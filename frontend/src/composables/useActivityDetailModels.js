@@ -1693,11 +1693,19 @@ function circleCompletionIndexModel(row) {
               const kikoeruTags = Array.isArray(it?.source_compare?.kikoeru?.tags)
                 ? it.source_compare.kikoeru.tags.filter(Boolean)
                 : []
+              const subtitleRjcodes = Array.isArray(it?.source_compare?.kikoeru?.subtitle_rjcodes)
+                ? it.source_compare.kikoeru.subtitle_rjcodes.filter(Boolean)
+                : []
+              const originalSubtitlePresent = Boolean(it?.original_subtitle_present)
+                || subtitleRjcodes.includes(String(it?.canonical_rjcode || '').trim())
               return {
                 canonical_rjcode: String(it?.canonical_rjcode || '').trim(),
                 workRjcode: String(it?.work_rjcode || it?.canonical_rjcode || '').trim(),
                 display_rjcode: String(it?.display_rjcode || '').trim(),
                 title: String(it?.title || '').trim(),
+                isBonusWork: Boolean(it?.is_bonus_work),
+                hasBonus: Boolean(it?.has_bonus),
+                originalSubtitlePresent,
                 preferred_variant_label: rawLabel,
                 variantTypeTag: _deriveVariantTypeTag(rawLabel),
                 hasSubtitleTag: kikoeruTags.includes('字幕') || Boolean(it?.source_compare?.kikoeru?.subtitle_present),
@@ -1964,6 +1972,7 @@ export function useActivityDetailModels(rowRef) {
   // 受 row 影响但有自己 UI 状态的 ref
   const compareSearchQuery = ref('')
   const compareSourceFilter = ref('all')
+  const compareVariantFilter = ref('all')
   const compareExpanded = ref(true)
   const circleRefreshFilter = ref('all')
   const circleRefreshPage = ref(1)
@@ -1977,6 +1986,7 @@ export function useActivityDetailModels(rowRef) {
   watch(rowRef, (next) => {
     compareSearchQuery.value = ''
     compareSourceFilter.value = 'all'
+    compareVariantFilter.value = 'all'
     compareExpanded.value = true
     circleRefreshFilter.value = 'all'
     circleRefreshPage.value = 1
@@ -2052,6 +2062,15 @@ export function useActivityDetailModels(rowRef) {
             && !(Array.isArray(it?.sourceCompare?.dlsite?.all_rjcodes) && it.sourceCompare.dlsite.all_rjcodes.length)
             && !it?.sourceCompare?.asmr_one?.primary_rjcode)
       if (!sm) return false
+      const variant = String(it?.variantTypeTag || it?.preferred_variant_label || '')
+      const vm = compareVariantFilter.value === 'all'
+        || (compareVariantFilter.value === 'simp' && /简中|简体/.test(variant))
+        || (compareVariantFilter.value === 'trad' && /繁中|繁体/.test(variant))
+        || (compareVariantFilter.value === 'original' && /原作|原版|日文原版|\bJPN\b/i.test(variant))
+        || (compareVariantFilter.value === 'bonus' && it?.isBonusWork)
+        || (compareVariantFilter.value === 'original_subtitle' && it?.originalSubtitlePresent)
+        || (compareVariantFilter.value === 'original_no_subtitle' && /原作|原版|日文原版|\bJPN\b/i.test(variant) && !it?.originalSubtitlePresent)
+      if (!vm) return false
       if (!q) return true
       const hay = [
         it?.title, it?.workRjcode, it?.display_rjcode, it?.preferred_variant_label,
@@ -2122,7 +2141,7 @@ export function useActivityDetailModels(rowRef) {
 
   return {
     // refs
-    compareSearchQuery, compareSourceFilter, compareExpanded,
+    compareSearchQuery, compareSourceFilter, compareVariantFilter, compareExpanded,
     circleRefreshFilter, circleRefreshPage, circleRefreshPageSize,
     batchWorkbenchAwaitingOnly, selectedBatchWorkbenchKeys,
     // basic computeds

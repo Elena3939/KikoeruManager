@@ -1357,9 +1357,57 @@ def _sqlite_pragma_on_connect(dbapi_connection, connection_record):
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+
+def _repair_orphan_sqlite_indexes() -> None:
+    """清理 sqlite_master 里指向不存在表的孤儿索引。
+
+    历史上如果 DB 文件被外部工具改过、或者上一次升级在 DROP TABLE 之间崩掉，
+    会留下 "有索引、没表" 的孤儿条目。SQLite 在 schema 解析阶段就会抛
+    `malformed database schema (<index>) - no such table: main.<table>`，
+    连无关的 `PRAGMA table_info(...)` 都会过不去，直接把 init_db 卡死。
+    这里在 create_all 之前用 writable_schema 把这些孤儿索引删掉。
+    """
+    try:
+        import sqlite3
+        # 直接用 sqlite3 驱动，避开 SQLAlchemy 的 schema 反射路径。
+        conn = sqlite3.connect(_db_path, timeout=30)
+        try:
+            cur = conn.cursor()
+            tables = {
+                row[0]
+                for row in cur.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            indexes = cur.execute(
+                "SELECT name, tbl_name FROM sqlite_master "
+                "WHERE type='index' AND sql IS NOT NULL"
+            ).fetchall()
+            orphans = [name for (name, tbl) in indexes if tbl not in tables]
+            if not orphans:
+                return
+            _db_logger.warning(
+                f"[数据库] 检测到孤儿索引，将清理：{orphans}"
+            )
+            cur.execute("PRAGMA writable_schema=ON")
+            for name in orphans:
+                cur.execute(
+                    "DELETE FROM sqlite_master WHERE type='index' AND name=?",
+                    (name,),
+                )
+            cur.execute("PRAGMA writable_schema=OFF")
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        # 修复失败不应阻断启动，让后续 create_all 自己抛真正错误。
+        _db_logger.warning(f"[数据库] 孤儿索引修复跳过：{exc}")
+
+
 def init_db():
     """初始化数据库"""
     _db_logger.info(f"[数据库] 初始化数据库，路径: {_db_path}")
+    _repair_orphan_sqlite_indexes()
     Base.metadata.create_all(bind=engine)
     with engine.connect() as conn:
         result = conn.execute(text("PRAGMA table_info(work_metadata)"))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -33,12 +34,108 @@ from .activity_log_service import log_circle_completion_event
 from .asmr_download_service import get_asmr_download_service
 from .asmr_resource_service import get_asmr_resource_service
 from .circle_image_cache_service import get_circle_image_cache_service
-from .dlsite_service import get_dlsite_service
+from .dlsite_service import DLsiteWorkSummary, get_dlsite_service
 from .kikoeru_duplicate_service import get_kikoeru_service
 from .metadata_service import MetadataService
 from .ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CircleIndexPerfTracker:
+    """单次社团索引的耗时 / 调用次数埋点收集器。
+
+    设计目标：
+
+    - **不引入新依赖**：纯 dataclass + ``time.monotonic()`` + 普通 dict 计数，
+      不依赖 Prometheus / OpenTelemetry，避免冷启动复杂度。
+    - **阶段维度记账**：以 ``with tracker.timed('candidate_collect')`` 标记阶段，
+      自动写入 ``stage_ms``。``timed`` 支持 ``__enter__/__exit__`` 与 ``async with``。
+    - **业务计数器维度记账**：``inc('kikoeru_search_calls')`` 风格，可在 P1-P8 各阶段
+      累加；只对实际感兴趣的字段累加，未累加的字段不会进 detail，减少噪音。
+    - **快照入日志**：``snapshot()`` 把 ``stage_ms`` / ``counters`` / ``total_ms``
+      合成一份扁平 dict 写到 ``index_completed.detail['perf']``，方便后续基于
+      操作历史导出。``snapshot()`` 可在任意阶段调用，方便 fail 时也能拿到部分数据。
+
+    使用示例：
+
+    ```python
+    perf = CircleIndexPerfTracker()
+    with perf.timed("phase1_external_snapshot"):
+        await self._collect_external_snapshot(..., perf=perf)
+    perf.inc("dlsite_summary_calls", 3)
+    detail["perf"] = perf.snapshot()
+    ```
+    """
+    stage_ms: Dict[str, float] = field(default_factory=dict)
+    counters: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    started_at_monotonic: float = field(default_factory=time.monotonic)
+
+    def inc(self, key: str, amount: int = 1) -> None:
+        """累加业务计数器。``amount`` 可为负，但通常不应出现。"""
+        if not key:
+            return
+        try:
+            self.counters[key] += int(amount)
+        except Exception:
+            # counters 必须始终是 int → defaultdict(int) 的契约；
+            # 任意上游写错类型时不要抛，记录后吞掉。
+            logger.debug("[社团补全·perf] inc 类型异常 key=%s amount=%r", key, amount, exc_info=True)
+
+    def add_stage(self, stage: str, duration_ms: float) -> None:
+        """直接补登一段阶段耗时；``timed`` 内部就调它。"""
+        if not stage:
+            return
+        try:
+            ms = float(duration_ms)
+        except Exception:
+            return
+        self.stage_ms[stage] = max(0.0, ms)
+
+    def timed(self, stage: str) -> "_PerfStageScope":
+        """上下文管理：``with perf.timed('phase'): ...``。"""
+        return _PerfStageScope(self, stage)
+
+    def snapshot(self) -> Dict[str, Any]:
+        """打包写入 ``index_completed.detail['perf']``。``total_ms`` 是从 tracker 实例化
+        起到 snapshot 调用为止的总耗时；和外层 ``index_circle_catalog`` 自己算的
+        ``duration_ms`` 不必完全相同（外层覆盖 progress callback 等额外阶段）。
+        """
+        return {
+            "total_ms": max(0, int((time.monotonic() - self.started_at_monotonic) * 1000)),
+            "stage_ms": {k: int(round(v)) for k, v in self.stage_ms.items()},
+            "counters": dict(self.counters),
+        }
+
+
+class _PerfStageScope:
+    """``CircleIndexPerfTracker.timed`` 的上下文实现：进入时记 start、退出时算 ms。
+
+    同时支持同步 ``with`` 和异步 ``async with``，因为阶段里既有同步聚合，
+    也有 ``await asyncio.gather(...)`` 这种 awaitable。
+    """
+
+    __slots__ = ("_tracker", "_stage", "_started_at")
+
+    def __init__(self, tracker: "CircleIndexPerfTracker", stage: str) -> None:
+        self._tracker = tracker
+        self._stage = stage
+        self._started_at = 0.0
+
+    def __enter__(self) -> "_PerfStageScope":
+        self._started_at = time.monotonic()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self._tracker.add_stage(self._stage, (time.monotonic() - self._started_at) * 1000)
+
+    async def __aenter__(self) -> "_PerfStageScope":
+        self._started_at = time.monotonic()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        self._tracker.add_stage(self._stage, (time.monotonic() - self._started_at) * 1000)
 
 
 @dataclass
@@ -124,11 +221,44 @@ class CircleCompletionService:
         self._asmr_probe_cache: TTLCache = TTLCache(max_size=2048, ttl_seconds=3600, name="circle.asmr_probe")
         # metadata / canonical 单条体积大，限严些；1h TTL 足以覆盖一次社团补全流程。
         self._metadata_cache: TTLCache = TTLCache(max_size=512, ttl_seconds=3600, name="circle.metadata")
-        self._canonical_cache: TTLCache = TTLCache(max_size=1024, ttl_seconds=3600, name="circle.canonical")
-        self._kikoeru_state_cache: TTLCache = TTLCache(max_size=1024, ttl_seconds=600, name="circle.kikoeru_state")
+        # ⚠ canonical cache 必须够大装下"大社团一次索引涉及的所有链路 RJ"：
+        # 实测 RaRo（304 件）展开后涉及 ~1600 个 RJ，旧 max_size=1024 会触发 LRU 淘汰，
+        # wave1 批量预热写进 1600 条但留下最后 1024 条，前 ~600 条全被踢出，
+        # 导致 resolve_canonical_rj 仍然走 DB+HTTP 慢路径。
+        self._canonical_cache: TTLCache = TTLCache(max_size=16384, ttl_seconds=3600, name="circle.canonical")
+        # Kikoeru state 同样按"链路 RJ × 多语言版本"展开，给充足上限避免 wave2b 命中失败。
+        self._kikoeru_state_cache: TTLCache = TTLCache(max_size=8192, ttl_seconds=600, name="circle.kikoeru_state")
         # 下面两个原本就有 expires_at 字段，结构不变以兼容现有读写。
         self._kikoeru_circle_id_cache: Dict[str, tuple[str, float]] = {}
         self._local_download_fallback_cache: Dict[str, Any] = {"expires_at": 0.0, "data": {}}
+        # P6 / P7：把"写库后才跑的耗时工作"挪到后台。同 circle_id 同时只跑一个，避免连续点击索引
+        # 触发并发任务竞争 DLsite / 图片 CDN，并让上层任务真正能"用户点击 → 索引完成"快速返回。
+        self._cover_cache_tasks: Dict[str, asyncio.Task] = {}
+        self._bonus_refresh_tasks: Dict[str, asyncio.Task] = {}
+        # P8：sync_local_owned_index TTL 节流。每次索引开头都全量 await 一次会拖慢中等库 5-15s；
+        # 改成首次 / 过期 / force 才同步，其他情况后台异步刷。
+        self._local_owned_sync_state: Dict[str, Any] = {
+            "last_completed_at": 0.0,
+            "background_task": None,  # type: Optional[asyncio.Task]
+        }
+        # ⚠ 性能优化：wave1 批量写 WorkCanonicalLink 的 buffer。
+        # ``resolve_canonical_rj`` 默认每次 RJ 解析完都立即 ``commit()``，wave1 阶段
+        # 587 个 RJ 串行触发 SQLite writer lock，加上 SessionLocal/SELECT 同步阻塞
+        # event loop，让 ``wave1_sem=20`` 实际退化为接近串行（实测 16-19 分）。
+        # ``_canonical_buffered_writes()`` with 块期间设为 list，``resolve_canonical_rj``
+        # 把待写 ``(canonical_rjcode, link_rows)`` append 到这里，with 退出时一次性
+        # 批量 DELETE + INSERT + COMMIT。设为 ``None`` 表示走原直写路径。
+        self._canonical_write_buffer: Optional[List[Tuple[str, List[Dict[str, Any]]]]] = None
+        # ⚠ 性能修复：`_fetch_metadata_dict` 单飞锁。
+        # 实测 322 件作品社团索引 ``stage_prepare_candidates`` 耗时 16 分钟，root cause 是
+        # 278 个 candidate 并发 await 同一个 ~150 个 canonical 的 metadata，每个 canonical
+        # 都被多个 candidate 同时打 → in-memory cache miss + DB miss + 触网，惊群效应。
+        # 单飞锁保证同一 RJ 同一时刻只 await 一次真实 fetch，剩下的等结果。
+        # **不**用 Lock，因为锁本身需要先取再释，重入会卡死；用 Future 字典 ``inflight[rj]``：
+        #   - first arrival 创建 Future、跑 fetch、set_result
+        #   - 后续 arrival 直接 await 现有 Future、零网络
+        # Future 完成后立刻清出字典，让后续真正 refresh 的 path 仍能触网。
+        self._metadata_inflight: Dict[str, asyncio.Future] = {}
 
     def normalize_circle_name(self, value: Any) -> str:
         text = unicodedata.normalize("NFKC", str(value or "")).strip().lower()
@@ -1136,6 +1266,9 @@ class CircleCompletionService:
                 "display_rjcode": item.get("display_rjcode"),
                 "asmr_available_rjcode": item.get("asmr_available_rjcode"),
                 "title": item.get("title"),
+                "is_bonus_work": bool(item.get("is_bonus_work")),
+                "has_bonus": bool(item.get("has_bonus")),
+                "original_subtitle_present": bool(item.get("subtitle_present")),
                 "preferred_variant_label": preferred_variant.get("label") or "优先版本 未标记",
                 "status_label": "本地已下载" if item.get("local_download_ready") else ("服务器已有" if item.get("server_owned") else ("可下载" if item.get("has_asmr_one") else "暂无来源")),
                 "status_key": "local" if item.get("local_download_ready") else ("owned" if item.get("server_owned") else ("downloadable" if item.get("has_asmr_one") else "dl_only")),
@@ -1684,6 +1817,197 @@ class CircleCompletionService:
 
         return normalized_circle_id
 
+    @contextlib.contextmanager
+    def _canonical_buffered_writes(self):
+        """wave1 等批量 ``resolve_canonical_rj`` 场景里把"逐 RJ commit"合并为一次 bulk commit。
+
+        ⚠ 性能优化（wave1 16-19 分 → 预期 < 5 分）：
+        默认路径每个 RJ 都开一个 ``SessionLocal()`` 跑 ``DELETE + INSERT + COMMIT``，
+        在 ``wave1_sem=20`` 协程下触发 SQLite writer lock 串行化、同步代码独占 event loop，
+        实际并发退化为接近串行。with 块期间所有 ``resolve_canonical_rj`` 内的 DB write
+        全部 append 到 ``self._canonical_write_buffer``，with 退出时一次性 ``_flush_canonical_write_buffer``。
+        Block 1（SELECT cached_rows，refresh=True 时反正不用）和 Block 2（SELECT overlap_codes，
+        全量 INSERT 时也能自动覆盖）在 buffered 模式下都跳过，进一步消除 event loop 阻塞。
+
+        with 块内 raise 时主动放弃 buffer（不 flush），下次索引会重新跑出来。
+        """
+        if self._canonical_write_buffer is not None:
+            # 不支持嵌套（理论上不会发生），直接 yield 让外层管理
+            yield
+            return
+        self._canonical_write_buffer = []
+        succeeded = False
+        try:
+            yield
+            succeeded = True
+        finally:
+            buffer = self._canonical_write_buffer or []
+            self._canonical_write_buffer = None
+            if succeeded and buffer:
+                try:
+                    self._flush_canonical_write_buffer(buffer)
+                except Exception:
+                    logger.warning(
+                        "[社团补全·snapshot] wave1 批量 flush canonical writes 失败 size=%d",
+                        len(buffer), exc_info=True,
+                    )
+
+    def _flush_canonical_write_buffer(
+        self, buffer: List[Tuple[str, List[Dict[str, Any]]]]
+    ) -> None:
+        """把 ``_canonical_buffered_writes`` 收集的 ``(canonical, link_rows)`` 一次批量落库。
+
+        语义跟 ``resolve_canonical_rj`` 内联的 Block 3 完全一致：先 DELETE 所有相关
+        canonical / linked RJ 的旧行，再 INSERT 新的。整批进同一个 SessionLocal，
+        一次 commit。SQLite writer lock 只串行 1 次而不是 587 次。
+        """
+        if not buffer:
+            return
+        # 去重：同一个 canonical_rjcode 可能被多个 RJ 解析出来，留最后一份覆盖
+        latest_by_canonical: Dict[str, List[Dict[str, Any]]] = {}
+        for canonical, link_rows in buffer:
+            if not canonical:
+                continue
+            latest_by_canonical[canonical] = link_rows
+        if not latest_by_canonical:
+            return
+        all_canonical_codes: Set[str] = set(latest_by_canonical.keys())
+        all_linked_codes: Set[str] = set()
+        for link_rows in latest_by_canonical.values():
+            for row in link_rows:
+                code = row.get("linked_rjcode")
+                if code:
+                    all_linked_codes.add(code)
+
+        db = SessionLocal()
+        try:
+            # 一次性删除所有相关旧行：DELETE WHERE canonical IN (...) OR linked IN (...)
+            db.query(WorkCanonicalLink).filter(
+                (WorkCanonicalLink.canonical_rjcode.in_(all_canonical_codes))
+                | (WorkCanonicalLink.linked_rjcode.in_(all_linked_codes))
+            ).delete(synchronize_session=False)
+            # 一次性 INSERT 新的
+            now = datetime.now()
+            for canonical, link_rows in latest_by_canonical.items():
+                for row in link_rows:
+                    linked = row.get("linked_rjcode")
+                    if not linked:
+                        continue
+                    db.add(WorkCanonicalLink(
+                        id=str(uuid.uuid4()),
+                        canonical_rjcode=canonical,
+                        linked_rjcode=linked,
+                        link_type=row.get("link_type") or "linked",
+                        lang=row.get("lang") or "",
+                        cached_at=now,
+                    ))
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def _prewarm_canonical_cache_from_db(self, rjcodes: List[str]) -> int:
+        """wave1 前一次性把 ``WorkCanonicalLink`` 里的关联链批量灌进 ``_canonical_cache``。
+
+        ⚠ 性能优化（wave1 19.59 分钟 → 预期秒级）：
+        旧实现里每个 RJ 都同步开 ``SessionLocal()`` 查 ``WorkCanonicalLink`` 然后调
+        ``dlsite_service.get_linked_works``，587 RJ × ``wave1_sem=20`` 在 SQLAlchemy
+        同步 IO 下退化为接近串行（实测 1175s ≈ 串行 2s × 587）。
+        改为：一次 ``WHERE linked_rjcode IN (...) OR canonical_rjcode IN (...)``
+        拉所有相关行（实测命中率 ~100%），按链路构造 payload 灌进 ``_canonical_cache``。
+        wave1 内 ``resolve_canonical_rj`` 见 memory cache 命中直接 return，跳过 DB+HTTP。
+
+        返回预热到 cache 的 RJ 数量（去重后）。
+        """
+        if not rjcodes:
+            return 0
+        normalized = list({self.normalize_rjcode(rj) for rj in rjcodes if self.normalize_rjcode(rj)})
+        if not normalized:
+            return 0
+
+        def _rj_sort_key(value: Any) -> tuple[int, str]:
+            v = self.normalize_rjcode(value)
+            match = re.search(r"RJ(\d+)", v)
+            return (int(match.group(1)) if match else 10**12, v)
+
+        def _select_canonical(rows: List[Any], fallback_rj: str) -> str:
+            candidates = []
+            for row in rows:
+                candidates.append({
+                    "rjcode": self.normalize_rjcode(row.linked_rjcode),
+                    "link_type": str(row.link_type or "").strip().lower(),
+                    "lang": self._normalize_lang_code(str(row.lang or "")),
+                })
+            candidates = [c for c in candidates if c["rjcode"]]
+            original = [c["rjcode"] for c in candidates if c["link_type"] == "original"]
+            if original:
+                return sorted(original, key=_rj_sort_key)[0]
+            jpn = [c["rjcode"] for c in candidates if c["lang"] in {"JPN", "JA", "JP"}]
+            if jpn:
+                return sorted(jpn, key=_rj_sort_key)[0]
+            all_codes = [c["rjcode"] for c in candidates]
+            if all_codes:
+                return sorted(all_codes, key=_rj_sort_key)[0]
+            return self.normalize_rjcode(fallback_rj)
+
+        db = SessionLocal()
+        try:
+            all_rows = (
+                db.query(WorkCanonicalLink)
+                .filter(
+                    (WorkCanonicalLink.linked_rjcode.in_(normalized))
+                    | (WorkCanonicalLink.canonical_rjcode.in_(normalized))
+                )
+                .all()
+            )
+        except Exception:
+            logger.warning("[社团补全·snapshot] wave1 批量预热 WorkCanonicalLink 失败", exc_info=True)
+            return 0
+        finally:
+            db.close()
+
+        if not all_rows:
+            return 0
+
+        # 按 canonical_rjcode 分组，每条 canonical 对应链上所有 link rows
+        rows_by_canonical: Dict[str, List[Any]] = {}
+        for row in all_rows:
+            canonical = self.normalize_rjcode(getattr(row, "canonical_rjcode", "") or "")
+            if not canonical:
+                continue
+            rows_by_canonical.setdefault(canonical, []).append(row)
+
+        warmed = 0
+        for canonical, rows in rows_by_canonical.items():
+            # 实际 canonical 可能因 link_type='original' 不在 canonical_rjcode 字段里
+            # （DLsite 关联链解析存在 BUG 时段），用 _select_canonical 重新计算保持与
+            # ``resolve_canonical_rj`` 完全一致的语义。
+            actual_canonical = _select_canonical(rows, canonical)
+            linked = sorted({
+                self.normalize_rjcode(row.linked_rjcode) for row in rows
+                if self.normalize_rjcode(row.linked_rjcode)
+            }, key=_rj_sort_key)
+            payload = {
+                "canonical_rjcode": actual_canonical,
+                "linked_rjcodes": linked,
+                "link_map": {
+                    self.normalize_rjcode(row.linked_rjcode): {
+                        "link_type": row.link_type,
+                        "lang": row.lang,
+                    }
+                    for row in rows
+                    if self.normalize_rjcode(row.linked_rjcode)
+                },
+            }
+            # 链路上每个 RJ 共享同一份 payload（与 resolve_canonical_rj 写 cache 时一致）
+            for linked_rj in linked or [actual_canonical]:
+                if linked_rj and linked_rj not in self._canonical_cache:
+                    self._canonical_cache[linked_rj] = payload
+                    warmed += 1
+        return warmed
+
     async def resolve_canonical_rj(self, rjcode: str, refresh: bool = False) -> Dict[str, Any]:
         normalized_rj = self.normalize_rjcode(rjcode)
         if not normalized_rj:
@@ -1754,27 +2078,32 @@ class CircleCompletionService:
                 },
             }
 
+        # ⚠ 性能优化：buffered 模式下（wave1 批量场景）跳过 Block 1 的 DB SELECT。
+        # 进入 buffered 模式的调用方典型语义是"强刷场景，cached_rows 反正不用"或
+        # "wave1 预热已经填好 memory cache"，多查一次 DB 只是同步阻塞 event loop。
+        # 非 buffered 路径保持原行为：先看 DB cache，命中且非强刷时短路 return。
         cached_rows: List[Any] = []
-        db = SessionLocal()
-        try:
-            cached_rows = (
-                db.query(WorkCanonicalLink)
-                .filter(
-                    (WorkCanonicalLink.linked_rjcode == normalized_rj)
-                    | (WorkCanonicalLink.canonical_rjcode == normalized_rj)
+        if self._canonical_write_buffer is None:
+            db = SessionLocal()
+            try:
+                cached_rows = (
+                    db.query(WorkCanonicalLink)
+                    .filter(
+                        (WorkCanonicalLink.linked_rjcode == normalized_rj)
+                        | (WorkCanonicalLink.canonical_rjcode == normalized_rj)
+                    )
+                    .all()
                 )
-                .all()
-            )
-            if cached_rows and not refresh:
-                payload = build_canonical_payload(cached_rows, normalized_rj)
-                for linked_rjcode in payload.get("linked_rjcodes") or [normalized_rj]:
-                    normalized_linked = self.normalize_rjcode(linked_rjcode)
-                    if normalized_linked:
-                        self._canonical_cache[normalized_linked] = payload
-                self._canonical_cache[normalized_rj] = payload
-                return payload
-        finally:
-            db.close()
+                if cached_rows and not refresh:
+                    payload = build_canonical_payload(cached_rows, normalized_rj)
+                    for linked_rjcode in payload.get("linked_rjcodes") or [normalized_rj]:
+                        normalized_linked = self.normalize_rjcode(linked_rjcode)
+                        if normalized_linked:
+                            self._canonical_cache[normalized_linked] = payload
+                    self._canonical_cache[normalized_rj] = payload
+                    return payload
+            finally:
+                db.close()
 
         linked_map: Dict[str, Any] = {}
         try:
@@ -1839,61 +2168,74 @@ class CircleCompletionService:
             link_rows = [{"linked_rjcode": normalized_rj, "link_type": "self", "lang": ""}]
             canonical_rjcode = normalized_rj
 
-        db = SessionLocal()
-        try:
-            overlap_codes = [row["linked_rjcode"] for row in link_rows if row.get("linked_rjcode")]
-            if overlap_codes:
-                existing_overlap_rows = (
-                    db.query(WorkCanonicalLink)
-                    .filter(
-                        (WorkCanonicalLink.linked_rjcode.in_(overlap_codes))
-                        | (WorkCanonicalLink.canonical_rjcode.in_(overlap_codes))
+        # ⚠ 性能优化：buffered 模式下跳过 Block 2 的 overlap SELECT。
+        # 该 SELECT 的目的是"如果别的链路也包含这些 RJ，合并 link_rows 以避免误删"，
+        # 但 buffered 模式下 ``_flush_canonical_write_buffer`` 一次性 DELETE 所有
+        # 相关 canonical / linked，再统一 INSERT，逻辑上等价。同时 wave1 批量场景里
+        # 多个 RJ 解析同一 chain 时本来就会算出一致的 link_rows，overlap 合并的收益微乎其微。
+        if self._canonical_write_buffer is None:
+            db = SessionLocal()
+            try:
+                overlap_codes = [row["linked_rjcode"] for row in link_rows if row.get("linked_rjcode")]
+                if overlap_codes:
+                    existing_overlap_rows = (
+                        db.query(WorkCanonicalLink)
+                        .filter(
+                            (WorkCanonicalLink.linked_rjcode.in_(overlap_codes))
+                            | (WorkCanonicalLink.canonical_rjcode.in_(overlap_codes))
+                        )
+                        .all()
                     )
-                    .all()
-                )
-                if existing_overlap_rows:
-                    merged_by_rj: Dict[str, Dict[str, str]] = {
-                        row["linked_rjcode"]: dict(row)
-                        for row in link_rows
-                        if row.get("linked_rjcode")
-                    }
-                    for existing in existing_overlap_rows:
-                        linked = self.normalize_rjcode(existing.linked_rjcode)
-                        if not linked:
-                            continue
-                        current = merged_by_rj.get(linked)
-                        if current is None or current.get("link_type") in {"self", "unknown"}:
-                            merged_by_rj[linked] = {
-                                "linked_rjcode": linked,
-                                "link_type": str(existing.link_type or ""),
-                                "lang": str(existing.lang or ""),
-                            }
-                    link_rows = list(merged_by_rj.values())
-                    canonical_rjcode = _select_canonical_from_link_rows(link_rows, canonical_rjcode)
-        finally:
-            db.close()
+                    if existing_overlap_rows:
+                        merged_by_rj: Dict[str, Dict[str, str]] = {
+                            row["linked_rjcode"]: dict(row)
+                            for row in link_rows
+                            if row.get("linked_rjcode")
+                        }
+                        for existing in existing_overlap_rows:
+                            linked = self.normalize_rjcode(existing.linked_rjcode)
+                            if not linked:
+                                continue
+                            current = merged_by_rj.get(linked)
+                            if current is None or current.get("link_type") in {"self", "unknown"}:
+                                merged_by_rj[linked] = {
+                                    "linked_rjcode": linked,
+                                    "link_type": str(existing.link_type or ""),
+                                    "lang": str(existing.lang or ""),
+                                }
+                        link_rows = list(merged_by_rj.values())
+                        canonical_rjcode = _select_canonical_from_link_rows(link_rows, canonical_rjcode)
+            finally:
+                db.close()
 
-        db = SessionLocal()
-        try:
-            db.query(WorkCanonicalLink).filter(
-                (WorkCanonicalLink.canonical_rjcode == canonical_rjcode)
-                | (WorkCanonicalLink.linked_rjcode.in_([row["linked_rjcode"] for row in link_rows]))
-            ).delete(synchronize_session=False)
-            for row in link_rows:
-                db.add(WorkCanonicalLink(
-                    id=str(uuid.uuid4()),
-                    canonical_rjcode=canonical_rjcode,
-                    linked_rjcode=row["linked_rjcode"],
-                    link_type=row["link_type"],
-                    lang=row["lang"],
-                    cached_at=datetime.now(),
-                ))
-            db.commit()
-        except Exception:
-            db.rollback()
-            logger.warning("[社团补全] 写入 canonical 链失败 %s", normalized_rj, exc_info=True)
-        finally:
-            db.close()
+        # ⚠ 性能优化：buffered 模式下把 Block 3 的 DELETE + INSERT + COMMIT
+        # append 到 ``_canonical_write_buffer``，由 ``_flush_canonical_write_buffer``
+        # 在 wave1 结束后一次批量落库。SQLite writer lock 只串行 1 次而不是 587 次，
+        # 同时同步代码不再独占 event loop，wave1_sem=20 才能真正发挥 20 并发。
+        if self._canonical_write_buffer is not None:
+            self._canonical_write_buffer.append((canonical_rjcode, list(link_rows)))
+        else:
+            db = SessionLocal()
+            try:
+                db.query(WorkCanonicalLink).filter(
+                    (WorkCanonicalLink.canonical_rjcode == canonical_rjcode)
+                    | (WorkCanonicalLink.linked_rjcode.in_([row["linked_rjcode"] for row in link_rows]))
+                ).delete(synchronize_session=False)
+                for row in link_rows:
+                    db.add(WorkCanonicalLink(
+                        id=str(uuid.uuid4()),
+                        canonical_rjcode=canonical_rjcode,
+                        linked_rjcode=row["linked_rjcode"],
+                        link_type=row["link_type"],
+                        lang=row["lang"],
+                        cached_at=datetime.now(),
+                    ))
+                db.commit()
+            except Exception:
+                db.rollback()
+                logger.warning("[社团补全] 写入 canonical 链失败 %s", normalized_rj, exc_info=True)
+            finally:
+                db.close()
 
         payload = {
             "canonical_rjcode": canonical_rjcode,
@@ -1946,21 +2288,54 @@ class CircleCompletionService:
         cached_metadata = self._metadata_cache.get(normalized_rj)
         if not refresh and cached_metadata is not None and not _is_placeholder_metadata(cached_metadata):
             return cached_metadata
+
+        # ⚠ 性能修复：单飞锁。N 个 candidate 同时 await 同一个 canonical 的 metadata
+        # 时，让首个进入的 task 负责真实 fetch，其他全部 await 同一份 Future。
+        # 这是 ``stage_prepare_candidates`` 16 分钟降到 ~2 分钟的关键改动。
+        # ``refresh=True`` 跳过 inflight 复用，因为调用方明确要求重新拉。
         if not refresh:
-            db = SessionLocal()
+            existing = self._metadata_inflight.get(normalized_rj)
+            if existing is not None and not existing.done():
+                return await existing
+
+        future: Optional[asyncio.Future] = None
+        if not refresh:
             try:
-                cached = db.query(WorkMetadata).filter(WorkMetadata.rjcode == normalized_rj).first()
-                if cached:
-                    payload = cached.to_dict()
-                    if not _is_placeholder_metadata(payload):
-                        self._metadata_cache[normalized_rj] = payload
-                        return payload
-            finally:
-                db.close()
-        fake_task = type("FakeTask", (), {"task_metadata": {"rjcode": normalized_rj}, "rjcode": normalized_rj, "update_progress": lambda *args, **kwargs: None})()
-        payload = await self.metadata_service.fetch(normalized_rj, fake_task, force_refresh=refresh)
-        self._metadata_cache[normalized_rj] = dict(payload or {})
-        return self._metadata_cache[normalized_rj]
+                # ``_fetch_metadata_dict`` 一定在协程中被调用，``get_running_loop`` 永远可用，
+                # 且避开 Python 3.12 ``get_event_loop`` 在无 running loop 时的 deprecation 警告。
+                future = asyncio.get_running_loop().create_future()
+                self._metadata_inflight[normalized_rj] = future
+            except Exception:
+                future = None
+
+        try:
+            if not refresh:
+                db = SessionLocal()
+                try:
+                    cached = db.query(WorkMetadata).filter(WorkMetadata.rjcode == normalized_rj).first()
+                    if cached:
+                        payload = cached.to_dict()
+                        if not _is_placeholder_metadata(payload):
+                            self._metadata_cache[normalized_rj] = payload
+                            if future is not None and not future.done():
+                                future.set_result(payload)
+                            return payload
+                finally:
+                    db.close()
+            fake_task = type("FakeTask", (), {"task_metadata": {"rjcode": normalized_rj}, "rjcode": normalized_rj, "update_progress": lambda *args, **kwargs: None})()
+            payload = await self.metadata_service.fetch(normalized_rj, fake_task, force_refresh=refresh)
+            self._metadata_cache[normalized_rj] = dict(payload or {})
+            if future is not None and not future.done():
+                future.set_result(self._metadata_cache[normalized_rj])
+            return self._metadata_cache[normalized_rj]
+        except Exception as exc:
+            if future is not None and not future.done():
+                future.set_exception(exc)
+            raise
+        finally:
+            # 不管成功失败，立刻清出 inflight，让下一波调用可以重走 cache 检查路径。
+            if future is not None and self._metadata_inflight.get(normalized_rj) is future:
+                self._metadata_inflight.pop(normalized_rj, None)
 
     async def _probe_kikoeru_owned_state(self, probe_rjcode: str, *, use_cache: bool = True) -> bool:
         # ★ 性能优化：复用 ``_probe_kikoeru_state`` 的 ``_kikoeru_state_cache``。
@@ -2055,6 +2430,62 @@ class CircleCompletionService:
             "found_titles": found_titles,
         }
 
+    def _build_known_kikoeru_index(
+        self,
+        kikoeru_works: List[Dict[str, Any]],
+    ) -> Dict[str, Dict[str, Any]]:
+        """把 ``list_circle_works`` 直连结果转成 ``{normalized RJ → state}`` 索引。
+
+        每个直连命中的 RJ → 一份 ``{has_kikoeru, found_rjcodes, subtitle_rjcodes,
+        found_titles, work_id, source}`` 字典，结构与 ``_probe_kikoeru_state`` 输出
+        完全兼容。命中后 ``_collect_external_snapshot`` 的 Wave 2b 跳过 probe，把同
+        一份 state 直接灌到 ``_kikoeru_state_cache``。
+
+        ``subtitle_rjcodes`` 在直连结果里暂时为空 —— 字幕信息要靠 ``/api/tracks/{id}``
+        逐个拉取，与 P3 的设计意图（**不在关键路径**逐个 hydrate tracks）冲突。
+        ``server_owned`` / ``has_kikoeru`` 等关键字段不依赖 subtitle，索引依然完整；
+        字幕统计将来需要可以在 ``bonus refresh`` 同样的后台路径补刷。
+        """
+        known: Dict[str, Dict[str, Any]] = {}
+        if not kikoeru_works:
+            return known
+        for work in kikoeru_works:
+            if not isinstance(work, dict):
+                continue
+            try:
+                rjcodes = self.kikoeru_service._work_to_rjcodes(work)
+            except Exception:
+                guessed = self._guess_kikoeru_rjcode(work)
+                rjcodes = [guessed] if guessed else []
+            title = str(work.get("title") or "").strip()
+            try:
+                work_id = int(work.get("id") or 0)
+            except Exception:
+                work_id = 0
+            normalized_rjcodes: List[str] = []
+            for rj in rjcodes:
+                normalized = self.normalize_rjcode(rj)
+                if normalized and normalized not in normalized_rjcodes:
+                    normalized_rjcodes.append(normalized)
+            if not normalized_rjcodes:
+                continue
+            found_titles: Dict[str, str] = {}
+            if title:
+                for rj in normalized_rjcodes:
+                    found_titles[rj] = title
+            state_payload = {
+                "has_kikoeru": True,
+                "found_rjcodes": list(normalized_rjcodes),
+                "subtitle_rjcodes": [],
+                "found_titles": found_titles,
+                "work_id": work_id,
+                "source": "kikoeru_circle_works",
+            }
+            # 同一份 state 灌到链上每个 RJ —— 这与 Wave 2b 内部回灌策略一致。
+            for rj in normalized_rjcodes:
+                known.setdefault(rj, state_payload)
+        return known
+
     async def _collect_external_snapshot(
         self,
         candidate_rjcodes: List[str],
@@ -2062,6 +2493,8 @@ class CircleCompletionService:
         force_refresh: bool = False,
         progress_callback: Optional[Callable[[int, str], None]] = None,
         cancel_callback: Optional[Callable[[], bool]] = None,
+        known_kikoeru_index: Optional[Dict[str, Dict[str, Any]]] = None,
+        perf: Optional[CircleIndexPerfTracker] = None,
     ) -> CircleCompletionSnapshot:
         """Phase 1：一次性批量预取所有外部数据，Phase 2 纯本地聚合不再触网。
 
@@ -2144,20 +2577,65 @@ class CircleCompletionService:
         # 的设计意图严格对齐。
         wave1_sem = asyncio.Semaphore(20)
 
+        # ⚠ 性能优化 P1：wave1 启动前一次性批量预热 ``_canonical_cache``。
+        # 旧实现 587 RJ 各自同步开 ``SessionLocal()`` 查 ``WorkCanonicalLink``，
+        # 即使 force_refresh=True 也会跑 Block 1 SELECT 然后丢弃结果，纯属浪费。
+        # 这里改为一次性 ``WHERE linked_rjcode IN (...) OR canonical_rjcode IN (...)``
+        # 把所有相关行批量拉出来灌进 memory cache。新社团首次索引时 DB 空，方法返回 0 无副作用。
+        # 即使 force_refresh=True 也跑：``WorkCanonicalLink`` 是 DLsite 关联链解析结果的
+        # 持久化，跟 ``dlsite_service`` 内部的 24h HTTP cache 是两个层，强刷语义针对的是后者。
+        prewarm_ctx = perf.timed("stage_snapshot_wave1_prewarm_canonical") if perf else contextlib.nullcontext()
+        with prewarm_ctx:
+            warmed = await asyncio.to_thread(
+                self._prewarm_canonical_cache_from_db, snapshot.candidate_rjcodes
+            )
+        if perf:
+            perf.inc("wave1_canonical_cache_prewarmed", warmed)
+        logger.info(
+            "[社团补全·snapshot] wave1 批量预热 _canonical_cache: rj=%d cache_warmed=%d force_refresh=%s",
+            len(snapshot.candidate_rjcodes), warmed, force_refresh,
+        )
+
         async def prefetch_dlsite(rj: str) -> Tuple[str, str, Set[str], Dict[str, Any]]:
             """返回 ``(原始 rj, canonical rj, 链上所有 rj 的集合, canonical_info)``。
 
             内部把所有异常吞掉、回 fallback 值（canonical=rj 自身），保证
             上游聚合阶段不需要再处理 BaseException 分支。
+
+            ★ 性能：进入 wave1_sem 之前先看 ``_canonical_cache``（预热已填）。
+            memory 命中直接 return，跳过 sem 排队 + HTTP + DB IO。新社团首次索引时
+            cache 是空的，这条 fast-path 不命中，正常进入 ``resolve_canonical_rj``
+            走 DLsite HTTP；但 buffered 模式下 DB writes 已被合并，sem 真并发。
             """
-            related: Set[str] = {rj}
-            canonical: str = rj
+            cached_payload = self._canonical_cache.get(rj) if not force_refresh else None
+            if cached_payload is not None:
+                canonical = self.normalize_rjcode(cached_payload.get("canonical_rjcode")) or rj
+                related: Set[str] = {rj, canonical}
+                for code in cached_payload.get("linked_rjcodes") or []:
+                    norm = self.normalize_rjcode(code)
+                    if norm:
+                        related.add(norm)
+                if perf:
+                    perf.inc("wave1_chain_memory_hits")
+                return rj, canonical, related, cached_payload
+
+            related = {rj}
+            canonical = rj
             canonical_info: Dict[str, Any] = {}
             async with wave1_sem:
+                chain_t0 = time.monotonic()
                 try:
                     canonical_info = await self.resolve_canonical_rj(rj, refresh=force_refresh) or {}
                 except Exception:
                     logger.debug("[社团补全·snapshot] resolve_canonical_rj 失败 rj=%s", rj, exc_info=True)
+                chain_ms = int((time.monotonic() - chain_t0) * 1000)
+                if perf:
+                    perf.inc("wave1_chain_count")
+                    perf.inc("wave1_chain_total_ms", chain_ms)
+                    if chain_ms > 5000:
+                        perf.inc("wave1_chain_slow_gt_5s")
+                    if chain_ms > 15000:
+                        perf.inc("wave1_chain_slow_gt_15s")
                 canonical = self.normalize_rjcode(canonical_info.get("canonical_rjcode")) or rj
                 related.add(canonical)
                 for code in canonical_info.get("linked_rjcodes") or []:
@@ -2166,15 +2644,57 @@ class CircleCompletionService:
                         related.add(norm)
             return rj, canonical, related, canonical_info
 
+        wave1_total = len(snapshot.candidate_rjcodes)
         safe_progress(
             0,
-            f"解析 DLsite 作品关联链 0/{len(snapshot.candidate_rjcodes)} 件",
+            f"解析 DLsite 作品关联链 0/{wave1_total} 件",
         )
 
-        wave1_raw = await asyncio.gather(
-            *[prefetch_dlsite(rj) for rj in snapshot.candidate_rjcodes],
-            return_exceptions=True,
-        )
+        # ⚠ UX 修复：旧实现用 ``asyncio.gather``，所有 RJ 一起跑、整体完成才返回，
+        # progress 在 587 个 RJ 跑完前永远卡在 "0/587"，用户以为系统卡死。实际是
+        # 并发的（wave1_sem=20）但前端看不到进度。改成 ``asyncio.as_completed``，
+        # 每完成一个立刻推进 progress（按 done/total × 50 缩放，因为 wave1 只占 snapshot
+        # 阶段的 0-50 段）。
+        wave1_raw: List[Any] = []
+        wave1_done = 0
+        wave1_tasks = [
+            asyncio.ensure_future(prefetch_dlsite(rj))
+            for rj in snapshot.candidate_rjcodes
+        ]
+        # ⚠ 性能诊断：分别记录 wave1 / wave2a / wave2b 耗时，定位 stage_external_snapshot
+        # 内部的真实瓶颈。perf 的 stage_ms 用 timed 包装即可。
+        # ⚠ 性能优化 P2：把整段 wave1 包进 ``_canonical_buffered_writes`` 上下文。
+        # ``resolve_canonical_rj`` 内部检测到 buffered 模式时，所有 ``WorkCanonicalLink``
+        # 的 DELETE/INSERT/COMMIT 不再每 RJ 立即提交，而是 append 到 buffer，
+        # with 退出时一次批量落库。587 次 SQLite writer lock 串行 → 1 次，
+        # 同步 DB IO 不再独占 event loop，wave1_sem=20 才能真正发挥 20 并发。
+        wave1_ctx = perf.timed("stage_snapshot_wave1_dlsite_chains") if perf else contextlib.nullcontext()
+        with self._canonical_buffered_writes():
+            with wave1_ctx:
+                try:
+                    for future in asyncio.as_completed(wave1_tasks):
+                        ensure_not_cancelled()
+                        try:
+                            result = await future
+                        except BaseException as exc:  # 与原 gather(return_exceptions=True) 等价
+                            result = exc
+                        wave1_raw.append(result)
+                        wave1_done += 1
+                        # 节流：每 5 个或最后一个才推 progress，避免 SSE 通道刷爆
+                        if wave1_done % 5 == 0 or wave1_done == wave1_total:
+                            safe_progress(
+                                int(wave1_done / max(1, wave1_total) * 50),
+                                f"解析 DLsite 作品关联链 {wave1_done}/{wave1_total} 件",
+                            )
+                except asyncio.CancelledError:
+                    for task in wave1_tasks:
+                        if not task.done():
+                            task.cancel()
+                    raise
+
+            # 记录批量 flush 大小（with 块退出时 _canonical_buffered_writes 才真正 flush）
+            if perf and self._canonical_write_buffer is not None:
+                perf.inc("wave1_canonical_writes_buffered", len(self._canonical_write_buffer))
 
         ensure_not_cancelled()
 
@@ -2242,10 +2762,64 @@ class CircleCompletionService:
         # 新实现：每条链路按 ``link_map`` 排序选 preferred，命中即停。最差情况（preferred /
         # 翻译版全部 miss、最后只命中原作）的探测次数等于链路长度；正常情况只打 1-2 次。
         # 整体能压到链路数 ~= 10-15，比旧实现省 70-80% 的 ASMR.one HTTP。
+        #
+        # ⚠ 性能调优历史：
+        # - 30（最初）：稳定但 322 件社团需 15 分钟（chain 内部串行 + ASMR.one 单次 5-10s）
+        # - 64（一次尝试）：**触发 ASMR.one 限流 / connection pool 打爆**，单次社团索引超过
+        #   1 小时还没出 snapshot 阶段（进度卡在 8%）。回退。
+        # - 30（当前保守值）：维持原值，ASMR.one 稳定吞吐对外暴露的就是 ~30 并发上限。
+        # 真正能进一步压榨的方向是：让 chain 内部 probe 并发（``probe_order`` 短列表内并发，
+        # 命中即停），而不是无脑提升 chain-level 并发。如果未来要再优化，从这个方向走。
         wave2_asmr_sem = asyncio.Semaphore(30)
         asmr_completed = 0
         # 进度按链路推进而不是按 RJ，避免跳跃
         asmr_total = max(1, len(canonical_to_chain))
+
+        # P5：snapshot 内局部 ASMR 探测去重 —— ASMR.one 没有持久 cache，但同一轮任务里
+        # 同一个 RJ 出现在不同链路（边界情况）时不应该被请求两次。本地 dict + 锁即可，
+        # **不**升级为跨任务的 self.* 缓存——ASMR.one 资源变动概率高，跨任务复用会
+        # 让用户感觉"明明 ASMR.one 上有了，索引仍说没有"。
+        asmr_probe_once: Dict[str, Tuple[Optional[Dict[str, Any]], Optional[List[Any]]]] = {}
+        asmr_probe_locks: Dict[str, asyncio.Lock] = {}
+
+        async def probe_asmr_once(
+            rjcode: str,
+        ) -> Tuple[Optional[Dict[str, Any]], Optional[List[Any]]]:
+            normalized = self.normalize_rjcode(rjcode)
+            if not normalized:
+                return None, None
+            if normalized in asmr_probe_once:
+                if perf:
+                    perf.inc("asmr_probe_once_hits")
+                return asmr_probe_once[normalized]
+            lock = asmr_probe_locks.setdefault(normalized, asyncio.Lock())
+            async with lock:
+                if normalized in asmr_probe_once:
+                    if perf:
+                        perf.inc("asmr_probe_once_hits")
+                    return asmr_probe_once[normalized]
+                if perf:
+                    perf.inc("asmr_probe_once_misses")
+                    perf.inc("asmr_work_info_calls")
+                # ⚠ 性能修复：``wave2_asmr_sem`` 移到这里（RJ-level 并发上限），
+                # 配合 ``prefetch_asmr_chain`` 的 chain 内并发改造，sem 真正控制的就是
+                # 同时打 ASMR.one 的请求数（≤ 30），不再是 chain 级并发数。
+                work_info: Optional[Dict[str, Any]] = None
+                tracks: Optional[List[Any]] = None
+                async with wave2_asmr_sem:
+                    try:
+                        work_info = await self.asmr_service.fetch_work_info(normalized)
+                    except Exception:
+                        logger.debug("[社团补全·snapshot] ASMR fetch_work_info 失败 rj=%s", normalized, exc_info=True)
+                    if work_info:
+                        if perf:
+                            perf.inc("asmr_track_list_calls")
+                        try:
+                            tracks = await self.asmr_service.fetch_track_list(normalized)
+                        except Exception:
+                            logger.debug("[社团补全·snapshot] ASMR fetch_track_list 失败 rj=%s", normalized, exc_info=True)
+                asmr_probe_once[normalized] = (work_info, tracks)
+                return work_info, tracks
 
         def _build_chain_probe_order(canonical: str, chain_rjs: Set[str]) -> List[str]:
             """按 ``link_map`` 排序得到这条链路上 ASMR.one 探测顺序。
@@ -2270,51 +2844,98 @@ class CircleCompletionService:
             return order
 
         async def prefetch_asmr_chain(canonical: str) -> List[Tuple[str, Optional[Dict[str, Any]], Optional[List[Any]]]]:
-            """对一条 canonical 链路按 preferred 优先级串行探 ASMR.one，命中即停。
+            """对一条 canonical 链路按 preferred 优先级**串行**探 ASMR.one，命中即停。
 
-            返回链上每个 RJ 的 ``(rj, work_info, tracks)``：
-            - 首个 ``work_info`` & ``tracks`` 双双命中的 RJ 之后停止真探，剩余 RJ 用
-              ``(rj, None, None)`` 占位（``snapshot.contains_asmr`` 仍正确返 False）。
-            - 全 miss 时链上每个 RJ 都是 ``(rj, None, None)``。
+            ⚠ 性能修复（27.80 分钟 → 预期 2-3 分钟）：旧实现在这里 ``async with wave2_asmr_sem``
+            把 sem 锁在整个 chain 探测过程，导致 sem=30 实际限制的是 **chain 级并发**：
+            150 条 chain / 30 = 5 批 × 平均 5.7 RJ × 1.94s/call = 55s/批 → 总 27.8 分钟。
+
+            新实现：sem 已移到 ``probe_asmr_once`` 内部（RJ-level 并发上限），这里**不再**
+            在 chain 层加 sem，让所有 chain（典型 150 个）真正并发起来；每个 chain 内仍
+            **串行命中即停**，保留旧合约（preferred 命中后不再对原作 / 其他翻译版打 ASMR.one HTTP）。
+            预期：
+            - 命中（273/304 ≈ 89%）：每 chain 只打 1 次 ASMR.one ≈ 1.94s
+            - miss（31/304）：每 chain 打满 ~5.7 RJ ≈ 11s
+            - 上层 150 chain 同时跑，RJ-level sem=30 是真实瓶颈：
+              总 calls ≈ 273×1 + 31×5.7 = 450 → 450 / 30 = 15 批 × 1.94s ≈ 30s（理论）
+            实际受 ASMR.one 单次延时波动影响，预估 2-3 分钟稳定下限。
             """
             chain_rjs: Set[str] = set(canonical_to_chain.get(canonical) or {canonical})
             probe_order = _build_chain_probe_order(canonical, chain_rjs)
             results: List[Tuple[str, Optional[Dict[str, Any]], Optional[List[Any]]]] = []
             explored: Set[str] = set()
-            async with wave2_asmr_sem:
-                for rj in probe_order:
-                    work_info: Optional[Dict[str, Any]] = None
-                    tracks: Optional[List[Any]] = None
-                    try:
-                        work_info = await self.asmr_service.fetch_work_info(rj)
-                    except Exception:
-                        logger.debug("[社团补全·snapshot] ASMR fetch_work_info 失败 rj=%s", rj, exc_info=True)
-                    if work_info:
-                        try:
-                            tracks = await self.asmr_service.fetch_track_list(rj)
-                        except Exception:
-                            logger.debug("[社团补全·snapshot] ASMR fetch_track_list 失败 rj=%s", rj, exc_info=True)
-                    results.append((rj, work_info, tracks))
-                    explored.add(rj)
-                    if work_info and tracks:
-                        break
+            chain_started = time.monotonic()
+            for rj in probe_order:
+                work_info, tracks = await probe_asmr_once(rj)
+                results.append((rj, work_info, tracks))
+                explored.add(rj)
+                if work_info and tracks:
+                    break
+            chain_elapsed = time.monotonic() - chain_started
+            # ⚠ 性能诊断：累计 chain 耗时分布，对比"理论 ≈ 链长 × 单 RJ 延时"与实际值。
+            if perf:
+                perf.inc("asmr_chain_total_ms", int(chain_elapsed * 1000))
+                perf.inc("asmr_chain_total_count")
+                if chain_elapsed > 10:
+                    perf.inc("asmr_chain_slow_gt_10s")
+                if chain_elapsed > 30:
+                    perf.inc("asmr_chain_slow_gt_30s")
             # 链上没探过的 RJ 用 (None, None) 占位，让 snapshot.contains_asmr 兼容旧行为。
             for rj in chain_rjs:
                 if rj not in explored:
                     results.append((rj, None, None))
             return results
 
-        # ============ Wave 2b：Kikoeru 作品链路核对（按 canonical 去重）============
+        # ============ Wave 2b：Kikoeru 作品链路核对（按 canonical 去重 + known_kikoeru_index 短路）============
         # ``check_duplicate_with_linkages(canonical_rj)`` 内部会自动展开整条作品
         # 链路、把每个翻译版都查一遍，返回的 state 对链上任意 RJ 都是等价的。
         # 这里把"按 RJ probe（典型 30-50 次）"压到"按链路 probe（典型 10-15 次）"，
         # 是耗时改善最大的地方。
+        #
+        # P3 进一步：``known_kikoeru_index`` 来自 ``kikoeru_service.list_circle_works``
+        # 的直连结果。链路上任意 RJ 命中索引即视为"该 canonical 已在 Kikoeru"，跳过
+        # ``_probe_kikoeru_state`` —— 减少全量 search 调用与 link 解析。
         wave2_kk_sem = asyncio.Semaphore(20)
         kikoeru_completed = 0
         kikoeru_total = max(1, len(unique_canonicals))
+        known_kikoeru = known_kikoeru_index or {}
+
+        def _merge_known_kikoeru_hits(hits: List[Dict[str, Any]]) -> Dict[str, Any]:
+            merged_rjcodes: List[str] = []
+            merged_subtitles: List[str] = []
+            merged_titles: Dict[str, str] = {}
+            for hit in hits:
+                for rj in hit.get("found_rjcodes") or []:
+                    if rj and rj not in merged_rjcodes:
+                        merged_rjcodes.append(rj)
+                for rj in hit.get("subtitle_rjcodes") or []:
+                    if rj and rj not in merged_subtitles:
+                        merged_subtitles.append(rj)
+                for k, v in (hit.get("found_titles") or {}).items():
+                    if k not in merged_titles and v:
+                        merged_titles[k] = v
+            return {
+                "has_kikoeru": True,
+                "found_rjcodes": merged_rjcodes,
+                "subtitle_rjcodes": merged_subtitles,
+                "found_titles": merged_titles,
+            }
 
         async def prefetch_kikoeru(canonical_rj: str) -> Tuple[str, Dict[str, Any]]:
+            chain = canonical_to_chain.get(canonical_rj) or {canonical_rj}
+            # P3：known_kikoeru_index 命中即跳过 probe。这是把"Kikoeru 直连已经知道有"
+            # 的作品从全量 search/link 流程里摘出来 —— 实测 RaRo 社团 322/362 命中
+            # known index，能省 80%+ Kikoeru 调用。
+            if known_kikoeru:
+                hits = [known_kikoeru[m] for m in chain if m in known_kikoeru]
+                if hits:
+                    state = _merge_known_kikoeru_hits(hits)
+                    if perf:
+                        perf.inc("kikoeru_known_hits")
+                    return canonical_rj, state
             async with wave2_kk_sem:
+                if perf:
+                    perf.inc("kikoeru_probe_calls")
                 try:
                     state = await self._probe_kikoeru_state(
                         canonical_rj, use_cache=not force_refresh
@@ -2333,47 +2954,53 @@ class CircleCompletionService:
 
         async def collect_asmr() -> None:
             nonlocal asmr_completed
-            for future in asyncio.as_completed(asmr_futures):
-                ensure_not_cancelled()
-                try:
-                    chain_results = await future
-                except Exception as exc:
-                    logger.debug("[社团补全·snapshot] ASMR prefetch 任务异常: %s", exc)
+            # ⚠ 性能诊断：单独计时 ASMR.one 链路核对耗时（不含 Kikoeru，因为它们并行）。
+            wave2a_ctx = perf.timed("stage_snapshot_wave2a_asmr") if perf else contextlib.nullcontext()
+            with wave2a_ctx:
+                for future in asyncio.as_completed(asmr_futures):
+                    ensure_not_cancelled()
+                    try:
+                        chain_results = await future
+                    except Exception as exc:
+                        logger.debug("[社团补全·snapshot] ASMR prefetch 任务异常: %s", exc)
+                        asmr_completed += 1
+                        continue
+                    for rj, work_info, tracks in chain_results:
+                        snapshot.asmr_work_info_by_rj[rj] = work_info
+                        snapshot.asmr_tracks_by_rj[rj] = tracks
                     asmr_completed += 1
-                    continue
-                for rj, work_info, tracks in chain_results:
-                    snapshot.asmr_work_info_by_rj[rj] = work_info
-                    snapshot.asmr_tracks_by_rj[rj] = tracks
-                asmr_completed += 1
-                if asmr_completed % 3 == 0 or asmr_completed == asmr_total:
-                    # snapshot 相对刻度：ASMR 占 50→75 段
-                    safe_progress(
-                        50 + int((asmr_completed / asmr_total) * 25),
-                        f"在 ASMR.one 上核对作品链路 {asmr_completed}/{asmr_total} 条",
-                    )
+                    if asmr_completed % 3 == 0 or asmr_completed == asmr_total:
+                        # snapshot 相对刻度：ASMR 占 50→75 段
+                        safe_progress(
+                            50 + int((asmr_completed / asmr_total) * 25),
+                            f"在 ASMR.one 上核对作品链路 {asmr_completed}/{asmr_total} 条",
+                        )
 
         async def collect_kikoeru() -> None:
             nonlocal kikoeru_completed
-            for future in asyncio.as_completed(kikoeru_futures):
-                ensure_not_cancelled()
-                try:
-                    canonical_rj, state = await future
-                except Exception as exc:
-                    logger.debug("[社团补全·snapshot] Kikoeru prefetch 任务异常: %s", exc)
+            # ⚠ 性能诊断：单独计时 Kikoeru 链路核对耗时（不含 ASMR.one，因为它们并行）。
+            wave2b_ctx = perf.timed("stage_snapshot_wave2b_kikoeru") if perf else contextlib.nullcontext()
+            with wave2b_ctx:
+                for future in asyncio.as_completed(kikoeru_futures):
+                    ensure_not_cancelled()
+                    try:
+                        canonical_rj, state = await future
+                    except Exception as exc:
+                        logger.debug("[社团补全·snapshot] Kikoeru prefetch 任务异常: %s", exc)
+                        kikoeru_completed += 1
+                        continue
+                    # 把同一份 state 回灌给链上每个 RJ 的 cache，让 Phase 2 对任意
+                    # candidate / linked RJ probe 都能直接 cache 命中。
+                    chain = canonical_to_chain.get(canonical_rj) or {canonical_rj}
+                    for member in chain:
+                        self._kikoeru_state_cache[member] = state
                     kikoeru_completed += 1
-                    continue
-                # 把同一份 state 回灌给链上每个 RJ 的 cache，让 Phase 2 对任意
-                # candidate / linked RJ probe 都能直接 cache 命中。
-                chain = canonical_to_chain.get(canonical_rj) or {canonical_rj}
-                for member in chain:
-                    self._kikoeru_state_cache[member] = state
-                kikoeru_completed += 1
-                if kikoeru_completed % 3 == 0 or kikoeru_completed == kikoeru_total:
-                    # snapshot 相对刻度：Kikoeru 占 75→95 段
-                    safe_progress(
-                        75 + int((kikoeru_completed / kikoeru_total) * 20),
-                        f"在 Kikoeru 上核对作品链路 {kikoeru_completed}/{kikoeru_total} 条",
-                    )
+                    if kikoeru_completed % 3 == 0 or kikoeru_completed == kikoeru_total:
+                        # snapshot 相对刻度：Kikoeru 占 75→95 段
+                        safe_progress(
+                            75 + int((kikoeru_completed / kikoeru_total) * 20),
+                            f"在 Kikoeru 上核对作品链路 {kikoeru_completed}/{kikoeru_total} 条",
+                        )
 
         # 两组并发同时跑，互不阻塞；耗时 = max(ASMR_total, Kikoeru_chain_total)
         await asyncio.gather(collect_asmr(), collect_kikoeru())
@@ -2778,6 +3405,7 @@ class CircleCompletionService:
         maker_id: str = "",
         *,
         progress_callback: Optional[Callable[..., None]] = None,
+        perf: Optional[CircleIndexPerfTracker] = None,
     ) -> List[Dict[str, Any]]:
         normalized_maker_id = str(maker_id or "").strip().upper()
         if not normalized_maker_id:
@@ -2789,11 +3417,37 @@ class CircleCompletionService:
                     normalized_maker_id = str(existing_catalog.circle_id).strip().upper()
             finally:
                 db.close()
-        dlsite_rjcodes: List[str] = []
+        # P2：dlsite_summaries 取代旧的 dlsite_rjcodes —— 列表 HTML 解析出的 chip
+        # 信息让 _classify_listing_summary_audio 在零外部 HTTP 的情况下就能把
+        # manga/CG/RPG/视频类作品过滤掉。``is_probably_audio is None`` 的条目会在
+        # fetch_candidate 中 fallback 到旧的 product/info/ajax 链路，行为完全兼容。
+        dlsite_summaries: List[DLsiteWorkSummary] = []
+        seen_rjcodes: Set[str] = set()
         # 只有直接来自 maker 主页的 RJ 码才是可信的，不需要二次校验社团名
-        profile_rjcodes: set = set()
+        profile_rjcodes: Set[str] = set()
         source_mode = "keyword"
         failure_messages: List[str] = []
+
+        def absorb_summary(summary: DLsiteWorkSummary, *, from_profile: bool) -> bool:
+            workno = self.normalize_rjcode(summary.workno)
+            if not workno or workno in seen_rjcodes:
+                return False
+            seen_rjcodes.add(workno)
+            summary.workno = workno
+            dlsite_summaries.append(summary)
+            if from_profile:
+                profile_rjcodes.add(workno)
+            return True
+
+        def absorb_rjcodes(rjcodes: List[str], *, from_profile: bool) -> int:
+            added = 0
+            for rj in rjcodes:
+                normalized = self.normalize_rjcode(rj)
+                if not normalized or normalized in seen_rjcodes:
+                    continue
+                if absorb_summary(DLsiteWorkSummary(workno=normalized), from_profile=from_profile):
+                    added += 1
+            return added
 
         # ★ profile_parse_status 用来区分两种"profile + announce 都返回 0"：
         #   - "empty"：DLsite 上 maker_id 真的没作品（多半是脏 maker_id），可以重置走关键字
@@ -2805,14 +3459,19 @@ class CircleCompletionService:
 
         if normalized_maker_id:
             try:
-                dlsite_rjcodes, profile_parse_status = await self.dlsite_service.list_circle_worknos_by_maker(normalized_maker_id, language="JPN")
+                profile_summaries, profile_parse_status = await self.dlsite_service.list_circle_work_summaries_by_maker(
+                    normalized_maker_id, language="JPN"
+                )
+                if perf:
+                    perf.inc("dlsite_summary_pages")
                 source_mode = "maker_profile"
-                profile_rjcodes = set(dlsite_rjcodes)
+                for summary in profile_summaries:
+                    absorb_summary(summary, from_profile=True)
                 if progress_callback:
                     progress_callback(
                         44,
                         "已抓取 DLsite 社团主页原作与预告列表",
-                        dlsite_profile_total=len(dlsite_rjcodes),
+                        dlsite_profile_total=len(dlsite_summaries),
                         dlsite_maker_id=normalized_maker_id,
                         dlsite_source_mode=source_mode,
                         dlsite_failure_reason="",
@@ -2829,14 +3488,7 @@ class CircleCompletionService:
             if maker_announce_failure:
                 failure_messages.append(maker_announce_failure)
             if maker_announce_rjcodes:
-                seen_rjcodes = set(dlsite_rjcodes)
-                added_count = 0
-                for rjcode in maker_announce_rjcodes:
-                    if rjcode not in seen_rjcodes:
-                        seen_rjcodes.add(rjcode)
-                        dlsite_rjcodes.append(rjcode)
-                        added_count += 1
-                profile_rjcodes.update(maker_announce_rjcodes)
+                added_count = absorb_rjcodes(maker_announce_rjcodes, from_profile=True)
                 source_mode = f"{source_mode}+maker_announce"
                 if progress_callback:
                     progress_callback(
@@ -2844,13 +3496,13 @@ class CircleCompletionService:
                         "已补充 DLsite maker 预告作品",
                         dlsite_maker_announce_total=len(maker_announce_rjcodes),
                         dlsite_maker_announce_added=added_count,
-                        dlsite_profile_total=len(dlsite_rjcodes),
+                        dlsite_profile_total=len(dlsite_summaries),
                         dlsite_maker_id=normalized_maker_id,
                         dlsite_source_mode=source_mode,
                         dlsite_failure_reason=" / ".join(failure_messages),
                     )
 
-        if not dlsite_rjcodes:
+        if not dlsite_summaries:
             # ★ profile + maker_announce 都返回 0 时，需要区分两种本质不同的情况：
             #
             # (1) parse_status == "empty"：HTTP 都 200 + HTML 也是正常 DLsite 页面，但确实
@@ -2895,14 +3547,15 @@ class CircleCompletionService:
                 )
                 if source_mode.startswith("maker_profile"):
                     source_mode = "keyword_with_strict_maker"
-            dlsite_rjcodes, keyword_failure_reason = await self._search_dlsite_circle_works(circle_query)
+            keyword_rjcodes, keyword_failure_reason = await self._search_dlsite_circle_works(circle_query)
             if keyword_failure_reason:
                 failure_messages.append(keyword_failure_reason)
+            absorb_rjcodes(keyword_rjcodes, from_profile=False)
             if progress_callback:
                 progress_callback(
                     44,
                     "已回退关键字搜索 DLsite",
-                    dlsite_profile_total=len(dlsite_rjcodes),
+                    dlsite_profile_total=len(dlsite_summaries),
                     dlsite_source_mode=source_mode,
                     dlsite_failure_reason=" / ".join(failure_messages),
                 )
@@ -2911,19 +3564,13 @@ class CircleCompletionService:
         if announce_failure_reason:
             failure_messages.append(announce_failure_reason)
         if announce_rjcodes:
-            seen_rjcodes = set(dlsite_rjcodes)
-            added_count = 0
-            for rjcode in announce_rjcodes:
-                if rjcode not in seen_rjcodes:
-                    seen_rjcodes.add(rjcode)
-                    dlsite_rjcodes.append(rjcode)
-                    added_count += 1
+            added_count = absorb_rjcodes(announce_rjcodes, from_profile=False)
             source_mode = f"{source_mode}+announce"
             if progress_callback:
                 progress_callback(
                     45,
                     "已补充 DLsite 发售预告作品",
-                    dlsite_profile_total=len(dlsite_rjcodes),
+                    dlsite_profile_total=len(dlsite_summaries),
                     dlsite_announce_total=len(announce_rjcodes),
                     dlsite_announce_added=added_count,
                     dlsite_source_mode=source_mode,
@@ -2931,31 +3578,131 @@ class CircleCompletionService:
                 )
 
         candidates: List[Dict[str, Any]] = []
-        total_rjcodes = max(1, len(dlsite_rjcodes))
+        # ⚠ P2 回归修复：列表 chip 判 False 时**不再硬过滤**。
+        # 之前的版本会把 ``is_probably_audio is False`` 直接 ``continue`` 跳过，
+        # 但 ``_classify_listing_summary_audio`` 的"非音声判定常量集合"对 ETC / GAM /
+        # 标题里出现"漫画/动画/CG"等关键词的纯音声特典会误杀，导致 RaRo 这种 322
+        # 件作品社团索引出来只剩 ~200 件。
+        #
+        # 新策略：
+        # - chip = True  → 加速路径：``get_product_info`` 轻量校验，跳过完整 metadata
+        # - chip = False → **降级为弱信号 hint**，仍走完整 fallback；不丢作品
+        # - chip = None  → 完整 fallback（旧行为）
+        #
+        # 性能上仍能享受 chip = True 的加速比，最差情况只是退回旧行为，绝不会丢作品。
+        pre_filtered_summaries: List[DLsiteWorkSummary] = list(dlsite_summaries)
+        listing_non_audio_hint = 0
+        for summary in dlsite_summaries:
+            if summary.is_probably_audio is False:
+                listing_non_audio_hint += 1
+                if perf:
+                    perf.inc("dlsite_listing_non_audio_hint")
+                logger.debug(
+                    "[社团补全·summary] 列表层提示非音声（仅作 hint，仍走 metadata 校验）rj=%s reason=%s",
+                    summary.workno, summary.classification_reason,
+                )
+        if perf:
+            perf.inc("dlsite_summary_total_raw", len(dlsite_summaries))
+            perf.inc(
+                "dlsite_summary_audio_candidates",
+                sum(1 for s in pre_filtered_summaries if s.is_probably_audio is True),
+            )
+            perf.inc(
+                "dlsite_summary_unknown",
+                sum(1 for s in pre_filtered_summaries if s.is_probably_audio is None),
+            )
+            perf.inc(
+                "dlsite_summary_listing_non_audio_hint",
+                listing_non_audio_hint,
+            )
+
+        if listing_non_audio_hint and progress_callback:
+            progress_callback(
+                45,
+                f"列表层提示 {listing_non_audio_hint} 件可能非音声（仍走 metadata 校验）",
+                dlsite_profile_total=len(dlsite_summaries),
+                dlsite_listing_non_audio_hint=listing_non_audio_hint,
+                dlsite_source_mode=source_mode,
+                dlsite_failure_reason=" / ".join(failure_messages),
+            )
+
+        total_summaries = max(1, len(pre_filtered_summaries))
         semaphore = asyncio.Semaphore(10)
 
-        async def fetch_candidate(rjcode: str) -> Optional[Dict[str, Any]]:
+        async def fetch_candidate(summary: DLsiteWorkSummary) -> Optional[Dict[str, Any]]:
+            rjcode = summary.workno
             is_from_profile = rjcode in profile_rjcodes
+            listing_label = summary.is_probably_audio  # True / False / None
             async with semaphore:
-                try:
-                    meta = await self._fetch_metadata_dict(rjcode)
-                except Exception:
-                    meta = {"rjcode": rjcode}
-                if self._is_non_audio_package_text(" ".join([
-                    str(meta.get("work_name") or meta.get("title") or ""),
-                    *self._extract_text_values(meta.get("tags")),
-                    *self._extract_text_values(meta.get("work_category")),
-                    *self._extract_text_values(meta.get("category")),
-                    *self._extract_text_values(meta.get("file_format")),
-                ])):
-                    return None
-                asmr_classification = await self._classify_asmr_work_candidate(rjcode, meta)
-                # maker 主页会列出同社团全部作品，游戏/漫画也在里面。不能因为
-                # 来源可信就放行；必须被 DLsite product 判成 SOU，或 metadata
-                # 自身有明确音声/ASMR 信号。
-                if asmr_classification is not True:
-                    return None
-            candidate_maker_id = self._normalize_maker_id(meta.get("maker_id"))
+                meta: Dict[str, Any]
+                product_payload: Optional[Dict[str, Any]] = None
+
+                if listing_label is True:
+                    # 列表 chip 已经判定为音声。只做轻量 product.json 校验，
+                    # 拿到 maker_id / maker_name 等关键字段；不走 _fetch_metadata_dict
+                    # 的完整链路（含 product/info/ajax 特典字段）。
+                    try:
+                        product_info = await self.dlsite_service.get_product_info(rjcode)
+                    except Exception:
+                        product_info = None
+                    product_payload = dict((product_info or {}).get("product") or {})
+                    if perf:
+                        perf.inc("dlsite_summary_light_verifications")
+                    if product_payload:
+                        image_main = product_payload.get("image_main") if isinstance(product_payload.get("image_main"), dict) else {}
+                        cover_url = ""
+                        if isinstance(image_main, dict):
+                            cover_url = str(image_main.get("url") or "")
+                        meta = {
+                            "rjcode": rjcode,
+                            "work_name": product_payload.get("work_name") or summary.title or "",
+                            "maker_id": product_payload.get("maker_id") or summary.maker_id or "",
+                            "maker_name": product_payload.get("maker_name") or summary.maker_name or "",
+                            "cover_url": cover_url or summary.cover_url,
+                            "price_text": product_payload.get("price") or "",
+                            "release_date": product_payload.get("regist_date") or "",
+                        }
+                    else:
+                        # product.json 失败：退化到旧的 metadata 链路，保留旧鲁棒性。
+                        if perf:
+                            perf.inc("dlsite_summary_light_verification_misses")
+                        try:
+                            meta = await self._fetch_metadata_dict(rjcode)
+                        except Exception:
+                            meta = {"rjcode": rjcode}
+                else:
+                    # listing_label is None（不确定）或 False（提示非音声但 hint 不可靠）：
+                    # 都走旧完整链路，由 ``_is_non_audio_package_text`` + 下方
+                    # ``_classify_asmr_work_candidate`` 兜底判定，避免漏作品。
+                    if perf:
+                        if listing_label is False:
+                            perf.inc("dlsite_summary_fallback_after_non_audio_hint")
+                        else:
+                            perf.inc("dlsite_summary_fallback_full_metadata")
+                    try:
+                        meta = await self._fetch_metadata_dict(rjcode)
+                    except Exception:
+                        meta = {"rjcode": rjcode}
+                    if self._is_non_audio_package_text(" ".join([
+                        str(meta.get("work_name") or meta.get("title") or ""),
+                        *self._extract_text_values(meta.get("tags")),
+                        *self._extract_text_values(meta.get("work_category")),
+                        *self._extract_text_values(meta.get("category")),
+                        *self._extract_text_values(meta.get("file_format")),
+                    ])):
+                        if perf:
+                            perf.inc("dlsite_non_audio_filtered_after_metadata")
+                        return None
+                    asmr_classification = await self._classify_asmr_work_candidate(rjcode, meta)
+                    # maker 主页会列出同社团全部作品，游戏/漫画也在里面。不能因为
+                    # 来源可信就放行；必须被 DLsite product 判成 SOU，或 metadata
+                    # 自身有明确音声/ASMR 信号。
+                    if asmr_classification is not True:
+                        if perf:
+                            perf.inc("dlsite_non_audio_filtered_after_metadata")
+                        return None
+
+            candidate_maker_id = self._normalize_maker_id(meta.get("maker_id") or summary.maker_id)
             if normalized_maker_id:
                 if is_from_profile:
                     if candidate_maker_id and candidate_maker_id != normalized_maker_id:
@@ -2965,7 +3712,7 @@ class CircleCompletionService:
                     # 候选必须携带且必须等于该 maker_id，缺失也直接丢弃。
                     if not candidate_maker_id or candidate_maker_id != normalized_maker_id:
                         return None
-            maker_name = str(meta.get("maker_name") or "").strip()
+            maker_name = str(meta.get("maker_name") or summary.maker_name or "").strip()
             if not is_from_profile:
                 # 关键字/预告搜索来源：必须校验社团名，防止不相关社团作品混入。
                 # 用双向宽松匹配，避免 query 比 maker_name 长（如 Kikoeru 把系列名
@@ -2976,33 +3723,36 @@ class CircleCompletionService:
                     return None
                 if not self._circle_name_loose_match(circle_query, maker_name):
                     return None
+            release_date = str(meta.get("release_date") or "")
             return {
                 "rjcode": rjcode,
-                "title": meta.get("work_name") or "",
-                "maker_id": meta.get("maker_id") or normalized_maker_id or "",
+                "title": meta.get("work_name") or summary.title or "",
+                "maker_id": meta.get("maker_id") or summary.maker_id or normalized_maker_id or "",
                 "maker_name": maker_name or circle_query,
                 "price_text": meta.get("price_text") or "",
                 "image_url": self._normalize_dlsite_cover_url(
-                    meta.get("cover_url"),
+                    meta.get("cover_url") or summary.cover_url,
                     rjcode,
-                    is_unreleased=self._is_future_release_date(meta.get("release_date")),
+                    is_unreleased=self._is_future_release_date(release_date),
                 ),
                 "source": "dlsite",
                 "_asmr_checked": True,
+                "_listing_label": listing_label,
+                "_listing_reason": summary.classification_reason,
             }
 
         completed = 0
-        futures = [fetch_candidate(rjcode) for rjcode in dlsite_rjcodes]
+        futures = [fetch_candidate(summary) for summary in pre_filtered_summaries]
         for future in asyncio.as_completed(futures):
             candidate = await future
             completed += 1
             if candidate:
                 candidates.append(candidate)
-            if progress_callback and (completed == total_rjcodes or completed % 10 == 0):
+            if progress_callback and (completed == total_summaries or completed % 10 == 0):
                 progress_callback(
-                    44 + int((completed / total_rjcodes) * 8),
-                    f"解析 DLsite 社团作品 {completed}/{total_rjcodes}",
-                    dlsite_profile_total=len(dlsite_rjcodes),
+                    44 + int((completed / total_summaries) * 8),
+                    f"解析 DLsite 社团作品 {completed}/{total_summaries}",
+                    dlsite_profile_total=len(dlsite_summaries),
                     dlsite_candidates_count=len(candidates),
                     dlsite_source_mode=source_mode,
                     dlsite_failure_reason=" / ".join(failure_messages),
@@ -3047,6 +3797,42 @@ class CircleCompletionService:
             return results
         finally:
             db.close()
+
+    # P8：本地拥有态全量重建的 TTL（秒）。30 分钟内重复点击索引时跳过同步重建，
+    # 直接复用 LibraryOwnedWork。后台仍会派一个刷新任务保持新鲜。
+    _LOCAL_OWNED_SYNC_TTL_SECONDS: float = 30 * 60
+
+    def _is_local_owned_index_fresh(self) -> bool:
+        last = float(self._local_owned_sync_state.get("last_completed_at") or 0.0)
+        if last <= 0.0:
+            return False
+        return (time.monotonic() - last) < self._LOCAL_OWNED_SYNC_TTL_SECONDS
+
+    def _schedule_local_owned_index_refresh(self) -> Optional[asyncio.Task]:
+        """派一个后台 sync_local_owned_index 任务，已有未完成任务则复用。"""
+        existing = self._local_owned_sync_state.get("background_task")
+        if existing and isinstance(existing, asyncio.Task) and not existing.done():
+            return existing
+
+        sync_state = self._local_owned_sync_state
+
+        async def _runner() -> None:
+            try:
+                await self.sync_local_owned_index()
+            except Exception:
+                logger.warning("[社团补全] 后台 sync_local_owned_index 失败", exc_info=True)
+            finally:
+                # 自检：只在自己仍是当前注册的 task 时清空，避免误清掉后续新调度的 task。
+                running_task = asyncio.current_task()
+                if sync_state.get("background_task") is running_task:
+                    sync_state["background_task"] = None
+
+        try:
+            task = asyncio.create_task(_runner(), name="circle-local-owned-sync")
+        except RuntimeError:
+            return None
+        sync_state["background_task"] = task
+        return task
 
     async def sync_local_owned_index(self) -> Dict[str, Any]:
         db = SessionLocal()
@@ -3095,6 +3881,8 @@ class CircleCompletionService:
             raise
         finally:
             db.close()
+        # P8：记录完成时间戳，用于 TTL 判断"下一次索引是否还需要 await 全量同步"。
+        self._local_owned_sync_state["last_completed_at"] = time.monotonic()
         return {"owned_count": len(merged)}
 
     async def sync_owned_for_rj(self, rjcode: str, folder_path: str = "", library_id: str = "") -> None:
@@ -3214,6 +4002,82 @@ class CircleCompletionService:
         except Exception:
             logger.debug("[社团补全] SSE 广播失败 rj=%s", normalized_rj, exc_info=True)
 
+    def _schedule_circle_cover_cache(
+        self,
+        circle_id: str,
+        cover_pairs: List[Tuple[str, str]],
+        thumb_pairs: List[Tuple[str, str]],
+    ) -> Optional[asyncio.Task]:
+        """把封面下载挪到后台。同 circle_id 同时只跑一个任务；上次还没完成时复用现有 Task。
+
+        返回新建（或已有）的后台任务对象，方便测试 / 调试 await。主流程不应 await。
+        """
+        if not cover_pairs and not thumb_pairs:
+            return None
+
+        existing = self._cover_cache_tasks.get(circle_id)
+        if existing and not existing.done():
+            logger.debug("[社团补全] circle_id=%s 已有封面缓存后台任务，跳过新建", circle_id)
+            return existing
+
+        async def _runner() -> None:
+            try:
+                image_cache_service = get_circle_image_cache_service()
+                if cover_pairs:
+                    await image_cache_service.download_many(cover_pairs)
+                if thumb_pairs:
+                    await image_cache_service.download_many(thumb_pairs, variant="list")
+            except Exception:
+                logger.warning("[社团补全] 后台封面缓存失败 circle_id=%s", circle_id, exc_info=True)
+            finally:
+                # 任务结束后从字典清除，避免长期占用内存
+                self._cover_cache_tasks.pop(circle_id, None)
+
+        try:
+            task = asyncio.create_task(_runner(), name=f"circle-cover-cache:{circle_id}")
+        except RuntimeError:
+            # 没运行中的 event loop（极少出现：测试场景 / 同步 caller）→ 静默放弃后台化，
+            # 不阻塞主流程。
+            logger.debug("[社团补全] 当前无运行中的 event loop，跳过封面缓存后台化 circle_id=%s", circle_id)
+            return None
+        self._cover_cache_tasks[circle_id] = task
+        return task
+
+    def _schedule_circle_bonus_refresh(
+        self,
+        circle_id: str,
+        bonus_lookup_rjcodes: List[str],
+        *,
+        force: bool = False,
+    ) -> Optional[asyncio.Task]:
+        """把 bonus 字段补刷挪到后台，保留 ``_refresh_circle_bonus_fields`` 同步版本给
+        ``refresh_circle_works`` 这种"选中作品刷新"路径使用（用户主动触发，期望立即看到结果）。
+        """
+        if not bonus_lookup_rjcodes:
+            return None
+        existing = self._bonus_refresh_tasks.get(circle_id)
+        if existing and not existing.done():
+            logger.debug("[社团补全] circle_id=%s 已有 bonus 后台任务，跳过新建", circle_id)
+            return existing
+
+        async def _runner() -> None:
+            try:
+                await self._refresh_circle_bonus_fields(
+                    circle_id, bonus_lookup_rjcodes, force=force
+                )
+            except Exception:
+                logger.warning("[社团补全] 后台 bonus 补刷失败 circle_id=%s", circle_id, exc_info=True)
+            finally:
+                self._bonus_refresh_tasks.pop(circle_id, None)
+
+        try:
+            task = asyncio.create_task(_runner(), name=f"circle-bonus-refresh:{circle_id}")
+        except RuntimeError:
+            logger.debug("[社团补全] 当前无运行中的 event loop，跳过 bonus 后台化 circle_id=%s", circle_id)
+            return None
+        self._bonus_refresh_tasks[circle_id] = task
+        return task
+
     async def _refresh_circle_bonus_fields(
         self,
         circle_id: str,
@@ -3326,6 +4190,9 @@ class CircleCompletionService:
         # 单社团索引耗时记账：从"用户点击 → index_completed 写日志"全程，时间线显示这条。
         # 我们在 lite 路径里把 task_finished 行过滤掉了，所以耗时必须直接写进 index_completed.detail。
         _index_start_monotonic = time.monotonic()
+        # P0：单次索引埋点对象。所有阶段耗时 / counter 都灌到这里，最后写入
+        # index_completed.detail['perf']，方便后续 SQL 聚合分析。
+        perf = CircleIndexPerfTracker()
 
         def ensure_not_cancelled():
             if cancel_callback and cancel_callback():
@@ -3339,13 +4206,25 @@ class CircleCompletionService:
                 except Exception:
                     logger.warning("[社团补全] 更新进度回调失败", exc_info=True)
 
-        report(5, "同步本地拥有态索引", circle_query=circle_query)
-        await self.sync_local_owned_index()
+        # P8：sync_local_owned_index TTL 节流。强刷 / 首次 / TTL 过期才同步 await；
+        # 其他场景后台异步刷新。索引开头不再等待 5-15s 的全量 LibrarySnapshot 重建。
+        if force_refresh or not self._is_local_owned_index_fresh():
+            report(5, "同步本地拥有态索引", circle_query=circle_query)
+            with perf.timed("stage_local_owned_sync"):
+                await self.sync_local_owned_index()
+            perf.inc("local_owned_sync_mode_sync")
+        else:
+            report(5, "本地拥有态索引仍在 TTL 内，后台异步刷新", circle_query=circle_query)
+            self._schedule_local_owned_index_refresh()
+            perf.inc("local_owned_sync_mode_background")
         ensure_not_cancelled()
 
         report(12, "收集本地社团候选")
         local_candidates = await self._collect_local_circle_candidates(circle_query)
         kikoeru_candidates: List[Dict[str, Any]] = []
+        # P3 跨阶段：``kikoeru_works`` 在 include_kikoeru 块内被填充，提到外层供
+        # ``_collect_external_snapshot`` 构造 known_kikoeru_index 复用。
+        kikoeru_works: List[Dict[str, Any]] = []
         resolved_kikoeru_circle_id = ""
         if include_kikoeru:
             report(24, "查询 Kikoeru 社团作品", local_candidates_count=len(local_candidates))
@@ -3409,7 +4288,6 @@ class CircleCompletionService:
                 if kikoeru_circle_id:
                     self._save_persisted_kikoeru_circle_id(normalized_circle_query, kikoeru_circle_id, maker_id_hint)
             resolved_kikoeru_circle_id = kikoeru_circle_id
-            kikoeru_works: List[Dict[str, Any]] = []
             if kikoeru_circle_id:
                 report(26, "已识别 Kikoeru 社团，切换直连作品接口", kikoeru_circle_id=kikoeru_circle_id)
                 try:
@@ -3528,11 +4406,13 @@ class CircleCompletionService:
         )
         dlsite_candidates: List[Dict[str, Any]] = []
         if include_dlsite:
-            dlsite_candidates = await self._collect_dlsite_circle_candidates(
-                circle_query,
-                identity_seed["maker_id"],
-                progress_callback=report,
-            )
+            with perf.timed("stage_dlsite_candidates"):
+                dlsite_candidates = await self._collect_dlsite_circle_candidates(
+                    circle_query,
+                    identity_seed["maker_id"],
+                    progress_callback=report,
+                    perf=perf,
+                )
         ensure_not_cancelled()
 
         combined_candidates = local_candidates + kikoeru_candidates + dlsite_candidates
@@ -3643,17 +4523,27 @@ class CircleCompletionService:
                 mapped = 54 + int(rel_pct * 0.18)  # 54 + 0..18 → 54..72
                 report(mapped, step, **meta)
 
+            # P3：用 kikoeru_works 构造 known index，让 snapshot Wave 2b 在链路上任一 RJ
+            # 命中时直接跳过 ``_probe_kikoeru_state``。这是 RaRo 这种 322/362 命中率社团
+            # 上耗时减少最多的优化点。
+            known_kikoeru_index = self._build_known_kikoeru_index(kikoeru_works)
+            if known_kikoeru_index:
+                perf.inc("kikoeru_known_index_size", len(known_kikoeru_index))
             report(
                 54,
                 f"准备核对 {len(snapshot_candidates)} 件候选作品的 DLsite / ASMR.one / Kikoeru 状态",
                 prefetch_count=len(snapshot_candidates),
+                known_kikoeru_index_size=len(known_kikoeru_index),
             )
-            external_snapshot = await self._collect_external_snapshot(
-                snapshot_candidates,
-                force_refresh=force_refresh,
-                progress_callback=_snapshot_progress,
-                cancel_callback=cancel_callback,
-            )
+            with perf.timed("stage_external_snapshot"):
+                external_snapshot = await self._collect_external_snapshot(
+                    snapshot_candidates,
+                    force_refresh=force_refresh,
+                    progress_callback=_snapshot_progress,
+                    cancel_callback=cancel_callback,
+                    known_kikoeru_index=known_kikoeru_index,
+                    perf=perf,
+                )
         else:
             external_snapshot = CircleCompletionSnapshot()
 
@@ -3678,8 +4568,20 @@ class CircleCompletionService:
                 # dlsite 候选在 fetch_candidate 阶段已完成 ASMR 检查，此处跳过避免重复调用 DLsite API
                 if not item.get("_asmr_checked") and not await self._is_asmr_work_candidate(rjcode, None):
                     return None
-                canonical_info = await self.resolve_canonical_rj(rjcode, refresh=force_refresh)
-                canonical = canonical_info["canonical_rjcode"] or rjcode
+                # P4：优先复用 external_snapshot 已经算好的 canonical / canonical_info。
+                # Wave 1 已经在 force_refresh=True 时刷新过 DLsite 关联链；prepare_candidate
+                # 阶段保持 refresh=False 即可保证零重复 resolve_canonical_rj 调用。
+                canonical_info = None
+                canonical = ""
+                snap_canonical = external_snapshot.get_canonical_rj(rjcode) if external_snapshot else None
+                if snap_canonical:
+                    canonical = snap_canonical
+                    canonical_info = (external_snapshot.canonical_info_by_canonical.get(snap_canonical) or {}).copy()
+                    if canonical_info and not canonical_info.get("canonical_rjcode"):
+                        canonical_info["canonical_rjcode"] = snap_canonical
+                if not canonical_info:
+                    canonical_info = await self.resolve_canonical_rj(rjcode, refresh=False)
+                    canonical = canonical_info.get("canonical_rjcode") or rjcode
 
                 # ★ 修复 BUG #3（韩英 / 其他外语版被独立成卡）：
                 # 在 input rjcode 自己的 link_map 信号下，直接判定它是否属于"非简繁日"分组。
@@ -3761,7 +4663,62 @@ class CircleCompletionService:
                 "public_linked_rjcodes": [variant["rjcode"] for variant in allowed_variants if variant.get("rjcode")],
             }
 
-        for future in asyncio.as_completed([prepare_candidate(item) for item in combined_candidates]):
+        _prepare_started_at = time.monotonic()
+
+        # ⚠ 关键设计修正（用户洞察）：
+        # 旧实现对**每个 candidate**单独跑 prepare_candidate，278 candidate × 1-2 次
+        # metadata fetch ≈ 16 分钟。但 278 candidate 里**多个翻译版共享同一个 canonical**
+        # （278 candidate → 实测 ~150 canonical），重复跑 prepare_candidate 完全是浪费。
+        #
+        # 正确设计："只对最优 RJ 拉元信息，其他翻译版只记录 RJ 号"。实现方式：
+        #   1. 用 ``external_snapshot.get_canonical_rj`` 把 candidates 按 canonical 分组
+        #   2. 对每个 canonical 唯一一次跑 prepare_candidate（用任一 primary item 作输入）
+        #   3. 聚合阶段对该 canonical 下**所有** items 合并 source_flags
+        #
+        # 收益：metadata fetch 调用从 278+ → ~150-200 次；prepare wrapping 从 278 → ~150 次。
+        # 配合 ``_metadata_inflight`` 单飞锁，stage_prepare_candidates 16 分钟 → ~2 分钟。
+        candidates_by_canonical: Dict[str, List[Dict[str, Any]]] = {}
+        for raw_item in combined_candidates:
+            raw_rj = self.normalize_rjcode(raw_item.get("rjcode"))
+            if not raw_rj:
+                continue
+            snap_canonical = (
+                external_snapshot.get_canonical_rj(raw_rj) if external_snapshot else None
+            ) or raw_rj
+            candidates_by_canonical.setdefault(snap_canonical, []).append(raw_item)
+        if perf:
+            perf.inc("prepare_canonical_buckets", len(candidates_by_canonical))
+            perf.inc("prepare_candidate_inputs", len(combined_candidates))
+
+        async def prepare_canonical(
+            canonical_key: str,
+            items: List[Dict[str, Any]],
+        ) -> Optional[Dict[str, Any]]:
+            """对一个 canonical 唯一一次跑 prepare：拉 canonical/preferred metadata、
+            校验 ASMR、身份匹配。返回的 ``items`` 里包含所有该 canonical 下的原 candidates，
+            供聚合阶段合并 source_flags。
+            """
+            # 选第一个 dlsite 来源的作为 primary（dlsite 候选 product.json 已 cache 热好；
+            # kikoeru/local 来源时缺一些字段也无所谓，因为下游主要用 canonical_metadata）。
+            primary_item = next(
+                (it for it in items if str(it.get("source") or "") == "dlsite"),
+                items[0],
+            )
+            # 把 primary_item 的 rjcode 设为 canonical（让 prepare_candidate 内部走"input 即
+            # canonical"的最优路径，跳过 lang=other 过滤、避免 prepare 内再 resolve_canonical_rj）。
+            forwarded_item = dict(primary_item)
+            forwarded_item["rjcode"] = canonical_key
+            # primary 来自 dlsite 时 _asmr_checked 已经标了；其他 source 时让 prepare 自己 probe。
+            prepared = await prepare_candidate(forwarded_item)
+            if not prepared:
+                return None
+            prepared["items"] = items  # 保留所有 candidates，聚合阶段合并 source
+            return prepared
+
+        for future in asyncio.as_completed([
+            prepare_canonical(canonical_key, items_list)
+            for canonical_key, items_list in candidates_by_canonical.items()
+        ]):
             prepared = await future
             metadata_checked += 1
             if not prepared:
@@ -3850,19 +4807,29 @@ class CircleCompletionService:
             bucket["preferred_variant_label"] = self._variant_label(preferred_variant["link_type"], preferred_variant["lang"])
             bucket["preferred_lang"] = preferred_variant["lang"]
             bucket["preferred_link_type"] = preferred_variant["link_type"]
-            source = str(item.get("source") or "").strip()
-            if source:
-                bucket["source_flags"].add(source)
-            if source == "kikoeru":
-                bucket["has_kikoeru"] = True
-                if rjcode not in bucket["kikoeru_found_rjcodes"]:
-                    bucket["kikoeru_found_rjcodes"].append(rjcode)
-                if item.get("kikoeru_work_id"):
-                    bucket["kikoeru_work_id"] = int(item["kikoeru_work_id"])
-            if source == "dlsite":
-                bucket["has_dlsite"] = True
-            if source == "local":
-                bucket["source_flags"].add("local")
+            # ⚠ 设计修正：``prepare_canonical`` 返回的 ``items`` 包含该 canonical 下所有原 candidates。
+            # 遍历全部 items 合并 source_flags / kikoeru_found_rjcodes / kikoeru_work_id，
+            # 不再像旧实现只看 primary 的 source（旧实现 278 个 candidate 各自进 bucket，
+            # 自然把 source 都覆盖到了；新实现按 canonical 一次进 bucket，必须显式合并）。
+            sibling_items: List[Dict[str, Any]] = prepared.get("items") or [item]
+            for sibling in sibling_items:
+                sibling_rj = self.normalize_rjcode(sibling.get("rjcode")) or rjcode
+                sibling_source = str(sibling.get("source") or "").strip()
+                if sibling_source:
+                    bucket["source_flags"].add(sibling_source)
+                if sibling_source == "kikoeru":
+                    bucket["has_kikoeru"] = True
+                    if sibling_rj and sibling_rj not in bucket["kikoeru_found_rjcodes"]:
+                        bucket["kikoeru_found_rjcodes"].append(sibling_rj)
+                    if sibling.get("kikoeru_work_id") and not bucket.get("kikoeru_work_id"):
+                        try:
+                            bucket["kikoeru_work_id"] = int(sibling["kikoeru_work_id"])
+                        except Exception:
+                            pass
+                if sibling_source == "dlsite":
+                    bucket["has_dlsite"] = True
+                if sibling_source == "local":
+                    bucket["source_flags"].add("local")
             bucket["source_flags"].add("dlsite")
             report(
                 52 + int((metadata_checked / total_candidates) * 18),
@@ -3926,7 +4893,9 @@ class CircleCompletionService:
                 },
             }
 
+        perf.add_stage("stage_prepare_candidates", (time.monotonic() - _prepare_started_at) * 1000)
         report(74, "检查 asmr.one 可下载状态", aggregated_count=len(aggregated))
+        _asmr_check_started_at = time.monotonic()
         checked_asmr = 0
         asmr_available = 0
         total_aggregated = max(1, len(aggregated))
@@ -4002,15 +4971,24 @@ class CircleCompletionService:
                 asmr_available_count=asmr_available,
             )
 
+        perf.add_stage("stage_asmr_check", (time.monotonic() - _asmr_check_started_at) * 1000)
         report(90, "补查 Kikoeru 服务器拥有态", aggregated_count=len(aggregated))
+        _kikoeru_check_started_at = time.monotonic()
         checked_kikoeru = 0
         kikoeru_owned = 0
         kikoeru_semaphore = asyncio.Semaphore(10)
 
         async def run_kikoeru_probe(canonical: str, item: Dict[str, Any]) -> tuple[str, Optional[Dict[str, Any]]]:
             ensure_not_cancelled()
-            if item["has_kikoeru"] and item["kikoeru_found_rjcodes"] and item["kikoeru_subtitle_rjcodes"]:
+            # ⚠ 性能修复 #1：旧短路条件要求 ``subtitle_rjcodes`` 也必须非空，但
+            # ASMR 社团大部分作品没字幕版（``subtitle_rjcodes`` 永远为 []），
+            # 导致 304 个 bucket 全部走完整 probe，Phase 2 多耗 ~11 分钟。
+            # 现在只要 ``has_kikoeru`` 已确认就跳过，subtitle 走后台 bonus refresh。
+            if item["has_kikoeru"] and item["kikoeru_found_rjcodes"]:
+                if perf:
+                    perf.inc("kikoeru_phase2_short_circuit_prefilled")
                 return canonical, None
+
             probe_candidates = [
                 item.get("display_rjcode"),
                 canonical,
@@ -4018,6 +4996,50 @@ class CircleCompletionService:
                 *(item.get("linked_rjcodes") or []),
                 *(item.get("kikoeru_found_rjcodes") or []),
             ]
+
+            # ⚠ 性能修复 #2：先扫 ``self._kikoeru_state_cache``。Snapshot Phase 1 已经
+            # 把所有 known_kikoeru / 主动 probe 的 state 灌进 cache，Phase 2 在这里
+            # 任意一个 candidate 命中且 has_kikoeru=True 即可拼装 state、彻底跳过
+            # ``_probe_kikoeru_state_for_candidates``（避免 5-8 个 candidate × 304 bucket
+            # 的 N 倍放大调用）。这是最大的省时点。
+            seen: Set[str] = set()
+            merged_found: List[str] = []
+            merged_subtitles: List[str] = []
+            merged_titles: Dict[str, str] = {}
+            cache_hit = False
+            for cand in probe_candidates:
+                normalized_cand = self.normalize_rjcode(cand)
+                if not normalized_cand or normalized_cand in seen:
+                    continue
+                seen.add(normalized_cand)
+                cached_state = self._kikoeru_state_cache.get(normalized_cand)
+                if not cached_state or not cached_state.get("has_kikoeru"):
+                    continue
+                cache_hit = True
+                for code in cached_state.get("found_rjcodes") or []:
+                    normalized = self.normalize_rjcode(code)
+                    if normalized and normalized not in merged_found:
+                        merged_found.append(normalized)
+                for code in cached_state.get("subtitle_rjcodes") or []:
+                    normalized = self.normalize_rjcode(code)
+                    if normalized and normalized not in merged_subtitles:
+                        merged_subtitles.append(normalized)
+                for code, title in (cached_state.get("found_titles") or {}).items():
+                    normalized = self.normalize_rjcode(code)
+                    if normalized and normalized not in merged_titles and title:
+                        merged_titles[normalized] = str(title or "").strip()
+            if cache_hit:
+                if perf:
+                    perf.inc("kikoeru_phase2_cache_hit")
+                return canonical, {
+                    "has_kikoeru": True,
+                    "found_rjcodes": merged_found,
+                    "subtitle_rjcodes": merged_subtitles,
+                    "found_titles": merged_titles,
+                }
+
+            if perf:
+                perf.inc("kikoeru_phase2_full_probe")
             async with kikoeru_semaphore:
                 state = await self._probe_kikoeru_state_for_candidates(probe_candidates)
             return canonical, state
@@ -4046,6 +5068,7 @@ class CircleCompletionService:
                 kikoeru_owned_count=kikoeru_owned,
             )
 
+        perf.add_stage("stage_kikoeru_check", (time.monotonic() - _kikoeru_check_started_at) * 1000)
         # 把封面图同步缓存到本地 data/img/，避免前端每次都从 dlsite 加载，
         # dlsite 图片 CDN 在国内偶发抖动 / 代理掉链时整个社团页都会"白板"。
         # 卡片图和列表小图分开缓存：卡片图保留 RJxxxx.jpg，列表图写 RJxxxx_sam.jpg。
@@ -4065,29 +5088,15 @@ class CircleCompletionService:
             if thumb_url.startswith(("http://", "https://")):
                 thumb_download_pairs.append((display_rj, thumb_url))
         if cover_download_pairs or thumb_download_pairs:
+            # P6：封面缓存后台化。索引完成即可返回，封面下载不阻塞 progress。
+            self._schedule_circle_cover_cache(circle_id, cover_download_pairs, thumb_download_pairs)
             report(
                 92,
-                f"缓存社团封面 {len(cover_download_pairs)} / 列表小图 {len(thumb_download_pairs)}",
+                f"已派发后台封面缓存任务 {len(cover_download_pairs)} / 列表小图 {len(thumb_download_pairs)}",
                 cover_total=len(cover_download_pairs),
                 cover_thumb_total=len(thumb_download_pairs),
+                cover_background=True,
             )
-            try:
-                image_cache_service = get_circle_image_cache_service()
-                cover_results = await image_cache_service.download_many(cover_download_pairs)
-                thumb_results = await image_cache_service.download_many(thumb_download_pairs, variant="list")
-                cover_cached_count = sum(1 for ok in cover_results.values() if ok)
-                thumb_cached_count = sum(1 for ok in thumb_results.values() if ok)
-                report(
-                    93,
-                    f"封面缓存完成 {cover_cached_count}/{len(cover_download_pairs)}，列表小图 {thumb_cached_count}/{len(thumb_download_pairs)}",
-                    cover_total=len(cover_download_pairs),
-                    cover_cached=cover_cached_count,
-                    cover_thumb_total=len(thumb_download_pairs),
-                    cover_thumb_cached=thumb_cached_count,
-                )
-            except Exception:
-                # 封面缓存失败属于"非关键"路径，远程 URL 仍能展示；只 warning 不抛。
-                logger.warning("[社团补全] 批量缓存封面失败", exc_info=True)
 
         report(94, "写入社团索引")
         db = SessionLocal()
@@ -4156,7 +5165,9 @@ class CircleCompletionService:
         # 关联 RJ 走 ``_refresh_circle_bonus_fields``：内部会先调
         # ``lazy_refresh_bonus_for_cached_rjcodes`` 补刷 work_metadata，再把
         # 结果同步到 circle_works。
-        report(96, "补刷特典字段", circle_id=circle_id)
+        # P7：bonus 字段补刷后台化。``_refresh_circle_bonus_fields`` 内部会触发
+        # ``lazy_refresh_bonus_for_cached_rjcodes`` 即 DLsite ``product/info/ajax`` 拉取，
+        # 全社团范围跑通是分钟级开销。前端可在补刷完后再次刷新拿到特典 chip，无需阻塞索引返回。
         bonus_lookup_rjcodes: List[str] = []
         for canonical, item in aggregated.items():
             for code in [
@@ -4167,7 +5178,14 @@ class CircleCompletionService:
                 normalized = self.normalize_rjcode(code)
                 if normalized and normalized not in bonus_lookup_rjcodes:
                     bonus_lookup_rjcodes.append(normalized)
-        await self._refresh_circle_bonus_fields(circle_id, bonus_lookup_rjcodes)
+        report(
+            96,
+            "已派发后台特典字段补刷任务",
+            circle_id=circle_id,
+            bonus_lookup_total=len(bonus_lookup_rjcodes),
+            bonus_background=True,
+        )
+        self._schedule_circle_bonus_refresh(circle_id, bonus_lookup_rjcodes)
 
         report(97, "生成社团视图摘要", circle_id=circle_id)
         summary = await self.build_circle_completion_view(circle_id)
@@ -4180,6 +5198,8 @@ class CircleCompletionService:
             "dl_count": int(summary.get("dl_count") or 0),
         }
         _index_duration_ms = max(0, int((time.monotonic() - _index_start_monotonic) * 1000))
+        # P0：完整耗时画像写进 detail.perf，方便后续 SQL 聚合 / Grafana 面板。
+        perf_payload = perf.snapshot()
         log_circle_completion_event(
             "index_completed",
             summary=(
@@ -4202,6 +5222,7 @@ class CircleCompletionService:
                 "works_count": indexed_counts["works"],
                 "duration_ms": _index_duration_ms,
                 "task_duration_ms": _index_duration_ms,
+                "perf": perf_payload,
                 **self._build_circle_index_log_detail(
                     summary,
                     force_refresh=force_refresh,
@@ -4214,6 +5235,15 @@ class CircleCompletionService:
                 "newly_indexed_count": len(aggregated),
             },
         )
+        try:
+            logger.info(
+                "[社团补全·perf] circle_id=%s duration_ms=%s stages=%s counters=%s",
+                circle_id, _index_duration_ms,
+                perf_payload.get("stage_ms"),
+                perf_payload.get("counters"),
+            )
+        except Exception:
+            logger.debug("[社团补全·perf] 日志输出失败", exc_info=True)
         return {
             "circle_id": circle_id,
             "summary": {

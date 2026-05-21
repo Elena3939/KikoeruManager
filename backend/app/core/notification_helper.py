@@ -549,17 +549,20 @@ def build_circle_completion_notification_extra(task) -> dict[str, Any]:
     if batch_rows:
         success_rows = [row for row in batch_rows if row.get("success", True)]
         failed_rows = [row for row in batch_rows if not row.get("success", True)]
+        works = sum(_safe_int(row.get("works")) for row in success_rows)
+        missing = sum(_safe_int(row.get("missing_count")) for row in success_rows)
         stats = {
             "circle_count": len(batch_rows),
             "completed_circles": len(success_rows),
             "failed_circles": len(failed_rows),
-            "works": sum(_safe_int(row.get("works")) for row in success_rows),
+            "works": works,
             "local_owned": sum(_safe_int(row.get("local_owned_count")) for row in success_rows),
             "owned": sum(_safe_int(row.get("kikoeru_owned_count")) for row in success_rows),
             "dl_count": sum(_safe_int(row.get("dl_count")) for row in success_rows),
             "asmr_one": sum(_safe_int(row.get("asmr_available_count")) for row in success_rows),
             "downloadable": sum(_safe_int(row.get("downloadable_count")) for row in success_rows),
-            "missing": sum(_safe_int(row.get("missing_count")) for row in success_rows),
+            "missing": missing,
+            "search_efficiency": _format_circle_search_efficiency(works, missing),
             "duration": _format_duration(getattr(task, "started_at", None), getattr(task, "completed_at", None)),
         }
         summary = f"批量补全 {len(batch_rows)} 个社团，成功 {len(success_rows)} 个"
@@ -599,6 +602,7 @@ def build_circle_completion_notification_extra(task) -> dict[str, Any]:
         "asmr_one": asmr_one,
         "downloadable": downloadable,
         "missing": missing,
+        "search_efficiency": _format_circle_search_efficiency(works, missing),
         "dl_only": dl_only,
         "duration": _format_duration(getattr(task, "started_at", None), getattr(task, "completed_at", None)),
     }
@@ -731,10 +735,10 @@ def build_upload_notification_extra(task) -> dict[str, Any]:
     rj_work_cards: list[dict] = []
     if rjcode or work_title or cover_url:
         card_changes = [
-            {"label": "文件数", "value": f"{file_count} 个"},
-            {"label": "大小", "value": _format_bytes(total_bytes)},
-            {"label": "用时", "value": stats["duration"] or "-"},
-            {"label": "已上传", "value": f"{completed_files} 个"},
+            {"icon": "file-text", "text": f"文件数 {file_count} 个"},
+            {"icon": "folder", "text": f"大小 {_format_bytes(total_bytes)}"},
+            {"icon": "clock", "text": f"用时 {stats['duration'] or '-'}"},
+            {"icon": "check-circle", "text": f"已上传 {completed_files} 个"},
         ]
         rj_work_cards.append({
             "rjcode": rjcode, "title": work_title, "cover_url": cover_url,
