@@ -5112,6 +5112,28 @@ class ExtractService:
         size, name = candidates[0]
         return {'name': name, 'size': size}
 
+    @classmethod
+    def _data_matches_any_known_magic(cls, data: bytes) -> bool:
+        """检查 data 是否命中 ``_KNOWN_MAGIC_TABLE`` 里的任意签名。
+
+        用于密码探测的"伪装文件"兜底：当声称的扩展名魔数比对失败时，
+        如果解出来的字节命中其他已知格式的魔数（比如声称 .png 但实际开头是
+        ``PK\\x03\\x04``），说明这是个被伪装的内层文件而不是密码错误。
+        典型场景：作者把内层压缩包改名成 .png / .jpg / .pdf 防误删。
+
+        正确密码 + 伪装文件 → 解出真实魔数 → 命中 → 返回 True，让上层
+        回退到更可靠的 t 探测；真错密码 → AES 随机字节 → 几乎不可能命中
+        任何已知魔数 → 返回 False，原 wrong_password 判定继续生效。
+        """
+        if not data:
+            return False
+        for offset, magics in cls._KNOWN_MAGIC_TABLE.values():
+            for magic in magics:
+                end = offset + len(magic)
+                if len(data) >= end and data[offset:end] == magic:
+                    return True
+        return False
+
     def _pick_magic_entries(self, file_list: Optional[List[Dict]]) -> List[Dict]:
         """挑多个后缀在魔数表里的条目，用于流式读前几十字节做魔数校验。"""
         if not file_list:
@@ -5283,6 +5305,19 @@ class ExtractService:
                 if verdict is True:
                     return 'ok'
                 if verdict is False:
+                    # 伪装文件兜底：声称扩展名的魔数没匹配，但解出来的字节
+                    # 命中其他已知魔数（典型场景：内层压缩包伪装成 .png/.pdf
+                    # /.jpg 防误删，正确密码解出来是 PK / 7z / Rar 魔数）。
+                    # 此时返回 unknown，让 ``_probe_password`` 回退到更可靠的
+                    # t 探测做 CRC 校验，不冤杀正确密码。
+                    if self._data_matches_any_known_magic(bytes(stdout_buf)):
+                        logger.info(
+                            "魔数探测命中疑似伪装条目（声称 %s，解出字节匹配其他已知魔数），"
+                            "改判 unknown 由 t 探测兜底: %s",
+                            entry_name,
+                            os.path.basename(archive_path),
+                        )
+                        return 'unknown'
                     return 'wrong_password'
                 return 'unknown'
 
@@ -5321,6 +5356,15 @@ class ExtractService:
                     continue
                 if bytes(stdout_buf[magic_offset:magic_offset + match_len]) == m[:match_len]:
                     return 'ok'
+            # 伪装文件兜底（小文件场景）：参见上方 enough_data 分支的注释。
+            if self._data_matches_any_known_magic(bytes(stdout_buf)):
+                logger.info(
+                    "魔数探测（小文件）命中疑似伪装条目（声称 %s），"
+                    "改判 unknown 由 t 探测兜底: %s",
+                    entry_name,
+                    os.path.basename(archive_path),
+                )
+                return 'unknown'
             return 'wrong_password'
 
         encryption_markers = (

@@ -13,11 +13,9 @@
         :disabled="scanning || !subtitleFolder"
         @click="scanFolder"
       >
-        <span class="page-head-btn-icon-wrap">
-          <Transition name="page-head-icon-swap" mode="out-in">
-            <Loader2 v-if="scanning" key="loader" :size="13" :stroke-width="2.4" class="animate-spin" />
-            <Search v-else key="default" :size="13" :stroke-width="2.4" class="page-head-btn-icon" />
-          </Transition>
+        <span class="page-head-btn-icon-swap-container">
+          <Loader2 :size="13" :stroke-width="2.4" class="page-head-btn-icon-slot animate-spin" :class="{ 'is-visible': scanning }" />
+          <Search :size="13" :stroke-width="2.4" class="page-head-btn-icon-slot page-head-btn-icon" :class="{ 'is-visible': !scanning }" />
         </span>
         <span class="page-head-btn-label">{{ scanning ? '扫描中…' : '扫描' }}</span>
       </button>
@@ -27,11 +25,9 @@
         :disabled="syncing || selectedItems.length === 0"
         @click="startSync"
       >
-        <span class="page-head-btn-icon-wrap">
-          <Transition name="page-head-icon-swap" mode="out-in">
-            <Loader2 v-if="syncing" key="loader" :size="13" :stroke-width="2.6" class="animate-spin" />
-            <DownloadIcon v-else key="default" :size="13" :stroke-width="2.6" class="page-head-btn-icon" />
-          </Transition>
+        <span class="page-head-btn-icon-swap-container">
+          <Loader2 :size="13" :stroke-width="2.6" class="page-head-btn-icon-slot animate-spin" :class="{ 'is-visible': syncing }" />
+          <DownloadIcon :size="13" :stroke-width="2.6" class="page-head-btn-icon-slot page-head-btn-icon" :class="{ 'is-visible': !syncing }" />
         </span>
         <span class="page-head-btn-label">{{ syncing ? '同步中…' : '开始同步下载' }}</span>
       </button>

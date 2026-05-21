@@ -91,8 +91,8 @@
       <div class="settings-card">
         <div class="card-head-row">
           <div class="card-title">认证记录</div>
-          <button type="button" class="gate-icon-btn" @click="loadLogs">
-            <RefreshCw :size="15" />
+          <button type="button" class="gate-icon-btn" :disabled="logsBusy" @click="loadLogs">
+            <RefreshCw :size="15" :class="{ 'spin-once': logsBusy }" />
           </button>
         </div>
         <div class="filter-row">
@@ -118,8 +118,8 @@
       <div class="settings-card">
         <div class="card-head-row">
           <div class="card-title">黑名单</div>
-          <button type="button" class="gate-icon-btn" @click="loadBlacklist">
-            <RefreshCw :size="15" />
+          <button type="button" class="gate-icon-btn" :disabled="blacklistBusy" @click="loadBlacklist">
+            <RefreshCw :size="15" :class="{ 'spin-once': blacklistBusy }" />
           </button>
         </div>
         <div class="black-list">
@@ -160,6 +160,8 @@ const setupBusy = ref(false)
 const logs = ref([])
 const blacklist = ref([])
 const logFilter = ref('all')
+const logsBusy = ref(false)
+const blacklistBusy = ref(false)
 
 const logFilters = [
   { value: 'all', label: '全部' },
@@ -249,13 +251,25 @@ async function copySecret() {
 }
 
 async function loadLogs() {
-  const result = await securityGateApi.logs({ result: logFilter.value, limit: 80 })
-  logs.value = result.items || []
+  if (logsBusy.value) return
+  logsBusy.value = true
+  try {
+    const result = await securityGateApi.logs({ result: logFilter.value, limit: 80 })
+    logs.value = result.items || []
+  } finally {
+    logsBusy.value = false
+  }
 }
 
 async function loadBlacklist() {
-  const result = await securityGateApi.blacklist()
-  blacklist.value = result.items || []
+  if (blacklistBusy.value) return
+  blacklistBusy.value = true
+  try {
+    const result = await securityGateApi.blacklist()
+    blacklist.value = result.items || []
+  } finally {
+    blacklistBusy.value = false
+  }
 }
 
 async function unblock(item) {
@@ -520,6 +534,20 @@ function formatTime(value) {
   color: #334155;
   background: #f8fafc;
   box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.22);
+}
+
+.gate-icon-btn:hover svg:not(.spin-once) {
+  transform: rotate(-360deg);
+  transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes spin-once {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.spin-once {
+  animation: spin-once 0.7s linear infinite;
 }
 
 .gate-action:hover:not(:disabled),

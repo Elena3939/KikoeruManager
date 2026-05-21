@@ -399,6 +399,11 @@ const filteredSections = computed(() => {
   color: #1d4ed8;
 }
 
+.sidebar-ghost-btn:hover:not(:disabled) svg:not(.spinning) {
+  transform: rotate(-360deg);
+  transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
 .sidebar-ghost-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 
 .settings-main,

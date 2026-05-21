@@ -11,11 +11,9 @@
         <input v-model="searchQuery" class="hero-search-input" type="text" placeholder="搜索文件夹名或 RJ 号" />
       </div>
       <button type="button" class="ef-head-btn primary btn-refresh" :disabled="loading" @click="refreshWithCache">
-        <span class="ef-head-btn-icon-wrap">
-          <Transition name="ef-head-icon-swap" mode="out-in">
-            <Loader2 v-if="loading" key="loader" :size="13" :stroke-width="2.6" class="animate-spin" />
-            <RefreshCw v-else key="default" :size="13" :stroke-width="2.6" class="ef-head-btn-icon" />
-          </Transition>
+        <span class="page-head-btn-icon-swap-container">
+          <Loader2 :size="13" :stroke-width="2.6" class="page-head-btn-icon-slot animate-spin" :class="{ 'is-visible': loading }" />
+          <RefreshCw :size="13" :stroke-width="2.6" class="page-head-btn-icon-slot ef-head-btn-icon" :class="{ 'is-visible': !loading }" />
         </span>
         <span class="ef-head-btn-label">{{ loading ? '刷新中…' : '刷新列表' }}</span>
       </button>
@@ -207,7 +205,7 @@
                   <Play :size="13" /> 重命名并入库
                 </button>
                 <button type="button" class="card-action" :disabled="checkingDuplicates" @click="handleRefreshFolder(folder)">
-                  <RefreshCw :size="13" /> 查重
+                  <RefreshCw :size="13" :class="{ 'animate-spin': folder.status === 'checking' }" /> 查重
                 </button>
                 <button type="button" class="card-action danger" @click="handleDeleteFolder(folder)">
                   <Trash2 :size="13" /> 删除

@@ -1,186 +1,218 @@
 <template>
   <div class="fts-stack">
-    <!-- ─── 操作记录 FTS ─── -->
-    <section class="fts-section">
-      <div class="card-title">操作记录全文搜索</div>
-      <p class="fts-desc">
-        为操作历史搜索框提供 SQLite FTS5 加速。trigram tokenizer 支持中文任意片段搜索（"字幕"、"失败"等），unicode61 仅支持英文前缀匹配。
-      </p>
-
-      <!-- 状态信息格子（对齐 DatabaseShrinkCard db-size-chip 设计语言） -->
-      <div class="fts-stat-grid">
-        <div class="fts-stat-cell">
-          <span class="fts-stat-label">状态</span>
-          <span class="fts-chip" :class="activityChipClass">
-            <svg v-if="activityStatusKey === 'syncing'" class="fts-spinner" viewBox="0 0 16 16" aria-hidden="true">
-              <circle class="fts-spinner-track" cx="8" cy="8" r="6" />
-              <circle class="fts-spinner-arc" cx="8" cy="8" r="6" />
-            </svg>
-            <component :is="activityStatusIcon" v-else :size="11" :stroke-width="2.4" />
-            <span>{{ activityStatusLabel }}</span>
-          </span>
+    <div class="settings-grid two">
+      <!-- ─── 操作记录 FTS ─── -->
+      <div class="fts-card">
+        <div class="fts-card-header">
+          <div class="card-title">
+            <IconDatabase :size="15" class="fts-title-icon" />
+            <span>操作记录全文搜索</span>
+          </div>
+          <p class="fts-desc">
+            为操作历史搜索框提供 SQLite FTS5 加速。trigram tokenizer 支持中文任意片段搜索（"字幕"、"失败"等），unicode61 仅支持英文前缀匹配。
+          </p>
         </div>
 
-        <div v-if="activityInfo?.fts_enabled" class="fts-stat-cell">
-          <span class="fts-stat-label">已索引 / 总行数</span>
-          <span class="fts-counts">
-            <span class="fts-count-num">{{ (activityInfo.fts_row_count ?? 0).toLocaleString() }}</span>
-            <span class="fts-count-sep">/</span>
-            <span class="fts-count-total">{{ (activityInfo.row_count ?? 0).toLocaleString() }}</span>
-            <span class="fts-count-unit">条</span>
-          </span>
+        <!-- 状态信息格子（对齐 DatabaseShrinkCard db-size-chip 设计语言） -->
+        <div class="fts-stat-grid">
+          <div class="fts-stat-cell">
+            <span class="fts-stat-label">当前状态</span>
+            <div class="fts-stat-value">
+              <span class="fts-chip" :class="activityChipClass">
+                <svg v-if="activityStatusKey === 'syncing'" class="fts-spinner" viewBox="0 0 16 16" aria-hidden="true">
+                  <circle class="fts-spinner-track" cx="8" cy="8" r="6" />
+                  <circle class="fts-spinner-arc" cx="8" cy="8" r="6" />
+                </svg>
+                <component :is="activityStatusIcon" v-else :size="12" :stroke-width="2.4" />
+                <span>{{ activityStatusLabel }}</span>
+              </span>
+            </div>
+          </div>
+
+          <div v-if="activityInfo?.fts_enabled" class="fts-stat-cell">
+            <span class="fts-stat-label">已索引 / 总行数</span>
+            <div class="fts-stat-value">
+              <span class="fts-counts">
+                <span class="fts-count-num">{{ (activityInfo.fts_row_count ?? 0).toLocaleString() }}</span>
+                <span class="fts-count-sep">/</span>
+                <span class="fts-count-total">{{ (activityInfo.row_count ?? 0).toLocaleString() }}</span>
+                <span class="fts-count-unit">条</span>
+              </span>
+            </div>
+          </div>
+
+          <div v-if="activityInfo?.tokenizer" class="fts-stat-cell">
+            <span class="fts-stat-label">Tokenizer</span>
+            <div class="fts-stat-value">
+              <span class="fts-token-chip" :class="{ 'is-trigram': activityInfo.tokenizer === 'trigram' }">
+                {{ activityInfo.tokenizer === 'trigram' ? '⚡ trigram' : activityInfo.tokenizer }}
+              </span>
+            </div>
+          </div>
         </div>
 
-        <div v-if="activityInfo?.tokenizer" class="fts-stat-cell">
-          <span class="fts-stat-label">Tokenizer</span>
-          <span class="fts-token-chip" :class="{ 'is-trigram': activityInfo.tokenizer === 'trigram' }">
-            {{ activityInfo.tokenizer === 'trigram' ? '⚡ trigram' : activityInfo.tokenizer }}
-          </span>
+        <!-- 升级提示 / 重建进度 / 结果 -->
+        <div class="fts-status-area">
+          <!-- 升级提示 -->
+          <div v-if="activityInfo?.needs_upgrade" class="fts-upgrade-hint">
+            <IconZap :size="13" />
+            <span>检测到 trigram 支持，建议重建升级以获得中文全文搜索能力</span>
+          </div>
+
+          <!-- 重建进度 -->
+          <div v-if="activityStatusKey === 'syncing'" class="fts-progress-wrapper">
+            <div class="fts-progress-row">
+              <div class="fts-progress-track">
+                <div class="fts-progress-fill" :style="{ width: activityProgressPct + '%' }" />
+              </div>
+              <span class="fts-progress-label">
+                {{ (activityInfo?.rebuild?.copied ?? 0).toLocaleString() }} / {{ (activityInfo?.rebuild?.total ?? 0).toLocaleString() }} 条 ({{ activityProgressPct }}%)
+              </span>
+            </div>
+          </div>
+
+          <!-- 结果行 -->
+          <div v-else-if="activityInfo?.rebuild?.ok === true" class="fts-result is-done">
+            <IconCheckCircle2 :size="13" />
+            <span>重建完成 · tokenizer: {{ activityInfo.rebuild.target_tokenizer || activityInfo.tokenizer }} · 共 {{ (activityInfo.rebuild.total ?? 0).toLocaleString() }} 条</span>
+          </div>
+          <div v-else-if="activityInfo?.rebuild?.ok === false" class="fts-result is-error">
+            <IconAlertCircle :size="13" />
+            <span>重建失败：{{ activityInfo.rebuild.reason || '未知错误' }}</span>
+          </div>
         </div>
-      </div>
 
-      <!-- 升级提示 -->
-      <div v-if="activityInfo?.needs_upgrade" class="fts-upgrade-hint">
-        <IconZap :size="13" />
-        <span>检测到 trigram 支持，建议重建升级以获得中文全文搜索能力</span>
-      </div>
-
-      <!-- 重建进度 -->
-      <div v-if="activityStatusKey === 'syncing'" class="fts-progress-row">
-        <div class="fts-progress-track">
-          <div class="fts-progress-fill" :style="{ width: activityProgressPct + '%' }" />
-        </div>
-        <span class="fts-progress-label">
-          {{ (activityInfo?.rebuild?.copied ?? 0).toLocaleString() }} / {{ (activityInfo?.rebuild?.total ?? 0).toLocaleString() }} 条
-        </span>
-      </div>
-
-      <!-- 结果行 -->
-      <div v-else-if="activityInfo?.rebuild?.ok === true" class="fts-result is-done">
-        <IconCheckCircle2 :size="13" />
-        <span>重建完成 · tokenizer: {{ activityInfo.rebuild.target_tokenizer || activityInfo.tokenizer }} · 共 {{ (activityInfo.rebuild.total ?? 0).toLocaleString() }} 条</span>
-      </div>
-      <div v-else-if="activityInfo?.rebuild?.ok === false" class="fts-result is-error">
-        <IconAlertCircle :size="13" />
-        <span>重建失败：{{ activityInfo.rebuild.reason || '未知错误' }}</span>
-      </div>
-
-      <!-- 操作按钮 -->
-      <div class="fts-actions">
-        <button type="button" class="fts-btn-primary" :disabled="activityBusy || !activityInfo?.fts_enabled" @click="rebuildActivity">
-          <IconLoader2 v-if="activityBusy" :size="13" class="fts-spin" />
-          <IconRefreshCw v-else :size="13" />
-          <span>{{ activityBusy ? '重建中…' : activityInfo?.needs_upgrade ? '升级 trigram 并重建' : '重建索引' }}</span>
-        </button>
-        <button type="button" class="fts-btn-ghost" :disabled="activityLoading" @click="fetchActivity">
-          <span class="fts-icon-swap">
-            <span class="fts-icon-slot" :class="{ 'is-visible': activityLoading && !activityBusy }">
-              <IconLoader2 :size="12" class="fts-spin" />
+        <!-- 操作按钮 -->
+        <div class="fts-actions">
+          <button type="button" class="fts-btn-primary" :disabled="activityBusy || !activityInfo?.fts_enabled" @click="rebuildActivity">
+            <IconLoader2 v-if="activityBusy" :size="13" class="fts-spin" />
+            <IconRefreshCw v-else :size="13" />
+            <span>{{ activityBusy ? '重建中…' : activityInfo?.needs_upgrade ? '升级 trigram 并重建' : '重建索引' }}</span>
+          </button>
+          <button type="button" class="fts-btn-ghost" :disabled="activityLoading" @click="fetchActivity">
+            <span class="fts-icon-swap">
+              <span class="fts-icon-slot" :class="{ 'is-visible': activityLoading && !activityBusy }">
+                <IconLoader2 :size="12" class="fts-spin" />
+              </span>
+              <span class="fts-icon-slot" :class="{ 'is-visible': !(activityLoading && !activityBusy) }">
+                <IconRefreshCw :size="12" />
+              </span>
             </span>
-            <span class="fts-icon-slot" :class="{ 'is-visible': !(activityLoading && !activityBusy) }">
-              <IconRefreshCw :size="12" />
+            <span class="fts-ghost-label">{{ activityLoading && !activityBusy ? '刷新中…' : '刷新状态' }}</span>
+          </button>
+        </div>
+
+        <p v-if="activityInfo && !activityInfo.fts_enabled" class="fts-warn-tip">
+          当前 SQLite 不支持 FTS5（版本 &lt; 3.34），操作历史搜索降级为 LIKE 全表扫描（较慢）。
+        </p>
+      </div>
+
+      <!-- ─── 库存索引 FTS ─── -->
+      <div class="fts-card">
+        <div class="fts-card-header">
+          <div class="card-title">
+            <IconSearchX :size="15" class="fts-title-icon" />
+            <span>库存索引全文搜索</span>
+          </div>
+          <p class="fts-desc">
+            为库存搜索框、RJ 跨库查找提供 SQLite FTS5 加速。重建完成后搜索速度从秒级降至 ms 级；重建期间搜索自动 fallback，功能不中断。
+          </p>
+        </div>
+
+        <!-- 状态信息格子 -->
+        <div class="fts-stat-grid">
+          <div class="fts-stat-cell">
+            <span class="fts-stat-label">当前状态</span>
+            <div class="fts-stat-value">
+              <span class="fts-chip" :class="libraryChipClass">
+                <svg v-if="libraryStatusKey === 'syncing'" class="fts-spinner" viewBox="0 0 16 16" aria-hidden="true">
+                  <circle class="fts-spinner-track" cx="8" cy="8" r="6" />
+                  <circle class="fts-spinner-arc" cx="8" cy="8" r="6" />
+                </svg>
+                <component :is="libraryStatusIcon" v-else :size="12" :stroke-width="2.4" />
+                <span>{{ libraryStatusLabel }}</span>
+              </span>
+            </div>
+          </div>
+
+          <div v-if="libraryInfo?.fts_enabled" class="fts-stat-cell">
+            <span class="fts-stat-label">已索引 / 总行数</span>
+            <div class="fts-stat-value">
+              <span class="fts-counts">
+                <span class="fts-count-num">{{ (libraryInfo.fts_row_count ?? libraryInfo.indexed_entries ?? 0).toLocaleString() }}</span>
+                <span class="fts-count-sep">/</span>
+                <span class="fts-count-total">{{ (libraryInfo.row_count ?? libraryInfo.total_entries ?? 0).toLocaleString() }}</span>
+                <span class="fts-count-unit">条</span>
+              </span>
+            </div>
+          </div>
+
+          <div v-if="libraryInfo?.tokenizer" class="fts-stat-cell">
+            <span class="fts-stat-label">Tokenizer</span>
+            <div class="fts-stat-value">
+              <span class="fts-token-chip" :class="{ 'is-trigram': libraryInfo.tokenizer === 'trigram' }">
+                {{ libraryInfo.tokenizer === 'trigram' ? '⚡ trigram' : libraryInfo.tokenizer }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 升级提示 / 重建进度 / 结果 -->
+        <div class="fts-status-area">
+          <!-- 升级提示 -->
+          <div v-if="libraryInfo?.needs_upgrade" class="fts-upgrade-hint">
+            <IconZap :size="13" />
+            <span>检测到 trigram 支持，建议重建升级以获得更精准的中文搜索能力</span>
+          </div>
+
+          <!-- 重建进度 -->
+          <div v-if="libraryStatusKey === 'syncing'" class="fts-progress-wrapper">
+            <div class="fts-progress-row">
+              <div class="fts-progress-track">
+                <div class="fts-progress-fill" :style="{ width: libraryProgressPct + '%' }" />
+              </div>
+              <span class="fts-progress-label">
+                {{ (libraryInfo?.indexed_entries ?? 0).toLocaleString() }} / {{ (libraryInfo?.total_entries ?? 0).toLocaleString() }} 条 ({{ libraryProgressPct }}%)
+              </span>
+            </div>
+          </div>
+
+          <!-- 结果行 -->
+          <div v-else-if="libraryInfo?.rebuild?.state === 'done'" class="fts-result is-done">
+            <IconCheckCircle2 :size="13" />
+            <span>重建完成 · tokenizer: {{ libraryInfo.rebuild.tokenizer }} · 共 {{ (libraryInfo.rebuild.total_entries ?? 0).toLocaleString() }} 条</span>
+          </div>
+          <div v-else-if="libraryInfo?.rebuild?.state === 'error'" class="fts-result is-error">
+            <IconAlertCircle :size="13" />
+            <span>重建失败：{{ libraryInfo.rebuild.error || '未知错误' }}</span>
+          </div>
+        </div>
+
+        <!-- 操作按钮 -->
+        <div class="fts-actions">
+          <button type="button" class="fts-btn-primary" :disabled="libraryBusy || !libraryInfo?.fts_enabled" @click="rebuildLibrary">
+            <IconLoader2 v-if="libraryBusy" :size="13" class="fts-spin" />
+            <IconRefreshCw v-else :size="13" />
+            <span>{{ libraryBusy ? '重建中…' : libraryInfo?.needs_upgrade ? '升级 trigram 并重建' : '重建索引' }}</span>
+          </button>
+          <button type="button" class="fts-btn-ghost" :disabled="libraryLoading" @click="fetchLibrary">
+            <span class="fts-icon-swap">
+              <span class="fts-icon-slot" :class="{ 'is-visible': libraryLoading && !libraryBusy }">
+                <IconLoader2 :size="12" class="fts-spin" />
+              </span>
+              <span class="fts-icon-slot" :class="{ 'is-visible': !(libraryLoading && !libraryBusy) }">
+                <IconRefreshCw :size="12" />
+              </span>
             </span>
-          </span>
-          <span class="fts-ghost-label">{{ activityLoading && !activityBusy ? '刷新中…' : '刷新状态' }}</span>
-        </button>
-      </div>
-
-      <p v-if="activityInfo && !activityInfo.fts_enabled" class="fts-warn-tip">
-        当前 SQLite 不支持 FTS5（版本 &lt; 3.34），操作历史搜索降级为 LIKE 全表扫描（较慢）。
-      </p>
-    </section>
-
-    <div class="fts-divider" />
-
-    <!-- ─── 库存索引 FTS ─── -->
-    <section class="fts-section">
-      <div class="card-title">库存索引全文搜索</div>
-      <p class="fts-desc">
-        为库存搜索框、RJ 跨库查找提供 SQLite FTS5 加速。重建完成后搜索速度从秒级降至 ms 级；重建期间搜索自动 fallback，功能不中断。
-      </p>
-
-      <!-- 状态信息格子 -->
-      <div class="fts-stat-grid">
-        <div class="fts-stat-cell">
-          <span class="fts-stat-label">状态</span>
-          <span class="fts-chip" :class="libraryChipClass">
-            <svg v-if="libraryStatusKey === 'syncing'" class="fts-spinner" viewBox="0 0 16 16" aria-hidden="true">
-              <circle class="fts-spinner-track" cx="8" cy="8" r="6" />
-              <circle class="fts-spinner-arc" cx="8" cy="8" r="6" />
-            </svg>
-            <component :is="libraryStatusIcon" v-else :size="11" :stroke-width="2.4" />
-            <span>{{ libraryStatusLabel }}</span>
-          </span>
+            <span class="fts-ghost-label">{{ libraryLoading && !libraryBusy ? '刷新中…' : '刷新状态' }}</span>
+          </button>
         </div>
 
-        <div v-if="libraryInfo?.fts_enabled" class="fts-stat-cell">
-          <span class="fts-stat-label">已索引 / 总行数</span>
-          <span class="fts-counts">
-            <span class="fts-count-num">{{ (libraryInfo.fts_row_count ?? libraryInfo.indexed_entries ?? 0).toLocaleString() }}</span>
-            <span class="fts-count-sep">/</span>
-            <span class="fts-count-total">{{ (libraryInfo.row_count ?? libraryInfo.total_entries ?? 0).toLocaleString() }}</span>
-            <span class="fts-count-unit">条</span>
-          </span>
-        </div>
-
-        <div v-if="libraryInfo?.tokenizer" class="fts-stat-cell">
-          <span class="fts-stat-label">Tokenizer</span>
-          <span class="fts-token-chip" :class="{ 'is-trigram': libraryInfo.tokenizer === 'trigram' }">
-            {{ libraryInfo.tokenizer === 'trigram' ? '⚡ trigram' : libraryInfo.tokenizer }}
-          </span>
-        </div>
+        <p v-if="libraryInfo && !libraryInfo.fts_enabled" class="fts-warn-tip">
+          当前 SQLite 不支持 FTS5（版本 &lt; 3.34），库存搜索降级为 LIKE 扫描（较慢）。
+        </p>
       </div>
-
-      <!-- 升级提示 -->
-      <div v-if="libraryInfo?.needs_upgrade" class="fts-upgrade-hint">
-        <IconZap :size="13" />
-        <span>检测到 trigram 支持，建议重建升级以获得更精准的中文搜索能力</span>
-      </div>
-
-      <!-- 重建进度 -->
-      <div v-if="libraryStatusKey === 'syncing'" class="fts-progress-row">
-        <div class="fts-progress-track">
-          <div class="fts-progress-fill" :style="{ width: libraryProgressPct + '%' }" />
-        </div>
-        <span class="fts-progress-label">
-          {{ (libraryInfo?.indexed_entries ?? 0).toLocaleString() }} / {{ (libraryInfo?.total_entries ?? 0).toLocaleString() }} 条
-        </span>
-      </div>
-
-      <!-- 结果行 -->
-      <div v-else-if="libraryInfo?.rebuild?.state === 'done'" class="fts-result is-done">
-        <IconCheckCircle2 :size="13" />
-        <span>重建完成 · tokenizer: {{ libraryInfo.rebuild.tokenizer }} · 共 {{ (libraryInfo.rebuild.total_entries ?? 0).toLocaleString() }} 条</span>
-      </div>
-      <div v-else-if="libraryInfo?.rebuild?.state === 'error'" class="fts-result is-error">
-        <IconAlertCircle :size="13" />
-        <span>重建失败：{{ libraryInfo.rebuild.error || '未知错误' }}</span>
-      </div>
-
-      <!-- 操作按钮 -->
-      <div class="fts-actions">
-        <button type="button" class="fts-btn-primary" :disabled="libraryBusy || !libraryInfo?.fts_enabled" @click="rebuildLibrary">
-          <IconLoader2 v-if="libraryBusy" :size="13" class="fts-spin" />
-          <IconRefreshCw v-else :size="13" />
-          <span>{{ libraryBusy ? '重建中…' : libraryInfo?.needs_upgrade ? '升级 trigram 并重建' : '重建索引' }}</span>
-        </button>
-        <button type="button" class="fts-btn-ghost" :disabled="libraryLoading" @click="fetchLibrary">
-          <span class="fts-icon-swap">
-            <span class="fts-icon-slot" :class="{ 'is-visible': libraryLoading && !libraryBusy }">
-              <IconLoader2 :size="12" class="fts-spin" />
-            </span>
-            <span class="fts-icon-slot" :class="{ 'is-visible': !(libraryLoading && !libraryBusy) }">
-              <IconRefreshCw :size="12" />
-            </span>
-          </span>
-          <span class="fts-ghost-label">{{ libraryLoading && !libraryBusy ? '刷新中…' : '刷新状态' }}</span>
-        </button>
-      </div>
-
-      <p v-if="libraryInfo && !libraryInfo.fts_enabled" class="fts-warn-tip">
-        当前 SQLite 不支持 FTS5（版本 &lt; 3.34），库存搜索降级为 LIKE 扫描（较慢）。
-      </p>
-    </section>
+    </div>
   </div>
 </template>
 
@@ -435,29 +467,61 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .fts-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
+  overflow: visible;
 }
 
-/* ─── 每个 FTS 区块（对齐 DatabaseShrinkCard .db-shrink 风格） ─── */
-.fts-section {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 20px 0;
+/* ─── 统一栅格（对齐 settings-grid two） ─── */
+.settings-grid {
+  display: grid;
+  gap: 24px;
+  align-items: start;
 }
 
-.fts-divider {
-  height: 1px;
-  background: rgba(226, 232, 240, 0.7);
-  margin: 0;
+.settings-grid.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 1200px) {
+  .settings-grid.two {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ─── 模块卡片（fts-card） ─── */
+.fts-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 22px;
+  border-radius: 12px;
+  background: #ffffff;
+  border: 1px solid rgba(226, 232, 240, 0.85);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.02), 0 8px 24px -12px rgba(15, 23, 42, 0.05);
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.fts-card:hover {
+  border-color: rgba(148, 163, 184, 0.45);
+  box-shadow: 0 4px 6px -1px rgba(15, 23, 42, 0.04), 0 12px 28px -4px rgba(15, 23, 42, 0.08);
+}
+
+.fts-card-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fts-title-icon {
+  color: #4f46e5;
 }
 
 .card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 0;
   color: #1d1d1f;
-  font-size: 13.5px;
+  font-size: 14.5px;
   font-weight: 600;
   letter-spacing: -0.1px;
 }
@@ -469,27 +533,33 @@ onBeforeUnmount(() => {
   line-height: 1.6;
 }
 
-/* ─── 状态信息格子（对齐 DatabaseShrinkCard .db-size-chip 设计语言） ─── */
+/* ─── 状态信息格子（解决嵌套白框，改用轻质对比底色） ─── */
 .fts-stat-grid {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+}
+
+@media (max-width: 480px) {
+  .fts-stat-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .fts-stat-cell {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 10px 14px;
+  gap: 8px;
+  padding: 12px 14px;
   border-radius: 10px;
-  background: #fff;
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  min-width: 80px;
-  transition: border-color 0.18s ease;
+  background: #f8fafc;
+  border: 1px solid rgba(226, 232, 240, 0.7);
+  transition: all 0.2s ease;
 }
 
 .fts-stat-cell:hover {
-  border-color: rgba(148, 163, 184, 0.6);
+  background: #f1f5f9;
+  border-color: rgba(203, 213, 225, 0.85);
 }
 
 .fts-stat-label {
@@ -500,7 +570,13 @@ onBeforeUnmount(() => {
   text-transform: uppercase;
 }
 
-/* ─── 状态 Chip（对齐 LibraryIndexBadge 的 lib-index-chip 设计语言） ─── */
+.fts-stat-value {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+}
+
+/* ─── 状态 Chip ─── */
 .fts-chip {
   display: inline-flex;
   align-items: center;
@@ -514,6 +590,10 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   border: 1px solid transparent;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.fts-chip:hover {
+  transform: translateY(-1px) scale(1.04);
 }
 
 .fts-chip-idle {
@@ -536,8 +616,7 @@ onBeforeUnmount(() => {
   border-color: rgba(96, 165, 250, 0.45);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 1px 2px rgba(37, 99, 235, 0.12),
-    0 0 0 0 rgba(59, 130, 246, 0.35);
+    0 1px 2px rgba(37, 99, 235, 0.12);
   animation: fts-chip-pulse 1.8s ease-in-out infinite;
 }
 
@@ -580,7 +659,7 @@ onBeforeUnmount(() => {
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.85),
       0 1px 2px rgba(37, 99, 235, 0.18),
-      0 0 0 4px rgba(59, 130, 246, 0);
+      0 0 0 4px rgba(59, 130, 246, 0.2);
   }
 }
 
@@ -623,19 +702,19 @@ onBeforeUnmount(() => {
 }
 
 .fts-count-num {
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 600;
   color: #0f172a;
 }
 
 .fts-count-sep {
-  font-size: 12px;
-  color: #94a3b8;
+  font-size: 11px;
+  color: #cbd5e1;
 }
 
 .fts-count-total {
-  font-size: 12px;
-  color: #475569;
+  font-size: 11.5px;
+  color: #64748b;
 }
 
 .fts-count-unit {
@@ -648,21 +727,36 @@ onBeforeUnmount(() => {
 .fts-token-chip {
   display: inline-flex;
   align-items: center;
-  height: 18px;
-  padding: 0 7px;
+  height: 22px;
+  padding: 0 9px;
   border-radius: 999px;
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
   background: linear-gradient(180deg, #f1f5f9 0%, #e2e8f0 100%);
   color: #475569;
   border: 1px solid rgba(148, 163, 184, 0.3);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.fts-token-chip:hover {
+  transform: translateY(-1px) scale(1.04);
 }
 
 .fts-token-chip.is-trigram {
   background: linear-gradient(180deg, #f0fdf4 0%, #dcfce7 100%);
   color: #15803d;
   border-color: rgba(134, 239, 172, 0.5);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 1px 2px rgba(34, 197, 94, 0.12);
+}
+
+/* ─── 提示与状态区域 ─── */
+.fts-status-area {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
 }
 
 /* ─── 升级提示 ─── */
@@ -670,12 +764,12 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 12px;
+  padding: 8px 12px;
   border-radius: 8px;
   background: linear-gradient(180deg, #fffbeb 0%, #fef9ec 100%);
   border: 1px solid rgba(251, 191, 36, 0.4);
   color: #92400e;
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 500;
 }
 
@@ -685,32 +779,37 @@ onBeforeUnmount(() => {
 }
 
 /* ─── 进度条 ─── */
+.fts-progress-wrapper {
+  padding: 4px 2px;
+}
+
 .fts-progress-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .fts-progress-track {
   flex: 1;
-  height: 4px;
+  height: 6px;
   border-radius: 999px;
-  background: rgba(59, 130, 246, 0.12);
+  background: rgba(59, 130, 246, 0.1);
   overflow: hidden;
 }
 
 .fts-progress-fill {
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, #3b82f6 0%, #60a5fa 100%);
-  transition: width 0.5s ease;
+  background: linear-gradient(90deg, #4f46e5 0%, #6366f1 100%);
+  transition: width 0.4s ease;
 }
 
 .fts-progress-label {
   font-size: 11.5px;
-  color: #475569;
+  color: #64748b;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+  font-weight: 500;
 }
 
 /* ─── 结果行 ─── */
@@ -718,9 +817,9 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 12px;
+  padding: 8px 12px;
   border-radius: 8px;
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 500;
 }
 
@@ -745,7 +844,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
+  margin-top: 4px;
 }
 
 .fts-btn-primary {
@@ -754,39 +854,44 @@ onBeforeUnmount(() => {
   gap: 7px;
   padding: 8px 16px;
   border-radius: 10px;
-  border: none;
-  background: linear-gradient(135deg, #1e293b 0%, #334155 50%, #1e293b 100%);
-  color: #fff;
-  font-size: 13px;
-  font-weight: 600;
+  border: 1px solid #0f172a;
   cursor: pointer;
+  background: linear-gradient(180deg, #1f2937 0%, #0f172a 60%, #020617 100%);
+  color: #ffffff;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 2px 6px rgba(15, 23, 42, 0.2),
-    0 8px 18px rgba(15, 23, 42, 0.14);
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 6px 16px -6px rgba(2, 6, 23, 0.55),
+    0 2px 4px rgba(15, 23, 42, 0.25);
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
   white-space: nowrap;
 }
 
+.fts-btn-primary svg {
+  transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
 .fts-btn-primary:hover:not(:disabled) {
-  transform: translateY(-2px) scale(1.02);
+  transform: translateY(-2px);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    0 4px 10px rgba(15, 23, 42, 0.22),
-    0 14px 28px rgba(15, 23, 42, 0.18),
-    0 0 0 4px rgba(15, 23, 42, 0.05);
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 10px 22px -6px rgba(2, 6, 23, 0.65),
+    0 4px 8px rgba(15, 23, 42, 0.3);
+}
+
+.fts-btn-primary:hover:not(:disabled) svg {
+  transform: scale(1.1) rotate(-6deg);
 }
 
 .fts-btn-primary:active:not(:disabled) {
   transform: translateY(0) scale(0.97);
-  box-shadow:
-    inset 0 2px 6px rgba(0, 0, 0, 0.3),
-    0 2px 4px rgba(15, 23, 42, 0.15);
   transition: all 0.08s ease;
 }
 
 .fts-btn-primary:disabled {
-  opacity: 0.6;
+  opacity: 0.55;
   cursor: not-allowed;
 }
 
@@ -794,18 +899,18 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 13px;
+  padding: 7.5px 13px;
   border-radius: 10px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  background: #fff;
+  border: 1px solid rgba(226, 232, 240, 0.85);
+  background: #ffffff;
   color: #475569;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-  transition: all 0.25s ease;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
   white-space: nowrap;
-  min-width: 88px; /* 避免「刷新状态」→「刷新中…」宽度跳变 */
+  min-width: 88px;
 }
 
 .fts-icon-swap {
@@ -833,12 +938,12 @@ onBeforeUnmount(() => {
 }
 
 .fts-ghost-label {
-  min-width: 42px; /* 固定宽，避免「刷新状态」↔「刷新中…」跳宽 */
+  min-width: 42px;
 }
 
 .fts-btn-ghost:hover:not(:disabled) {
   border-color: rgba(148, 163, 184, 0.75);
-  color: #1e293b;
+  color: #0f172a;
   background: #f8fafc;
   transform: translateY(-1px);
   box-shadow: 0 3px 8px rgba(15, 23, 42, 0.06);
@@ -850,11 +955,11 @@ onBeforeUnmount(() => {
 }
 
 .fts-btn-ghost:disabled {
-  opacity: 0.6;
+  opacity: 0.55;
   cursor: not-allowed;
 }
 
-/* ─── 旋转动画（Loader2 图标） ─── */
+/* ─── 旋转动画 ─── */
 .fts-spin {
   animation: fts-icon-spin 0.85s linear infinite;
 }
@@ -872,7 +977,7 @@ onBeforeUnmount(() => {
   background: rgba(241, 245, 249, 0.8);
   border: 1px solid rgba(226, 232, 240, 0.6);
   color: #64748b;
-  font-size: 12px;
+  font-size: 11.5px;
   line-height: 1.6;
 }
 
