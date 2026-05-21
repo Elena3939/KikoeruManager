@@ -73,8 +73,11 @@
           <span>{{ activityBusy ? '重建中…' : activityInfo?.needs_upgrade ? '升级 trigram 并重建' : '重建索引' }}</span>
         </button>
         <button type="button" class="fts-btn-ghost" :disabled="activityLoading" @click="fetchActivity">
-          <IconRefreshCw :size="12" :class="{ 'fts-spin': activityLoading && !activityBusy }" />
-          <span>刷新状态</span>
+          <span class="fts-icon-swap">
+            <IconLoader2 v-if="activityLoading && !activityBusy" :size="12" class="fts-spin" />
+            <IconRefreshCw v-else :size="12" />
+          </span>
+          <span>{{ activityLoading && !activityBusy ? '刷新中…' : '刷新状态' }}</span>
         </button>
       </div>
 
@@ -158,8 +161,11 @@
           <span>{{ libraryBusy ? '重建中…' : libraryInfo?.needs_upgrade ? '升级 trigram 并重建' : '重建索引' }}</span>
         </button>
         <button type="button" class="fts-btn-ghost" :disabled="libraryLoading" @click="fetchLibrary">
-          <IconRefreshCw :size="12" :class="{ 'fts-spin': libraryLoading && !libraryBusy }" />
-          <span>刷新状态</span>
+          <span class="fts-icon-swap">
+            <IconLoader2 v-if="libraryLoading && !libraryBusy" :size="12" class="fts-spin" />
+            <IconRefreshCw v-else :size="12" />
+          </span>
+          <span>{{ libraryLoading && !libraryBusy ? '刷新中…' : '刷新状态' }}</span>
         </button>
       </div>
 
@@ -786,6 +792,14 @@ onBeforeUnmount(() => {
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
   transition: all 0.25s ease;
   white-space: nowrap;
+  min-width: 88px; /* 避免「刷新状态」→「刷新中…」宽度跳变 */
+}
+
+.fts-icon-swap {
+  display: inline-flex;
+  align-items: center;
+  width: 12px;
+  flex-shrink: 0;
 }
 
 .fts-btn-ghost:hover:not(:disabled) {
