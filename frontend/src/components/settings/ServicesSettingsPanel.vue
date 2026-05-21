@@ -765,6 +765,11 @@ onBeforeUnmount(() => {
   color: #1d1d1f;
 }
 
+.email-watcher-action-btn:hover:not(:disabled) svg:not(.spin-once) {
+  transform: rotate(-360deg);
+  transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
 .ghost-inline-btn:disabled,
 .icon-btn:disabled,
 .email-watcher-action-btn:disabled { opacity: 0.5; cursor: not-allowed; }

@@ -141,7 +141,7 @@
             <p class="conflicts-list-hint">单击聚焦，Ctrl/⌘ 多选，Shift 连选</p>
           </div>
 
-          <div class="conflicts-list-scroll no-scrollbar">
+          <div class="conflicts-list-scroll">
             <!-- 筛选结果为空时的小空态（仍保留左侧筛选按钮，允许用户切回其他 tab） -->
             <div v-if="filteredConflicts.length === 0" class="conflicts-list-empty">
               <CheckCircle2 class="w-8 h-8 mb-2 text-emerald-300" stroke-width="1.5" />
@@ -2431,7 +2431,12 @@ button:disabled {
 .conflicts-page {
   display: flex;
   flex-direction: column;
-  min-height: 100%;
+  /* 用 height: 100% + min-height: 0 锁定到 .content-shell 视口高度，让
+     左侧列表 .conflicts-list-scroll 的 flex: 1 + overflow-y: auto 真正生效。
+     原来用 min-height: 100% 时，列表项目过多会撑高 page，由 .content-shell
+     接管整页滚动，视觉上左侧列表会无限向下延伸。 */
+  height: 100%;
+  min-height: 0;
   padding: 18px 24px 24px;
   /* App.vue 已有 #fbfbfd → #f2f2f5 全局渐变，这里不要再叠灰，避免双层灰过度 */
   background: transparent;
@@ -2555,6 +2560,10 @@ button:disabled {
  * ============================================================ */
 @media (max-width: 1024px) {
   .conflicts-page {
+    /* 移动端走整页 stream 滚动：放开 desktop 的 height: 100% 锁定，
+       让 .content-shell 重新接管页面级滚动，否则 list/detail 上下堆叠
+       会被强行压在视口高度里。 */
+    height: auto !important;
     min-height: auto !important;
     overflow: visible !important;
   }
@@ -2669,6 +2678,10 @@ button:disabled {
 .conflicts-list-pane {
   width: 360px;
   flex-shrink: 0;
+  /* min-height: 0 兜底：作为 .conflicts-main flex row 子项，stretch 拿到的高度
+     依赖父容器；显式 min-height: 0 保证内部 flex column 的 list-scroll 不被
+     卡片内容反向撑大它本身的高度，让 overflow: hidden 真正生效。 */
+  min-height: 0;
   display: flex;
   flex-direction: column;
   border-radius: 14px;
@@ -2962,6 +2975,9 @@ button:disabled {
  * ============================================================ */
 .conflicts-detail-pane {
   flex: 1;
+  /* min-height: 0 兜底：理由同 .conflicts-list-pane，避免详情内容过长反向
+     撑大 pane 破坏 .conflicts-detail-body 的 overflow-y 链。 */
+  min-height: 0;
   display: flex;
   flex-direction: column;
   border-radius: 14px;

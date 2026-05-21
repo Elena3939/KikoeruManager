@@ -1374,3 +1374,58 @@ pre:hover::-webkit-scrollbar-track {
     }
   }
 }
+
+/* ============================================================
+ * 全局刷新按钮悬停特效 (Global Refresh Button Hover Effects)
+ * ============================================================ */
+
+/* 1. 全局刷新图标平滑过渡基线（确保移入、移出均有平滑过渡，无任何瞬间闪烁） */
+svg.lucide-refresh-cw,
+.lucide-refresh-cw,
+.page-head-btn-icon,
+.ef-head-btn-icon,
+.fts-icon-slot svg,
+.page-head-btn-icon-slot {
+  transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.25s ease;
+}
+
+/* 2. 悬停在按钮上时，刷新图标逆时针旋转一圈（排除正在 loading 自转的图标） */
+button:hover svg.lucide-refresh-cw:not(.animate-spin):not(.spinning):not(.spin-once):not(.db-spin),
+button:hover .lucide-refresh-cw:not(.animate-spin):not(.spinning):not(.spin-once):not(.db-spin),
+.el-button:hover svg.lucide-refresh-cw:not(.animate-spin):not(.spinning):not(.spin-once):not(.db-spin),
+.el-button:hover .lucide-refresh-cw:not(.animate-spin):not(.spinning):not(.spin-once):not(.db-spin),
+.page-head-btn:hover .page-head-btn-icon:not(.animate-spin):not(.spinning):not(.spin-once):not(.db-spin),
+.ef-head-btn:hover .ef-head-btn-icon:not(.animate-spin),
+.gate-icon-btn:hover svg:not(.spin-once),
+.sidebar-ghost-btn:hover svg:not(.spinning),
+button:hover .page-head-btn-icon-slot:not(.animate-spin) {
+  transform: rotate(-360deg);
+}
+
+/* 3. 页面头部按钮通用的硬件加速无闪烁无塌陷 CSS 状态切换容器 */
+.page-head-btn-icon-swap-container {
+  position: relative;
+  width: 13px;
+  height: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.page-head-btn-icon-slot {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: scale(0.5) rotate(-45deg);
+  pointer-events: none;
+}
+
+.page-head-btn-icon-slot.is-visible {
+  opacity: 1;
+  transform: scale(1) rotate(0deg);
+  pointer-events: auto;
+}

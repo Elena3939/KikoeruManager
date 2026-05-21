@@ -737,3 +737,52 @@ class TestExtractService:
 
         assert sample is not None
         assert "僠儍僾僞乕" in sample
+
+    @pytest.mark.parametrize(
+        "data, expected",
+        [
+            (b"PK\x03\x04rest", True),                     # ZIP local file header
+            (b"7z\xbc\xaf\x27\x1c", True),                  # 7z signature
+            (b"Rar!\x1a\x07\x00", True),                    # RAR4 signature
+            (b"\x89PNG\r\n\x1a\nbody", True),              # PNG header
+            (b"\xff\xd8\xff\xe0", True),                    # JPEG header
+            (b"%PDF-1.4", True),                             # PDF header
+            (b"OggS\x00\x02", True),                        # OGG header
+            (b"fLaC\x00\x00", True),                        # FLAC header
+            (b"\x1f\x8b\x08\x00", True),                    # gzip header
+            (b"BZh91AY", True),                              # bzip2 header
+            (b"\x00" * 32, False),                           # 全零，非任何已知魔数
+            (b"\x12\x34\x56\x78\x9a\xbc\xde\xf0\x11\x22", False),  # 任意 AES 风格随机字节
+            (b"", False),                                     # 空字节
+        ],
+    )
+    def test_data_matches_any_known_magic(self, extract_service, data, expected):
+        """伪装兜底依赖：常见格式的合法首字节应命中，AES 随机字节不应命中。
+
+        helper 是 classmethod，靠 ExtractService 实例调更接近运行时调用形态。
+        """
+        assert extract_service._data_matches_any_known_magic(data) is expected
+
+    def test_data_matches_any_known_magic_tar_offset(self, extract_service):
+        """tar 头标志在 257 偏移，需要足够长的 buffer 才能命中。"""
+        tar_buf = bytearray(512)
+        tar_buf[257:262] = b"ustar"
+        assert extract_service._data_matches_any_known_magic(bytes(tar_buf)) is True
+        # 截短到 256 字节，offset=257 越界，不应命中。
+        assert extract_service._data_matches_any_known_magic(bytes(tar_buf[:256])) is False
+
+    def test_data_matches_any_known_magic_disguised_zip_in_png(self, extract_service):
+        """模拟伪装内层包：声称 .png 但实际是 zip 时，helper 仍能识别 zip 魔数。
+
+        这是 ``_probe_by_magic`` 误判的核心修复场景：正确密码下，伪装的
+        ``xxx.png`` 解出来流式拿到的是 ``PK\\x03\\x04...``，原本会被声称
+        PNG 的魔数比对失败而判 wrong_password；现在 helper 命中 zip 魔数，
+        ``_probe_by_magic`` 改判 unknown，让 t 探测兜底。
+        """
+        # 伪装文件：开头是 PK 魔数（zip）但叫 .png
+        disguised_zip_bytes = b"PK\x03\x04\x14\x00\x00\x00\x08\x00"
+        assert extract_service._data_matches_any_known_magic(disguised_zip_bytes) is True
+
+        # 真错密码场景：AES 解出来的是看起来随机的字节，几乎不会命中任何魔数
+        random_aes_bytes = bytes.fromhex("a3b1c4d5e6f78890aabbccddeeff0011")
+        assert extract_service._data_matches_any_known_magic(random_aes_bytes) is False

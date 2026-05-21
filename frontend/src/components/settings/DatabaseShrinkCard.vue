@@ -450,12 +450,17 @@ onBeforeUnmount(() => {
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  transition: border-color 0.18s ease, color 0.18s ease;
+  transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .db-btn-ghost:hover:not(:disabled) {
   border-color: rgba(148, 163, 184, 0.75);
   color: #0f172a;
+}
+
+.db-btn-ghost:hover:not(:disabled) svg:not(.db-spin) {
+  transform: rotate(-360deg);
+  transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .db-btn-ghost:active:not(:disabled) {

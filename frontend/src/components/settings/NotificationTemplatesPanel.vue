@@ -348,6 +348,11 @@ defineExpose({ reload })
   transform: scale(0.96);
 }
 
+.tpl-panel-action:not(.tpl-panel-action--primary):hover svg:not(.spin-once) {
+  transform: rotate(-360deg);
+  transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
 .tpl-panel-action:disabled {
   opacity: 0.55;
   cursor: not-allowed;
@@ -638,6 +643,6 @@ defineExpose({ reload })
 }
 
 .spin-once {
-  animation: spin-once 0.8s linear;
+  animation: spin-once 0.7s linear infinite;
 }
 </style>
