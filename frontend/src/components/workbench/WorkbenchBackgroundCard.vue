@@ -1,56 +1,25 @@
 <template>
-  <article class="workbench-card">
-    <div class="workbench-card-head">
-      <div class="workbench-card-copy">
-        <div class="workbench-card-title">{{ workbench.title || '后台工作台' }}</div>
-        <div v-if="workbench.summary?.subtitle" class="workbench-card-subtitle">{{ workbench.summary.subtitle }}</div>
-      </div>
-      <div class="workbench-card-status" :class="statusToneClass">
-        <span v-if="progressLabel">{{ progressLabel }}</span>
-        <span v-else>{{ workbench.status?.label || '运行中' }}</span>
-      </div>
-    </div>
-
-    <el-progress
-      v-if="showProgress"
-      :percentage="Number(workbench.progress?.percentage || 0)"
-      :status="progressStatus || undefined"
-      :stroke-width="8"
-      :show-text="false"
-      class="workbench-card-progress"
-    />
-
-    <div v-if="workbench.metrics?.length" class="workbench-card-metrics">
-      <span
-        v-for="metric in workbench.metrics"
-        :key="metric.key || metric.label"
-        class="workbench-card-chip"
-        :class="metricToneClass(metric)"
-      >
-        {{ metric.label }} {{ metric.value }}
-      </span>
-    </div>
-
-    <div class="workbench-card-text">
-      {{ workbench.summary?.text || workbench.progress?.label || workbench.status?.label || '后台任务正在运行。' }}
-    </div>
-
-    <div class="workbench-card-actions">
-      <el-button
-        v-for="action in normalizedActions"
-        :key="action"
-        size="small"
-        :type="action === 'resume' ? 'primary' : 'default'"
-        @click="emit('action', action)"
-      >
-        {{ getActionLabel(action) }}
-      </el-button>
-    </div>
-  </article>
+  <BackgroundFloatingCard
+    hosted
+    :kind="cardKind"
+    :tone="cardTone"
+    :title="cardTitle"
+    :subtitle="cardSubtitle"
+    :meta-text="cardMetaText"
+    :detail-text="cardDetailText"
+    :badge-text="cardBadgeText"
+    :percentage="progressPercent"
+    :completed="cardCompleted"
+    :metrics="cardMetrics"
+    :actions="cardActions"
+    :progress-key="`${workbench.id}-${cardCompleted ? 'done' : 'run'}`"
+    @action="emit('action', $event)"
+  />
 </template>
 
 <script setup>
 import { computed } from 'vue'
+import BackgroundFloatingCard from '../common/BackgroundFloatingCard.vue'
 
 const props = defineProps({
   workbench: {
@@ -61,138 +30,95 @@ const props = defineProps({
 
 const emit = defineEmits(['action'])
 
-const normalizedActions = computed(() => (
-  Array.isArray(props.workbench?.actions) ? props.workbench.actions.filter(Boolean) : []
+const progressPercent = computed(() => Math.max(0, Math.min(100, Number(props.workbench?.progress?.percentage || 0))))
+const statusTone = computed(() => String(props.workbench?.status?.tone || 'neutral').trim().toLowerCase())
+const statusKey = computed(() => String(props.workbench?.status?.key || '').trim().toLowerCase())
+
+const cardKind = computed(() => {
+  const type = String(props.workbench?.type || '').toLowerCase()
+  if (type.includes('subtitle')) return 'subtitle'
+  if (type.includes('upload')) return 'upload'
+  if (type.includes('download')) return 'download'
+  if (type.includes('delete')) return 'delete'
+  return 'generic'
+})
+
+const cardTone = computed(() => {
+  const type = String(props.workbench?.type || '').toLowerCase()
+  if (type.includes('subtitle')) return 'emerald'
+  if (type.includes('asmr')) return 'violet'
+  if (statusTone.value === 'success') return 'emerald'
+  if (statusTone.value === 'warning') return 'amber'
+  if (statusTone.value === 'danger') return 'rose'
+  return cardKind.value === 'upload' ? 'emerald' : 'primary'
+})
+
+const cardCompleted = computed(() => (
+  progressPercent.value >= 100
+  || statusTone.value === 'success'
+  || statusKey.value === 'success'
+  || statusKey.value === 'completed'
 ))
 
-const showProgress = computed(() => Number(props.workbench?.progress?.percentage || 0) > 0)
-const progressStatus = computed(() => String(props.workbench?.progress?.status || '').trim())
-const progressLabel = computed(() => String(props.workbench?.progress?.label || '').trim())
-const statusToneClass = computed(() => `tone-${String(props.workbench?.status?.tone || 'neutral')}`)
+const baseTitle = computed(() => String(props.workbench?.title || '后台工作台').trim())
+
+const cardTitle = computed(() => {
+  if (cardCompleted.value) return `${baseTitle.value}已完成`
+  if (statusTone.value === 'danger' || statusKey.value === 'failed') return `${baseTitle.value}需要处理`
+  return `${baseTitle.value}正在后台运行`
+})
+
+const cardSubtitle = computed(() => (
+  String(props.workbench?.summary?.subtitle || '').trim()
+  || '保留当前队列与工作台上下文'
+))
+
+const cardMetaText = computed(() => {
+  const label = String(props.workbench?.status?.label || '').trim()
+  return label ? `状态: ${label}` : ''
+})
+
+const cardDetailText = computed(() => (
+  String(props.workbench?.summary?.text || props.workbench?.progress?.label || props.workbench?.status?.label || '').trim()
+  || '隐藏后继续保留任务队列、轮询和当前焦点。'
+))
+
+const cardBadgeText = computed(() => {
+  const label = String(props.workbench?.status?.label || '').trim()
+  if (label) return label
+  if (progressPercent.value > 0) return `${progressPercent.value}%`
+  return ''
+})
+
+const cardMetrics = computed(() => (
+  Array.isArray(props.workbench?.metrics)
+    ? props.workbench.metrics.map(metric => ({
+      key: metric.key || metric.label,
+      label: metric.label,
+      value: metric.value,
+      tone: metric.tone || metric.key
+    }))
+    : []
+))
+
+const cardActions = computed(() => (
+  normalizedActions.value.map(action => ({
+    key: action,
+    label: getActionLabel(action),
+    variant: action === 'resume' ? cardTone.value : action === 'cancel' || action === 'stop' ? 'rose' : 'ghost'
+  }))
+))
+
+const normalizedActions = computed(() => (
+  Array.isArray(props.workbench?.actions) ? props.workbench.actions.filter(Boolean).map(item => String(item)) : []
+))
 
 function getActionLabel(action) {
-  if (action === 'resume') return '恢复'
+  if (action === 'resume') return '恢复工作台'
   if (action === 'close') return '关闭'
   if (action === 'cancel') return '取消'
   if (action === 'stop') return '停止'
   if (action === 'dismiss') return '收起'
   return action
 }
-
-function metricToneClass(metric = {}) {
-  return `tone-${String(metric.tone || 'neutral')}`
-}
 </script>
-
-<style scoped>
-.workbench-card {
-  display: grid;
-  gap: 12px;
-  padding: 16px;
-  border-radius: 22px;
-  border: 1px solid rgba(211, 220, 232, 0.92);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(246, 249, 253, 0.98) 100%);
-  box-shadow: 0 18px 46px rgba(15, 23, 42, 0.08);
-  backdrop-filter: blur(20px);
-}
-
-.workbench-card-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.workbench-card-copy {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.workbench-card-title {
-  font-size: 15px;
-  font-weight: 700;
-  color: #152033;
-}
-
-.workbench-card-subtitle {
-  font-size: 12px;
-  color: #607086;
-  line-height: 1.45;
-}
-
-.workbench-card-status {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  min-height: 30px;
-  padding: 0 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 700;
-  border: 1px solid transparent;
-}
-
-.workbench-card-progress {
-  margin-top: -2px;
-}
-
-.workbench-card-metrics {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.workbench-card-chip {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid transparent;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.workbench-card-text {
-  font-size: 13px;
-  line-height: 1.6;
-  color: #314053;
-}
-
-.workbench-card-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.tone-neutral {
-  color: #556476;
-  background: #f4f7fb;
-  border-color: #e3e9f1;
-}
-
-.tone-info {
-  color: #245da8;
-  background: #edf4ff;
-  border-color: #d6e6ff;
-}
-
-.tone-success {
-  color: #24704a;
-  background: #edf9f1;
-  border-color: #d4eddc;
-}
-
-.tone-warning {
-  color: #9c651b;
-  background: #fff6e8;
-  border-color: #f6ddb3;
-}
-
-.tone-danger {
-  color: #b53a36;
-  background: #fff1ef;
-  border-color: #ffd7d2;
-}
-</style>

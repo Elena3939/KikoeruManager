@@ -235,53 +235,12 @@
       @submit="handlePreviewSubmit"
     />
 
-    <!-- 增强下载后台浮窗（统一 floating-card 规范） -->
     <Transition name="floating-card">
-      <div v-if="showEnhancedDownloadBackgroundCard" class="floating-card">
-        <div class="flex items-start justify-between gap-3">
-          <div class="flex items-center gap-2.5 min-w-0">
-            <div class="floating-icon-box is-violet">
-              <CloudDownload class="h-3.5 w-3.5" :stroke-width="2.2" />
-            </div>
-            <div class="min-w-0">
-              <div class="text-[13px] font-semibold text-slate-900 leading-tight">增强下载正在后台运行</div>
-              <div class="mt-0.5 text-[11px] text-slate-500 leading-snug break-all">
-                {{ enhancedActiveBackgroundTask ? `${enhancedActiveBackgroundTask.rjcode || 'RJ'} · ${enhancedActiveBackgroundTask.work_title || '-'}` : '保留下载队列与进度' }}
-              </div>
-            </div>
-          </div>
-          <div class="floating-percent-badge"
-               :class="{
-                 'is-emerald': enhancedCompletedTasks.length === enhancedDownloadWorkbenchTasks.length && enhancedDownloadWorkbenchTasks.length > 0,
-                 'is-rose': enhancedFailedTasks.length > 0 && !enhancedProcessingTasks.length && !enhancedPendingTasks.length
-               }">
-            {{ enhancedBackgroundPercent }}%
-          </div>
-        </div>
-
-        <div class="floating-progress-bar">
-          <div class="floating-progress-bar-fill"
-               :class="{
-                 'is-emerald': enhancedCompletedTasks.length === enhancedDownloadWorkbenchTasks.length && enhancedDownloadWorkbenchTasks.length > 0,
-                 'is-danger': enhancedFailedTasks.length > 0 && !enhancedProcessingTasks.length && !enhancedPendingTasks.length
-               }"
-               :style="{ width: enhancedBackgroundPercent + '%' }" />
-        </div>
-
-        <div class="floating-chip-row-compact">
-          <span class="floating-chip"><RefreshCw class="floating-chip-icon chip-blue" :stroke-width="2.2" />进行中 <b>{{ enhancedProcessingTasks.length }}</b></span>
-          <span class="floating-chip"><Clock class="floating-chip-icon chip-amber" :stroke-width="2.2" />等待 <b>{{ enhancedPendingTasks.length }}</b></span>
-          <span class="floating-chip"><CheckCircle2 class="floating-chip-icon chip-emerald" :stroke-width="2.2" />完成 <b>{{ enhancedCompletedTasks.length }}</b></span>
-          <span class="floating-chip" :class="{ 'floating-chip-danger': enhancedFailedTasks.length > 0 }"><X class="floating-chip-icon chip-rose" :stroke-width="2.2" />失败 <b>{{ enhancedFailedTasks.length }}</b></span>
-        </div>
-
-        <div class="floating-actions-row">
-          <button type="button" class="floating-action-btn" @click="closeEnhancedDownloadWorkbench">关闭</button>
-          <button type="button" class="floating-action-btn floating-action-btn-primary" @click="resumeEnhancedDownloadWorkbench">
-            <CloudDownload class="h-3 w-3" :stroke-width="2.3" />恢复工作台
-          </button>
-        </div>
-      </div>
+      <BackgroundFloatingCard
+        v-if="showEnhancedDownloadBackgroundCard"
+        v-bind="enhancedDownloadBackgroundCardProps"
+        @action="handleEnhancedDownloadBackgroundCardAction"
+      />
     </Transition>
 
     <!-- 扫描结果 -->
@@ -645,7 +604,6 @@ import {
   AlertTriangle,
   FileText,
   File as FileIcon,
-  CheckCircle2,
   Sparkles,
   ListChecks,
   Database,
@@ -655,7 +613,6 @@ import {
   Activity,
   Hourglass,
   Loader2,
-  X,
 } from 'lucide-vue-next'
 import { asmrSyncApi, configApi, libraryApi, taskApi } from '../api'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
@@ -664,6 +621,7 @@ import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppLottieProgressBar from '../components/common/AppLottieProgressBar.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
+import BackgroundFloatingCard from '../components/common/BackgroundFloatingCard.vue'
 import DownloadTaskWorkbenchDialog from '../components/download/DownloadTaskWorkbenchDialog.vue'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
 import WorkCard from '../components/circle/WorkCard.vue'
@@ -820,6 +778,43 @@ const enhancedBackgroundPercent = computed(() => {
   const total = enhancedDownloadWorkbenchTasks.value.reduce((sum, t) => sum + Number(t.progress || 0), 0)
   return Math.max(0, Math.min(100, Math.round(total / enhancedDownloadWorkbenchTasks.value.length)))
 })
+const enhancedBackgroundCompleted = computed(() => (
+  enhancedDownloadWorkbenchTasks.value.length > 0
+  && enhancedCompletedTasks.value.length === enhancedDownloadWorkbenchTasks.value.length
+  && enhancedFailedTasks.value.length === 0
+))
+const enhancedBackgroundFailed = computed(() => (
+  enhancedFailedTasks.value.length > 0
+  && enhancedProcessingTasks.value.length === 0
+  && enhancedPendingTasks.value.length === 0
+))
+const enhancedDownloadBackgroundCardProps = computed(() => ({
+  kind: 'asmr',
+  tone: enhancedBackgroundFailed.value ? 'amber' : 'violet',
+  title: enhancedBackgroundCompleted.value
+    ? 'ASMR 增强下载已完成'
+    : enhancedBackgroundFailed.value
+      ? 'ASMR 增强下载需要处理'
+      : 'ASMR 增强下载正在后台运行',
+  badgeText: `下载 ${enhancedDownloadWorkbenchTasks.value.length} 项`,
+  subtitle: enhancedActiveBackgroundTask.value
+    ? `${enhancedActiveBackgroundTask.value.rjcode || 'RJ'} · ${enhancedActiveBackgroundTask.value.work_title || '-'}`
+    : '保留下载队列与进度',
+  metaText: `总进度: ${enhancedBackgroundPercent.value}%`,
+  percentage: enhancedBackgroundPercent.value,
+  completed: enhancedBackgroundCompleted.value,
+  metrics: [
+    { key: 'processing', label: '进行中', value: enhancedProcessingTasks.value.length, tone: 'info' },
+    { key: 'pending', label: '等待中', value: enhancedPendingTasks.value.length, tone: 'warning' },
+    { key: 'completed', label: '完成', value: enhancedCompletedTasks.value.length, tone: 'success' },
+    { key: 'failed', label: '失败', value: enhancedFailedTasks.value.length, tone: enhancedFailedTasks.value.length ? 'danger' : 'neutral' }
+  ],
+  detailText: enhancedActiveBackgroundTask.value?.current_step || '隐藏后继续保留增强下载队列和进度。',
+  actions: [
+    { key: 'close', label: '关闭' },
+    { key: 'resume', label: '恢复工作台', variant: 'violet' }
+  ]
+}))
 
 // 格式化下次重试时间
 const formatNextRetryTime = (isoString) => {
@@ -1144,6 +1139,16 @@ function resumeEnhancedDownloadWorkbench() {
 
 function closeEnhancedDownloadWorkbench() {
   clearEnhancedDownloadWorkbenchState()
+}
+
+function handleEnhancedDownloadBackgroundCardAction(action) {
+  if (action === 'resume') {
+    resumeEnhancedDownloadWorkbench()
+    return
+  }
+  if (action === 'close') {
+    closeEnhancedDownloadWorkbench()
+  }
 }
 
 async function retryEnhancedDownloadTask(task) {

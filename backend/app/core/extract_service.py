@@ -16,6 +16,12 @@ _ENCODING_TO_CP: dict = {
     'euc-kr': 949,
     'cp949': 949,
 }
+_CP_TO_ENCODING: dict[int, str] = {
+    932: 'shift_jis',
+    936: 'gbk',
+    949: 'euc_kr',
+    950: 'big5',
+}
 import subprocess
 import asyncio
 import sys
@@ -7647,9 +7653,21 @@ class ExtractService:
             (item["name"] for item in diagnostics if item.get("garbled")),
             None,
         )
+        mcp_args = self._get_mcp_args(normalized_path, filename_encoding=filename_encoding)
+        resolved_codepage = self._filename_encoding_to_codepage(filename_encoding)
+        if resolved_codepage <= 0:
+            for arg in mcp_args:
+                match = re.match(r"^-mcp=(\d+)$", str(arg or "").strip())
+                if match:
+                    resolved_codepage = int(match.group(1))
+                    break
+        detected_encoding = self.__class__._archive_encoding_cache.get(normalized_path) or ""
+        display_encoding = str(filename_encoding or detected_encoding or _CP_TO_ENCODING.get(resolved_codepage, "") or "auto")
         return safe_json_value({
-            "encoding": str(filename_encoding or "auto"),
-            "codepage": self._filename_encoding_to_codepage(filename_encoding),
+            "encoding": display_encoding,
+            "requested_encoding": str(filename_encoding or ""),
+            "detected_encoding": detected_encoding,
+            "codepage": resolved_codepage,
             "file_count": len(file_list or []),
             "items": entries,
             "diagnostics": diagnostics,

@@ -1803,6 +1803,7 @@ html.kikoerumanager-dark .filter-delete-floating-percent {
 }
 
 html.kikoerumanager-dark .floating-card .text-slate-500,
+html.kikoerumanager-dark .floating-card .text-slate-400,
 html.kikoerumanager-dark .filter-delete-floating-mode {
   color: var(--km-dark-text-muted) !important;
 }
@@ -1822,9 +1823,33 @@ html.kikoerumanager-dark .floating-action-btn {
 }
 
 html.kikoerumanager-dark .floating-action-btn-emerald {
-  background: linear-gradient(180deg, rgba(52, 211, 153, 0.94) 0%, rgba(5, 150, 105, 0.94) 100%) !important;
-  border-color: rgba(110, 231, 183, 0.42) !important;
-  color: #ecfdf5 !important;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.94), rgba(37, 99, 235, 0.94)) !important;
+  border-color: rgba(147, 197, 253, 0.34) !important;
+  color: #eff6ff !important;
+}
+
+html.kikoerumanager-dark .floating-action-btn-primary {
+  background: linear-gradient(180deg, rgba(96, 165, 250, 0.94) 0%, rgba(37, 99, 235, 0.94) 52%, rgba(30, 64, 175, 0.94) 100%) !important;
+  border-color: rgba(147, 197, 253, 0.42) !important;
+  color: #eff6ff !important;
+}
+
+html.kikoerumanager-dark .floating-action-btn-violet {
+  background: linear-gradient(180deg, rgba(167, 139, 250, 0.94) 0%, rgba(124, 58, 237, 0.94) 52%, rgba(91, 33, 182, 0.94) 100%) !important;
+  border-color: rgba(196, 181, 253, 0.42) !important;
+  color: #f5f3ff !important;
+}
+
+html.kikoerumanager-dark .floating-action-btn-amber {
+  background: linear-gradient(180deg, rgba(251, 191, 36, 0.94) 0%, rgba(217, 119, 6, 0.94) 52%, rgba(180, 83, 9, 0.94) 100%) !important;
+  border-color: rgba(252, 211, 77, 0.42) !important;
+  color: #fffbeb !important;
+}
+
+html.kikoerumanager-dark .floating-action-btn-rose {
+  background: linear-gradient(180deg, rgba(251, 113, 133, 0.94) 0%, rgba(225, 29, 72, 0.94) 52%, rgba(190, 18, 60, 0.94) 100%) !important;
+  border-color: rgba(253, 164, 175, 0.42) !important;
+  color: #fff1f2 !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog.el-dialog {

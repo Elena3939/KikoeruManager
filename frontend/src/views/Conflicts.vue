@@ -37,7 +37,7 @@
       </div>
       <div class="lib-info-divider"></div>
       <div class="lib-info-item">
-        <RotateCcw :size="15" :stroke-width="2.2" class="lib-info-icon text-emerald-500" />
+        <RotateCcw :size="15" :stroke-width="2.2" class="lib-info-icon text-indigo-500" />
         <div class="lib-info-body">
           <div class="lib-info-label">重试中</div>
           <div class="lib-info-value"><b>{{ retryingConflicts.length }}</b></div>
@@ -584,6 +584,7 @@
     <BatchRetryPasswordDialog
       v-model="batchRetryDialogVisible"
       :conflicts="batchRetryTargets"
+      :encoding-options="filenameEncodingOptions"
       @confirm="handleBatchRetryConfirm"
     />
 
@@ -604,11 +605,7 @@
       @cancel="handleVolumeRenameCancel"
     />
 
-    <!--
-      文件名预览弹窗：完全对齐库存页 mediaPreviewDialog 的"系统自定义弹窗"风格
-      Teleport + 全屏遮罩 + 圆角 22 玻璃面板 + backdrop-blur-2xl + 内嵌高光投影
-      头部 hero (gradient + 玻璃 icon)；主体 chip + 系统文件树；footer 玻璃带 + 主次按钮
-    -->
+    <!-- 文件名预览弹窗：对齐库存页目录内容窗口，保留玻璃外壳 + 工具栏 + 文件树列布局。 -->
     <Teleport to="body">
       <Transition name="fp-dlg-fade">
         <section
@@ -617,31 +614,60 @@
         >
           <!-- 半透明遮罩（点击=取消） -->
           <div
-            class="pointer-events-auto absolute inset-0 bg-slate-900/30 backdrop-blur-[3px]"
+            class="fp-preview-overlay pointer-events-auto absolute inset-0"
             @click="fpDlgClose"
           />
-          <!-- 玻璃面板（pointer-events-auto 让面板可交互） -->
           <div
-            class="fp-dlg-panel pointer-events-auto relative flex max-h-[calc(100vh-48px)] w-[min(720px,calc(100vw-48px))] flex-col overflow-hidden rounded-[22px] border border-white/70 bg-white/72 shadow-[0_22px_70px_rgba(15,23,42,0.18),inset_0_1px_0_rgba(255,255,255,0.82)] backdrop-blur-2xl backdrop-saturate-150 max-[900px]:max-h-[calc(100vh-24px)] max-[900px]:max-w-[calc(100vw-24px)]"
+            class="fp-dlg-panel pointer-events-auto relative flex max-h-[calc(100vh-48px)] w-[min(1120px,calc(100vw-48px))] flex-col overflow-hidden rounded-3xl max-[900px]:max-h-[calc(100vh-24px)] max-[900px]:max-w-[calc(100vw-24px)]"
             role="dialog"
             aria-modal="true"
             aria-labelledby="fp-dlg-title"
           >
-            <!-- Header：hero band (gradient + 玻璃 icon + 标签 + 关闭键) -->
-            <header class="flex flex-shrink-0 items-start justify-between gap-3 border-b border-white/55 bg-gradient-to-br from-amber-50/76 via-white/40 to-sky-50/56 px-5 py-4 backdrop-blur-xl">
-              <div class="flex min-w-0 flex-1 items-center gap-3">
-                <span class="inline-flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-[14px] border border-white/70 bg-white/56 shadow-sm backdrop-blur-xl">
-                  <FileSearch class="h-5 w-5 text-slate-700" :stroke-width="2" />
-                </span>
-                <div class="min-w-0 flex-1">
-                  <h3 id="fp-dlg-title" class="m-0 truncate text-[15px] font-bold text-slate-900">文件名预览</h3>
-                  <p class="mt-0.5 truncate text-[12px] leading-tight text-slate-500">
-                    {{ fpDlgGarbledCount
-                      ? `检测到 ${fpDlgGarbledCount} 项疑似乱码，确认是否继续按当前编码重试`
-                      : '检查指定编码下压缩包文件名是否仍然乱码' }}
-                  </p>
+            <header class="fp-window-header flex flex-shrink-0 items-center justify-between px-6 py-4">
+              <div class="min-w-0 flex-1">
+                <div class="fp-title-row">
+                  <span class="fp-title-icon">
+                    <FileSearch class="h-5 w-5" :stroke-width="2.1" />
+                  </span>
+                  <h3 id="fp-dlg-title" class="title m-0 truncate text-lg font-bold tracking-tight text-slate-900">文件名预览</h3>
+                  <span class="fp-badge">{{ fpDlgData?.file_count || 0 }} 个文件</span>
                 </div>
-                <div v-if="fpDlgGarbledCount || Number(fpDlgData?.repaired_count || 0) > 0" class="flex flex-shrink-0 items-center gap-2 max-[640px]:hidden">
+                <p class="mt-1 truncate text-sm text-slate-500">
+                  {{ fpDlgGarbledCount
+                    ? `仍有 ${fpDlgGarbledCount} 项疑似乱码，可取消后为该压缩包单独换编码`
+                    : '当前编码下未发现明显乱码，确认后会按该结果继续重试' }}
+                </p>
+              </div>
+              <div class="fp-count-pill">
+                {{ fpDlgTreeRows.length }} / {{ fpDlgData?.file_count || 0 }} 行
+              </div>
+              <button
+                type="button"
+                class="interactive-chip close-button inline-flex size-10 flex-shrink-0 items-center justify-center rounded-full text-slate-400 hover:text-slate-700"
+                title="关闭"
+                @click="fpDlgClose"
+              >
+                <X class="h-5 w-5 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:rotate-90" :stroke-width="2.2" />
+              </button>
+            </header>
+
+            <div v-if="fpDlgData" class="fp-dlg-body flex min-h-0 flex-1 flex-col px-6 pb-5">
+              <div class="fp-toolbar-row flex items-center justify-between gap-3 border-b border-slate-200/70 py-3">
+                <div class="flex min-w-0 flex-wrap items-center gap-2">
+                  <span class="fp-dlg-meta-chip">
+                    <span class="fp-dlg-meta-chip-label">编码</span>
+                    <b>{{ fpDlgData.encoding || 'auto' }}</b>
+                  </span>
+                  <span class="fp-dlg-meta-chip">
+                    <span class="fp-dlg-meta-chip-label">codepage</span>
+                    <b>{{ fpDlgData.codepage || 'auto' }}</b>
+                  </span>
+                  <span class="fp-dlg-meta-chip">
+                    <span class="fp-dlg-meta-chip-label">密码</span>
+                    <b>{{ fpDlgData.password_source || '未指定' }}</b>
+                  </span>
+                </div>
+                <div v-if="fpDlgGarbledCount || Number(fpDlgData?.repaired_count || 0) > 0" class="flex flex-shrink-0 items-center gap-2">
                   <span v-if="fpDlgGarbledCount" class="fp-dlg-tag is-amber">
                     <AlertTriangle class="h-3 w-3" />
                     {{ fpDlgGarbledCount }} 项乱码
@@ -656,78 +682,47 @@
                   </span>
                 </div>
               </div>
-              <button
-                type="button"
-                class="group inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[10px] border border-white/50 bg-white/30 text-slate-500 shadow-sm transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.04] hover:bg-white/70 hover:text-slate-900 active:translate-y-0 active:scale-[0.94]"
-                title="关闭"
-                @click="fpDlgClose"
-              >
-                <X class="h-[15px] w-[15px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:rotate-90" :stroke-width="2.4" />
-              </button>
-            </header>
-
-            <!-- Body：meta chips + 文件树卡片 -->
-            <div v-if="fpDlgData" class="flex min-h-0 flex-1 flex-col gap-3 px-5 pb-4 pt-4">
-              <div class="flex flex-wrap items-center gap-2">
-                <span class="fp-dlg-meta-chip">
-                  <span class="fp-dlg-meta-chip-label">编码</span>
-                  <b>{{ fpDlgData.encoding || 'auto' }}</b>
-                </span>
-                <span class="fp-dlg-meta-chip">
-                  <span class="fp-dlg-meta-chip-label">codepage</span>
-                  <b>{{ fpDlgData.codepage || 'auto' }}</b>
-                </span>
-                <span class="fp-dlg-meta-chip">
-                  <span class="fp-dlg-meta-chip-label">密码</span>
-                  <b>{{ fpDlgData.password_source || '未指定' }}</b>
-                </span>
-                <span class="fp-dlg-meta-chip">
-                  <span class="fp-dlg-meta-chip-label">文件数</span>
-                  <b>{{ fpDlgData.file_count || 0 }}</b>
-                </span>
-              </div>
-              <div class="fp-dlg-tree-shell">
+              <section class="fp-dlg-tree-shell mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl">
+                <div class="fp-tree-head fp-tree-grid items-center gap-3 border-b border-slate-200/70 px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
+                  <span>文件名</span>
+                  <span class="fp-tree-col-size">大小</span>
+                  <span class="fp-tree-col-status">状态</span>
+                </div>
                 <div class="fp-dlg-tree-scroll fp-detail-scroll">
                   <div
                     v-for="row in fpDlgTreeRows"
                     :key="row.key"
-                    class="fp-tree-row"
+                    class="fp-tree-row fp-tree-grid"
                     :class="{ 'is-dir': row.type === 'dir', 'is-garbled': row.isGarbled }"
-                    :style="{ paddingLeft: `${row.depth * 16 + 12}px` }"
                   >
-                    <div class="fp-tree-main">
+                    <div class="fp-tree-main flex min-w-0 items-center gap-2" :style="{ paddingLeft: `${row.depth * 16}px` }">
                       <span class="fp-tree-expander-spacer" />
-                      <span class="fp-tree-icon-wrap">
-                        <Folder v-if="row.type === 'dir'" :size="18" :stroke-width="2" class="fp-tree-icon is-folder" />
-                        <FileWarning v-else-if="row.isGarbled" :size="18" :stroke-width="2.2" class="fp-tree-icon is-warn" />
-                        <Archive v-else-if="row.isArchive" :size="17" :stroke-width="2" class="fp-tree-icon is-archive" />
-                        <Music v-else-if="fpIsAudio(row.displayName)" :size="17" :stroke-width="2" class="fp-tree-icon is-audio" />
-                        <FileText v-else-if="fpIsText(row.displayName)" :size="17" :stroke-width="2" class="fp-tree-icon is-text" />
-                        <File v-else :size="17" :stroke-width="2" class="fp-tree-icon is-file" />
-                      </span>
-                      <span class="fp-tree-name">{{ row.displayName }}</span>
-                      <span v-if="row.isGarbled" class="fp-garbled-tag">乱码</span>
+                      <component :is="fpRowIcon(row)" :size="17" class="fp-tree-icon" :style="fpRowIconStyle(row)" />
+                      <div class="min-w-0 flex-1">
+                        <div class="fp-tree-name truncate text-[13px] font-medium text-slate-800">{{ row.displayName }}</div>
+                        <div class="fp-tree-sub truncate text-[11px] text-slate-400">{{ row.displayPath }}</div>
+                      </div>
                     </div>
-                    <span v-if="row.sizeText && row.type !== 'dir'" class="fp-tree-size">{{ row.sizeText }}</span>
+                    <span class="fp-tree-size">{{ row.type === 'dir' ? '—' : (row.sizeText || '—') }}</span>
+                    <span class="fp-tree-status" :class="fpRowStatusClass(row)">{{ fpRowStatus(row) }}</span>
                   </div>
                   <div v-if="!fpDlgTreeRows.length" class="fp-dlg-tree-empty">压缩包内未读取到文件清单</div>
                 </div>
-              </div>
+              </section>
             </div>
 
-            <!-- Footer：玻璃带 + 主次按钮 -->
-            <footer class="flex flex-shrink-0 items-center justify-end gap-2 border-t border-white/55 bg-white/24 px-5 py-3 backdrop-blur-xl">
+            <footer class="fp-dlg-footer flex flex-shrink-0 items-center justify-end gap-2 border-t border-slate-200/70 px-6 py-4">
               <button
                 v-if="fpDlgCancelText"
                 type="button"
-                class="conflicts-action-btn is-slate"
+                class="fp-action-card"
                 @click="fpDlgCancel"
               >
                 {{ fpDlgCancelText }}
               </button>
               <button
                 type="button"
-                :class="['conflicts-action-btn', fpDlgGarbledCount ? 'is-amber' : 'is-emerald']"
+                :class="['fp-action-card', fpDlgGarbledCount ? 'fp-action-card-warn' : 'fp-action-card-primary']"
                 @click="fpDlgConfirm"
               >
                 {{ fpDlgConfirmText || '确认' }}
@@ -758,6 +753,7 @@ import VolumeRenameDialog from '../components/conflicts/VolumeRenameDialog.vue'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
+import { libraryEntryIconFor, libraryEntryMetaFor } from '../components/library/_libraryFileKind'
 import { conflictApi, taskCenterApi } from '../api'
 import { showSystemAlert, showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 
@@ -835,7 +831,7 @@ const fpDlgCancelText = ref('')
 let fpDlgResolveFn = null
 let fpDlgRejectFn = null
 
-const fpDlgEncoding = computed(() => fpDlgData.value?.requested_encoding || fpDlgData.value?.encoding || 'shift_jis')
+const fpDlgEncoding = computed(() => fpDlgData.value?.requested_encoding || fpDlgData.value?.encoding || 'auto')
 const fpDlgGarbledCount = computed(() => {
   const diags = Array.isArray(fpDlgData.value?.diagnostics) ? fpDlgData.value.diagnostics : []
   return diags.filter(d => d.garbled).length
@@ -922,7 +918,18 @@ function fpBuildTreeRows(preview, encoding) {
       return (a.label || '').localeCompare(b.label || '', 'zh-Hans-CN-u-kn-true')
     })
     for (const n of sorted) {
-      rows.push({ key: n.key, displayName: n.displayName || n.label, type: n.type, depth, isGarbled: n.isGarbled, isArchive: n.isArchive, sizeText: n.sizeText, score: n.score })
+      rows.push({
+        key: n.key,
+        displayPath: n.key,
+        displayName: n.displayName || n.label,
+        type: n.type,
+        depth,
+        isGarbled: n.isGarbled,
+        isArchive: n.isArchive,
+        isRepaired: n.isRepaired,
+        sizeText: n.sizeText,
+        score: n.score,
+      })
       if (n.children.length) walk(n.children, depth + 1)
     }
   }
@@ -938,6 +945,30 @@ function fpFormatBytes(bytes) {
 }
 
 const fpDlgTreeRows = computed(() => fpDlgData.value ? fpBuildTreeRows(fpDlgData.value, fpDlgEncoding.value) : [])
+
+function fpRowIcon(row) {
+  return libraryEntryIconFor({ type: row?.type, name: row?.displayName || row?.displayPath || '' })
+}
+
+function fpRowIconStyle(row) {
+  const meta = libraryEntryMetaFor({ type: row?.type, name: row?.displayName || row?.displayPath || '' })
+  return {
+    color: meta.color,
+    fill: meta.fillIcon ? `${meta.color}33` : 'none',
+  }
+}
+
+function fpRowStatus(row) {
+  if (row?.isGarbled) return '疑似乱码'
+  if (row?.isRepaired) return '已反解'
+  return row?.type === 'dir' ? '目录' : '正常'
+}
+
+function fpRowStatusClass(row) {
+  if (row?.isGarbled) return 'is-warn'
+  if (row?.isRepaired) return 'is-fixed'
+  return 'is-normal'
+}
 
 // Teleport 自绘弹窗：关闭流程统一走 cancel/confirm 两个出口，主动 hide + 清掉 data，
 // 不再依赖 el-dialog 的 @closed 回调。Promise 必须在 hide 之前 resolve，确保连续
@@ -992,12 +1023,12 @@ function openFilenamePreviewDialog(preview, { confirmText = '确认', cancelText
 }
 
 const filenameEncodingOptions = [
+  { value: 'auto', label: '自动识别', description: '每个压缩包独立嗅探编码' },
   { value: 'shift_jis', label: 'Shift_JIS / CP932', description: '日文 ZIP 最常见，7z codepage 932' },
   { value: 'gbk', label: 'GBK / CP936', description: '中文 Windows 压缩包，7z codepage 936' },
   { value: 'big5', label: 'Big5 / CP950', description: '繁体中文压缩包，7z codepage 950' },
   { value: 'euc_kr', label: 'EUC-KR / CP949', description: '韩文压缩包，7z codepage 949' },
   { value: 'utf-8', label: 'UTF-8', description: '标准 UTF-8 文件名' },
-  { value: 'auto', label: '自动嗅探', description: '不强制 -mcp，由后端自动判断' },
 ]
 
 const activeConflict = computed(() => conflicts.value.find(conflict => conflict.id === activeConflictId.value) || null)
@@ -1223,7 +1254,7 @@ function ensureFilenamePreviewState(conflict) {
   const id = conflict?.id || '_'
   if (!filenamePreviewState[id]) {
     filenamePreviewState[id] = {
-      encoding: 'shift_jis',
+      encoding: 'auto',
       preview: null,
     }
   }
@@ -1235,7 +1266,7 @@ function getFilenamePreviewState(conflict) {
 }
 
 function getFilenamePreviewEncoding(conflict) {
-  return ensureFilenamePreviewState(conflict).encoding || 'shift_jis'
+  return ensureFilenamePreviewState(conflict).encoding || 'auto'
 }
 
 function setFilenamePreviewEncoding(conflict, value) {
@@ -1441,7 +1472,7 @@ function getConflictStatusLabel(conflict) {
 }
 
 function getConflictStatusClass(conflict) {
-  if (isConflictRetrying(conflict)) return 'bg-emerald-50 text-emerald-700 border-emerald-200'
+  if (isConflictRetrying(conflict)) return 'bg-indigo-50 text-indigo-700 border-indigo-200'
   if (isConflictProcessing(conflict)) return 'bg-blue-50 text-blue-600 border-blue-200'
   return 'bg-slate-100 text-slate-500 border-slate-200'
 }
@@ -2261,14 +2292,24 @@ async function handleBatchRetryConfirm(entries) {
   const targets = batchRetryTargets.value
   if (!targets.length) return
   setBatchState('重试', true)
-  const passwordMap = Object.fromEntries(entries.map(e => [e.conflictId, e.password]))
+  const inputMap = Object.fromEntries(entries.map(e => [e.conflictId, e]))
   const successes = []
   const failures = []
   try {
     for (const conflict of targets) {
       try {
-        const pw = passwordMap[conflict.id] || ''
-        const result = await startRetry(conflict, pw ? { password: pw } : {})
+        const input = inputMap[conflict.id] || {}
+        const pw = String(input.password || '').trim()
+        const encoding = String(input.filenameEncoding || '').trim()
+        const payload = {}
+        if (pw) {
+          payload.passwords = [pw]
+          payload.password = pw
+        }
+        if (encoding && encoding !== 'auto') {
+          payload.filename_encoding = encoding
+        }
+        const result = await startRetry(conflict, payload)
         markConflictRetrying(conflict.id, true)
         successes.push(conflict)
         startRetryPoller(result.task_id, conflict.id)
@@ -2950,21 +2991,22 @@ button:disabled {
   transition: all 0.12s ease;
 }
 
-/* 批量重试：扁平克制风 → emerald 单色面 + 1px 实色边 + 极浅阴影 */
-/* 取消三段渐变与双层 glow：30px 高的小按钮下多层渐变会被挤压成斜条、"塑料"感明显。 */
+/* 批量重试：库存页轻量蓝按钮，细边框 + 小阴影，不做泛光。 */
 .conflicts-batch-btn.is-emerald {
-  background: #10b981;
-  border-color: #059669;
+  background: linear-gradient(180deg, #f8fbff 0%, #edf4ff 100%);
+  border-color: rgba(147, 197, 253, 0.78);
+  color: #1d4ed8;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.16),
-    0 1px 2px rgba(15, 23, 42, 0.05);
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 4px 10px rgba(37, 99, 235, 0.08);
 }
 .conflicts-batch-btn.is-emerald:hover:not(:disabled) {
-  background: #059669;
-  border-color: #047857;
+  background: linear-gradient(180deg, #f3f8ff 0%, #dfeeff 100%);
+  border-color: rgba(96, 165, 250, 0.82);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.2),
-    0 4px 12px -4px rgba(16, 185, 129, 0.45);
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 6px 14px rgba(37, 99, 235, 0.12);
 }
 .conflicts-batch-btn.is-emerald:hover:not(:disabled) :deep(svg) {
   transform: rotate(-180deg);
@@ -3108,19 +3150,19 @@ button:disabled {
   flex: 1;
   height: 4px;
   border-radius: 999px;
-  background: rgba(220, 252, 231, 0.6);
+  background: rgba(219, 234, 254, 0.66);
   overflow: hidden;
 }
 .conflicts-list-progress-bar {
   height: 100%;
-  background: linear-gradient(90deg, #10b981, #14b8a6);
+  background: linear-gradient(90deg, #60a5fa, #2563eb);
   border-radius: 999px;
   transition: width 0.5s ease;
 }
 .conflicts-list-progress-num {
   font-size: 10.5px;
   font-weight: 700;
-  color: #047857;
+  color: #1d4ed8;
   font-variant-numeric: tabular-nums;
 }
 
@@ -3225,7 +3267,7 @@ button:disabled {
   height: 17px;
   flex-shrink: 0;
   animation: conflicts-action-spin 0.85s linear infinite;
-  filter: drop-shadow(0 0 7px rgba(255, 255, 255, 0.48));
+  filter: none;
 }
 
 @keyframes conflicts-action-spin {
@@ -3242,43 +3284,43 @@ button:disabled {
   transition: all 0.12s ease;
 }
 
-/* 主操作按钮统一采用扁平克制风： */
-/* 单色面 + 1px 同色系边 + 极浅 inset 顶高光 + hover 加深一档颜色 + 轻微抬起。 */
-/* 去掉三段渐变 / 双层 glow / 底部 inset 暗影 / text-shadow，避免"塑料"感。 */
-
-/* 保留新版：blue 主色 */
+/* 主操作按钮统一采用库存页轻量质感：淡渐变、细边框、小阴影。 */
 .conflicts-action-btn.is-primary {
-  background: #2563eb;
-  border-color: #1d4ed8;
+  background: linear-gradient(180deg, #f8fbff 0%, #edf4ff 100%);
+  border-color: rgba(147, 197, 253, 0.78);
+  color: #1d4ed8;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.18),
-    0 1px 2px rgba(15, 23, 42, 0.06);
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 4px 10px rgba(37, 99, 235, 0.08);
 }
 .conflicts-action-btn.is-primary:hover:not(:disabled) {
-  background: #1d4ed8;
-  border-color: #1e40af;
+  background: linear-gradient(180deg, #f3f8ff 0%, #dfeeff 100%);
+  border-color: rgba(96, 165, 250, 0.82);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    0 4px 14px -4px rgba(37, 99, 235, 0.5);
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 6px 14px rgba(37, 99, 235, 0.12);
 }
 .conflicts-action-btn.is-primary:hover:not(:disabled) :deep(svg) {
   transform: scale(1.08) rotate(-3deg);
 }
 
-/* 重试：emerald */
+/* 重试：靛蓝语义色，轻量质感，避免绿色塑料感。 */
 .conflicts-action-btn.is-emerald {
-  background: #10b981;
-  border-color: #059669;
+  background: linear-gradient(180deg, #f8f8ff 0%, #eef2ff 100%);
+  border-color: rgba(165, 180, 252, 0.78);
+  color: #4338ca;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.18),
-    0 1px 2px rgba(15, 23, 42, 0.06);
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 4px 10px rgba(79, 70, 229, 0.08);
 }
 .conflicts-action-btn.is-emerald:hover:not(:disabled) {
-  background: #059669;
-  border-color: #047857;
+  background: linear-gradient(180deg, #f3f4ff 0%, #e0e7ff 100%);
+  border-color: rgba(129, 140, 248, 0.82);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    0 4px 14px -4px rgba(16, 185, 129, 0.5);
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 6px 14px rgba(79, 70, 229, 0.12);
 }
 .conflicts-action-btn.is-emerald:hover:not(:disabled) :deep(svg) {
   transform: rotate(-180deg);
@@ -3303,21 +3345,22 @@ button:disabled {
   transform: translateX(3px);
 }
 
-/* 合并：sober amber */
+/* 合并 / 重命名：琥珀语义色，保留警示但不做实心塑料块。 */
 .conflicts-action-btn.is-amber {
-  background: #d97706;
-  border-color: #b45309;
-  color: #ffffff;
+  background: linear-gradient(180deg, #fffdfa 0%, #fff4d6 100%);
+  border-color: rgba(251, 191, 36, 0.72);
+  color: #92400e;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.18),
-    0 1px 2px rgba(15, 23, 42, 0.06);
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 4px 10px rgba(217, 119, 6, 0.08);
 }
 .conflicts-action-btn.is-amber:hover:not(:disabled) {
-  background: #b45309;
-  border-color: #92400e;
+  background: linear-gradient(180deg, #fff9eb 0%, #fdecc0 100%);
+  border-color: rgba(245, 158, 11, 0.78);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    0 4px 14px -4px rgba(217, 119, 6, 0.5);
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 6px 14px rgba(217, 119, 6, 0.12);
 }
 .conflicts-action-btn.is-amber:hover:not(:disabled) :deep(svg) {
   transform: scale(1.08) rotate(8deg);
@@ -3527,16 +3570,16 @@ button:disabled {
   gap: 8px;
   flex-wrap: nowrap;
 }
-/* 后端反解徽章：与 garbled 警告色互补，绿色表示"已自动修复" */
+/* 后端反解徽章：与 garbled 警告色互补，用 cyan 表示"已自动修复" */
 .fp-repaired-badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   padding: 2px 9px;
   border-radius: 999px;
-  background: linear-gradient(180deg, #ecfdf5 0%, #d1fae5 100%);
-  border: 1px solid rgba(167, 243, 208, 0.9);
-  color: #047857;
+  background: linear-gradient(180deg, #f0f9ff 0%, #e0f2fe 100%);
+  border: 1px solid rgba(125, 211, 252, 0.82);
+  color: #0369a1;
   font-weight: 700;
   font-size: 11px;
   white-space: nowrap;
@@ -3699,10 +3742,10 @@ button:disabled {
   box-shadow: 0 1px 3px rgba(217, 119, 6, 0.16);
 }
 .fp-dlg-tag.is-emerald {
-  background: linear-gradient(180deg, rgba(236, 253, 245, 0.92) 0%, rgba(209, 250, 229, 0.88) 100%);
-  border: 1px solid rgba(167, 243, 208, 0.9);
-  color: #047857;
-  box-shadow: 0 1px 3px rgba(5, 150, 105, 0.12);
+  background: rgba(240, 249, 255, 0.62);
+  border: 1px solid rgba(125, 211, 252, 0.7);
+  color: #0369a1;
+  box-shadow: none;
 }
 
 /* 3. Meta chip（body 顶部一排 "编码 / codepage / 密码 / 文件数"） */
@@ -3791,8 +3834,338 @@ button:disabled {
   background: rgba(100, 116, 139, 0.68);
 }
 
+/* 库存页目录窗口风格：玻璃外壳、工具栏、三列文件树。 */
+.fp-preview-overlay {
+  background:
+    radial-gradient(circle at 18% 16%, rgba(191, 219, 254, 0.26), transparent 28%),
+    radial-gradient(circle at 82% 14%, rgba(186, 230, 253, 0.22), transparent 24%),
+    radial-gradient(circle at 82% 82%, rgba(221, 239, 255, 0.2), transparent 26%),
+    rgba(241, 245, 249, 0.34);
+  backdrop-filter: blur(20px) saturate(130%);
+  -webkit-backdrop-filter: blur(20px) saturate(130%);
+}
+
+.fp-dlg-panel {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.34)),
+    radial-gradient(circle at top left, rgba(191, 219, 254, 0.18), transparent 34%),
+    radial-gradient(circle at top right, rgba(186, 230, 253, 0.14), transparent 28%);
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.56),
+    0 28px 80px rgba(15, 23, 42, 0.14);
+  backdrop-filter: blur(28px) saturate(155%);
+  -webkit-backdrop-filter: blur(28px) saturate(155%);
+}
+
+.fp-dlg-panel::before {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  content: '';
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.22), transparent 30%, rgba(255, 255, 255, 0.08) 65%, transparent 100%);
+  opacity: 0.9;
+}
+
+.fp-window-header,
+.fp-dlg-body,
+.fp-dlg-footer {
+  position: relative;
+  z-index: 1;
+}
+
+.fp-window-header {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.4);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.06));
+}
+
+.fp-title-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.fp-title-icon {
+  display: inline-flex;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.58);
+  background: rgba(255, 255, 255, 0.42);
+  color: #334155;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    0 8px 22px rgba(15, 23, 42, 0.06);
+}
+
+.fp-badge,
+.fp-count-pill {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.fp-badge {
+  border: 1px solid rgba(255, 255, 255, 0.56);
+  background: rgba(255, 255, 255, 0.46);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.38);
+  padding: 3px 10px;
+  color: #475569;
+}
+
+.fp-count-pill {
+  margin-right: 10px;
+  border: 1px solid rgba(147, 197, 253, 0.56);
+  background: rgba(239, 246, 255, 0.4);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.44),
+    0 10px 28px rgba(59, 130, 246, 0.12);
+  padding: 4px 12px;
+  color: #1d4ed8;
+}
+
+.fp-dlg-panel .close-button {
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.34);
+  border: 1px solid rgba(255, 255, 255, 0.52);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    0 6px 18px rgba(15, 23, 42, 0.05);
+  transition: transform 0.16s ease, background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.fp-dlg-panel .close-button:hover {
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
+}
+
+.fp-toolbar-row {
+  border-bottom-color: rgba(255, 255, 255, 0.34) !important;
+}
+
+.fp-dlg-tree-shell {
+  max-height: none;
+  border: 1px solid rgba(255, 255, 255, 0.54);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.46), rgba(255, 255, 255, 0.26));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    0 20px 48px rgba(15, 23, 42, 0.07);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+}
+
+.fp-dlg-tree-shell::before,
+.fp-dlg-tree-shell::after {
+  display: none;
+}
+
+.fp-tree-head {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.12));
+  border-bottom-color: rgba(255, 255, 255, 0.34) !important;
+}
+
+.fp-tree-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px 92px;
+  column-gap: 8px;
+}
+
+.fp-dlg-tree-scroll {
+  min-height: 280px;
+  max-height: min(56vh, 520px);
+  padding: 8px 16px 12px;
+}
+
+.fp-tree-row.fp-tree-grid {
+  display: grid;
+  min-height: 44px;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 6px;
+  transition: background-color 0.15s ease, transform 0.15s ease;
+}
+
+.fp-tree-row.fp-tree-grid:hover {
+  background: rgba(255, 255, 255, 0.24);
+  box-shadow: none;
+}
+
+.fp-tree-main {
+  line-height: 1.15;
+}
+
+.fp-tree-row.fp-tree-grid .fp-tree-expander-spacer {
+  width: 21px;
+  flex: 0 0 21px;
+}
+
+.fp-tree-icon {
+  flex-shrink: 0;
+  transition: color 0.18s ease, transform 0.18s ease;
+}
+
+.fp-tree-row:hover .fp-tree-icon {
+  transform: scale(1.06);
+}
+
+.fp-tree-name {
+  min-width: 0;
+  color: #1e293b;
+  line-height: 1.2;
+  word-break: break-all;
+}
+
+.fp-tree-sub {
+  margin-top: 1px;
+  line-height: 1.15;
+}
+
+.fp-tree-col-size,
+.fp-tree-row.fp-tree-grid .fp-tree-size,
+.fp-tree-col-status,
+.fp-tree-row.fp-tree-grid .fp-tree-status {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.fp-tree-col-size,
+.fp-tree-row.fp-tree-grid .fp-tree-size {
+  justify-content: center;
+  min-width: 96px;
+  margin-left: 0;
+  color: #94a3b8;
+  font-size: 12px;
+  text-align: center;
+}
+
+.fp-tree-col-status,
+.fp-tree-row.fp-tree-grid .fp-tree-status {
+  justify-content: flex-start;
+  min-width: 92px;
+}
+
+.fp-tree-row.fp-tree-grid .fp-tree-status {
+  width: fit-content;
+  height: 22px;
+  align-self: center;
+  justify-self: start;
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.fp-tree-status.is-normal {
+  background: rgba(255, 255, 255, 0.46);
+  color: #64748b;
+  border: 1px solid rgba(255, 255, 255, 0.56);
+}
+
+.fp-tree-status.is-fixed {
+  background: linear-gradient(180deg, rgba(236, 253, 245, 0.92), rgba(209, 250, 229, 0.84));
+  color: #047857;
+  border: 1px solid rgba(167, 243, 208, 0.9);
+}
+
+.fp-tree-status.is-warn {
+  background: linear-gradient(180deg, rgba(254, 243, 199, 0.94), rgba(253, 230, 138, 0.86));
+  color: #92400e;
+  border: 1px solid rgba(252, 211, 77, 0.72);
+}
+
+.fp-dlg-footer {
+  background: rgba(255, 255, 255, 0.12);
+  border-top-color: rgba(255, 255, 255, 0.34) !important;
+}
+
+.fp-action-card {
+  display: inline-flex;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 14px;
+  cursor: pointer;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.52);
+  background: rgba(255, 255, 255, 0.42);
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    0 6px 18px rgba(15, 23, 42, 0.05);
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease;
+}
+
+.fp-action-card:hover {
+  border-color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
+}
+
+.fp-action-card:active {
+  transform: translateY(0) scale(0.97);
+}
+
+.fp-action-card-primary {
+  border-color: rgba(147, 197, 253, 0.78);
+  background: linear-gradient(180deg, #f8fbff 0%, #edf4ff 100%);
+  color: #1d4ed8;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 4px 10px rgba(37, 99, 235, 0.08);
+}
+
+.fp-action-card-primary:hover {
+  border-color: rgba(96, 165, 250, 0.82);
+  background: linear-gradient(180deg, #f3f8ff 0%, #dfeeff 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 6px 14px rgba(37, 99, 235, 0.12);
+}
+
+.fp-action-card-warn {
+  border-color: rgba(251, 191, 36, 0.72);
+  background: linear-gradient(180deg, #fffdfa 0%, #fff4d6 100%);
+  color: #92400e;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 4px 10px rgba(217, 119, 6, 0.08);
+}
+
+.fp-action-card-warn:hover {
+  border-color: rgba(245, 158, 11, 0.78);
+  background: linear-gradient(180deg, #fff9eb 0%, #fdecc0 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 6px 14px rgba(217, 119, 6, 0.12);
+}
+
 @media (max-width: 1100px) {
   .conflicts-garbled-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 760px) {
+  .fp-tree-grid { grid-template-columns: minmax(0, 1fr) 72px; }
+  .fp-tree-col-status,
+  .fp-tree-status { display: none; }
+  .fp-count-pill { display: none; }
 }
 
 /* 双卡网格 */
@@ -3955,14 +4328,13 @@ button:disabled {
 }
 
 /* ==============================================================
- * 已有动画（处理中 / 重试中）保留
+ * 已有动画（处理中 / 重试中）：保留反馈，弱化泛光和绿色塑料感
  * ============================================================ */
 .processing-conflict-card {
-  border-color: rgba(74, 222, 128, 0.72) !important;
+  border-color: rgba(96, 165, 250, 0.62) !important;
   box-shadow:
-    0 0 0 1px rgba(74, 222, 128, 0.26),
-    0 0 18px rgba(74, 222, 128, 0.18),
-    0 0 32px rgba(34, 197, 94, 0.12);
+    0 0 0 1px rgba(96, 165, 250, 0.22),
+    0 8px 18px rgba(37, 99, 235, 0.08);
   animation: processing-conflict-glow 1.9s ease-in-out infinite;
 }
 
@@ -3973,10 +4345,9 @@ button:disabled {
   border-radius: 14px;
   pointer-events: none;
   box-shadow:
-    0 0 0 1px rgba(134, 239, 172, 0.28),
-    0 0 22px rgba(74, 222, 128, 0.22),
-    0 0 42px rgba(34, 197, 94, 0.18);
-  opacity: 0.78;
+    0 0 0 1px rgba(147, 197, 253, 0.22),
+    0 0 18px rgba(59, 130, 246, 0.12);
+  opacity: 0.5;
   animation: processing-conflict-aura 1.9s ease-in-out infinite;
 }
 
@@ -3986,8 +4357,7 @@ button:disabled {
     linear-gradient(100deg, rgba(239, 246, 255, 0.92), rgba(255, 255, 255, 0.98) 42%, rgba(219, 234, 254, 0.78)) !important;
   box-shadow:
     0 0 0 1px rgba(59, 130, 246, 0.26),
-    0 0 20px rgba(59, 130, 246, 0.2),
-    0 0 38px rgba(37, 99, 235, 0.14) !important;
+    0 8px 18px rgba(37, 99, 235, 0.1) !important;
   animation: keep-new-conflict-glow 1.7s ease-in-out infinite;
 }
 
@@ -4003,9 +4373,8 @@ button:disabled {
 
 .keep-new-conflict-card::after {
   box-shadow:
-    0 0 0 1px rgba(147, 197, 253, 0.34),
-    0 0 24px rgba(59, 130, 246, 0.25),
-    0 0 46px rgba(37, 99, 235, 0.18) !important;
+    0 0 0 1px rgba(147, 197, 253, 0.28),
+    0 0 18px rgba(59, 130, 246, 0.14) !important;
   animation: keep-new-conflict-aura 1.7s ease-in-out infinite;
 }
 
@@ -4023,7 +4392,7 @@ button:disabled {
   border-radius: 999px;
   background: rgba(239, 246, 255, 0.96);
   color: #2563eb;
-  box-shadow: 0 8px 18px rgba(59, 130, 246, 0.2);
+  box-shadow: 0 4px 10px rgba(59, 130, 246, 0.14);
   animation: keep-new-card-float 1.15s ease-in-out infinite;
 }
 
@@ -4032,9 +4401,9 @@ button:disabled {
 }
 
 .retry-conflict-card {
-  border-color: rgba(16, 185, 129, 0.82) !important;
+  border-color: rgba(129, 140, 248, 0.68) !important;
   background:
-    linear-gradient(100deg, rgba(236, 253, 245, 0.86), rgba(255, 255, 255, 0.98) 38%, rgba(209, 250, 229, 0.72)) !important;
+    linear-gradient(100deg, rgba(238, 242, 255, 0.86), rgba(255, 255, 255, 0.98) 38%, rgba(224, 231, 255, 0.72)) !important;
   cursor: not-allowed !important;
 }
 
@@ -4062,11 +4431,11 @@ button:disabled {
   justify-content: center;
   width: 24px;
   height: 24px;
-  border: 1px solid rgba(16, 185, 129, 0.28);
+  border: 1px solid rgba(129, 140, 248, 0.32);
   border-radius: 999px;
-  background: rgba(236, 253, 245, 0.92);
-  color: #059669;
-  box-shadow: 0 8px 18px rgba(16, 185, 129, 0.18);
+  background: rgba(238, 242, 255, 0.94);
+  color: #4f46e5;
+  box-shadow: 0 4px 10px rgba(79, 70, 229, 0.14);
   animation: retry-card-float 1.2s ease-in-out infinite;
 }
 
@@ -4077,15 +4446,13 @@ button:disabled {
 @keyframes processing-conflict-glow {
   0%, 100% {
     box-shadow:
-      0 0 0 1px rgba(74, 222, 128, 0.22),
-      0 0 14px rgba(74, 222, 128, 0.12),
-      0 0 26px rgba(34, 197, 94, 0.08);
+      0 0 0 1px rgba(96, 165, 250, 0.2),
+      0 8px 18px rgba(37, 99, 235, 0.07);
   }
   50% {
     box-shadow:
-      0 0 0 1px rgba(74, 222, 128, 0.34),
-      0 0 24px rgba(74, 222, 128, 0.22),
-      0 0 44px rgba(34, 197, 94, 0.16);
+      0 0 0 1px rgba(96, 165, 250, 0.3),
+      0 10px 22px rgba(37, 99, 235, 0.11);
   }
 }
 
@@ -4104,14 +4471,12 @@ button:disabled {
   0%, 100% {
     box-shadow:
       0 0 0 1px rgba(59, 130, 246, 0.22),
-      0 0 16px rgba(59, 130, 246, 0.14),
-      0 0 30px rgba(37, 99, 235, 0.1);
+      0 8px 18px rgba(37, 99, 235, 0.08);
   }
   50% {
     box-shadow:
-      0 0 0 1px rgba(59, 130, 246, 0.36),
-      0 0 28px rgba(59, 130, 246, 0.25),
-      0 0 50px rgba(37, 99, 235, 0.18);
+      0 0 0 1px rgba(59, 130, 246, 0.32),
+      0 10px 24px rgba(37, 99, 235, 0.12);
   }
 }
 
@@ -4257,6 +4622,17 @@ html.kikoerumanager-dark .conflicts-batch-btn.is-slate:hover {
   color: #f8fafc;
   border-color: rgba(148, 163, 184, 0.28);
 }
+html.kikoerumanager-dark .conflicts-batch-btn.is-emerald {
+  background: linear-gradient(180deg, rgba(30, 58, 138, 0.44), rgba(30, 41, 59, 0.72));
+  color: #bfdbfe;
+  border-color: rgba(96, 165, 250, 0.34);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 4px 10px rgba(37, 99, 235, 0.1);
+}
+html.kikoerumanager-dark .conflicts-batch-btn.is-emerald:hover {
+  background: linear-gradient(180deg, rgba(37, 99, 235, 0.42), rgba(30, 41, 59, 0.82));
+  border-color: rgba(96, 165, 250, 0.46);
+  box-shadow: 0 6px 14px rgba(37, 99, 235, 0.14);
+}
 html.kikoerumanager-dark .conflicts-list-hint {
   color: #64748b;
 }
@@ -4289,7 +4665,7 @@ html.kikoerumanager-dark .conflicts-list-progress-track {
   background: rgba(30, 41, 59, 0.6);
 }
 html.kikoerumanager-dark .conflicts-list-progress-num {
-  color: #34d399;
+  color: #93c5fd;
 }
 
 html.kikoerumanager-dark .conflicts-detail-pane {
@@ -4323,6 +4699,39 @@ html.kikoerumanager-dark .conflicts-action-btn.is-slate:hover {
   color: #f8fafc;
   border-color: rgba(148, 163, 184, 0.28);
   box-shadow: 0 4px 14px -4px rgba(0, 0, 0, 0.25);
+}
+html.kikoerumanager-dark .conflicts-action-btn.is-primary {
+  background: linear-gradient(180deg, rgba(30, 58, 138, 0.44), rgba(30, 41, 59, 0.72));
+  color: #bfdbfe;
+  border-color: rgba(96, 165, 250, 0.34);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 4px 10px rgba(37, 99, 235, 0.1);
+}
+html.kikoerumanager-dark .conflicts-action-btn.is-primary:hover {
+  background: linear-gradient(180deg, rgba(37, 99, 235, 0.42), rgba(30, 41, 59, 0.82));
+  border-color: rgba(96, 165, 250, 0.46);
+  box-shadow: 0 6px 14px rgba(37, 99, 235, 0.14);
+}
+html.kikoerumanager-dark .conflicts-action-btn.is-emerald {
+  background: linear-gradient(180deg, rgba(49, 46, 129, 0.42), rgba(30, 41, 59, 0.72));
+  color: #c7d2fe;
+  border-color: rgba(129, 140, 248, 0.34);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 4px 10px rgba(79, 70, 229, 0.1);
+}
+html.kikoerumanager-dark .conflicts-action-btn.is-emerald:hover {
+  background: linear-gradient(180deg, rgba(67, 56, 202, 0.38), rgba(30, 41, 59, 0.82));
+  border-color: rgba(129, 140, 248, 0.46);
+  box-shadow: 0 6px 14px rgba(79, 70, 229, 0.14);
+}
+html.kikoerumanager-dark .conflicts-action-btn.is-amber {
+  background: linear-gradient(180deg, rgba(120, 53, 15, 0.34), rgba(30, 41, 59, 0.72));
+  color: #fcd34d;
+  border-color: rgba(245, 158, 11, 0.34);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 4px 10px rgba(217, 119, 6, 0.1);
+}
+html.kikoerumanager-dark .conflicts-action-btn.is-amber:hover {
+  background: linear-gradient(180deg, rgba(146, 64, 14, 0.36), rgba(30, 41, 59, 0.82));
+  border-color: rgba(245, 158, 11, 0.46);
+  box-shadow: 0 6px 14px rgba(217, 119, 6, 0.14);
 }
 
 html.kikoerumanager-dark .conflicts-detail-alert.is-warning {
@@ -4546,7 +4955,7 @@ html.kikoerumanager-dark .keep-new-conflict-card {
   background: linear-gradient(100deg, rgba(30, 58, 138, 0.35), rgba(15, 23, 42, 0.55) 42%, rgba(37, 99, 235, 0.25)) !important;
 }
 html.kikoerumanager-dark .retry-conflict-card {
-  background: linear-gradient(100deg, rgba(6, 78, 59, 0.3), rgba(15, 23, 42, 0.5) 38%, rgba(5, 150, 105, 0.22)) !important;
+  background: linear-gradient(100deg, rgba(49, 46, 129, 0.34), rgba(15, 23, 42, 0.5) 38%, rgba(79, 70, 229, 0.22)) !important;
 }
 html.kikoerumanager-dark .keep-new-card-orbit {
   background: rgba(30, 58, 138, 0.55);
@@ -4555,9 +4964,9 @@ html.kikoerumanager-dark .keep-new-card-orbit {
   box-shadow: 0 8px 18px rgba(37, 99, 235, 0.2);
 }
 html.kikoerumanager-dark .retry-card-orbit {
-  background: rgba(6, 78, 59, 0.5);
-  border-color: rgba(16, 185, 129, 0.3);
-  color: #34d399;
-  box-shadow: 0 8px 18px rgba(16, 185, 129, 0.18);
+  background: rgba(49, 46, 129, 0.52);
+  border-color: rgba(129, 140, 248, 0.34);
+  color: #a5b4fc;
+  box-shadow: 0 4px 10px rgba(79, 70, 229, 0.16);
 }
 </style>

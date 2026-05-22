@@ -83,7 +83,7 @@
                 <input
                   v-model="autoRetry"
                   type="checkbox"
-                  class="w-3.5 h-3.5 rounded border-slate-300 text-emerald-500 focus:ring-emerald-200"
+                  class="w-3.5 h-3.5 rounded border-slate-300 text-indigo-500 focus:ring-indigo-200"
                 />
                 重命名后立即重试解压
               </label>
@@ -349,7 +349,7 @@ function handleCancel() {
   box-shadow: 0 0 0 2px rgba(254, 215, 170, 0.5);
 }
 
-/* 主操作按钮：amber 三段渐变 + 顶部高光 + 双层 glow，对齐 Conflicts 页 is-amber 风格 */
+/* 主操作按钮：琥珀语义色，轻量边框质感，不做实心塑料块。 */
 .vrd-confirm-btn {
   display: inline-flex;
   align-items: center;
@@ -358,24 +358,25 @@ function handleCancel() {
   height: 36px;
   padding: 0 18px;
   border-radius: 12px;
-  border: 1px solid #b45309;
-  background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 50%, #d97706 100%);
-  color: #ffffff;
+  border: 1px solid rgba(251, 191, 36, 0.72);
+  background: linear-gradient(180deg, #fffdfa 0%, #fff4d6 100%);
+  color: #92400e;
   font-size: 13.5px;
   font-weight: 600;
   letter-spacing: 0.01em;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.32),
-    0 4px 12px -4px rgba(245, 158, 11, 0.5),
-    0 1px 2px rgba(15, 23, 42, 0.05);
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 4px 10px rgba(217, 119, 6, 0.08);
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .vrd-confirm-btn:hover:not(:disabled) {
   transform: translateY(-2px);
+  border-color: rgba(245, 158, 11, 0.78);
+  background: linear-gradient(180deg, #fff9eb 0%, #fdecc0 100%);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.4),
-    0 8px 20px -6px rgba(245, 158, 11, 0.6),
-    0 2px 4px rgba(15, 23, 42, 0.08);
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 6px 14px rgba(217, 119, 6, 0.12);
 }
 .vrd-confirm-btn:active:not(:disabled) {
   transform: translateY(0) scale(0.97);

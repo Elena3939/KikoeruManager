@@ -270,6 +270,7 @@ const props = defineProps({
   title: { type: String, default: '上传到服务器' },
   sourceLibraryId: { type: String, default: '' },
   sourceLibraryName: { type: String, default: '' },
+  circleName: { type: String, default: '' },
   sourceItems: { type: Array, default: () => [] },
   libraries: { type: Array, default: () => [] },
   initialTargetLibraryId: { type: String, default: '' },
@@ -298,6 +299,12 @@ const resolvedTargetRoot = computed(() => {
   const prefix = String(settings.targetSubdir || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
   if (!base) return ''
   return prefix ? `${base}/${prefix}`.replace(/\/+/g, '/') : base
+})
+const uploadCircleName = computed(() => String(props.circleName || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''))
+const resolvedUploadRoot = computed(() => {
+  const root = resolvedTargetRoot.value
+  if (!root) return ''
+  return uploadCircleName.value ? `${root}/${uploadCircleName.value}`.replace(/\/+/g, '/') : root
 })
 const selectedGroupCount = computed(() => previewGroups.value.filter(g => isGroupAllSelected(g) || isGroupPartiallySelected(g)).length)
 const selectedTotalBytes = computed(() => previewGroups.value.reduce((sum, group) => sum + Number(group.selected_size_bytes || 0), 0))
@@ -379,7 +386,7 @@ const estimatedRemainingSpaceText = computed(() => {
   return formatSize(Math.max(0, targetFreeSpaceBytes.value - selectedTotalBytes.value))
 })
 const selectedUploadGroups = computed(() => previewGroups.value.filter(group => isGroupAllSelected(group) || isGroupPartiallySelected(group)))
-const targetDirectoryPreview = computed(() => resolvedTargetRoot.value || '')
+const targetDirectoryPreview = computed(() => resolvedUploadRoot.value || '')
 const targetSubdirLabel = computed(() => {
   if (!settings.targetLibraryId) return '请先选择目标库存'
   const value = String(settings.targetSubdir || '').trim()
@@ -398,7 +405,7 @@ const selectedFolderPreview = computed(() => {
   return `${groups.length} 个已选目录，各自保留原目录名`
 })
 const finalPathPreview = computed(() => {
-  const root = resolvedTargetRoot.value
+  const root = resolvedUploadRoot.value
   if (!root) return ''
   const selectedGroups = selectedUploadGroups.value
   if (selectedGroups.length === 1) return `${root}/${selectedGroups[0].name}`.replace(/\/+/g, '/')
