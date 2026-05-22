@@ -50,7 +50,7 @@ from ..core.security_gate_service import COOKIE_NAME, get_security_gate_service
 app = FastAPI(
     title="KikoeruManager API",
     description="DLsite作品整理工具API",
-    version="1.0.0"
+    version="1.5.45"
 )
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 
@@ -82,7 +82,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "kikoerumanager",
-        "version": "1.0.0",
+        "version": "1.5.45",
         "timestamp": datetime.now().isoformat()
     }
 
