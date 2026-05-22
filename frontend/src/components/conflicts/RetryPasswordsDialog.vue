@@ -10,7 +10,7 @@
           <div class="relative overflow-hidden rounded-[26px] bg-white/98 border border-slate-100 shadow-2xl shadow-slate-900/10 flex flex-col max-h-[calc(100vh-2rem)]">
             <!-- Head -->
             <div class="flex items-start gap-3.5 px-6 pt-6 flex-none">
-              <div class="w-11 h-11 flex-shrink-0 flex items-center justify-center rounded-2xl border bg-emerald-50/92 text-emerald-700 border-emerald-200/48">
+              <div class="w-11 h-11 flex-shrink-0 flex items-center justify-center rounded-2xl border bg-indigo-50/92 text-indigo-700 border-indigo-200/48">
                 <RotateCcw :size="20" />
               </div>
               <div class="flex-1 min-w-0 pt-0.5">
@@ -33,7 +33,7 @@
             <!-- Hint -->
             <div class="px-6 pt-3 flex-none">
               <p class="text-xs text-slate-400 leading-relaxed">
-                <Sparkles :size="12" class="inline-block mr-1 -mt-0.5 text-emerald-500" />
+                <Sparkles :size="12" class="inline-block mr-1 -mt-0.5 text-indigo-500" />
                 可填多个密码，按顺序依次尝试，任一命中即成功。全部留空表示走密码库 / RJ 推导 / 默认密码。
               </p>
             </div>
@@ -53,7 +53,7 @@
                     :ref="el => bindInput(el, index)"
                     v-model="item.value"
                     type="text"
-                    class="flex-1 min-w-0 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 text-sm outline-none transition-all duration-200 focus:bg-white focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-100/60"
+                    class="flex-1 min-w-0 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 text-sm outline-none transition-all duration-200 focus:bg-white focus:border-indigo-400/60 focus:ring-2 focus:ring-indigo-100/60"
                     :placeholder="index === 0 ? '密码（可留空走密码库）' : `密码 ${index + 1}`"
                     autocomplete="off"
                     @keydown.enter.prevent="handleEnter(index)"
@@ -71,7 +71,7 @@
                 </div>
                 <button
                   type="button"
-                  class="self-start inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 text-[12.5px] font-medium transition-all duration-150"
+                  class="self-start inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 text-[12.5px] font-medium transition-all duration-150"
                   @click="addRow"
                 >
                   <Plus :size="14" />
@@ -215,7 +215,7 @@ function handleCancel() {
 .rpd-fade-enter-from, .rpd-fade-leave-to { opacity: 0; }
 .rpd-fade-enter-from .rpd-shell, .rpd-fade-leave-to .rpd-shell { transform: translateY(6px) scale(0.985); opacity: 0; filter: blur(1px); }
 
-/* 确认按钮：emerald 三段渐变 + 顶部高光 + 双层 glow，与 Conflicts 页 主操作风格一致 */
+/* 确认按钮：问题作品统一轻量蓝按钮，避免实心塑料感。 */
 .rpd-confirm-btn {
   display: inline-flex;
   align-items: center;
@@ -224,24 +224,25 @@ function handleCancel() {
   height: 36px;
   padding: 0 18px;
   border-radius: 12px;
-  border: 1px solid #047857;
-  background: linear-gradient(180deg, #34d399 0%, #10b981 50%, #059669 100%);
-  color: #ffffff;
+  border: 1px solid rgba(147, 197, 253, 0.78);
+  background: linear-gradient(180deg, #f8fbff 0%, #edf4ff 100%);
+  color: #1d4ed8;
   font-size: 13.5px;
   font-weight: 600;
   letter-spacing: 0.01em;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.32),
-    0 4px 12px -4px rgba(16, 185, 129, 0.45),
-    0 1px 2px rgba(15, 23, 42, 0.05);
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 4px 10px rgba(37, 99, 235, 0.08);
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .rpd-confirm-btn:hover {
   transform: translateY(-2px);
+  background: linear-gradient(180deg, #f3f8ff 0%, #dfeeff 100%);
+  border-color: rgba(96, 165, 250, 0.82);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.4),
-    0 8px 20px -6px rgba(16, 185, 129, 0.55),
-    0 2px 4px rgba(15, 23, 42, 0.08);
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 6px 14px rgba(37, 99, 235, 0.12);
 }
 .rpd-confirm-btn:active {
   transform: translateY(0) scale(0.97);

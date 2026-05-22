@@ -1345,169 +1345,22 @@
 
 
 
-    <div v-if="showSubtitleBackgroundCard" class="floating-card">
-
-      <div class="flex items-start justify-between gap-3">
-
-        <div class="flex items-center gap-2.5 min-w-0">
-
-          <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-emerald-500/10">
-
-            <IconCaptions class="h-3.5 w-3.5 text-emerald-600" :stroke-width="2.2" />
-
-          </div>
-
-          <div class="min-w-0">
-
-            <div class="text-[13px] font-semibold text-slate-900 leading-tight">RJ 字幕工作台正在后台运行</div>
-
-            <div class="mt-0.5 text-[11px] text-slate-500 line-clamp-2 leading-snug">
-
-              {{ subtitleBackgroundActiveTask ? `${getTaskDisplayRJCode(subtitleBackgroundActiveTask)} · ${subtitleBackgroundActiveTask.folder_name || getFileName(subtitleBackgroundActiveTask.folder_path) || '-'}` : '保留当前扫描与任务状态' }}
-
-            </div>
-
-          </div>
-
-        </div>
-
-        <div class="shrink-0 rounded-xl bg-emerald-50 border border-emerald-100 px-2.5 py-1 text-[13px] font-bold text-emerald-600 tabular-nums">{{ subtitleTasks.length }}</div>
-
-      </div>
-
-      <div class="flex flex-wrap gap-1.5">
-
-        <span class="floating-chip">任务 <b>{{ subtitleTasks.length }}</b></span>
-
-        <span class="floating-chip">执行中 <b>{{ subtitleTasks.filter(t => t.status === 'processing').length }}</b></span>
-
-        <span class="floating-chip">等待中 <b>{{ subtitleTasks.filter(t => t.status === 'pending').length }}</b></span>
-
-        <span class="floating-chip">扫描命中 <b>{{ subtitleDialogSelection.length }}</b></span>
-
-      </div>
-
-      <div class="rounded-xl bg-slate-50 border border-slate-100/80 px-3 py-2 text-[11px] leading-relaxed text-slate-500 line-clamp-2">
-
-        {{ subtitleBackgroundActiveTask?.current_step || subtitleSelectionProgressText || '隐藏后继续保留任务队列和当前焦点。' }}
-
-      </div>
-
-      <div class="flex items-center justify-end gap-2 pt-0.5">
-
-        <button type="button" class="floating-action-btn" @click="dismissSubtitleBackground">关闭</button>
-
-        <button type="button" class="floating-action-btn floating-action-btn-emerald" @click="resumeSubtitleTaskPanelFromBackground">
-
-          <IconCaptions class="h-3 w-3" :stroke-width="2.3" />恢复工作台
-
-        </button>
-
-      </div>
-
-    </div>
-
-
-
-    <div v-if="showFilterDeleteBackgroundCard" class="filter-delete-floating-card">
-
-      <div class="filter-delete-floating-head">
-
-        <div>
-
-          <div class="filter-delete-floating-title">{{ filterDeleteBackgroundState.scopeLabel || '删除过滤任务' }}</div>
-
-          <div class="filter-delete-floating-mode">{{ filterDeleteBackgroundState.mode === 'delete' ? '后台删除中' : '后台预审中' }}</div>
-
-        </div>
-
-        <div class="filter-delete-floating-percent">{{ filterDeleteBackgroundState.percentage }}%</div>
-
-      </div>
-
-      <el-progress
-
-        :percentage="filterDeleteBackgroundState.percentage"
-
-        :status="filterDeleteBackgroundState.progressStatus || undefined"
-
-        :stroke-width="8"
-
-        :show-text="false"
-
+    <Transition name="floating-card">
+      <BackgroundFloatingCard
+        v-if="showSubtitleBackgroundCard"
+        v-bind="subtitleBackgroundCardProps"
+        @action="handleSubtitleBackgroundCardAction"
       />
+    </Transition>
 
-      <div class="filter-delete-floating-text">
-
-        {{ filterDeleteBackgroundPrimaryText }}
-
-      </div>
-
-      <div class="filter-delete-floating-chip-row">
-
-        <span class="filter-delete-floating-chip">状态 {{ filterDeleteBackgroundState.statusLabel }}</span>
-
-        <span v-if="filterDeleteBackgroundState.mode === 'preview'" class="filter-delete-floating-chip">命中 {{ filterDeleteBackgroundState.selectedCount }}</span>
-
-        <span v-if="filterDeleteBackgroundState.mode === 'preview'" class="filter-delete-floating-chip">规则 {{ filterDeleteBackgroundState.ruleCount }}</span>
-
-        <span v-if="filterDeleteBackgroundState.mode === 'preview' && filterDeleteBackgroundState.previewTargetTotal > 0" class="filter-delete-floating-chip">
-
-          目录 {{ filterDeleteBackgroundState.previewTargetIndex }} / {{ filterDeleteBackgroundState.previewTargetTotal }}
-
-        </span>
-
-        <span v-if="filterDeleteBackgroundState.mode === 'delete' && filterDeleteBackgroundState.deleteTotal" class="filter-delete-floating-chip">
-
-          已删 {{ filterDeleteBackgroundState.deleteDone }} / {{ filterDeleteBackgroundState.deleteTotal }}
-
-        </span>
-
-      </div>
-
-      <div v-if="filterDeleteBackgroundState.currentPath" class="filter-delete-floating-path">
-
-        {{ filterDeleteBackgroundState.currentPath }}
-
-      </div>
-
-      <div v-if="filterDeleteBackgroundState.mode === 'preview'" class="filter-delete-floating-stats">
-
-        已扫描 {{ filterDeleteBackgroundState.scannedEntries }}
-
-        <span v-if="filterDeleteBackgroundState.discoveredEntries"> / 已发现 {{ filterDeleteBackgroundState.discoveredEntries }}</span>
-
-        <span v-if="filterDeleteBackgroundState.pendingDirectories"> / 待扫目录 {{ filterDeleteBackgroundState.pendingDirectories }}</span>
-
-        <span v-if="filterDeleteBackgroundState.selectedSizeText"> / 预计 {{ filterDeleteBackgroundState.selectedSizeText }}</span>
-
-      </div>
-
-      <div v-if="filterDeleteBackgroundState.startedAt" class="filter-delete-floating-stats">
-
-        开始 {{ filterDeleteBackgroundState.startedAtText }} / 已运行 {{ filterDeleteBackgroundElapsedText }}
-
-      </div>
-
-      <div v-if="filterDeleteBackgroundState.mode === 'delete' && filterDeleteBackgroundState.deleteTotal" class="filter-delete-floating-stats">
-
-        成功 {{ filterDeleteBackgroundState.deleteDone }} / {{ filterDeleteBackgroundState.deleteTotal }}，失败 {{ filterDeleteBackgroundState.deleteFailed || 0 }}
-
-      </div>
-
-      <div class="filter-delete-floating-actions">
-
-        <el-button size="small" type="primary" @click="resumeFilterDeleteDialog">{{ filterDeleteBackgroundState.reviewable ? '打开预审结果' : '打开' }}</el-button>
-
-        <el-button v-if="filterDeleteBackgroundState.canCancelPreview" size="small" @click="cancelBackgroundFilterDeletePreview">取消预审</el-button>
-
-        <el-button v-if="filterDeleteBackgroundState.canStopDelete" size="small" @click="stopBackgroundFilterDelete">停止删除</el-button>
-
-        <el-button v-if="!filterDeleteBackgroundState.active && filterDeleteBackgroundState.reviewable" size="small" @click="dismissFilterDeleteBackgroundCard">收起</el-button>
-
-      </div>
-
-    </div>
+    <Transition name="floating-card">
+      <BackgroundFloatingCard
+        v-if="showFilterDeleteBackgroundCard"
+        v-bind="filterDeleteBackgroundCardProps"
+        :stack-index="showSubtitleBackgroundCard ? 1 : 0"
+        @action="handleFilterDeleteBackgroundCardAction"
+      />
+    </Transition>
 
   </div>
 
@@ -1626,6 +1479,8 @@ import LibrarySearchBox from '../components/library/LibrarySearchBox.vue'
 import LibraryMobileCard from '../components/library/LibraryMobileCard.vue'
 
 import AppDropdown from '../components/common/AppDropdown.vue'
+
+import BackgroundFloatingCard from '../components/common/BackgroundFloatingCard.vue'
 
 import LibrarySearchOverlay from '../components/library/LibrarySearchOverlay.vue'
 
@@ -3000,6 +2855,121 @@ const {
 
   ensureSubtitleInspectorFocus
 
+})
+
+const subtitleBackgroundCompleted = computed(() => {
+  const total = subtitleTasks.value.length
+  if (!total) return false
+  const summary = subtitleTaskSummary.value || {}
+  return Number(summary.completed || 0) > 0
+    && Number(summary.processing || 0) === 0
+    && Number(summary.pending || 0) === 0
+    && Number(summary.failed || 0) === 0
+})
+
+const subtitleBackgroundFailed = computed(() => {
+  const summary = subtitleTaskSummary.value || {}
+  return Number(summary.failed || 0) > 0
+    && Number(summary.processing || 0) === 0
+    && Number(summary.pending || 0) === 0
+})
+
+const subtitleBackgroundPercent = computed(() => {
+  const total = subtitleTasks.value.length
+  if (!total) return 0
+  const summary = subtitleTaskSummary.value || {}
+  const done = Number(summary.completed || 0) + Number(summary.failed || 0)
+  return Math.max(0, Math.min(100, Math.round((done / total) * 100)))
+})
+
+const subtitleBackgroundCardProps = computed(() => ({
+  kind: 'subtitle',
+  tone: subtitleBackgroundFailed.value ? 'amber' : 'emerald',
+  title: subtitleBackgroundCompleted.value
+    ? 'RJ 字幕工作台已完成'
+    : subtitleBackgroundFailed.value
+      ? 'RJ 字幕工作台需要处理'
+      : 'RJ 字幕工作台正在后台运行',
+  badgeText: `任务 ${subtitleTasks.value.length}`,
+  subtitle: subtitleBackgroundActiveTask.value
+    ? `${getTaskDisplayRJCode(subtitleBackgroundActiveTask.value)} · ${subtitleBackgroundActiveTask.value.folder_name || getFileName(subtitleBackgroundActiveTask.value.folder_path) || '-'}`
+    : '保留当前扫描与任务状态',
+  metaText: `扫描命中: ${subtitleDialogSelection.value.length}`,
+  percentage: subtitleBackgroundPercent.value,
+  completed: subtitleBackgroundCompleted.value,
+  metrics: [
+    { key: 'total', label: '任务', value: subtitleTasks.value.length, tone: 'neutral' },
+    { key: 'processing', label: '执行中', value: Number(subtitleTaskSummary.value?.processing || 0), tone: 'info' },
+    { key: 'pending', label: '等待中', value: Number(subtitleTaskSummary.value?.pending || 0), tone: 'warning' },
+    { key: 'completed', label: '完成', value: Number(subtitleTaskSummary.value?.completed || 0), tone: 'success' },
+    { key: 'failed', label: '失败', value: Number(subtitleTaskSummary.value?.failed || 0), tone: Number(subtitleTaskSummary.value?.failed || 0) ? 'danger' : 'neutral' },
+    { key: 'scan', label: '扫描命中', value: subtitleDialogSelection.value.length, tone: 'indigo' }
+  ],
+  detailText: subtitleBackgroundActiveTask.value?.current_step || subtitleSelectionProgressText.value || '隐藏后继续保留任务队列和当前焦点。',
+  actions: [
+    { key: 'close', label: '关闭' },
+    { key: 'resume', label: '恢复工作台', variant: 'emerald' }
+  ]
+}))
+
+const filterDeleteBackgroundTone = computed(() => {
+  if (filterDeleteBackgroundState.value.progressStatus === 'exception') return 'rose'
+  if (filterDeleteBackgroundState.value.mode === 'delete') return 'rose'
+  if (filterDeleteBackgroundState.value.reviewable && !filterDeleteBackgroundState.value.active) return 'emerald'
+  return 'amber'
+})
+
+const filterDeleteBackgroundCompleted = computed(() => (
+  !filterDeleteBackgroundState.value.active
+  && filterDeleteBackgroundState.value.reviewable
+  && Number(filterDeleteBackgroundState.value.percentage || 0) >= 100
+))
+
+const filterDeleteBackgroundCardProps = computed(() => {
+  const state = filterDeleteBackgroundState.value
+  const metrics = [
+    { key: 'status', label: '状态', value: state.statusLabel || '等待中', tone: state.progressStatus === 'exception' ? 'danger' : 'info' }
+  ]
+  if (state.mode === 'preview') {
+    metrics.push(
+      { key: 'selected', label: '命中', value: state.selectedCount || 0, tone: state.selectedCount ? 'warning' : 'neutral' },
+      { key: 'rules', label: '规则', value: state.ruleCount || 0, tone: 'indigo' }
+    )
+    if (state.previewTargetTotal > 0) {
+      metrics.push({ key: 'directory', label: '目录', value: `${state.previewTargetIndex || 0}/${state.previewTargetTotal || 0}`, tone: 'violet' })
+    }
+    if (state.scannedEntries) metrics.push({ key: 'scan', label: '已扫描', value: state.scannedEntries, tone: 'neutral' })
+    if (state.selectedSizeText) metrics.push({ key: 'size', label: '预计', value: state.selectedSizeText, tone: 'warning' })
+  }
+  if (state.mode === 'delete' && state.deleteTotal) {
+    metrics.push(
+      { key: 'delete', label: '已删', value: `${state.deleteDone || 0}/${state.deleteTotal || 0}`, tone: 'danger' },
+      { key: 'failed', label: '失败', value: state.deleteFailed || 0, tone: state.deleteFailed ? 'danger' : 'neutral' }
+    )
+  }
+
+  const actions = [
+    { key: 'resume', label: state.reviewable ? '打开预审结果' : '打开', variant: filterDeleteBackgroundTone.value }
+  ]
+  if (state.canCancelPreview) actions.push({ key: 'cancel', label: '取消预审', variant: 'rose' })
+  if (state.canStopDelete) actions.push({ key: 'stop', label: '停止删除', variant: 'rose' })
+  if (!state.active && state.reviewable) actions.push({ key: 'dismiss', label: '收起' })
+
+  return {
+    kind: 'delete',
+    tone: filterDeleteBackgroundTone.value,
+    title: state.scopeLabel || '删除过滤任务',
+    badgeText: `${Math.max(0, Math.min(100, Number(state.percentage || 0)))}%`,
+    subtitle: state.mode === 'delete' ? '后台删除中' : '后台预审中',
+    metaText: state.startedAt ? `已运行: ${filterDeleteBackgroundElapsedText.value}` : `状态: ${state.statusLabel || '等待中'}`,
+    percentage: Number(state.percentage || 0),
+    completed: filterDeleteBackgroundCompleted.value,
+    metrics,
+    detailText: state.currentPath
+      ? `${filterDeleteBackgroundPrimaryText.value} ${state.currentPath}`
+      : filterDeleteBackgroundPrimaryText.value,
+    actions
+  }
 })
 
 
@@ -8381,6 +8351,24 @@ function dismissSubtitleBackground () {
   // 只收掉浮动片，不取消、不删除任务；任务继续在后台保持
 
   subtitleDialogBackgroundActive.value = false
+
+}
+
+function handleSubtitleBackgroundCardAction (action) {
+
+  if (action === 'resume') {
+
+    resumeSubtitleTaskPanelFromBackground()
+
+    return
+
+  }
+
+  if (action === 'close') {
+
+    dismissSubtitleBackground()
+
+  }
 
 }
 
@@ -14817,6 +14805,40 @@ async function cancelBackgroundFilterDeletePreview () {
 function stopBackgroundFilterDelete () {
 
   filterDeleteDialogRef.value?.requestStopDeletion?.()
+
+}
+
+function handleFilterDeleteBackgroundCardAction (action) {
+
+  if (action === 'resume') {
+
+    resumeFilterDeleteDialog()
+
+    return
+
+  }
+
+  if (action === 'cancel') {
+
+    cancelBackgroundFilterDeletePreview()
+
+    return
+
+  }
+
+  if (action === 'stop') {
+
+    stopBackgroundFilterDelete()
+
+    return
+
+  }
+
+  if (action === 'dismiss') {
+
+    dismissFilterDeleteBackgroundCard()
+
+  }
 
 }
 

@@ -858,6 +858,7 @@
       title="直接入库"
       :source-library-id="''"
       :source-library-name="detail.circle_name || ''"
+      :circle-name="localUploadPreviewCircleName"
       :source-items="localUploadSourceItems"
       :libraries="libraries"
       :initial-target-library-id="localUploadForm.targetLibraryId"
@@ -892,100 +893,22 @@
       @close="closeUploadWorkbench"
     />
 
-    <!-- 社团补全下载后台浮窗（统一 floating-card 规范） -->
-    <div v-if="showDownloadBackgroundCard" class="floating-card">
-      <div class="flex items-start justify-between gap-3">
-        <div class="flex items-center gap-2.5 min-w-0">
-          <div class="floating-icon-box is-blue">
-            <Download class="h-3.5 w-3.5" :stroke-width="2.2" />
-          </div>
-          <div class="min-w-0">
-            <div class="text-[13px] font-semibold text-slate-900 leading-tight">社团补全下载正在后台运行</div>
-            <div class="mt-0.5 text-[11px] text-slate-500 leading-snug break-all">
-              {{ activeBackgroundDownloadTask ? `${activeBackgroundDownloadTask.rjcode || 'RJ'} · ${activeBackgroundDownloadTask.work_title || activeBackgroundDownloadTask.source_label || '-'}` : '保留当前下载队列与进度状态' }}
-            </div>
-          </div>
-        </div>
-        <div class="floating-percent-badge"
-             :class="{
-               'is-emerald': completedDownloadTasks.length === trackedDownloadTasks.length && trackedDownloadTasks.length > 0,
-               'is-rose': failedDownloadTasks.length > 0 && !processingDownloadTasks.length && !pendingDownloadTasks.length
-             }">
-          {{ backgroundDownloadPercent }}%
-        </div>
-      </div>
+    <Transition name="floating-card">
+      <BackgroundFloatingCard
+        v-if="showDownloadBackgroundCard"
+        v-bind="downloadBackgroundCardProps"
+        @action="handleDownloadBackgroundCardAction"
+      />
+    </Transition>
 
-      <div class="floating-progress-bar">
-        <div class="floating-progress-bar-fill"
-             :class="{
-               'is-emerald': completedDownloadTasks.length === trackedDownloadTasks.length && trackedDownloadTasks.length > 0,
-               'is-danger': failedDownloadTasks.length > 0 && !processingDownloadTasks.length && !pendingDownloadTasks.length
-             }"
-             :style="{ width: backgroundDownloadPercent + '%' }" />
-      </div>
-
-      <div class="floating-chip-row-compact">
-        <span class="floating-chip"><RefreshCw class="floating-chip-icon chip-blue" :stroke-width="2.2" />进行中 <b>{{ processingDownloadTasks.length }}</b></span>
-        <span class="floating-chip"><Clock class="floating-chip-icon chip-amber" :stroke-width="2.2" />等待中 <b>{{ pendingDownloadTasks.length }}</b></span>
-        <span class="floating-chip"><CheckCircle2 class="floating-chip-icon chip-emerald" :stroke-width="2.2" />完成 <b>{{ completedDownloadTasks.length }}</b></span>
-        <span class="floating-chip" :class="{ 'floating-chip-danger': failedDownloadTasks.length > 0 }"><X class="floating-chip-icon chip-rose" :stroke-width="2.2" />失败 <b>{{ failedDownloadTasks.length }}</b></span>
-        <span class="floating-chip"><BarChart3 class="floating-chip-icon chip-indigo" :stroke-width="2.2" />{{ formatSpeed(getDownloadSpeedBytes(activeBackgroundDownloadTask)) }}</span>
-        <span class="floating-chip"><Timer class="floating-chip-icon chip-violet" :stroke-width="2.2" />{{ formatDownloadTaskEta(activeBackgroundDownloadTask) }}</span>
-      </div>
-
-      <div class="floating-detail-box">
-        {{ activeBackgroundDownloadTask?.current_step || '隐藏后继续保留下载队列和进度。' }}
-      </div>
-
-      <div class="floating-actions-row">
-        <button type="button" class="floating-action-btn" @click="closeDownloadWorkbench">关闭</button>
-        <button type="button" class="floating-action-btn floating-action-btn-primary" @click="resumeDownloadWorkbenchFromBackground">
-          <Download class="h-3 w-3" :stroke-width="2.3" />恢复工作台
-        </button>
-      </div>
-    </div>
-
-    <!-- 社团直接入库上传后台浮窗（统一 floating-card 规范） -->
-    <div v-if="showUploadBackgroundCard" class="floating-card">
-      <div class="flex items-start justify-between gap-3">
-        <div class="flex items-center gap-2.5 min-w-0">
-          <div class="floating-icon-box is-emerald">
-            <Upload class="h-3.5 w-3.5" :stroke-width="2.2" />
-          </div>
-          <div class="min-w-0">
-            <div class="text-[13px] font-semibold text-slate-900 leading-tight">直接入库上传正在后台运行</div>
-            <div class="mt-0.5 text-[11px] text-slate-500 leading-snug break-all">
-              {{ activeBackgroundUploadTask ? `${activeBackgroundUploadTask.work_title || activeBackgroundUploadTask.source_label || '-'} · ${getUploadBackgroundTargetLabel(activeBackgroundUploadTask)}` : '保留当前上传队列与进度状态' }}
-            </div>
-          </div>
-        </div>
-        <div class="floating-percent-badge is-emerald">{{ uploadBackgroundPercent }}%</div>
-      </div>
-
-      <div class="floating-progress-bar">
-        <div class="floating-progress-bar-fill is-emerald" :style="{ width: uploadBackgroundPercent + '%' }" />
-      </div>
-
-      <div class="floating-chip-row-compact">
-        <span class="floating-chip"><RefreshCw class="floating-chip-icon chip-blue" :stroke-width="2.2" />进行中 <b>{{ processingUploadTasks.length }}</b></span>
-        <span class="floating-chip"><Clock class="floating-chip-icon chip-amber" :stroke-width="2.2" />等待中 <b>{{ pendingUploadTasks.length }}</b></span>
-        <span class="floating-chip"><CheckCircle2 class="floating-chip-icon chip-emerald" :stroke-width="2.2" />完成 <b>{{ completedUploadTasks.length }}</b></span>
-        <span class="floating-chip" :class="{ 'floating-chip-danger': failedUploadTasks.length > 0 }"><X class="floating-chip-icon chip-rose" :stroke-width="2.2" />失败 <b>{{ failedUploadTasks.length }}</b></span>
-        <span class="floating-chip"><BarChart3 class="floating-chip-icon chip-indigo" :stroke-width="2.2" />{{ formatSpeed(getUploadBackgroundSpeed(activeBackgroundUploadTask)) }}</span>
-        <span class="floating-chip"><Timer class="floating-chip-icon chip-violet" :stroke-width="2.2" />{{ formatTaskEta(activeBackgroundUploadTask) }}</span>
-      </div>
-
-      <div class="floating-detail-box">
-        {{ activeBackgroundUploadTask?.current_step || '隐藏后继续保留上传队列和进度。' }}
-      </div>
-
-      <div class="floating-actions-row">
-        <button type="button" class="floating-action-btn" @click="closeUploadWorkbench">关闭</button>
-        <button type="button" class="floating-action-btn floating-action-btn-emerald" @click="resumeUploadWorkbenchFromBackground">
-          <Upload class="h-3 w-3" :stroke-width="2.3" />恢复工作台
-        </button>
-      </div>
-    </div>
+    <Transition name="floating-card">
+      <BackgroundFloatingCard
+        v-if="showUploadBackgroundCard"
+        v-bind="uploadBackgroundCardProps"
+        :stack-index="showDownloadBackgroundCard ? 1 : 0"
+        @action="handleUploadBackgroundCardAction"
+      />
+    </Transition>
 
   </div>
 </template>
@@ -1007,6 +930,7 @@ import AppLottieProgressBar from '../components/common/AppLottieProgressBar.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
+import BackgroundFloatingCard from '../components/common/BackgroundFloatingCard.vue'
 import WorkCard from '../components/circle/WorkCard.vue'
 import WorkListRow from '../components/circle/WorkListRow.vue'
 import { showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
@@ -1182,6 +1106,15 @@ const localUploadForm = ref({ targetLibraryId: '', targetSubdir: '' })
 const trackedUploadTaskIds = ref([])
 const trackedUploadTasks = ref([])
 const uploadWorkbenchVisible = ref(false)
+const localUploadPreviewCircleName = computed(() => {
+  const names = localUploadSourceItems.value
+    .map(source => String(source?.circle_name || '').trim())
+    .filter(Boolean)
+  const uniqueNames = [...new Set(names)]
+  if (uniqueNames.length === 1) return uniqueNames[0]
+  if (uniqueNames.length > 1) return ''
+  return String(detail.circle_name || '').trim()
+})
 
 async function handleNewReleaseNotification(event) {
   const item = event?.detail || {}
@@ -1971,6 +1904,84 @@ const backgroundDownloadPercent = computed(() => {
   const total = trackedDownloadTasks.value.reduce((sum, task) => sum + Number(task.progress || 0), 0)
   return Math.max(0, Math.min(100, Math.round(total / trackedDownloadTasks.value.length)))
 })
+const downloadBackgroundCompleted = computed(() => (
+  trackedDownloadTasks.value.length > 0
+  && completedDownloadTasks.value.length === trackedDownloadTasks.value.length
+  && failedDownloadTasks.value.length === 0
+))
+const downloadBackgroundFailed = computed(() => (
+  failedDownloadTasks.value.length > 0
+  && processingDownloadTasks.value.length === 0
+  && pendingDownloadTasks.value.length === 0
+))
+const uploadBackgroundCompleted = computed(() => (
+  trackedUploadTasks.value.length > 0
+  && completedUploadTasks.value.length === trackedUploadTasks.value.length
+  && failedUploadTasks.value.length === 0
+))
+const uploadBackgroundFailed = computed(() => (
+  failedUploadTasks.value.length > 0
+  && processingUploadTasks.value.length === 0
+  && pendingUploadTasks.value.length === 0
+))
+const downloadBackgroundCardProps = computed(() => ({
+  kind: 'download',
+  tone: downloadBackgroundFailed.value ? 'amber' : 'primary',
+  title: downloadBackgroundCompleted.value
+    ? '社团补全下载已完成'
+    : downloadBackgroundFailed.value
+      ? '社团补全下载需要处理'
+      : '社团补全下载正在后台运行',
+  badgeText: `下载 ${trackedDownloadTasks.value.length} 项`,
+  subtitle: activeBackgroundDownloadTask.value
+    ? `${activeBackgroundDownloadTask.value.rjcode || 'RJ'} · ${activeBackgroundDownloadTask.value.work_title || activeBackgroundDownloadTask.value.source_label || '-'}`
+    : '保留当前下载队列与进度状态',
+  metaText: `预计剩余: ${formatDownloadTaskEta(activeBackgroundDownloadTask.value)}`,
+  percentage: backgroundDownloadPercent.value,
+  completed: downloadBackgroundCompleted.value,
+  metrics: [
+    { key: 'processing', label: '进行中', value: processingDownloadTasks.value.length, tone: 'info' },
+    { key: 'pending', label: '等待中', value: pendingDownloadTasks.value.length, tone: 'warning' },
+    { key: 'completed', label: '完成', value: completedDownloadTasks.value.length, tone: 'success' },
+    { key: 'failed', label: '失败', value: failedDownloadTasks.value.length, tone: failedDownloadTasks.value.length ? 'danger' : 'neutral' },
+    { key: 'speed', label: formatSpeed(getDownloadSpeedBytes(activeBackgroundDownloadTask.value)), tone: 'indigo' },
+    { key: 'eta', label: formatDownloadTaskEta(activeBackgroundDownloadTask.value), tone: 'violet' }
+  ],
+  detailText: activeBackgroundDownloadTask.value?.current_step || '隐藏后继续保留下载队列和进度。',
+  actions: [
+    { key: 'close', label: '关闭' },
+    { key: 'resume', label: '恢复工作台', variant: 'primary' }
+  ]
+}))
+const uploadBackgroundCardProps = computed(() => ({
+  kind: 'upload',
+  tone: uploadBackgroundFailed.value ? 'amber' : 'emerald',
+  title: uploadBackgroundCompleted.value
+    ? '直接入库上传已完成'
+    : uploadBackgroundFailed.value
+      ? '直接入库上传需要处理'
+      : '直接入库上传正在后台运行',
+  badgeText: `上传 ${trackedUploadTasks.value.length} 项`,
+  subtitle: activeBackgroundUploadTask.value
+    ? `${activeBackgroundUploadTask.value.work_title || activeBackgroundUploadTask.value.source_label || '-'} · ${getUploadBackgroundTargetLabel(activeBackgroundUploadTask.value)}`
+    : '保留当前上传队列与进度状态',
+  metaText: `预计剩余: ${formatTaskEta(activeBackgroundUploadTask.value)}`,
+  percentage: uploadBackgroundPercent.value,
+  completed: uploadBackgroundCompleted.value,
+  metrics: [
+    { key: 'processing', label: '进行中', value: processingUploadTasks.value.length, tone: 'info' },
+    { key: 'pending', label: '等待中', value: pendingUploadTasks.value.length, tone: 'warning' },
+    { key: 'completed', label: '完成', value: completedUploadTasks.value.length, tone: 'success' },
+    { key: 'failed', label: '失败', value: failedUploadTasks.value.length, tone: failedUploadTasks.value.length ? 'danger' : 'neutral' },
+    { key: 'speed', label: formatSpeed(getUploadBackgroundSpeed(activeBackgroundUploadTask.value)), tone: 'indigo' },
+    { key: 'eta', label: formatTaskEta(activeBackgroundUploadTask.value), tone: 'violet' }
+  ],
+  detailText: activeBackgroundUploadTask.value?.current_step || '隐藏后继续保留上传队列和进度。',
+  actions: [
+    { key: 'close', label: '关闭' },
+    { key: 'resume', label: '恢复工作台', variant: 'emerald' }
+  ]
+}))
 const indexJobStatusText = computed(() => {
   if (indexJob.error_message === '用户取消' || indexJob.current_step === '已取消') return '已取消'
   if (indexJob.status === 'completed') return '已完成'
@@ -2953,6 +2964,7 @@ function openLocalUploadDialogWithSources(sources = []) {
   localUploadSourceItems.value = normalized.map(source => ({
     name: source.name,
     path: source.path,
+    circle_name: String(source.circle_name || '').trim(),
   }))
   localUploadForm.value = {
     targetLibraryId: localUploadForm.value.targetLibraryId || downloadSettings.targetLibraryId || targetLibraries.value.find(item => item?.type === 'synology_filestation')?.id || '',
@@ -2973,6 +2985,16 @@ function resumeDownloadWorkbenchFromBackground() {
 
 function closeDownloadWorkbench() {
   clearDownloadWorkbenchState()
+}
+
+function handleDownloadBackgroundCardAction(action) {
+  if (action === 'resume') {
+    resumeDownloadWorkbenchFromBackground()
+    return
+  }
+  if (action === 'close') {
+    closeDownloadWorkbench()
+  }
 }
 
 function stopRefreshJobPolling() {
@@ -3490,7 +3512,7 @@ async function submitLocalUpload(payload = {}) {
         selected_paths: [selectedPath],
         target_library_id: targetLibraryId,
         target_subdir: targetSubdir,
-        circle_name: detail.circle_name || ''
+        circle_name: getLocalUploadCircleNameForPath(selectedPath)
       })
       if (result?.task_id) rememberUploadTaskId(result.task_id)
       if (result?.task_id) createdTaskIds.push(result.task_id)
@@ -3510,6 +3532,24 @@ async function submitLocalUpload(payload = {}) {
   } finally {
     localUploadSubmitting.value = false
   }
+}
+
+function normalizeLocalUploadComparePath(path) {
+  return String(path || '').trim().replace(/\\/g, '/').replace(/\/+$/g, '').toLowerCase()
+}
+
+function isLocalUploadPathInside(sourcePath, selectedPath) {
+  const source = normalizeLocalUploadComparePath(sourcePath)
+  const selected = normalizeLocalUploadComparePath(selectedPath)
+  if (!source || !selected) return false
+  return selected === source || selected.startsWith(`${source}/`)
+}
+
+function getLocalUploadCircleNameForPath(selectedPath) {
+  const matchedSource = localUploadSourceItems.value
+    .filter(source => isLocalUploadPathInside(source?.path, selectedPath))
+    .sort((left, right) => normalizeLocalUploadComparePath(right?.path).length - normalizeLocalUploadComparePath(left?.path).length)[0]
+  return String(matchedSource?.circle_name || detail.circle_name || '').trim()
 }
 
 function commonAncestorPath(paths = []) {
@@ -3628,6 +3668,16 @@ async function closeUploadWorkbench() {
   trackedUploadTasks.value = []
   stopUploadWorkbenchPolling()
   persistUploadWorkbenchState()
+}
+
+function handleUploadBackgroundCardAction(action) {
+  if (action === 'resume') {
+    resumeUploadWorkbenchFromBackground()
+    return
+  }
+  if (action === 'close') {
+    closeUploadWorkbench()
+  }
 }
 
 function getUploadBackgroundSpeed(task) {

@@ -477,15 +477,16 @@ class TaskEngine:
         )
 
     def _should_skip_conflict_retry_precheck(self, task: Task) -> bool:
-        """问题作品发起的重试不再被普通重复预检打回问题队列。"""
+        """问题作品页发起的处理任务不再重复跑解压前预检 / 重复预检。"""
         metadata = dict(task.task_metadata or {})
         action = str(metadata.get("conflict_resolution_action") or "").strip().upper()
         return bool(
             metadata.get("skip_retry_precheck")
             or metadata.get("retry_from_conflicts")
             or metadata.get("retry_conflict_id")
+            or metadata.get("conflict_resolution_conflict_id")
             or metadata.get("manual_retry_password_requested")
-            or action == "RETRY"
+            or action in {"RETRY", "KEEP_NEW", "MERGE", "RENAME_VOLUMES"}
         )
 
     def persist_task_snapshot(self, task: Task) -> None:
@@ -1269,14 +1270,6 @@ class TaskEngine:
                 metadata_service = MetadataService()
                 classifier = SmartClassifier()
                 skip_retry_precheck = self._should_skip_conflict_retry_precheck(task)
-                # 密码重试检测：EXTRACT_FAILED 冲突重试且仅提供了密码时，需重新运行字幕补配预检，
-                # 确保含字幕文件的压缩包不因"跳过预检"而直接绕过字幕补配路由入库。
-                _is_password_only_retry = (
-                    skip_retry_precheck
-                    and bool((task.task_metadata or {}).get("manual_retry_password_only"))
-                    and bool(str((task.task_metadata or {}).get("manual_retry_password") or "").strip())
-                    and str((task.task_metadata or {}).get("retry_conflict_type") or "") == "EXTRACT_FAILED"
-                )
 
                 # 方案 B 并行 list 预检：在 RJ 已知后 fire-and-forget 启动后台协程，
                 # 协程跑完 7zz l 后写入 ExtractService._archive_info_cache，
@@ -1285,62 +1278,9 @@ class TaskEngine:
                 precheck_task: Optional[asyncio.Task] = None
 
                 # 步骤0: 预检（先字幕补配，再普通查重）
-                if skip_retry_precheck and not _is_password_only_retry:
-                    logger.info(f"[{rjcode}] 问题作品解压失败重试，跳过已完成的解压前预检")
-                    task.update_progress(8, "跳过预检，准备重试解压")
-                elif _is_password_only_retry:
-                    # 仅提供密码的 EXTRACT_FAILED 重试：重新运行字幕补配预检（用正确密码），
-                    # 跳过查重防止回流问题队列，跳过其余普通预检流程。
-                    try:
-                        hint_password = str((task.task_metadata or {}).get("manual_retry_password") or "").strip() or None
-                        logger.info(f"[{rjcode}] 密码重试，重新运行字幕补配预检: hint_password={'***' if hint_password else '无'}")
-                        task.update_progress(5, "密码重试预检中")
-                        if (
-                            rjcode
-                            and rjcode != "未知"
-                            and hint_password
-                            and getattr(config.auto_process, 'import_linked_translation_subtitles', False)
-                        ):
-                            from .linked_subtitle_import_service import get_linked_subtitle_import_service
-                            linked_import_service = get_linked_subtitle_import_service()
-                            try:
-                                linked_result = await linked_import_service.queue_pending_archive_import(
-                                    task, rjcode, hint_password=hint_password
-                                )
-                            except Exception as exc:
-                                linked_result = {"handled": False, "reason": str(exc)}
-                                logger.warning(f"[{rjcode}] 密码重试字幕补配预检失败: {exc}")
-                            if linked_result.get("handled"):
-                                record = linked_result.get("record") or {}
-                                preview = linked_result.get("preview") or {}
-                                source_label = os.path.basename(task.source_path or "").strip() or rjcode or "字幕补配预检"
-                                task.task_metadata = {
-                                    **(task.task_metadata or {}),
-                                    "linked_subtitle_import": record,
-                                    "linked_subtitle_preview": preview,
-                                    "source_mode": "linked_translation_archive_pending",
-                                    "task_domain": "subtitle_import",
-                                    "task_kind": "linked_translation_archive_pending",
-                                    "source_page": "subtitle-import",
-                                    "source_action": "linked_translation_archive_pending",
-                                    "source_label": source_label,
-                                    "business_key": str(record.get("id") or task.id),
-                                }
-                                task.output_path = ""
-                                task.status = TaskStatus.COMPLETED
-                                task.update_progress(100, "已加入字幕补配预检列表，请在字幕补配页继续处理")
-                                task.completed_at = datetime.now()
-                                logger.info(
-                                    f"[{rjcode}] 密码重试命中关联字幕补配预检分支: "
-                                    f"target={preview.get('target_rjcode', '')} record={record.get('id', '')}"
-                                )
-                                await self._abort_precheck(precheck_task)
-                                return
-                        task.update_progress(8, "字幕补配预检未命中，准备重试解压")
-                        logger.info(f"[{rjcode}] 密码重试字幕补配预检未命中，继续解压入库流程")
-                    except Exception:
-                        await self._abort_precheck(precheck_task)
-                        raise
+                if skip_retry_precheck:
+                    logger.info(f"[{rjcode}] 问题作品处理任务，跳过已完成的解压前预检")
+                    task.update_progress(8, "准备处理")
                 else:
                     try:  # 步骤 0 try/except：确保步骤 0 意外异常时 cancel precheck
                         logger.info(f"[{rjcode}] 步骤0: 预检")
@@ -1987,18 +1927,20 @@ class TaskEngine:
                 existing_folder_path = task.source_path
                 logger.debug(f"[{rjcode}] 处理已存在文件夹: {existing_folder_path}")
 
-                # 步骤0: 预检重复
-                logger.debug(f"[{rjcode}] 步骤0: 预检重复")
-                task.update_progress(5, "预检中")
                 rjcode = self._extract_rjcode(existing_folder_path)
                 logger.debug(f"[{rjcode}] 提取到的RJ号: {rjcode}")
                 resolution_mode = str((task.task_metadata or {}).get('existing_folder_resolution') or '').strip().upper()
                 skip_conflict_retry_precheck = self._should_skip_conflict_retry_precheck(task)
                 if skip_conflict_retry_precheck:
-                    logger.info(f"[{rjcode}] 问题作品重试任务，跳过重复预检")
+                    logger.info(f"[{rjcode}] 问题作品处理任务，跳过重复预检")
+                    task.update_progress(5, "准备处理")
                 elif resolution_mode in {"KEEP_NEW", "MERGE"}:
                     logger.info(f"[{rjcode}] 已指定冲突处理方案 {resolution_mode}，跳过重复预检")
+                    task.update_progress(5, "准备处理")
                 elif config.process_existing.check_duplicate and rjcode and task.auto_classify:
+                    # 步骤0: 预检重复
+                    logger.debug(f"[{rjcode}] 步骤0: 预检重复")
+                    task.update_progress(5, "预检中")
                     from .duplicate_service import get_duplicate_service
                     duplicate_service = get_duplicate_service()
 
@@ -2047,6 +1989,7 @@ class TaskEngine:
                 else:
                     if not config.process_existing.check_duplicate:
                         logger.info(f"[{rjcode}] 步骤[预检重复]已禁用，跳过")
+                    task.update_progress(5, "准备处理")
 
                 extracted_path = existing_folder_path
 
@@ -4659,6 +4602,26 @@ class TaskEngine:
         uploaded_rows = []
         runtime = dict(task.task_metadata.get("upload_runtime") or {})
 
+        def normalize_relative_target_dir(value: str) -> str:
+            text = str(value or "").replace("\\", "/").strip("/")
+            if not text:
+                return ""
+            try:
+                library_def = manager.get_library_definition(target_library_id)
+                root_text = str(getattr(library_def, "root_path", "") or "").replace("\\", "/").strip("/")
+                root_name = root_text.rsplit("/", 1)[-1] if root_text else ""
+                if root_text and text == root_text:
+                    return ""
+                if root_text and text.startswith(f"{root_text}/"):
+                    return text[len(root_text):].strip("/")
+                if root_name and text == root_name:
+                    return ""
+                if root_name and text.startswith(f"{root_name}/"):
+                    return text[len(root_name):].strip("/")
+            except Exception:
+                logger.debug("归一化上传目标相对目录失败: %s", value, exc_info=True)
+            return text
+
         def progress_callback(snapshot: dict):
             runtime.update(snapshot or {})
             try:
@@ -4708,13 +4671,13 @@ class TaskEngine:
         total_dirs = len(source_entries)
         for index, entry in enumerate(source_entries, start=1):
             source_dir = str(entry.get("source_path") or "").strip()
-            relative_target_dir = str(entry.get("relative_target_dir") or "").strip() or build_relative_target_dir()
+            relative_target_dir = normalize_relative_target_dir(str(entry.get("relative_target_dir") or "").strip() or build_relative_target_dir() or "")
             source_name = os.path.basename(os.path.abspath(source_dir))
             step_progress = max(1, min(95, int(((index - 1) / max(total_dirs, 1)) * 100)))
             task.update_progress(step_progress, f"上传目录 {index}/{total_dirs}: {source_name}")
             append_progress_log(f"开始上传目录 {source_name}", step_progress)
             if relative_target_dir:
-                task.task_metadata["target_path"] = relative_target_dir.replace("\\", "/")
+                task.task_metadata["target_relative_dir"] = relative_target_dir.replace("\\", "/")
             target_path = await manager.upload_directory_to_library(
                 target_library_id,
                 source_dir,

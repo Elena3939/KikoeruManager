@@ -12259,24 +12259,28 @@ async def local_upload_start(request: LocalUploadStartRequest):
 
         target_library = manager.get_library_definition(target_library_id)
         target_root = PurePosixPath(str(target_library.root_path or "").replace("\\", "/"))
-        normalized_target_subdir = target_subdir.strip("/\\")
+        normalized_target_subdir = target_subdir.replace("\\", "/").strip("/")
         target_root_text = str(target_root).replace("\\", "/").rstrip("/")
         target_root_name = PurePosixPath(target_root_text or "/").name
         if normalized_target_subdir in {target_root_name, target_root_text.lstrip("/")}:
             normalized_target_subdir = ""
-        if normalized_target_subdir:
-            target_root = target_root / normalized_target_subdir
-        if circle_name:
-            target_root = target_root / circle_name
+        target_root_without_slash = target_root_text.lstrip("/")
+        if normalized_target_subdir and target_root_without_slash and normalized_target_subdir.startswith(f"{target_root_without_slash}/"):
+            normalized_target_subdir = normalized_target_subdir[len(target_root_without_slash):].strip("/")
+        elif normalized_target_subdir and target_root_name and normalized_target_subdir.startswith(f"{target_root_name}/"):
+            normalized_target_subdir = normalized_target_subdir[len(target_root_name):].strip("/")
+
+        relative_target_parts = [part.strip("/\\") for part in (normalized_target_subdir, circle_name) if str(part or "").strip("/\\")]
+        relative_target_dir = "/".join(relative_target_parts)
+        preview_target_root = target_root / relative_target_dir if relative_target_dir else target_root
         selected_items = []
         for selected_path in selected_paths:
-            relative_target_dir = str(target_root).replace("\\", "/").strip("/")
             selected_items.append({
                 "source_path": selected_path,
                 "relative_target_dir": relative_target_dir,
             })
 
-        preview_target_path = str(target_root)
+        preview_target_path = str(preview_target_root)
         if len(selected_paths) == 1:
             preview_target_path = str(PurePosixPath(preview_target_path) / os.path.basename(os.path.abspath(selected_paths[0])))
 

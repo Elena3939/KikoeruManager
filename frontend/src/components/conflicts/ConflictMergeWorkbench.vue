@@ -268,7 +268,7 @@
             </div>
           </div>
 
-          <!-- Footer：主操作走系统 emerald 渐变；ghost 关闭键 -->
+          <!-- Footer：主操作走轻量蓝按钮；ghost 关闭键 -->
           <footer class="cmw-footer">
             <div v-if="isRemoteTarget && preview" class="cmw-footer-remote-hint">
               <Upload class="h-4 w-4 flex-shrink-0" :stroke-width="2.2" />
@@ -882,7 +882,7 @@ function formatDate(value) {
    ============================================================
    全部对齐 Library.mediaPreviewDialog 的玻璃面板范式：
    - 白玻璃 shell（rounded-22 + backdrop-blur-2xl 由父级 div 提供）
-   - 主操作 emerald 渐变；状态色用 indigo / amber / emerald
+   - 主操作轻量蓝按钮；状态色按语义区分
    - 不再使用 amber radial gradient / amber 主色
 */
 
@@ -1047,7 +1047,7 @@ function formatDate(value) {
   transform: translateY(-2px);
   border-color: rgba(99, 102, 241, 0.34);
   color: #4338ca;
-  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
 }
 
 /* Bulk decision 控件组：全取新包 / 全取库存 -- segmented 风格 */
@@ -1240,8 +1240,8 @@ function formatDate(value) {
 .cmw-loading-bar {
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #6366f1 0%, #10b981 56%, #2563eb 100%);
-  box-shadow: 0 8px 18px rgba(99, 102, 241, 0.22);
+  background: linear-gradient(90deg, #6366f1 0%, #2563eb 100%);
+  box-shadow: 0 4px 10px rgba(99, 102, 241, 0.14);
   transition: width 0.45s ease;
 }
 
@@ -1286,13 +1286,13 @@ function formatDate(value) {
   border-color: rgba(99, 102, 241, 0.42);
   color: #4338ca;
   background: #eef2ff;
-  box-shadow: 0 6px 14px rgba(99, 102, 241, 0.14);
+  box-shadow: 0 4px 10px rgba(99, 102, 241, 0.12);
 }
 
 .cmw-loading-step.is-done {
-  border-color: rgba(16, 185, 129, 0.3);
-  color: #047857;
-  background: #ecfdf5;
+  border-color: rgba(14, 165, 233, 0.28);
+  color: #0369a1;
+  background: #f0f9ff;
 }
 
 .cmw-loading-step-dot {
@@ -1312,8 +1312,8 @@ function formatDate(value) {
 }
 
 .cmw-loading-step.is-done .cmw-loading-step-dot {
-  background: rgba(16, 185, 129, 0.18);
-  color: #047857;
+  background: rgba(14, 165, 233, 0.16);
+  color: #0369a1;
 }
 
 .cmw-loading-step-title {
@@ -1738,8 +1738,8 @@ function formatDate(value) {
 }
 
 .cmw-decision-seg-btn.is-active.is-use-new {
-  background: #ecfdf5;
-  color: #047857;
+  background: #eff6ff;
+  color: #1d4ed8;
   font-weight: 700;
 }
 
@@ -1768,7 +1768,7 @@ function formatDate(value) {
   padding: 14px 22px;
 }
 
-/* Action 按钮：emerald 主 / slate ghost */
+/* Action 按钮：轻量蓝主按钮 / slate ghost，去掉绿色发光。 */
 .cmw-action-btn {
   display: inline-flex;
   align-items: center;
@@ -1790,23 +1790,26 @@ function formatDate(value) {
 .cmw-action-btn.is-slate:hover:not(:disabled) {
   transform: translateY(-2px);
   border-color: rgba(148, 163, 184, 0.5);
-  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.08);
 }
 
 .cmw-action-btn.is-emerald {
-  border: 1px solid rgba(16, 185, 129, 0.4);
-  color: #fff;
-  background: linear-gradient(180deg, #34d399 0%, #10b981 52%, #059669 100%);
+  border: 1px solid rgba(147, 197, 253, 0.78);
+  color: #1d4ed8;
+  background: linear-gradient(180deg, #f8fbff 0%, #edf4ff 100%);
   box-shadow:
-    0 14px 28px rgba(16, 185, 129, 0.28),
-    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 4px 10px rgba(37, 99, 235, 0.08);
 }
 
 .cmw-action-btn.is-emerald:hover:not(:disabled) {
   transform: translateY(-2px);
+  border-color: rgba(96, 165, 250, 0.82);
+  background: linear-gradient(180deg, #f3f8ff 0%, #dfeeff 100%);
   box-shadow:
-    0 18px 34px rgba(16, 185, 129, 0.36),
-    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 6px 14px rgba(37, 99, 235, 0.12);
 }
 
 .cmw-action-btn:hover:not(:disabled) svg {

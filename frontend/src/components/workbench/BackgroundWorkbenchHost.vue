@@ -34,27 +34,29 @@ function handleAction(id, action) {
 <style scoped>
 .workbench-host-stack {
   position: fixed;
-  right: 24px;
-  bottom: 24px;
+  right: 20px;
+  bottom: 20px;
   z-index: 2600;
   display: grid;
-  gap: 14px;
-  width: min(360px, calc(100vw - 32px));
+  gap: 10px;
+  width: min(420px, calc(100vw - 40px));
   pointer-events: none;
 }
 
-.workbench-host-stack :deep(.workbench-card) {
+.workbench-host-stack :deep(.floating-card) {
   pointer-events: auto;
 }
 
 .workbench-host-list-enter-active,
 .workbench-host-list-leave-active {
-  transition: transform 0.18s ease, opacity 0.18s ease;
+  transition:
+    opacity 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .workbench-host-list-enter-from,
 .workbench-host-list-leave-to {
   opacity: 0;
-  transform: translateY(12px);
+  transform: translateY(20px) scale(0.95);
 }
 </style>
