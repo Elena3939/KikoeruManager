@@ -3018,7 +3018,11 @@ button:disabled {
 /* 列表卡片：中性灰选中态，macOS Finder / Notion 风格 —— 克制、不刺眼、不加竖条 */
 .conflicts-list-card {
   position: relative;
+  display: flex;
+  min-height: 56px;
   width: 100%;
+  flex: 0 0 auto;
+  flex-direction: column;
   text-align: left;
   padding: 12px 14px;
   border-radius: 10px;
@@ -3049,10 +3053,12 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  min-width: 0;
   gap: 8px;
   margin-bottom: 6px;
 }
 .conflicts-list-card-title {
+  min-width: 0;
   flex: 1;
   display: inline-flex;
   align-items: center;
@@ -3069,17 +3075,24 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  min-width: 0;
   gap: 8px;
   font-size: 11.5px;
 }
 .conflicts-list-card-type {
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  flex: 1;
   color: #64748b;
   font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .conflicts-list-card-date {
+  flex-shrink: 0;
   color: #94a3b8;
   font-size: 11px;
   margin-left: auto;

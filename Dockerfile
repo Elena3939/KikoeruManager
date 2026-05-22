@@ -55,6 +55,19 @@ RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmwa
 # 复制后端依赖
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+RUN python - <<'PY'
+import sqlite3
+
+conn = sqlite3.connect(":memory:")
+opts = {row[0] for row in conn.execute("PRAGMA compile_options")}
+print("SQLite version:", sqlite3.sqlite_version)
+print("SQLite FTS options:", sorted(opt for opt in opts if "FTS" in opt or "TOKEN" in opt))
+if "ENABLE_FTS5" not in opts:
+    raise SystemExit("当前 Python SQLite 未启用 ENABLE_FTS5")
+conn.execute("CREATE VIRTUAL TABLE fts5_probe USING fts5(x)")
+conn.execute("CREATE VIRTUAL TABLE trigram_probe USING fts5(x, tokenize='trigram')")
+print("SQLite FTS5 + trigram 检查通过")
+PY
 
 # 复制后端代码
 COPY backend/app/ ./app/

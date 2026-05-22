@@ -7,6 +7,7 @@ import os
 import shutil
 import sqlite3
 import stat
+import threading
 from typing import Any, Callable, Dict, Optional
 
 import orjson
@@ -1356,6 +1357,8 @@ def _sqlite_pragma_on_connect(dbapi_connection, connection_record):
 
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+_init_db_lock = threading.RLock()
+_init_db_done = False
 
 
 def _repair_orphan_sqlite_indexes() -> None:
@@ -1406,6 +1409,12 @@ def _repair_orphan_sqlite_indexes() -> None:
 
 def init_db():
     """初始化数据库"""
+    global _init_db_done
+    with _init_db_lock:
+        if _init_db_done:
+            _db_logger.info("[数据库] 初始化已完成，跳过重复执行")
+            return
+        _init_db_done = True
     _db_logger.info(f"[数据库] 初始化数据库，路径: {_db_path}")
     _repair_orphan_sqlite_indexes()
     Base.metadata.create_all(bind=engine)
