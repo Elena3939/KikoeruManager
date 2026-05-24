@@ -1,11 +1,11 @@
 <template>
   <div class="lib-index-badge inline-flex items-center gap-1.5">
-    <span
+    <Badge
+      variant="outline"
       class="lib-index-chip"
       :class="chipColorClass"
       :title="tooltip"
     >
-      <!-- syncing 走圆环 spinner，其余状态走 Database 图标 -->
       <svg
         v-if="statusName === 'syncing'"
         class="lib-index-spinner"
@@ -18,9 +18,11 @@
       <IconDatabase v-else :size="11" :stroke-width="2.4" />
       <span class="font-medium">{{ statusLabel }}</span>
       <span v-if="totalEntriesText" class="lib-index-chip-meta">{{ totalEntriesText }}</span>
-    </span>
-    <button
+    </Badge>
+    <Badge
+      as="button"
       type="button"
+      variant="outline"
       class="lib-index-rebuild-btn"
       :class="{ 'is-busy': busy }"
       :disabled="busy || !libraryId"
@@ -33,13 +35,14 @@
         :class="['lib-index-rebuild-icon', { 'animate-spin': busy }]"
       />
       <span>{{ busy ? '同步中' : '重建索引' }}</span>
-    </button>
+    </Badge>
   </div>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Database as IconDatabase, RefreshCw as IconRefreshCw } from 'lucide-vue-next'
+import { Badge } from '@/components/ui/badge'
 import { libraryApi } from '../../api'
 import { showSystemAlert, showSystemConfirm } from '../../composables/useSystemPrompt'
 

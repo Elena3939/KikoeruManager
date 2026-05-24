@@ -16,17 +16,17 @@
 
       <template v-if="currentLibrary">
 
-        <span class="lib-chip" :class="isRemoteCurrentLibrary ? 'lib-chip-warning' : 'lib-chip-success'">
+        <Badge variant="outline" class="km-badge" :class="isRemoteCurrentLibrary ? 'km-badge-warning' : 'km-badge-success'">
 
           <IconHardDrive :size="12" :stroke-width="2.4" />{{ currentLibraryScopeLabel }}
 
-        </span>
+        </Badge>
 
-        <span class="lib-chip" :class="`lib-chip-${healthTagType(currentLibrary.health?.status) || 'info'}`">
+        <Badge variant="outline" class="km-badge" :class="`km-badge-${healthTagType(currentLibrary.health?.status) || 'info'}`">
 
           {{ healthStatusLabel(currentLibrary.health?.status) }}
 
-        </span>
+        </Badge>
 
         <LibraryIndexBadge :library="currentLibrary" />
 
@@ -1297,6 +1297,7 @@
                 :style="imageZoomTransformStyle"
               >
                 <img
+                  ref="mediaPreviewImageRef"
                   :key="mediaPreviewDialog.previewKey || mediaPreviewDialog.url"
                   class="media-preview-image block h-auto max-h-[calc(100vh-96px)] w-auto max-w-[calc(100vw-48px)] object-contain max-[900px]:max-h-[calc(100vh-72px)] max-[900px]:max-w-[calc(100vw-24px)]"
                   :class="mediaPreviewImageMotionClass"
@@ -1330,6 +1331,7 @@
 
             <video
               v-else-if="mediaPreviewDialog.kind === 'video'"
+              ref="mediaPreviewVideoRef"
               class="block h-auto max-h-[calc(100vh-96px)] w-auto max-w-[calc(100vw-48px)] bg-slate-950 object-contain max-[900px]:max-h-[calc(100vh-72px)] max-[900px]:max-w-[calc(100vw-24px)]"
               :src="mediaPreviewDialog.url"
               controls
@@ -1339,6 +1341,7 @@
 
             <iframe
               v-else
+              ref="mediaPreviewFrameRef"
               class="h-[min(760px,calc(100vh-96px))] w-[min(1100px,calc(100vw-48px))] border-0 bg-white max-[900px]:h-[calc(100vh-72px)] max-[900px]:w-[calc(100vw-24px)]"
               :src="mediaPreviewDialog.url"
               :title="mediaPreviewDialog.title"
@@ -1577,7 +1580,7 @@ import LibrarySearchBox from '../components/library/LibrarySearchBox.vue'
 import LibraryMobileCard from '../components/library/LibraryMobileCard.vue'
 
 import AppDropdown from '../components/common/AppDropdown.vue'
-
+import { Badge } from '@/components/ui/badge'
 import BackgroundFloatingCard from '../components/common/BackgroundFloatingCard.vue'
 
 import LibrarySearchOverlay from '../components/library/LibrarySearchOverlay.vue'
@@ -1939,14 +1942,19 @@ const uploadBackgroundCompleted = computed(() => {
   return completedUploadTasks.value.length > 0 && failedUploadTasks.value.length === 0
 })
 
-const uploadBackgroundTitleText = computed(() => (
-  uploadBackgroundCompleted.value ? '上传任务已完成' : '上传任务正在后台运行'
-))
+const uploadBackgroundTitleText = computed(() => {
+  if (uploadBackgroundCompleted.value) return '上传任务已完成'
+  if (failedUploadTasks.value.length > 0 && processingUploadTasks.value.length === 0 && pendingUploadTasks.value.length === 0) return '上传任务需要处理'
+  return '上传任务正在后台运行'
+})
 
 const uploadBackgroundDetailText = computed(() => {
   if (uploadBackgroundCompleted.value) {
     const completedCount = completedUploadTasks.value.length
     return completedCount > 0 ? `本批上传已完成，共 ${completedCount} 个任务` : '本批上传已完成'
+  }
+  if (failedUploadTasks.value.length > 0 && processingUploadTasks.value.length === 0 && pendingUploadTasks.value.length === 0) {
+    return String(failedUploadTasks.value[0]?.error_message || failedUploadTasks.value[0]?.task_metadata?.failure_reason || '存在上传失败或本地清理失败任务').trim()
   }
   return String(activeBackgroundUploadTask.value?.current_step || '').trim()
 })
@@ -2153,6 +2161,12 @@ const mediaPreviewImageMotionClass = ref('media-preview-image-next')
 const mediaPreviewImageFrame = ref({ width: 0, height: 0 })
 
 const imageZoomContainerRef = ref(null)
+
+const mediaPreviewImageRef = ref(null)
+
+const mediaPreviewVideoRef = ref(null)
+
+const mediaPreviewFrameRef = ref(null)
 
 const imageZoomState = ref({ scale: 1, translateX: 0, translateY: 0 })
 
@@ -5188,6 +5202,8 @@ onDeactivated(() => {
 
   libraryViewActive = false
 
+  closeMediaPreviewDialog()
+
   closeLibraryRowContextMenu()
 
   unbindLibraryContextMenuDismiss()
@@ -5232,6 +5248,8 @@ onDeactivated(() => {
 onBeforeUnmount(() => {
 
   libraryViewActive = false
+
+  closeMediaPreviewDialog()
 
   closeLibraryRowContextMenu()
 
@@ -7998,6 +8016,12 @@ async function submitLocalUpload () {
     targetLibraryId,
 
     targetSubdir,
+
+  }
+
+  if (mediaPreviewDialog.value.visible) {
+
+    await closeMediaPreviewBeforeLocalUpload()
 
   }
 
@@ -15225,7 +15249,35 @@ function switchMediaPreviewImage (direction) {
 }
 
 
+function releaseMediaPreviewStreams () {
+
+  const video = mediaPreviewVideoRef.value
+
+  if (video) {
+    try { video.pause?.() } catch {}
+    try { video.removeAttribute?.('src') } catch {}
+    try { video.load?.() } catch {}
+  }
+
+  const frame = mediaPreviewFrameRef.value
+
+  if (frame) {
+    try { frame.removeAttribute?.('src') } catch {}
+    try { frame.src = 'about:blank' } catch {}
+  }
+
+  const image = mediaPreviewImageRef.value
+
+  if (image) {
+    try { image.removeAttribute?.('src') } catch {}
+  }
+
+}
+
+
 function closeMediaPreviewDialog () {
+
+  releaseMediaPreviewStreams()
 
   resetImageZoom()
 
@@ -15240,6 +15292,19 @@ function closeMediaPreviewDialog () {
   }
 
   mediaPreviewImageFrame.value = { width: 0, height: 0 }
+
+}
+
+
+async function closeMediaPreviewBeforeLocalUpload () {
+
+  if (!mediaPreviewDialog.value.visible) return
+
+  closeMediaPreviewDialog()
+
+  await nextTick()
+
+  await new Promise(resolve => window.setTimeout(resolve, 600))
 
 }
 
