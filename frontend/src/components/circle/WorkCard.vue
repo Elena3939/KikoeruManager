@@ -94,8 +94,14 @@ const isUnreleased = computed(() => {
 // 早期版本前端自己用 email_watcher_first_seen_at + 48h 单独算，会和左侧
 // search_circles 的 new_works_48h_count 出现口径漂移（左侧已不显示"新作"
 // 但右侧卡片还在闪"新作"特效）。这里改成统一读后端字段，左右两侧永远一致。
-const isNewWork = computed(() => Boolean(props.item?.is_new_work))
-const isBonusWork = computed(() => Boolean(props.item?.is_bonus_work))
+function isStrictTrue(value) {
+  if (value === true || value === 1 || value === '1') return true
+  if (typeof value === 'string') return value.trim().toLowerCase() === 'true'
+  return false
+}
+
+const isNewWork = computed(() => isStrictTrue(props.item?.is_new_work))
+const isBonusWork = computed(() => isStrictTrue(props.item?.is_bonus_work))
 const displayVariant = computed(() =>
   isBonusWork.value ? '' :
   props.item?.owned ? (props.item.owned_variant?.group_short_label || '原作') : (props.item.preferred_variant?.group_short_label || '原作')
@@ -178,6 +184,7 @@ function onCoverError(event) {
   event.currentTarget.dataset.fallbackIndex = String(tried + 1)
   event.currentTarget.src = fallback
 }
+
 </script>
 
 <template>
@@ -307,8 +314,10 @@ function onCoverError(event) {
   transition: border-color .22s ease, box-shadow .28s ease;
 }
 .work-card.selected .work-card-select-ring {
-  border-color: rgba(52, 120, 246, 0.55);
-  box-shadow: 0 0 0 3px rgba(52, 120, 246, 0.10);
+  border-color: rgba(37, 99, 235, 0.42);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.88),
+    0 0 0 3px rgba(37, 99, 235, 0.08);
   animation: selectRingPulse .5s cubic-bezier(.4,0,.2,1);
 }
 
@@ -405,13 +414,18 @@ function onCoverError(event) {
     linear-gradient(180deg, rgba(255, 255, 255, 1) 0%, rgba(246, 250, 255, 0.98) 100%);
 }
 .work-card.selected {
-  border-color: rgba(52, 120, 246, 0.42);
-  box-shadow: 0 0 0 2.5px rgba(52, 120, 246, 0.12), 0 12px 24px rgba(52, 120, 246, 0.10);
-  background: linear-gradient(180deg, #f6faff 0%, #ebf2ff 100%);
-  transform: scale(0.975);
+  border-color: rgba(37, 99, 235, 0.34);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.94),
+    0 0 0 1px rgba(37, 99, 235, 0.08),
+    0 10px 24px rgba(37, 99, 235, 0.10);
+  background:
+    radial-gradient(circle at top right, rgba(37, 99, 235, 0.08), transparent 38%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(244, 248, 255, 0.98) 100%);
+  transform: translateY(-1px);
 }
 .work-card.selected:hover {
-  transform: translateY(-2px) scale(0.99);
+  transform: translateY(-3px) scale(1.01);
 }
 .work-card.status-flash {
   animation: workStatusFlash 2.4s ease;
@@ -450,9 +464,13 @@ function onCoverError(event) {
   }
 }
 @keyframes selectRingPulse {
-  0% { box-shadow: 0 0 0 0 rgba(52, 120, 246, 0.3); }
-  60% { box-shadow: 0 0 0 6px rgba(52, 120, 246, 0); }
-  100% { box-shadow: 0 0 0 3px rgba(52, 120, 246, 0.10); }
+  0% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.24); }
+  60% { box-shadow: 0 0 0 6px rgba(37, 99, 235, 0); }
+  100% {
+    box-shadow:
+      inset 0 0 0 1px rgba(255, 255, 255, 0.88),
+      0 0 0 3px rgba(37, 99, 235, 0.08);
+  }
 }
 @keyframes workStatusFlash {
   0% {

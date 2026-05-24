@@ -52,8 +52,14 @@ const originalSubtitleLabel = computed(() => {
 // "新作"判定：直接用后端 build_circle_completion_view 算好的 is_new_work。
 // 后端口径 = email_watcher 来源 + 48h 窗口 + email_watcher_first_seen_at（fallback created_at）。
 // 不再前端自己算时间窗口，避免左右两侧出现"左边没有新作但右边还在闪新作"的不一致。
-const isNewWork = computed(() => Boolean(props.item?.is_new_work))
-const isBonusWork = computed(() => Boolean(props.item?.is_bonus_work))
+function isStrictTrue(value) {
+  if (value === true || value === 1 || value === '1') return true
+  if (typeof value === 'string') return value.trim().toLowerCase() === 'true'
+  return false
+}
+
+const isNewWork = computed(() => isStrictTrue(props.item?.is_new_work))
+const isBonusWork = computed(() => isStrictTrue(props.item?.is_bonus_work))
 
 const isUnreleased = computed(() => {
   if (props.item.is_unreleased) return true
@@ -295,9 +301,14 @@ function onImgError(e) {
 
 
 .work-list-row.is-selected {
-  background: #eff6ff;
-  border-color: #bfdbfe;
-  box-shadow: 0 0 0 1px #bfdbfe;
+  background:
+    radial-gradient(circle at 0 50%, rgba(37, 99, 235, 0.08), transparent 42%),
+    rgba(248, 251, 255, 0.96);
+  border-color: rgba(37, 99, 235, 0.28);
+  box-shadow:
+    inset 3px 0 0 rgba(37, 99, 235, 0.56),
+    0 0 0 1px rgba(37, 99, 235, 0.07),
+    0 6px 14px rgba(37, 99, 235, 0.08);
 }
 
 .work-list-row.status-flash {
