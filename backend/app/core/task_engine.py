@@ -235,8 +235,10 @@ class Task:
                 last_progress = last.get("progress")
                 if last_text == text and last_progress == self.progress:
                     return
+            now = datetime.now()
             logs.append({
-                "ts": datetime.now().strftime("%H:%M:%S"),
+                "time": now.isoformat(),
+                "ts": now.strftime("%H:%M:%S"),
                 "progress": self.progress,
                 "message": text,
                 "level": "info",
@@ -4555,11 +4557,18 @@ class TaskEngine:
 
     async def _process_local_library_upload(self, task: Task):
         from .circle_completion_service import get_circle_completion_service
-        from .library_manager import get_library_manager
+        from .library_manager import (
+            LocalUploadCleanupError,
+            LocalUploadSourceLockedError,
+            LocalUploadVerificationError,
+            get_library_manager,
+        )
 
         task.task_metadata = dict(task.task_metadata or {})
         task.task_metadata.setdefault("upload_files", [])
         task.task_metadata.setdefault("uploaded_files", [])
+        task.task_metadata.setdefault("failed_files", [])
+        task.task_metadata.setdefault("verification_failures", [])
         task.task_metadata.setdefault("progress_log", [])
         task.task_metadata.setdefault("upload_runtime", {})
 
@@ -4673,8 +4682,7 @@ class TaskEngine:
             "current_source_dir": "",
         }
 
-        task.update_progress(1, "准备上传目录")
-        append_progress_log(f"准备上传 {len(selected_paths)} 个目录", 1)
+        task.update_progress(1, f"准备上传 {len(selected_paths)} 个目录")
 
         manager = get_library_manager()
         uploaded = []
@@ -4751,24 +4759,110 @@ class TaskEngine:
                 break
             task.task_metadata["upload_files"] = rows
 
+        def mark_upload_verification_failed(error: LocalUploadVerificationError):
+            failures = list(getattr(error, "failures", []) or [])
+            task.task_metadata["verification_failures"] = failures
+            task.task_metadata["failure_reason"] = str(error)
+            failed_files = []
+            rows = list(task.task_metadata.get("upload_files") or [])
+            for failure in failures:
+                failure_relative = str((failure or {}).get("relative_path") or "").strip()
+                for row in rows:
+                    if failure_relative and str(row.get("relative_path") or "").strip() != failure_relative:
+                        continue
+                    row["status"] = "failed"
+                    row["progress"] = min(99, int(row.get("progress") or 0))
+                    row["failure_reason"] = str((failure or {}).get("reason") or "远端校验失败")
+                    failed_files.append({
+                        "name": row.get("name") or failure_relative,
+                        "relative_path": row.get("relative_path") or failure_relative,
+                        "size": int(row.get("size") or row.get("size_bytes") or 0),
+                        "uploaded": int(row.get("uploaded_bytes") or 0),
+                        "stage": "upload",
+                        "reason": row["failure_reason"],
+                        "remote_path": (failure or {}).get("remote_path") or "",
+                    })
+                    break
+            task.task_metadata["upload_files"] = rows
+            task.task_metadata["failed_files"] = failed_files
+            append_progress_log(f"远端校验失败，已保留本地源目录: {str(error)}", task.progress, "error")
+
+        def mark_upload_cleanup_failed(error: LocalUploadCleanupError, target_path: str):
+            task.task_metadata["local_cleanup_status"] = "failed"
+            task.task_metadata["local_cleanup_error"] = str(getattr(error, "cleanup_error", "") or error)
+            task.task_metadata["remote_upload_verified"] = True
+            task.task_metadata["failure_reason"] = str(error)
+            if target_path:
+                task.output_path = target_path
+                task.task_metadata["final_output_path"] = target_path
+            append_progress_log("远端已确认上传完成，但本地源目录删除失败，请关闭占用文件后手动清理", task.progress, "error")
+
+        def mark_upload_source_locked(error: LocalUploadSourceLockedError):
+            locked_paths = list(getattr(error, "locked_paths", []) or [])
+            task.task_metadata["source_lock_failures"] = locked_paths
+            task.task_metadata["failure_reason"] = str(error)
+            failed_files = []
+            rows = list(task.task_metadata.get("upload_files") or [])
+            for row in rows:
+                row_path = str(row.get("local_path") or "").strip()
+                matched_lock = next((item for item in locked_paths if str(item.get("path") or "") == row_path), None)
+                if not matched_lock:
+                    continue
+                row["status"] = "failed"
+                row["failure_reason"] = "本地文件被占用，未开始上传"
+                failed_files.append({
+                    "name": row.get("name") or row.get("relative_path") or "",
+                    "relative_path": row.get("relative_path") or "",
+                    "size": int(row.get("size") or row.get("size_bytes") or 0),
+                    "uploaded": 0,
+                    "stage": "preflight",
+                    "reason": row["failure_reason"],
+                    "local_path": row_path,
+                })
+            task.task_metadata["upload_files"] = rows
+            task.task_metadata["failed_files"] = failed_files
+            append_progress_log("本地源文件仍被占用，已停止上传，避免远端成功但本地无法删除", task.progress, "error")
+
         total_dirs = len(source_entries)
         for index, entry in enumerate(source_entries, start=1):
             source_dir = str(entry.get("source_path") or "").strip()
             relative_target_dir = normalize_relative_target_dir(str(entry.get("relative_target_dir") or "").strip() or build_relative_target_dir() or "")
             source_name = os.path.basename(os.path.abspath(source_dir))
             step_progress = max(1, min(95, int(((index - 1) / max(total_dirs, 1)) * 100)))
-            task.update_progress(step_progress, f"上传目录 {index}/{total_dirs}: {source_name}")
-            append_progress_log(f"开始上传目录 {source_name}", step_progress)
+            task.update_progress(step_progress, f"开始上传 {index}/{total_dirs}: {source_name}")
             if relative_target_dir:
                 task.task_metadata["target_relative_dir"] = relative_target_dir.replace("\\", "/")
-            target_path = await manager.upload_directory_to_library(
-                target_library_id,
-                source_dir,
-                relative_target_dir,
-                delete_source_on_success=True,
-                progress_callback=progress_callback,
-                file_completed_callback=file_completed_callback,
-            )
+            try:
+                target_path = await manager.upload_directory_to_library(
+                    target_library_id,
+                    source_dir,
+                    relative_target_dir,
+                    delete_source_on_success=True,
+                    progress_callback=progress_callback,
+                    file_completed_callback=file_completed_callback,
+                )
+            except LocalUploadVerificationError as exc:
+                mark_upload_verification_failed(exc)
+                raise
+            except LocalUploadSourceLockedError as exc:
+                mark_upload_source_locked(exc)
+                raise
+            except LocalUploadCleanupError as exc:
+                target_path = str(getattr(exc, "remote_path", "") or "")
+                uploaded.append({
+                    "source": source_dir,
+                    "target": target_path,
+                    "remote_verified": True,
+                    "local_cleanup": "failed",
+                    "cleanup_error": str(getattr(exc, "cleanup_error", "") or exc),
+                })
+                task.task_metadata["upload_result"] = {
+                    "uploaded": uploaded,
+                    "count": len(uploaded),
+                    "local_cleanup": "failed",
+                }
+                mark_upload_cleanup_failed(exc, target_path)
+                raise
             uploaded.append({"source": source_dir, "target": target_path})
             # 索引同步：远程上传完成后立即 fire-and-forget upsert，
             # 让跨库搜索 / 库存页搜索能立刻找到刚上传的子树
