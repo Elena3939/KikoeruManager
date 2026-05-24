@@ -202,7 +202,7 @@
                             <div class="v1-file-row-top">
                               <div class="v1-file-row-main">
                                 <span class="v1-file-row-name">{{ file.name }}</span>
-                                <span v-if="file.tone === 'success'" class="v1-file-chip success">{{ file.statusText }}</span>
+                                <span v-if="['success', 'upload-success'].includes(file.tone)" class="v1-file-chip success">{{ file.statusText }}</span>
                                 <span v-else-if="file.tone === 'danger'" class="v1-file-chip danger">{{ file.statusText }}</span>
                               </div>
                               <div class="v1-file-row-side">
@@ -312,6 +312,8 @@ const props = defineProps({
   showDownloadMetrics: { type: Boolean, default: true },
   showUploadEta: { type: Boolean, default: false },
   preferUploadIcon: { type: Boolean, default: false },
+  transferMode: { type: String, default: 'download' },
+  mergeTasks: { type: Boolean, default: true },
   compact: { type: Boolean, default: false },
 })
 
@@ -333,6 +335,7 @@ const activeFilter = ref('all')
 const searchQuery = ref('')
 const expandedTaskIds = ref(new Set())
 const localSpinning = ref(false)
+const isUploadMode = computed(() => props.transferMode === 'upload')
 
 function handleRefresh() {
   emit('refresh')
@@ -341,7 +344,7 @@ function handleRefresh() {
 }
 
 const retryingSet = computed(() => new Set((props.retryingKeys || []).map(item => String(item || ''))))
-const mergedTasks = computed(() => buildMergedTasks(props.tasks || []))
+const mergedTasks = computed(() => props.mergeTasks === false ? (props.tasks || []) : buildMergedTasks(props.tasks || []))
 const titleText = computed(() => String(props.title || 'Download Manager'))
 const subtitleText = computed(() => String(props.subtitle || '社团补全下载任务'))
 const emptyTitleText = computed(() => String(props.emptyTitle || '暂无符合筛选的下载任务'))
@@ -519,6 +522,9 @@ function getTaskRjcode(task) {
 }
 
 function getTaskSecondaryLabel(task) {
+  if (isUploadMode.value) {
+    return String(task?.task_metadata?.workbench_subtitle || task?.source_label || task?.task_metadata?.source_label || '').trim() || '上传任务'
+  }
   return String(task?.task_metadata?.workbench_subtitle || task?.rjcode || task?.task_metadata?.rjcode || '').trim() || '未知 RJ'
 }
 
@@ -531,6 +537,7 @@ function getTaskLocalDownloadRoot(task) {
 }
 
 function getTaskMergeKey(task) {
+  if (isUploadMode.value) return `task:${String(task?.id || '').trim()}`
   const sessionId = getTaskSessionId(task)
   const rjcode = getTaskRjcode(task)
   if (sessionId) return `session:${sessionId}::${rjcode || 'unknown'}`
@@ -730,6 +737,7 @@ function isTaskPaused(task) {
 }
 
 function isUploadEnabled(task) {
+  if (isUploadMode.value) return true
   const explicitUpload = Boolean(
     task?.task_metadata?.upload_options?.enabled ||
     task?.upload_options?.enabled ||
@@ -776,6 +784,7 @@ function getUploadEtaSeconds(task) {
 }
 
 function getTaskRemainingBytes(task) {
+  if (isUploadMode.value) return Math.max(0, getUploadTotalBytes(task) - getTaskUploadedBytes(task))
   const transferTotal = getTaskTransferBytes(task)
   const downloadRemaining = Math.max(0, transferTotal - getTaskDownloadedBytes(task))
   if (!isUploadEnabled(task)) return downloadRemaining
@@ -791,12 +800,19 @@ function getUploadTotalBytes(task) {
   const runtimeBytes = Number(getUploadRuntime(task)?.total_bytes || 0)
   if (runtimeBytes > 0) return runtimeBytes
   const uploadFiles = Array.isArray(task?.upload_files) ? task.upload_files : []
-  const totalBytes = uploadFiles.reduce((sum, item) => sum + Number(item?.size_bytes || item?.total || 0), 0)
+  const totalBytes = uploadFiles.reduce((sum, item) => sum + Number(item?.size_bytes || item?.size || item?.total || 0), 0)
   if (totalBytes > 0) return totalBytes
   return getTaskTransferBytes(task)
 }
 
 function getTaskTransferBytes(task) {
+  if (isUploadMode.value) {
+    const runtimeBytes = Number(getUploadRuntime(task)?.total_bytes || 0)
+    if (runtimeBytes > 0) return runtimeBytes
+    const uploadFiles = Array.isArray(task?.upload_files) ? task.upload_files : []
+    const uploadBytes = uploadFiles.reduce((sum, item) => sum + Number(item?.size_bytes || item?.size || item?.total || 0), 0)
+    if (uploadBytes > 0) return uploadBytes
+  }
   const rowTotal = getUnifiedFileRows(task).reduce((sum, row) => sum + Number(row.total || 0), 0)
   if (rowTotal > 0) return rowTotal
   const selectedResources = Array.isArray(task?.task_metadata?.selected_resources) ? task.task_metadata.selected_resources : []
@@ -859,7 +875,9 @@ function getTaskSummaryStepText(task) {
   if (!currentStep) return ''
 
   // 被后续任务覆盖：显示简洁文案，不要露出 UUID
-  if (currentStep.startsWith('已由后续成功任务覆盖')) return '已由其他任务完成，此条任务已合并'
+  if (currentStep.startsWith('已由后续成功任务覆盖')) {
+    return isUploadMode.value ? '上传任务状态已恢复，请刷新后继续查看' : '已由其他任务完成，此条任务已合并'
+  }
 
   const errorMessage = String(task?.error_message || task?.task_metadata?.failure_reason || '').trim()
   if (!errorMessage) return currentStep
@@ -885,7 +903,7 @@ function getTaskTone(task) {
 function getTaskStageLabel(task) {
   const status = String(task?.display_status || task?.status || '')
   if (status === 'waiting_retry') return '等待重试'
-  if (status === 'pending') return '等待开始'
+  if (status === 'pending') return isUploadMode.value ? '等待上传' : '等待开始'
   if (status === 'paused') return '已暂停'
   if (status === 'failed') return '失败'
   if (status === 'partial_failed' || (status === 'completed' && hasTaskFailures(task))) return '部分失败'
@@ -939,6 +957,12 @@ function getPrimaryFileProgressLabel(task) {
   const stage = getTaskStageLabel(task)
   const total = getTaskResourceCount(task)
   if (!total) return '文件 0 / 0'
+  if (isUploadMode.value) {
+    const uploadedCount = getUploadCompletedCount(task)
+    if (getTaskTone(task) === 'success') return `已上传 ${uploadedCount} / ${total}`
+    if (getTaskTone(task) === 'warning') return `成功 ${Math.max(0, total - getFailureCount(task))} / ${total}`
+    return `上传 ${uploadedCount} / ${total}`
+  }
   if (getTaskTone(task) === 'success' && isUploadEnabled(task)) return `已上传 ${getUploadCompletedCount(task)} / ${total}`
   if (stage === '上传 / 入库中' || stage === '上传准备中') return `上传 ${getUploadCompletedCount(task)} / ${total}`
   if (getDownloadCompletedCount(task) >= 0 && getDownloadCompletedCount(task) < total) return `下载 ${getDownloadCompletedCount(task)} / ${total}`
@@ -947,11 +971,16 @@ function getPrimaryFileProgressLabel(task) {
 }
 
 function getPrimarySizeText(task) {
-  const total = formatSize(getTaskTransferBytes(task))
+  const totalBytes = isUploadMode.value ? (getUploadTotalBytes(task) || getTaskTransferBytes(task)) : getTaskTransferBytes(task)
+  const total = formatSize(totalBytes)
   const tone = getTaskTone(task)
   const stage = getTaskStageLabel(task)
   const downloadSpeedVisible = getVisibleDownloadSpeed(task) > 0
   const uploadSpeedVisible = getVisibleUploadSpeed(task) > 0
+  if (isUploadMode.value) {
+    const uploaded = tone === 'success' ? Math.max(getTaskUploadedBytes(task), totalBytes) : getTaskUploadedBytes(task)
+    return `上传 ${formatSize(uploaded)} / ${total}`
+  }
   if (downloadSpeedVisible && uploadSpeedVisible) {
     return `下载 ${formatSize(getTaskDownloadedBytes(task))} / ${total}  上传 ${formatSize(getTaskUploadedBytes(task))} / ${total}`
   }
@@ -967,6 +996,9 @@ function getPrimarySizeText(task) {
 }
 
 function getDownloadRoot(task) {
+  if (isUploadMode.value) {
+    return task?.task_metadata?.source_root || task?.task_metadata?.source_base_path || task?.source_path || '来源目录处理中'
+  }
   return task?.task_metadata?.local_download_root || task?.session_state?.local_download_root || task?.task_metadata?.download_root || task?.task_metadata?.download_base_path || '默认临时目录'
 }
 
@@ -978,6 +1010,7 @@ function getFinalOutputDisplay(task) {
   const resolved = String(task?.task_metadata?.final_output_path || task?.output_path || task?.task_metadata?.target_path || '').trim()
   if (resolved) return resolved
   const status = String(task?.display_status || task?.status || '')
+  if (isUploadMode.value) return ['completed', 'partial_failed', 'failed'].includes(status) ? '目标路径未返回' : '目标路径处理中'
   if (status === 'completed' || status === 'partial_failed' || status === 'failed') {
     return '未配置入库目标 · 仍在下载目录'
   }
@@ -985,6 +1018,7 @@ function getFinalOutputDisplay(task) {
 }
 
 function canRetryDownloadTask(task) {
+  if (isUploadMode.value) return false
   return Boolean(String(task?.task_metadata?.session_id || task?.session_id || '').trim() && getFailureCount(task) > 0)
 }
 
@@ -1017,7 +1051,9 @@ function getUnifiedFileRows(task) {
       retryable: false,
       statusText: '等待中',
       stageLabel: '等待中',
-      sizeText: payload.size_bytes ? `下载大小 ${formatSize(payload.size_bytes)}` : '下载大小 0 B',
+      sizeText: payload.size_bytes
+        ? `${isUploadMode.value ? '上传大小' : '下载大小'} ${formatSize(payload.size_bytes)}`
+        : `${isUploadMode.value ? '上传大小' : '下载大小'} 0 B`,
       downloadSpeed: 0,
       uploadSpeed: 0,
       downloadSpeedVisible: false,
@@ -1102,9 +1138,10 @@ function getUnifiedFileRows(task) {
     row.retryable = Boolean(row.relative_path)
     row.tone = 'danger'
     const failedStage = String(file.stage || '').trim()
-    row.stageLabel = failedStage === 'upload' ? '上传失败' : '下载失败'
+    const resolvedFailedStage = isUploadMode.value && !failedStage ? 'upload' : failedStage
+    row.stageLabel = resolvedFailedStage === 'upload' ? '上传失败' : '下载失败'
     row.statusText = row.stageLabel
-    row.sizeText = failedStage === 'upload' ? `上传 ${formatSize(file.uploaded || 0)} / ${formatSize(row.total)}` : `下载 ${formatSize(file.downloaded || 0)} / ${formatSize(row.total)}`
+    row.sizeText = resolvedFailedStage === 'upload' ? `上传 ${formatSize(file.uploaded || 0)} / ${formatSize(row.total)}` : `下载 ${formatSize(file.downloaded || 0)} / ${formatSize(row.total)}`
   })
 
   const taskCompleted = String(task?.display_status || task?.status || '') === 'completed'

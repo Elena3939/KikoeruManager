@@ -568,6 +568,23 @@ function inferTaskFileTreeRoot(item) {
   return ''
 }
 
+function inferSnapshotFileTreeRoot(item) {
+  const metadata = item?.details?.metadata || {}
+  const candidates = [
+    metadata.file_tree_root_label,
+    metadata.final_output_path,
+    metadata.output_path,
+    metadata.target_path,
+    item?.output_path,
+    item?.target_path,
+  ]
+  for (const candidate of candidates) {
+    const label = getFileName(String(candidate || '').replace(/[\\/]+$/g, ''))
+    if (label && containsRJ(label)) return label
+  }
+  return ''
+}
+
 function withTaskFileTreeRoot(path, rootLabel) {
   const normalizedPath = String(path || '').replace(/^[/\\]+|[/\\]+$/g, '').replace(/\\/g, '/')
   const normalizedRoot = String(rootLabel || '').replace(/^[/\\]+|[/\\]+$/g, '').replace(/\\/g, '/')
@@ -806,9 +823,10 @@ function buildTaskFileTreeSections(item) {
   const metadata = item?.details?.metadata || {}
   const removedItems = mapFilteredItems(item)
   const sourceItems = []
-  const rootLabel = inferTaskFileTreeRoot(item)
+  const hasSnapshotTree = Array.isArray(metadata.file_tree_items) && metadata.file_tree_items.length
+  const rootLabel = hasSnapshotTree ? inferSnapshotFileTreeRoot(item) : inferTaskFileTreeRoot(item)
 
-  if (Array.isArray(metadata.file_tree_items) && metadata.file_tree_items.length) {
+  if (hasSnapshotTree) {
     sourceItems.push(...mapFileTreeItems(item))
   } else if (
     (Array.isArray(metadata.upload_files) && metadata.upload_files.length) ||

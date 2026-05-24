@@ -171,7 +171,16 @@ function onImgError(e) {
   >
     <!-- 左侧缩略图 -->
     <div class="wlr-thumb">
-      <img v-if="coverUrl" :src="coverUrl" class="wlr-thumb-img" loading="lazy" decoding="async" referrerpolicy="no-referrer" @error="onImgError" />
+      <img
+        v-if="coverUrl"
+        :src="coverUrl"
+        class="wlr-thumb-img"
+        loading="lazy"
+        decoding="async"
+        fetchpriority="low"
+        referrerpolicy="no-referrer"
+        @error="onImgError"
+      />
       <div v-else class="wlr-thumb-placeholder">
         <LibraryBig :size="16" class="opacity-30" />
       </div>

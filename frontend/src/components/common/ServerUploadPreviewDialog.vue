@@ -20,8 +20,19 @@
         </button>
       </div>
 
-      <div class="tabs-row px-8 pt-1 pb-3 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-        <div class="preview-chip-scroll flex min-w-0 items-center gap-1.5 overflow-x-auto no-scrollbar py-0">
+      <div class="tabs-row px-8 pt-1 pb-3 flex items-center gap-2 overflow-hidden">
+        <div class="preview-chip-rail min-w-0 flex-1">
+          <div
+            ref="previewChipScrollRef"
+            class="preview-chip-scroll flex min-w-0 items-center gap-1.5 overflow-x-auto no-scrollbar py-0"
+            :class="{ 'is-dragging': previewChipDragState.active }"
+            @pointerdown="onPreviewChipPointerDown"
+            @pointermove="onPreviewChipPointerMove"
+            @pointerup="onPreviewChipPointerUp"
+            @pointercancel="onPreviewChipPointerCancel"
+            @wheel="onPreviewChipWheel"
+            @click.capture="onPreviewChipClickCapture"
+          >
           <button
             type="button"
             class="tab-chip px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] whitespace-nowrap flex items-center gap-1 border"
@@ -40,8 +51,9 @@
           >
             <span>{{ chip.label }}</span>
           </button>
+          </div>
         </div>
-        <button type="button" class="tab-chip tab-chip-idle restore-button ml-auto px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] border" @click="toggleExpandAll">{{ isAllExpanded ? '全部收起' : '全部展开' }}</button>
+        <button type="button" class="tab-chip tab-chip-idle restore-button shrink-0 px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] border" @click="toggleExpandAll">{{ isAllExpanded ? '全部收起' : '全部展开' }}</button>
       </div>
 
       <div class="content-grid flex-1 flex gap-6 px-8 py-2 min-h-0">
@@ -138,96 +150,100 @@
         </div>
 
         <section class="glass-panel glass-card tree-panel flex-1 rounded-2xl flex flex-col overflow-hidden">
-          <div class="tree-scroll flex-1 p-4 overflow-auto no-scrollbar">
+          <div ref="treeScrollRef" class="tree-scroll flex-1 p-4 overflow-auto no-scrollbar" @scroll="onPreviewTreeScroll">
             <div v-if="!previewGroups.length" class="preview-empty">当前没有可上传的目录</div>
-            <div v-else class="tree-list space-y-1">
-              <template v-for="group in previewGroups" :key="group.id">
-                <div class="tree-node">
+            <template v-else>
+              <div v-if="previewVirtualTopPadding" class="preview-virtual-spacer" :style="{ height: `${previewVirtualTopPadding}px` }" />
+              <div class="tree-list space-y-1">
+                <div v-for="item in previewVisibleRows" :key="item.id" class="tree-node">
+                  <template v-if="item.kind === 'group'">
                   <div
                     class="tree-row plan-node-header flex items-center py-1.5 px-2 rounded-md group cursor-pointer"
-                    :class="isGroupAllSelected(group) || isGroupPartiallySelected(group) ? 'tree-row-selected' : ''"
-                    @click="toggleGroupExpand(group)"
+                    :class="isGroupAllSelected(item.group) || isGroupPartiallySelected(item.group) ? 'tree-row-selected' : ''"
+                    @click="toggleGroupExpand(item.group)"
                   >
                     <div class="tree-main flex items-center gap-2 flex-1 min-w-0">
                       <button
                         type="button"
                         class="tree-expander p-0.5 rounded"
-                        @click.stop="toggleGroupExpand(group)"
+                        @click.stop="toggleGroupExpand(item.group)"
                       >
-                        <ChevronDown v-if="group.rootExpanded !== false" :size="17" class="text-slate-400" />
+                        <ChevronDown v-if="item.group.rootExpanded !== false" :size="17" class="text-slate-400" />
                         <ChevronRight v-else :size="17" class="text-slate-400" />
                       </button>
                       <button
                         type="button"
                         class="tree-checkbox relative flex size-4 shrink-0 items-center justify-center rounded-[4px] border"
-                        :class="isGroupAllSelected(group) ? 'tree-checkbox-on' : (isGroupPartiallySelected(group) ? 'tree-checkbox-partial' : 'tree-checkbox-off')"
-                        @click.stop="toggleGroupAll(group)"
+                        :class="isGroupAllSelected(item.group) ? 'tree-checkbox-on' : (isGroupPartiallySelected(item.group) ? 'tree-checkbox-partial' : 'tree-checkbox-off')"
+                        @click.stop="toggleGroupAll(item.group)"
                       >
-                        <Check v-if="isGroupAllSelected(group)" :size="14" />
-                        <span v-else-if="isGroupPartiallySelected(group)" class="checkbox-minus" />
+                        <Check v-if="isGroupAllSelected(item.group)" :size="14" />
+                        <span v-else-if="isGroupPartiallySelected(item.group)" class="checkbox-minus" />
                       </button>
                       <component
-                        :is="iconMetaForGroup(group).icon"
+                        :is="iconMetaForGroup(item.group).icon"
                         :size="20"
                         :stroke-width="2.2"
                         class="tree-icon"
-                        :class="[`tree-icon-kind-${classifyGroupKind(group)}`, { 'tree-icon-fill': iconMetaForGroup(group).fillIcon }]"
-                        :style="{ color: iconMetaForGroup(group).color }"
+                        :class="[`tree-icon-kind-${classifyGroupKind(item.group)}`, { 'tree-icon-fill': iconMetaForGroup(item.group).fillIcon }]"
+                        :style="{ color: iconMetaForGroup(item.group).color }"
                       />
                       <span class="tree-name node-rjcode text-sm text-slate-800 truncate font-medium">
-                        {{ getDisplayText(group.name) }}
-                        <span class="node-title-muted">{{ getDisplayText(group.path) }}</span>
+                        {{ getDisplayText(item.group.name) }}
+                        <span class="node-title-muted">{{ getDisplayText(item.group.path) }}</span>
                       </span>
                     </div>
-                    <span class="tree-size text-xs text-slate-400 ml-4 tabular-nums">{{ formatSize(group.total_size_bytes) }}</span>
+                    <span class="tree-size text-xs text-slate-400 ml-4 tabular-nums">{{ formatSize(item.group.total_size_bytes) }}</span>
                   </div>
-                </div>
+                  </template>
 
-                <div v-for="row in (group.rootExpanded === false ? [] : group.flatRows)" :key="row.id" class="tree-node">
+                  <template v-else>
                   <div
                     class="tree-row flex items-center py-1.5 px-2 rounded-md group cursor-pointer"
-                    :class="row.checked || row.indeterminate ? 'tree-row-selected' : ''"
-                    :style="{ paddingLeft: `${(row.depth + 1) * 16 + 16}px` }"
-                    @click="handleTreeRowClick(group, row)"
+                    :class="isTreeNodeChecked(item.row) || isTreeNodePartiallySelected(item.row) ? 'tree-row-selected' : ''"
+                    :style="{ paddingLeft: `${(item.row.depth + 1) * 16 + 16}px` }"
+                    @click="handleTreeRowClick(item.group, item.row)"
                   >
                     <div class="tree-main flex items-center gap-2 flex-1 min-w-0">
                       <button
-                        v-if="row.type === 'dir'"
+                        v-if="item.row.type === 'dir'"
                         type="button"
                         class="tree-expander p-0.5 rounded"
-                        @click.stop="toggleExpand(group, row)"
+                        @click.stop="toggleExpand(item.group, item.row)"
                       >
-                        <ChevronDown v-if="group.expandedIds.has(row.id)" :size="17" class="text-slate-400" />
+                        <ChevronDown v-if="item.group.expandedIds.has(item.row.id)" :size="17" class="text-slate-400" />
                         <ChevronRight v-else :size="17" class="text-slate-400" />
                       </button>
                       <span v-else class="expander-spacer" />
                       <button
                         type="button"
                         class="tree-checkbox relative flex size-4 shrink-0 items-center justify-center rounded-[4px] border"
-                        :class="row.checked ? 'tree-checkbox-on' : (row.indeterminate ? 'tree-checkbox-partial' : 'tree-checkbox-off')"
-                        @click.stop="toggleTreeRow(group, row)"
+                        :class="isTreeNodeChecked(item.row) ? 'tree-checkbox-on' : (isTreeNodePartiallySelected(item.row) ? 'tree-checkbox-partial' : 'tree-checkbox-off')"
+                        @click.stop="toggleTreeRow(item.group, item.row)"
                       >
-                        <Check v-if="row.checked" :size="14" />
-                        <span v-else-if="row.indeterminate" class="checkbox-minus" />
+                        <Check v-if="isTreeNodeChecked(item.row)" :size="14" />
+                        <span v-else-if="isTreeNodePartiallySelected(item.row)" class="checkbox-minus" />
                       </button>
                       <component
-                        :is="iconMetaForRow(row).icon"
+                        :is="iconMetaForRow(item.row).icon"
                         :size="20"
                         :stroke-width="2.2"
                         class="tree-icon"
-                        :class="[`tree-icon-kind-${classifyRowKind(row)}`, { 'tree-icon-fill': iconMetaForRow(row).fillIcon }]"
-                        :style="{ color: iconMetaForRow(row).color }"
+                        :class="[`tree-icon-kind-${classifyRowKind(item.row)}`, { 'tree-icon-fill': iconMetaForRow(item.row).fillIcon }]"
+                        :style="{ color: iconMetaForRow(item.row).color }"
                       />
                       <span
                         class="tree-name text-sm truncate font-medium"
-                        :class="row.indeterminate ? 'tree-name-partial' : 'text-slate-800'"
-                      >{{ getDisplayText(row.name) }}</span>
+                        :class="isTreeNodePartiallySelected(item.row) ? 'tree-name-partial' : 'text-slate-800'"
+                      >{{ getDisplayText(item.row.name) }}</span>
                     </div>
-                    <span v-if="row.size_bytes" class="tree-size text-xs text-slate-400 ml-4 tabular-nums">{{ formatSize(row.size_bytes) }}</span>
+                    <span v-if="item.row.size_bytes" class="tree-size text-xs text-slate-400 ml-4 tabular-nums">{{ formatSize(item.row.size_bytes) }}</span>
                   </div>
+                  </template>
                 </div>
-              </template>
-            </div>
+              </div>
+              <div v-if="previewVirtualBottomPadding" class="preview-virtual-spacer" :style="{ height: `${previewVirtualBottomPadding}px` }" />
+            </template>
           </div>
         </section>
       </div>
@@ -256,7 +272,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, toRaw, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { Check, ChevronDown, ChevronRight, FolderOpen, X } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { libraryApi } from '../../api'
@@ -279,16 +295,35 @@ const props = defineProps({
 
 const emit = defineEmits(['update:visible', 'submit'])
 
+const PREVIEW_ROW_HEIGHT = 41
+const PREVIEW_OVERSCAN = 12
+const PREVIEW_VIRTUAL_THRESHOLD = 180
+
 const previewLoading = ref(false)
-const previewGroups = ref([])
+const previewGroups = shallowRef([])
+const previewTreeVersion = ref(0)
 const openSelect = ref(null)
 const selectRoot = ref(null)
+const previewChipScrollRef = ref(null)
+const treeScrollRef = ref(null)
+const previewScrollTop = ref(0)
+const previewViewportHeight = ref(420)
 const storageInfo = ref(null)
 const targetDirectoryDialogVisible = ref(false)
 const settings = reactive({
   targetLibraryId: '',
   targetSubdir: '',
 })
+const previewChipDragState = reactive({
+  active: false,
+  pointerId: null,
+  startX: 0,
+  startScrollLeft: 0,
+  moved: false,
+  suppressClick: false,
+})
+let previewScrollRafId = 0
+let previewResizeObserver = null
 
 const targetLibraries = computed(() => (Array.isArray(props.libraries) ? props.libraries : []).filter(item => item?.type === 'synology_filestation' && item?.enabled !== false))
 const selectedTargetLibrary = computed(() => targetLibraries.value.find(item => item.id === settings.targetLibraryId) || null)
@@ -306,12 +341,25 @@ const resolvedUploadRoot = computed(() => {
   if (!root) return ''
   return uploadCircleName.value ? `${root}/${uploadCircleName.value}`.replace(/\/+/g, '/') : root
 })
-const selectedGroupCount = computed(() => previewGroups.value.filter(g => isGroupAllSelected(g) || isGroupPartiallySelected(g)).length)
-const selectedTotalBytes = computed(() => previewGroups.value.reduce((sum, group) => sum + Number(group.selected_size_bytes || 0), 0))
-const selectedFileCount = computed(() => previewGroups.value.reduce((sum, group) => sum + Number(group.selected_resource_count || 0), 0))
-const previewSelectableResources = computed(() => previewGroups.value.flatMap(group => Array.isArray(group?.selectable_resources) ? group.selectable_resources : []))
+const selectedGroupCount = computed(() => {
+  previewTreeVersion.value
+  return previewGroups.value.filter(g => isGroupAllSelected(g) || isGroupPartiallySelected(g)).length
+})
+const selectedTotalBytes = computed(() => {
+  previewTreeVersion.value
+  return previewGroups.value.reduce((sum, group) => sum + Number(group.selected_size_bytes || 0), 0)
+})
+const selectedFileCount = computed(() => {
+  previewTreeVersion.value
+  return previewGroups.value.reduce((sum, group) => sum + Number(group.selected_resource_count || 0), 0)
+})
+const previewResourceCount = computed(() => {
+  previewTreeVersion.value
+  return previewGroups.value.reduce((sum, group) => sum + Number(group.total_resource_count || group.selectable_resources?.length || 0), 0)
+})
 
 const previewFileTypeChips = computed(() => {
+  previewTreeVersion.value
   const typeOrder = new Map([
     ['.wav', 0], ['.flac', 1], ['.mp3', 2], ['.m4a', 3], ['.ogg', 4], ['.aac', 5], ['.wma', 6],
     ['.pdf', 20], ['.txt', 21], ['.cue', 22], ['.json', 23],
@@ -319,13 +367,13 @@ const previewFileTypeChips = computed(() => {
     ['.srt', 40], ['.ass', 41], ['.ssa', 42], ['.vtt', 43], ['.lrc', 44], ['__no_ext__', 99],
   ])
   const groups = new Map()
-  previewSelectableResources.value.forEach((item) => {
-    const key = getPreviewFileTypeKey(item)
-    const label = getPreviewFileTypeLabel(item)
-    const current = groups.get(key) || { key, label, total: 0, selected: 0 }
-    current.total += 1
-    if (item?.selected) current.selected += 1
-    groups.set(key, current)
+  previewGroups.value.forEach((group) => {
+    Object.values(group?.type_stats || {}).forEach((stat) => {
+      const current = groups.get(stat.key) || { key: stat.key, label: stat.label, total: 0, selected: 0 }
+      current.total += Number(stat.total || 0)
+      current.selected += Number(stat.selected || 0)
+      groups.set(stat.key, current)
+    })
   })
   return [...groups.values()]
     .map((item) => ({ ...item, state: item.selected === 0 ? 'none' : (item.selected === item.total ? 'all' : 'partial') }))
@@ -338,18 +386,49 @@ const previewFileTypeChips = computed(() => {
 })
 
 const allPreviewSelectionState = computed(() => {
-  const total = previewSelectableResources.value.length
+  previewTreeVersion.value
+  const total = previewResourceCount.value
   if (!total) return 'none'
-  const selected = previewSelectableResources.value.filter(item => item?.selected).length
+  const selected = selectedFileCount.value
   if (selected === 0) return 'none'
   if (selected === total) return 'all'
   return 'partial'
 })
 
 const isAllExpanded = computed(() => {
+  previewTreeVersion.value
   if (!previewGroups.value.length) return false
   return previewGroups.value.every(group => group.rootExpanded !== false)
 })
+
+const previewFlatRows = computed(() => {
+  previewTreeVersion.value
+  const rows = []
+  previewGroups.value.forEach((group) => {
+    rows.push({ id: `${group.id}::header`, kind: 'group', group })
+    if (group.rootExpanded !== false) {
+      group.flatRows.forEach(row => {
+        rows.push({ id: row.id, kind: 'row', group, row })
+      })
+    }
+  })
+  return rows
+})
+const previewUseVirtual = computed(() => previewFlatRows.value.length > PREVIEW_VIRTUAL_THRESHOLD)
+const previewVirtualRange = computed(() => {
+  const total = previewFlatRows.value.length
+  if (!previewUseVirtual.value) return { start: 0, end: total }
+  const viewport = Math.max(previewViewportHeight.value || 420, PREVIEW_ROW_HEIGHT)
+  const start = Math.max(0, Math.floor(previewScrollTop.value / PREVIEW_ROW_HEIGHT) - PREVIEW_OVERSCAN)
+  const visibleCount = Math.ceil(viewport / PREVIEW_ROW_HEIGHT) + PREVIEW_OVERSCAN * 2
+  return { start, end: Math.min(total, start + visibleCount) }
+})
+const previewVisibleRows = computed(() => {
+  const { start, end } = previewVirtualRange.value
+  return previewFlatRows.value.slice(start, end)
+})
+const previewVirtualTopPadding = computed(() => previewUseVirtual.value ? previewVirtualRange.value.start * PREVIEW_ROW_HEIGHT : 0)
+const previewVirtualBottomPadding = computed(() => previewUseVirtual.value ? Math.max(0, (previewFlatRows.value.length - previewVirtualRange.value.end) * PREVIEW_ROW_HEIGHT) : 0)
 
 function collectAllDirIds(nodes) {
   const ids = []
@@ -371,8 +450,9 @@ function toggleExpandAll() {
     } else {
       group.expandedIds = new Set()
     }
-    refreshPlanTree(group)
+    refreshGroupFlatRows(group)
   })
+  bumpPreviewTreeVersion()
 }
 const targetFreeSpaceBytes = computed(() => {
   const explicitBytes = Number(storageInfo.value?.free_size_bytes || 0)
@@ -385,7 +465,10 @@ const estimatedRemainingSpaceText = computed(() => {
   if (targetFreeSpaceBytes.value <= 0) return ''
   return formatSize(Math.max(0, targetFreeSpaceBytes.value - selectedTotalBytes.value))
 })
-const selectedUploadGroups = computed(() => previewGroups.value.filter(group => isGroupAllSelected(group) || isGroupPartiallySelected(group)))
+const selectedUploadGroups = computed(() => {
+  previewTreeVersion.value
+  return previewGroups.value.filter(group => isGroupAllSelected(group) || isGroupPartiallySelected(group))
+})
 const targetDirectoryPreview = computed(() => resolvedUploadRoot.value || '')
 const targetSubdirLabel = computed(() => {
   if (!settings.targetLibraryId) return '请先选择目标库存'
@@ -416,11 +499,14 @@ const finalPathPreview = computed(() => {
 watch(() => props.visible, async (visible) => {
   if (!visible) {
     previewLoading.value = false
+    teardownPreviewTreeScrollObserver()
     return
   }
   settings.targetLibraryId = props.initialTargetLibraryId || settings.targetLibraryId || targetLibraries.value[0]?.id || ''
   settings.targetSubdir = props.initialTargetSubdir || ''
   previewGroups.value = []
+  bumpPreviewTreeVersion()
+  resetPreviewTreeScroll()
   previewLoading.value = true
   try {
     await Promise.all([
@@ -429,6 +515,9 @@ watch(() => props.visible, async (visible) => {
     ])
   } finally {
     previewLoading.value = false
+    await nextTick()
+    setupPreviewTreeScrollObserver()
+    resetPreviewTreeScroll()
   }
 }, { immediate: true })
 
@@ -490,18 +579,144 @@ function handleDocumentClick(event) {
   }
 }
 
+function onPreviewChipPointerDown(event) {
+  if (event?.button !== undefined && event.button !== 0) return
+  const element = previewChipScrollRef.value
+  if (!element) return
+  const startedOnButton = Boolean(event.target?.closest?.('button'))
+  previewChipDragState.active = true
+  previewChipDragState.pointerId = event.pointerId
+  previewChipDragState.startX = event.clientX
+  previewChipDragState.startScrollLeft = element.scrollLeft
+  previewChipDragState.moved = false
+  previewChipDragState.suppressClick = false
+  if (!startedOnButton) element.setPointerCapture?.(event.pointerId)
+}
+
+function onPreviewChipPointerMove(event) {
+  if (!previewChipDragState.active) return
+  const element = previewChipScrollRef.value
+  if (!element) return
+  const deltaX = Number(event.clientX || 0) - Number(previewChipDragState.startX || 0)
+  if (Math.abs(deltaX) > 4) {
+    previewChipDragState.moved = true
+    previewChipDragState.suppressClick = true
+    event.preventDefault?.()
+  }
+  element.scrollLeft = Number(previewChipDragState.startScrollLeft || 0) - deltaX
+}
+
+function finishPreviewChipDrag(event) {
+  const element = previewChipScrollRef.value
+  if (element && previewChipDragState.pointerId !== null && element.hasPointerCapture?.(previewChipDragState.pointerId)) {
+    element.releasePointerCapture?.(previewChipDragState.pointerId)
+  }
+  const moved = previewChipDragState.moved
+  previewChipDragState.active = false
+  previewChipDragState.pointerId = null
+  previewChipDragState.moved = false
+  if (moved) {
+    previewChipDragState.suppressClick = true
+    setTimeout(() => {
+      previewChipDragState.suppressClick = false
+    }, 120)
+    event?.preventDefault?.()
+  }
+}
+
+function onPreviewChipPointerUp(event) {
+  finishPreviewChipDrag(event)
+}
+
+function onPreviewChipPointerCancel(event) {
+  finishPreviewChipDrag(event)
+}
+
+function onPreviewChipWheel(event) {
+  const element = previewChipScrollRef.value
+  if (!element) return
+  const delta = Math.abs(event.deltaX || 0) > Math.abs(event.deltaY || 0) ? event.deltaX : event.deltaY
+  if (!delta) return
+  element.scrollLeft += delta
+  event.preventDefault?.()
+}
+
+function onPreviewChipClickCapture(event) {
+  if (!previewChipDragState.suppressClick) return
+  previewChipDragState.suppressClick = false
+  event.preventDefault?.()
+  event.stopPropagation?.()
+}
+
 onMounted(() => {
   document.addEventListener('click', handleDocumentClick)
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', handleDocumentClick)
+  teardownPreviewTreeScrollObserver()
 })
+
+function bumpPreviewTreeVersion() {
+  previewTreeVersion.value += 1
+}
+
+function syncPreviewTreeViewport() {
+  const element = treeScrollRef.value
+  previewViewportHeight.value = element ? Math.max(Number(element.clientHeight || 0), 180) : 420
+}
+
+function setupPreviewTreeScrollObserver() {
+  teardownPreviewTreeScrollObserver()
+  const element = treeScrollRef.value
+  if (!element || typeof ResizeObserver === 'undefined') {
+    syncPreviewTreeViewport()
+    return
+  }
+  previewResizeObserver = new ResizeObserver(syncPreviewTreeViewport)
+  previewResizeObserver.observe(element)
+  syncPreviewTreeViewport()
+}
+
+function teardownPreviewTreeScrollObserver() {
+  if (previewScrollRafId) {
+    cancelAnimationFrame(previewScrollRafId)
+    previewScrollRafId = 0
+  }
+  if (previewResizeObserver) {
+    previewResizeObserver.disconnect()
+    previewResizeObserver = null
+  }
+}
+
+function resetPreviewTreeScroll() {
+  previewScrollTop.value = 0
+  nextTick(() => {
+    const element = treeScrollRef.value
+    if (!element) return
+    element.scrollTop = 0
+    syncPreviewTreeViewport()
+  })
+}
+
+function onPreviewTreeScroll(event) {
+  const target = event?.target
+  if (!target) return
+  const nextScrollTop = Number(target.scrollTop || 0)
+  const nextViewportHeight = Math.max(Number(target.clientHeight || 0), 180)
+  if (previewScrollRafId) cancelAnimationFrame(previewScrollRafId)
+  previewScrollRafId = requestAnimationFrame(() => {
+    previewScrollTop.value = nextScrollTop
+    previewViewportHeight.value = nextViewportHeight
+    previewScrollRafId = 0
+  })
+}
 
 async function loadPreviewGroups() {
   const sourceItems = (Array.isArray(props.sourceItems) ? props.sourceItems : []).filter(item => item?.path)
   if (!sourceItems.length) {
     previewGroups.value = []
+    bumpPreviewTreeVersion()
     return
   }
   try {
@@ -518,6 +733,8 @@ async function loadPreviewGroups() {
           path,
           relative_path: name,
           size: Number(item.size || 0),
+          type_key: getPreviewFileTypeKey(item),
+          type_label: getPreviewFileTypeLabel(item),
           selected: true,
         }
         const tree = [{
@@ -536,10 +753,13 @@ async function loadPreviewGroups() {
           selectable_resources: [fileResource],
           rootExpanded: false,
           tree,
+          nodeById: new Map(),
+          type_stats: {},
+          total_resource_count: 1,
           expandedIds: new Set(),
           flatRows: [],
         }
-        refreshPlanTree(group)
+        initializeGroupTree(group)
         return group
       }
 
@@ -547,9 +767,13 @@ async function loadPreviewGroups() {
         ? await libraryApi.browserFolderContents(props.sourceLibraryId, path)
         : await libraryApi.folderContents(path)
       const items = Array.isArray(data?.items) ? data.items : []
-      const resources = items.map(item => ({ ...item, selected: true }))
+      const resources = items.map(item => ({
+        ...item,
+        type_key: getPreviewFileTypeKey(item),
+        type_label: getPreviewFileTypeLabel(item),
+        selected: true,
+      }))
       const tree = buildTree(resources, path, groupId)
-      const expandedIds = new Set(collectDirectoryIds(tree))
       const group = {
         id: groupId,
         name,
@@ -558,15 +782,20 @@ async function loadPreviewGroups() {
         selectable_resources: resources,
         rootExpanded: true,
         tree,
-        expandedIds,
+        nodeById: new Map(),
+        type_stats: {},
+        total_resource_count: resources.length,
+        expandedIds: new Set(),
         flatRows: [],
       }
-      refreshPlanTree(group)
+      initializeGroupTree(group)
       return group
     }))
     previewGroups.value = groups
+    bumpPreviewTreeVersion()
   } catch (error) {
     previewGroups.value = []
+    bumpPreviewTreeVersion()
     ElMessage.error(error?.response?.data?.detail || error?.message || '生成上传预览失败')
   }
 }
@@ -584,6 +813,7 @@ async function loadStorageInfo() {
 
 function toggleGroupExpand(group) {
   group.rootExpanded = group.rootExpanded === false
+  bumpPreviewTreeVersion()
 }
 
 function toggleExpand(group, row) {
@@ -592,7 +822,8 @@ function toggleExpand(group, row) {
   if (next.has(row.id)) next.delete(row.id)
   else next.add(row.id)
   group.expandedIds = next
-  group.flatRows = flattenTree(group.tree, 0, next)
+  refreshGroupFlatRows(group)
+  bumpPreviewTreeVersion()
 }
 
 function emitSubmit() {
@@ -619,9 +850,8 @@ function emitSubmit() {
 function buildTree(resources, basePath, groupId) {
   const root = []
   const dirMap = new Map()
-  const sorted = [...resources].sort((a, b) => String(a.relative_path || '').localeCompare(String(b.relative_path || '')))
 
-  for (const item of sorted) {
+  for (const item of resources) {
     const parts = String(item.relative_path || item.name || '').split('/').filter(Boolean)
     if (!parts.length) continue
     let children = root
@@ -638,6 +868,10 @@ function buildTree(resources, basePath, groupId) {
           relative_path: path,
           resolved_path: joinFolderPath(basePath, path),
           size_bytes: 0,
+          selected_size_bytes: 0,
+          leaf_count: 0,
+          selected_count: 0,
+          parentId: index === 0 ? '' : `${groupId}::dir:${parts.slice(0, index).join('/')}`,
           children: [],
         }
         dirMap.set(key, node)
@@ -652,6 +886,10 @@ function buildTree(resources, basePath, groupId) {
       type: 'file',
       resource: item,
       size_bytes: Number(item.size || 0),
+      selected_size_bytes: item.selected ? Number(item.size || 0) : 0,
+      leaf_count: 1,
+      selected_count: item.selected ? 1 : 0,
+      parentId: parts.length > 1 ? `${groupId}::dir:${parts.slice(0, -1).join('/')}` : '',
       resolved_path: item.path,
     })
   }
@@ -662,7 +900,8 @@ function buildTree(resources, basePath, groupId) {
 function flattenTree(nodes, depth, openIds) {
   const result = []
   for (const node of nodes) {
-    result.push({ ...node, depth })
+    node.depth = depth
+    result.push(node)
     if (node.type === 'dir' && openIds.has(node.id) && node.children?.length) {
       result.push(...flattenTree(node.children, depth + 1, openIds))
     }
@@ -670,43 +909,138 @@ function flattenTree(nodes, depth, openIds) {
   return result
 }
 
-function collectLeafResources(node) {
-  if (!node) return []
-  if (node.type === 'file') return [node.resource]
-  return (node.children || []).flatMap(child => collectLeafResources(child))
+function initializeGroupTree(group) {
+  group.nodeById = new Map()
+  group.type_stats = {}
+  group.selectable_resources.forEach((item) => {
+    const key = item.type_key || getPreviewFileTypeKey(item)
+    const label = item.type_label || getPreviewFileTypeLabel(item)
+    item.type_key = key
+    item.type_label = label
+    const stat = group.type_stats[key] || { key, label, total: 0, selected: 0 }
+    stat.total += 1
+    if (item.selected) stat.selected += 1
+    group.type_stats[key] = stat
+  })
+  recomputeTreeSelection(group)
+  group.flatRows = flattenTree(group.tree || [], 0, group.expandedIds || new Set())
 }
 
-function annotateSelection(node) {
+function recomputeTreeSelection(group) {
+  const walk = (node) => {
+    group.nodeById.set(node.id, node)
+    if (node.type === 'file') {
+      const size = Number(node.resource?.size || node.size_bytes || 0)
+      node.size_bytes = size
+      node.leaf_count = 1
+      node.selected_count = node.resource?.selected ? 1 : 0
+      node.selected_size_bytes = node.resource?.selected ? size : 0
+      if (node.resource) node.resource.node_id = node.id
+      return {
+        total: 1,
+        selected: node.selected_count,
+        size,
+        selectedSize: node.selected_size_bytes,
+      }
+    }
+    const totals = (node.children || []).reduce((acc, child) => {
+      const current = walk(child)
+      acc.total += current.total
+      acc.selected += current.selected
+      acc.size += current.size
+      acc.selectedSize += current.selectedSize
+      return acc
+    }, { total: 0, selected: 0, size: 0, selectedSize: 0 })
+    node.leaf_count = totals.total
+    node.selected_count = totals.selected
+    node.size_bytes = totals.size
+    node.selected_size_bytes = totals.selectedSize
+    return totals
+  }
+  group.nodeById = new Map()
+  const totals = (group.tree || []).reduce((acc, node) => {
+    const current = walk(node)
+    acc.total += current.total
+    acc.selected += current.selected
+    acc.size += current.size
+    acc.selectedSize += current.selectedSize
+    return acc
+  }, { total: 0, selected: 0, size: 0, selectedSize: 0 })
+  group.total_resource_count = totals.total
+  group.total_size_bytes = totals.size
+  group.selected_resource_count = totals.selected
+  group.selected_size_bytes = totals.selectedSize
+}
+
+function setSubtreeSelection(group, node, nextSelected) {
+  if (!node) return { count: 0, size: 0 }
   if (node.type === 'file') {
-    return { ...node, checked: Boolean(node.resource.selected), indeterminate: false }
+    const wasSelected = Boolean(node.resource?.selected)
+    if (wasSelected === nextSelected) return { count: 0, size: 0 }
+    const size = Number(node.size_bytes || node.resource?.size || 0)
+    node.resource.selected = nextSelected
+    node.selected_count = nextSelected ? 1 : 0
+    node.selected_size_bytes = nextSelected ? size : 0
+    const stat = group.type_stats[node.resource.type_key]
+    if (stat) stat.selected += nextSelected ? 1 : -1
+    return { count: nextSelected ? 1 : -1, size: nextSelected ? size : -size }
   }
-  const children = (node.children || []).map(annotateSelection)
-  const leafResources = children.flatMap(child => child.type === 'file' ? [child.resource] : collectLeafResources(child))
-  const checkedCount = leafResources.filter(item => item.selected).length
+  const beforeCount = Number(node.selected_count || 0)
+  const beforeSize = Number(node.selected_size_bytes || 0)
+  ;(node.children || []).forEach(child => setSubtreeSelection(group, child, nextSelected))
+  node.selected_count = nextSelected ? Number(node.leaf_count || 0) : 0
+  node.selected_size_bytes = nextSelected ? Number(node.size_bytes || 0) : 0
   return {
-    ...node,
-    children,
-    size_bytes: children.reduce((sum, child) => sum + Number(child.size_bytes || 0), 0),
-    checked: checkedCount > 0 && checkedCount === leafResources.length,
-    indeterminate: checkedCount > 0 && checkedCount < leafResources.length
+    count: node.selected_count - beforeCount,
+    size: node.selected_size_bytes - beforeSize,
   }
+}
+
+function applySelectionDeltaToAncestors(group, node, delta) {
+  let parentId = node?.parentId || ''
+  while (parentId) {
+    const parent = group.nodeById.get(parentId)
+    if (!parent) break
+    parent.selected_count = Math.max(0, Math.min(Number(parent.leaf_count || 0), Number(parent.selected_count || 0) + delta.count))
+    parent.selected_size_bytes = Math.max(0, Math.min(Number(parent.size_bytes || 0), Number(parent.selected_size_bytes || 0) + delta.size))
+    parentId = parent.parentId || ''
+  }
+}
+
+function updateGroupStatsByDelta(group, delta) {
+  group.selected_resource_count = Math.max(0, Math.min(Number(group.total_resource_count || 0), Number(group.selected_resource_count || 0) + delta.count))
+  group.selected_size_bytes = Math.max(0, Math.min(Number(group.total_size_bytes || 0), Number(group.selected_size_bytes || 0) + delta.size))
+}
+
+function refreshGroupFlatRows(group) {
+  group.flatRows = flattenTree(group.tree || [], 0, group.expandedIds || new Set())
 }
 
 function refreshPlanTree(group) {
-  group.tree = (group.tree || []).map(annotateSelection)
-  group.flatRows = flattenTree(group.tree, 0, group.expandedIds)
-  group.total_size_bytes = group.selectable_resources.reduce((sum, item) => sum + Number(item.size || 0), 0)
-  group.selected_resource_count = group.selectable_resources.filter(item => item.selected).length
-  group.selected_size_bytes = group.selectable_resources.filter(item => item.selected).reduce((sum, item) => sum + Number(item.size || 0), 0)
+  recomputeTreeSelection(group)
+  refreshGroupFlatRows(group)
 }
 
 function isGroupAllSelected(group) {
-  return group.selectable_resources.length > 0 && group.selectable_resources.every(item => item.selected)
+  const total = Number(group?.total_resource_count || group?.selectable_resources?.length || 0)
+  return total > 0 && Number(group?.selected_resource_count || 0) === total
 }
 
 function isGroupPartiallySelected(group) {
-  const checkedCount = group.selectable_resources.filter(item => item.selected).length
-  return checkedCount > 0 && checkedCount < group.selectable_resources.length
+  const total = Number(group?.total_resource_count || group?.selectable_resources?.length || 0)
+  const checkedCount = Number(group?.selected_resource_count || 0)
+  return checkedCount > 0 && checkedCount < total
+}
+
+function isTreeNodeChecked(row) {
+  const total = Number(row?.leaf_count || 0)
+  return total > 0 && Number(row?.selected_count || 0) === total
+}
+
+function isTreeNodePartiallySelected(row) {
+  const total = Number(row?.leaf_count || 0)
+  const checkedCount = Number(row?.selected_count || 0)
+  return checkedCount > 0 && checkedCount < total
 }
 
 function toggleGroupAll(group) {
@@ -714,32 +1048,38 @@ function toggleGroupAll(group) {
   group.selectable_resources.forEach(item => {
     item.selected = next
   })
+  Object.values(group.type_stats || {}).forEach(stat => {
+    stat.selected = next ? Number(stat.total || 0) : 0
+  })
   refreshPlanTree(group)
+  bumpPreviewTreeVersion()
 }
 
 function updateResourceSelection(group, row, nextSelected) {
-  const leafResources = new Set(collectLeafResources(row).map(item => toRaw(item)))
-  group.selectable_resources.forEach(item => {
-    if (leafResources.has(toRaw(item))) item.selected = nextSelected
-  })
-  refreshPlanTree(group)
+  const delta = setSubtreeSelection(group, row, nextSelected)
+  if (!delta.count && !delta.size) return
+  applySelectionDeltaToAncestors(group, row, delta)
+  updateGroupStatsByDelta(group, delta)
+  bumpPreviewTreeVersion()
 }
 
 function toggleTreeRow(group, row) {
-  const nextSelected = row.indeterminate ? true : !row.checked
+  const nextSelected = isTreeNodePartiallySelected(row) ? true : !isTreeNodeChecked(row)
   updateResourceSelection(group, row, nextSelected)
 }
 
-function collectCheckedDirectoryPaths(nodes = [], ancestorChecked = false) {
+function collectCheckedUploadPaths(nodes = [], ancestorChecked = false) {
   const paths = []
   for (const node of nodes || []) {
-    if (node.type !== 'dir') continue
     const currentPath = String(node.resolved_path || '').trim()
-    if (!ancestorChecked && node.checked && currentPath) {
+    const checked = isTreeNodeChecked(node)
+    if (!ancestorChecked && checked && currentPath) {
       paths.push(currentPath)
       continue
     }
-    paths.push(...collectCheckedDirectoryPaths(node.children || [], ancestorChecked || Boolean(node.checked)))
+    if (node.type === 'dir') {
+      paths.push(...collectCheckedUploadPaths(node.children || [], ancestorChecked || checked))
+    }
   }
   return paths
 }
@@ -759,7 +1099,7 @@ function collectSubmitPaths(group) {
   if (!group) return []
   if (isGroupAllSelected(group)) return group.path ? [group.path] : []
   if (!isGroupPartiallySelected(group)) return []
-  return normalizeSelectedPaths(collectCheckedDirectoryPaths(group.tree || []))
+  return normalizeSelectedPaths(collectCheckedUploadPaths(group.tree || []))
 }
 
 function handleTreeRowClick(group, row) {
@@ -791,8 +1131,12 @@ function toggleAllPreviewSelection() {
     group.selectable_resources.forEach(item => {
       item.selected = nextSelected
     })
+    Object.values(group.type_stats || {}).forEach(stat => {
+      stat.selected = nextSelected ? Number(stat.total || 0) : 0
+    })
     refreshPlanTree(group)
   })
+  bumpPreviewTreeVersion()
 }
 
 function togglePreviewFileType(chip) {
@@ -800,25 +1144,18 @@ function togglePreviewFileType(chip) {
   if (!key) return
   const nextSelected = String(chip?.state || '') !== 'all'
   previewGroups.value.forEach(group => {
+    let changed = false
     group.selectable_resources.forEach(item => {
-      if (getPreviewFileTypeKey(item) === key) item.selected = nextSelected
-    })
-    refreshPlanTree(group)
-  })
-}
-
-function collectDirectoryIds(nodes = []) {
-  const ids = []
-  const walk = list => {
-    for (const node of list || []) {
-      if (node.type === 'dir') {
-        ids.push(node.id)
-        walk(node.children || [])
+      if ((item.type_key || getPreviewFileTypeKey(item)) === key && item.selected !== nextSelected) {
+        item.selected = nextSelected
+        changed = true
       }
-    }
-  }
-  walk(nodes)
-  return ids
+    })
+    const stat = group.type_stats?.[key]
+    if (stat) stat.selected = nextSelected ? Number(stat.total || 0) : 0
+    if (changed) refreshPlanTree(group)
+  })
+  bumpPreviewTreeVersion()
 }
 
 function getFileName(path) {
@@ -873,17 +1210,50 @@ function classifyRowKind (row) {
 <style scoped>
 .dropdown-menu { backdrop-filter: blur(8px); }
 
+.tabs-row {
+  overflow: hidden;
+}
+
+.preview-chip-rail {
+  position: relative;
+  flex: 0 1 760px;
+  width: min(760px, calc(100% - 112px));
+  max-width: calc(100% - 112px);
+  overflow: hidden;
+}
+
 .preview-chip-scroll {
-  flex: 0 1 auto;
-  max-width: 100%;
+  width: 100%;
   overflow-y: visible;
-  padding-top: 2px;
+  padding: 2px 0 0;
   scrollbar-width: none;
   -ms-overflow-style: none;
+  cursor: grab;
+  scroll-behavior: smooth;
+  touch-action: pan-y;
+  user-select: none;
+  overscroll-behavior-inline: contain;
+}
+
+.preview-chip-scroll.is-dragging {
+  cursor: grabbing;
+  scroll-behavior: auto;
+}
+
+.preview-chip-scroll .tab-chip {
+  flex: 0 0 auto;
+}
+
+.restore-button {
+  margin-left: auto;
 }
 
 .preview-chip-scroll::-webkit-scrollbar {
   display: none;
+}
+.preview-virtual-spacer {
+  flex: 0 0 auto;
+  pointer-events: none;
 }
 .tree-row-selected { background: rgba(15,23,42,.04); }
 .field-input { transition: border-color .15s ease; }
@@ -971,7 +1341,12 @@ function classifyRowKind (row) {
     min-width: 0;
     padding: 4px 12px 8px !important;
     align-items: flex-start;
-    overflow-x: auto;
+    overflow: hidden;
+  }
+  .preview-chip-rail {
+    flex: 1 1 auto;
+    width: auto;
+    max-width: none;
   }
   .preview-chip-scroll {
     min-width: 0;
