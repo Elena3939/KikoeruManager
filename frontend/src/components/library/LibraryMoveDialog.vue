@@ -202,7 +202,22 @@
                 :class="{ 'fm-head-arrow-asc': sortDir === 'asc' }"
               />
             </button>
-            <div class="fm-cell fm-cell-size">大小</div>
+            <button
+              type="button"
+              class="fm-cell fm-cell-size fm-head-cell"
+              :class="{ 'fm-head-cell-active': sortBy === 'size' }"
+              @click="onColumnSort('size')"
+              title="按大小排序"
+            >
+              <span>大小</span>
+              <ChevronDown
+                v-if="sortBy === 'size'"
+                :size="13"
+                :stroke-width="2.4"
+                class="fm-head-arrow"
+                :class="{ 'fm-head-arrow-asc': sortDir === 'asc' }"
+              />
+            </button>
             <button
               type="button"
               class="fm-cell fm-cell-time fm-head-cell"
@@ -423,6 +438,7 @@ const FOLDER_SIZE_COMPUTE_CAP = 256
 const props = defineProps({
   visible: { type: Boolean, default: false },
   sourceLibraryId: { type: String, default: '' },
+  initialPath: { type: String, default: '' },
   items: { type: Array, default: () => [] },
   libraries: { type: Array, default: () => [] },
   submitting: { type: Boolean, default: false }
@@ -593,6 +609,14 @@ function sortFolderList (list) {
       if (at !== bt) return (at - bt) * dir
       return String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-Hans-CN', { numeric: true }) * dir
     }
+    if (by === 'size') {
+      const av = Number(a?.size)
+      const bv = Number(b?.size)
+      const as = Number.isFinite(av) ? av : -1
+      const bs = Number.isFinite(bv) ? bv : -1
+      if (as !== bs) return (as - bs) * dir
+      return String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-Hans-CN', { numeric: true })
+    }
     return String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-Hans-CN', { numeric: true }) * dir
   })
   return list
@@ -603,7 +627,7 @@ function onColumnSort (field) {
     sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
   } else {
     sortBy.value = field
-    sortDir.value = 'asc'
+    sortDir.value = field === 'mtime' || field === 'size' ? 'desc' : 'asc'
   }
 }
 
@@ -754,7 +778,8 @@ async function initFromProps () {
   if (!initial) initial = localLibraries.value[0] || null
   if (!initial) return
   currentLibraryId.value = initial.id
-  await loadFolders('')
+  const initialPath = String(props.initialPath || '').trim()
+  await loadFolders(initialPath)
 }
 
 function resetState () {
@@ -904,6 +929,7 @@ async function loadFolders (path) {
     searchKeyword.value = ''
     // 同步进导航树缓存
     syncNavTreeFromLoad(currentLibraryId.value, currentPath.value, rootPath.value, folders.value)
+    await ensureNavPathVisible(currentLibraryId.value, currentPath.value)
     await nextTick()
     listScrollRef.value?.scrollTo?.({ top: 0 })
   } catch (err) {
@@ -911,6 +937,36 @@ async function loadFolders (path) {
     error.value = err?.response?.data?.detail || err?.message || '读取目录失败'
   } finally {
     loading.value = false
+  }
+}
+
+async function ensureNavPathVisible (libraryId, path) {
+  if (!libraryId || !path || !rootPath.value) return
+  const lib = localLibraries.value.find(item => item.id === libraryId)
+  if (!lib) return
+  const root = rootPath.value.replace(/[\\/]+$/, '')
+  if (!root || normalizePath(path) === normalizePath(root)) {
+    const entry = ensureLibraryEntry(libraryId)
+    entry.rootExpanded = true
+    return
+  }
+  const normalizedRoot = normalizePath(root)
+  const normalizedPath = normalizePath(path)
+  if (!normalizedPath.startsWith(normalizedRoot)) return
+  const entry = ensureLibraryEntry(libraryId)
+  entry.rootExpanded = true
+  if (entry.rootChildren === null) await loadNavChildrenForRoot(lib)
+  const sep = detectSeparator(path)
+  const rel = String(path).slice(rootPath.value.length).replace(/^[\\/]+/, '')
+  const parts = rel.split(/[\\/]+/).filter(Boolean)
+  let cursor = root
+  for (let index = 0; index < parts.length; index += 1) {
+    cursor = `${cursor}${sep}${parts[index]}`
+    const node = ensureNodeEntry(libraryId, cursor)
+    node.expanded = true
+    if (index < parts.length - 1 && node.children === null) {
+      await loadNavChildrenForPath(libraryId, cursor)
+    }
   }
 }
 

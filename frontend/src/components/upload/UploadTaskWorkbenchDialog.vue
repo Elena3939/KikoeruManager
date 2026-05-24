@@ -11,11 +11,16 @@
     :show-download-metrics="false"
     :show-upload-eta="true"
     :prefer-upload-icon="true"
+    transfer-mode="upload"
+    :merge-tasks="false"
     :compact="true"
     @update:visible="emit('update:visible', $event)"
     @refresh="emit('refresh')"
     @background="emit('background')"
     @close="emit('close')"
+    @pause-task="emit('pause-task', $event)"
+    @resume-task="emit('resume-task', $event)"
+    @cancel-task="emit('cancel-task', $event)"
   />
 </template>
 
@@ -29,7 +34,7 @@ const props = defineProps({
   refreshing: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['update:visible', 'refresh', 'background', 'close'])
+const emit = defineEmits(['update:visible', 'refresh', 'background', 'close', 'pause-task', 'resume-task', 'cancel-task'])
 
 function clampActiveUploadPercent(transferredBytes, totalBytes, status, fallbackProgress = 0) {
   const normalizedStatus = String(status || '')
@@ -54,7 +59,7 @@ const mappedTasks = computed(() => {
     const finalOutputPath = String(metadata.final_output_path || task?.output_path || '').trim()
     const uploadRuntime = task?.upload_runtime || {}
     const currentRelativePath = String(uploadRuntime.current_relative_path || '').trim()
-    const currentSpeed = Number(uploadRuntime.speed_bytes_per_sec || uploadRuntime.last_non_zero_speed_bytes_per_sec || 0)
+    const currentSpeed = Number(uploadRuntime.frontend_speed_bytes_per_sec || 0)
     const currentUploadedBytes = Number(uploadRuntime.current_file_uploaded_bytes || 0)
     const totalBytes = Number(uploadRuntime.total_bytes || 0)
     const transferredBytes = Number(uploadRuntime.transferred_bytes || 0)
@@ -113,14 +118,16 @@ const mappedTasks = computed(() => {
       task_metadata: {
         ...metadata,
         source_action: 'local_library_upload',
-        download_root: sourceBasePath,
+        source_root: sourceBasePath,
         target_path: targetPath,
         final_output_path: finalOutputPath || targetPath,
+        total_bytes: totalBytes,
+        selected_resource_count: uploadFiles.length,
         workbench_subtitle: subtitle,
         selected_resources: uploadFiles.map((file) => ({
           relative_path: file.relative_path,
           file_name: file.name,
-          size: file.size_bytes,
+          size_bytes: file.size_bytes,
         })),
       },
     }

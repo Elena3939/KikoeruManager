@@ -329,10 +329,29 @@
               <div v-if="missingWorks.length > 0 && selectedActiveCanonicalRJCodes.length > 0" class="flex items-center justify-between bg-slate-50/80 border border-slate-200/80 rounded-xl px-4 py-3 mb-4 mt-2 shadow-sm backdrop-blur-sm">
                 <span class="text-sm font-medium text-slate-700">已选 {{ selectedActiveCanonicalRJCodes.length }} / {{ activeSelectableWorks.length }}</span>
                 <div class="flex items-center gap-2">
-                  <el-button class="batch-action-button" size="small" @click="selectAllVisibleWorks">全选</el-button>
-                  <el-button class="batch-action-button ghost" size="small" @click="clearSelection">清空</el-button>
-                  <el-button class="batch-action-button refresh" size="small" :disabled="isRefreshJobActive" :loading="refreshingCurrentCircle" @click="refreshSelectedCircleIndex(selectedActiveCanonicalRJCodes)">刷新状态</el-button>
-                  <el-button class="batch-action-button primary ml-2" type="primary" size="small" :disabled="selectedActiveDownloadableRJCodes.length === 0" :loading="previewing" @click="openBatchPreview()">下载选中项</el-button>
+                  <button type="button" class="batch-action-button" @click="selectAllVisibleWorks">全选</button>
+                  <button type="button" class="batch-action-button ghost" @click="clearSelection">清空</button>
+                  <button
+                    type="button"
+                    class="batch-action-button refresh"
+                    :class="{ 'is-busy': refreshingCurrentCircle }"
+                    :disabled="isRefreshJobActive"
+                    @click="refreshSelectedCircleIndex(selectedActiveCanonicalRJCodes)"
+                  >
+                    <RefreshCw v-if="refreshingCurrentCircle" :size="13" class="batch-action-spinner" />
+                    刷新状态
+                  </button>
+                  <button
+                    type="button"
+                    class="batch-action-button primary ml-2"
+                    :class="{ 'is-busy': previewing }"
+                    :disabled="selectedActiveDownloadableRJCodes.length === 0"
+                    @click="openBatchPreview()"
+                  >
+                    <Download v-if="!previewing" :size="13" />
+                    <RefreshCw v-else :size="13" class="batch-action-spinner" />
+                    下载选中项
+                  </button>
                 </div>
               </div>
 
@@ -374,45 +393,21 @@
                 size="lg"
                 class="circle-empty-state"
               />
-              <template v-else>
-                <div v-if="viewMode === 'card'" class="work-grid">
-                  <WorkCard
-                    v-for="(item, cardIdx) in pagedMissingWorks"
-                    :key="item.canonical_rjcode"
-                    :item="item"
-                    :card-index="cardIdx"
-                    :selected="selectedCanonicals.has(item.canonical_rjcode)"
-                    :status-flash="flashedWorkCodes.has(item.canonical_rjcode)"
-                    @select="toggleSelection"
-                    @preview="openBatchPreview"
-                    @reimport="openReimportDialogForWork"
-                  />
-                </div>
-                <div v-else class="work-list">
-                  <WorkListRow
-                    v-for="(item, rowIdx) in pagedMissingWorks"
-                    :key="item.canonical_rjcode"
-                    :item="item"
-                    image-field="thumb_image_url"
-                    :row-index="rowIdx"
-                    :selected="selectedCanonicals.has(item.canonical_rjcode)"
-                    :status-flash="flashedWorkCodes.has(item.canonical_rjcode)"
-                    @select="toggleSelection"
-                    @preview="openBatchPreview"
-                    @reimport="openReimportDialogForWork"
-                  />
-                </div>
-              <div class="works-pager">
-                <el-pagination
-                  v-model:current-page="missingPage"
-                  v-model:page-size="worksPageSize"
-                  :page-sizes="worksPageSizes"
-                  layout="total, sizes, prev, pager, next, jumper"
-                  :total="missingWorks.length"
-                  background
-                />
-              </div>
-              </template>
+              <CircleWorksViewport
+                v-else
+                v-model:current-page="missingPage"
+                v-model:page-size="worksPageSize"
+                :items="missingWorks"
+                :mode="viewMode"
+                :page-sizes="worksPageSizes"
+                :selected-codes="selectedCanonicals"
+                :flashed-codes="flashedWorkCodes"
+                image-field="thumb_image_url"
+                pager-label="缺失作品"
+                @select="toggleSelection"
+                @preview="openBatchPreview"
+                @reimport="openReimportDialogForWork"
+              />
             </el-tab-pane>
 
             <el-tab-pane name="owned">
@@ -535,7 +530,7 @@
               <!-- 改成和"缺失作品" tab 一样的双模式（card / list），共用 viewMode 开关，
                    保持上面 stats / 筛选 chip / 搜索框不变。已满足作品默认走 cornerLabel
                    = "已收录" 让卡片角标和原配色（绿色）统一。 -->
-              <template v-if="pagedOwnedWorks.length === 0">
+              <template v-if="ownedWorks.length === 0">
                 <div class="flex flex-col items-center justify-center py-12 text-slate-400 bg-white/50 rounded-xl border border-slate-200/50 border-dashed">
                   <LibraryBig :size="32" class="mb-3 opacity-40" />
                   <p class="text-sm font-medium">没有找到符合条件的作品</p>
@@ -545,51 +540,36 @@
                 <div v-if="ownedWorks.length > 0 && selectedActiveCanonicalRJCodes.length > 0" class="flex items-center justify-between bg-slate-50/80 border border-slate-200/80 rounded-xl px-4 py-3 mb-4 mt-2 shadow-sm backdrop-blur-sm">
                   <span class="text-sm font-medium text-slate-700">已选 {{ selectedActiveCanonicalRJCodes.length }} / {{ activeSelectableWorks.length }}</span>
                   <div class="flex items-center gap-2">
-                    <el-button class="batch-action-button" size="small" @click="selectAllVisibleWorks">全选</el-button>
-                    <el-button class="batch-action-button ghost" size="small" @click="clearSelection">清空</el-button>
-                    <el-button class="batch-action-button refresh" size="small" :disabled="isRefreshJobActive" :loading="refreshingCurrentCircle" @click="refreshSelectedCircleIndex(selectedActiveCanonicalRJCodes)">刷新状态</el-button>
+                    <button type="button" class="batch-action-button" @click="selectAllVisibleWorks">全选</button>
+                    <button type="button" class="batch-action-button ghost" @click="clearSelection">清空</button>
+                    <button
+                      type="button"
+                      class="batch-action-button refresh"
+                      :class="{ 'is-busy': refreshingCurrentCircle }"
+                      :disabled="isRefreshJobActive"
+                      @click="refreshSelectedCircleIndex(selectedActiveCanonicalRJCodes)"
+                    >
+                      <RefreshCw v-if="refreshingCurrentCircle" :size="13" class="batch-action-spinner" />
+                      刷新状态
+                    </button>
                   </div>
                 </div>
-                <div v-if="viewMode === 'card'" class="work-grid">
-                  <WorkCard
-                    v-for="(item, cardIdx) in pagedOwnedWorks"
-                    :key="item.canonical_rjcode"
-                    :item="item"
-                    :card-index="cardIdx"
-                    :selected="selectedCanonicals.has(item.canonical_rjcode)"
-                    corner-label="已收录"
-                    :status-flash="flashedWorkCodes.has(item.canonical_rjcode)"
-                    @select="toggleSelection"
-                    @preview="openBatchPreview"
-                    @reimport="openReimportDialogForWork"
-                  />
-                </div>
-                <div v-else class="work-list">
-                  <WorkListRow
-                    v-for="(item, rowIdx) in pagedOwnedWorks"
-                    :key="item.canonical_rjcode"
-                    :item="item"
-                    image-field="thumb_image_url"
-                    :row-index="rowIdx"
-                    :selected="selectedCanonicals.has(item.canonical_rjcode)"
-                    corner-label="已收录"
-                    :status-flash="flashedWorkCodes.has(item.canonical_rjcode)"
-                    @select="toggleSelection"
-                    @preview="openBatchPreview"
-                    @reimport="openReimportDialogForWork"
-                  />
-                </div>
-              </template>
-              <div class="works-pager">
-                <el-pagination
+                <CircleWorksViewport
                   v-model:current-page="ownedPage"
                   v-model:page-size="worksPageSize"
+                  :items="ownedWorks"
+                  :mode="viewMode"
                   :page-sizes="worksPageSizes"
-                  layout="total, sizes, prev, pager, next, jumper"
-                  :total="ownedWorks.length"
-                  background
+                  :selected-codes="selectedCanonicals"
+                  :flashed-codes="flashedWorkCodes"
+                  image-field="thumb_image_url"
+                  corner-label="已收录"
+                  pager-label="已满足作品"
+                  @select="toggleSelection"
+                  @preview="openBatchPreview"
+                  @reimport="openReimportDialogForWork"
                 />
-              </div>
+              </template>
             </el-tab-pane>
 
             <el-tab-pane name="compare">
@@ -931,8 +911,7 @@ import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
 import BackgroundFloatingCard from '../components/common/BackgroundFloatingCard.vue'
-import WorkCard from '../components/circle/WorkCard.vue'
-import WorkListRow from '../components/circle/WorkListRow.vue'
+import CircleWorksViewport from '../components/circle/CircleWorksViewport.vue'
 import { showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 
 const CIRCLE_COMPLETION_TARGET_SUBDIRS_KEY = 'kikoerumanager.circleCompletion.targetSubdirs'
@@ -1582,16 +1561,6 @@ const ownedWorksStats = computed(() => {
   }
 })
 
-const pagedMissingWorks = computed(() => {
-  const size = Number(worksPageSize.value || 24)
-  const start = (missingPage.value - 1) * size
-  return missingWorks.value.slice(start, start + size)
-})
-const pagedOwnedWorks = computed(() => {
-  const size = Number(worksPageSize.value || 24)
-  const start = (ownedPage.value - 1) * size
-  return ownedWorks.value.slice(start, start + size)
-})
 const compareWorks = computed(() => (detail.works || []).map(item => ({
   workRjcode: String(item?.source_compare?.work_rjcode || item?.canonical_rjcode || '').trim(),
   title: String(item?.title || '').trim(),
@@ -5674,6 +5643,10 @@ function getUploadBackgroundTargetLabel(task) {
   min-width: 100px;
   height: 34px;
   padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   border: 1px solid #e2e8f0;
   background: #ffffff;
   color: #475569;
@@ -5684,17 +5657,32 @@ function getUploadBackgroundTargetLabel(task) {
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
-.batch-action-button:hover {
+.batch-action-button:hover:not(:disabled) {
   transform: translateY(-2px) scale(1.02);
   background: #f8fafc;
   border-color: #cbd5e1;
   color: #1e293b;
   box-shadow: 0 6px 15px rgba(0, 0, 0, 0.08);
 }
-.batch-action-button:active {
+.batch-action-button:active:not(:disabled) {
   transform: translateY(0) scale(0.96);
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
   transition-duration: 0.1s;
+}
+.batch-action-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+  transform: none;
+  box-shadow: none;
+}
+.batch-action-button svg {
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.batch-action-button:hover:not(:disabled) svg:not(.batch-action-spinner) {
+  transform: rotate(-6deg) scale(1.08);
+}
+.batch-action-spinner {
+  animation: batchActionSpin 0.82s linear infinite;
 }
 .batch-action-button.primary {
   background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
@@ -5702,7 +5690,7 @@ function getUploadBackgroundTargetLabel(task) {
   border: none;
   box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2);
 }
-.batch-action-button.primary:hover {
+.batch-action-button.primary:hover:not(:disabled) {
   background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%);
   box-shadow: 0 8px 20px rgba(37, 99, 235, 0.3);
 }
@@ -5712,7 +5700,7 @@ function getUploadBackgroundTargetLabel(task) {
   border: none;
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.2);
 }
-.batch-action-button.refresh:hover {
+.batch-action-button.refresh:hover:not(:disabled) {
   background: linear-gradient(135deg, #475569 0%, #1e293b 100%);
   box-shadow: 0 8px 20px rgba(15, 23, 42, 0.3);
 }
@@ -5722,11 +5710,14 @@ function getUploadBackgroundTargetLabel(task) {
   color: #64748b;
   box-shadow: none;
 }
-.batch-action-button.ghost:hover {
+.batch-action-button.ghost:hover:not(:disabled) {
   background: #f1f5f9;
   border-style: solid;
   border-color: #94a3b8;
   color: #334155;
+}
+@keyframes batchActionSpin {
+  to { transform: rotate(360deg); }
 }
 .work-action-button:hover {
   background: linear-gradient(180deg, #f2f7ff 0%, #e9f2ff 100%);

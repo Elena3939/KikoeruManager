@@ -260,7 +260,13 @@
 
 
 
-      <div v-if="!selectedRowPaths.size" class="lib-path-toolbar">
+      <div class="lib-toolbar-switcher" :class="{ 'is-batch-mode': selectedRowPaths.size && !tableItemDragState.visible }">
+
+      <div
+        class="lib-path-toolbar lib-toolbar-panel"
+        :class="{ 'is-visible': !selectedRowPaths.size || tableItemDragState.visible }"
+        :aria-hidden="selectedRowPaths.size && !tableItemDragState.visible ? 'true' : 'false'"
+      >
 
         <div class="lib-path-left">
 
@@ -272,9 +278,73 @@
 
           </button>
 
-          <span class="lib-path-label">当前层级</span>
+          <span class="lib-path-label">地址</span>
 
-          <code class="lib-path-code">{{ currentPathDisplay }}</code>
+          <nav ref="pathBreadcrumbRef" class="lib-path-breadcrumb" aria-label="当前层级路径">
+            <IconHardDrive :size="15" :stroke-width="2.25" class="lib-path-address-icon" />
+            <template
+              v-for="(item, index) in currentPathBreadcrumbDisplayItems"
+              :key="item.key"
+            >
+              <span v-if="index > 0" class="lib-path-separator">{{ currentPathSeparatorSymbol }}</span>
+              <el-popover
+                v-if="item.type === 'ellipsis'"
+                v-model:visible="pathBreadcrumbPopoverVisible"
+                trigger="manual"
+                placement="bottom-start"
+                popper-class="lib-path-popover"
+                :width="360"
+              >
+                <template #reference>
+                  <button
+                    ref="pathBreadcrumbEllipsisRef"
+                    type="button"
+                    class="lib-path-crumb lib-path-ellipsis"
+                    :class="{ 'is-drag-hover': tableItemDragState.visible }"
+                    data-library-path-ellipsis="1"
+                    title="展开中间路径"
+                    @click="pathBreadcrumbPopoverVisible = !pathBreadcrumbPopoverVisible"
+                  >
+                    <span>...</span>
+                  </button>
+                </template>
+                <div class="lib-path-popover-list">
+                  <button
+                    v-for="segment in currentPathBreadcrumbHiddenSegments"
+                    :key="segment.path || segment.label"
+                    type="button"
+                    class="lib-path-popover-item"
+                    :class="{
+                      'is-drop-target': isPathBreadcrumbDropTarget(segment),
+                      'is-drop-blocked': isPathBreadcrumbDropBlocked(segment)
+                    }"
+                    :data-library-path-drop-target="segment.path || ''"
+                    :data-library-path-label="segment.label"
+                    :title="segment.path || segment.label"
+                    @click="navigateToBreadcrumbPath(segment.path)"
+                  >
+                    <span>{{ segment.label }}</span>
+                  </button>
+                </div>
+              </el-popover>
+              <button
+                v-else
+                type="button"
+                class="lib-path-crumb"
+                :class="{
+                  'is-current': item.segment.current,
+                  'is-drop-target': isPathBreadcrumbDropTarget(item.segment),
+                  'is-drop-blocked': isPathBreadcrumbDropBlocked(item.segment)
+                }"
+                :data-library-path-drop-target="item.segment.path || ''"
+                :data-library-path-label="item.segment.label"
+                :title="item.segment.path || item.segment.label"
+                @click="navigateToBreadcrumbPath(item.segment.path)"
+              >
+                <span>{{ item.segment.label }}</span>
+              </button>
+            </template>
+          </nav>
 
         </div>
 
@@ -398,27 +468,11 @@
 
 
 
-      <el-alert
-
-        v-if="librarySearchState.active"
-
-        :title="librarySearchSummary"
-
-        type="info"
-
-        :closable="false"
-
-        show-icon
-
-        style="margin-bottom: 14px"
-
-      />
-
-
-
-      <transition name="lib-batch-slide">
-
-        <div v-if="selectedRowPaths.size" class="lib-batch-bar">
+        <div
+          class="lib-batch-bar lib-toolbar-panel"
+          :class="{ 'is-visible': selectedRowPaths.size && !tableItemDragState.visible }"
+          :aria-hidden="selectedRowPaths.size && !tableItemDragState.visible ? 'false' : 'true'"
+        >
 
           <div class="lib-batch-info">
 
@@ -583,101 +637,136 @@
 
         </div>
 
-      </transition>
+      </div>
 
 
 
-      <el-table
+      <el-alert
 
+        v-if="librarySearchState.active"
+
+        :title="librarySearchSummary"
+
+        type="info"
+
+        :closable="false"
+
+        show-icon
+
+        style="margin-bottom: 14px"
+
+      />
+
+
+
+      <div
         v-if="!isMobileViewport"
-
-        :key="libraryTableKey"
-
-        ref="tableRef"
-
-        :data="files"
-
-        :row-key="libraryRowKey"
-
-        :row-class-name="libraryRowClassName"
-
-        empty-text="暂无文件"
-
-        @selection-change="handleSelectionChange"
-
-        @sort-change="handleSortChange"
-
-        @row-click="handleLibraryRowClick"
-
-        @row-contextmenu="handleLibraryRowContextMenu"
-
+        ref="tableMarqueeRef"
+        class="lib-table-marquee-host"
+        :class="{ 'is-marquee-selecting': tableMarqueeState.active }"
+        tabindex="0"
+        @pointerdown.capture="onTableMarqueePointerDown"
+        @keydown="handleLibraryTableKeydown"
       >
+        <div :key="libraryTableKey" ref="tableRef" class="lib-file-table" role="table" aria-label="库内文件列表">
+          <div class="lib-file-table-head" role="rowgroup">
+            <div class="lib-file-table-header-row" role="row">
+              <div class="lib-file-th is-name" role="columnheader">
+                <button type="button" class="lib-file-sort-btn" @click="toggleLibraryTableSort('name')">
+                  <span>文件名</span>
+                  <span class="lib-file-sort-caret" :class="getLibraryTableSortClass('name')"></span>
+                </button>
+              </div>
+              <div class="lib-file-th" role="columnheader">RJ 号</div>
+              <div class="lib-file-th" role="columnheader">
+                <button type="button" class="lib-file-sort-btn" @click="toggleLibraryTableSort('size')">
+                  <span>大小</span>
+                  <span class="lib-file-sort-caret" :class="getLibraryTableSortClass('size')"></span>
+                </button>
+              </div>
+              <div class="lib-file-th" role="columnheader">
+                <button type="button" class="lib-file-sort-btn" @click="toggleLibraryTableSort('modified_time')">
+                  <span>时间</span>
+                  <span class="lib-file-sort-caret" :class="getLibraryTableSortClass('modified_time')"></span>
+                </button>
+              </div>
+            </div>
+          </div>
 
-        <el-table-column type="selection" width="55" :selectable="isLibraryRowSelectable" />
+          <div class="lib-file-table-body" role="rowgroup">
+            <div
+              v-for="tableRow in libraryTableRows"
+              :key="tableRow.id"
+              class="lib-file-table-row"
+              :class="libraryRowClassName({ row: tableRow.original })"
+              :data-library-row-index="tableRow.index"
+              :data-library-row-path="tableRow.original.path || ''"
+              role="row"
+              @click="handleLibraryRowClick(tableRow.original, null, $event)"
+              @dblclick="handleLibraryRowDoubleClick(tableRow.original, null, $event)"
+              @contextmenu="handleLibraryRowContextMenu(tableRow.original, null, $event)"
+            >
+              <div class="lib-file-cell lib-file-name-cell" role="cell">
+                <div class="file-cell" :title="tableRow.original.name || getFileName(tableRow.original.path)">
+                  <div class="file-main-line">
+                    <span class="file-icon-shell">
+                      <component :is="getLibraryRowIconComponent(tableRow.original)" class="file-icon" :class="getLibraryRowIconClass(tableRow.original)" :size="18" :stroke-width="2.2" />
+                    </span>
 
-        <el-table-column prop="name" label="文件名" sortable="custom" show-overflow-tooltip>
+                    <button v-if="isSearchResultRow(tableRow.original)" type="button" class="file-link-btn" @click.stop="handleLibraryNameActionClick(tableRow.original, $event, 'locate')" v-html="renderLibrarySearchHighlight(tableRow.original.name)"></button>
 
-          <template #default="{ row }">
+                    <button v-else-if="tableRow.original.is_directory" type="button" class="file-link-btn" @click.stop="handleLibraryNameActionClick(tableRow.original, $event, 'open')" v-html="renderLibrarySearchHighlight(tableRow.original.name)"></button>
 
-            <div class="file-cell">
+                    <button v-else-if="canViewLibraryRow(tableRow.original)" type="button" class="file-link-btn" @click.stop="handleLibraryNameActionClick(tableRow.original, $event, 'view')" v-html="renderLibrarySearchHighlight(tableRow.original.name)"></button>
 
-              <div class="file-main-line">
+                    <span v-else class="file-name" v-html="renderLibrarySearchHighlight(tableRow.original.name)"></span>
+                  </div>
 
-                <span class="file-icon-shell">
-                  <component :is="getLibraryRowIconComponent(row)" class="file-icon" :class="getLibraryRowIconClass(row)" :size="18" :stroke-width="2.2" />
-                </span>
-
-                <button v-if="isSearchResultRow(row)" type="button" class="file-link-btn" @click.stop="locateLibrarySearchResult(row)" v-html="renderLibrarySearchHighlight(row.name)"></button>
-
-                <button v-else-if="row.is_directory" type="button" class="file-link-btn" @click.stop="openFolder(row)" v-html="renderLibrarySearchHighlight(row.name)"></button>
-
-                <button v-else-if="canViewLibraryRow(row)" type="button" class="file-link-btn" @click.stop="viewLibraryRow(row)" v-html="renderLibrarySearchHighlight(row.name)"></button>
-
-                <span v-else class="file-name" v-html="renderLibrarySearchHighlight(row.name)"></span>
-
+                  <div v-if="isSearchResultRow(tableRow.original) && getSearchResultLibraryLabel(tableRow.original)" class="search-result-library">
+                    来源库：{{ getSearchResultLibraryLabel(tableRow.original) }}
+                  </div>
+                </div>
               </div>
 
-              <div v-if="isSearchResultRow(row) && getSearchResultLibraryLabel(row)" class="search-result-library">
-
-                来源库：{{ getSearchResultLibraryLabel(row) }}
-
+              <div class="lib-file-cell lib-file-rj-cell" role="cell">
+                <span v-if="tableRow.original.rjcode" class="lib-file-rj-chip">{{ tableRow.original.rjcode }}</span>
+                <span v-else class="empty-text">-</span>
               </div>
 
+              <div class="lib-file-cell lib-file-size-cell" role="cell">{{ formatRowSize(tableRow.original) }}</div>
+
+              <div class="lib-file-cell lib-file-time-cell" role="cell">{{ formatDate(tableRow.original.unzip_time || tableRow.original.modified_time) }}</div>
             </div>
 
-          </template>
-
-        </el-table-column>
-
-        <el-table-column prop="rjcode" label="RJ 号" width="120">
-
-          <template #default="{ row }">
-
-            <el-tag v-if="row.rjcode" size="small" type="primary" effect="light">{{ row.rjcode }}</el-tag>
-
-            <span v-else class="empty-text">-</span>
-
-          </template>
-
-        </el-table-column>
-
-        <el-table-column prop="size" label="大小" sortable="custom" width="120">
-
-          <template #default="{ row }">{{ formatRowSize(row) }}</template>
-
-        </el-table-column>
-
-        <el-table-column prop="modified_time" label="时间" sortable="custom" width="180">
-
-          <template #default="{ row }">{{ formatDate(row.unzip_time || row.modified_time) }}</template>
-
-        </el-table-column>
-
-      </el-table>
+            <div v-if="!libraryTableRows.length" class="lib-file-empty-row">暂无文件</div>
+          </div>
+        </div>
+        <div
+          v-if="tableMarqueeState.visible"
+          class="lib-table-marquee-box"
+          :style="tableMarqueeBoxStyle"
+        />
+        <div
+          v-if="tableItemDragState.visible"
+          class="lib-table-drag-ghost"
+          :class="{ 'is-droppable': tableItemDragState.canDrop }"
+          :style="tableItemDragGhostStyle"
+        >
+          <span class="lib-table-drag-icon-stack">
+            <IconFile v-if="tableItemDragFileCount" :size="15" :stroke-width="2.3" class="lib-table-drag-file-icon" />
+            <IconFolderTree v-if="tableItemDragFolderCount" :size="16" :stroke-width="2.3" class="lib-table-drag-folder-icon" />
+            <IconFolderInput v-if="tableItemDragState.canDrop" :size="15" :stroke-width="2.3" class="lib-table-drag-move-icon" />
+          </span>
+          <span class="lib-table-drag-count">{{ tableItemDragCountText }}</span>
+          <span v-if="tableItemDragState.targetName" class="lib-table-drag-target">
+            {{ tableItemDragState.canDrop ? `移动到 ${tableItemDragState.targetName}` : tableItemDragState.targetName }}
+          </span>
+        </div>
+      </div>
 
       <!--
         移动端 (≤640) 卡片视图：复用桌面端的 row 状态计算函数与 click / contextmenu handler，
-        多选 / sort 留给桌面端 el-table，这里只做单点 click + 长按 / ⋮ 触发右键菜单。
+        多选 / sort 留给桌面端 TanStack 文件表，这里只做单点 click + 长按 / ⋮ 触发右键菜单。
       -->
       <div v-else class="lib-mobile-list">
         <LibraryMobileCard
@@ -821,6 +910,12 @@
       @background="hideUploadWorkbenchToBackground"
 
       @close="closeUploadWorkbench"
+
+      @pause-task="pauseUploadWorkbenchTask"
+
+      @resume-task="resumeUploadWorkbenchTask"
+
+      @cancel-task="cancelUploadWorkbenchTask"
 
     />
 
@@ -1329,6 +1424,8 @@
 
       :source-library-id="moveDialogState.sourceLibraryId"
 
+      :initial-path="moveDialogState.initialPath"
+
       :items="moveDialogState.items"
 
       :libraries="libraries"
@@ -1372,6 +1469,7 @@
 
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
+import { getCoreRowModel, useVueTable } from '@tanstack/vue-table'
 
 import { useRoute, useRouter } from 'vue-router'
 
@@ -1546,9 +1644,19 @@ const sortBy = ref(DEFAULT_SORT_BY)
 
 const sortOrder = ref(DEFAULT_SORT_ORDER)
 
+const pathBreadcrumbRef = ref(null)
+
+const pathBreadcrumbEllipsisRef = ref(null)
+
+const pathBreadcrumbWidth = ref(0)
+
+const pathBreadcrumbPopoverVisible = ref(false)
+
 const selectedRows = ref([])
 
 const selectedRowPaths = ref(new Set())
+
+const tableSelectionAnchorPath = ref('')
 
 const batchDeleting = ref(false)
 
@@ -1558,9 +1666,81 @@ const batchRenaming = ref(false)
 
 const tableRef = ref(null)
 
+const tableMarqueeRef = ref(null)
+
+const libraryTableColumns = [
+  { id: 'name', accessorKey: 'name', header: '文件名' },
+  { id: 'rjcode', accessorKey: 'rjcode', header: 'RJ 号' },
+  { id: 'size', accessorKey: 'size', header: '大小' },
+  { id: 'modified_time', accessorKey: 'modified_time', header: '时间' }
+]
+
+const libraryDataTable = useVueTable({
+  get data () {
+    return files.value
+  },
+  columns: libraryTableColumns,
+  getCoreRowModel: getCoreRowModel(),
+  getRowId: row => libraryRowKey(row)
+})
+
+const libraryTableRows = computed(() => libraryDataTable.getRowModel().rows)
+
+const tableMarqueeState = ref({
+  active: false,
+  visible: false,
+  startX: 0,
+  startY: 0,
+  currentX: 0,
+  currentY: 0,
+  hostLeft: 0,
+  hostTop: 0,
+  pointerId: null,
+  hasMoved: false,
+  append: false,
+  baseSelectedPaths: new Set(),
+  lastSelectionKey: ''
+})
+
+const tableItemDragState = ref({
+  active: false,
+  visible: false,
+  startX: 0,
+  startY: 0,
+  currentX: 0,
+  currentY: 0,
+  pointerId: null,
+  items: [],
+  targetPath: '',
+  targetName: '',
+  canDrop: false
+})
+
+const tableMarqueeSelectionActive = ref(false)
+
+const suppressMarqueeClickUntil = ref(0)
+
+let tableSelectionApplyTimer = null
+
+let tableMarqueeRowSnapshot = []
+
+let tableMarqueeMoveFrame = null
+
+let tableMarqueePendingPoint = null
+
+let tableItemDragMoveFrame = null
+
+let tableItemDragPendingPoint = null
+
+let pathBreadcrumbResizeObserver = null
+
+let pathBreadcrumbDragOpenTimer = null
+
+let pathBreadcrumbDragCloseTimer = null
+
 const libraryRowContextMenu = ref({ visible: false, x: 0, y: 0, row: null, batchMode: false, renderKey: 0 })
 
-const moveDialogState = ref({ visible: false, sourceLibraryId: '', items: [], submitting: false })
+const moveDialogState = ref({ visible: false, sourceLibraryId: '', initialPath: '', items: [], submitting: false })
 
 const librarySearchBoxRef = ref(null)
 
@@ -1693,6 +1873,8 @@ const LOCAL_UPLOAD_WORKBENCH_KEY = 'kikoerumanager.library.uploadWorkbench'
 
 let uploadWorkbenchTimer = null
 
+let uploadSpeedSamples = new Map()
+
 const processingUploadTasks = computed(() => trackedUploadTasks.value.filter(task => String(task?.status || '') === 'processing'))
 
 const pendingUploadTasks = computed(() => trackedUploadTasks.value.filter(task => ['pending', 'paused', 'waiting_retry'].includes(String(task?.status || ''))))
@@ -1716,7 +1898,7 @@ const uploadBackgroundAggregate = computed(() => {
     const status = String(task?.status || '')
     const taskTotal = Math.max(0, Number(runtime?.total_bytes || task?.task_metadata?.total_bytes || task?.total_bytes || task?.size_bytes || 0))
     let taskTransferred = Math.max(0, Number(runtime?.transferred_bytes || 0))
-    if (taskTotal > 0 && ['completed', 'failed'].includes(status)) {
+    if (taskTotal > 0 && status === 'completed') {
       taskTransferred = Math.max(taskTransferred, taskTotal)
     }
     totalBytes += taskTotal
@@ -1732,11 +1914,6 @@ const uploadBackgroundAggregate = computed(() => {
       transferredBytes,
       speedBytes: 0,
     }
-  }
-
-  if (speedBytes <= 0) {
-    const fallbackTask = processingUploadTasks.value[0] || pendingUploadTasks.value[0] || null
-    speedBytes = Math.max(0, Number(fallbackTask?.upload_runtime?.speed_bytes_per_sec || fallbackTask?.upload_runtime?.last_non_zero_speed_bytes_per_sec || 0))
   }
 
   return {
@@ -3005,6 +3182,51 @@ const isAllSelected = computed(() => files.value.length > 0 && selectedRows.valu
 // 是否处于根目录层（社团层），只有这一层需要"计算大小"入口
 const isAtComputeSizeRoot = computed(() => !currentPath.value || currentPath.value === browseRootPath.value)
 
+const tableMarqueeBoxStyle = computed(() => {
+  const state = tableMarqueeState.value
+  const left = Math.min(state.startX, state.currentX)
+  const top = Math.min(state.startY, state.currentY)
+  const width = Math.abs(state.currentX - state.startX)
+  const height = Math.abs(state.currentY - state.startY)
+  return {
+    left: `${Math.max(0, left)}px`,
+    top: `${Math.max(0, top)}px`,
+    width: `${Math.max(1, width)}px`,
+    height: `${Math.max(1, height)}px`
+  }
+})
+
+const tableItemDragGhostStyle = computed(() => ({
+  transform: `translate3d(${tableItemDragState.value.currentX + 14}px, ${tableItemDragState.value.currentY + 14}px, 0)`
+}))
+
+const tableItemDragFolderCount = computed(() => tableItemDragState.value.items.filter(row => row?.is_directory).length)
+
+const tableItemDragFileCount = computed(() => tableItemDragState.value.items.length - tableItemDragFolderCount.value)
+
+const tableItemDragCountText = computed(() => {
+  const count = tableItemDragState.value.items.length
+  return count > 1 ? `${count} 项` : '1 项'
+})
+
+function isPathBreadcrumbDropTarget (segment) {
+  return Boolean(
+    tableItemDragState.value.visible &&
+    tableItemDragState.value.canDrop &&
+    segment?.path &&
+    tableItemDragState.value.targetPath === segment.path
+  )
+}
+
+function isPathBreadcrumbDropBlocked (segment) {
+  return Boolean(
+    tableItemDragState.value.visible &&
+    !tableItemDragState.value.canDrop &&
+    segment?.path &&
+    tableItemDragState.value.targetPath === segment.path
+  )
+}
+
 // 当前选中行中的目录行（供批量计算使用）
 const selectedDirectoryRows = computed(() => selectedRows.value.filter(r => r?.is_directory))
 
@@ -3123,6 +3345,213 @@ const currentPathDisplay = computed(() => {
   return normalizedCurrent
 
 })
+
+const currentPathBreadcrumbSegments = computed(() => {
+
+  const current = String(currentPath.value || '').trim()
+
+  const root = String(browseRootPath.value || '').trim()
+
+  const sourcePath = current || root || '/'
+
+  const sep = sourcePath.includes('\\') ? '\\' : '/'
+
+  const normalizedPath = sourcePath.replace(/\\/g, '/').replace(/\/+$/, '') || '/'
+
+  const isAbsolute = normalizedPath.startsWith('/')
+
+  const parts = normalizedPath.split('/').filter(Boolean)
+
+  const segments = []
+
+  if (isAbsolute) {
+
+    segments.push({ label: '/', path: '/', current: parts.length === 0 })
+
+  }
+
+  let cursor = ''
+
+  parts.forEach((part, index) => {
+
+    const isDrive = /^[a-zA-Z]:$/.test(part)
+
+    if (!cursor && isDrive) {
+
+      cursor = part
+
+    } else if (!cursor) {
+
+      cursor = isAbsolute ? `${sep}${part}` : part
+
+    } else {
+
+      cursor = `${cursor.replace(/[\\/]+$/, '')}${sep}${part}`
+
+    }
+
+    segments.push({
+      label: part,
+      path: cursor,
+      current: index === parts.length - 1
+    })
+
+  })
+
+  return segments.length ? segments : [{ label: '/', path: root || current || '/', current: true }]
+
+})
+
+const currentPathBreadcrumbHiddenSegments = computed(() => {
+
+  const segments = currentPathBreadcrumbSegments.value
+
+  if (!shouldCollapseCurrentPathBreadcrumb.value) return []
+
+  return segments.slice(2, -2)
+
+})
+
+const estimatedCurrentPathBreadcrumbWidth = computed(() => {
+
+  const segments = currentPathBreadcrumbSegments.value
+
+  if (!segments.length) return 0
+
+  const iconWidth = 26
+
+  const containerPadding = 20
+
+  const separatorWidth = 18 * Math.max(0, segments.length - 1)
+
+  const segmentWidth = segments.reduce((sum, segment) => {
+
+    const label = String(segment?.label || '')
+
+    const rawWidth = Array.from(label).reduce((innerSum, char) => {
+
+      return innerSum + (/[\u3000-\u9fff\u3040-\u30ff\uff00-\uffef]/.test(char) ? 14 : 8)
+
+    }, 12)
+
+    return sum + Math.min(rawWidth, segment?.current ? 340 : 220)
+
+  }, 0)
+
+  return iconWidth + containerPadding + separatorWidth + segmentWidth
+
+})
+
+const shouldCollapseCurrentPathBreadcrumb = computed(() => {
+
+  const segments = currentPathBreadcrumbSegments.value
+
+  if (segments.length <= 5) return false
+
+  const availableWidth = Number(pathBreadcrumbWidth.value || 0)
+
+  if (!availableWidth) return false
+
+  return estimatedCurrentPathBreadcrumbWidth.value > availableWidth - 8
+
+})
+
+const currentPathBreadcrumbDisplayItems = computed(() => {
+
+  const segments = currentPathBreadcrumbSegments.value
+
+  if (!currentPathBreadcrumbHiddenSegments.value.length) {
+
+    return segments.map((segment, index) => ({
+      type: 'segment',
+      key: `segment-${segment.path || segment.label}-${index}`,
+      segment
+    }))
+
+  }
+
+  const visibleSegments = [
+    ...segments.slice(0, 2),
+    ...segments.slice(-2)
+  ]
+
+  return [
+    ...visibleSegments.slice(0, 2).map((segment, index) => ({
+      type: 'segment',
+      key: `segment-${segment.path || segment.label}-${index}`,
+      segment
+    })),
+    { type: 'ellipsis', key: 'path-ellipsis' },
+    ...visibleSegments.slice(2).map((segment, index) => ({
+      type: 'segment',
+      key: `segment-tail-${segment.path || segment.label}-${index}`,
+      segment
+    }))
+  ]
+
+})
+
+const currentPathSeparatorSymbol = computed(() => {
+
+  const path = `${currentPath.value || ''}${browseRootPath.value || ''}`
+
+  return path.includes('\\') ? '\\' : '/'
+
+})
+
+function updatePathBreadcrumbWidth () {
+
+  const el = pathBreadcrumbRef.value
+
+  if (!el) {
+
+    pathBreadcrumbWidth.value = 0
+
+    return
+
+  }
+
+  pathBreadcrumbWidth.value = Math.round(el.getBoundingClientRect().width || 0)
+
+}
+
+function bindPathBreadcrumbResizeObserver () {
+
+  if (typeof window === 'undefined') return
+
+  const el = pathBreadcrumbRef.value
+
+  if (!el) return
+
+  pathBreadcrumbResizeObserver?.disconnect?.()
+
+  if (typeof ResizeObserver === 'undefined') {
+
+    updatePathBreadcrumbWidth()
+
+    window.addEventListener('resize', updatePathBreadcrumbWidth)
+
+    return
+
+  }
+
+  pathBreadcrumbResizeObserver = new ResizeObserver(() => updatePathBreadcrumbWidth())
+
+  pathBreadcrumbResizeObserver.observe(el)
+
+  updatePathBreadcrumbWidth()
+
+}
+
+function unbindPathBreadcrumbResizeObserver () {
+
+  pathBreadcrumbResizeObserver?.disconnect?.()
+
+  pathBreadcrumbResizeObserver = null
+
+  if (typeof window !== 'undefined') window.removeEventListener('resize', updatePathBreadcrumbWidth)
+
+}
 
 const librarySearchSummary = computed(() => {
 
@@ -4589,6 +5018,8 @@ async function resumeLibraryPage () {
 
   bindLibraryKeydown()
 
+  bindLibraryMarqueeDismiss()
+
   await refreshLibrary({ silent: true })
 
   await refreshStats(false, { silent: true })
@@ -4613,7 +5044,11 @@ onMounted(async () => {
 
   bindLibraryContextMenuDismiss()
 
+  bindLibraryMarqueeDismiss()
+
   bindLibraryKeydown()
+
+  nextTick(() => bindPathBreadcrumbResizeObserver())
 
   // \u5148\u6062\u590d\u5220\u9664\u8fc7\u6ee4\u540e\u53f0\u72b6\u6001\uff0c\u907f\u514d\u9875\u9762\u521d\u59cb\u5316\u540e\u88ab\u8986\u76d6
 
@@ -4737,6 +5172,10 @@ onActivated(async () => {
 
   await resumeLibraryPage()
 
+  await nextTick()
+
+  bindPathBreadcrumbResizeObserver()
+
   await consumeSubtitleRouteFocus()
 
   await consumeSubtitleBatchSelectionRoute()
@@ -4753,11 +5192,27 @@ onDeactivated(() => {
 
   unbindLibraryContextMenuDismiss()
 
+  unbindLibraryMarqueeDismiss()
+
+  unbindPathBreadcrumbResizeObserver()
+
   stopLibraryPolling()
 
   stopUploadWorkbenchPolling()
 
   unbindLibraryKeydown()
+
+  stopTableMarqueeTracking()
+
+  stopTableItemDragTracking()
+
+  if (tableSelectionApplyTimer) {
+
+    window.clearTimeout(tableSelectionApplyTimer)
+
+    tableSelectionApplyTimer = null
+
+  }
 
   if (filterDeleteBackgroundTimer) {
 
@@ -4782,11 +5237,33 @@ onBeforeUnmount(() => {
 
   unbindLibraryContextMenuDismiss()
 
+  unbindLibraryMarqueeDismiss()
+
+  unbindPathBreadcrumbResizeObserver()
+
   stopLibraryPolling()
 
   stopUploadWorkbenchPolling()
 
   unbindLibraryKeydown()
+
+  stopTableMarqueeTracking()
+
+  stopTableItemDragTracking()
+
+  window.removeEventListener('click', suppressNextMarqueeClick, true)
+
+  cancelPathBreadcrumbDragOpen()
+
+  cancelPathBreadcrumbDragClose()
+
+  if (tableSelectionApplyTimer) {
+
+    window.clearTimeout(tableSelectionApplyTimer)
+
+    tableSelectionApplyTimer = null
+
+  }
 
   if (subtitlePreferencesSaveTimer) {
 
@@ -4887,6 +5364,14 @@ watch(currentPage, async (value, oldValue) => {
 watch(toolbarActionScope, value => {
 
   storeString(LIBRARY_ACTION_SCOPE_KEY, value)
+
+})
+
+watch([currentPath, selectedLibraryId], () => {
+
+  pathBreadcrumbPopoverVisible.value = false
+
+  nextTick(() => updatePathBreadcrumbWidth())
 
 })
 
@@ -5659,7 +6144,7 @@ async function refreshLibrary (options = {}) {
       try {
         files.value.forEach(row => {
           if (row?.path && prevSelectedPaths.has(row.path)) {
-            tableRef.value?.toggleRowSelection(row, true)
+            tableRef.value?.toggleRowSelection?.(row, true)
           }
         })
         selectedRows.value = files.value.filter(row => row?.path && prevSelectedPaths.has(row.path))
@@ -5703,7 +6188,7 @@ async function applyTableSortIndicator () {
 
   suppressSortChange.value = true
 
-  tableRef.value?.sort(prop, order)
+  tableRef.value?.sort?.(prop, order)
 
   await nextTick()
 
@@ -5853,13 +6338,68 @@ async function handleSortChange ({ prop, order }) {
 
 
 
+function normalizeLibrarySortProp (prop) {
+
+  return prop === 'modified_time' ? 'time' : (prop || DEFAULT_SORT_BY)
+
+}
+
+
+
+function getLibraryTableSortClass (prop) {
+
+  const normalized = normalizeLibrarySortProp(prop)
+
+  if (sortBy.value !== normalized) return ''
+
+  return sortOrder.value === 'asc' ? 'is-asc' : 'is-desc'
+
+}
+
+
+
+async function toggleLibraryTableSort (prop) {
+
+  const normalized = normalizeLibrarySortProp(prop)
+
+  const nextOrder = sortBy.value === normalized && sortOrder.value === 'asc' ? 'desc' : 'asc'
+
+  await handleSortChange({
+    prop,
+    order: nextOrder === 'asc' ? 'ascending' : 'descending'
+  })
+
+}
+
+
+
 function handleSelectionChange (selection) {
 
   if (suppressSelectionChange.value) return
 
+  tableMarqueeSelectionActive.value = false
+
+  const previousPaths = new Set(selectedRowPaths.value)
+
   selectedRows.value = Array.isArray(selection) ? selection : []
 
   selectedRowPaths.value = new Set(selectedRows.value.map(row => row?.path).filter(Boolean))
+
+  const addedRow = selectedRows.value.find(row => row?.path && !previousPaths.has(row.path))
+
+  if (addedRow?.path) {
+
+    tableSelectionAnchorPath.value = addedRow.path
+
+  } else if (!selectedRowPaths.value.size) {
+
+    tableSelectionAnchorPath.value = ''
+
+  } else if (tableSelectionAnchorPath.value && !selectedRowPaths.value.has(tableSelectionAnchorPath.value)) {
+
+    tableSelectionAnchorPath.value = selectedRows.value[selectedRows.value.length - 1]?.path || ''
+
+  }
 
 }
 
@@ -6170,13 +6710,36 @@ function toRJSubtitleItem (row) {
 
 
 
+function getCurrentSelectableTablePaths () {
+
+  return new Set(files.value.filter(row => isLibraryRowSelectable(row)).map(row => row.path).filter(Boolean))
+
+}
+
+
+
+function selectAllCurrentTableRows () {
+
+  const paths = getCurrentSelectableTablePaths()
+
+  if (!paths.size) return
+
+  applyTableSelectionByPaths(paths, {
+    source: 'row',
+    anchorPath: files.value.find(row => row?.path && isLibraryRowSelectable(row))?.path || ''
+  })
+
+}
+
+
+
 function toggleAllSelection () {
 
   if (!files.value.length) return
 
   if (isAllSelected.value) return clearSelection()
 
-  files.value.forEach(row => tableRef.value?.toggleRowSelection(row, true))
+  selectAllCurrentTableRows()
 
 }
 
@@ -6184,11 +6747,1153 @@ function toggleAllSelection () {
 
 function clearSelection () {
 
-  tableRef.value?.clearSelection()
+  if (tableSelectionApplyTimer) {
+
+    window.clearTimeout(tableSelectionApplyTimer)
+
+    tableSelectionApplyTimer = null
+
+  }
+
+  suppressSelectionChange.value = false
+
+  tableRef.value?.clearSelection?.()
+
+  tableMarqueeSelectionActive.value = false
 
   selectedRows.value = []
 
   selectedRowPaths.value = new Set()
+
+  tableSelectionAnchorPath.value = ''
+
+}
+
+
+
+function isTableSelectionModifierEvent (event) {
+
+  return Boolean(event?.ctrlKey || event?.metaKey || event?.shiftKey)
+
+}
+
+
+
+function findLibraryRowIndexByPath (path) {
+
+  if (!path) return -1
+
+  return files.value.findIndex(row => row?.path === path)
+
+}
+
+
+
+function resolveTableSelectionAnchorPath (fallbackPath) {
+
+  const anchorPath = tableSelectionAnchorPath.value
+
+  if (anchorPath && findLibraryRowIndexByPath(anchorPath) >= 0) return anchorPath
+
+  const selectedAnchor = selectedRows.value.find(row => row?.path && findLibraryRowIndexByPath(row.path) >= 0)
+
+  return selectedAnchor?.path || fallbackPath || ''
+
+}
+
+
+
+function getTableRangeSelectionPaths (anchorPath, targetPath) {
+
+  const result = new Set()
+
+  const anchorIndex = findLibraryRowIndexByPath(anchorPath)
+
+  const targetIndex = findLibraryRowIndexByPath(targetPath)
+
+  if (anchorIndex < 0 || targetIndex < 0) {
+
+    if (targetPath) result.add(targetPath)
+
+    return result
+
+  }
+
+  const start = Math.min(anchorIndex, targetIndex)
+
+  const end = Math.max(anchorIndex, targetIndex)
+
+  files.value.slice(start, end + 1).forEach((row) => {
+
+    if (row?.path && isLibraryRowSelectable(row)) result.add(row.path)
+
+  })
+
+  return result
+
+}
+
+
+
+function handleTableRowModifierSelection (row, event) {
+
+  if (!row?.path || !isLibraryRowSelectable(row) || !isTableSelectionModifierEvent(event)) return false
+
+  event?.preventDefault?.()
+
+  closeLibraryRowContextMenu()
+
+  const path = row.path
+
+  if (event?.shiftKey) {
+
+    const anchorPath = resolveTableSelectionAnchorPath(path)
+
+    const nextPaths = new Set(event?.ctrlKey || event?.metaKey ? selectedRowPaths.value : [])
+
+    getTableRangeSelectionPaths(anchorPath, path).forEach(itemPath => nextPaths.add(itemPath))
+
+    applyTableSelectionByPaths(nextPaths, {
+      source: 'row',
+      anchorPath: tableSelectionAnchorPath.value || anchorPath || path
+    })
+
+    return true
+
+  }
+
+  const nextPaths = new Set(selectedRowPaths.value)
+
+  if (nextPaths.has(path)) {
+
+    nextPaths.delete(path)
+
+  } else {
+
+    nextPaths.add(path)
+
+  }
+
+  applyTableSelectionByPaths(nextPaths, {
+    source: 'row',
+    anchorPath: path
+  })
+
+  return true
+
+}
+
+
+
+function handleTableRowPlainSelection (row, event) {
+
+  if (!row?.path || !isLibraryRowSelectable(row)) return false
+
+  event?.preventDefault?.()
+
+  closeLibraryRowContextMenu()
+
+  applyTableSelectionByPaths(new Set([row.path]), {
+    source: 'row',
+    anchorPath: row.path
+  })
+
+  return true
+
+}
+
+
+
+function isMarqueeAppendEvent (event) {
+
+  return Boolean(event?.ctrlKey || event?.metaKey || event?.shiftKey)
+
+}
+
+
+
+function onTableMarqueePointerDown (event) {
+
+  if (isMobileViewport.value || loading.value || !files.value.length) return
+
+  if (!event || event.button !== 0) return
+
+  const target = event.target
+
+  if (!(target instanceof Element)) return
+
+  if (target.closest('.lib-file-table-head, .el-scrollbar__bar')) return
+
+  const host = tableMarqueeRef.value
+
+  const body = target.closest('.lib-file-table-body')
+
+  if (!host || !body || !host.contains(body)) return
+
+  host.focus?.({ preventScroll: true })
+
+  const row = getLibraryRowFromPointerTarget(target)
+
+  if (target.closest('input, textarea, select, label, .el-checkbox')) return
+
+  const cell = target.closest('.lib-file-cell')
+
+  const isNameAction = Boolean(target.closest('.file-link-btn'))
+
+  const isItemDragHandle = Boolean(
+    (
+      isNameAction ||
+      target.closest('.file-cell, .file-icon-shell, .file-name') ||
+      cell?.querySelector('.file-cell')
+    )
+  )
+
+  if (row?.path && isLibraryRowSelectable(row) && isItemDragHandle && !isTableSelectionModifierEvent(event)) {
+
+    if (document?.body) delete document.body.dataset.libraryMarqueeSelecting
+
+    startTableItemDrag(row, event)
+
+    return
+
+  }
+
+  const append = isMarqueeAppendEvent(event)
+  const baseSelectedPaths = append ? new Set(selectedRowPaths.value) : new Set()
+  const startKey = Array.from(baseSelectedPaths).sort().join('\n')
+
+  tableMarqueeRowSnapshot = collectTableMarqueeRows(host)
+
+  tableMarqueeState.value = {
+    active: true,
+    visible: false,
+    startX: event.clientX,
+    startY: event.clientY,
+    currentX: event.clientX,
+    currentY: event.clientY,
+    hostLeft: 0,
+    hostTop: 0,
+    pointerId: event.pointerId,
+    hasMoved: false,
+    append,
+    baseSelectedPaths,
+    lastSelectionKey: startKey
+  }
+
+  try {
+    host.setPointerCapture?.(event.pointerId)
+  } catch {
+    // 指针捕获失败时继续用 window 级监听兜底。
+  }
+
+  window.addEventListener('pointermove', onTableMarqueePointerMove, { passive: false })
+  window.addEventListener('pointerup', onTableMarqueePointerUp, { passive: false })
+  window.addEventListener('pointercancel', onTableMarqueePointerUp, { passive: false })
+
+}
+
+
+
+function onTableMarqueePointerMove (event) {
+
+  const state = tableMarqueeState.value
+
+  if (!state.active) return
+
+  event.preventDefault()
+
+  tableMarqueePendingPoint = { clientX: event.clientX, clientY: event.clientY }
+
+  if (tableMarqueeMoveFrame !== null) return
+
+  tableMarqueeMoveFrame = window.requestAnimationFrame(() => {
+
+    tableMarqueeMoveFrame = null
+
+    const point = tableMarqueePendingPoint
+
+    tableMarqueePendingPoint = null
+
+    if (point) processTableMarqueePointerPoint(point)
+
+  })
+
+}
+
+
+
+function processTableMarqueePointerPoint ({ clientX, clientY }) {
+
+  const state = tableMarqueeState.value
+
+  if (!state.active) return
+
+  if (state.currentX === clientX && state.currentY === clientY) return
+
+  state.currentX = clientX
+  state.currentY = clientY
+
+  const moved = Math.hypot(state.currentX - state.startX, state.currentY - state.startY) >= 2
+
+  if (!moved && !state.visible) return
+
+  if (!state.visible) {
+
+    state.visible = true
+
+    state.hasMoved = true
+
+    closeLibraryRowContextMenu()
+
+    if (document?.body) document.body.dataset.libraryMarqueeSelecting = '1'
+
+  }
+
+  updateTableMarqueeSelection()
+
+}
+
+
+
+function onTableMarqueePointerUp (event) {
+
+  if (tableMarqueePendingPoint) processTableMarqueePointerPoint(tableMarqueePendingPoint)
+
+  const moved = tableMarqueeState.value.hasMoved
+
+  const finalPaths = moved ? new Set(selectedRowPaths.value) : new Set()
+
+  const shouldClearMarqueeSelection = !moved && shouldClearMarqueeSelectionClick(event)
+
+  if (moved && event) event.preventDefault()
+
+  stopTableMarqueeTracking()
+
+  if (moved) {
+
+    applyTableSelectionByPaths(finalPaths, { source: 'marquee' })
+
+    suppressNextTableClick()
+
+  } else if (shouldClearMarqueeSelection) {
+
+    clearSelection()
+
+    suppressNextTableClick()
+
+  }
+
+}
+
+
+
+function stopTableMarqueeTracking () {
+
+  const host = tableMarqueeRef.value
+
+  const pointerId = tableMarqueeState.value.pointerId
+
+  if (host && pointerId !== null && pointerId !== undefined) {
+
+    try {
+      if (host.hasPointerCapture?.(pointerId)) host.releasePointerCapture?.(pointerId)
+    } catch {
+      // 浏览器已经释放时忽略。
+    }
+
+  }
+
+  window.removeEventListener('pointermove', onTableMarqueePointerMove)
+
+  window.removeEventListener('pointerup', onTableMarqueePointerUp)
+
+  window.removeEventListener('pointercancel', onTableMarqueePointerUp)
+
+  if (tableMarqueeMoveFrame !== null) {
+
+    window.cancelAnimationFrame(tableMarqueeMoveFrame)
+
+    tableMarqueeMoveFrame = null
+
+  }
+
+  tableMarqueePendingPoint = null
+
+  tableMarqueeRowSnapshot = []
+
+  if (document?.body) delete document.body.dataset.libraryMarqueeSelecting
+
+  tableMarqueeState.value = {
+    ...tableMarqueeState.value,
+    active: false,
+    visible: false,
+    pointerId: null,
+    hasMoved: false,
+    baseSelectedPaths: new Set(),
+    lastSelectionKey: ''
+  }
+
+}
+
+
+
+function suppressNextMarqueeClick (event) {
+
+  window.removeEventListener('click', suppressNextMarqueeClick, true)
+
+  if (Date.now() > suppressMarqueeClickUntil.value) return
+
+  event.preventDefault()
+
+  event.stopPropagation()
+
+  event.stopImmediatePropagation?.()
+
+}
+
+
+
+function suppressNextTableClick () {
+
+  suppressMarqueeClickUntil.value = Date.now() + 350
+
+  window.addEventListener('click', suppressNextMarqueeClick, true)
+
+  window.setTimeout(() => window.removeEventListener('click', suppressNextMarqueeClick, true), 400)
+
+}
+
+
+
+function shouldClearMarqueeSelectionClick (event) {
+
+  if (!selectedRowPaths.value.size) return false
+
+  if (event?.ctrlKey || event?.metaKey || event?.shiftKey) return false
+
+  const target = event?.target
+
+  if (target instanceof Element) {
+
+    if (target.closest('.lib-file-table-row')) return false
+
+    if (shouldIgnoreMarqueeOutsideDismissTarget(target)) return false
+
+  }
+
+  return true
+
+}
+
+
+
+function shouldIgnoreMarqueeOutsideDismissTarget (target) {
+
+  if (!(target instanceof Element)) return false
+
+  return Boolean(target.closest([
+    'button',
+    'a',
+    'input',
+    'textarea',
+    'select',
+    'label',
+    '[role="button"]',
+    '[data-library-row-menu="1"]',
+    '.el-checkbox',
+    '.el-overlay',
+    '.el-popper',
+    '.el-message',
+    '.lib-batch-bar',
+    '.lib-path-toolbar',
+    '.page-head-btn',
+    '.lib-btn'
+  ].join(',')))
+
+}
+
+
+
+function handleLibraryMarqueeOutsidePointerDown (event) {
+
+  if (!selectedRowPaths.value.size) return
+
+  const target = event?.target
+
+  if (target instanceof Element && tableMarqueeRef.value?.contains(target)) return
+
+  if (shouldIgnoreMarqueeOutsideDismissTarget(target)) return
+
+  clearSelection()
+
+}
+
+
+
+function bindLibraryMarqueeDismiss () {
+
+  document.removeEventListener('pointerdown', handleLibraryMarqueeOutsidePointerDown, true)
+
+  document.addEventListener('pointerdown', handleLibraryMarqueeOutsidePointerDown, true)
+
+}
+
+
+
+function unbindLibraryMarqueeDismiss () {
+
+  document.removeEventListener('pointerdown', handleLibraryMarqueeOutsidePointerDown, true)
+
+}
+
+
+
+function collectTableMarqueeRows (host = tableMarqueeRef.value) {
+
+  if (!host) return []
+
+  const rowEls = Array.from(host.querySelectorAll('.lib-file-table-row'))
+
+  return rowEls.map((rowEl, fallbackIndex) => {
+
+    const index = Number(rowEl.getAttribute('data-library-row-index'))
+
+    const row = Number.isInteger(index) ? files.value[index] : files.value[fallbackIndex]
+
+    const rect = rowEl.getBoundingClientRect()
+
+    return {
+      row,
+      path: row?.path || '',
+      selectable: Boolean(row?.path && isLibraryRowSelectable(row)),
+      rect: {
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        bottom: rect.bottom
+      }
+    }
+
+  })
+
+}
+
+
+
+function updateTableMarqueeSelection () {
+
+  const state = tableMarqueeState.value
+
+  const left = Math.min(state.startX, state.currentX)
+
+  const right = Math.max(state.startX, state.currentX)
+
+  const top = Math.min(state.startY, state.currentY)
+
+  const bottom = Math.max(state.startY, state.currentY)
+
+  const nextPaths = new Set(state.append ? state.baseSelectedPaths : [])
+
+  const rowItems = tableMarqueeRowSnapshot.length ? tableMarqueeRowSnapshot : collectTableMarqueeRows()
+
+  rowItems.forEach((item) => {
+
+    const rect = item.rect
+
+    const hit = rect.right >= left && rect.left <= right && rect.bottom >= top && rect.top <= bottom
+
+    if (!hit) return
+
+    if (!item.selectable || !item.path) return
+
+    nextPaths.add(item.path)
+
+  })
+
+  const nextKey = Array.from(nextPaths).sort().join('\n')
+
+  if (nextKey === state.lastSelectionKey) return
+
+  state.lastSelectionKey = nextKey
+
+  previewTableSelectionByPaths(nextPaths)
+
+}
+
+
+
+function previewTableSelectionByPaths (paths) {
+
+  const selected = files.value.filter(row => row?.path && paths.has(row.path))
+
+  selectedRows.value = selected
+
+  selectedRowPaths.value = new Set(selected.map(row => row.path).filter(Boolean))
+
+}
+
+
+
+function applyTableSelectionByPaths (paths, options = {}) {
+
+  const requestedPaths = paths instanceof Set ? paths : new Set(Array.from(paths || []))
+
+  const selected = files.value.filter(row => row?.path && requestedPaths.has(row.path) && isLibraryRowSelectable(row))
+
+  const nextPaths = new Set(selected.map(row => row.path).filter(Boolean))
+
+  const previousRows = Array.isArray(selectedRows.value) ? selectedRows.value : []
+
+  const previousPaths = new Set(previousRows.map(row => row?.path).filter(Boolean))
+
+  const rowsToRemove = previousRows.filter(row => row?.path && !nextPaths.has(row.path))
+
+  const rowsToAdd = selected.filter(row => row?.path && !previousPaths.has(row.path))
+
+  if (tableSelectionApplyTimer) {
+
+    window.clearTimeout(tableSelectionApplyTimer)
+
+    tableSelectionApplyTimer = null
+
+  }
+
+  suppressSelectionChange.value = true
+
+  tableMarqueeSelectionActive.value = options?.source === 'marquee' && selected.length > 0
+
+  rowsToRemove.forEach(row => tableRef.value?.toggleRowSelection?.(row, false))
+
+  rowsToAdd.forEach(row => tableRef.value?.toggleRowSelection?.(row, true))
+
+  selectedRows.value = selected
+
+  selectedRowPaths.value = nextPaths
+
+  if (Object.prototype.hasOwnProperty.call(options, 'anchorPath')) {
+
+    tableSelectionAnchorPath.value = options.anchorPath || ''
+
+  } else if (!selected.length) {
+
+    tableSelectionAnchorPath.value = ''
+
+  }
+
+  tableSelectionApplyTimer = window.setTimeout(() => {
+
+    tableMarqueeSelectionActive.value = options?.source === 'marquee' && selected.length > 0
+
+    selectedRows.value = selected
+
+    selectedRowPaths.value = new Set(selected.map(row => row.path).filter(Boolean))
+
+    if (Object.prototype.hasOwnProperty.call(options, 'anchorPath')) {
+
+      tableSelectionAnchorPath.value = options.anchorPath || ''
+
+    } else if (!selected.length) {
+
+      tableSelectionAnchorPath.value = ''
+
+    }
+
+    suppressSelectionChange.value = false
+
+    tableSelectionApplyTimer = null
+
+  }, 32)
+
+}
+
+
+
+function startTableItemDrag (row, event) {
+
+  const items = row?.path && selectedRowPaths.value.has(row.path) && selectedRows.value.length
+
+    ? selectedRows.value.slice()
+
+    : [row]
+
+  const host = tableMarqueeRef.value
+
+  tableItemDragState.value = {
+    active: true,
+    visible: false,
+    startX: event.clientX,
+    startY: event.clientY,
+    currentX: event.clientX,
+    currentY: event.clientY,
+    pointerId: event.pointerId,
+    items,
+    targetPath: '',
+    targetName: '',
+    canDrop: false
+  }
+
+  window.addEventListener('pointermove', onTableItemDragPointerMove, { passive: false })
+  window.addEventListener('pointerup', onTableItemDragPointerUp, { passive: false })
+  window.addEventListener('pointercancel', onTableItemDragPointerUp, { passive: false })
+
+}
+
+
+
+function onTableItemDragPointerMove (event) {
+
+  const state = tableItemDragState.value
+
+  if (!state.active) return
+
+  const moved = Math.hypot(
+    Number(event.clientX || 0) - Number(state.startX || 0),
+    Number(event.clientY || 0) - Number(state.startY || 0)
+  ) >= 6
+
+  if (state.visible || moved) event.preventDefault()
+
+  tableItemDragPendingPoint = { clientX: event.clientX, clientY: event.clientY }
+
+  if (tableItemDragMoveFrame !== null) return
+
+  tableItemDragMoveFrame = window.requestAnimationFrame(() => {
+
+    tableItemDragMoveFrame = null
+
+    const point = tableItemDragPendingPoint
+
+    tableItemDragPendingPoint = null
+
+    if (point) processTableItemDragPointerPoint(point)
+
+  })
+
+}
+
+
+
+function processTableItemDragPointerPoint ({ clientX, clientY }) {
+
+  const state = tableItemDragState.value
+
+  if (!state.active) return
+
+  if (state.currentX === clientX && state.currentY === clientY) return
+
+  state.currentX = clientX
+  state.currentY = clientY
+
+  const moved = Math.hypot(state.currentX - state.startX, state.currentY - state.startY) >= 6
+
+  if (!moved && !state.visible) return
+
+  if (!state.visible) {
+
+    state.visible = true
+
+    closeLibraryRowContextMenu()
+
+    const host = tableMarqueeRef.value
+
+    if (host && state.pointerId !== null && state.pointerId !== undefined) {
+
+      try {
+        host.setPointerCapture?.(state.pointerId)
+      } catch {
+        // 指针捕获失败时继续用 window 级监听兜底。
+      }
+
+    }
+
+    if (typeof document !== 'undefined' && document.body) document.body.dataset.libraryItemDragging = '1'
+
+    if (state.items.length === 1) applyTableSelectionByPaths(new Set(state.items.map(item => item.path).filter(Boolean)))
+
+  }
+
+  updateTableItemDragTarget(clientX, clientY)
+
+}
+
+
+
+function onTableItemDragPointerUp (event) {
+
+  if (tableItemDragPendingPoint) processTableItemDragPointerPoint(tableItemDragPendingPoint)
+
+  const state = tableItemDragState.value
+
+  const shouldDrop = state.visible && state.canDrop && state.targetPath
+
+  const shouldClearMarqueeSelection = !state.visible && shouldClearMarqueeSelectionClick(event)
+
+  const items = state.items.slice()
+
+  const targetPath = state.targetPath
+
+  if (state.visible && event) event.preventDefault()
+
+  stopTableItemDragTracking()
+
+  if (state.visible) {
+
+    suppressNextTableClick()
+
+  } else if (shouldClearMarqueeSelection) {
+
+    clearSelection()
+
+    suppressNextTableClick()
+
+  }
+
+  if (shouldDrop) openMoveDialog(items, targetPath)
+
+}
+
+
+
+function stopTableItemDragTracking () {
+
+  const host = tableMarqueeRef.value
+
+  const pointerId = tableItemDragState.value.pointerId
+
+  if (host && pointerId !== null && pointerId !== undefined) {
+
+    try {
+      if (host.hasPointerCapture?.(pointerId)) host.releasePointerCapture?.(pointerId)
+    } catch {
+      // 浏览器已经释放时忽略。
+    }
+
+  }
+
+  window.removeEventListener('pointermove', onTableItemDragPointerMove)
+
+  window.removeEventListener('pointerup', onTableItemDragPointerUp)
+
+  window.removeEventListener('pointercancel', onTableItemDragPointerUp)
+
+  if (tableItemDragMoveFrame !== null) {
+
+    window.cancelAnimationFrame(tableItemDragMoveFrame)
+
+    tableItemDragMoveFrame = null
+
+  }
+
+  tableItemDragPendingPoint = null
+
+  cancelPathBreadcrumbDragOpen()
+
+  cancelPathBreadcrumbDragClose()
+
+  if (tableItemDragState.value.visible) pathBreadcrumbPopoverVisible.value = false
+
+  if (typeof document !== 'undefined' && document.body) delete document.body.dataset.libraryItemDragging
+
+  tableItemDragState.value = {
+    active: false,
+    visible: false,
+    startX: 0,
+    startY: 0,
+    currentX: 0,
+    currentY: 0,
+    pointerId: null,
+    items: [],
+    targetPath: '',
+    targetName: '',
+    canDrop: false
+  }
+
+}
+
+
+
+function isPointerOverPathBreadcrumbEllipsis (elements = [], clientX = 0, clientY = 0) {
+
+  const hitDom = elements.some((el) => {
+
+    if (!(el instanceof Element)) return false
+
+    return Boolean(el.closest('[data-library-path-ellipsis="1"]'))
+
+  })
+
+  if (hitDom) return true
+
+  const refValue = pathBreadcrumbEllipsisRef.value
+
+  const el = Array.isArray(refValue) ? refValue[0] : refValue
+
+  if (!el) return false
+
+  const rect = el.getBoundingClientRect()
+
+  const hotPadding = 16
+
+  return (
+    clientX >= rect.left - hotPadding &&
+    clientX <= rect.right + hotPadding &&
+    clientY >= rect.top - hotPadding &&
+    clientY <= rect.bottom + hotPadding
+  )
+
+}
+
+function isPointerOverPathBreadcrumbPopover (elements = [], clientX = 0, clientY = 0) {
+
+  const hitDom = elements.some((el) => {
+
+    if (!(el instanceof Element)) return false
+
+    return Boolean(el.closest('.lib-path-popover'))
+
+  })
+
+  if (hitDom) return true
+
+  const popover = typeof document !== 'undefined' ? document.querySelector('.lib-path-popover') : null
+
+  if (!popover) return false
+
+  const rect = popover.getBoundingClientRect()
+
+  const hotPadding = 8
+
+  return (
+    clientX >= rect.left - hotPadding &&
+    clientX <= rect.right + hotPadding &&
+    clientY >= rect.top - hotPadding &&
+    clientY <= rect.bottom + hotPadding
+  )
+
+}
+
+function schedulePathBreadcrumbDragOpen () {
+
+  if (pathBreadcrumbPopoverVisible.value) return
+
+  if (!tableItemDragState.value.visible) return
+
+  if (!currentPathBreadcrumbHiddenSegments.value.length) return
+
+  pathBreadcrumbPopoverVisible.value = true
+
+}
+
+function cancelPathBreadcrumbDragOpen () {
+
+  if (pathBreadcrumbDragOpenTimer === null) return
+
+  window.clearTimeout(pathBreadcrumbDragOpenTimer)
+
+  pathBreadcrumbDragOpenTimer = null
+
+}
+
+function schedulePathBreadcrumbDragClose () {
+
+  if (!pathBreadcrumbPopoverVisible.value) return
+
+  if (pathBreadcrumbDragCloseTimer !== null) return
+
+  pathBreadcrumbDragCloseTimer = window.setTimeout(() => {
+
+    pathBreadcrumbDragCloseTimer = null
+
+    if (!tableItemDragState.value.visible) return
+
+    pathBreadcrumbPopoverVisible.value = false
+
+  }, 160)
+
+}
+
+function cancelPathBreadcrumbDragClose () {
+
+  if (pathBreadcrumbDragCloseTimer === null) return
+
+  window.clearTimeout(pathBreadcrumbDragCloseTimer)
+
+  pathBreadcrumbDragCloseTimer = null
+
+}
+
+function updateTableItemDragTarget (clientX, clientY) {
+
+  const elements = typeof document !== 'undefined' ? document.elementsFromPoint(clientX, clientY) : []
+
+  const overPathEllipsis = isPointerOverPathBreadcrumbEllipsis(elements, clientX, clientY)
+
+  const overPathPopover = isPointerOverPathBreadcrumbPopover(elements, clientX, clientY)
+
+  if (overPathEllipsis) {
+
+    schedulePathBreadcrumbDragOpen()
+
+  } else {
+
+    cancelPathBreadcrumbDragOpen()
+
+  }
+
+  if (overPathEllipsis || overPathPopover) {
+
+    cancelPathBreadcrumbDragClose()
+
+  } else {
+
+    schedulePathBreadcrumbDragClose()
+
+  }
+
+  const pathTarget = resolvePathBreadcrumbDropTarget(elements)
+
+  if (pathTarget) {
+
+    const canDrop = canDropRowsToPath(tableItemDragState.value.items, pathTarget.path)
+
+    tableItemDragState.value.targetPath = pathTarget.path
+
+    tableItemDragState.value.targetName = pathTarget.label || getFileName(pathTarget.path) || pathTarget.path
+
+    tableItemDragState.value.canDrop = canDrop
+
+    return
+
+  }
+
+  const host = tableMarqueeRef.value
+
+  let targetRow = null
+
+  for (const el of elements) {
+
+    if (!(el instanceof Element)) continue
+
+    const rowEl = el.closest('.lib-file-table-row')
+
+    if (!rowEl || !host?.contains(rowEl)) continue
+
+    targetRow = getLibraryRowFromElement(rowEl)
+
+    break
+
+  }
+
+  if (!targetRow?.is_directory || !targetRow.path) {
+
+    tableItemDragState.value.targetPath = ''
+
+    tableItemDragState.value.targetName = ''
+
+    tableItemDragState.value.canDrop = false
+
+    return
+
+  }
+
+  const canDrop = canDropRowsToFolder(tableItemDragState.value.items, targetRow)
+
+  tableItemDragState.value.targetPath = targetRow.path
+
+  tableItemDragState.value.targetName = targetRow.name || getFileName(targetRow.path)
+
+  tableItemDragState.value.canDrop = canDrop
+
+}
+
+
+
+function resolvePathBreadcrumbDropTarget (elements = []) {
+
+  for (const el of elements) {
+
+    if (!(el instanceof Element)) continue
+
+    const target = el.closest('[data-library-path-drop-target]')
+
+    if (!target) continue
+
+    const path = String(target.getAttribute('data-library-path-drop-target') || '').trim()
+
+    if (!path) continue
+
+    const rawLabel = String(target.getAttribute('data-library-path-label') || '').trim()
+
+    return {
+      path,
+      label: rawLabel && rawLabel !== '/' ? rawLabel : '库存根目录'
+    }
+
+  }
+
+  return null
+
+}
+
+
+
+function getLibraryRowFromPointerTarget (target) {
+
+  const rowEl = target?.closest?.('.lib-file-table-row')
+
+  return getLibraryRowFromElement(rowEl)
+
+}
+
+
+
+function getLibraryRowFromElement (rowEl) {
+
+  if (!(rowEl instanceof Element) || !tableMarqueeRef.value?.contains(rowEl)) return null
+
+  const index = Number(rowEl.getAttribute('data-library-row-index'))
+
+  if (Number.isInteger(index) && index >= 0 && index < files.value.length) return files.value[index]
+
+  const path = String(rowEl.getAttribute('data-library-row-path') || '')
+
+  return files.value.find(row => row?.path === path) || null
+
+}
+
+
+
+function canDropRowsToFolder (rows, folder) {
+
+  if (!folder?.is_directory || !folder?.path) return false
+
+  return canDropRowsToPath(rows, folder.path)
+
+}
+
+
+
+function canDropRowsToPath (rows, targetPath) {
+
+  const target = normalizeConflictPathKey(targetPath)
+
+  if (!target) return false
+
+  for (const row of rows || []) {
+
+    const source = normalizeConflictPathKey(row?.path || '')
+
+    if (!source) return false
+
+    if (source === target) return false
+
+    if (target.startsWith(`${source}/`)) return false
+
+    if (normalizeConflictPathKey(getParentPath(row?.path || '')) === target) return false
+
+  }
+
+  return true
 
 }
 
@@ -6456,6 +8161,146 @@ function rememberUploadTaskId (nextTaskId) {
 
 
 
+function normalizeUploadRuntimeNumber (value) {
+
+  const numberValue = Number(value || 0)
+
+  return Number.isFinite(numberValue) ? Math.max(0, numberValue) : 0
+
+}
+
+
+
+function getUploadTaskTransferredBytes (task) {
+
+  const runtime = task?.upload_runtime || {}
+
+  const uploadFiles = Array.isArray(task?.upload_files) ? task.upload_files : []
+
+  const uploadedFiles = Array.isArray(task?.uploaded_files) ? task.uploaded_files : []
+
+  const runtimeTransferred = normalizeUploadRuntimeNumber(runtime?.transferred_bytes)
+
+  const rowsTransferred = uploadFiles.reduce((sum, file) => {
+
+    const sizeBytes = normalizeUploadRuntimeNumber(file?.size || file?.size_bytes)
+
+    const uploadedBytes = normalizeUploadRuntimeNumber(file?.uploaded_bytes)
+
+    const completed = String(file?.status || '') === 'completed' || Number(file?.progress || 0) >= 100
+
+    return sum + (completed ? sizeBytes : Math.min(uploadedBytes, sizeBytes || uploadedBytes))
+
+  }, 0)
+
+  const uploadedRowsTransferred = uploadedFiles.reduce((sum, file) => (
+
+    sum + normalizeUploadRuntimeNumber(file?.size || file?.size_bytes || file?.uploaded_bytes)
+
+  ), 0)
+
+  return Math.max(runtimeTransferred, rowsTransferred, uploadedRowsTransferred)
+
+}
+
+
+
+function getUploadTaskTotalBytes (task) {
+
+  const runtime = task?.upload_runtime || {}
+
+  const uploadFiles = Array.isArray(task?.upload_files) ? task.upload_files : []
+
+  const runtimeTotal = normalizeUploadRuntimeNumber(runtime?.total_bytes)
+
+  if (runtimeTotal > 0) return runtimeTotal
+
+  return uploadFiles.reduce((sum, file) => (
+
+    sum + normalizeUploadRuntimeNumber(file?.size || file?.size_bytes)
+
+  ), 0)
+
+}
+
+
+
+function withSampledUploadSpeeds (tasks) {
+
+  const now = Date.now()
+
+  const nextSamples = new Map()
+
+  const nextTasks = (Array.isArray(tasks) ? tasks : []).map((task) => {
+
+    const taskId = String(task?.id || '').trim()
+
+    if (!taskId) return task
+
+    const status = String(task?.status || '')
+
+    const runtime = { ...(task?.upload_runtime || {}) }
+
+    const totalBytes = getUploadTaskTotalBytes(task)
+
+    const transferredBytes = Math.min(getUploadTaskTransferredBytes(task), totalBytes || getUploadTaskTransferredBytes(task))
+
+    const previous = uploadSpeedSamples.get(taskId)
+
+    let sampledSpeed = 0
+
+    if (status === 'processing' && previous && now > previous.time) {
+
+      const elapsedSeconds = Math.max(0.001, (now - previous.time) / 1000)
+
+      const deltaBytes = Math.max(0, transferredBytes - previous.transferredBytes)
+
+      sampledSpeed = elapsedSeconds >= 0.5 && deltaBytes > 0 ? Math.round(deltaBytes / elapsedSeconds) : 0
+
+    }
+
+    const remainingBytes = Math.max(0, (totalBytes || 0) - transferredBytes)
+
+    runtime.total_bytes = totalBytes || normalizeUploadRuntimeNumber(runtime.total_bytes)
+
+    runtime.transferred_bytes = transferredBytes
+
+    runtime.speed_bytes_per_sec = status === 'processing' ? sampledSpeed : 0
+
+    runtime.frontend_speed_bytes_per_sec = runtime.speed_bytes_per_sec
+
+    runtime.eta_seconds = runtime.speed_bytes_per_sec > 0 && remainingBytes > 0
+
+      ? Math.ceil(remainingBytes / runtime.speed_bytes_per_sec)
+
+      : 0
+
+    nextSamples.set(taskId, {
+
+      time: now,
+
+      transferredBytes,
+
+    })
+
+    return {
+
+      ...task,
+
+      upload_runtime: runtime,
+
+    }
+
+  })
+
+  uploadSpeedSamples = nextSamples
+
+  return nextTasks
+
+}
+
+
+
 async function refreshUploadWorkbench (options = {}) {
 
   const silent = Boolean(options?.silent)
@@ -6465,6 +8310,8 @@ async function refreshUploadWorkbench (options = {}) {
     trackedUploadTasks.value = []
 
     uploadCompletionSyncedTaskIds.value = new Set()
+
+    uploadSpeedSamples = new Map()
 
     stopUploadWorkbenchPolling()
 
@@ -6486,7 +8333,7 @@ async function refreshUploadWorkbench (options = {}) {
 
     })
 
-    const allTasks = Array.isArray(result.tasks) ? result.tasks : []
+    const allTasks = withSampledUploadSpeeds(Array.isArray(result.tasks) ? result.tasks : [])
     const requestedTaskIds = trackedUploadTaskIds.value.map(id => String(id || '').trim()).filter(Boolean)
     const matchedRequestedTasks = requestedTaskIds
       .map(id => allTasks.find(task => String(task?.id || '').trim() === id))
@@ -6638,9 +8485,57 @@ async function closeUploadWorkbench () {
 
   trackedUploadTasks.value = []
 
+  uploadSpeedSamples = new Map()
+
   stopUploadWorkbenchPolling()
 
   persistUploadWorkbenchState()
+
+}
+
+
+
+async function pauseUploadWorkbenchTask (task) {
+
+  const taskId = String(task?.active_task_id || task?.id || '').trim()
+
+  if (!taskId) return
+
+  await taskApi.pause(taskId)
+
+  await refreshUploadWorkbench({ silent: true })
+
+}
+
+
+
+async function resumeUploadWorkbenchTask (task) {
+
+  const taskId = String(task?.active_task_id || task?.id || '').trim()
+
+  if (!taskId) return
+
+  await taskApi.resume(taskId)
+
+  await refreshUploadWorkbench({ silent: true })
+
+}
+
+
+
+async function cancelUploadWorkbenchTask (task) {
+
+  const taskId = String(task?.active_task_id || task?.id || '').trim()
+
+  if (!taskId) return
+
+  await taskApi.cancel(taskId)
+
+  trackedUploadTaskIds.value = trackedUploadTaskIds.value.filter(id => String(id || '').trim() !== taskId)
+
+  trackedUploadTasks.value = trackedUploadTasks.value.filter(item => String(item?.id || '').trim() !== taskId)
+
+  await refreshUploadWorkbench({ silent: true })
 
 }
 
@@ -6650,7 +8545,7 @@ function getUploadBackgroundSpeed (task) {
 
   const runtime = task?.upload_runtime || {}
 
-  return Number(runtime?.speed_bytes_per_sec || runtime?.last_non_zero_speed_bytes_per_sec || 0)
+  return Number(runtime?.speed_bytes_per_sec || 0)
 
 }
 
@@ -11808,6 +13703,20 @@ async function navigateToPath (path) {
 
 
 
+async function navigateToBreadcrumbPath (path) {
+
+  pathBreadcrumbPopoverVisible.value = false
+
+  const targetPath = String(path || browseRootPath.value || '').trim()
+
+  if (!targetPath || targetPath === currentPath.value) return
+
+  await navigateToPath(targetPath)
+
+}
+
+
+
 async function goToParent () {
 
   if (!canGoParent.value) return
@@ -13422,6 +15331,71 @@ function handleLibraryRowClick (row, _column, event) {
 
   if (target instanceof Element && target.closest('input,textarea,select,a,.el-checkbox,.el-tag')) return
 
+  if (handleTableRowModifierSelection(row, event)) return
+
+  handleTableRowPlainSelection(row, event)
+
+}
+
+
+function handleLibraryTableKeydown (event) {
+
+  if (isTextInputElement(event?.target)) return
+
+  const key = String(event?.key || '').toLowerCase()
+
+  if ((event?.ctrlKey || event?.metaKey) && key === 'a') {
+
+    event.preventDefault()
+
+    event.stopPropagation()
+
+    if (!files.value.length || loading.value) return
+
+    selectAllCurrentTableRows()
+
+  }
+
+}
+
+
+function handleLibraryNameActionClick (row, event, action) {
+
+  if (handleTableRowModifierSelection(row, event)) return
+
+  if (action === 'locate') {
+
+    locateLibrarySearchResult(row)
+
+    return
+
+  }
+
+  if (action === 'open') {
+
+    openFolder(row)
+
+    return
+
+  }
+
+  if (action === 'view') {
+
+    viewLibraryRow(row)
+
+  }
+
+}
+
+
+function handleLibraryRowDoubleClick (row, _column, event) {
+
+  if (libraryRowContextMenu.value.visible) closeLibraryRowContextMenu()
+
+  const target = event?.target
+
+  if (target instanceof Element && target.closest('input,textarea,select,a,button,.el-checkbox,.el-tag')) return
+
   if (row?.is_directory) {
 
     openFolder(row)
@@ -13458,7 +15432,15 @@ function onMobileCardClick ({ row, event }) {
 
   }
 
-  handleLibraryRowClick(row, undefined, event)
+  if (row?.is_directory) {
+
+    openFolder(row)
+
+    return
+
+  }
+
+  if (canViewLibraryRow(row)) viewLibraryRow(row)
 
 }
 
@@ -13638,7 +15620,7 @@ async function copyRowName (row) {
 
 
 
-function openMoveDialog (rows) {
+function openMoveDialog (rows, initialPathOverride = '') {
 
   if (isRemoteCurrentLibrary.value) {
 
@@ -13666,11 +15648,15 @@ function openMoveDialog (rows) {
 
   }
 
+  const initialPath = String(initialPathOverride || '').trim() || resolveMoveDialogInitialPath(sourceRows)
+
   moveDialogState.value = {
 
     visible: true,
 
     sourceLibraryId: selectedLibraryId.value,
+
+    initialPath,
 
     items: sourceRows.map(row => ({
 
@@ -13690,9 +15676,33 @@ function openMoveDialog (rows) {
 
 
 
+function resolveMoveDialogInitialPath (rows) {
+
+  const parents = (Array.isArray(rows) ? rows : [])
+
+    .map(row => getParentPath(row?.path || ''))
+
+    .filter(Boolean)
+
+  if (parents.length) {
+
+    const first = parents[0]
+
+    const firstKey = normalizeConflictPathKey(first)
+
+    if (parents.every(path => normalizeConflictPathKey(path) === firstKey)) return first
+
+  }
+
+  return currentPath.value || browseRootPath.value || ''
+
+}
+
+
+
 function closeMoveDialog () {
 
-  moveDialogState.value = { visible: false, sourceLibraryId: '', items: [], submitting: false }
+  moveDialogState.value = { visible: false, sourceLibraryId: '', initialPath: '', items: [], submitting: false }
 
 }
 
@@ -14896,6 +16906,14 @@ function libraryRowClassName ({ row }) {
 
   if (libraryRowContextMenu.value.visible && libraryRowContextMenu.value.row?.path && row?.path === libraryRowContextMenu.value.row.path) classes.push('library-row-context-active')
 
+  if (row?.path && selectedRowPaths.value.has(row.path)) classes.push('library-row-marquee-selected')
+
+  if (tableItemDragState.value.visible && row?.path && tableItemDragState.value.items.some(item => item?.path === row.path)) classes.push('library-row-drag-source')
+
+  if (tableItemDragState.value.visible && tableItemDragState.value.targetPath && row?.path === tableItemDragState.value.targetPath) {
+    classes.push(tableItemDragState.value.canDrop ? 'library-row-drop-target' : 'library-row-drop-blocked')
+  }
+
   return classes.join(' ')
 
 }
@@ -15559,18 +17577,6 @@ function statsStatusTextDisplay (stats) {
 
 .lib-row-action-btn:active { transform: scale(0.97); }
 
-/* 让 fixed 列的单元格不裁剪 hover shadow/ring */
-
-:deep(.main-card .el-table .el-table__fixed-right td.el-table__cell),
-
-:deep(.main-card .el-table td.el-table__cell.is-last-column),
-
-:deep(.main-card .el-table .el-table__fixed-right .cell),
-
-:deep(.main-card .el-table td.el-table__cell.is-last-column .cell) { overflow: visible !important; }
-
-
-
 :deep(.lib-row-dropdown .el-dropdown-menu) {
 
   min-width: 180px;
@@ -15611,81 +17617,259 @@ function statsStatusTextDisplay (stats) {
 
 /* 表格美化 */
 
-:deep(.main-card .el-table) {
-
-  --el-table-header-bg-color: #f8fafc;
-
-  --el-table-row-hover-bg-color: #f8fafc;
-
-  --el-table-border-color: rgba(226, 232, 240, 0.7);
+.lib-file-table {
 
   border-radius: 14px;
 
-  overflow: visible;
+  overflow: hidden;
 
-  border: 1px solid rgba(226, 232, 240, 0.6);
+  border: 1px solid rgba(226, 232, 240, 0.72);
 
-}
+  background: #fff;
 
-:deep(.main-card .el-table__inner-wrapper::before) { display: none; }
-
-:deep(.main-card .el-table__inner-wrapper) {
-
-  border-radius: 14px;
-
-  overflow: visible;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.95) inset,
+    0 10px 28px -22px rgba(15, 23, 42, 0.28);
 
 }
 
-:deep(.main-card .el-table .el-table__body-wrapper),
+.lib-file-table-head {
 
-:deep(.main-card .el-table .el-table__fixed),
+  background: #f8fafc;
 
-:deep(.main-card .el-table .el-table__fixed-right),
-
-:deep(.main-card .el-table .el-table__fixed-body-wrapper) {
-
-  overflow: visible !important;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.82);
 
 }
 
-:deep(.main-card .el-table th.el-table__cell) {
+.lib-file-table-header-row,
 
-  font-size: 11px;
+.lib-file-table-row {
 
-  font-weight: 600;
+  display: grid;
 
-  letter-spacing: 0.05em;
+  grid-template-columns: minmax(280px, 1fr) 140px 130px 190px;
 
-  text-transform: uppercase;
+  align-items: center;
+
+}
+
+.lib-file-table-header-row {
+
+  min-height: 48px;
+
+}
+
+.lib-file-table-body {
+
+  background: #fff;
+
+}
+
+.lib-file-table-row {
+
+  position: relative;
+
+  min-height: 52px;
+
+  color: #1f2937;
+
+  background: #fff;
+
+  border-bottom: 1px solid rgba(241, 245, 249, 0.94);
+
+  transition: background-color 0.14s ease, box-shadow 0.14s ease;
+
+}
+
+.lib-file-table-row:last-child {
+
+  border-bottom: 0;
+
+}
+
+.lib-file-table-row:hover {
+
+  background: #f8fafc;
+
+}
+
+.lib-file-th {
+
+  padding: 0 16px;
 
   color: #64748b;
 
-  background: #f8fafc !important;
+  font-size: 12px;
 
-  border-bottom: 1px solid rgba(226, 232, 240, 0.8);
+  font-weight: 700;
 
-}
-
-:deep(.main-card .el-table td.el-table__cell) {
-
-  border-bottom-color: rgba(241, 245, 249, 0.9);
+  text-align: left;
 
 }
 
-:deep(.main-card .el-table .el-table__row) {
+.lib-file-th.is-name { padding-left: 64px; }
 
-  transition: background-color 0.2s ease;
+.lib-file-sort-btn {
+
+  display: inline-flex;
+
+  align-items: center;
+
+  gap: 7px;
+
+  max-width: 100%;
+
+  padding: 0;
+
+  border: 0;
+
+  background: transparent;
+
+  color: inherit;
+
+  font: inherit;
+
+  cursor: pointer;
 
 }
 
-:deep(.main-card .el-table .el-table__row:hover > td) {
+.lib-file-sort-btn:hover { color: #1d4ed8; }
 
-  background: #f8fafc !important;
+.lib-file-sort-caret {
+
+  position: relative;
+
+  width: 9px;
+
+  height: 14px;
+
+  flex: 0 0 9px;
 
 }
 
+.lib-file-sort-caret::before,
 
+.lib-file-sort-caret::after {
+
+  content: "";
+
+  position: absolute;
+
+  left: 1px;
+
+  border-left: 4px solid transparent;
+
+  border-right: 4px solid transparent;
+
+  opacity: 0.42;
+
+}
+
+.lib-file-sort-caret::before {
+
+  top: 1px;
+
+  border-bottom: 5px solid #94a3b8;
+
+}
+
+.lib-file-sort-caret::after {
+
+  bottom: 1px;
+
+  border-top: 5px solid #94a3b8;
+
+}
+
+.lib-file-sort-caret.is-asc::before,
+
+.lib-file-sort-caret.is-desc::after {
+
+  opacity: 1;
+
+  border-bottom-color: #3b82f6;
+
+  border-top-color: #3b82f6;
+
+}
+
+.lib-file-cell {
+
+  padding: 0 16px;
+
+  min-width: 0;
+
+}
+
+.lib-file-name-cell { padding-left: 36px !important; }
+
+.lib-file-rj-cell,
+
+.lib-file-size-cell,
+
+.lib-file-time-cell {
+
+  color: #4b5563;
+
+  font-size: 13px;
+
+}
+
+.lib-file-rj-chip {
+
+  display: inline-flex;
+
+  align-items: center;
+
+  max-width: 100%;
+
+  height: 22px;
+
+  padding: 0 8px;
+
+  border-radius: 999px;
+
+  border: 1px solid rgba(147, 197, 253, 0.72);
+
+  background: rgba(239, 246, 255, 0.92);
+
+  color: #1d4ed8;
+
+  font-size: 12px;
+
+  font-weight: 700;
+
+}
+
+.lib-file-empty-row {
+
+  display: flex;
+
+  align-items: center;
+
+  justify-content: center;
+
+  min-height: 96px;
+
+  text-align: center;
+
+  color: #94a3b8;
+
+  font-size: 13px;
+
+}
+
+@media (max-width: 980px) {
+
+  .lib-file-table-header-row,
+
+  .lib-file-table-row {
+
+    grid-template-columns: minmax(220px, 1fr) 120px 110px 170px;
+
+  }
+
+}
 
 /* 主卡片壳 */
 
@@ -16313,6 +18497,67 @@ function statsStatusTextDisplay (stats) {
 
 
 
+/* 路径 / 批量工具栏切换 */
+
+.lib-toolbar-switcher {
+
+  display: grid;
+
+  grid-template-areas: "panel";
+
+  margin-bottom: 14px;
+
+}
+
+.lib-toolbar-panel {
+
+  grid-area: panel;
+
+  min-width: 0;
+
+  opacity: 0;
+
+  visibility: hidden;
+
+  pointer-events: none;
+
+  transform: translateY(4px) scale(0.995);
+
+  filter: saturate(0.92);
+
+  transition:
+    opacity 0.18s ease,
+    transform 0.22s cubic-bezier(0.21, 1.02, 0.35, 1),
+    filter 0.18s ease;
+
+}
+
+.lib-toolbar-panel.is-visible {
+
+  opacity: 1;
+
+  visibility: visible;
+
+  pointer-events: auto;
+
+  transform: translateY(0) scale(1);
+
+  filter: saturate(1);
+
+}
+
+.lib-toolbar-switcher.is-batch-mode .lib-path-toolbar {
+
+  transform: translateY(-4px) scale(0.995);
+
+}
+
+.lib-toolbar-switcher:not(.is-batch-mode) .lib-batch-bar {
+
+  transform: translateY(4px) scale(0.995);
+
+}
+
 /* 路径工具栏 */
 
 .lib-path-toolbar {
@@ -16325,17 +18570,19 @@ function statsStatusTextDisplay (stats) {
 
   gap: 14px;
 
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 
   padding: 10px 14px;
 
-  margin-bottom: 14px;
+  margin-bottom: 0;
 
   border-radius: 14px;
 
   background: linear-gradient(180deg, rgba(248, 250, 252, 0.9), rgba(241, 245, 249, 0.6));
 
   border: 1px solid rgba(226, 232, 240, 0.8);
+
+  overflow: hidden;
 
   backdrop-filter: blur(8px);
 
@@ -16353,7 +18600,9 @@ function statsStatusTextDisplay (stats) {
 
   min-width: 0;
 
-  flex: 1 1 auto;
+  flex: 1 1 0;
+
+  overflow: hidden;
 
 }
 
@@ -16365,41 +18614,177 @@ function statsStatusTextDisplay (stats) {
 
   gap: 8px;
 
-  flex-wrap: wrap;
+  flex: 0 0 auto;
+
+  flex-wrap: nowrap;
+
+  white-space: nowrap;
+
+}
+
+.lib-path-left > .lib-btn,
+.lib-path-right > .lib-btn,
+.lib-path-right > .lib-scope-switch {
+
+  flex: 0 0 auto;
 
 }
 
 .lib-path-label {
 
-  font-size: 11px;
+  font-size: 12px;
 
-  font-weight: 600;
+  font-weight: 650;
 
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
 
-  text-transform: uppercase;
+  text-transform: none;
 
-  color: #64748b;
+  color: #475569;
 
   flex-shrink: 0;
 
 }
 
-.lib-path-code {
+.lib-path-breadcrumb {
 
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  display: inline-flex;
 
-  font-size: 12px;
+  align-items: center;
 
-  color: #1e293b;
+  min-width: 0;
 
-  background: #fff;
+  max-width: none;
 
-  padding: 4px 10px;
+  flex: 1 1 auto;
 
-  border-radius: 8px;
+  height: 34px;
 
-  border: 1px solid rgba(226, 232, 240, 0.8);
+  overflow: hidden;
+
+  text-overflow: clip;
+
+  padding: 0 10px;
+
+  border-radius: 6px;
+
+  border: 1px solid rgba(190, 199, 213, 0.95);
+
+  background: #ffffff;
+
+  box-shadow:
+    inset 0 1px 2px rgba(15, 23, 42, 0.06),
+    0 1px 0 rgba(255, 255, 255, 0.92);
+
+  scrollbar-width: none;
+
+  font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+
+  white-space: nowrap;
+
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+
+}
+
+.lib-path-breadcrumb:hover,
+
+.lib-path-breadcrumb:focus-within {
+
+  border-color: rgba(148, 163, 184, 0.95);
+
+  box-shadow:
+    inset 0 1px 2px rgba(15, 23, 42, 0.07),
+    0 0 0 2px rgba(226, 232, 240, 0.48);
+
+}
+
+.lib-path-address-icon {
+
+  flex: 0 0 auto;
+
+  margin-right: 8px;
+
+  color: #64748b;
+
+  opacity: 0.88;
+
+}
+
+.lib-path-separator {
+
+  flex: 0 0 auto;
+
+  padding: 0 2px;
+
+  color: #94a3b8;
+
+  font-size: 13px;
+
+  font-weight: 500;
+
+  line-height: 1;
+
+  user-select: none;
+
+}
+
+.lib-path-crumb {
+
+  position: relative;
+
+  min-width: 0;
+
+  max-width: 220px;
+
+  height: 24px;
+
+  display: inline-flex;
+
+  align-items: center;
+
+  flex: 0 0 auto;
+
+  padding: 0 2px;
+
+  border: none;
+
+  border-radius: 3px;
+
+  background: transparent;
+
+  color: #172033;
+
+  font-size: 13px;
+
+  font-weight: 520;
+
+  cursor: pointer;
+
+  transition:
+    color 0.16s ease,
+    text-decoration-color 0.16s ease;
+
+}
+
+.lib-path-crumb.is-current {
+
+  max-width: min(340px, 26vw);
+
+}
+
+.lib-path-crumb:focus,
+
+.lib-path-crumb:active {
+
+  outline: none;
+
+  background: transparent;
+
+  box-shadow: none;
+
+}
+
+.lib-path-crumb span {
 
   min-width: 0;
 
@@ -16409,7 +18794,193 @@ function statsStatusTextDisplay (stats) {
 
   white-space: nowrap;
 
-  max-width: 520px;
+}
+
+.lib-path-crumb:hover {
+
+  color: #0f5fb8;
+
+  background: transparent;
+
+  box-shadow: none;
+
+  text-decoration-line: underline;
+
+  text-decoration-thickness: 1px;
+
+  text-underline-offset: 3px;
+
+}
+
+.lib-path-crumb.is-current {
+
+  color: #111827;
+
+  background: transparent;
+
+  font-weight: 650;
+
+}
+
+.lib-path-ellipsis {
+
+  width: 28px;
+
+  justify-content: center;
+
+  color: #64748b;
+
+  font-weight: 700;
+
+}
+
+.lib-path-ellipsis:hover {
+
+  color: #0f5fb8;
+
+  background: rgba(239, 246, 255, 0.72);
+
+  text-decoration-line: none;
+
+}
+
+.lib-path-ellipsis.is-drag-hover {
+
+  color: #0369a1;
+
+  background: rgba(224, 242, 254, 0.92);
+
+  box-shadow:
+    inset 0 0 0 1px rgba(14, 165, 233, 0.38),
+    0 4px 12px rgba(14, 165, 233, 0.14);
+
+}
+
+:deep(.lib-path-popover) {
+
+  padding: 6px !important;
+
+  border-radius: 10px !important;
+
+  border-color: rgba(203, 213, 225, 0.92) !important;
+
+  box-shadow:
+    0 14px 36px -18px rgba(15, 23, 42, 0.34),
+    0 0 0 1px rgba(255, 255, 255, 0.72) inset !important;
+
+}
+
+.lib-path-popover-list {
+
+  display: flex;
+
+  flex-direction: column;
+
+  gap: 2px;
+
+  max-height: 280px;
+
+  overflow: auto;
+
+}
+
+.lib-path-popover-item {
+
+  display: flex;
+
+  align-items: center;
+
+  width: 100%;
+
+  min-height: 30px;
+
+  padding: 0 9px;
+
+  border: 0;
+
+  border-radius: 7px;
+
+  background: transparent;
+
+  color: #172033;
+
+  font-size: 13px;
+
+  font-weight: 560;
+
+  text-align: left;
+
+  cursor: pointer;
+
+}
+
+.lib-path-popover-item span {
+
+  min-width: 0;
+
+  overflow: hidden;
+
+  text-overflow: ellipsis;
+
+  white-space: nowrap;
+
+}
+
+.lib-path-popover-item:hover {
+
+  background: rgba(239, 246, 255, 0.92);
+
+  color: #0f5fb8;
+
+}
+
+.lib-path-popover-item.is-drop-target {
+
+  background: linear-gradient(90deg, rgba(224, 242, 254, 0.96), rgba(236, 253, 245, 0.9));
+
+  color: #0369a1;
+
+  box-shadow:
+    inset 0 0 0 1px rgba(14, 165, 233, 0.42),
+    0 5px 14px rgba(14, 165, 233, 0.14);
+
+}
+
+.lib-path-popover-item.is-drop-blocked {
+
+  background: rgba(254, 226, 226, 0.82);
+
+  color: #b91c1c;
+
+  box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.44);
+
+}
+
+.lib-path-crumb.is-current:hover {
+
+  color: #111827;
+
+}
+
+.lib-path-crumb.is-drop-target {
+
+  color: #0369a1;
+
+  background: rgba(224, 242, 254, 0.92);
+
+  box-shadow:
+    inset 0 0 0 1px rgba(14, 165, 233, 0.38),
+    0 4px 12px rgba(14, 165, 233, 0.14);
+
+}
+
+.lib-path-crumb.is-drop-blocked {
+
+  color: #b91c1c;
+
+  background: rgba(254, 226, 226, 0.72);
+
+  box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.42);
 
 }
 
@@ -16499,7 +19070,7 @@ function statsStatusTextDisplay (stats) {
 
   padding: 10px 14px;
 
-  margin-bottom: 14px;
+  margin-bottom: 0;
 
   border-radius: 14px;
 
@@ -16593,35 +19164,13 @@ function statsStatusTextDisplay (stats) {
 
 
 
-/* 批量栏滑入/滑出 */
-
-.lib-batch-slide-enter-active,
-
-.lib-batch-slide-leave-active {
-
-  transition: opacity 0.25s ease, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-
-}
-
-.lib-batch-slide-enter-from,
-
-.lib-batch-slide-leave-to {
-
-  opacity: 0;
-
-  transform: translateY(-8px);
-
-}
-
-
-
 @media (max-width: 860px) {
 
   .lib-search { max-width: none; }
 
-  .lib-path-toolbar,
-
   .lib-batch-bar { flex-direction: column; align-items: stretch; }
+
+  .lib-path-toolbar { align-items: center; }
 
   .lib-path-right,
 
@@ -16629,7 +19178,21 @@ function statsStatusTextDisplay (stats) {
 
   .lib-batch-info { flex-wrap: wrap; }
 
-  .lib-path-code { max-width: none; }
+  .lib-path-right {
+
+    flex-wrap: nowrap;
+
+    max-width: 48vw;
+
+    overflow-x: auto;
+
+    scrollbar-width: none;
+
+  }
+
+  .lib-path-right::-webkit-scrollbar { display: none; }
+
+  .lib-path-breadcrumb { max-width: none; }
 
 }
 
@@ -17517,7 +20080,7 @@ function statsStatusTextDisplay (stats) {
 
 .file-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 
-.file-main-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.file-main-line { display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; }
 
 .file-icon-shell {
   display: inline-flex;
@@ -17568,15 +20131,182 @@ function statsStatusTextDisplay (stats) {
 
 .file-link-btn:hover { color: #0066cc; }
 
+.file-link-btn,
+
+.file-name {
+
+  min-width: 0;
+
+  max-width: 100%;
+
+  overflow: hidden;
+
+  text-overflow: ellipsis;
+
+  white-space: nowrap;
+
+}
+
 .search-result-library { padding-left: 22px; font-size: 11px; line-height: 1.4; color: #7a8ba5; }
 
 :deep(.library-search-mark) { background: #fff1a8; color: #7a4b00; padding: 0 2px; border-radius: 4px; }
 
-:deep(.el-table .library-row-located > td.el-table__cell) { background: #eef7ff !important; }
+.lib-table-marquee-host {
+  position: relative;
+}
 
-:deep(.el-table .library-row-context-active > td.el-table__cell) { background: #f1f5f9 !important; }
+.lib-table-marquee-host:focus {
+  outline: none;
+}
 
-:deep(.el-table .library-row-operating) {
+.lib-table-marquee-host.is-marquee-selecting {
+  cursor: crosshair;
+}
+
+.lib-table-marquee-box {
+  position: fixed;
+  z-index: 1000;
+  pointer-events: none;
+  border: 1px solid rgba(37, 99, 235, 0.88);
+  border-radius: 2px;
+  background: rgba(59, 130, 246, 0.22);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.24),
+    0 0 0 1px rgba(96, 165, 250, 0.18),
+    0 8px 22px rgba(37, 99, 235, 0.12);
+}
+
+.lib-table-drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 80;
+  pointer-events: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 300px;
+  padding: 7px 10px 7px 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 12px 28px rgba(15, 23, 42, 0.18);
+  color: #334155;
+  font-size: 11.5px;
+  font-weight: 700;
+  backdrop-filter: blur(14px) saturate(160%);
+  will-change: transform;
+  animation: lib-table-drag-ghost-in 0.16s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.lib-table-drag-ghost.is-droppable {
+  border-color: rgba(14, 165, 233, 0.34);
+  background: rgba(240, 249, 255, 0.94);
+  color: #0c4a6e;
+}
+
+.lib-table-drag-icon-stack {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  flex: 0 0 28px;
+}
+
+.lib-table-drag-file-icon,
+.lib-table-drag-folder-icon,
+.lib-table-drag-move-icon {
+  position: absolute;
+  filter: drop-shadow(0 3px 4px rgba(15, 23, 42, 0.16));
+}
+
+.lib-table-drag-file-icon {
+  left: 1px;
+  top: 5px;
+  color: #64748b;
+  transform: rotate(-7deg);
+}
+
+.lib-table-drag-folder-icon {
+  left: 7px;
+  top: 2px;
+  color: #f59e0b;
+  fill: currentColor;
+  stroke: currentColor;
+}
+
+.lib-table-drag-move-icon {
+  right: -2px;
+  bottom: -1px;
+  color: #0284c7;
+}
+
+.lib-table-drag-count {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.lib-table-drag-target {
+  min-width: 0;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.lib-table-drag-ghost.is-droppable .lib-table-drag-target {
+  color: #0369a1;
+}
+
+@keyframes lib-table-drag-ghost-in {
+  from { opacity: 0; filter: blur(1px); }
+  to { opacity: 1; filter: blur(0); }
+}
+
+:global(body[data-library-marquee-selecting="1"]),
+:global(body[data-library-item-dragging="1"]) {
+  user-select: none;
+}
+
+:global(body[data-library-marquee-selecting="1"]) {
+  cursor: crosshair;
+}
+
+:global(body[data-library-item-dragging="1"]) {
+  cursor: grabbing;
+}
+
+.lib-file-table-row.library-row-located { background: #eef7ff; }
+
+.lib-file-table-row.library-row-context-active { background: #f1f5f9; }
+
+.lib-file-table-row.library-row-marquee-selected {
+  background: rgba(219, 234, 254, 0.78);
+}
+
+.lib-file-table-row.library-row-marquee-selected:hover {
+  background: rgba(191, 219, 254, 0.84);
+}
+
+.lib-file-table-row.library-row-drag-source {
+  background: rgba(224, 242, 254, 0.48);
+}
+
+.lib-file-table-row.library-row-drop-target {
+  background: linear-gradient(90deg, rgba(186, 230, 253, 0.72), rgba(240, 253, 250, 0.66));
+}
+
+.lib-file-table-row.library-row-drop-blocked {
+  background: rgba(254, 226, 226, 0.66);
+}
+
+.lib-file-table-row.library-row-operating {
   background:
     linear-gradient(
       105deg,
@@ -17586,27 +20316,21 @@ function statsStatusTextDisplay (stats) {
       rgba(191, 219, 254, 0.86) 58%,
       rgba(147, 197, 253, 0.42) 72%,
       rgba(239, 246, 255, 0.98) 100%
-    ) !important;
+    );
   background-size: 300% 100%;
   animation: library-row-operating-flow 1.25s linear infinite;
 }
 
-:deep(.el-table .library-row-operating > td.el-table__cell) {
+.lib-file-table-row.library-row-operating .lib-file-cell {
   position: relative;
   overflow: hidden;
-  background: transparent !important;
 }
 
-:deep(.el-table .library-row-operating > td.el-table__cell > .cell) {
-  position: relative;
-  z-index: 1;
-}
-
-:deep(.el-table .library-row-operating .file-icon-shell) {
+.lib-file-table-row.library-row-operating .file-icon-shell {
   position: relative;
 }
 
-:deep(.el-table .library-row-operating .file-icon) {
+.lib-file-table-row.library-row-operating .file-icon {
   transform: rotate(-8deg) scale(1.08);
   filter: drop-shadow(0 4px 8px rgba(37, 99, 235, 0.18));
 }
