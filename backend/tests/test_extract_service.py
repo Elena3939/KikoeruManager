@@ -8,7 +8,9 @@ import tempfile
 import zipfile
 from unittest.mock import Mock, AsyncMock, patch
 
+from app.core.archive_detection import detect_embedded_zip_offset
 from app.core.extract_service import ArchiveInfo, ExtractService
+from app.core.file_processor import FileProcessor
 from app.core.task_engine import Task, TaskType
 
 class TestExtractService:
@@ -30,6 +32,15 @@ class TestExtractService:
         with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as zf:
             zf.writestr('test.txt', 'test content')
             zf.writestr('test_dir/nested.txt', 'nested content')
+
+    def create_prefixed_zip(self, path):
+        """创建前面带 MP4 壳、后面才是 ZIP 的伪装包。"""
+        prefix = b'\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00' + (b'\x00' * 128)
+        with open(path, 'wb') as f:
+            f.write(prefix)
+        with zipfile.ZipFile(path, 'a', zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr('inner.txt', 'embedded zip content')
+        return len(prefix)
     
     @pytest.mark.asyncio
     async def test_detect_real_type_zip(self, extract_service, temp_dir):
@@ -57,6 +68,49 @@ class TestExtractService:
         assert result == expected_path
         assert os.path.exists(expected_path)
         assert not os.path.exists(wrong_path)
+
+    @pytest.mark.asyncio
+    async def test_repair_extension_keeps_prefixed_zip(self, extract_service, temp_dir):
+        """MP4 壳 + ZIP payload 不能被修回 .mp4。"""
+        disguised_path = os.path.join(temp_dir, 'movie.mp4')
+        offset = self.create_prefixed_zip(disguised_path)
+
+        result = await extract_service._repair_extension(disguised_path)
+
+        assert result == disguised_path
+        assert detect_embedded_zip_offset(disguised_path) == offset
+
+    @pytest.mark.asyncio
+    async def test_prepare_embedded_zip_archive_materializes_clean_zip(self, extract_service, temp_dir):
+        """给 7zz 用的临时视图必须从 PK 头开始，原始 source_path 不动。"""
+        disguised_path = os.path.join(temp_dir, 'movie.mp4')
+        self.create_prefixed_zip(disguised_path)
+        old_temp_path = extract_service.config.storage.temp_path
+        extract_service.config.storage.temp_path = temp_dir
+        task = Mock()
+        task.task_metadata = {}
+        task.update_progress = Mock()
+
+        try:
+            view_path = await extract_service._prepare_embedded_zip_archive(disguised_path, task)
+
+            assert view_path is not None
+            with open(view_path, 'rb') as f:
+                assert f.read(4) == b'PK\x03\x04'
+            with zipfile.ZipFile(view_path) as zf:
+                assert zf.namelist() == ['inner.txt']
+            assert task.task_metadata['embedded_zip_source_path'] == disguised_path
+            extract_service._cleanup_embedded_zip_view(task)
+            assert not os.path.exists(view_path)
+        finally:
+            extract_service.config.storage.temp_path = old_temp_path
+
+    def test_file_processor_accepts_prefixed_zip_with_mp4_suffix(self, temp_dir):
+        """目录扫描 / watcher 应该把伪装成 .mp4 的 ZIP 也送进入库。"""
+        disguised_path = os.path.join(temp_dir, 'movie.mp4')
+        self.create_prefixed_zip(disguised_path)
+
+        assert FileProcessor().is_archive(disguised_path) is True
     
     @pytest.mark.asyncio
     async def test_detect_volume_set(self, extract_service, temp_dir):

@@ -37,6 +37,7 @@ import time
 from datetime import datetime
 
 from ..config.settings import get_config
+from ..core.archive_detection import detect_embedded_zip_offset
 from ..core.task_engine import Task
 from ..core.password_utils import (
     normalize_filename_value,
@@ -1355,6 +1356,70 @@ class ExtractService:
         for key, value in values.items():
             task.task_metadata[key] = value
 
+    def _copy_embedded_zip_payload(self, source_path: str, offset: int) -> str:
+        temp_root = str(getattr(self.config.storage, "temp_path", "") or "").strip()
+        if not temp_root:
+            temp_root = tempfile.gettempdir()
+        try:
+            os.makedirs(temp_root, exist_ok=True)
+        except OSError:
+            temp_root = tempfile.gettempdir()
+            os.makedirs(temp_root, exist_ok=True)
+
+        fd, view_path = tempfile.mkstemp(
+            prefix="kikoerumanager_embedded_zip_",
+            suffix=".zip",
+            dir=temp_root,
+        )
+        try:
+            with os.fdopen(fd, "wb") as dst, open(source_path, "rb") as src:
+                src.seek(offset)
+                shutil.copyfileobj(src, dst, 8 * 1024 * 1024)
+            return view_path
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            with contextlib.suppress(OSError):
+                os.remove(view_path)
+            raise
+
+    async def _prepare_embedded_zip_archive(self, archive_path: str, task: Task) -> Optional[str]:
+        """把 MP4/其它前缀壳里的 ZIP payload 剥成临时干净 ZIP。"""
+        offset = detect_embedded_zip_offset(archive_path)
+        if offset is None:
+            return None
+        task.update_progress(12, "检测到伪装 ZIP，正在剥离前缀")
+        view_path = await asyncio.to_thread(self._copy_embedded_zip_payload, archive_path, offset)
+        try:
+            view_size = os.path.getsize(view_path)
+        except OSError:
+            view_size = 0
+        self._set_extract_meta(
+            task,
+            embedded_zip_source_path=archive_path,
+            embedded_zip_view_path=view_path,
+            embedded_zip_offset=offset,
+            embedded_zip_size=view_size,
+        )
+        logger.info(
+            "[Extract] 检测到带前缀伪装 ZIP，已生成临时解压视图: source=%s offset=%s view=%s size=%s",
+            archive_path,
+            offset,
+            view_path,
+            view_size,
+        )
+        return view_path
+
+    def _cleanup_embedded_zip_view(self, task: Optional[Task]) -> None:
+        metadata = getattr(task, "task_metadata", None) or {}
+        view_path = str(metadata.get("embedded_zip_view_path") or "").strip()
+        if not view_path:
+            return
+        with contextlib.suppress(OSError):
+            if os.path.exists(view_path):
+                os.remove(view_path)
+                logger.info("[Extract] 已清理伪装 ZIP 临时视图: %s", view_path)
+
     async def extract(self, task: Task) -> Optional[str]:
         """
         解压压缩包
@@ -1390,12 +1455,17 @@ class ExtractService:
         # 2. 修复后缀名
         self._set_extract_meta(task, extract_stage="detect_type")
         task.update_progress(10, "检测文件类型")
-        archive_path = await self._repair_extension(archive_path)
+        embedded_zip_view_path = await self._prepare_embedded_zip_archive(archive_path, task)
+        if embedded_zip_view_path:
+            archive_path = embedded_zip_view_path
+        else:
+            archive_path = await self._repair_extension(archive_path)
 
-        # 更新任务的 source_path，确保归档时使用正确的路径
-        if archive_path != task.source_path:
-            logger.info(f"[Extract] 文件路径已更新: {task.source_path} -> {archive_path}")
-            task.source_path = archive_path
+            # 更新任务的 source_path，确保归档时使用正确的路径。伪装 ZIP 的临时视图
+            # 不写回 source_path，否则后续归档会搬走临时文件而不是用户原始文件。
+            if archive_path != task.source_path:
+                logger.info(f"[Extract] 文件路径已更新: {task.source_path} -> {archive_path}")
+                task.source_path = archive_path
 
         # 3. 检查是否是分卷
         volume_set = self._detect_volume_set(archive_path)
@@ -1487,13 +1557,18 @@ class ExtractService:
         else:
             # 3.5 如果密码库是按文件名匹配到的，且条目里带 RJ 号，则只注入 RJ 提示。
             # 不改源文件名，避免监控链路还在等旧路径导致超时。
-            password_candidates = await self._get_password_candidates_for_archive(archive_path)
-            hinted_rjcode = self._apply_filename_password_rj_hint(archive_path, task, password_candidates)
+            password_lookup_path = str(
+                (task.task_metadata or {}).get("embedded_zip_source_path")
+                or archive_path
+            )
+            password_candidates = await self._get_password_candidates_for_archive(password_lookup_path)
+            hinted_rjcode = self._apply_filename_password_rj_hint(password_lookup_path, task, password_candidates)
 
         # 检查暂停和取消
         await task.wait_if_paused()
         if task.is_cancelled():
             logger.info(f"任务 {task.id} 在等待分卷后被取消")
+            self._cleanup_embedded_zip_view(task)
             return None
 
         # 4. 获取压缩包内文件列表
@@ -1531,6 +1606,7 @@ class ExtractService:
             )
         except Exception:
             await self._cleanup_extract_path(output_path)
+            self._cleanup_embedded_zip_view(task)
             await self._rollback_exe_e_remap(task)
             await self._rollback_zip_numeric_remap(task)
             await self._rollback_part_exe_remap(task)
@@ -1546,6 +1622,7 @@ class ExtractService:
                 await self._rollback_exe_e_remap(task)
                 await self._rollback_zip_numeric_remap(task)
                 await self._rollback_part_exe_remap(task)
+                self._cleanup_embedded_zip_view(task)
                 return None
             # 更新任务状态为失败，并设置更准确的错误信息
             if extract_failure_reason == "disk_full":
@@ -1571,6 +1648,7 @@ class ExtractService:
             await self._rollback_zip_numeric_remap(task)
             # .partN.exe WinRAR 自解压分卷重命名失败时，把文件名还原回 .partN.exe
             await self._rollback_part_exe_remap(task)
+            self._cleanup_embedded_zip_view(task)
             return None
 
         try:
@@ -1598,6 +1676,7 @@ class ExtractService:
             if task.is_cancelled():
                 logger.info(f"任务 {task.id} 在解压完成后被取消，清理已解压文件")
                 await self._cleanup_extract_path(output_path)
+                self._cleanup_embedded_zip_view(task)
                 return None
 
             # 7. 验证解压完整性
@@ -1648,9 +1727,11 @@ class ExtractService:
                 raise RuntimeError(f"解压失败：文件名疑似乱码（样本：{garbled_sample}，评分：{final_garbled_score:.1f}）")
 
             self._set_extract_meta(task, extract_stage="done", extract_finished_at=datetime.now().isoformat())
+            self._cleanup_embedded_zip_view(task)
             return output_path
         except Exception:
             await self._cleanup_extract_path(output_path)
+            self._cleanup_embedded_zip_view(task)
             await self._rollback_exe_e_remap(task)
             await self._rollback_zip_numeric_remap(task)
             await self._rollback_part_exe_remap(task)
@@ -2718,6 +2799,10 @@ class ExtractService:
         filename = Path(file_path).name
         current_ext = Path(file_path).suffix.lower()
 
+        if detect_embedded_zip_offset(file_path) is not None:
+            logger.info(f"[Extract] 检测到带前缀伪装 ZIP，跳过后缀修复: {file_path}")
+            return file_path
+
         # 跳过自解压文件（.exe）
         if filename.lower().endswith('.exe'):
             logger.info(f"跳过自解压文件后缀名修复: {file_path}")
@@ -2822,6 +2907,10 @@ class ExtractService:
         path = Path(file_path)
         filename = path.name
         current_ext = path.suffix.lower()
+
+        if detect_embedded_zip_offset(file_path) is not None:
+            logger.info(f"[Normalize] 检测到带前缀伪装 ZIP，保持原始文件名: {file_path}")
+            return file_path
 
         # 检查是否是分卷压缩文件
         volume_set = self._detect_volume_set(file_path)
@@ -2999,6 +3088,10 @@ class ExtractService:
         current_ext = path.suffix.lower()
 
         logger.debug(f"[Normalize] 检查文件: {filename}, 当前后缀: {current_ext}")
+
+        if detect_embedded_zip_offset(file_path) is not None:
+            logger.debug("[Normalize] 带前缀伪装 ZIP 不做文件名预览修复")
+            return None
 
         # 检查是否是分卷压缩文件
         volume_set = self._detect_volume_set(file_path)
