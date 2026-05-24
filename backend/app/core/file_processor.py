@@ -16,6 +16,7 @@ from typing import Optional, Set, List, Callable
 import logging
 
 from ..config.settings import get_config
+from ..core.archive_detection import has_embedded_zip_archive
 from ..core.task_engine import Task, TaskType, get_task_engine
 
 logger = logging.getLogger(__name__)
@@ -367,7 +368,12 @@ class FileProcessor:
 
         # 对于没有后缀名或后缀名不在列表中的文件，尝试通过魔数检测
         if not ext or ext not in archive_extensions:
-            return self._detect_archive_by_magic(file_path)
+            if self._detect_archive_by_magic(file_path):
+                return True
+            if has_embedded_zip_archive(file_path):
+                logger.info(f"[FileProcessor] 检测到带前缀伪装的 ZIP 压缩包: {file_path}")
+                return True
+            return False
 
     def detect_volume_set(self, file_path: str) -> Optional[VolumeSet]:
         """检测分卷组
