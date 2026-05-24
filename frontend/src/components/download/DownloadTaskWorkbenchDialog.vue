@@ -228,15 +228,15 @@
                         </div>
                       </div>
 
-                      <div v-if="task.progress_log?.length" class="v1-detail-section">
+                      <div v-if="getVisibleProgressLogs(task).length" class="v1-detail-section">
                         <div class="v1-detail-section-label">最近日志</div>
                         <div class="v1-log-list">
                           <div
-                            v-for="entry in task.progress_log.slice(-6)"
-                            :key="`${task.id}-${entry.time}-${entry.message}`"
+                            v-for="entry in getVisibleProgressLogs(task)"
+                            :key="`${task.id}-${entry.timeKey}-${entry.message}`"
                             class="v1-log-row"
                           >
-                            <span class="v1-log-time">{{ formatLogTime(entry.time) }}</span>
+                            <span class="v1-log-time">{{ formatLogTime(entry.timeKey) }}</span>
                             <span class="v1-log-message">{{ entry.message }}</span>
                           </div>
                         </div>
@@ -406,7 +406,9 @@ const aggregatedUploadEta = computed(() => {
 })
 const remainingTaskSummary = computed(() => {
   const remaining = processingTasks.value.length + pendingTasks.value.length
-  return remaining ? `${remaining} 个` : '已全部完成'
+  if (remaining) return `${remaining} 个`
+  if (partialFailedTasks.value.length > 0) return '有失败'
+  return '已全部完成'
 })
 
 watch(() => mergedTasks.value.map(task => task.id).join(':'), () => {
@@ -506,11 +508,70 @@ function formatSpeed(bytesPerSec) {
   return value > 0 ? `${formatSize(value)}/s` : '—'
 }
 
+function getLogTimeValue(entry) {
+  return entry?.time || entry?.timestamp || entry?.created_at || entry?.ts || ''
+}
+
+function getLogMessage(entry) {
+  return String(entry?.message || entry?.text || '').trim()
+}
+
+function getLogTimestamp(entry) {
+  const value = getLogTimeValue(entry)
+  if (!value) return 0
+  const date = new Date(value)
+  if (!Number.isNaN(date.getTime())) return date.getTime()
+  const match = String(value).match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/)
+  if (!match) return 0
+  const hours = Number(match[1] || 0)
+  const minutes = Number(match[2] || 0)
+  const seconds = Number(match[3] || 0)
+  return hours * 3600 + minutes * 60 + seconds
+}
+
+function shouldSkipUploadLogNoise(entry, index, entries) {
+  if (!isUploadMode.value) return false
+  const message = entry.message
+  const nextMessage = entries[index + 1]?.message || ''
+  if (message === '准备上传目录' && /^准备上传\s*\d+\s*个目录$/.test(nextMessage)) return true
+  const startMatch = message.match(/^上传目录\s*(\d+\/\d+)[:：]\s*(.+)$/)
+  if (startMatch && nextMessage === `开始上传目录 ${startMatch[2]}`) return true
+  return false
+}
+
+function getVisibleProgressLogs(task) {
+  const entries = (Array.isArray(task?.progress_log) ? task.progress_log : [])
+    .map((entry) => ({
+      ...entry,
+      timeKey: getLogTimeValue(entry),
+      message: getLogMessage(entry),
+      progress: entry?.progress,
+      level: entry?.level || 'info',
+    }))
+    .filter(entry => entry.message)
+
+  const compacted = []
+  entries.forEach((entry, index) => {
+    if (shouldSkipUploadLogNoise(entry, index, entries)) return
+    const last = compacted[compacted.length - 1]
+    if (
+      last &&
+      last.message === entry.message &&
+      last.progress === entry.progress &&
+      String(last.level || '') === String(entry.level || '')
+    ) return
+    compacted.push(entry)
+  })
+
+  return compacted.slice(-6)
+}
+
 function formatLogTime(value) {
   if (!value) return '--:--:--'
+  if (/^\d{1,2}:\d{2}(?::\d{2})?$/.test(String(value))) return String(value)
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return String(value)
-  return date.toLocaleTimeString()
+  return date.toLocaleTimeString('zh-CN', { hour12: false })
 }
 
 function getTaskSessionId(task) {
@@ -582,7 +643,9 @@ function mergeTaskGroup(group) {
   const base = [...sorted].sort((a, b) => getTaskResourceCount(b) - getTaskResourceCount(a) || getTaskTimestamp(b) - getTaskTimestamp(a))[0] || primary
   const mergedSelectedResources = dedupeByRelativePath(sorted.flatMap(task => Array.isArray(task?.task_metadata?.selected_resources) ? task.task_metadata.selected_resources : []))
   const mergedFileCollections = mergeLatestFileCollections(sorted)
-  const mergedLogs = [...sorted].flatMap(task => Array.isArray(task?.progress_log) ? task.progress_log : []).sort((a, b) => new Date(a?.time || 0).getTime() - new Date(b?.time || 0).getTime())
+  const mergedLogs = [...sorted]
+    .flatMap(task => Array.isArray(task?.progress_log) ? task.progress_log : [])
+    .sort((a, b) => getLogTimestamp(a) - getLogTimestamp(b))
   const mergedTask = {
     ...base,
     ...primary,
