@@ -1033,6 +1033,82 @@ class TaskEngine:
         task.error_message = None
         task.current_step = f"已由后续成功任务覆盖: {superseded_by_task_id}"
 
+    async def revive_superseded_local_upload_tasks(self, task_ids: Optional[list[str]] = None) -> list[str]:
+        """修复旧逻辑误标记的本地上传任务，并重新入队。"""
+        target_ids = {str(item or "").strip() for item in (task_ids or []) if str(item or "").strip()}
+        revived: list[str] = []
+
+        for task in list(self.tasks.values()):
+            if task.type != TaskType.LOCAL_LIBRARY_UPLOAD:
+                continue
+            if target_ids and task.id not in target_ids:
+                continue
+
+            metadata = dict(task.task_metadata or {})
+            current_step = str(task.current_step or "").strip()
+            was_superseded = bool(
+                str(metadata.get("superseded_by_task_id") or "").strip()
+                or current_step.startswith("已由后续成功任务覆盖")
+            )
+            if not was_superseded:
+                continue
+
+            upload_result = metadata.get("upload_result") if isinstance(metadata.get("upload_result"), dict) else {}
+            if task.status == TaskStatus.COMPLETED and int((upload_result or {}).get("count") or 0) > 0:
+                continue
+            if task.id in self.processing or task.status == TaskStatus.PROCESSING:
+                continue
+
+            for key in ("superseded_by_task_id", "superseded_at", "superseded_reason", "superseded_output_path"):
+                metadata.pop(key, None)
+            metadata.pop("hidden_in_task_lists", None)
+
+            upload_files = []
+            for row in list(metadata.get("upload_files") or []):
+                if not isinstance(row, dict):
+                    continue
+                next_row = dict(row)
+                next_row["status"] = "pending"
+                next_row["progress"] = 0
+                next_row["uploaded_bytes"] = 0
+                upload_files.append(next_row)
+            total_files = len(upload_files)
+            total_bytes = sum(int(row.get("size") or row.get("size_bytes") or 0) for row in upload_files)
+            metadata["upload_files"] = upload_files
+            metadata["uploaded_files"] = []
+            metadata["upload_runtime"] = {
+                "phase": "preparing",
+                "total_files": total_files,
+                "completed_files": 0,
+                "transferred_bytes": 0,
+                "total_bytes": total_bytes,
+                "speed_bytes_per_sec": 0,
+                "current_file_name": "",
+                "current_relative_path": "",
+                "current_source_dir": "",
+            }
+
+            logs = list(metadata.get("progress_log") or [])
+            logs.append({
+                "time": datetime.now().isoformat(),
+                "message": "检测到上传任务曾被错误合并，已恢复并重新排队",
+                "progress": 0,
+                "level": "warning",
+            })
+            metadata["progress_log"] = logs[-40:]
+            task.task_metadata = metadata
+            task.reset_for_rerun("等待重新上传")
+            self._ensure_task_context(task)
+
+            queued_ids = {getattr(queued_task, "id", "") for queued_task in list(getattr(self.queue, "_queue", []))}
+            if task.id not in queued_ids:
+                await self.queue.put(task)
+            revived.append(task.id)
+
+        if revived:
+            logger.warning("已恢复被错误合并的本地上传任务: %s", ",".join(revived))
+        return revived
+
     def cleanup_retry_output_artifacts(self, failed_task_id: str, source_path: str = "") -> list[str]:
         """在失败任务重试前，主动清掉上次失败留下的产物目录，避免被新的重复检测命中。"""
         target_task = self.get_task(str(failed_task_id or "").strip())
@@ -1086,6 +1162,8 @@ class TaskEngine:
     def _task_matches_recovered_success(self, candidate: Task, source_path: str, rjcode: str, recovered_task_id: str) -> bool:
         if not candidate or candidate.id == recovered_task_id:
             return False
+        if candidate.type not in {TaskType.EXTRACT, TaskType.AUTO_PROCESS, TaskType.PROCESS_EXISTING_FOLDER}:
+            return False
         if candidate.status == TaskStatus.COMPLETED:
             return False
 
@@ -1108,6 +1186,8 @@ class TaskEngine:
     def _resolve_completed_failure_followups(self, task: Task):
         """普通任务后续成功时，自动移除同源/同 RJ 的失败问题项，并标记旧失败已恢复。"""
         if task.status != TaskStatus.COMPLETED:
+            return
+        if task.type not in {TaskType.EXTRACT, TaskType.AUTO_PROCESS, TaskType.PROCESS_EXISTING_FOLDER}:
             return
 
         metadata = dict(task.task_metadata or {})
@@ -4588,7 +4668,6 @@ class TaskEngine:
             "transferred_bytes": 0,
             "total_bytes": total_bytes,
             "speed_bytes_per_sec": 0,
-            "last_non_zero_speed_bytes_per_sec": 0,
             "current_file_name": "",
             "current_relative_path": "",
             "current_source_dir": "",
@@ -4624,12 +4703,8 @@ class TaskEngine:
 
         def progress_callback(snapshot: dict):
             runtime.update(snapshot or {})
-            try:
-                speed_value = int(runtime.get("speed_bytes_per_sec") or 0)
-            except Exception:
-                speed_value = 0
-            if speed_value > 0:
-                runtime["last_non_zero_speed_bytes_per_sec"] = speed_value
+            runtime["backend_speed_bytes_per_sec"] = int(runtime.get("speed_bytes_per_sec") or 0)
+            runtime["speed_bytes_per_sec"] = 0
             task.task_metadata["upload_runtime"] = dict(runtime)
             phase = str(runtime.get("phase") or "").strip()
             current_file_name = str(runtime.get("current_file_name") or "").strip()
@@ -4640,12 +4715,16 @@ class TaskEngine:
             elif current_file_name:
                 task.current_step = f"上传中: {current_file_name}"
             current_relative_path = str(runtime.get("current_relative_path") or "").strip()
+            current_source_dir = str(runtime.get("current_source_dir") or "").strip()
             total_bytes_current = max(0, int(runtime.get("current_file_total_bytes") or 0))
             uploaded_bytes_current = max(0, int(runtime.get("current_file_uploaded_bytes") or 0))
             if current_relative_path:
                 rows = list(task.task_metadata.get("upload_files") or [])
                 for row in rows:
                     if str(row.get("relative_path") or "").strip() != current_relative_path:
+                        continue
+                    row_source_dir = str(row.get("source_dir") or "").strip()
+                    if current_source_dir and row_source_dir and os.path.abspath(row_source_dir) != os.path.abspath(current_source_dir):
                         continue
                     row["status"] = "uploading" if phase != "preparing" else "preparing"
                     row["uploaded_bytes"] = uploaded_bytes_current
@@ -4658,9 +4737,13 @@ class TaskEngine:
             uploaded_rows.append(dict(file_row or {}))
             task.task_metadata["uploaded_files"] = uploaded_rows[-200:]
             relative_path = str((file_row or {}).get("relative_path") or "").strip()
+            source_dir = str((file_row or {}).get("source_dir") or "").strip()
             rows = list(task.task_metadata.get("upload_files") or [])
             for row in rows:
                 if str(row.get("relative_path") or "").strip() != relative_path:
+                    continue
+                row_source_dir = str(row.get("source_dir") or "").strip()
+                if source_dir and row_source_dir and os.path.abspath(row_source_dir) != os.path.abspath(source_dir):
                     continue
                 row["status"] = "completed"
                 row["uploaded_bytes"] = int(row.get("size") or 0)

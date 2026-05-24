@@ -308,6 +308,8 @@ class TaskCenterService:
             if snapshot:
                 enriched = dict(metadata)
                 enriched["file_tree_items"] = snapshot
+                enriched["file_tree_root_path"] = candidate
+                enriched["file_tree_root_label"] = self._basename(candidate)
                 return enriched
 
         return metadata
