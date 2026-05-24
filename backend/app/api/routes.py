@@ -50,7 +50,7 @@ from ..core.security_gate_service import COOKIE_NAME, get_security_gate_service
 app = FastAPI(
     title="KikoeruManager API",
     description="DLsite作品整理工具API",
-    version="1.5.45"
+    version="1.5.46"
 )
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 
@@ -82,7 +82,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "kikoerumanager",
-        "version": "1.5.45",
+        "version": "1.5.46",
         "timestamp": datetime.now().isoformat()
     }
 
@@ -12284,9 +12284,10 @@ async def local_upload_start(request: LocalUploadStartRequest):
         if len(selected_paths) == 1:
             preview_target_path = str(PurePosixPath(preview_target_path) / os.path.basename(os.path.abspath(selected_paths[0])))
 
+        task_source_path = selected_paths[0] if len(selected_paths) == 1 else source_base_path
         task = Task(
             task_type=TaskType.LOCAL_LIBRARY_UPLOAD,
-            source_path=source_base_path,
+            source_path=task_source_path,
             metadata={
                 "source_library_id": source_library_id,
                 "source_base_path": source_base_path,
@@ -12343,13 +12344,13 @@ async def local_upload_status(task_ids: str = "", include_hidden: bool = True):
             for item in str(task_ids or "").split(",")
             if str(item or "").strip()
         ]
+        if requested_ids:
+            await engine.revive_superseded_local_upload_tasks(requested_ids)
         all_tasks = engine.get_all_tasks(include_hidden=bool(include_hidden))
         upload_tasks = [t for t in all_tasks if t.type == TaskType.LOCAL_LIBRARY_UPLOAD]
         upload_task_map = {str(t.id): t for t in upload_tasks}
         if requested_ids:
             selected_tasks = [upload_task_map[task_id] for task_id in requested_ids if task_id in upload_task_map]
-            seen_ids = {str(task.id) for task in selected_tasks}
-            selected_tasks.extend([t for t in upload_tasks if str(t.id) not in seen_ids][:20])
             upload_tasks = selected_tasks
 
         return {
