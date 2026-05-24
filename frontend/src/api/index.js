@@ -1624,7 +1624,8 @@ export const circleCompletionApi = {
         only_missing: options.onlyMissing ?? false,
         only_downloadable: options.onlyDownloadable ?? false,
         include_dl_only: options.includeDlOnly ?? true
-      }
+      },
+      signal: options.signal
     })
     return response.data
   },

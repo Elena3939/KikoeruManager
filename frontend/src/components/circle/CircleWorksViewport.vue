@@ -309,6 +309,8 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .circle-work-viewport {
+  position: relative;
+  z-index: 0;
   display: flex;
   flex-direction: column;
   flex: 1;

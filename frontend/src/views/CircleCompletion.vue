@@ -477,13 +477,31 @@
 
                 <div class="owned-filter-row flex items-center justify-between gap-4">
                   <div class="owned-filter-tabs flex bg-white rounded-lg border border-slate-200/60 p-1 shadow-sm">
-                    <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="ownedWorksFilterType === 'all' ? 'bg-slate-800 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="ownedWorksFilterType = 'all'">全部</button>
-                    <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="ownedWorksFilterType === 'original' ? 'bg-slate-800 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="ownedWorksFilterType = 'original'">仅原作</button>
-                    <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="ownedWorksFilterType === 'simplified' ? 'bg-sky-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="ownedWorksFilterType = 'simplified'">简中</button>
-                    <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="ownedWorksFilterType === 'traditional' ? 'bg-violet-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="ownedWorksFilterType = 'traditional'">繁中</button>
-                    <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all flex items-center gap-1.5" :class="ownedWorksFilterType === 'subtitle' ? 'bg-indigo-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="ownedWorksFilterType = 'subtitle'">
+                    <button type="button" class="owned-filter-chip" :class="{ 'is-active': ownedWorksFilterType === 'all' }" @click="setOwnedWorksFilter('all')">
+                      全部
+                      <span class="owned-filter-count">{{ ownedWorksStats.total }}</span>
+                    </button>
+                    <button type="button" class="owned-filter-chip" :class="{ 'is-active': ownedWorksFilterType === 'original' }" @click="setOwnedWorksFilter('original')">
+                      仅原作
+                      <span class="owned-filter-count">{{ ownedWorksStats.original }}</span>
+                    </button>
+                    <button type="button" class="owned-filter-chip is-simplified" :class="{ 'is-active': ownedWorksFilterType === 'simplified' }" @click="setOwnedWorksFilter('simplified')">
+                      简中
+                      <span class="owned-filter-count">{{ ownedWorksStats.simplified }}</span>
+                    </button>
+                    <button type="button" class="owned-filter-chip is-traditional" :class="{ 'is-active': ownedWorksFilterType === 'traditional' }" @click="setOwnedWorksFilter('traditional')">
+                      繁中
+                      <span class="owned-filter-count">{{ ownedWorksStats.traditional }}</span>
+                    </button>
+                    <button type="button" class="owned-filter-chip is-subtitle" :class="{ 'is-active': ownedWorksFilterType === 'subtitle' }" @click="setOwnedWorksFilter('subtitle')">
                       <MessageSquareText :size="14" stroke-width="2.5" />
                       字幕
+                      <span class="owned-filter-count">{{ ownedWorksStats.subtitle }}</span>
+                    </button>
+                    <button type="button" class="owned-filter-chip is-bonus" :class="{ 'is-active': ownedWorksFilterType === 'bonus' }" @click="setOwnedWorksFilter('bonus')">
+                      <Gift :size="14" stroke-width="2.5" />
+                      特典
+                      <span class="owned-filter-count">{{ ownedWorksStats.bonus }}</span>
                     </button>
                   </div>
 
@@ -530,7 +548,17 @@
               <!-- 改成和"缺失作品" tab 一样的双模式（card / list），共用 viewMode 开关，
                    保持上面 stats / 筛选 chip / 搜索框不变。已满足作品默认走 cornerLabel
                    = "已收录" 让卡片角标和原配色（绿色）统一。 -->
-              <template v-if="ownedWorks.length === 0">
+              <template v-if="circleDetailLoading && !circleDetailLoaded">
+                <div class="circle-works-loading-state">
+                  <AppLoadingAnimation
+                    label="正在切换社团作品"
+                    description="先展示当前社团摘要，作品列表马上补齐"
+                    :size="176"
+                    :min-height="280"
+                  />
+                </div>
+              </template>
+              <template v-else-if="ownedWorks.length === 0">
                 <div class="flex flex-col items-center justify-center py-12 text-slate-400 bg-white/50 rounded-xl border border-slate-200/50 border-dashed">
                   <LibraryBig :size="32" class="mb-3 opacity-40" />
                   <p class="text-sm font-medium">没有找到符合条件的作品</p>
@@ -959,6 +987,13 @@ const detail = reactive({
   dl_only_count: 0,
   works: []
 })
+const CIRCLE_DETAIL_CACHE_TTL = 5 * 60 * 1000
+const CIRCLE_DETAIL_PREFETCH_LIMIT = 2
+const circleDetailCache = new Map()
+let circleDetailRequestSeq = 0
+let circleDetailAbortController = null
+let circleDetailPrefetchTimer = null
+let circleDetailPrefetchRunning = false
 const filters = reactive({
   onlyMissing: false,
   onlyDownloadable: false,
@@ -1026,6 +1061,11 @@ function normalizeStatusFilters(next, previous = []) {
 }
 
 function resetCircleDetail() {
+  circleDetailRequestSeq += 1
+  if (circleDetailAbortController) {
+    circleDetailAbortController.abort()
+    circleDetailAbortController = null
+  }
   Object.assign(detail, {
     circle_id: '',
     circle_name: '',
@@ -1040,6 +1080,94 @@ function resetCircleDetail() {
   circleDetailLoaded.value = false
   circleDetailLoading.value = false
   selectedCanonicals.value = new Set()
+}
+
+function getCircleDetailCacheKey(circleId) {
+  return `${String(circleId || '').trim()}::dlOnly=${filters.includeDlOnly ? 1 : 0}`
+}
+
+function cloneCircleDetailPayload(payload = {}) {
+  return {
+    circle_id: String(payload.circle_id || ''),
+    circle_name: String(payload.circle_name || ''),
+    source_mask: String(payload.source_mask || ''),
+    last_indexed_at: payload.last_indexed_at || '',
+    owned_count: Number(payload.owned_count || 0),
+    missing_count: Number(payload.missing_count || 0),
+    downloadable_count: Number(payload.downloadable_count || 0),
+    dl_only_count: Number(payload.dl_only_count || 0),
+    works: Array.isArray(payload.works) ? payload.works.map(item => ({ ...item })) : []
+  }
+}
+
+function getCachedCircleDetail(circleId) {
+  const key = getCircleDetailCacheKey(circleId)
+  const cached = circleDetailCache.get(key)
+  if (!cached) return null
+  if (Date.now() - cached.cachedAt > CIRCLE_DETAIL_CACHE_TTL) {
+    circleDetailCache.delete(key)
+    return null
+  }
+  return cloneCircleDetailPayload(cached.payload)
+}
+
+function hasFreshCircleDetailCache(circleId) {
+  const key = getCircleDetailCacheKey(circleId)
+  const cached = circleDetailCache.get(key)
+  if (!cached) return false
+  if (Date.now() - cached.cachedAt <= CIRCLE_DETAIL_CACHE_TTL) return true
+  circleDetailCache.delete(key)
+  return false
+}
+
+function setCachedCircleDetail(circleId, payload) {
+  const key = getCircleDetailCacheKey(circleId)
+  circleDetailCache.set(key, {
+    cachedAt: Date.now(),
+    payload: cloneCircleDetailPayload(payload)
+  })
+  while (circleDetailCache.size > 12) {
+    const oldestKey = circleDetailCache.keys().next().value
+    if (!oldestKey) break
+    circleDetailCache.delete(oldestKey)
+  }
+}
+
+function invalidateCircleDetailCache(circleId = '') {
+  const target = String(circleId || '').trim()
+  if (!target) {
+    circleDetailCache.clear()
+    return
+  }
+  for (const key of [...circleDetailCache.keys()]) {
+    if (key.startsWith(`${target}::`)) circleDetailCache.delete(key)
+  }
+}
+
+function applyCircleDetailPayload(payload, { loaded = true } = {}) {
+  const normalized = cloneCircleDetailPayload(payload)
+  Object.assign(detail, normalized)
+  circleDetailLoaded.value = loaded
+  selectedCanonicals.value = new Set(
+    [...selectedCanonicals.value].filter(code => normalized.works.some(item => item.canonical_rjcode === code))
+  )
+}
+
+function applyCircleSummaryPlaceholder(circleId) {
+  const target = String(circleId || '').trim()
+  const circle = (circleList.value || []).find(item => String(item?.circle_id || '') === target)
+  Object.assign(detail, {
+    circle_id: target,
+    circle_name: circle?.circle_name || target,
+    source_mask: circle?.source_mask || '',
+    last_indexed_at: circle?.last_indexed_at || '',
+    owned_count: Number(circle?.owned_count ?? circle?.server_owned ?? 0),
+    missing_count: Number(circle?.missing ?? 0),
+    downloadable_count: Number(circle?.downloadable_count ?? 0),
+    dl_only_count: Number(circle?.dl_only_count ?? 0),
+    works: []
+  })
+  circleDetailLoaded.value = false
 }
 
 async function syncActiveCircleWithList(options = {}) {
@@ -1298,10 +1426,10 @@ const unreleasedWorksCount = computed(() =>
 // 同一来源），保证左侧 search_circles 的 new_works_48h_count、右侧卡片特效、
 // 以及这里的工具栏数字三方永远对齐，不会再出现"卡片闪新作但左侧没标记"。
 const newWorksCount = computed(() =>
-  (detail.works || []).filter(item => Boolean(item?.is_new_work)).length
+  (detail.works || []).filter(item => isStrictTrue(item?.is_new_work)).length
 )
 const bonusWorksCount = computed(() =>
-  (detail.works || []).filter(item => Boolean(item?.is_bonus_work)).length
+  (detail.works || []).filter(item => isBonusDisplayWork(item)).length
 )
 
 function getCircleWorksCount(circle) {
@@ -1491,9 +1619,12 @@ watch(showMissingWorksCompleteState, value => {
 }, { immediate: true })
 
 const ownedWorksSearchQuery = ref('')
-const ownedWorksFilterType = ref('all') // 'all', 'original', 'simplified', 'traditional', 'subtitle'
+const ownedWorksFilterType = ref('all') // 'all', 'original', 'simplified', 'traditional', 'subtitle', 'bonus'
 const compareSearchQuery = ref('')
 const compareSourceFilter = ref('all') // 'all', 'kikoeru', 'dlsite', 'asmr_one', 'missing'
+
+watch(ownedWorksSearchQuery, () => { ownedPage.value = 1 })
+watch(compareSearchQuery, () => { comparePage.value = 1 })
 
 function getOwnedVariantGroupLabel(item) {
   return item?.owned_variant?.group_short_label || '原作'
@@ -1503,6 +1634,22 @@ function getOwnedVariantGroupKey(item) {
   return item?.owned_variant?.group_key || 'original'
 }
 
+function isStrictTrue(value) {
+  if (value === true || value === 1 || value === '1') return true
+  if (typeof value === 'string') return value.trim().toLowerCase() === 'true'
+  return false
+}
+
+function isBonusDisplayWork(item) {
+  return isStrictTrue(item?.is_bonus_work)
+}
+
+function setOwnedWorksFilter(type) {
+  if (ownedWorksFilterType.value === type) return
+  ownedWorksFilterType.value = type
+  ownedPage.value = 1
+}
+
 const ownedWorks = computed(() => {
   let list = applyStatusFilters((detail.works || []).filter(item => item.owned))
 
@@ -1510,13 +1657,14 @@ const ownedWorks = computed(() => {
   if (ownedWorksFilterType.value !== 'all') {
     list = list.filter(item => {
       const groupKey = getOwnedVariantGroupKey(item)
-      const hasSubtitle = groupKey === 'original' && item.subtitle_present
+      const hasSubtitle = groupKey === 'original' && isStrictTrue(item.subtitle_present)
 
       switch (ownedWorksFilterType.value) {
         case 'original': return groupKey === 'original' && !hasSubtitle
         case 'simplified': return groupKey === 'simplified'
         case 'traditional': return groupKey === 'traditional'
         case 'subtitle': return hasSubtitle
+        case 'bonus': return isBonusDisplayWork(item)
         default: return true
       }
     })
@@ -1551,13 +1699,13 @@ const ownedWorksStats = computed(() => {
     total: all.length,
     original: all.filter(item => {
       const groupKey = getOwnedVariantGroupKey(item)
-      const hasSubtitle = groupKey === 'original' && item.subtitle_present
+      const hasSubtitle = groupKey === 'original' && isStrictTrue(item.subtitle_present)
       return groupKey === 'original' && !hasSubtitle
     }).length,
     simplified: all.filter(item => getOwnedVariantGroupKey(item) === 'simplified').length,
     traditional: all.filter(item => getOwnedVariantGroupKey(item) === 'traditional').length,
-    subtitle: all.filter(item => getOwnedVariantGroupKey(item) === 'original' && item.subtitle_present).length,
-    bonus: all.filter(item => Boolean(item?.is_bonus_work)).length,
+    subtitle: all.filter(item => getOwnedVariantGroupKey(item) === 'original' && isStrictTrue(item.subtitle_present)).length,
+    bonus: all.filter(item => isBonusDisplayWork(item)).length,
   }
 })
 
@@ -2033,6 +2181,14 @@ onBeforeUnmount(() => {
   if (completeConfettiTimer) {
     clearTimeout(completeConfettiTimer)
     completeConfettiTimer = null
+  }
+  if (circleDetailPrefetchTimer) {
+    clearTimeout(circleDetailPrefetchTimer)
+    circleDetailPrefetchTimer = null
+  }
+  if (circleDetailAbortController) {
+    circleDetailAbortController.abort()
+    circleDetailAbortController = null
   }
   stopIndexJobPolling()
   stopRefreshJobPolling()
@@ -3184,6 +3340,45 @@ async function searchCachedCircles() {
   await syncActiveCircleWithList({ preserveActiveWhenEmpty: Boolean(keyword) })
 }
 
+function scheduleCircleDetailPrefetch() {
+  if (circleDetailPrefetchTimer) {
+    window.clearTimeout(circleDetailPrefetchTimer)
+    circleDetailPrefetchTimer = null
+  }
+  circleDetailPrefetchTimer = window.setTimeout(() => {
+    circleDetailPrefetchTimer = null
+    prefetchNeighborCircleDetails().catch(() => {})
+  }, 450)
+}
+
+async function prefetchNeighborCircleDetails() {
+  if (circleDetailPrefetchRunning || circleDetailLoading.value) return
+  const list = Array.isArray(displayCircleList.value) ? displayCircleList.value : []
+  if (!list.length || !activeCircleId.value) return
+  const activeIndex = list.findIndex(circle => String(circle?.circle_id || '') === activeCircleId.value)
+  if (activeIndex < 0) return
+  const candidates = [
+    ...list.slice(activeIndex + 1, activeIndex + 1 + CIRCLE_DETAIL_PREFETCH_LIMIT),
+    ...list.slice(Math.max(0, activeIndex - 1), activeIndex),
+  ]
+    .map(circle => String(circle?.circle_id || '').trim())
+    .filter(circleId => circleId && circleId !== activeCircleId.value && !hasFreshCircleDetailCache(circleId))
+
+  if (!candidates.length) return
+  circleDetailPrefetchRunning = true
+  try {
+    for (const circleId of candidates.slice(0, CIRCLE_DETAIL_PREFETCH_LIMIT)) {
+      if (hasFreshCircleDetailCache(circleId)) continue
+      const result = await circleCompletionApi.getCircleDetail(circleId, {
+        includeDlOnly: filters.includeDlOnly
+      })
+      setCachedCircleDetail(circleId, result)
+    }
+  } finally {
+    circleDetailPrefetchRunning = false
+  }
+}
+
 async function handleIndexCircle() {
   await startIndexCircleJob({
     circleQuery: circleQuery.value.trim(),
@@ -3328,38 +3523,72 @@ async function refreshSelectedCircleIndex(targetCodes = null) {
 }
 
 async function selectCircle(circleId) {
-  activeCircleId.value = circleId
-  circleDetailLoaded.value = false
+  const targetCircleId = String(circleId || '').trim()
+  if (!targetCircleId) return
+  if (activeCircleId.value === targetCircleId && circleDetailLoaded.value && !circleDetailLoading.value) {
+    return
+  }
+
+  activeCircleId.value = targetCircleId
   selectedCanonicals.value = new Set()
-  await refreshActiveCircle()
+  flashedWorkCodes.value = new Set()
+  missingPage.value = 1
+  ownedPage.value = 1
+  comparePage.value = 1
+
+  const cached = getCachedCircleDetail(targetCircleId)
+  if (cached) {
+    applyCircleDetailPayload(cached)
+    circleDetailLoading.value = false
+    scheduleCircleDetailPrefetch()
+    return
+  }
+
+  applyCircleSummaryPlaceholder(targetCircleId)
+  await refreshActiveCircle({ preferCache: true })
 }
 
-async function refreshActiveCircle() {
+async function refreshActiveCircle(options = {}) {
   if (!activeCircleId.value) return
+  const { preferCache = false } = options
+  const requestCircleId = String(activeCircleId.value || '').trim()
+  if (!requestCircleId) return
+
+  if (preferCache) {
+    const cached = getCachedCircleDetail(requestCircleId)
+    if (cached) {
+      applyCircleDetailPayload(cached)
+      circleDetailLoading.value = false
+      scheduleCircleDetailPrefetch()
+      return
+    }
+  } else {
+    invalidateCircleDetailCache(requestCircleId)
+  }
+
+  const requestSeq = ++circleDetailRequestSeq
+  if (circleDetailAbortController) {
+    circleDetailAbortController.abort()
+  }
+  circleDetailAbortController = new AbortController()
   circleDetailLoading.value = true
   try {
-    const result = await circleCompletionApi.getCircleDetail(activeCircleId.value, {
-      includeDlOnly: filters.includeDlOnly
+    const result = await circleCompletionApi.getCircleDetail(requestCircleId, {
+      includeDlOnly: filters.includeDlOnly,
+      signal: circleDetailAbortController.signal
     })
-    Object.assign(detail, {
-      circle_id: result.circle_id || '',
-      circle_name: result.circle_name || '',
-      source_mask: result.source_mask || '',
-      last_indexed_at: result.last_indexed_at || '',
-      owned_count: result.owned_count || 0,
-      missing_count: result.missing_count || 0,
-      downloadable_count: result.downloadable_count || 0,
-      dl_only_count: result.dl_only_count || 0,
-      works: result.works || []
-    })
-    circleDetailLoaded.value = true
-    selectedCanonicals.value = new Set(
-      [...selectedCanonicals.value].filter(code => (result.works || []).some(item => item.canonical_rjcode === code))
-    )
+    if (requestSeq !== circleDetailRequestSeq || activeCircleId.value !== requestCircleId) return
+    setCachedCircleDetail(requestCircleId, result)
+    applyCircleDetailPayload(result)
+    scheduleCircleDetailPrefetch()
   } catch (error) {
+    if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') return
     ElMessage.error(error.response?.data?.detail || '加载社团详情失败')
   } finally {
-    circleDetailLoading.value = false
+    if (requestSeq === circleDetailRequestSeq) {
+      circleDetailLoading.value = false
+      circleDetailAbortController = null
+    }
   }
 }
 
@@ -6094,6 +6323,93 @@ function getUploadBackgroundTargetLabel(task) {
   min-height: 0;
   overflow: hidden;
 }
+.owned-panel {
+  position: relative;
+  z-index: 30;
+  flex: 0 0 auto;
+}
+.owned-filter-row {
+  position: relative;
+  z-index: 31;
+  pointer-events: auto;
+}
+.owned-filter-tabs {
+  position: relative;
+  z-index: 32;
+  align-items: center;
+  gap: 4px;
+  pointer-events: auto;
+}
+.owned-filter-chip {
+  position: relative;
+  z-index: 1;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 11px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1;
+  cursor: pointer;
+  transition: all .22s cubic-bezier(.34, 1.56, .64, 1);
+}
+.owned-filter-chip:hover {
+  background: rgba(248, 250, 252, .92);
+  color: #1f2937;
+  transform: translateY(-1px);
+}
+.owned-filter-chip.is-active {
+  background: rgba(255, 255, 255, .96);
+  border-color: rgba(148, 163, 184, .28);
+  color: #0f172a;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .92),
+    0 4px 12px rgba(15, 23, 42, .08);
+}
+.owned-filter-chip.is-simplified.is-active {
+  border-color: rgba(14, 165, 233, .24);
+  color: #0369a1;
+  background: rgba(240, 249, 255, .78);
+}
+.owned-filter-chip.is-traditional.is-active {
+  border-color: rgba(124, 58, 237, .20);
+  color: #6d28d9;
+  background: rgba(245, 243, 255, .68);
+}
+.owned-filter-chip.is-subtitle.is-active {
+  border-color: rgba(79, 70, 229, .20);
+  color: #4338ca;
+  background: rgba(238, 242, 255, .72);
+}
+.owned-filter-chip.is-bonus.is-active {
+  border-color: rgba(168, 85, 247, .18);
+  color: #7e22ce;
+  background: rgba(250, 245, 255, .66);
+}
+.owned-filter-count {
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(241, 245, 249, .92);
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+.owned-filter-chip.is-active .owned-filter-count {
+  background: rgba(15, 23, 42, .08);
+  color: currentColor;
+}
 .preview-dialog-shell {
   display: grid;
   gap: 18px;
@@ -7015,17 +7331,23 @@ function getUploadBackgroundTargetLabel(task) {
     max-width: 100%;
     min-width: 0;
     display: grid !important;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 4px;
     overflow-x: hidden;
   }
-  .owned-filter-tabs > button {
+  .owned-filter-chip {
     min-width: 0;
-    padding: 6px 4px !important;
-    font-size: 12px !important;
+    padding: 6px 5px !important;
+    font-size: 12px;
     justify-content: center;
-    white-space: normal;
+    white-space: nowrap;
     line-height: 1.15;
+  }
+  .owned-filter-count {
+    min-width: 18px;
+    height: 17px;
+    padding: 0 5px;
+    font-size: 10px;
   }
   .owned-search-wrap {
     width: 100% !important;
