@@ -147,6 +147,9 @@ KikoeruManager 是一款专为 DLsite 音声作品设计的智能整理工具。
 - **框架**: Vue 3 + Vite
 - **UI 组件**: Element Plus
 - **状态管理**: Pinia
+- **表格模型**: TanStack Table Vue（库存页文件列表）
+- **虚拟滚动**: TanStack Virtual Vue（社团作品视口）
+- **框选交互**: 原生 Pointer Events + RAF（库存页 Windows 式区域选择）
 - **HTTP 客户端**: Axios
 
 ### 部署方式

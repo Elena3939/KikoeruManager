@@ -122,6 +122,9 @@ services:
 - `Vue 3` + `Vite` + `Pinia`
 - `Element Plus` + `Tailwind CSS`
 - `lucide-vue-next`（图标，全站统一）
+- `@tanstack/vue-table`（库存页轻量表格模型）
+- `@tanstack/vue-virtual`（社团作品虚拟滚动）
+- 原生 Pointer Events + RAF（库存页 Windows 式框选 / 拖动选择）
 - `@lottiefiles/dotlottie-vue`（动效）
 - `Tiptap`（富文本 / 邮件 Block Editor）
 
