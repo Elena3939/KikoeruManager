@@ -1,6 +1,6 @@
 {
   "name": "kikoerumanager-frontend",
-  "version": "1.5.46",
+  "version": "1.5.47",
   "description": "KikoeruManager Web UI",
   "type": "module",
   "scripts": {
@@ -23,14 +23,19 @@
     "@tiptap/extension-table-row": "^3.22.5",
     "@tiptap/starter-kit": "^3.22.4",
     "@tiptap/vue-3": "^3.22.4",
+    "@vueuse/core": "^14.3.0",
     "ag-grid-community": "^35.2.1",
     "ag-grid-vue3": "^35.2.1",
     "axios": "^1.6.2",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
     "dayjs": "^1.11.10",
     "element-plus": "^2.4.4",
     "lottie-web": "^5.13.0",
     "lucide-vue-next": "^1.0.0",
     "pinia": "^2.1.7",
+    "reka-ui": "^2.9.8",
+    "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.2.2",
     "vue": "^3.3.8",
     "vue-router": "^4.2.5"
