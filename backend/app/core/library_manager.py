@@ -4943,6 +4943,8 @@ class LibraryManager:
         started_at = time.monotonic()
         last_speed_sample_at = started_at
         last_speed_sample_bytes = 0
+        stable_speed_bytes_per_sec = 0
+        speed_sample_interval = 0.75
         # FileStation Upload 对同一目录并发写入很容易在公网/反代链路下返回 408。
         # 这里保持单文件流式上传，避免前端等待最终补配时发生超时回滚竞态。
         completed_files = 0
@@ -4951,18 +4953,27 @@ class LibraryManager:
         _upload_semaphore = asyncio.Semaphore(1)
 
         def emit_progress(current_row: dict, uploaded_bytes: int):
-            nonlocal last_speed_sample_at, last_speed_sample_bytes
+            nonlocal last_speed_sample_at, last_speed_sample_bytes, stable_speed_bytes_per_sec
             if not progress_callback:
                 return
             transferred_bytes = min(total_bytes, completed_bytes + sum(in_flight_bytes.values()))
-            elapsed = max(0.001, time.monotonic() - started_at)
             now = time.monotonic()
-            delta_time = max(0.001, now - last_speed_sample_at)
+            elapsed = max(0.001, now - started_at)
+            delta_time = now - last_speed_sample_at
             delta_bytes = max(0, transferred_bytes - last_speed_sample_bytes)
-            instant_speed = int(delta_bytes / delta_time) if delta_bytes > 0 else 0
-            if instant_speed > 0:
+            if transferred_bytes >= total_bytes and total_bytes > 0:
+                stable_speed_bytes_per_sec = 0
                 last_speed_sample_at = now
                 last_speed_sample_bytes = transferred_bytes
+            elif delta_time >= speed_sample_interval:
+                sample_speed = int(delta_bytes / max(delta_time, 0.001)) if delta_bytes > 0 else 0
+                if sample_speed > 0 and stable_speed_bytes_per_sec > 0:
+                    stable_speed_bytes_per_sec = int((stable_speed_bytes_per_sec * 0.65) + (sample_speed * 0.35))
+                else:
+                    stable_speed_bytes_per_sec = sample_speed
+                last_speed_sample_at = now
+                last_speed_sample_bytes = transferred_bytes
+            remaining_bytes = max(0, total_bytes - transferred_bytes)
             progress_callback({
                 "phase": "uploading",
                 "current_file_name": current_row.get("name") or "",
@@ -4974,8 +4985,10 @@ class LibraryManager:
                 "total_files": len(file_rows),
                 "transferred_bytes": transferred_bytes,
                 "total_bytes": total_bytes,
-                "speed_bytes_per_sec": instant_speed,
+                "speed_bytes_per_sec": stable_speed_bytes_per_sec,
                 "average_speed_bytes_per_sec": int(transferred_bytes / elapsed) if transferred_bytes > 0 else 0,
+                "eta_seconds": int(remaining_bytes / stable_speed_bytes_per_sec) if stable_speed_bytes_per_sec > 0 and remaining_bytes > 0 else 0,
+                "active_file_count": 1 if remaining_bytes > 0 else 0,
             })
 
         async def upload_one(row: dict):
