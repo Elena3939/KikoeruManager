@@ -1,18 +1,21 @@
 {
   "name": "kikoerumanager-frontend",
-  "version": "1.5.45",
+  "version": "1.5.46",
   "description": "KikoeruManager Web UI",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "dev": "node --max-old-space-size=4096 ./node_modules/vite/bin/vite.js",
+    "build": "node --max-old-space-size=4096 ./node_modules/vite/bin/vite.js build",
+    "preview": "node --max-old-space-size=4096 ./node_modules/vite/bin/vite.js preview"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.1.0",
     "@formkit/auto-animate": "^0.9.0",
     "@lottiefiles/dotlottie-vue": "^0.11.11",
     "@tailwindcss/vite": "^4.2.2",
+    "@tanstack/vue-table": "^8.21.3",
+    "@tanstack/vue-virtual": "^3.13.25",
+    "@tiptap/core": "^3.22.4",
     "@tiptap/extension-link": "^3.22.4",
     "@tiptap/extension-table": "^3.22.5",
     "@tiptap/extension-table-cell": "^3.22.5",

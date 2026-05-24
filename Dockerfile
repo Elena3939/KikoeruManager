@@ -4,14 +4,14 @@ FROM node:20-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 
-# 复制前端依赖
+# 复制前端依赖清单；TanStack Table 等前端交互依赖由 lock 文件锁定并通过 npm ci 安装
 COPY frontend/package*.json ./
 # 增大 Node.js 堆内存上限，避免大型 Vite 项目 OOM
-RUN NODE_OPTIONS="--max-old-space-size=2048" npm ci
+RUN NODE_OPTIONS="--max-old-space-size=4096" npm ci
 
 # 复制前端源码并构建
 COPY frontend/ ./
-RUN NODE_OPTIONS="--max-old-space-size=2048" npm run build
+RUN NODE_OPTIONS="--max-old-space-size=4096" npm run build
 
 # 阶段2：后端运行环境
 FROM python:3.11-slim
