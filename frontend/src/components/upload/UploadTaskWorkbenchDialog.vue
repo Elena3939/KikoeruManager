@@ -91,6 +91,15 @@ const mappedTasks = computed(() => {
       status: 'completed',
     }))
 
+    const failedFiles = (Array.isArray(task?.failed_files) ? task.failed_files : []).map((file) => ({
+      relative_path: String(file?.relative_path || '').trim(),
+      name: String(file?.name || file?.relative_path || '').trim(),
+      size_bytes: Number(file?.size || file?.size_bytes || 0),
+      uploaded: Number(file?.uploaded || file?.uploaded_bytes || 0),
+      stage: String(file?.stage || 'upload').trim(),
+      reason: String(file?.reason || file?.failure_reason || '失败').trim(),
+    }))
+
     const title = selectedPaths.length === 1
       ? getBaseName(selectedPaths[0])
       : (String(metadata.source_label || '').trim() || getBaseName(sourceBasePath) || '上传任务')
@@ -114,6 +123,9 @@ const mappedTasks = computed(() => {
       progress_log: Array.isArray(task?.progress_log) ? task.progress_log : [],
       upload_files: uploadFiles,
       uploaded_files: uploadedFiles,
+      failed_files: failedFiles,
+      verification_failures: Array.isArray(task?.verification_failures) ? task.verification_failures : [],
+      source_lock_failures: Array.isArray(task?.source_lock_failures) ? task.source_lock_failures : [],
       upload_runtime: uploadRuntime,
       task_metadata: {
         ...metadata,
