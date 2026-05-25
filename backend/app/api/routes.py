@@ -82,7 +82,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "kikoerumanager",
-        "version": "1.5.47",
+        "version": "1.5.48",
         "timestamp": datetime.now().isoformat()
     }
 

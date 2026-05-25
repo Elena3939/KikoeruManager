@@ -278,15 +278,12 @@
 
           </button>
 
-          <span class="lib-path-label">地址</span>
-
           <nav ref="pathBreadcrumbRef" class="lib-path-breadcrumb" aria-label="当前层级路径">
-            <IconHardDrive :size="15" :stroke-width="2.25" class="lib-path-address-icon" />
             <template
               v-for="(item, index) in currentPathBreadcrumbDisplayItems"
               :key="item.key"
             >
-              <span v-if="index > 0" class="lib-path-separator">{{ currentPathSeparatorSymbol }}</span>
+              <IconChevronRight v-if="index > 0" :size="14" :stroke-width="2.2" class="lib-path-separator" />
               <el-popover
                 v-if="item.type === 'ellipsis'"
                 v-model:visible="pathBreadcrumbPopoverVisible"
@@ -323,6 +320,7 @@
                     :title="segment.path || segment.label"
                     @click="navigateToBreadcrumbPath(segment.path)"
                   >
+                    <component :is="getPathBreadcrumbSegmentIconComponent(segment)" class="lib-path-segment-icon file-icon" :class="getPathBreadcrumbSegmentIconClass(segment)" :size="15" :stroke-width="2.2" />
                     <span>{{ segment.label }}</span>
                   </button>
                 </div>
@@ -341,6 +339,7 @@
                 :title="item.segment.path || item.segment.label"
                 @click="navigateToBreadcrumbPath(item.segment.path)"
               >
+                <component :is="getPathBreadcrumbSegmentIconComponent(item.segment)" class="lib-path-segment-icon file-icon" :class="getPathBreadcrumbSegmentIconClass(item.segment)" :size="15" :stroke-width="2.2" />
                 <span>{{ item.segment.label }}</span>
               </button>
             </template>
@@ -1702,6 +1701,7 @@ const tableMarqueeState = ref({
   hasMoved: false,
   append: false,
   baseSelectedPaths: new Set(),
+  modifierRow: null,
   lastSelectionKey: ''
 })
 
@@ -3422,7 +3422,7 @@ const currentPathBreadcrumbHiddenSegments = computed(() => {
 
   if (!shouldCollapseCurrentPathBreadcrumb.value) return []
 
-  return segments.slice(2, -2)
+  return segments.slice(2, -1)
 
 })
 
@@ -3484,32 +3484,19 @@ const currentPathBreadcrumbDisplayItems = computed(() => {
 
   }
 
-  const visibleSegments = [
-    ...segments.slice(0, 2),
-    ...segments.slice(-2)
-  ]
-
   return [
-    ...visibleSegments.slice(0, 2).map((segment, index) => ({
+    ...segments.slice(0, 2).map((segment, index) => ({
       type: 'segment',
       key: `segment-${segment.path || segment.label}-${index}`,
       segment
     })),
     { type: 'ellipsis', key: 'path-ellipsis' },
-    ...visibleSegments.slice(2).map((segment, index) => ({
+    ...segments.slice(-1).map((segment, index) => ({
       type: 'segment',
       key: `segment-tail-${segment.path || segment.label}-${index}`,
       segment
     }))
   ]
-
-})
-
-const currentPathSeparatorSymbol = computed(() => {
-
-  const path = `${currentPath.value || ''}${browseRootPath.value || ''}`
-
-  return path.includes('\\') ? '\\' : '/'
 
 })
 
@@ -6442,6 +6429,24 @@ function getLibraryRowIconClass (row) {
   return `icon-${classifyLibraryEntryKind(row)}`
 }
 
+function getPathBreadcrumbSegmentIconRow (segment) {
+  return {
+    is_directory: true,
+    entry_type: 'dir',
+    type: 'dir',
+    name: segment?.label || '',
+    path: segment?.path || segment?.label || ''
+  }
+}
+
+function getPathBreadcrumbSegmentIconComponent (segment) {
+  return getLibraryRowIconComponent(getPathBreadcrumbSegmentIconRow(segment))
+}
+
+function getPathBreadcrumbSegmentIconClass (segment) {
+  return getLibraryRowIconClass(getPathBreadcrumbSegmentIconRow(segment))
+}
+
 
 
 function getParentPath (path) {
@@ -6930,6 +6935,23 @@ function isMarqueeAppendEvent (event) {
 
 
 
+function clearNativeSelection () {
+
+  if (typeof window === 'undefined') return
+
+  try {
+    const selection = window.getSelection?.()
+    if (selection && typeof selection.removeAllRanges === 'function') {
+      selection.removeAllRanges()
+    }
+  } catch {
+    // 浏览器在某些受限环境会抛错，忽略即可。
+  }
+
+}
+
+
+
 function onTableMarqueePointerDown (event) {
 
   if (isMobileViewport.value || loading.value || !files.value.length) return
@@ -6954,19 +6976,31 @@ function onTableMarqueePointerDown (event) {
 
   if (target.closest('input, textarea, select, label, .el-checkbox')) return
 
-  const cell = target.closest('.lib-file-cell')
+  const isItemDragHandle = Boolean(target.closest('.file-icon-shell, .file-link-btn, .file-name'))
 
-  const isNameAction = Boolean(target.closest('.file-link-btn'))
-
-  const isItemDragHandle = Boolean(
-    (
-      isNameAction ||
-      target.closest('.file-cell, .file-icon-shell, .file-name') ||
-      cell?.querySelector('.file-cell')
-    )
+  // 已经在多选 / 单选范围里的行，整行任意位置都允许直接发起拖拽移动；
+  // 未选中的行仍然只允许从文件图标 / 文件名小块发起拖拽，避免和框选冲突。
+  const isClickInsideSelectedRow = Boolean(
+    row?.path
+    && isLibraryRowSelectable(row)
+    && selectedRowPaths.value.has(row.path)
   )
 
-  if (row?.path && isLibraryRowSelectable(row) && isItemDragHandle && !isTableSelectionModifierEvent(event)) {
+  const modifierRow = row?.path && isLibraryRowSelectable(row) && isTableSelectionModifierEvent(event) ? row : null
+
+  if (modifierRow) {
+    clearNativeSelection()
+    event.preventDefault()
+  }
+
+  if (
+    row?.path
+    && isLibraryRowSelectable(row)
+    && !isTableSelectionModifierEvent(event)
+    && (isItemDragHandle || isClickInsideSelectedRow)
+  ) {
+
+    clearNativeSelection()
 
     if (document?.body) delete document.body.dataset.libraryMarqueeSelecting
 
@@ -6975,6 +7009,8 @@ function onTableMarqueePointerDown (event) {
     return
 
   }
+
+  clearNativeSelection()
 
   const append = isMarqueeAppendEvent(event)
   const baseSelectedPaths = append ? new Set(selectedRowPaths.value) : new Set()
@@ -6995,6 +7031,7 @@ function onTableMarqueePointerDown (event) {
     hasMoved: false,
     append,
     baseSelectedPaths,
+    modifierRow,
     lastSelectionKey: startKey
   }
 
@@ -7081,6 +7118,8 @@ function onTableMarqueePointerUp (event) {
 
   const finalPaths = moved ? new Set(selectedRowPaths.value) : new Set()
 
+  const modifierRow = tableMarqueeState.value.modifierRow
+
   const shouldClearMarqueeSelection = !moved && shouldClearMarqueeSelectionClick(event)
 
   if (moved && event) event.preventDefault()
@@ -7090,6 +7129,12 @@ function onTableMarqueePointerUp (event) {
   if (moved) {
 
     applyTableSelectionByPaths(finalPaths, { source: 'marquee' })
+
+    suppressNextTableClick()
+
+  } else if (modifierRow?.path) {
+
+    handleTableRowModifierSelection(modifierRow, event)
 
     suppressNextTableClick()
 
@@ -7148,6 +7193,7 @@ function stopTableMarqueeTracking () {
     pointerId: null,
     hasMoved: false,
     baseSelectedPaths: new Set(),
+    modifierRow: null,
     lastSelectionKey: ''
   }
 
@@ -17688,6 +17734,10 @@ function statsStatusTextDisplay (stats) {
 
   overflow: hidden;
 
+  user-select: none;
+
+  -webkit-user-select: none;
+
   border: 1px solid rgba(226, 232, 240, 0.72);
 
   background: #fff;
@@ -17954,9 +18004,9 @@ function statsStatusTextDisplay (stats) {
 
   padding: 14px 18px;
 
-  border-bottom: 1px solid rgba(226, 232, 240, 0.7);
+  border-bottom: none;
 
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 250, 252, 0.95));
+  background: transparent;
 
 }
 
@@ -18637,21 +18687,23 @@ function statsStatusTextDisplay (stats) {
 
   flex-wrap: nowrap;
 
-  padding: 10px 14px;
+  padding: 0;
 
   margin-bottom: 0;
 
-  border-radius: 14px;
+  border-radius: 0;
 
-  background: linear-gradient(180deg, rgba(248, 250, 252, 0.9), rgba(241, 245, 249, 0.6));
+  background: transparent !important;
 
-  border: 1px solid rgba(226, 232, 240, 0.8);
+  border: 0 !important;
 
   overflow: hidden;
 
-  backdrop-filter: blur(8px);
+  box-shadow: none !important;
 
-  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: none !important;
+
+  -webkit-backdrop-filter: none !important;
 
 }
 
@@ -18695,140 +18747,115 @@ function statsStatusTextDisplay (stats) {
 
 }
 
-.lib-path-label {
+.lib-path-toolbar .lib-btn,
+.lib-path-toolbar .lib-btn-ghost,
+.lib-path-toolbar .lib-btn-icon-tinted {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
 
-  font-size: 12px;
+.lib-path-toolbar .lib-btn:hover:not(:disabled),
+.lib-path-toolbar .lib-btn-ghost:hover:not(:disabled),
+.lib-path-toolbar .lib-btn-icon-tinted:hover:not(:disabled) {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
 
-  font-weight: 650;
+.lib-path-toolbar .lib-scope-switch {
+  gap: 10px;
+  padding: 0;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
 
-  letter-spacing: 0;
+.lib-path-toolbar .lib-scope-option {
+  position: relative;
+  padding: 4px 0;
+  border-radius: 0;
+  background: transparent !important;
+  box-shadow: none !important;
+}
 
-  text-transform: none;
+.lib-path-toolbar .lib-scope-option:hover:not(.is-active) {
+  background: transparent !important;
+}
 
-  color: #475569;
+.lib-path-toolbar .lib-scope-option.is-active {
+  background: transparent !important;
+  box-shadow: none !important;
+}
 
-  flex-shrink: 0;
-
+.lib-path-toolbar .lib-scope-option.is-active::after {
+  position: absolute;
+  right: 0;
+  bottom: -2px;
+  left: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: #2563eb;
+  content: '';
 }
 
 .lib-path-breadcrumb {
-
   display: inline-flex;
-
   align-items: center;
-
+  gap: 8px;
   min-width: 0;
-
   max-width: none;
-
   flex: 1 1 auto;
-
-  height: 34px;
-
+  height: 32px;
   overflow: hidden;
-
   text-overflow: clip;
-
-  padding: 0 10px;
-
-  border-radius: 6px;
-
-  border: 1px solid rgba(190, 199, 213, 0.95);
-
-  background: #ffffff;
-
-  box-shadow:
-    inset 0 1px 2px rgba(15, 23, 42, 0.06),
-    0 1px 0 rgba(255, 255, 255, 0.92);
-
+  padding: 0 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
   scrollbar-width: none;
-
-  font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
-
+  font-family: inherit;
   white-space: nowrap;
-
-  transition: border-color 0.16s ease, box-shadow 0.16s ease;
-
+  transition: none;
 }
 
 .lib-path-breadcrumb:hover,
 
 .lib-path-breadcrumb:focus-within {
-
-  border-color: rgba(148, 163, 184, 0.95);
-
-  box-shadow:
-    inset 0 1px 2px rgba(15, 23, 42, 0.07),
-    0 0 0 2px rgba(226, 232, 240, 0.48);
-
-}
-
-.lib-path-address-icon {
-
-  flex: 0 0 auto;
-
-  margin-right: 8px;
-
-  color: #64748b;
-
-  opacity: 0.88;
-
+  box-shadow: none;
 }
 
 .lib-path-separator {
-
   flex: 0 0 auto;
-
-  padding: 0 2px;
-
-  color: #94a3b8;
-
-  font-size: 13px;
-
-  font-weight: 500;
-
-  line-height: 1;
-
+  color: #64748b;
   user-select: none;
+}
 
+.lib-path-segment-icon {
+  flex: 0 0 auto;
 }
 
 .lib-path-crumb {
-
   position: relative;
-
   min-width: 0;
-
   max-width: 220px;
-
-  height: 24px;
-
+  min-height: 24px;
   display: inline-flex;
-
   align-items: center;
-
+  gap: 6px;
   flex: 0 0 auto;
-
-  padding: 0 2px;
-
+  padding: 0;
   border: none;
-
-  border-radius: 3px;
-
+  border-radius: 4px;
   background: transparent;
-
-  color: #172033;
-
-  font-size: 13px;
-
-  font-weight: 520;
-
+  color: #4b5563;
+  font-size: 14px;
+  font-weight: 400;
   cursor: pointer;
-
   transition:
-    color 0.16s ease,
-    text-decoration-color 0.16s ease;
-
+    color 0.18s ease,
+    transform 0.18s ease;
 }
 
 .lib-path-crumb.is-current {
@@ -18862,51 +18889,31 @@ function statsStatusTextDisplay (stats) {
 }
 
 .lib-path-crumb:hover {
-
-  color: #0f5fb8;
-
+  color: #111827;
   background: transparent;
-
   box-shadow: none;
-
-  text-decoration-line: underline;
-
-  text-decoration-thickness: 1px;
-
-  text-underline-offset: 3px;
-
+  text-decoration-line: none;
+  transform: translateY(-1px);
 }
 
 .lib-path-crumb.is-current {
-
-  color: #111827;
-
+  color: #000000;
   background: transparent;
-
-  font-weight: 650;
-
+  font-weight: 600;
 }
 
 .lib-path-ellipsis {
-
-  width: 28px;
-
+  width: auto;
+  min-width: 24px;
   justify-content: center;
-
   color: #64748b;
-
-  font-weight: 700;
-
+  font-weight: 600;
 }
 
 .lib-path-ellipsis:hover {
-
-  color: #0f5fb8;
-
-  background: rgba(239, 246, 255, 0.72);
-
+  color: #111827;
+  background: transparent;
   text-decoration-line: none;
-
 }
 
 .lib-path-ellipsis.is-drag-hover {
@@ -18954,6 +18961,8 @@ function statsStatusTextDisplay (stats) {
   display: flex;
 
   align-items: center;
+
+  gap: 7px;
 
   width: 100%;
 
@@ -19449,9 +19458,11 @@ function statsStatusTextDisplay (stats) {
 
 .main-card :deep(.el-card__header) {
 
-  padding: 18px 18px 0;
+  padding: 18px 18px 18px;
 
   border-bottom: none;
+
+  background: transparent;
 
 }
 
@@ -20146,6 +20157,14 @@ function statsStatusTextDisplay (stats) {
 .file-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 
 .file-main-line { display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; }
+
+.file-cell,
+.file-main-line,
+.file-link-btn,
+.file-name {
+  user-select: none;
+  -webkit-user-select: none;
+}
 
 .file-icon-shell {
   display: inline-flex;
