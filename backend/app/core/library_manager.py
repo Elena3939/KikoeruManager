@@ -21,7 +21,36 @@ from ..config.settings import get_config, get_config_file_path
 from .ttl_cache import TTLCache
 
 
-def _robust_rmtree(path: str, retries: int = 3, delay: float = 1.0) -> None:
+class LocalUploadVerificationError(RuntimeError):
+    """远端上传校验失败：不能删除本地源，也不能把文件标成已上传。"""
+
+    def __init__(self, message: str, *, source_path: str, remote_path: str, failures: list[dict[str, Any]]):
+        super().__init__(message)
+        self.source_path = source_path
+        self.remote_path = remote_path
+        self.failures = failures
+
+
+class LocalUploadCleanupError(RuntimeError):
+    """远端已确认上传成功，但本地源清理失败。"""
+
+    def __init__(self, message: str, *, source_path: str, remote_path: str, cleanup_error: str):
+        super().__init__(message)
+        self.source_path = source_path
+        self.remote_path = remote_path
+        self.cleanup_error = cleanup_error
+
+
+class LocalUploadSourceLockedError(RuntimeError):
+    """本地源仍被占用，不能开始“上传后删除源”的任务。"""
+
+    def __init__(self, message: str, *, source_path: str, locked_paths: list[dict[str, Any]]):
+        super().__init__(message)
+        self.source_path = source_path
+        self.locked_paths = locked_paths
+
+
+def _robust_rmtree(path: str, retries: int = 10, delay: float = 1.5) -> None:
     """删除目录树，自动处理只读文件(WinError 5)和文件被占用(WinError 32)。"""
 
     def _onerror(func, fpath, exc_info):
@@ -43,6 +72,105 @@ def _robust_rmtree(path: str, retries: int = 3, delay: float = 1.0) -> None:
         except Exception as exc:
             last_exc = exc
             if getattr(exc, 'winerror', None) == 32 and attempt < retries - 1:
+                time.sleep(delay)
+                continue
+            break
+    if last_exc:
+        raise last_exc
+
+
+def _probe_delete_access(path: str) -> Optional[str]:
+    if os.name != "nt" or not os.path.exists(path):
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
+    DELETE_ACCESS = 0x00010000
+    FILE_SHARE_READ = 0x00000001
+    FILE_SHARE_WRITE = 0x00000002
+    FILE_SHARE_DELETE = 0x00000004
+    OPEN_EXISTING = 3
+    FILE_ATTRIBUTE_NORMAL = 0x00000080
+    FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+    INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+    flags = FILE_FLAG_BACKUP_SEMANTICS if os.path.isdir(path) else FILE_ATTRIBUTE_NORMAL
+    handle = create_file(
+        path,
+        DELETE_ACCESS,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        None,
+        OPEN_EXISTING,
+        flags,
+        None,
+    )
+    if handle == INVALID_HANDLE_VALUE:
+        err = ctypes.get_last_error()
+        return f"[WinError {err}] {ctypes.FormatError(err).strip()}"
+    close_handle(handle)
+    return None
+
+
+def _collect_delete_locked_paths(path: str, limit: int = 8) -> list[dict[str, Any]]:
+    locked: list[dict[str, Any]] = []
+
+    def check_one(target: str):
+        if len(locked) >= limit:
+            return
+        reason = _probe_delete_access(target)
+        if reason:
+            locked.append({"path": target, "reason": reason})
+
+    if os.path.isfile(path):
+        check_one(path)
+        return locked
+
+    if os.path.isdir(path):
+        for root, dirs, files in os.walk(path, topdown=False):
+            for filename in files:
+                check_one(os.path.join(root, filename))
+                if len(locked) >= limit:
+                    return locked
+            for dirname in dirs:
+                check_one(os.path.join(root, dirname))
+                if len(locked) >= limit:
+                    return locked
+        check_one(path)
+    return locked
+
+
+def _robust_unlink(path: str, retries: int = 10, delay: float = 1.5) -> None:
+    last_exc: Exception | None = None
+    for attempt in range(retries):
+        try:
+            os.unlink(path)
+            return
+        except Exception as exc:
+            last_exc = exc
+            if getattr(exc, "winerror", None) == 5:
+                try:
+                    os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+                    os.unlink(path)
+                    return
+                except Exception as chmod_exc:
+                    last_exc = chmod_exc
+            if getattr(exc, "winerror", None) == 32 and attempt < retries - 1:
                 time.sleep(delay)
                 continue
             break
@@ -646,8 +774,10 @@ class SynologyFileStationClient:
 
         async def body_iter():
             uploaded = 0
-            yield bytes(preamble)
-            with open(local_path, "rb") as handle:
+            handle = None
+            try:
+                yield bytes(preamble)
+                handle = open(local_path, "rb")
                 while True:
                     chunk = handle.read(1024 * 256)
                     if not chunk:
@@ -656,7 +786,12 @@ class SynologyFileStationClient:
                     uploaded += len(chunk)
                     if progress_callback:
                         progress_callback(uploaded, file_size)
-            yield epilogue
+                handle.close()
+                handle = None
+                yield epilogue
+            finally:
+                if handle is not None:
+                    handle.close()
 
         headers = {
             "Content-Type": f"multipart/form-data; boundary={boundary}",
@@ -666,8 +801,13 @@ class SynologyFileStationClient:
             "Connection": "close",
         }
 
-        async with session.post(url, params=query_params, data=body_iter(), headers=headers, ssl=self.config.verify_ssl) as response:
-            data = await self._read_response_payload(response, api_name)
+        body = body_iter()
+        try:
+            async with session.post(url, params=query_params, data=body, headers=headers, ssl=self.config.verify_ssl) as response:
+                data = await self._read_response_payload(response, api_name)
+        finally:
+            await body.aclose()
+            await asyncio.sleep(0)
 
         if not data.get("success"):
             raise SynologyError(_format_synology_error(api_name, "\u6587\u4ef6\u7ad9\u8bf7\u6c42", data))
@@ -4770,6 +4910,92 @@ class LibraryManager:
             "total_size_gb": 0,
         }
 
+    async def _remote_file_size(self, client: SynologyFileStationClient, remote_path: str) -> Optional[int]:
+        try:
+            info = await client.stat(self._normalize_remote_path(remote_path))
+            item = self._first_remote_info_item(info)
+            if not item:
+                return None
+            additional = item.get("additional") or {}
+            if "size" in additional:
+                return int(additional.get("size") or 0)
+            if "size" in item:
+                return int(item.get("size") or 0)
+        except Exception:
+            return None
+        return None
+
+    async def _verify_uploaded_remote_file(
+        self,
+        client: SynologyFileStationClient,
+        *,
+        source_path: str,
+        remote_path: str,
+        relative_path: str,
+        expected_size: int,
+        retries: int = 4,
+    ) -> None:
+        actual_size: Optional[int] = None
+        for attempt in range(retries):
+            actual_size = await self._remote_file_size(client, remote_path)
+            if actual_size is not None and actual_size == expected_size:
+                return
+            if attempt < retries - 1:
+                await asyncio.sleep(min(2.0, 0.4 * (attempt + 1)))
+
+        failure = {
+            "source_path": source_path,
+            "remote_path": remote_path,
+            "relative_path": relative_path,
+            "expected_size": expected_size,
+            "actual_size": actual_size,
+            "reason": "远端文件不存在" if actual_size is None else "远端文件大小不一致",
+        }
+        raise LocalUploadVerificationError(
+            f"上传后远端校验失败: {relative_path or os.path.basename(source_path)}",
+            source_path=source_path,
+            remote_path=remote_path,
+            failures=[failure],
+        )
+
+    def _cleanup_uploaded_source(self, source_path: str, remote_path: str) -> None:
+        try:
+            if os.path.isfile(source_path):
+                _robust_unlink(source_path)
+                return
+            if os.path.isdir(source_path):
+                _robust_rmtree(source_path)
+                return
+        except Exception as exc:
+            raise LocalUploadCleanupError(
+                f"远端已确认上传完成，但删除本地源失败: {source_path}，{exc}",
+                source_path=source_path,
+                remote_path=remote_path,
+                cleanup_error=str(exc),
+            ) from exc
+
+    async def _wait_for_source_delete_access(
+        self,
+        source_path: str,
+        *,
+        timeout_seconds: float = 20.0,
+        stage: str = "上传前",
+    ) -> None:
+        deadline = time.monotonic() + max(0.5, timeout_seconds)
+        locked: list[dict[str, Any]] = []
+        while True:
+            locked = await asyncio.to_thread(_collect_delete_locked_paths, source_path)
+            if not locked:
+                return
+            if time.monotonic() >= deadline:
+                sample = locked[0]
+                raise LocalUploadSourceLockedError(
+                    f"{stage}检测到本地文件仍被占用，已停止上传: {sample.get('path')}，{sample.get('reason')}",
+                    source_path=source_path,
+                    locked_paths=locked,
+                )
+            await asyncio.sleep(0.75)
+
     async def upload_directory_to_library(
         self,
         library_id: str,
@@ -4797,6 +5023,12 @@ class LibraryManager:
         source_name = os.path.basename(os.path.abspath(normalized_source_dir))
         if not source_name:
             raise RuntimeError("来源名称无效，无法上传到远程库存")
+        if delete_source_on_success:
+            await self._wait_for_source_delete_access(
+                normalized_source_dir,
+                timeout_seconds=20.0,
+                stage="上传前",
+            )
 
         # 单文件场景：直接将文件上传到 target_root_path，不再套一层同名子目录
         if os.path.isfile(normalized_source_dir):
@@ -4808,12 +5040,13 @@ class LibraryManager:
                 progress_callback=progress_callback,
                 file_completed_callback=file_completed_callback,
             )
-            if delete_source_on_success and os.path.isfile(source_dir):
-                try:
-                    os.unlink(source_dir)
-                except Exception as exc:
-                    logger.warning("上传成功后删除本地文件失败: source=%s error=%s", source_dir, exc, exc_info=True)
-                    raise RuntimeError(f"上传完成，但删除本地文件失败: {source_dir}，{exc}") from exc
+            if delete_source_on_success:
+                await self._wait_for_source_delete_access(
+                    source_dir,
+                    timeout_seconds=15.0,
+                    stage="本地清理前",
+                )
+                self._cleanup_uploaded_source(source_dir, final_remote_path)
             return final_remote_path
 
         final_remote_path = self._normalize_remote_path(str(PurePosixPath(target_root_path) / source_name))
@@ -4827,12 +5060,13 @@ class LibraryManager:
             progress_callback=progress_callback,
             file_completed_callback=file_completed_callback,
         )
-        if delete_source_on_success and os.path.isdir(source_dir):
-            try:
-                _robust_rmtree(source_dir)
-            except Exception as exc:
-                logger.warning("上传成功后删除本地目录失败: source=%s error=%s", source_dir, exc, exc_info=True)
-                raise RuntimeError(f"上传完成，但删除本地目录失败: {source_dir}，{exc}") from exc
+        if delete_source_on_success:
+            await self._wait_for_source_delete_access(
+                source_dir,
+                timeout_seconds=15.0,
+                stage="本地清理前",
+            )
+            self._cleanup_uploaded_source(source_dir, final_remote_path)
         return final_remote_path
 
     def _move_directory_to_local_library(self, library: LibraryDefinition, source_dir: str, relative_target_dir: Optional[str]) -> str:
@@ -5003,6 +5237,16 @@ class LibraryManager:
                     row["remote_dir"],
                     row["local_path"],
                     progress_callback=on_file_progress,
+                )
+                remote_file_path = self._normalize_remote_path(
+                    str(PurePosixPath(row["remote_dir"]) / str(row.get("name") or os.path.basename(row["local_path"])))
+                )
+                await self._verify_uploaded_remote_file(
+                    client,
+                    source_path=row["local_path"],
+                    remote_path=remote_file_path,
+                    relative_path=str(row.get("relative_path") or row.get("name") or ""),
+                    expected_size=int(row.get("size") or 0),
                 )
                 in_flight_bytes[key] = 0
                 completed_files += 1

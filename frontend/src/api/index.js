@@ -1,5 +1,4 @@
 import axios from 'axios'
-import { ref } from 'vue'
 
 const DEFAULT_DEV_BACKEND_PORT = '5555'
 
@@ -35,8 +34,26 @@ const FILTER_DELETE_PREVIEW_TIMEOUT = 30 * 60 * 1000
 const CONFLICT_MERGE_TIMEOUT = 30 * 60 * 1000
 const RJ_SUBTITLE_SCAN_TIMEOUT = 0
 
+function createSignal(initialValue) {
+  let current = initialValue
+  const listeners = new Set()
+  return {
+    get value() {
+      return current
+    },
+    set value(next) {
+      current = next
+      listeners.forEach(listener => listener(current))
+    },
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    }
+  }
+}
+
 /** 群晖 OTP 二步验证过期标志。任意库存接口返回含 OTP 的错误时置 true，提示用户刷新 Device Token。 */
-export const synologyOtpRequired = ref(false)
+export const synologyOtpRequired = createSignal(false)
 
 const apiClient = axios.create({
   baseURL: API_BASE,
@@ -1624,7 +1641,8 @@ export const circleCompletionApi = {
         only_missing: options.onlyMissing ?? false,
         only_downloadable: options.onlyDownloadable ?? false,
         include_dl_only: options.includeDlOnly ?? true
-      }
+      },
+      signal: options.signal
     })
     return response.data
   },

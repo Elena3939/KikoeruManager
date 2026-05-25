@@ -1,0 +1,116 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - img [ref=e8]
+        - generic [ref=e10]:
+          - generic [ref=e11]: KikoeruManager
+          - generic [ref=e12]:
+            - generic [ref=e13]: v1.5.46
+            - button "通知" [ref=e15] [cursor=pointer]
+      - generic [ref=e16]: 导航
+      - navigation [ref=e17]:
+        - link "概览" [ref=e18] [cursor=pointer]:
+          - /url: /
+          - img [ref=e19]
+          - generic [ref=e22]: 概览
+        - link "任务队列" [ref=e23] [cursor=pointer]:
+          - /url: /tasks
+          - img [ref=e24]
+          - generic [ref=e27]: 任务队列
+        - link "问题作品" [ref=e28] [cursor=pointer]:
+          - /url: /conflicts
+          - img [ref=e29]
+          - generic [ref=e31]: 问题作品
+        - link "库存管理" [ref=e32] [cursor=pointer]:
+          - /url: /library
+          - img [ref=e33]
+          - generic [ref=e43]: 库存管理
+        - link "字幕补配" [ref=e44] [cursor=pointer]:
+          - /url: /subtitle-import
+          - img [ref=e45]
+          - generic [ref=e48]: 字幕补配
+        - link "密码库" [ref=e49] [cursor=pointer]:
+          - /url: /passwords
+          - img [ref=e50]
+          - generic [ref=e53]: 密码库
+        - link "已有文件夹" [ref=e54] [cursor=pointer]:
+          - /url: /existing-folders
+          - img [ref=e55]
+          - generic [ref=e60]: 已有文件夹
+        - link "ASMR 同步下载" [ref=e61] [cursor=pointer]:
+          - /url: /asmr-sync
+          - img [ref=e62]
+          - generic [ref=e65]: ASMR 同步下载
+        - link "社团补全" [ref=e66] [cursor=pointer]:
+          - /url: /circle-completion
+          - img [ref=e67]
+          - generic [ref=e71]: 社团补全
+        - link "库存打包" [ref=e72] [cursor=pointer]:
+          - /url: /library-backup
+          - img [ref=e73]
+          - generic [ref=e76]: 库存打包
+        - link "设置" [ref=e77] [cursor=pointer]:
+          - /url: /settings
+          - img [ref=e78]
+          - generic [ref=e81]: 设置
+        - link "日志" [ref=e82] [cursor=pointer]:
+          - /url: /logs
+          - img [ref=e83]
+          - generic [ref=e86]: 日志
+        - link "操作记录" [ref=e87] [cursor=pointer]:
+          - /url: /activity-history
+          - img [ref=e88]
+          - generic [ref=e92]: 操作记录
+      - generic [ref=e93]:
+        - generic [ref=e94]:
+          - generic [ref=e95]:
+            - generic [ref=e96]: 监视器
+            - generic [ref=e97]: 已停止
+          - generic [ref=e98]: 当前没有自动监听任务。
+          - button "启动监视器" [ref=e99] [cursor=pointer]
+        - generic [ref=e100]:
+          - generic [ref=e101]: KikoeruManager
+          - button "深色" [active] [ref=e169] [cursor=pointer]:
+            - img [ref=e170]
+            - generic [ref=e109]: 深色
+  - main [ref=e110]:
+    - generic [ref=e113]:
+      - generic [ref=e114]:
+        - generic [ref=e115]:
+          - generic [ref=e116]: 工作台概览
+          - heading "KikoeruManager" [level=1] [ref=e117]
+          - paragraph [ref=e118]: 库存、任务、通知和后台服务的实时入口。
+        - button "刷新" [ref=e120] [cursor=pointer]:
+          - img [ref=e121]
+          - text: 刷新
+      - generic [ref=e130]:
+        - generic [ref=e131]:
+          - img [ref=e132]
+          - generic [ref=e134]: 处理中
+          - strong [ref=e135]: "0"
+        - generic [ref=e136]:
+          - img [ref=e137]
+          - generic [ref=e140]: 等待处理
+          - strong [ref=e141]: "0"
+        - generic [ref=e142]:
+          - img [ref=e143]
+          - generic [ref=e146]: 任务总数
+          - strong [ref=e147]: "0"
+        - generic [ref=e148]:
+          - img [ref=e149]
+          - generic [ref=e153]: 库存库数
+          - strong [ref=e154]: "0"
+      - generic [ref=e155]:
+        - generic [ref=e156]:
+          - heading "服务状态" [level=2] [ref=e157]
+          - generic [ref=e158]:
+            - generic [ref=e159]: 后端
+            - strong [ref=e160]: 未知
+            - generic [ref=e161]: 监视器
+            - strong [ref=e162]: 已停止
+            - generic [ref=e163]: 索引
+            - strong [ref=e164]: 未读取
+        - generic [ref=e165]:
+          - heading "库存库" [level=2] [ref=e166]
+          - generic [ref=e168]: 暂无库存库配置

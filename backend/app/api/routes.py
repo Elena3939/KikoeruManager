@@ -7308,6 +7308,7 @@ async def preview_library_browser_file(library_id: str, path: str, encoding: Opt
             filename = PurePosixPath(target_path).name or "preview"
             headers = {
                 "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
+                "Cache-Control": "no-store, max-age=0",
                 "X-Content-Type-Options": "nosniff",
             }
             if _is_library_text_preview_type(media_type):
@@ -7335,6 +7336,7 @@ async def preview_library_browser_file(library_id: str, path: str, encoding: Opt
         filename = os.path.basename(target_path)
         headers = {
             "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
+            "Cache-Control": "no-store, max-age=0",
             "X-Content-Type-Options": "nosniff",
         }
         if _is_library_text_preview_type(media_type):
@@ -12363,7 +12365,15 @@ async def local_upload_status(task_ids: str = "", include_hidden: bool = True):
                 {
                     "id": t.id,
                     "status": t.status.value,
-                    "display_status": t.status.value,
+                    "display_status": (
+                        "partial_failed"
+                        if (
+                            t.task_metadata.get("local_cleanup_status") == "failed"
+                            or t.task_metadata.get("verification_failures")
+                            or t.task_metadata.get("failed_files")
+                        )
+                        else t.status.value
+                    ),
                     "progress": t.progress,
                     "current_step": t.current_step,
                     "error_message": t.error_message,
@@ -12374,6 +12384,9 @@ async def local_upload_status(task_ids: str = "", include_hidden: bool = True):
                     "output_path": getattr(t, "output_path", ""),
                     "upload_files": t.task_metadata.get("upload_files", []),
                     "uploaded_files": t.task_metadata.get("uploaded_files", []),
+                    "failed_files": t.task_metadata.get("failed_files", []),
+                    "verification_failures": t.task_metadata.get("verification_failures", []),
+                    "source_lock_failures": t.task_metadata.get("source_lock_failures", []),
                     "upload_runtime": t.task_metadata.get("upload_runtime", {}),
                     "progress_log": t.task_metadata.get("progress_log", []),
                     "task_metadata": {
@@ -12388,6 +12401,11 @@ async def local_upload_status(task_ids: str = "", include_hidden: bool = True):
                         "target_path": t.task_metadata.get("target_path", ""),
                         "final_output_path": t.task_metadata.get("final_output_path", ""),
                         "upload_result": t.task_metadata.get("upload_result", {}),
+                        "failure_reason": t.task_metadata.get("failure_reason", ""),
+                        "source_lock_failures": t.task_metadata.get("source_lock_failures", []),
+                        "local_cleanup_status": t.task_metadata.get("local_cleanup_status", ""),
+                        "local_cleanup_error": t.task_metadata.get("local_cleanup_error", ""),
+                        "remote_upload_verified": bool(t.task_metadata.get("remote_upload_verified")),
                         "source_action": t.task_metadata.get("source_action", ""),
                         "source_label": t.task_metadata.get("source_label", ""),
                     },
