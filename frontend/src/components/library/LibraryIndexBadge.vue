@@ -216,15 +216,18 @@ defineExpose({ refresh: fetchStatus })
 .lib-index-chip {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 4px;
-  height: 22px;
-  padding: 0 9px;
+  min-height: 22px;
+  padding: 2px 8px;
   border-radius: 999px;
-  font-size: 11px;
-  line-height: 1;
-  letter-spacing: 0.01em;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  letter-spacing: 0;
   white-space: nowrap;
   border: 1px solid transparent;
+  box-shadow: none;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -235,55 +238,40 @@ defineExpose({ refresh: fetchStatus })
 }
 
 .lib-index-chip-idle {
-  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  background: #f8fafc;
   color: #475569;
-  border-color: rgba(148, 163, 184, 0.35);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 1px 2px rgba(15, 23, 42, 0.04);
+  border-color: rgba(148, 163, 184, 0.45);
+  box-shadow: none;
 }
 
 .lib-index-chip-syncing {
-  background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
+  background: #eff6ff;
   color: #1d4ed8;
-  border-color: rgba(96, 165, 250, 0.45);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 1px 2px rgba(37, 99, 235, 0.12),
-    0 0 0 0 rgba(59, 130, 246, 0.35);
+  border-color: rgba(96, 165, 250, 0.5);
+  box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.24);
   animation: lib-index-pulse 1.8s ease-in-out infinite;
 }
 
 .lib-index-chip-ready {
-  background: linear-gradient(180deg, #ecfdf5 0%, #d1fae5 100%);
+  background: #ecfdf5;
   color: #047857;
-  border-color: rgba(110, 231, 183, 0.55);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 1px 2px rgba(16, 185, 129, 0.12);
+  border-color: rgba(110, 231, 183, 0.6);
+  box-shadow: none;
 }
 
 .lib-index-chip-error {
-  background: linear-gradient(180deg, #fef2f2 0%, #fee2e2 100%);
+  background: #fef2f2;
   color: #b91c1c;
-  border-color: rgba(248, 113, 113, 0.5);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.65),
-    0 1px 2px rgba(239, 68, 68, 0.15);
+  border-color: rgba(248, 113, 113, 0.55);
+  box-shadow: none;
 }
 
 @keyframes lib-index-pulse {
   0%, 100% {
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.7),
-      0 1px 2px rgba(37, 99, 235, 0.12),
-      0 0 0 0 rgba(59, 130, 246, 0.4);
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.24);
   }
   50% {
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.85),
-      0 1px 2px rgba(37, 99, 235, 0.18),
-      0 0 0 4px rgba(59, 130, 246, 0);
+    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0);
   }
 }
 
@@ -334,25 +322,28 @@ defineExpose({ refresh: fetchStatus })
 .lib-index-rebuild-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 4px;
-  height: 22px;
-  padding: 0 9px;
+  min-height: 22px;
+  padding: 2px 8px;
   border-radius: 999px;
-  font-size: 11px;
-  line-height: 1;
-  background: #ffffff;
-  color: #334155;
-  border: 1px solid #cbd5e1;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid rgba(96, 165, 250, 0.5);
+  box-shadow: none;
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
   user-select: none;
 }
 
-.lib-index-rebuild-btn:hover {
+.lib-index-rebuild-btn:hover:not(:disabled) {
   transform: translateY(-2px) scale(1.02);
-  border-color: #94a3b8;
-  background: #f8fafc;
-  box-shadow: 0 4px 10px -4px rgba(15, 23, 42, 0.12);
+  border-color: rgba(59, 130, 246, 0.7);
+  background: #dbeafe;
+  box-shadow: none;
 }
 
 .lib-index-rebuild-btn:active:not(:disabled) {
@@ -365,7 +356,7 @@ defineExpose({ refresh: fetchStatus })
 }
 
 .lib-index-rebuild-btn.is-busy {
-  border-color: #bfdbfe;
+  border-color: rgba(96, 165, 250, 0.5);
   background: #eff6ff;
   color: #1d4ed8;
 }
@@ -374,7 +365,7 @@ defineExpose({ refresh: fetchStatus })
   transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.lib-index-rebuild-btn:hover .lib-index-rebuild-icon {
+.lib-index-rebuild-btn:hover:not(:disabled) .lib-index-rebuild-icon {
   transform: rotate(90deg);
 }
 </style>

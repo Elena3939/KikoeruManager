@@ -32,7 +32,12 @@
       />
     </Transition>
 
-    <el-aside v-if="!isGateRoute" width="248px" class="sidebar" :class="{ 'is-mobile-open': mobileNavOpen }">
+    <el-aside
+      v-if="!isGateRoute"
+      width="248px"
+      class="sidebar"
+      :class="{ 'is-mobile-open': mobileNavOpen, 'is-sidebar-pinned': sidebarPinned }"
+    >
       <div class="sidebar-shell">
         <div class="logo">
           <div class="logo-mark">
@@ -47,6 +52,20 @@
           </div>
         </div>
 
+        <button
+          type="button"
+          class="sidebar-pin-button"
+          :class="{ 'is-pinned': sidebarPinned }"
+          :aria-pressed="sidebarPinned"
+          :aria-label="sidebarPinned ? '取消常驻展开侧边栏' : '常驻展开侧边栏'"
+          :title="sidebarPinned ? '取消常驻展开侧边栏' : '常驻展开侧边栏'"
+          @click="toggleSidebarPinned"
+        >
+          <ChevronsLeft v-if="sidebarPinned" :size="17" :stroke-width="2.2" />
+          <ChevronsRight v-else :size="17" :stroke-width="2.2" />
+          <span>{{ sidebarPinned ? '收回侧栏' : '常驻展开' }}</span>
+        </button>
+
         <div class="sidebar-section-label">导航</div>
 
         <el-menu
@@ -54,74 +73,75 @@
           router
           class="sidebar-menu"
         >
-          <el-menu-item index="/">
+          <el-menu-item index="/" title="概览">
             <House :size="18" :stroke-width="2.2" />
             <span>概览</span>
           </el-menu-item>
 
-          <el-menu-item index="/tasks">
+          <el-menu-item index="/tasks" title="任务队列">
             <ListTodo :size="18" :stroke-width="2.2" />
             <span>任务队列</span>
           </el-menu-item>
 
-          <el-menu-item index="/conflicts">
+          <el-menu-item index="/conflicts" title="问题作品">
             <TriangleAlert :size="18" :stroke-width="2.2" />
             <span>问题作品</span>
             <el-badge v-if="conflictCount > 0" :value="conflictCount" class="conflict-badge" />
           </el-menu-item>
 
-          <el-menu-item index="/library">
+          <el-menu-item index="/library" title="库存管理">
             <Boxes :size="18" :stroke-width="2.2" />
             <span>库存管理</span>
           </el-menu-item>
 
-          <el-menu-item index="/subtitle-import">
+          <el-menu-item index="/subtitle-import" title="字幕补配">
             <Captions :size="18" :stroke-width="2.2" />
             <span>字幕补配</span>
           </el-menu-item>
 
-          <el-menu-item index="/passwords">
+          <el-menu-item index="/passwords" title="密码库">
             <KeyRound :size="18" :stroke-width="2.2" />
             <span>密码库</span>
           </el-menu-item>
 
-          <el-menu-item index="/existing-folders">
+          <el-menu-item index="/existing-folders" title="已有文件夹">
             <FolderTree :size="18" :stroke-width="2.2" />
             <span>已有文件夹</span>
           </el-menu-item>
 
-          <el-menu-item index="/asmr-sync">
+          <el-menu-item index="/asmr-sync" title="ASMR 同步下载">
             <Download :size="18" :stroke-width="2.2" />
             <span>ASMR 同步下载</span>
           </el-menu-item>
 
-          <el-menu-item index="/circle-completion">
+          <el-menu-item index="/circle-completion" title="社团补全">
             <Tags :size="18" :stroke-width="2.2" />
             <span>社团补全</span>
           </el-menu-item>
 
-          <el-menu-item index="/library-backup">
+          <el-menu-item index="/library-backup" title="库存打包">
             <Archive :size="18" :stroke-width="2.2" />
             <span>库存打包</span>
           </el-menu-item>
 
-          <el-menu-item index="/settings">
+          <el-menu-item index="/settings" title="设置">
             <Settings2 :size="18" :stroke-width="2.2" />
             <span>设置</span>
           </el-menu-item>
 
-          <el-menu-item index="/logs">
+          <el-menu-item index="/logs" title="日志">
             <ScrollText :size="18" :stroke-width="2.2" />
             <span>日志</span>
           </el-menu-item>
 
-          <el-menu-item index="/activity-history">
+          <el-menu-item index="/activity-history" title="操作记录">
             <History :size="18" :stroke-width="2.2" />
             <span>操作记录</span>
           </el-menu-item>
         </el-menu>
 
         <div class="sidebar-footer">
+          <NotificationBell class="sidebar-rail-bell" />
           <div class="sidebar-status-card">
             <div class="sidebar-status-header">
               <span class="sidebar-status-title">监视器</span>
@@ -134,7 +154,10 @@
             </div>
             <el-button
               class="watcher-button"
+              :class="{ 'is-running': watcherStatus.is_running }"
               size="small"
+              :aria-label="watcherStatus.is_running ? '停止监视器' : '启动监视器'"
+              :title="watcherStatus.is_running ? '停止监视器' : '启动监视器'"
               @click="toggleWatcher"
             >
               {{ watcherStatus.is_running ? '停止监视器' : '启动监视器' }}
@@ -199,6 +222,8 @@ import {
   Archive,
   Boxes,
   Captions,
+  ChevronsLeft,
+  ChevronsRight,
   Download,
   FolderTree,
   History,
@@ -242,7 +267,9 @@ const conflictCount = ref(0)
 const watcherStatus = ref({ is_running: false, watch_path: '', pending_files: [] })
 const mobileNavOpen = ref(false)
 const themeStorageKey = 'kikoerumanager.theme'
+const sidebarPinnedStorageKey = 'kikoerumanager.sidebarPinned'
 const isDarkTheme = ref(false)
+const sidebarPinned = ref(false)
 
 // 路由切换时自动关闭移动端抽屉（点击菜单项后即关闭）
 watch(() => route.fullPath, () => {
@@ -294,6 +321,7 @@ let intervalId = null
 
 onMounted(async () => {
   isDarkTheme.value = readInitialTheme()
+  sidebarPinned.value = readInitialSidebarPinned()
   applyTheme()
   if (isGateRoute.value) return
   await refreshStatus()
@@ -340,6 +368,11 @@ function readInitialTheme() {
   return window.localStorage.getItem(themeStorageKey) === 'dark'
 }
 
+function readInitialSidebarPinned() {
+  if (typeof window === 'undefined') return false
+  return window.localStorage.getItem(sidebarPinnedStorageKey) === 'true'
+}
+
 function applyTheme() {
   if (typeof document === 'undefined') return
   document.documentElement.classList.toggle('kikoerumanager-dark', isDarkTheme.value)
@@ -351,6 +384,13 @@ function toggleTheme() {
   applyTheme()
   if (typeof window !== 'undefined') {
     window.localStorage.setItem(themeStorageKey, isDarkTheme.value ? 'dark' : 'light')
+  }
+}
+
+function toggleSidebarPinned() {
+  sidebarPinned.value = !sidebarPinned.value
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(sidebarPinnedStorageKey, sidebarPinned.value ? 'true' : 'false')
   }
 }
 </script>
@@ -1405,6 +1445,24 @@ html.kikoerumanager-dark .library .lib-batch-bar {
   border-color: rgba(148, 163, 184, 0.2) !important;
   color: var(--km-dark-text) !important;
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+}
+
+html.kikoerumanager-dark .library .lib-path-toolbar {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .library .lib-path-toolbar .lib-btn,
+html.kikoerumanager-dark .library .lib-path-toolbar .lib-btn-ghost,
+html.kikoerumanager-dark .library .lib-path-toolbar .lib-btn-icon-tinted,
+html.kikoerumanager-dark .library .lib-path-toolbar .lib-scope-switch,
+html.kikoerumanager-dark .library .lib-path-toolbar .lib-scope-option,
+html.kikoerumanager-dark .library .lib-path-toolbar .lib-scope-option:hover,
+html.kikoerumanager-dark .library .lib-path-toolbar .lib-scope-option.is-active {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .library .lib-path-label,
@@ -5125,41 +5183,93 @@ html.kikoerumanager-dark .detail-body .path {
 <style scoped>
 .app-container {
   height: 100vh;
-  padding: 16px;
-  gap: 16px;
+  padding: 8px;
+  gap: 10px;
+  overflow: hidden;
   background: #ffffff;
 }
 
 .sidebar {
-  width: 248px !important;
-  border-radius: 30px;
+  --sidebar-collapsed-width: 64px;
+  --sidebar-expanded-width: 248px;
+  position: relative;
+  z-index: 40;
+  width: var(--sidebar-collapsed-width) !important;
+  flex: 0 0 var(--sidebar-collapsed-width) !important;
+  border-radius: 22px;
   overflow: hidden;
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow:
+    0 18px 42px rgba(15, 23, 42, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.86);
+  contain: layout paint;
+  will-change: width;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  transition:
+    width 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    flex-basis 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.24s ease,
+    border-color 0.24s ease;
+}
+
+.sidebar.is-sidebar-pinned {
+  width: var(--sidebar-expanded-width) !important;
+  flex-basis: var(--sidebar-expanded-width) !important;
+}
+
+.sidebar:hover {
+  width: var(--sidebar-expanded-width) !important;
+  flex-basis: var(--sidebar-expanded-width) !important;
 }
 
 .sidebar-shell {
   display: flex;
   flex-direction: column;
+  align-items: stretch;
   height: 100%;
-  padding: 20px 16px 16px;
-  background: rgba(255, 255, 255, 0.82);
-  border: 1px solid rgba(29, 29, 31, 0.06);
-  box-shadow: 0 22px 48px rgba(0, 0, 0, 0.08);
-  backdrop-filter: blur(20px);
+  width: var(--sidebar-expanded-width);
+  padding: 8px 0;
+  overflow: hidden;
+  box-sizing: border-box;
+  background: transparent;
 }
 
 .logo {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 44px;
   gap: 10px;
-  padding: 6px 8px 18px;
+  padding: 6px 0 8px 12px;
+  overflow: hidden;
 }
 
 .logo-copy {
+  display: flex;
   flex: 1;
   min-width: 0;
-  display: flex;
+  max-width: 0;
   flex-direction: column;
   gap: 2px;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transform: translateX(-6px);
+  transition:
+    max-width 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.18s ease,
+    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.sidebar:hover .logo-copy,
+.sidebar.is-sidebar-pinned .logo-copy {
+  max-width: 160px;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
 }
 
 .logo-meta-row {
@@ -5189,10 +5299,12 @@ html.kikoerumanager-dark .detail-body .path {
   justify-content: center;
   width: 40px;
   height: 40px;
-  border-radius: 13px;
-  background: #f3f7ff;
-  color: #0071e3;
-  box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #111827;
+  box-shadow:
+    0 8px 18px rgba(15, 23, 42, 0.08),
+    inset 0 0 0 1px rgba(15, 23, 42, 0.08);
   flex-shrink: 0;
 }
 
@@ -5216,29 +5328,172 @@ html.kikoerumanager-dark .detail-body .path {
 }
 
 .sidebar-section-label {
-  margin: 0 10px 10px;
+  display: block;
+  max-height: 0;
+  margin: 0 10px;
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.04em;
   color: rgba(29, 29, 31, 0.42);
   text-transform: uppercase;
+  opacity: 0;
+  overflow: hidden;
+  transform: translateX(-6px);
+  transition:
+    max-height 0.24s ease,
+    margin 0.24s ease,
+    opacity 0.18s ease,
+    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.sidebar:hover .sidebar-section-label,
+.sidebar.is-sidebar-pinned .sidebar-section-label {
+  max-height: 20px;
+  margin: 0 10px 8px;
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.sidebar-pin-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: flex-end;
+  width: 24px;
+  height: 24px;
+  max-height: 0;
+  margin: 0 12px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  color: rgba(29, 29, 31, 0.55);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.86);
+  transition:
+    max-height 0.2s ease,
+    margin 0.2s ease,
+    opacity 0.2s ease,
+    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+    background 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.sidebar-pin-button > svg {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+}
+
+.sidebar-pin-button span {
+  display: none;
+}
+
+.sidebar:hover .sidebar-pin-button,
+.sidebar.is-sidebar-pinned .sidebar-pin-button {
+  max-height: 24px;
+  margin: 0 12px 6px;
+  opacity: 1;
+  pointer-events: auto;
+  transform: scale(1);
+}
+
+.sidebar-pin-button:hover {
+  background: #ffffff;
+  border-color: rgba(15, 23, 42, 0.14);
+  color: #1d1d1f;
+}
+
+.sidebar-pin-button:active {
+  transform: scale(0.92);
+}
+
+.sidebar-pin-button.is-pinned {
+  background: rgba(15, 23, 42, 0.08);
+  border-color: rgba(15, 23, 42, 0.12);
+  color: rgba(15, 23, 42, 0.85);
 }
 
 .sidebar-menu {
   flex: 1;
+  width: 100%;
+  padding: 4px 0;
+  overflow: hidden;
+  scrollbar-width: none;
   border-right: none;
   background: transparent;
 }
 
+.sidebar-menu::-webkit-scrollbar {
+  display: none;
+}
+
 .sidebar-footer {
-  padding: 16px 8px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 0 0;
+}
+
+.sidebar:hover .sidebar-rail-bell,
+.sidebar.is-sidebar-pinned .sidebar-rail-bell {
+  opacity: 0;
+  pointer-events: none;
+  max-height: 0;
+  margin: 0 12px;
+}
+
+.sidebar-rail-bell {
+  flex-shrink: 0;
+  margin: 0 12px;
+  align-self: flex-start;
+  max-height: 40px;
+  overflow: hidden;
+  transition:
+    max-height 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.2s ease;
+}
+
+.sidebar-rail-bell :deep(.notif-bell-btn) {
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
+}
+
+.sidebar-rail-bell :deep(.notif-bell-player) {
+  width: 30px;
+  height: 30px;
 }
 
 .sidebar-status-card {
-  padding: 14px;
-  border-radius: 22px;
+  width: calc(var(--sidebar-expanded-width) - 16px);
+  margin: 0 8px;
+  padding: 0 14px;
+  max-height: 0;
+  border-radius: 16px;
   background: #f7f7fa;
   box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.05);
+  opacity: 0;
+  pointer-events: none;
+  overflow: hidden;
+  transition:
+    max-height 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    padding 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.2s ease;
+}
+
+.sidebar:hover .sidebar-status-card,
+.sidebar.is-sidebar-pinned .sidebar-status-card {
+  max-height: 200px;
+  padding: 14px;
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .sidebar-status-header {
@@ -5280,28 +5535,54 @@ html.kikoerumanager-dark .detail-body .path {
 
 .conflict-badge {
   margin-left: auto;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+}
+
+.sidebar:hover .conflict-badge,
+.sidebar.is-sidebar-pinned .conflict-badge {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .version-info {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
+  flex-direction: row;
   gap: 8px;
-  margin-top: 14px;
-  padding: 0 6px;
+  width: 100%;
+  padding: 0 0 0 12px;
+}
+
+.sidebar:not(:hover):not(.is-sidebar-pinned) .version-info {
+  gap: 0;
 }
 
 .version-text {
+  display: inline-block;
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  white-space: nowrap;
   font-size: 12px;
-  color: rgba(29, 29, 31, 0.46);
-}
-
-.version-text {
-  padding: 4px 10px;
+  padding: 4px 0;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.9);
   color: #1d1d1f;
   box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.06);
+  transition:
+    max-width 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.18s ease,
+    padding 0.24s ease;
+}
+
+.sidebar:hover .version-text,
+.sidebar.is-sidebar-pinned .version-text {
+  max-width: 140px;
+  opacity: 1;
+  padding: 4px 10px;
 }
 
 .main-frame {
@@ -5323,6 +5604,7 @@ html.kikoerumanager-dark .detail-body .path {
 .content-shell {
   height: 100%;
   overflow-y: auto;
+  overflow-x: hidden;
   padding-right: 4px;
   scrollbar-gutter: stable;
 }
@@ -5334,36 +5616,75 @@ html.kikoerumanager-dark .detail-body .path {
 :deep(.sidebar-menu .el-menu-item) {
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: 46px;
-  margin: 4px 0;
-  border-radius: 16px;
+  justify-content: flex-start;
+  width: calc(100% - 16px);
+  height: 40px;
+  min-width: 0;
+  margin: 4px 8px;
+  padding: 0 14px !important;
+  gap: 12px;
+  border-radius: 12px;
   color: rgba(29, 29, 31, 0.72);
   font-size: 14px;
+  white-space: nowrap;
+  transition:
+    background 0.22s ease,
+    color 0.22s ease,
+    box-shadow 0.24s ease,
+    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+:deep(.sidebar-menu .el-menu-item span) {
+  display: inline-block;
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  transform: translateX(-6px);
+  transition:
+    max-width 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.18s ease,
+    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 :deep(.sidebar-menu .el-menu-item > svg) {
   flex: 0 0 auto;
+  width: 19px;
+  height: 19px;
   color: rgba(29, 29, 31, 0.56);
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.24s ease;
+}
+
+.sidebar:hover :deep(.sidebar-menu .el-menu-item span),
+.sidebar.is-sidebar-pinned :deep(.sidebar-menu .el-menu-item span) {
+  max-width: 140px;
+  opacity: 1;
+  transform: translateX(0);
 }
 
 :deep(.sidebar-menu .el-menu-item:hover) {
-  background: #f3f3f6;
+  transform: translateY(-2px) scale(1.02);
+  background: rgba(255, 255, 255, 0.82);
   color: #1d1d1f;
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.76);
 }
 
 :deep(.sidebar-menu .el-menu-item:hover > svg) {
+  transform: rotate(-8deg);
   color: #1d1d1f;
 }
 
 :deep(.sidebar-menu .el-menu-item.is-active) {
-  background: #f0f6ff;
-  color: #0066cc;
+  background: rgba(15, 23, 42, 0.9);
+  color: #ffffff;
   font-weight: 600;
+  box-shadow:
+    0 12px 24px rgba(15, 23, 42, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
 }
 
 :deep(.sidebar-menu .el-menu-item.is-active > svg) {
-  color: #0071e3;
+  color: #ffffff;
 }
 
 :deep(.el-card) {
@@ -5387,13 +5708,14 @@ html.kikoerumanager-dark .detail-body .path {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  height: 26px;
+  gap: 0;
+  width: 40px;
+  height: 40px;
   min-width: 0;
-  padding: 0 8px;
+  padding: 0;
   overflow: hidden;
   border: 1px solid rgba(29, 29, 31, 0.08);
-  border-radius: 999px;
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.68);
   color: rgba(29, 29, 31, 0.72);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.62);
@@ -5401,7 +5723,22 @@ html.kikoerumanager-dark .detail-body .path {
   font-size: 12px;
   font-weight: 650;
   letter-spacing: -0.01em;
-  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.24s ease, color 0.24s ease, box-shadow 0.24s ease;
+  transition:
+    width 0.26s cubic-bezier(0.22, 1, 0.36, 1),
+    gap 0.24s ease,
+    padding 0.24s ease,
+    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    border-color 0.24s ease,
+    color 0.24s ease,
+    box-shadow 0.24s ease;
+}
+
+.sidebar:hover .theme-toggle-button,
+.sidebar.is-sidebar-pinned .theme-toggle-button {
+  width: auto;
+  gap: 6px;
+  padding: 0 10px;
+  border-radius: 999px;
 }
 
 .theme-toggle-button:hover {
@@ -5431,10 +5768,29 @@ html.kikoerumanager-dark .detail-body .path {
 .theme-toggle-text {
   position: relative;
   z-index: 1;
+  display: inline-block;
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  transform: translateX(-4px);
+  transition:
+    max-width 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.18s ease,
+    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.sidebar:hover .theme-toggle-text,
+.sidebar.is-sidebar-pinned .theme-toggle-text {
+  max-width: 48px;
+  opacity: 1;
+  transform: translateX(0);
 }
 
 .theme-toggle-icon {
   flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
   transition: color 0.3s ease, filter 0.3s ease, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -5774,8 +6130,110 @@ html.kikoerumanager-dark .detail-body .path {
   /* sidebar-shell 在抽屉态调整 */
   .sidebar-shell {
     height: 100%;
+    width: 100%;
     padding: 16px 14px 16px;
     border-radius: 0 22px 22px 0;
+    align-items: stretch;
+    contain: none;
+    will-change: auto;
+  }
+
+  .logo {
+    justify-content: flex-start;
+    gap: 10px;
+    padding: 6px 8px 18px;
+  }
+
+  .logo-copy {
+    display: flex;
+    max-width: none;
+    opacity: 1;
+    pointer-events: auto;
+    transform: none;
+  }
+
+  .logo-bell {
+    display: block;
+  }
+
+  .logo-mark {
+    width: 40px;
+    height: 40px;
+    border-radius: 13px;
+    background: #f3f7ff;
+    color: #0071e3;
+    box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.08);
+  }
+
+  .sidebar-section-label {
+    display: block;
+    max-height: none;
+    margin: 0 10px 10px;
+    opacity: 1;
+    transform: none;
+  }
+
+  .sidebar-pin-button {
+    display: none;
+  }
+
+  .sidebar-menu {
+    padding: 0;
+    overflow-y: auto;
+  }
+
+  :deep(.sidebar-menu .el-menu-item) {
+    justify-content: flex-start;
+    width: auto;
+    height: 46px;
+    min-width: 0;
+    margin: 4px 0;
+    padding: 0 18px !important;
+    gap: 10px;
+    border-radius: 16px;
+  }
+
+  :deep(.sidebar-menu .el-menu-item span) {
+    display: inline;
+    max-width: none;
+    opacity: 1;
+    transform: none;
+  }
+
+  :deep(.sidebar-menu .el-menu-item > svg) {
+    width: 18px;
+    height: 18px;
+  }
+
+  .sidebar-footer {
+    align-items: stretch;
+    gap: 12px;
+    padding: 16px 8px 0;
+  }
+
+  .sidebar-rail-bell {
+    display: none;
+  }
+
+  .sidebar-status-card {
+    display: block;
+    max-height: none;
+    padding: 14px;
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .version-info {
+    flex-direction: row;
+    margin-top: 14px;
+    padding: 0 6px;
+  }
+
+  .version-text {
+    display: inline-flex;
+    max-width: none;
+    opacity: 1;
+    padding: 4px 10px;
   }
 
   /* 主内容区铺满 */
@@ -5792,7 +6250,11 @@ html.kikoerumanager-dark .detail-body .path {
     padding-right: 0;
   }
   .theme-toggle-button {
-    height: 26px;
+    width: auto;
+    height: 32px;
+    gap: 6px;
+    padding: 0 10px;
+    border-radius: 999px;
   }
 }
 
@@ -5831,4 +6293,65 @@ body.app-mobile-nav-locked {
   overflow: hidden !important;
   touch-action: none;
 }
+
+.app-container {
+  background: #ffffff !important;
+}
+
+html.kikoerumanager-dark .app-container {
+  background: #08090c !important;
+}
+
+html.kikoerumanager-dark,
+body.kikoerumanager-dark,
+html.kikoerumanager-dark body,
+html.kikoerumanager-dark #app {
+  background: #08090c !important;
+}
+
+.sidebar-shell {
+  background: rgba(255, 255, 255, 0.86) !important;
+  border-color: rgba(15, 23, 42, 0.08) !important;
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.8) !important;
+  backdrop-filter: blur(22px) saturate(170%) !important;
+  -webkit-backdrop-filter: blur(22px) saturate(170%) !important;
+}
+
+html.kikoerumanager-dark .sidebar-shell {
+  background: rgba(12, 13, 17, 0.78) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
+}
+
+html.kikoerumanager-dark .logo-mark {
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: rgba(241, 245, 249, 0.92) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
+}
+
+html.kikoerumanager-dark .sidebar-menu .el-menu-item {
+  color: rgba(226, 232, 240, 0.78) !important;
+}
+
+html.kikoerumanager-dark .sidebar-menu .el-menu-item > svg {
+  color: rgba(226, 232, 240, 0.68) !important;
+}
+
+html.kikoerumanager-dark .sidebar-menu .el-menu-item:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #f8fafc !important;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+}
+
+html.kikoerumanager-dark .sidebar-menu .el-menu-item.is-active {
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: #f8fafc !important;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+}
+
+html.kikoerumanager-dark .sidebar-menu .el-menu-item:hover > svg,
+html.kikoerumanager-dark .sidebar-menu .el-menu-item.is-active > svg {
+  color: #f8fafc !important;
+}
+
 </style>
