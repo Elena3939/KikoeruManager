@@ -3,9 +3,15 @@
 """
 import pytest
 import asyncio
+import os
+import shutil
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from app.config import settings as settings_module
 from app.core.task_engine import TaskEngine, Task, TaskType, TaskStatus
+from app.models import database as database_module
+from app.models.database import ConflictWork
 
 class TestTaskEngine:
     """测试任务引擎"""
@@ -140,3 +146,73 @@ class TestTaskEngine:
         engine.add_progress_callback(callback)
         
         assert callback in engine._progress_callbacks
+
+    def test_extract_subtask_conflict_source_moves_to_stable_conflicts_dir(self, engine, tmp_path, monkeypatch):
+        temp_root = tmp_path / "temp"
+        library_root = tmp_path / "library"
+        holder = temp_root / "RJ00000011_subtask_parent"
+        source = holder / "RJ00000011"
+        source.mkdir(parents=True)
+        (source / "track.wav").write_bytes(b"data")
+        library_root.mkdir()
+
+        monkeypatch.setattr(
+            settings_module,
+            "get_config",
+            lambda: SimpleNamespace(storage=SimpleNamespace(library_path=str(library_root))),
+        )
+
+        task = Task(
+            task_type=TaskType.PROCESS_EXISTING_FOLDER,
+            source_path=str(source),
+            metadata={
+                "is_extract_subtask": True,
+                "extract_subtask_temp_holder": str(holder),
+            },
+        )
+
+        classifier = SimpleNamespace(_move_with_rename=lambda src, dst: shutil.move(src, os.path.join(dst, os.path.basename(src))))
+
+        stable_path = asyncio.run(engine._stabilize_extract_subtask_conflict_source(task, str(source), classifier))
+
+        assert stable_path.startswith(str(library_root / "_conflicts"))
+        assert os.path.exists(stable_path)
+        assert not os.path.exists(source)
+        assert task.source_path == stable_path
+        assert task.output_path == stable_path
+
+        task.status = TaskStatus.WAITING_MANUAL
+        asyncio.run(engine._cleanup_failed_task(task))
+
+        assert os.path.exists(stable_path)
+        assert not os.path.exists(holder)
+
+    def test_rewrite_active_conflict_new_path_for_extract_subtask(self, engine, db_session, monkeypatch):
+        old_path = "/tmp/RJ00000011_subtask_parent/RJ00000011"
+        new_path = "/library/_conflicts/RJ00000011"
+
+        db_session.add(
+            ConflictWork(
+                id="conflict-1",
+                task_id="task-1",
+                rjcode="RJ00000011",
+                conflict_type="DUPLICATE",
+                existing_path="/library/RJ00000011",
+                new_path=old_path,
+                new_metadata={},
+                status="PENDING",
+            )
+        )
+        db_session.commit()
+
+        def fake_get_db():
+            yield db_session
+
+        monkeypatch.setattr(database_module, "get_db", fake_get_db)
+
+        updated = engine._rewrite_active_conflict_new_path("task-1", old_path, new_path)
+
+        row = db_session.query(ConflictWork).filter(ConflictWork.id == "conflict-1").one()
+        assert updated == 1
+        assert row.new_path == new_path
+        assert row.new_metadata["new_path_recovered_from"] == old_path

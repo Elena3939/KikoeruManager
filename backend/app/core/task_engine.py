@@ -1323,6 +1323,88 @@ class TaskEngine:
             return
         except Exception:
             logger.warning("[清理] 删除任务临时解压目录失败: task_id=%s path=%s", task.id, target, exc_info=True)
+
+    async def _stabilize_extract_subtask_conflict_source(self, task: Task, source_path: str, classifier) -> str:
+        metadata = dict(task.task_metadata or {})
+        if not metadata.get("is_extract_subtask"):
+            return source_path
+
+        candidate = str(source_path or "").strip()
+        if not candidate or not os.path.exists(candidate):
+            return candidate
+
+        try:
+            from ..config.settings import get_config
+            config = get_config()
+            conflict_base_path = os.path.join(str(config.storage.library_path), "_conflicts")
+            os.makedirs(conflict_base_path, exist_ok=True)
+            final_path = await asyncio.to_thread(classifier._move_with_rename, candidate, conflict_base_path)
+        except Exception:
+            logger.warning(
+                "[多作品拆分] 稳定化问题作品来源失败: task_id=%s source=%s",
+                task.id,
+                candidate,
+                exc_info=True,
+            )
+            return candidate
+
+        if final_path and final_path != candidate:
+            metadata["extract_subtask_conflict_source_original"] = candidate
+            metadata["extract_subtask_conflict_source_stable_path"] = final_path
+            task.task_metadata = metadata
+            task.source_path = final_path
+            task.output_path = final_path
+            logger.info(
+                "[多作品拆分] 问题作品来源已搬到稳定目录: task_id=%s %s -> %s",
+                task.id,
+                candidate,
+                final_path,
+            )
+        return final_path or candidate
+
+    def _rewrite_active_conflict_new_path(self, task_id: str, old_path: str, new_path: str) -> int:
+        old_value = str(old_path or "").strip()
+        new_value = str(new_path or "").strip()
+        if not task_id or not old_value or not new_value or old_value == new_value:
+            return 0
+
+        from ..models.database import ConflictWork, get_db
+
+        db = next(get_db())
+        updated = 0
+        try:
+            rows = (
+                db.query(ConflictWork)
+                .filter(
+                    ConflictWork.task_id == task_id,
+                    ConflictWork.new_path == old_value,
+                    ConflictWork.status.in_(["PENDING", "PROCESSING"]),
+                )
+                .all()
+            )
+            for row in rows:
+                row.new_path = new_value
+                metadata = dict(row.new_metadata or {})
+                metadata["new_path_recovered_from"] = old_value
+                metadata["new_path_recovered_at"] = datetime.now().isoformat()
+                row.new_metadata = metadata
+                updated += 1
+            if updated:
+                db.commit()
+                logger.info(
+                    "问题作品 new_path 已随多作品子任务稳定化修正: task_id=%s count=%s old=%s new=%s",
+                    task_id,
+                    updated,
+                    old_value,
+                    new_value,
+                )
+        except Exception:
+            db.rollback()
+            logger.warning("修正多作品子任务问题作品路径失败: task_id=%s", task_id, exc_info=True)
+            return 0
+        finally:
+            db.close()
+        return updated
     
     async def _process_task(self, task: Task):
         """处理单个任务"""
@@ -2042,13 +2124,18 @@ class TaskEngine:
                             linked_rjcodes = [w['rjcode'] for w in check_result.linked_works_found]
                             logger.warning(f"[{rjcode}] 关联作品冲突: {linked_rjcodes}")
 
+                        source_for_conflict = await self._stabilize_extract_subtask_conflict_source(
+                            task,
+                            existing_folder_path,
+                            classifier,
+                        )
                         classifier._add_to_conflict_works(
                             task.id,
                             rjcode,
                             conflict_type,
                             check_result.direct_duplicate['path'] if check_result.direct_duplicate else
                             (check_result.linked_works_found[0]['path'] if check_result.linked_works_found else "未知路径"),
-                            existing_folder_path,
+                            source_for_conflict,
                             {},
                             linked_works_info=check_result.linked_works_found,
                             analysis_info=check_result.analysis_info,
@@ -2063,6 +2150,12 @@ class TaskEngine:
 
                     is_processing = await classifier.check_duplicate_before_extract(rjcode, task, self)
                     if is_processing:
+                        stable_source_path = await self._stabilize_extract_subtask_conflict_source(
+                            task,
+                            existing_folder_path,
+                            classifier,
+                        )
+                        self._rewrite_active_conflict_new_path(task.id, existing_folder_path, stable_source_path)
                         logger.info(f"[{rjcode}] 正在处理中，已添加到问题作品列表")
                         task.status = TaskStatus.WAITING_MANUAL
                         task.update_progress(100, "正在处理中，请在问题作品页面查看")
@@ -3147,6 +3240,32 @@ class TaskEngine:
             if metadata.get("is_extract_subtask"):
                 holder = str(metadata.get("extract_subtask_temp_holder") or "").strip()
                 if holder and os.path.isdir(holder):
+                    source_in_holder = False
+                    try:
+                        holder_abs = os.path.abspath(holder)
+                        source_abs = os.path.abspath(str(task.source_path or ""))
+                        source_in_holder = (
+                            os.path.exists(source_abs)
+                            and os.path.commonpath([holder_abs, source_abs]) == holder_abs
+                        )
+                    except ValueError:
+                        source_in_holder = False
+                    except Exception:
+                        logger.warning(
+                            "[多作品拆分] 判断子任务临时容器是否仍在使用失败: task_id=%s holder=%s",
+                            task.id,
+                            holder,
+                            exc_info=True,
+                        )
+                        return
+                    if task.status == TaskStatus.WAITING_MANUAL and source_in_holder:
+                        logger.warning(
+                            "[多作品拆分] 子任务等待人工处理，跳过清理仍在使用的临时容器: task_id=%s holder=%s source=%s",
+                            task.id,
+                            holder,
+                            task.source_path,
+                        )
+                        return
                     try:
                         await asyncio.to_thread(shutil.rmtree, holder, ignore_errors=True)
                         logger.info(

@@ -908,12 +908,25 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             extract_output_bytes = _safe_path_size(task.output_path) if task.output_path else 0
             if extract_output_bytes <= 0 and preview_extract_path:
                 extract_output_bytes = _safe_path_size(preview_extract_path)
+            if extract_output_bytes <= 0:
+                try:
+                    extract_output_bytes = int(meta.get("extract_payload_total_bytes") or 0)
+                except Exception:
+                    extract_output_bytes = 0
         archive_size_bytes = 0
         archive_path = None
         if archive_input:
             archive_size_bytes, archive_path = _resolve_archive_snapshot(task)
         duration_ms = _duration_ms_for_task(task)
         source_mode = str(meta.get("source_mode") or "").strip()
+        try:
+            filtered_count = int(meta.get("filtered_count") or 0)
+        except Exception:
+            filtered_count = 0
+        try:
+            filtered_size = int(meta.get("filtered_size") or 0)
+        except Exception:
+            filtered_size = 0
         if st == TaskStatus.COMPLETED and tt == TaskType.AUTO_PROCESS and archive_input:
             extract_label = "预检解包" if source_mode == "linked_translation_archive_pending" and not task.output_path else "解压产物"
             summary = (
@@ -934,12 +947,18 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             "batch_id": str(meta.get("batch_id") or "").strip() or None,
             "session_id": str(meta.get("session_id") or "").strip() or None,
             "source_mode": source_mode or None,
+            "source_action": str(meta.get("source_action") or "").strip() or None,
+            "source_label": str(meta.get("source_label") or "").strip() or None,
+            "source_page": str(meta.get("source_page") or "").strip() or None,
+            "parent_task_id": str(meta.get("parent_task_id") or "").strip() or None,
             "linked_source_rjcode": str(linked_preview.get("source_rjcode") or "").strip().upper() or None,
             "linked_target_rjcode": str(linked_preview.get("target_rjcode") or "").strip().upper() or None,
             "file_tree_items": list(meta.get("file_tree_items") or []),
-            "filtered_count": int(meta.get("filtered_count") or 0),
-            "filtered_size": int(meta.get("filtered_size") or 0),
+            "filtered_count": filtered_count or None,
+            "filtered_size": filtered_size or None,
             "filtered_items": _build_filter_delete_items(meta.get("filtered_items"), limit=240),
+            "multi_rj_subtask_count": int(meta.get("multi_rj_subtask_count") or 0) or None,
+            "multi_rj_dispatch_failed": len(list(meta.get("multi_rj_dispatch_failures") or [])) or None,
         }
 
     if tt in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH}:
