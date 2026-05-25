@@ -293,15 +293,21 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
         batch_id = str(detail.get("batch_id") or detail.get("session_id") or "").strip()
         if not batch_id:
             continue
-        batch_key = (category_key, batch_id)
-        if batch_key in import_batch_rows_by_key:
-            continue
-
-        source_action = str(
+        source_action_for_synthetic = str(
             detail.get("batch_source_action")
             or detail.get("source_action")
             or ""
         ).strip()
+        if category_key == "process_existing" and source_action_for_synthetic == "multi_rj_extract_subtask":
+            continue
+        batch_key = (category_key, batch_id)
+        if batch_key in import_batch_rows_by_key:
+            continue
+        if category_key == "auto_import" and int(detail.get("multi_rj_subtask_count") or 0) > 0:
+            import_batch_rows_by_key[batch_key] = row
+            continue
+
+        source_action = source_action_for_synthetic
         source_label = str(
             detail.get("batch_source_label")
             or detail.get("source_label")
@@ -351,6 +357,8 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
         extract_completed_count = 0
         extract_output_total = 0
         archive_size_total = 0
+        filtered_count_total = 0
+        filtered_size_total = 0
         batch_created_task_ids = {
             str(item.get("task_id") or "").strip()
             for item in (batch_detail.get("created_tasks") or [])
@@ -365,21 +373,35 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
             row_id = str(row.get("id") or "")
             if row_id == str(batch_row.get("id") or ""):
                 continue
-            if str(row.get("category") or "").strip() != category_key:
-                continue
             if str(row.get("action") or "").strip() == "batch_start":
                 continue
+            row_category = str(row.get("category") or "").strip()
             detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+            is_cross_multi_rj_child = (
+                category_key == "auto_import"
+                and row_category == "process_existing"
+                and str(detail.get("source_action") or "").strip() == "multi_rj_extract_subtask"
+            )
+            if row_category != category_key and not is_cross_multi_rj_child:
+                continue
             row_batch_id = str(detail.get("batch_id") or "").strip()
             row_task_id = str(row.get("task_id") or "").strip()
             row_source_path = str(row.get("source_path") or "").strip()
             row_created_at = _coerce_dt(row.get("created_at")) or datetime.min
             matched_by_batch_id = bool(row_batch_id) and row_batch_id == batch_id
             matched_by_created_task = bool(row_task_id) and row_task_id in batch_created_task_ids
+            matched_by_multi_rj_parent = bool(
+                is_cross_multi_rj_child
+                and (
+                    str(detail.get("parent_task_id") or "").strip() == str(batch_row.get("task_id") or "").strip()
+                    or matched_by_batch_id
+                )
+            )
             matched_by_source_path_fallback = False
             if (
                 not matched_by_batch_id
                 and not matched_by_created_task
+                and not matched_by_multi_rj_parent
                 and not batch_created_task_ids
                 and row_source_path
                 and row_source_path in batch_source_paths
@@ -389,13 +411,14 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
                 fallback_seconds = abs((row_created_at - batch_created_at).total_seconds())
                 matched_by_source_path_fallback = fallback_seconds <= 1800
             matched_by_parent_manifest = matched_by_created_task or matched_by_source_path_fallback
-            if not matched_by_batch_id and not matched_by_parent_manifest:
+            if not matched_by_batch_id and not matched_by_parent_manifest and not matched_by_multi_rj_parent:
                 continue
             merged_import_batch_child_ids.add(row_id)
+            child_category_label = "子处理任务" if row_category == "process_existing" else ("子解压任务" if category_key == "auto_import" else "子处理任务")
             child_row = _make_tree_child(
                 row,
                 relation="import_item",
-                category_label="子解压任务" if category_key == "auto_import" else "子处理任务",
+                category_label=child_category_label,
             )
             child_rows.append(child_row)
             import_batch_child_rows_by_source_id[row_id] = child_rows[-1]
@@ -428,6 +451,14 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
                     earliest_child_activity = min(earliest_child_activity, item_created_at)
                 item_detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
                 item_duration_ms = int(item_detail.get("duration_ms") or 0)
+                try:
+                    filtered_count_total += int(item_detail.get("filtered_count") or 0)
+                except Exception:
+                    pass
+                try:
+                    filtered_size_total += int(item_detail.get("filtered_size") or 0)
+                except Exception:
+                    pass
                 max_child_duration_ms = max(max_child_duration_ms, item_duration_ms)
                 if item_created_at and item_duration_ms > 0:
                     item_completed_at = item_created_at + timedelta(milliseconds=item_duration_ms)
@@ -467,7 +498,7 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
                 seconds = total_seconds % 60
                 summary_parts.append(f"耗时 {minutes} 分 {seconds} 秒" if minutes else f"耗时 {seconds} 秒")
             batch_row["summary"] = f"{'批量创建解压任务' if category_key == 'auto_import' else '批量创建已有目录处理任务'}，{'，'.join(summary_parts)}"
-            batch_row["detail"] = {
+            next_detail = {
                 **batch_detail,
                 "child_rows": sorted(
                     child_rows,
@@ -482,6 +513,11 @@ def merge_activity_rows_from_dicts(rows: List[Dict[str, Any]]) -> List[Dict[str,
                 "batch_duration_ms": batch_duration_ms,
                 "latest_activity_at": latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at"),
             }
+            if filtered_count_total > 0:
+                next_detail["aggregate_filtered_count"] = filtered_count_total
+            if filtered_size_total > 0:
+                next_detail["aggregate_filtered_size"] = filtered_size_total
+            batch_row["detail"] = next_detail
             batch_row["has_child_rows"] = True
             batch_row["latest_activity_at"] = latest_activity.isoformat() if latest_activity != datetime.min else batch_row.get("created_at")
             # 没有真实 batch_start 锚点但有 batch_id 的 import 行，会生成 synthetic 父行；

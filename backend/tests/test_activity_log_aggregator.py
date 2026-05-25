@@ -144,3 +144,72 @@ def test_from_dicts_does_not_mutate_input(scenario: str) -> None:
         json.loads(json.dumps(first, ensure_ascii=False, sort_keys=True))
         == json.loads(json.dumps(second, ensure_ascii=False, sort_keys=True))
     ), f"scenario={scenario} from_dicts 不幂等，同一输入两次输出不一致"
+
+
+def test_multi_rj_extract_subtasks_roll_up_filtered_size_to_parent() -> None:
+    from app.core.activity_log_aggregator import merge_activity_rows_from_dicts
+
+    rows = [
+        {
+            "id": "parent",
+            "category": "auto_import",
+            "action": "task_finished",
+            "status": "success",
+            "summary": "解压入库完成，压缩包 66.79 GB，解压产物 120.00 GB，耗时 1 分 0 秒",
+            "task_id": "parent-task",
+            "source_path": "/archives/big.zip",
+            "rjcode": "RJ00000001",
+            "created_at": "2026-05-25T15:13:41",
+            "detail": {
+                "batch_id": "parent-task",
+                "archive_size_bytes": 1024,
+                "extract_output_bytes": 4096,
+                "duration_ms": 60000,
+                "multi_rj_subtask_count": 2,
+            },
+        },
+        {
+            "id": "child-1",
+            "category": "process_existing",
+            "action": "task_finished",
+            "status": "success",
+            "summary": "完成",
+            "task_id": "child-task-1",
+            "source_path": "/temp/RJ00000011",
+            "rjcode": "RJ00000011",
+            "created_at": "2026-05-25T15:14:41",
+            "detail": {
+                "batch_id": "parent-task",
+                "parent_task_id": "parent-task",
+                "source_action": "multi_rj_extract_subtask",
+                "filtered_count": 2,
+                "filtered_size": 300,
+            },
+        },
+        {
+            "id": "child-2",
+            "category": "process_existing",
+            "action": "task_finished",
+            "status": "success",
+            "summary": "完成",
+            "task_id": "child-task-2",
+            "source_path": "/temp/RJ00000012",
+            "rjcode": "RJ00000012",
+            "created_at": "2026-05-25T15:15:41",
+            "detail": {
+                "batch_id": "parent-task",
+                "parent_task_id": "parent-task",
+                "source_action": "multi_rj_extract_subtask",
+                "filtered_count": 1,
+                "filtered_size": 700,
+            },
+        },
+    ]
+
+    result = merge_activity_rows_from_dicts(rows)
+
+    assert len(result) == 1
+    detail = result[0]["detail"]
+    assert detail["child_row_count"] == 2
+    assert detail["aggregate_filtered_count"] == 3
+    assert detail["aggregate_filtered_size"] == 1000
