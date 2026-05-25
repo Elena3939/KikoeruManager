@@ -20,14 +20,9 @@
         <span>暂无通知</span>
       </div>
 
-      <div v-else-if="displayedItems.length === 0" class="notif-empty">
-        <Bell :size="32" :stroke-width="1.4" style="opacity:0.3" />
-        <span>近3天内无通知</span>
-      </div>
-
       <div v-else class="notif-list">
         <div
-          v-for="(item, index) in displayedItems"
+          v-for="(item, index) in items"
           :key="item.id"
           class="notif-item"
           :class="[`notif-item--${item.severity}`, { 'notif-item--unread': !item.is_read, 'notif-item--read': item.is_read }]"
@@ -53,9 +48,15 @@
 
         <!-- 加载更多 -->
         <div v-if="hasMore || loadingMore" class="notif-load-more">
-          <button v-if="!loadingMore" class="notif-load-more-btn" @click="onLoadMore">
+          <button
+            v-if="!loadingMore"
+            class="notif-load-more-btn"
+            :class="{ 'notif-load-more-btn--unread': hasMoreUnread }"
+            @click="onLoadMore"
+          >
             <ChevronDown :size="13" :stroke-width="2.2" />
             查看更多
+            <span v-if="hasMoreUnread" class="notif-load-more-dot" />
           </button>
           <div v-else class="notif-load-more-spin">
             <Loader2 :size="14" :stroke-width="2" class="notif-spin" />
@@ -80,15 +81,14 @@ const props = defineProps({
 
 const emit = defineEmits(['close'])
 const router = useRouter()
-const { items, loading, loadingMore, hasMore, markAllRead, deleteItem, loadMore } = useNotifications()
+const { items, loading, loadingMore, hasMore, unreadCount, markAllRead, deleteItem, loadMore } = useNotifications()
 
-const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000
-const displayedItems = computed(() => {
-  const cutoff = Date.now() - THREE_DAYS_MS
-  return items.value.filter(i => new Date(i.created_at).getTime() >= cutoff)
-})
+const hasUnread = computed(() => unreadCount.value > 0 || items.value.some(i => !i.is_read))
 
-const hasUnread = computed(() => displayedItems.value.some(i => !i.is_read))
+// 当前列表里仍未读的条目数
+const loadedUnreadCount = computed(() => items.value.filter(i => !i.is_read).length)
+// 服务端总未读 > 当前已加载列表里看到的未读 → 仍有未加载的未读项
+const hasMoreUnread = computed(() => hasMore.value && unreadCount.value > loadedUnreadCount.value)
 
 function domainLabel(item) {
   if (item.domain_label) return item.domain_label
@@ -431,6 +431,33 @@ function onItemClick(item) {
 
 .notif-load-more-btn:active {
   transform: scale(0.96);
+}
+
+.notif-load-more-btn--unread {
+  color: #0071e3;
+  background: rgba(0, 113, 227, 0.10);
+  font-weight: 600;
+}
+
+.notif-load-more-btn--unread:hover {
+  background: rgba(0, 113, 227, 0.16);
+  color: #0055b3;
+}
+
+.notif-load-more-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #0071e3;
+  margin-left: 2px;
+  box-shadow: 0 0 0 0 rgba(0, 113, 227, 0.6);
+  animation: notifLoadMorePulse 1.6s ease-out infinite;
+}
+
+@keyframes notifLoadMorePulse {
+  0%   { box-shadow: 0 0 0 0 rgba(0, 113, 227, 0.55); }
+  70%  { box-shadow: 0 0 0 6px rgba(0, 113, 227, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(0, 113, 227, 0); }
 }
 
 .notif-load-more-spin {
