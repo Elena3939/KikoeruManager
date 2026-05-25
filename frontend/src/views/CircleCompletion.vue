@@ -3894,7 +3894,7 @@ function getUploadBackgroundTargetLabel(task) {
   flex-direction: column;
   gap: 0;
   padding: 0;
-  background: #fafafa;
+  background: transparent;
   min-height: 0;
   height: 100%;
   overflow-y: auto;

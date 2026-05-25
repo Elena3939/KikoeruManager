@@ -551,12 +551,14 @@ const HIGHLIGHT_LABELS = {
   partial_child_count: '部分成功项数',
   aggregate_archive_size_bytes: '批量压缩包大小',
   aggregate_extract_output_bytes: '批量解压产物大小',
+  aggregate_filtered_count: '批量过滤文件数',
+  aggregate_filtered_size: '批量过滤体积',
 }
 
 const HIGHLIGHT_BYTE_KEYS = new Set([
   'selected_size', 'deleted_bytes', 'archive_size_bytes', 'extract_output_bytes',
   'recovered_selected_size', 'filtered_size', 'aggregate_archive_size_bytes',
-  'aggregate_extract_output_bytes', 'uploaded_bytes', 'downloaded_bytes', 'size_bytes',
+  'aggregate_extract_output_bytes', 'aggregate_filtered_size', 'uploaded_bytes', 'downloaded_bytes', 'size_bytes',
 ])
 
 function detailHighlights(row) {
