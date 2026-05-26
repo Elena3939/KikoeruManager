@@ -4836,6 +4836,70 @@ class ExtractService:
         logger.warning("无法预读取压缩包内容，后续将尝试直接解压: %s", archive_path)
         return None
 
+    @staticmethod
+    def _scan_top_level_rjcodes(
+        file_list: List[Dict],
+        max_depth: int = 3,
+    ) -> List[str]:
+        """从压缩包清单扫描各顶层路径段中的不同 RJ 号。
+
+        用于解压前判断是否为合集包（一个压缩包内多个独立 RJ 顶层目录）。
+        每条记录在前 ``max_depth`` 层路径段内匹配到的第一个 RJ 号都计入，
+        同一 RJ 号自动去重。
+
+        兼容两类常见合集结构：
+        - 顶层即 RJ 目录：``RJ01567971/...``。
+        - 顶层是社团 / 月份 / 标签容器，第二层才是 RJ 目录：
+          ``[Deep,Dahlia]/RJ01567971/...``、``2024-05/RJ01567971/...``。
+
+        返回的 list 按 RJ 字典序稳定排序，方便日志和单测断言。
+        """
+        rj_pattern = re.compile(r'[RVB]J(\d{8}|\d{6})(?!\d)', re.IGNORECASE)
+        found: set = set()
+        for item in file_list or []:
+            name = str((item or {}).get("name") or "").strip()
+            if not name:
+                continue
+            parts = [seg for seg in name.replace("\\", "/").split("/") if seg][:max_depth]
+            for part in parts:
+                match = rj_pattern.search(part)
+                if match:
+                    found.add(match.group(0).upper())
+                    break
+        return sorted(found)
+
+    async def collect_top_level_rjcodes(
+        self,
+        archive_path: str,
+        *,
+        max_depth: int = 3,
+        task: Optional[Task] = None,
+    ) -> List[str]:
+        """读取压缩包清单（命中 list 缓存即秒回），返回顶层路径段内出现的不同 RJ 号。
+
+        用于解压前判断合集包：``len(result) >= 2`` 即可视为多 RJ 合集，
+        上游应跳过基于"第一个 RJ"的整体查重，把判重交给解压后的多作品拆分流程，
+        避免合集里第一个 RJ 已在库存就把整个大包判成"完全重复"。
+
+        清单读取失败 / 加密读不出 / file_list 为空时统一返回 ``[]``，调用方应
+        当作"无法判定"，回退到原查重逻辑。
+        """
+        target_path = str(archive_path or "")
+        if not target_path or not os.path.isfile(target_path):
+            return []
+        try:
+            info = await self._get_archive_info(target_path, task=task)
+        except Exception:
+            logger.warning(
+                "[多 RJ 预检] 读取压缩包清单失败: archive=%s",
+                target_path,
+                exc_info=True,
+            )
+            return []
+        if not info or not info.file_list:
+            return []
+        return self._scan_top_level_rjcodes(info.file_list, max_depth=max_depth)
+
     async def precheck_archive(
         self,
         task: Task,

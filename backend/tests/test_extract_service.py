@@ -1317,3 +1317,157 @@ class TestExtractService:
         assert result is not None
         # 魔数失败，仍按扩展名归类为 zip
         assert result['detected_kind'] == 'zip'
+
+    # ------------------------------------------------------------------
+    # 多 RJ 合集预检：覆盖大包内首个子作品命中库存导致整包被判重的回归
+    # ------------------------------------------------------------------
+
+    def test_scan_top_level_rjcodes_empty_returns_empty_list(self, extract_service):
+        """file_list 为空 / None 都返回空 list，不能抛异常。"""
+        assert extract_service._scan_top_level_rjcodes([]) == []
+        assert extract_service._scan_top_level_rjcodes(None) == []
+
+    def test_scan_top_level_rjcodes_single_rj_archive(self, extract_service):
+        """普通单作品包（顶层就是一个 RJ 目录）只返回 1 个 RJ。"""
+        file_list = [
+            {"name": "RJ01567971/track01.mp3", "size": 1024, "is_dir": False},
+            {"name": "RJ01567971/track02.mp3", "size": 2048, "is_dir": False},
+            {"name": "RJ01567971/cover.jpg", "size": 512, "is_dir": False},
+        ]
+        assert extract_service._scan_top_level_rjcodes(file_list) == ["RJ01567971"]
+
+    def test_scan_top_level_rjcodes_multi_rj_top_level(self, extract_service):
+        """顶层直接含多个 RJ 目录的合集包必须返回所有 RJ。"""
+        file_list = [
+            {"name": "RJ01567971/track01.mp3", "size": 1024, "is_dir": False},
+            {"name": "RJ01567972/track01.mp3", "size": 1024, "is_dir": False},
+            {"name": "RJ01567973/track01.mp3", "size": 1024, "is_dir": False},
+        ]
+        assert extract_service._scan_top_level_rjcodes(file_list) == [
+            "RJ01567971",
+            "RJ01567972",
+            "RJ01567973",
+        ]
+
+    def test_scan_top_level_rjcodes_circle_container_with_rj_children(self, extract_service):
+        """社团 / 月份容器在顶层、RJ 在第二层，也应识别出全部 RJ。
+
+        典型场景：``[Deep,Dahlia]/RJ0156xxxx/...``。
+        """
+        file_list = [
+            {"name": "[Deep,Dahlia]/RJ01567971/01.mp3", "size": 100, "is_dir": False},
+            {"name": "[Deep,Dahlia]/RJ01567972/01.mp3", "size": 100, "is_dir": False},
+            {"name": "[Deep,Dahlia]/RJ01567973/01.mp3", "size": 100, "is_dir": False},
+        ]
+        assert extract_service._scan_top_level_rjcodes(file_list) == [
+            "RJ01567971",
+            "RJ01567972",
+            "RJ01567973",
+        ]
+
+    def test_scan_top_level_rjcodes_ignores_deep_path_rj(self, extract_service):
+        """超过 max_depth 的路径段不应被采集，避免误把内部引用文件名当作独立 RJ。"""
+        # 这里 max_depth=3，第 4 层的 RJ 不算
+        file_list = [
+            {"name": "RJ01567971/subdir/inner/RJ09999999_ref.txt", "size": 10, "is_dir": False},
+        ]
+        assert extract_service._scan_top_level_rjcodes(file_list, max_depth=3) == ["RJ01567971"]
+
+    def test_scan_top_level_rjcodes_handles_backslash_paths(self, extract_service):
+        """Windows 风格 ``\\`` 分隔符也能正确切分。"""
+        file_list = [
+            {"name": r"RJ01567971\track01.mp3", "size": 1, "is_dir": False},
+            {"name": r"RJ01567972\track01.mp3", "size": 1, "is_dir": False},
+        ]
+        assert extract_service._scan_top_level_rjcodes(file_list) == [
+            "RJ01567971",
+            "RJ01567972",
+        ]
+
+    def test_scan_top_level_rjcodes_dedupes_same_rj(self, extract_service):
+        """同一 RJ 在多条 entry 中出现只算一次。"""
+        file_list = [
+            {"name": "RJ01567971/a.mp3", "size": 1, "is_dir": False},
+            {"name": "RJ01567971/b.mp3", "size": 1, "is_dir": False},
+            {"name": "RJ01567971/sub/c.mp3", "size": 1, "is_dir": False},
+        ]
+        assert extract_service._scan_top_level_rjcodes(file_list) == ["RJ01567971"]
+
+    def test_scan_top_level_rjcodes_supports_six_digit_rj(self, extract_service):
+        """旧版 6 位 RJ（如 RJ123456）也要识别。"""
+        file_list = [
+            {"name": "RJ123456/foo.wav", "size": 1, "is_dir": False},
+            {"name": "RJ234567/foo.wav", "size": 1, "is_dir": False},
+        ]
+        assert extract_service._scan_top_level_rjcodes(file_list) == [
+            "RJ123456",
+            "RJ234567",
+        ]
+
+    def test_scan_top_level_rjcodes_ignores_entries_with_no_rj(self, extract_service):
+        """无 RJ 痕迹的条目应被静默跳过，不影响结果。"""
+        file_list = [
+            {"name": "readme.txt", "size": 1, "is_dir": False},
+            {"name": "junk/info.log", "size": 1, "is_dir": False},
+            {"name": "RJ01567971/audio.mp3", "size": 1, "is_dir": False},
+        ]
+        assert extract_service._scan_top_level_rjcodes(file_list) == ["RJ01567971"]
+
+    def test_collect_top_level_rjcodes_returns_empty_for_missing_file(
+        self, extract_service, temp_dir
+    ):
+        """目标路径不存在 → 直接返回空 list，不触碰 7zz。"""
+        import asyncio
+
+        missing = os.path.join(temp_dir, 'no_such_archive.zip')
+        result = asyncio.run(extract_service.collect_top_level_rjcodes(missing))
+        assert result == []
+
+    def test_collect_top_level_rjcodes_uses_archive_info_file_list(
+        self, extract_service, temp_dir
+    ):
+        """复用 ``_get_archive_info`` 的 file_list 输出，正确识别合集包。"""
+        import asyncio
+
+        fake_archive = os.path.join(temp_dir, 'big_pack.zip')
+        # 写一个最小占位文件，避免 isfile 校验失败
+        with open(fake_archive, 'wb') as f:
+            f.write(b'PK\x03\x04dummy')
+
+        fake_info = ArchiveInfo(
+            path=fake_archive,
+            file_list=[
+                {"name": "RJ01567971/01.mp3", "size": 1, "is_dir": False},
+                {"name": "RJ01567972/01.mp3", "size": 1, "is_dir": False},
+                {"name": "[Circle]/RJ01567973/01.mp3", "size": 1, "is_dir": False},
+            ],
+            password=None,
+        )
+
+        with patch.object(
+            ExtractService,
+            "_get_archive_info",
+            new=AsyncMock(return_value=fake_info),
+        ):
+            result = asyncio.run(extract_service.collect_top_level_rjcodes(fake_archive))
+
+        assert result == ["RJ01567971", "RJ01567972", "RJ01567973"]
+
+    def test_collect_top_level_rjcodes_returns_empty_on_failure(
+        self, extract_service, temp_dir
+    ):
+        """``_get_archive_info`` 抛异常时回退到空 list，让调用方走原查重逻辑。"""
+        import asyncio
+
+        fake_archive = os.path.join(temp_dir, 'broken.zip')
+        with open(fake_archive, 'wb') as f:
+            f.write(b'PK\x03\x04dummy')
+
+        with patch.object(
+            ExtractService,
+            "_get_archive_info",
+            new=AsyncMock(side_effect=RuntimeError("7zz crashed")),
+        ):
+            result = asyncio.run(extract_service.collect_top_level_rjcodes(fake_archive))
+
+        assert result == []
