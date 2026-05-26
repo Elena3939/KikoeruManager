@@ -1,6 +1,6 @@
 {
   "name": "kikoerumanager-frontend",
-  "version": "1.5.48",
+  "version": "1.5.49",
   "description": "KikoeruManager Web UI",
   "type": "module",
   "scripts": {
