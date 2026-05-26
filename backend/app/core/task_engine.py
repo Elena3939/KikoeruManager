@@ -1699,15 +1699,60 @@ class TaskEngine:
                                             f"subtitle_count={_preview_subtitle_count}"
                                         )
                                 else:
-                                    is_duplicate = await classifier.check_duplicate_before_extract(rjcode, task, self)
-                                    logger.info(f"[{rjcode}] 重复检查结果: {is_duplicate}")
-                                    if is_duplicate:
-                                        logger.info(f"[{rjcode}] 作品已存在或正在处理中，已添加到问题作品列表")
-                                        task.status = TaskStatus.WAITING_MANUAL
-                                        task.update_progress(100, "重复作品，请在问题作品页面处理")
-                                        task.completed_at = datetime.now()
-                                        await self._abort_precheck(precheck_task)
-                                        return
+                                    # 解压前多 RJ 合集预检：合集包（一个大压缩包内有多个独立 RJ 顶层目录）
+                                    # 的 inferred_rjcode 只是清单里第一个 RJ，不代表整包语义。若这个 RJ 已
+                                    # 在库存命中，原流程会把整个大包都判成"完全重复"跳过解压，剩下几十个
+                                    # 不重复的 RJ 永远没机会处理。这里先扫一遍清单：若顶层 >=2 个独立 RJ，
+                                    # 跳过基于第一个 RJ 的整体查重，让解压完成后的步骤 1.4
+                                    # （_detect_multi_rj_subfolders + _dispatch_multi_rj_subtasks）拆分子任务，
+                                    # 每个 RJ 各自查重。失败回退到原行为。
+                                    skip_aggregate_dedup = False
+                                    rjcode_locked_for_dedup = bool(
+                                        (task.task_metadata or {}).get('rjcode_lock')
+                                    )
+                                    if (
+                                        not rjcode_locked_for_dedup
+                                        and os.path.isfile(task.source_path)
+                                    ):
+                                        try:
+                                            archive_top_rjs = await extract_service.collect_top_level_rjcodes(
+                                                task.source_path,
+                                                task=task,
+                                            )
+                                        except Exception:
+                                            archive_top_rjs = []
+                                            logger.warning(
+                                                f"[{rjcode}] 解压前多 RJ 合集预检异常，回退到单作品查重",
+                                                exc_info=True,
+                                            )
+                                        if len(archive_top_rjs) >= 2:
+                                            _preview = archive_top_rjs[:8]
+                                            _more = (
+                                                f"... +{len(archive_top_rjs) - 8}"
+                                                if len(archive_top_rjs) > 8
+                                                else ""
+                                            )
+                                            logger.info(
+                                                f"[{rjcode}] 清单检测到 {len(archive_top_rjs)} 个独立 RJ"
+                                                f"（合集包），跳过整体查重，"
+                                                f"交给解压后多作品拆分: {_preview}{_more}"
+                                            )
+                                            skip_aggregate_dedup = True
+                                    if skip_aggregate_dedup:
+                                        logger.info(
+                                            f"[{rjcode}] 合集包跳过解压前整体查重，"
+                                            "每个子 RJ 将在拆分后各自查重"
+                                        )
+                                    else:
+                                        is_duplicate = await classifier.check_duplicate_before_extract(rjcode, task, self)
+                                        logger.info(f"[{rjcode}] 重复检查结果: {is_duplicate}")
+                                        if is_duplicate:
+                                            logger.info(f"[{rjcode}] 作品已存在或正在处理中，已添加到问题作品列表")
+                                            task.status = TaskStatus.WAITING_MANUAL
+                                            task.update_progress(100, "重复作品，请在问题作品页面处理")
+                                            task.completed_at = datetime.now()
+                                            await self._abort_precheck(precheck_task)
+                                            return
 
 
                     except Exception:
