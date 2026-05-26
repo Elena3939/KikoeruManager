@@ -2381,10 +2381,26 @@ class ExtractService:
         if failed_nested_archives:
             if task.task_metadata is None:
                 task.task_metadata = {}
-            task.task_metadata["nested_archive_failures"] = failed_nested_archives
-            raise RuntimeError(
-                "存在未成功解压的嵌套压缩包，已停止入库: "
-                + "；".join(failed_nested_archives[:5])
+            # 失败列表合并写入 metadata（同一任务多层递归都能累积），不再 raise 中断主任务。
+            # 旧行为：单个嵌套包失败 → raise → 上游 except 调 _cleanup_extract_path 把整个
+            # output_path 全删 → 已成功解压的几十个兄弟 RJ 全军覆没。
+            # 用户痛点：117 GB 合集包内 38 个 RJ 解压成功、1 个嵌套奖励 zip 密码错，整任务被毙。
+            # 新行为：嵌套部分失败视为软失败——把失败明细记到 task_metadata，
+            # 让外层 extract() 继续走完整性校验、最终兜底、返回 output_path，
+            # 后续多 RJ 拆分流程会基于已解压目录树各自查重 / 入库；
+            # 失败的嵌套包源文件已被 _process_one 留在原位，对应 RJ 后续可手工处理。
+            existing_failures = task.task_metadata.get("nested_archive_failures") or []
+            if not isinstance(existing_failures, list):
+                existing_failures = []
+            merged_failures = list(existing_failures) + [
+                item for item in failed_nested_archives if item not in existing_failures
+            ]
+            task.task_metadata["nested_archive_failures"] = merged_failures
+            logger.warning(
+                "嵌套解压部分失败（共 %d 个），不阻断主任务，已记入 task_metadata: %s%s",
+                len(failed_nested_archives),
+                failed_nested_archives[:5],
+                "..." if len(failed_nested_archives) > 5 else "",
             )
 
         return extracted_count

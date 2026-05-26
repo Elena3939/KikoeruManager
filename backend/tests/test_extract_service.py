@@ -1471,3 +1471,129 @@ class TestExtractService:
             result = asyncio.run(extract_service.collect_top_level_rjcodes(fake_archive))
 
         assert result == []
+
+    # ------------------------------------------------------------------
+    # 嵌套解压软失败：覆盖合集包内单个嵌套 zip 失败导致整任务被毙的回归
+    # ------------------------------------------------------------------
+
+    def test_extract_nested_archives_part_failure_does_not_raise(
+        self, extract_service, temp_dir
+    ):
+        """嵌套解压部分失败时不应抛 RuntimeError 中断主任务。
+
+        回归用户痛点：117 GB 合集包内 38 个 RJ 解压成功、1 个嵌套奖励 zip 密码错，
+        旧实现 raise 后上游 except 调 ``_cleanup_extract_path`` 清空整个 output_path
+        导致全军覆没。新实现把失败明细写入 ``task.task_metadata['nested_archive_failures']``，
+        不抛异常，让 ``extract()`` 继续走完整性校验、最终兜底、返回 output_path。
+        """
+        import asyncio
+
+        output_path = os.path.join(temp_dir, 'extract_out')
+        os.makedirs(output_path)
+
+        nested_zip = os.path.join(output_path, 'broken_inner.zip')
+        self.create_test_zip(nested_zip)
+
+        task = Task(
+            task_type=TaskType.EXTRACT,
+            source_path=os.path.join(temp_dir, 'outer.zip'),
+        )
+
+        with patch.object(
+            ExtractService,
+            '_classify_nested_small_archive',
+            new=AsyncMock(return_value='non_subtitle'),
+        ), patch.object(
+            ExtractService,
+            '_try_extract_nested_direct',
+            new=AsyncMock(return_value=(False, None)),
+        ):
+            result = asyncio.run(extract_service._extract_nested_archives(
+                output_path, task, max_depth=1,
+            ))
+
+        # 不抛异常，返回 0（无成功）
+        assert result == 0
+
+        failures = task.task_metadata.get('nested_archive_failures')
+        assert isinstance(failures, list)
+        assert len(failures) >= 1
+        assert any('broken_inner.zip' in str(item) for item in failures)
+
+        # 失败的源 zip 应仍留在原位，方便后续按 RJ 子任务重试或人工处理
+        assert os.path.exists(nested_zip)
+
+    def test_extract_nested_archives_failure_metadata_dedupes(
+        self, extract_service, temp_dir
+    ):
+        """metadata 累积合并：同一任务多层递归不应重复记录同名失败明细。"""
+        import asyncio
+
+        output_path = os.path.join(temp_dir, 'extract_out')
+        os.makedirs(output_path)
+
+        nested_zip = os.path.join(output_path, 'failing.zip')
+        self.create_test_zip(nested_zip)
+
+        task = Task(
+            task_type=TaskType.EXTRACT,
+            source_path=os.path.join(temp_dir, 'outer.zip'),
+        )
+        # 预置一条同名失败记录，模拟前一层递归已经写过
+        task.task_metadata['nested_archive_failures'] = [
+            '嵌套压缩包解压失败: failing.zip',
+        ]
+
+        with patch.object(
+            ExtractService,
+            '_classify_nested_small_archive',
+            new=AsyncMock(return_value='non_subtitle'),
+        ), patch.object(
+            ExtractService,
+            '_try_extract_nested_direct',
+            new=AsyncMock(return_value=(False, None)),
+        ):
+            asyncio.run(extract_service._extract_nested_archives(
+                output_path, task, max_depth=1,
+            ))
+
+        failures = task.task_metadata['nested_archive_failures']
+        assert isinstance(failures, list)
+        # 同名失败不重复追加
+        assert len(failures) == 1
+        assert 'failing.zip' in failures[0]
+
+    def test_extract_nested_archives_failure_metadata_resets_on_bad_type(
+        self, extract_service, temp_dir
+    ):
+        """metadata 之前被错误写成非 list（如 str）→ 重置为 list 而非抛错。"""
+        import asyncio
+
+        output_path = os.path.join(temp_dir, 'extract_out')
+        os.makedirs(output_path)
+
+        nested_zip = os.path.join(output_path, 'failing.zip')
+        self.create_test_zip(nested_zip)
+
+        task = Task(
+            task_type=TaskType.EXTRACT,
+            source_path=os.path.join(temp_dir, 'outer.zip'),
+        )
+        task.task_metadata['nested_archive_failures'] = 'corrupted_str_value'
+
+        with patch.object(
+            ExtractService,
+            '_classify_nested_small_archive',
+            new=AsyncMock(return_value='non_subtitle'),
+        ), patch.object(
+            ExtractService,
+            '_try_extract_nested_direct',
+            new=AsyncMock(return_value=(False, None)),
+        ):
+            asyncio.run(extract_service._extract_nested_archives(
+                output_path, task, max_depth=1,
+            ))
+
+        failures = task.task_metadata['nested_archive_failures']
+        assert isinstance(failures, list)
+        assert any('failing.zip' in str(item) for item in failures)
