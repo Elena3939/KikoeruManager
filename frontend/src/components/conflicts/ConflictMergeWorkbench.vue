@@ -5,9 +5,9 @@
         v-if="visible"
         class="pointer-events-none fixed inset-0 z-[2450] flex items-center justify-center p-6 max-[900px]:p-3"
       >
-        <!-- 玻璃遮罩；非 loading / submitting 时点击关闭 -->
+        <!-- 透明点击层；弹窗打开时不虚化、不压暗背景 -->
         <div
-          class="pointer-events-auto absolute inset-0 bg-slate-900/35 backdrop-blur-[3px]"
+          class="merge-dialog-overlay pointer-events-auto absolute inset-0 bg-transparent"
           @click="close"
         />
         <!-- 玻璃面板 shell：对齐 Library.mediaPreviewDialog 的视觉范式 -->
@@ -86,63 +86,81 @@
 
           <!-- Filter Pills -->
           <div v-if="preview" class="cmw-pill-bar">
-            <button
-              v-for="pill in filterPills"
-              :key="pill.value"
-              type="button"
-              class="cmw-pill"
-              :class="{ 'is-active': isFilterActive(pill.value) }"
-              @click="setStatusFilter(pill.value)"
-            >
-              {{ pill.label }}<span class="cmw-pill-count">{{ pill.count }}</span>
-            </button>
+            <div class="cmw-pill-group">
+              <button
+                v-for="pill in filterPills"
+                :key="pill.value"
+                type="button"
+                class="cmw-pill"
+                :class="{ 'is-active': isFilterActive(pill.value) }"
+                @click="setStatusFilter(pill.value)"
+              >
+                {{ pill.label }}<span class="cmw-pill-count">{{ pill.count }}</span>
+              </button>
+            </div>
+            <div class="cmw-summary-stats" aria-label="当前决策统计">
+              <span class="cmw-summary-stat is-new"><i class="cmw-dot is-new" />取新包<b>{{ decisionSummary.useNew }}</b></span>
+              <span class="cmw-summary-stat is-old"><i class="cmw-dot is-old" />取库存<b>{{ decisionSummary.useOld }}</b></span>
+              <span class="cmw-summary-stat is-del"><i class="cmw-dot is-del" />不要<b>{{ decisionSummary.delete }}</b></span>
+            </div>
           </div>
 
           <!-- Loading panel：阶段 / 进度由父组件 loadingProgress 实时驱动，
                不再靠前端计时器估算。stage 映射到 6 个用户可读的步骤卡。 -->
           <div v-if="loading || progressStatus === 'failed'" class="cmw-loading-panel">
             <div class="cmw-loading-card">
-              <div class="cmw-loading-orb" :class="{ 'is-error': progressStatus === 'failed' }">
-                <Loader2 v-if="progressStatus !== 'failed'" class="h-6 w-6 animate-spin" :stroke-width="2.4" />
-                <AlertTriangle v-else class="h-6 w-6" :stroke-width="2.4" />
-              </div>
-              <p class="cmw-loading-stage">{{ progressStageLabel }}</p>
-              <p class="cmw-loading-message" :title="progressMessage">{{ progressMessage || '准备中…' }}</p>
-              <!-- 真实 percent 进度条（来自 extract_task.progress 的 22~62 区间映射） -->
-              <div class="cmw-loading-bar-track">
-                <div
-                  class="cmw-loading-bar"
-                  :class="{ 'is-error': progressStatus === 'failed' }"
-                  :style="{ width: `${progressPercent}%` }"
-                />
-                <span class="cmw-loading-bar-text">{{ progressPercent }}%</span>
-              </div>
-              <!-- 6 步骤卡：state = pending / active / done -->
-              <div class="cmw-loading-steps">
-                <div
-                  v-for="step in displayLoadingSteps"
-                  :key="step.key"
-                  class="cmw-loading-step"
-                  :class="{
-                    'is-active': step.state === 'active',
-                    'is-done': step.state === 'done',
-                    'is-pending': step.state === 'pending',
-                  }"
-                >
-                  <span class="cmw-loading-step-dot">
-                    <CheckCircle2 v-if="step.state === 'done'" class="h-3 w-3" :stroke-width="2.6" />
-                    <Loader2 v-else-if="step.state === 'active'" class="h-3 w-3 animate-spin" :stroke-width="2.4" />
-                  </span>
-                  <span class="cmw-loading-step-title">{{ step.title }}</span>
+              <div class="cmw-loading-main">
+                <div class="cmw-loading-orb" :class="{ 'is-error': progressStatus === 'failed' }">
+                  <Loader2 v-if="progressStatus !== 'failed'" class="h-6 w-6 animate-spin" :stroke-width="2.4" />
+                  <AlertTriangle v-else class="h-6 w-6" :stroke-width="2.4" />
+                </div>
+                <div class="min-w-0">
+                  <p class="cmw-loading-kicker">合并预览任务</p>
+                  <p class="cmw-loading-stage">{{ progressStageLabel }}</p>
+                  <p class="cmw-loading-message" :title="progressMessage">{{ progressMessage || '准备中…' }}</p>
                 </div>
               </div>
-              <p v-if="progressStatus === 'failed'" class="cmw-loading-error">
-                <AlertTriangle class="mr-1 inline-block h-3.5 w-3.5 text-rose-500" />
-                {{ progressMessage }}
-              </p>
-              <p v-else class="cmw-loading-footnote">
-                后端实际处理阶段会反映在上方步骤上；大压缩包 / 嵌套包 / 远程库存会更久，窗口会保持到完成。
-              </p>
+
+              <div class="cmw-loading-progress">
+                <!-- 真实 percent 进度条（来自 extract_task.progress 的 22~62 区间映射） -->
+                <div class="cmw-loading-bar-head">
+                  <span>处理进度</span>
+                  <b>{{ progressPercent }}%</b>
+                </div>
+                <div class="cmw-loading-bar-track">
+                  <div
+                    class="cmw-loading-bar"
+                    :class="{ 'is-error': progressStatus === 'failed' }"
+                    :style="{ width: `${progressPercent}%` }"
+                  />
+                </div>
+                <!-- 6 步骤卡：state = pending / active / done -->
+                <div class="cmw-loading-steps">
+                  <div
+                    v-for="step in displayLoadingSteps"
+                    :key="step.key"
+                    class="cmw-loading-step"
+                    :class="{
+                      'is-active': step.state === 'active',
+                      'is-done': step.state === 'done',
+                      'is-pending': step.state === 'pending',
+                    }"
+                  >
+                    <span class="cmw-loading-step-dot">
+                      <CheckCircle2 v-if="step.state === 'done'" class="h-3 w-3" :stroke-width="2.6" />
+                      <Loader2 v-else-if="step.state === 'active'" class="h-3 w-3 animate-spin" :stroke-width="2.4" />
+                    </span>
+                    <span class="cmw-loading-step-title">{{ step.title }}</span>
+                  </div>
+                </div>
+                <p v-if="progressStatus === 'failed'" class="cmw-loading-error">
+                  <AlertTriangle class="mr-1 inline-block h-3.5 w-3.5 text-rose-500" />
+                  {{ progressMessage }}
+                </p>
+                <p v-else class="cmw-loading-footnote">
+                  后端实际处理阶段会反映在上方步骤上；大压缩包 / 嵌套包 / 远程库存会更久，窗口会保持到完成。
+                </p>
+              </div>
             </div>
           </div>
 
@@ -153,118 +171,107 @@
           </div>
 
           <!-- Main content -->
-          <div v-else class="flex-1 min-h-0 flex overflow-hidden">
-            <!-- Left summary panel：克制灰阶，去三色 dot 强字 -->
-            <aside class="cmw-summary-pane">
-              <div class="cmw-summary-block">
-                <p class="cmw-summary-label">来源路径</p>
-                <p class="cmw-summary-path">{{ resolvedSourcePath }}</p>
-              </div>
-              <div class="cmw-summary-block">
-                <p class="cmw-summary-label">{{ existingPaneLabel }}路径</p>
-                <p class="cmw-summary-path">{{ resolvedExistingPath }}</p>
-              </div>
-              <div class="cmw-summary-block cmw-summary-decisions">
-                <p class="cmw-summary-label">当前决策</p>
-                <div class="cmw-summary-decision-row">
-                  <span class="cmw-decision-key"><i class="cmw-dot is-new" />取新包</span>
-                  <span class="cmw-decision-val">{{ decisionSummary.useNew }}</span>
+          <div v-else class="cmw-main">
+            <!-- Split diff：左右并排比对，点击任一侧文件即可选择 / 取消 -->
+            <div class="cmw-split-pane">
+              <div class="cmw-split-head">
+                <div class="cmw-split-title">
+                  <span>{{ existingPaneLabel }}</span>
+                  <code :title="resolvedExistingPath">{{ resolvedExistingPath }}</code>
                 </div>
-                <div class="cmw-summary-decision-row">
-                  <span class="cmw-decision-key"><i class="cmw-dot is-old" />取库存</span>
-                  <span class="cmw-decision-val">{{ decisionSummary.useOld }}</span>
-                </div>
-                <div class="cmw-summary-decision-row">
-                  <span class="cmw-decision-key"><i class="cmw-dot is-del" />删除</span>
-                  <span class="cmw-decision-val">{{ decisionSummary.delete }}</span>
+                <div class="cmw-split-title">
+                  <span>新包</span>
+                  <code :title="resolvedSourcePath">{{ resolvedSourcePath }}</code>
                 </div>
               </div>
-              <div v-if="isRemoteTarget" class="cmw-summary-remote">
-                <Upload class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="2.2" />
-                <div class="min-w-0">
-                  <p class="cmw-summary-remote-title">远程上传合并</p>
-                  <p class="cmw-summary-remote-desc">差异文件将上传至远程库存，耗时取决于网速与文件量。</p>
-                  <p class="cmw-summary-remote-name">{{ props.conflict?.context?.existing?.library_name || '远程库存' }}</p>
-                </div>
-              </div>
-            </aside>
 
-            <!-- Right diff table：借鉴 GitHub PR review + VSCode Source Control 的 status glyph + segmented decision -->
-            <div class="flex-1 min-w-0 overflow-auto">
-              <table class="cmw-diff-table">
-                <thead>
-                  <tr>
-                    <th class="cmw-diff-th cmw-diff-th-marker" aria-hidden="true"></th>
-                    <th class="cmw-diff-th cmw-diff-th-tree">文件 / 路径</th>
-                    <th class="cmw-diff-th cmw-diff-th-side">{{ existingPaneLabel }}</th>
-                    <th class="cmw-diff-th cmw-diff-th-side">新包</th>
-                    <th class="cmw-diff-th cmw-diff-th-decision">决策</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="row in displayRows" :key="row.node_key" class="cmw-diff-row" :class="rowToneClass(row)">
-                    <td class="cmw-diff-marker" />
-                    <td class="cmw-diff-td">
-                      <div class="cmw-diff-name-line" :style="{ paddingLeft: `${row._depth * 16}px` }">
-                        <button v-if="row.type === 'dir' && row._hasChildren" type="button" class="cmw-diff-toggle" @click="toggleCollapse(row)">
-                          <ChevronRight v-if="row._collapsed" class="h-3.5 w-3.5" />
-                          <ChevronDown v-else class="h-3.5 w-3.5" />
-                        </button>
-                        <span v-else class="w-4 flex-shrink-0" />
-                        <!-- Status glyph：VSCode SCM 风格的单字符状态 -->
-                        <span class="cmw-diff-glyph" :class="statusBadgeClass(row)" :title="displayStatusInfo(row).label">
-                          {{ statusGlyph(row) }}
-                        </span>
-                        <component :is="row.type === 'dir' ? FolderIcon : FileIcon" class="cmw-diff-fileicon" :stroke-width="1.9" />
+              <div class="cmw-split-list">
+                <article
+                  v-for="row in displayRows"
+                  :key="row.node_key"
+                  class="cmw-split-row"
+                  :class="rowToneClass(row)"
+                >
+                  <section
+                    class="cmw-side-line is-old"
+                    :class="sideLineClass(row, 'old')"
+                    role="button"
+                    :tabindex="canPickSide(row, 'old') ? 0 : -1"
+                    :title="canPickSide(row, 'old') ? '选择库存侧这个文件' : ''"
+                    @click="pickSide(row, 'old')"
+                    @keydown.enter.prevent="pickSide(row, 'old')"
+                    @keydown.space.prevent="pickSide(row, 'old')"
+                  >
+                    <div v-if="hasSide(row, 'old')" class="cmw-side-file">
+                      <span
+                        v-if="row.type === 'file'"
+                        class="cmw-pick-mark"
+                        :class="{ 'is-hidden': !isSidePicked(row, 'old') }"
+                        :title="isSidePicked(row, 'old') ? '已选择库存侧；再点取消' : ''"
+                        :aria-hidden="!isSidePicked(row, 'old')"
+                      >
+                        <CheckCircle2 class="h-3.5 w-3.5" :stroke-width="2.6" />
+                      </span>
+                      <span class="cmw-file-icon-shell">
+                        <component :is="fileIconForRow(row)" class="cmw-diff-fileicon file-icon" :class="fileIconClassForRow(row)" :size="18" :stroke-width="2.2" />
+                      </span>
+                      <div class="cmw-side-name-stack">
                         <span class="cmw-diff-name" :title="row.relative_path || row.name">{{ row.name }}</span>
-                        <span v-if="row.relative_path && row.relative_path.includes('/')" class="cmw-diff-pathtail" :title="row.relative_path">{{ pathTail(row.relative_path) }}</span>
-                        <span class="cmw-diff-badge" :class="statusBadgeClass(row)">{{ displayStatusInfo(row).label }}</span>
+                        <span class="cmw-side-path" :title="row.relative_path || row.name">{{ row.relative_path || row.name }}</span>
                       </div>
-                      <p v-if="displayStatusInfo(row).note" class="cmw-diff-note" :title="displayStatusInfo(row).note">{{ displayStatusInfo(row).note }}</p>
-                    </td>
-                    <td class="cmw-diff-td cmw-diff-td-side">
+                    </div>
+                    <div v-else class="cmw-side-missing">此侧不存在</div>
+                    <div class="cmw-side-meta" :class="{ 'is-empty': !hasSide(row, 'old') }">
                       <template v-if="hasSide(row, 'old')">
-                        <span class="cmw-diff-side-primary">{{ formatSidePrimary(row, 'old') }}</span>
-                        <span class="cmw-diff-side-secondary">{{ formatSideTime(row, 'old') }}</span>
+                        <span :class="{ 'is-size-diff': isSizeDifferent(row) }">{{ formatSidePrimary(row, 'old') }}</span>
+                        <span>{{ formatSideTime(row, 'old') }}</span>
                       </template>
-                      <span v-else class="cmw-diff-side-empty">—</span>
-                    </td>
-                    <td class="cmw-diff-td cmw-diff-td-side">
+                    </div>
+                  </section>
+
+                  <section
+                    class="cmw-side-line is-new"
+                    :class="sideLineClass(row, 'new')"
+                    role="button"
+                    :tabindex="canPickSide(row, 'new') ? 0 : -1"
+                    :title="canPickSide(row, 'new') ? '选择新包侧这个文件' : ''"
+                    @click="pickSide(row, 'new')"
+                    @keydown.enter.prevent="pickSide(row, 'new')"
+                    @keydown.space.prevent="pickSide(row, 'new')"
+                  >
+                    <div v-if="hasSide(row, 'new')" class="cmw-side-file">
+                      <span
+                        v-if="row.type === 'file'"
+                        class="cmw-pick-mark"
+                        :class="{ 'is-hidden': !isSidePicked(row, 'new') }"
+                        :title="isSidePicked(row, 'new') ? '已选择新包侧；再点取消' : ''"
+                        :aria-hidden="!isSidePicked(row, 'new')"
+                      >
+                        <CheckCircle2 class="h-3.5 w-3.5" :stroke-width="2.6" />
+                      </span>
+                      <span class="cmw-file-icon-shell">
+                        <component :is="fileIconForRow(row)" class="cmw-diff-fileicon file-icon" :class="fileIconClassForRow(row)" :size="18" :stroke-width="2.2" />
+                      </span>
+                      <div class="cmw-side-name-stack">
+                        <span class="cmw-diff-name" :title="row.relative_path || row.name">{{ row.name }}</span>
+                        <span class="cmw-side-path" :title="row.relative_path || row.name">{{ row.relative_path || row.name }}</span>
+                      </div>
+                    </div>
+                    <div v-else class="cmw-side-missing">此侧不存在</div>
+                    <div class="cmw-side-meta" :class="{ 'is-empty': !hasSide(row, 'new') }">
                       <template v-if="hasSide(row, 'new')">
-                        <span class="cmw-diff-side-primary">{{ formatSidePrimary(row, 'new') }}</span>
-                        <span class="cmw-diff-side-secondary">{{ formatSideTime(row, 'new') }}</span>
+                        <span :class="{ 'is-size-diff': isSizeDifferent(row) }">{{ formatSidePrimary(row, 'new') }}</span>
+                        <span>{{ formatSideTime(row, 'new') }}</span>
                       </template>
-                      <span v-else class="cmw-diff-side-empty">—</span>
-                    </td>
-                    <td class="cmw-diff-td cmw-diff-td-decision">
-                      <template v-if="row.type === 'file'">
-                        <!-- Segmented decision：借鉴 GitKraken stage-line 控件，单击即切 -->
-                        <div class="cmw-decision-seg" role="radiogroup" :aria-label="`决策：${row.name}`">
-                          <button
-                            v-for="opt in decisionOptions(row)"
-                            :key="opt.value"
-                            type="button"
-                            class="cmw-decision-seg-btn"
-                            :class="[`is-${opt.value.replace('_', '-')}`, { 'is-active': decisionFor(row) === opt.value }]"
-                            :disabled="submitting"
-                            role="radio"
-                            :aria-checked="decisionFor(row) === opt.value"
-                            :title="opt.label"
-                            @click="updateDecision(row, opt.value)"
-                          >{{ opt.short }}</button>
-                        </div>
-                      </template>
-                      <span v-else class="cmw-diff-side-empty">自动</span>
-                    </td>
-                  </tr>
-                  <tr v-if="!displayRows.length">
-                    <td colspan="5" class="cmw-diff-empty">
-                      <Search class="h-10 w-10 mx-auto mb-2 opacity-20" />
-                      无匹配项目
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+                    </div>
+                  </section>
+                </article>
+
+                <div v-if="!displayRows.length" class="cmw-diff-empty">
+                  <Search class="h-10 w-10 mx-auto mb-2 opacity-20" />
+                  无匹配项目
+                </div>
+              </div>
             </div>
           </div>
 
@@ -304,12 +311,11 @@
 import { computed, ref } from 'vue'
 import {
   GitMerge, Search, RotateCcw, RefreshCw, X, Upload,
-  ChevronRight, ChevronDown,
-  File as FileIcon, Folder as FolderIcon,
   CheckCircle2, Loader2, AlertTriangle,
   ArrowDownToLine, Archive
 } from 'lucide-vue-next'
 import AppDropdown from '../common/AppDropdown.vue'
+import { classifyLibraryEntryKind, libraryEntryIconFor } from '../library/_libraryFileKind'
 
 const props = defineProps({
   modelValue: {
@@ -348,11 +354,11 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'update:decisions', 'refresh', 'submit', 'close'])
 
 const searchText = ref('')
-const statusFilter = ref('all')
+const statusFilter = ref('changed')
 
 const statusDropdownOptions = [
   { value: 'all', label: '全部项目' },
-  { value: 'changed', label: '仅差异项' },
+  { value: 'changed', label: '只看差异' },
   { value: 'new_only', label: '仅新包独有' },
   { value: 'old_only', label: '仅库存独有' },
   { value: 'size_changed', label: '仅大小不同' },
@@ -515,7 +521,7 @@ const decisionSummary = computed(() => {
 
 const filterPills = computed(() => ([
   { value: 'all', label: '全部', count: compareItems.value.filter(item => item.type === 'file').length, tone: 'all' },
-  { value: 'changed', label: '差异', count: displaySummary.value.changed, tone: 'changed' },
+  { value: 'changed', label: '只看差异', count: displaySummary.value.changed, tone: 'changed' },
   { value: 'new_only', label: '新包独有', count: displaySummary.value.newOnly, tone: 'new-only' },
   { value: 'old_only', label: '库存独有', count: displaySummary.value.oldOnly, tone: 'old-only' },
   { value: 'unchanged', label: '一致', count: displaySummary.value.unchanged, tone: 'unchanged' }
@@ -678,7 +684,7 @@ function displayStatusInfo(row) {
 
   if (status === 'modified') {
     if (row?.compare_basis === 'content') {
-      return { key: 'content_changed', label: '内容不同', tagType: 'danger', note: '名称与大小一致，但内容校验不同' }
+      return { key: 'content_changed', label: '内容不同', tagType: 'danger', note: '同名同大小，但文件内容不同' }
     }
     return { key: 'time_changed', label: '时间不同', tagType: 'warning', note: '名称与大小一致，但修改时间不同' }
   }
@@ -695,6 +701,10 @@ function formatSidePrimary(row, side) {
 function formatSideTime(row, side) {
   const value = side === 'new' ? row.new_mtime : row.old_mtime
   return formatDate(value)
+}
+
+function isSizeDifferent(row) {
+  return displayStatusInfo(row).key === 'size_changed'
 }
 
 function decisionFor(row) {
@@ -718,17 +728,26 @@ function resetDecisions() {
   emit('update:decisions', { ...(props.preview?.default_decisions || {}) })
 }
 
-function decisionOptions(row) {
-  // short 用于 segmented 按钮的单字签，label 用于 tooltip / a11y
-  const options = []
-  if (row.new_path) {
-    options.push({ label: '取新包', short: '新', value: 'use_new' })
+function decisionValueForSide(side) {
+  return side === 'new' ? 'use_new' : 'use_old'
+}
+
+function canPickSide(row, side) {
+  return row?.type === 'file' && hasSide(row, side) && !props.submitting
+}
+
+function isSidePicked(row, side) {
+  return row?.type === 'file' && decisionFor(row) === decisionValueForSide(side)
+}
+
+function pickSide(row, side) {
+  if (!canPickSide(row, side)) return
+  const sideDecision = decisionValueForSide(side)
+  if (decisionFor(row) === sideDecision) {
+    updateDecision(row, 'delete')
+    return
   }
-  if (row.old_path) {
-    options.push({ label: '取库存', short: '库', value: 'use_old' })
-  }
-  options.push({ label: '删除', short: '删', value: 'delete' })
-  return options
+  updateDecision(row, sideDecision)
 }
 
 // VSCode SCM 风格的单字符状态指示。
@@ -740,6 +759,34 @@ function statusGlyph(row) {
   if (key === 'size_changed' || key === 'content_changed') return '≠'
   if (key === 'time_changed') return '∆'
   return '='
+}
+
+function sideLineClass(row, side) {
+  const key = displayStatusInfo(row).key
+  return {
+    'is-missing': !hasSide(row, side),
+    'is-added': side === 'new' && key === 'new_only',
+    'is-removed': side === 'old' && key === 'old_only',
+    'is-pickable': canPickSide(row, side),
+    'is-picked': isSidePicked(row, side),
+  }
+}
+
+function fileIconForRow(row) {
+  return libraryEntryIconFor({
+    ...row,
+    is_directory: row?.type === 'dir',
+    entry_type: row?.type === 'dir' ? 'dir' : 'file',
+  })
+}
+
+function fileIconClassForRow(row) {
+  const kind = classifyLibraryEntryKind({
+    ...row,
+    is_directory: row?.type === 'dir',
+    entry_type: row?.type === 'dir' ? 'dir' : 'file',
+  })
+  return `icon-${kind}`
 }
 
 // 为 path tail 提供上一级父目录片段，避免在長路径中丢失上下文。
@@ -889,28 +936,29 @@ function formatDate(value) {
 /* Transition：fade + 轻位移 */
 .cmw-fade-enter-active,
 .cmw-fade-leave-active {
-  transition: opacity 0.22s ease, transform 0.22s ease;
+  transition: opacity 0.18s ease;
 }
 .cmw-fade-enter-from,
 .cmw-fade-leave-to {
   opacity: 0;
-  transform: translateY(6px) scale(0.98);
 }
 
-/* Shell：白底玻璃面板 */
+/* Shell：对齐社团补全预览的白色毛玻璃壳 */
 .cmw-shell {
   position: relative;
   display: flex;
-  width: min(94vw, 1480px);
-  height: 88vh;
+  width: min(94vw, 1360px);
+  height: min(88vh, 820px);
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid rgba(226, 232, 240, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.42);
   border-radius: 22px;
   background: #fff;
+  backdrop-filter: blur(34px) saturate(150%);
+  -webkit-backdrop-filter: blur(34px) saturate(150%);
   box-shadow:
-    0 24px 80px rgba(15, 23, 42, 0.2),
-    0 1px 0 rgba(255, 255, 255, 0.9) inset;
+    0 28px 70px rgba(15, 23, 42, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
 /* Header：纯玻璃 */
@@ -920,9 +968,11 @@ function formatDate(value) {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.85);
-  background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
-  padding: 16px 22px;
+  border-bottom: 1px solid #eef2f7;
+  background: #fff;
+  padding: 12px 18px;
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
 }
 
 .cmw-icon {
@@ -934,10 +984,8 @@ function formatDate(value) {
   justify-content: center;
   border-radius: 12px;
   color: #4f46e5;
-  background: linear-gradient(180deg, #eef2ff 0%, #e0e7ff 100%);
-  box-shadow:
-    0 10px 24px rgba(79, 70, 229, 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.34);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
 .cmw-title {
@@ -960,13 +1008,18 @@ function formatDate(value) {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid rgba(255, 255, 255, 0.62);
   border-radius: 999px;
   padding: 2px 8px;
-  background: #f8fafc;
+  background: rgba(255, 255, 255, 0.56);
   color: #475569;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    0 6px 14px rgba(15, 23, 42, 0.055);
+  backdrop-filter: blur(10px) saturate(130%);
+  -webkit-backdrop-filter: blur(10px) saturate(130%);
 }
 
 /* Close 按钮：玻璃 + hover rotate */
@@ -977,17 +1030,17 @@ function formatDate(value) {
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(226, 232, 240, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.38);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.24);
   color: #64748b;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .cmw-close-btn:hover:not(:disabled) {
-  transform: translateY(-1px) scale(1.04);
+  transform: translateY(-2px) scale(1.02);
   border-color: rgba(148, 163, 184, 0.55);
-  background: #fff;
+  background: rgba(255, 255, 255, 0.48);
   color: #0f172a;
 }
 
@@ -1005,58 +1058,60 @@ function formatDate(value) {
   flex: none;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  border-bottom: 1px solid rgba(241, 245, 249, 0.95);
-  background: rgba(255, 255, 255, 0.86);
-  padding: 12px 22px;
+  gap: 8px;
+  border-bottom: 1px solid #eef2f7;
+  background: #fff;
+  padding: 7px 16px;
 }
 
 .cmw-search-input {
   width: 100%;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  background: #fff;
-  padding: 9px 12px 9px 36px;
-  font-size: 13px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  padding: 7px 10px 7px 32px;
+  font-size: 12.5px;
   color: #334155;
   outline: none;
   transition: all 0.2s ease;
 }
 
 .cmw-search-input:focus {
-  border-color: #6366f1;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.16);
+  border-color: rgba(203, 213, 225, 0.9);
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: none;
 }
 
 .cmw-toolbar-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
-  border: 1px solid rgba(226, 232, 240, 0.95);
-  border-radius: 10px;
-  background: #fff;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
   color: #475569;
-  padding: 9px 12px;
-  font-size: 13px;
+  padding: 7px 9px;
+  font-size: 12.5px;
   font-weight: 700;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .cmw-toolbar-btn:hover:not(:disabled) {
-  transform: translateY(-2px);
-  border-color: rgba(99, 102, 241, 0.34);
-  color: #4338ca;
-  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
+  transform: translateY(-2px) scale(1.02);
+  border-color: rgba(203, 213, 225, 0.82);
+  background: rgba(255, 255, 255, 0.74);
+  color: #0f172a;
+  box-shadow: none;
 }
 
 /* Bulk decision 控件组：全取新包 / 全取库存 -- segmented 风格 */
 .cmw-bulk-group {
   display: inline-flex;
   align-items: center;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  background: #fff;
+  border: 1px solid rgba(226, 232, 240, 0.82);
+  border-radius: 8px;
+  background: transparent;
   overflow: hidden;
 }
 
@@ -1064,22 +1119,23 @@ function formatDate(value) {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 8px 11px;
+  padding: 7px 9px;
   font-size: 12px;
   font-weight: 600;
   color: #475569;
   background: transparent;
   border: 0;
-  transition: background-color 0.15s ease, color 0.15s ease;
+  transition: background-color 0.18s ease, color 0.18s ease, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .cmw-bulk-btn + .cmw-bulk-btn {
-  border-left: 1px solid #e2e8f0;
+  border-left: 1px solid rgba(15, 23, 42, 0.06);
 }
 
 .cmw-bulk-btn:hover:not(:disabled) {
-  background: #f8fafc;
-  color: #4338ca;
+  background: rgba(255, 255, 255, 0.78);
+  color: #0f172a;
+  transform: translateY(-2px) scale(1.02);
 }
 
 .cmw-bulk-btn:disabled {
@@ -1100,9 +1156,28 @@ function formatDate(value) {
   flex: none;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  border-bottom: 1px solid rgba(241, 245, 249, 0.95);
-  padding: 10px 22px;
+  justify-content: space-between;
+  gap: 8px 12px;
+  border-bottom: 1px solid #eef2f7;
+  background: #fff;
+  padding: 6px 16px;
+}
+
+.cmw-pill-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cmw-main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  background: #fff;
 }
 
 /* Pill：segmented 灰阶，active 单色 indigo（去渐变、去阴影） */
@@ -1110,26 +1185,28 @@ function formatDate(value) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid rgba(226, 232, 240, 0.74);
   border-radius: 999px;
-  background: #fff;
+  background: rgba(255, 255, 255, 0.48);
   color: #64748b;
-  padding: 5px 12px;
-  font-size: 12px;
-  font-weight: 600;
-  transition: all 0.18s ease;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 700;
+  box-shadow: none;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .cmw-pill:hover {
-  border-color: #cbd5e1;
+  transform: translateY(-2px) scale(1.02);
+  border-color: rgba(203, 213, 225, 0.9);
   color: #334155;
-  background: #f8fafc;
+  background: rgba(255, 255, 255, 0.78);
 }
 
 .cmw-pill.is-active {
-  border-color: #6366f1;
-  background: #eef2ff;
-  color: #4338ca;
+  border-color: rgba(165, 180, 252, 0.48);
+  background: rgba(238, 242, 255, 0.72);
+  color: #3730a3;
 }
 
 .cmw-pill-count {
@@ -1157,20 +1234,33 @@ function formatDate(value) {
   flex: 1;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(180deg, rgba(248, 250, 252, 0.94) 0%, rgba(255, 255, 255, 0.98) 100%);
-  padding: 24px;
+  background: rgba(255, 255, 255, 0.56);
+  padding: 28px;
 }
 
 .cmw-loading-card {
-  width: min(640px, 100%);
+  display: grid;
+  width: min(860px, 100%);
+  grid-template-columns: minmax(210px, 0.38fr) minmax(0, 1fr);
+  gap: 26px;
+  align-items: center;
   border: 1px solid rgba(226, 232, 240, 0.95);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.96);
-  padding: 28px;
-  text-align: center;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 26px;
+  text-align: left;
+  backdrop-filter: blur(20px) saturate(130%);
+  -webkit-backdrop-filter: blur(20px) saturate(130%);
   box-shadow:
-    0 22px 56px rgba(15, 23, 42, 0.12),
+    0 18px 46px rgba(15, 23, 42, 0.08),
     inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.cmw-loading-main {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 18px;
 }
 
 .cmw-loading-orb {
@@ -1184,7 +1274,7 @@ function formatDate(value) {
   color: #4f46e5;
   background: linear-gradient(180deg, #eef2ff 0%, #e0e7ff 100%);
   box-shadow:
-    0 18px 38px rgba(79, 70, 229, 0.22),
+    0 16px 32px rgba(79, 70, 229, 0.14),
     inset 0 1px 0 rgba(255, 255, 255, 0.95);
 }
 
@@ -1212,15 +1302,25 @@ function formatDate(value) {
   animation: none;
 }
 
+.cmw-loading-kicker {
+  margin: 0 0 5px;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .cmw-loading-stage {
-  margin-top: 18px;
-  font-size: 16px;
+  margin: 0;
+  font-size: 20px;
   font-weight: 800;
   color: #0f172a;
+  letter-spacing: -0.35px;
 }
 
 .cmw-loading-message {
-  margin-top: 6px;
+  margin: 7px 0 0;
   font-size: 12.5px;
   color: #64748b;
   overflow: hidden;
@@ -1228,13 +1328,32 @@ function formatDate(value) {
   white-space: nowrap;
 }
 
+.cmw-loading-progress {
+  min-width: 0;
+}
+
+.cmw-loading-bar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.cmw-loading-bar-head b {
+  color: #334155;
+  font-variant-numeric: tabular-nums;
+}
+
 .cmw-loading-bar-track {
   position: relative;
-  height: 10px;
-  margin-top: 18px;
+  height: 8px;
+  margin-top: 8px;
   overflow: hidden;
   border-radius: 999px;
-  background: #e2e8f0;
+  background: rgba(226, 232, 240, 0.78);
 }
 
 .cmw-loading-bar {
@@ -1250,20 +1369,11 @@ function formatDate(value) {
   box-shadow: 0 8px 18px rgba(220, 38, 38, 0.22);
 }
 
-.cmw-loading-bar-text {
-  position: absolute;
-  top: -22px;
-  right: 0;
-  font-size: 11px;
-  font-weight: 800;
-  color: #475569;
-}
-
 .cmw-loading-steps {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 20px;
+  gap: 8px;
+  margin-top: 16px;
   text-align: left;
 }
 
@@ -1272,12 +1382,12 @@ function formatDate(value) {
   min-width: 0;
   align-items: center;
   gap: 8px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid rgba(226, 232, 240, 0.88);
   border-radius: 12px;
-  background: #fff;
-  padding: 9px 11px;
+  background: rgba(255, 255, 255, 0.62);
+  padding: 8px 10px;
   color: #94a3b8;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 700;
   transition: all 0.3s ease;
 }
@@ -1285,14 +1395,14 @@ function formatDate(value) {
 .cmw-loading-step.is-active {
   border-color: rgba(99, 102, 241, 0.42);
   color: #4338ca;
-  background: #eef2ff;
-  box-shadow: 0 4px 10px rgba(99, 102, 241, 0.12);
+  background: rgba(238, 242, 255, 0.82);
+  box-shadow: 0 8px 18px rgba(99, 102, 241, 0.1);
 }
 
 .cmw-loading-step.is-done {
   border-color: rgba(14, 165, 233, 0.28);
   color: #0369a1;
-  background: #f0f9ff;
+  background: rgba(240, 249, 255, 0.82);
 }
 
 .cmw-loading-step-dot {
@@ -1348,21 +1458,6 @@ function formatDate(value) {
   color: #94a3b8;
 }
 
-/* ============================================================
-   Left summary panel：克制灰阶，去三色 dot 强字
-   ============================================================ */
-.cmw-summary-pane {
-  width: 256px;
-  flex-shrink: 0;
-  overflow-y: auto;
-  border-right: 1px solid #f1f5f9;
-  background: #fafbfc;
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
 .cmw-summary-block {
   display: flex;
   flex-direction: column;
@@ -1378,41 +1473,45 @@ function formatDate(value) {
 }
 
 .cmw-summary-path {
-  border: 1px solid #e2e8f0;
+  border: 1px solid rgba(255, 255, 255, 0.36);
   border-radius: 10px;
-  background: #fff;
-  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.28);
+  padding: 6px 9px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 11px;
-  line-height: 1.6;
+  line-height: 1.45;
   color: #475569;
-  word-break: break-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.cmw-summary-decisions {
-  border-top: 1px solid #e2e8f0;
-  padding-top: 14px;
-  gap: 10px;
-}
-
-.cmw-summary-decision-row {
+.cmw-summary-stats {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  font-size: 12px;
+  flex: none;
+  gap: 6px;
 }
 
-.cmw-decision-key {
+.cmw-summary-stat {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  justify-content: center;
+  gap: 6px;
+  min-width: 64px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  padding: 4px 7px;
+  font-size: 11px;
   color: #475569;
-  font-weight: 500;
+  font-weight: 700;
 }
 
-.cmw-decision-val {
-  font-weight: 700;
+.cmw-summary-stat b {
+  margin-left: 2px;
   color: #0f172a;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1428,41 +1527,195 @@ function formatDate(value) {
 
 .cmw-summary-remote {
   display: flex;
-  align-items: flex-start;
+  flex: none;
+  align-items: center;
   gap: 8px;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  background: #fff;
-  padding: 10px;
+  border: 1px solid rgba(226, 232, 240, 0.76);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  padding: 6px 10px;
+  max-width: 220px;
+  font-size: 11.5px;
+  font-weight: 700;
   color: #64748b;
 }
 
-.cmw-summary-remote-title {
-  font-size: 11px;
-  font-weight: 700;
-  color: #334155;
-}
-
-.cmw-summary-remote-desc {
-  margin-top: 3px;
-  font-size: 10.5px;
-  line-height: 1.55;
-  color: #94a3b8;
-}
-
-.cmw-summary-remote-name {
-  margin-top: 5px;
-  font-size: 10.5px;
-  font-weight: 700;
-  color: #475569;
+.cmw-table-pane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: rgba(255, 255, 255, 0.1);
 }
 
 /* ============================================================
-   Diff table：去填色行、统一 muted
+   Split diff：左右并排文件级对比
    ============================================================ */
+.cmw-split-pane {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  background: #fff;
+}
+
+.cmw-split-head {
+  display: grid;
+  flex: none;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+  border-bottom: 1px solid #e5edf6;
+  background: #fff;
+  padding: 7px 12px 6px;
+}
+
+.cmw-split-head .cmw-split-title:last-child {
+  grid-column: 2;
+}
+
+.cmw-split-title {
+  min-width: 0;
+}
+
+.cmw-split-title span {
+  display: block;
+  color: #7d91ad;
+  font-size: 10.5px;
+  font-weight: 800;
+}
+
+.cmw-split-title code {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #6f86a5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.cmw-split-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 12px 12px;
+  background: #fff;
+}
+
+.cmw-split-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+  align-items: stretch;
+  min-height: 38px;
+  border-bottom: 1px solid rgba(219, 226, 235, 0.62);
+}
+
+.cmw-split-row:hover {
+  background: rgba(246, 249, 252, 0.62);
+}
+
+.cmw-side-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  border-left: 2px solid transparent;
+  padding: 5px 8px 5px 7px;
+  transition: background-color 0.16s ease, border-color 0.16s ease;
+}
+
+.cmw-side-line.is-pickable {
+  cursor: pointer;
+}
+
+.cmw-side-line.is-pickable:hover {
+  background: rgba(239, 246, 255, 0.46);
+}
+
+.cmw-side-line.is-picked {
+  border-left-color: #2563eb;
+  background: rgba(239, 246, 255, 0.7);
+}
+
+.cmw-side-line.is-missing {
+  opacity: 0.74;
+  color: #94a3b8;
+}
+
+.cmw-side-line.is-added {
+  border-left-color: #22c55e;
+  background: rgba(236, 253, 245, 0.44);
+}
+
+.cmw-side-line.is-removed {
+  border-left-color: #ef4444;
+  background: rgba(254, 242, 242, 0.44);
+}
+
+.cmw-side-line.is-changed {
+  border-left-color: #f59e0b;
+}
+
+.cmw-side-file {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.cmw-side-name-stack {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.cmw-side-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10px;
+}
+
+.cmw-side-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 164px;
+  color: #7890ad;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.cmw-side-meta span:last-child {
+  min-width: 108px;
+  text-align: right;
+  color: #7890ad;
+  font-weight: 600;
+}
+
+.cmw-side-meta .is-size-diff {
+  color: #b45309;
+  font-weight: 850;
+}
+
+.cmw-side-meta.is-empty {
+  display: none;
+}
+
+/* 旧表格样式保留给潜在回退结构，主界面已切到 split diff */
 .cmw-diff-table {
   width: 100%;
-  min-width: 860px;
+  min-width: 980px;
   border-collapse: collapse;
 }
 
@@ -1470,14 +1723,15 @@ function formatDate(value) {
   position: sticky;
   top: 0;
   z-index: 10;
-  background: #fafbfc;
-  backdrop-filter: blur(6px);
+  background: rgba(255, 255, 255, 0.32);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
 }
 
 .cmw-diff-th {
-  padding: 11px 14px;
+  padding: 10px 12px;
   text-align: left;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.8);
   font-size: 10.5px;
   font-weight: 700;
   color: #64748b;
@@ -1492,13 +1746,13 @@ function formatDate(value) {
 
 /* 行 tone：GitHub PR 风格的左侧 4px 色条。颜色仅作状态错锅使用，不填整行 bg。 */
 .cmw-diff-row {
-  border-bottom: 1px solid #f1f5f9;
+  border-bottom: 1px solid rgba(241, 245, 249, 0.82);
   transition: background-color 0.12s ease;
   position: relative;
 }
 
 .cmw-diff-row:hover {
-  background: #f8fafc;
+  background: rgba(255, 255, 255, 0.24);
 }
 
 .cmw-diff-marker {
@@ -1515,16 +1769,16 @@ function formatDate(value) {
 .tone-unchanged .cmw-diff-marker { background: transparent; }
 
 .cmw-diff-td {
-  padding: 9px 14px;
+  padding: 8px 12px;
   vertical-align: top;
 }
 
 .cmw-diff-td-side {
-  padding: 9px 12px;
+  padding: 8px 10px;
 }
 
 .cmw-diff-td-decision {
-  padding: 9px 12px;
+  padding: 8px 10px;
 }
 
 /* Name line：紧凑 toggle + glyph + fileicon + name + tail + badge 一行平铺 */
@@ -1553,14 +1807,14 @@ function formatDate(value) {
 /* Status glyph：VSCode SCM 风格的单字符状态。颜色复用 cmw-diff-badge 的 tone class */
 .cmw-diff-glyph {
   display: inline-flex;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  border-radius: 5px;
+  border-radius: 4px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
   line-height: 1;
   background: #f1f5f9;
@@ -1576,11 +1830,58 @@ function formatDate(value) {
 .cmw-diff-glyph.is-content { background: #fef2f2; color: #b91c1c; }
 .cmw-diff-glyph.is-neutral { background: #f1f5f9; color: #94a3b8; }
 
+.cmw-file-icon-shell {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  align-items: center;
+  justify-content: center;
+}
+
 .cmw-diff-fileicon {
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
   flex-shrink: 0;
-  color: #94a3b8;
+}
+
+.cmw-diff-fileicon.icon-dir,
+.cmw-diff-fileicon.icon-folder {
+  color: #f6b73c;
+  fill: currentColor;
+  stroke: currentColor;
+}
+
+.cmw-diff-fileicon.icon-audio-lossless { color: #2563eb; }
+
+.cmw-diff-fileicon.icon-audio { color: #7c3aed; }
+
+.cmw-diff-fileicon.icon-image { color: #f97316; }
+
+.cmw-diff-fileicon.icon-video { color: #6366f1; }
+
+.cmw-diff-fileicon.icon-pdf { color: #dc2626; }
+
+.cmw-diff-fileicon.icon-archive { color: #d97706; }
+
+.cmw-diff-fileicon.icon-text { color: #64748b; }
+
+.cmw-diff-fileicon.icon-file { color: #94a3b8; }
+
+.cmw-pick-mark {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #2563eb;
+  color: #fff;
+}
+
+.cmw-pick-mark.is-hidden {
+  opacity: 0;
 }
 
 .cmw-diff-name {
@@ -1588,7 +1889,7 @@ function formatDate(value) {
   font-size: 12.5px;
   font-weight: 600;
   color: #1e293b;
-  max-width: 280px;
+  max-width: 340px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1700,62 +2001,6 @@ function formatDate(value) {
   border-color: #e2e8f0;
 }
 
-/* Segmented decision：借鉴 GitKraken stage-line，3 个单字按钮贴在一起，active 亮色 */
-.cmw-decision-seg {
-  display: inline-flex;
-  align-items: stretch;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #fff;
-  overflow: hidden;
-}
-
-.cmw-decision-seg-btn {
-  flex: 1;
-  min-width: 28px;
-  border: 0;
-  background: transparent;
-  padding: 5px 0;
-  font-size: 12px;
-  font-weight: 600;
-  color: #94a3b8;
-  cursor: pointer;
-  transition: background-color 0.12s ease, color 0.12s ease;
-}
-
-.cmw-decision-seg-btn + .cmw-decision-seg-btn {
-  border-left: 1px solid #e2e8f0;
-}
-
-.cmw-decision-seg-btn:hover:not(:disabled):not(.is-active) {
-  background: #f8fafc;
-  color: #475569;
-}
-
-.cmw-decision-seg-btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.cmw-decision-seg-btn.is-active.is-use-new {
-  background: #eff6ff;
-  color: #1d4ed8;
-  font-weight: 700;
-}
-
-.cmw-decision-seg-btn.is-active.is-use-old {
-  background: #eef2ff;
-  color: #4338ca;
-  font-weight: 700;
-}
-
-.cmw-decision-seg-btn.is-active.is-delete {
-  background: #f1f5f9;
-  color: #475569;
-  font-weight: 700;
-  text-decoration: line-through;
-}
-
 /* Footer */
 .cmw-footer {
   display: flex;
@@ -1763,53 +2008,64 @@ function formatDate(value) {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border-top: 1px solid rgba(226, 232, 240, 0.85);
-  background: rgba(255, 255, 255, 0.92);
-  padding: 14px 22px;
+  border-top: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.16);
+  padding: 12px 20px;
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
 }
 
-/* Action 按钮：轻量蓝主按钮 / slate ghost，去掉绿色发光。 */
+/* Action 按钮：深色主按钮 / 白色磨砂 ghost，去掉绿色发光。 */
 .cmw-action-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 7px;
-  border-radius: 10px;
+  border-radius: 14px;
   padding: 10px 20px;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 800;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
+/* Cancel：与社团预览 secondary-cta 同款（半透灰 ghost） */
 .cmw-action-btn.is-slate {
-  border: 1px solid rgba(226, 232, 240, 0.95);
-  background: #fff;
-  color: #475569;
+  border: 1px solid rgba(255, 255, 255, 0.66);
+  background: rgba(255, 255, 255, 0.58);
+  color: #334155;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(10px) saturate(130%);
+  -webkit-backdrop-filter: blur(10px) saturate(130%);
 }
 
 .cmw-action-btn.is-slate:hover:not(:disabled) {
-  transform: translateY(-2px);
-  border-color: rgba(148, 163, 184, 0.5);
-  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.08);
+  transform: translateY(-2px) scale(1.02);
+  background: rgba(255, 255, 255, 0.86);
+  color: #0f172a;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.84),
+    0 14px 28px rgba(15, 23, 42, 0.12);
 }
 
+/* Submit：与社团预览 primary-cta 同款（深色实心 #111827） */
 .cmw-action-btn.is-emerald {
-  border: 1px solid rgba(147, 197, 253, 0.78);
-  color: #1d4ed8;
-  background: linear-gradient(180deg, #f8fbff 0%, #edf4ff 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.92),
-    0 1px 2px rgba(15, 23, 42, 0.04),
-    0 4px 10px rgba(37, 99, 235, 0.08);
+  border: 0;
+  color: #fff;
+  background: #111827;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.16);
 }
 
 .cmw-action-btn.is-emerald:hover:not(:disabled) {
-  transform: translateY(-2px);
-  border-color: rgba(96, 165, 250, 0.82);
-  background: linear-gradient(180deg, #f3f8ff 0%, #dfeeff 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.95),
-    0 6px 14px rgba(37, 99, 235, 0.12);
+  transform: translateY(-2px) scale(1.02);
+  background: #0f172a;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.22);
+}
+
+.cmw-action-btn.is-emerald:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  box-shadow: none;
+  transform: none;
 }
 
 .cmw-action-btn:hover:not(:disabled) svg {
@@ -1823,8 +2079,9 @@ function formatDate(value) {
 .cmw-action-btn:active:not(:disabled),
 .cmw-toolbar-btn:active:not(:disabled),
 .cmw-close-btn:active:not(:disabled),
+.cmw-bulk-btn:active:not(:disabled),
 .cmw-pill:active:not(:disabled) {
-  transform: translateY(0) scale(0.97);
+  transform: scale(0.96);
 }
 
 /* Footer remote hint：去 amber 强字 */
