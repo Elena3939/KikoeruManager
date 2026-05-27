@@ -35,7 +35,7 @@
 
 ### 前端
 
-- 前端：`Vue 3 + Vite + Element Plus + Tailwind CSS + lucide-vue-next`。
+- 前端：`Vue 3 + Tailwind CSS + Radix Vue / Reka UI + Headless UI + VueUse + TanStack Table / AG Grid + lucide-vue-next`。
 - 包清单以 `frontend/package.json` + `frontend/package-lock.json` 为 Docker 构建基准；根 `Dockerfile` 使用 `npm ci`。
 - `frontend/pnpm-lock.yaml` 也要同步维护，避免本地 pnpm 用户装包失败。
 - 当前直接依赖必须保留：
@@ -111,19 +111,16 @@
 
 ## 5. 前端设计规则
 
-- 不要交付 Element Plus 默认后台风。
-- 样式优先级：`Tailwind CSS` -> 项目已有语义 class -> Element Plus 基础交互能力 -> Lottie 动画增强。
+- 不要交付默认后台风。
+- 样式优先级：`Tailwind CSS` -> 项目已有语义 class -> Lottie 动画增强。
 - 图标只用 `lucide-vue-next`。
 - 所有按钮必须有交互动效：hover `translateY(-2px) scale(1.02)`，active `scale(0.96)`，图标轻旋转。
 - 统一动画曲线：`all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)`。
-- 主操作按钮走三段渐变 + inset 高光 + glow shadow；次操作按钮走白底 ghost。
 - 页面默认结构：顶部标题区、工具栏、筛选区、主内容、详情 / 抽屉 / 弹窗。
-- 禁止用 Element Plus 默认表格当核心页面布局。
 - 新做任务面板、工作台、预览、批量处理、详情抽屉时，对齐 `DownloadTaskWorkbenchDialog.vue`。
 - 系统确认 / 输入 / 提醒统一走 `useSystemPrompt`，不要新增散落的 `ElMessageBox.*`。
 - 页头按钮统一走 `.page-head-btn`，不要另起一套。
 - loading 遮罩绑定到页面内容区或 Modal 主体区，不要盖住整个页面或 Dialog 顶部按钮。
-- 不要新增 `el-select` 做普通单选筛选；统一用 `AppDropdown`。只有多选 + collapse-tags 场景允许保留 `el-select`。
 
 ## 6. 当前重点变更红线
 
