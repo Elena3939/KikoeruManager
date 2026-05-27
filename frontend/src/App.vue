@@ -5192,26 +5192,24 @@ html.kikoerumanager-dark .detail-body .path {
 .sidebar {
   --sidebar-collapsed-width: 64px;
   --sidebar-expanded-width: 248px;
+  --sidebar-ease: cubic-bezier(0.22, 1, 0.36, 1);
   position: relative;
   z-index: 40;
   width: var(--sidebar-collapsed-width) !important;
   flex: 0 0 var(--sidebar-collapsed-width) !important;
   border-radius: 22px;
-  overflow: hidden;
-  background: rgba(255, 255, 255, 0.86);
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  box-shadow:
-    0 18px 42px rgba(15, 23, 42, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.86);
-  contain: layout paint;
+  overflow: visible;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  contain: layout style;
+  isolation: isolate;
   will-change: width;
   transform: translateZ(0);
   backface-visibility: hidden;
   transition:
-    width 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    flex-basis 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 0.24s ease,
-    border-color 0.24s ease;
+    width 0.24s var(--sidebar-ease),
+    flex-basis 0.24s var(--sidebar-ease);
 }
 
 .sidebar.is-sidebar-pinned {
@@ -5219,21 +5217,38 @@ html.kikoerumanager-dark .detail-body .path {
   flex-basis: var(--sidebar-expanded-width) !important;
 }
 
-.sidebar:hover {
-  width: var(--sidebar-expanded-width) !important;
+.sidebar.is-sidebar-pinned {
   flex-basis: var(--sidebar-expanded-width) !important;
 }
 
 .sidebar-shell {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: stretch;
   height: 100%;
-  width: var(--sidebar-expanded-width);
+  width: var(--sidebar-collapsed-width);
   padding: 8px 0;
   overflow: hidden;
   box-sizing: border-box;
-  background: transparent;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow:
+    0 18px 42px rgba(15, 23, 42, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.86);
+  contain: layout paint style;
+  transform: translateZ(0);
+  will-change: width;
+  transition:
+    width 0.24s var(--sidebar-ease),
+    box-shadow 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.sidebar:hover .sidebar-shell,
+.sidebar.is-sidebar-pinned .sidebar-shell {
+  width: var(--sidebar-expanded-width);
 }
 
 .logo {
@@ -5251,25 +5266,22 @@ html.kikoerumanager-dark .detail-body .path {
   display: flex;
   flex: 1;
   min-width: 0;
-  max-width: 0;
   flex-direction: column;
   gap: 2px;
   opacity: 0;
   overflow: hidden;
   pointer-events: none;
-  transform: translateX(-6px);
+  transform: translate3d(-8px, 0, 0);
   transition:
-    max-width 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.18s ease,
-    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+    opacity 0.16s ease,
+    transform 0.2s var(--sidebar-ease);
 }
 
 .sidebar:hover .logo-copy,
 .sidebar.is-sidebar-pinned .logo-copy {
-  max-width: 160px;
   opacity: 1;
   pointer-events: auto;
-  transform: translateX(0);
+  transform: translate3d(0, 0, 0);
 }
 
 .logo-meta-row {
@@ -5329,7 +5341,7 @@ html.kikoerumanager-dark .detail-body .path {
 
 .sidebar-section-label {
   display: block;
-  max-height: 0;
+  height: 0;
   margin: 0 10px;
   font-size: 12px;
   font-weight: 600;
@@ -5338,31 +5350,33 @@ html.kikoerumanager-dark .detail-body .path {
   text-transform: uppercase;
   opacity: 0;
   overflow: hidden;
-  transform: translateX(-6px);
+  pointer-events: none;
+  transform: translate3d(-8px, 0, 0);
   transition:
-    max-height 0.24s ease,
-    margin 0.24s ease,
-    opacity 0.18s ease,
-    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+    opacity 0.16s ease,
+    transform 0.2s var(--sidebar-ease);
 }
 
 .sidebar:hover .sidebar-section-label,
 .sidebar.is-sidebar-pinned .sidebar-section-label {
-  max-height: 20px;
+  height: 20px;
   margin: 0 10px 8px;
   opacity: 1;
-  transform: translateX(0);
+  pointer-events: auto;
+  transform: translate3d(0, 0, 0);
 }
 
 .sidebar-pin-button {
+  position: absolute;
+  top: 102px;
+  right: 12px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  align-self: flex-end;
   width: 24px;
   height: 24px;
-  max-height: 0;
-  margin: 0 12px;
+  min-height: 24px;
+  margin: 0;
   padding: 0;
   overflow: hidden;
   border: 1px solid rgba(15, 23, 42, 0.08);
@@ -5372,12 +5386,10 @@ html.kikoerumanager-dark .detail-body .path {
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
-  transform: scale(0.86);
+  transform: translate3d(0, -4px, 0) scale(0.86);
   transition:
-    max-height 0.2s ease,
-    margin 0.2s ease,
-    opacity 0.2s ease,
-    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.16s ease,
+    transform 0.2s var(--sidebar-ease),
     background 0.2s ease,
     border-color 0.2s ease,
     color 0.2s ease;
@@ -5395,11 +5407,9 @@ html.kikoerumanager-dark .detail-body .path {
 
 .sidebar:hover .sidebar-pin-button,
 .sidebar.is-sidebar-pinned .sidebar-pin-button {
-  max-height: 24px;
-  margin: 0 12px 6px;
   opacity: 1;
   pointer-events: auto;
-  transform: scale(1);
+  transform: translate3d(0, 0, 0) scale(1);
 }
 
 .sidebar-pin-button:hover {
@@ -5445,19 +5455,21 @@ html.kikoerumanager-dark .detail-body .path {
 .sidebar.is-sidebar-pinned .sidebar-rail-bell {
   opacity: 0;
   pointer-events: none;
-  max-height: 0;
+  height: 0;
   margin: 0 12px;
+  transform: translate3d(0, 6px, 0) scale(0.92);
 }
 
 .sidebar-rail-bell {
   flex-shrink: 0;
   margin: 0 12px;
   align-self: flex-start;
-  max-height: 40px;
+  height: 40px;
   overflow: hidden;
+  transform: translate3d(0, 0, 0) scale(1);
   transition:
-    max-height 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.2s ease;
+    opacity 0.16s ease,
+    transform 0.2s var(--sidebar-ease);
 }
 
 .sidebar-rail-bell :deep(.notif-bell-btn) {
@@ -5473,27 +5485,29 @@ html.kikoerumanager-dark .detail-body .path {
 
 .sidebar-status-card {
   width: calc(var(--sidebar-expanded-width) - 16px);
+  height: 0;
   margin: 0 8px;
   padding: 0 14px;
-  max-height: 0;
+  box-sizing: border-box;
   border-radius: 16px;
   background: #f7f7fa;
   box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.05);
   opacity: 0;
   pointer-events: none;
   overflow: hidden;
+  transform: translate3d(0, 10px, 0) scale(0.98);
   transition:
-    max-height 0.32s cubic-bezier(0.22, 1, 0.36, 1),
-    padding 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.2s ease;
+    opacity 0.18s ease,
+    transform 0.22s var(--sidebar-ease);
 }
 
 .sidebar:hover .sidebar-status-card,
 .sidebar.is-sidebar-pinned .sidebar-status-card {
-  max-height: 200px;
+  height: 132px;
   padding: 14px;
   opacity: 1;
   pointer-events: auto;
+  transform: translate3d(0, 0, 0) scale(1);
 }
 
 .sidebar-status-header {
@@ -5547,13 +5561,15 @@ html.kikoerumanager-dark .detail-body .path {
 }
 
 .version-info {
+  position: static;
   display: flex;
   align-items: center;
   justify-content: flex-start;
   flex-direction: row;
   gap: 8px;
   width: 100%;
-  padding: 0 0 0 12px;
+  min-height: 40px;
+  padding: 0;
 }
 
 .sidebar:not(:hover):not(.is-sidebar-pinned) .version-info {
@@ -5562,7 +5578,8 @@ html.kikoerumanager-dark .detail-body .path {
 
 .version-text {
   display: inline-block;
-  max-width: 0;
+  width: 0;
+  margin-left: calc(var(--sidebar-collapsed-width) + 8px);
   opacity: 0;
   overflow: hidden;
   white-space: nowrap;
@@ -5572,17 +5589,18 @@ html.kikoerumanager-dark .detail-body .path {
   background: rgba(255, 255, 255, 0.9);
   color: #1d1d1f;
   box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.06);
+  transform: translate3d(-8px, 0, 0);
   transition:
-    max-width 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.18s ease,
-    padding 0.24s ease;
+    opacity 0.16s ease,
+    transform 0.2s var(--sidebar-ease);
 }
 
 .sidebar:hover .version-text,
 .sidebar.is-sidebar-pinned .version-text {
-  max-width: 140px;
+  width: 128px;
   opacity: 1;
   padding: 4px 10px;
+  transform: translate3d(0, 0, 0);
 }
 
 .main-frame {
@@ -5626,6 +5644,7 @@ html.kikoerumanager-dark .detail-body .path {
   border-radius: 12px;
   color: rgba(29, 29, 31, 0.72);
   font-size: 14px;
+  overflow: hidden;
   white-space: nowrap;
   transition:
     background 0.22s ease,
@@ -5636,15 +5655,14 @@ html.kikoerumanager-dark .detail-body .path {
 
 :deep(.sidebar-menu .el-menu-item span) {
   display: inline-block;
-  max-width: 0;
+  width: 140px;
   opacity: 0;
   overflow: hidden;
   white-space: nowrap;
-  transform: translateX(-6px);
+  transform: translate3d(-8px, 0, 0);
   transition:
-    max-width 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.18s ease,
-    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+    opacity 0.16s ease,
+    transform 0.2s var(--sidebar-ease);
 }
 
 :deep(.sidebar-menu .el-menu-item > svg) {
@@ -5657,9 +5675,8 @@ html.kikoerumanager-dark .detail-body .path {
 
 .sidebar:hover :deep(.sidebar-menu .el-menu-item span),
 .sidebar.is-sidebar-pinned :deep(.sidebar-menu .el-menu-item span) {
-  max-width: 140px;
   opacity: 1;
-  transform: translateX(0);
+  transform: translate3d(0, 0, 0);
 }
 
 :deep(.sidebar-menu .el-menu-item:hover) {
@@ -5704,15 +5721,17 @@ html.kikoerumanager-dark .detail-body .path {
 }
 
 .theme-toggle-button {
-  position: relative;
+  position: absolute;
+  left: calc(var(--sidebar-collapsed-width) / 2 - 1px);
+  bottom: 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 0;
-  width: 40px;
-  height: 40px;
+  width: 40px !important;
+  height: 40px !important;
   min-width: 0;
-  padding: 0;
+  padding: 0 !important;
   overflow: hidden;
   border: 1px solid rgba(29, 29, 31, 0.08);
   border-radius: 14px;
@@ -5720,36 +5739,27 @@ html.kikoerumanager-dark .detail-body .path {
   color: rgba(29, 29, 31, 0.72);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.62);
   cursor: pointer;
+  z-index: 2;
   font-size: 12px;
   font-weight: 650;
   letter-spacing: -0.01em;
+  transform: translate3d(-50%, 0, 0);
   transition:
-    width 0.26s cubic-bezier(0.22, 1, 0.36, 1),
-    gap 0.24s ease,
-    padding 0.24s ease,
     transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
     border-color 0.24s ease,
     color 0.24s ease,
     box-shadow 0.24s ease;
 }
 
-.sidebar:hover .theme-toggle-button,
-.sidebar.is-sidebar-pinned .theme-toggle-button {
-  width: auto;
-  gap: 6px;
-  padding: 0 10px;
-  border-radius: 999px;
-}
-
 .theme-toggle-button:hover {
-  transform: translateY(-1px) scale(1.03);
   border-color: rgba(29, 29, 31, 0.16);
   color: #1d1d1f;
   box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08), inset 0 0 0 1px rgba(255, 255, 255, 0.72);
+  transform: translate3d(-50%, -1px, 0) scale(1.03);
 }
 
 .theme-toggle-button:active {
-  transform: scale(0.96);
+  transform: translate3d(-50%, 0, 0) scale(0.96);
 }
 
 .theme-toggle-button.is-dark {
@@ -5766,31 +5776,14 @@ html.kikoerumanager-dark .detail-body .path {
 }
 
 .theme-toggle-text {
-  position: relative;
-  z-index: 1;
-  display: inline-block;
-  max-width: 0;
-  opacity: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  transform: translateX(-4px);
-  transition:
-    max-width 0.24s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.18s ease,
-    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.sidebar:hover .theme-toggle-text,
-.sidebar.is-sidebar-pinned .theme-toggle-text {
-  max-width: 48px;
-  opacity: 1;
-  transform: translateX(0);
+  display: none;
 }
 
 .theme-toggle-icon {
   flex: 0 0 auto;
   width: 18px;
   height: 18px;
+  margin: 0;
   transition: color 0.3s ease, filter 0.3s ease, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -6122,6 +6115,12 @@ html.kikoerumanager-dark .detail-body .path {
     box-shadow: 0 24px 60px rgba(15, 23, 42, 0.24);
   }
 
+  .sidebar.is-sidebar-pinned {
+    width: min(82vw, 320px) !important;
+    flex: none !important;
+    flex-basis: auto !important;
+  }
+
   /* 抽屉打开态 */
   .sidebar.is-mobile-open {
     transform: translateX(0);
@@ -6146,7 +6145,6 @@ html.kikoerumanager-dark .detail-body .path {
 
   .logo-copy {
     display: flex;
-    max-width: none;
     opacity: 1;
     pointer-events: auto;
     transform: none;
@@ -6167,9 +6165,10 @@ html.kikoerumanager-dark .detail-body .path {
 
   .sidebar-section-label {
     display: block;
-    max-height: none;
+    height: auto;
     margin: 0 10px 10px;
     opacity: 1;
+    pointer-events: auto;
     transform: none;
   }
 
@@ -6195,7 +6194,7 @@ html.kikoerumanager-dark .detail-body .path {
 
   :deep(.sidebar-menu .el-menu-item span) {
     display: inline;
-    max-width: none;
+    width: auto;
     opacity: 1;
     transform: none;
   }
@@ -6217,23 +6216,27 @@ html.kikoerumanager-dark .detail-body .path {
 
   .sidebar-status-card {
     display: block;
-    max-height: none;
+    height: auto;
     padding: 14px;
     opacity: 1;
     pointer-events: auto;
+    transform: none;
   }
 
   .version-info {
     flex-direction: row;
+    justify-content: space-between;
     margin-top: 14px;
     padding: 0 6px;
   }
 
   .version-text {
     display: inline-flex;
-    max-width: none;
+    width: auto;
+    margin-left: 0;
     opacity: 1;
     padding: 4px 10px;
+    transform: none;
   }
 
   /* 主内容区铺满 */
@@ -6250,11 +6253,21 @@ html.kikoerumanager-dark .detail-body .path {
     padding-right: 0;
   }
   .theme-toggle-button {
-    width: auto;
-    height: 32px;
+    position: static;
+    width: 40px !important;
+    height: 40px !important;
     gap: 6px;
-    padding: 0 10px;
-    border-radius: 999px;
+    padding: 0 !important;
+    border-radius: 14px;
+    transform: none;
+  }
+
+  .theme-toggle-button:hover {
+    transform: translateY(-1px) scale(1.03);
+  }
+
+  .theme-toggle-button:active {
+    transform: scale(0.96);
   }
 }
 
@@ -6310,15 +6323,13 @@ html.kikoerumanager-dark #app {
 }
 
 .sidebar-shell {
-  background: rgba(255, 255, 255, 0.86) !important;
+  background: rgba(255, 255, 255, 0.98) !important;
   border-color: rgba(15, 23, 42, 0.08) !important;
   box-shadow: 0 18px 44px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.8) !important;
-  backdrop-filter: blur(22px) saturate(170%) !important;
-  -webkit-backdrop-filter: blur(22px) saturate(170%) !important;
 }
 
 html.kikoerumanager-dark .sidebar-shell {
-  background: rgba(12, 13, 17, 0.78) !important;
+  background: rgba(12, 13, 17, 0.96) !important;
   border-color: rgba(255, 255, 255, 0.08) !important;
   box-shadow: 0 22px 60px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
 }
