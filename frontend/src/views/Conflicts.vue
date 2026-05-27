@@ -1579,6 +1579,33 @@ function setBatchState(label, value) {
   batchActionLabel.value = value ? label : ''
 }
 
+// 限并发的批量执行：单条失败不影响其它条目，返回与输入同序的 {ok, item, value/error} 列表。
+// 串行 for-await 在远程 NAS 慢路径下整批耗时叠加，单条 60s axios timeout 容易雪崩；
+// 4 路并发既能压缩总耗时，又不会瞬间打爆后端 SYNO API。
+async function runConflictBatch(items, taskFn, { concurrency = 4 } = {}) {
+  const list = Array.isArray(items) ? items : []
+  if (!list.length) return []
+  const results = new Array(list.length)
+  let cursor = 0
+  const limit = Math.max(1, Math.min(concurrency, list.length))
+  const worker = async () => {
+    while (true) {
+      const idx = cursor++
+      if (idx >= list.length) return
+      const item = list[idx]
+      try {
+        results[idx] = { ok: true, item, value: await taskFn(item, idx) }
+      } catch (error) {
+        results[idx] = { ok: false, item, error }
+      }
+    }
+  }
+  const workers = []
+  for (let i = 0; i < limit; i++) workers.push(worker())
+  await Promise.all(workers)
+  return results
+}
+
 function buildPathPreview(paths) {
   const lines = paths.slice(0, 5)
   if (paths.length > lines.length) {
@@ -2132,15 +2159,20 @@ async function handleBatchKeepNew() {
 
   setBatchState('保留新版', true)
   try {
+    // 第一阶段：4 路并发拉删除审查 preview。串行版本在远程 NAS / 大目录下，
+    // 单条几十秒 + 串行叠加会直接把 axios 60s timeout 撞穿。
     const previewEntries = []
     const failures = []
-
-    for (const conflict of targets) {
-      try {
-        const preview = await loadKeepNewPreview(conflict)
-        previewEntries.push({ conflict, preview })
-      } catch (error) {
-        failures.push({ conflict, message: resolveErrorMessage(error, '生成删除审查失败') })
+    const previewResults = await runConflictBatch(
+      targets,
+      async (conflict) => loadKeepNewPreview(conflict),
+      { concurrency: 4 }
+    )
+    for (const r of previewResults) {
+      if (r.ok) {
+        previewEntries.push({ conflict: r.item, preview: r.value })
+      } else {
+        failures.push({ conflict: r.item, message: resolveErrorMessage(r.error, '生成删除审查失败') })
       }
     }
 
@@ -2169,13 +2201,19 @@ async function handleBatchKeepNew() {
       cancelText: '取消'
     })
 
+    // 第二阶段：4 路并发提交 KEEP_NEW resolve。后端事件循环已下沉同步 IO，
+    // 这里并发只会让用户更快看到批量结果，不会回压后端。
     const successes = []
-    for (const entry of previewEntries) {
-      try {
-        await resolveKeepNew(entry.conflict, entry.preview)
-        successes.push(entry.conflict)
-      } catch (error) {
-        failures.push({ conflict: entry.conflict, message: resolveErrorMessage(error, '保留新版失败') })
+    const resolveResults = await runConflictBatch(
+      previewEntries,
+      async (entry) => resolveKeepNew(entry.conflict, entry.preview),
+      { concurrency: 4 }
+    )
+    for (const r of resolveResults) {
+      if (r.ok) {
+        successes.push(r.item.conflict)
+      } else {
+        failures.push({ conflict: r.item.conflict, message: resolveErrorMessage(r.error, '保留新版失败') })
       }
     }
 
@@ -2211,14 +2249,19 @@ async function handleBatchSkip() {
       cancelText: '取消'
     })
 
+    // 4 路并发提交 SKIP resolve；单条慢不会拖累整批。
     const successes = []
     const failures = []
-    for (const conflict of targets) {
-      try {
-        await resolveSkip(conflict)
-        successes.push(conflict)
-      } catch (error) {
-        failures.push({ conflict, message: resolveErrorMessage(error, '跳过失败') })
+    const skipResults = await runConflictBatch(
+      targets,
+      async (conflict) => resolveSkip(conflict),
+      { concurrency: 4 }
+    )
+    for (const r of skipResults) {
+      if (r.ok) {
+        successes.push(r.item)
+      } else {
+        failures.push({ conflict: r.item, message: resolveErrorMessage(r.error, '跳过失败') })
       }
     }
 
