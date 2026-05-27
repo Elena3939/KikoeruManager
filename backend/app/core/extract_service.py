@@ -5033,6 +5033,32 @@ class ExtractService:
             logger.debug(f"[编码嗅探] {file_path} 失败: {e}")
             return None
 
+    def _probe_zip_no_password_status(self, file_path: str) -> Optional[str]:
+        """只读 ZIP 中央目录，判断无密码解压是否可行。
+
+        返回 ``plain`` 表示所有文件条目都未加密，``encrypted`` 表示至少一个文件条目
+        设置了 ZIP 加密 bit，``None`` 表示不是标准 ZIP 或无法判断。这个检查不读文件
+        内容，对几十 GB 的 ZIP 也是轻量操作。
+        """
+        import zipfile as _zipfile
+        try:
+            with _zipfile.ZipFile(file_path, 'r') as zf:
+                has_file = False
+                for info in zf.infolist():
+                    if info.is_dir():
+                        continue
+                    has_file = True
+                    if info.flag_bits & 0x1:
+                        return "encrypted"
+        except (OSError, _zipfile.BadZipFile, _zipfile.LargeZipFile):
+            return None
+        except Exception as e:
+            logger.debug("[zip无密码探测] %s 读取中央目录失败: %s", file_path, e)
+            return None
+        if not has_file:
+            return None
+        return "plain"
+
     def _detect_best_encoding(self, raw_bytes: bytes) -> str:
         """
         自动检测压缩包文件名的最佳编码
@@ -5203,8 +5229,8 @@ class ExtractService:
         manual_ignore_garbled = bool((task.task_metadata or {}).get("manual_retry_ignore_garbled"))
 
         if manual_retry_passwords and manual_retry_password_only:
-            # 多个指定密码：完整 list 作为候选，依次尝试，任一命中即成功
-            unique_passwords = list(manual_retry_passwords)
+            # 多个指定密码：先做无密码轻量探测，确认可解再完整解压；否则再按指定密码依次尝试。
+            unique_passwords = ["", *manual_retry_passwords]
             vault_passwords = []
             rj_passwords = []
         else:
@@ -5228,6 +5254,11 @@ class ExtractService:
                     seen.add(pwd)
                     unique_passwords.append(pwd)
 
+        # 非加密压缩包会忽略 -p 参数，7zz l 可能用任意密码成功读取目录。
+        # 真正解压前先把"无密码"排到第一位做轻量探测，确认可解才完整解压。
+        if "" in unique_passwords:
+            unique_passwords = ["", *[pwd for pwd in unique_passwords if pwd != ""]]
+
         # 预读目录可用说明压缩包结构至少可读；后续若遇疑似"损坏"特征，
         # 更可能是头加密 + 错密码，而不是真的坏包，用于最后定性判断。
         listing_available = bool(getattr(archive_info, "file_list", None))
@@ -5247,11 +5278,24 @@ class ExtractService:
         )
         if self.config.extract.prefer_unar_for_rar and is_rar_archive:
             if self._find_unar_executable():
+                unar_passwords = unique_passwords
+                if "" in unique_passwords:
+                    no_password_probe = await self._probe_password(
+                        archive_info.path,
+                        "",
+                        probe_bytes=self.PROBE_BYTES,
+                        timeout=self.PROBE_TIMEOUT_SECONDS,
+                        file_list=getattr(archive_info, 'file_list', None),
+                        task=task,
+                        allow_full_test=False,
+                    )
+                    if no_password_probe != "ok":
+                        unar_passwords = [pwd for pwd in unique_passwords if pwd]
                 unar_success, unar_password, unar_reason = await self._try_extract_rar_with_unar(
                     archive_info,
                     output_path,
                     task,
-                    unique_passwords,
+                    unar_passwords,
                     vault_passwords,
                     password_entry_id_map,
                     password_rjcode_map,
@@ -5323,7 +5367,7 @@ class ExtractService:
                 # #3 命中负缓存：跳过，不再启动 7z
                 cache_key = (
                     self._password_cache_key(archive_fingerprint, password)
-                    if archive_fingerprint else None
+                    if archive_fingerprint and password else None
                 )
                 if cache_key and cache_key in ExtractService._password_negative_cache:
                     logger.info(
@@ -5341,7 +5385,8 @@ class ExtractService:
                 if task.is_cancelled():
                     return False, None, "cancelled"
 
-                # 流式预验证：错密码秒级淘汰，避免跑完整解压才发现 CRC Failed
+                # 轻量预验证：错密码秒级淘汰，避免跑完整解压才发现 CRC Failed。
+                # 无密码候选也必须探测，但只做轻量检查，不跑完整 t，避免加密大包白跑。
                 if self.PROBE_BEFORE_EXTRACT:
                     task.update_progress(38, f"探测密码 (来源: {password_source})")
                     probe_result = await self._probe_password(
@@ -5351,6 +5396,7 @@ class ExtractService:
                         timeout=self.PROBE_TIMEOUT_SECONDS,
                         file_list=getattr(archive_info, 'file_list', None),
                         task=task,
+                        allow_full_test=bool(password),
                     )
                     # 探测期间被 cancel/pause kill 掉，按 stop_reason 决策
                     if task.is_cancelled():
@@ -5388,6 +5434,18 @@ class ExtractService:
                             password or '无密码',
                         )
                     elif probe_result == 'unknown':
+                        if not password:
+                            has_password_candidates = any(bool(pwd) for pwd in unique_passwords)
+                            if has_password_candidates:
+                                logger.info(
+                                    "无密码轻量探测无法定性，跳过无密码完整解压，继续尝试密码候选: %s",
+                                    os.path.basename(archive_info.path),
+                                )
+                                continue
+                            logger.info(
+                                "无密码轻量探测无法定性且没有其他密码候选，进入完整解压兜底: %s",
+                                os.path.basename(archive_info.path),
+                            )
                         logger.info(
                             "密码 %s (%s) 探测无法定性，进入完整解压兜底",
                             password_source,
@@ -5451,6 +5509,7 @@ class ExtractService:
                 # 重新跑 x，而不是跳到下一个密码（那会导致恢复后丢掉85%进度并跳密码）。
                 while True:
                     task.update_progress(40, f"准备解压 (密码来源: {password_source})")
+                    await self._cleanup_extract_attempt(output_path)
                     result = await self._run_7z_command(
                         cmd,
                         progress_callback=progress_callback,
@@ -6128,7 +6187,8 @@ class ExtractService:
             '-bso0', '-bsp0',
             *self._get_mcp_args(archive_path),
         ]
-        cmd.append(f'-p{password}' if password else '-p')
+        if password:
+            cmd.append(f'-p{password}')
         cmd.append(archive_path)
         cmd.append(f'-i!{entry_name}')
 
@@ -6336,7 +6396,8 @@ class ExtractService:
             '-bso0', '-bsp0',
             *self._get_mcp_args(archive_path),
         ]
-        cmd.append(f'-p{password}' if password else '-p')
+        if password:
+            cmd.append(f'-p{password}')
         cmd.append(archive_path)
         # 用 `-i!条目` 缩小范围，比直接带文件名参数对 7zz 较新版本更稳。
         cmd.append(f'-i!{entry_name}')
@@ -6432,7 +6493,8 @@ class ExtractService:
             '-bso0', '-bsp0',
             *self._get_mcp_args(archive_path),
         ]
-        cmd.append(f'-p{password}' if password else '-p')
+        if password:
+            cmd.append(f'-p{password}')
         cmd.append(archive_path)
 
         kwargs = {
@@ -6521,6 +6583,7 @@ class ExtractService:
         timeout: float = 30.0,
         file_list: Optional[List[Dict]] = None,
         task: Optional[Task] = None,
+        allow_full_test: bool = True,
     ) -> str:
         """轻量探测密码是否正确。
 
@@ -6538,6 +6601,13 @@ class ExtractService:
           2. 小条目 t 探测（有 <=5MB 的条目但无已知后缀时）：运行单文件 CRC。
           3. 流式探测（没 file_list 的头加密包兜底）：注意对 store+AES 可能漏判。
         """
+        if not password:
+            zip_status = self._probe_zip_no_password_status(archive_path)
+            if zip_status == "plain":
+                return "ok"
+            if zip_status == "encrypted":
+                return "wrong_password"
+
         is_rar = self._is_rar_archive(archive_path)
         if not is_rar:
             magic_entries = self._pick_magic_entries(file_list)
@@ -6584,7 +6654,7 @@ class ExtractService:
                 os.path.basename(archive_path),
             )
 
-        if file_list:
+        if file_list and allow_full_test:
             logger.debug(
                 "轻量探测无法定性，先执行完整 t 验证避免无效落盘解压: %s",
                 os.path.basename(archive_path),
@@ -6599,13 +6669,16 @@ class ExtractService:
                 return result
         if is_rar:
             return 'unknown'
+        if not password and file_list:
+            return 'unknown'
         # ---- 以下是原有流式探测逻辑（无 file_list 时的兜底） ----
         cmd = [
             self.seven_zip, 'x', '-so', '-y',
             '-bso0', '-bsp0',  # 关掉进度/消息，stdout 只剩解压数据
             *self._get_mcp_args(archive_path),
         ]
-        cmd.append(f'-p{password}' if password else '-p')
+        if password:
+            cmd.append(f'-p{password}')
         cmd.append(archive_path)
 
         kwargs = {

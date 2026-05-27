@@ -783,6 +783,27 @@ class TestExtractService:
         extract_service._probe_by_magic.assert_not_awaited()
         extract_service._probe_by_smallest_entry.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_no_password_probe_plain_zip_uses_central_directory_only(self, extract_service, temp_dir):
+        """普通未加密 ZIP 的无密码探测只读中央目录，不启动 7zz 子进程。"""
+        archive_path = os.path.join(temp_dir, "plain.zip")
+        self.create_test_zip(archive_path)
+        extract_service._probe_by_magic = AsyncMock(return_value="wrong_password")
+        extract_service._probe_by_smallest_entry = AsyncMock(return_value="wrong_password")
+        extract_service._probe_by_full_test = AsyncMock(return_value="wrong_password")
+
+        result = await extract_service._probe_password(
+            archive_path,
+            "",
+            file_list=[{"name": "test.txt", "size": 12, "is_dir": False}],
+            allow_full_test=False,
+        )
+
+        assert result == "ok"
+        extract_service._probe_by_magic.assert_not_awaited()
+        extract_service._probe_by_smallest_entry.assert_not_awaited()
+        extract_service._probe_by_full_test.assert_not_awaited()
+
     def test_archive_file_list_garbled_sample_detects_rar_toc_mojibake(self, extract_service):
         """RAR TOC 已经乱码时，不应继续交给 7zz fallback 产出同样乱码的文件。"""
         sample = extract_service._archive_file_list_garbled_sample([
@@ -899,6 +920,222 @@ class TestExtractService:
             "manual_retry_password": "stale_legacy_pwd",
         })
         assert extract_service._get_manual_retry_passwords(task) == ["new_pwd_1", "new_pwd_2"]
+
+    # ------------------------------------------------------------------
+    # _try_extract：非加密大包先不带密码轻量探测
+    # ------------------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_try_extract_probes_no_password_before_full_extract(
+        self, extract_service, temp_dir,
+    ):
+        """密码库候选存在时，也必须先探测无密码；探测通过后才完整解压。"""
+        archive_path = os.path.join(temp_dir, "RJ00000001.zip")
+        self.create_test_zip(archive_path)
+        output_path = os.path.join(temp_dir, "extract-output")
+        os.makedirs(output_path, exist_ok=True)
+        task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
+
+        run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=b"",
+            stderr=b"",
+        ))
+        extract_service._run_7z_command = run_7z_command
+        extract_service._probe_password = AsyncMock(return_value="ok")
+        extract_service._reject_if_garbled_after_extract = AsyncMock(return_value=False)
+        extract_service._verify_extraction = AsyncMock(return_value=True)
+        extract_service._cleanup_extract_attempt = AsyncMock()
+
+        archive_info = ArchiveInfo(
+            path=archive_path,
+            file_list=[{"name": "test.txt", "size": 12, "is_dir": False}],
+            password="sana",
+        )
+
+        success, password, reason = await extract_service._try_extract(
+            archive_info,
+            output_path,
+            task,
+            password_candidates=[{
+                "password": "sana",
+                "source": "密码库-通用",
+                "entry_id": None,
+                "rjcode": None,
+            }],
+        )
+
+        assert success is True
+        assert password == ""
+        assert reason == ""
+        extract_service._probe_password.assert_awaited_once()
+        probe_args = extract_service._probe_password.await_args
+        assert probe_args.args[1] == ""
+        assert probe_args.kwargs["allow_full_test"] is False
+        extract_service._cleanup_extract_attempt.assert_awaited_once_with(output_path)
+        first_cmd = run_7z_command.await_args.args[0]
+        assert not any(str(arg).startswith("-p") for arg in first_cmd)
+
+    @pytest.mark.asyncio
+    async def test_try_extract_manual_retry_skips_no_password_full_extract_when_probe_unknown(
+        self, extract_service, temp_dir,
+    ):
+        """手动指定密码重试时，无密码探测无法定性就不能完整解压大包，应直接试指定密码。"""
+        archive_path = os.path.join(temp_dir, "RJ00000002.zip")
+        self.create_test_zip(archive_path)
+        output_path = os.path.join(temp_dir, "manual-output")
+        os.makedirs(output_path, exist_ok=True)
+        task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
+        task.task_metadata = {
+            "manual_retry_passwords": ["sxy4649777"],
+            "manual_retry_password_only": True,
+        }
+
+        run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=b"",
+            stderr=b"",
+        ))
+        extract_service._run_7z_command = run_7z_command
+        extract_service._probe_password = AsyncMock(side_effect=["unknown", "ok"])
+        extract_service._reject_if_garbled_after_extract = AsyncMock(return_value=False)
+        extract_service._verify_extraction = AsyncMock(return_value=True)
+        extract_service._cleanup_extract_attempt = AsyncMock()
+
+        archive_info = ArchiveInfo(
+            path=archive_path,
+            file_list=[{"name": "test.txt", "size": 12, "is_dir": False}],
+        )
+
+        success, password, reason = await extract_service._try_extract(
+            archive_info,
+            output_path,
+            task,
+            password_candidates=[{
+                "password": "sxy4649777",
+                "source": "指定密码",
+                "entry_id": None,
+                "rjcode": None,
+            }],
+        )
+
+        assert success is True
+        assert password == "sxy4649777"
+        assert reason == ""
+        assert extract_service._probe_password.await_count == 2
+        first_probe = extract_service._probe_password.await_args_list[0]
+        second_probe = extract_service._probe_password.await_args_list[1]
+        assert first_probe.args[1] == ""
+        assert first_probe.kwargs["allow_full_test"] is False
+        assert second_probe.args[1] == "sxy4649777"
+        assert second_probe.kwargs["allow_full_test"] is True
+        assert run_7z_command.await_count == 1
+        first_cmd = run_7z_command.await_args.args[0]
+        assert "-psxy4649777" in first_cmd
+
+    @pytest.mark.asyncio
+    async def test_try_extract_no_password_ignores_stale_negative_cache(
+        self, extract_service, temp_dir,
+    ):
+        """空密码负缓存不能阻止本次轻量探测，否则旧误判会继续影响非加密包。"""
+        archive_path = os.path.join(temp_dir, "RJ00000003.zip")
+        self.create_test_zip(archive_path)
+        output_path = os.path.join(temp_dir, "cache-output")
+        os.makedirs(output_path, exist_ok=True)
+        task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
+        fingerprint = extract_service._archive_fingerprint(archive_path)
+        assert fingerprint is not None
+        empty_cache_key = extract_service._password_cache_key(fingerprint, "")
+        ExtractService._password_negative_cache[empty_cache_key] = 1.0
+
+        run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=b"",
+            stderr=b"",
+        ))
+        extract_service._run_7z_command = run_7z_command
+        extract_service._probe_password = AsyncMock(return_value="ok")
+        extract_service._reject_if_garbled_after_extract = AsyncMock(return_value=False)
+        extract_service._verify_extraction = AsyncMock(return_value=True)
+        extract_service._cleanup_extract_attempt = AsyncMock()
+
+        archive_info = ArchiveInfo(
+            path=archive_path,
+            file_list=[{"name": "test.txt", "size": 12, "is_dir": False}],
+        )
+
+        try:
+            success, password, reason = await extract_service._try_extract(
+                archive_info,
+                output_path,
+                task,
+                password_candidates=[{
+                    "password": "sana",
+                    "source": "密码库-通用",
+                    "entry_id": None,
+                    "rjcode": None,
+                }],
+            )
+        finally:
+            ExtractService._password_negative_cache.pop(empty_cache_key, None)
+
+        assert success is True
+        assert password == ""
+        assert reason == ""
+        extract_service._probe_password.assert_awaited_once()
+        run_7z_command.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_try_extract_rar_unar_skips_no_password_when_probe_unknown(
+        self, extract_service, temp_dir,
+    ):
+        """RAR fast-path 也不能在无密码探测不确定时先完整跑 unar。"""
+        archive_path = os.path.join(temp_dir, "RJ00000004.rar")
+        with open(archive_path, "wb") as f:
+            f.write(b"Rar!\x1a\x07\x00")
+        output_path = os.path.join(temp_dir, "rar-output")
+        os.makedirs(output_path, exist_ok=True)
+        task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
+        task.task_metadata = {
+            "manual_retry_passwords": ["sxy4649777"],
+            "manual_retry_password_only": True,
+        }
+        old_prefer_unar = extract_service.config.extract.prefer_unar_for_rar
+        extract_service.config.extract.prefer_unar_for_rar = True
+        extract_service._find_unar_executable = Mock(return_value="unar")
+        extract_service._probe_password = AsyncMock(return_value="unknown")
+        extract_service._try_extract_rar_with_unar = AsyncMock(
+            return_value=(True, "sxy4649777", "")
+        )
+
+        archive_info = ArchiveInfo(
+            path=archive_path,
+            file_list=[{"name": "voice.wav", "size": 12, "is_dir": False}],
+        )
+
+        try:
+            success, password, reason = await extract_service._try_extract(
+                archive_info,
+                output_path,
+                task,
+                password_candidates=[{
+                    "password": "sxy4649777",
+                    "source": "指定密码",
+                    "entry_id": None,
+                    "rjcode": None,
+                }],
+            )
+        finally:
+            extract_service.config.extract.prefer_unar_for_rar = old_prefer_unar
+
+        assert success is True
+        assert password == "sxy4649777"
+        assert reason == ""
+        extract_service._probe_password.assert_awaited_once()
+        unar_passwords = extract_service._try_extract_rar_with_unar.await_args.args[3]
+        assert unar_passwords == ["sxy4649777"]
 
     # ------------------------------------------------------------------
     # _detect_disguised_volume_set：伪装多卷启发式探测
