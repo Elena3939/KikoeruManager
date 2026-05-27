@@ -165,33 +165,52 @@
               ]"
               @click="handleConflictCardClick(conflict, $event)"
             >
-              <span v-if="isKeepNewProcessing(conflict)" class="keep-new-card-orbit" aria-hidden="true">
-                <Save class="w-3.5 h-3.5" />
-              </span>
-              <span v-if="isConflictRetrying(conflict)" class="retry-card-orbit" aria-hidden="true">
-                <RotateCcw class="w-3.5 h-3.5" />
-              </span>
-              <div class="conflicts-list-card-row">
-                <strong class="conflicts-list-card-title">
-                  {{ conflict.rjcode || conflict.new_metadata?.work_name || conflict.new_path || '未识别项目' }}
-                  <ChevronRight class="w-3.5 h-3.5 opacity-0 -translate-x-2 transition-all duration-300 group-hover:opacity-100 group-hover:translate-x-0 text-indigo-500" />
-                </strong>
-                <span class="lib-chip" :class="conflict.context?.existing?.is_remote ? 'lib-chip-warning' : 'lib-chip-info'">
-                  <Cloud v-if="conflict.context?.existing?.is_remote" :size="11" :stroke-width="2.4" />
-                  <HardDrive v-else :size="11" :stroke-width="2.4" />
-                  {{ conflict.context?.existing?.is_remote ? '远程' : '本地' }}
-                </span>
-              </div>
-              <div class="conflicts-list-card-meta">
-                <span class="conflicts-list-card-type">
-                  <FileWarning v-if="isFailureConflict(conflict)" :size="13" :stroke-width="2.2" class="text-red-400" />
-                  <Copy v-else :size="13" :stroke-width="2.2" class="text-indigo-400" />
-                  {{ getConflictTypeDetail(conflict) }}
-                </span>
-                <span class="lib-chip" :class="getConflictStatusChipClass(conflict)">
-                  {{ getConflictStatusLabel(conflict) }}
-                </span>
-                <span class="conflicts-list-card-date">{{ formatDate(conflict.created_at).split(' ')[0] }}</span>
+              <div class="conflicts-list-card-grid">
+                <div class="conflicts-list-card-main">
+                  <div class="conflicts-list-card-row">
+                    <strong class="conflicts-list-card-title">
+                      {{ conflict.rjcode || conflict.new_metadata?.work_name || conflict.new_path || '未识别项目' }}
+                      <ChevronRight class="w-3.5 h-3.5 opacity-0 -translate-x-2 transition-all duration-300 group-hover:opacity-100 group-hover:translate-x-0 text-indigo-500" />
+                    </strong>
+                  </div>
+                  <div class="conflicts-list-card-meta">
+                    <span class="conflicts-list-card-type">
+                      <FileWarning v-if="isFailureConflict(conflict)" :size="13" :stroke-width="2.2" class="text-red-400" />
+                      <Copy v-else :size="13" :stroke-width="2.2" class="text-indigo-400" />
+                      {{ getConflictTypeDetail(conflict) }}
+                    </span>
+                  </div>
+                </div>
+                <div class="conflicts-list-card-aside">
+                  <div class="conflicts-list-card-status-row">
+                    <span class="lib-chip conflicts-list-source-chip" :class="conflict.context?.existing?.is_remote ? 'lib-chip-warning' : 'lib-chip-info'">
+                      <Cloud v-if="conflict.context?.existing?.is_remote" :size="11" :stroke-width="2.4" />
+                      <HardDrive v-else :size="11" :stroke-width="2.4" />
+                      {{ conflict.context?.existing?.is_remote ? '远程' : '本地' }}
+                    </span>
+                    <span
+                      class="conflicts-list-status-chip"
+                      :class="[
+                        getConflictStatusChipClass(conflict),
+                        isConflictRetrying(conflict) || isConflictProcessing(conflict) || isKeepNewProcessing(conflict) ? 'is-running' : 'is-idle'
+                      ]"
+                    >
+                      {{ getConflictStatusLabel(conflict) }}
+                    </span>
+                  </div>
+                  <div class="conflicts-list-card-date-row">
+                    <span class="conflicts-list-card-date">{{ formatDate(conflict.created_at).split(' ')[0] }}</span>
+                    <span
+                      v-if="isKeepNewProcessing(conflict) || isConflictRetrying(conflict)"
+                      class="conflicts-list-card-state-icon"
+                      :class="isConflictRetrying(conflict) ? 'is-retry' : 'is-save'"
+                      aria-hidden="true"
+                    >
+                      <RotateCcw v-if="isConflictRetrying(conflict)" class="w-3.5 h-3.5" />
+                      <Save v-else class="w-3.5 h-3.5" />
+                    </span>
+                  </div>
+                </div>
               </div>
               <div v-if="isConflictRetrying(conflict)" class="conflicts-list-card-progress">
                 <div class="conflicts-list-progress-track">
@@ -207,10 +226,6 @@
         <section class="conflicts-detail-pane" v-if="activeConflict">
           <!-- 详情顶栏 -->
           <div class="conflicts-detail-header">
-            <div class="conflicts-detail-bg-glyph">
-              <FileWarning v-if="isFailureConflict(activeConflict)" :size="220" :stroke-width="1.4" />
-              <Copy v-else :size="220" :stroke-width="1.4" />
-            </div>
             <div class="conflicts-detail-header-inner">
               <div class="conflicts-detail-title-block">
                 <div class="flex items-center gap-3">
@@ -431,14 +446,22 @@
               </div>
             </div>
 
-            <div class="conflicts-detail-grid">
-              <!-- 当前新内容 -->
-              <div class="conflicts-info-card">
-                <div class="conflicts-info-card-header">
-                  <FolderOpen class="w-4 h-4 text-slate-400" />
-                  <h3>{{ isFailureConflict(activeConflict) ? '失败来源' : '当前新内容' }}</h3>
+            <section class="conflicts-detail-panel">
+              <div class="conflicts-detail-panel-head">
+                <div class="conflicts-detail-panel-title">
+                  <Info class="w-4 h-4 text-slate-400" />
+                  <h3>{{ isFailureConflict(activeConflict) ? '问题详情' : '冲突详情' }}</h3>
                 </div>
-                <div class="conflicts-info-card-body">
+                <span class="conflicts-detail-panel-time">{{ formatDate(activeConflict.created_at) }}</span>
+              </div>
+
+              <div class="conflicts-detail-panel-grid">
+                <section class="conflicts-detail-section">
+                  <h4 class="conflicts-detail-section-title">
+                    <FolderOpen class="w-4 h-4 text-slate-400" />
+                    {{ isFailureConflict(activeConflict) ? '失败来源' : '当前新内容' }}
+                  </h4>
+
                   <div class="conflicts-info-section">
                     <span class="conflicts-info-label">来源路径</span>
                     <div class="conflicts-info-path">{{ getConflictSourcePath(activeConflict) }}</div>
@@ -453,11 +476,10 @@
                       <span class="conflicts-info-label">大小</span>
                       <p class="conflicts-info-value">{{ displayStatSize(activeConflict.context?.source?.stats) }}</p>
                     </div>
-                  </div>
-
-                  <div class="conflicts-info-section">
-                    <span class="conflicts-info-label">创建时间</span>
-                    <p class="conflicts-info-value-muted">{{ displayStatTime(activeConflict.context?.source?.stats) }}</p>
+                    <div>
+                      <span class="conflicts-info-label">创建时间</span>
+                      <p class="conflicts-info-value-muted">{{ displayStatTime(activeConflict.context?.source?.stats) }}</p>
+                    </div>
                   </div>
 
                   <div v-if="activeConflict.new_metadata" class="conflicts-info-block">
@@ -480,29 +502,24 @@
 
                   <div v-if="activeConflict.new_metadata?.error_message" class="conflicts-info-block">
                     <span class="conflicts-info-label">失败原因</span>
-                    <p class="text-sm text-red-600 font-medium">{{ activeConflict.new_metadata.error_message }}</p>
+                    <p class="conflicts-info-error-text">{{ activeConflict.new_metadata.error_message }}</p>
                   </div>
-                </div>
-              </div>
+                </section>
 
-              <!-- 已存在目录 -->
-              <div class="conflicts-info-card">
-                <div class="conflicts-info-card-header">
-                  <Archive class="w-4 h-4 text-slate-400" />
-                  <h3>{{ isFailureConflict(activeConflict) ? '处理建议' : '已存在目录' }}</h3>
-                </div>
-                <div class="conflicts-info-card-body">
+                <section v-if="!isFailureConflict(activeConflict)" class="conflicts-detail-section">
+                  <h4 class="conflicts-detail-section-title">
+                    <Archive class="w-4 h-4 text-slate-400" />
+                    已存在目录
+                  </h4>
+
                   <div class="conflicts-info-section">
-                    <span class="conflicts-info-label">{{ isFailureConflict(activeConflict) ? '建议动作' : '目标路径' }}</span>
-                    <div v-if="!isFailureConflict(activeConflict)" class="conflicts-info-path is-target">
+                    <span class="conflicts-info-label">目标路径</span>
+                    <div class="conflicts-info-path is-target">
                       {{ getExistingConflictPath(activeConflict) }}
                     </div>
-                    <p v-else class="conflicts-info-suggest">
-                      {{ isExtractFailed(activeConflict) ? '可直接跳过并删除当前失败来源；如果你已经补充了正确密码或完整分卷，建议回到任务列表重新处理。' : '可先根据失败原因修复来源内容后重试；如果确认不再处理，也可以直接跳过删除当前失败来源。' }}
-                    </p>
                   </div>
 
-                  <div v-if="!isFailureConflict(activeConflict)" class="conflicts-info-cols">
+                  <div class="conflicts-info-cols">
                     <div>
                       <span class="conflicts-info-label">落地位置</span>
                       <p class="conflicts-info-value flex items-center gap-1.5">
@@ -516,39 +533,14 @@
                       <span class="conflicts-info-label">大小</span>
                       <p class="conflicts-info-value">{{ displayStatSize(activeConflict.context?.existing?.stats) }}</p>
                     </div>
-                  </div>
-
-                  <div class="conflicts-info-block conflicts-info-cols">
                     <div>
-                      <span class="conflicts-info-label">{{ isFailureConflict(activeConflict) ? '记录时间' : '检测时间' }}</span>
-                      <p class="conflicts-info-value-muted">{{ formatDate(activeConflict.created_at) }}</p>
-                    </div>
-                    <div v-if="!isFailureConflict(activeConflict)">
                       <span class="conflicts-info-label">目标创建时间</span>
                       <p class="conflicts-info-value-muted">{{ displayStatTime(activeConflict.context?.existing?.stats) }}</p>
                     </div>
                   </div>
-                </div>
+                </section>
               </div>
-            </div>
-
-            <!-- 帮助说明 -->
-            <div class="conflicts-help-card">
-              <h4 class="conflicts-help-title">
-                <Info class="w-4 h-4 text-slate-400" />
-                {{ isFailureConflict(activeConflict) ? '失败说明' : '动作说明' }}
-              </h4>
-              <ul v-if="!isFailureConflict(activeConflict)" class="conflicts-help-list">
-                <li><strong>保留新版：</strong>先经过删除审查，再安全替换已有目录，失败时走最小化破坏路径。</li>
-                <li><strong>跳过：</strong>不解压，直接删除当前压缩包或待处理目录，原有目录保持不变。</li>
-                <li><strong>合并：</strong>进入组件文件夹对比视图，逐文件决定保留新文件、旧文件或删除。</li>
-              </ul>
-              <ul v-else class="conflicts-help-list">
-                <li>{{ isExtractFailed(activeConflict) ? '当前问题发生在解压阶段，不代表库存中已经有重复作品。' : '当前问题发生在导入处理链路中，不代表库存中已经有重复作品。' }}</li>
-                <li>{{ isExtractFailed(activeConflict) ? '如果错误是密码不正确、分卷缺失或压缩包损坏，修复后重新处理通常更合适。' : '如果错误发生在元数据、重命名、过滤或分类阶段，优先按当前失败原因排查对应链路。' }}</li>
-                <li>如果确认不再处理这个包，可以直接点击"跳过"删除失败来源。</li>
-              </ul>
-            </div>
+            </section>
           </div>
         </section>
 
@@ -605,131 +597,117 @@
       @cancel="handleVolumeRenameCancel"
     />
 
-    <!-- 文件名预览弹窗：对齐库存页目录内容窗口，保留玻璃外壳 + 工具栏 + 文件树列布局。 -->
+    <!-- 文件名预览弹窗：Teleport + Tailwind 玻璃壳，与社团补全下载预览同款风格。 -->
     <Teleport to="body">
       <Transition name="fp-dlg-fade">
-        <section
+        <div
           v-if="fpDlgVisible"
-          class="pointer-events-none fixed inset-0 z-[4000] flex items-center justify-center p-6 max-[900px]:p-3"
+          class="fp-dlg-overlay fixed inset-0 z-[4000] flex items-center justify-center p-6 max-[900px]:p-3"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="fp-dlg-title"
+          @click.self="fpDlgClose"
         >
-          <!-- 半透明遮罩（点击=取消） -->
-          <div
-            class="fp-preview-overlay pointer-events-auto absolute inset-0"
-            @click="fpDlgClose"
-          />
-          <div
-            class="fp-dlg-panel pointer-events-auto relative flex max-h-[calc(100vh-48px)] w-[min(1120px,calc(100vw-48px))] flex-col overflow-hidden rounded-3xl max-[900px]:max-h-[calc(100vh-24px)] max-[900px]:max-w-[calc(100vw-24px)]"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="fp-dlg-title"
-          >
-            <header class="fp-window-header flex flex-shrink-0 items-center justify-between px-6 py-4">
+          <div class="fp-dlg-window relative w-full max-w-[1100px] max-h-[calc(100vh-3rem)] max-[900px]:max-h-[calc(100vh-24px)] flex flex-col rounded-3xl overflow-hidden" @mousedown.stop>
+            <!-- Header -->
+            <header class="fp-dlg-header flex items-start justify-between gap-4 px-7 pt-6 pb-4 flex-none">
               <div class="min-w-0 flex-1">
-                <div class="fp-title-row">
-                  <span class="fp-title-icon">
-                    <FileSearch class="h-5 w-5" :stroke-width="2.1" />
+                <div class="flex items-center flex-wrap gap-2.5">
+                  <h1 id="fp-dlg-title" class="fp-dlg-title text-2xl font-bold tracking-tight">文件名预览</h1>
+                  <span v-if="fpDlgData?.file_count" class="fp-dlg-pill"><b>{{ fpDlgData.file_count }}</b> 个文件</span>
+                  <span v-if="fpDlgGarbledCount" class="fp-dlg-pill is-amber">
+                    <AlertTriangle :size="12" :stroke-width="2.4" />
+                    <b>{{ fpDlgGarbledCount }}</b> 项乱码
                   </span>
-                  <h3 id="fp-dlg-title" class="title m-0 truncate text-lg font-bold tracking-tight text-slate-900">文件名预览</h3>
-                  <span class="fp-badge">{{ fpDlgData?.file_count || 0 }} 个文件</span>
+                  <span
+                    v-if="Number(fpDlgData?.repaired_count || 0) > 0"
+                    class="fp-dlg-pill is-emerald"
+                    title="后端按 surrogate / mojibake 反解，已直接展示真实文件名"
+                  >
+                    <CheckCircle2 :size="12" :stroke-width="2.4" />
+                    自动反解 <b>{{ Number(fpDlgData?.repaired_count || 0) }}</b> 项
+                  </span>
                 </div>
-                <p class="mt-1 truncate text-sm text-slate-500">
+                <p class="fp-dlg-subtitle text-sm m-0 mt-1.5">
                   {{ fpDlgGarbledCount
                     ? `仍有 ${fpDlgGarbledCount} 项疑似乱码，可取消后为该压缩包单独换编码`
                     : '当前编码下未发现明显乱码，确认后会按该结果继续重试' }}
                 </p>
               </div>
-              <div class="fp-count-pill">
-                {{ fpDlgTreeRows.length }} / {{ fpDlgData?.file_count || 0 }} 行
-              </div>
               <button
                 type="button"
-                class="interactive-chip close-button inline-flex size-10 flex-shrink-0 items-center justify-center rounded-full text-slate-400 hover:text-slate-700"
+                class="fp-dlg-close inline-flex size-9 items-center justify-center rounded-full flex-shrink-0"
                 title="关闭"
                 @click="fpDlgClose"
               >
-                <X class="h-5 w-5 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:rotate-90" :stroke-width="2.2" />
+                <X :size="18" :stroke-width="2" />
               </button>
             </header>
 
-            <div v-if="fpDlgData" class="fp-dlg-body flex min-h-0 flex-1 flex-col px-6 pb-5">
-              <div class="fp-toolbar-row flex items-center justify-between gap-3 border-b border-slate-200/70 py-3">
-                <div class="flex min-w-0 flex-wrap items-center gap-2">
-                  <span class="fp-dlg-meta-chip">
-                    <span class="fp-dlg-meta-chip-label">编码</span>
-                    <b>{{ fpDlgData.encoding || 'auto' }}</b>
-                  </span>
-                  <span class="fp-dlg-meta-chip">
-                    <span class="fp-dlg-meta-chip-label">codepage</span>
-                    <b>{{ fpDlgData.codepage || 'auto' }}</b>
-                  </span>
-                  <span class="fp-dlg-meta-chip">
-                    <span class="fp-dlg-meta-chip-label">密码</span>
-                    <b>{{ fpDlgData.password_source || '未指定' }}</b>
-                  </span>
-                </div>
-                <div v-if="fpDlgGarbledCount || Number(fpDlgData?.repaired_count || 0) > 0" class="flex flex-shrink-0 items-center gap-2">
-                  <span v-if="fpDlgGarbledCount" class="fp-dlg-tag is-amber">
-                    <AlertTriangle class="h-3 w-3" />
-                    {{ fpDlgGarbledCount }} 项乱码
-                  </span>
-                  <span
-                    v-if="Number(fpDlgData?.repaired_count || 0) > 0"
-                    class="fp-dlg-tag is-emerald"
-                    title="后端已按 surrogate / mojibake 反解，直接展示真实文件名"
-                  >
-                    <CheckCircle2 class="h-3 w-3" />
-                    自动反解 {{ Number(fpDlgData?.repaired_count || 0) }} 项
-                  </span>
-                </div>
-              </div>
-              <section class="fp-dlg-tree-shell mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl">
-                <div class="fp-tree-head fp-tree-grid items-center gap-3 border-b border-slate-200/70 px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400">
-                  <span>文件名</span>
-                  <span class="fp-tree-col-size">大小</span>
-                  <span class="fp-tree-col-status">状态</span>
-                </div>
-                <div class="fp-dlg-tree-scroll fp-detail-scroll">
-                  <div
-                    v-for="row in fpDlgTreeRows"
-                    :key="row.key"
-                    class="fp-tree-row fp-tree-grid"
-                    :class="{ 'is-dir': row.type === 'dir', 'is-garbled': row.isGarbled }"
-                  >
-                    <div class="fp-tree-main flex min-w-0 items-center gap-2" :style="{ paddingLeft: `${row.depth * 16}px` }">
-                      <span class="fp-tree-expander-spacer" />
-                      <component :is="fpRowIcon(row)" :size="17" class="fp-tree-icon" :style="fpRowIconStyle(row)" />
-                      <div class="min-w-0 flex-1">
-                        <div class="fp-tree-name truncate text-[13px] font-medium text-slate-800">{{ row.displayName }}</div>
-                        <div class="fp-tree-sub truncate text-[11px] text-slate-400">{{ row.displayPath }}</div>
-                      </div>
-                    </div>
-                    <span class="fp-tree-size">{{ row.type === 'dir' ? '—' : (row.sizeText || '—') }}</span>
-                    <span class="fp-tree-status" :class="fpRowStatusClass(row)">{{ fpRowStatus(row) }}</span>
-                  </div>
-                  <div v-if="!fpDlgTreeRows.length" class="fp-dlg-tree-empty">压缩包内未读取到文件清单</div>
-                </div>
-              </section>
+            <!-- 元数据 chip rail：编码 / codepage / 密码 / 行计数 -->
+            <div v-if="fpDlgData" class="fp-dlg-tabs px-7 pt-1 pb-3 flex items-center flex-wrap gap-1.5 flex-none">
+              <span class="fp-dlg-pill">
+                <span class="fp-dlg-pill-label">编码</span>
+                <b>{{ fpDlgData.encoding || 'auto' }}</b>
+              </span>
+              <span class="fp-dlg-pill">
+                <span class="fp-dlg-pill-label">codepage</span>
+                <b>{{ fpDlgData.codepage || 'auto' }}</b>
+              </span>
+              <span class="fp-dlg-pill">
+                <span class="fp-dlg-pill-label">密码</span>
+                <b>{{ fpDlgData.password_source || '未指定' }}</b>
+              </span>
+              <span class="fp-dlg-pill ml-auto">
+                <b>{{ fpDlgTreeRows.length }}</b> / {{ fpDlgData.file_count || 0 }} 行
+              </span>
             </div>
 
-            <footer class="fp-dlg-footer flex flex-shrink-0 items-center justify-end gap-2 border-t border-slate-200/70 px-6 py-4">
+            <!-- Body：文件树直接平铺，无内嵌卡片 -->
+            <div v-if="fpDlgData" class="fp-dlg-body flex-1 min-h-0 flex flex-col px-7 pb-3 min-[900px]:gap-0">
+              <div class="fp-dlg-tree-head fp-tree-grid px-3 py-2.5 text-xs font-semibold uppercase tracking-[0.12em] text-slate-400 flex-none">
+                <span>文件名</span>
+                <span class="fp-tree-col-size">大小</span>
+                <span class="fp-tree-col-status">状态</span>
+              </div>
+              <div class="fp-dlg-tree-scroll fp-detail-scroll flex-1 overflow-auto px-2 pb-2">
+                <div
+                  v-for="row in fpDlgTreeRows"
+                  :key="row.key"
+                  class="fp-tree-row fp-tree-grid"
+                  :class="{ 'is-dir': row.type === 'dir', 'is-garbled': row.isGarbled }"
+                >
+                  <div class="fp-tree-main flex min-w-0 items-center gap-2" :style="{ paddingLeft: `${row.depth * 16}px` }">
+                    <span class="fp-tree-expander-spacer" />
+                    <component :is="fpRowIcon(row)" :size="17" class="fp-tree-icon" :style="fpRowIconStyle(row)" />
+                    <div class="min-w-0 flex-1">
+                      <div class="fp-tree-name truncate text-[13px] font-medium text-slate-800">{{ row.displayName }}</div>
+                      <div class="fp-tree-sub truncate text-[11px] text-slate-400">{{ row.displayPath }}</div>
+                    </div>
+                  </div>
+                  <span class="fp-tree-size">{{ row.type === 'dir' ? '—' : (row.sizeText || '—') }}</span>
+                  <span class="fp-tree-status" :class="fpRowStatusClass(row)">{{ fpRowStatus(row) }}</span>
+                </div>
+                <div v-if="!fpDlgTreeRows.length" class="fp-dlg-tree-empty">压缩包内未读取到文件清单</div>
+              </div>
+            </div>
+
+            <!-- Footer -->
+            <footer class="fp-dlg-footer flex items-center justify-end gap-3 px-7 py-5 flex-none">
               <button
                 v-if="fpDlgCancelText"
                 type="button"
-                class="fp-action-card"
+                class="fp-dlg-btn-secondary px-6 h-10 rounded-xl font-bold"
                 @click="fpDlgCancel"
-              >
-                {{ fpDlgCancelText }}
-              </button>
+              >{{ fpDlgCancelText }}</button>
               <button
                 type="button"
-                :class="['fp-action-card', fpDlgGarbledCount ? 'fp-action-card-warn' : 'fp-action-card-primary']"
+                class="fp-dlg-btn-primary px-7 h-10 rounded-xl font-bold text-white"
                 @click="fpDlgConfirm"
-              >
-                {{ fpDlgConfirmText || '确认' }}
-              </button>
+              >{{ fpDlgConfirmText || '确认' }}</button>
             </footer>
           </div>
-        </section>
+        </div>
       </Transition>
     </Teleport>
   </div>
@@ -970,9 +948,8 @@ function fpRowStatusClass(row) {
   return 'is-normal'
 }
 
-// Teleport 自绘弹窗：关闭流程统一走 cancel/confirm 两个出口，主动 hide + 清掉 data，
-// 不再依赖 el-dialog 的 @closed 回调。Promise 必须在 hide 之前 resolve，确保连续
-// 重试场景下连环调用不会卡在 stale resolver 上。
+// Teleport 自绘弹窗：关闭流程统一走 cancel/confirm 两个出口，主动 hide + 清掉 data。
+// Promise 必须在 hide 之前 resolve，确保连续重试场景下连环调用不会卡在 stale resolver 上。
 function _fpDlgFinish(kind) {
   const resolveFn = fpDlgResolveFn
   const rejectFn = fpDlgRejectFn
@@ -1066,7 +1043,7 @@ watch(conflictFilter, () => {
 
 onMounted(() => {
   fetchConflicts()
-  // ESC 关闭文件名预览弹窗（Teleport 自绘，没有 el-dialog 自动接管）
+  // ESC 关闭文件名预览弹窗。
   window.addEventListener('keydown', _onFpDlgKeydown)
 })
 
@@ -1478,9 +1455,10 @@ function getConflictStatusClass(conflict) {
 }
 
 function getConflictStatusChipClass(conflict) {
-  if (isConflictRetrying(conflict)) return 'lib-chip-success'
-  if (isConflictProcessing(conflict)) return 'lib-chip-info'
-  return 'lib-chip-info'
+  if (isConflictRetrying(conflict)) return 'is-retry'
+  if (isKeepNewProcessing(conflict)) return 'is-save'
+  if (isConflictProcessing(conflict)) return 'is-processing'
+  return 'is-pending'
 }
 
 function isConflictSelected(conflictId) {
@@ -2696,13 +2674,13 @@ button:disabled {
   border-color: rgba(15, 23, 42, 0.18);
   background: #fff;
   color: #0f172a;
-  transform: translateY(-1px);
+  transform: translateY(-2px) scale(1.02);
   box-shadow: 0 6px 16px -6px rgba(15, 23, 42, 0.18);
 }
 .conflicts-refresh-btn:hover:not(:disabled) :deep(svg) {
   transform: rotate(180deg);
 }
-.conflicts-refresh-btn:active:not(:disabled) { transform: translateY(0) scale(0.97); }
+.conflicts-refresh-btn:active:not(:disabled) { transform: scale(0.96); }
 .conflicts-refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* 信息条：纯白 + 极淡黑灰边 + 一层柔阴影 */
@@ -3104,12 +3082,12 @@ button:disabled {
 .conflicts-list-card {
   position: relative;
   display: flex;
-  min-height: 56px;
+  min-height: 92px;
   width: 100%;
   flex: 0 0 auto;
   flex-direction: column;
   text-align: left;
-  padding: 12px 14px;
+  padding: 14px;
   border-radius: 10px;
   border: 1px solid transparent;
   background: transparent;
@@ -3134,13 +3112,28 @@ button:disabled {
   color: #0f172a;
 }
 
+.conflicts-list-card-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, max-content);
+  grid-template-rows: 24px 26px;
+  align-items: center;
+  gap: 8px 16px;
+  min-width: 0;
+  width: 100%;
+}
+
+.conflicts-list-card-main {
+  display: contents;
+}
+
 .conflicts-list-card-row {
+  grid-column: 1;
+  grid-row: 1;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   min-width: 0;
   gap: 8px;
-  margin-bottom: 6px;
 }
 .conflicts-list-card-title {
   min-width: 0;
@@ -3157,11 +3150,14 @@ button:disabled {
   text-overflow: ellipsis;
 }
 .conflicts-list-card-meta {
+  grid-column: 1;
+  grid-row: 2;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
+  flex-wrap: nowrap;
   min-width: 0;
-  gap: 8px;
+  gap: 7px;
   font-size: 11.5px;
 }
 .conflicts-list-card-type {
@@ -3176,11 +3172,207 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+.conflicts-list-card-aside {
+  display: contents;
+}
+
+.conflicts-list-card-status-row {
+  grid-column: 2;
+  grid-row: 1;
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  justify-self: end;
+}
+
+.conflicts-list-card-date-row {
+  grid-column: 2;
+  grid-row: 2;
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  justify-self: end;
+}
+
 .conflicts-list-card-date {
   flex-shrink: 0;
   color: #94a3b8;
   font-size: 11px;
-  margin-left: auto;
+  line-height: 1;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.conflicts-list-source-chip {
+  flex-shrink: 0;
+  justify-content: center;
+}
+
+.conflicts-list-status-chip {
+  position: relative;
+  display: inline-flex;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  padding: 0 10px 0 9px;
+  border: 1px solid rgba(96, 165, 250, 0.42);
+  background: rgba(239, 246, 255, 0.82);
+  color: #1d4ed8;
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.78),
+    0 8px 18px rgba(37, 99, 235, 0.08);
+}
+
+.conflicts-list-status-chip::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14);
+}
+
+.conflicts-list-status-chip::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(110deg, transparent 0%, rgba(255, 255, 255, 0.72) 45%, transparent 68%);
+  transform: translateX(-130%);
+}
+
+.conflicts-list-status-chip.is-running {
+  border-color: rgba(59, 130, 246, 0.5);
+  background: rgba(239, 246, 255, 0.94);
+  color: #1d4ed8;
+  animation: conflict-status-chip-breathe 1.8s ease-in-out infinite;
+}
+
+.conflicts-list-status-chip.is-running::before {
+  animation: conflict-status-dot-pulse 1.05s ease-in-out infinite;
+}
+
+.conflicts-list-status-chip.is-running::after {
+  animation: conflict-status-chip-sheen 1.7s cubic-bezier(0.34, 1.56, 0.64, 1) infinite;
+}
+
+.conflicts-list-status-chip.is-idle {
+  border-color: rgba(148, 163, 184, 0.24);
+  background: rgba(248, 250, 252, 0.82);
+  color: #64748b;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.conflicts-list-status-chip.is-idle::before {
+  background: #94a3b8;
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.12);
+}
+
+.conflicts-list-status-chip.is-save {
+  border-color: rgba(59, 130, 246, 0.5);
+  background: rgba(239, 246, 255, 0.94);
+  color: #1d4ed8;
+}
+
+.conflicts-list-status-chip.is-retry {
+  border-color: rgba(129, 140, 248, 0.5);
+  background: rgba(238, 242, 255, 0.94);
+  color: #4338ca;
+}
+
+.conflicts-list-status-chip.is-retry::before {
+  background: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.14);
+}
+
+.conflicts-list-status-chip.is-processing {
+  border-color: rgba(14, 165, 233, 0.48);
+  background: rgba(240, 249, 255, 0.94);
+  color: #0369a1;
+}
+
+.conflicts-list-status-chip.is-processing::before {
+  background: #0ea5e9;
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.14);
+}
+
+.conflicts-list-status-chip.is-pending {
+  border-color: rgba(148, 163, 184, 0.28);
+  background: rgba(248, 250, 252, 0.86);
+  color: #64748b;
+}
+
+@keyframes conflict-status-chip-breathe {
+  0%, 100% {
+    transform: translateY(0);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.78),
+      0 8px 18px rgba(37, 99, 235, 0.08);
+  }
+  50% {
+    transform: translateY(-1px);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.88),
+      0 10px 22px rgba(37, 99, 235, 0.14);
+  }
+}
+
+@keyframes conflict-status-dot-pulse {
+  0%, 100% {
+    opacity: 0.72;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+}
+
+@keyframes conflict-status-chip-sheen {
+  0% { transform: translateX(-130%); }
+  58%, 100% { transform: translateX(130%); }
+}
+
+.conflicts-list-card-state-icon {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid rgba(59, 130, 246, 0.24);
+  background: rgba(239, 246, 255, 0.82);
+  color: #2563eb;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 6px 14px rgba(59, 130, 246, 0.12);
+  backdrop-filter: blur(10px) saturate(130%);
+  -webkit-backdrop-filter: blur(10px) saturate(130%);
+}
+
+.conflicts-list-card-state-icon.is-retry {
+  border-color: rgba(129, 140, 248, 0.3);
+  background: rgba(238, 242, 255, 0.82);
+  color: #4f46e5;
+}
+
+.conflicts-list-card-state-icon.is-retry svg {
+  animation: retry-card-spin 1s linear infinite;
 }
 
 .conflicts-list-card-progress {
@@ -3231,16 +3423,8 @@ button:disabled {
   flex-shrink: 0;
   padding: 22px 26px;
   border-bottom: 1px solid rgba(15, 23, 42, 0.06);
-  background: #f8fafc;
+  background: #fff;
   overflow: hidden;
-}
-.conflicts-detail-bg-glyph {
-  position: absolute;
-  top: -20px;
-  right: -20px;
-  color: #cbd5e1;
-  opacity: 0.08;
-  pointer-events: none;
 }
 .conflicts-detail-header-inner {
   position: relative;
@@ -3756,108 +3940,180 @@ button:disabled {
    - 文件树沿用 fp-tree-row（已对齐 TaskDetailPane.task-file-tree）
    ============================================================ */
 
+/* ============================================================
+   文件名预览弹窗 fp-dlg-* 玻璃壳风格（对齐社团补全下载预览）
+   ----------------------------------------------------------------
+   单层半透白 backdrop-blur shell + 直接平铺文件树（无嵌套卡片）+
+   主操作 #111827 深色实心 / 次操作半透灰。
+============================================================ */
+
 /* 1. 入场 / 出场过渡：fade + scale，遮罩同步淡入淡出 */
 .fp-dlg-fade-enter-active,
 .fp-dlg-fade-leave-active { transition: opacity 0.22s ease; }
 .fp-dlg-fade-enter-from,
 .fp-dlg-fade-leave-to { opacity: 0; }
-.fp-dlg-fade-enter-active .fp-dlg-panel,
-.fp-dlg-fade-leave-active .fp-dlg-panel { transition: transform 0.26s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.22s ease, filter 0.22s ease; }
-.fp-dlg-fade-enter-from .fp-dlg-panel,
-.fp-dlg-fade-leave-to .fp-dlg-panel { transform: translateY(8px) scale(0.97); opacity: 0; filter: blur(1px); }
+.fp-dlg-fade-enter-active .fp-dlg-window,
+.fp-dlg-fade-leave-active .fp-dlg-window { transition: transform 0.26s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.22s ease, filter 0.22s ease; }
+.fp-dlg-fade-enter-from .fp-dlg-window,
+.fp-dlg-fade-leave-to .fp-dlg-window { transform: translateY(8px) scale(0.97); opacity: 0; filter: blur(1px); }
 
-/* 2. 标签 chip（hero 区右侧的 "N 项乱码 / 自动反解 N 项"） */
-.fp-dlg-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 9px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 700;
-  white-space: nowrap;
-  letter-spacing: 0.01em;
-}
-.fp-dlg-tag.is-amber {
-  background: linear-gradient(180deg, rgba(254, 243, 199, 0.92) 0%, rgba(253, 230, 138, 0.86) 100%);
-  border: 1px solid rgba(252, 211, 77, 0.7);
-  color: #92400e;
-  box-shadow: 0 1px 3px rgba(217, 119, 6, 0.16);
-}
-.fp-dlg-tag.is-emerald {
-  background: rgba(240, 249, 255, 0.62);
-  border: 1px solid rgba(125, 211, 252, 0.7);
-  color: #0369a1;
-  box-shadow: none;
+/* 2. Overlay：半透 slate-900 + blur(6) */
+.fp-dlg-overlay {
+  background: rgba(15, 23, 42, 0.32);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
 }
 
-/* 3. Meta chip（body 顶部一排 "编码 / codepage / 密码 / 文件数"） */
-.fp-dlg-meta-chip {
+/* 3. Window：单层半透白玻璃壳 */
+.fp-dlg-window {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.74) 0%, rgba(255, 255, 255, 0.62) 100%);
+  backdrop-filter: blur(20px) saturate(130%);
+  -webkit-backdrop-filter: blur(20px) saturate(130%);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow:
+    0 24px 60px rgba(15, 23, 42, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+/* 4. Header / Tabs / Body / Footer：仅 1px 边框分隔 */
+.fp-dlg-header { border-bottom: 1px solid rgba(15, 23, 42, 0.06); }
+.fp-dlg-tabs { border-bottom: 1px solid rgba(15, 23, 42, 0.04); }
+.fp-dlg-footer { border-top: 1px solid rgba(15, 23, 42, 0.06); }
+
+/* 5. Title / Subtitle */
+.fp-dlg-title {
+  margin: 0;
+  color: #0f172a;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+
+.fp-dlg-subtitle {
+  color: #64748b;
+  line-height: 1.5;
+}
+
+/* 6. Close 按钮：透明 ghost + hover rotate90 */
+.fp-dlg-close {
+  border: 0;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: background-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+
+.fp-dlg-close:hover {
+  background: rgba(241, 245, 249, 0.72);
+  color: #334155;
+}
+
+.fp-dlg-close svg {
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.fp-dlg-close:hover svg {
+  transform: rotate(90deg);
+}
+
+/* 7. Pill：head pill + tab chip 都用同一套半透白 */
+.fp-dlg-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 11px;
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid rgba(226, 232, 240, 0.78);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.6);
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  font-size: 12px;
-  color: #334155;
+  background: rgba(255, 255, 255, 0.55);
+  color: #475569;
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
 }
-.fp-dlg-meta-chip-label {
+
+.fp-dlg-pill b {
+  color: #0f172a;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.fp-dlg-pill.is-amber {
+  border-color: rgba(252, 211, 77, 0.62);
+  background: rgba(254, 243, 199, 0.85);
+  color: #92400e;
+}
+
+.fp-dlg-pill.is-amber b { color: #92400e; }
+
+.fp-dlg-pill.is-emerald {
+  border-color: rgba(45, 212, 191, 0.5);
+  background: rgba(236, 253, 245, 0.85);
+  color: #0f766e;
+}
+
+.fp-dlg-pill.is-emerald b { color: #0f766e; }
+
+.fp-dlg-pill-label {
   color: rgba(29, 29, 31, 0.54);
   font-size: 10.5px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
-.fp-dlg-meta-chip b {
-  color: #0f172a;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
+
+/* 8. Tree head + scroll：直接平铺，无内嵌卡片 */
+.fp-dlg-tree-head {
+  border-bottom: 1px solid rgba(15, 23, 42, 0.04);
 }
 
-/* 4. 文件树外壳（半透明白卡 + 顶底 fade mask + 内嵌高光） */
-.fp-dlg-tree-shell {
-  position: relative;
-  flex: 1;
-  min-height: 200px;
-  max-height: 420px;
-  overflow: hidden;
-  border-radius: 16px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  background: rgba(255, 255, 255, 0.62);
-  box-shadow:
-    0 10px 28px rgba(15, 23, 42, 0.04),
-    inset 0 1px 0 rgba(255, 255, 255, 0.96);
-}
-.fp-dlg-tree-shell::before,
-.fp-dlg-tree-shell::after {
-  position: absolute;
-  right: 0;
-  left: 0;
-  z-index: 2;
-  height: 18px;
-  pointer-events: none;
-  content: '';
-}
-.fp-dlg-tree-shell::before {
-  top: 0;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.86) 0%, rgba(255, 255, 255, 0));
-}
-.fp-dlg-tree-shell::after {
-  bottom: 0;
-  background: linear-gradient(0deg, rgba(255, 255, 255, 0.86) 0%, rgba(255, 255, 255, 0));
-}
 .fp-dlg-tree-scroll {
-  height: 100%;
-  max-height: 420px;
-  overflow: auto;
-  padding: 12px;
   scrollbar-width: thin;
-  scrollbar-color: rgba(148, 163, 184, 0.65) transparent;
+  scrollbar-color: rgba(148, 163, 184, 0.55) transparent;
 }
+
+/* 9. Buttons：与社团预览 primary-cta / secondary-cta 同款 */
+.fp-dlg-btn-primary,
+.fp-dlg-btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  cursor: pointer;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  font-size: 13px;
+  transition: background-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.fp-dlg-btn-secondary {
+  background: rgba(17, 24, 39, 0.06);
+  color: #334155;
+}
+
+.fp-dlg-btn-secondary:hover {
+  background: rgba(15, 23, 42, 0.1);
+  color: #0f172a;
+  transform: translateY(-2px) scale(1.02);
+}
+
+.fp-dlg-btn-primary {
+  background: #111827;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.16);
+}
+
+.fp-dlg-btn-primary:hover {
+  background: #0f172a;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.22);
+  transform: translateY(-2px) scale(1.02);
+}
+
+.fp-dlg-btn-primary:active,
+.fp-dlg-btn-secondary:active { transform: scale(0.96); }
+
 .fp-dlg-tree-empty {
   padding: 36px 12px;
   text-align: center;
@@ -3877,142 +4133,6 @@ button:disabled {
   background: rgba(100, 116, 139, 0.68);
 }
 
-/* 库存页目录窗口风格：玻璃外壳、工具栏、三列文件树。 */
-.fp-preview-overlay {
-  background:
-    radial-gradient(circle at 18% 16%, rgba(191, 219, 254, 0.26), transparent 28%),
-    radial-gradient(circle at 82% 14%, rgba(186, 230, 253, 0.22), transparent 24%),
-    radial-gradient(circle at 82% 82%, rgba(221, 239, 255, 0.2), transparent 26%),
-    rgba(241, 245, 249, 0.34);
-  backdrop-filter: blur(20px) saturate(130%);
-  -webkit-backdrop-filter: blur(20px) saturate(130%);
-}
-
-.fp-dlg-panel {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.34)),
-    radial-gradient(circle at top left, rgba(191, 219, 254, 0.18), transparent 34%),
-    radial-gradient(circle at top right, rgba(186, 230, 253, 0.14), transparent 28%);
-  border: 1px solid rgba(255, 255, 255, 0.42);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.56),
-    0 28px 80px rgba(15, 23, 42, 0.14);
-  backdrop-filter: blur(28px) saturate(155%);
-  -webkit-backdrop-filter: blur(28px) saturate(155%);
-}
-
-.fp-dlg-panel::before {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  content: '';
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.22), transparent 30%, rgba(255, 255, 255, 0.08) 65%, transparent 100%);
-  opacity: 0.9;
-}
-
-.fp-window-header,
-.fp-dlg-body,
-.fp-dlg-footer {
-  position: relative;
-  z-index: 1;
-}
-
-.fp-window-header {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.4);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.06));
-}
-
-.fp-title-row {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 10px;
-}
-
-.fp-title-icon {
-  display: inline-flex;
-  width: 40px;
-  height: 40px;
-  flex: 0 0 40px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.58);
-  background: rgba(255, 255, 255, 0.42);
-  color: #334155;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.42),
-    0 8px 22px rgba(15, 23, 42, 0.06);
-}
-
-.fp-badge,
-.fp-count-pill {
-  flex: 0 0 auto;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.fp-badge {
-  border: 1px solid rgba(255, 255, 255, 0.56);
-  background: rgba(255, 255, 255, 0.46);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.38);
-  padding: 3px 10px;
-  color: #475569;
-}
-
-.fp-count-pill {
-  margin-right: 10px;
-  border: 1px solid rgba(147, 197, 253, 0.56);
-  background: rgba(239, 246, 255, 0.4);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.44),
-    0 10px 28px rgba(59, 130, 246, 0.12);
-  padding: 4px 12px;
-  color: #1d4ed8;
-}
-
-.fp-dlg-panel .close-button {
-  cursor: pointer;
-  background: rgba(255, 255, 255, 0.34);
-  border: 1px solid rgba(255, 255, 255, 0.52);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.34),
-    0 6px 18px rgba(15, 23, 42, 0.05);
-  transition: transform 0.16s ease, background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
-}
-
-.fp-dlg-panel .close-button:hover {
-  background: rgba(255, 255, 255, 0.58);
-  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.08);
-  transform: translateY(-1px);
-}
-
-.fp-toolbar-row {
-  border-bottom-color: rgba(255, 255, 255, 0.34) !important;
-}
-
-.fp-dlg-tree-shell {
-  max-height: none;
-  border: 1px solid rgba(255, 255, 255, 0.54);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.46), rgba(255, 255, 255, 0.26));
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.42),
-    0 20px 48px rgba(15, 23, 42, 0.07);
-  backdrop-filter: blur(20px) saturate(140%);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
-}
-
-.fp-dlg-tree-shell::before,
-.fp-dlg-tree-shell::after {
-  display: none;
-}
-
-.fp-tree-head {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.12));
-  border-bottom-color: rgba(255, 255, 255, 0.34) !important;
-}
-
 .fp-tree-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 96px 92px;
@@ -4020,9 +4140,12 @@ button:disabled {
 }
 
 .fp-dlg-tree-scroll {
+  min-height: 0;
   min-height: 280px;
-  max-height: min(56vh, 520px);
-  padding: 8px 16px 12px;
+  max-height: none;
+  padding: 8px 8px 12px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.65) transparent;
 }
 
 .fp-tree-row.fp-tree-grid {
@@ -4128,78 +4251,6 @@ button:disabled {
   border: 1px solid rgba(252, 211, 77, 0.72);
 }
 
-.fp-dlg-footer {
-  background: rgba(255, 255, 255, 0.12);
-  border-top-color: rgba(255, 255, 255, 0.34) !important;
-}
-
-.fp-action-card {
-  display: inline-flex;
-  height: 34px;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 0 14px;
-  cursor: pointer;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.52);
-  background: rgba(255, 255, 255, 0.42);
-  color: #0f172a;
-  font-size: 12px;
-  font-weight: 700;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.34),
-    0 6px 18px rgba(15, 23, 42, 0.05);
-  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease;
-}
-
-.fp-action-card:hover {
-  border-color: rgba(255, 255, 255, 0.72);
-  background: rgba(255, 255, 255, 0.58);
-  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
-  transform: translateY(-1px);
-}
-
-.fp-action-card:active {
-  transform: translateY(0) scale(0.97);
-}
-
-.fp-action-card-primary {
-  border-color: rgba(147, 197, 253, 0.78);
-  background: linear-gradient(180deg, #f8fbff 0%, #edf4ff 100%);
-  color: #1d4ed8;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.92),
-    0 1px 2px rgba(15, 23, 42, 0.04),
-    0 4px 10px rgba(37, 99, 235, 0.08);
-}
-
-.fp-action-card-primary:hover {
-  border-color: rgba(96, 165, 250, 0.82);
-  background: linear-gradient(180deg, #f3f8ff 0%, #dfeeff 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.95),
-    0 6px 14px rgba(37, 99, 235, 0.12);
-}
-
-.fp-action-card-warn {
-  border-color: rgba(251, 191, 36, 0.72);
-  background: linear-gradient(180deg, #fffdfa 0%, #fff4d6 100%);
-  color: #92400e;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.92),
-    0 1px 2px rgba(15, 23, 42, 0.04),
-    0 4px 10px rgba(217, 119, 6, 0.08);
-}
-
-.fp-action-card-warn:hover {
-  border-color: rgba(245, 158, 11, 0.78);
-  background: linear-gradient(180deg, #fff9eb 0%, #fdecc0 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.95),
-    0 6px 14px rgba(217, 119, 6, 0.12);
-}
-
 @media (max-width: 1100px) {
   .conflicts-garbled-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -4208,54 +4259,301 @@ button:disabled {
   .fp-tree-grid { grid-template-columns: minmax(0, 1fr) 72px; }
   .fp-tree-col-status,
   .fp-tree-status { display: none; }
-  .fp-count-pill { display: none; }
 }
 
-/* 双卡网格 */
-.conflicts-detail-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 16px;
-}
-@media (min-width: 1280px) {
-  .conflicts-detail-grid { grid-template-columns: 1fr 1fr; }
-}
-
-/* 信息卡片：纯白 + 极淡黑灰边 */
-.conflicts-info-card {
-  display: flex;
-  flex-direction: column;
-  border-radius: 12px;
-  background: #fff;
-  border: 1px solid rgba(15, 23, 42, 0.06);
+/* ============================================================
+ * 问题作品页面主题：纯白工作台
+ * ============================================================ */
+.conflicts-page {
+  position: relative;
+  padding: 22px 26px 26px;
   overflow: hidden;
+  background: #fff;
 }
-.conflicts-info-card-header {
+
+.conflicts-page :deep(.app-page-header) {
+  margin-bottom: 16px;
+  padding: 4px 2px;
+}
+
+.conflicts-page :deep(.app-page-icon) {
+  width: 46px;
+  height: 46px;
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.46);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.74),
+    0 14px 28px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(14px) saturate(130%);
+  -webkit-backdrop-filter: blur(14px) saturate(130%);
+}
+
+.conflicts-page :deep(.app-page-title) {
+  color: #0f172a;
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.55px;
+}
+
+.conflicts-page :deep(.app-page-subtitle) {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.conflicts-refresh-btn,
+.lib-info-strip,
+.conflicts-list-pane,
+.conflicts-detail-pane,
+.conflicts-empty,
+.conflicts-garbled-card,
+.conflicts-filename-preview {
+  background: #fff;
+  border-color: rgba(15, 23, 42, 0.06);
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.035),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.conflicts-refresh-btn {
+  height: 36px;
+  border-radius: 12px;
+  color: #334155;
+}
+
+.conflicts-refresh-btn:hover {
+  background: #fff;
+  border-color: rgba(15, 23, 42, 0.1);
+  box-shadow:
+    0 8px 18px rgba(15, 23, 42, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.lib-info-strip {
+  margin-bottom: 18px;
+  padding: 18px 22px;
+  border-radius: 22px;
+}
+
+.lib-info-divider {
+  background: linear-gradient(180deg, transparent, rgba(100, 116, 139, 0.18), transparent);
+}
+
+.lib-info-label,
+.conflicts-list-hint,
+.conflicts-list-card-date,
+.conflicts-info-label {
+  color: #8a9bb3;
+}
+
+.lib-info-value b {
+  color: #111827;
+}
+
+.conflicts-main {
+  gap: 18px;
+}
+
+.conflicts-list-pane,
+.conflicts-detail-pane {
+  border-radius: 24px;
+  border-color: rgba(15, 23, 42, 0.06);
+}
+
+.conflicts-list-header,
+.conflicts-detail-header,
+.conflicts-filename-preview-head {
+  background: #fff;
+  border-color: rgba(15, 23, 42, 0.055);
+}
+
+.conflicts-list-title,
+.conflicts-detail-title,
+.conflicts-info-value {
+  color: #111827;
+}
+
+.conflicts-segmented,
+.conflicts-mini-btn,
+.conflicts-batch-btn.is-slate,
+.conflicts-action-btn.is-slate,
+.conflicts-info-path,
+.conflicts-garbled-toolbar,
+.conflicts-garbled-grid div {
+  background: #fff;
+  border-color: rgba(15, 23, 42, 0.06);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.conflicts-segmented-item.is-active {
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow:
+    0 8px 18px rgba(15, 23, 42, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.conflicts-list-scroll {
+  padding: 12px;
+}
+
+.conflicts-list-card {
+  border-radius: 16px;
+  border-color: rgba(255, 255, 255, 0);
+  transition: transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.conflicts-list-card:hover {
+  transform: translateY(-2px);
+  background: #fff;
+  border-color: rgba(15, 23, 42, 0.1);
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
+}
+
+.conflicts-list-card.is-selected {
+  background: #f8fbff;
+  border-color: rgba(147, 197, 253, 0.52);
+}
+
+.conflicts-list-card.is-active {
+  background: #fff;
+  border-color: rgba(96, 165, 250, 0.62);
+  box-shadow:
+    0 12px 24px rgba(37, 99, 235, 0.08),
+    inset 0 0 0 1px rgba(96, 165, 250, 0.18);
+}
+
+.conflicts-detail-header {
+  padding: 24px 28px;
+}
+
+.conflicts-detail-body {
+  padding: 24px 28px 30px;
+}
+
+.conflicts-action-btn,
+.conflicts-batch-btn {
+  border-radius: 14px;
+}
+
+.conflicts-action-btn.is-primary,
+.conflicts-action-btn.is-emerald,
+.conflicts-batch-btn.is-emerald {
+  color: #ffffff;
+  border-color: rgba(17, 24, 39, 0.08);
+  background: #111827;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.18);
+}
+
+.conflicts-action-btn.is-primary:hover:not(:disabled),
+.conflicts-action-btn.is-emerald:hover:not(:disabled),
+.conflicts-batch-btn.is-emerald:hover:not(:disabled) {
+  background: #0f172a;
+  box-shadow: 0 18px 34px rgba(15, 23, 42, 0.24);
+}
+
+.conflicts-action-btn.is-amber {
+  background: rgba(255, 247, 237, 0.74);
+  border-color: rgba(251, 191, 36, 0.46);
+  box-shadow:
+    0 12px 24px rgba(217, 119, 6, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.74);
+}
+
+.conflicts-detail-alert,
+.conflicts-garbled-card {
+  backdrop-filter: blur(14px) saturate(130%);
+  -webkit-backdrop-filter: blur(14px) saturate(130%);
+}
+
+.conflicts-detail-alert.is-warning {
+  background: rgba(254, 243, 199, 0.56);
+}
+
+.conflicts-detail-alert.is-danger,
+.conflicts-error-alert {
+  background: rgba(254, 226, 226, 0.64);
+  backdrop-filter: blur(14px) saturate(130%);
+  -webkit-backdrop-filter: blur(14px) saturate(130%);
+}
+
+.conflicts-detail-panel {
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 16px;
+  background: #fff;
+  overflow: hidden;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.035),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+}
+
+.conflicts-detail-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.055);
+  background: #fff;
+}
+
+.conflicts-detail-panel-title,
+.conflicts-detail-section-title {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 12px 16px;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.05);
-  background: #f8fafc;
+  min-width: 0;
 }
-.conflicts-info-card-header h3 {
+
+.conflicts-detail-panel-title h3,
+.conflicts-detail-section-title {
   margin: 0;
-  font-size: 13px;
-  font-weight: 600;
   color: #334155;
-  letter-spacing: -0.2px;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: -0.1px;
 }
-.conflicts-info-card-body {
-  flex: 1;
-  padding: 16px 18px;
+
+.conflicts-detail-panel-time {
+  flex-shrink: 0;
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.conflicts-detail-panel-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  background: #fff;
+}
+
+@media (min-width: 1280px) {
+  .conflicts-detail-panel-grid { grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr); }
+}
+
+.conflicts-detail-section {
   display: flex;
+  min-width: 0;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
+  padding: 18px 20px 22px;
 }
+
+.conflicts-detail-section + .conflicts-detail-section {
+  border-top: 1px solid rgba(15, 23, 42, 0.055);
+}
+
+@media (min-width: 1280px) {
+  .conflicts-detail-section + .conflicts-detail-section {
+    border-top: 0;
+    border-left: 1px solid rgba(15, 23, 42, 0.055);
+  }
+}
+
 .conflicts-info-section { display: flex; flex-direction: column; gap: 6px; }
 .conflicts-info-block {
-  padding-top: 12px;
-  border-top: 1px solid rgba(15, 23, 42, 0.05);
+  padding-top: 14px;
+  border-top: 1px dashed rgba(15, 23, 42, 0.08);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -4286,23 +4584,18 @@ button:disabled {
   font-size: 12.5px;
   color: #64748b;
 }
-.conflicts-info-suggest {
+.conflicts-info-error-text {
   margin: 0;
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: #f8fafc;
-  border: 1px solid rgba(15, 23, 42, 0.05);
-  font-size: 12.5px;
-  color: #475569;
+  color: #dc2626;
+  font-size: 13px;
+  font-weight: 700;
   line-height: 1.6;
 }
-
-/* 路径展示框 */
 .conflicts-info-path {
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: #f8fafc;
-  border: 1px solid rgba(15, 23, 42, 0.05);
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  border: 0;
   font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
   font-size: 11.5px;
   color: #334155;
@@ -4314,12 +4607,11 @@ button:disabled {
 .conflicts-info-path::-webkit-scrollbar { width: 4px; }
 .conflicts-info-path::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.4); border-radius: 4px; }
 .conflicts-info-path.is-target {
-  background: #e0f2fe;
-  border-color: rgba(2, 132, 199, 0.18);
-  color: #0c4a6e;
+  background: transparent;
+  border-color: transparent;
+  color: #0369a1;
 }
 
-/* 元数据 */
 .conflicts-info-meta-list { display: flex; flex-direction: column; gap: 6px; }
 .conflicts-info-meta-row {
   display: flex;
@@ -4335,35 +4627,166 @@ button:disabled {
 }
 .conflicts-info-meta-val { color: #1e293b; flex: 1; }
 
-/* 帮助卡：纯白 */
-.conflicts-help-card {
-  margin-top: 16px;
-  padding: 16px 20px;
-  border-radius: 12px;
-  background: #fff;
-  border: 1px solid rgba(15, 23, 42, 0.06);
+/* ============================================================
+ * 页面按钮 / 标签统一微调：跟随玻璃主题
+ * ============================================================ */
+.lib-chip {
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.74),
+    0 6px 14px rgba(15, 23, 42, 0.055);
+  backdrop-filter: blur(12px) saturate(130%);
+  -webkit-backdrop-filter: blur(12px) saturate(130%);
 }
-.conflicts-help-title {
-  margin: 0 0 10px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  font-weight: 600;
+
+.lib-chip-info {
+  background: rgba(238, 242, 255, 0.72);
+  color: #3730a3;
+  border-color: rgba(165, 180, 252, 0.48);
+}
+
+.lib-chip-warning {
+  background: rgba(255, 247, 237, 0.78);
+  color: #9a3412;
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
+.lib-chip-success {
+  background: rgba(236, 253, 245, 0.76);
+  color: #047857;
+  border-color: rgba(45, 212, 191, 0.42);
+}
+
+.lib-chip-danger {
+  background: rgba(254, 226, 226, 0.76);
+  color: #b91c1c;
+  border-color: rgba(252, 165, 165, 0.48);
+}
+
+.conflicts-segmented {
+  padding: 4px;
+  border-radius: 14px;
+}
+
+.conflicts-segmented-item {
+  height: 30px;
+  border-radius: 10px;
+  font-weight: 700;
+}
+
+.conflicts-mini-btn,
+.conflicts-batch-btn,
+.conflicts-action-btn,
+.conflicts-refresh-btn {
+  min-width: 0;
+  transform-origin: center;
+}
+
+.conflicts-mini-btn {
+  height: 30px;
+  border-radius: 11px;
+  font-weight: 700;
+  transition: transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.conflicts-mini-btn:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.08);
+}
+
+.conflicts-mini-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.conflicts-batch-btn,
+.conflicts-action-btn {
+  border-radius: 14px;
+  font-weight: 800;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.68),
+    0 12px 24px rgba(15, 23, 42, 0.1);
+}
+
+.conflicts-batch-btn.is-slate,
+.conflicts-action-btn.is-slate {
+  background: rgba(255, 255, 255, 0.58);
   color: #334155;
+  border-color: rgba(255, 255, 255, 0.66);
 }
-.conflicts-help-list {
-  margin: 0;
-  padding-left: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 12.5px;
-  color: #475569;
-  line-height: 1.7;
+
+.conflicts-batch-btn.is-slate:hover:not(:disabled),
+.conflicts-action-btn.is-slate:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.86);
+  color: #0f172a;
+  border-color: rgba(255, 255, 255, 0.82);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.84),
+    0 14px 28px rgba(15, 23, 42, 0.12);
 }
-.conflicts-help-list li::marker { color: #cbd5e1; }
-.conflicts-help-list strong { color: #0f172a; font-weight: 600; }
+
+.conflicts-action-btn.is-primary,
+.conflicts-action-btn.is-emerald,
+.conflicts-batch-btn.is-emerald {
+  color: #fff;
+  background: #111827;
+  border-color: rgba(17, 24, 39, 0.08);
+  box-shadow:
+    0 14px 28px rgba(15, 23, 42, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.conflicts-action-btn.is-primary:hover:not(:disabled),
+.conflicts-action-btn.is-emerald:hover:not(:disabled),
+.conflicts-batch-btn.is-emerald:hover:not(:disabled) {
+  background: #0f172a;
+  box-shadow:
+    0 18px 34px rgba(15, 23, 42, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.conflicts-action-btn.is-amber {
+  background: rgba(255, 247, 237, 0.76);
+  color: #9a3412;
+  border-color: rgba(251, 191, 36, 0.48);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.74),
+    0 12px 24px rgba(217, 119, 6, 0.1);
+}
+
+.conflicts-action-btn.is-amber:hover:not(:disabled) {
+  background: rgba(255, 237, 213, 0.88);
+  border-color: rgba(245, 158, 11, 0.58);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    0 16px 30px rgba(217, 119, 6, 0.14);
+}
+
+.conflicts-action-btn:hover:not(:disabled),
+.conflicts-batch-btn:hover:not(:disabled),
+.conflicts-refresh-btn:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.02);
+}
+
+.conflicts-action-btn:active:not(:disabled),
+.conflicts-batch-btn:active:not(:disabled),
+.conflicts-refresh-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.conflicts-info-path {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.conflicts-info-path.is-target {
+  background: transparent;
+  border-color: transparent;
+}
 
 @keyframes conflicts-fade-in {
   from { opacity: 0; transform: translateY(-4px); }
@@ -4375,9 +4798,10 @@ button:disabled {
  * ============================================================ */
 .processing-conflict-card {
   border-color: rgba(96, 165, 250, 0.62) !important;
+  background: #fff !important;
   box-shadow:
     0 0 0 1px rgba(96, 165, 250, 0.22),
-    0 8px 18px rgba(37, 99, 235, 0.08);
+    0 6px 14px rgba(37, 99, 235, 0.06);
   animation: processing-conflict-glow 1.9s ease-in-out infinite;
 }
 
@@ -4396,22 +4820,15 @@ button:disabled {
 
 .keep-new-conflict-card {
   border-color: rgba(59, 130, 246, 0.78) !important;
-  background:
-    linear-gradient(100deg, rgba(239, 246, 255, 0.92), rgba(255, 255, 255, 0.98) 42%, rgba(219, 234, 254, 0.78)) !important;
+  background: #fff !important;
   box-shadow:
     0 0 0 1px rgba(59, 130, 246, 0.26),
-    0 8px 18px rgba(37, 99, 235, 0.1) !important;
+    0 6px 14px rgba(37, 99, 235, 0.06) !important;
   animation: keep-new-conflict-glow 1.7s ease-in-out infinite;
 }
 
 .keep-new-conflict-card::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(115deg, transparent 0%, rgba(255, 255, 255, 0.9) 44%, transparent 60%);
-  transform: translateX(-120%);
-  animation: keep-new-card-sheen 1.35s cubic-bezier(0.34, 1.56, 0.64, 1) infinite;
+  display: none;
 }
 
 .keep-new-conflict-card::after {
@@ -4421,32 +4838,9 @@ button:disabled {
   animation: keep-new-conflict-aura 1.7s ease-in-out infinite;
 }
 
-.keep-new-card-orbit {
-  position: absolute;
-  right: 10px;
-  bottom: 10px;
-  z-index: 2;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border: 1px solid rgba(59, 130, 246, 0.3);
-  border-radius: 999px;
-  background: rgba(239, 246, 255, 0.96);
-  color: #2563eb;
-  box-shadow: 0 4px 10px rgba(59, 130, 246, 0.14);
-  animation: keep-new-card-float 1.15s ease-in-out infinite;
-}
-
-.keep-new-card-orbit svg {
-  animation: keep-new-card-pulse 1.2s ease-in-out infinite;
-}
-
 .retry-conflict-card {
   border-color: rgba(129, 140, 248, 0.68) !important;
-  background:
-    linear-gradient(100deg, rgba(238, 242, 255, 0.86), rgba(255, 255, 255, 0.98) 38%, rgba(224, 231, 255, 0.72)) !important;
+  background: #fff !important;
   cursor: not-allowed !important;
 }
 
@@ -4455,35 +4849,7 @@ button:disabled {
 }
 
 .retry-conflict-card::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(115deg, transparent 0%, rgba(255, 255, 255, 0.85) 42%, transparent 58%);
-  transform: translateX(-120%);
-  animation: retry-card-sheen 1.45s cubic-bezier(0.34, 1.56, 0.64, 1) infinite;
-}
-
-.retry-card-orbit {
-  position: absolute;
-  right: 10px;
-  bottom: 10px;
-  z-index: 2;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border: 1px solid rgba(129, 140, 248, 0.32);
-  border-radius: 999px;
-  background: rgba(238, 242, 255, 0.94);
-  color: #4f46e5;
-  box-shadow: 0 4px 10px rgba(79, 70, 229, 0.14);
-  animation: retry-card-float 1.2s ease-in-out infinite;
-}
-
-.retry-card-orbit svg {
-  animation: retry-card-spin 1s linear infinite;
+  display: none;
 }
 
 @keyframes processing-conflict-glow {
@@ -4539,16 +4905,6 @@ button:disabled {
   to { transform: translateX(120%); }
 }
 
-@keyframes keep-new-card-pulse {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.14); }
-}
-
-@keyframes keep-new-card-float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-2px); }
-}
-
 @keyframes retry-card-sheen {
   from { transform: translateX(-120%); }
   to { transform: translateX(120%); }
@@ -4558,10 +4914,6 @@ button:disabled {
   to { transform: rotate(-360deg); }
 }
 
-@keyframes retry-card-float {
-  0%, 100% { transform: translateY(0) scale(1); }
-  50% { transform: translateY(-2px) scale(1.06); }
-}
 </style>
 
 <style>
@@ -4720,10 +5072,6 @@ html.kikoerumanager-dark .conflicts-detail-header {
   background: rgba(30, 41, 59, 0.72);
   border-color: rgba(148, 163, 184, 0.12);
 }
-html.kikoerumanager-dark .conflicts-detail-bg-glyph {
-  color: #475569;
-  opacity: 0.06;
-}
 html.kikoerumanager-dark .conflicts-detail-title {
   color: #f8fafc;
 }
@@ -4858,16 +5206,28 @@ html.kikoerumanager-dark .fp-repaired-badge {
   color: #6ee7b7;
 }
 
-html.kikoerumanager-dark .conflicts-info-card {
+html.kikoerumanager-dark .conflicts-detail-panel {
   background: rgba(15, 23, 42, 0.72);
   border-color: rgba(148, 163, 184, 0.14);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.15);
 }
-html.kikoerumanager-dark .conflicts-info-card-header {
-  background: rgba(30, 41, 59, 0.55);
+html.kikoerumanager-dark .conflicts-detail-panel-head,
+html.kikoerumanager-dark .conflicts-detail-panel-grid {
+  background: transparent;
   border-color: rgba(148, 163, 184, 0.1);
 }
-html.kikoerumanager-dark .conflicts-info-card-header h3 {
+html.kikoerumanager-dark .conflicts-detail-section + .conflicts-detail-section {
+  border-color: rgba(148, 163, 184, 0.1);
+}
+html.kikoerumanager-dark .conflicts-detail-panel-title h3,
+html.kikoerumanager-dark .conflicts-detail-section-title {
   color: #e2e8f0;
+}
+html.kikoerumanager-dark .conflicts-detail-panel-time {
+  color: #64748b;
+}
+html.kikoerumanager-dark .conflicts-info-block {
+  border-color: rgba(148, 163, 184, 0.12);
 }
 html.kikoerumanager-dark .conflicts-info-label {
   color: #64748b;
@@ -4878,19 +5238,14 @@ html.kikoerumanager-dark .conflicts-info-value {
 html.kikoerumanager-dark .conflicts-info-value-muted {
   color: #94a3b8;
 }
-html.kikoerumanager-dark .conflicts-info-suggest {
-  background: rgba(30, 41, 59, 0.55);
-  border-color: rgba(148, 163, 184, 0.1);
-  color: #cbd5e1;
-}
 html.kikoerumanager-dark .conflicts-info-path {
-  background: rgba(30, 41, 59, 0.55);
-  border-color: rgba(148, 163, 184, 0.1);
+  background: transparent;
+  border-color: transparent;
   color: #cbd5e1;
 }
 html.kikoerumanager-dark .conflicts-info-path.is-target {
-  background: rgba(12, 74, 110, 0.25);
-  border-color: rgba(56, 189, 248, 0.2);
+  background: transparent;
+  border-color: transparent;
   color: #7dd3fc;
 }
 html.kikoerumanager-dark .conflicts-info-meta-key {
@@ -4899,67 +5254,36 @@ html.kikoerumanager-dark .conflicts-info-meta-key {
 html.kikoerumanager-dark .conflicts-info-meta-val {
   color: #e2e8f0;
 }
-
-html.kikoerumanager-dark .conflicts-help-card {
-  background: rgba(15, 23, 42, 0.72);
+/* 文件名预览弹窗 */
+html.kikoerumanager-dark .fp-dlg-window {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.92) 0%, rgba(15, 23, 42, 0.82) 100%);
+  border-color: rgba(148, 163, 184, 0.2);
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+html.kikoerumanager-dark .fp-dlg-header,
+html.kikoerumanager-dark .fp-dlg-tabs,
+html.kikoerumanager-dark .fp-dlg-footer,
+html.kikoerumanager-dark .fp-dlg-tree-head {
   border-color: rgba(148, 163, 184, 0.14);
 }
-html.kikoerumanager-dark .conflicts-help-title {
-  color: #e2e8f0;
-}
-html.kikoerumanager-dark .conflicts-help-list {
-  color: #94a3b8;
-}
-html.kikoerumanager-dark .conflicts-help-list strong {
+html.kikoerumanager-dark .fp-dlg-title {
   color: #f8fafc;
 }
-html.kikoerumanager-dark .conflicts-help-list li::marker {
-  color: #475569;
-}
-
-/* 文件名预览弹窗 */
-html.kikoerumanager-dark .fp-dlg-panel {
-  background: rgba(15, 23, 42, 0.92) !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
-  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
-}
-html.kikoerumanager-dark .fp-dlg-panel header {
-  background: linear-gradient(180deg, rgba(30, 41, 59, 0.85) 0%, rgba(30, 41, 59, 0.6) 100%) !important;
-  border-color: rgba(148, 163, 184, 0.14) !important;
-}
-html.kikoerumanager-dark .fp-dlg-panel footer {
-  background: rgba(30, 41, 59, 0.55) !important;
-  border-color: rgba(148, 163, 184, 0.14) !important;
-}
-html.kikoerumanager-dark .fp-dlg-panel #fp-dlg-title {
-  color: #f8fafc !important;
-}
-html.kikoerumanager-dark .fp-dlg-panel header p {
-  color: #94a3b8 !important;
-}
-html.kikoerumanager-dark .fp-dlg-tree-shell {
-  background: rgba(15, 23, 42, 0.55);
-  border-color: rgba(148, 163, 184, 0.14);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.03);
-}
-html.kikoerumanager-dark .fp-dlg-tree-shell::before {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.75) 0%, rgba(15, 23, 42, 0));
-}
-html.kikoerumanager-dark .fp-dlg-tree-shell::after {
-  background: linear-gradient(0deg, rgba(15, 23, 42, 0.75) 0%, rgba(15, 23, 42, 0));
+html.kikoerumanager-dark .fp-dlg-subtitle {
+  color: #94a3b8;
 }
 html.kikoerumanager-dark .fp-dlg-tree-empty {
   color: #64748b;
 }
-html.kikoerumanager-dark .fp-dlg-meta-chip {
+html.kikoerumanager-dark .fp-dlg-pill {
   background: rgba(30, 41, 59, 0.6);
   border-color: rgba(148, 163, 184, 0.14);
   color: #cbd5e1;
 }
-html.kikoerumanager-dark .fp-dlg-meta-chip-label {
+html.kikoerumanager-dark .fp-dlg-pill-label {
   color: rgba(148, 163, 184, 0.7);
 }
-html.kikoerumanager-dark .fp-dlg-meta-chip b {
+html.kikoerumanager-dark .fp-dlg-pill b {
   color: #f8fafc;
 }
 
@@ -4999,17 +5323,5 @@ html.kikoerumanager-dark .keep-new-conflict-card {
 }
 html.kikoerumanager-dark .retry-conflict-card {
   background: linear-gradient(100deg, rgba(49, 46, 129, 0.34), rgba(15, 23, 42, 0.5) 38%, rgba(79, 70, 229, 0.22)) !important;
-}
-html.kikoerumanager-dark .keep-new-card-orbit {
-  background: rgba(30, 58, 138, 0.55);
-  border-color: rgba(59, 130, 246, 0.35);
-  color: #93c5fd;
-  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.2);
-}
-html.kikoerumanager-dark .retry-card-orbit {
-  background: rgba(49, 46, 129, 0.52);
-  border-color: rgba(129, 140, 248, 0.34);
-  color: #a5b4fc;
-  box-shadow: 0 4px 10px rgba(79, 70, 229, 0.16);
 }
 </style>
