@@ -4285,7 +4285,10 @@ async def resolve_conflict(conflict_id: str, action: dict):
                 if existing_task and existing_task.status == TaskStatus.PROCESSING:
                     # 任务还在跑也代表用户已经拍板"保留新版"——把原 waiting
                     # 那条活动日志同步回写，避免操作记录上一直挂着"等待处理"。
-                    mark_task_conflict_resolved_activity_log(
+                    # 内部走独立 SQLAlchemy session + commit，是同步阻塞调用，
+                    # 批量 KEEP_NEW 时会卡事件循环，统一下沉到线程池。
+                    await asyncio.to_thread(
+                        mark_task_conflict_resolved_activity_log,
                         original_task_id,
                         action_type,
                         conflict_id=conflict.id,
@@ -4304,11 +4307,22 @@ async def resolve_conflict(conflict_id: str, action: dict):
                 next_metadata["resolution_task_state"] = "queued"
                 next_metadata["resolution_action"] = action_type
                 next_metadata["resolution_requested_at"] = datetime.now().isoformat()
-                next_metadata["resolution_before_tree_items"] = (
-                    snapshot_file_tree_for_activity(existing_path, limit=300)
-                    if existing_path and os.path.isdir(existing_path)
-                    else []
-                )
+                # 同步 os.walk 会阻塞事件循环，批量 KEEP_NEW 时整个 FastAPI 进程会无法响应
+                # 其它请求（前端会感知为超时）。这里下沉到线程池，让事件循环在等盘 IO
+                # 时仍能继续处理其它 HTTP / SSE 请求。
+                if existing_path:
+                    try:
+                        existing_is_dir = await asyncio.to_thread(os.path.isdir, existing_path)
+                    except Exception:
+                        existing_is_dir = False
+                    if existing_is_dir:
+                        next_metadata["resolution_before_tree_items"] = await asyncio.to_thread(
+                            snapshot_file_tree_for_activity, existing_path, 300,
+                        )
+                    else:
+                        next_metadata["resolution_before_tree_items"] = []
+                else:
+                    next_metadata["resolution_before_tree_items"] = []
                 conflict.new_metadata = next_metadata
 
                 duplicate_conflicts = []
@@ -4373,12 +4387,15 @@ async def resolve_conflict(conflict_id: str, action: dict):
                 db.commit()
                 # 提交完新任务后，再把原 waiting 那条活动日志改写为"已保留新版"，
                 # 避免操作记录里关联事件长期停留在"等待处理"。
-                mark_task_conflict_resolved_activity_log(
+                # 同步函数 + 内部 commit，下沉到线程池避免阻塞事件循环。
+                await asyncio.to_thread(
+                    mark_task_conflict_resolved_activity_log,
                     original_task_id,
                     action_type,
                     conflict_id=conflict.id,
                 )
-                log_conflict_resolution_activity(
+                await asyncio.to_thread(
+                    log_conflict_resolution_activity,
                     conflict_id=conflict.id,
                     action=action_type,
                     status="waiting",
@@ -4453,11 +4470,21 @@ async def resolve_conflict(conflict_id: str, action: dict):
                     conflict_task.complete()
             else:
                 source_for_skip = str(conflict.new_path or "").strip()
-                skip_tree_items = (
-                    snapshot_file_tree_for_activity(source_for_skip, limit=300)
-                    if source_for_skip and os.path.isdir(source_for_skip)
-                    else []
-                )
+                # 与 KEEP_NEW 同因：批量 SKIP 走同步 os.walk 会卡死事件循环，
+                # 必须把目录探测和文件树快照都丢到线程池里。
+                if source_for_skip:
+                    try:
+                        skip_is_dir = await asyncio.to_thread(os.path.isdir, source_for_skip)
+                    except Exception:
+                        skip_is_dir = False
+                    if skip_is_dir:
+                        skip_tree_items = await asyncio.to_thread(
+                            snapshot_file_tree_for_activity, source_for_skip, 300,
+                        )
+                    else:
+                        skip_tree_items = []
+                else:
+                    skip_tree_items = []
                 resolution_diff_items = [
                     {**item, "variant": "deleted"}
                     for item in skip_tree_items
@@ -4487,13 +4514,16 @@ async def resolve_conflict(conflict_id: str, action: dict):
         db.commit()
         # MERGE / SKIP 完成后同步把原 waiting 那条 task_finished 行回写成
         # "已合并" / "已跳过"，否则操作记录的关联事件依然停留在"等待处理"。
-        mark_task_conflict_resolved_activity_log(
+        # 同步函数 + 内部 commit，下沉到线程池避免阻塞事件循环。
+        await asyncio.to_thread(
+            mark_task_conflict_resolved_activity_log,
             original_task_id,
             action_type,
             conflict_id=conflict.id,
         )
         if action_type in {"MERGE", "SKIP"}:
-            log_conflict_resolution_activity(
+            await asyncio.to_thread(
+                log_conflict_resolution_activity,
                 conflict_id=conflict.id,
                 action=action_type,
                 status="success",
