@@ -1,0 +1,1373 @@
+html.kikoerumanager-dark {
+  color-scheme: dark;
+  --km-dark-bg: #08090d;
+  --km-dark-bg-deep: #05060a;
+  --km-dark-sidebar: rgba(10, 11, 16, 0.98);
+  --km-dark-surface: rgba(24, 24, 28, 0.96);
+  --km-dark-surface-soft: rgba(32, 32, 37, 0.94);
+  --km-dark-surface-muted: rgba(39, 39, 44, 0.9);
+  --km-dark-surface-hover: rgba(48, 48, 54, 0.94);
+  --km-dark-elevated: rgba(28, 28, 33, 0.98);
+  --km-dark-field: rgba(17, 18, 23, 0.96);
+  --km-dark-border: rgba(255, 255, 255, 0.09);
+  --km-dark-border-soft: rgba(255, 255, 255, 0.06);
+  --km-dark-border-strong: rgba(255, 255, 255, 0.17);
+  --km-dark-text: rgba(244, 244, 245, 0.88);
+  --km-dark-text-strong: #f8f8fa;
+  --km-dark-text-muted: rgba(212, 212, 216, 0.62);
+  --km-dark-text-subtle: rgba(161, 161, 170, 0.72);
+  --km-dark-accent: #e6e6ea;
+  --km-dark-accent-bg: rgba(255, 255, 255, 0.1);
+  --km-dark-accent-bg-strong: rgba(255, 255, 255, 0.16);
+  --km-dark-primary: #f2f2f4;
+  --km-dark-primary-bg: rgba(244, 244, 245, 0.14);
+  --km-dark-green: #8ddfbb;
+  --km-dark-green-bg: rgba(34, 197, 94, 0.16);
+  --km-dark-amber: #f4ce75;
+  --km-dark-amber-bg: rgba(245, 158, 11, 0.16);
+  --km-dark-red: #f3a2a8;
+  --km-dark-red-bg: rgba(244, 63, 94, 0.16);
+  --km-dark-info: #c8c8cf;
+  --km-dark-info-bg: rgba(255, 255, 255, 0.1);
+  --km-dark-shadow: 0 18px 44px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --km-dark-shadow-soft: 0 10px 28px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  --km-dark-button-bg: linear-gradient(180deg, rgba(48, 48, 54, 0.96) 0%, rgba(30, 30, 35, 0.96) 100%);
+  --km-dark-button-bg-hover: linear-gradient(180deg, rgba(62, 62, 68, 0.98) 0%, rgba(42, 42, 48, 0.98) 100%);
+  --km-dark-primary-button-bg: linear-gradient(180deg, #f4f4f5 0%, #d9d9df 100%);
+  --km-dark-primary-button-text: #111116;
+  --km-dark-focus: rgba(244, 244, 245, 0.26);
+  --el-bg-color: var(--km-dark-surface);
+  --el-bg-color-page: var(--km-dark-bg);
+  --el-bg-color-overlay: var(--km-dark-elevated);
+  --el-text-color-primary: var(--km-dark-text-strong);
+  --el-text-color-regular: var(--km-dark-text);
+  --el-text-color-secondary: var(--km-dark-text-muted);
+  --el-text-color-placeholder: var(--km-dark-text-subtle);
+  --el-border-color: var(--km-dark-border);
+  --el-border-color-light: var(--km-dark-border-soft);
+  --el-border-color-lighter: var(--km-dark-border-soft);
+  --el-border-color-extra-light: var(--km-dark-border-soft);
+  --el-fill-color: var(--km-dark-surface-soft);
+  --el-fill-color-light: var(--km-dark-surface-muted);
+  --el-fill-color-lighter: var(--km-dark-surface-muted);
+  --el-fill-color-extra-light: var(--km-dark-surface);
+  --el-fill-color-blank: var(--km-dark-surface);
+  --el-color-primary: var(--km-dark-primary);
+  --el-color-primary-light-3: rgba(244, 244, 245, 0.72);
+  --el-color-primary-light-5: rgba(244, 244, 245, 0.34);
+  --el-color-primary-light-7: rgba(244, 244, 245, 0.18);
+  --el-color-primary-light-8: rgba(244, 244, 245, 0.14);
+  --el-color-primary-light-9: rgba(244, 244, 245, 0.1);
+  --el-color-primary-dark-2: #ffffff;
+  --tw-gradient-from: var(--km-dark-surface) var(--tw-gradient-from-position);
+  --tw-gradient-via: var(--km-dark-surface-soft) var(--tw-gradient-via-position);
+  --tw-gradient-to: var(--km-dark-surface) var(--tw-gradient-to-position);
+}
+
+html.kikoerumanager-dark,
+html.kikoerumanager-dark body,
+body.kikoerumanager-dark,
+html.kikoerumanager-dark #app,
+html.kikoerumanager-dark .app-container,
+html.kikoerumanager-dark .main-frame,
+html.kikoerumanager-dark .main-content,
+html.kikoerumanager-dark .content-shell {
+  background: var(--km-dark-bg) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark body::selection {
+  background: rgba(244, 244, 245, 0.22);
+  color: var(--km-dark-text-strong);
+}
+
+html.kikoerumanager-dark :is(
+  .page-shell,
+  .dashboard-page,
+  .tasks-page,
+  .conflicts-page,
+  .library,
+  .library-page,
+  .settings-page,
+  .logs-page,
+  .activity-page,
+  .asmr-sync-page,
+  .circle-completion-page,
+  .password-vault,
+  .backup-page,
+  .subtitle-page,
+  .existing-folders-page
+) {
+  background: transparent !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .sidebar-shell {
+  background: var(--km-dark-sidebar) !important;
+  border-color: var(--km-dark-border) !important;
+  box-shadow: 0 22px 58px rgba(0, 0, 0, 0.52), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+}
+
+html.kikoerumanager-dark :is(.logo-mark, .app-mobile-brand-mark) {
+  background: var(--km-dark-surface) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: inset 0 0 0 1px var(--km-dark-border-strong) !important;
+}
+
+html.kikoerumanager-dark .sidebar-menu .el-menu-item {
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark .sidebar-menu .el-menu-item > svg {
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark .sidebar-menu .el-menu-item:hover,
+html.kikoerumanager-dark .sidebar-menu .el-menu-item.is-active {
+  background: var(--km-dark-surface-muted) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .sidebar-menu .el-menu-item:hover > svg,
+html.kikoerumanager-dark .sidebar-menu .el-menu-item.is-active > svg {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .sidebar-status-card,
+  .theme-toggle-button,
+  .version-text,
+  .watcher-button
+) {
+  background: var(--km-dark-surface) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: inset 0 0 0 1px var(--km-dark-border-soft) !important;
+}
+
+html.kikoerumanager-dark .theme-toggle-button:hover,
+html.kikoerumanager-dark .watcher-button:hover {
+  background: var(--km-dark-surface-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: var(--km-dark-shadow-soft) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .el-card,
+  .el-dialog,
+  .el-drawer,
+  .el-message-box,
+  .el-popover.el-popper,
+  .el-popper,
+  .el-dropdown__popper .el-dropdown-menu,
+  .el-picker-panel,
+  .el-select-dropdown,
+  .el-cascader__dropdown,
+  .el-tooltip__popper,
+  .el-notification,
+  .el-message
+) {
+  background: var(--km-dark-elevated) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: var(--km-dark-shadow) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .el-dialog__header,
+  .el-dialog__body,
+  .el-dialog__footer,
+  .el-drawer__header,
+  .el-drawer__body,
+  .el-message-box__header,
+  .el-message-box__content,
+  .el-message-box__btns
+) {
+  background: transparent !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .el-dialog__title,
+  .el-message-box__title,
+  .el-message-box__message,
+  .el-form-item__label,
+  .el-checkbox__label,
+  .el-radio__label,
+  .el-descriptions__label,
+  .el-descriptions__content,
+  .el-tabs__item,
+  .el-table,
+  .el-table__cell
+) {
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .el-input__wrapper,
+  .el-textarea__inner,
+  .el-select__wrapper,
+  .el-input-number,
+  .el-radio-button__inner,
+  .el-date-editor,
+  input,
+  textarea,
+  select
+) {
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: inset 0 0 0 1px var(--km-dark-border) !important;
+}
+
+html.kikoerumanager-dark :is(.el-input__inner, .el-select__input, input, textarea, select)::placeholder {
+  color: var(--km-dark-text-subtle) !important;
+}
+
+html.kikoerumanager-dark :is(.el-input__wrapper:hover, .el-textarea__inner:hover, input:hover, textarea:hover, select:hover) {
+  border-color: var(--km-dark-border-strong) !important;
+  box-shadow: inset 0 0 0 1px var(--km-dark-border-strong) !important;
+}
+
+html.kikoerumanager-dark :is(.el-input__wrapper.is-focus, .el-textarea__inner:focus, input:focus, textarea:focus, select:focus) {
+  border-color: var(--km-dark-border-strong) !important;
+  box-shadow: 0 0 0 3px var(--km-dark-focus), inset 0 0 0 1px var(--km-dark-border-strong) !important;
+  outline: none !important;
+}
+
+html.kikoerumanager-dark :is(
+  .el-table,
+  .el-table__inner-wrapper,
+  .el-table tr,
+  .el-table th.el-table__cell,
+  .el-table td.el-table__cell,
+  .el-table__body-wrapper,
+  .el-table__header-wrapper
+) {
+  background: var(--km-dark-surface) !important;
+  color: var(--km-dark-text) !important;
+  border-color: var(--km-dark-border-soft) !important;
+}
+
+html.kikoerumanager-dark .el-table th.el-table__cell {
+  background: var(--km-dark-surface-soft) !important;
+}
+
+html.kikoerumanager-dark .el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell {
+  background: var(--km-dark-surface-hover) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .bg-white,
+  .bg-white\/95,
+  .bg-white\/90,
+  .bg-white\/80,
+  .bg-white\/70,
+  .bg-slate-50,
+  .bg-slate-50\/80,
+  .bg-slate-50\/50,
+  .bg-slate-50\/40,
+  .bg-neutral-50,
+  .bg-gray-50,
+  .bg-zinc-50
+),
+html.kikoerumanager-dark [class*="bg-white"],
+html.kikoerumanager-dark [class*="bg-slate-50"],
+html.kikoerumanager-dark [class*="bg-neutral-50"],
+html.kikoerumanager-dark [class*="bg-gray-50"],
+html.kikoerumanager-dark [class*="bg-zinc-50"] {
+  background: var(--km-dark-surface) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .bg-slate-100,
+  .bg-slate-100\/95,
+  .bg-slate-100\/90,
+  .bg-slate-100\/80,
+  .bg-neutral-100,
+  .bg-gray-100,
+  .bg-zinc-100
+),
+html.kikoerumanager-dark [class*="bg-slate-100"],
+html.kikoerumanager-dark [class*="bg-neutral-100"],
+html.kikoerumanager-dark [class*="bg-gray-100"],
+html.kikoerumanager-dark [class*="bg-zinc-100"] {
+  background: var(--km-dark-surface-soft) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark [class*="from-white"],
+html.kikoerumanager-dark [class*="via-white"],
+html.kikoerumanager-dark [class*="to-white"],
+html.kikoerumanager-dark [class*="from-slate-50"],
+html.kikoerumanager-dark [class*="via-slate-50"],
+html.kikoerumanager-dark [class*="to-slate-50"],
+html.kikoerumanager-dark [class*="from-gray-50"],
+html.kikoerumanager-dark [class*="to-gray-50"] {
+  --tw-gradient-from: var(--km-dark-surface) var(--tw-gradient-from-position) !important;
+  --tw-gradient-via: var(--km-dark-surface-soft) var(--tw-gradient-via-position) !important;
+  --tw-gradient-to: var(--km-dark-surface) var(--tw-gradient-to-position) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .border-slate-100,
+  .border-slate-100\/80,
+  .border-slate-200,
+  .border-slate-200\/80,
+  .border-gray-100,
+  .border-gray-200,
+  .border-neutral-100,
+  .border-neutral-200,
+  .divide-slate-100 > :not([hidden]) ~ :not([hidden]),
+  .divide-slate-200 > :not([hidden]) ~ :not([hidden])
+),
+html.kikoerumanager-dark [class*="border-slate-100"],
+html.kikoerumanager-dark [class*="border-slate-200"],
+html.kikoerumanager-dark [class*="border-gray-100"],
+html.kikoerumanager-dark [class*="border-gray-200"],
+html.kikoerumanager-dark [class*="border-neutral-100"],
+html.kikoerumanager-dark [class*="border-neutral-200"] {
+  border-color: var(--km-dark-border) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .text-slate-950,
+  .text-slate-900,
+  .text-slate-800,
+  .text-gray-950,
+  .text-gray-900,
+  .text-gray-800,
+  .text-zinc-950,
+  .text-zinc-900,
+  .text-zinc-800,
+  .hover\:text-slate-900:hover
+),
+html.kikoerumanager-dark [class*="text-slate-900"],
+html.kikoerumanager-dark [class*="text-slate-800"],
+html.kikoerumanager-dark [class*="text-gray-900"],
+html.kikoerumanager-dark [class*="text-gray-800"],
+html.kikoerumanager-dark [class*="text-zinc-900"],
+html.kikoerumanager-dark [class*="text-zinc-800"] {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .text-slate-700,
+  .text-slate-600,
+  .text-gray-700,
+  .text-gray-600,
+  .text-zinc-700,
+  .text-zinc-600,
+  .hover\:text-slate-700:hover
+),
+html.kikoerumanager-dark [class*="text-slate-700"],
+html.kikoerumanager-dark [class*="text-slate-600"],
+html.kikoerumanager-dark [class*="text-gray-700"],
+html.kikoerumanager-dark [class*="text-gray-600"],
+html.kikoerumanager-dark [class*="text-zinc-700"],
+html.kikoerumanager-dark [class*="text-zinc-600"] {
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .text-slate-500,
+  .text-slate-400,
+  .text-slate-300,
+  .text-gray-500,
+  .text-gray-400,
+  .text-zinc-500,
+  .text-zinc-400
+),
+html.kikoerumanager-dark [class*="text-slate-500"],
+html.kikoerumanager-dark [class*="text-slate-400"],
+html.kikoerumanager-dark [class*="text-slate-300"],
+html.kikoerumanager-dark [class*="text-gray-500"],
+html.kikoerumanager-dark [class*="text-gray-400"],
+html.kikoerumanager-dark [class*="text-zinc-500"],
+html.kikoerumanager-dark [class*="text-zinc-400"] {
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .text-blue-500,
+  .text-blue-600,
+  .text-sky-500,
+  .text-sky-600,
+  .text-indigo-500,
+  .text-indigo-600,
+  .text-violet-500,
+  .text-violet-600
+) {
+  color: var(--km-dark-info) !important;
+}
+
+html.kikoerumanager-dark :is(.bg-blue-50, .bg-sky-50, .bg-indigo-50, .bg-violet-50),
+html.kikoerumanager-dark [class*="bg-blue-50"],
+html.kikoerumanager-dark [class*="bg-sky-50"],
+html.kikoerumanager-dark [class*="bg-indigo-50"],
+html.kikoerumanager-dark [class*="bg-violet-50"] {
+  background: var(--km-dark-info-bg) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .border-blue-200,
+  .border-sky-200,
+  .border-indigo-200,
+  .border-violet-200
+),
+html.kikoerumanager-dark [class*="border-blue-200"],
+html.kikoerumanager-dark [class*="border-sky-200"],
+html.kikoerumanager-dark [class*="border-indigo-200"],
+html.kikoerumanager-dark [class*="border-violet-200"] {
+  border-color: var(--km-dark-border-strong) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .bg-emerald-50,
+  .bg-green-50,
+  .from-emerald-50,
+  .to-emerald-50
+),
+html.kikoerumanager-dark [class*="bg-emerald-50"],
+html.kikoerumanager-dark [class*="bg-green-50"] {
+  background: var(--km-dark-green-bg) !important;
+  color: #d9fbe8 !important;
+}
+
+html.kikoerumanager-dark :is(
+  .bg-amber-50,
+  .bg-yellow-50,
+  .from-amber-50,
+  .to-amber-50
+),
+html.kikoerumanager-dark [class*="bg-amber-50"],
+html.kikoerumanager-dark [class*="bg-yellow-50"] {
+  background: var(--km-dark-amber-bg) !important;
+  color: #fff1c2 !important;
+}
+
+html.kikoerumanager-dark :is(
+  .bg-rose-50,
+  .bg-red-50,
+  .from-rose-50,
+  .to-rose-50
+),
+html.kikoerumanager-dark [class*="bg-rose-50"],
+html.kikoerumanager-dark [class*="bg-red-50"] {
+  background: var(--km-dark-red-bg) !important;
+  color: #ffe1e4 !important;
+}
+
+html.kikoerumanager-dark :is(
+  .el-button:not(.el-button--primary):not(.el-button--danger):not(.el-button--success),
+  .page-head-btn:not(.is-primary),
+  .lib-btn,
+  .lib-action-btn:not(.is-primary),
+  .tasks-toolbar-btn,
+  .task-tree-filter-button,
+  .task-tree-toggle,
+  .subtitle-refresh-btn,
+  .subtitle-action-btn:not(.is-primary),
+  .subtitle-mini-btn,
+  .vault-btn,
+  .vault-toolbar-btn,
+  .vault-icon-btn,
+  .conflicts-action-btn.is-slate,
+  .conflicts-mini-btn,
+  .conflicts-refresh-btn,
+  .cmw-action-btn.is-slate,
+  .app-dd-trigger,
+  .blk-fullscreen-btn,
+  .blk-row-btn,
+  .rte-tb-btn,
+  .rte-var-trigger,
+  .rte-var-pill--btn
+) {
+  background: var(--km-dark-button-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .el-button:not(.el-button--primary):not(.el-button--danger):not(.el-button--success):hover,
+  .page-head-btn:not(.is-primary):hover,
+  .lib-btn:hover,
+  .lib-action-btn:not(.is-primary):hover,
+  .tasks-toolbar-btn:hover,
+  .tasks-toolbar-btn.is-on,
+  .task-tree-filter-button:hover,
+  .task-tree-toggle:hover,
+  .subtitle-refresh-btn:hover,
+  .subtitle-action-btn:not(.is-primary):hover,
+  .subtitle-mini-btn:hover,
+  .vault-btn:hover,
+  .vault-toolbar-btn:hover,
+  .vault-icon-btn:hover,
+  .conflicts-action-btn.is-slate:hover,
+  .conflicts-mini-btn:hover,
+  .conflicts-refresh-btn:hover,
+  .cmw-action-btn.is-slate:hover,
+  .app-dd-trigger:hover,
+  .app-dd-trigger.is-open,
+  .blk-fullscreen-btn:hover,
+  .blk-row-btn:hover,
+  .rte-tb-btn:hover,
+  .rte-tb-btn.is-active,
+  .rte-var-trigger:hover,
+  .rte-var-trigger.is-open,
+  .rte-var-pill--btn:hover
+) {
+  background: var(--km-dark-button-bg-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: var(--km-dark-shadow-soft) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .el-button--primary,
+  .page-head-btn.is-primary,
+  .lib-action-btn.is-primary,
+  .subtitle-action-btn.is-primary,
+  .vault-btn.is-primary,
+  .conflicts-action-btn.is-primary,
+  .fp-dlg-btn-primary,
+  .rpd-btn-primary,
+  .vrd-btn-primary,
+  .save-bar-btn-primary,
+  .blk-add-main-btn,
+  .tpl-btn-primary
+) {
+  background: var(--km-dark-primary-button-bg) !important;
+  border-color: rgba(255, 255, 255, 0.36) !important;
+  color: var(--km-dark-primary-button-text) !important;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.42) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .el-button--primary:hover,
+  .page-head-btn.is-primary:hover,
+  .lib-action-btn.is-primary:hover,
+  .subtitle-action-btn.is-primary:hover,
+  .vault-btn.is-primary:hover,
+  .conflicts-action-btn.is-primary:hover,
+  .fp-dlg-btn-primary:hover,
+  .rpd-btn-primary:hover,
+  .vrd-btn-primary:hover,
+  .save-bar-btn-primary:hover,
+  .blk-add-main-btn:hover,
+  .tpl-btn-primary:hover
+) {
+  background: linear-gradient(180deg, #ffffff 0%, #e6e6ea 100%) !important;
+  color: #0e0e12 !important;
+}
+
+html.kikoerumanager-dark :is(
+  .library-card,
+  .lib-info-strip,
+  .lib-toolbar-panel,
+  .lib-file-table,
+  .lib-mobile-card,
+  .lib-mobile-list,
+  .tasks-toolbar,
+  .task-list-pane,
+  .task-detail-pane,
+  .task-card,
+  .task-file-tree-card,
+  .conflicts-list-pane,
+  .conflicts-detail-pane,
+  .conflicts-detail-panel,
+  .conflicts-detail-section,
+  .conflicts-list-card,
+  .conflicts-empty,
+  .conflicts-garbled-card,
+  .settings-card,
+  .settings-panel,
+  .settings-field-card,
+  .config-section,
+  .template-card,
+  .notification-card,
+  .vault-card,
+  .vault-list-card,
+  .vault-toolbar-panel,
+  .vault-toolbar-shell,
+  .metric-strip,
+  .overview-strip,
+  .timeline-shell,
+  .timeline-card,
+  .metric-cell,
+  .chart-card,
+  .distribution-card,
+  .log-toolbar,
+  .log-viewer,
+  .log-table,
+  .circle-layout,
+  .circle-sidebar,
+  .circle-main,
+  .circle-list-panel,
+  .circle-list-card,
+  .toolbar-card,
+  .work-grid,
+  .work-card,
+  .sync-card,
+  .sync-panel,
+  .download-card,
+  .workbench-card,
+  .app-dd-menu,
+  .subtitle-shell,
+  .subtitle-list-pane,
+  .subtitle-detail-pane,
+  .subtitle-info-card,
+  .subtitle-candidate-card,
+  .import-task-list-card,
+  .import-task-detail,
+  .import-task-row,
+  .subtitle-workbench-shell,
+  .subtitle-workbench-shell :is(.rounded-\[20px\], .rounded-\[18px\], .rounded-\[14px\])
+) {
+  background: var(--km-dark-surface) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: var(--km-dark-shadow-soft) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .lib-card-header,
+  .lib-file-table-head,
+  .lib-file-table-header-row,
+  .tasks-toolbar-row,
+  .task-detail-header,
+  .task-list-header,
+  .conflicts-list-header,
+  .conflicts-detail-header,
+  .settings-card-head,
+  .settings-section-head,
+  .subtitle-detail-header,
+  .subtitle-info-card-header,
+  .import-task-list-head,
+  .workbench-card-head,
+  .subtitle-workbench-header
+) {
+  background: var(--km-dark-surface-soft) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .lib-file-table-body,
+  .lib-file-empty-row,
+  .lib-file-table-row,
+  .lib-path-breadcrumb,
+  .lib-path-crumb,
+  .lib-scope-switch,
+  .lib-scope-option,
+  .lib-batch-count-pill,
+  .lib-chip,
+  .set-chip,
+  .app-dd-badge,
+  .tasks-metric-pill,
+  .task-tree-actions,
+  .task-tree-filter-button,
+  .conflicts-segmented,
+  .conflicts-segmented-item,
+  .conflicts-info-path,
+  .conflicts-info-block,
+  .conflicts-info-meta-row,
+  .conflicts-list-status-chip,
+  .subtitle-meta-item,
+  .subtitle-tree,
+  .subtitle-detail-alert,
+  .workbench-card-chip,
+  .import-task-row,
+  .settings-field,
+  .settings-field-dd,
+  .settings-toggle-row,
+  .settings-toggle-chip
+) {
+  background: var(--km-dark-surface-soft) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark :is(
+  .lib-file-table-row:hover,
+  .lib-file-table-row.is-hover,
+  .lib-path-crumb:hover,
+  .lib-scope-option:hover,
+  .lib-scope-option.is-active,
+  .task-card:hover,
+  .task-card.is-active,
+  .conflicts-list-card:hover,
+  .conflicts-list-card.is-active,
+  .conflicts-segmented-item:hover,
+  .conflicts-segmented-item.is-active,
+  .circle-list-card:hover,
+  .circle-list-card.is-active,
+  .work-card:hover,
+  .metric-cell:hover,
+  .subtitle-list-card:hover,
+  .subtitle-list-card.is-active,
+  .subtitle-candidate-card:hover,
+  .subtitle-candidate-card.is-selected,
+  .import-task-row:hover
+) {
+  background: var(--km-dark-surface-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .lib-file-table-row.is-selected,
+  .lib-file-table-row.is-current,
+  .processing-conflict-card,
+  .keep-new-conflict-card,
+  .retry-conflict-card
+) {
+  background: var(--km-dark-accent-bg-strong) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .lib-file-th,
+  .lib-card-title,
+  .lib-info-value,
+  .file-name,
+  .file-link-btn,
+  .conflicts-detail-title,
+  .conflicts-list-title,
+  .conflicts-list-card-title,
+  .conflicts-detail-panel-title,
+  .conflicts-info-value,
+  .settings-card-title,
+  .settings-section-title,
+  .subtitle-list-card-title,
+  .subtitle-detail-title,
+  .subtitle-info-card-header h3,
+  .subtitle-meta-value,
+  .subtitle-tree-name.is-dir,
+  .subtitle-candidate-name,
+  .import-section-title,
+  .workbench-card-title,
+  .task-card strong,
+  .task-list-pane .text-slate-900
+) {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .lib-info-label,
+  .lib-info-sub,
+  .lib-file-size-cell,
+  .lib-file-time-cell,
+  .search-result-library,
+  .conflicts-detail-subtitle,
+  .conflicts-list-hint,
+  .conflicts-info-label,
+  .conflicts-info-value-muted,
+  .subtitle-list-card-source,
+  .subtitle-list-card-meta,
+  .subtitle-list-card-arrow,
+  .subtitle-detail-subtitle,
+  .subtitle-meta-label,
+  .subtitle-meta-value-muted,
+  .subtitle-tree-bullet,
+  .subtitle-tree-name.is-file,
+  .workbench-card-subtitle,
+  .workbench-card-text,
+  .import-section-tip
+) {
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .lib-file-rj-chip,
+  .lib-badge,
+  .conflicts-list-source-chip,
+  .tasks-metric-count,
+  .workbench-card-chip,
+  .app-dd-badge
+) {
+  background: var(--km-dark-accent-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .lib-chip-success,
+  .set-chip-success,
+  .tone-success,
+  .tone-emerald,
+  .app-dd-badge.tone-emerald
+) {
+  background: var(--km-dark-green-bg) !important;
+  border-color: rgba(141, 223, 187, 0.32) !important;
+  color: #d9fbe8 !important;
+}
+
+html.kikoerumanager-dark :is(
+  .lib-chip-warning,
+  .set-chip-warning,
+  .tone-warning,
+  .tone-amber,
+  .app-dd-badge.tone-amber
+) {
+  background: var(--km-dark-amber-bg) !important;
+  border-color: rgba(244, 206, 117, 0.34) !important;
+  color: #fff1c2 !important;
+}
+
+html.kikoerumanager-dark :is(
+  .lib-chip-danger,
+  .tone-danger,
+  .tone-rose,
+  .app-dd-badge.tone-rose
+) {
+  background: var(--km-dark-red-bg) !important;
+  border-color: rgba(243, 162, 168, 0.34) !important;
+  color: #ffe1e4 !important;
+}
+
+html.kikoerumanager-dark :is(
+  .lib-chip-info,
+  .set-chip-info,
+  .tone-info,
+  .tone-sky,
+  .tone-violet,
+  .app-dd-badge.tone-sky,
+  .app-dd-badge.tone-violet
+) {
+  background: var(--km-dark-info-bg) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .lib-info-icon,
+  .file-icon,
+  .conflicts-list-card-state-icon,
+  .tasks-toolbar-search-icon,
+  .app-dd-trigger-icon,
+  .app-dd-trigger-caret,
+  .app-dd-item-icon,
+  .dash-icon-hover,
+  .dash-icon-default,
+  button svg,
+  .el-button svg
+) {
+  color: currentColor !important;
+}
+
+html.kikoerumanager-dark :is(
+  .lib-file-table,
+  .lib-file-table-head,
+  .lib-file-table-body
+) {
+  overflow: hidden;
+}
+
+html.kikoerumanager-dark .lib-file-empty-row {
+  min-height: 112px;
+}
+
+html.kikoerumanager-dark :is(
+  .library-page-loading-mask,
+  .app-loading-mask
+) {
+  background: rgba(8, 9, 13, 0.76) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .blk-shell,
+  .blk-body,
+  .blk-right,
+  .blk-lib,
+  .blk-canvas,
+  .blk-canvas-paper,
+  .blk-row,
+  .blk-row-actions,
+  .blk-row-type-badge,
+  .blk-preview,
+  .blk-preview-head,
+  .blk-preview-subject,
+  .blk-preview-frame-wrap,
+  .blk-preview-frame,
+  .blk-inspector,
+  .tpl-rte-wrap,
+  .tpl-rte-editor,
+  .tpl-preview,
+  .tpl-panel,
+  .rte-wrap,
+  .rte-toolbar,
+  .rte-body,
+  .rte-var-menu,
+  .bi-input,
+  .bi-select,
+  .bi-var-preview,
+  .bi-num-val
+) {
+  background: var(--km-dark-surface) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .blk-row:hover,
+  .blk-row.is-selected,
+  .blk-row.is-drag-over,
+  .blk-lib-item:hover,
+  .blk-insert-btn,
+  .rte-var-menu-item:hover,
+  .bi-stats-add:hover
+) {
+  background: var(--km-dark-surface-hover) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .blk-row-content :is(table, td, th, div) {
+  border-color: var(--km-dark-border) !important;
+}
+
+html.kikoerumanager-dark .blk-row-content :is(table, td, th) {
+  background: var(--km-dark-surface-soft) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .rte-body .tiptap {
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .rte-body .tiptap :is(code, pre, blockquote, table, th, td) {
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .rte-body .tiptap a {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .conflicts-error-alert,
+  .conflicts-detail-alert.is-danger,
+  .conflicts-info-error-text
+) {
+  background: var(--km-dark-red-bg) !important;
+  border-color: rgba(243, 162, 168, 0.34) !important;
+  color: #ffe1e4 !important;
+}
+
+html.kikoerumanager-dark :is(
+  .conflicts-detail-alert.is-info,
+  .conflicts-garbled-card,
+  .conflicts-filename-preview,
+  .fp-dlg-tree,
+  .fp-dlg-tree-head,
+  .fp-tree-row
+) {
+  background: var(--km-dark-surface-soft) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .cmw-shell,
+  .cmw-card,
+  .cmw-toolbar,
+  .cmw-pane,
+  .cmw-row,
+  .cmw-diff-row,
+  .cmw-stat-card,
+  .cmw-path-chip,
+  .rpd-panel,
+  .rpd-card,
+  .vrd-panel,
+  .vrd-card,
+  .brp-panel,
+  .brp-card
+) {
+  background: var(--km-dark-surface) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .el-pagination,
+  .el-pagination button,
+  .el-pagination .el-pager li,
+  .el-pagination .el-select .el-input,
+  .el-pagination .el-pagination__jump
+) {
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .el-pagination.is-background .el-pager li:not(.is-disabled).is-active {
+  background: var(--km-dark-primary-button-bg) !important;
+  color: var(--km-dark-primary-button-text) !important;
+}
+
+html.kikoerumanager-dark .el-overlay {
+  background: rgba(0, 0, 0, 0.52) !important;
+}
+
+html.kikoerumanager-dark .custom-preview-overlay,
+html.kikoerumanager-dark .subtitle-workbench-overlay {
+  background: rgba(0, 0, 0, 0.58) !important;
+}
+
+html.kikoerumanager-dark body :is(
+  .bg-blue-600,
+  .bg-blue-500,
+  .bg-indigo-600,
+  .bg-indigo-500,
+  .bg-sky-600,
+  .bg-sky-500,
+  .from-blue-600,
+  .from-blue-500,
+  .to-blue-600,
+  .to-blue-500,
+  .from-indigo-600,
+  .to-indigo-600
+),
+html.kikoerumanager-dark body [class*="bg-blue-600"],
+html.kikoerumanager-dark body [class*="bg-blue-500"],
+html.kikoerumanager-dark body [class*="bg-indigo-600"],
+html.kikoerumanager-dark body [class*="bg-indigo-500"],
+html.kikoerumanager-dark body [class*="bg-sky-600"],
+html.kikoerumanager-dark body [class*="bg-sky-500"] {
+  background: var(--km-dark-primary-button-bg) !important;
+  border-color: rgba(255, 255, 255, 0.3) !important;
+  color: var(--km-dark-primary-button-text) !important;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.42) !important;
+}
+
+html.kikoerumanager-dark body :is(
+  .hover\:bg-blue-600:hover,
+  .hover\:bg-blue-500:hover,
+  .hover\:bg-indigo-600:hover,
+  .hover\:bg-indigo-500:hover,
+  .hover\:bg-sky-600:hover,
+  .hover\:bg-sky-500:hover
+) {
+  background: linear-gradient(180deg, #ffffff 0%, #e6e6ea 100%) !important;
+  color: #0e0e12 !important;
+}
+
+html.kikoerumanager-dark body [data-section="dashboard-command"] :is(
+  .bg-blue-600,
+  .dash-cmd-btn:first-child,
+  .dash-cmd-btn
+),
+html.kikoerumanager-dark body [data-section="dashboard-hero"] :is(
+  .bg-slate-900,
+  .hover\:bg-slate-800:hover
+) {
+  background: var(--km-dark-primary-button-bg) !important;
+  border-color: rgba(255, 255, 255, 0.3) !important;
+  color: var(--km-dark-primary-button-text) !important;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.42) !important;
+}
+
+html.kikoerumanager-dark body :is(
+  .dash-icon-btn,
+  .dash-cmd-btn:not(:first-child),
+  .dash-archive-refresh-btn,
+  .dash-archive-pager-btn,
+  [data-section="dashboard-tasks"] button:not(.theme-toggle-button),
+  [data-section="dashboard-archive"] button:not(.theme-toggle-button)
+) {
+  background: var(--km-dark-button-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+}
+
+html.kikoerumanager-dark body :is(
+  .dash-icon-btn:hover,
+  .dash-cmd-btn:not(:first-child):hover,
+  .dash-archive-refresh-btn:hover,
+  .dash-archive-pager-btn:hover,
+  [data-section="dashboard-tasks"] button:not(.theme-toggle-button):hover,
+  [data-section="dashboard-archive"] button:not(.theme-toggle-button):hover
+) {
+  background: var(--km-dark-button-bg-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark body :is(
+  .text-blue-700,
+  .text-blue-600,
+  .text-blue-500,
+  .text-sky-700,
+  .text-sky-600,
+  .text-sky-500,
+  .text-indigo-700,
+  .text-indigo-600,
+  .text-indigo-500,
+  .text-violet-700,
+  .text-violet-600,
+  .text-violet-500
+),
+html.kikoerumanager-dark body [class*="text-blue-"],
+html.kikoerumanager-dark body [class*="text-sky-"],
+html.kikoerumanager-dark body [class*="text-indigo-"],
+html.kikoerumanager-dark body [class*="text-violet-"] {
+  color: var(--km-dark-info) !important;
+}
+
+html.kikoerumanager-dark body :is(
+  .dash-kpi,
+  .dash-status-chip,
+  .dash-kpi:hover,
+  .dash-status-chip:hover
+) {
+  background: var(--km-dark-surface-soft) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark body :is(
+  .lib-info-strip,
+  .conflicts-info-strip
+) {
+  background: var(--km-dark-surface) !important;
+}
+
+html.kikoerumanager-dark body #app :is(
+  .sidebar-pin-button,
+  .dash-archive-pager-indicator,
+  .app-page-icon,
+  .el-tag,
+  .inline-flex.items-center.justify-center.rounded-full.border,
+  .inline-flex.items-baseline.gap-1.rounded-md,
+  .inline-flex.items-center.gap-1.rounded-md
+) {
+  background: var(--km-dark-surface-soft) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app :is(
+  .sidebar-pin-button:hover,
+  .app-page-icon:hover,
+  .el-tag:hover
+) {
+  background: var(--km-dark-surface-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark body #app :is(
+  .nav-item,
+  .nav-item.active,
+  .nav-item:hover
+) {
+  background: var(--km-dark-surface-soft) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app :is(
+  .nav-item.active,
+  .nav-item:hover
+) {
+  background: var(--km-dark-surface-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark body #app :is(
+  .nav-item-icon,
+  .nav-item-storage .nav-item-icon,
+  .nav-item-security .nav-item-icon
+) {
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark body #app :is(
+  .nav-item.active .nav-item-icon,
+  .nav-item:hover .nav-item-icon
+) {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark body #app :is(
+  .log-action-btn,
+  .log-level-pill,
+  .log-mod,
+  .log-filter-chip,
+  .log-toolbar-chip
+) {
+  background: var(--km-dark-button-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app :is(
+  .log-action-btn:hover,
+  .log-action-btn.is-active,
+  .log-level-pill:hover,
+  .log-level-pill.is-active,
+  .log-filter-chip:hover,
+  .log-filter-chip.is-active,
+  .log-toolbar-chip:hover,
+  .log-toolbar-chip.is-active
+) {
+  background: var(--km-dark-button-bg-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark body #app :is(
+  .subtitle-action-btn.is-primary,
+  .subtitle-segmented-item.is-active,
+  .subtitle-segmented-item:hover,
+  .subtitle-workbench-btn.is-primary
+) {
+  background: var(--km-dark-primary-button-bg) !important;
+  border-color: rgba(255, 255, 255, 0.3) !important;
+  color: var(--km-dark-primary-button-text) !important;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.42) !important;
+}
+
+html.kikoerumanager-dark body #app :is(
+  .subtitle-segmented-item:not(.is-active),
+  .subtitle-action-btn:not(.is-primary),
+  .subtitle-workbench-btn:not(.is-primary)
+) {
+  background: var(--km-dark-button-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark body #app :is(
+  [class~="bg-blue-50"],
+  [class~="bg-blue-50\/80"],
+  [class~="bg-blue-50\/70"],
+  [class~="bg-sky-50"],
+  [class~="bg-sky-50\/80"],
+  [class~="bg-indigo-50"],
+  [class~="bg-indigo-50\/80"],
+  [class~="bg-violet-50"],
+  [class~="bg-violet-50\/80"]
+) {
+  background: var(--km-dark-info-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark body #app :is(
+  [class*="hover:bg-blue-50"],
+  [class*="hover:bg-sky-50"],
+  [class*="hover:bg-indigo-50"],
+  [class*="hover:bg-violet-50"],
+  [class*="hover:bg-blue-100"],
+  [class*="hover:bg-sky-100"],
+  [class*="hover:bg-indigo-100"],
+  [class*="hover:bg-violet-100"]
+) {
+  background: transparent !important;
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark body #app :is(
+  .hover\:bg-blue-50:hover,
+  .hover\:bg-sky-50:hover,
+  .hover\:bg-indigo-50:hover,
+  .hover\:bg-violet-50:hover,
+  .hover\:bg-blue-100:hover,
+  .hover\:bg-sky-100:hover,
+  .hover\:bg-indigo-100:hover,
+  .hover\:bg-violet-100:hover
+) {
+  background: var(--km-dark-surface-hover) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark body #app :is(
+  [class*="hover:text-blue-"],
+  [class*="hover:text-sky-"],
+  [class*="hover:text-indigo-"],
+  [class*="hover:text-violet-"]
+) {
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark body #app :is(
+  .hover\:text-blue-500:hover,
+  .hover\:text-blue-600:hover,
+  .hover\:text-sky-500:hover,
+  .hover\:text-sky-600:hover,
+  .hover\:text-indigo-500:hover,
+  .hover\:text-indigo-600:hover,
+  .hover\:text-violet-500:hover,
+  .hover\:text-violet-600:hover
+) {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark body #app :is(
+  .asmr-mini-btn,
+  .ef-head-btn,
+  .lib-refresh-btn,
+  .sidebar-filter-chip,
+  .circle-list-item,
+  .view-toggle-group,
+  .view-toggle-btn,
+  .work-action-btn
+) {
+  background: var(--km-dark-button-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app :is(
+  .asmr-mini-btn:hover,
+  .ef-head-btn:hover,
+  .lib-refresh-btn:hover,
+  .sidebar-filter-chip:hover,
+  .sidebar-filter-chip.active,
+  .circle-list-item:hover,
+  .circle-list-item.active,
+  .view-toggle-btn:hover,
+  .view-toggle-btn.active,
+  .work-action-btn:hover
+) {
+  background: var(--km-dark-button-bg-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: var(--km-dark-shadow-soft) !important;
+}
+
+html.kikoerumanager-dark body #app :is(
+  .ef-head-btn.primary,
+  .lib-refresh-btn.primary
+) {
+  background: var(--km-dark-primary-button-bg) !important;
+  border-color: rgba(255, 255, 255, 0.3) !important;
+  color: var(--km-dark-primary-button-text) !important;
+}
+
+html.kikoerumanager-dark body #app :is(
+  .circle-list-id,
+  .metric-pill,
+  .work-unreleased-flag,
+  .work-release-chip,
+  .work-status-chip,
+  .work-tag,
+  .work-meta-chip
+) {
+  background: var(--km-dark-surface-soft) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text-muted) !important;
+}
