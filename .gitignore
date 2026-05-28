@@ -104,6 +104,10 @@ frontend/vite.config.js.timestamp-*.mjs
 
 # Backend / view scratch dirs
 backend/tempView/
+backend/_conflicts/
+
+# Local runtime helper scripts output
+.runtime/
 
 # pytest 临时目录（conftest.py 把 basetemp 重定向到这里规避 Windows %TEMP% 锁）
 backend/.pytest-tmp/
