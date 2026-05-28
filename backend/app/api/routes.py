@@ -4307,22 +4307,11 @@ async def resolve_conflict(conflict_id: str, action: dict):
                 next_metadata["resolution_task_state"] = "queued"
                 next_metadata["resolution_action"] = action_type
                 next_metadata["resolution_requested_at"] = datetime.now().isoformat()
-                # 同步 os.walk 会阻塞事件循环，批量 KEEP_NEW 时整个 FastAPI 进程会无法响应
-                # 其它请求（前端会感知为超时）。这里下沉到线程池，让事件循环在等盘 IO
-                # 时仍能继续处理其它 HTTP / SSE 请求。
-                if existing_path:
-                    try:
-                        existing_is_dir = await asyncio.to_thread(os.path.isdir, existing_path)
-                    except Exception:
-                        existing_is_dir = False
-                    if existing_is_dir:
-                        next_metadata["resolution_before_tree_items"] = await asyncio.to_thread(
-                            snapshot_file_tree_for_activity, existing_path, 300,
-                        )
-                    else:
-                        next_metadata["resolution_before_tree_items"] = []
-                else:
-                    next_metadata["resolution_before_tree_items"] = []
+                # KEEP_NEW 这里必须保持轻量：真实解压 / 替换目录会进任务队列执行。
+                # 旧逻辑在 HTTP 请求里同步生成旧目录文件树快照，大目录或 NAS 上批量执行
+                # 会把请求和其它接口一起拖慢。快照改由任务真正替换前在后台线程里采集。
+                next_metadata["resolution_before_tree_items"] = []
+                next_metadata["resolution_before_tree_deferred"] = True
                 conflict.new_metadata = next_metadata
 
                 duplicate_conflicts = []
@@ -4357,7 +4346,8 @@ async def resolve_conflict(conflict_id: str, action: dict):
                     )
                     db.delete(duplicate)
 
-                task_type = TaskType.AUTO_PROCESS if os.path.isfile(source_path) else TaskType.PROCESS_EXISTING_FOLDER
+                source_is_file = await asyncio.to_thread(os.path.isfile, source_path)
+                task_type = TaskType.AUTO_PROCESS if source_is_file else TaskType.PROCESS_EXISTING_FOLDER
                 task = Task(
                     task_type=task_type,
                     source_path=source_path,
@@ -4383,6 +4373,7 @@ async def resolve_conflict(conflict_id: str, action: dict):
                 conflict.new_metadata = {
                     **dict(conflict.new_metadata or {}),
                     "resolution_task_id": task.id,
+                    "resolution_task_state": "queued",
                 }
                 db.commit()
                 # 提交完新任务后，再把原 waiting 那条活动日志改写为"已保留新版"，

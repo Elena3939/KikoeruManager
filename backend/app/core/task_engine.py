@@ -394,12 +394,67 @@ class TaskEngine:
                     getattr(task, "status", "missing"),
                 )
     
+    def _refresh_conflict_resolution_progress(
+        self,
+        task: Task,
+        *,
+        state: str,
+        step: str = "",
+        error: str = "",
+    ) -> None:
+        """把问题作品后台处理的轻量状态写回 ConflictWork，供列表持续展示。"""
+        metadata = dict(task.task_metadata or {})
+        conflict_id = str(metadata.get("conflict_resolution_conflict_id") or "").strip()
+        action = str(metadata.get("conflict_resolution_action") or "").strip().upper()
+        if not conflict_id or not action:
+            return
+
+        try:
+            from ..models.database import ConflictWork, get_db
+
+            db = next(get_db())
+            try:
+                conflict = db.query(ConflictWork).filter(ConflictWork.id == conflict_id).first()
+                if not conflict:
+                    return
+                next_metadata = dict(conflict.new_metadata or {})
+                next_metadata["resolution_task_id"] = task.id
+                next_metadata["resolution_action"] = action
+                next_metadata["resolution_task_state"] = state
+                next_metadata["resolution_progress"] = int(getattr(task, "progress", 0) or 0)
+                next_metadata["resolution_step"] = step or str(getattr(task, "current_step", "") or "")
+                next_metadata["resolution_updated_at"] = datetime.now().isoformat()
+                if error:
+                    next_metadata["resolution_error"] = error
+                conflict.new_metadata = next_metadata
+                if state in {"queued", "running"}:
+                    conflict.status = "PROCESSING"
+                db.commit()
+            except Exception:
+                db.rollback()
+                logger.debug(
+                    "刷新问题作品处理状态失败: task_id=%s conflict_id=%s",
+                    task.id,
+                    conflict_id,
+                    exc_info=True,
+                )
+            finally:
+                db.close()
+        except Exception:
+            logger.debug("刷新问题作品处理状态外层失败: task_id=%s", task.id, exc_info=True)
+
     def add_progress_callback(self, callback: Callable):
         """添加进度回调"""
         self._progress_callbacks.append(callback)
     
     async def _notify_progress(self, task: Task):
         """通知进度更新"""
+        if (task.task_metadata or {}).get("conflict_resolution_conflict_id"):
+            await asyncio.to_thread(
+                self._refresh_conflict_resolution_progress,
+                task,
+                state="running" if task.status == TaskStatus.PROCESSING else str(task.status.value if isinstance(task.status, TaskStatus) else task.status),
+            )
         for callback in self._progress_callbacks:
             try:
                 callback(task)
@@ -962,6 +1017,10 @@ class TaskEngine:
 
             if task.status == TaskStatus.COMPLETED:
                 conflict.status = action
+                next_metadata["resolution_task_state"] = "completed"
+                next_metadata["resolution_progress"] = 100
+                next_metadata["resolution_step"] = "完成"
+                next_metadata["resolution_completed_at"] = datetime.now().isoformat()
                 next_metadata.pop("resolution_error", None)
                 if task.output_path:
                     next_metadata["resolution_output_path"] = task.output_path
@@ -979,6 +1038,9 @@ class TaskEngine:
                             snapshot_file_tree_for_activity,
                         )
                         before_items = list(next_metadata.get("resolution_before_tree_items") or [])
+                        existing_path = str(next_metadata.get("existing_path") or conflict.existing_path or "")
+                        if not before_items and next_metadata.get("resolution_before_tree_deferred") and existing_path:
+                            before_items = snapshot_file_tree_for_activity(existing_path, limit=300)
                         after_items = snapshot_file_tree_for_activity(task.output_path, limit=300) if task.output_path else []
                         log_conflict_resolution_activity(
                             conflict_id=conflict.id,
@@ -996,6 +1058,9 @@ class TaskEngine:
                         logger.warning("写入保留新版操作记录失败: task_id=%s conflict_id=%s", task.id, conflict_id, exc_info=True)
             elif task.status == TaskStatus.FAILED:
                 conflict.status = "PENDING"
+                next_metadata["resolution_task_state"] = "failed"
+                next_metadata["resolution_progress"] = int(getattr(task, "progress", 0) or 0)
+                next_metadata["resolution_step"] = str(getattr(task, "current_step", "") or "")
                 next_metadata["resolution_error"] = str(task.error_message or "冲突处理失败")
                 task_extract_reason = str((task.task_metadata or {}).get("extract_failure_reason") or "").strip()
                 if task_extract_reason:
@@ -2437,6 +2502,12 @@ class TaskEngine:
             if task.type in {TaskType.EXTRACT, TaskType.AUTO_PROCESS, TaskType.PROCESS_EXISTING_FOLDER}:
                 self._record_problem_work_for_task_failure(task, rjcode, str(e))
             task.fail(str(e))
+            await asyncio.to_thread(
+                self._refresh_conflict_resolution_progress,
+                task,
+                state="failed",
+                error=str(e),
+            )
             if task.type in {TaskType.AUTO_PROCESS, TaskType.PROCESS_EXISTING_FOLDER}:
                 try:
                     from .notification_helper import build_import_notification_extra, set_notification_extra

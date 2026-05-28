@@ -1232,7 +1232,11 @@ class ConflictResolutionService:
                     existing["path"],
                 )
             else:
-                final_path = get_folder_compare_service().safe_replace_directory(staged_root, existing["path"])
+                final_path = await asyncio.to_thread(
+                    get_folder_compare_service().safe_replace_directory,
+                    staged_root,
+                    existing["path"],
+                )
 
             # 索引同步：替换完成后先 delete 旧子树（防孤儿），再 upsert 新子树
             self._notify_index_after_conflict_resolution(
@@ -1477,7 +1481,8 @@ class ConflictResolutionService:
                 normalized_decisions,
             )
         else:
-            final_path = compare_service.apply_merge(
+            final_path = await asyncio.to_thread(
+                compare_service.apply_merge,
                 session.staged_root,
                 session.existing_path,
                 normalized_decisions,
