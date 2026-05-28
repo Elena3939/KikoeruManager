@@ -6136,6 +6136,12 @@ class ExtractService:
                 name = f.get('name') or ''
                 if size <= 0 or not name:
                     continue
+                base_name = os.path.basename(name)
+                # Office 会把锁文件写成 "~$foo.docx" 这类名字；它们沿用
+                # docx/xlsx/pptx 后缀，但文件头并不是对应 OOXML 容器魔数。
+                # 若拿它做 magic probe，会把正确密码误杀成 wrong_password。
+                if base_name.startswith('~$'):
+                    continue
                 ext = os.path.splitext(name)[1].lower()
                 magic_info = self._KNOWN_MAGIC_TABLE.get(ext)
                 if not magic_info:
@@ -6190,7 +6196,9 @@ class ExtractService:
         if password:
             cmd.append(f'-p{password}')
         cmd.append(archive_path)
-        cmd.append(f'-i!{entry_name}')
+        # Do not use -i! here: archive members can contain wildcard metacharacters
+        # like [] and 7z will treat them as patterns instead of literal names.
+        cmd.append(entry_name)
 
         kwargs = {
             'stdout': subprocess.PIPE,
@@ -6399,8 +6407,10 @@ class ExtractService:
         if password:
             cmd.append(f'-p{password}')
         cmd.append(archive_path)
-        # 用 `-i!条目` 缩小范围，比直接带文件名参数对 7zz 较新版本更稳。
-        cmd.append(f'-i!{entry_name}')
+        # Pass the archive member as a literal argument. With -i! 7z interprets
+        # [] and other metacharacters as wildcard syntax, which can falsely turn
+        # a valid password probe into a miss for paths like [B-bishop]/....
+        cmd.append(entry_name)
 
         kwargs = {
             'stdout': subprocess.PIPE,
