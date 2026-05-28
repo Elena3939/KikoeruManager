@@ -532,11 +532,16 @@ class SmartClassifier:
         existing_subtree_to_clear: Optional[str] = None
         if resolution == "KEEP_NEW" and resolution_existing_path:
             task.update_progress(92, "替换现有目录")
-            final_path = get_folder_compare_service().safe_replace_directory(source_path, str(resolution_existing_path))
+            final_path = await asyncio.to_thread(
+                get_folder_compare_service().safe_replace_directory,
+                source_path,
+                str(resolution_existing_path),
+            )
             existing_subtree_to_clear = str(resolution_existing_path)
         elif resolution == "MERGE" and resolution_existing_path:
             task.update_progress(92, "生成并写入合并结果")
-            final_path = get_folder_compare_service().apply_merge(
+            final_path = await asyncio.to_thread(
+                get_folder_compare_service().apply_merge,
                 source_path,
                 str(resolution_existing_path),
                 merge_decisions or {},

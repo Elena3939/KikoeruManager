@@ -514,7 +514,8 @@ class TaskCenterService:
             except Exception:
                 linked_engine_task = None
         title = self._normalize_rjcode(getattr(conflict, "rjcode", "")) or self._basename(getattr(conflict, "new_path", "")) or "问题作品"
-        error_message = self._safe_text(metadata.get("error_message"))
+        stored_error_message = self._safe_text(metadata.get("error_message"))
+        error_message = "" if is_retrying else stored_error_message
         subtitle = error_message or self._basename(getattr(conflict, "new_path", ""))
         metrics: List[Dict[str, str]] = []
         self._append_metric(metrics, "问题类型", self._conflict_type_label(conflict_type))
