@@ -221,12 +221,12 @@ function handleCancel() {
 /* Shell：对齐社团补全预览的白色毛玻璃壳 */
 .brp-window {
   background: rgba(255, 255, 255, 0.7);
-  backdrop-filter: blur(28px) saturate(135%);
-  -webkit-backdrop-filter: blur(28px) saturate(135%);
-  border: 1px solid rgba(255, 255, 255, 0.42);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(15, 23, 42, 0.06);
   box-shadow:
-    0 28px 70px rgba(15, 23, 42, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+    0 30px 80px rgba(15, 23, 42, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
 }
 
 /* Header */

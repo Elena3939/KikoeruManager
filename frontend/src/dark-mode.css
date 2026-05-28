@@ -390,19 +390,6 @@ html.kikoerumanager-dark [class*="text-zinc-400"] {
   color: var(--km-dark-text-muted) !important;
 }
 
-html.kikoerumanager-dark :is(
-  .text-blue-500,
-  .text-blue-600,
-  .text-sky-500,
-  .text-sky-600,
-  .text-indigo-500,
-  .text-indigo-600,
-  .text-violet-500,
-  .text-violet-600
-) {
-  color: var(--km-dark-info) !important;
-}
-
 html.kikoerumanager-dark :is(.bg-blue-50, .bg-sky-50, .bg-indigo-50, .bg-violet-50),
 html.kikoerumanager-dark [class*="bg-blue-50"],
 html.kikoerumanager-dark [class*="bg-sky-50"],
@@ -848,17 +835,14 @@ html.kikoerumanager-dark :is(
 
 html.kikoerumanager-dark :is(
   .lib-info-icon,
-  .file-icon,
   .conflicts-list-card-state-icon,
   .tasks-toolbar-search-icon,
   .app-dd-trigger-icon,
   .app-dd-trigger-caret,
   .app-dd-item-icon,
   .dash-icon-hover,
-  .dash-icon-default,
-  button svg,
-  .el-button svg
-) {
+  .dash-icon-default
+):not([class*="text-"]) {
   color: currentColor !important;
 }
 
@@ -1067,10 +1051,10 @@ html.kikoerumanager-dark body [data-section="dashboard-hero"] :is(
   .bg-slate-900,
   .hover\:bg-slate-800:hover
 ) {
-  background: var(--km-dark-primary-button-bg) !important;
-  border-color: rgba(255, 255, 255, 0.3) !important;
-  color: var(--km-dark-primary-button-text) !important;
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.42) !important;
+  background: #020617 !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.44), inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
 }
 
 html.kikoerumanager-dark body :is(
@@ -1098,27 +1082,6 @@ html.kikoerumanager-dark body :is(
   background: var(--km-dark-button-bg-hover) !important;
   border-color: var(--km-dark-border-strong) !important;
   color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark body :is(
-  .text-blue-700,
-  .text-blue-600,
-  .text-blue-500,
-  .text-sky-700,
-  .text-sky-600,
-  .text-sky-500,
-  .text-indigo-700,
-  .text-indigo-600,
-  .text-indigo-500,
-  .text-violet-700,
-  .text-violet-600,
-  .text-violet-500
-),
-html.kikoerumanager-dark body [class*="text-blue-"],
-html.kikoerumanager-dark body [class*="text-sky-"],
-html.kikoerumanager-dark body [class*="text-indigo-"],
-html.kikoerumanager-dark body [class*="text-violet-"] {
-  color: var(--km-dark-info) !important;
 }
 
 html.kikoerumanager-dark body :is(
@@ -1290,28 +1253,6 @@ html.kikoerumanager-dark body #app :is(
   .hover\:bg-violet-100:hover
 ) {
   background: var(--km-dark-surface-hover) !important;
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark body #app :is(
-  [class*="hover:text-blue-"],
-  [class*="hover:text-sky-"],
-  [class*="hover:text-indigo-"],
-  [class*="hover:text-violet-"]
-) {
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark body #app :is(
-  .hover\:text-blue-500:hover,
-  .hover\:text-blue-600:hover,
-  .hover\:text-sky-500:hover,
-  .hover\:text-sky-600:hover,
-  .hover\:text-indigo-500:hover,
-  .hover\:text-indigo-600:hover,
-  .hover\:text-violet-500:hover,
-  .hover\:text-violet-600:hover
-) {
   color: var(--km-dark-text-strong) !important;
 }
 

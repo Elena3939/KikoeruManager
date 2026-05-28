@@ -175,7 +175,7 @@
                   </div>
                   <div class="conflicts-list-card-meta">
                     <span class="conflicts-list-card-type">
-                      <FileWarning v-if="isFailureConflict(conflict)" :size="13" :stroke-width="2.2" class="text-red-400" />
+                      <FileWarning v-if="isProblemConflict(conflict)" :size="13" :stroke-width="2.2" class="text-red-400" />
                       <Copy v-else :size="13" :stroke-width="2.2" class="text-indigo-400" />
                       {{ getConflictTypeDetail(conflict) }}
                     </span>
@@ -183,10 +183,10 @@
                 </div>
                 <div class="conflicts-list-card-aside">
                   <div class="conflicts-list-card-status-row">
-                    <span class="lib-chip conflicts-list-source-chip" :class="conflict.context?.existing?.is_remote ? 'lib-chip-warning' : 'lib-chip-info'">
-                      <Cloud v-if="conflict.context?.existing?.is_remote" :size="11" :stroke-width="2.4" />
+                    <span class="lib-chip conflicts-list-source-chip" :class="getConflictLocationContext(conflict)?.is_remote ? 'lib-chip-warning' : 'lib-chip-info'">
+                      <Cloud v-if="getConflictLocationContext(conflict)?.is_remote" :size="11" :stroke-width="2.4" />
                       <HardDrive v-else :size="11" :stroke-width="2.4" />
-                      {{ conflict.context?.existing?.is_remote ? '远程' : '本地' }}
+                      {{ isProblemConflict(conflict) ? '来源' : (getConflictLocationContext(conflict)?.is_remote ? '远程' : '本地') }}
                     </span>
                     <span
                       class="conflicts-list-status-chip"
@@ -235,7 +235,7 @@
                   </span>
                 </div>
                 <p class="conflicts-detail-subtitle">
-                  <span class="conflicts-detail-dot" :class="isFailureConflict(activeConflict) ? 'is-danger' : 'is-info'"></span>
+                  <span class="conflicts-detail-dot" :class="isProblemConflict(activeConflict) ? 'is-danger' : 'is-info'"></span>
                   {{ getConflictTypeDetail(activeConflict) }}
                 </p>
               </div>
@@ -308,23 +308,77 @@
                   合并
                 </button>
               </div>
+              <div
+                v-if="hasFilenamePreview(activeConflict) && !getGarbledMeta(activeConflict)"
+                class="conflicts-filename-preview"
+              >
+                <div class="conflicts-filename-preview-head">
+                  <span>
+                    编码：{{ getFilenamePreviewState(activeConflict).preview.encoding || 'auto' }}
+                    / codepage={{ getFilenamePreviewState(activeConflict).preview.codepage || 'auto' }}
+                    / 密码来源={{ getFilenamePreviewState(activeConflict).preview.password_source || '未指定' }}
+                  </span>
+                  <span class="conflicts-filename-preview-badges">
+                    <span
+                      v-if="Number(getFilenamePreviewState(activeConflict).preview.repaired_count || 0) > 0"
+                      class="fp-repaired-badge"
+                      title="后端按 surrogate / mojibake 反解，已直接展示真实文件名"
+                    >
+                      <CheckCircle2 class="w-3 h-3" />
+                      已自动反解 {{ Number(getFilenamePreviewState(activeConflict).preview.repaired_count || 0) }} 项
+                    </span>
+                    <b>{{ getFilenamePreviewState(activeConflict).preview.file_count || 0 }} 项</b>
+                  </span>
+                </div>
+                <div
+                  v-if="getInlineFilenamePreviewRows(activeConflict).length"
+                  class="conflicts-filename-preview-tree fp-detail-scroll"
+                >
+                  <div
+                    v-for="row in getInlineFilenamePreviewRows(activeConflict)"
+                    :key="row.key"
+                    class="fp-tree-row"
+                    :class="{ 'is-dir': row.type === 'dir', 'is-garbled': row.isGarbled }"
+                    :style="{ paddingLeft: `${row.depth * 16 + 12}px` }"
+                  >
+                    <div class="fp-tree-main">
+                      <span class="fp-tree-expander-spacer" />
+                      <span class="fp-tree-icon-wrap">
+                        <Folder v-if="row.type === 'dir'" :size="18" :stroke-width="2" class="fp-tree-icon is-folder" />
+                        <FileWarning v-else-if="row.isGarbled" :size="18" :stroke-width="2.2" class="fp-tree-icon is-warn" />
+                        <Archive v-else-if="row.isArchive" :size="17" :stroke-width="2" class="fp-tree-icon is-archive" />
+                        <Music v-else-if="fpIsAudio(row.displayName)" :size="17" :stroke-width="2" class="fp-tree-icon is-audio" />
+                        <FileText v-else-if="fpIsText(row.displayName)" :size="17" :stroke-width="2" class="fp-tree-icon is-text" />
+                        <File v-else :size="17" :stroke-width="2" class="fp-tree-icon is-file" />
+                      </span>
+                      <span class="fp-tree-name">{{ row.displayName }}</span>
+                      <span v-if="row.isGarbled" class="fp-garbled-tag">乱码</span>
+                    </div>
+                    <span v-if="row.sizeText && row.type !== 'dir'" class="fp-tree-size">{{ row.sizeText }}</span>
+                  </div>
+                </div>
+                <div v-else class="conflicts-filename-preview-empty">
+                  <Info class="w-4 h-4" />
+                  <span>未读取到文件清单</span>
+                </div>
+              </div>
             </div>
           </div>
 
           <div class="conflicts-detail-body no-scrollbar">
             <!-- 失败提醒 -->
             <div
-              v-if="isFailureConflict(activeConflict)"
+              v-if="isProblemConflict(activeConflict)"
               class="conflicts-detail-alert"
               :class="isExtractFailed(activeConflict) ? 'is-warning' : 'is-danger'"
             >
               <AlertTriangle class="w-5 h-5 flex-shrink-0 mt-0.5" :class="isExtractFailed(activeConflict) ? 'text-amber-500' : 'text-red-500'" />
               <div>
                 <h4 class="font-semibold mb-1">
-                  {{ isExtractFailed(activeConflict) ? '解压阶段失败，非重复冲突' : '处理中途失败，非重复冲突' }}
+                  {{ getProblemConflictAlertTitle(activeConflict) }}
                 </h4>
                 <p class="text-sm opacity-90 leading-relaxed">
-                  {{ activeConflict.new_metadata?.error_message || (isExtractFailed(activeConflict) ? '请检查密码、分卷完整性或压缩包本身是否损坏。' : '请按失败原因修复后重试。') }}
+                  {{ activeConflict.new_metadata?.error_message || getProblemConflictAlertMessage(activeConflict) }}
                 </p>
               </div>
             </div>
@@ -362,66 +416,21 @@
                   刷新预览
                 </button>
               </div>
-              <div class="conflicts-garbled-grid">
-                <div>
-                  <span>评分</span>
-                  <b>{{ getGarbledMeta(activeConflict).scoreBefore }} → {{ getGarbledMeta(activeConflict).scoreAfter }}</b>
-                </div>
-                <div>
-                  <span>修复 / 编码尝试</span>
-                  <b>{{ getGarbledMeta(activeConflict).repairedCount }} / {{ getGarbledMeta(activeConflict).codecPairsTried }}</b>
-                </div>
-                <div>
-                  <span>触发位置</span>
-                  <b>{{ getGarbledMeta(activeConflict).origin || '—' }}</b>
-                </div>
-                <div>
-                  <span>命中数量</span>
-                  <b>{{ getGarbledMeta(activeConflict).garbledCount }} / {{ getGarbledMeta(activeConflict).totalNames || '—' }}</b>
+              <div
+                v-if="hasFilenamePreview(activeConflict)"
+                class="conflicts-garbled-preview-list"
+              >
+                <div class="conflicts-garbled-preview-title">
+                  <FileSearch class="w-4 h-4" />
+                  <span>乱码文件清单</span>
+                  <b>{{ getFilenamePreviewState(activeConflict).preview.file_count || 0 }} 项</b>
                 </div>
                 <div
-                  v-if="getGarbledMeta(activeConflict).surrogateRepairedCount || getGarbledMeta(activeConflict).surrogateEscapedCount"
-                  class="conflicts-garbled-grid-wide"
+                  v-if="getInlineFilenamePreviewRows(activeConflict).length"
+                  class="conflicts-filename-preview-tree fp-detail-scroll"
                 >
-                  <span>非 UTF-8 文件名</span>
-                  <b>
-                    反解 {{ getGarbledMeta(activeConflict).surrogateRepairedCount }}
-                    / 字面转义 {{ getGarbledMeta(activeConflict).surrogateEscapedCount }}
-                  </b>
-                </div>
-              </div>
-              <div v-if="getGarbledMeta(activeConflict).topSamples.length" class="conflicts-garbled-samples">
-                <div
-                  v-for="entry in getGarbledMeta(activeConflict).topSamples"
-                  :key="`${entry.name}-${entry.score}`"
-                  class="conflicts-garbled-row"
-                >
-                  <span>{{ formatPreviewName(entry.name, getFilenamePreviewEncoding(activeConflict)) }}</span>
-                  <b>{{ entry.score }}</b>
-                </div>
-              </div>
-              <div v-if="getFilenamePreviewState(activeConflict).preview" class="conflicts-filename-preview">
-                <div class="conflicts-filename-preview-head">
-                  <span>
-                    编码：{{ getFilenamePreviewState(activeConflict).preview.encoding || 'auto' }}
-                    / codepage={{ getFilenamePreviewState(activeConflict).preview.codepage || 'auto' }}
-                    / 密码来源={{ getFilenamePreviewState(activeConflict).preview.password_source || '未指定' }}
-                  </span>
-                  <span class="conflicts-filename-preview-badges">
-                    <span
-                      v-if="Number(getFilenamePreviewState(activeConflict).preview.repaired_count || 0) > 0"
-                      class="fp-repaired-badge"
-                      title="后端按 surrogate / mojibake 反解，已直接展示真实文件名"
-                    >
-                      <CheckCircle2 class="w-3 h-3" />
-                      已自动反解 {{ Number(getFilenamePreviewState(activeConflict).preview.repaired_count || 0) }} 项
-                    </span>
-                    <b>{{ getFilenamePreviewState(activeConflict).preview.file_count || 0 }} 项</b>
-                  </span>
-                </div>
-                <div class="conflicts-filename-preview-tree fp-detail-scroll">
                   <div
-                    v-for="row in fpBuildTreeRows(getFilenamePreviewState(activeConflict).preview, getFilenamePreviewEncoding(activeConflict))"
+                    v-for="row in getInlineFilenamePreviewRows(activeConflict)"
                     :key="row.key"
                     class="fp-tree-row"
                     :class="{ 'is-dir': row.type === 'dir', 'is-garbled': row.isGarbled }"
@@ -443,6 +452,13 @@
                     <span v-if="row.sizeText && row.type !== 'dir'" class="fp-tree-size">{{ row.sizeText }}</span>
                   </div>
                 </div>
+                <div v-else class="conflicts-filename-preview-empty is-garbled-list-empty">
+                  <Info class="w-4 h-4" />
+                  <div>
+                    <strong>未读取到文件清单</strong>
+                    <span>当前编码预览没有返回可展示的压缩包条目。</span>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -450,7 +466,7 @@
               <div class="conflicts-detail-panel-head">
                 <div class="conflicts-detail-panel-title">
                   <Info class="w-4 h-4 text-slate-400" />
-                  <h3>{{ isFailureConflict(activeConflict) ? '问题详情' : '冲突详情' }}</h3>
+                  <h3>{{ isProblemConflict(activeConflict) ? '问题详情' : '冲突详情' }}</h3>
                 </div>
                 <span class="conflicts-detail-panel-time">{{ formatDate(activeConflict.created_at) }}</span>
               </div>
@@ -459,7 +475,7 @@
                 <section class="conflicts-detail-section">
                   <h4 class="conflicts-detail-section-title">
                     <FolderOpen class="w-4 h-4 text-slate-400" />
-                    {{ isFailureConflict(activeConflict) ? '失败来源' : '当前新内容' }}
+                    {{ isProblemConflict(activeConflict) ? '问题来源' : '当前新内容' }}
                   </h4>
 
                   <div class="conflicts-info-section">
@@ -483,7 +499,7 @@
                   </div>
 
                   <div v-if="activeConflict.new_metadata" class="conflicts-info-block">
-                    <span class="conflicts-info-label">{{ isFailureConflict(activeConflict) ? '附带信息' : '作品信息' }}</span>
+                    <span class="conflicts-info-label">{{ isProblemConflict(activeConflict) ? '附带信息' : '作品信息' }}</span>
                     <div class="conflicts-info-meta-list">
                       <div v-if="activeConflict.new_metadata.work_name" class="conflicts-info-meta-row">
                         <span class="conflicts-info-meta-key">名称</span>
@@ -506,7 +522,7 @@
                   </div>
                 </section>
 
-                <section v-if="!isFailureConflict(activeConflict)" class="conflicts-detail-section">
+                <section v-if="!isProblemConflict(activeConflict)" class="conflicts-detail-section">
                   <h4 class="conflicts-detail-section-title">
                     <Archive class="w-4 h-4 text-slate-400" />
                     已存在目录
@@ -1129,11 +1145,12 @@ async function backfillConflictStats() {
   if (!conflicts.value.length) return
   // 短路 1：所有项的 stats 都已齐全（前一次 backfill 已写入 + fetchConflicts 阶段 1
   // 已正确合并保留）就直接跳过，避免重试轮询 / SSE 推送 / 切回页面时反复 list 出空 stats
-  // 又重新触发"统计中…"占位符闪烁。EXTRACT_FAILED 项可能只有 source 没 existing，
+  // 又重新触发"统计中…"占位符闪烁。问题类条目可能只有 source 没 existing，
   // existing 不存在不视为缺 stats。
   const needsStats = conflicts.value.some(item => {
     const srcStats = item.context?.source?.stats
     if (!srcStats || srcStats.size == null) return true
+    if (isProblemConflict(item)) return false
     const existing = item.context?.existing
     if (existing && (!existing.stats || existing.stats.size == null)) return true
     return false
@@ -1216,8 +1233,28 @@ function isExtractFailed(conflict) {
   return conflict?.conflict_type === 'EXTRACT_FAILED'
 }
 
+function isDisguisedVolumeConflict(conflict) {
+  return conflict?.conflict_type === '分卷压缩包后缀无法识别'
+}
+
 function isFailureConflict(conflict) {
   return ['EXTRACT_FAILED', 'PROCESS_FAILED'].includes(conflict?.conflict_type)
+}
+
+function isProblemConflict(conflict) {
+  return isFailureConflict(conflict) || isDisguisedVolumeConflict(conflict)
+}
+
+function getProblemConflictAlertTitle(conflict) {
+  if (isDisguisedVolumeConflict(conflict)) return '分卷压缩包命名异常，非重复冲突'
+  return isExtractFailed(conflict) ? '解压阶段失败，非重复冲突' : '处理中途失败，非重复冲突'
+}
+
+function getProblemConflictAlertMessage(conflict) {
+  if (isDisguisedVolumeConflict(conflict)) {
+    return '检测到疑似分卷压缩包，但部分分卷后缀被伪装或无法识别。请使用“手动重命名分卷”确认文件名后再重试。'
+  }
+  return isExtractFailed(conflict) ? '请检查密码、分卷完整性或压缩包本身是否损坏。' : '请按失败原因修复后重试。'
 }
 
 function canPreviewFilenames(conflict) {
@@ -1244,6 +1281,16 @@ function getFilenamePreviewState(conflict) {
 
 function getFilenamePreviewEncoding(conflict) {
   return ensureFilenamePreviewState(conflict).encoding || 'auto'
+}
+
+function hasFilenamePreview(conflict) {
+  return Boolean(getFilenamePreviewState(conflict).preview)
+}
+
+function getInlineFilenamePreviewRows(conflict) {
+  const state = getFilenamePreviewState(conflict)
+  if (!state.preview) return []
+  return fpBuildTreeRows(state.preview, getFilenamePreviewEncoding(conflict))
 }
 
 function setFilenamePreviewEncoding(conflict, value) {
@@ -1550,6 +1597,10 @@ function getConflictSourcePath(conflict) {
 
 function getExistingConflictPath(conflict) {
   return conflict?.context?.existing?.path || conflict?.existing_path || '-'
+}
+
+function getConflictLocationContext(conflict) {
+  return isProblemConflict(conflict) ? conflict?.context?.source : conflict?.context?.existing
 }
 
 function setBatchState(label, value) {
@@ -2500,7 +2551,9 @@ function removeConflict(conflictId) {
 }
 
 function getConflictTypeLabel(type) {
-  return {
+  const rawType = String(type || '')
+  const upperType = rawType.toUpperCase()
+  const labels = {
     DUPLICATE: '完全重复',
     LANGUAGE_VARIANT: '多语言版本',
     MULTIPLE_VERSIONS: '多版本冲突',
@@ -2509,8 +2562,10 @@ function getConflictTypeLabel(type) {
     LINKED_WORK_CHILD: '子版本已入库',
     LINKED_WORK: '关联作品',
     EXTRACT_FAILED: '解压失败',
-    PROCESS_FAILED: '处理失败'
-  }[type] || type || '未知冲突'
+    PROCESS_FAILED: '处理失败',
+    分卷压缩包后缀无法识别: '分卷压缩包后缀无法识别'
+  }
+  return labels[rawType] || labels[upperType] || rawType || '未知冲突'
 }
 
 // 比 getConflictTypeLabel 更细：根据 analysis_info / linked_works_info 拆出具体子类型，
@@ -3597,7 +3652,7 @@ button:disabled {
 .conflicts-detail-body {
   flex: 1;
   overflow-y: auto;
-  padding: 22px 26px 28px;
+  padding: 20px 26px 28px;
   background: transparent;
 }
 
@@ -3620,29 +3675,31 @@ button:disabled {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  margin-bottom: 18px;
-  padding: 14px 16px;
-  border-radius: 12px;
-  border: 1px solid;
+  margin-bottom: 16px;
+  padding: 12px 0 12px 14px;
+  border: 0;
+  border-left: 3px solid;
+  border-radius: 0;
 }
 .conflicts-detail-alert.is-warning {
-  background: rgba(254, 243, 199, 0.55);
-  border-color: rgba(245, 158, 11, 0.2);
+  background: linear-gradient(90deg, rgba(254, 243, 199, 0.48), rgba(254, 243, 199, 0));
+  border-color: rgba(245, 158, 11, 0.78);
   color: #92400e;
 }
 .conflicts-detail-alert.is-danger {
-  background: rgba(254, 226, 226, 0.55);
-  border-color: rgba(239, 68, 68, 0.18);
+  background: linear-gradient(90deg, rgba(254, 226, 226, 0.56), rgba(254, 226, 226, 0));
+  border-color: rgba(239, 68, 68, 0.78);
   color: #991b1b;
 }
 
 .conflicts-garbled-card {
   margin-bottom: 18px;
-  padding: 14px 16px;
-  border: 1px solid rgba(245, 158, 11, 0.22);
-  border-radius: 12px;
-  background: #fff;
-  box-shadow: 0 12px 28px -22px rgba(217, 119, 6, 0.35);
+  padding: 0 0 16px;
+  border: 0;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 .conflicts-garbled-head {
   display: flex;
@@ -3669,10 +3726,12 @@ button:disabled {
   justify-content: space-between;
   gap: 10px;
   margin-top: 12px;
-  padding: 10px;
-  border: 1px solid #f1f5f9;
-  border-radius: 10px;
-  background: #f8fafc;
+  padding: 10px 0;
+  border: 0;
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 0;
+  background: transparent;
 }
 .conflicts-garbled-select {
   display: flex;
@@ -3708,79 +3767,44 @@ button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
-.conflicts-garbled-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 12px;
-}
-.conflicts-garbled-grid div {
-  min-width: 0;
-  padding: 9px 10px;
-  border: 1px solid #f1f5f9;
-  border-radius: 9px;
-  background: #f8fafc;
-}
-.conflicts-garbled-grid span {
-  display: block;
-  color: #94a3b8;
-  font-size: 10.5px;
-  font-weight: 700;
-}
-.conflicts-garbled-grid b {
-  display: block;
-  margin-top: 3px;
-  color: #334155;
-  font-size: 12px;
-  word-break: break-all;
-}
-/* 当出现非 UTF-8 文件名修复条目时占满整行，避免标签被强行挤窄 */
-.conflicts-garbled-grid .conflicts-garbled-grid-wide {
-  grid-column: 1 / -1;
-}
-.conflicts-garbled-samples {
-  max-height: 150px;
-  overflow-y: auto;
+.conflicts-garbled-preview-list {
   margin-top: 10px;
-  border: 1px solid #f1f5f9;
-  border-radius: 10px;
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
 }
-.conflicts-garbled-row {
-  display: grid;
-  grid-template-columns: 1fr 52px;
-  gap: 10px;
-  padding: 8px 10px;
-  border-bottom: 1px solid #f1f5f9;
-  font-size: 11.5px;
-}
-.conflicts-garbled-row:last-child { border-bottom: 0; }
-.conflicts-garbled-row span {
-  min-width: 0;
+.conflicts-garbled-preview-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 0;
   color: #475569;
-  font-weight: 600;
-  word-break: break-all;
+  font-size: 12px;
+  font-weight: 800;
 }
-.conflicts-garbled-row b {
-  color: #b45309;
-  text-align: right;
+.conflicts-garbled-preview-title svg {
+  color: #94a3b8;
+}
+.conflicts-garbled-preview-title b {
+  margin-left: auto;
+  color: #0f172a;
   font-variant-numeric: tabular-nums;
 }
 .conflicts-filename-preview {
-  margin-top: 10px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  border-radius: 14px;
-  overflow: hidden;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
+  margin-top: 12px;
+  border: 0;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 0;
+  overflow: visible;
+  background: transparent;
+  box-shadow: none;
 }
 .conflicts-filename-preview-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 14px;
-  border-bottom: 1px solid rgba(29, 29, 31, 0.06);
-  background: linear-gradient(180deg, rgba(248, 250, 252, 0.92) 0%, rgba(241, 245, 249, 0.86) 100%);
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+  background: transparent;
   color: #475569;
   font-size: 12px;
 }
@@ -3811,13 +3835,12 @@ button:disabled {
   font-size: 11px;
   white-space: nowrap;
 }
-/* 内联文件树（问题作品详情页 - 文件名乱码诊断卡里的 inline 预览）：
-   贴齐 task-file-tree-card 卡片视觉，带顶底 fade mask + 滚动条统一风格 */
+/* 内联文件树：作为详情内容的一段分隔列表，不再额外套卡片。 */
 .conflicts-filename-preview-tree {
   position: relative;
   max-height: 280px;
   overflow-y: auto;
-  padding: 8px 4px;
+  padding: 4px 0;
   scrollbar-width: thin;
   scrollbar-color: rgba(148, 163, 184, 0.65) transparent;
 }
@@ -3831,8 +3854,45 @@ button:disabled {
 .conflicts-filename-preview-tree::-webkit-scrollbar-thumb:hover {
   background: rgba(100, 116, 139, 0.68);
 }
-
-/* --- 文件名预览文件树通用行（与 TaskDetailPane.tree-row 视觉对齐） --- */
+.conflicts-filename-preview-empty {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 10px;
+  padding: 0;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 640;
+  line-height: 1.6;
+}
+.conflicts-filename-preview-empty svg {
+  color: #94a3b8;
+}
+.conflicts-filename-preview-empty.is-garbled-list-empty {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  margin-top: 0;
+  padding: 18px 14px;
+  border: 1px dashed rgba(148, 163, 184, 0.42);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.72);
+}
+.conflicts-filename-preview-empty.is-garbled-list-empty div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.conflicts-filename-preview-empty.is-garbled-list-empty strong {
+  color: #334155;
+  font-size: 12.5px;
+}
+.conflicts-filename-preview-empty.is-garbled-list-empty span {
+  color: #94a3b8;
+  font-size: 11.5px;
+  font-weight: 500;
+}
+/* --- 文件名预览文件树通用行 --- */
 .fp-tree-row {
   position: relative;
   display: flex;
@@ -3840,18 +3900,19 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 4px;
-  padding: 5px 12px 5px 12px;
-  border: 1px solid transparent;
-  border-radius: 8px;
+  margin-bottom: 0;
+  padding: 7px 0;
+  border: 0;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.05);
+  border-radius: 0;
   color: rgb(30, 41, 59);
   cursor: default;
-  transition: background-color 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+  transition: background-color 0.16s ease, color 0.16s ease;
 }
-.fp-tree-row:last-child { margin-bottom: 0; }
+.fp-tree-row:last-child { border-bottom: 0; }
 .fp-tree-row:hover {
-  background: rgba(248, 250, 252, 0.7);
-  box-shadow: inset 0 0 0 1px rgba(226, 232, 240, 0.84);
+  background: rgba(248, 250, 252, 0.56);
+  box-shadow: none;
 }
 .fp-tree-main {
   position: relative;
@@ -3874,21 +3935,21 @@ button:disabled {
   flex: 0 0 auto;
   width: 22px;
   height: 22px;
-  border-radius: 7px;
-  background: rgba(241, 245, 249, 0.72);
-  border: 1px solid rgba(226, 232, 240, 0.7);
+  border-radius: 0;
+  background: transparent;
+  border: 0;
 }
 .fp-tree-row:hover .fp-tree-icon-wrap {
-  background: rgba(255, 255, 255, 0.86);
-  border-color: rgba(203, 213, 225, 0.9);
+  background: transparent;
+  border-color: transparent;
 }
 .fp-tree-row.is-dir .fp-tree-icon-wrap {
-  background: linear-gradient(180deg, rgba(254, 243, 199, 0.68) 0%, rgba(253, 230, 138, 0.45) 100%);
-  border-color: rgba(252, 211, 77, 0.65);
+  background: transparent;
+  border-color: transparent;
 }
 .fp-tree-row.is-garbled .fp-tree-icon-wrap {
-  background: linear-gradient(180deg, rgba(254, 226, 226, 0.7) 0%, rgba(252, 165, 165, 0.5) 100%);
-  border-color: rgba(248, 113, 113, 0.6);
+  background: transparent;
+  border-color: transparent;
 }
 .fp-tree-icon { flex: 0 0 auto; }
 .fp-tree-icon.is-folder { color: #f6b73c; fill: rgba(251, 191, 36, 0.22); }
@@ -3959,20 +4020,20 @@ button:disabled {
 
 /* 2. Overlay：半透 slate-900 + blur(6) */
 .fp-dlg-overlay {
-  background: rgba(15, 23, 42, 0.32);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 /* 3. Window：单层半透白玻璃壳 */
 .fp-dlg-window {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.74) 0%, rgba(255, 255, 255, 0.62) 100%);
-  backdrop-filter: blur(20px) saturate(130%);
-  -webkit-backdrop-filter: blur(20px) saturate(130%);
-  border: 1px solid rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(15, 23, 42, 0.06);
   box-shadow:
-    0 24px 60px rgba(15, 23, 42, 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    0 30px 80px rgba(15, 23, 42, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
 }
 
 /* 4. Header / Tabs / Body / Footer：仅 1px 边框分隔 */
@@ -4251,10 +4312,6 @@ button:disabled {
   border: 1px solid rgba(252, 211, 77, 0.72);
 }
 
-@media (max-width: 1100px) {
-  .conflicts-garbled-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-
 @media (max-width: 760px) {
   .fp-tree-grid { grid-template-columns: minmax(0, 1fr) 72px; }
   .fp-tree-col-status,
@@ -4305,9 +4362,7 @@ button:disabled {
 .lib-info-strip,
 .conflicts-list-pane,
 .conflicts-detail-pane,
-.conflicts-empty,
-.conflicts-garbled-card,
-.conflicts-filename-preview {
+.conflicts-empty {
   background: #fff;
   border-color: rgba(15, 23, 42, 0.06);
   box-shadow:
@@ -4361,8 +4416,7 @@ button:disabled {
 }
 
 .conflicts-list-header,
-.conflicts-detail-header,
-.conflicts-filename-preview-head {
+.conflicts-detail-header {
   background: #fff;
   border-color: rgba(15, 23, 42, 0.055);
 }
@@ -4378,8 +4432,7 @@ button:disabled {
 .conflicts-batch-btn.is-slate,
 .conflicts-action-btn.is-slate,
 .conflicts-info-path,
-.conflicts-garbled-toolbar,
-.conflicts-garbled-grid div {
+.conflicts-garbled-toolbar {
   background: #fff;
   border-color: rgba(15, 23, 42, 0.06);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
@@ -4477,13 +4530,11 @@ button:disabled {
 }
 
 .conflicts-detail-panel {
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  border-radius: 16px;
-  background: #fff;
-  overflow: hidden;
-  box-shadow:
-    0 1px 2px rgba(15, 23, 42, 0.035),
-    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+  box-shadow: none;
 }
 
 .conflicts-detail-panel-head {
@@ -4491,9 +4542,9 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 16px 20px;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.055);
-  background: #fff;
+  padding: 0 0 12px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.09);
+  background: transparent;
 }
 
 .conflicts-detail-panel-title,
@@ -4507,10 +4558,10 @@ button:disabled {
 .conflicts-detail-panel-title h3,
 .conflicts-detail-section-title {
   margin: 0;
-  color: #334155;
+  color: #1e293b;
   font-size: 13px;
-  font-weight: 800;
-  letter-spacing: -0.1px;
+  font-weight: 850;
+  letter-spacing: 0;
 }
 
 .conflicts-detail-panel-time {
@@ -4524,7 +4575,7 @@ button:disabled {
 .conflicts-detail-panel-grid {
   display: grid;
   grid-template-columns: 1fr;
-  background: #fff;
+  background: transparent;
 }
 
 @media (min-width: 1280px) {
@@ -4535,54 +4586,69 @@ button:disabled {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 16px;
-  padding: 18px 20px 22px;
+  gap: 14px;
+  padding: 18px 0 20px;
 }
 
 .conflicts-detail-section + .conflicts-detail-section {
-  border-top: 1px solid rgba(15, 23, 42, 0.055);
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
 }
 
 @media (min-width: 1280px) {
   .conflicts-detail-section + .conflicts-detail-section {
     border-top: 0;
-    border-left: 1px solid rgba(15, 23, 42, 0.055);
+    border-left: 1px solid rgba(15, 23, 42, 0.08);
+    padding-left: 24px;
+    margin-left: 24px;
   }
 }
 
 .conflicts-info-section { display: flex; flex-direction: column; gap: 6px; }
 .conflicts-info-block {
-  padding-top: 14px;
-  border-top: 1px dashed rgba(15, 23, 42, 0.08);
+  padding-top: 12px;
+  border-top: 1px solid rgba(15, 23, 42, 0.07);
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 .conflicts-info-cols {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.conflicts-info-cols > div {
+  min-width: 0;
+  padding: 10px 14px 10px 0;
+}
+
+.conflicts-info-cols > div + div {
+  padding-left: 14px;
+  border-left: 1px solid rgba(15, 23, 42, 0.06);
 }
 
 .conflicts-info-label {
   display: block;
   font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
+  font-weight: 760;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: #94a3b8;
+  color: #7f8fa6;
   margin-bottom: 4px;
 }
 .conflicts-info-value {
   margin: 0;
   font-size: 13px;
-  font-weight: 500;
-  color: #0f172a;
+  font-weight: 720;
+  color: #111827;
 }
 .conflicts-info-value-muted {
   margin: 0;
   font-size: 12.5px;
-  color: #64748b;
+  font-weight: 560;
+  color: #52647c;
 }
 .conflicts-info-error-text {
   margin: 0;
@@ -4598,7 +4664,8 @@ button:disabled {
   border: 0;
   font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
   font-size: 11.5px;
-  color: #334155;
+  font-weight: 560;
+  color: #243247;
   line-height: 1.6;
   word-break: break-all;
   max-height: 96px;
@@ -4614,18 +4681,23 @@ button:disabled {
 
 .conflicts-info-meta-list { display: flex; flex-direction: column; gap: 6px; }
 .conflicts-info-meta-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
   align-items: flex-start;
-  gap: 8px;
+  gap: 10px;
   font-size: 12.5px;
 }
 .conflicts-info-meta-key {
-  flex-shrink: 0;
-  width: 36px;
-  color: #94a3b8;
+  color: #7f8fa6;
   font-size: 11.5px;
+  font-weight: 700;
 }
-.conflicts-info-meta-val { color: #1e293b; flex: 1; }
+.conflicts-info-meta-val {
+  color: #1e293b;
+  flex: 1;
+  font-weight: 620;
+  line-height: 1.55;
+}
 
 /* ============================================================
  * 页面按钮 / 标签统一微调：跟随玻璃主题
@@ -4718,6 +4790,19 @@ button:disabled {
   border-color: rgba(255, 255, 255, 0.66);
 }
 
+.conflicts-batch-actions > .conflicts-batch-btn.is-slate {
+  background: #111827;
+  color: #ffffff;
+  border-color: rgba(17, 24, 39, 0.88);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 10px 22px rgba(15, 23, 42, 0.22);
+}
+
+.conflicts-batch-actions > .conflicts-batch-btn.is-slate svg {
+  color: #ffffff;
+}
+
 .conflicts-batch-btn.is-slate:hover:not(:disabled),
 .conflicts-action-btn.is-slate:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.86);
@@ -4726,6 +4811,15 @@ button:disabled {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.84),
     0 14px 28px rgba(15, 23, 42, 0.12);
+}
+
+.conflicts-batch-actions > .conflicts-batch-btn.is-slate:hover:not(:disabled) {
+  background: #0f172a;
+  color: #ffffff;
+  border-color: rgba(15, 23, 42, 0.95);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 14px 28px rgba(15, 23, 42, 0.28);
 }
 
 .conflicts-action-btn.is-primary,
@@ -5017,6 +5111,22 @@ html.kikoerumanager-dark .conflicts-batch-btn.is-slate:hover {
   color: #f8fafc;
   border-color: rgba(148, 163, 184, 0.28);
 }
+html.kikoerumanager-dark .conflicts-batch-actions > .conflicts-batch-btn.is-slate {
+  background: #020617;
+  color: #ffffff;
+  border-color: rgba(15, 23, 42, 0.95);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 10px 22px rgba(0, 0, 0, 0.34);
+}
+html.kikoerumanager-dark .conflicts-batch-actions > .conflicts-batch-btn.is-slate:hover {
+  background: #111827;
+  color: #ffffff;
+  border-color: rgba(30, 41, 59, 0.98);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 14px 28px rgba(0, 0, 0, 0.38);
+}
 html.kikoerumanager-dark .conflicts-batch-btn.is-emerald {
   background: linear-gradient(180deg, rgba(30, 58, 138, 0.44), rgba(30, 41, 59, 0.72));
   color: #bfdbfe;
@@ -5137,9 +5247,9 @@ html.kikoerumanager-dark .conflicts-detail-alert.is-danger {
 }
 
 html.kikoerumanager-dark .conflicts-garbled-card {
-  background: rgba(15, 23, 42, 0.72);
-  border-color: rgba(245, 158, 11, 0.25);
-  box-shadow: 0 12px 28px -22px rgba(217, 119, 6, 0.25);
+  background: transparent;
+  border-color: rgba(148, 163, 184, 0.14);
+  box-shadow: none;
 }
 html.kikoerumanager-dark .conflicts-garbled-head h4 {
   color: #f8fafc;
@@ -5148,7 +5258,7 @@ html.kikoerumanager-dark .conflicts-garbled-head p {
   color: #94a3b8;
 }
 html.kikoerumanager-dark .conflicts-garbled-toolbar {
-  background: rgba(30, 41, 59, 0.6);
+  background: transparent;
   border-color: rgba(148, 163, 184, 0.12);
 }
 html.kikoerumanager-dark .conflicts-garbled-select > span {
@@ -5162,16 +5272,6 @@ html.kikoerumanager-dark .conflicts-garbled-preview-btn {
 html.kikoerumanager-dark .conflicts-garbled-preview-btn:hover {
   border-color: rgba(148, 163, 184, 0.28);
   box-shadow: 0 8px 18px -12px rgba(0, 0, 0, 0.35);
-}
-html.kikoerumanager-dark .conflicts-garbled-grid div {
-  background: rgba(30, 41, 59, 0.55);
-  border-color: rgba(148, 163, 184, 0.12);
-}
-html.kikoerumanager-dark .conflicts-garbled-grid span {
-  color: #64748b;
-}
-html.kikoerumanager-dark .conflicts-garbled-grid b {
-  color: #e2e8f0;
 }
 html.kikoerumanager-dark .conflicts-garbled-samples {
   background: rgba(30, 41, 59, 0.4);
@@ -5188,12 +5288,12 @@ html.kikoerumanager-dark .conflicts-garbled-row b {
 }
 
 html.kikoerumanager-dark .conflicts-filename-preview {
-  background: rgba(15, 23, 42, 0.72);
+  background: transparent;
   border-color: rgba(148, 163, 184, 0.14);
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.15);
+  box-shadow: none;
 }
 html.kikoerumanager-dark .conflicts-filename-preview-head {
-  background: linear-gradient(180deg, rgba(30, 41, 59, 0.92) 0%, rgba(30, 41, 59, 0.72) 100%);
+  background: transparent;
   border-color: rgba(148, 163, 184, 0.1);
   color: #94a3b8;
 }
@@ -5290,18 +5390,19 @@ html.kikoerumanager-dark .fp-dlg-pill b {
 /* 文件树 */
 html.kikoerumanager-dark .fp-tree-row {
   color: #cbd5e1;
+  border-color: rgba(148, 163, 184, 0.1);
 }
 html.kikoerumanager-dark .fp-tree-row:hover {
-  background: rgba(51, 65, 85, 0.45);
-  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.14);
+  background: rgba(51, 65, 85, 0.24);
+  box-shadow: none;
 }
 html.kikoerumanager-dark .fp-tree-icon-wrap {
-  background: rgba(30, 41, 59, 0.6);
-  border-color: rgba(148, 163, 184, 0.14);
+  background: transparent;
+  border-color: transparent;
 }
 html.kikoerumanager-dark .fp-tree-row:hover .fp-tree-icon-wrap {
-  background: rgba(51, 65, 85, 0.7);
-  border-color: rgba(148, 163, 184, 0.22);
+  background: transparent;
+  border-color: transparent;
 }
 html.kikoerumanager-dark .fp-tree-name {
   color: #e2e8f0;
@@ -5317,11 +5418,106 @@ html.kikoerumanager-dark .conflicts-detail-placeholder-inner p {
   color: #94a3b8;
 }
 
+html.kikoerumanager-dark .conflicts-page .lib-info-strip,
+html.kikoerumanager-dark .conflicts-page .conflicts-empty,
+html.kikoerumanager-dark .conflicts-page .conflicts-list-pane,
+html.kikoerumanager-dark .conflicts-page .conflicts-detail-pane {
+  background: var(--km-dark-sidebar) !important;
+  border-color: var(--km-dark-border) !important;
+  box-shadow: 0 22px 58px rgba(0, 0, 0, 0.52), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-list-header,
+html.kikoerumanager-dark .conflicts-page .conflicts-detail-header,
+html.kikoerumanager-dark .conflicts-page .conflicts-segmented,
+html.kikoerumanager-dark .conflicts-page .conflicts-mini-btn,
+html.kikoerumanager-dark .conflicts-page .conflicts-refresh-btn,
+html.kikoerumanager-dark .conflicts-page .conflicts-garbled-toolbar {
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035) !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-segmented-item,
+html.kikoerumanager-dark .conflicts-page .conflicts-mini-btn,
+html.kikoerumanager-dark .conflicts-page .conflicts-refresh-btn,
+html.kikoerumanager-dark .conflicts-page .conflicts-batch-btn,
+html.kikoerumanager-dark .conflicts-page .conflicts-action-btn {
+  background: var(--km-dark-button-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-segmented-item:hover,
+html.kikoerumanager-dark .conflicts-page .conflicts-segmented-item.is-active,
+html.kikoerumanager-dark .conflicts-page .conflicts-mini-btn:hover,
+html.kikoerumanager-dark .conflicts-page .conflicts-mini-btn.is-active,
+html.kikoerumanager-dark .conflicts-page .conflicts-refresh-btn:hover,
+html.kikoerumanager-dark .conflicts-page .conflicts-batch-btn:hover,
+html.kikoerumanager-dark .conflicts-page .conflicts-action-btn:hover {
+  background: var(--km-dark-button-bg-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-batch-actions > .conflicts-batch-btn.is-slate,
+html.kikoerumanager-dark .conflicts-page .conflicts-action-btn.is-primary,
+html.kikoerumanager-dark .conflicts-page .conflicts-action-btn.is-emerald {
+  background: #020617 !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #ffffff !important;
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-batch-actions > .conflicts-batch-btn.is-slate:hover,
+html.kikoerumanager-dark .conflicts-page .conflicts-action-btn.is-primary:hover,
+html.kikoerumanager-dark .conflicts-page .conflicts-action-btn.is-emerald:hover {
+  background: #111116 !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-list-card {
+  background: rgba(17, 18, 23, 0.88) !important;
+  border-color: rgba(255, 255, 255, 0.07) !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-list-card:hover {
+  background: rgba(28, 28, 33, 0.95) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-list-card.is-selected,
+html.kikoerumanager-dark .conflicts-page .conflicts-list-card.is-active {
+  background: rgba(32, 32, 37, 0.96) !important;
+  border-color: rgba(255, 255, 255, 0.17) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04) !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-list-status-chip,
+html.kikoerumanager-dark .conflicts-page .conflicts-list-card-state-icon {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-list-progress-track {
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-list-progress-num {
+  color: var(--km-dark-text-muted) !important;
+}
+
 /* 处理中 / 重试中 卡片深色适配 */
 html.kikoerumanager-dark .keep-new-conflict-card {
-  background: linear-gradient(100deg, rgba(30, 58, 138, 0.35), rgba(15, 23, 42, 0.55) 42%, rgba(37, 99, 235, 0.25)) !important;
+  background: linear-gradient(100deg, rgba(28, 28, 33, 0.98), rgba(10, 11, 16, 0.96) 42%, rgba(39, 39, 44, 0.9)) !important;
 }
 html.kikoerumanager-dark .retry-conflict-card {
-  background: linear-gradient(100deg, rgba(49, 46, 129, 0.34), rgba(15, 23, 42, 0.5) 38%, rgba(79, 70, 229, 0.22)) !important;
+  background: linear-gradient(100deg, rgba(28, 28, 33, 0.98), rgba(10, 11, 16, 0.96) 38%, rgba(39, 39, 44, 0.9)) !important;
 }
 </style>

@@ -187,4 +187,26 @@ function normalizePath (path) {
 }
 
 .nav-row-meta-error { color: #b91c1c; font-style: normal; }
+
+:global(html.kikoerumanager-dark) .lib-move-modal .nav-row {
+  color: var(--km-dark-text) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-move-modal .nav-row:hover,
+:global(html.kikoerumanager-dark) .lib-move-modal .nav-row-active,
+:global(html.kikoerumanager-dark) .lib-move-modal .nav-row-active:hover {
+  background: rgba(255, 255, 255, 0.16) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow:
+    inset 3px 0 0 rgba(255, 255, 255, 0.82),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.16) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-move-modal .nav-row-active .nav-folder-icon {
+  color: #f59e0b !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-move-modal .nav-row-meta {
+  color: var(--km-dark-text-muted) !important;
+}
 </style>
