@@ -2149,6 +2149,57 @@ body[data-lib-move-resizing="1"] {
   user-select: none !important;
 }
 
+html.kikoerumanager-dark .lib-move-modal .nav-row-active,
+html.kikoerumanager-dark .lib-move-modal .nav-row-active:hover,
+html.kikoerumanager-dark .lib-move-modal .nav-row-active.nav-row-source,
+html.kikoerumanager-dark .lib-move-modal .nav-row-active.nav-row-source:hover,
+html.kikoerumanager-dark .lib-move-modal .fm-row-selected,
+html.kikoerumanager-dark .lib-move-modal .fm-row-selected:hover,
+html.kikoerumanager-dark .lib-move-modal .fm-row-selected.fm-row-self {
+  background: rgba(255, 255, 255, 0.16) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow:
+    inset 3px 0 0 rgba(255, 255, 255, 0.82),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.16) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .nav-row:hover,
+html.kikoerumanager-dark .lib-move-modal .fm-row:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .nav-row-active .nav-disk-icon,
+html.kikoerumanager-dark .lib-move-modal .nav-row-active .nav-folder-icon {
+  color: #f59e0b !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .fm-row-selected .fm-cell-size,
+html.kikoerumanager-dark .lib-move-modal .fm-row-selected .fm-cell-time {
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .fm-head-cell-active,
+html.kikoerumanager-dark .lib-move-modal .fm-head-cell:hover {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .fm-body:focus-visible {
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.16) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .fm-loading-icon {
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .fm-loading-title {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .fm-loading-desc {
+  color: var(--km-dark-text-muted) !important;
+}
+
 @media (max-width: 640px) {
   .lib-move-modal.el-dialog {
     width: 100vw !important;

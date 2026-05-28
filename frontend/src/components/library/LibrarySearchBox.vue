@@ -1251,4 +1251,154 @@ onBeforeUnmount(() => {
   background: rgba(15, 23, 42, 0.24);
   background-clip: content-box;
 }
+
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-pop,
+:global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu {
+  background: var(--km-dark-sidebar) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow:
+    0 22px 54px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-head,
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-foot,
+:global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-head {
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text-muted) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-head-title,
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-row-name,
+:global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-label,
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-state .font-medium {
+  color: var(--km-dark-text-strong) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-head-loader,
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-head-meta,
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-state,
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-state-hint,
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-row-sub,
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-row-path,
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-foot-hint {
+  color: var(--km-dark-text-muted) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-row:hover,
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-row.is-active,
+:global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-row:hover,
+:global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-row.is-active {
+  background: rgba(255, 255, 255, 0.16) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow:
+    inset 3px 0 0 rgba(255, 255, 255, 0.78),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-head-count,
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-row-rj,
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-lib-chip,
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-foot-hint kbd {
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-banner.is-warning {
+  background: rgba(245, 158, 11, 0.14) !important;
+  border-color: rgba(245, 158, 11, 0.34) !important;
+  color: #fbbf24 !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-banner.is-error {
+  background: rgba(244, 63, 94, 0.14) !important;
+  border-color: rgba(251, 113, 133, 0.34) !important;
+  color: #fda4af !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-foot-btn {
+  background: #020617 !important;
+  border: 1px solid var(--km-dark-border-strong) !important;
+  color: #ffffff !important;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.38) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  background-clip: content-box;
+}
+</style>
+
+<style>
+html.kikoerumanager-dark .lib-suggest-pop {
+  background: rgba(8, 9, 13, 0.86) !important;
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 24px 58px rgba(0, 0, 0, 0.58) !important;
+  backdrop-filter: blur(28px) saturate(135%) !important;
+  -webkit-backdrop-filter: blur(28px) saturate(135%) !important;
+}
+
+html.kikoerumanager-dark .lib-suggest-head,
+html.kikoerumanager-dark .lib-suggest-foot {
+  background: rgba(8, 9, 13, 0.64) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark .lib-suggest-list,
+html.kikoerumanager-dark .lib-suggest-row {
+  background: transparent !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .lib-suggest-row:hover,
+html.kikoerumanager-dark .lib-suggest-row.is-active {
+  background: rgba(255, 255, 255, 0.16) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow:
+    inset 3px 0 0 rgba(255, 255, 255, 0.78),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
+}
+
+html.kikoerumanager-dark .lib-suggest-head-title,
+html.kikoerumanager-dark .lib-suggest-row-name {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .lib-suggest-head-loader,
+html.kikoerumanager-dark .lib-suggest-head-meta,
+html.kikoerumanager-dark .lib-suggest-row-sub,
+html.kikoerumanager-dark .lib-suggest-row-path,
+html.kikoerumanager-dark .lib-suggest-row-size,
+html.kikoerumanager-dark .lib-suggest-foot-hint {
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark .lib-suggest-head-count,
+html.kikoerumanager-dark .lib-suggest-row-rj,
+html.kikoerumanager-dark .lib-suggest-lib-chip,
+html.kikoerumanager-dark .lib-suggest-foot-hint kbd {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .lib-suggest-banner.is-warning {
+  background: rgba(245, 158, 11, 0.14) !important;
+  border-color: rgba(245, 158, 11, 0.34) !important;
+  color: #fbbf24 !important;
+}
+
+html.kikoerumanager-dark .lib-suggest-foot-btn {
+  background: #020617 !important;
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  color: #ffffff !important;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.38) !important;
+}
 </style>

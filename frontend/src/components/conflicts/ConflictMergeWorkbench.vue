@@ -105,63 +105,14 @@
             </div>
           </div>
 
-          <!-- Loading panel：阶段 / 进度由父组件 loadingProgress 实时驱动，
-               不再靠前端计时器估算。stage 映射到 6 个用户可读的步骤卡。 -->
+          <!-- Loading panel：阶段 / 进度由父组件 loadingProgress 实时驱动。 -->
           <div v-if="loading || progressStatus === 'failed'" class="cmw-loading-panel">
-            <div class="cmw-loading-card">
-              <div class="cmw-loading-main">
-                <div class="cmw-loading-orb" :class="{ 'is-error': progressStatus === 'failed' }">
-                  <Loader2 v-if="progressStatus !== 'failed'" class="h-6 w-6 animate-spin" :stroke-width="2.4" />
-                  <AlertTriangle v-else class="h-6 w-6" :stroke-width="2.4" />
-                </div>
-                <div class="min-w-0">
-                  <p class="cmw-loading-kicker">合并预览任务</p>
-                  <p class="cmw-loading-stage">{{ progressStageLabel }}</p>
-                  <p class="cmw-loading-message" :title="progressMessage">{{ progressMessage || '准备中…' }}</p>
-                </div>
-              </div>
-
-              <div class="cmw-loading-progress">
-                <!-- 真实 percent 进度条（来自 extract_task.progress 的 22~62 区间映射） -->
-                <div class="cmw-loading-bar-head">
-                  <span>处理进度</span>
-                  <b>{{ progressPercent }}%</b>
-                </div>
-                <div class="cmw-loading-bar-track">
-                  <div
-                    class="cmw-loading-bar"
-                    :class="{ 'is-error': progressStatus === 'failed' }"
-                    :style="{ width: `${progressPercent}%` }"
-                  />
-                </div>
-                <!-- 6 步骤卡：state = pending / active / done -->
-                <div class="cmw-loading-steps">
-                  <div
-                    v-for="step in displayLoadingSteps"
-                    :key="step.key"
-                    class="cmw-loading-step"
-                    :class="{
-                      'is-active': step.state === 'active',
-                      'is-done': step.state === 'done',
-                      'is-pending': step.state === 'pending',
-                    }"
-                  >
-                    <span class="cmw-loading-step-dot">
-                      <CheckCircle2 v-if="step.state === 'done'" class="h-3 w-3" :stroke-width="2.6" />
-                      <Loader2 v-else-if="step.state === 'active'" class="h-3 w-3 animate-spin" :stroke-width="2.4" />
-                    </span>
-                    <span class="cmw-loading-step-title">{{ step.title }}</span>
-                  </div>
-                </div>
-                <p v-if="progressStatus === 'failed'" class="cmw-loading-error">
-                  <AlertTriangle class="mr-1 inline-block h-3.5 w-3.5 text-rose-500" />
-                  {{ progressMessage }}
-                </p>
-                <p v-else class="cmw-loading-footnote">
-                  后端实际处理阶段会反映在上方步骤上；大压缩包 / 嵌套包 / 远程库存会更久，窗口会保持到完成。
-                </p>
-              </div>
-            </div>
+            <AppLoadingAnimation
+              :label="loadingLabel"
+              :description="loadingDescription"
+              :size="168"
+              :min-height="360"
+            />
           </div>
 
           <!-- 默认空态：进度 idle 且没有 preview（罕见路径，比如刚 mount 就没数据） -->
@@ -311,10 +262,11 @@
 import { computed, ref } from 'vue'
 import {
   GitMerge, Search, RotateCcw, RefreshCw, X, Upload,
-  CheckCircle2, Loader2, AlertTriangle,
+  CheckCircle2,
   ArrowDownToLine, Archive
 } from 'lucide-vue-next'
 import AppDropdown from '../common/AppDropdown.vue'
+import AppLoadingAnimation from '../common/AppLoadingAnimation.vue'
 import { classifyLibraryEntryKind, libraryEntryIconFor } from '../library/_libraryFileKind'
 
 const props = defineProps({
@@ -366,29 +318,6 @@ const statusDropdownOptions = [
   { value: 'unchanged', label: '仅一致' },
 ]
 
-// ============================================================
-// 合并预览 loading panel：真实进度驱动
-// ============================================================
-// 后端 stage 序列（来自 ConflictResolutionService._run_merge_preview_worker）：
-//   init / resolve_path / copy_archive / scan_source / extract / nested_extract /
-//   filter / scan_existing / compare / done / failed
-// 前端归并成 6 个用户可读步骤：
-//   prep / stage / extract / filter / scan / diff
-// 让 chip 跟随真实 stage 切，不再靠前端计时器估算时间阈值。
-const STAGE_TO_STEP_INDEX = {
-  init: 0,
-  resolve_path: 0,
-  copy_archive: 1,
-  scan_source: 1,
-  extract: 2,
-  nested_extract: 2,
-  filter: 3,
-  scan_existing: 4,
-  compare: 5,
-  done: 6,           // 全部完成
-  failed: -1,        // 失败：无 active 步骤
-}
-
 const progressStatus = computed(() => props.loadingProgress?.status || 'idle')
 const progressStage = computed(() => props.loadingProgress?.stage || '')
 const progressStageLabel = computed(() => {
@@ -399,37 +328,25 @@ const progressStageLabel = computed(() => {
   return '初始化'
 })
 const progressMessage = computed(() => props.loadingProgress?.message || '')
-const progressPercent = computed(() => {
-  const raw = Number(props.loadingProgress?.percent)
-  if (!Number.isFinite(raw)) return 0
-  return Math.max(0, Math.min(100, Math.round(raw)))
+const loadingLabel = computed(() => {
+  if (progressStatus.value === 'failed') return progressStageLabel.value || '合并预览生成失败'
+  const label = progressStageLabel.value && progressStageLabel.value !== '初始化'
+    ? progressStageLabel.value
+    : '正在生成目录差异...'
+  return label
 })
-
-const displayLoadingSteps = computed(() => {
-  const isArchive = props.conflict?.context?.new_path_kind === 'archive'
-  const remoteScan = isRemoteTarget.value
-  const steps = [
-    { key: 'prep', title: '准备工作区' },
-    { key: 'stage', title: isArchive ? '复制压缩包' : '读取目录' },
-    { key: 'extract', title: isArchive ? '解压新包' : '整理新目录' },
-    { key: 'filter', title: '过滤临时文件' },
-    { key: 'scan', title: remoteScan ? '读取远程库存' : '扫描库存目录' },
-    { key: 'diff', title: '生成差异树' },
-  ]
-  const currentIdx = STAGE_TO_STEP_INDEX[progressStage.value]
-  // failed：当前 step 不高亮，已 done 的步骤保留 done 视觉
-  if (progressStatus.value === 'failed') {
-    return steps.map(step => ({ ...step, state: 'pending' }))
-  }
-  // completed / done：全部 done
-  if (progressStatus.value === 'completed' || currentIdx === 6) {
-    return steps.map(step => ({ ...step, state: 'done' }))
-  }
-  const idx = (typeof currentIdx === 'number' && currentIdx >= 0) ? currentIdx : 0
-  return steps.map((step, i) => ({
-    ...step,
-    state: i < idx ? 'done' : (i === idx ? 'active' : 'pending'),
-  }))
+const loadingDescription = computed(() => {
+  if (progressStatus.value === 'failed') return progressMessage.value || '请关闭后重新生成，或检查任务日志。'
+  if (progressMessage.value) return progressMessage.value
+  const stage = progressStage.value
+  if (stage === 'resolve_path') return '正在定位现有目录和新包来源'
+  if (stage === 'copy_archive') return '正在准备临时工作区'
+  if (stage === 'scan_source') return '正在读取新包目录结构'
+  if (stage === 'extract' || stage === 'nested_extract') return '正在展开压缩包并整理文件'
+  if (stage === 'filter') return '正在过滤临时文件和系统文件'
+  if (stage === 'scan_existing') return '正在读取库存目录'
+  if (stage === 'compare') return '正在按相对路径生成差异'
+  return '正在分析目录结构，请稍候'
 })
 
 const visible = computed({
@@ -951,14 +868,19 @@ function formatDate(value) {
   height: min(88vh, 820px);
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.42);
-  border-radius: 22px;
-  background: #fff;
-  backdrop-filter: blur(34px) saturate(150%);
-  -webkit-backdrop-filter: blur(34px) saturate(150%);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   box-shadow:
-    0 28px 70px rgba(15, 23, 42, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+    0 30px 80px rgba(15, 23, 42, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  font-family: Inter, "HarmonyOS Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* Header：纯玻璃 */
@@ -968,8 +890,8 @@ function formatDate(value) {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border-bottom: 1px solid #eef2f7;
-  background: #fff;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.58);
+  background: transparent;
   padding: 12px 18px;
   backdrop-filter: blur(18px) saturate(140%);
   -webkit-backdrop-filter: blur(18px) saturate(140%);
@@ -989,9 +911,12 @@ function formatDate(value) {
 }
 
 .cmw-title {
-  font-size: 16px;
-  font-weight: 800;
+  margin: 0;
+  font-size: 17px;
+  font-weight: 850;
+  line-height: 1.15;
   color: #0f172a;
+  letter-spacing: -0.015em;
 }
 
 .cmw-subtitle {
@@ -999,8 +924,10 @@ function formatDate(value) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12.5px;
-  color: #64748b;
+  font-size: 12px;
+  line-height: 1.35;
+  color: #52647c;
+  font-weight: 520;
 }
 
 /* 远程合并 tag：克制 slate 轮廓，去 amber 渐变 */
@@ -1059,8 +986,8 @@ function formatDate(value) {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  border-bottom: 1px solid #eef2f7;
-  background: #fff;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.58);
+  background: transparent;
   padding: 7px 16px;
 }
 
@@ -1070,8 +997,9 @@ function formatDate(value) {
   border-radius: 8px;
   background: transparent;
   padding: 7px 10px 7px 32px;
-  font-size: 12.5px;
-  color: #334155;
+  font-size: 12px;
+  font-weight: 560;
+  color: #243247;
   outline: none;
   transition: all 0.2s ease;
 }
@@ -1092,8 +1020,9 @@ function formatDate(value) {
   background: transparent;
   color: #475569;
   padding: 7px 9px;
-  font-size: 12.5px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 720;
+  letter-spacing: 0.005em;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -1121,7 +1050,8 @@ function formatDate(value) {
   gap: 5px;
   padding: 7px 9px;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 680;
+  letter-spacing: 0.005em;
   color: #475569;
   background: transparent;
   border: 0;
@@ -1158,8 +1088,8 @@ function formatDate(value) {
   align-items: center;
   justify-content: space-between;
   gap: 8px 12px;
-  border-bottom: 1px solid #eef2f7;
-  background: #fff;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.5);
+  background: transparent;
   padding: 6px 16px;
 }
 
@@ -1177,7 +1107,7 @@ function formatDate(value) {
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
-  background: #fff;
+  background: transparent;
 }
 
 /* Pill：segmented 灰阶，active 单色 indigo（去渐变、去阴影） */
@@ -1191,7 +1121,8 @@ function formatDate(value) {
   color: #64748b;
   padding: 4px 10px;
   font-size: 11.5px;
-  font-weight: 700;
+  font-weight: 720;
+  letter-spacing: 0.005em;
   box-shadow: none;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
@@ -1234,217 +1165,25 @@ function formatDate(value) {
   flex: 1;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.56);
+  background: transparent;
   padding: 28px;
 }
 
-.cmw-loading-card {
-  display: grid;
-  width: min(860px, 100%);
-  grid-template-columns: minmax(210px, 0.38fr) minmax(0, 1fr);
-  gap: 26px;
-  align-items: center;
-  border: 1px solid rgba(226, 232, 240, 0.95);
-  border-radius: 22px;
-  background: rgba(255, 255, 255, 0.72);
-  padding: 26px;
-  text-align: left;
-  backdrop-filter: blur(20px) saturate(130%);
-  -webkit-backdrop-filter: blur(20px) saturate(130%);
-  box-shadow:
-    0 18px 46px rgba(15, 23, 42, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+.cmw-loading-panel :deep(.app-loading-animation) {
+  width: min(520px, 100%);
 }
 
-.cmw-loading-main {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 18px;
+.cmw-loading-panel :deep(.app-loading-animation__label) {
+  color: #111827;
+  font-size: 15px;
+  font-weight: 820;
+  letter-spacing: -0.01em;
 }
 
-.cmw-loading-orb {
-  position: relative;
-  display: inline-flex;
-  width: 64px;
-  height: 64px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 18px;
-  color: #4f46e5;
-  background: linear-gradient(180deg, #eef2ff 0%, #e0e7ff 100%);
-  box-shadow:
-    0 16px 32px rgba(79, 70, 229, 0.14),
-    inset 0 1px 0 rgba(255, 255, 255, 0.95);
-}
-
-.cmw-loading-orb::after {
-  position: absolute;
-  inset: -7px;
-  border: 2px solid rgba(99, 102, 241, 0.22);
-  border-top-color: #6366f1;
-  border-radius: 22px;
-  animation: cmw-spin 1.1s linear infinite;
-  content: '';
-}
-
-.cmw-loading-orb.is-error {
-  color: #dc2626;
-  background: linear-gradient(180deg, #fef2f2 0%, #fee2e2 100%);
-  box-shadow:
-    0 18px 38px rgba(220, 38, 38, 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 0.95);
-}
-
-.cmw-loading-orb.is-error::after {
-  border-color: rgba(220, 38, 38, 0.22);
-  border-top-color: #dc2626;
-  animation: none;
-}
-
-.cmw-loading-kicker {
-  margin: 0 0 5px;
-  color: #94a3b8;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.cmw-loading-stage {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 800;
-  color: #0f172a;
-  letter-spacing: -0.35px;
-}
-
-.cmw-loading-message {
-  margin: 7px 0 0;
-  font-size: 12.5px;
-  color: #64748b;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.cmw-loading-progress {
-  min-width: 0;
-}
-
-.cmw-loading-bar-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  color: #64748b;
-  font-size: 11px;
-  font-weight: 800;
-}
-
-.cmw-loading-bar-head b {
-  color: #334155;
-  font-variant-numeric: tabular-nums;
-}
-
-.cmw-loading-bar-track {
-  position: relative;
-  height: 8px;
-  margin-top: 8px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: rgba(226, 232, 240, 0.78);
-}
-
-.cmw-loading-bar {
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #6366f1 0%, #2563eb 100%);
-  box-shadow: 0 4px 10px rgba(99, 102, 241, 0.14);
-  transition: width 0.45s ease;
-}
-
-.cmw-loading-bar.is-error {
-  background: linear-gradient(90deg, #ef4444 0%, #dc2626 100%);
-  box-shadow: 0 8px 18px rgba(220, 38, 38, 0.22);
-}
-
-.cmw-loading-steps {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 16px;
-  text-align: left;
-}
-
-.cmw-loading-step {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid rgba(226, 232, 240, 0.88);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.62);
-  padding: 8px 10px;
-  color: #94a3b8;
-  font-size: 11.5px;
-  font-weight: 700;
-  transition: all 0.3s ease;
-}
-
-.cmw-loading-step.is-active {
-  border-color: rgba(99, 102, 241, 0.42);
-  color: #4338ca;
-  background: rgba(238, 242, 255, 0.82);
-  box-shadow: 0 8px 18px rgba(99, 102, 241, 0.1);
-}
-
-.cmw-loading-step.is-done {
-  border-color: rgba(14, 165, 233, 0.28);
-  color: #0369a1;
-  background: rgba(240, 249, 255, 0.82);
-}
-
-.cmw-loading-step-dot {
-  display: inline-flex;
-  width: 18px;
-  height: 18px;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.14);
-}
-
-.cmw-loading-step.is-active .cmw-loading-step-dot {
-  background: rgba(99, 102, 241, 0.18);
-  color: #4338ca;
-}
-
-.cmw-loading-step.is-done .cmw-loading-step-dot {
-  background: rgba(14, 165, 233, 0.16);
-  color: #0369a1;
-}
-
-.cmw-loading-step-title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.cmw-loading-footnote,
-.cmw-loading-error {
-  margin-top: 16px;
+.cmw-loading-panel :deep(.app-loading-animation__description) {
+  color: #52647c;
   font-size: 12px;
-  line-height: 1.7;
-  color: #64748b;
-}
-
-.cmw-loading-error {
-  color: #b91c1c;
-  font-weight: 700;
+  font-weight: 540;
 }
 
 /* 空态：仅在 idle 且无 preview 时显示（罕见路径） */
@@ -1503,9 +1242,9 @@ function formatDate(value) {
   border-radius: 999px;
   background: transparent;
   padding: 4px 7px;
-  font-size: 11px;
+  font-size: 11.5px;
   color: #475569;
-  font-weight: 700;
+  font-weight: 720;
 }
 
 .cmw-summary-stat b {
@@ -1557,7 +1296,7 @@ function formatDate(value) {
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
-  background: #fff;
+  background: transparent;
 }
 
 .cmw-split-head {
@@ -1565,8 +1304,8 @@ function formatDate(value) {
   flex: none;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 6px;
-  border-bottom: 1px solid #e5edf6;
-  background: #fff;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.6);
+  background: transparent;
   padding: 7px 12px 6px;
 }
 
@@ -1580,9 +1319,10 @@ function formatDate(value) {
 
 .cmw-split-title span {
   display: block;
-  color: #7d91ad;
-  font-size: 10.5px;
-  font-weight: 800;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 820;
+  letter-spacing: 0.02em;
 }
 
 .cmw-split-title code {
@@ -1591,10 +1331,11 @@ function formatDate(value) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #6f86a5;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #52647c;
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 10.5px;
-  font-weight: 700;
+  font-weight: 650;
+  letter-spacing: 0;
 }
 
 .cmw-split-list {
@@ -1602,7 +1343,7 @@ function formatDate(value) {
   min-height: 0;
   overflow: auto;
   padding: 0 12px 12px;
-  background: #fff;
+  background: transparent;
 }
 
 .cmw-split-row {
@@ -1679,9 +1420,11 @@ function formatDate(value) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #94a3b8;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 10px;
+  color: #7f8fa6;
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 10.5px;
+  font-weight: 520;
+  letter-spacing: 0;
 }
 
 .cmw-side-meta {
@@ -1690,17 +1433,17 @@ function formatDate(value) {
   justify-content: flex-end;
   gap: 10px;
   min-width: 164px;
-  color: #7890ad;
-  font-size: 11px;
-  font-weight: 700;
+  color: #52647c;
+  font-size: 11.5px;
+  font-weight: 720;
   font-variant-numeric: tabular-nums;
 }
 
 .cmw-side-meta span:last-child {
   min-width: 108px;
   text-align: right;
-  color: #7890ad;
-  font-weight: 600;
+  color: #667993;
+  font-weight: 620;
 }
 
 .cmw-side-meta .is-size-diff {
@@ -1886,9 +1629,11 @@ function formatDate(value) {
 
 .cmw-diff-name {
   flex-shrink: 0;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: #1e293b;
+  font-size: 13px;
+  font-weight: 720;
+  color: #111827;
+  line-height: 1.22;
+  letter-spacing: 0;
   max-width: 340px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2024,7 +1769,8 @@ function formatDate(value) {
   border-radius: 14px;
   padding: 10px 20px;
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 780;
+  letter-spacing: 0.005em;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -2091,6 +1837,7 @@ function formatDate(value) {
   align-items: center;
   gap: 8px;
   font-size: 12px;
+  font-weight: 560;
   color: #64748b;
 }
 
@@ -2102,18 +1849,10 @@ function formatDate(value) {
 button:not(:disabled) { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: 0.55; }
 
-@keyframes cmw-spin {
-  to { transform: rotate(360deg); }
-}
-
 @media (max-width: 768px) {
   .cmw-shell {
     width: 96vw;
     height: 92vh;
-  }
-
-  .cmw-loading-steps {
-    grid-template-columns: 1fr;
   }
 }
 </style>

@@ -576,10 +576,10 @@ html.kikoerumanager-dark [data-section="dashboard-archive"] .bg-white,
 html.kikoerumanager-dark .task-list-pane,
 html.kikoerumanager-dark .task-card,
 html.kikoerumanager-dark .el-card {
-  background: rgba(15, 23, 42, 0.92) !important;
-  border-color: rgba(148, 163, 184, 0.16) !important;
-  color: #e2e8f0 !important;
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+  background: var(--km-dark-sidebar) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: 0 22px 58px rgba(0, 0, 0, 0.52), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
 }
 
 html.kikoerumanager-dark [data-section="dashboard-hero"] .bg-slate-50,
@@ -588,9 +588,9 @@ html.kikoerumanager-dark [data-section="dashboard-tasks"] .bg-slate-50,
 html.kikoerumanager-dark [data-section="dashboard-tasks"] .bg-slate-100,
 html.kikoerumanager-dark [data-section="dashboard-archive"] .bg-slate-50,
 html.kikoerumanager-dark [data-section="dashboard-archive"] .bg-slate-100 {
-  background: rgba(30, 41, 59, 0.82) !important;
-  border-color: rgba(148, 163, 184, 0.16) !important;
-  color: #cbd5e1 !important;
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
 }
 
 html.kikoerumanager-dark [data-section="dashboard-hero"] .hover\:bg-slate-50:hover,
@@ -600,8 +600,8 @@ html.kikoerumanager-dark [data-section="dashboard-tasks"] .hover\:bg-slate-50:ho
 html.kikoerumanager-dark [data-section="dashboard-archive"] .hover\:bg-slate-50\/50:hover,
 html.kikoerumanager-dark [data-section="dashboard-archive"] .hover\:bg-slate-50:hover,
 html.kikoerumanager-dark .task-card:hover {
-  background: rgba(30, 41, 59, 0.96) !important;
-  border-color: rgba(148, 163, 184, 0.24) !important;
+  background: var(--km-dark-surface-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
 }
 
 html.kikoerumanager-dark .text-slate-900,
@@ -635,10 +635,10 @@ html.kikoerumanager-dark .dash-archive-refresh-btn,
 html.kikoerumanager-dark .dash-archive-pager-btn,
 html.kikoerumanager-dark [data-section="dashboard-tasks"] button:not(.theme-toggle-button),
 html.kikoerumanager-dark [data-section="dashboard-archive"] button:not(.theme-toggle-button) {
-  background: linear-gradient(180deg, rgba(30, 64, 175, 0.2) 0%, rgba(30, 41, 59, 0.86) 100%) !important;
-  border-color: rgba(96, 165, 250, 0.24) !important;
-  color: #bfdbfe !important;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+  background: var(--km-dark-button-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: var(--km-dark-shadow-soft) !important;
 }
 
 html.kikoerumanager-dark .dash-icon-btn:hover,
@@ -647,85 +647,75 @@ html.kikoerumanager-dark .dash-archive-refresh-btn:hover,
 html.kikoerumanager-dark .dash-archive-pager-btn:hover,
 html.kikoerumanager-dark [data-section="dashboard-tasks"] button:not(.theme-toggle-button):hover,
 html.kikoerumanager-dark [data-section="dashboard-archive"] button:not(.theme-toggle-button):hover {
-  background: linear-gradient(180deg, rgba(37, 99, 235, 0.34) 0%, rgba(30, 64, 175, 0.9) 100%) !important;
-  border-color: rgba(147, 197, 253, 0.42) !important;
-  color: #f8fafc !important;
-  box-shadow: 0 12px 24px rgba(37, 99, 235, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.12) !important;
+  background: var(--km-dark-button-bg-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: var(--km-dark-shadow-soft) !important;
 }
 
 html.kikoerumanager-dark .dash-kpi {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.86) 0%, rgba(30, 41, 59, 0.92) 100%) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: #e2e8f0 !important;
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
 }
 
 html.kikoerumanager-dark .dash-kpi:hover {
-  background: linear-gradient(180deg, rgba(30, 41, 59, 0.96) 0%, rgba(51, 65, 85, 0.9) 100%) !important;
-  border-color: rgba(147, 197, 253, 0.3) !important;
+  background: var(--km-dark-button-bg-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
 }
 
 html.kikoerumanager-dark .dash-status-chip {
-  background: linear-gradient(180deg, rgba(20, 83, 45, 0.22) 0%, rgba(15, 23, 42, 0.84) 100%) !important;
-  border-color: rgba(52, 211, 153, 0.22) !important;
-  color: #d1fae5 !important;
-  box-shadow: 0 8px 18px rgba(6, 78, 59, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.07) !important;
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
 }
 
 html.kikoerumanager-dark .dash-status-chip:hover {
-  background: linear-gradient(180deg, rgba(5, 150, 105, 0.28) 0%, rgba(20, 83, 45, 0.84) 100%) !important;
-  border-color: rgba(110, 231, 183, 0.34) !important;
+  background: var(--km-dark-surface-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
 }
 
-html.kikoerumanager-dark .dash-icon-hover,
-html.kikoerumanager-dark .dash-icon-default,
-html.kikoerumanager-dark .el-button svg,
-html.kikoerumanager-dark button svg {
+html.kikoerumanager-dark .dash-icon-hover:not([class*="text-"]),
+html.kikoerumanager-dark .dash-icon-default:not([class*="text-"]),
+html.kikoerumanager-dark .el-button svg:not([class*="text-"]) {
   color: currentColor;
 }
 
 html.kikoerumanager-dark .dash-kpi .group-hover\:bg-slate-900,
 html.kikoerumanager-dark .dash-kpi:hover .group-hover\:bg-slate-900 {
-  background: rgba(96, 165, 250, 0.18) !important;
-  color: #bfdbfe !important;
+  background: var(--km-dark-surface-hover) !important;
+  color: var(--km-dark-text-strong) !important;
 }
 
 html.kikoerumanager-dark [data-section="dashboard-tasks"] .border-dashed {
-  background: rgba(15, 23, 42, 0.72) !important;
-  border-color: rgba(148, 163, 184, 0.22) !important;
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
 }
 
 html.kikoerumanager-dark [data-section="dashboard-hero"] .border-dashed,
 html.kikoerumanager-dark [data-section="dashboard-hero"] .border-neutral-200,
 html.kikoerumanager-dark [data-section="dashboard-hero"] .hover\:bg-slate-50:hover {
-  background: rgba(30, 41, 59, 0.72) !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
 }
 
 html.kikoerumanager-dark [data-section="dashboard-hero"] select,
 html.kikoerumanager-dark [data-section="dashboard-hero"] option {
-  background: #0f172a !important;
-  border-color: rgba(148, 163, 184, 0.22) !important;
-  color: #e2e8f0 !important;
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
 }
 
 html.kikoerumanager-dark [data-section="dashboard-hero"] .bg-slate-900 {
-  background: linear-gradient(180deg, #3b82f6 0%, #2563eb 52%, #1d4ed8 100%) !important;
+  background: #020617 !important;
   color: #ffffff !important;
-  box-shadow: 0 12px 28px rgba(37, 99, 235, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.18) !important;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.12) !important;
 }
 
 html.kikoerumanager-dark [data-section="dashboard-hero"] .hover\:bg-slate-800:hover {
-  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 54%, #1e40af 100%) !important;
-}
-
-html.kikoerumanager-dark [data-section="dashboard-hero"] .text-blue-600 {
-  color: #93c5fd !important;
-}
-
-html.kikoerumanager-dark [data-section="dashboard-hero"] .text-amber-700,
-html.kikoerumanager-dark [data-section="dashboard-archive"] .text-amber-700 {
-  color: #fcd34d !important;
+  background: #111116 !important;
 }
 
 html.kikoerumanager-dark [data-section="dashboard-hero"] .bg-amber-50,
@@ -734,74 +724,55 @@ html.kikoerumanager-dark [data-section="dashboard-archive"] .bg-amber-50 {
   border-color: rgba(245, 158, 11, 0.26) !important;
 }
 
-html.kikoerumanager-dark [data-section="dashboard-hero"] .text-emerald-600,
-html.kikoerumanager-dark [data-section="dashboard-tasks"] .text-emerald-600,
-html.kikoerumanager-dark [data-section="dashboard-archive"] .text-emerald-600 {
-  color: #6ee7b7 !important;
-}
-
-html.kikoerumanager-dark [data-section="dashboard-hero"] .text-sky-600,
-html.kikoerumanager-dark [data-section="dashboard-tasks"] .text-sky-600,
-html.kikoerumanager-dark [data-section="dashboard-archive"] .text-sky-600 {
-  color: #7dd3fc !important;
-}
-
-html.kikoerumanager-dark [data-section="dashboard-hero"] .text-violet-600,
-html.kikoerumanager-dark [data-section="dashboard-tasks"] .text-violet-600,
-html.kikoerumanager-dark [data-section="dashboard-archive"] .text-violet-600 {
-  color: #c4b5fd !important;
-}
-
-html.kikoerumanager-dark [data-section="dashboard-hero"] .text-rose-600,
-html.kikoerumanager-dark [data-section="dashboard-hero"] .text-rose-500,
-html.kikoerumanager-dark [data-section="dashboard-tasks"] .text-rose-600,
-html.kikoerumanager-dark [data-section="dashboard-tasks"] .text-rose-500,
-html.kikoerumanager-dark [data-section="dashboard-archive"] .text-rose-600,
-html.kikoerumanager-dark [data-section="dashboard-archive"] .text-rose-500 {
-  color: #fda4af !important;
-}
-
 html.kikoerumanager-dark [data-section="dashboard-command"] .bg-blue-600 {
-  background: linear-gradient(180deg, #3b82f6 0%, #2563eb 52%, #1d4ed8 100%) !important;
+  background: #020617 !important;
   color: #ffffff !important;
-  box-shadow: 0 12px 28px rgba(37, 99, 235, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.18) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.44), inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
 }
 
 html.kikoerumanager-dark .el-input__wrapper,
 html.kikoerumanager-dark .el-radio-button__inner {
-  background: rgba(30, 41, 59, 0.78) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: #e2e8f0 !important;
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
 }
 
 html.kikoerumanager-dark .el-radio-button__original-radio:checked + .el-radio-button__inner {
-  background: rgba(96, 165, 250, 0.2) !important;
-  border-color: rgba(147, 197, 253, 0.34) !important;
-  color: #bfdbfe !important;
+  background: var(--km-dark-surface-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
   box-shadow: none !important;
 }
 
 html.kikoerumanager-dark {
-  --km-dark-bg: #070b12;
-  --km-dark-surface: rgba(15, 23, 42, 0.92);
-  --km-dark-surface-2: rgba(30, 41, 59, 0.9);
-  --km-dark-surface-3: rgba(51, 65, 85, 0.82);
-  --km-dark-border: rgba(148, 163, 184, 0.18);
-  --km-dark-border-strong: rgba(147, 197, 253, 0.34);
-  --km-dark-text: #e2e8f0;
-  --km-dark-text-strong: #f8fafc;
-  --km-dark-text-muted: #94a3b8;
-  --km-dark-blue: #93c5fd;
-  --km-dark-blue-bg: rgba(37, 99, 235, 0.2);
-  --km-dark-blue-bg-strong: rgba(37, 99, 235, 0.34);
-  --km-dark-green: #6ee7b7;
-  --km-dark-green-bg: rgba(16, 185, 129, 0.16);
-  --km-dark-amber: #fcd34d;
+  --km-dark-bg: #08090d;
+  --km-dark-bg-deep: #05060a;
+  --km-dark-sidebar: rgba(10, 11, 16, 0.98);
+  --km-dark-surface: rgba(24, 24, 28, 0.96);
+  --km-dark-surface-2: rgba(32, 32, 37, 0.94);
+  --km-dark-surface-3: rgba(39, 39, 44, 0.9);
+  --km-dark-surface-hover: rgba(48, 48, 54, 0.94);
+  --km-dark-field: rgba(17, 18, 23, 0.96);
+  --km-dark-border: rgba(255, 255, 255, 0.09);
+  --km-dark-border-strong: rgba(255, 255, 255, 0.17);
+  --km-dark-text: rgba(244, 244, 245, 0.88);
+  --km-dark-text-strong: #f8f8fa;
+  --km-dark-text-muted: rgba(212, 212, 216, 0.62);
+  --km-dark-blue: #c8c8cf;
+  --km-dark-blue-bg: rgba(255, 255, 255, 0.1);
+  --km-dark-blue-bg-strong: rgba(255, 255, 255, 0.16);
+  --km-dark-green: #8ddfbb;
+  --km-dark-green-bg: rgba(34, 197, 94, 0.16);
+  --km-dark-amber: #f4ce75;
   --km-dark-amber-bg: rgba(245, 158, 11, 0.16);
-  --km-dark-red: #fda4af;
+  --km-dark-red: #f3a2a8;
   --km-dark-red-bg: rgba(244, 63, 94, 0.16);
-  --km-dark-purple: #c4b5fd;
-  --km-dark-purple-bg: rgba(139, 92, 246, 0.16);
+  --km-dark-purple: #d7d7dc;
+  --km-dark-purple-bg: rgba(255, 255, 255, 0.1);
+  --km-dark-button-bg: linear-gradient(180deg, rgba(48, 48, 54, 0.96) 0%, rgba(30, 30, 35, 0.96) 100%);
+  --km-dark-button-bg-hover: linear-gradient(180deg, rgba(62, 62, 68, 0.98) 0%, rgba(42, 42, 48, 0.98) 100%);
+  --km-dark-shadow-soft: 0 10px 28px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.035);
 }
 
 html.kikoerumanager-dark .bg-white,
@@ -888,6 +859,33 @@ html.kikoerumanager-dark .conflicts-action-btn.is-danger {
   border-color: rgba(253, 164, 175, 0.36) !important;
   color: #ffe4e6 !important;
   box-shadow: 0 12px 26px rgba(244, 63, 94, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
+}
+
+html.kikoerumanager-dark [data-section="dashboard-hero"] .el-button,
+html.kikoerumanager-dark [data-section="dashboard-command"] .el-button,
+html.kikoerumanager-dark [data-section="dashboard-tasks"] .el-button,
+html.kikoerumanager-dark [data-section="dashboard-archive"] .el-button,
+html.kikoerumanager-dark [data-section="dashboard-hero"] .dash-cmd-btn,
+html.kikoerumanager-dark [data-section="dashboard-command"] .dash-cmd-btn,
+html.kikoerumanager-dark [data-section="dashboard-tasks"] .dash-cmd-btn,
+html.kikoerumanager-dark [data-section="dashboard-archive"] .dash-cmd-btn {
+  background: var(--km-dark-button-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: var(--km-dark-shadow-soft) !important;
+}
+
+html.kikoerumanager-dark [data-section="dashboard-hero"] .el-button:hover,
+html.kikoerumanager-dark [data-section="dashboard-command"] .el-button:hover,
+html.kikoerumanager-dark [data-section="dashboard-tasks"] .el-button:hover,
+html.kikoerumanager-dark [data-section="dashboard-archive"] .el-button:hover,
+html.kikoerumanager-dark [data-section="dashboard-hero"] .dash-cmd-btn:hover,
+html.kikoerumanager-dark [data-section="dashboard-command"] .dash-cmd-btn:hover,
+html.kikoerumanager-dark [data-section="dashboard-tasks"] .dash-cmd-btn:hover,
+html.kikoerumanager-dark [data-section="dashboard-archive"] .dash-cmd-btn:hover {
+  background: var(--km-dark-button-bg-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
 }
 
 html.kikoerumanager-dark .app-dd-menu {
@@ -981,9 +979,9 @@ html.kikoerumanager-dark .task-card:hover {
 html.kikoerumanager-dark .subtitle-list-card.is-active,
 html.kikoerumanager-dark .subtitle-candidate-card.is-selected,
 html.kikoerumanager-dark .task-card.is-active {
-  background: linear-gradient(180deg, rgba(37, 99, 235, 0.24) 0%, rgba(30, 41, 59, 0.92) 100%) !important;
-  border-color: rgba(147, 197, 253, 0.42) !important;
-  box-shadow: 0 12px 28px rgba(37, 99, 235, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+  background: var(--km-dark-surface-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04) !important;
 }
 
 html.kikoerumanager-dark .tasks-toolbar-search-input,
@@ -1164,10 +1162,10 @@ html.kikoerumanager-dark .sync-panel,
 html.kikoerumanager-dark .download-card,
 html.kikoerumanager-dark .task-detail-pane,
 html.kikoerumanager-dark .task-list-pane {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.94) 0%, rgba(15, 23, 42, 0.88) 100%) !important;
+  background: var(--km-dark-surface) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+  box-shadow: var(--km-dark-shadow-soft) !important;
 }
 
 html.kikoerumanager-dark .metric-strip-head,
@@ -1179,7 +1177,7 @@ html.kikoerumanager-dark .circle-filter-bar,
 html.kikoerumanager-dark .sync-stat-row,
 html.kikoerumanager-dark .task-detail-header,
 html.kikoerumanager-dark .task-list-header {
-  background: rgba(30, 41, 59, 0.86) !important;
+  background: var(--km-dark-surface-2) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
@@ -1188,8 +1186,76 @@ html.kikoerumanager-dark .circle-list-card:hover,
 html.kikoerumanager-dark .circle-list-card.is-active,
 html.kikoerumanager-dark .work-card:hover,
 html.kikoerumanager-dark .metric-cell:hover {
-  background: linear-gradient(180deg, rgba(37, 99, 235, 0.24) 0%, rgba(30, 41, 59, 0.92) 100%) !important;
+  background: var(--km-dark-surface-hover) !important;
   border-color: var(--km-dark-border-strong) !important;
+}
+
+html.kikoerumanager-dark .tasks-page .task-list-pane,
+html.kikoerumanager-dark .tasks-page .task-detail-pane,
+html.kikoerumanager-dark .tasks-page .detail-scroll,
+html.kikoerumanager-dark .tasks-page .bg-white,
+html.kikoerumanager-dark .tasks-page .bg-white\/95 {
+  background: var(--km-dark-sidebar) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .tasks-page .task-card,
+html.kikoerumanager-dark .tasks-page .bg-slate-50,
+html.kikoerumanager-dark .tasks-page .bg-slate-100 {
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .tasks-page .task-card:hover,
+html.kikoerumanager-dark .tasks-page .task-card.is-active,
+html.kikoerumanager-dark .tasks-page .hover\:bg-slate-50:hover,
+html.kikoerumanager-dark .tasks-page .hover\:bg-slate-100:hover {
+  background: var(--km-dark-surface-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+}
+
+html.kikoerumanager-dark .tasks-page .border-slate-100,
+html.kikoerumanager-dark .tasks-page .border-slate-200,
+html.kikoerumanager-dark .tasks-page .border-slate-200\/90 {
+  border-color: var(--km-dark-border) !important;
+}
+
+html.kikoerumanager-dark .tasks-page .tasks-main > .detail-scroll,
+html.kikoerumanager-dark .tasks-page .tasks-main > .detail-scroll > header,
+html.kikoerumanager-dark .tasks-page .task-file-tree-card,
+html.kikoerumanager-dark .tasks-page .task-file-tree,
+html.kikoerumanager-dark .tasks-page .tree-row {
+  background: var(--km-dark-sidebar) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .tasks-page .tasks-main > .detail-scroll section,
+html.kikoerumanager-dark .tasks-page .tasks-main > .detail-scroll .mx-4,
+html.kikoerumanager-dark .tasks-page .task-file-tree-row {
+  background: transparent !important;
+  border-color: var(--km-dark-border) !important;
+}
+
+html.kikoerumanager-dark .tasks-page .task-file-tree-card::before {
+  background: linear-gradient(180deg, var(--km-dark-sidebar) 0%, rgba(10, 11, 16, 0)) !important;
+}
+
+html.kikoerumanager-dark .tasks-page .task-file-tree-card::after {
+  background: linear-gradient(0deg, var(--km-dark-sidebar) 0%, rgba(10, 11, 16, 0)) !important;
+}
+
+html.kikoerumanager-dark .tasks-page .tree-row:hover {
+  background: var(--km-dark-surface-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+}
+
+html.kikoerumanager-dark .tasks-page .rounded-\[8px\],
+html.kikoerumanager-dark .tasks-page .rounded-\[10px\],
+html.kikoerumanager-dark .tasks-page .rounded-\[12px\] {
+  border-color: var(--km-dark-border) !important;
 }
 
 html.kikoerumanager-dark .el-table,
@@ -1347,17 +1413,17 @@ html.kikoerumanager-dark .library .main-card,
 html.kikoerumanager-dark .library .el-card.main-card,
 html.kikoerumanager-dark .library .el-card__header,
 html.kikoerumanager-dark .library .el-card__body {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.94) 0%, rgba(15, 23, 42, 0.88) 100%) !important;
+  background: var(--km-dark-sidebar) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+  box-shadow: 0 22px 58px rgba(0, 0, 0, 0.52), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
 }
 
 html.kikoerumanager-dark .library .lib-card-header,
 html.kikoerumanager-dark .library .lib-toolbar,
 html.kikoerumanager-dark .library .path-toolbar,
 html.kikoerumanager-dark .library .pagination-wrap {
-  background: rgba(30, 41, 59, 0.86) !important;
+  background: var(--km-dark-field) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
@@ -1387,23 +1453,25 @@ html.kikoerumanager-dark .library .lib-info-divider {
 
 html.kikoerumanager-dark .library .lib-btn,
 html.kikoerumanager-dark .library .lib-btn-ghost,
-html.kikoerumanager-dark .library .lib-btn-icon-tinted {
-  background: linear-gradient(180deg, rgba(30, 64, 175, 0.18) 0%, rgba(30, 41, 59, 0.88) 100%) !important;
-  border-color: rgba(96, 165, 250, 0.24) !important;
-  color: var(--km-dark-blue) !important;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+html.kikoerumanager-dark .library .lib-btn-icon-tinted,
+html.kikoerumanager-dark .library .lib-action-btn {
+  background: var(--km-dark-button-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: var(--km-dark-shadow-soft) !important;
 }
 
 html.kikoerumanager-dark .library .lib-btn:hover,
 html.kikoerumanager-dark .library .lib-btn-ghost:hover,
-html.kikoerumanager-dark .library .lib-btn-icon-tinted:hover {
-  background: linear-gradient(180deg, rgba(37, 99, 235, 0.34) 0%, rgba(30, 64, 175, 0.9) 100%) !important;
+html.kikoerumanager-dark .library .lib-btn-icon-tinted:hover,
+html.kikoerumanager-dark .library .lib-action-btn:hover {
+  background: var(--km-dark-button-bg-hover) !important;
   border-color: var(--km-dark-border-strong) !important;
   color: var(--km-dark-text-strong) !important;
 }
 
 html.kikoerumanager-dark .library .el-table th.el-table__cell {
-  background: rgba(30, 41, 59, 0.96) !important;
+  background: var(--km-dark-surface-2) !important;
   color: var(--km-dark-text-muted) !important;
 }
 
@@ -1413,13 +1481,115 @@ html.kikoerumanager-dark .library .el-table td.el-table__cell {
 
 html.kikoerumanager-dark .library .el-table__row:nth-child(odd),
 html.kikoerumanager-dark .library .el-table__row:nth-child(odd) td.el-table__cell {
-  background: rgba(15, 23, 42, 0.94) !important;
+  background: var(--km-dark-field) !important;
 }
 
 html.kikoerumanager-dark .library .el-table__row:nth-child(even),
 html.kikoerumanager-dark .library .el-table__row:nth-child(even) td.el-table__cell {
-  background: rgba(30, 41, 59, 0.78) !important;
+  background: var(--km-dark-surface) !important;
 }
+
+html.kikoerumanager-dark .library .lib-file-table {
+  background: var(--km-dark-sidebar) !important;
+  border-color: var(--km-dark-border) !important;
+  box-shadow: var(--km-dark-shadow-soft) !important;
+}
+
+html.kikoerumanager-dark .library .lib-file-table-head,
+html.kikoerumanager-dark .library .lib-file-table-header-row {
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+}
+
+html.kikoerumanager-dark .library .lib-file-table-body,
+html.kikoerumanager-dark .library .lib-file-table-row {
+  background: var(--km-dark-sidebar) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .library .lib-file-table-row:hover,
+html.kikoerumanager-dark .library .lib-file-table-row.is-hover {
+  background: var(--km-dark-surface-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+}
+
+html.kikoerumanager-dark .library .lib-file-table-row.library-row-marquee-selected {
+  background: rgba(255, 255, 255, 0.16) !important;
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  box-shadow:
+    inset 3px 0 0 rgba(255, 255, 255, 0.82),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.14),
+    0 0 0 1px rgba(255, 255, 255, 0.08) !important;
+}
+
+html.kikoerumanager-dark .library .lib-file-table-row.library-row-marquee-selected:hover {
+  background: rgba(255, 255, 255, 0.22) !important;
+  border-color: rgba(255, 255, 255, 0.32) !important;
+  box-shadow:
+    inset 3px 0 0 rgba(255, 255, 255, 0.92),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.2),
+    0 0 0 1px rgba(255, 255, 255, 0.12) !important;
+}
+
+html.kikoerumanager-dark .library .lib-file-table-row.library-row-context-active {
+  background: rgba(255, 255, 255, 0.12) !important;
+  box-shadow: inset 3px 0 0 rgba(255, 255, 255, 0.62) !important;
+}
+
+html.kikoerumanager-dark .library .lib-file-table-row.library-row-drag-source {
+  background: rgba(255, 255, 255, 0.1) !important;
+  opacity: 0.78;
+}
+
+html.kikoerumanager-dark .library .lib-table-marquee-box {
+  border: 1px solid rgba(255, 255, 255, 0.88) !important;
+  background: rgba(255, 255, 255, 0.16) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.22),
+    0 0 0 1px rgba(255, 255, 255, 0.18),
+    0 10px 28px rgba(0, 0, 0, 0.36) !important;
+}
+
+html.kikoerumanager-dark .library .lib-batch-bar {
+  background: rgba(24, 24, 28, 0.98) !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.48),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.06) !important;
+}
+
+html.kikoerumanager-dark .library .lib-batch-count-pill {
+  background: rgba(255, 255, 255, 0.16) !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
+}
+
+html.kikoerumanager-dark .library .lib-batch-count-pill b {
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark .library .lib-file-th {
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark .library .file-icon.icon-dir,
+html.kikoerumanager-dark .library .file-icon.icon-folder {
+  color: #f6b73c !important;
+  fill: currentColor;
+  stroke: currentColor;
+}
+
+html.kikoerumanager-dark .library .file-icon.icon-audio-lossless { color: #2563eb !important; }
+html.kikoerumanager-dark .library .file-icon.icon-audio { color: #7c3aed !important; }
+html.kikoerumanager-dark .library .file-icon.icon-image { color: #f97316 !important; }
+html.kikoerumanager-dark .library .file-icon.icon-video { color: #6366f1 !important; }
+html.kikoerumanager-dark .library .file-icon.icon-pdf { color: #dc2626 !important; }
+html.kikoerumanager-dark .library .file-icon.icon-archive { color: #d97706 !important; }
+html.kikoerumanager-dark .library .file-icon.icon-text { color: #64748b !important; }
+html.kikoerumanager-dark .library .file-icon.icon-file { color: #94a3b8 !important; }
 
 html.kikoerumanager-dark .library .library-search-mark {
   background: rgba(245, 158, 11, 0.28) !important;
@@ -1429,22 +1599,23 @@ html.kikoerumanager-dark .library .library-search-mark {
 html.kikoerumanager-dark .library .el-pagination button,
 html.kikoerumanager-dark .library .el-pagination .el-pager li,
 html.kikoerumanager-dark .library .el-pagination .el-input__wrapper {
-  background: rgba(30, 41, 59, 0.9) !important;
+  background: var(--km-dark-button-bg) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
 
 html.kikoerumanager-dark .library .el-pagination .el-pager li.is-active {
-  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%) !important;
+  background: #020617 !important;
+  border-color: var(--km-dark-border-strong) !important;
   color: #ffffff !important;
 }
 
 html.kikoerumanager-dark .library .lib-path-toolbar,
 html.kikoerumanager-dark .library .lib-batch-bar {
-  background: linear-gradient(180deg, rgba(30, 41, 59, 0.94) 0%, rgba(15, 23, 42, 0.92) 100%) !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+  box-shadow: var(--km-dark-shadow-soft) !important;
 }
 
 html.kikoerumanager-dark .library .lib-path-toolbar {
@@ -1472,14 +1643,34 @@ html.kikoerumanager-dark .library .lib-batch-info {
 
 html.kikoerumanager-dark .library .lib-path-code,
 html.kikoerumanager-dark .library .lib-batch-count-pill {
-  background: rgba(15, 23, 42, 0.82) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text-strong) !important;
 }
 
+html.kikoerumanager-dark .library .lib-batch-bar {
+  background: rgba(24, 24, 28, 0.98) !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.48),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.06) !important;
+}
+
+html.kikoerumanager-dark .library .lib-batch-count-pill {
+  background: rgba(255, 255, 255, 0.16) !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
+}
+
+html.kikoerumanager-dark .library .lib-batch-count-pill b {
+  color: #ffffff !important;
+}
+
 html.kikoerumanager-dark .library .lib-scope-switch {
-  background: rgba(15, 23, 42, 0.86) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
 }
 
@@ -1490,9 +1681,9 @@ html.kikoerumanager-dark .library .lib-scope-option {
 
 html.kikoerumanager-dark .library .lib-scope-option:hover,
 html.kikoerumanager-dark .library .lib-scope-option.is-active {
-  background: linear-gradient(180deg, rgba(59, 130, 246, 0.34) 0%, rgba(30, 64, 175, 0.8) 100%) !important;
-  color: #ffffff !important;
-  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.12) !important;
+  background: var(--km-dark-surface-hover) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
 }
 
 html.kikoerumanager-dark .library .el-alert {
@@ -1520,8 +1711,8 @@ html.kikoerumanager-dark .library .el-checkbox__input.is-indeterminate .el-check
 html.kikoerumanager-dark .library .el-select__wrapper,
 html.kikoerumanager-dark .library .el-pagination .el-select__wrapper,
 html.kikoerumanager-dark .library .el-pagination .el-input__wrapper {
-  background: rgba(15, 23, 42, 0.92) !important;
-  border: 1px solid rgba(148, 163, 184, 0.2) !important;
+  background: var(--km-dark-field) !important;
+  border: 1px solid var(--km-dark-border) !important;
   box-shadow: none !important;
   color: var(--km-dark-text) !important;
 }
@@ -1555,10 +1746,10 @@ html.kikoerumanager-dark .library .el-table td.el-table__cell {
 
 html.kikoerumanager-dark [data-library-row-menu="1"],
 html.kikoerumanager-dark .menu-panel[data-library-row-menu="1"] {
-  background: rgba(15, 23, 42, 0.98) !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
+  background: var(--km-dark-sidebar) !important;
+  border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
-  box-shadow: 0 24px 54px rgba(0, 0, 0, 0.44), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+  box-shadow: 0 24px 54px rgba(0, 0, 0, 0.52), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
 }
 
 html.kikoerumanager-dark [data-library-row-menu="1"] .menu-header span {
@@ -1571,7 +1762,7 @@ html.kikoerumanager-dark [data-library-row-menu="1"] .menu-item {
 }
 
 html.kikoerumanager-dark [data-library-row-menu="1"] .menu-item:hover:not(:disabled) {
-  background: rgba(37, 99, 235, 0.2) !important;
+  background: var(--km-dark-surface-hover) !important;
   color: var(--km-dark-text-strong) !important;
 }
 
@@ -1606,10 +1797,10 @@ html.kikoerumanager-dark .lib-move-modal .window,
 html.kikoerumanager-dark .custom-preview-modal .glass-shell,
 html.kikoerumanager-dark .server-upload-preview-modal .glass-shell,
 html.kikoerumanager-dark .lib-move-modal .glass-shell {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.98) 0%, rgba(15, 23, 42, 0.94) 100%) !important;
-  border: 1px solid rgba(148, 163, 184, 0.2) !important;
+  background: var(--km-dark-sidebar) !important;
+  border: 1px solid var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
-  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.56), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
 }
 
 html.kikoerumanager-dark .custom-preview-modal .window-header,
@@ -1619,8 +1810,8 @@ html.kikoerumanager-dark .custom-preview-modal .footer-row,
 html.kikoerumanager-dark .server-upload-preview-modal .footer-row,
 html.kikoerumanager-dark .lib-move-modal .footer-row,
 html.kikoerumanager-dark .lib-move-modal .explorer-toolbar {
-  background: rgba(30, 41, 59, 0.78) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
 
@@ -1662,8 +1853,8 @@ html.kikoerumanager-dark .lib-move-modal .path-bar,
 html.kikoerumanager-dark .lib-move-modal .nav-pane,
 html.kikoerumanager-dark .lib-move-modal .file-list,
 html.kikoerumanager-dark .lib-move-modal .content-pane {
-  background: rgba(30, 41, 59, 0.72) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: var(--km-dark-surface) !important;
+  border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
 
@@ -1678,8 +1869,8 @@ html.kikoerumanager-dark .server-upload-preview-modal .dropdown-panel,
 html.kikoerumanager-dark .lib-move-modal .search-input,
 html.kikoerumanager-dark .lib-move-modal .crumb-btn,
 html.kikoerumanager-dark .lib-move-modal .fm-icon-btn {
-  background: rgba(15, 23, 42, 0.9) !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
 
@@ -1692,7 +1883,7 @@ html.kikoerumanager-dark .custom-preview-modal .dropdown-item:hover,
 html.kikoerumanager-dark .server-upload-preview-modal .dropdown-item:hover,
 html.kikoerumanager-dark .lib-move-modal .crumb-btn:hover,
 html.kikoerumanager-dark .lib-move-modal .fm-icon-btn:hover:not(:disabled) {
-  background: rgba(37, 99, 235, 0.2) !important;
+  background: var(--km-dark-surface-hover) !important;
   color: var(--km-dark-text-strong) !important;
 }
 
@@ -1709,15 +1900,35 @@ html.kikoerumanager-dark .server-upload-preview-modal .tree-row:hover,
 html.kikoerumanager-dark .lib-move-modal .tree-row:hover,
 html.kikoerumanager-dark .lib-move-modal .file-row:hover,
 html.kikoerumanager-dark .lib-move-modal .nav-item:hover {
-  background: rgba(37, 99, 235, 0.16) !important;
+  background: var(--km-dark-surface-hover) !important;
 }
 
 html.kikoerumanager-dark .custom-preview-modal .tree-row-selected,
 html.kikoerumanager-dark .server-upload-preview-modal .tree-row-selected,
 html.kikoerumanager-dark .lib-move-modal .tree-row-selected,
 html.kikoerumanager-dark .lib-move-modal .is-active {
-  background: rgba(37, 99, 235, 0.24) !important;
+  background: rgba(255, 255, 255, 0.16) !important;
   color: var(--km-dark-text-strong) !important;
+  box-shadow:
+    inset 3px 0 0 rgba(255, 255, 255, 0.78),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
+}
+
+html.kikoerumanager-dark .custom-preview-modal .tab-chip,
+html.kikoerumanager-dark .server-upload-preview-modal .tab-chip {
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .custom-preview-modal .tab-chip-active,
+html.kikoerumanager-dark .custom-preview-modal .tab-chip-partial,
+html.kikoerumanager-dark .server-upload-preview-modal .tab-chip-active,
+html.kikoerumanager-dark .server-upload-preview-modal .tab-chip-partial {
+  background: rgba(255, 255, 255, 0.16) !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
 }
 
 html.kikoerumanager-dark .custom-preview-modal .tree-name,
@@ -1734,9 +1945,9 @@ html.kikoerumanager-dark .lib-move-modal .secondary-cta,
 html.kikoerumanager-dark .custom-preview-modal .interactive-chip,
 html.kikoerumanager-dark .server-upload-preview-modal .interactive-chip,
 html.kikoerumanager-dark .lib-move-modal .interactive-chip {
-  background: linear-gradient(180deg, rgba(30, 64, 175, 0.18) 0%, rgba(30, 41, 59, 0.88) 100%) !important;
-  border-color: rgba(96, 165, 250, 0.24) !important;
-  color: var(--km-dark-blue) !important;
+  background: var(--km-dark-button-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
 }
 
 html.kikoerumanager-dark .subtitle-workbench-dialog.el-dialog {
@@ -1750,23 +1961,23 @@ html.kikoerumanager-dark .subtitle-workbench-dialog .el-dialog__body {
 }
 
 html.kikoerumanager-dark .subtitle-workbench-shell {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.98) 0%, rgba(15, 23, 42, 0.94) 100%) !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
+  background: var(--km-dark-sidebar) !important;
+  border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
-  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.56), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
 }
 
 html.kikoerumanager-dark .subtitle-workbench-header {
-  background: rgba(15, 23, 42, 0.96) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: var(--km-dark-sidebar) !important;
+  border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
 
 html.kikoerumanager-dark .subtitle-workbench-body {
-  --tw-gradient-from: rgba(15, 23, 42, 0.96) var(--tw-gradient-from-position) !important;
-  --tw-gradient-via: rgba(15, 23, 42, 0.94) var(--tw-gradient-via-position) !important;
-  --tw-gradient-to: rgba(15, 23, 42, 0.92) var(--tw-gradient-to-position) !important;
-  background-color: rgba(15, 23, 42, 0.94) !important;
+  --tw-gradient-from: var(--km-dark-sidebar) var(--tw-gradient-from-position) !important;
+  --tw-gradient-via: var(--km-dark-bg) var(--tw-gradient-via-position) !important;
+  --tw-gradient-to: var(--km-dark-bg-deep) var(--tw-gradient-to-position) !important;
+  background-color: var(--km-dark-bg) !important;
   color: var(--km-dark-text) !important;
 }
 
@@ -1801,8 +2012,45 @@ html.kikoerumanager-dark .subtitle-workbench-dialog .bg-slate-100,
 html.kikoerumanager-dark .subtitle-workbench-dialog .bg-slate-100\/80,
 html.kikoerumanager-dark .subtitle-workbench-dialog .bg-slate-100\/90,
 html.kikoerumanager-dark .subtitle-workbench-dialog .bg-slate-100\/95 {
-  background: rgba(30, 41, 59, 0.82) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: var(--km-dark-surface) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog :is(
+  aside,
+  .rounded-\[20px\],
+  .rounded-\[18px\],
+  .rounded-\[16px\],
+  .rounded-\[14px\],
+  .rounded-\[12px\],
+  .settings-card,
+  .config-section,
+  .subtitle-info-card,
+  .subtitle-candidate-card,
+  .import-task-list-card,
+  .import-task-detail,
+  .import-task-row,
+  .glass-card,
+  .glass-panel
+) {
+  background: var(--km-dark-surface) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: var(--km-dark-shadow-soft) !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog :is(
+  .rounded-\[10px\],
+  .rounded-\[8px\],
+  .app-dd-badge,
+  .lib-chip,
+  .set-chip,
+  .task-status-pill,
+  .toolbar-pill
+) {
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
 
@@ -1811,19 +2059,19 @@ html.kikoerumanager-dark .subtitle-workbench-dialog .border-slate-200,
 html.kikoerumanager-dark .subtitle-workbench-dialog .border-slate-200\/70,
 html.kikoerumanager-dark .subtitle-workbench-dialog .border-slate-200\/80,
 html.kikoerumanager-dark .subtitle-workbench-dialog .border-slate-300 {
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  border-color: var(--km-dark-border) !important;
 }
 
 html.kikoerumanager-dark .subtitle-workbench-dialog button:not(.primary-cta):not(.el-button--primary),
 html.kikoerumanager-dark .subtitle-workbench-btn {
-  background: linear-gradient(180deg, rgba(30, 64, 175, 0.18) 0%, rgba(30, 41, 59, 0.88) 100%) !important;
-  border-color: rgba(96, 165, 250, 0.24) !important;
-  color: var(--km-dark-blue) !important;
+  background: var(--km-dark-button-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
 }
 
 html.kikoerumanager-dark .subtitle-workbench-dialog button:not(.primary-cta):not(.el-button--primary):hover,
 html.kikoerumanager-dark .subtitle-workbench-btn:hover {
-  background: linear-gradient(180deg, rgba(37, 99, 235, 0.34) 0%, rgba(30, 64, 175, 0.9) 100%) !important;
+  background: var(--km-dark-button-bg-hover) !important;
   border-color: var(--km-dark-border-strong) !important;
   color: var(--km-dark-text-strong) !important;
 }
@@ -1831,8 +2079,39 @@ html.kikoerumanager-dark .subtitle-workbench-btn:hover {
 html.kikoerumanager-dark .subtitle-workbench-dialog .bg-slate-900,
 html.kikoerumanager-dark .subtitle-workbench-dialog .stage-tab-active,
 html.kikoerumanager-dark .subtitle-workbench-dialog .is-active {
-  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%) !important;
-  border-color: rgba(147, 197, 253, 0.42) !important;
+  background: #020617 !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog :is(
+  .bg-blue-50,
+  .bg-sky-50,
+  .bg-indigo-50,
+  .bg-violet-50,
+  .bg-blue-100,
+  .bg-sky-100,
+  .bg-indigo-100,
+  .bg-violet-100,
+  [class*="from-blue-"],
+  [class*="to-blue-"],
+  [class*="from-sky-"],
+  [class*="to-sky-"],
+  [class*="from-indigo-"],
+  [class*="to-indigo-"]
+) {
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog :is(
+  button:not(.primary-cta):not(.el-button--primary).is-active,
+  button:not(.primary-cta):not(.el-button--primary)[class*="bg-slate-900"],
+  button:not(.primary-cta):not(.el-button--primary)[class*="bg-blue-"],
+  button:not(.primary-cta):not(.el-button--primary)[class*="bg-indigo-"]
+) {
+  background: #020617 !important;
+  border-color: var(--km-dark-border-strong) !important;
   color: #ffffff !important;
 }
 
@@ -1840,18 +2119,18 @@ html.kikoerumanager-dark .subtitle-workbench-dialog input,
 html.kikoerumanager-dark .subtitle-workbench-dialog textarea,
 html.kikoerumanager-dark .subtitle-workbench-dialog .el-input__wrapper,
 html.kikoerumanager-dark .subtitle-workbench-dialog .el-textarea__inner {
-  background: rgba(15, 23, 42, 0.9) !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
   box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .floating-card,
 html.kikoerumanager-dark .filter-delete-floating-card {
-  background: rgba(15, 23, 42, 0.96) !important;
-  border: 1px solid rgba(148, 163, 184, 0.22) !important;
+  background: var(--km-dark-sidebar) !important;
+  border: 1px solid var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
-  box-shadow: 0 22px 52px rgba(0, 0, 0, 0.46), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+  box-shadow: 0 22px 52px rgba(0, 0, 0, 0.52), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
 }
 
 html.kikoerumanager-dark .floating-card .text-slate-900,
@@ -1869,14 +2148,292 @@ html.kikoerumanager-dark .filter-delete-floating-mode {
 html.kikoerumanager-dark .floating-card .bg-slate-50,
 html.kikoerumanager-dark .floating-chip,
 html.kikoerumanager-dark .filter-delete-floating-card [class*="bg-slate-50"] {
-  background: rgba(30, 41, 59, 0.78) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
 
 html.kikoerumanager-dark .floating-action-btn {
-  background: rgba(30, 41, 59, 0.9) !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
+  background: var(--km-dark-button-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .sp-shell > div {
+  background: var(--km-dark-sidebar) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: 0 24px 58px rgba(0, 0, 0, 0.56), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+}
+
+html.kikoerumanager-dark .sp-shell > div > div {
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .sp-shell h3,
+html.kikoerumanager-dark .sp-shell .text-slate-900,
+html.kikoerumanager-dark .sp-shell .text-slate-800 {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .sp-shell .text-slate-600,
+html.kikoerumanager-dark .sp-shell .text-slate-500,
+html.kikoerumanager-dark .sp-shell .text-slate-400 {
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark .sp-shell .bg-slate-50,
+html.kikoerumanager-dark .sp-shell .bg-slate-100 {
+  background: var(--km-dark-surface) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .sp-shell input,
+html.kikoerumanager-dark .sp-shell textarea {
+  background: var(--km-dark-field) !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 0 0 3px rgba(255, 255, 255, 0.08) !important;
+}
+
+html.kikoerumanager-dark .sp-shell input:focus,
+html.kikoerumanager-dark .sp-shell textarea:focus {
+  background: #090a0f !important;
+  border-color: rgba(255, 255, 255, 0.42) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+    0 0 0 3px rgba(255, 255, 255, 0.12) !important;
+}
+
+html.kikoerumanager-dark .sp-shell button:not([class*="bg-rose"]):not([class*="bg-red"]):not([class*="bg-emerald"]) {
+  background: var(--km-dark-button-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .sp-shell button:not([class*="bg-rose"]):not([class*="bg-red"]):not([class*="bg-emerald"]):hover {
+  background: var(--km-dark-button-bg-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .sp-shell button[class*="bg-slate-900"],
+html.kikoerumanager-dark .sp-shell button[class*="bg-blue-"],
+html.kikoerumanager-dark .sp-shell button[class*="bg-indigo-"] {
+  background: #020617 !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: #ffffff !important;
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.16) !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog).el-dialog,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .window,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .glass-shell,
+html.kikoerumanager-dark .mojibake-preview-dialog.el-dialog,
+html.kikoerumanager-dark .mojibake-preview-dialog .window,
+html.kikoerumanager-dark .mojibake-preview-dialog .glass-shell {
+  background: var(--km-dark-sidebar) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.56), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .window-header,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .fm-body,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .toolbar-row,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-head,
+html.kikoerumanager-dark .mojibake-preview-dialog .window-header,
+html.kikoerumanager-dark .mojibake-preview-dialog .fm-body,
+html.kikoerumanager-dark .mojibake-preview-dialog .toolbar-row,
+html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-footer {
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .glass-panel,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .glass-card,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-panel,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-scroll,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-row,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .selection-card,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .search-shell,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .fm-badge,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .fm-count-pill,
+html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-body,
+html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-card,
+html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-empty,
+html.kikoerumanager-dark .mojibake-preview-dialog .fm-badge,
+html.kikoerumanager-dark .mojibake-preview-dialog .fm-count-pill {
+  background: var(--km-dark-surface) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: var(--km-dark-shadow-soft) !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-row:hover,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-row-selected,
+html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-card:hover {
+  background: rgba(255, 255, 255, 0.16) !important;
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow:
+    inset 3px 0 0 rgba(255, 255, 255, 0.78),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .action-card,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .close-button,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .row-action,
+html.kikoerumanager-dark .mojibake-preview-dialog .action-card,
+html.kikoerumanager-dark .mojibake-preview-dialog .close-button {
+  background: var(--km-dark-button-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: var(--km-dark-shadow-soft) !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .action-card:hover:not(:disabled),
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .close-button:hover,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .row-action:hover:not(:disabled),
+html.kikoerumanager-dark .mojibake-preview-dialog .action-card:hover:not(:disabled),
+html.kikoerumanager-dark .mojibake-preview-dialog .close-button:hover {
+  background: var(--km-dark-button-bg-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .title,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .text-slate-900,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .text-slate-800,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .text-slate-700,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-name,
+html.kikoerumanager-dark .mojibake-preview-dialog .title,
+html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-value {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .text-slate-600,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .text-slate-500,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .text-slate-400,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-sub,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-size,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-time,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .preview-empty,
+html.kikoerumanager-dark .mojibake-preview-dialog .text-slate-600,
+html.kikoerumanager-dark .mojibake-preview-dialog .text-slate-500,
+html.kikoerumanager-dark .mojibake-preview-dialog .text-slate-400,
+html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-label,
+html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-path,
+html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-encoding {
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .search-input,
+html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-input {
+  background: transparent !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-checkbox {
+  background: var(--km-dark-field) !important;
+  border-color: rgba(255, 255, 255, 0.26) !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-checkbox-on,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-checkbox-partial,
+html.kikoerumanager-dark .mojibake-preview-dialog .tree-checkbox-on {
+  background: #020617 !important;
+  border-color: rgba(255, 255, 255, 0.42) !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark .filter-delete-dialog.el-dialog,
+html.kikoerumanager-dark .filter-delete-dialog .window,
+html.kikoerumanager-dark .filter-delete-dialog .glass-shell {
+  background: var(--km-dark-sidebar) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.56), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+}
+
+html.kikoerumanager-dark .filter-delete-dialog .window-header,
+html.kikoerumanager-dark .filter-delete-dialog .fm-body,
+html.kikoerumanager-dark .filter-delete-dialog .toolbar-row,
+html.kikoerumanager-dark .filter-delete-dialog .tree-head,
+html.kikoerumanager-dark .filter-delete-dialog .window > .flex.items-center.justify-end {
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .filter-delete-dialog .glass-panel,
+html.kikoerumanager-dark .filter-delete-dialog .glass-card,
+html.kikoerumanager-dark .filter-delete-dialog .tree-panel,
+html.kikoerumanager-dark .filter-delete-dialog .tree-scroll,
+html.kikoerumanager-dark .filter-delete-dialog .tree-row,
+html.kikoerumanager-dark .filter-delete-dialog .selection-card,
+html.kikoerumanager-dark .filter-delete-dialog .search-shell,
+html.kikoerumanager-dark .filter-delete-dialog .fd-chip,
+html.kikoerumanager-dark .filter-delete-dialog .fd-type-tag {
+  background: var(--km-dark-surface) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .filter-delete-dialog .tree-row:hover,
+html.kikoerumanager-dark .filter-delete-dialog .tree-row-selected,
+html.kikoerumanager-dark .filter-delete-dialog .fd-type-tag-active,
+html.kikoerumanager-dark .filter-delete-dialog .fd-type-tag-partial {
+  background: var(--km-dark-surface-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .filter-delete-dialog .action-card,
+html.kikoerumanager-dark .filter-delete-dialog button[class*="bg-white"],
+html.kikoerumanager-dark .filter-delete-dialog button[class*="bg-slate-50"] {
+  background: var(--km-dark-button-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: var(--km-dark-shadow-soft) !important;
+}
+
+html.kikoerumanager-dark .filter-delete-dialog .action-card:hover:not(:disabled),
+html.kikoerumanager-dark .filter-delete-dialog button[class*="bg-white"]:hover:not(:disabled),
+html.kikoerumanager-dark .filter-delete-dialog button[class*="bg-slate-50"]:hover:not(:disabled) {
+  background: var(--km-dark-button-bg-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .filter-delete-dialog .title,
+html.kikoerumanager-dark .filter-delete-dialog .text-slate-900,
+html.kikoerumanager-dark .filter-delete-dialog .text-slate-800,
+html.kikoerumanager-dark .filter-delete-dialog .text-slate-700,
+html.kikoerumanager-dark .filter-delete-dialog .tree-name {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .filter-delete-dialog .text-slate-600,
+html.kikoerumanager-dark .filter-delete-dialog .text-slate-500,
+html.kikoerumanager-dark .filter-delete-dialog .text-slate-400,
+html.kikoerumanager-dark .filter-delete-dialog .tree-sub,
+html.kikoerumanager-dark .filter-delete-dialog .tree-size,
+html.kikoerumanager-dark .filter-delete-dialog .tree-time,
+html.kikoerumanager-dark .filter-delete-dialog .fd-progress,
+html.kikoerumanager-dark .filter-delete-dialog .preview-empty {
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark .filter-delete-dialog .search-input {
+  background: transparent !important;
   color: var(--km-dark-text) !important;
 }
 
@@ -2043,12 +2600,15 @@ html.kikoerumanager-dark .filter-delete-dialog .tree-row {
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .tree-row:hover {
-  background: rgba(37, 99, 235, 0.16) !important;
+  background: var(--km-dark-surface-hover) !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .tree-row-selected {
-  background: rgba(37, 99, 235, 0.24) !important;
+  background: rgba(255, 255, 255, 0.16) !important;
   color: var(--km-dark-text-strong) !important;
+  box-shadow:
+    inset 3px 0 0 rgba(255, 255, 255, 0.78),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .tree-checkbox {
@@ -2197,7 +2757,7 @@ html.kikoerumanager-dark .lib-move-modal .fm-row:hover,
 html.kikoerumanager-dark .lib-move-modal .nav-row:hover,
 html.kikoerumanager-dark .lib-move-modal .crumb-btn:hover,
 html.kikoerumanager-dark .lib-move-modal .fm-icon-btn:hover:not(:disabled) {
-  background: rgba(37, 99, 235, 0.18) !important;
+  background: var(--km-dark-surface-hover) !important;
   color: var(--km-dark-text-strong) !important;
 }
 
@@ -2206,9 +2766,11 @@ html.kikoerumanager-dark .remote-folder-picker-modal .nav-row-active,
 html.kikoerumanager-dark .server-upload-preview-modal .tree-row-selected,
 html.kikoerumanager-dark .lib-move-modal .fm-row-selected,
 html.kikoerumanager-dark .lib-move-modal .nav-row-active {
-  background: rgba(37, 99, 235, 0.28) !important;
+  background: rgba(255, 255, 255, 0.16) !important;
   color: var(--km-dark-text-strong) !important;
-  box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.26) !important;
+  box-shadow:
+    inset 3px 0 0 rgba(255, 255, 255, 0.78),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
 }
 
 html.kikoerumanager-dark .remote-folder-picker-modal .fm-name,
@@ -2238,7 +2800,7 @@ html.kikoerumanager-dark .lib-move-modal .nav-splitter {
 
 html.kikoerumanager-dark .remote-folder-picker-modal .nav-splitter-line,
 html.kikoerumanager-dark .lib-move-modal .nav-splitter-line {
-  background: rgba(147, 197, 253, 0.36) !important;
+  background: var(--km-dark-border) !important;
 }
 
 html.kikoerumanager-dark .remote-folder-picker-modal .secondary-cta,
@@ -2247,18 +2809,18 @@ html.kikoerumanager-dark .server-upload-preview-modal .secondary-cta,
 html.kikoerumanager-dark .server-upload-preview-modal .interactive-chip,
 html.kikoerumanager-dark .lib-move-modal .secondary-cta,
 html.kikoerumanager-dark .lib-move-modal .interactive-chip {
-  background: linear-gradient(180deg, rgba(30, 64, 175, 0.18) 0%, rgba(30, 41, 59, 0.88) 100%) !important;
-  border-color: rgba(96, 165, 250, 0.24) !important;
-  color: var(--km-dark-blue) !important;
+  background: var(--km-dark-button-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
 }
 
 html.kikoerumanager-dark .remote-folder-picker-modal .primary-cta,
 html.kikoerumanager-dark .server-upload-preview-modal .primary-cta,
 html.kikoerumanager-dark .lib-move-modal .primary-cta {
-  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%) !important;
-  border-color: rgba(147, 197, 253, 0.42) !important;
+  background: #020617 !important;
+  border-color: var(--km-dark-border-strong) !important;
   color: #ffffff !important;
-  box-shadow: 0 14px 30px rgba(37, 99, 235, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.18) !important;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.16) !important;
 }
 
 html.kikoerumanager-dark .subtitle-page .subtitle-info-strip,
@@ -2338,22 +2900,22 @@ html.kikoerumanager-dark .subtitle-import-workbench-dialog .el-dialog__body {
 
 html.kikoerumanager-dark .subtitle-import-workbench-dialog .import-workbench-modal,
 html.kikoerumanager-dark .subtitle-import-workbench-dialog .subtitle-workbench-shell {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.98) 0%, rgba(15, 23, 42, 0.94) 100%) !important;
-  border-color: rgba(148, 163, 184, 0.22) !important;
+  background: var(--km-dark-sidebar) !important;
+  border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
-  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.56), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
 }
 
 html.kikoerumanager-dark .subtitle-import-workbench-dialog .subtitle-workbench-header {
-  background: rgba(30, 41, 59, 0.9) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: var(--km-dark-sidebar) !important;
+  border-color: var(--km-dark-border) !important;
 }
 
 html.kikoerumanager-dark .subtitle-import-workbench-dialog .subtitle-workbench-body {
-  --tw-gradient-from: rgba(15, 23, 42, 0.96) var(--tw-gradient-from-position) !important;
-  --tw-gradient-via: rgba(15, 23, 42, 0.94) var(--tw-gradient-via-position) !important;
-  --tw-gradient-to: rgba(15, 23, 42, 0.92) var(--tw-gradient-to-position) !important;
-  background-color: rgba(15, 23, 42, 0.94) !important;
+  --tw-gradient-from: var(--km-dark-sidebar) var(--tw-gradient-from-position) !important;
+  --tw-gradient-via: var(--km-dark-bg) var(--tw-gradient-via-position) !important;
+  --tw-gradient-to: var(--km-dark-bg-deep) var(--tw-gradient-to-position) !important;
+  background-color: var(--km-dark-bg) !important;
   color: var(--km-dark-text) !important;
 }
 
@@ -2369,8 +2931,8 @@ html.kikoerumanager-dark .subtitle-import-workbench-dialog .bg-slate-50\/50,
 html.kikoerumanager-dark .subtitle-import-workbench-dialog .bg-slate-50\/40,
 html.kikoerumanager-dark .subtitle-import-workbench-dialog .bg-slate-100,
 html.kikoerumanager-dark .subtitle-import-workbench-dialog .bg-slate-100\/80 {
-  background: rgba(30, 41, 59, 0.82) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: var(--km-dark-surface) !important;
+  border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
 
@@ -2378,7 +2940,7 @@ html.kikoerumanager-dark .subtitle-import-workbench-dialog .border-slate-100,
 html.kikoerumanager-dark .subtitle-import-workbench-dialog .border-slate-200,
 html.kikoerumanager-dark .subtitle-import-workbench-dialog .border-slate-200\/70,
 html.kikoerumanager-dark .subtitle-import-workbench-dialog .border-slate-200\/80 {
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  border-color: var(--km-dark-border) !important;
 }
 
 html.kikoerumanager-dark .subtitle-import-workbench-dialog .text-slate-900,
@@ -2399,9 +2961,9 @@ html.kikoerumanager-dark .subtitle-import-workbench-dialog p {
 
 html.kikoerumanager-dark .subtitle-import-workbench-dialog .subtitle-workbench-btn,
 html.kikoerumanager-dark .subtitle-import-workbench-dialog button:not(.primary-cta):not(.el-button--primary) {
-  background: linear-gradient(180deg, rgba(30, 64, 175, 0.18) 0%, rgba(30, 41, 59, 0.88) 100%) !important;
-  border-color: rgba(96, 165, 250, 0.24) !important;
-  color: var(--km-dark-blue) !important;
+  background: var(--km-dark-button-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
 }
 
 html.kikoerumanager-dark .subtitle-import-workbench-dialog .subtitle-workbench-btn-close {
@@ -2414,21 +2976,21 @@ html.kikoerumanager-dark .subtitle-import-workbench-dialog input,
 html.kikoerumanager-dark .subtitle-import-workbench-dialog textarea,
 html.kikoerumanager-dark .subtitle-import-workbench-dialog .el-input__wrapper,
 html.kikoerumanager-dark .subtitle-import-workbench-dialog .el-textarea__inner {
-  background: rgba(15, 23, 42, 0.9) !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
   box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .import-workbench-modal {
-  background: rgba(15, 23, 42, 0.96) !important;
+  background: var(--km-dark-sidebar) !important;
   color: var(--km-dark-text) !important;
 }
 
 html.kikoerumanager-dark .import-workbench-modal .subtitle-workbench-body,
 html.kikoerumanager-dark .import-workbench-modal .bg-gradient-to-b {
-  background: rgba(15, 23, 42, 0.94) !important;
-  background-image: linear-gradient(180deg, rgba(15, 23, 42, 0.96) 0%, rgba(15, 23, 42, 0.94) 48%, rgba(15, 23, 42, 0.92) 100%) !important;
+  background: var(--km-dark-bg) !important;
+  background-image: linear-gradient(180deg, var(--km-dark-sidebar) 0%, var(--km-dark-bg) 48%, var(--km-dark-bg-deep) 100%) !important;
   color: var(--km-dark-text) !important;
 }
 
@@ -2438,7 +3000,7 @@ html.kikoerumanager-dark .import-workbench-modal article,
 html.kikoerumanager-dark .import-workbench-modal .grid,
 html.kikoerumanager-dark .import-workbench-modal .min-w-0,
 html.kikoerumanager-dark .import-workbench-modal .min-h-0 {
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  border-color: var(--km-dark-border) !important;
 }
 
 html.kikoerumanager-dark .import-workbench-modal .rounded-\[20px\],
@@ -2446,7 +3008,7 @@ html.kikoerumanager-dark .import-workbench-modal .rounded-\[18px\],
 html.kikoerumanager-dark .import-workbench-modal .rounded-\[14px\],
 html.kikoerumanager-dark .import-workbench-modal .rounded-\[12px\],
 html.kikoerumanager-dark .import-workbench-modal .rounded-xl {
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  border-color: var(--km-dark-border) !important;
 }
 
 html.kikoerumanager-dark .import-workbench-modal .bg-white,
@@ -2467,15 +3029,15 @@ html.kikoerumanager-dark .import-workbench-modal .bg-slate-100,
 html.kikoerumanager-dark .import-workbench-modal .bg-slate-100\/90,
 html.kikoerumanager-dark .import-workbench-modal .bg-slate-100\/80,
 html.kikoerumanager-dark .import-workbench-modal .bg-slate-100\/70 {
-  background: rgba(30, 41, 59, 0.82) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: var(--km-dark-surface) !important;
+  border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
 
 html.kikoerumanager-dark .import-workbench-modal .bg-slate-900,
 html.kikoerumanager-dark .import-workbench-modal .is-active {
-  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%) !important;
-  border-color: rgba(147, 197, 253, 0.42) !important;
+  background: #020617 !important;
+  border-color: var(--km-dark-border-strong) !important;
   color: #ffffff !important;
 }
 
@@ -2498,7 +3060,7 @@ html.kikoerumanager-dark .import-workbench-modal .border-slate-200,
 html.kikoerumanager-dark .import-workbench-modal .border-slate-200\/70,
 html.kikoerumanager-dark .import-workbench-modal .border-slate-200\/80,
 html.kikoerumanager-dark .import-workbench-modal .border-slate-300 {
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  border-color: var(--km-dark-border) !important;
 }
 
 html.kikoerumanager-dark .import-workbench-modal .shadow-\[0_4px_16px_rgba\(15\,23\,42\,0\.04\)\],
@@ -2513,10 +3075,10 @@ html.kikoerumanager-dark .import-workbench-modal .subtitle-setting-item,
 html.kikoerumanager-dark .import-workbench-modal .subtitle-filter-editor,
 html.kikoerumanager-dark .import-workbench-modal .subtitle-filter-detail,
 html.kikoerumanager-dark .import-workbench-modal .search-row {
-  background: rgba(30, 41, 59, 0.84) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: var(--km-dark-surface) !important;
+  border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
-  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+  box-shadow: var(--km-dark-shadow-soft) !important;
 }
 
 html.kikoerumanager-dark .import-workbench-modal .subtitle-help-card-danger {
@@ -2525,9 +3087,9 @@ html.kikoerumanager-dark .import-workbench-modal .subtitle-help-card-danger {
 }
 
 html.kikoerumanager-dark .import-workbench-modal .header-badge {
-  background: rgba(15, 23, 42, 0.9) !important;
-  border-color: rgba(96, 165, 250, 0.24) !important;
-  color: var(--km-dark-blue) !important;
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
 }
 
 html.kikoerumanager-dark .import-workbench-modal .header-badge-danger {
@@ -2555,14 +3117,14 @@ html.kikoerumanager-dark .import-workbench-modal .stat-cell .text-slate-500 {
 
 html.kikoerumanager-dark .import-workbench-modal .stat-trio,
 html.kikoerumanager-dark .import-workbench-modal .stat-cell {
-  background: rgba(15, 23, 42, 0.78) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
 
 html.kikoerumanager-dark .import-workbench-modal .subtitle-naming-switch {
-  background: rgba(15, 23, 42, 0.9) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
 }
 
 html.kikoerumanager-dark .import-workbench-modal .subtitle-naming-option,
@@ -2571,8 +3133,8 @@ html.kikoerumanager-dark .import-workbench-modal .subtitle-filter-row,
 html.kikoerumanager-dark .import-workbench-modal .subtitle-filter-target-badge,
 html.kikoerumanager-dark .import-workbench-modal button[class*="bg-white"],
 html.kikoerumanager-dark .import-workbench-modal button[class*="bg-slate-50"] {
-  background: rgba(15, 23, 42, 0.82) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
 
@@ -2581,16 +3143,16 @@ html.kikoerumanager-dark .import-workbench-modal .subtitle-toggle-pill:hover,
 html.kikoerumanager-dark .import-workbench-modal .subtitle-filter-row:hover,
 html.kikoerumanager-dark .import-workbench-modal button[class*="bg-white"]:hover:not(:disabled),
 html.kikoerumanager-dark .import-workbench-modal button[class*="bg-slate-50"]:hover:not(:disabled) {
-  background: rgba(37, 99, 235, 0.2) !important;
-  border-color: rgba(147, 197, 253, 0.34) !important;
+  background: var(--km-dark-surface-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
   color: var(--km-dark-text-strong) !important;
 }
 
 html.kikoerumanager-dark .import-workbench-modal .subtitle-naming-option.active,
 html.kikoerumanager-dark .import-workbench-modal .subtitle-toggle-pill.active,
 html.kikoerumanager-dark .import-workbench-modal .subtitle-filter-row.active {
-  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%) !important;
-  border-color: rgba(147, 197, 253, 0.42) !important;
+  background: #020617 !important;
+  border-color: var(--km-dark-border-strong) !important;
   color: #ffffff !important;
 }
 

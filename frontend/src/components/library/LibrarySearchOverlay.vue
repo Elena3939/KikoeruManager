@@ -1345,6 +1345,205 @@ onBeforeUnmount(() => {
   .lib-panel-row-sub { font-size: 10.5px; }
 }
 
+:global(html.kikoerumanager-dark) .lib-search-panel,
+:global(html.kikoerumanager-dark) .lib-panel-filter-menu {
+  background: #08090d !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow:
+    0 24px 58px rgba(0, 0, 0, 0.56),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-panel-input-row,
+:global(html.kikoerumanager-dark) .lib-panel-results,
+:global(html.kikoerumanager-dark) .lib-panel-filter-menu-head {
+  background: #08090d !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-panel-input {
+  background: #090a0f !important;
+  border: 1px solid rgba(255, 255, 255, 0.24) !important;
+  border-radius: 0 !important;
+  padding: 0 8px !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 0 0 3px rgba(255, 255, 255, 0.08) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-panel-input::placeholder {
+  color: var(--km-dark-text-muted) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-panel-filter,
+:global(html.kikoerumanager-dark) .lib-panel-input-close,
+:global(html.kikoerumanager-dark) .lib-panel-banner-retry {
+  background: var(--km-dark-button-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-panel-filter:hover,
+:global(html.kikoerumanager-dark) .lib-panel-filter.is-active,
+:global(html.kikoerumanager-dark) .lib-panel-filter.is-open,
+:global(html.kikoerumanager-dark) .lib-panel-input-close:hover,
+:global(html.kikoerumanager-dark) .lib-panel-banner-retry:hover {
+  background: var(--km-dark-button-bg-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-panel-filter-menu-row,
+:global(html.kikoerumanager-dark) .lib-panel-row {
+  background: #08090d !important;
+  color: var(--km-dark-text) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-panel-filter-menu-row:hover,
+:global(html.kikoerumanager-dark) .lib-panel-filter-menu-row.is-active,
+:global(html.kikoerumanager-dark) .lib-panel-row:hover,
+:global(html.kikoerumanager-dark) .lib-panel-row.is-active {
+  background: rgba(255, 255, 255, 0.16) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow:
+    inset 3px 0 0 rgba(255, 255, 255, 0.78),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-panel-filter-menu-head,
+:global(html.kikoerumanager-dark) .lib-panel-row-sub,
+:global(html.kikoerumanager-dark) .lib-panel-row-path,
+:global(html.kikoerumanager-dark) .lib-panel-row-meta,
+:global(html.kikoerumanager-dark) .lib-panel-row-size,
+:global(html.kikoerumanager-dark) .lib-panel-state {
+  color: var(--km-dark-text-muted) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-panel-row-name,
+:global(html.kikoerumanager-dark) .lib-panel-filter-menu-label {
+  color: var(--km-dark-text-strong) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-panel-list {
+  background: #08090d !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-panel-row-rj,
+:global(html.kikoerumanager-dark) .lib-panel-row-lib {
+  background: var(--km-dark-field) !important;
+  color: var(--km-dark-text) !important;
+  border: 1px solid var(--km-dark-border) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-panel-banner.is-warning {
+  background: rgba(245, 158, 11, 0.14) !important;
+  border-color: rgba(245, 158, 11, 0.34) !important;
+  color: #fbbf24 !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-panel-banner.is-warning .lib-panel-banner-retry {
+  background: rgba(0, 0, 0, 0.24) !important;
+  border: 1px solid rgba(245, 158, 11, 0.28) !important;
+  color: #fbbf24 !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-panel-banner.is-error {
+  background: rgba(244, 63, 94, 0.14) !important;
+  border-color: rgba(251, 113, 133, 0.34) !important;
+  color: #fda4af !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-panel-results::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  background-clip: content-box;
+}
+
 /* 注：之前有 prefers-color-scheme: dark 暗色覆盖；明确按需求保持白色磨砂，
    不跟随系统暗色主题。如果未来要做应用级暗色，统一在 App.vue 主题切换里走。 */
+</style>
+
+<style>
+html.kikoerumanager-dark .lib-search-overlay .lib-search-panel {
+  background: rgba(8, 9, 13, 0.78) !important;
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.42),
+    0 28px 76px rgba(0, 0, 0, 0.58) !important;
+  backdrop-filter: blur(34px) saturate(135%) !important;
+  -webkit-backdrop-filter: blur(34px) saturate(135%) !important;
+}
+
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-input-row {
+  background: rgba(8, 9, 13, 0.36) !important;
+}
+
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-input {
+  background: rgba(4, 5, 8, 0.92) !important;
+  border: 1px solid rgba(255, 255, 255, 0.28) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 0 0 1px rgba(0, 0, 0, 0.72) !important;
+}
+
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-filter,
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-input-close {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-filter:hover,
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-filter.is-active,
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-filter.is-open,
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-input-close:hover {
+  background: rgba(255, 255, 255, 0.14) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-input-loader {
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-results,
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-list,
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-row {
+  background: rgba(8, 9, 13, 0.74) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-row:hover,
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-row.is-active {
+  background: rgba(255, 255, 255, 0.14) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-row-name {
+  color: #f8fafc !important;
+}
+
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-row-sub,
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-row-path,
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-row-meta,
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-row-size {
+  color: rgba(226, 232, 240, 0.72) !important;
+}
+
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-row-rj {
+  background: rgba(99, 102, 241, 0.24) !important;
+  color: #c7d2fe !important;
+}
+
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-row-lib {
+  background: rgba(255, 255, 255, 0.1) !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: #d1fae5 !important;
+}
+
+html.kikoerumanager-dark .lib-search-overlay .lib-panel-state {
+  color: var(--km-dark-text-muted) !important;
+}
 </style>
