@@ -1957,13 +1957,8 @@ onBeforeUnmount(() => {
 }
 
 .glass-shell::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.22), transparent 30%, rgba(255, 255, 255, 0.08) 65%, transparent 100%);
-  opacity: 0.9;
+  display: none;
+  content: none;
 }
 
 .window-header {
@@ -2226,18 +2221,35 @@ onBeforeUnmount(() => {
 }
 
 .tree-row {
+  position: relative;
   cursor: pointer;
   min-height: 44px;
-  transition: background-color 0.15s ease;
+  transition:
+    transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 0.24s cubic-bezier(0.34, 1.56, 0.64, 1),
+    color 0.18s ease;
+  will-change: transform;
 }
 
 .tree-row:hover {
-  background: rgba(255, 255, 255, 0.24);
+  z-index: 1;
+  background: transparent;
+  transform: translate3d(0, -2px, 0);
+  box-shadow:
+    0 8px 18px rgba(15, 23, 42, 0.1),
+    inset 0 0 0 1px rgba(15, 23, 42, 0.08);
 }
 
 .tree-row-selected {
-  background: rgba(191, 219, 254, 0.16);
-  box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.2);
+  background: rgba(15, 23, 42, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.12);
+}
+
+.tree-row-selected:hover {
+  background: rgba(15, 23, 42, 0.09);
+  box-shadow:
+    0 8px 18px rgba(15, 23, 42, 0.12),
+    inset 0 0 0 1px rgba(15, 23, 42, 0.14);
 }
 
 .tree-main {

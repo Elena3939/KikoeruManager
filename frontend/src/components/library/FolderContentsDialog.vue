@@ -88,6 +88,7 @@
               @click="openMojibakeRepairPreview"
             >
               <DotLottieVue
+                class="fm-repair-lottie"
                 :src="translateAnimation"
                 autoplay
                 loop
