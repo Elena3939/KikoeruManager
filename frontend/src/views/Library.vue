@@ -137,6 +137,8 @@
             <AppDropdown
               v-model="selectedLibraryId"
               :options="libraryDropdownOptions"
+              class="library-select-dd"
+              menu-class="library-select-dd-menu"
               :width="220"
               :menu-min-width="260"
               placeholder="选择库存"
