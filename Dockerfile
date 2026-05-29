@@ -28,6 +28,7 @@ RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmwa
         ca-certificates \
         wget \
         xz-utils \
+        aria2 \
         unar \
         libopencc-dev \
     && apt-get purge -y --auto-remove p7zip-full p7zip p7zip-rar 2>/dev/null || true \
@@ -49,6 +50,7 @@ RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmwa
     && /usr/local/bin/7zz --help | head -3 \
     && /usr/local/bin/7zz --help | grep -q "24.08" \
     && echo "===== 7-Zip 24.08 installed OK =====" \
+    && aria2c --version | head -1 \
     && which unar && unar --version 2>&1 | head -1 \
     && which lsar && echo "===== unar + lsar installed OK ====="
 
