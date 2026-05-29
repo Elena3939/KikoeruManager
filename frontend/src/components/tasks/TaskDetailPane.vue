@@ -448,6 +448,7 @@ const ACTION_ICON_MAP = {
   pause: PauseCircle,
   resume: PlayCircle,
   cancel: XCircle,
+  retry: RotateCcw,
   retry_waiting: RotateCcw,
   delete_waiting_retry: XCircle,
   open_subtitle_import: ArrowRight,
@@ -459,6 +460,7 @@ const ACTION_LABEL_MAP = {
   pause: '暂停',
   resume: '恢复',
   cancel: '取消',
+  retry: '重试',
   retry_waiting: '立即重试',
   delete_waiting_retry: '移除等待重试',
   open_subtitle_import: '前往字幕补配',
@@ -484,7 +486,7 @@ function actionToneClass(action) {
   if (action === 'resume') {
     return 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-100 hover:shadow-[0_8px_18px_-8px_rgba(16,185,129,0.3)]'
   }
-  if (action === 'retry_waiting' || action === 'reindex_circle') {
+  if (action === 'retry' || action === 'retry_waiting' || action === 'reindex_circle') {
     return 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:border-indigo-300 hover:bg-indigo-100 hover:shadow-[0_8px_18px_-8px_rgba(79,70,229,0.3)]'
   }
   if (action === 'open_subtitle_import' || action === 'open_circle_completion') {

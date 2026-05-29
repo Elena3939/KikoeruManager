@@ -1312,3 +1312,1254 @@ html.kikoerumanager-dark body #app :is(
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text-muted) !important;
 }
+
+/* 任务中心 Web 端：哑光暗面，去掉蓝色和发光灰框 */
+html.kikoerumanager-dark {
+  --tasks-matte: #2b2c30;
+  --tasks-matte-soft: #242529;
+  --tasks-matte-strong: #333438;
+  --tasks-panel: #0d0e12;
+  --tasks-border: rgba(255, 255, 255, 0.15);
+  --tasks-border-strong: rgba(255, 255, 255, 0.22);
+  --tasks-text: rgba(246, 246, 248, 0.9);
+  --tasks-muted: rgba(214, 214, 220, 0.58);
+}
+
+@media (min-width: 981px) {
+  html.kikoerumanager-dark .tasks-page {
+    color: var(--tasks-text) !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .app-page-icon {
+    color: rgba(214, 214, 220, 0.86) !important;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .app-page-head-right > span,
+  html.kikoerumanager-dark .tasks-page .tasks-toolbar,
+  html.kikoerumanager-dark .tasks-page .task-list-pane,
+  html.kikoerumanager-dark .tasks-page .tasks-main > .detail-scroll {
+    background: var(--tasks-panel) !important;
+    border-color: var(--tasks-border) !important;
+    color: var(--tasks-text) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .tasks-toolbar-row {
+    background: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-list-scroll,
+  html.kikoerumanager-dark .tasks-page .task-file-tree,
+  html.kikoerumanager-dark .tasks-page .detail-scroll {
+    scrollbar-color: #333438 transparent !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-tree-actions {
+    gap: 6px !important;
+    padding: 0 !important;
+    background: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page :is(
+    .tasks-toolbar-search,
+    .tasks-filter-dd .app-dd-trigger,
+    .tasks-toolbar-btn,
+    .task-tree-filter-button,
+    .task-tree-toggle,
+    .tasks-main > .detail-scroll button:not(.tree-expander)
+  ) {
+    background: var(--tasks-matte) !important;
+    border-color: var(--tasks-border) !important;
+    color: rgba(242, 242, 246, 0.86) !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page :is(
+    .tasks-toolbar-search:hover,
+    .tasks-toolbar-search:focus-within,
+    .tasks-filter-dd .app-dd-trigger:hover,
+    .tasks-filter-dd .app-dd-trigger.is-open,
+    .tasks-toolbar-btn:hover,
+    .tasks-toolbar-btn.is-on,
+    .task-tree-filter-button:hover,
+    .task-tree-filter-button--active,
+    .task-tree-filter-button--active:hover,
+    .task-tree-toggle:hover,
+    .tasks-main > .detail-scroll button:not(.tree-expander):hover
+  ) {
+    background: var(--tasks-matte-strong) !important;
+    border-color: var(--tasks-border-strong) !important;
+    color: rgba(250, 250, 252, 0.94) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page :is(
+    .tasks-toolbar-search,
+    .tasks-toolbar-search *,
+    .tasks-filter-dd .app-dd-trigger,
+    .tasks-filter-dd .app-dd-trigger *,
+    .tasks-toolbar-btn,
+    .tasks-toolbar-btn *,
+    .task-tree-filter-button,
+    .task-tree-toggle,
+    [class*="ring-"],
+    [class*="shadow-"]
+  ) {
+    --tw-ring-color: transparent !important;
+    --tw-ring-shadow: 0 0 #0000 !important;
+    --tw-shadow: 0 0 #0000 !important;
+    outline-color: transparent !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .tasks-toolbar-search-input,
+  html.kikoerumanager-dark .tasks-page .tasks-toolbar-search-input:focus {
+    background: transparent !important;
+    border: 0 !important;
+    color: var(--tasks-text) !important;
+    outline: 0 !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .tasks-toolbar-search-input::placeholder,
+  html.kikoerumanager-dark .tasks-page .tasks-toolbar-search-icon,
+  html.kikoerumanager-dark .tasks-page .tasks-toolbar-search-clear,
+  html.kikoerumanager-dark .tasks-page .app-dd-trigger-label,
+  html.kikoerumanager-dark .tasks-page .app-dd-trigger-icon,
+  html.kikoerumanager-dark .tasks-page .app-dd-trigger-caret {
+    color: var(--tasks-muted) !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .app-dd-trigger-value,
+  html.kikoerumanager-dark .tasks-page .tasks-toolbar-btn {
+    color: rgba(248, 248, 250, 0.9) !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-card {
+    background: transparent !important;
+    border-color: transparent !important;
+    color: var(--tasks-text) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-card:hover {
+    background: var(--tasks-matte-soft) !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-card.is-active {
+    background: var(--tasks-matte) !important;
+    border-left-color: rgba(214, 214, 220, 0.72) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-list-pane > .border-t {
+    background: rgba(8, 9, 12, 0.42) !important;
+    border-color: var(--tasks-border) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-list-pane > .border-t button {
+    background: var(--tasks-matte) !important;
+    border-color: var(--tasks-border) !important;
+    color: rgba(232, 232, 236, 0.82) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-list-pane > .border-t button:hover:not(:disabled) {
+    background: var(--tasks-matte-strong) !important;
+    border-color: var(--tasks-border-strong) !important;
+    color: rgba(250, 250, 252, 0.94) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-list-pane > .border-t span {
+    color: var(--tasks-muted) !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page :is(
+    [class*="bg-white"],
+    [class*="bg-slate-50"],
+    [class*="bg-slate-100"],
+    [class*="bg-blue-50"],
+    [class*="bg-sky-50"],
+    [class*="bg-indigo-50"],
+    [class*="bg-violet-50"],
+    [class*="from-white"],
+    [class*="to-white"],
+    [class*="from-slate-"],
+    [class*="to-slate-"],
+    [class*="from-blue-"],
+    [class*="to-blue-"],
+    [class*="from-sky-"],
+    [class*="to-sky-"],
+    [class*="from-indigo-"],
+    [class*="to-indigo-"],
+    [class*="from-violet-"],
+    [class*="to-violet-"]
+  ) {
+    --tw-gradient-from: var(--tasks-matte-soft) var(--tw-gradient-from-position) !important;
+    --tw-gradient-via: var(--tasks-matte-soft) var(--tw-gradient-via-position) !important;
+    --tw-gradient-to: var(--tasks-matte-soft) var(--tw-gradient-to-position) !important;
+    background: var(--tasks-matte-soft) !important;
+    background-image: none !important;
+    border-color: var(--tasks-border) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page :is(
+    [class*="border-blue-"],
+    [class*="border-sky-"],
+    [class*="border-indigo-"],
+    [class*="border-violet-"],
+    [class*="border-slate-"]
+  ) {
+    border-color: var(--tasks-border) !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page :is(
+    [class*="text-blue-"],
+    [class*="text-sky-"],
+    [class*="text-indigo-"],
+    [class*="text-violet-"]
+  ) {
+    color: rgba(218, 218, 224, 0.78) !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page :is(
+    [class*="bg-blue-"],
+    [class*="bg-sky-"],
+    [class*="bg-indigo-"],
+    [class*="bg-violet-"]
+  ) {
+    background: var(--tasks-matte-strong) !important;
+    background-color: var(--tasks-matte-strong) !important;
+    background-image: none !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .detail-scroll > header {
+    background: rgba(13, 14, 18, 0.96) !important;
+    border-color: var(--tasks-border) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .tasks-main > .detail-scroll section,
+  html.kikoerumanager-dark .tasks-page .tasks-main > .detail-scroll .mx-4 {
+    background: transparent !important;
+    border-color: var(--tasks-border) !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .tasks-main > .detail-scroll :is(
+    [class*="border-emerald-"],
+    [class*="border-amber-"],
+    [class*="border-rose-"]
+  ) {
+    border-color: var(--tasks-border) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page code,
+  html.kikoerumanager-dark .tasks-page .task-file-tree-card {
+    background: rgba(8, 9, 12, 0.74) !important;
+    border-color: var(--tasks-border) !important;
+    color: rgba(232, 232, 236, 0.8) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-file-tree-card::before {
+    background: linear-gradient(180deg, rgba(8, 9, 12, 0.95), rgba(8, 9, 12, 0)) !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-file-tree-card::after {
+    background: linear-gradient(0deg, rgba(8, 9, 12, 0.95), rgba(8, 9, 12, 0)) !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .tree-row {
+    background: transparent !important;
+    border-color: transparent !important;
+    color: rgba(232, 232, 236, 0.78) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .tree-row:hover {
+    background: var(--tasks-matte-soft) !important;
+    border-color: var(--tasks-border) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page :is(
+    .tree-name,
+    .tree-label-text,
+    .tree-size,
+    .tree-main-target,
+    .icon-folder,
+    .icon-file,
+    .icon-text,
+    .icon-audio,
+    .icon-audio-lossless
+  ) {
+    color: rgba(226, 226, 232, 0.78) !important;
+    filter: none !important;
+    text-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .tree-expander {
+    background: transparent !important;
+    color: var(--tasks-muted) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .tree-expander:hover {
+    background: var(--tasks-matte) !important;
+    color: var(--tasks-text) !important;
+  }
+}
+
+@media (min-width: 981px) {
+  html.kikoerumanager-dark body .app-dd-menu.tasks-filter-dd-menu {
+    background: #101116 !important;
+    border-color: var(--tasks-border) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body .app-dd-menu.tasks-filter-dd-menu .app-dd-item {
+    border-color: transparent !important;
+    color: rgba(226, 226, 232, 0.82) !important;
+  }
+
+  html.kikoerumanager-dark body .app-dd-menu.tasks-filter-dd-menu .app-dd-item:hover,
+  html.kikoerumanager-dark body .app-dd-menu.tasks-filter-dd-menu .app-dd-item.is-active,
+  html.kikoerumanager-dark body .app-dd-menu.tasks-filter-dd-menu .app-dd-item.is-active:hover {
+    background: var(--tasks-matte) !important;
+    border-color: var(--tasks-border) !important;
+    color: rgba(250, 250, 252, 0.94) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body .app-dd-menu.tasks-filter-dd-menu :is(
+    .app-dd-item-icon,
+    .app-dd-item-check,
+    .app-dd-badge
+  ) {
+    color: rgba(218, 218, 224, 0.72) !important;
+    background: var(--tasks-matte-soft) !important;
+    border-color: var(--tasks-border) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) :is(
+    .subtitle-task-card,
+    .subtitle-task-rail > button,
+    .task-log-level,
+    .task-log-message
+  ) {
+    background: var(--tasks-matte-soft, #242529) !important;
+    border-color: var(--tasks-border, rgba(255, 255, 255, 0.15)) !important;
+    color: rgba(246, 246, 248, 0.88) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-task-rail > button:hover {
+    background: var(--tasks-matte, #2b2c30) !important;
+    border-color: var(--tasks-border-strong, rgba(255, 255, 255, 0.22)) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-task-rail > button[class*="ring"],
+  html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-task-rail > button[class*="shadow"] {
+    --tw-ring-color: transparent !important;
+    --tw-ring-shadow: 0 0 #0000 !important;
+    --tw-shadow: 0 0 #0000 !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-task-rail :is(
+    [class*="bg-white"],
+    [class*="bg-slate-50"],
+    [class*="bg-slate-100"],
+    [class*="bg-blue-"],
+    [class*="bg-sky-"],
+    [class*="bg-indigo-"],
+    [class*="bg-violet-"]
+  ) {
+    background: var(--tasks-matte-soft, #242529) !important;
+    border-color: var(--tasks-border, rgba(255, 255, 255, 0.15)) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-task-rail :is(
+    [class*="text-blue-"],
+    [class*="text-sky-"],
+    [class*="text-indigo-"],
+    [class*="text-violet-"]
+  ) {
+    color: rgba(218, 218, 224, 0.78) !important;
+  }
+
+  html.kikoerumanager-dark .library .lib-btn-icon-tinted.lib-icon-refresh svg { color: #2563eb !important; }
+  html.kikoerumanager-dark .library .lib-btn-icon-tinted.lib-icon-stats svg { color: #4f46e5 !important; }
+  html.kikoerumanager-dark .library .lib-btn-icon-tinted.lib-icon-select svg { color: #0f766e !important; }
+  html.kikoerumanager-dark .library .lib-btn-icon-tinted.lib-icon-subtitle svg,
+  html.kikoerumanager-dark .library .lib-btn-icon-tinted.lib-icon-subtitle-batch svg { color: #059669 !important; }
+  html.kikoerumanager-dark .library .lib-btn-icon-tinted.lib-icon-filter-delete svg { color: #d97706 !important; }
+  html.kikoerumanager-dark .library .lib-btn-icon-tinted.lib-icon-task-panel svg { color: #7c3aed !important; }
+  html.kikoerumanager-dark .library .lib-btn-icon-tinted.lib-icon-upload svg { color: #0284c7 !important; }
+  html.kikoerumanager-dark .library .lib-btn-icon-tinted.lib-icon-compute-size svg { color: #0ea5e9 !important; }
+  html.kikoerumanager-dark .library .lib-btn-icon-tinted.lib-icon-batch-delete svg { color: #e11d48 !important; }
+  html.kikoerumanager-dark .library .lib-btn-icon-tinted.lib-icon-batch-move svg { color: #0ea5e9 !important; }
+  html.kikoerumanager-dark .library .lib-btn-icon-tinted.lib-icon-api-rename svg { color: #7c3aed !important; }
+}
+
+/* 库存页 Web 端：统一成参考图里的中性深灰，去掉塑料灰和蓝色泛光 */
+@media (min-width: 981px) {
+  html.kikoerumanager-dark .library {
+    --library-matte: #2b2c30;
+    --library-matte-soft: #242529;
+    --library-matte-strong: #333438;
+    --library-panel: #0d0e12;
+    --library-panel-deep: #08090c;
+    --library-border: rgba(255, 255, 255, 0.15);
+    --library-border-strong: rgba(255, 255, 255, 0.22);
+    --library-text: rgba(246, 246, 248, 0.9);
+    --library-muted: rgba(214, 214, 220, 0.58);
+    color: var(--library-text) !important;
+  }
+
+  html.kikoerumanager-dark .library :is(
+    .lib-info-strip,
+    .main-card,
+    .el-card.main-card,
+    .main-card .el-card__header,
+    .main-card .el-card__body,
+    .lib-file-table
+  ) {
+    background: var(--library-panel) !important;
+    background-image: none !important;
+    border-color: var(--library-border) !important;
+    color: var(--library-text) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .library :is(
+    .lib-card-header,
+    .lib-toolbar,
+    .lib-toolbar-panel,
+    .lib-path-toolbar,
+    .lib-batch-bar,
+    .pagination-wrap
+  ) {
+    background: transparent !important;
+    background-image: none !important;
+    border-color: transparent !important;
+    color: var(--library-text) !important;
+    box-shadow: none !important;
+    filter: none !important;
+  }
+
+  html.kikoerumanager-dark .library .lib-toolbar > .app-dd-root,
+  html.kikoerumanager-dark .library .lib-search-box {
+    flex: 0 1 auto;
+  }
+
+  html.kikoerumanager-dark .library :is(
+    .lib-toolbar .app-dd-trigger,
+    .lib-search,
+    .lib-search-input,
+    .lib-search-filter,
+    .lib-search-expand,
+    .lib-btn,
+    .lib-btn-ghost,
+    .lib-btn-icon-tinted,
+    .lib-path-breadcrumb,
+    .lib-path-crumb,
+    .lib-scope-option,
+    .el-pagination button,
+    .el-pagination .el-pager li,
+    .el-pagination .el-select__wrapper,
+    .el-pagination .el-input__wrapper
+  ) {
+    background: var(--library-matte) !important;
+    background-image: none !important;
+    border-color: var(--library-border) !important;
+    color: rgba(242, 242, 246, 0.86) !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .library :is(
+    .lib-toolbar .app-dd-trigger:hover,
+    .lib-toolbar .app-dd-trigger.is-open,
+    .lib-search:hover,
+    .lib-search:focus-within,
+    .lib-search-input:hover,
+    .lib-search-input:focus,
+    .lib-search-filter:hover,
+    .lib-search-filter.is-active,
+    .lib-search-filter.is-open,
+    .lib-search-expand:hover,
+    .lib-btn:hover:not(:disabled),
+    .lib-btn-ghost:hover:not(:disabled),
+    .lib-btn-icon-tinted:hover:not(:disabled),
+    .lib-path-crumb:hover,
+    .lib-path-crumb.is-current,
+    .lib-scope-option:hover,
+    .lib-scope-option.is-active,
+    .el-pagination button:hover:not(:disabled),
+    .el-pagination .el-pager li:hover,
+    .el-pagination .el-pager li.is-active
+  ) {
+    background: var(--library-matte-strong) !important;
+    background-image: none !important;
+    border-color: var(--library-border-strong) !important;
+    color: rgba(250, 250, 252, 0.94) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .library :is(
+    .lib-search-input,
+    .lib-search-input:focus,
+    .lib-toolbar .app-dd-trigger,
+    .lib-toolbar .app-dd-trigger *,
+    .lib-btn,
+    .lib-btn *,
+    .lib-path-breadcrumb,
+    .lib-path-crumb,
+    .lib-scope-option,
+    .el-pagination button,
+    .el-pagination .el-pager li,
+    [class*="ring-"],
+    [class*="shadow-"]
+  ) {
+    --tw-ring-color: transparent !important;
+    --tw-ring-shadow: 0 0 #0000 !important;
+    --tw-shadow: 0 0 #0000 !important;
+    outline-color: transparent !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .library .lib-search-input::placeholder,
+  html.kikoerumanager-dark .library :is(
+    .lib-info-label,
+    .lib-info-meta,
+    .lib-info-sub,
+    .lib-search-icon,
+    .lib-search-clear,
+    .app-dd-trigger-label,
+    .app-dd-trigger-caret,
+    .lib-path-separator,
+    .el-pagination__total,
+    .el-pagination__jump,
+    .el-pagination__goto,
+    .el-pagination__classifier
+  ) {
+    color: var(--library-muted) !important;
+  }
+
+  html.kikoerumanager-dark .library :is(
+    .lib-card-title,
+    .lib-info-value,
+    .lib-info-value b,
+    .app-dd-trigger-value,
+    .file-name,
+    .file-link-btn,
+    .lib-file-th,
+    .lib-file-sort-btn
+  ) {
+    color: var(--library-text) !important;
+  }
+
+  html.kikoerumanager-dark .library .lib-info-divider {
+    background: linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.12), transparent) !important;
+  }
+
+  html.kikoerumanager-dark .library .lib-scope-option.is-active::after {
+    background: rgba(214, 214, 220, 0.72) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .library :is(
+    .lib-file-table-head,
+    .lib-file-table-header-row
+  ) {
+    background: rgba(8, 9, 12, 0.74) !important;
+    background-image: none !important;
+    border-color: var(--library-border) !important;
+    color: var(--library-text) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .library :is(
+    .lib-file-table-body,
+    .lib-file-table-row,
+    .lib-file-empty-row
+  ) {
+    background: var(--library-matte-soft) !important;
+    background-image: none !important;
+    border-color: var(--library-border) !important;
+    color: rgba(232, 232, 236, 0.8) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .library .lib-file-table-row:hover,
+  html.kikoerumanager-dark .library .lib-file-table-row.is-hover {
+    background: var(--library-matte) !important;
+    border-color: var(--library-border) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .library :is(
+    .lib-file-rj-cell,
+    .lib-file-size-cell,
+    .lib-file-time-cell,
+    .empty-text
+  ) {
+    color: rgba(232, 232, 236, 0.66) !important;
+  }
+
+  html.kikoerumanager-dark .library .lib-file-sort-caret.is-asc::before {
+    border-bottom-color: rgba(214, 214, 220, 0.78) !important;
+  }
+
+  html.kikoerumanager-dark .library .lib-file-sort-caret.is-desc::after {
+    border-top-color: rgba(214, 214, 220, 0.78) !important;
+  }
+
+  html.kikoerumanager-dark .library .lib-file-sort-caret.is-asc::after {
+    border-top-color: rgba(214, 214, 220, 0.32) !important;
+  }
+
+  html.kikoerumanager-dark .library .lib-file-sort-caret.is-desc::before {
+    border-bottom-color: rgba(214, 214, 220, 0.32) !important;
+  }
+
+  html.kikoerumanager-dark .library .el-pagination .el-pager li.is-active {
+    min-width: 32px;
+    color: rgba(250, 250, 252, 0.96) !important;
+  }
+
+  html.kikoerumanager-dark .library .el-pagination button.is-disabled,
+  html.kikoerumanager-dark .library :is(.lib-btn:disabled, .lib-btn-icon-tinted:disabled) {
+    opacity: 0.48 !important;
+    background: var(--library-matte-soft) !important;
+    border-color: var(--library-border) !important;
+    color: var(--library-muted) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .library :is(
+    [class*="bg-blue-"],
+    [class*="bg-sky-"],
+    [class*="bg-indigo-"],
+    [class*="bg-violet-"],
+    [class*="from-blue-"],
+    [class*="to-blue-"],
+    [class*="from-indigo-"],
+    [class*="to-indigo-"]
+  ) {
+    background: var(--library-matte-strong) !important;
+    background-image: none !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .library :is(
+    [class*="border-blue-"],
+    [class*="border-sky-"],
+    [class*="border-indigo-"],
+    [class*="border-violet-"]
+  ) {
+    border-color: var(--library-border) !important;
+  }
+
+  html.kikoerumanager-dark .library :is(
+    [class*="text-blue-"],
+    [class*="text-sky-"],
+    [class*="text-indigo-"],
+    [class*="text-violet-"]
+  ) {
+    color: rgba(218, 218, 224, 0.78) !important;
+  }
+
+  html.kikoerumanager-dark body .app-dd-menu.library-select-dd-menu {
+    background: #101116 !important;
+    border-color: var(--library-border, rgba(255, 255, 255, 0.095)) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body .app-dd-menu.library-select-dd-menu .app-dd-item {
+    border-color: transparent !important;
+    color: rgba(226, 226, 232, 0.82) !important;
+  }
+
+  html.kikoerumanager-dark body .app-dd-menu.library-select-dd-menu .app-dd-item:hover,
+  html.kikoerumanager-dark body .app-dd-menu.library-select-dd-menu .app-dd-item.is-active,
+  html.kikoerumanager-dark body .app-dd-menu.library-select-dd-menu .app-dd-item.is-active:hover {
+    background: #2b2c30 !important;
+    border-color: rgba(255, 255, 255, 0.15) !important;
+    color: rgba(250, 250, 252, 0.94) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .main-card,
+  html.kikoerumanager-dark body #app .library .el-card.main-card {
+    background-color: var(--library-panel) !important;
+    background-image: none !important;
+    border-color: var(--library-border) !important;
+    color: var(--library-text) !important;
+    box-shadow: none !important;
+    transition-property: border-color, color, background-color !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .library-select-dd .app-dd-trigger,
+  html.kikoerumanager-dark body #app .library .lib-toolbar .lib-btn-icon-tinted,
+  html.kikoerumanager-dark body #app .library .lib-toolbar .lib-btn,
+  html.kikoerumanager-dark body #app .library .lib-path-toolbar .lib-btn-icon-tinted,
+  html.kikoerumanager-dark body #app .library .lib-path-toolbar .lib-btn,
+  html.kikoerumanager-dark body #app .library .lib-path-toolbar .lib-btn-ghost,
+  html.kikoerumanager-dark body #app .library .el-pagination.is-background .btn-prev,
+  html.kikoerumanager-dark body #app .library .el-pagination.is-background .btn-next,
+  html.kikoerumanager-dark body #app .library .el-pagination.is-background .el-pager li {
+    background-color: var(--library-matte) !important;
+    background-image: none !important;
+    border-color: var(--library-border) !important;
+    color: rgba(242, 242, 246, 0.86) !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+    transition-property: transform, border-color, color, background-color !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .library-select-dd .app-dd-trigger:hover,
+  html.kikoerumanager-dark body #app .library .library-select-dd .app-dd-trigger.is-open,
+  html.kikoerumanager-dark body #app .library .lib-toolbar .lib-btn-icon-tinted:hover:not(:disabled),
+  html.kikoerumanager-dark body #app .library .lib-toolbar .lib-btn:hover:not(:disabled),
+  html.kikoerumanager-dark body #app .library .lib-path-toolbar .lib-btn-icon-tinted:hover:not(:disabled),
+  html.kikoerumanager-dark body #app .library .lib-path-toolbar .lib-btn:hover:not(:disabled),
+  html.kikoerumanager-dark body #app .library .lib-path-toolbar .lib-btn-ghost:hover:not(:disabled),
+  html.kikoerumanager-dark body #app .library .el-pagination.is-background .btn-prev:hover:not(:disabled),
+  html.kikoerumanager-dark body #app .library .el-pagination.is-background .btn-next:hover:not(:disabled),
+  html.kikoerumanager-dark body #app .library .el-pagination.is-background .el-pager li:hover,
+  html.kikoerumanager-dark body #app .library .el-pagination.is-background .el-pager li.is-active {
+    background-color: var(--library-matte-strong) !important;
+    background-image: none !important;
+    border-color: var(--library-border-strong) !important;
+    color: rgba(250, 250, 252, 0.94) !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-scope-option,
+  html.kikoerumanager-dark body #app .library .lib-scope-option:hover,
+  html.kikoerumanager-dark body #app .library .lib-scope-option.is-active {
+    background-color: transparent !important;
+    background-image: none !important;
+    border-color: transparent !important;
+    color: rgba(242, 242, 246, 0.86) !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+    transition-property: color, transform !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-refresh svg { color: #2563eb !important; }
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-stats svg { color: #4f46e5 !important; }
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-select svg { color: #0f766e !important; }
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-subtitle svg,
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-subtitle-batch svg { color: #059669 !important; }
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-filter-delete svg { color: #d97706 !important; }
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-task-panel svg { color: #7c3aed !important; }
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-upload svg { color: #0284c7 !important; }
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-compute-size svg { color: #0ea5e9 !important; }
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-batch-delete svg { color: #e11d48 !important; }
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-batch-move svg { color: #0ea5e9 !important; }
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-api-rename svg { color: #7c3aed !important; }
+}
+
+/* 库存页 Web 端最终收紧：去亮边、去蓝色焦点、统一成参考灰哑光层 */
+@media (min-width: 981px) {
+  html.kikoerumanager-dark body #app .library {
+    --library-matte: #2b2c30;
+    --library-matte-soft: #242529;
+    --library-matte-strong: #333438;
+    --library-border: rgba(255, 255, 255, 0.15);
+    --library-border-strong: rgba(255, 255, 255, 0.22);
+    --library-panel: #090a0d;
+    --library-panel-soft: #0d0e12;
+    --library-text: rgba(245, 245, 247, 0.9);
+    --library-muted: rgba(205, 205, 211, 0.58);
+  }
+
+  html.kikoerumanager-dark body #app .library :is(
+    .lib-info-strip,
+    .main-card,
+    .el-card.main-card,
+    .main-card .el-card__header,
+    .main-card .el-card__body,
+    .lib-card-header,
+    .lib-toolbar,
+    .lib-toolbar-panel,
+    .lib-path-toolbar,
+    .pagination-wrap,
+    .lib-file-table,
+    .lib-file-table-head,
+    .lib-file-table-header-row,
+    .lib-file-table-body,
+    .lib-file-empty-row
+  ) {
+    background-image: none !important;
+    box-shadow: none !important;
+    filter: none !important;
+    text-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library :is(
+    .lib-info-strip,
+    .main-card,
+    .el-card.main-card,
+    .lib-file-table
+  ) {
+    background-color: var(--library-panel) !important;
+    border-color: var(--library-border) !important;
+    border-radius: 12px !important;
+  }
+
+  html.kikoerumanager-dark body #app .library :is(
+    .main-card .el-card__header,
+    .main-card .el-card__body,
+    .lib-card-header,
+    .lib-toolbar,
+    .lib-toolbar-panel,
+    .lib-path-toolbar,
+    .pagination-wrap
+  ) {
+    background-color: transparent !important;
+    border-color: transparent !important;
+  }
+
+  html.kikoerumanager-dark body #app .library :is(
+    .library-select-dd .app-dd-trigger,
+    .lib-search-box .lib-search-input,
+    .lib-search-box .lib-search-filter,
+    .lib-search-box .lib-search-expand,
+    .lib-search-box .lib-search-clear:hover,
+    .lib-btn,
+    .lib-btn-ghost,
+    .lib-btn-icon-tinted,
+    .lib-scope-switch,
+    .lib-scope-option,
+    .el-pagination.is-background .btn-prev,
+    .el-pagination.is-background .btn-next,
+    .el-pagination.is-background .el-pager li,
+    .el-pagination .el-select__wrapper,
+    .el-pagination .el-input__wrapper
+  ) {
+    background-color: var(--library-matte) !important;
+    background-image: none !important;
+    border-color: var(--library-border) !important;
+    color: var(--library-text) !important;
+    box-shadow: none !important;
+    outline: none !important;
+    text-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library :is(
+    .library-select-dd .app-dd-trigger:hover,
+    .library-select-dd .app-dd-trigger.is-open,
+    .lib-search-box .lib-search-input:hover,
+    .lib-search-box .lib-search-input:focus,
+    .lib-search-box .lib-search-filter:hover,
+    .lib-search-box .lib-search-filter.is-active,
+    .lib-search-box .lib-search-filter.is-open,
+    .lib-search-box .lib-search-expand:hover,
+    .lib-btn:hover:not(:disabled),
+    .lib-btn-ghost:hover:not(:disabled),
+    .lib-btn-icon-tinted:hover:not(:disabled),
+    .lib-scope-option:hover,
+    .lib-scope-option.is-active,
+    .el-pagination.is-background .btn-prev:hover:not(:disabled),
+    .el-pagination.is-background .btn-next:hover:not(:disabled),
+    .el-pagination.is-background .el-pager li:hover,
+    .el-pagination.is-background .el-pager li.is-active
+  ) {
+    background-color: var(--library-matte-strong) !important;
+    background-image: none !important;
+    border-color: var(--library-border-strong) !important;
+    color: rgba(250, 250, 252, 0.94) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library :is(
+    .lib-search-box .lib-search-input,
+    .lib-search-box .lib-search-input:focus,
+    .library-select-dd .app-dd-trigger,
+    .lib-btn,
+    .lib-btn-ghost,
+    .lib-btn-icon-tinted,
+    .lib-scope-switch,
+    .lib-scope-option,
+    .el-pagination.is-background .btn-prev,
+    .el-pagination.is-background .btn-next,
+    .el-pagination.is-background .el-pager li
+  ) {
+    --tw-ring-color: transparent !important;
+    --tw-ring-shadow: 0 0 #0000 !important;
+    --tw-shadow: 0 0 #0000 !important;
+  }
+
+  html.kikoerumanager-dark body #app .library :is(
+    .lib-search-box .lib-search-input::placeholder,
+    .lib-search-box .lib-search-icon,
+    .lib-search-box .lib-search-clear,
+    .lib-search-box .lib-search-expand,
+    .app-dd-trigger-label,
+    .app-dd-trigger-caret,
+    .lib-info-label,
+    .lib-info-meta,
+    .lib-info-sub,
+    .lib-path-separator,
+    .lib-file-rj-cell,
+    .lib-file-size-cell,
+    .lib-file-time-cell,
+    .empty-text,
+    .el-pagination__total,
+    .el-pagination__jump,
+    .el-pagination__goto,
+    .el-pagination__classifier
+  ) {
+    color: var(--library-muted) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-search:focus-within .lib-search-icon,
+  html.kikoerumanager-dark body #app .library .lib-file-sort-btn:hover,
+  html.kikoerumanager-dark body #app .library .file-link-btn:hover {
+    color: rgba(245, 245, 247, 0.9) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-search-box,
+  html.kikoerumanager-dark body #app .library .lib-search-box .lib-search,
+  html.kikoerumanager-dark body #app .library .lib-search-box .lib-search:hover,
+  html.kikoerumanager-dark body #app .library .lib-search-box .lib-search:focus-within {
+    background: transparent !important;
+    background-image: none !important;
+    border-color: transparent !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    outline: 0 !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-info-divider {
+    background: rgba(255, 255, 255, 0.12) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-path-breadcrumb {
+    background-color: transparent !important;
+    background-image: none !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-path-crumb {
+    background-color: transparent !important;
+    background-image: none !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-path-crumb:hover,
+  html.kikoerumanager-dark body #app .library .lib-path-crumb.is-current {
+    background-color: transparent !important;
+    background-image: none !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+    color: var(--library-text) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-file-table {
+    background-color: var(--library-panel) !important;
+    overflow: hidden !important;
+  }
+
+  html.kikoerumanager-dark body #app .library :is(
+    .lib-file-table-head,
+    .lib-file-table-header-row
+  ) {
+    background-color: rgba(8, 9, 12, 0.82) !important;
+    border-color: var(--library-border) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library :is(
+    .lib-file-table-body,
+    .lib-file-table-row,
+    .lib-file-empty-row
+  ) {
+    background-color: var(--library-panel) !important;
+    border-color: rgba(255, 255, 255, 0.09) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-file-table-row:hover,
+  html.kikoerumanager-dark body #app .library .lib-file-table-row.is-hover {
+    background-color: rgba(255, 255, 255, 0.055) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-table-marquee-box {
+    background-color: rgba(255, 255, 255, 0.09) !important;
+    background-image: none !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    outline: 0 !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-file-table-row.library-row-marquee-selected {
+    background-color: #35363a !important;
+    border-color: #5556 !important;
+    color: rgba(250, 250, 252, 0.96) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-file-table-row.library-row-marquee-selected:hover {
+    background-color: #3d3e42 !important;
+    border-color: #6667 !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-file-table-row.library-row-marquee-selected::before,
+  html.kikoerumanager-dark body #app .library .lib-file-table-row.library-row-marquee-selected::after {
+    display: none !important;
+    content: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-file-table-row.library-row-marquee-selected :is(
+    .file-name,
+    .file-link-btn,
+    .lib-file-rj-cell,
+    .lib-file-size-cell,
+    .lib-file-time-cell
+  ) {
+    color: rgba(250, 250, 252, 0.94) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-file-sort-caret::before {
+    border-bottom-color: rgba(210, 210, 216, 0.34) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-file-sort-caret::after {
+    border-top-color: rgba(210, 210, 216, 0.34) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-file-sort-caret.is-asc::before {
+    border-bottom-color: rgba(242, 242, 246, 0.8) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-file-sort-caret.is-desc::after {
+    border-top-color: rgba(242, 242, 246, 0.8) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-scope-option {
+    background-color: transparent !important;
+    border-color: transparent !important;
+    color: var(--library-muted) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-scope-option:hover,
+  html.kikoerumanager-dark body #app .library .lib-scope-option.is-active {
+    background-color: transparent !important;
+    border-color: transparent !important;
+    color: var(--library-text) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-scope-option.is-active::after {
+    background: rgba(242, 242, 246, 0.78) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .el-pagination.is-background .el-pager li.is-active {
+    background-color: var(--library-matte-strong) !important;
+    border-color: var(--library-border-strong) !important;
+    color: rgba(250, 250, 252, 0.94) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .el-pagination.is-background {
+    gap: 10px !important;
+    column-gap: 10px !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .el-pagination.is-background .el-pager {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .el-pagination.is-background .btn-prev,
+  html.kikoerumanager-dark body #app .library .el-pagination.is-background .btn-next,
+  html.kikoerumanager-dark body #app .library .el-pagination.is-background .el-pager li {
+    margin: 0 !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .el-pagination__sizes {
+    margin-right: 8px !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .el-pagination__jump {
+    margin-left: 10px !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .el-pagination__jump .el-input,
+  html.kikoerumanager-dark body #app .library .el-pagination__sizes .el-select,
+  html.kikoerumanager-dark body #app .library .el-pagination__sizes .el-input {
+    background: transparent !important;
+    background-image: none !important;
+    border-color: transparent !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    outline: 0 !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .el-pagination__jump .el-input {
+    background: transparent !important;
+    background-image: none !important;
+    border-color: transparent !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    outline: 0 !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .el-pagination__jump .el-input__wrapper {
+    background-color: var(--library-matte) !important;
+    background-image: none !important;
+    border-color: var(--library-border) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .el-pagination__jump .el-input__wrapper {
+    width: 50px !important;
+    min-width: 50px !important;
+    padding: 0 10px !important;
+    border-radius: 10px !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .el-pagination__sizes .el-select__wrapper {
+    min-width: 128px !important;
+    background-color: var(--library-matte) !important;
+    background-image: none !important;
+    border-color: var(--library-border) !important;
+    border-radius: 10px !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .el-pagination__sizes :is(
+    .el-select__selection,
+    .el-select__input-wrapper,
+    .el-select__input-wrapper.is-hidden,
+    .el-select__input
+  ) {
+    background: transparent !important;
+    background-color: transparent !important;
+    background-image: none !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    outline: 0 !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .el-pagination__sizes .el-select__input-wrapper.is-hidden,
+  html.kikoerumanager-dark body #app .library .el-pagination__sizes .el-select__input-wrapper.is-hidden .el-select__input {
+    width: 0 !important;
+    min-width: 0 !important;
+    max-width: 0 !important;
+    flex: 0 0 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .el-pagination__sizes :is(
+    .el-select__selected-item,
+    .el-select__placeholder,
+    .el-select__selected-item span,
+    .el-select__placeholder span,
+    .el-input__inner
+  ) {
+    color: var(--library-text) !important;
+    opacity: 1 !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .el-pagination__sizes .el-select__caret,
+  html.kikoerumanager-dark body #app .library .el-pagination__sizes .el-icon {
+    color: var(--library-muted) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .el-pagination__jump .el-input__inner {
+    height: 30px !important;
+    padding: 0 !important;
+    background: transparent !important;
+    border: 0 !important;
+    color: var(--library-text) !important;
+    text-align: center !important;
+    box-shadow: none !important;
+    outline: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .el-pagination__jump .el-input__wrapper.is-focus,
+  html.kikoerumanager-dark body #app .library .el-pagination__jump .el-input__wrapper:hover {
+    background-color: var(--library-matte-strong) !important;
+    border-color: var(--library-border-strong) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library :is(
+    .lib-btn:disabled,
+    .lib-btn-icon-tinted:disabled,
+    .el-pagination button.is-disabled,
+    .el-pagination.is-background .btn-prev:disabled,
+    .el-pagination.is-background .btn-next:disabled
+  ) {
+    background-color: var(--library-matte-soft) !important;
+    border-color: var(--library-border) !important;
+    color: rgba(205, 205, 211, 0.42) !important;
+    opacity: 0.55 !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body .app-dd-menu.library-select-dd-menu,
+  html.kikoerumanager-dark body .lib-suggest-pop,
+  html.kikoerumanager-dark body .lib-filter-menu {
+    background-color: #0b0c10 !important;
+    background-image: none !important;
+    border-color: #5553 !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  html.kikoerumanager-dark body .app-dd-menu.library-select-dd-menu .app-dd-item:hover,
+  html.kikoerumanager-dark body .app-dd-menu.library-select-dd-menu .app-dd-item.is-active,
+  html.kikoerumanager-dark body .lib-suggest-row:hover,
+  html.kikoerumanager-dark body .lib-suggest-row.is-active,
+  html.kikoerumanager-dark body .lib-filter-menu-row:hover,
+  html.kikoerumanager-dark body .lib-filter-menu-row.is-active {
+    background-color: #2b2c30 !important;
+    background-image: none !important;
+    border-color: #5553 !important;
+    color: rgba(250, 250, 252, 0.94) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-refresh svg { color: #2563eb !important; }
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-stats svg { color: #4f46e5 !important; }
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-select svg { color: #0f766e !important; }
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-subtitle svg,
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-subtitle-batch svg { color: #059669 !important; }
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-filter-delete svg { color: #d97706 !important; }
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-task-panel svg { color: #7c3aed !important; }
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-upload svg { color: #0284c7 !important; }
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-compute-size svg { color: #0ea5e9 !important; }
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-batch-delete svg { color: #e11d48 !important; }
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-batch-move svg { color: #0ea5e9 !important; }
+  html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-api-rename svg { color: #7c3aed !important; }
+}

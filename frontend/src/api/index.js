@@ -1369,6 +1369,57 @@ export const asmrSyncApi = {
   }
 }
 
+export const httpDownloadApi = {
+  health: async () => {
+    const response = await apiClient.get('/http-download/health')
+    return response.data
+  },
+
+  preview: async (payload = {}) => {
+    const response = await apiClient.post('/http-download/preview', {
+      urls: payload.urls || [],
+      target_subdir: payload.targetSubdir || payload.target_subdir || '',
+      conflict_policy: payload.conflictPolicy || payload.conflict_policy || ''
+    })
+    return response.data
+  },
+
+  start: async (payload = {}) => {
+    const response = await apiClient.post('/http-download/start', {
+      urls: payload.urls || [],
+      target_subdir: payload.targetSubdir || payload.target_subdir || '',
+      conflict_policy: payload.conflictPolicy || payload.conflict_policy || '',
+      batch_name: payload.batchName || payload.batch_name || ''
+    })
+    return response.data
+  },
+
+  status: async () => {
+    const response = await apiClient.get('/http-download/status')
+    return response.data
+  },
+
+  pause: async (taskId) => {
+    const response = await apiClient.post(`/http-download/task/${taskId}/pause`)
+    return response.data
+  },
+
+  resume: async (taskId) => {
+    const response = await apiClient.post(`/http-download/task/${taskId}/resume`)
+    return response.data
+  },
+
+  cancel: async (taskId) => {
+    const response = await apiClient.post(`/http-download/task/${taskId}/cancel`)
+    return response.data
+  },
+
+  retry: async (taskId) => {
+    const response = await apiClient.post(`/http-download/task/${taskId}/retry`)
+    return response.data
+  }
+}
+
 export const rjSubtitleApi = {
   scan: async (folderPath, options = {}) => {
     const response = await apiClient.post('/rj-subtitle/scan', {
@@ -1773,6 +1824,7 @@ export default {
   kikoeru: kikoeruApi,
   health: healthApi,
   asmrSync: asmrSyncApi,
+  httpDownload: httpDownloadApi,
   rjSubtitle: rjSubtitleApi,
   subtitleImport: subtitleImportApi,
   circleCompletion: circleCompletionApi,

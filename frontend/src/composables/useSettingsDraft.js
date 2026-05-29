@@ -221,6 +221,30 @@ export const defaultConfig = {
     lrc_clean_patterns: ['@[\\w]{3,}', 'Telegram', 'telegram', '电报', 'tg群', 'TG群', 'QQ群[：:]\\s*\\d+', '群号[：:]\\s*\\d+'],
     simplify_chinese_enabled: true
   },
+  http_downloader: {
+    enabled: true,
+    engine: 'aria2',
+    download_root: '',
+    aria2_path: 'aria2c',
+    proxy_url: '',
+    max_concurrent_downloads: 3,
+    split: 8,
+    max_connection_per_server: 8,
+    min_split_size: '1M',
+    retry_count: 5,
+    retry_wait_seconds: 5,
+    connect_timeout_seconds: 15,
+    timeout_seconds: 60,
+    allow_private_network: false,
+    conflict_policy: 'resume',
+    pikpak_enabled: false,
+    pikpak_username: '',
+    pikpak_password: '',
+    pikpak_encoded_token: '',
+    pikpak_device_id: '',
+    pikpak_transfer_dir: '/KikoeruManager',
+    pikpak_auto_save_share: true
+  },
   auto_process: {
     check_duplicate: true,
     import_linked_translation_subtitles: true,
@@ -415,6 +439,7 @@ function hydrateConfig(data = {}) {
     path_mapping_enabled: data?.path_mapping?.enabled ?? defaultConfig.path_mapping_enabled,
     kikoeru_server: { ...defaultConfig.kikoeru_server, ...(data?.kikoeru_server || {}) },
     asmr_sync: { ...defaultConfig.asmr_sync, ...(data?.asmr_sync || {}), lrc_clean_patterns: data?.asmr_sync?.lrc_clean_patterns || defaultConfig.asmr_sync.lrc_clean_patterns },
+    http_downloader: { ...defaultConfig.http_downloader, ...(data?.http_downloader || {}) },
     auto_process: { ...defaultConfig.auto_process, ...(data?.auto_process || {}) },
     process_existing: { ...defaultConfig.process_existing, ...(data?.process_existing || {}) },
     asmr_sync_step: { ...defaultConfig.asmr_sync_step, ...(data?.asmr_sync_step || {}) },
@@ -462,6 +487,7 @@ function serializeConfig(config) {
     },
     kikoeru_server: payload.kikoeru_server,
     asmr_sync: payload.asmr_sync,
+    http_downloader: payload.http_downloader,
     auto_process: payload.auto_process,
     process_existing: payload.process_existing,
     asmr_sync_step: payload.asmr_sync_step,
@@ -625,6 +651,18 @@ export function useSettingsDraft(options = {}) {
         snapshot.value?.notification_email?.password === MASKED_PASSWORD
       ) {
         delete payload.notification_email.password
+      }
+      if (
+        payload.http_downloader?.pikpak_password === MASKED_PASSWORD &&
+        snapshot.value?.http_downloader?.pikpak_password === MASKED_PASSWORD
+      ) {
+        delete payload.http_downloader.pikpak_password
+      }
+      if (
+        payload.http_downloader?.pikpak_encoded_token === MASKED_PASSWORD &&
+        snapshot.value?.http_downloader?.pikpak_encoded_token === MASKED_PASSWORD
+      ) {
+        delete payload.http_downloader.pikpak_encoded_token
       }
       await configStore.saveConfig(payload)
       snapshot.value = deepClone(config.value)

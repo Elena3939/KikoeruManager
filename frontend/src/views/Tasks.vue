@@ -74,6 +74,7 @@ import {
   Activity,
   Captions,
   Database,
+  Download,
   FileArchive,
   FolderInput,
   ListChecks,
@@ -126,6 +127,7 @@ const domainOptions = [
   { value: 'rj_subtitle', label: 'RJ 字幕', icon: Captions },
   { value: 'subtitle_import', label: '字幕补配', icon: Sparkles },
   { value: 'asmr_sync', label: 'ASMR 同步', icon: UploadCloud },
+  { value: 'http_download', label: 'HTTP 下载', icon: Download },
   { value: 'upload', label: '库存上传', icon: Upload },
   { value: 'circle_completion', label: '社团补全', icon: Database },
   { value: 'system', label: '系统任务', icon: Activity },
@@ -726,6 +728,20 @@ function getTaskSummary(item) {
     if (duration) pieces.push(duration)
     if (failedFiles) pieces.push(`失败 ${failedFiles}`)
     if (item.subtitle) pieces.push(`来源 ${getFileName(item.subtitle)}`)
+  } else if (item.domain === 'http_download') {
+    const source = pickMetricValue(item, '来源')
+    const fileCount = pickMetricValue(item, '文件')
+    const completedCount = pickMetricValue(item, '完成')
+    const failedCount = pickMetricValue(item, '失败')
+    const totalSize = pickMetricValue(item, '大小')
+    const downloaded = pickMetricValue(item, '已下载')
+    const speed = pickMetricValue(item, '速度')
+    if (source) pieces.push(source)
+    if (fileCount) pieces.push(`文件 ${fileCount}`)
+    if (completedCount) pieces.push(`完成 ${completedCount}`)
+    if (downloaded || totalSize) pieces.push(downloaded && totalSize ? `${downloaded} / ${totalSize}` : (downloaded || totalSize))
+    if (speed) pieces.push(speed)
+    if (failedCount) pieces.push(`失败 ${failedCount}`)
   } else if (item.domain === 'circle_completion') {
     const dlsiteCount = pickMetricValue(item, 'DLsite')
     const downloadableCount = pickMetricValue(item, '可下载')
