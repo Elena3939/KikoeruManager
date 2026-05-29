@@ -58,7 +58,7 @@
 
       <div class="content-grid flex-1 flex gap-6 px-8 py-2 min-h-0">
         <div class="left-column w-[380px] flex flex-col gap-6">
-          <section ref="selectRoot" class="glass-panel glass-card settings-card flex-1 rounded-2xl p-6 overflow-y-auto no-scrollbar">
+          <section ref="selectRoot" class="glass-panel glass-card upload-settings-card flex-1 rounded-2xl p-6 overflow-y-auto no-scrollbar">
             <div class="space-y-6">
               <section class="space-y-4">
                 <div class="section-head space-y-1">
@@ -1374,7 +1374,7 @@ function classifyRowKind (row) {
     min-width: 0;
     gap: 10px !important;
   }
-  .settings-card {
+  .upload-settings-card {
     flex: 0 0 auto !important;
     max-height: none;
     padding: 12px !important;

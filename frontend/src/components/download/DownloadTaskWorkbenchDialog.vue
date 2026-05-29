@@ -6,7 +6,7 @@
   -->
   <Teleport to="body">
     <transition name="el-fade-in">
-      <div v-if="visible" class="v1-overlay">
+      <div v-if="visible" class="v1-overlay" @click.self="emit('background')">
         <div class="v1-shell" :class="{ 'is-compact': compact }">
           <header class="v1-header">
             <div class="v1-header-copy">

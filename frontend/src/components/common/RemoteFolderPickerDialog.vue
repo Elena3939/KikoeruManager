@@ -1147,15 +1147,14 @@ onBeforeUnmount(() => {
 /* 玻璃外壳 -------------------------------------------------------- */
 .glass-shell {
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.24)),
-    rgba(255, 255, 255, 0.32);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0.36)),
+    rgba(255, 255, 255, 0.34);
   border: 1px solid rgba(255, 255, 255, 0.5);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.55),
-    0 22px 50px rgba(15, 23, 42, 0.12),
-    0 38px 110px rgba(15, 23, 42, 0.18);
-  backdrop-filter: blur(38px) saturate(190%);
-  -webkit-backdrop-filter: blur(38px) saturate(190%);
+  outline: 1px solid rgba(255, 255, 255, 0.52);
+  outline-offset: -2px;
+  box-shadow: none;
+  backdrop-filter: blur(34px) saturate(145%);
+  -webkit-backdrop-filter: blur(34px) saturate(145%);
 }
 
 .is-resizing,
@@ -1335,9 +1334,9 @@ onBeforeUnmount(() => {
   transition: background-color 0.18s ease;
 }
 
-.nav-splitter:hover .nav-splitter-line { background: rgba(14, 165, 233, 0.55); }
+.nav-splitter:hover .nav-splitter-line { background: rgba(71, 85, 105, 0.38); }
 .nav-splitter-active .nav-splitter-line,
-.nav-splitter:active .nav-splitter-line { background: rgba(14, 165, 233, 0.9); }
+.nav-splitter:active .nav-splitter-line { background: rgba(51, 65, 85, 0.62); }
 
 .nav-section-title {
   font-size: 10.5px;
@@ -1365,18 +1364,28 @@ onBeforeUnmount(() => {
   font-size: 12.5px;
   color: #1e293b;
   border-radius: 6px;
-  transition: background-color 0.15s ease;
+  border: 1px solid transparent;
+  transition:
+    background-color 0.22s cubic-bezier(0.34, 1.56, 0.64, 1),
+    border-color 0.22s ease,
+    transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1),
+    color 0.22s ease;
 }
 
-.nav-row:hover { background: rgba(15, 23, 42, 0.05); }
+.nav-row:hover {
+  background: rgba(15, 23, 42, 0.05);
+  border-color: rgba(15, 23, 42, 0.06);
+  transform: translate3d(0, -1px, 0);
+}
 
 .nav-row-active {
-  background: rgba(186, 230, 253, 0.55);
-  color: #0c4a6e;
+  background: rgba(100, 116, 139, 0.14);
+  border-color: rgba(100, 116, 139, 0.2);
+  color: #1e293b;
   font-weight: 600;
 }
 
-.nav-row-active:hover { background: rgba(186, 230, 253, 0.7); }
+.nav-row-active:hover { background: rgba(100, 116, 139, 0.18); }
 
 .nav-expander {
   display: inline-flex;
@@ -1400,7 +1409,7 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 
-.nav-row-active .nav-disk-icon { color: #0284c7; }
+.nav-row-active .nav-disk-icon { color: #475569; }
 
 .nav-row-name {
   flex: 1 1 auto;
@@ -1553,7 +1562,7 @@ onBeforeUnmount(() => {
 }
 
 .fm-loading-icon {
-  color: #0284c7;
+  color: #475569;
   animation: fm-loading-spin 1.1s linear infinite;
 }
 
@@ -1616,8 +1625,11 @@ onBeforeUnmount(() => {
   color: #1e293b;
   transition:
     background-color 0.22s cubic-bezier(0.34, 1.56, 0.64, 1),
+    border-color 0.22s ease,
     box-shadow 0.22s cubic-bezier(0.34, 1.56, 0.64, 1),
+    transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1),
     color 0.22s ease;
+  border: 1px solid transparent;
 }
 
 /* 搜索模式下 row 多一行 relative_path，需要撑高并把内容对齐到顶部，
@@ -1630,7 +1642,9 @@ onBeforeUnmount(() => {
 
 .fm-row:hover {
   background: rgba(15, 23, 42, 0.04);
-  box-shadow: inset 2px 0 0 rgba(15, 23, 42, 0.08);
+  border-color: rgba(15, 23, 42, 0.06);
+  box-shadow: none;
+  transform: translate3d(0, -1px, 0);
 }
 
 /* 搜索关键字高亮：用 <mark> 渲染，命中部分轻量 chip 风格不抢眼。 */
@@ -1703,16 +1717,17 @@ onBeforeUnmount(() => {
 }
 
 .fm-row-selected {
-  background: rgba(186, 230, 253, 0.45);
-  box-shadow: inset 2px 0 0 rgba(2, 132, 199, 0.7);
+  background: rgba(100, 116, 139, 0.14);
+  border-color: rgba(100, 116, 139, 0.22);
+  box-shadow: none;
 }
 
 .fm-row-selected:hover {
-  background: rgba(186, 230, 253, 0.6);
-  box-shadow: inset 2px 0 0 rgba(2, 132, 199, 0.7);
+  background: rgba(100, 116, 139, 0.18);
+  box-shadow: none;
 }
 
-.fm-row-selected .fm-cell-time { color: #0c4a6e; }
+.fm-row-selected .fm-cell-time { color: #334155; }
 
 .fm-row-file {
   cursor: default;
