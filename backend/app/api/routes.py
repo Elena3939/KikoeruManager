@@ -55,6 +55,28 @@ app = FastAPI(
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # ========== 工具函数 ==========
+def _mask_url_credentials(value: str) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    try:
+        from ..core.http_download_service import mask_http_download_url
+        return mask_http_download_url(text)
+    except Exception:
+        return re.sub(r"//([^/@:]+):([^/@]+)@", "//***:***@", text)
+
+
+def _mask_http_downloader_config_for_log(value: dict) -> dict:
+    data = dict(value or {})
+    if "proxy_url" in data:
+        data["proxy_url"] = _mask_url_credentials(data.get("proxy_url") or "")
+    if data.get("pikpak_password"):
+        data["pikpak_password"] = "********"
+    if data.get("pikpak_encoded_token"):
+        data["pikpak_encoded_token"] = "********"
+    return data
+
+
 def _synology_http_status(exc: Exception) -> int:
     """将群晖 API 错误码映射到合适的 HTTP 状态码。
     119: SID 过期/无效路径; 121: 无效参数; 401: 无权限; 408: 操作超时
@@ -1752,6 +1774,7 @@ class ConfigResponse(BaseModel):
     path_mapping: Optional[dict] = None
     kikoeru_server: Optional[dict] = None
     asmr_sync: Optional[dict] = None
+    http_downloader: Optional[dict] = None
     auto_process: Optional[dict] = None
     process_existing: Optional[dict] = None
     asmr_sync_step: Optional[dict] = None
@@ -2124,12 +2147,34 @@ def _mask_notification_email_config(config) -> Optional[dict]:
     return data
 
 
+def _mask_http_downloader_config(config) -> Optional[dict]:
+    """返回 HTTP 下载配置，PikPak 密码和 token 脱敏。"""
+    if not hasattr(config, 'http_downloader'):
+        return None
+    data = config.http_downloader.model_dump()
+    if data.get('pikpak_password'):
+        data['pikpak_password'] = '********'
+    if data.get('pikpak_encoded_token'):
+        data['pikpak_encoded_token'] = '********'
+    return data
+
+
+def _runtime_config_path_from_settings() -> str:
+    from ..config.settings import get_config_file_path, get_config_runtime_state
+
+    config_path = get_config_file_path()
+    state = get_config_runtime_state()
+    config_path = state.get("path") or config_path
+    if os.path.isabs(config_path):
+        return config_path
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../"))
+    return os.path.abspath(os.path.join(project_root, config_path))
+
+
 def _read_notification_email_password_from_disk() -> str:
     """读取磁盘原始配置，避免把前端脱敏占位符写回真实配置。"""
     try:
-        from ..config.settings import get_config_file_path
-
-        config_path = get_config_file_path()
+        config_path = _runtime_config_path_from_settings()
         if not os.path.exists(config_path):
             return ""
         with open(config_path, "r", encoding="utf-8") as f:
@@ -2138,6 +2183,21 @@ def _read_notification_email_password_from_disk() -> str:
         return password if password != "********" else ""
     except Exception:
         logger.warning("[NOTIFICATION] 读取磁盘 notification_email 密码失败", exc_info=True)
+        return ""
+
+
+def _read_http_downloader_secret_from_disk(key: str) -> str:
+    """读取磁盘原始 HTTP 下载敏感配置，避免把脱敏占位符写回。"""
+    try:
+        config_path = _runtime_config_path_from_settings()
+        if not os.path.exists(config_path):
+            return ""
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        value = data.get("http_downloader", {}).get(key, "")
+        return value if value != "********" else ""
+    except Exception:
+        logger.warning("[HTTP下载] 读取磁盘敏感配置失败: %s", key, exc_info=True)
         return ""
 
 
@@ -2165,6 +2225,7 @@ def get_configuration():
         path_mapping=config.path_mapping.model_dump(),
         kikoeru_server=config.kikoeru_server.model_dump() if hasattr(config, 'kikoeru_server') else None,
         asmr_sync=config.asmr_sync.model_dump() if hasattr(config, 'asmr_sync') else None,
+        http_downloader=_mask_http_downloader_config(config),
         auto_process=config.auto_process.model_dump() if hasattr(config, 'auto_process') else None,
         process_existing=config.process_existing.model_dump() if hasattr(config, 'process_existing') else None,
         asmr_sync_step=config.asmr_sync_step.model_dump() if hasattr(config, 'asmr_sync_step') else None,
@@ -2412,6 +2473,31 @@ async def update_configuration(request: Request):
                 logger.error(f"[ASMR] ASMR 同步配置验证失败: {e}")
         else:
             logger.info("[ASMR] 未接收到 ASMR 同步配置")
+
+        if 'http_downloader' in config_data:
+            logger.info("[HTTP下载] 接收到 HTTP 外链下载配置: %s", _mask_http_downloader_config_for_log(config_data['http_downloader']))
+            try:
+                from ..config.settings import HttpDownloaderConfig
+                http_data = dict(config_data['http_downloader'])
+                current_cfg = get_config()
+                if http_data.get('pikpak_password') == '********' or 'pikpak_password' not in http_data:
+                    current_password = getattr(current_cfg.http_downloader, 'pikpak_password', '')
+                    http_data['pikpak_password'] = (
+                        _read_http_downloader_secret_from_disk('pikpak_password')
+                        or (current_password if current_password != '********' else '')
+                    )
+                if http_data.get('pikpak_encoded_token') == '********' or 'pikpak_encoded_token' not in http_data:
+                    current_token = getattr(current_cfg.http_downloader, 'pikpak_encoded_token', '')
+                    http_data['pikpak_encoded_token'] = (
+                        _read_http_downloader_secret_from_disk('pikpak_encoded_token')
+                        or (current_token if current_token != '********' else '')
+                    )
+                http_downloader_config = HttpDownloaderConfig(**http_data)
+                config_data['http_downloader'] = http_downloader_config.model_dump()
+                logger.info(f"[HTTP下载] 配置验证通过: engine={http_downloader_config.engine}, aria2_path={http_downloader_config.aria2_path}")
+            except Exception as e:
+                logger.error(f"[HTTP下载] 配置验证失败: {e}")
+                raise HTTPException(status_code=400, detail=f"HTTP 外链下载配置无效: {e}")
 
         if 'backup_zip' in config_data:
             try:
@@ -11107,6 +11193,19 @@ class ASMRSyncLocateRJRequest(BaseModel):
     library_ids: Optional[List[str]] = None
 
 
+class HttpDownloadPreviewRequest(BaseModel):
+    urls: List[str]
+    target_subdir: str = ""
+    conflict_policy: str = ""
+
+
+class HttpDownloadStartRequest(BaseModel):
+    urls: List[str]
+    target_subdir: str = ""
+    conflict_policy: str = ""
+    batch_name: str = ""
+
+
 _circle_completion_refresh_history: dict[str, deque[float]] = defaultdict(deque)
 
 
@@ -11133,6 +11232,230 @@ class LocalUploadStartRequest(BaseModel):
     target_library_id: str
     target_subdir: str = ""
     circle_name: str = ""
+
+
+def _serialize_http_download_task(task) -> dict:
+    from ..core.http_download_service import sanitize_http_download_item
+
+    metadata = dict(getattr(task, "task_metadata", None) or {})
+    failed_files = list(metadata.get("failed_files") or [])
+    status_value = task.status.value if hasattr(task.status, "value") else str(task.status or "")
+    display_status = "partial_failed" if status_value == "completed" and failed_files else status_value
+    return {
+        "id": task.id,
+        "rjcode": "",
+        "work_title": metadata.get("batch_name") or metadata.get("source_label") or "HTTP 外链下载",
+        "source_label": metadata.get("source_label", ""),
+        "status": status_value,
+        "display_status": display_status,
+        "progress": task.progress,
+        "current_step": task.current_step,
+        "error_message": task.error_message,
+        "created_at": task.created_at.isoformat() if getattr(task, "created_at", None) else None,
+        "started_at": task.started_at.isoformat() if getattr(task, "started_at", None) else None,
+        "completed_at": task.completed_at.isoformat() if getattr(task, "completed_at", None) else None,
+        "output_path": getattr(task, "output_path", ""),
+        "download_files": [
+            sanitize_http_download_item(item)
+            for item in list(metadata.get("download_files") or [])
+        ],
+        "download_runtime": metadata.get("download_runtime", {}),
+        "failed_files": [sanitize_http_download_item(item) for item in failed_files if isinstance(item, dict)],
+        "progress_log": metadata.get("progress_log", []),
+        "performance_metrics": metadata.get("performance_metrics", {}),
+        "download_mode": metadata.get("download_mode", "http"),
+        "session_id": metadata.get("session_id", ""),
+        "queue_priority": metadata.get("queue_priority", metadata.get("priority", 100)),
+        "task_metadata": {
+            "source_action": metadata.get("source_action", ""),
+            "download_root": metadata.get("download_root", ""),
+            "target_subdir": metadata.get("target_subdir", ""),
+            "final_output_path": metadata.get("final_output_path", ""),
+            "failure_reason": metadata.get("failure_reason", ""),
+            "url_count": metadata.get("url_count", 0),
+            "retry_count": metadata.get("retry_count", 0),
+            "download_mode": metadata.get("download_mode", "http"),
+            "source_modes": metadata.get("source_modes", []),
+        },
+    }
+
+
+def _http_download_urls_from_payload(urls: List[str]) -> list[str]:
+    result = []
+    for raw in urls or []:
+        for line in re.split(r"[\r\n]+", str(raw or "")):
+            value = line.strip()
+            if value:
+                result.append(value)
+    return result
+
+
+@app.get("/api/http-download/health")
+async def http_download_health():
+    from ..core.http_download_service import get_http_download_service
+
+    try:
+        return await get_http_download_service().health()
+    except Exception as exc:
+        logger.error("HTTP 下载健康检查失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"健康检查失败: {str(exc)}")
+
+
+@app.post("/api/http-download/preview")
+async def http_download_preview(request: HttpDownloadPreviewRequest):
+    from ..core.http_download_service import get_http_download_service, sanitize_http_download_preview
+
+    urls = _http_download_urls_from_payload(request.urls)
+    if not urls:
+        raise HTTPException(status_code=400, detail="至少需要一个下载链接")
+    if len(urls) > 100:
+        raise HTTPException(status_code=400, detail="单次最多预览 100 个链接")
+    try:
+        preview = await get_http_download_service().preview_urls(
+            urls,
+            target_subdir=request.target_subdir,
+            conflict_policy=request.conflict_policy,
+        )
+        return sanitize_http_download_preview(preview)
+    except Exception as exc:
+        logger.error("HTTP 下载预览失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"预览失败: {str(exc)}")
+
+
+@app.post("/api/http-download/start")
+async def http_download_start(request: HttpDownloadStartRequest):
+    from ..core.http_download_service import get_http_download_service, sanitize_http_download_preview
+    from ..core.task_engine import Task, TaskType, get_task_engine
+
+    urls = _http_download_urls_from_payload(request.urls)
+    if not urls:
+        raise HTTPException(status_code=400, detail="至少需要一个下载链接")
+    if len(urls) > 100:
+        raise HTTPException(status_code=400, detail="单次最多创建 100 个下载链接")
+
+    service = get_http_download_service()
+    preview = await service.preview_urls(urls, target_subdir=request.target_subdir, conflict_policy=request.conflict_policy)
+    public_preview = sanitize_http_download_preview(preview)
+    ok_items = [item for item in preview.get("items") or [] if item.get("ok")]
+    if not ok_items:
+        return JSONResponse({"success": False, "message": "没有可下载直链", "preview": public_preview}, status_code=400)
+
+    first_host = str(ok_items[0].get("host") or "").strip()
+    source_modes = list(preview.get("source_modes") or [])
+    source_action = "manual_pikpak_download" if source_modes == ["pikpak"] else "manual_http_download"
+    download_mode = "pikpak" if source_modes == ["pikpak"] else ("mixed" if "pikpak" in source_modes else "http")
+    default_title = "PikPak 下载" if download_mode == "pikpak" else "HTTP 外链下载"
+    label = str(request.batch_name or "").strip() or (f"{first_host} 等 {len(ok_items)} 项" if len(ok_items) > 1 else (ok_items[0].get("filename") or first_host or default_title))
+    task = Task(
+        task_type=TaskType.HTTP_DOWNLOAD,
+        source_path=first_host or "http-download",
+        metadata={
+            "urls": urls,
+            "url_count": len(urls),
+            "target_subdir": request.target_subdir,
+            "conflict_policy": request.conflict_policy,
+            "batch_name": label,
+            "download_mode": download_mode,
+            "source_modes": source_modes,
+            "task_domain": "http_download",
+            "task_kind": TaskType.HTTP_DOWNLOAD.value,
+            "source_page": "asmr-sync",
+            "source_action": source_action,
+            "source_label": label,
+            "business_key": f"http_download:{uuid.uuid4().hex}",
+            "preview_items": [
+                {k: v for k, v in dict(item or {}).items() if k != "url"}
+                for item in public_preview.get("items") or []
+            ],
+            "source_items": public_preview.get("source_items") or [],
+        },
+    )
+    await get_task_engine().submit(task)
+    return {
+        "success": True,
+        "message": f"已创建 HTTP 下载任务，共 {len(ok_items)} 个直链",
+        "task": {"task_id": task.id, "id": task.id},
+        "tasks": [{"task_id": task.id, "id": task.id}],
+        "preview": public_preview,
+    }
+
+
+@app.get("/api/http-download/status")
+async def http_download_status():
+    from ..core.task_engine import TaskType, get_task_engine
+
+    try:
+        all_tasks = get_task_engine().get_all_tasks()
+        tasks = [task for task in all_tasks if task.type == TaskType.HTTP_DOWNLOAD]
+        return {
+            "total_tasks": len(tasks),
+            "processing": len([t for t in tasks if t.status.value == "processing"]),
+            "pending": len([t for t in tasks if t.status.value == "pending"]),
+            "completed": len([t for t in tasks if t.status.value == "completed"]),
+            "failed": len([t for t in tasks if t.status.value == "failed"]),
+            "tasks": [_serialize_http_download_task(t) for t in tasks[:50]],
+        }
+    except Exception as exc:
+        logger.error("获取 HTTP 下载状态失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取状态失败: {str(exc)}")
+
+
+@app.post("/api/http-download/task/{task_id}/pause")
+async def http_download_pause_task(task_id: str):
+    from ..core.http_download_service import get_http_download_service
+    from ..core.task_engine import TaskType, get_task_engine
+
+    engine = get_task_engine()
+    task = engine.get_task(task_id)
+    if not task or task.type != TaskType.HTTP_DOWNLOAD:
+        raise HTTPException(status_code=404, detail="HTTP 下载任务不存在")
+    task.pause()
+    await get_http_download_service().pause_task(task_id)
+    return {"success": True, "message": "任务已暂停"}
+
+
+@app.post("/api/http-download/task/{task_id}/resume")
+async def http_download_resume_task(task_id: str):
+    from ..core.http_download_service import get_http_download_service
+    from ..core.task_engine import TaskType, get_task_engine
+
+    engine = get_task_engine()
+    task = engine.get_task(task_id)
+    if not task or task.type != TaskType.HTTP_DOWNLOAD:
+        raise HTTPException(status_code=404, detail="HTTP 下载任务不存在")
+    engine.resume_task(task_id)
+    await get_http_download_service().resume_task(task_id)
+    return {"success": True, "message": "任务已恢复"}
+
+
+@app.post("/api/http-download/task/{task_id}/cancel")
+async def http_download_cancel_task(task_id: str):
+    from ..core.http_download_service import get_http_download_service
+    from ..core.task_engine import TaskType, get_task_engine
+
+    engine = get_task_engine()
+    task = engine.get_task(task_id)
+    if not task or task.type != TaskType.HTTP_DOWNLOAD:
+        raise HTTPException(status_code=404, detail="HTTP 下载任务不存在")
+    task.cancel()
+    await get_http_download_service().cancel_task(task_id)
+    return {"success": True, "message": "任务已取消"}
+
+
+@app.post("/api/http-download/task/{task_id}/retry")
+async def http_download_retry_task(task_id: str):
+    from ..core.http_download_service import get_http_download_service
+    from ..core.task_engine import TaskStatus, TaskType, get_task_engine
+
+    engine = get_task_engine()
+    task = engine.get_task(task_id)
+    if not task or task.type != TaskType.HTTP_DOWNLOAD:
+        raise HTTPException(status_code=404, detail="HTTP 下载任务不存在")
+    if task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED}:
+        raise HTTPException(status_code=400, detail="任务仍在执行中，不能重试")
+    await get_http_download_service().reset_task_for_retry(task)
+    await engine.queue.put(task)
+    return {"success": True, "message": "任务已加入重试队列"}
 
 @app.post("/api/asmr-sync/scan")
 async def asmr_sync_scan(request: ASMRSyncScanRequest):

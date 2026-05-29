@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .linked_subtitle_import_service import get_linked_subtitle_import_service
 from .task_engine import Task, TaskStatus, TaskType, get_task_engine
 from .json_safety import safe_json_value, safe_text
+from .http_download_service import sanitize_http_download_metadata
 from ..models.database import ConflictWork, SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,7 @@ class TaskCenterService:
         "rj_subtitle": "RJ 字幕",
         "subtitle_import": "字幕补配",
         "asmr_sync": "ASMR 同步",
+        "http_download": "HTTP 下载",
         "upload": "库存上传",
         "circle_completion": "社团补全",
         "system": "系统任务",
@@ -131,9 +133,10 @@ class TaskCenterService:
         "rj_subtitle": 2,
         "subtitle_import": 3,
         "asmr_sync": 4,
-        "upload": 5,
-        "circle_completion": 6,
-        "system": 7,
+        "http_download": 5,
+        "upload": 6,
+        "circle_completion": 7,
+        "system": 8,
     }
 
     TASK_TYPE_TO_DOMAIN = {
@@ -141,6 +144,7 @@ class TaskCenterService:
         TaskType.PROCESS_EXISTING_FOLDER: "existing_folder",
         TaskType.RJ_SUBTITLE_FETCH: "rj_subtitle",
         TaskType.ASMR_SYNC_DOWNLOAD: "asmr_sync",
+        TaskType.HTTP_DOWNLOAD: "http_download",
         TaskType.LOCAL_LIBRARY_UPLOAD: "upload",
         TaskType.CIRCLE_COMPLETION_INDEX: "circle_completion",
         TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH: "circle_completion",
@@ -157,6 +161,7 @@ class TaskCenterService:
         "rj_subtitle": "/library",
         "subtitle_import": "/subtitle-import",
         "asmr_sync": "/asmr-sync",
+        "http_download": "/asmr-sync",
         "upload": "/library",
         "circle_completion": "/circle-completion",
         "system": "/tasks",
@@ -773,6 +778,8 @@ class TaskCenterService:
             actions.extend(["pause", "cancel"])
         elif task.status == TaskStatus.PAUSED:
             actions.extend(["resume", "cancel"])
+        elif domain == "http_download" and task.status == TaskStatus.COMPLETED and list((task.task_metadata or {}).get("failed_files") or []):
+            actions.append("retry")
         elif task.status == TaskStatus.FAILED and self._can_retry_engine_task(task, domain):
             actions.append("retry")
         elif task.status == TaskStatus.WAITING_RETRY and domain == "asmr_sync":
@@ -780,6 +787,8 @@ class TaskCenterService:
         return actions
 
     def _can_retry_engine_task(self, task: Task, domain: str) -> bool:
+        if domain == "http_download":
+            return task.status in {TaskStatus.FAILED, TaskStatus.COMPLETED}
         if domain not in {"import", "system"}:
             return False
         source_path = self._safe_text(getattr(task, "source_path", ""))
@@ -798,6 +807,8 @@ class TaskCenterService:
     def _serialize_engine_task(self, task: Task, *, mode: str = "detail") -> Dict[str, Any]:
         metadata = dict(task.task_metadata or {})
         domain = self._infer_domain(task)
+        if domain == "http_download":
+            metadata = sanitize_http_download_metadata(metadata)
         source_path = self._safe_text(task.source_path)
         output_path = self._safe_text(task.output_path)
         resolved_target_path = (
@@ -1034,6 +1045,34 @@ class TaskCenterService:
             source_label = source_label or "社团补全"
             source_action = source_action or ("index_start" if task.type == TaskType.CIRCLE_COMPLETION_INDEX else "batch_download")
             source_page = source_page or "circle-completion"
+        elif domain == "http_download":
+            download_files = list(metadata.get("download_files") or [])
+            failed_files = list(metadata.get("failed_files") or [])
+            download_runtime = dict(metadata.get("download_runtime") or {})
+            download_mode = self._safe_text(metadata.get("download_mode")) or "http"
+            default_download_title = "PikPak 下载" if download_mode == "pikpak" else ("混合外链下载" if download_mode == "mixed" else "HTTP 外链下载")
+            title = self._safe_text(metadata.get("batch_name")) or self._safe_text(metadata.get("source_label")) or default_download_title
+            if len(download_files) == 1:
+                title = self._safe_text(download_files[0].get("name")) or title
+            subtitle = self._safe_text(metadata.get("download_root")) or output_path or source_path
+            source_label = source_label or default_download_title
+            source_action = source_action or ("manual_pikpak_download" if download_mode == "pikpak" else "manual_http_download")
+            source_page = source_page or "asmr-sync"
+            route_hint = self.DOMAIN_ROUTE_HINT["http_download"]
+            total_bytes = int(
+                download_runtime.get("total_bytes")
+                or sum(int((item or {}).get("total") or (item or {}).get("size") or 0) for item in download_files)
+                or 0
+            )
+            transferred = int(download_runtime.get("transferred_bytes") or 0)
+            speed = int(download_runtime.get("speed_bytes_per_sec") or 0)
+            self._append_metric(metrics, "文件", len(download_files) if download_files else metadata.get("url_count"))
+            self._append_metric(metrics, "完成", download_runtime.get("completed_files"))
+            self._append_metric(metrics, "失败", len(failed_files) or download_runtime.get("failed_files"))
+            self._append_metric(metrics, "大小", self._format_bytes(total_bytes) if total_bytes else None)
+            self._append_metric(metrics, "已下载", self._format_bytes(transferred) if transferred else None)
+            self._append_metric(metrics, "速度", f"{self._format_bytes(speed)}/s" if speed else None)
+            self._append_metric(metrics, "来源", "PikPak" if download_mode == "pikpak" else ("混合" if download_mode == "mixed" else None))
         else:
             title = self._basename(source_path) or task.type.value
             subtitle = self._safe_text(metadata.get("work_name")) or self._safe_text(metadata.get("folder_path"))
@@ -1519,7 +1558,11 @@ class TaskCenterService:
                     "rjcode": getattr(task, "rjcode", ""),
                     "error": repr(exc),
                     "task_metadata_type": type(getattr(task, "task_metadata", None)).__name__,
-                    "task_metadata_preview": self._json_safe(getattr(task, "task_metadata", None)),
+                    "task_metadata_preview": self._json_safe(
+                        sanitize_http_download_metadata(getattr(task, "task_metadata", None))
+                        if getattr(getattr(task, "type", None), "value", getattr(task, "type", "")) == TaskType.HTTP_DOWNLOAD.value
+                        else getattr(task, "task_metadata", None)
+                    ),
                 })
 
         subtitle_import_service = get_linked_subtitle_import_service()
@@ -1703,6 +1746,18 @@ class TaskCenterService:
                 engine.cancel_task(engine_task_id)
                 return {"success": True, "message": "任务已取消"}
             if normalized_action == "retry":
+                if self._infer_domain(task) == "http_download":
+                    if task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED}:
+                        raise ValueError("任务仍在执行中，不能重试")
+                    from .http_download_service import get_http_download_service
+
+                    await get_http_download_service().reset_task_for_retry(task)
+                    await engine.queue.put(task)
+                    return {
+                        "success": True,
+                        "message": "HTTP 下载任务已加入重试队列",
+                        "route_hint": self.DOMAIN_ROUTE_HINT["http_download"],
+                    }
                 if not self._can_retry_engine_task(task, self._infer_domain(task)):
                     raise ValueError("当前任务不支持重试")
                 from .file_processor import get_file_processor

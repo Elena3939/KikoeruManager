@@ -278,6 +278,31 @@ class ASMRSyncConfig(BaseModel):
     # 字幕繁简转换配置
     simplify_chinese_enabled: bool = True  # 是否启用字幕繁体转简体
 
+class HttpDownloaderConfig(BaseModel):
+    """HTTP 外链下载配置"""
+    enabled: bool = True
+    engine: str = "aria2"
+    download_root: str = ""
+    aria2_path: str = "aria2c"
+    proxy_url: str = ""
+    max_concurrent_downloads: int = 3
+    split: int = 8
+    max_connection_per_server: int = 8
+    min_split_size: str = "1M"
+    retry_count: int = 5
+    retry_wait_seconds: int = 5
+    connect_timeout_seconds: int = 15
+    timeout_seconds: int = 60
+    allow_private_network: bool = False
+    conflict_policy: str = "resume"
+    pikpak_enabled: bool = False
+    pikpak_username: str = ""
+    pikpak_password: str = ""
+    pikpak_encoded_token: str = ""
+    pikpak_device_id: str = ""
+    pikpak_transfer_dir: str = "/KikoeruManager"
+    pikpak_auto_save_share: bool = True
+
 class AutoProcessConfig(BaseModel):
     """正常解压缩流程步骤配置"""
     check_duplicate: bool = True  # 预检重复
@@ -431,6 +456,7 @@ class AppConfig(BaseModel):
     path_mapping: PathMappingConfig = PathMappingConfig()
     kikoeru_server: KikoeruServerConfig = KikoeruServerConfig()
     asmr_sync: ASMRSyncConfig = ASMRSyncConfig()
+    http_downloader: HttpDownloaderConfig = HttpDownloaderConfig()
     auto_process: AutoProcessConfig = AutoProcessConfig()
     process_existing: ProcessExistingFolderConfig = ProcessExistingFolderConfig()
     asmr_sync_step: ASMRSyncStepConfig = ASMRSyncStepConfig()
@@ -674,6 +700,15 @@ def load_config(config_path: str = None) -> AppConfig:
                         for key, value in defaults.items():
                             if key not in config_data['asmr_sync_step']:
                                 config_data['asmr_sync_step'][key] = value
+
+                    if 'http_downloader' not in config_data or not config_data['http_downloader']:
+                        config_data['http_downloader'] = HttpDownloaderConfig().model_dump()
+                        logger.info("添加缺失的 http_downloader 配置，使用默认值")
+                    else:
+                        defaults = HttpDownloaderConfig().model_dump()
+                        for key, value in defaults.items():
+                            if key not in config_data['http_downloader']:
+                                config_data['http_downloader'][key] = value
 
                     if 'rj_subtitle' not in config_data or not config_data['rj_subtitle']:
                         config_data['rj_subtitle'] = {

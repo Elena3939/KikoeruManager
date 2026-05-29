@@ -14,6 +14,8 @@ from typing import Any, Dict, Optional
 
 from sqlalchemy.orm.attributes import flag_modified
 
+from .http_download_service import sanitize_http_download_item
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,6 +31,7 @@ CATEGORY_PIPELINE_METADATA = "pipeline_metadata"
 CATEGORY_PIPELINE_RENAME = "pipeline_rename"
 CATEGORY_PIPELINE_DELETE = "pipeline_delete"
 CATEGORY_ASMR_SYNC = "asmr_sync"
+CATEGORY_HTTP_DOWNLOAD = "http_download"
 CATEGORY_UPLOAD = "upload"
 CATEGORY_CIRCLE_COMPLETION = "circle_completion"
 CATEGORY_EMAIL_WATCHER = "email_watcher"
@@ -46,6 +49,7 @@ CATEGORY_LABELS = {
     CATEGORY_PIPELINE_RENAME: "重命名",
     CATEGORY_PIPELINE_DELETE: "删除",
     CATEGORY_ASMR_SYNC: "ASMR 同步",
+    CATEGORY_HTTP_DOWNLOAD: "HTTP 下载",
     CATEGORY_UPLOAD: "库存上传",
     CATEGORY_CIRCLE_COMPLETION: "社团补全",
     CATEGORY_EMAIL_WATCHER: "邮件监听",
@@ -674,6 +678,7 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
         TaskType.METADATA: CATEGORY_PIPELINE_METADATA,
         TaskType.RENAME: CATEGORY_PIPELINE_RENAME,
         TaskType.ASMR_SYNC_DOWNLOAD: CATEGORY_ASMR_SYNC,
+        TaskType.HTTP_DOWNLOAD: CATEGORY_HTTP_DOWNLOAD,
         TaskType.LOCAL_LIBRARY_UPLOAD: CATEGORY_UPLOAD,
         TaskType.CIRCLE_COMPLETION_INDEX: CATEGORY_CIRCLE_COMPLETION,
         TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED: CATEGORY_CIRCLE_COMPLETION,
@@ -822,6 +827,57 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             "duration_ms": duration_ms,
             "uploaded_files": uploaded_files[:200],
         }
+    elif tt == TaskType.HTTP_DOWNLOAD:
+        performance_metrics = meta.get("performance_metrics") if isinstance(meta.get("performance_metrics"), dict) else {}
+        download_runtime = meta.get("download_runtime") if isinstance(meta.get("download_runtime"), dict) else {}
+        download_files = [
+            sanitize_http_download_item(item)
+            for item in list(meta.get("download_files") or [])
+            if isinstance(item, dict)
+        ]
+        failed_files = [
+            sanitize_http_download_item(item)
+            for item in list(meta.get("failed_files") or [])
+            if isinstance(item, dict)
+        ]
+        download_root = str(meta.get("download_root") or task.output_path or "").strip()
+        downloaded_bytes = int(
+            performance_metrics.get("downloaded_bytes")
+            or download_runtime.get("transferred_bytes")
+            or sum(int((item or {}).get("downloaded") or 0) for item in download_files)
+            or 0
+        )
+        success_count = int(performance_metrics.get("success_count") or len([item for item in download_files if (item or {}).get("status") == "completed"]) or 0)
+        failed_count = int(performance_metrics.get("failed_count") or len(failed_files) or 0)
+        duration_ms = int(performance_metrics.get("duration_ms") or _duration_ms_for_task(task) or 0)
+        average_speed_bytes = int(
+            performance_metrics.get("average_speed_bytes")
+            or (downloaded_bytes / max(duration_ms / 1000, 1) if downloaded_bytes > 0 and duration_ms > 0 else 0)
+            or 0
+        )
+        if st == TaskStatus.COMPLETED and success_count > 0:
+            summary_parts = [f"下载 {success_count} 个文件"]
+            if downloaded_bytes > 0:
+                summary_parts.append(_format_bytes(downloaded_bytes))
+            if average_speed_bytes > 0:
+                summary_parts.append(f"平均 {_format_bytes(average_speed_bytes)}/s")
+            if duration_ms > 0:
+                summary_parts.append(f"耗时 {_format_duration_ms(duration_ms)}")
+            summary = " / ".join(summary_parts)[:4000]
+        detail = {
+            "download_root": download_root or None,
+            "target_subdir": str(meta.get("target_subdir") or "").strip() or None,
+            "source_action": str(meta.get("source_action") or "").strip() or None,
+            "download_mode": str(meta.get("download_mode") or "").strip() or None,
+            "source_modes": list(meta.get("source_modes") or []),
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "downloaded_bytes": downloaded_bytes,
+            "average_speed_bytes": average_speed_bytes,
+            "duration_ms": duration_ms,
+            "download_files": download_files[:200],
+            "failed_files": failed_files[:200],
+        }
     elif tt == TaskType.LOCAL_LIBRARY_UPLOAD:
         upload_runtime = meta.get("upload_runtime") if isinstance(meta.get("upload_runtime"), dict) else {}
         uploaded_files = list(meta.get("uploaded_files") or [])
@@ -961,7 +1017,7 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             "multi_rj_dispatch_failed": len(list(meta.get("multi_rj_dispatch_failures") or [])) or None,
         }
 
-    if tt in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH}:
+    if tt in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH, TaskType.HTTP_DOWNLOAD}:
         detail["source_page"] = str(meta.get("source_page") or "").strip() or None
         detail["source_action"] = str(meta.get("source_action") or "").strip() or None
         detail["source_label"] = str(meta.get("source_label") or "").strip() or None
