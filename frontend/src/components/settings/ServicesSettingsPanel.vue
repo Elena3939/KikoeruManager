@@ -126,6 +126,92 @@
           </SettingsFieldCard>
         </div>
       </div>
+
+      <!-- HTTP 外链下载 -->
+      <div class="settings-card">
+        <div class="card-title">HTTP 外链下载</div>
+        <div class="field-stack">
+          <SettingsToggleRow v-model="config.http_downloader.enabled" title="启用 HTTP 外链下载" subtitle="ASMR 同步页可把 HTTP/HTTPS 直链交给 aria2 下载。" />
+          <SettingsFieldCard label="下载根目录" hint="留空时使用 storage.temp_path/http_downloads。">
+            <input v-model="config.http_downloader.download_root" class="field-input" type="text" placeholder="例如 D:\Downloads\KikoeruManager">
+          </SettingsFieldCard>
+          <div class="mini-grid three">
+            <SettingsFieldCard label="下载引擎" hint="首版仅支持 aria2。">
+              <AppDropdown
+                v-model="config.http_downloader.engine"
+                :options="httpEngineOptions"
+                class="settings-field-dd"
+              />
+            </SettingsFieldCard>
+            <SettingsFieldCard label="aria2 路径" hint="Docker 内默认 aria2c；Windows 可填 aria2c.exe 绝对路径。">
+              <input v-model="config.http_downloader.aria2_path" class="field-input" type="text" placeholder="aria2c">
+            </SettingsFieldCard>
+            <SettingsFieldCard label="HTTP 代理" hint="仅用于 HTTP 外链下载，和 asmr.one 代理分离。">
+              <input v-model="config.http_downloader.proxy_url" class="field-input" type="text" placeholder="http://127.0.0.1:7890">
+            </SettingsFieldCard>
+          </div>
+          <div class="mini-grid three">
+            <SettingsFieldCard label="并发下载">
+              <el-input-number v-model="config.http_downloader.max_concurrent_downloads" :min="1" :max="16" class="field-number" />
+            </SettingsFieldCard>
+            <SettingsFieldCard label="分片数">
+              <el-input-number v-model="config.http_downloader.split" :min="1" :max="32" class="field-number" />
+            </SettingsFieldCard>
+            <SettingsFieldCard label="单站连接">
+              <el-input-number v-model="config.http_downloader.max_connection_per_server" :min="1" :max="32" class="field-number" />
+            </SettingsFieldCard>
+          </div>
+          <div class="mini-grid three">
+            <SettingsFieldCard label="最小分片">
+              <input v-model="config.http_downloader.min_split_size" class="field-input" type="text" placeholder="1M">
+            </SettingsFieldCard>
+            <SettingsFieldCard label="重试次数">
+              <el-input-number v-model="config.http_downloader.retry_count" :min="1" :max="50" class="field-number" />
+            </SettingsFieldCard>
+            <SettingsFieldCard label="重试等待秒">
+              <el-input-number v-model="config.http_downloader.retry_wait_seconds" :min="0" :max="300" class="field-number" />
+            </SettingsFieldCard>
+          </div>
+          <div class="mini-grid three">
+            <SettingsFieldCard label="连接超时秒">
+              <el-input-number v-model="config.http_downloader.connect_timeout_seconds" :min="1" :max="120" class="field-number" />
+            </SettingsFieldCard>
+            <SettingsFieldCard label="传输超时秒">
+              <el-input-number v-model="config.http_downloader.timeout_seconds" :min="1" :max="600" class="field-number" />
+            </SettingsFieldCard>
+            <SettingsFieldCard label="冲突策略">
+              <AppDropdown
+                v-model="config.http_downloader.conflict_policy"
+                :options="httpConflictPolicyOptions"
+                class="settings-field-dd"
+              />
+            </SettingsFieldCard>
+          </div>
+          <SettingsToggleRow v-model="config.http_downloader.allow_private_network" title="允许内网 URL" subtitle="默认阻止 localhost、内网、link-local 和 metadata 地址，避免误把系统内部服务当下载源。" />
+          <div class="service-divider"></div>
+          <SettingsToggleRow v-model="config.http_downloader.pikpak_enabled" title="启用 PikPak 链接解析" subtitle="分享链接先解析为临时直链，再交给 aria2 下载；不处理验证码绕过。" />
+          <div class="mini-grid three" v-if="config.http_downloader.pikpak_enabled">
+            <SettingsFieldCard label="PikPak 账号">
+              <input v-model="config.http_downloader.pikpak_username" class="field-input" type="text" placeholder="邮箱或手机号">
+            </SettingsFieldCard>
+            <SettingsFieldCard label="PikPak 密码">
+              <AnimatedPasswordInput v-model="config.http_downloader.pikpak_password" placeholder="登录密码" autocomplete="new-password" />
+            </SettingsFieldCard>
+            <SettingsFieldCard label="设备 ID" hint="可选；留空按账号生成固定设备 ID。">
+              <input v-model="config.http_downloader.pikpak_device_id" class="field-input" type="text" placeholder="可选">
+            </SettingsFieldCard>
+          </div>
+          <div class="mini-grid two" v-if="config.http_downloader.pikpak_enabled">
+            <SettingsFieldCard label="转存目录" hint="分享文件需要先转存到自己的 PikPak，再获取下载直链。">
+              <input v-model="config.http_downloader.pikpak_transfer_dir" class="field-input" type="text" placeholder="/KikoeruManager">
+            </SettingsFieldCard>
+            <SettingsFieldCard label="缓存 Token" hint="可手动填入；保存时会脱敏展示，刷新 token 后后端会自动写回。">
+              <AnimatedPasswordInput v-model="config.http_downloader.pikpak_encoded_token" placeholder="可选，登录后自动生成" autocomplete="off" />
+            </SettingsFieldCard>
+          </div>
+          <SettingsToggleRow v-if="config.http_downloader.pikpak_enabled" v-model="config.http_downloader.pikpak_auto_save_share" title="自动转存分享文件" subtitle="开启后预览/开始下载 PikPak 分享时自动保存到转存目录。" />
+        </div>
+      </div>
     </div>
 
     <div class="settings-grid two">
@@ -310,6 +396,14 @@ const props = defineProps({
 const uploadModeOptions = [
   { value: 'local', label: '本地复制' },
   { value: 'synology', label: '群晖上传' }
+]
+const httpConflictPolicyOptions = [
+  { value: 'resume', label: '断点续传' },
+  { value: 'rename', label: '自动改名' },
+  { value: 'skip', label: '已存在跳过' }
+]
+const httpEngineOptions = [
+  { value: 'aria2', label: 'aria2' }
 ]
 const namingStrategyOptions = [
   { value: 'audio', label: '按音频' },
@@ -618,6 +712,7 @@ onBeforeUnmount(() => {
 
 .mini-grid { display: grid; gap: 10px; }
 .mini-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.mini-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
 .pill-switch-grid {
   display: grid;
@@ -792,6 +887,12 @@ onBeforeUnmount(() => {
 }
 
 .service-inline-row .field-input { flex: 1 1 220px; }
+
+.service-divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, rgba(148, 163, 184, 0.35) 18%, rgba(148, 163, 184, 0.35) 82%, transparent 100%);
+  margin: 2px 0;
+}
 
 /* Lottie 触发按钮 */
 .service-lottie-trigger {
@@ -1008,6 +1109,7 @@ onBeforeUnmount(() => {
 @media (max-width: 1200px) {
   .settings-grid.two,
   .mini-grid.two,
+  .mini-grid.three,
   .pill-switch-grid { grid-template-columns: 1fr; }
   .service-result-grid { grid-template-columns: 1fr; }
 }

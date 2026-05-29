@@ -1470,6 +1470,20 @@ html.kikoerumanager-dark .library .lib-action-btn:hover {
   color: var(--km-dark-text-strong) !important;
 }
 
+html.kikoerumanager-dark .library .lib-btn-icon-tinted {
+  background: rgba(27, 28, 33, 0.82) !important;
+  border-color: rgba(255, 255, 255, 0.075) !important;
+  color: rgba(236, 236, 241, 0.86) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .library .lib-btn-icon-tinted:hover:not(:disabled) {
+  background: rgba(34, 35, 41, 0.9) !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  color: rgba(250, 250, 252, 0.94) !important;
+  box-shadow: none !important;
+}
+
 html.kikoerumanager-dark .library .el-table th.el-table__cell {
   background: var(--km-dark-surface-2) !important;
   color: var(--km-dark-text-muted) !important;
@@ -1626,13 +1640,24 @@ html.kikoerumanager-dark .library .lib-path-toolbar {
 
 html.kikoerumanager-dark .library .lib-path-toolbar .lib-btn,
 html.kikoerumanager-dark .library .lib-path-toolbar .lib-btn-ghost,
-html.kikoerumanager-dark .library .lib-path-toolbar .lib-btn-icon-tinted,
 html.kikoerumanager-dark .library .lib-path-toolbar .lib-scope-switch,
 html.kikoerumanager-dark .library .lib-path-toolbar .lib-scope-option,
 html.kikoerumanager-dark .library .lib-path-toolbar .lib-scope-option:hover,
 html.kikoerumanager-dark .library .lib-path-toolbar .lib-scope-option.is-active {
   background: transparent !important;
   border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .library .lib-path-toolbar .lib-btn-icon-tinted {
+  background: rgba(27, 28, 33, 0.78) !important;
+  border-color: rgba(255, 255, 255, 0.07) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .library .lib-path-toolbar .lib-btn-icon-tinted:hover:not(:disabled) {
+  background: rgba(34, 35, 41, 0.88) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
   box-shadow: none !important;
 }
 

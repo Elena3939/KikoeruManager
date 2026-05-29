@@ -74,134 +74,77 @@
       </template>
     </section>
 
-    <!-- 字幕文件夹扫描 -->
-    <section class="asmr-card">
-      <header class="asmr-card-head">
-        <div class="asmr-card-head-title">
-          <FolderSearch :size="14" :stroke-width="2.2" class="asmr-card-head-icon" />
-          <h2>字幕文件夹扫描</h2>
-        </div>
-      </header>
-      <div class="asmr-card-body">
-        <div class="flex items-center gap-3">
-          <el-input v-model="subtitleFolder" placeholder="输入包含字幕文件的文件夹路径" clearable class="flex-1" />
-        </div>
-      </div>
+    <section class="asmr-workspace-tabs" role="tablist" aria-label="ASMR 下载工作台">
+      <button
+        v-for="tab in workspaceTabs"
+        :key="tab.key"
+        type="button"
+        class="asmr-workspace-tab"
+        :class="{ 'is-active': activeWorkspaceTab === tab.key }"
+        role="tab"
+        :aria-selected="activeWorkspaceTab === tab.key"
+        @click="activeWorkspaceTab = tab.key"
+      >
+        <component :is="tab.icon" :size="14" :stroke-width="2.4" />
+        <span>{{ tab.label }}</span>
+        <b v-if="tab.badge">{{ tab.badge }}</b>
+      </button>
     </section>
 
-    <!-- 增强下载工作台 -->
-    <section class="asmr-card">
-      <header class="asmr-card-head">
-        <div class="asmr-card-head-title">
-          <Sparkles :size="14" :stroke-width="2.2" class="asmr-card-head-icon" />
-          <div>
-            <h2>增强下载工作台</h2>
-            <p class="asmr-card-head-subtitle">手动输入 RJ 号直接查询并下载</p>
-          </div>
-        </div>
-        <div class="asmr-card-head-actions">
-          <button
-            class="asmr-mini-btn"
-            type="button"
-            :disabled="enhancedPlanning"
-            @click="buildEnhancedPlans"
-          >
-            <Search :size="12" :stroke-width="2.4" />
-            {{ enhancedPlanning ? '查询中…' : '查询 RJ' }}
-          </button>
-          <button
-            v-if="enhancedDownloadWorkbenchTaskIds.length"
-            class="asmr-mini-btn"
-            type="button"
-            @click="enhancedDownloadWorkbenchVisible = true"
-          >
-            <DownloadIcon :size="12" :stroke-width="2.4" />
-            下载工作台
-          </button>
-        </div>
-      </header>
-      <div class="asmr-card-body">
-        <el-input
-          v-model="enhancedInput"
-          type="textarea"
-          :rows="3"
-          placeholder="支持粘贴 RJ123456、RJ234567，空格 / 换行 / 逗号分隔"
-          class="mb-4"
-        />
+    <Transition name="asmr-section" mode="out-in">
+      <AsmrEnhancedDownloadPanel
+        v-if="activeWorkspaceTab === 'enhanced'"
+        v-model:input="enhancedInput"
+        :plans="enhancedPlans"
+        :selected-rjcodes="selectedPlanRjcodes"
+        :selected-set="selectedPlanSet"
+        :planning="enhancedPlanning"
+        :starting="enhancedStarting"
+        :has-workbench-tasks="enhancedDownloadWorkbenchTaskIds.length > 0"
+        :get-resource-type-label="getResourceTypeLabel"
+        @query="buildEnhancedPlans"
+        @open-workbench="enhancedDownloadWorkbenchVisible = true"
+        @select-all="selectAllPlans"
+        @clear-selection="clearPlanSelection"
+        @download-selected="openEnhancedPreview"
+        @toggle-plan="togglePlanSelect"
+      />
 
-        <!-- 计划列表 -->
-        <Transition name="asmr-section">
-          <div v-if="enhancedPlans.length > 0" class="space-y-4">
-            <!-- 批量操作工具条 -->
-            <div class="asmr-batch-toolbar">
-              <div class="asmr-batch-toolbar-info">
-                <span class="asmr-batch-toolbar-title">批量操作</span>
-                <span class="lib-chip lib-chip-info">已选 {{ selectedPlanRjcodes.length }} / {{ enhancedPlans.length }}</span>
-              </div>
-              <div class="asmr-batch-toolbar-actions">
-                <button class="asmr-mini-btn" type="button" @click="selectAllPlans">全选</button>
-                <button class="asmr-mini-btn" type="button" @click="clearPlanSelection">清空</button>
-                <button
-                  class="asmr-mini-btn is-primary"
-                  type="button"
-                  :disabled="enhancedStarting || selectedPlanRjcodes.length === 0"
-                  @click="openEnhancedPreview"
-                >
-                  <DownloadIcon :size="12" :stroke-width="2.4" />
-                  {{ enhancedStarting ? '创建中…' : `下载选中 (${selectedPlanRjcodes.length})` }}
-                </button>
-              </div>
-            </div>
+      <HttpDownloadPanel
+        v-else-if="activeWorkspaceTab === 'http'"
+        :has-tasks="httpDownloadWorkbenchTaskIds.length > 0"
+        @started="handleHttpDownloadStarted"
+        @open-workbench="resumeHttpDownloadWorkbench"
+      />
 
-            <!-- Plan Cards Grid -->
-            <TransitionGroup
-              tag="div"
-              name="asmr-grid"
-              class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3"
-            >
-              <WorkCard
-                v-for="(plan, idx) in enhancedPlans"
-                :key="plan.rjcode"
-                :item="plan"
-                :card-index="idx"
-                :selected="selectedPlanSet.has(plan.rjcode)"
-                image-field="cover_url"
-                code-field="rjcode"
-                size="default"
-                :show-release-badge="false"
-                class="enhanced-plan-card"
-                :style="{ '--asmr-grid-delay': `${Math.min(idx, 12) * 35}ms` }"
-                @select="(p) => togglePlanSelect(p.rjcode)"
-              >
-                <template #cover-placeholder>
-                  <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow">
-                    <DownloadIcon class="w-5 h-5 text-white" />
-                  </div>
-                </template>
-                <template #meta>
-                  <div class="enhanced-plan-meta">
-                    <span class="enhanced-plan-meta-pill is-code">RJ {{ plan.rjcode }}</span>
-                    <span class="enhanced-plan-meta-pill is-downloadable">{{ plan.summary?.selectable_total || 0 }} 个可下载</span>
-                  </div>
-                </template>
-                <template #tags>
-                  <div class="enhanced-plan-tags">
-                    <span class="enhanced-plan-tag is-primary">资源构成</span>
-                    <span v-for="group in (plan.grouped_resources || []).slice(0, 3)" :key="group.group_key" class="enhanced-plan-tag is-soft">
-                      {{ getResourceTypeLabel(group.resource_type) }} ×{{ group.count }}
-                    </span>
-                    <span v-if="(plan.grouped_resources || []).length > 3" class="enhanced-plan-tag is-muted">
-                      +{{ (plan.grouped_resources || []).length - 3 }}
-                    </span>
-                  </div>
-                </template>
-                <template #actions><span /></template>
-              </WorkCard>
-            </TransitionGroup>
-          </div>
-        </Transition>
-      </div>
-    </section>
+      <AsmrSubtitleScanPanel v-else v-model="subtitleFolder" />
+    </Transition>
+
+    <DownloadTaskWorkbenchDialog
+      v-model:visible="httpDownloadWorkbenchVisible"
+      :tasks="httpDownloadWorkbenchTasks"
+      :refreshing="httpDownloadWorkbenchRefreshing"
+      :retrying-keys="[...httpDownloadRetryingTaskIds]"
+      title="HTTP 外链下载"
+      subtitle="aria2 下载任务进度"
+      source-path-label="下载根目录"
+      :merge-tasks="false"
+      @refresh="refreshHttpDownloadWorkbench({ silent: true })"
+      @background="hideHttpDownloadWorkbenchToBackground"
+      @close="closeHttpDownloadWorkbench"
+      @retry-task="retryHttpDownloadTask"
+      @pause-task="pauseHttpDownloadTask"
+      @resume-task="resumeHttpDownloadTask"
+      @cancel-task="cancelHttpDownloadTask"
+    />
+
+    <Transition name="floating-card">
+      <BackgroundFloatingCard
+        v-if="showHttpDownloadBackgroundCard"
+        v-bind="httpDownloadBackgroundCardProps"
+        @action="handleHttpDownloadBackgroundCardAction"
+      />
+    </Transition>
 
     <!-- Enhanced Download Workbench Dialog -->
     <DownloadTaskWorkbenchDialog
@@ -614,7 +557,7 @@ import {
   Hourglass,
   Loader2,
 } from 'lucide-vue-next'
-import { asmrSyncApi, configApi, libraryApi, taskApi } from '../api'
+import { asmrSyncApi, configApi, httpDownloadApi, libraryApi, taskApi } from '../api'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
 import { useViewport } from '../composables/useViewport'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
@@ -624,11 +567,14 @@ import AppPageHeader from '../components/common/AppPageHeader.vue'
 import BackgroundFloatingCard from '../components/common/BackgroundFloatingCard.vue'
 import DownloadTaskWorkbenchDialog from '../components/download/DownloadTaskWorkbenchDialog.vue'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
-import WorkCard from '../components/circle/WorkCard.vue'
+import AsmrEnhancedDownloadPanel from '../components/asmr/AsmrEnhancedDownloadPanel.vue'
+import HttpDownloadPanel from '../components/asmr/HttpDownloadPanel.vue'
+import AsmrSubtitleScanPanel from '../components/asmr/AsmrSubtitleScanPanel.vue'
 
 const { isMobile: isMobileViewport } = useViewport()
 
 const ASMR_SYNC_DOWNLOAD_WORKBENCH_KEY = 'kikoerumanager.asmrSync.downloadWorkbench'
+const ASMR_SYNC_HTTP_DOWNLOAD_WORKBENCH_KEY = 'kikoerumanager.asmrSync.httpDownloadWorkbench'
 
 const subtitleFolder = ref('')
 const scanning = ref(false)
@@ -654,6 +600,7 @@ const enhancedSessionDetail = ref(null)
 const enhancedPlans = ref([])
 const enhancedSessions = ref([])
 const selectedPlanSet = ref(new Set())
+const activeWorkspaceTab = ref('enhanced')
 const enhancedDownloadWorkbenchTaskIds = ref([])
 const enhancedDownloadWorkbenchTasks = ref([])
 const enhancedDownloadWorkbenchVisible = ref(false)
@@ -661,6 +608,13 @@ const enhancedDownloadWorkbenchBackgroundActive = ref(false)
 const enhancedDownloadWorkbenchRefreshing = ref(false)
 const enhancedRetryingTaskIds = ref(new Set())
 let enhancedDownloadWorkbenchTimer = null
+const httpDownloadWorkbenchTaskIds = ref([])
+const httpDownloadWorkbenchTasks = ref([])
+const httpDownloadWorkbenchVisible = ref(false)
+const httpDownloadWorkbenchBackgroundActive = ref(false)
+const httpDownloadWorkbenchRefreshing = ref(false)
+const httpDownloadRetryingTaskIds = ref(new Set())
+let httpDownloadWorkbenchTimer = null
 
 // Enhanced preview dialog state
 const enhancedPreviewVisible = ref(false)
@@ -767,6 +721,26 @@ const hasEnhancedSelections = computed(() => {
 })
 
 const selectedPlanRjcodes = computed(() => [...selectedPlanSet.value])
+const workspaceTabs = computed(() => [
+  {
+    key: 'enhanced',
+    label: 'RJ 增强下载',
+    icon: Sparkles,
+    badge: selectedPlanRjcodes.value.length ? String(selectedPlanRjcodes.value.length) : ''
+  },
+  {
+    key: 'http',
+    label: 'HTTP 外链下载',
+    icon: CloudDownload,
+    badge: httpDownloadWorkbenchTaskIds.value.length ? String(httpDownloadWorkbenchTaskIds.value.length) : ''
+  },
+  {
+    key: 'subtitle',
+    label: '字幕扫描',
+    icon: FolderSearch,
+    badge: scanResults.value.length ? String(scanResults.value.length) : ''
+  }
+])
 const enhancedProcessingTasks = computed(() => enhancedDownloadWorkbenchTasks.value.filter(t => t.status === 'processing'))
 const enhancedPendingTasks = computed(() => enhancedDownloadWorkbenchTasks.value.filter(t => ['pending', 'paused', 'waiting_retry'].includes(String(t.status || ''))))
 const enhancedCompletedTasks = computed(() => enhancedDownloadWorkbenchTasks.value.filter(t => t.status === 'completed'))
@@ -813,6 +787,55 @@ const enhancedDownloadBackgroundCardProps = computed(() => ({
   actions: [
     { key: 'close', label: '关闭' },
     { key: 'resume', label: '恢复工作台', variant: 'violet' }
+  ]
+}))
+
+const httpDownloadProcessingTasks = computed(() => httpDownloadWorkbenchTasks.value.filter(t => t.status === 'processing'))
+const httpDownloadPendingTasks = computed(() => httpDownloadWorkbenchTasks.value.filter(t => ['pending', 'paused', 'waiting_retry'].includes(String(t.status || ''))))
+const httpDownloadCompletedTasks = computed(() => httpDownloadWorkbenchTasks.value.filter(t => t.status === 'completed' && String(t.display_status || '') !== 'partial_failed'))
+const httpDownloadFailedTasks = computed(() => httpDownloadWorkbenchTasks.value.filter(t => ['failed', 'partial_failed'].includes(String(t.display_status || t.status || ''))))
+const showHttpDownloadBackgroundCard = computed(() => httpDownloadWorkbenchBackgroundActive.value && !httpDownloadWorkbenchVisible.value && httpDownloadWorkbenchTaskIds.value.length > 0)
+const httpDownloadActiveBackgroundTask = computed(() => httpDownloadProcessingTasks.value[0] || httpDownloadPendingTasks.value[0] || httpDownloadWorkbenchTasks.value[0] || null)
+const httpDownloadBackgroundPercent = computed(() => {
+  if (!httpDownloadWorkbenchTasks.value.length) return 0
+  const total = httpDownloadWorkbenchTasks.value.reduce((sum, t) => sum + Number(t.progress || 0), 0)
+  return Math.max(0, Math.min(100, Math.round(total / httpDownloadWorkbenchTasks.value.length)))
+})
+const httpDownloadBackgroundCompleted = computed(() => (
+  httpDownloadWorkbenchTasks.value.length > 0
+  && httpDownloadCompletedTasks.value.length === httpDownloadWorkbenchTasks.value.length
+  && httpDownloadFailedTasks.value.length === 0
+))
+const httpDownloadBackgroundFailed = computed(() => (
+  httpDownloadFailedTasks.value.length > 0
+  && httpDownloadProcessingTasks.value.length === 0
+  && httpDownloadPendingTasks.value.length === 0
+))
+const httpDownloadBackgroundCardProps = computed(() => ({
+  kind: 'download',
+  tone: httpDownloadBackgroundFailed.value ? 'amber' : 'blue',
+  title: httpDownloadBackgroundCompleted.value
+    ? 'HTTP 外链下载已完成'
+    : httpDownloadBackgroundFailed.value
+      ? 'HTTP 外链下载需要处理'
+      : 'HTTP 外链下载正在后台运行',
+  badgeText: `下载 ${httpDownloadWorkbenchTasks.value.length} 项`,
+  subtitle: httpDownloadActiveBackgroundTask.value
+    ? `${httpDownloadActiveBackgroundTask.value.work_title || httpDownloadActiveBackgroundTask.value.source_label || 'HTTP 下载'}`
+    : '保留 aria2 下载队列与进度',
+  metaText: `总进度: ${httpDownloadBackgroundPercent.value}%`,
+  percentage: httpDownloadBackgroundPercent.value,
+  completed: httpDownloadBackgroundCompleted.value,
+  metrics: [
+    { key: 'processing', label: '进行中', value: httpDownloadProcessingTasks.value.length, tone: 'info' },
+    { key: 'pending', label: '等待中', value: httpDownloadPendingTasks.value.length, tone: 'warning' },
+    { key: 'completed', label: '完成', value: httpDownloadCompletedTasks.value.length, tone: 'success' },
+    { key: 'failed', label: '失败', value: httpDownloadFailedTasks.value.length, tone: httpDownloadFailedTasks.value.length ? 'danger' : 'neutral' }
+  ],
+  detailText: httpDownloadActiveBackgroundTask.value?.current_step || '隐藏后继续保留 HTTP 下载队列和进度。',
+  actions: [
+    { key: 'close', label: '关闭' },
+    { key: 'resume', label: '恢复工作台', variant: 'blue' }
   ]
 }))
 
@@ -1148,6 +1171,185 @@ function handleEnhancedDownloadBackgroundCardAction(action) {
   }
   if (action === 'close') {
     closeEnhancedDownloadWorkbench()
+  }
+}
+
+// --- HTTP Download Workbench Management ---
+
+function persistHttpDownloadWorkbenchState() {
+  try {
+    localStorage.setItem(ASMR_SYNC_HTTP_DOWNLOAD_WORKBENCH_KEY, JSON.stringify({
+      taskIds: httpDownloadWorkbenchTaskIds.value,
+      visible: httpDownloadWorkbenchVisible.value,
+      background: httpDownloadWorkbenchBackgroundActive.value
+    }))
+  } catch (_) {}
+}
+
+function hydrateHttpDownloadWorkbenchState() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(ASMR_SYNC_HTTP_DOWNLOAD_WORKBENCH_KEY) || '{}')
+    httpDownloadWorkbenchTaskIds.value = Array.isArray(raw.taskIds) ? raw.taskIds.filter(Boolean) : []
+    httpDownloadWorkbenchVisible.value = Boolean(raw.visible && httpDownloadWorkbenchTaskIds.value.length)
+    httpDownloadWorkbenchBackgroundActive.value = Boolean(raw.background && httpDownloadWorkbenchTaskIds.value.length)
+  } catch (_) {
+    httpDownloadWorkbenchTaskIds.value = []
+    httpDownloadWorkbenchVisible.value = false
+    httpDownloadWorkbenchBackgroundActive.value = false
+  }
+}
+
+function clearHttpDownloadWorkbenchState() {
+  httpDownloadWorkbenchTaskIds.value = []
+  httpDownloadWorkbenchTasks.value = []
+  httpDownloadWorkbenchVisible.value = false
+  httpDownloadWorkbenchBackgroundActive.value = false
+  stopHttpDownloadWorkbenchPolling()
+  try { localStorage.removeItem(ASMR_SYNC_HTTP_DOWNLOAD_WORKBENCH_KEY) } catch (_) {}
+}
+
+function stopHttpDownloadWorkbenchPolling() {
+  if (httpDownloadWorkbenchTimer) {
+    window.clearTimeout(httpDownloadWorkbenchTimer)
+    httpDownloadWorkbenchTimer = null
+  }
+}
+
+function startHttpDownloadWorkbenchPolling() {
+  if (!httpDownloadWorkbenchTaskIds.value.length) return
+  stopHttpDownloadWorkbenchPolling()
+  httpDownloadWorkbenchTimer = window.setTimeout(() => {
+    refreshHttpDownloadWorkbench()
+  }, 2000)
+}
+
+async function refreshHttpDownloadWorkbench(options = {}) {
+  const silent = Boolean(options?.silent)
+  if (!httpDownloadWorkbenchTaskIds.value.length) {
+    httpDownloadWorkbenchTasks.value = []
+    stopHttpDownloadWorkbenchPolling()
+    return
+  }
+  if (!silent) httpDownloadWorkbenchRefreshing.value = true
+  try {
+    const result = await httpDownloadApi.status()
+    const allTasks = Array.isArray(result.tasks) ? result.tasks : []
+    httpDownloadWorkbenchTasks.value = httpDownloadWorkbenchTaskIds.value
+      .map(id => allTasks.find(t => t.id === id))
+      .filter(Boolean)
+    httpDownloadWorkbenchTaskIds.value = httpDownloadWorkbenchTasks.value.map(t => t.id)
+    const stillActive = httpDownloadWorkbenchTasks.value.some(t => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(t.status || '')))
+    if (stillActive || httpDownloadWorkbenchVisible.value || httpDownloadWorkbenchBackgroundActive.value) startHttpDownloadWorkbenchPolling()
+    else stopHttpDownloadWorkbenchPolling()
+  } catch (error) {
+    console.error('刷新 HTTP 下载工作台失败:', error)
+    startHttpDownloadWorkbenchPolling()
+  } finally {
+    if (!silent) httpDownloadWorkbenchRefreshing.value = false
+  }
+}
+
+async function handleHttpDownloadStarted(taskIds = []) {
+  const newTaskIds = Array.isArray(taskIds) ? taskIds.filter(Boolean) : []
+  if (!newTaskIds.length) return
+  httpDownloadWorkbenchTaskIds.value = [
+    ...newTaskIds,
+    ...httpDownloadWorkbenchTaskIds.value.filter(id => !newTaskIds.includes(id))
+  ]
+  httpDownloadWorkbenchVisible.value = true
+  httpDownloadWorkbenchBackgroundActive.value = false
+  persistHttpDownloadWorkbenchState()
+  await refreshHttpDownloadWorkbench()
+}
+
+function hideHttpDownloadWorkbenchToBackground() {
+  httpDownloadWorkbenchVisible.value = false
+  httpDownloadWorkbenchBackgroundActive.value = true
+}
+
+function resumeHttpDownloadWorkbench() {
+  httpDownloadWorkbenchVisible.value = true
+  httpDownloadWorkbenchBackgroundActive.value = false
+}
+
+function closeHttpDownloadWorkbench() {
+  clearHttpDownloadWorkbenchState()
+}
+
+function handleHttpDownloadBackgroundCardAction(action) {
+  if (action === 'resume') {
+    resumeHttpDownloadWorkbench()
+    return
+  }
+  if (action === 'close') {
+    closeHttpDownloadWorkbench()
+  }
+}
+
+async function pauseHttpDownloadTask(task) {
+  const taskId = String(task?.id || task?.active_task_id || '').trim()
+  if (!taskId) return ElMessage.warning('无法识别 HTTP 下载任务')
+  try {
+    await httpDownloadApi.pause(taskId)
+    ElMessage.success('已暂停')
+    await refreshHttpDownloadWorkbench({ silent: true })
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '暂停失败')
+  }
+}
+
+async function resumeHttpDownloadTask(task) {
+  const taskId = String(task?.id || task?.active_task_id || '').trim()
+  if (!taskId) return ElMessage.warning('无法识别 HTTP 下载任务')
+  try {
+    await httpDownloadApi.resume(taskId)
+    ElMessage.success('已恢复')
+    await refreshHttpDownloadWorkbench({ silent: true })
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '恢复失败')
+  }
+}
+
+async function cancelHttpDownloadTask(task) {
+  const taskId = String(task?.id || task?.active_task_id || '').trim()
+  if (!taskId) return ElMessage.warning('无法识别 HTTP 下载任务')
+  const title = String(task?.work_title || task?.source_label || '此下载任务').trim()
+  try {
+    await showSystemConfirm({
+      title: '取消 HTTP 下载',
+      message: `确定要取消 ${title} 吗？`,
+      description: '取消后 aria2 会停止对应下载，已下载的部分文件和 .aria2 控制文件会保留用于后续续传。',
+      tone: 'danger',
+      confirmText: '取消下载',
+    })
+  } catch {
+    return
+  }
+  try {
+    await httpDownloadApi.cancel(taskId)
+    ElMessage.success('已取消')
+    await refreshHttpDownloadWorkbench({ silent: true })
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '取消失败')
+  }
+}
+
+async function retryHttpDownloadTask(task) {
+  const taskId = String(task?.id || task?.active_task_id || '').trim()
+  if (!taskId) return ElMessage.warning('无法识别 HTTP 下载任务')
+  const next = new Set(httpDownloadRetryingTaskIds.value)
+  next.add(taskId)
+  httpDownloadRetryingTaskIds.value = next
+  try {
+    await httpDownloadApi.retry(taskId)
+    ElMessage.success('已提交重试')
+    await refreshHttpDownloadWorkbench({ silent: true })
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '提交重试失败')
+  } finally {
+    const done = new Set(httpDownloadRetryingTaskIds.value)
+    done.delete(taskId)
+    httpDownloadRetryingTaskIds.value = done
   }
 }
 
@@ -1520,10 +1722,12 @@ function startStatusPolling () {
 async function initializeASMRSyncPage () {
   if (asmrSyncInitialized) return
   hydrateEnhancedDownloadWorkbenchState()
+  hydrateHttpDownloadWorkbenchState()
   await loadSavedFolder()
   await loadWaitingRetryTasks()
   await refreshStatus()
   if (enhancedDownloadWorkbenchTaskIds.value.length) await refreshEnhancedDownloadWorkbench()
+  if (httpDownloadWorkbenchTaskIds.value.length) await refreshHttpDownloadWorkbench()
   if (subtitleFolder.value) {
     await scanFolder()
   }
@@ -1543,6 +1747,7 @@ onActivated(async () => {
   await refreshStatus()
   await loadEnhancedSessions()
   if (enhancedDownloadWorkbenchTaskIds.value.length) refreshEnhancedDownloadWorkbench()
+  if (httpDownloadWorkbenchTaskIds.value.length) refreshHttpDownloadWorkbench()
   startStatusPolling()
 })
 
@@ -1553,12 +1758,14 @@ onDeactivated(() => {
 
 onBeforeUnmount(() => {
   stopEnhancedDownloadWorkbenchPolling()
+  stopHttpDownloadWorkbenchPolling()
 })
 
 onUnmounted(() => {
   asmrSyncViewActive = false
   stopStatusPolling()
   stopEnhancedDownloadWorkbenchPolling()
+  stopHttpDownloadWorkbenchPolling()
 })
 
 watch(enhancedDownloadWorkbenchVisible, (visible) => {
@@ -1575,6 +1782,22 @@ watch(enhancedDownloadWorkbenchBackgroundActive, () => {
 
 watch(enhancedDownloadWorkbenchTaskIds, () => {
   persistEnhancedDownloadWorkbenchState()
+}, { deep: true })
+
+watch(httpDownloadWorkbenchVisible, (visible) => {
+  persistHttpDownloadWorkbenchState()
+  if (visible || httpDownloadWorkbenchBackgroundActive.value) startHttpDownloadWorkbenchPolling()
+  else stopHttpDownloadWorkbenchPolling()
+})
+
+watch(httpDownloadWorkbenchBackgroundActive, () => {
+  persistHttpDownloadWorkbenchState()
+  if (httpDownloadWorkbenchVisible.value || httpDownloadWorkbenchBackgroundActive.value) startHttpDownloadWorkbenchPolling()
+  else stopHttpDownloadWorkbenchPolling()
+})
+
+watch(httpDownloadWorkbenchTaskIds, () => {
+  persistHttpDownloadWorkbenchState()
 }, { deep: true })
 </script>
 
@@ -1944,6 +2167,57 @@ button:disabled { cursor: not-allowed; }
   background: linear-gradient(180deg, transparent, rgba(15, 23, 42, 0.1), transparent);
   align-self: stretch;
 }
+
+.asmr-workspace-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -16px rgba(15, 23, 42, 0.08);
+}
+.asmr-workspace-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+}
+.asmr-workspace-tab:hover {
+  transform: translateY(-1px);
+  color: #0f172a;
+  background: #f8fafc;
+}
+.asmr-workspace-tab.is-active {
+  color: #0f172a;
+  border-color: rgba(37, 99, 235, 0.16);
+  background: linear-gradient(180deg, #eff6ff, #fff);
+  box-shadow: 0 8px 18px -14px rgba(37, 99, 235, 0.45);
+}
+.asmr-workspace-tab b {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.1);
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 800;
+}
 @media (max-width: 1180px) {
   .asmr-info-strip {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1958,6 +2232,18 @@ button:disabled { cursor: not-allowed; }
   .asmr-info-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .lib-info-item:nth-child(3n) { border-right: 1px solid rgba(15, 23, 42, 0.06); }
   .lib-info-item:nth-child(2n) { border-right: 0; }
+  .asmr-workspace-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .asmr-workspace-tab {
+    min-width: 0;
+    padding: 0 8px;
+  }
+  .asmr-workspace-tab span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 }
 
 /* ==============================================================

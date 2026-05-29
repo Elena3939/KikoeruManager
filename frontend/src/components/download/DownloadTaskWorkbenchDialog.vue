@@ -292,7 +292,7 @@
 
 <script setup>
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
-import { Archive, AlertCircle, ArrowUpToLine, CheckCircle2, Clock3, Download, HardDriveUpload, Minimize2, Pause, Play, RefreshCw, Search, TriangleAlert, X, XCircle, Zap } from 'lucide-vue-next'
+import { Archive, AlertCircle, ArrowUpToLine, CheckCircle2, Clock3, Cloud, Download, HardDriveUpload, Minimize2, Pause, Play, RefreshCw, Search, TriangleAlert, X, XCircle, Zap } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import downloadIconAnimation from '../../assets/anime/download-icon-clean.json?url'
 import uploadToCloudAnimation from '../../assets/anime/Uploading to cloud.lottie'
@@ -465,6 +465,8 @@ function getTaskIcon(task) {
   if (tone === 'warning' || tone === 'danger') return TriangleAlert
   if (props.preferUploadIcon && isUploadEnabled(task)) return ArrowUpToLine
   if (getTaskStageLabel(task).includes('上传')) return HardDriveUpload
+  const mode = String(task?.task_metadata?.download_mode || task?.download_mode || '').trim()
+  if (mode === 'pikpak') return Cloud
   if (['pending', 'waiting_retry'].includes(String(task?.display_status || task?.status || ''))) return Clock3
   return Download
 }
@@ -586,6 +588,10 @@ function getTaskSecondaryLabel(task) {
   if (isUploadMode.value) {
     return String(task?.task_metadata?.workbench_subtitle || task?.source_label || task?.task_metadata?.source_label || '').trim() || '上传任务'
   }
+  const mode = String(task?.task_metadata?.download_mode || task?.download_mode || '').trim()
+  if (mode === 'http' || mode === 'pikpak' || mode === 'mixed') {
+    return String(task?.task_metadata?.source_label || task?.source_label || task?.task_metadata?.download_root || '').trim() || (mode === 'pikpak' ? 'PikPak 下载' : 'HTTP 下载')
+  }
   return String(task?.task_metadata?.workbench_subtitle || task?.rjcode || task?.task_metadata?.rjcode || '').trim() || '未知 RJ'
 }
 
@@ -599,6 +605,8 @@ function getTaskLocalDownloadRoot(task) {
 
 function getTaskMergeKey(task) {
   if (isUploadMode.value) return `task:${String(task?.id || '').trim()}`
+  const mode = String(task?.task_metadata?.download_mode || task?.download_mode || '').trim()
+  if (mode === 'http' || mode === 'pikpak' || mode === 'mixed') return `task:${String(task?.id || '').trim()}`
   const sessionId = getTaskSessionId(task)
   const rjcode = getTaskRjcode(task)
   if (sessionId) return `session:${sessionId}::${rjcode || 'unknown'}`
@@ -1082,6 +1090,10 @@ function getFinalOutputDisplay(task) {
 
 function canRetryDownloadTask(task) {
   if (isUploadMode.value) return false
+  const domain = String(task?.task_domain || task?.task_metadata?.task_domain || task?.task_metadata?.download_mode || '').trim()
+  if (domain === 'http_download' || domain === 'http') {
+    return ['failed', 'partial_failed', 'completed'].includes(String(task?.display_status || task?.status || '')) && getFailureCount(task) > 0
+  }
   return Boolean(String(task?.task_metadata?.session_id || task?.session_id || '').trim() && getFailureCount(task) > 0)
 }
 

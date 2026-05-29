@@ -27,6 +27,8 @@
       <AppDropdown
         :model-value="currentDomain"
         :options="domainDropdownOptions"
+        class="tasks-filter-dd"
+        menu-class="tasks-filter-dd-menu"
         label="类型"
         :width="172"
         :menu-min-width="200"
@@ -37,6 +39,8 @@
       <AppDropdown
         :model-value="currentStatus"
         :options="statusDropdownOptions"
+        class="tasks-filter-dd"
+        menu-class="tasks-filter-dd-menu"
         label="状态"
         :width="148"
         :menu-min-width="160"
@@ -47,6 +51,8 @@
       <AppDropdown
         :model-value="sortKey"
         :options="sortDropdownOptions"
+        class="tasks-filter-dd"
+        menu-class="tasks-filter-dd-menu"
         label="排序"
         :width="160"
         :menu-min-width="160"
