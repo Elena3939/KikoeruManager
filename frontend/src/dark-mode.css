@@ -2280,6 +2280,43 @@ html.kikoerumanager-dark {
     color: var(--library-text) !important;
   }
 
+  html.kikoerumanager-dark body #app .library .lib-path-toolbar .lib-scope-switch {
+    gap: 2px !important;
+    padding: 3px !important;
+    background-color: var(--library-matte-soft) !important;
+    background-image: none !important;
+    border: 1px solid var(--library-border) !important;
+    border-radius: 10px !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-path-toolbar .lib-scope-option {
+    min-width: 62px !important;
+    padding: 5px 10px !important;
+    border: 0 !important;
+    border-radius: 7px !important;
+    background-color: transparent !important;
+    background-image: none !important;
+    color: var(--library-muted) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-path-toolbar .lib-scope-option:hover:not(.is-active) {
+    background-color: rgba(255, 255, 255, 0.06) !important;
+    color: var(--library-text) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-path-toolbar .lib-scope-option.is-active {
+    background-color: var(--library-matte-strong) !important;
+    color: rgba(250, 250, 252, 0.94) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-path-toolbar .lib-scope-option.is-active::after {
+    display: none !important;
+    content: none !important;
+  }
+
   html.kikoerumanager-dark body #app .library .lib-file-table {
     background-color: var(--library-panel) !important;
     overflow: hidden !important;

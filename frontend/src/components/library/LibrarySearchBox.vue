@@ -160,7 +160,7 @@
                   <component :is="item.library_type === 'synology_filestation' ? IconCloud : IconHardDrive" :size="10" :stroke-width="2.4" />
                   {{ item.library_name || item.library_id }}
                 </span>
-                <span class="lib-suggest-row-path" :title="item.relative_path">{{ formatPath(item) }}</span>
+                <span class="lib-suggest-row-path">{{ formatPath(item) }}</span>
               </div>
             </div>
             <span class="lib-suggest-row-arrow">
@@ -1334,20 +1334,18 @@ onBeforeUnmount(() => {
 
 <style>
 html.kikoerumanager-dark .lib-suggest-pop {
-  background: rgba(8, 9, 13, 0.86) !important;
-  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  background: #0b0c10 !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
   color: var(--km-dark-text) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 24px 58px rgba(0, 0, 0, 0.58) !important;
-  backdrop-filter: blur(28px) saturate(135%) !important;
-  -webkit-backdrop-filter: blur(28px) saturate(135%) !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
 html.kikoerumanager-dark .lib-suggest-head,
 html.kikoerumanager-dark .lib-suggest-foot {
-  background: rgba(8, 9, 13, 0.64) !important;
-  border-color: rgba(255, 255, 255, 0.12) !important;
+  background: #0b0c10 !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
   color: var(--km-dark-text-muted) !important;
 }
 
@@ -1355,15 +1353,14 @@ html.kikoerumanager-dark .lib-suggest-list,
 html.kikoerumanager-dark .lib-suggest-row {
   background: transparent !important;
   color: var(--km-dark-text) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .lib-suggest-row:hover,
 html.kikoerumanager-dark .lib-suggest-row.is-active {
-  background: rgba(255, 255, 255, 0.16) !important;
+  background: #2b2c30 !important;
   color: var(--km-dark-text-strong) !important;
-  box-shadow:
-    inset 3px 0 0 rgba(255, 255, 255, 0.78),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .lib-suggest-head-title,
@@ -1384,8 +1381,8 @@ html.kikoerumanager-dark .lib-suggest-head-count,
 html.kikoerumanager-dark .lib-suggest-row-rj,
 html.kikoerumanager-dark .lib-suggest-lib-chip,
 html.kikoerumanager-dark .lib-suggest-foot-hint kbd {
-  background: rgba(255, 255, 255, 0.08) !important;
-  border-color: rgba(255, 255, 255, 0.14) !important;
+  background: #2b2c30 !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
   color: var(--km-dark-text-strong) !important;
 }
 
@@ -1396,9 +1393,36 @@ html.kikoerumanager-dark .lib-suggest-banner.is-warning {
 }
 
 html.kikoerumanager-dark .lib-suggest-foot-btn {
-  background: #020617 !important;
-  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  background: #2b2c30 !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
   color: #ffffff !important;
-  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.38) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .lib-suggest-foot-btn:hover {
+  background: #333438 !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .lib-search-box,
+html.kikoerumanager-dark .lib-search-box .lib-search {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  outline: 0 !important;
+}
+
+html.kikoerumanager-dark .lib-search-box .lib-search-input,
+html.kikoerumanager-dark .lib-search-box .lib-search-input:hover,
+html.kikoerumanager-dark .lib-search-box .lib-search-input:focus {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  background: #2b2c30 !important;
+  background-clip: padding-box !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  border-radius: 10px !important;
+  box-shadow: none !important;
+  outline: 0 !important;
 }
 </style>
