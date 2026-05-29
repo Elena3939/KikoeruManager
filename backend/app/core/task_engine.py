@@ -1038,10 +1038,15 @@ class TaskEngine:
                             snapshot_file_tree_for_activity,
                         )
                         before_items = list(next_metadata.get("resolution_before_tree_items") or [])
-                        existing_path = str(next_metadata.get("existing_path") or conflict.existing_path or "")
-                        if not before_items and next_metadata.get("resolution_before_tree_deferred") and existing_path:
-                            before_items = snapshot_file_tree_for_activity(existing_path, limit=300)
-                        after_items = snapshot_file_tree_for_activity(task.output_path, limit=300) if task.output_path else []
+                        snapshot_skipped = bool(next_metadata.get("resolution_activity_snapshot_skipped"))
+                        extra_detail = {"snapshot_skipped": True} if snapshot_skipped else None
+                        if not snapshot_skipped:
+                            existing_path = str(next_metadata.get("existing_path") or conflict.existing_path or "")
+                            if not before_items and next_metadata.get("resolution_before_tree_deferred") and existing_path:
+                                before_items = snapshot_file_tree_for_activity(existing_path, limit=300)
+                            after_items = snapshot_file_tree_for_activity(task.output_path, limit=300) if task.output_path else []
+                        else:
+                            after_items = []
                         log_conflict_resolution_activity(
                             conflict_id=conflict.id,
                             action=action,
@@ -1053,6 +1058,7 @@ class TaskEngine:
                             final_path=str(task.output_path or ""),
                             before_tree_items=before_items,
                             after_tree_items=after_items,
+                            extra_detail=extra_detail,
                         )
                     except Exception:
                         logger.warning("写入保留新版操作记录失败: task_id=%s conflict_id=%s", task.id, conflict_id, exc_info=True)
