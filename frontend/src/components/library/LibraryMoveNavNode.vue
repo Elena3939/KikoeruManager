@@ -112,6 +112,7 @@ function normalizePath (path) {
 .nav-item { list-style: none; }
 
 .nav-row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -121,10 +122,21 @@ function normalizePath (path) {
   font-size: 12.5px;
   color: #1e293b;
   border-radius: 6px;
-  transition: background-color 0.15s ease;
+  transition:
+    transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 0.24s cubic-bezier(0.34, 1.56, 0.64, 1),
+    color 0.18s ease;
+  will-change: transform;
 }
 
-.nav-row:hover { background: rgba(15, 23, 42, 0.05); }
+.nav-row:hover {
+  z-index: 1;
+  background: transparent;
+  transform: translate3d(0, -2px, 0);
+  box-shadow:
+    0 8px 18px rgba(15, 23, 42, 0.1),
+    inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+}
 
 .nav-row-active {
   background: rgba(186, 230, 253, 0.55);
@@ -192,14 +204,20 @@ function normalizePath (path) {
   color: var(--km-dark-text) !important;
 }
 
-:global(html.kikoerumanager-dark) .lib-move-modal .nav-row:hover,
+:global(html.kikoerumanager-dark) .lib-move-modal .nav-row:hover {
+  background: transparent !important;
+  color: var(--km-dark-text-strong) !important;
+  transform: translate3d(0, -2px, 0) !important;
+  box-shadow:
+    0 8px 18px rgba(0, 0, 0, 0.22),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.1) !important;
+}
+
 :global(html.kikoerumanager-dark) .lib-move-modal .nav-row-active,
 :global(html.kikoerumanager-dark) .lib-move-modal .nav-row-active:hover {
-  background: rgba(255, 255, 255, 0.16) !important;
+  background: #3a3b40 !important;
   color: var(--km-dark-text-strong) !important;
-  box-shadow:
-    inset 3px 0 0 rgba(255, 255, 255, 0.82),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.16) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16) !important;
 }
 
 :global(html.kikoerumanager-dark) .lib-move-modal .nav-row-active .nav-folder-icon {

@@ -1427,14 +1427,14 @@ onBeforeUnmount(() => {
 
 /* 主区：左侧导航 + 右侧文件 -------------------------------------- */
 .explorer-main {
-  background: rgba(255, 255, 255, 0.4);
+  background: transparent;
 }
 
 .explorer-nav {
   /* 宽度由 navWidth ref 通过 inline :style 控制；此处只定边框与背景 */
   flex-shrink: 0;
   border-right: 1px solid rgba(15, 23, 42, 0.06);
-  background: rgba(248, 250, 252, 0.5);
+  background: transparent;
 }
 
 /* 拖拽分割条：视觉始终是一根 1px 细线，命中区域用透明伪元素扩到 ~9px 方便鼠标抓取，
@@ -1499,6 +1499,7 @@ onBeforeUnmount(() => {
 .nav-item { list-style: none; }
 
 .nav-row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1508,10 +1509,21 @@ onBeforeUnmount(() => {
   font-size: 12.5px;
   color: #1e293b;
   border-radius: 6px;
-  transition: background-color 0.15s ease;
+  transition:
+    transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 0.24s cubic-bezier(0.34, 1.56, 0.64, 1),
+    color 0.18s ease;
+  will-change: transform;
 }
 
-.nav-row:hover { background: rgba(15, 23, 42, 0.05); }
+.nav-row:hover {
+  z-index: 1;
+  background: transparent;
+  transform: translate3d(0, -2px, 0);
+  box-shadow:
+    0 8px 18px rgba(15, 23, 42, 0.1),
+    inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+}
 
 .nav-row-active {
   background: rgba(186, 230, 253, 0.55);
@@ -1554,20 +1566,18 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-/* 源所在库存：行最左侧嵌入一道 2px 琥珀色细条（替代原来"源"字胶囊），
-   视觉更克制；hover/active 时色条略加深 */
+/* 源所在库存只保留行状态，不再加左侧竖条。 */
 .nav-row-source {
-  box-shadow: inset 2px 0 0 rgba(245, 158, 11, 0.55);
+  box-shadow: none;
 }
 
 .nav-row-source:hover {
-  box-shadow: inset 2px 0 0 rgba(245, 158, 11, 0.7);
+  box-shadow: none;
 }
 
 .nav-row-active.nav-row-source,
 .nav-row-active.nav-row-source:hover {
-  /* 选中态以蓝色高亮为主，保留少量琥珀提示但让位给主色 */
-  box-shadow: inset 2px 0 0 rgba(245, 158, 11, 0.85);
+  box-shadow: none;
 }
 
 .nav-children {
@@ -1812,7 +1822,7 @@ onBeforeUnmount(() => {
 
 .fm-row-selected {
   background: rgba(186, 230, 253, 0.45);
-  box-shadow: inset 2px 0 0 rgba(2, 132, 199, 0.7);
+  box-shadow: inset 0 0 0 1px rgba(2, 132, 199, 0.16);
 }
 
 .fm-row-selected:hover { background: rgba(186, 230, 253, 0.6); }
@@ -1822,19 +1832,17 @@ onBeforeUnmount(() => {
   color: #0c4a6e;
 }
 
-/* 源所在行：用左侧 2px 琥珀色细条 + 轻度 opacity 表达"这是待移动项"，
-   不再依赖"源"文字 chip，视觉更克制；hover 时恢复对比度方便阅读 */
+/* 源所在行只用轻度 opacity 表达，不再加左侧竖条。 */
 .fm-row-self {
   opacity: 0.82;
-  box-shadow: inset 2px 0 0 rgba(245, 158, 11, 0.55);
+  box-shadow: none;
 }
 
 .fm-row-self:hover { opacity: 0.96; }
 
-/* 同时选中且为源时，主选中蓝色优先，保证选中态可识别 */
 .fm-row-selected.fm-row-self {
   opacity: 1;
-  box-shadow: inset 2px 0 0 rgba(2, 132, 199, 0.7);
+  box-shadow: none;
 }
 
 .fm-row-conflict { background: rgba(254, 215, 170, 0.18); }
@@ -2158,15 +2166,20 @@ html.kikoerumanager-dark .lib-move-modal .fm-row-selected:hover,
 html.kikoerumanager-dark .lib-move-modal .fm-row-selected.fm-row-self {
   background: rgba(255, 255, 255, 0.16) !important;
   color: var(--km-dark-text-strong) !important;
-  box-shadow:
-    inset 3px 0 0 rgba(255, 255, 255, 0.82),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.16) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16) !important;
 }
 
 html.kikoerumanager-dark .lib-move-modal .nav-row:hover,
 html.kikoerumanager-dark .lib-move-modal .fm-row:hover {
-  background: rgba(255, 255, 255, 0.1) !important;
   color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .nav-row:hover {
+  background: transparent !important;
+  transform: translate3d(0, -2px, 0) !important;
+  box-shadow:
+    0 8px 18px rgba(0, 0, 0, 0.22),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.1) !important;
 }
 
 html.kikoerumanager-dark .lib-move-modal .nav-row-active .nav-disk-icon,
