@@ -4260,6 +4260,7 @@ async def resolve_conflict(conflict_id: str, action: dict):
         if action_type not in service.get_available_actions(conflict):
             raise HTTPException(status_code=400, detail="当前问题项不支持该操作")
         confirmed = bool(action.get("confirmed"))
+        skip_activity_snapshot = bool(action.get("skip_activity_snapshot"))
         engine = get_task_engine()
         # KEEP_NEW 分支会用新任务 ID 覆盖 conflict.task_id，必须在覆盖前
         # 记下原任务 ID 才能定位到那条 task_finished/waiting 的活动日志。
@@ -4311,7 +4312,11 @@ async def resolve_conflict(conflict_id: str, action: dict):
                 # 旧逻辑在 HTTP 请求里同步生成旧目录文件树快照，大目录或 NAS 上批量执行
                 # 会把请求和其它接口一起拖慢。快照改由任务真正替换前在后台线程里采集。
                 next_metadata["resolution_before_tree_items"] = []
-                next_metadata["resolution_before_tree_deferred"] = True
+                if skip_activity_snapshot:
+                    next_metadata["resolution_activity_snapshot_skipped"] = True
+                    next_metadata["resolution_before_tree_deferred"] = False
+                else:
+                    next_metadata["resolution_before_tree_deferred"] = True
                 conflict.new_metadata = next_metadata
 
                 duplicate_conflicts = []

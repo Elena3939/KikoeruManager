@@ -212,11 +212,14 @@
                   </div>
                 </div>
               </div>
-              <div v-if="isConflictRetrying(conflict)" class="conflicts-list-card-progress">
+              <div v-if="isConflictProcessing(conflict)" class="conflicts-list-card-progress">
+                <span v-if="getConflictProcessingStep(conflict)" class="conflicts-list-progress-step">
+                  {{ getConflictProcessingStep(conflict) }}
+                </span>
                 <div class="conflicts-list-progress-track">
-                  <div class="conflicts-list-progress-bar" :style="{ width: `${getConflictRetryProgress(conflict)}%` }" />
+                  <div class="conflicts-list-progress-bar" :style="{ width: `${getConflictProcessingProgress(conflict)}%` }" />
                 </div>
-                <span class="conflicts-list-progress-num">{{ getConflictRetryProgress(conflict) }}%</span>
+                <span class="conflicts-list-progress-num">{{ getConflictProcessingProgress(conflict) }}%</span>
               </div>
             </button>
           </div>
@@ -796,6 +799,7 @@ const mergePreviewProgress = ref({
 let mergePreviewPollingAbort = null
 const conflictFilter = ref('all')
 const retryPollers = new Map()
+const processingPollers = new Map()
 const localRetryingConflictIds = reactive({})
 const filenamePreviewState = reactive({})
 
@@ -1078,6 +1082,10 @@ onUnmounted(() => {
     clearTimeout(timerId)
   }
   retryPollers.clear()
+  for (const timerId of processingPollers.values()) {
+    clearTimeout(timerId)
+  }
+  processingPollers.clear()
   for (const key of Object.keys(localRetryingConflictIds)) {
     delete localRetryingConflictIds[key]
   }
@@ -1120,6 +1128,7 @@ async function fetchConflicts() {
         }
       })
       reconcileLocalRetryingConflicts()
+      ensureProcessingPollers()
       syncSelectedConflicts()
       syncActiveConflict()
     } catch (error) {
@@ -1132,7 +1141,11 @@ async function fetchConflicts() {
     // 阶段 2：后台异步补齐 stats（目录大小 / 创建时间），不阻塞 UI、失败不打扰。
     // 注意 backfill 不 await，它内部有 abort + requestId 双重去重机制，自我管理；
     // 并且只在确实缺 stats 的项存在时才请求，避免重复跑空。
-    void backfillConflictStats()
+    if (!hasActiveProcessingConflicts()) {
+      void backfillConflictStats()
+    } else {
+      statsBackfilling.value = false
+    }
   })()
   try {
     await pendingFetchPromise
@@ -1143,6 +1156,7 @@ async function fetchConflicts() {
 
 async function backfillConflictStats() {
   if (!conflicts.value.length) return
+  if (hasActiveProcessingConflicts()) return
   // 短路 1：所有项的 stats 都已齐全（前一次 backfill 已写入 + fetchConflicts 阶段 1
   // 已正确合并保留）就直接跳过，避免重试轮询 / SSE 推送 / 切回页面时反复 list 出空 stats
   // 又重新触发"统计中…"占位符闪烁。问题类条目可能只有 source 没 existing，
@@ -1192,6 +1206,9 @@ async function backfillConflictStats() {
 
 function syncActiveConflict() {
   if (!filteredConflicts.value.length) {
+    if (conflicts.value.length) {
+      return
+    }
     activeConflictId.value = ''
     return
   }
@@ -1433,6 +1450,14 @@ function isKeepNewProcessing(conflict) {
   return isConflictProcessing(conflict) && getConflictResolutionAction(conflict) === 'KEEP_NEW'
 }
 
+function hasActiveProcessingConflicts() {
+  return conflicts.value.some(conflict => {
+    if (!isConflictProcessing(conflict)) return false
+    const linkedStatus = String(conflict?.linked_task?.status || '').trim().toLowerCase()
+    return !['completed', 'failed', 'cancelled', 'canceled'].includes(linkedStatus)
+  })
+}
+
 function isConflictRetrying(conflict) {
   if (!conflict?.id) return false
   return Boolean(
@@ -1464,6 +1489,43 @@ function markConflictRetrying(conflictId, value) {
   delete localRetryingConflictIds[conflictId]
 }
 
+function markConflictProcessing(conflict, result = {}, action = 'KEEP_NEW') {
+  if (!conflict?.id) return
+  const taskId = String(result?.task_id || conflict?.linked_task?.id || conflict?.task_id || '').trim()
+  const now = new Date().toISOString()
+  const nextStatus = String(result?.already_running ? (conflict?.linked_task?.status || 'processing') : 'pending').toLowerCase()
+  const progress = Number(result?.already_running ? (conflict?.linked_task?.progress ?? 8) : 1)
+  const currentStep = result?.already_running
+    ? (conflict?.linked_task?.current_step || '保留新版任务已在执行中')
+    : '保留新版任务已提交'
+  const patch = {
+    status: 'PROCESSING',
+    task_id: taskId || conflict.task_id,
+    linked_task: taskId
+      ? {
+          ...(conflict.linked_task || {}),
+          id: taskId,
+          status: nextStatus || 'pending',
+          progress: Math.max(0, Math.min(100, Math.round(Number.isFinite(progress) ? progress : 1))),
+          current_step: currentStep,
+          error_message: ''
+        }
+      : conflict.linked_task,
+    new_metadata: {
+      ...(conflict.new_metadata || {}),
+      resolution_action: action,
+      resolution_task_id: taskId || conflict?.new_metadata?.resolution_task_id || '',
+      resolution_task_state: result?.already_running ? 'running' : 'queued',
+      resolution_requested_at: conflict?.new_metadata?.resolution_requested_at || now,
+      resolution_step: currentStep,
+      resolution_progress: Math.max(0, Math.min(100, Math.round(Number.isFinite(progress) ? progress : 1)))
+    }
+  }
+  conflicts.value = conflicts.value.map(item => item.id === conflict.id ? { ...item, ...patch } : item)
+  selectedConflictIds.value = selectedConflictIds.value.filter(id => id !== conflict.id)
+  ensureProcessingPoller(taskId, conflict.id, action)
+}
+
 function reconcileLocalRetryingConflicts() {
   for (const conflictId of Object.keys(localRetryingConflictIds)) {
     const conflict = conflicts.value.find(item => item.id === conflictId)
@@ -1486,6 +1548,16 @@ function getConflictRetryProgress(conflict) {
   const value = Number(conflict?.linked_task?.progress ?? conflict?.new_metadata?.resolution_progress ?? 0)
   if (!Number.isFinite(value)) return 0
   return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+function getConflictProcessingProgress(conflict) {
+  const value = Number(conflict?.linked_task?.progress ?? conflict?.new_metadata?.resolution_progress ?? 0)
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+function getConflictProcessingStep(conflict) {
+  return String(conflict?.linked_task?.current_step || conflict?.new_metadata?.resolution_step || '').trim()
 }
 
 function getConflictStatusLabel(conflict) {
@@ -1704,6 +1776,110 @@ function startRetryPoller(taskId, conflictId) {
   retryPollers.set(taskId, timerId)
 }
 
+function ensureProcessingPollers() {
+  for (const conflict of conflicts.value) {
+    if (!isConflictProcessing(conflict) || isConflictRetrying(conflict)) continue
+    const action = getConflictResolutionAction(conflict) || 'KEEP_NEW'
+    const taskId = String(conflict?.linked_task?.id || conflict?.new_metadata?.resolution_task_id || conflict?.task_id || '').trim()
+    if (!taskId) continue
+    const linkedStatus = String(conflict?.linked_task?.status || '').trim().toLowerCase()
+    if (['completed', 'failed', 'cancelled', 'canceled'].includes(linkedStatus)) continue
+    ensureProcessingPoller(taskId, conflict.id, action)
+  }
+}
+
+function ensureProcessingPoller(taskId, conflictId, action = 'KEEP_NEW') {
+  const normalizedTaskId = String(taskId || '').trim()
+  const normalizedConflictId = String(conflictId || '').trim()
+  if (!normalizedTaskId || !normalizedConflictId || processingPollers.has(normalizedTaskId)) return
+  startProcessingPoller(normalizedTaskId, normalizedConflictId, action)
+}
+
+function startProcessingPoller(taskId, conflictId, action = 'KEEP_NEW') {
+  let attempts = 0
+  const maxAttempts = 240
+  const scheduleNext = () => {
+    const delay = attempts < 30 ? 1200 : 3000
+    const timerId = setTimeout(poll, delay)
+    processingPollers.set(taskId, timerId)
+  }
+
+  const poll = async () => {
+    attempts++
+    try {
+      const task = await taskCenterApi.getItem({ engine_task_id: taskId, _t: Date.now() })
+      if (task) {
+        const taskStatus = String(task.status || '').trim().toLowerCase()
+        updateConflictLinkedTask(conflictId, task, action)
+        if (taskStatus === 'completed') {
+          processingPollers.delete(taskId)
+          await fetchConflicts()
+          if (!conflicts.value.some(item => item.id === conflictId)) {
+            ElMessage.success(action === 'KEEP_NEW' ? '保留新版完成，已自动刷新' : '问题处理完成，已自动刷新')
+          }
+          return
+        }
+        if (taskStatus === 'failed') {
+          processingPollers.delete(taskId)
+          await fetchConflicts()
+          ElMessage.warning(task.error_message ? `问题处理失败：${task.error_message}` : '问题处理失败，请查看任务详情')
+          return
+        }
+      } else {
+        await fetchConflicts()
+        const conflict = conflicts.value.find(item => item.id === conflictId)
+        if (!isConflictProcessing(conflict)) {
+          processingPollers.delete(taskId)
+          return
+        }
+      }
+      if (attempts % 5 === 0) {
+        await fetchConflicts()
+      }
+    } catch (_) {
+    }
+    if (attempts < maxAttempts && processingPollers.has(taskId)) {
+      scheduleNext()
+    } else {
+      processingPollers.delete(taskId)
+      await fetchConflicts()
+    }
+  }
+
+  const timerId = setTimeout(poll, 800)
+  processingPollers.set(taskId, timerId)
+}
+
+function updateConflictLinkedTask(conflictId, task, action = 'KEEP_NEW') {
+  const taskId = String(task?.engine_task_id || task?.entity_id || '').trim()
+  const progress = Math.max(0, Math.min(100, Math.round(Number(task?.progress || 0))))
+  const currentStep = String(task?.current_step || '').trim()
+  conflicts.value = conflicts.value.map(conflict => {
+    if (conflict.id !== conflictId) return conflict
+    return {
+      ...conflict,
+      status: 'PROCESSING',
+      task_id: taskId || conflict.task_id,
+      linked_task: {
+        ...(conflict.linked_task || {}),
+        id: taskId || conflict.linked_task?.id || conflict.task_id,
+        status: String(task?.status || conflict.linked_task?.status || 'processing').toLowerCase(),
+        progress,
+        current_step: currentStep,
+        error_message: String(task?.error_message || '')
+      },
+      new_metadata: {
+        ...(conflict.new_metadata || {}),
+        resolution_action: action,
+        resolution_task_id: taskId || conflict.new_metadata?.resolution_task_id || '',
+        resolution_task_state: String(task?.status || '').trim().toLowerCase() || 'processing',
+        resolution_step: currentStep,
+        resolution_progress: progress
+      }
+    }
+  })
+}
+
 async function loadKeepNewPreview(conflict) {
   const response = await conflictApi.preview(conflict.id, 'KEEP_NEW')
   return response.preview || {}
@@ -1718,11 +1894,12 @@ function buildKeepNewSummary(conflict, preview) {
   ].join('\n')
 }
 
-async function resolveKeepNew(conflict, preview = null) {
+async function resolveKeepNew(conflict, preview = null, options = {}) {
   const effectivePreview = preview || await loadKeepNewPreview(conflict)
   const result = await conflictApi.resolve(conflict.id, {
     action: 'KEEP_NEW',
-    confirmed: true
+    confirmed: true,
+    skip_activity_snapshot: Boolean(options.skipActivitySnapshot)
   })
   return {
     ...effectivePreview,
@@ -2099,7 +2276,9 @@ async function handleKeepNew(conflict) {
     })
 
     const result = await resolveKeepNew(conflict, preview)
-    await fetchConflicts()
+    markConflictProcessing(conflict, result, 'KEEP_NEW')
+    conflictFilter.value = 'processing'
+    void fetchConflicts()
     ElMessage.success(result?.message || '已提交保留新版后台任务')
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') {
@@ -2235,17 +2414,22 @@ async function handleBatchKeepNew() {
     const successes = []
     const resolveResults = await runConflictBatch(
       previewEntries,
-      async (entry) => resolveKeepNew(entry.conflict, entry.preview),
+      async (entry) => resolveKeepNew(entry.conflict, entry.preview, { skipActivitySnapshot: true }),
       { concurrency: 4 }
     )
     for (const r of resolveResults) {
       if (r.ok) {
         successes.push(r.item.conflict)
+        markConflictProcessing(r.item.conflict, r.value, 'KEEP_NEW')
       } else {
         failures.push({ conflict: r.item.conflict, message: resolveErrorMessage(r.error, '保留新版失败') })
       }
     }
 
+    if (successes.length) {
+      conflictFilter.value = 'processing'
+      void fetchConflicts()
+    }
     await presentBatchResult('批量保留新版', successes, failures)
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') {
@@ -3435,6 +3619,18 @@ button:disabled {
   align-items: center;
   gap: 8px;
   margin-top: 8px;
+  flex-wrap: wrap;
+}
+.conflicts-list-progress-step {
+  flex: 0 0 100%;
+  min-width: 0;
+  font-size: 10.5px;
+  line-height: 1.25;
+  font-weight: 650;
+  color: #64748b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .conflicts-list-progress-track {
   flex: 1;
@@ -5168,6 +5364,9 @@ html.kikoerumanager-dark .conflicts-list-card-date {
 }
 html.kikoerumanager-dark .conflicts-list-progress-track {
   background: rgba(30, 41, 59, 0.6);
+}
+html.kikoerumanager-dark .conflicts-list-progress-step {
+  color: #94a3b8;
 }
 html.kikoerumanager-dark .conflicts-list-progress-num {
   color: #93c5fd;
