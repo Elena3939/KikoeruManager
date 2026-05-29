@@ -1,7 +1,7 @@
 <template>
   <aside
-    class="relative grid min-h-0 self-start rounded-[20px] border border-slate-100 bg-white shadow-[0_4px_16px_rgba(15,23,42,0.04)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
-    :class="ctx.drawerCollapsed ? 'gap-2 px-2 py-2.5' : 'gap-3.5 px-4 py-4'"
+    class="subtitle-context-drawer relative grid min-h-0 self-start rounded-[20px] border border-slate-100 bg-white shadow-[0_4px_16px_rgba(15,23,42,0.04)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+    :class="ctx.drawerCollapsed ? 'gap-2 px-2 py-2.5' : 'gap-3 px-3 py-3'"
   >
     <!-- 浮动收纳手柄 -->
     <button
@@ -56,7 +56,7 @@
     <template v-else>
       <div class="min-w-0">
         <div class="text-[13px] font-semibold tracking-[-0.01em] text-slate-900">{{ ctx.modeTitle }}</div>
-        <div class="mt-1 text-[12px] leading-6 text-slate-500">{{ ctx.modeTip }}</div>
+        <div class="mt-1 line-clamp-1 text-[11.5px] leading-5 text-slate-500">{{ ctx.modeTip }}</div>
       </div>
 
       <div class="flex gap-1 rounded-[12px] border border-slate-200 bg-slate-100/80 p-1" style="position: relative; z-index: 60; pointer-events: auto; isolation: isolate;">
@@ -193,5 +193,71 @@ defineProps({
 .rail-handle:hover .rail-handle-label {
   max-width: 40px;
   opacity: 1;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-context-drawer {
+  background:
+    linear-gradient(180deg, rgba(45, 46, 51, 0.58), rgba(13, 14, 18, 0.84)),
+    rgba(18, 19, 23, 0.78) !important;
+  background-image: linear-gradient(180deg, rgba(45, 46, 51, 0.58), rgba(13, 14, 18, 0.84)) !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  backdrop-filter: blur(12px) saturate(106%) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(106%) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-context-drawer .subtitle-workbench-scrollbar {
+  max-height: calc(100vh - 168px) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-context-drawer .text-slate-900 {
+  color: rgba(250, 250, 252, 0.96) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-context-drawer .text-slate-500 {
+  color: rgba(214, 214, 220, 0.66) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-context-drawer > .flex {
+  background: #24252a !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-context-drawer > .flex button {
+  color: rgba(214, 214, 220, 0.76) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-context-drawer > .flex button:hover {
+  background: #303136 !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-context-drawer > .flex button.bg-slate-900,
+:global(html.kikoerumanager-dark) .subtitle-context-drawer > .flex button[class*="bg-slate-900"] {
+  background: #4a4b51 !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-context-drawer .rail-handle {
+  background: #2b2c30 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: rgba(244, 244, 245, 0.78) !important;
+  box-shadow: none !important;
+  animation: none !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-context-drawer .rail-handle:hover {
+  background: #3a3b40 !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
 }
 </style>
