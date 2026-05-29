@@ -5,8 +5,9 @@
         type="button"
         class="lib-search-filter"
         :class="{ 'is-active': kindFilter !== 'all', 'is-open': isFilterMenuOpen }"
+        :data-kind-filter="kindFilter"
         :title="filterButtonTitle"
-        :style="{ color: currentFilterMeta.color }"
+        :style="{ color: currentFilterMeta.color, '--lib-search-filter-color': currentFilterMeta.color }"
         @mousedown.prevent
         @click="toggleFilterMenu"
       >
@@ -661,6 +662,7 @@ onBeforeUnmount(() => {
   position: absolute;
   left: 5px;
   top: 50%;
+  z-index: 2;
   transform: translateY(-50%);
   width: 26px;
   height: 26px;
@@ -670,8 +672,18 @@ onBeforeUnmount(() => {
   background: transparent;
   border-radius: 7px;
   cursor: pointer;
-  color: #94a3b8;
+  color: var(--lib-search-filter-color, #94a3b8);
   transition: all 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.lib-search-filter svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+  color: currentColor;
+  stroke: currentColor;
+  opacity: 1;
+  pointer-events: none;
 }
 
 .lib-search-filter:hover {
@@ -1254,27 +1266,49 @@ onBeforeUnmount(() => {
 
 :global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-pop,
 :global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu {
-  background: var(--km-dark-sidebar) !important;
-  border-color: var(--km-dark-border) !important;
+  background: #0b0c10 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
   color: var(--km-dark-text) !important;
-  box-shadow:
-    0 22px 54px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
 :global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-head,
 :global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-foot,
 :global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-head {
-  background: var(--km-dark-field) !important;
-  border-color: var(--km-dark-border) !important;
-  color: var(--km-dark-text-muted) !important;
+  background: #16171b !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: rgba(214, 214, 220, 0.72) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-head svg {
+  color: #64748b !important;
+  stroke: currentColor !important;
+  opacity: 1 !important;
 }
 
 :global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-head-title,
 :global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-row-name,
-:global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-label,
 :global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-state .font-medium {
   color: var(--km-dark-text-strong) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-row {
+  color: rgba(226, 232, 240, 0.78) !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-label {
+  color: currentColor !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-icon svg {
+  color: currentColor !important;
+  stroke: currentColor !important;
+  opacity: 1 !important;
 }
 
 :global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-head-loader,
@@ -1291,11 +1325,16 @@ onBeforeUnmount(() => {
 :global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-row.is-active,
 :global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-row:hover,
 :global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-row.is-active {
-  background: rgba(255, 255, 255, 0.16) !important;
+  background: #2b2c30 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
   color: var(--km-dark-text-strong) !important;
-  box-shadow:
-    inset 3px 0 0 rgba(255, 255, 255, 0.78),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .lib-search-box .lib-filter-menu-check {
+  color: #6366f1 !important;
+  stroke: currentColor !important;
 }
 
 :global(html.kikoerumanager-dark) .lib-search-box .lib-suggest-head-count,

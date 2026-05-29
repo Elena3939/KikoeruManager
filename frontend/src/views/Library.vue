@@ -584,7 +584,7 @@
 
               class="lib-btn lib-btn-icon-tinted lib-icon-batch-move lib-batch-action-btn"
 
-              :disabled="!isWritableCurrentLibrary || moveDialogState.submitting || !selectedRows.length"
+              :disabled="!isWritableCurrentLibrary || moveDialogState.submitting || directMoveSubmitting || !selectedRows.length"
 
               @click="openMoveDialog(selectedRows)"
 
@@ -664,7 +664,7 @@
         v-if="!isMobileViewport"
         ref="tableMarqueeRef"
         class="lib-table-marquee-host"
-        :class="{ 'is-marquee-selecting': tableMarqueeState.active }"
+        :class="{ 'is-marquee-selecting': tableMarqueeState.visible }"
         tabindex="0"
         @pointerdown.capture="onTableMarqueePointerDown"
         @keydown="handleLibraryTableKeydown"
@@ -699,7 +699,7 @@
               v-for="tableRow in libraryTableRows"
               :key="tableRow.id"
               class="lib-file-table-row"
-              :class="libraryRowClassName({ row: tableRow.original })"
+              :class="libraryRowClassName({ row: tableRow.original, rowIndex: tableRow.index })"
               :data-library-row-index="tableRow.index"
               :data-library-row-path="tableRow.original.path || ''"
               role="row"
@@ -710,15 +710,15 @@
               <div class="lib-file-cell lib-file-name-cell" role="cell">
                 <div class="file-cell" :title="tableRow.original.name || getFileName(tableRow.original.path)">
                   <div class="file-main-line">
-                    <span class="file-icon-shell">
+                    <span class="file-icon-shell" @click.stop="handleLibraryNameActionClick(tableRow.original, $event, getLibraryNamePrimaryAction(tableRow.original))" @dblclick.stop>
                       <component :is="getLibraryRowIconComponent(tableRow.original)" class="file-icon" :class="getLibraryRowIconClass(tableRow.original)" :size="18" :stroke-width="2.2" />
                     </span>
 
-                    <button v-if="isSearchResultRow(tableRow.original)" type="button" class="file-link-btn" @click.stop="handleLibraryNameActionClick(tableRow.original, $event, 'locate')" v-html="renderLibrarySearchHighlight(tableRow.original.name)"></button>
+                    <button v-if="isSearchResultRow(tableRow.original)" type="button" class="file-link-btn" @click.stop="handleLibraryNameActionClick(tableRow.original, $event, 'locate')" @dblclick.stop v-html="renderLibrarySearchHighlight(tableRow.original.name)"></button>
 
-                    <button v-else-if="tableRow.original.is_directory" type="button" class="file-link-btn" @click.stop="handleLibraryNameActionClick(tableRow.original, $event, 'open')" v-html="renderLibrarySearchHighlight(tableRow.original.name)"></button>
+                    <button v-else-if="tableRow.original.is_directory" type="button" class="file-link-btn" @click.stop="handleLibraryNameActionClick(tableRow.original, $event, 'open')" @dblclick.stop v-html="renderLibrarySearchHighlight(tableRow.original.name)"></button>
 
-                    <button v-else-if="canViewLibraryRow(tableRow.original)" type="button" class="file-link-btn" @click.stop="handleLibraryNameActionClick(tableRow.original, $event, 'view')" v-html="renderLibrarySearchHighlight(tableRow.original.name)"></button>
+                    <button v-else-if="canViewLibraryRow(tableRow.original)" type="button" class="file-link-btn" @click.stop="handleLibraryNameActionClick(tableRow.original, $event, 'view')" @dblclick.stop v-html="renderLibrarySearchHighlight(tableRow.original.name)"></button>
 
                     <span v-else class="file-name" v-html="renderLibrarySearchHighlight(tableRow.original.name)"></span>
                   </div>
@@ -830,7 +830,7 @@
 
         :show-move="Boolean(libraryRowContextMenu.row && !isRemoteCurrentLibrary)"
 
-        :disable-move="!isWritableCurrentLibrary || moveDialogState.submitting || (libraryRowContextMenu.batchMode && !selectedRows.length)"
+        :disable-move="!isWritableCurrentLibrary || moveDialogState.submitting || directMoveSubmitting || (libraryRowContextMenu.batchMode && !selectedRows.length)"
 
         :show-upload="Boolean(libraryRowContextMenu.row?.path && !isRemoteCurrentLibrary)"
 
@@ -862,7 +862,15 @@
 
       <div class="pagination-wrap">
 
-        <el-pagination v-model:current-page="currentPage" v-model:page-size="pageSize" :page-sizes="PAGE_SIZES" :total="totalFiles" layout="total, sizes, prev, pager, next, jumper" background />
+        <el-pagination
+          v-model:current-page="currentPage"
+          v-model:page-size="pageSize"
+          :page-sizes="PAGE_SIZES"
+          :total="totalFiles"
+          layout="total, sizes, prev, pager, next, jumper"
+          popper-class="library-pagination-size-popper"
+          background
+        />
 
       </div>
 
@@ -1444,6 +1452,85 @@
 
     />
 
+    <Transition name="drag-move-conflict-fade">
+      <div
+        v-if="dragMoveConflictState.visible"
+        class="drag-move-conflict-overlay"
+        @click.self="cancelDragMoveConflict"
+      >
+        <section class="drag-move-conflict-panel" role="dialog" aria-modal="true" aria-labelledby="drag-move-conflict-title">
+          <header class="drag-move-conflict-head">
+            <span class="drag-move-conflict-icon">
+              <IconFolderInput :size="20" :stroke-width="2.4" />
+            </span>
+            <div class="drag-move-conflict-title-block">
+              <h3 id="drag-move-conflict-title">目标目录存在同名项</h3>
+              <p>{{ dragMoveConflictSummary }}</p>
+            </div>
+            <button
+              type="button"
+              class="drag-move-conflict-close"
+              :disabled="dragMoveConflictState.submitting"
+              @click="cancelDragMoveConflict"
+            >
+              <IconX :size="16" :stroke-width="2.4" />
+            </button>
+          </header>
+
+          <div class="drag-move-conflict-body">
+            <div class="drag-move-conflict-target" :title="dragMoveConflictState.targetPath">
+              <span>移动到</span>
+              <b>{{ dragMoveConflictTargetName }}</b>
+            </div>
+            <ul class="drag-move-conflict-list">
+              <li v-for="item in dragMoveConflictPreview" :key="item.path || item.name">
+                <span>{{ item.name }}</span>
+                <em>{{ item.is_directory ? '文件夹' : '文件' }}</em>
+              </li>
+              <li v-if="dragMoveConflictOverflowCount > 0" class="drag-move-conflict-more">
+                还有 {{ dragMoveConflictOverflowCount }} 项同名
+              </li>
+            </ul>
+          </div>
+
+          <footer class="drag-move-conflict-actions">
+            <button
+              type="button"
+              class="drag-move-conflict-btn is-primary"
+              :disabled="dragMoveConflictState.submitting"
+              @click="confirmDragMoveConflict('suffix')"
+            >
+              保留两者
+            </button>
+            <button
+              type="button"
+              class="drag-move-conflict-btn is-danger"
+              :disabled="dragMoveConflictState.submitting"
+              @click="confirmDragMoveConflict('overwrite')"
+            >
+              覆盖目标
+            </button>
+            <button
+              type="button"
+              class="drag-move-conflict-btn"
+              :disabled="dragMoveConflictState.submitting"
+              @click="confirmDragMoveConflict('skip')"
+            >
+              跳过同名
+            </button>
+            <button
+              type="button"
+              class="drag-move-conflict-btn is-ghost"
+              :disabled="dragMoveConflictState.submitting"
+              @click="cancelDragMoveConflict"
+            >
+              取消
+            </button>
+          </footer>
+        </section>
+      </div>
+    </Transition>
+
 
 
     <Transition name="floating-card">
@@ -1725,6 +1812,16 @@ const tableMarqueeSelectionActive = ref(false)
 
 const suppressMarqueeClickUntil = ref(0)
 
+const TABLE_MARQUEE_START_DISTANCE = 10
+
+const TABLE_ITEM_DRAG_START_DISTANCE = 8
+
+const TABLE_BLANK_DOUBLE_CLICK_DELAY = 420
+
+const TABLE_BLANK_DOUBLE_CLICK_DISTANCE = 10
+
+const DRAG_MOVE_CONFLICT_PREVIEW_MAX = 8
+
 let tableSelectionApplyTimer = null
 
 let tableMarqueeRowSnapshot = []
@@ -1737,6 +1834,8 @@ let tableItemDragMoveFrame = null
 
 let tableItemDragPendingPoint = null
 
+let tableBlankClickCandidate = null
+
 let pathBreadcrumbResizeObserver = null
 
 let pathBreadcrumbDragOpenTimer = null
@@ -1746,6 +1845,19 @@ let pathBreadcrumbDragCloseTimer = null
 const libraryRowContextMenu = ref({ visible: false, x: 0, y: 0, row: null, batchMode: false, renderKey: 0 })
 
 const moveDialogState = ref({ visible: false, sourceLibraryId: '', initialPath: '', items: [], submitting: false })
+
+const directMoveSubmitting = ref(false)
+
+const dragMoveConflictState = ref({
+  visible: false,
+  sourceLibraryId: '',
+  targetLibraryId: '',
+  targetPath: '',
+  targetName: '',
+  items: [],
+  conflicts: [],
+  submitting: false
+})
 
 const librarySearchBoxRef = ref(null)
 
@@ -3223,6 +3335,21 @@ const tableItemDragFileCount = computed(() => tableItemDragState.value.items.len
 const tableItemDragCountText = computed(() => {
   const count = tableItemDragState.value.items.length
   return count > 1 ? `${count} 项` : '1 项'
+})
+
+const dragMoveConflictPreview = computed(() => dragMoveConflictState.value.conflicts.slice(0, DRAG_MOVE_CONFLICT_PREVIEW_MAX))
+
+const dragMoveConflictOverflowCount = computed(() => Math.max(0, dragMoveConflictState.value.conflicts.length - dragMoveConflictPreview.value.length))
+
+const dragMoveConflictTargetName = computed(() => {
+  const state = dragMoveConflictState.value
+  return state.targetName || getFileName(state.targetPath) || '目标目录'
+})
+
+const dragMoveConflictSummary = computed(() => {
+  const conflictCount = dragMoveConflictState.value.conflicts.length
+  const itemCount = dragMoveConflictState.value.items.length
+  return `${itemCount} 项中有 ${conflictCount} 项会与目标目录同名`
 })
 
 function isPathBreadcrumbDropTarget (segment) {
@@ -5258,6 +5385,8 @@ onBeforeUnmount(() => {
 
   stopTableItemDragTracking()
 
+  resetDragMoveConflict()
+
   window.removeEventListener('click', suppressNextMarqueeClick, true)
 
   cancelPathBreadcrumbDragOpen()
@@ -6953,6 +7082,56 @@ function clearNativeSelection () {
 }
 
 
+function handleTableBlankAreaPointerDoubleClick (row, event, isItemDragHandle = false) {
+
+  if (!row?.path || isItemDragHandle || isTableSelectionModifierEvent(event)) {
+
+    tableBlankClickCandidate = null
+
+    return false
+
+  }
+
+  const now = Date.now()
+
+  const candidate = tableBlankClickCandidate
+
+  const isSameBlankDoubleClick = Boolean(
+    candidate &&
+    candidate.path === row.path &&
+    now - candidate.time <= TABLE_BLANK_DOUBLE_CLICK_DELAY &&
+    Math.hypot(
+      Number(event.clientX || 0) - candidate.x,
+      Number(event.clientY || 0) - candidate.y
+    ) <= TABLE_BLANK_DOUBLE_CLICK_DISTANCE
+  )
+
+  tableBlankClickCandidate = {
+    path: row.path,
+    time: now,
+    x: Number(event.clientX || 0),
+    y: Number(event.clientY || 0)
+  }
+
+  if (!isSameBlankDoubleClick) return false
+
+  clearNativeSelection()
+
+  event.preventDefault()
+
+  event.stopPropagation()
+
+  event.stopImmediatePropagation?.()
+
+  tableBlankClickCandidate = null
+
+  openLibraryRowPrimaryAction(row)
+
+  return true
+
+}
+
+
 
 function onTableMarqueePointerDown (event) {
 
@@ -6979,6 +7158,8 @@ function onTableMarqueePointerDown (event) {
   if (target.closest('input, textarea, select, label, .el-checkbox')) return
 
   const isItemDragHandle = Boolean(target.closest('.file-icon-shell, .file-link-btn, .file-name'))
+
+  if (handleTableBlankAreaPointerDoubleClick(row, event, isItemDragHandle)) return
 
   // 已经在多选 / 单选范围里的行，整行任意位置都允许直接发起拖拽移动；
   // 未选中的行仍然只允许从文件图标 / 文件名小块发起拖拽，避免和框选冲突。
@@ -7057,7 +7238,12 @@ function onTableMarqueePointerMove (event) {
 
   if (!state.active) return
 
-  event.preventDefault()
+  const movedEnough = Math.hypot(
+    Number(event.clientX || 0) - Number(state.startX || 0),
+    Number(event.clientY || 0) - Number(state.startY || 0)
+  ) >= TABLE_MARQUEE_START_DISTANCE
+
+  if (state.visible || movedEnough) event.preventDefault()
 
   tableMarqueePendingPoint = { clientX: event.clientX, clientY: event.clientY }
 
@@ -7090,7 +7276,7 @@ function processTableMarqueePointerPoint ({ clientX, clientY }) {
   state.currentX = clientX
   state.currentY = clientY
 
-  const moved = Math.hypot(state.currentX - state.startX, state.currentY - state.startY) >= 2
+  const moved = Math.hypot(state.currentX - state.startX, state.currentY - state.startY) >= TABLE_MARQUEE_START_DISTANCE
 
   if (!moved && !state.visible) return
 
@@ -7515,7 +7701,7 @@ function onTableItemDragPointerMove (event) {
   const moved = Math.hypot(
     Number(event.clientX || 0) - Number(state.startX || 0),
     Number(event.clientY || 0) - Number(state.startY || 0)
-  ) >= 6
+  ) >= TABLE_ITEM_DRAG_START_DISTANCE
 
   if (state.visible || moved) event.preventDefault()
 
@@ -7550,7 +7736,7 @@ function processTableItemDragPointerPoint ({ clientX, clientY }) {
   state.currentX = clientX
   state.currentY = clientY
 
-  const moved = Math.hypot(state.currentX - state.startX, state.currentY - state.startY) >= 6
+  const moved = Math.hypot(state.currentX - state.startX, state.currentY - state.startY) >= TABLE_ITEM_DRAG_START_DISTANCE
 
   if (!moved && !state.visible) return
 
@@ -7614,7 +7800,7 @@ function onTableItemDragPointerUp (event) {
 
   }
 
-  if (shouldDrop) openMoveDialog(items, targetPath)
+  if (shouldDrop) directMoveRowsToPath(items, targetPath)
 
 }
 
@@ -7960,6 +8146,214 @@ function canDropRowsToPath (rows, targetPath) {
   }
 
   return true
+
+}
+
+
+
+function resetDragMoveConflict () {
+
+  dragMoveConflictState.value = {
+    visible: false,
+    sourceLibraryId: '',
+    targetLibraryId: '',
+    targetPath: '',
+    targetName: '',
+    items: [],
+    conflicts: [],
+    submitting: false
+  }
+
+}
+
+
+
+function getMoveTargetName (targetPath) {
+
+  return getFileName(targetPath) || '库存根目录'
+
+}
+
+
+
+async function getDirectMoveConflicts (targetLibraryId, targetPath, items) {
+
+  const sourceNameMap = new Map()
+
+  for (const item of items || []) {
+
+    const key = String(item?.name || getFileName(item?.path) || '').trim().toLowerCase()
+
+    if (key && !sourceNameMap.has(key)) sourceNameMap.set(key, item)
+
+  }
+
+  if (!sourceNameMap.size) return []
+
+  const data = await libraryApi.browserListFolders(targetLibraryId, targetPath, { includeFiles: true })
+
+  const conflicts = []
+
+  for (const entry of data?.folders || []) {
+
+    const key = String(entry?.name || '').trim().toLowerCase()
+
+    if (!key || !sourceNameMap.has(key)) continue
+
+    const sourceItem = sourceNameMap.get(key)
+
+    if (normalizeConflictPathKey(sourceItem?.path) === normalizeConflictPathKey(entry?.path)) continue
+
+    conflicts.push({
+      ...sourceItem,
+      existingPath: entry?.path || ''
+    })
+
+  }
+
+  return conflicts
+
+}
+
+
+
+async function directMoveRowsToPath (rows, targetPath) {
+
+  if (isRemoteCurrentLibrary.value) {
+
+    ElMessage.warning('远程库存暂不支持拖拽移动')
+
+    return
+
+  }
+
+  if (!isWritableCurrentLibrary.value) {
+
+    ElMessage.warning('当前库存只读，无法移动')
+
+    return
+
+  }
+
+  if (directMoveSubmitting.value || dragMoveConflictState.value.submitting) return
+
+  const items = normalizeMoveItems(rows)
+
+  if (!items.length) {
+
+    ElMessage.warning('未选中可移动的项')
+
+    return
+
+  }
+
+  const sourceLibraryId = selectedLibraryId.value
+  const targetLibraryId = selectedLibraryId.value
+  const normalizedTargetPath = String(targetPath || '').trim()
+
+  if (!canDropRowsToPath(items, normalizedTargetPath)) {
+
+    ElMessage.warning('不能移动到该目录')
+
+    return
+
+  }
+
+  directMoveSubmitting.value = true
+
+  try {
+
+    const conflicts = await getDirectMoveConflicts(targetLibraryId, normalizedTargetPath, items)
+
+    if (conflicts.length) {
+
+      dragMoveConflictState.value = {
+        visible: true,
+        sourceLibraryId,
+        targetLibraryId,
+        targetPath: normalizedTargetPath,
+        targetName: getMoveTargetName(normalizedTargetPath),
+        items,
+        conflicts,
+        submitting: false
+      }
+
+      return
+
+    }
+
+    await executeLibraryMove({
+      sourceLibraryId,
+      targetLibraryId,
+      targetPath: normalizedTargetPath,
+      items,
+      conflictStrategy: 'suffix'
+    })
+
+  } catch (error) {
+
+    ElMessage.error('移动失败：' + (error?.response?.data?.detail || error?.message || '未知错误'))
+
+  } finally {
+
+    directMoveSubmitting.value = false
+
+  }
+
+}
+
+
+
+async function confirmDragMoveConflict (strategy) {
+
+  if (dragMoveConflictState.value.submitting) return
+
+  const state = dragMoveConflictState.value
+
+  if (!state.items.length || !state.targetPath) {
+
+    resetDragMoveConflict()
+
+    return
+
+  }
+
+  dragMoveConflictState.value = { ...state, submitting: true }
+  directMoveSubmitting.value = true
+
+  try {
+
+    await executeLibraryMove({
+      sourceLibraryId: state.sourceLibraryId,
+      targetLibraryId: state.targetLibraryId,
+      targetPath: state.targetPath,
+      items: state.items,
+      conflictStrategy: strategy || 'suffix'
+    })
+
+    resetDragMoveConflict()
+
+  } catch (error) {
+
+    ElMessage.error('移动失败：' + (error?.response?.data?.detail || error?.message || '未知错误'))
+
+    dragMoveConflictState.value = { ...dragMoveConflictState.value, submitting: false }
+
+  } finally {
+
+    directMoveSubmitting.value = false
+
+  }
+
+}
+
+
+
+function cancelDragMoveConflict () {
+
+  if (dragMoveConflictState.value.submitting) return
+
+  resetDragMoveConflict()
 
 }
 
@@ -15444,6 +15838,14 @@ function handleLibraryRowClick (row, _column, event) {
 
   if (target instanceof Element && target.closest('input,textarea,select,a,.el-checkbox,.el-tag')) return
 
+  if (isLibraryRowBlankDoubleClick(event)) {
+
+    openLibraryRowPrimaryAction(row)
+
+    return
+
+  }
+
   if (handleTableRowModifierSelection(row, event)) return
 
   handleTableRowPlainSelection(row, event)
@@ -15476,6 +15878,8 @@ function handleLibraryNameActionClick (row, event, action) {
 
   if (handleTableRowModifierSelection(row, event)) return
 
+  if (!action) return
+
   if (action === 'locate') {
 
     locateLibrarySearchResult(row)
@@ -15501,19 +15905,41 @@ function handleLibraryNameActionClick (row, event, action) {
 }
 
 
-function handleLibraryRowDoubleClick (row, _column, event) {
+function getLibraryNamePrimaryAction (row) {
 
-  if (libraryRowContextMenu.value.visible) closeLibraryRowContextMenu()
+  if (isSearchResultRow(row)) return 'locate'
 
-  const target = event?.target
+  if (row?.is_directory) return 'open'
 
-  if (target instanceof Element && target.closest('input,textarea,select,a,button,.el-checkbox,.el-tag')) return
+  if (canViewLibraryRow(row)) return 'view'
+
+  return ''
+
+}
+
+
+function isLibraryRowBlankDoubleClick (event) {
+
+  if (!event || Number(event.detail || 0) < 2) return false
+
+  if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return false
+
+  const target = event.target
+
+  if (!(target instanceof Element)) return false
+
+  return !target.closest('.file-icon-shell,.file-link-btn,.file-name')
+
+}
+
+
+function openLibraryRowPrimaryAction (row) {
 
   if (row?.is_directory) {
 
     openFolder(row)
 
-    return
+    return true
 
   }
 
@@ -15521,7 +15947,24 @@ function handleLibraryRowDoubleClick (row, _column, event) {
 
     viewLibraryRow(row)
 
+    return true
+
   }
+
+  return false
+
+}
+
+
+function handleLibraryRowDoubleClick (row, _column, event) {
+
+  if (libraryRowContextMenu.value.visible) closeLibraryRowContextMenu()
+
+  const target = event?.target
+
+  if (target instanceof Element && target.closest('input,textarea,select,a,button,.file-icon-shell,.file-name,.el-checkbox,.el-tag')) return
+
+  openLibraryRowPrimaryAction(row)
 
 }
 
@@ -15821,13 +16264,109 @@ function closeMoveDialog () {
 
 
 
+function normalizeMoveItems (rows) {
+
+  return (Array.isArray(rows) ? rows : [])
+    .filter(row => row?.path)
+    .map(row => ({
+      path: row.path,
+      name: row.name || getFileName(row.path),
+      is_directory: !!row.is_directory
+    }))
+
+}
+
+
+
+function getMoveResultCounts (result) {
+
+  return {
+    successCount: Number(result?.success_count || (Array.isArray(result?.moved) ? result.moved.length : 0)),
+    skippedCount: Number(result?.skipped_count || (Array.isArray(result?.skipped) ? result.skipped.length : 0)),
+    failedCount: Number(result?.failed_count || (Array.isArray(result?.failed) ? result.failed.length : 0))
+  }
+
+}
+
+
+
+function notifyMoveResult (result) {
+
+  const { successCount, skippedCount, failedCount } = getMoveResultCounts(result)
+
+  if (failedCount > 0) {
+
+    const firstError = (Array.isArray(result?.failed) && result.failed[0]?.error) || ''
+
+    ElMessage.warning(`移动完成：成功 ${successCount} 项，跳过 ${skippedCount} 项，失败 ${failedCount} 项${firstError ? '。首个错误：' + firstError : ''}`)
+
+  } else if (skippedCount > 0) {
+
+    ElMessage.success(`移动完成：成功 ${successCount} 项，跳过 ${skippedCount} 项`)
+
+  } else {
+
+    ElMessage.success(`移动完成：成功 ${successCount} 项`)
+
+  }
+
+}
+
+
+
+async function refreshAfterMove (sourceLibraryId, targetLibraryId) {
+
+  const refreshJobs = [refreshLibrary({ silent: true })]
+
+  refreshJobs.push(refreshStats(false, { silent: true, refreshLibraryId: sourceLibraryId }))
+
+  if (targetLibraryId !== sourceLibraryId) {
+
+    refreshJobs.push(refreshStats(false, { silent: true, refreshLibraryId: targetLibraryId }))
+
+  }
+
+  await Promise.all(refreshJobs)
+
+}
+
+
+
+async function executeLibraryMove ({ sourceLibraryId, targetLibraryId, targetPath, items, conflictStrategy = 'suffix' }) {
+
+  const result = await libraryApi.browserMove(
+
+    sourceLibraryId,
+
+    items.map(item => item.path),
+
+    targetLibraryId,
+
+    targetPath,
+
+    { conflictStrategy }
+
+  )
+
+  notifyMoveResult(result)
+
+  clearSelection()
+
+  await refreshAfterMove(sourceLibraryId, targetLibraryId)
+
+  return result
+
+}
+
+
+
 async function handleMoveSubmit (payload) {
 
   if (!payload?.targetLibraryId || !payload?.targetPath) return
 
   if (moveDialogState.value.submitting) return
 
-  const items = moveDialogState.value.items.slice()
+  const items = normalizeMoveItems(moveDialogState.value.items)
 
   if (!items.length) return
 
@@ -15837,59 +16376,15 @@ async function handleMoveSubmit (payload) {
 
   const targetPath = payload.targetPath
 
+  const conflictStrategy = payload.conflictStrategy || 'suffix'
+
   moveDialogState.value = { ...moveDialogState.value, submitting: true }
 
   try {
 
-    const result = await libraryApi.browserMove(
-
-      sourceLibraryId,
-
-      items.map(item => item.path),
-
-      targetLibraryId,
-
-      targetPath
-
-    )
-
-    const successCount = Number(result?.success_count || 0)
-
-    const skippedCount = Number(result?.skipped_count || (Array.isArray(result?.skipped) ? result.skipped.length : 0))
-
-    const failedCount = Number(result?.failed_count || (Array.isArray(result?.failed) ? result.failed.length : 0))
-
-    if (failedCount > 0) {
-
-      const firstError = (Array.isArray(result?.failed) && result.failed[0]?.error) || ''
-
-      ElMessage.warning(`移动完成：成功 ${successCount} 项，跳过 ${skippedCount} 项，失败 ${failedCount} 项${firstError ? '。首个错误：' + firstError : ''}`)
-
-    } else if (skippedCount > 0) {
-
-      ElMessage.success(`移动完成：成功 ${successCount} 项，跳过 ${skippedCount} 项`)
-
-    } else {
-
-      ElMessage.success(`移动完成：成功 ${successCount} 项`)
-
-    }
+    await executeLibraryMove({ sourceLibraryId, targetLibraryId, targetPath, items, conflictStrategy })
 
     closeMoveDialog()
-
-    clearSelection()
-
-    const refreshJobs = [refreshLibrary({ silent: true })]
-
-    refreshJobs.push(refreshStats(false, { silent: true, refreshLibraryId: sourceLibraryId }))
-
-    if (targetLibraryId !== sourceLibraryId) {
-
-      refreshJobs.push(refreshStats(false, { silent: true, refreshLibraryId: targetLibraryId }))
-
-    }
-
-    await Promise.all(refreshJobs)
 
   } catch (error) {
 
@@ -17009,7 +17504,7 @@ function libraryRowKey (row) {
 
 
 
-function libraryRowClassName ({ row }) {
+function libraryRowClassName ({ row, rowIndex = -1 }) {
 
   const classes = []
 
@@ -17019,7 +17514,20 @@ function libraryRowClassName ({ row }) {
 
   if (libraryRowContextMenu.value.visible && libraryRowContextMenu.value.row?.path && row?.path === libraryRowContextMenu.value.row.path) classes.push('library-row-context-active')
 
-  if (row?.path && selectedRowPaths.value.has(row.path)) classes.push('library-row-marquee-selected')
+  if (row?.path && selectedRowPaths.value.has(row.path)) {
+    classes.push('library-row-marquee-selected')
+
+    const rows = libraryTableRows.value
+    const previousPath = rows[rowIndex - 1]?.original?.path
+    const nextPath = rows[rowIndex + 1]?.original?.path
+    const hasPreviousSelected = Boolean(previousPath && selectedRowPaths.value.has(previousPath))
+    const hasNextSelected = Boolean(nextPath && selectedRowPaths.value.has(nextPath))
+
+    if (!hasPreviousSelected && !hasNextSelected) classes.push('library-row-selected-single')
+    else if (!hasPreviousSelected) classes.push('library-row-selected-start')
+    else if (!hasNextSelected) classes.push('library-row-selected-end')
+    else classes.push('library-row-selected-middle')
+  }
 
   if (tableItemDragState.value.visible && row?.path && tableItemDragState.value.items.some(item => item?.path === row.path)) classes.push('library-row-drag-source')
 
@@ -17332,6 +17840,72 @@ function statsStatusTextDisplay (stats) {
 
 /* 页面头部现在走共享组件 components/common/AppPageHeader.vue，这里不再重复定义 */
 
+.library {
+  --lib-liquid-bg:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0.32) 48%, rgba(255, 255, 255, 0.2)),
+    rgba(255, 255, 255, 0.34);
+  --lib-liquid-bg-hover:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.42) 48%, rgba(255, 255, 255, 0.28)),
+    rgba(255, 255, 255, 0.42);
+  --lib-liquid-border: rgba(71, 85, 105, 0.23);
+  --lib-liquid-border-strong: rgba(71, 85, 105, 0.32);
+  --lib-liquid-inner: rgba(255, 255, 255, 0.58);
+  --lib-liquid-highlight:
+    linear-gradient(115deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.14) 32%, rgba(255, 255, 255, 0) 66%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.04));
+  --lib-liquid-toplight: linear-gradient(180deg, rgba(255, 255, 255, 0.38), rgba(255, 255, 255, 0.06) 44%, rgba(255, 255, 255, 0));
+  --lib-liquid-blur: blur(22px) saturate(148%) contrast(1.02);
+}
+
+.library :deep(.app-page-icon) {
+  color: #1d4ed8 !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+.library :deep(.app-page-icon svg) {
+  color: currentColor !important;
+  stroke: currentColor !important;
+}
+
+.library :deep(.app-page-head-right .km-badge) {
+  gap: 4px;
+  min-height: 22px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  box-shadow: none !important;
+}
+
+.library :deep(.app-page-head-right .km-badge svg) {
+  color: currentColor !important;
+  stroke: currentColor !important;
+}
+
+.library :deep(.app-page-head-right .km-badge-success) {
+  color: #047857 !important;
+  background: rgba(236, 253, 245, 0.9) !important;
+  border-color: rgba(110, 231, 183, 0.68) !important;
+}
+
+.library :deep(.app-page-head-right .km-badge-warning) {
+  color: #b45309 !important;
+  background: rgba(255, 251, 235, 0.92) !important;
+  border-color: rgba(251, 191, 36, 0.64) !important;
+}
+
+.library :deep(.app-page-head-right .km-badge-info) {
+  color: #2563eb !important;
+  background: rgba(239, 246, 255, 0.9) !important;
+  border-color: rgba(147, 197, 253, 0.68) !important;
+}
+
+.library :deep(.app-page-head-right .km-badge-danger) {
+  color: #be123c !important;
+  background: rgba(255, 241, 242, 0.9) !important;
+  border-color: rgba(251, 113, 133, 0.62) !important;
+}
+
 .media-preview-image {
   animation: media-preview-image-enter 180ms ease both;
   transform-origin: center;
@@ -17373,6 +17947,10 @@ function statsStatusTextDisplay (stats) {
 
 .lib-info-strip {
 
+  position: relative;
+
+  isolation: isolate;
+
   display: grid;
 
   grid-template-columns: minmax(0, 1.2fr) 1px minmax(0, 1fr) 1px minmax(0, 1fr);
@@ -17387,11 +17965,62 @@ function statsStatusTextDisplay (stats) {
 
   border-radius: 16px;
 
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 250, 252, 0.92));
+  overflow: hidden;
 
-  border: 1px solid rgba(226, 232, 240, 0.8);
+  background: var(--lib-liquid-bg);
 
-  box-shadow: 0 6px 20px -12px rgba(15, 23, 42, 0.1);
+  border: 1px solid var(--lib-liquid-border);
+
+  outline: 1px solid var(--lib-liquid-inner);
+
+  outline-offset: -2px;
+
+  box-shadow: none;
+
+  backdrop-filter: var(--lib-liquid-blur);
+
+  -webkit-backdrop-filter: var(--lib-liquid-blur);
+
+}
+
+.lib-info-strip::before,
+.lib-info-strip::after {
+
+  content: "";
+
+  position: absolute;
+
+  inset: 0;
+
+  pointer-events: none;
+
+}
+
+.lib-info-strip::before {
+
+  z-index: 0;
+
+  background: var(--lib-liquid-highlight);
+
+  opacity: 0.82;
+
+}
+
+.lib-info-strip::after {
+
+  z-index: 0;
+
+  background: var(--lib-liquid-toplight);
+
+  opacity: 0.52;
+
+}
+
+.lib-info-strip > * {
+
+  position: relative;
+
+  z-index: 1;
 
 }
 
@@ -17732,7 +18361,11 @@ function statsStatusTextDisplay (stats) {
 
 .lib-file-table {
 
-  border-radius: 14px;
+  position: relative;
+
+  isolation: isolate;
+
+  border-radius: 18px;
 
   overflow: hidden;
 
@@ -17740,21 +18373,68 @@ function statsStatusTextDisplay (stats) {
 
   -webkit-user-select: none;
 
-  border: 1px solid rgba(226, 232, 240, 0.72);
+  border: 1px solid rgba(71, 85, 105, 0.24);
 
-  background: #fff;
+  outline: 1px solid rgba(255, 255, 255, 0.46);
 
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.95) inset,
-    0 10px 28px -22px rgba(15, 23, 42, 0.28);
+  outline-offset: -2px;
+
+  background: var(--lib-liquid-bg);
+
+  backdrop-filter: var(--lib-liquid-blur);
+
+  -webkit-backdrop-filter: var(--lib-liquid-blur);
+
+  box-shadow: none;
+
+}
+
+.lib-file-table::before,
+.lib-file-table::after {
+
+  content: "";
+
+  position: absolute;
+
+  inset: 0;
+
+  pointer-events: none;
+
+}
+
+.lib-file-table::before {
+
+  z-index: 0;
+
+  background: var(--lib-liquid-highlight);
+
+  opacity: 0.86;
+
+}
+
+.lib-file-table::after {
+
+  z-index: 0;
+
+  background: var(--lib-liquid-toplight);
+
+  mix-blend-mode: screen;
+
+  opacity: 0.46;
+
+  box-shadow: none;
 
 }
 
 .lib-file-table-head {
 
-  background: #f8fafc;
+  position: relative;
 
-  border-bottom: 1px solid rgba(226, 232, 240, 0.82);
+  z-index: 1;
+
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.08));
+
+  border-bottom: 0;
 
 }
 
@@ -17778,7 +18458,15 @@ function statsStatusTextDisplay (stats) {
 
 .lib-file-table-body {
 
-  background: #fff;
+  position: relative;
+
+  z-index: 1;
+
+  padding: 8px 6px 12px;
+
+  overflow: visible;
+
+  background: transparent;
 
 }
 
@@ -17790,11 +18478,25 @@ function statsStatusTextDisplay (stats) {
 
   color: #1f2937;
 
-  background: #fff;
+  background: transparent;
 
-  border-bottom: 1px solid rgba(241, 245, 249, 0.94);
+  border-bottom: 0;
 
-  transition: background-color 0.14s ease, box-shadow 0.14s ease;
+  border-radius: 10px;
+
+  overflow: hidden;
+
+  backface-visibility: hidden;
+
+  transform: translate3d(0, 0, 0) scale(1);
+
+  transition:
+    background-color 0.26s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.26s cubic-bezier(0.22, 1, 0.36, 1),
+    color 0.2s ease,
+    transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+
+  will-change: transform, background-color, box-shadow;
 
 }
 
@@ -17804,9 +18506,16 @@ function statsStatusTextDisplay (stats) {
 
 }
 
-.lib-file-table-row:hover {
+.lib-file-table-row:hover,
+.lib-file-table-row.is-hover {
 
-  background: #f8fafc;
+  background: #eef0f3;
+
+  z-index: 2;
+
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
+
+  transform: translate3d(0, -4px, 0) scale(1.012);
 
 }
 
@@ -17918,7 +18627,11 @@ function statsStatusTextDisplay (stats) {
 
 }
 
-.lib-file-name-cell { padding-left: 36px !important; }
+.lib-file-name-cell {
+
+  padding-left: 36px !important;
+
+}
 
 .lib-file-rj-cell,
 
@@ -17994,11 +18707,13 @@ function statsStatusTextDisplay (stats) {
 
   border-radius: 20px;
 
-  border: 1px solid rgba(226, 232, 240, 0.7);
+  border: 0 !important;
 
-  box-shadow: 0 10px 30px -14px rgba(15, 23, 42, 0.12);
+  background: transparent !important;
 
-  overflow: hidden;
+  box-shadow: none !important;
+
+  overflow: visible;
 
 }
 
@@ -18088,6 +18803,67 @@ function statsStatusTextDisplay (stats) {
 
 /* 库存切换器（AppDropdown）的 trigger 在 toolbar 中作为主入口，
  * 这里给它增加一点视觉层级以呼应卡片标题，紧贴库存名 + 远程/本地徽章。*/
+
+.library :deep(.library-select-dd .app-dd-trigger),
+.library :deep(.lib-search-box .lib-search-input),
+.library :deep(.lib-search-box .lib-search-filter),
+.library :deep(.lib-search-box .lib-search-expand),
+.library .lib-btn-icon-tinted {
+
+  border-color: var(--lib-liquid-border) !important;
+
+  background: var(--lib-liquid-bg) !important;
+
+  box-shadow: none !important;
+
+  outline: 1px solid var(--lib-liquid-inner);
+
+  outline-offset: -2px;
+
+  backdrop-filter: var(--lib-liquid-blur);
+
+  -webkit-backdrop-filter: var(--lib-liquid-blur);
+
+}
+
+.library :deep(.library-select-dd .app-dd-trigger:hover),
+.library :deep(.library-select-dd .app-dd-trigger.is-open),
+.library :deep(.lib-search-box .lib-search-input:hover),
+.library :deep(.lib-search-box .lib-search-input:focus),
+.library :deep(.lib-search-box .lib-search-filter:hover),
+.library :deep(.lib-search-box .lib-search-filter.is-active),
+.library :deep(.lib-search-box .lib-search-filter.is-open),
+.library :deep(.lib-search-box .lib-search-expand:hover),
+.library .lib-btn-icon-tinted:hover {
+
+  border-color: var(--lib-liquid-border-strong) !important;
+
+  background: var(--lib-liquid-bg-hover) !important;
+
+  box-shadow: none !important;
+
+}
+
+.library :deep(.lib-search-box .lib-search-filter),
+.library :deep(.lib-search-box .lib-search-expand) {
+
+  border: 1px solid rgba(255, 255, 255, 0.28);
+
+}
+
+.library :deep(.lib-search-box .lib-search-clear:hover) {
+
+  background: rgba(255, 255, 255, 0.5) !important;
+
+  box-shadow: none !important;
+
+}
+
+.library :deep(.lib-search-box .lib-search-expand:hover svg) {
+
+  filter: none;
+
+}
 
 
 
@@ -18381,23 +19157,23 @@ function statsStatusTextDisplay (stats) {
 
   color: #334155;
 
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.92));
+  background: var(--lib-liquid-bg);
 
-  border-color: rgba(226, 232, 240, 0.78);
+  border-color: var(--lib-liquid-border);
 
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.95) inset, 0 5px 14px rgba(15, 23, 42, 0.045);
+  box-shadow: none;
 
 }
 
 .lib-btn-icon-tinted:hover {
 
-  background: linear-gradient(135deg, rgba(239, 246, 255, 0.98), rgba(255, 255, 255, 0.96));
+  background: var(--lib-liquid-bg-hover);
 
   color: #1e293b;
 
-  border-color: rgba(191, 219, 254, 0.92);
+  border-color: var(--lib-liquid-border-strong);
 
-  box-shadow: 0 10px 22px rgba(37, 99, 235, 0.12), 0 1px 0 rgba(255, 255, 255, 0.96) inset;
+  box-shadow: none;
 
 }
 
@@ -18428,7 +19204,7 @@ function statsStatusTextDisplay (stats) {
 
   position: relative;
 
-  overflow: hidden;
+  overflow: visible;
 
 }
 
@@ -18689,7 +19465,7 @@ function statsStatusTextDisplay (stats) {
 
   flex-wrap: nowrap;
 
-  padding: 0;
+  padding: 2px 0 0;
 
   margin-bottom: 0;
 
@@ -18699,7 +19475,7 @@ function statsStatusTextDisplay (stats) {
 
   border: 0 !important;
 
-  overflow: hidden;
+  overflow: visible;
 
   box-shadow: none !important;
 
@@ -18721,7 +19497,7 @@ function statsStatusTextDisplay (stats) {
 
   flex: 1 1 0;
 
-  overflow: hidden;
+  overflow: visible;
 
 }
 
@@ -19290,11 +20066,11 @@ function statsStatusTextDisplay (stats) {
 
   border-radius: 0;
 
-  background: rgba(250, 251, 255, 0.84);
+  background: rgba(255, 255, 255, 0.34);
 
-  backdrop-filter: blur(3px);
+  backdrop-filter: blur(0.8px) saturate(116%);
 
-  -webkit-backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(0.8px) saturate(116%);
 
   z-index: 50;
 
@@ -19450,9 +20226,9 @@ function statsStatusTextDisplay (stats) {
 
   border-radius: 18px;
 
-  background: rgba(255, 255, 255, 0.94);
+  background: transparent !important;
 
-  box-shadow: 0 12px 30px rgba(0, 0, 0, .05) !important;
+  box-shadow: none !important;
 
 }
 
@@ -20179,7 +20955,13 @@ function statsStatusTextDisplay (stats) {
 
 .file-icon {
   flex-shrink: 0;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform-origin: center;
+  transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.lib-file-table-row:hover .file-icon,
+.lib-file-table-row.is-hover .file-icon {
+  transform: translate3d(0, 0, 0) scale(1.08);
 }
 
 /*
@@ -20350,6 +21132,326 @@ function statsStatusTextDisplay (stats) {
   color: #0369a1;
 }
 
+.drag-move-conflict-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+.drag-move-conflict-panel {
+  width: min(520px, calc(100vw - 32px));
+  overflow: hidden;
+  border: 1px solid rgba(71, 85, 105, 0.22);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.72)),
+    rgba(255, 255, 255, 0.76);
+  color: #0f172a;
+  box-shadow: none;
+  backdrop-filter: blur(20px) saturate(145%);
+  -webkit-backdrop-filter: blur(20px) saturate(145%);
+}
+
+.drag-move-conflict-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 18px 18px 14px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.drag-move-conflict-icon {
+  display: inline-flex;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: rgba(226, 232, 240, 0.72);
+  color: #475569;
+}
+
+.drag-move-conflict-title-block {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.drag-move-conflict-title-block h3 {
+  margin: 0;
+  color: #111827;
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.drag-move-conflict-title-block p {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.drag-move-conflict-close {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.54);
+  color: #64748b;
+  transition: all 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.drag-move-conflict-close:hover:not(:disabled) {
+  background: #eef0f3;
+  color: #0f172a;
+  transform: translateY(-1px) scale(1.02);
+}
+
+.drag-move-conflict-body {
+  display: grid;
+  gap: 12px;
+  padding: 14px 18px 4px;
+}
+
+.drag-move-conflict-target {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: rgba(241, 245, 249, 0.62);
+}
+
+.drag-move-conflict-target span {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.drag-move-conflict-target b {
+  min-width: 0;
+  overflow: hidden;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drag-move-conflict-list {
+  display: grid;
+  gap: 6px;
+  max-height: 232px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.drag-move-conflict-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 10px;
+  border-radius: 10px;
+  background: rgba(248, 250, 252, 0.64);
+  color: #334155;
+}
+
+.drag-move-conflict-list span {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drag-move-conflict-list em {
+  color: #64748b;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 750;
+}
+
+.drag-move-conflict-list .drag-move-conflict-more {
+  display: block;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 750;
+  text-align: center;
+}
+
+.drag-move-conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 18px 18px;
+}
+
+.drag-move-conflict-btn {
+  min-height: 34px;
+  padding: 0 13px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.62);
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+  transition: all 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.drag-move-conflict-btn:hover:not(:disabled) {
+  background: #eef0f3;
+  color: #0f172a;
+  transform: translateY(-1px) scale(1.02);
+}
+
+.drag-move-conflict-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.drag-move-conflict-btn.is-primary {
+  border-color: rgba(71, 85, 105, 0.24);
+  background: #334155;
+  color: #fff;
+}
+
+.drag-move-conflict-btn.is-primary:hover:not(:disabled) {
+  background: #475569;
+  color: #fff;
+}
+
+.drag-move-conflict-btn.is-danger {
+  border-color: rgba(248, 113, 113, 0.24);
+  background: rgba(254, 226, 226, 0.72);
+  color: #b91c1c;
+}
+
+.drag-move-conflict-btn.is-danger:hover:not(:disabled) {
+  background: rgba(254, 202, 202, 0.9);
+  color: #991b1b;
+}
+
+.drag-move-conflict-btn.is-ghost {
+  background: transparent;
+}
+
+.drag-move-conflict-btn:disabled,
+.drag-move-conflict-close:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+  transform: none;
+}
+
+.drag-move-conflict-fade-enter-active,
+.drag-move-conflict-fade-leave-active {
+  transition: opacity 0.16s ease;
+}
+
+.drag-move-conflict-fade-enter-active .drag-move-conflict-panel,
+.drag-move-conflict-fade-leave-active .drag-move-conflict-panel {
+  transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.16s ease;
+}
+
+.drag-move-conflict-fade-enter-from,
+.drag-move-conflict-fade-leave-to {
+  opacity: 0;
+}
+
+.drag-move-conflict-fade-enter-from .drag-move-conflict-panel,
+.drag-move-conflict-fade-leave-to .drag-move-conflict-panel {
+  opacity: 0;
+  transform: translateY(8px) scale(0.98);
+}
+
+:global(html.kikoerumanager-dark) .drag-move-conflict-overlay {
+  background: rgba(0, 0, 0, 0.24);
+}
+
+:global(html.kikoerumanager-dark) .drag-move-conflict-panel {
+  border-color: rgba(255, 255, 255, 0.14);
+  background:
+    linear-gradient(180deg, rgba(48, 49, 54, 0.78), rgba(18, 19, 23, 0.9)),
+    rgba(18, 19, 23, 0.86);
+  color: rgba(250, 250, 252, 0.94);
+}
+
+:global(html.kikoerumanager-dark) .drag-move-conflict-head {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+:global(html.kikoerumanager-dark) .drag-move-conflict-icon,
+:global(html.kikoerumanager-dark) .drag-move-conflict-close,
+:global(html.kikoerumanager-dark) .drag-move-conflict-target,
+:global(html.kikoerumanager-dark) .drag-move-conflict-list li,
+:global(html.kikoerumanager-dark) .drag-move-conflict-btn {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: #2b2c30;
+  color: rgba(226, 232, 240, 0.86);
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark) .drag-move-conflict-title-block h3,
+:global(html.kikoerumanager-dark) .drag-move-conflict-target b,
+:global(html.kikoerumanager-dark) .drag-move-conflict-list span {
+  color: rgba(250, 250, 252, 0.96);
+}
+
+:global(html.kikoerumanager-dark) .drag-move-conflict-title-block p,
+:global(html.kikoerumanager-dark) .drag-move-conflict-target span,
+:global(html.kikoerumanager-dark) .drag-move-conflict-list em,
+:global(html.kikoerumanager-dark) .drag-move-conflict-list .drag-move-conflict-more {
+  color: rgba(214, 214, 220, 0.66);
+}
+
+:global(html.kikoerumanager-dark) .drag-move-conflict-close:hover:not(:disabled),
+:global(html.kikoerumanager-dark) .drag-move-conflict-btn:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: #333438;
+  color: rgba(250, 250, 252, 0.96);
+}
+
+:global(html.kikoerumanager-dark) .drag-move-conflict-btn.is-primary {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: #e7e7eb;
+  color: #111116;
+}
+
+:global(html.kikoerumanager-dark) .drag-move-conflict-btn.is-primary:hover:not(:disabled) {
+  background: #f2f2f4;
+  color: #0e0e12;
+}
+
+:global(html.kikoerumanager-dark) .drag-move-conflict-btn.is-danger {
+  border-color: rgba(248, 113, 113, 0.28);
+  background: rgba(127, 29, 29, 0.42);
+  color: #fecaca;
+}
+
+:global(html.kikoerumanager-dark) .drag-move-conflict-btn.is-danger:hover:not(:disabled) {
+  background: rgba(153, 27, 27, 0.58);
+  color: #fee2e2;
+}
+
 @keyframes lib-table-drag-ghost-in {
   from { opacity: 0; filter: blur(1px); }
   to { opacity: 1; filter: blur(0); }
@@ -20373,11 +21475,55 @@ function statsStatusTextDisplay (stats) {
 .lib-file-table-row.library-row-context-active { background: #f1f5f9; }
 
 .lib-file-table-row.library-row-marquee-selected {
-  background: rgba(219, 234, 254, 0.78);
+  background: #e2e6ec;
+  border-radius: 0;
+  color: #111827;
+  transform: translate3d(0, 0, 0) scale(1);
 }
 
 .lib-file-table-row.library-row-marquee-selected:hover {
-  background: rgba(191, 219, 254, 0.84);
+  background: #d9dde4;
+}
+
+.lib-file-table-row.library-row-selected-start {
+  border-top-left-radius: 10px;
+  border-top-right-radius: 10px;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.lib-file-table-row.library-row-selected-end {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  border-bottom-left-radius: 10px;
+  border-bottom-right-radius: 10px;
+}
+
+.lib-file-table-row.library-row-selected-single {
+  border-radius: 10px;
+}
+
+.lib-file-table-row.library-row-selected-middle {
+  border-radius: 0;
+}
+
+.lib-file-table-row:hover,
+.lib-file-table-row.is-hover,
+.lib-file-table-row.library-row-located:hover,
+.lib-file-table-row.library-row-context-active:hover,
+.lib-file-table-row.library-row-marquee-selected:hover {
+  background: #eef0f3;
+  z-index: 2;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
+  transform: translate3d(0, -4px, 0) scale(1.012);
+}
+
+.lib-file-table-row.library-row-selected-start:hover,
+.lib-file-table-row.library-row-selected-middle:hover,
+.lib-file-table-row.library-row-selected-end:hover {
+  background: #d9dde4;
+  box-shadow: none;
+  transform: translate3d(0, 0, 0) scale(1);
 }
 
 .lib-file-table-row.library-row-drag-source {
@@ -20693,8 +21839,182 @@ function statsStatusTextDisplay (stats) {
 
 
 
-.pagination-wrap { margin-top: 18px; display: flex; justify-content: flex-end; }
-/* el-pagination 走 index.css 全局规范，本页不再覆盖 */
+.pagination-wrap {
+  margin-top: 18px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.pagination-wrap :deep(.el-pagination) {
+  --el-pagination-button-width: 34px;
+  --el-pagination-button-height: 34px;
+  --el-pagination-button-bg-color: transparent;
+  --el-pagination-hover-color: #0f172a;
+  gap: 10px;
+  color: #64748b;
+  font-weight: 700;
+}
+
+.pagination-wrap :deep(.el-pagination__total),
+.pagination-wrap :deep(.el-pagination__jump),
+.pagination-wrap :deep(.el-pagination__goto),
+.pagination-wrap :deep(.el-pagination__classifier) {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pagination-wrap :deep(.el-pagination.is-background .btn-prev),
+.pagination-wrap :deep(.el-pagination.is-background .btn-next),
+.pagination-wrap :deep(.el-pagination.is-background .el-pager li),
+.pagination-wrap :deep(.el-pagination__sizes .el-select__wrapper),
+.pagination-wrap :deep(.el-pagination__jump .el-input__wrapper) {
+  min-width: 34px;
+  height: 34px;
+  margin: 0;
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.82), rgba(248, 250, 252, 0.58)),
+    rgba(255, 255, 255, 0.62);
+  color: #334155;
+  box-shadow: none;
+  backdrop-filter: blur(16px) saturate(130%);
+  -webkit-backdrop-filter: blur(16px) saturate(130%);
+  transition:
+    background-color 0.22s ease,
+    border-color 0.22s ease,
+    color 0.22s ease,
+    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.pagination-wrap :deep(.el-pagination.is-background .btn-prev:hover:not(:disabled)),
+.pagination-wrap :deep(.el-pagination.is-background .btn-next:hover:not(:disabled)),
+.pagination-wrap :deep(.el-pagination.is-background .el-pager li:hover),
+.pagination-wrap :deep(.el-pagination__sizes .el-select__wrapper:hover),
+.pagination-wrap :deep(.el-pagination__sizes .el-select__wrapper.is-hovering),
+.pagination-wrap :deep(.el-pagination__jump .el-input__wrapper:hover),
+.pagination-wrap :deep(.el-pagination__jump .el-input__wrapper.is-focus) {
+  border-color: rgba(100, 116, 139, 0.36);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(241, 245, 249, 0.7)),
+    rgba(255, 255, 255, 0.72);
+  color: #0f172a;
+  transform: translateY(-1px);
+}
+
+.pagination-wrap :deep(.el-pagination.is-background .el-pager li.is-active) {
+  border-color: rgba(15, 23, 42, 0.18);
+  background: #111827;
+  color: #ffffff;
+}
+
+.pagination-wrap :deep(.el-pagination.is-background .btn-prev:disabled),
+.pagination-wrap :deep(.el-pagination.is-background .btn-next:disabled),
+.pagination-wrap :deep(.el-pagination.is-background .btn-prev.is-disabled),
+.pagination-wrap :deep(.el-pagination.is-background .btn-next.is-disabled) {
+  background: rgba(241, 245, 249, 0.52);
+  color: #cbd5e1;
+  opacity: 0.7;
+  transform: none;
+}
+
+.pagination-wrap :deep(.el-pager) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pagination-wrap :deep(.el-pagination__sizes) {
+  margin-right: 0;
+}
+
+.pagination-wrap :deep(.el-pagination__sizes .el-select__wrapper) {
+  min-width: 116px;
+  padding: 0 12px;
+}
+
+.pagination-wrap :deep(.el-pagination__sizes .el-select__placeholder),
+.pagination-wrap :deep(.el-pagination__sizes .el-select__selected-item),
+.pagination-wrap :deep(.el-pagination__sizes .el-select__selected-item span),
+.pagination-wrap :deep(.el-pagination__jump .el-input__inner) {
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.pagination-wrap :deep(.el-pagination__sizes .el-select__caret),
+.pagination-wrap :deep(.el-pagination__sizes .el-icon) {
+  color: #94a3b8;
+}
+
+.pagination-wrap :deep(.el-pagination__jump .el-input__wrapper) {
+  width: 54px;
+  min-width: 54px;
+  padding: 0 10px;
+}
+
+.pagination-wrap :deep(.el-pagination__jump .el-input__inner) {
+  height: 32px;
+  padding: 0;
+  text-align: center;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+:global(.library-pagination-size-popper.el-popper) {
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.24) !important;
+  border-radius: 14px !important;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.72)),
+    rgba(255, 255, 255, 0.82) !important;
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.14) !important;
+  backdrop-filter: blur(18px) saturate(135%) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(135%) !important;
+}
+
+:global(.library-pagination-size-popper .el-select-dropdown) {
+  min-width: 116px !important;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+:global(.library-pagination-size-popper .el-select-dropdown__list) {
+  padding: 6px !important;
+}
+
+:global(.library-pagination-size-popper .el-select-dropdown__item) {
+  height: 32px !important;
+  margin: 2px 0 !important;
+  border-radius: 10px !important;
+  color: #475569 !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  transition:
+    background-color 0.18s ease,
+    color 0.18s ease,
+    transform 0.2s cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+
+:global(.library-pagination-size-popper .el-select-dropdown__item:hover),
+:global(.library-pagination-size-popper .el-select-dropdown__item.is-hovering) {
+  background: #eef0f3 !important;
+  color: #0f172a !important;
+  transform: translateY(-1px);
+}
+
+:global(.library-pagination-size-popper .el-select-dropdown__item.is-selected) {
+  background: #e2e6ec !important;
+  color: #111827 !important;
+}
+
+:global(.library-pagination-size-popper .el-popper__arrow::before) {
+  border-color: rgba(148, 163, 184, 0.24) !important;
+  background: rgba(255, 255, 255, 0.86) !important;
+}
 
 
 
