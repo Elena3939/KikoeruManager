@@ -338,9 +338,9 @@ pre:hover::-webkit-scrollbar-track {
     justify-content: center;
     padding: 20px;
     border-radius: inherit;
-    background: rgba(248, 250, 252, 0.76);
-    backdrop-filter: blur(2px);
-    -webkit-backdrop-filter: blur(2px);
+    background: rgba(255, 255, 255, 0.48);
+    backdrop-filter: blur(1px) saturate(112%);
+    -webkit-backdrop-filter: blur(1px) saturate(112%);
     animation: app-loading-mask-fade-in 0.22s ease;
   }
 

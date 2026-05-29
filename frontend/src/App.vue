@@ -745,36 +745,6 @@ html.kikoerumanager-dark .el-radio-button__original-radio:checked + .el-radio-bu
   box-shadow: none !important;
 }
 
-html.kikoerumanager-dark {
-  --km-dark-bg: #08090d;
-  --km-dark-bg-deep: #05060a;
-  --km-dark-sidebar: rgba(10, 11, 16, 0.98);
-  --km-dark-surface: rgba(24, 24, 28, 0.96);
-  --km-dark-surface-2: rgba(32, 32, 37, 0.94);
-  --km-dark-surface-3: rgba(39, 39, 44, 0.9);
-  --km-dark-surface-hover: rgba(48, 48, 54, 0.94);
-  --km-dark-field: rgba(17, 18, 23, 0.96);
-  --km-dark-border: rgba(255, 255, 255, 0.09);
-  --km-dark-border-strong: rgba(255, 255, 255, 0.17);
-  --km-dark-text: rgba(244, 244, 245, 0.88);
-  --km-dark-text-strong: #f8f8fa;
-  --km-dark-text-muted: rgba(212, 212, 216, 0.62);
-  --km-dark-blue: #c8c8cf;
-  --km-dark-blue-bg: rgba(255, 255, 255, 0.1);
-  --km-dark-blue-bg-strong: rgba(255, 255, 255, 0.16);
-  --km-dark-green: #8ddfbb;
-  --km-dark-green-bg: rgba(34, 197, 94, 0.16);
-  --km-dark-amber: #f4ce75;
-  --km-dark-amber-bg: rgba(245, 158, 11, 0.16);
-  --km-dark-red: #f3a2a8;
-  --km-dark-red-bg: rgba(244, 63, 94, 0.16);
-  --km-dark-purple: #d7d7dc;
-  --km-dark-purple-bg: rgba(255, 255, 255, 0.1);
-  --km-dark-button-bg: linear-gradient(180deg, rgba(48, 48, 54, 0.96) 0%, rgba(30, 30, 35, 0.96) 100%);
-  --km-dark-button-bg-hover: linear-gradient(180deg, rgba(62, 62, 68, 0.98) 0%, rgba(42, 42, 48, 0.98) 100%);
-  --km-dark-shadow-soft: 0 10px 28px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.035);
-}
-
 html.kikoerumanager-dark .bg-white,
 html.kikoerumanager-dark .bg-slate-50,
 html.kikoerumanager-dark .bg-neutral-50,
@@ -814,10 +784,11 @@ html.kikoerumanager-dark .vault-icon-btn,
 html.kikoerumanager-dark .page-head-btn:not(.is-primary),
 html.kikoerumanager-dark .lib-action-btn:not(.is-primary),
 html.kikoerumanager-dark .conflicts-action-btn.is-slate {
-  background: linear-gradient(180deg, rgba(30, 64, 175, 0.18) 0%, rgba(30, 41, 59, 0.88) 100%) !important;
-  border-color: rgba(96, 165, 250, 0.24) !important;
-  color: var(--km-dark-blue) !important;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+  background: var(--km-dark-button-bg) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .el-button:not(.el-button--primary):not(.el-button--danger):not(.el-button--success):hover,
@@ -834,10 +805,11 @@ html.kikoerumanager-dark .vault-icon-btn:hover,
 html.kikoerumanager-dark .page-head-btn:not(.is-primary):hover,
 html.kikoerumanager-dark .lib-action-btn:not(.is-primary):hover,
 html.kikoerumanager-dark .conflicts-action-btn.is-slate:hover {
-  background: linear-gradient(180deg, var(--km-dark-blue-bg-strong) 0%, rgba(30, 64, 175, 0.9) 100%) !important;
+  background: var(--km-dark-button-bg-hover) !important;
+  background-image: none !important;
   border-color: var(--km-dark-border-strong) !important;
   color: var(--km-dark-text-strong) !important;
-  box-shadow: 0 12px 26px rgba(37, 99, 235, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.12) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .el-button--primary,
@@ -1321,10 +1293,11 @@ html.kikoerumanager-dark .conflicts-info-strip,
 html.kikoerumanager-dark .conflicts-empty,
 html.kikoerumanager-dark .conflicts-list-pane,
 html.kikoerumanager-dark .conflicts-detail-pane {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.94) 0%, rgba(15, 23, 42, 0.88) 100%) !important;
+  background: var(--km-dark-panel) !important;
+  background-image: none !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .conflicts-empty {
@@ -1335,9 +1308,11 @@ html.kikoerumanager-dark .conflicts-empty {
 html.kikoerumanager-dark .conflicts-list-header,
 html.kikoerumanager-dark .conflicts-detail-header,
 html.kikoerumanager-dark .conflicts-segmented {
-  background: rgba(30, 41, 59, 0.88) !important;
+  background: transparent !important;
+  background-image: none !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .conflicts-list-title,
@@ -1366,9 +1341,11 @@ html.kikoerumanager-dark .lib-info-divider {
 html.kikoerumanager-dark .conflicts-segmented-item,
 html.kikoerumanager-dark .conflicts-mini-btn,
 html.kikoerumanager-dark .conflicts-refresh-btn {
-  background: linear-gradient(180deg, rgba(30, 64, 175, 0.18) 0%, rgba(30, 41, 59, 0.88) 100%) !important;
-  border-color: rgba(96, 165, 250, 0.24) !important;
-  color: var(--km-dark-blue) !important;
+  background: var(--km-dark-matte) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .conflicts-segmented-item:hover,
@@ -1376,10 +1353,11 @@ html.kikoerumanager-dark .conflicts-segmented-item.is-active,
 html.kikoerumanager-dark .conflicts-mini-btn:hover,
 html.kikoerumanager-dark .conflicts-mini-btn.is-active,
 html.kikoerumanager-dark .conflicts-refresh-btn:hover {
-  background: linear-gradient(180deg, rgba(37, 99, 235, 0.34) 0%, rgba(30, 64, 175, 0.9) 100%) !important;
+  background: var(--km-dark-selected) !important;
+  background-image: none !important;
   border-color: var(--km-dark-border-strong) !important;
   color: var(--km-dark-text-strong) !important;
-  box-shadow: 0 12px 26px rgba(37, 99, 235, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.12) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .conflicts-list-card {
@@ -1391,8 +1369,10 @@ html.kikoerumanager-dark .conflicts-list-card {
 html.kikoerumanager-dark .conflicts-list-card:hover,
 html.kikoerumanager-dark .conflicts-list-card.is-selected,
 html.kikoerumanager-dark .conflicts-list-card.is-active {
-  background: linear-gradient(180deg, rgba(37, 99, 235, 0.24) 0%, rgba(30, 41, 59, 0.92) 100%) !important;
-  border-color: rgba(147, 197, 253, 0.42) !important;
+  background: var(--km-dark-selected) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-selected-border) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .app-page-title,
@@ -1531,24 +1511,18 @@ html.kikoerumanager-dark .library .lib-file-table-row.is-hover {
 html.kikoerumanager-dark .library .lib-file-table-row.library-row-marquee-selected {
   background: rgba(255, 255, 255, 0.16) !important;
   border-color: rgba(255, 255, 255, 0.24) !important;
-  box-shadow:
-    inset 3px 0 0 rgba(255, 255, 255, 0.82),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.14),
-    0 0 0 1px rgba(255, 255, 255, 0.08) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .library .lib-file-table-row.library-row-marquee-selected:hover {
   background: rgba(255, 255, 255, 0.22) !important;
   border-color: rgba(255, 255, 255, 0.32) !important;
-  box-shadow:
-    inset 3px 0 0 rgba(255, 255, 255, 0.92),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.2),
-    0 0 0 1px rgba(255, 255, 255, 0.12) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .library .lib-file-table-row.library-row-context-active {
   background: rgba(255, 255, 255, 0.12) !important;
-  box-shadow: inset 3px 0 0 rgba(255, 255, 255, 0.62) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .library .lib-file-table-row.library-row-drag-source {
@@ -1915,28 +1889,30 @@ html.kikoerumanager-dark .lib-move-modal .fm-icon-btn:hover:not(:disabled) {
 html.kikoerumanager-dark .custom-preview-modal .tree-row,
 html.kikoerumanager-dark .server-upload-preview-modal .tree-row,
 html.kikoerumanager-dark .lib-move-modal .tree-row,
-html.kikoerumanager-dark .lib-move-modal .file-row,
-html.kikoerumanager-dark .lib-move-modal .nav-item {
+html.kikoerumanager-dark .lib-move-modal .file-row {
   color: var(--km-dark-text) !important;
 }
 
 html.kikoerumanager-dark .custom-preview-modal .tree-row:hover,
 html.kikoerumanager-dark .server-upload-preview-modal .tree-row:hover,
 html.kikoerumanager-dark .lib-move-modal .tree-row:hover,
-html.kikoerumanager-dark .lib-move-modal .file-row:hover,
-html.kikoerumanager-dark .lib-move-modal .nav-item:hover {
+html.kikoerumanager-dark .lib-move-modal .file-row:hover {
   background: var(--km-dark-surface-hover) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .nav-item,
+html.kikoerumanager-dark .lib-move-modal .nav-item:hover {
+  background: transparent !important;
+  color: inherit !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .custom-preview-modal .tree-row-selected,
 html.kikoerumanager-dark .server-upload-preview-modal .tree-row-selected,
-html.kikoerumanager-dark .lib-move-modal .tree-row-selected,
-html.kikoerumanager-dark .lib-move-modal .is-active {
+html.kikoerumanager-dark .lib-move-modal .tree-row-selected {
   background: rgba(255, 255, 255, 0.16) !important;
   color: var(--km-dark-text-strong) !important;
-  box-shadow:
-    inset 3px 0 0 rgba(255, 255, 255, 0.78),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
 }
 
 html.kikoerumanager-dark .custom-preview-modal .tab-chip,
@@ -2109,6 +2085,44 @@ html.kikoerumanager-dark .subtitle-workbench-dialog .is-active {
   color: #ffffff !important;
 }
 
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card :is(
+  .subtitle-filter-row.active,
+  .subtitle-naming-option.active,
+  .subtitle-toggle-pill.active
+) {
+  background: #56575e !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.42) !important;
+  color: #ffffff !important;
+  outline: 2px solid rgba(255, 255, 255, 0.34) !important;
+  outline-offset: -2px !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card :is(
+  .subtitle-filter-add-btn,
+  .subtitle-filter-delete-btn,
+  .subtitle-filter-editor-toggle
+) {
+  background: #2b2c30 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(244, 244, 245, 0.88) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card :is(
+  .subtitle-filter-add-btn,
+  .subtitle-filter-delete-btn,
+  .subtitle-filter-editor-toggle
+):hover {
+  background: #333438 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: none !important;
+}
+
 html.kikoerumanager-dark .subtitle-workbench-dialog :is(
   .bg-blue-50,
   .bg-sky-50,
@@ -2140,6 +2154,19 @@ html.kikoerumanager-dark .subtitle-workbench-dialog :is(
   color: #ffffff !important;
 }
 
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card button.subtitle-filter-row.active,
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card button.subtitle-naming-option.active,
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card button.subtitle-toggle-pill.active {
+  background: #56575e !important;
+  background-color: #56575e !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.42) !important;
+  color: #ffffff !important;
+  outline: 2px solid rgba(255, 255, 255, 0.34) !important;
+  outline-offset: -2px !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
+}
+
 html.kikoerumanager-dark .subtitle-workbench-dialog input,
 html.kikoerumanager-dark .subtitle-workbench-dialog textarea,
 html.kikoerumanager-dark .subtitle-workbench-dialog .el-input__wrapper,
@@ -2152,36 +2179,91 @@ html.kikoerumanager-dark .subtitle-workbench-dialog .el-textarea__inner {
 
 html.kikoerumanager-dark .floating-card,
 html.kikoerumanager-dark .filter-delete-floating-card {
-  background: var(--km-dark-sidebar) !important;
-  border: 1px solid var(--km-dark-border) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow: 0 22px 52px rgba(0, 0, 0, 0.52), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+  background:
+    linear-gradient(180deg, rgba(45, 46, 51, 0.72), rgba(13, 14, 18, 0.88)),
+    rgba(18, 19, 23, 0.86) !important;
+  background-image:
+    linear-gradient(180deg, rgba(45, 46, 51, 0.72), rgba(13, 14, 18, 0.88)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  outline: 1px solid rgba(255, 255, 255, 0.045) !important;
+  outline-offset: -2px !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  backdrop-filter: blur(14px) saturate(106%) !important;
+  -webkit-backdrop-filter: blur(14px) saturate(106%) !important;
 }
 
 html.kikoerumanager-dark .floating-card .text-slate-900,
+html.kikoerumanager-dark .floating-card .upload-floating-title,
+html.kikoerumanager-dark .floating-chip b,
+html.kikoerumanager-dark .floating-card .floating-chip b,
 html.kikoerumanager-dark .filter-delete-floating-title,
 html.kikoerumanager-dark .filter-delete-floating-percent {
-  color: var(--km-dark-text-strong) !important;
+  color: #ffffff !important;
 }
 
 html.kikoerumanager-dark .floating-card .text-slate-500,
 html.kikoerumanager-dark .floating-card .text-slate-400,
+html.kikoerumanager-dark .floating-card .floating-detail-box,
 html.kikoerumanager-dark .filter-delete-floating-mode {
-  color: var(--km-dark-text-muted) !important;
+  color: rgba(214, 214, 220, 0.68) !important;
 }
 
 html.kikoerumanager-dark .floating-card .bg-slate-50,
 html.kikoerumanager-dark .floating-chip,
+html.kikoerumanager-dark .floating-chip-title,
+html.kikoerumanager-dark .floating-detail-box,
+html.kikoerumanager-dark .floating-percent-badge,
+html.kikoerumanager-dark .filter-delete-floating-path,
 html.kikoerumanager-dark .filter-delete-floating-card [class*="bg-slate-50"] {
-  background: var(--km-dark-field) !important;
-  border-color: var(--km-dark-border) !important;
-  color: var(--km-dark-text) !important;
+  background: #2b2c30 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(244, 244, 245, 0.84) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
 }
 
 html.kikoerumanager-dark .floating-action-btn {
-  background: var(--km-dark-button-bg) !important;
-  border-color: var(--km-dark-border) !important;
-  color: var(--km-dark-text) !important;
+  background: #2b2c30 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(244, 244, 245, 0.88) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark .floating-action-btn:hover {
+  background: #333438 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .floating-card .floating-action-btn-primary,
+html.kikoerumanager-dark .floating-card .floating-action-btn-emerald,
+html.kikoerumanager-dark .floating-card .floating-action-btn-violet,
+html.kikoerumanager-dark .floating-card .floating-action-btn-amber,
+html.kikoerumanager-dark .floating-card .floating-action-btn-rose {
+  background: #3a3b40 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .floating-card .floating-action-btn-primary:hover,
+html.kikoerumanager-dark .floating-card .floating-action-btn-emerald:hover,
+html.kikoerumanager-dark .floating-card .floating-action-btn-violet:hover,
+html.kikoerumanager-dark .floating-card .floating-action-btn-amber:hover,
+html.kikoerumanager-dark .floating-card .floating-action-btn-rose:hover {
+  background: #45464b !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .sp-shell > div {
@@ -2462,34 +2544,16 @@ html.kikoerumanager-dark .filter-delete-dialog .search-input {
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark .floating-action-btn-emerald {
-  background: linear-gradient(135deg, rgba(59, 130, 246, 0.94), rgba(37, 99, 235, 0.94)) !important;
-  border-color: rgba(147, 197, 253, 0.34) !important;
-  color: #eff6ff !important;
-}
-
-html.kikoerumanager-dark .floating-action-btn-primary {
-  background: linear-gradient(180deg, rgba(96, 165, 250, 0.94) 0%, rgba(37, 99, 235, 0.94) 52%, rgba(30, 64, 175, 0.94) 100%) !important;
-  border-color: rgba(147, 197, 253, 0.42) !important;
-  color: #eff6ff !important;
-}
-
-html.kikoerumanager-dark .floating-action-btn-violet {
-  background: linear-gradient(180deg, rgba(167, 139, 250, 0.94) 0%, rgba(124, 58, 237, 0.94) 52%, rgba(91, 33, 182, 0.94) 100%) !important;
-  border-color: rgba(196, 181, 253, 0.42) !important;
-  color: #f5f3ff !important;
-}
-
-html.kikoerumanager-dark .floating-action-btn-amber {
-  background: linear-gradient(180deg, rgba(251, 191, 36, 0.94) 0%, rgba(217, 119, 6, 0.94) 52%, rgba(180, 83, 9, 0.94) 100%) !important;
-  border-color: rgba(252, 211, 77, 0.42) !important;
-  color: #fffbeb !important;
-}
-
+html.kikoerumanager-dark .floating-action-btn-emerald,
+html.kikoerumanager-dark .floating-action-btn-primary,
+html.kikoerumanager-dark .floating-action-btn-violet,
+html.kikoerumanager-dark .floating-action-btn-amber,
 html.kikoerumanager-dark .floating-action-btn-rose {
-  background: linear-gradient(180deg, rgba(251, 113, 133, 0.94) 0%, rgba(225, 29, 72, 0.94) 52%, rgba(190, 18, 60, 0.94) 100%) !important;
-  border-color: rgba(253, 164, 175, 0.42) !important;
-  color: #fff1f2 !important;
+  background: #3a3b40 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog.el-dialog {
@@ -2497,12 +2561,33 @@ html.kikoerumanager-dark .filter-delete-dialog.el-dialog {
   box-shadow: none !important;
 }
 
+html.kikoerumanager-dark .custom-preview-overlay:has(.filter-delete-dialog) {
+  background: transparent !important;
+  background-image: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
 html.kikoerumanager-dark .filter-delete-dialog .window,
 html.kikoerumanager-dark .filter-delete-dialog .glass-shell {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.98) 0%, rgba(15, 23, 42, 0.94) 100%) !important;
-  border: 1px solid rgba(148, 163, 184, 0.22) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+  background:
+    linear-gradient(180deg, rgba(45, 46, 51, 0.76), rgba(13, 14, 18, 0.9)),
+    rgba(18, 19, 23, 0.86) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  outline: 1px solid rgba(255, 255, 255, 0.045) !important;
+  outline-offset: -2px !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  backdrop-filter: blur(18px) saturate(112%) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(112%) !important;
+}
+
+html.kikoerumanager-dark .filter-delete-dialog .glass-shell::before {
+  display: none !important;
+  content: none !important;
+  background: none !important;
+  opacity: 0 !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .window-header,
@@ -2511,13 +2596,17 @@ html.kikoerumanager-dark .filter-delete-dialog .toolbar-row,
 html.kikoerumanager-dark .filter-delete-dialog .tree-head,
 html.kikoerumanager-dark .filter-delete-dialog .footer-row,
 html.kikoerumanager-dark .filter-delete-dialog [class*="border-t"][class*="bg-slate-50"] {
-  background: rgba(30, 41, 59, 0.78) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text) !important;
+  background: rgba(20, 21, 25, 0.66) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .fm-body {
-  background: rgba(15, 23, 42, 0.92) !important;
+  background: rgba(20, 21, 25, 0.48) !important;
+  background-image: none !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .title,
@@ -2542,15 +2631,21 @@ html.kikoerumanager-dark .filter-delete-dialog .text-slate-400 {
 
 html.kikoerumanager-dark .filter-delete-dialog .filter-delete-alert.el-alert,
 html.kikoerumanager-dark .filter-delete-dialog .el-alert--warning {
-  background: rgba(245, 158, 11, 0.14) !important;
-  border-color: rgba(252, 211, 77, 0.34) !important;
-  color: #fef3c7 !important;
+  background: #3a3b40 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  color: rgba(250, 250, 252, 0.9) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .el-alert--error {
-  background: rgba(244, 63, 94, 0.14) !important;
-  border-color: rgba(253, 164, 175, 0.34) !important;
-  color: #ffe4e6 !important;
+  background: rgba(70, 42, 46, 0.72) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  color: rgba(255, 228, 230, 0.9) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .el-alert__title,
@@ -2558,94 +2653,154 @@ html.kikoerumanager-dark .filter-delete-dialog .el-alert__description {
   color: inherit !important;
 }
 
+html.kikoerumanager-dark .filter-delete-dialog .el-alert__icon {
+  color: currentColor !important;
+  filter: none !important;
+}
+
 html.kikoerumanager-dark .filter-delete-dialog .fd-chip,
 html.kikoerumanager-dark .filter-delete-dialog .fm-badge,
 html.kikoerumanager-dark .filter-delete-dialog .selection-card {
-  background: rgba(30, 41, 59, 0.84) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text) !important;
+  background:
+    linear-gradient(180deg, rgba(52, 53, 58, 0.28), rgba(18, 19, 23, 0.42)),
+    rgba(20, 21, 25, 0.74) !important;
+  background-image:
+    linear-gradient(180deg, rgba(52, 53, 58, 0.28), rgba(18, 19, 23, 0.42)) !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(244, 244, 245, 0.88) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  backdrop-filter: blur(10px) saturate(112%) !important;
+  -webkit-backdrop-filter: blur(10px) saturate(112%) !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .action-card,
 html.kikoerumanager-dark .filter-delete-dialog .fd-type-tag,
 html.kikoerumanager-dark .filter-delete-dialog .close-button,
 html.kikoerumanager-dark .filter-delete-dialog button[class*="bg-white"] {
-  background: linear-gradient(180deg, rgba(30, 64, 175, 0.18) 0%, rgba(30, 41, 59, 0.88) 100%) !important;
-  border-color: rgba(96, 165, 250, 0.24) !important;
-  color: var(--km-dark-blue) !important;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+  background: #2b2c30 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(244, 244, 245, 0.88) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .action-card:hover:not(:disabled),
 html.kikoerumanager-dark .filter-delete-dialog .fd-type-tag:hover:not(:disabled),
 html.kikoerumanager-dark .filter-delete-dialog .close-button:hover,
 html.kikoerumanager-dark .filter-delete-dialog button[class*="bg-white"]:hover:not(:disabled) {
-  background: linear-gradient(180deg, rgba(37, 99, 235, 0.34) 0%, rgba(30, 64, 175, 0.9) 100%) !important;
-  border-color: var(--km-dark-border-strong) !important;
-  color: var(--km-dark-text-strong) !important;
+  background: #333438 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .action-card-danger,
 html.kikoerumanager-dark .filter-delete-dialog button[class*="bg-rose-600"] {
-  background: linear-gradient(180deg, rgba(251, 113, 133, 0.94) 0%, rgba(190, 18, 60, 0.96) 100%) !important;
-  border-color: rgba(253, 164, 175, 0.42) !important;
-  color: #fff1f2 !important;
-  box-shadow: 0 12px 26px rgba(244, 63, 94, 0.24) !important;
+  background: #3a3b40 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  color: rgba(250, 250, 252, 0.72) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .action-card-primary,
 html.kikoerumanager-dark .filter-delete-dialog button[class*="bg-indigo-600"] {
-  background: linear-gradient(180deg, #818cf8 0%, #4f46e5 100%) !important;
-  border-color: rgba(165, 180, 252, 0.42) !important;
-  color: #eef2ff !important;
+  background: #3a3b40 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .search-shell,
 html.kikoerumanager-dark .filter-delete-dialog .search-input {
-  background: rgba(15, 23, 42, 0.9) !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
-  color: var(--km-dark-text) !important;
+  background: #2b2c30 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(244, 244, 245, 0.88) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .search-input::placeholder {
-  color: rgba(148, 163, 184, 0.62) !important;
+  color: rgba(214, 214, 220, 0.5) !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .tree-panel,
 html.kikoerumanager-dark .filter-delete-dialog .glass-panel,
 html.kikoerumanager-dark .filter-delete-dialog .glass-card,
 html.kikoerumanager-dark .filter-delete-dialog .tree-scroll {
-  background: rgba(15, 23, 42, 0.88) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text) !important;
+  background:
+    linear-gradient(180deg, rgba(48, 49, 54, 0.36), rgba(18, 19, 23, 0.52)),
+    rgba(22, 23, 27, 0.72) !important;
+  background-image:
+    linear-gradient(180deg, rgba(48, 49, 54, 0.36), rgba(18, 19, 23, 0.52)) !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  outline: 1px solid rgba(255, 255, 255, 0.045) !important;
+  outline-offset: -2px !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  backdrop-filter: blur(12px) saturate(108%) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(108%) !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .tree-row {
-  color: var(--km-dark-text) !important;
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  color: rgba(226, 232, 240, 0.82) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .tree-row:hover {
-  background: var(--km-dark-surface-hover) !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  color: rgba(250, 250, 252, 0.94) !important;
+  transform: translate3d(0, -2px, 0) !important;
+  box-shadow:
+    0 8px 18px rgba(0, 0, 0, 0.22),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.1) !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .tree-row-selected {
-  background: rgba(255, 255, 255, 0.16) !important;
-  color: var(--km-dark-text-strong) !important;
-  box-shadow:
-    inset 3px 0 0 rgba(255, 255, 255, 0.78),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
+  background: #3a3b40 !important;
+  background-image: none !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12) !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .tree-checkbox {
-  background: rgba(15, 23, 42, 0.9) !important;
-  border-color: rgba(148, 163, 184, 0.36) !important;
+  background: #2b2c30 !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .tree-checkbox-on,
 html.kikoerumanager-dark .filter-delete-dialog .tree-checkbox-partial {
-  background: #3b82f6 !important;
-  border-color: #60a5fa !important;
+  background: #3a3b40 !important;
+  border-color: rgba(255, 255, 255, 0.34) !important;
   color: #ffffff !important;
+}
+
+html.kikoerumanager-dark .filter-delete-dialog .el-progress-bar__outer {
+  background: #2b2c30 !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .filter-delete-dialog .el-progress-bar__inner {
+  background: #5a5b60 !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .filter-delete-dialog .el-progress-bar__inner::after {
+  display: none !important;
+  content: none !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog .preview-empty {
@@ -2660,25 +2815,58 @@ html.kikoerumanager-dark .lib-move-modal.el-dialog {
 }
 
 html.kikoerumanager-dark .remote-folder-picker-modal .window,
-html.kikoerumanager-dark .server-upload-preview-modal .window,
-html.kikoerumanager-dark .lib-move-modal .window {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.98) 0%, rgba(15, 23, 42, 0.94) 100%) !important;
-  border: 1px solid rgba(148, 163, 184, 0.22) !important;
+html.kikoerumanager-dark .server-upload-preview-modal .window {
+  background:
+    linear-gradient(180deg, rgba(48, 49, 54, 0.74), rgba(16, 17, 21, 0.9)),
+    rgba(20, 21, 25, 0.88) !important;
+  background-image:
+    linear-gradient(180deg, rgba(48, 49, 54, 0.74), rgba(16, 17, 21, 0.9)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  outline: 1px solid rgba(255, 255, 255, 0.045) !important;
+  outline-offset: -2px !important;
   color: var(--km-dark-text) !important;
-  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  backdrop-filter: blur(18px) saturate(112%) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(112%) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .window {
+  background:
+    linear-gradient(180deg, rgba(45, 46, 51, 0.76), rgba(13, 14, 18, 0.9)),
+    rgba(18, 19, 23, 0.86) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  outline: 1px solid rgba(255, 255, 255, 0.045) !important;
+  outline-offset: -2px !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  backdrop-filter: blur(18px) saturate(112%) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(112%) !important;
 }
 
 html.kikoerumanager-dark .remote-folder-picker-modal .window-header,
 html.kikoerumanager-dark .remote-folder-picker-modal .explorer-toolbar,
 html.kikoerumanager-dark .remote-folder-picker-modal .footer-row,
 html.kikoerumanager-dark .server-upload-preview-modal .window-header,
-html.kikoerumanager-dark .server-upload-preview-modal .footer-row,
+html.kikoerumanager-dark .server-upload-preview-modal .footer-row {
+  background: rgba(24, 25, 29, 0.58) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
 html.kikoerumanager-dark .lib-move-modal .window-header,
 html.kikoerumanager-dark .lib-move-modal .explorer-toolbar,
 html.kikoerumanager-dark .lib-move-modal .footer-row {
-  background: rgba(30, 41, 59, 0.82) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text) !important;
+  background: rgba(20, 21, 25, 0.66) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
 }
 
 html.kikoerumanager-dark .remote-folder-picker-modal .title,
@@ -2715,24 +2903,55 @@ html.kikoerumanager-dark .remote-folder-picker-modal .fm-body,
 html.kikoerumanager-dark .server-upload-preview-modal .content-grid,
 html.kikoerumanager-dark .server-upload-preview-modal .left-column,
 html.kikoerumanager-dark .server-upload-preview-modal .tree-panel,
-html.kikoerumanager-dark .server-upload-preview-modal .tree-scroll,
-html.kikoerumanager-dark .lib-move-modal .explorer-main,
-html.kikoerumanager-dark .lib-move-modal .explorer-nav,
+html.kikoerumanager-dark .server-upload-preview-modal .tree-scroll {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
 html.kikoerumanager-dark .lib-move-modal .explorer-list,
 html.kikoerumanager-dark .lib-move-modal .fm-body {
-  background: rgba(15, 23, 42, 0.9) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text) !important;
+  background: rgba(16, 17, 21, 0.68) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .explorer-main,
+html.kikoerumanager-dark .lib-move-modal .explorer-nav {
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .explorer-nav {
+  border-color: rgba(255, 255, 255, 0.1) !important;
 }
 
 html.kikoerumanager-dark .remote-folder-picker-modal .fm-head,
 html.kikoerumanager-dark .remote-folder-picker-modal .nav-section-title,
-html.kikoerumanager-dark .server-upload-preview-modal .section-head,
+html.kikoerumanager-dark .server-upload-preview-modal .section-head {
+  background: rgba(20, 21, 25, 0.46) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: var(--km-dark-text-muted) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
 html.kikoerumanager-dark .lib-move-modal .fm-head,
 html.kikoerumanager-dark .lib-move-modal .nav-section-title {
-  background: rgba(30, 41, 59, 0.86) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text-muted) !important;
+  background: transparent !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: rgba(214, 214, 220, 0.68) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .remote-folder-picker-modal .path-bar,
@@ -2745,22 +2964,32 @@ html.kikoerumanager-dark .server-upload-preview-modal .field-input,
 html.kikoerumanager-dark .server-upload-preview-modal .select-button,
 html.kikoerumanager-dark .server-upload-preview-modal .picker-button,
 html.kikoerumanager-dark .server-upload-preview-modal .dropdown-panel,
-html.kikoerumanager-dark .server-upload-preview-modal .target-path,
+html.kikoerumanager-dark .server-upload-preview-modal .target-path {
+  background: rgba(43, 44, 48, 0.84) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
 html.kikoerumanager-dark .lib-move-modal .path-bar,
 html.kikoerumanager-dark .lib-move-modal .search-input,
 html.kikoerumanager-dark .lib-move-modal .crumb-btn,
 html.kikoerumanager-dark .lib-move-modal .fm-icon-btn,
 html.kikoerumanager-dark .lib-move-modal .target-chip,
 html.kikoerumanager-dark .lib-move-modal .rel-chip {
-  background: rgba(15, 23, 42, 0.92) !important;
-  border-color: rgba(148, 163, 184, 0.22) !important;
-  color: var(--km-dark-text) !important;
+  background: #2b2c30 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(244, 244, 245, 0.88) !important;
   box-shadow: none !important;
+  text-shadow: none !important;
 }
 
 html.kikoerumanager-dark .remote-folder-picker-modal .search-input::placeholder,
 html.kikoerumanager-dark .lib-move-modal .search-input::placeholder {
-  color: rgba(148, 163, 184, 0.62) !important;
+  color: rgba(214, 214, 220, 0.5) !important;
 }
 
 html.kikoerumanager-dark .remote-folder-picker-modal .fm-row,
@@ -2779,23 +3008,40 @@ html.kikoerumanager-dark .remote-folder-picker-modal .fm-icon-btn:hover:not(:dis
 html.kikoerumanager-dark .server-upload-preview-modal .tree-row:hover,
 html.kikoerumanager-dark .server-upload-preview-modal .dropdown-item:hover,
 html.kikoerumanager-dark .lib-move-modal .fm-row:hover,
-html.kikoerumanager-dark .lib-move-modal .nav-row:hover,
 html.kikoerumanager-dark .lib-move-modal .crumb-btn:hover,
 html.kikoerumanager-dark .lib-move-modal .fm-icon-btn:hover:not(:disabled) {
-  background: var(--km-dark-surface-hover) !important;
+  background: rgba(255, 255, 255, 0.055) !important;
   color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .nav-row:hover {
+  background: transparent !important;
+  color: var(--km-dark-text-strong) !important;
+  transform: translate3d(0, -2px, 0) !important;
+  box-shadow:
+    0 8px 18px rgba(0, 0, 0, 0.22),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.1) !important;
 }
 
 html.kikoerumanager-dark .remote-folder-picker-modal .fm-row-selected,
 html.kikoerumanager-dark .remote-folder-picker-modal .nav-row-active,
-html.kikoerumanager-dark .server-upload-preview-modal .tree-row-selected,
-html.kikoerumanager-dark .lib-move-modal .fm-row-selected,
-html.kikoerumanager-dark .lib-move-modal .nav-row-active {
+html.kikoerumanager-dark .server-upload-preview-modal .tree-row-selected {
   background: rgba(255, 255, 255, 0.16) !important;
   color: var(--km-dark-text-strong) !important;
   box-shadow:
     inset 3px 0 0 rgba(255, 255, 255, 0.78),
     inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .fm-row-selected,
+html.kikoerumanager-dark .lib-move-modal .fm-row-selected:hover,
+html.kikoerumanager-dark .lib-move-modal .nav-row-active,
+html.kikoerumanager-dark .lib-move-modal .nav-row-active:hover,
+html.kikoerumanager-dark .lib-move-modal .fm-row-selected.fm-row-self {
+  background: #3a3b40 !important;
+  background-image: none !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12) !important;
 }
 
 html.kikoerumanager-dark .remote-folder-picker-modal .fm-name,
@@ -2840,12 +3086,20 @@ html.kikoerumanager-dark .lib-move-modal .interactive-chip {
 }
 
 html.kikoerumanager-dark .remote-folder-picker-modal .primary-cta,
-html.kikoerumanager-dark .server-upload-preview-modal .primary-cta,
+html.kikoerumanager-dark .server-upload-preview-modal .primary-cta {
+  background: #e7e7eb !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  color: #111116 !important;
+  box-shadow: none !important;
+}
+
 html.kikoerumanager-dark .lib-move-modal .primary-cta {
-  background: #020617 !important;
-  border-color: var(--km-dark-border-strong) !important;
-  color: #ffffff !important;
-  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.16) !important;
+  background: #e7e7eb !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  color: #111116 !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .subtitle-page .subtitle-info-strip,
@@ -4271,28 +4525,28 @@ html.kikoerumanager-dark .custom-preview-modal.el-dialog {
   box-shadow: none !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal .window,
-html.kikoerumanager-dark .custom-preview-modal .glass-shell {
+html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .window,
+html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .glass-shell {
   background: linear-gradient(180deg, rgba(15, 23, 42, 0.98) 0%, rgba(15, 23, 42, 0.94) 100%) !important;
   border: 1px solid rgba(148, 163, 184, 0.22) !important;
   color: var(--km-dark-text) !important;
   box-shadow: 0 28px 72px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal .window-header,
-html.kikoerumanager-dark .custom-preview-modal .tabs-row,
-html.kikoerumanager-dark .custom-preview-modal .footer-row {
+html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .window-header,
+html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .tabs-row,
+html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .footer-row {
   background: rgba(30, 41, 59, 0.82) !important;
   border-color: rgba(148, 163, 184, 0.18) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal .glass-card,
-html.kikoerumanager-dark .custom-preview-modal .mode-switch,
-html.kikoerumanager-dark .custom-preview-modal .content-grid,
-html.kikoerumanager-dark .custom-preview-modal .left-column,
-html.kikoerumanager-dark .custom-preview-modal .dropdown-panel,
-html.kikoerumanager-dark .custom-preview-modal .resource-row,
-html.kikoerumanager-dark .custom-preview-modal .preview-card {
+html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .glass-card,
+html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .mode-switch,
+html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .content-grid,
+html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .left-column,
+html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .dropdown-panel,
+html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .resource-row,
+html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .preview-card {
   background: rgba(30, 41, 59, 0.82) !important;
   border-color: rgba(148, 163, 184, 0.18) !important;
   color: var(--km-dark-text) !important;
@@ -4314,9 +4568,9 @@ html.kikoerumanager-dark .custom-preview-modal .text-slate-400 {
   color: var(--km-dark-text-muted) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal .field-input,
-html.kikoerumanager-dark .custom-preview-modal .select-button,
-html.kikoerumanager-dark .custom-preview-modal input {
+html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .field-input,
+html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .select-button,
+html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) input {
   background: rgba(15, 23, 42, 0.9) !important;
   border-color: rgba(148, 163, 184, 0.22) !important;
   color: var(--km-dark-text-strong) !important;
@@ -6950,6 +7204,770 @@ html.kikoerumanager-dark .sidebar-menu .el-menu-item.is-active {
 html.kikoerumanager-dark .sidebar-menu .el-menu-item:hover > svg,
 html.kikoerumanager-dark .sidebar-menu .el-menu-item.is-active > svg {
   color: #f8fafc !important;
+}
+
+/* 文件管理弹窗最终暗色兜底：保留厚玻璃层次，去掉蓝灰泛光和投影。 */
+html.kikoerumanager-dark .custom-preview-overlay:has(.folder-dialog:not(.filter-delete-dialog)),
+html.kikoerumanager-dark .custom-preview-overlay:has(.mojibake-preview-dialog) {
+  background: rgba(4, 5, 8, 0.2) !important;
+  background-image: none !important;
+  backdrop-filter: blur(12px) saturate(108%) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(108%) !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog).el-dialog,
+html.kikoerumanager-dark .mojibake-preview-dialog.el-dialog {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .window,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .glass-shell,
+html.kikoerumanager-dark .mojibake-preview-dialog .window,
+html.kikoerumanager-dark .mojibake-preview-dialog .glass-shell {
+  background:
+    linear-gradient(180deg, rgba(45, 46, 51, 0.76), rgba(13, 14, 18, 0.9)),
+    rgba(18, 19, 23, 0.86) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  outline: 1px solid rgba(255, 255, 255, 0.045) !important;
+  outline-offset: -2px !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  backdrop-filter: blur(18px) saturate(112%) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(112%) !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .glass-shell::before,
+html.kikoerumanager-dark .mojibake-preview-dialog .glass-shell::before {
+  display: none !important;
+  content: none !important;
+  background: none !important;
+  opacity: 0 !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .window-header,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .fm-body,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .toolbar-row,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-head,
+html.kikoerumanager-dark .mojibake-preview-dialog .window-header,
+html.kikoerumanager-dark .mojibake-preview-dialog .fm-body,
+html.kikoerumanager-dark .mojibake-preview-dialog .toolbar-row,
+html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-footer {
+  background: rgba(20, 21, 25, 0.66) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) :is(
+  .glass-panel,
+  .glass-card,
+  .tree-panel,
+  .selection-card,
+  .info-card,
+  .search-shell,
+  .fm-badge,
+  .fm-count-pill
+),
+html.kikoerumanager-dark .mojibake-preview-dialog :is(
+  .repair-preview-body,
+  .repair-preview-card,
+  .repair-preview-empty,
+  .repair-preview-input,
+  .fm-badge,
+  .fm-count-pill
+) {
+  background:
+    linear-gradient(180deg, rgba(48, 49, 54, 0.36), rgba(18, 19, 23, 0.52)),
+    rgba(22, 23, 27, 0.72) !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  outline: 1px solid rgba(255, 255, 255, 0.045) !important;
+  outline-offset: -2px !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  backdrop-filter: blur(12px) saturate(108%) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(108%) !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-scroll {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-row {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  color: rgba(226, 232, 240, 0.82) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-row:hover {
+  background: rgba(255, 255, 255, 0.055) !important;
+  border-color: transparent !important;
+  color: rgba(250, 250, 252, 0.94) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-row-selected {
+  background: rgba(255, 255, 255, 0.095) !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) :is(
+  .action-card,
+  .close-button
+),
+html.kikoerumanager-dark .mojibake-preview-dialog :is(
+  .action-card,
+  .close-button
+) {
+  background: #2b2c30 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(244, 244, 245, 0.88) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) :is(
+  .action-card:hover:not(:disabled),
+  .close-button:hover
+),
+html.kikoerumanager-dark .mojibake-preview-dialog :is(
+  .action-card:hover:not(:disabled),
+  .close-button:hover
+) {
+  background: #333438 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .action-card-danger {
+  background: rgba(244, 63, 94, 0.12) !important;
+  border-color: rgba(251, 113, 133, 0.28) !important;
+  color: #fb7185 !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .action-card-danger:hover:not(:disabled) {
+  background: rgba(244, 63, 94, 0.2) !important;
+  border-color: rgba(251, 113, 133, 0.38) !important;
+  color: #fecdd3 !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .fm-repair-lottie {
+  filter: grayscale(1) brightness(0) invert(1) !important;
+  opacity: 0.92 !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .row-action {
+  background: rgba(244, 63, 94, 0.1) !important;
+  background-image: none !important;
+  border-color: rgba(251, 113, 133, 0.24) !important;
+  color: #fb7185 !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .row-action:hover:not(:disabled) {
+  background: rgba(244, 63, 94, 0.2) !important;
+  border-color: rgba(251, 113, 133, 0.38) !important;
+  color: #fecdd3 !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) :is(
+  .title,
+  .tree-name,
+  .text-slate-900,
+  .text-slate-800,
+  .text-slate-700
+),
+html.kikoerumanager-dark .mojibake-preview-dialog :is(
+  .title,
+  .repair-preview-value,
+  .text-slate-900,
+  .text-slate-800,
+  .text-slate-700
+) {
+  color: rgba(250, 250, 252, 0.96) !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) :is(
+  .tree-sub,
+  .tree-size,
+  .tree-time,
+  .preview-empty,
+  .text-slate-600,
+  .text-slate-500,
+  .text-slate-400
+),
+html.kikoerumanager-dark .mojibake-preview-dialog :is(
+  .repair-preview-label,
+  .repair-preview-path,
+  .repair-preview-encoding,
+  .text-slate-600,
+  .text-slate-500,
+  .text-slate-400
+) {
+  color: rgba(214, 214, 220, 0.68) !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .search-input {
+  background: transparent !important;
+  color: rgba(250, 250, 252, 0.94) !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .app-loading-mask {
+  background: rgba(5, 6, 10, 0.52) !important;
+  color: rgba(250, 250, 252, 0.94) !important;
+  box-shadow: none !important;
+  backdrop-filter: blur(5px) saturate(104%) !important;
+  -webkit-backdrop-filter: blur(5px) saturate(104%) !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .app-loading-animation__player {
+  filter: none !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .app-loading-animation__label {
+  color: rgba(250, 250, 252, 0.96) !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .app-loading-animation__description {
+  color: rgba(214, 214, 220, 0.72) !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .action-icon {
+  color: currentColor !important;
+  stroke: currentColor !important;
+  filter: none !important;
+  opacity: 1 !important;
+}
+
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-icon {
+  filter: none !important;
+  opacity: 1 !important;
+}
+
+/* 上传到服务器预览：单独兜底，避免被通用 custom-preview 深蓝规则再次覆盖。 */
+html.kikoerumanager-dark .custom-preview-overlay:has(.server-upload-preview-modal) {
+  background: rgba(4, 5, 8, 0.22) !important;
+  background-image: none !important;
+  backdrop-filter: blur(10px) saturate(108%) !important;
+  -webkit-backdrop-filter: blur(10px) saturate(108%) !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal.el-dialog {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .window,
+html.kikoerumanager-dark .server-upload-preview-modal .glass-shell {
+  background:
+    linear-gradient(180deg, rgba(48, 49, 54, 0.74), rgba(16, 17, 21, 0.9)),
+    rgba(20, 21, 25, 0.88) !important;
+  background-image:
+    linear-gradient(180deg, rgba(48, 49, 54, 0.74), rgba(16, 17, 21, 0.9)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  outline: 1px solid rgba(255, 255, 255, 0.045) !important;
+  outline-offset: -2px !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  backdrop-filter: blur(18px) saturate(112%) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(112%) !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .glass-shell::before {
+  display: none !important;
+  content: none !important;
+  background: none !important;
+  opacity: 0 !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal :is(
+  .window-header,
+  .tabs-row,
+  .footer-row
+) {
+  background: rgba(24, 25, 29, 0.58) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .content-grid,
+html.kikoerumanager-dark .server-upload-preview-modal .left-column {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal :is(
+  .glass-panel,
+  .glass-card,
+  .tree-panel
+) {
+  background:
+    linear-gradient(180deg, rgba(50, 51, 56, 0.38), rgba(20, 21, 25, 0.56)),
+    rgba(24, 25, 29, 0.72) !important;
+  background-image:
+    linear-gradient(180deg, rgba(50, 51, 56, 0.38), rgba(20, 21, 25, 0.56)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  outline: 1px solid rgba(255, 255, 255, 0.045) !important;
+  outline-offset: -2px !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  backdrop-filter: blur(14px) saturate(108%) !important;
+  -webkit-backdrop-filter: blur(14px) saturate(108%) !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .upload-settings-card {
+  background-color: rgba(24, 25, 29, 0.72) !important;
+  background-image: linear-gradient(180deg, rgba(56, 57, 62, 0.44), rgba(16, 17, 21, 0.62)) !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .tree-scroll {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .section-head {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  color: rgba(214, 214, 220, 0.72) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal :is(
+  .field-input,
+  .select-button,
+  .picker-button,
+  .dropdown-panel,
+  .target-path
+) {
+  background: rgba(35, 36, 40, 0.72) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  backdrop-filter: blur(10px) saturate(106%) !important;
+  -webkit-backdrop-filter: blur(10px) saturate(106%) !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .target-path {
+  background: rgba(255, 255, 255, 0.045) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  border-radius: 8px !important;
+  padding: 5px 8px !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .field-input:hover,
+html.kikoerumanager-dark .server-upload-preview-modal .picker-button:not(:disabled):hover,
+html.kikoerumanager-dark .server-upload-preview-modal .select-button:hover {
+  background: rgba(48, 49, 54, 0.78) !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .tree-row {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  color: rgba(226, 232, 240, 0.84) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .tree-row:hover {
+  background: rgba(255, 255, 255, 0.055) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  transform: translate3d(0, -1px, 0) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .tree-row-selected,
+html.kikoerumanager-dark .server-upload-preview-modal .tree-row-selected:hover {
+  background: rgba(255, 255, 255, 0.13) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  color: rgba(250, 250, 252, 0.98) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1) !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal :is(
+  .tab-chip,
+  .secondary-cta,
+  .interactive-chip,
+  .close-button
+) {
+  background: rgba(43, 44, 48, 0.84) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(244, 244, 245, 0.88) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal :is(
+  .tab-chip:hover,
+  .secondary-cta:hover,
+  .interactive-chip:hover,
+  .close-button:hover
+) {
+  background: rgba(56, 57, 62, 0.9) !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal :is(
+  .tab-chip-active,
+  .tab-chip-partial
+) {
+  background: rgba(86, 87, 94, 0.86) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.34) !important;
+  color: #ffffff !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1) !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .primary-cta {
+  background: #e7e7eb !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  color: #111116 !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .primary-cta:hover:not(:disabled) {
+  background: #ffffff !important;
+  border-color: rgba(255, 255, 255, 0.42) !important;
+  color: #0f1014 !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .primary-cta:disabled {
+  background: rgba(86, 87, 94, 0.52) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: rgba(214, 214, 220, 0.48) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal :is(
+  .tree-checkbox-on,
+  .tree-checkbox-partial
+) {
+  background: #4a4b51 !important;
+  border-color: rgba(255, 255, 255, 0.34) !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .tree-checkbox-off {
+  background: rgba(30, 31, 35, 0.74) !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  color: transparent !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .tree-row:hover .tree-checkbox-off {
+  background: rgba(48, 49, 54, 0.88) !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal :is(
+  .title,
+  h1,
+  h2,
+  label,
+  .tree-name,
+  .summary-strong,
+  .text-slate-900,
+  .text-slate-800,
+  .text-slate-700
+) {
+  color: rgba(250, 250, 252, 0.96) !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal :is(
+  p,
+  .summary,
+  .summary-stack,
+  .tree-size,
+  .node-title-muted,
+  .preview-empty,
+  .text-slate-600,
+  .text-slate-500,
+  .text-slate-400
+) {
+  color: rgba(214, 214, 220, 0.68) !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .tree-icon {
+  filter: none !important;
+  opacity: 1 !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .app-loading-animation {
+  color: rgba(250, 250, 252, 0.94) !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .app-loading-animation__label {
+  color: rgba(250, 250, 252, 0.96) !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .app-loading-animation__description {
+  color: rgba(214, 214, 220, 0.72) !important;
+  text-shadow: none !important;
+}
+
+/* 上传目录选择器：跟上传到服务器弹窗统一为中性厚玻璃，移除蓝灰底和竖条选中线。 */
+html.kikoerumanager-dark .custom-preview-overlay:has(.remote-folder-picker-modal) {
+  background: rgba(4, 5, 8, 0.22) !important;
+  background-image: none !important;
+  backdrop-filter: blur(10px) saturate(108%) !important;
+  -webkit-backdrop-filter: blur(10px) saturate(108%) !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal.el-dialog {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal .window,
+html.kikoerumanager-dark .remote-folder-picker-modal .glass-shell {
+  background:
+    linear-gradient(180deg, rgba(48, 49, 54, 0.74), rgba(16, 17, 21, 0.9)),
+    rgba(20, 21, 25, 0.88) !important;
+  background-image:
+    linear-gradient(180deg, rgba(48, 49, 54, 0.74), rgba(16, 17, 21, 0.9)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  outline: 1px solid rgba(255, 255, 255, 0.045) !important;
+  outline-offset: -2px !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  backdrop-filter: blur(18px) saturate(112%) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(112%) !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal .glass-shell::before {
+  display: none !important;
+  content: none !important;
+  background: none !important;
+  opacity: 0 !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal :is(
+  .window-header,
+  .explorer-toolbar,
+  .footer-row
+) {
+  background: rgba(24, 25, 29, 0.58) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal :is(
+  .explorer-main,
+  .explorer-nav,
+  .explorer-list,
+  .fm-body
+) {
+  background: transparent !important;
+  background-image: none !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal .explorer-nav {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal :is(
+  .fm-head,
+  .nav-section-title
+) {
+  background: rgba(20, 21, 25, 0.46) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: rgba(214, 214, 220, 0.68) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal :is(
+  .fm-head-cell,
+  .fm-head .fm-cell-time
+) {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  color: rgba(214, 214, 220, 0.68) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal :is(
+  .path-bar,
+  .search-input,
+  .crumb-btn,
+  .fm-icon-btn,
+  .target-chip,
+  .rel-chip,
+  .interactive-chip,
+  .secondary-cta
+) {
+  background: rgba(43, 44, 48, 0.84) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(244, 244, 245, 0.88) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal :is(
+  .crumb-btn:hover,
+  .fm-icon-btn:hover:not(:disabled),
+  .interactive-chip:hover,
+  .secondary-cta:hover
+) {
+  background: rgba(56, 57, 62, 0.9) !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal :is(
+  .fm-row,
+  .nav-row
+) {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  color: rgba(226, 232, 240, 0.84) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal :is(
+  .fm-row:hover,
+  .nav-row:hover
+) {
+  background: rgba(255, 255, 255, 0.055) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  transform: translate3d(0, -1px, 0) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal :is(
+  .fm-row-selected,
+  .fm-row-selected:hover,
+  .nav-row-active,
+  .nav-row-active:hover
+) {
+  background: rgba(255, 255, 255, 0.13) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  color: rgba(250, 250, 252, 0.98) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1) !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal .primary-cta {
+  background: #e7e7eb !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  color: #111116 !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal .primary-cta:hover:not(:disabled) {
+  background: #ffffff !important;
+  border-color: rgba(255, 255, 255, 0.42) !important;
+  color: #0f1014 !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal .primary-cta:disabled {
+  background: rgba(86, 87, 94, 0.52) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: rgba(250, 250, 252, 0.72) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal :is(
+  .title,
+  .fm-name,
+  .target-chip-path,
+  .rel-chip-value,
+  .text-slate-900,
+  .text-slate-800,
+  .text-slate-700
+) {
+  color: rgba(250, 250, 252, 0.96) !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal :is(
+  .fm-cell-time,
+  .rel-chip-label,
+  .fm-name-rel,
+  .fm-loading-desc,
+  .text-slate-600,
+  .text-slate-500,
+  .text-slate-400
+) {
+  color: rgba(214, 214, 220, 0.68) !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal .search-input::placeholder {
+  color: rgba(214, 214, 220, 0.5) !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal :is(
+  .fm-loading-icon,
+  .fm-loading-title,
+  .nav-disk-icon
+) {
+  color: rgba(250, 250, 252, 0.92) !important;
+  filter: none !important;
+  opacity: 1 !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal .fm-kind-icon {
+  filter: none !important;
+  opacity: 1 !important;
+}
+
+html.kikoerumanager-dark .remote-folder-picker-modal :is(
+  .nav-splitter,
+  .nav-splitter-line
+) {
+  background: rgba(255, 255, 255, 0.1) !important;
 }
 
 </style>

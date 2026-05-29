@@ -1,17 +1,19 @@
 html.kikoerumanager-dark {
   color-scheme: dark;
-  --km-dark-bg: #08090d;
+  --km-dark-bg: #08090c;
   --km-dark-bg-deep: #05060a;
-  --km-dark-sidebar: rgba(10, 11, 16, 0.98);
-  --km-dark-surface: rgba(24, 24, 28, 0.96);
-  --km-dark-surface-soft: rgba(32, 32, 37, 0.94);
-  --km-dark-surface-muted: rgba(39, 39, 44, 0.9);
-  --km-dark-surface-hover: rgba(48, 48, 54, 0.94);
-  --km-dark-elevated: rgba(28, 28, 33, 0.98);
-  --km-dark-field: rgba(17, 18, 23, 0.96);
-  --km-dark-border: rgba(255, 255, 255, 0.09);
-  --km-dark-border-soft: rgba(255, 255, 255, 0.06);
-  --km-dark-border-strong: rgba(255, 255, 255, 0.17);
+  --km-dark-sidebar: #0a0b10;
+  --km-dark-surface: #0d0e12;
+  --km-dark-surface-soft: #242529;
+  --km-dark-surface-muted: #2b2c30;
+  --km-dark-surface-2: var(--km-dark-surface-soft);
+  --km-dark-surface-3: var(--km-dark-surface-muted);
+  --km-dark-surface-hover: #333438;
+  --km-dark-elevated: #101116;
+  --km-dark-field: #2b2c30;
+  --km-dark-border: rgba(255, 255, 255, 0.15);
+  --km-dark-border-soft: rgba(255, 255, 255, 0.09);
+  --km-dark-border-strong: rgba(255, 255, 255, 0.22);
   --km-dark-text: rgba(244, 244, 245, 0.88);
   --km-dark-text-strong: #f8f8fa;
   --km-dark-text-muted: rgba(212, 212, 216, 0.62);
@@ -29,13 +31,26 @@ html.kikoerumanager-dark {
   --km-dark-red-bg: rgba(244, 63, 94, 0.16);
   --km-dark-info: #c8c8cf;
   --km-dark-info-bg: rgba(255, 255, 255, 0.1);
-  --km-dark-shadow: 0 18px 44px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  --km-dark-shadow-soft: 0 10px 28px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.035);
-  --km-dark-button-bg: linear-gradient(180deg, rgba(48, 48, 54, 0.96) 0%, rgba(30, 30, 35, 0.96) 100%);
-  --km-dark-button-bg-hover: linear-gradient(180deg, rgba(62, 62, 68, 0.98) 0%, rgba(42, 42, 48, 0.98) 100%);
-  --km-dark-primary-button-bg: linear-gradient(180deg, #f4f4f5 0%, #d9d9df 100%);
+  --km-dark-blue: var(--km-dark-info);
+  --km-dark-blue-bg: var(--km-dark-info-bg);
+  --km-dark-blue-bg-strong: var(--km-dark-accent-bg-strong);
+  --km-dark-purple: var(--km-dark-info);
+  --km-dark-purple-bg: var(--km-dark-info-bg);
+  --km-dark-shadow: none;
+  --km-dark-shadow-soft: none;
+  --km-dark-button-bg: #2b2c30;
+  --km-dark-button-bg-hover: #333438;
+  --km-dark-primary-button-bg: #e7e7eb;
   --km-dark-primary-button-text: #111116;
   --km-dark-focus: rgba(244, 244, 245, 0.26);
+  --km-dark-matte: var(--km-dark-button-bg);
+  --km-dark-matte-soft: var(--km-dark-surface-soft);
+  --km-dark-matte-strong: var(--km-dark-button-bg-hover);
+  --km-dark-selected: #17181d;
+  --km-dark-selected-hover: #1d1e23;
+  --km-dark-selected-border: rgba(255, 255, 255, 0.26);
+  --km-dark-panel: var(--km-dark-surface);
+  --km-dark-muted: rgba(214, 214, 220, 0.58);
   --el-bg-color: var(--km-dark-surface);
   --el-bg-color-page: var(--km-dark-bg);
   --el-bg-color-overlay: var(--km-dark-elevated);
@@ -216,9 +231,11 @@ html.kikoerumanager-dark :is(
   select
 ) {
   background: var(--km-dark-field) !important;
+  background-image: none !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
-  box-shadow: inset 0 0 0 1px var(--km-dark-border) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
 }
 
 html.kikoerumanager-dark :is(.el-input__inner, .el-select__input, input, textarea, select)::placeholder {
@@ -227,12 +244,12 @@ html.kikoerumanager-dark :is(.el-input__inner, .el-select__input, input, textare
 
 html.kikoerumanager-dark :is(.el-input__wrapper:hover, .el-textarea__inner:hover, input:hover, textarea:hover, select:hover) {
   border-color: var(--km-dark-border-strong) !important;
-  box-shadow: inset 0 0 0 1px var(--km-dark-border-strong) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark :is(.el-input__wrapper.is-focus, .el-textarea__inner:focus, input:focus, textarea:focus, select:focus) {
   border-color: var(--km-dark-border-strong) !important;
-  box-shadow: 0 0 0 3px var(--km-dark-focus), inset 0 0 0 1px var(--km-dark-border-strong) !important;
+  box-shadow: none !important;
   outline: none !important;
 }
 
@@ -476,7 +493,9 @@ html.kikoerumanager-dark :is(
   background: var(--km-dark-button-bg) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
 }
 
 html.kikoerumanager-dark :is(
@@ -511,7 +530,9 @@ html.kikoerumanager-dark :is(
   background: var(--km-dark-button-bg-hover) !important;
   border-color: var(--km-dark-border-strong) !important;
   color: var(--km-dark-text-strong) !important;
-  box-shadow: var(--km-dark-shadow-soft) !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
 }
 
 html.kikoerumanager-dark :is(
@@ -531,7 +552,9 @@ html.kikoerumanager-dark :is(
   background: var(--km-dark-primary-button-bg) !important;
   border-color: rgba(255, 255, 255, 0.36) !important;
   color: var(--km-dark-primary-button-text) !important;
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.42) !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
 }
 
 html.kikoerumanager-dark :is(
@@ -548,8 +571,10 @@ html.kikoerumanager-dark :is(
   .blk-add-main-btn:hover,
   .tpl-btn-primary:hover
 ) {
-  background: linear-gradient(180deg, #ffffff 0%, #e6e6ea 100%) !important;
+  background: #f2f2f4 !important;
+  background-image: none !important;
   color: #0e0e12 !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark :is(
@@ -570,7 +595,6 @@ html.kikoerumanager-dark :is(
   .conflicts-detail-section,
   .conflicts-list-card,
   .conflicts-empty,
-  .conflicts-garbled-card,
   .settings-card,
   .settings-panel,
   .settings-field-card,
@@ -616,9 +640,11 @@ html.kikoerumanager-dark :is(
   .subtitle-workbench-shell :is(.rounded-\[20px\], .rounded-\[18px\], .rounded-\[14px\])
 ) {
   background: var(--km-dark-surface) !important;
+  background-image: none !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
   box-shadow: var(--km-dark-shadow-soft) !important;
+  text-shadow: none !important;
 }
 
 html.kikoerumanager-dark :is(
@@ -714,9 +740,11 @@ html.kikoerumanager-dark :is(
   .keep-new-conflict-card,
   .retry-conflict-card
 ) {
-  background: var(--km-dark-accent-bg-strong) !important;
-  border-color: var(--km-dark-border-strong) !important;
+  background: var(--km-dark-selected) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-selected-border) !important;
   color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark :is(
@@ -847,11 +875,351 @@ html.kikoerumanager-dark :is(
 }
 
 html.kikoerumanager-dark :is(
-  .lib-file-table,
-  .lib-file-table-head,
-  .lib-file-table-body
+  .lib-file-table-head
 ) {
   overflow: hidden;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-list-pane {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .conflicts-page :is(
+  .conflicts-segmented,
+  .conflicts-mini-btn,
+  .conflicts-refresh-btn,
+  .conflicts-batch-btn,
+  .conflicts-action-btn,
+  .conflicts-garbled-preview-btn,
+  .fp-dlg-pill
+) {
+  background: var(--km-dark-matte) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark .conflicts-page :is(
+  .conflicts-segmented-item,
+  .conflicts-segmented-item:hover
+) {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-segmented-item.is-active {
+  background: var(--km-dark-selected) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-selected-border) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .conflicts-page :is(
+  .conflicts-mini-btn:hover,
+  .conflicts-refresh-btn:hover,
+  .conflicts-batch-btn:hover,
+  .conflicts-action-btn:hover,
+  .conflicts-garbled-preview-btn:hover
+) {
+  background: var(--km-dark-matte-strong) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark .conflicts-page :is(
+  .conflicts-mini-btn.is-active,
+  .conflicts-action-btn.is-primary,
+  .conflicts-action-btn.is-emerald,
+  .conflicts-batch-btn.is-emerald
+) {
+  background: var(--km-dark-selected) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-selected-border) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark .conflicts-page :is(
+  .conflicts-mini-btn.is-active:hover,
+  .conflicts-action-btn.is-primary:hover,
+  .conflicts-action-btn.is-emerald:hover,
+  .conflicts-batch-btn.is-emerald:hover
+) {
+  background: var(--km-dark-selected-hover) !important;
+  border-color: var(--km-dark-selected-border) !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-list-header {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .conflicts-page :is(
+  .conflicts-detail-pane,
+  .conflicts-empty,
+  .conflicts-detail-panel,
+  .conflicts-list-card,
+  .fp-dlg-window
+) {
+  background: var(--km-dark-panel) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .conflicts-page :is(
+  .conflicts-detail-header,
+  .conflicts-detail-body,
+  .conflicts-detail-panel-head,
+  .conflicts-detail-panel-grid,
+  .conflicts-detail-section,
+  .conflicts-info-section,
+  .conflicts-info-block,
+  .conflicts-info-meta-list,
+  .conflicts-info-meta-row,
+  .conflicts-info-cols,
+  .conflicts-garbled-card,
+  .conflicts-garbled-toolbar,
+  .conflicts-filename-preview,
+  .conflicts-filename-preview-head,
+  .conflicts-filename-preview-tree,
+  .fp-dlg-header,
+  .fp-dlg-tabs,
+  .fp-dlg-body,
+  .fp-dlg-footer,
+  .fp-dlg-tree-head,
+  .fp-dlg-tree-scroll
+) {
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-garbled-card {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border-soft) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-garbled-toolbar {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border-soft) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .conflicts-page :is(
+  .conflicts-garbled-head h4,
+  .conflicts-garbled-preview-title b,
+  .conflicts-garbled-card .app-dd-trigger-value
+) {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .conflicts-page :is(
+  .conflicts-garbled-head p,
+  .conflicts-garbled-select > span,
+  .conflicts-garbled-preview-title,
+  .conflicts-garbled-preview-title svg,
+  .conflicts-garbled-card .app-dd-trigger-label,
+  .conflicts-garbled-card .app-dd-trigger-caret,
+  .conflicts-garbled-card .app-dd-trigger-icon
+) {
+  color: var(--km-dark-muted) !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-garbled-card .app-dd-trigger {
+  background: var(--km-dark-matte) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-garbled-card .app-dd-trigger:hover,
+html.kikoerumanager-dark .conflicts-page .conflicts-garbled-card .app-dd-trigger.is-open {
+  background: var(--km-dark-matte-strong) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-garbled-preview-list {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border-soft) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-garbled-card :is(
+  .conflicts-filename-preview,
+  .conflicts-filename-preview-head,
+  .conflicts-filename-preview-tree,
+  .conflicts-filename-preview-empty,
+  .fp-tree-row,
+  .fp-tree-icon-wrap
+) {
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-garbled-card .fp-tree-row {
+  border-color: var(--km-dark-border-soft) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-garbled-card .fp-tree-row:hover {
+  background: var(--km-dark-selected-hover) !important;
+  border-color: var(--km-dark-selected-border) !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-garbled-card :is(
+  .fp-tree-name,
+  .fp-tree-row.is-dir .fp-tree-name,
+  .conflicts-filename-preview-empty strong
+) {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .conflicts-page .conflicts-garbled-card :is(
+  .fp-tree-size,
+  .conflicts-filename-preview-empty,
+  .conflicts-filename-preview-empty span
+) {
+  color: var(--km-dark-muted) !important;
+}
+
+html.kikoerumanager-dark .conflicts-page :is(
+  .conflicts-info-path,
+  .conflicts-info-path.is-target,
+  .conflicts-list-status-chip,
+  .conflicts-list-card-state-icon,
+  .conflicts-filename-preview-empty,
+  .fp-tree-row,
+  .fp-dlg-close,
+  .fp-dlg-btn-secondary
+) {
+  background: var(--km-dark-matte-soft) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .conflicts-page :is(
+  .conflicts-info-path,
+  .conflicts-info-path.is-target
+) {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .conflicts-page :is(
+  .conflicts-list-card:hover,
+  .fp-tree-row:hover,
+  .fp-dlg-close:hover,
+  .fp-dlg-btn-secondary:hover
+) {
+  background: var(--km-dark-matte) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .conflicts-page :is(
+  .conflicts-list-card.is-active,
+  .conflicts-list-card.is-selected
+) {
+  background: var(--km-dark-selected) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-selected-border) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .conflicts-page :is(
+  .conflicts-list-card.is-active:hover,
+  .conflicts-list-card.is-selected:hover
+) {
+  background: var(--km-dark-selected-hover) !important;
+  border-color: var(--km-dark-selected-border) !important;
+}
+
+html.kikoerumanager-dark .conflicts-page :is(
+  .conflicts-detail-alert.is-warning,
+  .conflicts-detail-alert.is-danger,
+  .conflicts-error-alert
+) {
+  background: rgba(91, 25, 39, 0.72) !important;
+  background-image: none !important;
+  border-color: rgba(244, 114, 182, 0.22) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .conflicts-page :is(
+  .conflicts-info-cols,
+  .conflicts-info-block,
+  .conflicts-detail-panel-head,
+  .conflicts-detail-section,
+  .conflicts-detail-section + .conflicts-detail-section,
+  .fp-dlg-header,
+  .fp-dlg-tabs,
+  .fp-dlg-footer,
+  .fp-dlg-tree-head
+) {
+  border-color: var(--km-dark-border-soft) !important;
+}
+
+html.kikoerumanager-dark .conflicts-page :is(
+  .conflicts-info-value,
+  .conflicts-info-meta-val,
+  .conflicts-detail-title,
+  .conflicts-detail-section-title,
+  .conflicts-detail-panel-title h3,
+  .fp-tree-name,
+  .fp-dlg-title
+) {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .conflicts-page :is(
+  .conflicts-info-label,
+  .conflicts-info-meta-key,
+  .conflicts-info-value-muted,
+  .conflicts-detail-subtitle,
+  .conflicts-detail-panel-time,
+  .fp-tree-size,
+  .fp-dlg-subtitle,
+  .fp-dlg-pill-label
+) {
+  color: var(--km-dark-muted) !important;
 }
 
 html.kikoerumanager-dark .lib-file-empty-row {
@@ -862,8 +1230,26 @@ html.kikoerumanager-dark :is(
   .library-page-loading-mask,
   .app-loading-mask
 ) {
-  background: rgba(8, 9, 13, 0.76) !important;
+  background: rgba(8, 9, 12, 0.36) !important;
   color: var(--km-dark-text) !important;
+  backdrop-filter: blur(1px) saturate(112%) !important;
+  -webkit-backdrop-filter: blur(1px) saturate(112%) !important;
+}
+
+html.kikoerumanager-dark :is(
+  .library-page-loading-mask,
+  .app-loading-mask
+) .app-loading-animation__label {
+  color: rgba(255, 255, 255, 0.94) !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark :is(
+  .library-page-loading-mask,
+  .app-loading-mask
+) .app-loading-animation__description {
+  color: rgba(255, 255, 255, 0.76) !important;
+  text-shadow: none !important;
 }
 
 html.kikoerumanager-dark :is(
@@ -948,7 +1334,6 @@ html.kikoerumanager-dark :is(
 
 html.kikoerumanager-dark :is(
   .conflicts-detail-alert.is-info,
-  .conflicts-garbled-card,
   .conflicts-filename-preview,
   .fp-dlg-tree,
   .fp-dlg-tree-head,
@@ -1105,11 +1490,7 @@ html.kikoerumanager-dark body :is(
 html.kikoerumanager-dark body #app :is(
   .sidebar-pin-button,
   .dash-archive-pager-indicator,
-  .app-page-icon,
-  .el-tag,
-  .inline-flex.items-center.justify-center.rounded-full.border,
-  .inline-flex.items-baseline.gap-1.rounded-md,
-  .inline-flex.items-center.gap-1.rounded-md
+  .el-tag
 ) {
   background: var(--km-dark-surface-soft) !important;
   border-color: var(--km-dark-border) !important;
@@ -1119,7 +1500,6 @@ html.kikoerumanager-dark body #app :is(
 
 html.kikoerumanager-dark body #app :is(
   .sidebar-pin-button:hover,
-  .app-page-icon:hover,
   .el-tag:hover
 ) {
   background: var(--km-dark-surface-hover) !important;
@@ -1128,9 +1508,9 @@ html.kikoerumanager-dark body #app :is(
 }
 
 html.kikoerumanager-dark body #app :is(
-  .nav-item,
-  .nav-item.active,
-  .nav-item:hover
+  .settings-page .nav-item,
+  .settings-page .nav-item.active,
+  .settings-page .nav-item:hover
 ) {
   background: var(--km-dark-surface-soft) !important;
   border-color: var(--km-dark-border) !important;
@@ -1139,8 +1519,8 @@ html.kikoerumanager-dark body #app :is(
 }
 
 html.kikoerumanager-dark body #app :is(
-  .nav-item.active,
-  .nav-item:hover
+  .settings-page .nav-item.active,
+  .settings-page .nav-item:hover
 ) {
   background: var(--km-dark-surface-hover) !important;
   border-color: var(--km-dark-border-strong) !important;
@@ -1277,17 +1657,26 @@ html.kikoerumanager-dark body #app :is(
   .ef-head-btn:hover,
   .lib-refresh-btn:hover,
   .sidebar-filter-chip:hover,
-  .sidebar-filter-chip.active,
   .circle-list-item:hover,
-  .circle-list-item.active,
   .view-toggle-btn:hover,
-  .view-toggle-btn.active,
   .work-action-btn:hover
 ) {
   background: var(--km-dark-button-bg-hover) !important;
   border-color: var(--km-dark-border-strong) !important;
   color: var(--km-dark-text-strong) !important;
   box-shadow: var(--km-dark-shadow-soft) !important;
+}
+
+html.kikoerumanager-dark body #app :is(
+  .sidebar-filter-chip.active,
+  .circle-list-item.active,
+  .view-toggle-btn.active
+) {
+  background: var(--km-dark-selected) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-selected-border) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark body #app :is(
@@ -1735,18 +2124,32 @@ html.kikoerumanager-dark {
   }
 
   html.kikoerumanager-dark .library :is(
-    .lib-info-strip,
-    .main-card,
-    .el-card.main-card,
-    .main-card .el-card__header,
-    .main-card .el-card__body,
-    .lib-file-table
+    .lib-info-strip
   ) {
-    background: var(--library-panel) !important;
-    background-image: none !important;
-    border-color: var(--library-border) !important;
+    background:
+      linear-gradient(180deg, rgba(46, 47, 52, 0.34), rgba(16, 17, 21, 0.46)),
+      rgba(14, 15, 18, 0.72) !important;
+    border-color: rgba(255, 255, 255, 0.16) !important;
     color: var(--library-text) !important;
     box-shadow: none !important;
+    outline: 1px solid rgba(255, 255, 255, 0.055) !important;
+    outline-offset: -2px !important;
+    backdrop-filter: blur(12px) saturate(112%) !important;
+    -webkit-backdrop-filter: blur(12px) saturate(112%) !important;
+  }
+
+  html.kikoerumanager-dark .library .lib-info-strip::before {
+    display: none !important;
+    content: none !important;
+    background: none !important;
+    opacity: 0 !important;
+  }
+
+  html.kikoerumanager-dark .library .lib-info-strip::after {
+    display: none !important;
+    content: none !important;
+    background: none !important;
+    opacity: 0 !important;
   }
 
   html.kikoerumanager-dark .library :is(
@@ -1774,7 +2177,6 @@ html.kikoerumanager-dark {
     .lib-toolbar .app-dd-trigger,
     .lib-search,
     .lib-search-input,
-    .lib-search-filter,
     .lib-search-expand,
     .lib-btn,
     .lib-btn-ghost,
@@ -1787,12 +2189,38 @@ html.kikoerumanager-dark {
     .el-pagination .el-select__wrapper,
     .el-pagination .el-input__wrapper
   ) {
-    background: var(--library-matte) !important;
-    background-image: none !important;
-    border-color: var(--library-border) !important;
+    background:
+      linear-gradient(180deg, rgba(52, 53, 58, 0.28), rgba(18, 19, 23, 0.42)),
+      rgba(20, 21, 25, 0.74) !important;
+    border-color: rgba(255, 255, 255, 0.15) !important;
     color: rgba(242, 242, 246, 0.86) !important;
     box-shadow: none !important;
+    outline: 1px solid rgba(255, 255, 255, 0.05) !important;
+    outline-offset: -2px !important;
     text-shadow: none !important;
+    backdrop-filter: blur(10px) saturate(112%) !important;
+    -webkit-backdrop-filter: blur(10px) saturate(112%) !important;
+  }
+
+  html.kikoerumanager-dark .library .lib-search-box .lib-search-filter {
+    background:
+      linear-gradient(180deg, rgba(52, 53, 58, 0.28), rgba(18, 19, 23, 0.42)),
+      rgba(20, 21, 25, 0.74) !important;
+    border-color: rgba(255, 255, 255, 0.15) !important;
+    color: var(--lib-search-filter-color, #64748b) !important;
+    box-shadow: none !important;
+    outline: 1px solid rgba(255, 255, 255, 0.05) !important;
+    outline-offset: -2px !important;
+    text-shadow: none !important;
+    backdrop-filter: blur(10px) saturate(112%) !important;
+    -webkit-backdrop-filter: blur(10px) saturate(112%) !important;
+  }
+
+  html.kikoerumanager-dark .library .lib-search-box .lib-search-filter svg {
+    color: currentColor !important;
+    stroke: currentColor !important;
+    opacity: 1 !important;
+    filter: none !important;
   }
 
   html.kikoerumanager-dark .library :is(
@@ -1802,9 +2230,6 @@ html.kikoerumanager-dark {
     .lib-search:focus-within,
     .lib-search-input:hover,
     .lib-search-input:focus,
-    .lib-search-filter:hover,
-    .lib-search-filter.is-active,
-    .lib-search-filter.is-open,
     .lib-search-expand:hover,
     .lib-btn:hover:not(:disabled),
     .lib-btn-ghost:hover:not(:disabled),
@@ -1817,10 +2242,24 @@ html.kikoerumanager-dark {
     .el-pagination .el-pager li:hover,
     .el-pagination .el-pager li.is-active
   ) {
-    background: var(--library-matte-strong) !important;
-    background-image: none !important;
-    border-color: var(--library-border-strong) !important;
+    background:
+      linear-gradient(180deg, rgba(62, 63, 69, 0.34), rgba(24, 25, 30, 0.48)),
+      rgba(28, 29, 34, 0.78) !important;
+    border-color: rgba(255, 255, 255, 0.22) !important;
     color: rgba(250, 250, 252, 0.94) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .library .lib-search-box :is(
+    .lib-search-filter:hover,
+    .lib-search-filter.is-active,
+    .lib-search-filter.is-open
+  ) {
+    background:
+      linear-gradient(180deg, rgba(62, 63, 69, 0.34), rgba(24, 25, 30, 0.48)),
+      rgba(28, 29, 34, 0.78) !important;
+    border-color: rgba(255, 255, 255, 0.22) !important;
+    color: var(--lib-search-filter-color, #64748b) !important;
     box-shadow: none !important;
   }
 
@@ -1984,8 +2423,26 @@ html.kikoerumanager-dark {
     [class*="text-sky-"],
     [class*="text-indigo-"],
     [class*="text-violet-"]
-  ) {
+  ):not(.lib-info-icon) {
     color: rgba(218, 218, 224, 0.78) !important;
+  }
+
+  html.kikoerumanager-dark .library .lib-info-icon.text-blue-500 {
+    color: #3b82f6 !important;
+    stroke: currentColor !important;
+    opacity: 1 !important;
+  }
+
+  html.kikoerumanager-dark .library .lib-info-icon.text-violet-500 {
+    color: #8b5cf6 !important;
+    stroke: currentColor !important;
+    opacity: 1 !important;
+  }
+
+  html.kikoerumanager-dark .library .lib-info-icon.text-amber-500 {
+    color: #f59e0b !important;
+    stroke: currentColor !important;
+    opacity: 1 !important;
   }
 
   html.kikoerumanager-dark body .app-dd-menu.library-select-dd-menu {
@@ -2010,9 +2467,9 @@ html.kikoerumanager-dark {
 
   html.kikoerumanager-dark body #app .library .main-card,
   html.kikoerumanager-dark body #app .library .el-card.main-card {
-    background-color: var(--library-panel) !important;
+    background-color: transparent !important;
     background-image: none !important;
-    border-color: var(--library-border) !important;
+    border-color: transparent !important;
     color: var(--library-text) !important;
     box-shadow: none !important;
     transition-property: border-color, color, background-color !important;
@@ -2027,12 +2484,17 @@ html.kikoerumanager-dark {
   html.kikoerumanager-dark body #app .library .el-pagination.is-background .btn-prev,
   html.kikoerumanager-dark body #app .library .el-pagination.is-background .btn-next,
   html.kikoerumanager-dark body #app .library .el-pagination.is-background .el-pager li {
-    background-color: var(--library-matte) !important;
-    background-image: none !important;
-    border-color: var(--library-border) !important;
+    background:
+      linear-gradient(180deg, rgba(52, 53, 58, 0.28), rgba(18, 19, 23, 0.42)),
+      rgba(20, 21, 25, 0.74) !important;
+    border-color: rgba(255, 255, 255, 0.15) !important;
     color: rgba(242, 242, 246, 0.86) !important;
     box-shadow: none !important;
+    outline: 1px solid rgba(255, 255, 255, 0.05) !important;
+    outline-offset: -2px !important;
     text-shadow: none !important;
+    backdrop-filter: blur(10px) saturate(112%) !important;
+    -webkit-backdrop-filter: blur(10px) saturate(112%) !important;
     transition-property: transform, border-color, color, background-color !important;
   }
 
@@ -2047,9 +2509,10 @@ html.kikoerumanager-dark {
   html.kikoerumanager-dark body #app .library .el-pagination.is-background .btn-next:hover:not(:disabled),
   html.kikoerumanager-dark body #app .library .el-pagination.is-background .el-pager li:hover,
   html.kikoerumanager-dark body #app .library .el-pagination.is-background .el-pager li.is-active {
-    background-color: var(--library-matte-strong) !important;
-    background-image: none !important;
-    border-color: var(--library-border-strong) !important;
+    background:
+      linear-gradient(180deg, rgba(62, 63, 69, 0.34), rgba(24, 25, 30, 0.48)),
+      rgba(28, 29, 34, 0.78) !important;
+    border-color: rgba(255, 255, 255, 0.22) !important;
     color: rgba(250, 250, 252, 0.94) !important;
     box-shadow: none !important;
     text-shadow: none !important;
@@ -2079,6 +2542,89 @@ html.kikoerumanager-dark {
   html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-batch-delete svg { color: #e11d48 !important; }
   html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-batch-move svg { color: #0ea5e9 !important; }
   html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-api-rename svg { color: #7c3aed !important; }
+
+  html.kikoerumanager-dark body #app .library .app-page-icon {
+    color: #60a5fa !important;
+    background: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .app-page-icon svg,
+  html.kikoerumanager-dark body #app .library .app-page-head-right .km-badge svg,
+  html.kikoerumanager-dark body #app .library .lib-index-chip svg,
+  html.kikoerumanager-dark body #app .library .lib-index-rebuild-btn svg {
+    color: currentColor !important;
+    stroke: currentColor !important;
+    opacity: 1 !important;
+    filter: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .app-page-head-right .km-badge,
+  html.kikoerumanager-dark body #app .library .lib-index-chip,
+  html.kikoerumanager-dark body #app .library .lib-index-rebuild-btn {
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .app-page-head-right .km-badge-success {
+    color: #34d399 !important;
+    background: rgba(5, 150, 105, 0.16) !important;
+    border-color: rgba(52, 211, 153, 0.38) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .app-page-head-right .km-badge-warning {
+    color: #fbbf24 !important;
+    background: rgba(217, 119, 6, 0.16) !important;
+    border-color: rgba(251, 191, 36, 0.4) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .app-page-head-right .km-badge-info {
+    color: #60a5fa !important;
+    background: rgba(37, 99, 235, 0.16) !important;
+    border-color: rgba(96, 165, 250, 0.38) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .app-page-head-right .km-badge-danger {
+    color: #fb7185 !important;
+    background: rgba(225, 29, 72, 0.16) !important;
+    border-color: rgba(251, 113, 133, 0.38) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-index-chip-idle {
+    color: #cbd5e1 !important;
+    background: rgba(148, 163, 184, 0.14) !important;
+    border-color: rgba(203, 213, 225, 0.28) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-index-chip-syncing,
+  html.kikoerumanager-dark body #app .library .lib-index-rebuild-btn {
+    color: #60a5fa !important;
+    background: rgba(37, 99, 235, 0.16) !important;
+    border-color: rgba(96, 165, 250, 0.38) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-index-chip-ready {
+    color: #34d399 !important;
+    background: rgba(5, 150, 105, 0.16) !important;
+    border-color: rgba(52, 211, 153, 0.38) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-index-chip-error {
+    color: #fb7185 !important;
+    background: rgba(225, 29, 72, 0.16) !important;
+    border-color: rgba(251, 113, 133, 0.38) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-search-box .lib-search-filter {
+    color: var(--lib-search-filter-color, #64748b) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-search-box .lib-search-filter svg {
+    color: currentColor !important;
+    stroke: currentColor !important;
+    opacity: 1 !important;
+  }
 }
 
 /* 库存页 Web 端最终收紧：去亮边、去蓝色焦点、统一成参考灰哑光层 */
@@ -2106,27 +2652,54 @@ html.kikoerumanager-dark {
     .lib-toolbar-panel,
     .lib-path-toolbar,
     .pagination-wrap,
-    .lib-file-table,
-    .lib-file-table-head,
-    .lib-file-table-header-row,
-    .lib-file-table-body,
     .lib-file-empty-row
   ) {
     background-image: none !important;
-    box-shadow: none !important;
     filter: none !important;
     text-shadow: none !important;
   }
 
   html.kikoerumanager-dark body #app .library :is(
-    .lib-info-strip,
-    .main-card,
-    .el-card.main-card,
-    .lib-file-table
+    .lib-info-strip
   ) {
-    background-color: var(--library-panel) !important;
-    border-color: var(--library-border) !important;
+    background:
+      linear-gradient(180deg, rgba(46, 47, 52, 0.34), rgba(16, 17, 21, 0.46)),
+      rgba(14, 15, 18, 0.72) !important;
+    border-color: rgba(255, 255, 255, 0.16) !important;
     border-radius: 12px !important;
+    outline: 1px solid rgba(255, 255, 255, 0.055) !important;
+    outline-offset: -2px !important;
+    backdrop-filter: blur(12px) saturate(112%) !important;
+    -webkit-backdrop-filter: blur(12px) saturate(112%) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-file-table {
+    background:
+      linear-gradient(180deg, rgba(48, 49, 54, 0.36), rgba(18, 19, 23, 0.5)),
+      rgba(14, 15, 18, 0.72) !important;
+    border: 1px solid rgba(255, 255, 255, 0.16) !important;
+    border-radius: 18px !important;
+    outline: 1px solid rgba(255, 255, 255, 0.055) !important;
+    outline-offset: -2px !important;
+    box-shadow: none !important;
+    backdrop-filter: blur(10px) saturate(112%) !important;
+    -webkit-backdrop-filter: blur(10px) saturate(112%) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-file-table::before {
+    display: none !important;
+    content: none !important;
+    background: none !important;
+    opacity: 0 !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-file-table::after {
+    display: none !important;
+    content: none !important;
+    background: none !important;
+    mix-blend-mode: normal !important;
+    opacity: 0 !important;
+    box-shadow: none !important;
   }
 
   html.kikoerumanager-dark body #app .library :is(
@@ -2145,7 +2718,6 @@ html.kikoerumanager-dark {
   html.kikoerumanager-dark body #app .library :is(
     .library-select-dd .app-dd-trigger,
     .lib-search-box .lib-search-input,
-    .lib-search-box .lib-search-filter,
     .lib-search-box .lib-search-expand,
     .lib-search-box .lib-search-clear:hover,
     .lib-btn,
@@ -2159,13 +2731,38 @@ html.kikoerumanager-dark {
     .el-pagination .el-select__wrapper,
     .el-pagination .el-input__wrapper
   ) {
-    background-color: var(--library-matte) !important;
-    background-image: none !important;
-    border-color: var(--library-border) !important;
+    background:
+      linear-gradient(180deg, rgba(52, 53, 58, 0.28), rgba(18, 19, 23, 0.42)),
+      rgba(20, 21, 25, 0.74) !important;
+    border-color: rgba(255, 255, 255, 0.15) !important;
     color: var(--library-text) !important;
     box-shadow: none !important;
-    outline: none !important;
+    outline: 1px solid rgba(255, 255, 255, 0.05) !important;
+    outline-offset: -2px !important;
     text-shadow: none !important;
+    backdrop-filter: blur(10px) saturate(112%) !important;
+    -webkit-backdrop-filter: blur(10px) saturate(112%) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-search-box .lib-search-filter {
+    background:
+      linear-gradient(180deg, rgba(52, 53, 58, 0.28), rgba(18, 19, 23, 0.42)),
+      rgba(20, 21, 25, 0.74) !important;
+    border-color: rgba(255, 255, 255, 0.15) !important;
+    color: var(--lib-search-filter-color, #64748b) !important;
+    box-shadow: none !important;
+    outline: 1px solid rgba(255, 255, 255, 0.05) !important;
+    outline-offset: -2px !important;
+    text-shadow: none !important;
+    backdrop-filter: blur(10px) saturate(112%) !important;
+    -webkit-backdrop-filter: blur(10px) saturate(112%) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-search-box .lib-search-filter svg {
+    color: currentColor !important;
+    stroke: currentColor !important;
+    opacity: 1 !important;
+    filter: none !important;
   }
 
   html.kikoerumanager-dark body #app .library :is(
@@ -2173,9 +2770,6 @@ html.kikoerumanager-dark {
     .library-select-dd .app-dd-trigger.is-open,
     .lib-search-box .lib-search-input:hover,
     .lib-search-box .lib-search-input:focus,
-    .lib-search-box .lib-search-filter:hover,
-    .lib-search-box .lib-search-filter.is-active,
-    .lib-search-box .lib-search-filter.is-open,
     .lib-search-box .lib-search-expand:hover,
     .lib-btn:hover:not(:disabled),
     .lib-btn-ghost:hover:not(:disabled),
@@ -2187,10 +2781,24 @@ html.kikoerumanager-dark {
     .el-pagination.is-background .el-pager li:hover,
     .el-pagination.is-background .el-pager li.is-active
   ) {
-    background-color: var(--library-matte-strong) !important;
-    background-image: none !important;
-    border-color: var(--library-border-strong) !important;
+    background:
+      linear-gradient(180deg, rgba(62, 63, 69, 0.34), rgba(24, 25, 30, 0.48)),
+      rgba(28, 29, 34, 0.78) !important;
+    border-color: rgba(255, 255, 255, 0.22) !important;
     color: rgba(250, 250, 252, 0.94) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-search-box :is(
+    .lib-search-filter:hover,
+    .lib-search-filter.is-active,
+    .lib-search-filter.is-open
+  ) {
+    background:
+      linear-gradient(180deg, rgba(62, 63, 69, 0.34), rgba(24, 25, 30, 0.48)),
+      rgba(28, 29, 34, 0.78) !important;
+    border-color: rgba(255, 255, 255, 0.22) !important;
+    color: var(--lib-search-filter-color, #64748b) !important;
     box-shadow: none !important;
   }
 
@@ -2318,16 +2926,34 @@ html.kikoerumanager-dark {
   }
 
   html.kikoerumanager-dark body #app .library .lib-file-table {
-    background-color: var(--library-panel) !important;
-    overflow: hidden !important;
+    background:
+      linear-gradient(180deg, rgba(48, 49, 54, 0.36), rgba(18, 19, 23, 0.5)),
+      rgba(14, 15, 18, 0.72) !important;
+    border: 1px solid rgba(255, 255, 255, 0.16) !important;
+    border-radius: 18px !important;
+    outline: 1px solid rgba(255, 255, 255, 0.055) !important;
+    outline-offset: -2px !important;
+    box-shadow: none !important;
+    backdrop-filter: blur(10px) saturate(112%) !important;
+    -webkit-backdrop-filter: blur(10px) saturate(112%) !important;
+    overflow: visible !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-file-table-body {
+    overflow: visible !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-file-table-head {
+    background: rgba(255, 255, 255, 0.035) !important;
+    border-bottom: 0 !important;
   }
 
   html.kikoerumanager-dark body #app .library :is(
     .lib-file-table-head,
     .lib-file-table-header-row
   ) {
-    background-color: rgba(8, 9, 12, 0.82) !important;
-    border-color: var(--library-border) !important;
+    background-color: transparent !important;
+    border-color: transparent !important;
   }
 
   html.kikoerumanager-dark body #app .library :is(
@@ -2335,13 +2961,24 @@ html.kikoerumanager-dark {
     .lib-file-table-row,
     .lib-file-empty-row
   ) {
-    background-color: var(--library-panel) !important;
-    border-color: rgba(255, 255, 255, 0.09) !important;
+    background-color: transparent !important;
+    border-color: transparent !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-file-table-row {
+    background-color: transparent !important;
+    border-bottom: 0 !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-file-table-row:last-child {
+    border-bottom: 0 !important;
   }
 
   html.kikoerumanager-dark body #app .library .lib-file-table-row:hover,
   html.kikoerumanager-dark body #app .library .lib-file-table-row.is-hover {
-    background-color: rgba(255, 255, 255, 0.055) !important;
+    background-color: #34353a !important;
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28) !important;
+    transform: translate3d(0, -4px, 0) scale(1.012) !important;
   }
 
   html.kikoerumanager-dark body #app .library .lib-table-marquee-box {
@@ -2354,16 +2991,28 @@ html.kikoerumanager-dark {
   }
 
   html.kikoerumanager-dark body #app .library .lib-file-table-row.library-row-marquee-selected {
-    background-color: #35363a !important;
-    border-color: #5556 !important;
+    background-color: #3a3b40 !important;
+    border-color: transparent !important;
     color: rgba(250, 250, 252, 0.96) !important;
     box-shadow: none !important;
   }
 
   html.kikoerumanager-dark body #app .library .lib-file-table-row.library-row-marquee-selected:hover {
-    background-color: #3d3e42 !important;
-    border-color: #6667 !important;
+    background-color: #44454a !important;
+    border-color: transparent !important;
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-file-table-row.library-row-selected-middle {
+    border-radius: 0 !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-file-table-row.library-row-selected-start:hover,
+  html.kikoerumanager-dark body #app .library .lib-file-table-row.library-row-selected-middle:hover,
+  html.kikoerumanager-dark body #app .library .lib-file-table-row.library-row-selected-end:hover {
+    background-color: #44454a !important;
     box-shadow: none !important;
+    transform: translate3d(0, 0, 0) scale(1) !important;
   }
 
   html.kikoerumanager-dark body #app .library .lib-file-table-row.library-row-marquee-selected::before,
@@ -2587,6 +3236,96 @@ html.kikoerumanager-dark {
     box-shadow: none !important;
   }
 
+  html.kikoerumanager-dark body .library-pagination-size-popper.el-popper {
+    background:
+      linear-gradient(180deg, rgba(48, 49, 54, 0.78), rgba(18, 19, 23, 0.92)),
+      rgba(18, 19, 23, 0.86) !important;
+    background-image:
+      linear-gradient(180deg, rgba(48, 49, 54, 0.78), rgba(18, 19, 23, 0.92)) !important;
+    border-color: rgba(255, 255, 255, 0.14) !important;
+    box-shadow: none !important;
+    backdrop-filter: blur(16px) saturate(110%) !important;
+    -webkit-backdrop-filter: blur(16px) saturate(110%) !important;
+  }
+
+  html.kikoerumanager-dark body .library-pagination-size-popper .el-select-dropdown {
+    background: transparent !important;
+    background-image: none !important;
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body .library-pagination-size-popper .el-select-dropdown__item {
+    color: rgba(214, 214, 220, 0.78) !important;
+    background: transparent !important;
+    background-image: none !important;
+  }
+
+  html.kikoerumanager-dark body .library-pagination-size-popper .el-select-dropdown__item:hover,
+  html.kikoerumanager-dark body .library-pagination-size-popper .el-select-dropdown__item.is-hovering {
+    color: rgba(250, 250, 252, 0.96) !important;
+    background: #333438 !important;
+    background-image: none !important;
+  }
+
+  html.kikoerumanager-dark body .library-pagination-size-popper .el-select-dropdown__item.is-selected {
+    color: rgba(250, 250, 252, 0.98) !important;
+    background: #3a3b40 !important;
+    background-image: none !important;
+  }
+
+  html.kikoerumanager-dark body .library-pagination-size-popper .el-popper__arrow::before {
+    background: #242529 !important;
+    border-color: rgba(255, 255, 255, 0.14) !important;
+  }
+
+  html.kikoerumanager-dark body .lib-filter-menu .lib-filter-menu-head {
+    background: #16171b !important;
+    background-image: none !important;
+    border-color: rgba(255, 255, 255, 0.14) !important;
+    color: rgba(214, 214, 220, 0.72) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body .lib-filter-menu .lib-filter-menu-head svg {
+    color: #64748b !important;
+    stroke: currentColor !important;
+    opacity: 1 !important;
+  }
+
+  html.kikoerumanager-dark body .lib-filter-menu .lib-filter-menu-row {
+    background: transparent !important;
+    background-image: none !important;
+    border-color: transparent !important;
+    color: rgba(226, 232, 240, 0.78) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body .lib-filter-menu .lib-filter-menu-label {
+    color: currentColor !important;
+  }
+
+  html.kikoerumanager-dark body .lib-filter-menu .lib-filter-menu-icon svg {
+    color: currentColor !important;
+    stroke: currentColor !important;
+    opacity: 1 !important;
+  }
+
+  html.kikoerumanager-dark body .lib-filter-menu .lib-filter-menu-check {
+    color: #6366f1 !important;
+    stroke: currentColor !important;
+    opacity: 1 !important;
+  }
+
+  html.kikoerumanager-dark body .lib-filter-menu .lib-filter-menu-row:hover,
+  html.kikoerumanager-dark body .lib-filter-menu .lib-filter-menu-row.is-active {
+    background: #2b2c30 !important;
+    background-image: none !important;
+    border-color: rgba(255, 255, 255, 0.18) !important;
+    color: rgba(250, 250, 252, 0.94) !important;
+    box-shadow: none !important;
+  }
+
   html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-refresh svg { color: #2563eb !important; }
   html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-stats svg { color: #4f46e5 !important; }
   html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-select svg { color: #0f766e !important; }
@@ -2599,4 +3338,165 @@ html.kikoerumanager-dark {
   html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-batch-delete svg { color: #e11d48 !important; }
   html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-batch-move svg { color: #0ea5e9 !important; }
   html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-api-rename svg { color: #7c3aed !important; }
+}
+
+/* 库存页暗色最终兜底：保留顶部 / 搜索 / 索引控件的语义图标色，不被通用玻璃规则洗灰。 */
+html.kikoerumanager-dark body #app .library .app-page-icon {
+  color: #60a5fa !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app .library .app-page-icon svg,
+html.kikoerumanager-dark body #app .library .app-page-head-right .km-badge svg,
+html.kikoerumanager-dark body #app .library .lib-index-chip svg,
+html.kikoerumanager-dark body #app .library .lib-index-rebuild-btn svg,
+html.kikoerumanager-dark body #app .library .lib-search-box .lib-search-filter svg {
+  color: currentColor !important;
+  stroke: currentColor !important;
+  opacity: 1 !important;
+  filter: none !important;
+}
+
+html.kikoerumanager-dark body #app .library .app-page-head-right .km-badge,
+html.kikoerumanager-dark body #app .library .lib-index-chip,
+html.kikoerumanager-dark body #app .library .lib-index-rebuild-btn {
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app .library .app-page-head-right .km-badge-success {
+  color: #34d399 !important;
+  background: rgba(5, 150, 105, 0.16) !important;
+  border-color: rgba(52, 211, 153, 0.38) !important;
+}
+
+html.kikoerumanager-dark body #app .library .app-page-head-right .km-badge-warning {
+  color: #fbbf24 !important;
+  background: rgba(217, 119, 6, 0.16) !important;
+  border-color: rgba(251, 191, 36, 0.4) !important;
+}
+
+html.kikoerumanager-dark body #app .library .app-page-head-right .km-badge-info {
+  color: #60a5fa !important;
+  background: rgba(37, 99, 235, 0.16) !important;
+  border-color: rgba(96, 165, 250, 0.38) !important;
+}
+
+html.kikoerumanager-dark body #app .library .app-page-head-right .km-badge-danger {
+  color: #fb7185 !important;
+  background: rgba(225, 29, 72, 0.16) !important;
+  border-color: rgba(251, 113, 133, 0.38) !important;
+}
+
+html.kikoerumanager-dark body #app .library .lib-index-chip-idle {
+  color: #cbd5e1 !important;
+  background: rgba(148, 163, 184, 0.14) !important;
+  border-color: rgba(203, 213, 225, 0.28) !important;
+}
+
+html.kikoerumanager-dark body #app .library .lib-index-chip-syncing,
+html.kikoerumanager-dark body #app .library .lib-index-rebuild-btn {
+  color: #60a5fa !important;
+  background: rgba(37, 99, 235, 0.16) !important;
+  border-color: rgba(96, 165, 250, 0.38) !important;
+}
+
+html.kikoerumanager-dark body #app .library .lib-index-chip-ready {
+  color: #34d399 !important;
+  background: rgba(5, 150, 105, 0.16) !important;
+  border-color: rgba(52, 211, 153, 0.38) !important;
+}
+
+html.kikoerumanager-dark body #app .library .lib-index-chip-error {
+  color: #fb7185 !important;
+  background: rgba(225, 29, 72, 0.16) !important;
+  border-color: rgba(251, 113, 133, 0.38) !important;
+}
+
+html.kikoerumanager-dark body #app .library .lib-search-box .lib-search-filter {
+  color: var(--lib-search-filter-color, rgba(226, 232, 240, 0.9)) !important;
+}
+
+html.kikoerumanager-dark body #app .library.library.library .app-page-header .app-page-icon.app-page-icon {
+  color: #1d4ed8 !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app .library.library.library .app-page-header .app-page-icon.app-page-icon svg {
+  color: currentColor !important;
+  stroke: currentColor !important;
+}
+
+html.kikoerumanager-dark body #app .library.library .app-page-head-right .km-badge.km-badge-success {
+  color: #34d399 !important;
+  background: rgba(5, 150, 105, 0.16) !important;
+  border-color: rgba(52, 211, 153, 0.38) !important;
+}
+
+html.kikoerumanager-dark body #app .library.library .app-page-head-right .km-badge.km-badge-warning {
+  color: #fbbf24 !important;
+  background: rgba(217, 119, 6, 0.16) !important;
+  border-color: rgba(251, 191, 36, 0.4) !important;
+}
+
+html.kikoerumanager-dark body #app .library.library .app-page-head-right .km-badge.km-badge-info {
+  color: #60a5fa !important;
+  background: rgba(37, 99, 235, 0.16) !important;
+  border-color: rgba(96, 165, 250, 0.38) !important;
+}
+
+html.kikoerumanager-dark body #app .library.library .app-page-head-right .km-badge.km-badge-danger {
+  color: #fb7185 !important;
+  background: rgba(225, 29, 72, 0.16) !important;
+  border-color: rgba(251, 113, 133, 0.38) !important;
+}
+
+html.kikoerumanager-dark body #app .library.library .app-page-head-right .km-badge svg {
+  color: currentColor !important;
+  stroke: currentColor !important;
+}
+
+html.kikoerumanager-dark body #app .library.library .app-page-head-right .lib-index-chip.lib-index-chip-idle {
+  color: #cbd5e1 !important;
+  background: rgba(148, 163, 184, 0.14) !important;
+  border-color: rgba(203, 213, 225, 0.28) !important;
+}
+
+html.kikoerumanager-dark body #app .library.library .app-page-head-right .lib-index-chip.lib-index-chip-syncing,
+html.kikoerumanager-dark body #app .library.library .app-page-head-right .lib-index-rebuild-btn {
+  color: #60a5fa !important;
+  background: rgba(37, 99, 235, 0.16) !important;
+  border-color: rgba(96, 165, 250, 0.38) !important;
+}
+
+html.kikoerumanager-dark body #app .library.library .app-page-head-right .lib-index-chip.lib-index-chip-ready {
+  color: #34d399 !important;
+  background: rgba(5, 150, 105, 0.16) !important;
+  border-color: rgba(52, 211, 153, 0.38) !important;
+}
+
+html.kikoerumanager-dark body #app .library.library .app-page-head-right .lib-index-chip.lib-index-chip-error {
+  color: #fb7185 !important;
+  background: rgba(225, 29, 72, 0.16) !important;
+  border-color: rgba(251, 113, 133, 0.38) !important;
+}
+
+html.kikoerumanager-dark body #app .library.library .app-page-head-right .lib-index-chip svg,
+html.kikoerumanager-dark body #app .library.library .app-page-head-right .lib-index-rebuild-btn svg {
+  color: currentColor !important;
+  stroke: currentColor !important;
+}
+
+html.kikoerumanager-dark body #app .library.library .lib-search-box .lib-search-filter {
+  color: var(--lib-search-filter-color, #64748b) !important;
+}
+
+html.kikoerumanager-dark body #app .library.library .lib-search-box .lib-search-filter svg {
+  color: currentColor !important;
+  stroke: currentColor !important;
+  opacity: 1 !important;
 }
