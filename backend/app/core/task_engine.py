@@ -30,6 +30,7 @@ class TaskType(str, Enum):
     AUTO_PROCESS = "auto_process"
     PROCESS_EXISTING_FOLDER = "process_existing_folder"  # 处理已存在的文件夹（跳过解压）
     ASMR_SYNC_DOWNLOAD = "asmr_sync_download"  # ASMR 同步下载任务
+    HTTP_DOWNLOAD = "http_download"  # HTTP 外链下载任务
     RJ_SUBTITLE_FETCH = "rj_subtitle_fetch"  # RJ 字幕抓取任务
     LOCAL_LIBRARY_UPLOAD = "local_library_upload"
     CIRCLE_COMPLETION_INDEX = "circle_completion_index"
@@ -512,6 +513,8 @@ class TaskEngine:
             return "rj_subtitle"
         if task.type == TaskType.ASMR_SYNC_DOWNLOAD:
             return "asmr_sync"
+        if task.type == TaskType.HTTP_DOWNLOAD:
+            return "http_download"
         if task.type == TaskType.LOCAL_LIBRARY_UPLOAD:
             return "upload"
         if task.type in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH}:
@@ -2477,6 +2480,8 @@ class TaskEngine:
                 elif task.type == TaskType.ASMR_SYNC_DOWNLOAD:
                     # ASMR 同步下载任务
                     await self._process_asmr_sync_download(task)
+                elif task.type == TaskType.HTTP_DOWNLOAD:
+                    await self._process_http_download(task)
                 elif task.type == TaskType.RJ_SUBTITLE_FETCH:
                     await self._process_rj_subtitle_fetch(task)
                 elif task.type == TaskType.LOCAL_LIBRARY_UPLOAD:
@@ -2769,6 +2774,8 @@ class TaskEngine:
         if task_id in self.tasks:
             task = self.tasks[task_id]
             metadata = dict(task.task_metadata or {})
+            if task.status in {TaskStatus.FAILED, TaskStatus.COMPLETED} and task.type == TaskType.HTTP_DOWNLOAD:
+                return
             if task.status == TaskStatus.PAUSED and metadata.get("pause_origin_status") == TaskStatus.PENDING.value:
                 metadata.pop("pause_origin_status", None)
                 task.task_metadata = metadata
@@ -2796,7 +2803,14 @@ class TaskEngine:
     def cancel_task(self, task_id: str):
         """取消任务"""
         if task_id in self.tasks:
-            self.tasks[task_id].cancel()
+            task = self.tasks[task_id]
+            task.cancel()
+            if task.type == TaskType.HTTP_DOWNLOAD:
+                try:
+                    from .http_download_service import get_http_download_service
+                    asyncio.create_task(get_http_download_service().cancel_task(task_id))
+                except Exception:
+                    logger.debug("取消 HTTP 下载 aria2 任务失败: task_id=%s", task_id, exc_info=True)
     
     def get_task(self, task_id: str) -> Optional[Task]:
         """获取任务"""
@@ -2815,6 +2829,12 @@ class TaskEngine:
         self.processing.discard(task_id)
         if task.rjcode:
             self._processing_rjcodes.discard(task.rjcode)
+        if task.type == TaskType.HTTP_DOWNLOAD:
+            try:
+                from .http_download_service import get_http_download_service
+                asyncio.create_task(get_http_download_service().cancel_task(task_id))
+            except Exception:
+                logger.debug("清理 HTTP 下载 aria2 状态失败: task_id=%s", task_id, exc_info=True)
         self.delete_task_snapshot(task_id)
         return True
     
@@ -4292,6 +4312,26 @@ class TaskEngine:
                     logger.info(f"[{rjcode}] 清理临时目录: {download_dir}")
                 except Exception as cleanup_error:
                     logger.warning(f"[{rjcode}] 清理临时目录失败: {cleanup_error}")
+
+    async def _process_http_download(self, task: Task):
+        """处理 HTTP 外链下载任务。"""
+        from .http_download_service import get_http_download_service
+
+        service = get_http_download_service()
+        task.task_metadata.setdefault("download_files", [])
+        task.task_metadata.setdefault("download_runtime", {})
+        task.task_metadata.setdefault("failed_files", [])
+        task.task_metadata.setdefault("progress_log", [])
+        task.task_metadata.setdefault("download_mode", "http")
+        task.task_metadata.setdefault("source_page", "asmr-sync")
+        task.task_metadata.setdefault("source_action", "manual_http_download")
+        task.task_metadata.setdefault("task_domain", "http_download")
+        task.task_metadata.setdefault("task_kind", TaskType.HTTP_DOWNLOAD.value)
+        try:
+            await service.start_download_task(task)
+        finally:
+            if task.is_cancelled():
+                await service.cancel_task(task.id)
 
     async def _queue_nested_subtitle_archives(
         self,
