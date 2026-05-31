@@ -2,13 +2,13 @@
   <div class="existing-page">
     <AppPageHeader
       :icon="FolderInput"
-      icon-color="#16a34a"
+      icon-color="var(--km-nav-folders-icon)"
       title="已有文件夹"
-      subtitle="把已解压的 RJ 文件夹放入已有目录，自动识别 RJ、抓取元数据、重命名并按分类规则入库"
+      subtitle="把已解压的 RJ 文件夹放入已有目录，支持社团分层识别、抓取元数据、重命名并按分类规则入库"
     >
       <div class="hero-search-wrap">
         <Search :size="13" class="hero-search-icon" />
-        <input v-model="searchQuery" class="hero-search-input" type="text" placeholder="搜索文件夹名或 RJ 号" />
+        <input v-model="searchQuery" class="hero-search-input" type="text" placeholder="搜索文件夹名、路径或 RJ 号" />
       </div>
       <button type="button" class="ef-head-btn primary btn-refresh" :disabled="loading" @click="refreshWithCache">
         <span class="page-head-btn-icon-swap-container">
@@ -55,7 +55,17 @@
                   <div class="option-row-desc">处理完成后移动到库存分类目录</div>
                 </div>
               </div>
-              <el-switch v-model="autoClassify" size="small" />
+              <button
+                type="button"
+                class="ef-switch"
+                :class="{ checked: autoClassify }"
+                role="switch"
+                :aria-checked="autoClassify"
+                aria-label="自动分类入库"
+                @click="autoClassify = !autoClassify"
+              >
+                <span class="ef-switch-thumb"></span>
+              </button>
             </div>
             <div class="option-row">
               <div class="option-row-main">
@@ -65,19 +75,49 @@
                   <div class="option-row-desc">刷新列表时检查重复与关联作品</div>
                 </div>
               </div>
-              <el-switch v-model="checkDuplicates" size="small" />
+              <button
+                type="button"
+                class="ef-switch"
+                :class="{ checked: checkDuplicates }"
+                role="switch"
+                :aria-checked="checkDuplicates"
+                aria-label="扫描时查重"
+                @click="checkDuplicates = !checkDuplicates"
+              >
+                <span class="ef-switch-thumb"></span>
+              </button>
             </div>
           </div>
 
           <div class="sidebar-actions">
-            <el-button class="side-ep-action primary" :disabled="selectedFolders.length === 0" :loading="processing" @click="handleProcess">
-              <Play :size="13" class="side-button-icon" />
-              处理选中 {{ selectedFolders.length ? `(${selectedFolders.length})` : '' }}
-            </el-button>
-            <el-button class="side-ep-action" :disabled="selectedFolders.length === 0" :loading="checkingDuplicates" @click="checkSelectedDuplicates">
-              <SearchCheck :size="13" class="side-button-icon" />
-              检查选中项
-            </el-button>
+            <button
+              type="button"
+              class="side-ep-action primary"
+              :disabled="selectedProcessableFolders.length === 0 || processing"
+              :aria-busy="processing"
+              @click="handleProcess"
+            >
+              <span class="side-button-icon-wrap">
+                <Loader2 v-if="processing" :size="13" :stroke-width="2.5" class="side-button-icon animate-spin" />
+                <Play v-else :size="13" :stroke-width="2.5" class="side-button-icon" />
+              </span>
+              <span class="side-action-label">处理选中</span>
+              <span v-if="selectedProcessableFolders.length" class="side-action-count">{{ selectedProcessableFolders.length }}</span>
+            </button>
+            <button
+              type="button"
+              class="side-ep-action"
+              :disabled="selectedCheckableFolders.length === 0 || checkingDuplicates"
+              :aria-busy="checkingDuplicates"
+              @click="checkSelectedDuplicates"
+            >
+              <span class="side-button-icon-wrap">
+                <Loader2 v-if="checkingDuplicates" :size="13" :stroke-width="2.5" class="side-button-icon animate-spin" />
+                <SearchCheck v-else :size="13" :stroke-width="2.5" class="side-button-icon" />
+              </span>
+              <span class="side-action-label">检查选中项</span>
+              <span v-if="selectedCheckableFolders.length" class="side-action-count">{{ selectedCheckableFolders.length }}</span>
+            </button>
           </div>
         </div>
       </aside>
@@ -132,7 +172,7 @@
                 <Transition name="ef-num-flip" mode="out-in">
                   <b :key="String(selectedFolders.length)">{{ selectedFolders.length }}</b>
                 </Transition>
-                <span class="ef-info-meta">个准备处理</span>
+                <span class="ef-info-meta">个已选项</span>
               </div>
             </div>
           </div>
@@ -159,16 +199,29 @@
               v-for="(folder, idx) in filteredFolders"
               :key="folder.path"
               class="folder-card"
-              :class="{ selected: isSelected(folder), conflict: isConflict(folder) }"
+              :class="{ selected: isSelected(folder), conflict: isConflict(folder), unrecognized: isUnrecognized(folder) }"
               :style="{ '--ef-grid-delay': `${Math.min(idx, 14) * 30}ms` }"
             >
               <div class="folder-card-head">
-                <button type="button" class="select-toggle" :class="{ active: isSelected(folder) }" :aria-label="isSelected(folder) ? '取消选择' : '选择文件夹'" @click="toggleFolderSelection(folder)">
+                <button
+                  type="button"
+                  class="select-toggle"
+                  :class="{ active: isSelected(folder) }"
+                  :disabled="!canSelectFolder(folder)"
+                  :aria-label="isSelected(folder) ? '取消选择' : '选择文件夹'"
+                  @click="toggleFolderSelection(folder)"
+                >
                   <Check :size="13" />
                 </button>
                 <div class="folder-main-info">
-                  <div class="folder-name" :title="folder.name">{{ folder.name }}</div>
-                  <div class="folder-path" :title="folder.path">{{ folder.path }}</div>
+                  <div class="folder-name-row">
+                    <div class="folder-name" :title="folder.name">{{ folder.name }}</div>
+                    <span v-if="folder.is_nested" class="folder-depth-chip">社团分层</span>
+                  </div>
+                  <div class="folder-path" :title="folder.path">{{ getFolderDisplayPath(folder) }}</div>
+                  <div v-if="folder.is_nested" class="folder-root" :title="folder.path">
+                    源目录：{{ folder.source_root_name || '上级目录' }}
+                  </div>
                 </div>
                 <span class="status-pill" :class="getFolderState(folder).tone">
                   <AlertTriangle v-if="getFolderState(folder).icon === 'alert'" :size="11" />
@@ -182,7 +235,8 @@
               </div>
 
               <div class="folder-meta-row">
-                <span class="folder-meta rj"><Hash :size="11" /> {{ folder.rjcode || '未识别 RJ' }}</span>
+                <span class="folder-meta rj" :class="{ missing: isUnrecognized(folder) }"><Hash :size="11" /> {{ folder.rjcode || '未识别 RJ' }}</span>
+                <span v-if="folder.is_nested" class="folder-meta route"><FolderTree :size="11" /> {{ folder.relative_path }}</span>
                 <span class="folder-meta"><HardDrive :size="11" /> 大小 {{ formatFileSize(folder.folder_size || folder.size) }}</span>
                 <span class="folder-meta"><Clock3 :size="11" /> 修改 {{ formatDate(folder.modified_time) }}</span>
               </div>
@@ -201,10 +255,10 @@
                 <button v-if="isConflict(folder)" type="button" class="card-action warning" @click="showDuplicateDetail(folder)">
                   <Eye :size="13" /> 查看冲突
                 </button>
-                <button v-else type="button" class="card-action primary" :disabled="processing" @click="handleProcessSingle(folder)">
-                  <Play :size="13" /> 重命名并入库
+                <button v-else type="button" class="card-action primary" :disabled="processing || !isProcessable(folder)" @click="handleProcessSingle(folder)">
+                  <Play :size="13" /> {{ isUnrecognized(folder) ? '等待识别' : '重命名并入库' }}
                 </button>
-                <button type="button" class="card-action" :disabled="checkingDuplicates" @click="handleRefreshFolder(folder)">
+                <button type="button" class="card-action" :disabled="checkingDuplicates || !isCheckable(folder)" @click="handleRefreshFolder(folder)">
                   <RefreshCw :size="13" :class="{ 'animate-spin': folder.status === 'checking' }" /> 查重
                 </button>
                 <button type="button" class="card-action danger" @click="handleDeleteFolder(folder)">
@@ -319,6 +373,7 @@ import {
   FileSearch,
   Folder,
   FolderInput,
+  FolderTree,
   HardDrive,
   Hash,
   Loader2,
@@ -370,11 +425,16 @@ const filteredFolders = computed(() => {
   if (!query) return folders.value
   return folders.value.filter((folder) =>
     String(folder.name || '').toLowerCase().includes(query) ||
-    String(folder.rjcode || '').toLowerCase().includes(query)
+    String(folder.rjcode || '').toLowerCase().includes(query) ||
+    String(folder.relative_path || '').toLowerCase().includes(query) ||
+    String(folder.source_root_name || '').toLowerCase().includes(query) ||
+    String(folder.path || '').toLowerCase().includes(query)
   )
 })
 
-const readyCount = computed(() => folders.value.filter((folder) => !isConflict(folder)).length)
+const selectedProcessableFolders = computed(() => selectedFolders.value.filter(isProcessable))
+const selectedCheckableFolders = computed(() => selectedFolders.value.filter(isCheckable))
+const readyCount = computed(() => folders.value.filter(isProcessable).length)
 
 onMounted(() => {
   refreshWithCache()
@@ -454,11 +514,31 @@ function isConflict(folder) {
   return Boolean(folder?.duplicate_info?.is_duplicate)
 }
 
+function isUnrecognized(folder) {
+  return !folder?.rjcode || folder.status === 'unrecognized'
+}
+
+function isCheckable(folder) {
+  return Boolean(folder?.rjcode) && folder.status !== 'checking'
+}
+
+function isProcessable(folder) {
+  return Boolean(folder?.rjcode) && !isConflict(folder) && folder.status !== 'unrecognized'
+}
+
+function canSelectFolder(folder) {
+  return isCheckable(folder)
+}
+
 function isSelected(folder) {
   return selectedFolders.value.some((item) => item.path === folder.path)
 }
 
 function toggleFolderSelection(folder) {
+  if (!canSelectFolder(folder)) {
+    ElMessage.warning('这个目录还没有识别到 RJ 号，不能加入处理队列')
+    return
+  }
   if (isSelected(folder)) {
     selectedFolders.value = selectedFolders.value.filter((item) => item.path !== folder.path)
   } else {
@@ -468,6 +548,7 @@ function toggleFolderSelection(folder) {
 
 function getFolderState(folder) {
   if (isConflict(folder)) return { label: getConflictTypeLabel(folder.duplicate_info?.conflict_type), tone: 'danger', icon: 'alert' }
+  if (isUnrecognized(folder)) return { label: '未识别 RJ', tone: 'muted', icon: 'x' }
   if (folder.status === 'checking') return { label: '检查中', tone: 'warning', icon: 'refresh' }
   if (folder.status === 'pending') return { label: '待检查', tone: 'muted', icon: 'clock' }
   if (folder.status === 'error') return { label: '检查失败', tone: 'danger', icon: 'x' }
@@ -476,10 +557,13 @@ function getFolderState(folder) {
 }
 
 async function handleProcess() {
-  if (!selectedFolders.value.length) return
+  if (!selectedProcessableFolders.value.length) {
+    ElMessage.warning('没有可处理的选中目录')
+    return
+  }
   processing.value = true
   try {
-    const data = await existingFolderApi.process(selectedFolders.value.map((folder) => folder.path), autoClassify.value)
+    const data = await existingFolderApi.process(selectedProcessableFolders.value.map((folder) => folder.path), autoClassify.value)
     resultData.value = { success: true, message: data.message, tasks: data.tasks || [] }
     resultDialogVisible.value = true
     selectedFolders.value = []
@@ -492,10 +576,13 @@ async function handleProcess() {
 }
 
 async function checkSelectedDuplicates() {
-  if (!selectedFolders.value.length) return
+  if (!selectedCheckableFolders.value.length) {
+    ElMessage.warning('没有可查重的选中目录')
+    return
+  }
   checkingDuplicates.value = true
   try {
-    const data = await existingFolderApi.checkDuplicates(selectedFolders.value.map((folder) => folder.path), { checkLinkedWorks: true })
+    const data = await existingFolderApi.checkDuplicates(selectedCheckableFolders.value.map((folder) => folder.path), { checkLinkedWorks: true })
     applyDuplicateResults(data.results || [])
     ElMessage[data.duplicate_count > 0 ? 'warning' : 'success'](data.message || '查重完成')
   } catch (error) {
@@ -511,7 +598,7 @@ function applyDuplicateResults(results) {
     if (index === -1) return
     folders.value[index] = {
       ...folders.value[index],
-      status: result.error ? 'error' : 'checked',
+      status: result.error && !result.rjcode ? 'unrecognized' : (result.error ? 'error' : 'checked'),
       duplicate_info: result.error ? { error: result.error } : {
         is_duplicate: result.is_duplicate,
         conflict_type: result.conflict_type,
@@ -574,6 +661,10 @@ async function handleDeleteFolder(row) {
 }
 
 async function handleRefreshFolder(row) {
+  if (!isCheckable(row)) {
+    ElMessage.warning('这个目录还没有识别到 RJ 号，不能查重')
+    return
+  }
   checkingDuplicates.value = true
   try {
     const index = folders.value.findIndex((folder) => folder.path === row.path)
@@ -590,6 +681,10 @@ async function handleRefreshFolder(row) {
 }
 
 async function handleProcessSingle(row) {
+  if (!isProcessable(row)) {
+    ElMessage.warning(isConflict(row) ? '这个目录有冲突，请先查看冲突详情' : '这个目录还没有识别到 RJ 号')
+    return
+  }
   try {
     await showSystemConfirm({
       title: '处理已有文件夹',
@@ -616,6 +711,11 @@ function getFolderName(path) {
   if (!path) return ''
   const parts = path.split(/[\\/]/)
   return parts[parts.length - 1]
+}
+
+function getFolderDisplayPath(folder) {
+  if (folder?.relative_path) return folder.relative_path
+  return folder?.path || ''
 }
 
 function goToTasks() {
@@ -653,18 +753,74 @@ function getConflictTypeLabel(conflictType) {
 </script>
 
 <style scoped>
-.existing-page { max-width: 1480px; margin: 0 auto; padding: 22px; color: #0f172a; background: #fff; }
+.existing-page,
+:global(.existing-dialog) {
+  --ef-page-bg: transparent;
+  --ef-surface: #ffffff;
+  --ef-surface-soft: #f8fafc;
+  --ef-surface-muted: #f1f5f9;
+  --ef-surface-hover: #fafbfc;
+  --ef-text: #0f172a;
+  --ef-text-soft: #334155;
+  --ef-muted: #64748b;
+  --ef-faint: #94a3b8;
+  --ef-border: #e2e8f0;
+  --ef-border-soft: rgba(15, 23, 42, 0.08);
+  --ef-border-strong: rgba(15, 23, 42, 0.18);
+  --ef-primary: #111827;
+  --ef-primary-hover: #1f2937;
+  --ef-primary-soft: rgba(15, 23, 42, 0.06);
+  --ef-shadow: 0 10px 26px rgba(15, 23, 42, 0.04);
+  --ef-shadow-hover: 0 18px 36px rgba(15, 23, 42, 0.1);
+  --ef-conflict-bg: #fff7ed;
+  --ef-conflict-border: #fed7aa;
+  --ef-conflict-text: #9a3412;
+  --ef-conflict-muted: #b45309;
+  color: var(--ef-text);
+  background: var(--ef-page-bg);
+}
+
+:global(html.kikoerumanager-dark .existing-page),
+:global(html.kikoerumanager-dark .existing-dialog) {
+  --ef-page-bg: transparent;
+  --ef-surface: #151515;
+  --ef-surface-soft: #1b1b1d;
+  --ef-surface-muted: #242427;
+  --ef-surface-hover: #202023;
+  --ef-text: #f5f5f5;
+  --ef-text-soft: #d4d4d8;
+  --ef-muted: #a1a1aa;
+  --ef-faint: #71717a;
+  --ef-border: rgba(255, 255, 255, 0.11);
+  --ef-border-soft: rgba(255, 255, 255, 0.08);
+  --ef-border-strong: rgba(255, 255, 255, 0.18);
+  --ef-primary: #e5e7eb;
+  --ef-primary-hover: #ffffff;
+  --ef-primary-soft: rgba(255, 255, 255, 0.08);
+  --ef-shadow: 0 14px 36px rgba(0, 0, 0, 0.24);
+  --ef-shadow-hover: 0 20px 42px rgba(0, 0, 0, 0.32);
+  --ef-conflict-bg: rgba(127, 29, 29, 0.16);
+  --ef-conflict-border: rgba(248, 113, 113, 0.28);
+  --ef-conflict-text: #fca5a5;
+  --ef-conflict-muted: #f87171;
+}
+
+.existing-page {
+  max-width: 1480px;
+  margin: 0 auto;
+  padding: 22px;
+}
 
 /* ============================================================
  * 页头搜索框 + page-head-btn 规范按钮（对齐 ASMR 同步页 / 操作记录页）
  * ============================================================ */
 .hero-search-wrap { position: relative; width: min(360px, 42vw); }
-.hero-search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #94a3b8; pointer-events: none; transition: color 0.2s ease; }
-.hero-search-input { width: 100%; height: 36px; padding: 0 14px 0 34px; border: 1px solid rgba(15, 23, 42, 0.12); border-radius: 10px; outline: none; background: #fff; font-size: 13px; color: #1e293b; transition: border-color 0.25s ease, box-shadow 0.25s ease, background-color 0.25s ease; }
-.hero-search-input::placeholder { color: #94a3b8; }
-.hero-search-input:hover { border-color: rgba(15, 23, 42, 0.2); background: #f8fafc; }
-.hero-search-input:focus { border-color: #0f172a; background: #fff; box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.06); }
-.hero-search-wrap:focus-within .hero-search-icon { color: #0f172a; }
+.hero-search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--ef-faint); pointer-events: none; transition: color 0.2s ease; }
+.hero-search-input { width: 100%; height: 36px; padding: 0 14px 0 34px; border: 1px solid var(--ef-border-soft); border-radius: 10px; outline: none; background: var(--ef-surface); font-size: 13px; color: var(--ef-text); transition: border-color 0.25s ease, box-shadow 0.25s ease, background-color 0.25s ease; }
+.hero-search-input::placeholder { color: var(--ef-faint); }
+.hero-search-input:hover { border-color: var(--ef-border-strong); background: var(--ef-surface-soft); }
+.hero-search-input:focus { border-color: var(--ef-primary); background: var(--ef-surface); box-shadow: 0 0 0 3px var(--ef-primary-soft); }
+.hero-search-wrap:focus-within .hero-search-icon { color: var(--ef-primary); }
 
 .ef-head-btn {
   position: relative;
@@ -675,9 +831,9 @@ function getConflictTypeLabel(conflictType) {
   height: 36px;
   padding: 0 14px;
   border-radius: 10px;
-  border: 1px solid rgba(15, 23, 42, 0.12);
-  background: #fff;
-  color: #1e293b;
+  border: 1px solid var(--ef-border-soft);
+  background: var(--ef-surface);
+  color: var(--ef-text-soft);
   font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
@@ -731,8 +887,8 @@ function getConflictTypeLabel(conflictType) {
 
 /* primary：黑灰渐变 + shimmer 高光（对齐 ASMR 同步页 page-head-btn.primary） */
 .ef-head-btn.primary {
-  background: linear-gradient(135deg, #111827, #1e293b);
-  color: #fff;
+  background: linear-gradient(135deg, var(--ef-primary), var(--ef-primary-hover));
+  color: var(--ef-surface);
   border-color: transparent;
   box-shadow: 0 8px 18px rgba(15, 23, 42, 0.18);
 }
@@ -749,14 +905,14 @@ function getConflictTypeLabel(conflictType) {
   pointer-events: none;
 }
 .ef-head-btn.primary:hover {
-  background: linear-gradient(135deg, #1e293b, #334155);
+  background: linear-gradient(135deg, var(--ef-primary-hover), var(--ef-primary));
   box-shadow: 0 14px 28px rgba(15, 23, 42, 0.28), 0 0 0 4px rgba(15, 23, 42, 0.05);
 }
 .ef-head-btn.primary:hover::before { left: 130%; }
 
 /* ghost：白底纯色 transition（gradient 不能 transition 会瞬切） */
-.ef-head-btn.ghost { background-color: #fff; }
-.ef-head-btn.ghost:hover { background-color: #f8fafc; border-color: rgba(15, 23, 42, 0.2); }
+.ef-head-btn.ghost { background-color: var(--ef-surface); }
+.ef-head-btn.ghost:hover { background-color: var(--ef-surface-soft); border-color: var(--ef-border-strong); }
 
 /* 各按钮专属图标动效 */
 .ef-head-btn.btn-refresh:hover :deep(.ef-head-btn-icon:not(.animate-spin)) {
@@ -806,9 +962,9 @@ function getConflictTypeLabel(conflictType) {
   margin-bottom: 14px;
   padding: 16px 20px;
   border-radius: 14px;
-  background: #fff;
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -16px rgba(15, 23, 42, 0.08);
+  background: var(--ef-surface);
+  border: 1px solid var(--ef-border-soft);
+  box-shadow: var(--ef-shadow);
 }
 .ef-info-item {
   display: flex;
@@ -823,19 +979,19 @@ function getConflictTypeLabel(conflictType) {
 .ef-info-icon-blue { color: #3b82f6; }
 .ef-info-icon-emerald { color: #10b981; }
 .ef-info-icon-amber { color: #f59e0b; }
-.ef-info-icon-slate { color: #64748b; }
+.ef-info-icon-slate { color: var(--ef-muted); }
 .ef-info-body { min-width: 0; flex: 1 1 auto; }
 .ef-info-label {
   font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: #94a3b8;
+  color: var(--ef-faint);
   margin-bottom: 4px;
 }
 .ef-info-value {
   font-size: 13.5px;
-  color: #475569;
+  color: var(--ef-muted);
   line-height: 1.3;
   display: flex;
   align-items: baseline;
@@ -848,15 +1004,15 @@ function getConflictTypeLabel(conflictType) {
   font-weight: 700;
   font-size: 20px;
   letter-spacing: -0.4px;
-  color: #0f172a;
+  color: var(--ef-text);
   font-variant-numeric: tabular-nums;
   display: inline-block;
   transform-origin: center;
 }
-.ef-info-meta { color: #94a3b8; font-size: 12px; }
+.ef-info-meta { color: var(--ef-faint); font-size: 12px; }
 .ef-info-divider {
   width: 1px;
-  background: linear-gradient(180deg, transparent, rgba(15, 23, 42, 0.1), transparent);
+  background: linear-gradient(180deg, transparent, var(--ef-border-strong), transparent);
   align-self: stretch;
 }
 @media (max-width: 980px) {
@@ -881,82 +1037,211 @@ function getConflictTypeLabel(conflictType) {
  * 主体布局：左侧栏 + 右侧主区
  * ============================================================ */
 .existing-shell { display: grid; grid-template-columns: 310px minmax(0,1fr); gap: 18px; margin-top: 18px; }
-.sidebar-card, .folders-card { border: 1px solid #e5e7eb; border-radius: 20px; background: #fff; box-shadow: 0 10px 26px rgba(15,23,42,.04); }
+.sidebar-card, .folders-card { border: 1px solid var(--ef-border); border-radius: 20px; background: var(--ef-surface); box-shadow: var(--ef-shadow); }
 .sidebar-card { padding: 16px; position: sticky; top: 18px; }
 .sidebar-head, .folder-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.sidebar-overline { color: #94a3b8; font-size: 11px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; }
+.sidebar-overline { color: var(--ef-faint); font-size: 11px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; }
 .sidebar-title { font-size: 17px; font-weight: 900; letter-spacing: -.03em; }
-.sidebar-count { min-width: 30px; height: 24px; border-radius: 999px; display: grid; place-items: center; background: #f1f5f9; color: #334155; font-size: 12px; font-weight: 900; transition: background-color 0.25s ease, color 0.25s ease; }
+.sidebar-count { min-width: 30px; height: 24px; border-radius: 999px; display: grid; place-items: center; background: var(--ef-surface-muted); color: var(--ef-text-soft); font-size: 12px; font-weight: 900; transition: background-color 0.25s ease, color 0.25s ease; }
 .pipeline-list { margin-top: 16px; display: grid; gap: 12px; }
-.pipeline-item { display: flex; gap: 10px; align-items: flex-start; padding: 10px; border-radius: 14px; background: #fff; border: 1px solid #e5e7eb; transition: border-color 0.25s ease, background-color 0.25s ease; }
-.pipeline-item:hover { border-color: rgba(15,23,42,0.12); background: #fafbfc; }
+.pipeline-item { display: flex; gap: 10px; align-items: flex-start; padding: 10px; border-radius: 14px; background: var(--ef-surface-soft); border: 1px solid var(--ef-border); transition: border-color 0.25s ease, background-color 0.25s ease; }
+.pipeline-item:hover { border-color: var(--ef-border-strong); background: var(--ef-surface-hover); }
 .pipeline-dot { width: 26px; height: 26px; flex: 0 0 auto; border-radius: 11px; display: grid; place-items: center; transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
 .pipeline-item:hover .pipeline-dot { transform: scale(1.1); }
-.pipeline-dot.info { background: #eff6ff; color: #2563eb; } .pipeline-dot.ok { background: #ecfdf5; color: #059669; } .pipeline-dot.warn { background: #fffbeb; color: #d97706; } .pipeline-dot.done { background: #f1f5f9; color: #0f172a; }
+.pipeline-dot.info { background: rgba(59, 130, 246, 0.12); color: #3b82f6; } .pipeline-dot.ok { background: rgba(16, 185, 129, 0.12); color: #10b981; } .pipeline-dot.warn { background: rgba(245, 158, 11, 0.12); color: #f59e0b; } .pipeline-dot.done { background: var(--ef-surface-muted); color: var(--ef-text); }
 .pipeline-title { font-size: 13px; font-weight: 900; }
-.pipeline-desc { margin-top: 2px; font-size: 11px; color: #64748b; line-height: 1.45; }
+.pipeline-desc { margin-top: 2px; font-size: 11px; color: var(--ef-muted); line-height: 1.45; }
 .option-stack { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 16px; }
-.option-row { min-height: 58px; border: 1px solid #e5e7eb; border-radius: 14px; background: #fff; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; transition: border-color 0.25s ease; }
-.option-row:hover { border-color: rgba(15,23,42,0.12); }
-.option-row-main { min-width: 0; display: flex; align-items: center; gap: 10px; color: #475569; }
-.option-row-title { color: #0f172a; font-size: 13px; font-weight: 900; line-height: 1.2; }
-.option-row-desc { margin-top: 3px; color: #94a3b8; font-size: 11px; line-height: 1.35; }
+.option-row { min-height: 58px; border: 1px solid var(--ef-border); border-radius: 14px; background: var(--ef-surface-soft); display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; transition: border-color 0.25s ease; }
+.option-row:hover { border-color: var(--ef-border-strong); }
+.option-row-main { min-width: 0; display: flex; align-items: center; gap: 10px; color: var(--ef-muted); }
+.option-row-title { color: var(--ef-text); font-size: 13px; font-weight: 900; line-height: 1.2; }
+.option-row-desc { margin-top: 3px; color: var(--ef-faint); font-size: 11px; line-height: 1.35; }
+.ef-switch {
+  width: 30px;
+  height: 18px;
+  flex: 0 0 auto;
+  border: 1px solid var(--ef-border-strong);
+  border-radius: 999px;
+  background: var(--ef-surface-muted);
+  padding: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  cursor: pointer;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.08);
+  transition:
+    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    background-color 0.25s ease,
+    border-color 0.25s ease,
+    box-shadow 0.25s ease;
+}
+.ef-switch:hover {
+  transform: translateY(-1px) scale(1.03);
+  border-color: var(--ef-border-strong);
+  background: var(--ef-surface-hover);
+}
+.ef-switch:active { transform: scale(0.94); transition: transform 0.12s ease; }
+.ef-switch.checked {
+  justify-content: flex-end;
+  background: var(--ef-text-soft);
+  border-color: var(--ef-text-soft);
+  box-shadow: 0 3px 8px rgba(15, 23, 42, 0.1);
+}
+.ef-switch-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--ef-surface);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.18);
+  transition:
+    background-color 0.25s ease,
+    box-shadow 0.25s ease,
+    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.ef-switch:hover .ef-switch-thumb { transform: scale(1.04); }
+.ef-switch.checked .ef-switch-thumb { background: var(--ef-surface); }
 
 /* ============================================================
  * 侧边栏按钮（应用防闪烁规则）
  * ============================================================ */
 .sidebar-actions { margin-top: 16px; display: grid; gap: 9px; }
-.side-ep-action { width: 100%; height: 38px; margin-left: 0 !important; border-radius: 12px; font-weight: 700; font-size: 13px; transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.25s ease; }
-.side-ep-action:hover { transform: translateY(-2px) scale(1.02); }
-.side-ep-action:active:not(.is-disabled) { transform: scale(0.96); transition: transform 0.12s ease; }
-.side-ep-action.is-disabled { opacity: 0.7; cursor: not-allowed; }
-.side-ep-action.primary { --el-button-bg-color: #111827; --el-button-border-color: #111827; --el-button-text-color: #fff; --el-button-hover-bg-color: #1f2937; --el-button-hover-border-color: #1f2937; --el-button-hover-text-color: #fff; box-shadow: 0 6px 14px rgba(15,23,42,0.15); }
-.side-ep-action.primary:hover { box-shadow: 0 10px 22px rgba(15,23,42,0.25); }
-.side-button-icon { margin-right: 4px; }
+.side-ep-action {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--ef-border);
+  border-radius: 10px;
+  background: var(--ef-surface-soft);
+  color: var(--ef-text-soft);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 11px;
+  font-weight: 800;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  transition:
+    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    background-color 0.25s ease,
+    border-color 0.25s ease,
+    color 0.25s ease,
+    opacity 0.25s ease;
+}
+.side-ep-action:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.02);
+  border-color: var(--ef-border-strong);
+  background: var(--ef-surface-hover);
+  box-shadow: var(--ef-shadow-hover);
+}
+.side-ep-action:active:not(:disabled) {
+  transform: scale(0.96);
+  transition: transform 0.12s ease;
+}
+.side-ep-action:disabled {
+  background: var(--ef-surface-soft);
+  border-color: var(--ef-border);
+  color: var(--ef-faint);
+  cursor: not-allowed;
+  opacity: 1;
+  box-shadow: none;
+}
+.side-ep-action.primary {
+  background: var(--ef-primary);
+  border-color: var(--ef-primary);
+  color: var(--ef-surface);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.16);
+}
+.side-ep-action.primary:hover:not(:disabled) {
+  background: var(--ef-primary-hover);
+  border-color: var(--ef-primary-hover);
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.22);
+}
+.side-ep-action.primary:disabled {
+  background: color-mix(in srgb, var(--ef-surface-muted) 72%, transparent);
+  border-color: var(--ef-border);
+  color: var(--ef-faint);
+  box-shadow: none;
+}
+.side-button-icon-wrap {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+}
+.side-button-icon {
+  transition: transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.25s ease;
+}
+.side-ep-action:hover:not(:disabled) .side-button-icon { transform: rotate(-8deg) scale(1.08); }
+.side-action-label { min-width: 0; white-space: nowrap; }
+.side-action-count {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  color: currentColor;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+}
 
 /* ============================================================
  * 主区：扫描横幅 + 文件夹网格
  * ============================================================ */
 .folders-card { padding: 16px; min-height: 420px; }
-.scan-banner { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; padding: 12px; border-radius: 14px; background: linear-gradient(180deg, #fafbfc 0%, #ffffff 100%); border: 1px dashed rgba(15,23,42,0.18); }
+.scan-banner { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; padding: 12px; border-radius: 14px; background: var(--ef-surface-soft); border: 1px dashed var(--ef-border-strong); }
 .scan-title { font-weight: 900; font-size: 13px; }
-.scan-desc { color: #64748b; font-size: 12px; margin-top: 2px; }
+.scan-desc { color: var(--ef-muted); font-size: 12px; margin-top: 2px; }
 .folder-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 13px; }
-.folder-card { border: 1px solid #dbe3ef; border-radius: 16px; padding: 14px; background: #fff; transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.25s ease, background-color 0.25s ease; }
-.folder-card:hover { transform: translateY(-3px); box-shadow: 0 18px 36px rgba(15,23,42,.1); border-color: rgba(15,23,42,0.16); }
-.folder-card.selected { border-color: #111827; box-shadow: inset 0 0 0 1px #111827, 0 8px 18px rgba(15,23,42,0.08); }
-.folder-card.conflict { background: linear-gradient(180deg, #fff7ed 0%, #ffffff 60%); border-color: #fed7aa; }
-.folder-card.conflict.selected { border-color: #c2410c; box-shadow: inset 0 0 0 1px #c2410c, 0 8px 18px rgba(194,65,12,0.1); }
+.folder-card { border: 1px solid var(--ef-border); border-radius: 16px; padding: 14px; background: var(--ef-surface); transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.25s ease, background-color 0.25s ease; }
+.folder-card:hover { transform: translateY(-3px); box-shadow: var(--ef-shadow-hover); border-color: var(--ef-border-strong); }
+.folder-card.selected { border-color: var(--ef-primary); box-shadow: inset 0 0 0 1px var(--ef-primary), var(--ef-shadow); }
+.folder-card.conflict { background: var(--ef-conflict-bg); border-color: var(--ef-conflict-border); }
+.folder-card.conflict.selected { border-color: var(--ef-conflict-text); box-shadow: inset 0 0 0 1px var(--ef-conflict-text), var(--ef-shadow); }
+.folder-card.unrecognized { background: var(--ef-surface-soft); border-style: dashed; }
 
 /* select-toggle 选择按钮：防闪烁 + 平滑 */
-.select-toggle { width: 26px; height: 26px; border-radius: 8px; border: 1px solid #cbd5e1; background: #fff; color: #cbd5e1; display: grid; place-items: center; flex: 0 0 auto; cursor: pointer; transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease, box-shadow 0.25s ease; }
-.select-toggle:hover { border-color: #111827; color: #111827; background: #f8fafc; transform: scale(1.06); }
+.select-toggle { width: 26px; height: 26px; border-radius: 8px; border: 1px solid var(--ef-border-strong); background: var(--ef-surface); color: var(--ef-faint); display: grid; place-items: center; flex: 0 0 auto; cursor: pointer; transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease, box-shadow 0.25s ease; }
+.select-toggle:hover { border-color: var(--ef-primary); color: var(--ef-primary); background: var(--ef-surface-soft); transform: scale(1.06); }
 .select-toggle:active { transform: scale(0.92); transition: transform 0.1s ease; }
-.select-toggle.active { background: #111827; color: white; border-color: #111827; box-shadow: 0 4px 10px rgba(15,23,42,0.2); }
-.select-toggle.active:hover { background: #1f2937; }
+.select-toggle.active { background: var(--ef-primary); color: var(--ef-surface); border-color: var(--ef-primary); box-shadow: 0 4px 10px rgba(15,23,42,0.2); }
+.select-toggle.active:hover { background: var(--ef-primary-hover); }
+.select-toggle:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
 
 .folder-main-info { min-width: 0; flex: 1; }
-.folder-name { font-weight: 900; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.folder-path { margin-top: 3px; color: #94a3b8; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+.folder-name-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.folder-name { min-width: 0; color: var(--ef-text); font-weight: 900; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.folder-depth-chip { flex: 0 0 auto; height: 20px; display: inline-flex; align-items: center; padding: 0 7px; border-radius: 999px; border: 1px solid var(--ef-border); background: var(--ef-surface-muted); color: var(--ef-muted); font-size: 10.5px; font-weight: 700; }
+.folder-path { margin-top: 3px; color: var(--ef-faint); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+.folder-root { margin-top: 4px; color: var(--ef-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* status-pill：和 lib-chip 一致的视觉规范 */
 .status-pill { height: 22px; border-radius: 999px; display: inline-flex; align-items: center; gap: 4px; padding: 0 9px; font-size: 11px; font-weight: 600; white-space: nowrap; transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1); }
 .folder-card:hover .status-pill { transform: scale(1.04); }
-.status-pill.success { background: rgba(220, 252, 231, 0.8); color: #047857; border: 1px solid rgba(134, 239, 172, 0.5); }
+.status-pill.success { background: rgba(16, 185, 129, 0.12); color: #059669; border: 1px solid rgba(16, 185, 129, 0.24); }
 .status-pill.warning { background: rgba(254, 243, 199, 0.8); color: #b45309; border: 1px solid rgba(253, 224, 71, 0.5); }
 .status-pill.danger { background: rgba(254, 226, 226, 0.8); color: #b91c1c; border: 1px solid rgba(252, 165, 165, 0.5); }
-.status-pill.info { background: rgba(224, 231, 255, 0.8); color: #4338ca; border: 1px solid rgba(165, 180, 252, 0.5); }
-.status-pill.muted { background: rgba(241, 245, 249, 0.8); color: #475569; border: 1px solid rgba(203, 213, 225, 0.5); }
+.status-pill.info { background: rgba(100, 116, 139, 0.12); color: var(--ef-text-soft); border: 1px solid rgba(100, 116, 139, 0.24); }
+.status-pill.muted { background: var(--ef-surface-muted); color: var(--ef-muted); border: 1px solid var(--ef-border); }
 
 .folder-meta-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-.folder-meta { display: inline-flex; align-items: center; gap: 4px; height: 22px; border-radius: 999px; background: #f8fafc; border: 1px solid rgba(15,23,42,0.06); padding: 0 8px; color: #64748b; font-size: 11px; font-weight: 500; transition: background-color 0.25s ease, border-color 0.25s ease; }
-.folder-meta:hover { background: #f1f5f9; border-color: rgba(15,23,42,0.12); }
-.folder-meta.rj { color: #0f172a; font-weight: 700; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+.folder-meta { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; height: 22px; border-radius: 999px; background: var(--ef-surface-soft); border: 1px solid var(--ef-border-soft); padding: 0 8px; color: var(--ef-muted); font-size: 11px; font-weight: 500; transition: background-color 0.25s ease, border-color 0.25s ease; }
+.folder-meta:hover { background: var(--ef-surface-muted); border-color: var(--ef-border-strong); }
+.folder-meta.rj { color: var(--ef-text); font-weight: 700; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+.folder-meta.rj.missing { color: var(--ef-faint); }
+.folder-meta.route { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 8px; }
 
-.conflict-box { margin-top: 12px; display: flex; gap: 9px; padding: 10px; border-radius: 12px; background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412; }
+.conflict-box { margin-top: 12px; display: flex; gap: 9px; padding: 10px; border-radius: 12px; background: var(--ef-conflict-bg); border: 1px solid var(--ef-conflict-border); color: var(--ef-conflict-text); }
 .conflict-box.large { margin-top: 0; }
 .conflict-title { font-size: 13px; font-weight: 900; }
-.conflict-desc { margin-top: 2px; font-size: 12px; color: #b45309; }
+.conflict-desc { margin-top: 2px; font-size: 12px; color: var(--ef-conflict-muted); }
 
 /* ============================================================
  * 卡片操作按钮（防闪烁 + 微动效）
@@ -964,28 +1249,28 @@ function getConflictTypeLabel(conflictType) {
 .folder-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 .card-action {
   height: 28px;
-  border: 1px solid rgba(15,23,42,0.12);
+  border: 1px solid var(--ef-border-soft);
   border-radius: 8px;
-  background: #fff;
+  background: var(--ef-surface);
   display: inline-flex;
   align-items: center;
   gap: 5px;
   padding: 0 10px;
-  color: #475569;
+  color: var(--ef-muted);
   font-size: 11.5px;
   font-weight: 600;
   cursor: pointer;
   transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s ease, background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease, opacity 0.2s ease;
   will-change: transform;
 }
-.card-action:hover { transform: translateY(-1px) scale(1.03); background: #f8fafc; border-color: rgba(15,23,42,0.18); box-shadow: 0 4px 10px rgba(15,23,42,0.06); }
+.card-action:hover { transform: translateY(-1px) scale(1.03); background: var(--ef-surface-soft); border-color: var(--ef-border-strong); box-shadow: var(--ef-shadow); }
 .card-action:active:not(:disabled) { transform: scale(0.96); transition: transform 0.12s ease; }
 .card-action:disabled { opacity: 0.65; cursor: not-allowed; }
-.card-action.primary { background: #111827; color: white; border-color: #111827; box-shadow: 0 3px 8px rgba(15,23,42,0.15); }
-.card-action.primary:hover { background: #1f2937; box-shadow: 0 6px 14px rgba(15,23,42,0.22); }
+.card-action.primary { background: var(--ef-primary); color: var(--ef-surface); border-color: var(--ef-primary); box-shadow: var(--ef-shadow); }
+.card-action.primary:hover { background: var(--ef-primary-hover); box-shadow: var(--ef-shadow-hover); }
 .card-action.warning { background: #fffbeb; color: #b45309; border-color: #fde68a; }
 .card-action.warning:hover { background: #fef3c7; border-color: #fcd34d; }
-.card-action.danger { background: #fff; color: #dc2626; border-color: rgba(220,38,38,0.25); }
+.card-action.danger { background: var(--ef-surface); color: #dc2626; border-color: rgba(220,38,38,0.25); }
 .card-action.danger:hover { background: #fef2f2; border-color: #fca5a5; box-shadow: 0 4px 10px rgba(220,38,38,0.12); }
 
 /* ============================================================
@@ -1018,7 +1303,7 @@ function getConflictTypeLabel(conflictType) {
 .ef-grid-enter-from { opacity: 0; transform: translateY(20px) scale(0.94); }
 .ef-grid-leave-to   { opacity: 0; transform: translateY(-10px) scale(0.96); }
 .ef-grid-move { transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1); }
-.result-dialog :deep(.el-dialog) { border-radius: 22px; overflow: hidden; box-shadow: 0 24px 70px rgba(15,23,42,.2); }
+.result-dialog :deep(.el-dialog) { border-radius: 22px; overflow: hidden; background: var(--ef-surface); border: 1px solid var(--ef-border); box-shadow: 0 24px 70px rgba(15,23,42,.2); }
 .result-dialog :deep(.el-dialog__header) { margin: 0; padding: 18px 18px 0; }
 .result-dialog :deep(.el-dialog__body) { padding: 16px 18px; }
 .result-dialog :deep(.el-dialog__footer) { padding: 0 18px 18px; }
@@ -1026,24 +1311,24 @@ function getConflictTypeLabel(conflictType) {
 .dialog-title-wrap { display: flex; align-items: center; gap: 12px; }
 .dialog-icon { width: 38px; height: 38px; border-radius: 14px; display: grid; place-items: center; }
 .dialog-icon.success { background: #ecfdf5; color: #059669; } .dialog-icon.warning { background: #fffbeb; color: #d97706; }
-.dialog-title { color: #0f172a; font-size: 17px; font-weight: 900; letter-spacing: -.03em; }
-.dialog-subtitle { margin-top: 3px; color: #64748b; font-size: 12px; }
+.dialog-title { color: var(--ef-text); font-size: 17px; font-weight: 900; letter-spacing: -.03em; }
+.dialog-subtitle { margin-top: 3px; color: var(--ef-muted); font-size: 12px; }
 /* ============================================================
  * 对话框：标题 / 关闭按钮 / 结果面板 / 任务列表 / 解决方案选项
  *  - 所有交互元素加防闪烁规则（hover 不依赖 :not(:disabled)）
  * ============================================================ */
 .dialog-close {
   width: 32px; height: 32px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--ef-border);
   border-radius: 10px;
-  background: #fff;
-  color: #94a3b8;
+  background: var(--ef-surface);
+  color: var(--ef-faint);
   display: grid;
   place-items: center;
   cursor: pointer;
   transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.25s ease, border-color 0.25s ease, background-color 0.25s ease, box-shadow 0.25s ease;
 }
-.dialog-close:hover { color: #0f172a; border-color: rgba(15,23,42,0.2); background: #f8fafc; transform: scale(1.06) rotate(90deg); }
+.dialog-close:hover { color: var(--ef-text); border-color: var(--ef-border-strong); background: var(--ef-surface-soft); transform: scale(1.06) rotate(90deg); }
 .dialog-close:active { transform: scale(0.92) rotate(90deg); transition: transform 0.1s ease; }
 
 .result-panel { padding: 14px; border-radius: 14px; margin-bottom: 12px; border: 1px solid; }
@@ -1052,12 +1337,12 @@ function getConflictTypeLabel(conflictType) {
 .result-title { font-weight: 900; }
 .result-message { font-size: 13px; margin-top: 4px; line-height: 1.6; }
 .task-list, .duplicate-panel { display: grid; gap: 10px; }
-.task-list-title { color: #0f172a; font-size: 12px; font-weight: 900; }
-.task-row, .linked-row { display: grid; grid-template-columns: 92px 1fr auto; gap: 10px; align-items: center; padding: 10px 12px; border-radius: 12px; background: #fff; border: 1px solid #e5e7eb; color: #475569; font-size: 12px; transition: border-color 0.25s ease, background-color 0.25s ease; }
-.task-row:hover, .linked-row:hover { border-color: rgba(15,23,42,0.14); background: #fafbfc; }
-.task-id { font-weight: 900; color: #0f172a; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+.task-list-title { color: var(--ef-text); font-size: 12px; font-weight: 900; }
+.task-row, .linked-row { display: grid; grid-template-columns: 92px 1fr auto; gap: 10px; align-items: center; padding: 10px 12px; border-radius: 12px; background: var(--ef-surface-soft); border: 1px solid var(--ef-border); color: var(--ef-muted); font-size: 12px; transition: border-color 0.25s ease, background-color 0.25s ease; }
+.task-row:hover, .linked-row:hover { border-color: var(--ef-border-strong); background: var(--ef-surface-hover); }
+.task-id { font-weight: 900; color: var(--ef-text); font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
 .task-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.task-status { height: 22px; border-radius: 999px; display: inline-flex; align-items: center; padding: 0 9px; background: rgba(224, 231, 255, 0.8); color: #4338ca; border: 1px solid rgba(165, 180, 252, 0.5); font-size: 11px; font-weight: 600; }
+.task-status { height: 22px; border-radius: 999px; display: inline-flex; align-items: center; padding: 0 9px; background: var(--ef-surface-muted); color: var(--ef-text-soft); border: 1px solid var(--ef-border); font-size: 11px; font-weight: 600; }
 
 .dialog-footer { display: flex; justify-content: flex-end; gap: 9px; }
 .dialog-ep-btn { height: 34px; border-radius: 10px; font-weight: 700; transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s ease, opacity 0.25s ease; }
@@ -1066,19 +1351,19 @@ function getConflictTypeLabel(conflictType) {
 .dialog-ep-btn.primary { --el-button-bg-color: #111827; --el-button-border-color: #111827; --el-button-text-color: #fff; --el-button-hover-bg-color: #1f2937; --el-button-hover-border-color: #1f2937; --el-button-hover-text-color: #fff; box-shadow: 0 6px 14px rgba(15,23,42,0.18); }
 .dialog-ep-btn.primary:hover { box-shadow: 0 10px 22px rgba(15,23,42,0.26); }
 
-.detail-card { border: 1px solid #e2e8f0; border-radius: 14px; padding: 12px; background: #fff; transition: border-color 0.25s ease, background-color 0.25s ease; }
-.detail-card:hover { border-color: rgba(15,23,42,0.14); background: #fafbfc; }
+.detail-card { border: 1px solid var(--ef-border); border-radius: 14px; padding: 12px; background: var(--ef-surface-soft); transition: border-color 0.25s ease, background-color 0.25s ease; }
+.detail-card:hover { border-color: var(--ef-border-strong); background: var(--ef-surface-hover); }
 .detail-title { font-weight: 900; margin-bottom: 8px; }
-.detail-line { font-size: 12px; color: #475569; line-height: 1.7; word-break: break-all; }
+.detail-line { font-size: 12px; color: var(--ef-muted); line-height: 1.7; word-break: break-all; }
 
 /* 解决方案选项卡：选中状态加 ring + 推荐项 emerald 高亮 */
 .resolution-list { display: grid; gap: 9px; }
 .resolution-option {
   text-align: left;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--ef-border);
   border-radius: 14px;
   padding: 12px;
-  background: #fff;
+  background: var(--ef-surface-soft);
   display: grid;
   gap: 4px;
   cursor: pointer;
@@ -1088,36 +1373,36 @@ function getConflictTypeLabel(conflictType) {
     border-color 0.25s ease,
     background-color 0.25s ease;
 }
-.resolution-option:hover { transform: translateY(-1px); border-color: rgba(15,23,42,0.16); box-shadow: 0 4px 10px rgba(15,23,42,0.05); }
+.resolution-option:hover { transform: translateY(-1px); border-color: var(--ef-border-strong); box-shadow: var(--ef-shadow); }
 .resolution-option:active { transform: scale(0.99); transition: transform 0.1s ease; }
 .resolution-option.active {
-  border-color: #111827;
-  box-shadow: inset 0 0 0 1px #111827, 0 6px 14px rgba(15,23,42,0.08);
-  background: linear-gradient(180deg, #fafbfc 0%, #ffffff 100%);
+  border-color: var(--ef-primary);
+  box-shadow: inset 0 0 0 1px var(--ef-primary), var(--ef-shadow);
+  background: var(--ef-surface);
 }
 .resolution-option.recommend { background: linear-gradient(180deg, #f0fdf4 0%, #ffffff 100%); border-color: #bbf7d0; }
 .resolution-option.recommend.active { border-color: #047857; box-shadow: inset 0 0 0 1px #047857, 0 6px 14px rgba(5,150,105,0.12); }
-.resolution-title { font-weight: 900; color: #0f172a; }
-.resolution-desc { color: #64748b; font-size: 12px; }
+.resolution-title { font-weight: 900; color: var(--ef-text); }
+.resolution-desc { color: var(--ef-muted); font-size: 12px; }
 
 /* 冲突详情对话框页脚按钮 */
 .dialog-btn {
   height: 34px;
-  border: 1px solid rgba(15,23,42,0.12);
+  border: 1px solid var(--ef-border-soft);
   border-radius: 10px;
-  background: white;
+  background: var(--ef-surface);
   padding: 0 14px;
   font-weight: 700;
-  color: #475569;
+  color: var(--ef-muted);
   font-size: 13px;
   cursor: pointer;
   transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s ease, background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease, opacity 0.25s ease;
 }
-.dialog-btn:hover { transform: translateY(-2px) scale(1.02); background: #f8fafc; border-color: rgba(15,23,42,0.2); box-shadow: 0 6px 14px rgba(15,23,42,0.06); }
+.dialog-btn:hover { transform: translateY(-2px) scale(1.02); background: var(--ef-surface-soft); border-color: var(--ef-border-strong); box-shadow: var(--ef-shadow); }
 .dialog-btn:active { transform: scale(0.96); transition: transform 0.12s ease; }
 .dialog-btn:disabled { opacity: 0.65; cursor: not-allowed; }
-.dialog-btn.primary { background: #111827; color: white; border-color: #111827; box-shadow: 0 6px 14px rgba(15,23,42,0.18); }
-.dialog-btn.primary:hover { background: #1f2937; border-color: #1f2937; box-shadow: 0 10px 22px rgba(15,23,42,0.26); }
+.dialog-btn.primary { background: var(--ef-primary); color: var(--ef-surface); border-color: var(--ef-primary); box-shadow: var(--ef-shadow); }
+.dialog-btn.primary:hover { background: var(--ef-primary-hover); border-color: var(--ef-primary-hover); box-shadow: var(--ef-shadow-hover); }
 
 /* lucide animate-spin 全局已存在（Tailwind utility），此处保留兼容 */
 .animate-spin { animation: spin 1s linear infinite; }
