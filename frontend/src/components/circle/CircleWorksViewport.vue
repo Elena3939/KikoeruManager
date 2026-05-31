@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
+import CirclePager from './CirclePager.vue'
 import WorkCard from './WorkCard.vue'
 import WorkListRow from './WorkListRow.vue'
 
@@ -8,8 +9,8 @@ const props = defineProps({
   items: { type: Array, default: () => [] },
   mode: { type: String, default: 'card', validator: value => ['card', 'list'].includes(value) },
   currentPage: { type: Number, default: 1 },
-  pageSize: { type: Number, default: 24 },
-  pageSizes: { type: Array, default: () => [24, 48, 96] },
+  pageSize: { type: Number, default: 10 },
+  pageSizes: { type: Array, default: () => [10, 20, 50, 100] },
   selectedCodes: { type: Object, default: () => new Set() },
   flashedCodes: { type: Object, default: () => new Set() },
   imageField: { type: String, default: 'image_url' },
@@ -37,8 +38,8 @@ let motionTimer = null
 const safeItems = computed(() => Array.isArray(props.items) ? props.items : [])
 const totalItems = computed(() => safeItems.value.length)
 const normalizedPageSize = computed(() => {
-  const size = Number(props.pageSize || 24)
-  return Number.isFinite(size) && size > 0 ? size : 24
+  const size = Number(props.pageSize || 10)
+  return Number.isFinite(size) && size > 0 ? size : 10
 })
 const pageCount = computed(() => Math.max(1, Math.ceil(totalItems.value / normalizedPageSize.value)))
 const normalizedPage = computed(() => {
@@ -294,13 +295,12 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="works-pager">
-        <el-pagination
+        <CirclePager
           v-model:current-page="currentPageModel"
           v-model:page-size="pageSizeModel"
           :page-sizes="pageSizes"
-          layout="total, sizes, prev, pager, next, jumper"
           :total="totalItems"
-          background
+          :label="pagerLabel"
         />
       </div>
     </template>
@@ -426,10 +426,10 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px dashed rgba(203, 213, 225, 0.88);
+  border: 1px dashed var(--circle-border-soft, rgba(203, 213, 225, 0.88));
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.54);
-  color: #94a3b8;
+  background: var(--circle-surface-muted, rgba(255, 255, 255, 0.54));
+  color: var(--circle-text-muted, #94a3b8);
   font-size: 13px;
   font-weight: 700;
 }
@@ -464,11 +464,6 @@ onBeforeUnmount(() => {
 @media (max-width: 760px) {
   .works-pager {
     justify-content: center;
-  }
-
-  .works-pager :deep(.el-pagination__sizes),
-  .works-pager :deep(.el-pagination__jump) {
-    display: none !important;
   }
 }
 
