@@ -96,11 +96,14 @@ frontend/src/assets/anime/tempView/
 frontend/vite.config.js.timestamp-*.mjs
 
 # Codex / agent runtime caches and intermediate artifacts
+.codegraph/
 .codex/
 .codex-backups/
 .codex-temp-visibility/
 .codex-temp/
 .cursor/
+.npm-codegraph-cache/
+.playwright-cli/
 
 # Backend / view scratch dirs
 backend/tempView/

@@ -1,14 +1,22 @@
 <template>
   <article
     class="floating-card floating-card-upload background-floating-card"
-    :class="[toneClass, { 'is-hosted': hosted }]"
+    :class="[
+      toneClass,
+      {
+        'is-hosted': hosted,
+        'is-compact': compactLayout,
+        'is-completed': completed,
+        'is-problem': hasProblem
+      }
+    ]"
     :style="cardStyle"
   >
     <div class="upload-floating-head">
       <div class="flex min-w-0 items-center gap-2.5 pr-2">
-        <div class="floating-hero-icon">
+        <div class="floating-hero-icon" :class="`is-${resolvedKind}`">
           <DotLottieVue
-            v-if="resolvedHeroAnimation"
+            v-if="showHeroAnimation"
             :src="resolvedHeroAnimation"
             autoplay
             loop
@@ -41,7 +49,7 @@
     </div>
 
     <DotLottieVue
-      v-if="completed"
+      v-if="showProgressLottie && completed"
       :src="successAnimationSrc"
       autoplay
       loop
@@ -51,7 +59,7 @@
     />
 
     <DotLottieVue
-      v-else
+      v-else-if="showProgressLottie"
       ref="progressLottieRef"
       :key="progressLottieKey"
       :src="progressAnimationSrc"
@@ -61,6 +69,23 @@
       background="transparent"
       class="floating-progress-lottie floating-progress-lottie-progress"
     />
+    <span
+      v-if="showProgressLottie && !completed"
+      class="floating-progress-percent"
+      :style="progressPercentStyle"
+      aria-hidden="true"
+    >
+      {{ progressPercentText }}
+    </span>
+    <div
+      v-else
+      class="floating-progress-ring"
+      :style="progressPercentStyle"
+      aria-hidden="true"
+    >
+      <CheckSquare v-if="completed" :size="16" :stroke-width="2.4" />
+      <span v-else>{{ progressPercentText }}</span>
+    </div>
 
     <div v-if="normalizedMetrics.length" class="floating-chip-row-compact">
       <span
@@ -189,9 +214,16 @@ const resolvedKind = computed(() => {
 
 const resolvedHeroAnimation = computed(() => props.heroAnimation || heroAnimationMap[resolvedKind.value] || '')
 const resolvedHeroIcon = computed(() => props.heroIcon || heroIconMap[resolvedKind.value] || Upload)
+const compactLayout = computed(() => resolvedKind.value !== 'upload')
+const showHeroAnimation = computed(() => !compactLayout.value && Boolean(resolvedHeroAnimation.value))
+const showProgressLottie = computed(() => !compactLayout.value)
 const progressAnimationSrc = computed(() => props.progressAnimation || progressAnimation)
 const successAnimationSrc = computed(() => props.successAnimation || successConfettiAnimation)
 const safePercentage = computed(() => Math.max(0, Math.min(100, Number(props.percentage || 0))))
+const progressPercentText = computed(() => `${Math.round(safePercentage.value)}%`)
+const progressPercentStyle = computed(() => ({
+  '--floating-progress': `${safePercentage.value}%`
+}))
 const progressLottieKey = computed(() => props.progressKey || `${resolvedKind.value}-${props.completed ? 'done' : 'run'}`)
 
 const normalizedMetrics = computed(() => props.metrics
@@ -210,6 +242,16 @@ const normalizedMetrics = computed(() => props.metrics
   })
   .filter(metric => metric.label || metric.value !== '')
 )
+
+const hasProblem = computed(() => {
+  const tone = normalizeTone(props.tone)
+  if (tone === 'rose') return true
+  return normalizedMetrics.value.some((metric) => {
+    if (metric.tone !== 'danger') return false
+    const value = Number(metric.value)
+    return Number.isFinite(value) ? value > 0 : Boolean(metric.value)
+  })
+})
 
 const normalizedActions = computed(() => props.actions
   .filter(Boolean)
@@ -345,7 +387,7 @@ function bindProgressLottieListeners() {
 }
 
 async function syncProgressLottieFrame() {
-  if (props.completed) return
+  if (props.completed || !showProgressLottie.value) return
   const instance = getProgressLottieInstance()
   if (!instance) return
 
@@ -397,7 +439,7 @@ async function syncProgressLottieFrame() {
 }
 
 watch([safePercentage, () => props.completed, progressLottieRef], () => {
-  if (props.completed) {
+  if (props.completed || !showProgressLottie.value) {
     cancelFrameAnimation()
     return
   }

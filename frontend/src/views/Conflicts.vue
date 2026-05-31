@@ -3,7 +3,7 @@
     <!-- 页头走共享组件 AppPageHeader，保持与其他页面一致 -->
     <AppPageHeader
       :icon="ShieldAlert"
-      icon-color="#b45309"
+      icon-color="var(--km-nav-conflicts-icon)"
       title="问题作品"
       subtitle="重复作品、解压失败、处理失败的集中处理站"
     >

@@ -173,7 +173,7 @@ onBeforeUnmount(() => {
   height: 100%;
   transform: scale(1.34);
   transform-origin: center;
-  filter: drop-shadow(0 10px 20px rgba(14, 116, 244, 0.14));
+  filter: drop-shadow(0 10px 20px rgba(15, 23, 42, 0.12));
   pointer-events: none;
 }
 
@@ -184,7 +184,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   padding: 0 24px;
-  color: #0f172a;
+  color: var(--set-text-strong, #0f172a);
   font-size: 13px;
   font-weight: 800;
   letter-spacing: 0.02em;
@@ -193,10 +193,10 @@ onBeforeUnmount(() => {
 }
 
 .app-lottie-text-button.is-active .app-lottie-text-button__label {
-  color: #0369a1;
+  color: var(--set-text-strong, #0f172a);
 }
 
 .app-lottie-text-button.is-active .app-lottie-text-button__player {
-  filter: drop-shadow(0 12px 22px rgba(14, 116, 244, 0.22));
+  filter: drop-shadow(0 12px 22px rgba(15, 23, 42, 0.18));
 }
 </style>

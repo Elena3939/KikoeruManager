@@ -2,7 +2,7 @@
   <div class="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
     <AppPageHeader
       :icon="Archive"
-      icon-color="#9333ea"
+      icon-color="var(--km-nav-backup-icon)"
       title="库存打包"
       subtitle="将当前库存完整打包为压缩文件，支持目录结构快照和自动加密。"
     >

@@ -58,6 +58,19 @@ body.el-popup-parent--hidden {
   --km-scrollbar-thumb-hover: rgba(100, 116, 139, 0.84);
   --km-scrollbar-thumb-active: rgba(71, 85, 105, 0.92);
   --km-scrollbar-border: rgba(248, 250, 252, 0.86);
+  --km-nav-overview-icon: #64748b;
+  --km-nav-tasks-icon: #0d9488;
+  --km-nav-conflicts-icon: #dc2626;
+  --km-nav-library-icon: #2563eb;
+  --km-nav-subtitle-icon: #7c3aed;
+  --km-nav-passwords-icon: #d97706;
+  --km-nav-folders-icon: #0891b2;
+  --km-nav-asmr-icon: #16a34a;
+  --km-nav-circle-icon: #db2777;
+  --km-nav-backup-icon: #ea580c;
+  --km-nav-settings-icon: #475569;
+  --km-nav-logs-icon: #9333ea;
+  --km-nav-history-icon: #4f46e5;
 }
 
 html.kikoerumanager-dark {
@@ -67,6 +80,19 @@ html.kikoerumanager-dark {
   --km-scrollbar-thumb-hover: rgba(148, 163, 184, 0.88);
   --km-scrollbar-thumb-active: rgba(203, 213, 225, 0.92);
   --km-scrollbar-border: rgba(15, 23, 42, 0.7);
+  --km-nav-overview-icon: #a1a1aa;
+  --km-nav-tasks-icon: #5eead4;
+  --km-nav-conflicts-icon: #fda4af;
+  --km-nav-library-icon: #93c5fd;
+  --km-nav-subtitle-icon: #c4b5fd;
+  --km-nav-passwords-icon: #fbbf24;
+  --km-nav-folders-icon: #67e8f9;
+  --km-nav-asmr-icon: #86efac;
+  --km-nav-circle-icon: #f9a8d4;
+  --km-nav-backup-icon: #fdba74;
+  --km-nav-settings-icon: #e4e4e7;
+  --km-nav-logs-icon: #d8b4fe;
+  --km-nav-history-icon: #c7d2fe;
 }
 
 html,
@@ -1019,6 +1045,24 @@ pre:hover::-webkit-scrollbar-track {
   width: 56px;
   height: 56px;
 }
+.floating-progress-percent {
+  position: absolute;
+  right: 10px;
+  top: 7px;
+  z-index: 1;
+  display: inline-flex;
+  width: 56px;
+  height: 56px;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  border-radius: 999px;
+  color: transparent;
+  font-size: 11px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
 .floating-progress-lottie-success {
   right: 4px;
   top: 2px;
@@ -1230,6 +1274,249 @@ pre:hover::-webkit-scrollbar-track {
   background: linear-gradient(180deg, #fda4af 0%, #e11d48 48%, #9f1239 100%);
   color: #fff;
   box-shadow: 0 4px 12px rgba(225, 29, 72, 0.26);
+}
+
+.floating-card.is-compact {
+  width: min(92vw, 490px);
+  gap: 10px;
+  padding: 14px;
+  border-radius: 12px;
+}
+
+.floating-card.is-compact .upload-floating-head {
+  min-height: 54px;
+  align-items: center;
+  padding-right: 74px;
+}
+
+.floating-card.is-compact .floating-hero-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  background: rgba(37, 99, 235, 0.08);
+  color: #2563eb;
+}
+
+.floating-card.is-compact.floating-card-tone-amber .floating-hero-icon,
+.floating-card.is-compact.is-problem .floating-hero-icon {
+  border-color: rgba(245, 158, 11, 0.24);
+  background: rgba(245, 158, 11, 0.1);
+  color: #d97706;
+}
+
+.floating-card.is-compact.floating-card-tone-emerald .floating-hero-icon,
+.floating-card.is-compact.is-completed .floating-hero-icon {
+  border-color: rgba(14, 165, 233, 0.24);
+  background: rgba(14, 165, 233, 0.1);
+  color: #0284c7;
+}
+
+.floating-card.is-compact .floating-hero-static-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.floating-card.is-compact .upload-floating-title {
+  display: block;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.floating-card.is-compact .upload-floating-head [class*="text-slate-500"] {
+  color: #64748b;
+}
+
+.floating-card.is-compact .upload-floating-head [class*="text-slate-400"] {
+  color: #94a3b8;
+}
+
+.floating-progress-ring {
+  position: absolute;
+  right: 14px;
+  top: 14px;
+  z-index: 1;
+  display: inline-flex;
+  width: 52px;
+  height: 52px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at center, #fff 0 54%, transparent 55%),
+    conic-gradient(#2563eb var(--floating-progress, 0%), rgba(226, 232, 240, 0.9) 0);
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+}
+
+.floating-card.is-problem .floating-progress-ring {
+  background:
+    radial-gradient(circle at center, #fff 0 54%, transparent 55%),
+    conic-gradient(#f59e0b var(--floating-progress, 0%), rgba(226, 232, 240, 0.9) 0);
+}
+
+.floating-card.is-completed .floating-progress-ring {
+  background:
+    radial-gradient(circle at center, #fff 0 54%, transparent 55%),
+    conic-gradient(#0ea5e9 var(--floating-progress, 0%), rgba(226, 232, 240, 0.9) 0);
+}
+
+.floating-card.is-compact .floating-chip-row-compact {
+  gap: 6px;
+}
+
+.floating-card.is-compact .floating-detail-box {
+  border-radius: 10px;
+  padding: 8px 12px;
+  line-height: 1.45;
+}
+
+html.kikoerumanager-dark .floating-card {
+  border-color: rgba(255, 255, 255, 0.13);
+  background: #1b1c21;
+  color: rgba(244, 244, 245, 0.9);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+html.kikoerumanager-dark .floating-card.is-compact {
+  background: #202126;
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+html.kikoerumanager-dark .floating-card.is-compact .floating-hero-icon {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(244, 244, 245, 0.9);
+}
+
+html.kikoerumanager-dark .floating-card.is-compact.floating-card-tone-amber .floating-hero-icon,
+html.kikoerumanager-dark .floating-card.is-compact.is-problem .floating-hero-icon {
+  border-color: rgba(245, 158, 11, 0.26);
+  background: rgba(245, 158, 11, 0.12);
+  color: #f4ce75;
+}
+
+html.kikoerumanager-dark .floating-card.is-compact.floating-card-tone-emerald .floating-hero-icon,
+html.kikoerumanager-dark .floating-card.is-compact.is-completed .floating-hero-icon {
+  border-color: rgba(45, 212, 191, 0.22);
+  background: rgba(45, 212, 191, 0.1);
+  color: #8ddfbb;
+}
+
+html.kikoerumanager-dark .floating-card.is-compact .upload-floating-title,
+html.kikoerumanager-dark .floating-card .upload-floating-head [class*="text-slate-900"] {
+  color: #f8f8fa;
+}
+
+html.kikoerumanager-dark .floating-card .upload-floating-head [class*="text-slate-500"] {
+  color: rgba(212, 212, 216, 0.68);
+}
+
+html.kikoerumanager-dark .floating-card .upload-floating-head [class*="text-slate-400"] {
+  color: rgba(161, 161, 170, 0.78);
+}
+
+html.kikoerumanager-dark .floating-card .floating-chip {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(244, 244, 245, 0.82);
+}
+
+html.kikoerumanager-dark .floating-card .floating-chip b {
+  color: #f8f8fa;
+}
+
+html.kikoerumanager-dark .floating-card .floating-chip-danger {
+  border-color: rgba(244, 63, 94, 0.34);
+  background: rgba(244, 63, 94, 0.13);
+  color: #f3a2a8;
+}
+
+html.kikoerumanager-dark .floating-card .floating-chip-danger b {
+  color: #f3a2a8;
+}
+
+html.kikoerumanager-dark .floating-card .floating-chip-title {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: #f8f8fa;
+}
+
+html.kikoerumanager-dark .floating-card .floating-detail-box {
+  border-color: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(244, 244, 245, 0.78);
+}
+
+html.kikoerumanager-dark .floating-card.is-problem .floating-detail-box {
+  border-color: rgba(244, 63, 94, 0.28);
+  background: rgba(244, 63, 94, 0.1);
+  color: #f3a2a8;
+}
+
+html.kikoerumanager-dark .floating-card .floating-action-btn {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(244, 244, 245, 0.9);
+  box-shadow: none;
+}
+
+html.kikoerumanager-dark .floating-card .floating-action-btn:hover {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.13);
+  color: #fff;
+  box-shadow: none;
+}
+
+html.kikoerumanager-dark .floating-card .floating-action-btn-primary,
+html.kikoerumanager-dark .floating-card .floating-action-btn-emerald,
+html.kikoerumanager-dark .floating-card .floating-action-btn-violet,
+html.kikoerumanager-dark .floating-card .floating-action-btn-amber {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: #3a3b41;
+  color: #f8f8fa;
+}
+
+html.kikoerumanager-dark .floating-card .floating-action-btn-primary:hover,
+html.kikoerumanager-dark .floating-card .floating-action-btn-emerald:hover,
+html.kikoerumanager-dark .floating-card .floating-action-btn-violet:hover,
+html.kikoerumanager-dark .floating-card .floating-action-btn-amber:hover {
+  background: #47484f;
+  color: #fff;
+}
+
+html.kikoerumanager-dark .floating-card .floating-action-btn-rose {
+  border-color: rgba(244, 63, 94, 0.32);
+  background: rgba(244, 63, 94, 0.14);
+  color: #f3a2a8;
+}
+
+html.kikoerumanager-dark .floating-progress-ring {
+  background:
+    radial-gradient(circle at center, #202126 0 54%, transparent 55%),
+    conic-gradient(#d8d8de var(--floating-progress, 0%), rgba(255, 255, 255, 0.16) 0);
+  color: #f8f8fa;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+html.kikoerumanager-dark .floating-card.is-problem .floating-progress-ring {
+  background:
+    radial-gradient(circle at center, #202126 0 54%, transparent 55%),
+    conic-gradient(#f4ce75 var(--floating-progress, 0%), rgba(255, 255, 255, 0.16) 0);
+}
+
+html.kikoerumanager-dark .floating-card.is-completed .floating-progress-ring {
+  background:
+    radial-gradient(circle at center, #202126 0 54%, transparent 55%),
+    conic-gradient(#8ddfbb var(--floating-progress, 0%), rgba(255, 255, 255, 0.16) 0);
 }
 
 /* ============================================================
