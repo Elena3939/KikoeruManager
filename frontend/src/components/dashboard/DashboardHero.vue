@@ -3,7 +3,7 @@
     <!-- 顶部页头：与其他页面（库存 / 问题作品 / 操作记录 等）同款 AppPageHeader -->
     <AppPageHeader
       :icon="House"
-      icon-color="#334155"
+      icon-color="var(--km-nav-overview-icon)"
       title="概览"
       subtitle="处理队列、入库入口和最近归档"
     >

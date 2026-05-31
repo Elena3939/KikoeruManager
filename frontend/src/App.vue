@@ -73,68 +73,68 @@
           router
           class="sidebar-menu"
         >
-          <el-menu-item index="/" title="概览">
+          <el-menu-item index="/" title="概览" class="sidebar-nav-item sidebar-nav-overview">
             <House :size="18" :stroke-width="2.2" />
             <span>概览</span>
           </el-menu-item>
 
-          <el-menu-item index="/tasks" title="任务队列">
+          <el-menu-item index="/tasks" title="任务队列" class="sidebar-nav-item sidebar-nav-tasks">
             <ListTodo :size="18" :stroke-width="2.2" />
             <span>任务队列</span>
           </el-menu-item>
 
-          <el-menu-item index="/conflicts" title="问题作品">
+          <el-menu-item index="/conflicts" title="问题作品" class="sidebar-nav-item sidebar-nav-conflicts">
             <TriangleAlert :size="18" :stroke-width="2.2" />
             <span>问题作品</span>
             <el-badge v-if="conflictCount > 0" :value="conflictCount" class="conflict-badge" />
           </el-menu-item>
 
-          <el-menu-item index="/library" title="库存管理">
+          <el-menu-item index="/library" title="库存管理" class="sidebar-nav-item sidebar-nav-library">
             <Boxes :size="18" :stroke-width="2.2" />
             <span>库存管理</span>
           </el-menu-item>
 
-          <el-menu-item index="/subtitle-import" title="字幕补配">
+          <el-menu-item index="/subtitle-import" title="字幕补配" class="sidebar-nav-item sidebar-nav-subtitle">
             <Captions :size="18" :stroke-width="2.2" />
             <span>字幕补配</span>
           </el-menu-item>
 
-          <el-menu-item index="/passwords" title="密码库">
+          <el-menu-item index="/passwords" title="密码库" class="sidebar-nav-item sidebar-nav-passwords">
             <KeyRound :size="18" :stroke-width="2.2" />
             <span>密码库</span>
           </el-menu-item>
 
-          <el-menu-item index="/existing-folders" title="已有文件夹">
+          <el-menu-item index="/existing-folders" title="已有文件夹" class="sidebar-nav-item sidebar-nav-folders">
             <FolderTree :size="18" :stroke-width="2.2" />
             <span>已有文件夹</span>
           </el-menu-item>
 
-          <el-menu-item index="/asmr-sync" title="ASMR 同步下载">
+          <el-menu-item index="/asmr-sync" title="ASMR 同步下载" class="sidebar-nav-item sidebar-nav-asmr">
             <Download :size="18" :stroke-width="2.2" />
             <span>ASMR 同步下载</span>
           </el-menu-item>
 
-          <el-menu-item index="/circle-completion" title="社团补全">
+          <el-menu-item index="/circle-completion" title="社团补全" class="sidebar-nav-item sidebar-nav-circle">
             <Tags :size="18" :stroke-width="2.2" />
             <span>社团补全</span>
           </el-menu-item>
 
-          <el-menu-item index="/library-backup" title="库存打包">
+          <el-menu-item index="/library-backup" title="库存打包" class="sidebar-nav-item sidebar-nav-backup">
             <Archive :size="18" :stroke-width="2.2" />
             <span>库存打包</span>
           </el-menu-item>
 
-          <el-menu-item index="/settings" title="设置">
+          <el-menu-item index="/settings" title="设置" class="sidebar-nav-item sidebar-nav-settings">
             <Settings2 :size="18" :stroke-width="2.2" />
             <span>设置</span>
           </el-menu-item>
 
-          <el-menu-item index="/logs" title="日志">
+          <el-menu-item index="/logs" title="日志" class="sidebar-nav-item sidebar-nav-logs">
             <ScrollText :size="18" :stroke-width="2.2" />
             <span>日志</span>
           </el-menu-item>
 
-          <el-menu-item index="/activity-history" title="操作记录">
+          <el-menu-item index="/activity-history" title="操作记录" class="sidebar-nav-item sidebar-nav-history">
             <History :size="18" :stroke-width="2.2" />
             <span>操作记录</span>
           </el-menu-item>
@@ -268,8 +268,11 @@ const watcherStatus = ref({ is_running: false, watch_path: '', pending_files: []
 const mobileNavOpen = ref(false)
 const themeStorageKey = 'kikoerumanager.theme'
 const sidebarPinnedStorageKey = 'kikoerumanager.sidebarPinned'
+const themeTransitionClass = 'kikoerumanager-theme-transition'
+const themeTransitionDuration = 460
 const isDarkTheme = ref(false)
 const sidebarPinned = ref(false)
+let themeTransitionTimer = null
 
 // 路由切换时自动关闭移动端抽屉（点击菜单项后即关闭）
 watch(() => route.fullPath, () => {
@@ -347,6 +350,7 @@ onUnmounted(() => {
     clearInterval(intervalId)
     intervalId = null
   }
+  clearThemeTransitionClass()
 })
 
 async function refreshStatus() {
@@ -377,14 +381,66 @@ function applyTheme() {
   if (typeof document === 'undefined') return
   document.documentElement.classList.toggle('kikoerumanager-dark', isDarkTheme.value)
   document.body.classList.toggle('kikoerumanager-dark', isDarkTheme.value)
+  const themeColorMeta = document.querySelector('meta[name="theme-color"]')
+  if (themeColorMeta) {
+    themeColorMeta.setAttribute('content', isDarkTheme.value ? '#08090d' : '#ffffff')
+  }
 }
 
-function toggleTheme() {
-  isDarkTheme.value = !isDarkTheme.value
-  applyTheme()
+function persistTheme() {
   if (typeof window !== 'undefined') {
     window.localStorage.setItem(themeStorageKey, isDarkTheme.value ? 'dark' : 'light')
   }
+}
+
+function commitThemeToggle() {
+  isDarkTheme.value = !isDarkTheme.value
+  applyTheme()
+  persistTheme()
+}
+
+function getThemeTransitionOrigin(event) {
+  if (typeof window === 'undefined') {
+    return { x: 0, y: 0, radius: 0 }
+  }
+  const target = event?.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  const rect = target?.getBoundingClientRect()
+  const x = rect ? rect.left + rect.width / 2 : window.innerWidth / 2
+  const y = rect ? rect.top + rect.height / 2 : window.innerHeight / 2
+  const radius = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y))
+  return { x, y, radius }
+}
+
+function clearThemeTransitionClass() {
+  if (typeof document === 'undefined') return
+  if (themeTransitionTimer) {
+    clearTimeout(themeTransitionTimer)
+    themeTransitionTimer = null
+  }
+  document.documentElement.classList.remove(themeTransitionClass)
+  document.body.classList.remove(themeTransitionClass)
+}
+
+function markThemeTransitioning(event) {
+  if (typeof document === 'undefined' || typeof window === 'undefined') return
+  if (typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+  const { x, y, radius } = getThemeTransitionOrigin(event)
+  document.documentElement.style.setProperty('--theme-transition-x', `${x}px`)
+  document.documentElement.style.setProperty('--theme-transition-y', `${y}px`)
+  document.documentElement.style.setProperty('--theme-transition-radius', `${Math.ceil(radius)}px`)
+  document.documentElement.style.setProperty(
+    '--theme-transition-color',
+    isDarkTheme.value ? 'rgba(255, 255, 255, 0.5)' : 'rgba(8, 9, 13, 0.36)'
+  )
+  document.documentElement.classList.add(themeTransitionClass)
+  document.body.classList.add(themeTransitionClass)
+  if (themeTransitionTimer) clearTimeout(themeTransitionTimer)
+  themeTransitionTimer = setTimeout(clearThemeTransitionClass, themeTransitionDuration + 80)
+}
+
+function toggleTheme(event) {
+  markThemeTransitioning(event)
+  commitThemeToggle()
 }
 
 function toggleSidebarPinned() {
@@ -491,25 +547,27 @@ html.kikoerumanager-dark .sidebar-menu .el-menu-item {
 }
 
 html.kikoerumanager-dark .sidebar-menu .el-menu-item > svg {
-  color: rgba(203, 213, 225, 0.58);
+  color: var(--sidebar-nav-icon, rgba(203, 213, 225, 0.58));
 }
 
 html.kikoerumanager-dark .sidebar-menu .el-menu-item:hover {
-  background: rgba(51, 65, 85, 0.72);
+  background: transparent;
   color: #f8fafc;
+  box-shadow: none;
 }
 
 html.kikoerumanager-dark .sidebar-menu .el-menu-item:hover > svg {
-  color: #f8fafc;
+  color: var(--sidebar-nav-icon, #f8fafc);
 }
 
 html.kikoerumanager-dark .sidebar-menu .el-menu-item.is-active {
-  background: rgba(37, 99, 235, 0.18);
-  color: #93c5fd;
+  background: transparent;
+  color: #f8fafc;
+  box-shadow: none;
 }
 
 html.kikoerumanager-dark .sidebar-menu .el-menu-item.is-active > svg {
-  color: #60a5fa;
+  color: var(--sidebar-nav-icon, #f8fafc);
 }
 
 html.kikoerumanager-dark .theme-toggle-button {
@@ -523,6 +581,57 @@ html.kikoerumanager-dark .theme-toggle-button:hover {
   border-color: rgba(147, 197, 253, 0.34);
   color: #f8fafc;
   box-shadow: 0 8px 18px rgba(37, 99, 235, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+body.kikoerumanager-theme-transition::before {
+  position: fixed;
+  left: var(--theme-transition-x, 50vw);
+  top: var(--theme-transition-y, 50vh);
+  z-index: 2147483647;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+  content: "";
+  border-radius: 999px;
+  background: var(--theme-transition-color, rgba(15, 23, 42, 0.32));
+  opacity: 0;
+  transform: translate3d(-50%, -50%, 0) scale(0);
+  animation: theme-lightweight-ripple 0.46s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform, opacity;
+}
+
+html.kikoerumanager-theme-transition body,
+html.kikoerumanager-theme-transition #app,
+html.kikoerumanager-theme-transition .app-container,
+html.kikoerumanager-theme-transition .sidebar-shell,
+html.kikoerumanager-theme-transition .content-shell,
+html.kikoerumanager-theme-transition .main-shell {
+  transition:
+    background-color 0.28s ease,
+    background 0.28s ease,
+    border-color 0.28s ease,
+    color 0.24s ease,
+    box-shadow 0.28s ease !important;
+}
+
+@keyframes theme-lightweight-ripple {
+  0% {
+    opacity: 0.28;
+    transform: translate3d(-50%, -50%, 0) scale(0);
+  }
+  55% {
+    opacity: 0.18;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(-50%, -50%, 0) scale(var(--theme-transition-radius, 1400));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.kikoerumanager-theme-transition::before {
+    animation-duration: 0.01ms;
+  }
 }
 
 html.kikoerumanager-dark .el-card,
@@ -762,7 +871,6 @@ html.kikoerumanager-dark .page-shell,
 html.kikoerumanager-dark .tasks-page,
 html.kikoerumanager-dark .subtitle-page,
 html.kikoerumanager-dark .settings-page,
-html.kikoerumanager-dark .password-vault,
 html.kikoerumanager-dark .library-page,
 html.kikoerumanager-dark .conflicts-page,
 html.kikoerumanager-dark .activity-page,
@@ -778,9 +886,6 @@ html.kikoerumanager-dark .tasks-toolbar-btn,
 html.kikoerumanager-dark .subtitle-refresh-btn,
 html.kikoerumanager-dark .subtitle-action-btn:not(.is-primary),
 html.kikoerumanager-dark .subtitle-mini-btn,
-html.kikoerumanager-dark .vault-btn,
-html.kikoerumanager-dark .vault-toolbar-btn,
-html.kikoerumanager-dark .vault-icon-btn,
 html.kikoerumanager-dark .page-head-btn:not(.is-primary),
 html.kikoerumanager-dark .lib-action-btn:not(.is-primary),
 html.kikoerumanager-dark .conflicts-action-btn.is-slate {
@@ -799,9 +904,6 @@ html.kikoerumanager-dark .tasks-toolbar-btn.is-on,
 html.kikoerumanager-dark .subtitle-refresh-btn:hover,
 html.kikoerumanager-dark .subtitle-action-btn:not(.is-primary):hover,
 html.kikoerumanager-dark .subtitle-mini-btn:hover,
-html.kikoerumanager-dark .vault-btn:hover,
-html.kikoerumanager-dark .vault-toolbar-btn:hover,
-html.kikoerumanager-dark .vault-icon-btn:hover,
 html.kikoerumanager-dark .page-head-btn:not(.is-primary):hover,
 html.kikoerumanager-dark .lib-action-btn:not(.is-primary):hover,
 html.kikoerumanager-dark .conflicts-action-btn.is-slate:hover {
@@ -816,16 +918,17 @@ html.kikoerumanager-dark .el-button--primary,
 html.kikoerumanager-dark .subtitle-action-btn.is-primary,
 html.kikoerumanager-dark .page-head-btn.is-primary,
 html.kikoerumanager-dark .lib-action-btn.is-primary,
-html.kikoerumanager-dark .vault-btn.is-primary,
 html.kikoerumanager-dark .conflicts-action-btn.is-primary {
-  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 52%, #1d4ed8 100%) !important;
-  border-color: rgba(147, 197, 253, 0.42) !important;
-  color: #ffffff !important;
-  box-shadow: 0 14px 30px rgba(37, 99, 235, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.2) !important;
+  background: var(--km-dark-primary-button-bg) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  color: var(--km-dark-primary-button-text) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .el-button--danger,
-html.kikoerumanager-dark .is-danger,
+html.kikoerumanager-dark button.is-danger,
+html.kikoerumanager-dark .el-button.is-danger,
 html.kikoerumanager-dark .conflicts-action-btn.is-danger {
   background: linear-gradient(180deg, rgba(244, 63, 94, 0.34) 0%, rgba(127, 29, 29, 0.9) 100%) !important;
   border-color: rgba(253, 164, 175, 0.36) !important;
@@ -861,7 +964,7 @@ html.kikoerumanager-dark [data-section="dashboard-archive"] .dash-cmd-btn:hover 
 }
 
 html.kikoerumanager-dark .app-dd-menu {
-  background: rgba(15, 23, 42, 0.98) !important;
+  background: var(--km-dark-selected, #17181d) !important;
   border-color: var(--km-dark-border) !important;
   box-shadow: 0 24px 54px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
 }
@@ -873,7 +976,7 @@ html.kikoerumanager-dark .app-dd-item {
 html.kikoerumanager-dark .app-dd-item:hover,
 html.kikoerumanager-dark .app-dd-item.is-active,
 html.kikoerumanager-dark .app-dd-item.is-active:hover {
-  background: var(--km-dark-blue-bg) !important;
+  background: var(--km-dark-selected-hover, #24252a) !important;
   color: var(--km-dark-text-strong) !important;
 }
 
@@ -887,14 +990,12 @@ html.kikoerumanager-dark .app-dd-item-suffix {
 }
 
 html.kikoerumanager-dark .app-dd-item-check {
-  color: #60a5fa !important;
+  color: var(--km-dark-text-strong) !important;
 }
 
 html.kikoerumanager-dark .tasks-toolbar,
 html.kikoerumanager-dark .tasks-toolbar-row,
 html.kikoerumanager-dark .tasks-toolbar-search,
-html.kikoerumanager-dark .vault-toolbar-panel,
-html.kikoerumanager-dark .vault-toolbar-shell,
 html.kikoerumanager-dark .subtitle-shell,
 html.kikoerumanager-dark .subtitle-list-pane,
 html.kikoerumanager-dark .subtitle-detail-pane,
@@ -909,15 +1010,14 @@ html.kikoerumanager-dark .settings-card,
 html.kikoerumanager-dark .settings-panel,
 html.kikoerumanager-dark .config-section,
 html.kikoerumanager-dark .template-card,
-html.kikoerumanager-dark .vault-card,
-html.kikoerumanager-dark .vault-list-card,
 html.kikoerumanager-dark .library-card,
 html.kikoerumanager-dark .conflicts-card,
 html.kikoerumanager-dark .activity-card {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.94) 0%, rgba(15, 23, 42, 0.88) 100%) !important;
+  background: var(--km-dark-surface) !important;
+  background-image: none !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .subtitle-detail-header,
@@ -925,7 +1025,8 @@ html.kikoerumanager-dark .subtitle-info-card-header,
 html.kikoerumanager-dark .import-task-list-head,
 html.kikoerumanager-dark .workbench-card-head,
 html.kikoerumanager-dark .el-table th.el-table__cell {
-  background: linear-gradient(180deg, rgba(30, 41, 59, 0.96) 0%, rgba(15, 23, 42, 0.94) 100%) !important;
+  background: var(--km-dark-surface-soft) !important;
+  background-image: none !important;
   border-color: var(--km-dark-border) !important;
 }
 
@@ -998,7 +1099,6 @@ html.kikoerumanager-dark .workbench-card-title {
 }
 
 html.kikoerumanager-dark .lib-chip,
-html.kikoerumanager-dark .set-chip,
 html.kikoerumanager-dark .app-dd-badge {
   background: linear-gradient(180deg, rgba(30, 41, 59, 0.9) 0%, rgba(15, 23, 42, 0.9) 100%) !important;
   border-color: var(--km-dark-border) !important;
@@ -1007,7 +1107,6 @@ html.kikoerumanager-dark .app-dd-badge {
 }
 
 html.kikoerumanager-dark .lib-chip-success,
-html.kikoerumanager-dark .set-chip-success,
 html.kikoerumanager-dark .tone-success,
 html.kikoerumanager-dark .tone-emerald,
 html.kikoerumanager-dark .app-dd-badge.tone-emerald {
@@ -1017,7 +1116,6 @@ html.kikoerumanager-dark .app-dd-badge.tone-emerald {
 }
 
 html.kikoerumanager-dark .lib-chip-warning,
-html.kikoerumanager-dark .set-chip-warning,
 html.kikoerumanager-dark .tone-warning,
 html.kikoerumanager-dark .tone-amber,
 html.kikoerumanager-dark .app-dd-badge.tone-amber {
@@ -1036,7 +1134,6 @@ html.kikoerumanager-dark .app-dd-badge.tone-rose {
 }
 
 html.kikoerumanager-dark .lib-chip-info,
-html.kikoerumanager-dark .set-chip-info,
 html.kikoerumanager-dark .tone-info,
 html.kikoerumanager-dark .tone-sky,
 html.kikoerumanager-dark .app-dd-badge.tone-sky,
@@ -1120,14 +1217,6 @@ html.kikoerumanager-dark .log-toolbar,
 html.kikoerumanager-dark .log-viewer,
 html.kikoerumanager-dark .log-table,
 html.kikoerumanager-dark .backup-page section,
-html.kikoerumanager-dark .circle-layout,
-html.kikoerumanager-dark .circle-sidebar,
-html.kikoerumanager-dark .circle-main,
-html.kikoerumanager-dark .circle-list-panel,
-html.kikoerumanager-dark .circle-list-card,
-html.kikoerumanager-dark .toolbar-card,
-html.kikoerumanager-dark .work-grid,
-html.kikoerumanager-dark .work-card,
 html.kikoerumanager-dark .asmr-sync-page section,
 html.kikoerumanager-dark .sync-card,
 html.kikoerumanager-dark .sync-panel,
@@ -1142,10 +1231,6 @@ html.kikoerumanager-dark .task-list-pane {
 
 html.kikoerumanager-dark .metric-strip-head,
 html.kikoerumanager-dark .metric-strip-row,
-html.kikoerumanager-dark .toolbar-main,
-html.kikoerumanager-dark .toolbar-stats-row,
-html.kikoerumanager-dark .circle-search-box,
-html.kikoerumanager-dark .circle-filter-bar,
 html.kikoerumanager-dark .sync-stat-row,
 html.kikoerumanager-dark .task-detail-header,
 html.kikoerumanager-dark .task-list-header {
@@ -1154,9 +1239,6 @@ html.kikoerumanager-dark .task-list-header {
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark .circle-list-card:hover,
-html.kikoerumanager-dark .circle-list-card.is-active,
-html.kikoerumanager-dark .work-card:hover,
 html.kikoerumanager-dark .metric-cell:hover {
   background: var(--km-dark-surface-hover) !important;
   border-color: var(--km-dark-border-strong) !important;
@@ -1273,9 +1355,6 @@ html.kikoerumanager-dark .el-switch.is-checked .el-switch__core {
   border-color: rgba(147, 197, 253, 0.42) !important;
 }
 
-html.kikoerumanager-dark .page-head-search,
-html.kikoerumanager-dark .page-head-search-input,
-html.kikoerumanager-dark .search-engine-hint,
 html.kikoerumanager-dark .log-action-btn,
 html.kikoerumanager-dark .batch-action-button {
   background: linear-gradient(180deg, rgba(30, 64, 175, 0.18) 0%, rgba(30, 41, 59, 0.88) 100%) !important;
@@ -1613,11 +1692,7 @@ html.kikoerumanager-dark .library .lib-path-toolbar {
 }
 
 html.kikoerumanager-dark .library .lib-path-toolbar .lib-btn,
-html.kikoerumanager-dark .library .lib-path-toolbar .lib-btn-ghost,
-html.kikoerumanager-dark .library .lib-path-toolbar .lib-scope-switch,
-html.kikoerumanager-dark .library .lib-path-toolbar .lib-scope-option,
-html.kikoerumanager-dark .library .lib-path-toolbar .lib-scope-option:hover,
-html.kikoerumanager-dark .library .lib-path-toolbar .lib-scope-option.is-active {
+html.kikoerumanager-dark .library .lib-path-toolbar .lib-btn-ghost {
   background: transparent !important;
   border-color: transparent !important;
   box-shadow: none !important;
@@ -1683,6 +1758,35 @@ html.kikoerumanager-dark .library .lib-scope-option.is-active {
   background: var(--km-dark-surface-hover) !important;
   color: var(--km-dark-text-strong) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+}
+
+html.kikoerumanager-dark .library .lib-path-toolbar .lib-scope-switch {
+  background: #202126 !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .library .lib-path-toolbar .lib-scope-option {
+  background: transparent !important;
+  color: rgba(205, 205, 211, 0.62) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .library .lib-path-toolbar .lib-scope-option:hover:not(.is-active) {
+  background: #3334 !important;
+  color: rgba(238, 238, 242, 0.84) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .library .lib-path-toolbar .lib-scope-option.is-active {
+  background: #5556 !important;
+  color: rgba(255, 255, 255, 0.96) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .library .lib-path-toolbar .lib-scope-option.is-active::after {
+  display: none !important;
+  content: none !important;
 }
 
 html.kikoerumanager-dark .library .el-alert {
@@ -1790,10 +1894,10 @@ html.kikoerumanager-dark .lib-move-modal.el-dialog {
   box-shadow: none !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal .window,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .window,
 html.kikoerumanager-dark .server-upload-preview-modal .window,
 html.kikoerumanager-dark .lib-move-modal .window,
-html.kikoerumanager-dark .custom-preview-modal .glass-shell,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .glass-shell,
 html.kikoerumanager-dark .server-upload-preview-modal .glass-shell,
 html.kikoerumanager-dark .lib-move-modal .glass-shell {
   background: var(--km-dark-sidebar) !important;
@@ -1802,10 +1906,10 @@ html.kikoerumanager-dark .lib-move-modal .glass-shell {
   box-shadow: 0 28px 70px rgba(0, 0, 0, 0.56), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal .window-header,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .window-header,
 html.kikoerumanager-dark .server-upload-preview-modal .window-header,
 html.kikoerumanager-dark .lib-move-modal .window-header,
-html.kikoerumanager-dark .custom-preview-modal .footer-row,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .footer-row,
 html.kikoerumanager-dark .server-upload-preview-modal .footer-row,
 html.kikoerumanager-dark .lib-move-modal .footer-row,
 html.kikoerumanager-dark .lib-move-modal .explorer-toolbar {
@@ -1814,11 +1918,11 @@ html.kikoerumanager-dark .lib-move-modal .explorer-toolbar {
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal .title,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .title,
 html.kikoerumanager-dark .server-upload-preview-modal .title,
 html.kikoerumanager-dark .lib-move-modal .title,
-html.kikoerumanager-dark .custom-preview-modal h1,
-html.kikoerumanager-dark .custom-preview-modal h2,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) h1,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) h2,
 html.kikoerumanager-dark .server-upload-preview-modal h1,
 html.kikoerumanager-dark .server-upload-preview-modal h2,
 html.kikoerumanager-dark .lib-move-modal h1,
@@ -1826,11 +1930,11 @@ html.kikoerumanager-dark .lib-move-modal h2 {
   color: var(--km-dark-text-strong) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal p,
-html.kikoerumanager-dark .custom-preview-modal label,
-html.kikoerumanager-dark .custom-preview-modal .summary,
-html.kikoerumanager-dark .custom-preview-modal .target-path,
-html.kikoerumanager-dark .custom-preview-modal .tree-size,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) p,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) label,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .summary,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .target-path,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .tree-size,
 html.kikoerumanager-dark .server-upload-preview-modal p,
 html.kikoerumanager-dark .server-upload-preview-modal label,
 html.kikoerumanager-dark .server-upload-preview-modal .summary,
@@ -1842,8 +1946,8 @@ html.kikoerumanager-dark .lib-move-modal .path-empty {
   color: var(--km-dark-text-muted) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal .glass-panel,
-html.kikoerumanager-dark .custom-preview-modal .glass-card,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .glass-panel,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .glass-card,
 html.kikoerumanager-dark .server-upload-preview-modal .glass-panel,
 html.kikoerumanager-dark .server-upload-preview-modal .glass-card,
 html.kikoerumanager-dark .lib-move-modal .glass-panel,
@@ -1857,10 +1961,10 @@ html.kikoerumanager-dark .lib-move-modal .content-pane {
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal .field-input,
-html.kikoerumanager-dark .custom-preview-modal .select-button,
-html.kikoerumanager-dark .custom-preview-modal .picker-button,
-html.kikoerumanager-dark .custom-preview-modal .dropdown-panel,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .field-input,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .select-button,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .picker-button,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .dropdown-panel,
 html.kikoerumanager-dark .server-upload-preview-modal .field-input,
 html.kikoerumanager-dark .server-upload-preview-modal .select-button,
 html.kikoerumanager-dark .server-upload-preview-modal .picker-button,
@@ -1873,12 +1977,12 @@ html.kikoerumanager-dark .lib-move-modal .fm-icon-btn {
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal .dropdown-item,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .dropdown-item,
 html.kikoerumanager-dark .server-upload-preview-modal .dropdown-item {
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal .dropdown-item:hover,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .dropdown-item:hover,
 html.kikoerumanager-dark .server-upload-preview-modal .dropdown-item:hover,
 html.kikoerumanager-dark .lib-move-modal .crumb-btn:hover,
 html.kikoerumanager-dark .lib-move-modal .fm-icon-btn:hover:not(:disabled) {
@@ -1886,14 +1990,14 @@ html.kikoerumanager-dark .lib-move-modal .fm-icon-btn:hover:not(:disabled) {
   color: var(--km-dark-text-strong) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal .tree-row,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .tree-row,
 html.kikoerumanager-dark .server-upload-preview-modal .tree-row,
 html.kikoerumanager-dark .lib-move-modal .tree-row,
 html.kikoerumanager-dark .lib-move-modal .file-row {
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal .tree-row:hover,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .tree-row:hover,
 html.kikoerumanager-dark .server-upload-preview-modal .tree-row:hover,
 html.kikoerumanager-dark .lib-move-modal .tree-row:hover,
 html.kikoerumanager-dark .lib-move-modal .file-row:hover {
@@ -1907,7 +2011,7 @@ html.kikoerumanager-dark .lib-move-modal .nav-item:hover {
   box-shadow: none !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal .tree-row-selected,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .tree-row-selected,
 html.kikoerumanager-dark .server-upload-preview-modal .tree-row-selected,
 html.kikoerumanager-dark .lib-move-modal .tree-row-selected {
   background: rgba(255, 255, 255, 0.16) !important;
@@ -1915,15 +2019,15 @@ html.kikoerumanager-dark .lib-move-modal .tree-row-selected {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal .tab-chip,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .tab-chip,
 html.kikoerumanager-dark .server-upload-preview-modal .tab-chip {
   background: var(--km-dark-field) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal .tab-chip-active,
-html.kikoerumanager-dark .custom-preview-modal .tab-chip-partial,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .tab-chip-active,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .tab-chip-partial,
 html.kikoerumanager-dark .server-upload-preview-modal .tab-chip-active,
 html.kikoerumanager-dark .server-upload-preview-modal .tab-chip-partial {
   background: rgba(255, 255, 255, 0.16) !important;
@@ -1932,18 +2036,18 @@ html.kikoerumanager-dark .server-upload-preview-modal .tab-chip-partial {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal .tree-name,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .tree-name,
 html.kikoerumanager-dark .server-upload-preview-modal .tree-name,
 html.kikoerumanager-dark .lib-move-modal .tree-name,
-html.kikoerumanager-dark .custom-preview-modal .summary-strong,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .summary-strong,
 html.kikoerumanager-dark .server-upload-preview-modal .summary-strong {
   color: var(--km-dark-text-strong) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal .secondary-cta,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .secondary-cta,
 html.kikoerumanager-dark .server-upload-preview-modal .secondary-cta,
 html.kikoerumanager-dark .lib-move-modal .secondary-cta,
-html.kikoerumanager-dark .custom-preview-modal .interactive-chip,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .interactive-chip,
 html.kikoerumanager-dark .server-upload-preview-modal .interactive-chip,
 html.kikoerumanager-dark .lib-move-modal .interactive-chip {
   background: var(--km-dark-button-bg) !important;
@@ -1951,34 +2055,25 @@ html.kikoerumanager-dark .lib-move-modal .interactive-chip {
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark .subtitle-workbench-dialog.el-dialog {
-  background: transparent !important;
+html.kikoerumanager-dark .subtitle-workbench-shell {
+  background: var(--km-dark-surface) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
   box-shadow: none !important;
 }
 
-html.kikoerumanager-dark .subtitle-workbench-dialog .el-dialog__header,
-html.kikoerumanager-dark .subtitle-workbench-dialog .el-dialog__body {
-  background: transparent !important;
-}
-
-html.kikoerumanager-dark .subtitle-workbench-shell {
-  background: var(--km-dark-sidebar) !important;
-  border-color: var(--km-dark-border) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.56), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
-}
-
 html.kikoerumanager-dark .subtitle-workbench-header {
-  background: var(--km-dark-sidebar) !important;
+  background: var(--km-dark-surface) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
 
 html.kikoerumanager-dark .subtitle-workbench-body {
-  --tw-gradient-from: var(--km-dark-sidebar) var(--tw-gradient-from-position) !important;
+  --tw-gradient-from: var(--km-dark-bg) var(--tw-gradient-from-position) !important;
   --tw-gradient-via: var(--km-dark-bg) var(--tw-gradient-via-position) !important;
-  --tw-gradient-to: var(--km-dark-bg-deep) var(--tw-gradient-to-position) !important;
+  --tw-gradient-to: var(--km-dark-bg) var(--tw-gradient-to-position) !important;
   background-color: var(--km-dark-bg) !important;
+  background-image: none !important;
   color: var(--km-dark-text) !important;
 }
 
@@ -2031,14 +2126,12 @@ html.kikoerumanager-dark .subtitle-workbench-dialog :is(
   .subtitle-candidate-card,
   .import-task-list-card,
   .import-task-detail,
-  .import-task-row,
-  .glass-card,
-  .glass-panel
+  .import-task-row
 ) {
   background: var(--km-dark-surface) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
-  box-shadow: var(--km-dark-shadow-soft) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .subtitle-workbench-dialog :is(
@@ -2063,18 +2156,61 @@ html.kikoerumanager-dark .subtitle-workbench-dialog .border-slate-300 {
   border-color: var(--km-dark-border) !important;
 }
 
-html.kikoerumanager-dark .subtitle-workbench-dialog button:not(.primary-cta):not(.el-button--primary),
+html.kikoerumanager-dark .subtitle-workbench-dialog button:not(.primary-cta),
 html.kikoerumanager-dark .subtitle-workbench-btn {
   background: var(--km-dark-button-bg) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark .subtitle-workbench-dialog button:not(.primary-cta):not(.el-button--primary):hover,
+html.kikoerumanager-dark .subtitle-workbench-dialog button:not(.primary-cta):hover,
 html.kikoerumanager-dark .subtitle-workbench-btn:hover {
   background: var(--km-dark-button-bg-hover) !important;
   border-color: var(--km-dark-border-strong) !important;
   color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog :is(button, input, textarea, [tabindex]):focus,
+html.kikoerumanager-dark .subtitle-workbench-dialog :is(button, input, textarea, [tabindex]):focus-visible {
+  outline: 0 !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-queue-overview {
+  background: #111216 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-queue-filter {
+  height: 32px !important;
+  min-height: 0 !important;
+  background: #24252a !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  color: rgba(244, 244, 245, 0.86) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-queue-filter:hover {
+  background: #303136 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-queue-filter.is-active {
+  background: #34353a !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.26) !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-queue-filter:focus,
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-queue-filter:focus-visible {
+  outline: 0 !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .subtitle-workbench-dialog .bg-slate-900,
@@ -2094,15 +2230,16 @@ html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card :is(
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.42) !important;
   color: #ffffff !important;
-  outline: 2px solid rgba(255, 255, 255, 0.34) !important;
-  outline-offset: -2px !important;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
+  outline: 0 !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card :is(
   .subtitle-filter-add-btn,
   .subtitle-filter-delete-btn,
-  .subtitle-filter-editor-toggle
+  .subtitle-filter-editor-toggle,
+  .subtitle-filter-current-card,
+  .subtitle-filter-nav-btn
 ) {
   background: #2b2c30 !important;
   background-image: none !important;
@@ -2114,7 +2251,9 @@ html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card :is(
 html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card :is(
   .subtitle-filter-add-btn,
   .subtitle-filter-delete-btn,
-  .subtitle-filter-editor-toggle
+  .subtitle-filter-editor-toggle,
+  .subtitle-filter-current-card,
+  .subtitle-filter-nav-btn
 ):hover {
   background: #333438 !important;
   background-image: none !important;
@@ -2144,10 +2283,10 @@ html.kikoerumanager-dark .subtitle-workbench-dialog :is(
 }
 
 html.kikoerumanager-dark .subtitle-workbench-dialog :is(
-  button:not(.primary-cta):not(.el-button--primary).is-active,
-  button:not(.primary-cta):not(.el-button--primary)[class*="bg-slate-900"],
-  button:not(.primary-cta):not(.el-button--primary)[class*="bg-blue-"],
-  button:not(.primary-cta):not(.el-button--primary)[class*="bg-indigo-"]
+  button:not(.primary-cta).is-active,
+  button:not(.primary-cta)[class*="bg-slate-900"],
+  button:not(.primary-cta)[class*="bg-blue-"],
+  button:not(.primary-cta)[class*="bg-indigo-"]
 ) {
   background: #020617 !important;
   border-color: var(--km-dark-border-strong) !important;
@@ -2162,15 +2301,17 @@ html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card button
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.42) !important;
   color: #ffffff !important;
-  outline: 2px solid rgba(255, 255, 255, 0.34) !important;
-  outline-offset: -2px !important;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-naming-option,
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-naming-option span {
+  white-space: nowrap !important;
 }
 
 html.kikoerumanager-dark .subtitle-workbench-dialog input,
-html.kikoerumanager-dark .subtitle-workbench-dialog textarea,
-html.kikoerumanager-dark .subtitle-workbench-dialog .el-input__wrapper,
-html.kikoerumanager-dark .subtitle-workbench-dialog .el-textarea__inner {
+html.kikoerumanager-dark .subtitle-workbench-dialog textarea {
   background: var(--km-dark-field) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
@@ -2198,9 +2339,28 @@ html.kikoerumanager-dark .floating-card .text-slate-900,
 html.kikoerumanager-dark .floating-card .upload-floating-title,
 html.kikoerumanager-dark .floating-chip b,
 html.kikoerumanager-dark .floating-card .floating-chip b,
+html.kikoerumanager-dark .floating-card .floating-progress-percent,
 html.kikoerumanager-dark .filter-delete-floating-title,
 html.kikoerumanager-dark .filter-delete-floating-percent {
   color: #ffffff !important;
+}
+
+html.kikoerumanager-dark .floating-card .floating-hero-lottie,
+html.kikoerumanager-dark .floating-card .floating-hero-static-icon {
+  color: #ffffff !important;
+  filter: brightness(0) invert(1) !important;
+}
+
+html.kikoerumanager-dark .floating-card .floating-progress-lottie-progress {
+  opacity: 0 !important;
+}
+
+html.kikoerumanager-dark .floating-card .floating-progress-percent {
+  background:
+    radial-gradient(circle, rgba(18, 19, 23, 0.94) 0 46%, transparent 47%),
+    conic-gradient(#ffffff var(--floating-progress, 0%), rgba(255, 255, 255, 0.22) 0);
+  color: #ffffff !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
 }
 
 html.kikoerumanager-dark .floating-card .text-slate-500,
@@ -2344,10 +2504,11 @@ html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .glass-shell,
 html.kikoerumanager-dark .mojibake-preview-dialog.el-dialog,
 html.kikoerumanager-dark .mojibake-preview-dialog .window,
 html.kikoerumanager-dark .mojibake-preview-dialog .glass-shell {
-  background: var(--km-dark-sidebar) !important;
-  border-color: var(--km-dark-border) !important;
+  background: #111216 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
   color: var(--km-dark-text) !important;
-  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.56), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .window-header,
@@ -2358,8 +2519,9 @@ html.kikoerumanager-dark .mojibake-preview-dialog .window-header,
 html.kikoerumanager-dark .mojibake-preview-dialog .fm-body,
 html.kikoerumanager-dark .mojibake-preview-dialog .toolbar-row,
 html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-footer {
-  background: var(--km-dark-field) !important;
-  border-color: var(--km-dark-border) !important;
+  background: #17181d !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
   color: var(--km-dark-text) !important;
 }
 
@@ -2377,21 +2539,21 @@ html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-card,
 html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-empty,
 html.kikoerumanager-dark .mojibake-preview-dialog .fm-badge,
 html.kikoerumanager-dark .mojibake-preview-dialog .fm-count-pill {
-  background: var(--km-dark-surface) !important;
-  border-color: var(--km-dark-border) !important;
+  background: #1d1e23 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
   color: var(--km-dark-text) !important;
-  box-shadow: var(--km-dark-shadow-soft) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-row:hover,
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-row-selected,
 html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-card:hover {
-  background: rgba(255, 255, 255, 0.16) !important;
-  border-color: rgba(255, 255, 255, 0.24) !important;
+  background: #333438 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
   color: var(--km-dark-text-strong) !important;
-  box-shadow:
-    inset 3px 0 0 rgba(255, 255, 255, 0.78),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .action-card,
@@ -2399,10 +2561,11 @@ html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .close-button
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .row-action,
 html.kikoerumanager-dark .mojibake-preview-dialog .action-card,
 html.kikoerumanager-dark .mojibake-preview-dialog .close-button {
-  background: var(--km-dark-button-bg) !important;
-  border-color: var(--km-dark-border) !important;
+  background: #2b2c30 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
   color: var(--km-dark-text) !important;
-  box-shadow: var(--km-dark-shadow-soft) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .action-card:hover:not(:disabled),
@@ -2410,8 +2573,9 @@ html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .close-button
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .row-action:hover:not(:disabled),
 html.kikoerumanager-dark .mojibake-preview-dialog .action-card:hover:not(:disabled),
 html.kikoerumanager-dark .mojibake-preview-dialog .close-button:hover {
-  background: var(--km-dark-button-bg-hover) !important;
-  border-color: var(--km-dark-border-strong) !important;
+  background: #333438 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
   color: var(--km-dark-text-strong) !important;
 }
 
@@ -2449,16 +2613,19 @@ html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-input {
 }
 
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-checkbox {
-  background: var(--km-dark-field) !important;
-  border-color: rgba(255, 255, 255, 0.26) !important;
+  background: #24252a !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  color: transparent !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-checkbox-on,
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-checkbox-partial,
 html.kikoerumanager-dark .mojibake-preview-dialog .tree-checkbox-on {
-  background: #020617 !important;
-  border-color: rgba(255, 255, 255, 0.42) !important;
+  background: #56575e !important;
+  border-color: rgba(255, 255, 255, 0.34) !important;
   color: #ffffff !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .filter-delete-dialog.el-dialog,
@@ -2833,8 +3000,10 @@ html.kikoerumanager-dark .server-upload-preview-modal .window {
 
 html.kikoerumanager-dark .lib-move-modal .window {
   background:
-    linear-gradient(180deg, rgba(45, 46, 51, 0.76), rgba(13, 14, 18, 0.9)),
-    rgba(18, 19, 23, 0.86) !important;
+    linear-gradient(180deg, rgba(29, 30, 35, 0.96), rgba(14, 15, 18, 0.98)),
+    #111216 !important;
+  background-image:
+    linear-gradient(180deg, rgba(29, 30, 35, 0.96), rgba(14, 15, 18, 0.98)) !important;
   border: 1px solid rgba(255, 255, 255, 0.14) !important;
   outline: 1px solid rgba(255, 255, 255, 0.045) !important;
   outline-offset: -2px !important;
@@ -2861,7 +3030,7 @@ html.kikoerumanager-dark .server-upload-preview-modal .footer-row {
 html.kikoerumanager-dark .lib-move-modal .window-header,
 html.kikoerumanager-dark .lib-move-modal .explorer-toolbar,
 html.kikoerumanager-dark .lib-move-modal .footer-row {
-  background: rgba(20, 21, 25, 0.66) !important;
+  background: #17181d !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.1) !important;
   color: rgba(244, 244, 245, 0.9) !important;
@@ -2914,7 +3083,7 @@ html.kikoerumanager-dark .server-upload-preview-modal .tree-scroll {
 
 html.kikoerumanager-dark .lib-move-modal .explorer-list,
 html.kikoerumanager-dark .lib-move-modal .fm-body {
-  background: rgba(16, 17, 21, 0.68) !important;
+  background: #15161a !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.1) !important;
   color: rgba(244, 244, 245, 0.9) !important;
@@ -3010,17 +3179,18 @@ html.kikoerumanager-dark .server-upload-preview-modal .dropdown-item:hover,
 html.kikoerumanager-dark .lib-move-modal .fm-row:hover,
 html.kikoerumanager-dark .lib-move-modal .crumb-btn:hover,
 html.kikoerumanager-dark .lib-move-modal .fm-icon-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.055) !important;
+  background: #2b2c30 !important;
+  background-image: none !important;
   color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .lib-move-modal .nav-row:hover {
-  background: transparent !important;
+  background: #2b2c30 !important;
+  background-image: none !important;
   color: var(--km-dark-text-strong) !important;
-  transform: translate3d(0, -2px, 0) !important;
-  box-shadow:
-    0 8px 18px rgba(0, 0, 0, 0.22),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.1) !important;
+  transform: none !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .remote-folder-picker-modal .fm-row-selected,
@@ -3038,10 +3208,10 @@ html.kikoerumanager-dark .lib-move-modal .fm-row-selected:hover,
 html.kikoerumanager-dark .lib-move-modal .nav-row-active,
 html.kikoerumanager-dark .lib-move-modal .nav-row-active:hover,
 html.kikoerumanager-dark .lib-move-modal .fm-row-selected.fm-row-self {
-  background: #3a3b40 !important;
+  background: #333438 !important;
   background-image: none !important;
   color: rgba(250, 250, 252, 0.96) !important;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .remote-folder-picker-modal .fm-name,
@@ -3106,13 +3276,15 @@ html.kikoerumanager-dark .subtitle-page .subtitle-info-strip,
 html.kikoerumanager-dark .subtitle-page .subtitle-shell,
 html.kikoerumanager-dark .subtitle-page .subtitle-list-pane,
 html.kikoerumanager-dark .subtitle-page .subtitle-detail-pane {
-  background: rgba(15, 23, 42, 0.92) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: #15161b !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
   color: var(--km-dark-text) !important;
 }
 
 html.kikoerumanager-dark .subtitle-page .subtitle-info-strip {
-  background: linear-gradient(180deg, rgba(30, 41, 59, 0.92) 0%, rgba(15, 23, 42, 0.9) 100%) !important;
+  background: #18191f !important;
+  background-image: none !important;
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
 }
 
@@ -3122,24 +3294,28 @@ html.kikoerumanager-dark .subtitle-page .subtitle-detail-header,
 html.kikoerumanager-dark .subtitle-page .subtitle-info-card,
 html.kikoerumanager-dark .subtitle-page .subtitle-candidate-card,
 html.kikoerumanager-dark .subtitle-page .subtitle-list-card {
-  background: rgba(30, 41, 59, 0.78) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: #1c1d22 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
   color: var(--km-dark-text) !important;
 }
 
 html.kikoerumanager-dark .subtitle-page .subtitle-segmented-item,
 html.kikoerumanager-dark .subtitle-page .subtitle-action-btn,
 html.kikoerumanager-dark .subtitle-page .subtitle-mini-btn {
-  background: linear-gradient(180deg, rgba(30, 64, 175, 0.18) 0%, rgba(30, 41, 59, 0.88) 100%) !important;
-  border-color: rgba(96, 165, 250, 0.24) !important;
-  color: var(--km-dark-blue) !important;
+  background: #24252a !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #e7e7eb !important;
 }
 
 html.kikoerumanager-dark .subtitle-page .subtitle-segmented-item.is-active,
 html.kikoerumanager-dark .subtitle-page .subtitle-action-btn.is-primary {
-  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%) !important;
-  border-color: rgba(147, 197, 253, 0.42) !important;
-  color: #ffffff !important;
+  background: #e7e7eb !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  color: #111116 !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .subtitle-page .subtitle-list-title,
@@ -3163,8 +3339,9 @@ html.kikoerumanager-dark .subtitle-page .lib-info-sub {
 
 html.kikoerumanager-dark .subtitle-page .subtitle-list-card.is-active,
 html.kikoerumanager-dark .subtitle-page .subtitle-candidate-card.is-selected {
-  background: rgba(37, 99, 235, 0.24) !important;
-  border-color: rgba(147, 197, 253, 0.34) !important;
+  background: rgba(245, 158, 11, 0.16) !important;
+  background-image: none !important;
+  border-color: rgba(245, 158, 11, 0.42) !important;
   color: var(--km-dark-text-strong) !important;
 }
 
@@ -3179,22 +3356,23 @@ html.kikoerumanager-dark .subtitle-import-workbench-dialog .el-dialog__body {
 
 html.kikoerumanager-dark .subtitle-import-workbench-dialog .import-workbench-modal,
 html.kikoerumanager-dark .subtitle-import-workbench-dialog .subtitle-workbench-shell {
-  background: var(--km-dark-sidebar) !important;
+  background: var(--km-dark-surface) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
-  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.56), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .subtitle-import-workbench-dialog .subtitle-workbench-header {
-  background: var(--km-dark-sidebar) !important;
+  background: var(--km-dark-surface) !important;
   border-color: var(--km-dark-border) !important;
 }
 
 html.kikoerumanager-dark .subtitle-import-workbench-dialog .subtitle-workbench-body {
-  --tw-gradient-from: var(--km-dark-sidebar) var(--tw-gradient-from-position) !important;
+  --tw-gradient-from: var(--km-dark-bg) var(--tw-gradient-from-position) !important;
   --tw-gradient-via: var(--km-dark-bg) var(--tw-gradient-via-position) !important;
-  --tw-gradient-to: var(--km-dark-bg-deep) var(--tw-gradient-to-position) !important;
+  --tw-gradient-to: var(--km-dark-bg) var(--tw-gradient-to-position) !important;
   background-color: var(--km-dark-bg) !important;
+  background-image: none !important;
   color: var(--km-dark-text) !important;
 }
 
@@ -3262,14 +3440,14 @@ html.kikoerumanager-dark .subtitle-import-workbench-dialog .el-textarea__inner {
 }
 
 html.kikoerumanager-dark .import-workbench-modal {
-  background: var(--km-dark-sidebar) !important;
+  background: var(--km-dark-surface) !important;
   color: var(--km-dark-text) !important;
 }
 
 html.kikoerumanager-dark .import-workbench-modal .subtitle-workbench-body,
 html.kikoerumanager-dark .import-workbench-modal .bg-gradient-to-b {
   background: var(--km-dark-bg) !important;
-  background-image: linear-gradient(180deg, var(--km-dark-sidebar) 0%, var(--km-dark-bg) 48%, var(--km-dark-bg-deep) 100%) !important;
+  background-image: none !important;
   color: var(--km-dark-text) !important;
 }
 
@@ -3344,7 +3522,7 @@ html.kikoerumanager-dark .import-workbench-modal .border-slate-300 {
 
 html.kikoerumanager-dark .import-workbench-modal .shadow-\[0_4px_16px_rgba\(15\,23\,42\,0\.04\)\],
 html.kikoerumanager-dark .import-workbench-modal .shadow-\[0_20px_60px_rgba\(15\,23\,42\,0\.1\)\] {
-  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .import-workbench-modal .subtitle-config-card,
@@ -3357,7 +3535,7 @@ html.kikoerumanager-dark .import-workbench-modal .search-row {
   background: var(--km-dark-surface) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
-  box-shadow: var(--km-dark-shadow-soft) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .import-workbench-modal .subtitle-help-card-danger {
@@ -3447,586 +3625,6 @@ html.kikoerumanager-dark .import-workbench-modal .subtitle-filter-state.off {
   color: rgba(203, 213, 225, 0.72) !important;
 }
 
-html.kikoerumanager-dark .password-vault {
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .password-vault .vault-toolbar-panel,
-html.kikoerumanager-dark .password-vault > section,
-html.kikoerumanager-dark .password-vault .vault-mobile-card {
-  background: rgba(15, 23, 42, 0.92) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
-}
-
-html.kikoerumanager-dark .password-vault h2,
-html.kikoerumanager-dark .password-vault .text-slate-900,
-html.kikoerumanager-dark .password-vault .text-slate-800,
-html.kikoerumanager-dark .password-vault .text-slate-700 {
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .password-vault p,
-html.kikoerumanager-dark .password-vault .text-slate-600,
-html.kikoerumanager-dark .password-vault .text-slate-500,
-html.kikoerumanager-dark .password-vault .text-slate-400 {
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .password-vault .bg-white,
-html.kikoerumanager-dark .password-vault .bg-white\/90,
-html.kikoerumanager-dark .password-vault .bg-white\/80,
-html.kikoerumanager-dark .password-vault .bg-slate-50,
-html.kikoerumanager-dark .password-vault .bg-slate-50\/70,
-html.kikoerumanager-dark .password-vault .bg-slate-50\/50,
-html.kikoerumanager-dark .password-vault .bg-slate-100 {
-  background: rgba(30, 41, 59, 0.82) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .password-vault input,
-html.kikoerumanager-dark .password-vault .el-input__wrapper,
-html.kikoerumanager-dark .password-vault .el-textarea__inner {
-  background: rgba(15, 23, 42, 0.9) !important;
-  border-color: rgba(148, 163, 184, 0.22) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow: none !important;
-}
-
-html.kikoerumanager-dark .password-vault input::placeholder,
-html.kikoerumanager-dark .password-vault textarea::placeholder {
-  color: rgba(148, 163, 184, 0.62) !important;
-}
-
-html.kikoerumanager-dark .password-vault .vault-btn {
-  border-color: rgba(96, 165, 250, 0.24) !important;
-  color: var(--km-dark-blue) !important;
-}
-
-html.kikoerumanager-dark .password-vault .vault-btn-ghost {
-  background: linear-gradient(180deg, rgba(30, 64, 175, 0.18) 0%, rgba(30, 41, 59, 0.88) 100%) !important;
-}
-
-html.kikoerumanager-dark .password-vault .vault-btn-primary {
-  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%) !important;
-  border-color: rgba(147, 197, 253, 0.42) !important;
-  color: #ffffff !important;
-  box-shadow: 0 12px 26px rgba(37, 99, 235, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.18) !important;
-}
-
-html.kikoerumanager-dark .password-vault .vault-btn-danger {
-  background: linear-gradient(180deg, rgba(251, 113, 133, 0.92) 0%, rgba(190, 18, 60, 0.96) 100%) !important;
-  border-color: rgba(253, 164, 175, 0.42) !important;
-  color: #fff1f2 !important;
-}
-
-html.kikoerumanager-dark .password-vault .vault-toolbar-divider {
-  background: rgba(148, 163, 184, 0.18) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table.el-table,
-html.kikoerumanager-dark .password-vault .password-table .el-table__inner-wrapper,
-html.kikoerumanager-dark .password-vault .password-table .el-table__body-wrapper,
-html.kikoerumanager-dark .password-vault .password-table .el-table__header-wrapper {
-  background: rgba(15, 23, 42, 0.92) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table th.el-table__cell {
-  background: rgba(15, 23, 42, 0.96) !important;
-  border-bottom-color: rgba(148, 163, 184, 0.16) !important;
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table tr,
-html.kikoerumanager-dark .password-vault .password-table td.el-table__cell {
-  background: rgba(15, 23, 42, 0.88) !important;
-  border-bottom-color: rgba(148, 163, 184, 0.12) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .el-table__row--striped td.el-table__cell {
-  background: rgba(30, 41, 59, 0.72) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .el-table__row:hover td.el-table__cell,
-html.kikoerumanager-dark .password-vault .password-table .el-table__row.current-row td.el-table__cell {
-  background: rgba(37, 99, 235, 0.22) !important;
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-pill,
-html.kikoerumanager-dark .password-vault .vault-mobile-password {
-  background: rgba(226, 232, 240, 0.92) !important;
-  color: #0f172a !important;
-  border-color: rgba(203, 213, 225, 0.72) !important;
-}
-
-html.kikoerumanager-dark .password-vault .el-tag {
-  background: rgba(37, 99, 235, 0.16) !important;
-  border-color: rgba(147, 197, 253, 0.28) !important;
-  color: #bfdbfe !important;
-}
-
-html.kikoerumanager-dark .password-vault .el-checkbox__inner {
-  background: rgba(15, 23, 42, 0.9) !important;
-  border-color: rgba(148, 163, 184, 0.36) !important;
-}
-
-html.kikoerumanager-dark .password-vault .el-checkbox__input.is-checked .el-checkbox__inner,
-html.kikoerumanager-dark .password-vault .el-checkbox__input.is-indeterminate .el-checkbox__inner {
-  background: #3b82f6 !important;
-  border-color: #60a5fa !important;
-}
-
-html.kikoerumanager-dark .password-vault .el-pagination button,
-html.kikoerumanager-dark .password-vault .el-pagination .el-pager li,
-html.kikoerumanager-dark .password-vault .el-pagination .el-input__wrapper,
-html.kikoerumanager-dark .password-vault .el-pagination .el-select__wrapper {
-  background: rgba(15, 23, 42, 0.92) !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow: none !important;
-}
-
-html.kikoerumanager-dark .password-vault .el-pagination .el-pager li.is-active {
-  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%) !important;
-  color: #ffffff !important;
-}
-
-html.kikoerumanager-dark .vault-dialog.el-dialog {
-  background: transparent !important;
-  box-shadow: none !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .el-dialog__header,
-html.kikoerumanager-dark .vault-dialog .el-dialog__body {
-  background: transparent !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .vault-dialog-shell {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.98) 0%, rgba(15, 23, 42, 0.94) 100%) !important;
-  border: 1px solid rgba(148, 163, 184, 0.22) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow: 0 26px 66px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .vault-dialog-header,
-html.kikoerumanager-dark .vault-dialog .vault-dialog-footer {
-  background: rgba(30, 41, 59, 0.82) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .vault-dialog-body {
-  background: rgba(15, 23, 42, 0.92) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .vault-dialog-note,
-html.kikoerumanager-dark .vault-dialog .vault-cleanup-summary,
-html.kikoerumanager-dark .vault-dialog .vault-cleanup-meta {
-  background: rgba(30, 41, 59, 0.78) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .vault-cleanup-value,
-html.kikoerumanager-dark .vault-dialog b,
-html.kikoerumanager-dark .vault-dialog .text-slate-900,
-html.kikoerumanager-dark .vault-dialog .text-slate-800,
-html.kikoerumanager-dark .vault-dialog .text-slate-700 {
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .text-slate-600,
-html.kikoerumanager-dark .vault-dialog .text-slate-500,
-html.kikoerumanager-dark .vault-dialog .text-slate-400 {
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .el-form-item__label {
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .el-input__wrapper,
-html.kikoerumanager-dark .vault-dialog .el-textarea__inner,
-html.kikoerumanager-dark .vault-dialog input,
-html.kikoerumanager-dark .vault-dialog textarea {
-  background: rgba(15, 23, 42, 0.9) !important;
-  border-color: rgba(148, 163, 184, 0.22) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow: none !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .vault-icon-btn {
-  background: rgba(15, 23, 42, 0.86) !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .el-table__row.current-row td.el-table__cell,
-html.kikoerumanager-dark .password-vault .password-table .el-table__row.is-selected td.el-table__cell,
-html.kikoerumanager-dark .password-vault .password-table tr:hover > td.el-table__cell {
-  background: rgba(30, 64, 175, 0.34) !important;
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .el-table__row--striped.current-row td.el-table__cell,
-html.kikoerumanager-dark .password-vault .password-table .el-table__row--striped:hover td.el-table__cell {
-  background: rgba(30, 64, 175, 0.34) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-pill,
-html.kikoerumanager-dark .password-vault .vault-mobile-password {
-  background: rgba(15, 23, 42, 0.78) !important;
-  border: 1px solid rgba(148, 163, 184, 0.22) !important;
-  color: #dbeafe !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-pill:hover,
-html.kikoerumanager-dark .password-vault .vault-mobile-password:hover {
-  background: rgba(30, 41, 59, 0.92) !important;
-  color: #eff6ff !important;
-}
-
-html.kikoerumanager-dark .password-vault .el-table__fixed-right,
-html.kikoerumanager-dark .password-vault .el-table__fixed-right-patch,
-html.kikoerumanager-dark .password-vault .el-table__fixed-right::before {
-  background: rgba(15, 23, 42, 0.96) !important;
-  box-shadow: -10px 0 22px rgba(0, 0, 0, 0.24) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table button[title="编辑"] {
-  background: rgba(37, 99, 235, 0.16) !important;
-  border: 1px solid rgba(147, 197, 253, 0.22) !important;
-  color: #93c5fd !important;
-  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.16) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table button[title="编辑"]:hover {
-  background: rgba(37, 99, 235, 0.28) !important;
-  border-color: rgba(147, 197, 253, 0.36) !important;
-  color: #bfdbfe !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table button[title="删除"] {
-  background: rgba(190, 18, 60, 0.22) !important;
-  border: 1px solid rgba(253, 164, 175, 0.24) !important;
-  color: #fda4af !important;
-  box-shadow: 0 8px 18px rgba(244, 63, 94, 0.16) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table button[title="删除"]:hover {
-  background: rgba(190, 18, 60, 0.36) !important;
-  border-color: rgba(253, 164, 175, 0.4) !important;
-  color: #ffe4e6 !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .el-input,
-html.kikoerumanager-dark .vault-dialog .el-textarea,
-html.kikoerumanager-dark .vault-dialog .animated-password-input,
-html.kikoerumanager-dark .vault-dialog .password-input-wrapper {
-  background: transparent !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .el-input__wrapper,
-html.kikoerumanager-dark .vault-dialog .el-textarea__inner,
-html.kikoerumanager-dark .vault-dialog input,
-html.kikoerumanager-dark .vault-dialog textarea,
-html.kikoerumanager-dark .vault-dialog .animated-password-input input {
-  background: rgba(30, 41, 59, 0.92) !important;
-  border: 1px solid rgba(148, 163, 184, 0.24) !important;
-  color: var(--km-dark-text-strong) !important;
-  caret-color: #93c5fd !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .el-input__wrapper.is-focus,
-html.kikoerumanager-dark .vault-dialog .el-textarea__inner:focus,
-html.kikoerumanager-dark .vault-dialog input:focus,
-html.kikoerumanager-dark .vault-dialog textarea:focus {
-  background: rgba(15, 23, 42, 0.96) !important;
-  border-color: rgba(147, 197, 253, 0.5) !important;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog input::placeholder,
-html.kikoerumanager-dark .vault-dialog textarea::placeholder {
-  color: rgba(148, 163, 184, 0.64) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .el-input__suffix,
-html.kikoerumanager-dark .vault-dialog .el-input__suffix-inner,
-html.kikoerumanager-dark .vault-dialog .el-icon {
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .grid.size-10,
-html.kikoerumanager-dark .vault-dialog .grid.size-11 {
-  background: rgba(37, 99, 235, 0.18) !important;
-  border: 1px solid rgba(147, 197, 253, 0.24) !important;
-  color: #93c5fd !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .vault-dialog-note b {
-  color: #bfdbfe !important;
-}
-
-html.kikoerumanager-dark .password-vault .inline-flex.h-8,
-html.kikoerumanager-dark .password-vault .inline-flex.h-7 {
-  background: rgba(30, 41, 59, 0.78) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .vault-form .el-input,
-html.kikoerumanager-dark .vault-dialog .vault-form .el-input__wrapper,
-html.kikoerumanager-dark .vault-dialog .vault-form .el-input__inner,
-html.kikoerumanager-dark .vault-dialog .vault-form .el-textarea,
-html.kikoerumanager-dark .vault-dialog .vault-form .el-textarea__inner {
-  --el-input-bg-color: rgba(30, 41, 59, 0.94) !important;
-  --el-input-border-color: rgba(148, 163, 184, 0.26) !important;
-  --el-input-text-color: var(--km-dark-text-strong) !important;
-  --el-input-placeholder-color: rgba(148, 163, 184, 0.64) !important;
-  --el-input-hover-border-color: rgba(147, 197, 253, 0.38) !important;
-  --el-input-focus-border-color: rgba(147, 197, 253, 0.55) !important;
-  background-color: rgba(30, 41, 59, 0.94) !important;
-  background-image: none !important;
-  border-color: rgba(148, 163, 184, 0.26) !important;
-  color: var(--km-dark-text-strong) !important;
-  box-shadow: none !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .vault-form .el-input__wrapper {
-  border: 1px solid rgba(148, 163, 184, 0.26) !important;
-  border-radius: 10px !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .vault-form .el-input__wrapper.is-focus {
-  background-color: rgba(15, 23, 42, 0.96) !important;
-  border-color: rgba(147, 197, 253, 0.55) !important;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .vault-form .el-input__inner {
-  -webkit-text-fill-color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .vault-form .el-input__inner::placeholder,
-html.kikoerumanager-dark .vault-dialog .vault-form .el-textarea__inner::placeholder {
-  color: rgba(148, 163, 184, 0.64) !important;
-  -webkit-text-fill-color: rgba(148, 163, 184, 0.64) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .vault-form .animated-password-input,
-html.kikoerumanager-dark .vault-dialog .vault-form .animated-password-input .el-input,
-html.kikoerumanager-dark .vault-dialog .vault-form .animated-password-input .el-input__wrapper,
-html.kikoerumanager-dark .vault-dialog .vault-form .animated-password-input .el-input__inner {
-  background-color: rgba(30, 41, 59, 0.94) !important;
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .vault-form .el-input__clear,
-html.kikoerumanager-dark .vault-dialog .vault-form .el-input__password,
-html.kikoerumanager-dark .vault-dialog .vault-form .el-input__suffix-inner svg {
-  color: rgba(203, 213, 225, 0.72) !important;
-}
-
-html.kikoerumanager-dark .existing-page {
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .existing-page .hero-search-wrap,
-html.kikoerumanager-dark .existing-page .hero-search-input,
-html.kikoerumanager-dark .existing-page .existing-shell,
-html.kikoerumanager-dark .existing-page .sidebar-card,
-html.kikoerumanager-dark .existing-page .ef-info-strip,
-html.kikoerumanager-dark .existing-page .folders-card {
-  background: rgba(15, 23, 42, 0.92) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
-}
-
-html.kikoerumanager-dark .existing-page .hero-search-input::placeholder {
-  color: rgba(148, 163, 184, 0.62) !important;
-}
-
-html.kikoerumanager-dark .existing-page .sidebar-title,
-html.kikoerumanager-dark .existing-page .pipeline-title,
-html.kikoerumanager-dark .existing-page .option-row-title,
-html.kikoerumanager-dark .existing-page .ef-info-value,
-html.kikoerumanager-dark .existing-page .folder-name,
-html.kikoerumanager-dark .existing-page .scan-title {
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .existing-page .sidebar-overline,
-html.kikoerumanager-dark .existing-page .pipeline-desc,
-html.kikoerumanager-dark .existing-page .option-row-desc,
-html.kikoerumanager-dark .existing-page .ef-info-label,
-html.kikoerumanager-dark .existing-page .ef-info-meta,
-html.kikoerumanager-dark .existing-page .folder-path,
-html.kikoerumanager-dark .existing-page .folder-meta,
-html.kikoerumanager-dark .existing-page .scan-desc {
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .existing-page .pipeline-item,
-html.kikoerumanager-dark .existing-page .option-row,
-html.kikoerumanager-dark .existing-page .folder-card,
-html.kikoerumanager-dark .existing-page .scan-banner {
-  background: rgba(30, 41, 59, 0.82) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .existing-page .pipeline-item:hover,
-html.kikoerumanager-dark .existing-page .option-row:hover,
-html.kikoerumanager-dark .existing-page .folder-card:hover {
-  background: rgba(37, 99, 235, 0.16) !important;
-  border-color: rgba(147, 197, 253, 0.28) !important;
-}
-
-html.kikoerumanager-dark .existing-page .folder-card.selected {
-  background: rgba(37, 99, 235, 0.24) !important;
-  border-color: rgba(147, 197, 253, 0.36) !important;
-}
-
-html.kikoerumanager-dark .existing-page .folder-card.conflict,
-html.kikoerumanager-dark .existing-page .conflict-box {
-  background: rgba(120, 53, 15, 0.32) !important;
-  border-color: rgba(251, 191, 36, 0.26) !important;
-  color: #fde68a !important;
-}
-
-html.kikoerumanager-dark .existing-page .conflict-title {
-  color: #fef3c7 !important;
-}
-
-html.kikoerumanager-dark .existing-page .conflict-desc {
-  color: rgba(253, 230, 138, 0.72) !important;
-}
-
-html.kikoerumanager-dark .existing-page .sidebar-count,
-html.kikoerumanager-dark .existing-page .folder-meta,
-html.kikoerumanager-dark .existing-page .status-pill,
-html.kikoerumanager-dark .existing-page .select-toggle {
-  background: rgba(15, 23, 42, 0.82) !important;
-  border-color: rgba(148, 163, 184, 0.22) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .existing-page .select-toggle.active {
-  background: #3b82f6 !important;
-  border-color: #60a5fa !important;
-  color: #ffffff !important;
-}
-
-html.kikoerumanager-dark .existing-page .pipeline-dot.info,
-html.kikoerumanager-dark .existing-page .ef-info-icon-blue {
-  background: rgba(37, 99, 235, 0.18) !important;
-  color: #93c5fd !important;
-}
-
-html.kikoerumanager-dark .existing-page .pipeline-dot.ok,
-html.kikoerumanager-dark .existing-page .ef-info-icon-emerald {
-  background: rgba(16, 185, 129, 0.16) !important;
-  color: #6ee7b7 !important;
-}
-
-html.kikoerumanager-dark .existing-page .pipeline-dot.warn,
-html.kikoerumanager-dark .existing-page .ef-info-icon-amber {
-  background: rgba(245, 158, 11, 0.16) !important;
-  color: #fcd34d !important;
-}
-
-html.kikoerumanager-dark .existing-page .pipeline-dot.done,
-html.kikoerumanager-dark .existing-page .ef-info-icon-slate {
-  background: rgba(148, 163, 184, 0.14) !important;
-  color: #cbd5e1 !important;
-}
-
-html.kikoerumanager-dark .existing-page .ef-info-divider {
-  background: rgba(148, 163, 184, 0.14) !important;
-}
-
-html.kikoerumanager-dark .existing-page .ef-head-btn,
-html.kikoerumanager-dark .existing-page .side-ep-action,
-html.kikoerumanager-dark .existing-page .card-action {
-  background: linear-gradient(180deg, rgba(30, 64, 175, 0.18) 0%, rgba(30, 41, 59, 0.88) 100%) !important;
-  border-color: rgba(96, 165, 250, 0.24) !important;
-  color: var(--km-dark-blue) !important;
-}
-
-html.kikoerumanager-dark .existing-page .ef-head-btn.primary,
-html.kikoerumanager-dark .existing-page .side-ep-action.primary,
-html.kikoerumanager-dark .existing-page .card-action.primary {
-  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%) !important;
-  border-color: rgba(147, 197, 253, 0.42) !important;
-  color: #ffffff !important;
-}
-
-html.kikoerumanager-dark .existing-page .card-action.warning {
-  background: linear-gradient(180deg, rgba(245, 158, 11, 0.28) 0%, rgba(120, 53, 15, 0.72) 100%) !important;
-  border-color: rgba(251, 191, 36, 0.3) !important;
-  color: #fde68a !important;
-}
-
-html.kikoerumanager-dark .existing-page .card-action.danger {
-  background: linear-gradient(180deg, rgba(251, 113, 133, 0.28) 0%, rgba(127, 29, 29, 0.76) 100%) !important;
-  border-color: rgba(253, 164, 175, 0.34) !important;
-  color: #fecdd3 !important;
-}
-
-html.kikoerumanager-dark .existing-dialog.el-dialog {
-  background: transparent !important;
-  box-shadow: none !important;
-}
-
-html.kikoerumanager-dark .existing-dialog .el-dialog__header,
-html.kikoerumanager-dark .existing-dialog .el-dialog__body,
-html.kikoerumanager-dark .existing-dialog .el-dialog__footer {
-  background: rgba(15, 23, 42, 0.96) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .existing-dialog .dialog-header,
-html.kikoerumanager-dark .existing-dialog .dialog-footer,
-html.kikoerumanager-dark .existing-dialog .duplicate-panel,
-html.kikoerumanager-dark .existing-dialog .detail-card,
-html.kikoerumanager-dark .existing-dialog .task-row,
-html.kikoerumanager-dark .existing-dialog .resolution-option {
-  background: rgba(30, 41, 59, 0.84) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .existing-dialog .dialog-title,
-html.kikoerumanager-dark .existing-dialog .result-title,
-html.kikoerumanager-dark .existing-dialog .task-list-title,
-html.kikoerumanager-dark .existing-dialog .detail-title,
-html.kikoerumanager-dark .existing-dialog .resolution-title {
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .existing-dialog .dialog-subtitle,
-html.kikoerumanager-dark .existing-dialog .result-message,
-html.kikoerumanager-dark .existing-dialog .detail-line,
-html.kikoerumanager-dark .existing-dialog .resolution-desc,
-html.kikoerumanager-dark .existing-dialog .task-path {
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .existing-dialog .resolution-option.active {
-  background: rgba(37, 99, 235, 0.26) !important;
-  border-color: rgba(147, 197, 253, 0.36) !important;
-}
 
 html.kikoerumanager-dark body:has(.existing-page),
 html.kikoerumanager-dark .main-content:has(.existing-page),
@@ -4036,31 +3634,16 @@ html.kikoerumanager-dark .content-area:has(.existing-page) {
 }
 
 html.kikoerumanager-dark .existing-page {
-  min-height: calc(100vh - 32px) !important;
-  background: linear-gradient(180deg, rgba(7, 11, 18, 0.98) 0%, rgba(15, 23, 42, 0.94) 100%) !important;
-  border-radius: 18px !important;
-  padding: 14px !important;
+  color: var(--ef-text, var(--km-dark-text)) !important;
+  background: transparent !important;
 }
 
 html.kikoerumanager-dark .existing-page .app-page-header,
 html.kikoerumanager-dark .existing-page .app-page-header-inner,
 html.kikoerumanager-dark .existing-page .app-page-header-actions {
-  background: rgba(15, 23, 42, 0.92) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .existing-page .hero-search-wrap {
-  background: rgba(15, 23, 42, 0.96) !important;
-  border: 1px solid rgba(148, 163, 184, 0.22) !important;
-  box-shadow: none !important;
-}
-
-html.kikoerumanager-dark .existing-page .hero-search-input {
   background: transparent !important;
-  border: 0 !important;
-  box-shadow: none !important;
-  color: var(--km-dark-text-strong) !important;
+  border-color: transparent !important;
+  color: var(--ef-text, var(--km-dark-text)) !important;
 }
 
 html.kikoerumanager-dark .existing-page .existing-shell {
@@ -4073,451 +3656,16 @@ html.kikoerumanager-dark .existing-page .existing-main {
   background: transparent !important;
 }
 
-html.kikoerumanager-dark .existing-page .sidebar-card,
-html.kikoerumanager-dark .existing-page .folders-card,
-html.kikoerumanager-dark .existing-page .ef-info-strip {
-  background: rgba(15, 23, 42, 0.96) !important;
-  border: 1px solid rgba(148, 163, 184, 0.2) !important;
-}
-
-html.kikoerumanager-dark .existing-page .folders-card {
-  min-height: 420px !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 18px 38px rgba(0, 0, 0, 0.28) !important;
-}
-
 html.kikoerumanager-dark .existing-page .app-empty-state,
 html.kikoerumanager-dark .existing-page .empty-state,
 html.kikoerumanager-dark .existing-page [class*="empty"] {
   background: transparent !important;
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .existing-page .status-pill.success {
-  background: rgba(16, 185, 129, 0.16) !important;
-  border-color: rgba(110, 231, 183, 0.26) !important;
-  color: #a7f3d0 !important;
-}
-
-html.kikoerumanager-dark .existing-page .status-pill.warning {
-  background: rgba(245, 158, 11, 0.16) !important;
-  border-color: rgba(251, 191, 36, 0.28) !important;
-  color: #fde68a !important;
-}
-
-html.kikoerumanager-dark .existing-page .status-pill.danger {
-  background: rgba(190, 18, 60, 0.18) !important;
-  border-color: rgba(253, 164, 175, 0.3) !important;
-  color: #fecdd3 !important;
-}
-
-html.kikoerumanager-dark .existing-page .status-pill.info {
-  background: rgba(37, 99, 235, 0.18) !important;
-  border-color: rgba(147, 197, 253, 0.28) !important;
-  color: #bfdbfe !important;
-}
-
-html.kikoerumanager-dark .existing-page .status-pill.muted {
-  background: rgba(148, 163, 184, 0.12) !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
-  color: #cbd5e1 !important;
+  color: var(--ef-muted, var(--km-dark-text-muted)) !important;
 }
 
 html.kikoerumanager-dark .existing-page .side-ep-action.is-disabled,
 html.kikoerumanager-dark .existing-page .card-action:disabled {
-  background: rgba(30, 41, 59, 0.62) !important;
-  border-color: rgba(148, 163, 184, 0.14) !important;
-  color: rgba(203, 213, 225, 0.54) !important;
-  opacity: 1 !important;
-}
-
-html.kikoerumanager-dark .asmr-page {
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .asmr-page .asmr-info-strip,
-html.kikoerumanager-dark .asmr-page .asmr-card,
-html.kikoerumanager-dark .asmr-page .asmr-batch-toolbar,
-html.kikoerumanager-dark .asmr-page .asmr-table-wrap {
-  background: rgba(15, 23, 42, 0.94) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
-}
-
-html.kikoerumanager-dark .asmr-page .asmr-card-head,
-html.kikoerumanager-dark .asmr-page .asmr-card-head-amber {
-  background: rgba(30, 41, 59, 0.84) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .asmr-page .asmr-card-body {
-  background: rgba(15, 23, 42, 0.92) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .asmr-page .asmr-card-head-title h2,
-html.kikoerumanager-dark .asmr-page .asmr-batch-toolbar-title,
-html.kikoerumanager-dark .asmr-page .lib-info-value,
-html.kikoerumanager-dark .asmr-page .text-slate-900,
-html.kikoerumanager-dark .asmr-page .text-slate-800,
-html.kikoerumanager-dark .asmr-page .text-slate-700 {
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .asmr-page .asmr-card-head-subtitle,
-html.kikoerumanager-dark .asmr-page .asmr-card-head-count,
-html.kikoerumanager-dark .asmr-page .lib-info-label,
-html.kikoerumanager-dark .asmr-page .text-slate-600,
-html.kikoerumanager-dark .asmr-page .text-slate-500,
-html.kikoerumanager-dark .asmr-page .text-slate-400 {
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .asmr-page .asmr-card-head-icon,
-html.kikoerumanager-dark .asmr-page .lib-info-icon {
-  color: var(--km-dark-blue) !important;
-}
-
-html.kikoerumanager-dark .asmr-page .asmr-card-head-icon-amber {
-  color: #fcd34d !important;
-}
-
-html.kikoerumanager-dark .asmr-page .lib-info-divider {
-  background: rgba(148, 163, 184, 0.14) !important;
-}
-
-html.kikoerumanager-dark .asmr-page .page-head-btn,
-html.kikoerumanager-dark .asmr-page .asmr-mini-btn,
-html.kikoerumanager-dark .asmr-page .asmr-link-btn {
-  background: linear-gradient(180deg, rgba(30, 64, 175, 0.18) 0%, rgba(30, 41, 59, 0.88) 100%) !important;
-  border-color: rgba(96, 165, 250, 0.24) !important;
-  color: var(--km-dark-blue) !important;
-}
-
-html.kikoerumanager-dark .asmr-page .page-head-btn.primary,
-html.kikoerumanager-dark .asmr-page .asmr-mini-btn.is-primary {
-  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%) !important;
-  border-color: rgba(147, 197, 253, 0.42) !important;
-  color: #ffffff !important;
-  box-shadow: 0 12px 26px rgba(37, 99, 235, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.18) !important;
-}
-
-html.kikoerumanager-dark .asmr-page .asmr-mini-btn.is-warning {
-  background: linear-gradient(180deg, rgba(245, 158, 11, 0.28) 0%, rgba(120, 53, 15, 0.72) 100%) !important;
-  border-color: rgba(251, 191, 36, 0.3) !important;
-  color: #fde68a !important;
-}
-
-html.kikoerumanager-dark .asmr-page .page-head-btn:disabled,
-html.kikoerumanager-dark .asmr-page .asmr-mini-btn:disabled {
-  background: rgba(30, 41, 59, 0.62) !important;
-  border-color: rgba(148, 163, 184, 0.14) !important;
-  color: rgba(203, 213, 225, 0.54) !important;
-  opacity: 1 !important;
-}
-
-html.kikoerumanager-dark .asmr-page .el-input,
-html.kikoerumanager-dark .asmr-page .el-input__wrapper,
-html.kikoerumanager-dark .asmr-page .el-input__inner,
-html.kikoerumanager-dark .asmr-page .el-textarea,
-html.kikoerumanager-dark .asmr-page .el-textarea__inner {
-  --el-input-bg-color: rgba(30, 41, 59, 0.94) !important;
-  --el-input-border-color: rgba(148, 163, 184, 0.26) !important;
-  --el-input-text-color: var(--km-dark-text-strong) !important;
-  --el-input-placeholder-color: rgba(148, 163, 184, 0.64) !important;
-  background-color: rgba(30, 41, 59, 0.94) !important;
-  background-image: none !important;
-  border-color: rgba(148, 163, 184, 0.26) !important;
-  color: var(--km-dark-text-strong) !important;
-  box-shadow: none !important;
-}
-
-html.kikoerumanager-dark .asmr-page .el-input__wrapper,
-html.kikoerumanager-dark .asmr-page .el-textarea__inner {
-  border: 1px solid rgba(148, 163, 184, 0.26) !important;
-}
-
-html.kikoerumanager-dark .asmr-page .el-input__inner::placeholder,
-html.kikoerumanager-dark .asmr-page .el-textarea__inner::placeholder {
-  color: rgba(148, 163, 184, 0.64) !important;
-  -webkit-text-fill-color: rgba(148, 163, 184, 0.64) !important;
-}
-
-html.kikoerumanager-dark .asmr-page .asmr-card-amber {
-  background: rgba(120, 53, 15, 0.22) !important;
-  border-color: rgba(251, 191, 36, 0.24) !important;
-}
-
-html.kikoerumanager-dark .asmr-page .asmr-list-row,
-html.kikoerumanager-dark .asmr-page .asmr-task-card,
-html.kikoerumanager-dark .asmr-page .enhanced-plan-card {
-  background: rgba(30, 41, 59, 0.82) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .asmr-page .asmr-rjcode,
-html.kikoerumanager-dark .asmr-page .enhanced-plan-meta-pill,
-html.kikoerumanager-dark .asmr-page .enhanced-plan-tag {
-  background: rgba(37, 99, 235, 0.16) !important;
-  border-color: rgba(147, 197, 253, 0.28) !important;
-  color: #bfdbfe !important;
-}
-
-html.kikoerumanager-dark .asmr-page .asmr-table-wrap .el-table,
-html.kikoerumanager-dark .asmr-page .asmr-table-wrap .el-table__inner-wrapper,
-html.kikoerumanager-dark .asmr-page .asmr-table-wrap .el-table__body-wrapper,
-html.kikoerumanager-dark .asmr-page .asmr-table-wrap .el-table__header-wrapper {
-  background: rgba(15, 23, 42, 0.92) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .asmr-page .asmr-table-wrap th.el-table__cell {
-  background: rgba(15, 23, 42, 0.96) !important;
-  border-bottom-color: rgba(148, 163, 184, 0.16) !important;
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .asmr-page .asmr-table-wrap td.el-table__cell {
-  background: rgba(15, 23, 42, 0.88) !important;
-  border-bottom-color: rgba(148, 163, 184, 0.12) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .asmr-page .asmr-table-wrap .el-table__row:hover td.el-table__cell {
-  background: rgba(37, 99, 235, 0.2) !important;
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .asmr-page .asmr-card-head-checkbox {
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .circle-page {
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .circle-page .hero-search-wrap,
-html.kikoerumanager-dark .circle-page .hero-search-input,
-html.kikoerumanager-dark .circle-page .circle-shell,
-html.kikoerumanager-dark .circle-page .sidebar-card,
-html.kikoerumanager-dark .circle-page .toolbar-card,
-html.kikoerumanager-dark .circle-page .works-card,
-html.kikoerumanager-dark .circle-page .circle-tabs-wrapper,
-html.kikoerumanager-dark .circle-page .owned-stats-strip,
-html.kikoerumanager-dark .circle-page .owned-filter-tabs {
-  background: rgba(15, 23, 42, 0.94) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
-}
-
-html.kikoerumanager-dark .circle-page .circle-shell {
-  background: transparent !important;
-  box-shadow: none !important;
-}
-
-html.kikoerumanager-dark .circle-page .circle-sidebar,
-html.kikoerumanager-dark .circle-page .circle-main {
-  background: transparent !important;
-}
-
-html.kikoerumanager-dark .circle-page .sidebar-title,
-html.kikoerumanager-dark .circle-page .toolbar-title,
-html.kikoerumanager-dark .circle-page .circle-list-name,
-html.kikoerumanager-dark .circle-page .text-slate-900,
-html.kikoerumanager-dark .circle-page .text-slate-800,
-html.kikoerumanager-dark .circle-page .text-slate-700 {
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .circle-page .sidebar-overline,
-html.kikoerumanager-dark .circle-page .toolbar-subtitle,
-html.kikoerumanager-dark .circle-page .toolbar-subtext,
-html.kikoerumanager-dark .circle-page .circle-list-id,
-html.kikoerumanager-dark .circle-page .sidebar-sort-label,
-html.kikoerumanager-dark .circle-page .text-slate-600,
-html.kikoerumanager-dark .circle-page .text-slate-500,
-html.kikoerumanager-dark .circle-page .text-slate-400 {
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .circle-page .el-input,
-html.kikoerumanager-dark .circle-page .el-input__wrapper,
-html.kikoerumanager-dark .circle-page .el-input__inner,
-html.kikoerumanager-dark .circle-page .owned-search-wrap input {
-  --el-input-bg-color: rgba(30, 41, 59, 0.94) !important;
-  --el-input-border-color: rgba(148, 163, 184, 0.26) !important;
-  --el-input-text-color: var(--km-dark-text-strong) !important;
-  --el-input-placeholder-color: rgba(148, 163, 184, 0.64) !important;
-  background-color: rgba(30, 41, 59, 0.94) !important;
-  background-image: none !important;
-  border-color: rgba(148, 163, 184, 0.26) !important;
-  color: var(--km-dark-text-strong) !important;
-  box-shadow: none !important;
-}
-
-html.kikoerumanager-dark .circle-page .hero-search-input {
-  background: transparent !important;
-  border: 0 !important;
-  box-shadow: none !important;
-}
-
-html.kikoerumanager-dark .circle-page .circle-list-item,
-html.kikoerumanager-dark .circle-page .sidebar-filter-chip,
-html.kikoerumanager-dark .circle-page .owned-filter-tabs button,
-html.kikoerumanager-dark .circle-page .release-sort-button,
-html.kikoerumanager-dark .circle-page .view-toggle-btn,
-html.kikoerumanager-dark .circle-page .batch-action-button,
-html.kikoerumanager-dark .circle-page .toolbar-right-actions button {
-  background: rgba(30, 41, 59, 0.82) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .circle-page .circle-list-item:hover,
-html.kikoerumanager-dark .circle-page .sidebar-filter-chip:hover,
-html.kikoerumanager-dark .circle-page .owned-filter-tabs button:hover,
-html.kikoerumanager-dark .circle-page .release-sort-button:hover,
-html.kikoerumanager-dark .circle-page .view-toggle-btn:hover {
-  background: rgba(37, 99, 235, 0.18) !important;
-  border-color: rgba(147, 197, 253, 0.3) !important;
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .circle-page .circle-list-item.active,
-html.kikoerumanager-dark .circle-page .sidebar-filter-chip.active,
-html.kikoerumanager-dark .circle-page .view-toggle-btn.active,
-html.kikoerumanager-dark .circle-page .owned-filter-tabs button[class*="text-white"] {
-  background: linear-gradient(180deg, rgba(37, 99, 235, 0.36) 0%, rgba(30, 41, 59, 0.96) 100%) !important;
-  border-color: rgba(147, 197, 253, 0.42) !important;
-  color: #ffffff !important;
-}
-
-html.kikoerumanager-dark .circle-page .circle-list-item.active {
-  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
-}
-
-html.kikoerumanager-dark .circle-page .circle-list-progress-track {
-  background: rgba(15, 23, 42, 0.86) !important;
-}
-
-html.kikoerumanager-dark .circle-page .circle-list-progress-fill {
-  background: linear-gradient(90deg, #60a5fa 0%, #34d399 100%) !important;
-}
-
-html.kikoerumanager-dark .circle-page .circle-stat-item,
-html.kikoerumanager-dark .circle-page .circle-list-status-pill,
-html.kikoerumanager-dark .circle-page .circle-list-tag,
-html.kikoerumanager-dark .circle-page .metric-pill,
-html.kikoerumanager-dark .circle-page .circle-inline-new-badge,
-html.kikoerumanager-dark .circle-page .circle-tab-badge {
-  background: rgba(37, 99, 235, 0.16) !important;
-  border-color: rgba(147, 197, 253, 0.28) !important;
-  color: #bfdbfe !important;
-}
-
-html.kikoerumanager-dark .circle-page .metric-pill.warn,
-html.kikoerumanager-dark .circle-page .circle-stat-item.missing {
-  background: rgba(190, 18, 60, 0.18) !important;
-  border-color: rgba(253, 164, 175, 0.3) !important;
-  color: #fecdd3 !important;
-}
-
-html.kikoerumanager-dark .circle-page .metric-pill.ok,
-html.kikoerumanager-dark .circle-page .circle-stat-item.owned,
-html.kikoerumanager-dark .circle-page .circle-list-status-pill.completed {
-  background: rgba(16, 185, 129, 0.16) !important;
-  border-color: rgba(110, 231, 183, 0.26) !important;
-  color: #a7f3d0 !important;
-}
-
-html.kikoerumanager-dark .circle-page .metric-pill.unreleased,
-html.kikoerumanager-dark .circle-page .circle-list-tag.unreleased {
-  background: rgba(245, 158, 11, 0.16) !important;
-  border-color: rgba(251, 191, 36, 0.28) !important;
-  color: #fde68a !important;
-}
-
-html.kikoerumanager-dark .circle-page .metric-pill.bonus {
-  background: rgba(126, 34, 206, 0.18) !important;
-  border-color: rgba(216, 180, 254, 0.30) !important;
-  color: #e9d5ff !important;
-}
-
-html.kikoerumanager-dark .circle-page .el-tabs__nav-wrap::after,
-html.kikoerumanager-dark .circle-page .el-tabs__active-bar {
-  background: rgba(148, 163, 184, 0.18) !important;
-}
-
-html.kikoerumanager-dark .circle-page .el-tabs__item {
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .circle-page .el-tabs__item.is-active {
-  color: var(--km-dark-blue) !important;
-}
-
-html.kikoerumanager-dark .circle-page .work-card,
-html.kikoerumanager-dark .circle-page .work-list-row,
-html.kikoerumanager-dark .circle-page .owned-panel,
-html.kikoerumanager-dark .circle-page .compare-panel,
-html.kikoerumanager-dark .circle-page .index-progress-card,
-html.kikoerumanager-dark .circle-page .bg-white,
-html.kikoerumanager-dark .circle-page .bg-white\/50,
-html.kikoerumanager-dark .circle-page .bg-slate-50,
-html.kikoerumanager-dark .circle-page .bg-slate-100 {
-  background: rgba(30, 41, 59, 0.82) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .circle-page .work-card:hover,
-html.kikoerumanager-dark .circle-page .work-list-row:hover,
-html.kikoerumanager-dark .circle-page .work-card.is-selected,
-html.kikoerumanager-dark .circle-page .work-list-row.is-selected {
-  background: rgba(37, 99, 235, 0.2) !important;
-  border-color: rgba(147, 197, 253, 0.34) !important;
-}
-
-html.kikoerumanager-dark .circle-page .wlr-title,
-html.kikoerumanager-dark .circle-page .wlr-title-text,
-html.kikoerumanager-dark .circle-page .work-title,
-html.kikoerumanager-dark .circle-page .card-title {
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .circle-page .wlr-subtitle,
-html.kikoerumanager-dark .circle-page .wlr-cv,
-html.kikoerumanager-dark .circle-page .work-subtitle,
-html.kikoerumanager-dark .circle-page .card-subtitle {
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .circle-page .wlr-code,
-html.kikoerumanager-dark .circle-page .wlr-variant,
-html.kikoerumanager-dark .circle-page .wlr-linked-code,
-html.kikoerumanager-dark .circle-page .wlr-pill,
-html.kikoerumanager-dark .circle-page .wlr-btn {
-  background: rgba(15, 23, 42, 0.82) !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .circle-page .works-pager .el-pagination button,
-html.kikoerumanager-dark .circle-page .works-pager .el-pagination .el-pager li,
-html.kikoerumanager-dark .circle-page .works-pager .el-pagination .el-input__wrapper,
-html.kikoerumanager-dark .circle-page .works-pager .el-pagination .el-select__wrapper {
-  background: rgba(15, 23, 42, 0.92) !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow: none !important;
-}
-
-html.kikoerumanager-dark .circle-page .works-pager .el-pagination .el-pager li.is-active {
-  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%) !important;
-  color: #ffffff !important;
+  opacity: 0.58 !important;
 }
 
 html.kikoerumanager-dark .custom-preview-modal.el-dialog {
@@ -4525,228 +3673,59 @@ html.kikoerumanager-dark .custom-preview-modal.el-dialog {
   box-shadow: none !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .window,
-html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .glass-shell {
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .window,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .glass-shell {
   background: linear-gradient(180deg, rgba(15, 23, 42, 0.98) 0%, rgba(15, 23, 42, 0.94) 100%) !important;
   border: 1px solid rgba(148, 163, 184, 0.22) !important;
   color: var(--km-dark-text) !important;
   box-shadow: 0 28px 72px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .window-header,
-html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .tabs-row,
-html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .footer-row {
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .window-header,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .tabs-row,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .footer-row {
   background: rgba(30, 41, 59, 0.82) !important;
   border-color: rgba(148, 163, 184, 0.18) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .glass-card,
-html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .mode-switch,
-html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .content-grid,
-html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .left-column,
-html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .dropdown-panel,
-html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .resource-row,
-html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .preview-card {
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .glass-card,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .mode-switch,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .content-grid,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .left-column,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .dropdown-panel,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .resource-row,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .preview-card {
   background: rgba(30, 41, 59, 0.82) !important;
   border-color: rgba(148, 163, 184, 0.18) !important;
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal .title,
-html.kikoerumanager-dark .custom-preview-modal h1,
-html.kikoerumanager-dark .custom-preview-modal h2,
-html.kikoerumanager-dark .custom-preview-modal label,
-html.kikoerumanager-dark .custom-preview-modal .text-slate-900,
-html.kikoerumanager-dark .custom-preview-modal .text-slate-800 {
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .title,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) h1,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) h2,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) label,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .text-slate-900,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .text-slate-800 {
   color: var(--km-dark-text-strong) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal p,
-html.kikoerumanager-dark .custom-preview-modal .text-slate-600,
-html.kikoerumanager-dark .custom-preview-modal .text-slate-500,
-html.kikoerumanager-dark .custom-preview-modal .text-slate-400 {
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) p,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .text-slate-600,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .text-slate-500,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .text-slate-400 {
   color: var(--km-dark-text-muted) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .field-input,
-html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .select-button,
-html.kikoerumanager-dark .custom-preview-modal:not(.lib-move-modal):not(.filter-delete-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) input {
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .field-input,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .select-button,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) input {
   background: rgba(15, 23, 42, 0.9) !important;
   border-color: rgba(148, 163, 184, 0.22) !important;
   color: var(--km-dark-text-strong) !important;
 }
 
-html.kikoerumanager-dark body:has(.circle-page),
-html.kikoerumanager-dark .main-content:has(.circle-page),
-html.kikoerumanager-dark .page-content:has(.circle-page),
-html.kikoerumanager-dark .content-area:has(.circle-page) {
-  background: var(--km-dark-bg) !important;
-}
-
-html.kikoerumanager-dark .circle-page {
-  min-height: calc(100vh - 32px) !important;
-  background: linear-gradient(180deg, rgba(7, 11, 18, 0.98) 0%, rgba(15, 23, 42, 0.94) 100%) !important;
-  border-radius: 18px !important;
-  padding: 14px !important;
-}
-
-html.kikoerumanager-dark .circle-page .circle-page-header,
-html.kikoerumanager-dark .circle-page .app-page-header,
-html.kikoerumanager-dark .circle-page .app-page-header-inner,
-html.kikoerumanager-dark .circle-page .app-page-header-actions {
-  background: rgba(15, 23, 42, 0.92) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-}
-
-html.kikoerumanager-dark .circle-page .work-card,
-html.kikoerumanager-dark .circle-page .work-card.is-downloaded,
-html.kikoerumanager-dark .circle-page .work-card.is-unreleased,
-html.kikoerumanager-dark .circle-page .work-card.disabled {
-  background: linear-gradient(180deg, rgba(30, 41, 59, 0.92) 0%, rgba(15, 23, 42, 0.94) 100%) !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
-}
-
-html.kikoerumanager-dark .circle-page .work-card:hover,
-html.kikoerumanager-dark .circle-page .work-card.is-downloaded:hover,
-html.kikoerumanager-dark .circle-page .work-card.is-unreleased:hover {
-  background: linear-gradient(180deg, rgba(30, 64, 175, 0.24) 0%, rgba(15, 23, 42, 0.96) 100%) !important;
-  border-color: rgba(147, 197, 253, 0.34) !important;
-  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(147, 197, 253, 0.12) !important;
-}
-
-html.kikoerumanager-dark .circle-page .work-card.selected,
-html.kikoerumanager-dark .circle-page .work-card.selected:hover {
-  background: linear-gradient(180deg, rgba(37, 99, 235, 0.34) 0%, rgba(15, 23, 42, 0.96) 100%) !important;
-  border-color: rgba(147, 197, 253, 0.48) !important;
-  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.2), 0 18px 36px rgba(0, 0, 0, 0.32) !important;
-}
-
-html.kikoerumanager-dark .circle-page .work-card.status-flash {
-  background: linear-gradient(180deg, rgba(16, 185, 129, 0.22) 0%, rgba(15, 23, 42, 0.96) 100%) !important;
-  border-color: rgba(110, 231, 183, 0.4) !important;
-}
-
-html.kikoerumanager-dark .circle-page .work-cover-wrapper,
-html.kikoerumanager-dark .circle-page .work-cover-placeholder,
-html.kikoerumanager-dark .circle-page .wlr-thumb-placeholder {
-  background: rgba(15, 23, 42, 0.92) !important;
-  border-color: rgba(148, 163, 184, 0.16) !important;
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .circle-page .work-cover-shine {
-  background: linear-gradient(115deg, transparent 40%, rgba(147, 197, 253, 0.16) 50%, transparent 60%) !important;
-}
-
-html.kikoerumanager-dark .circle-page .work-rj,
-html.kikoerumanager-dark .circle-page .work-card:hover .work-rj {
-  color: #93c5fd !important;
-}
-
-html.kikoerumanager-dark .circle-page .work-title,
-html.kikoerumanager-dark .circle-page .work-card:hover .work-title {
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .circle-page .work-linked,
-html.kikoerumanager-dark .circle-page .work-card.disabled .work-rj,
-html.kikoerumanager-dark .circle-page .work-card.disabled .work-title,
-html.kikoerumanager-dark .circle-page .work-card.disabled .work-linked {
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .circle-page .work-cv {
-  color: #7dd3fc !important;
-}
-
-html.kikoerumanager-dark .circle-page .tag-chip.is-primary,
-html.kikoerumanager-dark .circle-page .work-release-chip,
-html.kikoerumanager-dark .circle-page .work-unreleased-flag {
-  background: rgba(37, 99, 235, 0.18) !important;
-  border-color: rgba(147, 197, 253, 0.28) !important;
-  color: #bfdbfe !important;
-}
-
-html.kikoerumanager-dark .circle-page .tag-chip.is-success {
-  background: rgba(16, 185, 129, 0.16) !important;
-  border-color: rgba(110, 231, 183, 0.26) !important;
-  color: #a7f3d0 !important;
-}
-
-html.kikoerumanager-dark .circle-page .tag-chip.is-danger {
-  background: rgba(190, 18, 60, 0.18) !important;
-  border-color: rgba(253, 164, 175, 0.3) !important;
-  color: #fecdd3 !important;
-}
-
-html.kikoerumanager-dark .circle-page .tag-chip.is-warning,
-html.kikoerumanager-dark .circle-page .work-new-flag,
-html.kikoerumanager-dark .circle-page .work-new-badge {
-  background: rgba(245, 158, 11, 0.2) !important;
-  border-color: rgba(251, 191, 36, 0.3) !important;
-  color: #fde68a !important;
-}
-
-html.kikoerumanager-dark .circle-page .tag-chip.is-info,
-html.kikoerumanager-dark .circle-page .tag-chip.is-disabled {
-  background: rgba(148, 163, 184, 0.12) !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
-  color: #cbd5e1 !important;
-}
-
-html.kikoerumanager-dark .circle-page .work-action-btn {
-  background: rgba(37, 99, 235, 0.16) !important;
-  border-color: rgba(147, 197, 253, 0.28) !important;
-  color: #bfdbfe !important;
-  box-shadow: none !important;
-}
-
-html.kikoerumanager-dark .circle-page .work-action-btn:hover {
-  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%) !important;
-  border-color: rgba(147, 197, 253, 0.42) !important;
-  color: #ffffff !important;
-}
-
-html.kikoerumanager-dark .circle-page .work-action-btn.upload {
-  background: rgba(16, 185, 129, 0.16) !important;
-  border-color: rgba(110, 231, 183, 0.26) !important;
-  color: #a7f3d0 !important;
-}
-
-html.kikoerumanager-dark .circle-page .work-action-btn.upload:hover {
-  background: linear-gradient(180deg, #34d399 0%, #059669 100%) !important;
-  border-color: rgba(110, 231, 183, 0.42) !important;
-  color: #ffffff !important;
-}
-
-html.kikoerumanager-dark .circle-page .work-list-row {
-  background: rgba(30, 41, 59, 0.78) !important;
-  border-color: rgba(148, 163, 184, 0.16) !important;
-}
-
-html.kikoerumanager-dark .circle-page .work-list-row:hover,
-html.kikoerumanager-dark .circle-page .work-list-row.is-selected {
-  background: rgba(37, 99, 235, 0.22) !important;
-  border-color: rgba(147, 197, 253, 0.34) !important;
-}
-
-html.kikoerumanager-dark .circle-page .owned-search-wrap input::placeholder,
-html.kikoerumanager-dark .circle-page .hero-search-input::placeholder,
-html.kikoerumanager-dark .circle-page .el-input__inner::placeholder {
-  color: rgba(148, 163, 184, 0.64) !important;
-  -webkit-text-fill-color: rgba(148, 163, 184, 0.64) !important;
-}
-
-html.kikoerumanager-dark .circle-page .el-pagination .el-select .el-input,
-html.kikoerumanager-dark .circle-page .el-pagination .el-select__wrapper,
-html.kikoerumanager-dark .circle-page .el-pagination__jump .el-input__wrapper {
-  background: rgba(15, 23, 42, 0.94) !important;
-  border-color: rgba(148, 163, 184, 0.22) !important;
-  color: var(--km-dark-text) !important;
-}
-
+/* 旧设置页暗黑覆盖保留作历史参考，但禁用。设置页现在由 Settings.vue / settings 组件变量接管。 */
+@media not all {
 html.kikoerumanager-dark .settings-page {
   color: var(--km-dark-text) !important;
 }
@@ -4913,26 +3892,34 @@ html.kikoerumanager-dark .settings-page textarea:focus {
 }
 
 html.kikoerumanager-dark .settings-page .set-chip-success {
-  background: rgba(16, 185, 129, 0.16) !important;
-  border-color: rgba(110, 231, 183, 0.28) !important;
-  color: #a7f3d0 !important;
+  background: var(--set-success-bg) !important;
+  border-color: var(--set-success-border) !important;
+  color: var(--set-success-text) !important;
 }
 
 html.kikoerumanager-dark .settings-page .set-chip-warning {
-  background: rgba(245, 158, 11, 0.16) !important;
-  border-color: rgba(251, 191, 36, 0.28) !important;
-  color: #fde68a !important;
+  background: var(--set-warning-bg) !important;
+  border-color: var(--set-warning-border) !important;
+  color: var(--set-warning-text) !important;
 }
 
 html.kikoerumanager-dark .settings-page .set-chip-info,
-html.kikoerumanager-dark .settings-page .nav-badge {
-  background: rgba(37, 99, 235, 0.16) !important;
-  border-color: rgba(147, 197, 253, 0.28) !important;
-  color: #bfdbfe !important;
+html.kikoerumanager-dark .settings-page .settings-nav-badge:not(.is-dirty) {
+  background: var(--set-tag-info-bg) !important;
+  border-color: var(--set-tag-info-border) !important;
+  color: var(--set-tag-info-text) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .settings-page .settings-nav-badge.is-dirty {
+  background: rgba(173, 136, 82, 0.12) !important;
+  border-color: rgba(202, 164, 101, 0.3) !important;
+  color: #d7ba7d !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .settings-page .sidebar-ghost-btn,
-html.kikoerumanager-dark .settings-page button:not(.el-switch__core) {
+html.kikoerumanager-dark .settings-page button:not(.el-switch__core):not(.settings-nav-item):not(.pikpak-account-tab) {
   border-color: rgba(96, 165, 250, 0.24) !important;
 }
 
@@ -5630,6 +4617,47 @@ html.kikoerumanager-dark .settings-page .tpl-action--danger:hover {
   color: #fecdd3 !important;
 }
 
+}
+
+html.kikoerumanager-dark .settings-page {
+  color: var(--set-text, #d4d4d8) !important;
+}
+
+html.kikoerumanager-dark .settings-page :is(.settings-workbench, .settings-main, .main-slot) {
+  color: var(--set-text, #d4d4d8) !important;
+}
+
+html.kikoerumanager-dark .settings-page :is(input, textarea, select, .el-input__wrapper, .el-input__inner, .el-textarea__inner, .el-select__wrapper) {
+  --el-input-bg-color: var(--set-field-bg, #1b1b1d) !important;
+  --el-input-border-color: var(--set-border, rgba(255, 255, 255, 0.11)) !important;
+  --el-input-text-color: var(--set-text-strong, #f5f5f5) !important;
+  --el-input-placeholder-color: var(--set-text-subtle, #71717a) !important;
+  background-color: var(--set-field-bg, #1b1b1d) !important;
+  border-color: var(--set-border, rgba(255, 255, 255, 0.11)) !important;
+  color: var(--set-text-strong, #f5f5f5) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .settings-page :is(input, textarea)::placeholder {
+  color: var(--set-text-subtle, #71717a) !important;
+  -webkit-text-fill-color: var(--set-text-subtle, #71717a) !important;
+}
+
+html.kikoerumanager-dark .settings-page :is(input:focus, textarea:focus, .el-input__wrapper.is-focus, .el-select__wrapper.is-focused) {
+  border-color: var(--set-border-strong, rgba(255, 255, 255, 0.18)) !important;
+  box-shadow: 0 0 0 3px var(--set-accent-soft, rgba(255, 255, 255, 0.08)) !important;
+}
+
+html.kikoerumanager-dark .settings-page .el-switch__core {
+  background-color: var(--set-surface-muted, #242427) !important;
+  border-color: var(--set-border-strong, rgba(255, 255, 255, 0.18)) !important;
+}
+
+html.kikoerumanager-dark .settings-page .el-switch.is-checked .el-switch__core {
+  background-color: var(--set-accent, #e5e7eb) !important;
+  border-color: var(--set-accent, #e5e7eb) !important;
+}
+
 html.kikoerumanager-dark .activity-page {
   color: var(--km-dark-text) !important;
 }
@@ -5667,10 +4695,17 @@ html.kikoerumanager-dark .activity-page .day-meta {
 }
 
 html.kikoerumanager-dark .activity-page .filter-reset,
-html.kikoerumanager-dark .activity-page .page-head-search,
+html.kikoerumanager-dark .activity-page .page-head-search {
+  background: #17181d !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
+}
+
 html.kikoerumanager-dark .activity-page .page-head-search-input {
-  background: rgba(15, 23, 42, 0.86) !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
+  background: transparent !important;
+  background-image: none !important;
   color: var(--km-dark-text-strong) !important;
 }
 
@@ -5867,15 +4902,16 @@ html.kikoerumanager-dark .activity-page .rename-reason-inline {
 html.kikoerumanager-dark .activity-drawer,
 html.kikoerumanager-dark .activity-drawer .el-drawer__body,
 html.kikoerumanager-dark .detail-body {
-  background: linear-gradient(180deg, rgba(7, 11, 18, 0.98) 0%, rgba(15, 23, 42, 0.96) 100%) !important;
+  background: #0b0c10 !important;
+  background-image: none !important;
   color: var(--km-dark-text) !important;
 }
 
 html.kikoerumanager-dark .detail-head,
 html.kikoerumanager-dark .detail-foot {
-  background: rgba(15, 23, 42, 0.92) !important;
+  background: #0b0c10 !important;
   background-image: none !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
   color: var(--km-dark-text) !important;
 }
 
@@ -5883,9 +4919,18 @@ html.kikoerumanager-dark .detail-close,
 html.kikoerumanager-dark .copy-btn,
 html.kikoerumanager-dark .panel-toggle,
 html.kikoerumanager-dark .foot-btn {
-  background: rgba(15, 23, 42, 0.82) !important;
-  border-color: rgba(96, 165, 250, 0.24) !important;
-  color: #bfdbfe !important;
+  background: #17181d !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #d7dde7 !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .detail-icon {
+  background: #17181d !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: #d7dde7 !important;
   box-shadow: none !important;
 }
 
@@ -5893,15 +4938,17 @@ html.kikoerumanager-dark .detail-close:hover,
 html.kikoerumanager-dark .copy-btn:hover,
 html.kikoerumanager-dark .panel-toggle:hover,
 html.kikoerumanager-dark .foot-btn:hover {
-  background: rgba(37, 99, 235, 0.22) !important;
-  border-color: rgba(147, 197, 253, 0.34) !important;
+  background: #202126 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
   color: var(--km-dark-text-strong) !important;
 }
 
 html.kikoerumanager-dark .foot-btn.primary {
-  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%) !important;
-  border-color: rgba(147, 197, 253, 0.42) !important;
-  color: #ffffff !important;
+  background: #e7e7eb !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.26) !important;
+  color: #111116 !important;
 }
 
 html.kikoerumanager-dark .detail-title,
@@ -5921,42 +4968,46 @@ html.kikoerumanager-dark .child-time {
 }
 
 html.kikoerumanager-dark .detail-body .panel {
-  background: rgba(15, 23, 42, 0.94) !important;
-  background-image: linear-gradient(180deg, rgba(30, 41, 59, 0.86) 0%, rgba(15, 23, 42, 0.94) 100%) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: #111216 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
   color: var(--km-dark-text) !important;
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .detail-body .rounded-xl,
 html.kikoerumanager-dark .detail-body .inline-flex {
-  background-color: rgba(15, 23, 42, 0.72) !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
+  background-color: #17181d !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
 }
 
 html.kikoerumanager-dark .detail-body .child-item {
-  background: rgba(15, 23, 42, 0.72) !important;
-  border-color: rgba(148, 163, 184, 0.16) !important;
+  background: #17181d !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
 }
 
 html.kikoerumanager-dark .detail-body .child-item:hover,
 html.kikoerumanager-dark .detail-body .child-item.is-expanded {
-  background: rgba(37, 99, 235, 0.18) !important;
-  border-color: rgba(147, 197, 253, 0.34) !important;
+  background: #202126 !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
 }
 
 html.kikoerumanager-dark .detail-body .raw-json-wrap {
-  background: rgba(2, 6, 23, 0.96) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: #08090c !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
 }
 
 html.kikoerumanager-dark .detail-body .raw-json {
-  color: #dbeafe !important;
+  color: #d7dde7 !important;
 }
 
 html.kikoerumanager-dark .detail-body [class*="text-slate-900"],
 html.kikoerumanager-dark .detail-body [class*="text-slate-800"],
 html.kikoerumanager-dark .detail-body [class*="text-slate-700"],
+html.kikoerumanager-dark .detail-body [class*="text-sky-"],
+html.kikoerumanager-dark .detail-body [class*="text-blue-"],
+html.kikoerumanager-dark .detail-body [class*="text-indigo-"],
+html.kikoerumanager-dark .detail-body [class*="text-violet-"],
 html.kikoerumanager-dark .detail-body .entry-section-title,
 html.kikoerumanager-dark .detail-body .highlight-value,
 html.kikoerumanager-dark .detail-body .highlight-num,
@@ -5985,21 +5036,42 @@ html.kikoerumanager-dark .detail-body .entry-subtitle {
 html.kikoerumanager-dark .detail-body [class*="bg-slate-50"],
 html.kikoerumanager-dark .detail-body [class*="bg-slate-100"],
 html.kikoerumanager-dark .detail-body [class*="bg-white"],
+html.kikoerumanager-dark .detail-body [class*="bg-sky-50"],
+html.kikoerumanager-dark .detail-body [class*="bg-blue-50"],
+html.kikoerumanager-dark .detail-body [class*="bg-indigo-50"],
+html.kikoerumanager-dark .detail-body [class*="bg-violet-50"],
+html.kikoerumanager-dark .detail-body [class*="from-sky-50"],
+html.kikoerumanager-dark .detail-body [class*="from-blue-50"],
+html.kikoerumanager-dark .detail-body [class*="from-indigo-50"],
+html.kikoerumanager-dark .detail-body [class*="from-violet-50"],
+html.kikoerumanager-dark .detail-body [class*="to-white"],
 html.kikoerumanager-dark .detail-body .highlight-row,
 html.kikoerumanager-dark .detail-body .metric-cell,
 html.kikoerumanager-dark .detail-body .metric-tail-row,
 html.kikoerumanager-dark .detail-body .entry-row,
 html.kikoerumanager-dark .detail-body .entry-item,
 html.kikoerumanager-dark .detail-body .entry-section-toggle {
-  background-color: rgba(15, 23, 42, 0.74) !important;
+  background-color: #17181d !important;
   background-image: none !important;
-  border-color: rgba(148, 163, 184, 0.2) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
   color: var(--km-dark-text) !important;
 }
 
+html.kikoerumanager-dark .detail-body [class*="ring-sky-"],
+html.kikoerumanager-dark .detail-body [class*="ring-blue-"],
+html.kikoerumanager-dark .detail-body [class*="ring-indigo-"],
+html.kikoerumanager-dark .detail-body [class*="ring-violet-"],
+html.kikoerumanager-dark .detail-body [class*="border-sky-"],
+html.kikoerumanager-dark .detail-body [class*="border-blue-"],
+html.kikoerumanager-dark .detail-body [class*="border-indigo-"],
+html.kikoerumanager-dark .detail-body [class*="border-violet-"] {
+  --tw-ring-color: rgba(255, 255, 255, 0.14) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
 html.kikoerumanager-dark .detail-body .metric-strip {
-  background: rgba(15, 23, 42, 0.74) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: #17181d !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
 }
 
 html.kikoerumanager-dark .detail-body .highlight-grid,
@@ -6010,14 +5082,14 @@ html.kikoerumanager-dark .detail-body .metric-tail {
 html.kikoerumanager-dark .detail-body .entry-section-toggle:hover,
 html.kikoerumanager-dark .detail-body .entry-row:hover,
 html.kikoerumanager-dark .detail-body .entry-item:hover {
-  background: rgba(37, 99, 235, 0.18) !important;
-  border-color: rgba(147, 197, 253, 0.34) !important;
+  background: #202126 !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
 }
 
 html.kikoerumanager-dark .detail-body code,
 html.kikoerumanager-dark .detail-body .mono,
 html.kikoerumanager-dark .detail-body .path {
-  color: #dbeafe !important;
+  color: #d7dde7 !important;
 }
 </style>
 
@@ -6494,6 +5566,20 @@ html.kikoerumanager-dark .detail-body .path {
     transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
+:deep(.sidebar-menu .sidebar-nav-overview) { --sidebar-nav-icon: var(--km-nav-overview-icon); }
+:deep(.sidebar-menu .sidebar-nav-tasks) { --sidebar-nav-icon: var(--km-nav-tasks-icon); }
+:deep(.sidebar-menu .sidebar-nav-conflicts) { --sidebar-nav-icon: var(--km-nav-conflicts-icon); }
+:deep(.sidebar-menu .sidebar-nav-library) { --sidebar-nav-icon: var(--km-nav-library-icon); }
+:deep(.sidebar-menu .sidebar-nav-subtitle) { --sidebar-nav-icon: var(--km-nav-subtitle-icon); }
+:deep(.sidebar-menu .sidebar-nav-passwords) { --sidebar-nav-icon: var(--km-nav-passwords-icon); }
+:deep(.sidebar-menu .sidebar-nav-folders) { --sidebar-nav-icon: var(--km-nav-folders-icon); }
+:deep(.sidebar-menu .sidebar-nav-asmr) { --sidebar-nav-icon: var(--km-nav-asmr-icon); }
+:deep(.sidebar-menu .sidebar-nav-circle) { --sidebar-nav-icon: var(--km-nav-circle-icon); }
+:deep(.sidebar-menu .sidebar-nav-backup) { --sidebar-nav-icon: var(--km-nav-backup-icon); }
+:deep(.sidebar-menu .sidebar-nav-settings) { --sidebar-nav-icon: var(--km-nav-settings-icon); }
+:deep(.sidebar-menu .sidebar-nav-logs) { --sidebar-nav-icon: var(--km-nav-logs-icon); }
+:deep(.sidebar-menu .sidebar-nav-history) { --sidebar-nav-icon: var(--km-nav-history-icon); }
+
 :deep(.sidebar-menu .el-menu-item span) {
   display: inline-block;
   width: 140px;
@@ -6510,7 +5596,7 @@ html.kikoerumanager-dark .detail-body .path {
   flex: 0 0 auto;
   width: 19px;
   height: 19px;
-  color: rgba(29, 29, 31, 0.56);
+  color: var(--sidebar-nav-icon, rgba(29, 29, 31, 0.56));
   transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.24s ease;
 }
 
@@ -6522,27 +5608,25 @@ html.kikoerumanager-dark .detail-body .path {
 
 :deep(.sidebar-menu .el-menu-item:hover) {
   transform: translateY(-2px) scale(1.02);
-  background: rgba(255, 255, 255, 0.82);
+  background: transparent;
   color: #1d1d1f;
-  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.76);
+  box-shadow: none;
 }
 
 :deep(.sidebar-menu .el-menu-item:hover > svg) {
   transform: rotate(-8deg);
-  color: #1d1d1f;
+  color: var(--sidebar-nav-icon, #1d1d1f);
 }
 
 :deep(.sidebar-menu .el-menu-item.is-active) {
-  background: rgba(15, 23, 42, 0.9);
-  color: #ffffff;
+  background: transparent;
+  color: #1d1d1f;
   font-weight: 600;
-  box-shadow:
-    0 12px 24px rgba(15, 23, 42, 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  box-shadow: none;
 }
 
 :deep(.sidebar-menu .el-menu-item.is-active > svg) {
-  color: #ffffff;
+  color: var(--sidebar-nav-icon, #1d1d1f);
 }
 
 :deep(.el-card) {
@@ -6583,10 +5667,11 @@ html.kikoerumanager-dark .detail-body .path {
   z-index: 2;
   font-size: 12px;
   font-weight: 650;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   transform: translate3d(-50%, 0, 0);
   transition:
     transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    background-color 0.28s ease,
     border-color 0.24s ease,
     color 0.24s ease,
     box-shadow 0.24s ease;
@@ -6625,6 +5710,8 @@ html.kikoerumanager-dark .detail-body .path {
   width: 18px;
   height: 18px;
   margin: 0;
+  position: relative;
+  z-index: 1;
   transition: color 0.3s ease, filter 0.3s ease, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -6644,18 +5731,18 @@ html.kikoerumanager-dark .detail-body .path {
 
 .theme-icon-enter-active,
 .theme-icon-leave-active {
-  transition: opacity 0.24s ease, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.24s ease;
+  transition: opacity 0.28s ease, transform 0.42s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.28s ease;
 }
 
 .theme-icon-enter-from {
   opacity: 0;
-  transform: rotate(-80deg) scale(0.35);
+  transform: rotate(-110deg) scale(0.25);
   filter: blur(5px);
 }
 
 .theme-icon-leave-to {
   opacity: 0;
-  transform: rotate(80deg) scale(0.35);
+  transform: rotate(110deg) scale(0.25);
   filter: blur(5px);
 }
 
@@ -6721,25 +5808,27 @@ html.kikoerumanager-dark .detail-body .path {
 }
 
 :global(html.kikoerumanager-dark) :deep(.sidebar-menu .el-menu-item > svg) {
-  color: rgba(203, 213, 225, 0.58);
+  color: var(--sidebar-nav-icon, rgba(203, 213, 225, 0.58));
 }
 
 :global(html.kikoerumanager-dark) :deep(.sidebar-menu .el-menu-item:hover) {
-  background: rgba(51, 65, 85, 0.72);
+  background: transparent;
   color: #f8fafc;
+  box-shadow: none;
 }
 
 :global(html.kikoerumanager-dark) :deep(.sidebar-menu .el-menu-item:hover > svg) {
-  color: #f8fafc;
+  color: var(--sidebar-nav-icon, #f8fafc);
 }
 
 :global(html.kikoerumanager-dark) :deep(.sidebar-menu .el-menu-item.is-active) {
-  background: rgba(37, 99, 235, 0.18);
-  color: #93c5fd;
+  background: transparent;
+  color: #f8fafc;
+  box-shadow: none;
 }
 
 :global(html.kikoerumanager-dark) :deep(.sidebar-menu .el-menu-item.is-active > svg) {
-  color: #60a5fa;
+  color: var(--sidebar-nav-icon, #f8fafc);
 }
 
 :global(html.kikoerumanager-dark) :deep(.el-card),
@@ -7186,30 +6275,151 @@ html.kikoerumanager-dark .sidebar-menu .el-menu-item {
 }
 
 html.kikoerumanager-dark .sidebar-menu .el-menu-item > svg {
-  color: rgba(226, 232, 240, 0.68) !important;
+  color: var(--sidebar-nav-icon, rgba(226, 232, 240, 0.68)) !important;
 }
 
 html.kikoerumanager-dark .sidebar-menu .el-menu-item:hover {
-  background: rgba(255, 255, 255, 0.08) !important;
+  background: transparent !important;
   color: #f8fafc !important;
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .sidebar-menu .el-menu-item.is-active {
-  background: rgba(255, 255, 255, 0.1) !important;
+  background: transparent !important;
   color: #f8fafc !important;
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .sidebar-menu .el-menu-item:hover > svg,
 html.kikoerumanager-dark .sidebar-menu .el-menu-item.is-active > svg {
-  color: #f8fafc !important;
+  color: var(--sidebar-nav-icon, #f8fafc) !important;
 }
 
-/* 文件管理弹窗最终暗色兜底：保留厚玻璃层次，去掉蓝灰泛光和投影。 */
+/* 弹窗内统一取消浏览器 / Element Plus / Tailwind 聚焦态。 */
+.el-dialog :is(
+  button,
+  input,
+  textarea,
+  select,
+  [tabindex],
+  [role="button"],
+  [contenteditable="true"],
+  .interactive-chip,
+  .action-card,
+  .row-action,
+  .tree-row,
+  .tree-checkbox,
+  .fm-body,
+  .fm-row,
+  .nav-row,
+  .crumb-btn,
+  .fm-icon-btn,
+  .search-input,
+  .primary-cta,
+  .secondary-cta,
+  .close-button,
+  .el-input__wrapper,
+  .el-select__wrapper
+):focus,
+.el-dialog :is(
+  button,
+  input,
+  textarea,
+  select,
+  [tabindex],
+  [role="button"],
+  [contenteditable="true"],
+  .interactive-chip,
+  .action-card,
+  .row-action,
+  .tree-row,
+  .tree-checkbox,
+  .fm-body,
+  .fm-row,
+  .nav-row,
+  .crumb-btn,
+  .fm-icon-btn,
+  .search-input,
+  .primary-cta,
+  .secondary-cta,
+  .close-button,
+  .el-input__wrapper,
+  .el-select__wrapper
+):focus-visible,
+.el-dialog :is(
+  .el-input__wrapper.is-focus,
+  .el-select__wrapper.is-focused,
+  .search-shell:focus-within
+) {
+  --tw-ring-color: transparent !important;
+  --tw-ring-offset-shadow: 0 0 #0000 !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
+  outline: 0 !important;
+  outline-offset: 0 !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark :is(
+  .folder-dialog:not(.filter-delete-dialog),
+  .mojibake-preview-dialog
+) :is(
+  button,
+  input,
+  textarea,
+  select,
+  [tabindex],
+  [role="button"],
+  [contenteditable="true"],
+  .interactive-chip,
+  .action-card,
+  .row-action,
+  .tree-row,
+  .tree-checkbox,
+  .close-button,
+  .el-input__wrapper,
+  .el-select__wrapper
+):focus,
+html.kikoerumanager-dark :is(
+  .folder-dialog:not(.filter-delete-dialog),
+  .mojibake-preview-dialog
+) :is(
+  button,
+  input,
+  textarea,
+  select,
+  [tabindex],
+  [role="button"],
+  [contenteditable="true"],
+  .interactive-chip,
+  .action-card,
+  .row-action,
+  .tree-row,
+  .tree-checkbox,
+  .close-button,
+  .el-input__wrapper,
+  .el-select__wrapper
+):focus-visible,
+html.kikoerumanager-dark :is(
+  .folder-dialog:not(.filter-delete-dialog),
+  .mojibake-preview-dialog
+) :is(
+  .el-input__wrapper.is-focus,
+  .el-select__wrapper.is-focused,
+  .search-shell:focus-within,
+  .repair-preview-input:focus
+) {
+  --tw-ring-color: transparent !important;
+  --tw-ring-offset-shadow: 0 0 #0000 !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
+  outline: 0 !important;
+  outline-offset: 0 !important;
+  box-shadow: none !important;
+}
+
+/* 文件管理弹窗最终暗色兜底：改为中性黑灰，去掉蓝灰泛光和聚焦投影。 */
 html.kikoerumanager-dark .custom-preview-overlay:has(.folder-dialog:not(.filter-delete-dialog)),
 html.kikoerumanager-dark .custom-preview-overlay:has(.mojibake-preview-dialog) {
-  background: rgba(4, 5, 8, 0.2) !important;
+  background: rgba(8, 8, 10, 0.42) !important;
   background-image: none !important;
   backdrop-filter: blur(12px) saturate(108%) !important;
   -webkit-backdrop-filter: blur(12px) saturate(108%) !important;
@@ -7226,10 +6436,12 @@ html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .glass-shell,
 html.kikoerumanager-dark .mojibake-preview-dialog .window,
 html.kikoerumanager-dark .mojibake-preview-dialog .glass-shell {
   background:
-    linear-gradient(180deg, rgba(45, 46, 51, 0.76), rgba(13, 14, 18, 0.9)),
-    rgba(18, 19, 23, 0.86) !important;
-  border: 1px solid rgba(255, 255, 255, 0.14) !important;
-  outline: 1px solid rgba(255, 255, 255, 0.045) !important;
+    linear-gradient(180deg, rgba(29, 30, 35, 0.96), rgba(14, 15, 18, 0.98)),
+    #111216 !important;
+  background-image:
+    linear-gradient(180deg, rgba(29, 30, 35, 0.96), rgba(14, 15, 18, 0.98)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  outline: 1px solid rgba(255, 255, 255, 0.04) !important;
   outline-offset: -2px !important;
   color: rgba(244, 244, 245, 0.9) !important;
   box-shadow: none !important;
@@ -7254,7 +6466,7 @@ html.kikoerumanager-dark .mojibake-preview-dialog .window-header,
 html.kikoerumanager-dark .mojibake-preview-dialog .fm-body,
 html.kikoerumanager-dark .mojibake-preview-dialog .toolbar-row,
 html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-footer {
-  background: rgba(20, 21, 25, 0.66) !important;
+  background: #17181d !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.1) !important;
   color: rgba(244, 244, 245, 0.9) !important;
@@ -7280,11 +6492,10 @@ html.kikoerumanager-dark .mojibake-preview-dialog :is(
   .fm-badge,
   .fm-count-pill
 ) {
-  background:
-    linear-gradient(180deg, rgba(48, 49, 54, 0.36), rgba(18, 19, 23, 0.52)),
-    rgba(22, 23, 27, 0.72) !important;
-  border-color: rgba(255, 255, 255, 0.14) !important;
-  outline: 1px solid rgba(255, 255, 255, 0.045) !important;
+  background: #1d1e23 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  outline: 1px solid rgba(255, 255, 255, 0.035) !important;
   outline-offset: -2px !important;
   color: rgba(244, 244, 245, 0.9) !important;
   box-shadow: none !important;
@@ -7310,14 +6521,16 @@ html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-row {
 }
 
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-row:hover {
-  background: rgba(255, 255, 255, 0.055) !important;
+  background: #2b2c30 !important;
+  background-image: none !important;
   border-color: transparent !important;
   color: rgba(250, 250, 252, 0.94) !important;
   box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-row-selected {
-  background: rgba(255, 255, 255, 0.095) !important;
+  background: #333438 !important;
+  background-image: none !important;
   border-color: rgba(255, 255, 255, 0.14) !important;
   color: rgba(250, 250, 252, 0.96) !important;
   box-shadow: none !important;
@@ -7429,6 +6642,12 @@ html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .search-input
   color: rgba(250, 250, 252, 0.94) !important;
 }
 
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .search-shell:focus-within,
+html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-input:focus {
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  box-shadow: none !important;
+}
+
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .app-loading-mask {
   background: rgba(5, 6, 10, 0.52) !important;
   color: rgba(250, 250, 252, 0.94) !important;
@@ -7451,16 +6670,19 @@ html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .app-loading-
   text-shadow: none !important;
 }
 
-html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .action-icon {
-  color: currentColor !important;
-  stroke: currentColor !important;
-  filter: none !important;
-  opacity: 1 !important;
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-checkbox {
+  background: #24252a !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  color: transparent !important;
+  box-shadow: none !important;
 }
 
-html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-icon {
-  filter: none !important;
-  opacity: 1 !important;
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-checkbox-on,
+html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-checkbox-partial {
+  background: #56575e !important;
+  border-color: rgba(255, 255, 255, 0.34) !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
 }
 
 /* 上传到服务器预览：单独兜底，避免被通用 custom-preview 深蓝规则再次覆盖。 */

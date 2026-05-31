@@ -3,7 +3,7 @@
     <!-- 页头走共享组件 AppPageHeader，右侧 slot 保留三个统计 chip -->
     <AppPageHeader
       :icon="IconKey"
-      icon-color="#1d4ed8"
+      icon-color="var(--km-nav-passwords-icon)"
       title="解压密码工作台"
       subtitle="集中管理解压密码、作品绑定关系与自动清理规则。同时填写文件名 + RJ 号时，系统会把该文件视为该 RJ，查重/命名/包裹目录都以此为准。"
     >
@@ -22,7 +22,7 @@
     <section class="vault-toolbar-shell mb-4">
       <div class="vault-toolbar-panel vault-toolbar-panel-actions rounded-2xl border border-slate-200/80 bg-white/80 p-2.5 shadow-sm backdrop-blur">
         <div class="vault-toolbar-main-actions">
-          <button type="button" class="vault-btn vault-btn-primary" @click="() => { resetForm(); showAddDialog = true }">
+          <button type="button" class="vault-btn vault-btn-primary" @click="openAddDialog">
             <span class="vault-btn-icon vault-btn-icon-add"><IconPlus :size="15" :stroke-width="2.4" /></span>
             <span>添加密码</span>
           </button>
@@ -51,9 +51,11 @@
         <span class="text-xs font-medium uppercase tracking-wider text-slate-400">排序</span>
         <AppDropdown
           v-model="passwordSortBy"
+          class="password-sort-dd"
           :options="passwordSortByOptions"
           :width="128"
           :menu-min-width="160"
+          menu-class="password-sort-dd-menu"
           :show-trigger-badge="false"
           @update:model-value="handlePasswordSortChange"
         />
@@ -89,7 +91,7 @@
           <template #title><span class="text-[22px] font-bold tracking-tight text-slate-800">还没有录入任何密码</span></template>
           <template #subtitle><span class="text-sm text-slate-500">先录入常用解压密码，解压、匹配、清理链路才会真正串起来。</span></template>
           <template #actions>
-            <button type="button" class="vault-btn vault-btn-primary" @click="() => { resetForm(); showAddDialog = true }">
+            <button type="button" class="vault-btn vault-btn-primary" @click="openAddDialog">
               <IconPlus :size="15" :stroke-width="2.4" />添加第一个密码
             </button>
             <button type="button" class="vault-btn vault-btn-ghost" @click="showImportDialog = true">
@@ -164,11 +166,11 @@
           </el-table-column>
           <el-table-column label="操作" width="170" align="center" fixed="right">
             <template #default="{ row }">
-              <div class="inline-flex items-center justify-center gap-1.5">
-                <button type="button" class="inline-flex size-12 items-center justify-center rounded-lg text-slate-500 transition-all duration-300 hover:-translate-y-0.5 hover:bg-blue-50 hover:text-blue-600 active:scale-95" @click="handleEdit(row)" title="编辑">
+              <div class="vault-row-actions">
+                <button type="button" class="vault-row-action is-edit" @click="handleEdit(row)" title="编辑">
                   <AppLottieIcon :src="editIconAnimation" :size="52" tone="primary" />
                 </button>
-                <button type="button" class="group inline-flex size-11 items-center justify-center rounded-lg text-slate-500 transition-all duration-300 hover:-translate-y-0.5 hover:bg-rose-50 hover:text-rose-600 active:scale-95" @click="handleDelete(row)" title="删除">
+                <button type="button" class="vault-row-action is-delete" @click="handleDelete(row)" title="删除">
                   <AppLottieIcon :src="deleteIconAnimation" :size="38" tone="danger" />
                 </button>
               </div>
@@ -223,151 +225,194 @@
         </div>
 
         <div class="mt-4 flex justify-end">
-          <el-pagination background layout="total, sizes, prev, pager, next, jumper"
+          <el-pagination class="vault-pagination" popper-class="vault-pagination-size-popper" background
+            layout="total, sizes, prev, pager, next, jumper"
             :current-page="currentPage" :page-size="pageSize" :page-sizes="PAGE_SIZES" :total="totalCount"
             @current-change="handlePageChange" @size-change="handlePageSizeChange" />
         </div>
       </template>
     </section>
 
-    <!-- 添加/编辑弹框 -->
-    <el-dialog v-model="showAddDialog" :show-close="false" width="520px" align-center class="vault-dialog" @close="resetForm">
-      <div class="vault-dialog-shell">
-        <header class="vault-dialog-header">
-          <div class="flex items-center gap-3">
-            <div class="grid size-10 place-items-center rounded-xl bg-blue-50 text-blue-600">
-              <IconKey :size="18" :stroke-width="2.2" />
-            </div>
-            <div>
-              <div class="text-base font-semibold text-slate-900">{{ isEditing ? '编辑密码' : '添加密码' }}</div>
-              <div class="text-xs text-slate-500">维护解压密码与作品绑定信息</div>
-            </div>
-          </div>
-          <button type="button" class="vault-icon-btn" @click="showAddDialog = false"><IconClose :size="16" :stroke-width="2.2" /></button>
-        </header>
+    <Teleport to="body">
+      <Transition name="vault-modal">
+        <div v-if="showAddDialog" class="vault-modal-layer" @click.self="closeAddDialog">
+          <section class="vault-dialog-shell vault-dialog-edit" role="dialog" aria-modal="true" :aria-label="isEditing ? '编辑密码' : '添加密码'">
+            <header class="vault-dialog-header">
+              <div class="vault-dialog-title-row">
+                <div class="vault-dialog-icon vault-dialog-icon-key">
+                  <IconKey :size="18" :stroke-width="2.2" />
+                </div>
+                <div>
+                  <div class="vault-dialog-title">{{ isEditing ? '编辑密码' : '添加密码' }}</div>
+                  <div class="vault-dialog-subtitle">维护解压密码与作品绑定信息</div>
+                </div>
+              </div>
+              <button type="button" class="vault-icon-btn" aria-label="关闭" @click="closeAddDialog">
+                <IconClose :size="16" :stroke-width="2.2" />
+              </button>
+            </header>
 
-        <div class="vault-dialog-body">
-          <p class="vault-dialog-note mb-4 flex items-start gap-1.5 text-xs leading-relaxed text-slate-500"><IconShield :size="13" :stroke-width="2.2" class="mt-0.5 shrink-0 text-blue-500" />同时填写 <b>文件名</b> + <b>RJ 号</b> 时，系统会把匹配到的压缩包视为该 RJ 作品，查重、重命名和包裹目录都按这个绑定执行。</p>
+            <div class="vault-dialog-body">
+              <p class="vault-dialog-note">
+                <IconShield :size="13" :stroke-width="2.2" class="vault-dialog-note-icon" />
+                <span>同时填写 <b>文件名</b> + <b>RJ 号</b> 时，系统会把匹配到的压缩包视为该 RJ 作品，查重、重命名和包裹目录都按这个绑定执行。</span>
+              </p>
 
-          <el-form ref="formRef" :model="form" :rules="rules" label-width="72px" class="vault-form">
-            <el-form-item label="RJ 号" prop="rjcode">
-              <el-input v-model="form.rjcode" placeholder="例如 RJ123456（可选）" clearable />
-            </el-form-item>
-            <el-form-item label="文件名" prop="filename">
-              <el-input v-model="form.filename" placeholder="例如 my_archive.rar（可选）" clearable />
-              <div class="mt-1 text-[11px] text-slate-400">留空表示不按文件名匹配。</div>
-            </el-form-item>
-            <el-form-item label="密码" prop="password" required>
-              <AnimatedPasswordInput v-model="form.password" placeholder="请输入解压密码" show-password />
-            </el-form-item>
-            <el-form-item label="备注">
-              <el-input v-model="form.description" type="textarea" :rows="2" placeholder="备注或来源说明（可选）" />
-            </el-form-item>
-          </el-form>
+              <div class="vault-form">
+                <label class="vault-field">
+                  <span class="vault-field-label">RJ 号</span>
+                  <input v-model="form.rjcode" class="vault-input" type="text" placeholder="例如 RJ123456（可选）">
+                </label>
+                <label class="vault-field">
+                  <span class="vault-field-label">文件名</span>
+                  <input v-model="form.filename" class="vault-input" type="text" placeholder="例如 my_archive.rar（可选）">
+                  <span class="vault-field-hint">留空表示不按文件名匹配。</span>
+                </label>
+                <label class="vault-field">
+                  <span class="vault-field-label is-required">密码</span>
+                  <AnimatedPasswordInput v-model="form.password" placeholder="请输入解压密码" autocomplete="new-password" />
+                  <span v-if="formPasswordError" class="vault-field-error">{{ formPasswordError }}</span>
+                </label>
+                <label class="vault-field">
+                  <span class="vault-field-label">备注</span>
+                  <textarea v-model="form.description" class="vault-textarea" rows="2" placeholder="备注或来源说明（可选）"></textarea>
+                </label>
+              </div>
+            </div>
+
+            <footer class="vault-dialog-footer">
+              <button type="button" class="vault-btn vault-btn-ghost" @click="closeAddDialog">取消</button>
+              <button type="button" class="vault-btn vault-btn-primary" :disabled="submitting" @click="handleSubmit">
+                <span v-if="submitting" class="size-3.5 animate-spin rounded-full border-2 border-white/50 border-t-white"></span>
+                {{ isEditing ? '保存修改' : '添加密码' }}
+              </button>
+            </footer>
+          </section>
         </div>
+      </Transition>
 
-        <footer class="vault-dialog-footer">
-          <button type="button" class="vault-btn vault-btn-ghost" @click="showAddDialog = false">取消</button>
-          <button type="button" class="vault-btn vault-btn-primary" :disabled="submitting" @click="handleSubmit">
-            <span v-if="submitting" class="size-3.5 animate-spin rounded-full border-2 border-white/50 border-t-white"></span>
-            {{ isEditing ? '保存修改' : '添加密码' }}
-          </button>
-        </footer>
-      </div>
-    </el-dialog>
+      <Transition name="vault-modal">
+        <div v-if="showCleanupDialog" class="vault-modal-layer" @click.self="showCleanupDialog = false">
+          <section class="vault-dialog-shell vault-dialog-cleanup" role="dialog" aria-modal="true" aria-label="智能清理">
+            <header class="vault-dialog-header">
+              <div class="vault-dialog-title-row">
+                <div class="vault-dialog-icon vault-dialog-icon-cleanup">
+                  <IconSparkles :size="18" :stroke-width="2.2" />
+                </div>
+                <div>
+                  <div class="vault-dialog-title">智能清理</div>
+                  <div class="vault-dialog-subtitle">查看规则、预览匹配、确认后再执行</div>
+                </div>
+              </div>
+              <button type="button" class="vault-icon-btn" aria-label="关闭" @click="showCleanupDialog = false">
+                <IconClose :size="16" :stroke-width="2.2" />
+              </button>
+            </header>
 
-    <!-- 智能清理弹框 -->
-    <el-dialog v-model="showCleanupDialog" :show-close="false" width="880px" align-center class="vault-dialog">
-      <div class="vault-dialog-shell">
-        <header class="vault-dialog-header">
-          <div class="flex items-center gap-3">
-            <div class="grid size-10 place-items-center rounded-xl bg-amber-50 text-amber-600">
-              <IconSparkles :size="18" :stroke-width="2.2" />
-            </div>
-            <div>
-              <div class="text-base font-semibold text-slate-900">智能清理</div>
-              <div class="text-xs text-slate-500">查看规则、预览匹配、确认后再执行</div>
-            </div>
-          </div>
-          <button type="button" class="vault-icon-btn" @click="showCleanupDialog = false"><IconClose :size="16" :stroke-width="2.2" /></button>
-        </header>
+            <div class="vault-dialog-body">
+              <div class="vault-cleanup-summary">
+                <div class="vault-cleanup-meta">
+                  <span class="vault-cleanup-label">下次清理</span>
+                  <span class="vault-cleanup-value is-info">{{ formatNextCleanupTime(cleanupStatus?.next_cleanup_at) }}</span>
+                </div>
+                <div class="vault-cleanup-meta">
+                  <span class="vault-cleanup-label">已清理</span>
+                  <span class="vault-cleanup-value is-success">{{ cleanupStatus?.total_cleaned_count ?? 0 }}</span>
+                </div>
+                <div class="vault-cleanup-meta">
+                  <span class="vault-cleanup-label">规则</span>
+                  <span class="vault-cleanup-value is-warning">使用 ≤ {{ cleanupStatus?.max_use_count ?? '-' }}，保留 {{ cleanupStatus?.preserve_days ?? '-' }} 天</span>
+                </div>
+              </div>
 
-        <div class="vault-dialog-body">
-          <div class="vault-cleanup-summary mb-3">
-            <div class="vault-cleanup-meta">
-              <span class="vault-cleanup-label">下次清理</span>
-              <span class="vault-cleanup-value text-blue-600">{{ formatNextCleanupTime(cleanupStatus?.next_cleanup_at) }}</span>
-            </div>
-            <div class="vault-cleanup-meta">
-              <span class="vault-cleanup-label">已清理</span>
-              <span class="vault-cleanup-value text-emerald-600">{{ cleanupStatus?.total_cleaned_count ?? 0 }}</span>
-            </div>
-            <div class="vault-cleanup-meta">
-              <span class="vault-cleanup-label">规则</span>
-              <span class="vault-cleanup-value text-amber-600">使用 ≤ {{ cleanupStatus?.max_use_count ?? '-' }}，保留 {{ cleanupStatus?.preserve_days ?? '-' }} 天</span>
-            </div>
-          </div>
+              <div class="vault-cleanup-actions">
+                <button type="button" class="vault-btn vault-btn-primary" :disabled="cleanupLoading" @click="previewCleanup">
+                  <IconEye :size="15" :stroke-width="2.2" />预览清理
+                </button>
+                <button type="button" class="vault-btn vault-btn-ghost" :disabled="cleanupLoading" @click="loadCleanupHistory">
+                  <IconRefresh :size="15" :stroke-width="2.2" :class="{ 'animate-spin': cleanupLoading }" />刷新历史
+                </button>
+                <button type="button" class="vault-btn vault-btn-ghost vault-cleanup-settings" @click="goCleanupSettings">
+                  <IconSettings :size="15" :stroke-width="2.2" />清理设置
+                </button>
+              </div>
 
-          <div class="mb-3 flex flex-wrap gap-2">
-            <button type="button" class="vault-btn vault-btn-primary" :disabled="cleanupLoading" @click="previewCleanup">
-              <IconEye :size="15" :stroke-width="2.2" />预览清理
-            </button>
-            <button type="button" class="vault-btn vault-btn-ghost" :disabled="cleanupLoading" @click="loadCleanupHistory">
-              <IconRefresh :size="15" :stroke-width="2.2" :class="{ 'animate-spin': cleanupLoading }" />刷新历史
-            </button>
-            <button type="button" class="vault-btn vault-btn-ghost ml-auto" onclick="window.location.href='/settings#cleanup'">
-              <IconSettings :size="15" :stroke-width="2.2" />清理设置
-            </button>
-          </div>
+              <div class="vault-section-divider">
+                <span></span><b>清理历史</b><span></span>
+              </div>
 
-          <div class="mb-2 flex items-center gap-2 text-[12px] font-medium uppercase tracking-wider text-slate-400">
-            <span class="h-px flex-1 bg-slate-200"></span><span>清理历史</span><span class="h-px flex-1 bg-slate-200"></span>
-          </div>
-          <el-table :data="cleanupHistory" class="password-table" style="width:100%" max-height="300" row-key="id">
-            <el-table-column prop="_formatted_created_at" label="时间" width="180" />
-            <el-table-column prop="deleted_count" label="清理数" width="90" align="center" />
-            <el-table-column prop="trigger_type" label="触发方式" width="110">
-              <template #default="{ row }">
-                <el-tag size="small" :type="row.trigger_type === 'manual' ? 'warning' : ''" effect="plain">{{ row.trigger_type === 'manual' ? '手动' : '自动' }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="note" label="备注" show-overflow-tooltip />
-          </el-table>
+              <div class="vault-cleanup-table" role="table" aria-label="清理历史">
+                <div class="vault-cleanup-row is-head" role="row">
+                  <span role="columnheader">时间</span>
+                  <span role="columnheader">清理数</span>
+                  <span role="columnheader">触发方式</span>
+                  <span role="columnheader">备注</span>
+                </div>
+                <div v-if="cleanupLoading" class="vault-cleanup-empty">正在加载…</div>
+                <div v-else-if="!cleanupHistory.length" class="vault-cleanup-empty">No Data</div>
+                <div
+                  v-for="row in cleanupHistory"
+                  v-else
+                  :key="row.id || `${row.created_at}-${row.deleted_count}`"
+                  class="vault-cleanup-row"
+                  role="row"
+                >
+                  <span role="cell">{{ row._formatted_created_at }}</span>
+                  <span role="cell" class="vault-cleanup-count">{{ row.deleted_count }}</span>
+                  <span role="cell">
+                    <b class="vault-source-badge" :class="{ 'is-manual': row.trigger_type === 'manual' }">{{ row.trigger_type === 'manual' ? '手动' : '自动' }}</b>
+                  </span>
+                  <span role="cell" class="vault-cleanup-note">{{ row.note || '—' }}</span>
+                </div>
+              </div>
+            </div>
+          </section>
         </div>
-      </div>
-    </el-dialog>
+      </Transition>
 
-    <!-- 批量导入弹框 -->
-    <el-dialog v-model="showImportDialog" :show-close="false" width="560px" align-center class="vault-dialog">
-      <div class="vault-dialog-shell">
-        <header class="vault-dialog-header">
-          <div class="flex items-center gap-3">
-            <div class="grid size-11 place-items-center rounded-xl bg-violet-50 text-violet-600">
-              <IconDoc :size="20" :stroke-width="2.3" />
-            </div>
-            <div>
-              <div class="text-base font-semibold text-slate-900">批量导入密码</div>
-              <div class="text-xs text-slate-500">按行粘贴通用密码，解压链路会自动尝试</div>
-            </div>
-          </div>
-          <button type="button" class="vault-icon-btn" @click="showImportDialog = false"><IconClose :size="16" :stroke-width="2.2" /></button>
-        </header>
+      <Transition name="vault-modal">
+        <div v-if="showImportDialog" class="vault-modal-layer" @click.self="showImportDialog = false">
+          <section class="vault-dialog-shell vault-dialog-import" role="dialog" aria-modal="true" aria-label="批量导入密码">
+            <header class="vault-dialog-header">
+              <div class="vault-dialog-title-row">
+                <div class="vault-dialog-icon vault-dialog-icon-import">
+                  <IconDoc :size="20" :stroke-width="2.3" />
+                </div>
+                <div>
+                  <div class="vault-dialog-title">批量导入密码</div>
+                  <div class="vault-dialog-subtitle">按行粘贴通用密码，解压链路会自动尝试</div>
+                </div>
+              </div>
+              <button type="button" class="vault-icon-btn" aria-label="关闭" @click="showImportDialog = false">
+                <IconClose :size="16" :stroke-width="2.2" />
+              </button>
+            </header>
 
-        <div class="vault-dialog-body">
-          <p class="vault-dialog-note vault-dialog-note-subtle mb-3 text-xs leading-relaxed text-slate-500"><IconShield :size="13" :stroke-width="2.2" class="shrink-0 text-violet-500" />每行一个密码；此处导入的都是通用密码（不绑定 RJ / 文件名），适合添加常见公共解压密码。</p>
-          <el-input v-model="importText" type="textarea" :rows="10" placeholder="每行一个密码，例如：&#10;pass123&#10;kikoeru&#10;asmr.one" />
-          <div class="mt-2 text-xs text-slate-500">已识别有效密码 <b class="text-slate-800">{{ importLineCount }}</b> 条</div>
+            <div class="vault-dialog-body">
+              <p class="vault-dialog-note vault-dialog-note-subtle">
+                <IconShield :size="13" :stroke-width="2.2" class="vault-dialog-note-icon is-violet" />
+                <span>每行一个密码；此处导入的都是通用密码（不绑定 RJ / 文件名），适合添加常见公共解压密码。</span>
+              </p>
+              <textarea
+                v-model="importText"
+                class="vault-import-textarea"
+                rows="10"
+                placeholder="每行一个密码，例如：&#10;pass123&#10;kikoeru&#10;asmr.one"
+              ></textarea>
+              <div class="vault-import-count">已识别有效密码 <b>{{ importLineCount }}</b> 条</div>
+            </div>
+
+            <footer class="vault-dialog-footer">
+              <button type="button" class="vault-btn vault-btn-ghost" @click="showImportDialog = false">取消</button>
+              <button type="button" class="vault-btn vault-btn-primary" :disabled="importing || importLineCount === 0" @click="handleImport">
+                <span v-if="importing" class="size-3.5 animate-spin rounded-full border-2 border-white/50 border-t-white"></span>
+                导入 {{ importLineCount }} 个密码
+              </button>
+            </footer>
+          </section>
         </div>
-
-        <footer class="vault-dialog-footer">
-          <button type="button" class="vault-btn vault-btn-ghost" @click="showImportDialog = false">取消</button>
-          <button type="button" class="vault-btn vault-btn-primary" :disabled="importing || importLineCount === 0" @click="handleImport">
-            <span v-if="importing" class="size-3.5 animate-spin rounded-full border-2 border-white/50 border-t-white"></span>
-            导入 {{ importLineCount }} 个密码
-          </button>
-        </footer>
-      </div>
-    </el-dialog>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -435,12 +480,11 @@ const submitting = ref(false)
 const importing = ref(false)
 const cleanupLoading = ref(false)
 const importText = ref('')
-const formRef = ref(null)
+const formPasswordError = ref('')
 const cleanupStatus = ref(null)
 const cleanupHistory = shallowRef([])
 
 const form = ref({ id: null, rjcode: '', filename: '', password: '', description: '' })
-const rules = { password: [{ required: true, message: '请输入密码', trigger: 'blur' }, { min: 1, max: 255, message: '密码长度应在1-255个字符之间', trigger: 'blur' }] }
 
 const tablePasswords = computed(() => isServerPaginated.value ? passwords.value : passwords.value.slice((currentPage.value - 1) * pageSize.value, currentPage.value * pageSize.value))
 const usedPasswordCount = computed(() => passwords.value.filter(item => Number(item?.use_count || 0) > 0).length)
@@ -485,11 +529,39 @@ function toggleMobileSelection(row, checked) {
   }
   selectedRows.value = selectedRows.value.filter(item => item.id !== row.id)
 }
-function handleEdit(row) { isEditing.value = true; form.value = { id: row.id, rjcode: row.rjcode || '', filename: row.filename || '', password: row.password, description: row.description || '' }; showAddDialog.value = true }
+function openAddDialog() {
+  resetForm()
+  showAddDialog.value = true
+}
+
+function closeAddDialog() {
+  showAddDialog.value = false
+  resetForm()
+}
+
+function handleEdit(row) {
+  formPasswordError.value = ''
+  isEditing.value = true
+  form.value = { id: row.id, rjcode: row.rjcode || '', filename: row.filename || '', password: row.password, description: row.description || '' }
+  showAddDialog.value = true
+}
+
+function validatePasswordForm() {
+  const password = String(form.value.password || '')
+  if (!password.trim()) {
+    formPasswordError.value = '请输入密码'
+    return false
+  }
+  if (password.length > 255) {
+    formPasswordError.value = '密码长度应在 1-255 个字符之间'
+    return false
+  }
+  formPasswordError.value = ''
+  return true
+}
 
 async function handleSubmit() {
-  const valid = await formRef.value?.validate().catch(() => false)
-  if (!valid) return
+  if (!validatePasswordForm()) return
   submitting.value = true
   const startTime = Date.now()
   try {
@@ -503,8 +575,7 @@ async function handleSubmit() {
     }
     const elapsed = Date.now() - startTime
     if (elapsed < 500) await new Promise(r => setTimeout(r, 500 - elapsed))
-    showAddDialog.value = false
-    resetForm()
+    closeAddDialog()
     loadPasswords()
   } catch (error) {
     console.error('保存密码失败:', error)
@@ -563,7 +634,11 @@ async function handleImport() {
   } finally { importing.value = false }
 }
 
-function resetForm() { form.value = { id: null, rjcode: '', filename: '', password: '', description: '' }; isEditing.value = false; formRef.value?.resetFields() }
+function resetForm() {
+  form.value = { id: null, rjcode: '', filename: '', password: '', description: '' }
+  isEditing.value = false
+  formPasswordError.value = ''
+}
 
 function formatDate(dateStr) {
   if (!dateStr) return '-'
@@ -613,6 +688,10 @@ async function runCleanup() {
     console.error('执行清理失败:', error)
     ElMessage.error('执行清理失败: ' + (error.response?.data?.detail || error.message))
   } finally { cleanupLoading.value = false }
+}
+
+function goCleanupSettings() {
+  window.location.href = '/settings#cleanup'
 }
 
 function formatNextCleanupTime(timeStr) {
@@ -846,28 +925,6 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
 .vault-icon-btn:hover { transform: translateY(-2px) scale(1.05); color: #0f172a; background: #ffffff; border-color: rgba(203, 213, 225, 0.8); }
 .vault-icon-btn:active { transform: scale(0.95); }
 
-/* ============ 输入框 / 选择框 ============ */
-:deep(.vault-select .el-select__wrapper),
-:deep(.vault-form .el-input__wrapper),
-:deep(.vault-form .el-textarea__inner) {
-  border-radius: 10px;
-  background: rgba(248, 250, 252, 0.7);
-  box-shadow: inset 0 0 0 1px rgba(203, 213, 225, 0.7);
-  transition: all 0.3s ease;
-}
-:deep(.vault-select .el-select__wrapper:hover),
-:deep(.vault-form .el-input__wrapper:hover),
-:deep(.vault-form .el-textarea__inner:hover) {
-  box-shadow: inset 0 0 0 1px #94a3b8;
-  background: #ffffff;
-}
-:deep(.vault-select .el-select__wrapper.is-focused),
-:deep(.vault-form .el-input__wrapper.is-focus),
-:deep(.vault-form .el-textarea__inner:focus) {
-  box-shadow: inset 0 0 0 2px rgba(59, 130, 246, 0.5) !important;
-  background: #ffffff;
-}
-
 /* ============ 表格 ============ */
 :deep(.password-table.el-table) {
   --el-table-header-bg-color: #f8fafc;
@@ -887,6 +944,55 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
 :deep(.password-table td.el-table__cell) { border-bottom-color: rgba(226, 232, 240, 0.7); }
 :deep(.password-table .el-table__row) { transition: all 0.25s ease; }
 :deep(.password-table .el-table__row:hover) { background: #f8fafc !important; }
+
+.vault-row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.vault-row-action {
+  display: inline-flex;
+  width: 46px;
+  height: 46px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.vault-row-action:hover {
+  transform: translateY(-2px) scale(1.02);
+}
+
+.vault-row-action:active {
+  transform: scale(0.96);
+}
+
+.vault-row-action.is-edit:hover {
+  border-color: transparent;
+  background: transparent;
+}
+
+.vault-row-action.is-delete:hover {
+  border-color: transparent;
+  background: transparent;
+}
+
+.vault-row-action :deep(.app-lottie-icon),
+.vault-mobile-action :deep(.app-lottie-icon),
+.vault-row-action :deep(.app-lottie-icon__player),
+.vault-mobile-action :deep(.app-lottie-icon__player) {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
 
 .password-pill-wrap {
   width: 100%;
@@ -915,21 +1021,200 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
   display: none;
 }
 
-/* ============ 弹框 ============ */
-:deep(.vault-dialog.el-dialog) {
-  background: transparent;
-  box-shadow: none;
-  padding: 0;
-  width: auto !important;
-  overflow: visible;
+/* ============ 分页 ============ */
+.vault-pagination.el-pagination {
+  --el-pagination-button-width: 34px;
+  --el-pagination-button-height: 34px;
+  --el-pagination-button-bg-color: transparent;
+  --el-pagination-hover-color: #0f172a;
+  align-items: center;
+  gap: 10px;
+  color: #64748b;
+  font-weight: 700;
 }
-:deep(.vault-dialog .el-dialog__header),
-:deep(.vault-dialog .el-dialog__body) { padding: 0 !important; }
-:deep(.vault-dialog .el-dialog__header) { display: none; }
+
+.vault-pagination.el-pagination :deep(.el-pager) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vault-pagination.el-pagination :deep(.el-pagination__total),
+.vault-pagination.el-pagination :deep(.el-pagination__jump),
+.vault-pagination.el-pagination :deep(.el-pagination__goto),
+.vault-pagination.el-pagination :deep(.el-pagination__classifier) {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.vault-pagination.el-pagination.is-background :deep(.btn-prev),
+.vault-pagination.el-pagination.is-background :deep(.btn-next),
+.vault-pagination.el-pagination.is-background :deep(.el-pager li),
+.vault-pagination.el-pagination :deep(.el-pagination__sizes .el-select__wrapper),
+.vault-pagination.el-pagination :deep(.el-pagination__jump .el-input__wrapper) {
+  min-width: 34px;
+  height: 34px;
+  margin: 0;
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.86), rgba(248, 250, 252, 0.64)),
+    rgba(255, 255, 255, 0.7) !important;
+  color: #334155 !important;
+  box-shadow: none !important;
+  backdrop-filter: blur(16px) saturate(130%);
+  -webkit-backdrop-filter: blur(16px) saturate(130%);
+  transition:
+    background-color 0.22s ease,
+    border-color 0.22s ease,
+    color 0.22s ease,
+    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.vault-pagination.el-pagination.is-background :deep(.btn-prev:hover:not(:disabled)),
+.vault-pagination.el-pagination.is-background :deep(.btn-next:hover:not(:disabled)),
+.vault-pagination.el-pagination.is-background :deep(.el-pager li:hover),
+.vault-pagination.el-pagination :deep(.el-pagination__sizes .el-select__wrapper:hover),
+.vault-pagination.el-pagination :deep(.el-pagination__sizes .el-select__wrapper.is-hovering),
+.vault-pagination.el-pagination :deep(.el-pagination__jump .el-input__wrapper:hover),
+.vault-pagination.el-pagination :deep(.el-pagination__jump .el-input__wrapper.is-focus) {
+  border-color: rgba(100, 116, 139, 0.36);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(241, 245, 249, 0.74)),
+    rgba(255, 255, 255, 0.76) !important;
+  color: #0f172a !important;
+  transform: translateY(-1px);
+}
+
+.vault-pagination.el-pagination.is-background :deep(.el-pager li.is-active) {
+  border-color: rgba(15, 23, 42, 0.18);
+  background: #111827 !important;
+  color: #ffffff !important;
+}
+
+.vault-pagination.el-pagination.is-background :deep(.btn-prev:disabled),
+.vault-pagination.el-pagination.is-background :deep(.btn-next:disabled),
+.vault-pagination.el-pagination.is-background :deep(.btn-prev.is-disabled),
+.vault-pagination.el-pagination.is-background :deep(.btn-next.is-disabled) {
+  background: rgba(241, 245, 249, 0.54) !important;
+  color: #cbd5e1 !important;
+  opacity: 0.72;
+  transform: none;
+}
+
+.vault-pagination.el-pagination :deep(.el-pagination__sizes) {
+  margin-right: 0;
+}
+
+.vault-pagination.el-pagination :deep(.el-pagination__sizes .el-select__wrapper) {
+  min-width: 116px;
+  padding: 0 12px;
+}
+
+.vault-pagination.el-pagination :deep(.el-pagination__sizes .el-select__placeholder),
+.vault-pagination.el-pagination :deep(.el-pagination__sizes .el-select__selected-item),
+.vault-pagination.el-pagination :deep(.el-pagination__sizes .el-select__selected-item span),
+.vault-pagination.el-pagination :deep(.el-pagination__jump .el-input__inner) {
+  color: #334155 !important;
+  -webkit-text-fill-color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.vault-pagination.el-pagination :deep(.el-pagination__sizes .el-select__caret),
+.vault-pagination.el-pagination :deep(.el-pagination__sizes .el-icon) {
+  color: #94a3b8;
+}
+
+.vault-pagination.el-pagination :deep(.el-pagination__jump .el-input) {
+  width: 54px;
+}
+
+.vault-pagination.el-pagination :deep(.el-pagination__jump .el-input__wrapper) {
+  width: 54px;
+  min-width: 54px;
+  padding: 0 10px;
+}
+
+.vault-pagination.el-pagination :deep(.el-pagination__jump .el-input__inner) {
+  height: 32px;
+  padding: 0;
+  text-align: center;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+:global(.vault-pagination-size-popper.el-popper) {
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.24) !important;
+  border-radius: 14px !important;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(248, 250, 252, 0.76)),
+    rgba(255, 255, 255, 0.86) !important;
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.14) !important;
+  backdrop-filter: blur(18px) saturate(135%) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(135%) !important;
+}
+
+:global(.vault-pagination-size-popper .el-select-dropdown) {
+  min-width: 116px !important;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+:global(.vault-pagination-size-popper .el-select-dropdown__list) {
+  padding: 6px !important;
+}
+
+:global(.vault-pagination-size-popper .el-select-dropdown__item) {
+  height: 32px !important;
+  margin: 2px 0 !important;
+  border-radius: 10px !important;
+  background: transparent !important;
+  color: #475569 !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  transition:
+    background-color 0.18s ease,
+    color 0.18s ease,
+    transform 0.2s cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+
+:global(.vault-pagination-size-popper .el-select-dropdown__item:hover),
+:global(.vault-pagination-size-popper .el-select-dropdown__item.is-hovering) {
+  background: #eef0f3 !important;
+  color: #0f172a !important;
+  transform: translateY(-1px);
+}
+
+:global(.vault-pagination-size-popper .el-select-dropdown__item.is-selected) {
+  background: #e2e6ec !important;
+  color: #111827 !important;
+}
+
+:global(.vault-pagination-size-popper .el-popper__arrow::before) {
+  border-color: rgba(148, 163, 184, 0.24) !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+}
+
+/* ============ 弹框 ============ */
+.vault-modal-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 2700;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.24);
+}
 
 .vault-dialog-shell {
   display: flex;
   flex-direction: column;
+  width: min(560px, calc(100vw - 32px));
   max-height: calc(100vh - 80px);
   overflow: hidden;
   border-radius: 22px;
@@ -938,6 +1223,56 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
   box-shadow: 0 24px 64px -24px rgba(15, 23, 42, 0.28);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
+}
+
+.vault-dialog-cleanup {
+  width: min(880px, calc(100vw - 32px));
+}
+
+.vault-dialog-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.vault-dialog-icon {
+  display: inline-grid;
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 14px;
+  border: 1px solid rgba(203, 213, 225, 0.76);
+}
+
+.vault-dialog-icon-key {
+  color: #2563eb;
+  background: #eff6ff;
+}
+
+.vault-dialog-icon-cleanup {
+  color: #0f766e;
+  background: #ccfbf1;
+}
+
+.vault-dialog-icon-import {
+  color: #7c3aed;
+  background: #f5f3ff;
+}
+
+.vault-dialog-title {
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.vault-dialog-subtitle {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .vault-dialog-header {
@@ -952,8 +1287,8 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
 
 .vault-dialog-body {
   padding: 18px 18px 16px;
-  overflow-y: auto;
   flex: 1;
+  overflow: hidden;
 }
 
 .vault-dialog-note b {
@@ -963,18 +1298,129 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
 
 .vault-dialog-note {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  align-items: flex-start;
+  gap: 7px;
+  margin-bottom: 14px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(239, 246, 255, 0.78);
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.vault-dialog-note-icon {
+  margin-top: 3px;
+  flex-shrink: 0;
+  color: #2563eb;
+}
+
+.vault-dialog-note-icon.is-violet {
+  color: #7c3aed;
 }
 
 .vault-dialog-note-subtle b {
   color: #475569;
 }
 
+.vault-form {
+  display: grid;
+  gap: 13px;
+}
+
+.vault-field {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+}
+
+.vault-field-label {
+  padding-top: 11px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: right;
+}
+
+.vault-field-label.is-required::before {
+  content: "* ";
+  color: #ef4444;
+}
+
+.vault-field-hint,
+.vault-field-error {
+  grid-column: 2;
+  margin-top: -5px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.vault-field-hint {
+  color: #94a3b8;
+}
+
+.vault-field-error {
+  color: #e11d48;
+}
+
+.vault-input,
+.vault-textarea,
+.vault-import-textarea {
+  width: 100%;
+  border: 0;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #0f172a;
+  outline: none;
+  box-shadow: inset 0 0 0 1px rgba(203, 213, 225, 0.82);
+  transition: box-shadow 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.vault-input {
+  height: 42px;
+  padding: 0 12px;
+  font-size: 14px;
+}
+
+.vault-textarea,
+.vault-import-textarea {
+  min-height: 66px;
+  resize: vertical;
+  padding: 10px 12px;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.vault-input:hover,
+.vault-textarea:hover,
+.vault-import-textarea:hover {
+  background: #ffffff;
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.9);
+}
+
+.vault-input:focus,
+.vault-textarea:focus,
+.vault-import-textarea:focus {
+  background: #ffffff;
+  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.95), 0 0 0 4px rgba(191, 219, 254, 0.42);
+}
+
+.vault-input::placeholder,
+.vault-textarea::placeholder,
+.vault-import-textarea::placeholder {
+  color: #94a3b8;
+}
+
+.vault-form :deep(.animated-password-input__field) {
+  background: #ffffff;
+}
+
 .vault-cleanup-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
+  margin-bottom: 14px;
 }
 
 .vault-cleanup-meta {
@@ -1002,10 +1448,122 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
   line-height: 1.3;
 }
 
-@media (max-width: 720px) {
-  .vault-cleanup-summary {
-    grid-template-columns: 1fr;
-  }
+.vault-cleanup-value.is-info {
+  color: #2563eb;
+}
+
+.vault-cleanup-value.is-success {
+  color: #059669;
+}
+
+.vault-cleanup-value.is-warning {
+  color: #d97706;
+}
+
+.vault-cleanup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.vault-cleanup-settings {
+  margin-left: auto;
+}
+
+.vault-section-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 12px;
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.vault-section-divider span {
+  height: 1px;
+  flex: 1;
+  background: rgba(203, 213, 225, 0.9);
+}
+
+.vault-cleanup-table {
+  overflow: hidden;
+  border: 1px solid rgba(226, 232, 240, 0.86);
+  border-radius: 14px;
+  background: #ffffff;
+}
+
+.vault-cleanup-row {
+  display: grid;
+  grid-template-columns: 180px 90px 110px minmax(0, 1fr);
+  min-height: 42px;
+  align-items: center;
+  gap: 14px;
+  padding: 0 14px;
+  border-top: 1px solid rgba(226, 232, 240, 0.74);
+  color: #475569;
+  font-size: 12px;
+}
+
+.vault-cleanup-row.is-head {
+  min-height: 46px;
+  border-top: 0;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.vault-cleanup-count {
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.vault-cleanup-note {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vault-cleanup-empty {
+  display: grid;
+  min-height: 76px;
+  place-items: center;
+  border-top: 1px solid rgba(226, 232, 240, 0.74);
+  color: #94a3b8;
+  font-size: 14px;
+}
+
+.vault-source-badge {
+  display: inline-flex;
+  height: 22px;
+  align-items: center;
+  border-radius: 7px;
+  border: 1px solid rgba(203, 213, 225, 0.8);
+  background: rgba(248, 250, 252, 0.9);
+  padding: 0 8px;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.vault-source-badge.is-manual {
+  border-color: rgba(251, 191, 36, 0.42);
+  background: rgba(254, 243, 199, 0.78);
+  color: #b45309;
+}
+
+.vault-import-count {
+  margin-top: 8px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.vault-import-count b {
+  color: #0f172a;
 }
 
 .vault-dialog-footer {
@@ -1017,32 +1575,39 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
   background: rgba(248, 250, 252, 0.7);
 }
 
-.vault-form :deep(.el-form-item) { margin-bottom: 14px; }
-.vault-form :deep(.el-form-item__label) { font-size: 12px; font-weight: 500; color: #475569; }
-
-:deep(.vault-form .el-input__wrapper),
-:deep(.vault-form .el-textarea__inner),
-:deep(.vault-form .el-select__wrapper),
-:deep(.vault-form .el-input__inner),
-:deep(.vault-form input),
-:deep(.vault-form textarea),
-:deep(.vault-form .animated-password-input .el-input__wrapper),
-:deep(.vault-form .animated-password-input input) {
-  background-color: #ffffff !important;
-}
-
-:deep(.vault-form .el-input__inner:-webkit-autofill),
-:deep(.vault-form .el-input__inner:-webkit-autofill:hover),
-:deep(.vault-form .el-input__inner:-webkit-autofill:focus),
-:deep(.vault-form input:-webkit-autofill),
-:deep(.vault-form input:-webkit-autofill:hover),
-:deep(.vault-form input:-webkit-autofill:focus),
-:deep(.vault-form textarea:-webkit-autofill),
-:deep(.vault-form textarea:-webkit-autofill:hover),
-:deep(.vault-form textarea:-webkit-autofill:focus) {
+.vault-form input:-webkit-autofill,
+.vault-form input:-webkit-autofill:hover,
+.vault-form input:-webkit-autofill:focus,
+.vault-form textarea:-webkit-autofill,
+.vault-form textarea:-webkit-autofill:hover,
+.vault-form textarea:-webkit-autofill:focus,
+.vault-import-textarea:-webkit-autofill,
+.vault-import-textarea:-webkit-autofill:hover,
+.vault-import-textarea:-webkit-autofill:focus {
   -webkit-text-fill-color: #0f172a !important;
   box-shadow: 0 0 0 1000px #ffffff inset !important;
   transition: background-color 9999s ease-out 0s;
+}
+
+.vault-modal-enter-active,
+.vault-modal-leave-active {
+  transition: opacity 0.22s ease;
+}
+
+.vault-modal-enter-active .vault-dialog-shell,
+.vault-modal-leave-active .vault-dialog-shell {
+  transition: transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.22s ease;
+}
+
+.vault-modal-enter-from,
+.vault-modal-leave-to {
+  opacity: 0;
+}
+
+.vault-modal-enter-from .vault-dialog-shell,
+.vault-modal-leave-to .vault-dialog-shell {
+  opacity: 0;
+  transform: translateY(14px) scale(0.96);
 }
 
 /* ============ 响应式 ============ */
@@ -1251,12 +1816,13 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
   .password-vault :deep(.el-pagination__jump) {
     display: none;
   }
-  :deep(.vault-dialog.el-dialog) {
-    width: 100vw !important;
-    max-width: 100vw !important;
-    margin: 0 !important;
+  .vault-modal-layer {
+    padding: 0;
+    place-items: stretch;
   }
   .vault-dialog-shell {
+    width: 100vw;
+    max-width: 100vw;
     max-height: 100dvh;
     min-height: 100dvh;
     border-radius: 0;
@@ -1273,594 +1839,36 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
   .vault-dialog-footer .vault-btn {
     flex: 1;
   }
-  .vault-form :deep(.el-form-item) {
-    display: block;
+  .vault-field {
+    grid-template-columns: 1fr;
+    gap: 5px;
   }
-  .vault-form :deep(.el-form-item__label) {
-    width: auto !important;
-    justify-content: flex-start;
-    margin-bottom: 4px;
+  .vault-field-label {
+    padding-top: 0;
+    text-align: left;
   }
-  .vault-form :deep(.el-form-item__content) {
-    margin-left: 0 !important;
+  .vault-field-hint,
+  .vault-field-error {
+    grid-column: auto;
+    margin-top: -1px;
+  }
+  .vault-cleanup-summary {
+    grid-template-columns: 1fr;
+  }
+  .vault-cleanup-actions {
+    align-items: stretch;
+  }
+  .vault-cleanup-actions .vault-btn,
+  .vault-cleanup-settings {
+    flex: 1 1 calc(50% - 6px);
+    margin-left: 0;
+  }
+  .vault-cleanup-row {
+    grid-template-columns: minmax(0, 1fr) 64px 72px;
+  }
+  .vault-cleanup-row span:nth-child(4) {
+    display: none;
   }
 }
 
-:global(html.kikoerumanager-dark) .password-vault {
-  color: var(--km-dark-text) !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault .vault-toolbar-panel,
-:global(html.kikoerumanager-dark) .password-vault > section.rounded-2xl {
-  background: rgba(8, 9, 13, 0.72) !important;
-  border-color: var(--km-dark-border) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow:
-    0 18px 44px rgba(0, 0, 0, 0.36),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
-  backdrop-filter: blur(18px) saturate(135%) !important;
-  -webkit-backdrop-filter: blur(18px) saturate(135%) !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault h2,
-:global(html.kikoerumanager-dark) .password-vault .text-slate-800,
-:global(html.kikoerumanager-dark) .password-vault .text-slate-900,
-:global(html.kikoerumanager-dark) .password-vault .text-slate-700 {
-  color: var(--km-dark-text-strong) !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault .text-slate-400,
-:global(html.kikoerumanager-dark) .password-vault .text-slate-500,
-:global(html.kikoerumanager-dark) .password-vault .text-slate-600 {
-  color: var(--km-dark-text-muted) !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault .bg-white\/80,
-:global(html.kikoerumanager-dark) .password-vault .bg-white\/90,
-:global(html.kikoerumanager-dark) .password-vault .bg-slate-50\/50,
-:global(html.kikoerumanager-dark) .password-vault .bg-slate-50\/70,
-:global(html.kikoerumanager-dark) .password-vault .bg-slate-100 {
-  background: var(--km-dark-field) !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault .border-slate-100,
-:global(html.kikoerumanager-dark) .password-vault .border-slate-200,
-:global(html.kikoerumanager-dark) .password-vault .border-slate-200\/80 {
-  border-color: var(--km-dark-border) !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault input[type="text"] {
-  background: rgba(4, 5, 8, 0.9) !important;
-  border-color: var(--km-dark-border) !important;
-  color: var(--km-dark-text-strong) !important;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04) !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault input[type="text"]::placeholder {
-  color: var(--km-dark-text-muted) !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault input[type="text"]:focus {
-  background: rgba(4, 5, 8, 0.96) !important;
-  border-color: var(--km-dark-border-strong) !important;
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
-    0 0 0 3px rgba(255, 255, 255, 0.08) !important;
-}
-
-:global(html.kikoerumanager-dark) .vault-btn-primary {
-  background: #020617 !important;
-  border-color: var(--km-dark-border-strong) !important;
-  color: #ffffff !important;
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.38) !important;
-}
-
-:global(html.kikoerumanager-dark) .vault-btn-ghost {
-  background: var(--km-dark-button-bg) !important;
-  border-color: var(--km-dark-border) !important;
-  color: var(--km-dark-text) !important;
-}
-
-:global(html.kikoerumanager-dark) .vault-btn-ghost:hover {
-  background: var(--km-dark-button-bg-hover) !important;
-  border-color: var(--km-dark-border-strong) !important;
-  color: var(--km-dark-text-strong) !important;
-}
-
-:global(html.kikoerumanager-dark) .vault-btn-danger {
-  background: rgba(127, 29, 29, 0.18) !important;
-  border-color: rgba(248, 113, 113, 0.3) !important;
-  color: #fca5a5 !important;
-}
-
-:global(html.kikoerumanager-dark) .vault-toolbar-divider {
-  background: linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.22), transparent) !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault :deep(.password-table.el-table) {
-  --el-table-bg-color: rgba(8, 9, 13, 0.72);
-  --el-table-tr-bg-color: rgba(8, 9, 13, 0.72);
-  --el-table-header-bg-color: rgba(13, 15, 22, 0.95);
-  --el-table-row-hover-bg-color: rgba(255, 255, 255, 0.1);
-  --el-table-border-color: var(--km-dark-border);
-  --el-table-text-color: var(--km-dark-text);
-  --el-table-header-text-color: var(--km-dark-text-muted);
-  background: rgba(8, 9, 13, 0.72) !important;
-  color: var(--km-dark-text) !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault :deep(.password-table th.el-table__cell) {
-  background: rgba(13, 15, 22, 0.95) !important;
-  color: var(--km-dark-text-muted) !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault :deep(.password-table tr),
-:global(html.kikoerumanager-dark) .password-vault :deep(.password-table td.el-table__cell) {
-  background: transparent !important;
-  border-bottom-color: var(--km-dark-border) !important;
-  color: var(--km-dark-text) !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault :deep(.password-table .el-table__row--striped td.el-table__cell) {
-  background: rgba(255, 255, 255, 0.055) !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault :deep(.password-table .el-table__row:hover > td.el-table__cell) {
-  background: rgba(255, 255, 255, 0.12) !important;
-  color: var(--km-dark-text-strong) !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault :deep(.password-table .current-row > td.el-table__cell),
-:global(html.kikoerumanager-dark) .password-vault :deep(.password-table .el-table__row.is-selected > td.el-table__cell),
-:global(html.kikoerumanager-dark) .password-vault :deep(.password-table .el-table__row.selected > td.el-table__cell),
-:global(html.kikoerumanager-dark) .password-vault :deep(.password-table .el-table__row.is-current > td.el-table__cell) {
-  background: rgba(255, 255, 255, 0.16) !important;
-  color: var(--km-dark-text-strong) !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault :deep(.password-table .el-table__fixed-right),
-:global(html.kikoerumanager-dark) .password-vault :deep(.password-table .el-table__fixed-right-patch),
-:global(html.kikoerumanager-dark) .password-vault :deep(.password-table .el-table__fixed) {
-  background: rgba(8, 9, 13, 0.88) !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault :deep(.el-checkbox__inner) {
-  background-color: rgba(4, 5, 8, 0.9) !important;
-  border-color: var(--km-dark-border-strong) !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault :deep(.el-checkbox__input.is-checked .el-checkbox__inner),
-:global(html.kikoerumanager-dark) .password-vault :deep(.el-checkbox__input.is-indeterminate .el-checkbox__inner) {
-  background-color: #f8fafc !important;
-  border-color: #f8fafc !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault :deep(.el-checkbox__input.is-checked .el-checkbox__inner::after) {
-  border-color: #020617 !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault :deep(.el-tag) {
-  background: rgba(255, 255, 255, 0.08) !important;
-  border-color: rgba(255, 255, 255, 0.14) !important;
-  color: var(--km-dark-text-strong) !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault :deep(.el-pagination button),
-:global(html.kikoerumanager-dark) .password-vault :deep(.el-pagination .el-pager li),
-:global(html.kikoerumanager-dark) .password-vault :deep(.el-pagination .el-input__wrapper),
-:global(html.kikoerumanager-dark) .password-vault :deep(.el-pagination .el-select__wrapper) {
-  background: var(--km-dark-field) !important;
-  border-color: var(--km-dark-border) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow: inset 0 0 0 1px var(--km-dark-border) !important;
-}
-
-:global(html.kikoerumanager-dark) .password-vault :deep(.el-pagination .el-pager li.is-active) {
-  background: #f8fafc !important;
-  color: #020617 !important;
-}
-
-:global(html.kikoerumanager-dark) .password-pill {
-  background: rgba(4, 5, 8, 0.86) !important;
-  border-color: var(--km-dark-border) !important;
-  color: var(--km-dark-text-strong) !important;
-}
-
-:global(html.kikoerumanager-dark) .vault-mobile-card,
-:global(html.kikoerumanager-dark) .vault-cleanup-meta {
-  background: rgba(8, 9, 13, 0.72) !important;
-  border-color: var(--km-dark-border) !important;
-  color: var(--km-dark-text) !important;
-}
-
-:global(html.kikoerumanager-dark) .vault-mobile-card.is-selected {
-  background: rgba(255, 255, 255, 0.14) !important;
-  border-color: rgba(255, 255, 255, 0.22) !important;
-}
-
-:global(html.kikoerumanager-dark) .vault-mobile-value,
-:global(html.kikoerumanager-dark) .vault-mobile-password {
-  color: var(--km-dark-text-strong) !important;
-}
-
-:global(html.kikoerumanager-dark) .vault-mobile-password,
-:global(html.kikoerumanager-dark) .vault-mobile-source,
-:global(html.kikoerumanager-dark) .vault-mobile-rj {
-  background: rgba(255, 255, 255, 0.08) !important;
-  border-color: rgba(255, 255, 255, 0.14) !important;
-}
-</style>
-
-<style>
-html.kikoerumanager-dark .password-vault {
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .password-vault .vault-toolbar-panel,
-html.kikoerumanager-dark .password-vault > section.rounded-2xl {
-  background: rgba(8, 9, 13, 0.78) !important;
-  border-color: rgba(255, 255, 255, 0.12) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 18px 44px rgba(0, 0, 0, 0.42) !important;
-  backdrop-filter: blur(20px) saturate(130%) !important;
-  -webkit-backdrop-filter: blur(20px) saturate(130%) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table.el-table {
-  --el-table-bg-color: #08090d !important;
-  --el-table-tr-bg-color: #08090d !important;
-  --el-table-header-bg-color: #0b0c12 !important;
-  --el-table-row-hover-bg-color: rgba(255, 255, 255, 0.1) !important;
-  --el-table-current-row-bg-color: rgba(255, 255, 255, 0.16) !important;
-  --el-table-border-color: rgba(255, 255, 255, 0.1) !important;
-  --el-table-text-color: var(--km-dark-text) !important;
-  --el-table-header-text-color: var(--km-dark-text-muted) !important;
-  background: #08090d !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .el-table__inner-wrapper,
-html.kikoerumanager-dark .password-vault .password-table .el-table__body-wrapper,
-html.kikoerumanager-dark .password-vault .password-table .el-table__header-wrapper,
-html.kikoerumanager-dark .password-vault .password-table .el-scrollbar,
-html.kikoerumanager-dark .password-vault .password-table .el-scrollbar__wrap,
-html.kikoerumanager-dark .password-vault .password-table .el-scrollbar__view {
-  background: #08090d !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table th.el-table__cell,
-html.kikoerumanager-dark .password-vault .password-table tr,
-html.kikoerumanager-dark .password-vault .password-table td.el-table__cell {
-  background: #08090d !important;
-  border-bottom-color: rgba(255, 255, 255, 0.1) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table th.el-table__cell {
-  background: #0b0c12 !important;
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell {
-  background: #10131b !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table.el-table--striped .el-table__body tr.el-table__row--striped:hover td.el-table__cell {
-  background: rgba(255, 255, 255, 0.14) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .el-table__body tr:hover > td.el-table__cell,
-html.kikoerumanager-dark .password-vault .password-table .el-table__body tr.hover-row > td.el-table__cell,
-html.kikoerumanager-dark .password-vault .password-table .el-table__body tr.current-row > td.el-table__cell {
-  background: rgba(255, 255, 255, 0.14) !important;
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .el-table__fixed,
-html.kikoerumanager-dark .password-vault .password-table .el-table__fixed-right,
-html.kikoerumanager-dark .password-vault .password-table .el-table__fixed-right-patch {
-  background: #08090d !important;
-  box-shadow: -10px 0 24px rgba(0, 0, 0, 0.32) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .el-table__fixed-right td.el-table__cell,
-html.kikoerumanager-dark .password-vault .password-table .el-table__fixed-right th.el-table__cell {
-  background: #08090d !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-pill {
-  background: rgba(4, 5, 8, 0.94) !important;
-  border-color: rgba(255, 255, 255, 0.14) !important;
-  color: #f8fafc !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .text-slate-700,
-html.kikoerumanager-dark .password-vault .password-table .text-slate-800,
-html.kikoerumanager-dark .password-vault .password-table .font-semibold {
-  color: #f8fafc !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .text-slate-400,
-html.kikoerumanager-dark .password-vault .password-table .text-slate-500 {
-  color: rgba(226, 232, 240, 0.68) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .bg-blue-50 {
-  background: rgba(255, 255, 255, 0.08) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .text-blue-700 {
-  color: #bfdbfe !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .el-checkbox__inner {
-  background-color: rgba(4, 5, 8, 0.96) !important;
-  border-color: rgba(255, 255, 255, 0.22) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .el-checkbox__input.is-checked .el-checkbox__inner,
-html.kikoerumanager-dark .password-vault .password-table .el-checkbox__input.is-indeterminate .el-checkbox__inner {
-  background-color: #f8fafc !important;
-  border-color: #f8fafc !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .el-checkbox__input.is-checked .el-checkbox__inner::after {
-  border-color: #020617 !important;
-}
-
-html.kikoerumanager-dark .password-vault > section.rounded-2xl > .mb-3,
-html.kikoerumanager-dark .password-vault > section.rounded-2xl > template,
-html.kikoerumanager-dark .password-vault .mb-3.flex.flex-wrap.items-start.justify-between {
-  background: transparent !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table.el-table,
-html.kikoerumanager-dark .password-vault .password-table .el-table__inner-wrapper,
-html.kikoerumanager-dark .password-vault .password-table .el-table__body-wrapper,
-html.kikoerumanager-dark .password-vault .password-table .el-table__header-wrapper,
-html.kikoerumanager-dark .password-vault .password-table .el-table__body,
-html.kikoerumanager-dark .password-vault .password-table .el-table__header,
-html.kikoerumanager-dark .password-vault .password-table .el-scrollbar,
-html.kikoerumanager-dark .password-vault .password-table .el-scrollbar__wrap,
-html.kikoerumanager-dark .password-vault .password-table .el-scrollbar__view {
-  background: #050609 !important;
-  background-color: #050609 !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .el-table__body tr,
-html.kikoerumanager-dark .password-vault .password-table .el-table__body tr.el-table__row,
-html.kikoerumanager-dark .password-vault .password-table .el-table__body tr.el-table__row td.el-table__cell {
-  background: #050609 !important;
-  background-color: #050609 !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .el-table__body tr:nth-child(even),
-html.kikoerumanager-dark .password-vault .password-table .el-table__body tr:nth-child(even) td.el-table__cell,
-html.kikoerumanager-dark .password-vault .password-table.el-table--striped .el-table__body tr.el-table__row--striped,
-html.kikoerumanager-dark .password-vault .password-table.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell {
-  background: #0a0b10 !important;
-  background-color: #0a0b10 !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .el-table__body tr:hover,
-html.kikoerumanager-dark .password-vault .password-table .el-table__body tr:hover td.el-table__cell,
-html.kikoerumanager-dark .password-vault .password-table .el-table__body tr.hover-row,
-html.kikoerumanager-dark .password-vault .password-table .el-table__body tr.hover-row td.el-table__cell,
-html.kikoerumanager-dark .password-vault .password-table .el-table__body tr.current-row,
-html.kikoerumanager-dark .password-vault .password-table .el-table__body tr.current-row td.el-table__cell {
-  background: rgba(255, 255, 255, 0.13) !important;
-  background-color: rgba(255, 255, 255, 0.13) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .el-table__header th.el-table__cell,
-html.kikoerumanager-dark .password-vault .password-table .el-table__fixed-right th.el-table__cell {
-  background: #090a0d !important;
-  background-color: #090a0d !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .el-table__fixed-right,
-html.kikoerumanager-dark .password-vault .password-table .el-table__fixed-right table,
-html.kikoerumanager-dark .password-vault .password-table .el-table__fixed-right tbody,
-html.kikoerumanager-dark .password-vault .password-table .el-table__fixed-right tr,
-html.kikoerumanager-dark .password-vault .password-table .el-table__fixed-right td.el-table__cell {
-  background: #050609 !important;
-  background-color: #050609 !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .el-table__fixed-right tr:nth-child(even),
-html.kikoerumanager-dark .password-vault .password-table .el-table__fixed-right tr:nth-child(even) td.el-table__cell {
-  background: #0a0b10 !important;
-  background-color: #0a0b10 !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table .cell,
-html.kikoerumanager-dark .password-vault .password-table .cell span {
-  color: inherit !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table td.el-table__cell button[title="编辑"],
-html.kikoerumanager-dark .password-vault .password-table td.el-table__cell button[title="删除"] {
-  width: 42px !important;
-  height: 42px !important;
-  border-radius: 999px !important;
-  background: rgba(4, 5, 8, 0.86) !important;
-  border: 1px solid rgba(255, 255, 255, 0.14) !important;
-  color: var(--km-dark-text-muted) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 8px 18px rgba(0, 0, 0, 0.3) !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table td.el-table__cell button[title="编辑"]:hover,
-html.kikoerumanager-dark .password-vault .password-table td.el-table__cell button[title="删除"]:hover {
-  background: rgba(255, 255, 255, 0.12) !important;
-  border-color: rgba(255, 255, 255, 0.22) !important;
-  color: var(--km-dark-text-strong) !important;
-  transform: none !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table td.el-table__cell button[title="编辑"]:active,
-html.kikoerumanager-dark .password-vault .password-table td.el-table__cell button[title="删除"]:active {
-  transform: none !important;
-}
-
-html.kikoerumanager-dark .password-vault .password-table td.el-table__cell button[title="编辑"] *,
-html.kikoerumanager-dark .password-vault .password-table td.el-table__cell button[title="删除"] * {
-  box-shadow: none !important;
-}
-
-html.kikoerumanager-dark .vault-dialog.el-dialog {
-  background: transparent !important;
-  box-shadow: none !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .el-dialog__header,
-html.kikoerumanager-dark .vault-dialog .el-dialog__body {
-  background: transparent !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .vault-dialog-shell {
-  background: rgba(8, 9, 13, 0.82) !important;
-  border: 1px solid rgba(255, 255, 255, 0.16) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 28px 76px rgba(0, 0, 0, 0.58) !important;
-  backdrop-filter: blur(28px) saturate(135%) !important;
-  -webkit-backdrop-filter: blur(28px) saturate(135%) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .vault-dialog-header,
-html.kikoerumanager-dark .vault-dialog .vault-dialog-footer {
-  background: rgba(8, 9, 13, 0.58) !important;
-  border-color: rgba(255, 255, 255, 0.12) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .vault-dialog-body {
-  background: rgba(8, 9, 13, 0.42) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .text-slate-900,
-html.kikoerumanager-dark .vault-dialog .text-slate-800,
-html.kikoerumanager-dark .vault-dialog .text-slate-700,
-html.kikoerumanager-dark .vault-dialog .vault-dialog-note b,
-html.kikoerumanager-dark .vault-dialog .vault-dialog-note-subtle b,
-html.kikoerumanager-dark .vault-dialog .vault-cleanup-value {
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .text-slate-500,
-html.kikoerumanager-dark .vault-dialog .text-slate-400,
-html.kikoerumanager-dark .vault-dialog .vault-form .el-form-item__label,
-html.kikoerumanager-dark .vault-dialog .vault-cleanup-label {
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .vault-icon-btn {
-  background: rgba(255, 255, 255, 0.08) !important;
-  border-color: rgba(255, 255, 255, 0.12) !important;
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .vault-icon-btn:hover {
-  background: rgba(255, 255, 255, 0.14) !important;
-  border-color: rgba(255, 255, 255, 0.2) !important;
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .el-input__wrapper,
-html.kikoerumanager-dark .vault-dialog .el-textarea__inner,
-html.kikoerumanager-dark .vault-dialog .animated-password-input__field {
-  background: rgba(4, 5, 8, 0.9) !important;
-  border-color: transparent !important;
-  color: var(--km-dark-text-strong) !important;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .el-input__wrapper:hover,
-html.kikoerumanager-dark .vault-dialog .el-textarea__inner:hover,
-html.kikoerumanager-dark .vault-dialog .animated-password-input__field:hover {
-  background: rgba(4, 5, 8, 0.96) !important;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .el-input__wrapper.is-focus,
-html.kikoerumanager-dark .vault-dialog .el-textarea__inner:focus,
-html.kikoerumanager-dark .vault-dialog .animated-password-input__field:focus {
-  background: rgba(4, 5, 8, 0.98) !important;
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.28),
-    0 0 0 3px rgba(255, 255, 255, 0.08) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .el-input__inner,
-html.kikoerumanager-dark .vault-dialog .el-textarea__inner,
-html.kikoerumanager-dark .vault-dialog .animated-password-input__field {
-  color: var(--km-dark-text-strong) !important;
-  -webkit-text-fill-color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .el-input__inner::placeholder,
-html.kikoerumanager-dark .vault-dialog .el-textarea__inner::placeholder,
-html.kikoerumanager-dark .vault-dialog .animated-password-input__field::placeholder {
-  color: var(--km-dark-text-muted) !important;
-  -webkit-text-fill-color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog input:-webkit-autofill,
-html.kikoerumanager-dark .vault-dialog input:-webkit-autofill:hover,
-html.kikoerumanager-dark .vault-dialog input:-webkit-autofill:focus,
-html.kikoerumanager-dark .vault-dialog textarea:-webkit-autofill,
-html.kikoerumanager-dark .vault-dialog textarea:-webkit-autofill:hover,
-html.kikoerumanager-dark .vault-dialog textarea:-webkit-autofill:focus {
-  -webkit-text-fill-color: var(--km-dark-text-strong) !important;
-  box-shadow: 0 0 0 1000px rgba(4, 5, 8, 0.98) inset !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .animated-password-input__toggle {
-  background: rgba(255, 255, 255, 0.08) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .vault-cleanup-meta {
-  background: rgba(255, 255, 255, 0.08) !important;
-  border-color: rgba(255, 255, 255, 0.14) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .bg-blue-50,
-html.kikoerumanager-dark .vault-dialog .bg-amber-50,
-html.kikoerumanager-dark .vault-dialog .bg-violet-50 {
-  background: rgba(255, 255, 255, 0.08) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .password-table.el-table {
-  --el-table-bg-color: rgba(8, 9, 13, 0.72);
-  --el-table-tr-bg-color: rgba(8, 9, 13, 0.72);
-  --el-table-header-bg-color: rgba(13, 15, 22, 0.95);
-  --el-table-row-hover-bg-color: rgba(255, 255, 255, 0.1);
-  --el-table-border-color: var(--km-dark-border);
-  --el-table-text-color: var(--km-dark-text);
-  --el-table-header-text-color: var(--km-dark-text-muted);
-  background: rgba(8, 9, 13, 0.72) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .password-table th.el-table__cell {
-  background: rgba(13, 15, 22, 0.95) !important;
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .password-table tr,
-html.kikoerumanager-dark .vault-dialog .password-table td.el-table__cell {
-  background: transparent !important;
-  border-bottom-color: var(--km-dark-border) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .vault-dialog .password-table .el-table__row:hover > td.el-table__cell {
-  background: rgba(255, 255, 255, 0.12) !important;
-  color: var(--km-dark-text-strong) !important;
-}
 </style>

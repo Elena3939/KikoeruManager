@@ -134,18 +134,19 @@ html.kikoerumanager-dark .sidebar-menu .el-menu-item {
 }
 
 html.kikoerumanager-dark .sidebar-menu .el-menu-item > svg {
-  color: var(--km-dark-text-muted) !important;
+  color: var(--sidebar-nav-icon, var(--km-dark-text-muted)) !important;
 }
 
 html.kikoerumanager-dark .sidebar-menu .el-menu-item:hover,
 html.kikoerumanager-dark .sidebar-menu .el-menu-item.is-active {
-  background: var(--km-dark-surface-muted) !important;
+  background: transparent !important;
   color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .sidebar-menu .el-menu-item:hover > svg,
 html.kikoerumanager-dark .sidebar-menu .el-menu-item.is-active > svg {
-  color: var(--km-dark-text-strong) !important;
+  color: var(--sidebar-nav-icon, var(--km-dark-text-strong)) !important;
 }
 
 html.kikoerumanager-dark :is(
@@ -476,9 +477,6 @@ html.kikoerumanager-dark :is(
   .subtitle-refresh-btn,
   .subtitle-action-btn:not(.is-primary),
   .subtitle-mini-btn,
-  .vault-btn,
-  .vault-toolbar-btn,
-  .vault-icon-btn,
   .conflicts-action-btn.is-slate,
   .conflicts-mini-btn,
   .conflicts-refresh-btn,
@@ -510,9 +508,6 @@ html.kikoerumanager-dark :is(
   .subtitle-refresh-btn:hover,
   .subtitle-action-btn:not(.is-primary):hover,
   .subtitle-mini-btn:hover,
-  .vault-btn:hover,
-  .vault-toolbar-btn:hover,
-  .vault-icon-btn:hover,
   .conflicts-action-btn.is-slate:hover,
   .conflicts-mini-btn:hover,
   .conflicts-refresh-btn:hover,
@@ -540,7 +535,6 @@ html.kikoerumanager-dark :is(
   .page-head-btn.is-primary,
   .lib-action-btn.is-primary,
   .subtitle-action-btn.is-primary,
-  .vault-btn.is-primary,
   .conflicts-action-btn.is-primary,
   .fp-dlg-btn-primary,
   .rpd-btn-primary,
@@ -562,7 +556,6 @@ html.kikoerumanager-dark :is(
   .page-head-btn.is-primary:hover,
   .lib-action-btn.is-primary:hover,
   .subtitle-action-btn.is-primary:hover,
-  .vault-btn.is-primary:hover,
   .conflicts-action-btn.is-primary:hover,
   .fp-dlg-btn-primary:hover,
   .rpd-btn-primary:hover,
@@ -575,6 +568,768 @@ html.kikoerumanager-dark :is(
   background-image: none !important;
   color: #0e0e12 !important;
   box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault {
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault :is(
+  .vault-toolbar-panel,
+  section,
+  .vault-mobile-card,
+  .grid.min-h-\[420px\],
+  .relative.overflow-hidden
+) {
+  background: #111216 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault :is(
+  h2,
+  .text-slate-900,
+  .text-slate-800,
+  .text-slate-700,
+  .app-page-title,
+  .font-semibold,
+  .font-bold
+) {
+  color: #f4f4f5 !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault :is(
+  p,
+  .text-slate-600,
+  .text-slate-500,
+  .text-slate-400,
+  .app-page-subtitle
+) {
+  color: rgba(228, 228, 231, 0.64) !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault :is(
+  .bg-white,
+  .bg-white\/90,
+  .bg-white\/80,
+  .bg-slate-50,
+  .bg-slate-50\/70,
+  .bg-slate-50\/50,
+  .bg-slate-100,
+  .from-white,
+  .via-white,
+  .to-white,
+  .from-slate-50,
+  .to-slate-50
+),
+html.kikoerumanager-dark body #app .password-vault [class*="bg-white"],
+html.kikoerumanager-dark body #app .password-vault [class*="bg-slate-50"],
+html.kikoerumanager-dark body #app .password-vault [class*="bg-slate-100"] {
+  --tw-gradient-from: #17181d var(--tw-gradient-from-position) !important;
+  --tw-gradient-via: #17181d var(--tw-gradient-via-position) !important;
+  --tw-gradient-to: #17181d var(--tw-gradient-to-position) !important;
+  background: #17181d !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault :is(
+  .bg-blue-50,
+  .from-blue-100,
+  .to-blue-50,
+  .text-blue-600,
+  .text-blue-700,
+  .focus\:border-blue-400,
+  .focus\:ring-blue-500\/20
+),
+html.kikoerumanager-dark body #app .password-vault [class*="bg-blue-"],
+html.kikoerumanager-dark body #app .password-vault [class*="from-blue-"],
+html.kikoerumanager-dark body #app .password-vault [class*="to-blue-"],
+html.kikoerumanager-dark body #app .password-vault [class*="border-blue-"],
+html.kikoerumanager-dark body #app .password-vault [class*="text-blue-"],
+html.kikoerumanager-dark body #app .password-vault [class*="ring-blue-"] {
+  --tw-gradient-from: #24252a var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: #17181d var(--tw-gradient-to-position) !important;
+  background: #24252a !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: #e7e7eb !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault :is(input, textarea, .el-input__wrapper, .el-textarea__inner) {
+  background: #0b0c10 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #f4f4f5 !important;
+  -webkit-text-fill-color: #f4f4f5 !important;
+  caret-color: #f4f4f5 !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12) !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault :is(input:hover, textarea:hover, .el-input__wrapper:hover, .el-textarea__inner:hover) {
+  background: #0f1014 !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault :is(input:focus, textarea:focus, .el-input__wrapper.is-focus, .el-textarea__inner:focus) {
+  background: #0f1014 !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.28),
+    0 0 0 3px rgba(255, 255, 255, 0.08) !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault :is(input::placeholder, textarea::placeholder) {
+  color: rgba(228, 228, 231, 0.56) !important;
+  -webkit-text-fill-color: rgba(228, 228, 231, 0.56) !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .vault-btn {
+  background: #24252a !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #e7e7eb !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .vault-btn:hover {
+  background: #2e2f35 !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .password-sort-dd .app-dd-trigger {
+  background: #24252a !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #e7e7eb !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .password-sort-dd .app-dd-trigger:hover,
+html.kikoerumanager-dark body #app .password-vault .password-sort-dd .app-dd-trigger.is-open {
+  background: #2e2f35 !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  color: #f4f4f5 !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .password-sort-dd :is(
+  .app-dd-trigger-label,
+  .app-dd-trigger-icon,
+  .app-dd-trigger-caret
+) {
+  color: rgba(228, 228, 231, 0.62) !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .password-sort-dd .app-dd-trigger-value {
+  color: #e7e7eb !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .vault-btn-primary {
+  background: #e7e7eb !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  color: #111116 !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .vault-btn-primary:hover {
+  background: #f4f4f5 !important;
+  color: #0e0e12 !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .vault-btn-danger {
+  background: rgba(127, 29, 29, 0.32) !important;
+  background-image: none !important;
+  border-color: rgba(248, 113, 113, 0.3) !important;
+  color: #ffe4e6 !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .vault-btn-danger:hover {
+  background: rgba(159, 18, 57, 0.42) !important;
+  border-color: rgba(251, 113, 133, 0.38) !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault :is(
+  .vault-btn-icon-add,
+  .vault-btn-icon-refresh,
+  .inline-flex.h-8,
+  .inline-flex.h-7,
+  .vault-mobile-rj,
+  .vault-mobile-source
+) {
+  background: #17181d !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: #e7e7eb !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .vault-btn-icon-import {
+  background: rgba(139, 92, 246, 0.16) !important;
+  border-color: rgba(167, 139, 250, 0.24) !important;
+  color: #ddd6fe !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .vault-btn-icon-cleanup {
+  background: rgba(20, 184, 166, 0.16) !important;
+  border-color: rgba(94, 234, 212, 0.24) !important;
+  color: #99f6e4 !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .vault-btn-icon-delete {
+  background: rgba(244, 63, 94, 0.16) !important;
+  border-color: rgba(251, 113, 133, 0.24) !important;
+  color: #fecdd3 !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .vault-toolbar-divider {
+  background: rgba(255, 255, 255, 0.12) !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .password-table.el-table {
+  --el-table-bg-color: #0b0d12;
+  --el-table-tr-bg-color: #0b0d12;
+  --el-table-header-bg-color: #111217;
+  --el-table-row-hover-bg-color: rgba(255, 255, 255, 0.1);
+  --el-table-current-row-bg-color: rgba(255, 255, 255, 0.12);
+  --el-table-border-color: rgba(255, 255, 255, 0.08);
+  --el-table-text-color: var(--km-dark-text);
+  --el-table-header-text-color: var(--km-dark-text-muted);
+  background: #0b0d12 !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .password-table :is(
+  .el-table__inner-wrapper,
+  .el-table__body-wrapper,
+  .el-table__header-wrapper,
+  .el-table__body,
+  .el-table__header,
+  .el-scrollbar,
+  .el-scrollbar__wrap,
+  .el-scrollbar__view
+) {
+  background: #0b0d12 !important;
+  background-image: none !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .password-table th.el-table__cell {
+  background: #111217 !important;
+  background-image: none !important;
+  border-bottom-color: rgba(255, 255, 255, 0.1) !important;
+  color: rgba(228, 228, 231, 0.62) !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .password-table :is(tr, td.el-table__cell) {
+  background: #0b0d12 !important;
+  background-image: none !important;
+  border-bottom-color: rgba(255, 255, 255, 0.08) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .password-table .el-table__row--striped td.el-table__cell {
+  background: #15161b !important;
+  background-image: none !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .password-table :is(
+  .el-table__row:hover,
+  .el-table__row.current-row,
+  .el-table__row.is-current,
+  .el-table__row.is-selected
+) > td.el-table__cell,
+html.kikoerumanager-dark body #app .password-vault .password-table tr:hover > td.el-table__cell {
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: #f4f4f5 !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .password-table :is(
+  .el-table__fixed,
+  .el-table__fixed-right,
+  .el-table__fixed-right-patch,
+  .el-table__fixed-right::before
+) {
+  background: #0b0d12 !important;
+  box-shadow: -10px 0 18px rgba(0, 0, 0, 0.26) !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault :is(.password-pill, .vault-mobile-password) {
+  background: #0b0c10 !important;
+  background-image: none !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  color: #f4f4f5 !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault :is(.password-pill:hover, .vault-mobile-password:hover) {
+  background: #17181d !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault :is(.el-tag, .vault-source-badge) {
+  background: #24252a !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: #e7e7eb !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .el-tag.el-tag--success {
+  background: rgba(16, 185, 129, 0.16) !important;
+  border-color: rgba(110, 231, 183, 0.24) !important;
+  color: #a7f3d0 !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .el-checkbox__inner {
+  background: #0b0c10 !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault :is(
+  .el-checkbox__input.is-checked .el-checkbox__inner,
+  .el-checkbox__input.is-indeterminate .el-checkbox__inner
+) {
+  background: #e7e7eb !important;
+  border-color: #e7e7eb !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .el-checkbox__input.is-checked .el-checkbox__inner::after {
+  border-color: #111116 !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .vault-pagination.el-pagination {
+  --el-pagination-hover-color: #f4f4f5;
+  color: rgba(228, 228, 231, 0.68) !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .vault-pagination.el-pagination :is(
+  .el-pagination__total,
+  .el-pagination__jump,
+  .el-pagination__goto,
+  .el-pagination__classifier
+) {
+  color: rgba(228, 228, 231, 0.66) !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .vault-pagination.el-pagination.is-background :is(
+  .btn-prev,
+  .btn-next,
+  .el-pager li
+),
+html.kikoerumanager-dark body #app .password-vault .vault-pagination.el-pagination :is(
+  .el-pagination__sizes .el-select__wrapper,
+  .el-pagination__jump .el-input__wrapper
+) {
+  background: #17181d !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #e7e7eb !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .vault-pagination.el-pagination.is-background :is(
+  .btn-prev:hover:not(:disabled),
+  .btn-next:hover:not(:disabled),
+  .el-pager li:hover
+),
+html.kikoerumanager-dark body #app .password-vault .vault-pagination.el-pagination :is(
+  .el-pagination__sizes .el-select__wrapper:hover,
+  .el-pagination__sizes .el-select__wrapper.is-hovering,
+  .el-pagination__jump .el-input__wrapper:hover,
+  .el-pagination__jump .el-input__wrapper.is-focus
+) {
+  background: #24252a !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  color: #f4f4f5 !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .vault-pagination.el-pagination.is-background .el-pager li.is-active {
+  background: #e7e7eb !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.32) !important;
+  color: #111116 !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .vault-pagination.el-pagination :is(
+  .el-pagination__sizes .el-select__placeholder,
+  .el-pagination__sizes .el-select__selected-item,
+  .el-pagination__sizes .el-select__selected-item span,
+  .el-pagination__jump .el-input__inner
+) {
+  background: transparent !important;
+  background-image: none !important;
+  border: 0 !important;
+  color: #e7e7eb !important;
+  -webkit-text-fill-color: #e7e7eb !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .vault-pagination.el-pagination :is(
+  .el-pagination__sizes .el-select__caret,
+  .el-pagination__sizes .el-icon
+) {
+  color: rgba(228, 228, 231, 0.62) !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .vault-row-action,
+html.kikoerumanager-dark body #app .password-vault .vault-mobile-action {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault :is(.vault-row-action.is-edit:hover, .vault-mobile-action.is-edit:hover) {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault :is(.vault-row-action.is-delete:hover, .vault-mobile-action.is-delete:hover) {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault :is(
+  .vault-row-action,
+  .vault-mobile-action,
+  .vault-row-action .app-lottie-icon,
+  .vault-mobile-action .app-lottie-icon,
+  .vault-row-action .app-lottie-icon__player,
+  .vault-mobile-action .app-lottie-icon__player
+) {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+html.kikoerumanager-dark body #app .password-vault .vault-mobile-meta {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: rgba(228, 228, 231, 0.62) !important;
+}
+
+html.kikoerumanager-dark body .password-sort-dd-menu {
+  background: #111216 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #e7e7eb !important;
+  box-shadow: none !important;
+  scrollbar-color: #333438 transparent !important;
+}
+
+html.kikoerumanager-dark body .password-sort-dd-menu .app-dd-item {
+  background: transparent !important;
+  color: rgba(228, 228, 231, 0.76) !important;
+}
+
+html.kikoerumanager-dark body .password-sort-dd-menu .app-dd-item:hover {
+  background: #24252a !important;
+  color: #f4f4f5 !important;
+}
+
+html.kikoerumanager-dark body .password-sort-dd-menu .app-dd-item.is-active,
+html.kikoerumanager-dark body .password-sort-dd-menu .app-dd-item.is-active:hover {
+  background: var(--km-dark-selected-hover) !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark body .password-sort-dd-menu :is(
+  .app-dd-item-icon,
+  .app-dd-item-description,
+  .app-dd-item-suffix,
+  .app-dd-item-check
+) {
+  color: rgba(228, 228, 231, 0.66) !important;
+}
+
+html.kikoerumanager-dark body .password-sort-dd-menu .app-dd-item.is-active :is(
+  .app-dd-item-icon,
+  .app-dd-item-check
+) {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark body .vault-pagination-size-popper.el-popper {
+  background: #111216 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html.kikoerumanager-dark body .vault-pagination-size-popper .el-select-dropdown {
+  background: transparent !important;
+  background-image: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body .vault-pagination-size-popper .el-select-dropdown__list {
+  padding: 6px !important;
+}
+
+html.kikoerumanager-dark body .vault-pagination-size-popper .el-select-dropdown__item {
+  background: transparent !important;
+  background-image: none !important;
+  color: rgba(228, 228, 231, 0.76) !important;
+}
+
+html.kikoerumanager-dark body .vault-pagination-size-popper .el-select-dropdown__item:hover,
+html.kikoerumanager-dark body .vault-pagination-size-popper .el-select-dropdown__item.is-hovering {
+  background: #24252a !important;
+  background-image: none !important;
+  color: #f4f4f5 !important;
+}
+
+html.kikoerumanager-dark body .vault-pagination-size-popper .el-select-dropdown__item.is-selected {
+  background: #e7e7eb !important;
+  background-image: none !important;
+  color: #111116 !important;
+}
+
+html.kikoerumanager-dark body .vault-pagination-size-popper .el-popper__arrow::before {
+  background: #111216 !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+html.kikoerumanager-dark body .vault-modal-layer {
+  background: rgba(0, 0, 0, 0.62) !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell {
+  background: #111216 !important;
+  background-image: none !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell :is(.vault-dialog-header, .vault-dialog-body, .vault-dialog-footer) {
+  background: #111216 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell :is(
+  .vault-dialog-title,
+  .vault-dialog-note b,
+  .vault-dialog-note-subtle b,
+  .vault-cleanup-value,
+  .vault-import-count b,
+  .vault-cleanup-count
+) {
+  color: #f4f4f5 !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell :is(
+  .vault-dialog-subtitle,
+  .vault-field-label,
+  .vault-field-hint,
+  .vault-cleanup-label,
+  .vault-import-count
+) {
+  color: rgba(228, 228, 231, 0.62) !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell .vault-dialog-icon,
+html.kikoerumanager-dark body .vault-dialog-shell .vault-icon-btn,
+html.kikoerumanager-dark body .vault-dialog-shell .animated-password-input__toggle {
+  background: #24252a !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #e7e7eb !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell .animated-password-input__toggle {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell .animated-password-input__player {
+  filter: brightness(0) invert(1) !important;
+  opacity: 0.92 !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell .vault-dialog-icon-cleanup {
+  background: rgba(20, 184, 166, 0.16) !important;
+  border-color: rgba(94, 234, 212, 0.24) !important;
+  color: #99f6e4 !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell .vault-dialog-icon-import {
+  background: rgba(139, 92, 246, 0.16) !important;
+  border-color: rgba(167, 139, 250, 0.24) !important;
+  color: #ddd6fe !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell :is(
+  .vault-dialog-note,
+  .vault-cleanup-summary,
+  .vault-cleanup-meta,
+  .vault-cleanup-table,
+  .vault-source-badge
+) {
+  background: #17181d !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: rgba(228, 228, 231, 0.66) !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell :is(
+  .vault-input,
+  .vault-textarea,
+  .vault-import-textarea,
+  input,
+  textarea,
+  .animated-password-input__field
+) {
+  background: #0b0c10 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #f4f4f5 !important;
+  -webkit-text-fill-color: #f4f4f5 !important;
+  caret-color: #f4f4f5 !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12) !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell :is(
+  .vault-input:hover,
+  .vault-textarea:hover,
+  .vault-import-textarea:hover,
+  input:hover,
+  textarea:hover,
+  .animated-password-input__field:hover
+) {
+  background: #0f1014 !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18) !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell :is(
+  .vault-input:focus,
+  .vault-textarea:focus,
+  .vault-import-textarea:focus,
+  input:focus,
+  textarea:focus,
+  .animated-password-input__field:focus
+) {
+  background: #0f1014 !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.28),
+    0 0 0 3px rgba(255, 255, 255, 0.08) !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell :is(
+  .vault-input::placeholder,
+  .vault-textarea::placeholder,
+  .vault-import-textarea::placeholder,
+  input::placeholder,
+  textarea::placeholder,
+  .animated-password-input__field::placeholder
+) {
+  color: rgba(228, 228, 231, 0.58) !important;
+  -webkit-text-fill-color: rgba(228, 228, 231, 0.58) !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell .vault-input::placeholder,
+html.kikoerumanager-dark body .vault-dialog-shell .vault-textarea::placeholder,
+html.kikoerumanager-dark body .vault-dialog-shell .vault-import-textarea::placeholder,
+html.kikoerumanager-dark body .vault-dialog-shell input::placeholder,
+html.kikoerumanager-dark body .vault-dialog-shell textarea::placeholder,
+html.kikoerumanager-dark body .vault-dialog-shell .animated-password-input__field::placeholder {
+  color: rgba(148, 163, 184, 0.74) !important;
+  -webkit-text-fill-color: rgba(148, 163, 184, 0.74) !important;
+  opacity: 1 !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell :is(
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  textarea:-webkit-autofill,
+  textarea:-webkit-autofill:hover,
+  textarea:-webkit-autofill:focus
+) {
+  -webkit-text-fill-color: #f4f4f5 !important;
+  box-shadow: 0 0 0 1000px #0b0c10 inset !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell .vault-btn {
+  background: #24252a !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #e7e7eb !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell .vault-btn:hover {
+  background: #2e2f35 !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  color: #f4f4f5 !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell .vault-btn-primary {
+  background: #e7e7eb !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  color: #111116 !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell .vault-btn-primary:hover {
+  background: #f4f4f5 !important;
+  color: #0e0e12 !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell .vault-btn-danger {
+  background: rgba(127, 29, 29, 0.32) !important;
+  background-image: none !important;
+  border-color: rgba(248, 113, 113, 0.3) !important;
+  color: #ffe4e6 !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell .vault-cleanup-row {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  color: rgba(228, 228, 231, 0.78) !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell .vault-cleanup-row.is-head {
+  background: #1c1d22 !important;
+  background-image: none !important;
+  color: rgba(228, 228, 231, 0.62) !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell .vault-cleanup-empty {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  color: rgba(228, 228, 231, 0.46) !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell .vault-section-divider {
+  color: rgba(228, 228, 231, 0.62) !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell .vault-section-divider span {
+  background: rgba(255, 255, 255, 0.12) !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell .vault-cleanup-value.is-info,
+html.kikoerumanager-dark body .vault-dialog-shell .vault-cleanup-value.is-warning {
+  color: #e7e7eb !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell .vault-cleanup-value.is-success {
+  color: #9be6c0 !important;
 }
 
 html.kikoerumanager-dark :is(
@@ -601,10 +1356,6 @@ html.kikoerumanager-dark :is(
   .config-section,
   .template-card,
   .notification-card,
-  .vault-card,
-  .vault-list-card,
-  .vault-toolbar-panel,
-  .vault-toolbar-shell,
   .metric-strip,
   .overview-strip,
   .timeline-shell,
@@ -615,14 +1366,6 @@ html.kikoerumanager-dark :is(
   .log-toolbar,
   .log-viewer,
   .log-table,
-  .circle-layout,
-  .circle-sidebar,
-  .circle-main,
-  .circle-list-panel,
-  .circle-list-card,
-  .toolbar-card,
-  .work-grid,
-  .work-card,
   .sync-card,
   .sync-panel,
   .download-card,
@@ -679,8 +1422,6 @@ html.kikoerumanager-dark :is(
   .lib-scope-option,
   .lib-batch-count-pill,
   .lib-chip,
-  .set-chip,
-  .app-dd-badge,
   .tasks-metric-pill,
   .task-tree-actions,
   .task-tree-filter-button,
@@ -706,6 +1447,28 @@ html.kikoerumanager-dark :is(
   box-shadow: none !important;
 }
 
+html.kikoerumanager-dark .settings-page .set-chip {
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .settings-page .set-chip-success {
+  background: var(--set-success-bg) !important;
+  border-color: var(--set-success-border) !important;
+  color: var(--set-success-text) !important;
+}
+
+html.kikoerumanager-dark .settings-page .set-chip-warning {
+  background: var(--set-warning-bg) !important;
+  border-color: var(--set-warning-border) !important;
+  color: var(--set-warning-text) !important;
+}
+
+html.kikoerumanager-dark .settings-page .set-chip-info {
+  background: var(--set-tag-info-bg) !important;
+  border-color: var(--set-tag-info-border) !important;
+  color: var(--set-tag-info-text) !important;
+}
+
 html.kikoerumanager-dark :is(
   .lib-file-table-row:hover,
   .lib-file-table-row.is-hover,
@@ -718,9 +1481,6 @@ html.kikoerumanager-dark :is(
   .conflicts-list-card.is-active,
   .conflicts-segmented-item:hover,
   .conflicts-segmented-item.is-active,
-  .circle-list-card:hover,
-  .circle-list-card.is-active,
-  .work-card:hover,
   .metric-cell:hover,
   .subtitle-list-card:hover,
   .subtitle-list-card.is-active,
@@ -804,8 +1564,7 @@ html.kikoerumanager-dark :is(
   .lib-badge,
   .conflicts-list-source-chip,
   .tasks-metric-count,
-  .workbench-card-chip,
-  .app-dd-badge
+  .workbench-card-chip
 ) {
   background: var(--km-dark-accent-bg) !important;
   border-color: var(--km-dark-border) !important;
@@ -814,10 +1573,8 @@ html.kikoerumanager-dark :is(
 
 html.kikoerumanager-dark :is(
   .lib-chip-success,
-  .set-chip-success,
   .tone-success,
-  .tone-emerald,
-  .app-dd-badge.tone-emerald
+  .tone-emerald
 ) {
   background: var(--km-dark-green-bg) !important;
   border-color: rgba(141, 223, 187, 0.32) !important;
@@ -826,10 +1583,8 @@ html.kikoerumanager-dark :is(
 
 html.kikoerumanager-dark :is(
   .lib-chip-warning,
-  .set-chip-warning,
   .tone-warning,
-  .tone-amber,
-  .app-dd-badge.tone-amber
+  .tone-amber
 ) {
   background: var(--km-dark-amber-bg) !important;
   border-color: rgba(244, 206, 117, 0.34) !important;
@@ -839,8 +1594,7 @@ html.kikoerumanager-dark :is(
 html.kikoerumanager-dark :is(
   .lib-chip-danger,
   .tone-danger,
-  .tone-rose,
-  .app-dd-badge.tone-rose
+  .tone-rose
 ) {
   background: var(--km-dark-red-bg) !important;
   border-color: rgba(243, 162, 168, 0.34) !important;
@@ -849,12 +1603,9 @@ html.kikoerumanager-dark :is(
 
 html.kikoerumanager-dark :is(
   .lib-chip-info,
-  .set-chip-info,
   .tone-info,
   .tone-sky,
-  .tone-violet,
-  .app-dd-badge.tone-sky,
-  .app-dd-badge.tone-violet
+  .tone-violet
 ) {
   background: var(--km-dark-info-bg) !important;
   border-color: var(--km-dark-border-strong) !important;
@@ -1508,26 +2259,6 @@ html.kikoerumanager-dark body #app :is(
 }
 
 html.kikoerumanager-dark body #app :is(
-  .settings-page .nav-item,
-  .settings-page .nav-item.active,
-  .settings-page .nav-item:hover
-) {
-  background: var(--km-dark-surface-soft) !important;
-  border-color: var(--km-dark-border) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow: none !important;
-}
-
-html.kikoerumanager-dark body #app :is(
-  .settings-page .nav-item.active,
-  .settings-page .nav-item:hover
-) {
-  background: var(--km-dark-surface-hover) !important;
-  border-color: var(--km-dark-border-strong) !important;
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark body #app :is(
   .nav-item-icon,
   .nav-item-storage .nav-item-icon,
   .nav-item-security .nav-item-icon
@@ -1577,9 +2308,10 @@ html.kikoerumanager-dark body #app :is(
   .subtitle-workbench-btn.is-primary
 ) {
   background: var(--km-dark-primary-button-bg) !important;
-  border-color: rgba(255, 255, 255, 0.3) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
   color: var(--km-dark-primary-button-text) !important;
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.42) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark body #app :is(
@@ -1588,8 +2320,10 @@ html.kikoerumanager-dark body #app :is(
   .subtitle-workbench-btn:not(.is-primary)
 ) {
   background: var(--km-dark-button-bg) !important;
+  background-image: none !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark body #app :is(
@@ -1637,14 +2371,8 @@ html.kikoerumanager-dark body #app :is(
 }
 
 html.kikoerumanager-dark body #app :is(
-  .asmr-mini-btn,
   .ef-head-btn,
-  .lib-refresh-btn,
-  .sidebar-filter-chip,
-  .circle-list-item,
-  .view-toggle-group,
-  .view-toggle-btn,
-  .work-action-btn
+  .lib-refresh-btn
 ) {
   background: var(--km-dark-button-bg) !important;
   border-color: var(--km-dark-border) !important;
@@ -1653,30 +2381,13 @@ html.kikoerumanager-dark body #app :is(
 }
 
 html.kikoerumanager-dark body #app :is(
-  .asmr-mini-btn:hover,
   .ef-head-btn:hover,
-  .lib-refresh-btn:hover,
-  .sidebar-filter-chip:hover,
-  .circle-list-item:hover,
-  .view-toggle-btn:hover,
-  .work-action-btn:hover
+  .lib-refresh-btn:hover
 ) {
   background: var(--km-dark-button-bg-hover) !important;
   border-color: var(--km-dark-border-strong) !important;
   color: var(--km-dark-text-strong) !important;
   box-shadow: var(--km-dark-shadow-soft) !important;
-}
-
-html.kikoerumanager-dark body #app :is(
-  .sidebar-filter-chip.active,
-  .circle-list-item.active,
-  .view-toggle-btn.active
-) {
-  background: var(--km-dark-selected) !important;
-  background-image: none !important;
-  border-color: var(--km-dark-selected-border) !important;
-  color: var(--km-dark-text-strong) !important;
-  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark body #app :is(
@@ -1689,10 +2400,6 @@ html.kikoerumanager-dark body #app :is(
 }
 
 html.kikoerumanager-dark body #app :is(
-  .circle-list-id,
-  .metric-pill,
-  .work-unreleased-flag,
-  .work-release-chip,
   .work-status-chip,
   .work-tag,
   .work-meta-chip
@@ -1720,7 +2427,6 @@ html.kikoerumanager-dark {
   }
 
   html.kikoerumanager-dark .tasks-page .app-page-icon {
-    color: rgba(214, 214, 220, 0.86) !important;
     background: transparent !important;
     box-shadow: none !important;
   }
@@ -2544,7 +3250,6 @@ html.kikoerumanager-dark {
   html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-api-rename svg { color: #7c3aed !important; }
 
   html.kikoerumanager-dark body #app .library .app-page-icon {
-    color: #60a5fa !important;
     background: transparent !important;
     border-color: transparent !important;
     box-shadow: none !important;
@@ -2891,7 +3596,7 @@ html.kikoerumanager-dark {
   html.kikoerumanager-dark body #app .library .lib-path-toolbar .lib-scope-switch {
     gap: 2px !important;
     padding: 3px !important;
-    background-color: var(--library-matte-soft) !important;
+    background-color: #202126 !important;
     background-image: none !important;
     border: 1px solid var(--library-border) !important;
     border-radius: 10px !important;
@@ -2905,18 +3610,18 @@ html.kikoerumanager-dark {
     border-radius: 7px !important;
     background-color: transparent !important;
     background-image: none !important;
-    color: var(--library-muted) !important;
+    color: rgba(205, 205, 211, 0.62) !important;
     box-shadow: none !important;
   }
 
   html.kikoerumanager-dark body #app .library .lib-path-toolbar .lib-scope-option:hover:not(.is-active) {
-    background-color: rgba(255, 255, 255, 0.06) !important;
-    color: var(--library-text) !important;
+    background-color: #3334 !important;
+    color: rgba(238, 238, 242, 0.84) !important;
   }
 
   html.kikoerumanager-dark body #app .library .lib-path-toolbar .lib-scope-option.is-active {
-    background-color: var(--library-matte-strong) !important;
-    color: rgba(250, 250, 252, 0.94) !important;
+    background-color: #5556 !important;
+    color: rgba(255, 255, 255, 0.96) !important;
     box-shadow: none !important;
   }
 
@@ -3063,6 +3768,31 @@ html.kikoerumanager-dark {
   html.kikoerumanager-dark body #app .library .lib-scope-option.is-active::after {
     background: rgba(242, 242, 246, 0.78) !important;
     box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-path-toolbar .lib-scope-switch {
+    background-color: #202126 !important;
+    border-color: var(--library-border) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-path-toolbar .lib-scope-option {
+    background-color: transparent !important;
+    color: rgba(205, 205, 211, 0.62) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-path-toolbar .lib-scope-option:hover:not(.is-active) {
+    background-color: #3334 !important;
+    color: rgba(238, 238, 242, 0.84) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-path-toolbar .lib-scope-option.is-active {
+    background-color: #5556 !important;
+    color: rgba(255, 255, 255, 0.96) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-path-toolbar .lib-scope-option.is-active::after {
+    display: none !important;
+    content: none !important;
   }
 
   html.kikoerumanager-dark body #app .library .el-pagination.is-background .el-pager li.is-active {
@@ -3340,9 +4070,8 @@ html.kikoerumanager-dark {
   html.kikoerumanager-dark body #app .library .lib-btn-icon-tinted.lib-icon-api-rename svg { color: #7c3aed !important; }
 }
 
-/* 库存页暗色最终兜底：保留顶部 / 搜索 / 索引控件的语义图标色，不被通用玻璃规则洗灰。 */
+/* 库存页暗色语义图标色：页头主图标由 AppPageHeader 的 iconColor 接管。 */
 html.kikoerumanager-dark body #app .library .app-page-icon {
-  color: #60a5fa !important;
   background: transparent !important;
   border-color: transparent !important;
   box-shadow: none !important;
@@ -3420,7 +4149,6 @@ html.kikoerumanager-dark body #app .library .lib-search-box .lib-search-filter {
 }
 
 html.kikoerumanager-dark body #app .library.library.library .app-page-header .app-page-icon.app-page-icon {
-  color: #1d4ed8 !important;
   background: transparent !important;
   border-color: transparent !important;
   box-shadow: none !important;

@@ -325,6 +325,58 @@ defineExpose({ close: () => (open.value = false) })
   position: relative;
 }
 
+.app-dd-root,
+.app-dd-menu {
+  --app-dd-trigger-bg: rgb(248 250 252);
+  --app-dd-trigger-bg-hover: #ffffff;
+  --app-dd-trigger-bg-open: #ffffff;
+  --app-dd-trigger-border: rgb(226 232 240);
+  --app-dd-trigger-border-hover: rgb(203 213 225);
+  --app-dd-trigger-border-open: rgb(148 163 184);
+  --app-dd-trigger-text: rgb(15 23 42);
+  --app-dd-muted-text: rgb(100 116 139);
+  --app-dd-placeholder-text: rgba(100, 116, 139, 0.78);
+  --app-dd-focus-ring: rgba(148, 163, 184, 0.14);
+  --app-dd-menu-bg: #ffffff;
+  --app-dd-menu-border: rgba(226, 232, 240, 0.95);
+  --app-dd-item-text: rgb(30 41 59);
+  --app-dd-item-hover-bg: rgb(241 245 249);
+  --app-dd-item-active-bg: rgb(241 245 249);
+  --app-dd-item-active-hover-bg: rgb(226 232 240);
+  --app-dd-item-active-text: #0f172a;
+  --app-dd-description-text: rgb(148 163 184);
+  --app-dd-description-active-text: rgb(100 116 139);
+  --app-dd-suffix-text: rgb(148 163 184);
+  --app-dd-suffix-active-text: rgb(71 85 105);
+  --app-dd-check-text: rgb(71 85 105);
+}
+
+:global(html.kikoerumanager-dark) .app-dd-root,
+:global(html.kikoerumanager-dark) .app-dd-menu {
+  --app-dd-trigger-bg: #17181d;
+  --app-dd-trigger-bg-hover: #1d1e23;
+  --app-dd-trigger-bg-open: #1d1e23;
+  --app-dd-trigger-border: rgba(255, 255, 255, 0.12);
+  --app-dd-trigger-border-hover: rgba(255, 255, 255, 0.22);
+  --app-dd-trigger-border-open: rgba(255, 255, 255, 0.28);
+  --app-dd-trigger-text: #f4f4f5;
+  --app-dd-muted-text: rgba(228, 228, 231, 0.62);
+  --app-dd-placeholder-text: rgba(228, 228, 231, 0.46);
+  --app-dd-focus-ring: rgba(255, 255, 255, 0.1);
+  --app-dd-menu-bg: #17181d;
+  --app-dd-menu-border: rgba(255, 255, 255, 0.12);
+  --app-dd-item-text: rgba(228, 228, 231, 0.78);
+  --app-dd-item-hover-bg: #24252a;
+  --app-dd-item-active-bg: #24252a;
+  --app-dd-item-active-hover-bg: #2b2c32;
+  --app-dd-item-active-text: #f4f4f5;
+  --app-dd-description-text: rgba(228, 228, 231, 0.46);
+  --app-dd-description-active-text: rgba(228, 228, 231, 0.68);
+  --app-dd-suffix-text: rgba(228, 228, 231, 0.5);
+  --app-dd-suffix-active-text: rgba(244, 244, 245, 0.78);
+  --app-dd-check-text: #f4f4f5;
+}
+
 .app-dd-trigger-anchor {
   display: inline-block;
   max-width: 100%;
@@ -337,10 +389,10 @@ defineExpose({ close: () => (open.value = false) })
   gap: 6px;
   height: 32px;
   padding: 0 10px 0 12px;
-  border: 1px solid rgb(226 232 240);
+  border: 1px solid var(--app-dd-trigger-border);
   border-radius: 10px;
-  background: rgb(248 250 252);
-  color: rgb(15 23 42);
+  background: var(--app-dd-trigger-bg);
+  color: var(--app-dd-trigger-text);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
@@ -353,8 +405,8 @@ defineExpose({ close: () => (open.value = false) })
 }
 
 .app-dd-trigger:hover {
-  background: #fff;
-  border-color: rgb(203 213 225);
+  background: var(--app-dd-trigger-bg-hover);
+  border-color: var(--app-dd-trigger-border-hover);
   transform: translateY(-1px);
   box-shadow: 0 6px 14px -10px rgba(15, 23, 42, 0.22);
 }
@@ -364,24 +416,24 @@ defineExpose({ close: () => (open.value = false) })
 }
 
 .app-dd-trigger.is-open {
-  background: #fff;
-  border-color: rgb(148 163 184);
-  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.14);
+  background: var(--app-dd-trigger-bg-open);
+  border-color: var(--app-dd-trigger-border-open);
+  box-shadow: 0 0 0 3px var(--app-dd-focus-ring);
   transform: translateY(0);
 }
 
 .app-dd-trigger.is-placeholder .app-dd-trigger-value {
-  color: rgba(100, 116, 139, 0.78);
+  color: var(--app-dd-placeholder-text);
   font-weight: 500;
 }
 
 .app-dd-trigger-icon {
   flex-shrink: 0;
-  color: rgb(100 116 139);
+  color: var(--app-dd-muted-text);
 }
 
 .app-dd-trigger-label {
-  color: rgb(100 116 139);
+  color: var(--app-dd-muted-text);
   font-size: 12px;
   font-weight: 500;
   margin-right: 2px;
@@ -399,20 +451,20 @@ defineExpose({ close: () => (open.value = false) })
 
 .app-dd-trigger-caret {
   flex-shrink: 0;
-  color: rgb(100 116 139);
+  color: var(--app-dd-muted-text);
   margin-left: 2px;
   transition:
     transform 0.32s cubic-bezier(0.34, 1.56, 0.64, 1),
     color 0.2s ease;
 }
 .app-dd-trigger:hover .app-dd-trigger-caret {
-  color: #0f172a;
+  color: var(--app-dd-trigger-text);
   transform: translateY(1px);
 }
 .app-dd-trigger-caret.is-open,
 .app-dd-trigger:hover .app-dd-trigger-caret.is-open {
   transform: rotate(180deg);
-  color: #0f172a;
+  color: var(--app-dd-trigger-text);
 }
 
 /* ---- Menu ---- */
@@ -424,8 +476,8 @@ defineExpose({ close: () => (open.value = false) })
   max-height: 360px;
   overflow-y: auto;
   padding: 5px;
-  background: #ffffff;
-  border: 1px solid rgba(226, 232, 240, 0.95);
+  background: var(--app-dd-menu-bg);
+  border: 1px solid var(--app-dd-menu-border);
   border-radius: 12px;
   box-shadow:
     0 18px 38px -14px rgba(15, 23, 42, 0.22),
@@ -494,7 +546,7 @@ defineExpose({ close: () => (open.value = false) })
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: rgb(30 41 59);
+  color: var(--app-dd-item-text);
   font-size: 13px;
   font-weight: 500;
   text-align: left;
@@ -531,8 +583,8 @@ defineExpose({ close: () => (open.value = false) })
 }
 
 .app-dd-item:hover {
-  background: rgb(241 245 249);
-  color: #0f172a;
+  background: var(--app-dd-item-hover-bg);
+  color: var(--app-dd-item-active-text);
 }
 .app-dd-item:active {
   transform: scale(0.985);
@@ -541,20 +593,20 @@ defineExpose({ close: () => (open.value = false) })
 
 /* active 项：淮灰底 + 加粗（Linear / Notion 风格） */
 .app-dd-item.is-active {
-  background: rgb(241 245 249);
-  color: #0f172a;
+  background: var(--app-dd-item-active-bg);
+  color: var(--app-dd-item-active-text);
   font-weight: 600;
 }
 .app-dd-item.is-active:hover {
-  background: rgb(226 232 240);
+  background: var(--app-dd-item-active-hover-bg);
 }
 
 .app-dd-item-icon {
   flex-shrink: 0;
-  color: rgb(100 116 139);
+  color: var(--app-dd-muted-text);
 }
 .app-dd-item.is-active .app-dd-item-icon {
-  color: #0f172a;
+  color: var(--app-dd-item-active-text);
 }
 
 .app-dd-item-text {
@@ -576,13 +628,13 @@ defineExpose({ close: () => (open.value = false) })
   margin-top: 2px;
   font-size: 11px;
   font-weight: 400;
-  color: rgb(148 163 184);
+  color: var(--app-dd-description-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .app-dd-item.is-active .app-dd-item-description {
-  color: rgb(100 116 139);
+  color: var(--app-dd-description-active-text);
 }
 
 .app-dd-item-suffix {
@@ -590,16 +642,16 @@ defineExpose({ close: () => (open.value = false) })
   font-size: 11px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  color: rgb(148 163 184);
+  color: var(--app-dd-suffix-text);
 }
 .app-dd-item.is-active .app-dd-item-suffix {
-  color: rgb(71 85 105);
+  color: var(--app-dd-suffix-active-text);
 }
 
 .app-dd-item-check {
   flex-shrink: 0;
   margin-left: 2px;
-  color: rgb(37 99 235); /* sky-600 调性色，active 项的“勾选” */
+  color: var(--app-dd-check-text);
   animation: app-dd-check-pop 0.36s cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
 
