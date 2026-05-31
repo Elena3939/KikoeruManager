@@ -3,36 +3,36 @@
     <!-- 页头：和库存页 / 操作记录页保持一致 -->
     <AppPageHeader
       :icon="DownloadIcon"
-      icon-color="#1d4ed8"
+      icon-color="var(--km-nav-asmr-icon)"
       title="ASMR 同步下载"
       subtitle="根据字幕文件自动下载并匹配，或手动输入 RJ 号查询下载"
     >
       <button
-        class="page-head-btn ghost btn-scan"
+        class="asmr-head-btn ghost btn-scan"
         type="button"
         :disabled="scanning || !subtitleFolder"
         @click="scanFolder"
       >
         <span class="page-head-btn-icon-swap-container">
           <Loader2 :size="13" :stroke-width="2.4" class="page-head-btn-icon-slot animate-spin" :class="{ 'is-visible': scanning }" />
-          <Search :size="13" :stroke-width="2.4" class="page-head-btn-icon-slot page-head-btn-icon" :class="{ 'is-visible': !scanning }" />
+          <Search :size="13" :stroke-width="2.4" class="page-head-btn-icon-slot asmr-head-btn-icon" :class="{ 'is-visible': !scanning }" />
         </span>
         <span class="page-head-btn-label">{{ scanning ? '扫描中…' : '扫描' }}</span>
       </button>
       <button
-        class="page-head-btn primary btn-download"
+        class="asmr-head-btn primary btn-download"
         type="button"
         :disabled="syncing || selectedItems.length === 0"
         @click="startSync"
       >
         <span class="page-head-btn-icon-swap-container">
           <Loader2 :size="13" :stroke-width="2.6" class="page-head-btn-icon-slot animate-spin" :class="{ 'is-visible': syncing }" />
-          <DownloadIcon :size="13" :stroke-width="2.6" class="page-head-btn-icon-slot page-head-btn-icon" :class="{ 'is-visible': !syncing }" />
+          <DownloadIcon :size="13" :stroke-width="2.6" class="page-head-btn-icon-slot asmr-head-btn-icon" :class="{ 'is-visible': !syncing }" />
         </span>
         <span class="page-head-btn-label">{{ syncing ? '同步中…' : '开始同步下载' }}</span>
       </button>
       <button
-        class="page-head-btn ghost btn-refresh"
+        class="asmr-head-btn ghost btn-refresh"
         type="button"
         :disabled="refreshing"
         title="刷新状态"
@@ -42,7 +42,7 @@
           <RefreshCw
             :size="13"
             :stroke-width="2.6"
-            class="page-head-btn-icon"
+            class="asmr-head-btn-icon"
             :class="{ 'animate-spin': refreshing }"
           />
         </span>
@@ -91,7 +91,7 @@
       </button>
     </section>
 
-    <Transition name="asmr-section" mode="out-in">
+    <Transition name="asmr-workspace-panel" mode="out-in" :duration="180">
       <AsmrEnhancedDownloadPanel
         v-if="activeWorkspaceTab === 'enhanced'"
         v-model:input="enhancedInput"
@@ -213,14 +213,14 @@
           <el-table-column prop="folder_name" label="文件夹名称" min-width="250">
             <template #default="{ row }">
               <div class="flex items-center gap-2">
-                <FolderIcon :size="14" :stroke-width="2.2" class="text-slate-400 shrink-0" />
-                <span class="text-sm text-slate-700 truncate">{{ row.folder_name }}</span>
+                <FolderIcon :size="14" :stroke-width="2.2" class="asmr-muted-icon shrink-0" />
+                <span class="asmr-cell-text text-sm truncate">{{ row.folder_name }}</span>
               </div>
             </template>
           </el-table-column>
           <el-table-column prop="subtitle_count" label="字幕数" width="80" align="center">
             <template #default="{ row }">
-              <span class="text-sm text-slate-600">{{ row.subtitle_count }}</span>
+              <span class="asmr-cell-text text-sm">{{ row.subtitle_count }}</span>
             </template>
           </el-table-column>
           <el-table-column label="预览" width="80" align="center">
@@ -258,17 +258,17 @@
           <Clock :size="14" :stroke-width="2.4" class="asmr-card-head-icon-amber" />
           <h2>等待重试 <span class="asmr-card-head-count">({{ waitingRetryTasks.length }})</span></h2>
         </div>
-        <span v-if="nextRetryTime" class="text-xs text-slate-500">下次：{{ formatNextRetryTime(nextRetryTime) }}</span>
+        <span v-if="nextRetryTime" class="asmr-muted-text text-xs">下次：{{ formatNextRetryTime(nextRetryTime) }}</span>
       </header>
       <TransitionGroup tag="div" name="asmr-list" class="asmr-card-body asmr-list">
         <div v-for="task in waitingRetryTasks" :key="task.id" class="asmr-list-row">
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2">
               <span class="asmr-rjcode">{{ task.rjcode }}</span>
-              <span class="text-sm text-slate-600 truncate">{{ task.work_title || task.task_metadata?.work_title }}</span>
+              <span class="asmr-cell-text text-sm truncate">{{ task.work_title || task.task_metadata?.work_title }}</span>
             </div>
-            <div class="flex items-center gap-3 mt-1 text-xs text-slate-500">
-              <span class="text-amber-600">{{ task.task_metadata?.retry_reason || task.current_step || '未找到版本' }}</span>
+            <div class="asmr-muted-text flex items-center gap-3 mt-1 text-xs">
+              <span class="asmr-warning-text">{{ task.task_metadata?.retry_reason || task.current_step || '未找到版本' }}</span>
               <span>已重试 {{ task.task_metadata?.retry_count || 0 }} 次</span>
             </div>
           </div>
@@ -309,8 +309,8 @@
           <div class="asmr-task-head">
             <div class="asmr-task-head-info">
               <span class="asmr-rjcode is-bold">{{ task.actual_rjcode || task.rjcode }}</span>
-              <span v-if="task.actual_rjcode && task.actual_rjcode !== task.rjcode" class="text-xs text-slate-400">(原: {{ task.rjcode }})</span>
-              <span class="text-sm text-slate-600 truncate">{{ task.work_title }}</span>
+              <span v-if="task.actual_rjcode && task.actual_rjcode !== task.rjcode" class="asmr-muted-text text-xs">(原: {{ task.rjcode }})</span>
+              <span class="asmr-cell-text text-sm truncate">{{ task.work_title }}</span>
             </div>
             <div class="asmr-task-head-actions">
               <span class="lib-chip" :class="{
@@ -335,7 +335,7 @@
           </div>
 
           <!-- 当前步骤 -->
-          <div class="flex items-center gap-1.5 mt-2 text-xs text-slate-500">
+          <div class="asmr-muted-text flex items-center gap-1.5 mt-2 text-xs">
             <AppLoadingAnimation v-if="task.status === 'processing'" variant="inline" :size="20" />
             <span>{{ task.current_step }}</span>
           </div>
@@ -354,10 +354,10 @@
             </summary>
             <div class="asmr-task-details-body">
               <div v-for="(item, idx) in task.sync_result.renamed_files" :key="idx" class="asmr-task-mapping">
-                <div class="flex items-baseline gap-2"><span class="asmr-task-mapping-label">原音频</span><span class="text-amber-600 font-medium truncate">{{ item.original }}</span></div>
+                <div class="flex items-baseline gap-2"><span class="asmr-task-mapping-label">原音频</span><span class="asmr-warning-text font-medium truncate">{{ item.original }}</span></div>
                 <div class="asmr-task-mapping-arrow">↓</div>
-                <div class="flex items-baseline gap-2"><span class="asmr-task-mapping-label">重命名</span><span class="text-blue-600 font-medium truncate">{{ item.new }}</span></div>
-                <div class="flex items-baseline gap-2"><span class="asmr-task-mapping-label">字幕</span><span class="text-emerald-600 font-medium truncate">{{ item.subtitle }}</span></div>
+                <div class="flex items-baseline gap-2"><span class="asmr-task-mapping-label">重命名</span><span class="asmr-accent-text font-medium truncate">{{ item.new }}</span></div>
+                <div class="flex items-baseline gap-2"><span class="asmr-task-mapping-label">字幕</span><span class="asmr-success-text font-medium truncate">{{ item.subtitle }}</span></div>
               </div>
             </div>
           </details>
@@ -370,8 +370,8 @@
             </summary>
             <div class="asmr-task-details-body">
               <div v-for="(file, idx) in task.failed_files" :key="idx" class="asmr-task-failed-item">
-                <span class="text-slate-600 truncate">{{ file.title || file.path }}</span>
-                <span class="text-red-600 shrink-0 ml-2">{{ file.reason }}</span>
+                <span class="asmr-cell-text truncate">{{ file.title || file.path }}</span>
+                <span class="asmr-danger-text shrink-0 ml-2">{{ file.reason }}</span>
               </div>
             </div>
           </details>
@@ -384,7 +384,7 @@
             </summary>
             <div class="asmr-task-details-body">
               <div v-for="file in task.download_files" :key="file.name" class="asmr-task-file-row">
-                <span class="flex-1 min-w-0 truncate text-slate-700">{{ file.name }}</span>
+                <span class="asmr-cell-text flex-1 min-w-0 truncate">{{ file.name }}</span>
                 <div class="asmr-task-file-progress">
                   <div class="asmr-task-file-progress-bar" :style="{ width: file.progress + '%' }" />
                 </div>
@@ -399,75 +399,75 @@
 
     <!-- Preview Dialog -->
     <!-- mobile-full-dialog 类让 ≤640 自动 100vw/100dvh，桌面 width=900px 不变 -->
-    <el-dialog v-model="previewDialogVisible" title="下载预览" width="900px" class="rounded-2xl mobile-full-dialog">
+    <el-dialog v-model="previewDialogVisible" title="下载预览" width="900px" class="asmr-dialog-theme rounded-2xl mobile-full-dialog">
       <div v-if="previewLoading" class="flex items-center justify-center py-10">
         <AppLoadingAnimation label="正在获取作品信息..." :size="132" :min-height="180" />
       </div>
       <div v-else-if="previewData" class="space-y-5">
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div class="bg-slate-50 rounded-xl p-3 border border-slate-100">
-            <div class="text-xs text-slate-500 mb-1">请求 RJ 号</div>
-            <div class="font-mono font-semibold text-slate-900">{{ previewData.rjcode }}</div>
+          <div class="asmr-preview-stat rounded-xl p-3">
+            <div class="asmr-muted-text text-xs mb-1">请求 RJ 号</div>
+            <div class="asmr-strong-text font-mono font-semibold">{{ previewData.rjcode }}</div>
           </div>
-          <div class="bg-slate-50 rounded-xl p-3 border border-slate-100">
-            <div class="text-xs text-slate-500 mb-1">实际下载</div>
+          <div class="asmr-preview-stat rounded-xl p-3">
+            <div class="asmr-muted-text text-xs mb-1">实际下载</div>
             <div class="flex items-center gap-2">
-              <span class="font-mono font-semibold" :class="previewData.actual_rjcode !== previewData.rjcode ? 'text-amber-600' : 'text-emerald-600'">{{ previewData.actual_rjcode || '未找到' }}</span>
-              <span v-if="previewData.lang" class="text-xs text-slate-500">({{ previewData.lang }})</span>
+              <span class="font-mono font-semibold" :class="previewData.actual_rjcode !== previewData.rjcode ? 'asmr-warning-text' : 'asmr-success-text'">{{ previewData.actual_rjcode || '未找到' }}</span>
+              <span v-if="previewData.lang" class="asmr-muted-text text-xs">({{ previewData.lang }})</span>
             </div>
           </div>
-          <div class="bg-slate-50 rounded-xl p-3 border border-slate-100">
-            <div class="text-xs text-slate-500 mb-1">预计大小</div>
-            <div class="font-semibold text-blue-600">{{ formatSize(previewData.total_size) }}</div>
+          <div class="asmr-preview-stat rounded-xl p-3">
+            <div class="asmr-muted-text text-xs mb-1">预计大小</div>
+            <div class="asmr-accent-text font-semibold">{{ formatSize(previewData.total_size) }}</div>
           </div>
         </div>
-        <div class="flex items-center gap-4 text-sm text-slate-600">
-          <span>标题: <strong class="text-slate-900">{{ previewData.title }}</strong></span>
-          <span>文件: {{ previewData.total_files }} → <strong class="text-emerald-600">{{ previewData.filtered_files }}</strong></span>
+        <div class="asmr-cell-text flex items-center gap-4 text-sm">
+          <span>标题: <strong class="asmr-strong-text">{{ previewData.title }}</strong></span>
+          <span>文件: {{ previewData.total_files }} → <strong class="asmr-success-text">{{ previewData.filtered_files }}</strong></span>
         </div>
 
         <!-- Available Versions -->
         <div v-if="previewData.available_versions?.length">
-          <h4 class="text-sm font-semibold text-slate-700 mb-2">可用版本</h4>
+          <h4 class="asmr-section-title text-sm font-semibold mb-2">可用版本</h4>
           <div class="space-y-1.5">
             <div v-for="ver in previewData.available_versions" :key="ver.rjcode"
-              class="flex items-center gap-3 px-3 py-2 bg-slate-50 rounded-lg border border-slate-100 text-sm"
+              class="asmr-preview-row flex items-center gap-3 px-3 py-2 rounded-lg text-sm"
             >
-              <span class="font-mono font-semibold text-slate-900 w-24">{{ ver.rjcode }}</span>
-              <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium border" :class="{
-                'bg-emerald-50 text-emerald-700 border-emerald-200': ver.priority <= 1,
-                'bg-amber-50 text-amber-700 border-amber-200': ver.priority === 2,
-                'bg-slate-100 text-slate-600 border-slate-200': ver.priority > 2,
+              <span class="asmr-strong-text font-mono font-semibold w-24">{{ ver.rjcode }}</span>
+              <span class="asmr-dialog-chip" :class="{
+                'is-success': ver.priority <= 1,
+                'is-warning': ver.priority === 2,
+                'is-muted': ver.priority > 2,
               }">{{ getLangName(ver.lang) }}</span>
-              <span class="text-slate-500">{{ ver.file_count }} 文件</span>
-              <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px]" :class="ver.available ? 'text-emerald-600 bg-emerald-50' : 'text-red-600 bg-red-50'">{{ ver.available ? '可用' : '不可用' }}</span>
-              <span class="text-slate-500 truncate flex-1">{{ ver.title }}</span>
+              <span class="asmr-muted-text">{{ ver.file_count }} 文件</span>
+              <span class="asmr-dialog-chip is-compact" :class="ver.available ? 'is-success' : 'is-danger'">{{ ver.available ? '可用' : '不可用' }}</span>
+              <span class="asmr-muted-text truncate flex-1">{{ ver.title }}</span>
             </div>
           </div>
         </div>
 
         <!-- File List -->
         <div>
-          <h4 class="text-sm font-semibold text-slate-700 mb-2">下载文件 ({{ previewData.filtered_files }})</h4>
+          <h4 class="asmr-section-title text-sm font-semibold mb-2">下载文件 ({{ previewData.filtered_files }})</h4>
           <div class="overflow-auto" style="max-height: 350px;">
             <el-table :data="previewData.files" size="small">
               <el-table-column type="index" label="#" width="50" />
               <el-table-column label="文件路径" min-width="300">
                 <template #default="{ row }">
                   <div class="flex items-center gap-1.5 text-sm">
-                    <FileIcon class="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                    <FileIcon class="asmr-muted-icon w-3.5 h-3.5 shrink-0" />
                     <span class="truncate" :title="row.path || row.title">{{ row.title }}</span>
                   </div>
                 </template>
               </el-table-column>
               <el-table-column prop="type" label="类型" width="80">
                 <template #default="{ row }">
-                  <span class="text-xs text-slate-500">{{ row.type || '文件' }}</span>
+                  <span class="asmr-muted-text text-xs">{{ row.type || '文件' }}</span>
                 </template>
               </el-table-column>
               <el-table-column label="大小" width="100">
                 <template #default="{ row }">
-                  <span class="text-xs font-mono text-slate-600">{{ formatSize(row.size) }}</span>
+                  <span class="asmr-cell-text text-xs font-mono">{{ formatSize(row.size) }}</span>
                 </template>
               </el-table-column>
             </el-table>
@@ -481,36 +481,36 @@
 
     <!-- Enhanced Session Drawer -->
     <!-- ≤640 抽屉占满整屏，桌面端保留 55% 侧滑 -->
-    <el-drawer v-model="enhancedSessionDrawerVisible" :size="isMobileViewport ? '100%' : '55%'" :title="enhancedSessionDetail?.rjcode ? `${enhancedSessionDetail.rjcode} 会话详情` : '会话详情'">
+    <el-drawer v-model="enhancedSessionDrawerVisible" class="asmr-dialog-theme" :size="isMobileViewport ? '100%' : '55%'" :title="enhancedSessionDetail?.rjcode ? `${enhancedSessionDetail.rjcode} 会话详情` : '会话详情'">
       <div v-app-loading="{ loading: enhancedSessionDetailLoading, text: '正在加载增强下载详情...', size: 124 }">
         <template v-if="enhancedSessionDetail">
           <div class="flex flex-wrap gap-2 mb-4">
-            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200">{{ getSessionStatusLabel(enhancedSessionDetail.status) }}</span>
-            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">优先级 {{ enhancedSessionDetail.queue_priority }}</span>
-            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">{{ getUploadModeLabel(enhancedSessionDetail.upload_mode) }}</span>
+            <span class="asmr-dialog-chip is-info">{{ getSessionStatusLabel(enhancedSessionDetail.status) }}</span>
+            <span class="asmr-dialog-chip is-muted">优先级 {{ enhancedSessionDetail.queue_priority }}</span>
+            <span class="asmr-dialog-chip is-muted">{{ getUploadModeLabel(enhancedSessionDetail.upload_mode) }}</span>
           </div>
 
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
-            <div class="bg-slate-50 rounded-lg p-3 border border-slate-100">
-              <div class="text-xs text-slate-500">标题</div>
-              <div class="text-sm text-slate-900 font-medium mt-0.5">{{ enhancedSessionDetail.source_label || '未命名会话' }}</div>
+            <div class="asmr-preview-stat rounded-lg p-3">
+              <div class="asmr-muted-text text-xs">标题</div>
+              <div class="asmr-strong-text text-sm font-medium mt-0.5">{{ enhancedSessionDetail.source_label || '未命名会话' }}</div>
             </div>
-            <div class="bg-slate-50 rounded-lg p-3 border border-slate-100">
-              <div class="text-xs text-slate-500">目标路径</div>
-              <div class="text-sm text-slate-900 font-mono mt-0.5 break-all">{{ enhancedSessionDetail.target_path || '未设置' }}</div>
+            <div class="asmr-preview-stat rounded-lg p-3">
+              <div class="asmr-muted-text text-xs">目标路径</div>
+              <div class="asmr-strong-text text-sm font-mono mt-0.5 break-all">{{ enhancedSessionDetail.target_path || '未设置' }}</div>
             </div>
-            <div class="bg-slate-50 rounded-lg p-3 border border-slate-100">
-              <div class="text-xs text-slate-500">已选/已上传</div>
-              <div class="text-sm text-slate-900 font-medium mt-0.5">{{ enhancedSessionDetail.statistics?.selected_resource_count || 0 }} / {{ enhancedSessionDetail.statistics?.uploaded_count || 0 }}</div>
+            <div class="asmr-preview-stat rounded-lg p-3">
+              <div class="asmr-muted-text text-xs">已选/已上传</div>
+              <div class="asmr-strong-text text-sm font-medium mt-0.5">{{ enhancedSessionDetail.statistics?.selected_resource_count || 0 }} / {{ enhancedSessionDetail.statistics?.uploaded_count || 0 }}</div>
             </div>
-            <div class="bg-slate-50 rounded-lg p-3 border border-slate-100">
-              <div class="text-xs text-slate-500">成功/失败/MD5失败</div>
+            <div class="asmr-preview-stat rounded-lg p-3">
+              <div class="asmr-muted-text text-xs">成功/失败/MD5失败</div>
               <div class="text-sm font-medium mt-0.5">
-                <span class="text-emerald-600">{{ enhancedSessionDetail.statistics?.success_count || 0 }}</span>
-                <span class="text-slate-400 mx-1">/</span>
-                <span class="text-red-600">{{ enhancedSessionDetail.statistics?.failed_count || 0 }}</span>
-                <span class="text-slate-400 mx-1">/</span>
-                <span class="text-amber-600">{{ enhancedSessionDetail.statistics?.verify_summary?.failed || 0 }}</span>
+                <span class="asmr-success-text">{{ enhancedSessionDetail.statistics?.success_count || 0 }}</span>
+                <span class="asmr-muted-text mx-1">/</span>
+                <span class="asmr-danger-text">{{ enhancedSessionDetail.statistics?.failed_count || 0 }}</span>
+                <span class="asmr-muted-text mx-1">/</span>
+                <span class="asmr-warning-text">{{ enhancedSessionDetail.statistics?.verify_summary?.failed || 0 }}</span>
               </div>
             </div>
           </div>
@@ -676,42 +676,42 @@ const enhancedMetricCards = computed(() => {
       value: dashboard.total_rj || 0,
       help: '资源库中已记录的作品数',
       icon: Database,
-      iconClass: 'text-blue-500',
+      iconClass: 'asmr-metric-icon-info',
     },
     {
       label: '资源条目',
       value: dashboard.total_resources || 0,
       help: '已抓取并落库的远端资源',
       icon: Package,
-      iconClass: 'text-indigo-500',
+      iconClass: 'asmr-metric-icon-info',
     },
     {
       label: '已下载',
       value: dashboard.downloaded_resources || 0,
       help: '已完成下载的文件数',
       icon: CloudDownload,
-      iconClass: 'text-emerald-500',
+      iconClass: 'asmr-metric-icon-success',
     },
     {
       label: '已上传',
       value: dashboard.uploaded_resources || 0,
       help: '已进入自动上传管道的文件数',
       icon: Upload,
-      iconClass: 'text-cyan-500',
+      iconClass: 'asmr-metric-icon-info',
     },
     {
       label: '处理中',
       value: dashboard.processing_tasks || 0,
       help: '当前运行中的增强下载任务',
       icon: Activity,
-      iconClass: 'text-amber-500',
+      iconClass: 'asmr-metric-icon-warning',
     },
     {
       label: '待处理 / 失败',
       value: `${dashboard.pending_tasks || 0} / ${dashboard.failed_tasks || 0}`,
       help: '当前排队与失败任务概况',
       icon: Hourglass,
-      iconClass: 'text-rose-500',
+      iconClass: 'asmr-metric-icon-danger',
     },
   ]
 })
@@ -823,7 +823,9 @@ const httpDownloadBackgroundCardProps = computed(() => ({
   subtitle: httpDownloadActiveBackgroundTask.value
     ? `${httpDownloadActiveBackgroundTask.value.work_title || httpDownloadActiveBackgroundTask.value.source_label || 'HTTP 下载'}`
     : '保留 aria2 下载队列与进度',
-  metaText: `总进度: ${httpDownloadBackgroundPercent.value}%`,
+  metaText: httpDownloadBackgroundFailed.value
+    ? `总进度: ${httpDownloadBackgroundPercent.value}% · 需要处理`
+    : `总进度: ${httpDownloadBackgroundPercent.value}%`,
   percentage: httpDownloadBackgroundPercent.value,
   completed: httpDownloadBackgroundCompleted.value,
   metrics: [
@@ -832,7 +834,9 @@ const httpDownloadBackgroundCardProps = computed(() => ({
     { key: 'completed', label: '完成', value: httpDownloadCompletedTasks.value.length, tone: 'success' },
     { key: 'failed', label: '失败', value: httpDownloadFailedTasks.value.length, tone: httpDownloadFailedTasks.value.length ? 'danger' : 'neutral' }
   ],
-  detailText: httpDownloadActiveBackgroundTask.value?.current_step || '隐藏后继续保留 HTTP 下载队列和进度。',
+  detailText: httpDownloadBackgroundFailed.value
+    ? (httpDownloadActiveBackgroundTask.value?.failure_reason || httpDownloadActiveBackgroundTask.value?.current_step || '下载失败，需要打开工作台处理。')
+    : (httpDownloadActiveBackgroundTask.value?.current_step || '隐藏后继续保留 HTTP 下载队列和进度。'),
   actions: [
     { key: 'close', label: '关闭' },
     { key: 'resume', label: '恢复工作台', variant: 'blue' }
@@ -1808,6 +1812,95 @@ button:disabled { cursor: not-allowed; }
 /* ==============================================================
  * 页面整体布局：与库存页 / 操作记录页保持一致
  * ============================================================ */
+.asmr-page,
+:global(.asmr-dialog-theme) {
+  --asmr-surface: #ffffff;
+  --asmr-surface-soft: #f8fafc;
+  --asmr-surface-muted: #f1f5f9;
+  --asmr-surface-hover: #f8fafc;
+  --asmr-field-bg: rgba(248, 250, 252, 0.92);
+  --asmr-field-bg-focus: #ffffff;
+  --asmr-field-placeholder: #94a3b8;
+  --asmr-focus-ring: rgba(59, 130, 246, 0.12);
+  --asmr-border: rgba(15, 23, 42, 0.08);
+  --asmr-border-strong: rgba(15, 23, 42, 0.16);
+  --asmr-divider: rgba(15, 23, 42, 0.1);
+  --asmr-text: #475569;
+  --asmr-text-strong: #0f172a;
+  --asmr-text-muted: #94a3b8;
+  --asmr-accent: #2563eb;
+  --asmr-accent-hover: #1d4ed8;
+  --asmr-card-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -16px rgba(15, 23, 42, 0.08);
+  --asmr-control-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+  --asmr-primary-bg: linear-gradient(135deg, #111827, #1e293b);
+  --asmr-primary-bg-hover: linear-gradient(135deg, #1e293b, #334155);
+  --asmr-primary-text: #ffffff;
+  --asmr-tab-active-bg: linear-gradient(180deg, #eff6ff, #ffffff);
+  --asmr-tab-active-border: rgba(37, 99, 235, 0.16);
+  --asmr-tab-active-text: #0f172a;
+  --asmr-tab-badge-bg: rgba(37, 99, 235, 0.1);
+  --asmr-tab-badge-text: #1d4ed8;
+  --asmr-info-bg: rgba(224, 231, 255, 0.85);
+  --asmr-info-text: #4338ca;
+  --asmr-info-border: rgba(165, 180, 252, 0.5);
+  --asmr-success-bg: rgba(220, 252, 231, 0.85);
+  --asmr-success-text: #047857;
+  --asmr-success-border: rgba(134, 239, 172, 0.5);
+  --asmr-warning-bg: rgba(254, 243, 199, 0.85);
+  --asmr-warning-text: #b45309;
+  --asmr-warning-border: rgba(253, 224, 71, 0.5);
+  --asmr-danger-bg: rgba(254, 226, 226, 0.85);
+  --asmr-danger-text: #b91c1c;
+  --asmr-danger-border: rgba(252, 165, 165, 0.5);
+  --asmr-chip-muted-bg: rgba(241, 245, 249, 0.85);
+  --asmr-chip-muted-text: #475569;
+  --asmr-chip-muted-border: rgba(203, 213, 225, 0.55);
+}
+
+:global(html.kikoerumanager-dark .asmr-page),
+:global(html.kikoerumanager-dark .asmr-dialog-theme) {
+  --asmr-surface: #111216;
+  --asmr-surface-soft: #17181d;
+  --asmr-surface-muted: #24252a;
+  --asmr-surface-hover: #202126;
+  --asmr-field-bg: #17181d;
+  --asmr-field-bg-focus: #1d1e23;
+  --asmr-field-placeholder: rgba(228, 228, 231, 0.45);
+  --asmr-focus-ring: rgba(255, 255, 255, 0.1);
+  --asmr-border: rgba(255, 255, 255, 0.11);
+  --asmr-border-strong: rgba(255, 255, 255, 0.2);
+  --asmr-divider: rgba(255, 255, 255, 0.12);
+  --asmr-text: rgba(228, 228, 231, 0.78);
+  --asmr-text-strong: #f4f4f5;
+  --asmr-text-muted: rgba(228, 228, 231, 0.58);
+  --asmr-accent: #e7e7eb;
+  --asmr-accent-hover: #ffffff;
+  --asmr-card-shadow: none;
+  --asmr-control-shadow: none;
+  --asmr-primary-bg: #e7e7eb;
+  --asmr-primary-bg-hover: #f4f4f5;
+  --asmr-primary-text: #111116;
+  --asmr-tab-active-bg: #e7e7eb;
+  --asmr-tab-active-border: rgba(255, 255, 255, 0.32);
+  --asmr-tab-active-text: #111116;
+  --asmr-tab-badge-bg: rgba(17, 17, 22, 0.1);
+  --asmr-tab-badge-text: #111116;
+  --asmr-info-bg: rgba(255, 255, 255, 0.1);
+  --asmr-info-text: rgba(244, 244, 245, 0.88);
+  --asmr-info-border: rgba(255, 255, 255, 0.14);
+  --asmr-success-bg: rgba(16, 185, 129, 0.16);
+  --asmr-success-text: #a7f3d0;
+  --asmr-success-border: rgba(110, 231, 183, 0.24);
+  --asmr-warning-bg: rgba(245, 158, 11, 0.16);
+  --asmr-warning-text: #fde68a;
+  --asmr-warning-border: rgba(251, 191, 36, 0.24);
+  --asmr-danger-bg: rgba(244, 63, 94, 0.16);
+  --asmr-danger-text: #fecdd3;
+  --asmr-danger-border: rgba(251, 113, 133, 0.24);
+  --asmr-chip-muted-bg: rgba(255, 255, 255, 0.08);
+  --asmr-chip-muted-text: rgba(228, 228, 231, 0.72);
+  --asmr-chip-muted-border: rgba(255, 255, 255, 0.12);
+}
 .asmr-page {
   display: flex;
   flex-direction: column;
@@ -1819,11 +1912,11 @@ button:disabled { cursor: not-allowed; }
 .asmr-page > div { flex-shrink: 0; }
 
 /* ==============================================================
- * 页头按钮：page-head-btn 规范（对齐 ActivityHistory.vue）
+ * 页头按钮：ASMR 自有按钮源样式
  *  - 基础 ghost 白底
  *  - .primary 黑灰渐变 + 软阴影
  * ============================================================ */
-.page-head-btn {
+.asmr-head-btn {
   position: relative;
   display: inline-flex;
   align-items: center;
@@ -1832,9 +1925,9 @@ button:disabled { cursor: not-allowed; }
   height: 36px;
   padding: 0 14px;
   border-radius: 10px;
-  border: 1px solid rgba(15, 23, 42, 0.12);
-  background: #fff;
-  color: #1e293b;
+  border: 1px solid var(--asmr-border-strong);
+  background: var(--asmr-surface);
+  color: var(--asmr-text-strong);
   font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
@@ -1850,11 +1943,11 @@ button:disabled { cursor: not-allowed; }
   will-change: transform, opacity;
 }
 /* 通用图标动画基线（Loader2 spin 不在此选择器范围，避免冲突） */
-.page-head-btn :deep(.page-head-btn-icon) {
+.asmr-head-btn :deep(.asmr-head-btn-icon) {
   flex-shrink: 0;
   transition: transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.3s ease;
 }
-.page-head-btn :deep(svg) { flex-shrink: 0; }
+.asmr-head-btn :deep(svg) { flex-shrink: 0; }
 
 /* 图标包裹层：固定尺寸 + 居中，让 swap Transition 不影响按钮整体宽高 */
 .page-head-btn-icon-wrap {
@@ -1867,11 +1960,11 @@ button:disabled { cursor: not-allowed; }
 }
 
 /* 关键：hover 不依赖 :not(:disabled)，避免点击瞬间 disabled 切换导致按钮塌回 base 闪烁 */
-.page-head-btn:hover {
+.asmr-head-btn:hover {
   transform: translateY(-2px) scale(1.02);
-  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+  box-shadow: var(--asmr-control-shadow);
 }
-.page-head-btn:active:not(:disabled) {
+.asmr-head-btn:active:not(:disabled) {
   transform: scale(0.96);
   transition:
     transform 0.12s ease,
@@ -1882,24 +1975,24 @@ button:disabled { cursor: not-allowed; }
     opacity 0.2s ease;
 }
 /* 按下瞬间图标短暂缩放反馈 */
-.page-head-btn:active:not(:disabled) :deep(.page-head-btn-icon) {
+.asmr-head-btn:active:not(:disabled) :deep(.asmr-head-btn-icon) {
   transform: scale(0.82);
   transition: transform 0.12s ease;
 }
 /* disabled：仅改 opacity / cursor，不重置 transform / box-shadow，让 hover 视觉与 enabled 一致，消除点击瞬间跳变 */
-.page-head-btn:disabled {
+.asmr-head-btn:disabled {
   opacity: 0.7;
   cursor: not-allowed;
 }
 
 /* === Primary 黑灰渐变按钮 + shimmer 高光扫光 === */
-.page-head-btn.primary {
-  background: linear-gradient(135deg, #111827, #1e293b);
-  color: #fff;
+.asmr-head-btn.primary {
+  background: var(--asmr-primary-bg);
+  color: var(--asmr-primary-text);
   border-color: transparent;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.18);
+  box-shadow: var(--asmr-control-shadow);
 }
-.page-head-btn.primary::before {
+.asmr-head-btn.primary::before {
   content: '';
   position: absolute;
   top: 0;
@@ -1918,28 +2011,26 @@ button:disabled { cursor: not-allowed; }
   transition: left 0.7s cubic-bezier(0.4, 0, 0.2, 1);
   pointer-events: none;
 }
-.page-head-btn.primary:hover {
-  background: linear-gradient(135deg, #1e293b, #334155);
-  box-shadow:
-    0 14px 28px rgba(15, 23, 42, 0.28),
-    0 0 0 4px rgba(15, 23, 42, 0.05);
+.asmr-head-btn.primary:hover {
+  background: var(--asmr-primary-bg-hover);
+  box-shadow: var(--asmr-control-shadow);
 }
-.page-head-btn.primary:hover::before {
+.asmr-head-btn.primary:hover::before {
   left: 130%;
 }
 
 /* === Ghost 白底按钮 hover 时纯色变化（避免 gradient 不能 transition 造成瞬切）=== */
-.page-head-btn.ghost {
-  background-color: #fff;
+.asmr-head-btn.ghost {
+  background-color: var(--asmr-surface);
 }
-.page-head-btn.ghost:hover {
-  background-color: #f8fafc;
-  border-color: rgba(15, 23, 42, 0.2);
+.asmr-head-btn.ghost:hover {
+  background-color: var(--asmr-surface-hover);
+  border-color: var(--asmr-border-strong);
 }
 
 /* === 各按钮专属图标动效 === */
 /* 扫描：Search 图标 hover 时左摆 + 放大（模拟搜索动作） */
-.page-head-btn.btn-scan:hover:not(:disabled) :deep(.page-head-btn-icon) {
+.asmr-head-btn.btn-scan:hover:not(:disabled) :deep(.asmr-head-btn-icon) {
   animation: scan-icon-wiggle 0.7s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 @keyframes scan-icon-wiggle {
@@ -1951,7 +2042,7 @@ button:disabled { cursor: not-allowed; }
 }
 
 /* 开始同步下载：DownloadIcon 箭头 hover 时下移 + 缩放（模拟下载方向）+ 白色发光 */
-.page-head-btn.btn-download:hover:not(:disabled) :deep(.page-head-btn-icon) {
+.asmr-head-btn.btn-download:hover:not(:disabled) :deep(.asmr-head-btn-icon) {
   transform: translateY(2px) scale(1.18);
   filter: drop-shadow(0 2px 5px rgba(255, 255, 255, 0.45));
   animation: download-icon-bob 1.2s ease-in-out infinite;
@@ -1962,7 +2053,7 @@ button:disabled { cursor: not-allowed; }
 }
 
 /* 刷新：RefreshCw 图标 hover 时旋转一整圈（非 loading 态）*/
-.page-head-btn.btn-refresh:hover:not(:disabled) :deep(.page-head-btn-icon:not(.animate-spin)) {
+.asmr-head-btn.btn-refresh:hover:not(:disabled) :deep(.asmr-head-btn-icon:not(.animate-spin)) {
   transform: rotate(-360deg) scale(1.1);
   transition: transform 0.6s cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -1973,30 +2064,30 @@ button:disabled { cursor: not-allowed; }
   text-align: center;
   transition: opacity 0.2s ease, letter-spacing 0.3s ease;
 }
-.page-head-btn.primary .page-head-btn-label { min-width: 86px; }
-.page-head-btn.ghost .page-head-btn-label { min-width: 42px; }
+.asmr-head-btn.primary .page-head-btn-label { min-width: 86px; }
+.asmr-head-btn.ghost .page-head-btn-label { min-width: 42px; }
 /* hover 时文字微微展开间距（不依赖 :not(:disabled)，避免点击瞬间跳变） */
-.page-head-btn:hover .page-head-btn-label {
+.asmr-head-btn:hover .page-head-btn-label {
   letter-spacing: 0.04em;
 }
 
 /* === 图标 swap Transition：Loader2 ↔ Search/DownloadIcon 切换时平滑过渡 === */
-.page-head-btn :deep(.page-head-icon-swap-enter-active) {
+.asmr-head-btn :deep(.page-head-icon-swap-enter-active) {
   transition:
     opacity 0.2s cubic-bezier(0.22, 1, 0.36, 1),
     transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-.page-head-btn :deep(.page-head-icon-swap-leave-active) {
+.asmr-head-btn :deep(.page-head-icon-swap-leave-active) {
   transition:
     opacity 0.14s ease,
     transform 0.18s ease;
   position: absolute;
 }
-.page-head-btn :deep(.page-head-icon-swap-enter-from) {
+.asmr-head-btn :deep(.page-head-icon-swap-enter-from) {
   opacity: 0;
   transform: scale(0.4) rotate(-90deg);
 }
-.page-head-btn :deep(.page-head-icon-swap-leave-to) {
+.asmr-head-btn :deep(.page-head-icon-swap-leave-to) {
   opacity: 0;
   transform: scale(0.4) rotate(90deg);
 }
@@ -2027,6 +2118,16 @@ button:disabled { cursor: not-allowed; }
 .asmr-section-leave-to {
   opacity: 0;
   transform: translateY(-6px) scale(0.99);
+}
+
+.asmr-workspace-panel-enter-active,
+.asmr-workspace-panel-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.asmr-workspace-panel-enter-from,
+.asmr-workspace-panel-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
 }
 
 /* 列表项进出（TransitionGroup name="asmr-list"） */
@@ -2113,9 +2214,9 @@ button:disabled { cursor: not-allowed; }
   margin-bottom: 0;
   padding: 16px 20px;
   border-radius: 14px;
-  background: #fff;
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -16px rgba(15, 23, 42, 0.08);
+  background: var(--asmr-surface);
+  border: 1px solid var(--asmr-border);
+  box-shadow: var(--asmr-card-shadow);
 }
 /* 6 项：5 条 divider 即可 */
 .asmr-info-strip {
@@ -2139,7 +2240,7 @@ button:disabled { cursor: not-allowed; }
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: #94a3b8;
+  color: var(--asmr-text-muted);
   margin-bottom: 4px;
   white-space: nowrap;
   overflow: hidden;
@@ -2147,7 +2248,7 @@ button:disabled { cursor: not-allowed; }
 }
 .lib-info-value {
   font-size: 13.5px;
-  color: #475569;
+  color: var(--asmr-text);
   line-height: 1.3;
   display: flex;
   align-items: baseline;
@@ -2159,12 +2260,12 @@ button:disabled { cursor: not-allowed; }
   font-weight: 700;
   font-size: 20px;
   letter-spacing: -0.4px;
-  color: #0f172a;
+  color: var(--asmr-text-strong);
   font-variant-numeric: tabular-nums;
 }
 .lib-info-divider {
   width: 1px;
-  background: linear-gradient(180deg, transparent, rgba(15, 23, 42, 0.1), transparent);
+  background: linear-gradient(180deg, transparent, var(--asmr-divider), transparent);
   align-self: stretch;
 }
 
@@ -2174,9 +2275,9 @@ button:disabled { cursor: not-allowed; }
   gap: 6px;
   padding: 6px;
   border-radius: 14px;
-  background: #fff;
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -16px rgba(15, 23, 42, 0.08);
+  background: var(--asmr-surface);
+  border: 1px solid var(--asmr-border);
+  box-shadow: var(--asmr-card-shadow);
 }
 .asmr-workspace-tab {
   display: inline-flex;
@@ -2188,7 +2289,7 @@ button:disabled { cursor: not-allowed; }
   border-radius: 10px;
   border: 1px solid transparent;
   background: transparent;
-  color: #64748b;
+  color: var(--asmr-text);
   font-size: 13px;
   font-weight: 650;
   white-space: nowrap;
@@ -2196,13 +2297,13 @@ button:disabled { cursor: not-allowed; }
 }
 .asmr-workspace-tab:hover {
   transform: translateY(-1px);
-  color: #0f172a;
-  background: #f8fafc;
+  color: var(--asmr-text-strong);
+  background: var(--asmr-surface-hover);
 }
 .asmr-workspace-tab.is-active {
-  color: #0f172a;
-  border-color: rgba(37, 99, 235, 0.16);
-  background: linear-gradient(180deg, #eff6ff, #fff);
+  color: var(--asmr-tab-active-text);
+  border-color: var(--asmr-tab-active-border);
+  background: var(--asmr-tab-active-bg);
   box-shadow: 0 8px 18px -14px rgba(37, 99, 235, 0.45);
 }
 .asmr-workspace-tab b {
@@ -2213,8 +2314,8 @@ button:disabled { cursor: not-allowed; }
   height: 20px;
   padding: 0 6px;
   border-radius: 999px;
-  background: rgba(37, 99, 235, 0.1);
-  color: #1d4ed8;
+  background: var(--asmr-tab-badge-bg);
+  color: var(--asmr-tab-badge-text);
   font-size: 11px;
   font-weight: 800;
 }
@@ -2225,12 +2326,12 @@ button:disabled { cursor: not-allowed; }
     padding: 16px 18px;
   }
   .lib-info-divider { display: none; }
-  .lib-info-item { padding: 0 14px; border-right: 1px solid rgba(15, 23, 42, 0.06); }
+  .lib-info-item { padding: 0 14px; border-right: 1px solid var(--asmr-border); }
   .lib-info-item:nth-child(3n) { border-right: 0; }
 }
 @media (max-width: 720px) {
   .asmr-info-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .lib-info-item:nth-child(3n) { border-right: 1px solid rgba(15, 23, 42, 0.06); }
+  .lib-info-item:nth-child(3n) { border-right: 1px solid var(--asmr-border); }
   .lib-info-item:nth-child(2n) { border-right: 0; }
   .asmr-workspace-tabs {
     display: grid;
@@ -2260,11 +2361,11 @@ button:disabled { cursor: not-allowed; }
   font-weight: 600;
   white-space: nowrap;
 }
-.lib-chip-success { background: rgba(220, 252, 231, 0.85); color: #047857; border: 1px solid rgba(134, 239, 172, 0.5); }
-.lib-chip-warning { background: rgba(254, 243, 199, 0.85); color: #b45309; border: 1px solid rgba(253, 224, 71, 0.5); }
-.lib-chip-danger  { background: rgba(254, 226, 226, 0.85); color: #b91c1c; border: 1px solid rgba(252, 165, 165, 0.5); }
-.lib-chip-info    { background: rgba(224, 231, 255, 0.85); color: #4338ca; border: 1px solid rgba(165, 180, 252, 0.5); }
-.lib-chip-slate   { background: rgba(241, 245, 249, 0.85); color: #475569; border: 1px solid rgba(203, 213, 225, 0.55); }
+.lib-chip-success { background: var(--asmr-success-bg); color: var(--asmr-success-text); border: 1px solid var(--asmr-success-border); }
+.lib-chip-warning { background: var(--asmr-warning-bg); color: var(--asmr-warning-text); border: 1px solid var(--asmr-warning-border); }
+.lib-chip-danger  { background: var(--asmr-danger-bg); color: var(--asmr-danger-text); border: 1px solid var(--asmr-danger-border); }
+.lib-chip-info    { background: var(--asmr-info-bg); color: var(--asmr-info-text); border: 1px solid var(--asmr-info-border); }
+.lib-chip-slate   { background: var(--asmr-chip-muted-bg); color: var(--asmr-chip-muted-text); border: 1px solid var(--asmr-chip-muted-border); }
 
 /* ==============================================================
  * 主卡片 asmr-card：和 conflicts-info-card / subtitle-info-card 同款
@@ -2273,14 +2374,14 @@ button:disabled { cursor: not-allowed; }
   display: flex;
   flex-direction: column;
   border-radius: 14px;
-  background: #fff;
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -16px rgba(15, 23, 42, 0.08);
+  background: var(--asmr-surface);
+  border: 1px solid var(--asmr-border);
+  box-shadow: var(--asmr-card-shadow);
   overflow: hidden;
 }
 .asmr-card-amber {
-  background: rgba(255, 251, 235, 0.6);
-  border-color: rgba(245, 158, 11, 0.25);
+  background: var(--asmr-warning-bg);
+  border-color: var(--asmr-warning-border);
 }
 .asmr-card-head {
   display: flex;
@@ -2289,12 +2390,12 @@ button:disabled { cursor: not-allowed; }
   gap: 12px;
   flex-wrap: wrap;
   padding: 14px 18px;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.05);
-  background: linear-gradient(180deg, #fbfcfe 0%, #f8fafc 100%);
+  border-bottom: 1px solid var(--asmr-border);
+  background: var(--asmr-surface-soft);
 }
 .asmr-card-head-amber {
-  background: linear-gradient(180deg, rgba(255, 251, 235, 0.85) 0%, rgba(254, 243, 199, 0.55) 100%);
-  border-bottom-color: rgba(245, 158, 11, 0.18);
+  background: var(--asmr-warning-bg);
+  border-bottom-color: var(--asmr-warning-border);
 }
 .asmr-card-head-title {
   display: flex;
@@ -2307,17 +2408,17 @@ button:disabled { cursor: not-allowed; }
   font-size: 14px;
   font-weight: 600;
   letter-spacing: -0.2px;
-  color: #0f172a;
+  color: var(--asmr-text-strong);
 }
 .asmr-card-head-subtitle {
   margin: 2px 0 0;
   font-size: 11.5px;
-  color: #94a3b8;
+  color: var(--asmr-text-muted);
   letter-spacing: 0.01em;
 }
-.asmr-card-head-icon { color: #2563eb; flex-shrink: 0; }
-.asmr-card-head-icon-amber { color: #b45309; flex-shrink: 0; }
-.asmr-card-head-count { color: #94a3b8; font-weight: 500; font-size: 12.5px; }
+.asmr-card-head-icon { color: var(--asmr-accent); flex-shrink: 0; }
+.asmr-card-head-icon-amber { color: var(--asmr-warning-text); flex-shrink: 0; }
+.asmr-card-head-count { color: var(--asmr-text-muted); font-weight: 500; font-size: 12.5px; }
 .asmr-card-head-actions {
   display: flex;
   align-items: center;
@@ -2329,13 +2430,93 @@ button:disabled { cursor: not-allowed; }
   align-items: center;
   gap: 6px;
   font-size: 12.5px;
-  color: #64748b;
+  color: var(--asmr-text);
   cursor: pointer;
   user-select: none;
 }
-.asmr-card-head-checkbox input { width: 14px; height: 14px; accent-color: #1e293b; }
+.asmr-card-head-checkbox input { width: 14px; height: 14px; accent-color: var(--asmr-accent); }
 .asmr-card-body {
   padding: 16px 18px;
+}
+.asmr-cell-text {
+  color: var(--asmr-text);
+}
+.asmr-strong-text,
+.asmr-section-title {
+  color: var(--asmr-text-strong);
+}
+.asmr-muted-text,
+.asmr-muted-icon {
+  color: var(--asmr-text-muted);
+}
+.asmr-accent-text {
+  color: var(--asmr-accent);
+}
+.asmr-success-text {
+  color: var(--asmr-success-text);
+}
+.asmr-warning-text {
+  color: var(--asmr-warning-text);
+}
+.asmr-danger-text {
+  color: var(--asmr-danger-text);
+}
+.asmr-preview-stat,
+.asmr-preview-row {
+  background: var(--asmr-surface-soft);
+  border: 1px solid var(--asmr-border);
+}
+.asmr-dialog-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.asmr-dialog-chip.is-compact {
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+.asmr-dialog-chip.is-info {
+  background: var(--asmr-info-bg);
+  color: var(--asmr-info-text);
+  border-color: var(--asmr-info-border);
+}
+.asmr-dialog-chip.is-success {
+  background: var(--asmr-success-bg);
+  color: var(--asmr-success-text);
+  border-color: var(--asmr-success-border);
+}
+.asmr-dialog-chip.is-warning {
+  background: var(--asmr-warning-bg);
+  color: var(--asmr-warning-text);
+  border-color: var(--asmr-warning-border);
+}
+.asmr-dialog-chip.is-danger {
+  background: var(--asmr-danger-bg);
+  color: var(--asmr-danger-text);
+  border-color: var(--asmr-danger-border);
+}
+.asmr-dialog-chip.is-muted {
+  background: var(--asmr-chip-muted-bg);
+  color: var(--asmr-chip-muted-text);
+  border-color: var(--asmr-chip-muted-border);
+}
+.asmr-metric-icon-info {
+  color: var(--asmr-info-text);
+}
+.asmr-metric-icon-success {
+  color: var(--asmr-success-text);
+}
+.asmr-metric-icon-warning {
+  color: var(--asmr-warning-text);
+}
+.asmr-metric-icon-danger {
+  color: var(--asmr-danger-text);
 }
 .asmr-list { display: flex; flex-direction: column; gap: 10px; }
 .asmr-table-wrap {
@@ -2353,42 +2534,43 @@ button:disabled { cursor: not-allowed; }
   height: 28px;
   padding: 0 10px;
   border-radius: 8px;
-  border: 1px solid rgba(15, 23, 42, 0.12);
-  background: #fff;
-  color: #475569;
+  border: 1px solid var(--asmr-border-strong);
+  background: var(--asmr-surface);
+  color: var(--asmr-text);
   font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
   transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.15s ease, box-shadow 0.18s ease;
 }
 .asmr-mini-btn:hover {
-  background: #f8fafc;
-  border-color: rgba(15, 23, 42, 0.22);
-  color: #0f172a;
+  background: var(--asmr-surface-hover);
+  border-color: var(--asmr-border-strong);
+  color: var(--asmr-text-strong);
 }
 .asmr-mini-btn:active:not(:disabled) { transform: scale(0.96); }
 .asmr-mini-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .asmr-mini-btn.is-primary {
-  background: linear-gradient(135deg, #111827, #1e293b);
-  color: #fff;
+  background: var(--asmr-primary-bg);
+  color: var(--asmr-primary-text);
   border-color: transparent;
-  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.18);
+  box-shadow: var(--asmr-control-shadow);
 }
 .asmr-mini-btn.is-primary:hover {
-  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.22);
-  color: #fff;
+  background: var(--asmr-primary-bg-hover);
+  box-shadow: var(--asmr-control-shadow);
+  color: var(--asmr-primary-text);
 }
 
 .asmr-mini-btn.is-warning {
-  background: linear-gradient(180deg, #fef3c7 0%, #fde68a 100%);
-  color: #92400e;
-  border-color: rgba(245, 158, 11, 0.4);
+  background: var(--asmr-warning-bg);
+  color: var(--asmr-warning-text);
+  border-color: var(--asmr-warning-border);
 }
 .asmr-mini-btn.is-warning:hover {
-  background: linear-gradient(180deg, #fde68a 0%, #fcd34d 100%);
-  color: #78350f;
-  border-color: rgba(217, 119, 6, 0.55);
+  background: var(--asmr-warning-bg);
+  color: var(--asmr-warning-text);
+  border-color: var(--asmr-warning-border);
 }
 
 /* xs：更小的尺寸（任务卡片 / 等待重试列表用）*/
@@ -2410,8 +2592,8 @@ button:disabled { cursor: not-allowed; }
   gap: 12px;
   padding: 10px 14px;
   border-radius: 10px;
-  background: linear-gradient(180deg, #fbfcfe 0%, #f5f7fb 100%);
-  border: 1px solid rgba(15, 23, 42, 0.06);
+  background: var(--asmr-surface-soft);
+  border: 1px solid var(--asmr-border);
 }
 .asmr-batch-toolbar-info {
   display: flex;
@@ -2421,7 +2603,7 @@ button:disabled { cursor: not-allowed; }
 .asmr-batch-toolbar-title {
   font-size: 13px;
   font-weight: 600;
-  color: #334155;
+  color: var(--asmr-text-strong);
   letter-spacing: -0.1px;
 }
 .asmr-batch-toolbar-actions {
@@ -2439,25 +2621,25 @@ button:disabled { cursor: not-allowed; }
 .asmr-task {
   padding: 14px 16px;
   border-radius: 12px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: #fff;
+  border: 1px solid var(--asmr-border);
+  background: var(--asmr-surface);
   transition: border-color 0.18s ease, background-color 0.18s ease;
 }
 .asmr-task.is-completed {
-  border-color: rgba(16, 185, 129, 0.32);
-  background: rgba(220, 252, 231, 0.22);
+  border-color: var(--asmr-success-border);
+  background: var(--asmr-success-bg);
 }
 .asmr-task.is-failed {
-  border-color: rgba(248, 113, 113, 0.32);
-  background: rgba(254, 226, 226, 0.22);
+  border-color: var(--asmr-danger-border);
+  background: var(--asmr-danger-bg);
 }
 .asmr-task.is-paused {
-  border-color: rgba(148, 163, 184, 0.32);
-  background: rgba(241, 245, 249, 0.45);
+  border-color: var(--asmr-chip-muted-border);
+  background: var(--asmr-chip-muted-bg);
 }
 .asmr-task.is-processing {
-  border-color: rgba(59, 130, 246, 0.32);
-  background: rgba(219, 234, 254, 0.18);
+  border-color: var(--asmr-info-border);
+  background: var(--asmr-info-bg);
 }
 .asmr-task-head {
   display: flex;
@@ -2491,9 +2673,9 @@ button:disabled { cursor: not-allowed; }
   line-height: 1.5;
 }
 .asmr-task-alert.is-error {
-  background: rgba(254, 226, 226, 0.6);
-  border: 1px solid rgba(248, 113, 113, 0.25);
-  color: #991b1b;
+  background: var(--asmr-danger-bg);
+  border: 1px solid var(--asmr-danger-border);
+  color: var(--asmr-danger-text);
 }
 .asmr-task-alert :deep(svg) { flex-shrink: 0; margin-top: 1px; color: currentColor; }
 
@@ -2510,13 +2692,13 @@ button:disabled { cursor: not-allowed; }
   border-radius: 6px;
   transition: background-color 0.18s ease, color 0.18s ease;
 }
-.asmr-task-details-summary:hover { background: rgba(15, 23, 42, 0.04); }
-.asmr-task-details-summary.is-success { color: #047857; }
-.asmr-task-details-summary.is-success:hover { color: #065f46; }
-.asmr-task-details-summary.is-danger { color: #b91c1c; }
-.asmr-task-details-summary.is-danger:hover { color: #991b1b; }
-.asmr-task-details-summary.is-slate { color: #334155; }
-.asmr-task-details-summary.is-slate:hover { color: #0f172a; }
+.asmr-task-details-summary:hover { background: var(--asmr-surface-hover); }
+.asmr-task-details-summary.is-success { color: var(--asmr-success-text); }
+.asmr-task-details-summary.is-success:hover { color: var(--asmr-success-text); }
+.asmr-task-details-summary.is-danger { color: var(--asmr-danger-text); }
+.asmr-task-details-summary.is-danger:hover { color: var(--asmr-danger-text); }
+.asmr-task-details-summary.is-slate { color: var(--asmr-text); }
+.asmr-task-details-summary.is-slate:hover { color: var(--asmr-text-strong); }
 .asmr-task-details-body {
   margin-top: 8px;
   display: flex;
@@ -2527,8 +2709,8 @@ button:disabled { cursor: not-allowed; }
 .asmr-task-mapping {
   padding: 10px 12px;
   border-radius: 8px;
-  background: rgba(220, 252, 231, 0.32);
-  border: 1px solid rgba(167, 243, 208, 0.45);
+  background: var(--asmr-success-bg);
+  border: 1px solid var(--asmr-success-border);
   font-size: 11.5px;
   display: flex;
   flex-direction: column;
@@ -2537,12 +2719,12 @@ button:disabled { cursor: not-allowed; }
 .asmr-task-mapping-label {
   width: 56px;
   flex-shrink: 0;
-  color: #94a3b8;
+  color: var(--asmr-text-muted);
   font-size: 10.5px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
-.asmr-task-mapping-arrow { text-align: center; color: #10b981; font-weight: 700; font-size: 10px; }
+.asmr-task-mapping-arrow { text-align: center; color: var(--asmr-success-text); font-weight: 700; font-size: 10px; }
 
 .asmr-task-failed-item {
   display: flex;
@@ -2550,7 +2732,7 @@ button:disabled { cursor: not-allowed; }
   justify-content: space-between;
   padding: 6px 10px;
   border-radius: 6px;
-  background: rgba(254, 226, 226, 0.4);
+  background: var(--asmr-danger-bg);
   font-size: 11.5px;
 }
 
@@ -2560,7 +2742,7 @@ button:disabled { cursor: not-allowed; }
   gap: 8px;
   padding: 6px 10px;
   border-radius: 6px;
-  background: #f8fafc;
+  background: var(--asmr-surface-soft);
   font-size: 11.5px;
   min-width: 0;
 }
@@ -2571,7 +2753,7 @@ button:disabled { cursor: not-allowed; }
 .asmr-task-file-progress-bar {
   height: 6px;
   border-radius: 999px;
-  background: rgba(226, 232, 240, 0.8);
+  background: var(--asmr-surface-muted);
   position: relative;
   overflow: hidden;
 }
@@ -2580,20 +2762,20 @@ button:disabled { cursor: not-allowed; }
   position: absolute;
   inset: 0;
   width: var(--w, 0%);
-  background: linear-gradient(90deg, #3b82f6, #2563eb);
+  background: linear-gradient(90deg, var(--asmr-accent), var(--asmr-accent-hover));
   border-radius: 999px;
   transition: width 0.4s ease;
 }
-.asmr-task-file-progress-bar { background: rgba(226, 232, 240, 0.8); }
+.asmr-task-file-progress-bar { background: var(--asmr-surface-muted); }
 .asmr-task-file-progress-bar > div,
 .asmr-task-file-row .asmr-task-file-progress > div {
   height: 6px;
-  background: linear-gradient(90deg, #3b82f6, #2563eb);
+  background: linear-gradient(90deg, var(--asmr-accent), var(--asmr-accent-hover));
   border-radius: 999px;
   transition: width 0.4s ease;
 }
 .asmr-task-file-size {
-  color: #94a3b8;
+  color: var(--asmr-text-muted);
   font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
   font-size: 10.5px;
   white-space: nowrap;
@@ -2612,8 +2794,8 @@ button:disabled { cursor: not-allowed; }
   gap: 12px;
   padding: 10px 12px;
   border-radius: 10px;
-  background: #fff;
-  border: 1px solid rgba(245, 158, 11, 0.18);
+  background: var(--asmr-surface);
+  border: 1px solid var(--asmr-warning-border);
 }
 
 /* ==============================================================
@@ -2623,7 +2805,7 @@ button:disabled { cursor: not-allowed; }
   font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
   font-weight: 600;
   font-size: 13px;
-  color: #2563eb;
+  color: var(--asmr-accent);
   letter-spacing: -0.2px;
   flex-shrink: 0;
 }
@@ -2632,14 +2814,14 @@ button:disabled { cursor: not-allowed; }
 .asmr-link-btn {
   background: transparent;
   border: 0;
-  color: #2563eb;
+  color: var(--asmr-accent);
   font-size: 12.5px;
   font-weight: 500;
   transition: color 0.18s ease, text-decoration 0.18s ease;
   padding: 4px 6px;
 }
 .asmr-link-btn:hover {
-  color: #1d4ed8;
+  color: var(--asmr-accent-hover);
   text-decoration: underline;
 }
 .asmr-link-btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -2699,19 +2881,19 @@ button:disabled { cursor: not-allowed; }
   margin-top: auto;
 }
 .enhanced-plan-tag.is-primary {
-  color: #2b63c8;
-  background: #edf4ff;
-  border-color: #cadeff;
+  color: var(--asmr-info-text);
+  background: var(--asmr-info-bg);
+  border-color: var(--asmr-info-border);
 }
 .enhanced-plan-tag.is-soft {
-  color: #5d6d81;
-  background: #f6f8fb;
-  border-color: #e2e8f0;
+  color: var(--asmr-chip-muted-text);
+  background: var(--asmr-chip-muted-bg);
+  border-color: var(--asmr-chip-muted-border);
 }
 .enhanced-plan-tag.is-muted {
-  color: #7b8797;
-  background: #fafafa;
-  border-color: #e5e7eb;
+  color: var(--asmr-text-muted);
+  background: var(--asmr-surface-muted);
+  border-color: var(--asmr-border);
 }
 
 /* ==============================================================
@@ -2719,6 +2901,45 @@ button:disabled { cursor: not-allowed; }
  * ============================================================ */
 :deep(.el-dialog) {
   border-radius: 16px !important;
+}
+:deep(.el-dialog),
+:deep(.el-drawer) {
+  background: var(--asmr-surface);
+  color: var(--asmr-text);
+}
+:deep(.el-dialog__header),
+:deep(.el-drawer__header) {
+  color: var(--asmr-text-strong);
+  border-bottom: 1px solid var(--asmr-border);
+}
+:deep(.el-dialog__body),
+:deep(.el-drawer__body) {
+  color: var(--asmr-text);
+}
+.asmr-page :deep(.el-table),
+:deep(.el-dialog .el-table),
+:deep(.el-drawer .el-table) {
+  --el-table-bg-color: var(--asmr-surface);
+  --el-table-tr-bg-color: var(--asmr-surface);
+  --el-table-header-bg-color: var(--asmr-surface-soft);
+  --el-table-row-hover-bg-color: var(--asmr-surface-hover);
+  --el-table-border-color: var(--asmr-border);
+  --el-table-text-color: var(--asmr-text);
+  --el-table-header-text-color: var(--asmr-text-strong);
+  background: var(--asmr-surface);
+  color: var(--asmr-text);
+}
+.asmr-page :deep(.el-table th.el-table__cell),
+:deep(.el-dialog .el-table th.el-table__cell),
+:deep(.el-drawer .el-table th.el-table__cell) {
+  background: var(--asmr-surface-soft);
+  color: var(--asmr-text-strong);
+}
+.asmr-page :deep(.el-table td.el-table__cell),
+:deep(.el-dialog .el-table td.el-table__cell),
+:deep(.el-drawer .el-table td.el-table__cell) {
+  background: var(--asmr-surface);
+  color: var(--asmr-text);
 }
 
 /* ==============================================================
@@ -2741,14 +2962,14 @@ button:disabled { cursor: not-allowed; }
     gap: 10px;
   }
 
-  /* AppPageHeader 内的 page-head-btn：≤640 三个按钮均分整行（与全局规则呼应） */
-  .page-head-btn {
+  /* AppPageHeader 内的 ASMR 页头按钮：≤640 三个按钮均分整行 */
+  .asmr-head-btn {
     height: 34px;
     padding: 0 10px;
     font-size: 12px;
   }
-  .page-head-btn.primary .page-head-btn-label,
-  .page-head-btn.ghost .page-head-btn-label {
+  .asmr-head-btn.primary .page-head-btn-label,
+  .asmr-head-btn.ghost .page-head-btn-label {
     min-width: 0;
   }
 
@@ -2826,7 +3047,7 @@ button:disabled { cursor: not-allowed; }
   .asmr-table-wrap {
     max-height: 320px;
     border-radius: 10px;
-    border: 1px solid rgba(15, 23, 42, 0.06);
+    border: 1px solid var(--asmr-border);
   }
 
   /* 任务卡：紧凑 padding + 标题区可换行 */

@@ -4,13 +4,14 @@
     :class="[
       isVisible ? 'is-visible' : 'is-hidden',
       disabled ? 'is-disabled' : '',
+      isMaskedSecret ? 'is-masked-secret' : '',
     ]"
   >
     <input
-      :value="modelValue"
+      :value="displayValue"
       class="animated-password-input__field"
-      :type="isVisible ? 'text' : 'password'"
-      :placeholder="placeholder"
+      :type="inputType"
+      :placeholder="displayPlaceholder"
       :disabled="disabled"
       :autocomplete="autocomplete"
       @input="handleInput"
@@ -24,11 +25,14 @@
       :aria-label="isVisible ? '隐藏密码' : '显示密码'"
       :aria-pressed="isVisible ? 'true' : 'false'"
       @click="toggleVisibility"
+      @mouseenter="handlePointerEnter"
+      @mouseleave="handlePointerLeave"
     >
       <DotLottieVue
+        :key="visibilityAnimationKey"
         ref="playerRef"
         class="animated-password-input__player"
-        :src="visibilityAnimation"
+        :src="activeVisibilityAnimation"
         :autoplay="false"
         :loop="false"
         :speed="1"
@@ -39,9 +43,10 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import visibilityAnimation from '../../assets/anime/Visibility.lottie'
+import visibilityDarkAnimation from '../../assets/anime/VisibilityDark.lottie'
 
 const VISIBLE_FRAME = 0
 const HIDDEN_FRAME = 25
@@ -69,6 +74,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  revealValue: {
+    type: String,
+    default: '',
+  },
 })
 
 const emit = defineEmits(['update:modelValue', 'visibility-change'])
@@ -78,7 +87,36 @@ const toggleRef = ref(null)
 const ready = ref(false)
 const playingHoverAnimation = ref(false)
 const isVisible = ref(props.visibleByDefault)
-let interactionTarget = null
+const isDarkTheme = ref(getDarkThemeState())
+let themeObserver = null
+let boundPlayerInstance = null
+let bindPlayerTimer = null
+
+const activeVisibilityAnimation = computed(() =>
+  isDarkTheme.value ? visibilityDarkAnimation : visibilityAnimation,
+)
+const visibilityAnimationKey = computed(() => (isDarkTheme.value ? 'visibility-dark' : 'visibility-light'))
+const isMaskedSecret = computed(() => props.modelValue === '********')
+const displayValue = computed(() => {
+  if (isMaskedSecret.value) {
+    return isVisible.value && props.revealValue ? props.revealValue : '********'
+  }
+  return props.modelValue
+})
+const displayPlaceholder = computed(() => props.placeholder)
+const inputType = computed(() => {
+  return isVisible.value ? 'text' : 'password'
+})
+
+function getDarkThemeState() {
+  if (typeof document === 'undefined') return false
+  return document.documentElement.classList.contains('kikoerumanager-dark')
+    || document.body.classList.contains('kikoerumanager-dark')
+}
+
+function syncThemeMode() {
+  isDarkTheme.value = getDarkThemeState()
+}
 
 function handlePointerEnter() {
   playHoverAnimation()
@@ -90,6 +128,50 @@ function handlePointerLeave() {
 
 function getInstance() {
   return playerRef.value?.getDotLottieInstance?.() || null
+}
+
+function unbindPlayerEvents(instance = boundPlayerInstance) {
+  if (!instance) return
+  instance.removeEventListener?.('ready', handleReady)
+  instance.removeEventListener?.('load', handleReady)
+  instance.removeEventListener?.('complete', handleComplete)
+  if (instance === boundPlayerInstance) {
+    boundPlayerInstance = null
+  }
+}
+
+function bindPlayerEvents() {
+  const instance = getInstance()
+  if (!instance) return false
+  if (instance === boundPlayerInstance) return true
+
+  unbindPlayerEvents()
+  boundPlayerInstance = instance
+  instance.addEventListener('ready', handleReady)
+  instance.addEventListener('load', handleReady)
+  instance.addEventListener('complete', handleComplete)
+  if (instance.isLoaded) {
+    handleReady()
+  }
+  return true
+}
+
+function schedulePlayerBind() {
+  if (bindPlayerTimer) {
+    window.clearTimeout(bindPlayerTimer)
+    bindPlayerTimer = null
+  }
+
+  const tryBind = (delay = 0) => {
+    bindPlayerTimer = window.setTimeout(() => {
+      bindPlayerTimer = null
+      if (!bindPlayerEvents()) {
+        tryBind(90)
+      }
+    }, delay)
+  }
+
+  tryBind()
 }
 
 async function setStaticFrame(visible) {
@@ -125,6 +207,7 @@ async function stopHoverAnimation({ preserveHover = false } = {}) {
 }
 
 function handleInput(event) {
+  if (isMaskedSecret.value && (event.target.value === '********' || event.target.value === props.revealValue)) return
   emit('update:modelValue', event.target.value)
 }
 
@@ -147,42 +230,31 @@ function handleComplete() {
 }
 
 onMounted(() => {
-  const bindInteraction = () => {
-    const target = toggleRef.value
-    if (!target) return
-    target.addEventListener('mouseenter', handlePointerEnter)
-    target.addEventListener('mouseleave', handlePointerLeave)
-    interactionTarget = target
-  }
+  syncThemeMode()
+  themeObserver = new MutationObserver(syncThemeMode)
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+  themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] })
 
-  const bind = () => {
-    const instance = getInstance()
-    if (!instance) return false
-    instance.addEventListener('ready', handleReady)
-    instance.addEventListener('load', handleReady)
-    instance.addEventListener('complete', handleComplete)
-    return true
-  }
+  schedulePlayerBind()
+})
 
-  if (!bind()) {
-    window.setTimeout(bind, 60)
-  }
-
-  bindInteraction()
+watch(activeVisibilityAnimation, async () => {
+  ready.value = false
+  playingHoverAnimation.value = false
+  unbindPlayerEvents()
+  await nextTick()
+  schedulePlayerBind()
 })
 
 onBeforeUnmount(() => {
-  if (interactionTarget) {
-    interactionTarget.removeEventListener('mouseenter', handlePointerEnter)
-    interactionTarget.removeEventListener('mouseleave', handlePointerLeave)
-    interactionTarget = null
+  if (bindPlayerTimer) {
+    window.clearTimeout(bindPlayerTimer)
+    bindPlayerTimer = null
   }
+  themeObserver?.disconnect()
+  themeObserver = null
 
-  const instance = getInstance()
-  if (!instance) return
-  instance.removeEventListener('ready', handleReady)
-  instance.removeEventListener('load', handleReady)
-  instance.removeEventListener('complete', handleComplete)
+  unbindPlayerEvents()
 })
 </script>
 
@@ -235,6 +307,11 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
+.animated-password-input.is-masked-secret .animated-password-input__field {
+  color: #64748b;
+  -webkit-text-fill-color: #64748b;
+}
+
 .animated-password-input__toggle:hover {
   transform: translateY(calc(-50% - 2px)) scale(1.06);
 }
@@ -252,5 +329,33 @@ onBeforeUnmount(() => {
   width: 34px;
   height: 34px;
   pointer-events: none;
+}
+
+:global(html.kikoerumanager-dark .animated-password-input__field),
+:global(body.kikoerumanager-dark .animated-password-input__field) {
+  background: var(--set-field-bg, #1b1b1d);
+  color: var(--set-text-strong, #f5f5f5);
+  -webkit-text-fill-color: var(--set-text-strong, #f5f5f5);
+  caret-color: var(--set-text-strong, #f5f5f5);
+  box-shadow: inset 0 0 0 1px var(--set-border, rgba(255, 255, 255, 0.11));
+}
+
+:global(html.kikoerumanager-dark .animated-password-input__field:focus),
+:global(body.kikoerumanager-dark .animated-password-input__field:focus) {
+  box-shadow: inset 0 0 0 1px var(--set-border-strong, rgba(255, 255, 255, 0.18));
+}
+
+:global(html.kikoerumanager-dark .animated-password-input__field::placeholder),
+:global(body.kikoerumanager-dark .animated-password-input__field::placeholder) {
+  color: var(--set-text-subtle, #71717a);
+  -webkit-text-fill-color: var(--set-text-subtle, #71717a);
+}
+
+:global(html.kikoerumanager-dark .animated-password-input__toggle:focus),
+:global(body.kikoerumanager-dark .animated-password-input__toggle:focus),
+:global(html.kikoerumanager-dark .animated-password-input__toggle:focus-visible),
+:global(body.kikoerumanager-dark .animated-password-input__toggle:focus-visible) {
+  outline: none;
+  box-shadow: none;
 }
 </style>
