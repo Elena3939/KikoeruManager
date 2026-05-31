@@ -1,7 +1,7 @@
 <template>
   <AppPageHeader
     :icon="ListTodo"
-    icon-color="#2563eb"
+    icon-color="var(--km-nav-tasks-icon)"
     title="任务中心"
     subtitle="导入处理、RJ 字幕、字幕补配、ASMR 同步与系统任务的统一视图"
   >

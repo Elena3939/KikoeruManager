@@ -3,7 +3,7 @@
     <!-- 页头走共享组件 AppPageHeader，右侧 slot 保留原本的搜索框 + 两个操作按钮 -->
     <AppPageHeader
       :icon="History"
-      icon-color="#059669"
+      icon-color="var(--km-nav-history-icon)"
       title="操作记录"
       subtitle="字幕、解压、入库、删除、ASMR 同步等任务的完整审计"
     >
@@ -67,309 +67,383 @@
       </button>
     </AppPageHeader>
 
-    <!-- 关键指标：紧凑横向数据条，hairline 分隔，不再是一个个独立卡片 -->
-    <section class="metric-strip">
-      <div class="metric-strip-head">
-        <span class="metric-strip-label">关键指标</span>
-        <AppDropdown
-          v-model="statsDays"
-          :options="statsDaysOptions"
-          :width="140"
-          :menu-min-width="160"
-          :show-trigger-badge="false"
-          @update:model-value="loadStats"
-        />
-      </div>
-      <div class="metric-strip-row">
-        <div
-          v-for="m in metricCards"
-          :key="m.key"
-          class="metric-cell"
-          :title="m.hint"
-        >
-          <div class="metric-cell-label">{{ m.label }}</div>
-          <div class="metric-cell-value">
-            <span class="metric-cell-num" :style="{ color: m.color }">{{ metricSplit(m.value).num }}</span>
-            <span v-if="metricSplit(m.value).unit" class="metric-cell-unit">{{ metricSplit(m.value).unit }}</span>
-          </div>
+    <section class="activity-command-strip">
+      <div class="activity-range-copy">
+        <span class="activity-kicker">审计范围</span>
+        <div class="activity-range-line">
+          <strong>{{ statsRangeText }}</strong>
+          <span>{{ formatNumber(stats.total_in_range) }} 条记录</span>
+          <span v-if="lastLoadedAtText">{{ lastLoadedAtText }}</span>
         </div>
       </div>
+      <AppDropdown
+        v-model="statsDays"
+        :options="statsDaysOptions"
+        :width="128"
+        :menu-min-width="150"
+        :show-trigger-badge="false"
+        @update:model-value="loadStats"
+      />
     </section>
 
-    <!-- 趋势 + 分类分布两栏 -->
-    <section class="overview-strip">
-      <article class="overview-card overview-trend">
-        <div class="overview-card-head">
-          <span class="overview-label">每日操作量</span>
-          <span class="overview-meta">{{ statsRangeText }} · {{ formatNumber(stats.total_in_range) }} 条</span>
-        </div>
-        <AppEmptyState v-if="!sparkPoints.length" description="暂无趋势" size="sm" />
-        <div v-else class="sparkline-wrap">
-          <svg
-            class="sparkline"
-            :viewBox="`0 0 ${sparkBox.width} ${sparkBox.height}`"
-            preserveAspectRatio="none"
-          >
-            <defs>
-              <linearGradient :id="sparkGradientId" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stop-color="#0a84ff" stop-opacity="0.28" />
-                <stop offset="100%" stop-color="#0a84ff" stop-opacity="0" />
-              </linearGradient>
-            </defs>
-            <path :d="sparkAreaPath" :fill="`url(#${sparkGradientId})`" />
-            <path :d="sparkLinePath" fill="none" stroke="#0a84ff" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
-            <circle :cx="sparkLastPoint.x" :cy="sparkLastPoint.y" r="3.2" fill="#0a84ff" />
-          </svg>
-          <div class="sparkline-foot">
-            <span>{{ formatShortDate(sparkPoints[0]?.date) }}</span>
-            <span>{{ formatShortDate(sparkPoints[sparkPoints.length - 1]?.date) }}</span>
-          </div>
-        </div>
-      </article>
+    <section class="activity-insight-board" aria-label="操作记录概览">
+      <div class="activity-metric-rail">
+        <article
+          v-for="m in metricCards"
+          :key="m.key"
+          class="activity-metric-card"
+          :title="m.hint"
+        >
+          <span class="activity-metric-label">{{ m.label }}</span>
+          <strong class="activity-metric-value" :style="{ color: m.color }">
+            <span>{{ metricSplit(m.value).num }}</span>
+            <small v-if="metricSplit(m.value).unit">{{ metricSplit(m.value).unit }}</small>
+          </strong>
+        </article>
+      </div>
 
-      <article class="overview-card overview-cats">
-        <div class="overview-card-head">
-          <span class="overview-label">分类分布</span>
-          <span class="overview-meta">{{ formatNumber(allCategories.length) }} 项 · 滚动查看更多</span>
-        </div>
-        <AppEmptyState v-if="!allCategories.length" description="暂无数据" size="sm" />
-        <div v-else class="cat-list-scroll">
-          <div class="cat-list">
-            <div
-              v-for="(cat, idx) in allCategories"
-              :key="cat.category"
-              class="cat-row"
+      <div class="activity-context-band">
+        <div class="activity-trend-panel">
+          <div class="activity-panel-title">
+            <span>每日操作量</span>
+            <strong>{{ formatNumber(stats.total_in_range) }}</strong>
+          </div>
+          <AppEmptyState v-if="!sparkPoints.length" description="暂无趋势" size="sm" />
+          <div v-else class="activity-sparkline-wrap">
+            <svg
+              class="activity-sparkline"
+              :viewBox="`0 0 ${sparkBox.width} ${sparkBox.height}`"
+              preserveAspectRatio="none"
             >
-              <span class="cat-dot" :style="{ background: catPaletteColor(idx) }"></span>
-              <span class="cat-label">{{ cat.label }}</span>
-              <div class="cat-track">
-                <div
-                  class="cat-fill"
-                  :style="{ width: cat.pct + '%', background: catPaletteColor(idx) }"
-                />
-              </div>
-              <span class="cat-num">{{ formatNumber(cat.count) }}</span>
+              <defs>
+                <linearGradient :id="sparkGradientId" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#71717a" stop-opacity="0.24" />
+                  <stop offset="100%" stop-color="#71717a" stop-opacity="0" />
+                </linearGradient>
+              </defs>
+              <path :d="sparkAreaPath" :fill="`url(#${sparkGradientId})`" />
+              <path :d="sparkLinePath" fill="none" stroke="#71717a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+              <circle :cx="sparkLastPoint.x" :cy="sparkLastPoint.y" r="3.2" fill="#71717a" />
+            </svg>
+            <div class="activity-sparkline-foot">
+              <span>{{ formatShortDate(sparkPoints[0]?.date) }}</span>
+              <span>{{ formatShortDate(sparkPoints[sparkPoints.length - 1]?.date) }}</span>
             </div>
           </div>
         </div>
-      </article>
-    </section>
 
-    <!-- 筛选栏：使用项目统一 AppDropdown，与任务中心 / 设置页保持一致 -->
-    <section class="filter-bar">
-      <AppDropdown
-        v-model="filters.category"
-        :options="categoryDropdownOptions"
-        label="分类"
-        placeholder="全部分类"
-        :width="220"
-        :menu-min-width="240"
-        @update:model-value="applyFilters"
-      />
-      <AppDropdown
-        v-model="filters.status"
-        :options="statusDropdownOptions"
-        label="状态"
-        placeholder="全部状态"
-        :width="190"
-        :menu-min-width="200"
-        @update:model-value="applyFilters"
-      />
-      <button
-        v-if="hasActiveFilters"
-        class="filter-reset"
-        type="button"
-        title="清空所有筛选条件"
-        @click="resetFilters"
-      >
-        <FilterX :size="13" :stroke-width="2.4" />
-        <span>重置筛选</span>
-      </button>
-    </section>
-
-    <!-- 时间线主体：加载遮罩仅覆盖这一区，不影响顶部「刷新/归档」按钮点击 -->
-    <section
-      class="timeline-shell"
-      v-app-loading="{ loading, text: '正在加载操作记录…', description: '同步索引、统计与状态聚合', size: 168, minHeight: 360, delay: 80, minVisible: 360, maskClass: 'activity-loading-mask' }"
-    >
-      <AppEmptyState
-        v-if="!timelineGroups.length && !loading"
-        description="没有匹配的操作记录"
-        size="md"
-      />
-      <div v-else class="timeline">
-        <section
-          v-for="group in timelineGroups"
-          :key="group.key"
-          class="day-group"
-        >
-          <header class="day-marker">
-            <span class="day-label">{{ group.label }}</span>
-            <span class="day-meta">{{ formatNumber(group.items.length) }} 条</span>
-            <span class="day-spine"></span>
-          </header>
-          <div class="day-events">
-            <article
-              v-for="row in group.items"
-              :key="row.id"
-              class="event-row"
-              :class="[`tone-${statusTone(effectiveStatus(row))}`, { 'is-active': selectedRowId === row.id }]"
-              @click="openDetail(row)"
-            >
-              <div class="event-rail">
-                <span class="event-time">{{ formatTime(row.created_at) }}</span>
-                <span class="event-dot" :class="`tone-${statusTone(effectiveStatus(row))}`">
-                  <component
-                    :is="statusIcon(effectiveStatus(row))"
-                    :size="10"
-                    :stroke-width="3"
-                  />
-                </span>
-              </div>
-              <div class="event-card">
-                <div class="event-card-head">
-                  <span
-                    class="inline-flex items-center gap-1 px-2 py-[3px] rounded-md text-[11px] font-semibold leading-none ring-1 ring-inset transition-colors"
-                    :class="categoryToneClasses(categoryConfig(row.category).tone)"
-                  >
-                    <component
-                      :is="categoryIcon(row.category)"
-                      :size="11"
-                      :stroke-width="2.6"
-                    />
-                    <span>{{ row.category_label }}</span>
-                  </span>
-                  <span
-                    v-if="row.rjcode"
-                    class="inline-flex items-center px-1.5 py-[3px] rounded-md text-[11px] font-mono font-semibold leading-none tracking-tight bg-slate-100/70 text-slate-700 ring-1 ring-inset ring-slate-200/60"
-                  >
-                    {{ row.rjcode }}
-                  </span>
-                  <span
-                    class="text-[12px] font-bold leading-none tracking-tight"
-                    :class="actionToneClasses(statusTone(effectiveStatus(row)))"
-                  >
-                    {{ humanAction(row) }}
-                  </span>
-                  <span
-                    v-if="row.compacted"
-                    class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-medium tracking-wide text-slate-500 ring-1 ring-inset ring-slate-200/70"
-                    title="已归档：detail 已被压缩"
-                  >
-                    已归档
-                  </span>
-                  <span
-                    v-if="row.rerun"
-                    class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-medium tracking-wide text-amber-600 bg-amber-50/40 ring-1 ring-inset ring-amber-200/70"
-                  >
-                    已重试
-                  </span>
-                  <span
-                    v-if="row.has_children"
-                    class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-medium tracking-wide text-indigo-600 bg-indigo-50/40 ring-1 ring-inset ring-indigo-200/70"
-                  >
-                    有子任务
-                  </span>
-                  <!-- 失败但被后续重试 / 重新爬取 / 同 RJ 成功记录覆盖的，挂"已修复"绿底徽章 -->
-                  <span
-                    v-if="isRowRecovered(row)"
-                    class="recovery-chip inline-flex items-center gap-1 px-1.5 py-[2px] rounded text-[10px] font-semibold leading-none tracking-tight text-emerald-700 bg-emerald-50 ring-1 ring-inset ring-emerald-200/70"
-                    title="此次失败后被人工处理或重试修复"
-                  >
-                    <CheckCircle2 :size="10" :stroke-width="2.6" />
-                    已修复
-                  </span>
-                </div>
-                <div
-                  v-if="renameSegments(row)"
-                  class="event-summary rename-summary"
-                  :class="{ 'is-failed': renameSegments(row).failed }"
-                >
-                  <!-- 单条重命名行：灰名（删除线）＋ 醒目箭头胶囊 ＋ 绿名（加粗），让目光聚焦在改动差异 -->
-                  <span class="rename-old" :title="renameSegments(row).oldName">{{ renameSegments(row).oldName }}</span>
-                  <span class="rename-arrow">--&gt;</span>
-                  <span class="rename-new" :title="renameSegments(row).newName">{{ renameSegments(row).newName }}</span>
-                  <span
-                    v-if="renameSegments(row).reason"
-                    class="rename-reason-inline"
-                    :title="renameSegments(row).reason"
-                  >· {{ renameSegments(row).reason }}</span>
-                </div>
-                <div v-else class="event-summary">{{ row.summary || '—' }}</div>
-                <div v-if="row.chips?.length || row.source_path" class="event-meta">
-                  <span
-                    v-for="chip in row.chips || []"
-                    :key="`${row.id}-${chip.label}`"
-                    class="inline-flex items-baseline gap-1 px-2 py-[3px] rounded-md text-[11px] leading-none ring-1 ring-inset transition-colors"
-                    :class="chipToneClasses(chip.tone)"
-                  >
-                    <span class="font-medium opacity-70">{{ chip.label }}</span>
-                    <span class="font-semibold tabular-nums tracking-tight">{{ chip.value }}</span>
-                  </span>
-                  <span v-if="row.source_path" class="event-path" :title="row.source_path">
-                    <FolderOpen :size="11" :stroke-width="2.4" />
-                    <span class="event-path-text">{{ compactPath(row.source_path) }}</span>
-                  </span>
-                </div>
-              </div>
-              <div class="event-tail">
-                <ChevronRight :size="14" :stroke-width="2.4" />
-              </div>
-            </article>
+        <div class="activity-category-panel">
+          <div class="activity-panel-title">
+            <span>分类分布</span>
+            <strong>{{ formatNumber(allCategories.length) }} 项</strong>
           </div>
-        </section>
+          <AppEmptyState v-if="!allCategories.length" description="暂无数据" size="sm" />
+          <div v-else class="activity-category-list">
+            <div
+              v-for="(cat, idx) in allCategories"
+              :key="cat.category"
+              class="activity-category-row"
+            >
+              <span class="activity-category-dot" :style="{ background: catPaletteColor(idx) }"></span>
+              <span class="activity-category-name">{{ cat.label }}</span>
+              <div class="activity-category-track">
+                <span
+                  class="activity-category-fill"
+                  :style="{ width: cat.pct + '%', background: catPaletteColor(idx) }"
+                />
+              </div>
+              <span class="activity-category-count">{{ formatNumber(cat.count) }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="activity-filter-panel">
+          <div class="activity-panel-title">
+            <span>筛选记录流</span>
+            <button
+              v-if="hasActiveFilters"
+              class="activity-filter-reset"
+              type="button"
+              title="清空所有筛选条件"
+              @click="resetFilters"
+            >
+              <FilterX :size="13" :stroke-width="2.4" />
+              <span>重置</span>
+            </button>
+          </div>
+          <div class="activity-filter-controls">
+            <AppDropdown
+              v-model="filters.category"
+              :options="categoryDropdownOptions"
+              label="分类"
+              placeholder="全部分类"
+              :width="0"
+              :menu-min-width="240"
+              @update:model-value="applyFilters"
+            />
+            <AppDropdown
+              v-model="filters.status"
+              :options="statusDropdownOptions"
+              label="状态"
+              placeholder="全部状态"
+              :width="0"
+              :menu-min-width="200"
+              @update:model-value="applyFilters"
+            />
+          </div>
+        </div>
       </div>
     </section>
 
-    <!-- 分页 -->
-    <footer class="footer-bar">
-      <div class="footer-meta">
-        <span>共 {{ formatNumber(total) }} 条</span>
-        <span v-if="lastLoadedAtText" class="footer-sep">·</span>
-        <span v-if="lastLoadedAtText">{{ lastLoadedAtText }}</span>
-      </div>
-      <el-pagination
-        v-model:current-page="page"
-        v-model:page-size="limit"
-        layout="sizes, prev, pager, next, jumper"
-        :total="total"
-        :page-sizes="[30, 50, 100, 200]"
-        background
-        size="small"
-        class="footer-pager"
-        @current-change="loadList"
-        @size-change="onPageSizeChange"
-      />
-    </footer>
+    <main class="activity-reader">
+      <header class="activity-reader-head">
+        <div>
+          <span class="activity-kicker">记录流</span>
+          <h2>按时间聚合阅读</h2>
+        </div>
+        <div class="activity-reader-meta">
+          <span>匹配 {{ formatNumber(total) }} 条</span>
+          <span>第 {{ formatNumber(page) }} / {{ formatNumber(totalPages) }} 页</span>
+        </div>
+      </header>
 
-    <!-- 详情抽屉 -->
-    <el-drawer
-      v-model="detailDrawerVisible"
-      class="activity-drawer"
-      :class="{ 'is-resizing': isDrawerResizing }"
-      direction="rtl"
-      :size="`${detailDrawerWidth}px`"
-      :show-close="false"
-      :with-header="false"
-      :before-close="onDrawerBeforeClose"
-      @closed="onDrawerClosed"
-    >
-      <ActivityDetailBody
-        :row="selectedRow"
-        :loading="detailLoading"
-        :category-config="selectedCategoryConfig"
-        :status-config="selectedStatusConfig"
-        :status-tone="statusTone"
-        :format-date-time="formatDateTime"
-        :compact-path="compactPath"
-        :human-action="humanAction"
-        @close="closeDetail"
-        @open-row="openDetailById"
-        @navigate="handleDetailNavigate"
-      />
-    </el-drawer>
+      <section
+        class="activity-timeline-shell"
+        v-app-loading="{ loading, text: '正在加载操作记录…', description: '同步索引、统计与状态聚合', size: 168, minHeight: 360, delay: 80, minVisible: 360, maskClass: 'activity-loading-mask' }"
+      >
+        <AppEmptyState
+          v-if="!timelineGroups.length && !loading"
+          description="没有匹配的操作记录"
+          size="md"
+        />
+        <div v-else class="activity-timeline">
+          <section
+            v-for="group in timelineGroups"
+            :key="group.key"
+            class="activity-day-section"
+          >
+            <header class="activity-day-header">
+              <span class="activity-day-label">{{ group.label }}</span>
+              <span class="activity-day-count">{{ formatNumber(group.items.length) }} 条</span>
+            </header>
+            <div class="activity-log-list">
+              <article
+                v-for="row in group.items"
+                :key="row.id"
+                class="activity-log-row"
+                :class="[`tone-${row._statusTone}`, { 'is-active': selectedRowId === String(row.id) }]"
+                role="button"
+                tabindex="0"
+                @click="openDetail(row)"
+                @keydown.enter.prevent="openDetail(row)"
+                @keydown.space.prevent="openDetail(row)"
+              >
+                <div class="activity-log-time">
+                  <time>{{ formatTime(row.created_at) }}</time>
+                  <span class="activity-log-dot">
+                    <component
+                      :is="row._statusIcon"
+                      :size="11"
+                      :stroke-width="3"
+                    />
+                  </span>
+                </div>
+                <div class="activity-log-content">
+                  <div class="activity-log-topline">
+                    <span
+                      class="activity-category-chip"
+                      :class="row._categoryToneClass"
+                    >
+                      <component
+                        :is="row._categoryIcon"
+                        :size="12"
+                        :stroke-width="2.6"
+                      />
+                      <span>{{ row.category_label }}</span>
+                    </span>
+                    <span
+                      class="activity-action-label"
+                      :class="row._actionToneClass"
+                    >
+                      {{ row._humanAction }}
+                    </span>
+                    <span v-if="row.rjcode" class="activity-rj-chip">{{ row.rjcode }}</span>
+                    <span
+                      v-if="row.compacted"
+                      class="activity-flag-chip tone-neutral"
+                      title="已归档：detail 已被压缩"
+                    >
+                      已归档
+                    </span>
+                    <span v-if="row.rerun" class="activity-flag-chip tone-warn">已重试</span>
+                    <span v-if="row.has_children" class="activity-flag-chip tone-info">有子任务</span>
+                    <span
+                      v-if="row._isRecovered"
+                      class="activity-recovery-chip"
+                      title="此次失败后被人工处理或重试修复"
+                    >
+                      <CheckCircle2 :size="11" :stroke-width="2.6" />
+                      已修复
+                    </span>
+                  </div>
+                  <div
+                    v-if="row._rename"
+                    class="activity-log-summary activity-rename-summary"
+                    :class="{ 'is-failed': row._rename.failed }"
+                  >
+                    <span class="activity-rename-old" :title="row._rename.oldName">{{ row._rename.oldName }}</span>
+                    <span class="activity-rename-arrow">--&gt;</span>
+                    <span class="activity-rename-new" :title="row._rename.newName">{{ row._rename.newName }}</span>
+                    <span
+                      v-if="row._rename.reason"
+                      class="activity-rename-reason"
+                      :title="row._rename.reason"
+                    >· {{ row._rename.reason }}</span>
+                  </div>
+                  <div v-else class="activity-log-summary">{{ row.summary || '—' }}</div>
+                  <div v-if="row.chips?.length || row.source_path" class="activity-log-meta">
+                    <span
+                      v-for="chip in row.chips || []"
+                      :key="`${row.id}-${chip.label}`"
+                      class="activity-meta-chip"
+                      :class="chipToneClasses(chip.tone)"
+                    >
+                      <span>{{ chip.label }}</span>
+                      <strong>{{ chip.value }}</strong>
+                    </span>
+                    <span v-if="row.source_path" class="activity-path-chip" :title="row.source_path">
+                      <FolderOpen :size="12" :stroke-width="2.4" />
+                      <span>{{ compactPath(row.source_path) }}</span>
+                    </span>
+                  </div>
+                </div>
+                <div class="activity-log-cue">
+                  <ChevronRight :size="15" :stroke-width="2.4" />
+                </div>
+              </article>
+            </div>
+          </section>
+        </div>
+      </section>
 
-    <!-- 抽屉左缘的拖拽手柄：fixed 定位到抽屉外面，不受 el-drawer 内部 DOM 影响 -->
+      <footer class="activity-footer">
+        <div class="activity-footer-meta">
+          <span>第 {{ formatNumber(page) }} / {{ formatNumber(totalPages) }} 页</span>
+          <span>每页 {{ formatNumber(limit) }} 条</span>
+        </div>
+        <nav class="activity-pager" aria-label="操作记录分页">
+          <AppDropdown
+            v-model="limit"
+            :options="pageSizeOptions"
+            :width="116"
+            :menu-min-width="132"
+            :show-trigger-badge="false"
+            @update:model-value="onCustomPageSizeChange"
+          />
+          <div class="activity-pager-buttons">
+            <button
+              class="activity-pager-btn icon"
+              type="button"
+              :disabled="page <= 1 || loading"
+              title="第一页"
+              @click="goToPage(1)"
+            >
+              <ChevronsLeft :size="14" :stroke-width="2.4" />
+            </button>
+            <button
+              class="activity-pager-btn icon"
+              type="button"
+              :disabled="page <= 1 || loading"
+              title="上一页"
+              @click="goToPage(page - 1)"
+            >
+              <ChevronLeft :size="14" :stroke-width="2.4" />
+            </button>
+            <template v-for="item in pagerItems" :key="item.key">
+              <span v-if="item.type === 'ellipsis'" class="activity-pager-ellipsis">…</span>
+              <button
+                v-else
+                class="activity-pager-btn page"
+                :class="{ active: item.page === page }"
+                type="button"
+                :disabled="loading"
+                :aria-current="item.page === page ? 'page' : undefined"
+                @click="goToPage(item.page)"
+              >
+                {{ item.page }}
+              </button>
+            </template>
+            <button
+              class="activity-pager-btn icon"
+              type="button"
+              :disabled="page >= totalPages || loading"
+              title="下一页"
+              @click="goToPage(page + 1)"
+            >
+              <ChevronRight :size="14" :stroke-width="2.4" />
+            </button>
+            <button
+              class="activity-pager-btn icon"
+              type="button"
+              :disabled="page >= totalPages || loading"
+              title="最后一页"
+              @click="goToPage(totalPages)"
+            >
+              <ChevronsRight :size="14" :stroke-width="2.4" />
+            </button>
+          </div>
+          <form class="activity-pager-jump" @submit.prevent="submitPageJump">
+            <span>跳至</span>
+            <input
+              v-model="pageJumpInput"
+              class="activity-pager-jump-input"
+              type="text"
+              inputmode="numeric"
+              :disabled="loading"
+              :aria-label="`跳转页码，当前共 ${totalPages} 页`"
+            />
+            <span>页</span>
+          </form>
+        </nav>
+      </footer>
+    </main>
+
+    <!-- 详情抽屉：自定义 Teleport 面板，避免 Element 默认蓝色 / 暗黑模式漏色 -->
+    <Teleport to="body">
+      <Transition name="activity-overlay" @after-leave="onDrawerClosed">
+        <div
+          v-if="detailDrawerVisible"
+          class="activity-detail-overlay"
+          :class="{ 'is-resizing': isDrawerResizing }"
+          @click.self="closeDetail"
+        >
+          <aside
+            class="activity-detail-panel"
+            :style="{ width: `${detailDrawerWidth}px` }"
+            role="dialog"
+            aria-modal="true"
+            aria-label="操作记录详情"
+            @click.stop
+          >
+            <ActivityDetailBody
+              :row="selectedRow"
+              :loading="detailLoading"
+              :category-config="selectedCategoryConfig"
+              :status-config="selectedStatusConfig"
+              :status-tone="statusTone"
+              :format-date-time="formatDateTime"
+              :compact-path="compactPath"
+              :human-action="humanAction"
+              @close="closeDetail"
+              @open-row="openDetailById"
+              @navigate="handleDetailNavigate"
+            />
+          </aside>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- 详情面板左缘拖拽手柄：fixed 定位到面板外面，不受内容滚动影响 -->
     <Teleport to="body">
       <div
         v-if="detailDrawerVisible"
@@ -392,8 +466,11 @@ import {
   AlertCircle,
   Archive,
   CheckCircle2,
+  ChevronLeft,
   Loader2,
   ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Clock,
   Database,
   FileDown,
@@ -685,6 +762,75 @@ const statsDaysOptions = [
   { value: 30, label: '近 30 天' },
 ]
 
+const pageSizeOptions = [
+  { value: 30, label: '30 条/页' },
+  { value: 50, label: '50 条/页' },
+  { value: 100, label: '100 条/页' },
+  { value: 200, label: '200 条/页' },
+]
+
+const totalPages = computed(() => {
+  const size = Math.max(1, Number(limit.value || 50))
+  return Math.max(1, Math.ceil(Number(total.value || 0) / size))
+})
+
+const pageJumpInput = ref('1')
+
+const pagerItems = computed(() => {
+  const current = Math.min(totalPages.value, Math.max(1, Number(page.value || 1)))
+  const last = totalPages.value
+  const around = new Set([1, last, current - 1, current, current + 1])
+  if (current <= 3) {
+    around.add(2)
+    around.add(3)
+    around.add(4)
+  }
+  if (current >= last - 2) {
+    around.add(last - 1)
+    around.add(last - 2)
+    around.add(last - 3)
+  }
+  const pages = Array.from(around)
+    .filter((n) => n >= 1 && n <= last)
+    .sort((a, b) => a - b)
+
+  const out = []
+  let prev = 0
+  for (const n of pages) {
+    if (prev && n - prev > 1) {
+      out.push({ type: 'ellipsis', key: `e-${prev}-${n}` })
+    }
+    out.push({ type: 'page', key: `p-${n}`, page: n })
+    prev = n
+  }
+  return out
+})
+
+function goToPage(nextPage) {
+  const next = Math.min(totalPages.value, Math.max(1, Number(nextPage || 1)))
+  if (next === Number(page.value || 1)) return
+  page.value = next
+  pageJumpInput.value = String(next)
+  loadList()
+}
+
+function onCustomPageSizeChange(value) {
+  const nextLimit = Number(value || limit.value || 50)
+  limit.value = Number.isFinite(nextLimit) && nextLimit > 0 ? nextLimit : 50
+  page.value = 1
+  pageJumpInput.value = '1'
+  loadList()
+}
+
+function submitPageJump() {
+  const raw = String(pageJumpInput.value || '').replace(/[^\d]/g, '')
+  if (!raw) {
+    pageJumpInput.value = String(page.value || 1)
+    return
+  }
+  goToPage(Number(raw))
+}
+
 // 一键重置所有筛选条件并立即重新查询
 function resetFilters() {
   filters.category = ''
@@ -766,37 +912,37 @@ function isRowRecovered(row) {
 // 15 种 tone 让所有 category 各占一色（含 default = slate），避免与状态色（success/warn/danger）撞色。
 // pink 留着作未来备选，但不再默认给邮件监听用（暖红容易被误读为失败）。
 const CATEGORY_TONE_CLASS = {
-  indigo: 'bg-indigo-50 text-indigo-700 ring-indigo-200/60',
-  violet: 'bg-violet-50 text-violet-700 ring-violet-200/60',
-  purple: 'bg-purple-50 text-purple-700 ring-purple-200/60',
-  fuchsia: 'bg-fuchsia-50 text-fuchsia-700 ring-fuchsia-200/60',
-  amber: 'bg-amber-50 text-amber-700 ring-amber-200/60',
-  orange: 'bg-orange-50 text-orange-700 ring-orange-200/60',
-  emerald: 'bg-emerald-50 text-emerald-700 ring-emerald-200/60',
-  teal: 'bg-teal-50 text-teal-700 ring-teal-200/60',
-  lime: 'bg-lime-50 text-lime-700 ring-lime-200/60',
-  rose: 'bg-rose-50 text-rose-700 ring-rose-200/60',
-  pink: 'bg-pink-50 text-pink-700 ring-pink-200/60',
-  sky: 'bg-sky-50 text-sky-700 ring-sky-200/60',
-  blue: 'bg-blue-50 text-blue-700 ring-blue-200/60',
-  cyan: 'bg-cyan-50 text-cyan-700 ring-cyan-200/60',
-  slate: 'bg-slate-50 text-slate-700 ring-slate-200/60'
+  indigo: 'cat-tone-indigo',
+  violet: 'cat-tone-violet',
+  purple: 'cat-tone-purple',
+  fuchsia: 'cat-tone-fuchsia',
+  amber: 'cat-tone-amber',
+  orange: 'cat-tone-orange',
+  emerald: 'cat-tone-emerald',
+  teal: 'cat-tone-teal',
+  lime: 'cat-tone-lime',
+  rose: 'cat-tone-rose',
+  pink: 'cat-tone-pink',
+  sky: 'cat-tone-sky',
+  blue: 'cat-tone-blue',
+  cyan: 'cat-tone-cyan',
+  slate: 'cat-tone-slate'
 }
 
 const ACTION_TONE_CLASS = {
-  success: 'text-emerald-600',
-  warn: 'text-amber-600',
-  danger: 'text-rose-600',
-  info: 'text-sky-600',
-  neutral: 'text-slate-500'
+  success: 'action-tone-success',
+  warn: 'action-tone-warn',
+  danger: 'action-tone-danger',
+  info: 'action-tone-info',
+  neutral: 'action-tone-neutral'
 }
 
 const CHIP_TONE_CLASS = {
-  success: 'bg-emerald-50/80 text-emerald-700 ring-emerald-100',
-  warn: 'bg-amber-50/80 text-amber-700 ring-amber-100',
-  danger: 'bg-rose-50/80 text-rose-700 ring-rose-100',
-  info: 'bg-sky-50/80 text-sky-700 ring-sky-100',
-  neutral: 'bg-slate-50/80 text-slate-700 ring-slate-100'
+  success: 'chip-tone-success',
+  warn: 'chip-tone-warn',
+  danger: 'chip-tone-danger',
+  info: 'chip-tone-info',
+  neutral: 'chip-tone-neutral'
 }
 
 function categoryToneClasses(tone) {
@@ -875,8 +1021,8 @@ function onDrawerResizeStart(event) {
   _drawerResizeStartX = event.clientX
   _drawerResizeStartWidth = detailDrawerWidth.value
   _drawerResizeMaxWidth = getMaxDrawerWidth()
-  // 拖拽过程中只改实际 DOM，不走 Vue 响应式，避免每帧重新渲染整个 drawer 内容
-  _drawerResizeEl = document.querySelector('.activity-drawer .el-drawer')
+  // 拖拽过程中只改实际 DOM，不走 Vue 响应式，避免每帧重新渲染整个详情内容
+  _drawerResizeEl = document.querySelector('.activity-detail-panel')
   _drawerResizeHandleEl = drawerResizerRef.value || event.currentTarget
   _drawerResizePendingWidth = _drawerResizeStartWidth
   isDrawerResizing.value = true
@@ -1171,6 +1317,21 @@ const timelineGroups = computed(() => {
 
   for (const row of items.value) {
     if (!row || !row.id) continue
+    const effective = effectiveStatus(row)
+    const statusToneValue = statusTone(effective)
+    const catConfig = categoryConfig(row.category)
+    const viewRow = {
+      ...row,
+      _effectiveStatus: effective,
+      _statusTone: statusToneValue,
+      _statusIcon: statusIcon(effective),
+      _categoryIcon: catConfig.icon,
+      _categoryToneClass: categoryToneClasses(catConfig.tone),
+      _actionToneClass: actionToneClasses(statusToneValue),
+      _humanAction: humanAction(row),
+      _isRecovered: isRowRecovered(row),
+      _rename: renameSegments(row)
+    }
     const dt = row.created_at ? dayjs(row.created_at) : null
     let key
     let label
@@ -1191,7 +1352,7 @@ const timelineGroups = computed(() => {
       map.set(key, group)
       groups.push(group)
     }
-    map.get(key).items.push(row)
+    map.get(key).items.push(viewRow)
   }
   return groups
 })
@@ -1486,14 +1647,45 @@ watch(() => filters.q, (val, old) => {
     applyFilters()
   }
 })
+
+watch(page, (val) => {
+  pageJumpInput.value = String(Math.min(totalPages.value, Math.max(1, Number(val || 1))))
+})
+
+watch(totalPages, (val) => {
+  if (Number(page.value || 1) > val) {
+    page.value = val
+    pageJumpInput.value = String(val)
+  }
+})
 </script>
 
 <style scoped>
+/* ============= 新版审计工作台布局 ============= */
+.activity-page,
+.activity-detail-overlay {
+  --activity-bg: #f6f7f8;
+  --activity-surface: #ffffff;
+  --activity-surface-soft: #f4f4f5;
+  --activity-surface-raised: #fafafa;
+  --activity-border: rgba(24, 24, 27, 0.1);
+  --activity-border-strong: rgba(24, 24, 27, 0.18);
+  --activity-text: #18181b;
+  --activity-muted: #71717a;
+  --activity-subtle: #a1a1aa;
+  --activity-accent: #52525b;
+  --activity-shadow: 0 18px 44px rgba(24, 24, 27, 0.08);
+  --activity-success: #059669;
+  --activity-warn: #b45309;
+  --activity-danger: #dc2626;
+  --activity-info: #4b5563;
+}
+
 .activity-page {
   position: relative;
-  max-width: 1280px;
+  max-width: 1480px;
   margin: 0 auto;
-  padding: 12px 28px 56px;
+  padding: 12px 24px 40px;
   font-family:
     -apple-system,
     BlinkMacSystemFont,
@@ -1503,27 +1695,23 @@ watch(() => filters.q, (val, old) => {
     'Helvetica Neue',
     Arial,
     sans-serif;
-  color: #0f172a;
+  color: var(--activity-text);
 }
 
 :deep(.activity-loading-mask) {
   inset: 0;
   border-radius: 0;
-  background: rgba(248, 250, 252, 0.78);
+  background: rgba(250, 250, 250, 0.78);
   backdrop-filter: blur(2px);
   -webkit-backdrop-filter: blur(2px);
   z-index: 10;
 }
 
-/* 页头现在走共享组件 components/common/AppPageHeader.vue，这里只保留页头右侧 slot 里的搜索框 + 按钮内嵌样式 */
-
-/* 头部内嵌搜索框 */
 .page-head-search-wrap {
   display: inline-flex;
   flex-direction: column;
   align-items: stretch;
   gap: 4px;
-  /* 让 hint 和搜索框对齐相同最大宽度，且不挤压旁边按钮 */
   min-width: 280px;
 }
 
@@ -1534,21 +1722,21 @@ watch(() => filters.q, (val, old) => {
   width: 280px;
   height: 36px;
   padding: 0 56px 0 34px;
+  border: 1px solid var(--activity-border);
   border-radius: 10px;
-  background: #fff;
-  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: var(--activity-surface);
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .page-head-search:focus-within {
-  border-color: rgba(15, 23, 42, 0.28);
-  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.06);
+  border-color: var(--activity-border-strong);
+  box-shadow: 0 0 0 3px rgba(82, 82, 91, 0.1);
 }
 
 .page-head-search-icon {
   position: absolute;
   left: 11px;
-  color: rgba(15, 23, 42, 0.42);
+  color: var(--activity-muted);
   pointer-events: none;
 }
 
@@ -1558,62 +1746,61 @@ watch(() => filters.q, (val, old) => {
   border: 0;
   outline: 0;
   background: transparent;
+  color: var(--activity-text);
   font-size: 13px;
-  color: #0f172a;
 }
 
 .page-head-search-input::placeholder {
-  color: rgba(15, 23, 42, 0.4);
+  color: var(--activity-subtle);
 }
 
-/* 搜索期间右上角 spinner（在 clear 按钮左边） */
 .page-head-search-spinner {
   position: absolute;
   right: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: rgba(15, 23, 42, 0.42);
+  color: var(--activity-muted);
   pointer-events: none;
 }
 
 .page-head-search-clear {
   position: absolute;
   right: 8px;
-  width: 20px;
-  height: 20px;
-  border-radius: 6px;
-  border: 0;
-  background: transparent;
-  color: rgba(15, 23, 42, 0.45);
-  cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--activity-muted);
+  cursor: pointer;
   transition: background-color 0.18s ease, color 0.18s ease;
 }
 
 .page-head-search-clear:hover {
-  background: rgba(15, 23, 42, 0.06);
-  color: #0f172a;
+  background: var(--activity-surface-soft);
+  color: var(--activity-text);
 }
 
-/* 搜索引擎状态徽章：低视觉权重，hairline 边 + 软底色 + 11px 紧凑 */
 .search-engine-hint {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 4px 8px;
+  border: 1px solid transparent;
   border-radius: 8px;
   font-size: 11px;
   line-height: 14px;
-  border: 1px solid transparent;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.search-engine-hint .hint-icon {
+.search-engine-hint .hint-icon,
+.search-engine-hint .hint-action {
   flex-shrink: 0;
 }
 
@@ -1624,65 +1811,39 @@ watch(() => filters.q, (val, old) => {
 }
 
 .search-engine-hint .hint-action {
-  flex-shrink: 0;
+  padding: 1px 6px;
   border: 0;
+  border-radius: 6px;
   background: transparent;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 680;
   cursor: pointer;
-  padding: 1px 6px;
-  border-radius: 6px;
   transition: background-color 0.18s ease, opacity 0.18s ease;
 }
 
 .search-engine-hint .hint-action:disabled {
-  opacity: 0.5;
   cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .search-engine-hint.tone-info {
-  color: #0369a1;
-  background: rgba(186, 230, 253, 0.45);
-  border-color: rgba(125, 211, 252, 0.55);
-}
-
-.search-engine-hint.tone-info .hint-action {
-  color: #0369a1;
-}
-
-.search-engine-hint.tone-info .hint-action:hover:not(:disabled) {
-  background: rgba(125, 211, 252, 0.35);
+  color: #3f3f46;
+  background: rgba(113, 113, 122, 0.1);
+  border-color: rgba(113, 113, 122, 0.2);
 }
 
 .search-engine-hint.tone-warn {
-  color: #b45309;
-  background: rgba(254, 243, 199, 0.65);
-  border-color: rgba(252, 211, 77, 0.55);
-}
-
-.search-engine-hint.tone-warn .hint-action {
-  color: #b45309;
-}
-
-.search-engine-hint.tone-warn .hint-action:hover:not(:disabled) {
-  background: rgba(252, 211, 77, 0.32);
+  color: #92400e;
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.24);
 }
 
 .search-engine-hint.tone-danger {
-  color: #b91c1c;
-  background: rgba(254, 226, 226, 0.65);
-  border-color: rgba(248, 113, 113, 0.5);
+  color: #be123c;
+  background: rgba(244, 63, 94, 0.1);
+  border-color: rgba(244, 63, 94, 0.24);
 }
 
-.search-engine-hint.tone-danger .hint-action {
-  color: #b91c1c;
-}
-
-.search-engine-hint.tone-danger .hint-action:hover:not(:disabled) {
-  background: rgba(248, 113, 113, 0.25);
-}
-
-/* 操作按钮（对齐 ASMRSync.vue / LibraryBackup.vue page-head-btn 规范） */
 .page-head-btn {
   position: relative;
   display: inline-flex;
@@ -1691,12 +1852,12 @@ watch(() => filters.q, (val, old) => {
   gap: 6px;
   height: 36px;
   padding: 0 14px;
+  border: 1px solid var(--activity-border);
   border-radius: 10px;
-  border: 1px solid rgba(15, 23, 42, 0.12);
-  background: #fff;
-  color: #1e293b;
+  background: var(--activity-surface);
+  color: var(--activity-text);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 680;
   white-space: nowrap;
   cursor: pointer;
   overflow: hidden;
@@ -1707,143 +1868,71 @@ watch(() => filters.q, (val, old) => {
     border-color 0.25s ease,
     color 0.25s ease,
     opacity 0.25s ease;
-  will-change: transform, opacity;
 }
 
-/* 图标包裹层：14×14 容器锁定尺寸，避免 swap Transition 影响按钮宽高 */
 .page-head-btn-icon-wrap {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 14px;
   height: 14px;
-  position: relative;
 }
 
-/* 图标基础动效（Loader2 spin 不在此选择器范围，避免冲突） */
-.page-head-btn :deep(.page-head-btn-icon) {
+.page-head-btn :deep(svg) {
   flex-shrink: 0;
+}
+
+.page-head-btn :deep(.page-head-btn-icon) {
   transition: transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.3s ease;
 }
-.page-head-btn :deep(svg) { flex-shrink: 0; }
 
 .page-head-btn:hover {
   transform: translateY(-2px) scale(1.02);
-  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 10px 22px rgba(24, 24, 27, 0.08);
 }
 
-/* :active 不依赖 :not(:disabled)，让按下反馈在 click → disabled 切换瞬间也保留 */
 .page-head-btn:active {
-  transform: translateY(0) scale(0.94);
-  box-shadow:
-    0 4px 10px rgba(15, 23, 42, 0.12),
-    inset 0 2px 6px rgba(15, 23, 42, 0.18);
-  transition:
-    transform 0.08s ease-out,
-    box-shadow 0.08s ease-out;
+  transform: scale(0.96);
 }
 
-.page-head-btn.primary:active {
-  box-shadow:
-    0 4px 10px rgba(15, 23, 42, 0.3),
-    inset 0 2px 8px rgba(0, 0, 0, 0.35);
-}
-
-.page-head-btn:active :deep(.page-head-btn-icon) {
-  transform: scale(0.78);
-  transition: transform 0.08s ease-out;
-}
-
-/* disabled：仅 opacity + cursor，不重置 transform/shadow，避免 hover 中点击瞬间塌回闪烁 */
 .page-head-btn:disabled {
-  opacity: 0.7;
   cursor: not-allowed;
+  opacity: 0.68;
 }
 
-/* === Primary 黑灰渐变 + shimmer 高光扫光 === */
 .page-head-btn.primary {
-  background: linear-gradient(135deg, #111827, #1e293b);
-  color: #fff;
   border-color: transparent;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.18);
-}
-
-.page-head-btn.primary::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: -120%;
-  width: 60%;
-  height: 100%;
-  background: linear-gradient(
-    100deg,
-    transparent 0%,
-    rgba(255, 255, 255, 0.05) 30%,
-    rgba(255, 255, 255, 0.28) 50%,
-    rgba(255, 255, 255, 0.05) 70%,
-    transparent 100%
-  );
-  transform: skewX(-18deg);
-  transition: left 0.7s cubic-bezier(0.4, 0, 0.2, 1);
-  pointer-events: none;
-}
-
-.page-head-btn.primary:hover {
-  background: linear-gradient(135deg, #1e293b, #334155);
-  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.28), 0 0 0 4px rgba(15, 23, 42, 0.05);
-}
-
-.page-head-btn.primary:hover::before {
-  left: 130%;
-}
-
-/* === Ghost 白底纯色 transition（gradient 不能 transition 会瞬切） === */
-.page-head-btn.ghost {
-  background-color: #fff;
+  background: #27272a;
+  color: #fafafa;
 }
 
 .page-head-btn.ghost:hover {
-  background-color: #f8fafc;
-  border-color: rgba(15, 23, 42, 0.2);
+  background: var(--activity-surface-soft);
+  border-color: var(--activity-border-strong);
 }
 
-/* === 各按钮专属图标动效 === */
-/* 刷新：RefreshCcw hover 时反向旋转一整圈
- *  - 仅在 :not(:disabled) 时触发：loading 中按钮 disabled，避免 hover rotate 与 swap leave Transition 冲突造成图标消失
- *  - :not(.animate-spin) 进一步排除 Loader2，让 spin 动画独立运行
- */
 .page-head-btn.btn-refresh:hover:not(:disabled) :deep(.page-head-btn-icon:not(.animate-spin)) {
   transform: rotate(-360deg) scale(1.1);
-  transition: transform 0.6s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* 归档：Archive 图标 hover 时轻微下沉 + 缩放（模拟"归档落盘"动作）+ 蓝光（同样仅 :not(:disabled)） */
 .page-head-btn.btn-archive:hover:not(:disabled) :deep(.page-head-btn-icon) {
   transform: translateY(1px) scale(1.12);
-  filter: drop-shadow(0 2px 4px rgba(59, 130, 246, 0.35));
-  color: #2563eb;
 }
 
-/* 文本 label：min-width + 居中，避免「刷新」→「刷新中…」宽度跳变 */
 .page-head-btn-label {
   display: inline-block;
   text-align: center;
-  transition: opacity 0.2s ease, letter-spacing 0.3s ease;
-}
-.page-head-btn.primary .page-head-btn-label { min-width: 56px; }
-.page-head-btn.ghost .page-head-btn-label { min-width: 70px; }
-
-/* hover 时文字微微展开间距 */
-.page-head-btn:hover .page-head-btn-label {
-  letter-spacing: 0.04em;
 }
 
-/* === 图标双 layer 平滑切换：Loader2 ↔ RefreshCcw 通过 opacity + scale 渐变 ===
- *  - 两个 slot 都常驻 DOM，避免 v-if 瞬切 / Vue Transition 初始挂载阶段不稳定
- *  - .is-visible 控制显示态（opacity 1, scale 1），未激活时 opacity 0 + scale 0.5 + rotate 隐藏
- *  - spin 动画在 svg 内层，与外层 transform 不冲突
- *  - 切换时间缩短到 200ms，让点击后 loader 立即出现，反馈更即时
- */
+.page-head-btn.primary .page-head-btn-label {
+  min-width: 56px;
+}
+
+.page-head-btn.ghost .page-head-btn-label {
+  min-width: 70px;
+}
+
 .page-head-btn-icon-slot {
   position: absolute;
   top: 50%;
@@ -1857,7 +1946,6 @@ watch(() => filters.q, (val, old) => {
   transition:
     opacity 0.16s cubic-bezier(0.22, 1, 0.36, 1),
     transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
-  will-change: transform, opacity;
 }
 
 .page-head-btn-icon-slot.is-visible {
@@ -1865,585 +1953,537 @@ watch(() => filters.q, (val, old) => {
   transform: translate(-50%, -50%) scale(1) rotate(0deg);
 }
 
-/* === 按下 flash：一次性白色高光从中心扩散，给点击清晰即时反馈 === */
-.page-head-btn::after {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 100%;
-  height: 100%;
-  border-radius: inherit;
-  background: radial-gradient(
-    circle at center,
-    rgba(255, 255, 255, 0.6) 0%,
-    rgba(255, 255, 255, 0.2) 40%,
-    transparent 70%
-  );
-  transform: translate(-50%, -50%) scale(0);
-  opacity: 0;
-  pointer-events: none;
-}
-
-.page-head-btn:active::after {
-  animation: page-head-btn-flash 0.4s ease-out;
-}
-
-@keyframes page-head-btn-flash {
-  0%   { transform: translate(-50%, -50%) scale(0);   opacity: 0.9; }
-  60%  { transform: translate(-50%, -50%) scale(1.4); opacity: 0.45; }
-  100% { transform: translate(-50%, -50%) scale(1.8); opacity: 0; }
-}
-
 .page-head-btn-hint {
   margin-left: 4px;
   padding: 2px 6px;
   border-radius: 999px;
+  background: rgba(82, 82, 91, 0.1);
+  color: var(--activity-muted);
   font-size: 10px;
-  font-weight: 700;
-  background: rgba(15, 118, 110, 0.1);
-  color: #0d9488;
+  font-weight: 720;
 }
 
-/* ============= 关键指标紧凑横向条 ============= */
-.metric-strip {
-  margin-bottom: 14px;
-  padding: 14px 18px 12px;
+.activity-command-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--activity-border);
   border-radius: 16px;
-  background: #fff;
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  background: var(--activity-surface);
 }
 
-.metric-strip-head {
+.activity-kicker {
+  display: block;
+  color: var(--activity-muted);
+  font-size: 10.5px;
+  font-weight: 720;
+  letter-spacing: 0.12em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.activity-range-copy {
+  min-width: 0;
+}
+
+.activity-range-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.activity-range-line strong {
+  color: var(--activity-text);
+  font-size: 18px;
+  font-weight: 780;
+  line-height: 1.1;
+}
+
+.activity-range-line span {
+  color: var(--activity-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.activity-insight-board {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.activity-metric-rail {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.activity-metric-card {
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid var(--activity-border);
+  border-radius: 12px;
+  background: var(--activity-surface);
+  cursor: help;
+}
+
+.activity-metric-label {
+  display: block;
+  color: var(--activity-muted);
+  font-size: 11px;
+  font-weight: 680;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-metric-value {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin-top: 6px;
+  min-width: 0;
+  font-size: 18px;
+  font-weight: 780;
+  line-height: 1.08;
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-metric-value span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-metric-value small {
+  flex: 0 0 auto;
+  color: var(--activity-muted);
+  font-size: 10px;
+  font-weight: 720;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.activity-context-band {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.95fr) minmax(300px, 1.35fr) minmax(280px, 0.9fr);
+  gap: 10px;
+  align-items: stretch;
+}
+
+.activity-trend-panel,
+.activity-category-panel,
+.activity-filter-panel {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--activity-border);
+  border-radius: 14px;
+  background: var(--activity-surface);
+}
+
+.activity-panel-title {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
   margin-bottom: 10px;
-}
-
-.metric-strip-label {
+  color: var(--activity-muted);
   font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.04em;
-  color: rgba(15, 23, 42, 0.55);
-  text-transform: uppercase;
 }
 
-/* statsDays AppDropdown 已接管宁广与状态样式（参考 width prop），这里仅保留上下文占位 */
-
-/* 数据条本体：8 列等宽，hairline 分隔 */
-.metric-strip-row {
-  display: grid;
-  grid-template-columns: repeat(8, minmax(0, 1fr));
-  gap: 0;
-  border-top: 1px solid rgba(15, 23, 42, 0.05);
-}
-
-.metric-cell {
-  position: relative;
-  padding: 12px 14px;
-  border-right: 1px solid rgba(15, 23, 42, 0.05);
-  min-width: 0;
-  cursor: help;
-}
-
-.metric-cell:last-child {
-  border-right: none;
-}
-
-.metric-cell-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: rgba(15, 23, 42, 0.5);
-  letter-spacing: 0.02em;
-  margin-bottom: 6px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.metric-cell-value {
-  display: flex;
-  align-items: baseline;
-  gap: 4px;
-  min-width: 0;
-}
-
-.metric-cell-num {
-  font-size: 19px;
-  font-weight: 700;
-  color: #0f172a;
-  letter-spacing: -0.02em;
-  line-height: 1.05;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.metric-cell-unit {
-  font-size: 10.5px;
-  font-weight: 600;
-  color: rgba(15, 23, 42, 0.5);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  flex: 0 0 auto;
-}
-
-@media (max-width: 1100px) {
-  .metric-strip-row {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-  .metric-cell:nth-child(4n) {
-    border-right: none;
-  }
-  .metric-cell:nth-child(n+5) {
-    border-top: 1px solid rgba(15, 23, 42, 0.05);
-  }
-}
-
-@media (max-width: 640px) {
-  .metric-strip-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .metric-cell:nth-child(2n) {
-    border-right: none;
-  }
-  .metric-cell:nth-child(n+3) {
-    border-top: 1px solid rgba(15, 23, 42, 0.05);
-  }
-}
-
-/* ============= 概览条（趋势 + 分类） ============= */
-.overview-strip {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
-  gap: 14px;
-  margin-bottom: 14px;
-}
-
-.overview-card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 18px 20px;
-  border-radius: 16px;
-  background: #ffffff;
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
-  min-width: 0;
-}
-
-.overview-card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.overview-label {
+.activity-panel-title strong {
+  color: var(--activity-text);
   font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: rgba(15, 23, 42, 0.5);
-  text-transform: uppercase;
-}
-
-.overview-meta {
-  font-size: 12px;
-  color: rgba(15, 23, 42, 0.42);
+  font-weight: 760;
   font-variant-numeric: tabular-nums;
 }
 
-.sparkline-wrap {
+.activity-sparkline {
+  width: 100%;
+  height: 78px;
+}
+
+.activity-sparkline-wrap {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.sparkline {
-  width: 100%;
-  height: 70px;
-}
-
-.sparkline-foot {
+.activity-sparkline-foot {
   display: flex;
   justify-content: space-between;
+  color: var(--activity-muted);
   font-size: 11px;
-  color: rgba(15, 23, 42, 0.48);
   font-variant-numeric: tabular-nums;
 }
 
-/* 分类分布：滚动隐藏条 */
-.cat-list-scroll {
-  max-height: 180px;
+.activity-category-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  max-height: 132px;
   overflow-y: auto;
-  /* 自定义薄滚动条：默认隐藏，悬停时弱显 */
+  padding-right: 4px;
   scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
-  transition: scrollbar-color 0.2s ease;
+  scrollbar-color: rgba(113, 113, 122, 0.28) transparent;
 }
 
-.cat-list-scroll:hover {
-  scrollbar-color: rgba(15, 23, 42, 0.18) transparent;
-}
-
-.cat-list-scroll::-webkit-scrollbar {
+.activity-category-list::-webkit-scrollbar {
   width: 4px;
 }
 
-.cat-list-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.cat-list-scroll::-webkit-scrollbar-thumb {
-  background: transparent;
+.activity-category-list::-webkit-scrollbar-thumb {
   border-radius: 999px;
-  transition: background 0.2s ease;
+  background: rgba(113, 113, 122, 0.28);
 }
 
-.cat-list-scroll:hover::-webkit-scrollbar-thumb {
-  background: rgba(15, 23, 42, 0.18);
-}
-
-.cat-list-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(15, 23, 42, 0.32);
-}
-
-.cat-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-right: 4px;
-}
-
-.cat-row {
+.activity-category-row {
   display: grid;
-  grid-template-columns: 8px minmax(60px, 1fr) 2fr 40px;
-  gap: 8px;
+  grid-template-columns: 8px minmax(76px, 1fr) minmax(58px, 0.8fr) 38px;
+  gap: 7px;
   align-items: center;
+  min-width: 0;
+  color: var(--activity-text);
   font-size: 12px;
 }
 
-.cat-dot {
+.activity-category-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
 }
 
-.cat-label {
-  color: #0f172a;
-  font-weight: 500;
-  white-space: nowrap;
+.activity-category-name {
+  color: var(--activity-text);
+  font-weight: 620;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.cat-track {
+.activity-category-track {
   height: 6px;
   border-radius: 999px;
-  background: #f1f5f9;
+  background: var(--activity-surface-soft);
   overflow: hidden;
 }
 
-.cat-fill {
+.activity-category-fill {
+  display: block;
   height: 100%;
   border-radius: 999px;
-  opacity: 0.85;
+  opacity: 0.9;
   transition: width 0.35s ease;
 }
 
-.cat-num {
-  text-align: right;
+.activity-category-count {
+  color: var(--activity-muted);
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
-  color: rgba(15, 23, 42, 0.7);
-  font-weight: 600;
+  text-align: right;
 }
 
-/* ============= 筛选栏：靠右对齐 + 项目统一 AppDropdown ============= */
-.filter-bar {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  margin-bottom: 14px;
-  border-radius: 16px;
-  background: #ffffff;
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+.activity-filter-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
-/* 重置筛选按钮：仅在有活动筛选时出现，hover 微动效统一规范 */
-.filter-reset {
+.activity-filter-controls :deep(.app-dd-root),
+.activity-filter-controls :deep(.app-dd-trigger-anchor),
+.activity-filter-controls :deep(.app-dd-trigger) {
+  width: 100%;
+}
+
+.activity-filter-reset {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  flex: 0 0 auto;
-  height: 36px;
-  padding: 0 18px;
-  border-radius: 10px;
-  border: 1px solid rgba(15, 23, 42, 0.12);
-  background: #fff;
-  color: #475569;
-  font-size: 12.5px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--activity-border);
+  border-radius: 9px;
+  background: var(--activity-surface-raised);
+  color: var(--activity-muted);
+  font-size: 12px;
+  font-weight: 680;
   cursor: pointer;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
   transition:
     transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
-    box-shadow 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
-    background-color 0.25s ease,
-    border-color 0.25s ease,
-    color 0.25s ease;
+    background-color 0.2s ease,
+    color 0.2s ease,
+    border-color 0.2s ease;
 }
 
-.filter-reset:hover {
+.activity-filter-reset:hover {
   transform: translateY(-2px) scale(1.02);
-  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
-  background: #f8fafc;
-  border-color: rgba(15, 23, 42, 0.2);
-  color: #0f172a;
+  border-color: var(--activity-border-strong);
+  background: var(--activity-surface-soft);
+  color: var(--activity-text);
 }
 
-.filter-reset:active {
+.activity-filter-reset:active {
   transform: scale(0.96);
-  transition: transform 0.1s ease;
 }
 
-@media (max-width: 720px) {
-  .filter-bar {
-    justify-content: stretch;
-  }
-  .filter-reset {
-    flex: 1 0 100%;
-  }
+.activity-reader {
+  min-width: 0;
+  border: 1px solid var(--activity-border);
+  border-radius: 18px;
+  background: var(--activity-surface);
+  overflow: hidden;
+  box-shadow: var(--activity-shadow);
 }
 
-/* ============= Timeline ============= */
-.timeline-shell {
-  min-height: 320px;
-}
-
-.timeline {
-  display: flex;
-  flex-direction: column;
-  gap: 28px;
-}
-
-.day-group {
-  position: relative;
-}
-
-.day-marker {
-  position: relative;
+.activity-reader-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
-  padding: 6px 4px 12px;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: rgba(15, 23, 42, 0.55);
-  text-transform: uppercase;
+  padding: 15px 18px;
+  border-bottom: 1px solid var(--activity-border);
+  background: var(--activity-surface);
 }
 
-.day-label {
-  position: relative;
-  z-index: 2;
-  padding: 4px 12px;
+.activity-reader-head h2 {
+  margin: 3px 0 0;
+  color: var(--activity-text);
+  font-size: 18px;
+  font-weight: 780;
+  line-height: 1.2;
+}
+
+.activity-reader-meta {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  color: var(--activity-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.activity-reader-meta span + span::before {
+  content: '';
+  display: inline-block;
+  width: 3px;
+  height: 3px;
+  margin-right: 8px;
   border-radius: 999px;
-  background: linear-gradient(135deg, rgba(10, 132, 255, 0.1), rgba(94, 200, 250, 0.1));
-  color: #0a84ff;
-  font-size: 12px;
+  background: var(--activity-subtle);
+  vertical-align: middle;
 }
 
-.day-meta {
-  position: relative;
-  z-index: 2;
+.activity-timeline-shell {
+  min-height: 430px;
+  padding: 18px 20px 8px;
+  background: var(--activity-surface);
+}
+
+.activity-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.activity-day-section {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.activity-day-header {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 7px;
+}
+
+.activity-day-label {
+  color: var(--activity-text);
+  font-size: 14px;
+  font-weight: 780;
+  line-height: 1.2;
+}
+
+.activity-day-count {
+  color: var(--activity-muted);
   font-size: 11px;
-  color: rgba(15, 23, 42, 0.4);
-  font-weight: 600;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
-.day-spine {
-  flex: 1;
-  height: 1px;
-  background: linear-gradient(90deg, rgba(15, 23, 42, 0.1), transparent);
-}
-
-.day-events {
+.activity-log-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
 }
 
-.event-row {
+.activity-log-row {
+  --activity-row-accent: var(--activity-subtle);
   position: relative;
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr) 22px;
+  grid-template-columns: 74px minmax(0, 1fr) 24px;
+  gap: 12px;
   align-items: stretch;
+  min-width: 0;
+  padding: 12px 12px 12px 0;
+  border: 1px solid var(--activity-border);
+  border-radius: 14px;
+  background: var(--activity-surface-raised);
   cursor: pointer;
-  border-radius: 16px;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  outline: none;
+  overflow: hidden;
+  transition:
+    border-color 0.18s ease,
+    background-color 0.18s ease;
+  contain: layout paint;
 }
 
-.event-row:hover {
-  transform: translateY(-1px);
+.activity-log-row:hover,
+.activity-log-row.is-active,
+.activity-log-row:focus-visible {
+  border-color: var(--activity-border-strong);
+  background: color-mix(in srgb, var(--activity-surface-raised) 86%, var(--activity-row-accent) 14%);
 }
 
-.event-row:active {
-  transform: scale(0.998);
+.activity-log-row:active {
+  border-color: color-mix(in srgb, var(--activity-row-accent) 48%, var(--activity-border-strong));
 }
 
-.event-row.is-active .event-card {
-  border-color: rgba(10, 132, 255, 0.45);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 16px 36px rgba(10, 132, 255, 0.16);
-}
+.activity-log-row.tone-success { --activity-row-accent: var(--activity-success); }
+.activity-log-row.tone-warn { --activity-row-accent: var(--activity-warn); }
+.activity-log-row.tone-danger { --activity-row-accent: var(--activity-danger); }
+.activity-log-row.tone-info { --activity-row-accent: var(--activity-info); }
+.activity-log-row.tone-neutral { --activity-row-accent: var(--activity-subtle); }
 
-.event-rail {
+.activity-log-time {
   position: relative;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  justify-content: flex-end;
   gap: 8px;
-  padding: 0 0 0 6px;
-}
-
-.event-rail::before {
-  content: '';
-  position: absolute;
-  left: 21px;
-  top: -8px;
-  bottom: -8px;
-  width: 1px;
-  background: rgba(15, 23, 42, 0.08);
-}
-
-.event-row:first-child .event-rail::before {
-  top: 50%;
-}
-
-.event-row:last-child .event-rail::before {
-  bottom: 50%;
-}
-
-.event-time {
-  min-width: 36px;
+  padding-top: 2px;
+  padding-left: 14px;
+  color: var(--activity-muted);
   font-size: 11px;
+  font-weight: 720;
   font-variant-numeric: tabular-nums;
-  color: rgba(15, 23, 42, 0.55);
-  font-weight: 600;
 }
 
-.event-dot {
-  position: relative;
-  z-index: 2;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
+.activity-log-dot {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: #fff;
-  color: #94a3b8;
-  border: 2px solid #cbd5e1;
   flex-shrink: 0;
-  transition: all 0.2s ease;
+  width: 22px;
+  height: 22px;
+  border: 1px solid color-mix(in srgb, var(--activity-row-accent) 44%, transparent);
+  border-radius: 50%;
+  background: var(--activity-surface);
+  color: var(--activity-row-accent);
 }
 
-.event-dot.tone-success {
-  background: #ecfdf5;
-  color: #059669;
-  border-color: #34c759;
-}
-
-.event-dot.tone-warn {
-  background: #fffbeb;
-  color: #b45309;
-  border-color: #ff9500;
-}
-
-.event-dot.tone-danger {
-  background: #fef2f2;
-  color: #b91c1c;
-  border-color: #ff3b30;
-}
-
-.event-dot.tone-info {
-  background: #eff6ff;
-  color: #0a84ff;
-  border-color: #0a84ff;
-}
-
-.event-dot.tone-neutral {
-  background: #f1f5f9;
-  color: #64748b;
-  border-color: #94a3b8;
-}
-
-.event-row:hover .event-dot {
-  transform: scale(1.1);
-}
-
-.event-card {
-  position: relative;
-  padding: 12px 16px;
-  border-radius: 14px;
-  background: #ffffff;
-  border: 1px solid rgba(15, 23, 42, 0.05);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+.activity-log-content {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 7px;
   min-width: 0;
-  transition: all 0.25s ease;
 }
 
-.event-row:hover .event-card {
-  border-color: rgba(15, 23, 42, 0.1);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 12px 24px rgba(15, 23, 42, 0.08);
-}
-
-.event-card-head {
+.activity-log-topline {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 7px;
+  min-width: 0;
+}
+
+.activity-category-chip,
+.activity-rj-chip,
+.activity-flag-chip,
+.activity-recovery-chip,
+.activity-meta-chip,
+.activity-path-chip {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  border-radius: 8px;
+  line-height: 1;
+}
+
+.activity-category-chip {
+  gap: 5px;
+  padding: 4px 8px;
+  border: 1px solid var(--tw-ring-color);
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.activity-action-label {
+  color: var(--activity-muted);
   font-size: 12px;
+  font-weight: 780;
+  line-height: 1;
 }
 
-/* "已修复"徽章：失败行的复原标记，加一层柔和呼吸光晕，让用户在长列表里能注意到 */
-.recovery-chip {
-  position: relative;
-  box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.45);
-  animation: recoveryPulse 2.4s ease-in-out infinite;
-  transition: transform 0.2s ease;
+.activity-rj-chip {
+  padding: 4px 7px;
+  border: 1px solid var(--activity-border);
+  background: var(--activity-surface-soft);
+  color: var(--activity-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0;
 }
 
-.recovery-chip:hover {
-  transform: translateY(-1px);
+.activity-flag-chip {
+  padding: 3px 7px;
+  border: 1px solid var(--activity-border);
+  background: transparent;
+  color: var(--activity-muted);
+  font-size: 10.5px;
+  font-weight: 720;
 }
 
-@keyframes recoveryPulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-  50%      { box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.18); }
+.activity-flag-chip.tone-warn {
+  border-color: rgba(245, 158, 11, 0.24);
+  color: var(--activity-warn);
 }
 
-/* 失败但已修复的行：把卡片左边的色条由"红"切到"红→绿"的柔和渐变，告诉用户这条已经被覆盖 */
-.event-row.tone-danger:has(.recovery-chip) .event-card::before {
-  background: linear-gradient(180deg, #f87171 0%, #fb923c 45%, #34d399 100%);
+.activity-flag-chip.tone-info {
+  border-color: rgba(82, 82, 91, 0.22);
+  color: var(--activity-info);
 }
 
-.event-summary {
+.activity-recovery-chip {
+  gap: 4px;
+  padding: 3px 7px;
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  background: rgba(16, 185, 129, 0.09);
+  color: #047857;
+  font-size: 10.5px;
+  font-weight: 760;
+}
+
+.activity-log-summary {
+  max-width: 100%;
+  color: var(--activity-text);
   font-size: 13px;
-  line-height: 1.5;
-  color: #1e293b;
+  line-height: 1.55;
   word-break: break-word;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -2452,166 +2492,301 @@ watch(() => filters.q, (val, old) => {
   overflow: hidden;
 }
 
-/* ============= 重命名行：'黄底原名 + 箭头 + 绿底新名' 单行高亮 ============= */
-.rename-summary {
+.activity-rename-summary {
   display: block;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12.5px;
   line-height: 1.65;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
   word-break: break-all;
 }
 
-/* 旧名：amber 渐变胶囊 + 加粗，第一眼就吸引到"被改掉的旧值" */
-.rename-summary .rename-old {
+.activity-rename-old,
+.activity-rename-new {
   display: inline-block;
   padding: 1px 8px;
-  font-weight: 600;
-  color: #92400e; /* amber-800 */
-  background: linear-gradient(180deg, rgba(251, 191, 36, 0.22) 0%, rgba(251, 191, 36, 0.10) 100%);
   border-radius: 6px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
-  transition: all 0.2s ease;
+  font-weight: 720;
 }
 
-/* 中间箭头：slate plain text，不抢前后两个胶囊的视觉焦点 */
-.rename-summary .rename-arrow {
+.activity-rename-old {
+  color: #92400e;
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.activity-rename-arrow {
   display: inline-block;
   margin: 0 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-weight: 700;
-  font-size: 13px;
-  letter-spacing: -0.08em;
-  color: rgba(71, 85, 105, 0.78); /* slate-600 */
-  vertical-align: baseline;
+  color: var(--activity-muted);
+  font-weight: 760;
 }
 
-/* 新名：emerald 渐变胶囊 + 加粗，目光最终落到"改成了什么" */
-.rename-summary .rename-new {
-  display: inline-block;
-  padding: 1px 8px;
-  font-weight: 600;
-  color: #065f46; /* emerald-800 */
-  background: linear-gradient(180deg, rgba(16, 185, 129, 0.20) 0%, rgba(16, 185, 129, 0.08) 100%);
-  border-radius: 6px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
-  transition: all 0.2s ease;
+.activity-rename-new {
+  color: #047857;
+  background: rgba(16, 185, 129, 0.12);
 }
 
-/* 失败：箭头 + 新名都切到 rose 系，旧名 amber 保持不变（语义：改之前的状态没问题，是改这一步出错） */
-.rename-summary.is-failed .rename-arrow {
-  color: #b91c1c;
+.activity-rename-summary.is-failed .activity-rename-arrow,
+.activity-rename-reason {
+  color: #be123c;
 }
 
-.rename-summary.is-failed .rename-new {
-  color: #991b1b;
-  background: linear-gradient(180deg, rgba(244, 63, 94, 0.18) 0%, rgba(244, 63, 94, 0.08) 100%);
+.activity-rename-summary.is-failed .activity-rename-new {
+  color: #be123c;
+  background: rgba(244, 63, 94, 0.1);
 }
 
-.rename-summary .rename-reason-inline {
+.activity-rename-reason {
   margin-left: 8px;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 11.5px;
-  color: rgba(190, 18, 60, 0.85);
-  letter-spacing: 0.02em;
 }
 
-/* hover：两个胶囊轻微抬升 + 微 glow，对齐项目主操作"渐变 + glow"的交互语言 */
-.event-row:hover .rename-summary .rename-old {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 2px 6px rgba(251, 191, 36, 0.22);
-  transform: translateY(-1px);
-}
-
-.event-row:hover .rename-summary .rename-new {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 2px 6px rgba(16, 185, 129, 0.18);
-  transform: translateY(-1px);
-}
-
-.event-row:hover .rename-summary.is-failed .rename-new {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 2px 6px rgba(244, 63, 94, 0.22);
-}
-
-.event-meta {
+.activity-log-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
-  margin-top: 2px;
-}
-
-.event-path {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 8px;
-  border-radius: 8px;
-  font-size: 11px;
-  background: rgba(241, 245, 249, 0.7);
-  color: rgba(15, 23, 42, 0.62);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  max-width: 100%;
   min-width: 0;
 }
 
-.event-path-text {
+.activity-meta-chip {
+  gap: 4px;
+  padding: 4px 8px;
+  border: 1px solid var(--tw-ring-color);
+  font-size: 11px;
+}
+
+.activity-meta-chip span {
+  opacity: 0.74;
+  font-weight: 650;
+}
+
+.activity-meta-chip strong {
+  font-weight: 780;
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-path-chip {
+  gap: 5px;
+  max-width: min(520px, 100%);
+  padding: 4px 8px;
+  background: var(--activity-surface-soft);
+  color: var(--activity-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.activity-path-chip span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 360px;
 }
 
-.event-tail {
+.activity-log-cue {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: rgba(15, 23, 42, 0.3);
-  transition: all 0.25s ease;
+  color: var(--activity-subtle);
+  transition: color 0.18s ease;
 }
 
-.event-row:hover .event-tail {
-  color: rgba(15, 23, 42, 0.6);
-  transform: translateX(2px);
+.activity-log-row:hover .activity-log-cue,
+.activity-log-row:focus-visible .activity-log-cue {
+  color: var(--activity-muted);
 }
 
-/* ============= 底部 ============= */
-.footer-bar {
+.cat-tone-indigo { background: rgba(99, 102, 241, 0.1); color: #4338ca; --tw-ring-color: rgba(99, 102, 241, 0.24); }
+.cat-tone-violet { background: rgba(139, 92, 246, 0.1); color: #6d28d9; --tw-ring-color: rgba(139, 92, 246, 0.24); }
+.cat-tone-purple { background: rgba(147, 51, 234, 0.1); color: #7e22ce; --tw-ring-color: rgba(147, 51, 234, 0.24); }
+.cat-tone-fuchsia { background: rgba(217, 70, 239, 0.1); color: #a21caf; --tw-ring-color: rgba(217, 70, 239, 0.24); }
+.cat-tone-amber { background: rgba(245, 158, 11, 0.12); color: #92400e; --tw-ring-color: rgba(245, 158, 11, 0.26); }
+.cat-tone-orange { background: rgba(249, 115, 22, 0.11); color: #9a3412; --tw-ring-color: rgba(249, 115, 22, 0.25); }
+.cat-tone-emerald { background: rgba(16, 185, 129, 0.1); color: #047857; --tw-ring-color: rgba(16, 185, 129, 0.24); }
+.cat-tone-teal { background: rgba(20, 184, 166, 0.1); color: #0f766e; --tw-ring-color: rgba(20, 184, 166, 0.24); }
+.cat-tone-lime { background: rgba(132, 204, 22, 0.12); color: #4d7c0f; --tw-ring-color: rgba(132, 204, 22, 0.25); }
+.cat-tone-rose { background: rgba(244, 63, 94, 0.1); color: #be123c; --tw-ring-color: rgba(244, 63, 94, 0.25); }
+.cat-tone-pink { background: rgba(236, 72, 153, 0.1); color: #be185d; --tw-ring-color: rgba(236, 72, 153, 0.24); }
+.cat-tone-sky { background: rgba(14, 165, 233, 0.1); color: #0369a1; --tw-ring-color: rgba(14, 165, 233, 0.24); }
+.cat-tone-blue { background: rgba(59, 130, 246, 0.1); color: #1d4ed8; --tw-ring-color: rgba(59, 130, 246, 0.24); }
+.cat-tone-cyan { background: rgba(6, 182, 212, 0.1); color: #0e7490; --tw-ring-color: rgba(6, 182, 212, 0.24); }
+.cat-tone-slate { background: rgba(100, 116, 139, 0.1); color: #475569; --tw-ring-color: rgba(100, 116, 139, 0.22); }
+
+.action-tone-success { color: var(--activity-success); }
+.action-tone-warn { color: var(--activity-warn); }
+.action-tone-danger { color: var(--activity-danger); }
+.action-tone-info { color: var(--activity-info); }
+.action-tone-neutral { color: var(--activity-muted); }
+
+.chip-tone-success { background: rgba(16, 185, 129, 0.09); color: #047857; --tw-ring-color: rgba(16, 185, 129, 0.2); }
+.chip-tone-warn { background: rgba(245, 158, 11, 0.1); color: #92400e; --tw-ring-color: rgba(245, 158, 11, 0.22); }
+.chip-tone-danger { background: rgba(244, 63, 94, 0.09); color: #be123c; --tw-ring-color: rgba(244, 63, 94, 0.22); }
+.chip-tone-info { background: rgba(82, 82, 91, 0.09); color: #52525b; --tw-ring-color: rgba(82, 82, 91, 0.2); }
+.chip-tone-neutral { background: rgba(113, 113, 122, 0.1); color: #52525b; --tw-ring-color: rgba(113, 113, 122, 0.2); }
+
+.activity-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 24px 4px 4px;
-  gap: 16px;
+  gap: 12px;
+  padding: 12px 16px 14px;
+  border-top: 1px solid var(--activity-border);
+  background: var(--activity-surface);
 }
 
-.footer-meta {
+.activity-footer-meta {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  color: var(--activity-muted);
   font-size: 12px;
-  color: rgba(15, 23, 42, 0.5);
+  font-weight: 650;
 }
 
-.footer-sep {
-  opacity: 0.55;
+.activity-pager {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
-/* footer-pager 走 index.css 全局规范（small 尺寸自动适配 28px 紧凑版） */
-
-/* ============= Drawer ============= */
-:deep(.activity-drawer) {
-  --el-drawer-padding-primary: 0;
+.activity-pager-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--activity-border);
+  border-radius: 12px;
+  background: var(--activity-surface-raised);
 }
 
-:deep(.activity-drawer .el-drawer__header) {
-  display: none;
+.activity-pager-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--activity-muted);
+  font-size: 12px;
+  font-weight: 720;
+  cursor: pointer;
+  transition:
+    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    background-color 0.2s ease,
+    color 0.2s ease,
+    opacity 0.2s ease;
 }
 
-:deep(.activity-drawer .el-drawer__body) {
-  padding: 0;
+.activity-pager-btn.icon {
+  width: 28px;
+}
+
+.activity-pager-btn:hover:not(:disabled) {
+  transform: translateY(-1px) scale(1.02);
+  background: var(--activity-surface-soft);
+  color: var(--activity-text);
+}
+
+.activity-pager-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.activity-pager-btn.active {
+  background: #27272a;
+  color: #fafafa;
+}
+
+.activity-pager-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.activity-pager-ellipsis {
+  min-width: 18px;
+  color: var(--activity-subtle);
+  text-align: center;
+}
+
+.activity-pager-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--activity-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.activity-pager-jump-input {
+  width: 48px;
+  height: 32px;
+  border: 1px solid var(--activity-border);
+  border-radius: 10px;
+  background: var(--activity-surface-raised);
+  color: var(--activity-text);
+  text-align: center;
+  font-size: 12px;
+  font-weight: 720;
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.activity-pager-jump-input:focus {
+  border-color: var(--activity-border-strong);
+  box-shadow: 0 0 0 3px rgba(82, 82, 91, 0.12);
+}
+
+.activity-detail-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2600;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(24, 24, 27, 0.28);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.activity-detail-panel {
+  height: 100dvh;
+  max-width: calc(100vw - 72px);
+  min-width: min(480px, 100vw);
   overflow: hidden;
+  border-left: 1px solid var(--activity-border);
+  background: var(--activity-surface);
+  box-shadow: -28px 0 60px rgba(24, 24, 27, 0.18);
 }
 
-/* 拖拽手柄：fixed 到抽屉外面、贴左边缘，z-index 高于 el-overlay (默认 2000+) */
-/* transform: translateX(50%) 让 10px 宽的命中区横跨抽屉左边缘（5px 在外、5px 在内）*/
+.activity-detail-panel :deep(.detail-body) {
+  height: 100dvh;
+  background: var(--activity-surface);
+  color: var(--activity-text);
+}
+
+.activity-overlay-enter-active,
+.activity-overlay-leave-active {
+  transition: opacity 0.22s ease;
+}
+
+.activity-overlay-enter-active .activity-detail-panel,
+.activity-overlay-leave-active .activity-detail-panel {
+  transition: transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.activity-overlay-enter-from,
+.activity-overlay-leave-to {
+  opacity: 0;
+}
+
+.activity-overlay-enter-from .activity-detail-panel,
+.activity-overlay-leave-to .activity-detail-panel {
+  transform: translateX(28px);
+}
+
 .activity-drawer-resizer-fixed {
   position: fixed;
   top: 0;
@@ -2619,7 +2794,7 @@ watch(() => filters.q, (val, old) => {
   width: 10px;
   transform: translateX(50%);
   cursor: col-resize;
-  z-index: 3000;
+  z-index: 2700;
   background: transparent;
   user-select: none;
 }
@@ -2631,91 +2806,229 @@ watch(() => filters.q, (val, old) => {
   bottom: 0;
   left: 4px;
   right: 4px;
-  background: rgba(15, 23, 42, 0.08);
+  background: rgba(113, 113, 122, 0.28);
   transition: background 0.18s ease, left 0.18s ease, right 0.18s ease;
 }
 
 .activity-drawer-resizer-fixed:hover::before,
 .activity-drawer-resizer-fixed.is-active::before {
-  background: #3b82f6;
+  background: #71717a;
   left: 3px;
   right: 3px;
 }
 
-/* 拖拽过程中关掉抽屉自身的动画过渡，让宽度跟随鼠标实时贴合 */
-:deep(.activity-drawer.is-resizing .el-drawer) {
-  transition: none !important;
-  will-change: width;
+:global(html.kikoerumanager-dark .activity-page),
+:global(html.kikoerumanager-dark .activity-detail-overlay) {
+  --activity-bg: #08090c;
+  --activity-surface: #111216;
+  --activity-surface-soft: #202126;
+  --activity-surface-raised: #17181d;
+  --activity-border: rgba(255, 255, 255, 0.11);
+  --activity-border-strong: rgba(255, 255, 255, 0.2);
+  --activity-text: #f4f4f5;
+  --activity-muted: rgba(212, 212, 216, 0.68);
+  --activity-subtle: rgba(161, 161, 170, 0.7);
+  --activity-accent: #d4d4d8;
+  --activity-shadow: none;
+  --activity-success: #8ddfbb;
+  --activity-warn: #f4ce75;
+  --activity-danger: #f3a2a8;
+  --activity-info: #c8c8cf;
 }
 
-@media (max-width: 1080px) {
-  .overview-strip {
-    grid-template-columns: 1fr;
+:global(html.kikoerumanager-dark .activity-page) {
+  color: var(--activity-text);
+}
+
+:global(html.kikoerumanager-dark .activity-page .page-head-search),
+:global(html.kikoerumanager-dark .activity-page .page-head-btn.ghost) {
+  background: #17181d !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: var(--activity-text) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .activity-page .page-head-search:focus-within) {
+  background: #1d1e23 !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.06) !important;
+}
+
+:global(html.kikoerumanager-dark .activity-page .page-head-search-input) {
+  color: #ffffff;
+  background: transparent !important;
+  background-image: none !important;
+}
+
+:global(html.kikoerumanager-dark .activity-page .page-head-search-input::placeholder) {
+  color: rgba(212, 212, 216, 0.55);
+}
+
+:global(html.kikoerumanager-dark .activity-page .page-head-search-icon),
+:global(html.kikoerumanager-dark .activity-page .page-head-search-spinner),
+:global(html.kikoerumanager-dark .activity-page .page-head-search-clear) {
+  color: var(--activity-muted);
+}
+
+:global(html.kikoerumanager-dark .activity-page .page-head-btn.primary),
+:global(html.kikoerumanager-dark .activity-page .activity-pager-btn.active) {
+  background: #17181d;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #d7dde7;
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark .activity-page .page-head-btn.primary:hover) {
+  background: #202126;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark .activity-page .activity-log-row:hover),
+:global(html.kikoerumanager-dark .activity-page .activity-log-row.is-active),
+:global(html.kikoerumanager-dark .activity-page .activity-log-row:focus-visible) {
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark .activity-detail-overlay) {
+  background: rgba(0, 0, 0, 0.48);
+}
+
+:global(html.kikoerumanager-dark .activity-detail-panel) {
+  background: #0b0c10 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  box-shadow: -28px 0 60px rgba(0, 0, 0, 0.42) !important;
+}
+
+:global(html.kikoerumanager-dark .activity-page .search-engine-hint) {
+  background: #17181d !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: #d7dde7 !important;
+}
+
+:global(html.kikoerumanager-dark .activity-page .search-engine-hint.tone-info),
+:global(html.kikoerumanager-dark .activity-page .search-engine-hint.tone-warn),
+:global(html.kikoerumanager-dark .activity-page .search-engine-hint.tone-danger) {
+  background: #17181d !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: #d7dde7 !important;
+}
+
+:global(html.kikoerumanager-dark .activity-page .search-engine-hint .hint-action) {
+  color: #d7dde7 !important;
+}
+
+:global(html.kikoerumanager-dark .activity-page .search-engine-hint .hint-action:hover) {
+  background: #202126 !important;
+}
+
+:global(html.kikoerumanager-dark) .cat-tone-indigo { background: rgba(129, 140, 248, 0.16); color: #c7d2fe; --tw-ring-color: rgba(129, 140, 248, 0.28); }
+:global(html.kikoerumanager-dark) .cat-tone-violet { background: rgba(167, 139, 250, 0.16); color: #ddd6fe; --tw-ring-color: rgba(167, 139, 250, 0.28); }
+:global(html.kikoerumanager-dark) .cat-tone-purple { background: rgba(192, 132, 252, 0.15); color: #e9d5ff; --tw-ring-color: rgba(192, 132, 252, 0.26); }
+:global(html.kikoerumanager-dark) .cat-tone-fuchsia { background: rgba(232, 121, 249, 0.14); color: #f5d0fe; --tw-ring-color: rgba(232, 121, 249, 0.26); }
+:global(html.kikoerumanager-dark) .cat-tone-amber { background: rgba(251, 191, 36, 0.15); color: #fde68a; --tw-ring-color: rgba(251, 191, 36, 0.28); }
+:global(html.kikoerumanager-dark) .cat-tone-orange { background: rgba(251, 146, 60, 0.15); color: #fed7aa; --tw-ring-color: rgba(251, 146, 60, 0.28); }
+:global(html.kikoerumanager-dark) .cat-tone-emerald { background: rgba(52, 211, 153, 0.14); color: #a7f3d0; --tw-ring-color: rgba(52, 211, 153, 0.26); }
+:global(html.kikoerumanager-dark) .cat-tone-teal { background: rgba(45, 212, 191, 0.14); color: #99f6e4; --tw-ring-color: rgba(45, 212, 191, 0.26); }
+:global(html.kikoerumanager-dark) .cat-tone-lime { background: rgba(163, 230, 53, 0.13); color: #d9f99d; --tw-ring-color: rgba(163, 230, 53, 0.25); }
+:global(html.kikoerumanager-dark) .cat-tone-rose { background: rgba(251, 113, 133, 0.14); color: #fecdd3; --tw-ring-color: rgba(251, 113, 133, 0.28); }
+:global(html.kikoerumanager-dark) .cat-tone-pink { background: rgba(244, 114, 182, 0.14); color: #fbcfe8; --tw-ring-color: rgba(244, 114, 182, 0.26); }
+:global(html.kikoerumanager-dark) .cat-tone-sky { background: rgba(56, 189, 248, 0.13); color: #bae6fd; --tw-ring-color: rgba(56, 189, 248, 0.26); }
+:global(html.kikoerumanager-dark) .cat-tone-blue { background: rgba(96, 165, 250, 0.14); color: #bfdbfe; --tw-ring-color: rgba(96, 165, 250, 0.28); }
+:global(html.kikoerumanager-dark) .cat-tone-cyan { background: rgba(34, 211, 238, 0.13); color: #a5f3fc; --tw-ring-color: rgba(34, 211, 238, 0.26); }
+:global(html.kikoerumanager-dark) .cat-tone-slate { background: rgba(212, 212, 216, 0.1); color: #e4e4e7; --tw-ring-color: rgba(212, 212, 216, 0.18); }
+
+:global(html.kikoerumanager-dark) .chip-tone-success { background: rgba(52, 211, 153, 0.13); color: #a7f3d0; --tw-ring-color: rgba(52, 211, 153, 0.24); }
+:global(html.kikoerumanager-dark) .chip-tone-warn { background: rgba(251, 191, 36, 0.14); color: #fde68a; --tw-ring-color: rgba(251, 191, 36, 0.25); }
+:global(html.kikoerumanager-dark) .chip-tone-danger { background: rgba(251, 113, 133, 0.13); color: #fecdd3; --tw-ring-color: rgba(251, 113, 133, 0.25); }
+:global(html.kikoerumanager-dark) .chip-tone-info,
+:global(html.kikoerumanager-dark) .chip-tone-neutral { background: rgba(212, 212, 216, 0.1); color: #e4e4e7; --tw-ring-color: rgba(212, 212, 216, 0.18); }
+
+@media (max-width: 1180px) {
+  .activity-metric-rail {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
-  .activity-page {
-    padding: 12px 16px 56px;
+
+  .activity-context-band {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .activity-filter-panel {
+    grid-column: 1 / -1;
   }
 }
 
 @media (max-width: 720px) {
-  .page-head-search {
-    width: 100%;
+  .activity-page {
+    padding: 8px 10px 32px;
   }
-  .overview-strip {
+
+  .activity-command-strip,
+  .activity-reader-head,
+  .activity-footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .activity-metric-rail,
+  .activity-context-band,
+  .activity-filter-controls {
     grid-template-columns: 1fr;
   }
-  .event-row {
-    grid-template-columns: 64px minmax(0, 1fr) 18px;
-  }
-  .event-time {
-    min-width: 28px;
-  }
-}
 
-/* ≤640 紧凑边距 + metric / 筛选 / list 进一步收紧 */
-@media (max-width: 640px) {
-  :deep(.activity-drawer) {
+  .activity-category-list {
+    grid-template-columns: 1fr;
+    max-height: 180px;
+  }
+
+  .activity-timeline-shell {
+    padding: 12px 10px 4px;
+  }
+
+  .activity-day-section {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .activity-day-header {
+    position: relative;
+    top: auto;
+    flex-direction: row;
+    align-items: baseline;
+    padding-top: 0;
+  }
+
+  .activity-log-row {
+    grid-template-columns: 58px minmax(0, 1fr) 14px;
+    gap: 8px;
+    padding: 10px 10px 10px 0;
+  }
+
+  .activity-log-time {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 5px;
+    padding-left: 10px;
+  }
+
+  .activity-reader-meta {
+    justify-content: flex-start;
+  }
+
+  .activity-pager {
+    justify-content: flex-start;
+  }
+
+  .activity-detail-panel {
     width: 100vw !important;
-    max-width: 100vw !important;
-  }
-  :deep(.activity-drawer .el-drawer) {
-    width: 100vw !important;
-    max-width: 100vw !important;
-  }
-  :deep(.activity-drawer .el-drawer__body) {
-    width: 100%;
-    max-width: 100%;
-    overflow: hidden;
-  }
-  .activity-drawer-resizer-fixed {
-    display: none !important;
-  }
-  .activity-page {
-    padding: 8px 10px 56px !important;
-  }
-  /* 顶栏搜索框 wrap 全宽（配合全局 .app-page-head-right 规则） */
-  .page-head-search-wrap {
-    width: 100%;
-  }
-  /* 指标卡 cell 字号收紧 */
-  .metric-cell {
-    padding: 8px 10px;
-  }
-  .metric-cell-label {
-    font-size: 10.5px;
-  }
-  .metric-cell-num {
-    font-size: 18px;
-  }
-  /* event-row 进一步紧凑：左侧时间列 56px */
-  .event-row {
-    grid-template-columns: 56px minmax(0, 1fr) 16px !important;
-    padding: 10px 12px !important;
-  }
-  /* 筛选条紧凑 padding */
-  .filter-bar {
-    padding: 8px 10px !important;
-    gap: 6px !important;
+    max-width: 100vw;
+    min-width: 0;
   }
 }
 </style>
