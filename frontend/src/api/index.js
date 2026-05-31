@@ -152,6 +152,11 @@ export const configApi = {
   state: async () => {
     const response = await apiClient.get('/config/state')
     return response.data
+  },
+
+  revealHttpSecret: async (payload) => {
+    const response = await apiClient.post('/config/http-downloader/reveal-secret', payload)
+    return response.data
   }
 }
 
@@ -424,6 +429,13 @@ export const logApi = {
     if (sinceOffset >= 0) params.since_offset = sinceOffset
     const response = await apiClient.get('/logs', { params })
     return response.data
+  },
+  streamUrl: ({ lines = 300, sinceOffset = -1 } = {}) => {
+    const query = new URLSearchParams()
+    query.set('lines', String(lines))
+    if (sinceOffset >= 0) query.set('since_offset', String(sinceOffset))
+    const suffix = query.toString()
+    return apiUrl(`/logs/stream${suffix ? `?${suffix}` : ''}`)
   },
   search: async (q = '', levels = [], limit = 500, cursor = 0, options = {}) => {
     const params = { limit, cursor }
@@ -1380,6 +1392,9 @@ export const httpDownloadApi = {
       urls: payload.urls || [],
       target_subdir: payload.targetSubdir || payload.target_subdir || '',
       conflict_policy: payload.conflictPolicy || payload.conflict_policy || ''
+    }, {
+      timeout: payload.timeout ?? 45000,
+      signal: payload.signal
     })
     return response.data
   },
@@ -1389,7 +1404,9 @@ export const httpDownloadApi = {
       urls: payload.urls || [],
       target_subdir: payload.targetSubdir || payload.target_subdir || '',
       conflict_policy: payload.conflictPolicy || payload.conflict_policy || '',
-      batch_name: payload.batchName || payload.batch_name || ''
+      batch_name: payload.batchName || payload.batch_name || '',
+      selected_keys: payload.selectedKeys || payload.selected_keys || [],
+      selected_items: payload.selectedItems || payload.selected_items || []
     })
     return response.data
   },
@@ -1416,6 +1433,53 @@ export const httpDownloadApi = {
 
   retry: async (taskId) => {
     const response = await apiClient.post(`/http-download/task/${taskId}/retry`)
+    return response.data
+  },
+
+  pikpakStatus: async (payload = {}) => {
+    const response = await apiClient.get('/http-download/pikpak/status', {
+      params: {
+        include_files: payload.includeFiles || payload.include_files || false,
+        limit: payload.limit || 100,
+        account_id: payload.accountId || payload.account_id || undefined
+      },
+      timeout: payload.timeout ?? 45000
+    })
+    return response.data
+  },
+
+  pikpakFiles: async (payload = {}) => {
+    const response = await apiClient.get('/http-download/pikpak/files', {
+      params: {
+        limit: payload.limit || 100,
+        root: payload.root || false,
+        account_id: payload.accountId || payload.account_id || undefined,
+        parent_id: payload.parentId || payload.parent_id || undefined
+      },
+      timeout: payload.timeout ?? 45000
+    })
+    return response.data
+  },
+
+  pikpakTestAccount: async (payload = {}) => {
+    const response = await apiClient.post('/http-download/pikpak/test-account', {
+      account_id: payload.accountId || payload.account_id || '',
+      account: payload.account || {},
+      use_saved: Boolean(payload.useSaved || payload.use_saved)
+    }, {
+      timeout: payload.timeout ?? 45000
+    })
+    return response.data
+  },
+
+  pikpakDelete: async (payload = {}) => {
+    const response = await apiClient.post('/http-download/pikpak/delete', {
+      ids: payload.ids || [],
+      permanent: Boolean(payload.permanent),
+      account_id: payload.accountId || payload.account_id || ''
+    }, {
+      timeout: payload.timeout ?? 45000
+    })
     return response.data
   }
 }

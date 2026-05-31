@@ -278,6 +278,18 @@ class ASMRSyncConfig(BaseModel):
     # 字幕繁简转换配置
     simplify_chinese_enabled: bool = True  # 是否启用字幕繁体转简体
 
+class PikPakAccountConfig(BaseModel):
+    """PikPak 多账号配置"""
+    id: str = ""
+    label: str = ""
+    enabled: bool = True
+    username: str = ""
+    password: str = ""
+    encoded_token: str = ""
+    device_id: str = ""
+    transfer_dir: str = "/KikoeruManager"
+
+
 class HttpDownloaderConfig(BaseModel):
     """HTTP 外链下载配置"""
     enabled: bool = True
@@ -295,13 +307,17 @@ class HttpDownloaderConfig(BaseModel):
     timeout_seconds: int = 60
     allow_private_network: bool = False
     conflict_policy: str = "resume"
+    gofile_token: str = ""
     pikpak_enabled: bool = False
+    pikpak_default_enabled: bool = True
+    pikpak_label: str = ""
     pikpak_username: str = ""
     pikpak_password: str = ""
     pikpak_encoded_token: str = ""
     pikpak_device_id: str = ""
     pikpak_transfer_dir: str = "/KikoeruManager"
     pikpak_auto_save_share: bool = True
+    pikpak_accounts: List[PikPakAccountConfig] = Field(default_factory=list)
 
 class AutoProcessConfig(BaseModel):
     """正常解压缩流程步骤配置"""

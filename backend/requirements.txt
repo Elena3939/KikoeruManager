@@ -14,6 +14,7 @@ requests>=2.31.0
 brotlicffi>=1.1.0
 httpx>=0.25.0
 pikpakapi==0.1.11
+transferit-py>=0.1.0rc1
 # 邮件模板块渲染后的 HTML 白名单清洗；缺失时会回退正则清洗，但邮件安全边界会变弱。
 nh3>=0.2.18
 python-multipart>=0.0.6
