@@ -1,12 +1,12 @@
 <template>
-  <div class="max-w-[1480px] mx-auto flex flex-col gap-0">
+  <div class="logs-page max-w-[1480px] mx-auto flex flex-col gap-0">
     <AppPageHeader
       :icon="Terminal"
-      icon-color="#475569"
+      icon-color="var(--km-nav-logs-icon)"
       title="系统日志"
       subtitle="实时监控应用运行输出，支持级别过滤、模块筛选与关键词搜索。"
     >
-        <span class="inline-flex items-center gap-1 px-3 py-1 border border-slate-200 rounded-full bg-slate-50 text-xs text-slate-500">
+        <span class="logs-count-chip inline-flex items-center gap-1 px-3 py-1 border border-slate-200 rounded-full bg-slate-50 text-xs text-slate-500">
           <span class="font-bold text-blue-500">{{ filteredLogs.length }}</span>
           <span class="text-slate-300">/</span>
           <span class="font-semibold text-slate-600">{{ logs.length }}</span> 条
@@ -14,43 +14,43 @@
 
         <button
           type="button"
-          class="log-action-btn"
-          :class="isPaused ? 'log-action-btn--success' : 'log-action-btn--warning'"
+          class="logs-toolbar-btn"
+          :class="isPaused ? 'is-success' : 'is-warning'"
           @click="togglePause"
         >
           <component :is="isPaused ? Play : PauseCircle" :size="13" />
           {{ isPaused ? '恢复刷新' : '暂停刷新' }}
         </button>
 
-        <button type="button" class="log-action-btn log-action-btn--default" @click="refreshLogs(true)">
+        <button type="button" class="logs-toolbar-btn is-default" @click="refreshCurrentLogs">
           <RefreshCw :size="13" />
           刷新
         </button>
 
-        <button type="button" class="log-action-btn log-action-btn--default" @click="exportFilteredLogs">
+        <button type="button" class="logs-toolbar-btn is-default" @click="exportFilteredLogs">
           <Download :size="13" />
           导出筛选结果
         </button>
 
-        <button type="button" class="log-action-btn log-action-btn--default" @click="copyVisibleLogs">
+        <button type="button" class="logs-toolbar-btn is-default" @click="copyVisibleLogs">
           <Copy :size="13" />
           复制可见窗口
         </button>
 
-        <button type="button" class="log-action-btn log-action-btn--default" @click="openLogManager">
+        <button type="button" class="logs-toolbar-btn is-default" @click="openLogManager">
           <Settings2 :size="13" />
           日志管理
         </button>
 
-        <button type="button" class="log-action-btn log-action-btn--danger" @click="clearLogs">
+        <button type="button" class="logs-toolbar-btn is-danger" @click="clearLogs">
           <AppLottieIcon :src="deleteIconAnimation" :size="26" tone="danger" />
           清空视图
         </button>
     </AppPageHeader>
 
-    <div class="flex flex-wrap items-center gap-3 px-4 py-3 mb-3.5 border border-slate-200 rounded-2xl bg-white shadow-sm">
+    <div class="logs-toolbar flex flex-wrap items-center gap-3 px-4 py-3 mb-3.5 border border-slate-200 rounded-2xl bg-white shadow-sm">
       <div class="flex items-center gap-2">
-        <span class="text-[12.5px] font-semibold text-slate-500 whitespace-nowrap">级别</span>
+        <span class="logs-toolbar-label text-[12.5px] font-semibold text-slate-500 whitespace-nowrap">级别</span>
         <div class="flex gap-1.5">
           <button
             v-for="level in allLevels"
@@ -67,7 +67,7 @@
       </div>
 
       <div class="flex items-center gap-2">
-        <span class="text-[12.5px] font-semibold text-slate-500 whitespace-nowrap">模块</span>
+        <span class="logs-toolbar-label text-[12.5px] font-semibold text-slate-500 whitespace-nowrap">模块</span>
         <el-select
           v-model="selectedModules"
           multiple
@@ -88,7 +88,7 @@
           ref="searchInputRef"
           v-model="searchKeyword"
           type="text"
-          class="w-full h-[32px] pl-7 border border-slate-200 rounded-lg bg-white text-[13px] text-slate-800 outline-none placeholder-slate-400 transition focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
+          class="logs-search-input w-full h-[32px] pl-7 border border-slate-200 rounded-lg bg-white text-[13px] text-slate-800 outline-none placeholder-slate-400 transition focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
           :class="isFullSearch ? 'pr-[134px]' : 'pr-20'"
           :placeholder="isFullSearch ? '全历史检索关键词（回车立即检索）' : '搜索当前日志内容…'"
           @input="onSearchInput"
@@ -97,19 +97,19 @@
         <button
           v-if="searchKeyword"
           type="button"
-          class="absolute right-[86px] top-1/2 -translate-y-1/2 text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 hover:bg-slate-200 transition"
+          class="logs-search-clear absolute right-[86px] top-1/2 -translate-y-1/2 text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 hover:bg-slate-200 transition"
           @click="clearSearchKeyword"
         >清空</button>
         <button
           v-if="isFullSearch"
           type="button"
-          class="absolute right-1 top-1/2 inline-flex h-[26px] min-w-[58px] -translate-y-1/2 items-center justify-center gap-1 whitespace-nowrap rounded-md border border-indigo-300 bg-indigo-50 px-3 text-[12px] font-semibold leading-none text-indigo-600 transition hover:-translate-y-[calc(50%+1px)] hover:bg-indigo-100 hover:shadow-sm active:-translate-y-1/2 active:scale-95"
+          class="logs-search-submit absolute right-1 top-1/2 inline-flex h-[26px] min-w-[58px] -translate-y-1/2 items-center justify-center gap-1 whitespace-nowrap rounded-md border px-3 text-[12px] font-semibold leading-none transition active:-translate-y-1/2 active:scale-95"
           @click="doFullSearch(true)"
         >检索</button>
       </div>
 
       <div class="flex items-center gap-2 ml-auto" :class="{ 'opacity-50 pointer-events-none': isFullSearch }">
-        <span class="text-[12.5px] font-semibold text-slate-500 whitespace-nowrap">条数</span>
+        <span class="logs-toolbar-label text-[12.5px] font-semibold text-slate-500 whitespace-nowrap">条数</span>
         <AppDropdown
           v-model="logLimit"
           :options="logLimitOptions"
@@ -122,10 +122,8 @@
 
       <button
         type="button"
-        class="flex items-center gap-1.5 h-[28px] px-3 border rounded-full text-[11.5px] font-semibold cursor-pointer transition"
-        :class="isFullSearch
-          ? 'border-indigo-300 bg-indigo-50 text-indigo-600'
-          : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'"
+        class="logs-toggle-btn"
+        :class="{ 'is-active': isFullSearch }"
         @click="toggleFullSearch"
       >
         <FileSearch :size="12" />
@@ -135,10 +133,8 @@
 
       <button
         type="button"
-        class="flex items-center gap-1.5 h-[28px] px-3 border rounded-full text-[11.5px] font-semibold cursor-pointer transition"
-        :class="compactProcessLogs
-          ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
-          : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'"
+        class="logs-toggle-btn"
+        :class="{ 'is-active is-compact': compactProcessLogs }"
         @click="toggleCompactProcessLogs"
       >
         <SlidersHorizontal :size="12" />
@@ -146,119 +142,34 @@
         <span v-if="compactProcessLogs && hiddenProcessNoiseCount > 0" class="text-[10px] text-emerald-500">{{ hiddenProcessNoiseCount }}</span>
       </button>
 
-      <div class="w-full flex flex-wrap items-center gap-2 text-[11px] text-slate-600 pt-1 border-t border-slate-100 mt-1">
-        <span class="px-2 py-0.5 rounded bg-sky-50 border border-sky-100 text-sky-700">模式 {{ lastFetchMode }}</span>
-        <span class="px-2 py-0.5 rounded bg-emerald-50 border border-emerald-100 text-emerald-700">本次 {{ lastFetchMs }}ms</span>
+      <div class="logs-status-row w-full flex flex-wrap items-center gap-2">
+        <span class="logs-status-chip is-info">模式 {{ lastFetchMode }}</span>
+        <span class="logs-status-chip is-success">本次 {{ lastFetchMs }}ms</span>
         <span
           v-if="lastSearchScanMb > 0"
-          class="px-2 py-0.5 rounded bg-amber-50 border border-amber-100 text-amber-700"
+          class="logs-status-chip is-warning"
           title="后端实际扫描的字节数（MB），跨主日志 + 备份"
         >扫描 {{ lastSearchScanMb }}MB</span>
         <span
           v-if="lastSearchStoppedEarly"
-          class="px-2 py-0.5 rounded bg-orange-50 border border-orange-100 text-orange-700"
+          class="logs-status-chip is-warning"
           title="本次搜索触顶（5 万匹配 / 96MB 扫描预算 / 单页 1000 条），未扫到全部历史"
         >已截断</span>
-        <span class="px-2 py-0.5 rounded bg-indigo-50 border border-indigo-100 text-indigo-700">快捷键 Ctrl+K 搜索 · Ctrl+R 刷新 · Ctrl+Shift+C 复制可见</span>
+        <span class="logs-status-chip is-muted">快捷键 Ctrl+K 搜索 · Ctrl+R 刷新 · Ctrl+Shift+C 复制可见</span>
       </div>
     </div>
 
-    <div class="flex flex-col border border-slate-800 rounded-2xl overflow-hidden bg-[#0f172a] shadow-[0_20px_50px_rgba(15,23,42,0.24)]">
-      <div class="flex items-center gap-2 px-4 py-2 bg-[#111c31] border-b border-slate-700 text-xs text-slate-300">
-        <span
-          class="w-[7px] h-[7px] rounded-full flex-shrink-0"
-          :class="isFullSearch ? 'bg-indigo-400' : isPaused ? 'bg-amber-400' : 'bg-emerald-400 shadow-[0_0_6px_#22c55e]'"
-        />
-        <span class="font-bold text-slate-200">{{ isFullSearch ? '全历史检索' : isPaused ? '已暂停' : autoFollowLogs ? '实时跟随' : '查看历史' }}</span>
-        <span v-if="isFullSearch" class="ml-1 px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 text-[10px] font-bold">全历史</span>
-        <span class="text-slate-400">{{ filteredLogs.length }} 条匹配 · {{ logs.length }} 条总计</span>
-        <span class="text-cyan-300 text-[11px]">{{ lastFetchMode }} {{ lastFetchMs }}ms</span>
-        <span v-if="incrementalCount > 0" class="text-emerald-300">+{{ incrementalCount }} 新增</span>
-        <span v-if="isFullSearch && fullSearchHasMore" class="text-amber-400/80 text-[11px]">可继续加载更多</span>
-        <span v-if="isSearchLoading" class="text-indigo-300 text-[11px]">检索中…</span>
-        <button
-          v-if="!autoFollowLogs && !isPaused"
-          type="button"
-          class="ml-auto px-2.5 py-0.5 border border-indigo-400/40 rounded-md bg-indigo-400/10 text-indigo-300 text-[11px] font-semibold hover:bg-indigo-400/20 transition cursor-pointer"
-          @click="scrollToBottom"
-        >
-          <ArrowDown :size="10" class="inline mr-0.5" />跳到底部
-        </button>
-      </div>
-
-      <div
-        ref="logContainer"
-        class="log-viewer"
-        :class="{ 'is-paused': isPaused }"
-        @scroll.passive="onScroll"
-      >
-        <div :style="{ height: paddingTop + 'px' }" aria-hidden="true" />
-
-        <div
-          v-for="log in visibleLogs"
-          :key="log.key"
-          class="log-line"
-          :class="[`is-${log.level.toLowerCase()}`, { 'is-selected': selectedLogKey === log.key }]"
-        >
-          <span class="log-ts">{{ log.time || '--:--:--' }}</span>
-          <span class="log-lvl" :class="`lvl-${log.level.toLowerCase()}`">{{ log.level }}</span>
-          <!-- module 列始终渲染，没解析到时隐藏内容但保留 layout，让 message 起点严格上下齐 -->
-          <span
-            class="log-mod"
-            :class="{ 'is-empty': !log.module }"
-            :style="log.module ? { background: getModuleColor(log.module) } : null"
-            :aria-hidden="!log.module"
-            v-html="log.module ? highlightModuleName(log.module) : '&nbsp;'"
-          />
-          <span
-            class="log-msg"
-            :title="log.isTruncated ? '内容过长，点击下方详情查看完整文本' : log.message"
-            @click="showLogDetail(log)"
-            @dblclick.stop="copyLogLine(log)"
-            v-html="highlightLogMessage(log.displayMessage || log.message)"
-          />
-        </div>
-
-        <div :style="{ height: paddingBottom + 'px' }" aria-hidden="true" />
-      </div>
-
-      <div v-if="selectedLog" class="border-t border-white/10 bg-black/20 px-4 py-3 text-xs text-slate-200">
-        <div class="flex items-center justify-between gap-2 mb-2">
-          <div class="font-semibold text-slate-100">日志详情</div>
-          <div class="flex items-center gap-2">
-            <button
-              type="button"
-              class="px-2.5 py-1 rounded border border-indigo-400/40 bg-indigo-400/10 text-indigo-200 hover:bg-indigo-400/25 transition inline-flex items-center gap-1"
-              @click="copyLogLine(selectedLog)"
-              title="复制包含时间戳 / 级别 / 模块的完整单行（不截断）"
-            >
-              <ClipboardCopy :size="12" />复制原文
-            </button>
-            <button
-              type="button"
-              class="px-2.5 py-1 rounded border border-slate-500/40 text-slate-200 hover:bg-slate-700/40 transition inline-flex items-center gap-1"
-              @click="copyLogWithContext(selectedLog, 15)"
-              title="复制前后各 15 行（共 31 行）上下文"
-            >
-              <ClipboardList :size="12" />复制上下文 ±15
-            </button>
-            <button
-              type="button"
-              class="px-2 py-1 rounded border border-slate-500/40 text-slate-300 hover:bg-slate-700/40 transition"
-              @click="clearSelectedLog"
-            >关闭</button>
-          </div>
-        </div>
-        <div class="flex flex-wrap items-center gap-2 mb-2 text-[11px] text-slate-400">
-          <span>{{ selectedLog.time || '--:--:--' }}</span>
-          <span class="px-1.5 py-0.5 rounded bg-slate-700/60">{{ selectedLog.level }}</span>
-          <span v-if="selectedLog.module" class="px-1.5 py-0.5 rounded bg-slate-700/60">{{ selectedLog.module }}</span>
-          <span class="text-slate-500">提示：下方文本可鼠标直接选中复制，不受虚拟滚动影响</span>
-        </div>
-        <pre
-          class="m-0 max-h-[240px] overflow-auto whitespace-pre-wrap break-all leading-5 text-slate-100 no-scrollbar select-text"
-        >{{ selectedLog.message }}</pre>
-      </div>
+    <div class="system-log-shell" :class="{ 'is-search-mode': isFullSearch }">
+      <SystemLogTerminal
+        title="system.log"
+        :subtitle="terminalSubtitle"
+        :lines="terminalLines"
+        :status="terminalStatus"
+        :error-message="terminalErrorMessage"
+        :max-height="terminalMaxHeight"
+        @clear="clearLogs"
+        @reconnect="reconnectLogStream"
+      />
 
       <div v-if="isFullSearch" class="border-t border-white/10 px-4 py-2 bg-black/20 flex items-center gap-2">
         <button
@@ -275,19 +186,6 @@
         >下一页</button>
         <span class="text-[11px] text-slate-400 ml-1">页起点 {{ fullSearchPageStart }} / 总匹配 {{ fullSearchTotal }}</span>
       </div>
-
-      <AppEmptyState
-        v-if="filteredLogs.length === 0 && logs.length > 0"
-        description="没有匹配的日志"
-        size="default"
-        class="py-8"
-      />
-      <AppEmptyState
-        v-if="logs.length === 0"
-        description="暂无日志"
-        size="default"
-        class="py-8"
-      />
     </div>
 
     <el-dialog
@@ -371,7 +269,7 @@
           <div class="flex flex-wrap gap-2">
             <button
               type="button"
-              class="log-action-btn log-action-btn--default"
+              class="log-manager-action-btn is-default"
               :disabled="cleanupLoading"
               @click="loadLogInfo"
             >
@@ -379,7 +277,7 @@
             </button>
             <button
               type="button"
-              class="log-action-btn log-action-btn--success"
+              class="log-manager-action-btn is-success"
               :disabled="cleanupLoading"
               @click="runLogCleanup('rotate')"
               title="把当前 app.log 滚到 .1，新日志写入空文件；不删除任何内容"
@@ -388,7 +286,7 @@
             </button>
             <button
               type="button"
-              class="log-action-btn log-action-btn--warning"
+              class="log-manager-action-btn is-warning"
               :disabled="cleanupLoading"
               @click="runLogCleanup('purge_backups')"
               title="删除所有 app.log.N 备份文件"
@@ -397,7 +295,7 @@
             </button>
             <button
               type="button"
-              class="log-action-btn log-action-btn--warning"
+              class="log-manager-action-btn is-warning"
               :disabled="cleanupLoading"
               @click="runLogCleanup('truncate')"
               title="把主日志保留最近 2MB，丢弃前面所有内容（应急救急）"
@@ -406,7 +304,7 @@
             </button>
             <button
               type="button"
-              class="log-action-btn log-action-btn--danger"
+              class="log-manager-action-btn is-danger"
               :disabled="cleanupLoading"
               @click="runLogCleanup('rotate_and_purge')"
               title="先轮转再清理全部备份；当前 app.log 会被清空，旧日志将无法恢复"
@@ -419,7 +317,7 @@
         <div class="log-manager-footer">
           <button
             type="button"
-            class="log-action-btn log-action-btn--default"
+            class="log-manager-action-btn is-default"
             @click="logManagerVisible = false"
           >关闭</button>
         </div>
@@ -429,12 +327,9 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, triggerRef, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, shallowRef, triggerRef, watch } from 'vue'
 import {
-  ArrowDown,
   Terminal,
-  ClipboardCopy,
-  ClipboardList,
   Copy,
   Download,
   FileSearch,
@@ -448,40 +343,24 @@ import {
   Trash2,
   X,
 } from 'lucide-vue-next'
-import { ElDialog, ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
 import { logApi } from '../api'
 import AppLottieIcon from '../components/common/AppLottieIcon.vue'
-import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
+import SystemLogTerminal from '../components/common/SystemLogTerminal.vue'
 import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 
-const LOG_POLL_INTERVAL = 5000
-const ITEM_HEIGHT = 28
-// OVERSCAN 25→60：鼠标滚轮一下平均 200-400px，原 25 行=700px 缓冲区在快速滚动
-// 时会被一下走穿，导致下一帧 visibleLogs 没跟上，用户看到的是未填充的
-// padding 空白。改成 60 行=1680px 缓冲，三轮鼠标以内都不会看到空白。
-const OVERSCAN = 60
-// scrollTop 距离阈值：鼠标走超过半行=14px 才重算 startIndex / endIndex，
-// 避免每个 pixel 都 trigger reactive 重算 visibleLogs。OVERSCAN=60 行
-// 缓冲足够掩护中间未同步的帧，肉眼看不出延迟。
-const SCROLL_THRESHOLD = Math.max(8, Math.floor(ITEM_HEIGHT / 2))
 const LOG_PREVIEW_LIMIT = 900
+const LOG_FLUSH_INTERVAL = 120
+const LOG_STREAM_RECONNECT_MS = 2500
 
 const logs = shallowRef([])
-const logContainer = ref(null)
 const isPaused = ref(false)
-const autoFollowLogs = ref(true)
 const logLimit = ref(300)
 
-// 「条数」下拉选项
-//
-// 上限砍到 1000：之前有 2000 选项，遇到含 traceback / 长堆栈的日志时，
-// `parseCache` (logLimit*8 上限) + `highlightCache` (logLimit*4 上限)
-// 加上每条 parsed 对象的 4 份字符串副本 (rawLine / rawLineLower /
-// message / messageLower)，浏览器内存能膨胀到几百 MB → OOM 白屏。
-// 1000 条对实际排查日志足够，需要更多请用"搜索全历史"或"导出筛选结果"。
+// 「条数」下拉选项。1000 条对实际排查日志足够，需要更多请用"搜索全历史"或"导出筛选结果"。
 const logLimitOptions = [
   { value: 100, label: '100 条' },
   { value: 300, label: '300 条' },
@@ -491,29 +370,25 @@ const logLimitOptions = [
 const selectedLevels = ref(['INFO', 'WARNING', 'ERROR'])
 const selectedModules = ref([])
 const searchKeyword = ref('')
-const selectedLog = ref(null)
-const selectedLogKey = ref('')
 const searchInputRef = ref(null)
 const compactProcessLogs = ref(localStorage.getItem('kikoerumanager.logs.compact_process_noise') === '1')
 
-const scrollTop = ref(0)
-const viewerHeight = ref(600)
-
 const allLevels = ['DEBUG', 'INFO', 'WARNING', 'ERROR']
 
-let intervalId = null
-let resizeObserver = null
 let lastLogSignature = ''
 let nextOffset = -1
 let logIdCounter = 0
 let searchDebounceTimer = null
-let scrollRafId = null
-let smoothScrollRafId = null
-let latestScrollTop = 0
+let logEventSource = null
+let reconnectTimer = null
+let streamFlushTimer = null
+let pendingStreamLines = []
 
 const incrementalCount = ref(0)
 const lastFetchMs = ref(0)
 const lastFetchMode = ref('idle')
+const terminalStatus = ref('idle')
+const terminalErrorMessage = ref('')
 const isFullSearch = ref(false)
 const fullSearchTotal = ref(0)
 const fullSearchCursor = ref(0)
@@ -525,32 +400,9 @@ const isSearchLoading = ref(false)
 let fullSearchRequestSeq = 0
 
 const parseCache = new Map()
-const highlightCache = new Map()
-// 不再维护命中率统计：旧版把 hits/misses 放进 ref，highlightText() 是 render-time 调用的函数，
-// 每次渲染 +=1 会触发依赖计数的 computed 重算 → 视图重渲染 → 又调 highlightText → 死循环
-// （Vue 'Maximum recursive updates exceeded'，对应用户截图里的红色 stack）。
-// dev 体验信息删掉就彻底没问题，搜索/高亮逻辑只读 cache，永远不写 reactive。
-
 // 后端搜索状态（用于头部小标签展示，不进入 render path 修改）
 const lastSearchScanMb = ref(0)
 const lastSearchStoppedEarly = ref(false)
-
-const moduleColors = {
-  KikoeruManager: '#6d8ef7',
-  关联查询: '#8b5cf6',
-  字幕抓取: '#7c3aed',
-  CONFIG: '#0ea5e9',
-  'CONFIG SAVE': '#0284c7',
-  RENAME: '#10b981',
-  'API RENAME': '#059669',
-  解压: '#f59e0b',
-  分类: '#3b82f6',
-  元数据: '#ec4899',
-  密码: '#6366f1',
-  清理: '#14b8a6',
-  扫描: '#f97316',
-  删除: '#ef4444'
-}
 
 const availableModules = computed(() => {
   const modules = new Set()
@@ -607,6 +459,27 @@ const hiddenProcessNoiseCount = computed(() => {
   return count
 })
 
+const terminalLines = computed(() => filteredLogs.value.map((log) => ({
+  id: log.key,
+  time: log.time,
+  level: log.level,
+  source: log.module || inferSourceFromLevel(log.level),
+  message: log.displayMessage || log.message,
+})))
+
+const terminalSubtitle = computed(() => {
+  if (isFullSearch.value) {
+    return `全历史检索 · ${fullSearchPageStart.value} / ${fullSearchTotal.value || filteredLogs.value.length}`
+  }
+  if (isPaused.value) return `已暂停 · ${filteredLogs.value.length} 条匹配 / ${logs.value.length} 条`
+  return `${lastFetchMode.value} · ${filteredLogs.value.length} 条匹配 / ${logs.value.length} 条 · offset ${nextOffset >= 0 ? nextOffset : 0}`
+})
+
+const terminalMaxHeight = computed(() => {
+  if (typeof window === 'undefined') return 620
+  return Math.max(420, Math.min(760, window.innerHeight - 330))
+})
+
 const searchTerms = computed(() =>
   searchKeyword.value
     .toLowerCase()
@@ -616,24 +489,18 @@ const searchTerms = computed(() =>
     .slice(0, 8)
 )
 
-const startIndex = computed(() => Math.max(0, Math.floor(scrollTop.value / ITEM_HEIGHT) - OVERSCAN))
-const endIndex = computed(() => Math.min(filteredLogs.value.length, Math.ceil((scrollTop.value + viewerHeight.value) / ITEM_HEIGHT) + OVERSCAN))
-const visibleLogs = computed(() => filteredLogs.value.slice(startIndex.value, endIndex.value))
-const paddingTop = computed(() => startIndex.value * ITEM_HEIGHT)
-const paddingBottom = computed(() => Math.max(0, (filteredLogs.value.length - endIndex.value) * ITEM_HEIGHT))
-
 // 缓存上限大幅缩小（OOM 修复）：
 // 旧值 logLimit*8 / logLimit*4 在 logLimit=2000 时上限 16000 / 8000 条目，
 // 单条 parsed 含 4 份字符串副本（含 4096 字节 rawLineLower），峰值可达数百 MB。
 // 新值按 1.5x 冗余足够覆盖滚动 + 切刷新带来的旧条目重用，超出立即 trim。
 const parseCacheMax = computed(() => Math.max(1500, Math.floor(logLimit.value * 1.5)))
-const highlightCacheMax = computed(() => Math.max(600, logLimit.value))
-// highlight cacheKey 长度上限：超过这个长度的（典型场景：含 traceback 的长日志）
-// 直接不缓存，每次现算，避免 cache key 自身吃几 KB 内存 × 上千条目 → 几十 MB 白白占着。
-const HIGHLIGHT_CACHE_KEY_MAX = 280
 
-function getModuleColor(moduleName) {
-  return moduleColors[moduleName] || '#64748b'
+function inferSourceFromLevel(level) {
+  const normalized = String(level || '').toUpperCase()
+  if (normalized === 'ERROR') return 'error'
+  if (normalized === 'WARNING') return 'warn'
+  if (normalized === 'DEBUG') return 'debug'
+  return 'system'
 }
 
 function isLevelSelected(level) {
@@ -711,19 +578,6 @@ function parseModule(message, rawLine) {
   return null
 }
 
-function escapeHtml(input) {
-  return String(input)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
-
-function escapeRegExp(input) {
-  return String(input).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
 function trimMapByOldest(map, maxSize, trimCount) {
   if (map.size <= maxSize) return
   let removed = 0
@@ -732,56 +586,6 @@ function trimMapByOldest(map, maxSize, trimCount) {
     removed += 1
     if (removed >= trimCount) break
   }
-}
-
-function buildHighlightMeta(terms) {
-  if (!terms.length) return null
-  const sorted = [...terms].sort((a, b) => b.length - a.length)
-  const unique = Array.from(new Set(sorted))
-  const pattern = unique.map((t) => escapeRegExp(t)).join('|')
-  const regex = new RegExp(`(${pattern})`, 'ig')
-  const classMap = new Map()
-  unique.forEach((term, idx) => {
-    classMap.set(term.toLowerCase(), `log-hit-${idx % 4}`)
-  })
-  return { regex, classMap }
-}
-
-function highlightText(input) {
-  const safe = escapeHtml(input || '')
-  const terms = searchTerms.value
-  if (!terms.length) return safe
-  const termsKey = terms.join('|')
-
-  // OOM 防护：safe 太长时（典型场景：traceback / 长 JSON dump），cacheKey 自身就吃几 KB，
-  // 上千条目累积下来能占几十 MB；这种情况直接现算不入 cache，hit 率损失可忽略
-  // （滚动时同一长日志通常只显示 1-2 帧）。
-  const willCache = safe.length <= HIGHLIGHT_CACHE_KEY_MAX
-  const cacheKey = willCache ? `${termsKey}::${safe}` : ''
-  if (willCache && highlightCache.has(cacheKey)) {
-    return highlightCache.get(cacheKey)
-  }
-  const meta = buildHighlightMeta(terms)
-  if (!meta) return safe
-  const highlighted = safe.replace(meta.regex, (matched) => {
-    const cls = meta.classMap.get(matched.toLowerCase()) || 'log-hit-0'
-    return `<mark class="log-hit ${cls}">${matched}</mark>`
-  })
-  if (willCache) {
-    // 触发更激进的瘦身：超上限时一次 trim 1/2，避免 logLimit=1000 长跑时
-    // map 一直贴着 ceil 触发频繁 micro-trim 但实际没腾出空间。
-    trimMapByOldest(highlightCache, highlightCacheMax.value, Math.max(200, Math.floor(highlightCacheMax.value / 2)))
-    highlightCache.set(cacheKey, highlighted)
-  }
-  return highlighted
-}
-
-function highlightLogMessage(message) {
-  return highlightText(message)
-}
-
-function highlightModuleName(moduleName) {
-  return highlightText(moduleName)
 }
 
 function buildDisplayMessage(message) {
@@ -848,112 +652,33 @@ function parseLogLines(lines, keyPrefix = '') {
   return lines.map((line) => {
     const parsed = parseLogLine(line)
     const id = ++logIdCounter
-    return { ...parsed, id, key: `${keyPrefix}${id}` }
-  })
-}
-
-function isNearBottom() {
-  if (!logContainer.value) return true
-  const { scrollTop: st, scrollHeight, clientHeight } = logContainer.value
-  // 60 → 100：原阈值一行=28px 之内在顶下一个行高的位置就会反复在
-  // true/false 间跳变，导致 autoFollow 反复切换 → increment 路径重复触发
-  // smoothScrollToBottom。100px 约 3.5 行，容忍一下鼠标滚轮调整仍锁住 auto follow。
-  return scrollHeight - st - clientHeight < 100
-}
-
-function onScroll(e) {
-  latestScrollTop = e.target.scrollTop
-  if (scrollRafId) return
-  scrollRafId = requestAnimationFrame(() => {
-    // 距离阈值节流：快速滚轮时鼠标每帧可能只走 1-2px，避免每 1px
-    // 都触发 scrollTop ref 更新 → startIndex/endIndex/visibleLogs/paddingTop
-    // /paddingBottom 全量重算 + DOM diff。只有走过半行才让 reactive 跳，
-    // OVERSCAN=60 行 足够掏住中间所有未同步的帧。
-    if (Math.abs(latestScrollTop - scrollTop.value) >= SCROLL_THRESHOLD) {
-      scrollTop.value = latestScrollTop
+    return {
+      ...parsed,
+      id,
+      key: `${keyPrefix}${id}`,
     }
-    autoFollowLogs.value = isNearBottom()
-    scrollRafId = null
   })
-}
-
-function scrollToBottom(smooth = true) {
-  if (!logContainer.value) return
-  const el = logContainer.value
-  const target = el.scrollHeight
-  if (!smooth) {
-    el.scrollTop = target
-    autoFollowLogs.value = true
-    return
-  }
-
-  const start = el.scrollTop
-  const distance = target - start
-  if (Math.abs(distance) < 8) {
-    el.scrollTop = target
-    autoFollowLogs.value = true
-    return
-  }
-
-  // 距离太大时直接跳转，避免长时间动画占用主线程。
-  if (Math.abs(distance) > 1600) {
-    el.scrollTop = target
-    autoFollowLogs.value = true
-    return
-  }
-
-  if (smoothScrollRafId) cancelAnimationFrame(smoothScrollRafId)
-  // 原来 mix 了 easeOutCubic + easeOutQuint 两条曲线，动画尾部有个“二次减
-  // 速”拐点，在高频调用场景（点 跳到底部 / 手动滚动后释放）被看出是个
-  // 奇怪的“双货”。只保留 easeOutCubic 后动画更贴近 macOS / iOS 滚动手感。
-  const duration = Math.min(260, Math.max(120, Math.abs(distance) * 0.07))
-  const t0 = performance.now()
-  const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3)
-
-  const tick = (ts) => {
-    const p = Math.min(1, (ts - t0) / duration)
-    el.scrollTop = start + distance * easeOutCubic(p)
-    if (p < 1) {
-      smoothScrollRafId = requestAnimationFrame(tick)
-      return
-    }
-    smoothScrollRafId = null
-    autoFollowLogs.value = true
-  }
-
-  smoothScrollRafId = requestAnimationFrame(tick)
-  autoFollowLogs.value = true
-}
-
-function showLogDetail(log) {
-  selectedLog.value = log
-  selectedLogKey.value = log?.key || ''
-}
-
-function clearSelectedLog() {
-  selectedLog.value = null
-  selectedLogKey.value = ''
-}
-
-function restoreSelectedLog() {
-  if (!selectedLogKey.value) return
-  const matched = logs.value.find((log) => log.key === selectedLogKey.value)
-  if (matched) {
-    selectedLog.value = matched
-    return
-  }
-  selectedLog.value = null
-  selectedLogKey.value = ''
 }
 
 function togglePause() {
   isPaused.value = !isPaused.value
   if (isPaused.value) {
     ElMessage.info('已暂停自动刷新')
+    closeLogStream()
+    terminalStatus.value = 'disconnected'
   } else {
-    ElMessage.success('已恢复自动刷新')
-    refreshLogs(true)
+    ElMessage.success('已恢复实时日志')
+    connectLogStream({ reset: false })
   }
+}
+
+function refreshCurrentLogs() {
+  if (isFullSearch.value) {
+    doFullSearch(true)
+    return
+  }
+  isPaused.value = false
+  connectLogStream({ reset: true })
 }
 
 async function refreshLogs(force = false) {
@@ -961,7 +686,6 @@ async function refreshLogs(force = false) {
 
   try {
     const t0 = performance.now()
-    const shouldFollow = autoFollowLogs.value || isNearBottom()
     const useIncremental = !force && nextOffset >= 0
     lastFetchMode.value = useIncremental ? 'delta' : force ? 'full(force)' : 'full'
     const data = await logApi.get(logLimit.value, useIncremental ? nextOffset : -1)
@@ -985,21 +709,172 @@ async function refreshLogs(force = false) {
     }
 
     triggerRef(logs)
-    restoreSelectedLog()
     // OOM 修复：每次刷新后兜底瘦身，一次清 1/2 而不是 1/6，避免每 4 秒触发的
     // 刷新回调让 map 长期贴顶。
     trimMapByOldest(parseCache, parseCacheMax.value, Math.max(200, Math.floor(parseCacheMax.value / 2)))
-    trimMapByOldest(highlightCache, highlightCacheMax.value, Math.max(150, Math.floor(highlightCacheMax.value / 2)))
     lastFetchMs.value = Math.round(performance.now() - t0)
-    await nextTick()
-    // 增量刷新后跳底不走 smooth 动画：之前每 5s 轮询新日志进来都跱 280ms
-    // easing，如果用户正在手动滚动 / 选中某行，动画会把他顶走；多帧连续
-    // 增量进来时连续启新动画互相打断 → 视觉抖。不走动画直接 scrollTop，
-    // 才是主流 tail -f 体验。手动点头部「跳到底部」按钮仍走 smooth。
-    if (shouldFollow && !isPaused.value) scrollToBottom(false)
   } catch (error) {
     console.error('获取日志失败:', error)
+    terminalStatus.value = 'error'
+    terminalErrorMessage.value = error?.response?.data?.detail || error.message || '获取日志失败'
   }
+}
+
+function resetLiveLogState() {
+  logs.value = []
+  logIdCounter = 0
+  lastLogSignature = ''
+  nextOffset = -1
+  incrementalCount.value = 0
+  parseCache.clear()
+  pendingStreamLines = []
+  if (streamFlushTimer) {
+    clearTimeout(streamFlushTimer)
+    streamFlushTimer = null
+  }
+}
+
+function appendParsedLogs(lines, keyPrefix = 'stream-', { reset = false } = {}) {
+  const logLines = Array.isArray(lines) ? lines.filter(Boolean) : []
+  if (reset) {
+    logs.value = parseLogLines(logLines, keyPrefix)
+    incrementalCount.value = 0
+  } else if (logLines.length) {
+    const parsed = parseLogLines(logLines, keyPrefix)
+    incrementalCount.value += parsed.length
+    const combined = [...logs.value, ...parsed]
+    logs.value = combined.length > logLimit.value ? combined.slice(combined.length - logLimit.value) : combined
+  }
+  triggerRef(logs)
+  trimMapByOldest(parseCache, parseCacheMax.value, Math.max(200, Math.floor(parseCacheMax.value / 2)))
+}
+
+function flushPendingStreamLines() {
+  streamFlushTimer = null
+  if (!pendingStreamLines.length || isPaused.value || isFullSearch.value) return
+  const lines = pendingStreamLines
+  pendingStreamLines = []
+  appendParsedLogs(lines, `stream-${nextOffset}-`)
+}
+
+function queueStreamLines(lines) {
+  if (!Array.isArray(lines) || !lines.length) return
+  pendingStreamLines.push(...lines)
+  if (streamFlushTimer) return
+  streamFlushTimer = setTimeout(flushPendingStreamLines, LOG_FLUSH_INTERVAL)
+}
+
+function closeLogStream({ keepStatus = false, discardPending = false } = {}) {
+  const wasPaused = isPaused.value
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  if (streamFlushTimer) {
+    clearTimeout(streamFlushTimer)
+    streamFlushTimer = null
+  }
+  if (discardPending) {
+    pendingStreamLines = []
+  } else if (pendingStreamLines.length && !isPaused.value && !isFullSearch.value) {
+    const lines = pendingStreamLines
+    pendingStreamLines = []
+    appendParsedLogs(lines, `stream-${nextOffset}-`)
+  }
+  if (logEventSource) {
+    try { logEventSource.close() } catch {}
+    logEventSource = null
+  }
+  if (!keepStatus && !wasPaused && !isFullSearch.value) {
+    terminalStatus.value = 'disconnected'
+  }
+}
+
+function scheduleReconnect() {
+  if (isPaused.value || isFullSearch.value || reconnectTimer) return
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    connectLogStream()
+  }, LOG_STREAM_RECONNECT_MS)
+}
+
+function handleStreamPayload(event, { reset = false } = {}) {
+  let payload = {}
+  try {
+    payload = JSON.parse(event.data || '{}')
+  } catch {
+    payload = {}
+  }
+  if (typeof payload.next_offset === 'number') nextOffset = payload.next_offset
+  const lines = Array.isArray(payload.logs) ? payload.logs : []
+  const signature = `${lines.length}::${lines[lines.length - 1] || ''}`
+  lastFetchMode.value = reset || payload.is_full ? 'sse(full)' : 'sse'
+  lastFetchMs.value = 0
+  terminalErrorMessage.value = ''
+  terminalStatus.value = 'connected'
+  if (reset || payload.is_full) {
+    lastLogSignature = signature
+    appendParsedLogs(lines, 'sse-full-', { reset: true })
+    return
+  }
+  if (lines.length) {
+    lastLogSignature = signature
+    queueStreamLines(lines)
+  }
+}
+
+function connectLogStream({ reset = false } = {}) {
+  if (typeof EventSource === 'undefined') {
+    terminalStatus.value = 'error'
+    terminalErrorMessage.value = '当前浏览器不支持 SSE'
+    refreshLogs(true)
+    return
+  }
+  const blocked = isPaused.value || isFullSearch.value
+  closeLogStream()
+  if (reset) resetLiveLogState()
+  if (blocked) return
+
+  terminalStatus.value = 'connecting'
+  terminalErrorMessage.value = ''
+  const url = logApi.streamUrl({ lines: logLimit.value, sinceOffset: reset ? -1 : nextOffset })
+  const resetOnConnected = reset || nextOffset < 0
+  logEventSource = new EventSource(url, { withCredentials: true })
+
+  logEventSource.addEventListener('connected', (event) => handleStreamPayload(event, { reset: resetOnConnected }))
+  logEventSource.addEventListener('reset', (event) => handleStreamPayload(event, { reset: true }))
+  logEventSource.addEventListener('log', (event) => handleStreamPayload(event))
+  logEventSource.addEventListener('heartbeat', (event) => {
+    terminalStatus.value = 'connected'
+    try {
+      const payload = JSON.parse(event.data || '{}')
+      if (typeof payload.next_offset === 'number') nextOffset = payload.next_offset
+    } catch {}
+  })
+  logEventSource.addEventListener('stream_error', (event) => {
+    terminalStatus.value = 'error'
+    try {
+      const payload = JSON.parse(event.data || '{}')
+      terminalErrorMessage.value = payload.message || '日志流异常'
+    } catch {
+      terminalErrorMessage.value = '日志流异常'
+    }
+  })
+  logEventSource.onerror = () => {
+    if (isPaused.value || isFullSearch.value) return
+    terminalStatus.value = 'error'
+    terminalErrorMessage.value = '日志流连接中断，正在重连'
+    closeLogStream({ keepStatus: true })
+    scheduleReconnect()
+  }
+}
+
+function reconnectLogStream() {
+  isPaused.value = false
+  if (isFullSearch.value) {
+    isFullSearch.value = false
+  }
+  connectLogStream({ reset: false })
 }
 
 async function clearLogs() {
@@ -1011,17 +886,16 @@ async function clearLogs() {
     })
     logs.value = []
     triggerRef(logs)
-    // 同时清 parseCache：之前只清 highlightCache，parseCache 残留的几千条 parsed 对象
-    // 直到下次刷新触发 trim 才会被丢弃，是「点了清空但内存没下来」的常见误解。
     parseCache.clear()
-    highlightCache.clear()
+    pendingStreamLines = []
     if (fullSearchAbortController) {
       try { fullSearchAbortController.abort() } catch {}
       fullSearchAbortController = null
     }
-    clearSelectedLog()
+    const resumeOffset = nextOffset
+    closeLogStream({ discardPending: true })
     lastLogSignature = ''
-    nextOffset = -1
+    nextOffset = resumeOffset
     incrementalCount.value = 0
     fullSearchCursor.value = 0
     fullSearchHasMore.value = false
@@ -1030,7 +904,9 @@ async function clearLogs() {
     lastSearchScanMb.value = 0
     lastSearchStoppedEarly.value = false
     isSearchLoading.value = false
-    scrollTop.value = 0
+    if (!isPaused.value && !isFullSearch.value) {
+      connectLogStream({ reset: false })
+    }
     ElMessage.success('日志视图已清空')
   } catch (_) {}
 }
@@ -1040,72 +916,11 @@ function onLimitChange() {
   // OOM 修复：从大 limit 切到小 limit 时主动清空缓存，避免旧条目要等下次刷新
   // 触发 trim 才被释放（中间窗口内 GC 难以回收，是切换刷条数后内存继续涨的根因）。
   parseCache.clear()
-  highlightCache.clear()
-  refreshLogs(true)
-}
-
-function formatLogLineForCopy(log) {
-  if (!log) return ''
-  const parts = []
-  if (log.time) parts.push(log.time)
-  if (log.level) parts.push(`[${log.level}]`)
-  if (log.module) parts.push(`[${log.module}]`)
-  parts.push(log.message ?? '')
-  return parts.join(' ')
-}
-
-async function writeToClipboard(text, successMessage) {
-  try {
-    await navigator.clipboard.writeText(text)
-    if (successMessage) {
-      ElMessage({ message: successMessage, type: 'success', duration: 1200 })
-    }
-    return true
-  } catch {
-    // 不安全上下文（http 局域网 / 部分桌面包装）下 navigator.clipboard 不可用，
-    // 回退到旧 API + 隐藏 textarea，确保能复制完整长度。
-    try {
-      const textarea = document.createElement('textarea')
-      textarea.value = text
-      textarea.setAttribute('readonly', '')
-      textarea.style.position = 'fixed'
-      textarea.style.top = '-9999px'
-      document.body.appendChild(textarea)
-      textarea.focus()
-      textarea.select()
-      const ok = document.execCommand('copy')
-      document.body.removeChild(textarea)
-      if (!ok) throw new Error('execCommand failed')
-      if (successMessage) {
-        ElMessage({ message: successMessage, type: 'success', duration: 1200 })
-      }
-      return true
-    } catch {
-      ElMessage.warning('复制失败，请手动选中详情里的文本')
-      return false
-    }
+  if (isFullSearch.value) {
+    doFullSearch(true)
+  } else {
+    connectLogStream({ reset: true })
   }
-}
-
-async function copyLogLine(log) {
-  // 注意 log.message 是完整原文，虚拟滚动不会裁短；此处拼上时间 / 级别 / 模块，
-  // 方便丢到 issue 里让团队按时间点定位问题，而不是只有一行裸消息。
-  await writeToClipboard(formatLogLineForCopy(log), '已复制当前日志原文')
-}
-
-async function copyLogWithContext(log, span = 15) {
-  if (!log) return
-  const all = logs.value
-  const idx = all.findIndex((item) => item.key === log.key)
-  if (idx < 0) {
-    ElMessage.warning('未找到该日志的上下文')
-    return
-  }
-  const from = Math.max(0, idx - span)
-  const to = Math.min(all.length, idx + span + 1)
-  const lines = all.slice(from, to).map(formatLogLineForCopy)
-  const text = lines.join('\n')
-  await writeToClipboard(text, `已复制上下文共 ${lines.length} 行`)
 }
 
 function exportFilteredLogs() {
@@ -1130,16 +945,16 @@ function exportFilteredLogs() {
 }
 
 async function copyVisibleLogs() {
-  if (!visibleLogs.value.length) {
-    ElMessage.warning('当前可见区没有可复制日志')
+  if (!filteredLogs.value.length) {
+    ElMessage.warning('当前没有可复制日志')
     return
   }
-  const lines = visibleLogs.value.map((log) =>
+  const lines = filteredLogs.value.map((log) =>
     [log.time || '--', log.level, log.module || '-', log.message].join(' | ')
   )
   try {
     await navigator.clipboard.writeText(lines.join('\n'))
-    ElMessage.success(`已复制 ${visibleLogs.value.length} 条可见日志`)
+    ElMessage.success(`已复制 ${filteredLogs.value.length} 条日志`)
   } catch {
     ElMessage.warning('复制失败，请手动选中')
   }
@@ -1153,7 +968,7 @@ function onWindowKeydown(e) {
   }
   if (e.ctrlKey && e.key.toLowerCase() === 'r') {
     e.preventDefault()
-    refreshLogs(true)
+    refreshCurrentLogs()
     return
   }
   if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'c') {
@@ -1219,11 +1034,7 @@ async function gotoFullSearchPage(cursor) {
     logIdCounter = 0
     logs.value = parseLogLines(lines, `search-${cursor}-`)
     triggerRef(logs)
-    restoreSelectedLog()
     lastFetchMs.value = Math.round(performance.now() - t0)
-    await nextTick()
-    scrollTop.value = 0
-    if (logContainer.value) logContainer.value.scrollTop = 0
   } catch (err) {
     // 用户取消的旧请求（AbortController.abort）：静默
     if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') return
@@ -1267,10 +1078,10 @@ async function toggleFullSearch() {
     lastSearchScanMb.value = 0
     lastSearchStoppedEarly.value = false
     isSearchLoading.value = false
-    highlightCache.clear()
     nextOffset = -1
-    refreshLogs(true)
+    connectLogStream({ reset: true })
   } else {
+    closeLogStream()
     isFullSearch.value = true
     await doFullSearch(true)
   }
@@ -1368,7 +1179,8 @@ async function runLogCleanup(action) {
     await loadLogInfo()
     // 清理后本地视图还指向旧 byte offset，强制全量刷新避免读不到数据
     nextOffset = -1
-    await refreshLogs(true)
+    if (isFullSearch.value) await doFullSearch(true)
+    else connectLogStream({ reset: true })
   } catch (err) {
     ElMessage.error(err?.response?.data?.detail || '清理失败')
   } finally {
@@ -1376,42 +1188,14 @@ async function runLogCleanup(action) {
   }
 }
 
-// 搜索关键词变化时主动清 highlightCache：旧 termsKey 的条目已经永远不会再被命中
-// （cacheKey 含 termsKey，新 terms 一定走新 cacheKey），但仍占内存直到下次 trim。
-// 直接清掉避免内存继续涨。debounce 一下避免用户快速打字时 cache 反复清空。
-let highlightCacheClearTimer = null
-watch(
-  () => searchKeyword.value,
-  () => {
-    if (highlightCacheClearTimer) clearTimeout(highlightCacheClearTimer)
-    highlightCacheClearTimer = setTimeout(() => {
-      highlightCache.clear()
-      highlightCacheClearTimer = null
-    }, 350)
-  }
-)
-
-onMounted(async () => {
-  await refreshLogs(true)
-  intervalId = setInterval(refreshLogs, LOG_POLL_INTERVAL)
+onMounted(() => {
+  connectLogStream({ reset: true })
   window.addEventListener('keydown', onWindowKeydown)
-
-  if (logContainer.value) {
-    viewerHeight.value = logContainer.value.clientHeight
-    resizeObserver = new ResizeObserver(([entry]) => {
-      viewerHeight.value = entry.contentRect.height
-    })
-    resizeObserver.observe(logContainer.value)
-  }
 })
 
 onUnmounted(() => {
-  if (intervalId) clearInterval(intervalId)
-  if (resizeObserver) resizeObserver.disconnect()
+  closeLogStream()
   if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
-  if (highlightCacheClearTimer) clearTimeout(highlightCacheClearTimer)
-  if (scrollRafId) cancelAnimationFrame(scrollRafId)
-  if (smoothScrollRafId) cancelAnimationFrame(smoothScrollRafId)
   // 取消未完搜索请求，避免页面销毁后老响应仍试图写 reactive
   if (fullSearchAbortController) {
     try { fullSearchAbortController.abort() } catch {}
@@ -1419,13 +1203,13 @@ onUnmounted(() => {
   }
   // 离开页面时主动释放缓存，回到列表 / 库存等其他页面后内存能立即降下来
   parseCache.clear()
-  highlightCache.clear()
   window.removeEventListener('keydown', onWindowKeydown)
 })
 </script>
 
 <style scoped>
-.log-action-btn {
+.logs-toolbar-btn,
+.log-manager-action-btn {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -1441,37 +1225,163 @@ onUnmounted(() => {
   transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.log-action-btn:hover {
+.logs-toolbar-btn:hover,
+.log-manager-action-btn:hover {
   transform: translateY(-1px);
   box-shadow: 0 6px 14px rgba(15, 23, 42, 0.1);
 }
 
-.log-action-btn:hover svg {
+.logs-toolbar-btn:hover svg,
+.log-manager-action-btn:hover svg {
   transform: rotate(-8deg) scale(1.08);
 }
 
-.log-action-btn svg {
+.logs-toolbar-btn svg,
+.log-manager-action-btn svg {
   transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.log-action-btn:active { transform: scale(0.96); }
-.log-action-btn--success { border-color: #bbf7d0; background: #f0fdf4; color: #16a34a; }
-.log-action-btn--warning { border-color: #fde68a; background: #fffbeb; color: #b45309; }
-.log-action-btn--danger  { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
-.log-action-btn--default:hover { border-color: #94a3b8; background: #f8fafc; }
+.logs-toolbar-btn:active,
+.log-manager-action-btn:active { transform: scale(0.96); }
+
+.logs-toolbar-btn:focus,
+.logs-toolbar-btn:focus-visible,
+.log-manager-action-btn:focus,
+.log-manager-action-btn:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.logs-toolbar-btn:disabled,
+.log-manager-action-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
+}
+
+.logs-toolbar-btn.is-success,
+.log-manager-action-btn.is-success {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #16a34a;
+}
+
+.logs-toolbar-btn.is-warning,
+.log-manager-action-btn.is-warning {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #b45309;
+}
+
+.logs-toolbar-btn.is-danger,
+.log-manager-action-btn.is-danger {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.logs-toolbar-btn.is-default:hover,
+.log-manager-action-btn.is-default:hover {
+  border-color: #94a3b8;
+  background: #f8fafc;
+}
+
+.logs-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #64748b;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.logs-toggle-btn:hover {
+  border-color: #cbd5e1;
+  transform: translateY(-1px);
+}
+
+.logs-toggle-btn.is-active {
+  border-color: #c7d2fe;
+  background: #eef2ff;
+  color: #4f46e5;
+}
+
+.logs-toggle-btn.is-compact {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #047857;
+}
+
+.logs-toggle-btn:focus,
+.logs-toggle-btn:focus-visible,
+.logs-search-submit:focus,
+.logs-search-submit:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.logs-search-submit {
+  border-color: #c7d2fe;
+  background: #eef2ff;
+  color: #4f46e5;
+}
+
+.logs-search-submit:hover {
+  background: #e0e7ff;
+}
+
+.logs-status-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.logs-status-chip.is-info { color: #0369a1; background: #f0f9ff; border-color: #bae6fd; }
+.logs-status-chip.is-success { color: #047857; background: #ecfdf5; border-color: #a7f3d0; }
+.logs-status-chip.is-warning { color: #b45309; background: #fffbeb; border-color: #fde68a; }
+.logs-status-chip.is-muted { color: #475569; background: #f8fafc; border-color: #e2e8f0; }
+
+.logs-status-row {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid #f1f5f9;
+  color: #475569;
+  font-size: 11px;
+}
+
+.system-log-shell {
+  overflow: hidden;
+  border-radius: 14px;
+  background: #09090b;
+  box-shadow: 0 18px 44px -30px rgba(15, 23, 42, 0.72);
+}
+
+.system-log-shell.is-search-mode {
+  border: 1px solid rgba(39, 39, 42, 0.96);
+}
 
 .log-manager-shell {
   overflow: hidden;
   border: 1px solid rgba(203, 213, 225, 0.72);
-  border-radius: 18px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.86)),
-    radial-gradient(circle at top left, rgba(99, 102, 241, 0.12), transparent 34%);
+  border-radius: 14px;
+  background: #ffffff;
   box-shadow:
     0 24px 70px rgba(15, 23, 42, 0.18),
     inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
 }
 
 .log-manager-header,
@@ -1605,7 +1515,7 @@ onUnmounted(() => {
 .log-file-badge {
   flex-shrink: 0;
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: 5px;
   font-family: var(--font-body);
   font-size: 10px;
   font-weight: 800;
@@ -1615,13 +1525,13 @@ onUnmounted(() => {
 
 .log-file-badge.is-main {
   border: 1px solid rgba(52, 211, 153, 0.32);
-  background: linear-gradient(180deg, rgba(236, 253, 245, 0.98), rgba(209, 250, 229, 0.84));
+  background: #ecfdf5;
   color: #047857;
 }
 
 .log-file-badge.is-backup {
   border: 1px solid rgba(129, 140, 248, 0.36);
-  background: linear-gradient(180deg, rgba(238, 242, 255, 0.98), rgba(224, 231, 255, 0.86));
+  background: #eef2ff;
   color: #4f46e5;
 }
 
@@ -1636,8 +1546,6 @@ onUnmounted(() => {
 
 :global(.log-manager-overlay) {
   background: rgba(15, 23, 42, 0.34) !important;
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
 }
 
 :global(.log-manager-overlay .el-overlay-dialog) {
@@ -1667,61 +1575,313 @@ onUnmounted(() => {
   background: transparent !important;
 }
 
-:global(html.kikoerumanager-dark .log-manager-shell) {
-  border-color: rgba(148, 163, 184, 0.24);
-  background:
-    linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(15, 23, 42, 0.91)),
-    radial-gradient(circle at top left, rgba(99, 102, 241, 0.2), transparent 34%) !important;
-  color: #dbeafe;
+:global(html.kikoerumanager-dark body .log-manager-overlay) {
+  background: rgba(0, 0, 0, 0.58) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
-:global(html.kikoerumanager-dark .log-manager-header),
-:global(html.kikoerumanager-dark .log-manager-footer) {
-  border-color: rgba(148, 163, 184, 0.18);
-  background: rgba(30, 41, 59, 0.72);
+:global(html.kikoerumanager-dark body .log-manager-dialog.el-dialog) {
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark .log-manager-icon),
-:global(html.kikoerumanager-dark .log-manager-close),
-:global(html.kikoerumanager-dark .log-stat-card),
-:global(html.kikoerumanager-dark .log-policy-card),
-:global(html.kikoerumanager-dark .log-file-panel) {
-  border-color: rgba(148, 163, 184, 0.2);
-  background: rgba(30, 41, 59, 0.72);
-  color: #cbd5e1;
+:global(html.kikoerumanager-dark body #app .log-manager-shell),
+:global(html.kikoerumanager-dark body .log-manager-shell) {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  background: #0b0f14 !important;
+  background-image: none !important;
+  color: #d7dde7 !important;
+  box-shadow: 0 22px 52px rgba(0, 0, 0, 0.46) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
-:global(html.kikoerumanager-dark .log-manager-shell .text-slate-950),
-:global(html.kikoerumanager-dark .log-manager-shell .text-slate-900),
-:global(html.kikoerumanager-dark .log-manager-shell .text-slate-800),
-:global(html.kikoerumanager-dark .log-manager-shell .text-slate-700) {
-  color: #f8fafc !important;
+:global(html.kikoerumanager-dark body #app .log-manager-header),
+:global(html.kikoerumanager-dark body #app .log-manager-footer),
+:global(html.kikoerumanager-dark body .log-manager-header),
+:global(html.kikoerumanager-dark body .log-manager-footer) {
+  border-color: rgba(255, 255, 255, 0.07) !important;
+  background: #0b0f14 !important;
+  background-image: none !important;
 }
 
-:global(html.kikoerumanager-dark .log-manager-shell .text-slate-600),
-:global(html.kikoerumanager-dark .log-manager-shell .text-slate-500),
-:global(html.kikoerumanager-dark .log-manager-shell .text-slate-400) {
-  color: #94a3b8 !important;
+:global(html.kikoerumanager-dark body #app .log-manager-body),
+:global(html.kikoerumanager-dark body .log-manager-body) {
+  background: #0b0f14 !important;
 }
 
-:global(html.kikoerumanager-dark .log-file-head) {
-  border-color: rgba(148, 163, 184, 0.18);
-  background: rgba(15, 23, 42, 0.76);
-  color: #94a3b8;
+:global(html.kikoerumanager-dark body #app .log-manager-icon),
+:global(html.kikoerumanager-dark body #app .log-manager-close),
+:global(html.kikoerumanager-dark body .log-manager-icon),
+:global(html.kikoerumanager-dark body .log-manager-close) {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  background: #131820 !important;
+  background-image: none !important;
+  color: #c9d1dd !important;
+  box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark .log-file-row) {
-  border-color: rgba(148, 163, 184, 0.14);
+:global(html.kikoerumanager-dark body #app .log-manager-close:hover),
+:global(html.kikoerumanager-dark body .log-manager-close:hover) {
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  background: #1a202a !important;
+  color: #f2f6fb !important;
+  transform: none !important;
 }
 
-:global(html.kikoerumanager-dark .log-file-row:hover) {
-  background: rgba(51, 65, 85, 0.34);
+:global(html.kikoerumanager-dark body #app .log-stat-card),
+:global(html.kikoerumanager-dark body #app .log-policy-card),
+:global(html.kikoerumanager-dark body #app .log-file-panel),
+:global(html.kikoerumanager-dark body .log-stat-card),
+:global(html.kikoerumanager-dark body .log-policy-card),
+:global(html.kikoerumanager-dark body .log-file-panel) {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  background: #11161d !important;
+  background-image: none !important;
+  color: #d7dde7 !important;
+  box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark .log-policy-card code) {
-  border-color: rgba(148, 163, 184, 0.22);
-  background: rgba(15, 23, 42, 0.78);
-  color: #bfdbfe;
+:global(html.kikoerumanager-dark body #app .log-manager-shell .text-slate-950),
+:global(html.kikoerumanager-dark body #app .log-manager-shell .text-slate-900),
+:global(html.kikoerumanager-dark body #app .log-manager-shell .text-slate-800),
+:global(html.kikoerumanager-dark body #app .log-manager-shell .text-slate-700),
+:global(html.kikoerumanager-dark body .log-manager-shell .text-slate-950),
+:global(html.kikoerumanager-dark body .log-manager-shell .text-slate-900),
+:global(html.kikoerumanager-dark body .log-manager-shell .text-slate-800),
+:global(html.kikoerumanager-dark body .log-manager-shell .text-slate-700) {
+  color: #f1f5f9 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .log-manager-shell .text-slate-600),
+:global(html.kikoerumanager-dark body #app .log-manager-shell .text-slate-500),
+:global(html.kikoerumanager-dark body #app .log-manager-shell .text-slate-400),
+:global(html.kikoerumanager-dark body .log-manager-shell .text-slate-600),
+:global(html.kikoerumanager-dark body .log-manager-shell .text-slate-500),
+:global(html.kikoerumanager-dark body .log-manager-shell .text-slate-400) {
+  color: #8b96a8 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .log-file-head),
+:global(html.kikoerumanager-dark body .log-file-head) {
+  border-color: rgba(255, 255, 255, 0.07) !important;
+  background: #0f1319 !important;
+  color: #8b96a8 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .log-file-row),
+:global(html.kikoerumanager-dark body .log-file-row) {
+  border-color: rgba(255, 255, 255, 0.06) !important;
+}
+
+:global(html.kikoerumanager-dark body #app .log-file-row:hover),
+:global(html.kikoerumanager-dark body .log-file-row:hover) {
+  background: #151b24 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .log-policy-card code),
+:global(html.kikoerumanager-dark body .log-policy-card code) {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  background: #080b10 !important;
+  color: #cbd5e1 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .log-manager-shell .log-file-badge),
+:global(html.kikoerumanager-dark body .log-manager-shell .log-file-badge) {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  background: #171d26 !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .log-manager-shell .log-file-badge.is-main),
+:global(html.kikoerumanager-dark body .log-manager-shell .log-file-badge.is-main) {
+  color: #7dd3fc !important;
+}
+
+:global(html.kikoerumanager-dark body #app .log-manager-shell .log-file-badge.is-backup),
+:global(html.kikoerumanager-dark body .log-manager-shell .log-file-badge.is-backup) {
+  color: #cbd5e1 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .log-manager-shell .log-manager-action-btn),
+:global(html.kikoerumanager-dark body .log-manager-shell .log-manager-action-btn) {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  background: #141a22 !important;
+  background-image: none !important;
+  color: #d7dde7 !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .log-manager-shell .log-manager-action-btn:hover),
+:global(html.kikoerumanager-dark body .log-manager-shell .log-manager-action-btn:hover) {
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  background: #1a202a !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .log-manager-shell .log-manager-action-btn.is-success),
+:global(html.kikoerumanager-dark body .log-manager-shell .log-manager-action-btn.is-success) {
+  color: #86efac !important;
+}
+
+:global(html.kikoerumanager-dark body #app .log-manager-shell .log-manager-action-btn.is-warning),
+:global(html.kikoerumanager-dark body .log-manager-shell .log-manager-action-btn.is-warning) {
+  color: #fde047 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .log-manager-shell .log-manager-action-btn.is-danger),
+:global(html.kikoerumanager-dark body .log-manager-shell .log-manager-action-btn.is-danger) {
+  color: #f87171 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .log-manager-shell .log-manager-action-btn:focus),
+:global(html.kikoerumanager-dark body #app .log-manager-shell .log-manager-action-btn:focus-visible),
+:global(html.kikoerumanager-dark body #app .log-manager-shell .log-manager-close:focus),
+:global(html.kikoerumanager-dark body #app .log-manager-shell .log-manager-close:focus-visible),
+:global(html.kikoerumanager-dark body .log-manager-shell .log-manager-action-btn:focus),
+:global(html.kikoerumanager-dark body .log-manager-shell .log-manager-action-btn:focus-visible),
+:global(html.kikoerumanager-dark body .log-manager-shell .log-manager-close:focus),
+:global(html.kikoerumanager-dark body .log-manager-shell .log-manager-close:focus-visible) {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .logs-toolbar) {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  background: #0d1117 !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .logs-status-row) {
+  border-top-color: rgba(255, 255, 255, 0.07) !important;
+  background: transparent !important;
+  background-image: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .logs-count-chip),
+:global(html.kikoerumanager-dark body #app .logs-page .logs-status-chip),
+:global(html.kikoerumanager-dark body #app .logs-page .logs-search-clear) {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  background: #141a22 !important;
+  background-image: none !important;
+  color: #cbd5e1 !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .logs-toolbar-label),
+:global(html.kikoerumanager-dark body #app .logs-page .text-slate-500),
+:global(html.kikoerumanager-dark body #app .logs-page .text-slate-600) {
+  color: #8b96a8 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .logs-search-input) {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  background: #080b10 !important;
+  background-image: none !important;
+  color: #e5e7eb !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .logs-search-input::placeholder) {
+  color: #667085 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .logs-search-input:focus) {
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .logs-search-submit),
+:global(html.kikoerumanager-dark body #app .logs-page .logs-toggle-btn),
+:global(html.kikoerumanager-dark body #app .logs-page .logs-toolbar-btn),
+:global(html.kikoerumanager-dark body #app .logs-page .log-level-pill),
+:global(html.kikoerumanager-dark body #app .logs-page .logs-search-submit .text-indigo-400),
+:global(html.kikoerumanager-dark body #app .logs-page .logs-count-chip .text-blue-500) {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  background: #141a22 !important;
+  background-image: none !important;
+  color: #d7dde7 !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .logs-search-submit:hover),
+:global(html.kikoerumanager-dark body #app .logs-page .logs-toggle-btn:hover),
+:global(html.kikoerumanager-dark body #app .logs-page .logs-toolbar-btn:hover),
+:global(html.kikoerumanager-dark body #app .logs-page .log-level-pill:hover) {
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  background: #1a202a !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .logs-toolbar-btn.is-success),
+:global(html.kikoerumanager-dark body #app .logs-page .logs-toggle-btn.is-compact),
+:global(html.kikoerumanager-dark body #app .logs-page .logs-status-chip.is-success) {
+  color: #86efac !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .logs-toolbar-btn.is-warning),
+:global(html.kikoerumanager-dark body #app .logs-page .logs-status-chip.is-warning) {
+  color: #fde047 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .logs-toolbar-btn.is-danger) {
+  color: #f87171 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .logs-search-submit),
+:global(html.kikoerumanager-dark body #app .logs-page .logs-toggle-btn.is-active),
+:global(html.kikoerumanager-dark body #app .logs-page .logs-status-chip.is-info) {
+  color: #d7dde7 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .logs-count-chip .text-blue-500),
+:global(html.kikoerumanager-dark body #app .logs-page .logs-search-submit .text-indigo-400) {
+  color: #d7dde7 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .logs-status-chip.is-muted) {
+  color: #a3adbd !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .log-level-pill.is-active) {
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  background: #1d2430 !important;
+  color: #f1f5f9 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .log-level-pill.is-warning.is-active) {
+  color: #fde047 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .log-level-pill.is-error.is-active) {
+  color: #f87171 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .log-level-pill.is-info.is-active) {
+  color: #7dd3fc !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .log-level-pill.is-debug.is-active) {
+  color: #c4b5fd !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .el-select__wrapper) {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  background: #141a22 !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .logs-page .el-select__placeholder),
+:global(html.kikoerumanager-dark body #app .logs-page .el-select__selected-item) {
+  color: #cbd5e1 !important;
 }
 
 @media (max-width: 720px) {
@@ -1776,142 +1936,4 @@ onUnmounted(() => {
 .log-level-pill.is-info.is-active   { border-color: #bfdbfe; background: #eff6ff; color: #1d4ed8; }
 .log-level-pill.is-warning.is-active{ border-color: #fcd34d; background: #fffbeb; color: #b45309; }
 .log-level-pill.is-error.is-active  { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
-
-.log-viewer {
-  height: calc(100vh - 320px);
-  min-height: 420px;
-  overflow-y: auto;
-  overflow-x: auto;
-  padding: 8px 0 12px;
-  color: #e2e8f0;
-  font-family: 'Consolas', 'JetBrains Mono', 'Monaco', monospace;
-  font-size: 12.5px;
-  line-height: 28px;
-  scrollbar-width: thin;
-  scrollbar-color: #334155 transparent;
-  /* 锁住滚动不穿透到父容器：鼠标滚轮在顶部 / 底部边界不会拖动页面。 */
-  overscroll-behavior: contain;
-  /* 提示浏览器这是个常滚动容器，提前提升为独立 compositor layer， 
-     避免滚动时反复重建 repaint layer。配合下面 .log-line 的
-     content-visibility 一起吃下 5万行 list 也不卸肉。 */
-  contain: layout paint;
-}
-
-.log-viewer.is-paused {
-  outline: 2px solid rgba(245, 158, 11, 0.5);
-  outline-offset: -2px;
-}
-
-.log-viewer::-webkit-scrollbar { width: 6px; height: 6px; }
-.log-viewer::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
-
-.log-line {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 28px;
-  padding: 0 14px;
-  white-space: nowrap;
-  /*
-   * 去掉 background-color 动画：虚拟滚动下每个进入视口的新 row 都会跳
-   * 0.12s transition，鼠标连续滚轮时 上调起来是一片闪烁的 hover/选中
-   * 状态跳动。hover 是拖动中一闪而过的东西，没必要上动画。
-   *
-   * content-visibility: auto + contain-intrinsic-size: 28px：
-   * 让浏览器原生跳过不可见 row 的 layout / paint，list 上万行时才能
-   * 保着滚动 60fps。OVERSCAN 以外的行被跳过，与虚拟滚动同一个思路但
-   * 是在 GPU/compositor 层。
-   *
-   * contain: layout style paint：告诉浏览器每行是独立子树，变化不要反作用到
-   * 老哥 / 兄弟。在增量插行 / 选中成色变时只重画该行，不需重取其它行 layout。
-   */
-  content-visibility: auto;
-  contain-intrinsic-size: 28px;
-  contain: layout style paint;
-}
-
-.log-line:hover { background: rgba(148, 163, 184, 0.07); }
-.log-line.is-selected {
-  background: rgba(59, 130, 246, 0.16);
-  box-shadow: inset 3px 0 0 #38bdf8;
-}
-.log-line.is-warning { background: rgba(245, 158, 11, 0.07); }
-.log-line.is-error   { background: rgba(239, 68, 68, 0.07); }
-.log-line.is-debug   { opacity: 0.7; }
-.log-line.is-selected.is-warning { background: rgba(245, 158, 11, 0.16); }
-.log-line.is-selected.is-error { background: rgba(239, 68, 68, 0.16); }
-
-.log-ts {
-  flex-shrink: 0;
-  color: #5a6a82;
-  font-size: 12px;
-  width: 138px;
-  /* 时间戳数字等宽：避免不同字体下“1”与“0”宽度不同导致上下行时间戳右侧错位。 */
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.01em;
-}
-
-.log-lvl {
-  flex-shrink: 0;
-  width: 52px;
-  padding: 0 5px;
-  border-radius: 4px;
-  font-size: 10.5px;
-  font-weight: 700;
-  text-align: center;
-  letter-spacing: 0.03em;
-}
-
-.lvl-debug { background: #2d3748; color: #a0aec0; }
-.lvl-info { background: #162b4d; color: #7cc0ff; }
-.lvl-warning { background: #5a3310; color: #fbbf24; }
-.lvl-error { background: #5a1a1a; color: #fca5a5; }
-
-.log-mod {
-  flex-shrink: 0;
-  /* 固定列宽区间：之前没设 min/max，“RJ字幕”与“CONFIG SAVE” 长短不同
-     会抨 message 起点 → 上下行 message 错位。锁 86px、超出 ellipsis，
-     让代码里所有模块名都进同一个可预测的区域。 */
-  width: 86px;
-  min-width: 86px;
-  max-width: 86px;
-  padding: 0 7px;
-  border-radius: 4px;
-  color: #ffffff;
-  font-size: 10.5px;
-  font-weight: 600;
-  line-height: 18px;
-  text-align: center;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.log-mod.is-empty {
-  background: transparent !important;
-  visibility: hidden;
-}
-
-.log-msg {
-  flex: 1;
-  min-width: 0;
-  color: #cbd5e1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  cursor: pointer;
-}
-
-.log-line.is-error .log-msg { color: #fca5a5; }
-.log-line.is-warning .log-msg { color: #fde68a; }
-
-:deep(.log-hit) {
-  color: #f8fafc;
-  padding: 0 2px;
-  border-radius: 2px;
-}
-
-:deep(.log-hit.log-hit-0) { background: rgba(250, 204, 21, 0.38); }
-:deep(.log-hit.log-hit-1) { background: rgba(34, 211, 238, 0.35); }
-:deep(.log-hit.log-hit-2) { background: rgba(52, 211, 153, 0.34); }
-:deep(.log-hit.log-hit-3) { background: rgba(251, 113, 133, 0.36); }
 </style>
