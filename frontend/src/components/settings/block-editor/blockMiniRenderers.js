@@ -14,7 +14,7 @@ const SEVERITY_BG = {
   success: '#1f8f4e',
   danger:  '#d93025',
   warning: '#d97706',
-  info:    '#0071e3',
+  info:    '#64748b',
 }
 
 const SAMPLE_BY_EVENT = {
@@ -227,7 +227,7 @@ function renderHeaderStatus(props, payload) {
 function renderSummaryCard(props, payload) {
   const label  = htmlEscape(props.label || '摘要')
   const value  = resolveVar(props.valueKey || '摘要', payload, '')
-  const accent = htmlEscape(props.accentColor || '#0071e3')
+  const accent = htmlEscape(props.accentColor || '#64748b')
   return `
     <div style="padding:14px 16px;background:#f5f5f7;border-radius:10px;border-left:3px solid ${accent};">
       <div style="font-size:11px;font-weight:600;color:#8e8e93;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">${label}</div>
@@ -297,7 +297,7 @@ function renderStatsGrid(props, payload) {
 const FILE_STATUS_STYLE = {
   kept:     { color: '#1f8f4e', marker: '✓', labelExtra: 'color:#1d1d1f;' },
   filtered: { color: '#d97706', marker: '✕', labelExtra: 'color:rgba(29,29,31,0.45);' },
-  new:      { color: '#0071e3', marker: '+', labelExtra: 'color:#1d1d1f;' },
+  new:      { color: '#64748b', marker: '+', labelExtra: 'color:#1d1d1f;' },
   removed:  { color: '#d93025', marker: '−', labelExtra: 'color:rgba(29,29,31,0.45);' },
 }
 
@@ -343,7 +343,7 @@ function renderFileTree(props, payload) {
     '已上传':   'background:#dcfce7;color:#166534;border:1px solid #86efac;',
     '下载失败': 'background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;',
   }
-  const DEFAULT_BADGE_STYLE = 'background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;'
+  const DEFAULT_BADGE_STYLE = 'background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;'
   const renderBadges = (badges) => {
     if (!Array.isArray(badges) || !badges.length) return ''
     return badges.map(b => {
@@ -365,7 +365,7 @@ function renderFileTree(props, payload) {
     const style = FILE_STATUS_STYLE[status] || { color: '#48484a', marker: '·', labelExtra: 'color:#1d1d1f;' }
     const isMuted = inheritedMuted || status === 'filtered' || status === 'removed'
     const lowerLabel = label.toLowerCase()
-    const iconColor = isMuted ? '#94a3b8' : (lowerLabel.match(/\.(flac|wav)$/) ? '#2563eb' : lowerLabel.match(/\.(mp3|m4a|ogg|aac|opus)$/) ? '#7c3aed' : '#64748b')
+    const iconColor = isMuted ? '#94a3b8' : '#64748b'
     const iconHtml = `<span style="display:inline-block;width:18px;text-align:center;line-height:1;flex-shrink:0;">${lucideIcon(fileTreeIconName(label), iconColor, 15)}</span>`
     const sizeText = String(node.size_text || '')
     const sizeHtml = sizeText ? `<span style="display:inline-block;width:72px;text-align:right;color:#94a3b8;font-size:11px;white-space:nowrap;flex-shrink:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">${htmlEscape(sizeText)}</span>` : ''

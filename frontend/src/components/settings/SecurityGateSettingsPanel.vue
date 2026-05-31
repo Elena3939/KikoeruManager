@@ -15,10 +15,10 @@
         </div>
         <div class="mini-grid two">
           <SettingsFieldCard label="普通会话小时">
-            <el-input-number v-model="config.security_gate.session_hours" :min="1" :max="72" class="field-number" />
+            <SettingsNumberStepper v-model="config.security_gate.session_hours" :min="1" :max="72" />
           </SettingsFieldCard>
           <SettingsFieldCard label="记住设备天数">
-            <el-input-number v-model="config.security_gate.remember_days" :min="1" :max="180" class="field-number" />
+            <SettingsNumberStepper v-model="config.security_gate.remember_days" :min="1" :max="180" />
           </SettingsFieldCard>
         </div>
       </div>
@@ -75,13 +75,13 @@
         </div>
         <div class="mini-grid two">
           <SettingsFieldCard label="失败统计窗口（分钟）">
-            <el-input-number v-model="config.security_gate.failure_window_minutes" :min="1" :max="120" class="field-number" />
+            <SettingsNumberStepper v-model="config.security_gate.failure_window_minutes" :min="1" :max="120" />
           </SettingsFieldCard>
           <SettingsFieldCard label="最大失败次数">
-            <el-input-number v-model="config.security_gate.max_failures" :min="2" :max="20" class="field-number" />
+            <SettingsNumberStepper v-model="config.security_gate.max_failures" :min="2" :max="20" />
           </SettingsFieldCard>
           <SettingsFieldCard label="提醒最小间隔（秒）">
-            <el-input-number v-model="config.security_gate.email_alert_min_interval_seconds" :min="60" :max="86400" class="field-number" />
+            <SettingsNumberStepper v-model="config.security_gate.email_alert_min_interval_seconds" :min="60" :max="86400" />
           </SettingsFieldCard>
         </div>
       </div>
@@ -146,6 +146,7 @@ import { ElMessage } from 'element-plus'
 import { Copy, QrCode, RefreshCw, RotateCcw, ShieldCheck, UnlockKeyhole } from 'lucide-vue-next'
 import AppEmptyState from '../common/AppEmptyState.vue'
 import SettingsFieldCard from './SettingsFieldCard.vue'
+import SettingsNumberStepper from './SettingsNumberStepper.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
 import { securityGateApi } from '../../api'
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
@@ -333,7 +334,7 @@ function formatTime(value) {
 
 .card-title {
   margin: 0 0 14px;
-  color: #1d1d1f;
+  color: var(--set-text-strong);
   font-size: 14px;
   font-weight: 600;
   letter-spacing: -0.1px;
@@ -405,8 +406,8 @@ function formatTime(value) {
   height: 36px;
   padding: 9px;
   border-radius: 12px;
-  color: #475569;
-  background: #f8fafc;
+  color: var(--set-text-muted);
+  background: var(--set-surface-soft);
   box-shadow:
     inset 0 0 0 1px rgba(148, 163, 184, 0.16),
     0 6px 16px rgba(15, 23, 42, 0.05);
@@ -423,13 +424,13 @@ function formatTime(value) {
 }
 
 .gate-bind-status.is-bound > svg {
-  color: #059669;
-  background: #ecfdf5;
+  color: var(--set-success-text);
+  background: var(--set-success-bg);
 }
 
 .gate-bind-status.is-empty > svg {
-  color: #475569;
-  background: #ffffff;
+  color: var(--set-text-muted);
+  background: var(--set-surface);
 }
 
 .gate-bind-status strong,
@@ -439,7 +440,7 @@ function formatTime(value) {
 
 .gate-bind-status span {
   margin-top: 5px;
-  color: rgba(29, 29, 31, 0.56);
+  color: var(--set-text-muted);
   font-size: 12px;
   line-height: 1.55;
 }
@@ -450,8 +451,8 @@ function formatTime(value) {
   margin-top: 16px;
   padding: 16px 18px;
   border-radius: 14px;
-  background: #ffffff;
-  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: var(--set-surface);
+  border: 1px solid var(--set-border);
   box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
 }
 
@@ -467,13 +468,13 @@ function formatTime(value) {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  color: #0f172a;
+  color: var(--set-text-strong);
   font-size: 12px;
   word-break: break-all;
   padding: 9px 10px;
   border-radius: 12px;
-  background: #f8fafc;
-  border: 1px solid rgba(226, 232, 240, 0.82);
+  background: var(--set-surface-soft);
+  border: 1px solid var(--set-border);
 }
 
 .setup-secret button,
@@ -500,40 +501,40 @@ function formatTime(value) {
 }
 
 .gate-action.is-primary {
-  color: white;
-  background: linear-gradient(180deg, #1f2937 0%, #111827 52%, #020617 100%);
+  color: var(--set-primary-text);
+  background: var(--set-primary-bg);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.18),
     0 8px 18px rgba(15, 23, 42, 0.14);
 }
 
 .gate-action.is-danger {
-  color: #9f1239;
-  background: #fff7f7;
-  box-shadow: inset 0 0 0 1px rgba(244, 63, 94, 0.12);
+  color: var(--set-danger-text);
+  background: var(--set-danger-bg);
+  box-shadow: inset 0 0 0 1px var(--set-danger-border);
 }
 
 .gate-action.is-ghost,
 .setup-secret button,
 .filter-chip {
-  color: #334155;
-  background: #ffffff;
-  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.18);
+  color: var(--set-text);
+  background: var(--set-surface);
+  box-shadow: inset 0 0 0 1px var(--set-border);
 }
 
 .filter-chip.is-active {
-  color: #0f172a;
-  background: #eef2f7;
-  box-shadow: inset 0 0 0 1px rgba(100, 116, 139, 0.18);
+  color: var(--set-text-strong);
+  background: var(--set-surface-muted);
+  box-shadow: inset 0 0 0 1px var(--set-border-strong);
 }
 
 .gate-icon-btn {
   width: 34px;
   height: 34px;
   border-radius: 12px;
-  color: #334155;
-  background: #f8fafc;
-  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.22);
+  color: var(--set-text);
+  background: var(--set-surface-soft);
+  box-shadow: inset 0 0 0 1px var(--set-border);
 }
 
 .gate-icon-btn:hover svg:not(.spin-once) {
@@ -571,17 +572,17 @@ function formatTime(value) {
   width: 100%;
   min-height: 38px;
   padding: 0 12px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
+  border: 1px solid var(--set-border);
   border-radius: 10px;
   outline: none;
-  color: #1d1d1f;
-  background: #ffffff;
+  color: var(--set-text-strong);
+  background: var(--set-field-bg);
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
 .field-input:focus {
-  border-color: rgba(79, 70, 229, 0.45);
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.08);
+  border-color: var(--set-border-strong);
+  box-shadow: 0 0 0 3px var(--set-focus-ring);
 }
 
 .confirm-row .field-input {
@@ -597,8 +598,8 @@ function formatTime(value) {
   min-height: 72px;
   padding: 14px 16px;
   border-radius: 14px;
-  background: #ffffff;
-  border: 1px solid rgba(226, 232, 240, 0.86);
+  background: var(--set-surface);
+  border: 1px solid var(--set-border);
   box-shadow: 0 6px 18px rgba(15, 23, 42, 0.03);
 }
 
@@ -630,7 +631,7 @@ function formatTime(value) {
 
 .log-row strong,
 .black-row strong {
-  color: #0f172a;
+  color: var(--set-text-strong);
   font-size: 14px;
   line-height: 1.35;
 }
@@ -638,7 +639,7 @@ function formatTime(value) {
 .log-row span,
 .black-row span {
   margin-top: 4px;
-  color: #64748b;
+  color: var(--set-text-muted);
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -648,7 +649,7 @@ function formatTime(value) {
 .log-result {
   min-width: 72px;
   text-align: right;
-  color: #64748b;
+  color: var(--set-text-muted);
   font-size: 12px;
   font-weight: 600;
   font-style: normal;

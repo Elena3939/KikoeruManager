@@ -10,7 +10,7 @@
       <!-- enabled 开关 -->
       <div class="bi-field bi-field--row">
         <span class="bi-label">启用此块</span>
-        <el-switch :model-value="block.enabled" @update:model-value="setProp('__enabled', $event)" />
+        <SettingsSwitch :model-value="block.enabled" @update:model-value="setProp('__enabled', $event)" />
       </div>
 
       <!-- 各类型 prop 表单 -->
@@ -186,6 +186,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { BLOCK_TYPES, VARIABLES } from './blockTypes.js'
+import SettingsSwitch from '../SettingsSwitch.vue'
 import RichTextEditor from './RichTextEditor.vue'
 
 const props = defineProps({
@@ -281,8 +282,8 @@ function currentVarExample(schema) {
   align-items: center;
   gap: 8px;
   padding: 12px 16px 10px;
-  border-bottom: 1px solid rgba(29, 29, 31, 0.07);
-  background: #fafafa;
+  border-bottom: 1px solid var(--set-border);
+  background: var(--set-surface-soft);
   flex-shrink: 0;
 }
 
@@ -291,13 +292,13 @@ function currentVarExample(schema) {
   height: 9px;
   border-radius: 50%;
   flex-shrink: 0;
-  box-shadow: 0 0 0 2px rgba(255,255,255,0.8), 0 0 0 3px currentColor;
+  box-shadow: none;
 }
 
 .blk-inspector-title {
   font-size: 13px;
   font-weight: 600;
-  color: #1d1d1f;
+  color: var(--set-text-strong);
   flex: 1;
   min-width: 0;
 }
@@ -306,9 +307,9 @@ function currentVarExample(schema) {
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.04em;
-  color: rgba(29, 29, 31, 0.4);
+  color: var(--set-text-muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  background: rgba(29, 29, 31, 0.06);
+  background: var(--set-surface-muted);
   padding: 2px 7px;
   border-radius: 5px;
 }
@@ -338,7 +339,7 @@ function currentVarExample(schema) {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.04em;
-  color: rgba(29, 29, 31, 0.55);
+  color: var(--set-text-muted);
   text-transform: uppercase;
 }
 
@@ -347,9 +348,9 @@ function currentVarExample(schema) {
   box-sizing: border-box;
   padding: 7px 10px;
   font-size: 12.5px;
-  color: #1d1d1f;
-  background: #fff;
-  border: 1.5px solid rgba(29, 29, 31, 0.1);
+  color: var(--set-text-strong);
+  background: var(--set-field-bg);
+  border: 1px solid var(--set-border);
   border-radius: 8px;
   outline: none;
   font-family: inherit;
@@ -380,13 +381,13 @@ function currentVarExample(schema) {
   gap: 6px;
   margin-top: 6px;
   padding: 6px 10px;
-  background: rgba(0, 113, 227, 0.05);
+  background: var(--set-surface-soft, rgba(0, 0, 0, 0.03));
   border-radius: 6px;
   font-size: 11px;
-  color: rgba(29, 29, 31, 0.7);
+  color: var(--set-text);
 }
 .bi-data-source-hint-text {
-  color: rgba(29, 29, 31, 0.55);
+  color: var(--set-text-muted);
   font-size: 10.5px;
 }
 
@@ -425,24 +426,24 @@ function currentVarExample(schema) {
   padding: 7px 10px;
   font-size: 11.5px;
   font-weight: 500;
-  color: #0071e3;
-  background: rgba(0, 113, 227, 0.05);
-  border: 1px dashed rgba(0, 113, 227, 0.3);
+  color: var(--set-text-strong, #1d1d1f);
+  background: var(--set-surface-soft, rgba(0, 0, 0, 0.03));
+  border: 1px dashed var(--set-border, rgba(29, 29, 31, 0.12));
   border-radius: 6px;
   cursor: pointer;
   text-align: center;
   transition: all 0.15s;
 }
 .bi-stats-add:hover {
-  background: rgba(0, 113, 227, 0.1);
-  border-color: rgba(0, 113, 227, 0.5);
+  background: var(--set-surface-hover, rgba(0, 0, 0, 0.05));
+  border-color: var(--set-border-strong, rgba(29, 29, 31, 0.2));
 }
 
 .bi-input--sm { width: 88px; }
 
 .bi-input:focus {
-  border-color: rgba(0, 113, 227, 0.5);
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.1);
+  border-color: var(--set-border-strong, rgba(29, 29, 31, 0.2));
+  box-shadow: 0 0 0 3px var(--set-focus-ring, rgba(15, 23, 42, 0.08));
 }
 
 /* 变量选择 */
@@ -453,9 +454,9 @@ function currentVarExample(schema) {
   width: 100%;
   padding: 7px 10px;
   font-size: 12.5px;
-  color: #1d1d1f;
-  background: #fff;
-  border: 1.5px solid rgba(29, 29, 31, 0.1);
+  color: var(--set-text-strong);
+  background: var(--set-field-bg);
+  border: 1px solid var(--set-border);
   border-radius: 8px;
   outline: none;
   font-family: inherit;
@@ -463,8 +464,8 @@ function currentVarExample(schema) {
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 .bi-select:focus {
-  border-color: rgba(0, 113, 227, 0.5);
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.1);
+  border-color: var(--set-border-strong, rgba(29, 29, 31, 0.2));
+  box-shadow: 0 0 0 3px var(--set-focus-ring, rgba(15, 23, 42, 0.08));
 }
 
 .bi-var-preview {
@@ -472,10 +473,10 @@ function currentVarExample(schema) {
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
-  background: rgba(0, 113, 227, 0.06);
+  background: var(--set-surface-soft, rgba(0, 0, 0, 0.03));
   border-radius: 6px;
   font-size: 11px;
-  color: rgba(29, 29, 31, 0.7);
+  color: var(--set-text);
 }
 /* BlockNote 风格变量 pill */
 .bi-var-pill {
@@ -495,13 +496,13 @@ function currentVarExample(schema) {
 .bi-var-pill-dot {
   width: 5px;
   height: 5px;
-  background: #6ea8fe;
+  background: var(--set-tag-info-text, #c7d2fe);
   transform: rotate(45deg);
   border-radius: 1px;
   flex-shrink: 0;
 }
 .bi-var-preview-arrow {
-  color: rgba(29, 29, 31, 0.35);
+  color: var(--set-text-subtle);
   font-size: 11px;
   flex-shrink: 0;
 }
@@ -511,7 +512,7 @@ function currentVarExample(schema) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: #1d1d1f;
+  color: var(--set-text-strong);
   font-weight: 500;
 }
 
@@ -522,7 +523,7 @@ function currentVarExample(schema) {
   width: 30px;
   height: 30px;
   padding: 2px;
-  border: 1.5px solid rgba(29, 29, 31, 0.12);
+  border: 1px solid var(--set-border);
   border-radius: 8px;
   cursor: pointer;
   background: none;
@@ -531,11 +532,11 @@ function currentVarExample(schema) {
 
 /* 数字滑块 */
 .bi-num-wrap { display: flex; align-items: center; gap: 8px; }
-.bi-range { flex: 1; accent-color: #0071e3; }
+.bi-range { flex: 1; accent-color: var(--set-text-muted, #64748b); }
 .bi-num-val {
   font-size: 11px;
   font-family: ui-monospace, monospace;
-  color: rgba(29, 29, 31, 0.5);
+  color: var(--set-text-muted);
   min-width: 32px;
   text-align: right;
 }

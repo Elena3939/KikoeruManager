@@ -173,15 +173,30 @@ function commitSel() {
 }
 .btp-panel {
   position: fixed;
-  background: #fff;
-  border: 1px solid rgba(29, 29, 31, 0.08);
+  background: var(--set-surface, #fff);
+  border: 1px solid var(--set-border, rgba(29, 29, 31, 0.08));
   border-radius: 12px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--set-shadow-hover, 0 12px 40px rgba(0, 0, 0, 0.12));
   display: flex;
   flex-direction: column;
   overflow: hidden;
   font-size: 12.5px;
   animation: btp-pop 0.14s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+:global(html.kikoerumanager-dark) .btp-panel,
+:global(body.kikoerumanager-dark) .btp-panel {
+  --set-surface: #151515;
+  --set-surface-soft: #1b1b1d;
+  --set-surface-hover: #202023;
+  --set-field-bg: #1b1b1d;
+  --set-text-strong: #f5f5f5;
+  --set-text-muted: #a1a1aa;
+  --set-text-subtle: #71717a;
+  --set-border: rgba(255, 255, 255, 0.11);
+  --set-border-soft: rgba(255, 255, 255, 0.08);
+  --set-border-strong: rgba(255, 255, 255, 0.18);
+  --set-shadow-hover: none;
 }
 @keyframes btp-pop {
   from { opacity: 0; transform: translateY(-4px) scale(0.97); }
@@ -190,43 +205,43 @@ function commitSel() {
 .btp-search-wrap {
   position: relative;
   padding: 8px 10px 6px;
-  border-bottom: 1px solid rgba(29, 29, 31, 0.06);
+  border-bottom: 1px solid var(--set-border-soft, rgba(29, 29, 31, 0.06));
 }
 .btp-search-icon {
   position: absolute;
   left: 18px;
   top: 50%;
   transform: translateY(-50%);
-  color: rgba(29, 29, 31, 0.4);
+  color: var(--set-text-subtle, rgba(29, 29, 31, 0.4));
 }
 .btp-search {
   width: 100%;
   padding: 6px 10px 6px 28px;
   font-size: 12.5px;
-  border: 1px solid rgba(29, 29, 31, 0.1);
+  border: 1px solid var(--set-border, rgba(29, 29, 31, 0.1));
   border-radius: 8px;
   outline: none;
   font-family: inherit;
-  color: #1d1d1f;
-  background: #fafafa;
+  color: var(--set-text-strong, #1d1d1f);
+  background: var(--set-field-bg, #fafafa);
   transition: border-color 0.15s, background 0.15s;
 }
 .btp-search:focus {
-  border-color: rgba(0, 113, 227, 0.5);
-  background: #fff;
+  border-color: var(--set-border-strong, rgba(29, 29, 31, 0.2));
+  background: var(--set-surface, #fff);
 }
 .btp-empty {
   padding: 24px 14px;
   text-align: center;
   font-size: 12px;
-  color: rgba(29, 29, 31, 0.4);
+  color: var(--set-text-subtle, rgba(29, 29, 31, 0.4));
 }
 .btp-group {
   padding: 8px 6px 4px;
   overflow-y: auto;
 }
 .btp-group + .btp-group {
-  border-top: 1px solid rgba(29, 29, 31, 0.05);
+  border-top: 1px solid var(--set-border-soft, rgba(29, 29, 31, 0.05));
 }
 .btp-group-label {
   margin: 0 0 4px;
@@ -235,7 +250,7 @@ function commitSel() {
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: rgba(29, 29, 31, 0.4);
+  color: var(--set-text-subtle, rgba(29, 29, 31, 0.4));
 }
 .btp-item {
   width: 100%;
@@ -253,7 +268,7 @@ function commitSel() {
 }
 .btp-item:hover,
 .btp-item.is-active {
-  background: rgba(0, 113, 227, 0.08);
+  background: var(--set-surface-hover, rgba(0, 0, 0, 0.05));
 }
 .btp-item-dot {
   width: 8px;
@@ -271,11 +286,11 @@ function commitSel() {
 .btp-item-label {
   font-size: 12.5px;
   font-weight: 600;
-  color: #1d1d1f;
+  color: var(--set-text-strong, #1d1d1f);
 }
 .btp-item-desc {
   font-size: 11px;
-  color: rgba(29, 29, 31, 0.5);
+  color: var(--set-text-muted, rgba(29, 29, 31, 0.5));
   line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;

@@ -10,7 +10,7 @@
           <SettingsToggleRow v-model="config.watcher.delete_after_process" title="处理后删除原文件" subtitle="谨慎开启，适合完全托管的目录。" />
         </div>
         <SettingsFieldCard label="扫描间隔（秒）">
-          <el-slider v-model="config.watcher.scan_interval" :min="10" :max="300" :step="10" show-input />
+          <SettingsRangeStepper v-model="config.watcher.scan_interval" :min="10" :max="300" :step="10" />
         </SettingsFieldCard>
       </div>
 
@@ -18,7 +18,7 @@
         <div class="card-title">处理与解压</div>
         <div class="field-stack">
           <SettingsFieldCard label="最大任务并发数">
-            <el-slider v-model="config.processing.max_workers" :min="1" :max="10" show-input />
+            <SettingsRangeStepper v-model="config.processing.max_workers" :min="1" :max="10" />
           </SettingsFieldCard>
           <SettingsFieldCard label="解压并发数（7z 子进程）">
             <div class="extract-concurrency-row">
@@ -87,7 +87,7 @@
           </SettingsFieldCard>
           <SettingsToggleRow v-model="config.extract.extract_nested_archives" title="自动解压嵌套压缩包" subtitle="适合复杂包结构，但会增加处理时长。" />
           <SettingsFieldCard v-if="config.extract.extract_nested_archives" label="最大嵌套深度">
-            <el-slider v-model="config.extract.max_nested_depth" :min="1" :max="10" show-input />
+            <SettingsRangeStepper v-model="config.extract.max_nested_depth" :min="1" :max="10" />
           </SettingsFieldCard>
         </div>
       </div>
@@ -117,6 +117,7 @@ import { HardDrive, HelpCircle, Zap } from 'lucide-vue-next'
 import SettingsFieldCard from './SettingsFieldCard.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
 import SettingsToggleChip from './SettingsToggleChip.vue'
+import SettingsRangeStepper from './SettingsRangeStepper.vue'
 import AppDropdown from '../common/AppDropdown.vue'
 import { systemApi } from '../../api'
 
@@ -308,7 +309,7 @@ const storageHintText = computed(() => {
   gap: 8px;
   flex-wrap: wrap;
   margin: 0 0 14px;
-  color: #1d1d1f;
+  color: var(--set-text-strong);
   font-size: 13.5px;
   font-weight: 600;
   letter-spacing: -0.1px;
@@ -331,23 +332,23 @@ const storageHintText = computed(() => {
   width: 100%;
   min-height: 38px;
   padding: 0 12px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
+  border: 1px solid var(--set-border);
   border-radius: 10px;
-  background: #ffffff;
-  color: #1d1d1f;
+  background: var(--set-field-bg);
+  color: var(--set-text-strong);
   font-size: 13.5px;
   outline: none;
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
-.field-input:hover { border-color: rgba(148, 163, 184, 0.75); }
+.field-input:hover { border-color: var(--set-border-strong); }
 
 .field-input:focus {
-  border-color: rgba(79, 70, 229, 0.5);
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+  border-color: var(--set-border-strong);
+  box-shadow: 0 0 0 3px var(--set-focus-ring);
 }
 
-.field-input::placeholder { color: #94a3b8; }
+.field-input::placeholder { color: var(--set-text-subtle); }
 
 .template-textarea {
   min-height: 86px;

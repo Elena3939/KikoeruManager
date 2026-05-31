@@ -42,22 +42,22 @@ const groupedBlocks = computed(() => {
 .blk-lib {
   width: 176px;
   flex-shrink: 0;
-  border-right: 1px solid rgba(29, 29, 31, 0.07);
-  background: #fafafa;
+  border-right: 1px solid var(--set-border-soft, rgba(29, 29, 31, 0.07));
+  background: var(--set-surface-soft, #fafafa);
   display: flex;
   flex-direction: column;
   overflow-y: auto;
 }
 .blk-lib-head {
   padding: 12px 14px 8px;
-  border-bottom: 1px solid rgba(29, 29, 31, 0.07);
+  border-bottom: 1px solid var(--set-border-soft, rgba(29, 29, 31, 0.07));
 }
 .blk-lib-title {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: rgba(29, 29, 31, 0.5);
+  color: var(--set-text-muted, rgba(29, 29, 31, 0.5));
 }
 .blk-lib-group {
   padding: 10px 8px 4px;
@@ -65,7 +65,7 @@ const groupedBlocks = computed(() => {
 .blk-lib-group-label {
   font-size: 10px;
   font-weight: 600;
-  color: rgba(29, 29, 31, 0.4);
+  color: var(--set-text-subtle, rgba(29, 29, 31, 0.4));
   letter-spacing: 0.05em;
   text-transform: uppercase;
   padding: 0 6px;
@@ -81,13 +81,13 @@ const groupedBlocks = computed(() => {
   border-radius: 8px;
   background: transparent;
   cursor: pointer;
-  color: #1d1d1f;
+  color: var(--set-text-strong, #1d1d1f);
   text-align: left;
   transition: background 0.15s;
   margin-bottom: 2px;
 }
 .blk-lib-item:hover {
-  background: rgba(0, 0, 0, 0.05);
+  background: var(--set-surface-hover, rgba(0, 0, 0, 0.05));
 }
 .blk-lib-item:hover .blk-lib-item-add {
   opacity: 1;
@@ -105,7 +105,7 @@ const groupedBlocks = computed(() => {
 }
 .blk-lib-item-add {
   opacity: 0;
-  color: #0071e3;
+  color: var(--set-text-muted, #64748b);
   transition: opacity 0.15s;
 }
 </style>

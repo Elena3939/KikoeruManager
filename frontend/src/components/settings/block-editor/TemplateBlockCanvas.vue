@@ -204,11 +204,11 @@ function toggleEnabled(id) {
 .blk-canvas {
   flex: 1;
   min-width: 0;
-  border-right: 1px solid rgba(29, 29, 31, 0.07);
+  border-right: 1px solid var(--set-border-soft, rgba(29, 29, 31, 0.07));
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #f5f5f7;
+  background: var(--set-surface-soft, #f5f5f7);
 }
 
 /* ── 空态 ── */
@@ -219,7 +219,7 @@ function toggleEnabled(id) {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  color: rgba(29, 29, 31, 0.3);
+  color: var(--set-text-subtle, rgba(29, 29, 31, 0.3));
   padding: 32px;
 }
 .blk-canvas-empty-illu {
@@ -229,19 +229,19 @@ function toggleEnabled(id) {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 113, 227, 0.06);
-  color: rgba(0, 113, 227, 0.55);
+  background: var(--set-surface-soft, rgba(0, 0, 0, 0.03));
+  color: var(--set-text-muted, rgba(29, 29, 31, 0.55));
   margin-bottom: 4px;
 }
 .blk-canvas-empty-title {
   font-size: 14px;
   font-weight: 600;
-  color: rgba(29, 29, 31, 0.65);
+  color: var(--set-text, rgba(29, 29, 31, 0.65));
   margin: 0;
 }
 .blk-canvas-empty-sub {
   font-size: 12px;
-  color: rgba(29, 29, 31, 0.4);
+  color: var(--set-text-subtle, rgba(29, 29, 31, 0.4));
   margin: 0;
   text-align: center;
   line-height: 1.6;
@@ -257,10 +257,11 @@ function toggleEnabled(id) {
 .blk-canvas-paper {
   max-width: 600px;
   margin: 0 auto;
-  background: #fff;
+  background: var(--set-surface, #fff);
+  border: 1px solid var(--set-border-soft, rgba(29, 29, 31, 0.07));
   border-radius: 16px;
   padding: 28px 32px;
-  box-shadow: 0 2px 20px rgba(0, 0, 0, 0.05);
+  box-shadow: none;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -278,19 +279,19 @@ function toggleEnabled(id) {
 }
 
 .blk-row:hover {
-  background: rgba(0, 113, 227, 0.04);
+  background: var(--set-surface-hover, rgba(0, 0, 0, 0.04));
 }
 
 .blk-row.is-selected {
-  background: rgba(0, 113, 227, 0.06);
-  box-shadow: 0 0 0 2px rgba(0, 113, 227, 0.32) inset;
+  background: var(--set-surface-muted, rgba(0, 0, 0, 0.06));
+  box-shadow: 0 0 0 2px var(--set-border-strong, rgba(29, 29, 31, 0.2)) inset;
 }
 
 .blk-row.is-disabled { opacity: 0.4; }
 .blk-row.is-dragging { opacity: 0.4; }
 .blk-row.is-drag-over {
-  box-shadow: 0 -2px 0 0 #0071e3 inset;
-  background: rgba(0, 113, 227, 0.05);
+  box-shadow: 0 -2px 0 0 var(--set-text-muted, #64748b) inset;
+  background: var(--set-surface-hover, rgba(0, 0, 0, 0.05));
 }
 
 /* 真实渲染区域（v-html 内容用 inline style） */
@@ -327,15 +328,15 @@ function toggleEnabled(id) {
   align-items: center;
   justify-content: center;
   border-radius: 6px;
-  color: rgba(29, 29, 31, 0.35);
+  color: var(--set-text-subtle, rgba(29, 29, 31, 0.35));
   cursor: grab;
   opacity: 0;
   transition: opacity 0.12s, background 0.12s;
   z-index: 5;
 }
 .blk-row-grip:hover {
-  background: rgba(0, 0, 0, 0.06);
-  color: #1d1d1f;
+  background: var(--set-surface-hover, rgba(0, 0, 0, 0.06));
+  color: var(--set-text-strong, #1d1d1f);
 }
 .blk-row-grip:active { cursor: grabbing; }
 .blk-row:hover .blk-row-grip,
@@ -351,7 +352,7 @@ function toggleEnabled(id) {
   transform: translateY(-50%);
   font-size: 10px;
   font-weight: 600;
-  color: rgba(29, 29, 31, 0.32);
+  color: var(--set-text-subtle, rgba(29, 29, 31, 0.32));
   font-family: ui-monospace, SFMono-Regular, monospace;
   opacity: 0;
   transition: opacity 0.12s;
@@ -369,11 +370,11 @@ function toggleEnabled(id) {
   font-size: 10px;
   font-weight: 600;
   color: var(--accent);
-  background: #fff;
+  background: color-mix(in srgb, var(--accent) 12%, var(--set-surface, #fff));
   padding: 2px 8px;
   border-radius: 99px;
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, #fff);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--set-border, rgba(29, 29, 31, 0.1)));
+  box-shadow: none;
   opacity: 0;
   transform: translateY(4px);
   transition: opacity 0.15s, transform 0.15s;
@@ -391,8 +392,8 @@ function toggleEnabled(id) {
 }
 .blk-row-off-pill {
   font-size: 9px;
-  color: rgba(29, 29, 31, 0.5);
-  background: rgba(29, 29, 31, 0.07);
+  color: var(--set-text-muted, rgba(29, 29, 31, 0.5));
+  background: var(--set-surface-muted, rgba(29, 29, 31, 0.07));
   padding: 1px 5px;
   border-radius: 99px;
   font-weight: 500;
@@ -407,10 +408,10 @@ function toggleEnabled(id) {
   display: flex;
   gap: 2px;
   padding: 3px;
-  background: #fff;
-  border: 1px solid rgba(29, 29, 31, 0.08);
+  background: var(--set-surface, #fff);
+  border: 1px solid var(--set-border, rgba(29, 29, 31, 0.08));
   border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  box-shadow: none;
   opacity: 0;
   transition: opacity 0.15s;
   z-index: 6;
@@ -429,17 +430,17 @@ function toggleEnabled(id) {
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: rgba(29, 29, 31, 0.55);
+  color: var(--set-text-muted, rgba(29, 29, 31, 0.55));
   cursor: pointer;
   transition: all 0.15s;
 }
 .blk-row-btn:hover {
-  background: rgba(0, 0, 0, 0.06);
-  color: #1d1d1f;
+  background: var(--set-surface-hover, rgba(0, 0, 0, 0.06));
+  color: var(--set-text-strong, #1d1d1f);
 }
 .blk-row-btn--danger:hover {
-  background: rgba(220, 50, 50, 0.08);
-  color: #dc3232;
+  background: var(--set-danger-bg, rgba(220, 50, 50, 0.08));
+  color: var(--set-danger-text, #dc3232);
 }
 
 /* ── 块间插入条 ── */
@@ -458,7 +459,7 @@ function toggleEnabled(id) {
 .blk-insert-line {
   width: 100%;
   height: 1px;
-  background: rgba(0, 113, 227, 0.55);
+  background: var(--set-text-muted, rgba(100, 116, 139, 0.55));
   opacity: 0;
   transition: opacity 0.12s;
 }
@@ -467,9 +468,9 @@ function toggleEnabled(id) {
   position: absolute;
   width: 22px;
   height: 22px;
-  border: 1px solid rgba(0, 113, 227, 0.4);
-  background: #fff;
-  color: #0071e3;
+  border: 1px solid var(--set-border-strong, rgba(29, 29, 31, 0.2));
+  background: var(--set-surface, #fff);
+  color: var(--set-text-strong, #1d1d1f);
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
@@ -479,11 +480,11 @@ function toggleEnabled(id) {
   transform: scale(0.85);
   transition: opacity 0.15s, transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.15s;
   z-index: 7;
-  box-shadow: 0 2px 8px rgba(0, 113, 227, 0.18);
+  box-shadow: none;
 }
 .blk-insert-btn:hover {
-  background: #0071e3;
-  color: #fff;
+  background: var(--set-primary-bg, #1d1d1f);
+  color: var(--set-primary-text, #fff);
 }
 
 .blk-insert-zone:hover .blk-insert-line { opacity: 1; }

@@ -238,8 +238,8 @@ defineExpose({
   flex-wrap: wrap;
   gap: 8px;
   padding: 10px 16px;
-  border-bottom: 1px solid rgba(29, 29, 31, 0.08);
-  background: #fafafa;
+  border-bottom: 1px solid var(--set-border);
+  background: var(--set-surface-soft);
   flex-shrink: 0;
 }
 /* 顶部主按钮：添加积木 */
@@ -250,26 +250,26 @@ defineExpose({
   padding: 6px 14px;
   font-size: 12.5px;
   font-weight: 600;
-  color: #fff;
-  background: #0071e3;
-  border: 1px solid #0071e3;
+  color: var(--set-primary-text, #fff);
+  background: var(--set-primary-bg, #1d1d1f);
+  border: 1px solid var(--set-primary-border, #1d1d1f);
   border-radius: 99px;
   cursor: pointer;
   transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
   flex-shrink: 0;
-  box-shadow: 0 1px 4px rgba(0, 113, 227, 0.3);
+  box-shadow: none;
 }
 .blk-add-main-btn:hover {
-  background: #0056b3;
-  border-color: #0056b3;
+  background: var(--set-primary-bg-hover);
+  border-color: var(--set-primary-border);
   transform: translateY(-1px) scale(1.02);
-  box-shadow: 0 4px 12px rgba(0, 113, 227, 0.4);
+  box-shadow: none;
 }
 .blk-add-main-btn:active { transform: scale(0.96); }
 
 .blk-toolbar-hint {
   font-size: 11.5px;
-  color: rgba(29, 29, 31, 0.5);
+  color: var(--set-text-muted);
   font-weight: 500;
   flex-shrink: 0;
 }
@@ -284,18 +284,18 @@ defineExpose({
   padding: 5px 12px;
   font-size: 12px;
   font-weight: 500;
-  color: #fff;
-  background: #1d1d1f;
-  border: 1px solid #1d1d1f;
+  color: var(--set-primary-text);
+  background: var(--set-primary-bg);
+  border: 1px solid var(--set-primary-border);
   border-radius: 99px;
   cursor: pointer;
   transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
   flex-shrink: 0;
 }
 .blk-fullscreen-btn:hover {
-  background: #000;
+  background: var(--set-primary-bg-hover);
   transform: translateY(-1px) scale(1.02);
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.18);
+  box-shadow: none;
 }
 .blk-fullscreen-btn:active:not(:disabled) { transform: scale(0.96); }
 .blk-fullscreen-btn:disabled {
@@ -318,8 +318,8 @@ defineExpose({
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-left: 1px solid rgba(29, 29, 31, 0.07);
-  background: #fff;
+  border-left: 1px solid var(--set-border);
+  background: var(--set-surface);
 }
 
 .blk-empty-hint {
@@ -329,7 +329,7 @@ defineExpose({
   align-items: center;
   justify-content: center;
   gap: 8px;
-  color: rgba(29, 29, 31, 0.35);
+  color: var(--set-text-muted);
   font-size: 12.5px;
   line-height: 1.6;
   text-align: center;
@@ -342,20 +342,20 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 113, 227, 0.06);
-  color: rgba(0, 113, 227, 0.55);
+  background: var(--set-surface-soft, rgba(0, 0, 0, 0.03));
+  color: var(--set-text-muted, rgba(29, 29, 31, 0.55));
   margin-bottom: 6px;
 }
 .blk-empty-hint-title {
   margin: 0;
   font-size: 13px;
   font-weight: 600;
-  color: rgba(29, 29, 31, 0.6);
+  color: var(--set-text);
 }
 .blk-empty-hint-sub {
   margin: 0;
   font-size: 11.5px;
-  color: rgba(29, 29, 31, 0.4);
+  color: var(--set-text-muted);
 }
 
 /* ── 全屏预览 dialog ── */
@@ -373,9 +373,10 @@ defineExpose({
 .blk-prev-panel {
   width: min(880px, 100%);
   max-height: calc(100vh - 64px);
-  background: #fff;
+  background: var(--set-surface);
+  border: 1px solid var(--set-border);
   border-radius: 16px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.25);
+  box-shadow: none;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -385,8 +386,8 @@ defineExpose({
   align-items: center;
   justify-content: space-between;
   padding: 14px 18px;
-  border-bottom: 1px solid rgba(29, 29, 31, 0.08);
-  background: #fafafa;
+  border-bottom: 1px solid var(--set-border);
+  background: var(--set-surface-soft);
 }
 .blk-prev-head-title {
   display: inline-flex;
@@ -394,21 +395,21 @@ defineExpose({
   gap: 8px;
   font-size: 13px;
   font-weight: 600;
-  color: #1d1d1f;
+  color: var(--set-text-strong);
 }
 .blk-prev-head-hint {
   font-size: 11px;
-  color: rgba(29, 29, 31, 0.45);
+  color: var(--set-text-muted);
   font-weight: 400;
   margin-left: 6px;
 }
 .blk-prev-close {
   width: 30px;
   height: 30px;
-  border: 1px solid rgba(29, 29, 31, 0.08);
+  border: 1px solid var(--set-border);
   border-radius: 8px;
-  background: #fff;
-  color: rgba(29, 29, 31, 0.6);
+  background: var(--set-surface);
+  color: var(--set-text-muted);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -416,8 +417,9 @@ defineExpose({
   transition: all 0.15s;
 }
 .blk-prev-close:hover {
-  border-color: rgba(29, 29, 31, 0.18);
-  color: #1d1d1f;
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
+  color: var(--set-text-strong);
 }
 .blk-prev-body {
   flex: 1;

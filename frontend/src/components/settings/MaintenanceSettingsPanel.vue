@@ -9,10 +9,10 @@
           <SettingsToggleRow v-model="config.password_cleanup.enabled" title="启用自动清理" subtitle="按使用次数和保留天数自动清理密码库。" />
           <div class="mini-grid two">
             <SettingsFieldCard label="使用次数阈值">
-              <el-slider v-model="config.password_cleanup.max_use_count" :min="0" :max="10" show-input />
+              <SettingsRangeStepper v-model="config.password_cleanup.max_use_count" :min="0" :max="10" />
             </SettingsFieldCard>
             <SettingsFieldCard label="保留天数">
-              <el-slider v-model="config.password_cleanup.preserve_days" :min="1" :max="90" show-input />
+              <SettingsRangeStepper v-model="config.password_cleanup.preserve_days" :min="1" :max="90" />
             </SettingsFieldCard>
           </div>
           <SettingsFieldCard label="Cron 表达式">
@@ -27,10 +27,10 @@
           <SettingsToggleRow v-model="config.archive_cleanup.enabled" title="启用自动清理" subtitle="按天数和保底数量控制已处理压缩包规模。" />
           <div class="mini-grid two">
             <SettingsFieldCard label="保留天数">
-              <el-slider v-model="config.archive_cleanup.preserve_days" :min="1" :max="90" show-input />
+              <SettingsRangeStepper v-model="config.archive_cleanup.preserve_days" :min="1" :max="90" />
             </SettingsFieldCard>
             <SettingsFieldCard label="最小保留数量">
-              <el-input-number v-model="config.archive_cleanup.min_keep_count" :min="0" :max="100" class="field-number" />
+              <SettingsNumberStepper v-model="config.archive_cleanup.min_keep_count" :min="0" :max="100" />
             </SettingsFieldCard>
           </div>
           <SettingsFieldCard label="Cron 表达式">
@@ -65,7 +65,7 @@
               />
             </SettingsFieldCard>
             <SettingsFieldCard label="压缩级别">
-              <el-input-number v-model="config.backup_zip.compression_level" :min="0" :max="9" class="field-number" />
+              <SettingsNumberStepper v-model="config.backup_zip.compression_level" :min="0" :max="9" />
             </SettingsFieldCard>
           </div>
           <SettingsToggleRow v-model="config.backup_zip.copy_structure_before_zip" title="复制结构后再压缩" subtitle="先生成中转目录再做归档，更适合复杂结构。" />
@@ -77,6 +77,8 @@
 
 <script setup>
 import SettingsFieldCard from './SettingsFieldCard.vue'
+import SettingsNumberStepper from './SettingsNumberStepper.vue'
+import SettingsRangeStepper from './SettingsRangeStepper.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
 import AppDropdown from '../common/AppDropdown.vue'
 import DatabaseShrinkCard from './DatabaseShrinkCard.vue'
@@ -135,7 +137,7 @@ const archiveFormatOptions = [
   gap: 8px;
   flex-wrap: wrap;
   margin: 0 0 14px;
-  color: #1d1d1f;
+  color: var(--set-text-strong);
   font-size: 13.5px;
   font-weight: 600;
   letter-spacing: -0.1px;
@@ -145,42 +147,23 @@ const archiveFormatOptions = [
   width: 100%;
   min-height: 38px;
   padding: 0 12px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
+  border: 1px solid var(--set-border);
   border-radius: 10px;
-  background: #ffffff;
-  color: #1d1d1f;
+  background: var(--set-field-bg);
+  color: var(--set-text-strong);
   font-size: 13.5px;
   outline: none;
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
-.field-input:hover { border-color: rgba(148, 163, 184, 0.75); }
+.field-input:hover { border-color: var(--set-border-strong); }
 
 .field-input:focus {
-  border-color: rgba(79, 70, 229, 0.5);
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+  border-color: var(--set-border-strong);
+  box-shadow: 0 0 0 3px var(--set-focus-ring);
 }
 
-.field-input::placeholder { color: #94a3b8; }
-
-.field-number :deep(.el-input__wrapper) {
-  min-height: 38px;
-  border-radius: 10px;
-  background: #ffffff;
-  box-shadow: none;
-  border: 1px solid rgba(226, 232, 240, 0.85) !important;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease;
-}
-
-.field-number :deep(.el-input__wrapper:hover) {
-  border-color: rgba(148, 163, 184, 0.75) !important;
-  box-shadow: none;
-}
-
-.field-number :deep(.el-input__wrapper.is-focus) {
-  border-color: rgba(79, 70, 229, 0.5) !important;
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1) !important;
-}
+.field-input::placeholder { color: var(--set-text-subtle); }
 
 /* AppDropdown 收敛 */
 .settings-field-dd {
@@ -199,19 +182,19 @@ const archiveFormatOptions = [
   height: 38px;
   padding: 0 12px;
   border-radius: 10px;
-  background: #ffffff;
-  border: 1px solid rgba(226, 232, 240, 0.85);
+  background: var(--set-field-bg);
+  border: 1px solid var(--set-border);
   font-size: 13.5px;
   justify-content: space-between;
 }
 
 .settings-field-dd :deep(.app-dd-trigger:hover) {
-  border-color: rgba(148, 163, 184, 0.75);
+  border-color: var(--set-border-strong);
 }
 
 .settings-field-dd :deep(.app-dd-trigger.is-open) {
-  border-color: rgba(79, 70, 229, 0.55);
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+  border-color: var(--set-border-strong);
+  box-shadow: 0 0 0 3px var(--set-focus-ring);
 }
 
 @media (max-width: 1200px) {
