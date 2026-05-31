@@ -1,7 +1,7 @@
 <template>
   <aside
-    class="subtitle-context-drawer relative grid min-h-0 self-start rounded-[20px] border border-slate-100 bg-white shadow-[0_4px_16px_rgba(15,23,42,0.04)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
-    :class="ctx.drawerCollapsed ? 'gap-2 px-2 py-2.5' : 'gap-3 px-3 py-3'"
+    class="subtitle-context-drawer relative grid h-full min-h-0 overflow-hidden rounded-[18px] border border-slate-100 bg-white transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+    :class="ctx.drawerCollapsed ? 'content-start gap-2 px-2 py-2.5' : 'grid-rows-[auto_auto_minmax(0,1fr)] gap-2 px-2 py-2'"
   >
     <!-- 浮动收纳手柄 -->
     <button
@@ -29,16 +29,15 @@
           v-for="item in ctx.modeOptions"
           :key="item.key"
           type="button"
-          class="group relative inline-flex h-10 w-10 items-center justify-center self-center rounded-[10px] border text-slate-500 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.06] active:scale-[0.94]"
-          :class="ctx.contextMode === item.key
-            ? 'border-slate-900 bg-slate-900 text-white shadow-[0_6px_14px_rgba(15,23,42,0.2)]'
-            : 'border-slate-100 bg-white hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 hover:shadow-[0_4px_12px_rgba(15,23,42,0.06)]'"
+          class="subtitle-context-tab subtitle-context-tab-collapsed group relative inline-flex h-10 w-10 items-center justify-center self-center rounded-[10px] border text-slate-500 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.06] active:scale-[0.94]"
+          :class="[getModeToneClass(item), ctx.contextMode === item.key ? 'is-active' : 'is-idle']"
           :title="item.label"
+          :aria-pressed="ctx.contextMode === item.key"
           @click="ctx.setContextMode(item.key)"
         >
           <component
             :is="iconMap[item.icon]"
-            class="h-4 w-4 shrink-0 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+            class="subtitle-context-tab-icon h-4 w-4 shrink-0 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
             :class="ctx.contextMode === item.key
               ? 'opacity-100 group-hover:-translate-y-0.5 group-hover:scale-[1.14] group-hover:rotate-[10deg]'
               : 'opacity-85 group-hover:opacity-100 group-hover:-translate-y-0.5 group-hover:rotate-[8deg] group-hover:scale-110'"
@@ -46,7 +45,7 @@
           />
           <span
             v-if="ctx.contextMode === item.key"
-            class="absolute left-[-4px] top-1/2 h-5 w-1 -translate-y-1/2 rounded-full bg-slate-900"
+            class="subtitle-context-tab-mark absolute left-[-4px] top-1/2 h-5 w-1 -translate-y-1/2 rounded-full"
           ></span>
         </button>
       </div>
@@ -56,30 +55,29 @@
     <template v-else>
       <div class="min-w-0">
         <div class="text-[13px] font-semibold tracking-[-0.01em] text-slate-900">{{ ctx.modeTitle }}</div>
-        <div class="mt-1 line-clamp-1 text-[11.5px] leading-5 text-slate-500">{{ ctx.modeTip }}</div>
+        <div class="mt-0.5 line-clamp-1 text-[11px] leading-4 text-slate-500">{{ ctx.modeTip }}</div>
       </div>
 
-      <div class="flex gap-1 rounded-[12px] border border-slate-200 bg-slate-100/80 p-1" style="position: relative; z-index: 60; pointer-events: auto; isolation: isolate;">
+      <div class="subtitle-context-tabs flex gap-1 rounded-[11px] border border-slate-200 bg-slate-100/80 p-0.5" style="position: relative; z-index: 60; pointer-events: auto; isolation: isolate;">
         <button
           v-for="item in ctx.modeOptions"
           :key="item.key"
           type="button"
-          class="group flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-[8px] px-3 py-1.5 text-[12px] font-semibold transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
-          :class="ctx.contextMode === item.key
-            ? 'bg-slate-900 text-white shadow-[0_4px_12px_rgba(15,23,42,0.22)] scale-[1.02]'
-            : 'text-slate-600 hover:bg-white hover:text-slate-900 hover:shadow-[0_2px_6px_rgba(15,23,42,0.06)]'"
+          class="subtitle-context-tab subtitle-context-tab-wide group flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-[8px] px-2 py-1 text-[11.5px] font-semibold transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+          :class="[getModeToneClass(item), ctx.contextMode === item.key ? 'is-active' : 'is-idle']"
+          :aria-pressed="ctx.contextMode === item.key"
           @click="ctx.setContextMode(item.key)"
         >
           <component
             :is="iconMap[item.icon]"
-            class="h-[13px] w-[13px] shrink-0 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] opacity-90 group-hover:opacity-100 group-hover:-translate-y-0.5 group-hover:rotate-[12deg] group-hover:scale-[1.18]"
+            class="subtitle-context-tab-icon h-[13px] w-[13px] shrink-0 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] opacity-90 group-hover:opacity-100 group-hover:-translate-y-0.5 group-hover:rotate-[12deg] group-hover:scale-[1.18]"
             :stroke-width="2.4"
           />
           <span>{{ item.label }}</span>
         </button>
       </div>
 
-      <div class="subtitle-workbench-scrollbar min-h-0 overflow-auto pt-0.5">
+      <div class="min-h-0 overflow-hidden pt-0.5">
         <slot />
       </div>
     </template>
@@ -90,6 +88,15 @@
 import { ChevronsLeft, ChevronsRight, Sliders, Link2, FolderTree } from 'lucide-vue-next'
 
 const iconMap = { Sliders, Link2, FolderTree }
+const modeToneClass = {
+  settings: 'tone-settings',
+  pairing: 'tone-pairing',
+  tree: 'tone-tree'
+}
+
+function getModeToneClass(item) {
+  return modeToneClass[item?.key] || 'tone-settings'
+}
 
 defineProps({
   ctx: {
@@ -195,21 +202,79 @@ defineProps({
   opacity: 1;
 }
 
+.subtitle-context-tabs {
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.02);
+}
+
+.subtitle-context-tab {
+  --tab-accent: #64748b;
+  --tab-accent-soft: rgba(100, 116, 139, 0.12);
+  --tab-accent-border: rgba(100, 116, 139, 0.26);
+  border-color: #e2e8f0;
+  background: #ffffff;
+  color: #64748b;
+  box-shadow: none;
+}
+
+.subtitle-context-tab.tone-settings {
+  --tab-accent: #d97706;
+  --tab-accent-soft: rgba(245, 158, 11, 0.16);
+  --tab-accent-border: rgba(217, 119, 6, 0.34);
+}
+
+.subtitle-context-tab.tone-pairing {
+  --tab-accent: #059669;
+  --tab-accent-soft: rgba(16, 185, 129, 0.16);
+  --tab-accent-border: rgba(5, 150, 105, 0.34);
+}
+
+.subtitle-context-tab.tone-tree {
+  --tab-accent: #7c3aed;
+  --tab-accent-soft: rgba(124, 58, 237, 0.15);
+  --tab-accent-border: rgba(124, 58, 237, 0.34);
+}
+
+.subtitle-context-tab.is-idle {
+  background: transparent;
+  border-color: transparent;
+}
+
+.subtitle-context-tab.is-idle .subtitle-context-tab-icon {
+  color: var(--tab-accent);
+}
+
+.subtitle-context-tab.is-idle:hover {
+  background: #ffffff;
+  border-color: var(--tab-accent-border);
+  color: #0f172a;
+  box-shadow: none;
+}
+
+.subtitle-context-tab.is-active {
+  background: var(--tab-accent-soft);
+  border-color: var(--tab-accent-border);
+  color: #0f172a;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.72);
+  transform: scale(1.02);
+}
+
+.subtitle-context-tab.is-active .subtitle-context-tab-icon {
+  color: var(--tab-accent);
+}
+
+.subtitle-context-tab-mark {
+  background: var(--tab-accent);
+}
+
 :global(html.kikoerumanager-dark) .subtitle-context-drawer {
-  background:
-    linear-gradient(180deg, rgba(45, 46, 51, 0.58), rgba(13, 14, 18, 0.84)),
-    rgba(18, 19, 23, 0.78) !important;
-  background-image: linear-gradient(180deg, rgba(45, 46, 51, 0.58), rgba(13, 14, 18, 0.84)) !important;
+  background: #111216 !important;
+  background-image: none !important;
   border-color: rgba(255, 255, 255, 0.14) !important;
   color: rgba(244, 244, 245, 0.9) !important;
   box-shadow: none !important;
   text-shadow: none !important;
-  backdrop-filter: blur(12px) saturate(106%) !important;
-  -webkit-backdrop-filter: blur(12px) saturate(106%) !important;
-}
-
-:global(html.kikoerumanager-dark) .subtitle-context-drawer .subtitle-workbench-scrollbar {
-  max-height: calc(100vh - 168px) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
 :global(html.kikoerumanager-dark) .subtitle-context-drawer .text-slate-900 {
@@ -220,29 +285,41 @@ defineProps({
   color: rgba(214, 214, 220, 0.66) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-context-drawer > .flex {
+:global(html.kikoerumanager-dark) .subtitle-context-drawer .subtitle-context-tabs {
   background: #24252a !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.14) !important;
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-context-drawer > .flex button {
+:global(html.kikoerumanager-dark) .subtitle-context-drawer .subtitle-context-tab {
   color: rgba(214, 214, 220, 0.76) !important;
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-context-drawer > .flex button:hover {
+:global(html.kikoerumanager-dark) .subtitle-context-drawer .subtitle-context-tab.is-idle {
+  background: transparent !important;
+  border-color: transparent !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-context-drawer .subtitle-context-tab.is-idle:hover {
   background: #303136 !important;
+  border-color: var(--tab-accent-border) !important;
   color: rgba(250, 250, 252, 0.96) !important;
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-context-drawer > .flex button.bg-slate-900,
-:global(html.kikoerumanager-dark) .subtitle-context-drawer > .flex button[class*="bg-slate-900"] {
-  background: #4a4b51 !important;
+:global(html.kikoerumanager-dark) .subtitle-context-drawer .subtitle-context-tab.is-active {
+  background: color-mix(in srgb, var(--tab-accent) 28%, #24252a) !important;
+  border-color: var(--tab-accent-border) !important;
   color: #ffffff !important;
+  outline: 1px solid rgba(255, 255, 255, 0.22) !important;
+  outline-offset: -1px !important;
   box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-context-drawer .subtitle-context-tab-icon {
+  color: var(--tab-accent) !important;
 }
 
 :global(html.kikoerumanager-dark) .subtitle-context-drawer .rail-handle {

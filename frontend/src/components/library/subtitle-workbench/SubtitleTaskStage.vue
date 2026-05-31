@@ -1,14 +1,10 @@
 <template>
-  <component
-    :is="immersive ? 'div' : 'el-card'"
-    :shadow="immersive ? undefined : 'never'"
-    :class="immersive ? 'grid min-w-0 gap-3' : 'subtitle-task-card'"
-  >
-    <template v-if="!immersive" #header>
+  <section :class="immersive ? 'subtitle-task-stage-root grid min-h-0 min-w-0 gap-3 overflow-hidden' : 'subtitle-task-card'">
+    <header v-if="!immersive" class="subtitle-task-card-head">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
           <div class="flex items-center gap-2 text-[14px] font-semibold text-slate-900">
-            <ListTodo class="h-4 w-4 text-indigo-500" :stroke-width="2.1" />
+            <ListTodo class="h-4 w-4 text-violet-500" :stroke-width="2.1" />
             <span>最近字幕任务</span>
           </div>
           <p class="mt-1 text-[12px] leading-relaxed text-slate-500">上面展示当前选中任务的详情，下面保留完整任务队列。运行中任务也会留在队列里，当前查看项会高亮。</p>
@@ -20,34 +16,29 @@
           <span class="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-900">
             <Sparkles class="h-3 w-3 text-amber-500" :stroke-width="2.2" />可清理 {{ ctx.subtitleClearableTaskCounts.finished }}
           </span>
-          <el-dropdown
-            trigger="click"
-            :disabled="!ctx.subtitleClearableTaskCounts.finished || Boolean(ctx.subtitleBulkClearingScope)"
-            @command="ctx.clearSubtitleTasksByScope"
-          >
+          <div class="subtitle-clear-menu" @mouseleave="clearMenuOpen = false">
             <button
               type="button"
               class="group inline-flex items-center gap-1.5 whitespace-nowrap rounded-[10px] border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-medium text-slate-900 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 hover:shadow-[0_4px_12px_rgba(15,23,42,0.08)] active:translate-y-0 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:scale-100"
               :disabled="!ctx.subtitleClearableTaskCounts.finished || Boolean(ctx.subtitleBulkClearingScope)"
+              @click="clearMenuOpen = !clearMenuOpen"
             >
               <Trash2 class="h-3.5 w-3.5 text-rose-500 transition-transform duration-300 group-hover:scale-110 group-hover:rotate-[-6deg]" :stroke-width="2.1" />
               <span>一键清空任务</span>
               <ChevronDown class="h-3 w-3 transition-transform duration-300 group-hover:translate-y-0.5" :stroke-width="2.2" />
             </button>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item command="completed" :disabled="!ctx.subtitleClearableTaskCounts.completed">清空成功 {{ ctx.subtitleClearableTaskCounts.completed }}</el-dropdown-item>
-                <el-dropdown-item command="failed" :disabled="!ctx.subtitleClearableTaskCounts.failed">清空失败 {{ ctx.subtitleClearableTaskCounts.failed }}</el-dropdown-item>
-                <el-dropdown-item command="finished" :disabled="!ctx.subtitleClearableTaskCounts.finished">清空全部已结束 {{ ctx.subtitleClearableTaskCounts.finished }}</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
+            <div v-if="clearMenuOpen" class="subtitle-clear-menu-panel">
+              <button type="button" :disabled="!ctx.subtitleClearableTaskCounts.completed" @click="clearTasksByScope('completed')">清空成功 {{ ctx.subtitleClearableTaskCounts.completed }}</button>
+              <button type="button" :disabled="!ctx.subtitleClearableTaskCounts.failed" @click="clearTasksByScope('failed')">清空失败 {{ ctx.subtitleClearableTaskCounts.failed }}</button>
+              <button type="button" :disabled="!ctx.subtitleClearableTaskCounts.finished" @click="clearTasksByScope('finished')">清空全部已结束 {{ ctx.subtitleClearableTaskCounts.finished }}</button>
+            </div>
+          </div>
         </div>
       </div>
-    </template>
+    </header>
 
     <AppEmptyState v-if="showOverview && !ctx.visibleSubtitleTasks.length" description="暂无字幕任务" size="sm" />
-    <div v-else class="grid min-w-0 gap-3">
+    <div v-else class="subtitle-task-stage-scroll grid min-h-0 min-w-0 gap-3 overflow-auto">
       <!-- Active task log panel -->
       <div
         v-if="showOverview && ctx.activeSubtitleTask"
@@ -125,7 +116,7 @@
               {{ ctx.activeSubtitleTask.progress_log?.length || 0 }} 条
             </span>
           </div>
-          <div v-if="ctx.activeSubtitleTaskProgressLogs.length" class="subtitle-workbench-scrollbar max-h-[300px] overflow-auto px-3 py-3">
+          <div v-if="ctx.activeSubtitleTaskProgressLogs.length" class="subtitle-workbench-scrollbar max-h-[220px] overflow-auto px-3 py-3">
             <TransitionGroup tag="div" name="sub-log-item" class="task-log-stream">
               <div
                 v-for="(entry, idx) in ctx.activeSubtitleTaskProgressLogs"
@@ -163,7 +154,7 @@
       <div v-if="showQueue && !immersive" class="flex items-start justify-between gap-3">
         <div class="min-w-0">
           <div class="flex items-center gap-1.5 text-[13px] font-semibold text-slate-900">
-            <Layers class="h-3.5 w-3.5 text-indigo-500" :stroke-width="2.2" />
+            <Layers class="h-3.5 w-3.5 text-violet-500" :stroke-width="2.2" />
             <span>任务队列</span>
           </div>
           <p class="mt-1 text-[11.5px] leading-relaxed text-slate-500">包含正在处理中的任务和历史任务，当前查看项会高亮。</p>
@@ -265,7 +256,7 @@
                 <Download class="h-2.5 w-2.5 text-sky-500" :stroke-width="2.4" />下载 {{ task.downloaded_count || ctx.getSubtitleDownloadFiles(task).length }}
               </span>
               <span class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10.5px] font-medium text-slate-900">
-                <Link2 class="h-2.5 w-2.5 text-indigo-500" :stroke-width="2.4" />匹配 {{ ctx.getSubtitleMatchedPairCount(task) || 0 }}
+                <Link2 class="h-2.5 w-2.5 text-violet-500" :stroke-width="2.4" />匹配 {{ ctx.getSubtitleMatchedPairCount(task) || 0 }}
               </span>
               <span class="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10.5px] font-medium text-slate-900">
                 <FileCheck class="h-2.5 w-2.5 text-emerald-500" :stroke-width="2.4" />写入 {{ ctx.getSubtitleAppliedWrittenFiles(task).length || 0 }}
@@ -305,11 +296,11 @@
         </button>
       </TransitionGroup>
     </div>
-  </component>
+  </section>
 </template>
 
 <script setup>
-import { computed, nextTick, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import {
   Activity, CheckCheck, CheckCircle2, ChevronDown, CircleDot, CircleSlash,
   Clock, Download, Eye, FileCheck, FileDown, FileUp, Filter, Folder, FolderOpen, Hand, History,
@@ -374,6 +365,7 @@ const ctx = computed(() => ({
   ...defaultCtx,
   ...(props.ctx || {})
 }))
+const clearMenuOpen = ref(false)
 
 const showOverview = computed(() => ['full', 'overview'].includes(props.mode))
 const showQueue = computed(() => ['full', 'queue'].includes(props.mode))
@@ -385,6 +377,11 @@ const railRefs = new Map()
 function registerRailRef(id, el) {
   if (el) railRefs.set(id, el)
   else railRefs.delete(id)
+}
+
+function clearTasksByScope(scope) {
+  clearMenuOpen.value = false
+  ctx.value?.clearSubtitleTasksByScope?.(scope)
 }
 
 let scrollRafId = 0
@@ -493,11 +490,11 @@ function getTaskLogTone(entry = {}) {
   const kind = getTaskLogKind(entry)
   const tones = {
     download: { dot: 'bg-sky-500', icon: 'text-sky-600', label: 'border-sky-200 text-sky-700' },
-    upload: { dot: 'bg-indigo-500', icon: 'text-indigo-600', label: 'border-indigo-200 text-indigo-700' },
+    upload: { dot: 'bg-violet-500', icon: 'text-violet-600', label: 'border-violet-200 text-violet-700' },
     write: { dot: 'bg-emerald-500', icon: 'text-emerald-600', label: 'border-emerald-200 text-emerald-700' },
     postprocess: { dot: 'bg-teal-500', icon: 'text-teal-600', label: 'border-teal-200 text-teal-700' },
     source: { dot: 'bg-violet-500', icon: 'text-violet-600', label: 'border-violet-200 text-violet-700' },
-    search: { dot: 'bg-blue-500', icon: 'text-blue-600', label: 'border-blue-200 text-blue-700' },
+    search: { dot: 'bg-slate-500', icon: 'text-slate-600', label: 'border-slate-200 text-slate-700' },
     match: { dot: 'bg-cyan-500', icon: 'text-cyan-600', label: 'border-cyan-200 text-cyan-700' },
     filter: { dot: 'bg-amber-500', icon: 'text-amber-600', label: 'border-amber-200 text-amber-700' },
     success: { dot: 'bg-emerald-500', icon: 'text-emerald-600', label: 'border-emerald-200 text-emerald-700' },
@@ -736,7 +733,7 @@ function getTaskMetaItems(task) {
       label: '来源模式',
       value: sourceModeLabel,
       icon: Layers,
-      iconClass: 'text-indigo-500'
+      iconClass: 'text-violet-500'
     })
   }
 
@@ -815,17 +812,74 @@ function getTaskMetaItems(task) {
   border-radius: 14px;
   border: 1px solid rgb(226 232 240 / 0.8);
   background: #fff;
+  padding: 14px 16px;
 }
 
-.subtitle-task-card :deep(.el-card__header) {
-  padding: 14px 16px;
+.subtitle-task-card-head {
+  padding-bottom: 14px;
   border-bottom: 1px solid rgb(226 232 240 / 0.8);
 }
 
-.subtitle-task-card :deep(.el-card__body) {
+.subtitle-task-stage-root {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.subtitle-task-stage-scroll {
+  padding-right: 2px;
+  scrollbar-gutter: stable;
+}
+
+.subtitle-task-stage-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.subtitle-task-stage-scroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.36);
+}
+
+.subtitle-clear-menu {
+  position: relative;
+}
+
+.subtitle-clear-menu-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 40;
   display: grid;
-  gap: 12px;
-  padding: 14px 16px;
+  min-width: 180px;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.12);
+}
+
+.subtitle-clear-menu-panel button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  padding: 0 10px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.subtitle-clear-menu-panel button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.subtitle-clear-menu-panel button:disabled {
+  color: #94a3b8;
+  cursor: not-allowed;
 }
 
 /* Horizontal rail item transitions */

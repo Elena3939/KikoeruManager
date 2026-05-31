@@ -1,348 +1,150 @@
 <template>
-  <div class="import-workbench-modal">
-    
-    <div class="subtitle-workbench-shell relative flex w-full min-h-[78vh] max-h-[92vh] flex-col overflow-hidden rounded-[20px] border border-slate-200/80 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.1)]">
-      <header class="subtitle-workbench-header relative flex items-center justify-between gap-4 px-6 py-4 flex-shrink-0 border-b border-slate-100 bg-white">
-        <div class="flex items-center gap-3.5 min-w-0">
-          <div class="subtitle-workbench-brand group flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-[12px] border border-slate-200 bg-slate-900 text-white shadow-[0_4px_12px_rgba(15,23,42,0.18)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:shadow-[0_8px_20px_rgba(15,23,42,0.28)]">
-            <Captions class="h-[18px] w-[18px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110 group-hover:rotate-[-4deg]" :stroke-width="2.1" />
+  <div class="subtitle-import-workbench">
+    <section class="siw-shell" aria-label="字幕补配工作台">
+      <header class="siw-header">
+        <div class="siw-title-wrap">
+          <div class="siw-brand" aria-hidden="true">
+            <Captions class="siw-brand-icon" :stroke-width="2.15" />
           </div>
-          <div class="min-w-0">
-            <div class="flex items-center gap-2">
-              <h2 class="text-[17px] font-semibold tracking-[-0.02em] leading-tight text-slate-900">字幕补配工作台</h2>
-              <span class="inline-flex items-center gap-1 rounded-full border border-emerald-200/70 bg-emerald-50 px-2 py-0.5 text-[10.5px] font-medium text-emerald-700">
-                <span class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>Live
+          <div class="siw-title-copy">
+            <div class="siw-title-line">
+              <h2>字幕补配工作台</h2>
+              <span class="siw-live-pill"><span></span>Live</span>
+            </div>
+            <div class="siw-focus-row">
+              <span class="siw-focus-code">{{ activeTask ? getTaskDisplayRJCode(activeTask) : '等待任务' }}</span>
+              <span class="siw-focus-name">
+                {{ activeTask ? (activeTask.folder_name || getFileName(activeTask.folder_path) || getTaskStatusLabel(activeTask)) : '队列、筛选、配对和字幕树上下文会保留在这里' }}
               </span>
             </div>
-            <p class="mt-0.5 text-[11.5px] leading-snug text-slate-500 truncate">沉浸式单舞台工作台，焦点只保留当前阶段、当前任务和当前操作。</p>
           </div>
         </div>
-        <div class="flex items-center gap-2 flex-shrink-0">
+
+        <div class="siw-actions" aria-label="工作台操作">
           <button
             type="button"
-            class="subtitle-workbench-btn group inline-flex items-center gap-1.5 rounded-[10px] border border-slate-200 bg-white px-3.5 py-2 text-[12.5px] font-medium text-slate-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 hover:shadow-[0_8px_16px_rgba(15,23,42,0.08)] active:translate-y-0 active:scale-[0.96]"
-            @click="emit('hide-background')"
+            class="siw-action-btn"
+            :disabled="manualRefreshing || taskRefreshing"
+            title="刷新状态"
+            @click="refreshTaskStatus(true, { inspect: true, forceInspect: true, showOverlay: false })"
           >
-            <Minimize2 class="h-[13px] w-[13px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110 group-hover:rotate-[-8deg]" :stroke-width="2.2" />
-            <span>隐藏到后台</span>
+            <RefreshCw class="siw-action-icon" :class="{ 'is-spinning': manualRefreshing || taskRefreshing }" :stroke-width="2.3" />
+            <span>刷新</span>
           </button>
           <button
             type="button"
-            class="subtitle-workbench-btn subtitle-workbench-btn-close group inline-flex items-center gap-1.5 rounded-[10px] border border-rose-200/70 bg-rose-50/70 px-3.5 py-2 text-[12.5px] font-medium text-rose-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 hover:shadow-[0_8px_16px_rgba(225,29,72,0.16)] active:translate-y-0 active:scale-[0.96]"
+            class="siw-action-btn"
+            :disabled="!clearableTaskCount || queueClearing"
+            title="清空已结束、失败或待配对任务"
+            @click="clearFinishedTasks"
+          >
+            <Trash2 class="siw-action-icon" :class="{ 'is-spinning': queueClearing }" :stroke-width="2.3" />
+            <span>清空</span>
+          </button>
+          <button
+            type="button"
+            class="siw-action-btn"
+            title="隐藏到后台"
+            @click="emit('hide-background')"
+          >
+            <Minimize2 class="siw-action-icon" :stroke-width="2.3" />
+            <span>后台</span>
+          </button>
+          <button
+            type="button"
+            class="siw-action-btn is-close"
             :disabled="workbenchClosing"
+            title="关闭并清理已结束任务"
             @click="closeWorkbenchAndCleanupCompleted"
           >
-            <X class="h-[13px] w-[13px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110 group-hover:rotate-90" :class="{ 'animate-spin': workbenchClosing }" :stroke-width="2.4" />
+            <component :is="workbenchClosing ? Loader2 : X" class="siw-action-icon" :class="{ 'is-spinning': workbenchClosing }" :stroke-width="2.4" />
             <span>关闭</span>
           </button>
         </div>
       </header>
-      <!-- 加载遮罩仅覆盖 body 区，避免遮住 header 里的「隐藏到后台」/「关闭」按钮 -->
-      <div
-        class="subtitle-workbench-body subtitle-workbench-scrollbar flex-1 min-h-0 overflow-auto bg-gradient-to-b from-[#fafcff] via-white to-[#f6f8ff] p-4"
+
+      <main
+        class="siw-stage-wrap"
         v-app-loading="{ loading: workbenchLoading, text: '正在整理字幕工作台...', description: '同步批次、候选字幕和配对状态', size: 136 }"
       >
         <SubtitleWorkbenchStage :ctx="subtitleWorkbenchStageCtx" />
-      </div>
-    </div>
-    <div v-if="false" class="import-workbench-head">
-      <div>
-        <div class="import-workbench-title">字幕补配工作台</div>
-        <div class="import-workbench-desc">工作台会保留补配历史，不会因为完成、失败或临时关闭而自动清空。你可以随时回来继续处理或回看结果。</div>
-      </div>
-      <div class="import-workbench-actions">
-        <el-button size="small" :loading="manualRefreshing" @click="refreshTaskStatus(true, { inspect: true, forceInspect: true, showOverlay: false })">刷新状态</el-button>
-        <el-button size="small" :disabled="!clearableTaskCount" :loading="queueClearing" @click="clearFinishedTasks">清空队列</el-button>
-        <el-button size="small" @click="emit('hide-background')">隐藏到后台</el-button>
-        <el-button size="small" @click="emit('close')">关闭工作台</el-button>
-      </div>
-    </div>
-    <div v-if="false" class="import-workbench-toolbar">
-      <div class="import-toolbar-stats">
-        <span class="toolbar-pill">全部 {{ linkedTasks.length }}</span>
-        <span class="toolbar-pill toolbar-pill-primary">进行中 {{ processingTaskCount }}</span>
-        <span class="toolbar-pill toolbar-pill-success">已完成 {{ completedTaskCount }}</span>
-        <span class="toolbar-pill toolbar-pill-danger">失败 {{ failedTaskCount }}</span>
-      </div>
-      <div class="import-toolbar-tip">仅手动清理已完成或已失败任务，进行中的任务会继续保留。</div>
-    </div>
+      </main>
+    </section>
 
-    <div v-if="false" class="import-workbench-body">
-      <section class="import-task-list-card">
-        <div class="import-task-list-head">
-          <div>
-            <div class="import-section-title">任务列表</div>
-            <div class="import-section-tip">长驻式队列视图，支持查看历史、失败原因和手动重试。</div>
-          </div>
-          <el-tag size="small" type="info">分页 {{ queuePage }} / {{ totalQueuePages }}</el-tag>
-        </div>
-
-        <AppEmptyState v-if="!linkedTasks.length && !workbenchLoading" description="当前没有字幕补配任务，打开工作台后新任务会继续留在这里。" size="sm" />
-
-        <div v-else class="import-task-list-body">
-          <button
-            v-for="task in pagedLinkedTasks"
-            :key="task.id"
-            type="button"
-            class="import-task-row"
-            :class="[getTaskStateClass(task), { active: task.id === selectedTaskId }]"
-            @click="selectWorkbenchTask(task.id)"
+    <Teleport to="body">
+      <Transition name="siw-dialog-fade">
+        <div
+          v-if="subtitleRenameDialogVisible"
+          class="siw-rename-overlay"
+          role="presentation"
+          @click="subtitleRenameDialogVisible = false"
+        >
+          <form
+            class="siw-rename-card"
+            role="dialog"
+            aria-modal="true"
+            aria-label="重命名字幕文件"
+            @click.stop
+            @submit.prevent="confirmSubtitleRename"
           >
-            <div class="import-task-row-main">
-              <div class="import-task-row-heading">
-                <span class="import-task-row-rj">{{ getTaskDisplayRJCode(task) }}</span>
-                <div class="import-task-row-title">{{ task.folder_name || getFileName(task.folder_path) }}</div>
+            <header class="siw-rename-head">
+              <div>
+                <h3>重命名字幕文件</h3>
+                <p>只修改字幕工作区里的当前文件名。</p>
               </div>
-              <div class="import-task-row-meta">
-                <span v-if="getTaskSourceRJCode(task)">来源 {{ getTaskSourceRJCode(task) }}</span>
-                <span v-if="task.target_rjcode">目标 {{ task.target_rjcode }}</span>
-                <span>{{ task.downloaded_count || 0 }} 字幕</span>
-                <span v-if="task.manual_match_completed">已应用 {{ task.manual_match_applied_pairs || 0 }} 组</span>
-                <span>{{ formatTaskTimeline(task) }}</span>
-              </div>
-            </div>
-
-            <div class="import-task-row-side">
-              <el-tooltip
-                v-if="getTaskFailureReason(task)"
-                :content="getTaskFailureReason(task)"
-                placement="top"
+              <button
+                type="button"
+                class="siw-icon-btn"
+                aria-label="关闭"
+                @click="subtitleRenameDialogVisible = false"
               >
-                <span
-                  :class="[
-                    isCompletedTask(task) ? 'task-status-text' : 'task-status-pill',
-                    `state-${getTaskStateClass(task)}`
-                  ]"
-                >
-                  {{ getTaskStatusLabel(task) }}
-                </span>
-              </el-tooltip>
-              <span
-                v-else
-                :class="[
-                  isCompletedTask(task) ? 'task-status-text' : 'task-status-pill',
-                  `state-${getTaskStateClass(task)}`
-                ]"
-              >
-                {{ getTaskStatusLabel(task) }}
-              </span>
+                <X :size="16" :stroke-width="2.4" />
+              </button>
+            </header>
 
-              <div class="import-task-row-progress">{{ getTaskProgressText(task) }}</div>
-
-              <div class="import-task-row-actions">
-                <el-button
-                  size="small"
-                  :type="task.id === selectedTaskId ? 'primary' : 'default'"
-                  @click.stop="selectWorkbenchTask(task.id)"
-                >
-                  查看
-                </el-button>
-                <el-button
-                  v-if="canRetryTask(task)"
-                  size="small"
-                  :loading="retryingTaskId === task.id"
-                  @click.stop="retryWorkbenchTask(task)"
-                >
-                  重试
-                </el-button>
-              </div>
-            </div>
-          </button>
-        </div>
-
-        <div v-if="linkedTasks.length > queuePageSize" class="import-task-pagination">
-          <el-pagination
-            v-model:current-page="queuePage"
-            small
-            background
-            layout="prev, pager, next"
-            :page-size="queuePageSize"
-            :total="linkedTasks.length"
-          />
-        </div>
-      </section>
-
-      <section class="import-task-detail">
-        <AppEmptyState v-if="!workbenchLoading && !linkedTasks.length" description="当前工作台没有可展示的字幕补配任务。" size="sm" />
-
-        <template v-else-if="activeTask">
-          <el-card shadow="never" class="import-config-card">
-            <template #header>
-              <div class="import-config-head">
-                <span>补配选项</span>
-              </div>
-            </template>
-
-            <div class="import-config-stack">
-              <div class="import-config-row">
-                <div>
-                  <div class="import-config-title">命名依据</div>
-                  <div class="import-config-tip">最终一键应用时，决定字幕和音频按谁的名字落地。</div>
-                </div>
-                <el-radio-group v-model="subtitleOptions.namingStrategy" size="small">
-                  <el-radio-button label="audio">以音频名为准</el-radio-button>
-                  <el-radio-button label="subtitle">以字幕名为准</el-radio-button>
-                </el-radio-group>
-              </div>
-
-              <div class="import-config-row import-config-row-wrap">
-                <div class="import-config-title-row">
-                  <div>
-                    <div class="import-config-title">字幕过滤规则</div>
-                    <div class="import-config-tip">规则支持实时编辑、启停和持久化，下次打开工作台会继续保留。</div>
-                  </div>
-                  <el-switch v-model="subtitleOptions.useFilterRules" inline-prompt active-text="开" inactive-text="关" />
-                </div>
-
-                <div class="import-filter-actions">
-                  <el-button size="small" @click="addSubtitleFilterRule">添加规则</el-button>
-                </div>
-
-                <div class="import-filter-list">
-                  <div v-if="!subtitleOptions.subtitleFilterRules.length" class="import-filter-empty">当前没有补配过滤规则。</div>
-                  <div v-for="rule in subtitleOptions.subtitleFilterRules" :key="rule.id" class="import-filter-editor">
-                    <div class="import-filter-editor-head">
-                      <el-switch v-model="rule.enabled" size="small" />
-                      <AppDropdown
-                        v-model="rule.target"
-                        :options="importFilterTargetOptions"
-                        class="import-filter-target"
-                        :width="110"
-                        :menu-min-width="130"
-                        :show-trigger-badge="false"
-                      />
-                      <el-button size="small" text type="danger" @click="removeSubtitleFilterRule(rule.id)">删除</el-button>
-                    </div>
-                    <el-input v-model="rule.name" size="small" placeholder="规则名，可留空" />
-                    <el-input v-model="rule.pattern" size="small" placeholder="输入正则表达式，例如 \\.mp3$ 或 @[^\\s]+" />
-                  </div>
-                </div>
-              </div>
-
-              <div class="import-config-row">
-                <div>
-                  <div class="import-config-title">字幕正文清理</div>
-                  <div class="import-config-tip">复用设置页里的 LRC 广告清理和繁体转简体，对当前工作台字幕执行一次处理。</div>
-                </div>
-                <div class="import-config-inline-actions">
-                  <el-button size="small" :loading="subtitleCleanupLoading" @click="applySubtitleCleanup">应用字幕清理</el-button>
-                </div>
-              </div>
-
-              <div v-if="subtitleCleanupSummary" class="import-cleanup-summary">
-                {{ subtitleCleanupSummary }}
-              </div>
-
-              <div v-if="activeTaskSupportsRetarget" class="import-config-row import-config-row-wrap">
-                <div class="import-config-title-row">
-                  <div>
-                    <div class="import-config-title">切换目标目录</div>
-                    <div class="import-config-tip">从当前工作区里的原始字幕重新建一个新补配任务，不直接篡改旧任务。</div>
-                  </div>
-                  <div class="import-config-inline-actions">
-                    <el-button size="small" :loading="retargetPreviewLoading" @click="loadRetargetPreview(activeTask, { force: true, showMessage: true })">刷新候选</el-button>
-                    <el-button
-                      size="small"
-                      type="primary"
-                      :disabled="!canRetargetActiveTask"
-                      :loading="retargetingTaskId === activeTask?.id"
-                      @click="retargetActiveTask"
-                    >
-                      切换目标并重建
-                    </el-button>
-                  </div>
-                </div>
-
-                <div class="import-retarget-current">
-                  <div class="import-retarget-label">当前目标</div>
-                  <div class="import-retarget-name">{{ activeTask.folder_name || getFileName(activeTask.target_folder_path || activeTask.folder_path) || '-' }}</div>
-                  <div v-if="activeTask.target_rjcode" class="import-retarget-rj">{{ activeTask.target_rjcode }}</div>
-                  <div v-if="activeTask.target_folder_path" class="import-retarget-path">{{ activeTask.target_folder_path }}</div>
-                </div>
-
-                <AppEmptyState
-                  v-if="!retargetPreviewLoading && !retargetCandidates.length"
-                  description="当前没有可切换的目标目录候选"
-                  size="sm"
+            <div class="siw-rename-fields">
+              <label class="siw-field">
+                <span>当前名称</span>
+                <input :value="subtitleRenameForm.currentName" type="text" readonly />
+              </label>
+              <label class="siw-field">
+                <span>新名称</span>
+                <input
+                  v-model="subtitleRenameForm.newName"
+                  type="text"
+                  autocomplete="off"
+                  placeholder="输入新的字幕文件名"
+                  @keydown.stop
                 />
-
-                <el-radio-group v-else v-model="retargetCandidateSelection" class="candidate-list">
-                  <label
-                    v-for="candidate in retargetCandidates"
-                    :key="candidateKey(candidate)"
-                    class="candidate-item"
-                  >
-                    <el-radio :label="candidateKey(candidate)">
-                      <span class="candidate-title">{{ candidate.folder_name || candidate.folder_path }}</span>
-                    </el-radio>
-                    <div class="candidate-meta">
-                      <span>{{ candidate.library_name }}</span>
-                      <span>{{ candidate.library_type === 'synology_filestation' ? '远程库' : '本地库' }}</span>
-                      <span>音频 {{ candidate.audio_count ?? 0 }}</span>
-                      <span>现有字幕 {{ candidate.existing_subtitle_count ?? 0 }}</span>
-                      <span>{{ formatFileSize(candidate.total_size || 0) }}</span>
-                    </div>
-                    <div class="candidate-path">{{ candidate.folder_path }}</div>
-                  </label>
-                </el-radio-group>
+              </label>
+              <div class="siw-preview">
+                <span>预览</span>
+                <strong>{{ subtitleRenameForm.newName || subtitleRenameForm.currentName }}</strong>
               </div>
             </div>
-          </el-card>
 
-          <div class="import-task-main">
-            <el-alert
-              v-if="isFailedTask(activeTask)"
-              title="当前任务执行失败"
-              type="error"
-              :closable="false"
-              show-icon
-            >
-              <template #default>
-                {{ getTaskFailureReason(activeTask) || '请检查原因后重试该任务。' }}
-              </template>
-            </el-alert>
-
-            <el-alert
-              v-else-if="activeTask && !activeTask.subtitle_dir"
-              title="当前任务还在准备字幕目录"
-              type="info"
-              :closable="false"
-              show-icon
-            >
-              <template #default>
-                {{ activeTask.current_step || '稍后刷新状态即可进入字幕补配工作台。' }}
-              </template>
-            </el-alert>
-
-            <SubtitleInspectorWorkbench
-              v-if="activeTask.subtitle_dir"
-              :ctx="subtitleWorkbenchCtx"
-            />
-
-            <el-card v-else class="import-task-placeholder" shadow="never">
-              <div class="import-task-placeholder-title">{{ getTaskStatusLabel(activeTask) }}</div>
-              <div class="import-task-placeholder-text">
-                {{ getTaskFailureReason(activeTask) || activeTask.current_step || '当前任务还没有可查看的字幕工作区。' }}
-              </div>
-            </el-card>
-          </div>
-        </template>
-
-        <AppEmptyState v-else description="请选择一条补配任务查看详情。" size="sm" />
-      </section>
-    </div>
-
-    <el-dialog v-model="subtitleRenameDialogVisible" title="重命名字幕文件" width="500px">
-      <el-form :model="subtitleRenameForm" label-width="80px">
-        <el-form-item label="当前名称"><el-input v-model="subtitleRenameForm.currentName" disabled /></el-form-item>
-        <el-form-item label="新名称"><el-input v-model="subtitleRenameForm.newName" placeholder="输入新的字幕文件名" /></el-form-item>
-        <el-form-item label="预览"><div class="name-preview">{{ subtitleRenameForm.newName || subtitleRenameForm.currentName }}</div></el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="subtitleRenameDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="subtitleRenameLoading" @click="confirmSubtitleRename">确认重命名</el-button>
-      </template>
-    </el-dialog>
+            <footer class="siw-rename-actions">
+              <button
+                type="button"
+                class="siw-form-btn"
+                :disabled="subtitleRenameLoading"
+                @click="subtitleRenameDialogVisible = false"
+              >
+                取消
+              </button>
+              <button
+                type="submit"
+                class="siw-form-btn is-primary"
+                :disabled="subtitleRenameLoading"
+              >
+                <Loader2 v-if="subtitleRenameLoading" class="siw-action-icon is-spinning" :stroke-width="2.4" />
+                <span>{{ subtitleRenameLoading ? '重命名中' : '确认重命名' }}</span>
+              </button>
+            </footer>
+          </form>
+        </div>
+      </Transition>
+    </Teleport>
 
     <FilterDeleteDialog
       v-model="filterDeleteDialogVisible"
@@ -360,23 +162,13 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Captions, Folder, FolderOpen, Minimize2, RefreshCw, Trash2, X } from 'lucide-vue-next'
+import { Captions, Folder, FolderOpen, Loader2, Minimize2, RefreshCw, Trash2, X } from 'lucide-vue-next'
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
 import { libraryApi, rjSubtitleApi, subtitleImportApi } from '../../api'
 import { runWithConcurrency } from '../../composables/useAsyncBatch'
 import { libraryEntryIconFor, libraryEntryMetaFor } from '../library/_libraryFileKind'
 import FilterDeleteDialog from '../library/FilterDeleteDialog.vue'
-import SubtitleInspectorWorkbench from '../library/SubtitleInspectorWorkbench.vue'
 import SubtitleWorkbenchStage from '../library/subtitle-workbench/SubtitleWorkbenchStage.vue'
-import AppEmptyState from '../common/AppEmptyState.vue'
-import AppDropdown from '../common/AppDropdown.vue'
-
-// 字幕导入过滤规则作用范围选项
-const importFilterTargetOptions = [
-  { value: 'name', label: '文件名' },
-  { value: 'path', label: '路径' },
-  { value: 'all', label: '全部' },
-]
 
 const props = defineProps({
   taskId: {
@@ -2216,6 +2008,7 @@ const processingTaskCount = computed(() => linkedTasks.value.filter(task => isPr
 const completedTaskCount = computed(() => linkedTasks.value.filter(task => isCompletedTask(task)).length)
 const failedTaskCount = computed(() => linkedTasks.value.filter(task => isFailedTask(task)).length)
 const clearableTaskCount = computed(() => linkedTasks.value.filter(task => canClearTask(task)).length)
+const awaitingTaskCount = computed(() => linkedTasks.value.filter(task => isAwaitingManualTask(task)).length)
 const activeTaskSupportsRetarget = computed(() => canRetargetTask(activeTask.value))
 const retargetCandidates = computed(() => retargetPreview.value?.candidates || [])
 const selectedRetargetCandidate = computed(() => (
@@ -2318,6 +2111,11 @@ watch(() => activeTask.value?.id, async (taskId) => {
 // 切到 "筛选与配对" / "字幕文件树" stage 时兜底再 inspect 一次，
 // 避免 overview 阶段打开工作台后、没自动 inspect 过就切 tab 导致列表空。
 watch(activeSubtitleWorkbenchStage, async (stage) => {
+  subtitleWorkbenchContextMode.value = stage === 'overview'
+    ? 'settings'
+    : stage === 'tree'
+      ? 'tree'
+      : 'pairing'
   if (stage !== 'pairing' && stage !== 'tree') return
   const task = activeTask.value
   if (!task?.subtitle_dir) return
@@ -2336,14 +2134,18 @@ const subtitleClearableTaskCounts = computed(() => ({
 }))
 const subtitleTaskManualOverview = computed(() => ([
   { key: 'all', label: '\u5168\u90e8', value: linkedTasks.value.length },
-  { key: 'awaiting', label: '\u5f85\u914d\u5bf9', value: linkedTasks.value.filter(task => isAwaitingManualTask(task)).length },
+  { key: 'processing', label: '\u8fdb\u884c\u4e2d', value: processingTaskCount.value },
+  { key: 'awaiting', label: '\u5f85\u914d\u5bf9', value: awaitingTaskCount.value },
   { key: 'completed', label: '\u5df2\u5b8c\u6210', value: completedTaskCount.value },
-  { key: 'failed', label: '\u5931\u8d25', value: failedTaskCount.value }
-]).filter(item => item.key === 'all' || item.value > 0))
+  { key: 'failed', label: '\u5931\u8d25', value: failedTaskCount.value },
+  { key: 'clearable', label: '\u53ef\u6e05\u7406', value: clearableTaskCount.value }
+]))
 const visibleSubtitleTasks = computed(() => {
+  if (subtitleTaskManualFilter.value === 'processing') return linkedTasks.value.filter(task => isProcessingTask(task))
   if (subtitleTaskManualFilter.value === 'awaiting') return linkedTasks.value.filter(task => isAwaitingManualTask(task))
   if (subtitleTaskManualFilter.value === 'completed') return linkedTasks.value.filter(task => isCompletedTask(task))
   if (subtitleTaskManualFilter.value === 'failed') return linkedTasks.value.filter(task => isFailedTask(task))
+  if (subtitleTaskManualFilter.value === 'clearable') return linkedTasks.value.filter(task => canClearTask(task))
   return linkedTasks.value
 })
 const activeSubtitleTaskProgressLogs = computed(() => Array.isArray(activeTask.value?.progress_log) ? activeTask.value.progress_log : [])
@@ -2352,17 +2154,6 @@ const activeSubtitleWorkbenchStageLabel = computed(() => ({
   pairing: '\u7b5b\u9009\u4e0e\u914d\u5bf9',
   tree: '\u5b57\u5e55\u6811'
 }[activeSubtitleWorkbenchStage.value] || '\u4efb\u52a1\u603b\u89c8'))
-const subtitleWorkbenchFocusTitle = computed(() => activeTask.value ? getTaskDisplayRJCode(activeTask.value) : '\u7b49\u5f85\u7126\u70b9\u4efb\u52a1')
-const subtitleWorkbenchFocusSubtitle = computed(() => activeTask.value ? (activeTask.value.folder_name || getFileName(activeTask.value.folder_path)) : '\u4ece\u5de6\u4fa7\u4efb\u52a1\u961f\u5217\u91cc\u9009\u4e00\u4e2a\u7126\u70b9\u9879')
-const subtitleWorkbenchFocusStep = computed(() => activeTask.value?.current_step || '\u5f53\u524d\u8fd8\u6ca1\u6709\u8fdb\u884c\u4e2d\u7684\u5b57\u5e55\u5904\u7406\u6b65\u9aa4')
-const subtitleWorkbenchFocusChips = computed(() => {
-  const task = activeTask.value
-  const chips = []
-  if (task?.awaiting_manual_match) chips.push({ key: 'manual', label: '\u5f85\u624b\u52a8\u914d\u5bf9', class: 'is-warning' })
-  if (task?.manual_match_completed) chips.push({ key: 'done', label: `\u5df2\u5339\u914d ${task.manual_match_applied_pairs || 0}`, class: 'is-success' })
-  if (task?.subtitle_dir) chips.push({ key: 'tree', label: '\u53ef\u8fdb\u5165\u5b57\u5e55\u6811' })
-  return chips
-})
 const subtitleConfigCtx = computed(() => ({
   subtitleOptions: subtitleOptions.value,
   canClearSequenceSelection: Boolean(subtitleSequenceSelection.value.audioPaths.length || subtitleSequenceSelection.value.subtitlePaths.length),
@@ -2380,13 +2171,29 @@ const subtitleConfigCtx = computed(() => ({
   clearSubtitleSequenceSelection,
   clearSubtitleManualPairs,
   openSubtitleInspectorFilterDeleteDialog,
-  canOpenSubtitleInspectorFilterDeleteDialog: canOpenSubtitleInspectorFilterDeleteDialog.value
+  canOpenSubtitleInspectorFilterDeleteDialog: canOpenSubtitleInspectorFilterDeleteDialog.value,
+  activeTask: activeTask.value,
+  subtitleCleanupLoading: subtitleCleanupLoading.value,
+  subtitleCleanupSummary: subtitleCleanupSummary.value,
+  applySubtitleCleanup,
+  activeTaskSupportsRetarget: activeTaskSupportsRetarget.value,
+  retargetPreviewLoading: retargetPreviewLoading.value,
+  retargetingTaskId: retargetingTaskId.value,
+  retargetCandidates: retargetCandidates.value,
+  selectedRetargetCandidate: selectedRetargetCandidate.value,
+  retargetCandidateSelection: retargetCandidateSelection.value,
+  canRetargetActiveTask: canRetargetActiveTask.value,
+  candidateKey,
+  loadRetargetPreview,
+  retargetActiveTask,
+  setRetargetCandidateSelection: value => { retargetCandidateSelection.value = value }
 }))
- const subtitleTaskStageCtx = computed(() => ({
+const subtitleTaskStageCtx = computed(() => ({
   subtitleQueueTasks: linkedTasks.value,
   visibleSubtitleTasks: visibleSubtitleTasks.value,
   activeSubtitleTask: activeTask.value,
   selectedSubtitleTaskId: String(selectedTaskId.value || ''),
+  activeSubtitleWorkbenchStageLabel: activeSubtitleWorkbenchStageLabel.value,
   subtitleClearableTaskCounts: subtitleClearableTaskCounts.value,
   subtitleBulkClearingScope: queueClearing.value ? 'finished' : '',
   subtitleTaskDetailPanels: buildDefaultSubtitleTaskDetailPanels(activeTask.value),
@@ -2468,10 +2275,6 @@ const subtitleWorkbenchStageCtx = computed(() => ({
   activeStage: activeSubtitleWorkbenchStage.value,
   activeStageLabel: activeSubtitleWorkbenchStageLabel.value,
   setActiveStage: value => { activeSubtitleWorkbenchStage.value = value },
-  focusTitle: subtitleWorkbenchFocusTitle.value,
-  focusSubtitle: subtitleWorkbenchFocusSubtitle.value,
-  focusStep: subtitleWorkbenchFocusStep.value,
-  focusChips: subtitleWorkbenchFocusChips.value,
   contextMode: subtitleWorkbenchContextMode.value,
   scanCtx: {},
   taskNavigatorCtx: subtitleTaskStageCtx.value,
@@ -2494,9 +2297,9 @@ const subtitleWorkbenchStageCtx = computed(() => ({
     drawerCollapsed: subtitleWorkbenchDrawerCollapsed.value,
     toggleDrawer: () => { subtitleWorkbenchDrawerCollapsed.value = !subtitleWorkbenchDrawerCollapsed.value },
     modeOptions: [
-      { key: 'settings', label: '\u53c2\u6570', shortLabel: '\u53c2' },
-      { key: 'pairing', label: '\u914d\u5bf9', shortLabel: '\u914d' },
-      { key: 'tree', label: '\u6587\u4ef6', shortLabel: '\u6587' }
+      { key: 'settings', label: '\u53c2\u6570', shortLabel: '\u53c2', icon: 'Sliders' },
+      { key: 'pairing', label: '\u914d\u5bf9', shortLabel: '\u914d', icon: 'Link2' },
+      { key: 'tree', label: '\u6587\u4ef6', shortLabel: '\u6587', icon: 'FolderTree' }
     ]
   }
 }))
@@ -2584,1105 +2387,612 @@ const subtitleWorkbenchCtx = computed(() => ({
 </script>
 
 <style scoped>
+.subtitle-import-workbench {
+  --siw-bg: #f7f9fc;
+  --siw-surface: #ffffff;
+  --siw-surface-soft: #f8fafc;
+  --siw-border: rgba(226, 232, 240, 0.92);
+  --siw-border-strong: rgba(203, 213, 225, 0.95);
+  --siw-text: #0f172a;
+  --siw-muted: #64748b;
+  --siw-soft: #94a3b8;
+  --siw-shadow: none;
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  color: var(--siw-text);
+}
 
-.subtitle-workbench-shell {
+.siw-shell {
   display: flex;
+  width: 100%;
+  height: min(900px, calc(100dvh - 32px));
+  min-height: min(760px, calc(100dvh - 32px));
+  max-height: calc(100dvh - 32px);
   flex-direction: column;
-  min-height: 78vh;
-  max-height: 92vh;
   overflow: hidden;
-  border-radius: 20px;
-  border: 1px solid rgba(226, 232, 240, 0.8);
-  background: #fff;
-  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.1);
+  border: 1px solid var(--siw-border);
+  border-radius: 22px;
+  background: var(--siw-surface);
+  box-shadow: var(--siw-shadow);
 }
 
-.subtitle-workbench-header {
-  position: sticky;
-  top: 0;
-  z-index: 40;
+.siw-header {
   display: flex;
-  align-items: flex-start;
+  flex: 0 0 auto;
+  align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 16px 18px;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
-  background: rgba(255, 255, 255, 0.82);
-  backdrop-filter: blur(16px);
+  gap: 14px;
+  min-height: 68px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--siw-border);
+  background: var(--siw-surface);
 }
 
-.subtitle-workbench-title-row {
+.siw-title-wrap {
   display: flex;
-  flex-wrap: wrap;
+  min-width: 0;
   align-items: center;
-  gap: 6px;
+  gap: 12px;
 }
 
-.subtitle-workbench-kicker,
-.subtitle-workbench-stat {
+.siw-brand {
   display: inline-flex;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
   align-items: center;
-  gap: 4px;
-  border-radius: 999px;
-  border: 1px solid rgb(226 232 240);
-  background: rgb(248 250 252);
-  padding: 3px 8px;
-  color: rgb(71 85 105);
-  font-size: 11px;
-  font-weight: 700;
+  justify-content: center;
+  border: 1px solid #ddd6fe;
+  border-radius: 12px;
+  background: #f5f3ff;
+  color: #6d28d9;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.subtitle-workbench-kicker {
-  border-color: rgb(191 219 254);
-  background: rgb(239 246 255);
-  color: rgb(37 99 235);
+.siw-brand:hover {
+  transform: translateY(-2px) scale(1.02);
 }
 
-.subtitle-workbench-stat.is-processing {
-  border-color: rgb(186 230 253);
-  background: rgb(240 249 255);
-  color: rgb(2 132 199);
+.siw-brand-icon {
+  width: 18px;
+  height: 18px;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.subtitle-workbench-stat.is-success {
-  border-color: rgb(187 247 208);
-  background: rgb(240 253 244);
-  color: rgb(22 163 74);
+.siw-brand:hover .siw-brand-icon {
+  transform: rotate(-6deg) scale(1.12);
 }
 
-.subtitle-workbench-stat.is-danger {
-  border-color: rgb(254 202 202);
-  background: rgb(254 242 242);
-  color: rgb(220 38 38);
+.siw-title-copy {
+  min-width: 0;
 }
 
-.subtitle-workbench-title {
-  margin: 8px 0 0;
-  color: rgb(15 23 42);
-  font-size: 20px;
-  font-weight: 800;
-  letter-spacing: -0.03em;
-}
-
-.subtitle-workbench-desc {
-  margin: 4px 0 0;
-  color: rgb(100 116 139);
-  font-size: 12px;
-  line-height: 1.7;
-}
-
-.subtitle-workbench-actions {
+.siw-title-line {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  min-width: 0;
+  align-items: center;
   gap: 8px;
 }
 
-.subtitle-workbench-action {
+.siw-title-line h2 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--siw-text);
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.siw-live-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid rgba(34, 197, 94, 0.28);
+  border-radius: 999px;
+  background: rgba(240, 253, 244, 0.92);
+  padding: 2px 8px;
+  color: #15803d;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.siw-live-pill span {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #22c55e;
+}
+
+.siw-focus-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+  color: var(--siw-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.siw-focus-code {
+  flex: 0 0 auto;
+  max-width: 108px;
+  overflow: hidden;
+  border: 1px solid var(--siw-border);
+  border-radius: 8px;
+  background: var(--siw-surface-soft);
+  padding: 2px 7px;
+  color: var(--siw-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.siw-focus-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.siw-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.siw-action-btn,
+.siw-form-btn,
+.siw-icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 32px;
-  border-radius: 12px;
-  border: 1px solid rgb(226 232 240);
-  background: rgba(255, 255, 255, 0.92);
-  padding: 0 12px;
-  color: rgb(51 65 85);
-  font-size: 12px;
+  border: 1px solid var(--siw-border);
+  background: var(--siw-surface);
+  color: var(--siw-text);
+  cursor: pointer;
   font-weight: 700;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.subtitle-workbench-action:hover:enabled {
-  transform: translateY(-2px) scale(1.02);
-  border-color: rgb(203 213 225);
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+.siw-action-btn {
+  min-height: 34px;
+  gap: 6px;
+  border-radius: 10px;
+  padding: 0 10px;
+  font-size: 12px;
 }
 
-.subtitle-workbench-action:active:enabled {
+.siw-action-btn:hover:enabled,
+.siw-form-btn:hover:enabled,
+.siw-icon-btn:hover:enabled {
+  transform: translateY(-2px) scale(1.02);
+  border-color: var(--siw-border-strong);
+  background: var(--siw-surface-soft);
+}
+
+.siw-action-btn:active:enabled,
+.siw-form-btn:active:enabled,
+.siw-icon-btn:active:enabled {
   transform: scale(0.96);
 }
 
-.subtitle-workbench-action:disabled {
-  opacity: 0.55;
+.siw-action-btn:disabled,
+.siw-form-btn:disabled {
   cursor: not-allowed;
+  opacity: 0.45;
 }
 
-.subtitle-workbench-action.is-primary {
-  border-color: rgb(15 23 42);
-  background: rgb(15 23 42);
-  color: white;
-  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.18);
+.siw-action-btn.is-close {
+  border-color: rgba(244, 63, 94, 0.24);
+  background: rgba(255, 241, 242, 0.82);
+  color: #be123c;
 }
 
-.subtitle-workbench-body {
+.siw-action-btn.is-close:hover:enabled {
+  border-color: rgba(244, 63, 94, 0.38);
+  background: rgba(255, 228, 230, 0.95);
+}
+
+.siw-action-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.siw-action-btn:hover:enabled .siw-action-icon,
+.siw-form-btn:hover:enabled .siw-action-icon,
+.siw-icon-btn:hover:enabled svg {
+  transform: rotate(-8deg) scale(1.12);
+}
+
+.is-spinning {
+  animation: siw-spin 0.8s linear infinite;
+}
+
+.siw-stage-wrap {
   position: relative;
-  z-index: 1;
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 16px;
-  background: linear-gradient(180deg, #fafcff 0%, #ffffff 48%, #f6f8ff 100%);
-}
-
-.import-workbench-modal {
-  display: grid;
-  grid-template-rows: auto auto auto;
-  gap: 12px;
-  padding: 16px;
-  overflow: visible;
-  background:
-    radial-gradient(circle at top right, rgba(116, 164, 255, 0.12), transparent 24%),
-    linear-gradient(180deg, rgba(249, 252, 255, 0.98) 0%, #f4f8fe 100%);
-}
-
-.import-workbench-modal :deep(.el-empty) {
-  padding: 24px 0 8px;
-}
-
-.import-workbench-modal :deep(.el-empty__image) {
-  width: 80px;
-  height: 80px;
-  margin-bottom: 8px;
-}
-
-.import-workbench-head {
   display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.import-workbench-title {
-  font-size: 20px;
-  font-weight: 700;
-  color: #20344d;
-}
-
-.import-workbench-desc {
-  margin-top: 2px;
-  max-width: 780px;
-  font-size: 11px;
-  line-height: 1.5;
-  color: #667a93;
-}
-
-.import-workbench-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.import-workbench-toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 8px 12px;
-  border-radius: 14px;
-  border: 1px solid #e3ebf7;
-  background: rgba(255, 255, 255, 0.78);
-}
-
-.import-toolbar-stats {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.toolbar-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 9px;
-  border-radius: 999px;
-  border: 1px solid #d6e2f4;
-  background: #fff;
-  color: #415975;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.toolbar-pill-primary {
-  border-color: #c9dcff;
-  background: #edf4ff;
-  color: #2a61ad;
-}
-
-.toolbar-pill-success {
-  border-color: #cde9d0;
-  background: #f2fbf3;
-  color: #2f8a43;
-}
-
-.toolbar-pill-danger {
-  border-color: #f0c9c9;
-  background: #fff2f2;
-  color: #c23d3d;
-}
-
-.import-toolbar-tip {
-  font-size: 11px;
-  line-height: 1.5;
-  color: #6e8099;
-}
-
-.import-workbench-body {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
-  overflow: visible;
-  min-width: 0;
-  overflow-x: hidden;
-}
-
-.import-task-list-card,
-.import-task-detail {
-  border: 1px solid #e6edf7;
-  border-radius: 16px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, #ffffff 100%);
-  box-shadow: 0 8px 20px rgba(31, 46, 67, 0.05);
-}
-
-.import-task-list-card {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
-  max-height: calc(100vh - 180px);
-}
-
-.import-task-list-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: flex-start;
-  flex-wrap: wrap;
-  padding: 10px 12px 8px;
-  border-bottom: 1px solid #edf2f8;
-  background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
-}
-
-.import-section-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: #24364f;
-}
-
-.import-section-tip {
-  margin-top: 2px;
-  font-size: 11px;
-  line-height: 1.5;
-  color: #71839b;
-}
-
-.import-task-list-body {
-  display: grid;
-  gap: 6px;
-  max-height: calc(100vh - 150px);
-  padding: 8px 12px;
-  overflow: auto;
-  min-width: 0;
-  overflow-x: hidden;
-}
-
-.import-task-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(180px, 248px);
-  gap: 14px;
-  width: 100%;
-  min-height: 96px;
-  padding: 14px 16px;
-  border-radius: 14px;
-  border: 1px solid #e4ebf7;
-  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
-  text-align: left;
-  align-items: start;
-  cursor: pointer;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
-  min-width: 0;
-}
-
-.import-task-row:hover {
-  border-color: #bfd4f6;
-  box-shadow: 0 10px 24px rgba(59, 88, 135, 0.08);
-  transform: translateY(-1px);
-}
-
-.import-task-row.active {
-  border-color: #ffb000;
-  box-shadow: 0 0 0 3px rgba(255, 176, 0, 0.5);
-}
-
-.import-task-row.failed {
-  border-color: #efc4c4;
-  background: linear-gradient(180deg, #fff8f8 0%, #fff2f2 100%);
-}
-
-.import-task-row.completed {
-  border-color: #cce6cf;
-  background: linear-gradient(180deg, #f8fff9 0%, #f1fbf2 100%);
-}
-
-.import-task-row.awaiting {
-  border-color: #e4ebf7;
-  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
-}
-
-.import-task-row.processing {
-  border-color: #e4ebf7;
-  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
-}
-
-.import-task-row-main {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-  align-content: start;
-}
-
-.import-task-row-heading {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  flex-wrap: wrap;
-}
-
-.import-task-row-rj {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  max-width: 100%;
-  padding: 3px 10px;
-  font-size: 12px;
-  font-weight: 700;
-  color: #2c5ea8;
-  line-height: 1.2;
-  white-space: nowrap;
-}
-
-.import-task-row-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: #223754;
-  line-height: 1.35;
-  word-break: break-word;
-  min-width: 0;
-  flex: 1 1 240px;
-}
-
-.import-task-row-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  font-size: 11px;
-  line-height: 1.45;
-  color: #70829a;
-}
-
-.import-task-row-status {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 0;
-}
-
-.import-task-row-side {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  justify-items: end;
-  align-content: start;
-  row-gap: 8px;
-  min-width: 0;
-  width: 100%;
-}
-
-.task-status-pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 28px;
-  min-width: 0;
-  width: 100%;
-  max-width: 110px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px solid #d6e2f4;
-  background: #fff;
-  color: #415975;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1;
-  white-space: nowrap;
-}
-
-.task-status-text {
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1.2;
-  white-space: nowrap;
-}
-
-.task-status-pill.state-processing {
-  border-color: #d6e2f4;
-  background: #ffffff;
-  color: #415975;
-}
-
-.task-status-pill.state-awaiting {
-  border-color: #f1c85b;
-  background: #fff7dc;
-  color: #9c6a00;
-}
-
-.task-status-pill.state-completed {
-  border-color: #cce6cf;
-  background: #edf9ef;
-  color: #2f8a43;
-}
-
-.task-status-text.state-completed {
-  color: #2f8a43;
-}
-
-.task-status-pill.state-failed {
-  border-color: #efc4c4;
-  background: #fff1f1;
-  color: #c23d3d;
-}
-
-.import-task-row-progress {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  min-width: 0;
-  font-size: 11px;
-  line-height: 1.5;
-  color: #62758f;
-  text-align: right;
-  white-space: normal;
-}
-
-.import-task-row-actions {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-
-.import-task-row-actions :deep(.el-button) {
-  min-width: 58px;
-  height: 28px;
-  margin-left: 0;
-}
-
-.import-task-pagination {
-  display: flex;
-  justify-content: flex-end;
-  padding: 0 12px 12px;
-}
-
-.import-task-detail {
-  display: grid;
-  grid-template-columns: minmax(320px, 360px) minmax(0, 1fr);
-  gap: 12px;
   padding: 12px;
-  overflow: visible;
-  align-items: start;
-  min-width: 0;
+  background: var(--siw-bg);
 }
 
-.import-config-card {
+.siw-stage-wrap > :deep(.subtitle-workbench-stage) {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.siw-rename-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 3200;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(15, 23, 42, 0.52);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.siw-rename-card {
+  width: min(520px, calc(100vw - 24px));
+  overflow: hidden;
+  border: 1px solid var(--siw-border);
   border-radius: 18px;
+  background: var(--siw-surface);
+  box-shadow: none;
 }
 
-.import-task-main {
-  grid-column: 2;
-  display: grid;
-  gap: 10px;
-  min-width: 0;
-}
-
-.import-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 5px 8px;
-  border-radius: 999px;
-  border: 1px solid #d8e4f5;
-  background: #ffffff;
-  color: #33527e;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.import-chip-primary {
-  background: #edf4ff;
-  border-color: #cfe0ff;
-  color: #2458a6;
-}
-
-.import-config-head {
-  font-size: 14px;
-  font-weight: 700;
-  color: #233750;
-}
-
-.import-config-card {
-  border: 1px solid #e7edf6;
-  background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%);
-  grid-column: 1;
-  position: sticky;
-  top: 8px;
-  align-self: start;
-}
-
-.import-config-card :deep(.el-card__header) {
-  padding: 10px 12px 8px;
-  border-bottom-color: #edf2f8;
-}
-
-.import-config-card :deep(.el-card__body) {
-  padding: 10px 12px 12px;
-  overflow-x: hidden;
-}
-
-.import-config-stack {
-  display: grid;
-  gap: 8px;
-}
-
-.import-config-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 8px;
-}
-
-.import-config-row-wrap {
-  padding-top: 2px;
-}
-
-.import-config-title-row {
+.siw-rename-head {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  align-items: flex-start;
-  flex-wrap: wrap;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--siw-border);
 }
 
-.import-config-title {
-  font-size: 13px;
-  font-weight: 700;
-  color: #223754;
-}
-
-.import-config-tip {
-  margin-top: 2px;
-  font-size: 11px;
-  line-height: 1.5;
-  color: #70829a;
-}
-
-.import-filter-list {
-  display: grid;
-  gap: 6px;
-}
-
-.import-filter-actions {
-  display: flex;
-  justify-content: flex-start;
-}
-
-.import-filter-empty {
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px dashed #cfdcf2;
-  color: #6a7d97;
-  font-size: 12px;
-  background: #fff;
-}
-
-.import-filter-item {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-  padding: 8px 10px;
-  border-radius: 12px;
-  background: #f8fbff;
-  border: 1px solid #e2ebfb;
-  font-size: 12px;
-  color: #415975;
-}
-
-.import-filter-editor {
-  display: grid;
-  gap: 5px;
-  padding: 6px;
-  border-radius: 12px;
-  background: #f8fbff;
-  border: 1px solid #e2ebfb;
-}
-
-.import-filter-editor-head {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.import-filter-target {
-  width: 110px;
-}
-
-.import-config-inline-actions {
-  display: flex;
-  justify-content: flex-start;
-}
-
-.import-cleanup-summary {
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: #f7fbf4;
-  border: 1px solid #d8ebcf;
-  color: #41603d;
-  font-size: 12px;
-  line-height: 1.7;
-}
-
-.import-retarget-current {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: #f6f9ff;
-  border: 1px solid #d9e4fb;
-  color: #30486f;
-  font-size: 12px;
-  line-height: 1.6;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.import-retarget-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: #6a7f9d;
-}
-
-.import-retarget-name {
-  font-size: 14px;
-  font-weight: 700;
-  color: #223754;
-  word-break: break-word;
-}
-
-.import-retarget-rj {
-  display: inline-flex;
-  align-self: flex-start;
-  padding: 3px 10px;
-  border-radius: 8px;
-  background: rgb(248 250 252);
-  color: rgb(51 65 85);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.import-retarget-path {
-  color: #667b9e;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-}
-
-.candidate-list {
-  display: grid;
-  gap: 8px;
-  min-width: 0;
-}
-
-.candidate-item {
-  display: grid;
-  gap: 5px;
-  width: 100%;
-  padding: 10px 12px;
-  border: 1px solid #e6edf6;
-  border-radius: 12px;
-  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
-  text-align: left;
-  cursor: pointer;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
-}
-
-.candidate-item:hover {
-  border-color: #bfd4f6;
-  box-shadow: 0 8px 20px rgba(59, 88, 135, 0.08);
-  transform: translateY(-1px);
-}
-
-.candidate-title {
-  font-weight: 700;
-  color: #24364f;
-}
-
-.candidate-meta,
-.candidate-path {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  font-size: 11px;
-  line-height: 1.5;
-  color: #71839b;
-}
-
-.candidate-item :deep(.el-radio) {
-  align-items: flex-start;
-  white-space: normal;
-}
-
-.import-task-main > :deep(.el-alert) {
-  border-radius: 16px;
-}
-
-.import-task-detail > :deep(.el-empty) {
-  grid-column: 1 / -1;
-  min-height: 240px;
-  border-radius: 18px;
-  border: 1px dashed #dbe6f5;
-  background: linear-gradient(180deg, #fbfdff 0%, #ffffff 100%);
-}
-
-.import-task-main > :deep(.subtitle-inspector-workbench),
-.import-task-main > :deep(.el-card) {
-  border-radius: 18px;
-}
-
-.import-task-main > :deep(.subtitle-tree-card) {
-  flex: 0 0 auto;
-}
-
-.import-task-main > :deep(.subtitle-tree-card .el-card__body) {
-  display: flex;
-  flex-direction: column;
-  min-height: 720px;
-}
-
-.import-task-placeholder {
-  border: 1px dashed #d8e3f2;
-  background: linear-gradient(180deg, #fbfdff 0%, #ffffff 100%);
-}
-
-.import-task-placeholder-title {
+.siw-rename-head h3 {
+  margin: 0;
+  color: var(--siw-text);
   font-size: 15px;
-  font-weight: 700;
-  color: #24364f;
+  font-weight: 800;
+  letter-spacing: 0;
 }
 
-.import-task-placeholder-text {
-  margin-top: 8px;
+.siw-rename-head p {
+  margin: 4px 0 0;
+  color: var(--siw-muted);
   font-size: 12px;
-  line-height: 1.7;
-  color: #6d8099;
+  line-height: 1.5;
 }
 
-.name-preview {
-  padding: 8px 12px;
-  background: #f8f9fa;
-  border: 1px solid #e4e7ed;
-  border-radius: 4px;
-  color: #606266;
-  word-break: break-all;
+.siw-icon-btn {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  border-radius: 9px;
+  color: var(--siw-muted);
 }
 
-@media (max-width: 960px) {
-  .import-task-row {
-    grid-template-columns: 1fr;
-    min-height: 112px;
-  }
-
-  .import-task-row-side {
-    grid-template-columns: 1fr;
-  }
-
-  .import-task-row-side,
-  .import-task-row-status,
-  .import-task-row-progress {
-    justify-content: flex-start;
-    text-align: left;
-    width: 100%;
-    justify-items: start;
-  }
-
-  .import-task-row-actions {
-    justify-content: flex-start;
-  }
-
-  .import-task-list-body {
-    max-height: none;
-    padding-right: 0;
-  }
-
-  .import-workbench-modal {
-    padding: 14px;
-  }
-
-  .import-task-detail {
-    grid-template-columns: 1fr;
-  }
-
-  .import-config-card,
-  .import-task-main {
-    grid-column: 1;
-  }
+.siw-rename-fields {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
 }
 
-.import-workbench-modal {
-  display: block;
-  min-width: 0;
-  padding: 0;
-  overflow: visible;
-  background: transparent;
+.siw-field {
+  display: grid;
+  gap: 6px;
 }
 
-.subtitle-workbench-shell {
-  display: flex;
+.siw-field span,
+.siw-preview span {
+  color: var(--siw-muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.siw-field input {
   width: 100%;
-  min-height: 78vh;
-  max-height: 92vh;
-  flex-direction: column;
-  overflow: hidden;
-  border-radius: 20px;
-  border: 1px solid rgba(226, 232, 240, 0.8);
-  background: #fff;
-  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.1);
-}
-
-.subtitle-workbench-header {
-  position: relative;
-  top: auto;
-  z-index: 40;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-shrink: 0;
-  padding: 16px 24px;
-  border-bottom: 1px solid rgb(241 245 249);
-  background: #fff;
-  backdrop-filter: none;
-}
-
-.subtitle-workbench-body {
-  position: relative;
-  z-index: 1;
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 16px;
-  background: linear-gradient(180deg, #fafcff 0%, #ffffff 48%, #f6f8ff 100%);
-}
-
-.subtitle-workbench-brand {
-  border-radius: 12px;
-  border-color: rgb(226 232 240);
-  background: rgb(15 23 42);
-  color: #fff;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.18);
-}
-
-.subtitle-workbench-btn {
+  min-width: 0;
+  height: 38px;
+  border: 1px solid var(--siw-border);
   border-radius: 10px;
-  border-color: rgb(226 232 240);
-  background: #fff;
-  color: rgb(71 85 105);
-  box-shadow: none;
+  background: var(--siw-surface-soft);
+  color: var(--siw-text);
+  font-size: 13px;
+  font-weight: 650;
+  outline: none;
+  padding: 0 11px;
+  transition: all 0.2s ease;
 }
 
-.subtitle-workbench-btn:hover:enabled {
-  border-color: rgb(203 213 225);
-  background: rgb(248 250 252);
-  color: rgb(15 23 42);
-  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.08);
+.siw-field input:focus {
+  border-color: var(--siw-border-strong);
+  background: var(--siw-surface);
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.18);
 }
 
-.subtitle-workbench-btn-close {
-  border-color: rgba(254, 202, 202, 0.7);
-  background: rgba(255, 241, 242, 0.7);
-  color: rgb(225 29 72);
+.siw-field input[readonly] {
+  color: var(--siw-muted);
 }
 
-.subtitle-workbench-header .rounded-full {
-  border-radius: 8px;
+.siw-preview {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  border: 1px dashed var(--siw-border-strong);
+  border-radius: 12px;
+  background: var(--siw-surface-soft);
+  padding: 10px 11px;
 }
 
-.import-workbench-modal :deep(.el-button),
-.import-workbench-modal :deep(.el-button--default),
-.import-workbench-modal :deep(.el-button--primary) {
-  min-height: 32px;
-  border-radius: 8px;
+.siw-preview strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--siw-text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.siw-rename-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--siw-border);
+}
+
+.siw-form-btn {
+  min-height: 34px;
+  gap: 6px;
+  border-radius: 10px;
+  padding: 0 13px;
   font-size: 12px;
-  font-weight: 600;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.import-workbench-modal :deep(.el-button--default) {
-  border-color: rgb(226 232 240);
-  background: #fff;
-  color: rgb(51 65 85);
+.siw-form-btn.is-primary {
+  border-color: #111827;
+  background: #111827;
+  color: #ffffff;
 }
 
-.import-workbench-modal :deep(.el-button--default:hover) {
-  border-color: rgb(203 213 225);
-  background: rgb(248 250 252);
-  color: rgb(15 23 42);
+.siw-dialog-fade-enter-active,
+.siw-dialog-fade-leave-active {
+  transition: opacity 0.2s ease;
 }
 
-.import-workbench-modal :deep(.el-button--primary) {
-  border-color: rgb(15 23 42);
-  background: rgb(15 23 42);
-  color: #fff;
-  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.18);
+.siw-dialog-fade-enter-active .siw-rename-card,
+.siw-dialog-fade-leave-active .siw-rename-card {
+  transition: transform 0.22s ease, opacity 0.22s ease;
 }
 
-.import-workbench-modal :deep(.el-button--primary:hover) {
-  background: rgb(30 41 59);
+.siw-dialog-fade-enter-from,
+.siw-dialog-fade-leave-to {
+  opacity: 0;
 }
 
-.import-workbench-modal :deep(.el-input__wrapper),
-.import-workbench-modal :deep(.el-select__wrapper) {
-  border-radius: 8px;
-  background: rgb(248 250 252);
-  box-shadow: 0 0 0 1px rgb(226 232 240) inset;
+.siw-dialog-fade-enter-from .siw-rename-card,
+.siw-dialog-fade-leave-to .siw-rename-card {
+  opacity: 0;
 }
 
-.import-workbench-modal :deep(.el-input__wrapper.is-focus),
-.import-workbench-modal :deep(.el-select__wrapper.is-focused) {
-  background: #fff;
-  box-shadow: 0 0 0 1px rgb(203 213 225) inset, 0 0 0 3px rgb(226 232 240);
+@keyframes siw-spin {
+  to { transform: rotate(360deg); }
 }
 
-.import-workbench-modal :deep(.el-radio-button__inner) {
-  border-radius: 8px;
-}
-
-.import-workbench-modal :deep(.el-alert) {
-  border-radius: 12px;
-  border: 1px solid rgb(226 232 240);
-  background: #fff;
-}
-
-.import-workbench-toolbar,
-.import-task-list-card,
-.import-task-detail,
-.import-config-card,
-.import-filter-editor,
-.candidate-item,
-.import-retarget-current,
-.import-cleanup-summary,
-.import-task-placeholder {
-  border: 1px solid rgb(226 232 240);
-  border-radius: 14px;
-  background: #fff;
-  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
-}
-
-.import-task-row {
-  border: 1px solid rgb(226 232 240);
-  border-radius: 12px;
-  background: #fff;
-  box-shadow: none;
-}
-
-.import-task-row:hover {
-  border-color: rgb(203 213 225);
-  background: rgb(248 250 252);
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
-}
-
-.import-task-row.active {
-  border-color: rgb(15 23 42);
-  background: rgb(248 250 252);
-  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.12);
-}
-
-.toolbar-pill,
-.import-task-row-rj,
-.import-chip,
-.import-chip-primary,
-.task-status-pill {
-  border-radius: 8px;
-  border-color: rgb(226 232 240);
-  background: rgb(248 250 252);
-  color: rgb(71 85 105);
-  box-shadow: none;
-}
-
-.toolbar-pill-primary,
-.toolbar-pill-success,
-.toolbar-pill-danger,
-.import-chip-primary {
-  border-color: rgb(226 232 240);
-  background: rgb(248 250 252);
-  color: rgb(51 65 85);
-}
-
-.candidate-item:hover {
-  border-color: rgb(203 213 225);
-  background: rgb(248 250 252);
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
-}
-
-.candidate-item :deep(.el-radio__input.is-checked .el-radio__inner) {
-  background: rgb(15 23 42);
-  border-color: rgb(15 23 42);
-}
-
-.import-task-main > :deep(.subtitle-inspector-workbench),
-.import-task-main > :deep(.el-card) {
-  border-radius: 14px;
-}
-
-/* ============================================================
- * 移动端 (≤640)：解锁 dialog body 与 shell 的高度限制（Phase 2.4 顺带修复）
- * 全局规则会把 .subtitle-workbench-dialog 在 ≤640 改成 100vw/100dvh，
- * 但本组件 :global(.subtitle-import-workbench-dialog .el-dialog__body) 的
- * max-height: calc(100vh - 18px) 与 .subtitle-workbench-shell 的
- * min-height: 78vh / max-height: 92vh 会留 8%~ 间隙、撑不满全屏 dialog。
- * 这里只在 ≤640 解锁这些限制，桌面端零改动。
- * 内部 SubtitleWorkbenchStage 三栏的"分步抽屉化"留给 Phase 4。
- * ============================================================ */
-@media (max-width: 640px) {
-  .subtitle-workbench-shell {
-    min-height: 100% !important;
-    max-height: 100% !important;
-    height: 100% !important;
-    border-radius: 0 !important;
-    border: 0 !important;
-    box-shadow: none !important;
+@media (max-width: 760px) {
+  .siw-shell {
+    height: 100dvh;
+    min-height: 100dvh;
+    max-height: 100dvh;
+    border-radius: 0;
+    border: 0;
   }
-  .subtitle-workbench-header {
-    padding: 12px 14px !important;
+
+  .siw-header {
+    align-items: flex-start;
+    flex-direction: column;
     gap: 10px;
-    flex-wrap: wrap;
+    min-height: 0;
+    padding: 12px;
   }
-  .subtitle-workbench-body {
-    padding: 12px !important;
+
+  .siw-actions {
+    display: grid;
+    width: 100%;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .siw-action-btn {
+    width: 100%;
+    padding: 0 7px;
+  }
+
+  .siw-stage-wrap {
+    padding: 8px;
   }
 }
 
-@media (max-width: 640px) {
-  :global(.subtitle-import-workbench-dialog) {
-    border-radius: 0 !important;
-    box-shadow: none !important;
-    background: transparent !important;
-  }
-  :global(.subtitle-import-workbench-dialog .el-dialog__body) {
-    max-height: none !important;
-    height: 100dvh !important;
-    overflow: hidden !important;
-  }
+:global(html.kikoerumanager-dark .subtitle-import-workbench),
+:global(body.kikoerumanager-dark .subtitle-import-workbench),
+:global(.kikoerumanager-dark .subtitle-import-workbench) {
+  --siw-bg: var(--km-dark-bg);
+  --siw-surface: var(--km-dark-surface);
+  --siw-surface-soft: var(--km-dark-elevated);
+  --siw-border: var(--km-dark-border);
+  --siw-border-strong: var(--km-dark-border-strong);
+  --siw-text: var(--km-dark-text-strong);
+  --siw-muted: var(--km-dark-text-muted);
+  --siw-soft: var(--km-dark-text-subtle);
+  --siw-shadow: none;
+}
+
+:global(html.kikoerumanager-dark .subtitle-import-workbench .siw-shell),
+:global(body.kikoerumanager-dark .subtitle-import-workbench .siw-shell),
+:global(.kikoerumanager-dark .subtitle-import-workbench .siw-shell),
+:global(html.kikoerumanager-dark .siw-rename-card),
+:global(body.kikoerumanager-dark .siw-rename-card),
+:global(.kikoerumanager-dark .siw-rename-card) {
+  background: var(--km-dark-surface) !important;
+  border-color: var(--km-dark-border) !important;
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark .subtitle-import-workbench .siw-header),
+:global(body.kikoerumanager-dark .subtitle-import-workbench .siw-header),
+:global(.kikoerumanager-dark .subtitle-import-workbench .siw-header) {
+  background: var(--km-dark-surface) !important;
+  border-color: var(--km-dark-border) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-import-workbench .siw-stage-wrap),
+:global(body.kikoerumanager-dark .subtitle-import-workbench .siw-stage-wrap),
+:global(.kikoerumanager-dark .subtitle-import-workbench .siw-stage-wrap) {
+  background: var(--km-dark-bg) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-import-workbench .siw-brand),
+:global(body.kikoerumanager-dark .subtitle-import-workbench .siw-brand),
+:global(.kikoerumanager-dark .subtitle-import-workbench .siw-brand) {
+  border-color: rgba(167, 139, 250, 0.38);
+  background: rgba(139, 92, 246, 0.16);
+  color: #c4b5fd;
+}
+
+:global(html.kikoerumanager-dark .siw-form-btn.is-primary),
+:global(body.kikoerumanager-dark .siw-form-btn.is-primary),
+:global(.kikoerumanager-dark .siw-form-btn.is-primary) {
+  border-color: var(--km-dark-border-strong);
+  background: var(--km-dark-primary-button-bg);
+  color: var(--km-dark-primary-button-text);
+}
+
+:global(html.kikoerumanager-dark .subtitle-import-workbench .siw-live-pill),
+:global(body.kikoerumanager-dark .subtitle-import-workbench .siw-live-pill),
+:global(.kikoerumanager-dark .subtitle-import-workbench .siw-live-pill) {
+  border-color: rgba(126, 211, 169, 0.26);
+  background: rgba(126, 211, 169, 0.12);
+  color: var(--km-dark-green);
+}
+
+:global(html.kikoerumanager-dark .subtitle-import-workbench .siw-action-btn),
+:global(body.kikoerumanager-dark .subtitle-import-workbench .siw-action-btn),
+:global(.kikoerumanager-dark .subtitle-import-workbench .siw-action-btn) {
+  background: var(--km-dark-button-bg) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-import-workbench .siw-action-btn:hover:enabled),
+:global(body.kikoerumanager-dark .subtitle-import-workbench .siw-action-btn:hover:enabled),
+:global(.kikoerumanager-dark .subtitle-import-workbench .siw-action-btn:hover:enabled) {
+  background: var(--km-dark-button-bg-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-import-workbench .siw-action-btn.is-close),
+:global(body.kikoerumanager-dark .subtitle-import-workbench .siw-action-btn.is-close),
+:global(.kikoerumanager-dark .subtitle-import-workbench .siw-action-btn.is-close) {
+  border-color: rgba(251, 113, 133, 0.24);
+  background: rgba(251, 113, 133, 0.1);
+  color: var(--km-dark-red);
+}
+
+:global(html.kikoerumanager-dark) .siw-rename-overlay,
+:global(body.kikoerumanager-dark) .siw-rename-overlay,
+:global(.kikoerumanager-dark) .siw-rename-overlay {
+  background: rgba(0, 0, 0, 0.34);
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-import-workbench .bg-white),
+:global(body.kikoerumanager-dark .subtitle-import-workbench .bg-white),
+:global(.kikoerumanager-dark .subtitle-import-workbench .bg-white),
+:global(html.kikoerumanager-dark .subtitle-import-workbench [class*="bg-white"]),
+:global(body.kikoerumanager-dark .subtitle-import-workbench [class*="bg-white"]),
+:global(.kikoerumanager-dark .subtitle-import-workbench [class*="bg-white"]) {
+  background-color: var(--km-dark-surface) !important;
+  background-image: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-import-workbench .bg-slate-50),
+:global(body.kikoerumanager-dark .subtitle-import-workbench .bg-slate-50),
+:global(.kikoerumanager-dark .subtitle-import-workbench .bg-slate-50),
+:global(html.kikoerumanager-dark .subtitle-import-workbench .bg-slate-100),
+:global(body.kikoerumanager-dark .subtitle-import-workbench .bg-slate-100),
+:global(.kikoerumanager-dark .subtitle-import-workbench .bg-slate-100),
+:global(html.kikoerumanager-dark .subtitle-import-workbench [class*="bg-slate-50"]),
+:global(body.kikoerumanager-dark .subtitle-import-workbench [class*="bg-slate-50"]),
+:global(.kikoerumanager-dark .subtitle-import-workbench [class*="bg-slate-50"]),
+:global(html.kikoerumanager-dark .subtitle-import-workbench [class*="bg-slate-100"]),
+:global(body.kikoerumanager-dark .subtitle-import-workbench [class*="bg-slate-100"]),
+:global(.kikoerumanager-dark .subtitle-import-workbench [class*="bg-slate-100"]) {
+  background-color: var(--km-dark-elevated) !important;
+  background-image: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-import-workbench .border-slate-100),
+:global(body.kikoerumanager-dark .subtitle-import-workbench .border-slate-100),
+:global(.kikoerumanager-dark .subtitle-import-workbench .border-slate-100),
+:global(html.kikoerumanager-dark .subtitle-import-workbench .border-slate-200),
+:global(body.kikoerumanager-dark .subtitle-import-workbench .border-slate-200),
+:global(.kikoerumanager-dark .subtitle-import-workbench .border-slate-200),
+:global(html.kikoerumanager-dark .subtitle-import-workbench [class*="border-slate-100"]),
+:global(body.kikoerumanager-dark .subtitle-import-workbench [class*="border-slate-100"]),
+:global(.kikoerumanager-dark .subtitle-import-workbench [class*="border-slate-100"]),
+:global(html.kikoerumanager-dark .subtitle-import-workbench [class*="border-slate-200"]),
+:global(body.kikoerumanager-dark .subtitle-import-workbench [class*="border-slate-200"]),
+:global(.kikoerumanager-dark .subtitle-import-workbench [class*="border-slate-200"]) {
+  border-color: var(--km-dark-border) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-import-workbench .text-slate-900),
+:global(body.kikoerumanager-dark .subtitle-import-workbench .text-slate-900),
+:global(.kikoerumanager-dark .subtitle-import-workbench .text-slate-900),
+:global(html.kikoerumanager-dark .subtitle-import-workbench .text-slate-800),
+:global(body.kikoerumanager-dark .subtitle-import-workbench .text-slate-800),
+:global(.kikoerumanager-dark .subtitle-import-workbench .text-slate-800),
+:global(html.kikoerumanager-dark .subtitle-import-workbench .text-slate-700),
+:global(body.kikoerumanager-dark .subtitle-import-workbench .text-slate-700),
+:global(.kikoerumanager-dark .subtitle-import-workbench .text-slate-700) {
+  color: var(--km-dark-text-strong) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-import-workbench .text-slate-600),
+:global(body.kikoerumanager-dark .subtitle-import-workbench .text-slate-600),
+:global(.kikoerumanager-dark .subtitle-import-workbench .text-slate-600),
+:global(html.kikoerumanager-dark .subtitle-import-workbench .text-slate-500),
+:global(body.kikoerumanager-dark .subtitle-import-workbench .text-slate-500),
+:global(.kikoerumanager-dark .subtitle-import-workbench .text-slate-500),
+:global(html.kikoerumanager-dark .subtitle-import-workbench .text-slate-400),
+:global(body.kikoerumanager-dark .subtitle-import-workbench .text-slate-400),
+:global(.kikoerumanager-dark .subtitle-import-workbench .text-slate-400),
+:global(html.kikoerumanager-dark .subtitle-import-workbench .text-slate-300),
+:global(body.kikoerumanager-dark .subtitle-import-workbench .text-slate-300),
+:global(.kikoerumanager-dark .subtitle-import-workbench .text-slate-300) {
+  color: var(--km-dark-text-muted) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-import-workbench :is([class*="shadow-"], .shadow-sm, .shadow, .shadow-md, .shadow-lg, .shadow-xl, .shadow-2xl)),
+:global(body.kikoerumanager-dark .subtitle-import-workbench :is([class*="shadow-"], .shadow-sm, .shadow, .shadow-md, .shadow-lg, .shadow-xl, .shadow-2xl)),
+:global(.kikoerumanager-dark .subtitle-import-workbench :is([class*="shadow-"], .shadow-sm, .shadow, .shadow-md, .shadow-lg, .shadow-xl, .shadow-2xl)) {
+  box-shadow: none !important;
 }
 </style>

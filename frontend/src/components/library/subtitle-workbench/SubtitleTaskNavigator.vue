@@ -1,13 +1,10 @@
 <template>
-  <div ref="rootRef" class="grid h-full gap-3.5">
-    <div class="flex items-start justify-between gap-3 max-[1280px]:flex-col max-[1280px]:items-stretch">
+  <div ref="rootRef" class="subtitle-task-navigator grid h-full min-h-0 grid-rows-[auto_auto_minmax(0,1fr)_auto] gap-2.5">
+    <div class="flex items-center justify-between gap-2">
       <div class="min-w-0">
         <div class="flex items-center gap-1.5 text-[14px] font-semibold tracking-[-0.015em] text-slate-900">
-          <ListTodo class="h-3.5 w-3.5 text-indigo-500" :stroke-width="2.2" />
+          <ListTodo class="h-3.5 w-3.5 text-violet-500" :stroke-width="2.2" />
           <span>执行队列</span>
-        </div>
-        <div class="mt-1 max-w-[24ch] text-[11px] leading-relaxed text-slate-500">
-          活跃任务会自动置顶，点击任意卡片可直达中央工位。
         </div>
       </div>
 
@@ -43,42 +40,37 @@
       </div>
     </div>
 
-    <div class="overflow-hidden rounded-[12px] border border-slate-100 bg-white">
+    <div class="subtitle-queue-overview">
       <button
         v-for="(item, idx) in ctx.subtitleTaskManualOverview"
         :key="item.key"
         type="button"
-        class="group relative flex w-full items-center gap-2.5 px-3 py-2 text-left transition-all duration-200 ease-out hover:bg-slate-50/80"
-        :class="[
-          idx > 0 ? 'border-t border-slate-100' : '',
-          ctx.subtitleTaskManualFilter === item.key ? 'bg-slate-50' : ''
-        ]"
+        class="subtitle-queue-filter group"
+        :class="{ 'is-active': ctx.subtitleTaskManualFilter === item.key }"
+        :aria-pressed="ctx.subtitleTaskManualFilter === item.key"
         @click="ctx.setSubtitleTaskManualFilter(item.key)"
       >
         <span
-          class="absolute left-0 top-1/2 h-[18px] w-[3px] -translate-y-1/2 rounded-r-full transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
-          :class="ctx.subtitleTaskManualFilter === item.key ? 'bg-slate-900 opacity-100' : 'bg-slate-900 opacity-0 group-hover:opacity-30'"
+          class="subtitle-queue-active-mark"
+          :class="{ 'is-active': ctx.subtitleTaskManualFilter === item.key }"
         ></span>
         <span
-          class="h-1.5 w-1.5 flex-shrink-0 rounded-full transition-all duration-200"
+          class="subtitle-queue-dot"
           :class="statDotClass(item.key)"
         ></span>
         <span
-          class="flex-1 text-[11.5px] text-slate-900 transition-colors duration-200"
-          :class="ctx.subtitleTaskManualFilter === item.key ? 'font-semibold' : 'font-medium'"
+          class="subtitle-queue-label"
         >{{ item.label }}</span>
         <span
-          class="tabular-nums text-[13px] leading-none transition-colors duration-200"
-          :class="ctx.subtitleTaskManualFilter === item.key
-            ? 'font-bold text-slate-900'
-            : item.value > 0 ? 'font-semibold text-slate-900' : 'font-medium text-slate-300'"
+          class="subtitle-queue-count"
+          :class="{ 'is-active': ctx.subtitleTaskManualFilter === item.key, 'has-value': item.value > 0 }"
         >{{ item.value }}</span>
       </button>
     </div>
 
-    <AppEmptyState v-if="!ctx.subtitleQueueTasks.length" description="暂无字幕任务" size="sm" />
+    <AppEmptyState v-if="!visibleTasks.length" :description="ctx.subtitleQueueTasks.length ? '当前筛选暂无任务' : '暂无字幕任务'" size="sm" />
 
-    <TransitionGroup v-else tag="div" name="sub-task-item" class="grid content-start gap-2">
+    <TransitionGroup v-else tag="div" name="sub-task-item" class="grid min-h-0 content-start gap-2 overflow-hidden">
       <button
         v-for="task in pagedTasks"
         :key="task.id"
@@ -230,17 +222,18 @@ const clearActions = computed(() => [
   { key: 'finished', label: '清理全部已结束', count: props.ctx?.subtitleClearableTaskCounts?.finished || 0 }
 ])
 
-const totalPages = computed(() => Math.max(1, Math.ceil((props.ctx?.subtitleQueueTasks?.length || 0) / PAGE_SIZE)))
+const visibleTasks = computed(() => props.ctx?.visibleSubtitleTasks || props.ctx?.subtitleQueueTasks || [])
+const totalPages = computed(() => Math.max(1, Math.ceil(visibleTasks.value.length / PAGE_SIZE)))
 const pagedTasks = computed(() => {
   const start = (currentPage.value - 1) * PAGE_SIZE
-  return (props.ctx?.subtitleQueueTasks || []).slice(start, start + PAGE_SIZE)
+  return visibleTasks.value.slice(start, start + PAGE_SIZE)
 })
 
 watch(() => props.ctx?.subtitleTaskManualFilter, () => {
   currentPage.value = 1
 })
 
-watch(() => props.ctx?.subtitleQueueTasks?.length, () => {
+watch(() => visibleTasks.value.length, () => {
   if (currentPage.value > totalPages.value) currentPage.value = totalPages.value
 })
 
@@ -266,7 +259,7 @@ watch(
   () => props.ctx?.selectedSubtitleTaskId || props.ctx?.activeSubtitleTask?.id || props.ctx?.subtitleActiveTaskId || '',
   (id) => {
     if (!id) return
-    const tasks = props.ctx?.subtitleQueueTasks || []
+    const tasks = visibleTasks.value
     const idx = tasks.findIndex(t => t.id === id)
     if (idx < 0) return
     const targetPage = Math.floor(idx / PAGE_SIZE) + 1
@@ -382,6 +375,7 @@ function statDotClass(key) {
   if (k === 'all' || k === 'total') return 'bg-slate-700'
   if (k === 'pending' || k === 'waiting' || k === 'waiting_manual' || k === 'awaiting_manual_match') return 'bg-amber-400'
   if (k === 'processing') return 'bg-sky-500'
+  if (k === 'clearable') return 'bg-slate-400'
   if (k === 'completed' || k === 'matched' || k === 'manual_match_completed') return 'bg-emerald-500'
   if (k === 'failed') return 'bg-rose-500'
   return 'bg-slate-300'
@@ -402,6 +396,159 @@ function getDisplayFolderName(task) {
 </script>
 
 <style scoped>
+.subtitle-queue-overview {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: 32px;
+  gap: 6px;
+  align-content: start;
+  padding: 6px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.subtitle-queue-filter {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  width: 100%;
+  min-height: 0;
+  height: 32px;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: #f8fafc;
+  padding: 0 8px 0 10px;
+  color: #334155;
+  text-align: left;
+  transition: transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1),
+              background 0.2s ease,
+              border-color 0.2s ease,
+              color 0.2s ease;
+}
+
+.subtitle-queue-filter:hover {
+  transform: translateY(-1px) scale(1.01);
+  border-color: #cbd5e1;
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.subtitle-queue-filter:active {
+  transform: scale(0.96);
+}
+
+.subtitle-task-navigator button:focus,
+.subtitle-task-navigator button:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.subtitle-queue-filter.is-active {
+  border-color: #94a3b8;
+  background: #e8edf4;
+  color: #0f172a;
+}
+
+.subtitle-queue-active-mark {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 16px;
+  border-radius: 0 999px 999px 0;
+  background: #0f172a;
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: opacity 0.24s ease;
+}
+
+.subtitle-queue-filter:hover .subtitle-queue-active-mark {
+  opacity: 0.28;
+}
+
+.subtitle-queue-active-mark.is-active {
+  opacity: 1;
+}
+
+.subtitle-queue-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+}
+
+.subtitle-queue-label {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: currentColor;
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subtitle-queue-count {
+  flex: 0 0 auto;
+  color: #94a3b8;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.subtitle-queue-count.is-active,
+.subtitle-queue-count.has-value {
+  color: #0f172a;
+  font-weight: 800;
+}
+
+:global(html.kikoerumanager-dark .subtitle-queue-overview) {
+  background: #111216 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-queue-filter) {
+  background: #24252a !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  color: rgba(244, 244, 245, 0.86) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-queue-filter:hover) {
+  background: #303136 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-queue-filter.is-active) {
+  background: #34353a !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.26) !important;
+  color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-queue-active-mark) {
+  background: rgba(250, 250, 252, 0.92) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-queue-count) {
+  color: rgba(214, 214, 220, 0.48) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-queue-count.is-active),
+:global(html.kikoerumanager-dark .subtitle-queue-count.has-value) {
+  color: rgba(250, 250, 252, 0.94) !important;
+}
+
 .subtitle-status-flip-enter-active,
 .subtitle-status-flip-leave-active {
   transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.22s ease;

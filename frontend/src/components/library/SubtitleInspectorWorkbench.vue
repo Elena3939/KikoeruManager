@@ -1,5 +1,5 @@
 ﻿<template>
-  <div :class="immersive ? 'flex flex-col min-h-0' : 'flex flex-col min-h-0 rounded-[18px] border border-slate-200 bg-white'">
+  <div :class="immersive ? 'subtitle-inspector-workbench-root flex h-full min-h-0 flex-col overflow-hidden' : 'flex flex-col min-h-0 rounded-[18px] border border-slate-200 bg-white'">
     <div v-if="!immersive" class="flex items-center justify-between gap-3 px-5 py-3.5 border-b border-slate-100">
       <div class="flex flex-col gap-0.5 min-w-0">
         <div class="flex items-center gap-2">
@@ -32,7 +32,7 @@
       </AppEmptyState>
     </div>
 
-    <div v-else class="flex flex-col gap-3 p-4 min-h-0" v-app-loading="{ loading: view.subtitleInspectorBusy, text: '正在处理字幕目录...', size: 124 }">
+    <div v-else class="subtitle-inspector-workbench-scroll flex min-h-0 flex-col gap-3 overflow-auto p-3" v-app-loading="{ loading: view.subtitleInspectorBusy, text: '正在处理字幕目录...', size: 124 }">
       <div class="flex items-center justify-between gap-3 flex-wrap px-4 py-3 rounded-[12px] border border-slate-200 bg-white">
 
         <div class="flex items-center gap-2.5 min-w-0">
@@ -585,4 +585,7 @@ function getSubtitlePairRenamePreview(pair = {}) {
 }
 .sub-stage-fade-enter-active, .sub-stage-fade-leave-active { transition: all 0.25s ease; }
 .sub-stage-fade-enter-from, .sub-stage-fade-leave-to { opacity: 0; transform: translateY(-4px); }
+.subtitle-inspector-workbench-scroll { scrollbar-gutter: stable; }
+.subtitle-inspector-workbench-scroll::-webkit-scrollbar { width: 6px; }
+.subtitle-inspector-workbench-scroll::-webkit-scrollbar-thumb { border-radius: 999px; background: rgba(148, 163, 184, 0.36); }
 </style>

@@ -35,9 +35,9 @@ defineEmits(['update:modelValue'])
   display: flex;
   flex-direction: column;
   border-radius: 14px;
-  background: #fff;
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -16px rgba(15, 23, 42, 0.08);
+  background: var(--asmr-surface);
+  border: 1px solid var(--asmr-border);
+  box-shadow: var(--asmr-card-shadow);
   overflow: hidden;
 }
 .asmr-card-head {
@@ -47,8 +47,8 @@ defineEmits(['update:modelValue'])
   gap: 12px;
   flex-wrap: wrap;
   padding: 14px 18px;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.05);
-  background: linear-gradient(180deg, #fbfcfe 0%, #f8fafc 100%);
+  border-bottom: 1px solid var(--asmr-border);
+  background: var(--asmr-surface-soft);
 }
 .asmr-card-head-title {
   display: flex;
@@ -61,10 +61,10 @@ defineEmits(['update:modelValue'])
   font-size: 14px;
   font-weight: 600;
   letter-spacing: 0;
-  color: #0f172a;
+  color: var(--asmr-text-strong);
 }
 .asmr-card-head-icon {
-  color: #2563eb;
+  color: var(--asmr-accent);
   flex-shrink: 0;
 }
 .asmr-card-body {
@@ -78,6 +78,23 @@ defineEmits(['update:modelValue'])
 .scan-input {
   flex: 1 1 auto;
   min-width: 0;
+}
+.scan-input :deep(.el-input__wrapper) {
+  background: var(--asmr-field-bg);
+  border: 1px solid var(--asmr-border);
+  box-shadow: none;
+}
+.scan-input :deep(.el-input__wrapper:hover),
+.scan-input :deep(.el-input__wrapper.is-focus) {
+  background: var(--asmr-field-bg-focus);
+  border-color: var(--asmr-border-strong);
+  box-shadow: 0 0 0 3px var(--asmr-focus-ring);
+}
+.scan-input :deep(.el-input__inner) {
+  color: var(--asmr-text-strong);
+}
+.scan-input :deep(.el-input__inner::placeholder) {
+  color: var(--asmr-field-placeholder);
 }
 @media (max-width: 640px) {
   .asmr-card {
