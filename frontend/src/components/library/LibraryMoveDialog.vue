@@ -1474,12 +1474,12 @@ onBeforeUnmount(() => {
 }
 
 .nav-splitter:hover .nav-splitter-line {
-  background: rgba(14, 165, 233, 0.55);
+  background: rgba(100, 116, 139, 0.55);
 }
 
 .nav-splitter-active .nav-splitter-line,
 .nav-splitter:active .nav-splitter-line {
-  background: rgba(14, 165, 233, 0.9);
+  background: rgba(100, 116, 139, 0.9);
 }
 
 .nav-section-title {
@@ -1526,12 +1526,12 @@ onBeforeUnmount(() => {
 }
 
 .nav-row-active {
-  background: rgba(186, 230, 253, 0.55);
-  color: #0c4a6e;
+  background: rgba(148, 163, 184, 0.18);
+  color: #334155;
   font-weight: 600;
 }
 
-.nav-row-active:hover { background: rgba(186, 230, 253, 0.7); }
+.nav-row-active:hover { background: rgba(148, 163, 184, 0.24); }
 
 .nav-expander {
   display: inline-flex;
@@ -1555,8 +1555,6 @@ onBeforeUnmount(() => {
   color: #64748b;
   flex-shrink: 0;
 }
-
-.nav-row-active .nav-disk-icon { color: #0284c7; }
 
 .nav-row-name {
   flex: 1 1 auto;
@@ -1631,7 +1629,7 @@ onBeforeUnmount(() => {
   color: #334155;
 }
 .fm-head-cell-active {
-  color: #3b82f6;
+  color: #475569;
 }
 .fm-head-arrow {
   flex-shrink: 0;
@@ -1651,7 +1649,7 @@ onBeforeUnmount(() => {
 }
 
 .fm-body:focus-visible {
-  box-shadow: inset 0 0 0 2px rgba(125, 211, 252, 0.6);
+  box-shadow: none;
 }
 
 .fm-state {
@@ -1682,7 +1680,7 @@ onBeforeUnmount(() => {
 }
 
 .fm-loading-icon {
-  color: #0284c7;
+  color: #64748b;
   animation: fm-loading-spin 1.1s linear infinite;
 }
 
@@ -1821,15 +1819,15 @@ onBeforeUnmount(() => {
 }
 
 .fm-row-selected {
-  background: rgba(186, 230, 253, 0.45);
-  box-shadow: inset 0 0 0 1px rgba(2, 132, 199, 0.16);
+  background: rgba(148, 163, 184, 0.18);
+  box-shadow: none;
 }
 
-.fm-row-selected:hover { background: rgba(186, 230, 253, 0.6); }
+.fm-row-selected:hover { background: rgba(148, 163, 184, 0.24); }
 
 .fm-row-selected .fm-cell-size,
 .fm-row-selected .fm-cell-time {
-  color: #0c4a6e;
+  color: #475569;
 }
 
 /* 源所在行只用轻度 opacity 表达，不再加左侧竖条。 */
@@ -2164,9 +2162,10 @@ html.kikoerumanager-dark .lib-move-modal .nav-row-active.nav-row-source:hover,
 html.kikoerumanager-dark .lib-move-modal .fm-row-selected,
 html.kikoerumanager-dark .lib-move-modal .fm-row-selected:hover,
 html.kikoerumanager-dark .lib-move-modal .fm-row-selected.fm-row-self {
-  background: rgba(255, 255, 255, 0.16) !important;
+  background: #333438 !important;
+  background-image: none !important;
   color: var(--km-dark-text-strong) !important;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .lib-move-modal .nav-row:hover,
@@ -2175,16 +2174,10 @@ html.kikoerumanager-dark .lib-move-modal .fm-row:hover {
 }
 
 html.kikoerumanager-dark .lib-move-modal .nav-row:hover {
-  background: transparent !important;
-  transform: translate3d(0, -2px, 0) !important;
-  box-shadow:
-    0 8px 18px rgba(0, 0, 0, 0.22),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.1) !important;
-}
-
-html.kikoerumanager-dark .lib-move-modal .nav-row-active .nav-disk-icon,
-html.kikoerumanager-dark .lib-move-modal .nav-row-active .nav-folder-icon {
-  color: #f59e0b !important;
+  background: #2b2c30 !important;
+  background-image: none !important;
+  transform: none !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .lib-move-modal .fm-row-selected .fm-cell-size,
@@ -2197,8 +2190,62 @@ html.kikoerumanager-dark .lib-move-modal .fm-head-cell:hover {
   color: var(--km-dark-text-strong) !important;
 }
 
+html.kikoerumanager-dark .lib-move-modal :is(
+  button,
+  input,
+  textarea,
+  select,
+  [tabindex],
+  [role="button"],
+  .fm-body,
+  .nav-row,
+  .fm-row,
+  .crumb-btn,
+  .fm-icon-btn,
+  .search-input,
+  .secondary-cta,
+  .primary-cta,
+  .interactive-chip
+):focus,
+html.kikoerumanager-dark .lib-move-modal :is(
+  button,
+  input,
+  textarea,
+  select,
+  [tabindex],
+  [role="button"],
+  .fm-body,
+  .nav-row,
+  .fm-row,
+  .crumb-btn,
+  .fm-icon-btn,
+  .search-input,
+  .secondary-cta,
+  .primary-cta,
+  .interactive-chip
+):focus-visible,
+html.kikoerumanager-dark .lib-move-modal .search-input:focus {
+  --tw-ring-color: transparent !important;
+  --tw-ring-offset-shadow: 0 0 #0000 !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
+  outline: 0 !important;
+  outline-offset: 0 !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .search-input:focus {
+  border-color: rgba(255, 255, 255, 0.16) !important;
+}
+
 html.kikoerumanager-dark .lib-move-modal .fm-body:focus-visible {
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.16) !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .nav-splitter:hover .nav-splitter-line,
+html.kikoerumanager-dark .lib-move-modal .nav-splitter-active .nav-splitter-line,
+html.kikoerumanager-dark .lib-move-modal .nav-splitter:active .nav-splitter-line {
+  background: rgba(255, 255, 255, 0.28) !important;
 }
 
 html.kikoerumanager-dark .lib-move-modal .fm-loading-icon {

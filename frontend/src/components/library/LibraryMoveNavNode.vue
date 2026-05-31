@@ -139,12 +139,12 @@ function normalizePath (path) {
 }
 
 .nav-row-active {
-  background: rgba(186, 230, 253, 0.55);
-  color: #0c4a6e;
+  background: rgba(148, 163, 184, 0.18);
+  color: #334155;
   font-weight: 600;
 }
 
-.nav-row-active:hover { background: rgba(186, 230, 253, 0.7); }
+.nav-row-active:hover { background: rgba(148, 163, 184, 0.24); }
 
 .nav-expander {
   display: inline-flex;
@@ -170,8 +170,6 @@ function normalizePath (path) {
   stroke: currentColor;
   flex-shrink: 0;
 }
-
-.nav-row-active .nav-folder-icon { color: #d97706; }
 
 .nav-row-name {
   flex: 1 1 auto;
@@ -205,23 +203,19 @@ function normalizePath (path) {
 }
 
 :global(html.kikoerumanager-dark) .lib-move-modal .nav-row:hover {
-  background: transparent !important;
+  background: #2b2c30 !important;
+  background-image: none !important;
   color: var(--km-dark-text-strong) !important;
-  transform: translate3d(0, -2px, 0) !important;
-  box-shadow:
-    0 8px 18px rgba(0, 0, 0, 0.22),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.1) !important;
+  transform: none !important;
+  box-shadow: none !important;
 }
 
 :global(html.kikoerumanager-dark) .lib-move-modal .nav-row-active,
 :global(html.kikoerumanager-dark) .lib-move-modal .nav-row-active:hover {
-  background: #3a3b40 !important;
+  background: #333438 !important;
+  background-image: none !important;
   color: var(--km-dark-text-strong) !important;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16) !important;
-}
-
-:global(html.kikoerumanager-dark) .lib-move-modal .nav-row-active .nav-folder-icon {
-  color: #f59e0b !important;
+  box-shadow: none !important;
 }
 
 :global(html.kikoerumanager-dark) .lib-move-modal .nav-row-meta {

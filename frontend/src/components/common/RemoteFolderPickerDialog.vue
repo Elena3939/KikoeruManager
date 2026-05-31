@@ -237,7 +237,7 @@
           </div>
           <div
             ref="listScrollRef"
-            class="fm-body flex-1 overflow-y-auto"
+            class="fm-body flex-1 min-w-0 min-h-0"
             tabindex="0"
             @keydown="handleListKeydown"
           >
@@ -1293,6 +1293,8 @@ onBeforeUnmount(() => {
 /* 主区 ---------------------------------------------------------- */
 .explorer-main {
   background: rgba(255, 255, 255, 0.4);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .explorer-nav {
@@ -1440,6 +1442,8 @@ onBeforeUnmount(() => {
 /* 右侧：表头 / 行 ---------------------------------------------- */
 .explorer-list {
   background: white;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .fm-head {
@@ -1454,6 +1458,8 @@ onBeforeUnmount(() => {
   font-weight: 600;
   color: #64748b;
   letter-spacing: 0.3px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .fm-head .fm-cell-time {
@@ -1509,6 +1515,9 @@ onBeforeUnmount(() => {
   flex-direction: column;
   padding: 4px 0;
   outline: none;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .fm-soft-hint {
@@ -1617,8 +1626,11 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 200px;
   align-items: center;
+  width: 100%;
+  min-width: 0;
   padding: 0 18px;
   min-height: 32px;
+  box-sizing: border-box;
   cursor: pointer;
   user-select: none;
   font-size: 12.5px;
@@ -1672,6 +1684,7 @@ onBeforeUnmount(() => {
 .fm-cell-name {
   gap: 8px;
   padding-right: 12px;
+  overflow: hidden;
 }
 
 .fm-cell-time {
@@ -1699,12 +1712,18 @@ onBeforeUnmount(() => {
 .fm-name-wrap {
   flex: 1 1 auto;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   line-height: 1.25;
 }
 
 .fm-name {
   display: block;
   font-weight: 500;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .fm-name-rel {
@@ -1714,6 +1733,10 @@ onBeforeUnmount(() => {
   font-weight: 400;
   color: #94a3b8;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .fm-row-selected {
@@ -1742,6 +1765,13 @@ onBeforeUnmount(() => {
 .footer-row {
   border-top: 1px solid rgba(15, 23, 42, 0.06);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.4));
+  min-width: 0;
+  overflow: hidden;
+}
+
+.footer-left {
+  min-width: 0;
+  overflow: hidden;
 }
 
 /* 目标 chip ------------------------------------------------------ */
@@ -1754,7 +1784,8 @@ onBeforeUnmount(() => {
   background: rgba(248, 250, 252, 0.92);
   border: 1px solid rgba(15, 23, 42, 0.08);
   min-width: 0;
-  max-width: 520px;
+  max-width: min(520px, 100%);
+  overflow: hidden;
 }
 
 .target-chip-path {
@@ -1763,6 +1794,9 @@ onBeforeUnmount(() => {
   color: #1e293b;
   font-weight: 500;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .rel-chip {
@@ -1775,7 +1809,8 @@ onBeforeUnmount(() => {
   border: 1px solid rgba(2, 132, 199, 0.18);
   font-size: 11px;
   min-width: 0;
-  max-width: 360px;
+  max-width: min(360px, 100%);
+  overflow: hidden;
 }
 
 .rel-chip-default {

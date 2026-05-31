@@ -6,7 +6,7 @@
 
       :icon="IconDatabase"
 
-      icon-color="#1d4ed8"
+      icon-color="var(--km-nav-library-icon)"
 
       :title="labels.pageTitle"
 
@@ -1029,27 +1029,10 @@
 
 
 
-    <el-dialog
+    <Teleport to="body">
+      <div v-if="subtitleDialogVisible" class="subtitle-workbench-overlay" role="presentation">
 
-      v-model="subtitleDialogVisible"
-
-      :show-close="false"
-
-      :destroy-on-close="false"
-
-      :close-on-click-modal="false"
-
-      :close-on-press-escape="false"
-
-      :before-close="handleSubtitleDialogBeforeClose"
-
-      class="subtitle-workbench-dialog"
-
-      align-center
-
-      modal-class="subtitle-workbench-overlay"
-
-    >
+      <div class="subtitle-workbench-dialog" role="dialog" aria-modal="true" aria-labelledby="subtitle-workbench-title">
 
       <div class="subtitle-workbench-shell relative flex w-full min-h-[78vh] max-h-[92vh] flex-col overflow-hidden rounded-[20px] border border-slate-200/80 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.1)]">
 
@@ -1067,7 +1050,7 @@
 
               <div class="flex items-center gap-2">
 
-                <h2 class="text-[17px] font-semibold tracking-[-0.02em] leading-tight text-slate-900">RJ 字幕抓取工作台</h2>
+                <h2 id="subtitle-workbench-title" class="text-[17px] font-semibold tracking-[-0.02em] leading-tight text-slate-900">RJ 字幕抓取工作台</h2>
 
                 <span class="inline-flex items-center gap-1 rounded-full border border-emerald-200/70 bg-emerald-50 px-2 py-0.5 text-[10.5px] font-medium text-emerald-700">
 
@@ -1107,7 +1090,7 @@
 
               class="subtitle-workbench-btn subtitle-workbench-btn-close group inline-flex items-center gap-1.5 rounded-[10px] border border-slate-200/70 bg-slate-50/70 px-3.5 py-2 text-[12.5px] font-medium text-slate-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 hover:text-slate-700 hover:shadow-[0_8px_16px_rgba(0,0,0,0.08)] active:translate-y-0 active:scale-[0.96]"
 
-              @click="hideSubtitleTaskPanelToBackground"
+              @click="closeSubtitleTaskPanel"
 
             >
 
@@ -1121,7 +1104,7 @@
 
         </header>
 
-        <div class="subtitle-workbench-body subtitle-workbench-scrollbar flex-1 min-h-0 overflow-auto bg-gradient-to-b from-[#fafcff] via-white to-[#f6f8ff] p-4">
+        <div class="subtitle-workbench-body flex flex-1 min-h-0 flex-col overflow-hidden bg-gradient-to-b from-[#fafcff] via-white to-[#f6f8ff] p-3">
 
           <SubtitleWorkbenchStage :ctx="subtitleWorkbenchStageCtx" />
 
@@ -1129,31 +1112,61 @@
 
       </div>
 
-    </el-dialog>
+      </div>
+
+      </div>
+    </Teleport>
 
 
 
-    <el-dialog v-model="subtitleRenameDialogVisible" title="重命名字幕文件" width="500px" class="mobile-full-dialog library-simple-dialog">
+    <Teleport to="body">
+      <div v-if="subtitleRenameDialogVisible" class="subtitle-rename-overlay" role="presentation">
+        <section class="subtitle-rename-dialog" role="dialog" aria-modal="true" aria-labelledby="subtitle-rename-title">
+          <header class="subtitle-rename-head">
+            <div>
+              <h3 id="subtitle-rename-title">重命名字幕文件</h3>
+              <p>只修改字幕目录中的当前文件名。</p>
+            </div>
+            <button type="button" class="subtitle-rename-icon-btn" title="关闭" @click="subtitleRenameDialogVisible = false">
+              <IconX class="h-4 w-4" :stroke-width="2.4" />
+            </button>
+          </header>
 
-      <el-form :model="subtitleRenameForm" label-width="80px">
+          <div class="subtitle-rename-body">
+            <label class="subtitle-rename-field">
+              <span>当前名称</span>
+              <input class="subtitle-rename-input" :value="subtitleRenameForm.currentName" disabled />
+            </label>
+            <label class="subtitle-rename-field">
+              <span>新名称</span>
+              <input
+                v-model="subtitleRenameForm.newName"
+                class="subtitle-rename-input"
+                type="text"
+                placeholder="输入新的字幕文件名"
+                @keyup.enter="confirmSubtitleRename"
+              />
+            </label>
+            <div class="subtitle-rename-field">
+              <span>预览</span>
+              <div class="name-preview subtitle-rename-preview">{{ subtitleRenameForm.newName || subtitleRenameForm.currentName }}</div>
+            </div>
+          </div>
 
-        <el-form-item label="当前名称"><el-input v-model="subtitleRenameForm.currentName" disabled /></el-form-item>
-
-        <el-form-item label="新名称"><el-input v-model="subtitleRenameForm.newName" placeholder="输入新的字幕文件名" /></el-form-item>
-
-        <el-form-item label="预览"><div class="name-preview">{{ subtitleRenameForm.newName || subtitleRenameForm.currentName }}</div></el-form-item>
-
-      </el-form>
-
-      <template #footer>
-
-        <el-button @click="subtitleRenameDialogVisible = false">取消</el-button>
-
-        <el-button type="primary" :loading="subtitleRenameLoading" @click="confirmSubtitleRename">确认重命名</el-button>
-
-      </template>
-
-    </el-dialog>
+          <footer class="subtitle-rename-foot">
+            <button type="button" class="subtitle-rename-btn" @click="subtitleRenameDialogVisible = false">取消</button>
+            <button
+              type="button"
+              class="subtitle-rename-btn subtitle-rename-btn-primary"
+              :disabled="subtitleRenameLoading"
+              @click="confirmSubtitleRename"
+            >
+              {{ subtitleRenameLoading ? '重命名中…' : '确认重命名' }}
+            </button>
+          </footer>
+        </section>
+      </div>
+    </Teleport>
 
 
 
@@ -2739,6 +2752,8 @@ const filterDeleteBackgroundPrimaryText = computed(() => {
 const subtitleDialogVisible = ref(false)
 
 const subtitleDialogBackgroundActive = ref(false)
+
+const subtitleTaskPanelClosing = ref(false)
 
 const subtitleSubmitting = ref(false)
 
@@ -10707,14 +10722,6 @@ function hideSubtitleTaskPanelToBackground () {
 
 
 
-function dismissSubtitleBackground () {
-
-  // 只收掉浮动片，不取消、不删除任务；任务继续在后台保持
-
-  subtitleDialogBackgroundActive.value = false
-
-}
-
 function handleSubtitleBackgroundCardAction (action) {
 
   if (action === 'resume') {
@@ -10727,17 +10734,9 @@ function handleSubtitleBackgroundCardAction (action) {
 
   if (action === 'close') {
 
-    dismissSubtitleBackground()
+    closeSubtitleTaskPanel()
 
   }
-
-}
-
-
-
-function handleSubtitleDialogBeforeClose () {
-
-  hideSubtitleTaskPanelToBackground()
 
 }
 
@@ -10745,57 +10744,69 @@ function handleSubtitleDialogBeforeClose () {
 
 async function closeSubtitleTaskPanel () {
 
+  if (subtitleTaskPanelClosing.value) return
+
+  subtitleTaskPanelClosing.value = true
+
+  subtitleDialogBackgroundActive.value = false
+
   const liveTasks = subtitleTasks.value
 
     .map(task => ({ ...task, id: String(task?.id || '').trim() }))
 
     .filter(task => task.id)
 
-  const cancellableTaskIds = liveTasks
+  try {
 
-    .filter(task => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(task?.status || '')))
+    const cancellableTaskIds = liveTasks
 
-    .map(task => task.id)
+      .filter(task => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(task?.status || '')))
 
-  if (cancellableTaskIds.length) {
+      .map(task => task.id)
 
-    await Promise.allSettled(cancellableTaskIds.map(taskId => rjSubtitleApi.cancel(taskId)))
+    if (cancellableTaskIds.length) {
+
+      await Promise.allSettled(cancellableTaskIds.map(taskId => rjSubtitleApi.cancel(taskId)))
+
+    }
+
+    if (liveTasks.length) {
+
+      await Promise.allSettled(liveTasks.map(task => rjSubtitleApi.clearTask(task.id)))
+
+    }
+
+  } finally {
+
+    subtitleDialogBackgroundActive.value = false
+
+    subtitleDialogVisible.value = false
+
+    clearSubtitleStatusPoll()
+
+    subtitleTasks.value = []
+
+    subtitleActiveTaskId.value = ''
+
+    subtitleScanRetryingPath.value = ''
+
+    subtitleSelectionScanCurrent.value = ''
+
+    setSubtitleWorkbenchRailMode('scan')
+
+    setActiveSubtitleWorkbenchStage('overview')
+
+    subtitleWorkbenchDrawerCollapsed.value = false
+
+    clearSubtitleScanWorkspace()
+
+    clearSubtitleInspectorState()
+
+    persistSubtitleScanWorkspace()
+
+    subtitleTaskPanelClosing.value = false
 
   }
-
-  if (liveTasks.length) {
-
-    await Promise.allSettled(liveTasks.map(task => rjSubtitleApi.clearTask(task.id)))
-
-  }
-
-
-
-  subtitleDialogBackgroundActive.value = false
-
-  subtitleDialogVisible.value = false
-
-  clearSubtitleStatusPoll()
-
-  subtitleTasks.value = []
-
-  subtitleActiveTaskId.value = ''
-
-  subtitleScanRetryingPath.value = ''
-
-  subtitleSelectionScanCurrent.value = ''
-
-  setSubtitleWorkbenchRailMode('scan')
-
-  setActiveSubtitleWorkbenchStage('overview')
-
-  subtitleWorkbenchDrawerCollapsed.value = false
-
-  clearSubtitleScanWorkspace()
-
-  clearSubtitleInspectorState()
-
-  persistSubtitleScanWorkspace()
 
 }
 
@@ -17858,7 +17869,6 @@ function statsStatusTextDisplay (stats) {
 }
 
 .library :deep(.app-page-icon) {
-  color: #1d4ed8 !important;
   background: transparent !important;
   border-color: transparent !important;
   box-shadow: none !important;
@@ -22052,6 +22062,251 @@ function statsStatusTextDisplay (stats) {
 
   backdrop-filter: blur(8px);
 
+}
+
+:global(.subtitle-workbench-overlay) {
+  position: fixed;
+  inset: 0;
+  z-index: 2050;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  background: rgba(15, 23, 42, 0.34);
+}
+
+:global(.subtitle-workbench-dialog) {
+  width: min(1480px, calc(100vw - 56px));
+  max-height: calc(100vh - 56px);
+}
+
+:global(.subtitle-workbench-dialog .subtitle-workbench-shell) {
+  margin: 0 auto;
+}
+
+:global(.subtitle-rename-overlay) {
+  position: fixed;
+  inset: 0;
+  z-index: 2120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.34);
+}
+
+:global(.subtitle-rename-dialog) {
+  width: min(500px, calc(100vw - 48px));
+  overflow: hidden;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.22);
+}
+
+:global(.subtitle-rename-head) {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+:global(.subtitle-rename-head h3) {
+  margin: 0;
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+:global(.subtitle-rename-head p) {
+  margin: 5px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+:global(.subtitle-rename-icon-btn) {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+:global(.subtitle-rename-icon-btn:hover) {
+  transform: translateY(-2px) scale(1.02);
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+:global(.subtitle-rename-body) {
+  display: grid;
+  gap: 12px;
+  padding: 18px 20px;
+}
+
+:global(.subtitle-rename-field) {
+  display: grid;
+  gap: 6px;
+}
+
+:global(.subtitle-rename-field > span) {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+:global(.subtitle-rename-input) {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid #d8e1ec;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 0 12px;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 700;
+  outline: none;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+:global(.subtitle-rename-input:disabled) {
+  background: #f8fafc;
+  color: #64748b;
+}
+
+:global(.subtitle-rename-input:hover:not(:disabled)),
+:global(.subtitle-rename-input:focus) {
+  border-color: #cbd5e1;
+  box-shadow: 0 0 0 3px rgba(100, 116, 139, 0.1);
+}
+
+:global(.subtitle-rename-preview) {
+  min-height: 38px;
+  border-radius: 12px;
+  border-color: #d8e1ec !important;
+  background: #f8fafc !important;
+  padding: 9px 12px !important;
+  color: #334155 !important;
+}
+
+:global(.subtitle-rename-foot) {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 20px 18px;
+  border-top: 1px solid #eef2f7;
+}
+
+:global(.subtitle-rename-btn) {
+  min-height: 38px;
+  border: 1px solid #d8e1ec;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 0 16px;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+:global(.subtitle-rename-btn:hover:not(:disabled)) {
+  transform: translateY(-2px) scale(1.02);
+  border-color: #cbd5e1;
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+:global(.subtitle-rename-btn:active:not(:disabled)) {
+  transform: scale(0.96);
+}
+
+:global(.subtitle-rename-btn:disabled) {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+:global(.subtitle-rename-btn-primary) {
+  border-color: #111827;
+  background: #111827;
+  color: #ffffff;
+}
+
+:global(.subtitle-rename-btn-primary:hover:not(:disabled)) {
+  border-color: #020617;
+  background: #020617;
+  color: #ffffff;
+}
+
+:global(html.kikoerumanager-dark .subtitle-rename-overlay) {
+  background: rgba(0, 0, 0, 0.48);
+}
+
+:global(html.kikoerumanager-dark .subtitle-rename-dialog) {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: #18191d;
+  color: rgba(244, 244, 245, 0.9);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.42);
+}
+
+:global(html.kikoerumanager-dark .subtitle-rename-head),
+:global(html.kikoerumanager-dark .subtitle-rename-foot) {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+:global(html.kikoerumanager-dark .subtitle-rename-head h3) {
+  color: rgba(250, 250, 252, 0.96);
+}
+
+:global(html.kikoerumanager-dark .subtitle-rename-head p),
+:global(html.kikoerumanager-dark .subtitle-rename-field > span) {
+  color: rgba(214, 214, 220, 0.66);
+}
+
+:global(html.kikoerumanager-dark .subtitle-rename-icon-btn),
+:global(html.kikoerumanager-dark .subtitle-rename-btn) {
+  border-color: rgba(255, 255, 255, 0.15);
+  background: #2b2c30;
+  color: rgba(244, 244, 245, 0.88);
+}
+
+:global(html.kikoerumanager-dark .subtitle-rename-icon-btn:hover),
+:global(html.kikoerumanager-dark .subtitle-rename-btn:hover:not(:disabled)) {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: #333438;
+  color: rgba(250, 250, 252, 0.96);
+}
+
+:global(html.kikoerumanager-dark .subtitle-rename-input),
+:global(html.kikoerumanager-dark .subtitle-rename-preview) {
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  background: #2b2c30 !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-rename-input:disabled) {
+  color: rgba(214, 214, 220, 0.58) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-rename-btn-primary) {
+  border-color: rgba(255, 255, 255, 0.32);
+  background: #56575e;
+  color: #ffffff;
+}
+
+:global(html.kikoerumanager-dark .subtitle-rename-btn-primary:hover:not(:disabled)) {
+  border-color: rgba(255, 255, 255, 0.42);
+  background: #62636a;
+  color: #ffffff;
 }
 
 .filter-delete-floating-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
