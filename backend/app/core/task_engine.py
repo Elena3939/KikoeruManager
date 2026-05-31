@@ -1489,8 +1489,13 @@ class TaskEngine:
         from .classifier import SmartClassifier
         
         inferred_rjcode = self._extract_rjcode(str((task.task_metadata or {}).get('inferred_rjcode') or '')) or str((task.task_metadata or {}).get('inferred_rjcode') or '').strip().upper()
-        rjcode = self._extract_rjcode_from_path_tail(task.source_path) or inferred_rjcode or "未知"
-        self._sync_task_rjcode(task, rjcode if rjcode != "未知" else None, source="source_path")
+        task_metadata_rjcode = self._get_effective_rjcode(task)
+        rjcode = task_metadata_rjcode or self._extract_rjcode_from_path_tail(task.source_path) or inferred_rjcode or "未知"
+        self._sync_task_rjcode(
+            task,
+            rjcode if rjcode != "未知" else None,
+            source=(task.task_metadata or {}).get("rjcode_source") or ("task_metadata" if task_metadata_rjcode else "source_path"),
+        )
         logger.info(f"[{rjcode}] ========== 开始处理任务 ==========")
         logger.info(f"[{rjcode}] 任务ID: {task.id}, 类型: {self._resolve_task_log_type_label(task)}")
         logger.info(f"[{rjcode}] 源路径: {task.source_path}")
@@ -2210,8 +2215,13 @@ class TaskEngine:
                 existing_folder_path = task.source_path
                 logger.debug(f"[{rjcode}] 处理已存在文件夹: {existing_folder_path}")
 
-                rjcode = self._extract_rjcode(existing_folder_path)
-                logger.debug(f"[{rjcode}] 提取到的RJ号: {rjcode}")
+                effective_existing_rjcode = self._get_effective_rjcode(task, existing_folder_path)
+                rjcode = self._sync_task_rjcode(
+                    task,
+                    effective_existing_rjcode,
+                    source=(task.task_metadata or {}).get("rjcode_source") or "existing_folder_scan",
+                ) or effective_existing_rjcode or "未知"
+                logger.debug(f"[{rjcode}] 已有文件夹任务RJ号: {rjcode}")
                 resolution_mode = str((task.task_metadata or {}).get('existing_folder_resolution') or '').strip().upper()
                 skip_conflict_retry_precheck = self._should_skip_conflict_retry_precheck(task)
                 if skip_conflict_retry_precheck:

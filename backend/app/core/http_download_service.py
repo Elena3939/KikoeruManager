@@ -1,5 +1,7 @@
 import asyncio
 import contextlib
+import hashlib
+import html
 import inspect
 import ipaddress
 import json
@@ -16,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import unquote, urlparse, urlunparse
+from urllib.parse import parse_qs, urlencode, unquote, urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 import aiohttp
@@ -25,9 +27,17 @@ from ..config.settings import get_config
 
 logger = logging.getLogger(__name__)
 
-_BLOCKED_HOST_HINTS = {"gofile.io", "tranfile.com", "transfernow.net"}
+_BLOCKED_HOST_HINTS = {"tranfile.com", "transfernow.net"}
 _PIKPAK_HOST_HINTS = {"mypikpak.com", "www.mypikpak.com", "drive.mypikpak.com"}
+_GOFILE_HOST_HINTS = {"gofile.io", "www.gofile.io"}
+_TRANSFERIT_HOST_HINTS = {"transfer.it", "www.transfer.it"}
+_ONEDRIVE_HOST_HINTS = {"1drv.ms", "onedrive.live.com", "onedrive.com"}
+_GOOGLE_DRIVE_HOST_HINTS = {"drive.google.com", "docs.google.com"}
 _PIKPAK_MAX_SHARE_FILES = 100
+_SHARE_PREVIEW_ONLY_SOURCES = {"pikpak", "transferit"}
+_GOFILE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+_GOFILE_LANGUAGE = "en-US"
+_GOFILE_WEBSITE_TOKEN_SALT = "g4f8fd9f12h14g"
 
 
 class HttpDownloadError(ValueError):
@@ -154,6 +164,19 @@ class Aria2Daemon:
     secret: str
 
 
+@dataclass
+class PikPakAccount:
+    id: str
+    label: str
+    enabled: bool
+    username: str
+    password: str
+    encoded_token: str
+    device_id: str
+    transfer_dir: str
+    legacy: bool = False
+
+
 class HttpDownloadService:
     """通用 HTTP/HTTPS 外链下载服务，底层通过 aria2 RPC 驱动。"""
 
@@ -162,6 +185,8 @@ class HttpDownloadService:
         self._daemon_lock = asyncio.Lock()
         self._task_gids: Dict[str, List[str]] = {}
         self._rpc_id = 0
+        self._gofile_guest_token_cache: tuple[str, float] = ("", 0.0)
+        self._gofile_guest_token_lock = asyncio.Lock()
 
     def _config(self):
         return get_config().http_downloader
@@ -173,6 +198,8 @@ class HttpDownloadService:
         cfg = self._config()
         root = str(getattr(cfg, "download_root", "") or "").strip()
         if not root:
+            root = str(getattr(get_config().storage, "input_path", "") or "").strip()
+        if not root:
             root = os.path.join(get_config().storage.temp_path, "http_downloads")
         return os.path.abspath(root)
 
@@ -181,6 +208,40 @@ class HttpDownloadService:
 
     def _sanitize_error(self, value: Any) -> str:
         return sanitize_http_download_error(value)
+
+    def _pikpak_error(self, value: Any, stage: str = "") -> HttpDownloadError:
+        text = self._sanitize_error(value)
+        lowered = text.lower()
+        prefix = f"PikPak {stage}失败" if stage else "PikPak 操作失败"
+        if lowered.strip() in {"not found", "404", "404 not found"}:
+            return HttpDownloadError(f"{prefix}: PikPak 返回 404。若这是账号检测，通常是旧 token 已失效或后端接口版本未重启；请重新输入密码保存后重试。原始错误: {text}")
+        if any(marker in lowered for marker in ("current region", "region", "prohibited", "not available")) or any(marker in text for marker in ("地区", "区域", "不可用", "禁止")):
+            return HttpDownloadError(f"{prefix}: 分享在当前账号/地区不可用，通常需要更换 PikPak 账号地区或代理节点后重试。原始错误: {text}")
+        if any(marker in lowered for marker in ("insufficient", "quota", "space", "not enough", "capacity", "storage")) or any(marker in text for marker in ("空间", "容量", "配额", "不足")):
+            return HttpDownloadError(f"{prefix}: 账号空间不足，先在设置页清理转存目录或更换账号后重试。原始错误: {text}")
+        if any(marker in lowered for marker in ("invalid username", "invalid account", "invalid_account_or_password", "password", "unauthorized", "token", "login")) or any(marker in text for marker in ("账号", "密码", "登录", "token", "Token", "授权")):
+            return HttpDownloadError(f"{prefix}: 账号登录或 token 已失效，请在设置页重新保存账号/密码或清空缓存 Token 后重试。原始错误: {text}")
+        if any(marker in lowered for marker in ("captcha", "verification", "verify")) or any(marker in text for marker in ("验证码", "验证")):
+            return HttpDownloadError(f"{prefix}: 触发 PikPak 验证/验证码，当前后端不能自动处理，请稍后重试或换账号。原始错误: {text}")
+        if any(marker in lowered for marker in ("vip", "privilege", "permission", "forbidden", "403")) or any(marker in text for marker in ("会员", "权限", "无权")):
+            return HttpDownloadError(f"{prefix}: 账号权限不足或文件需要会员能力。原始错误: {text}")
+        if any(marker in lowered for marker in ("not found", "expired", "deleted", "share")) or any(marker in text for marker in ("不存在", "过期", "删除", "分享")):
+            return HttpDownloadError(f"{prefix}: 分享不存在、已过期或提取码不对。原始错误: {text}")
+        if any(marker in lowered for marker in ("timeout", "timed out", "connection", "network")) or any(marker in text for marker in ("超时", "网络", "连接")):
+            return HttpDownloadError(f"{prefix}: 连接 PikPak 超时或网络不可用，请检查代理/网络。原始错误: {text}")
+        return HttpDownloadError(f"{prefix}: {text or value.__class__.__name__}")
+
+    def _is_pikpak_token_error(self, value: Any) -> bool:
+        text = self._sanitize_error(value).lower()
+        return any(marker in text for marker in (
+            "not found",
+            "404",
+            "unauthorized",
+            "token",
+            "login",
+            "invalid",
+            "expired",
+        ))
 
     def _proxy_url(self) -> str:
         proxy = str(getattr(self._config(), "proxy_url", "") or "").strip()
@@ -191,13 +252,222 @@ class HttpDownloadService:
     def _pikpak_enabled(self) -> bool:
         return bool(getattr(self._config(), "pikpak_enabled", False))
 
-    def _is_pikpak_url(self, raw_url: str) -> bool:
+    def _pikpak_account_id(self, account: Dict[str, Any], index: int) -> str:
+        raw_id = str(account.get("id") or "").strip()
+        if raw_id:
+            safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw_id).strip("-")
+            if safe:
+                return safe[:80]
+        raw_identity = str(account.get("username") or account.get("label") or "").strip()
+        if raw_identity:
+            digest = hashlib.sha1(raw_identity.encode("utf-8", errors="ignore")).hexdigest()[:10]
+            return f"account-{digest}"
+        return f"account-{index + 1}"
+
+    def _pikpak_accounts(self, *, include_disabled: bool = False) -> List[PikPakAccount]:
+        cfg = self._config()
+        accounts: List[PikPakAccount] = []
+        seen: set[str] = set()
+        configured = list(getattr(cfg, "pikpak_accounts", []) or [])
+        for index, raw in enumerate(configured):
+            if hasattr(raw, "model_dump"):
+                data = raw.model_dump()
+            elif isinstance(raw, dict):
+                data = dict(raw)
+            else:
+                continue
+            account_id = self._pikpak_account_id(data, index)
+            if account_id in seen:
+                suffix = 2
+                base_id = account_id
+                while f"{base_id}-{suffix}" in seen:
+                    suffix += 1
+                account_id = f"{base_id}-{suffix}"
+            seen.add(account_id)
+            username = str(data.get("username") or "").strip()
+            label = str(data.get("label") or "").strip() or username or account_id
+            transfer_dir = str(data.get("transfer_dir") or "").strip() or "/KikoeruManager"
+            accounts.append(PikPakAccount(
+                id=account_id,
+                label=label,
+                enabled=bool(data.get("enabled", True)),
+                username=username,
+                password=str(data.get("password") or "").strip(),
+                encoded_token=str(data.get("encoded_token") or "").strip(),
+                device_id=str(data.get("device_id") or "").strip(),
+                transfer_dir=transfer_dir,
+            ))
+
+        legacy_token = str(getattr(cfg, "pikpak_encoded_token", "") or "").strip()
+        legacy_username = str(getattr(cfg, "pikpak_username", "") or "").strip()
+        legacy_password = str(getattr(cfg, "pikpak_password", "") or "").strip()
+        if legacy_token or (legacy_username and legacy_password):
+            legacy_id = "default"
+            if legacy_id in seen:
+                legacy_id = "legacy-default"
+            legacy_label = str(getattr(cfg, "pikpak_label", "") or "").strip() or legacy_username or "PikPak 账号"
+            accounts.insert(0, PikPakAccount(
+                id=legacy_id,
+                label=legacy_label,
+                enabled=bool(getattr(cfg, "pikpak_default_enabled", True)),
+                username=legacy_username,
+                password=legacy_password,
+                encoded_token=legacy_token,
+                device_id=str(getattr(cfg, "pikpak_device_id", "") or "").strip(),
+                transfer_dir=str(getattr(cfg, "pikpak_transfer_dir", "") or "/KikoeruManager").strip() or "/KikoeruManager",
+                legacy=True,
+            ))
+        if include_disabled:
+            return accounts
+        return [item for item in accounts if item.enabled]
+
+    def _pikpak_account_public(self, account: PikPakAccount) -> Dict[str, Any]:
+        return {
+            "id": account.id,
+            "label": account.label,
+            "username": account.username,
+            "enabled": account.enabled,
+            "transfer_dir": account.transfer_dir,
+            "legacy": account.legacy,
+            "configured": bool(account.encoded_token or (account.username and account.password)),
+        }
+
+    def _pikpak_account_from_payload(self, data: Dict[str, Any], *, fallback_id: str = "") -> PikPakAccount:
+        payload = dict(data or {})
+        account_id = self._pikpak_account_id(payload, 0)
+        if fallback_id:
+            account_id = str(fallback_id).strip() or account_id
+        username = str(payload.get("username") or "").strip()
+        label = str(payload.get("label") or "").strip() or username or account_id
+        return PikPakAccount(
+            id=account_id,
+            label=label,
+            enabled=bool(payload.get("enabled", True)),
+            username=username,
+            password=str(payload.get("password") or "").strip(),
+            encoded_token=str(payload.get("encoded_token") or "").strip(),
+            device_id=str(payload.get("device_id") or "").strip(),
+            transfer_dir=str(payload.get("transfer_dir") or "").strip() or "/KikoeruManager",
+            legacy=bool(payload.get("legacy", False)),
+        )
+
+    def _select_pikpak_account(self, account_id: str = "") -> PikPakAccount:
+        accounts = self._pikpak_accounts()
+        if not accounts:
+            raise HttpDownloadError("PikPak 未配置可用账号或 token")
+        wanted = str(account_id or "").strip()
+        if not wanted:
+            return accounts[0]
+        for account in accounts:
+            if account.id == wanted:
+                return account
+        raise HttpDownloadError(f"PikPak 账号不存在或已禁用: {wanted}")
+
+    def _host_matches(self, raw_url: str, hosts: set[str]) -> bool:
         try:
             parsed = urlparse(str(raw_url or "").strip())
         except Exception:
             return False
         host = (parsed.hostname or "").lower()
-        return host in _PIKPAK_HOST_HINTS or host.endswith(".mypikpak.com")
+        return any(host == item or host.endswith(f".{item}") for item in hosts)
+
+    def _is_pikpak_url(self, raw_url: str) -> bool:
+        return self._host_matches(raw_url, _PIKPAK_HOST_HINTS)
+
+    def _is_gofile_url(self, raw_url: str) -> bool:
+        return self._host_matches(raw_url, _GOFILE_HOST_HINTS)
+
+    def _is_transferit_url(self, raw_url: str) -> bool:
+        return self._host_matches(raw_url, _TRANSFERIT_HOST_HINTS)
+
+    def _is_onedrive_url(self, raw_url: str) -> bool:
+        return self._host_matches(raw_url, _ONEDRIVE_HOST_HINTS)
+
+    def _is_google_drive_url(self, raw_url: str) -> bool:
+        return self._host_matches(raw_url, _GOOGLE_DRIVE_HOST_HINTS)
+
+    def _provider_source(self, raw_url: str) -> str:
+        if self._is_pikpak_url(raw_url):
+            return "pikpak"
+        if self._is_gofile_url(raw_url):
+            return "gofile"
+        if self._is_transferit_url(raw_url):
+            return "transferit"
+        if self._is_onedrive_url(raw_url):
+            return "onedrive"
+        if self._is_google_drive_url(raw_url):
+            return "google_drive"
+        return "http"
+
+    def _preview_item_selection_key(self, item: Dict[str, Any]) -> str:
+        """Build a public-safe stable key used by the UI to select preview rows."""
+        if not isinstance(item, dict):
+            return ""
+        existing = str(item.get("selection_key") or "").strip()
+        if existing:
+            return existing
+        source = str(item.get("source") or "http").strip().lower() or "http"
+        stable_source_id = (
+            str(item.get("content_id") or "").strip()
+            or str(item.get("file_id") or "").strip()
+            or str(item.get("download_file_id") or "").strip()
+            or str(item.get("share_id") or "").strip()
+        )
+        share_url = str(item.get("share_url") or "").strip()
+        url_identity = ""
+        if source == "http" or (not stable_source_id and not share_url):
+            url_identity = str(item.get("masked_url") or item.get("url") or "").strip()
+        filename_identity = str(item.get("filename") or item.get("name") or "").strip()
+        relative_path_identity = str(item.get("relative_path") or "").strip()
+        size_identity = str(item.get("size_bytes") or item.get("size") or "").strip()
+        if source in _SHARE_PREVIEW_ONLY_SOURCES and (stable_source_id or share_url):
+            filename_identity = ""
+            relative_path_identity = str(item.get("relative_dir") or "").strip()
+            size_identity = ""
+        parts = [
+            source,
+            share_url,
+            stable_source_id,
+            url_identity,
+            relative_path_identity,
+            str(item.get("relative_dir") or "").strip(),
+            filename_identity,
+            size_identity,
+        ]
+        digest = hashlib.sha1("\n".join(parts).encode("utf-8", errors="ignore")).hexdigest()[:16]
+        return f"{source}:{digest}"
+
+    def filter_preview_selection(
+        self,
+        preview: Dict[str, Any],
+        selected_keys: Optional[List[str]] = None,
+        selected_items: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        keys = {
+            str(key or "").strip()
+            for key in (selected_keys or [])
+            if str(key or "").strip()
+        }
+        for item in selected_items or []:
+            if isinstance(item, dict):
+                key = self._preview_item_selection_key(item)
+                if key:
+                    keys.add(key)
+        if not keys:
+            return preview
+
+        out = dict(preview or {})
+        items = [
+            item for item in list(out.get("items") or [])
+            if isinstance(item, dict) and self._preview_item_selection_key(item) in keys
+        ]
+        out["items"] = items
+        ok_count = sum(1 for item in items if item.get("ok"))
+        out["ok_count"] = ok_count
+        out["failed_count"] = len(items) - ok_count
+        out["success"] = ok_count > 0
+        out["selected_count"] = len(items)
+        return out
 
     def _normalize_url(self, raw_url: str) -> str:
         url = str(raw_url or "").strip()
@@ -250,7 +520,8 @@ class HttpDownloadService:
         return url
 
     def _parse_pikpak_pass_code(self, url: str) -> str:
-        parsed = urlparse(url)
+        raw_text = str(url or "")
+        parsed = urlparse(raw_text)
         query = {}
         if parsed.query:
             from urllib.parse import parse_qs
@@ -265,28 +536,59 @@ class HttpDownloadService:
             match = re.search(pattern, fragment, re.IGNORECASE)
             if match:
                 return unquote(match.group(1)).strip()
+        for pattern in (
+            r"(?:pwd|pass_code|passcode|password|code)\s*[=:：]\s*([A-Za-z0-9]{4,12})",
+            r"(?:提取码|访问码|密[码碼])[:：\s]*([A-Za-z0-9]{4,12})",
+        ):
+            match = re.search(pattern, raw_text, re.IGNORECASE)
+            if match:
+                return unquote(match.group(1)).strip()
         return ""
 
-    async def _save_pikpak_token_callback(self, client, **_kwargs) -> None:
+    def _pikpak_share_url(self, value: str) -> str:
+        text = str(value or "").strip()
+        match = re.search(r"https?://[^\s<>'\"）)]+", text)
+        if match:
+            text = match.group(0).rstrip(".,，。;；")
+        return text
+
+    async def _save_pikpak_token_callback(self, client, *, account: Optional[PikPakAccount] = None, **_kwargs) -> None:
         token = str(getattr(client, "encoded_token", "") or "").strip()
         if not token:
             return
         try:
             from ..config.settings import save_config
 
-            await asyncio.to_thread(save_config, {"http_downloader": {"pikpak_encoded_token": token}})
+            if not account or account.legacy:
+                await asyncio.to_thread(save_config, {"http_downloader": {"pikpak_encoded_token": token}})
+                return
+
+            cfg = self._config()
+            next_accounts = []
+            updated = False
+            for index, raw in enumerate(list(getattr(cfg, "pikpak_accounts", []) or [])):
+                data = raw.model_dump() if hasattr(raw, "model_dump") else dict(raw or {})
+                raw_id = self._pikpak_account_id(data, index)
+                if raw_id == account.id:
+                    data["id"] = account.id
+                    data["encoded_token"] = token
+                    updated = True
+                next_accounts.append(data)
+            if updated:
+                await asyncio.to_thread(save_config, {"http_downloader": {"pikpak_accounts": next_accounts}})
         except Exception:
             logger.warning("[PikPak] 保存刷新后的 token 失败", exc_info=True)
 
-    async def _pikpak_client(self):
+    async def _pikpak_client(self, account_id: str = "", *, account: Optional[PikPakAccount] = None):
         cfg = self._config()
         if not self._pikpak_enabled():
             raise HttpDownloadError("PikPak 下载未启用，请先在设置页启用并配置账号")
-        token = str(getattr(cfg, "pikpak_encoded_token", "") or "").strip()
-        username = str(getattr(cfg, "pikpak_username", "") or "").strip()
-        password = str(getattr(cfg, "pikpak_password", "") or "").strip()
+        account = account or self._select_pikpak_account(account_id)
+        token = "" if account.encoded_token == "********" else account.encoded_token
+        username = account.username
+        password = "" if account.password == "********" else account.password
         if not token and not (username and password):
-            raise HttpDownloadError("PikPak 未配置账号或 token")
+            raise HttpDownloadError(f"PikPak 账号 {account.label} 未配置账号密码或 token")
         try:
             from pikpakapi import PikPakApi
             import httpx
@@ -303,21 +605,792 @@ class HttpDownloadService:
             "encoded_token": token or None,
             "username": username or None,
             "password": password or None,
-            "device_id": str(getattr(cfg, "pikpak_device_id", "") or "").strip() or None,
+            "device_id": account.device_id or None,
             "httpx_client_args": httpx_args,
             "request_max_retries": max(1, int(getattr(cfg, "retry_count", 5) or 5)),
             "request_initial_backoff": max(0.5, float(getattr(cfg, "retry_wait_seconds", 5) or 5)),
-            "token_refresh_callback": self._save_pikpak_token_callback,
+            "token_refresh_callback": lambda callback_client, **kwargs: self._save_pikpak_token_callback(callback_client, account=account, **kwargs),
         }
         client = PikPakApi(**kwargs)
+        setattr(client, "_kikoeru_pikpak_account", account)
         if not token:
-            await client.login()
-            await self._save_pikpak_token_callback(client)
+            try:
+                await client.login()
+                await self._save_pikpak_token_callback(client, account=account)
+            except Exception as exc:
+                raise self._pikpak_error(exc, f"登录账号 {account.label}") from exc
         return client
+
+    async def _ensure_pikpak_logged_in(self, client, account: PikPakAccount) -> None:
+        """让检测/状态接口把旧 token 失效和密码登录失败区分开。"""
+        try:
+            if hasattr(client, "user_info"):
+                await client.user_info()
+        except Exception as exc:
+            if not self._is_pikpak_token_error(exc) or not account.username or not account.password or account.password == "********":
+                raise self._pikpak_error(exc, f"校验账号 {account.label}") from exc
+            with contextlib.suppress(Exception):
+                setattr(client, "encoded_token", None)
+            try:
+                await client.login()
+                await self._save_pikpak_token_callback(client, account=account)
+            except Exception as login_exc:
+                raise self._pikpak_error(login_exc, f"重新登录账号 {account.label}") from login_exc
+
+    async def _refresh_pikpak_login_with_password(self, client, account: PikPakAccount, *, stage: str) -> None:
+        if not account.username or not account.password or account.password == "********":
+            raise HttpDownloadError(
+                f"PikPak {stage}失败: 旧 token 已失效，但账号 {account.label} 没有可用密码，请重新输入密码保存后重试。"
+            )
+        with contextlib.suppress(Exception):
+            setattr(client, "encoded_token", None)
+        try:
+            await client.login()
+            await self._save_pikpak_token_callback(client, account=account)
+        except Exception as login_exc:
+            raise self._pikpak_error(login_exc, f"重新登录账号 {account.label}") from login_exc
+
+    async def _pikpak_client_with_account(self, account_id: str = "", *, account: Optional[PikPakAccount] = None) -> tuple[Any, PikPakAccount]:
+        selected = account or self._select_pikpak_account(account_id)
+        client = await self._pikpak_client(account=selected)
+        return client, selected
 
     async def _close_pikpak_client(self, client) -> None:
         with contextlib.suppress(Exception):
             await client.httpx_client.aclose()
+
+    def _int_value(self, value: Any) -> int:
+        try:
+            return int(value or 0)
+        except Exception:
+            return 0
+
+    def _pikpak_file_id(self, item: Dict[str, Any]) -> str:
+        return str(item.get("id") or item.get("file_id") or "").strip()
+
+    def _normalize_pikpak_file_row(self, item: Dict[str, Any], *, parent_id: str = "") -> Dict[str, Any]:
+        return {
+            "id": self._pikpak_file_id(item),
+            "name": str(item.get("name") or item.get("file_name") or "").strip(),
+            "kind": str(item.get("kind") or item.get("mime_type") or item.get("type") or ""),
+            "is_folder": self._pikpak_is_folder(item),
+            "size_bytes": self._pikpak_file_size(item),
+            "parent_id": parent_id,
+            "created_time": item.get("created_time") or item.get("created_at") or "",
+            "modified_time": item.get("modified_time") or item.get("updated_at") or "",
+            "phase": item.get("phase") or "",
+        }
+
+    def _normalize_pikpak_quota(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        quota = data.get("quota") if isinstance(data, dict) else {}
+        if not isinstance(quota, dict):
+            quota = {}
+        limit = self._int_value(quota.get("limit"))
+        usage = self._int_value(quota.get("usage"))
+        trash = self._int_value(quota.get("usage_in_trash"))
+        remaining = max(0, limit - usage) if limit > 0 else 0
+        return {
+            "limit_bytes": limit,
+            "usage_bytes": usage,
+            "usage_in_trash_bytes": trash,
+            "remaining_bytes": remaining,
+            "used_percent": round((usage / limit) * 100, 2) if limit > 0 else 0,
+        }
+
+    async def _pikpak_transfer_parent_id(self, client, *, create: bool = False, account: Optional[PikPakAccount] = None) -> str:
+        account = account or getattr(client, "_kikoeru_pikpak_account", None)
+        transfer_dir = str(getattr(account, "transfer_dir", "") or "").strip()
+        if not transfer_dir:
+            transfer_dir = str(getattr(self._config(), "pikpak_transfer_dir", "") or "/KikoeruManager").strip() or "/KikoeruManager"
+        try:
+            path_rows = await client.path_to_id(transfer_dir, create=create)
+        except Exception as exc:
+            raise self._pikpak_error(exc, "定位转存目录") from exc
+        if not path_rows:
+            if create:
+                raise HttpDownloadError(f"PikPak 转存目录创建失败: {transfer_dir}")
+            return ""
+        return str(path_rows[-1].get("id") or "").strip()
+
+    async def _pikpak_account_status(self, account: PikPakAccount, *, include_files: bool = False, limit: int = 100) -> Dict[str, Any]:
+        client = await self._pikpak_client(account=account)
+        try:
+            quota = {}
+            transfer_quota = {}
+            vip = {}
+            await self._ensure_pikpak_logged_in(client, account)
+            try:
+                quota = self._normalize_pikpak_quota(await client.get_quota_info())
+            except Exception as exc:
+                if self._is_pikpak_token_error(exc):
+                    await self._refresh_pikpak_login_with_password(client, account, stage=f"读取账号 {account.label} 容量")
+                    try:
+                        quota = self._normalize_pikpak_quota(await client.get_quota_info())
+                    except Exception as retry_exc:
+                        raise self._pikpak_error(retry_exc, f"读取账号 {account.label} 容量") from retry_exc
+                else:
+                    raise self._pikpak_error(exc, f"读取账号 {account.label} 容量") from exc
+            with contextlib.suppress(Exception):
+                transfer_quota = await client.get_transfer_quota()
+            with contextlib.suppress(Exception):
+                vip = await client.vip_info()
+            result: Dict[str, Any] = {
+                "success": True,
+                "enabled": True,
+                "ready": True,
+                "account": self._pikpak_account_public(account),
+                "account_id": account.id,
+                "account_label": account.label,
+                "transfer_dir": account.transfer_dir,
+                "quota": quota,
+                "transfer_quota": transfer_quota,
+                "vip": vip,
+            }
+            if include_files:
+                listing = await self.pikpak_transfer_files(client=client, account=account, limit=limit)
+                result["files"] = listing.get("files") or []
+                result["folder_id"] = listing.get("folder_id") or ""
+            return result
+        finally:
+            await self._close_pikpak_client(client)
+
+    async def pikpak_status(self, *, include_files: bool = False, limit: int = 100, account_id: str = "") -> Dict[str, Any]:
+        accounts = self._pikpak_accounts(include_disabled=True)
+        enabled_accounts = [item for item in accounts if item.enabled]
+        if not self._pikpak_enabled():
+            return {"success": True, "enabled": False, "ready": False, "accounts": [self._pikpak_account_public(item) for item in accounts]}
+        if account_id:
+            return await self._pikpak_account_status(self._select_pikpak_account(account_id), include_files=include_files, limit=limit)
+        if not enabled_accounts:
+            raise HttpDownloadError("PikPak 未配置可用账号或 token")
+        statuses = []
+        for account in enabled_accounts:
+            try:
+                statuses.append(await self._pikpak_account_status(account, include_files=include_files, limit=limit))
+            except Exception as exc:
+                statuses.append({
+                    "success": False,
+                    "enabled": True,
+                    "ready": False,
+                    "account": self._pikpak_account_public(account),
+                    "account_id": account.id,
+                    "account_label": account.label,
+                    "transfer_dir": account.transfer_dir,
+                    "quota": {},
+                    "files": [],
+                    "message": self._sanitize_error(exc),
+                })
+        primary = next((item for item in statuses if item.get("success")), statuses[0])
+        result = dict(primary)
+        result["accounts"] = statuses
+        result["total_remaining_bytes"] = sum(int((item.get("quota") or {}).get("remaining_bytes") or 0) for item in statuses if item.get("success"))
+        result["ready"] = any(item.get("success") for item in statuses)
+        result["success"] = result["ready"]
+        return result
+
+    async def test_pikpak_account(self, payload: Optional[Dict[str, Any]] = None, *, account_id: str = "") -> Dict[str, Any]:
+        data = dict(payload or {})
+        use_saved = bool(data.get("use_saved"))
+        if account_id and use_saved:
+            return await self._pikpak_account_status(self._select_pikpak_account(account_id), include_files=False, limit=1)
+
+        # 前端配置里的密码/token 可能是脱敏占位符；这种情况下回退到已保存账号。
+        password = str(data.get("password") or "").strip()
+        encoded_token = str(data.get("encoded_token") or "").strip()
+        masked_secret = password == "********" or encoded_token == "********"
+        if account_id and masked_secret:
+            return await self._pikpak_account_status(self._select_pikpak_account(account_id), include_files=False, limit=1)
+
+        account = self._pikpak_account_from_payload(data, fallback_id=account_id)
+        if account.password and account.password != "********":
+            account.encoded_token = ""
+        if not account.username and not account.encoded_token:
+            raise HttpDownloadError("PikPak 账号缺少邮箱/手机号")
+        if not account.encoded_token and not account.password:
+            raise HttpDownloadError(f"PikPak 账号 {account.label} 缺少密码")
+        return await self._pikpak_account_status(account, include_files=False, limit=1)
+
+    async def pikpak_transfer_files(
+        self,
+        *,
+        client=None,
+        account: Optional[PikPakAccount] = None,
+        account_id: str = "",
+        limit: int = 100,
+        root: bool = False,
+        parent_id: str = "",
+    ) -> Dict[str, Any]:
+        owns_client = client is None
+        if client is None:
+            client, account = await self._pikpak_client_with_account(account_id)
+        account = account or getattr(client, "_kikoeru_pikpak_account", None)
+        requested_parent_id = str(parent_id or "").strip()
+        try:
+            folder_id = requested_parent_id or ("" if root else await self._pikpak_transfer_parent_id(client, create=False, account=account))
+            if not folder_id:
+                if root:
+                    folder_id = None
+                else:
+                    return {"success": True, "folder_id": "", "files": [], "message": "转存目录还不存在"}
+            if not root and not folder_id:
+                return {"success": True, "folder_id": "", "files": [], "message": "转存目录还不存在"}
+            files: List[Dict[str, Any]] = []
+            next_page_token = None
+            while len(files) < max(1, min(500, int(limit or 100))):
+                data = await client.file_list(size=min(100, max(1, int(limit or 100)) - len(files)), parent_id=folder_id, next_page_token=next_page_token)
+                for item in list((data or {}).get("files") or []):
+                    if isinstance(item, dict):
+                        files.append(self._normalize_pikpak_file_row(item, parent_id=str(folder_id or "")))
+                next_page_token = (data or {}).get("next_page_token")
+                if not next_page_token:
+                    break
+            account_public = self._pikpak_account_public(account) if account else {}
+            return {
+                "success": True,
+                "folder_id": folder_id or "",
+                "parent_id": requested_parent_id,
+                "files": files,
+                "message": "",
+                "root": root,
+                "account": account_public,
+                "account_id": account_public.get("id", ""),
+            }
+        except Exception as exc:
+            if isinstance(exc, HttpDownloadError):
+                raise
+            raise self._pikpak_error(exc, "读取转存目录") from exc
+        finally:
+            if owns_client:
+                await self._close_pikpak_client(client)
+
+    async def _collect_pikpak_delete_ids(self, client, file_ids: List[str]) -> List[str]:
+        """Expand folder ids before delete so folder cleanup frees quota reliably."""
+        result: List[tuple[int, str]] = []
+        seen: set[str] = set()
+
+        async def walk(parent_id: str, depth: int = 0) -> None:
+            if not parent_id or parent_id in seen or depth > 16:
+                return
+            seen.add(parent_id)
+            children: List[Dict[str, Any]] = []
+            next_page_token = None
+            try:
+                while True:
+                    data = await client.file_list(size=100, parent_id=parent_id, next_page_token=next_page_token)
+                    rows = [item for item in list((data or {}).get("files") or []) if isinstance(item, dict)]
+                    children.extend(rows)
+                    next_page_token = (data or {}).get("next_page_token")
+                    if not next_page_token:
+                        break
+            except Exception:
+                children = []
+            for child in children:
+                child_id = self._pikpak_file_id(child)
+                if child_id:
+                    await walk(child_id, depth + 1)
+            result.append((depth, parent_id))
+
+        for file_id in file_ids:
+            await walk(file_id, 0)
+        return [file_id for _depth, file_id in sorted(result, key=lambda item: item[0], reverse=True)]
+
+    async def delete_pikpak_transfer_items(self, ids: List[str], *, permanent: bool = False, account_id: str = "") -> Dict[str, Any]:
+        file_ids = [str(item or "").strip() for item in ids or [] if str(item or "").strip()]
+        if not file_ids:
+            raise HttpDownloadError("请选择要删除的 PikPak 转存文件")
+        account = self._select_pikpak_account(account_id)
+        client = await self._pikpak_client(account=account)
+        try:
+            delete_ids = await self._collect_pikpak_delete_ids(client, file_ids)
+            if permanent:
+                result = await client.delete_forever(delete_ids)
+            else:
+                result = await client.delete_to_trash(delete_ids)
+            quota = {}
+            with contextlib.suppress(Exception):
+                quota = self._normalize_pikpak_quota(await client.get_quota_info())
+            return {
+                "success": True,
+                "deleted_count": len(delete_ids),
+                "requested_count": len(file_ids),
+                "permanent": permanent,
+                "result": result,
+                "quota": quota,
+                "account": self._pikpak_account_public(account),
+                "account_id": account.id,
+            }
+        except Exception as exc:
+            if isinstance(exc, HttpDownloadError):
+                raise
+            raise self._pikpak_error(exc, "删除转存文件") from exc
+        finally:
+            await self._close_pikpak_client(client)
+
+    def _direct_link_preview_provider(self, raw_url: str) -> str:
+        source = self._provider_source(raw_url)
+        return source if source in {"gofile", "onedrive", "google_drive"} else "http"
+
+    def _is_direct_download_item(self, item: Dict[str, Any]) -> bool:
+        source = str(item.get("source") or "http")
+        if source in _SHARE_PREVIEW_ONLY_SOURCES:
+            return False
+        return bool(str(item.get("url") or "").strip())
+
+    async def _fetch_json_once(self, url: str, *, method: str = "GET", headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        timeout = aiohttp.ClientTimeout(total=max(20, int(getattr(self._config(), "timeout_seconds", 60) or 60)), connect=10)
+        proxy = self._proxy_url() or None
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            request_method = str(method or "GET").upper()
+            request = session.post if request_method == "POST" else session.get
+            async with request(url, headers=headers or {}, allow_redirects=True, proxy=proxy) as response:
+                body = await response.text()
+                if response.status >= 400:
+                    raise HttpDownloadError(f"源站 API 返回 HTTP {response.status}: {body[:160]}")
+                try:
+                    data = json.loads(body)
+                except Exception as exc:
+                    raise HttpDownloadError("源站 API 返回不是 JSON") from exc
+        if not isinstance(data, dict):
+            raise HttpDownloadError("源站 API 返回结构异常")
+        return data
+
+    async def _fetch_json(self, url: str, *, method: str = "GET", headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        last_error: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                return await self._fetch_json_once(url, method=method, headers=headers)
+            except HttpDownloadError:
+                raise
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    await asyncio.sleep(0.6 * (attempt + 1))
+        raise HttpDownloadError(f"源站 API 请求失败: {self._sanitize_error(last_error)}") from last_error
+
+    def _gofile_content_id_from_url(self, raw_url: str) -> str:
+        parsed = urlparse(raw_url)
+        match = re.search(r"/(?:d|contents?)/([^/?#]+)", parsed.path, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        parts = [part for part in parsed.path.split("/") if part]
+        if parts:
+            return parts[-1]
+        raise HttpDownloadError("Gofile 分享链接格式不正确")
+
+    def _gofile_token(self) -> str:
+        return str(getattr(self._config(), "gofile_token", "") or "").strip()
+
+    def _gofile_website_token(self, token: str) -> str:
+        slot = str(int(time.time() // 14400))
+        payload = f"{_GOFILE_USER_AGENT}::{_GOFILE_LANGUAGE}::{token}::{slot}::{_GOFILE_WEBSITE_TOKEN_SALT}"
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    async def _gofile_guest_token(self) -> str:
+        cached_token, expires_at = self._gofile_guest_token_cache
+        if cached_token and expires_at > time.time():
+            return cached_token
+        async with self._gofile_guest_token_lock:
+            cached_token, expires_at = self._gofile_guest_token_cache
+            if cached_token and expires_at > time.time():
+                return cached_token
+            data = await self._fetch_json(
+                "https://api.gofile.io/accounts",
+                method="POST",
+                headers={"User-Agent": _GOFILE_USER_AGENT, "X-BL": _GOFILE_LANGUAGE},
+            )
+            if str(data.get("status") or "").lower() != "ok":
+                raise HttpDownloadError(f"Gofile 创建访客账号失败: {data.get('status') or 'unknown'}")
+            token = str((data.get("data") or {}).get("token") or "").strip()
+            if not token:
+                raise HttpDownloadError("Gofile 未返回访客 token")
+            self._gofile_guest_token_cache = (token, time.time() + 6 * 60 * 60)
+            return token
+
+    def _gofile_password(self, raw_url: str) -> str:
+        parsed = urlparse(raw_url)
+        query = parse_qs(parsed.query or "")
+        for key in ("password", "pwd", "pass", "code"):
+            values = query.get(key) or []
+            if values and str(values[0] or "").strip():
+                return str(values[0]).strip()
+        fragment = parsed.fragment or ""
+        match = re.search(r"(?:password|pwd|pass|code)=([^&]+)", fragment, re.IGNORECASE)
+        return unquote(match.group(1)).strip() if match else ""
+
+    def _gofile_public_token(self, raw_url: str) -> str:
+        parsed = urlparse(raw_url)
+        query = parse_qs(parsed.query or "")
+        for key in ("publicToken", "public_token"):
+            values = query.get(key) or []
+            if values and str(values[0] or "").strip():
+                return str(values[0]).strip()
+        return ""
+
+    async def _collect_gofile_files(self, raw_url: str) -> Dict[str, Any]:
+        content_id = self._gofile_content_id_from_url(raw_url)
+        token = self._gofile_token() or await self._gofile_guest_token()
+        params: Dict[str, str] = {}
+        public_token = self._gofile_public_token(raw_url)
+        if public_token:
+            params["publicToken"] = public_token
+        password = self._gofile_password(raw_url)
+        if password:
+            params["password"] = password
+        api_url = f"https://api.gofile.io/contents/{content_id}"
+        if params:
+            api_url = f"{api_url}?{urlencode(params)}"
+        data = await self._fetch_json(
+            api_url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-Website-Token": self._gofile_website_token(token),
+                "X-BL": _GOFILE_LANGUAGE,
+                "User-Agent": _GOFILE_USER_AGENT,
+            },
+        )
+        if str(data.get("status") or "").lower() != "ok":
+            raise HttpDownloadError(f"Gofile 解析失败: {data.get('status') or 'unknown'}")
+        root = data.get("data") or {}
+        if not isinstance(root, dict):
+            raise HttpDownloadError("Gofile 返回数据结构异常")
+        files: List[Dict[str, Any]] = []
+
+        def walk(node: Dict[str, Any], prefix: str = "") -> None:
+            if not isinstance(node, dict):
+                return
+            kind = str(node.get("type") or "").lower()
+            if kind == "folder":
+                folder_name = self._sanitize_filename(node.get("name") or "", fallback="")
+                next_prefix = "/".join([part for part in (prefix, folder_name) if part])
+                children = node.get("children") or {}
+                if isinstance(children, dict):
+                    for child in children.values():
+                        if isinstance(child, dict):
+                            walk(child, next_prefix)
+                elif isinstance(children, list):
+                    for child in children:
+                        if isinstance(child, dict):
+                            walk(child, next_prefix)
+                return
+            link = str(node.get("link") or node.get("downloadPage") or "").strip()
+            if not link:
+                return
+            name = self._sanitize_filename(node.get("name") or node.get("filename") or "gofile-file")
+            files.append({
+                "source": "gofile",
+                "share_url": self._mask_url(raw_url),
+                "url": link,
+                "masked_url": self._mask_url(link),
+                "name": name,
+                "filename": name,
+                "relative_dir": prefix.strip("/"),
+                "size_bytes": int(node.get("size") or 0),
+                "content_id": str(node.get("id") or content_id),
+                "headers": {"Cookie": f"accountToken={token}"},
+                "aria2_header": [f"Cookie: accountToken={token}"],
+            })
+
+        walk(root)
+        return {"files": files, "token_configured": bool(self._gofile_token())}
+
+    def _google_drive_file_id_from_url(self, raw_url: str) -> str:
+        parsed = urlparse(raw_url)
+        match = re.search(r"/file/d/([^/]+)", parsed.path)
+        if match:
+            return match.group(1)
+        query = parse_qs(parsed.query or "")
+        for key in ("id", "docid"):
+            values = query.get(key) or []
+            if values and str(values[0] or "").strip():
+                return str(values[0]).strip()
+        match = re.search(r"/(?:document|spreadsheets|presentation)/d/([^/]+)", parsed.path)
+        if match:
+            return match.group(1)
+        raise HttpDownloadError("Google Drive 分享链接缺少文件 ID")
+
+    def _google_drive_direct_url(self, raw_url: str) -> str:
+        file_id = self._google_drive_file_id_from_url(raw_url)
+        return f"https://drive.usercontent.google.com/download?{urlencode({'id': file_id, 'export': 'download'})}"
+
+    def _onedrive_direct_url(self, raw_url: str) -> str:
+        parsed = urlparse(raw_url)
+        query = parse_qs(parsed.query or "")
+        if query.get("download") == ["1"]:
+            return raw_url
+        query["download"] = ["1"]
+        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(query, doseq=True), parsed.fragment))
+
+    async def _extract_html_download_links(self, raw_url: str, *, source: str) -> List[Dict[str, Any]]:
+        timeout = aiohttp.ClientTimeout(total=30, connect=10)
+        proxy = self._proxy_url() or None
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(raw_url, allow_redirects=True, proxy=proxy) as response:
+                body = await response.text(errors="ignore")
+                base_url = str(response.url)
+                if response.status >= 400:
+                    raise HttpDownloadError(f"分享页返回 HTTP {response.status}")
+        links = []
+        for match in re.finditer(r'''(?:href|data-href|data-url)=["']([^"']+)["']''', body, re.IGNORECASE):
+            href = html.unescape(match.group(1)).strip()
+            if not href:
+                continue
+            absolute = urljoin(base_url, href)
+            parsed = urlparse(absolute)
+            if parsed.scheme not in {"http", "https"}:
+                continue
+            label = absolute.lower()
+            if "download" not in label and "/dl" not in label and "/api/" not in label:
+                continue
+            links.append({
+                "source": source,
+                "url": absolute,
+                "masked_url": self._mask_url(absolute),
+                "share_url": self._mask_url(raw_url),
+            })
+        unique = []
+        seen = set()
+        for item in links:
+            url = item["url"]
+            if url in seen:
+                continue
+            seen.add(url)
+            unique.append(item)
+        return unique
+
+    def _transferit_id_from_url(self, raw_url: str) -> str:
+        parsed = urlparse(raw_url)
+        match = re.search(r"/t/([^/?#]+)", parsed.path)
+        if match:
+            return match.group(1)
+        parts = [part for part in parsed.path.split("/") if part]
+        if parts:
+            return parts[-1]
+        raise HttpDownloadError("Transfer.it 分享链接格式不正确")
+
+    def _transferit_password(self, raw_url: str) -> str:
+        parsed = urlparse(raw_url)
+        query = parse_qs(parsed.query or "")
+        for key in ("password", "pwd", "pass", "code"):
+            values = query.get(key) or []
+            if values and str(values[0] or "").strip():
+                return str(values[0]).strip()
+        fragment = parsed.fragment or ""
+        match = re.search(r"(?:password|pwd|pass|code)=([^&]+)", fragment, re.IGNORECASE)
+        return unquote(match.group(1)).strip() if match else ""
+
+    def _is_transferit_transient_error(self, exc: BaseException) -> bool:
+        text = self._sanitize_error(exc).lower()
+        return any(marker in text for marker in (
+            "server is busy",
+            "try again",
+            "temporarily",
+            "timeout",
+            "timed out",
+            "too many requests",
+            "429",
+            "502",
+            "503",
+            "504",
+        ))
+
+    def _transferit_node_row(self, item: Any, index: int) -> Optional[Dict[str, Any]]:
+        if isinstance(item, dict):
+            kind = str(item.get("type") or item.get("kind") or "").lower()
+            if kind and "folder" in kind:
+                return None
+            name = (
+                item.get("name")
+                or item.get("filename")
+                or item.get("file_name")
+                or f"transferit-file-{index + 1}"
+            )
+            size = item.get("size") or item.get("byte_size") or item.get("bytes") or item.get("total_bytes") or 0
+            return {"name": str(name), "size_bytes": int(size or 0)}
+        if hasattr(item, "to_json_dict"):
+            return self._transferit_node_row(item.to_json_dict(), index)
+        is_file = getattr(item, "is_file", True)
+        if callable(is_file):
+            is_file = is_file()
+        if is_file is False:
+            return None
+        name = (
+            getattr(item, "name", "")
+            or getattr(item, "filename", "")
+            or getattr(item, "file_name", "")
+            or f"transferit-file-{index + 1}"
+        )
+        size = (
+            getattr(item, "size", 0)
+            or getattr(item, "byte_size", 0)
+            or getattr(item, "bytes", 0)
+            or getattr(item, "total_bytes", 0)
+            or 0
+        )
+        return {"name": str(name), "size_bytes": int(size or 0)}
+
+    def _transferit_metadata_row(self, metadata: Any, share_id: str) -> Optional[Dict[str, Any]]:
+        if hasattr(metadata, "to_json_dict"):
+            data = metadata.to_json_dict()
+        elif isinstance(metadata, dict):
+            data = dict(metadata)
+        else:
+            data = {
+                "title": getattr(metadata, "title", ""),
+                "total_bytes": getattr(metadata, "total_bytes", 0),
+                "file_count": getattr(metadata, "file_count", 0),
+                "folder_count": getattr(metadata, "folder_count", 0),
+                "password_protected": getattr(metadata, "password_protected", False),
+                "zip_pending": getattr(metadata, "zip_pending", False),
+                "zip_handle": getattr(metadata, "zip_handle", None),
+            }
+        if bool(data.get("password_protected")):
+            return None
+        try:
+            file_count = int(data.get("file_count") or 0)
+        except Exception:
+            file_count = 0
+        if file_count and file_count != 1:
+            return None
+        title = (
+            data.get("title")
+            or data.get("name")
+            or data.get("filename")
+            or f"transferit-{share_id}"
+        )
+        filename = self._sanitize_filename(str(title), fallback=f"transferit-{share_id}.zip")
+        if not os.path.splitext(filename)[1]:
+            filename = self._sanitize_filename(f"{filename}.zip", fallback=f"transferit-{share_id}.zip")
+        return {
+            "name": filename,
+            "size_bytes": int(data.get("total_bytes") or data.get("size_bytes") or 0),
+            "metadata_fallback": True,
+        }
+
+    async def _collect_transferit_files(self, raw_url: str) -> Dict[str, Any]:
+        share_id = self._transferit_id_from_url(raw_url)
+        url = self._normalize_url(raw_url)
+        password = self._transferit_password(raw_url) or None
+        try:
+            from transferit import Transferit
+        except Exception as exc:
+            raise HttpDownloadError("后端缺少 transferit-py 依赖，请重新安装 backend/requirements.txt") from exc
+
+        metadata_row: Optional[Dict[str, Any]] = None
+
+        def collect() -> List[Dict[str, Any]]:
+            with Transferit() as client:
+                info = client.info(url, password=password) if password else client.info(url)
+            rows: List[Dict[str, Any]] = []
+            candidates: Any = info
+            if isinstance(info, dict):
+                candidates = info.get("files") or info.get("children") or info.get("items") or [info]
+            elif hasattr(info, "to_json_dict"):
+                candidates = info.to_json_dict()
+            if isinstance(candidates, dict):
+                candidates = list(candidates.values())
+            if not isinstance(candidates, list):
+                candidates = [candidates]
+            for index, item in enumerate(candidates):
+                row = self._transferit_node_row(item, index)
+                if row:
+                    rows.append(row)
+            if not rows and isinstance(info, dict):
+                nested = info.get("files") or info.get("children") or info.get("items") or []
+                if isinstance(nested, dict):
+                    nested = list(nested.values())
+                for index, item in enumerate(nested):
+                    row = self._transferit_node_row(item, index)
+                    if row:
+                        rows.append(row)
+            if not rows and not isinstance(info, dict) and hasattr(info, "to_json_dict"):
+                data = info.to_json_dict()
+                candidates = data.get("files") or data.get("children") or data.get("items") or []
+                if isinstance(candidates, dict):
+                    candidates = list(candidates.values())
+                for index, item in enumerate(candidates):
+                    row = self._transferit_node_row(item, index)
+                    if row:
+                        rows.append(row)
+            if not rows:
+                fallback_name = (
+                    (info.get("name") if isinstance(info, dict) else "")
+                    or getattr(info, "name", "")
+                    or getattr(info, "title", "")
+                    or "transferit-download"
+                )
+                fallback_size = (
+                    (info.get("size") if isinstance(info, dict) else 0)
+                    or getattr(info, "size", 0)
+                    or getattr(info, "total_bytes", 0)
+                    or 0
+                )
+                rows.append({"name": str(fallback_name), "size_bytes": int(fallback_size or 0)})
+            return rows
+
+        def collect_metadata_row() -> Optional[Dict[str, Any]]:
+            with Transferit() as client:
+                metadata = client.metadata(url)
+            return self._transferit_metadata_row(metadata, share_id)
+
+        files: List[Dict[str, Any]] = []
+        resolved_files = False
+        last_error: Optional[BaseException] = None
+        for attempt in range(3):
+            try:
+                files = await asyncio.wait_for(asyncio.to_thread(collect), timeout=25)
+                resolved_files = True
+                break
+            except asyncio.TimeoutError as exc:
+                last_error = exc
+            except Exception as exc:
+                last_error = exc
+                if not self._is_transferit_transient_error(exc):
+                    raise
+            if last_error and self._is_transferit_transient_error(last_error) and metadata_row is None:
+                try:
+                    metadata_row = await asyncio.wait_for(asyncio.to_thread(collect_metadata_row), timeout=15)
+                except Exception as meta_exc:
+                    logger.debug("Transfer.it 元数据兜底解析失败: %s", meta_exc)
+            if attempt < 2:
+                await asyncio.sleep(1.2 * (attempt + 1))
+        else:
+            if metadata_row:
+                files = [metadata_row]
+                resolved_files = True
+            else:
+                if isinstance(last_error, asyncio.TimeoutError):
+                    raise HttpDownloadError("Transfer.it 解析超时，请稍后重试或确认分享链接仍有效") from last_error
+                if last_error and self._is_transferit_transient_error(last_error):
+                    raise HttpDownloadError("Transfer.it 服务器忙，请稍后重试") from last_error
+                if last_error:
+                    raise last_error
+                files = []
+
+        if not files and metadata_row:
+            files = [metadata_row]
+            resolved_files = True
+
+        if not resolved_files and last_error:
+            raise last_error
+
+        return {
+            "share_id": share_id,
+            "files": [
+                {
+                    "source": "transferit",
+                    "share_url": self._mask_url(raw_url),
+                    "url": self._mask_url(raw_url),
+                    "original_url": raw_url,
+                    "name": self._sanitize_filename(item.get("name") or "transferit-download"),
+                    "filename": self._sanitize_filename(item.get("name") or "transferit-download"),
+                    "size_bytes": int(item.get("size_bytes") or 0),
+                    "preview_only": True,
+                    "share_id": share_id,
+                    "metadata_fallback": bool(item.get("metadata_fallback")),
+                }
+                for item in files
+            ],
+        }
 
     def _pikpak_file_size(self, item: Dict[str, Any]) -> int:
         for key in ("size", "file_size", "bytes"):
@@ -341,13 +1414,23 @@ class HttpDownloadService:
         return match.group(1)
 
     async def _collect_pikpak_share_files(self, client, share_link: str) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
-        pass_code = self._parse_pikpak_pass_code(share_link)
-        info = await client.get_share_info(share_link, pass_code=pass_code or None)
+        clean_share_link = self._pikpak_share_url(share_link)
+        pass_code = self._parse_pikpak_pass_code(share_link) or self._parse_pikpak_pass_code(clean_share_link)
+        try:
+            info = await client.get_share_info(clean_share_link, pass_code=pass_code or None)
+        except Exception as exc:
+            raise self._pikpak_error(exc, "读取分享") from exc
         if isinstance(info, Exception):
-            raise HttpDownloadError(str(info))
+            raise self._pikpak_error(info, "读取分享")
         if not isinstance(info, dict):
             raise HttpDownloadError("PikPak 分享信息返回异常")
-        share_id = str(info.get("share_id") or self._pikpak_share_id_from_url(share_link))
+        share_status = str(info.get("share_status") or info.get("status") or "").strip()
+        share_status_text = str(info.get("share_status_text") or info.get("message") or info.get("error") or "").strip()
+        bad_share_statuses = {"PROHIBITED", "EXPIRED", "DELETED", "BANNED", "FORBIDDEN", "VIOLATION", "INVALID"}
+        if share_status.upper() in bad_share_statuses or "current region" in share_status_text.lower():
+            detail = f"{share_status}: {share_status_text}" if share_status_text else share_status
+            raise self._pikpak_error(detail, "读取分享")
+        share_id = str(info.get("share_id") or self._pikpak_share_id_from_url(clean_share_link))
         token = str(info.get("pass_code_token") or "")
         files = [item for item in list(info.get("files") or []) if isinstance(item, dict)]
         collected: List[Dict[str, Any]] = []
@@ -361,7 +1444,10 @@ class HttpDownloadService:
                     if not token:
                         raise HttpDownloadError("PikPak 文件夹分享缺少访问 token")
                     folder_id = str(item.get("id") or item.get("file_id") or "")
-                    detail = await client.get_share_folder(share_id, token, parent_id=folder_id or None)
+                    try:
+                        detail = await client.get_share_folder(share_id, token, parent_id=folder_id or None)
+                    except Exception as exc:
+                        raise self._pikpak_error(exc, "读取分享文件夹") from exc
                     children = [child for child in list((detail or {}).get("files") or []) if isinstance(child, dict)]
                     await walk(children, "/".join([part for part in (prefix, name) if part]))
                     continue
@@ -372,20 +1458,54 @@ class HttpDownloadService:
         await walk(files)
         return info, collected
 
-    async def _copy_pikpak_share_files(self, client, file_ids: List[str]) -> Dict[str, str]:
+    async def _touch_pikpak_share(self, client, share_link: str, *, account: Optional[PikPakAccount] = None) -> None:
+        if not share_link:
+            return
+        clean_share_link = self._pikpak_share_url(share_link)
+        pass_code = self._parse_pikpak_pass_code(share_link) or self._parse_pikpak_pass_code(clean_share_link)
+        try:
+            info = await client.get_share_info(clean_share_link, pass_code=pass_code or None)
+        except Exception as exc:
+            label = getattr(account, "label", "") or "账号"
+            raise self._pikpak_error(exc, f"账号 {label} 读取分享") from exc
+        if isinstance(info, Exception):
+            label = getattr(account, "label", "") or "账号"
+            raise self._pikpak_error(info, f"账号 {label} 读取分享")
+
+    async def _copy_pikpak_share_files(self, client, file_ids: List[str], share_files: Optional[List[Dict[str, Any]]] = None, *, account: Optional[PikPakAccount] = None) -> Dict[str, str]:
         id_map = {str(item): str(item) for item in file_ids if str(item or "").strip()}
         if not file_ids:
             return id_map
-        cfg = self._config()
-        transfer_dir = str(getattr(cfg, "pikpak_transfer_dir", "") or "/KikoeruManager").strip() or "/KikoeruManager"
+        account = account or getattr(client, "_kikoeru_pikpak_account", None)
         parent_id = None
         try:
-            path_rows = await client.path_to_id(transfer_dir, create=True)
-            if path_rows:
-                parent_id = path_rows[-1].get("id")
+            parent_id = await self._pikpak_transfer_parent_id(client, create=True, account=account)
+        except HttpDownloadError:
+            raise
+        except Exception as exc:
+            raise self._pikpak_error(exc, "创建/定位转存目录") from exc
+        try:
+            quota = self._normalize_pikpak_quota(await client.get_quota_info())
+            needed = 0
+            if int(quota.get("limit_bytes") or 0) > 0:
+                file_id_set = set(file_ids)
+                needed = sum(
+                    self._pikpak_file_size(item)
+                    for item in list(share_files or [])
+                    if self._pikpak_file_id(item) in file_id_set
+                )
+            if needed and needed > int(quota.get("remaining_bytes") or 0):
+                raise HttpDownloadError(
+                    f"PikPak 转存空间不足: 账号 {getattr(account, 'label', '') or '默认账号'} 需要 {needed} 字节，剩余 {quota.get('remaining_bytes', 0)} 字节。请在设置页清理转存目录或换账号。"
+                )
+        except HttpDownloadError:
+            raise
         except Exception:
-            logger.warning("[PikPak] 创建/定位转存目录失败，将转存到根目录: %s", transfer_dir, exc_info=True)
-        result = await client.file_batch_copy(file_ids, to_parent_id=parent_id)
+            logger.debug("[PikPak] 容量预检失败，继续尝试转存", exc_info=True)
+        try:
+            result = await client.file_batch_copy(file_ids, to_parent_id=parent_id or None)
+        except Exception as exc:
+            raise self._pikpak_error(exc, "转存分享文件") from exc
         for item in list((result or {}).get("files") or []):
             if not isinstance(item, dict):
                 continue
@@ -403,13 +1523,133 @@ class HttpDownloadService:
                 id_map[original_id] = copied_id
         return id_map
 
+    async def _copy_pikpak_share_files_multi(
+        self,
+        collector_client,
+        file_ids: List[str],
+        share_files: Optional[List[Dict[str, Any]]] = None,
+        *,
+        share_link: str = "",
+    ) -> tuple[Dict[str, str], Dict[str, PikPakAccount]]:
+        source_id_map = {str(item): str(item) for item in file_ids if str(item or "").strip()}
+        account_by_source: Dict[str, PikPakAccount] = {}
+        if not file_ids:
+            return source_id_map, account_by_source
+
+        accounts = self._pikpak_accounts()
+        if not accounts:
+            raise HttpDownloadError("PikPak 未配置可用账号或 token")
+
+        item_by_id: Dict[str, Dict[str, Any]] = {}
+        for item in list(share_files or []):
+            file_id = self._pikpak_file_id(item)
+            if file_id:
+                item_by_id[file_id] = item
+        file_rows = [
+            {
+                "id": file_id,
+                "size": self._pikpak_file_size(item_by_id.get(file_id, {})),
+            }
+            for file_id in file_ids
+            if str(file_id or "").strip()
+        ]
+        if not file_rows:
+            return source_id_map, account_by_source
+
+        clients: Dict[str, Any] = {}
+        quotas: Dict[str, Dict[str, Any]] = {}
+        failures: Dict[str, str] = {}
+        collector_account_id = getattr(getattr(collector_client, "_kikoeru_pikpak_account", None), "id", None)
+        try:
+            for account in accounts:
+                try:
+                    if account.id == collector_account_id:
+                        client = collector_client
+                    else:
+                        client = await self._pikpak_client(account=account)
+                    clients[account.id] = client
+                    quotas[account.id] = self._normalize_pikpak_quota(await client.get_quota_info())
+                except Exception as exc:
+                    failures[account.id] = self._sanitize_error(exc)
+
+            available_accounts = [
+                account
+                for account in accounts
+                if account.id in clients and int((quotas.get(account.id) or {}).get("limit_bytes") or 0) > 0
+            ]
+            if not available_accounts:
+                if len(accounts) == 1:
+                    return await self._copy_pikpak_share_files(collector_client, file_ids, share_files, account=accounts[0]), {file_id: accounts[0] for file_id in file_ids}
+                detail = "；".join(f"{account.label}: {failures.get(account.id, '无法读取容量')}" for account in accounts)
+                raise HttpDownloadError(f"PikPak 无法读取任何账号容量，不能安全分配转存。{detail}")
+
+            remaining = {
+                account.id: int((quotas.get(account.id) or {}).get("remaining_bytes") or 0)
+                for account in available_accounts
+            }
+            assigned: Dict[str, List[str]] = {account.id: [] for account in available_accounts}
+            unassigned: List[Dict[str, Any]] = []
+            for row in sorted(file_rows, key=lambda item: int(item.get("size") or 0), reverse=True):
+                size = int(row.get("size") or 0)
+                candidates = sorted(available_accounts, key=lambda account: remaining.get(account.id, 0), reverse=True)
+                target = next((account for account in candidates if size <= 0 or remaining.get(account.id, 0) >= size), None)
+                if not target:
+                    unassigned.append(row)
+                    continue
+                assigned[target.id].append(str(row["id"]))
+                if size > 0:
+                    remaining[target.id] = max(0, remaining.get(target.id, 0) - size)
+
+            if unassigned:
+                need = sum(int(item.get("size") or 0) for item in unassigned)
+                quota_text = "；".join(
+                    f"{account.label} 剩余 {self._format_bytes_for_error(int((quotas.get(account.id) or {}).get('remaining_bytes') or 0))}"
+                    for account in available_accounts
+                )
+                raise HttpDownloadError(
+                    f"PikPak 多账号空间仍不足: 未能分配 {len(unassigned)} 个文件，共 {self._format_bytes_for_error(need)}。{quota_text}。请清理空间或添加账号。"
+                )
+
+            for account in available_accounts:
+                ids_for_account = assigned.get(account.id) or []
+                if not ids_for_account:
+                    continue
+                client = clients[account.id]
+                if account.id != collector_account_id and share_link:
+                    await self._touch_pikpak_share(client, share_link, account=account)
+                id_map = await self._copy_pikpak_share_files(
+                    client,
+                    ids_for_account,
+                    [item_by_id.get(file_id, {"id": file_id}) for file_id in ids_for_account],
+                    account=account,
+                )
+                source_id_map.update(id_map)
+                for file_id in ids_for_account:
+                    account_by_source[file_id] = account
+            return source_id_map, account_by_source
+        finally:
+            for account_id, client in list(clients.items()):
+                if account_id != collector_account_id:
+                    await self._close_pikpak_client(client)
+
+    def _format_bytes_for_error(self, value: Any) -> str:
+        size = float(self._int_value(value))
+        units = ["B", "KB", "MB", "GB", "TB"]
+        index = 0
+        while size >= 1024 and index < len(units) - 1:
+            size /= 1024
+            index += 1
+        if index == 0:
+            return f"{int(size)} {units[index]}"
+        return f"{size:.1f} {units[index]}"
+
     async def _pikpak_download_link(self, client, file_id: str, *, allow_missing: bool = False) -> Dict[str, Any]:
         try:
             info = await client.get_download_url(file_id)
         except Exception as exc:
             if allow_missing:
                 return {}
-            raise exc
+            raise self._pikpak_error(exc, "解析下载直链") from exc
         if not isinstance(info, dict):
             raise HttpDownloadError("PikPak 下载链接返回异常")
         url = str(info.get("web_content_link") or "").strip()
@@ -430,67 +1670,148 @@ class HttpDownloadService:
         resolved: List[str] = []
         source_items: List[Dict[str, Any]] = []
         failed: List[Dict[str, Any]] = []
-        pikpak_links = [url for url in urls if self._is_pikpak_url(url)]
-        direct_links = [url for url in urls if not self._is_pikpak_url(url)]
+        direct_links = [
+            url
+            for url in urls
+            if self._provider_source(url) == "http"
+        ]
         resolved.extend(direct_links)
         for url in direct_links:
             source_items.append({"source": "http", "url": url, "masked_url": self._mask_url(url)})
-        if not pikpak_links:
-            return {"urls": resolved, "source_items": source_items, "failed_items": failed, "source_modes": ["http"] if direct_links else []}
 
-        client = await self._pikpak_client()
-        try:
-            for raw_url in pikpak_links:
-                try:
-                    info, files = await self._collect_pikpak_share_files(client, raw_url)
-                    if not files:
-                        failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": "PikPak 分享中没有可下载文件", "source": "pikpak"})
+        gofile_links = [url for url in urls if self._is_gofile_url(url)]
+        for raw_url in gofile_links:
+            try:
+                data = await self._collect_gofile_files(raw_url)
+                files = data.get("files") or []
+                if not files:
+                    failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": "Gofile 分享中没有可下载文件", "source": "gofile"})
+                    continue
+                for item in files:
+                    download_url = str(item.get("url") or "")
+                    if not download_url:
                         continue
-                    file_ids = []
-                    for item in files:
-                        file_id = str(item.get("id") or item.get("file_id") or "")
-                        if file_id and file_id not in file_ids:
-                            file_ids.append(file_id)
-                    copied_id_map = {item: item for item in file_ids}
-                    if materialize and bool(getattr(self._config(), "pikpak_auto_save_share", True)):
-                        copied_id_map = await self._copy_pikpak_share_files(client, file_ids)
-                    for item in files:
-                        file_id = str(item.get("id") or item.get("file_id") or "")
-                        if not file_id:
-                            failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": "PikPak 文件缺少 file_id", "source": "pikpak"})
+                    resolved.append(download_url)
+                    source_items.append(item)
+            except Exception as exc:
+                failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": self._sanitize_error(exc), "source": "gofile"})
+
+        onedrive_links = [url for url in urls if self._is_onedrive_url(url)]
+        for raw_url in onedrive_links:
+            try:
+                direct_url = self._onedrive_direct_url(raw_url)
+                resolved.append(direct_url)
+                source_items.append({
+                    "source": "onedrive",
+                    "share_url": self._mask_url(raw_url),
+                    "url": direct_url,
+                    "masked_url": self._mask_url(direct_url),
+                })
+            except Exception as exc:
+                failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": self._sanitize_error(exc), "source": "onedrive"})
+
+        google_links = [url for url in urls if self._is_google_drive_url(url)]
+        for raw_url in google_links:
+            try:
+                direct_url = self._google_drive_direct_url(raw_url)
+                resolved.append(direct_url)
+                source_items.append({
+                    "source": "google_drive",
+                    "share_url": self._mask_url(raw_url),
+                    "url": direct_url,
+                    "masked_url": self._mask_url(direct_url),
+                })
+            except Exception as exc:
+                failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": self._sanitize_error(exc), "source": "google_drive"})
+
+        transferit_links = [url for url in urls if self._is_transferit_url(url)]
+        for raw_url in transferit_links:
+            try:
+                data = await self._collect_transferit_files(raw_url)
+                files = data.get("files") or []
+                if not files:
+                    failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": "Transfer.it 分享中没有可下载文件", "source": "transferit"})
+                    continue
+                source_items.extend(files)
+            except Exception as exc:
+                failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": self._sanitize_error(exc), "source": "transferit"})
+
+        pikpak_links = [url for url in urls if self._is_pikpak_url(url)]
+        if pikpak_links:
+            collector_account = self._select_pikpak_account()
+            client = await self._pikpak_client(account=collector_account)
+            try:
+                for raw_url in pikpak_links:
+                    try:
+                        download_clients: Dict[str, Any] = {}
+                        info, files = await self._collect_pikpak_share_files(client, raw_url)
+                        if not files:
+                            failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": "PikPak 分享中没有可下载文件", "source": "pikpak"})
                             continue
-                        download_file_id = copied_id_map.get(file_id, file_id)
-                        detail = await self._pikpak_download_link(client, download_file_id, allow_missing=not materialize)
-                        download_url = str(detail.get("_download_url") or "")
-                        name = self._sanitize_filename(detail.get("name") or item.get("name") or "pikpak-file")
-                        relative_dir = str(item.get("_relative_dir") or "").strip("/")
-                        if download_url:
-                            resolved.append(download_url)
-                        source_items.append({
-                            "source": "pikpak",
-                            "share_url": self._mask_url(raw_url),
-                            "url": self._mask_url(download_url) if download_url else self._mask_url(raw_url),
-                            "original_url": download_url,
-                            "file_id": file_id,
-                            "download_file_id": download_file_id,
-                            "name": name,
-                            "filename": name,
-                            "relative_dir": relative_dir,
-                            "size_bytes": self._pikpak_file_size(detail) or self._pikpak_file_size(item),
-                            "share_id": info.get("share_id") or self._pikpak_share_id_from_url(raw_url),
-                        })
-                        if not download_url:
-                            source_items[-1]["preview_only"] = True
-                except Exception as exc:
-                    failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": self._sanitize_error(exc), "source": "pikpak"})
-        finally:
-            await self._close_pikpak_client(client)
+                        file_ids = []
+                        for item in files:
+                            file_id = str(item.get("id") or item.get("file_id") or "")
+                            if file_id and file_id not in file_ids:
+                                file_ids.append(file_id)
+                        copied_id_map = {item: item for item in file_ids}
+                        account_by_source: Dict[str, PikPakAccount] = {item: collector_account for item in file_ids}
+                        download_clients = {collector_account.id: client}
+                        if materialize and bool(getattr(self._config(), "pikpak_auto_save_share", True)):
+                            copied_id_map, account_by_source = await self._copy_pikpak_share_files_multi(
+                                client,
+                                file_ids,
+                                files,
+                                share_link=raw_url,
+                            )
+                            for account in account_by_source.values():
+                                if account.id not in download_clients:
+                                    download_clients[account.id] = await self._pikpak_client(account=account)
+                        for item in files:
+                            file_id = str(item.get("id") or item.get("file_id") or "")
+                            if not file_id:
+                                failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": "PikPak 文件缺少 file_id", "source": "pikpak"})
+                                continue
+                            download_file_id = copied_id_map.get(file_id, file_id)
+                            item_account = account_by_source.get(file_id) or collector_account
+                            detail_client = download_clients.get(item_account.id) or client
+                            detail = await self._pikpak_download_link(detail_client, download_file_id, allow_missing=not materialize)
+                            download_url = str(detail.get("_download_url") or "")
+                            name = self._sanitize_filename(detail.get("name") or item.get("name") or "pikpak-file")
+                            relative_dir = str(item.get("_relative_dir") or "").strip("/")
+                            if download_url:
+                                resolved.append(download_url)
+                            source_items.append({
+                                "source": "pikpak",
+                                "share_url": self._mask_url(raw_url),
+                                "url": self._mask_url(download_url) if download_url else self._mask_url(raw_url),
+                                "original_url": download_url,
+                                "file_id": file_id,
+                                "download_file_id": download_file_id,
+                                "name": name,
+                                "filename": name,
+                                "relative_dir": relative_dir,
+                                "size_bytes": self._pikpak_file_size(detail) or self._pikpak_file_size(item),
+                                "share_id": info.get("share_id") or self._pikpak_share_id_from_url(raw_url),
+                                "pikpak_account_id": item_account.id,
+                                "pikpak_account_label": item_account.label,
+                                "pikpak_transfer_dir": item_account.transfer_dir,
+                            })
+                            if not download_url:
+                                source_items[-1]["preview_only"] = True
+                    except Exception as exc:
+                        failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": self._sanitize_error(exc), "source": "pikpak"})
+                    finally:
+                        for account_id, detail_client in list(download_clients.items()):
+                            if account_id != collector_account.id:
+                                await self._close_pikpak_client(detail_client)
+            finally:
+                await self._close_pikpak_client(client)
 
         modes = []
-        if direct_links:
-            modes.append("http")
-        if pikpak_links:
-            modes.append("pikpak")
+        for url in urls:
+            mode = self._provider_source(url)
+            if mode not in modes:
+                modes.append(mode)
         return {"urls": resolved, "source_items": source_items, "failed_items": failed, "source_modes": modes}
 
     def _sanitize_filename(self, name: str, fallback: str = "download.bin") -> str:
@@ -573,23 +1894,37 @@ class HttpDownloadService:
     async def preview_urls(self, urls: List[str], target_subdir: str = "", conflict_policy: str = "", *, materialize_sources: bool = False) -> Dict[str, Any]:
         source = await self.resolve_source_urls(urls, materialize=materialize_sources)
         items = []
+        source_by_url = {}
+        for source_item in source.get("source_items") or []:
+            if not isinstance(source_item, dict):
+                continue
+            raw = str(source_item.get("original_url") or source_item.get("url") or "").strip()
+            if raw and not source_item.get("preview_only"):
+                source_by_url.setdefault(raw, source_item)
         for raw_url in source.get("urls") or []:
-            item = await self.preview_url(raw_url, target_subdir=target_subdir, conflict_policy=conflict_policy)
-            items.append(item)
-        if not materialize_sources:
-            for source_item in source.get("source_items") or []:
-                if not isinstance(source_item, dict) or source_item.get("source") != "pikpak" or not source_item.get("preview_only"):
-                    continue
-                filename = self._sanitize_filename(source_item.get("filename") or source_item.get("name") or "pikpak-file")
-                subdir = "/".join([part for part in (target_subdir, source_item.get("relative_dir")) if str(part or "").strip()])
+            source_item = source_by_url.get(str(raw_url or "").strip())
+            item = await self.preview_url(
+                raw_url,
+                target_subdir=target_subdir,
+                conflict_policy=conflict_policy,
+                headers=dict(source_item.get("headers") or {}) if isinstance(source_item, dict) else None,
+            )
+            if (
+                isinstance(source_item, dict)
+                and not item.get("ok")
+                and source_item.get("source") == "gofile"
+                and source_item.get("filename")
+            ):
                 try:
-                    target = self._resolve_target(filename, subdir, conflict_policy)
-                    items.append({
+                    subdir = "/".join([part for part in (target_subdir, source_item.get("relative_dir")) if str(part or "").strip()])
+                    target = self._resolve_target(str(source_item.get("filename") or "gofile-file"), subdir, conflict_policy)
+                    item = {
                         "ok": True,
-                        "url": source_item.get("url") or source_item.get("share_url") or "",
-                        "masked_url": source_item.get("share_url") or "",
-                        "host": "mypikpak.com",
-                        "source": "pikpak",
+                        "url": str(source_item.get("url") or raw_url),
+                        "masked_url": source_item.get("masked_url") or self._mask_url(str(source_item.get("url") or raw_url)),
+                        "host": urlparse(str(source_item.get("url") or raw_url)).hostname or "gofile.io",
+                        "source": "gofile",
+                        "share_url": source_item.get("share_url"),
                         "filename": target["filename"],
                         "relative_path": target["relative_path"],
                         "final_path": target["final_path"],
@@ -597,7 +1932,75 @@ class HttpDownloadService:
                         "size_bytes": int(source_item.get("size_bytes") or 0),
                         "content_type": "",
                         "resumable": True,
-                        "warning": "PikPak 分享将在开始下载时转存并解析直链。",
+                        "warning": "Gofile CDN 未响应预览探测，已使用 API 返回的文件名和大小创建下载项。",
+                    }
+                except Exception as exc:
+                    item["reason"] = self._sanitize_error(exc) or exc.__class__.__name__
+            if source_item and item.get("ok"):
+                item["source"] = str(source_item.get("source") or item.get("source") or "http")
+                if source_item.get("share_url"):
+                    item["share_url"] = source_item.get("share_url")
+                for meta_key in ("content_id", "file_id", "download_file_id", "share_id", "pikpak_account_id", "pikpak_account_label", "pikpak_transfer_dir"):
+                    if source_item.get(meta_key):
+                        item[meta_key] = source_item.get(meta_key)
+                relative_dir = str(source_item.get("relative_dir") or "").strip("/")
+                if relative_dir:
+                    filename = self._sanitize_filename(source_item.get("filename") or source_item.get("name") or item.get("filename") or "download.bin")
+                    subdir = "/".join([part for part in (target_subdir, relative_dir) if str(part or "").strip()])
+                    target = self._resolve_target(filename, subdir, conflict_policy)
+                    item.update({
+                        "filename": target["filename"],
+                        "relative_path": target["relative_path"],
+                        "final_path": target["final_path"],
+                        "target_dir": target["target_dir"],
+                    })
+                if source_item.get("size_bytes") and not int(item.get("size_bytes") or 0):
+                    item["size_bytes"] = int(source_item.get("size_bytes") or 0)
+                if source_item.get("aria2_header"):
+                    item["aria2_header"] = list(source_item.get("aria2_header") or [])
+                if source_item.get("headers"):
+                    item["headers"] = dict(source_item.get("headers") or {})
+            items.append(item)
+        for source_item in source.get("source_items") or []:
+            if (
+                not isinstance(source_item, dict)
+                or source_item.get("source") not in _SHARE_PREVIEW_ONLY_SOURCES
+                or not source_item.get("preview_only")
+            ):
+                continue
+            source_name = str(source_item.get("source") or "http")
+            if materialize_sources and source_name != "transferit":
+                continue
+            if not materialize_sources or source_name == "transferit":
+                filename = self._sanitize_filename(source_item.get("filename") or source_item.get("name") or f"{source_name}-file")
+                subdir = "/".join([part for part in (target_subdir, source_item.get("relative_dir")) if str(part or "").strip()])
+                try:
+                    target = self._resolve_target(filename, subdir, conflict_policy)
+                    items.append({
+                        "ok": True,
+                        "url": source_item.get("url") or source_item.get("share_url") or "",
+                        "masked_url": source_item.get("share_url") or "",
+                        "host": "transfer.it" if source_name == "transferit" else "mypikpak.com",
+                        "source": source_name,
+                        "share_url": source_item.get("share_url"),
+                        "file_id": source_item.get("file_id"),
+                        "download_file_id": source_item.get("download_file_id"),
+                        "share_id": source_item.get("share_id"),
+                        "pikpak_account_id": source_item.get("pikpak_account_id"),
+                        "pikpak_account_label": source_item.get("pikpak_account_label"),
+                        "pikpak_transfer_dir": source_item.get("pikpak_transfer_dir"),
+                        "filename": target["filename"],
+                        "relative_path": target["relative_path"],
+                        "final_path": target["final_path"],
+                        "target_dir": target["target_dir"],
+                        "size_bytes": int(source_item.get("size_bytes") or 0),
+                        "content_type": "",
+                        "resumable": source_name != "transferit",
+                        "warning": (
+                            "Transfer.it 分享将在开始下载时用专用下载器拉取。"
+                            if source_name == "transferit"
+                            else "PikPak 分享将在开始下载时转存并解析直链。"
+                        ),
                     })
                 except Exception as exc:
                     items.append({
@@ -605,10 +2008,13 @@ class HttpDownloadService:
                         "url": source_item.get("share_url") or "",
                         "masked_url": source_item.get("share_url") or "",
                         "reason": self._sanitize_error(exc),
-                        "source": "pikpak",
+                        "source": source_name,
                     })
         items.extend(source.get("failed_items") or [])
         ok_count = sum(1 for item in items if item.get("ok"))
+        for item in items:
+            if isinstance(item, dict):
+                item["selection_key"] = self._preview_item_selection_key(item)
         return {
             "success": ok_count > 0,
             "items": items,
@@ -621,7 +2027,7 @@ class HttpDownloadService:
             "needs_materialize": any(bool(item.get("preview_only")) for item in source.get("source_items") or [] if isinstance(item, dict)),
         }
 
-    async def preview_url(self, raw_url: str, target_subdir: str = "", conflict_policy: str = "") -> Dict[str, Any]:
+    async def preview_url(self, raw_url: str, target_subdir: str = "", conflict_policy: str = "", headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         try:
             url = await self.validate_url(raw_url)
             parsed = urlparse(url)
@@ -629,45 +2035,46 @@ class HttpDownloadService:
             hint = ""
             if any(host == item or host.endswith(f".{item}") for item in _BLOCKED_HOST_HINTS):
                 hint = "该站点常见页面链接需要登录/验证码；首版只支持真实文件直链。"
-            headers: Dict[str, str] = {}
+            response_headers: Dict[str, str] = {}
             status = None
             size = 0
             content_type = ""
             timeout = aiohttp.ClientTimeout(total=20, connect=8)
             proxy = self._proxy_url() or None
+            request_headers = dict(headers or {})
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 try:
-                    async with session.head(url, allow_redirects=True, proxy=proxy) as response:
+                    async with session.head(url, allow_redirects=True, headers=request_headers, proxy=proxy) as response:
                         status = response.status
-                        headers = {k.lower(): v for k, v in response.headers.items()}
+                        response_headers = {k.lower(): v for k, v in response.headers.items()}
                         url = str(response.url)
                 except Exception:
-                    async with session.get(url, allow_redirects=True, headers={"Range": "bytes=0-0"}, proxy=proxy) as response:
+                    async with session.get(url, allow_redirects=True, headers={**request_headers, "Range": "bytes=0-0"}, proxy=proxy) as response:
                         status = response.status
-                        headers = {k.lower(): v for k, v in response.headers.items()}
+                        response_headers = {k.lower(): v for k, v in response.headers.items()}
                         url = str(response.url)
             url = await self.validate_url(url)
             if status and status >= 400:
                 raise HttpDownloadError(f"源站返回 HTTP {status}")
-            content_type = str(headers.get("content-type") or "")
+            content_type = str(response_headers.get("content-type") or "")
             if "text/html" in content_type.lower() and not hint:
                 hint = "源站返回 HTML 页面，可能不是可直接下载的文件链接。"
-            size = self._content_length_from_headers(headers)
-            filename = self._filename_from_headers(headers) or self._filename_from_url(url)
+            size = self._content_length_from_headers(response_headers)
+            filename = self._filename_from_headers(response_headers) or self._filename_from_url(url)
             target = self._resolve_target(filename, target_subdir, conflict_policy)
             return {
                 "ok": True,
                 "url": url,
                 "masked_url": self._mask_url(url),
                 "host": urlparse(url).hostname or "",
-                "source": "http",
+                "source": self._direct_link_preview_provider(raw_url),
                 "filename": target["filename"],
                 "relative_path": target["relative_path"],
                 "final_path": target["final_path"],
                 "target_dir": target["target_dir"],
                 "size_bytes": size,
                 "content_type": content_type,
-                "resumable": "bytes" in str(headers.get("accept-ranges") or "").lower(),
+                "resumable": "bytes" in str(response_headers.get("accept-ranges") or "").lower(),
                 "warning": hint,
             }
         except Exception as exc:
@@ -675,7 +2082,7 @@ class HttpDownloadService:
                 "ok": False,
                 "url": str(raw_url or "").strip(),
                 "masked_url": self._mask_url(str(raw_url or "")),
-                "reason": self._sanitize_error(exc),
+                "reason": self._sanitize_error(exc) or exc.__class__.__name__,
             }
 
     def _find_free_port(self) -> int:
@@ -767,7 +2174,7 @@ class HttpDownloadService:
         daemon = await self._ensure_daemon()
         return await self._rpc_call_raw(daemon, method, params)
 
-    def _aria2_options(self, item: Dict[str, Any], target_dir: str) -> Dict[str, str]:
+    def _aria2_options(self, item: Dict[str, Any], target_dir: str) -> Dict[str, Any]:
         cfg = self._config()
         options = {
             "dir": target_dir,
@@ -786,7 +2193,91 @@ class HttpDownloadService:
         proxy = self._proxy_url()
         if proxy:
             options["all-proxy"] = proxy
+        headers = [
+            str(header).strip()
+            for header in list(item.get("aria2_header") or [])
+            if str(header or "").strip()
+        ]
+        if headers:
+            options["header"] = headers
         return options
+
+    async def _download_transferit_item(self, item: Dict[str, Any], task=None) -> Dict[str, Any]:
+        raw_url = str(item.get("original_url") or item.get("url") or "").strip()
+        if not raw_url:
+            raise HttpDownloadError("Transfer.it 下载缺少分享链接")
+        target_dir = str(item.get("target_dir") or self._download_root())
+        os.makedirs(target_dir, exist_ok=True)
+        final_path = str(item.get("final_path") or os.path.join(target_dir, item.get("filename") or "transferit-download"))
+        filename = self._sanitize_filename(item.get("filename") or os.path.basename(final_path) or "transferit-download")
+        try:
+            from transferit import Transferit
+        except Exception as exc:
+            raise HttpDownloadError("后端缺少 transferit-py 依赖，请重新安装 backend/requirements.txt") from exc
+
+        def run_download() -> str:
+            download_dir = os.path.dirname(final_path) or target_dir
+            password = self._transferit_password(raw_url)
+            with Transferit() as client:
+                if password:
+                    result = client.download(raw_url, download_dir, password=password)
+                else:
+                    result = client.download(raw_url, download_dir)
+            expected_path = os.path.join(download_dir, filename)
+            if expected_path != final_path and os.path.exists(expected_path) and not os.path.exists(final_path):
+                os.replace(expected_path, final_path)
+                return final_path
+            paths = list(getattr(result, "paths", []) or [])
+            file_paths = [path for path in paths if os.path.isfile(path)]
+            if file_paths:
+                return file_paths[0]
+            return expected_path
+
+        downloaded_path = ""
+        last_error: Optional[BaseException] = None
+        for attempt in range(3):
+            try:
+                downloaded_path = await asyncio.wait_for(asyncio.to_thread(run_download), timeout=None)
+                break
+            except Exception as exc:
+                last_error = exc
+                if not self._is_transferit_transient_error(exc):
+                    raise
+                if attempt < 2:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+        else:
+            raise HttpDownloadError("Transfer.it 服务器忙，请稍后重试") from last_error
+
+        if item.get("metadata_fallback") and downloaded_path and os.path.isfile(downloaded_path):
+            final_path = downloaded_path
+            filename = self._sanitize_filename(os.path.basename(final_path) or filename)
+        elif downloaded_path and os.path.isfile(downloaded_path) and downloaded_path != final_path and not os.path.exists(final_path):
+            os.replace(downloaded_path, final_path)
+        if not os.path.exists(final_path):
+            matches = [
+                os.path.join(target_dir, name)
+                for name in os.listdir(target_dir)
+                if os.path.isfile(os.path.join(target_dir, name))
+            ]
+            if len(matches) == 1:
+                os.replace(matches[0], final_path)
+        if not os.path.exists(final_path):
+            raise HttpDownloadError("Transfer.it 下载完成后未找到输出文件")
+        size = os.path.getsize(final_path) if os.path.exists(final_path) else 0
+        return {
+            "gid": f"transferit:{item.get('share_id') or filename}",
+            "name": os.path.basename(final_path) or filename,
+            "relative_path": os.path.relpath(final_path, self._download_root()).replace("\\", "/"),
+            "local_path": final_path,
+            "url": item.get("masked_url") or self._mask_url(raw_url),
+            "source": "transferit",
+            "status": "completed",
+            "progress": 100,
+            "downloaded": size,
+            "total": size,
+            "size": size,
+            "speed_bytes_per_sec": 0,
+        }
 
     async def start_download_task(self, task) -> Dict[str, Any]:
         metadata = dict(task.task_metadata or {})
@@ -802,19 +2293,29 @@ class HttpDownloadService:
         target_subdir = str(metadata.get("target_subdir") or "").strip()
         conflict_policy = str(metadata.get("conflict_policy") or getattr(cfg, "conflict_policy", "resume") or "resume")
         preview = await self.preview_urls(raw_urls, target_subdir=target_subdir, conflict_policy=conflict_policy, materialize_sources=True)
+        preview = self.filter_preview_selection(
+            preview,
+            selected_keys=list(metadata.get("selected_keys") or []),
+            selected_items=[
+                item for item in list(metadata.get("selected_items") or [])
+                if isinstance(item, dict)
+            ],
+        )
         items = [item for item in preview.get("items") or [] if item.get("ok")]
         failed_items = [item for item in preview.get("items") or [] if not item.get("ok")]
         if not items:
-            raise HttpDownloadError("没有通过校验的直链")
+            raise HttpDownloadError("没有通过校验的下载项")
         resolved_urls = list(preview.get("resolved_urls") or [])
         source_items = list(preview.get("source_items") or [])
         source_modes = list(preview.get("source_modes") or [])
+        transferit_items = [item for item in items if str(item.get("source") or "") == "transferit"]
+        aria2_items = [item for item in items if self._is_direct_download_item(item)]
 
         os.makedirs(self._download_root(), exist_ok=True)
         gids: List[str] = []
         download_files = []
         total_bytes = 0
-        for item in items:
+        for item in aria2_items:
             os.makedirs(item["target_dir"], exist_ok=True)
             options = self._aria2_options(item, item["target_dir"])
             gid = await self._rpc_call("aria2.addUri", [[item["url"]], options])
@@ -828,6 +2329,25 @@ class HttpDownloadService:
                 "url": item["masked_url"],
                 "original_url": item["url"],
                 "source": item.get("source", "http"),
+                "status": "pending",
+                "progress": 0,
+                "downloaded": 0,
+                "total": int(item.get("size_bytes") or 0),
+                "size": int(item.get("size_bytes") or 0),
+                "pikpak_account_id": item.get("pikpak_account_id", ""),
+                "pikpak_account_label": item.get("pikpak_account_label", ""),
+                "pikpak_transfer_dir": item.get("pikpak_transfer_dir", ""),
+            })
+        for item in transferit_items:
+            total_bytes += int(item.get("size_bytes") or 0)
+            download_files.append({
+                "gid": f"transferit:{item.get('share_id') or item.get('filename')}",
+                "name": item["filename"],
+                "relative_path": item["relative_path"],
+                "local_path": item["final_path"],
+                "url": item.get("masked_url") or self._mask_url(str(item.get("url") or "")),
+                "original_url": item.get("original_url") or item.get("url"),
+                "source": "transferit",
                 "status": "pending",
                 "progress": 0,
                 "downloaded": 0,
@@ -864,59 +2384,156 @@ class HttpDownloadService:
         })
         task.output_path = self._download_root()
         task.task_metadata["final_output_path"] = self._download_root()
-        task.update_progress(1, f"已提交 {len(gids)} 个 aria2 下载")
+        submit_parts = []
+        if gids:
+            submit_parts.append(f"{len(gids)} 个 aria2 下载")
+        if transferit_items:
+            submit_parts.append(f"{len(transferit_items)} 个专用下载")
+        task.update_progress(1, f"已提交 {'，'.join(submit_parts) if submit_parts else '0 个下载'}")
 
         started = time.monotonic()
-        last_log_at = 0.0
-        while True:
-            await task.wait_if_paused()
-            if task.is_cancelled():
-                await self.cancel_task(task.id)
-                raise HttpDownloadError("用户取消")
-            rows, runtime, done, failed = await self._poll_task(gids, download_files)
-            task.task_metadata["download_files"] = rows
-            task.task_metadata["download_runtime"] = runtime
-            task.current_step = runtime.get("current_file_name") or "下载中"
-            total = max(1, int(runtime.get("total_bytes") or total_bytes or 0))
-            transferred = int(runtime.get("transferred_bytes") or 0)
-            progress = 95 if total <= 1 else min(99, int(transferred / total * 100))
-            task.progress = max(task.progress, progress)
-            now = time.monotonic()
-            if now - last_log_at > 5:
-                last_log_at = now
-                task.update_progress(task.progress, f"下载中 {runtime.get('completed_files', 0)}/{len(rows)}")
-            if done:
-                break
-            await asyncio.sleep(1.0)
+        transfer_success_files = []
+        transfer_failed_rows = []
+        if transferit_items:
+            for index, item in enumerate(transferit_items, start=1):
+                await task.wait_if_paused()
+                if task.is_cancelled():
+                    await self.cancel_task(task.id)
+                    raise HttpDownloadError("用户取消")
+                task.current_step = f"下载 Transfer.it {index}/{len(transferit_items)}"
+                task.update_progress(max(task.progress, 3), task.current_step)
+                try:
+                    row = await self._download_transferit_item(item, task=task)
+                    transfer_success_files.append(row)
+                    matched_row = False
+                    for existing in download_files:
+                        if (
+                            existing.get("gid") == row.get("gid")
+                            or (
+                                existing.get("source") == "transferit"
+                                and existing.get("relative_path") == row.get("relative_path")
+                            )
+                        ):
+                            existing.update(row)
+                            matched_row = True
+                            break
+                    if not matched_row:
+                        download_files.append(row)
+                except Exception as exc:
+                    failed_row = {
+                        "gid": f"transferit:{item.get('share_id') or item.get('filename')}",
+                        "name": item.get("filename") or "transferit-download",
+                        "relative_path": item.get("relative_path") or "",
+                        "local_path": item.get("final_path") or "",
+                        "url": item.get("masked_url") or self._mask_url(str(item.get("url") or "")),
+                        "source": "transferit",
+                        "status": "failed",
+                        "failure_reason": self._sanitize_error(exc),
+                        "progress": 0,
+                    }
+                    transfer_failed_rows.append(failed_row)
+                    failed_items.append(failed_row)
+                    for existing in download_files:
+                        if (
+                            existing.get("gid") == failed_row.get("gid")
+                            or (
+                                existing.get("source") == "transferit"
+                                and existing.get("relative_path") == failed_row.get("relative_path")
+                            )
+                        ):
+                            existing.update(failed_row)
+                            break
+                completed_transfer = len(transfer_success_files) + len(transfer_failed_rows)
+                task.task_metadata["download_files"] = download_files
+                task.task_metadata["download_runtime"] = {
+                    "status": "downloading",
+                    "total_files": len(download_files),
+                    "completed_files": len(transfer_success_files),
+                    "failed_files": len(failed_items) + len(transfer_failed_rows),
+                    "active_file_count": 1 if completed_transfer < len(transferit_items) else 0,
+                    "transferred_bytes": sum(int(row.get("downloaded") or 0) for row in transfer_success_files),
+                    "total_bytes": total_bytes,
+                    "speed_bytes_per_sec": 0,
+                    "current_file_name": str(item.get("filename") or ""),
+                    "current_relative_path": str(item.get("relative_path") or ""),
+                }
 
-        success_files = [row for row in rows if row.get("status") == "completed"]
-        failed_rows = [row for row in rows if row.get("status") == "failed"]
+        last_log_at = 0.0
+        if gids:
+            while True:
+                await task.wait_if_paused()
+                if task.is_cancelled():
+                    await self.cancel_task(task.id)
+                    raise HttpDownloadError("用户取消")
+                aria_rows = [row for row in download_files if row.get("source") != "transferit"]
+                rows, runtime, done, _failed = await self._poll_task(gids, aria_rows)
+                for row in rows:
+                    for existing in download_files:
+                        if existing.get("gid") == row.get("gid"):
+                            existing.update(row)
+                            break
+                transfer_done = len(transfer_success_files)
+                transfer_failed = len(transfer_failed_rows)
+                runtime.update({
+                    "total_files": len(download_files),
+                    "completed_files": int(runtime.get("completed_files") or 0) + transfer_done,
+                    "failed_files": int(runtime.get("failed_files") or 0) + transfer_failed,
+                    "transferred_bytes": int(runtime.get("transferred_bytes") or 0) + sum(int(row.get("downloaded") or 0) for row in transfer_success_files),
+                    "total_bytes": total_bytes,
+                })
+                task.task_metadata["download_files"] = download_files
+                task.task_metadata["download_runtime"] = runtime
+                task.current_step = runtime.get("current_file_name") or "下载中"
+                total = max(1, int(runtime.get("total_bytes") or total_bytes or 0))
+                transferred = int(runtime.get("transferred_bytes") or 0)
+                progress = 95 if total <= 1 else min(99, int(transferred / total * 100))
+                task.progress = max(task.progress, progress)
+                now = time.monotonic()
+                if now - last_log_at > 5:
+                    last_log_at = now
+                    task.update_progress(task.progress, f"下载中 {runtime.get('completed_files', 0)}/{len(download_files)}")
+                if done:
+                    break
+                await asyncio.sleep(1.0)
+        else:
+            runtime = task.task_metadata.get("download_runtime") or {}
+
+        success_files = [row for row in download_files if row.get("status") == "completed"]
+        failed_rows = [row for row in download_files if row.get("status") == "failed"]
         duration_ms = int((time.monotonic() - started) * 1000)
         downloaded_bytes = sum(int(row.get("downloaded") or row.get("size") or 0) for row in success_files)
         task.task_metadata.update({
-            "download_files": rows,
-            "failed_files": [*failed_items, *failed_rows],
+            "download_files": download_files,
+            "failed_files": [*failed_items, *[row for row in failed_rows if row not in failed_items]],
             "final_output_path": self._download_root(),
             "performance_metrics": {
                 "duration_ms": duration_ms,
                 "downloaded_bytes": downloaded_bytes,
                 "success_count": len(success_files),
-                "failed_count": len(failed_items) + len(failed_rows),
+                "failed_count": len(failed_items) + len([row for row in failed_rows if row not in failed_items]),
                 "average_speed_bytes": int(downloaded_bytes / max(duration_ms / 1000, 1)) if downloaded_bytes else 0,
             },
         })
-        final_status = "completed" if success_files and not failed_items and not failed_rows else "partial_failed"
+        merged_failed_rows = [*failed_items, *[row for row in failed_rows if row not in failed_items]]
+        final_status = "completed" if success_files and not merged_failed_rows else "partial_failed"
+        runtime.update({
+            "total_files": len(download_files),
+            "completed_files": len(success_files),
+            "failed_files": len(merged_failed_rows),
+            "transferred_bytes": downloaded_bytes,
+            "total_bytes": total_bytes,
+        })
         runtime["status"] = final_status
         runtime["speed_bytes_per_sec"] = 0
         task.task_metadata["download_runtime"] = runtime
         if not success_files:
             raise HttpDownloadError("没有任何文件下载成功")
-        task.update_progress(100, f"下载完成，成功 {len(success_files)} 个，失败 {len(failed_items) + len(failed_rows)} 个")
+        task.update_progress(100, f"下载完成，成功 {len(success_files)} 个，失败 {len(merged_failed_rows)} 个")
         return {
             "success": True,
             "download_root": self._download_root(),
             "downloaded_files": success_files,
-            "failed_files": [*failed_items, *failed_rows],
+            "failed_files": merged_failed_rows,
         }
 
     def _content_length_from_headers(self, headers: Dict[str, str]) -> int:
@@ -1072,19 +2689,14 @@ class HttpDownloadService:
         pikpak_ready = False
         pikpak_message = ""
         if self._pikpak_enabled():
-            cfg = self._config()
-            pikpak_ready = bool(
-                str(getattr(cfg, "pikpak_encoded_token", "") or "").strip()
-                or (
-                    str(getattr(cfg, "pikpak_username", "") or "").strip()
-                    and str(getattr(cfg, "pikpak_password", "") or "").strip()
-                )
-            )
-            pikpak_message = "PikPak 已配置" if pikpak_ready else "PikPak 已启用但缺少账号或 token"
+            accounts = self._pikpak_accounts()
+            pikpak_ready = bool(accounts)
+            pikpak_message = f"PikPak 已配置 {len(accounts)} 个账号" if pikpak_ready else "PikPak 已启用但缺少账号或 token"
         result.update({
             "pikpak_enabled": self._pikpak_enabled(),
             "pikpak_ready": pikpak_ready,
             "pikpak_message": pikpak_message,
+            "gofile_ready": bool(self._gofile_token()),
         })
         return result
 

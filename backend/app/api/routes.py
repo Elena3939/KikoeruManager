@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse,
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func, or_, text
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 import asyncio
@@ -37,6 +37,7 @@ from ..core.backup_zip_service import get_backup_zip_service
 from ..core.file_processor import get_file_processor
 from ..core.library_manager import get_library_manager, SynologyError
 from ..core.library_index import get_library_index_service
+from ..core.rjcode_utils import extract_rjcode, extract_rjcode_from_path, scan_existing_folder_candidates
 from ..core.password_utils import (
     normalize_filename_value,
     normalize_optional_text,
@@ -74,6 +75,20 @@ def _mask_http_downloader_config_for_log(value: dict) -> dict:
         data["pikpak_password"] = "********"
     if data.get("pikpak_encoded_token"):
         data["pikpak_encoded_token"] = "********"
+    if isinstance(data.get("pikpak_accounts"), list):
+        masked_accounts = []
+        for account in data.get("pikpak_accounts") or []:
+            if not isinstance(account, dict):
+                continue
+            row = dict(account)
+            if row.get("password"):
+                row["password"] = "********"
+            if row.get("encoded_token"):
+                row["encoded_token"] = "********"
+            masked_accounts.append(row)
+        data["pikpak_accounts"] = masked_accounts
+    if data.get("gofile_token"):
+        data["gofile_token"] = "********"
     return data
 
 
@@ -1785,6 +1800,12 @@ class ConfigResponse(BaseModel):
     notification_center: Optional[dict] = None
     security_gate: Optional[dict] = None
 
+
+class HttpDownloaderSecretRevealRequest(BaseModel):
+    key: str
+    account_id: Optional[str] = None
+
+
 # API路由
 # 兼容层：旧任务接口仅保留给少数历史入口使用，新功能统一走 /api/task-center/*
 @app.post("/api/tasks", response_model=TaskResponse, deprecated=True, summary="兼容层：创建原始引擎任务")
@@ -2156,6 +2177,16 @@ def _mask_http_downloader_config(config) -> Optional[dict]:
         data['pikpak_password'] = '********'
     if data.get('pikpak_encoded_token'):
         data['pikpak_encoded_token'] = '********'
+    if isinstance(data.get('pikpak_accounts'), list):
+        for account in data['pikpak_accounts']:
+            if not isinstance(account, dict):
+                continue
+            if account.get('password'):
+                account['password'] = '********'
+            if account.get('encoded_token'):
+                account['encoded_token'] = '********'
+    if data.get('gofile_token'):
+        data['gofile_token'] = '********'
     return data
 
 
@@ -2201,6 +2232,75 @@ def _read_http_downloader_secret_from_disk(key: str) -> str:
         return ""
 
 
+def _read_http_downloader_accounts_from_disk() -> list[dict]:
+    """读取磁盘原始 PikPak 多账号，保存脱敏表单时保留真实 token/password。"""
+    try:
+        config_path = _runtime_config_path_from_settings()
+        if not os.path.exists(config_path):
+            return []
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        accounts = data.get("http_downloader", {}).get("pikpak_accounts", [])
+        return [dict(item) for item in accounts if isinstance(item, dict)]
+    except Exception:
+        logger.warning("[HTTP下载] 读取磁盘 PikPak 多账号失败", exc_info=True)
+        return []
+
+
+def _read_http_downloader_account_secret_from_disk(account_id: str, key: str) -> str:
+    """按账号 id 读取磁盘原始 PikPak 多账号敏感字段。"""
+    wanted = str(account_id or "").strip()
+    if not wanted:
+        return ""
+    for account in _read_http_downloader_accounts_from_disk():
+        if str(account.get("id") or "").strip() != wanted:
+            continue
+        value = str(account.get(key) or "")
+        return value if value != "********" else ""
+    return ""
+
+
+def _merge_masked_pikpak_accounts(accounts: list, current_accounts: list, disk_accounts: list) -> list[dict]:
+    current_by_id = {
+        str((item.model_dump() if hasattr(item, "model_dump") else item).get("id") or "").strip(): (
+            item.model_dump() if hasattr(item, "model_dump") else dict(item or {})
+        )
+        for item in current_accounts or []
+        if hasattr(item, "model_dump") or isinstance(item, dict)
+    }
+    disk_by_id = {
+        str(item.get("id") or "").strip(): dict(item)
+        for item in disk_accounts or []
+        if isinstance(item, dict)
+    }
+    result = []
+    for index, raw in enumerate(accounts or []):
+        if not isinstance(raw, dict):
+            continue
+        row = dict(raw)
+        account_id = str(row.get("id") or "").strip()
+        candidates = []
+        if account_id:
+            candidates.extend([disk_by_id.get(account_id), current_by_id.get(account_id)])
+        if index < len(disk_accounts):
+            candidates.append(disk_accounts[index])
+        if index < len(current_accounts or []):
+            current_item = current_accounts[index]
+            candidates.append(current_item.model_dump() if hasattr(current_item, "model_dump") else current_item)
+        for secret_key in ("password", "encoded_token"):
+            if row.get(secret_key) == "********" or secret_key not in row:
+                preserved = ""
+                for candidate in candidates:
+                    if isinstance(candidate, dict):
+                        value = str(candidate.get(secret_key) or "")
+                        if value and value != "********":
+                            preserved = value
+                            break
+                row[secret_key] = preserved
+        result.append(row)
+    return result
+
+
 @app.get("/api/config", response_model=ConfigResponse)
 def get_configuration():
     """获取配置"""
@@ -2243,6 +2343,22 @@ def get_configuration_state():
     from ..config.settings import get_config_runtime_state
 
     return get_config_runtime_state()
+
+
+@app.post("/api/config/http-downloader/reveal-secret")
+def reveal_http_downloader_secret(payload: HttpDownloaderSecretRevealRequest):
+    """从本地配置文件读取 HTTP 下载敏感字段，只供设置页显隐使用。"""
+    key = str(payload.key or "").strip()
+    account_id = str(payload.account_id or "").strip()
+    if key not in {"pikpak_password", "gofile_token", "password", "encoded_token"}:
+        raise HTTPException(status_code=400, detail="不支持读取该敏感字段")
+    if account_id:
+        if key not in {"password", "encoded_token"}:
+            raise HTTPException(status_code=400, detail="账号敏感字段只能读取 password 或 encoded_token")
+        value = _read_http_downloader_account_secret_from_disk(account_id, key)
+    else:
+        value = _read_http_downloader_secret_from_disk(key)
+    return {"value": value}
 
 
 class SecurityGateVerifyRequest(BaseModel):
@@ -2491,6 +2607,18 @@ async def update_configuration(request: Request):
                     http_data['pikpak_encoded_token'] = (
                         _read_http_downloader_secret_from_disk('pikpak_encoded_token')
                         or (current_token if current_token != '********' else '')
+                    )
+                if http_data.get('gofile_token') == '********' or 'gofile_token' not in http_data:
+                    current_gofile_token = getattr(current_cfg.http_downloader, 'gofile_token', '')
+                    http_data['gofile_token'] = (
+                        _read_http_downloader_secret_from_disk('gofile_token')
+                        or (current_gofile_token if current_gofile_token != '********' else '')
+                    )
+                if isinstance(http_data.get('pikpak_accounts'), list):
+                    http_data['pikpak_accounts'] = _merge_masked_pikpak_accounts(
+                        http_data.get('pikpak_accounts') or [],
+                        list(getattr(current_cfg.http_downloader, 'pikpak_accounts', []) or []),
+                        _read_http_downloader_accounts_from_disk(),
                     )
                 http_downloader_config = HttpDownloaderConfig(**http_data)
                 config_data['http_downloader'] = http_downloader_config.model_dump()
@@ -3246,6 +3374,32 @@ def _tail_lines(path: str, n: int) -> List[str]:
     return lines[-n:]
 
 
+def _read_log_payload(log_file: str, line_limit: int, since_offset: int = -1) -> Dict[str, Any]:
+    file_size = os.path.getsize(log_file)
+    if 0 <= since_offset <= file_size:
+        if since_offset == file_size:
+            return {"logs": [], "next_offset": file_size, "is_full": False}
+        # 增量窗口太大时直接回落到尾部 line_limit 行，避免暂停很久后一次性 read()
+        # 几十 MB 文本并把前端/后端都拖住。
+        max_incremental_bytes = 2 * 1024 * 1024
+        if file_size - since_offset > max_incremental_bytes:
+            result = _tail_lines(log_file, line_limit)
+            return {"logs": result, "next_offset": file_size, "is_full": True}
+        with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+            f.seek(since_offset)
+            new_lines = [l.strip() for l in f.read().splitlines() if l.strip()]
+        if len(new_lines) > line_limit:
+            new_lines = new_lines[-line_limit:]
+        return {"logs": new_lines, "next_offset": file_size, "is_full": False}
+
+    result = _tail_lines(log_file, line_limit)
+    return {"logs": result, "next_offset": file_size, "is_full": True}
+
+
+def _sse_payload(event: str, payload: Dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
 @app.get("/api/logs")
 async def get_logs(lines: int = 100, since_offset: int = -1):
     """获取日志文件内容。
@@ -3264,23 +3418,123 @@ async def get_logs(lines: int = 100, since_offset: int = -1):
         _log_file = log_file
 
         def _read_log():
-            file_size = os.path.getsize(_log_file)
-            # 增量模式：文件未轮转且有新内容
-            if 0 <= since_offset <= file_size:
-                if since_offset == file_size:
-                    return {"logs": [], "next_offset": file_size, "is_full": False}
-                with open(_log_file, 'r', encoding='utf-8', errors='ignore') as f:
-                    f.seek(since_offset)
-                    new_lines = [l.strip() for l in f.read().splitlines() if l.strip()]
-                return {"logs": new_lines, "next_offset": file_size, "is_full": False}
-
-            # 全量模式（首次请求或文件已轮转）：反向块读取末尾
-            result = _tail_lines(_log_file, line_limit)
-            return {"logs": result, "next_offset": file_size, "is_full": True}
+            return _read_log_payload(_log_file, line_limit, since_offset)
 
         return await asyncio.to_thread(_read_log)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"读取日志失败: {str(e)}")
+
+
+@app.get("/api/logs/stream")
+async def stream_logs(request: Request, lines: int = 300, since_offset: int = -1):
+    """SSE 推送系统日志增量。
+
+    连接建立后先补一段最近历史或 since_offset 之后的新内容；之后每秒检查
+    主日志文件偏移，发现新增内容就批量推送。心跳用于防止代理/浏览器静默断开。
+    """
+    line_limit = max(50, min(int(lines or 300), 5000))
+
+    async def generator():
+        current_offset = max(-1, int(since_offset or -1))
+        last_heartbeat_at = time.monotonic()
+        active_log_path = ""
+        sent_missing_notice = False
+        try:
+            while True:
+                log_file = _resolve_main_log_path()
+                if not log_file:
+                    yield _sse_payload("connected", {
+                        "logs": [],
+                        "next_offset": 0,
+                        "is_full": True,
+                        "message": "日志文件尚未创建",
+                        "time": datetime.now().isoformat(),
+                    })
+                    sent_missing_notice = True
+                    break
+
+                active_log_path = log_file
+                payload = await asyncio.to_thread(_read_log_payload, log_file, line_limit, current_offset)
+                current_offset = int(payload.get("next_offset") or 0)
+                yield _sse_payload("connected", {
+                    **payload,
+                    "path": os.path.basename(log_file),
+                    "time": datetime.now().isoformat(),
+                })
+                break
+
+            while True:
+                if await request.is_disconnected():
+                    break
+
+                log_file = _resolve_main_log_path()
+                if not log_file:
+                    now = time.monotonic()
+                    if not sent_missing_notice:
+                        sent_missing_notice = True
+                        yield _sse_payload("reset", {
+                            "logs": [],
+                            "next_offset": 0,
+                            "is_full": True,
+                            "message": "日志文件尚未创建",
+                            "time": datetime.now().isoformat(),
+                        })
+                    elif now - last_heartbeat_at >= 20:
+                        last_heartbeat_at = now
+                        yield _sse_payload("heartbeat", {
+                            "next_offset": 0,
+                            "time": datetime.now().isoformat(),
+                        })
+                    await asyncio.sleep(1)
+                    continue
+                sent_missing_notice = False
+
+                if log_file != active_log_path:
+                    active_log_path = log_file
+                    current_offset = -1
+
+                try:
+                    payload = await asyncio.to_thread(_read_log_payload, log_file, line_limit, current_offset)
+                except OSError:
+                    await asyncio.sleep(1)
+                    continue
+
+                current_offset = int(payload.get("next_offset") or current_offset or 0)
+                log_lines = payload.get("logs") or []
+                if log_lines:
+                    event_name = "reset" if payload.get("is_full") else "log"
+                    yield _sse_payload(event_name, {
+                        **payload,
+                        "path": os.path.basename(log_file),
+                        "time": datetime.now().isoformat(),
+                    })
+
+                now = time.monotonic()
+                if now - last_heartbeat_at >= 20:
+                    last_heartbeat_at = now
+                    yield _sse_payload("heartbeat", {
+                        "next_offset": current_offset,
+                        "time": datetime.now().isoformat(),
+                    })
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("[系统日志流] SSE 异常: %s", exc, exc_info=True)
+            yield _sse_payload("stream_error", {
+                "message": str(exc),
+                "time": datetime.now().isoformat(),
+            })
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # 全文检索硬上限：保护后端在「用户搜了一个高频词」场景下不耗光内存 / CPU。
@@ -8567,6 +8821,12 @@ class ExistingFolderResponse(BaseModel):
     modified_time: str
     size: int
     is_directory: bool
+    relative_path: Optional[str] = None
+    source_root: Optional[str] = None
+    source_root_name: Optional[str] = None
+    is_nested: bool = False
+    scan_depth: int = 1
+    rjcode_source: Optional[str] = None
 
 
 def _normalize_existing_folder_resolution_options(options: list[dict] | None) -> list[dict]:
@@ -8625,15 +8885,143 @@ def _normalize_existing_folder_resolution_options(options: list[dict] | None) ->
     ]
 
 
+def _build_existing_folder_info(candidate: dict) -> dict:
+    path = str(candidate.get("path") or "")
+    name = str(candidate.get("name") or os.path.basename(path.rstrip("\\/")) or path)
+    folder_info = {
+        "name": name,
+        "path": path,
+        "rjcode": candidate.get("rjcode"),
+        "status": "pending",
+        "relative_path": candidate.get("relative_path") or name,
+        "source_root": candidate.get("source_root") or path,
+        "source_root_name": candidate.get("source_root_name") or name,
+        "is_nested": bool(candidate.get("is_nested")),
+        "scan_depth": int(candidate.get("scan_depth") or 1),
+        "rjcode_source": candidate.get("rjcode_source") or "",
+    }
+    try:
+        stat = os.stat(path)
+        folder_info["modified_time"] = datetime.fromtimestamp(stat.st_mtime).isoformat()
+    except Exception:
+        folder_info["modified_time"] = ""
+    return folder_info
+
+
+def _collect_existing_folder_stats(folder_path: str) -> tuple[int, int]:
+    folder_size = 0
+    file_count = 0
+    try:
+        for root, _dirs, files in os.walk(folder_path):
+            file_count += len(files)
+            for file in files:
+                file_path = os.path.join(root, file)
+                if os.path.isfile(file_path):
+                    folder_size += os.path.getsize(file_path)
+    except Exception:
+        pass
+    return file_count, folder_size
+
+
+def _existing_folder_path_key(path: str) -> str:
+    normalized = os.path.abspath(os.path.normpath(str(path or "")))
+    return os.path.normcase(normalized) if os.name == "nt" else normalized
+
+
+def _existing_folder_source_root(path: str, existing_root: str) -> tuple[str, str, str, bool]:
+    base = os.path.abspath(os.path.normpath(str(existing_root or "")))
+    target = os.path.abspath(os.path.normpath(str(path or "")))
+    try:
+        relative_path = os.path.relpath(target, base).replace("\\", "/")
+    except Exception:
+        relative_path = os.path.basename(target.rstrip("\\/")) or target
+
+    first_part = relative_path.split("/", 1)[0] if relative_path and relative_path != "." else ""
+    source_root = os.path.join(base, first_part) if first_part else target
+    source_root = os.path.abspath(os.path.normpath(source_root))
+    source_root_name = os.path.basename(source_root.rstrip("\\/")) or source_root
+    is_nested = _existing_folder_path_key(source_root) != _existing_folder_path_key(target)
+    return relative_path, source_root, source_root_name, is_nested
+
+
+def _existing_folder_candidate_result(candidate: dict, resolved_from: str | None = None) -> dict:
+    path = os.path.abspath(os.path.normpath(str(candidate.get("path") or "")))
+    return {
+        "ok": True,
+        "path": path,
+        "folder_name": candidate.get("name") or os.path.basename(path.rstrip("\\/")) or path,
+        "rjcode": candidate.get("rjcode"),
+        "resolved_from": os.path.abspath(os.path.normpath(str(resolved_from or path))),
+        "source_root": candidate.get("source_root") or path,
+        "source_root_name": candidate.get("source_root_name") or os.path.basename(path.rstrip("\\/")) or path,
+        "relative_path": candidate.get("relative_path") or os.path.basename(path.rstrip("\\/")) or path,
+        "is_nested": bool(candidate.get("is_nested")),
+        "scan_depth": int(candidate.get("scan_depth") or 1),
+        "rjcode_source": candidate.get("rjcode_source") or "folder_name",
+    }
+
+
+def _resolve_existing_folder_candidate_path(
+    folder_path: str,
+    existing_root: str,
+    candidates: list[dict] | None = None,
+) -> dict:
+    """把请求中的路径解析成单个可处理候选目录。"""
+    normalized_path = os.path.abspath(os.path.normpath(str(folder_path or "")))
+    if not _is_path_under_base(normalized_path, existing_root):
+        return {"ok": False, "path": normalized_path, "reason": "路径不在已存在文件夹目录下"}
+    if not os.path.exists(normalized_path) or not os.path.isdir(normalized_path):
+        return {"ok": False, "path": normalized_path, "reason": "路径不存在或不是文件夹"}
+
+    known_candidates = candidates if candidates is not None else scan_existing_folder_candidates(existing_root)
+    rj_candidates = [item for item in known_candidates if item.get("rjcode")]
+    target_key = _existing_folder_path_key(normalized_path)
+
+    for candidate in rj_candidates:
+        if _existing_folder_path_key(candidate.get("path") or "") == target_key:
+            return _existing_folder_candidate_result(candidate, normalized_path)
+
+    nested_candidates = [
+        item for item in rj_candidates
+        if _is_path_under_base(item.get("path") or "", normalized_path)
+    ]
+    if len(nested_candidates) == 1:
+        return _existing_folder_candidate_result(nested_candidates[0], normalized_path)
+    if len(nested_candidates) > 1:
+        return {
+            "ok": False,
+            "path": normalized_path,
+            "reason": "该目录下包含多个 RJ 作品，请刷新后选择具体作品目录",
+            "candidate_count": len(nested_candidates),
+        }
+
+    folder_name = os.path.basename(normalized_path.rstrip("\\/")) or normalized_path
+    rjcode = extract_rjcode(folder_name)
+    if rjcode:
+        relative_path, source_root, source_root_name, is_nested = _existing_folder_source_root(normalized_path, existing_root)
+        return {
+            "ok": True,
+            "path": normalized_path,
+            "folder_name": folder_name,
+            "rjcode": rjcode,
+            "resolved_from": normalized_path,
+            "source_root": source_root,
+            "source_root_name": source_root_name,
+            "relative_path": relative_path,
+            "is_nested": is_nested,
+            "scan_depth": len([part for part in relative_path.split("/") if part and part != "."]),
+            "rjcode_source": "folder_name",
+        }
+    return {"ok": False, "path": normalized_path, "reason": "无法提取RJ号"}
+
+
 async def _resolve_existing_folder_conflict_path(folder_path: str, preferred_path: str | None = None) -> str | None:
     if preferred_path and os.path.exists(preferred_path):
         return preferred_path
 
     from ..core.duplicate_service import get_duplicate_service
 
-    folder_name = os.path.basename(folder_path)
-    rj_match = re.search(r'[RVB]J(\d{6}|\d{8})(?!\d)', folder_name, re.IGNORECASE)
-    rjcode = rj_match.group(0).upper() if rj_match else None
+    rjcode = extract_rjcode_from_path(folder_path, search_subfolders=True)
     if not rjcode:
         return None
 
@@ -8661,36 +9049,26 @@ async def get_existing_folders():
             return []
         
         folders = []
-        for item in os.listdir(existing_folders_path):
-            item_path = os.path.join(existing_folders_path, item)
-            
-            # 跳过隐藏文件和非文件夹项目
-            if item.startswith('.') or not os.path.isdir(item_path):
-                continue
-            
+        for candidate in scan_existing_folder_candidates(existing_folders_path):
+            folder_info = _build_existing_folder_info(candidate)
+            item_path = folder_info["path"]
             try:
                 stat = os.stat(item_path)
-                # 提取RJ号
-                rj_match = re.search(r'[RVB]J(\d{6}|\d{8})(?!\d)', item, re.IGNORECASE)
-                rjcode = rj_match.group(0).upper() if rj_match else None
-                
-                # 计算文件夹大小（简化版，只统计直接子项）
-                size = 0
-                try:
-                    for subitem in os.listdir(item_path):
-                        subitem_path = os.path.join(item_path, subitem)
-                        if os.path.isfile(subitem_path):
-                            size += os.path.getsize(subitem_path)
-                except:
-                    pass
+                _file_count, size = _collect_existing_folder_stats(item_path)
                 
                 folders.append(ExistingFolderResponse(
-                    name=item,
+                    name=folder_info["name"],
                     path=item_path,
-                    rjcode=rjcode,
+                    rjcode=folder_info.get("rjcode"),
                     modified_time=datetime.fromtimestamp(stat.st_mtime).isoformat(),
                     size=size,
-                    is_directory=True
+                    is_directory=True,
+                    relative_path=folder_info.get("relative_path"),
+                    source_root=folder_info.get("source_root"),
+                    source_root_name=folder_info.get("source_root_name"),
+                    is_nested=bool(folder_info.get("is_nested")),
+                    scan_depth=int(folder_info.get("scan_depth") or 1),
+                    rjcode_source=folder_info.get("rjcode_source"),
                 ))
             except Exception as e:
                 logger.warning(f"获取文件夹信息失败: {item_path}, {e}")
@@ -8726,34 +9104,19 @@ async def scan_existing_folders(check_duplicates: bool = True, force_refresh: bo
                     yield json.dumps({"error": f"无法创建目录: {str(e)}"}) + "\n"
                     return
             
-            # 第一步：快速列出所有文件夹（不查重）
-            items = os.listdir(existing_folders_path)
+            # 第一步：快速列出所有 RJ 作品候选（支持 已有目录/社团名/RJxxxx 这种嵌套结构）
+            candidates = scan_existing_folder_candidates(existing_folders_path)
             folders = []
             
             yield json.dumps({
                 "type": "start",
-                "total": len(items),
-                "message": f"开始扫描，共 {len(items)} 个项目"
+                "total": len(candidates),
+                "message": f"开始扫描，共 {len(candidates)} 个候选目录"
             }) + "\n"
             
             # 先发送所有文件夹基本信息（立即可见）
-            for index, item in enumerate(items):
-                item_path = os.path.join(existing_folders_path, item)
-                
-                # 跳过隐藏文件和非文件夹项目
-                if item.startswith('.') or not os.path.isdir(item_path):
-                    continue
-                
-                # 提取RJ号
-                rj_match = re.search(r'[RVB]J(\d{6}|\d{8})(?!\d)', item, re.IGNORECASE)
-                rjcode = rj_match.group(0).upper() if rj_match else None
-                
-                folder_info = {
-                    "name": item,
-                    "path": item_path,
-                    "rjcode": rjcode,
-                    "status": "pending"  # 待检查状态
-                }
+            for index, candidate in enumerate(candidates):
+                folder_info = _build_existing_folder_info(candidate)
                 
                 folders.append(folder_info)
                 
@@ -8761,9 +9124,9 @@ async def scan_existing_folders(check_duplicates: bool = True, force_refresh: bo
                 yield json.dumps({
                     "type": "folder",
                     "index": index,
-                    "total": len(items),
+                    "total": len(candidates),
                     "folder": folder_info,
-                    "progress": f"{index + 1}/{len(items)}"
+                    "progress": f"{index + 1}/{len(candidates)}"
                 }) + "\n"
             
             # 第二步：后台逐个查重（如果有RJ号且需要检查）
@@ -8786,6 +9149,13 @@ async def scan_existing_folders(check_duplicates: bool = True, force_refresh: bo
                         rjcode = folder_info["rjcode"]
                         
                         if not rjcode:
+                            folder_info["status"] = "unrecognized"
+                            yield json.dumps({
+                                "type": "folder_update",
+                                "index": index,
+                                "folder": folder_info,
+                                "error": "无法提取RJ号"
+                            }) + "\n"
                             continue
                         
                         # 检查缓存
@@ -8850,17 +9220,7 @@ async def scan_existing_folders(check_duplicates: bool = True, force_refresh: bo
                             folder_info["status"] = "checked"
                             
                             # 计算文件夹大小
-                            folder_size = 0
-                            file_count = 0
-                            try:
-                                for root, dirs, files in os.walk(item_path):
-                                    file_count += len(files)
-                                    for file in files:
-                                        file_path = os.path.join(root, file)
-                                        if os.path.isfile(file_path):
-                                            folder_size += os.path.getsize(file_path)
-                            except:
-                                pass
+                            file_count, folder_size = _collect_existing_folder_stats(item_path)
                             
                             folder_info["file_count"] = file_count
                             folder_info["folder_size"] = folder_size
@@ -9002,20 +9362,23 @@ async def check_existing_folders_duplicates(request: Request):
         
         from ..core.duplicate_service import get_duplicate_service
         duplicate_service = get_duplicate_service()
+        config = get_config()
+        existing_folders_path = config.storage.existing_folders_path
+        candidates = scan_existing_folder_candidates(existing_folders_path)
         
         results = []
-        for folder_path in folder_paths:
-            # 提取RJ号
-            folder_name = os.path.basename(folder_path)
-            rj_match = re.search(r'[RVB]J(\d{6}|\d{8})(?!\d)', folder_name, re.IGNORECASE)
-            rjcode = rj_match.group(0).upper() if rj_match else None
+        for requested_path in folder_paths:
+            resolved = _resolve_existing_folder_candidate_path(requested_path, existing_folders_path, candidates)
+            folder_path = resolved.get("path") or requested_path
+            folder_name = resolved.get("folder_name") or os.path.basename(str(folder_path).rstrip("\\/"))
+            rjcode = resolved.get("rjcode")
             
-            if not rjcode:
+            if not resolved.get("ok") or not rjcode:
                 results.append({
                     "folder_path": folder_path,
                     "folder_name": folder_name,
                     "rjcode": None,
-                    "error": "无法提取RJ号"
+                    "error": resolved.get("reason") or "无法提取RJ号"
                 })
                 continue
             
@@ -9095,19 +9458,18 @@ async def process_existing_folders(request: Request):
         # 验证所有路径是否有效
         config = get_config()
         existing_folders_path = config.storage.existing_folders_path
+        candidates = scan_existing_folder_candidates(existing_folders_path)
         
         valid_folders = []
+        skipped_folders = []
         for folder_path in folders:
-            # 安全检查：确保路径在 existing_folders_path 目录下
-            if not _is_path_under_base(folder_path, existing_folders_path):
-                logger.warning(f"路径不在已存在文件夹目录下，跳过: {folder_path}")
+            resolved = _resolve_existing_folder_candidate_path(folder_path, existing_folders_path, candidates)
+            if not resolved.get("ok"):
+                reason = resolved.get("reason") or "invalid_path"
+                logger.warning(f"已有文件夹路径不可处理，跳过: {folder_path}, reason={reason}")
+                skipped_folders.append({"folder_path": folder_path, "reason": reason})
                 continue
-            
-            if not os.path.exists(folder_path) or not os.path.isdir(folder_path):
-                logger.warning(f"路径不存在或不是文件夹，跳过: {folder_path}")
-                continue
-            
-            valid_folders.append(folder_path)
+            valid_folders.append(resolved)
         
         if not valid_folders:
             raise HTTPException(status_code=400, detail="没有有效的文件夹可以处理")
@@ -9117,10 +9479,10 @@ async def process_existing_folders(request: Request):
         created_tasks = []
         batch_id = str(uuid.uuid4())
 
-        for folder_path in valid_folders:
-            folder_name = os.path.basename(str(folder_path).rstrip("\\/"))
-            rj_match = re.search(r'[RVB]J(\d{6}|\d{8})(?!\d)', folder_name, re.IGNORECASE)
-            inferred_rjcode = rj_match.group(0).upper() if rj_match else None
+        for folder_info in valid_folders:
+            folder_path = folder_info["path"]
+            folder_name = folder_info["folder_name"]
+            inferred_rjcode = folder_info.get("rjcode")
             task = Task(
                 task_type=TaskType.PROCESS_EXISTING_FOLDER,
                 source_path=folder_path,
@@ -9137,6 +9499,13 @@ async def process_existing_folders(request: Request):
                     "source_label": "已有目录页 / 批量处理",
                     "folder_path": folder_path,
                     "folder_name": folder_name,
+                    "original_folder_path": folder_info.get("resolved_from") or folder_path,
+                    "relative_path": folder_info.get("relative_path") or "",
+                    "source_root": folder_info.get("source_root") or "",
+                    "source_root_name": folder_info.get("source_root_name") or "",
+                    "is_nested": bool(folder_info.get("is_nested")),
+                    "scan_depth": int(folder_info.get("scan_depth") or 1),
+                    "rjcode_source": folder_info.get("rjcode_source") or "existing_folder_scan",
                     "inferred_rjcode": inferred_rjcode,
                     "rjcode": inferred_rjcode,
                     "auto_classify": bool(auto_classify),
@@ -9145,7 +9514,8 @@ async def process_existing_folders(request: Request):
             await engine.submit(task)
             created_tasks.append({
                 "task_id": task.id,
-                "folder_path": folder_path
+                "folder_path": folder_path,
+                "rjcode": inferred_rjcode,
             })
 
         log_import_batch_start_result(
@@ -9160,14 +9530,10 @@ async def process_existing_folders(request: Request):
                 "source_page": "existing-folders",
                 "source_action": "process_existing_batch",
                 "source_label": "已有目录页 / 批量处理",
-                "source_paths": valid_folders,
+                "source_paths": [item["path"] for item in valid_folders],
                 "created_tasks": created_tasks,
-                "skipped_items": [
-                    {"folder_path": folder_path, "reason": "invalid_path"}
-                    for folder_path in folders
-                    if folder_path not in valid_folders
-                ],
-                "source_path": valid_folders[0] if valid_folders else None,
+                "skipped_items": skipped_folders,
+                "source_path": valid_folders[0]["path"] if valid_folders else None,
             },
             category="process_existing",
         )
@@ -9205,12 +9571,15 @@ async def delete_existing_folder(request: Request):
         # 安全检查：确保路径在 existing_folders_path 目录下
         config = get_config()
         existing_folders_path = config.storage.existing_folders_path
+        folder_path = os.path.abspath(os.path.normpath(str(folder_path or "")))
         
         if not _is_path_under_base(folder_path, existing_folders_path):
             raise HTTPException(status_code=400, detail="路径不在已存在文件夹目录下")
         
         if not os.path.exists(folder_path):
             raise HTTPException(status_code=404, detail="文件夹不存在")
+        if not os.path.isdir(folder_path):
+            raise HTTPException(status_code=400, detail="路径不是文件夹")
         
         # 删除文件夹
         import shutil
@@ -9239,10 +9608,10 @@ async def get_existing_folder_merge_preview(request: Request):
 
         config = get_config()
         existing_folders_path = config.storage.existing_folders_path
-        if not _is_path_under_base(folder_path, existing_folders_path):
-            raise HTTPException(status_code=400, detail="路径不在已存在文件夹目录中")
-        if not os.path.exists(folder_path):
-            raise HTTPException(status_code=404, detail="待处理文件夹不存在")
+        resolved_folder = _resolve_existing_folder_candidate_path(folder_path, existing_folders_path)
+        if not resolved_folder.get("ok"):
+            raise HTTPException(status_code=400, detail=resolved_folder.get("reason") or "待处理文件夹不可合并")
+        folder_path = resolved_folder["path"]
 
         resolved_existing_path = await _resolve_existing_folder_conflict_path(folder_path, existing_path)
         if not resolved_existing_path:
@@ -9313,12 +9682,10 @@ async def process_existing_folder_with_resolution(request: Request):
         # 安全检查：确保路径在 existing_folders_path 目录下
         config = get_config()
         existing_folders_path = config.storage.existing_folders_path
-        
-        if not _is_path_under_base(folder_path, existing_folders_path):
-            raise HTTPException(status_code=400, detail="路径不在已存在文件夹目录下")
-        
-        if not os.path.exists(folder_path):
-            raise HTTPException(status_code=404, detail="文件夹不存在")
+        resolved_folder = _resolve_existing_folder_candidate_path(folder_path, existing_folders_path)
+        if not resolved_folder.get("ok"):
+            raise HTTPException(status_code=400, detail=resolved_folder.get("reason") or "路径不在已存在文件夹目录下")
+        folder_path = resolved_folder["path"]
         
         # 根据解决方案执行不同操作
         if normalized_resolution == "SKIP":
@@ -9340,9 +9707,8 @@ async def process_existing_folder_with_resolution(request: Request):
             db = next(get_db())
             try:
                 # 提取RJ号
-                folder_name = os.path.basename(folder_path)
-                rj_match = re.search(r'[RVB]J(\d{6}|\d{8})(?!\d)', folder_name, re.IGNORECASE)
-                rjcode = rj_match.group(0).upper() if rj_match else None
+                folder_name = resolved_folder.get("folder_name") or os.path.basename(folder_path)
+                rjcode = resolved_folder.get("rjcode") or extract_rjcode_from_path(folder_path, search_subfolders=True)
                 
                 if rjcode:
                     # 查找对应的冲突记录并更新状态
@@ -9368,6 +9734,13 @@ async def process_existing_folder_with_resolution(request: Request):
                         "merge_decisions": merge_decisions if normalized_resolution == "MERGE" else {},
                         "folder_path": folder_path,
                         "folder_name": folder_name,
+                        "original_folder_path": resolved_folder.get("resolved_from") or folder_path,
+                        "relative_path": resolved_folder.get("relative_path") or "",
+                        "source_root": resolved_folder.get("source_root") or "",
+                        "source_root_name": resolved_folder.get("source_root_name") or "",
+                        "is_nested": bool(resolved_folder.get("is_nested")),
+                        "scan_depth": int(resolved_folder.get("scan_depth") or 1),
+                        "rjcode_source": resolved_folder.get("rjcode_source") or "existing_folder_scan",
                         "inferred_rjcode": rjcode,
                         "rjcode": rjcode,
                         "auto_classify": bool(auto_classify),
@@ -11204,6 +11577,20 @@ class HttpDownloadStartRequest(BaseModel):
     target_subdir: str = ""
     conflict_policy: str = ""
     batch_name: str = ""
+    selected_keys: List[str] = []
+    selected_items: List[dict] = []
+
+
+class PikPakTransferDeleteRequest(BaseModel):
+    ids: List[str]
+    permanent: bool = False
+    account_id: str = ""
+
+
+class PikPakAccountTestRequest(BaseModel):
+    account_id: str = ""
+    account: dict = Field(default_factory=dict)
+    use_saved: bool = False
 
 
 _circle_completion_refresh_history: dict[str, deque[float]] = defaultdict(deque)
@@ -11282,11 +11669,22 @@ def _serialize_http_download_task(task) -> dict:
 
 def _http_download_urls_from_payload(urls: List[str]) -> list[str]:
     result = []
+    last_pikpak_index: Optional[int] = None
     for raw in urls or []:
         for line in re.split(r"[\r\n]+", str(raw or "")):
             value = line.strip()
-            if value:
-                result.append(value)
+            if not value:
+                continue
+            if last_pikpak_index is not None and not value.lower().startswith(("http://", "https://")):
+                match = re.search(r"(?:pwd|pass_code|passcode|password|code)\s*[=:：]\s*([A-Za-z0-9]{4,12})|(?:提取码|访问码|密[码碼])[:：\s]*([A-Za-z0-9]{4,12})|^([A-Za-z0-9]{4,12})$", value, re.IGNORECASE)
+                if match and ("mypikpak.com" in result[last_pikpak_index] or "drive.mypikpak.com" in result[last_pikpak_index]):
+                    code = next((group for group in match.groups() if group), "")
+                    if code and "pwd=" not in result[last_pikpak_index] and "pass_code=" not in result[last_pikpak_index]:
+                        separator = "&" if "?" in result[last_pikpak_index] else "?"
+                        result[last_pikpak_index] = f"{result[last_pikpak_index]}{separator}pwd={quote(code)}"
+                        continue
+            result.append(value)
+            last_pikpak_index = len(result) - 1 if "mypikpak.com" in value or "drive.mypikpak.com" in value else None
     return result
 
 
@@ -11335,6 +11733,11 @@ async def http_download_start(request: HttpDownloadStartRequest):
 
     service = get_http_download_service()
     preview = await service.preview_urls(urls, target_subdir=request.target_subdir, conflict_policy=request.conflict_policy)
+    preview = service.filter_preview_selection(
+        preview,
+        selected_keys=request.selected_keys,
+        selected_items=request.selected_items,
+    )
     public_preview = sanitize_http_download_preview(preview)
     ok_items = [item for item in preview.get("items") or [] if item.get("ok")]
     if not ok_items:
@@ -11342,9 +11745,16 @@ async def http_download_start(request: HttpDownloadStartRequest):
 
     first_host = str(ok_items[0].get("host") or "").strip()
     source_modes = list(preview.get("source_modes") or [])
-    source_action = "manual_pikpak_download" if source_modes == ["pikpak"] else "manual_http_download"
-    download_mode = "pikpak" if source_modes == ["pikpak"] else ("mixed" if "pikpak" in source_modes else "http")
-    default_title = "PikPak 下载" if download_mode == "pikpak" else "HTTP 外链下载"
+    source_action = f"manual_{source_modes[0]}_download" if len(source_modes) == 1 and source_modes[0] != "http" else "manual_http_download"
+    download_mode = source_modes[0] if len(source_modes) == 1 else ("mixed" if source_modes else "http")
+    mode_titles = {
+        "pikpak": "PikPak 下载",
+        "gofile": "Gofile 下载",
+        "transferit": "Transfer.it 下载",
+        "onedrive": "OneDrive 下载",
+        "google_drive": "Google Drive 下载",
+    }
+    default_title = mode_titles.get(download_mode, "HTTP 外链下载")
     label = str(request.batch_name or "").strip() or (f"{first_host} 等 {len(ok_items)} 项" if len(ok_items) > 1 else (ok_items[0].get("filename") or first_host or default_title))
     task = Task(
         task_type=TaskType.HTTP_DOWNLOAD,
@@ -11352,6 +11762,16 @@ async def http_download_start(request: HttpDownloadStartRequest):
         metadata={
             "urls": urls,
             "url_count": len(urls),
+            "selected_keys": [
+                str(key or "").strip()
+                for key in (request.selected_keys or [])
+                if str(key or "").strip()
+            ],
+            "selected_items": [
+                {k: v for k, v in dict(item or {}).items() if k != "original_url"}
+                for item in public_preview.get("items") or []
+                if item.get("ok")
+            ],
             "target_subdir": request.target_subdir,
             "conflict_policy": request.conflict_policy,
             "batch_name": label,
@@ -11398,6 +11818,53 @@ async def http_download_status():
     except Exception as exc:
         logger.error("获取 HTTP 下载状态失败: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取状态失败: {str(exc)}")
+
+
+@app.get("/api/http-download/pikpak/status")
+async def http_download_pikpak_status(include_files: bool = False, limit: int = 100, account_id: str = ""):
+    from ..core.http_download_service import get_http_download_service
+
+    try:
+        return await get_http_download_service().pikpak_status(include_files=include_files, limit=limit, account_id=account_id)
+    except Exception as exc:
+        logger.error("获取 PikPak 状态失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/http-download/pikpak/test-account")
+async def http_download_pikpak_test_account(request: PikPakAccountTestRequest):
+    from ..core.http_download_service import get_http_download_service
+
+    try:
+        account = dict(request.account or {})
+        if request.use_saved:
+            account["use_saved"] = True
+        return await get_http_download_service().test_pikpak_account(account, account_id=request.account_id)
+    except Exception as exc:
+        logger.error("检测 PikPak 账号失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/http-download/pikpak/files")
+async def http_download_pikpak_files(limit: int = 100, root: bool = False, account_id: str = "", parent_id: str = ""):
+    from ..core.http_download_service import get_http_download_service
+
+    try:
+        return await get_http_download_service().pikpak_transfer_files(limit=limit, root=root, account_id=account_id, parent_id=parent_id)
+    except Exception as exc:
+        logger.error("获取 PikPak 转存目录失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/http-download/pikpak/delete")
+async def http_download_pikpak_delete(request: PikPakTransferDeleteRequest):
+    from ..core.http_download_service import get_http_download_service
+
+    try:
+        return await get_http_download_service().delete_pikpak_transfer_items(request.ids, permanent=request.permanent, account_id=request.account_id)
+    except Exception as exc:
+        logger.error("删除 PikPak 转存文件失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/api/http-download/task/{task_id}/pause")
