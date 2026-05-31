@@ -3,16 +3,16 @@
     :model-value="visible"
     :show-close="false"
     destroy-on-close
-    class="custom-preview-modal"
+    class="custom-preview-modal circle-download-preview-modal"
     align-center
-    modal-class="custom-preview-overlay"
+    modal-class="custom-preview-overlay circle-download-preview-overlay"
     @update:model-value="emit('update:visible', $event)"
   >
-    <div v-if="loading" class="window panel-enter glass-shell relative w-full max-w-[1210px] aspect-[16/9] rounded-3xl flex flex-col overflow-hidden dialog-loading-overlay">
+    <div v-if="loading" class="window circle-download-preview-window panel-enter glass-shell relative w-full max-w-[1210px] aspect-[16/9] rounded-3xl flex flex-col overflow-hidden dialog-loading-overlay is-loading">
       <AppLoadingAnimation label="正在分析资源结构并生成下载计划..." description="聚合资源分组、语言版本和推荐项" :size="168" :min-height="260" />
     </div>
     
-    <div v-else class="window panel-enter glass-shell relative w-full max-w-[1210px] aspect-[16/9] rounded-3xl flex flex-col overflow-hidden">
+    <div v-else class="window circle-download-preview-window panel-enter glass-shell relative w-full max-w-[1210px] aspect-[16/9] rounded-3xl flex flex-col overflow-hidden">
       <div class="window-header flex items-center justify-between px-8 py-6">
         <h1 class="title text-2xl font-bold text-slate-900 tracking-tight">创建下载任务</h1>
         <button type="button" class="interactive-chip close-button inline-flex size-10 items-center justify-center rounded-full text-slate-400 hover:text-slate-700" @click="emit('update:visible', false)">
@@ -1647,6 +1647,287 @@ function formatSize(bytes) {
 
 .soft-button:active {
   transform: scale(0.98);
+}
+
+html.kikoerumanager-dark .circle-download-preview-overlay {
+  background: rgba(6, 7, 10, 0.72) !important;
+  backdrop-filter: blur(10px);
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal.el-dialog {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-window {
+  background: #121316 !important;
+  border: 1px solid rgba(255, 255, 255, 0.10) !important;
+  color: rgba(244, 244, 245, 0.88) !important;
+  box-shadow:
+    0 28px 72px rgba(0, 0, 0, 0.54),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-window.is-loading {
+  align-items: center;
+  justify-content: center;
+  background: #121316 !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .window-header,
+html.kikoerumanager-dark .circle-download-preview-modal .tabs-row,
+html.kikoerumanager-dark .circle-download-preview-modal .footer-row {
+  background: #17191d !important;
+  border-color: rgba(255, 255, 255, 0.10) !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .window-header {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .tabs-row {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .footer-row {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .title,
+html.kikoerumanager-dark .circle-download-preview-modal h1,
+html.kikoerumanager-dark .circle-download-preview-modal h2,
+html.kikoerumanager-dark .circle-download-preview-modal .summary-strong,
+html.kikoerumanager-dark .circle-download-preview-modal .tree-name,
+html.kikoerumanager-dark .circle-download-preview-modal .node-rjcode,
+html.kikoerumanager-dark .circle-download-preview-modal .text-slate-900,
+html.kikoerumanager-dark .circle-download-preview-modal .text-slate-800,
+html.kikoerumanager-dark .circle-download-preview-modal .text-slate-700 {
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal p,
+html.kikoerumanager-dark .circle-download-preview-modal label,
+html.kikoerumanager-dark .circle-download-preview-modal .summary,
+html.kikoerumanager-dark .circle-download-preview-modal .target-path,
+html.kikoerumanager-dark .circle-download-preview-modal .tree-size,
+html.kikoerumanager-dark .circle-download-preview-modal .node-title-muted,
+html.kikoerumanager-dark .circle-download-preview-modal .text-slate-600,
+html.kikoerumanager-dark .circle-download-preview-modal .text-slate-500,
+html.kikoerumanager-dark .circle-download-preview-modal .text-slate-400 {
+  color: rgba(212, 212, 216, 0.68) !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .glass-panel,
+html.kikoerumanager-dark .circle-download-preview-modal .glass-card,
+html.kikoerumanager-dark .circle-download-preview-modal .mode-switch {
+  background: #17191d !important;
+  border-color: rgba(255, 255, 255, 0.10) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .content-grid {
+  background: #121316 !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .tab-chip {
+  min-height: 28px;
+  border-radius: 7px !important;
+  background: rgba(255, 255, 255, 0.045) !important;
+  border-color: rgba(255, 255, 255, 0.10) !important;
+  color: rgba(244, 244, 245, 0.82) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .tab-chip:hover {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.075) !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .tab-chip-active,
+html.kikoerumanager-dark .circle-download-preview-modal .tab-chip-partial {
+  background: rgba(255, 255, 255, 0.12) !important;
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .tab-count {
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: rgba(212, 212, 216, 0.72) !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .tab-chip-active .tab-count,
+html.kikoerumanager-dark .circle-download-preview-modal .tab-chip-partial .tab-count {
+  background: rgba(255, 255, 255, 0.16) !important;
+  color: rgba(244, 244, 245, 0.92) !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .mode-tab {
+  color: rgba(212, 212, 216, 0.70) !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .mode-tab-active {
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .mode-tab-idle:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .field-input,
+html.kikoerumanager-dark .circle-download-preview-modal .select-button,
+html.kikoerumanager-dark .circle-download-preview-modal .picker-button {
+  background: #101114 !important;
+  border-color: rgba(255, 255, 255, 0.11) !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .field-input::placeholder {
+  color: rgba(161, 161, 170, 0.62) !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .field-input:hover,
+html.kikoerumanager-dark .circle-download-preview-modal .field-input:focus,
+html.kikoerumanager-dark .circle-download-preview-modal .select-button:hover,
+html.kikoerumanager-dark .circle-download-preview-modal .picker-button:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  background: #14161a !important;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.06) !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .picker-button:disabled {
+  background: rgba(255, 255, 255, 0.035) !important;
+  color: rgba(161, 161, 170, 0.62) !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .dropdown-menu,
+html.kikoerumanager-dark .circle-download-preview-modal .dropdown-panel {
+  background: #202226 !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: rgba(244, 244, 245, 0.88) !important;
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.38) !important;
+  backdrop-filter: none !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .dropdown-item {
+  color: rgba(244, 244, 245, 0.86) !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .dropdown-item:hover {
+  background: rgba(255, 255, 255, 0.07) !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .soft-button,
+html.kikoerumanager-dark .circle-download-preview-modal .secondary-cta,
+html.kikoerumanager-dark .circle-download-preview-modal .interactive-chip {
+  background: rgba(255, 255, 255, 0.045) !important;
+  border-color: rgba(255, 255, 255, 0.10) !important;
+  color: rgba(244, 244, 245, 0.84) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .soft-button:hover,
+html.kikoerumanager-dark .circle-download-preview-modal .secondary-cta:hover,
+html.kikoerumanager-dark .circle-download-preview-modal .interactive-chip:hover {
+  background: rgba(255, 255, 255, 0.075) !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .soft-button.active {
+  background: rgba(255, 255, 255, 0.12) !important;
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .tree-row {
+  color: rgba(244, 244, 245, 0.86) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .tree-row:hover {
+  background: rgba(255, 255, 255, 0.055) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .tree-row-selected {
+  background: rgba(255, 255, 255, 0.11) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16) !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .tree-checkbox {
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  background: #101114 !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .tree-checkbox-on,
+html.kikoerumanager-dark .circle-download-preview-modal .tree-checkbox-partial {
+  border-color: rgba(255, 255, 255, 0.40) !important;
+  background: #d4d4d8 !important;
+  color: #18181b !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .tree-row:hover .tree-checkbox-off {
+  border-color: rgba(255, 255, 255, 0.26) !important;
+  background: #14161a !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .icon-folder {
+  color: rgba(244, 244, 245, 0.82) !important;
+  fill: rgba(244, 244, 245, 0.10) !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .icon-audio-blue,
+html.kikoerumanager-dark .circle-download-preview-modal .icon-audio-purple {
+  color: #a5b4fc !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .icon-file {
+  color: rgba(212, 212, 216, 0.60) !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .primary-cta {
+  background: linear-gradient(180deg, #3f3f46 0%, #27272a 100%) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.26) !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .primary-cta:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.02);
+  background: linear-gradient(180deg, #52525b 0%, #3f3f46 100%) !important;
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.34) !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-modal .primary-cta:disabled {
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: rgba(161, 161, 170, 0.62) !important;
+  border-color: rgba(255, 255, 255, 0.10) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-window .app-loading-animation {
+  color: #ffffff;
+}
+
+html.kikoerumanager-dark .circle-download-preview-window .app-loading-animation__player {
+  filter: brightness(1.12) contrast(1.04);
+}
+
+html.kikoerumanager-dark .circle-download-preview-window .app-loading-animation__label {
+  color: #ffffff !important;
+  font-weight: 700;
+}
+
+html.kikoerumanager-dark .circle-download-preview-window .app-loading-animation__description {
+  color: rgba(212, 212, 216, 0.72) !important;
 }
 
 @media (max-width: 1280px) {

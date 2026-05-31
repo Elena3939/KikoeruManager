@@ -142,9 +142,9 @@ defineEmits([
   display: flex;
   flex-direction: column;
   border-radius: 14px;
-  background: #fff;
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -16px rgba(15, 23, 42, 0.08);
+  background: var(--asmr-surface);
+  border: 1px solid var(--asmr-border);
+  box-shadow: var(--asmr-card-shadow);
   overflow: hidden;
 }
 .asmr-card-head {
@@ -154,8 +154,8 @@ defineEmits([
   gap: 12px;
   flex-wrap: wrap;
   padding: 14px 18px;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.05);
-  background: linear-gradient(180deg, #fbfcfe 0%, #f8fafc 100%);
+  border-bottom: 1px solid var(--asmr-border);
+  background: var(--asmr-surface-soft);
 }
 .asmr-card-head-title {
   display: flex;
@@ -168,16 +168,16 @@ defineEmits([
   font-size: 14px;
   font-weight: 600;
   letter-spacing: 0;
-  color: #0f172a;
+  color: var(--asmr-text-strong);
 }
 .asmr-card-head-subtitle {
   margin: 2px 0 0;
   font-size: 11.5px;
-  color: #94a3b8;
+  color: var(--asmr-text-muted);
   letter-spacing: 0.01em;
 }
 .asmr-card-head-icon {
-  color: #2563eb;
+  color: var(--asmr-accent);
   flex-shrink: 0;
 }
 .asmr-card-head-actions {
@@ -192,6 +192,21 @@ defineEmits([
 .enhanced-rj-input {
   margin-bottom: 16px;
 }
+.enhanced-rj-input :deep(.el-textarea__inner) {
+  background: var(--asmr-field-bg);
+  border: 1px solid var(--asmr-border);
+  box-shadow: none;
+  color: var(--asmr-text-strong);
+}
+.enhanced-rj-input :deep(.el-textarea__inner::placeholder) {
+  color: var(--asmr-field-placeholder);
+}
+.enhanced-rj-input :deep(.el-textarea__inner:hover),
+.enhanced-rj-input :deep(.el-textarea__inner:focus) {
+  background: var(--asmr-field-bg-focus);
+  border-color: var(--asmr-border-strong);
+  box-shadow: 0 0 0 3px var(--asmr-focus-ring);
+}
 .enhanced-plan-section {
   display: flex;
   flex-direction: column;
@@ -204,18 +219,18 @@ defineEmits([
   height: 28px;
   padding: 0 10px;
   border-radius: 8px;
-  border: 1px solid rgba(15, 23, 42, 0.12);
-  background: #fff;
-  color: #475569;
+  border: 1px solid var(--asmr-border-strong);
+  background: var(--asmr-surface);
+  color: var(--asmr-text);
   font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
   transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.15s ease, box-shadow 0.18s ease;
 }
 .asmr-mini-btn:hover:not(:disabled) {
-  background: #f8fafc;
-  border-color: rgba(15, 23, 42, 0.22);
-  color: #0f172a;
+  background: var(--asmr-surface-hover);
+  border-color: var(--asmr-border-strong);
+  color: var(--asmr-text-strong);
 }
 .asmr-mini-btn:active:not(:disabled) {
   transform: scale(0.96);
@@ -225,14 +240,14 @@ defineEmits([
   cursor: not-allowed;
 }
 .asmr-mini-btn.is-primary {
-  background: linear-gradient(135deg, #111827, #1e293b);
-  color: #fff;
+  background: var(--asmr-primary-bg);
+  color: var(--asmr-primary-text);
   border-color: transparent;
-  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.18);
+  box-shadow: var(--asmr-control-shadow);
 }
 .asmr-mini-btn.is-primary:hover:not(:disabled) {
-  background: linear-gradient(135deg, #1e293b, #334155);
-  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.22);
+  background: var(--asmr-primary-bg-hover);
+  box-shadow: var(--asmr-control-shadow);
 }
 .asmr-batch-toolbar {
   display: flex;
@@ -241,8 +256,8 @@ defineEmits([
   gap: 12px;
   padding: 10px 12px;
   border-radius: 12px;
-  background: #f8fafc;
-  border: 1px solid rgba(15, 23, 42, 0.06);
+  background: var(--asmr-surface-soft);
+  border: 1px solid var(--asmr-border);
 }
 .asmr-batch-toolbar-info,
 .asmr-batch-toolbar-actions {
@@ -254,7 +269,7 @@ defineEmits([
 .asmr-batch-toolbar-title {
   font-size: 12px;
   font-weight: 700;
-  color: #334155;
+  color: var(--asmr-text-strong);
 }
 .lib-chip {
   display: inline-flex;
@@ -268,9 +283,9 @@ defineEmits([
   white-space: nowrap;
 }
 .lib-chip-info {
-  background: rgba(224, 231, 255, 0.85);
-  color: #4338ca;
-  border: 1px solid rgba(165, 180, 252, 0.5);
+  background: var(--asmr-info-bg);
+  color: var(--asmr-info-text);
+  border: 1px solid var(--asmr-info-border);
 }
 .enhanced-plan-grid {
   display: grid;
@@ -307,16 +322,17 @@ defineEmits([
   width: 40px;
   height: 40px;
   border-radius: 12px;
-  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  background: var(--asmr-info-bg);
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 10px 20px rgba(37, 99, 235, 0.22);
+  border: 1px solid var(--asmr-info-border);
+  box-shadow: var(--asmr-control-shadow);
 }
 .enhanced-plan-cover-icon {
   width: 20px;
   height: 20px;
-  color: #fff;
+  color: var(--asmr-info-text);
 }
 .enhanced-plan-meta {
   display: flex;
@@ -338,12 +354,12 @@ defineEmits([
   white-space: nowrap;
 }
 .enhanced-plan-meta-pill.is-code {
-  background: rgba(15, 23, 42, 0.06);
-  color: #334155;
+  background: var(--asmr-chip-muted-bg);
+  color: var(--asmr-chip-muted-text);
 }
 .enhanced-plan-meta-pill.is-downloadable {
-  background: rgba(220, 252, 231, 0.8);
-  color: #047857;
+  background: var(--asmr-success-bg);
+  color: var(--asmr-success-text);
 }
 .enhanced-plan-tags {
   display: flex;
@@ -352,16 +368,16 @@ defineEmits([
   margin-top: 8px;
 }
 .enhanced-plan-tag.is-primary {
-  background: rgba(219, 234, 254, 0.9);
-  color: #1d4ed8;
+  background: var(--asmr-info-bg);
+  color: var(--asmr-info-text);
 }
 .enhanced-plan-tag.is-soft {
-  background: rgba(241, 245, 249, 0.92);
-  color: #475569;
+  background: var(--asmr-chip-muted-bg);
+  color: var(--asmr-chip-muted-text);
 }
 .enhanced-plan-tag.is-muted {
-  background: rgba(226, 232, 240, 0.7);
-  color: #64748b;
+  background: var(--asmr-surface-muted);
+  color: var(--asmr-text-muted);
 }
 .asmr-section-enter-active {
   transition:
