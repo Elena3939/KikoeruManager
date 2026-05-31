@@ -278,9 +278,9 @@ function onCoverError(event) {
 /* ── 卡片共用圆角 ── */
 .work-card {
   border-radius: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(248, 251, 255, 0.94) 100%);
+  border: 1px solid var(--circle-work-card-border, rgba(148, 163, 184, 0.22));
+  background: var(--circle-work-card-bg, linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(248, 251, 255, 0.94) 100%));
+  color: var(--circle-text, #334155);
   position: relative;
   overflow: hidden;
   padding: 0;
@@ -296,9 +296,7 @@ function onCoverError(event) {
   transform: translateZ(0);
   contain: layout paint;
   height: max-content;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.88),
-    0 8px 20px rgba(15, 23, 42, 0.045);
+  box-shadow: var(--circle-work-card-shadow, inset 0 1px 0 rgba(255, 255, 255, 0.88), 0 8px 20px rgba(15, 23, 42, 0.045));
   animation: workCardEntrance .38s cubic-bezier(.22,1,.36,1) both;
   animation-delay: calc(var(--card-index, 0) * 28ms);
 }
@@ -314,10 +312,10 @@ function onCoverError(event) {
   transition: border-color .22s ease, box-shadow .28s ease;
 }
 .work-card.selected .work-card-select-ring {
-  border-color: rgba(37, 99, 235, 0.42);
+  border-color: color-mix(in srgb, var(--circle-primary, #2563eb) 58%, transparent);
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.88),
-    0 0 0 3px rgba(37, 99, 235, 0.08);
+    inset 0 0 0 1px color-mix(in srgb, var(--circle-surface, #ffffff) 88%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--circle-primary, #2563eb) 12%, transparent);
   animation: selectRingPulse .5s cubic-bezier(.4,0,.2,1);
 }
 
@@ -347,9 +345,8 @@ function onCoverError(event) {
   flex-shrink: 0;
   flex-grow: 0;
   overflow: hidden;
-  background:
-    linear-gradient(135deg, rgba(241, 245, 249, 0.96), rgba(248, 250, 252, 0.82));
-  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  background: var(--circle-work-cover-bg, linear-gradient(135deg, rgba(241, 245, 249, 0.96), rgba(248, 250, 252, 0.82)));
+  border-bottom: 1px solid var(--circle-border-soft, rgba(148, 163, 184, 0.16));
 }
 
 /* ── 封面图 ── */
@@ -375,53 +372,46 @@ function onCoverError(event) {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #c1c8d1;
-  background: #f5f6f8;
+  color: var(--circle-text-subtle, #c1c8d1);
+  background: var(--circle-surface-muted, #f5f6f8);
 }
 
 /* ── 已下载态 ── */
 .work-card.is-downloaded {
-  border-color: rgba(67, 160, 94, 0.18);
+  border-color: color-mix(in srgb, var(--circle-tag-success, #059669) 26%, transparent);
   background:
-    radial-gradient(circle at top right, rgba(93, 193, 122, 0.12), transparent 40%),
-    linear-gradient(180deg, #fbfefb 0%, #f3fbf5 100%);
+    radial-gradient(circle at top right, color-mix(in srgb, var(--circle-tag-success, #059669) 14%, transparent), transparent 40%),
+    var(--circle-work-card-bg, linear-gradient(180deg, #fbfefb 0%, #f3fbf5 100%));
 }
 .work-card.is-downloaded:hover {
-  border-color: rgba(67, 160, 94, 0.28);
-  box-shadow:
-    0 10px 20px rgba(53, 102, 72, 0.09),
-    inset 0 0 0 1px rgba(93, 193, 122, 0.08);
+  border-color: color-mix(in srgb, var(--circle-tag-success, #059669) 38%, transparent);
+  box-shadow: var(--circle-work-card-hover-shadow, 0 10px 20px rgba(53, 102, 72, 0.09));
 }
 .work-card.is-unreleased {
-  border-color: rgba(52, 120, 246, 0.16);
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 28%, transparent);
   background:
-    radial-gradient(circle at top left, rgba(52, 120, 246, 0.08), transparent 42%),
-    linear-gradient(180deg, #fbfcff 0%, #f5f8ff 100%);
+    radial-gradient(circle at top left, color-mix(in srgb, var(--circle-tag-primary, #2563eb) 12%, transparent), transparent 42%),
+    var(--circle-work-card-bg, linear-gradient(180deg, #fbfcff 0%, #f5f8ff 100%));
 }
 .work-card.is-unreleased:hover {
-  border-color: rgba(52, 120, 246, 0.24);
-  box-shadow: 0 10px 20px rgba(38, 74, 134, 0.08);
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 42%, transparent);
+  box-shadow: var(--circle-work-card-hover-shadow, 0 10px 20px rgba(38, 74, 134, 0.08));
 }
 
 /* ── hover / selected / flash ── */
 .work-card:hover {
   transform: translateY(-3px) scale(1.012);
-  border-color: rgba(52, 120, 246, 0.28);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.92),
-    0 14px 30px rgba(38, 74, 134, 0.12);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 1) 0%, rgba(246, 250, 255, 0.98) 100%);
+  border-color: var(--circle-work-card-hover-border, rgba(52, 120, 246, 0.28));
+  box-shadow: var(--circle-work-card-hover-shadow, inset 0 1px 0 rgba(255, 255, 255, 0.92), 0 14px 30px rgba(38, 74, 134, 0.12));
+  background: var(--circle-work-card-hover-bg, linear-gradient(180deg, rgba(255, 255, 255, 1) 0%, rgba(246, 250, 255, 0.98) 100%));
 }
 .work-card.selected {
-  border-color: rgba(37, 99, 235, 0.34);
+  border-color: color-mix(in srgb, var(--circle-primary, #2563eb) 44%, transparent);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.94),
-    0 0 0 1px rgba(37, 99, 235, 0.08),
-    0 10px 24px rgba(37, 99, 235, 0.10);
-  background:
-    radial-gradient(circle at top right, rgba(37, 99, 235, 0.08), transparent 38%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(244, 248, 255, 0.98) 100%);
+    inset 0 1px 0 color-mix(in srgb, var(--circle-surface, #ffffff) 88%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--circle-primary, #2563eb) 12%, transparent),
+    0 10px 24px color-mix(in srgb, var(--circle-primary, #2563eb) 14%, transparent);
+  background: var(--circle-work-card-selected-bg, radial-gradient(circle at top right, rgba(37, 99, 235, 0.08), transparent 38%), linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(244, 248, 255, 0.98) 100%));
   transform: translateY(-1px);
 }
 .work-card.selected:hover {
@@ -429,13 +419,13 @@ function onCoverError(event) {
 }
 .work-card.status-flash {
   animation: workStatusFlash 2.4s ease;
-  border-color: rgba(82, 170, 103, 0.5);
+  border-color: color-mix(in srgb, var(--circle-tag-success, #059669) 58%, transparent);
   box-shadow:
     0 0 0 2px rgba(82, 170, 103, 0.16),
     0 12px 24px rgba(73, 137, 91, 0.12);
   background:
-    radial-gradient(circle at top right, rgba(115, 205, 134, 0.18), transparent 36%),
-    linear-gradient(180deg, #fcfffb 0%, #eefaf0 100%);
+    radial-gradient(circle at top right, color-mix(in srgb, var(--circle-tag-success, #059669) 18%, transparent), transparent 36%),
+    var(--circle-work-card-bg, linear-gradient(180deg, #fcfffb 0%, #eefaf0 100%));
 }
 .work-card.status-flash.selected {
   border-color: rgba(82, 170, 103, 0.6);
@@ -443,13 +433,13 @@ function onCoverError(event) {
 .work-card.disabled {
   opacity: .94;
   filter: saturate(0.5) grayscale(0.14);
-  background: linear-gradient(180deg, #fafbfd 0%, #f1f3f6 100%);
-  border-color: rgba(29, 29, 31, 0.06);
+  background: var(--circle-surface-muted, linear-gradient(180deg, #fafbfd 0%, #f1f3f6 100%));
+  border-color: var(--circle-border-soft, rgba(29, 29, 31, 0.06));
   cursor: default;
 }
 .work-card.disabled:hover {
   transform: translateY(-1px);
-  box-shadow: 0 6px 12px rgba(29, 29, 31, 0.04);
+  box-shadow: var(--circle-shadow-soft, 0 6px 12px rgba(29, 29, 31, 0.04));
 }
 
 /* ── 入场 + 选中脉冲 ── */
@@ -539,11 +529,11 @@ function onCoverError(event) {
   gap: 4px;
   height: 22px;
   padding: 0 8px;
-  border: 1px solid rgba(52, 120, 246, 0.15);
+  border: 1px solid color-mix(in srgb, var(--circle-tag-primary, #2563eb) 24%, transparent);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.45);
+  background: color-mix(in srgb, var(--circle-surface, #ffffff) 64%, transparent);
   backdrop-filter: blur(12px) saturate(1.6);
-  color: #2563eb;
+  color: var(--circle-tag-primary, #2563eb);
   font-size: 10px;
   font-weight: 800;
   line-height: 1;
@@ -553,8 +543,8 @@ function onCoverError(event) {
 }
 .work-card:hover .work-unreleased-flag {
   transform: translateY(-1px) scale(1.03);
-  border-color: rgba(52, 120, 246, 0.22);
-  background: rgba(255, 255, 255, 0.6);
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 34%, transparent);
+  background: color-mix(in srgb, var(--circle-surface, #ffffff) 78%, transparent);
 }
 .work-new-badge {
   flex-shrink: 0;
@@ -585,11 +575,11 @@ function onCoverError(event) {
   align-items: center;
   height: 22px;
   padding: 0 8px;
-  border: 1px solid rgba(249, 115, 22, 0.18);
+  border: 1px solid color-mix(in srgb, var(--circle-tag-orange, #ea580c) 24%, transparent);
   border-radius: 999px;
-  background: rgba(255, 248, 240, 0.45);
+  background: color-mix(in srgb, var(--circle-tag-orange-soft, rgba(255, 248, 240, 0.45)) 72%, transparent);
   backdrop-filter: blur(12px) saturate(1.6);
-  color: #ea580c;
+  color: var(--circle-tag-orange, #ea580c);
   font-size: 10px;
   font-weight: 800;
   line-height: 1;
@@ -602,8 +592,8 @@ function onCoverError(event) {
 }
 .work-card:hover .work-new-flag {
   transform: translateY(-1px) scale(1.03);
-  border-color: rgba(249, 115, 22, 0.28);
-  background: rgba(255, 248, 240, 0.62);
+  border-color: color-mix(in srgb, var(--circle-tag-orange, #ea580c) 36%, transparent);
+  background: color-mix(in srgb, var(--circle-tag-orange-soft, rgba(255, 248, 240, 0.62)) 88%, transparent);
 }
 .work-bonus-flag {
   position: absolute;
@@ -615,11 +605,11 @@ function onCoverError(event) {
   gap: 4px;
   height: 22px;
   padding: 0 8px;
-  border: 1px solid rgba(168, 85, 247, 0.20);
+  border: 1px solid color-mix(in srgb, var(--circle-tag-violet, #7e22ce) 24%, transparent);
   border-radius: 999px;
-  background: rgba(250, 245, 255, 0.74);
+  background: color-mix(in srgb, var(--circle-tag-violet-soft, rgba(250, 245, 255, 0.74)) 86%, transparent);
   backdrop-filter: blur(12px) saturate(1.4);
-  color: #7e22ce;
+  color: var(--circle-tag-violet, #7e22ce);
   font-size: 10px;
   font-weight: 800;
   line-height: 1;
@@ -634,33 +624,33 @@ function onCoverError(event) {
 }
 .work-card:hover .work-bonus-flag {
   transform: translateY(-1px) scale(1.03);
-  background: rgba(250, 245, 255, 0.9);
+  background: color-mix(in srgb, var(--circle-tag-violet-soft, rgba(250, 245, 255, 0.9)) 96%, transparent);
 }
 /* ── 新作边框光圈 ── */
 .work-card.is-new-work {
-  border-color: rgba(249, 115, 22, 0.55);
-  box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.12), 0 0 22px rgba(249, 115, 22, 0.20);
+  border-color: color-mix(in srgb, var(--circle-tag-orange, #f97316) 55%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--circle-tag-orange, #f97316) 12%, transparent), 0 0 22px color-mix(in srgb, var(--circle-tag-orange, #f97316) 20%, transparent);
 }
 .work-card.is-new-work:hover {
-  border-color: rgba(249, 115, 22, 0.72);
-  box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.16), 0 0 30px rgba(249, 115, 22, 0.28);
+  border-color: color-mix(in srgb, var(--circle-tag-orange, #f97316) 72%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--circle-tag-orange, #f97316) 16%, transparent), 0 0 30px color-mix(in srgb, var(--circle-tag-orange, #f97316) 28%, transparent);
 }
 .work-card.is-new-work .work-card-select-ring {
-  border-color: rgba(249, 115, 22, 0.7);
-  box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.14), 0 0 24px rgba(249, 115, 22, 0.22);
+  border-color: color-mix(in srgb, var(--circle-tag-orange, #f97316) 70%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--circle-tag-orange, #f97316) 14%, transparent), 0 0 24px color-mix(in srgb, var(--circle-tag-orange, #f97316) 22%, transparent);
 }
 /* ── 未发售边框光圈 ── */
 .work-card.is-unreleased {
-  border-color: rgba(52, 120, 246, 0.45);
-  box-shadow: 0 0 0 2px rgba(52, 120, 246, 0.10), 0 0 18px rgba(52, 120, 246, 0.16);
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #3478f6) 45%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--circle-tag-primary, #3478f6) 10%, transparent), 0 0 18px color-mix(in srgb, var(--circle-tag-primary, #3478f6) 16%, transparent);
 }
 .work-card.is-unreleased:hover {
-  border-color: rgba(52, 120, 246, 0.65);
-  box-shadow: 0 0 0 3px rgba(52, 120, 246, 0.14), 0 0 26px rgba(52, 120, 246, 0.22);
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #3478f6) 65%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--circle-tag-primary, #3478f6) 14%, transparent), 0 0 26px color-mix(in srgb, var(--circle-tag-primary, #3478f6) 22%, transparent);
 }
 .work-card.is-unreleased .work-card-select-ring {
-  border-color: rgba(52, 120, 246, 0.6);
-  box-shadow: 0 0 0 3px rgba(52, 120, 246, 0.12), 0 0 20px rgba(52, 120, 246, 0.18);
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #3478f6) 60%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--circle-tag-primary, #3478f6) 12%, transparent), 0 0 20px color-mix(in srgb, var(--circle-tag-primary, #3478f6) 18%, transparent);
 }
 .work-release-chip {
   display: inline-flex;
@@ -668,10 +658,10 @@ function onCoverError(event) {
   gap: 4px;
   min-height: 18px;
   padding: 0 6px;
-  border: 1px solid rgba(52, 120, 246, 0.14);
-  border-radius: 6px;
-  background: rgba(237, 244, 255, 0.88);
-  color: #2f66c0;
+  border: 1px solid color-mix(in srgb, var(--circle-tag-primary, #2563eb) 22%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 8%, transparent);
+  color: var(--circle-tag-primary, #2f66c0);
   font-size: 9px;
   font-weight: 800;
   line-height: 1;
@@ -689,7 +679,7 @@ function onCoverError(event) {
 .work-rj {
   font-size: 9px;
   font-weight: 700;
-  color: #6d8bb5;
+  color: var(--circle-text-muted, #6d8bb5);
   letter-spacing: .03em;
   line-height: 12px;
   min-width: 0;
@@ -699,19 +689,19 @@ function onCoverError(event) {
   transition: color .2s ease;
 }
 .work-card:hover .work-rj {
-  color: #3478f6;
+  color: var(--circle-primary, #3478f6);
 }
 .work-card.disabled .work-rj,
 .work-card.disabled .work-title,
 .work-card.disabled .work-linked {
-  color: rgba(29, 29, 31, 0.36);
+  color: var(--circle-text-subtle, rgba(29, 29, 31, 0.36));
 }
 
 /* ── 标题 ── */
 .work-title {
   font-size: 11px;
   font-weight: 800;
-  color: #1f3554;
+  color: var(--circle-text-strong, #1f3554);
   line-height: 1.38;
   display: -webkit-box;
   height: calc(1.38em * 2);
@@ -723,7 +713,7 @@ function onCoverError(event) {
   transition: color .2s ease;
 }
 .work-card:hover .work-title {
-  color: #2563eb;
+  color: var(--circle-primary, #2563eb);
 }
 
 /* ── 关联信息 ── */
@@ -733,7 +723,7 @@ function onCoverError(event) {
   flex-wrap: nowrap;
   gap: 6px;
   font-size: 9px;
-  color: rgba(29, 29, 31, 0.40);
+  color: var(--circle-text-muted, rgba(29, 29, 31, 0.40));
   line-height: 16px;
   min-width: 0;
   height: 16px;
@@ -755,10 +745,10 @@ function onCoverError(event) {
   flex: 0 0 auto;
   font-size: 9px;
   font-weight: 500;
-  color: rgba(71, 85, 105, 0.85);
+  color: var(--circle-text-muted, rgba(71, 85, 105, 0.85));
 }
 .work-release-inline :first-child {
-  color: rgba(148, 163, 184, 0.95);
+  color: var(--circle-text-subtle, rgba(148, 163, 184, 0.95));
 }
 .work-card--lg .work-release-inline {
   font-size: 10px;
@@ -767,7 +757,7 @@ function onCoverError(event) {
 /* ── CV 名 ── */
 .work-cv {
   font-size: 9px;
-  color: #0ea5e9;
+  color: var(--circle-primary, #0ea5e9);
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
@@ -800,9 +790,9 @@ function onCoverError(event) {
   height: 28px;
   padding-top: 2px;
   box-sizing: border-box;
-  opacity: 0;
-  transform: translateY(3px);
-  pointer-events: none;
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
   overflow: visible;
   transition:
     opacity .22s ease,
@@ -810,12 +800,10 @@ function onCoverError(event) {
   margin-top: 0;
 }
 .work-card:hover .work-actions {
-  opacity: 1;
-  transform: translateY(0);
   pointer-events: auto;
 }
 
-/* ── 标签胶囊 ── */
+/* ── 状态标签 ── */
 .tag-chip {
   height: 19px;
   display: inline-flex;
@@ -827,17 +815,15 @@ function onCoverError(event) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  border-radius: 7px;
+  border-radius: 5px;
   font-size: 9px;
   font-weight: 750;
   line-height: 1;
   letter-spacing: 0.02em;
-  background: rgba(248, 250, 252, 0.72);
-  border: 1px solid rgba(203, 213, 225, 0.72);
-  color: #64748b;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.82),
-    0 1px 2px rgba(15, 23, 42, 0.03);
+  background: var(--circle-chip-bg, rgba(248, 250, 252, 0.72));
+  border: 1px solid var(--circle-chip-border, rgba(203, 213, 225, 0.72));
+  color: var(--circle-text-muted, #64748b);
+  box-shadow: none;
   transition:
     transform .18s cubic-bezier(.34,1.56,.64,1),
     background-color .18s ease,
@@ -847,57 +833,57 @@ function onCoverError(event) {
   transform: translateY(-1px);
 }
 .tag-chip.is-primary {
-  background: rgba(239, 246, 255, 0.74);
-  color: #416fae;
-  border-color: rgba(191, 219, 254, 0.82);
+  background: color-mix(in srgb, var(--circle-tag-primary, #416fae) 8%, transparent);
+  color: var(--circle-tag-primary, #416fae);
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #416fae) 22%, transparent);
 }
 .tag-chip.is-success {
-  background: rgba(240, 253, 244, 0.78);
-  color: #247348;
-  border-color: rgba(187, 247, 208, 0.86);
+  background: color-mix(in srgb, var(--circle-tag-success, #247348) 8%, transparent);
+  color: var(--circle-tag-success, #247348);
+  border-color: color-mix(in srgb, var(--circle-tag-success, #247348) 22%, transparent);
 }
 .tag-chip.is-danger {
-  background: rgba(255, 247, 237, 0.78);
-  color: #c2412d;
-  border-color: rgba(254, 202, 202, 0.86);
+  background: color-mix(in srgb, var(--circle-tag-danger, #c2412d) 8%, transparent);
+  color: var(--circle-tag-danger, #c2412d);
+  border-color: color-mix(in srgb, var(--circle-tag-danger, #c2412d) 22%, transparent);
 }
 .tag-chip.is-warning {
-  background: rgba(255, 248, 235, 0.78);
-  color: #b06f13;
-  border-color: rgba(251, 230, 196, 0.9);
+  background: color-mix(in srgb, var(--circle-tag-warning, #b06f13) 8%, transparent);
+  color: var(--circle-tag-warning, #b06f13);
+  border-color: color-mix(in srgb, var(--circle-tag-warning, #b06f13) 22%, transparent);
 }
 .tag-chip.is-info {
-  background: rgba(244, 246, 249, 0.76);
-  color: #5d6d81;
-  border-color: rgba(226, 232, 240, 0.86);
+  background: var(--circle-chip-bg, rgba(244, 246, 249, 0.76));
+  color: var(--circle-text-muted, #5d6d81);
+  border-color: var(--circle-chip-border, rgba(226, 232, 240, 0.86));
 }
 .tag-chip.is-subtitle {
-  background: rgba(238, 242, 255, 0.78);
-  color: #4f46e5;
-  border-color: rgba(199, 210, 254, 0.9);
+  background: color-mix(in srgb, var(--circle-tag-indigo, #4f46e5) 8%, transparent);
+  color: var(--circle-tag-indigo, #4f46e5);
+  border-color: color-mix(in srgb, var(--circle-tag-indigo, #4f46e5) 22%, transparent);
 }
 .tag-chip.is-subtitle-none {
-  background: rgba(248, 250, 252, 0.78);
-  color: #64748b;
-  border-color: rgba(226, 232, 240, 0.86);
+  background: var(--circle-chip-bg, rgba(248, 250, 252, 0.78));
+  color: var(--circle-text-muted, #64748b);
+  border-color: var(--circle-chip-border, rgba(226, 232, 240, 0.86));
 }
 .tag-chip.is-repair {
-  background: rgba(255, 247, 237, 0.78);
-  color: #ea580c;
-  border-color: rgba(254, 215, 170, 0.9);
+  background: color-mix(in srgb, var(--circle-tag-orange, #ea580c) 8%, transparent);
+  color: var(--circle-tag-orange, #ea580c);
+  border-color: color-mix(in srgb, var(--circle-tag-orange, #ea580c) 22%, transparent);
 }
 .tag-chip.is-bonus {
   max-width: 100%;
   justify-content: flex-start;
   gap: 3px;
-  background: rgba(250, 245, 255, 0.78);
-  color: #7e22ce;
-  border-color: rgba(233, 213, 255, 0.9);
+  background: color-mix(in srgb, var(--circle-tag-violet, #7e22ce) 8%, transparent);
+  color: var(--circle-tag-violet, #7e22ce);
+  border-color: color-mix(in srgb, var(--circle-tag-violet, #7e22ce) 22%, transparent);
 }
 .tag-chip.is-disabled {
-  background: rgba(248, 250, 252, 0.72);
-  color: #8a97a8;
-  border-color: rgba(226, 232, 240, 0.86);
+  background: var(--circle-chip-bg, rgba(248, 250, 252, 0.72));
+  color: var(--circle-text-subtle, #8a97a8);
+  border-color: var(--circle-chip-border, rgba(226, 232, 240, 0.86));
 }
 
 /* ── 迷你操作按钮 ── */
@@ -907,9 +893,9 @@ function onCoverError(event) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(191, 219, 254, 0.86);
-  background: rgba(255, 255, 255, 0.68);
-  color: #2468b2;
+  border: 1px solid color-mix(in srgb, var(--circle-primary, #2468b2) 28%, transparent);
+  background: color-mix(in srgb, var(--circle-surface, #ffffff) 76%, transparent);
+  color: var(--circle-primary, #2468b2);
   height: 24px;
   min-height: 0;
   padding: 0 6px;
@@ -929,9 +915,9 @@ function onCoverError(event) {
     0 2px 7px rgba(37, 99, 235, 0.06);
 }
 .work-action-btn:hover {
-  background: rgba(239, 246, 255, 0.92);
-  border-color: rgba(96, 165, 250, 0.74);
-  color: #155ea8;
+  background: var(--circle-primary-soft, rgba(239, 246, 255, 0.92));
+  border-color: color-mix(in srgb, var(--circle-primary, #155ea8) 48%, transparent);
+  color: var(--circle-primary, #155ea8);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.9),
     0 6px 14px rgba(37, 99, 235, 0.10);
@@ -941,14 +927,14 @@ function onCoverError(event) {
   transform: scale(0.96);
 }
 .work-action-btn.upload {
-  border-color: rgba(187, 247, 208, 0.86);
-  background: rgba(240, 253, 244, 0.72);
-  color: #247348;
+  border-color: color-mix(in srgb, var(--circle-success, #247348) 34%, transparent);
+  background: var(--circle-success-soft, rgba(240, 253, 244, 0.72));
+  color: var(--circle-success, #247348);
 }
 .work-action-btn.upload:hover {
-  background: rgba(236, 253, 245, 0.94);
-  border-color: rgba(74, 222, 128, 0.74);
-  color: #16653d;
+  background: var(--circle-success-soft, rgba(236, 253, 245, 0.94));
+  border-color: color-mix(in srgb, var(--circle-success, #16653d) 52%, transparent);
+  color: var(--circle-success, #16653d);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.9),
     0 6px 14px rgba(34, 197, 94, 0.10);

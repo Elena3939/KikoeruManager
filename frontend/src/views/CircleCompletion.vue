@@ -2,7 +2,7 @@
   <div class="circle-page">
     <AppPageHeader
       :icon="Tags"
-      icon-color="#0f766e"
+      icon-color="var(--km-nav-circle-icon)"
       title="社团补全"
       subtitle="按社团建立索引，结合 Kikoeru 收录态、DLsite 关联与 asmr.one 下载能力补全缺失作品"
       class="circle-page-header"
@@ -326,8 +326,8 @@
                 <span class="circle-tab-label"><XCircle :size="13" class="circle-tab-icon missing" /> 缺失作品 <em class="circle-tab-badge missing">{{ missingWorksTotal }}</em></span>
               </template>
 
-              <div v-if="missingWorks.length > 0 && selectedActiveCanonicalRJCodes.length > 0" class="flex items-center justify-between bg-slate-50/80 border border-slate-200/80 rounded-xl px-4 py-3 mb-4 mt-2 shadow-sm backdrop-blur-sm">
-                <span class="text-sm font-medium text-slate-700">已选 {{ selectedActiveCanonicalRJCodes.length }} / {{ activeSelectableWorks.length }}</span>
+              <div v-if="missingWorks.length > 0 && selectedActiveCanonicalRJCodes.length > 0" class="selection-bar">
+                <span class="selection-count">已选 {{ selectedActiveCanonicalRJCodes.length }} / {{ activeSelectableWorks.length }}</span>
                 <div class="flex items-center gap-2">
                   <button type="button" class="batch-action-button" @click="selectAllVisibleWorks">全选</button>
                   <button type="button" class="batch-action-button ghost" @click="clearSelection">清空</button>
@@ -416,67 +416,67 @@
               </template>
               <!-- Header Stats & Actions -->
               <div class="owned-panel mb-4 space-y-4">
-                <div class="owned-stats-strip flex items-center justify-between bg-white rounded-xl border border-slate-200/60 p-1.5 shadow-sm">
-                  <div class="owned-stats-list flex items-center divide-x divide-slate-200/60">
-                    <div class="px-4 py-2 flex items-center gap-2.5">
-                      <div class="w-7 h-7 rounded-full bg-slate-50 border border-slate-100/50 flex items-center justify-center text-slate-500">
+                <div class="owned-stats-strip">
+                  <div class="owned-stats-list">
+                    <div class="owned-stat-item">
+                      <div class="owned-stat-icon is-total">
                         <LibraryBig :size="14" stroke-width="2.5" />
                       </div>
                       <div class="flex flex-col">
-                        <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">总收录</span>
-                        <span class="text-[15px] font-bold text-slate-800 leading-none">{{ ownedWorksStats.total }}</span>
+                        <span class="owned-stat-label">总收录</span>
+                        <span class="owned-stat-value">{{ ownedWorksStats.total }}</span>
                       </div>
                     </div>
-                    <div class="px-4 py-2 flex items-center gap-2.5">
-                      <div class="w-7 h-7 rounded-full bg-sky-50 border border-sky-100/50 flex items-center justify-center text-sky-500">
+                    <div class="owned-stat-item">
+                      <div class="owned-stat-icon is-simplified">
                         <Languages :size="14" stroke-width="2.5" />
                       </div>
                       <div class="flex flex-col">
-                        <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">简中</span>
-                        <span class="text-[15px] font-bold text-slate-800 leading-none">{{ ownedWorksStats.simplified }}</span>
+                        <span class="owned-stat-label">简中</span>
+                        <span class="owned-stat-value">{{ ownedWorksStats.simplified }}</span>
                       </div>
                     </div>
-                    <div class="px-4 py-2 flex items-center gap-2.5">
-                      <div class="w-7 h-7 rounded-full bg-violet-50 border border-violet-100/50 flex items-center justify-center text-violet-500">
+                    <div class="owned-stat-item">
+                      <div class="owned-stat-icon is-traditional">
                         <Languages :size="14" stroke-width="2.5" />
                       </div>
                       <div class="flex flex-col">
-                        <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">繁中</span>
-                        <span class="text-[15px] font-bold text-slate-800 leading-none">{{ ownedWorksStats.traditional }}</span>
+                        <span class="owned-stat-label">繁中</span>
+                        <span class="owned-stat-value">{{ ownedWorksStats.traditional }}</span>
                       </div>
                     </div>
-                    <div class="px-4 py-2 flex items-center gap-2.5">
-                      <div class="w-7 h-7 rounded-full bg-slate-100 border border-slate-200/50 flex items-center justify-center text-slate-600">
+                    <div class="owned-stat-item">
+                      <div class="owned-stat-icon is-original">
                         <PlayCircle :size="14" stroke-width="2.5" />
                       </div>
                       <div class="flex flex-col">
-                        <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">原作</span>
-                        <span class="text-[15px] font-bold text-slate-800 leading-none">{{ ownedWorksStats.original }}</span>
+                        <span class="owned-stat-label">原作</span>
+                        <span class="owned-stat-value">{{ ownedWorksStats.original }}</span>
                       </div>
                     </div>
-                    <div class="px-4 py-2 flex items-center gap-2.5">
-                      <div class="w-7 h-7 rounded-full bg-indigo-50 border border-indigo-100/50 flex items-center justify-center text-indigo-500">
+                    <div class="owned-stat-item">
+                      <div class="owned-stat-icon is-subtitle">
                         <Subtitles :size="14" stroke-width="2.5" />
                       </div>
                       <div class="flex flex-col">
-                        <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">含字幕</span>
-                        <span class="text-[15px] font-bold text-slate-800 leading-none">{{ ownedWorksStats.subtitle }}</span>
+                        <span class="owned-stat-label">含字幕</span>
+                        <span class="owned-stat-value">{{ ownedWorksStats.subtitle }}</span>
                       </div>
                     </div>
-                    <div class="px-4 py-2 flex items-center gap-2.5">
-                      <div class="w-7 h-7 rounded-full bg-purple-50 border border-purple-100/50 flex items-center justify-center text-purple-600">
+                    <div class="owned-stat-item">
+                      <div class="owned-stat-icon is-bonus">
                         <Gift :size="14" stroke-width="2.5" />
                       </div>
                       <div class="flex flex-col">
-                        <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">特典</span>
-                        <span class="text-[15px] font-bold text-slate-800 leading-none">{{ ownedWorksStats.bonus }}</span>
+                        <span class="owned-stat-label">特典</span>
+                        <span class="owned-stat-value">{{ ownedWorksStats.bonus }}</span>
                       </div>
                     </div>
                   </div>
                 </div>
 
                 <div class="owned-filter-row flex items-center justify-between gap-4">
-                  <div class="owned-filter-tabs flex bg-white rounded-lg border border-slate-200/60 p-1 shadow-sm">
+                  <div class="owned-filter-tabs">
                     <button type="button" class="owned-filter-chip" :class="{ 'is-active': ownedWorksFilterType === 'all' }" @click="setOwnedWorksFilter('all')">
                       全部
                       <span class="owned-filter-count">{{ ownedWorksStats.total }}</span>
@@ -522,20 +522,20 @@
                       <ArrowDown v-else :size="12" class="release-sort-direction desc" />
                     </button>
 
-                    <div class="owned-search-wrap relative w-64">
-                    <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <Search :size="16" class="text-slate-400" />
+                    <div class="owned-search-wrap">
+                    <div class="owned-search-icon">
+                      <Search :size="16" />
                     </div>
-                    <input 
-                      v-model="ownedWorksSearchQuery" 
-                      type="text" 
-                      class="block w-full pl-9 pr-3 py-2 border border-slate-200/60 rounded-lg text-sm bg-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-400/20 focus:border-slate-400 transition-all shadow-sm" 
-                      placeholder="搜索作品名或 RJ 号..." 
+                    <input
+                      v-model="ownedWorksSearchQuery"
+                      type="text"
+                      class="owned-search-input"
+                      placeholder="搜索作品名或 RJ 号..."
                     />
                     <button 
                       v-if="ownedWorksSearchQuery" 
                       @click="ownedWorksSearchQuery = ''" 
-                      class="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
+                      class="owned-search-clear"
                     >
                       <X :size="14" />
                     </button>
@@ -559,14 +559,14 @@
                 </div>
               </template>
               <template v-else-if="ownedWorks.length === 0">
-                <div class="flex flex-col items-center justify-center py-12 text-slate-400 bg-white/50 rounded-xl border border-slate-200/50 border-dashed">
+                <div class="owned-empty-state">
                   <LibraryBig :size="32" class="mb-3 opacity-40" />
                   <p class="text-sm font-medium">没有找到符合条件的作品</p>
                 </div>
               </template>
               <template v-else>
-                <div v-if="ownedWorks.length > 0 && selectedActiveCanonicalRJCodes.length > 0" class="flex items-center justify-between bg-slate-50/80 border border-slate-200/80 rounded-xl px-4 py-3 mb-4 mt-2 shadow-sm backdrop-blur-sm">
-                  <span class="text-sm font-medium text-slate-700">已选 {{ selectedActiveCanonicalRJCodes.length }} / {{ activeSelectableWorks.length }}</span>
+                <div v-if="ownedWorks.length > 0 && selectedActiveCanonicalRJCodes.length > 0" class="selection-bar">
+                  <span class="selection-count">已选 {{ selectedActiveCanonicalRJCodes.length }} / {{ activeSelectableWorks.length }}</span>
                   <div class="flex items-center gap-2">
                     <button type="button" class="batch-action-button" @click="selectAllVisibleWorks">全选</button>
                     <button type="button" class="batch-action-button ghost" @click="clearSelection">清空</button>
@@ -606,50 +606,50 @@
               </template>
               <!-- Stats Row -->
               <div class="compare-panel mb-4">
-                <div class="compare-stats-list bg-white rounded-xl border border-slate-200/60 shadow-sm overflow-hidden flex flex-wrap divide-x divide-slate-100">
-                  <div class="px-4 py-2 flex items-center gap-2.5">
-                    <div class="w-7 h-7 rounded-full bg-slate-50 border border-slate-100/50 flex items-center justify-center text-slate-500">
+                <div class="compare-stats-list">
+                  <div class="compare-stat-item">
+                    <div class="compare-stat-icon is-total">
                       <LibraryBig :size="14" stroke-width="2.5" />
                     </div>
                     <div class="flex flex-col">
-                      <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">总数</span>
-                      <span class="text-[15px] font-bold text-slate-800 leading-none">{{ compareWorksStats.total }}</span>
+                      <span class="compare-stat-label">总数</span>
+                      <span class="compare-stat-value">{{ compareWorksStats.total }}</span>
                     </div>
                   </div>
-                  <div class="px-4 py-2 flex items-center gap-2.5">
-                    <div class="w-7 h-7 rounded-full bg-emerald-50 border border-emerald-100/50 flex items-center justify-center text-emerald-500">
+                  <div class="compare-stat-item">
+                    <div class="compare-stat-icon is-kikoeru">
                       <CheckCircle2 :size="14" stroke-width="2.5" />
                     </div>
                     <div class="flex flex-col">
-                      <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Kikoeru</span>
-                      <span class="text-[15px] font-bold text-slate-800 leading-none">{{ compareWorksStats.kikoeru }}</span>
+                      <span class="compare-stat-label">Kikoeru</span>
+                      <span class="compare-stat-value">{{ compareWorksStats.kikoeru }}</span>
                     </div>
                   </div>
-                  <div class="px-4 py-2 flex items-center gap-2.5">
-                    <div class="w-7 h-7 rounded-full bg-blue-50 border border-blue-100/50 flex items-center justify-center text-blue-500">
+                  <div class="compare-stat-item">
+                    <div class="compare-stat-icon is-dlsite">
                       <CheckCircle2 :size="14" stroke-width="2.5" />
                     </div>
                     <div class="flex flex-col">
-                      <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">DLsite</span>
-                      <span class="text-[15px] font-bold text-slate-800 leading-none">{{ compareWorksStats.dlsite }}</span>
+                      <span class="compare-stat-label">DLsite</span>
+                      <span class="compare-stat-value">{{ compareWorksStats.dlsite }}</span>
                     </div>
                   </div>
-                  <div class="px-4 py-2 flex items-center gap-2.5">
-                    <div class="w-7 h-7 rounded-full bg-violet-50 border border-violet-100/50 flex items-center justify-center text-violet-500">
+                  <div class="compare-stat-item">
+                    <div class="compare-stat-icon is-asmr">
                       <CheckCircle2 :size="14" stroke-width="2.5" />
                     </div>
                     <div class="flex flex-col">
-                      <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">ASMR.ONE</span>
-                      <span class="text-[15px] font-bold text-slate-800 leading-none">{{ compareWorksStats.asmr_one }}</span>
+                      <span class="compare-stat-label">ASMR.ONE</span>
+                      <span class="compare-stat-value">{{ compareWorksStats.asmr_one }}</span>
                     </div>
                   </div>
-                  <div class="px-4 py-2 flex items-center gap-2.5">
-                    <div class="w-7 h-7 rounded-full bg-rose-50 border border-rose-100/50 flex items-center justify-center text-rose-500">
+                  <div class="compare-stat-item">
+                    <div class="compare-stat-icon is-missing">
                       <XCircle :size="14" stroke-width="2.5" />
                     </div>
                     <div class="flex flex-col">
-                      <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">暂无来源</span>
-                      <span class="text-[15px] font-bold text-slate-800 leading-none">{{ compareWorksStats.missing }}</span>
+                      <span class="compare-stat-label">暂无来源</span>
+                      <span class="compare-stat-value">{{ compareWorksStats.missing }}</span>
                     </div>
                   </div>
                 </div>
@@ -657,10 +657,10 @@
 
               <!-- Actions Toolbar -->
               <div class="compare-filter-row flex items-center justify-between mb-4">
-                <div class="compare-filter-tabs flex bg-white rounded-lg border border-slate-200/60 p-1 shadow-sm">
-                  <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="compareSourceFilter === 'all' ? 'bg-slate-800 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="compareSourceFilter = 'all'; comparePage = 1">全部</button>
-                  <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="compareSourceFilter === 'kikoeru' ? 'bg-emerald-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="compareSourceFilter = 'kikoeru'; comparePage = 1">已拥有(Kikoeru)</button>
-                  <button type="button" class="px-3 py-1.5 rounded-md text-sm font-medium transition-all" :class="compareSourceFilter === 'asmr_one' ? 'bg-indigo-600 text-white shadow' : 'text-slate-600 hover:bg-slate-100/80'" @click="compareSourceFilter = 'asmr_one'; comparePage = 1">可下载(ASMR.ONE)</button>
+                <div class="compare-filter-tabs">
+                  <button type="button" class="compare-filter-chip" :class="{ 'is-active': compareSourceFilter === 'all' }" @click="compareSourceFilter = 'all'; comparePage = 1">全部</button>
+                  <button type="button" class="compare-filter-chip is-kikoeru" :class="{ 'is-active': compareSourceFilter === 'kikoeru' }" @click="compareSourceFilter = 'kikoeru'; comparePage = 1">已拥有(Kikoeru)</button>
+                  <button type="button" class="compare-filter-chip is-asmr" :class="{ 'is-active': compareSourceFilter === 'asmr_one' }" @click="compareSourceFilter = 'asmr_one'; comparePage = 1">可下载(ASMR.ONE)</button>
                 </div>
 
                 <div class="flex items-center gap-3">
@@ -680,21 +680,21 @@
                     <ArrowDown v-else :size="12" class="release-sort-direction desc" />
                   </button>
 
-                  <div class="compare-search-wrap relative w-64">
-                  <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                    <Search :size="16" class="text-slate-400" />
+                  <div class="compare-search-wrap">
+                  <div class="compare-search-icon">
+                    <Search :size="16" />
                   </div>
-                  <input 
-                    v-model="compareSearchQuery" 
-                    type="text" 
+                  <input
+                    v-model="compareSearchQuery"
+                    type="text"
                     @input="comparePage = 1"
-                    class="block w-full pl-9 pr-3 py-2 border border-slate-200/60 rounded-lg text-sm bg-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-400/20 focus:border-slate-400 transition-all shadow-sm" 
-                    placeholder="搜索作品名或 RJ 号..." 
+                    class="compare-search-input"
+                    placeholder="搜索作品名或 RJ 号..."
                   />
                   <button 
                     v-if="compareSearchQuery" 
                     @click="compareSearchQuery = ''; comparePage = 1" 
-                    class="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
+                    class="compare-search-clear"
                   >
                     <X :size="14" />
                   </button>
@@ -703,57 +703,52 @@
               </div>
 
               <!-- Header -->
-              <div class="compare-head flex items-center gap-4 px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 border border-slate-200/60 rounded-t-lg">
-                <div class="flex-1">资源信息</div>
-                <div class="flex items-center gap-4 shrink-0 text-center">
-                  <div class="w-20">Kikoeru</div>
-                  <div class="w-px h-4 bg-transparent"></div>
-                  <div class="w-20">DLsite</div>
-                  <div class="w-px h-4 bg-transparent"></div>
-                  <div class="w-20">ASMR.ONE</div>
+              <div class="compare-head">
+                <div class="compare-head-main">资源信息</div>
+                <div class="compare-head-sources">
+                  <div class="compare-source-col">Kikoeru</div>
+                  <div class="compare-source-divider is-transparent"></div>
+                  <div class="compare-source-col">DLsite</div>
+                  <div class="compare-source-divider is-transparent"></div>
+                  <div class="compare-source-col">ASMR.ONE</div>
                 </div>
               </div>
 
               <!-- List -->
-              <div class="compare-works-list border-x border-b border-slate-200/60 rounded-b-lg mb-4 divide-y divide-slate-100/80 bg-white" v-auto-animate>
-                <div v-for="item in pagedCompareWorks" :key="`compare-${item.workRjcode}`" class="compare-work-item p-4 hover:bg-slate-50/50 transition-colors">
+              <div class="compare-works-list" v-auto-animate>
+                <div v-for="item in pagedCompareWorks" :key="`compare-${item.workRjcode}`" class="compare-work-item">
                   <div class="compare-work-row flex items-start justify-between gap-4">
                     <!-- Title & Badges -->
                     <div class="compare-work-main flex-1 min-w-0">
-                      <h4 class="compare-work-title text-[14px] font-semibold text-slate-800 truncate mb-1.5" :title="item.title || item.workRjcode || '未命名作品'">{{ item.title || item.workRjcode || '未命名作品' }}</h4>
+                      <h4 class="compare-work-title" :title="item.title || item.workRjcode || '未命名作品'">{{ item.title || item.workRjcode || '未命名作品' }}</h4>
                       <div class="compare-work-tags flex items-center gap-2">
                         <!-- Status Badge -->
-                        <span v-if="item.statusKey === 'owned'" class="inline-flex items-center gap-1 text-emerald-600 text-xs font-medium" title="服务器已拥有">
+                        <span v-if="item.statusKey === 'owned'" class="compare-status-inline is-owned" title="服务器已拥有">
                           <CheckCircle2 :size="14" stroke-width="2.5" />
                           已拥有
                         </span>
-                        <span v-else-if="item.statusKey === 'missing'" class="inline-flex items-center gap-1 text-rose-500 text-xs font-medium" title="未拥有">
+                        <span v-else-if="item.statusKey === 'missing'" class="compare-status-inline is-missing" title="未拥有">
                           <XCircle :size="14" stroke-width="2.5" />
                           未拥有
                         </span>
-                        <span v-else-if="item.statusKey === 'partial'" class="inline-flex items-center gap-1 text-amber-500 text-xs font-medium" title="部分拥有">
+                        <span v-else-if="item.statusKey === 'partial'" class="compare-status-inline is-partial" title="部分拥有">
                           <AlertCircle :size="14" stroke-width="2.5" />
                           部分拥有
                         </span>
-                        <span v-else class="inline-flex items-center gap-1 text-slate-500 text-xs font-medium">
+                        <span v-else class="compare-status-inline">
                           <MinusCircle :size="14" stroke-width="2.5" />
                           {{ item.statusLabel }}
                         </span>
 
-                        <span class="text-xs font-mono font-medium text-slate-600">{{ item.workRjcode || '—' }}</span>
+                        <span class="compare-work-code">{{ item.workRjcode || '—' }}</span>
 
                         <!-- Variant Tags -->
-                        <span v-if="item.preferredVariantLabel && item.preferredVariantLabel !== '—'" class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold" :class="[
-                          item.preferredVariantLabel === '简中' ? 'text-sky-600 bg-sky-50 border border-sky-100' :
-                          item.preferredVariantLabel === '繁中' ? 'text-violet-600 bg-violet-50 border border-violet-100' :
-                          item.preferredVariantLabel === '原作' ? 'text-slate-600 bg-slate-100 border border-slate-200' :
-                          'text-slate-600 bg-slate-50 border border-slate-200'
-                        ]">
+                        <span v-if="item.preferredVariantLabel && item.preferredVariantLabel !== '—'" class="compare-variant-badge" :class="getVariantBadgeClass(item.preferredVariantLabel)">
                           {{ item.preferredVariantLabel }}
                         </span>
 
                         <!-- Subtitle Icon (if kikoeru tags contain 字幕) -->
-                        <span v-if="normalizeKikoeruTags(item.sourceCompare.kikoeru.tags).includes('字幕')" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-100">
+                        <span v-if="normalizeKikoeruTags(item.sourceCompare.kikoeru.tags).includes('字幕')" class="compare-variant-badge is-subtitle">
                           <MessageSquareText :size="12" stroke-width="2.5" />
                           字幕
                         </span>
@@ -764,55 +759,44 @@
                     <div class="compare-source-cols flex items-center gap-4 text-xs shrink-0 mt-0.5">
                       <!-- Kikoeru -->
                       <div class="flex flex-col items-center gap-1 w-20">
-                        <span v-if="item.sourceCompare.kikoeru.primary_rjcode" class="font-mono text-slate-700">{{ item.sourceCompare.kikoeru.primary_rjcode }}</span>
-                        <span v-else class="text-slate-400 scale-90">—</span>
+                        <span v-if="item.sourceCompare.kikoeru.primary_rjcode" class="compare-source-code">{{ item.sourceCompare.kikoeru.primary_rjcode }}</span>
+                        <span v-else class="compare-source-empty">—</span>
                         <div v-if="item.sourceCompare.kikoeru.variantBadges.length || normalizeKikoeruTags(item.sourceCompare.kikoeru.tags).length" class="flex flex-wrap items-center justify-center gap-1 mt-0.5">
-                          <span v-for="badge in item.sourceCompare.kikoeru.variantBadges" :key="`kb-${item.workRjcode}-${badge}`" class="inline-flex items-center px-1 py-0.5 rounded text-[9px] font-bold leading-none" :class="[
-                            badge === '简中' ? 'text-sky-600 bg-sky-50 border border-sky-100' :
-                            badge === '繁中' ? 'text-violet-600 bg-violet-50 border border-violet-100' :
-                            badge === '原作' ? 'text-slate-600 bg-slate-100 border border-slate-200' :
-                            'text-slate-500 bg-slate-50 border border-slate-200'
-                          ]">{{ badge }}</span>
+                          <span v-for="badge in item.sourceCompare.kikoeru.variantBadges" :key="`kb-${item.workRjcode}-${badge}`" class="compare-source-badge" :class="getVariantBadgeClass(badge)">{{ badge }}</span>
                         </div>
                       </div>
                       
-                      <div class="w-px h-6 bg-slate-200/60"></div>
+                      <div class="compare-source-divider"></div>
                       
                       <!-- DLsite -->
                       <div class="flex flex-col items-center gap-1 w-20">
                         <div v-if="item.sourceCompare.dlsite.all_rjcodes.length" class="flex flex-col items-center gap-0.5">
-                          <span v-for="code in item.sourceCompare.dlsite.all_rjcodes" :key="`d-${item.workRjcode}-${code}`" class="font-mono text-slate-700">{{ code }}</span>
+                          <span v-for="code in item.sourceCompare.dlsite.all_rjcodes" :key="`d-${item.workRjcode}-${code}`" class="compare-source-code">{{ code }}</span>
                         </div>
-                        <span v-else class="text-slate-400 scale-90">—</span>
+                        <span v-else class="compare-source-empty">—</span>
                       </div>
                       
-                      <div class="w-px h-6 bg-slate-200/60"></div>
+                      <div class="compare-source-divider"></div>
 
                       <!-- ASMR.ONE -->
                       <div class="flex flex-col items-center gap-1 w-20">
                         <div v-if="item.sourceCompare.asmr_one.primary_rjcode" class="flex flex-col items-center">
-                          <span class="font-mono text-slate-700">{{ item.sourceCompare.asmr_one.primary_rjcode }}</span>
-                          <span v-if="item.sourceCompare.asmr_one.primaryBadge" class="inline-flex items-center px-1 py-0.5 rounded text-[9px] font-bold leading-none mt-0.5" :class="[
-                            item.sourceCompare.asmr_one.primaryBadge === '简中' ? 'text-sky-600 bg-sky-50 border border-sky-100' :
-                            item.sourceCompare.asmr_one.primaryBadge === '繁中' ? 'text-violet-600 bg-violet-50 border border-violet-100' :
-                            item.sourceCompare.asmr_one.primaryBadge === '原作' ? 'text-slate-600 bg-slate-100 border border-slate-200' :
-                            'text-slate-500 bg-slate-50 border border-slate-200'
-                          ]">{{ item.sourceCompare.asmr_one.primaryBadge }}</span>
+                          <span class="compare-source-code">{{ item.sourceCompare.asmr_one.primary_rjcode }}</span>
+                          <span v-if="item.sourceCompare.asmr_one.primaryBadge" class="compare-source-badge mt-0.5" :class="getVariantBadgeClass(item.sourceCompare.asmr_one.primaryBadge)">{{ item.sourceCompare.asmr_one.primaryBadge }}</span>
                         </div>
-                        <span v-else class="text-slate-400 scale-90">—</span>
+                        <span v-else class="compare-source-empty">—</span>
                       </div>
                     </div>
                   </div>
                 </div>
               </div>
               <div class="works-pager">
-                <el-pagination
+                <CirclePager
                   v-model:current-page="comparePage"
                   v-model:page-size="comparePageSize"
                   :page-sizes="comparePageSizes"
-                  layout="total, sizes, prev, pager, next, jumper"
                   :total="compareWorksFilteredCount"
-                  background
+                  label="对比项"
                 />
               </div>
             </el-tab-pane>
@@ -939,6 +923,7 @@ import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
 import BackgroundFloatingCard from '../components/common/BackgroundFloatingCard.vue'
+import CirclePager from '../components/circle/CirclePager.vue'
 import CircleWorksViewport from '../components/circle/CircleWorksViewport.vue'
 import { showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 
@@ -1271,9 +1256,9 @@ function handleCircleOwnedSynced(event) {
 }
 const uploadWorkbenchBackgroundActive = ref(false)
 const uploadWorkbenchRefreshing = ref(false)
-const worksPageSizes = [12, 24, 48, 96]
+const worksPageSizes = [10, 20, 50, 100]
 const comparePageSizes = [10, 20, 50, 100]
-const worksPageSize = ref(24)
+const worksPageSize = ref(10)
 const comparePageSize = ref(10)
 const missingPage = ref(1)
 const missingSort = ref('default') // 'default' | 'downloadable' | 'title'
@@ -1842,6 +1827,14 @@ function normalizeKikoeruTags(tags) {
   return normalized
 }
 
+function getVariantBadgeClass(label) {
+  const text = String(label || '').trim()
+  if (text === '简中') return 'is-simplified'
+  if (text === '繁中') return 'is-traditional'
+  if (text === '原作') return 'is-original'
+  return 'is-generic'
+}
+
 function flashChangedWorks(codes = []) {
   const normalized = [...new Set((codes || []).map(code => String(code || '').trim()).filter(Boolean))]
   if (!normalized.length) return
@@ -2072,7 +2065,7 @@ const downloadBackgroundCardProps = computed(() => ({
 }))
 const uploadBackgroundCardProps = computed(() => ({
   kind: 'upload',
-  tone: uploadBackgroundFailed.value ? 'amber' : 'emerald',
+  tone: uploadBackgroundFailed.value ? 'amber' : 'primary',
   title: uploadBackgroundCompleted.value
     ? '直接入库上传已完成'
     : uploadBackgroundFailed.value
@@ -2096,7 +2089,7 @@ const uploadBackgroundCardProps = computed(() => ({
   detailText: activeBackgroundUploadTask.value?.current_step || '隐藏后继续保留上传队列和进度。',
   actions: [
     { key: 'close', label: '关闭' },
-    { key: 'resume', label: '恢复工作台', variant: 'emerald' }
+    { key: 'resume', label: '恢复工作台', variant: 'primary' }
   ]
 }))
 const indexJobStatusText = computed(() => {
@@ -3890,15 +3883,156 @@ function getUploadBackgroundTargetLabel(task) {
 
 <style scoped>
 .circle-page {
+  --circle-page-bg: transparent;
+  --circle-surface: #ffffff;
+  --circle-surface-soft: #f8fafc;
+  --circle-surface-muted: rgba(248, 250, 252, 0.86);
+  --circle-surface-elevated: rgba(255, 255, 255, 0.96);
+  --circle-field-bg: #ffffff;
+  --circle-hover-bg: #f1f5f9;
+  --circle-selected-bg: #eff6ff;
+  --circle-selected-strong-bg: #0f172a;
+  --circle-border: rgba(15, 23, 42, 0.12);
+  --circle-border-soft: #e2e8f0;
+  --circle-border-strong: #94a3b8;
+  --circle-text: #334155;
+  --circle-text-strong: #111827;
+  --circle-text-muted: #64748b;
+  --circle-text-subtle: #94a3b8;
+  --circle-placeholder: #94a3b8;
+  --circle-primary: #2563eb;
+  --circle-primary-soft: #eff6ff;
+  --circle-success: #059669;
+  --circle-success-soft: #ecfdf5;
+  --circle-danger: #dc2626;
+  --circle-danger-soft: #fef2f2;
+  --circle-warning: #d97706;
+  --circle-warning-soft: #fffbeb;
+  --circle-orange: #ea580c;
+  --circle-orange-soft: rgba(255, 248, 240, 0.95);
+  --circle-violet: #7e22ce;
+  --circle-violet-soft: #faf5ff;
+  --circle-sky: #0284c7;
+  --circle-sky-soft: #f0f9ff;
+  --circle-indigo: #4f46e5;
+  --circle-indigo-soft: #eef2ff;
+  --circle-rose: #e11d48;
+  --circle-rose-soft: #fff1f2;
+  --circle-tag-primary: #2563eb;
+  --circle-tag-primary-soft: #eff6ff;
+  --circle-tag-success: #059669;
+  --circle-tag-success-soft: #ecfdf5;
+  --circle-tag-danger: #dc2626;
+  --circle-tag-danger-soft: #fef2f2;
+  --circle-tag-warning: #d97706;
+  --circle-tag-warning-soft: #fffbeb;
+  --circle-tag-orange: #ea580c;
+  --circle-tag-orange-soft: rgba(255, 248, 240, 0.95);
+  --circle-tag-violet: #7e22ce;
+  --circle-tag-violet-soft: #faf5ff;
+  --circle-tag-sky: #0284c7;
+  --circle-tag-sky-soft: #f0f9ff;
+  --circle-tag-indigo: #4f46e5;
+  --circle-tag-indigo-soft: #eef2ff;
+  --circle-tag-rose: #e11d48;
+  --circle-tag-rose-soft: #fff1f2;
+  --circle-shadow-soft: 0 1px 2px rgba(15, 23, 42, 0.04), 0 6px 16px -10px rgba(15, 23, 42, 0.10);
+  --circle-shadow-lift: 0 8px 18px rgba(15, 23, 42, 0.08);
+  --circle-work-card-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(248, 251, 255, 0.94) 100%);
+  --circle-work-card-hover-bg: linear-gradient(180deg, rgba(255, 255, 255, 1) 0%, rgba(246, 250, 255, 0.98) 100%);
+  --circle-work-card-selected-bg: radial-gradient(circle at top right, rgba(37, 99, 235, 0.08), transparent 38%), linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(244, 248, 255, 0.98) 100%);
+  --circle-work-card-border: rgba(148, 163, 184, 0.22);
+  --circle-work-card-hover-border: rgba(52, 120, 246, 0.28);
+  --circle-work-card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.88), 0 8px 20px rgba(15, 23, 42, 0.045);
+  --circle-work-card-hover-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92), 0 14px 30px rgba(38, 74, 134, 0.12);
+  --circle-work-cover-bg: linear-gradient(135deg, rgba(241, 245, 249, 0.96), rgba(248, 250, 252, 0.82));
+  --circle-chip-bg: rgba(248, 250, 252, 0.72);
+  --circle-chip-border: rgba(203, 213, 225, 0.72);
+  --circle-label-surface: rgba(248, 250, 252, 0.82);
+  --circle-label-border: rgba(203, 213, 225, 0.72);
+  --circle-label-shadow: none;
   display: flex;
   flex-direction: column;
   gap: 0;
   padding: 0;
-  background: transparent;
+  color: var(--circle-text);
+  background: var(--circle-page-bg);
   min-height: 0;
   height: 100%;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+:global(html.kikoerumanager-dark .circle-page),
+:global(body.kikoerumanager-dark .circle-page) {
+  --circle-page-bg: linear-gradient(180deg, #121316 0%, #0c0d10 100%);
+  --circle-surface: #17191d;
+  --circle-surface-soft: #202226;
+  --circle-surface-muted: #25282d;
+  --circle-surface-elevated: rgba(32, 34, 38, 0.94);
+  --circle-field-bg: #101114;
+  --circle-hover-bg: #262a30;
+  --circle-selected-bg: rgba(255, 255, 255, 0.12);
+  --circle-selected-strong-bg: linear-gradient(180deg, #56575e 0%, #3a3b40 100%);
+  --circle-border: rgba(255, 255, 255, 0.12);
+  --circle-border-soft: rgba(255, 255, 255, 0.10);
+  --circle-border-strong: rgba(148, 163, 184, 0.36);
+  --circle-text: rgba(244, 244, 245, 0.88);
+  --circle-text-strong: #ffffff;
+  --circle-text-muted: rgba(212, 212, 216, 0.68);
+  --circle-text-subtle: rgba(161, 161, 170, 0.62);
+  --circle-placeholder: rgba(161, 161, 170, 0.62);
+  --circle-primary: #d4d4d8;
+  --circle-primary-soft: rgba(255, 255, 255, 0.075);
+  --circle-success: #d4d4d8;
+  --circle-success-soft: rgba(255, 255, 255, 0.075);
+  --circle-danger: #fda4af;
+  --circle-danger-soft: rgba(244, 63, 94, 0.09);
+  --circle-warning: #fcd34d;
+  --circle-warning-soft: rgba(245, 158, 11, 0.10);
+  --circle-orange: #fdba74;
+  --circle-orange-soft: rgba(249, 115, 22, 0.10);
+  --circle-violet: #d8b4fe;
+  --circle-violet-soft: rgba(168, 85, 247, 0.10);
+  --circle-sky: #7dd3fc;
+  --circle-sky-soft: rgba(14, 165, 233, 0.10);
+  --circle-indigo: #a5b4fc;
+  --circle-indigo-soft: rgba(99, 102, 241, 0.10);
+  --circle-rose: #fda4af;
+  --circle-rose-soft: rgba(244, 63, 94, 0.09);
+  --circle-tag-primary: #60a5fa;
+  --circle-tag-primary-soft: rgba(59, 130, 246, 0.13);
+  --circle-tag-success: #34d399;
+  --circle-tag-success-soft: rgba(16, 185, 129, 0.13);
+  --circle-tag-danger: #fb7185;
+  --circle-tag-danger-soft: rgba(244, 63, 94, 0.12);
+  --circle-tag-warning: #fbbf24;
+  --circle-tag-warning-soft: rgba(245, 158, 11, 0.13);
+  --circle-tag-orange: #fb923c;
+  --circle-tag-orange-soft: rgba(249, 115, 22, 0.13);
+  --circle-tag-violet: #c084fc;
+  --circle-tag-violet-soft: rgba(168, 85, 247, 0.13);
+  --circle-tag-sky: #38bdf8;
+  --circle-tag-sky-soft: rgba(14, 165, 233, 0.13);
+  --circle-tag-indigo: #a5b4fc;
+  --circle-tag-indigo-soft: rgba(99, 102, 241, 0.13);
+  --circle-tag-rose: #fb7185;
+  --circle-tag-rose-soft: rgba(244, 63, 94, 0.12);
+  --circle-shadow-soft: 0 14px 32px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --circle-shadow-lift: 0 18px 38px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --circle-work-card-bg: linear-gradient(180deg, #202226 0%, #17191d 100%);
+  --circle-work-card-hover-bg: linear-gradient(180deg, #252a30 0%, #191b20 100%);
+  --circle-work-card-selected-bg: radial-gradient(circle at top right, rgba(255, 255, 255, 0.12), transparent 38%), linear-gradient(180deg, #24282e 0%, #17191d 100%);
+  --circle-work-card-border: rgba(255, 255, 255, 0.12);
+  --circle-work-card-hover-border: rgba(255, 255, 255, 0.24);
+  --circle-work-card-shadow: 0 10px 24px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --circle-work-card-hover-shadow: 0 16px 34px rgba(0, 0, 0, 0.30), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --circle-work-cover-bg: linear-gradient(135deg, #111214, #23262b);
+  --circle-chip-bg: rgba(255, 255, 255, 0.045);
+  --circle-chip-border: rgba(255, 255, 255, 0.09);
+  --circle-label-surface: rgba(255, 255, 255, 0.045);
+  --circle-label-border: rgba(255, 255, 255, 0.10);
+  --circle-label-shadow: none;
 }
 
 .circle-works-loading-state {
@@ -4562,7 +4696,7 @@ function getUploadBackgroundTargetLabel(task) {
   left: 8px;
   top: 50%;
   transform: translateY(-50%);
-  color: rgb(148 163 184);
+  color: var(--circle-text-subtle, rgb(148 163 184));
   z-index: 1;
   pointer-events: none;
 }
@@ -4570,24 +4704,27 @@ function getUploadBackgroundTargetLabel(task) {
   min-height: 28px;
   min-width: 240px;
   border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 0 0 1px rgb(226 232 240) inset, 0 1px 2px rgba(15, 23, 42, 0.04);
+  --el-input-bg-color: var(--circle-field-bg, #fff);
+  --el-input-text-color: var(--circle-text-strong, rgb(30 41 59));
+  --el-input-placeholder-color: var(--circle-placeholder, rgb(148 163 184));
+  background: var(--circle-field-bg, #fff);
+  box-shadow: 0 0 0 1px var(--circle-border-soft, rgb(226 232 240)) inset, 0 1px 2px rgba(15, 23, 42, 0.04);
   padding: 0 8px 0 26px;
   transition: box-shadow 0.3s ease;
 }
 .hero-search-input :deep(.el-input__wrapper:hover) {
-  box-shadow: 0 0 0 1px rgb(203 213 225) inset, 0 1px 2px rgba(15, 23, 42, 0.04);
+  box-shadow: 0 0 0 1px var(--circle-border-strong, rgb(203 213 225)) inset, 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 .hero-search-input :deep(.el-input__wrapper.is-focus) {
-  box-shadow: 0 0 0 1px rgb(148 163 184) inset, 0 0 0 3px rgb(241 245 249);
+  box-shadow: 0 0 0 1px var(--circle-primary, rgb(148 163 184)) inset, 0 0 0 3px color-mix(in srgb, var(--circle-primary, #2563eb) 14%, transparent);
 }
 .hero-search-input :deep(.el-input__inner) {
   height: 26px;
   font-size: 11.5px;
-  color: rgb(30 41 59);
+  color: var(--circle-text-strong, rgb(30 41 59));
 }
 .hero-search-input :deep(.el-input__inner::placeholder) {
-  color: rgb(148 163 184);
+  color: var(--circle-placeholder, rgb(148 163 184));
 }
 .hero-btn {
   height: 28px;
@@ -4601,28 +4738,32 @@ function getUploadBackgroundTargetLabel(task) {
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .hero-btn-primary {
-  background: rgb(15 23 42);
+  --el-button-text-color: #fff;
+  --el-button-hover-text-color: #fff;
+  --el-button-active-text-color: #fff;
+  background: var(--circle-selected-strong-bg, rgb(15 23 42));
   color: #fff;
-  border: 1px solid rgb(15 23 42);
+  border: 1px solid color-mix(in srgb, var(--circle-text-strong, rgb(15 23 42)) 70%, transparent);
   box-shadow: 0 2px 6px -2px rgba(15, 23, 42, 0.35);
 }
 .hero-btn-primary:hover:not(.is-disabled):not(:disabled) {
-  background: rgb(30 41 59);
+  background: var(--circle-selected-strong-bg, rgb(30 41 59));
+  filter: brightness(1.08);
   transform: translateY(-1px);
 }
 .hero-btn-primary:active:not(.is-disabled):not(:disabled) {
   transform: translateY(0) scale(0.96);
 }
 .hero-btn-secondary {
-  background: #fff;
-  color: rgb(51 65 85);
-  border: 1px solid rgb(226 232 240);
+  background: var(--circle-surface, #fff);
+  color: var(--circle-text, rgb(51 65 85));
+  border: 1px solid var(--circle-border-soft, rgb(226 232 240));
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 .hero-btn-secondary:hover:not(.is-disabled):not(:disabled) {
-  background: rgb(248 250 252);
-  border-color: rgb(203 213 225);
-  color: rgb(15 23 42);
+  background: var(--circle-hover-bg, rgb(248 250 252));
+  border-color: var(--circle-border-strong, rgb(203 213 225));
+  color: var(--circle-text-strong, rgb(15 23 42));
   transform: translateY(-1px);
   box-shadow: 0 4px 10px -4px rgba(15, 23, 42, 0.18);
 }
@@ -4630,26 +4771,26 @@ function getUploadBackgroundTargetLabel(task) {
   transform: translateY(0) scale(0.96);
 }
 .hero-btn-email {
-  background: linear-gradient(135deg, #e0f2fe 0%, #f0fdf4 100%);
-  color: #0369a1;
-  border: 1px solid #bae6fd;
-  box-shadow: 0 1px 3px rgba(3, 105, 161, 0.08);
+  background: var(--circle-surface, #ffffff);
+  color: var(--circle-text, rgb(51 65 85));
+  border: 1px solid var(--circle-border-soft, rgb(226 232 240));
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
   display: flex;
   align-items: center;
 }
 .hero-btn-email:hover:not(.is-disabled):not(:disabled) {
-  background: linear-gradient(135deg, #bae6fd 0%, #bbf7d0 100%);
-  border-color: #7dd3fc;
-  color: #075985;
+  background: var(--circle-hover-bg, rgb(248 250 252));
+  border-color: var(--circle-border-strong, rgb(203 213 225));
+  color: var(--circle-text-strong, rgb(15 23 42));
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px -4px rgba(3, 105, 161, 0.22);
+  box-shadow: 0 4px 10px -4px rgba(15, 23, 42, 0.18);
 }
 .hero-btn-email:active:not(.is-disabled):not(:disabled) {
   transform: translateY(0) scale(0.96);
 }
 .sidebar-refresh-button {
   font-weight: 600;
-  color: #6b7280;
+  color: var(--circle-text-muted, #6b7280);
   font-size: 12px;
 }
 
@@ -4672,10 +4813,10 @@ function getUploadBackgroundTargetLabel(task) {
   height: 28px;
   min-width: 52px;
   padding: 0 12px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--circle-border-soft, #e2e8f0);
   border-radius: 999px;
-  background: #ffffff;
-  color: #334155;
+  background: var(--circle-surface, #ffffff);
+  color: var(--circle-text, #334155);
   font-size: 12px;
   font-weight: 700;
   line-height: 1;
@@ -4686,10 +4827,10 @@ function getUploadBackgroundTargetLabel(task) {
 
 .sidebar-filter-chip:hover {
   transform: translateY(-2px) scale(1.02);
-  border-color: #cbd5e1;
-  background: #f8fafc;
-  color: #0f172a;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+  border-color: var(--circle-border-strong, #cbd5e1);
+  background: var(--circle-hover-bg, #f8fafc);
+  color: var(--circle-text-strong, #0f172a);
+  box-shadow: var(--circle-shadow-lift, 0 8px 18px rgba(15, 23, 42, 0.08));
 }
 
 .sidebar-filter-chip:active {
@@ -4697,23 +4838,23 @@ function getUploadBackgroundTargetLabel(task) {
 }
 
 .sidebar-filter-chip.active {
-  border-color: #93c5fd;
-  background: #eff6ff;
-  color: #1d4ed8;
-  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.08), inset 0 0 0 1px rgba(147, 197, 253, 0.35);
+  border-color: color-mix(in srgb, var(--circle-primary, #1d4ed8) 44%, transparent);
+  background: var(--circle-selected-bg, #eff6ff);
+  color: var(--circle-primary, #1d4ed8);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--circle-primary, #1d4ed8) 14%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--circle-primary, #1d4ed8) 22%, transparent);
 }
 
 .sidebar-filter-chip.new-work.active {
-  border-color: rgba(249, 115, 22, 0.5);
-  background: rgba(255, 248, 240, 0.95);
-  color: #ea580c;
+  border-color: color-mix(in srgb, var(--circle-tag-orange, #ea580c) 50%, transparent);
+  background: var(--circle-tag-orange-soft, rgba(255, 248, 240, 0.95));
+  color: var(--circle-tag-orange, #ea580c);
   box-shadow: 0 1px 2px rgba(249, 115, 22, 0.1), inset 0 0 0 1px rgba(249, 115, 22, 0.2);
 }
 
 .sidebar-filter-chip.new-work:not(.active):hover {
-  border-color: rgba(249, 115, 22, 0.3);
-  background: rgba(255, 248, 240, 0.6);
-  color: #ea580c;
+  border-color: color-mix(in srgb, var(--circle-tag-orange, #ea580c) 34%, transparent);
+  background: color-mix(in srgb, var(--circle-tag-orange-soft, rgba(255, 248, 240, 0.6)) 72%, transparent);
+  color: var(--circle-tag-orange, #ea580c);
 }
 
 .sidebar-sort-row {
@@ -4724,7 +4865,7 @@ function getUploadBackgroundTargetLabel(task) {
 
 .sidebar-sort-label {
   flex-shrink: 0;
-  color: #64748b;
+  color: var(--circle-text-muted, #64748b);
   font-size: 12px;
   font-weight: 700;
 }
@@ -4741,9 +4882,9 @@ function getUploadBackgroundTargetLabel(task) {
   padding: 14px 20px 12px;
   margin: 12px 24px;
   border-radius: 10px;
-  border: 1px solid #e5e7eb;
-  background: #fff;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+  border: 1px solid var(--circle-border-soft, #e5e7eb);
+  background: var(--circle-surface, #fff);
+  box-shadow: var(--circle-shadow-soft, 0 1px 4px rgba(0,0,0,0.05));
 }
 .index-progress-head {
   min-width: 0;
@@ -4772,21 +4913,21 @@ function getUploadBackgroundTargetLabel(task) {
 .refresh-progress-card {
   margin: -1px -1px 12px;
   border-radius: 8px 8px 0 0;
-  border: 1px solid #e5e7eb;
-  background: #fafafa;
+  border: 1px solid var(--circle-border-soft, #e5e7eb);
+  background: var(--circle-surface-soft, #fafafa);
   max-height: 156px;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 10px 16px 9px;
   scrollbar-width: thin;
-  scrollbar-color: #cbd5e1 transparent;
+  scrollbar-color: var(--circle-border-strong, #cbd5e1) transparent;
 }
 .refresh-progress-card::-webkit-scrollbar {
   width: 6px;
 }
 .refresh-progress-card::-webkit-scrollbar-thumb {
   border-radius: 999px;
-  background: #cbd5e1;
+  background: var(--circle-border-strong, #cbd5e1);
 }
 .refresh-progress-card .index-progress-head {
   align-items: center;
@@ -4826,13 +4967,13 @@ function getUploadBackgroundTargetLabel(task) {
 .index-progress-title {
   font-size: 14px;
   font-weight: 600;
-  color: #111827;
+  color: var(--circle-text-strong, #111827);
 }
 .index-progress-subtitle {
   min-width: 0;
   margin-top: 2px;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--circle-text-muted, #6b7280);
   overflow-wrap: anywhere;
 }
 .index-progress-status,
@@ -4847,19 +4988,19 @@ function getUploadBackgroundTargetLabel(task) {
   font-weight: 500;
 }
 .index-progress-status {
-  background: #eff6ff;
-  color: #2563eb;
-  border: 1px solid #dbeafe;
+  background: var(--circle-tag-primary-soft, #eff6ff);
+  color: var(--circle-tag-primary, #2563eb);
+  border: 1px solid color-mix(in srgb, var(--circle-tag-primary, #2563eb) 22%, transparent);
 }
 .index-progress-status.completed {
-  background: #ecfdf5;
-  color: #059669;
-  border-color: #d1fae5;
+  background: var(--circle-tag-success-soft, #ecfdf5);
+  color: var(--circle-tag-success, #059669);
+  border-color: color-mix(in srgb, var(--circle-tag-success, #059669) 22%, transparent);
 }
 .index-progress-status.failed {
-  background: #fef2f2;
-  color: #dc2626;
-  border-color: #fecaca;
+  background: var(--circle-tag-danger-soft, #fef2f2);
+  color: var(--circle-tag-danger, #dc2626);
+  border-color: color-mix(in srgb, var(--circle-tag-danger, #dc2626) 22%, transparent);
 }
 .index-progress-meta {
   display: flex;
@@ -4867,13 +5008,13 @@ function getUploadBackgroundTargetLabel(task) {
   gap: 6px;
 }
 .progress-meta-pill {
-  background: #ffffff;
-  color: #334155;
-  border: 1px solid #e5e7eb;
+  background: var(--circle-surface-elevated, #ffffff);
+  color: var(--circle-text, #334155);
+  border: 1px solid var(--circle-border-soft, #e5e7eb);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 .progress-meta-pill svg {
-  color: #64748b;
+  color: var(--circle-text-muted, #64748b);
   stroke-width: 2.2;
   transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
@@ -4881,47 +5022,47 @@ function getUploadBackgroundTargetLabel(task) {
   transform: scale(1.14) rotate(-4deg);
 }
 .progress-meta-pill.time svg {
-  color: #64748b;
+  color: var(--circle-text-muted, #64748b);
 }
 .progress-meta-pill.total svg,
 .progress-meta-pill.merged svg,
 .progress-meta-pill.current svg {
-  color: #475569;
+  color: var(--circle-text, #475569);
 }
 .progress-meta-pill.batch svg {
-  color: #2563eb;
+  color: var(--circle-tag-primary, #2563eb);
 }
 .progress-meta-pill.local svg {
-  color: #0f766e;
+  color: var(--circle-tag-success, #0f766e);
 }
 .progress-meta-pill.kikoeru svg {
-  color: #7c3aed;
+  color: var(--circle-tag-violet, #7c3aed);
 }
 .progress-meta-pill.dlsite svg {
-  color: #0284c7;
+  color: var(--circle-tag-sky, #0284c7);
 }
 .progress-meta-pill.changed svg {
-  color: #f59e0b;
+  color: var(--circle-tag-warning, #f59e0b);
 }
 .progress-meta-pill.ok {
-  background: #ffffff;
-  color: #334155;
-  border-color: #d1fae5;
+  background: var(--circle-surface-elevated, #ffffff);
+  color: var(--circle-text, #334155);
+  border-color: color-mix(in srgb, var(--circle-tag-success, #10b981) 24%, transparent);
 }
 .progress-meta-pill.ok svg {
-  color: #10b981;
+  color: var(--circle-tag-success, #10b981);
 }
 .progress-meta-pill.warn {
-  background: #ffffff;
-  color: #334155;
-  border-color: #fde68a;
+  background: var(--circle-surface-elevated, #ffffff);
+  color: var(--circle-text, #334155);
+  border-color: color-mix(in srgb, var(--circle-tag-warning, #f59e0b) 30%, transparent);
 }
 .progress-meta-pill.warn svg {
-  color: #ef4444;
+  color: var(--circle-tag-danger, #ef4444);
 }
 .index-progress-error {
   font-size: 12px;
-  color: #dc2626;
+  color: var(--circle-tag-danger, #dc2626);
   line-height: 1.5;
 }
 .refresh-progress-log-list {
@@ -4939,29 +5080,29 @@ function getUploadBackgroundTargetLabel(task) {
   align-items: flex-start;
   padding: 6px 10px;
   border-radius: 6px;
-  background: #f9fafb;
-  border: 1px solid #f3f4f6;
-  color: #4b5563;
+  background: var(--circle-surface-muted, #f9fafb);
+  border: 1px solid var(--circle-border-soft, #f3f4f6);
+  color: var(--circle-text, #4b5563);
   font-size: 12px;
 }
 .refresh-progress-log-item.success {
-  background: #ecfdf5;
-  border-color: #d1fae5;
-  color: #065f46;
+  background: var(--circle-tag-success-soft, #ecfdf5);
+  border-color: color-mix(in srgb, var(--circle-tag-success, #059669) 24%, transparent);
+  color: var(--circle-tag-success, #065f46);
 }
 .refresh-progress-log-item.warning {
-  background: #fffbeb;
-  border-color: #fde68a;
-  color: #92400e;
+  background: var(--circle-tag-warning-soft, #fffbeb);
+  border-color: color-mix(in srgb, var(--circle-tag-warning, #d97706) 28%, transparent);
+  color: var(--circle-tag-warning, #92400e);
 }
 .refresh-progress-log-item.error {
-  background: #fef2f2;
-  border-color: #fecaca;
-  color: #991b1b;
+  background: var(--circle-tag-danger-soft, #fef2f2);
+  border-color: color-mix(in srgb, var(--circle-tag-danger, #dc2626) 24%, transparent);
+  color: var(--circle-tag-danger, #991b1b);
 }
 .refresh-progress-log-time {
   flex: 0 0 auto;
-  color: #9ca3af;
+  color: var(--circle-text-subtle, #9ca3af);
   font-variant-numeric: tabular-nums;
 }
 .refresh-progress-log-message {
@@ -4983,12 +5124,10 @@ function getUploadBackgroundTargetLabel(task) {
 }
 .sidebar-card,
 .circle-main {
-  background: #fff;
+  background: var(--circle-surface, #fff);
   border-radius: 14px;
-  border: 1px solid rgba(15, 23, 42, 0.12);
-  box-shadow:
-    0 1px 2px rgba(15, 23, 42, 0.04),
-    0 6px 16px -10px rgba(15, 23, 42, 0.10);
+  border: 1px solid var(--circle-border, rgba(15, 23, 42, 0.12));
+  box-shadow: var(--circle-shadow-soft, 0 1px 2px rgba(15, 23, 42, 0.04), 0 6px 16px -10px rgba(15, 23, 42, 0.10));
 }
 .circle-main {
   flex: 1;
@@ -5005,7 +5144,7 @@ function getUploadBackgroundTargetLabel(task) {
   align-items: center;
   justify-content: center;
   padding-top: 0;
-  color: #94a3b8;
+  color: var(--circle-text-subtle, #94a3b8);
 }
 .sidebar-card {
   padding: 20px 16px;
@@ -5031,12 +5170,12 @@ function getUploadBackgroundTargetLabel(task) {
 .sidebar-title {
   font-size: 13px;
   font-weight: 600;
-  color: #111827;
+  color: var(--circle-text-strong, #111827);
 }
 .toolbar-title {
   font-size: 14px;
   font-weight: 600;
-  color: #111827;
+  color: var(--circle-text-strong, #111827);
 }
 .toolbar-card {
   padding: 14px 18px 10px;
@@ -5044,11 +5183,11 @@ function getUploadBackgroundTargetLabel(task) {
   align-content: start;
   gap: 6px;
   min-height: 94px;
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid var(--circle-border-soft, #f3f4f6);
 }
 .toolbar-subtitle {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--circle-text-subtle, #9ca3af);
   margin-top: 2px;
 }
 .toolbar-metrics {
@@ -5088,20 +5227,20 @@ function getUploadBackgroundTargetLabel(task) {
   gap: 6px;
   height: 26px;
   padding: 0 12px;
-  border-radius: 8px;
+  border-radius: 7px;
   font-size: 11px;
   font-weight: 700;
-  background: #ffffff;
-  color: #475569;
-  border: 1px solid #e2e8f0;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  background: var(--circle-label-surface, var(--circle-surface-elevated, #ffffff));
+  color: var(--circle-text, #475569);
+  border: 1px solid var(--circle-label-border, var(--circle-border-soft, #e2e8f0));
+  box-shadow: var(--circle-label-shadow, none);
   cursor: default;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .metric-pill:hover {
-  transform: translateY(-2px) scale(1.02);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-  border-color: #cbd5e1;
+  transform: translateY(-1px);
+  box-shadow: var(--circle-label-shadow, none);
+  border-color: var(--circle-border-strong, #cbd5e1);
 }
 .metric-pill svg {
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -5110,73 +5249,73 @@ function getUploadBackgroundTargetLabel(task) {
   transform: scale(1.2) rotate(5deg);
 }
 .metric-pill.owned {
-  background: #f0f7ff;
-  color: #2563eb;
-  border-color: #dbeafe;
+  color: var(--circle-tag-primary, #2563eb);
+  background: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 8%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 24%, transparent);
 }
 .metric-pill.owned:hover {
-  background: #e0efff;
-  border-color: #bfdbfe;
-  color: #1d4ed8;
+  background: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 12%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 36%, transparent);
+  color: var(--circle-tag-primary, #1d4ed8);
 }
 .metric-pill.warn {
-  background: #fffbeb;
-  color: #d97706;
-  border-color: #fef3c7;
+  color: var(--circle-tag-warning, #d97706);
+  background: color-mix(in srgb, var(--circle-tag-warning, #d97706) 9%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-warning, #d97706) 24%, transparent);
 }
 .metric-pill.warn:hover {
-  background: #fef3c7;
-  border-color: #fde68a;
-  color: #b45309;
+  background: color-mix(in srgb, var(--circle-tag-warning, #d97706) 13%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-warning, #d97706) 36%, transparent);
+  color: var(--circle-tag-warning, #b45309);
 }
 .metric-pill.ok {
-  background: #f0fdf4;
-  color: #16a34a;
-  border-color: #dcfce7;
+  color: var(--circle-tag-success, #16a34a);
+  background: color-mix(in srgb, var(--circle-tag-success, #16a34a) 9%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-success, #16a34a) 24%, transparent);
 }
 .metric-pill.ok:hover {
-  background: #dcfce7;
-  border-color: #bbf7d0;
-  color: #15803d;
+  background: color-mix(in srgb, var(--circle-tag-success, #16a34a) 13%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-success, #16a34a) 36%, transparent);
+  color: var(--circle-tag-success, #15803d);
 }
 .metric-pill.muted {
-  background: #f8fafc;
-  color: #64748b;
-  border-color: #f1f5f9;
+  color: var(--circle-text-muted, #64748b);
+  background: var(--circle-label-surface, var(--circle-surface-soft, #f8fafc));
+  border-color: var(--circle-border-soft, #f1f5f9);
 }
 .metric-pill.muted:hover {
-  background: #f1f5f9;
-  border-color: #e2e8f0;
-  color: #475569;
+  background: var(--circle-hover-bg, #f1f5f9);
+  border-color: var(--circle-border-soft, #e2e8f0);
+  color: var(--circle-text, #475569);
 }
 .metric-pill.unreleased {
-  background: #eff6ff;
-  color: #2563eb;
-  border-color: rgba(52, 120, 246, 0.18);
+  color: var(--circle-tag-primary, #2563eb);
+  background: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 8%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 24%, transparent);
 }
 .metric-pill.unreleased:hover {
-  background: #dbeafe;
-  border-color: rgba(52, 120, 246, 0.30);
+  background: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 12%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 36%, transparent);
 }
 .metric-pill.bonus {
-  background: #faf5ff;
-  color: #7e22ce;
-  border-color: #e9d5ff;
-  box-shadow: 0 1px 4px rgba(126, 34, 206, 0.12);
+  color: var(--circle-tag-violet, #7e22ce);
+  background: color-mix(in srgb, var(--circle-tag-violet, #7e22ce) 8%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-violet, #7e22ce) 24%, transparent);
+  box-shadow: var(--circle-label-shadow, none);
 }
 .metric-pill.bonus:hover {
-  background: rgba(250, 245, 255, 0.90);
-  border-color: rgba(168, 85, 247, 0.24);
-  color: #7e22ce;
+  background: color-mix(in srgb, var(--circle-tag-violet, #7e22ce) 12%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-violet, #7e22ce) 34%, transparent);
+  color: var(--circle-tag-violet, #7e22ce);
 }
 .metric-pill.new-work {
-  background: rgba(255, 248, 240, 0.9);
-  color: #ea580c;
-  border-color: rgba(249, 115, 22, 0.22);
+  color: var(--circle-tag-orange, #ea580c);
+  background: color-mix(in srgb, var(--circle-tag-orange, #ea580c) 8%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-orange, #ea580c) 24%, transparent);
 }
 .metric-pill.new-work:hover {
-  background: #fed7aa;
-  border-color: rgba(249, 115, 22, 0.35);
+  background: color-mix(in srgb, var(--circle-tag-orange, #ea580c) 12%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-orange, #ea580c) 36%, transparent);
 }
 .toolbar-right-actions {
   display: flex;
@@ -5194,20 +5333,20 @@ function getUploadBackgroundTargetLabel(task) {
   width: 100%;
   height: 32px;
   padding: 0 9px 0 11px;
-  border: 1px solid rgba(203, 213, 225, 0.9);
+  border: 1px solid var(--circle-border-soft, rgba(203, 213, 225, 0.9));
   border-radius: 13px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.94) 100%);
-  color: #334155;
+  background: var(--circle-surface-elevated, linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.94) 100%));
+  color: var(--circle-text, #334155);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    inset 0 1px 0 color-mix(in srgb, var(--circle-surface, #fff) 72%, transparent),
     0 1px 2px rgba(15, 23, 42, 0.035);
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .status-filter-trigger:hover {
   transform: translateY(-2px) scale(1.02);
-  border-color: rgba(148, 163, 184, 0.92);
-  background: #ffffff;
+  border-color: var(--circle-border-strong, rgba(148, 163, 184, 0.92));
+  background: var(--circle-hover-bg, #ffffff);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.96),
     0 8px 18px rgba(15, 23, 42, 0.075);
@@ -5216,11 +5355,11 @@ function getUploadBackgroundTargetLabel(task) {
   transform: scale(0.96);
 }
 .status-filter-trigger.is-open {
-  border-color: rgba(148, 163, 184, 0.96);
-  background: #ffffff;
+  border-color: var(--circle-border-strong, rgba(148, 163, 184, 0.96));
+  background: var(--circle-surface-elevated, #ffffff);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.96),
-    0 0 0 3px rgba(148, 163, 184, 0.13),
+    inset 0 1px 0 color-mix(in srgb, var(--circle-surface, #fff) 72%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--circle-primary, #94a3b8) 14%, transparent),
     0 8px 18px rgba(15, 23, 42, 0.075);
 }
 .status-filter-trigger__content {
@@ -5238,7 +5377,7 @@ function getUploadBackgroundTargetLabel(task) {
   right: 0;
   bottom: 0;
   width: 14px;
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.98) 100%);
+  background: linear-gradient(90deg, transparent 0%, var(--circle-surface-elevated, rgba(255, 255, 255, 0.98)) 100%);
   pointer-events: none;
 }
 .status-filter-trigger__tags {
@@ -5254,7 +5393,7 @@ function getUploadBackgroundTargetLabel(task) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: rgba(100, 116, 139, 0.82);
+  color: var(--circle-text-muted, rgba(100, 116, 139, 0.82));
   font-size: 12px;
   font-weight: 600;
 }
@@ -5268,9 +5407,9 @@ function getUploadBackgroundTargetLabel(task) {
   height: 20px;
   padding: 0 7px;
   border-radius: 6px;
-  background: rgba(241, 245, 249, 0.92);
-  border: 1px solid rgba(226, 232, 240, 0.86);
-  color: #334155;
+  background: var(--circle-surface-soft, rgba(241, 245, 249, 0.92));
+  border: 1px solid var(--circle-border-soft, rgba(226, 232, 240, 0.86));
+  color: var(--circle-text, #334155);
   font-size: 11px;
   font-weight: 600;
   line-height: 20px;
@@ -5285,24 +5424,24 @@ function getUploadBackgroundTargetLabel(task) {
   height: 20px;
   padding: 0 6px;
   border-radius: 999px;
-  background: rgba(241, 245, 249, 0.86);
-  color: #64748b;
+  background: var(--circle-surface-soft, rgba(241, 245, 249, 0.86));
+  color: var(--circle-text-muted, #64748b);
   font-size: 11px;
   font-weight: 700;
   line-height: 1;
 }
 .status-filter-trigger__caret {
   flex-shrink: 0;
-  color: #64748b;
+  color: var(--circle-text-muted, #64748b);
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .status-filter-trigger:hover .status-filter-trigger__caret {
-  color: #334155;
+  color: var(--circle-text, #334155);
   transform: translateY(-1px);
 }
 .status-filter-trigger__caret.is-open {
   transform: rotate(180deg);
-  color: #334155;
+  color: var(--circle-text, #334155);
 }
 .status-filter-option {
   display: flex;
@@ -5318,7 +5457,7 @@ function getUploadBackgroundTargetLabel(task) {
   white-space: nowrap;
   font-size: 13px;
   font-weight: 600;
-  color: #334155;
+  color: var(--circle-text, #334155);
 }
 .status-filter-option__meta {
   display: inline-flex;
@@ -5336,9 +5475,9 @@ function getUploadBackgroundTargetLabel(task) {
   height: 21px;
   padding: 0 7px;
   border-radius: 999px;
-  background: rgba(248, 250, 252, 0.72);
-  border: 1px solid rgba(226, 232, 240, 0.78);
-  color: #64748b;
+  background: var(--circle-surface-soft, rgba(248, 250, 252, 0.72));
+  border: 1px solid var(--circle-border-soft, rgba(226, 232, 240, 0.78));
+  color: var(--circle-text-muted, #64748b);
   font-size: 11px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -5347,13 +5486,22 @@ function getUploadBackgroundTargetLabel(task) {
 }
 .status-filter-option__check {
   flex-shrink: 0;
-  color: #64748b;
+  color: var(--circle-text-muted, #64748b);
   opacity: 0.82;
 }
 :global(.circle-status-filter-menu.app-dd-menu) {
+  --circle-surface: #ffffff;
+  --circle-surface-soft: #f8fafc;
+  --circle-hover-bg: #f1f5f9;
+  --circle-selected-bg: #f1f5f9;
+  --circle-border-soft: #e2e8f0;
+  --circle-border-strong: #94a3b8;
+  --circle-text: #334155;
+  --circle-text-strong: #0f172a;
+  --circle-text-muted: #64748b;
   padding: 6px;
   border-radius: 14px;
-  border-color: rgba(203, 213, 225, 0.92);
+  border-color: var(--circle-border-soft, rgba(203, 213, 225, 0.92));
   box-shadow:
     0 20px 42px -18px rgba(15, 23, 42, 0.28),
     0 8px 16px -12px rgba(15, 23, 42, 0.16);
@@ -5364,29 +5512,45 @@ function getUploadBackgroundTargetLabel(task) {
   border-radius: 10px;
 }
 :global(.circle-status-filter-menu .app-dd-item:hover) {
-  background: rgba(248, 250, 252, 0.98);
+  background: var(--circle-hover-bg, rgba(248, 250, 252, 0.98));
 }
 :global(.circle-status-filter-menu .app-dd-item.is-active) {
-  background: linear-gradient(90deg, rgba(248, 250, 252, 0.98) 0%, rgba(241, 245, 249, 0.58) 100%);
-  color: #0f172a;
+  background: var(--circle-selected-bg, linear-gradient(90deg, rgba(248, 250, 252, 0.98) 0%, rgba(241, 245, 249, 0.58) 100%));
+  color: var(--circle-text-strong, #0f172a);
   font-weight: 600;
 }
+:global(html.kikoerumanager-dark .circle-status-filter-menu.app-dd-menu),
+:global(body.kikoerumanager-dark .circle-status-filter-menu.app-dd-menu) {
+  --circle-surface: #17191d;
+  --circle-surface-soft: #202226;
+  --circle-hover-bg: #262a30;
+  --circle-selected-bg: #24252a;
+  --circle-border-soft: rgba(255, 255, 255, 0.12);
+  --circle-border-strong: rgba(148, 163, 184, 0.36);
+  --circle-text: rgba(244, 244, 245, 0.82);
+  --circle-text-strong: #f4f4f5;
+  --circle-text-muted: rgba(212, 212, 216, 0.66);
+}
 :global(.circle-status-filter-menu .app-dd-item.is-active:hover) {
-  background: linear-gradient(90deg, rgba(241, 245, 249, 0.98) 0%, rgba(226, 232, 240, 0.48) 100%);
+  background: var(--circle-hover-bg, linear-gradient(90deg, rgba(241, 245, 249, 0.98) 0%, rgba(226, 232, 240, 0.48) 100%));
+}
+:global(.circle-status-filter-menu .app-dd-item.is-active .status-filter-option__label),
+:global(.circle-status-filter-menu .app-dd-item.is-active .status-filter-option__check) {
+  color: var(--circle-text-strong, #0f172a);
 }
 :global(.circle-status-filter-menu .app-dd-item.is-active .status-filter-option__count) {
-  background: #ffffff;
-  border-color: rgba(203, 213, 225, 0.84);
-  color: #334155;
+  background: var(--circle-surface, #ffffff);
+  border-color: var(--circle-border-strong, rgba(203, 213, 225, 0.84));
+  color: var(--circle-text, #334155);
 }
 .filter-toggles {
   display: flex;
   align-items: center;
   gap: 4px;
-  background: #f1f5f9;
+  background: var(--circle-surface-soft, #f1f5f9);
   padding: 3px;
   border-radius: 10px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--circle-border-soft, #e2e8f0);
 }
 .filter-toggle-btn {
   display: flex;
@@ -5398,22 +5562,22 @@ function getUploadBackgroundTargetLabel(task) {
   border: none;
   border-radius: 7px;
   cursor: pointer;
-  color: #64748b;
+  color: var(--circle-text-muted, #64748b);
   font-size: 11px;
   font-weight: 600;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .filter-toggle-btn:hover {
-  color: #1e293b;
-  background: rgba(255, 255, 255, 0.5);
+  color: var(--circle-text-strong, #1e293b);
+  background: color-mix(in srgb, var(--circle-surface, #fff) 56%, transparent);
 }
 .filter-toggle-btn:active {
   transform: scale(0.96);
 }
 .filter-toggle-btn.active {
-  color: #1e293b;
-  background: #ffffff;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+  color: var(--circle-text-strong, #1e293b);
+  background: var(--circle-surface, #ffffff);
+  box-shadow: var(--circle-shadow-soft, 0 2px 6px rgba(0, 0, 0, 0.06));
 }
 
 .release-sort-button {
@@ -5422,10 +5586,10 @@ function getUploadBackgroundTargetLabel(task) {
   gap: 6px;
   height: 32px;
   padding: 0 12px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--circle-border-soft, #e2e8f0);
   border-radius: 10px;
-  background: #ffffff;
-  color: #334155;
+  background: var(--circle-surface-elevated, #ffffff);
+  color: var(--circle-text, #334155);
   font-size: 12px;
   font-weight: 700;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
@@ -5434,9 +5598,9 @@ function getUploadBackgroundTargetLabel(task) {
 }
 .release-sort-button:hover {
   transform: translateY(-2px) scale(1.02);
-  border-color: #bfdbfe;
-  color: #1d4ed8;
-  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.12);
+  border-color: color-mix(in srgb, var(--circle-primary, #2563eb) 30%, transparent);
+  color: var(--circle-primary, #1d4ed8);
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--circle-primary, #2563eb) 16%, transparent);
 }
 .release-sort-button:active {
   transform: scale(0.96);
@@ -5454,17 +5618,17 @@ function getUploadBackgroundTargetLabel(task) {
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .release-sort-icon.base {
-  color: #3b82f6;
+  color: var(--circle-primary, #3b82f6);
 }
 .release-sort-icon.hover {
   opacity: 0;
   transform: translateY(5px) scale(0.72) rotate(-16deg);
 }
 .release-sort-icon.hover.asc {
-  color: #10b981;
+  color: var(--circle-tag-success, #10b981);
 }
 .release-sort-icon.hover.desc {
-  color: #f97316;
+  color: var(--circle-tag-orange, #f97316);
 }
 .release-sort-button:hover .release-sort-icon.base {
   opacity: 0;
@@ -5478,10 +5642,10 @@ function getUploadBackgroundTargetLabel(task) {
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .release-sort-direction.asc {
-  color: #10b981;
+  color: var(--circle-tag-success, #10b981);
 }
 .release-sort-direction.desc {
-  color: #f97316;
+  color: var(--circle-tag-orange, #f97316);
 }
 .release-sort-button:hover .release-sort-direction {
   transform: translateY(-1px) scale(1.12);
@@ -5512,22 +5676,22 @@ function getUploadBackgroundTargetLabel(task) {
   padding: 10px 12px;
   border: 1px solid transparent;
   border-radius: 10px;
-  background: #fff;
+  background: var(--circle-surface-elevated, #fff);
   text-align: left;
   cursor: pointer;
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
 .circle-list-item:hover {
-  background: #ffffff;
-  border-color: #cbd5e1;
-  box-shadow: 0 8px 16px rgba(0,0,0,0.08);
+  background: var(--circle-hover-bg, #ffffff);
+  border-color: var(--circle-border-strong, #cbd5e1);
+  box-shadow: var(--circle-shadow-lift, 0 8px 16px rgba(0,0,0,0.08));
   transform: translateY(-3px);
 }
 .circle-list-item.active {
-  background: #eff6ff;
-  border-color: #3b82f6;
-  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
+  background: var(--circle-selected-bg, #eff6ff);
+  border-color: var(--circle-primary, #3b82f6);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--circle-primary, #3b82f6) 22%, transparent);
   transform: translateY(-1px);
 }
 .circle-list-item:active {
@@ -5549,7 +5713,7 @@ function getUploadBackgroundTargetLabel(task) {
   gap: 6px;
   font-size: 14px;
   font-weight: 700;
-  color: #111827;
+  color: var(--circle-text-strong, #111827);
   line-height: 1.4;
   white-space: nowrap;
   overflow: hidden;
@@ -5567,16 +5731,17 @@ function getUploadBackgroundTargetLabel(task) {
   font-weight: 700;
   line-height: 1;
   letter-spacing: .08em;
-  color: #047857;
-  background: rgba(16, 185, 129, 0.08);
-  border: 1px solid rgba(16, 185, 129, 0.18);
+  color: var(--circle-tag-orange, #ea580c);
+  background: color-mix(in srgb, var(--circle-tag-orange, #ea580c) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--circle-tag-orange, #ea580c) 22%, transparent);
   flex-shrink: 0;
 }
 .circle-list-id {
   font-size: 11px;
   font-weight: 600;
-  color: #64748b;
-  background: #f1f5f9;
+  color: var(--circle-text-muted, #64748b);
+  background: color-mix(in srgb, var(--circle-surface-soft, #f1f5f9) 58%, transparent);
+  border: 1px solid var(--circle-border-soft, transparent);
   padding: 2px 6px;
   border-radius: 4px;
   flex-shrink: 0;
@@ -5605,17 +5770,18 @@ function getUploadBackgroundTargetLabel(task) {
   font-weight: 650;
   letter-spacing: .02em;
   line-height: 1;
-  border: 1px solid transparent;
+  border: 1px solid var(--circle-label-border, transparent);
+  background: var(--circle-label-surface, transparent);
 }
 .circle-list-tag.unreleased {
-  background: rgba(237, 244, 255, 0.85);
-  color: #2563eb;
-  border-color: rgba(52, 120, 246, 0.18);
+  background: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 8%, transparent);
+  color: var(--circle-tag-primary, #2563eb);
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 22%, transparent);
 }
 .circle-list-tag.new-work {
-  background: rgba(16, 185, 129, 0.07);
-  color: #047857;
-  border-color: rgba(16, 185, 129, 0.16);
+  background: color-mix(in srgb, var(--circle-tag-orange, #ea580c) 8%, transparent);
+  color: var(--circle-tag-orange, #ea580c);
+  border-color: color-mix(in srgb, var(--circle-tag-orange, #ea580c) 20%, transparent);
 }
 .circle-list-refresh-row {
   display: inline-flex;
@@ -5623,7 +5789,7 @@ function getUploadBackgroundTargetLabel(task) {
   gap: 3px;
   margin-top: 5px;
   font-size: 10px;
-  color: rgba(100, 116, 139, 0.78);
+  color: var(--circle-text-muted, rgba(100, 116, 139, 0.78));
   font-weight: 500;
 }
 .circle-list-counts {
@@ -5641,26 +5807,26 @@ function getUploadBackgroundTargetLabel(task) {
   font-size: 10px;
   font-weight: 500;
   line-height: 1.6;
-  background: #f3f4f6;
-  color: #6b7280;
+  background: var(--circle-surface-soft, #f3f4f6);
+  color: var(--circle-text-muted, #6b7280);
   border: none;
 }
 .circle-count-pill.owned {
-  background: #eff6ff;
-  color: #2563eb;
+  background: var(--circle-tag-primary-soft, #eff6ff);
+  color: var(--circle-tag-primary, #2563eb);
 }
 .circle-count-pill.dl {
-  background: #f0fdf4;
-  color: #16a34a;
+  background: var(--circle-tag-success-soft, #f0fdf4);
+  color: var(--circle-tag-success, #16a34a);
 }
 .circle-count-pill.warn {
-  background: #fef2f2;
-  color: #dc2626;
+  background: var(--circle-tag-danger-soft, #fef2f2);
+  color: var(--circle-tag-danger, #dc2626);
 }
 .circle-list-meta {
   margin-top: 6px;
   font-size: 10px;
-  color: #94a3b8;
+  color: var(--circle-text-subtle, #94a3b8);
   display: flex;
   justify-content: flex-end;
 }
@@ -5682,23 +5848,24 @@ function getUploadBackgroundTargetLabel(task) {
   flex-shrink: 0;
   min-width: 52px;
   padding: 3px 8px;
-  border-radius: 999px;
+  border-radius: 5px;
   font-size: 11px;
   font-weight: 700;
   line-height: 1;
-  border: 1px solid transparent;
+  border: 1px solid var(--circle-label-border, transparent);
+  background: var(--circle-label-surface, transparent);
 }
 
 .circle-list-status-pill.completed {
-  color: #047857;
-  background: rgba(236, 253, 245, 0.95);
-  border-color: rgba(110, 231, 183, 0.9);
+  color: var(--circle-tag-success, #047857);
+  background: color-mix(in srgb, var(--circle-tag-success, #10b981) 8%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-success, #10b981) 22%, transparent);
 }
 
 .circle-list-status-pill.incomplete {
-  color: #b91c1c;
-  background: rgba(254, 242, 242, 0.95);
-  border-color: rgba(252, 165, 165, 0.9);
+  color: var(--circle-tag-danger, #b91c1c);
+  background: color-mix(in srgb, var(--circle-tag-danger, #dc2626) 8%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-danger, #dc2626) 22%, transparent);
 }
 
 .circle-list-counts {
@@ -5716,7 +5883,7 @@ function getUploadBackgroundTargetLabel(task) {
   gap: 3px;
   font-size: 11px;
   font-weight: 600;
-  color: #374151;
+  color: var(--circle-text, #374151);
   line-height: 1;
 }
 
@@ -5729,10 +5896,10 @@ function getUploadBackgroundTargetLabel(task) {
   flex-shrink: 0;
 }
 
-.circle-stat-dot.total::before { background: #3b82f6; }
-.circle-stat-dot.owned::before { background: #10b981; }
-.circle-stat-dot.missing::before { background: #ef4444; }
-.circle-stat-dot.missing { color: #ef4444; }
+.circle-stat-dot.total::before { background: var(--circle-tag-primary, #3b82f6); }
+.circle-stat-dot.owned::before { background: var(--circle-tag-success, #10b981); }
+.circle-stat-dot.missing::before { background: var(--circle-tag-danger, #ef4444); }
+.circle-stat-dot.missing { color: var(--circle-tag-danger, #ef4444); }
 
 /* icon 版侧边栏统计（当前使用） */
 .circle-stat-item {
@@ -5743,7 +5910,9 @@ function getUploadBackgroundTargetLabel(task) {
   font-weight: 600;
   line-height: 1;
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: 5px;
+  border: 1px solid var(--circle-label-border, transparent);
+  background: var(--circle-label-surface, transparent);
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .circle-stat-item:hover {
@@ -5755,17 +5924,20 @@ function getUploadBackgroundTargetLabel(task) {
 .circle-stat-item:hover svg {
   transform: scale(1.15) rotate(-3deg);
 }
-.circle-stat-item.total { 
-  color: #2563eb; 
-  background: #eff6ff;
+.circle-stat-item.total {
+  color: var(--circle-tag-primary, #2563eb);
+  background: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 8%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 20%, transparent);
 }
-.circle-stat-item.owned { 
-  color: #059669; 
-  background: #ecfdf5;
+.circle-stat-item.owned {
+  color: var(--circle-tag-success, #059669);
+  background: color-mix(in srgb, var(--circle-tag-success, #059669) 8%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-success, #059669) 20%, transparent);
 }
-.circle-stat-item.missing { 
-  color: #dc2626; 
-  background: #fef2f2;
+.circle-stat-item.missing {
+  color: var(--circle-tag-danger, #dc2626);
+  background: color-mix(in srgb, var(--circle-tag-danger, #dc2626) 8%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-danger, #dc2626) 20%, transparent);
 }
 
 .circle-list-progress {
@@ -5780,21 +5952,21 @@ function getUploadBackgroundTargetLabel(task) {
   flex: 1;
   height: 3px;
   border-radius: 2px;
-  background: #e5e7eb;
+  background: var(--circle-border-soft, #e5e7eb);
   overflow: hidden;
 }
 
 .circle-list-progress-fill {
   height: 100%;
   border-radius: 2px;
-  background: #10b981;
+  background: var(--circle-tag-success, #10b981);
   transition: width 0.4s ease;
 }
 
 .circle-list-percent {
   font-size: 11px;
   font-weight: 700;
-  color: #9ca3af;
+  color: var(--circle-text-subtle, #9ca3af);
   white-space: nowrap;
   min-width: 28px;
   text-align: right;
@@ -5818,26 +5990,26 @@ function getUploadBackgroundTargetLabel(task) {
   min-width: 18px;
   height: 16px;
   padding: 0 5px;
-  border-radius: 8px;
+  border-radius: 5px;
   font-size: 10px;
   font-style: normal;
   font-weight: 700;
   line-height: 1;
-  background: #f3f4f6;
-  color: #6b7280;
-  border: 1px solid #e5e7eb;
+  background: var(--circle-label-surface, var(--circle-surface-soft, #f3f4f6));
+  color: var(--circle-text-muted, #6b7280);
+  border: 1px solid var(--circle-label-border, var(--circle-border-soft, #e5e7eb));
 }
 
 .circle-tab-badge.missing {
-  background: #fef2f2;
-  color: #dc2626;
-  border-color: #fecaca;
+  background: color-mix(in srgb, var(--circle-tag-danger, #dc2626) 8%, transparent);
+  color: var(--circle-tag-danger, #dc2626);
+  border-color: color-mix(in srgb, var(--circle-tag-danger, #dc2626) 22%, transparent);
 }
 
 .circle-tab-badge.owned {
-  background: #ecfdf5;
-  color: #059669;
-  border-color: #d1fae5;
+  background: color-mix(in srgb, var(--circle-tag-success, #059669) 8%, transparent);
+  color: var(--circle-tag-success, #059669);
+  border-color: color-mix(in srgb, var(--circle-tag-success, #059669) 22%, transparent);
 }
 .works-card {
   padding: 18px;
@@ -5847,21 +6019,50 @@ function getUploadBackgroundTargetLabel(task) {
   min-height: 0;
   gap: 14px;
 }
+.selection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 0 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--circle-border-soft, rgba(226, 232, 240, 0.8));
+  border-radius: 12px;
+  background: var(--circle-surface-muted, rgba(248, 250, 252, 0.8));
+  box-shadow: var(--circle-shadow-soft, 0 1px 2px rgba(15, 23, 42, 0.04));
+  backdrop-filter: blur(10px);
+}
+.selection-count {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--circle-text, #334155);
+}
+.owned-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 16px;
+  border: 1px dashed var(--circle-border-soft, rgba(226, 232, 240, 0.5));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--circle-surface, #ffffff) 56%, transparent);
+  color: var(--circle-text-subtle, #94a3b8);
+}
 .batch-bar {
   padding: 14px 16px;
   border-radius: 18px;
-  background: linear-gradient(135deg, #f7f9fb 0%, #ffffff 100%);
-  border: 1px solid rgba(29, 29, 31, 0.06);
+  background: var(--circle-surface-elevated, linear-gradient(135deg, #f7f9fb 0%, #ffffff 100%));
+  border: 1px solid var(--circle-border-soft, rgba(29, 29, 31, 0.06));
 }
 .batch-count {
   font-size: 15px;
   font-weight: 800;
-  color: #1d1d1f;
+  color: var(--circle-text-strong, #1d1d1f);
 }
 .batch-hint {
   margin-top: 4px;
   font-size: 12px;
-  color: rgba(29, 29, 31, 0.56);
+  color: var(--circle-text-muted, rgba(29, 29, 31, 0.56));
 }
 .batch-bar-actions {
   display: flex;
@@ -5876,9 +6077,9 @@ function getUploadBackgroundTargetLabel(task) {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  border: 1px solid #e2e8f0;
-  background: #ffffff;
-  color: #475569;
+  border: 1px solid var(--circle-border-soft, #e2e8f0);
+  background: var(--circle-surface-elevated, #ffffff);
+  color: var(--circle-text, #475569);
   border-radius: 8px;
   font-weight: 700;
   font-size: 13px;
@@ -5886,12 +6087,12 @@ function getUploadBackgroundTargetLabel(task) {
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
-.batch-action-button:hover:not(:disabled) {
+.batch-action-button:not(.primary):not(.refresh):not(.ghost):hover:not(:disabled) {
   transform: translateY(-2px) scale(1.02);
-  background: #f8fafc;
-  border-color: #cbd5e1;
-  color: #1e293b;
-  box-shadow: 0 6px 15px rgba(0, 0, 0, 0.08);
+  background: var(--circle-hover-bg, #f8fafc);
+  border-color: var(--circle-border-strong, #cbd5e1);
+  color: var(--circle-text-strong, #1e293b);
+  box-shadow: var(--circle-shadow-lift, 0 6px 15px rgba(0, 0, 0, 0.08));
 }
 .batch-action-button:active:not(:disabled) {
   transform: translateY(0) scale(0.96);
@@ -5914,36 +6115,43 @@ function getUploadBackgroundTargetLabel(task) {
   animation: batchActionSpin 0.82s linear infinite;
 }
 .batch-action-button.primary {
-  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+  --el-button-text-color: #ffffff;
+  --el-button-hover-text-color: #ffffff;
+  --el-button-active-text-color: #ffffff;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--circle-primary, #3b82f6) 88%, #ffffff) 0%, var(--circle-primary, #2563eb) 100%);
   color: #ffffff;
   border: none;
-  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--circle-primary, #2563eb) 24%, transparent);
 }
 .batch-action-button.primary:hover:not(:disabled) {
-  background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%);
-  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.3);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--circle-primary, #60a5fa) 70%, #ffffff) 0%, var(--circle-primary, #3b82f6) 100%);
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--circle-primary, #2563eb) 30%, transparent);
 }
 .batch-action-button.refresh {
-  background: linear-gradient(135deg, #334155 0%, #0f172a 100%);
+  --el-button-text-color: #ffffff;
+  --el-button-hover-text-color: #ffffff;
+  --el-button-active-text-color: #ffffff;
+  background: var(--circle-selected-strong-bg, linear-gradient(135deg, #334155 0%, #0f172a 100%));
   color: #ffffff;
   border: none;
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.2);
 }
 .batch-action-button.refresh:hover:not(:disabled) {
-  background: linear-gradient(135deg, #475569 0%, #1e293b 100%);
+  background: var(--circle-selected-strong-bg, #1e293b);
+  filter: brightness(1.08);
   box-shadow: 0 8px 20px rgba(15, 23, 42, 0.3);
 }
 .batch-action-button.ghost {
   background: transparent;
-  border: 1px dashed #cbd5e1;
-  color: #64748b;
+  border: 1px dashed var(--circle-border-strong, #cbd5e1);
+  color: var(--circle-text-muted, #64748b);
   box-shadow: none;
 }
 .batch-action-button.ghost:hover:not(:disabled) {
-  background: #f1f5f9;
+  background: var(--circle-hover-bg, #f1f5f9);
   border-style: solid;
-  border-color: #94a3b8;
-  color: #334155;
+  border-color: var(--circle-border-strong, #94a3b8);
+  color: var(--circle-text, #334155);
 }
 @keyframes batchActionSpin {
   to { transform: rotate(360deg); }
@@ -6015,10 +6223,10 @@ function getUploadBackgroundTargetLabel(task) {
   display: flex;
   align-items: center;
   gap: 4px;
-  background: #f1f5f9;
+  background: var(--circle-surface-soft, #f1f5f9);
   padding: 3px;
   border-radius: 10px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--circle-border-soft, #e2e8f0);
 }
 .view-toggle-btn {
   display: flex;
@@ -6030,15 +6238,15 @@ function getUploadBackgroundTargetLabel(task) {
   border: none;
   border-radius: 7px;
   cursor: pointer;
-  color: #64748b;
+  color: var(--circle-text-muted, #64748b);
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .view-toggle-btn svg {
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .view-toggle-btn:hover {
-  color: #1e293b;
-  background: rgba(255, 255, 255, 0.5);
+  color: var(--circle-text-strong, #1e293b);
+  background: color-mix(in srgb, var(--circle-surface, #fff) 56%, transparent);
 }
 .view-toggle-btn:hover svg {
   transform: scale(1.1);
@@ -6047,27 +6255,27 @@ function getUploadBackgroundTargetLabel(task) {
   transform: scale(0.96);
 }
 .view-toggle-btn.active {
-  color: #1e293b;
-  background: #ffffff;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+  color: var(--circle-text-strong, #1e293b);
+  background: var(--circle-surface, #ffffff);
+  box-shadow: var(--circle-shadow-soft, 0 2px 6px rgba(0, 0, 0, 0.06));
 }
 .owned-card,
 .info-card,
 .preview-plan {
   border-radius: 14px;
-  border: 1px solid rgba(29, 29, 31, 0.06);
-  background: #fcfcfd;
+  border: 1px solid var(--circle-border-soft, rgba(29, 29, 31, 0.06));
+  background: var(--circle-surface-elevated, #fcfcfd);
 }
 .owned-title {
   font-size: 11px;
   font-weight: 800;
-  color: #1f3554;
+  color: var(--circle-text-strong, #1f3554);
   line-height: 1.38;
 }
 .owned-meta,
 .owned-path {
   font-size: 9px;
-  color: rgba(29, 29, 31, 0.40);
+  color: var(--circle-text-muted, rgba(29, 29, 31, 0.40));
   line-height: 1.4;
   word-break: break-word;
 }
@@ -6167,14 +6375,14 @@ function getUploadBackgroundTargetLabel(task) {
   border: 1px solid transparent;
 }
 .circle-complete-pill.owned {
-  background: rgba(239, 246, 255, 0.96);
-  border-color: rgba(191, 219, 254, 0.95);
-  color: #2563eb;
+  background: var(--circle-tag-primary-soft, rgba(239, 246, 255, 0.96));
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 24%, transparent);
+  color: var(--circle-tag-primary, #2563eb);
 }
 .circle-complete-pill.success {
-  background: rgba(236, 253, 245, 0.96);
-  border-color: rgba(167, 243, 208, 0.95);
-  color: #059669;
+  background: var(--circle-tag-success-soft, rgba(236, 253, 245, 0.96));
+  border-color: color-mix(in srgb, var(--circle-tag-success, #059669) 24%, transparent);
+  color: var(--circle-tag-success, #059669);
 }
 .complete-confetti-enter-active,
 .complete-confetti-leave-active {
@@ -6259,13 +6467,13 @@ function getUploadBackgroundTargetLabel(task) {
 }
 .info-label {
   font-size: 12px;
-  color: #70819b;
+  color: var(--circle-text-muted, #64748b);
 }
 .info-value {
   margin-top: 6px;
   font-size: 14px;
   font-weight: 700;
-  color: #233d60;
+  color: var(--circle-text-strong, #0f172a);
   line-height: 1.6;
   word-break: break-all;
 }
@@ -6304,10 +6512,10 @@ function getUploadBackgroundTargetLabel(task) {
 .circle-tabs :deep(.el-tabs__item) {
   height: 38px;
   font-weight: 800;
-  color: #60748d;
+  color: var(--circle-text-muted, #60748d);
 }
 .circle-tabs :deep(.el-tabs__item.is-active) {
-  color: #2d6ec0;
+  color: var(--circle-primary, #2d6ec0);
 }
 .circle-tabs :deep(.el-tabs__content) {
   display: flex;
@@ -6328,6 +6536,92 @@ function getUploadBackgroundTargetLabel(task) {
   z-index: 30;
   flex: 0 0 auto;
 }
+.owned-stats-strip,
+.compare-stats-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--circle-border-soft, rgba(226, 232, 240, 0.6));
+  border-radius: 12px;
+  background: var(--circle-surface-elevated, #ffffff);
+  box-shadow: var(--circle-shadow-soft, 0 1px 2px rgba(15, 23, 42, 0.04));
+}
+.owned-stats-strip {
+  justify-content: space-between;
+  padding: 6px;
+}
+.owned-stats-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.owned-stat-item,
+.compare-stat-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  min-width: 0;
+}
+.owned-stat-item + .owned-stat-item,
+.compare-stat-item + .compare-stat-item {
+  border-left: 1px solid var(--circle-border-soft, rgba(226, 232, 240, 0.6));
+}
+.owned-stat-icon,
+.compare-stat-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 5px;
+  border: 1px solid var(--circle-border-soft, rgba(226, 232, 240, 0.5));
+  background: var(--circle-surface-soft, #f8fafc);
+  color: var(--circle-text-muted, #64748b);
+}
+.owned-stat-icon.is-simplified,
+.compare-stat-icon.is-dlsite {
+  background: var(--circle-tag-sky-soft, #f0f9ff);
+  color: var(--circle-tag-sky, #0284c7);
+  border-color: color-mix(in srgb, var(--circle-tag-sky, #0284c7) 20%, transparent);
+}
+.owned-stat-icon.is-traditional,
+.owned-stat-icon.is-bonus,
+.compare-stat-icon.is-asmr {
+  background: var(--circle-tag-violet-soft, #faf5ff);
+  color: var(--circle-tag-violet, #7e22ce);
+  border-color: color-mix(in srgb, var(--circle-tag-violet, #7e22ce) 20%, transparent);
+}
+.owned-stat-icon.is-subtitle {
+  background: var(--circle-tag-indigo-soft, #eef2ff);
+  color: var(--circle-tag-indigo, #4f46e5);
+  border-color: color-mix(in srgb, var(--circle-tag-indigo, #4f46e5) 20%, transparent);
+}
+.compare-stat-icon.is-kikoeru {
+  background: var(--circle-tag-success-soft, #ecfdf5);
+  color: var(--circle-tag-success, #059669);
+  border-color: color-mix(in srgb, var(--circle-tag-success, #059669) 20%, transparent);
+}
+.compare-stat-icon.is-missing {
+  background: var(--circle-tag-rose-soft, #fff1f2);
+  color: var(--circle-tag-rose, #e11d48);
+  border-color: color-mix(in srgb, var(--circle-tag-rose, #e11d48) 20%, transparent);
+}
+.owned-stat-label,
+.compare-stat-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--circle-text-subtle, #94a3b8);
+  text-transform: uppercase;
+}
+.owned-stat-value,
+.compare-stat-value {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--circle-text-strong, #111827);
+  line-height: 1;
+}
 .owned-filter-row {
   position: relative;
   z-index: 31;
@@ -6336,8 +6630,14 @@ function getUploadBackgroundTargetLabel(task) {
 .owned-filter-tabs {
   position: relative;
   z-index: 32;
+  display: flex;
   align-items: center;
   gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--circle-border-soft, rgba(226, 232, 240, 0.6));
+  border-radius: 10px;
+  background: var(--circle-surface-elevated, #ffffff);
+  box-shadow: var(--circle-shadow-soft, 0 1px 2px rgba(15, 23, 42, 0.04));
   pointer-events: auto;
 }
 .owned-filter-chip {
@@ -6352,7 +6652,7 @@ function getUploadBackgroundTargetLabel(task) {
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
-  color: #475569;
+  color: var(--circle-text, #475569);
   font-size: 13px;
   font-weight: 750;
   line-height: 1;
@@ -6360,37 +6660,37 @@ function getUploadBackgroundTargetLabel(task) {
   transition: all .22s cubic-bezier(.34, 1.56, .64, 1);
 }
 .owned-filter-chip:hover {
-  background: rgba(248, 250, 252, .92);
-  color: #1f2937;
+  background: var(--circle-hover-bg, rgba(248, 250, 252, .92));
+  color: var(--circle-text-strong, #1f2937);
   transform: translateY(-1px);
 }
 .owned-filter-chip.is-active {
-  background: rgba(255, 255, 255, .96);
-  border-color: rgba(148, 163, 184, .28);
-  color: #0f172a;
+  background: var(--circle-surface, rgba(255, 255, 255, .96));
+  border-color: var(--circle-border-strong, rgba(148, 163, 184, .28));
+  color: var(--circle-text-strong, #0f172a);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, .92),
+    inset 0 1px 0 color-mix(in srgb, var(--circle-surface, #fff) 70%, transparent),
     0 4px 12px rgba(15, 23, 42, .08);
 }
 .owned-filter-chip.is-simplified.is-active {
-  border-color: rgba(14, 165, 233, .24);
-  color: #0369a1;
-  background: rgba(240, 249, 255, .78);
+  border-color: color-mix(in srgb, var(--circle-tag-sky, #0284c7) 24%, transparent);
+  color: var(--circle-tag-sky, #0369a1);
+  background: var(--circle-tag-sky-soft, rgba(240, 249, 255, .78));
 }
 .owned-filter-chip.is-traditional.is-active {
-  border-color: rgba(124, 58, 237, .20);
-  color: #6d28d9;
-  background: rgba(245, 243, 255, .68);
+  border-color: color-mix(in srgb, var(--circle-tag-violet, #7e22ce) 20%, transparent);
+  color: var(--circle-tag-violet, #6d28d9);
+  background: var(--circle-tag-violet-soft, rgba(245, 243, 255, .68));
 }
 .owned-filter-chip.is-subtitle.is-active {
-  border-color: rgba(79, 70, 229, .20);
-  color: #4338ca;
-  background: rgba(238, 242, 255, .72);
+  border-color: color-mix(in srgb, var(--circle-tag-indigo, #4f46e5) 20%, transparent);
+  color: var(--circle-tag-indigo, #4338ca);
+  background: var(--circle-tag-indigo-soft, rgba(238, 242, 255, .72));
 }
 .owned-filter-chip.is-bonus.is-active {
-  border-color: rgba(168, 85, 247, .18);
-  color: #7e22ce;
-  background: rgba(250, 245, 255, .66);
+  border-color: color-mix(in srgb, var(--circle-tag-violet, #7e22ce) 18%, transparent);
+  color: var(--circle-tag-violet, #7e22ce);
+  background: var(--circle-tag-violet-soft, rgba(250, 245, 255, .66));
 }
 .owned-filter-count {
   min-width: 20px;
@@ -6400,15 +6700,106 @@ function getUploadBackgroundTargetLabel(task) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: rgba(241, 245, 249, .92);
-  color: #64748b;
+  background: var(--circle-surface-soft, rgba(241, 245, 249, .92));
+  color: var(--circle-text-muted, #64748b);
   font-size: 11px;
   font-weight: 800;
   line-height: 1;
 }
 .owned-filter-chip.is-active .owned-filter-count {
-  background: rgba(15, 23, 42, .08);
+  background: color-mix(in srgb, currentColor 12%, transparent);
   color: currentColor;
+}
+.owned-search-wrap,
+.compare-search-wrap {
+  position: relative;
+  width: 256px;
+}
+.owned-search-icon,
+.compare-search-icon {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: flex;
+  align-items: center;
+  padding-left: 12px;
+  color: var(--circle-text-subtle, #94a3b8);
+  pointer-events: none;
+}
+.owned-search-input,
+.compare-search-input {
+  display: block;
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 36px 8px 36px;
+  border: 1px solid var(--circle-border-soft, rgba(226, 232, 240, 0.6));
+  border-radius: 10px;
+  background: var(--circle-field-bg, #ffffff);
+  color: var(--circle-text-strong, #111827);
+  font-size: 14px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.owned-search-input::placeholder,
+.compare-search-input::placeholder {
+  color: var(--circle-placeholder, #94a3b8);
+}
+.owned-search-input:focus,
+.compare-search-input:focus {
+  outline: none;
+  border-color: var(--circle-primary, #2563eb);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--circle-primary, #2563eb) 14%, transparent);
+}
+.owned-search-clear,
+.compare-search-clear {
+  position: absolute;
+  inset: 0 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding-right: 12px;
+  color: var(--circle-text-subtle, #94a3b8);
+  transition: color 0.2s ease, transform 0.2s ease;
+}
+.owned-search-clear:hover,
+.compare-search-clear:hover {
+  color: var(--circle-text, #334155);
+  transform: scale(1.08);
+}
+.compare-filter-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--circle-border-soft, rgba(226, 232, 240, 0.6));
+  border-radius: 10px;
+  background: var(--circle-surface-elevated, #ffffff);
+  box-shadow: var(--circle-shadow-soft, 0 1px 2px rgba(15, 23, 42, 0.04));
+}
+.compare-filter-chip {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--circle-text, #475569);
+  font-size: 14px;
+  font-weight: 700;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.compare-filter-chip:hover {
+  transform: translateY(-1px);
+  background: var(--circle-hover-bg, rgba(248, 250, 252, 0.9));
+  color: var(--circle-text-strong, #111827);
+}
+.compare-filter-chip.is-active {
+  background: var(--circle-selected-strong-bg, #0f172a);
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.18);
+}
+.compare-filter-chip.is-kikoeru.is-active {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--circle-tag-success, #059669) 82%, #ffffff) 0%, var(--circle-tag-success, #059669) 100%);
+}
+.compare-filter-chip.is-asmr.is-active {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--circle-tag-indigo, #4f46e5) 82%, #ffffff) 0%, var(--circle-tag-indigo, #4f46e5) 100%);
 }
 .preview-dialog-shell {
   display: grid;
@@ -6969,7 +7360,53 @@ function getUploadBackgroundTargetLabel(task) {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #6c7d95;
+  color: var(--circle-text-muted, #6c7d95);
+}
+.compare-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+  border: 1px solid var(--circle-border-soft, rgba(226, 232, 240, 0.6));
+  border-radius: 10px 10px 0 0;
+  background: var(--circle-surface-soft, #f8fafc);
+  color: var(--circle-text-muted, #64748b);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.compare-head-main {
+  flex: 1;
+  min-width: 0;
+}
+.compare-head-sources {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
+  text-align: center;
+}
+.compare-source-col {
+  width: 80px;
+}
+.compare-works-list {
+  margin-bottom: 16px;
+  border: 1px solid var(--circle-border-soft, rgba(226, 232, 240, 0.6));
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
+  background: var(--circle-surface-elevated, #ffffff);
+  overflow: hidden;
+}
+.compare-work-item {
+  padding: 16px;
+  color: var(--circle-text, #334155);
+  transition: background 0.2s ease;
+}
+.compare-work-item + .compare-work-item {
+  border-top: 1px solid var(--circle-border-soft, rgba(226, 232, 240, 0.7));
+}
+.compare-work-item:hover {
+  background: var(--circle-hover-bg, rgba(248, 250, 252, 0.5));
 }
 .compare-work-top {
   display: flex;
@@ -6979,37 +7416,126 @@ function getUploadBackgroundTargetLabel(task) {
 }
 .compare-work-rj {
   font-weight: 800;
-  color: #223754;
+  color: var(--circle-text-strong, #223754);
 }
 .compare-work-title {
-  margin-top: 6px;
-  color: #24364f;
+  margin: 0 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--circle-text-strong, #24364f);
+  font-size: 14px;
+  font-weight: 800;
   line-height: 1.55;
 }
 .compare-work-meta {
   margin-top: 4px;
   font-size: 12px;
-  color: #7b8797;
+  color: var(--circle-text-muted, #7b8797);
+}
+.compare-status-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--circle-text-muted, #64748b);
+  font-size: 12px;
+  font-weight: 700;
+}
+.compare-status-inline.is-owned {
+  color: var(--circle-tag-success, #059669);
+}
+.compare-status-inline.is-missing {
+  color: var(--circle-tag-rose, #e11d48);
+}
+.compare-status-inline.is-partial {
+  color: var(--circle-tag-warning, #d97706);
+}
+.compare-work-code,
+.compare-source-code {
+  color: var(--circle-text, #475569);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  font-weight: 700;
+}
+.compare-source-empty {
+  color: var(--circle-text-subtle, #94a3b8);
+  transform: scale(0.9);
+}
+.compare-variant-badge,
+.compare-source-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--circle-label-border, #e2e8f0);
+  border-radius: 5px;
+  background: var(--circle-label-surface, #f8fafc);
+  color: var(--circle-text-muted, #64748b);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+.compare-variant-badge {
+  padding: 3px 6px;
+}
+.compare-source-badge {
+  padding: 2px 4px;
+  font-size: 9px;
+}
+.compare-variant-badge.is-simplified,
+.compare-source-badge.is-simplified {
+  background: color-mix(in srgb, var(--circle-tag-sky, #0284c7) 8%, transparent);
+  color: var(--circle-tag-sky, #0284c7);
+  border-color: color-mix(in srgb, var(--circle-tag-sky, #0284c7) 22%, transparent);
+}
+.compare-variant-badge.is-traditional,
+.compare-source-badge.is-traditional {
+  background: color-mix(in srgb, var(--circle-tag-violet, #7e22ce) 8%, transparent);
+  color: var(--circle-tag-violet, #7e22ce);
+  border-color: color-mix(in srgb, var(--circle-tag-violet, #7e22ce) 22%, transparent);
+}
+.compare-variant-badge.is-original,
+.compare-source-badge.is-original {
+  background: var(--circle-label-surface, #f1f5f9);
+  color: var(--circle-text, #475569);
+  border-color: var(--circle-label-border, #e2e8f0);
+}
+.compare-variant-badge.is-subtitle {
+  background: color-mix(in srgb, var(--circle-tag-indigo, #4f46e5) 8%, transparent);
+  color: var(--circle-tag-indigo, #4f46e5);
+  border-color: color-mix(in srgb, var(--circle-tag-indigo, #4f46e5) 22%, transparent);
+}
+.compare-source-divider {
+  width: 1px;
+  height: 24px;
+  background: var(--circle-border-soft, rgba(226, 232, 240, 0.6));
+}
+.compare-source-divider.is-transparent {
+  background: transparent;
 }
 .compare-status-pill {
   display: inline-flex;
   align-items: center;
   padding: 4px 8px;
-  border-radius: 999px;
+  border: 1px solid var(--circle-label-border, transparent);
+  border-radius: 5px;
+  background: var(--circle-label-surface, transparent);
   font-size: 11px;
   font-weight: 800;
 }
 .compare-status-pill.is-owned {
-  background: rgba(10, 132, 255, 0.12);
-  color: #005fcc;
+  background: color-mix(in srgb, var(--circle-tag-primary, #005fcc) 8%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #005fcc) 22%, transparent);
+  color: var(--circle-tag-primary, #005fcc);
 }
 .compare-status-pill.is-downloadable {
-  background: rgba(52, 199, 89, 0.12);
-  color: #248a3d;
+  background: color-mix(in srgb, var(--circle-tag-success, #248a3d) 8%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-success, #248a3d) 22%, transparent);
+  color: var(--circle-tag-success, #248a3d);
 }
 .compare-status-pill.is-dl_only {
-  background: rgba(255, 59, 48, 0.10);
-  color: #c2410c;
+  background: color-mix(in srgb, var(--circle-tag-orange, #c2410c) 8%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-orange, #c2410c) 22%, transparent);
+  color: var(--circle-tag-orange, #c2410c);
 }
 .compare-chip-list {
   display: flex;
@@ -7020,17 +7546,17 @@ function getUploadBackgroundTargetLabel(task) {
   display: inline-flex;
   align-items: center;
   padding: 4px 8px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid #d8e4f2;
-  color: #23406f;
+  border-radius: 5px;
+  background: var(--circle-label-surface, rgba(255, 255, 255, 0.92));
+  border: 1px solid var(--circle-label-border, #d8e4f2);
+  color: var(--circle-text, #23406f);
   font-size: 12px;
   line-height: 1.2;
 }
 .compare-chip.is-kikoeru-tag {
-  border-color: rgba(10, 132, 255, 0.16);
-  background: rgba(239, 246, 255, 0.96);
-  color: #005fcc;
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 18%, transparent);
+  background: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 8%, transparent);
+  color: var(--circle-tag-primary, #005fcc);
   font-weight: 800;
 }
 .compare-chip.has-icon {
@@ -7044,19 +7570,19 @@ function getUploadBackgroundTargetLabel(task) {
   flex: 0 0 auto;
 }
 .compare-chip.is-asmr {
-  border-color: rgba(52, 199, 89, 0.16);
-  background: rgba(236, 253, 245, 0.98);
-  color: #248a3d;
+  border-color: color-mix(in srgb, var(--circle-tag-success, #059669) 18%, transparent);
+  background: color-mix(in srgb, var(--circle-tag-success, #059669) 8%, transparent);
+  color: var(--circle-tag-success, #248a3d);
   font-weight: 800;
 }
 .compare-chip.is-asmr-badge {
-  border-color: rgba(52, 199, 89, 0.14);
-  background: rgba(220, 252, 231, 0.94);
-  color: #1f8f51;
+  border-color: color-mix(in srgb, var(--circle-tag-success, #059669) 18%, transparent);
+  background: color-mix(in srgb, var(--circle-tag-success, #059669) 8%, transparent);
+  color: var(--circle-tag-success, #1f8f51);
   font-weight: 800;
 }
 .compare-empty {
-  color: #8a97aa;
+  color: var(--circle-text-muted, #8a97aa);
   font-size: 12px;
 }
 @media (max-width: 1100px) {
@@ -7319,7 +7845,7 @@ function getUploadBackgroundTargetLabel(task) {
     padding: 8px 10px !important;
     border-right: 0 !important;
     border-radius: 12px;
-    background: rgba(248, 250, 252, 0.72);
+    background: var(--circle-surface-soft, rgba(248, 250, 252, 0.72));
   }
   .owned-filter-row {
     flex-direction: column;
@@ -7379,7 +7905,7 @@ function getUploadBackgroundTargetLabel(task) {
     padding: 8px 10px !important;
     border-right: 0 !important;
     border-radius: 12px;
-    background: rgba(248, 250, 252, 0.72);
+    background: var(--circle-surface-soft, rgba(248, 250, 252, 0.72));
   }
   .compare-filter-row {
     flex-direction: column;
@@ -7454,7 +7980,7 @@ function getUploadBackgroundTargetLabel(task) {
     align-items: flex-start !important;
     padding: 6px;
     border-radius: 10px;
-    background: rgba(248, 250, 252, 0.86);
+    background: var(--circle-surface-soft, rgba(248, 250, 252, 0.86));
     overflow: hidden;
   }
   .compare-source-cols span {
@@ -7465,8 +7991,6 @@ function getUploadBackgroundTargetLabel(task) {
 
   /* works-pager 居中 */
   .works-pager { justify-content: center; }
-  .works-pager :deep(.el-pagination__sizes),
-  .works-pager :deep(.el-pagination__jump) { display: none !important; }
 
   .compare-head { display: none !important; }
 
