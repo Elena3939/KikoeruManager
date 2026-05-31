@@ -114,7 +114,7 @@ defineExpose({ fetchPreview })
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #f5f5f7;
+  background: var(--set-surface-soft, #f5f5f7);
   min-height: 0;
 }
 .blk-preview-head {
@@ -122,15 +122,15 @@ defineExpose({ fetchPreview })
   align-items: center;
   justify-content: space-between;
   padding: 8px 14px 6px;
-  border-bottom: 1px solid rgba(29, 29, 31, 0.07);
-  background: #fff;
+  border-bottom: 1px solid var(--set-border-soft, rgba(29, 29, 31, 0.07));
+  background: var(--set-surface, #fff);
 }
 .blk-preview-kicker {
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: rgba(29, 29, 31, 0.45);
+  color: var(--set-text-subtle, rgba(29, 29, 31, 0.45));
 }
 .blk-preview-controls {
   display: flex;
@@ -140,10 +140,10 @@ defineExpose({ fetchPreview })
 .blk-preview-sel {
   font-size: 11px;
   padding: 3px 6px;
-  border: 1px solid rgba(29, 29, 31, 0.12);
+  border: 1px solid var(--set-border, rgba(29, 29, 31, 0.12));
   border-radius: 6px;
-  background: #fff;
-  color: #1d1d1f;
+  background: var(--set-field-bg, #fff);
+  color: var(--set-text-strong, #1d1d1f);
   outline: none;
 }
 .blk-preview-refresh {
@@ -153,34 +153,34 @@ defineExpose({ fetchPreview })
   padding: 4px 10px;
   font-size: 11px;
   font-weight: 500;
-  color: #1d1d1f;
-  background: #fff;
-  border: 1px solid rgba(29, 29, 31, 0.12);
+  color: var(--set-text-strong, #1d1d1f);
+  background: var(--set-surface, #fff);
+  border: 1px solid var(--set-border, rgba(29, 29, 31, 0.12));
   border-radius: 99px;
   cursor: pointer;
   transition: all 0.2s;
 }
 .blk-preview-refresh:hover {
-  border-color: rgba(0, 113, 227, 0.3);
-  color: #0071e3;
+  border-color: var(--set-border-strong, rgba(29, 29, 31, 0.2));
+  color: var(--set-text-strong, #1d1d1f);
 }
 .blk-preview-subject {
   display: flex;
   align-items: baseline;
   gap: 8px;
   padding: 6px 14px;
-  background: #fff;
-  border-bottom: 1px solid rgba(29, 29, 31, 0.07);
+  background: var(--set-surface, #fff);
+  border-bottom: 1px solid var(--set-border-soft, rgba(29, 29, 31, 0.07));
 }
 .blk-preview-subject-label {
   font-size: 10px;
   font-weight: 600;
-  color: rgba(29, 29, 31, 0.45);
+  color: var(--set-text-subtle, rgba(29, 29, 31, 0.45));
   flex-shrink: 0;
 }
 .blk-preview-subject-val {
   font-size: 12px;
-  color: #1d1d1f;
+  color: var(--set-text-strong, #1d1d1f);
   line-height: 1.4;
 }
 .blk-preview-frame-wrap {
@@ -194,7 +194,7 @@ defineExpose({ fetchPreview })
   height: 100%;
   border: none;
   border-radius: 10px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+  box-shadow: none;
   background: #fff;
 }
 .blk-preview-placeholder {
@@ -204,7 +204,7 @@ defineExpose({ fetchPreview })
   align-items: center;
   justify-content: center;
   gap: 10px;
-  color: rgba(29, 29, 31, 0.35);
+  color: var(--set-text-subtle, rgba(29, 29, 31, 0.35));
   font-size: 12px;
 }
 </style>

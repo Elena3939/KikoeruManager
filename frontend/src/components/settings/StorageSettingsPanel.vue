@@ -37,10 +37,10 @@
           />
         </SettingsFieldCard>
         <SettingsFieldCard label="剩余空间预警（GB）">
-          <el-input-number v-model="modelValue.storage.health_warning_free_gb" :min="0" :step="10" class="storage-field-number" />
+          <SettingsNumberStepper v-model="modelValue.storage.health_warning_free_gb" :min="0" :step="10" />
         </SettingsFieldCard>
         <SettingsFieldCard label="统计缓存秒数">
-          <el-input-number v-model="modelValue.storage.stats_cache_ttl_seconds" :min="30" :step="30" class="storage-field-number" />
+          <SettingsNumberStepper v-model="modelValue.storage.stats_cache_ttl_seconds" :min="30" :step="30" />
         </SettingsFieldCard>
       </div>
     </section>
@@ -91,6 +91,7 @@ import { computed } from 'vue'
 import LibraryInventoryPanel from './LibraryInventoryPanel.vue'
 import SynologyProfileCenter from './SynologyProfileCenter.vue'
 import SettingsFieldCard from './SettingsFieldCard.vue'
+import SettingsNumberStepper from './SettingsNumberStepper.vue'
 import AppDropdown from '../common/AppDropdown.vue'
 
 const props = defineProps({
@@ -177,7 +178,7 @@ const primaryProfileSummary = computed(() => props.getProfileSummary(resolvedPri
 
 .storage-card-title {
   margin: 0;
-  color: #1d1d1f;
+  color: var(--set-text-strong, #1d1d1f);
   font-size: 14px;
   font-weight: 600;
   letter-spacing: -0.1px;
@@ -185,7 +186,7 @@ const primaryProfileSummary = computed(() => props.getProfileSummary(resolvedPri
 
 .storage-card-desc {
   margin: 4px 0 0;
-  color: rgba(29, 29, 31, 0.55);
+  color: var(--set-text-muted, rgba(29, 29, 31, 0.55));
   font-size: 12px;
   line-height: 1.6;
 }
@@ -203,42 +204,23 @@ const primaryProfileSummary = computed(() => props.getProfileSummary(resolvedPri
   width: 100%;
   min-height: 38px;
   padding: 0 12px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
+  border: 1px solid var(--set-border, rgba(226, 232, 240, 0.85));
   outline: none;
   border-radius: 10px;
-  background: #ffffff;
-  color: #1d1d1f;
+  background: var(--set-field-bg, #ffffff);
+  color: var(--set-text-strong, #1d1d1f);
   font-size: 13.5px;
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
-.storage-field-input:hover { border-color: rgba(148, 163, 184, 0.75); }
+.storage-field-input:hover { border-color: var(--set-border-strong, rgba(148, 163, 184, 0.75)); }
 
 .storage-field-input:focus {
-  border-color: rgba(79, 70, 229, 0.5);
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+  border-color: var(--set-border-strong, rgba(148, 163, 184, 0.75));
+  box-shadow: 0 0 0 3px var(--set-accent-soft, rgba(15, 23, 42, 0.06));
 }
 
-.storage-field-input::placeholder { color: #94a3b8; }
-
-/* el-input-number 与 input 视觉对齐：38px 高 / 10px 圆角 / 同色边 / 同色 focus ring */
-.storage-field-number :deep(.el-input__wrapper) {
-  min-height: 38px;
-  border-radius: 10px;
-  background: #ffffff;
-  box-shadow: none;
-  border: 1px solid rgba(226, 232, 240, 0.85) !important;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease;
-}
-
-.storage-field-number :deep(.el-input__wrapper:hover) {
-  border-color: rgba(148, 163, 184, 0.75) !important;
-}
-
-.storage-field-number :deep(.el-input__wrapper.is-focus) {
-  border-color: rgba(79, 70, 229, 0.5) !important;
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1) !important;
-}
+.storage-field-input::placeholder { color: var(--set-text-subtle, #94a3b8); }
 
 /* AppDropdown 收敛：撑满 SettingsFieldCard 控件槽 + 38px 高 / 10px 圆角，与 input 视觉对齐 */
 .settings-field-dd {
@@ -257,19 +239,19 @@ const primaryProfileSummary = computed(() => props.getProfileSummary(resolvedPri
   height: 38px;
   padding: 0 12px;
   border-radius: 10px;
-  background: #ffffff;
-  border: 1px solid rgba(226, 232, 240, 0.85);
+  background: var(--set-field-bg, #ffffff);
+  border: 1px solid var(--set-border, rgba(226, 232, 240, 0.85));
   font-size: 13.5px;
   justify-content: space-between;
 }
 
 .settings-field-dd :deep(.app-dd-trigger:hover) {
-  border-color: rgba(148, 163, 184, 0.75);
+  border-color: var(--set-border-strong, rgba(148, 163, 184, 0.75));
 }
 
 .settings-field-dd :deep(.app-dd-trigger.is-open) {
-  border-color: rgba(79, 70, 229, 0.55);
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+  border-color: var(--set-border-strong, rgba(148, 163, 184, 0.75));
+  box-shadow: 0 0 0 3px var(--set-accent-soft, rgba(15, 23, 42, 0.06));
 }
 
 @media (max-width: 960px) {

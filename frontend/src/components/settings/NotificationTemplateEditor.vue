@@ -46,11 +46,11 @@
               >{{ e.label }}</button>
             </div>
             <label class="tpl-toggle">
-              <el-switch v-model="form.enabled" size="small" />
+              <SettingsSwitch v-model="form.enabled" />
               <span style="font-size:12px;">启用</span>
             </label>
             <label class="tpl-toggle">
-              <el-switch v-model="form.is_default" size="small" />
+              <SettingsSwitch v-model="form.is_default" />
               <span style="font-size:12px;">默认</span>
             </label>
             <button
@@ -88,11 +88,11 @@
               >{{ e.label }}</button>
             </div>
             <label class="tpl-toggle">
-              <el-switch v-model="form.enabled" size="small" />
+              <SettingsSwitch v-model="form.enabled" />
               <span style="font-size:12px;">启用</span>
             </label>
             <label class="tpl-toggle">
-              <el-switch v-model="form.is_default" size="small" />
+              <SettingsSwitch v-model="form.is_default" />
               <span style="font-size:12px;">默认</span>
             </label>
           </div>
@@ -322,6 +322,7 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { Check, Code2, Eye, LayoutTemplate, Maximize2, RefreshCw, X } from 'lucide-vue-next'
 import { notificationApi } from '../../api'
+import SettingsSwitch from './SettingsSwitch.vue'
 import NotificationBlockEditor from './block-editor/NotificationBlockEditor.vue'
 import { DEFAULT_EMAIL_HTML, DEFAULT_SUBJECT, buildDefaultEmailBlocks } from './block-editor/defaultEmailTemplate.js'
 import { renderBlockMini, buildSamplePayload } from './block-editor/blockMiniRenderers.js'
@@ -554,7 +555,7 @@ function buildVisualPreviewSrcdoc() {
     '严重程度': samplePayload.severity || '',
   }
   const phStyle = 'cursor:pointer;outline:2px dashed transparent;transition:outline-color 0.15s'
-  const phOver = "this.style.outlineColor='rgba(0,113,227,0.4)'"
+  const phOver = "this.style.outlineColor='rgba(228,228,231,0.42)'"
   const phOut = "this.style.outlineColor='transparent'"
   const renderPreviewPlaceholder = (key, innerHtml) => `<div data-ph="${key}" style="${phStyle}" onmouseover="${phOver}" onmouseout="${phOut}" title="点击跳转到占位符 {${key}}">${innerHtml}</div>`
   const businessSectionsHtml = [
@@ -1322,9 +1323,10 @@ function onCancel() {
   width: min(1480px, 100%);
   height: calc(100vh - 32px);
   max-height: calc(100vh - 32px);
-  background: #fff;
+  background: var(--set-surface);
+  border: 1px solid var(--set-border);
   border-radius: 18px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.18);
+  box-shadow: none;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1335,7 +1337,8 @@ function onCancel() {
   align-items: flex-start;
   gap: 16px;
   padding: 22px 26px 18px;
-  border-bottom: 1px solid rgba(29, 29, 31, 0.08);
+  border-bottom: 1px solid var(--set-border);
+  background: var(--set-surface);
 }
 
 .tpl-editor-head-text {
@@ -1348,9 +1351,9 @@ function onCancel() {
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: rgba(0, 113, 227, 0.85);
+  color: var(--set-text-muted, rgba(29, 29, 31, 0.55));
   padding: 2px 8px;
-  background: rgba(0, 113, 227, 0.08);
+  background: var(--set-surface-soft, rgba(0, 0, 0, 0.03));
   border-radius: 99px;
   margin-bottom: 8px;
 }
@@ -1358,33 +1361,33 @@ function onCancel() {
 .tpl-editor-title {
   font-size: 18px;
   font-weight: 600;
-  color: #1d1d1f;
+  color: var(--set-text-strong);
   margin-bottom: 4px;
 }
 
 .tpl-editor-desc {
   font-size: 12px;
-  color: rgba(29, 29, 31, 0.55);
+  color: var(--set-text-muted);
   line-height: 1.5;
 }
 
 .tpl-editor-desc code {
-  background: rgba(0, 0, 0, 0.04);
-  border: 1px solid rgba(29, 29, 31, 0.08);
+  background: var(--set-surface-soft);
+  border: 1px solid var(--set-border);
   border-radius: 5px;
   padding: 1px 5px;
   font-size: 11px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: #1d1d1f;
+  color: var(--set-text-strong);
 }
 
 .tpl-icon-btn {
   width: 32px;
   height: 32px;
-  border: 1px solid rgba(29, 29, 31, 0.08);
+  border: 1px solid var(--set-border);
   border-radius: 10px;
-  background: #fff;
-  color: rgba(29, 29, 31, 0.6);
+  background: var(--set-surface);
+  color: var(--set-text-muted);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -1394,9 +1397,10 @@ function onCancel() {
 
 .tpl-icon-btn:hover {
   transform: translateY(-2px) scale(1.02);
-  color: #1d1d1f;
-  border-color: rgba(29, 29, 31, 0.16);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+  color: var(--set-text-strong);
+  background: var(--set-surface-hover);
+  border-color: var(--set-border-strong);
+  box-shadow: none;
 }
 
 .tpl-icon-btn:active {
@@ -1417,7 +1421,7 @@ function onCancel() {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  border-right: 1px solid rgba(29, 29, 31, 0.06);
+  border-right: 1px solid var(--set-border);
 }
 
 .tpl-field {
@@ -1442,7 +1446,7 @@ function onCancel() {
 .tpl-field-label {
   font-size: 12px;
   font-weight: 600;
-  color: rgba(29, 29, 31, 0.7);
+  color: var(--set-text);
   display: flex;
   align-items: baseline;
   gap: 8px;
@@ -1451,7 +1455,7 @@ function onCancel() {
 .tpl-field-hint {
   font-weight: 400;
   font-size: 11px;
-  color: rgba(29, 29, 31, 0.45);
+  color: var(--set-text-muted);
 }
 
 .tpl-input,
@@ -1459,9 +1463,9 @@ function onCancel() {
   width: 100%;
   padding: 8px 12px;
   font-size: 13px;
-  color: #1d1d1f;
-  background: #fff;
-  border: 1px solid rgba(29, 29, 31, 0.12);
+  color: var(--set-text-strong);
+  background: var(--set-field-bg);
+  border: 1px solid var(--set-border);
   border-radius: 10px;
   outline: none;
   font-family: inherit;
@@ -1470,8 +1474,8 @@ function onCancel() {
 
 .tpl-input:focus,
 .tpl-textarea:focus {
-  border-color: rgba(0, 113, 227, 0.5);
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.12);
+  border-color: var(--set-border-strong, rgba(29, 29, 31, 0.2));
+  box-shadow: 0 0 0 3px var(--set-focus-ring, rgba(15, 23, 42, 0.08));
 }
 
 .tpl-textarea {
@@ -1495,9 +1499,9 @@ function onCancel() {
   padding: 5px 11px;
   font-size: 12px;
   font-weight: 500;
-  color: rgba(29, 29, 31, 0.7);
-  background: rgba(0, 0, 0, 0.03);
-  border: 1px solid rgba(29, 29, 31, 0.08);
+  color: var(--set-chip-text);
+  background: var(--set-chip-bg);
+  border: 1px solid var(--set-border);
   border-radius: 99px;
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -1505,9 +1509,9 @@ function onCancel() {
 
 .tpl-chip:hover {
   transform: translateY(-2px) scale(1.02);
-  background: rgba(0, 113, 227, 0.06);
-  border-color: rgba(0, 113, 227, 0.2);
-  color: #0071e3;
+  background: var(--set-surface-hover, rgba(0, 0, 0, 0.05));
+  border-color: var(--set-border-strong, rgba(29, 29, 31, 0.2));
+  color: var(--set-text-strong, #1d1d1f);
 }
 
 .tpl-chip:active {
@@ -1515,9 +1519,9 @@ function onCancel() {
 }
 
 .tpl-chip.is-active {
-  background: #1d1d1f;
-  border-color: #1d1d1f;
-  color: #fff;
+  background: var(--set-tag-info-bg);
+  border-color: var(--set-tag-info-border);
+  color: var(--set-tag-info-text);
 }
 
 .tpl-toggle {
@@ -1525,19 +1529,19 @@ function onCancel() {
   align-items: center;
   gap: 10px;
   font-size: 12px;
-  color: #1d1d1f;
+  color: var(--set-text);
 }
 
 .tpl-toggle small {
   display: block;
   font-size: 11px;
-  color: rgba(29, 29, 31, 0.5);
+  color: var(--set-text-muted);
   font-weight: 400;
 }
 
 .tpl-editor-preview {
   padding: 20px 26px;
-  background: #fafafa;
+  background: var(--set-surface-soft);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -1555,7 +1559,7 @@ function onCancel() {
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: rgba(29, 29, 31, 0.55);
+  color: var(--set-text-muted);
 }
 
 .tpl-preview-refresh {
@@ -1565,9 +1569,9 @@ function onCancel() {
   padding: 5px 11px;
   font-size: 12px;
   font-weight: 500;
-  color: #1d1d1f;
-  background: #fff;
-  border: 1px solid rgba(29, 29, 31, 0.12);
+  color: var(--set-text);
+  background: var(--set-surface);
+  border: 1px solid var(--set-border);
   border-radius: 99px;
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -1575,9 +1579,10 @@ function onCancel() {
 
 .tpl-preview-refresh:hover {
   transform: translateY(-2px) scale(1.02);
-  border-color: rgba(0, 113, 227, 0.3);
-  color: #0071e3;
-  box-shadow: 0 4px 12px rgba(0, 113, 227, 0.1);
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
+  color: var(--set-text-strong);
+  box-shadow: none;
 }
 
 .tpl-preview-refresh:active:not(:disabled) {
@@ -1600,8 +1605,8 @@ function onCancel() {
 
 .tpl-preview-subject {
   padding: 10px 12px;
-  background: #fff;
-  border: 1px solid rgba(29, 29, 31, 0.08);
+  background: var(--set-surface);
+  border: 1px solid var(--set-border);
   border-radius: 10px;
   display: flex;
   flex-direction: column;
@@ -1613,21 +1618,21 @@ function onCancel() {
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: rgba(29, 29, 31, 0.45);
+  color: var(--set-text-subtle);
 }
 
 .tpl-preview-value {
   font-size: 13px;
-  color: #1d1d1f;
+  color: var(--set-text-strong);
   word-break: break-all;
 }
 
 .tpl-preview-frame-wrap {
   flex: 1;
   min-height: 320px;
-  border: 1px solid rgba(29, 29, 31, 0.08);
+  border: 1px solid var(--set-border);
   border-radius: 12px;
-  background: #fff;
+  background: var(--set-surface);
   overflow: hidden;
   position: relative;
 }
@@ -1646,18 +1651,18 @@ function onCancel() {
   align-items: center;
   justify-content: center;
   font-size: 12px;
-  color: rgba(29, 29, 31, 0.45);
+  color: var(--set-text-muted);
 }
 
 .tpl-preview-text pre {
   padding: 10px 12px;
-  background: #fff;
-  border: 1px solid rgba(29, 29, 31, 0.08);
+  background: var(--set-surface);
+  border: 1px solid var(--set-border);
   border-radius: 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   line-height: 1.5;
-  color: #1d1d1f;
+  color: var(--set-text-strong);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -1667,8 +1672,8 @@ function onCancel() {
   align-items: center;
   gap: 10px;
   padding: 14px 26px;
-  border-top: 1px solid rgba(29, 29, 31, 0.08);
-  background: #fafafa;
+  border-top: 1px solid var(--set-border);
+  background: var(--set-surface-soft);
 }
 
 .tpl-editor-spacer {
@@ -1708,25 +1713,26 @@ function onCancel() {
 }
 
 .tpl-btn--ghost {
-  color: rgba(29, 29, 31, 0.7);
-  background: #fff;
-  border-color: rgba(29, 29, 31, 0.12);
+  color: var(--set-text);
+  background: var(--set-surface);
+  border-color: var(--set-border);
 }
 
 .tpl-btn--ghost:hover {
-  border-color: rgba(29, 29, 31, 0.24);
-  color: #1d1d1f;
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
+  color: var(--set-text-strong);
 }
 
 .tpl-btn--primary {
-  color: #fff;
-  background: #1d1d1f;
-  border-color: #1d1d1f;
+  color: var(--set-primary-text);
+  background: var(--set-primary-bg);
+  border-color: var(--set-primary-border);
 }
 
 .tpl-btn--primary:hover {
-  background: #000;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+  background: var(--set-primary-bg-hover);
+  box-shadow: none;
 }
 
 .tpl-fade-enter-active,
@@ -1750,7 +1756,7 @@ function onCancel() {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: #fafafa;
+  background: var(--set-surface-soft);
 }
 .tpl-rte-wrap {
   flex: 1;
@@ -1767,8 +1773,8 @@ function onCancel() {
 }
 .tpl-html-pane {
   min-height: 0;
-  background: #fff;
-  border: 1px solid rgba(29, 29, 31, 0.08);
+  background: var(--set-surface);
+  border: 1px solid var(--set-border);
   border-radius: 12px;
   overflow: hidden;
   display: flex;
@@ -1780,19 +1786,19 @@ function onCancel() {
   justify-content: space-between;
   gap: 10px;
   padding: 8px 10px;
-  border-bottom: 1px solid rgba(29, 29, 31, 0.08);
-  background: rgba(248, 250, 252, 0.88);
+  border-bottom: 1px solid var(--set-border);
+  background: var(--set-surface-soft);
 }
 .tpl-html-pane-title {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: rgba(29, 29, 31, 0.6);
+  color: var(--set-text-muted);
 }
 .tpl-html-pane-hint {
   font-size: 11px;
-  color: rgba(29, 29, 31, 0.45);
+  color: var(--set-text-subtle);
 }
 .tpl-html-pane-head-right {
   display: inline-flex;
@@ -1820,8 +1826,8 @@ function onCancel() {
   transition: all 0.18s ease;
 }
 .tpl-html-sync-btn.is-active {
-  background: rgba(59, 130, 246, 0.25);
-  color: #e0f2fe;
+  background: var(--set-surface-muted, rgba(148, 163, 184, 0.22));
+  color: var(--set-text-strong, #f4f4f5);
 }
 .tpl-html-pane-btn {
   display: inline-flex;
@@ -1829,10 +1835,10 @@ function onCancel() {
   gap: 4px;
   height: 24px;
   padding: 0 8px;
-  border: 1px solid rgba(29, 29, 31, 0.16);
+  border: 1px solid var(--set-border);
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.9);
-  color: rgba(29, 29, 31, 0.7);
+  background: var(--set-surface);
+  color: var(--set-text);
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
@@ -1840,15 +1846,17 @@ function onCancel() {
 }
 .tpl-html-pane-btn:hover {
   transform: translateY(-1px) scale(1.02);
-  border-color: rgba(0, 113, 227, 0.45);
-  color: #0071e3;
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
+  color: var(--set-text-strong);
 }
 .tpl-html-pane-btn:active {
   transform: scale(0.96);
 }
 .tpl-html-pane-btn--primary {
-  border-color: rgba(37, 99, 235, 0.45);
-  color: #1d4ed8;
+  border-color: var(--set-primary-border);
+  background: var(--set-primary-bg);
+  color: var(--set-primary-text);
 }
 .tpl-html-pane-body {
   flex: 1;
@@ -1921,7 +1929,7 @@ function onCancel() {
   border-radius: 0;
   background: transparent;
   color: transparent;
-  caret-color: #93c5fd;
+  caret-color: var(--set-text-strong, #f4f4f5);
   overflow: auto;
   z-index: 1;
 }
@@ -1932,7 +1940,7 @@ function onCancel() {
   box-shadow: none;
 }
 .tpl-html-raw-view::selection {
-  background: rgba(59, 130, 246, 0.32);
+  background: var(--set-focus-ring, rgba(148, 163, 184, 0.28));
 }
 .tpl-html-raw-view::-webkit-scrollbar,
 .tpl-html-code-overlay::-webkit-scrollbar {
@@ -2062,7 +2070,7 @@ function onCancel() {
   border: 0;
   background: transparent;
   color: transparent;
-  caret-color: #93c5fd;
+  caret-color: var(--set-text-strong, #f4f4f5);
   z-index: 2;
   outline: none;
 }
@@ -2081,8 +2089,8 @@ function onCancel() {
   background: rgba(15, 23, 42, 0.14);
 }
 .tpl-component-doc-edit-wrap:focus-within {
-  border-color: rgba(59, 130, 246, 0.55);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.16);
+  border-color: var(--set-border-strong, rgba(148, 163, 184, 0.32));
+  box-shadow: 0 0 0 2px var(--set-focus-ring, rgba(255, 255, 255, 0.08));
 }
 .tpl-component-doc-editor-actions {
   margin: 8px 0 10px;
@@ -2092,11 +2100,11 @@ function onCancel() {
 .tpl-component-edit-tag {
   font-size: 11px;
   font-weight: 600;
-  color: #60a5fa;
+  color: var(--set-text-strong, #e2e8f0);
   padding: 3px 8px;
   border-radius: 999px;
-  background: rgba(59, 130, 246, 0.12);
-  border: 1px solid rgba(59, 130, 246, 0.24);
+  background: var(--set-surface-muted, rgba(148, 163, 184, 0.12));
+  border: 1px solid var(--set-border, rgba(148, 163, 184, 0.22));
 }
 .tpl-component-doc-section-title {
   font-size: 10px;
@@ -2205,19 +2213,19 @@ function onCancel() {
   gap: 5px;
   height: 26px;
   padding: 0 10px;
-  border: 1px solid rgba(29, 29, 31, 0.12);
+  border: 1px solid var(--set-border);
   border-radius: 7px;
-  background: #fff;
-  color: rgba(29, 29, 31, 0.7);
+  background: var(--set-surface);
+  color: var(--set-text);
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.18s ease;
 }
 .tpl-reset-btn:hover {
-  border-color: rgba(0, 113, 227, 0.4);
-  background: rgba(0, 113, 227, 0.04);
-  color: #0071e3;
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
+  color: var(--set-text-strong);
 }
 .tpl-reset-btn:active { transform: scale(0.96); }
 .tpl-meta-bar-label {
@@ -2225,12 +2233,12 @@ function onCancel() {
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: rgba(29, 29, 31, 0.45);
+  color: var(--set-text-subtle);
   flex-shrink: 0;
 }
 .tpl-meta-bar-hint {
   font-size: 11px;
-  color: rgba(29, 29, 31, 0.4);
+  color: var(--set-text-muted);
   margin-left: 4px;
 }
 .tpl-meta-bar-spacer { flex: 1; }
@@ -2245,17 +2253,17 @@ function onCancel() {
   padding: 5px 12px;
   font-size: 12px;
   font-weight: 500;
-  color: #1d1d1f;
-  background: #fff;
-  border: 1px solid rgba(29, 29, 31, 0.12);
+  color: var(--set-text);
+  background: var(--set-surface);
+  border: 1px solid var(--set-border);
   border-radius: 7px;
   cursor: pointer;
   transition: all 0.15s ease;
 }
 .tpl-fullscreen-btn:hover {
-  border-color: rgba(0, 113, 227, 0.4);
-  color: #0071e3;
-  background: rgba(0, 113, 227, 0.04);
+  border-color: var(--set-border-strong);
+  color: var(--set-text-strong);
+  background: var(--set-surface-hover);
   transform: translateY(-1px);
 }
 .tpl-fullscreen-btn:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -2275,9 +2283,10 @@ function onCancel() {
 .tpl-prev-panel {
   width: min(960px, 100%);
   height: calc(100vh - 64px);
-  background: #fff;
+  background: var(--set-surface);
+  border: 1px solid var(--set-border);
   border-radius: 16px;
-  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.32);
+  box-shadow: none;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -2286,8 +2295,8 @@ function onCancel() {
   display: flex;
   align-items: center;
   padding: 14px 20px;
-  border-bottom: 1px solid rgba(29, 29, 31, 0.06);
-  background: #fafafa;
+  border-bottom: 1px solid var(--set-border);
+  background: var(--set-surface-soft);
 }
 .tpl-prev-head-title {
   display: flex;
@@ -2296,12 +2305,12 @@ function onCancel() {
   flex: 1;
   font-size: 13px;
   font-weight: 600;
-  color: #1d1d1f;
+  color: var(--set-text-strong);
 }
 .tpl-prev-head-hint {
   font-size: 11.5px;
   font-weight: 400;
-  color: rgba(29, 29, 31, 0.5);
+  color: var(--set-text-muted);
   margin-left: 8px;
   white-space: nowrap;
   overflow: hidden;
@@ -2315,18 +2324,18 @@ function onCancel() {
   justify-content: center;
   background: transparent;
   border: none;
-  color: rgba(29, 29, 31, 0.5);
+  color: var(--set-text-muted);
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.15s ease;
 }
 .tpl-prev-close:hover {
-  background: rgba(0, 0, 0, 0.05);
-  color: #1d1d1f;
+  background: var(--set-surface-hover);
+  color: var(--set-text-strong);
 }
 .tpl-prev-frame-wrap {
   flex: 1;
-  background: #f6f7f9;
+  background: var(--set-surface-soft);
   overflow: hidden;
   display: flex;
 }
@@ -2342,7 +2351,7 @@ function onCancel() {
   align-items: center;
   justify-content: center;
   font-size: 13px;
-  color: rgba(29, 29, 31, 0.4);
+  color: var(--set-text-muted);
 }
 .tpl-prev-fade-enter-active,
 .tpl-prev-fade-leave-active {
@@ -2375,7 +2384,7 @@ function onCancel() {
   display: flex;
   align-items: center;
   gap: 2px;
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--set-surface-soft);
   border-radius: 10px;
   padding: 3px;
   flex-shrink: 0;
@@ -2387,7 +2396,7 @@ function onCancel() {
   padding: 5px 12px;
   font-size: 12px;
   font-weight: 500;
-  color: rgba(29, 29, 31, 0.6);
+  color: var(--set-text-muted);
   border: none;
   border-radius: 8px;
   background: transparent;
@@ -2395,9 +2404,9 @@ function onCancel() {
   transition: all 0.2s;
 }
 .tpl-mode-btn.is-active {
-  background: #fff;
-  color: #1d1d1f;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+  background: var(--set-surface);
+  color: var(--set-text-strong);
+  box-shadow: none;
 }
 
 /* ---- blocks 模式布局 ---- */
@@ -2414,8 +2423,8 @@ function onCancel() {
   flex-wrap: wrap;
   gap: 8px;
   padding: 10px 14px;
-  border-bottom: 1px solid rgba(29, 29, 31, 0.07);
-  background: #fafafa;
+  border-bottom: 1px solid var(--set-border);
+  background: var(--set-surface-soft);
 }
 .tpl-meta-input {
   flex: 0 0 auto;
@@ -2436,8 +2445,8 @@ function onCancel() {
   justify-content: space-between;
   gap: 14px;
   padding: 12px 14px;
-  border: 1px solid rgba(0, 113, 227, 0.18);
-  background: linear-gradient(135deg, rgba(0, 113, 227, 0.04), rgba(0, 113, 227, 0.08));
+  border: 1px solid var(--set-border, rgba(29, 29, 31, 0.12));
+  background: var(--set-surface-soft, rgba(0, 0, 0, 0.03));
   border-radius: 12px;
   margin-bottom: 4px;
 }
@@ -2451,11 +2460,11 @@ function onCancel() {
 .tpl-mode-suggest-text strong {
   font-size: 13px;
   font-weight: 600;
-  color: #1d1d1f;
+  color: var(--set-text-strong);
 }
 .tpl-mode-suggest-text small {
   font-size: 11.5px;
-  color: rgba(29, 29, 31, 0.6);
+  color: var(--set-text-muted);
   line-height: 1.5;
 }
 .tpl-mode-suggest-btn {
@@ -2465,20 +2474,20 @@ function onCancel() {
   padding: 6px 14px;
   font-size: 12px;
   font-weight: 600;
-  color: #fff;
-  background: #0071e3;
-  border: 1px solid #0071e3;
+  color: var(--set-primary-text, #fff);
+  background: var(--set-primary-bg, #1d1d1f);
+  border: 1px solid var(--set-primary-border, #1d1d1f);
   border-radius: 99px;
   cursor: pointer;
   transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
   flex-shrink: 0;
-  box-shadow: 0 1px 4px rgba(0, 113, 227, 0.3);
+  box-shadow: none;
 }
 .tpl-mode-suggest-btn:hover {
-  background: #0056b3;
-  border-color: #0056b3;
+  background: var(--set-primary-bg-hover);
+  border-color: var(--set-primary-border);
   transform: translateY(-1px) scale(1.02);
-  box-shadow: 0 4px 12px rgba(0, 113, 227, 0.4);
+  box-shadow: none;
 }
 .tpl-mode-suggest-btn:active { transform: scale(0.96); }
 
@@ -2489,8 +2498,8 @@ function onCancel() {
   flex-wrap: wrap;
   gap: 4px;
   padding: 8px 10px;
-  background: #fafafa;
-  border: 1px solid rgba(29, 29, 31, 0.08);
+  background: var(--set-surface-soft);
+  border: 1px solid var(--set-border);
   border-bottom: none;
   border-radius: 10px 10px 0 0;
 }
@@ -2499,7 +2508,7 @@ function onCancel() {
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: rgba(29, 29, 31, 0.45);
+  color: var(--set-text-subtle);
   margin-right: 4px;
 }
 /* BlockNote 风格变量 pill */
@@ -2520,16 +2529,16 @@ function onCancel() {
   transition: all 0.15s ease;
 }
 .tpl-var-pill:hover {
-  background: #1d1d1f;
+  background: var(--set-primary-bg);
   border-color: #4a4d55;
   transform: translateY(-1px);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+  box-shadow: none;
 }
 .tpl-var-pill:active { transform: translateY(0); }
 .tpl-var-pill-dot {
   width: 6px;
   height: 6px;
-  background: #6ea8fe;
+  background: var(--set-tag-info-text, #c7d2fe);
   transform: rotate(45deg);
   border-radius: 1px;
   flex-shrink: 0;
@@ -2550,18 +2559,18 @@ function onCancel() {
   line-height: 1.65 !important;
   tab-size: 2;
   padding: 14px 16px !important;
-  caret-color: #0a84ff;
+  caret-color: var(--set-text-strong, #f5f5f7);
 }
 .tpl-code-editor-area:focus {
-  border-color: rgba(10, 132, 255, 0.6) !important;
-  box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.15) !important;
+  border-color: var(--set-border-strong, rgba(255, 255, 255, 0.22)) !important;
+  box-shadow: 0 0 0 3px var(--set-focus-ring, rgba(255, 255, 255, 0.08)) !important;
 }
 .tpl-code-editor-area::placeholder {
   color: rgba(245, 245, 247, 0.3);
   font-family: inherit;
 }
 .tpl-code-editor-area::selection {
-  background: rgba(10, 132, 255, 0.3);
+  background: rgba(228, 228, 231, 0.24);
 }
 .tpl-code-editor-hint {
   position: absolute;
@@ -2587,7 +2596,7 @@ function onCancel() {
   border: 1px solid rgba(29, 29, 31, 0.08);
   padding: 1px 5px;
   border-radius: 4px;
-  color: #0071e3;
+  color: var(--set-text-strong, #1d1d1f);
   margin: 0 1px;
 }
 </style>

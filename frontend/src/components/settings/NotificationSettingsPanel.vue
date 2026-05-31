@@ -11,10 +11,10 @@
         <div class="field-stack notif-center-fields">
           <div class="mini-grid two">
             <SettingsFieldCard label="通知保留天数">
-              <el-input-number v-model="config.notification_center.retain_days" :min="1" :max="365" class="field-number" />
+              <SettingsNumberStepper v-model="config.notification_center.retain_days" :min="1" :max="365" />
             </SettingsFieldCard>
             <SettingsFieldCard label="最大保留条数">
-              <el-input-number v-model="config.notification_center.max_items" :min="20" :max="2000" class="field-number" />
+              <SettingsNumberStepper v-model="config.notification_center.max_items" :min="20" :max="2000" />
             </SettingsFieldCard>
           </div>
         </div>
@@ -74,12 +74,18 @@
           </SettingsFieldCard>
           <div class="mini-grid two">
             <SettingsFieldCard label="端口">
-              <el-input-number v-model="config.notification_email.smtp_port" :min="1" :max="65535" class="field-number" />
+              <SettingsNumberStepper v-model="config.notification_email.smtp_port" :min="1" :max="65535" />
             </SettingsFieldCard>
             <SettingsFieldCard label="加密方式">
               <div class="smtp-crypt-row">
-                <label class="toggle-mini"><el-switch v-model="config.notification_email.smtp_ssl" @change="v => { if(v) config.notification_email.smtp_starttls = false }" /><span>SSL</span></label>
-                <label class="toggle-mini"><el-switch v-model="config.notification_email.smtp_starttls" @change="v => { if(v) config.notification_email.smtp_ssl = false }" /><span>STARTTLS</span></label>
+                <div class="toggle-mini">
+                  <SettingsSwitch v-model="config.notification_email.smtp_ssl" @change="v => { if(v) config.notification_email.smtp_starttls = false }" />
+                  <span>SSL</span>
+                </div>
+                <div class="toggle-mini">
+                  <SettingsSwitch v-model="config.notification_email.smtp_starttls" @change="v => { if(v) config.notification_email.smtp_ssl = false }" />
+                  <span>STARTTLS</span>
+                </div>
               </div>
             </SettingsFieldCard>
           </div>
@@ -119,6 +125,8 @@
 import { computed, ref } from 'vue'
 import { Activity, Bell, Captions, Database, FileArchive, Mail, Sparkles, Upload, UploadCloud } from 'lucide-vue-next'
 import SettingsFieldCard from './SettingsFieldCard.vue'
+import SettingsNumberStepper from './SettingsNumberStepper.vue'
+import SettingsSwitch from './SettingsSwitch.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
 import NotificationTemplatesPanel from './NotificationTemplatesPanel.vue'
 import AnimatedPasswordInput from '../common/AnimatedPasswordInput.vue'
@@ -251,7 +259,7 @@ async function doTestEmail() {
   gap: 8px;
   flex-wrap: wrap;
   margin: 0 0 14px;
-  color: #1d1d1f;
+  color: var(--set-text-strong);
   font-size: 13.5px;
   font-weight: 600;
   letter-spacing: -0.1px;
@@ -262,42 +270,23 @@ async function doTestEmail() {
   width: 100%;
   min-height: 38px;
   padding: 0 12px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
+  border: 1px solid var(--set-border);
   border-radius: 10px;
-  background: #ffffff;
-  color: #1d1d1f;
+  background: var(--set-field-bg);
+  color: var(--set-text-strong);
   font-size: 13.5px;
   outline: none;
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
-.field-input:hover { border-color: rgba(148, 163, 184, 0.75); }
+.field-input:hover { border-color: var(--set-border-strong); }
 
 .field-input:focus {
-  border-color: rgba(79, 70, 229, 0.5);
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+  border-color: var(--set-border-strong);
+  box-shadow: 0 0 0 3px var(--set-focus-ring);
 }
 
-.field-input::placeholder { color: #94a3b8; }
-
-.field-number :deep(.el-input__wrapper) {
-  min-height: 38px;
-  border-radius: 10px;
-  background: #ffffff;
-  box-shadow: none;
-  border: 1px solid rgba(226, 232, 240, 0.85) !important;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease;
-}
-
-.field-number :deep(.el-input__wrapper:hover) {
-  border-color: rgba(148, 163, 184, 0.75) !important;
-  box-shadow: none;
-}
-
-.field-number :deep(.el-input__wrapper.is-focus) {
-  border-color: rgba(79, 70, 229, 0.5) !important;
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1) !important;
-}
+.field-input::placeholder { color: var(--set-text-subtle); }
 
 /* SMTP */
 .smtp-preset-row {
@@ -310,7 +299,7 @@ async function doTestEmail() {
 
 .smtp-preset-label {
   font-size: 12px;
-  color: rgba(29, 29, 31, 0.55);
+  color: var(--set-text-muted);
   letter-spacing: -0.05px;
 }
 
@@ -320,9 +309,9 @@ async function doTestEmail() {
   height: 26px;
   padding: 0 10px;
   border-radius: 999px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  background: #ffffff;
-  color: #475569;
+  border: 1px solid var(--set-border);
+  background: var(--set-surface);
+  color: var(--set-text);
   font-size: 11.5px;
   font-weight: 500;
   letter-spacing: -0.03px;
@@ -332,14 +321,14 @@ async function doTestEmail() {
 
 .smtp-preset-btn:hover {
   transform: translateY(-1px);
-  border-color: rgba(99, 102, 241, 0.55);
-  background: linear-gradient(135deg, rgba(238, 242, 255, 0.85) 0%, #ffffff 100%);
-  color: #4f46e5;
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
+  color: var(--set-text-strong);
 }
 
 .smtp-help-link {
   font-size: 11.5px;
-  color: rgba(29, 29, 31, 0.5);
+  color: var(--set-text-muted);
   text-decoration: none;
   border-bottom: 1px dashed rgba(148, 163, 184, 0.55);
   padding-bottom: 1px;
@@ -348,8 +337,8 @@ async function doTestEmail() {
 }
 
 .smtp-help-link:hover {
-  color: #4f46e5;
-  border-bottom-color: rgba(99, 102, 241, 0.85);
+  color: var(--set-text-strong);
+  border-bottom-color: var(--set-border-strong);
 }
 
 .smtp-host-tip {
@@ -381,7 +370,7 @@ async function doTestEmail() {
   gap: 6px;
   font-size: 12px;
   font-weight: 500;
-  color: rgba(29, 29, 31, 0.65);
+  color: var(--set-text);
   letter-spacing: -0.05px;
   cursor: pointer;
 }
@@ -390,10 +379,10 @@ async function doTestEmail() {
 .notif-domain-block {
   margin-top: 14px;
   padding: 12px 14px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
+  border: 1px solid var(--set-border);
   border-radius: 12px;
-  background: linear-gradient(180deg, #ffffff 0%, rgba(248, 250, 252, 0.6) 100%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  background: var(--set-surface-soft);
+  box-shadow: none;
 }
 
 .notif-domain-block.is-disabled { opacity: 0.55; pointer-events: none; }
@@ -405,13 +394,13 @@ async function doTestEmail() {
   margin-bottom: 10px;
   font-size: 13px;
   font-weight: 500;
-  color: #1d1d1f;
+  color: var(--set-text-strong);
   letter-spacing: -0.05px;
 }
 
 .notif-domain-hint {
   font-size: 11.5px;
-  color: rgba(29, 29, 31, 0.5);
+  color: var(--set-text-muted);
   letter-spacing: -0.05px;
 }
 
@@ -426,39 +415,34 @@ async function doTestEmail() {
   font-size: 11.5px;
   font-weight: 500;
   letter-spacing: 0.01em;
-  color: #475569;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-  border: 1px solid rgba(226, 232, 240, 0.85);
+  color: var(--set-chip-text);
+  background: var(--set-chip-bg);
+  border: 1px solid var(--set-border);
   border-radius: 999px;
   cursor: pointer;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 1px 2px rgba(15, 23, 42, 0.04);
+  box-shadow: none;
   transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .notif-domain-chip:hover {
   transform: translateY(-1px) scale(1.04);
-  border-color: rgba(148, 163, 184, 0.75);
-  color: #1d1d1f;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.85),
-    0 4px 10px -2px rgba(15, 23, 42, 0.1);
+  border-color: var(--set-border-strong);
+  color: var(--set-text-strong);
+  background: var(--set-surface-hover);
+  box-shadow: none;
 }
 
 .notif-domain-chip.is-active {
-  color: #ffffff;
-  background: linear-gradient(180deg, #1f2937 0%, #0f172a 60%, #020617 100%);
-  border-color: #0f172a;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.18),
-    0 4px 10px -4px rgba(2, 6, 23, 0.5);
+  color: var(--set-tag-info-text);
+  background: var(--set-tag-info-bg);
+  border-color: var(--set-tag-info-border);
+  box-shadow: none;
 }
 
 .notif-domain-chip.is-active:hover {
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    0 8px 18px -6px rgba(2, 6, 23, 0.55);
+  color: var(--set-tag-info-text);
+  background: var(--set-tag-info-bg);
+  box-shadow: none;
 }
 
 .notif-domain-chip:disabled { cursor: not-allowed; opacity: 0.6; }
@@ -476,20 +460,20 @@ async function doTestEmail() {
   border: none;
   padding: 0;
   font-size: 11.5px;
-  color: #4f46e5;
+  color: var(--set-text-strong);
   letter-spacing: -0.03px;
   cursor: pointer;
   transition: color 0.18s;
 }
 
 .notif-domain-link:hover {
-  color: #3730a3;
+  color: var(--set-text-strong);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
-.notif-domain-link:disabled { color: #cbd5e1; cursor: not-allowed; }
-.notif-domain-sep { color: #cbd5e1; }
+.notif-domain-link:disabled { color: var(--set-text-subtle); cursor: not-allowed; }
+.notif-domain-sep { color: var(--set-text-subtle); }
 
 /* action 按钮 */
 .action-btn {
@@ -512,15 +496,15 @@ async function doTestEmail() {
 .action-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .action-btn--secondary {
-  background: #ffffff;
-  color: #475569;
-  border: 1px solid rgba(226, 232, 240, 0.85);
+  background: var(--set-surface);
+  color: var(--set-text);
+  border: 1px solid var(--set-border);
 }
 
 .action-btn--secondary:hover {
-  border-color: rgba(99, 102, 241, 0.55);
-  color: #4f46e5;
-  background: linear-gradient(135deg, rgba(238, 242, 255, 0.85) 0%, #ffffff 100%);
+  border-color: var(--set-border-strong);
+  color: var(--set-text-strong);
+  background: var(--set-surface-hover);
 }
 
 .email-test-result {
@@ -536,21 +520,17 @@ async function doTestEmail() {
 }
 
 .email-test-result.ok {
-  background: linear-gradient(180deg, #ecfdf5 0%, #d1fae5 100%);
-  color: #047857;
-  border: 1px solid rgba(110, 231, 183, 0.55);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 1px 2px rgba(16, 185, 129, 0.1);
+  background: var(--set-success-bg);
+  color: var(--set-success-text);
+  border: 1px solid var(--set-success-border);
+  box-shadow: none;
 }
 
 .email-test-result.err {
-  background: linear-gradient(180deg, #fff1f2 0%, #fee2e2 100%);
-  color: #b91c1c;
-  border: 1px solid rgba(252, 165, 165, 0.55);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 1px 2px rgba(239, 68, 68, 0.1);
+  background: var(--set-danger-bg);
+  color: var(--set-danger-text);
+  border: 1px solid var(--set-danger-border);
+  box-shadow: none;
 }
 
 @media (max-width: 1200px) {

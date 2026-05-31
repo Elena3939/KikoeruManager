@@ -1,7 +1,7 @@
 <template>
   <div class="settings-workbench">
     <aside class="settings-sidebar">
-      <div class="sidebar-shell">
+      <div class="settings-sidebar-shell">
         <label class="settings-search">
           <Search :size="15" :stroke-width="2.4" />
           <input :value="searchQuery" type="text" placeholder="搜索设置分组..." @input="$emit('update:searchQuery', $event.target.value)">
@@ -12,18 +12,18 @@
             v-for="section in filteredSections"
             :key="section.id"
             type="button"
-            class="nav-item"
-            :class="[`nav-item-${section.id}`, { active: activeSection === section.id }]"
+            class="settings-nav-item"
+            :class="[`settings-nav-item-${section.id}`, { active: activeSection === section.id }]"
             @click="$emit('navigate', section.id)"
           >
-            <span class="nav-item-icon">
+            <span class="settings-nav-item-icon">
               <component :is="section.icon" :size="15" :stroke-width="2.2" />
             </span>
-            <div class="nav-item-body">
-              <div class="nav-item-title">{{ section.title }}</div>
-              <div class="nav-item-desc">{{ section.short }}</div>
+            <div class="settings-nav-item-body">
+              <div class="settings-nav-item-title">{{ section.title }}</div>
+              <div class="settings-nav-item-desc">{{ section.short }}</div>
             </div>
-            <span v-if="dirtyMap?.[section.id]" class="nav-badge is-dirty">已改</span>
+            <span v-if="dirtyMap?.[section.id]" class="settings-nav-badge is-dirty">已改</span>
           </button>
         </nav>
 
@@ -123,7 +123,7 @@ const filteredSections = computed(() => {
     position: relative;
     top: auto;
   }
-  .sidebar-shell {
+  .settings-sidebar-shell {
     padding: 8px;
     border-radius: 14px;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.04);
@@ -150,8 +150,8 @@ const filteredSections = computed(() => {
     background: rgba(148, 163, 184, 0.4);
     border-radius: 999px;
   }
-  /* 每个 nav-item 改成 chip：图标 + 短标题，描述隐藏 */
-  .nav-item {
+  /* 每个导航项改成 chip：图标 + 短标题，描述隐藏 */
+  .settings-nav-item {
     flex: 0 0 auto;
     flex-direction: column;
     align-items: center;
@@ -161,19 +161,19 @@ const filteredSections = computed(() => {
     text-align: center;
     position: relative;
   }
-  .nav-item-body {
+  .settings-nav-item-body {
     flex: 0 0 auto;
     text-align: center;
   }
-  .nav-item-title {
+  .settings-nav-item-title {
     font-size: 11.5px;
     line-height: 1.15;
     white-space: nowrap;
   }
-  .nav-item-desc {
+  .settings-nav-item-desc {
     display: none;
   }
-  .nav-badge {
+  .settings-nav-badge {
     position: absolute;
     top: 2px;
     right: 4px;
@@ -181,30 +181,31 @@ const filteredSections = computed(() => {
     padding: 0 5px;
     font-size: 9px;
   }
-  /* nav-item-icon 在 chip 中略放大 */
-  .nav-item-icon {
+  /* 导航图标在 chip 中略放大 */
+  .settings-nav-item-icon {
     width: 28px;
     height: 28px;
   }
 }
 
 @media (max-width: 640px) {
-  .nav-item {
+  .settings-nav-item {
     min-width: 72px;
     padding: 6px 10px;
   }
-  .nav-item-title {
+  .settings-nav-item-title {
     font-size: 10.5px;
   }
 }
 
-.sidebar-shell {
+.settings-sidebar-shell {
   box-sizing: border-box;
   width: 100%;
   padding: 14px 12px 12px;
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.05);
+  background: var(--set-surface, rgba(255, 255, 255, 0.94));
+  border: 1px solid var(--set-border-soft, transparent);
+  box-shadow: var(--set-shadow, 0 12px 30px rgba(0, 0, 0, 0.05));
   overflow: hidden;
 }
 
@@ -215,15 +216,15 @@ const filteredSections = computed(() => {
   height: 36px;
   padding: 0 12px;
   border-radius: 999px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  background: #ffffff;
-  color: #94a3b8;
+  border: 1px solid var(--set-border, rgba(226, 232, 240, 0.85));
+  background: var(--set-field-bg, #ffffff);
+  color: var(--set-text-subtle, #94a3b8);
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .settings-search:focus-within {
-  border-color: rgba(148, 163, 184, 0.85);
-  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.05);
+  border-color: var(--set-border-strong, rgba(148, 163, 184, 0.85));
+  box-shadow: 0 0 0 3px var(--set-accent-soft, rgba(15, 23, 42, 0.05));
 }
 
 .settings-search input {
@@ -231,11 +232,11 @@ const filteredSections = computed(() => {
   border: none;
   outline: none;
   background: transparent;
-  color: #0f172a;
+  color: var(--set-text-strong, #0f172a);
   font-size: 13px;
 }
 
-.settings-search input::placeholder { color: #94a3b8; }
+.settings-search input::placeholder { color: var(--set-text-subtle, #94a3b8); }
 
 .settings-nav {
   display: grid;
@@ -243,8 +244,8 @@ const filteredSections = computed(() => {
   margin-top: 12px;
 }
 
-/* nav-item 对齐库存页 lib-btn-icon-tinted 风：白底 + 图标按 section 染色 + hover 微上抬 */
-.nav-item {
+/* 设置导航：图标直接按模块语义染色，不再套灰色底块 */
+.settings-nav-item {
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -255,69 +256,72 @@ const filteredSections = computed(() => {
   border-radius: 12px;
   border: 1px solid transparent;
   background: transparent;
-  color: #334155;
+  color: var(--set-text, #334155);
   cursor: pointer;
   text-align: left;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
   overflow: hidden;
 }
 
-.nav-item:hover {
+.settings-nav-item:hover {
   transform: translateY(-1px);
-  background: rgba(248, 250, 252, 0.85);
-  border-color: rgba(226, 232, 240, 0.85);
+  background: var(--set-surface-hover, rgba(248, 250, 252, 0.85));
+  border-color: var(--set-border, rgba(226, 232, 240, 0.85));
 }
 
-.nav-item:hover .nav-item-icon { transform: scale(1.08); }
+.settings-nav-item:hover .settings-nav-item-icon { transform: scale(1.08); }
 
-.nav-item.active {
-  background: linear-gradient(135deg, rgba(239, 246, 255, 0.95) 0%, rgba(255, 255, 255, 0.96) 100%);
-  border-color: rgba(199, 210, 254, 0.7);
+.settings-nav-item.active {
+  background: var(--set-surface-muted, rgba(241, 245, 249, 0.95));
+  border-color: var(--set-border-strong, rgba(148, 163, 184, 0.36));
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.85),
-    0 4px 12px -4px rgba(79, 70, 229, 0.18);
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    var(--set-shadow, 0 4px 12px -4px rgba(15, 23, 42, 0.12));
 }
 
-.nav-item-icon {
+.settings-nav-item-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 26px;
   height: 26px;
   flex-shrink: 0;
-  border-radius: 8px;
-  color: #4f46e5;
+  border-radius: 0;
+  background: transparent;
+  border: none;
+  color: var(--settings-nav-icon, var(--set-text-muted, #64748b));
   transition: transform 0.25s ease, color 0.25s ease;
 }
 
-/* 每个 section 一个颜色，跟库存页 lib-btn-icon-tinted 同一思路 */
-.nav-item-storage     .nav-item-icon { color: #2563eb; }
-.nav-item-processing  .nav-item-icon { color: #7c3aed; }
-.nav-item-rules       .nav-item-icon { color: #d97706; }
-.nav-item-services    .nav-item-icon { color: #059669; }
-.nav-item-maintenance .nav-item-icon { color: #e11d48; }
-.nav-item-security    .nav-item-icon { color: #2563eb; }
-.nav-item-notification .nav-item-icon { color: #4f46e5; }
+.settings-nav-item-storage { --settings-nav-icon: var(--set-nav-storage-icon, #0f766e); }
+.settings-nav-item-processing { --settings-nav-icon: var(--set-nav-processing-icon, #b45309); }
+.settings-nav-item-rules { --settings-nav-icon: var(--set-nav-rules-icon, #7c3aed); }
+.settings-nav-item-services { --settings-nav-icon: var(--set-nav-services-icon, #0891b2); }
+.settings-nav-item-httpDownload { --settings-nav-icon: var(--set-nav-http-download-icon, #0284c7); }
+.settings-nav-item-maintenance { --settings-nav-icon: var(--set-nav-maintenance-icon, #c2410c); }
+.settings-nav-item-fts { --settings-nav-icon: var(--set-nav-fts-icon, #4f46e5); }
+.settings-nav-item-security { --settings-nav-icon: var(--set-nav-security-icon, #15803d); }
+.settings-nav-item-notification { --settings-nav-icon: var(--set-nav-notification-icon, #be185d); }
 
-.nav-item-body {
+.settings-nav-item-body {
   flex: 1 1 auto;
   min-width: 0;
 }
 
-.nav-item-title {
+.settings-nav-item-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #1d1d1f;
+  color: var(--set-text-strong, #1d1d1f);
   font-size: 13px;
   font-weight: 600;
   letter-spacing: -0.1px;
   line-height: 1.3;
 }
 
-.nav-item-desc {
+.settings-nav-item-desc {
   margin-top: 2px;
-  color: rgba(29, 29, 31, 0.55);
+  color: var(--set-text-muted, rgba(29, 29, 31, 0.55));
   font-size: 11px;
   line-height: 1.35;
   overflow: hidden;
@@ -325,7 +329,7 @@ const filteredSections = computed(() => {
   white-space: nowrap;
 }
 
-.nav-badge {
+.settings-nav-badge {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -337,7 +341,7 @@ const filteredSections = computed(() => {
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.02em;
-  background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
+  background: color-mix(in srgb, #f59e0b 13%, var(--set-surface));
   color: #b45309;
   border: 1px solid rgba(251, 191, 36, 0.5);
   box-shadow:
@@ -345,10 +349,47 @@ const filteredSections = computed(() => {
     0 1px 2px rgba(245, 158, 11, 0.1);
 }
 
+:global(html.kikoerumanager-dark .settings-page .settings-nav-item) {
+  border-color: transparent;
+}
+
+:global(html.kikoerumanager-dark .settings-page .settings-nav-item:hover) {
+  background: rgba(255, 255, 255, 0.035);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+:global(html.kikoerumanager-dark .settings-page .settings-nav-item.active) {
+  background: rgba(255, 255, 255, 0.055);
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark .settings-page .settings-nav-item-icon) {
+  opacity: 0.82;
+  filter: saturate(0.72) brightness(0.94);
+}
+
+:global(html.kikoerumanager-dark .settings-page .settings-nav-item:hover .settings-nav-item-icon),
+:global(html.kikoerumanager-dark .settings-page .settings-nav-item.active .settings-nav-item-icon) {
+  opacity: 0.96;
+  filter: saturate(0.82) brightness(1);
+}
+
+:global(html.kikoerumanager-dark .settings-page .settings-nav-item-httpDownload) {
+  --settings-nav-icon: var(--set-nav-http-download-icon, #8aaebe);
+}
+
+:global(html.kikoerumanager-dark .settings-page .settings-nav-badge.is-dirty) {
+  background: rgba(173, 136, 82, 0.12);
+  color: #d7ba7d;
+  border-color: rgba(202, 164, 101, 0.3);
+  box-shadow: none;
+}
+
 .sidebar-footer {
   margin-top: 14px;
   padding-top: 12px;
-  border-top: 1px dashed rgba(226, 232, 240, 0.85);
+  border-top: 1px dashed var(--set-border, rgba(226, 232, 240, 0.85));
   display: grid;
   gap: 8px;
 }
@@ -364,12 +405,12 @@ const filteredSections = computed(() => {
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #94a3b8;
+  color: var(--set-text-subtle, #94a3b8);
 }
 
 .sidebar-footer-value {
   font-size: 11.5px;
-  color: rgba(29, 29, 31, 0.65);
+  color: var(--set-text-muted, rgba(29, 29, 31, 0.65));
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   word-break: break-all;
   line-height: 1.4;
@@ -383,9 +424,9 @@ const filteredSections = computed(() => {
   height: 32px;
   padding: 0 12px;
   border-radius: 10px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  background: #ffffff;
-  color: #334155;
+  border: 1px solid var(--set-border, rgba(226, 232, 240, 0.85));
+  background: var(--set-surface, #ffffff);
+  color: var(--set-text, #334155);
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
@@ -394,9 +435,9 @@ const filteredSections = computed(() => {
 
 .sidebar-ghost-btn:not(:disabled):hover {
   transform: translateY(-1px);
-  background: linear-gradient(135deg, #eff6ff 0%, #fff 100%);
-  border-color: rgba(59, 130, 246, 0.55);
-  color: #1d4ed8;
+  background: var(--set-surface-hover, rgba(248, 250, 252, 0.85));
+  border-color: var(--set-border-strong, rgba(148, 163, 184, 0.75));
+  color: var(--set-text-strong, #111827);
 }
 
 .sidebar-ghost-btn:hover:not(:disabled) svg:not(.spinning) {
@@ -429,9 +470,9 @@ const filteredSections = computed(() => {
   width: min(720px, calc(100vw - 280px));
   padding: 14px 16px;
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.97);
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  box-shadow: 0 18px 40px -12px rgba(15, 23, 42, 0.18);
+  background: color-mix(in srgb, var(--set-surface, #ffffff) 96%, transparent);
+  border: 1px solid var(--set-border, rgba(226, 232, 240, 0.9));
+  box-shadow: var(--set-shadow-hover, 0 18px 40px -12px rgba(15, 23, 42, 0.18));
   backdrop-filter: blur(8px);
   pointer-events: auto;
 }
@@ -442,7 +483,7 @@ const filteredSections = computed(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #1d1d1f;
+  color: var(--set-text-strong, #1d1d1f);
   font-size: 14px;
   font-weight: 600;
   letter-spacing: -0.1px;
@@ -466,7 +507,7 @@ const filteredSections = computed(() => {
 
 .save-bar-desc {
   margin-top: 3px;
-  color: rgba(29, 29, 31, 0.55);
+  color: var(--set-text-muted, rgba(29, 29, 31, 0.55));
   font-size: 12px;
   line-height: 1.5;
 }
@@ -497,7 +538,7 @@ const filteredSections = computed(() => {
 /* 主按钮：180deg 三段渐变 + inset 顶部高光 + 双层 glow shadow */
 .save-bar-btn-primary {
   color: #ffffff;
-  background: linear-gradient(180deg, #1f2937 0%, #0f172a 60%, #020617 100%);
+  background: linear-gradient(180deg, var(--set-accent-hover, #1f2937) 0%, var(--set-accent, #111827) 100%);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.18),
     0 6px 16px -6px rgba(2, 6, 23, 0.55),
@@ -518,16 +559,16 @@ const filteredSections = computed(() => {
 
 /* 次按钮：白底 ghost */
 .save-bar-btn-ghost {
-  background: #ffffff;
-  border-color: rgba(226, 232, 240, 0.9);
-  color: #475569;
+  background: var(--set-surface, #ffffff);
+  border-color: var(--set-border, rgba(226, 232, 240, 0.9));
+  color: var(--set-text, #475569);
 }
 
 .save-bar-btn-ghost:not(:disabled):hover {
   transform: translateY(-1px);
-  border-color: rgba(148, 163, 184, 0.85);
-  background: rgba(248, 250, 252, 0.85);
-  color: #1d1d1f;
+  border-color: var(--set-border-strong, rgba(148, 163, 184, 0.85));
+  background: var(--set-surface-hover, rgba(248, 250, 252, 0.85));
+  color: var(--set-text-strong, #1d1d1f);
 }
 
 .save-bar-btn-ghost:not(:disabled):active {
@@ -581,7 +622,7 @@ const filteredSections = computed(() => {
     max-width: 100%;
     min-width: 0;
   }
-  .sidebar-shell {
+  .settings-sidebar-shell {
     padding: 8px !important;
     border-radius: 16px;
     overflow: hidden;
@@ -608,7 +649,7 @@ const filteredSections = computed(() => {
   .settings-nav::-webkit-scrollbar {
     display: none;
   }
-  .nav-item {
+  .settings-nav-item {
     width: auto !important;
     flex: 0 0 auto !important;
     flex-direction: column !important;
@@ -620,26 +661,26 @@ const filteredSections = computed(() => {
     text-align: center !important;
     position: relative;
   }
-  .nav-item-body {
+  .settings-nav-item-body {
     flex: 0 0 auto !important;
     width: 100%;
     min-width: 0;
     text-align: center !important;
   }
-  .nav-item-title {
+  .settings-nav-item-title {
     font-size: 11.5px !important;
     line-height: 1.18;
     white-space: nowrap;
   }
-  .nav-item-desc {
+  .settings-nav-item-desc {
     display: none !important;
   }
-  .nav-item-icon {
+  .settings-nav-item-icon {
     width: 30px !important;
     height: 30px !important;
     border-radius: 10px;
   }
-  .nav-badge {
+  .settings-nav-badge {
     position: absolute;
     top: 3px;
     right: 4px;
@@ -656,20 +697,20 @@ const filteredSections = computed(() => {
   .settings-workbench {
     gap: 10px;
   }
-  .sidebar-shell {
+  .settings-sidebar-shell {
     margin: 0 -2px;
     padding: 7px !important;
     border-radius: 14px;
   }
-  .nav-item {
+  .settings-nav-item {
     min-width: 78px;
     padding: 8px 9px !important;
     border-radius: 12px;
   }
-  .nav-item-title {
+  .settings-nav-item-title {
     font-size: 11px !important;
   }
-  .nav-item-icon {
+  .settings-nav-item-icon {
     width: 28px !important;
     height: 28px !important;
   }

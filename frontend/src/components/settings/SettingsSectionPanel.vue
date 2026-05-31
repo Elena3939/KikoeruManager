@@ -48,7 +48,7 @@ defineProps({
 
 .panel-kicker {
   margin: 0 0 6px;
-  color: #94a3b8;
+  color: var(--set-text-subtle, #94a3b8);
   font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.08em;
@@ -57,7 +57,7 @@ defineProps({
 
 .panel-title {
   margin: 0;
-  color: #1d1d1f;
+  color: var(--set-text-strong, #1d1d1f);
   font-size: 22px;
   font-weight: 700;
   line-height: 1.15;
@@ -67,7 +67,7 @@ defineProps({
 .panel-desc {
   margin: 6px 0 0;
   max-width: 720px;
-  color: rgba(29, 29, 31, 0.6);
+  color: var(--set-text-muted, rgba(29, 29, 31, 0.6));
   font-size: 13px;
   line-height: 1.65;
 }

@@ -329,9 +329,9 @@ defineExpose({ reload })
   padding: 5px 11px;
   font-size: 12px;
   font-weight: 500;
-  color: #1d1d1f;
-  background: #fff;
-  border: 1px solid rgba(29, 29, 31, 0.12);
+  color: var(--set-text);
+  background: var(--set-surface);
+  border: 1px solid var(--set-border);
   border-radius: 99px;
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -339,9 +339,10 @@ defineExpose({ reload })
 
 .tpl-panel-action:hover {
   transform: translateY(-2px) scale(1.02);
-  border-color: rgba(0, 113, 227, 0.3);
-  color: #0071e3;
-  box-shadow: 0 4px 12px rgba(0, 113, 227, 0.1);
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
+  color: var(--set-text-strong);
+  box-shadow: none;
 }
 
 .tpl-panel-action:active:not(:disabled) {
@@ -359,16 +360,16 @@ defineExpose({ reload })
 }
 
 .tpl-panel-action--primary {
-  color: #fff;
-  background: #1d1d1f;
-  border-color: #1d1d1f;
+  color: var(--set-primary-text);
+  background: var(--set-primary-bg);
+  border-color: var(--set-primary-border);
 }
 
 .tpl-panel-action--primary:hover {
-  background: #000;
-  border-color: #000;
-  color: #fff;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  background: var(--set-primary-bg-hover);
+  border-color: var(--set-primary-border);
+  color: var(--set-primary-text);
+  box-shadow: none;
 }
 
 .tpl-create-wrap {
@@ -383,10 +384,10 @@ defineExpose({ reload })
   z-index: 20;
   width: 310px;
   padding: 7px;
-  background: #fff;
-  border: 1px solid rgba(29, 29, 31, 0.1);
+  background: var(--set-surface);
+  border: 1px solid var(--set-border);
   border-radius: 12px;
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.14);
+  box-shadow: none;
 }
 
 .tpl-create-item {
@@ -395,7 +396,7 @@ defineExpose({ reload })
   align-items: flex-start;
   gap: 10px;
   padding: 10px 11px;
-  color: #1d1d1f;
+  color: var(--set-text);
   background: transparent;
   border: 0;
   border-radius: 9px;
@@ -405,8 +406,8 @@ defineExpose({ reload })
 }
 
 .tpl-create-item:hover {
-  background: rgba(0, 113, 227, 0.06);
-  color: #0071e3;
+  background: var(--set-surface-hover);
+  color: var(--set-text-strong);
   transform: translateY(-1px);
 }
 
@@ -430,7 +431,7 @@ defineExpose({ reload })
 .tpl-create-item small {
   font-size: 11px;
   line-height: 1.45;
-  color: rgba(29, 29, 31, 0.52);
+  color: var(--set-text-muted);
 }
 
 .tpl-panel-desc {
@@ -462,15 +463,16 @@ defineExpose({ reload })
 
 .tpl-card {
   padding: 14px 16px;
-  background: #fff;
-  border: 1px solid rgba(29, 29, 31, 0.08);
+  background: var(--set-surface);
+  border: 1px solid var(--set-border);
   border-radius: 14px;
   transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .tpl-card:hover {
-  border-color: rgba(29, 29, 31, 0.16);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
+  box-shadow: none;
 }
 
 .tpl-card.is-disabled {
@@ -495,7 +497,7 @@ defineExpose({ reload })
 .tpl-card-name {
   font-size: 14px;
   font-weight: 600;
-  color: #1d1d1f;
+  color: var(--set-text-strong);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -513,15 +515,15 @@ defineExpose({ reload })
 }
 
 .tpl-badge--default {
-  color: #0071e3;
-  background: rgba(0, 113, 227, 0.1);
-  border: 1px solid rgba(0, 113, 227, 0.2);
+  color: var(--set-tag-info-text);
+  background: var(--set-tag-info-bg);
+  border: 1px solid var(--set-tag-info-border);
 }
 
 .tpl-badge--off {
-  color: rgba(29, 29, 31, 0.55);
-  background: rgba(29, 29, 31, 0.06);
-  border: 1px solid rgba(29, 29, 31, 0.12);
+  color: var(--set-text-muted);
+  background: var(--set-surface-muted);
+  border: 1px solid var(--set-border);
 }
 
 .tpl-card-actions {
@@ -540,14 +542,14 @@ defineExpose({ reload })
   background: transparent;
   border: 1px solid transparent;
   border-radius: 8px;
-  color: rgba(29, 29, 31, 0.55);
+  color: var(--set-text-muted);
   cursor: pointer;
   transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .tpl-action:hover {
-  background: rgba(0, 0, 0, 0.05);
-  color: #1d1d1f;
+  background: var(--set-surface-hover);
+  color: var(--set-text-strong);
   transform: translateY(-1px);
 }
 
@@ -568,17 +570,17 @@ defineExpose({ reload })
   border-radius: 6px;
   font-size: 11.5px;
   font-weight: 600;
-  color: #7c3aed;
-  background: rgba(124, 58, 237, 0.07);
-  border: 1px solid rgba(124, 58, 237, 0.2);
+  color: var(--set-text-strong, #1d1d1f);
+  background: var(--set-surface-soft, rgba(0, 0, 0, 0.04));
+  border: 1px solid var(--set-border, rgba(29, 29, 31, 0.12));
   white-space: nowrap;
 }
 
 .tpl-action--upgrade:hover {
-  background: rgba(124, 58, 237, 0.14);
-  color: #6d28d9;
+  background: var(--set-surface-hover, rgba(0, 0, 0, 0.06));
+  color: var(--set-text-strong, #1d1d1f);
   transform: translateY(-1px);
-  border-color: rgba(109, 40, 217, 0.35);
+  border-color: var(--set-border-strong, rgba(29, 29, 31, 0.2));
 }
 
 .tpl-action :deep(.is-filled) {
@@ -587,7 +589,7 @@ defineExpose({ reload })
 
 .tpl-card-desc {
   font-size: 12px;
-  color: rgba(29, 29, 31, 0.6);
+  color: var(--set-text-muted);
   line-height: 1.55;
   margin-bottom: 8px;
 }
@@ -610,7 +612,7 @@ defineExpose({ reload })
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: rgba(29, 29, 31, 0.45);
+  color: var(--set-text-subtle);
   min-width: 38px;
 }
 
@@ -626,14 +628,16 @@ defineExpose({ reload })
   padding: 2px 7px;
   font-size: 11px;
   font-weight: 500;
-  color: rgba(29, 29, 31, 0.7);
-  background: rgba(0, 0, 0, 0.04);
-  border: 1px solid rgba(29, 29, 31, 0.06);
+  color: var(--set-tag-info-text);
+  background: var(--set-tag-info-bg);
+  border: 1px solid var(--set-tag-info-border);
   border-radius: 99px;
 }
 
 .tpl-meta-chip--muted {
-  color: rgba(29, 29, 31, 0.45);
+  color: var(--set-text-muted);
+  background: var(--set-surface-muted);
+  border-color: var(--set-border);
   font-style: italic;
 }
 

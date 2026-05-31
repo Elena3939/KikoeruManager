@@ -295,7 +295,7 @@ onBeforeUnmount(() => {
 /* 标题对齐其他设置卡片的 .card-title 样式 */
 .db-shrink-head .card-title {
   margin: 0;
-  color: #1d1d1f;
+  color: var(--set-text-strong);
   font-size: 13.5px;
   font-weight: 600;
   letter-spacing: -0.1px;
@@ -303,12 +303,11 @@ onBeforeUnmount(() => {
 
 .db-shrink-subtitle {
   margin: 0;
-  color: #64748b;
+  color: var(--set-text-muted);
   font-size: 12.5px;
   line-height: 1.6;
 }
 
-/* 4 块尺寸 chip：白底 + 浅边框，对齐 SettingsFieldCard 的视觉 */
 .db-size-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -325,13 +324,13 @@ onBeforeUnmount(() => {
   gap: 4px;
   padding: 11px 14px;
   border-radius: 10px;
-  background: #ffffff;
-  border: 1px solid rgba(226, 232, 240, 0.85);
+  background: var(--set-surface);
+  border: 1px solid var(--set-border);
   transition: border-color 0.18s ease;
 }
 
 .db-size-chip:hover {
-  border-color: rgba(148, 163, 184, 0.75);
+  border-color: var(--set-border-strong);
 }
 
 .db-size-label {
@@ -390,26 +389,21 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
-/* 主操作：对齐设置页右上角"保存配置"的深色 slate 三段渐变（SettingsWorkbench .save-bar-btn-primary）。
- * 这是设置页里所有主操作的视觉权威，比 emerald 绿更克制、更"工具感"，瘦身这种慎重动作更适合。 */
 .db-btn-primary {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 8px 16px;
+  padding: 7px 14px;
   border-radius: 10px;
-  border: 1px solid #0f172a;
+  border: 1px solid var(--set-primary-border);
   cursor: pointer;
-  background: linear-gradient(180deg, #1f2937 0%, #0f172a 60%, #020617 100%);
-  color: #ffffff;
+  background: var(--set-primary-bg);
+  color: var(--set-primary-text);
   font-size: 12.5px;
   font-weight: 600;
   letter-spacing: 0.1px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.18),
-    0 6px 16px -6px rgba(2, 6, 23, 0.55),
-    0 2px 4px rgba(15, 23, 42, 0.25);
-  transition: transform 0.18s ease, box-shadow 0.18s ease;
+  box-shadow: none;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .db-btn-primary :deep(svg) {
@@ -417,11 +411,9 @@ onBeforeUnmount(() => {
 }
 
 .db-btn-primary:hover:not(:disabled) {
-  transform: translateY(-2px);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    0 10px 22px -6px rgba(2, 6, 23, 0.65),
-    0 4px 8px rgba(15, 23, 42, 0.3);
+  transform: translateY(-2px) scale(1.02);
+  background: var(--set-primary-bg-hover);
+  box-shadow: none;
 }
 
 .db-btn-primary:hover:not(:disabled) :deep(svg) {
@@ -437,16 +429,15 @@ onBeforeUnmount(() => {
   opacity: 0.55;
 }
 
-/* 次操作：白底 ghost，不要 hover translate */
 .db-btn-ghost {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   padding: 7px 12px;
   border-radius: 9px;
-  background: #ffffff;
-  color: #475569;
-  border: 1px solid rgba(226, 232, 240, 0.85);
+  background: var(--set-surface);
+  color: var(--set-text);
+  border: 1px solid var(--set-border);
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
@@ -454,8 +445,10 @@ onBeforeUnmount(() => {
 }
 
 .db-btn-ghost:hover:not(:disabled) {
-  border-color: rgba(148, 163, 184, 0.75);
-  color: #0f172a;
+  transform: translateY(-1px);
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
+  color: var(--set-text-strong);
 }
 
 .db-btn-ghost:hover:not(:disabled) svg:not(.db-spin) {
@@ -496,11 +489,11 @@ onBeforeUnmount(() => {
 }
 
 .db-status.is-running {
-  color: #4338ca;
+  color: var(--set-text-strong);
 }
 
 .db-status.is-running svg {
-  color: #6366f1;
+  color: var(--set-text-muted);
 }
 
 .db-status .db-status-stage {
@@ -508,11 +501,11 @@ onBeforeUnmount(() => {
 }
 
 .db-status .db-status-detail {
-  color: #64748b;
+  color: var(--set-text-muted);
 }
 
 .db-status.is-done {
-  color: #047857;
+  color: var(--set-success-text);
 }
 
 .db-status.is-done svg {
@@ -525,7 +518,7 @@ onBeforeUnmount(() => {
 }
 
 .db-status.is-error {
-  color: #b91c1c;
+  color: var(--set-danger-text);
 }
 
 .db-status.is-error svg {
@@ -535,7 +528,7 @@ onBeforeUnmount(() => {
 /* 底部提示：仅小灰字 */
 .db-shrink-tip {
   margin: 0;
-  color: #94a3b8;
+  color: var(--set-text-subtle);
   font-size: 11.5px;
   line-height: 1.6;
 }

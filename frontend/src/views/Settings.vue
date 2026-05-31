@@ -2,7 +2,7 @@
   <div class="settings-page">
     <AppPageHeader
       :icon="IconSettings"
-      icon-color="#4f46e5"
+      icon-color="var(--km-nav-settings-icon)"
       title="设置工作台"
       subtitle="集中管理连接、目录、规则、外部服务和通知模板"
     >
@@ -85,9 +85,18 @@
         v-else-if="activeSection === 'services'"
         kicker="External Services"
         title="外部服务"
-        description="集中维护 Kikoeru、ASMR 下载和 RJ 字幕抓取等远程链路。"
+        description="集中维护 Kikoeru、ASMR 下载、RJ 字幕抓取和邮件监听等远程链路。"
       >
         <ServicesSettingsPanel :config="config" />
+      </SettingsSectionPanel>
+
+      <SettingsSectionPanel
+        v-else-if="activeSection === 'httpDownload'"
+        kicker="HTTP Downloader"
+        title="HTTP 下载"
+        description="配置 HTTP/HTTPS 外链、Gofile 分享和 PikPak 分享转存下载。"
+      >
+        <HttpDownloadSettingsPanel :config="config" />
       </SettingsSectionPanel>
 
       <SettingsSectionPanel
@@ -131,13 +140,14 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { Bell, Boxes, HardDrive, LifeBuoy, ScanSearch, ShieldCheck, TextSearch, Workflow, Settings2 as IconSettings, AlertCircle as IconAlertCircle, CheckCircle2 as IconCheckCircle2, Clock as IconClock } from 'lucide-vue-next'
+import { Bell, Boxes, DownloadCloud, HardDrive, LifeBuoy, ScanSearch, ShieldCheck, TextSearch, Workflow, Settings2 as IconSettings, AlertCircle as IconAlertCircle, CheckCircle2 as IconCheckCircle2, Clock as IconClock } from 'lucide-vue-next'
 import SettingsSectionPanel from '../components/settings/SettingsSectionPanel.vue'
 import SettingsWorkbench from '../components/settings/SettingsWorkbench.vue'
 import StorageSettingsPanel from '../components/settings/StorageSettingsPanel.vue'
 import ProcessingSettingsPanel from '../components/settings/ProcessingSettingsPanel.vue'
 import RulesSettingsPanel from '../components/settings/RulesSettingsPanel.vue'
 import ServicesSettingsPanel from '../components/settings/ServicesSettingsPanel.vue'
+import HttpDownloadSettingsPanel from '../components/settings/HttpDownloadSettingsPanel.vue'
 import MaintenanceSettingsPanel from '../components/settings/MaintenanceSettingsPanel.vue'
 import FtsSettingsPanel from '../components/settings/FtsSettingsPanel.vue'
 import NotificationSettingsPanel from '../components/settings/NotificationSettingsPanel.vue'
@@ -151,7 +161,8 @@ const sectionKeyMap = {
   storage: ['storage'],
   processing: ['watcher', 'processing', 'extract', 'auto_process', 'process_existing'],
   rules: ['filter', 'rename', 'classification', 'path_mappings', 'path_mapping_enabled'],
-  services: ['kikoeru_server', 'asmr_sync', 'http_downloader', 'asmr_sync_step', 'rj_subtitle', 'email_watcher'],
+  services: ['kikoeru_server', 'asmr_sync', 'asmr_sync_step', 'rj_subtitle', 'email_watcher'],
+  httpDownload: ['http_downloader'],
   maintenance: ['password_cleanup', 'archive_cleanup', 'backup_zip'],
   fts: [],
   security: ['security_gate'],
@@ -201,7 +212,8 @@ const sections = [
   { id: 'storage', title: '存储与库存', short: '路径、本地库存、群晖模板', icon: HardDrive, keywords: ['storage', 'library', 'synology', '群晖', '库存'] },
   { id: 'processing', title: '处理流程', short: '监视、解压、自动处理', icon: Workflow, keywords: ['watcher', 'processing', 'extract', '自动处理'] },
   { id: 'rules', title: '内容规则', short: '过滤、重命名、分类、路径映射', icon: Boxes, keywords: ['filter', 'rename', 'classification', 'path'] },
-  { id: 'services', title: '外部服务', short: 'Kikoeru、ASMR、HTTP 下载、RJ 字幕', icon: ScanSearch, keywords: ['kikoeru', 'asmr', 'http', 'download', 'aria2', 'subtitle', '外部服务'] },
+  { id: 'services', title: '外部服务', short: 'Kikoeru、ASMR、RJ 字幕', icon: ScanSearch, keywords: ['kikoeru', 'asmr', 'subtitle', 'email', '外部服务'] },
+  { id: 'httpDownload', title: 'HTTP 下载', short: 'HTTP、Gofile、PikPak', icon: DownloadCloud, keywords: ['http', 'download', 'aria2', 'gofile', 'pikpak', '外链下载'] },
   { id: 'maintenance', title: '维护与清理', short: '清理、备份、压缩包', icon: LifeBuoy, keywords: ['cleanup', 'backup', 'archive', '维护'] },
   { id: 'fts', title: '全文搜索索引', short: 'FTS5 trigram 加速', icon: TextSearch, keywords: ['fts', 'search', 'trigram', '索引', '全文搜索', 'sqlite'] },
   { id: 'security', title: '安全门禁', short: '验证器、黑名单', icon: ShieldCheck, keywords: ['security', 'google authenticator', '门禁', '黑名单'] },
@@ -252,11 +264,124 @@ onMounted(() => {
    ============================================= */
 
 .settings-page {
+  --set-page-bg: transparent;
+  --set-surface: #ffffff;
+  --set-surface-soft: #f8fafc;
+  --set-surface-muted: #f1f5f9;
+  --set-surface-hover: #f8fafc;
+  --set-field-bg: #ffffff;
+  --set-text: #334155;
+  --set-text-strong: #111827;
+  --set-text-muted: #64748b;
+  --set-text-subtle: #94a3b8;
+  --set-border: rgba(15, 23, 42, 0.12);
+  --set-border-soft: rgba(15, 23, 42, 0.08);
+  --set-border-strong: rgba(15, 23, 42, 0.2);
+  --set-accent: #111827;
+  --set-accent-hover: #1f2937;
+  --set-accent-soft: rgba(15, 23, 42, 0.06);
+  --set-primary-bg: #1f2937;
+  --set-primary-bg-hover: #111827;
+  --set-primary-border: rgba(15, 23, 42, 0.92);
+  --set-primary-text: #ffffff;
+  --set-chip-bg: #f8fafc;
+  --set-chip-bg-active: #e5e7eb;
+  --set-chip-text: #475569;
+  --set-chip-text-strong: #0f172a;
+  --set-focus-ring: rgba(15, 23, 42, 0.08);
+  --set-success-bg: #ecfdf5;
+  --set-success-border: rgba(110, 231, 183, 0.55);
+  --set-success-text: #047857;
+  --set-warning-bg: #fffbeb;
+  --set-warning-border: rgba(251, 191, 36, 0.55);
+  --set-warning-text: #b45309;
+  --set-danger-bg: #fff1f2;
+  --set-danger-border: rgba(252, 165, 165, 0.55);
+  --set-danger-text: #b91c1c;
+  --set-tag-local-bg: #fff7ed;
+  --set-tag-local-border: rgba(194, 120, 3, 0.24);
+  --set-tag-local-text: #9a3412;
+  --set-tag-remote-bg: #ecfeff;
+  --set-tag-remote-border: rgba(14, 116, 144, 0.24);
+  --set-tag-remote-text: #0e7490;
+  --set-tag-info-bg: #eef2ff;
+  --set-tag-info-border: rgba(79, 70, 229, 0.18);
+  --set-tag-info-text: #4338ca;
+  --set-nav-storage-icon: #0f766e;
+  --set-nav-processing-icon: #b45309;
+  --set-nav-rules-icon: #7c3aed;
+  --set-nav-services-icon: #0891b2;
+  --set-nav-http-download-icon: #0284c7;
+  --set-nav-maintenance-icon: #c2410c;
+  --set-nav-fts-icon: #4f46e5;
+  --set-nav-security-icon: #15803d;
+  --set-nav-notification-icon: #be185d;
+  --set-shadow: 0 10px 26px rgba(15, 23, 42, 0.04);
+  --set-shadow-hover: 0 18px 36px rgba(15, 23, 42, 0.1);
   max-width: 1480px;
   margin: 0 auto;
   padding: 16px;
-  color: #1d1d1f;
+  color: var(--set-text);
+  background: var(--set-page-bg);
   font-family: "SF Pro Text", "SF Pro Display", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+}
+
+:global(html.kikoerumanager-dark .settings-page),
+:global(body.kikoerumanager-dark .settings-page) {
+  --set-page-bg: transparent;
+  --set-surface: #151515;
+  --set-surface-soft: #1b1b1d;
+  --set-surface-muted: #242427;
+  --set-surface-hover: #202023;
+  --set-field-bg: #1b1b1d;
+  --set-text: #d4d4d8;
+  --set-text-strong: #f5f5f5;
+  --set-text-muted: #a1a1aa;
+  --set-text-subtle: #71717a;
+  --set-border: rgba(255, 255, 255, 0.11);
+  --set-border-soft: rgba(255, 255, 255, 0.08);
+  --set-border-strong: rgba(255, 255, 255, 0.18);
+  --set-accent: #e5e7eb;
+  --set-accent-hover: #ffffff;
+  --set-accent-soft: rgba(255, 255, 255, 0.08);
+  --set-primary-bg: #e4e4e7;
+  --set-primary-bg-hover: #f4f4f5;
+  --set-primary-border: rgba(255, 255, 255, 0.36);
+  --set-primary-text: #18181b;
+  --set-chip-bg: #202023;
+  --set-chip-bg-active: #2a2a2d;
+  --set-chip-text: #d4d4d8;
+  --set-chip-text-strong: #f5f5f5;
+  --set-focus-ring: rgba(255, 255, 255, 0.08);
+  --set-success-bg: rgba(52, 211, 153, 0.13);
+  --set-success-border: rgba(52, 211, 153, 0.28);
+  --set-success-text: #86efac;
+  --set-warning-bg: rgba(251, 191, 36, 0.13);
+  --set-warning-border: rgba(251, 191, 36, 0.28);
+  --set-warning-text: #fbbf24;
+  --set-danger-bg: rgba(251, 113, 133, 0.13);
+  --set-danger-border: rgba(251, 113, 133, 0.3);
+  --set-danger-text: #fda4af;
+  --set-tag-local-bg: rgba(251, 191, 36, 0.13);
+  --set-tag-local-border: rgba(251, 191, 36, 0.28);
+  --set-tag-local-text: #facc15;
+  --set-tag-remote-bg: rgba(45, 212, 191, 0.13);
+  --set-tag-remote-border: rgba(94, 234, 212, 0.26);
+  --set-tag-remote-text: #5eead4;
+  --set-tag-info-bg: rgba(129, 140, 248, 0.14);
+  --set-tag-info-border: rgba(165, 180, 252, 0.22);
+  --set-tag-info-text: #c7d2fe;
+  --set-nav-storage-icon: #5eead4;
+  --set-nav-processing-icon: #fbbf24;
+  --set-nav-rules-icon: #c4b5fd;
+  --set-nav-services-icon: #67e8f9;
+  --set-nav-http-download-icon: #8aaebe;
+  --set-nav-maintenance-icon: #fdba74;
+  --set-nav-fts-icon: #a5b4fc;
+  --set-nav-security-icon: #86efac;
+  --set-nav-notification-icon: #f9a8d4;
+  --set-shadow: 0 14px 36px rgba(0, 0, 0, 0.24);
+  --set-shadow-hover: 0 20px 42px rgba(0, 0, 0, 0.32);
 }
 
 /* 移动端紧凑边距 */
@@ -294,48 +419,36 @@ onMounted(() => {
 .set-chip:hover { transform: translateY(-1px) scale(1.04); }
 
 .set-chip-success {
-  background: linear-gradient(180deg, #ecfdf5 0%, #d1fae5 100%);
-  color: #047857;
-  border-color: rgba(110, 231, 183, 0.55);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 1px 2px rgba(16, 185, 129, 0.1);
+  background: var(--set-success-bg);
+  color: var(--set-success-text);
+  border-color: var(--set-success-border);
+  box-shadow: none;
 }
 
 .set-chip-success:hover {
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.85),
-    0 4px 10px -2px rgba(16, 185, 129, 0.28);
+  box-shadow: none;
 }
 
 .set-chip-warning {
-  background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
-  color: #b45309;
-  border-color: rgba(251, 191, 36, 0.55);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 1px 2px rgba(245, 158, 11, 0.12);
+  background: var(--set-warning-bg);
+  color: var(--set-warning-text);
+  border-color: var(--set-warning-border);
+  box-shadow: none;
 }
 
 .set-chip-warning:hover {
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.85),
-    0 4px 10px -2px rgba(245, 158, 11, 0.3);
+  box-shadow: none;
 }
 
 .set-chip-info {
-  background: linear-gradient(180deg, #eef2ff 0%, #e0e7ff 100%);
-  color: #4338ca;
-  border-color: rgba(165, 180, 252, 0.55);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 1px 2px rgba(99, 102, 241, 0.12);
+  background: var(--set-tag-info-bg);
+  color: var(--set-tag-info-text);
+  border-color: var(--set-tag-info-border);
+  box-shadow: none;
 }
 
 .set-chip-info:hover {
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.85),
-    0 4px 10px -2px rgba(99, 102, 241, 0.3);
+  box-shadow: none;
 }
 
 @media (max-width: 640px) {

@@ -14,7 +14,9 @@
             <div class="library-title">{{ library.name || library.id }}</div>
             <div class="library-sub">{{ library.isRemote ? '群晖共享目录实例' : '本地库存目录' }}</div>
           </div>
-          <span class="library-type-pill">{{ library.isRemote ? '远程' : '本地' }}</span>
+          <span class="library-type-pill" :class="library.isRemote ? 'is-remote' : 'is-local'">
+            {{ library.isRemote ? '远程' : '本地' }}
+          </span>
         </div>
         <div class="library-meta">
           <span>{{ library.id }}</span>
@@ -200,8 +202,9 @@ function emitLibraryFlag(libraryId, key, value) {
   width: 100%;
   padding: 12px 14px;
   border-radius: 12px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  background: #ffffff;
+  border: 1px solid var(--set-border);
+  background: var(--set-surface);
+  color: var(--set-text);
   text-align: left;
   cursor: pointer;
   transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -209,25 +212,26 @@ function emitLibraryFlag(libraryId, key, value) {
 
 .library-card:hover {
   transform: translateY(-1px);
-  border-color: rgba(148, 163, 184, 0.75);
-  box-shadow: 0 4px 12px -4px rgba(15, 23, 42, 0.08);
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
+  box-shadow: var(--set-shadow);
 }
 
 .library-card.active {
-  border-color: rgba(99, 102, 241, 0.55);
-  background: linear-gradient(135deg, rgba(239, 246, 255, 0.85) 0%, rgba(255, 255, 255, 0.96) 100%);
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-muted);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.85),
-    0 4px 12px -4px rgba(79, 70, 229, 0.18);
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    var(--set-shadow);
 }
 
 .library-card.remote {
-  background: linear-gradient(135deg, rgba(240, 253, 244, 0.6) 0%, rgba(255, 255, 255, 0.96) 100%);
+  background: var(--set-surface);
 }
 
 .library-card.remote.active {
-  background: linear-gradient(135deg, rgba(220, 252, 231, 0.85) 0%, rgba(255, 255, 255, 0.96) 100%);
-  border-color: rgba(110, 231, 183, 0.55);
+  background: var(--set-surface-muted);
+  border-color: var(--set-border-strong);
 }
 
 .library-head {
@@ -238,14 +242,14 @@ function emitLibraryFlag(libraryId, key, value) {
 }
 
 .library-title {
-  color: #1d1d1f;
+  color: var(--set-text-strong);
   font-size: 13.5px;
   font-weight: 600;
   letter-spacing: -0.05px;
 }
 
 .editor-title {
-  color: #1d1d1f;
+  color: var(--set-text-strong);
   font-size: 16px;
   font-weight: 600;
   letter-spacing: -0.2px;
@@ -253,21 +257,21 @@ function emitLibraryFlag(libraryId, key, value) {
 
 .library-sub {
   margin-top: 2px;
-  color: rgba(29, 29, 31, 0.55);
+  color: var(--set-text-muted);
   font-size: 11.5px;
   line-height: 1.5;
 }
 
 .editor-desc,
 .empty-desc {
-  color: rgba(29, 29, 31, 0.55);
+  color: var(--set-text-muted);
   font-size: 12.5px;
   line-height: 1.6;
 }
 
 .editor-desc { margin-top: 4px; }
 
-/* type-pill / summary-pill 对齐 lib-chip 风：180deg 渐变 + inset 顶高光 + 微 glow */
+/* 标签保持语义色，平面细边，不做高光胶囊 */
 .library-type-pill,
 .summary-pill {
   display: inline-flex;
@@ -275,15 +279,25 @@ function emitLibraryFlag(libraryId, key, value) {
   height: 22px;
   padding: 0 9px;
   border-radius: 999px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-  color: #475569;
+  border: 1px solid var(--set-tag-info-border);
+  background: var(--set-tag-info-bg);
+  color: var(--set-tag-info-text);
   font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 1px 2px rgba(15, 23, 42, 0.04);
+  font-weight: 600;
+  letter-spacing: 0;
+  box-shadow: none;
+}
+
+.library-type-pill.is-local {
+  border-color: var(--set-tag-local-border);
+  background: var(--set-tag-local-bg);
+  color: var(--set-tag-local-text);
+}
+
+.library-type-pill.is-remote {
+  border-color: var(--set-tag-remote-border);
+  background: var(--set-tag-remote-bg);
+  color: var(--set-tag-remote-text);
 }
 
 .library-meta,
@@ -292,7 +306,7 @@ function emitLibraryFlag(libraryId, key, value) {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 10px;
-  color: rgba(29, 29, 31, 0.55);
+  color: var(--set-text-muted);
   font-size: 11.5px;
 }
 
@@ -308,21 +322,21 @@ function emitLibraryFlag(libraryId, key, value) {
   justify-content: center;
   gap: 6px;
   padding: 10px 14px;
-  color: #4f46e5;
+  color: var(--set-text-strong);
   font-weight: 500;
   font-size: 12.5px;
 }
 
 .create-btn:hover {
-  border-color: rgba(99, 102, 241, 0.55);
-  background: linear-gradient(135deg, rgba(238, 242, 255, 0.85) 0%, #ffffff 100%);
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
 }
 
-.create-btn.warn { color: #d97706; }
+.create-btn.warn { color: var(--set-text-strong); }
 
 .create-btn.warn:hover {
-  border-color: rgba(251, 191, 36, 0.55);
-  background: linear-gradient(135deg, rgba(255, 251, 235, 0.85) 0%, #ffffff 100%);
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
 }
 
 /* 右侧编辑区去火火灰底大卡，内容直接铺在外层白底上 */
@@ -366,24 +380,24 @@ function emitLibraryFlag(libraryId, key, value) {
   width: 100%;
   min-height: 38px;
   padding: 0 12px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
+  border: 1px solid var(--set-border);
   outline: none;
   border-radius: 10px;
-  background: #ffffff;
-  color: #1d1d1f;
+  background: var(--set-field-bg);
+  color: var(--set-text-strong);
   font-size: 13.5px;
   box-shadow: none;
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
-.lib-input:hover { border-color: rgba(148, 163, 184, 0.75); }
+.lib-input:hover { border-color: var(--set-border-strong); }
 
 .lib-input:focus {
-  border-color: rgba(79, 70, 229, 0.5);
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+  border-color: var(--set-border-strong);
+  box-shadow: 0 0 0 3px var(--set-focus-ring);
 }
 
-.lib-input::placeholder { color: #94a3b8; }
+.lib-input::placeholder { color: var(--set-text-subtle); }
 
 /* AppDropdown 收敛：撑满 SettingsFieldCard 控件槽 + 38px 高 / 10px 圆角 */
 .settings-field-dd {
@@ -402,23 +416,23 @@ function emitLibraryFlag(libraryId, key, value) {
   height: 38px;
   padding: 0 12px;
   border-radius: 10px;
-  background: #ffffff;
-  border: 1px solid rgba(226, 232, 240, 0.85);
+  background: var(--set-field-bg);
+  border: 1px solid var(--set-border);
   font-size: 13.5px;
   justify-content: space-between;
 }
 
 .settings-field-dd :deep(.app-dd-trigger:hover) {
-  border-color: rgba(148, 163, 184, 0.75);
+  border-color: var(--set-border-strong);
 }
 
 .settings-field-dd :deep(.app-dd-trigger.is-open) {
-  border-color: rgba(79, 70, 229, 0.55);
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+  border-color: var(--set-border-strong);
+  box-shadow: 0 0 0 3px var(--set-focus-ring);
 }
 
 .inline-tip {
-  color: rgba(29, 29, 31, 0.5);
+  color: var(--set-text-muted);
   font-size: 11.5px;
   line-height: 1.55;
 }
@@ -426,13 +440,11 @@ function emitLibraryFlag(libraryId, key, value) {
 .inline-tip.warn {
   padding: 10px 12px;
   border-radius: 10px;
-  background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
-  border: 1px solid rgba(251, 191, 36, 0.55);
-  color: #b45309;
+  background: var(--set-warning-bg);
+  border: 1px solid var(--set-warning-border);
+  color: var(--set-warning-text);
   font-size: 12px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 1px 2px rgba(245, 158, 11, 0.1);
+  box-shadow: none;
 }
 
 /* toggle 行外层 grid：SettingsToggleRow 负责行内颜值，外层只负责二列排列 */
@@ -446,7 +458,7 @@ function emitLibraryFlag(libraryId, key, value) {
 
 .bottom { margin-top: 0; justify-content: flex-end; }
 
-/* 主按钮：AGENTS.md 三段黑色渐变 + inset 顶高光 + 双层 glow */
+/* 主按钮：中性实体按钮，去掉胶质高光 */
 .primary-btn {
   display: inline-flex;
   align-items: center;
@@ -455,13 +467,10 @@ function emitLibraryFlag(libraryId, key, value) {
   height: 36px;
   padding: 0 16px;
   border-radius: 10px;
-  color: #ffffff;
-  background: linear-gradient(180deg, #1f2937 0%, #0f172a 60%, #020617 100%);
-  border: 1px solid #0f172a;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.18),
-    0 6px 16px -6px rgba(2, 6, 23, 0.55),
-    0 2px 4px rgba(15, 23, 42, 0.25);
+  color: var(--set-primary-text);
+  background: var(--set-primary-bg);
+  border: 1px solid var(--set-primary-border);
+  box-shadow: none;
   font-size: 13px;
   font-weight: 600;
   letter-spacing: -0.1px;
@@ -472,10 +481,8 @@ function emitLibraryFlag(libraryId, key, value) {
 
 .primary-btn:not(:disabled):hover {
   transform: translateY(-2px);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    0 14px 28px -10px rgba(2, 6, 23, 0.6),
-    0 4px 8px rgba(15, 23, 42, 0.3);
+  background: var(--set-primary-bg-hover);
+  box-shadow: 0 8px 18px -14px rgba(0, 0, 0, 0.55);
 }
 
 .primary-btn:not(:disabled):active {
@@ -494,9 +501,9 @@ function emitLibraryFlag(libraryId, key, value) {
   height: 36px;
   padding: 0 14px;
   border-radius: 10px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  background: #ffffff;
-  color: #475569;
+  border: 1px solid var(--set-border);
+  background: var(--set-surface);
+  color: var(--set-text);
   font-size: 12.5px;
   font-weight: 500;
   letter-spacing: -0.05px;
@@ -508,9 +515,9 @@ function emitLibraryFlag(libraryId, key, value) {
 .ghost-btn:not(:disabled):hover,
 .link-btn:hover {
   transform: translateY(-1px);
-  border-color: rgba(148, 163, 184, 0.75);
-  background: rgba(248, 250, 252, 0.85);
-  color: #1d1d1f;
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
+  color: var(--set-text-strong);
 }
 
 .ghost-btn.danger { color: #e11d48; border-color: rgba(244, 63, 94, 0.4); }
@@ -526,12 +533,12 @@ function emitLibraryFlag(libraryId, key, value) {
   place-items: center;
   min-height: 240px;
   text-align: center;
-  color: rgba(29, 29, 31, 0.55);
+  color: var(--set-text-muted);
 }
 
 .empty-title {
   margin-top: 12px;
-  color: #1d1d1f;
+  color: var(--set-text-strong);
   font-size: 14px;
   font-weight: 600;
 }

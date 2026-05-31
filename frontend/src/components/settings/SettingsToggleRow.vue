@@ -10,7 +10,7 @@
     </span>
     <span class="str-control">
       <slot name="control">
-        <el-switch
+        <SettingsSwitch
           :model-value="modelValue"
           :disabled="disabled"
           @update:model-value="(v) => emit('update:modelValue', v)"
@@ -22,8 +22,10 @@
 </template>
 
 <script setup>
-/* 设置页开关行原子：左 title + subtitle，右 el-switch。
- * 默认用内置 el-switch，如果需要自定义控件（比如按钮 / 数字输入），可通过 control slot 覆写。
+import SettingsSwitch from './SettingsSwitch.vue'
+
+/* 设置页开关行原子：左 title + subtitle，右侧默认使用中性 SettingsSwitch。
+ * 如果需要自定义控件（比如按钮 / 数字输入），可通过 control slot 覆写。
  */
 defineProps({
   modelValue: { type: [Boolean, String, Number], default: false },
@@ -58,7 +60,7 @@ const emit = defineEmits(['update:modelValue', 'change'])
 
 .str-title {
   display: block;
-  color: #0f172a;
+  color: var(--set-text-strong, #0f172a);
   font-size: 13px;
   font-weight: 500;
   letter-spacing: -0.05px;
@@ -67,7 +69,7 @@ const emit = defineEmits(['update:modelValue', 'change'])
 .str-subtitle {
   display: block;
   margin-top: 3px;
-  color: #94a3b8;
+  color: var(--set-text-muted, #94a3b8);
   font-size: 12px;
   line-height: 1.5;
   letter-spacing: -0.05px;

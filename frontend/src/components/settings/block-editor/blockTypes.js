@@ -11,7 +11,7 @@ export const BLOCK_TYPES = {
     icon: 'LayoutTemplate',
     description: '顶部状态颜色区块，包含标题和摘要',
     group: 'layout',
-    color: '#0071e3',
+    color: '#64748b',
     defaultProps: {
       titleKey:    '任务标题',
       summaryKey:  '摘要',
@@ -32,12 +32,12 @@ export const BLOCK_TYPES = {
     defaultProps: {
       label:       '任务摘要',
       valueKey:    '摘要',
-      accentColor: '#0071e3',
+      accentColor: '#64748b',
     },
     propSchema: [
       { key: 'label',       label: '标签文字', type: 'text',     default: '任务摘要' },
       { key: 'valueKey',    label: '内容变量', type: 'variable', default: '摘要' },
-      { key: 'accentColor', label: '强调色',   type: 'color',    default: '#0071e3' },
+      { key: 'accentColor', label: '强调色',   type: 'color',    default: '#64748b' },
     ],
   },
   rich_text: {

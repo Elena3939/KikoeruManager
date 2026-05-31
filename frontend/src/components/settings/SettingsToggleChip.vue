@@ -3,7 +3,7 @@
     <span class="stc-label">
       <slot>{{ label }}</slot>
     </span>
-    <el-switch
+    <SettingsSwitch
       :model-value="modelValue"
       :disabled="disabled"
       @update:model-value="(v) => emit('update:modelValue', v)"
@@ -13,6 +13,8 @@
 </template>
 
 <script setup>
+import SettingsSwitch from './SettingsSwitch.vue'
+
 /* 设置页 pill 开关原子：用于 pill-switch-grid 里的小 chip（左 label，右 switch，整行一个 pill）。
  */
 defineProps({
@@ -31,9 +33,9 @@ const emit = defineEmits(['update:modelValue', 'change'])
   gap: 8px;
   padding: 10px 14px;
   border-radius: 10px;
-  background: #ffffff;
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  color: #1d1d1f;
+  background: var(--set-surface, #ffffff);
+  border: 1px solid var(--set-border, rgba(226, 232, 240, 0.85));
+  color: var(--set-text-strong, #1d1d1f);
   font-size: 13px;
   font-weight: 500;
   letter-spacing: -0.05px;
@@ -43,14 +45,14 @@ const emit = defineEmits(['update:modelValue', 'change'])
 
 .stc:not(.is-disabled):hover {
   transform: translateY(-1px);
-  border-color: rgba(148, 163, 184, 0.75);
-  background: linear-gradient(135deg, rgba(248, 250, 252, 0.6) 0%, #ffffff 100%);
-  box-shadow: 0 4px 12px -4px rgba(15, 23, 42, 0.08);
+  border-color: var(--set-border-strong, rgba(148, 163, 184, 0.75));
+  background: var(--set-surface-hover, rgba(248, 250, 252, 0.85));
+  box-shadow: var(--set-shadow, 0 4px 12px -4px rgba(15, 23, 42, 0.08));
 }
 
 .stc.is-active {
-  border-color: rgba(79, 70, 229, 0.35);
-  background: linear-gradient(135deg, rgba(238, 242, 255, 0.65) 0%, #ffffff 100%);
+  border-color: var(--set-border-strong, rgba(148, 163, 184, 0.36));
+  background: var(--set-surface-muted, rgba(241, 245, 249, 0.9));
 }
 
 .stc.is-disabled {

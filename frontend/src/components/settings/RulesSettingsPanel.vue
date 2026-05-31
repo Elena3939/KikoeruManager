@@ -18,7 +18,7 @@
             />
             <input v-model="rule.name" class="field-input" type="text" placeholder="规则名称">
             <input v-model="rule.pattern" class="field-input" type="text" placeholder="正则表达式">
-            <el-switch v-model="rule.enabled" />
+            <SettingsSwitch v-model="rule.enabled" />
             <button type="button" class="icon-btn danger" @click="config.filter.rules.splice(index, 1)"><Trash2 :size="15" :stroke-width="2.4" /></button>
           </div>
           <button type="button" class="ghost-inline-btn" @click="addFilterRule"><Plus :size="14" :stroke-width="2.4" /> 添加过滤规则</button>
@@ -40,7 +40,7 @@
           <SettingsToggleRow v-model="config.rename.illegal_char_to_full_width" title="非法字符转全角" subtitle="降低 Windows 文件名报错概率。" />
           <SettingsToggleRow v-model="config.rename.flatten_single_subfolder" title="自动扁平化单层文件夹" subtitle="过滤之后顺手把单层嵌套压平。" />
           <SettingsFieldCard v-if="config.rename.flatten_single_subfolder" label="扁平化深度">
-            <el-input-number v-model="config.rename.flatten_depth" :min="1" :max="10" class="field-number" />
+            <SettingsNumberStepper v-model="config.rename.flatten_depth" :min="1" :max="10" />
           </SettingsFieldCard>
           <SettingsToggleRow v-model="config.rename.remove_empty_folders" title="自动移除空文件夹" subtitle="过滤和扁平化后清理空目录。" />
         </div>
@@ -63,7 +63,7 @@
             <input v-model="rule.path_template" class="field-input" type="text" placeholder="路径模板">
             <input v-model="rule.custom_name" class="field-input" type="text" placeholder="自定义目录名">
             <input v-model="rule.rjcode_range" class="field-input" type="text" placeholder="RJ 段，例如 RJ01000000-RJ01999999">
-            <el-switch v-model="rule.enabled" />
+            <SettingsSwitch v-model="rule.enabled" />
             <button type="button" class="icon-btn danger" @click="config.classification.splice(index, 1)"><Trash2 :size="15" :stroke-width="2.4" /></button>
           </div>
           <button type="button" class="ghost-inline-btn" @click="addRule"><Plus :size="14" :stroke-width="2.4" /> 添加分类规则</button>
@@ -89,6 +89,8 @@
 <script setup>
 import { Plus, Trash2 } from 'lucide-vue-next'
 import SettingsFieldCard from './SettingsFieldCard.vue'
+import SettingsNumberStepper from './SettingsNumberStepper.vue'
+import SettingsSwitch from './SettingsSwitch.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
 import AppDropdown from '../common/AppDropdown.vue'
 
@@ -179,7 +181,7 @@ function addPathMapping() {
   gap: 8px;
   flex-wrap: wrap;
   margin: 0 0 14px;
-  color: #1d1d1f;
+  color: var(--set-text-strong);
   font-size: 13.5px;
   font-weight: 600;
   letter-spacing: -0.1px;
@@ -202,43 +204,23 @@ function addPathMapping() {
   width: 100%;
   min-height: 38px;
   padding: 0 12px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
+  border: 1px solid var(--set-border);
   border-radius: 10px;
-  background: #ffffff;
-  color: #1d1d1f;
+  background: var(--set-field-bg);
+  color: var(--set-text-strong);
   font-size: 13.5px;
   outline: none;
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
-.field-input:hover { border-color: rgba(148, 163, 184, 0.75); }
+.field-input:hover { border-color: var(--set-border-strong); }
 
 .field-input:focus {
-  border-color: rgba(79, 70, 229, 0.5);
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+  border-color: var(--set-border-strong);
+  box-shadow: 0 0 0 3px var(--set-focus-ring);
 }
 
-.field-input::placeholder { color: #94a3b8; }
-
-/* el-input-number 与 input 视觉对齐 */
-.field-number :deep(.el-input__wrapper) {
-  min-height: 38px;
-  border-radius: 10px;
-  background: #ffffff;
-  box-shadow: none;
-  border: 1px solid rgba(226, 232, 240, 0.85) !important;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease;
-}
-
-.field-number :deep(.el-input__wrapper:hover) {
-  border-color: rgba(148, 163, 184, 0.75) !important;
-  box-shadow: none;
-}
-
-.field-number :deep(.el-input__wrapper.is-focus) {
-  border-color: rgba(79, 70, 229, 0.5) !important;
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1) !important;
-}
+.field-input::placeholder { color: var(--set-text-subtle); }
 
 /* 规则行 grid 结构 */
 .rule-row,
@@ -249,15 +231,15 @@ function addPathMapping() {
   align-items: center;
   padding: 10px 12px;
   border-radius: 12px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  background: #ffffff;
+  border: 1px solid var(--set-border);
+  background: var(--set-surface);
   transition: border-color 0.18s ease, background 0.18s ease;
 }
 
 .rule-row:hover,
 .classification-row:hover {
-  border-color: rgba(148, 163, 184, 0.75);
-  background: rgba(248, 250, 252, 0.5);
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
 }
 
 .classification-row {
@@ -267,8 +249,8 @@ function addPathMapping() {
 .rule-target :deep(.el-select__wrapper) {
   min-height: 36px;
   border-radius: 8px;
-  background: #ffffff;
-  border: 1px solid #e2e8f0 !important;
+  background: var(--set-field-bg);
+  border: 1px solid var(--set-border) !important;
   box-shadow: none;
 }
 
@@ -281,9 +263,9 @@ function addPathMapping() {
   height: 36px;
   padding: 0 14px;
   border-radius: 10px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  background: #ffffff;
-  color: #475569;
+  border: 1px solid var(--set-border);
+  background: var(--set-surface);
+  color: var(--set-text);
   font-size: 12.5px;
   font-weight: 500;
   letter-spacing: -0.05px;
@@ -293,9 +275,9 @@ function addPathMapping() {
 
 .ghost-inline-btn:not(:disabled):hover {
   transform: translateY(-1px);
-  border-color: rgba(99, 102, 241, 0.55);
-  background: linear-gradient(135deg, rgba(238, 242, 255, 0.85) 0%, #ffffff 100%);
-  color: #4f46e5;
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
+  color: var(--set-text-strong);
 }
 
 .ghost-inline-btn:not(:disabled):active { transform: scale(0.97); }
@@ -308,14 +290,14 @@ function addPathMapping() {
   width: 32px;
   height: 32px;
   border-radius: 8px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  background: #ffffff;
-  color: #64748b;
+  border: 1px solid var(--set-border);
+  background: var(--set-surface);
+  color: var(--set-text-muted);
   cursor: pointer;
   transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.icon-btn:hover { transform: translateY(-1px); border-color: rgba(148, 163, 184, 0.75); }
+.icon-btn:hover { transform: translateY(-1px); border-color: var(--set-border-strong); background: var(--set-surface-hover); color: var(--set-text-strong); }
 .icon-btn:active { transform: scale(0.94); }
 
 .icon-btn.danger { color: #e11d48; border-color: rgba(244, 63, 94, 0.4); }

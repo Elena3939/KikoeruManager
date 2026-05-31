@@ -445,10 +445,10 @@ const toolbarBtns = [
 <style scoped>
 .rte-wrap {
   position: relative;
-  border: 1px solid rgba(29, 29, 31, 0.12);
+  border: 1px solid var(--set-border, rgba(29, 29, 31, 0.12));
   border-radius: 10px;
   overflow: hidden;
-  background: #fff;
+  background: var(--set-surface, #fff);
   transition: border-color 0.2s, box-shadow 0.2s;
   display: flex;
   flex-direction: column;
@@ -473,8 +473,8 @@ const toolbarBtns = [
   line-height: 1.7;
 }
 .rte-wrap--focused {
-  border-color: rgba(0, 113, 227, 0.5);
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.12);
+  border-color: var(--set-border-strong, rgba(29, 29, 31, 0.2));
+  box-shadow: 0 0 0 3px var(--set-focus-ring, rgba(15, 23, 42, 0.08));
 }
 .rte-toolbar {
   display: flex;
@@ -482,8 +482,8 @@ const toolbarBtns = [
   flex-wrap: wrap;
   gap: 2px;
   padding: 6px 8px;
-  border-bottom: 1px solid rgba(29, 29, 31, 0.07);
-  background: #fafafa;
+  border-bottom: 1px solid var(--set-border-soft, rgba(29, 29, 31, 0.07));
+  background: var(--set-surface-soft, #fafafa);
 }
 .rte-tb-btn {
   display: inline-flex;
@@ -494,17 +494,17 @@ const toolbarBtns = [
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: rgba(29, 29, 31, 0.6);
+  color: var(--set-text-muted, rgba(29, 29, 31, 0.6));
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
 .rte-tb-btn:hover, .rte-tb-btn.is-active {
-  background: rgba(0, 0, 0, 0.06);
-  color: #1d1d1f;
+  background: var(--set-surface-hover, rgba(0, 0, 0, 0.06));
+  color: var(--set-text-strong, #1d1d1f);
 }
 .rte-tb-btn.is-active {
-  background: rgba(0, 113, 227, 0.1);
-  color: #0071e3;
+  background: var(--set-surface-muted, rgba(0, 0, 0, 0.06));
+  color: var(--set-text-strong, #1d1d1f);
 }
 .rte-tb-btn:disabled {
   opacity: 0.35;
@@ -521,7 +521,7 @@ const toolbarBtns = [
 .rte-tb-sep {
   width: 1px;
   height: 16px;
-  background: rgba(29, 29, 31, 0.1);
+  background: var(--set-border, rgba(29, 29, 31, 0.1));
   margin: 0 4px;
 }
 .rte-tb-var-label {
@@ -529,7 +529,7 @@ const toolbarBtns = [
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: rgba(29, 29, 31, 0.4);
+  color: var(--set-text-subtle, rgba(29, 29, 31, 0.4));
   padding: 0 2px;
 }
 /* BlockNote 风格变量 pill：深色底 + 蓝菱形图标 + 白字 */
@@ -555,14 +555,14 @@ const toolbarBtns = [
   transition: all 0.15s ease;
 }
 .rte-var-pill--btn:hover {
-  background: #1d1d1f;
-  border-color: #4a4d55;
+  background: var(--set-surface-muted, #1d1d1f);
+  border-color: var(--set-border-strong, #4a4d55);
   transform: translateY(-1px);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+  box-shadow: none;
 }
 .rte-var-pill--btn:active { transform: translateY(0); }
 .rte-var-pill-icon {
-  color: #6ea8fe;
+  color: var(--set-tag-info-text, #c7d2fe);
   flex-shrink: 0;
 }
 /* 变量下拉触发器 */
@@ -577,10 +577,10 @@ const toolbarBtns = [
   gap: 6px;
   height: 26px;
   padding: 0 9px 0 8px;
-  border: 1px solid rgba(29, 29, 31, 0.12);
+  border: 1px solid var(--set-border, rgba(29, 29, 31, 0.12));
   border-radius: 7px;
-  background: #fff;
-  color: #1d1d1f;
+  background: var(--set-surface, #fff);
+  color: var(--set-text-strong, #1d1d1f);
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
@@ -588,19 +588,19 @@ const toolbarBtns = [
   font-family: inherit;
 }
 .rte-var-trigger:hover {
-  border-color: rgba(0, 113, 227, 0.4);
-  background: rgba(0, 113, 227, 0.04);
-  color: #0071e3;
+  border-color: var(--set-border-strong, rgba(29, 29, 31, 0.2));
+  background: var(--set-surface-hover, rgba(0, 0, 0, 0.05));
+  color: var(--set-text-strong, #1d1d1f);
 }
 .rte-var-trigger.is-open {
-  border-color: rgba(0, 113, 227, 0.55);
-  background: rgba(0, 113, 227, 0.08);
-  color: #0071e3;
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.12);
+  border-color: var(--set-border-strong, rgba(29, 29, 31, 0.2));
+  background: var(--set-surface-muted, rgba(0, 0, 0, 0.06));
+  color: var(--set-text-strong, #1d1d1f);
+  box-shadow: 0 0 0 3px var(--set-focus-ring, rgba(15, 23, 42, 0.08));
 }
-.rte-var-trigger-icon { color: #0071e3; }
+.rte-var-trigger-icon { color: var(--set-text-muted, #64748b); }
 .rte-var-trigger-caret {
-  color: rgba(29, 29, 31, 0.5);
+  color: var(--set-text-muted, rgba(29, 29, 31, 0.5));
   transition: transform 0.18s ease;
 }
 .rte-var-trigger.is-open .rte-var-trigger-caret { transform: rotate(180deg); }
@@ -618,10 +618,10 @@ const toolbarBtns = [
   max-height: 320px;
   overflow-y: auto;
   padding: 6px;
-  background: #fff;
-  border: 1px solid rgba(29, 29, 31, 0.1);
+  background: var(--set-surface, #fff);
+  border: 1px solid var(--set-border, rgba(29, 29, 31, 0.1));
   border-radius: 10px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.06);
+  box-shadow: var(--set-shadow-hover, 0 12px 32px rgba(0, 0, 0, 0.12));
   animation: rteVarMenuIn 0.16s ease;
 }
 @keyframes rteVarMenuIn {
@@ -640,14 +640,14 @@ const toolbarBtns = [
   cursor: pointer;
   transition: background 0.12s ease;
 }
-.rte-var-menu-item:hover { background: rgba(0, 113, 227, 0.06); }
-.rte-var-menu-item:active { background: rgba(0, 113, 227, 0.1); }
+.rte-var-menu-item:hover { background: var(--set-surface-hover, rgba(0, 0, 0, 0.05)); }
+.rte-var-menu-item:active { background: var(--set-surface-muted, rgba(0, 0, 0, 0.06)); }
 .rte-var-pill--menu { flex-shrink: 0; }
 .rte-var-menu-example {
   flex: 1;
   min-width: 0;
   font-size: 11.5px;
-  color: rgba(29, 29, 31, 0.55);
+  color: var(--set-text-muted, rgba(29, 29, 31, 0.55));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -657,7 +657,8 @@ const toolbarBtns = [
   padding: 10px 14px;
   font-size: 13px;
   line-height: 1.6;
-  color: #1d1d1f;
+  color: var(--set-text-strong, #1d1d1f);
+  background: var(--set-surface, #fff);
   outline: none;
 }
 </style>
@@ -674,26 +675,26 @@ const toolbarBtns = [
 .rte-body .tiptap ol { padding-left: 22px; margin: 6px 0 10px; }
 .rte-body .tiptap ul li,
 .rte-body .tiptap ol li { margin: 2px 0; }
-.rte-body .tiptap a { color: #0071e3; text-decoration: underline; text-underline-offset: 2px; }
+.rte-body .tiptap a { color: var(--set-text-strong, #1d1d1f); text-decoration: underline; text-underline-offset: 2px; }
 .rte-body .tiptap h1 { font-size: 22px; font-weight: 600; line-height: 1.35; margin: 18px 0 10px; letter-spacing: -0.01em; }
 .rte-body .tiptap h2 { font-size: 18px; font-weight: 600; line-height: 1.4;  margin: 16px 0 8px; }
 .rte-body .tiptap h3 { font-size: 15px; font-weight: 600; line-height: 1.4;  margin: 14px 0 6px; }
 .rte-body .tiptap blockquote {
-  border-left: 3px solid rgba(0, 113, 227, 0.4);
+  border-left: 3px solid var(--set-border-strong, rgba(29, 29, 31, 0.2));
   padding: 4px 12px;
   margin: 8px 0;
-  color: rgba(29, 29, 31, 0.7);
-  background: rgba(0, 113, 227, 0.04);
+  color: var(--set-text, rgba(29, 29, 31, 0.7));
+  background: var(--set-surface-soft, rgba(0, 0, 0, 0.03));
   border-radius: 0 6px 6px 0;
 }
 .rte-body .tiptap code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.92em;
-  background: rgba(0, 0, 0, 0.05);
-  border: 1px solid rgba(29, 29, 31, 0.07);
+  background: var(--set-surface-soft, rgba(0, 0, 0, 0.05));
+  border: 1px solid var(--set-border-soft, rgba(29, 29, 31, 0.07));
   padding: 1px 5px;
   border-radius: 4px;
-  color: #1d1d1f;
+  color: var(--set-text-strong, #1d1d1f);
 }
 .rte-body .tiptap pre {
   background: #1d1d1f;
@@ -714,7 +715,7 @@ const toolbarBtns = [
 }
 .rte-body .tiptap hr {
   border: none;
-  border-top: 1px solid rgba(29, 29, 31, 0.1);
+  border-top: 1px solid var(--set-border, rgba(29, 29, 31, 0.1));
   margin: 18px 0;
 }
 
@@ -728,22 +729,22 @@ const toolbarBtns = [
 }
 .rte-body .tiptap table td,
 .rte-body .tiptap table th {
-  border: 1px dashed rgba(0, 113, 227, 0.18);
+  border: 1px dashed var(--set-border, rgba(29, 29, 31, 0.12));
   padding: 6px 8px;
   vertical-align: top;
   position: relative;
   background: transparent;
 }
 .rte-body .tiptap table th {
-  background: rgba(0, 113, 227, 0.04);
+  background: var(--set-surface-soft, rgba(0, 0, 0, 0.03));
   font-weight: 600;
 }
 /* 编辑时选中态 */
-.rte-body .tiptap .selectedCell { background: rgba(0, 113, 227, 0.08) !important; }
+.rte-body .tiptap .selectedCell { background: var(--set-surface-muted, rgba(0, 0, 0, 0.06)) !important; }
 /* 占位提示 */
 .rte-body .tiptap p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
-  color: rgba(29, 29, 31, 0.3);
+  color: var(--set-text-subtle, rgba(29, 29, 31, 0.3));
   pointer-events: none;
   float: left;
   height: 0;
@@ -766,14 +767,14 @@ const toolbarBtns = [
   white-space: nowrap;
   user-select: all;
   cursor: default;
-  /* 模拟 hash 图标：用伪元素画蓝色菱形点 */
+  /* 模拟 hash 图标：用伪元素画语义色菱形点 */
   position: relative;
 }
 .rte-body .tiptap .rte-var-pill::before {
   content: "";
   width: 6px;
   height: 6px;
-  background: #6ea8fe;
+  background: var(--set-tag-info-text, #c7d2fe);
   border-radius: 1px;
   transform: rotate(45deg);
   flex-shrink: 0;

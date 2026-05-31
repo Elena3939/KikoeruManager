@@ -37,10 +37,10 @@ defineEmits(['select', 'active'])
   max-height: 320px;
   overflow-y: auto;
   padding: 6px;
-  background: #fff;
-  border: 1px solid rgba(29, 29, 31, 0.1);
+  background: var(--set-surface, #fff);
+  border: 1px solid var(--set-border, rgba(29, 29, 31, 0.1));
   border-radius: 12px;
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.16);
+  box-shadow: var(--set-shadow-hover, 0 18px 42px rgba(0, 0, 0, 0.12));
 }
 
 .slash-item {
@@ -52,7 +52,7 @@ defineEmits(['select', 'active'])
   border: 0;
   border-radius: 9px;
   background: transparent;
-  color: #1d1d1f;
+  color: var(--set-text-strong, #1d1d1f);
   text-align: left;
   cursor: pointer;
   transition: all 0.16s ease;
@@ -60,8 +60,8 @@ defineEmits(['select', 'active'])
 
 .slash-item:hover,
 .slash-item.is-active {
-  background: rgba(0, 113, 227, 0.07);
-  color: #0071e3;
+  background: var(--set-surface-hover, rgba(0, 0, 0, 0.05));
+  color: var(--set-text-strong, #1d1d1f);
 }
 
 .slash-item span {
@@ -80,6 +80,6 @@ defineEmits(['select', 'active'])
 .slash-item small {
   font-size: 11px;
   line-height: 1.35;
-  color: rgba(29, 29, 31, 0.52);
+  color: var(--set-text-muted, rgba(29, 29, 31, 0.52));
 }
 </style>

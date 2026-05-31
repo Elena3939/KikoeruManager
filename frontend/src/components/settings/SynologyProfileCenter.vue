@@ -51,7 +51,7 @@
         <input v-model="profile.device_id" class="profile-input" type="text" placeholder="测试成功后自动回填">
       </SettingsFieldCard>
       <SettingsFieldCard label="超时（秒）">
-        <el-input-number v-model="profile.timeout" :min="5" :step="5" class="profile-number" />
+        <SettingsNumberStepper v-model="profile.timeout" :min="5" :step="5" />
       </SettingsFieldCard>
     </div>
 
@@ -100,6 +100,7 @@ import { LoaderCircle, PlugZap } from 'lucide-vue-next'
 import AnimatedPasswordInput from '../common/AnimatedPasswordInput.vue'
 import AppLottieTextButton from '../common/AppLottieTextButton.vue'
 import SettingsFieldCard from './SettingsFieldCard.vue'
+import SettingsNumberStepper from './SettingsNumberStepper.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
 import rememberDeviceAnimation from '../../assets/anime/1111.lottie'
 
@@ -141,7 +142,7 @@ function emitProfileFlag(key, value) {
 }
 
 .profile-title {
-  color: #1d1d1f;
+  color: var(--set-text-strong);
   font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.1px;
@@ -149,7 +150,7 @@ function emitProfileFlag(key, value) {
 
 .profile-desc {
   margin-top: 4px;
-  color: rgba(29, 29, 31, 0.55);
+  color: var(--set-text-muted);
   font-size: 12px;
   line-height: 1.6;
 }
@@ -163,40 +164,34 @@ function emitProfileFlag(key, value) {
   flex-shrink: 0;
 }
 
-/* status-chip 对齐库存页 lib-chip 风：180deg 渐变 + inset 顶高光 + 微 glow */
+/* 顶部状态标签：低饱和语义色，平面细边 */
 .status-chip {
   display: inline-flex;
   align-items: center;
   height: 22px;
   padding: 0 10px;
   border-radius: 999px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-  color: #475569;
+  border: 1px solid var(--set-border);
+  background: var(--set-tag-info-bg);
+  color: var(--set-tag-info-text);
   font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 1px 2px rgba(15, 23, 42, 0.04);
+  font-weight: 600;
+  letter-spacing: 0;
+  box-shadow: none;
 }
 
 .status-chip.is-good {
-  background: linear-gradient(180deg, #ecfdf5 0%, #d1fae5 100%);
-  color: #047857;
-  border-color: rgba(110, 231, 183, 0.55);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 1px 2px rgba(16, 185, 129, 0.1);
+  background: var(--set-success-bg);
+  color: var(--set-success-text);
+  border-color: var(--set-success-border);
+  box-shadow: none;
 }
 
 .status-chip.is-warn {
-  background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
-  color: #b45309;
-  border-color: rgba(251, 191, 36, 0.55);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 1px 2px rgba(245, 158, 11, 0.12);
+  background: var(--set-warning-bg);
+  color: var(--set-warning-text);
+  border-color: var(--set-warning-border);
+  box-shadow: none;
 }
 
 /* 字段网格：平铺二列 / 三列，SettingsFieldCard 负责控件槽、label、hint排版 */
@@ -214,43 +209,24 @@ function emitProfileFlag(key, value) {
   width: 100%;
   min-height: 38px;
   padding: 0 12px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
+  border: 1px solid var(--set-border);
   outline: none;
   border-radius: 10px;
-  background: #ffffff;
-  color: #1d1d1f;
+  background: var(--set-field-bg);
+  color: var(--set-text-strong);
   font-size: 13.5px;
   box-shadow: none;
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
-.profile-input:hover { border-color: rgba(148, 163, 184, 0.75); }
+.profile-input:hover { border-color: var(--set-border-strong); }
 
 .profile-input:focus {
-  border-color: rgba(79, 70, 229, 0.5);
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+  border-color: var(--set-border-strong);
+  box-shadow: 0 0 0 3px var(--set-focus-ring);
 }
 
-.profile-input::placeholder { color: #94a3b8; }
-
-/* el-input-number 与 .profile-input 对齐：38px 高 / 10px 圆角 / 同色边 / 同色 focus ring */
-.profile-number :deep(.el-input__wrapper) {
-  min-height: 38px;
-  border-radius: 10px;
-  background: #ffffff;
-  box-shadow: none;
-  border: 1px solid rgba(226, 232, 240, 0.85) !important;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease;
-}
-
-.profile-number :deep(.el-input__wrapper:hover) {
-  border-color: rgba(148, 163, 184, 0.75) !important;
-}
-
-.profile-number :deep(.el-input__wrapper.is-focus) {
-  border-color: rgba(79, 70, 229, 0.5) !important;
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1) !important;
-}
+.profile-input::placeholder { color: var(--set-text-subtle); }
 
 /* toggle 行外层 grid：SettingsToggleRow 负责行内颜值，外层只负责二列排列 */
 .toggle-row {
@@ -266,7 +242,7 @@ function emitProfileFlag(key, value) {
   margin-top: 4px;
 }
 
-/* 主按钮：AGENTS.md 三段黑色渐变 + inset 顶高光 + 双层 glow */
+/* 主按钮：中性实体按钮，去掉胶质高光 */
 .primary-btn {
   display: inline-flex;
   align-items: center;
@@ -275,13 +251,10 @@ function emitProfileFlag(key, value) {
   height: 38px;
   padding: 0 18px;
   border-radius: 10px;
-  border: 1px solid #0f172a;
-  color: #ffffff;
-  background: linear-gradient(180deg, #1f2937 0%, #0f172a 60%, #020617 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.18),
-    0 6px 16px -6px rgba(2, 6, 23, 0.55),
-    0 2px 4px rgba(15, 23, 42, 0.25);
+  border: 1px solid var(--set-primary-border);
+  color: var(--set-primary-text);
+  background: var(--set-primary-bg);
+  box-shadow: none;
   font-size: 13px;
   font-weight: 600;
   letter-spacing: -0.1px;
@@ -291,10 +264,8 @@ function emitProfileFlag(key, value) {
 
 .primary-btn:not(:disabled):hover {
   transform: translateY(-2px);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    0 14px 28px -10px rgba(2, 6, 23, 0.6),
-    0 4px 8px rgba(15, 23, 42, 0.3);
+  background: var(--set-primary-bg-hover);
+  box-shadow: 0 8px 18px -14px rgba(0, 0, 0, 0.55);
 }
 
 .primary-btn:not(:disabled):active {

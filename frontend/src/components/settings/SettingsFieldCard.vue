@@ -14,8 +14,8 @@
 
 <script setup>
 /* 设置页字段原子：label + 单行控件 slot + 可选 hint。
- * 父侧直接把 input / el-input-number / el-slider / AppDropdown / AnimatedPasswordInput 丢到默认 slot 即可。
- * 开启 inline 时左右排布（label | 控件），常用于 chip 风 slider 行。
+ * 父侧直接放原生 input、AppDropdown、AnimatedPasswordInput 或 settings 自有控件。
+ * 开启 inline 时左右排布（label | 控件），常用于紧凑控制行。
  */
 defineProps({
   label: { type: String, default: '' },
@@ -51,7 +51,7 @@ defineProps({
 }
 
 .sfc-label {
-  color: #64748b;
+  color: var(--set-text-muted, #64748b);
   font-size: 12px;
   font-weight: 500;
   letter-spacing: -0.05px;
@@ -68,7 +68,7 @@ defineProps({
 }
 
 .sfc-hint {
-  color: rgba(29, 29, 31, 0.5);
+  color: var(--set-text-muted, rgba(29, 29, 31, 0.5));
   font-size: 11.5px;
   line-height: 1.55;
   letter-spacing: -0.05px;

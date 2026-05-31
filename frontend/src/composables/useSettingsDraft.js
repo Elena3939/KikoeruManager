@@ -237,13 +237,17 @@ export const defaultConfig = {
     timeout_seconds: 60,
     allow_private_network: false,
     conflict_policy: 'resume',
+    gofile_token: '',
     pikpak_enabled: false,
+    pikpak_default_enabled: true,
+    pikpak_label: '',
     pikpak_username: '',
     pikpak_password: '',
     pikpak_encoded_token: '',
     pikpak_device_id: '',
     pikpak_transfer_dir: '/KikoeruManager',
-    pikpak_auto_save_share: true
+    pikpak_auto_save_share: true,
+    pikpak_accounts: []
   },
   auto_process: {
     check_duplicate: true,
@@ -499,6 +503,28 @@ function serializeConfig(config) {
   }
 }
 
+function stripMaskedPikPakAccountSecrets(payload, snapshotConfig) {
+  const accounts = payload.http_downloader?.pikpak_accounts
+  if (!Array.isArray(accounts)) return
+  const snapshotAccounts = Array.isArray(snapshotConfig?.http_downloader?.pikpak_accounts)
+    ? snapshotConfig.http_downloader.pikpak_accounts
+    : []
+  const snapshotById = new Map(
+    snapshotAccounts
+      .filter(account => account && account.id)
+      .map(account => [String(account.id), account])
+  )
+  accounts.forEach((account, index) => {
+    const snapshotAccount = snapshotById.get(String(account?.id || '')) || snapshotAccounts[index] || {}
+    if (account?.password === MASKED_PASSWORD && snapshotAccount?.password === MASKED_PASSWORD) {
+      delete account.password
+    }
+    if (account?.encoded_token === MASKED_PASSWORD && snapshotAccount?.encoded_token === MASKED_PASSWORD) {
+      delete account.encoded_token
+    }
+  })
+}
+
 function pickSectionState(source = {}, keys = []) {
   const result = {}
   for (const key of keys) {
@@ -664,6 +690,13 @@ export function useSettingsDraft(options = {}) {
       ) {
         delete payload.http_downloader.pikpak_encoded_token
       }
+      if (
+        payload.http_downloader?.gofile_token === MASKED_PASSWORD &&
+        snapshot.value?.http_downloader?.gofile_token === MASKED_PASSWORD
+      ) {
+        delete payload.http_downloader.gofile_token
+      }
+      stripMaskedPikPakAccountSecrets(payload, snapshot.value)
       await configStore.saveConfig(payload)
       snapshot.value = deepClone(config.value)
       lastSavedAt.value = Date.now()

@@ -17,10 +17,10 @@
           </SettingsFieldCard>
           <div class="mini-grid two">
             <SettingsFieldCard label="请求超时">
-              <el-input-number v-model="config.kikoeru_server.timeout" :min="1" :max="60" class="field-number" />
+              <SettingsNumberStepper v-model="config.kikoeru_server.timeout" :min="1" :max="60" />
             </SettingsFieldCard>
             <SettingsFieldCard label="缓存秒数">
-              <el-input-number v-model="config.kikoeru_server.cache_ttl" :min="0" :max="3600" class="field-number" />
+              <SettingsNumberStepper v-model="config.kikoeru_server.cache_ttl" :min="0" :max="3600" />
             </SettingsFieldCard>
           </div>
           <SettingsToggleRow v-model="config.kikoeru_server.check_in_preextract" title="预检查重" subtitle="在解压预检阶段就使用远端查重。" />
@@ -83,18 +83,18 @@
           <SettingsToggleRow v-model="config.asmr_sync.enabled" title="启用 ASMR 同步" subtitle="允许从 asmr.one 拉音频与字幕。" />
           <div class="mini-grid two">
             <SettingsFieldCard label="最大并发下载数">
-              <el-input-number v-model="config.asmr_sync.max_concurrent_downloads" :min="1" :max="10" class="field-number" />
+              <SettingsNumberStepper v-model="config.asmr_sync.max_concurrent_downloads" :min="1" :max="10" />
             </SettingsFieldCard>
             <SettingsFieldCard label="最大重试次数">
-              <el-input-number v-model="config.asmr_sync.max_retry_count" :min="1" :max="100" class="field-number" />
+              <SettingsNumberStepper v-model="config.asmr_sync.max_retry_count" :min="1" :max="100" />
             </SettingsFieldCard>
           </div>
           <div class="mini-grid two">
             <SettingsFieldCard label="增强会话并发">
-              <el-input-number v-model="config.asmr_sync.enhanced_max_parallel_sessions" :min="1" :max="10" class="field-number" />
+              <SettingsNumberStepper v-model="config.asmr_sync.enhanced_max_parallel_sessions" :min="1" :max="10" />
             </SettingsFieldCard>
             <SettingsFieldCard label="单会话并发">
-              <el-input-number v-model="config.asmr_sync.enhanced_per_session_concurrency" :min="1" :max="10" class="field-number" />
+              <SettingsNumberStepper v-model="config.asmr_sync.enhanced_per_session_concurrency" :min="1" :max="10" />
             </SettingsFieldCard>
           </div>
           <SettingsFieldCard label="重试 Cron">
@@ -124,92 +124,6 @@
           <SettingsFieldCard v-if="config.asmr_sync.auto_upload_enabled" label="默认目标路径">
             <input v-model="config.asmr_sync.auto_upload_target_path" class="field-input" type="text" placeholder="本地目录或远程目录">
           </SettingsFieldCard>
-        </div>
-      </div>
-
-      <!-- HTTP 外链下载 -->
-      <div class="settings-card">
-        <div class="card-title">HTTP 外链下载</div>
-        <div class="field-stack">
-          <SettingsToggleRow v-model="config.http_downloader.enabled" title="启用 HTTP 外链下载" subtitle="ASMR 同步页可把 HTTP/HTTPS 直链交给 aria2 下载。" />
-          <SettingsFieldCard label="下载根目录" hint="留空时使用 storage.temp_path/http_downloads。">
-            <input v-model="config.http_downloader.download_root" class="field-input" type="text" placeholder="例如 D:\Downloads\KikoeruManager">
-          </SettingsFieldCard>
-          <div class="mini-grid three">
-            <SettingsFieldCard label="下载引擎" hint="首版仅支持 aria2。">
-              <AppDropdown
-                v-model="config.http_downloader.engine"
-                :options="httpEngineOptions"
-                class="settings-field-dd"
-              />
-            </SettingsFieldCard>
-            <SettingsFieldCard label="aria2 路径" hint="Docker 内默认 aria2c；Windows 可填 aria2c.exe 绝对路径。">
-              <input v-model="config.http_downloader.aria2_path" class="field-input" type="text" placeholder="aria2c">
-            </SettingsFieldCard>
-            <SettingsFieldCard label="HTTP 代理" hint="仅用于 HTTP 外链下载，和 asmr.one 代理分离。">
-              <input v-model="config.http_downloader.proxy_url" class="field-input" type="text" placeholder="http://127.0.0.1:7890">
-            </SettingsFieldCard>
-          </div>
-          <div class="mini-grid three">
-            <SettingsFieldCard label="并发下载">
-              <el-input-number v-model="config.http_downloader.max_concurrent_downloads" :min="1" :max="16" class="field-number" />
-            </SettingsFieldCard>
-            <SettingsFieldCard label="分片数">
-              <el-input-number v-model="config.http_downloader.split" :min="1" :max="32" class="field-number" />
-            </SettingsFieldCard>
-            <SettingsFieldCard label="单站连接">
-              <el-input-number v-model="config.http_downloader.max_connection_per_server" :min="1" :max="32" class="field-number" />
-            </SettingsFieldCard>
-          </div>
-          <div class="mini-grid three">
-            <SettingsFieldCard label="最小分片">
-              <input v-model="config.http_downloader.min_split_size" class="field-input" type="text" placeholder="1M">
-            </SettingsFieldCard>
-            <SettingsFieldCard label="重试次数">
-              <el-input-number v-model="config.http_downloader.retry_count" :min="1" :max="50" class="field-number" />
-            </SettingsFieldCard>
-            <SettingsFieldCard label="重试等待秒">
-              <el-input-number v-model="config.http_downloader.retry_wait_seconds" :min="0" :max="300" class="field-number" />
-            </SettingsFieldCard>
-          </div>
-          <div class="mini-grid three">
-            <SettingsFieldCard label="连接超时秒">
-              <el-input-number v-model="config.http_downloader.connect_timeout_seconds" :min="1" :max="120" class="field-number" />
-            </SettingsFieldCard>
-            <SettingsFieldCard label="传输超时秒">
-              <el-input-number v-model="config.http_downloader.timeout_seconds" :min="1" :max="600" class="field-number" />
-            </SettingsFieldCard>
-            <SettingsFieldCard label="冲突策略">
-              <AppDropdown
-                v-model="config.http_downloader.conflict_policy"
-                :options="httpConflictPolicyOptions"
-                class="settings-field-dd"
-              />
-            </SettingsFieldCard>
-          </div>
-          <SettingsToggleRow v-model="config.http_downloader.allow_private_network" title="允许内网 URL" subtitle="默认阻止 localhost、内网、link-local 和 metadata 地址，避免误把系统内部服务当下载源。" />
-          <div class="service-divider"></div>
-          <SettingsToggleRow v-model="config.http_downloader.pikpak_enabled" title="启用 PikPak 链接解析" subtitle="分享链接先解析为临时直链，再交给 aria2 下载；不处理验证码绕过。" />
-          <div class="mini-grid three" v-if="config.http_downloader.pikpak_enabled">
-            <SettingsFieldCard label="PikPak 账号">
-              <input v-model="config.http_downloader.pikpak_username" class="field-input" type="text" placeholder="邮箱或手机号">
-            </SettingsFieldCard>
-            <SettingsFieldCard label="PikPak 密码">
-              <AnimatedPasswordInput v-model="config.http_downloader.pikpak_password" placeholder="登录密码" autocomplete="new-password" />
-            </SettingsFieldCard>
-            <SettingsFieldCard label="设备 ID" hint="可选；留空按账号生成固定设备 ID。">
-              <input v-model="config.http_downloader.pikpak_device_id" class="field-input" type="text" placeholder="可选">
-            </SettingsFieldCard>
-          </div>
-          <div class="mini-grid two" v-if="config.http_downloader.pikpak_enabled">
-            <SettingsFieldCard label="转存目录" hint="分享文件需要先转存到自己的 PikPak，再获取下载直链。">
-              <input v-model="config.http_downloader.pikpak_transfer_dir" class="field-input" type="text" placeholder="/KikoeruManager">
-            </SettingsFieldCard>
-            <SettingsFieldCard label="缓存 Token" hint="可手动填入；保存时会脱敏展示，刷新 token 后后端会自动写回。">
-              <AnimatedPasswordInput v-model="config.http_downloader.pikpak_encoded_token" placeholder="可选，登录后自动生成" autocomplete="off" />
-            </SettingsFieldCard>
-          </div>
-          <SettingsToggleRow v-if="config.http_downloader.pikpak_enabled" v-model="config.http_downloader.pikpak_auto_save_share" title="自动转存分享文件" subtitle="开启后预览/开始下载 PikPak 分享时自动保存到转存目录。" />
         </div>
       </div>
     </div>
@@ -270,7 +184,7 @@
               />
             </SettingsFieldCard>
             <SettingsFieldCard label="端口">
-              <el-input-number v-model="config.email_watcher.imap_port" :min="1" :max="65535" class="field-number" />
+              <SettingsNumberStepper v-model="config.email_watcher.imap_port" :min="1" :max="65535" />
             </SettingsFieldCard>
           </div>
           <SettingsFieldCard label="IMAP 地址">
@@ -308,10 +222,10 @@
           </div>
           <div class="mini-grid two">
             <SettingsFieldCard label="IDLE 超时（分钟）">
-              <el-input-number v-model="config.email_watcher.idle_timeout_minutes" :min="5" :max="28" class="field-number" />
+              <SettingsNumberStepper v-model="config.email_watcher.idle_timeout_minutes" :min="5" :max="28" />
             </SettingsFieldCard>
             <SettingsFieldCard label="降级轮询间隔（秒）">
-              <el-input-number v-model="config.email_watcher.fallback_poll_interval_seconds" :min="60" :max="3600" class="field-number" />
+              <SettingsNumberStepper v-model="config.email_watcher.fallback_poll_interval_seconds" :min="60" :max="3600" />
             </SettingsFieldCard>
           </div>
           <div class="service-action-row">
@@ -380,6 +294,7 @@ import { ElMessage } from 'element-plus'
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import { BookOpen, FolderOpen, Mail, Plus, RefreshCw, Trash2, Wifi, Zap } from 'lucide-vue-next'
 import SettingsFieldCard from './SettingsFieldCard.vue'
+import SettingsNumberStepper from './SettingsNumberStepper.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
 import SettingsToggleChip from './SettingsToggleChip.vue'
 import AppDropdown from '../common/AppDropdown.vue'
@@ -396,14 +311,6 @@ const props = defineProps({
 const uploadModeOptions = [
   { value: 'local', label: '本地复制' },
   { value: 'synology', label: '群晖上传' }
-]
-const httpConflictPolicyOptions = [
-  { value: 'resume', label: '断点续传' },
-  { value: 'rename', label: '自动改名' },
-  { value: 'skip', label: '已存在跳过' }
-]
-const httpEngineOptions = [
-  { value: 'aria2', label: 'aria2' }
 ]
 const namingStrategyOptions = [
   { value: 'audio', label: '按音频' },
@@ -741,7 +648,7 @@ onBeforeUnmount(() => {
   gap: 8px;
   flex-wrap: wrap;
   margin: 0 0 14px;
-  color: #1d1d1f;
+  color: var(--set-text-strong);
   font-size: 13.5px;
   font-weight: 600;
   letter-spacing: -0.1px;
@@ -752,42 +659,23 @@ onBeforeUnmount(() => {
   width: 100%;
   min-height: 38px;
   padding: 0 12px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
+  border: 1px solid var(--set-border);
   border-radius: 10px;
-  background: #ffffff;
-  color: #1d1d1f;
+  background: var(--set-field-bg);
+  color: var(--set-text-strong);
   font-size: 13.5px;
   outline: none;
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
-.field-input:hover { border-color: rgba(148, 163, 184, 0.75); }
+.field-input:hover { border-color: var(--set-border-strong); }
 
 .field-input:focus {
-  border-color: rgba(79, 70, 229, 0.5);
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+  border-color: var(--set-border-strong);
+  box-shadow: 0 0 0 3px var(--set-focus-ring);
 }
 
-.field-input::placeholder { color: #94a3b8; }
-
-.field-number :deep(.el-input__wrapper) {
-  min-height: 38px;
-  border-radius: 10px;
-  background: #ffffff;
-  box-shadow: none;
-  border: 1px solid rgba(226, 232, 240, 0.85) !important;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease;
-}
-
-.field-number :deep(.el-input__wrapper:hover) {
-  border-color: rgba(148, 163, 184, 0.75) !important;
-  box-shadow: none;
-}
-
-.field-number :deep(.el-input__wrapper.is-focus) {
-  border-color: rgba(79, 70, 229, 0.5) !important;
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1) !important;
-}
+.field-input::placeholder { color: var(--set-text-subtle); }
 
 .settings-field-dd { display: block; width: 100%; }
 .settings-field-dd :deep(.app-dd-root) { display: block; width: 100%; }
@@ -798,16 +686,16 @@ onBeforeUnmount(() => {
   height: 38px;
   padding: 0 12px;
   border-radius: 10px;
-  background: #ffffff;
-  border: 1px solid rgba(226, 232, 240, 0.85);
+  background: var(--set-field-bg);
+  border: 1px solid var(--set-border);
   font-size: 13.5px;
   justify-content: space-between;
 }
 
-.settings-field-dd :deep(.app-dd-trigger:hover) { border-color: rgba(148, 163, 184, 0.75); }
+.settings-field-dd :deep(.app-dd-trigger:hover) { border-color: var(--set-border-strong); }
 .settings-field-dd :deep(.app-dd-trigger.is-open) {
-  border-color: rgba(79, 70, 229, 0.55);
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+  border-color: var(--set-border-strong);
+  box-shadow: 0 0 0 3px var(--set-focus-ring);
 }
 
 /* 规则行 */
@@ -818,14 +706,14 @@ onBeforeUnmount(() => {
   align-items: center;
   padding: 10px 12px;
   border-radius: 12px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  background: #ffffff;
+  border: 1px solid var(--set-border);
+  background: var(--set-surface);
   transition: border-color 0.18s ease, background 0.18s ease;
 }
 
 .rule-row:hover {
-  border-color: rgba(148, 163, 184, 0.75);
-  background: rgba(248, 250, 252, 0.5);
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
 }
 
 /* ghost / icon / 邮件监听按钮 */
@@ -838,9 +726,9 @@ onBeforeUnmount(() => {
   gap: 6px;
   height: 36px;
   border-radius: 10px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  background: #ffffff;
-  color: #475569;
+  border: 1px solid var(--set-border);
+  background: var(--set-surface);
+  color: var(--set-text);
   font-size: 12.5px;
   font-weight: 500;
   letter-spacing: -0.05px;
@@ -855,9 +743,9 @@ onBeforeUnmount(() => {
 .icon-btn:not(:disabled):hover,
 .email-watcher-action-btn:not(:disabled):hover {
   transform: translateY(-1px);
-  border-color: rgba(148, 163, 184, 0.75);
-  background: rgba(248, 250, 252, 0.85);
-  color: #1d1d1f;
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
+  color: var(--set-text-strong);
 }
 
 .email-watcher-action-btn:hover:not(:disabled) svg:not(.spin-once) {
@@ -888,12 +776,6 @@ onBeforeUnmount(() => {
 
 .service-inline-row .field-input { flex: 1 1 220px; }
 
-.service-divider {
-  height: 1px;
-  background: linear-gradient(90deg, transparent 0%, rgba(148, 163, 184, 0.35) 18%, rgba(148, 163, 184, 0.35) 82%, transparent 100%);
-  margin: 2px 0;
-}
-
 /* Lottie 触发按钮 */
 .service-lottie-trigger {
   display: inline-flex;
@@ -903,9 +785,9 @@ onBeforeUnmount(() => {
   padding: 0 14px 0 8px;
   height: 38px;
   border-radius: 10px;
-  border: 1px solid rgba(226, 232, 240, 0.85);
-  background: #ffffff;
-  color: #1d1d1f;
+  border: 1px solid var(--set-border);
+  background: var(--set-surface);
+  color: var(--set-text-strong);
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
@@ -926,7 +808,7 @@ onBeforeUnmount(() => {
 }
 
 .service-lottie-trigger__label {
-  color: #1d1d1f;
+  color: var(--set-text-strong);
   font-size: 12.5px;
   font-weight: 500;
   letter-spacing: -0.05px;
@@ -952,11 +834,11 @@ onBeforeUnmount(() => {
 .service-result-card {
   padding: 14px 16px;
   border-radius: 12px;
-  border: 1px solid rgba(191, 219, 254, 0.55);
-  background: linear-gradient(180deg, #f5f8ff 0%, #eff6ff 100%);
+  border: 1px solid var(--set-border);
+  background: var(--set-surface-soft);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 1px 2px rgba(37, 99, 235, 0.06);
+    0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 .service-result-grid {
@@ -969,13 +851,13 @@ onBeforeUnmount(() => {
 .service-result-key {
   display: block;
   margin-bottom: 3px;
-  color: rgba(29, 29, 31, 0.55);
+  color: var(--set-text-muted);
   font-size: 11.5px;
   font-weight: 500;
   letter-spacing: -0.05px;
 }
 
-.service-result-line { color: #1d1d1f; font-size: 13px; line-height: 1.6; letter-spacing: -0.05px; }
+.service-result-line { color: var(--set-text-strong); font-size: 13px; line-height: 1.6; letter-spacing: -0.05px; }
 
 /* 邮件监听 badge */
 .email-watcher-badge {
@@ -989,18 +871,18 @@ onBeforeUnmount(() => {
 }
 
 .email-watcher-badge.is-enabled {
-  background: linear-gradient(180deg, #ecfdf5 0%, #d1fae5 100%);
-  color: #047857;
-  border: 1px solid rgba(110, 231, 183, 0.55);
+  background: var(--set-success-bg);
+  color: var(--set-success-text);
+  border: 1px solid var(--set-success-border);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.7),
     0 1px 2px rgba(16, 185, 129, 0.1);
 }
 
 .email-watcher-badge.is-disabled {
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-  color: #64748b;
-  border: 1px solid rgba(226, 232, 240, 0.85);
+  background: var(--set-chip-bg);
+  color: var(--set-chip-text);
+  border: 1px solid var(--set-border);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.7),
     0 1px 2px rgba(15, 23, 42, 0.04);
@@ -1016,30 +898,30 @@ onBeforeUnmount(() => {
 }
 
 .email-watcher-msg.is-success {
-  background: linear-gradient(180deg, #ecfdf5 0%, #d1fae5 100%);
-  border: 1px solid rgba(110, 231, 183, 0.55);
-  color: #047857;
+  background: var(--set-success-bg);
+  border: 1px solid var(--set-success-border);
+  color: var(--set-success-text);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.7),
     0 1px 2px rgba(16, 185, 129, 0.1);
 }
 
 .email-watcher-msg.is-error {
-  background: linear-gradient(180deg, #fff1f2 0%, #fee2e2 100%);
-  border: 1px solid rgba(252, 165, 165, 0.55);
-  color: #b91c1c;
+  background: var(--set-danger-bg);
+  border: 1px solid var(--set-danger-border);
+  color: var(--set-danger-text);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.7),
     0 1px 2px rgba(239, 68, 68, 0.1);
 }
 
 .email-watcher-msg.is-info {
-  background: linear-gradient(180deg, #f5f8ff 0%, #eff6ff 100%);
-  border: 1px solid rgba(191, 219, 254, 0.55);
-  color: #1d4ed8;
+  background: var(--set-surface-soft);
+  border: 1px solid var(--set-border);
+  color: var(--set-text);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 1px 2px rgba(37, 99, 235, 0.08);
+    0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 .email-watcher-error { margin-top: 8px; color: var(--el-color-danger); }
@@ -1047,15 +929,15 @@ onBeforeUnmount(() => {
 .email-watcher-guide-item {
   padding: 12px 14px;
   border-radius: 10px;
-  background: #ffffff;
-  border: 1px solid rgba(226, 232, 240, 0.85);
+  background: var(--set-surface);
+  border: 1px solid var(--set-border);
   transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .email-watcher-guide-item:hover {
   transform: translateY(-1px);
-  border-color: rgba(148, 163, 184, 0.75);
-  background: linear-gradient(135deg, rgba(248, 250, 252, 0.6) 0%, #ffffff 100%);
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
   box-shadow: 0 4px 12px -4px rgba(15, 23, 42, 0.08);
 }
 
@@ -1063,32 +945,32 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  color: #1d1d1f;
+  color: var(--set-text-strong);
   font-size: 12.5px;
   font-weight: 600;
   letter-spacing: -0.05px;
   margin-bottom: 6px;
 }
 
-.email-watcher-guide-item p { font-size: 12.5px; line-height: 1.65; color: rgba(29, 29, 31, 0.55); margin: 0; }
+.email-watcher-guide-item p { font-size: 12.5px; line-height: 1.65; color: var(--set-text-muted); margin: 0; }
 .email-watcher-guide-extra { margin-top: 6px !important; }
 
 .email-watcher-guide-item p code {
-  background: linear-gradient(180deg, #f5f8ff 0%, #eff6ff 100%);
-  border: 1px solid rgba(191, 219, 254, 0.55);
+  background: var(--set-surface-soft);
+  border: 1px solid var(--set-border);
   border-radius: 6px;
   padding: 1px 5px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
-  color: #1d4ed8;
+  color: var(--set-text-strong);
 }
 
 .email-watcher-hint {
   padding: 8px 12px;
   border-radius: 10px;
-  background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
-  border: 1px solid rgba(251, 191, 36, 0.55);
-  color: #b45309;
+  background: var(--set-warning-bg);
+  border: 1px solid var(--set-warning-border);
+  color: var(--set-warning-text);
   font-size: 12px;
   line-height: 1.55;
   letter-spacing: -0.05px;
