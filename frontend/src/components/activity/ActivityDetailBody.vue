@@ -1,12 +1,12 @@
 <template>
-  <div class="detail-body" :class="row ? `tone-${statusTone(effectiveRowStatus(row))}` : ''">
+  <div class="detail-body">
     <!-- 顶部：分类 / 状态 / 关闭 -->
     <header class="detail-head">
       <button class="detail-close" type="button" @click="$emit('close')">
         <X :size="16" :stroke-width="2.6" />
       </button>
       <div class="detail-head-row">
-        <div class="detail-icon" :class="`tone-${statusTone(effectiveRowStatus(row))}`">
+        <div class="detail-icon" :class="`detail-tone-${statusTone(effectiveRowStatus(row))}`">
           <component
             :is="categoryConfig.icon"
             :size="18"
@@ -22,7 +22,7 @@
             >已归档</span>
             <span
               v-if="row?.__isLite"
-              class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-medium tracking-wide text-sky-600 bg-sky-50/70 ring-1 ring-inset ring-sky-200/70"
+              class="inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-medium tracking-wide text-slate-600 bg-slate-50/80 ring-1 ring-inset ring-slate-200/70"
             >详情加载中…</span>
           </div>
           <h2 class="detail-title">{{ row ? humanAction(row) : '—' }}</h2>
@@ -37,7 +37,7 @@
             <!-- 后续完成的修复 / 重新爬取 / 最终状态徽章 —— 把原版的状态修复指示器还原回来 -->
             <span
               v-if="isRerun"
-              class="inline-flex items-center px-1.5 py-[3px] rounded-md text-[11px] font-semibold leading-none tracking-tight ring-1 ring-inset bg-amber-50 text-amber-700 ring-amber-200/70"
+              class="inline-flex items-center px-1.5 py-[3px] rounded-md text-[11px] font-semibold leading-none tracking-tight ring-1 ring-inset bg-slate-50/80 text-slate-700 ring-slate-200/70"
               title="该任务被重新爬取过"
             >重新爬取</span>
             <span
@@ -48,7 +48,7 @@
             >{{ finalLabel }}</span>
             <span
               v-if="isRecovered && finalLabel !== '已修复✔'"
-              class="inline-flex items-center px-1.5 py-[3px] rounded-md text-[11px] font-semibold leading-none tracking-tight ring-1 ring-inset bg-emerald-50 text-emerald-700 ring-emerald-200/70"
+              class="inline-flex items-center px-1.5 py-[3px] rounded-md text-[11px] font-semibold leading-none tracking-tight ring-1 ring-inset bg-slate-50/80 text-slate-700 ring-slate-200/70"
               title="此次失败后被人工处理或重试修复"
             >已修复</span>
             <span
@@ -170,10 +170,10 @@
             v-for="child in childPreview"
             :key="childKey(child)"
             class="child-item"
-            :class="[`tone-${statusTone(child.status)}`, { 'is-expanded': isChildExpanded(child) }]"
+            :class="{ 'is-expanded': isChildExpanded(child) }"
           >
             <div class="child-row" @click="toggleChildExpansion(child)">
-              <span class="child-dot" :class="`tone-${statusTone(child.status)}`"></span>
+              <span class="child-dot" :class="`detail-tone-${statusTone(child.status)}`"></span>
               <div class="child-body">
                 <div class="child-head">
                   <span class="child-rel">{{ humanActionFn(child) || relationLabel(child) }}</span>
@@ -188,7 +188,7 @@
                   >{{ finalStatusLabel(child) }}</span>
                   <span
                     v-if="isRecoveredFailure(child) && finalStatusLabel(child) !== '已修复✔'"
-                    class="inline-flex items-center px-1.5 py-[1px] rounded text-[10px] font-semibold leading-none tracking-tight bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200/70"
+                    class="inline-flex items-center px-1.5 py-[1px] rounded text-[10px] font-semibold leading-none tracking-tight bg-slate-50/80 text-slate-700 ring-1 ring-inset ring-slate-200/70"
                   >已修复</span>
                   <span class="child-time">{{ formatDateTime(child.created_at) }}</span>
                 </div>
@@ -318,18 +318,18 @@ const emit = defineEmits(['close', 'open-row', 'navigate'])
 
 // ===== Tailwind tone class 映射 =====
 const SUBTITLE_STATUS_TONE_CLASS = {
-  success: 'bg-emerald-50/70 text-emerald-700 ring-emerald-200/60',
-  warn: 'bg-amber-50/70 text-amber-700 ring-amber-200/60',
-  danger: 'bg-rose-50/70 text-rose-700 ring-rose-200/60',
-  info: 'bg-sky-50/70 text-sky-700 ring-sky-200/60',
+  success: 'bg-slate-50/80 text-slate-700 ring-slate-200/70',
+  warn: 'bg-slate-50/80 text-slate-700 ring-slate-200/70',
+  danger: 'bg-slate-50/80 text-slate-700 ring-slate-200/70',
+  info: 'bg-slate-50/80 text-slate-700 ring-slate-200/70',
   neutral: 'bg-slate-50/70 text-slate-600 ring-slate-200/60'
 }
 
 const METRIC_CHIP_TONE_CLASS = {
-  success: 'bg-emerald-50/70 ring-emerald-200/40 text-emerald-700',
-  warn: 'bg-amber-50/70 ring-amber-200/40 text-amber-700',
-  danger: 'bg-rose-50/70 ring-rose-200/40 text-rose-700',
-  info: 'bg-sky-50/70 ring-sky-200/40 text-sky-700',
+  success: 'bg-slate-50/70 ring-slate-200/40 text-slate-700',
+  warn: 'bg-slate-50/70 ring-slate-200/40 text-slate-700',
+  danger: 'bg-slate-50/70 ring-slate-200/40 text-slate-700',
+  info: 'bg-slate-50/70 ring-slate-200/40 text-slate-700',
   neutral: 'bg-slate-50/70 ring-slate-200/40 text-slate-700'
 }
 
@@ -343,9 +343,9 @@ function metricChipClasses(tone) {
 
 // ===== final-status / 已修复 / 重新爬取 徽章配色 =====
 const FINAL_BADGE_CLASS = {
-  'is-final-success': 'bg-emerald-50 text-emerald-700 ring-emerald-200/70',
-  'is-final-partial': 'bg-amber-50 text-amber-700 ring-amber-200/70',
-  'is-final-failed': 'bg-rose-50 text-rose-700 ring-rose-200/70'
+  'is-final-success': 'bg-slate-50/80 text-slate-700 ring-slate-200/70',
+  'is-final-partial': 'bg-slate-50/80 text-slate-700 ring-slate-200/70',
+  'is-final-failed': 'bg-slate-50/80 text-slate-700 ring-slate-200/70'
 }
 function finalBadgeClasses(cls) {
   return FINAL_BADGE_CLASS[cls] || FINAL_BADGE_CLASS['is-final-failed']
@@ -632,28 +632,28 @@ async function copyText(value) {
   border: 1px solid rgba(15, 23, 42, 0.08);
 }
 
-.detail-icon.tone-success {
-  background: rgba(52, 199, 89, 0.12);
-  color: #047857;
-  border-color: rgba(52, 199, 89, 0.22);
+.detail-icon.detail-tone-success {
+  background: rgba(15, 23, 42, 0.06);
+  color: #334155;
+  border-color: rgba(15, 23, 42, 0.1);
 }
 
-.detail-icon.tone-warn {
-  background: rgba(255, 149, 0, 0.12);
-  color: #b45309;
-  border-color: rgba(255, 149, 0, 0.22);
+.detail-icon.detail-tone-warn {
+  background: rgba(15, 23, 42, 0.06);
+  color: #475569;
+  border-color: rgba(15, 23, 42, 0.1);
 }
 
-.detail-icon.tone-danger {
-  background: rgba(255, 59, 48, 0.1);
-  color: #b91c1c;
-  border-color: rgba(255, 59, 48, 0.2);
+.detail-icon.detail-tone-danger {
+  background: rgba(15, 23, 42, 0.06);
+  color: #334155;
+  border-color: rgba(15, 23, 42, 0.1);
 }
 
-.detail-icon.tone-info {
-  background: rgba(10, 132, 255, 0.1);
-  color: #0a3a8a;
-  border-color: rgba(10, 132, 255, 0.22);
+.detail-icon.detail-tone-info {
+  background: rgba(15, 23, 42, 0.06);
+  color: #475569;
+  border-color: rgba(15, 23, 42, 0.1);
 }
 
 .detail-titles {
@@ -921,10 +921,10 @@ async function copyText(value) {
   margin-top: 2px;
 }
 
-.child-dot.tone-success { background: #34c759; }
-.child-dot.tone-warn { background: #ff9500; }
-.child-dot.tone-danger { background: #ff3b30; }
-.child-dot.tone-info { background: #0a84ff; }
+.child-dot.detail-tone-success { background: #64748b; }
+.child-dot.detail-tone-warn { background: #71717a; }
+.child-dot.detail-tone-danger { background: #52525b; }
+.child-dot.detail-tone-info { background: #64748b; }
 
 .child-body {
   min-width: 0;
@@ -1088,6 +1088,126 @@ async function copyText(value) {
 
 .foot-btn.primary:hover {
   box-shadow: 0 14px 28px rgba(15, 23, 42, 0.22);
+}
+
+:global(html.kikoerumanager-dark) .detail-body {
+  background: #0b0c10;
+  background-image: none;
+  color: #f4f4f5;
+}
+
+:global(html.kikoerumanager-dark) .detail-head,
+:global(html.kikoerumanager-dark) .detail-foot {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: #0b0c10;
+  background-image: none;
+}
+
+:global(html.kikoerumanager-dark) .detail-scroll {
+  background: #0b0c10;
+}
+
+:global(html.kikoerumanager-dark) .detail-close,
+:global(html.kikoerumanager-dark) .foot-btn {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: #17181d;
+  background-image: none;
+  color: #d7dde7;
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark) .detail-close:hover,
+:global(html.kikoerumanager-dark) .foot-btn:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: #202126;
+  color: #f4f4f5;
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark) .foot-btn.primary {
+  border-color: rgba(255, 255, 255, 0.26);
+  background: #e7e7eb;
+  background-image: none;
+  color: #111116;
+}
+
+:global(html.kikoerumanager-dark) .foot-btn.primary:hover {
+  background: #ffffff;
+  color: #0e0e12;
+}
+
+:global(html.kikoerumanager-dark) .detail-title,
+:global(html.kikoerumanager-dark) .summary-text,
+:global(html.kikoerumanager-dark) .meta-row dd,
+:global(html.kikoerumanager-dark) .child-rel {
+  color: #f4f4f5;
+}
+
+:global(html.kikoerumanager-dark) .eyebrow-cat,
+:global(html.kikoerumanager-dark) .detail-subtitle,
+:global(html.kikoerumanager-dark) .panel-head,
+:global(html.kikoerumanager-dark) .meta-row dt,
+:global(html.kikoerumanager-dark) .child-time,
+:global(html.kikoerumanager-dark) .child-summary,
+:global(html.kikoerumanager-dark) .child-chevron {
+  color: rgba(212, 212, 216, 0.66);
+}
+
+:global(html.kikoerumanager-dark) .panel {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: #111216;
+  background-image: none;
+  color: #f4f4f5;
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark) .panel-head.clickable:hover {
+  color: #f4f4f5;
+}
+
+:global(html.kikoerumanager-dark) .panel-toggle,
+:global(html.kikoerumanager-dark) .copy-btn {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: #202126;
+  background-image: none;
+  color: #d7dde7;
+}
+
+:global(html.kikoerumanager-dark) .panel-toggle:hover,
+:global(html.kikoerumanager-dark) .copy-btn:hover,
+:global(html.kikoerumanager-dark) .child-jump-btn:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: #2b2c31;
+  color: #f4f4f5;
+}
+
+:global(html.kikoerumanager-dark) .detail-icon {
+  background: #17181d !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: #d7dde7 !important;
+}
+
+:global(html.kikoerumanager-dark) .child-item:hover,
+:global(html.kikoerumanager-dark) .child-item.is-expanded {
+  background: #17181d;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+:global(html.kikoerumanager-dark) .child-jump-btn {
+  color: rgba(212, 212, 216, 0.58);
+}
+
+:global(html.kikoerumanager-dark) .raw-json-wrap {
+  background: #08090c;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+:global(html.kikoerumanager-dark) .raw-json {
+  color: #d7dde7;
+}
+
+:global(html.kikoerumanager-dark) .detail-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
 }
 
 @media (max-width: 640px) {

@@ -58,14 +58,11 @@
   <section
     v-if="pairWorkbench"
     class="panel relative overflow-hidden"
-    :class="pairWorkbench.awaiting ? 'ring-1 ring-inset ring-amber-200/60 bg-gradient-to-br from-amber-50/60 to-white' : 'ring-1 ring-inset ring-sky-200/50 bg-gradient-to-br from-sky-50/50 to-white'"
+    :class="pairWorkbench.awaiting ? 'ring-1 ring-inset ring-slate-200/60 bg-slate-50/60' : 'ring-1 ring-inset ring-slate-200/50 bg-slate-50/50'"
   >
     <div class="flex items-start gap-3 flex-wrap">
       <div class="flex-1 min-w-0">
-        <div
-          class="inline-flex items-center gap-1 px-2 py-[3px] rounded-md text-[10px] font-semibold tracking-wide ring-1 ring-inset"
-          :class="pairWorkbench.awaiting ? 'bg-amber-50 text-amber-700 ring-amber-200/60' : 'bg-sky-50 text-sky-700 ring-sky-200/60'"
-        >{{ pairWorkbench.awaiting ? '待继续处理' : '可查看工作台' }}</div>
+        <div class="inline-flex items-center gap-1 px-2 py-[3px] rounded-md text-[10px] font-semibold tracking-wide ring-1 ring-inset bg-slate-50/80 text-slate-700 ring-slate-200/60">{{ pairWorkbench.awaiting ? '待继续处理' : '可查看工作台' }}</div>
         <div class="text-[15px] font-bold tracking-tight text-slate-900 mt-2">{{ pairWorkbench.title }}</div>
         <p class="text-[12.5px] leading-relaxed text-slate-600 mt-1">{{ pairWorkbench.description }}</p>
         <div v-if="pairWorkbench.chips.length" class="flex flex-wrap gap-1.5 mt-2.5">
@@ -79,7 +76,7 @@
       <el-button
         type="primary"
         size="default"
-        :class="['shrink-0 transition-all hover:-translate-y-0.5 hover:shadow-md', pairWorkbench.awaiting ? '!bg-amber-500 hover:!bg-amber-600 !border-amber-500' : '']"
+        class="shrink-0 transition-all hover:-translate-y-0.5 hover:shadow-md"
         @click="openSubtitlePairWorkbench"
       >
         <ArrowUpRight :size="14" :stroke-width="2.4" class="mr-1" />
@@ -133,11 +130,11 @@
     </div>
     <p class="text-[12.5px] leading-relaxed text-slate-600 mb-2.5">勾选要继续处理的 RJ，直接带回库存里的字幕工作台。这里只展示批量子任务，不展示单个 RJ 的配对映射。</p>
     <div class="flex flex-wrap gap-1.5 mb-2.5">
-      <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-md text-[11px] font-semibold tracking-tight bg-emerald-50/80 text-emerald-700 ring-1 ring-inset ring-emerald-200/60">
+      <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-md text-[11px] font-semibold tracking-tight bg-slate-50/80 text-slate-700 ring-1 ring-inset ring-slate-200/60">
         <CheckCircle2 :size="11" :stroke-width="2.5" />
         已配对 {{ subtitleBatchModel.pairedCount }}
       </span>
-      <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-md text-[11px] font-semibold tracking-tight bg-amber-50/80 text-amber-700 ring-1 ring-inset ring-amber-200/60">
+      <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-md text-[11px] font-semibold tracking-tight bg-slate-50/80 text-slate-700 ring-1 ring-inset ring-slate-200/60">
         <Clock :size="11" :stroke-width="2.5" />
         待配对 {{ subtitleBatchModel.awaitingCount }}
       </span>
@@ -150,20 +147,20 @@
         <input
           v-model="batchAwaitingOnly"
           type="checkbox"
-          class="accent-amber-500"
+          class="accent-slate-500"
         >
         仅显示未配对
       </label>
       <button
         type="button"
-        class="text-[12px] font-medium text-amber-700 hover:text-amber-800 transition-colors"
+        class="text-[12px] font-medium text-slate-700 hover:text-slate-900 transition-colors"
         @click="selectAwaitingBatch"
       >全选未配对</button>
       <label class="inline-flex items-center gap-1.5 text-[12px] text-slate-600 cursor-pointer select-none ml-auto">
         <input
           type="checkbox"
           :checked="allBatchSelected"
-          class="accent-sky-500"
+          class="accent-slate-500"
           @change="toggleAllBatch($event.target.checked)"
         >
         全选当前
@@ -189,7 +186,7 @@
           v-model="selectedBatchKeys"
           type="checkbox"
           :value="item.key"
-          class="mt-1 shrink-0 accent-sky-500"
+          class="mt-1 shrink-0 accent-slate-500"
         >
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-2 flex-wrap">
@@ -266,7 +263,7 @@
             :href="item.productUrl"
             target="_blank"
             rel="noopener"
-            class="text-[14px] font-bold leading-snug tracking-tight text-slate-900 hover:text-sky-700 transition-colors line-clamp-2"
+            class="text-[14px] font-bold leading-snug tracking-tight text-slate-900 hover:text-slate-700 transition-colors line-clamp-2"
           >{{ item.title || item.rjcode || '未命名作品' }}</a>
           <div v-else class="text-[14px] font-bold leading-snug tracking-tight text-slate-900 line-clamp-2">{{ item.title || item.rjcode || '未命名作品' }}</div>
           <div class="flex flex-wrap gap-x-3 gap-y-0.5 text-[12px] text-slate-600 leading-relaxed">
@@ -579,7 +576,7 @@
           v-model="compareSearchQuery"
           type="text"
           placeholder="搜索 RJ / 标题 / Tag..."
-          class="w-full pl-7 pr-3 py-1.5 text-[12px] rounded-[6px] bg-white ring-1 ring-inset ring-slate-200/70 focus:ring-sky-300/70 focus:outline-none transition-all placeholder:text-slate-400"
+          class="w-full pl-7 pr-3 py-1.5 text-[12px] rounded-[6px] bg-white ring-1 ring-inset ring-slate-200/70 focus:ring-slate-300/70 focus:outline-none transition-all placeholder:text-slate-400"
         >
       </div>
       <AppDropdown
@@ -596,7 +593,7 @@
           type="button"
           class="px-2.5 py-1 rounded-[6px] text-[11px] font-medium tracking-tight transition-all"
           :class="compareSourceFilter === f.value
-            ? 'bg-sky-50 text-sky-700 ring-1 ring-inset ring-sky-200/70 shadow-sm'
+            ? 'bg-slate-50 text-slate-800 ring-1 ring-inset ring-slate-200/70 shadow-sm'
             : 'text-slate-600 hover:bg-slate-50 ring-1 ring-inset ring-transparent'"
           @click="compareSourceFilter = f.value"
         >{{ f.label }}</button>
@@ -681,10 +678,10 @@
       <span class="panel-head-count">{{ circleRefreshModel.refreshedCount }}</span>
     </div>
     <div class="flex flex-wrap gap-1.5 mb-2.5">
-      <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-[4px] text-[11px] font-semibold tracking-tight bg-sky-50/80 text-sky-700 ring-1 ring-inset ring-sky-200/60">选中<span class="tabular-nums opacity-70">{{ circleRefreshModel.selectedCount }}</span></span>
-      <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-[4px] text-[11px] font-semibold tracking-tight bg-emerald-50/80 text-emerald-700 ring-1 ring-inset ring-emerald-200/60">已刷新<span class="tabular-nums opacity-70">{{ circleRefreshModel.refreshedCount }}</span></span>
-      <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-[4px] text-[11px] font-semibold tracking-tight bg-amber-50/80 text-amber-700 ring-1 ring-inset ring-amber-200/60">有变化<span class="tabular-nums opacity-70">{{ circleRefreshModel.changedCount }}</span></span>
-      <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-[4px] text-[11px] font-semibold tracking-tight bg-violet-50/80 text-violet-700 ring-1 ring-inset ring-violet-200/60">服务器已有<span class="tabular-nums opacity-70">{{ circleRefreshModel.serverMatchedCount }}</span></span>
+      <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-[4px] text-[11px] font-semibold tracking-tight bg-slate-50/80 text-slate-700 ring-1 ring-inset ring-slate-200/60">选中<span class="tabular-nums opacity-70">{{ circleRefreshModel.selectedCount }}</span></span>
+      <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-[4px] text-[11px] font-semibold tracking-tight bg-slate-50/80 text-slate-700 ring-1 ring-inset ring-slate-200/60">已刷新<span class="tabular-nums opacity-70">{{ circleRefreshModel.refreshedCount }}</span></span>
+      <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-[4px] text-[11px] font-semibold tracking-tight bg-slate-50/80 text-slate-700 ring-1 ring-inset ring-slate-200/60">有变化<span class="tabular-nums opacity-70">{{ circleRefreshModel.changedCount }}</span></span>
+      <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-[4px] text-[11px] font-semibold tracking-tight bg-slate-50/80 text-slate-700 ring-1 ring-inset ring-slate-200/60">服务器已有<span class="tabular-nums opacity-70">{{ circleRefreshModel.serverMatchedCount }}</span></span>
     </div>
     <div class="flex flex-wrap gap-1 mb-2.5">
       <button
@@ -693,7 +690,7 @@
         type="button"
         class="px-2.5 py-1 rounded-[6px] text-[11px] font-medium tracking-tight transition-all"
         :class="circleRefreshFilter === f.value
-          ? 'bg-sky-50 text-sky-700 ring-1 ring-inset ring-sky-200/70 shadow-sm'
+          ? 'bg-slate-50 text-slate-800 ring-1 ring-inset ring-slate-200/70 shadow-sm'
           : 'text-slate-600 hover:bg-slate-50 ring-1 ring-inset ring-transparent'"
         @click="setCircleRefreshFilter(f.value)"
       >{{ f.label }}</button>
@@ -725,7 +722,7 @@
             :key="`crfc-${item.canonical_rjcode}-${change.key}`"
             class="flex items-center gap-1.5 text-[11px] text-slate-600 flex-wrap"
           >
-            <ArrowRightLeft :size="10" :stroke-width="2.4" class="text-amber-500 shrink-0" />
+            <ArrowRightLeft :size="10" :stroke-width="2.4" class="text-slate-500 shrink-0" />
             <span class="font-semibold text-slate-700 tracking-tight">{{ change.label }}</span>
             <span class="text-slate-400">{{ formatRefreshChangeValue(change.before) }}</span>
             <ChevronRight :size="10" :stroke-width="2.4" class="text-slate-300" />
@@ -904,18 +901,18 @@ function onEmailWatchCoverError(event, item) {
 
 // ===== Tailwind tone 映射 =====
 const SRC_TAG_TONE_CLASS = {
-  info: 'bg-sky-50/80 text-sky-700 ring-sky-200/60',
-  warn: 'bg-amber-50/80 text-amber-700 ring-amber-200/60',
-  success: 'bg-emerald-50/80 text-emerald-700 ring-emerald-200/60',
-  danger: 'bg-rose-50/80 text-rose-700 ring-rose-200/60',
+  info: 'bg-slate-50/80 text-slate-700 ring-slate-200/60',
+  warn: 'bg-slate-50/80 text-slate-700 ring-slate-200/60',
+  success: 'bg-slate-50/80 text-slate-700 ring-slate-200/60',
+  danger: 'bg-slate-50/80 text-slate-700 ring-slate-200/60',
   neutral: 'bg-slate-50/80 text-slate-700 ring-slate-200/60'
 }
 
 const CIRCLE_FLAG_KIND_CLASS = {
-  'is-new': 'bg-emerald-50/80 text-emerald-700 ring-emerald-200/60',
-  'is-owned': 'bg-emerald-50/80 text-emerald-700 ring-emerald-200/60',
-  'is-missing': 'bg-rose-50/80 text-rose-700 ring-rose-200/60',
-  'is-partial': 'bg-amber-50/80 text-amber-700 ring-amber-200/60',
+  'is-new': 'bg-slate-50/80 text-slate-700 ring-slate-200/60',
+  'is-owned': 'bg-slate-50/80 text-slate-700 ring-slate-200/60',
+  'is-missing': 'bg-slate-50/80 text-slate-700 ring-slate-200/60',
+  'is-partial': 'bg-slate-50/80 text-slate-700 ring-slate-200/60',
   '': 'bg-slate-50/80 text-slate-600 ring-slate-200/60'
 }
 
@@ -928,27 +925,27 @@ function circleFlagClasses(kind) {
 }
 
 const PATH_OP_TAG_CLASS = {
-  'is-rename': 'bg-sky-50/80 text-sky-700 ring-sky-200/60',
-  'is-api-rename': 'bg-violet-50/80 text-violet-700 ring-violet-200/60',
-  'is-delete': 'bg-rose-50/80 text-rose-700 ring-rose-200/60',
+  'is-rename': 'bg-slate-50/80 text-slate-700 ring-slate-200/60',
+  'is-api-rename': 'bg-slate-50/80 text-slate-700 ring-slate-200/60',
+  'is-delete': 'bg-slate-50/80 text-slate-700 ring-slate-200/60',
   '': 'bg-slate-50/80 text-slate-700 ring-slate-200/60'
 }
 
 const PATH_REASON_CLASS = {
-  'is-success': 'bg-emerald-50/60 text-emerald-700 ring-emerald-200/40',
-  'is-warn': 'bg-amber-50/60 text-amber-700 ring-amber-200/40',
-  'is-fail': 'bg-rose-50/60 text-rose-700 ring-rose-200/40'
+  'is-success': 'bg-slate-50/70 text-slate-700 ring-slate-200/50',
+  'is-warn': 'bg-slate-50/70 text-slate-700 ring-slate-200/50',
+  'is-fail': 'bg-slate-50/70 text-slate-700 ring-slate-200/50'
 }
 
 const PAIR_STATUS_CLASS = {
-  success: 'bg-emerald-50/80 text-emerald-700 ring-emerald-200/60',
-  warning: 'bg-amber-50/80 text-amber-700 ring-amber-200/60',
+  success: 'bg-slate-50/80 text-slate-700 ring-slate-200/60',
+  warning: 'bg-slate-50/80 text-slate-700 ring-slate-200/60',
   default: 'bg-slate-50/80 text-slate-600 ring-slate-200/60'
 }
 
 const BATCH_STATE_CLASS = {
-  success: 'bg-emerald-50/80 text-emerald-700 ring-emerald-200/60',
-  warning: 'bg-amber-50/80 text-amber-700 ring-amber-200/60',
+  success: 'bg-slate-50/80 text-slate-700 ring-slate-200/60',
+  warning: 'bg-slate-50/80 text-slate-700 ring-slate-200/60',
   default: 'bg-slate-50/80 text-slate-600 ring-slate-200/60'
 }
 
@@ -1137,11 +1134,11 @@ function formatBytes(size) {
 }
 
 .email-watch-card.is-success {
-  border-color: rgba(5, 150, 105, 0.28);
+  border-color: rgba(100, 116, 139, 0.26);
 }
 
 .email-watch-card.is-failed {
-  border-color: rgba(225, 29, 72, 0.32);
+  border-color: rgba(100, 116, 139, 0.3);
 }
 
 .email-watch-card:hover {
@@ -1151,11 +1148,11 @@ function formatBytes(size) {
 }
 
 .email-watch-card.is-success:hover {
-  border-color: rgba(5, 150, 105, 0.45);
+  border-color: rgba(100, 116, 139, 0.42);
 }
 
 .email-watch-card.is-failed:hover {
-  border-color: rgba(225, 29, 72, 0.5);
+  border-color: rgba(100, 116, 139, 0.46);
 }
 
 .email-watch-cover {
@@ -1179,15 +1176,15 @@ function formatBytes(size) {
 }
 
 .email-watch-stat.is-stat-success {
-  background: #ecfdf5;
-  color: #047857;
-  border-color: #a7f3d0;
+  background: #f8fafc;
+  color: #475569;
+  border-color: #e2e8f0;
 }
 
 .email-watch-stat.is-stat-failed {
-  background: #fff1f2;
-  color: #be123c;
-  border-color: #fecdd3;
+  background: #f8fafc;
+  color: #475569;
+  border-color: #e2e8f0;
 }
 
 /* 邮件主题标签：方形浅蓝小卡 */
@@ -1231,15 +1228,15 @@ function formatBytes(size) {
 }
 
 .email-watch-status.is-status-success {
-  background: #ecfdf5;
-  color: #047857;
-  border-color: #a7f3d0;
+  background: #f1f5f9;
+  color: #475569;
+  border-color: #e2e8f0;
 }
 
 .email-watch-status.is-status-failed {
-  background: #fff1f2;
-  color: #be123c;
-  border-color: #fecdd3;
+  background: #f1f5f9;
+  color: #475569;
+  border-color: #e2e8f0;
 }
 
 .email-watch-status.is-status-default {
@@ -1673,6 +1670,65 @@ function formatBytes(size) {
   border-color: rgba(148, 163, 184, 0.32);
 }
 
+:global(html.kikoerumanager-dark) .panel {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: #111216;
+  background-image: none;
+  color: #f4f4f5;
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark) .panel-head,
+:global(html.kikoerumanager-dark) .entry-section-head {
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+:global(html.kikoerumanager-dark) .panel-head,
+:global(html.kikoerumanager-dark) .panel-head > svg,
+:global(html.kikoerumanager-dark) .entry-section-title,
+:global(html.kikoerumanager-dark) .highlight-value,
+:global(html.kikoerumanager-dark) .highlight-num {
+  color: #f4f4f5;
+}
+
+:global(html.kikoerumanager-dark) .panel-head-count,
+:global(html.kikoerumanager-dark) .panel-meta,
+:global(html.kikoerumanager-dark) .entry-eyebrow,
+:global(html.kikoerumanager-dark) .entry-section-desc,
+:global(html.kikoerumanager-dark) .highlight-label,
+:global(html.kikoerumanager-dark) .highlight-unit {
+  color: rgba(212, 212, 216, 0.66);
+}
+
+:global(html.kikoerumanager-dark) .highlight-row {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+:global(html.kikoerumanager-dark) .highlight-row:hover,
+:global(html.kikoerumanager-dark) .tree-row:hover {
+  background: #17181d;
+}
+
+:global(html.kikoerumanager-dark) .panel-toggle,
+:global(html.kikoerumanager-dark) .entry-section-toggle,
+:global(html.kikoerumanager-dark) .tree-inline-toggle:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: #202126;
+  background-image: none;
+  color: #d7dde7;
+}
+
+:global(html.kikoerumanager-dark) .panel-toggle:hover,
+:global(html.kikoerumanager-dark) .entry-section-toggle:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: #2b2c31;
+  color: #f4f4f5;
+}
+
+:global(html.kikoerumanager-dark) .tree-row:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
 .entry-tree-box {
   max-height: 360px;
   overflow: auto;
@@ -1804,12 +1860,12 @@ function formatBytes(size) {
 }
 
 .entry-icon.is-success {
-  color: #059669;
+  color: #64748b;
 }
 
 .entry-icon.is-added {
-  color: #059669;
-  filter: drop-shadow(0 6px 12px rgba(16, 185, 129, 0.16));
+  color: #64748b;
+  filter: none;
 }
 
 .entry-icon.is-changed {
@@ -1818,7 +1874,7 @@ function formatBytes(size) {
 }
 
 .entry-icon.is-warning {
-  color: #e11d48;
+  color: #64748b;
 }
 
 .entry-icon.is-file {
@@ -1891,17 +1947,17 @@ function formatBytes(size) {
 }
 
 .entry-name.is-added {
-  color: #047857;
+  color: #334155;
   font-weight: 700;
 }
 
 .entry-name.is-changed {
-  color: #1d4ed8;
+  color: #334155;
   font-weight: 700;
 }
 
 .entry-name.is-failed {
-  color: #b91c1c;
+  color: #334155;
 }
 
 .entry-meta-text {
@@ -1911,7 +1967,7 @@ function formatBytes(size) {
   word-break: break-word;
 }
 
-/* 上传成功 / 上传中 等绿色徽标（保留原版的内嵌高光） */
+/* 上传成功 / 上传中 等内联状态徽标 */
 .entry-inline-badge {
   display: inline-flex;
   align-items: center;
@@ -1919,9 +1975,9 @@ function formatBytes(size) {
   height: 18px;
   padding: 0 7px;
   border-radius: 999px;
-  border: 1px solid rgba(16, 185, 129, 0.18);
-  background: rgba(236, 253, 245, 0.92);
-  color: #047857;
+  border: 1px solid rgba(100, 116, 139, 0.18);
+  background: rgba(248, 250, 252, 0.92);
+  color: #475569;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.02em;
@@ -1943,7 +1999,7 @@ function formatBytes(size) {
 
 .entry-error {
   flex: 0 0 100%;
-  color: #d70015;
+  color: #475569;
   font-size: 12px;
   word-break: break-word;
   padding-left: 56px;
