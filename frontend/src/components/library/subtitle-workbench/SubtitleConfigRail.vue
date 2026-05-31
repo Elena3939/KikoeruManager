@@ -1,79 +1,99 @@
 <template>
   <div class="subtitle-config-card">
     <template v-if="mode === 'settings'">
-      <div class="subtitle-option-stack">
-        <!-- 抓取行为 -->
-        <section class="subtitle-settings-block group/card">
-          <div class="flex items-center gap-3">
-            <span class="header-badge">
+      <div class="subtitle-settings-compact">
+        <section class="subtitle-settings-block subtitle-fetch-block group/card">
+          <div class="subtitle-compact-head">
+            <span class="header-badge header-badge-fetch">
               <SlidersHorizontal class="h-[16px] w-[16px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/card:scale-110 group-hover/card:rotate-[8deg]" :stroke-width="2.4" />
             </span>
             <div class="min-w-0">
               <div class="subtitle-block-title">抓取行为</div>
-              <div class="subtitle-block-tip">建任务和扫描命中策略。</div>
             </div>
           </div>
 
-          <div class="subtitle-setting-list">
-            <div class="subtitle-setting-item">
-              <div class="subtitle-setting-main">
-                <div class="subtitle-option-title">覆盖已有字幕</div>
-                <div class="subtitle-card-tip">同名字幕直接覆盖，适合重抓和修正。</div>
+          <div class="subtitle-quick-grid">
+            <div class="subtitle-depth-control">
+              <span class="subtitle-quick-label">扫描深度</span>
+              <div class="subtitle-stepper" role="group" aria-label="扫描深度">
+                <input
+                  class="subtitle-stepper-input"
+                  type="number"
+                  :value="ctx.subtitleOptions.scanDepth"
+                  min="1"
+                  max="10"
+                  step="1"
+                  @input="setScanDepth($event.target.value)"
+                  @blur="setScanDepth($event.target.value)"
+                />
+                <div class="subtitle-stepper-actions">
+                  <button type="button" class="subtitle-stepper-btn" aria-label="增加扫描深度" @click="adjustScanDepth(1)">
+                    <ChevronUp class="h-[11px] w-[11px]" :stroke-width="2.4" />
+                  </button>
+                  <button type="button" class="subtitle-stepper-btn" aria-label="减少扫描深度" @click="adjustScanDepth(-1)">
+                    <ChevronDown class="h-[11px] w-[11px]" :stroke-width="2.4" />
+                  </button>
+                </div>
               </div>
-              <el-switch size="small" :model-value="ctx.subtitleOptions.overwriteExisting" @update:model-value="ctx.setSubtitleOption('overwriteExisting', $event)" />
+            </div>
+            <div class="subtitle-quick-toggle">
+              <span class="subtitle-quick-label">覆盖已有</span>
+              <button
+                type="button"
+                class="subtitle-switch tone-overwrite"
+                :class="{ checked: ctx.subtitleOptions.overwriteExisting }"
+                role="switch"
+                :aria-checked="ctx.subtitleOptions.overwriteExisting"
+                @click="ctx.setSubtitleOption('overwriteExisting', !ctx.subtitleOptions.overwriteExisting)"
+              >
+                <span class="subtitle-switch-knob"></span>
+              </button>
             </div>
 
-            <div class="subtitle-setting-item subtitle-setting-item-stack">
-              <div class="subtitle-setting-main">
-                <div class="subtitle-option-title">扫描深度</div>
-                <div class="subtitle-card-tip">递归查找 RJ 文件夹，默认 3 层。</div>
-              </div>
-              <el-input-number
-                :model-value="ctx.subtitleOptions.scanDepth"
-                size="small"
-                :min="1"
-                :max="10"
-                :step="1"
-                controls-position="right"
-                @update:model-value="ctx.setSubtitleOption('scanDepth', $event)"
-              />
+            <div class="subtitle-quick-toggle">
+              <span class="subtitle-quick-label">Metadata</span>
+              <button
+                type="button"
+                class="subtitle-switch tone-metadata"
+                :class="{ checked: ctx.subtitleOptions.enableMetadataMatch }"
+                role="switch"
+                :aria-checked="ctx.subtitleOptions.enableMetadataMatch"
+                @click="ctx.setSubtitleOption('enableMetadataMatch', !ctx.subtitleOptions.enableMetadataMatch)"
+              >
+                <span class="subtitle-switch-knob"></span>
+              </button>
             </div>
 
-            <div class="subtitle-setting-item">
-              <div class="subtitle-setting-main">
-                <div class="subtitle-option-title">启用 metadata 匹配</div>
-                <div class="subtitle-card-tip">读取音频标签，提高文件名配对准确度。</div>
-              </div>
-              <el-switch size="small" :model-value="ctx.subtitleOptions.enableMetadataMatch" @update:model-value="ctx.setSubtitleOption('enableMetadataMatch', $event)" />
-            </div>
-
-            <div class="subtitle-setting-item">
-              <div class="subtitle-setting-main">
-                <div class="subtitle-option-title">已有字幕时跳过</div>
-                <div class="subtitle-card-tip">已存在字幕就不进抓取队列。</div>
-              </div>
-              <el-switch size="small" :model-value="ctx.subtitleOptions.skipIfExistingSubtitles" @update:model-value="ctx.setSubtitleOption('skipIfExistingSubtitles', $event)" />
+            <div class="subtitle-quick-toggle">
+              <span class="subtitle-quick-label">已有字幕跳过</span>
+              <button
+                type="button"
+                class="subtitle-switch tone-skip"
+                :class="{ checked: ctx.subtitleOptions.skipIfExistingSubtitles }"
+                role="switch"
+                :aria-checked="ctx.subtitleOptions.skipIfExistingSubtitles"
+                @click="ctx.setSubtitleOption('skipIfExistingSubtitles', !ctx.subtitleOptions.skipIfExistingSubtitles)"
+              >
+                <span class="subtitle-switch-knob"></span>
+              </button>
             </div>
           </div>
         </section>
 
-        <!-- 命名与筛选 -->
-        <section class="subtitle-settings-block group/card">
-          <div class="flex items-center gap-3">
-            <span class="header-badge">
+        <section class="subtitle-settings-block subtitle-filter-settings-block group/card">
+          <div class="subtitle-compact-head">
+            <span class="header-badge header-badge-filter">
               <Filter class="h-[16px] w-[16px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/card:scale-110 group-hover/card:rotate-[-8deg]" :stroke-width="2.4" />
             </span>
             <div class="min-w-0">
               <div class="subtitle-block-title">命名与筛选</div>
-              <div class="subtitle-block-tip">配对后的命名口径和候选字幕过滤。</div>
             </div>
           </div>
 
-          <div class="subtitle-setting-list">
-            <div class="subtitle-setting-item subtitle-setting-item-stack">
-              <div class="subtitle-setting-main">
+          <div class="subtitle-filter-compact-panel">
+            <div class="subtitle-filter-compact-row">
+              <div class="subtitle-setting-main min-w-0">
                 <div class="subtitle-option-title">同名依据</div>
-                <div class="subtitle-card-tip">一键应用后，以谁的名字为准。</div>
               </div>
               <div class="subtitle-naming-switch" role="radiogroup" aria-label="同名依据">
                 <button
@@ -81,7 +101,7 @@
                   :key="option.value"
                   type="button"
                   class="group/naming subtitle-naming-option"
-                  :class="{ active: ctx.subtitleOptions.namingStrategy === option.value }"
+                  :class="[option.tone, { active: ctx.subtitleOptions.namingStrategy === option.value }]"
                   role="radio"
                   :aria-checked="ctx.subtitleOptions.namingStrategy === option.value"
                   @click="ctx.setSubtitleOption('namingStrategy', option.value)"
@@ -96,72 +116,105 @@
               </div>
             </div>
 
-            <div class="subtitle-setting-item">
-              <div class="subtitle-setting-main">
+            <div class="subtitle-filter-compact-row subtitle-filter-toggle-row subtitle-filter-toggle-card">
+              <div class="subtitle-setting-main min-w-0">
                 <div class="subtitle-option-title">启用字幕过滤</div>
-                <div class="subtitle-card-tip">只筛字幕候选，不影响解压过滤配置。</div>
+                <div class="subtitle-card-tip">规则 {{ enabledSubtitleFilterRuleCount }} / {{ subtitleFilterRuleCount }}</div>
               </div>
-              <el-switch size="small" :model-value="ctx.subtitleOptions.useFilterRules" @update:model-value="ctx.setSubtitleOption('useFilterRules', $event)" />
+              <button
+                type="button"
+                class="subtitle-switch tone-filter"
+                :class="{ checked: ctx.subtitleOptions.useFilterRules }"
+                role="switch"
+                :aria-checked="ctx.subtitleOptions.useFilterRules"
+                @click="ctx.setSubtitleOption('useFilterRules', !ctx.subtitleOptions.useFilterRules)"
+              >
+                <span class="subtitle-switch-knob"></span>
+              </button>
             </div>
           </div>
 
           <div v-if="ctx.subtitleOptions.useFilterRules" class="subtitle-filter-editor">
-            <div class="subtitle-filter-editor-head">
-              <div>
-                <div class="subtitle-option-title subtitle-option-title-sm">字幕过滤规则</div>
-                <div class="subtitle-card-tip">按文件名、路径或全文本匹配候选字幕。</div>
-              </div>
+            <div v-if="!ctx.subtitleOptions.subtitleFilterRules.length" class="subtitle-filter-empty">
+              <Inbox class="h-[14px] w-[14px] text-slate-400" :stroke-width="2.2" />
+              <span>还没有规则</span>
               <button
                 type="button"
-                class="group/btn subtitle-filter-add-btn inline-flex shrink-0 items-center gap-1.5 rounded-[10px] border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:text-slate-900 active:scale-[0.96]"
+                class="group/btn subtitle-filter-add-btn subtitle-filter-empty-add"
                 @click="handleAddSubtitleFilterRule"
               >
                 <Plus class="h-[13px] w-[13px] text-sky-600 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/btn:rotate-[90deg] group-hover/btn:scale-110" :stroke-width="2.4" />
-                <span>添加规则</span>
+                <span>新增</span>
               </button>
             </div>
 
-            <div v-if="!ctx.subtitleOptions.subtitleFilterRules.length" class="subtitle-filter-empty">
-              <Inbox class="h-[14px] w-[14px] text-slate-400" :stroke-width="2.2" />
-              <span>还没有规则，先加一条。</span>
-            </div>
-
-            <div v-else class="subtitle-filter-list">
+            <div v-else class="subtitle-filter-rule-strip">
               <button
-                v-for="(rule, index) in ctx.subtitleOptions.subtitleFilterRules"
-                :key="rule.id"
                 type="button"
-                class="subtitle-filter-row"
-                :class="{ active: activeSubtitleFilterRuleIndex === index }"
-                @click="selectSubtitleFilterRule(rule, index)"
+                class="subtitle-filter-nav-btn"
+                :disabled="subtitleFilterRuleCount <= 1"
+                title="上一条规则"
+                @click="selectAdjacentSubtitleFilterRule(-1)"
               >
-                <span class="subtitle-filter-index">{{ index + 1 }}</span>
+                <ChevronUp class="h-[12px] w-[12px]" :stroke-width="2.4" />
+              </button>
+              <button
+                type="button"
+                class="subtitle-filter-current-card"
+                @click="filterRuleEditorExpanded = !filterRuleEditorExpanded"
+              >
+                <span class="subtitle-filter-index">{{ activeSubtitleFilterRuleIndex + 1 }}</span>
                 <span class="subtitle-filter-summary min-w-0 flex-1">
                   <span class="subtitle-filter-row-topline">
-                    <span class="subtitle-filter-summary-title">{{ String(rule.name || '').trim() || `规则 ${index + 1}` }}</span>
-                    <span class="subtitle-filter-target-mini">{{ getFilterRuleTargetLabel(rule.target) }}</span>
+                    <span class="subtitle-filter-summary-title">{{ String(activeSubtitleFilterRule?.name || '').trim() || `规则 ${activeSubtitleFilterRuleIndex + 1}` }}</span>
+                    <span class="subtitle-filter-target-mini">{{ getFilterRuleTargetLabel(activeSubtitleFilterRule?.target) }}</span>
                   </span>
                   <span
                     class="subtitle-filter-summary-pattern"
-                    :title="String(rule.pattern || '').trim() || '尚未填写正则'"
-                  >{{ String(rule.pattern || '').trim() || '尚未填写正则' }}</span>
+                    :title="String(activeSubtitleFilterRule?.pattern || '').trim() || '尚未填写正则'"
+                  >{{ String(activeSubtitleFilterRule?.pattern || '').trim() || '尚未填写正则' }}</span>
                 </span>
-                <span class="subtitle-filter-state" :class="{ off: rule.enabled === false }">{{ rule.enabled === false ? '停用' : '启用' }}</span>
+                <span class="subtitle-filter-state" :class="{ off: activeSubtitleFilterRule?.enabled === false }">{{ activeSubtitleFilterRule?.enabled === false ? '停用' : '启用' }}</span>
+              </button>
+              <button
+                type="button"
+                class="subtitle-filter-nav-btn"
+                :disabled="subtitleFilterRuleCount <= 1"
+                title="下一条规则"
+                @click="selectAdjacentSubtitleFilterRule(1)"
+              >
+                <ChevronDown class="h-[12px] w-[12px]" :stroke-width="2.4" />
+              </button>
+              <button
+                type="button"
+                class="group/btn subtitle-filter-add-btn subtitle-filter-add-icon-btn"
+                title="新增过滤规则"
+                @click="handleAddSubtitleFilterRule"
+              >
+                <Plus class="h-[13px] w-[13px] text-sky-600 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/btn:rotate-[90deg] group-hover/btn:scale-110" :stroke-width="2.4" />
               </button>
             </div>
 
             <div
-              v-if="activeSubtitleFilterRule"
+              v-if="activeSubtitleFilterRule && filterRuleEditorExpanded"
               class="subtitle-filter-detail"
               :class="{ 'is-expanded': filterRuleEditorExpanded }"
             >
               <div class="subtitle-filter-detail-head">
                 <div>
-                  <div class="subtitle-filter-detail-title">编辑 {{ activeSubtitleFilterRuleIndex + 1 }} 号规则</div>
-                  <div class="subtitle-card-tip">当前规则，列表只保留摘要。</div>
+                  <div class="subtitle-filter-detail-title">规则 {{ activeSubtitleFilterRuleIndex + 1 }}</div>
                 </div>
                 <div class="subtitle-filter-detail-actions">
-                  <el-switch v-model="activeSubtitleFilterRule.enabled" size="small" />
+                  <button
+                    type="button"
+                    class="subtitle-switch subtitle-switch-compact"
+                    :class="{ checked: activeSubtitleFilterRule.enabled !== false }"
+                    role="switch"
+                    :aria-checked="activeSubtitleFilterRule.enabled !== false"
+                    @click="activeSubtitleFilterRule.enabled = activeSubtitleFilterRule.enabled === false"
+                  >
+                    <span class="subtitle-switch-knob"></span>
+                  </button>
                   <button
                     type="button"
                     class="subtitle-filter-editor-toggle"
@@ -196,17 +249,20 @@
                   </label>
                   <label class="subtitle-filter-field">
                     <span>规则名称</span>
-                    <el-input v-model="activeSubtitleFilterRule.name" size="small" placeholder="例如：反转版" />
+                    <input
+                      v-model="activeSubtitleFilterRule.name"
+                      class="subtitle-native-input"
+                      type="text"
+                      placeholder="例如：反转版"
+                    />
                   </label>
                   <label class="subtitle-filter-field subtitle-filter-field-full">
                     <span>正则表达式</span>
-                    <el-input
+                    <textarea
                       v-model="activeSubtitleFilterRule.pattern"
-                      size="small"
-                      type="textarea"
-                      :autosize="{ minRows: 2, maxRows: 2 }"
+                      class="subtitle-native-input subtitle-native-textarea"
                       placeholder="例如 (反转|reverse|無SE)"
-                    />
+                    ></textarea>
                   </label>
                 </div>
                 <div class="subtitle-filter-row-actions">
@@ -217,7 +273,7 @@
                     @click="removeActiveSubtitleFilterRule"
                   >
                     <Trash2 class="h-[12px] w-[12px] text-rose-600 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/btn:rotate-[-12deg] group-hover/btn:scale-110" :stroke-width="2.4" />
-                    <span>删除当前规则</span>
+                    <span>删除</span>
                   </button>
                 </div>
               </template>
@@ -225,16 +281,15 @@
           </div>
         </section>
 
-        <!-- 任务展示 -->
-        <section class="subtitle-settings-block group/card">
-          <div class="flex items-center gap-3">
-            <span class="header-badge">
+        <section class="subtitle-settings-block subtitle-display-block group/card">
+          <div class="subtitle-inline-section-head">
+            <div class="inline-flex min-w-0 items-center gap-2">
+            <span class="header-badge header-badge-display">
               <LayoutPanelLeft class="h-[16px] w-[16px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/card:scale-110 group-hover/card:rotate-[8deg]" :stroke-width="2.4" />
             </span>
-            <div class="min-w-0">
               <div class="subtitle-block-title">任务展示</div>
-              <div class="subtitle-block-tip">只控制面板显示，不影响执行和日志写入。</div>
             </div>
+            <span class="subtitle-inline-section-tip">仅显示</span>
           </div>
 
           <div class="subtitle-pill-grid">
@@ -243,7 +298,9 @@
               :key="pill.key"
               type="button"
               class="group/pill subtitle-toggle-pill"
-              :class="{ active: ctx.subtitleOptions[pill.key] }"
+              :class="[pill.tone, { active: ctx.subtitleOptions[pill.key] }]"
+              :title="pill.label"
+              :aria-pressed="Boolean(ctx.subtitleOptions[pill.key])"
               @click="ctx.setSubtitleOption(pill.key, !ctx.subtitleOptions[pill.key])"
             >
               <component
@@ -254,6 +311,67 @@
               <span>{{ pill.label }}</span>
             </button>
           </div>
+        </section>
+
+        <section class="subtitle-settings-block subtitle-tool-block group/card">
+          <div class="subtitle-tool-row">
+            <div class="min-w-0">
+              <div class="subtitle-block-title">字幕清理</div>
+              <div class="subtitle-block-tip">{{ ctx.subtitleCleanupSummary || '清理字幕正文里的多余标记。' }}</div>
+            </div>
+            <button
+              type="button"
+              class="subtitle-tool-btn tone-cleanup"
+              :disabled="ctx.subtitleCleanupLoading || !ctx.activeTask"
+              @click="ctx.applySubtitleCleanup"
+            >
+              <component :is="ctx.subtitleCleanupLoading ? Loader2 : WandSparkles" class="h-[13px] w-[13px]" :class="{ 'animate-spin': ctx.subtitleCleanupLoading }" :stroke-width="2.4" />
+              <span>{{ ctx.subtitleCleanupLoading ? '清理中' : '执行' }}</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="subtitle-settings-block subtitle-tool-block group/card">
+          <div class="subtitle-tool-row">
+            <div class="min-w-0">
+              <div class="subtitle-block-title">目标目录</div>
+              <div class="subtitle-block-tip">{{ retargetSummary }}</div>
+            </div>
+            <button
+              type="button"
+              class="subtitle-tool-btn tone-refresh"
+              :disabled="!ctx.activeTaskSupportsRetarget || ctx.retargetPreviewLoading"
+              @click="ctx.loadRetargetPreview?.(ctx.activeTask, { force: true, showMessage: true })"
+            >
+              <component :is="ctx.retargetPreviewLoading ? Loader2 : RefreshCw" class="h-[13px] w-[13px]" :class="{ 'animate-spin': ctx.retargetPreviewLoading }" :stroke-width="2.4" />
+              <span>刷新</span>
+            </button>
+          </div>
+
+          <div v-if="ctx.activeTaskSupportsRetarget && ctx.retargetCandidates?.length" class="subtitle-retarget-list">
+            <button
+              v-for="candidate in ctx.retargetCandidates.slice(0, 3)"
+              :key="ctx.candidateKey?.(candidate) || candidate.folder_path"
+              type="button"
+              class="subtitle-retarget-option"
+              :class="{ active: ctx.retargetCandidateSelection === (ctx.candidateKey?.(candidate) || '') }"
+              @click="ctx.setRetargetCandidateSelection?.(ctx.candidateKey?.(candidate) || '')"
+            >
+              <span class="subtitle-retarget-main">{{ candidate.library_id || '默认库' }}</span>
+              <span class="subtitle-retarget-path">{{ candidate.folder_path || '-' }}</span>
+            </button>
+          </div>
+
+          <button
+            v-if="ctx.activeTaskSupportsRetarget"
+            type="button"
+            class="subtitle-tool-btn subtitle-tool-btn-wide tone-retarget"
+            :disabled="!ctx.canRetargetActiveTask || Boolean(ctx.retargetingTaskId)"
+            @click="ctx.retargetActiveTask"
+          >
+            <component :is="ctx.retargetingTaskId ? Loader2 : ArrowRightLeft" class="h-[13px] w-[13px]" :class="{ 'animate-spin': ctx.retargetingTaskId }" :stroke-width="2.4" />
+            <span>{{ ctx.retargetingTaskId ? '切换中' : '切换目标并重建' }}</span>
+          </button>
         </section>
       </div>
     </template>
@@ -436,7 +554,11 @@ import {
   Download,
   AlertCircle,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Loader2,
+  WandSparkles,
+  RefreshCw,
+  ArrowRightLeft
 } from 'lucide-vue-next'
 import AppDropdown from '../../common/AppDropdown.vue'
 
@@ -473,16 +595,44 @@ const treeRows = computed(() => [
 ])
 
 const displayPills = [
-  { key: 'showSourceSearch', label: '来源搜索', icon: Globe, color: 'text-sky-600' },
-  { key: 'showWrittenFiles', label: '写入结果', icon: PenLine, color: 'text-emerald-600' },
-  { key: 'showDownloadedFiles', label: '下载进度', icon: Download, color: 'text-indigo-600' },
-  { key: 'showIssues', label: '问题项', icon: AlertCircle, color: 'text-amber-600' }
+  { key: 'showSourceSearch', label: '来源搜索', icon: Globe, color: 'text-sky-600', tone: 'tone-source' },
+  { key: 'showWrittenFiles', label: '写入结果', icon: PenLine, color: 'text-emerald-600', tone: 'tone-written' },
+  { key: 'showDownloadedFiles', label: '下载进度', icon: Download, color: 'text-violet-600', tone: 'tone-download' },
+  { key: 'showIssues', label: '问题项', icon: AlertCircle, color: 'text-amber-600', tone: 'tone-issue' }
 ]
 
 const namingOptions = [
-  { value: 'audio', label: '以音频名为准', icon: Music, color: 'text-sky-600' },
-  { value: 'subtitle', label: '以字幕名为准', icon: FileText, color: 'text-violet-600' }
+  { value: 'audio', label: '音频名', icon: Music, color: 'text-sky-600', tone: 'tone-audio' },
+  { value: 'subtitle', label: '字幕名', icon: FileText, color: 'text-violet-600', tone: 'tone-subtitle' }
 ]
+
+const subtitleFilterRuleCount = computed(() => props.ctx?.subtitleOptions?.subtitleFilterRules?.length || 0)
+
+const enabledSubtitleFilterRuleCount = computed(() => (
+  props.ctx?.subtitleOptions?.subtitleFilterRules || []
+).filter(rule => rule.enabled !== false).length)
+
+const retargetSummary = computed(() => {
+  if (!props.ctx?.activeTask) return '先选择一个任务。'
+  if (!props.ctx?.activeTaskSupportsRetarget) return '当前任务不支持切换。'
+  if (props.ctx?.retargetPreviewLoading) return '正在刷新候选目录。'
+  const count = props.ctx?.retargetCandidates?.length || 0
+  return count ? `候选 ${count} 个` : '暂无候选目录'
+})
+
+function normalizeScanDepth(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return 3
+  return Math.max(1, Math.min(10, Math.round(numeric)))
+}
+
+function setScanDepth(value) {
+  props.ctx?.setSubtitleOption?.('scanDepth', normalizeScanDepth(value))
+}
+
+function adjustScanDepth(delta) {
+  setScanDepth(Number(props.ctx?.subtitleOptions?.scanDepth || 3) + delta)
+}
 
 const activeSubtitleFilterRuleIndex = computed(() => {
   const rules = props.ctx?.subtitleOptions?.subtitleFilterRules || []
@@ -511,13 +661,21 @@ function selectSubtitleFilterRule(rule, index) {
   filterRuleEditorExpanded.value = false
 }
 
+function selectAdjacentSubtitleFilterRule(delta) {
+  const rules = props.ctx?.subtitleOptions?.subtitleFilterRules || []
+  if (!rules.length) return
+  const currentIndex = activeSubtitleFilterRuleIndex.value >= 0 ? activeSubtitleFilterRuleIndex.value : 0
+  const nextIndex = (currentIndex + delta + rules.length) % rules.length
+  selectSubtitleFilterRule(rules[nextIndex], nextIndex)
+}
+
 function handleAddSubtitleFilterRule() {
   props.ctx?.addSubtitleFilterRule?.()
   nextTick(() => {
     const rules = props.ctx?.subtitleOptions?.subtitleFilterRules || []
     const lastIndex = rules.length - 1
     if (lastIndex >= 0) activeFilterRuleKey.value = getFilterRuleKey(rules[lastIndex], lastIndex)
-    filterRuleEditorExpanded.value = true
+    filterRuleEditorExpanded.value = false
   })
 }
 
@@ -537,94 +695,192 @@ function removeActiveSubtitleFilterRule() {
 .subtitle-config-card {
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   display: grid;
-  gap: 10px;
+  min-height: 0;
+  overflow: hidden;
 }
 
-.subtitle-config-card :deep(.el-switch) {
-  --el-switch-on-color: #737780;
-  --el-switch-off-color: #e2e8f0;
+.subtitle-switch {
+  --switch-accent: #64748b;
+  --switch-accent-dark: #475569;
+  position: relative;
+  width: 34px;
+  height: 20px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 1px solid #d8e1ec;
+  border-radius: 999px;
+  background: #e2e8f0;
+  cursor: pointer;
+  transition: all 0.3s var(--ease-spring);
 }
 
-.subtitle-config-card :deep(.el-switch__core) {
-  background-color: #e2e8f0 !important;
-  border-color: #e2e8f0 !important;
-  box-shadow: none;
-  transition: background-color 0.28s var(--ease-spring),
-              border-color 0.28s var(--ease-spring),
-              box-shadow 0.28s var(--ease-spring) !important;
+.subtitle-switch:hover {
+  transform: translateY(-1px) scale(1.02);
+  border-color: #c3d4e5;
 }
 
-.subtitle-config-card :deep(.el-switch__core .el-switch__action) {
-  background-color: #ffffff !important;
+.subtitle-switch:active {
+  transform: scale(0.96);
 }
 
-.subtitle-config-card :deep(.el-switch.is-checked .el-switch__core) {
-  background-color: #737780 !important;
-  border-color: #737780 !important;
-  box-shadow: none !important;
+.subtitle-switch.checked {
+  background: var(--switch-accent);
+  border-color: var(--switch-accent-dark);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
 }
 
-.subtitle-config-card :deep(.el-input-number) {
-  width: 108px;
+.subtitle-switch.tone-overwrite {
+  --switch-accent: #e11d48;
+  --switch-accent-dark: #be123c;
 }
 
-.subtitle-config-card :deep(.el-input-number .el-input__wrapper),
-.subtitle-config-card :deep(.el-select__wrapper),
-.subtitle-config-card :deep(.el-input__wrapper) {
+.subtitle-switch.tone-metadata {
+  --switch-accent: #0ea5e9;
+  --switch-accent-dark: #0284c7;
+}
+
+.subtitle-switch.tone-skip {
+  --switch-accent: #059669;
+  --switch-accent-dark: #047857;
+}
+
+.subtitle-switch.tone-filter {
+  --switch-accent: #d97706;
+  --switch-accent-dark: #b45309;
+}
+
+.subtitle-switch-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
+  transition: transform 0.3s var(--ease-spring), background-color 0.3s ease;
+}
+
+.subtitle-switch.checked .subtitle-switch-knob {
+  transform: translateX(14px);
+}
+
+.subtitle-switch-compact {
+  width: 32px;
+  height: 18px;
+}
+
+.subtitle-switch-compact .subtitle-switch-knob {
+  width: 12px;
+  height: 12px;
+}
+
+.subtitle-switch-compact.checked .subtitle-switch-knob {
+  transform: translateX(12px);
+}
+
+.subtitle-stepper {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  width: 88px;
+  height: 28px;
+  overflow: hidden;
+  border: 1px solid #d8e1ec;
   border-radius: 12px;
-  background: #fff;
-  box-shadow: inset 0 0 0 1px #d8e1ec;
-  transition: all 0.28s var(--ease-spring);
+  background: #ffffff;
+  transition: all 0.3s var(--ease-spring);
 }
 
-.subtitle-config-card :deep(.el-input-number .el-input__wrapper:hover),
-.subtitle-config-card :deep(.el-select__wrapper:hover),
-.subtitle-config-card :deep(.el-input__wrapper:hover) {
-  box-shadow: inset 0 0 0 1px #c3d4e5;
+.subtitle-stepper:hover,
+.subtitle-stepper:focus-within {
+  border-color: #c3d4e5;
+  box-shadow: 0 0 0 3px rgba(114, 157, 208, 0.12);
 }
 
-.subtitle-config-card :deep(.el-input-number .el-input__wrapper.is-focus),
-.subtitle-config-card :deep(.el-select__wrapper.is-focused),
-.subtitle-config-card :deep(.el-input__wrapper.is-focus) {
-  box-shadow: inset 0 0 0 1px #7ea8d8, 0 0 0 3px rgba(114, 157, 208, 0.16);
+.subtitle-stepper-input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+  outline: none;
+}
+
+.subtitle-stepper-input::-webkit-outer-spin-button,
+.subtitle-stepper-input::-webkit-inner-spin-button {
+  margin: 0;
+  appearance: none;
+}
+
+.subtitle-stepper-actions {
+  display: grid;
+  border-left: 1px solid #e2e8f0;
+}
+
+.subtitle-stepper-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: #f8fafc;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.3s var(--ease-spring);
+}
+
+.subtitle-stepper-btn:first-child {
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.subtitle-stepper-btn:hover {
+  background: #eef2f7;
+  color: #0f172a;
 }
 
 .subtitle-naming-switch {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 4px;
-  width: 100%;
-  padding: 4px;
+  width: 168px;
+  padding: 3px;
   border: 1px solid #e2e8f0;
-  border-radius: 12px;
+  border-radius: 11px;
   background: #f8fafc;
   box-shadow: none;
 }
 
 .subtitle-naming-option {
+  --option-accent: #64748b;
+  --option-accent-soft: rgba(100, 116, 139, 0.12);
+  --option-accent-border: rgba(100, 116, 139, 0.24);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
-  min-height: 30px;
-  padding: 6px 8px;
+  height: 26px;
+  min-height: 24px;
+  padding: 4px 6px;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
   color: #64748b;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 800;
   line-height: 1;
   cursor: pointer;
+  white-space: nowrap;
   transition: all 0.28s var(--ease-spring);
 }
 
 .subtitle-naming-option:hover {
   transform: translateY(-1px) scale(1.01);
   color: #0f172a;
-  background: #f1f5f9;
-  border-color: #cbd5e1;
+  background: var(--option-accent-soft);
+  border-color: var(--option-accent-border);
 }
 
 .subtitle-naming-option:active {
@@ -632,27 +888,22 @@ function removeActiveSubtitleFilterRule() {
 }
 
 .subtitle-naming-option.active {
-  border-color: #aeb4bf;
-  background: #dfe3ea;
+  border-color: var(--option-accent-border);
+  background: var(--option-accent-soft);
   color: #0f172a;
-  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.76);
 }
 
-.subtitle-config-card :deep(.el-button) {
-  border-radius: 12px;
-  font-size: 12px;
-  font-weight: 800;
-  transition: all 0.28s var(--ease-spring);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+.subtitle-naming-option.tone-audio {
+  --option-accent: #0284c7;
+  --option-accent-soft: rgba(14, 165, 233, 0.16);
+  --option-accent-border: rgba(2, 132, 199, 0.36);
 }
 
-.subtitle-config-card :deep(.el-button:not(.is-disabled):not(:disabled):not(.is-loading):hover) {
-  transform: translateY(-2px) scale(1.02);
-  box-shadow: 0 12px 22px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.82);
-}
-
-.subtitle-config-card :deep(.el-button:active) {
-  transform: scale(0.96);
+.subtitle-naming-option.tone-subtitle {
+  --option-accent: #7c3aed;
+  --option-accent-soft: rgba(139, 92, 246, 0.16);
+  --option-accent-border: rgba(124, 58, 237, 0.34);
 }
 
 .subtitle-config-mode-title {
@@ -670,21 +921,220 @@ function removeActiveSubtitleFilterRule() {
   max-width: 24ch;
 }
 
-.subtitle-option-stack {
+.subtitle-option-stack,
+.subtitle-settings-compact {
   display: grid;
-  gap: 10px;
+  gap: 4px;
+  min-height: 0;
 }
 
 .subtitle-settings-block,
 .subtitle-help-card {
   display: grid;
-  gap: 9px;
-  padding: 11px;
+  gap: 5px;
+  padding: 6px;
   border: 1px solid #e2e8f0;
-  border-radius: 16px;
+  border-radius: 13px;
   background: #ffffff;
   box-shadow: none;
   transition: all 0.28s var(--ease-spring);
+}
+
+.subtitle-filter-settings-block {
+  gap: 5px;
+}
+
+.subtitle-tool-block {
+  gap: 6px;
+  padding: 7px;
+}
+
+.subtitle-tool-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.subtitle-tool-btn {
+  --tool-accent: #64748b;
+  --tool-accent-soft: rgba(100, 116, 139, 0.12);
+  --tool-accent-border: rgba(100, 116, 139, 0.24);
+  display: inline-flex;
+  min-height: 28px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid #d8e1ec;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0 9px;
+  color: var(--tool-accent);
+  font-size: 11.5px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.3s var(--ease-spring);
+}
+
+.subtitle-tool-btn:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.02);
+  border-color: var(--tool-accent-border);
+  background: var(--tool-accent-soft);
+  color: var(--tool-accent);
+}
+
+.subtitle-tool-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.subtitle-tool-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.subtitle-tool-btn-wide {
+  width: 100%;
+  min-height: 30px;
+}
+
+.subtitle-tool-btn.tone-cleanup {
+  --tool-accent: #059669;
+  --tool-accent-soft: rgba(16, 185, 129, 0.14);
+  --tool-accent-border: rgba(5, 150, 105, 0.32);
+}
+
+.subtitle-tool-btn.tone-refresh {
+  --tool-accent: #0284c7;
+  --tool-accent-soft: rgba(14, 165, 233, 0.14);
+  --tool-accent-border: rgba(2, 132, 199, 0.32);
+}
+
+.subtitle-tool-btn.tone-retarget {
+  --tool-accent: #7c3aed;
+  --tool-accent-soft: rgba(139, 92, 246, 0.14);
+  --tool-accent-border: rgba(124, 58, 237, 0.32);
+}
+
+.subtitle-retarget-list {
+  display: grid;
+  gap: 4px;
+}
+
+.subtitle-retarget-option {
+  --option-accent-soft: rgba(139, 92, 246, 0.14);
+  --option-accent-border: rgba(124, 58, 237, 0.34);
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 6px 8px;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.28s var(--ease-spring);
+}
+
+.subtitle-retarget-option:hover {
+  transform: translateY(-1px) scale(1.01);
+  border-color: #cbd5e1;
+  background: #f1f5f9;
+}
+
+.subtitle-retarget-option.active {
+  border-color: rgba(124, 58, 237, 0.34);
+  background: rgba(139, 92, 246, 0.14);
+  color: #111827;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.76);
+}
+
+.subtitle-retarget-main {
+  min-width: 0;
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 11.5px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subtitle-retarget-path {
+  min-width: 0;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subtitle-compact-head,
+.subtitle-inline-section-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.subtitle-fetch-block .subtitle-compact-head {
+  justify-content: flex-start;
+}
+
+.subtitle-inline-section-tip {
+  flex-shrink: 0;
+  color: #94a3b8;
+  font-size: 10.5px;
+  font-weight: 800;
+}
+
+.subtitle-display-block {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+}
+
+.subtitle-display-block .subtitle-inline-section-head {
+  justify-content: flex-start;
+  gap: 6px;
+}
+
+.subtitle-display-block .subtitle-inline-section-tip {
+  display: none;
+}
+
+.subtitle-quick-grid {
+  display: grid;
+  grid-template-columns: minmax(112px, 1.1fr) minmax(0, 1fr);
+  gap: 4px;
+}
+
+.subtitle-depth-control,
+.subtitle-quick-toggle {
+  display: flex;
+  min-width: 0;
+  min-height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  border: 1px solid #eef2f7;
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 3px 6px;
+}
+
+.subtitle-quick-label {
+  min-width: 0;
+  overflow: hidden;
+  color: #334155;
+  font-size: 11.5px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .subtitle-settings-block:hover,
@@ -781,7 +1231,7 @@ function removeActiveSubtitleFilterRule() {
 }
 
 .subtitle-block-title {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 800;
   letter-spacing: -0.01em;
   color: #1f2d3d;
@@ -800,7 +1250,29 @@ function removeActiveSubtitleFilterRule() {
 .subtitle-setting-list,
 .subtitle-filter-list {
   display: grid;
-  gap: 7px;
+  gap: 5px;
+}
+
+.subtitle-filter-compact-panel {
+  display: grid;
+  gap: 5px;
+}
+
+.subtitle-filter-compact-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.subtitle-filter-toggle-row {
+  padding-top: 5px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.subtitle-filter-toggle-card {
+  min-height: 34px;
 }
 
 .subtitle-setting-item {
@@ -833,7 +1305,7 @@ function removeActiveSubtitleFilterRule() {
 }
 
 .subtitle-option-title {
-  font-size: 12.5px;
+  font-size: 11.8px;
   font-weight: 800;
   color: #1f2d3d;
   letter-spacing: -0.01em;
@@ -844,7 +1316,7 @@ function removeActiveSubtitleFilterRule() {
 }
 
 .subtitle-card-tip {
-  font-size: 11px;
+  font-size: 10.5px;
   line-height: 1.35;
   color: #64748b;
   display: -webkit-box;
@@ -859,11 +1331,11 @@ function removeActiveSubtitleFilterRule() {
 
 .subtitle-filter-editor {
   display: grid;
-  gap: 8px;
+  gap: 4px;
   margin-top: 0;
-  padding: 9px;
+  padding: 5px;
   border: 1px solid #e2e8f0;
-  border-radius: 13px;
+  border-radius: 11px;
   background: #fbfcfd;
 }
 
@@ -878,16 +1350,17 @@ function removeActiveSubtitleFilterRule() {
   flex-shrink: 0;
 }
 
-.subtitle-filter-row {
+.subtitle-filter-row,
+.subtitle-filter-current-card {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   width: 100%;
-  min-height: 38px;
-  padding: 6px 7px;
+  min-height: 30px;
+  padding: 4px 6px;
   border: 1px solid #e2e8f0;
-  border-radius: 10px;
+  border-radius: 9px;
   background: #ffffff;
   color: inherit;
   text-align: left;
@@ -908,32 +1381,80 @@ function removeActiveSubtitleFilterRule() {
   box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
 }
 
-.subtitle-filter-list {
+.subtitle-filter-rule-strip {
   display: grid;
-  gap: 6px;
-  max-height: 112px;
-  overflow-y: auto;
-  padding-right: 2px;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
-  scrollbar-color: #cbd5e1 transparent;
+  grid-template-columns: 24px minmax(0, 1fr) 24px 24px;
+  align-items: stretch;
+  gap: 4px;
 }
 
-.subtitle-filter-list::-webkit-scrollbar {
-  width: 6px;
+.subtitle-filter-current-card {
+  min-height: 30px;
+  padding-block: 3px;
 }
 
-.subtitle-filter-list::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: #cbd5e1;
+.subtitle-filter-current-card:hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+  transform: translateY(-1px) scale(1.005);
+}
+
+.subtitle-filter-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  background: #ffffff;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.28s var(--ease-spring);
+}
+
+.subtitle-filter-add-icon-btn,
+.subtitle-filter-empty-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  background: #ffffff;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.28s var(--ease-spring);
+}
+
+.subtitle-filter-add-icon-btn:hover,
+.subtitle-filter-empty-add:hover {
+  transform: translateY(-1px) scale(1.03);
+  border-color: #cbd5e1;
+  background: #f1f5f9;
+}
+
+.subtitle-filter-nav-btn:hover:not(:disabled) {
+  transform: translateY(-1px) scale(1.03);
+  border-color: #cbd5e1;
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.subtitle-filter-nav-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.subtitle-filter-nav-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
 }
 
 .subtitle-filter-index {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 18px;
   flex-shrink: 0;
   border-radius: 8px;
   border: 1px solid #e2e8f0;
@@ -959,7 +1480,7 @@ function removeActiveSubtitleFilterRule() {
 
 .subtitle-filter-summary {
   display: grid;
-  gap: 2px;
+  gap: 1px;
 }
 
 .subtitle-filter-row-topline {
@@ -979,7 +1500,7 @@ function removeActiveSubtitleFilterRule() {
 
 .subtitle-filter-summary-title {
   min-width: 0;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
   color: #1e293b;
   letter-spacing: -0.01em;
@@ -990,7 +1511,7 @@ function removeActiveSubtitleFilterRule() {
   margin-top: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 10px;
-  line-height: 1.15;
+  line-height: 1.1;
   color: #64748b;
 }
 
@@ -1015,20 +1536,20 @@ function removeActiveSubtitleFilterRule() {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  min-width: 38px;
-  height: 22px;
+  min-width: 34px;
+  height: 19px;
   border-radius: 999px;
   border: 1px solid #dbeafe;
   background: #ffffff;
   padding: 0 8px;
   font-size: 10.5px;
   font-weight: 800;
-  color: #2563eb;
+  color: #7c3aed;
 }
 
 .subtitle-filter-state {
   min-width: 32px;
-  height: 19px;
+  height: 18px;
   border-color: #dbe4ee;
   background: #ffffff;
   color: #475569;
@@ -1043,16 +1564,16 @@ function removeActiveSubtitleFilterRule() {
 
 .subtitle-filter-detail {
   display: grid;
-  gap: 7px;
-  padding: 9px;
+  gap: 4px;
+  padding: 5px;
   border: 1px solid #dbe4ee;
-  border-radius: 12px;
+  border-radius: 11px;
   background: #fbfcfd;
   box-shadow: none;
 }
 
 .subtitle-filter-detail.is-expanded {
-  gap: 8px;
+  gap: 4px;
 }
 
 .subtitle-filter-detail-head {
@@ -1070,7 +1591,7 @@ function removeActiveSubtitleFilterRule() {
 }
 
 .subtitle-filter-detail-title {
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 800;
   color: #0f172a;
   letter-spacing: -0.01em;
@@ -1081,8 +1602,8 @@ function removeActiveSubtitleFilterRule() {
   align-items: center;
   justify-content: center;
   gap: 4px;
-  min-height: 26px;
-  padding: 0 8px;
+  min-height: 22px;
+  padding: 0 7px;
   border-radius: 8px;
   border: 1px solid #dbe4ee;
   background: #ffffff;
@@ -1106,8 +1627,8 @@ function removeActiveSubtitleFilterRule() {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  padding: 6px;
-  border-radius: 10px;
+  padding: 3px 6px;
+  border-radius: 9px;
   background: #f8fafc;
   border: 1px solid #eef2f7;
 }
@@ -1136,7 +1657,7 @@ function removeActiveSubtitleFilterRule() {
 .subtitle-filter-form-grid {
   display: grid;
   grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
-  gap: 7px 8px;
+  gap: 5px 6px;
 }
 
 .subtitle-filter-field {
@@ -1154,20 +1675,41 @@ function removeActiveSubtitleFilterRule() {
   color: #64748b;
 }
 
-.subtitle-filter-detail :deep(.el-textarea__inner),
-.subtitle-filter-detail :deep(.el-input__wrapper),
-.subtitle-filter-detail :deep(.el-select__wrapper) {
+.subtitle-native-input {
+  width: 100%;
+  min-width: 0;
+  height: 27px;
+  border: 0;
   border-radius: 10px;
+  background: #ffffff;
+  padding: 0 10px;
+  color: #0f172a;
+  font-size: 11.5px;
+  font-weight: 700;
   box-shadow: 0 0 0 1px #dbe4ee inset;
+  outline: none;
+  transition: all 0.28s var(--ease-spring);
 }
 
-.subtitle-filter-detail :deep(.el-textarea__inner) {
+.subtitle-native-input:hover,
+.subtitle-native-input:focus {
+  box-shadow: 0 0 0 1px #cbd5e1 inset, 0 0 0 3px rgba(114, 157, 208, 0.12);
+}
+
+.subtitle-native-input::placeholder {
+  color: #94a3b8;
+}
+
+.subtitle-native-textarea {
+  height: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  padding: 4px 10px;
+  resize: none;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 11px;
   line-height: 1.35;
-  min-height: 44px !important;
-  max-height: 54px !important;
-  overflow: auto !important;
+  overflow: hidden;
 }
 
 .subtitle-filter-row-top,
@@ -1188,7 +1730,7 @@ function removeActiveSubtitleFilterRule() {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 11px 10px;
+  padding: 6px 8px;
   border: 1px dashed #cbd5e1;
   border-radius: 12px;
   background: #ffffff;
@@ -1197,34 +1739,65 @@ function removeActiveSubtitleFilterRule() {
   color: #64748b;
 }
 
+.subtitle-filter-more-row {
+  min-height: 24px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 9px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.28s var(--ease-spring);
+}
+
+.subtitle-naming-option span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subtitle-filter-more-row:hover {
+  transform: translateY(-1px);
+  border-color: #94a3b8;
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
 .subtitle-pill-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
+  gap: 5px;
 }
 
 .subtitle-toggle-pill {
+  --pill-accent: #64748b;
+  --pill-accent-soft: rgba(100, 116, 139, 0.12);
+  --pill-accent-border: rgba(100, 116, 139, 0.24);
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 34px;
-  padding: 7px 9px;
-  border-radius: 10px;
+  justify-content: flex-start;
+  gap: 5px;
+  min-width: 0;
+  min-height: 28px;
+  padding: 4px 7px;
+  border-radius: 9px;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
   color: #475569;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 750;
   cursor: pointer;
   transition: all 0.28s var(--ease-spring);
 }
 
 .subtitle-toggle-pill:hover {
   transform: translateY(-1px) scale(1.01);
-  border-color: #cbd5e1;
-  color: #0f172a;
-  background: #f1f5f9;
+  border-color: var(--pill-accent-border);
+  color: var(--pill-accent);
+  background: var(--pill-accent-soft);
   box-shadow: none;
 }
 
@@ -1233,23 +1806,26 @@ function removeActiveSubtitleFilterRule() {
 }
 
 .subtitle-toggle-pill.active {
-  border-color: #aeb4bf;
-  background: #dfe3ea;
+  border-color: var(--pill-accent-border);
+  background: var(--pill-accent-soft);
   color: #111827;
-  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.76);
 }
 
 .header-badge {
+  --badge-accent: #64748b;
+  --badge-accent-soft: rgba(100, 116, 139, 0.12);
+  --badge-accent-border: rgba(100, 116, 139, 0.24);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
   flex-shrink: 0;
-  color: #475569;
-  background: #f8fafc;
-  border: 1px solid #dbe4ee;
+  color: var(--badge-accent);
+  background: var(--badge-accent-soft);
+  border: 1px solid var(--badge-accent-border);
   box-shadow: none;
   transition: all 0.3s var(--ease-spring);
 }
@@ -1265,6 +1841,48 @@ function removeActiveSubtitleFilterRule() {
   border-color: #fecdd3;
   color: #e11d48;
   box-shadow: none;
+}
+
+.header-badge-fetch {
+  --badge-accent: #0284c7;
+  --badge-accent-soft: rgba(14, 165, 233, 0.14);
+  --badge-accent-border: rgba(2, 132, 199, 0.32);
+}
+
+.header-badge-filter {
+  --badge-accent: #d97706;
+  --badge-accent-soft: rgba(245, 158, 11, 0.16);
+  --badge-accent-border: rgba(217, 119, 6, 0.34);
+}
+
+.header-badge-display {
+  --badge-accent: #7c3aed;
+  --badge-accent-soft: rgba(139, 92, 246, 0.15);
+  --badge-accent-border: rgba(124, 58, 237, 0.32);
+}
+
+.subtitle-toggle-pill.tone-source {
+  --pill-accent: #0284c7;
+  --pill-accent-soft: rgba(14, 165, 233, 0.14);
+  --pill-accent-border: rgba(2, 132, 199, 0.32);
+}
+
+.subtitle-toggle-pill.tone-written {
+  --pill-accent: #059669;
+  --pill-accent-soft: rgba(16, 185, 129, 0.14);
+  --pill-accent-border: rgba(5, 150, 105, 0.32);
+}
+
+.subtitle-toggle-pill.tone-download {
+  --pill-accent: #7c3aed;
+  --pill-accent-soft: rgba(99, 102, 241, 0.14);
+  --pill-accent-border: rgba(124, 58, 237, 0.34);
+}
+
+.subtitle-toggle-pill.tone-issue {
+  --pill-accent: #d97706;
+  --pill-accent-soft: rgba(245, 158, 11, 0.16);
+  --pill-accent-border: rgba(217, 119, 6, 0.34);
 }
 
 .group\/card:hover .header-badge {
@@ -1284,31 +1902,32 @@ function removeActiveSubtitleFilterRule() {
   color: rgba(244, 244, 245, 0.9);
 }
 
-:global(html.kikoerumanager-dark) .subtitle-config-card :deep(.el-switch) {
-  --el-switch-on-color: #8b8d94;
-  --el-switch-off-color: #3a3b40;
-}
-
-:global(html.kikoerumanager-dark) .subtitle-config-card :deep(.el-switch__core) {
-  background-color: #3a3b40 !important;
+:global(html.kikoerumanager-dark) .subtitle-switch {
+  background: #34353a !important;
   border-color: rgba(255, 255, 255, 0.18) !important;
-  box-shadow: none !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-config-card :deep(.el-switch.is-checked .el-switch__core) {
-  background-color: #8b8d94 !important;
-  border-color: rgba(255, 255, 255, 0.22) !important;
-  box-shadow: none !important;
+.subtitle-toggle-pill span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-config-card :deep(.el-switch.is-checked .el-switch__core .el-switch__action) {
-  background-color: #f4f4f5 !important;
+:global(html.kikoerumanager-dark) .subtitle-switch.checked {
+  background: var(--switch-accent) !important;
+  border-color: var(--switch-accent-dark) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-config-card :deep(.el-input-number .el-input__wrapper),
-:global(html.kikoerumanager-dark) .subtitle-config-card :deep(.el-select__wrapper),
-:global(html.kikoerumanager-dark) .subtitle-config-card :deep(.el-input__wrapper),
-:global(html.kikoerumanager-dark) .subtitle-config-card :deep(.el-textarea__inner),
+:global(html.kikoerumanager-dark) .subtitle-switch-knob {
+  background: #f4f4f5 !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.22) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-stepper,
+:global(html.kikoerumanager-dark) .subtitle-native-input,
 :global(html.kikoerumanager-dark) .subtitle-filter-target :deep(.app-dd-trigger) {
   background: #24252a !important;
   background-image: none !important;
@@ -1317,24 +1936,42 @@ function removeActiveSubtitleFilterRule() {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-config-card :deep(.el-input__inner),
-:global(html.kikoerumanager-dark) .subtitle-config-card :deep(.el-textarea__inner),
+:global(html.kikoerumanager-dark) .subtitle-stepper-input,
+:global(html.kikoerumanager-dark) .subtitle-native-input,
 :global(html.kikoerumanager-dark) .subtitle-filter-target :deep(.app-dd-trigger-value) {
   color: rgba(244, 244, 245, 0.92) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-config-card :deep(.el-input__inner::placeholder),
-:global(html.kikoerumanager-dark) .subtitle-config-card :deep(.el-textarea__inner::placeholder) {
+:global(html.kikoerumanager-dark) .subtitle-native-input::placeholder {
   color: rgba(214, 214, 220, 0.44) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-config-card :deep(.el-input-number .el-input__wrapper:hover),
-:global(html.kikoerumanager-dark) .subtitle-config-card :deep(.el-select__wrapper:hover),
-:global(html.kikoerumanager-dark) .subtitle-config-card :deep(.el-input__wrapper:hover),
+:global(html.kikoerumanager-dark) .subtitle-stepper:hover,
+:global(html.kikoerumanager-dark) .subtitle-stepper:focus-within,
+:global(html.kikoerumanager-dark) .subtitle-native-input:hover,
+:global(html.kikoerumanager-dark) .subtitle-native-input:focus,
 :global(html.kikoerumanager-dark) .subtitle-filter-target :deep(.app-dd-trigger:hover) {
   border-color: rgba(255, 255, 255, 0.22) !important;
   background: #2d2e33 !important;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-stepper-actions {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-stepper-btn {
+  background: #2b2c30 !important;
+  color: rgba(214, 214, 220, 0.72) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-stepper-btn:first-child {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-stepper-btn:hover {
+  background: #333438 !important;
+  color: rgba(250, 250, 252, 0.96) !important;
 }
 
 :global(html.kikoerumanager-dark) .subtitle-naming-switch,
@@ -1343,6 +1980,7 @@ function removeActiveSubtitleFilterRule() {
 :global(html.kikoerumanager-dark) .subtitle-filter-editor,
 :global(html.kikoerumanager-dark) .subtitle-filter-detail,
 :global(html.kikoerumanager-dark) .subtitle-filter-row,
+:global(html.kikoerumanager-dark) .subtitle-filter-more-row,
 :global(html.kikoerumanager-dark) .subtitle-filter-empty,
 :global(html.kikoerumanager-dark) .subtitle-toggle-pill,
 :global(html.kikoerumanager-dark) .search-row {
@@ -1366,6 +2004,7 @@ function removeActiveSubtitleFilterRule() {
 :global(html.kikoerumanager-dark) .subtitle-settings-block:hover,
 :global(html.kikoerumanager-dark) .subtitle-help-card:hover,
 :global(html.kikoerumanager-dark) .subtitle-filter-row:hover,
+:global(html.kikoerumanager-dark) .subtitle-filter-more-row:hover,
 :global(html.kikoerumanager-dark) .subtitle-toggle-pill:hover,
 :global(html.kikoerumanager-dark) .search-row:hover {
   background: #2d2e33 !important;
@@ -1377,11 +2016,26 @@ function removeActiveSubtitleFilterRule() {
 :global(html.kikoerumanager-dark) .subtitle-filter-row.active,
 :global(html.kikoerumanager-dark) .subtitle-naming-option.active,
 :global(html.kikoerumanager-dark) .subtitle-toggle-pill.active {
-  background: #45464b !important;
+  background: var(--option-accent-soft, var(--pill-accent-soft, #45464b)) !important;
   background-image: none !important;
-  border-color: rgba(255, 255, 255, 0.34) !important;
-  color: #ffffff !important;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12) !important;
+  border-color: var(--option-accent-border, var(--pill-accent-border, rgba(255, 255, 255, 0.34))) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-filter-current-card,
+:global(html.kikoerumanager-dark) .subtitle-filter-nav-btn {
+  background: #24252a !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: rgba(244, 244, 245, 0.82) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-filter-current-card:hover,
+:global(html.kikoerumanager-dark) .subtitle-filter-nav-btn:hover:not(:disabled) {
+  background: #303136 !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
 }
 
 :global(html.kikoerumanager-dark) .subtitle-naming-option {
@@ -1389,9 +2043,40 @@ function removeActiveSubtitleFilterRule() {
 }
 
 :global(html.kikoerumanager-dark) .subtitle-naming-option:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.16);
+  background: var(--option-accent-soft);
+  border-color: var(--option-accent-border);
   color: rgba(250, 250, 252, 0.96);
+}
+
+:global(html.kikoerumanager-dark) .subtitle-tool-btn {
+  background: #24252a !important;
+  background-image: none !important;
+  border-color: var(--tool-accent-border) !important;
+  color: var(--tool-accent) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-tool-btn:hover:not(:disabled) {
+  background: var(--tool-accent-soft) !important;
+  background-image: none !important;
+  border-color: var(--tool-accent-border) !important;
+  color: var(--tool-accent) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-retarget-option {
+  background: #24252a !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-retarget-main {
+  color: rgba(250, 250, 252, 0.94) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-retarget-path {
+  color: rgba(214, 214, 220, 0.66) !important;
 }
 
 :global(html.kikoerumanager-dark) .subtitle-block-title,
@@ -1416,6 +2101,21 @@ function removeActiveSubtitleFilterRule() {
   border-color: rgba(255, 255, 255, 0.1) !important;
 }
 
+:global(html.kikoerumanager-dark) .subtitle-depth-control,
+:global(html.kikoerumanager-dark) .subtitle-quick-toggle {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  background: #24252a !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-quick-label,
+:global(html.kikoerumanager-dark) .subtitle-inline-section-tip {
+  color: rgba(214, 214, 220, 0.72) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-filter-toggle-row {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
 :global(html.kikoerumanager-dark) .subtitle-filter-index,
 :global(html.kikoerumanager-dark) .subtitle-filter-target-mini,
 :global(html.kikoerumanager-dark) .subtitle-filter-target-badge,
@@ -1437,9 +2137,9 @@ function removeActiveSubtitleFilterRule() {
 }
 
 :global(html.kikoerumanager-dark) .header-badge {
-  background: #24252a !important;
-  border-color: rgba(255, 255, 255, 0.14) !important;
-  color: #ffffff !important;
+  background: var(--badge-accent-soft) !important;
+  border-color: var(--badge-accent-border) !important;
+  color: var(--badge-accent) !important;
   box-shadow: none !important;
 }
 
@@ -1479,6 +2179,7 @@ function removeActiveSubtitleFilterRule() {
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-editor),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-detail),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-row),
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-more-row),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-empty),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-toggle-pill),
 :global(html.kikoerumanager-dark .subtitle-config-card .search-row) {
@@ -1508,14 +2209,15 @@ function removeActiveSubtitleFilterRule() {
 
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-row.active),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-naming-option.active),
-:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-toggle-pill.active) {
-  background: #56575e !important;
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-toggle-pill.active),
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-retarget-option.active) {
+  background: var(--option-accent-soft, var(--pill-accent-soft, #56575e)) !important;
   background-image: none !important;
-  border-color: rgba(255, 255, 255, 0.42) !important;
+  border-color: var(--option-accent-border, var(--pill-accent-border, rgba(255, 255, 255, 0.42))) !important;
   color: #ffffff !important;
-  outline: 2px solid rgba(255, 255, 255, 0.34) !important;
-  outline-offset: -2px !important;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
+  outline: 1px solid rgba(255, 255, 255, 0.2) !important;
+  outline-offset: -1px !important;
+  box-shadow: none !important;
 }
 
 :global(html.kikoerumanager-dark .subtitle-config-card .text-sky-600),
@@ -1535,7 +2237,7 @@ function removeActiveSubtitleFilterRule() {
 
 :global(html.kikoerumanager-dark .subtitle-config-card .text-indigo-600),
 :global(html.kikoerumanager-dark .subtitle-config-card .text-indigo-500) {
-  color: #818cf8 !important;
+  color: #a78bfa !important;
 }
 
 :global(html.kikoerumanager-dark .subtitle-config-card .text-amber-600),
@@ -1568,7 +2270,7 @@ function removeActiveSubtitleFilterRule() {
 
 :global(html.kikoerumanager-dark body #app .library .subtitle-config-card .text-indigo-600),
 :global(html.kikoerumanager-dark body #app .library .subtitle-config-card .text-indigo-500) {
-  color: #818cf8 !important;
+  color: #a78bfa !important;
   stroke: currentColor !important;
 }
 
@@ -1584,7 +2286,7 @@ function removeActiveSubtitleFilterRule() {
   stroke: currentColor !important;
 }
 
-:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card button:not(.primary-cta):not(.el-button--primary)) {
+:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card button:not(.primary-cta, .subtitle-switch, .subtitle-naming-option, .subtitle-toggle-pill, .subtitle-tool-btn, .subtitle-retarget-option)) {
   background: #2b2c30 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.15) !important;
@@ -1592,7 +2294,7 @@ function removeActiveSubtitleFilterRule() {
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card button:not(.primary-cta):not(.el-button--primary):hover) {
+:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card button:not(.primary-cta, .subtitle-switch, .subtitle-naming-option, .subtitle-toggle-pill, .subtitle-tool-btn, .subtitle-retarget-option):hover) {
   background: #333438 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.22) !important;
@@ -1602,15 +2304,16 @@ function removeActiveSubtitleFilterRule() {
 
 :global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card .subtitle-filter-row.active),
 :global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card .subtitle-naming-option.active),
-:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card .subtitle-toggle-pill.active) {
-  background: #56575e !important;
-  background-color: #56575e !important;
+:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card .subtitle-toggle-pill.active),
+:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card .subtitle-retarget-option.active) {
+  background: var(--option-accent-soft, var(--pill-accent-soft, #56575e)) !important;
+  background-color: var(--option-accent-soft, var(--pill-accent-soft, #56575e)) !important;
   background-image: none !important;
-  border-color: rgba(255, 255, 255, 0.42) !important;
+  border-color: var(--option-accent-border, var(--pill-accent-border, rgba(255, 255, 255, 0.42))) !important;
   color: #ffffff !important;
-  outline: 2px solid rgba(255, 255, 255, 0.34) !important;
-  outline-offset: -2px !important;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
+  outline: 1px solid rgba(255, 255, 255, 0.2) !important;
+  outline-offset: -1px !important;
+  box-shadow: none !important;
 }
 
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-block-title),
@@ -1651,10 +2354,38 @@ function removeActiveSubtitleFilterRule() {
   border-color: rgba(255, 255, 255, 0.1) !important;
 }
 
-:global(html.kikoerumanager-dark .subtitle-config-card .el-input-number .el-input__wrapper),
-:global(html.kikoerumanager-dark .subtitle-config-card .el-select__wrapper),
-:global(html.kikoerumanager-dark .subtitle-config-card .el-input__wrapper),
-:global(html.kikoerumanager-dark .subtitle-config-card .el-textarea__inner),
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-current-card),
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-nav-btn) {
+  background: #24252a !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: rgba(244, 244, 245, 0.82) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-current-card:hover),
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-nav-btn:hover:not(:disabled)) {
+  background: #303136 !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-depth-control),
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-quick-toggle) {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  background: #24252a !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-quick-label),
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-inline-section-tip) {
+  color: rgba(214, 214, 220, 0.72) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-toggle-row) {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-stepper),
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-native-input),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-target .app-dd-trigger) {
   background: #2b2c30 !important;
   background-image: none !important;
@@ -1663,8 +2394,8 @@ function removeActiveSubtitleFilterRule() {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1) !important;
 }
 
-:global(html.kikoerumanager-dark .subtitle-config-card .el-input__inner),
-:global(html.kikoerumanager-dark .subtitle-config-card .el-textarea__inner),
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-stepper-input),
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-native-input),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-target .app-dd-trigger-value) {
   color: rgba(244, 244, 245, 0.92) !important;
 }

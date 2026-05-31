@@ -1,12 +1,12 @@
 <template>
-  <section class="min-h-0">
+  <section class="subtitle-workbench-stage relative h-full min-h-0 flex-1 overflow-hidden">
     <div
-      class="grid items-start gap-3.5"
+      class="absolute inset-0 grid min-h-0 grid-rows-[minmax(0,1fr)] items-stretch gap-3 overflow-hidden"
       :class="gridClass"
     >
       <aside
-        class="relative min-w-0 self-start rounded-[20px] border border-slate-100 bg-white shadow-[0_4px_16px_rgba(15,23,42,0.04)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
-        :class="leftRailCollapsed ? 'grid gap-2 px-2 py-2.5' : 'grid gap-3.5 px-4 py-4'"
+        class="relative min-w-0 overflow-hidden rounded-[18px] border border-slate-100 bg-white transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+        :class="leftRailCollapsed ? 'grid content-start gap-2 px-2 py-2.5' : 'grid grid-rows-[auto_minmax(0,1fr)] gap-3 px-3 py-3'"
       >
         <!-- 浮动收纳手柄 -->
         <button
@@ -29,7 +29,7 @@
 
         <!-- 折叠态：窄导航条 -->
         <template v-if="leftRailCollapsed">
-          <div class="grid content-start gap-1.5">
+          <div v-if="ctx.railModes.length > 1" class="grid content-start gap-1.5">
             <button
               v-for="item in ctx.railModes"
               :key="item.key"
@@ -55,11 +55,18 @@
               ></span>
             </button>
           </div>
+          <div v-else class="grid h-10 w-10 place-items-center self-center rounded-[10px] border border-slate-100 bg-white text-slate-500">
+            <component
+              :is="getRailTabIcon(ctx.railMode)"
+              class="h-4 w-4"
+              :stroke-width="2.2"
+            />
+          </div>
         </template>
 
         <!-- 展开态 -->
         <template v-else>
-          <div class="flex gap-1 rounded-[12px] border border-slate-200 bg-slate-100/80 p-1" style="position: relative; z-index: 60; pointer-events: auto; isolation: isolate;">
+          <div v-if="ctx.railModes.length > 1" class="flex gap-1 rounded-[12px] border border-slate-200 bg-slate-100/80 p-1" style="position: relative; z-index: 60; pointer-events: auto; isolation: isolate;">
             <button
               v-for="item in ctx.railModes"
               :key="item.key"
@@ -79,14 +86,14 @@
             </button>
           </div>
 
-          <div class="min-h-0">
+          <div class="subtitle-left-rail-content min-h-0 overflow-hidden">
             <SubtitleScanRail v-if="ctx.railMode === 'scan'" :ctx="ctx.scanCtx" embedded />
             <SubtitleTaskNavigator v-else :ctx="ctx.taskNavigatorCtx" />
           </div>
         </template>
       </aside>
 
-      <div class="grid min-w-0 gap-3.5" style="isolation: isolate;">
+      <div class="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden" style="isolation: isolate;">
         <div class="flex gap-1 rounded-[12px] border border-slate-200 bg-slate-100/80 p-1" style="position: relative; z-index: 60; pointer-events: auto; isolation: isolate;">
           <button
             v-for="item in ctx.stageTabs"
@@ -107,58 +114,7 @@
           </button>
         </div>
 
-        <div
-          v-if="ctx.focusTitle || ctx.focusSubtitle"
-          class="grid gap-3 rounded-[18px] border border-slate-200/80 bg-white px-4 py-3 shadow-[0_4px_16px_rgba(15,23,42,0.04)]"
-        >
-          <div class="flex items-start justify-between gap-3">
-            <div class="min-w-0">
-              <div class="flex flex-wrap items-center gap-2">
-                <span class="inline-flex items-center gap-1 rounded-[8px] border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10.5px] font-semibold text-slate-700">
-                  <ListChecks class="h-3 w-3 text-slate-500" :stroke-width="2.3" />
-                  <span>{{ ctx.activeStageLabel || '当前阶段' }}</span>
-                </span>
-                <span
-                  v-for="chip in ctx.focusChips || []"
-                  :key="chip.key"
-                  class="inline-flex items-center gap-1 rounded-[8px] border px-2 py-0.5 text-[10.5px] font-medium"
-                  :class="getFocusChipClass(chip.class)"
-                >
-                  <component :is="getFocusChipIcon(chip.key)" class="h-3 w-3" :stroke-width="2.3" />
-                  <span>{{ chip.label }}</span>
-                </span>
-              </div>
-              <div class="mt-2 text-[12px] font-semibold tracking-[-0.015em] text-slate-900">{{ ctx.focusTitle || '等待焦点任务' }}</div>
-              <div class="mt-1 text-[11px] leading-relaxed text-slate-500">{{ ctx.focusSubtitle || '从左侧扫描结果或任务队列里选一个焦点项' }}</div>
-            </div>
-            <div class="hidden min-w-[220px] rounded-[14px] border border-slate-200/80 bg-slate-50/80 px-3 py-2 md:block">
-              <div class="text-[10.5px] font-medium uppercase tracking-[0.08em] text-slate-400">当前步骤</div>
-              <div class="mt-1 text-[11.5px] font-medium leading-relaxed text-slate-700">{{ ctx.focusStep || '当前还没有进行中的字幕处理步骤' }}</div>
-            </div>
-          </div>
-
-          <div class="rounded-[12px] border border-slate-100 bg-slate-50/50 px-3 py-2 text-[11px] leading-relaxed text-slate-600 md:hidden">
-            {{ ctx.focusStep || '当前还没有进行中的字幕处理步骤' }}
-          </div>
-        </div>
-
-        <div class="min-w-0">
-          <SubtitleTaskStage
-            v-if="ctx.taskOverviewCtx?.subtitleQueueTasks?.length"
-            :ctx="ctx.taskOverviewCtx"
-            mode="queue"
-            immersive
-          />
-          <div
-            v-else
-            class="grid min-h-20 content-center gap-1.5 rounded-[14px] border border-dashed border-slate-200 bg-slate-50/40 px-3 py-2.5"
-          >
-            <div class="text-[13px] font-semibold text-slate-800">当前没有可展示任务</div>
-            <div class="text-[12px] leading-6 text-slate-500">先在左侧“扫描命中”里选目录入队，任务卡会在这里实时出现。</div>
-          </div>
-        </div>
-
-        <div class="min-h-0 min-w-0">
+        <div class="min-h-0 min-w-0 overflow-hidden">
           <SubtitleTaskStage
             v-if="ctx.activeStage === 'overview'"
             :ctx="ctx.taskOverviewCtx"
@@ -204,7 +160,7 @@ import SubtitleScanRail from './SubtitleScanRail.vue'
 import SubtitleTaskNavigator from './SubtitleTaskNavigator.vue'
 import SubtitleTaskStage from './SubtitleTaskStage.vue'
 import SubtitleContextDrawer from './SubtitleContextDrawer.vue'
-import { ChevronsLeft, ChevronsRight, FolderOpen, FolderTree, History, Layers3, Link2, ListChecks, ListTodo, Search } from 'lucide-vue-next'
+import { ChevronsLeft, ChevronsRight, FolderTree, Link2, ListChecks, ListTodo, Search } from 'lucide-vue-next'
 
 function getRailTabIcon(key) {
   return { scan: Search, tasks: ListTodo }[key] || Search
@@ -212,24 +168,6 @@ function getRailTabIcon(key) {
 
 function getStageTabIcon(key) {
   return { overview: ListChecks, pairing: Link2, tree: FolderTree }[key] || ListChecks
-}
-
-function getFocusChipClass(value) {
-  if (value === 'is-success') return 'border-emerald-200 bg-emerald-50 text-emerald-700'
-  if (value === 'is-warning') return 'border-amber-200 bg-amber-50 text-amber-700'
-  if (value === 'is-info') return 'border-sky-200 bg-sky-50 text-sky-700'
-  return 'border-slate-200 bg-slate-50 text-slate-700'
-}
-
-function getFocusChipIcon(key) {
-  return {
-    restored: History,
-    backfill: Layers3,
-    manual: Link2,
-    done: FolderOpen,
-    tree: FolderTree,
-    selection: Search
-  }[key] || ListChecks
 }
 
 const props = defineProps({
@@ -243,9 +181,9 @@ const leftRailCollapsed = ref(false)
 const isRightCollapsed = computed(() => Boolean(props.ctx?.contextDrawerCtx?.drawerCollapsed))
 const gridClass = computed(() => {
   if (leftRailCollapsed.value && isRightCollapsed.value) return 'grid-cols-[56px_minmax(0,1fr)_56px]'
-  if (leftRailCollapsed.value) return 'grid-cols-[56px_minmax(0,2.92fr)_minmax(260px,0.72fr)]'
+  if (leftRailCollapsed.value) return 'grid-cols-[56px_minmax(0,2.64fr)_minmax(312px,0.86fr)]'
   if (isRightCollapsed.value) return 'grid-cols-[minmax(236px,0.74fr)_minmax(0,2.82fr)_56px]'
-  return 'grid-cols-[minmax(236px,0.74fr)_minmax(0,2.46fr)_minmax(260px,0.72fr)]'
+  return 'grid-cols-[minmax(224px,0.7fr)_minmax(0,2.28fr)_minmax(312px,0.86fr)]'
 })
 </script>
 
@@ -366,6 +304,23 @@ const gridClass = computed(() => {
 .rail-handle:hover .rail-handle-label {
   max-width: 40px;
   opacity: 1;
+}
+
+.subtitle-left-rail-content :deep(> *) {
+  height: 100%;
+  min-height: 0;
+}
+
+.subtitle-left-rail-content :deep(.grid.content-start),
+.subtitle-left-rail-content :deep(.grid[style*="content-start"]) {
+  overflow: hidden;
+}
+
+:deep(.subtitle-task-stage-root),
+:deep(.subtitle-inspector-workbench-root) {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 .sub-stage-fade-enter-active,
 .sub-stage-fade-leave-active {

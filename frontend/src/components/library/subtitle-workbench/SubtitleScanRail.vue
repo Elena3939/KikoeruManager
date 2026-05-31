@@ -680,7 +680,7 @@ function getScanResultIcon(status) {
 }
 
 .scan-rail-count-badge-sky svg {
-  color: #1d4ed8;
+  color: #7c3aed;
 }
 
 .scan-rail-count-badge-amber {
@@ -804,9 +804,9 @@ function getScanResultIcon(status) {
 }
 
 .scan-rail-chip-pending {
-  border-color: #bfdbfe;
-  background: #eff6ff;
-  color: #1d4ed8;
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #b45309;
 }
 
 .scan-rail-chip-muted {
@@ -888,7 +888,7 @@ function getScanResultIcon(status) {
 }
 
 .scan-rail-filter-pill-sky svg {
-  color: #1d4ed8;
+  color: #7c3aed;
 }
 
 .scan-rail-filter-pill-soft {
@@ -1052,9 +1052,9 @@ function getScanResultIcon(status) {
 
 .scan-rail-filter-pill-sky.active {
   background: #ffffff;
-  border-color: #bfdbfe;
+  border-color: #ddd6fe;
   color: #0f172a;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.10);
+  box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.1);
 }
 
 .scan-rail-filter-pill.active::before {
@@ -1067,7 +1067,7 @@ function getScanResultIcon(status) {
 }
 
 .scan-rail-filter-pill-sky.active::before {
-  background: #3b82f6;
+  background: #7c3aed;
 }
 
 .scan-rail-filter-pill.active svg {
@@ -1152,7 +1152,7 @@ function getScanResultIcon(status) {
   font-weight: 500;
 }
 
-.scan-rail-status-pill.status-pending { background: #eff6ff; border-color: #bfdbfe; color: #1d4ed8; }
+.scan-rail-status-pill.status-pending { background: #fffbeb; border-color: #fde68a; color: #b45309; }
 .scan-rail-status-pill.status-success { background: #f0fdf4; border-color: #bbf7d0; color: #15803d; }
 .scan-rail-status-pill.status-no_audio,
 .scan-rail-status-pill.status-no_match { background: #f8fafc; border-color: #e2e8f0; color: #475569; }
