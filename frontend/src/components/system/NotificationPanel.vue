@@ -494,4 +494,154 @@ function onItemClick(item) {
   background: rgba(29, 29, 31, 0.03);
 }
 
+:global(html.kikoerumanager-dark .notif-panel) {
+  background: rgba(18, 19, 22, 0.96);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: rgba(244, 244, 245, 0.9);
+  box-shadow:
+    0 24px 58px rgba(0, 0, 0, 0.52),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(22px) saturate(1.02);
+  -webkit-backdrop-filter: blur(22px) saturate(1.02);
+}
+
+:global(html.kikoerumanager-dark .notif-panel-header) {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+:global(html.kikoerumanager-dark .notif-panel-title),
+:global(html.kikoerumanager-dark .notif-item-title) {
+  color: #f4f4f5;
+}
+
+:global(html.kikoerumanager-dark .notif-action-btn) {
+  color: rgba(244, 244, 245, 0.78);
+}
+
+:global(html.kikoerumanager-dark .notif-action-btn:hover) {
+  background: rgba(255, 255, 255, 0.07);
+  color: #ffffff;
+}
+
+:global(html.kikoerumanager-dark .notif-close-btn) {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(212, 212, 216, 0.72);
+}
+
+:global(html.kikoerumanager-dark .notif-close-btn:hover) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+:global(html.kikoerumanager-dark .notif-empty),
+:global(html.kikoerumanager-dark .notif-load-more-spin) {
+  color: rgba(212, 212, 216, 0.62);
+}
+
+:global(html.kikoerumanager-dark .notif-list) {
+  scrollbar-color: rgba(161, 161, 170, 0.32) transparent;
+}
+
+:global(html.kikoerumanager-dark .notif-list::-webkit-scrollbar-thumb) {
+  background: rgba(161, 161, 170, 0.22);
+}
+
+:global(html.kikoerumanager-dark .notif-list:hover::-webkit-scrollbar-thumb) {
+  background: rgba(161, 161, 170, 0.34);
+}
+
+:global(html.kikoerumanager-dark .notif-list::-webkit-scrollbar-thumb:hover) {
+  background: rgba(212, 212, 216, 0.42);
+}
+
+:global(html.kikoerumanager-dark .notif-item) {
+  color: rgba(244, 244, 245, 0.86);
+}
+
+:global(html.kikoerumanager-dark .notif-item:hover) {
+  background: rgba(255, 255, 255, 0.055);
+}
+
+:global(html.kikoerumanager-dark .notif-item--unread) {
+  background: rgba(255, 255, 255, 0.075);
+}
+
+:global(html.kikoerumanager-dark .notif-item--unread::before) {
+  background: #d4d4d8;
+}
+
+:global(html.kikoerumanager-dark .notif-item-summary) {
+  color: rgba(212, 212, 216, 0.66);
+}
+
+:global(html.kikoerumanager-dark .notif-item-time) {
+  color: rgba(161, 161, 170, 0.62);
+}
+
+:global(html.kikoerumanager-dark .notif-meta-domain) {
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(212, 212, 216, 0.72);
+}
+
+:global(html.kikoerumanager-dark .notif-meta-rj) {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(244, 244, 245, 0.78);
+}
+
+:global(html.kikoerumanager-dark .notif-item-del) {
+  color: rgba(161, 161, 170, 0.54);
+}
+
+:global(html.kikoerumanager-dark .notif-item-del:hover) {
+  background: rgba(248, 113, 113, 0.13);
+  color: #fca5a5;
+}
+
+:global(html.kikoerumanager-dark .notif-item--success .notif-item-icon) { color: #86efac; }
+:global(html.kikoerumanager-dark .notif-item--danger .notif-item-icon) { color: #fca5a5; }
+:global(html.kikoerumanager-dark .notif-item--warning .notif-item-icon) { color: #fbbf24; }
+:global(html.kikoerumanager-dark .notif-item--info .notif-item-icon) { color: #d4d4d8; }
+
+:global(html.kikoerumanager-dark .notif-load-more-btn) {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(212, 212, 216, 0.72);
+}
+
+:global(html.kikoerumanager-dark .notif-load-more-btn:hover) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+:global(html.kikoerumanager-dark .notif-load-more-btn--unread) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f4f4f5;
+}
+
+:global(html.kikoerumanager-dark .notif-load-more-dot) {
+  background: #d4d4d8;
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark .notif-item--read) {
+  opacity: 0.58;
+}
+
+:global(html.kikoerumanager-dark .notif-item--read .notif-item-title) {
+  color: rgba(212, 212, 216, 0.72);
+}
+
+:global(html.kikoerumanager-dark .notif-item--read .notif-item-icon) {
+  color: rgba(161, 161, 170, 0.52) !important;
+}
+
+:global(html.kikoerumanager-dark .notif-item--read .notif-meta-rj) {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(161, 161, 170, 0.68);
+}
+
+:global(html.kikoerumanager-dark .notif-item--read:hover) {
+  opacity: 0.78;
+  background: rgba(255, 255, 255, 0.045);
+}
+
 </style>
