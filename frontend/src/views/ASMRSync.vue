@@ -129,6 +129,7 @@
       subtitle="aria2 下载任务进度"
       source-path-label="下载根目录"
       :merge-tasks="false"
+      :compact="true"
       @refresh="refreshHttpDownloadWorkbench({ silent: true })"
       @background="hideHttpDownloadWorkbenchToBackground"
       @close="closeHttpDownloadWorkbench"
@@ -188,7 +189,7 @@
 
     <!-- 扫描结果 -->
     <Transition name="asmr-section">
-    <section v-if="scanResults.length > 0" class="asmr-card">
+    <section v-if="activeWorkspaceTab === 'subtitle' && scanResults.length > 0" class="asmr-card">
       <header class="asmr-card-head">
         <div class="asmr-card-head-title">
           <ListChecks :size="14" :stroke-width="2.2" class="asmr-card-head-icon" />
