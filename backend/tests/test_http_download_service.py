@@ -17,6 +17,10 @@ class DummyStorage:
     temp_path = ""
 
 
+class DummyMetadata:
+    http_proxy = None
+
+
 class DummyHttpDownloader:
     enabled = True
     engine = "aria2"
@@ -48,6 +52,7 @@ class DummyConfig:
     def __init__(self, tmp_path):
         self.storage = DummyStorage()
         self.storage.temp_path = str(tmp_path / "temp")
+        self.metadata = DummyMetadata()
         self.http_downloader = DummyHttpDownloader()
         self.http_downloader.download_root = str(tmp_path / "downloads")
 
@@ -55,7 +60,10 @@ class DummyConfig:
 def bind_config(monkeypatch, tmp_path, **overrides):
     cfg = DummyConfig(tmp_path)
     for key, value in overrides.items():
-        setattr(cfg.http_downloader, key, value)
+        if key.startswith("metadata_"):
+            setattr(cfg.metadata, key.removeprefix("metadata_"), value)
+        else:
+            setattr(cfg.http_downloader, key, value)
     monkeypatch.setattr("app.core.http_download_service.get_config", lambda: cfg)
     return cfg
 
@@ -254,6 +262,25 @@ def test_proxy_url_normalizes_scheme(monkeypatch, tmp_path):
     assert service._proxy_url() == "http://127.0.0.1:7890"
 
 
+def test_proxy_url_falls_back_to_metadata_proxy(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path, proxy_url="", metadata_http_proxy="127.0.0.1:7890")
+    service = HttpDownloadService()
+
+    assert service._proxy_url() == "http://127.0.0.1:7890"
+
+
+def test_proxy_url_prefers_http_downloader_proxy(monkeypatch, tmp_path):
+    bind_config(
+        monkeypatch,
+        tmp_path,
+        proxy_url="http://127.0.0.1:7891",
+        metadata_http_proxy="127.0.0.1:7890",
+    )
+    service = HttpDownloadService()
+
+    assert service._proxy_url() == "http://127.0.0.1:7891"
+
+
 @pytest.mark.asyncio
 async def test_preview_url_passes_provider_headers(monkeypatch, tmp_path):
     bind_config(monkeypatch, tmp_path, allow_private_network=True)
@@ -339,6 +366,39 @@ def test_google_drive_direct_url_from_share_link(monkeypatch, tmp_path):
 
     assert service._google_drive_direct_url("https://drive.google.com/file/d/file-id/view?usp=sharing") == "https://drive.usercontent.google.com/download?id=file-id&export=download"
     assert service._google_drive_direct_url("https://drive.google.com/open?id=file-id") == "https://drive.usercontent.google.com/download?id=file-id&export=download"
+
+
+def test_google_drive_folder_id_from_share_link(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+
+    folder_url = "https://drive.google.com/drive/folders/1Mq4yNPHMFlA7foAXjuCs_3DU-oN5ROim?usp=sharing"
+
+    assert service._google_drive_folder_id_from_url(folder_url) == "1Mq4yNPHMFlA7foAXjuCs_3DU-oN5ROim"
+    assert service._google_drive_is_folder_url(folder_url) is True
+    assert service._google_drive_is_folder_url("https://drive.google.com/file/d/file-id/view") is False
+
+
+def test_google_drive_confirm_url_from_warning_html(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    html = """
+    <form id="download-form" action="https://drive.usercontent.google.com/download" method="get">
+      <input type="hidden" name="id" value="file-id">
+      <input type="hidden" name="export" value="download">
+      <input type="hidden" name="confirm" value="t">
+      <input type="hidden" name="uuid" value="uuid-token">
+    </form>
+    <span class="uc-name-size"><a href="/open?id=file-id">RJ01603546.zip</a> (1.5G)</span>
+    """
+
+    url = service._google_drive_confirm_url_from_warning_html(
+        html,
+        "https://drive.usercontent.google.com/download?id=file-id&export=download",
+    )
+
+    assert url == "https://drive.usercontent.google.com/download?id=file-id&export=download&confirm=t&uuid=uuid-token"
+    assert service._google_drive_size_from_warning_html(html) == int(1.5 * 1024 * 1024 * 1024)
 
 
 def test_onedrive_direct_url_adds_download_param(monkeypatch, tmp_path):
@@ -1048,6 +1108,168 @@ async def test_resolve_gofile_folder_files(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_collect_google_drive_folder_files_from_embedded_folder_view(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    folder_url = "https://drive.google.com/drive/folders/folder-id?usp=sharing"
+    file_id = "1A2B3C4D5E6F7G8H9I0J"
+    page = f"""<html><body>
+      <a class="flip-entry-title" href="https://drive.google.com/file/d/{file_id}/view?usp=drive_web">RJ01581253.zip</a>
+    </body></html>"""
+
+    async def fake_fetch_text(url, headers=None):
+        assert url == "https://drive.google.com/embeddedfolderview?id=folder-id#list"
+        assert headers["User-Agent"]
+        return page
+
+    monkeypatch.setattr(service, "_fetch_text", fake_fetch_text)
+
+    result = await service._collect_google_drive_folder_files(folder_url)
+
+    assert result["folder_id"] == "folder-id"
+    assert len(result["files"]) == 1
+    assert result["files"][0]["source"] == "google_drive"
+    assert result["files"][0]["file_id"] == file_id
+    assert result["files"][0]["filename"] == "RJ01581253.zip"
+    assert result["files"][0]["size_bytes"] == 0
+    assert result["files"][0]["url"] == f"https://drive.usercontent.google.com/download?id={file_id}&export=download"
+
+
+@pytest.mark.asyncio
+async def test_collect_google_drive_folder_files_falls_back_to_page_json(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    folder_url = "https://drive.google.com/drive/folders/folder-id?usp=sharing"
+    file_id = "1A2B3C4D5E6F7G8H9I0J"
+    page = f"""
+    <html><script>
+    AF_initDataCallback({{key: 'ds:0', data: [[
+      ["{file_id}", null, "RJ01581253.zip", "application/zip", 4804731653],
+      ["folder-child-id-1234567890", null, "子目录", "application/vnd.google-apps.folder", 0]
+    ]] }});
+    </script></html>
+    """
+    fetched = []
+
+    async def fake_fetch_text(url, headers=None):
+        fetched.append(url)
+        if "embeddedfolderview" in url:
+            return "<html><body>empty</body></html>"
+        return page
+
+    monkeypatch.setattr(service, "_fetch_text", fake_fetch_text)
+
+    result = await service._collect_google_drive_folder_files(folder_url)
+
+    assert fetched == [
+        "https://drive.google.com/embeddedfolderview?id=folder-id#list",
+        "https://drive.google.com/drive/folders/folder-id?usp=sharing",
+    ]
+    assert len(result["files"]) == 1
+    assert result["files"][0]["file_id"] == file_id
+    assert result["files"][0]["size_bytes"] == 4804731653
+
+
+@pytest.mark.asyncio
+async def test_preview_urls_falls_back_to_google_drive_folder_metadata_when_probe_fails(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+
+    async def fake_resolve_source_urls(urls, materialize=False):
+        return {
+            "urls": ["https://drive.usercontent.google.com/download?id=file-id&export=download"],
+            "source_items": [{
+                "source": "google_drive",
+                "share_url": "https://drive.google.com/drive/folders/folder-id?usp=sharing",
+                "url": "https://drive.usercontent.google.com/download?id=file-id&export=download",
+                "masked_url": "https://drive.usercontent.google.com/download?query=***",
+                "filename": "RJ01581253.zip",
+                "size_bytes": 4804731653,
+                "file_id": "file-id",
+            }],
+            "failed_items": [],
+            "source_modes": ["google_drive"],
+        }
+
+    async def fake_preview_url(raw_url, target_subdir="", conflict_policy="", headers=None):
+        return {"ok": False, "url": raw_url, "reason": "源站返回 HTTP 403"}
+
+    monkeypatch.setattr(service, "resolve_source_urls", fake_resolve_source_urls)
+    monkeypatch.setattr(service, "preview_url", fake_preview_url)
+
+    preview = await service.preview_urls(["https://drive.google.com/drive/folders/folder-id?usp=sharing"])
+
+    assert preview["success"] is True
+    assert preview["items"][0]["source"] == "google_drive"
+    assert preview["items"][0]["filename"] == "RJ01581253.zip"
+    assert preview["items"][0]["relative_path"] == "RJ01581253.zip"
+    assert preview["items"][0]["file_id"] == "file-id"
+    assert "Google Drive" in preview["items"][0]["warning"]
+
+
+@pytest.mark.asyncio
+async def test_preview_urls_keeps_google_drive_folder_filename(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+
+    async def fake_resolve_source_urls(urls, materialize=False):
+        return {
+            "urls": ["https://drive.usercontent.google.com/download?id=file-id&export=download"],
+            "source_items": [{
+                "source": "google_drive",
+                "share_url": "https://drive.google.com/drive/folders/folder-id?usp=sharing",
+                "url": "https://drive.usercontent.google.com/download?id=file-id&export=download",
+                "masked_url": "https://drive.usercontent.google.com/download?query=***",
+                "filename": "RJ01603546.zip",
+                "size_bytes": 0,
+                "file_id": "file-id",
+            }],
+            "failed_items": [],
+            "source_modes": ["google_drive"],
+        }
+
+    async def fake_preview_url(raw_url, target_subdir="", conflict_policy="", headers=None):
+        return {
+            "ok": True,
+            "url": raw_url,
+            "masked_url": service._mask_url(raw_url),
+            "host": "drive.usercontent.google.com",
+            "source": "google_drive",
+            "filename": "download",
+            "relative_path": "download",
+            "final_path": str(tmp_path / "downloads" / "download"),
+            "target_dir": str(tmp_path / "downloads"),
+            "size_bytes": 0,
+            "resumable": False,
+            "warning": "源站返回 HTML 页面，可能不是可直接下载的文件链接。",
+        }
+
+    monkeypatch.setattr(service, "resolve_source_urls", fake_resolve_source_urls)
+    monkeypatch.setattr(service, "preview_url", fake_preview_url)
+    monkeypatch.setattr(
+        service,
+        "_google_drive_resolve_confirm_url",
+        lambda raw_url: asyncio.sleep(
+            0,
+            result={
+                "url": f"{raw_url}&confirm=t&uuid=uuid-token",
+                "size_bytes": 1610612736,
+                "content_type": "text/html; charset=utf-8",
+                "warning": "Google Drive 大文件已自动附加确认下载参数。",
+            },
+        ),
+    )
+
+    preview = await service.preview_urls(["https://drive.google.com/drive/folders/folder-id?usp=sharing"])
+
+    assert preview["items"][0]["filename"] == "RJ01603546.zip"
+    assert preview["items"][0]["relative_path"] == "RJ01603546.zip"
+    assert preview["items"][0]["size_bytes"] == 1610612736
+    assert "confirm=t" in preview["items"][0]["url"]
+    assert "确认下载参数" in preview["items"][0]["warning"]
+
+
+@pytest.mark.asyncio
 async def test_preview_urls_uses_source_relative_dir_and_header(monkeypatch, tmp_path):
     bind_config(monkeypatch, tmp_path)
     service = HttpDownloadService()
@@ -1327,6 +1549,28 @@ def test_preview_item_selection_key_survives_materialized_url_change():
     assert service._preview_item_selection_key(preview_item) == service._preview_item_selection_key(materialized_item)
 
 
+def test_preview_item_selection_key_matches_retry_row_without_share_url():
+    service = HttpDownloadService()
+    failed_row = {
+        "source": "pikpak",
+        "file_id": "file-004",
+        "filename": "RJ01632789.7z.004",
+        "relative_path": "RJ01632789.7z.004",
+    }
+    materialized_item = {
+        "ok": True,
+        "source": "pikpak",
+        "share_url": "https://mypikpak.com/s/share-id",
+        "file_id": "file-004",
+        "download_file_id": "copy-file-004",
+        "filename": "RJ01632789.7z.004",
+        "relative_path": "RJ01632789.7z.004",
+        "size_bytes": 20,
+    }
+
+    assert service._preview_item_selection_key(failed_row) == service._preview_item_selection_key(materialized_item)
+
+
 def test_preview_item_selection_key_survives_transferit_metadata_fallback():
     service = HttpDownloadService()
     fallback_item = {
@@ -1349,6 +1593,125 @@ def test_preview_item_selection_key_survives_transferit_metadata_fallback():
     }
 
     assert service._preview_item_selection_key(fallback_item) == service._preview_item_selection_key(resolved_item)
+
+
+def test_retry_selection_items_keep_only_failed_and_incomplete_rows(tmp_path):
+    service = HttpDownloadService()
+    metadata = {
+        "failed_files": [
+            {
+                "source": "pikpak",
+                "name": "RJ01632789.7z.004",
+                "relative_path": "RJ01632789.7z.004",
+                "file_id": "file-004",
+                "status": "failed",
+            }
+        ],
+        "download_files": [
+            {
+                "source": "pikpak",
+                "name": "RJ01632789.7z.001",
+                "relative_path": "RJ01632789.7z.001",
+                "file_id": "file-001",
+                "status": "completed",
+                "progress": 100,
+                "downloaded": 10,
+                "total": 10,
+            },
+            {
+                "source": "pikpak",
+                "name": "RJ01632789.7z.004",
+                "relative_path": "RJ01632789.7z.004",
+                "file_id": "file-004",
+                "status": "failed",
+                "progress": 73,
+                "downloaded": 7,
+                "total": 10,
+            },
+            {
+                "source": "pikpak",
+                "name": "RJ01632789.7z.010",
+                "relative_path": "RJ01632789.7z.010",
+                "file_id": "file-010",
+                "status": "downloading",
+                "progress": 20,
+                "downloaded": 2,
+                "total": 10,
+            },
+        ],
+    }
+
+    items = service._retry_selection_items_from_task_metadata(metadata)
+
+    assert [item["file_id"] for item in items] == ["file-004", "file-010"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_pikpak_materialize_filters_selected_failed_item(monkeypatch, tmp_path):
+    bind_config(
+        monkeypatch,
+        tmp_path,
+        pikpak_enabled=True,
+        pikpak_accounts=[{
+            "id": "acc-a",
+            "label": "A",
+            "enabled": True,
+            "username": "a",
+            "password": "p",
+        }],
+    )
+    service = HttpDownloadService()
+    calls = {"copy_ids": [], "download_ids": []}
+
+    class Client:
+        pass
+
+    async def fake_collect(_client, raw_url):
+        return (
+            {"share_id": "share-id", "pass_code_token": ""},
+            [
+                {"id": "file-001", "name": "RJ01632789.7z.001", "size": 10},
+                {"id": "file-004", "name": "RJ01632789.7z.004", "size": 20},
+                {"id": "file-010", "name": "RJ01632789.7z.010", "size": 30},
+            ],
+        )
+
+    async def fake_copy(_client, file_ids, files, **_kwargs):
+        calls["copy_ids"].extend(file_ids)
+        return (
+            {file_id: f"copy-{file_id}" for file_id in file_ids},
+            {file_id: service._select_pikpak_account("acc-a") for file_id in file_ids},
+        )
+
+    async def fake_download_link(_client, file_id, allow_missing=False):
+        calls["download_ids"].append(file_id)
+        return {
+            "_download_url": f"https://cdn.example.com/{file_id}?token=secret",
+            "name": file_id.replace("copy-file-", "RJ01632789.7z."),
+            "size": 20,
+        }
+
+    monkeypatch.setattr(service, "_pikpak_client", lambda *args, **kwargs: asyncio.sleep(0, result=Client()))
+    monkeypatch.setattr(service, "_close_pikpak_client", lambda _client: asyncio.sleep(0))
+    monkeypatch.setattr(service, "_collect_pikpak_share_files", fake_collect)
+    monkeypatch.setattr(service, "_copy_pikpak_share_files_multi", fake_copy)
+    monkeypatch.setattr(service, "_pikpak_download_link", fake_download_link)
+
+    result = await service.resolve_source_urls(
+        ["https://mypikpak.com/s/share-id"],
+        materialize=True,
+        selected_items=[{
+            "source": "pikpak",
+            "file_id": "file-004",
+            "relative_path": "RJ01632789.7z.004",
+            "filename": "RJ01632789.7z.004",
+        }],
+    )
+
+    assert calls["copy_ids"] == ["file-004"]
+    assert calls["download_ids"] == ["copy-file-004"]
+    assert len(result["source_items"]) == 1
+    assert result["source_items"][0]["file_id"] == "file-004"
 
 
 @pytest.mark.asyncio
