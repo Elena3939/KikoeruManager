@@ -16,6 +16,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlencode, unquote, urljoin, urlparse, urlunparse
@@ -43,6 +44,68 @@ _GOFILE_WEBSITE_TOKEN_SALT = "g4f8fd9f12h14g"
 
 class HttpDownloadError(ValueError):
     """HTTP 外链下载的可预期业务错误。"""
+
+
+class _GoogleDriveFolderHTMLParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.rows: List[Dict[str, str]] = []
+        self._current_href = ""
+        self._current_class = ""
+        self._current_text: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs: List[tuple[str, Optional[str]]]) -> None:
+        if tag.lower() != "a":
+            return
+        attr_map = {str(key or "").lower(): str(value or "") for key, value in attrs}
+        href = attr_map.get("href", "")
+        if not href:
+            return
+        self._current_href = href
+        self._current_class = attr_map.get("class", "")
+        self._current_text = []
+
+    def handle_data(self, data: str) -> None:
+        if self._current_href:
+            self._current_text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() != "a" or not self._current_href:
+            return
+        text = " ".join("".join(self._current_text).split())
+        if "/file/d/" in self._current_href or "id=" in self._current_href:
+            self.rows.append({
+                "href": self._current_href,
+                "name": text,
+                "class": self._current_class,
+            })
+        self._current_href = ""
+        self._current_class = ""
+        self._current_text = []
+
+
+class _GoogleDriveDownloadFormParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.action = ""
+        self.inputs: Dict[str, str] = {}
+        self._in_download_form = False
+
+    def handle_starttag(self, tag: str, attrs: List[tuple[str, Optional[str]]]) -> None:
+        tag_name = tag.lower()
+        attr_map = {str(key or "").lower(): str(value or "") for key, value in attrs}
+        if tag_name == "form" and attr_map.get("id") == "download-form":
+            self._in_download_form = True
+            self.action = attr_map.get("action", "")
+            return
+        if tag_name == "input" and self._in_download_form:
+            name = attr_map.get("name", "")
+            if name:
+                self.inputs[name] = attr_map.get("value", "")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "form" and self._in_download_form:
+            self._in_download_form = False
 
 
 def mask_http_download_url(value: str) -> str:
@@ -248,6 +311,8 @@ class HttpDownloadService:
 
     def _proxy_url(self) -> str:
         proxy = str(getattr(self._config(), "proxy_url", "") or "").strip()
+        if not proxy:
+            proxy = str(getattr(getattr(get_config(), "metadata", None), "http_proxy", "") or "").strip()
         if proxy and "://" not in proxy:
             proxy = f"http://{proxy}"
         return proxy
@@ -570,6 +635,7 @@ class HttpDownloadService:
             or str(item.get("share_id") or "").strip()
         )
         share_url = str(item.get("share_url") or "").strip()
+        share_url_identity = share_url
         url_identity = ""
         if source == "http" or (not stable_source_id and not share_url):
             url_identity = str(item.get("masked_url") or item.get("url") or "").strip()
@@ -577,12 +643,14 @@ class HttpDownloadService:
         relative_path_identity = str(item.get("relative_path") or "").strip()
         size_identity = str(item.get("size_bytes") or item.get("size") or "").strip()
         if source in _SHARE_PREVIEW_ONLY_SOURCES and (stable_source_id or share_url):
+            if stable_source_id:
+                share_url_identity = ""
             filename_identity = ""
             relative_path_identity = str(item.get("relative_dir") or "").strip()
             size_identity = ""
         parts = [
             source,
-            share_url,
+            share_url_identity,
             stable_source_id,
             url_identity,
             relative_path_identity,
@@ -1472,9 +1540,290 @@ class HttpDownloadService:
             return match.group(1)
         raise HttpDownloadError("Google Drive 分享链接缺少文件 ID")
 
+    def _google_drive_folder_id_from_url(self, raw_url: str) -> str:
+        parsed = urlparse(raw_url)
+        match = re.search(r"/(?:drive/)?folders/([^/?#]+)", parsed.path)
+        if match:
+            return match.group(1)
+        query = parse_qs(parsed.query or "")
+        for key in ("folder_id", "folderId"):
+            values = query.get(key) or []
+            if values and str(values[0] or "").strip():
+                return str(values[0]).strip()
+        return ""
+
+    def _google_drive_is_folder_url(self, raw_url: str) -> bool:
+        return bool(self._google_drive_folder_id_from_url(raw_url))
+
     def _google_drive_direct_url(self, raw_url: str) -> str:
         file_id = self._google_drive_file_id_from_url(raw_url)
         return f"https://drive.usercontent.google.com/download?{urlencode({'id': file_id, 'export': 'download'})}"
+
+    def _google_drive_direct_url_from_id(self, file_id: str) -> str:
+        return f"https://drive.usercontent.google.com/download?{urlencode({'id': str(file_id or '').strip(), 'export': 'download'})}"
+
+    async def _fetch_text(self, url: str, *, headers: Optional[Dict[str, str]] = None) -> str:
+        timeout = aiohttp.ClientTimeout(total=max(20, int(getattr(self._config(), "timeout_seconds", 60) or 60)), connect=10)
+        proxy = self._proxy_url() or None
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=headers or {}, allow_redirects=True, proxy=proxy) as response:
+                body = await response.text(errors="ignore")
+                if response.status >= 400:
+                    raise HttpDownloadError(f"分享页返回 HTTP {response.status}")
+                return body
+
+    async def _google_drive_probe_download(self, url: str) -> Dict[str, Any]:
+        timeout = aiohttp.ClientTimeout(total=30, connect=10)
+        proxy = self._proxy_url() or None
+        headers = {"User-Agent": _GOFILE_USER_AGENT, "Range": "bytes=0-1023"}
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=headers, allow_redirects=True, proxy=proxy) as response:
+                chunk = await response.content.read(1024)
+                response_headers = {k.lower(): v for k, v in response.headers.items()}
+                return {
+                    "status": response.status,
+                    "url": str(response.url),
+                    "content_type": str(response_headers.get("content-type") or ""),
+                    "content_length": self._content_length_from_headers(response_headers),
+                    "content_range": str(response_headers.get("content-range") or ""),
+                    "content_disposition": str(response_headers.get("content-disposition") or ""),
+                    "prefix": chunk[:32].hex(),
+                }
+
+    def _google_drive_extract_json_arrays(self, html_text: str) -> List[Any]:
+        text = str(html_text or "")
+        arrays: List[Any] = []
+        decoder = json.JSONDecoder()
+        markers = ("AF_initDataCallback", "window['_DRIVE_ivd']")
+        for marker in markers:
+            start = 0
+            while True:
+                marker_index = text.find(marker, start)
+                if marker_index < 0:
+                    break
+                bracket_index = text.find("[", marker_index)
+                if bracket_index < 0:
+                    break
+                try:
+                    value, offset = decoder.raw_decode(text[bracket_index:])
+                except Exception:
+                    start = bracket_index + 1
+                    continue
+                if isinstance(value, list):
+                    arrays.append(value)
+                start = bracket_index + max(offset, 1)
+        return arrays
+
+    def _google_drive_find_folder_rows(self, value: Any) -> List[List[Any]]:
+        rows: List[List[Any]] = []
+
+        def walk(node: Any) -> None:
+            if isinstance(node, list):
+                if self._google_drive_node_looks_like_file_row(node):
+                    rows.append(node)
+                    return
+                for child in node:
+                    walk(child)
+            elif isinstance(node, dict):
+                for child in node.values():
+                    walk(child)
+
+        walk(value)
+        return rows
+
+    def _google_drive_node_looks_like_file_row(self, node: List[Any]) -> bool:
+        if len(node) < 3:
+            return False
+        file_id = str(node[0] or "").strip() if isinstance(node[0], str) else ""
+        name = str(node[2] or "").strip() if isinstance(node[2], str) else ""
+        if not file_id or not name:
+            return False
+        if not re.fullmatch(r"[-_A-Za-z0-9]{16,}", file_id):
+            return False
+        if name.startswith(("https://", "http://")):
+            return False
+        return True
+
+    def _google_drive_file_row(self, row: List[Any], raw_url: str) -> Optional[Dict[str, Any]]:
+        file_id = str(row[0] or "").strip()
+        name = self._sanitize_filename(str(row[2] or "").strip(), fallback="google-drive-file")
+        if not file_id or not name:
+            return None
+        mime_type = str(row[3] or "").strip() if len(row) > 3 else ""
+        if mime_type == "application/vnd.google-apps.folder":
+            return None
+        size_bytes = 0
+        for value in row:
+            if isinstance(value, int) and value > 0:
+                size_bytes = value
+                break
+            if isinstance(value, str) and value.isdigit():
+                number = int(value)
+                if number > 0:
+                    size_bytes = number
+                    break
+        direct_url = self._google_drive_direct_url_from_id(file_id)
+        return {
+            "source": "google_drive",
+            "share_url": self._mask_url(raw_url),
+            "url": direct_url,
+            "masked_url": self._mask_url(direct_url),
+            "name": name,
+            "filename": name,
+            "relative_dir": "",
+            "size_bytes": size_bytes,
+            "file_id": file_id,
+            "content_type": mime_type,
+        }
+
+    def _google_drive_size_from_warning_html(self, html_text: str) -> int:
+        text = html.unescape(str(html_text or ""))
+        match = re.search(r"\(([\d.]+)\s*([KMGT]?B?)\)", text, re.IGNORECASE)
+        if not match:
+            return 0
+        value = float(match.group(1))
+        unit = match.group(2).upper()
+        multiplier = {
+            "K": 1024,
+            "KB": 1024,
+            "M": 1024 ** 2,
+            "MB": 1024 ** 2,
+            "G": 1024 ** 3,
+            "GB": 1024 ** 3,
+            "T": 1024 ** 4,
+            "TB": 1024 ** 4,
+        }.get(unit, 1)
+        return int(value * multiplier)
+
+    def _google_drive_confirm_url_from_warning_html(self, html_text: str, fallback_url: str) -> str:
+        parser = _GoogleDriveDownloadFormParser()
+        parser.feed(str(html_text or ""))
+        if not parser.action or not parser.inputs:
+            return ""
+        query = {
+            key: value
+            for key, value in parser.inputs.items()
+            if str(key or "").strip() and str(value or "").strip()
+        }
+        if not query:
+            return ""
+        parsed_fallback = urlparse(fallback_url)
+        fallback_query = parse_qs(parsed_fallback.query or "")
+        for key in ("id", "export"):
+            if key not in query and fallback_query.get(key):
+                query[key] = str(fallback_query[key][0])
+        return f"{parser.action}?{urlencode(query)}"
+
+    async def _google_drive_resolve_confirm_url(self, url: str) -> Dict[str, Any]:
+        timeout = aiohttp.ClientTimeout(total=30, connect=10)
+        proxy = self._proxy_url() or None
+        headers = {"User-Agent": _GOFILE_USER_AGENT}
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=headers, allow_redirects=True, proxy=proxy) as response:
+                body = await response.text(errors="ignore")
+                response_headers = {k.lower(): v for k, v in response.headers.items()}
+                content_type = str(response_headers.get("content-type") or "")
+                if response.status >= 400:
+                    raise HttpDownloadError(f"Google Drive 返回 HTTP {response.status}")
+                if "text/html" not in content_type.lower():
+                    return {
+                        "url": str(response.url),
+                        "size_bytes": self._content_length_from_headers(response_headers),
+                        "content_type": content_type,
+                        "warning": "",
+                    }
+        confirm_url = self._google_drive_confirm_url_from_warning_html(body, url)
+        if not confirm_url:
+            return {
+                "url": url,
+                "size_bytes": self._google_drive_size_from_warning_html(body),
+                "content_type": content_type,
+                "warning": "Google Drive 返回确认页，未解析到确认下载参数。",
+            }
+        return {
+            "url": confirm_url,
+            "size_bytes": self._google_drive_size_from_warning_html(body),
+            "content_type": content_type,
+            "warning": "Google Drive 大文件已自动附加确认下载参数。",
+        }
+
+    def _google_drive_dedupe_files(self, files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        unique: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in files:
+            file_id = str(item.get("file_id") or "").strip()
+            if not file_id or file_id in seen:
+                continue
+            seen.add(file_id)
+            unique.append(item)
+        return unique
+
+    def _google_drive_file_id_from_href(self, href: str) -> str:
+        absolute = urljoin("https://drive.google.com", html.unescape(str(href or "").strip()))
+        try:
+            return self._google_drive_file_id_from_url(absolute)
+        except HttpDownloadError:
+            return ""
+
+    def _google_drive_files_from_embedded_html(self, html_text: str, raw_url: str) -> List[Dict[str, Any]]:
+        parser = _GoogleDriveFolderHTMLParser()
+        parser.feed(str(html_text or ""))
+        files: List[Dict[str, Any]] = []
+        for row in parser.rows:
+            href = str(row.get("href") or "")
+            file_id = self._google_drive_file_id_from_href(href)
+            if not file_id:
+                continue
+            name = self._sanitize_filename(row.get("name") or "google-drive-file", fallback="google-drive-file")
+            direct_url = self._google_drive_direct_url_from_id(file_id)
+            files.append({
+                "source": "google_drive",
+                "share_url": self._mask_url(raw_url),
+                "url": direct_url,
+                "masked_url": self._mask_url(direct_url),
+                "name": name,
+                "filename": name,
+                "relative_dir": "",
+                "size_bytes": 0,
+                "file_id": file_id,
+                "content_type": "",
+            })
+        return self._google_drive_dedupe_files(files)
+
+    async def _collect_google_drive_folder_files(self, raw_url: str) -> Dict[str, Any]:
+        folder_id = self._google_drive_folder_id_from_url(raw_url)
+        if not folder_id:
+            raise HttpDownloadError("Google Drive 文件夹分享链接缺少文件夹 ID")
+        embedded_url = f"https://drive.google.com/embeddedfolderview?id={folder_id}#list"
+        html_text = await self._fetch_text(
+            embedded_url,
+            headers={
+                "User-Agent": _GOFILE_USER_AGENT,
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            },
+        )
+        files = self._google_drive_files_from_embedded_html(html_text, raw_url)
+        if not files:
+            folder_url = f"https://drive.google.com/drive/folders/{folder_id}?usp=sharing"
+            html_text = await self._fetch_text(
+                folder_url,
+                headers={
+                    "User-Agent": _GOFILE_USER_AGENT,
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                },
+            )
+            for payload in self._google_drive_extract_json_arrays(html_text):
+                for row in self._google_drive_find_folder_rows(payload):
+                    item = self._google_drive_file_row(row, raw_url)
+                    if item:
+                        files.append(item)
+        files = self._google_drive_dedupe_files(files)
+        if not files:
+            lowered = html_text.lower()
+            if "request access" in lowered or "需要访问权限" in html_text or "请求访问权限" in html_text:
+                raise HttpDownloadError("Google Drive 文件夹需要访问权限，当前分享不是公开可读")
+            raise HttpDownloadError("Google Drive 文件夹页未解析到可下载文件")
+        return {"files": files, "folder_id": folder_id}
 
     def _onedrive_direct_url(self, raw_url: str) -> str:
         parsed = urlparse(raw_url)
@@ -2465,10 +2814,87 @@ class HttpDownloadService:
             raise self._pikpak_error(last_error, "解析下载直链") from last_error
         raise HttpDownloadError("PikPak 解析下载直链失败")
 
-    async def resolve_source_urls(self, urls: List[str], *, materialize: bool = False) -> Dict[str, Any]:
+    def _selection_filter_from_items(self, items: Optional[List[Dict[str, Any]]]) -> Optional[set[str]]:
+        keys: set[str] = set()
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get("source") or "").strip().lower()
+            if source not in _SHARE_PREVIEW_ONLY_SOURCES:
+                continue
+            for field in ("file_id", "content_id", "download_file_id"):
+                value = str(item.get(field) or "").strip()
+                if value:
+                    keys.add(f"{source}:id:{value}")
+            for field in ("relative_path", "relative_dir", "filename", "name"):
+                value = str(item.get(field) or "").strip().replace("\\", "/").strip("/")
+                if value:
+                    keys.add(f"{source}:path:{value.lower()}")
+        return keys or None
+
+    def _share_item_matches_selection(self, source: str, item: Dict[str, Any], selection_filter: Optional[set[str]]) -> bool:
+        if not selection_filter:
+            return True
+        source_name = str(source or "").strip().lower()
+        file_id = str(item.get("id") or item.get("file_id") or item.get("content_id") or item.get("download_file_id") or "").strip()
+        if file_id and f"{source_name}:id:{file_id}" in selection_filter:
+            return True
+        name = str(item.get("name") or item.get("filename") or "").strip().replace("\\", "/").strip("/")
+        relative_dir = str(item.get("_relative_dir") or item.get("relative_dir") or "").strip().replace("\\", "/").strip("/")
+        relative_path = "/".join(part for part in (relative_dir, name) if part).strip("/")
+        for value in (relative_path, relative_dir, name):
+            if value and f"{source_name}:path:{value.lower()}" in selection_filter:
+                return True
+        return False
+
+    def _retry_selection_items_from_task_metadata(self, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def add_row(row: Dict[str, Any]) -> None:
+            if not isinstance(row, dict):
+                return
+            source = str(row.get("source") or "").strip().lower()
+            if not source:
+                return
+            identity = (
+                str(row.get("file_id") or "").strip()
+                or str(row.get("download_file_id") or "").strip()
+                or str(row.get("relative_path") or "").strip()
+                or str(row.get("name") or row.get("filename") or "").strip()
+            )
+            key = f"{source}:{identity}" if identity else json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)
+            if key in seen:
+                return
+            seen.add(key)
+            rows.append(dict(row))
+
+        for row in list(metadata.get("failed_files") or []):
+            if isinstance(row, dict):
+                add_row(row)
+        for row in list(metadata.get("download_files") or []):
+            if not isinstance(row, dict):
+                continue
+            status = str(row.get("status") or "").strip().lower()
+            progress = int(row.get("progress") or 0)
+            total = int(row.get("total") or row.get("size") or 0)
+            downloaded = int(row.get("downloaded") or 0)
+            if status == "completed" or progress >= 100 or (total > 0 and downloaded >= total):
+                continue
+            add_row(row)
+        return rows
+
+    async def resolve_source_urls(
+        self,
+        urls: List[str],
+        *,
+        materialize: bool = False,
+        selected_items: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         resolved: List[str] = []
         source_items: List[Dict[str, Any]] = []
         failed: List[Dict[str, Any]] = []
+        selection_filter = self._selection_filter_from_items(selected_items)
         direct_links = [
             url
             for url in urls
@@ -2512,14 +2938,28 @@ class HttpDownloadService:
         google_links = [url for url in urls if self._is_google_drive_url(url)]
         for raw_url in google_links:
             try:
-                direct_url = self._google_drive_direct_url(raw_url)
-                resolved.append(direct_url)
-                source_items.append({
-                    "source": "google_drive",
-                    "share_url": self._mask_url(raw_url),
-                    "url": direct_url,
-                    "masked_url": self._mask_url(direct_url),
-                })
+                if self._google_drive_is_folder_url(raw_url):
+                    data = await self._collect_google_drive_folder_files(raw_url)
+                    files = data.get("files") or []
+                    if not files:
+                        failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": "Google Drive 文件夹中没有可下载文件", "source": "google_drive"})
+                        continue
+                    for item in files:
+                        download_url = str(item.get("url") or "")
+                        if not download_url:
+                            continue
+                        resolved.append(download_url)
+                        source_items.append(item)
+                else:
+                    direct_url = self._google_drive_direct_url(raw_url)
+                    resolved.append(direct_url)
+                    source_items.append({
+                        "source": "google_drive",
+                        "share_url": self._mask_url(raw_url),
+                        "url": direct_url,
+                        "masked_url": self._mask_url(direct_url),
+                        "file_id": self._google_drive_file_id_from_url(raw_url),
+                    })
             except Exception as exc:
                 failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": self._sanitize_error(exc), "source": "google_drive"})
 
@@ -2549,6 +2989,13 @@ class HttpDownloadService:
                             continue
                         share_id = str(info.get("share_id") or self._pikpak_share_id_from_url(raw_url))
                         pass_code_token = str(info.get("pass_code_token") or "")
+                        if selection_filter:
+                            files = [
+                                item for item in files
+                                if self._share_item_matches_selection("pikpak", item, selection_filter)
+                            ]
+                            if not files:
+                                continue
                         file_ids = []
                         for item in files:
                             file_id = str(item.get("id") or item.get("file_id") or "")
@@ -2708,8 +3155,25 @@ class HttpDownloadService:
             "relative_path": os.path.relpath(final_path, root).replace("\\", "/"),
         }
 
-    async def preview_urls(self, urls: List[str], target_subdir: str = "", conflict_policy: str = "", *, materialize_sources: bool = False) -> Dict[str, Any]:
-        source = await self.resolve_source_urls(urls, materialize=materialize_sources)
+    async def preview_urls(
+        self,
+        urls: List[str],
+        target_subdir: str = "",
+        conflict_policy: str = "",
+        *,
+        materialize_sources: bool = False,
+        selected_items: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        try:
+            source = await self.resolve_source_urls(
+                urls,
+                materialize=materialize_sources,
+                selected_items=selected_items,
+            )
+        except TypeError as exc:
+            if "selected_items" not in str(exc):
+                raise
+            source = await self.resolve_source_urls(urls, materialize=materialize_sources)
         items = []
         source_by_url = {}
         for source_item in source.get("source_items") or []:
@@ -2720,8 +3184,25 @@ class HttpDownloadService:
                 source_by_url.setdefault(raw, source_item)
         for raw_url in source.get("urls") or []:
             source_item = source_by_url.get(str(raw_url or "").strip())
+            preview_url = raw_url
+            if isinstance(source_item, dict) and source_item.get("source") == "google_drive":
+                try:
+                    drive_resolved = await self._google_drive_resolve_confirm_url(raw_url)
+                    if drive_resolved.get("url"):
+                        preview_url = str(drive_resolved.get("url") or raw_url)
+                        source_item["url"] = preview_url
+                        source_item["original_url"] = preview_url
+                        source_item["masked_url"] = self._mask_url(preview_url)
+                    if drive_resolved.get("size_bytes"):
+                        source_item["size_bytes"] = int(drive_resolved.get("size_bytes") or 0)
+                    if drive_resolved.get("content_type"):
+                        source_item["content_type"] = str(drive_resolved.get("content_type") or "")
+                    if drive_resolved.get("warning"):
+                        source_item["warning"] = str(drive_resolved.get("warning") or "")
+                except Exception as exc:
+                    source_item["google_drive_confirm_error"] = self._sanitize_error(exc)
             item = await self.preview_url(
-                raw_url,
+                preview_url,
                 target_subdir=target_subdir,
                 conflict_policy=conflict_policy,
                 headers=dict(source_item.get("headers") or {}) if isinstance(source_item, dict) else None,
@@ -2729,27 +3210,33 @@ class HttpDownloadService:
             if (
                 isinstance(source_item, dict)
                 and not item.get("ok")
-                and source_item.get("source") == "gofile"
+                and source_item.get("source") in {"gofile", "google_drive"}
                 and source_item.get("filename")
             ):
                 try:
                     subdir = "/".join([part for part in (target_subdir, source_item.get("relative_dir")) if str(part or "").strip()])
-                    target = self._resolve_target(str(source_item.get("filename") or "gofile-file"), subdir, conflict_policy)
+                    source_name = str(source_item.get("source") or "http")
+                    fallback_name = "gofile-file" if source_name == "gofile" else "google-drive-file"
+                    target = self._resolve_target(str(source_item.get("filename") or fallback_name), subdir, conflict_policy)
                     item = {
                         "ok": True,
                         "url": str(source_item.get("url") or raw_url),
                         "masked_url": source_item.get("masked_url") or self._mask_url(str(source_item.get("url") or raw_url)),
-                        "host": urlparse(str(source_item.get("url") or raw_url)).hostname or "gofile.io",
-                        "source": "gofile",
+                        "host": urlparse(str(source_item.get("url") or raw_url)).hostname or ("gofile.io" if source_name == "gofile" else "drive.google.com"),
+                        "source": source_name,
                         "share_url": source_item.get("share_url"),
                         "filename": target["filename"],
                         "relative_path": target["relative_path"],
                         "final_path": target["final_path"],
                         "target_dir": target["target_dir"],
                         "size_bytes": int(source_item.get("size_bytes") or 0),
-                        "content_type": "",
+                        "content_type": str(source_item.get("content_type") or ""),
                         "resumable": True,
-                        "warning": "Gofile CDN 未响应预览探测，已使用 API 返回的文件名和大小创建下载项。",
+                        "warning": (
+                            "Gofile CDN 未响应预览探测，已使用 API 返回的文件名和大小创建下载项。"
+                            if source_name == "gofile"
+                            else "Google Drive 未响应预览探测，已使用文件夹页返回的文件名和大小创建下载项。"
+                        ),
                     }
                 except Exception as exc:
                     item["reason"] = self._sanitize_error(exc) or exc.__class__.__name__
@@ -2757,6 +3244,16 @@ class HttpDownloadService:
                 item["source"] = str(source_item.get("source") or item.get("source") or "http")
                 if source_item.get("share_url"):
                     item["share_url"] = source_item.get("share_url")
+                if source_item.get("source") == "google_drive" and source_item.get("filename"):
+                    filename = self._sanitize_filename(source_item.get("filename") or source_item.get("name") or item.get("filename") or "google-drive-file")
+                    subdir = "/".join([part for part in (target_subdir, source_item.get("relative_dir")) if str(part or "").strip()])
+                    target = self._resolve_target(filename, subdir, conflict_policy)
+                    item.update({
+                        "filename": target["filename"],
+                        "relative_path": target["relative_path"],
+                        "final_path": target["final_path"],
+                        "target_dir": target["target_dir"],
+                    })
                 for meta_key in (
                     "content_id",
                     "file_id",
@@ -2783,6 +3280,8 @@ class HttpDownloadService:
                     })
                 if source_item.get("size_bytes") and not int(item.get("size_bytes") or 0):
                     item["size_bytes"] = int(source_item.get("size_bytes") or 0)
+                if source_item.get("warning"):
+                    item["warning"] = source_item.get("warning")
                 if source_item.get("aria2_header"):
                     item["aria2_header"] = list(source_item.get("aria2_header") or [])
                 if source_item.get("headers"):
@@ -3121,14 +3620,21 @@ class HttpDownloadService:
 
         target_subdir = str(metadata.get("target_subdir") or "").strip()
         conflict_policy = str(metadata.get("conflict_policy") or getattr(cfg, "conflict_policy", "resume") or "resume")
-        preview = await self.preview_urls(raw_urls, target_subdir=target_subdir, conflict_policy=conflict_policy, materialize_sources=True)
+        selected_items = [
+            item for item in list(metadata.get("selected_items") or [])
+            if isinstance(item, dict)
+        ]
+        preview = await self.preview_urls(
+            raw_urls,
+            target_subdir=target_subdir,
+            conflict_policy=conflict_policy,
+            materialize_sources=True,
+            selected_items=selected_items,
+        )
         preview = self.filter_preview_selection(
             preview,
             selected_keys=list(metadata.get("selected_keys") or []),
-            selected_items=[
-                item for item in list(metadata.get("selected_items") or [])
-                if isinstance(item, dict)
-            ],
+            selected_items=selected_items,
         )
         items = [item for item in preview.get("items") or [] if item.get("ok")]
         failed_items = [item for item in preview.get("items") or [] if not item.get("ok")]
@@ -3429,10 +3935,26 @@ class HttpDownloadService:
         return int(headers.get("content-length") or 0)
 
     async def reset_task_for_retry(self, task) -> None:
-        urls = list((task.task_metadata or {}).get("urls") or [])
+        metadata = dict(task.task_metadata or {})
+        urls = list(metadata.get("urls") or [])
+        retry_items = self._retry_selection_items_from_task_metadata(metadata)
+        retry_keys = [
+            self._preview_item_selection_key(item)
+            for item in retry_items
+            if self._preview_item_selection_key(item)
+        ]
         from .task_engine import TaskStatus
 
         task.task_metadata["urls"] = urls
+        if retry_items:
+            task.task_metadata["selected_items"] = [
+                sanitize_http_download_item(item)
+                for item in retry_items
+            ]
+            task.task_metadata["selected_keys"] = retry_keys
+            task.task_metadata["retry_target_count"] = len(retry_items)
+        else:
+            task.task_metadata["retry_target_count"] = 0
         task.task_metadata["resolved_urls"] = []
         task.task_metadata["download_files"] = []
         task.task_metadata["download_runtime"] = {}
