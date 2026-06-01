@@ -79,7 +79,7 @@
           <div class="pikpak-accounts-head">
             <div>
               <div class="pikpak-status-title">PikPak 账号列表</div>
-              <div class="pikpak-status-subtitle">所有账号都在这里维护。多文件转存会按各账号剩余空间自动分配；单个文件不会拆分。</div>
+              <div class="pikpak-status-subtitle">所有账号都在这里维护。手机号账号按所属地区填写，必要时在号码前加国家码；多文件转存会按各账号剩余空间自动分配，单个文件不会拆分。</div>
             </div>
             <button type="button" class="ghost-inline-btn" @click="addPikPakAccount">
               <Plus :size="14" :stroke-width="2.4" />
@@ -97,12 +97,15 @@
               <div class="pikpak-account-fields">
                 <input v-if="row.legacy" :value="defaultPikPakAccountLabel" class="field-input" type="text" placeholder="备注名" @input="updateDefaultPikPakLabel($event.target.value)">
                 <input v-else v-model="row.account.label" class="field-input" type="text" placeholder="备注名">
-                <input v-if="row.legacy" v-model="config.http_downloader.pikpak_username" class="field-input" type="text" placeholder="邮箱或手机号">
-                <input v-else v-model="row.account.username" class="field-input" type="text" placeholder="邮箱或手机号">
+                <input v-if="row.legacy" v-model="config.http_downloader.pikpak_username" class="field-input" type="text" placeholder="邮箱或手机号（可带国家码）" @blur="normalizePikPakAccountUsername(row)">
+                <input v-else v-model="row.account.username" class="field-input" type="text" placeholder="邮箱或手机号（可带国家码）" @blur="normalizePikPakAccountUsername(row)">
                 <AnimatedPasswordInput v-if="row.legacy" v-model="config.http_downloader.pikpak_password" :reveal-value="getRevealedPikPakPassword(row.id)" placeholder="密码" autocomplete="new-password" @visibility-change="visible => handlePikPakPasswordVisibility(row, visible)" />
                 <AnimatedPasswordInput v-else v-model="row.account.password" :reveal-value="getRevealedPikPakPassword(row.id)" placeholder="密码" autocomplete="new-password" @visibility-change="visible => handlePikPakPasswordVisibility(row, visible)" />
                 <input v-if="row.legacy" v-model="config.http_downloader.pikpak_transfer_dir" class="field-input" type="text" placeholder="/KikoeruManager">
                 <input v-else v-model="row.account.transfer_dir" class="field-input" type="text" placeholder="/KikoeruManager">
+                <span v-if="getPikPakUsernameHint(row.legacy ? config.http_downloader.pikpak_username : row.account?.username)" class="pikpak-account-note">
+                  {{ getPikPakUsernameHint(row.legacy ? config.http_downloader.pikpak_username : row.account?.username) }}
+                </span>
               </div>
               <div class="pikpak-account-side">
                 <button type="button" class="ghost-inline-btn compact" :disabled="isPikPakTesting(row.id)" @click="testPikPakAccount(row.id, row.account)">
@@ -135,6 +138,10 @@
                 <RefreshCw :size="14" :stroke-width="2.4" />
                 检测全部
               </button>
+              <button type="button" class="ghost-inline-btn danger" :disabled="pikpakBusy || !visiblePikPakAccountRows.length" @click="clearAllPikPakTransfers">
+                <Trash2 :size="14" :stroke-width="2.4" />
+                清空全部
+              </button>
               <button type="button" class="ghost-inline-btn" :disabled="pikpakBusy" @click="openPikPakManager">
                 <FolderOpen :size="14" :stroke-width="2.4" />
                 管理转存
@@ -159,10 +166,10 @@
               <strong>{{ pikpakHealthyAccountCount }} / {{ pikpakAccountStatuses.length || visiblePikPakAccountRows.length }}</strong>
             </div>
           </div>
-          <div class="pikpak-quota-bar">
+          <div v-if="pikpakTotalQuota.usage > 0" class="pikpak-quota-bar">
             <div class="pikpak-quota-fill" :style="{ width: `${pikpakTotalUsedPercent}%` }"></div>
           </div>
-          <div class="pikpak-account-usage-list">
+          <div v-if="pikpakAccountUsageRows.length" class="pikpak-account-usage-list">
             <div v-for="row in pikpakAccountUsageRows" :key="row.id" class="pikpak-account-usage-row" :class="row.success ? 'is-ok' : 'is-error'">
               <div class="pikpak-usage-main">
                 <strong>{{ row.label }}</strong>
@@ -173,7 +180,6 @@
               </div>
               <small>{{ row.success ? `${row.percent}%` : '异常' }}</small>
             </div>
-            <div v-if="!pikpakAccountUsageRows.length" class="pikpak-empty small">点击“检测全部”读取各账号容量</div>
           </div>
           <div v-if="pikpakMessage" class="pikpak-message" :class="pikpakMessage.startsWith('✓') ? 'is-success' : pikpakMessage.startsWith('✗') ? 'is-error' : 'is-info'">{{ pikpakMessage }}</div>
         </div>
@@ -285,7 +291,10 @@
                   <span v-if="row.sizeText" class="pikpak-tree-size">{{ row.sizeText }}</span>
                 </div>
               </div>
-              <div v-else class="pikpak-empty">{{ pikpakBusy ? '正在读取...' : '转存目录为空' }}</div>
+              <div v-else class="pikpak-empty">
+                <LoaderCircle v-if="pikpakBusy" :size="16" class="spin-icon" />
+                <span>{{ pikpakBusy ? '正在读取...' : '转存目录为空' }}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -295,7 +304,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { CheckCircle2, ChevronDown, ChevronRight, File, FileArchive, FileAudio, FileVideo, Folder, FolderOpen, LoaderCircle, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
 import SettingsFieldCard from './SettingsFieldCard.vue'
@@ -304,6 +313,7 @@ import SettingsToggleRow from './SettingsToggleRow.vue'
 import AppDropdown from '../common/AppDropdown.vue'
 import AnimatedPasswordInput from '../common/AnimatedPasswordInput.vue'
 import { configApi, httpDownloadApi } from '../../api'
+import { showSystemConfirm } from '../../composables/useSystemPrompt'
 
 const props = defineProps({
   config: { type: Object, required: true }
@@ -430,7 +440,8 @@ const pikpakStatusText = computed(() => {
   if (!props.config.http_downloader.pikpak_enabled) return '未启用'
   if (!pikpakStatus.value) return '点击“检测全部”读取登录状态、总容量、已用空间和剩余空间。'
   const count = pikpakAccountStatuses.value.length || visiblePikPakAccountRows.value.length
-  return `${pikpakHealthyAccountCount.value}/${count || 0} 个账号可用，总容量 ${formatBytes(pikpakTotalQuota.value.limit)}，已用 ${pikpakTotalUsedPercent.value}%`
+  const suffix = pikpakStatus.value?.cache_updated_at ? `，上次同步 ${formatDateTime(pikpakStatus.value.cache_updated_at)}` : ''
+  return `${pikpakHealthyAccountCount.value}/${count || 0} 个账号可用，总容量 ${formatBytes(pikpakTotalQuota.value.limit)}，已用 ${pikpakTotalUsedPercent.value}%${suffix}`
 })
 const selectedPikPakAccountLabel = computed(() => selectedPikPakStatus.value?.account_label || selectedPikPakStatus.value?.account?.label || '默认账号')
 const selectedPikPakTransferDir = computed(() => selectedPikPakStatus.value?.transfer_dir || selectedPikPakStatus.value?.account?.transfer_dir || props.config.http_downloader.pikpak_transfer_dir || '/KikoeruManager')
@@ -496,6 +507,35 @@ function newPikPakAccount() {
   }
 }
 
+function normalizePikPakUsername(value) {
+  return String(value || '').trim()
+}
+
+function normalizePikPakAccountUsername(row) {
+  if (!row) return
+  if (row.legacy) {
+    props.config.http_downloader.pikpak_username = normalizePikPakUsername(props.config.http_downloader.pikpak_username)
+    return
+  }
+  if (row.account) {
+    row.account.username = normalizePikPakUsername(row.account.username)
+  }
+}
+
+function getPikPakUsernameHint(value) {
+  const text = normalizePikPakUsername(value)
+  if (!text || text.includes('@')) return ''
+  const raw = text.startsWith('+') ? text.slice(1) : text
+  if (!/^\d{6,18}$/.test(raw)) return ''
+  if (text.startsWith('+')) {
+    return '手机号账号已经带国家码。若检测仍失败，可以再试试账号原始格式。'
+  }
+  if (raw.length === 11 && raw.startsWith('1')) {
+    return '如果这是中国手机号，可以试试在号码前补 +86。'
+  }
+  return '如果这是手机号，可按所属地区补国家码。'
+}
+
 function addPikPakAccount() {
   props.config.http_downloader.pikpak_accounts = [...pikpakAccounts.value, newPikPakAccount()]
 }
@@ -533,6 +573,17 @@ function formatBytes(value) {
     index += 1
   }
   return `${size >= 10 || index === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[index]}`
+}
+
+function formatDateTime(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
 }
 
 function normalizePikPakAccountId(accountId = '') {
@@ -823,7 +874,7 @@ async function refreshPikPakStatus() {
   pikpakBusy.value = true
   pikpakMessage.value = '正在检测 PikPak 账号...'
   try {
-    const result = await httpDownloadApi.pikpakStatus({ includeFiles: false, limit: 1 })
+    const result = await httpDownloadApi.pikpakStatus({ includeFiles: false, limit: 1, forceRefresh: true })
     pikpakStatus.value = result
     ensureSelectedPikPakAccount(result)
     pikpakMessage.value = `✓ 已检测 ${pikpakHealthyAccountCount.value}/${pikpakAccountStatuses.value.length || 0} 个账号`
@@ -840,7 +891,7 @@ async function refreshPikPakManager(force = false) {
   pikpakMessage.value = '正在读取 PikPak 容量和转存目录...'
   try {
     if (force || !pikpakStatus.value) {
-      pikpakStatus.value = await httpDownloadApi.pikpakStatus({ includeFiles: false, limit: 200 })
+      pikpakStatus.value = await httpDownloadApi.pikpakStatus({ includeFiles: false, limit: 200, forceRefresh: force })
     }
     const result = pikpakStatus.value || {}
     ensureSelectedPikPakAccount(result)
@@ -864,6 +915,17 @@ async function refreshPikPakManager(force = false) {
     setPikPakError(error)
   } finally {
     pikpakBusy.value = false
+  }
+}
+
+async function loadPikPakCachedStatus() {
+  if (!props.config.http_downloader.pikpak_enabled || pikpakStatus.value) return
+  try {
+    const result = await httpDownloadApi.pikpakStatus({ includeFiles: false, limit: 1, forceRefresh: false })
+    pikpakStatus.value = result
+    ensureSelectedPikPakAccount(result)
+  } catch (error) {
+    console.debug('读取 PikPak 缓存状态失败:', error)
   }
 }
 
@@ -954,13 +1016,64 @@ async function deleteSelectedPikPak(permanent = false) {
     pikpakBusy.value = false
   }
 }
+
+async function clearAllPikPakTransfers() {
+  if (pikpakBusy.value) return
+  try {
+    await showSystemConfirm({
+      title: '清空所有 PikPak 转存空间',
+      message: '会永久删除所有已启用 PikPak 账号网盘里的文件，并继续清空回收站。',
+      description: '删除后无法从本工具恢复。正在执行的 PikPak 下载仍可能再次产生转存文件。',
+      details: [
+        { label: '账号数量', value: `${pikpakHealthyAccountCount.value}/${pikpakAccountStatuses.value.length || visiblePikPakAccountRows.value.length || 0}` },
+        { label: '当前已用', value: formatBytes(pikpakTotalQuota.value.usage) },
+        { label: '回收站', value: formatBytes(pikpakTotalQuota.value.trash) }
+      ],
+      confirmText: '永久清空',
+      cancelText: '取消',
+      tone: 'danger'
+    })
+  } catch {
+    return
+  }
+
+  pikpakBusy.value = true
+  pikpakMessage.value = '正在清空所有 PikPak 账号的转存文件...'
+  try {
+    const result = await httpDownloadApi.pikpakClear({ timeout: 180000 })
+    const deletedCount = Number(result?.deleted_count || 0)
+    const failedCount = Number(result?.failed_account_count || 0)
+    selectedPikPakFileIds.value = []
+    clearPikPakTreeCache()
+    pikpakStatus.value = await httpDownloadApi.pikpakStatus({ includeFiles: false, limit: 1, forceRefresh: true })
+    ensureSelectedPikPakAccount(pikpakStatus.value)
+    if (pikpakManagerVisible.value) {
+      await refreshPikPakManager(true)
+    }
+    const suffix = failedCount ? `，${failedCount} 个账号失败` : ''
+    pikpakMessage.value = `✓ 已清空 ${deletedCount} 项${suffix}`
+    if (failedCount) {
+      ElMessage.warning(pikpakMessage.value.slice(2))
+    } else {
+      ElMessage.success(pikpakMessage.value.slice(2))
+    }
+  } catch (error) {
+    setPikPakError(error, '清空 PikPak 转存空间失败')
+  } finally {
+    pikpakBusy.value = false
+  }
+}
+
+onMounted(() => {
+  loadPikPakCachedStatus()
+})
 </script>
 
 <style scoped>
 .http-settings-stack {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 18px;
 }
 
 .settings-grid,
@@ -972,7 +1085,7 @@ async function deleteSelectedPikPak(permanent = false) {
 
 .settings-grid {
   display: grid;
-  gap: 24px;
+  gap: 18px;
   align-items: start;
 }
 
@@ -995,7 +1108,7 @@ async function deleteSelectedPikPak(permanent = false) {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin: 0 0 14px;
+  margin: 0 0 10px;
   color: var(--set-text-strong);
   font-size: 13.5px;
   font-weight: 600;
@@ -1058,9 +1171,9 @@ async function deleteSelectedPikPak(permanent = false) {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 36px;
+  height: 34px;
   border-radius: 10px;
-  border: 1px solid var(--set-border);
+  border: 1px solid var(--pikpak-control-border, var(--set-border));
   background: var(--set-surface);
   color: var(--set-text);
   font-size: 12.5px;
@@ -1080,7 +1193,10 @@ async function deleteSelectedPikPak(permanent = false) {
 }
 
 .spin-icon {
+  display: inline-block;
   animation: pikpak-spin 0.9s linear infinite;
+  transform-origin: center;
+  will-change: transform;
 }
 
 .ghost-inline-btn:not(:disabled):hover,
@@ -1109,10 +1225,10 @@ async function deleteSelectedPikPak(permanent = false) {
 .pikpak-accounts-card {
   display: grid;
   gap: 10px;
-  padding: 12px 14px;
-  border-radius: 10px;
-  border: 1px solid var(--set-border);
-  background: var(--set-surface-soft);
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--pikpak-panel-border, var(--set-border));
+  background: var(--pikpak-panel-bg, var(--set-surface));
 }
 
 .pikpak-accounts-card { padding: 12px; }
@@ -1130,18 +1246,24 @@ async function deleteSelectedPikPak(permanent = false) {
 
 .pikpak-account-list {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .pikpak-account-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
-  padding: 10px;
-  border-radius: 10px;
-  border: 1px solid var(--set-border);
-  background: var(--set-surface);
+  padding: 8px 0 0;
+  border-radius: 0;
+  border: 0;
+  border-top: 1px solid var(--pikpak-row-divider, var(--set-border-soft, var(--set-border)));
+  background: transparent;
+}
+
+.pikpak-account-row:first-child {
+  padding-top: 0;
+  border-top: 0;
 }
 
 .pikpak-account-row.is-ok {
@@ -1157,7 +1279,7 @@ async function deleteSelectedPikPak(permanent = false) {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-width: 36px;
+  min-width: 34px;
   height: 32px;
   color: var(--set-text-muted);
   font-size: 12px;
@@ -1174,7 +1296,7 @@ async function deleteSelectedPikPak(permanent = false) {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 6px;
 }
 
 .pikpak-account-fields {
@@ -1183,16 +1305,25 @@ async function deleteSelectedPikPak(permanent = false) {
   gap: 8px;
 }
 
+.pikpak-account-note {
+  grid-column: 1 / -1;
+  min-width: 0;
+  color: var(--set-text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: normal;
+}
+
 .pikpak-account-status {
   grid-column: 2 / -1;
   display: flex;
   align-items: center;
   min-width: 0;
   gap: 8px;
-  padding: 7px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--set-border);
-  background: var(--set-surface-soft);
+  padding: 2px 0 0;
+  border-radius: 0;
+  border: 0;
+  background: transparent;
   color: var(--set-text-muted);
   font-size: 12px;
 }
@@ -1210,14 +1341,10 @@ async function deleteSelectedPikPak(permanent = false) {
 }
 
 .pikpak-account-status.is-ok {
-  border-color: var(--set-success-border);
-  background: var(--set-success-bg);
   color: var(--set-success-text);
 }
 
 .pikpak-account-status.is-error {
-  border-color: var(--set-danger-border);
-  background: var(--set-danger-bg);
   color: var(--set-danger-text);
 }
 
@@ -1363,17 +1490,17 @@ async function deleteSelectedPikPak(permanent = false) {
 .pikpak-message.is-info { background: var(--set-surface); }
 
 .pikpak-manager-overlay {
-  --set-surface: #ffffff;
-  --set-surface-soft: #f8fafc;
-  --set-surface-muted: #f1f5f9;
-  --set-surface-hover: #f8fafc;
-  --set-field-bg: #ffffff;
+  --set-surface: rgba(255, 255, 255, 0.14);
+  --set-surface-soft: rgba(255, 255, 255, 0.05);
+  --set-surface-muted: rgba(255, 255, 255, 0.08);
+  --set-surface-hover: rgba(255, 255, 255, 0.18);
+  --set-field-bg: rgba(255, 255, 255, 0.08);
   --set-text: #334155;
   --set-text-strong: #111827;
   --set-text-muted: #64748b;
   --set-text-subtle: #94a3b8;
-  --set-border: rgba(15, 23, 42, 0.12);
-  --set-border-strong: rgba(15, 23, 42, 0.2);
+  --set-border: rgba(148, 163, 184, 0.32);
+  --set-border-strong: rgba(51, 65, 85, 0.24);
   --set-accent: #111827;
   --set-primary-bg: #1f2937;
   --set-success-bg: #ecfdf5;
@@ -1382,6 +1509,30 @@ async function deleteSelectedPikPak(permanent = false) {
   --set-danger-bg: #fff1f2;
   --set-danger-border: rgba(252, 165, 165, 0.55);
   --set-danger-text: #b91c1c;
+  --pikpak-modal-bg:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.015) 46%, rgba(255, 255, 255, 0.09)),
+    rgba(255, 255, 255, 0.02);
+  --pikpak-glass-panel: rgba(255, 255, 255, 0.012);
+  --pikpak-glass-card: rgba(255, 255, 255, 0.03);
+  --pikpak-glass-card-hover: rgba(255, 255, 255, 0.11);
+  --pikpak-glass-border: rgba(255, 255, 255, 0.82);
+  --pikpak-glass-inset: rgba(255, 255, 255, 0.72);
+  --pikpak-modal-border: rgba(255, 255, 255, 0.78);
+  --pikpak-modal-highlight:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.24), transparent 34%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.22), transparent 26%, rgba(255, 255, 255, 0.06) 58%, transparent 82%);
+  --pikpak-modal-highlight-opacity: 0.28;
+  --pikpak-modal-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    inset 0 -1px 0 rgba(15, 23, 42, 0.03),
+    0 32px 72px -24px rgba(15, 23, 42, 0.28),
+    0 14px 36px -18px rgba(15, 23, 42, 0.18),
+    0 2px 8px rgba(15, 23, 42, 0.06);
+  --pikpak-soft-shadow: 0 4px 12px rgba(15, 23, 42, 0.04);
+  --pikpak-selected-shadow: 0 8px 18px rgba(59, 130, 246, 0.08);
+  --pikpak-tree-selected-bg: rgba(219, 234, 254, 0.16);
+  --pikpak-tree-selected-border: rgba(59, 130, 246, 0.28);
+  --pikpak-tree-selected-rail: #3b82f6;
   position: fixed;
   inset: 0;
   z-index: 5000;
@@ -1389,16 +1540,16 @@ async function deleteSelectedPikPak(permanent = false) {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgba(3, 7, 18, 0.58);
+  background: transparent;
 }
 
 :global(html.kikoerumanager-dark .pikpak-manager-overlay),
 :global(body.kikoerumanager-dark .pikpak-manager-overlay) {
-  --set-surface: #151515;
-  --set-surface-soft: #1b1b1d;
-  --set-surface-muted: #242427;
-  --set-surface-hover: #202023;
-  --set-field-bg: #1b1b1d;
+  --set-surface: rgba(21, 21, 21, 0.34);
+  --set-surface-soft: rgba(27, 27, 29, 0.14);
+  --set-surface-muted: rgba(36, 36, 39, 0.18);
+  --set-surface-hover: rgba(32, 32, 35, 0.28);
+  --set-field-bg: rgba(27, 27, 29, 0.2);
   --set-text: #d4d4d8;
   --set-text-strong: #f5f5f5;
   --set-text-muted: #a1a1aa;
@@ -1413,31 +1564,78 @@ async function deleteSelectedPikPak(permanent = false) {
   --set-danger-bg: rgba(251, 113, 133, 0.13);
   --set-danger-border: rgba(251, 113, 133, 0.3);
   --set-danger-text: #fda4af;
+  --pikpak-modal-bg:
+    linear-gradient(135deg, rgba(48, 49, 54, 0.28), rgba(18, 19, 22, 0.1) 48%, rgba(38, 39, 44, 0.2)),
+    rgba(18, 19, 22, 0.24);
+  --pikpak-glass-panel: rgba(38, 39, 44, 0.1);
+  --pikpak-glass-card: rgba(38, 39, 44, 0.13);
+  --pikpak-glass-card-hover: rgba(48, 50, 56, 0.24);
+  --pikpak-glass-border: rgba(255, 255, 255, 0.16);
+  --pikpak-glass-inset: rgba(255, 255, 255, 0.1);
+  --pikpak-modal-border: rgba(255, 255, 255, 0.13);
+  --pikpak-modal-highlight: linear-gradient(180deg, rgba(255, 255, 255, 0.07), transparent 30%);
+  --pikpak-modal-highlight-opacity: 0.18;
+  --pikpak-modal-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.035),
+    0 28px 66px -26px rgba(0, 0, 0, 0.74),
+    0 10px 28px -22px rgba(0, 0, 0, 0.68);
+  --pikpak-soft-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  --pikpak-selected-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
+  --pikpak-tree-selected-bg: linear-gradient(90deg, rgba(96, 165, 250, 0.16), rgba(32, 32, 35, 0.68));
+  --pikpak-tree-selected-border: rgba(96, 165, 250, 0.28);
+  --pikpak-tree-selected-rail: #60a5fa;
+  background: transparent;
 }
 
 .pikpak-manager-modal {
+  position: relative;
+  isolation: isolate;
   display: grid;
-  gap: 14px;
-  width: min(860px, 96vw);
+  gap: 12px;
+  width: min(820px, 96vw);
   max-height: min(760px, 92vh);
   overflow: hidden;
   padding: 18px;
-  border-radius: 12px;
-  border: 1px solid var(--set-border);
-  background: var(--set-surface);
+  border-radius: 22px;
+  border: 1px solid var(--pikpak-modal-border);
+  background: var(--pikpak-modal-bg);
   color: var(--set-text);
-  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.42);
+  box-shadow: var(--pikpak-modal-shadow);
+  backdrop-filter: blur(16px) saturate(180%) contrast(108%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%) contrast(108%);
+}
+
+.pikpak-manager-modal::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background: var(--pikpak-modal-highlight);
+  opacity: var(--pikpak-modal-highlight-opacity);
+  pointer-events: none;
+}
+
+.pikpak-manager-modal > * {
+  position: relative;
+  z-index: 1;
 }
 
 .pikpak-manager-modal .ghost-inline-btn {
-  background: var(--set-surface-soft);
-  border-color: var(--set-border);
+  background: var(--pikpak-glass-card);
+  border-color: var(--pikpak-glass-border);
   color: var(--set-text);
+  box-shadow:
+    inset 0 1px 0 var(--pikpak-glass-inset),
+    var(--pikpak-soft-shadow);
+  backdrop-filter: blur(12px) saturate(155%);
+  -webkit-backdrop-filter: blur(12px) saturate(155%);
 }
 
 .pikpak-manager-modal .ghost-inline-btn:hover:not(:disabled),
 .pikpak-manager-modal .ghost-inline-btn.active {
-  background: var(--set-surface-muted);
+  background: var(--pikpak-glass-card-hover);
   border-color: var(--set-border-strong);
   color: var(--set-text-strong);
 }
@@ -1445,20 +1643,24 @@ async function deleteSelectedPikPak(permanent = false) {
 .pikpak-icon-btn {
   width: 34px;
   height: 34px;
-  border-radius: 8px;
-  border: 1px solid var(--set-border);
-  background: var(--set-surface-soft);
+  border-radius: 10px;
+  border: 1px solid var(--pikpak-glass-border);
+  background: var(--pikpak-glass-card);
   color: var(--set-text-strong);
   font-size: 22px;
   line-height: 1;
   cursor: pointer;
+  backdrop-filter: blur(12px) saturate(155%);
+  -webkit-backdrop-filter: blur(12px) saturate(155%);
 }
 
 .pikpak-account-tabs {
   display: flex;
   gap: 8px;
   overflow-x: auto;
-  padding-bottom: 2px;
+  padding: 2px 2px 4px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--set-border-strong) transparent;
 }
 
 .pikpak-account-tab {
@@ -1468,21 +1670,27 @@ async function deleteSelectedPikPak(permanent = false) {
   min-width: 140px;
   padding: 10px 12px;
   border-radius: 9px;
-  border: 1px solid var(--set-border);
-  background: var(--set-surface-soft);
+  border: 1px solid var(--pikpak-glass-border);
+  background: var(--pikpak-glass-card);
   color: var(--set-text);
   text-align: left;
   cursor: pointer;
-  box-shadow: inset 0 0 0 1px transparent;
+  box-shadow:
+    inset 0 1px 0 var(--pikpak-glass-inset),
+    var(--pikpak-soft-shadow);
+  backdrop-filter: blur(12px) saturate(155%);
+  -webkit-backdrop-filter: blur(12px) saturate(155%);
   transition: all 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .pikpak-account-tab.active {
-  border-color: var(--set-border-strong);
-  background: var(--set-surface);
+  border-color: rgba(52, 211, 153, 0.42);
+  background: var(--pikpak-glass-card-hover);
   color: var(--set-text-strong);
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
-  transform: translateY(-1px);
+  box-shadow:
+    inset 0 0 0 1px rgba(52, 211, 153, 0.14),
+    inset 0 1px 0 var(--pikpak-glass-inset),
+    var(--pikpak-soft-shadow);
 }
 
 .pikpak-account-tab.is-ok.active {
@@ -1522,9 +1730,14 @@ async function deleteSelectedPikPak(permanent = false) {
 
 .pikpak-manager-quota > div {
   padding: 10px;
-  border-radius: 8px;
-  border: 1px solid var(--set-border);
-  background: var(--set-surface-soft);
+  border-radius: 12px;
+  border: 1px solid var(--pikpak-glass-border);
+  background: var(--pikpak-glass-card);
+  box-shadow:
+    inset 0 1px 0 var(--pikpak-glass-inset),
+    var(--pikpak-soft-shadow);
+  backdrop-filter: blur(12px) saturate(155%);
+  -webkit-backdrop-filter: blur(12px) saturate(155%);
 }
 
 .pikpak-manager-quota span {
@@ -1553,9 +1766,14 @@ async function deleteSelectedPikPak(permanent = false) {
 .pikpak-file-tree {
   min-height: 190px;
   overflow: hidden;
-  border-radius: 10px;
-  border: 1px solid var(--set-border);
-  background: var(--set-surface-soft);
+  border-radius: 14px;
+  border: 1px solid var(--pikpak-glass-border);
+  background: var(--pikpak-glass-panel);
+  box-shadow:
+    inset 0 1px 0 var(--pikpak-glass-inset),
+    inset 0 -1px 0 rgba(15, 23, 42, 0.03);
+  backdrop-filter: blur(14px) saturate(160%);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
 }
 
 .pikpak-tree-scroll {
@@ -1588,14 +1806,17 @@ async function deleteSelectedPikPak(permanent = false) {
 }
 
 .pikpak-tree-row:hover {
-  border-color: var(--set-border);
-  background: var(--set-surface-hover);
+  border-color: var(--pikpak-glass-border);
+  background: var(--pikpak-glass-card-hover);
 }
 
 .pikpak-tree-row.is-selected {
-  border-color: var(--set-border-strong);
-  background: var(--set-surface);
-  box-shadow: inset 3px 0 0 var(--set-accent);
+  border-color: var(--pikpak-tree-selected-border);
+  background: var(--pikpak-tree-selected-bg);
+  box-shadow:
+    inset 3px 0 0 var(--pikpak-tree-selected-rail),
+    var(--pikpak-selected-shadow);
+  transform: none;
 }
 
 .pikpak-tree-row.is-placeholder {
@@ -1717,10 +1938,11 @@ async function deleteSelectedPikPak(permanent = false) {
 
 .pikpak-empty {
   display: grid;
+  gap: 8px;
   place-items: center;
   min-height: 160px;
-  border-radius: 9px;
-  border: 1px dashed var(--set-border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.18);
   color: var(--set-text-muted);
   font-size: 12px;
 }
