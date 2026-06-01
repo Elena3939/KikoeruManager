@@ -353,15 +353,15 @@
         </section>
       </div>
 
-      <div class="footer-row px-8 py-6 flex items-center justify-between">
-        <div class="summary text-sm text-slate-500 font-medium"><span class="summary-strong text-slate-900">{{ selectedFileCount }}</span> 已选，共 <span class="summary-strong text-slate-900">{{ formatSize(selectedTotalBytes) }}</span></div>
+      <div class="footer-row flex items-center justify-between">
+        <div class="summary"><span class="summary-strong">{{ selectedFileCount }}</span> 已选，共 <span class="summary-strong">{{ formatSize(selectedTotalBytes) }}</span></div>
 
         <div class="footer-actions flex items-center gap-3">
-          <button type="button" class="primary-cta px-10 h-11 rounded-xl font-bold text-white" :disabled="primaryActionDisabled" @click="emitSubmit">
-            <span v-if="starting" class="inline-flex items-center"><AppLoadingAnimation variant="inline" :size="30" class="mr-1" />处理中</span>
+          <button type="button" class="primary-cta" :disabled="primaryActionDisabled" @click="emitSubmit">
+            <span v-if="starting" class="inline-flex items-center"><AppLoadingAnimation variant="inline" :size="24" class="mr-1" />处理中</span>
             <span v-else>{{ primaryActionLabel }}</span>
           </button>
-          <button type="button" class="secondary-cta interactive-button px-10 h-11 rounded-xl font-bold" @click="emit('update:visible', false)">取消</button>
+          <button type="button" class="secondary-cta" @click="emit('update:visible', false)">取消</button>
         </div>
       </div>
     </div>
@@ -1649,6 +1649,148 @@ function formatSize(bytes) {
   transform: scale(0.98);
 }
 
+.circle-download-preview-modal .footer-row {
+  flex: 0 0 auto;
+  min-height: 58px;
+  padding: 10px 30px 12px;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.56);
+  backdrop-filter: blur(18px) saturate(1.08);
+  -webkit-backdrop-filter: blur(18px) saturate(1.08);
+}
+
+.circle-download-preview-modal .summary {
+  margin: 0;
+  color: rgb(100, 116, 139);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.circle-download-preview-modal .summary-strong {
+  color: rgb(15, 23, 42);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.circle-download-preview-modal .footer-actions {
+  gap: 10px;
+}
+
+.circle-download-preview-modal .primary-cta,
+.circle-download-preview-modal .secondary-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 96px;
+  height: 36px;
+  padding: 0 22px;
+  border-radius: 10px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.circle-download-preview-modal .primary-cta {
+  background: rgba(24, 24, 27, 0.08);
+  color: rgb(24, 24, 27);
+  border-color: rgba(24, 24, 27, 0.18);
+  box-shadow:
+    0 5px 14px rgba(24, 24, 27, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.circle-download-preview-modal .primary-cta:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.02);
+  background: rgba(24, 24, 27, 0.12);
+  border-color: rgba(24, 24, 27, 0.26);
+  box-shadow:
+    0 10px 20px rgba(24, 24, 27, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.74);
+}
+
+.circle-download-preview-modal .primary-cta:focus,
+.circle-download-preview-modal .primary-cta:focus-visible,
+.circle-download-preview-modal .secondary-cta:focus,
+.circle-download-preview-modal .secondary-cta:focus-visible,
+.circle-download-preview-modal .tab-chip:focus,
+.circle-download-preview-modal .tab-chip:focus-visible,
+.circle-download-preview-modal .soft-button:focus,
+.circle-download-preview-modal .soft-button:focus-visible,
+.circle-download-preview-modal .mode-tab:focus,
+.circle-download-preview-modal .mode-tab:focus-visible,
+.circle-download-preview-modal .close-button:focus,
+.circle-download-preview-modal .close-button:focus-visible,
+.circle-download-preview-modal .tree-row:focus,
+.circle-download-preview-modal .tree-row:focus-visible,
+.circle-download-preview-modal .tree-checkbox:focus,
+.circle-download-preview-modal .tree-checkbox:focus-visible,
+.circle-download-preview-modal .tree-expander:focus,
+.circle-download-preview-modal .tree-expander:focus-visible,
+.circle-download-preview-modal .field-input:focus,
+.circle-download-preview-modal .field-input:focus-visible,
+.circle-download-preview-modal .select-button:focus,
+.circle-download-preview-modal .select-button:focus-visible,
+.circle-download-preview-modal .picker-button:focus,
+.circle-download-preview-modal .picker-button:focus-visible,
+.circle-download-preview-modal .dropdown-item:focus,
+.circle-download-preview-modal .dropdown-item:focus-visible,
+.circle-download-preview-modal .el-input__wrapper.is-focus,
+.circle-download-preview-modal .el-select__wrapper.is-focused {
+  outline: none !important;
+  outline-offset: 0 !important;
+  --tw-ring-color: transparent !important;
+  --tw-ring-offset-shadow: 0 0 #0000 !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
+}
+
+.circle-download-preview-modal .field-input:focus,
+.circle-download-preview-modal .field-input:focus-visible,
+.circle-download-preview-modal .select-button:focus,
+.circle-download-preview-modal .select-button:focus-visible,
+.circle-download-preview-modal .picker-button:focus,
+.circle-download-preview-modal .picker-button:focus-visible,
+.circle-download-preview-modal .dropdown-item:focus,
+.circle-download-preview-modal .dropdown-item:focus-visible,
+.circle-download-preview-modal .el-input__wrapper.is-focus,
+.circle-download-preview-modal .el-select__wrapper.is-focused {
+  box-shadow: none !important;
+}
+
+.circle-download-preview-modal .primary-cta:active:not(:disabled),
+.circle-download-preview-modal .secondary-cta:active {
+  transform: translateY(0) scale(0.96);
+}
+
+.circle-download-preview-modal .primary-cta:disabled {
+  cursor: not-allowed;
+  background: rgba(226, 232, 240, 0.68);
+  color: rgba(100, 116, 139, 0.7);
+  border-color: rgba(203, 213, 225, 0.7);
+  box-shadow: none;
+}
+
+.circle-download-preview-modal .secondary-cta {
+  background: rgba(255, 255, 255, 0.58);
+  color: rgb(51, 65, 85);
+  box-shadow:
+    0 4px 12px rgba(15, 23, 42, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+
+.circle-download-preview-modal .secondary-cta:hover {
+  transform: translateY(-2px) scale(1.02);
+  background: rgba(248, 250, 252, 0.92);
+  border-color: rgba(15, 23, 42, 0.2);
+  color: rgb(15, 23, 42);
+  box-shadow:
+    0 10px 20px rgba(15, 23, 42, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+}
+
 html.kikoerumanager-dark .circle-download-preview-overlay {
   background: rgba(6, 7, 10, 0.72) !important;
   backdrop-filter: blur(10px);
@@ -1894,16 +2036,21 @@ html.kikoerumanager-dark .circle-download-preview-modal .icon-file {
 }
 
 html.kikoerumanager-dark .circle-download-preview-modal .primary-cta {
-  background: linear-gradient(180deg, #3f3f46 0%, #27272a 100%) !important;
-  color: #ffffff !important;
-  border: 1px solid rgba(255, 255, 255, 0.18) !important;
-  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.26) !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: rgba(244, 244, 245, 0.92) !important;
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  box-shadow:
+    0 6px 16px rgba(0, 0, 0, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
 }
 
 html.kikoerumanager-dark .circle-download-preview-modal .primary-cta:hover:not(:disabled) {
   transform: translateY(-2px) scale(1.02);
-  background: linear-gradient(180deg, #52525b 0%, #3f3f46 100%) !important;
-  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.34) !important;
+  background: rgba(255, 255, 255, 0.12) !important;
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  box-shadow:
+    0 10px 22px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
 }
 
 html.kikoerumanager-dark .circle-download-preview-modal .primary-cta:disabled {

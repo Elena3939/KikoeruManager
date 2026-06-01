@@ -893,13 +893,13 @@ function onCoverError(event) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid color-mix(in srgb, var(--circle-primary, #2468b2) 28%, transparent);
-  background: color-mix(in srgb, var(--circle-surface, #ffffff) 76%, transparent);
-  color: var(--circle-primary, #2468b2);
+  border: 1px solid color-mix(in srgb, var(--circle-text-muted, #64748b) 26%, transparent);
+  background: color-mix(in srgb, var(--circle-surface, #ffffff) 58%, transparent);
+  color: var(--circle-text, #334155);
   height: 24px;
   min-height: 0;
   padding: 0 6px;
-  border-radius: 9px;
+  border-radius: 8px;
   font-size: 9px;
   font-weight: 800;
   line-height: 1;
@@ -910,34 +910,28 @@ function onCoverError(event) {
     border-color .18s ease,
     color .18s ease,
     box-shadow .18s ease;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 2px 7px rgba(37, 99, 235, 0.06);
+  box-shadow: none;
 }
 .work-action-btn:hover {
-  background: var(--circle-primary-soft, rgba(239, 246, 255, 0.92));
-  border-color: color-mix(in srgb, var(--circle-primary, #155ea8) 48%, transparent);
-  color: var(--circle-primary, #155ea8);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 6px 14px rgba(37, 99, 235, 0.10);
+  background: color-mix(in srgb, var(--circle-text, #334155) 7%, var(--circle-surface, #ffffff));
+  border-color: color-mix(in srgb, var(--circle-text, #334155) 32%, transparent);
+  color: var(--circle-text-strong, #1f2937);
+  box-shadow: none;
   transform: translateY(-2px);
 }
 .work-action-btn:active {
   transform: scale(0.96);
 }
 .work-action-btn.upload {
-  border-color: color-mix(in srgb, var(--circle-success, #247348) 34%, transparent);
-  background: var(--circle-success-soft, rgba(240, 253, 244, 0.72));
+  border-color: color-mix(in srgb, var(--circle-success, #247348) 24%, transparent);
+  background: color-mix(in srgb, var(--circle-success, #247348) 7%, var(--circle-surface, #ffffff));
   color: var(--circle-success, #247348);
 }
 .work-action-btn.upload:hover {
-  background: var(--circle-success-soft, rgba(236, 253, 245, 0.94));
-  border-color: color-mix(in srgb, var(--circle-success, #16653d) 52%, transparent);
+  background: color-mix(in srgb, var(--circle-success, #247348) 10%, var(--circle-surface, #ffffff));
+  border-color: color-mix(in srgb, var(--circle-success, #16653d) 34%, transparent);
   color: var(--circle-success, #16653d);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 6px 14px rgba(34, 197, 94, 0.10);
+  box-shadow: none;
 }
 
 /* ── lg 尺寸变体 ── */

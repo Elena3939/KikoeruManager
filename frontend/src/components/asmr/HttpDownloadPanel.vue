@@ -55,8 +55,8 @@
       </div>
 
       <div class="http-actions">
-        <button class="asmr-mini-btn" type="button" :disabled="previewing || !parsedUrls.length" @click="preview">
-          <Search :size="12" :stroke-width="2.4" />
+        <button class="asmr-mini-btn" type="button" :class="{ 'is-querying': previewing }" :disabled="previewing || !parsedUrls.length" @click="preview">
+          <Search :size="12" :stroke-width="2.4" :class="{ 'is-querying': previewing }" />
           {{ previewing ? '预览中...' : `预览 ${parsedUrls.length || ''}` }}
         </button>
         <button class="asmr-mini-btn is-primary" type="button" :disabled="starting || !selectedOkCount" @click="start">
@@ -64,101 +64,201 @@
           {{ starting ? '创建中...' : `开始下载 (${selectedOkCount})` }}
         </button>
       </div>
+    </div>
 
-      <Transition name="asmr-section">
-        <div v-if="previewing || previewItems.length || previewLogs.length" class="http-preview-workbench">
-          <div class="http-preview-status">
-            <div>
-              <div class="http-preview-status-title">{{ previewStatusTitle }}</div>
-              <div class="http-preview-status-text">{{ previewStatusText }}</div>
-            </div>
-            <span class="http-preview-status-count">{{ selectedOkCount }}/{{ okPreviewCount }} 已选</span>
-          </div>
-          <div class="http-preview-progress">
-            <div class="http-preview-progress-fill" :style="{ width: `${previewProgress}%` }"></div>
-          </div>
+    <el-dialog
+      v-model="previewDialogVisible"
+      :show-close="false"
+      destroy-on-close
+      class="custom-preview-modal http-download-preview-modal"
+      align-center
+      :append-to-body="false"
+      modal-class="custom-preview-overlay http-download-preview-overlay"
+    >
+      <div class="window http-preview-window panel-enter glass-shell relative w-full max-w-[1210px] aspect-[16/9] rounded-3xl flex flex-col overflow-hidden">
+        <div class="window-header flex items-center justify-between px-7 py-4">
+          <h1 class="title text-2xl font-bold text-slate-900 tracking-tight">创建下载任务</h1>
+          <button type="button" class="interactive-chip close-button inline-flex size-10 items-center justify-center rounded-full text-slate-400 hover:text-slate-700" @click="previewDialogVisible = false">
+            <X :size="20" :stroke-width="2" />
+          </button>
+        </div>
 
-          <div v-if="previewLogs.length" class="http-preview-log">
-            <div v-for="entry in previewLogs" :key="entry.id" class="http-preview-log-row" :class="`is-${entry.level}`">
-              <span class="http-preview-log-time">{{ entry.time }}</span>
-              <span class="http-preview-log-text">{{ entry.message }}</span>
-            </div>
-          </div>
+        <div class="tabs-row px-7 pt-1 pb-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+          <button
+            type="button"
+            class="tab-chip px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] whitespace-nowrap flex items-center gap-1 border"
+            :class="allPreviewSelectionState === 'all' ? 'tab-chip-active' : (allPreviewSelectionState === 'partial' ? 'tab-chip-partial' : 'tab-chip-idle')"
+            :disabled="!okPreviewCount"
+            @click="toggleAllPreviewSelection"
+          >
+            <span>全部</span>
+            <span class="tab-count">{{ selectedOkCount }}/{{ okPreviewCount }}</span>
+          </button>
+          <button
+            v-for="chip in previewSourceChips"
+            :key="chip.key"
+            type="button"
+            class="tab-chip px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] whitespace-nowrap flex items-center gap-1 border"
+            :class="chip.state === 'all' ? 'tab-chip-active' : (chip.state === 'partial' ? 'tab-chip-partial' : 'tab-chip-idle')"
+            @click="togglePreviewSource(chip)"
+          >
+            <span>{{ chip.label }}</span>
+            <span class="tab-count">{{ chip.selected }}/{{ chip.total }}</span>
+          </button>
+          <button type="button" class="tab-chip tab-chip-idle ml-auto px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] border" :disabled="!selectedOkCount" @click="clearPreviewSelection">清空</button>
+        </div>
 
-          <div v-if="previewItems.length" class="http-preview-toolbar">
-            <button class="http-link-btn" type="button" :disabled="!okPreviewCount" @click="selectAllPreviewItems">全选</button>
-            <button class="http-link-btn" type="button" :disabled="!selectedOkCount" @click="clearPreviewSelection">清空</button>
-          </div>
+        <div class="http-preview-content content-grid flex-1 flex gap-4 px-7 py-2 min-h-0">
+          <div class="left-column w-[350px] flex flex-col gap-4">
+            <section class="glass-panel glass-card http-preview-settings-card flex-1 rounded-2xl p-5 overflow-y-auto no-scrollbar">
+              <div class="space-y-6">
+                <section class="space-y-4">
+                  <div class="section-head space-y-1">
+                    <h2>下载设置</h2>
+                    <p>{{ previewStatusText }}</p>
+                  </div>
+                  <div class="http-preview-status-card">
+                    <div>
+                      <div class="http-preview-status-title">{{ previewStatusTitle }}</div>
+                      <div class="http-preview-status-sub">{{ previewing ? '正在连接源站' : '当前预览状态' }}</div>
+                    </div>
+                    <span class="http-preview-status-count">{{ selectedOkCount }}/{{ okPreviewCount }}</span>
+                  </div>
+                  <div class="http-preview-progress">
+                    <div class="http-preview-progress-fill" :style="{ width: `${previewProgress}%` }"></div>
+                  </div>
+                </section>
 
-          <div v-if="previewItems.length" class="http-preview-list">
-            <label
-              v-for="item in previewItems"
-              :key="previewItemKey(item)"
-              class="http-preview-row"
-              :class="{ bad: !item.ok, selected: isPreviewItemSelected(item) }"
-            >
-              <input
-                v-if="item.ok"
-                class="http-preview-check"
-                type="checkbox"
-                :checked="isPreviewItemSelected(item)"
-                @change="togglePreviewItem(item)"
-              >
-              <component v-else :is="AlertTriangle" :size="15" :stroke-width="2.3" />
-              <span
-                class="http-source-icon"
-                :class="`is-${sourceKey(item.source)}`"
-                :title="sourceLabel(item.source)"
-                :aria-label="sourceLabel(item.source)"
-              >
-                <img
-                  v-if="sourceIcon(item.source) && !isSourceIconFailed(item.source)"
-                  :src="sourceIcon(item.source)"
-                  alt=""
-                  loading="lazy"
-                  decoding="async"
-                  @error="markSourceIconFailed(item.source)"
-                >
-                <svg
-                  v-else-if="sourceKey(item.source) === 'gofile'"
-                  class="http-source-fallback-gofile"
-                  viewBox="0 0 32 32"
-                  aria-hidden="true"
-                >
-                  <path d="M2 19.2h10.7l-.5 2.2H2z" fill="#f2b705" opacity=".88" />
-                  <path d="M5.2 14.6h11.5l-.5 2.2H5.2z" fill="#f2b705" opacity=".92" />
-                  <path d="M9.8 10h12l-.5 2.2H9.8z" fill="#f2b705" />
-                  <path d="M14.1 5.8h8.9l3 3v13.5H14.1z" fill="#f8fafc" />
-                  <path d="M22.9 5.8v3.1H26z" fill="#cbd5e1" />
-                  <path d="M8.5 12.7h12.7l2-2.4h6.2l-3.6 15.9H10.4z" fill="#f3b51b" />
-                </svg>
-                <Globe2 v-else :size="15" :stroke-width="2.2" />
-              </span>
-              <div class="http-preview-main">
-                <div class="http-preview-name">{{ item.ok ? item.filename : item.masked_url }}</div>
-                <div class="http-preview-meta">
-                  <span v-if="item.ok">{{ formatSize(item.size_bytes) }}</span>
-                  <span v-if="item.ok">{{ item.resumable ? '支持断点' : '未声明断点' }}</span>
-                  <span v-if="item.ok">{{ item.relative_path }}</span>
-                  <span v-if="item.ok && item.share_url">{{ item.share_url }}</span>
-                  <span v-if="item.ok && previewNeedsMaterialize" class="warn">开始时解析直链</span>
-                  <span v-if="!item.ok">{{ item.reason }}</span>
-                  <span v-if="item.warning" class="warn">{{ item.warning }}</span>
-                </div>
+                <section class="space-y-4">
+                  <div class="section-head compact-head">
+                    <h2>落盘信息</h2>
+                  </div>
+                  <div class="summary-stack space-y-2 text-sm text-slate-600">
+                    <div>目标子目录 <span>{{ targetSubdir || '下载根目录' }}</span></div>
+                    <div>冲突策略 <span>{{ conflictPolicyLabel }}</span></div>
+                    <div>批次名 <span>{{ batchName || '自动生成' }}</span></div>
+                    <div>源链接 <span>{{ parsedUrls.length }} 个</span></div>
+                  </div>
+                </section>
+
+                <section v-if="previewLogs.length" class="space-y-4">
+                  <div class="section-head compact-head">
+                    <h2>解析日志</h2>
+                  </div>
+                  <div class="http-preview-log">
+                    <div v-for="entry in previewLogs" :key="entry.id" class="http-preview-log-row" :class="`is-${entry.level}`">
+                      <span class="http-preview-log-time">{{ entry.time }}</span>
+                      <span class="http-preview-log-text">{{ entry.message }}</span>
+                    </div>
+                  </div>
+                </section>
               </div>
-            </label>
+            </section>
+          </div>
+
+          <section class="glass-panel glass-card download-list-panel flex-1 rounded-2xl flex flex-col overflow-hidden">
+            <div class="download-list-head">
+              <div>
+                <h2>下载列表</h2>
+              </div>
+              <span>{{ previewItems.length }} 项</span>
+            </div>
+            <div class="download-list-scroll flex-1 overflow-auto no-scrollbar">
+              <div v-if="previewing && !previewItems.length" class="http-preview-empty">
+                <AppLoadingAnimation label="正在生成预览" variant="block" :size="118" :min-height="180" />
+              </div>
+              <div v-else-if="!previewItems.length" class="http-preview-empty">
+                <FileIcon :size="22" :stroke-width="2.2" />
+                <span>还没有预览结果</span>
+              </div>
+              <div v-else class="download-list space-y-1">
+                <label
+                  v-for="item in previewItems"
+                  :key="previewItemKey(item)"
+                  class="download-list-row"
+                  :class="{ bad: !item.ok, selected: isPreviewItemSelected(item) }"
+                  @click="togglePreviewItem(item)"
+                >
+                  <div class="download-list-main flex items-center gap-2 flex-1 min-w-0">
+                    <button
+                      v-if="item.ok"
+                      type="button"
+                      class="download-list-check relative flex size-4 shrink-0 items-center justify-center rounded-[4px] border"
+                      :class="isPreviewItemSelected(item) ? 'is-on' : 'is-off'"
+                      @click.stop="togglePreviewItem(item)"
+                    >
+                      <Check v-if="isPreviewItemSelected(item)" :size="14" />
+                    </button>
+                    <span v-else class="http-preview-error-icon">
+                      <AlertTriangle :size="15" :stroke-width="2.3" />
+                    </span>
+                    <span
+                      class="http-source-icon"
+                      :class="`is-${sourceKey(item.source)}`"
+                      :title="sourceLabel(item.source)"
+                      :aria-label="sourceLabel(item.source)"
+                    >
+                      <img
+                        v-if="sourceIcon(item.source) && !isSourceIconFailed(item.source)"
+                        :src="sourceIcon(item.source)"
+                        alt=""
+                        loading="lazy"
+                        decoding="async"
+                        @error="markSourceIconFailed(item.source)"
+                      >
+                      <svg
+                        v-else-if="sourceKey(item.source) === 'gofile'"
+                        class="http-source-fallback-gofile"
+                        viewBox="0 0 32 32"
+                        aria-hidden="true"
+                      >
+                        <path d="M2 19.2h10.7l-.5 2.2H2z" fill="#f2b705" opacity=".88" />
+                        <path d="M5.2 14.6h11.5l-.5 2.2H5.2z" fill="#f2b705" opacity=".92" />
+                        <path d="M9.8 10h12l-.5 2.2H9.8z" fill="#f2b705" />
+                        <path d="M14.1 5.8h8.9l3 3v13.5H14.1z" fill="#f8fafc" />
+                        <path d="M22.9 5.8v3.1H26z" fill="#cbd5e1" />
+                        <path d="M8.5 12.7h12.7l2-2.4h6.2l-3.6 15.9H10.4z" fill="#f3b51b" />
+                      </svg>
+                      <Globe2 v-else :size="15" :stroke-width="2.2" />
+                    </span>
+                    <div class="http-preview-main">
+                      <div class="download-list-name http-preview-name">{{ previewItemTitle(item) }}</div>
+                      <div class="http-preview-meta">
+                        <span>{{ sourceLabel(item.source) }}</span>
+                        <span v-if="!item.ok">{{ item.reason }}</span>
+                        <span v-else-if="item.warning" class="warn">{{ item.warning }}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <span v-if="item.ok" class="download-list-size text-xs text-slate-400 ml-4 tabular-nums">{{ formatSize(item.size_bytes) }}</span>
+                </label>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div class="footer-row px-7 py-3 flex items-center justify-between">
+          <div class="summary text-sm text-slate-500 font-medium">
+            已选 <span class="summary-strong text-slate-900">{{ selectedOkCount }}</span> 个文件，共 <span class="summary-strong text-slate-900">{{ formatSize(selectedTotalBytes) }}</span>
+          </div>
+          <div class="footer-actions flex items-center gap-3">
+            <button type="button" class="primary-cta px-10 h-11 rounded-xl font-bold text-white" :disabled="starting || !selectedOkCount" @click="start">
+              {{ starting ? '创建中...' : '开始下载' }}
+            </button>
+            <button type="button" class="secondary-cta interactive-button px-10 h-11 rounded-xl font-bold" @click="previewDialogVisible = false">取消</button>
           </div>
         </div>
-      </Transition>
-    </div>
+      </div>
+    </el-dialog>
   </section>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { AlertTriangle, CloudDownload, Download, Globe2, RefreshCw, Search } from 'lucide-vue-next'
+import { AlertTriangle, Check, CloudDownload, Download, FileIcon, Globe2, RefreshCw, Search, X } from 'lucide-vue-next'
 import AppDropdown from '../common/AppDropdown.vue'
+import AppLoadingAnimation from '../common/AppLoadingAnimation.vue'
 import { httpDownloadApi } from '../../api'
 
 defineProps({
@@ -175,6 +275,7 @@ const previewing = ref(false)
 const starting = ref(false)
 const healthLoading = ref(false)
 const health = ref(null)
+const previewDialogVisible = ref(false)
 const previewItems = ref([])
 const previewNeedsMaterialize = ref(false)
 const previewLogs = ref([])
@@ -209,16 +310,46 @@ const okPreviewItems = computed(() => previewItems.value.filter(item => item.ok)
 const okPreviewCount = computed(() => okPreviewItems.value.length)
 const selectedOkItems = computed(() => okPreviewItems.value.filter(item => selectedPreviewKeys.value.has(previewItemKey(item))))
 const selectedOkCount = computed(() => selectedOkItems.value.length)
+const selectedTotalBytes = computed(() => selectedOkItems.value.reduce((sum, item) => sum + Number(item.size_bytes || item.size || 0), 0))
+const allPreviewSelectionState = computed(() => {
+  if (!okPreviewCount.value || !selectedOkCount.value) return 'none'
+  return selectedOkCount.value === okPreviewCount.value ? 'all' : 'partial'
+})
+const previewSourceChips = computed(() => {
+  const map = new Map()
+  okPreviewItems.value.forEach(item => {
+    const key = sourceKey(item.source)
+    if (!map.has(key)) {
+      map.set(key, {
+        key,
+        label: sourceLabel(item.source),
+        items: [],
+        total: 0,
+        selected: 0,
+        state: 'none'
+      })
+    }
+    const chip = map.get(key)
+    chip.items.push(item)
+    chip.total += 1
+    if (isPreviewItemSelected(item)) chip.selected += 1
+  })
+  return [...map.values()].map(chip => ({
+    ...chip,
+    state: chip.selected === 0 ? 'none' : (chip.selected === chip.total ? 'all' : 'partial')
+  }))
+})
+const conflictPolicyLabel = computed(() => conflictOptions.find(item => item.value === conflictPolicy.value)?.label || conflictPolicy.value)
 
 const previewStatusTitle = computed(() => {
-  if (previewing.value) return '正在解析链接'
+  if (previewing.value) return '生成预览中'
   if (!previewItems.value.length) return '等待预览'
   if (okPreviewCount.value) return `已解析 ${okPreviewCount.value} 个可下载项`
   return '没有可下载项'
 })
 
 const previewStatusText = computed(() => {
-  if (previewing.value) return `正在按站点解析 ${parsedUrls.value.length} 个链接`
+  if (previewing.value) return `正在整理 ${parsedUrls.value.length} 个来源`
   if (!previewItems.value.length) return '粘贴多个链接后一行一个，先预览再勾选下载。'
   const failed = previewItems.value.length - okPreviewCount.value
   return failed ? `${failed} 项解析失败或不可直接下载` : '解析完成，可以勾选需要下载的项目。'
@@ -247,15 +378,16 @@ async function loadHealth() {
 
 async function preview() {
   if (!parsedUrls.value.length) return ElMessage.warning('先粘贴至少一个下载链接')
+  previewDialogVisible.value = true
   previewing.value = true
   previewItems.value = []
   previewNeedsMaterialize.value = false
   selectedPreviewKeys.value = new Set()
   previewProgress.value = 8
   previewLogs.value = []
-  addPreviewLog(`开始解析 ${parsedUrls.value.length} 个链接`)
+  addPreviewLog(`开始生成 ${parsedUrls.value.length} 个来源的预览`)
   parsedUrls.value.forEach((url, index) => {
-    addPreviewLog(`[${index + 1}/${parsedUrls.value.length}] ${sourceLabel(sourceFromUrl(url))} · ${url}`)
+    addPreviewLog(`[${index + 1}/${parsedUrls.value.length}] 处理 ${sourceLabel(sourceFromUrl(url))}`)
   })
   try {
     const urls = parsedUrls.value
@@ -320,6 +452,7 @@ async function start() {
     previewNeedsMaterialize.value = false
     addPreviewLog(result.message || 'HTTP 下载任务已创建', 'success')
     ElMessage.success(result.message || 'HTTP 下载任务已创建')
+    previewDialogVisible.value = false
   } catch (error) {
     addPreviewLog(error.response?.data?.detail || '创建下载任务失败', 'error')
     ElMessage.error(error.response?.data?.detail || '创建下载任务失败')
@@ -349,7 +482,7 @@ function sourceLabel(source) {
     onedrive: 'OneDrive',
     google_drive: 'Google Drive',
     pikpak: 'PikPak'
-  }[source] || source
+  }[source] || source || 'HTTP'
 }
 
 function sourceKey(source) {
@@ -378,6 +511,11 @@ function sourceFromUrl(url) {
   if (text.includes('drive.google.com') || text.includes('docs.google.com')) return 'google_drive'
   if (text.includes('mypikpak.com') || text.includes('drive.mypikpak.com')) return 'pikpak'
   return 'http'
+}
+
+function previewItemTitle(item) {
+  if (item?.ok) return item.filename || item.name || '未命名文件'
+  return `${sourceLabel(item?.source)} 预览失败`
 }
 
 function previewItemKey(item) {
@@ -412,6 +550,26 @@ function selectAllPreviewItems() {
 
 function clearPreviewSelection() {
   selectedPreviewKeys.value = new Set()
+}
+
+function toggleAllPreviewSelection() {
+  if (allPreviewSelectionState.value === 'all') {
+    clearPreviewSelection()
+    return
+  }
+  selectAllPreviewItems()
+}
+
+function togglePreviewSource(chip) {
+  const items = Array.isArray(chip?.items) ? chip.items : []
+  const next = new Set(selectedPreviewKeys.value)
+  const shouldSelect = chip?.state !== 'all'
+  items.forEach(item => {
+    const key = previewItemKey(item)
+    if (shouldSelect) next.add(key)
+    else next.delete(key)
+  })
+  selectedPreviewKeys.value = next
 }
 
 function addPreviewLog(message, level = 'info') {
@@ -546,22 +704,52 @@ onMounted(loadHealth)
 .http-field { display: grid; gap: 5px; min-width: 180px; color: var(--asmr-text); font-size: 12px; font-weight: 600; }
 .http-field.grow { flex: 1 1 240px; }
 .http-actions { display: flex; gap: 8px; justify-content: flex-end; }
-.http-preview-workbench {
-  display: grid;
-  gap: 10px;
-  padding-top: 4px;
-  border-top: 1px solid var(--asmr-border);
+.http-actions .asmr-mini-btn {
+  position: relative;
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 10px;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+  cursor: pointer;
 }
-.http-preview-status {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+.http-actions .asmr-mini-btn:disabled { cursor: not-allowed; }
+.http-actions .asmr-mini-btn.is-querying:disabled { cursor: progress; }
+.http-actions .asmr-mini-btn:hover:not(:disabled) {
+  transform: translateY(-3px) scale(1.035);
+  box-shadow: 0 14px 26px rgba(15, 23, 42, 0.14);
+}
+.http-actions .asmr-mini-btn:active:not(:disabled) {
+  transform: translateY(1px) scale(0.94);
+  box-shadow: 0 5px 12px rgba(15, 23, 42, 0.12);
+}
+.http-actions .asmr-mini-btn:hover:not(:disabled) :deep(svg) {
+  animation: http-action-icon-pop 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+.http-actions .asmr-mini-btn.is-primary:hover:not(:disabled) :deep(svg) {
+  animation-name: http-action-icon-drop;
+}
+.http-actions .asmr-mini-btn :deep(svg.is-querying) {
+  animation: http-query-spin 0.86s linear infinite, http-query-pulse 1.2s ease-in-out infinite;
+}
+@keyframes http-action-icon-pop {
+  0%, 100% { transform: rotate(0deg) scale(1); }
+  45% { transform: rotate(-14deg) scale(1.22); }
+}
+@keyframes http-action-icon-drop {
+  0%, 100% { transform: translateY(0) scale(1); }
+  42% { transform: translateY(3px) scale(1.18); }
+}
+@keyframes http-query-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes http-query-pulse {
+  0%, 100% { opacity: 0.72; }
+  50% { opacity: 1; }
 }
 .http-preview-status-title {
-  color: var(--asmr-text-strong);
+  color: rgb(15, 23, 42);
   font-size: 13px;
-  font-weight: 750;
+  font-weight: 800;
 }
 .http-preview-status-text {
   margin-top: 2px;
@@ -570,93 +758,254 @@ onMounted(loadHealth)
 }
 .http-preview-status-count {
   flex-shrink: 0;
-  color: var(--asmr-text);
-  font-size: 11.5px;
+  color: rgb(51, 65, 85);
+  font-size: 12px;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 .http-preview-progress {
   height: 6px;
   overflow: hidden;
   border-radius: 999px;
-  background: var(--asmr-surface-soft);
-  border: 1px solid var(--asmr-border);
+  background: rgba(226, 232, 240, 0.64);
+  border: 1px solid rgba(226, 232, 240, 0.7);
 }
 .http-preview-progress-fill {
   height: 100%;
   border-radius: inherit;
-  background: var(--asmr-primary-bg);
+  background: rgb(59, 130, 246);
   transition: width 0.36s ease;
 }
 .http-preview-log {
   display: grid;
   gap: 4px;
-  max-height: 128px;
+  max-height: 92px;
   overflow-y: auto;
   padding: 8px 10px;
   border-radius: 8px;
-  border: 1px solid var(--asmr-border);
-  background: var(--asmr-field-bg);
+  border: 1px solid rgba(226, 232, 240, 0.82);
+  background: rgba(248, 250, 252, 0.72);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 .http-preview-log-row {
   display: grid;
   grid-template-columns: 74px minmax(0, 1fr);
   gap: 8px;
-  color: var(--asmr-text);
+  color: rgb(71, 85, 105);
   font-size: 11px;
   line-height: 1.45;
 }
-.http-preview-log-row.is-success { color: var(--asmr-success-text); }
-.http-preview-log-row.is-warning { color: var(--asmr-warning-text); }
-.http-preview-log-row.is-error { color: var(--asmr-danger-text); }
+.http-preview-log-row.is-success { color: rgb(22, 101, 52); }
+.http-preview-log-row.is-warning { color: rgb(180, 83, 9); }
+.http-preview-log-row.is-error { color: rgb(185, 28, 28); }
 .http-preview-log-time {
-  color: var(--asmr-text-muted);
+  color: rgb(148, 163, 184);
   font-variant-numeric: tabular-nums;
 }
 .http-preview-log-text {
   min-width: 0;
-  word-break: break-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.http-preview-toolbar {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
+.http-preview-window {
+  color: rgb(30, 41, 59);
 }
-.http-link-btn {
-  border: none;
-  background: transparent;
-  color: var(--asmr-accent);
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
+.http-preview-window .window-header {
+  min-height: 66px;
 }
-.http-link-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
+.http-preview-content {
+  flex: 1;
+  min-height: 0;
 }
-.http-preview-list { display: grid; gap: 8px; }
-.http-preview-row {
+.http-preview-settings-card {
+  scrollbar-width: none;
+}
+.http-preview-settings-card::-webkit-scrollbar {
+  display: none;
+}
+.http-preview-status-card {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 62px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(226, 232, 240, 0.76);
+  background: rgba(255, 255, 255, 0.44);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+.http-preview-status-sub {
+  margin-top: 3px;
+  color: rgb(100, 116, 139);
+  font-size: 11px;
+}
+.summary-stack span {
+  float: right;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgb(30, 41, 59);
+  font-weight: 650;
+}
+.download-list-panel {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1 1 auto;
+}
+.download-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  padding: 10px 14px 8px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.72);
+}
+.download-list-head h2 {
+  margin: 0;
+  color: rgb(15, 23, 42);
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+.download-list-head p {
+  margin: 4px 0 0;
+  color: rgb(100, 116, 139);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+.download-list-head > span {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(241, 245, 249, 0.72);
+  color: rgb(71, 85, 105);
+  font-size: 11px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+.download-list-scroll {
+  height: 100%;
+  overflow: auto;
+  padding: 8px 10px 10px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(119, 129, 141, 0.58) transparent;
+}
+.download-list-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.download-list-scroll::-webkit-scrollbar-thumb {
+  background: rgba(119, 129, 141, 0.48);
+  border-radius: 999px;
+}
+.download-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.download-list-row {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 10px;
-  padding: 10px;
-  border-radius: 8px;
-  border: 1px solid var(--asmr-border);
-  background: var(--asmr-surface-soft);
-  color: var(--asmr-accent);
+  padding: 5px 8px;
+  border-radius: 6px;
   cursor: pointer;
-  transition: all 0.22s ease;
+  position: relative;
+  transition: background-color 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
 }
-.http-preview-row.bad { color: var(--asmr-danger-text); background: var(--asmr-danger-bg); border-color: var(--asmr-danger-border); }
-.http-preview-row.selected {
-  border-color: var(--asmr-border-strong);
-  background: var(--asmr-surface-hover);
+.download-list-row:hover {
+  background: rgba(248, 250, 252, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(226, 232, 240, 0.84);
 }
-.http-preview-check {
+.download-list-row.selected {
+  background: rgba(239, 246, 255, 0.7);
+  box-shadow: inset 0 0 0 1px rgba(219, 234, 254, 0.8);
+}
+.download-list-main {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+  position: relative;
+  z-index: 1;
+}
+.download-list-check {
   width: 16px;
   height: 16px;
-  flex-shrink: 0;
-  accent-color: var(--asmr-accent);
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 16px;
+  border: 1px solid rgb(203, 213, 225);
+  background: rgba(255, 255, 255, 0.9);
+  color: transparent;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+.download-list-check.is-on {
+  border-color: rgb(59, 130, 246);
+  background: rgb(59, 130, 246);
+  color: #ffffff;
+}
+.download-list-check.is-off {
+  border-color: rgb(203, 213, 225);
+  background: rgba(255, 255, 255, 0.95);
+}
+.download-list-row:hover .download-list-check.is-off {
+  border-color: rgba(148, 163, 184, 0.48);
+  background: rgba(255, 255, 255, 0.98);
+}
+.download-list-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 1.25;
+  font-weight: 650;
+  color: rgb(30, 41, 59);
+}
+.download-list-size {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  min-width: 68px;
+  text-align: right;
+  font-size: 11px;
+  color: rgb(148, 163, 184);
+  margin-left: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.download-list-row.bad {
+  color: rgb(185, 28, 28);
+  background: rgba(254, 242, 242, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(254, 202, 202, 0.8);
+  cursor: default;
+}
+.http-preview-error-icon {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 16px;
+}
+.http-preview-empty {
+  height: 100%;
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  color: rgb(148, 163, 184);
+  font-size: 13px;
+  font-weight: 650;
 }
 .http-source-icon {
   display: inline-flex;
@@ -685,9 +1034,26 @@ onMounted(loadHealth)
   display: block;
 }
 .http-preview-main { min-width: 0; flex: 1; }
-.http-preview-name { color: var(--asmr-text-strong); font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.http-preview-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 3px; color: var(--asmr-text); font-size: 11.5px; }
-.http-preview-meta .warn { color: var(--asmr-warning-text); }
+.http-preview-name { color: rgb(30, 41, 59); font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.http-preview-meta { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 1px; color: rgb(100, 116, 139); font-size: 10.5px; line-height: 1.25; }
+.http-preview-meta .warn { color: rgb(180, 83, 9); }
+.tab-count {
+  padding: 2px 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 500;
+  background: rgba(248, 250, 252, 0.4);
+  color: rgb(156, 163, 175);
+}
+.tab-chip-active .tab-count {
+  background: rgba(255, 255, 255, 0.25);
+  color: #ffffff;
+}
+.tab-chip-partial .tab-count {
+  background: rgba(59, 130, 246, 0.15);
+  color: #2563eb;
+}
 .http-policy-dd :deep(.app-dd-trigger) {
   background: var(--asmr-field-bg);
   border-color: var(--asmr-border);
@@ -705,19 +1071,212 @@ onMounted(loadHealth)
 }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+:global(html.kikoerumanager-dark .http-download-preview-modal.el-dialog) {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-window),
+:global(html.kikoerumanager-dark .http-download-preview-modal .glass-shell) {
+  background: #101010 !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  color: #eeeeee !important;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.62), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .window-header),
+:global(html.kikoerumanager-dark .http-download-preview-modal .tabs-row),
+:global(html.kikoerumanager-dark .http-download-preview-modal .footer-row) {
+  background: #131313 !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .glass-card),
+:global(html.kikoerumanager-dark .http-download-preview-modal .glass-panel) {
+  background: #181818 !important;
+  border-color: rgba(255, 255, 255, 0.09) !important;
+  color: #eeeeee !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .title),
+:global(html.kikoerumanager-dark .http-download-preview-modal h1),
+:global(html.kikoerumanager-dark .http-download-preview-modal h2),
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-status-title),
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-name),
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-name),
+:global(html.kikoerumanager-dark .http-download-preview-modal .summary-strong),
+:global(html.kikoerumanager-dark .http-download-preview-modal .summary-stack span) {
+  color: #f5f5f5 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal p),
+:global(html.kikoerumanager-dark .http-download-preview-modal .summary),
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-status-sub),
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-status-count),
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-meta),
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-size),
+:global(html.kikoerumanager-dark .http-download-preview-modal .summary-stack) {
+  color: #a3a3a3 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-status-card) {
+  background: #121212 !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-progress) {
+  background: #252525 !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-progress-fill) {
+  background: #9ca3af !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-log) {
+  background: #111111 !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-log-row) {
+  color: #d4d4d4 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-log-time) {
+  color: #737373 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-log-row.is-success) {
+  color: #e5e7eb !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-log-row.is-warning),
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-meta .warn) {
+  color: #fbbf24 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-log-row.is-error),
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-row.bad),
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-row.bad .http-preview-meta) {
+  color: #fca5a5 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-head) {
+  background: #171717 !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-head > span),
+:global(html.kikoerumanager-dark .http-download-preview-modal .tab-count) {
+  background: #242424 !important;
+  color: #d4d4d4 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-scroll) {
+  background: #181818 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-row) {
+  color: #eeeeee !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-row:hover) {
+  background: rgba(255, 255, 255, 0.045) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-row.selected) {
+  background: #242424 !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-row.bad) {
+  background: rgba(127, 29, 29, 0.18) !important;
+  box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.2) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-check.is-off) {
+  background: #111111 !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-check.is-on) {
+  background: #d4d4d8 !important;
+  border-color: #d4d4d8 !important;
+  color: #111111 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .tab-chip) {
+  background: #1b1b1b !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: #d4d4d4 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .tab-chip-active),
+:global(html.kikoerumanager-dark .http-download-preview-modal .tab-chip-partial) {
+  background: #2a2a2a !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  color: #f4f4f5 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .primary-cta) {
+  background: #2f2f2f !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: #f4f4f5 !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .primary-cta:hover:not(:disabled)) {
+  background: #3a3a3a !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .secondary-cta),
+:global(html.kikoerumanager-dark .http-download-preview-modal .interactive-chip) {
+  background: #1c1c1c !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: #d4d4d4 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .app-loading-animation__label),
+:global(html.kikoerumanager-dark .http-download-preview-modal .app-loading-animation__description) {
+  color: #d4d4d4 !important;
+}
+
+:global(.http-download-preview-modal .footer-row) {
+  min-height: 56px !important;
+}
+
+:global(.http-download-preview-modal .summary) {
+  font-size: 12px !important;
+}
+
+:global(.http-download-preview-modal .primary-cta),
+:global(.http-download-preview-modal .secondary-cta) {
+  height: 38px !important;
+  padding-inline: 28px !important;
+  border-radius: 10px !important;
+}
+
+@media (max-width: 960px) {
+  .http-preview-content {
+    flex-direction: column;
+    gap: 16px;
+    padding: 6px 18px;
+  }
+  .left-column {
+    width: auto;
+    flex-basis: auto;
+    gap: 16px;
+  }
+}
 @media (max-width: 720px) {
   .http-health-path { display: none; }
   .http-actions { justify-content: stretch; }
   .http-actions .asmr-mini-btn { flex: 1; justify-content: center; }
-  .http-preview-status,
-  .http-preview-row {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-  .http-preview-status-count,
-  .http-source-icon {
-    align-self: flex-start;
-  }
+  .summary-stack span { float: none; display: block; max-width: 100%; margin-top: 2px; }
   .http-preview-log-row {
     grid-template-columns: 1fr;
     gap: 2px;
