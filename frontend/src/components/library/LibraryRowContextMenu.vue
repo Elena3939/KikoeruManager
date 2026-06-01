@@ -105,11 +105,11 @@
           v-if="showAutoCircleGroup"
           type="button"
           class="menu-item"
-          :disabled="batchMode || disableAutoCircleGroup"
+          :disabled="disableAutoCircleGroup"
           @click="emit('action', 'auto_circle_group')"
         >
           <Tags :size="14" :stroke-width="2.2" class="menu-item-icon text-violet-600" />
-          <span>按社团分类</span>
+          <span>{{ batchMode ? '批量按社团分类' : '按社团分类' }}</span>
           <span v-if="autoCircleGroupRunning" class="ml-auto text-[10px] text-violet-600">运行中</span>
         </button>
 
