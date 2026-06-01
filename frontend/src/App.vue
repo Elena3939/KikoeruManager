@@ -6282,10 +6282,10 @@ html.kikoerumanager-dark :is(
 /* 文件管理弹窗最终暗色兜底：改为中性黑灰，去掉蓝灰泛光和聚焦投影。 */
 html.kikoerumanager-dark .custom-preview-overlay:has(.folder-dialog:not(.filter-delete-dialog)),
 html.kikoerumanager-dark .custom-preview-overlay:has(.mojibake-preview-dialog) {
-  background: rgba(8, 8, 10, 0.42) !important;
+  background: transparent !important;
   background-image: none !important;
-  backdrop-filter: blur(12px) saturate(108%) !important;
-  -webkit-backdrop-filter: blur(12px) saturate(108%) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog).el-dialog,
@@ -6550,10 +6550,10 @@ html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-checkbo
 
 /* 上传到服务器预览：单独兜底，避免被通用 custom-preview 深蓝规则再次覆盖。 */
 html.kikoerumanager-dark .custom-preview-overlay:has(.server-upload-preview-modal) {
-  background: rgba(4, 5, 8, 0.22) !important;
+  background: transparent !important;
   background-image: none !important;
-  backdrop-filter: blur(10px) saturate(108%) !important;
-  -webkit-backdrop-filter: blur(10px) saturate(108%) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
 html.kikoerumanager-dark .server-upload-preview-modal.el-dialog {
@@ -6830,10 +6830,10 @@ html.kikoerumanager-dark .server-upload-preview-modal .app-loading-animation__de
 
 /* 上传目录选择器：跟上传到服务器弹窗统一为中性厚玻璃，移除蓝灰底和竖条选中线。 */
 html.kikoerumanager-dark .custom-preview-overlay:has(.remote-folder-picker-modal) {
-  background: rgba(4, 5, 8, 0.22) !important;
+  background: transparent !important;
   background-image: none !important;
-  backdrop-filter: blur(10px) saturate(108%) !important;
-  -webkit-backdrop-filter: blur(10px) saturate(108%) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
 html.kikoerumanager-dark .remote-folder-picker-modal.el-dialog {
