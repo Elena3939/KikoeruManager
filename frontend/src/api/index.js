@@ -1441,7 +1441,8 @@ export const httpDownloadApi = {
       params: {
         include_files: payload.includeFiles || payload.include_files || false,
         limit: payload.limit || 100,
-        account_id: payload.accountId || payload.account_id || undefined
+        account_id: payload.accountId || payload.account_id || undefined,
+        force_refresh: Boolean(payload.forceRefresh || payload.force_refresh)
       },
       timeout: payload.timeout ?? 45000
     })
@@ -1479,6 +1480,13 @@ export const httpDownloadApi = {
       account_id: payload.accountId || payload.account_id || ''
     }, {
       timeout: payload.timeout ?? 45000
+    })
+    return response.data
+  },
+
+  pikpakClear: async (payload = {}) => {
+    const response = await apiClient.post('/http-download/pikpak/clear', {}, {
+      timeout: payload.timeout ?? 180000
     })
     return response.data
   }
