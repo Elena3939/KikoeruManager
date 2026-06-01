@@ -1490,3 +1490,66 @@ async def test_download_transferit_item_retries_busy_response(monkeypatch, tmp_p
     assert row["status"] == "completed"
     assert row["name"] == "real.zip"
     assert row["relative_path"] == "real.zip"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_completed_pikpak_transfer_items_only_deletes_success_rows(monkeypatch, tmp_path):
+    bind_config(
+        monkeypatch,
+        tmp_path,
+        pikpak_enabled=True,
+        pikpak_accounts=[
+            {"id": "acc-a", "label": "A", "enabled": True, "username": "a", "password": "p"},
+            {"id": "acc-b", "label": "B", "enabled": True, "username": "b", "password": "p"},
+        ],
+    )
+    service = HttpDownloadService()
+    calls = []
+
+    async def fake_delete(ids, *, permanent=False, account_id=""):
+        calls.append((account_id, list(ids), permanent))
+        return {
+            "success": True,
+            "deleted_count": len(ids),
+            "requested_count": len(ids),
+            "permanent": permanent,
+            "account_id": account_id,
+        }
+
+    monkeypatch.setattr(service, "delete_pikpak_transfer_items", fake_delete)
+
+    result = await service.cleanup_completed_pikpak_transfer_items([
+        {
+            "source": "pikpak",
+            "status": "completed",
+            "download_file_id": "copied-a",
+            "pikpak_materialized": True,
+            "pikpak_account_id": "acc-a",
+        },
+        {
+            "source": "pikpak",
+            "status": "failed",
+            "pikpak_cleanup_file_id": "failed-copy",
+            "pikpak_account_id": "acc-a",
+        },
+        {
+            "source": "pikpak",
+            "status": "completed",
+            "pikpak_cleanup_file_id": "copied-b",
+            "pikpak_account_id": "acc-b",
+        },
+        {
+            "source": "http",
+            "status": "completed",
+            "pikpak_cleanup_file_id": "not-pikpak",
+            "pikpak_account_id": "acc-a",
+        },
+    ])
+
+    assert result["success"] is True
+    assert result["requested_count"] == 2
+    assert result["deleted_count"] == 2
+    assert calls == [
+        ("acc-a", ["copied-a"], True),
+        ("acc-b", ["copied-b"], True),
+    ]
