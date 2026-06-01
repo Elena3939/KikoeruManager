@@ -1225,6 +1225,69 @@ class HttpDownloadService:
             "errors": errors,
         }
 
+    def _pikpak_cleanup_targets_from_rows(self, rows: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+        targets: Dict[str, List[str]] = {}
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("source") or "").strip().lower() != "pikpak":
+                continue
+            if str(row.get("status") or "").strip().lower() != "completed":
+                continue
+            cleanup_id = str(row.get("pikpak_cleanup_file_id") or "").strip()
+            if not cleanup_id and bool(row.get("pikpak_materialized")):
+                cleanup_id = str(row.get("download_file_id") or "").strip()
+            if not cleanup_id:
+                continue
+            account_id = str(row.get("pikpak_account_id") or "").strip()
+            bucket = targets.setdefault(account_id, [])
+            if cleanup_id not in bucket:
+                bucket.append(cleanup_id)
+        return targets
+
+    async def cleanup_completed_pikpak_transfer_items(self, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        targets = self._pikpak_cleanup_targets_from_rows(rows)
+        if not targets:
+            return {
+                "success": True,
+                "status": "skipped",
+                "requested_count": 0,
+                "deleted_count": 0,
+                "accounts": [],
+                "errors": [],
+            }
+
+        results: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+        for account_id, file_ids in targets.items():
+            try:
+                results.append(
+                    await self.delete_pikpak_transfer_items(
+                        file_ids,
+                        permanent=True,
+                        account_id=account_id,
+                    )
+                )
+            except Exception as exc:
+                errors.append({
+                    "account_id": account_id,
+                    "requested_count": len(file_ids),
+                    "file_ids": file_ids,
+                    "message": self._sanitize_error(exc),
+                })
+
+        deleted_count = sum(int(item.get("deleted_count") or 0) for item in results)
+        requested_count = sum(len(item) for item in targets.values())
+        status = "completed" if results and not errors else ("partial_failed" if results else "failed")
+        return {
+            "success": not errors,
+            "status": status,
+            "requested_count": requested_count,
+            "deleted_count": deleted_count,
+            "accounts": results,
+            "errors": errors,
+        }
+
     def _direct_link_preview_provider(self, raw_url: str) -> str:
         source = self._provider_source(raw_url)
         return source if source in {"gofile", "onedrive", "google_drive"} else "http"
@@ -2526,6 +2589,12 @@ class HttpDownloadService:
                             relative_dir = str(item.get("_relative_dir") or "").strip("/")
                             if download_url:
                                 resolved.append(download_url)
+                            pikpak_materialized = bool(
+                                materialize
+                                and getattr(self._config(), "pikpak_auto_save_share", True)
+                                and download_file_id
+                                and download_file_id != file_id
+                            )
                             source_items.append({
                                 "source": "pikpak",
                                 "share_url": self._mask_url(raw_url),
@@ -2533,6 +2602,8 @@ class HttpDownloadService:
                                 "original_url": download_url,
                                 "file_id": file_id,
                                 "download_file_id": download_file_id,
+                                "pikpak_cleanup_file_id": download_file_id if pikpak_materialized else "",
+                                "pikpak_materialized": pikpak_materialized,
                                 "name": name,
                                 "filename": name,
                                 "relative_dir": relative_dir,
@@ -2686,7 +2757,17 @@ class HttpDownloadService:
                 item["source"] = str(source_item.get("source") or item.get("source") or "http")
                 if source_item.get("share_url"):
                     item["share_url"] = source_item.get("share_url")
-                for meta_key in ("content_id", "file_id", "download_file_id", "share_id", "pikpak_account_id", "pikpak_account_label", "pikpak_transfer_dir"):
+                for meta_key in (
+                    "content_id",
+                    "file_id",
+                    "download_file_id",
+                    "pikpak_cleanup_file_id",
+                    "pikpak_materialized",
+                    "share_id",
+                    "pikpak_account_id",
+                    "pikpak_account_label",
+                    "pikpak_transfer_dir",
+                ):
                     if source_item.get(meta_key):
                         item[meta_key] = source_item.get(meta_key)
                 relative_dir = str(source_item.get("relative_dir") or "").strip("/")
@@ -2731,6 +2812,8 @@ class HttpDownloadService:
                         "share_url": source_item.get("share_url"),
                         "file_id": source_item.get("file_id"),
                         "download_file_id": source_item.get("download_file_id"),
+                        "pikpak_cleanup_file_id": source_item.get("pikpak_cleanup_file_id"),
+                        "pikpak_materialized": bool(source_item.get("pikpak_materialized")),
                         "share_id": source_item.get("share_id"),
                         "pikpak_account_id": source_item.get("pikpak_account_id"),
                         "pikpak_account_label": source_item.get("pikpak_account_label"),
@@ -3107,6 +3190,11 @@ class HttpDownloadService:
                 "downloaded": 0,
                 "total": int(item.get("size_bytes") or 0),
                 "size": int(item.get("size_bytes") or 0),
+                "file_id": item.get("file_id", ""),
+                "download_file_id": item.get("download_file_id", ""),
+                "pikpak_cleanup_file_id": item.get("pikpak_cleanup_file_id", ""),
+                "pikpak_materialized": bool(item.get("pikpak_materialized")),
+                "share_id": item.get("share_id", ""),
                 "pikpak_account_id": item.get("pikpak_account_id", ""),
                 "pikpak_account_label": item.get("pikpak_account_label", ""),
                 "pikpak_transfer_dir": item.get("pikpak_transfer_dir", ""),
@@ -3301,12 +3389,36 @@ class HttpDownloadService:
         task.task_metadata["download_runtime"] = runtime
         if not success_files:
             raise HttpDownloadError("没有任何文件下载成功")
-        task.update_progress(100, f"下载完成，成功 {len(success_files)} 个，失败 {len(merged_failed_rows)} 个")
+        try:
+            pikpak_cleanup_result = await self.cleanup_completed_pikpak_transfer_items(success_files)
+        except Exception as exc:
+            pikpak_cleanup_result = {
+                "success": False,
+                "status": "failed",
+                "requested_count": 0,
+                "deleted_count": 0,
+                "accounts": [],
+                "errors": [{"message": self._sanitize_error(exc)}],
+            }
+        task.task_metadata["pikpak_cleanup_result"] = pikpak_cleanup_result
+        self._task_gids.pop(task.id, None)
+
+        cleanup_suffix = ""
+        cleanup_requested = int(pikpak_cleanup_result.get("requested_count") or 0)
+        cleanup_deleted = int(pikpak_cleanup_result.get("deleted_count") or 0)
+        if cleanup_requested > 0 and pikpak_cleanup_result.get("success"):
+            cleanup_suffix = f"，PikPak 已清理 {cleanup_deleted} 个"
+        elif cleanup_requested > 0:
+            errors = list(pikpak_cleanup_result.get("errors") or [])
+            first_error = str((errors[0] or {}).get("message") or "").strip() if errors else ""
+            cleanup_suffix = f"，PikPak 清理失败: {first_error or '请在设置页手动清理'}"
+        task.update_progress(100, f"下载完成，成功 {len(success_files)} 个，失败 {len(merged_failed_rows)} 个{cleanup_suffix}")
         return {
             "success": True,
             "download_root": self._download_root(),
             "downloaded_files": success_files,
             "failed_files": merged_failed_rows,
+            "pikpak_cleanup_result": pikpak_cleanup_result,
         }
 
     def _content_length_from_headers(self, headers: Dict[str, str]) -> int:

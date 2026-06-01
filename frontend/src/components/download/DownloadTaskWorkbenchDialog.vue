@@ -257,11 +257,11 @@
                 <span class="v1-footer-value">{{ totalDownloadSpeed }}</span>
               </div>
               <div v-if="showDownloadMetrics" class="v1-footer-divider"></div>
-              <div class="v1-footer-block">
+              <div v-if="shouldShowUploadMetrics" class="v1-footer-block">
                 <span class="v1-footer-label">上传速度</span>
                 <span class="v1-footer-value">{{ totalUploadSpeed }}</span>
               </div>
-              <div class="v1-footer-divider"></div>
+              <div v-if="shouldShowUploadMetrics" class="v1-footer-divider"></div>
               <div class="v1-footer-block">
                 <span class="v1-footer-label">剩余大小</span>
                 <span class="v1-footer-value">{{ remainingTransferSize }}</span>
@@ -269,7 +269,7 @@
               <div class="v1-footer-divider"></div>
               <div class="v1-footer-block">
                 <span class="v1-footer-label">预计时间</span>
-                <span class="v1-footer-value">{{ aggregatedUploadEta }}</span>
+                <span class="v1-footer-value">{{ aggregatedTransferEta }}</span>
               </div>
               <div class="v1-footer-divider"></div>
               <div class="v1-footer-block">
@@ -379,6 +379,17 @@ const filteredTasks = computed(() => {
 })
 
 const pausedTasks = computed(() => mergedTasks.value.filter(task => isTaskPaused(task)))
+const shouldShowUploadMetrics = computed(() => {
+  if (isUploadMode.value || props.showUploadEta) return true
+  return mergedTasks.value.some((task) => {
+    return (
+      isUploadEnabled(task) ||
+      hasActiveUploadRuntime(task) ||
+      (Array.isArray(task?.upload_files) && task.upload_files.length > 0) ||
+      (Array.isArray(task?.uploaded_files) && task.uploaded_files.length > 0)
+    )
+  })
+})
 const totalDownloadSpeed = computed(() => {
   const speed = processingTasks.value.reduce((sum, task) => sum + getVisibleDownloadSpeed(task), 0)
   if (speed > 0) return formatSpeed(speed)
@@ -391,17 +402,22 @@ const totalUploadSpeed = computed(() => {
   if (!processingTasks.value.length && pausedTasks.value.length) return '已暂停'
   return '—'
 })
-const totalRemainingUploadBytes = computed(() => {
+const totalRemainingTransferBytes = computed(() => {
   return processingTasks.value.reduce((sum, task) => {
     return sum + getTaskRemainingBytes(task)
   }, 0)
 })
-const remainingTransferSize = computed(() => formatSize(totalRemainingUploadBytes.value))
-const aggregatedUploadEta = computed(() => {
-  const speed = processingTasks.value.reduce((sum, task) => sum + getVisibleUploadSpeed(task), 0)
-  const remainingBytes = totalRemainingUploadBytes.value
-  if (speed > 0 && remainingBytes > 0) return formatEtaSeconds(Math.ceil(remainingBytes / speed))
-  if (remainingBytes <= 0 && processingTasks.value.some(task => isUploadEnabled(task))) return '已接近完成'
+const remainingTransferSize = computed(() => formatSize(totalRemainingTransferBytes.value))
+const aggregatedTransferEta = computed(() => {
+  const downloadSpeed = processingTasks.value.reduce((sum, task) => sum + getVisibleDownloadSpeed(task), 0)
+  const uploadSpeed = processingTasks.value.reduce((sum, task) => sum + getVisibleUploadSpeed(task), 0)
+  const downloadRemainingBytes = processingTasks.value.reduce((sum, task) => sum + getDownloadRemainingBytes(task), 0)
+  const uploadRemainingBytes = processingTasks.value.reduce((sum, task) => sum + getUploadRemainingBytes(task), 0)
+  const downloadEta = downloadSpeed > 0 && downloadRemainingBytes > 0 ? Math.ceil(downloadRemainingBytes / downloadSpeed) : 0
+  const uploadEta = uploadSpeed > 0 && uploadRemainingBytes > 0 ? Math.ceil(uploadRemainingBytes / uploadSpeed) : 0
+  const etaSeconds = downloadEta + uploadEta
+  if (etaSeconds > 0) return formatEtaSeconds(etaSeconds)
+  if (totalRemainingTransferBytes.value <= 0 && processingTasks.value.length) return '已接近完成'
   return '—'
 })
 const remainingTaskSummary = computed(() => {
@@ -889,15 +905,30 @@ function getUploadEtaSeconds(task) {
 
 function getTaskRemainingBytes(task) {
   if (isUploadMode.value) return Math.max(0, getUploadTotalBytes(task) - getTaskUploadedBytes(task))
-  const transferTotal = getTaskTransferBytes(task)
-  const downloadRemaining = Math.max(0, transferTotal - getTaskDownloadedBytes(task))
+  const downloadRemaining = getDownloadRemainingBytes(task)
   if (!isUploadEnabled(task)) return downloadRemaining
   const uploadRemaining = Math.max(0, getUploadTotalBytes(task) - getTaskUploadedBytes(task))
   return downloadRemaining + uploadRemaining
 }
 
+function getDownloadRemainingBytes(task) {
+  if (isUploadMode.value) return 0
+  return Math.max(0, getDownloadTotalBytes(task) - getTaskDownloadedBytes(task))
+}
+
 function getUploadRemainingBytes(task) {
+  if (!isUploadMode.value && !isUploadEnabled(task)) return 0
   return Math.max(0, getUploadTotalBytes(task) - getTaskUploadedBytes(task))
+}
+
+function getDownloadTotalBytes(task) {
+  if (isUploadMode.value) return 0
+  const runtimeBytes = Number(getDownloadRuntime(task)?.total_bytes || 0)
+  if (runtimeBytes > 0) return runtimeBytes
+  const downloadFiles = Array.isArray(task?.download_files) ? task.download_files : []
+  const totalBytes = downloadFiles.reduce((sum, item) => sum + Number(item?.size_bytes || item?.size || item?.total || 0), 0)
+  if (totalBytes > 0) return totalBytes
+  return getTaskTransferBytes(task)
 }
 
 function getUploadTotalBytes(task) {
