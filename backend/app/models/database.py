@@ -1164,6 +1164,60 @@ class LibraryIndexStatus(Base):
         }
 
 
+class PikPakStatusCache(Base):
+    """PikPak 账号状态持久缓存。
+
+    只存前端展示需要的公开统计快照，不存密码、token、直链等敏感信息。
+    """
+    __tablename__ = 'pikpak_status_cache'
+
+    account_id = Column(String(80), primary_key=True)
+    account_label = Column(String(255), nullable=False, default='')
+    username_hint = Column(String(255), nullable=False, default='')
+    transfer_dir = Column(Text, nullable=False, default='/KikoeruManager')
+    success = Column(Boolean, nullable=False, default=False)
+    ready = Column(Boolean, nullable=False, default=False)
+    quota = Column(JSON, default=dict)
+    transfer_quota = Column(JSON, default=dict)
+    vip = Column(JSON, default=dict)
+    message = Column(Text, default='')
+    source = Column(String(20), nullable=False, default='live')
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    __table_args__ = (
+        Index('idx_pikpak_status_cache_updated_at', 'updated_at'),
+    )
+
+    def to_status_dict(self) -> Dict[str, Any]:
+        account = {
+            'id': self.account_id,
+            'label': self.account_label,
+            'username': self.username_hint,
+            'enabled': True,
+            'transfer_dir': self.transfer_dir or '/KikoeruManager',
+            'legacy': self.account_id == 'default',
+            'configured': True,
+        }
+        updated_at = self.updated_at.isoformat() if self.updated_at else None
+        return {
+            'success': bool(self.success),
+            'enabled': True,
+            'ready': bool(self.ready),
+            'account': account,
+            'account_id': self.account_id,
+            'account_label': self.account_label,
+            'transfer_dir': self.transfer_dir or '/KikoeruManager',
+            'quota': self.quota or {},
+            'transfer_quota': self.transfer_quota or {},
+            'vip': self.vip or {},
+            'message': self.message or '',
+            'source': self.source or 'cache',
+            'cached': True,
+            'updated_at': updated_at,
+            'cache_updated_at': updated_at,
+        }
+
+
 # 数据库连接
 def _count_password_entries(db_path):
     if not os.path.exists(db_path):

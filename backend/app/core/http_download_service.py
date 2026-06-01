@@ -34,6 +34,7 @@ _TRANSFERIT_HOST_HINTS = {"transfer.it", "www.transfer.it"}
 _ONEDRIVE_HOST_HINTS = {"1drv.ms", "onedrive.live.com", "onedrive.com"}
 _GOOGLE_DRIVE_HOST_HINTS = {"drive.google.com", "docs.google.com"}
 _PIKPAK_MAX_SHARE_FILES = 100
+_PIKPAK_STATUS_CACHE_TTL_SECONDS = 6 * 60 * 60
 _SHARE_PREVIEW_ONLY_SOURCES = {"pikpak", "transferit"}
 _GOFILE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 _GOFILE_LANGUAGE = "en-US"
@@ -221,8 +222,10 @@ class HttpDownloadService:
             return HttpDownloadError(f"{prefix}: 账号空间不足，先在设置页清理转存目录或更换账号后重试。原始错误: {text}")
         if any(marker in lowered for marker in ("invalid username", "invalid account", "invalid_account_or_password", "password", "unauthorized", "token", "login")) or any(marker in text for marker in ("账号", "密码", "登录", "token", "Token", "授权")):
             return HttpDownloadError(f"{prefix}: 账号登录或 token 已失效，请在设置页重新保存账号/密码或清空缓存 Token 后重试。原始错误: {text}")
+        if any(marker in lowered for marker in ("phone_number", "meta.username", "captcha init params")):
+            return HttpDownloadError(f"{prefix}: 触发 PikPak 验证/验证码，当前后端不能自动处理；如果这是手机号账号，试试在号码前补所属国家码，例如 +86。原始错误: {text}")
         if any(marker in lowered for marker in ("captcha", "verification", "verify")) or any(marker in text for marker in ("验证码", "验证")):
-            return HttpDownloadError(f"{prefix}: 触发 PikPak 验证/验证码，当前后端不能自动处理，请稍后重试或换账号。原始错误: {text}")
+            return HttpDownloadError(f"{prefix}: 触发 PikPak 验证/验证码，当前后端不能自动处理，请稍后重试或换账号；如果这是手机号账号，试试在号码前补所属国家码，例如 +86。原始错误: {text}")
         if any(marker in lowered for marker in ("vip", "privilege", "permission", "forbidden", "403")) or any(marker in text for marker in ("会员", "权限", "无权")):
             return HttpDownloadError(f"{prefix}: 账号权限不足或文件需要会员能力。原始错误: {text}")
         if any(marker in lowered for marker in ("not found", "expired", "deleted", "share")) or any(marker in text for marker in ("不存在", "过期", "删除", "分享")):
@@ -331,6 +334,159 @@ class HttpDownloadService:
             "legacy": account.legacy,
             "configured": bool(account.encoded_token or (account.username and account.password)),
         }
+
+    def _mask_pikpak_username_for_cache(self, value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if "@" in text:
+            name, domain = text.split("@", 1)
+            if len(name) <= 2:
+                masked = f"{name[:1]}***"
+            else:
+                masked = f"{name[:2]}***{name[-1:]}"
+            return f"{masked}@{domain}"
+        prefix = "+" if text.startswith("+") else ""
+        raw = text[1:] if prefix else text
+        if raw.isdigit() and len(raw) >= 6:
+            return f"{prefix}{raw[:3]}****{raw[-2:]}"
+        if len(text) <= 4:
+            return f"{text[:1]}***"
+        return f"{text[:2]}***{text[-1:]}"
+
+    def _pikpak_status_cache_ttl_seconds(self) -> int:
+        return _PIKPAK_STATUS_CACHE_TTL_SECONDS
+
+    def _pikpak_status_cache_is_fresh(self, updated_at: Optional[datetime]) -> bool:
+        if not updated_at:
+            return False
+        return (datetime.now() - updated_at).total_seconds() <= self._pikpak_status_cache_ttl_seconds()
+
+    def _pikpak_public_status(
+        self,
+        account: PikPakAccount,
+        *,
+        success: bool,
+        ready: bool,
+        quota: Optional[Dict[str, Any]] = None,
+        transfer_quota: Optional[Dict[str, Any]] = None,
+        vip: Optional[Dict[str, Any]] = None,
+        message: str = "",
+        source: str = "live",
+        cached: bool = False,
+        updated_at: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "success": bool(success),
+            "enabled": True,
+            "ready": bool(ready),
+            "account": self._pikpak_account_public(account),
+            "account_id": account.id,
+            "account_label": account.label,
+            "transfer_dir": account.transfer_dir,
+            "quota": quota or {},
+            "transfer_quota": transfer_quota or {},
+            "vip": vip or {},
+            "source": source,
+            "cached": cached,
+        }
+        if message:
+            payload["message"] = message
+        if updated_at:
+            payload["updated_at"] = updated_at.isoformat()
+            payload["cache_updated_at"] = updated_at.isoformat()
+        return payload
+
+    def _pikpak_status_cache_read(self, account: PikPakAccount, *, require_fresh: bool = True) -> Optional[Dict[str, Any]]:
+        try:
+            from ..models.database import PikPakStatusCache, SessionLocal
+        except Exception:
+            return None
+        db = SessionLocal()
+        try:
+            row = db.query(PikPakStatusCache).filter(PikPakStatusCache.account_id == account.id).first()
+            if not row:
+                return None
+            if require_fresh and not self._pikpak_status_cache_is_fresh(row.updated_at):
+                return None
+            payload = row.to_status_dict()
+            payload["account"] = {
+                **payload.get("account", {}),
+                **self._pikpak_account_public(account),
+                "username": self._mask_pikpak_username_for_cache(account.username),
+            }
+            payload["account_label"] = account.label
+            payload["transfer_dir"] = account.transfer_dir
+            payload["source"] = "cache"
+            payload["cached"] = True
+            return payload
+        except Exception:
+            logger.debug("[PikPak] 读取状态缓存失败 account=%s", account.id, exc_info=True)
+            return None
+        finally:
+            db.close()
+
+    def _pikpak_status_cache_write(self, status: Dict[str, Any], account: PikPakAccount, *, source: str = "live") -> None:
+        try:
+            from ..models.database import PikPakStatusCache, SessionLocal
+        except Exception:
+            return
+        now = datetime.now()
+        db = SessionLocal()
+        try:
+            row = db.query(PikPakStatusCache).filter(PikPakStatusCache.account_id == account.id).first()
+            if row is None:
+                row = PikPakStatusCache(account_id=account.id)
+                db.add(row)
+            row.account_label = str(status.get("account_label") or account.label or account.id)
+            row.username_hint = self._mask_pikpak_username_for_cache(account.username)
+            row.transfer_dir = str(status.get("transfer_dir") or account.transfer_dir or "/KikoeruManager")
+            row.success = bool(status.get("success"))
+            row.ready = bool(status.get("ready") or status.get("success"))
+            row.quota = dict(status.get("quota") or {})
+            row.transfer_quota = dict(status.get("transfer_quota") or {})
+            row.vip = dict(status.get("vip") or {})
+            row.message = str(status.get("message") or "")
+            row.source = source or "live"
+            row.updated_at = now
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.debug("[PikPak] 写入状态缓存失败 account=%s", account.id, exc_info=True)
+        finally:
+            db.close()
+
+    def _pikpak_status_cache_delete_missing(self, active_account_ids: set[str]) -> None:
+        try:
+            from ..models.database import PikPakStatusCache, SessionLocal
+        except Exception:
+            return
+        db = SessionLocal()
+        try:
+            query = db.query(PikPakStatusCache)
+            if active_account_ids:
+                query = query.filter(~PikPakStatusCache.account_id.in_(active_account_ids))
+            query.delete(synchronize_session=False)
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.debug("[PikPak] 清理已移除账号状态缓存失败", exc_info=True)
+        finally:
+            db.close()
+
+    def _pikpak_merge_statuses(self, statuses: List[Dict[str, Any]]) -> Dict[str, Any]:
+        primary = next((item for item in statuses if item.get("success")), statuses[0])
+        result = dict(primary)
+        result["accounts"] = statuses
+        result["total_remaining_bytes"] = sum(int((item.get("quota") or {}).get("remaining_bytes") or 0) for item in statuses if item.get("success"))
+        result["ready"] = any(item.get("success") for item in statuses)
+        result["success"] = result["ready"]
+        result["cached"] = all(bool(item.get("cached")) for item in statuses)
+        cache_times = [str(item.get("cache_updated_at") or item.get("updated_at") or "") for item in statuses if item.get("cache_updated_at") or item.get("updated_at")]
+        if cache_times:
+            result["cache_updated_at"] = max(cache_times)
+            result["updated_at"] = max(cache_times)
+        return result
 
     def _pikpak_account_from_payload(self, data: Dict[str, Any], *, fallback_id: str = "") -> PikPakAccount:
         payload = dict(data or {})
@@ -734,18 +890,18 @@ class HttpDownloadService:
                 transfer_quota = await client.get_transfer_quota()
             with contextlib.suppress(Exception):
                 vip = await client.vip_info()
-            result: Dict[str, Any] = {
-                "success": True,
-                "enabled": True,
-                "ready": True,
-                "account": self._pikpak_account_public(account),
-                "account_id": account.id,
-                "account_label": account.label,
-                "transfer_dir": account.transfer_dir,
-                "quota": quota,
-                "transfer_quota": transfer_quota,
-                "vip": vip,
-            }
+            result = self._pikpak_public_status(
+                account,
+                success=True,
+                ready=True,
+                quota=quota,
+                transfer_quota=transfer_quota,
+                vip=vip,
+                source="live",
+                cached=False,
+                updated_at=datetime.now(),
+            )
+            self._pikpak_status_cache_write(result, account, source="live")
             if include_files:
                 listing = await self.pikpak_transfer_files(client=client, account=account, limit=limit)
                 result["files"] = listing.get("files") or []
@@ -754,39 +910,61 @@ class HttpDownloadService:
         finally:
             await self._close_pikpak_client(client)
 
-    async def pikpak_status(self, *, include_files: bool = False, limit: int = 100, account_id: str = "") -> Dict[str, Any]:
+    async def pikpak_status(self, *, include_files: bool = False, limit: int = 100, account_id: str = "", force_refresh: bool = False) -> Dict[str, Any]:
         accounts = self._pikpak_accounts(include_disabled=True)
         enabled_accounts = [item for item in accounts if item.enabled]
         if not self._pikpak_enabled():
             return {"success": True, "enabled": False, "ready": False, "accounts": [self._pikpak_account_public(item) for item in accounts]}
         if account_id:
-            return await self._pikpak_account_status(self._select_pikpak_account(account_id), include_files=include_files, limit=limit)
+            account = self._select_pikpak_account(account_id)
+            if not force_refresh and not include_files:
+                cached = self._pikpak_status_cache_read(account)
+                if cached:
+                    return cached
+            try:
+                return await self._pikpak_account_status(account, include_files=include_files, limit=limit)
+            except Exception as exc:
+                if not force_refresh and not include_files:
+                    stale = self._pikpak_status_cache_read(account, require_fresh=False)
+                    if stale:
+                        stale["stale"] = True
+                        stale["message"] = f"缓存已过期，刷新失败: {self._sanitize_error(exc)}"
+                        return stale
+                raise
         if not enabled_accounts:
             raise HttpDownloadError("PikPak 未配置可用账号或 token")
+        self._pikpak_status_cache_delete_missing({item.id for item in accounts})
         statuses = []
         for account in enabled_accounts:
+            if not force_refresh and not include_files:
+                cached = self._pikpak_status_cache_read(account)
+                if cached:
+                    statuses.append(cached)
+                    continue
             try:
                 statuses.append(await self._pikpak_account_status(account, include_files=include_files, limit=limit))
             except Exception as exc:
-                statuses.append({
-                    "success": False,
-                    "enabled": True,
-                    "ready": False,
-                    "account": self._pikpak_account_public(account),
-                    "account_id": account.id,
-                    "account_label": account.label,
-                    "transfer_dir": account.transfer_dir,
-                    "quota": {},
-                    "files": [],
-                    "message": self._sanitize_error(exc),
-                })
-        primary = next((item for item in statuses if item.get("success")), statuses[0])
-        result = dict(primary)
-        result["accounts"] = statuses
-        result["total_remaining_bytes"] = sum(int((item.get("quota") or {}).get("remaining_bytes") or 0) for item in statuses if item.get("success"))
-        result["ready"] = any(item.get("success") for item in statuses)
-        result["success"] = result["ready"]
-        return result
+                if not force_refresh and not include_files:
+                    stale = self._pikpak_status_cache_read(account, require_fresh=False)
+                    if stale:
+                        stale["stale"] = True
+                        stale["message"] = f"缓存已过期，刷新失败: {self._sanitize_error(exc)}"
+                        statuses.append(stale)
+                        continue
+                status = self._pikpak_public_status(
+                    account,
+                    success=False,
+                    ready=False,
+                    quota={},
+                    message=self._sanitize_error(exc),
+                    source="live",
+                    cached=False,
+                    updated_at=datetime.now(),
+                )
+                status["files"] = []
+                self._pikpak_status_cache_write(status, account, source="live")
+                statuses.append(status)
+        return self._pikpak_merge_statuses(statuses)
 
     async def test_pikpak_account(self, payload: Optional[Dict[str, Any]] = None, *, account_id: str = "") -> Dict[str, Any]:
         data = dict(payload or {})
@@ -894,6 +1072,60 @@ class HttpDownloadService:
             await walk(file_id, 0)
         return [file_id for _depth, file_id in sorted(result, key=lambda item: item[0], reverse=True)]
 
+    async def _list_pikpak_children(
+        self,
+        client,
+        *,
+        parent_id: Optional[str],
+        trashed: bool = False,
+    ) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        next_page_token = None
+        filters = {"trashed": {"eq": bool(trashed)}}
+        while True:
+            data = await client.file_list(
+                size=100,
+                parent_id=parent_id,
+                next_page_token=next_page_token,
+                additional_filters=filters,
+            )
+            rows.extend([item for item in list((data or {}).get("files") or []) if isinstance(item, dict)])
+            next_page_token = (data or {}).get("next_page_token")
+            if not next_page_token:
+                break
+        return rows
+
+    async def _update_pikpak_quota_cache(self, client, account: PikPakAccount, *, source: str) -> Dict[str, Any]:
+        quota = {}
+        with contextlib.suppress(Exception):
+            quota = self._normalize_pikpak_quota(await client.get_quota_info())
+        if quota:
+            self._pikpak_status_cache_write(
+                self._pikpak_public_status(
+                    account,
+                    success=True,
+                    ready=True,
+                    quota=quota,
+                    source=source,
+                    cached=False,
+                    updated_at=datetime.now(),
+                ),
+                account,
+                source=source,
+            )
+        return quota
+
+    async def _delete_pikpak_ids_forever(self, client, ids: List[str]) -> int:
+        file_ids = [str(item or "").strip() for item in ids or [] if str(item or "").strip()]
+        deleted_count = 0
+        for index in range(0, len(file_ids), 100):
+            chunk = file_ids[index:index + 100]
+            if not chunk:
+                continue
+            await client.delete_forever(chunk)
+            deleted_count += len(chunk)
+        return deleted_count
+
     async def delete_pikpak_transfer_items(self, ids: List[str], *, permanent: bool = False, account_id: str = "") -> Dict[str, Any]:
         file_ids = [str(item or "").strip() for item in ids or [] if str(item or "").strip()]
         if not file_ids:
@@ -906,9 +1138,7 @@ class HttpDownloadService:
                 result = await client.delete_forever(delete_ids)
             else:
                 result = await client.delete_to_trash(delete_ids)
-            quota = {}
-            with contextlib.suppress(Exception):
-                quota = self._normalize_pikpak_quota(await client.get_quota_info())
+            quota = await self._update_pikpak_quota_cache(client, account, source="delete")
             return {
                 "success": True,
                 "deleted_count": len(delete_ids),
@@ -926,13 +1156,84 @@ class HttpDownloadService:
         finally:
             await self._close_pikpak_client(client)
 
+    async def clear_pikpak_account_transfer_space(self, *, account_id: str = "") -> Dict[str, Any]:
+        account = self._select_pikpak_account(account_id)
+        client = await self._pikpak_client(account=account)
+        root_deleted_count = 0
+        trash_deleted_count = 0
+        try:
+            root_rows = await self._list_pikpak_children(client, parent_id=None, trashed=False)
+            root_ids = [self._pikpak_file_id(item) for item in root_rows if self._pikpak_file_id(item)]
+            if root_ids:
+                delete_ids = await self._collect_pikpak_delete_ids(client, root_ids)
+                root_deleted_count = await self._delete_pikpak_ids_forever(client, delete_ids)
+
+            trash_rows = await self._list_pikpak_children(client, parent_id="*", trashed=True)
+            trash_ids = [self._pikpak_file_id(item) for item in trash_rows if self._pikpak_file_id(item)]
+            if trash_ids:
+                trash_deleted_count = await self._delete_pikpak_ids_forever(client, trash_ids)
+
+            quota = await self._update_pikpak_quota_cache(client, account, source="clear")
+            return {
+                "success": True,
+                "account": self._pikpak_account_public(account),
+                "account_id": account.id,
+                "deleted_count": root_deleted_count + trash_deleted_count,
+                "root_deleted_count": root_deleted_count,
+                "trash_deleted_count": trash_deleted_count,
+                "quota": quota,
+            }
+        except Exception as exc:
+            if isinstance(exc, HttpDownloadError):
+                raise
+            raise self._pikpak_error(exc, f"清空账号 {account.label} 转存空间") from exc
+        finally:
+            await self._close_pikpak_client(client)
+
+    async def clear_all_pikpak_transfer_space(self) -> Dict[str, Any]:
+        accounts = self._pikpak_accounts()
+        if not self._pikpak_enabled():
+            raise HttpDownloadError("PikPak 未启用")
+        if not accounts:
+            raise HttpDownloadError("PikPak 未配置可用账号或 token")
+
+        results: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+        for account in accounts:
+            try:
+                results.append(await self.clear_pikpak_account_transfer_space(account_id=account.id))
+            except Exception as exc:
+                errors.append({
+                    "account": self._pikpak_account_public(account),
+                    "account_id": account.id,
+                    "message": self._sanitize_error(exc),
+                })
+
+        total_deleted = sum(int(item.get("deleted_count") or 0) for item in results)
+        total_root_deleted = sum(int(item.get("root_deleted_count") or 0) for item in results)
+        total_trash_deleted = sum(int(item.get("trash_deleted_count") or 0) for item in results)
+        return {
+            "success": not errors,
+            "partial_success": bool(results) and bool(errors),
+            "account_count": len(accounts),
+            "cleared_account_count": len(results),
+            "failed_account_count": len(errors),
+            "deleted_count": total_deleted,
+            "root_deleted_count": total_root_deleted,
+            "trash_deleted_count": total_trash_deleted,
+            "accounts": results,
+            "errors": errors,
+        }
+
     def _direct_link_preview_provider(self, raw_url: str) -> str:
         source = self._provider_source(raw_url)
         return source if source in {"gofile", "onedrive", "google_drive"} else "http"
 
     def _is_direct_download_item(self, item: Dict[str, Any]) -> bool:
+        if item.get("preview_only"):
+            return False
         source = str(item.get("source") or "http")
-        if source in _SHARE_PREVIEW_ONLY_SOURCES:
+        if source == "transferit":
             return False
         return bool(str(item.get("url") or "").strip())
 
@@ -1413,15 +1714,9 @@ class HttpDownloadService:
             raise HttpDownloadError("PikPak 分享链接格式不正确")
         return match.group(1)
 
-    async def _collect_pikpak_share_files(self, client, share_link: str) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
-        clean_share_link = self._pikpak_share_url(share_link)
-        pass_code = self._parse_pikpak_pass_code(share_link) or self._parse_pikpak_pass_code(clean_share_link)
-        try:
-            info = await client.get_share_info(clean_share_link, pass_code=pass_code or None)
-        except Exception as exc:
-            raise self._pikpak_error(exc, "读取分享") from exc
+    def _normalize_pikpak_share_access(self, info: Any, share_link: str, stage: str = "读取分享") -> tuple[str, str]:
         if isinstance(info, Exception):
-            raise self._pikpak_error(info, "读取分享")
+            raise self._pikpak_error(info, stage)
         if not isinstance(info, dict):
             raise HttpDownloadError("PikPak 分享信息返回异常")
         share_status = str(info.get("share_status") or info.get("status") or "").strip()
@@ -1429,10 +1724,98 @@ class HttpDownloadService:
         bad_share_statuses = {"PROHIBITED", "EXPIRED", "DELETED", "BANNED", "FORBIDDEN", "VIOLATION", "INVALID"}
         if share_status.upper() in bad_share_statuses or "current region" in share_status_text.lower():
             detail = f"{share_status}: {share_status_text}" if share_status_text else share_status
-            raise self._pikpak_error(detail, "读取分享")
-        share_id = str(info.get("share_id") or self._pikpak_share_id_from_url(clean_share_link))
+            raise self._pikpak_error(detail, stage)
+        share_id = str(info.get("share_id") or self._pikpak_share_id_from_url(share_link))
         token = str(info.get("pass_code_token") or "")
-        files = [item for item in list(info.get("files") or []) if isinstance(item, dict)]
+        return share_id, token
+
+    async def _pikpak_share_page_request(
+        self,
+        client,
+        *,
+        endpoint: str,
+        share_id: str,
+        order: str,
+        parent_id: Optional[str],
+        page_token: str,
+        pass_code: Optional[str] = None,
+        pass_code_token: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        # pikpakapi 的 get_share_info/get_share_folder 写死 limit=100 且不支持 page_token，
+        # 这里直接复刻底层请求补上 page_token 用于翻页，参数与上游保持一致。
+        host = getattr(client, "PIKPAK_API_HOST", "api-drive.mypikpak.com")
+        data: Dict[str, Any] = {
+            "limit": "100",
+            "thumbnail_size": "SIZE_LARGE",
+            "order": order,
+            "share_id": share_id,
+            "parent_id": parent_id,
+            "page_token": page_token,
+        }
+        if pass_code is not None:
+            data["pass_code"] = pass_code
+        if pass_code_token is not None:
+            data["pass_code_token"] = pass_code_token
+        result = await client._request_get(f"https://{host}/{endpoint}", params=data)
+        return result if isinstance(result, dict) else {}
+
+    async def _pikpak_collect_all_pages(
+        self,
+        client,
+        first_page: Dict[str, Any],
+        *,
+        fetch_next,
+        max_pages: int = 50,
+    ) -> List[Dict[str, Any]]:
+        # 合并首页 files 与后续 next_page_token 翻页，确保 >100 或被 PikPak 分页的分享不丢文件；
+        # 翻页失败时按已取得的文件继续，不退化为报错。
+        files = [it for it in list((first_page or {}).get("files") or []) if isinstance(it, dict)]
+        page_token = str((first_page or {}).get("next_page_token") or "").strip()
+        if not page_token or not hasattr(client, "_request_get"):
+            return files
+        seen = set()
+        for _ in range(max(1, max_pages)):
+            if not page_token or page_token in seen:
+                break
+            seen.add(page_token)
+            try:
+                resp = await fetch_next(page_token)
+            except Exception as exc:
+                logger.warning(
+                    "[PikPak] 分享翻页失败，按已取得的 %s 个文件继续: %s",
+                    len(files),
+                    self._sanitize_error(exc),
+                )
+                break
+            if not isinstance(resp, dict):
+                break
+            files.extend([it for it in list(resp.get("files") or []) if isinstance(it, dict)])
+            page_token = str(resp.get("next_page_token") or "").strip()
+        return files
+
+    async def _collect_pikpak_share_files(self, client, share_link: str) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
+        clean_share_link = self._pikpak_share_url(share_link)
+        pass_code = self._parse_pikpak_pass_code(share_link) or self._parse_pikpak_pass_code(clean_share_link)
+        try:
+            info = await client.get_share_info(clean_share_link, pass_code=pass_code or None)
+        except Exception as exc:
+            raise self._pikpak_error(exc, "读取分享") from exc
+        share_id, token = self._normalize_pikpak_share_access(info, clean_share_link, "读取分享")
+        root_match = re.search(r"/s/[^/]+/([^/?#]+)", urlparse(clean_share_link).path)
+        root_parent_id = root_match.group(1) if root_match else None
+        files = await self._pikpak_collect_all_pages(
+            client,
+            info,
+            fetch_next=lambda pt: self._pikpak_share_page_request(
+                client,
+                endpoint="drive/v1/share",
+                share_id=share_id,
+                order="3",
+                parent_id=root_parent_id,
+                page_token=pt,
+                pass_code=pass_code or None,
+            ),
+        )
         collected: List[Dict[str, Any]] = []
 
         async def walk(items: List[Dict[str, Any]], prefix: str = "") -> None:
@@ -1448,7 +1831,19 @@ class HttpDownloadService:
                         detail = await client.get_share_folder(share_id, token, parent_id=folder_id or None)
                     except Exception as exc:
                         raise self._pikpak_error(exc, "读取分享文件夹") from exc
-                    children = [child for child in list((detail or {}).get("files") or []) if isinstance(child, dict)]
+                    children = await self._pikpak_collect_all_pages(
+                        client,
+                        detail or {},
+                        fetch_next=lambda pt, fid=folder_id: self._pikpak_share_page_request(
+                            client,
+                            endpoint="drive/v1/share/detail",
+                            share_id=share_id,
+                            order="6",
+                            parent_id=fid or None,
+                            page_token=pt,
+                            pass_code_token=token,
+                        ),
+                    )
                     await walk(children, "/".join([part for part in (prefix, name) if part]))
                     continue
                 row = dict(item)
@@ -1456,26 +1851,230 @@ class HttpDownloadService:
                 collected.append(row)
 
         await walk(files)
+        logger.info(
+            "[PikPak诊断] collect 翻页后顶层=%s 收集=%s 首页还有下页=%s 文件名=%s",
+            len(files),
+            len(collected),
+            bool(info.get("next_page_token")),
+            [self._sanitize_filename(str(r.get("name") or "")) for r in collected],
+        )
         return info, collected
 
-    async def _touch_pikpak_share(self, client, share_link: str, *, account: Optional[PikPakAccount] = None) -> None:
+    async def _touch_pikpak_share(self, client, share_link: str, *, account: Optional[PikPakAccount] = None) -> tuple[str, str]:
         if not share_link:
-            return
+            return "", ""
         clean_share_link = self._pikpak_share_url(share_link)
         pass_code = self._parse_pikpak_pass_code(share_link) or self._parse_pikpak_pass_code(clean_share_link)
+        label = getattr(account, "label", "") or "账号"
         try:
             info = await client.get_share_info(clean_share_link, pass_code=pass_code or None)
         except Exception as exc:
-            label = getattr(account, "label", "") or "账号"
             raise self._pikpak_error(exc, f"账号 {label} 读取分享") from exc
-        if isinstance(info, Exception):
-            label = getattr(account, "label", "") or "账号"
-            raise self._pikpak_error(info, f"账号 {label} 读取分享")
+        return self._normalize_pikpak_share_access(info, clean_share_link, f"账号 {label} 读取分享")
 
-    async def _copy_pikpak_share_files(self, client, file_ids: List[str], share_files: Optional[List[Dict[str, Any]]] = None, *, account: Optional[PikPakAccount] = None) -> Dict[str, str]:
+    async def _restore_pikpak_share_files(
+        self,
+        client,
+        *,
+        share_id: str,
+        pass_code_token: str,
+        file_ids: List[str],
+        parent_id: str,
+    ) -> Dict[str, Any]:
+        payload = {
+            "share_id": share_id,
+            "pass_code_token": pass_code_token or "",
+            "file_ids": file_ids,
+        }
+        if parent_id:
+            payload["parent_id"] = parent_id
+        if hasattr(client, "_request_post"):
+            host = str(getattr(client, "PIKPAK_API_HOST", "") or "api-drive.mypikpak.com")
+            return await client._request_post(
+                url=f"https://{host}/drive/v1/share/restore",
+                data=payload,
+            )
+
+        restore = getattr(client, "restore", None)
+        if not callable(restore):
+            raise HttpDownloadError("当前 pikpakapi 客户端不支持分享转存接口")
+        try:
+            signature = inspect.signature(restore)
+            if "parent_id" in signature.parameters:
+                return await restore(share_id, pass_code_token or "", file_ids, parent_id=parent_id or None)
+        except (TypeError, ValueError):
+            pass
+        result = await restore(share_id, pass_code_token or "", file_ids)
+        if parent_id:
+            id_map = self._extract_pikpak_restore_id_map(result, file_ids)
+            restored_ids = list(dict.fromkeys(id_map.values()))
+            if restored_ids and hasattr(client, "file_batch_move"):
+                await client.file_batch_move(restored_ids, to_parent_id=parent_id)
+        return result
+
+    def _extract_pikpak_restore_id_map(self, result: Any, file_ids: List[str]) -> Dict[str, str]:
+        source_ids = {str(item) for item in file_ids if str(item or "").strip()}
+        id_map: Dict[str, str] = {}
+
+        def add_mapping(source_id: Any, target_id: Any) -> None:
+            source = str(source_id or "").strip()
+            target = str(target_id or "").strip()
+            if source in source_ids and target and target != source:
+                id_map[source] = target
+
+        def walk(value: Any) -> None:
+            if isinstance(value, dict):
+                for key in ("file_id_map", "id_map", "restore_map", "file_map"):
+                    nested = value.get(key)
+                    if isinstance(nested, dict):
+                        for source_id, target_id in nested.items():
+                            add_mapping(source_id, target_id)
+                original_id = ""
+                for key in ("original_file_id", "from_id", "source_id", "src_file_id", "share_file_id", "origin_file_id"):
+                    if value.get(key):
+                        original_id = str(value.get(key) or "")
+                        break
+                target_id = ""
+                for key in ("restored_file_id", "new_file_id", "target_file_id", "to_id", "file_id", "id"):
+                    if value.get(key):
+                        target_id = str(value.get(key) or "")
+                        break
+                add_mapping(original_id, target_id)
+                for nested in value.values():
+                    walk(nested)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item)
+
+        walk(result)
+        return id_map
+
+    async def _match_pikpak_restored_files_from_listing(
+        self,
+        client,
+        *,
+        parent_id: str,
+        source_id_map: Dict[str, str],
+        file_ids: List[str],
+        share_files: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        unresolved = [file_id for file_id in file_ids if source_id_map.get(file_id) == file_id]
+        if not unresolved or not parent_id:
+            return
+        try:
+            listing = await self.pikpak_transfer_files(client=client, parent_id=parent_id, root=False, limit=500)
+        except Exception:
+            logger.debug("[PikPak] 转存后读取目录匹配文件失败", exc_info=True)
+            return
+        rows = [item for item in list((listing or {}).get("files") or []) if isinstance(item, dict)]
+        source_files = {
+            self._pikpak_file_id(item): item
+            for item in list(share_files or [])
+            if self._pikpak_file_id(item)
+        }
+        for file_id in unresolved:
+            source = source_files.get(file_id, {})
+            source_name = self._sanitize_filename(source.get("name") or source.get("file_name") or "")
+            source_size = self._pikpak_file_size(source)
+            candidates = []
+            for row in rows:
+                row_id = self._pikpak_file_id(row)
+                if not row_id or row_id in source_id_map.values():
+                    continue
+                row_name = self._sanitize_filename(row.get("name") or row.get("file_name") or "")
+                if source_name and row_name != source_name:
+                    continue
+                row_size = self._pikpak_file_size(row)
+                if source_size and row_size and source_size != row_size:
+                    continue
+                candidates.append(row_id)
+            if len(candidates) == 1:
+                source_id_map[file_id] = candidates[0]
+
+    async def _list_pikpak_folder_files(
+        self,
+        client,
+        folder_id: str,
+        *,
+        limit: int = 500,
+        depth: int = 0,
+    ) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        if not folder_id or depth > 8:
+            return rows
+        try:
+            listing = await self.pikpak_transfer_files(client=client, parent_id=folder_id, root=False, limit=limit)
+        except Exception:
+            return rows
+        for item in list((listing or {}).get("files") or []):
+            if not isinstance(item, dict):
+                continue
+            if self._pikpak_is_folder(item):
+                rows.extend(await self._list_pikpak_folder_files(client, self._pikpak_file_id(item), limit=limit, depth=depth + 1))
+            else:
+                rows.append(item)
+        return rows
+
+    async def _resolve_pikpak_restored_via_container(
+        self,
+        client,
+        *,
+        container_id: str,
+        source_id_map: Dict[str, str],
+        file_ids: List[str],
+        share_files: Optional[List[Dict[str, Any]]] = None,
+        wait_seconds: float = 30.0,
+    ) -> None:
+        unresolved = [file_id for file_id in file_ids if source_id_map.get(file_id) == file_id]
+        if not unresolved or not container_id:
+            return
+        source_by_id = {
+            self._pikpak_file_id(item): item
+            for item in list(share_files or [])
+            if self._pikpak_file_id(item)
+        }
+        deadline = time.monotonic() + max(2.0, float(wait_seconds))
+        while unresolved and time.monotonic() < deadline:
+            rows = await self._list_pikpak_folder_files(client, container_id, limit=500)
+            taken = set(source_id_map.values())
+            for file_id in list(unresolved):
+                source = source_by_id.get(file_id, {})
+                source_name = self._sanitize_filename(source.get("name") or source.get("file_name") or "")
+                source_size = self._pikpak_file_size(source)
+                candidates: List[str] = []
+                for row in rows:
+                    row_id = self._pikpak_file_id(row)
+                    if not row_id or row_id in taken:
+                        continue
+                    row_name = self._sanitize_filename(row.get("name") or row.get("file_name") or "")
+                    if source_name and row_name != source_name:
+                        continue
+                    row_size = self._pikpak_file_size(row)
+                    if source_size and row_size and source_size != row_size:
+                        continue
+                    candidates.append(row_id)
+                if len(candidates) == 1:
+                    source_id_map[file_id] = candidates[0]
+                    taken.add(candidates[0])
+                    unresolved.remove(file_id)
+            if unresolved:
+                await asyncio.sleep(1.5)
+
+    async def _copy_pikpak_share_files(
+        self,
+        client,
+        file_ids: List[str],
+        share_files: Optional[List[Dict[str, Any]]] = None,
+        *,
+        account: Optional[PikPakAccount] = None,
+        share_id: str = "",
+        pass_code_token: str = "",
+    ) -> Dict[str, str]:
         id_map = {str(item): str(item) for item in file_ids if str(item or "").strip()}
         if not file_ids:
             return id_map
+        if not share_id:
+            raise HttpDownloadError("PikPak 转存分享文件缺少 share_id")
         account = account or getattr(client, "_kikoeru_pikpak_account", None)
         parent_id = None
         try:
@@ -1486,6 +2085,20 @@ class HttpDownloadService:
             raise self._pikpak_error(exc, "创建/定位转存目录") from exc
         try:
             quota = self._normalize_pikpak_quota(await client.get_quota_info())
+            if account:
+                self._pikpak_status_cache_write(
+                    self._pikpak_public_status(
+                        account,
+                        success=True,
+                        ready=True,
+                        quota=quota,
+                        source="quota-check",
+                        cached=False,
+                        updated_at=datetime.now(),
+                    ),
+                    account,
+                    source="quota-check",
+                )
             needed = 0
             if int(quota.get("limit_bytes") or 0) > 0:
                 file_id_set = set(file_ids)
@@ -1503,24 +2116,119 @@ class HttpDownloadService:
         except Exception:
             logger.debug("[PikPak] 容量预检失败，继续尝试转存", exc_info=True)
         try:
-            result = await client.file_batch_copy(file_ids, to_parent_id=parent_id or None)
+            result = await self._restore_pikpak_share_files(
+                client,
+                share_id=share_id,
+                pass_code_token=pass_code_token,
+                file_ids=file_ids,
+                parent_id=parent_id or "",
+            )
         except Exception as exc:
             raise self._pikpak_error(exc, "转存分享文件") from exc
-        for item in list((result or {}).get("files") or []):
-            if not isinstance(item, dict):
-                continue
-            original_id = str(item.get("original_file_id") or item.get("from_id") or item.get("source_id") or "")
-            copied_id = str(item.get("id") or item.get("file_id") or "")
-            if original_id and copied_id:
-                id_map[original_id] = copied_id
-        tasks = list((result or {}).get("tasks") or [])
-        for item in tasks:
-            if not isinstance(item, dict):
-                continue
-            original_id = str(item.get("original_file_id") or item.get("from_id") or item.get("source_id") or "")
-            copied_id = str(item.get("file_id") or item.get("id") or "")
-            if original_id and copied_id:
-                id_map[original_id] = copied_id
+        try:
+            restore_keys = list(result.keys()) if isinstance(result, dict) else type(result).__name__
+            restore_dump = (
+                json.dumps(result, ensure_ascii=False, default=str)[:3000]
+                if isinstance(result, (dict, list))
+                else str(result)[:3000]
+            )
+            share_brief = [
+                {
+                    "id": self._pikpak_file_id(item),
+                    "name": str(item.get("name") or item.get("file_name") or ""),
+                    "size": self._pikpak_file_size(item),
+                    "is_folder": self._pikpak_is_folder(item),
+                }
+                for item in list(share_files or [])[:12]
+            ]
+            logger.info(
+                "[PikPak诊断] 转存入参 account=%s share_id=%s 传入parent_id=%s file_ids=%s share_files=%s",
+                getattr(account, "label", "") or "默认",
+                share_id,
+                parent_id,
+                file_ids,
+                share_brief,
+            )
+            logger.info("[PikPak诊断] restore 返回 keys=%s 原始=%s", restore_keys, restore_dump)
+            try:
+                root_listing = await self.pikpak_transfer_files(client=client, root=True, limit=200)
+                root_rows = [
+                    (r.get("name"), r.get("id"), r.get("is_folder"), r.get("size_bytes"))
+                    for r in (root_listing.get("files") or [])
+                ]
+                logger.info("[PikPak诊断] 转存后根目录(%s 项)=%s", len(root_rows), root_rows)
+            except Exception:
+                logger.warning("[PikPak诊断] 列根目录失败", exc_info=True)
+            try:
+                dir_listing = await self.pikpak_transfer_files(client=client, parent_id=parent_id or "", root=False, limit=200)
+                dir_rows = [
+                    (r.get("name"), r.get("id"), r.get("is_folder"), r.get("size_bytes"))
+                    for r in (dir_listing.get("files") or [])
+                ]
+                logger.info("[PikPak诊断] 转存目录 parent_id=%s(%s 项)=%s", parent_id, len(dir_rows), dir_rows)
+            except Exception:
+                logger.warning("[PikPak诊断] 列转存目录失败", exc_info=True)
+        except Exception:
+            logger.warning("[PikPak诊断] 诊断日志输出失败", exc_info=True)
+        id_map.update(self._extract_pikpak_restore_id_map(result, file_ids))
+        restore_container_id = str(result.get("file_id") or "").strip() if isinstance(result, dict) else ""
+        if restore_container_id:
+            await self._resolve_pikpak_restored_via_container(
+                client,
+                container_id=restore_container_id,
+                source_id_map=id_map,
+                file_ids=file_ids,
+                share_files=share_files,
+            )
+        await self._match_pikpak_restored_files_from_listing(
+            client,
+            parent_id=parent_id or "",
+            source_id_map=id_map,
+            file_ids=file_ids,
+            share_files=share_files,
+        )
+        with contextlib.suppress(Exception):
+            logger.info(
+                "[PikPak诊断] 匹配后 id_map=%s unresolved=%s",
+                id_map,
+                [fid for fid in file_ids if id_map.get(fid) == fid],
+            )
+        unresolved_ids = [file_id for file_id in file_ids if id_map.get(file_id) == file_id]
+        if unresolved_ids:
+            unresolved_names = []
+            source_by_id = {
+                self._pikpak_file_id(item): item
+                for item in list(share_files or [])
+                if self._pikpak_file_id(item)
+            }
+            for file_id in unresolved_ids[:5]:
+                source = source_by_id.get(file_id, {})
+                unresolved_names.append(str(source.get("name") or source.get("file_name") or file_id))
+            suffix = "、".join(unresolved_names)
+            raise HttpDownloadError(f"PikPak 转存成功但未能定位转存后的文件 ID: {suffix}")
+        restored_ids = [
+            id_map[file_id]
+            for file_id in file_ids
+            if id_map.get(file_id) and id_map.get(file_id) != file_id
+        ]
+        if restored_ids and parent_id and hasattr(client, "file_batch_move"):
+            with contextlib.suppress(Exception):
+                await client.file_batch_move(restored_ids, to_parent_id=parent_id)
+        if account:
+            with contextlib.suppress(Exception):
+                self._pikpak_status_cache_write(
+                    self._pikpak_public_status(
+                        account,
+                        success=True,
+                        ready=True,
+                        quota=self._normalize_pikpak_quota(await client.get_quota_info()),
+                        source="copy",
+                        cached=False,
+                        updated_at=datetime.now(),
+                    ),
+                    account,
+                    source="copy",
+                )
         return id_map
 
     async def _copy_pikpak_share_files_multi(
@@ -1530,6 +2238,8 @@ class HttpDownloadService:
         share_files: Optional[List[Dict[str, Any]]] = None,
         *,
         share_link: str = "",
+        share_id: str = "",
+        pass_code_token: str = "",
     ) -> tuple[Dict[str, str], Dict[str, PikPakAccount]]:
         source_id_map = {str(item): str(item) for item in file_ids if str(item or "").strip()}
         account_by_source: Dict[str, PikPakAccount] = {}
@@ -1579,7 +2289,14 @@ class HttpDownloadService:
             ]
             if not available_accounts:
                 if len(accounts) == 1:
-                    return await self._copy_pikpak_share_files(collector_client, file_ids, share_files, account=accounts[0]), {file_id: accounts[0] for file_id in file_ids}
+                    return await self._copy_pikpak_share_files(
+                        collector_client,
+                        file_ids,
+                        share_files,
+                        account=accounts[0],
+                        share_id=share_id or (self._pikpak_share_id_from_url(share_link) if share_link else ""),
+                        pass_code_token=pass_code_token,
+                    ), {file_id: accounts[0] for file_id in file_ids}
                 detail = "；".join(f"{account.label}: {failures.get(account.id, '无法读取容量')}" for account in accounts)
                 raise HttpDownloadError(f"PikPak 无法读取任何账号容量，不能安全分配转存。{detail}")
 
@@ -1615,13 +2332,17 @@ class HttpDownloadService:
                 if not ids_for_account:
                     continue
                 client = clients[account.id]
+                account_share_id = share_id or (self._pikpak_share_id_from_url(share_link) if share_link else "")
+                account_token = pass_code_token
                 if account.id != collector_account_id and share_link:
-                    await self._touch_pikpak_share(client, share_link, account=account)
+                    account_share_id, account_token = await self._touch_pikpak_share(client, share_link, account=account)
                 id_map = await self._copy_pikpak_share_files(
                     client,
                     ids_for_account,
                     [item_by_id.get(file_id, {"id": file_id}) for file_id in ids_for_account],
                     account=account,
+                    share_id=account_share_id,
+                    pass_code_token=account_token,
                 )
                 source_id_map.update(id_map)
                 for file_id in ids_for_account:
@@ -1643,28 +2364,43 @@ class HttpDownloadService:
             return f"{int(size)} {units[index]}"
         return f"{size:.1f} {units[index]}"
 
-    async def _pikpak_download_link(self, client, file_id: str, *, allow_missing: bool = False) -> Dict[str, Any]:
-        try:
-            info = await client.get_download_url(file_id)
-        except Exception as exc:
-            if allow_missing:
-                return {}
-            raise self._pikpak_error(exc, "解析下载直链") from exc
-        if not isinstance(info, dict):
-            raise HttpDownloadError("PikPak 下载链接返回异常")
-        url = str(info.get("web_content_link") or "").strip()
-        if not url:
-            media = list(info.get("medias") or [])
-            if media:
-                link = media[0].get("link") if isinstance(media[0], dict) else None
-                if isinstance(link, dict):
-                    url = str(link.get("url") or "").strip()
-        if not url and allow_missing:
-            return info
-        if not url:
-            raise HttpDownloadError("PikPak 未返回可下载链接，可能需要会员权限或文件仍在转码/审核")
-        info["_download_url"] = url
-        return info
+    async def _pikpak_download_link(self, client, file_id: str, *, allow_missing: bool = False, max_attempts: int = 5) -> Dict[str, Any]:
+        # captcha/init 对副账号偶发 400，单次失败极易丢分卷。下载阶段多次重试(失败则重新登录刷新匹配 token + 退避)，
+        # 预览阶段(allow_missing)只试一次保持响应速度。
+        attempts = 1 if allow_missing else max(1, max_attempts)
+        last_error: Optional[Exception] = None
+        for attempt in range(1, attempts + 1):
+            info: Any = None
+            try:
+                info = await client.get_download_url(file_id)
+            except Exception as exc:
+                last_error = exc
+                info = None
+            if isinstance(info, dict):
+                url = str(info.get("web_content_link") or "").strip()
+                if not url:
+                    media = list(info.get("medias") or [])
+                    if media:
+                        link = media[0].get("link") if isinstance(media[0], dict) else None
+                        if isinstance(link, dict):
+                            url = str(link.get("url") or "").strip()
+                if url:
+                    info["_download_url"] = url
+                    return info
+                last_error = HttpDownloadError("PikPak 未返回可下载链接，可能需要会员权限或文件仍在转码/审核")
+            if attempt < attempts:
+                account = getattr(client, "_kikoeru_pikpak_account", None)
+                if account and account.username and account.password and account.password != "********":
+                    with contextlib.suppress(Exception):
+                        await self._refresh_pikpak_login_with_password(client, account, stage="解析下载直链")
+                await asyncio.sleep(min(1.0 * attempt, 4.0))
+        if allow_missing:
+            return {}
+        if isinstance(last_error, HttpDownloadError):
+            raise last_error
+        if last_error is not None:
+            raise self._pikpak_error(last_error, "解析下载直链") from last_error
+        raise HttpDownloadError("PikPak 解析下载直链失败")
 
     async def resolve_source_urls(self, urls: List[str], *, materialize: bool = False) -> Dict[str, Any]:
         resolved: List[str] = []
@@ -1748,6 +2484,8 @@ class HttpDownloadService:
                         if not files:
                             failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": "PikPak 分享中没有可下载文件", "source": "pikpak"})
                             continue
+                        share_id = str(info.get("share_id") or self._pikpak_share_id_from_url(raw_url))
+                        pass_code_token = str(info.get("pass_code_token") or "")
                         file_ids = []
                         for item in files:
                             file_id = str(item.get("id") or item.get("file_id") or "")
@@ -1762,6 +2500,8 @@ class HttpDownloadService:
                                 file_ids,
                                 files,
                                 share_link=raw_url,
+                                share_id=share_id,
+                                pass_code_token=pass_code_token,
                             )
                             for account in account_by_source.values():
                                 if account.id not in download_clients:
@@ -1774,7 +2514,13 @@ class HttpDownloadService:
                             download_file_id = copied_id_map.get(file_id, file_id)
                             item_account = account_by_source.get(file_id) or collector_account
                             detail_client = download_clients.get(item_account.id) or client
-                            detail = await self._pikpak_download_link(detail_client, download_file_id, allow_missing=not materialize)
+                            item_name = self._sanitize_filename(item.get("name") or "pikpak-file")
+                            try:
+                                detail = await self._pikpak_download_link(detail_client, download_file_id, allow_missing=not materialize)
+                            except Exception as item_exc:
+                                # 单个分卷解析失败不再跳出整批，记录后继续，避免静默丢掉后续分卷
+                                failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": f"{item_name}: {self._sanitize_error(item_exc)}", "source": "pikpak", "name": item_name, "filename": item_name, "file_id": file_id})
+                                continue
                             download_url = str(detail.get("_download_url") or "")
                             name = self._sanitize_filename(detail.get("name") or item.get("name") or "pikpak-file")
                             relative_dir = str(item.get("_relative_dir") or "").strip("/")
@@ -1791,7 +2537,7 @@ class HttpDownloadService:
                                 "filename": name,
                                 "relative_dir": relative_dir,
                                 "size_bytes": self._pikpak_file_size(detail) or self._pikpak_file_size(item),
-                                "share_id": info.get("share_id") or self._pikpak_share_id_from_url(raw_url),
+                                "share_id": share_id,
                                 "pikpak_account_id": item_account.id,
                                 "pikpak_account_label": item_account.label,
                                 "pikpak_transfer_dir": item_account.transfer_dir,
@@ -2304,7 +3050,34 @@ class HttpDownloadService:
         items = [item for item in preview.get("items") or [] if item.get("ok")]
         failed_items = [item for item in preview.get("items") or [] if not item.get("ok")]
         if not items:
-            raise HttpDownloadError("没有通过校验的下载项")
+            reasons = []
+            for item in failed_items[:5]:
+                reason = str(item.get("reason") or item.get("failure_reason") or "").strip()
+                target = str(item.get("filename") or item.get("masked_url") or item.get("url") or "").strip()
+                if reason:
+                    reasons.append(f"{target}: {reason}" if target else reason)
+            detail = "；".join(reasons)
+            raise HttpDownloadError(f"没有通过校验的下载项: {detail}" if detail else "没有通过校验的下载项")
+        # 分享类(PikPak/Transfer.it)通常是同一作品的分卷，缺任一文件即无法解压；
+        # 只要有分享文件解析失败就整体中止并报明细，避免下载残缺分卷后续解压必然失败。
+        share_failed = [
+            item for item in failed_items
+            if str(item.get("source") or "") in _SHARE_PREVIEW_ONLY_SOURCES
+        ]
+        if share_failed:
+            reasons = []
+            for item in share_failed[:8]:
+                reason = str(item.get("reason") or item.get("failure_reason") or "").strip()
+                target = str(item.get("filename") or item.get("name") or item.get("masked_url") or "").strip()
+                if target and reason:
+                    reasons.append(f"{target}: {reason}")
+                elif target or reason:
+                    reasons.append(target or reason)
+            detail = "；".join(r for r in reasons if r)
+            raise HttpDownloadError(
+                f"分享中有 {len(share_failed)} 个文件解析失败，已中止以避免下载残缺分卷：{detail}"
+                if detail else f"分享中有 {len(share_failed)} 个文件解析失败，已中止以避免下载残缺分卷"
+            )
         resolved_urls = list(preview.get("resolved_urls") or [])
         source_items = list(preview.get("source_items") or [])
         source_modes = list(preview.get("source_modes") or [])

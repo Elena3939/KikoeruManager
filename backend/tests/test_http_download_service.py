@@ -451,12 +451,14 @@ async def test_copy_pikpak_share_files_maps_copied_ids(monkeypatch, tmp_path):
             assert create is True
             return [{"id": "target-folder"}]
 
-        async def file_batch_copy(self, ids, to_parent_id=None):
-            assert ids == ["src-1"]
-            assert to_parent_id == "target-folder"
+        async def restore(self, share_id, pass_code_token, file_ids, parent_id=None):
+            assert share_id == "share-id"
+            assert pass_code_token == "token"
+            assert file_ids == ["src-1"]
+            assert parent_id == "target-folder"
             return {"files": [{"original_file_id": "src-1", "id": "copied-1"}]}
 
-    id_map = await service._copy_pikpak_share_files(Client(), ["src-1"])
+    id_map = await service._copy_pikpak_share_files(Client(), ["src-1"], share_id="share-id", pass_code_token="token")
 
     assert id_map["src-1"] == "copied-1"
 
@@ -473,11 +475,11 @@ async def test_copy_pikpak_share_files_reports_space_shortage(monkeypatch, tmp_p
         async def get_quota_info(self):
             return {"quota": {"limit": "100", "usage": "90", "usage_in_trash": "0"}}
 
-        async def file_batch_copy(self, ids, to_parent_id=None):
+        async def restore(self, share_id, pass_code_token, file_ids, parent_id=None):
             raise AssertionError("空间不足时不应该继续转存")
 
     with pytest.raises(HttpDownloadError, match="转存空间不足"):
-        await service._copy_pikpak_share_files(Client(), ["src-1"], [{"id": "src-1", "size": 20}])
+        await service._copy_pikpak_share_files(Client(), ["src-1"], [{"id": "src-1", "size": 20}], share_id="share-id", pass_code_token="token")
 
 
 @pytest.mark.asyncio
@@ -508,9 +510,12 @@ async def test_copy_pikpak_share_files_multi_splits_by_remaining_space(monkeypat
         async def path_to_id(self, path, create=False):
             return [{"id": f"folder-{self._kikoeru_pikpak_account.id}"}]
 
-        async def file_batch_copy(self, ids, to_parent_id=None):
-            copied[self._kikoeru_pikpak_account.id] = list(ids)
-            return {"files": [{"original_file_id": item, "id": f"{self._kikoeru_pikpak_account.id}-{item}"} for item in ids]}
+        async def restore(self, share_id, pass_code_token, file_ids, parent_id=None):
+            assert share_id == "share-id"
+            assert pass_code_token == "token"
+            assert parent_id == f"folder-{self._kikoeru_pikpak_account.id}"
+            copied[self._kikoeru_pikpak_account.id] = list(file_ids)
+            return {"files": [{"original_file_id": item, "id": f"{self._kikoeru_pikpak_account.id}-{item}"} for item in file_ids]}
 
     clients = {
         "small": Client("small", 60),
@@ -528,6 +533,8 @@ async def test_copy_pikpak_share_files_multi_splits_by_remaining_space(monkeypat
         ["big", "mid"],
         [{"id": "big", "size": 90}, {"id": "mid", "size": 50}],
         share_link="https://mypikpak.com/s/share-id",
+        share_id="share-id",
+        pass_code_token="token",
     )
 
     assert copied["large"] == ["big"]
@@ -652,6 +659,51 @@ async def test_delete_pikpak_transfer_items_uses_trash(monkeypatch, tmp_path):
     assert result["account_id"] == "default"
 
 
+@pytest.mark.asyncio
+async def test_clear_pikpak_account_transfer_space_deletes_root_and_trash(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path, pikpak_enabled=True, pikpak_encoded_token="token")
+    service = HttpDownloadService()
+    deleted = []
+    list_calls = []
+
+    class Client:
+        async def file_list(self, size=100, parent_id=None, next_page_token=None, additional_filters=None):
+            list_calls.append((parent_id, additional_filters))
+            if parent_id is None:
+                return {"files": [{"id": "file-1", "name": "cache.zip", "kind": "drive#file"}]}
+            if parent_id == "file-1":
+                return {"files": []}
+            if parent_id == "*":
+                assert additional_filters == {"trashed": {"eq": True}}
+                return {"files": [{"id": "trash-1", "name": "old.zip", "kind": "drive#file"}]}
+            return {"files": []}
+
+        async def delete_forever(self, ids):
+            deleted.append(list(ids))
+            return {"ok": True}
+
+        async def get_quota_info(self):
+            return {"quota": {"limit": "100", "usage": "0", "usage_in_trash": "0"}}
+
+    async def fake_client(account_id="", *, account=None):
+        client = Client()
+        client._kikoeru_pikpak_account = account or service._select_pikpak_account(account_id)
+        return client
+
+    monkeypatch.setattr(service, "_pikpak_client", fake_client)
+    monkeypatch.setattr(service, "_close_pikpak_client", lambda _client: asyncio.sleep(0))
+
+    result = await service.clear_pikpak_account_transfer_space()
+
+    assert deleted == [["file-1"], ["trash-1"]]
+    assert (None, {"trashed": {"eq": False}}) in list_calls
+    assert ("*", {"trashed": {"eq": True}}) in list_calls
+    assert result["deleted_count"] == 2
+    assert result["root_deleted_count"] == 1
+    assert result["trash_deleted_count"] == 1
+    assert result["quota"]["remaining_bytes"] == 100
+
+
 def test_pikpak_error_explains_quota(monkeypatch, tmp_path):
     bind_config(monkeypatch, tmp_path)
     service = HttpDownloadService()
@@ -659,6 +711,107 @@ def test_pikpak_error_explains_quota(monkeypatch, tmp_path):
     error = service._pikpak_error(RuntimeError("insufficient storage quota"), "转存分享文件")
 
     assert "账号空间不足" in str(error)
+
+
+def test_pikpak_error_hints_country_code_for_captcha_init_params(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+
+    error = service._pikpak_error(
+        RuntimeError("meta.username expect 18950976769, but got map[phone_number:+8618950976769 result:accept], please check captcha init params"),
+        "登录账号 18950976769",
+    )
+
+    text = str(error)
+    assert "国家码" in text
+    assert "+86" in text
+
+
+def test_pikpak_status_uses_persisted_cache_by_default(monkeypatch, tmp_path):
+    bind_config(
+        monkeypatch,
+        tmp_path,
+        pikpak_enabled=True,
+        pikpak_accounts=[{
+            "id": "first",
+            "label": "一号",
+            "username": "first@example.com",
+            "password": "pass",
+            "transfer_dir": "/KikoeruManager",
+        }],
+    )
+    service = HttpDownloadService()
+    monkeypatch.setattr(service, "_pikpak_status_cache_delete_missing", lambda _ids: None)
+
+    def cached_status(account, *, require_fresh=True):
+        assert require_fresh is True
+        return {
+            "success": True,
+            "enabled": True,
+            "ready": True,
+            "account": service._pikpak_account_public(account),
+            "account_id": account.id,
+            "account_label": account.label,
+            "transfer_dir": account.transfer_dir,
+            "quota": {"limit_bytes": 100, "usage_bytes": 40, "remaining_bytes": 60},
+            "source": "cache",
+            "cached": True,
+            "cache_updated_at": "2026-01-01T00:00:00",
+        }
+
+    async def live_status(*_args, **_kwargs):
+        raise AssertionError("默认读取状态不应该重新请求 PikPak")
+
+    monkeypatch.setattr(service, "_pikpak_status_cache_read", cached_status)
+    monkeypatch.setattr(service, "_pikpak_account_status", live_status)
+
+    result = asyncio.run(service.pikpak_status())
+
+    assert result["success"] is True
+    assert result["cached"] is True
+    assert result["accounts"][0]["source"] == "cache"
+    assert result["total_remaining_bytes"] == 60
+
+
+def test_pikpak_status_force_refresh_bypasses_cache(monkeypatch, tmp_path):
+    bind_config(
+        monkeypatch,
+        tmp_path,
+        pikpak_enabled=True,
+        pikpak_accounts=[{
+            "id": "first",
+            "label": "一号",
+            "username": "first@example.com",
+            "password": "pass",
+        }],
+    )
+    service = HttpDownloadService()
+    calls = []
+    monkeypatch.setattr(service, "_pikpak_status_cache_delete_missing", lambda _ids: None)
+    monkeypatch.setattr(service, "_pikpak_status_cache_read", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("强制刷新不该读缓存")))
+
+    async def live_status(account, *, include_files=False, limit=100):
+        calls.append((account.id, include_files, limit))
+        return {
+            "success": True,
+            "enabled": True,
+            "ready": True,
+            "account": service._pikpak_account_public(account),
+            "account_id": account.id,
+            "account_label": account.label,
+            "transfer_dir": account.transfer_dir,
+            "quota": {"limit_bytes": 100, "usage_bytes": 10, "remaining_bytes": 90},
+            "source": "live",
+            "cached": False,
+        }
+
+    monkeypatch.setattr(service, "_pikpak_account_status", live_status)
+
+    result = asyncio.run(service.pikpak_status(force_refresh=True, limit=1))
+
+    assert calls == [("first", False, 1)]
+    assert result["cached"] is False
+    assert result["accounts"][0]["source"] == "live"
 
 
 @pytest.mark.asyncio
