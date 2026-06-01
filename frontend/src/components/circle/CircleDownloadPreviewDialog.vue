@@ -1143,6 +1143,21 @@ function formatSize(bytes) {
 </script>
 
 <style>
+.circle-download-preview-overlay {
+  background: transparent !important;
+  background-image: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html.kikoerumanager-dark .circle-download-preview-overlay,
+body.kikoerumanager-dark .circle-download-preview-overlay {
+  background: transparent !important;
+  background-image: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
 .tab-count {
   padding: 2px 5px;
   border-radius: 999px;
@@ -1792,8 +1807,10 @@ function formatSize(bytes) {
 }
 
 html.kikoerumanager-dark .circle-download-preview-overlay {
-  background: rgba(6, 7, 10, 0.72) !important;
-  backdrop-filter: blur(10px);
+  background: transparent !important;
+  background-image: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
 html.kikoerumanager-dark .circle-download-preview-modal.el-dialog {

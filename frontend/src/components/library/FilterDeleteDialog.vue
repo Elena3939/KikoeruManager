@@ -1925,12 +1925,10 @@ onBeforeUnmount(() => {
 }
 
 .custom-preview-overlay {
-  background:
-    radial-gradient(circle at 18% 16%, rgba(191, 219, 254, 0.26), transparent 28%),
-    radial-gradient(circle at 82% 14%, rgba(186, 230, 253, 0.22), transparent 24%),
-    radial-gradient(circle at 82% 82%, rgba(221, 239, 255, 0.2), transparent 26%),
-    rgba(241, 245, 249, 0.34);
-  backdrop-filter: blur(20px) saturate(130%);
+  background: transparent !important;
+  background-image: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
 .glass-card {
