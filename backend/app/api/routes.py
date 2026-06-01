@@ -11821,11 +11821,16 @@ async def http_download_status():
 
 
 @app.get("/api/http-download/pikpak/status")
-async def http_download_pikpak_status(include_files: bool = False, limit: int = 100, account_id: str = ""):
+async def http_download_pikpak_status(include_files: bool = False, limit: int = 100, account_id: str = "", force_refresh: bool = False):
     from ..core.http_download_service import get_http_download_service
 
     try:
-        return await get_http_download_service().pikpak_status(include_files=include_files, limit=limit, account_id=account_id)
+        return await get_http_download_service().pikpak_status(
+            include_files=include_files,
+            limit=limit,
+            account_id=account_id,
+            force_refresh=force_refresh,
+        )
     except Exception as exc:
         logger.error("获取 PikPak 状态失败: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
@@ -11864,6 +11869,17 @@ async def http_download_pikpak_delete(request: PikPakTransferDeleteRequest):
         return await get_http_download_service().delete_pikpak_transfer_items(request.ids, permanent=request.permanent, account_id=request.account_id)
     except Exception as exc:
         logger.error("删除 PikPak 转存文件失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/http-download/pikpak/clear")
+async def http_download_pikpak_clear():
+    from ..core.http_download_service import get_http_download_service
+
+    try:
+        return await get_http_download_service().clear_all_pikpak_transfer_space()
+    except Exception as exc:
+        logger.error("清空 PikPak 转存空间失败: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
 
 
