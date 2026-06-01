@@ -268,11 +268,8 @@ const watcherStatus = ref({ is_running: false, watch_path: '', pending_files: []
 const mobileNavOpen = ref(false)
 const themeStorageKey = 'kikoerumanager.theme'
 const sidebarPinnedStorageKey = 'kikoerumanager.sidebarPinned'
-const themeTransitionClass = 'kikoerumanager-theme-transition'
-const themeTransitionDuration = 460
 const isDarkTheme = ref(false)
 const sidebarPinned = ref(false)
-let themeTransitionTimer = null
 
 // 路由切换时自动关闭移动端抽屉（点击菜单项后即关闭）
 watch(() => route.fullPath, () => {
@@ -350,7 +347,6 @@ onUnmounted(() => {
     clearInterval(intervalId)
     intervalId = null
   }
-  clearThemeTransitionClass()
 })
 
 async function refreshStatus() {
@@ -399,47 +395,7 @@ function commitThemeToggle() {
   persistTheme()
 }
 
-function getThemeTransitionOrigin(event) {
-  if (typeof window === 'undefined') {
-    return { x: 0, y: 0, radius: 0 }
-  }
-  const target = event?.currentTarget instanceof HTMLElement ? event.currentTarget : null
-  const rect = target?.getBoundingClientRect()
-  const x = rect ? rect.left + rect.width / 2 : window.innerWidth / 2
-  const y = rect ? rect.top + rect.height / 2 : window.innerHeight / 2
-  const radius = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y))
-  return { x, y, radius }
-}
-
-function clearThemeTransitionClass() {
-  if (typeof document === 'undefined') return
-  if (themeTransitionTimer) {
-    clearTimeout(themeTransitionTimer)
-    themeTransitionTimer = null
-  }
-  document.documentElement.classList.remove(themeTransitionClass)
-  document.body.classList.remove(themeTransitionClass)
-}
-
-function markThemeTransitioning(event) {
-  if (typeof document === 'undefined' || typeof window === 'undefined') return
-  if (typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
-  const { x, y, radius } = getThemeTransitionOrigin(event)
-  document.documentElement.style.setProperty('--theme-transition-x', `${x}px`)
-  document.documentElement.style.setProperty('--theme-transition-y', `${y}px`)
-  document.documentElement.style.setProperty('--theme-transition-radius', `${Math.ceil(radius)}px`)
-  document.documentElement.style.setProperty(
-    '--theme-transition-color',
-    isDarkTheme.value ? 'rgba(255, 255, 255, 0.5)' : 'rgba(8, 9, 13, 0.36)'
-  )
-  document.documentElement.classList.add(themeTransitionClass)
-  document.body.classList.add(themeTransitionClass)
-  if (themeTransitionTimer) clearTimeout(themeTransitionTimer)
-  themeTransitionTimer = setTimeout(clearThemeTransitionClass, themeTransitionDuration + 80)
-}
-
-function toggleTheme(event) {
-  markThemeTransitioning(event)
+function toggleTheme() {
   commitThemeToggle()
 }
 
@@ -583,55 +539,18 @@ html.kikoerumanager-dark .theme-toggle-button:hover {
   box-shadow: 0 8px 18px rgba(37, 99, 235, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.1);
 }
 
-body.kikoerumanager-theme-transition::before {
-  position: fixed;
-  left: var(--theme-transition-x, 50vw);
-  top: var(--theme-transition-y, 50vh);
-  z-index: 2147483647;
-  width: 1px;
-  height: 1px;
-  pointer-events: none;
-  content: "";
-  border-radius: 999px;
-  background: var(--theme-transition-color, rgba(15, 23, 42, 0.32));
-  opacity: 0;
-  transform: translate3d(-50%, -50%, 0) scale(0);
-  animation: theme-lightweight-ripple 0.46s cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: transform, opacity;
-}
-
-html.kikoerumanager-theme-transition body,
-html.kikoerumanager-theme-transition #app,
-html.kikoerumanager-theme-transition .app-container,
-html.kikoerumanager-theme-transition .sidebar-shell,
-html.kikoerumanager-theme-transition .content-shell,
-html.kikoerumanager-theme-transition .main-shell {
+body,
+#app,
+.app-container,
+.sidebar-shell,
+.content-shell,
+.main-shell {
   transition:
     background-color 0.28s ease,
     background 0.28s ease,
     border-color 0.28s ease,
     color 0.24s ease,
     box-shadow 0.28s ease !important;
-}
-
-@keyframes theme-lightweight-ripple {
-  0% {
-    opacity: 0.28;
-    transform: translate3d(-50%, -50%, 0) scale(0);
-  }
-  55% {
-    opacity: 0.18;
-  }
-  100% {
-    opacity: 0;
-    transform: translate3d(-50%, -50%, 0) scale(var(--theme-transition-radius, 1400));
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  body.kikoerumanager-theme-transition::before {
-    animation-duration: 0.01ms;
-  }
 }
 
 html.kikoerumanager-dark .el-card,
@@ -1894,10 +1813,10 @@ html.kikoerumanager-dark .lib-move-modal.el-dialog {
   box-shadow: none !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .window,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .window,
 html.kikoerumanager-dark .server-upload-preview-modal .window,
 html.kikoerumanager-dark .lib-move-modal .window,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .glass-shell,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .glass-shell,
 html.kikoerumanager-dark .server-upload-preview-modal .glass-shell,
 html.kikoerumanager-dark .lib-move-modal .glass-shell {
   background: var(--km-dark-sidebar) !important;
@@ -1906,10 +1825,10 @@ html.kikoerumanager-dark .lib-move-modal .glass-shell {
   box-shadow: 0 28px 70px rgba(0, 0, 0, 0.56), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .window-header,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .window-header,
 html.kikoerumanager-dark .server-upload-preview-modal .window-header,
 html.kikoerumanager-dark .lib-move-modal .window-header,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .footer-row,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .footer-row,
 html.kikoerumanager-dark .server-upload-preview-modal .footer-row,
 html.kikoerumanager-dark .lib-move-modal .footer-row,
 html.kikoerumanager-dark .lib-move-modal .explorer-toolbar {
@@ -1918,11 +1837,11 @@ html.kikoerumanager-dark .lib-move-modal .explorer-toolbar {
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .title,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .title,
 html.kikoerumanager-dark .server-upload-preview-modal .title,
 html.kikoerumanager-dark .lib-move-modal .title,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) h1,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) h2,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) h1,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) h2,
 html.kikoerumanager-dark .server-upload-preview-modal h1,
 html.kikoerumanager-dark .server-upload-preview-modal h2,
 html.kikoerumanager-dark .lib-move-modal h1,
@@ -1930,11 +1849,11 @@ html.kikoerumanager-dark .lib-move-modal h2 {
   color: var(--km-dark-text-strong) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) p,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) label,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .summary,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .target-path,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .tree-size,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) p,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) label,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .summary,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .target-path,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .tree-size,
 html.kikoerumanager-dark .server-upload-preview-modal p,
 html.kikoerumanager-dark .server-upload-preview-modal label,
 html.kikoerumanager-dark .server-upload-preview-modal .summary,
@@ -1946,8 +1865,8 @@ html.kikoerumanager-dark .lib-move-modal .path-empty {
   color: var(--km-dark-text-muted) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .glass-panel,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .glass-card,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .glass-panel,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .glass-card,
 html.kikoerumanager-dark .server-upload-preview-modal .glass-panel,
 html.kikoerumanager-dark .server-upload-preview-modal .glass-card,
 html.kikoerumanager-dark .lib-move-modal .glass-panel,
@@ -1961,10 +1880,10 @@ html.kikoerumanager-dark .lib-move-modal .content-pane {
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .field-input,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .select-button,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .picker-button,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .dropdown-panel,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .field-input,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .select-button,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .picker-button,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .dropdown-panel,
 html.kikoerumanager-dark .server-upload-preview-modal .field-input,
 html.kikoerumanager-dark .server-upload-preview-modal .select-button,
 html.kikoerumanager-dark .server-upload-preview-modal .picker-button,
@@ -1977,12 +1896,12 @@ html.kikoerumanager-dark .lib-move-modal .fm-icon-btn {
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .dropdown-item,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .dropdown-item,
 html.kikoerumanager-dark .server-upload-preview-modal .dropdown-item {
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .dropdown-item:hover,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .dropdown-item:hover,
 html.kikoerumanager-dark .server-upload-preview-modal .dropdown-item:hover,
 html.kikoerumanager-dark .lib-move-modal .crumb-btn:hover,
 html.kikoerumanager-dark .lib-move-modal .fm-icon-btn:hover:not(:disabled) {
@@ -1990,14 +1909,14 @@ html.kikoerumanager-dark .lib-move-modal .fm-icon-btn:hover:not(:disabled) {
   color: var(--km-dark-text-strong) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .tree-row,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .tree-row,
 html.kikoerumanager-dark .server-upload-preview-modal .tree-row,
 html.kikoerumanager-dark .lib-move-modal .tree-row,
 html.kikoerumanager-dark .lib-move-modal .file-row {
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .tree-row:hover,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .tree-row:hover,
 html.kikoerumanager-dark .server-upload-preview-modal .tree-row:hover,
 html.kikoerumanager-dark .lib-move-modal .tree-row:hover,
 html.kikoerumanager-dark .lib-move-modal .file-row:hover {
@@ -2011,7 +1930,7 @@ html.kikoerumanager-dark .lib-move-modal .nav-item:hover {
   box-shadow: none !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .tree-row-selected,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .tree-row-selected,
 html.kikoerumanager-dark .server-upload-preview-modal .tree-row-selected,
 html.kikoerumanager-dark .lib-move-modal .tree-row-selected {
   background: rgba(255, 255, 255, 0.16) !important;
@@ -2019,15 +1938,15 @@ html.kikoerumanager-dark .lib-move-modal .tree-row-selected {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .tab-chip,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .tab-chip,
 html.kikoerumanager-dark .server-upload-preview-modal .tab-chip {
   background: var(--km-dark-field) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .tab-chip-active,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .tab-chip-partial,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .tab-chip-active,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .tab-chip-partial,
 html.kikoerumanager-dark .server-upload-preview-modal .tab-chip-active,
 html.kikoerumanager-dark .server-upload-preview-modal .tab-chip-partial {
   background: rgba(255, 255, 255, 0.16) !important;
@@ -2036,18 +1955,18 @@ html.kikoerumanager-dark .server-upload-preview-modal .tab-chip-partial {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .tree-name,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .tree-name,
 html.kikoerumanager-dark .server-upload-preview-modal .tree-name,
 html.kikoerumanager-dark .lib-move-modal .tree-name,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .summary-strong,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .summary-strong,
 html.kikoerumanager-dark .server-upload-preview-modal .summary-strong {
   color: var(--km-dark-text-strong) !important;
 }
 
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .secondary-cta,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .secondary-cta,
 html.kikoerumanager-dark .server-upload-preview-modal .secondary-cta,
 html.kikoerumanager-dark .lib-move-modal .secondary-cta,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .interactive-chip,
+html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.http-download-preview-modal):not(.folder-dialog) .interactive-chip,
 html.kikoerumanager-dark .server-upload-preview-modal .interactive-chip,
 html.kikoerumanager-dark .lib-move-modal .interactive-chip {
   background: var(--km-dark-button-bg) !important;
@@ -3666,62 +3585,6 @@ html.kikoerumanager-dark .existing-page [class*="empty"] {
 html.kikoerumanager-dark .existing-page .side-ep-action.is-disabled,
 html.kikoerumanager-dark .existing-page .card-action:disabled {
   opacity: 0.58 !important;
-}
-
-html.kikoerumanager-dark .custom-preview-modal.el-dialog {
-  background: transparent !important;
-  box-shadow: none !important;
-}
-
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .window,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .glass-shell {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.98) 0%, rgba(15, 23, 42, 0.94) 100%) !important;
-  border: 1px solid rgba(148, 163, 184, 0.22) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
-}
-
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .window-header,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .tabs-row,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .footer-row {
-  background: rgba(30, 41, 59, 0.82) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-}
-
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .glass-card,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .mode-switch,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .content-grid,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .left-column,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .dropdown-panel,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .resource-row,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .preview-card {
-  background: rgba(30, 41, 59, 0.82) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .title,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) h1,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) h2,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) label,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .text-slate-900,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .text-slate-800 {
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) p,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .text-slate-600,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .text-slate-500,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.folder-dialog) .text-slate-400 {
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .field-input,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) .select-button,
-html.kikoerumanager-dark .custom-preview-modal:not(.circle-download-preview-modal):not(.lib-move-modal):not(.filter-delete-dialog):not(.folder-dialog):not(.server-upload-preview-modal):not(.remote-folder-picker-modal) input {
-  background: rgba(15, 23, 42, 0.9) !important;
-  border-color: rgba(148, 163, 184, 0.22) !important;
-  color: var(--km-dark-text-strong) !important;
 }
 
 /* 旧设置页暗黑覆盖保留作历史参考，但禁用。设置页现在由 Settings.vue / settings 组件变量接管。 */
