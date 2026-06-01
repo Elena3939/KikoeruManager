@@ -582,6 +582,28 @@
 
               type="button"
 
+              :class="['lib-btn lib-btn-icon-tinted lib-icon-auto-circle-group lib-batch-action-btn', { 'is-executing': batchAutoCircleGrouping }]"
+
+              :disabled="!selectedAutoCircleGroupRows.length || Boolean(autoCircleGroupRunningId) || batchAutoCircleGrouping"
+
+              @click="handleBatchAutoCircleGroup"
+
+            >
+
+              <IconTags :size="14" :stroke-width="2.2" />
+
+              <span>批量按社团分类</span>
+
+              <span v-if="selectedAutoCircleGroupRows.length" class="lib-badge">{{ selectedAutoCircleGroupRows.length }}</span>
+
+            </button>
+
+            <button
+
+              v-if="!isRemoteCurrentLibrary"
+
+              type="button"
+
               class="lib-btn lib-btn-icon-tinted lib-icon-batch-move lib-batch-action-btn"
 
               :disabled="!isWritableCurrentLibrary || moveDialogState.submitting || directMoveSubmitting || !selectedRows.length"
@@ -836,11 +858,11 @@
 
         :disable-upload="!hasRemoteUploadLibraries || localUploadSubmitting || (libraryRowContextMenu.batchMode && selectedUploadCount === 0)"
 
-        :show-auto-circle-group="canAutoCircleGroupRow(libraryRowContextMenu.row)"
+        :show-auto-circle-group="libraryRowContextMenu.batchMode ? Boolean(selectedAutoCircleGroupRows.length) : canAutoCircleGroupRow(libraryRowContextMenu.row)"
 
-        :disable-auto-circle-group="!isWritableCurrentLibrary || Boolean(autoCircleGroupRunningId)"
+        :disable-auto-circle-group="libraryRowContextMenu.batchMode ? (!selectedAutoCircleGroupRows.length || Boolean(autoCircleGroupRunningId)) : (!isWritableCurrentLibrary || Boolean(autoCircleGroupRunningId))"
 
-        :auto-circle-group-running="Boolean(libraryRowContextMenu.row && autoCircleGroupRunningId === libraryRowContextMenu.row.id)"
+        :auto-circle-group-running="libraryRowContextMenu.batchMode ? batchAutoCircleGrouping : Boolean(libraryRowContextMenu.row && autoCircleGroupRunningId === libraryRowContextMenu.row.id)"
 
         :show-compute-size="libraryRowContextMenu.batchMode ? Boolean(!isRemoteCurrentLibrary && (!currentPath.value || currentPath.value === browseRootPath.value)) : Boolean(libraryRowContextMenu.row?.is_directory && !isRemoteCurrentLibrary && (!currentPath.value || currentPath.value === browseRootPath.value))"
 
@@ -1612,6 +1634,7 @@ import {
   Captions as IconCaptions,
 
   Sparkles as IconSparkles,
+  Tags as IconTags,
 
   HardDrive as IconHardDrive,
 
@@ -1767,6 +1790,7 @@ const batchDeleting = ref(false)
 const batchComputingSize = ref(false)
 
 const batchRenaming = ref(false)
+const batchAutoCircleGrouping = ref(false)
 
 const tableRef = ref(null)
 
@@ -5073,7 +5097,9 @@ const selectedSubtitleCandidates = computed(() => selectedRows.value.filter(row 
 
 const selectedApiRenameRows = computed(() => selectedRows.value.filter(row => canApiRenameRow(row)))
 
-const apiRenameBusy = computed(() => Boolean(apiRenamingId.value) || batchRenaming.value)
+const selectedAutoCircleGroupRows = computed(() => selectedRows.value.filter(row => canAutoCircleGroupRow(row)))
+
+const apiRenameBusy = computed(() => Boolean(apiRenamingId.value) || batchRenaming.value || batchAutoCircleGrouping.value)
 
 
 
@@ -6779,6 +6805,37 @@ function canAutoCircleGroupRow (row) {
 
 }
 
+async function runAutoCircleGroupForRow (row) {
+
+  let currentPath = row.path
+
+  let data = await libraryApi.autoCircleGroup(selectedLibraryId.value, currentPath)
+
+  // 文件夹名里没识别到社团前缀 → 先做 API 重命名再重试
+  if (data?.need_api_rename) {
+
+    const renameData = await libraryApi.apiRename(currentPath, selectedLibraryId.value)
+
+    const newPath = String(renameData?.path || '').trim()
+
+    if (!newPath) throw new Error('API 重命名后未拿到新路径')
+
+    currentPath = newPath
+
+    data = await libraryApi.autoCircleGroup(selectedLibraryId.value, currentPath)
+
+    if (data?.need_api_rename) {
+
+      throw new Error('API 重命名后仍未识别到社团前缀，请检查重命名模板')
+
+    }
+
+  }
+
+  return data
+
+}
+
 
 
 async function autoCircleGroup (row) {
@@ -6797,33 +6854,7 @@ async function autoCircleGroup (row) {
 
   try {
 
-    let currentPath = row.path
-
-    let data = await libraryApi.autoCircleGroup(selectedLibraryId.value, currentPath)
-
-    // 文件夹名里没识别到社团前缀 → 先做 API 重命名再重试
-
-    if (data?.need_api_rename) {
-
-      ElMessage.info('未识别到社团前缀，正在先执行 API 重命名...')
-
-      const renameData = await libraryApi.apiRename(currentPath, selectedLibraryId.value)
-
-      const newPath = String(renameData?.path || '').trim()
-
-      if (!newPath) throw new Error('API 重命名后未拿到新路径')
-
-      currentPath = newPath
-
-      data = await libraryApi.autoCircleGroup(selectedLibraryId.value, currentPath)
-
-      if (data?.need_api_rename) {
-
-        throw new Error('API 重命名后仍未识别到社团前缀，请检查重命名模板')
-
-      }
-
-    }
+    const data = await runAutoCircleGroupForRow(row)
 
     if (data?.skipped) {
 
@@ -16090,6 +16121,8 @@ async function handleLibraryRowContextMenuAction (action) {
 
     if (action === 'upload') return openLocalUploadDialog()
 
+    if (action === 'auto_circle_group') return handleBatchAutoCircleGroup()
+
     if (action === 'api_rename') return handleBatchApiRename()
 
     if (action === 'subtitle') return openRJSubtitleDialog(selectedSubtitleCandidates.value)
@@ -16734,6 +16767,119 @@ async function handleBatchDelete () {
   } finally {
 
     batchDeleting.value = false
+
+  }
+
+}
+
+
+
+async function handleBatchAutoCircleGroup () {
+
+  if (!selectedAutoCircleGroupRows.value.length || autoCircleGroupRunningId.value || batchAutoCircleGrouping.value) return
+
+  const targetRows = selectedAutoCircleGroupRows.value.slice()
+
+  const skippedCount = selectedRows.value.length - targetRows.length
+
+  try {
+
+    await showSystemConfirm({
+
+      title: '批量按社团分类确认',
+
+      badge: `${targetRows.length} 项`,
+
+      message: skippedCount > 0
+
+        ? `将对已选 ${targetRows.length} 个目录按社团分类，并跳过 ${skippedCount} 个不支持的项目。无法识别社团前缀的目录会先自动 API 重命名。`
+
+        : `将对已选 ${targetRows.length} 个目录按社团分类。无法识别社团前缀的目录会先自动 API 重命名。`,
+
+      currentLabel: '执行范围',
+
+      currentValue: targetRows.map(row => row.name).slice(0, 3).join(' / ') + (targetRows.length > 3 ? ` 等 ${targetRows.length} 项` : ''),
+
+      confirmText: '确认分类'
+
+    })
+
+  } catch (_) {
+
+    return
+
+  }
+
+  batchAutoCircleGrouping.value = true
+
+  const results = []
+
+  try {
+
+    for (const row of targetRows) {
+
+      autoCircleGroupRunningId.value = row.id
+
+      try {
+
+        const data = await runAutoCircleGroupForRow(row)
+
+        results.push({
+          path: row.path,
+          success: Boolean(data?.success),
+          skipped: Boolean(data?.skipped),
+          message: data?.message || '已按社团分类'
+        })
+
+      } catch (error) {
+
+        results.push({
+          path: row.path,
+          success: false,
+          error: error.response?.data?.detail || error.message || '未知错误'
+        })
+
+      }
+
+    }
+
+    const successCount = results.filter(item => item.success && !item.skipped).length
+
+    const skippedResultCount = results.filter(item => item.success && item.skipped).length
+
+    const failed = results.filter(item => !item.success)
+
+    clearSelection()
+
+    if (failed.length) {
+
+      const firstError = failed[0]?.error ? `，首个失败：${failed[0].error}` : ''
+
+      ElMessage.warning(`批量按社团分类完成：成功 ${successCount}，跳过 ${skippedResultCount}，失败 ${failed.length}${firstError}`)
+
+    } else {
+
+      ElMessage.success(`批量按社团分类完成：成功 ${successCount}，跳过 ${skippedResultCount}`)
+
+    }
+
+    await Promise.all([
+
+      refreshLibrary(),
+
+      isRemoteCurrentLibrary.value ? Promise.resolve() : refreshStats(false, { silent: true, refreshLibraryId: selectedLibraryId.value })
+
+    ])
+
+  } catch (error) {
+
+    ElMessage.error('批量按社团分类失败: ' + (error.response?.data?.detail || error.message || '未知错误'))
+
+  } finally {
+
+    autoCircleGroupRunningId.value = null
+
+    batchAutoCircleGrouping.value = false
 
   }
 
@@ -17557,6 +17703,7 @@ function isLibraryRowOperating (row) {
   return apiRenamingId.value === row.id ||
     computingSizeId.value === row.id ||
     autoCircleGroupRunningId.value === row.id ||
+    (batchAutoCircleGrouping.value && autoCircleGroupRunningId.value === row.id) ||
     isBatchApiRenameRunning(row)
 
 }
@@ -19209,6 +19356,7 @@ function statsStatusTextDisplay (stats) {
 .lib-btn-icon-tinted.lib-icon-batch-delete svg { color: #e11d48; }
 .lib-btn-icon-tinted.lib-icon-batch-move svg { color: #0ea5e9; }
 .lib-btn-icon-tinted.lib-icon-api-rename svg { color: #7c3aed; }
+.lib-btn-icon-tinted.lib-icon-auto-circle-group svg { color: #9333ea; }
 
 .lib-batch-action-btn {
 
