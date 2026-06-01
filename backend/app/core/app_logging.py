@@ -131,13 +131,23 @@ def configure_app_logging(
                 pass
             root.removeHandler(handler)
 
-        file_handler = logging.handlers.RotatingFileHandler(
-            log_path,
-            maxBytes=int(effective_max_mb) * 1024 * 1024,
-            backupCount=int(effective_backups),
-            encoding="utf-8",
-            delay=False,
-        )
+        try:
+            file_handler = logging.handlers.RotatingFileHandler(
+                log_path,
+                maxBytes=int(effective_max_mb) * 1024 * 1024,
+                backupCount=int(effective_backups),
+                encoding="utf-8",
+                delay=False,
+            )
+        except OSError:
+            log_path = os.path.join(resolved_dir, f"app.{os.getpid()}.log")
+            file_handler = logging.handlers.RotatingFileHandler(
+                log_path,
+                maxBytes=int(effective_max_mb) * 1024 * 1024,
+                backupCount=int(effective_backups),
+                encoding="utf-8",
+                delay=False,
+            )
         file_handler.setFormatter(formatter)
         root.addHandler(file_handler)
 
