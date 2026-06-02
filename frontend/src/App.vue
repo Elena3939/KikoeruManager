@@ -240,7 +240,7 @@ import AnimatedThemeToggler from './components/magicui/AnimatedThemeToggler.vue'
 import { useTheme } from './composables/useTheme'
 import router from './router'
 
-const appVersion = '1.5.45'
+const appVersion = '1.6.1'
 const route = useRoute()
 const watcherStore = useWatcherStore()
 const conflictCount = ref(0)
@@ -3829,6 +3829,13 @@ html.kikoerumanager-dark .settings-page .settings-field-dd .app-dd-trigger {
   background: rgba(30, 41, 59, 0.94) !important;
   border-color: rgba(148, 163, 184, 0.26) !important;
   color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .settings-page .settings-field-dd,
+html.kikoerumanager-dark .settings-page .settings-field-dd .app-dd-trigger-anchor {
+  background: transparent !important;
+  border-color: transparent !important;
   box-shadow: none !important;
 }
 
