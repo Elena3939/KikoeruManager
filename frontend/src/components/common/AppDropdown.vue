@@ -13,8 +13,9 @@
         <button
           type="button"
           class="app-dd-trigger"
-          :class="{ 'is-open': open, 'is-placeholder': !hasSelection }"
+          :class="{ 'is-open': open, 'is-placeholder': !hasSelection, 'is-disabled': disabled }"
           :style="defaultTriggerStyle"
+          :disabled="disabled"
           @click="toggle"
         >
           <component
@@ -112,6 +113,7 @@ const props = defineProps({
   showTriggerBadge: { type: Boolean, default: true },
   multiple: { type: Boolean, default: false },
   menuClass: { type: String, default: '' },
+  disabled: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['update:modelValue', 'change'])
@@ -233,6 +235,7 @@ function updateMenuPosition() {
 }
 
 async function toggle() {
+  if (props.disabled) return
   if (open.value) {
     open.value = false
     return
@@ -243,6 +246,7 @@ async function toggle() {
 }
 
 function handleSelect(option) {
+  if (props.disabled) return
   if (props.multiple) {
     const next = new Set(selectedValues.value)
     if (next.has(option.value)) next.delete(option.value)
@@ -425,6 +429,20 @@ defineExpose({ close: () => (open.value = false) })
 .app-dd-trigger.is-placeholder .app-dd-trigger-value {
   color: var(--app-dd-placeholder-text);
   font-weight: 500;
+}
+
+.app-dd-trigger.is-disabled,
+.app-dd-trigger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.app-dd-trigger.is-disabled:hover,
+.app-dd-trigger:disabled:hover {
+  background: var(--app-dd-trigger-bg);
+  border-color: var(--app-dd-trigger-border);
+  box-shadow: none;
 }
 
 .app-dd-trigger-icon {

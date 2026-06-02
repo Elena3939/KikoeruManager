@@ -1437,7 +1437,6 @@ html.kikoerumanager-dark :is(
   .workbench-card-chip,
   .import-task-row,
   .settings-field,
-  .settings-field-dd,
   .settings-toggle-row,
   .settings-toggle-chip
 ) {

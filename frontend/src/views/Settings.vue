@@ -91,6 +91,15 @@
       </SettingsSectionPanel>
 
       <SettingsSectionPanel
+        v-else-if="activeSection === 'aiSubtitle'"
+        kicker="AI Subtitle Matching"
+        title="AI 配对"
+        description="单独维护字幕配对模型、Key、代理、提示词和测试连接，任务执行仍由当前参数面板约束。"
+      >
+        <AISubtitleSettingsPanel :config="config" />
+      </SettingsSectionPanel>
+
+      <SettingsSectionPanel
         v-else-if="activeSection === 'httpDownload'"
         kicker="HTTP Downloader"
         title="HTTP 下载"
@@ -140,13 +149,14 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { Bell, Boxes, DownloadCloud, HardDrive, LifeBuoy, ScanSearch, ShieldCheck, TextSearch, Workflow, Settings2 as IconSettings, AlertCircle as IconAlertCircle, CheckCircle2 as IconCheckCircle2, Clock as IconClock } from 'lucide-vue-next'
+import { Bell, Bot, Boxes, DownloadCloud, HardDrive, LifeBuoy, ScanSearch, ShieldCheck, TextSearch, Workflow, Settings2 as IconSettings, AlertCircle as IconAlertCircle, CheckCircle2 as IconCheckCircle2, Clock as IconClock } from 'lucide-vue-next'
 import SettingsSectionPanel from '../components/settings/SettingsSectionPanel.vue'
 import SettingsWorkbench from '../components/settings/SettingsWorkbench.vue'
 import StorageSettingsPanel from '../components/settings/StorageSettingsPanel.vue'
 import ProcessingSettingsPanel from '../components/settings/ProcessingSettingsPanel.vue'
 import RulesSettingsPanel from '../components/settings/RulesSettingsPanel.vue'
 import ServicesSettingsPanel from '../components/settings/ServicesSettingsPanel.vue'
+import AISubtitleSettingsPanel from '../components/settings/AISubtitleSettingsPanel.vue'
 import HttpDownloadSettingsPanel from '../components/settings/HttpDownloadSettingsPanel.vue'
 import MaintenanceSettingsPanel from '../components/settings/MaintenanceSettingsPanel.vue'
 import FtsSettingsPanel from '../components/settings/FtsSettingsPanel.vue'
@@ -162,6 +172,7 @@ const sectionKeyMap = {
   processing: ['watcher', 'processing', 'extract', 'auto_process', 'process_existing'],
   rules: ['filter', 'rename', 'classification', 'path_mappings', 'path_mapping_enabled'],
   services: ['kikoeru_server', 'asmr_sync', 'asmr_sync_step', 'rj_subtitle', 'email_watcher'],
+  aiSubtitle: ['ai_subtitle_matching'],
   httpDownload: ['http_downloader'],
   maintenance: ['password_cleanup', 'archive_cleanup', 'backup_zip'],
   fts: [],
@@ -213,6 +224,7 @@ const sections = [
   { id: 'processing', title: '处理流程', short: '监视、解压、自动处理', icon: Workflow, keywords: ['watcher', 'processing', 'extract', '自动处理'] },
   { id: 'rules', title: '内容规则', short: '过滤、重命名、分类、路径映射', icon: Boxes, keywords: ['filter', 'rename', 'classification', 'path'] },
   { id: 'services', title: '外部服务', short: 'Kikoeru、ASMR、RJ 字幕', icon: ScanSearch, keywords: ['kikoeru', 'asmr', 'subtitle', 'email', '外部服务'] },
+  { id: 'aiSubtitle', title: 'AI 配对', short: '模型、Key、提示词、阈值', icon: Bot, keywords: ['ai', 'subtitle', 'match', 'model', 'prompt', '字幕配对', '模型', '提示词'] },
   { id: 'httpDownload', title: 'HTTP 下载', short: 'HTTP、Gofile、PikPak', icon: DownloadCloud, keywords: ['http', 'download', 'aria2', 'gofile', 'pikpak', '外链下载'] },
   { id: 'maintenance', title: '维护与清理', short: '清理、备份、压缩包', icon: LifeBuoy, keywords: ['cleanup', 'backup', 'archive', '维护'] },
   { id: 'fts', title: '全文搜索索引', short: 'FTS5 trigram 加速', icon: TextSearch, keywords: ['fts', 'search', 'trigram', '索引', '全文搜索', 'sqlite'] },
@@ -311,6 +323,7 @@ onMounted(() => {
   --set-nav-processing-icon: #b45309;
   --set-nav-rules-icon: #7c3aed;
   --set-nav-services-icon: #0891b2;
+  --set-nav-ai-subtitle-icon: #0d9488;
   --set-nav-http-download-icon: #0284c7;
   --set-nav-maintenance-icon: #c2410c;
   --set-nav-fts-icon: #4f46e5;
@@ -375,6 +388,7 @@ onMounted(() => {
   --set-nav-processing-icon: #fbbf24;
   --set-nav-rules-icon: #c4b5fd;
   --set-nav-services-icon: #67e8f9;
+  --set-nav-ai-subtitle-icon: #5eead4;
   --set-nav-http-download-icon: #8aaebe;
   --set-nav-maintenance-icon: #fdba74;
   --set-nav-fts-icon: #a5b4fc;

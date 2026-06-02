@@ -285,6 +285,24 @@ export const defaultConfig = {
     show_download_progress: true,
     show_issues: true
   },
+  ai_subtitle_matching: {
+    enabled: false,
+    auto_apply_enabled: false,
+    manual_assist_enabled: true,
+    default_mode: 'rule_ai_auto',
+    model: '',
+    api_key: '',
+    api_base: '',
+    api_version: '',
+    organization: '',
+    proxy_url: '',
+    timeout_seconds: 30,
+    max_retries: 2,
+    temperature: 0,
+    confidence_threshold: 85,
+    max_items_per_request: 120,
+    prompt_template: ''
+  },
   email_watcher: {
     enabled: false,
     imap_host: 'imap.gmail.com',
@@ -448,6 +466,7 @@ function hydrateConfig(data = {}) {
     process_existing: { ...defaultConfig.process_existing, ...(data?.process_existing || {}) },
     asmr_sync_step: { ...defaultConfig.asmr_sync_step, ...(data?.asmr_sync_step || {}) },
     rj_subtitle: { ...defaultConfig.rj_subtitle, ...(data?.rj_subtitle || {}) },
+    ai_subtitle_matching: { ...defaultConfig.ai_subtitle_matching, ...(data?.ai_subtitle_matching || {}) },
     email_watcher: { ...defaultConfig.email_watcher, ...(data?.email_watcher || {}) },
     notification_email: { ...defaultConfig.notification_email, ...(data?.notification_email || {}) },
     notification_center: { ...defaultConfig.notification_center, ...(data?.notification_center || {}) },
@@ -496,6 +515,7 @@ function serializeConfig(config) {
     process_existing: payload.process_existing,
     asmr_sync_step: payload.asmr_sync_step,
     rj_subtitle: payload.rj_subtitle,
+    ai_subtitle_matching: payload.ai_subtitle_matching,
     email_watcher: payload.email_watcher,
     notification_email: payload.notification_email,
     notification_center: payload.notification_center,
@@ -695,6 +715,12 @@ export function useSettingsDraft(options = {}) {
         snapshot.value?.http_downloader?.gofile_token === MASKED_PASSWORD
       ) {
         delete payload.http_downloader.gofile_token
+      }
+      if (
+        payload.ai_subtitle_matching?.api_key === MASKED_PASSWORD &&
+        snapshot.value?.ai_subtitle_matching?.api_key === MASKED_PASSWORD
+      ) {
+        delete payload.ai_subtitle_matching.api_key
       }
       stripMaskedPikPakAccountSecrets(payload, snapshot.value)
       await configStore.saveConfig(payload)

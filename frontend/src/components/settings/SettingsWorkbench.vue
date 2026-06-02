@@ -297,6 +297,7 @@ const filteredSections = computed(() => {
 .settings-nav-item-processing { --settings-nav-icon: var(--set-nav-processing-icon, #b45309); }
 .settings-nav-item-rules { --settings-nav-icon: var(--set-nav-rules-icon, #7c3aed); }
 .settings-nav-item-services { --settings-nav-icon: var(--set-nav-services-icon, #0891b2); }
+.settings-nav-item-aiSubtitle { --settings-nav-icon: var(--set-nav-ai-subtitle-icon, #0d9488); }
 .settings-nav-item-httpDownload { --settings-nav-icon: var(--set-nav-http-download-icon, #0284c7); }
 .settings-nav-item-maintenance { --settings-nav-icon: var(--set-nav-maintenance-icon, #c2410c); }
 .settings-nav-item-fts { --settings-nav-icon: var(--set-nav-fts-icon, #4f46e5); }
