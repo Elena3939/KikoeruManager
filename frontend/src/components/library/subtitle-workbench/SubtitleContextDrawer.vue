@@ -58,7 +58,7 @@
         <div class="mt-0.5 line-clamp-1 text-[11px] leading-4 text-slate-500">{{ ctx.modeTip }}</div>
       </div>
 
-      <div class="subtitle-context-tabs flex gap-1 rounded-[11px] border border-slate-200 bg-slate-100/80 p-0.5" style="position: relative; z-index: 60; pointer-events: auto; isolation: isolate;">
+      <div class="subtitle-context-tabs flex gap-1 rounded-[11px] border border-slate-200 bg-white p-0.5" style="position: relative; z-index: 60; pointer-events: auto; isolation: isolate;">
         <button
           v-for="item in ctx.modeOptions"
           :key="item.key"
@@ -203,7 +203,7 @@ defineProps({
 }
 
 .subtitle-context-tabs {
-  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.02);
+  box-shadow: none;
 }
 
 .subtitle-context-tab {
@@ -251,10 +251,10 @@ defineProps({
 }
 
 .subtitle-context-tab.is-active {
-  background: var(--tab-accent-soft);
+  background: #ffffff;
   border-color: var(--tab-accent-border);
   color: #0f172a;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.72);
+  box-shadow: none;
   transform: scale(1.02);
 }
 

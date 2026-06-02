@@ -2388,9 +2388,9 @@ const subtitleWorkbenchCtx = computed(() => ({
 
 <style scoped>
 .subtitle-import-workbench {
-  --siw-bg: #f7f9fc;
+  --siw-bg: #ffffff;
   --siw-surface: #ffffff;
-  --siw-surface-soft: #f8fafc;
+  --siw-surface-soft: #ffffff;
   --siw-border: rgba(226, 232, 240, 0.92);
   --siw-border-strong: rgba(203, 213, 225, 0.95);
   --siw-text: #0f172a;
@@ -2443,9 +2443,9 @@ const subtitleWorkbenchCtx = computed(() => ({
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  border: 1px solid #ddd6fe;
+  border: 0;
   border-radius: 12px;
-  background: #f5f3ff;
+  background: transparent;
   color: #6d28d9;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
@@ -2625,7 +2625,45 @@ const subtitleWorkbenchCtx = computed(() => ({
   min-height: 0;
   overflow: hidden;
   padding: 12px;
-  background: var(--siw-bg);
+  background: #ffffff;
+}
+
+.siw-shell :deep(button:focus),
+.siw-shell :deep(button:focus-visible),
+.siw-shell :deep(input:focus),
+.siw-shell :deep(input:focus-visible),
+.siw-shell :deep([tabindex]:focus),
+.siw-shell :deep([tabindex]:focus-visible) {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.siw-stage-wrap :deep(.bg-slate-50),
+.siw-stage-wrap :deep(.bg-slate-50\/30),
+.siw-stage-wrap :deep(.bg-slate-50\/40),
+.siw-stage-wrap :deep(.bg-slate-50\/60),
+.siw-stage-wrap :deep(.bg-slate-50\/80),
+.siw-stage-wrap :deep(.bg-slate-100),
+.siw-stage-wrap :deep(.bg-slate-100\/80) {
+  background-color: #ffffff !important;
+  background-image: none !important;
+}
+
+.siw-stage-wrap :deep(.shadow-sm),
+.siw-stage-wrap :deep(.shadow),
+.siw-stage-wrap :deep(.shadow-md),
+.siw-stage-wrap :deep(.shadow-lg),
+.siw-stage-wrap :deep(.shadow-xl),
+.siw-stage-wrap :deep([class*="shadow-"]) {
+  box-shadow: none !important;
+}
+
+.siw-stage-wrap :deep(.ring-1),
+.siw-stage-wrap :deep(.ring-2),
+.siw-stage-wrap :deep([class*="ring-"]) {
+  --tw-ring-offset-shadow: 0 0 #0000 !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
+  box-shadow: none !important;
 }
 
 .siw-stage-wrap > :deep(.subtitle-workbench-stage) {
@@ -2863,14 +2901,14 @@ const subtitleWorkbenchCtx = computed(() => ({
 :global(html.kikoerumanager-dark .subtitle-import-workbench .siw-stage-wrap),
 :global(body.kikoerumanager-dark .subtitle-import-workbench .siw-stage-wrap),
 :global(.kikoerumanager-dark .subtitle-import-workbench .siw-stage-wrap) {
-  background: var(--km-dark-bg) !important;
+  background: var(--km-dark-surface) !important;
 }
 
 :global(html.kikoerumanager-dark .subtitle-import-workbench .siw-brand),
 :global(body.kikoerumanager-dark .subtitle-import-workbench .siw-brand),
 :global(.kikoerumanager-dark .subtitle-import-workbench .siw-brand) {
   border-color: rgba(167, 139, 250, 0.38);
-  background: rgba(139, 92, 246, 0.16);
+  background: transparent;
   color: #c4b5fd;
 }
 

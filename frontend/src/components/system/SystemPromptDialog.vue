@@ -1,6 +1,6 @@
 <template>
   <div
-    class="fixed inset-0 z-[4000] flex items-center justify-center p-4 bg-black/30 backdrop-blur-[2px]"
+    class="fixed inset-0 z-[4000] flex items-center justify-center bg-transparent p-4"
     @click="handleOverlayClick"
   >
     <div
@@ -68,7 +68,7 @@
               v-if="options.inputType === 'textarea'"
               ref="inputRef"
               v-model="draftValue"
-              class="w-full min-h-[132px] px-3 py-2 rounded-[8px] bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 text-sm leading-relaxed outline-none transition-[border-color,background-color,box-shadow] duration-150 focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-200 resize-y"
+              class="w-full min-h-[132px] px-3 py-2 rounded-[8px] bg-white border border-slate-200 text-slate-800 placeholder-slate-400 text-sm leading-relaxed outline-none transition-[border-color,background-color] duration-150 focus:bg-white focus:border-slate-300 resize-y"
               style="resize: vertical; will-change: auto;"
               :placeholder="options.placeholder"
               rows="5"
@@ -78,7 +78,7 @@
               v-else
               ref="inputRef"
               v-model="draftValue"
-              class="w-full h-9 px-3 rounded-[8px] bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 text-sm outline-none transition-all duration-150 focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-200"
+              class="w-full h-9 px-3 rounded-[8px] bg-white border border-slate-200 text-slate-800 placeholder-slate-400 text-sm outline-none transition-all duration-150 focus:bg-white focus:border-slate-300"
               :type="normalizedInputType"
               :placeholder="options.placeholder"
               @keydown.enter.prevent="handleConfirm"
@@ -206,9 +206,16 @@ function handleConfirm() {
 .system-prompt-fade-enter-active,
 .system-prompt-fade-leave-active { transition: opacity 0.22s ease; }
 .system-prompt-fade-enter-active .sp-shell,
-.system-prompt-fade-leave-active .sp-shell { transition: transform 0.24s ease, opacity 0.24s ease, filter 0.24s ease; }
+.system-prompt-fade-leave-active .sp-shell { transition: transform 0.24s ease, opacity 0.24s ease; }
 .system-prompt-fade-enter-from,
 .system-prompt-fade-leave-to { opacity: 0; }
 .system-prompt-fade-enter-from .sp-shell,
-.system-prompt-fade-leave-to .sp-shell { transform: translateY(6px) scale(0.985); opacity: 0; filter: blur(1px); }
+.system-prompt-fade-leave-to .sp-shell { transform: translateY(6px) scale(0.985); opacity: 0; }
+
+.sp-shell :is(button, input, textarea):focus,
+.sp-shell :is(button, input, textarea):focus-visible,
+.sp-shell :focus-within {
+  outline: none !important;
+  box-shadow: none !important;
+}
 </style>

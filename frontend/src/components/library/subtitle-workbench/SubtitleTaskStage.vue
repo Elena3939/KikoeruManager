@@ -19,18 +19,30 @@
           <div class="subtitle-clear-menu" @mouseleave="clearMenuOpen = false">
             <button
               type="button"
-              class="group inline-flex items-center gap-1.5 whitespace-nowrap rounded-[10px] border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-medium text-slate-900 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 hover:shadow-[0_4px_12px_rgba(15,23,42,0.08)] active:translate-y-0 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:scale-100"
+              class="subtitle-stage-clear-trigger group"
               :disabled="!ctx.subtitleClearableTaskCounts.finished || Boolean(ctx.subtitleBulkClearingScope)"
+              :aria-expanded="clearMenuOpen"
+              aria-haspopup="menu"
+              title="批量清理任务"
               @click="clearMenuOpen = !clearMenuOpen"
             >
-              <Trash2 class="h-3.5 w-3.5 text-rose-500 transition-transform duration-300 group-hover:scale-110 group-hover:rotate-[-6deg]" :stroke-width="2.1" />
-              <span>一键清空任务</span>
-              <ChevronDown class="h-3 w-3 transition-transform duration-300 group-hover:translate-y-0.5" :stroke-width="2.2" />
+              <Trash2 class="subtitle-stage-clear-icon" :stroke-width="2.1" />
+              <span>批量清理</span>
+              <ChevronDown class="subtitle-stage-clear-chev" :class="{ 'rotate-180': clearMenuOpen }" :stroke-width="2.2" />
             </button>
-            <div v-if="clearMenuOpen" class="subtitle-clear-menu-panel">
-              <button type="button" :disabled="!ctx.subtitleClearableTaskCounts.completed" @click="clearTasksByScope('completed')">清空成功 {{ ctx.subtitleClearableTaskCounts.completed }}</button>
-              <button type="button" :disabled="!ctx.subtitleClearableTaskCounts.failed" @click="clearTasksByScope('failed')">清空失败 {{ ctx.subtitleClearableTaskCounts.failed }}</button>
-              <button type="button" :disabled="!ctx.subtitleClearableTaskCounts.finished" @click="clearTasksByScope('finished')">清空全部已结束 {{ ctx.subtitleClearableTaskCounts.finished }}</button>
+            <div v-if="clearMenuOpen" class="subtitle-clear-menu-panel" role="menu">
+              <button type="button" class="subtitle-stage-clear-menu-item" :disabled="!ctx.subtitleClearableTaskCounts.completed" role="menuitem" @click="clearTasksByScope('completed')">
+                <span>清空成功</span>
+                <span class="subtitle-stage-clear-count">{{ ctx.subtitleClearableTaskCounts.completed }}</span>
+              </button>
+              <button type="button" class="subtitle-stage-clear-menu-item" :disabled="!ctx.subtitleClearableTaskCounts.failed" role="menuitem" @click="clearTasksByScope('failed')">
+                <span>清空失败</span>
+                <span class="subtitle-stage-clear-count">{{ ctx.subtitleClearableTaskCounts.failed }}</span>
+              </button>
+              <button type="button" class="subtitle-stage-clear-menu-item" :disabled="!ctx.subtitleClearableTaskCounts.finished" role="menuitem" @click="clearTasksByScope('finished')">
+                <span>清空全部已结束</span>
+                <span class="subtitle-stage-clear-count">{{ ctx.subtitleClearableTaskCounts.finished }}</span>
+              </button>
             </div>
           </div>
         </div>
@@ -166,14 +178,14 @@
             type="button"
             class="group inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] active:translate-y-0 active:scale-[0.96]"
             :class="ctx.subtitleTaskManualFilter === item.key
-              ? 'border-slate-900 bg-slate-900 text-white shadow-[0_4px_12px_rgba(15,23,42,0.2)]'
-              : 'border-slate-100 bg-white text-slate-900 hover:border-slate-300 hover:bg-slate-50'"
+              ? 'border-slate-300 bg-white text-slate-900'
+              : 'border-slate-100 bg-white text-slate-900 hover:border-slate-300 hover:bg-white'"
             @click="ctx.setSubtitleTaskManualFilter(item.key)"
           >
             <span>{{ item.label }}</span>
             <span
               class="inline-flex min-w-[18px] items-center justify-center rounded-full px-1 text-[10px] font-semibold"
-              :class="ctx.subtitleTaskManualFilter === item.key ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-900'"
+              :class="ctx.subtitleTaskManualFilter === item.key ? 'bg-white text-slate-900' : 'bg-white text-slate-900'"
             >{{ item.value }}</span>
           </button>
         </div>
@@ -195,10 +207,10 @@
           :class="[
             isTaskInteractionLocked(task)
               ? (ctx.isSubtitleTaskSelected(task)
-                  ? 'cursor-not-allowed border-slate-300 bg-slate-100/95 opacity-75 shadow-[0_4px_14px_rgba(15,23,42,0.06)] ring-1 ring-slate-300/70'
-                  : 'cursor-not-allowed border-slate-200 bg-slate-100/90 opacity-70 shadow-none')
+                  ? 'cursor-not-allowed border-slate-300 bg-white opacity-75'
+                  : 'cursor-not-allowed border-slate-200 bg-white opacity-70')
               : ctx.isSubtitleTaskSelected(task)
-              ? 'border-slate-900 bg-white shadow-[0_6px_20px_rgba(15,23,42,0.1)] ring-1 ring-slate-900/15'
+              ? 'border-slate-400 bg-white'
               : task.manual_match_completed
                 ? 'border-emerald-200/70 hover:border-emerald-300'
                 : task.status === 'processing'
@@ -824,6 +836,56 @@ function getTaskMetaItems(task) {
   grid-template-rows: minmax(0, 1fr);
 }
 
+.subtitle-task-card :is(button):not(:disabled),
+.subtitle-task-stage-root :is(button):not(:disabled) {
+  cursor: pointer !important;
+}
+
+.subtitle-task-stage-root :is(button, input):focus,
+.subtitle-task-stage-root :is(button, input):focus-visible,
+.subtitle-task-stage-root :focus-within {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.subtitle-task-stage-root :deep(.bg-slate-50),
+.subtitle-task-stage-root :deep(.bg-slate-50\/60),
+.subtitle-task-stage-root :deep(.bg-slate-100),
+.subtitle-task-stage-root :deep(.bg-slate-100\/90),
+.subtitle-task-stage-root :deep(.bg-slate-100\/95),
+.subtitle-task-stage-root :deep(.bg-white\/80) {
+  background-color: #ffffff !important;
+  background-image: none !important;
+}
+
+.subtitle-task-stage-root :deep(.bg-slate-900) {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid #e2e8f0 !important;
+}
+
+.subtitle-task-stage-root :deep(.bg-gradient-to-b) {
+  background-color: #ffffff !important;
+  background-image: none !important;
+}
+
+.subtitle-task-stage-root :deep(.shadow-sm),
+.subtitle-task-stage-root :deep(.shadow),
+.subtitle-task-stage-root :deep(.shadow-md),
+.subtitle-task-stage-root :deep(.shadow-lg),
+.subtitle-task-stage-root :deep(.shadow-xl),
+.subtitle-task-stage-root :deep([class*="shadow-"]) {
+  box-shadow: none !important;
+}
+
+.subtitle-task-stage-root :deep(.ring-1),
+.subtitle-task-stage-root :deep(.ring-2),
+.subtitle-task-stage-root :deep([class*="ring-"]) {
+  --tw-ring-offset-shadow: 0 0 #0000 !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
+  box-shadow: none !important;
+}
+
 .subtitle-task-stage-scroll {
   padding-right: 2px;
   scrollbar-gutter: stable;
@@ -840,46 +902,182 @@ function getTaskMetaItems(task) {
 
 .subtitle-clear-menu {
   position: relative;
+  display: grid;
+  min-width: 126px;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.subtitle-stage-clear-trigger {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0 10px;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 700;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.subtitle-stage-clear-trigger:hover:not(:disabled) {
+  transform: scale(1.02);
+  border-color: #cbd5e1;
+  background: #ffffff;
+}
+
+.subtitle-stage-clear-trigger:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.subtitle-stage-clear-trigger:disabled {
+  cursor: not-allowed !important;
+  opacity: 0.5;
+}
+
+.subtitle-stage-clear-icon {
+  width: 14px;
+  height: 14px;
+  color: #e11d48;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.subtitle-stage-clear-trigger:hover:not(:disabled) .subtitle-stage-clear-icon {
+  transform: rotate(-8deg) scale(1.1);
+}
+
+.subtitle-stage-clear-chev {
+  width: 12px;
+  height: 12px;
+  transition: transform 0.2s ease;
 }
 
 .subtitle-clear-menu-panel {
   position: absolute;
   right: 0;
   top: calc(100% + 6px);
-  z-index: 40;
-  display: grid;
-  min-width: 180px;
-  gap: 4px;
-  padding: 6px;
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 196px;
+  padding: 5px;
   border: 1px solid rgba(148, 163, 184, 0.22);
   border-radius: 12px;
   background: #ffffff;
-  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.12);
+  box-shadow: none;
 }
 
-.subtitle-clear-menu-panel button {
+.subtitle-stage-clear-menu-item {
+  display: flex;
   min-height: 30px;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
   border: 0;
   border-radius: 9px;
-  background: transparent;
-  padding: 0 10px;
+  background: #ffffff;
+  padding: 0 8px;
   color: #334155;
   font-size: 12px;
   font-weight: 700;
   text-align: left;
-  cursor: pointer;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.subtitle-clear-menu-panel button:hover:not(:disabled) {
-  transform: translateY(-1px);
-  background: #f1f5f9;
+.subtitle-stage-clear-menu-item span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subtitle-stage-clear-menu-item:hover:not(:disabled) {
+  transform: none;
+  background: #ffffff;
   color: #0f172a;
 }
 
-.subtitle-clear-menu-panel button:disabled {
+.subtitle-stage-clear-menu-item:disabled {
   color: #94a3b8;
-  cursor: not-allowed;
+  cursor: not-allowed !important;
+  opacity: 0.48;
+}
+
+.subtitle-stage-clear-count {
+  display: inline-flex;
+  min-width: 20px;
+  justify-content: center;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #ffffff;
+  padding: 1px 6px;
+  color: #0f172a;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+@media (max-width: 720px) {
+  .subtitle-clear-menu {
+    flex-basis: 100%;
+  }
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-stage-root .subtitle-stage-clear-trigger),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-stage-root .subtitle-stage-clear-trigger) {
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  background: #24252a !important;
+  background-image: none !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-stage-root .subtitle-stage-clear-trigger:hover:not(:disabled)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-stage-root .subtitle-stage-clear-trigger:hover:not(:disabled)) {
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  background: #303136 !important;
+  background-image: none !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-stage-root .subtitle-clear-menu-panel),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-stage-root .subtitle-clear-menu-panel) {
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  background: #111216 !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-stage-root .subtitle-clear-menu-panel .subtitle-stage-clear-menu-item),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-stage-root .subtitle-clear-menu-panel .subtitle-stage-clear-menu-item) {
+  border-color: transparent !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: rgba(244, 244, 245, 0.88) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-stage-root .subtitle-clear-menu-panel .subtitle-stage-clear-menu-item:hover:not(:disabled)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-stage-root .subtitle-clear-menu-panel .subtitle-stage-clear-menu-item:hover:not(:disabled)) {
+  background: #24252a !important;
+  background-image: none !important;
+  color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-stage-root .subtitle-stage-clear-count),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-stage-root .subtitle-stage-clear-count) {
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  background: #2b2c30 !important;
+  background-image: none !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
 }
 
 /* Horizontal rail item transitions */

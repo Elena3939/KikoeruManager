@@ -1898,6 +1898,137 @@ function removeActiveSubtitleFilterRule() {
   box-shadow: 0 10px 20px rgba(244, 63, 94, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 
+.subtitle-config-card :is(button, input):focus,
+.subtitle-config-card :is(button, input):focus-visible,
+.subtitle-config-card :focus-within {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.subtitle-config-card :is(
+  .subtitle-stepper:hover,
+  .subtitle-stepper:focus,
+  .subtitle-stepper:focus-within,
+  .subtitle-native-input:hover,
+  .subtitle-native-input:focus,
+  .subtitle-native-input:focus-visible
+) {
+  border-color: #cbd5e1 !important;
+  background: #ffffff !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+.subtitle-config-card :is(
+  .header-badge,
+  .search-chip,
+  .subtitle-filter-index,
+  .subtitle-filter-target-mini,
+  .subtitle-filter-target-badge,
+  .subtitle-filter-state,
+  .subtitle-tool-badge,
+  .subtitle-retarget-chip
+) {
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+.subtitle-config-card :is(
+  .subtitle-depth-control,
+  .subtitle-quick-toggle,
+  .subtitle-naming-switch,
+  .subtitle-filter-editor,
+  .subtitle-filter-detail,
+  .subtitle-filter-current-summary,
+  .subtitle-retarget-option,
+  .subtitle-filter-current-card,
+  .subtitle-filter-nav-btn,
+  .subtitle-filter-add-icon-btn,
+  .subtitle-filter-empty-add,
+  .search-row,
+  .subtitle-stepper,
+  .subtitle-stepper-btn,
+  .subtitle-filter-more-row,
+  .subtitle-toggle-pill
+) {
+  background: #ffffff !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+.subtitle-config-card :is(
+  .subtitle-depth-control,
+  .subtitle-quick-toggle,
+  .subtitle-naming-switch,
+  .subtitle-filter-editor,
+  .subtitle-filter-detail,
+  .subtitle-filter-current-summary,
+  .subtitle-retarget-option,
+  .subtitle-filter-current-card,
+  .subtitle-filter-nav-btn,
+  .subtitle-filter-add-icon-btn,
+  .subtitle-filter-empty-add,
+  .search-row,
+  .subtitle-stepper,
+  .subtitle-stepper-btn,
+  .subtitle-filter-more-row,
+  .subtitle-toggle-pill
+):hover {
+  background: #ffffff !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+.subtitle-config-card :deep(.app-dd-root),
+.subtitle-config-card :deep(.app-dd-menu) {
+  --app-dd-trigger-bg: #ffffff;
+  --app-dd-trigger-bg-hover: #ffffff;
+  --app-dd-trigger-bg-open: #ffffff;
+  --app-dd-item-hover-bg: #ffffff;
+  --app-dd-item-active-bg: #ffffff;
+  --app-dd-item-active-hover-bg: #ffffff;
+  --app-dd-focus-ring: transparent;
+}
+
+.subtitle-config-card :deep(.app-dd-trigger),
+.subtitle-config-card :deep(.app-dd-trigger:hover),
+.subtitle-config-card :deep(.app-dd-trigger.is-open) {
+  background: #ffffff !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  transform: none !important;
+  outline: none !important;
+}
+
+.subtitle-config-card :is(
+  .subtitle-filter-row.active,
+  .subtitle-naming-option.active,
+  .subtitle-toggle-pill.active,
+  .subtitle-retarget-option.active
+) {
+  background: #ffffff !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+.subtitle-config-card :is(
+  .subtitle-tool-btn:hover:not(:disabled),
+  .subtitle-retarget-option:hover,
+  .subtitle-filter-current-card:hover,
+  .subtitle-filter-nav-btn:hover:not(:disabled),
+  .subtitle-filter-add-icon-btn:hover,
+  .subtitle-filter-empty-add:hover,
+  .subtitle-filter-editor-toggle:hover,
+  .search-row:hover,
+  .subtitle-toggle-pill:hover,
+  .subtitle-filter-more-row:hover
+) {
+  background: #ffffff !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
 :global(html.kikoerumanager-dark) .subtitle-config-card {
   color: rgba(244, 244, 245, 0.9);
 }
