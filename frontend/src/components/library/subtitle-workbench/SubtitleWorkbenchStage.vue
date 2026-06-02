@@ -5,7 +5,7 @@
       :class="gridClass"
     >
       <aside
-        class="relative min-w-0 overflow-hidden rounded-[18px] border border-slate-100 bg-white transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+        class="relative min-w-0 overflow-visible rounded-[18px] border border-slate-200 bg-white transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
         :class="leftRailCollapsed ? 'grid content-start gap-2 px-2 py-2.5' : 'grid grid-rows-[auto_minmax(0,1fr)] gap-3 px-3 py-3'"
       >
         <!-- 浮动收纳手柄 -->
@@ -36,8 +36,8 @@
               type="button"
               class="group relative inline-flex h-10 w-10 items-center justify-center self-center rounded-[10px] border text-slate-500 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.06] active:scale-[0.94]"
               :class="ctx.railMode === item.key
-                ? 'border-slate-900 bg-slate-900 text-white shadow-[0_6px_14px_rgba(15,23,42,0.2)]'
-                : 'border-slate-100 bg-white hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 hover:shadow-[0_4px_12px_rgba(15,23,42,0.06)]'"
+                ? 'border-slate-300 bg-white text-slate-900'
+                : 'border-slate-100 bg-white hover:border-slate-300 hover:bg-white hover:text-slate-900'"
               :title="item.label"
               @click="ctx.setRailMode(item.key)"
             >
@@ -51,7 +51,7 @@
               />
               <span
                 v-if="ctx.railMode === item.key"
-                class="absolute right-[-4px] top-1/2 h-5 w-1 -translate-y-1/2 rounded-full bg-slate-900"
+                class="absolute right-[-4px] top-1/2 h-5 w-1 -translate-y-1/2 rounded-full bg-slate-400"
               ></span>
             </button>
           </div>
@@ -66,15 +66,15 @@
 
         <!-- 展开态 -->
         <template v-else>
-          <div v-if="ctx.railModes.length > 1" class="flex gap-1 rounded-[12px] border border-slate-200 bg-slate-100/80 p-1" style="position: relative; z-index: 60; pointer-events: auto; isolation: isolate;">
+          <div v-if="ctx.railModes.length > 1" class="flex gap-1 rounded-[12px] border border-slate-200 bg-white p-1" style="position: relative; z-index: 60; pointer-events: auto; isolation: isolate;">
             <button
               v-for="item in ctx.railModes"
               :key="item.key"
               type="button"
               class="group flex flex-1 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-[8px] px-2 py-1.5 text-[12px] font-semibold transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
               :class="ctx.railMode === item.key
-                ? 'bg-slate-900 text-white shadow-[0_4px_12px_rgba(15,23,42,0.22)] scale-[1.02]'
-                : 'text-slate-600 hover:bg-white hover:text-slate-900 hover:shadow-[0_2px_6px_rgba(15,23,42,0.06)]'"
+                ? 'border border-slate-300 bg-white text-slate-900'
+                : 'border border-transparent text-slate-600 hover:bg-white hover:text-slate-900'"
               @click="ctx.setRailMode(item.key)"
             >
               <component
@@ -86,7 +86,7 @@
             </button>
           </div>
 
-          <div class="subtitle-left-rail-content min-h-0 overflow-hidden">
+          <div class="subtitle-left-rail-content min-h-0 overflow-visible">
             <SubtitleScanRail v-if="ctx.railMode === 'scan'" :ctx="ctx.scanCtx" embedded />
             <SubtitleTaskNavigator v-else :ctx="ctx.taskNavigatorCtx" />
           </div>
@@ -94,20 +94,19 @@
       </aside>
 
       <div class="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden" style="isolation: isolate;">
-        <div class="flex gap-1 rounded-[12px] border border-slate-200 bg-slate-100/80 p-1" style="position: relative; z-index: 60; pointer-events: auto; isolation: isolate;">
+        <div class="subtitle-stage-tabs">
           <button
             v-for="item in ctx.stageTabs"
             :key="item.key"
             type="button"
-            class="group flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-[8px] px-4 py-2 text-[12.5px] font-semibold transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
-            :class="ctx.activeStage === item.key
-              ? 'bg-slate-900 text-white shadow-[0_6px_16px_rgba(15,23,42,0.25)] scale-[1.02]'
-              : 'text-slate-600 hover:bg-white hover:text-slate-900 hover:shadow-[0_2px_6px_rgba(15,23,42,0.06)]'"
+            class="subtitle-stage-tab group"
+            :class="getStageTabClass(item.key, ctx.activeStage === item.key)"
             @click="ctx.setActiveStage(item.key)"
           >
             <component
               :is="getStageTabIcon(item.key)"
-              class="h-3.5 w-3.5 shrink-0 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] opacity-90 group-hover:opacity-100 group-hover:-translate-y-0.5 group-hover:rotate-[12deg] group-hover:scale-[1.18]"
+              class="subtitle-stage-tab-icon"
+              :class="getStageTabIconClass(item.key, ctx.activeStage === item.key)"
               :stroke-width="2.4"
             />
             <span>{{ item.label }}</span>
@@ -170,6 +169,24 @@ function getStageTabIcon(key) {
   return { overview: ListChecks, pairing: Link2, tree: FolderTree }[key] || ListChecks
 }
 
+function getStageTabClass(key, active) {
+  const colorClass = {
+    overview: active ? 'is-active is-overview' : 'is-overview',
+    pairing: active ? 'is-active is-pairing' : 'is-pairing',
+    tree: active ? 'is-active is-tree' : 'is-tree'
+  }
+  return colorClass[key] || (active ? 'is-active is-overview' : 'is-overview')
+}
+
+function getStageTabIconClass(key, active) {
+  const base = {
+    overview: active ? 'text-sky-600' : 'text-sky-500',
+    pairing: active ? 'text-emerald-600' : 'text-emerald-500',
+    tree: active ? 'text-violet-600' : 'text-violet-500'
+  }
+  return base[key] || base.overview
+}
+
 const props = defineProps({
   ctx: {
     type: Object,
@@ -188,6 +205,88 @@ const gridClass = computed(() => {
 </script>
 
 <style scoped>
+.subtitle-stage-tabs {
+  position: relative;
+  z-index: 60;
+  display: flex;
+  gap: 6px;
+  padding: 5px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #ffffff;
+  isolation: isolate;
+  pointer-events: auto;
+}
+
+.subtitle-stage-tab {
+  position: relative;
+  display: flex;
+  min-height: 34px;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: #ffffff;
+  padding: 7px 16px 8px;
+  color: #334155;
+  font-size: 12.5px;
+  font-weight: 750;
+  cursor: pointer;
+  transition: transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1),
+              border-color 0.2s ease,
+              color 0.2s ease;
+}
+
+.subtitle-stage-tab:hover {
+  transform: scale(1.01);
+  color: #0f172a;
+}
+
+.subtitle-stage-tab:focus,
+.subtitle-stage-tab:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.subtitle-stage-tab.is-active {
+  color: #0f172a;
+  border-width: 1px;
+  font-weight: 850;
+}
+
+.subtitle-stage-tab.is-overview.is-active {
+  border-color: #38bdf8;
+  background: #f0f9ff;
+}
+
+.subtitle-stage-tab.is-pairing.is-active {
+  border-color: #34d399;
+  background: #ecfdf5;
+}
+
+.subtitle-stage-tab.is-tree.is-active {
+  border-color: #a78bfa;
+  background: #f5f3ff;
+}
+
+.subtitle-stage-tab-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  opacity: 0.92;
+  transition: transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1),
+              opacity 0.2s ease;
+}
+
+.subtitle-stage-tab:hover .subtitle-stage-tab-icon,
+.subtitle-stage-tab.is-active .subtitle-stage-tab-icon {
+  opacity: 1;
+  transform: scale(1.16) rotate(8deg);
+}
+
 @keyframes nudge-r {
   0%, 70%, 100% { transform: translateX(0); }
   85% { transform: translateX(3px); }
@@ -304,6 +403,96 @@ const gridClass = computed(() => {
 .rail-handle:hover .rail-handle-label {
   max-width: 40px;
   opacity: 1;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-stage-tabs),
+:global(html.dark .subtitle-workbench-dialog .subtitle-stage-tabs) {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  background: #111216 !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-stage-tab),
+:global(html.dark .subtitle-workbench-dialog .subtitle-stage-tab) {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  background: #24252a !important;
+  background-image: none !important;
+  color: rgba(244, 244, 245, 0.78) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-stage-tab::before),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-stage-tab::after),
+:global(html.dark .subtitle-workbench-dialog .subtitle-stage-tab::before),
+:global(html.dark .subtitle-workbench-dialog .subtitle-stage-tab::after) {
+  display: none !important;
+  content: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-stage-tab:hover),
+:global(html.dark .subtitle-workbench-dialog .subtitle-stage-tab:hover) {
+  background: #303136 !important;
+  background-image: none !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-stage-tab.is-active),
+:global(html.dark .subtitle-workbench-dialog .subtitle-stage-tab.is-active) {
+  color: #ffffff !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-stage-tab.is-overview.is-active),
+:global(html.dark .subtitle-workbench-dialog .subtitle-stage-tab.is-overview.is-active) {
+  border-color: rgba(56, 189, 248, 0.9) !important;
+  background: rgba(14, 116, 144, 0.42) !important;
+  background-image: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-stage-tab.is-pairing.is-active),
+:global(html.dark .subtitle-workbench-dialog .subtitle-stage-tab.is-pairing.is-active) {
+  border-color: rgba(52, 211, 153, 0.9) !important;
+  background: rgba(5, 150, 105, 0.42) !important;
+  background-image: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-stage-tab.is-tree.is-active),
+:global(html.dark .subtitle-workbench-dialog .subtitle-stage-tab.is-tree.is-active) {
+  border-color: rgba(167, 139, 250, 0.92) !important;
+  background: rgba(124, 58, 237, 0.42) !important;
+  background-image: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-stage-tab.is-overview.is-active .subtitle-stage-tab-icon),
+:global(html.dark .subtitle-workbench-dialog .subtitle-stage-tab.is-overview.is-active .subtitle-stage-tab-icon) {
+  color: #38bdf8 !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-stage-tab.is-pairing.is-active .subtitle-stage-tab-icon),
+:global(html.dark .subtitle-workbench-dialog .subtitle-stage-tab.is-pairing.is-active .subtitle-stage-tab-icon) {
+  color: #34d399 !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-stage-tab.is-tree.is-active .subtitle-stage-tab-icon),
+:global(html.dark .subtitle-workbench-dialog .subtitle-stage-tab.is-tree.is-active .subtitle-stage-tab-icon) {
+  color: #a78bfa !important;
+}
+
+:global(html.kikoerumanager-dark) .rail-handle {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: #24252a;
+  color: rgba(244, 244, 245, 0.78);
+  box-shadow: none;
+  animation: none;
+}
+
+:global(html.kikoerumanager-dark) .rail-handle:hover {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: #303136;
+  color: #ffffff;
+  box-shadow: none;
 }
 
 .subtitle-left-rail-content :deep(> *) {

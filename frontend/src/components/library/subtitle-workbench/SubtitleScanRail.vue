@@ -88,10 +88,10 @@
               v-for="item in ctx.pagedSubtitleSelectionItems"
               :key="ctx.buildSubtitleSelectionKey(item)"
               type="button"
-              class="scan-rail-card group relative w-full overflow-hidden rounded-[16px] border px-3 py-2.5 text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.01]"
+              class="scan-rail-card group relative w-full overflow-hidden rounded-[16px] border px-3 py-2.5 text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:scale-[1.01]"
               :class="ctx.isSubtitleSelectionActive(item)
-                ? 'border-slate-950 bg-white ring-[3px] ring-slate-950/35 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.18)]'
-                : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50 hover:shadow-[0_4px_12px_rgba(15,23,42,0.06)]'"
+                ? 'border-slate-950 bg-white'
+                : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-white'"
               :title="item.folder_path"
               @click="ctx.focusSubtitleSelectionItem(item)"
             >
@@ -132,7 +132,7 @@
                   <button
                     v-if="item.queue_state === 'existing_task' || ctx.canInspectSubtitleSelectionFolder(item)"
                     type="button"
-                    class="group/btn inline-flex min-h-[30px] items-center gap-1 rounded-[9px] border border-slate-200 bg-white px-2.5 text-[10.5px] font-medium text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 active:scale-[0.96]"
+                    class="group/btn inline-flex min-h-[30px] items-center gap-1 rounded-[9px] border border-slate-200 bg-white px-2.5 text-[10.5px] font-medium text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:scale-[1.02] hover:border-slate-300 hover:bg-white hover:text-slate-900 active:scale-[0.96]"
                     @click.stop="ctx.focusSubtitleSelectionItem(item)"
                   >
                     <Eye class="h-3.5 w-3.5 text-sky-600 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/btn:scale-110 group-hover/btn:rotate-[8deg]" :stroke-width="2.2" />
@@ -141,7 +141,7 @@
                   <button
                     v-if="ctx.canRetryCreateSubtitleTaskForSelection(item)"
                     type="button"
-                    class="group/btn inline-flex min-h-[30px] items-center gap-1 rounded-[9px] border border-slate-200 bg-white px-2.5 text-[10.5px] font-medium text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45"
+                    class="group/btn inline-flex min-h-[30px] items-center gap-1 rounded-[9px] border border-slate-200 bg-white px-2.5 text-[10.5px] font-medium text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:scale-[1.02] hover:border-slate-300 hover:bg-white active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45"
                     :disabled="Boolean(ctx.subtitleForceQueueKey)"
                     @click.stop="ctx.forceCreateSubtitleTaskForSelection(item)"
                   >
@@ -151,7 +151,7 @@
                   <button
                     v-if="ctx.canForceCreateSubtitleTaskForSelection(item)"
                     type="button"
-                    class="group/btn inline-flex min-h-[30px] items-center gap-1 rounded-[9px] border border-slate-200 bg-white px-2.5 text-[10.5px] font-medium text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45"
+                    class="group/btn inline-flex min-h-[30px] items-center gap-1 rounded-[9px] border border-slate-200 bg-white px-2.5 text-[10.5px] font-medium text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:scale-[1.02] hover:border-slate-300 hover:bg-white hover:text-slate-900 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45"
                     :disabled="Boolean(ctx.subtitleForceQueueKey)"
                     @click.stop="ctx.forceCreateSubtitleTaskForSelection(item)"
                   >
@@ -207,8 +207,8 @@
               v-for="item in getPagedSkippedSelectionItems(ctx.filteredSubtitleSkippedSelectionItems, subtitleSkippedSelectionPage)"
               :key="`${ctx.buildSubtitleSelectionKey(item)}-skipped`"
               type="button"
-              class="scan-rail-card group w-full rounded-[14px] border border-slate-200 bg-white px-3 py-2.5 text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.01] hover:border-slate-300 hover:bg-white active:scale-[0.98]"
-              :class="ctx.isSubtitleSelectionActive(item) ? 'border-slate-950 ring-[3px] ring-slate-950/35 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.18)]' : ''"
+              class="scan-rail-card group w-full rounded-[14px] border border-slate-200 bg-white px-3 py-2.5 text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:scale-[1.01] hover:border-slate-300 hover:bg-white active:scale-[0.98]"
+              :class="ctx.isSubtitleSelectionActive(item) ? 'border-slate-950' : ''"
               :title="item.folder_path"
               @click="ctx.focusSubtitleSelectionItem(item)"
             >
@@ -570,6 +570,52 @@ function getScanResultIcon(status) {
 </script>
 
 <style scoped>
+.scan-rail-card,
+.scan-rail-card:hover,
+.scan-rail-card:focus,
+.scan-rail-card:focus-visible,
+.scan-rail-card:focus-within,
+.scan-rail-btn,
+.scan-rail-btn:hover,
+.scan-rail-btn:focus,
+.scan-rail-btn:focus-visible,
+.scan-rail-toggle,
+.scan-rail-toggle:hover,
+.scan-rail-toggle:focus,
+.scan-rail-toggle:focus-visible,
+.scan-rail-segment,
+.scan-rail-segment:hover,
+.scan-rail-segment:focus,
+.scan-rail-segment:focus-visible,
+.scan-rail-filter-pill,
+.scan-rail-filter-pill:hover,
+.scan-rail-filter-pill:focus,
+.scan-rail-filter-pill:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.scan-rail-card :is(button, input, textarea):focus,
+.scan-rail-card :is(button, input, textarea):focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.scan-rail-card,
+.scan-rail-card:hover,
+.scan-rail-toggle-subtle,
+.scan-rail-toggle-subtle:hover,
+.scan-session-summary,
+.scan-session-summary-row,
+.scan-target-card,
+.scan-target-card:hover,
+.scan-target-card:focus,
+.scan-target-card:focus-visible {
+  background: #ffffff !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
 .scan-rail-chip,
 .scan-rail-tag,
 .scan-rail-filter-pill,
@@ -593,7 +639,7 @@ function getScanResultIcon(status) {
   font-weight: 600;
   color: #334155;
   letter-spacing: -0.01em;
-  box-shadow: 0 1px 1px rgba(15, 23, 42, 0.03);
+  box-shadow: none;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -617,14 +663,14 @@ function getScanResultIcon(status) {
 
 .scan-rail-tag-success {
   border-color: #cfeedd;
-  background: #f9fdfa;
+  background: #ffffff;
   color: #3f7a5d;
-  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.05);
+  box-shadow: none;
 }
 
 .scan-rail-tag-sky {
   border-color: #e4effb;
-  background: #fbfdff;
+  background: #ffffff;
   color: #4a6a88;
 }
 
@@ -706,14 +752,14 @@ function getScanResultIcon(status) {
 .scan-rail-toggle-subtle {
   min-height: 26px;
   border-color: #e2e8f0;
-  background: #fbfdff;
+  background: #ffffff;
   color: #64748b;
   padding: 0 9px;
 }
 
 .scan-rail-toggle-subtle:hover {
   border-color: #d1dbe7;
-  background: #f8fbff;
+  background: #ffffff;
   color: #334155;
 }
 
@@ -741,7 +787,7 @@ function getScanResultIcon(status) {
 }
 
 .scan-session-summary-row:hover {
-  background: #f8fbff;
+  background: #ffffff;
 }
 
 .scan-session-summary-dot {
@@ -811,7 +857,7 @@ function getScanResultIcon(status) {
 
 .scan-rail-chip-muted {
   border-color: #e2e8f0;
-  background: #f8fafc;
+  background: #ffffff;
   color: #475569;
 }
 
@@ -933,21 +979,21 @@ function getScanResultIcon(status) {
   padding: 0 9px 0 10px;
   border-radius: 10px;
   border: 1px solid #dbe3ee;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  background: #ffffff;
   color: #334155;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: -0.01em;
   cursor: pointer;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  box-shadow: none;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .scan-rail-segment:hover {
-  transform: translateY(-1px) scale(1.02);
+  transform: scale(1.02);
   border-color: #cbd5e1;
   color: #0f172a;
-  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
+  box-shadow: none;
 }
 
 .scan-rail-segment:active {
@@ -956,14 +1002,14 @@ function getScanResultIcon(status) {
 
 .scan-rail-segment.active {
   border-color: #0f172a;
-  background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+  background: #0f172a;
   color: #f8fafc;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.18);
+  box-shadow: none;
 }
 
 .scan-rail-segment-queued {
   border-color: #bbf7d0;
-  background: linear-gradient(180deg, #ffffff 0%, #f0fdf4 100%);
+  background: #ffffff;
 }
 
 .scan-rail-segment-queued .scan-rail-segment-count {
@@ -974,14 +1020,14 @@ function getScanResultIcon(status) {
 
 .scan-rail-segment-queued:hover {
   border-color: #86efac;
-  box-shadow: 0 6px 14px rgba(21, 128, 61, 0.08);
+  box-shadow: none;
 }
 
 .scan-rail-segment-queued.active {
   border-color: #15803d;
-  background: linear-gradient(180deg, #22c55e 0%, #15803d 100%);
+  background: #15803d;
   color: #ffffff;
-  box-shadow: 0 8px 18px rgba(21, 128, 61, 0.16);
+  box-shadow: none;
 }
 
 .scan-rail-segment-queued.active .scan-rail-segment-count {
@@ -1020,9 +1066,9 @@ function getScanResultIcon(status) {
 .scan-rail-filter-pill:hover,
 .scan-rail-btn:hover,
 .scan-rail-toggle:hover {
-  transform: translateY(-1px) scale(1.02);
+  transform: scale(1.02);
   border-color: #cbd5e1;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
+  box-shadow: none;
 }
 
 .scan-rail-chip:hover {
@@ -1040,21 +1086,21 @@ function getScanResultIcon(status) {
   background: #ffffff;
   border-color: #cbd5e1;
   color: #0f172a;
-  box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.12);
+  box-shadow: none;
 }
 
 .scan-rail-filter-pill-success.active {
   background: #ffffff;
   border-color: #bbf7d0;
   color: #0f172a;
-  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.10);
+  box-shadow: none;
 }
 
 .scan-rail-filter-pill-sky.active {
   background: #ffffff;
   border-color: #ddd6fe;
   color: #0f172a;
-  box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.1);
+  box-shadow: none;
 }
 
 .scan-rail-filter-pill.active::before {
@@ -1089,7 +1135,7 @@ function getScanResultIcon(status) {
 }
 
 .scan-rail-btn-ghost {
-  background: #f8fafc;
+  background: #ffffff;
   color: #475569;
 }
 
@@ -1099,7 +1145,7 @@ function getScanResultIcon(status) {
 }
 
 .scan-rail-btn-primary:hover {
-  background: #f8fafc;
+  background: #ffffff;
   border-color: #94a3b8;
 }
 
@@ -1109,7 +1155,7 @@ function getScanResultIcon(status) {
 }
 
 .scan-rail-btn-success:hover {
-  background: #f8fafc;
+  background: #ffffff;
   border-color: #94a3b8;
 }
 
@@ -1131,7 +1177,7 @@ function getScanResultIcon(status) {
   padding: 0 9px;
   border-radius: 8px;
   border: 1px solid #e2e8f0;
-  background: #f8fafc;
+  background: #ffffff;
   color: #334155;
   font-size: 10.5px;
   font-weight: 600;
@@ -1155,7 +1201,7 @@ function getScanResultIcon(status) {
 .scan-rail-status-pill.status-pending { background: #fffbeb; border-color: #fde68a; color: #b45309; }
 .scan-rail-status-pill.status-success { background: #f0fdf4; border-color: #bbf7d0; color: #15803d; }
 .scan-rail-status-pill.status-no_audio,
-.scan-rail-status-pill.status-no_match { background: #f8fafc; border-color: #e2e8f0; color: #475569; }
+.scan-rail-status-pill.status-no_match { background: #ffffff; border-color: #e2e8f0; color: #475569; }
 .scan-rail-status-pill.status-failed { background: #fff1f2; border-color: #fecdd3; color: #be123c; }
 
 .scan-target-card {
@@ -1199,9 +1245,9 @@ function getScanResultIcon(status) {
 }
 
 .scan-target-card:hover {
-  transform: translateY(-1px) scale(1.01);
+  transform: scale(1.01);
   border-color: #bfdbfe;
-  background: #fbfdff;
+  background: #ffffff;
 }
 
 .scan-target-card-success { border-color: #bbf7d0; }
@@ -1225,7 +1271,7 @@ function getScanResultIcon(status) {
   justify-content: center;
   border-radius: 10px;
   border: 1px solid #fde68a;
-  background: linear-gradient(135deg, #fffbeb 0%, #ffffff 100%);
+  background: #ffffff;
   color: #f59e0b;
   transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
@@ -1236,25 +1282,25 @@ function getScanResultIcon(status) {
 
 .scan-target-icon-success {
   border-color: #fde68a;
-  background: linear-gradient(135deg, #fffbeb 0%, #ffffff 100%);
+  background: #ffffff;
   color: #f59e0b;
 }
 
 .scan-target-icon-pending {
   border-color: #fde68a;
-  background: linear-gradient(135deg, #fffbeb 0%, #ffffff 100%);
+  background: #ffffff;
   color: #f59e0b;
 }
 
 .scan-target-icon-failed {
   border-color: #fde68a;
-  background: linear-gradient(135deg, #fffbeb 0%, #ffffff 100%);
+  background: #ffffff;
   color: #f59e0b;
 }
 
 .scan-target-icon-muted {
   border-color: #fde68a;
-  background: linear-gradient(135deg, #fffbeb 0%, #ffffff 100%);
+  background: #ffffff;
   color: #f59e0b;
 }
 

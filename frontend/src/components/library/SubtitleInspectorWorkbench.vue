@@ -576,6 +576,53 @@ function getSubtitlePairRenamePreview(pair = {}) {
 </script>
 
 <style scoped>
+.subtitle-inspector-workbench-root :is(button, input):focus,
+.subtitle-inspector-workbench-root :is(button, input):focus-visible,
+.subtitle-inspector-workbench-root :focus-within {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.subtitle-inspector-workbench-root :deep(.bg-slate-50),
+.subtitle-inspector-workbench-root :deep(.bg-slate-50\/30),
+.subtitle-inspector-workbench-root :deep(.bg-slate-50\/40),
+.subtitle-inspector-workbench-root :deep(.bg-slate-50\/60),
+.subtitle-inspector-workbench-root :deep(.bg-slate-100),
+.subtitle-inspector-workbench-root :deep(.bg-white\/80) {
+  background-color: #ffffff !important;
+  background-image: none !important;
+}
+
+.subtitle-inspector-workbench-root :deep(.bg-slate-900) {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid #e2e8f0 !important;
+}
+
+.subtitle-inspector-workbench-root :deep(.bg-gradient-to-r),
+.subtitle-inspector-workbench-root :deep(.bg-gradient-to-br),
+.subtitle-inspector-workbench-root :deep(.bg-gradient-to-b) {
+  background-image: none !important;
+  background-color: #ffffff !important;
+}
+
+.subtitle-inspector-workbench-root :deep(.shadow-sm),
+.subtitle-inspector-workbench-root :deep(.shadow),
+.subtitle-inspector-workbench-root :deep(.shadow-md),
+.subtitle-inspector-workbench-root :deep(.shadow-lg),
+.subtitle-inspector-workbench-root :deep(.shadow-xl),
+.subtitle-inspector-workbench-root :deep([class*="shadow-"]) {
+  box-shadow: none !important;
+}
+
+.subtitle-inspector-workbench-root :deep(.ring-1),
+.subtitle-inspector-workbench-root :deep(.ring-2),
+.subtitle-inspector-workbench-root :deep([class*="ring-"]) {
+  --tw-ring-offset-shadow: 0 0 #0000 !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
+  box-shadow: none !important;
+}
+
 .is-spinning { animation: subtitle-spin 1s linear infinite; }
 .is-sequence-pulse { animation: subtitle-sequence-pulse 1.4s ease-in-out infinite; }
 @keyframes subtitle-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }

@@ -1,5 +1,8 @@
 <template>
-  <div ref="rootRef" class="subtitle-task-navigator grid h-full min-h-0 grid-rows-[auto_auto_minmax(0,1fr)_auto] gap-2.5">
+  <div
+    ref="rootRef"
+    class="subtitle-task-navigator grid h-full min-h-0 grid-rows-[auto_auto_minmax(0,1fr)_auto] gap-2.5"
+  >
     <div class="flex items-center justify-between gap-2">
       <div class="min-w-0">
         <div class="flex items-center gap-1.5 text-[14px] font-semibold tracking-[-0.015em] text-slate-900">
@@ -8,33 +11,36 @@
         </div>
       </div>
 
-      <div class="relative">
+      <div class="subtitle-clear-menu-wrap">
         <button
           type="button"
-          class="group inline-flex min-h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[10px] border border-slate-200 bg-white px-2.5 text-[11.5px] font-medium text-slate-900 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 hover:shadow-[0_6px_14px_rgba(15,23,42,0.08)] active:translate-y-0 active:scale-[0.96]"
+          class="subtitle-clear-trigger group"
           :aria-expanded="clearMenuOpen"
           aria-haspopup="menu"
+          title="批量清理任务"
           @click="clearMenuOpen = !clearMenuOpen"
         >
-          <Trash2 class="h-3 w-3 text-rose-500 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover:scale-110 group-hover:rotate-[-6deg]" :stroke-width="2.2" />
-          <span>批量清理</span>
-          <ChevronDown class="h-3 w-3 transition-transform duration-200" :class="{ 'rotate-180': clearMenuOpen }" :stroke-width="2.2" />
+          <Trash2 class="subtitle-clear-trigger-icon" :stroke-width="2.2" />
+          <span>清理</span>
+          <ChevronDown class="subtitle-clear-trigger-chev" :class="{ 'rotate-180': clearMenuOpen }" :stroke-width="2.2" />
         </button>
 
         <div
           v-if="clearMenuOpen"
-          class="absolute right-0 top-[calc(100%+8px)] z-20 w-48 rounded-[14px] border border-slate-200 bg-white p-1.5 shadow-[0_16px_40px_rgba(15,23,42,0.14)]"
+          class="subtitle-clear-menu-panel"
+          role="menu"
         >
           <button
             v-for="item in clearActions"
             :key="item.key"
             type="button"
-            class="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-[11.5px] font-medium text-slate-900 transition-all duration-200 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-45"
+            class="subtitle-clear-menu-item"
             :disabled="!item.count"
+            role="menuitem"
             @click="handleClear(item.key)"
           >
             <span>{{ item.label }}</span>
-            <span class="rounded-full border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-900">{{ item.count }}</span>
+            <span class="subtitle-clear-menu-count">{{ item.count }}</span>
           </button>
         </div>
       </div>
@@ -275,17 +281,23 @@ function handleClear(scope) {
 
 function handleDocumentClick(event) {
   if (!clearMenuOpen.value || !rootRef.value) return
-  if (!rootRef.value.contains(event.target)) {
+  if (!rootRef.value.contains(event.target)) clearMenuOpen.value = false
+}
+
+function handleEscape(event) {
+  if (event.key === 'Escape') {
     clearMenuOpen.value = false
   }
 }
 
 onMounted(() => {
   document.addEventListener('click', handleDocumentClick)
+  window.addEventListener('keydown', handleEscape)
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', handleDocumentClick)
+  window.removeEventListener('keydown', handleEscape)
 })
 
 function getTaskStatusKey(task) {
@@ -333,28 +345,28 @@ function getCardClass(task) {
   const status = getTaskStatusKey(task)
   if (isTaskInteractionLocked(task)) {
     return props.ctx?.isSubtitleTaskSelected?.(task)
-      ? 'cursor-not-allowed border-slate-300 bg-slate-100/95 opacity-75 shadow-[0_4px_14px_rgba(15,23,42,0.06)] ring-1 ring-slate-300/70'
-      : 'cursor-not-allowed border-slate-200 bg-slate-100/90 opacity-70 shadow-none'
+      ? 'cursor-not-allowed border-slate-300 bg-white opacity-75'
+      : 'cursor-not-allowed border-slate-200 bg-white opacity-70'
   }
   if (props.ctx?.isSubtitleTaskSelected?.(task)) {
-    return 'border-slate-900 bg-white shadow-[0_6px_20px_rgba(15,23,42,0.1)] ring-1 ring-slate-900/15 hover:-translate-y-0.5 hover:scale-[1.01] hover:shadow-[0_10px_22px_rgba(79,70,229,0.12)] active:translate-y-0 active:scale-[0.98]'
+    return 'border-slate-400 bg-white hover:-translate-y-0.5 hover:scale-[1.01] active:translate-y-0 active:scale-[0.98]'
   }
   if (task?.manual_match_completed || status === 'manual_match_completed') {
-    return 'border-emerald-200/70 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-emerald-300 hover:shadow-[0_10px_22px_rgba(79,70,229,0.12)] active:translate-y-0 active:scale-[0.98]'
+    return 'border-emerald-200/70 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-emerald-300 active:translate-y-0 active:scale-[0.98]'
   }
   if (status === 'view_restored') {
-    return 'border-violet-200/70 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-violet-300 hover:shadow-[0_10px_22px_rgba(79,70,229,0.12)] active:translate-y-0 active:scale-[0.98]'
+    return 'border-violet-200/70 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-violet-300 active:translate-y-0 active:scale-[0.98]'
   }
   if (status === 'view_backfilled') {
-    return 'border-slate-200/80 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-slate-300 hover:shadow-[0_10px_22px_rgba(79,70,229,0.12)] active:translate-y-0 active:scale-[0.98]'
+    return 'border-slate-200/80 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-slate-300 active:translate-y-0 active:scale-[0.98]'
   }
   if (status === 'processing') {
-    return 'border-sky-200/70 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-sky-300 hover:shadow-[0_10px_22px_rgba(79,70,229,0.12)] active:translate-y-0 active:scale-[0.98]'
+    return 'border-sky-200/70 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-sky-300 active:translate-y-0 active:scale-[0.98]'
   }
   if (status === 'failed') {
-    return 'border-rose-200/70 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-rose-300 hover:shadow-[0_10px_22px_rgba(79,70,229,0.12)] active:translate-y-0 active:scale-[0.98]'
+    return 'border-rose-200/70 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-rose-300 active:translate-y-0 active:scale-[0.98]'
   }
-  return 'border-slate-100 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-slate-300 hover:shadow-[0_10px_22px_rgba(79,70,229,0.12)] active:translate-y-0 active:scale-[0.98]'
+  return 'border-slate-100 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-slate-300 active:translate-y-0 active:scale-[0.98]'
 }
 
 function isTaskInteractionLocked(task) {
@@ -396,6 +408,202 @@ function getDisplayFolderName(task) {
 </script>
 
 <style scoped>
+.subtitle-task-navigator button:not(:disabled) {
+  cursor: pointer !important;
+}
+
+.subtitle-task-navigator button:disabled {
+  cursor: not-allowed !important;
+}
+
+.subtitle-task-navigator :deep(.bg-slate-50),
+.subtitle-task-navigator :deep(.bg-slate-50\/80),
+.subtitle-task-navigator :deep(.bg-slate-100) {
+  background-color: #ffffff !important;
+  background-image: none !important;
+}
+
+.subtitle-task-navigator :deep(.shadow-sm),
+.subtitle-task-navigator :deep(.shadow),
+.subtitle-task-navigator :deep(.shadow-md),
+.subtitle-task-navigator :deep(.shadow-lg),
+.subtitle-task-navigator :deep(.shadow-xl),
+.subtitle-task-navigator :deep([class*="shadow-"]) {
+  box-shadow: none !important;
+}
+
+.subtitle-task-navigator :deep(.ring-1),
+.subtitle-task-navigator :deep(.ring-2),
+.subtitle-task-navigator :deep([class*="ring-"]) {
+  --tw-ring-offset-shadow: 0 0 #0000 !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
+  box-shadow: none !important;
+}
+
+.subtitle-clear-menu-wrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.subtitle-clear-trigger {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0 8px;
+  color: #0f172a;
+  font-size: 11.5px;
+  font-weight: 700;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.subtitle-clear-trigger:hover:not(:disabled) {
+  transform: scale(1.02);
+  border-color: #cbd5e1;
+  background: #ffffff;
+}
+
+.subtitle-clear-trigger:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.subtitle-clear-trigger-icon {
+  width: 13px;
+  height: 13px;
+  color: #e11d48;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.subtitle-clear-trigger:hover .subtitle-clear-trigger-icon {
+  transform: rotate(-8deg) scale(1.1);
+}
+
+.subtitle-clear-trigger-chev {
+  width: 12px;
+  height: 12px;
+  transition: transform 0.2s ease;
+}
+
+.subtitle-clear-menu-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 196px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 5px;
+  box-shadow: none;
+}
+
+.subtitle-clear-menu-item {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 0;
+  border-radius: 9px;
+  background: #ffffff;
+  padding: 6px 8px;
+  color: #0f172a;
+  text-align: left;
+  font-size: 11.5px;
+  font-weight: 650;
+  transition: all 0.2s ease;
+}
+
+.subtitle-clear-menu-item span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subtitle-clear-menu-item:hover:not(:disabled) {
+  transform: none;
+  background: #ffffff;
+  color: #0f172a;
+}
+
+.subtitle-clear-menu-item:disabled {
+  opacity: 0.45;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-clear-trigger),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-clear-trigger) {
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  background: #24252a !important;
+  background-image: none !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-clear-trigger:hover:not(:disabled)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-clear-trigger:hover:not(:disabled)) {
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  background: #303136 !important;
+  background-image: none !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-clear-menu-panel),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-clear-menu-panel) {
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  background: #111216 !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-clear-menu-panel .subtitle-clear-menu-item),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-clear-menu-panel .subtitle-clear-menu-item) {
+  border-color: transparent !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: rgba(244, 244, 245, 0.88) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-clear-menu-panel .subtitle-clear-menu-item:hover:not(:disabled)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-clear-menu-panel .subtitle-clear-menu-item:hover:not(:disabled)) {
+  background: #24252a !important;
+  background-image: none !important;
+  color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-clear-menu-count),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-clear-menu-count) {
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  background: #2b2c30 !important;
+  background-image: none !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+}
+
+.subtitle-clear-menu-count {
+  display: inline-flex;
+  min-width: 20px;
+  justify-content: center;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #ffffff;
+  padding: 1px 6px;
+  color: #0f172a;
+  font-size: 10px;
+  font-weight: 800;
+}
+
 .subtitle-queue-overview {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -420,7 +628,7 @@ function getDisplayFolderName(task) {
   overflow: hidden;
   border: 1px solid transparent;
   border-radius: 9px;
-  background: #f8fafc;
+  background: #ffffff;
   padding: 0 8px 0 10px;
   color: #334155;
   text-align: left;
@@ -433,7 +641,7 @@ function getDisplayFolderName(task) {
 .subtitle-queue-filter:hover {
   transform: translateY(-1px) scale(1.01);
   border-color: #cbd5e1;
-  background: #f1f5f9;
+  background: #ffffff;
   color: #0f172a;
 }
 
@@ -449,7 +657,7 @@ function getDisplayFolderName(task) {
 
 .subtitle-queue-filter.is-active {
   border-color: #94a3b8;
-  background: #e8edf4;
+  background: #ffffff;
   color: #0f172a;
 }
 
