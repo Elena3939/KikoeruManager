@@ -1662,7 +1662,7 @@ import { classifyLibraryEntryKind, libraryEntryIconFor, libraryEntryMetaFor } fr
 
 import { ElMessage } from 'element-plus'
 
-import { configApi, libraryApi, localUploadApi, rjSubtitleApi, taskApi, synologyOtpRequired } from '../api'
+import { aiSubtitleMatchApi, configApi, libraryApi, localUploadApi, rjSubtitleApi, taskApi, synologyOtpRequired } from '../api'
 
 import { showSystemAlert, showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 
@@ -2885,6 +2885,8 @@ const subtitleSelectedManualPairId = ref('')
 
 const subtitlePairApplying = ref(false)
 
+const subtitleAutoPairing = ref(false)
+
 const subtitleRenameDialogVisible = ref(false)
 
 const subtitleRenameForm = ref({ currentName: '', newName: '', path: '' })
@@ -2916,6 +2918,10 @@ const subtitleOptions = ref({
   useFilterRules: false,
 
   subtitleFilterRules: [],
+
+  aiMatchMode: 'rule_ai_auto',
+
+  aiConfidenceThreshold: 85,
 
   showSourceSearch: true,
 
@@ -4445,7 +4451,7 @@ const subtitleInspectorFlatTree = computed(() => flattenTree(subtitleInspectorFi
 
 const subtitleInspectorHasDirectories = computed(() => subtitleInspectorItems.value.some(item => item?.type === 'dir'))
 
-const subtitleInspectorBusy = computed(() => subtitleInspectorLoading.value || subtitleInspectorDeleting.value || subtitlePairApplying.value)
+const subtitleInspectorBusy = computed(() => subtitleInspectorLoading.value || subtitleInspectorDeleting.value || subtitlePairApplying.value || subtitleAutoPairing.value)
 
 const subtitleInspectorAudioFiles = computed(() => (
 
@@ -4576,6 +4582,8 @@ const subtitleWorkbenchCtx = computed(() => ({
   subtitleSelectedManualPairId: subtitleSelectedManualPairId.value,
 
   subtitlePairApplying: subtitlePairApplying.value,
+
+  subtitleAutoPairing: subtitleAutoPairing.value,
 
   subtitleManualApplyLabel: subtitleManualApplyLabel.value,
 
@@ -5886,6 +5894,8 @@ function normalizeRJSubtitleOptions (source = {}) {
 
   const subtitleFilterRules = source?.subtitleFilterRules ?? source?.subtitle_filter_rules
 
+  const aiMatchMode = source?.aiMatchMode ?? source?.ai_match_mode
+
   return {
 
     overwriteExisting: source?.overwriteExisting ?? source?.overwrite_existing ?? false,
@@ -5901,6 +5911,10 @@ function normalizeRJSubtitleOptions (source = {}) {
     useFilterRules: source?.useFilterRules ?? source?.use_filter_rules ?? false,
 
     subtitleFilterRules: Array.isArray(subtitleFilterRules) ? subtitleFilterRules.map(rule => normalizeSubtitleFilterRule(rule)) : [],
+
+    aiMatchMode: normalizeAISubtitleMatchMode(aiMatchMode),
+
+    aiConfidenceThreshold: normalizeAISubtitleConfidenceThreshold(source?.aiConfidenceThreshold ?? source?.ai_confidence_threshold, 85),
 
     showSourceSearch: source?.showSourceSearch ?? source?.show_source_search ?? true,
 
@@ -9191,6 +9205,28 @@ function normalizeRJSubtitleScanDepth (value) {
 
 
 
+function normalizeAISubtitleMatchMode (value) {
+
+  const mode = String(value || '').trim().toLowerCase()
+
+  return ['rule', 'ai_auto', 'rule_ai_auto', 'ai_assist'].includes(mode) ? mode : 'rule_ai_auto'
+
+}
+
+
+
+function normalizeAISubtitleConfidenceThreshold (value, fallback = 85) {
+
+  const normalized = Number.parseInt(value ?? fallback, 10)
+
+  if (Number.isNaN(normalized)) return fallback
+
+  return Math.max(0, Math.min(normalized, 100))
+
+}
+
+
+
 async function loadRJSubtitlePreferences () {
 
   const localSaved = loadJson(SUBTITLE_OPTIONS_KEY, {})
@@ -9207,7 +9243,15 @@ async function loadRJSubtitlePreferences () {
 
     if (data?.rj_subtitle) {
 
-      nextOptions = normalizeRJSubtitleOptions(data.rj_subtitle)
+      nextOptions = normalizeRJSubtitleOptions({
+
+        ...data.rj_subtitle,
+
+        aiMatchMode: localSaved?.aiMatchMode ?? data.ai_subtitle_matching?.default_mode,
+
+        aiConfidenceThreshold: localSaved?.aiConfidenceThreshold ?? data.ai_subtitle_matching?.confidence_threshold
+
+      })
 
       loadedFromBackend = true
 
@@ -11869,6 +11913,10 @@ async function submitRJSubtitleTasks (items, options = {}) {
 
       subtitleFilterRules: sanitizeSubtitleFilterRules(subtitleOptions.value.subtitleFilterRules),
 
+      aiMatchMode: subtitleOptions.value.aiMatchMode,
+
+      aiConfidenceThreshold: subtitleOptions.value.aiConfidenceThreshold,
+
       batchContext
 
     })
@@ -12755,7 +12803,7 @@ function buildSequenceOrOrderedSubtitlePairs () {
 
 
 
-function buildAutoSubtitlePairs () {
+function buildRuleSubtitlePairs ({ silent = false } = {}) {
 
   const audioList = [...subtitleInspectorAudioFiles.value]
 
@@ -12879,9 +12927,9 @@ function buildAutoSubtitlePairs () {
 
   if (!pairs.length) {
 
-    ElMessage.warning('没有生成可用的自动预匹配结果')
+    if (!silent) ElMessage.warning('没有生成可用的自动预匹配结果')
 
-    return
+    return false
 
   }
 
@@ -12890,6 +12938,180 @@ function buildAutoSubtitlePairs () {
   subtitleLastPairBuildMode.value = 'auto'
 
   subtitleSelectedManualPairId.value = pairs[0]?.id || ''
+
+  return true
+
+}
+
+
+
+function normalizeAIPairConfidenceLevel (score) {
+
+  const numeric = Number(score)
+
+  if (!Number.isFinite(numeric)) return 'medium'
+
+  if (numeric >= Math.max(90, Number(subtitleOptions.value.aiConfidenceThreshold || 85))) return 'high'
+
+  if (numeric < Number(subtitleOptions.value.aiConfidenceThreshold || 85)) return 'low'
+
+  return 'medium'
+
+}
+
+
+
+function buildSubtitlePairFromAIMatch (match, audioByPath, subtitleByPath, subtitleByName) {
+
+  const audioPath = String(match?.audio_path || '')
+
+  const subtitlePath = String(match?.subtitle_path || '')
+
+  const audio = audioByPath.get(audioPath)
+
+  const subtitle = subtitleByPath.get(subtitlePath) || subtitleByName.get(String(match?.subtitle_name || ''))
+
+  if (!audio || !subtitle) return null
+
+  return createSubtitlePair(audio, subtitle, {
+
+    confidenceLevel: normalizeAIPairConfidenceLevel(match?.ai_confidence ?? match?.match_score),
+
+    matchReason: `AI 草稿${match?.match_reason ? `：${match.match_reason}` : ''}`
+
+  })
+
+}
+
+
+
+async function buildAISubtitlePairs () {
+
+  if (subtitleAutoPairing.value) return false
+
+  const audioList = [...subtitleInspectorAudioFiles.value]
+
+  const subtitleList = [...subtitleInspectorSubtitleFiles.value]
+
+  if (!audioList.length || !subtitleList.length) return false
+
+  subtitleAutoPairing.value = true
+
+  try {
+
+    const data = await aiSubtitleMatchApi.preview({
+
+      audioFiles: audioList.map(item => ({
+
+        path: item.path,
+
+        name: item.name,
+
+        relative_path: item.relative_path || item.name
+
+      })),
+
+      subtitleFiles: subtitleList.map(item => ({
+
+        path: item.path,
+
+        name: item.name,
+
+        relative_path: item.relative_path || item.name
+
+      })),
+
+      aiMatchMode: 'ai_assist',
+
+      namingStrategy: subtitleOptions.value.namingStrategy,
+
+      enableMetadataMatch: false,
+
+      useFilterRules: subtitleOptions.value.useFilterRules,
+
+      subtitleFilterRules: sanitizeSubtitleFilterRules(subtitleOptions.value.subtitleFilterRules),
+
+      aiConfidenceThreshold: subtitleOptions.value.aiConfidenceThreshold
+
+    })
+
+    if (data?.status === 'disabled' || data?.status === 'skipped' || data?.success === false) {
+
+      if (data?.error?.message) ElMessage.warning(`AI 配对不可用，已改用规则预配对：${data.error.message}`)
+
+      return false
+
+    }
+
+    const audioByPath = new Map(audioList.map(item => [String(item.path || ''), item]))
+
+    const subtitleByPath = new Map(subtitleList.map(item => [String(item.path || ''), item]))
+
+    const subtitleByName = new Map()
+
+    subtitleList.forEach(item => {
+
+      const name = String(item.name || '')
+
+      if (name && !subtitleByName.has(name)) subtitleByName.set(name, item)
+
+    })
+
+    const pairs = []
+
+    const usedAudio = new Set()
+
+    const usedSubtitle = new Set()
+
+    for (const match of data?.match_result?.matches || []) {
+
+      const pair = buildSubtitlePairFromAIMatch(match, audioByPath, subtitleByPath, subtitleByName)
+
+      if (!pair || usedAudio.has(pair.audio_path) || usedSubtitle.has(pair.subtitle_path)) continue
+
+      usedAudio.add(pair.audio_path)
+
+      usedSubtitle.add(pair.subtitle_path)
+
+      pairs.push(pair)
+
+    }
+
+    if (!pairs.length) return false
+
+    subtitleManualPairs.value = pairs
+
+    subtitleLastPairBuildMode.value = 'ai'
+
+    subtitleSelectedManualPairId.value = pairs[0]?.id || ''
+
+    ElMessage.success(`AI 已生成 ${pairs.length} 组配对草稿`)
+
+    return true
+
+  } catch (error) {
+
+    ElMessage.warning('AI 配对不可用，已改用规则预配对: ' + (error.response?.data?.detail || error.message))
+
+    return false
+
+  } finally {
+
+    subtitleAutoPairing.value = false
+
+  }
+
+}
+
+
+
+async function buildAutoSubtitlePairs (options = {}) {
+
+  const { preferAi = true, silent = false } = options || {}
+
+  if (preferAi && await buildAISubtitlePairs()) return
+
+  buildRuleSubtitlePairs({ silent })
 
 }
 
@@ -14859,7 +15081,7 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
 
     if (loadSeq !== subtitleInspectorLoadSeq.value) return
 
-    buildAutoSubtitlePairs()
+    buildAutoSubtitlePairs({ preferAi: false, silent: true })
 
   } catch (error) {
 
@@ -15007,7 +15229,7 @@ async function inspectSubtitleTask (task, options = {}) {
 
     if (loadSeq !== subtitleInspectorLoadSeq.value) return
 
-    buildAutoSubtitlePairs()
+    buildAutoSubtitlePairs({ preferAi: false, silent: true })
 
   } catch (error) {
 

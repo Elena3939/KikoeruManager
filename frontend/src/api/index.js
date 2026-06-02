@@ -157,6 +157,11 @@ export const configApi = {
   revealHttpSecret: async (payload) => {
     const response = await apiClient.post('/config/http-downloader/reveal-secret', payload)
     return response.data
+  },
+
+  revealAISubtitleSecret: async (payload) => {
+    const response = await apiClient.post('/config/ai-subtitle-match/reveal-secret', payload)
+    return response.data
   }
 }
 
@@ -1567,6 +1572,8 @@ export const rjSubtitleApi = {
       naming_strategy: options.namingStrategy ?? 'audio',
       use_filter_rules: options.useFilterRules ?? false,
       subtitle_filter_rules: options.subtitleFilterRules || [],
+      ai_match_mode: options.aiMatchMode || options.ai_match_mode || 'rule_ai_auto',
+      ai_confidence_threshold: options.aiConfidenceThreshold ?? options.ai_confidence_threshold ?? null,
       batch_context: options.batchContext || null
     })
     return response.data
@@ -1608,7 +1615,9 @@ export const rjSubtitleApi = {
       enable_metadata_match: options.enableMetadataMatch ?? true,
       naming_strategy: options.namingStrategy ?? 'audio',
       use_filter_rules: options.useFilterRules ?? false,
-      subtitle_filter_rules: options.subtitleFilterRules || []
+      subtitle_filter_rules: options.subtitleFilterRules || [],
+      ai_match_mode: options.aiMatchMode || options.ai_match_mode || 'rule_ai_auto',
+      ai_confidence_threshold: options.aiConfidenceThreshold ?? options.ai_confidence_threshold ?? null
     })
     return response.data
   },
@@ -1624,6 +1633,56 @@ export const rjSubtitleApi = {
     const response = await apiClient.post('/rj-subtitle/folder-subtitle-state', {
       folder_path: folderPath,
       library_id: options.libraryId || undefined
+    })
+    return response.data
+  }
+}
+
+export const aiSubtitleMatchApi = {
+  test: async (config = {}) => {
+    const response = await apiClient.post('/ai-subtitle-match/test', { config }, {
+      timeout: 120000
+    })
+    return response.data
+  },
+
+  models: async (config = {}) => {
+    const response = await apiClient.post('/ai-subtitle-match/models', { config }, {
+      timeout: 120000
+    })
+    return response.data
+  },
+
+  providerIcon: async (payload = {}) => {
+    const response = await apiClient.post('/ai-subtitle-match/provider-icon', {
+      model: payload.model || '',
+      api_base: payload.apiBase || payload.api_base || '',
+      proxy_url: payload.proxyUrl || payload.proxy_url || ''
+    }, {
+      timeout: 30000
+    })
+    return response.data
+  },
+
+  usage: async (limit = 100) => {
+    const response = await apiClient.get('/ai-subtitle-match/usage', {
+      params: { limit }
+    })
+    return response.data
+  },
+
+  preview: async (payload = {}) => {
+    const response = await apiClient.post('/ai-subtitle-match/preview', {
+      audio_files: payload.audioFiles || payload.audio_files || [],
+      subtitle_files: payload.subtitleFiles || payload.subtitle_files || [],
+      ai_match_mode: payload.aiMatchMode || payload.ai_match_mode || 'ai_assist',
+      naming_strategy: payload.namingStrategy || payload.naming_strategy || 'audio',
+      enable_metadata_match: payload.enableMetadataMatch ?? payload.enable_metadata_match ?? true,
+      use_filter_rules: payload.useFilterRules ?? payload.use_filter_rules ?? false,
+      subtitle_filter_rules: payload.subtitleFilterRules || payload.subtitle_filter_rules || [],
+      ai_confidence_threshold: payload.aiConfidenceThreshold ?? payload.ai_confidence_threshold ?? null
+    }, {
+      timeout: 120000
     })
     return response.data
   }
@@ -1898,6 +1957,7 @@ export default {
   asmrSync: asmrSyncApi,
   httpDownload: httpDownloadApi,
   rjSubtitle: rjSubtitleApi,
+  aiSubtitleMatch: aiSubtitleMatchApi,
   subtitleImport: subtitleImportApi,
   circleCompletion: circleCompletionApi,
   localUpload: localUploadApi,

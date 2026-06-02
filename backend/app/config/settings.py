@@ -364,6 +364,35 @@ class RJSubtitleConfig(BaseModel):
     show_download_progress: bool = True
     show_issues: bool = True
 
+
+class AISubtitleMatchingConfig(BaseModel):
+    """AI 字幕配对配置。"""
+    enabled: bool = False
+    auto_apply_enabled: bool = False
+    manual_assist_enabled: bool = True
+    default_mode: str = "rule_ai_auto"
+    model: str = ""
+    api_key: str = ""
+    api_base: str = ""
+    api_version: str = ""
+    organization: str = ""
+    proxy_url: str = ""
+    timeout_seconds: int = 30
+    max_retries: int = 2
+    temperature: float = 0
+    confidence_threshold: int = 85
+    max_items_per_request: int = 120
+    prompt_template: str = (
+        "你是字幕文件名匹配器。你只能根据文件名判断音频和字幕组是否对应。\n"
+        "不要假设文件内容、字幕正文、音频时长、音频 metadata 或目录路径。\n"
+        "输入包含 audio_files 与 subtitle_groups。每项只有 id 和 filename/base_name。\n"
+        "请只输出 JSON，格式为：\n"
+        '{"matches":[{"audio_id":"a1","subtitle_group_id":"g1","confidence":0,"reason":"简短中文原因"}],'
+        '"unmatched_audio_ids":[],"unmatched_subtitle_group_ids":[]}\n'
+        "规则：一个 audio_id 最多匹配一个 subtitle_group_id；一个 subtitle_group_id 最多使用一次；"
+        "文件名完全对应、轨道号对应、标题规范化后对应时给高分；不确定就放入 unmatched。"
+    )
+
 class BackupZipConfig(BaseModel):
     enabled: bool = False
     source_path: str = ""
@@ -477,6 +506,7 @@ class AppConfig(BaseModel):
     process_existing: ProcessExistingFolderConfig = ProcessExistingFolderConfig()
     asmr_sync_step: ASMRSyncStepConfig = ASMRSyncStepConfig()
     rj_subtitle: RJSubtitleConfig = RJSubtitleConfig()
+    ai_subtitle_matching: AISubtitleMatchingConfig = AISubtitleMatchingConfig()
     backup_zip: BackupZipConfig = BackupZipConfig()
     email_watcher: EmailWatcherConfig = EmailWatcherConfig()
     notification_email: NotificationEmailConfig = NotificationEmailConfig()

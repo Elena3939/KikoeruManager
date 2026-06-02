@@ -1486,6 +1486,56 @@ class RJSubtitleService:
             'unmatched_subtitles': unmatched_subtitles,
         }
 
+    async def _maybe_apply_ai_auto_match(
+        self,
+        *,
+        audio_files: List[Any],
+        subtitle_files: List[Dict],
+        base_match_result: Dict,
+        enable_metadata_match: bool,
+        naming_strategy: str,
+        ai_match_mode: Optional[str] = None,
+        ai_confidence_threshold: Optional[int] = None,
+        task_id: str = "",
+        rjcode: str = "",
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+    ) -> Dict[str, Any]:
+        from ..config.settings import get_config
+        from .ai_subtitle_match_service import AI_ACTIVE_MODES, get_ai_subtitle_match_service, normalize_ai_match_mode
+
+        config = get_config()
+        ai_config = getattr(config, 'ai_subtitle_matching', None)
+        mode = normalize_ai_match_mode(ai_match_mode or 'rule_ai_auto')
+        if mode not in AI_ACTIVE_MODES:
+            return {
+                'used': False,
+                'auto_safe': False,
+                'status': 'skipped',
+                'match_result': base_match_result,
+                'metadata': {
+                    'ai_match_mode': mode,
+                    'ai_match_status': 'skipped',
+                    'ai_auto_applied': False,
+                },
+            }
+
+        if progress_callback:
+            progress_callback(86, 'AI 分析字幕配对')
+
+        audio_index = self._build_audio_index(audio_files, enable_metadata_match=enable_metadata_match)
+        subtitle_groups = self._group_subtitles(subtitle_files)
+        return await get_ai_subtitle_match_service().build_auto_match_result(
+            config=ai_config,
+            audio_index=audio_index,
+            subtitle_groups=subtitle_groups,
+            base_match_result=base_match_result,
+            mode=mode,
+            naming_strategy=self._resolve_naming_strategy(naming_strategy),
+            threshold=ai_confidence_threshold,
+            task_id=task_id,
+            rjcode=rjcode,
+        )
+
     def _is_synology_error_code(self, exc: Exception, code: int) -> bool:
         message = str(exc)
         patterns = [
@@ -1562,6 +1612,38 @@ class RJSubtitleService:
             display_name = display_name_by_path.get(subtitle_path) or display_name_by_name.get(subtitle_name)
             if display_name:
                 item['display_name'] = display_name
+
+    def _validate_ai_auto_output_conflicts(
+        self,
+        match_result: Optional[Dict],
+        existing_names: set[str],
+        overwrite: bool,
+    ) -> List[str]:
+        if overwrite:
+            return []
+        conflicts: List[str] = []
+        for match in (match_result or {}).get('matches', []):
+            output_name = os.path.basename(str(match.get('output_subtitle_name') or '')).strip()
+            if not output_name:
+                continue
+            equivalent_names = self._find_equivalent_subtitle_names(existing_names, output_name)
+            if output_name in existing_names or equivalent_names:
+                conflicts.append(output_name)
+        return sorted(set(conflicts))
+
+    def _downgrade_ai_auto_to_manual(self, ai_metadata: Dict, match_result: Dict, reason: str) -> Dict:
+        metadata = dict(ai_metadata or {})
+        errors = list((match_result or {}).get('ai_validation_errors') or [])
+        if reason and reason not in errors:
+            errors.append(reason)
+        if isinstance(match_result, dict):
+            match_result['ai_validation_errors'] = errors
+        metadata.update({
+            'ai_match_status': 'awaiting_manual',
+            'ai_auto_applied': False,
+            'ai_match_result': match_result,
+        })
+        return metadata
 
     async def _remote_subtitle_exists(self, client, subtitle_dir: str, file_name: str) -> bool:
         try:
@@ -1717,6 +1799,78 @@ class RJSubtitleService:
             'match_type': match_type,
             'match_score': 0,
         }
+
+    def _build_written_match_record(self, match: Dict) -> Dict:
+        return {
+            'audio_name': match.get('audio_name') or '',
+            'subtitle_name': match.get('subtitle_name') or match.get('output_subtitle_name') or '',
+            'output_name': match.get('output_subtitle_name') or '',
+            'match_type': match.get('match_type') or 'AI自动配对',
+            'match_score': int(match.get('match_score') or match.get('ai_confidence') or 0),
+        }
+
+    def _write_local_matched_subtitles(
+        self,
+        folder: Path,
+        match_result: Dict,
+        overwrite: bool,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
+    ) -> Tuple[str, List[Dict], List[str], List[str]]:
+        subtitle_dir = folder / 'subtitles'
+        subtitle_dir.mkdir(parents=True, exist_ok=True)
+        existing_names = self._list_local_existing_subtitle_names(subtitle_dir)
+        used_names: set[str] = set()
+        written_files: List[Dict] = []
+        skipped_files: List[str] = []
+        write_errors: List[str] = []
+        matches = list(match_result.get('matches') or [])
+        total_matches = max(len(matches), 1)
+
+        for index, match in enumerate(matches, start=1):
+            if should_cancel and should_cancel():
+                raise asyncio.CancelledError()
+            output_name = os.path.basename(str(match.get('output_subtitle_name') or '')).strip()
+            source_path = str(match.get('subtitle_path') or '')
+            if not output_name or not source_path:
+                write_errors.append(f"{output_name or source_path or 'unknown'}: 缺少字幕源或输出名")
+                continue
+            key = output_name.lower()
+            if key in used_names:
+                write_errors.append(f"{output_name}: 输出名重复")
+                continue
+            used_names.add(key)
+            destination = subtitle_dir / output_name
+            if progress_callback:
+                progress = 92 + int((index - 1) / total_matches * 6)
+                progress_callback(progress, f"写入匹配字幕 {index}/{total_matches}: {output_name}")
+            try:
+                equivalent_names = self._find_equivalent_subtitle_names(existing_names, output_name)
+                if overwrite:
+                    cleanup_names = []
+                    if output_name in existing_names:
+                        cleanup_names.append(output_name)
+                    cleanup_names.extend(equivalent_names)
+                    for name in cleanup_names:
+                        target_path = subtitle_dir / name
+                        if target_path.exists():
+                            target_path.unlink()
+                        existing_names.discard(name)
+                elif output_name in existing_names:
+                    skipped_files.append(output_name)
+                    continue
+                elif equivalent_names:
+                    skipped_files.append(output_name)
+                    continue
+                shutil.copy2(source_path, destination)
+                existing_names.add(output_name)
+                written_files.append(self._build_written_match_record(match))
+            except Exception as exc:
+                write_errors.append(f"{output_name}: {exc}")
+
+        if progress_callback:
+            progress_callback(98, f"匹配字幕写入完成，写入 {len(written_files)}，跳过 {len(skipped_files)}")
+        return str(subtitle_dir), written_files, skipped_files, write_errors
 
     async def _migrate_remote_equivalent_subtitles(
         self,
@@ -2192,9 +2346,7 @@ class RJSubtitleService:
 
         client = manager.get_cached_synology_client(library.synology)
         subtitle_dir = await self._ensure_remote_subtitle_dir(client, folder_path)
-        existing_names = set()
-        if not overwrite:
-            existing_names = await self._get_remote_existing_subtitle_names(client, subtitle_dir)
+        existing_names = await self._get_remote_existing_subtitle_names(client, subtitle_dir)
         # 清理上次中断遗留的临时上传文件，保证写入幂等
         await self._cleanup_stranded_upload_temps(client, subtitle_dir, existing_names)
 
@@ -2219,6 +2371,16 @@ class RJSubtitleService:
                 logger.info('[RJ字幕] 远程字幕已存在，跳过写入: %s', output_name)
                 skipped_files.append(output_name)
                 continue
+            if overwrite:
+                for legacy_name in {output_name, *self._find_equivalent_subtitle_names(existing_names, output_name)}:
+                    if legacy_name not in existing_names:
+                        continue
+                    try:
+                        await client.delete(str(PurePosixPath(subtitle_dir) / legacy_name))
+                    except Exception as exc:
+                        if not self._is_synology_error_codes(exc, 118, 119, 408):
+                            raise
+                    existing_names.discard(legacy_name)
             staged_path = os.path.join(upload_stage_dir, output_name)
             temp_remote_name = self._build_remote_upload_temp_name(index, output_name)
             temp_remote_path = str(PurePosixPath(subtitle_dir) / temp_remote_name)
@@ -2319,6 +2481,9 @@ class RJSubtitleService:
         naming_strategy: Optional[str] = None,
         use_filter_rules: Optional[bool] = None,
         subtitle_filter_rules: Optional[List[Dict]] = None,
+        ai_match_mode: Optional[str] = None,
+        ai_confidence_threshold: Optional[int] = None,
+        task_id: str = "",
         progress_callback: Optional[Callable[[int, str], None]] = None,
         file_progress_callback: Optional[Callable[[str, int, int, int, int], None]] = None,
         should_cancel: Optional[Callable[[], bool]] = None,
@@ -2508,7 +2673,36 @@ class RJSubtitleService:
                 enable_metadata_match=False,
                 naming_strategy=naming_strategy,
             )
-            self._annotate_download_display_names(downloaded_files, match_result)
+
+            ai_result = await self._maybe_apply_ai_auto_match(
+                audio_files=audio_entries,
+                subtitle_files=downloaded_subtitles,
+                base_match_result=match_result,
+                enable_metadata_match=False,
+                naming_strategy=naming_strategy,
+                ai_match_mode=ai_match_mode,
+                ai_confidence_threshold=ai_confidence_threshold,
+                task_id=task_id,
+                rjcode=rjcode,
+                progress_callback=progress_callback,
+            )
+            match_result = ai_result.get('match_result') or match_result
+            ai_metadata = ai_result.get('metadata') or {}
+            ai_auto_applied = bool(ai_metadata.get('ai_auto_applied'))
+            if ai_auto_applied:
+                subtitle_dir_preview = await self._ensure_remote_subtitle_dir(cached_client, folder_path)
+                existing_names = await self._get_remote_existing_subtitle_names(cached_client, subtitle_dir_preview)
+                conflicts = self._validate_ai_auto_output_conflicts(match_result, existing_names, overwrite)
+                if conflicts:
+                    ai_metadata = self._downgrade_ai_auto_to_manual(
+                        ai_metadata,
+                        match_result,
+                        f"overwrite_conflict:{', '.join(conflicts[:5])}",
+                    )
+                    ai_auto_applied = False
+            awaiting_manual_match = bool(ai_result.get('used')) and not ai_auto_applied
+            if ai_auto_applied:
+                self._annotate_download_display_names(downloaded_files, match_result)
 
             if progress_callback:
                 progress_callback(92, '回写远程 subtitles 目录')
@@ -2516,15 +2710,26 @@ class RJSubtitleService:
             if should_cancel and should_cancel():
                 raise asyncio.CancelledError()
 
-            subtitle_dir, written_files, skipped_files, write_errors = await self._write_remote_downloaded_subtitles(
-                library_id=library_id,
-                folder_path=folder_path,
-                downloaded_files=downloaded_files,
-                overwrite=overwrite,
-                temp_dir=temp_dir,
-                progress_callback=progress_callback,
-                should_cancel=should_cancel,
-            )
+            if ai_auto_applied:
+                subtitle_dir, written_files, skipped_files, write_errors = await self._write_remote_subtitles(
+                    library_id=library_id,
+                    folder_path=folder_path,
+                    match_result=match_result,
+                    overwrite=overwrite,
+                    temp_dir=temp_dir,
+                    progress_callback=progress_callback,
+                    should_cancel=should_cancel,
+                )
+            else:
+                subtitle_dir, written_files, skipped_files, write_errors = await self._write_remote_downloaded_subtitles(
+                    library_id=library_id,
+                    folder_path=folder_path,
+                    downloaded_files=downloaded_files,
+                    overwrite=overwrite,
+                    temp_dir=temp_dir,
+                    progress_callback=progress_callback,
+                    should_cancel=should_cancel,
+                )
 
             has_output = len(written_files) > 0 or len(skipped_files) > 0
             success = has_output
@@ -2556,6 +2761,8 @@ class RJSubtitleService:
                 'write_errors': write_errors,
                 'subtitle_dir': subtitle_dir,
                 'existing_subtitle_count': self._count_remote_existing_subtitles(remote_items),
+                'awaiting_manual_match': awaiting_manual_match,
+                **ai_metadata,
                 'error': None if success else '未能匹配并写入任何字幕文件',
             }
         finally:
@@ -2570,6 +2777,9 @@ class RJSubtitleService:
         naming_strategy: Optional[str] = None,
         use_filter_rules: Optional[bool] = None,
         subtitle_filter_rules: Optional[List[Dict]] = None,
+        ai_match_mode: Optional[str] = None,
+        ai_confidence_threshold: Optional[int] = None,
+        task_id: str = "",
         progress_callback: Optional[Callable[[int, str], None]] = None,
         file_progress_callback: Optional[Callable[[str, int, int, int, int], None]] = None,
         should_cancel: Optional[Callable[[], bool]] = None,
@@ -2586,6 +2796,9 @@ class RJSubtitleService:
                 naming_strategy=naming_strategy,
                 use_filter_rules=use_filter_rules,
                 subtitle_filter_rules=subtitle_filter_rules,
+                ai_match_mode=ai_match_mode,
+                ai_confidence_threshold=ai_confidence_threshold,
+                task_id=task_id,
                 progress_callback=progress_callback,
                 file_progress_callback=file_progress_callback,
                 should_cancel=should_cancel,
@@ -2760,15 +2973,52 @@ class RJSubtitleService:
                 enable_metadata_match=enable_metadata_match,
                 naming_strategy=naming_strategy,
             )
-            self._annotate_download_display_names(downloaded_files, match_result)
-
-            subtitle_dir, written_files, skipped_files, write_errors = self._write_local_downloaded_subtitles(
-                folder=folder,
-                downloaded_files=downloaded_files,
-                overwrite=overwrite,
+            ai_result = await self._maybe_apply_ai_auto_match(
+                audio_files=audio_files,
+                subtitle_files=downloaded_subtitles,
+                base_match_result=match_result,
+                enable_metadata_match=enable_metadata_match,
+                naming_strategy=naming_strategy,
+                ai_match_mode=ai_match_mode,
+                ai_confidence_threshold=ai_confidence_threshold,
+                task_id=task_id,
+                rjcode=rjcode,
                 progress_callback=progress_callback,
-                should_cancel=should_cancel,
             )
+            match_result = ai_result.get('match_result') or match_result
+            ai_metadata = ai_result.get('metadata') or {}
+            ai_auto_applied = bool(ai_metadata.get('ai_auto_applied'))
+            if ai_auto_applied:
+                subtitle_dir_preview = folder / 'subtitles'
+                existing_names = self._list_local_existing_subtitle_names(subtitle_dir_preview)
+                conflicts = self._validate_ai_auto_output_conflicts(match_result, existing_names, overwrite)
+                if conflicts:
+                    ai_metadata = self._downgrade_ai_auto_to_manual(
+                        ai_metadata,
+                        match_result,
+                        f"overwrite_conflict:{', '.join(conflicts[:5])}",
+                    )
+                    ai_auto_applied = False
+            awaiting_manual_match = bool(ai_result.get('used')) and not ai_auto_applied
+            if ai_auto_applied:
+                self._annotate_download_display_names(downloaded_files, match_result)
+
+            if ai_auto_applied:
+                subtitle_dir, written_files, skipped_files, write_errors = self._write_local_matched_subtitles(
+                    folder=folder,
+                    match_result=match_result,
+                    overwrite=overwrite,
+                    progress_callback=progress_callback,
+                    should_cancel=should_cancel,
+                )
+            else:
+                subtitle_dir, written_files, skipped_files, write_errors = self._write_local_downloaded_subtitles(
+                    folder=folder,
+                    downloaded_files=downloaded_files,
+                    overwrite=overwrite,
+                    progress_callback=progress_callback,
+                    should_cancel=should_cancel,
+                )
 
             if progress_callback:
                 progress_callback(96, "写入 subtitles 目录")
@@ -2802,6 +3052,8 @@ class RJSubtitleService:
                 'skipped_files': skipped_files,
                 'write_errors': write_errors,
                 'subtitle_dir': subtitle_dir,
+                'awaiting_manual_match': awaiting_manual_match,
+                **ai_metadata,
                 'error': None if success else '未能匹配并写入任何字幕文件',
             }
         finally:
