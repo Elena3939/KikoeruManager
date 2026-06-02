@@ -201,6 +201,28 @@ def _build_notification_info(event_type: str, group_key: str, group_type: str, c
 
     meta = dict(context_task.task_metadata or {})
     task_kind = _task_kind(context_task)
+    if task_kind == 'http_download' or domain == 'http_download':
+        try:
+            from .http_download_service import http_download_platforms_from_metadata, http_download_platforms_label
+            platforms = http_download_platforms_from_metadata(meta)
+            platform_label = str(meta.get('platform_label') or '').strip() or http_download_platforms_label(platforms)
+        except Exception:
+            platforms = list(meta.get('platforms') or meta.get('source_modes') or [])
+            platform_label = str(meta.get('platform_label') or '').strip() or domain_label
+        if platform_label and platform_label != 'HTTP':
+            domain_label = f'{platform_label} 下载'
+        title = str(meta.get('batch_name') or meta.get('source_label') or title or '').strip() or domain_label
+        if group_type == 'task':
+            summary = f'{domain_label}{label_map.get(event_type, event_type)}'
+        route_query = dict(route_hint.get('query') or {})
+        route_query.update({
+            'platforms': ','.join(str(item) for item in platforms if str(item or '').strip()),
+            'platform_label': platform_label,
+            'download_mode': str(meta.get('download_mode') or '').strip(),
+        })
+        route_hint = {**route_hint, 'query': route_query}
+        meta['platforms'] = platforms
+        meta['platform_label'] = platform_label
     if task_kind == 'circle_completion_refresh_selected':
         title, summary, rjcode = _build_refresh_selected_notification_text(meta, domain_label, label_map.get(event_type, event_type))
     return {
@@ -212,11 +234,15 @@ def _build_notification_info(event_type: str, group_key: str, group_type: str, c
         'rjcode': rjcode,
         'source_page': meta.get('source_page', ''),
         'source_action': meta.get('source_action', ''),
-        'source_label': meta.get('source_label', ''),
+        'source_label': meta.get('source_label', '') or meta.get('platform_label', ''),
         'business_key': str(meta.get('business_key') or ''),
         'route_path': route_hint.get('path', ''),
         'route_query': route_hint.get('query') or {},
         'task_kind': task_kind,
+        'platforms': list(meta.get('platforms') or []),
+        'platform_label': meta.get('platform_label', ''),
+        'download_mode': meta.get('download_mode', ''),
+        'source_modes': list(meta.get('source_modes') or []),
     }
 
 
@@ -424,6 +450,10 @@ def _write_sync(event_key: str, event_type: str, task, group_key: str, group_typ
                     'domain_label': info['domain_label'],
                     'rjcode': info['rjcode'],
                     'source_label': info['source_label'],
+                    'platforms': info.get('platforms') or [],
+                    'platform_label': info.get('platform_label') or '',
+                    'download_mode': info.get('download_mode') or '',
+                    'source_modes': info.get('source_modes') or [],
                     'task_ids': task_ids,
                     'group_type': group_type,
                     'severity': info['severity'],

@@ -14,7 +14,13 @@ from typing import Any, Dict, Optional
 
 from sqlalchemy.orm.attributes import flag_modified
 
-from .http_download_service import sanitize_http_download_item
+from .http_download_service import (
+    build_http_download_batch_title,
+    http_download_platform_label,
+    http_download_platforms_from_metadata,
+    http_download_platforms_label,
+    sanitize_http_download_item,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -841,6 +847,8 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             if isinstance(item, dict)
         ]
         download_root = str(meta.get("download_root") or task.output_path or "").strip()
+        platforms = http_download_platforms_from_metadata(meta)
+        platform_label = str(meta.get("platform_label") or "").strip() or http_download_platforms_label(platforms)
         downloaded_bytes = int(
             performance_metrics.get("downloaded_bytes")
             or download_runtime.get("transferred_bytes")
@@ -856,7 +864,7 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             or 0
         )
         if st == TaskStatus.COMPLETED and success_count > 0:
-            summary_parts = [f"下载 {success_count} 个文件"]
+            summary_parts = [f"{platform_label} 下载 {success_count} 个文件"]
             if downloaded_bytes > 0:
                 summary_parts.append(_format_bytes(downloaded_bytes))
             if average_speed_bytes > 0:
@@ -870,6 +878,8 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             "source_action": str(meta.get("source_action") or "").strip() or None,
             "download_mode": str(meta.get("download_mode") or "").strip() or None,
             "source_modes": list(meta.get("source_modes") or []),
+            "platforms": platforms,
+            "platform_label": platform_label or None,
             "success_count": success_count,
             "failed_count": failed_count,
             "downloaded_bytes": downloaded_bytes,

@@ -22,11 +22,11 @@
       <!-- Hero：纯色图标无背景框，和任务列表卡片呼应 -->
       <div class="flex items-start gap-3 px-5 pt-4 pb-3">
         <component
-          :is="domainMeta(item.domain).icon"
+          :is="taskIcon(item)"
           :size="22"
           :stroke-width="2"
           class="mt-[3px] flex-shrink-0 transition-transform duration-300 hover:scale-110 hover:rotate-[-4deg]"
-          :class="domainMeta(item.domain).chipIcon"
+          :class="taskIconClass(item)"
         />
         <div class="flex-1 min-w-0">
           <div class="flex items-start justify-between gap-2.5">
@@ -38,7 +38,7 @@
             <span
               class="inline-flex h-[20px] items-center rounded-full px-2 text-[11px] font-semibold"
               :class="[domainMeta(item.domain).chipBg, domainMeta(item.domain).chipText]"
-            >{{ item.domain_label }}</span>
+            >{{ taskDomainLabel(item) }}</span>
             <span v-if="formatRJCode(item.rjcode)" class="font-bold tabular-nums text-slate-700">{{ formatRJCode(item.rjcode) }}</span>
           </div>
         </div>
@@ -366,6 +366,7 @@ import {
 import AppEmptyState from '../common/AppEmptyState.vue'
 import StatusPill from '../dashboard/StatusPill.vue'
 import { getTaskDomainMeta } from '../common/taskDomainMeta.js'
+import { getHttpDownloadDisplayMeta } from '../common/httpDownloadPlatformMeta.js'
 
 defineProps({
   item: { type: Object, default: null },
@@ -386,6 +387,30 @@ defineEmits(['open-route', 'action', 'update:treeFilterMode', 'expand-section', 
 
 function domainMeta(domain) {
   return getTaskDomainMeta(domain)
+}
+
+function isHttpDownloadTask(item) {
+  return String(item?.domain || '').trim() === 'http_download'
+}
+
+function httpDisplayMeta(item) {
+  return getHttpDownloadDisplayMeta(item)
+}
+
+function taskIcon(item) {
+  if (isHttpDownloadTask(item)) return httpDisplayMeta(item).icon || domainMeta(item.domain).icon
+  return domainMeta(item.domain).icon
+}
+
+function taskIconClass(item) {
+  return isHttpDownloadTask(item) && httpDisplayMeta(item).icon
+    ? 'task-platform-icon'
+    : domainMeta(item.domain).chipIcon
+}
+
+function taskDomainLabel(item) {
+  if (isHttpDownloadTask(item)) return httpDisplayMeta(item).label || item.domain_label
+  return item.domain_label
 }
 
 function getTreeRowIconComponent(entry) {
@@ -717,6 +742,13 @@ function actionToneClass(action) {
 
 .tree-icon {
   flex: 0 0 auto;
+}
+
+.task-platform-icon {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  border-radius: 4px;
 }
 
 .icon-folder {

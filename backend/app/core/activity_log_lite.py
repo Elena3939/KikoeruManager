@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from .activity_log_service import CATEGORY_LABELS
+from .http_download_service import http_download_platforms_from_metadata, http_download_platforms_label
 
 __all__ = [
     "build_lite_item",
@@ -400,6 +401,17 @@ def build_lite_item(row: Dict[str, Any]) -> Dict[str, Any]:
         "rerun": bool(detail.get("rerun_linked") or detail.get("rerun_count")),
         "compacted": bool(detail.get("__compacted")),
     }
+
+    if category == "http_download":
+        platforms = http_download_platforms_from_metadata(detail)
+        platform_label = str(detail.get("platform_label") or "").strip() or http_download_platforms_label(platforms)
+        item.update({
+            "category_label": f"{platform_label} 下载" if platform_label and platform_label != "HTTP" else "HTTP 下载",
+            "platforms": platforms,
+            "platform_label": platform_label,
+            "download_mode": str(detail.get("download_mode") or "").strip(),
+            "source_modes": list(detail.get("source_modes") or []),
+        })
 
     # 单条重命名行：列表 UI 需要 old_name / new_name 才能渲染"原 / 新"对比块。
     # lite 路径默认不回传 detail，这里只挑必要字段精简下发，避免又把整段 detail JSON
