@@ -1273,7 +1273,7 @@ function getUnifiedFileRows(task) {
     if (keepActiveState) return
     row.downloadedBytes = Number(file.stage === 'upload' ? (row.total || 0) : (file.downloaded || row.downloadedBytes || 0))
     row.uploadedBytes = Number(file.stage === 'upload' ? (file.uploaded || 0) : 0)
-    row.reason = String(file.reason || file.exception_type || '失败').trim()
+    row.reason = String(file.reason || file.failure_reason || file.error_message || file.exception_type || '失败').trim()
     row.retryable = Boolean(row.relative_path)
     row.tone = 'danger'
     const failedStage = String(file.stage || '').trim()

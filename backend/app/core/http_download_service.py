@@ -33,7 +33,7 @@ _PIKPAK_HOST_HINTS = {"mypikpak.com", "www.mypikpak.com", "drive.mypikpak.com"}
 _GOFILE_HOST_HINTS = {"gofile.io", "www.gofile.io"}
 _TRANSFERIT_HOST_HINTS = {"transfer.it", "www.transfer.it"}
 _ONEDRIVE_HOST_HINTS = {"1drv.ms", "onedrive.live.com", "onedrive.com"}
-_GOOGLE_DRIVE_HOST_HINTS = {"drive.google.com", "docs.google.com"}
+_GOOGLE_DRIVE_HOST_HINTS = {"drive.google.com", "docs.google.com", "drive.usercontent.google.com"}
 _PIKPAK_MAX_SHARE_FILES = 100
 _PIKPAK_STATUS_CACHE_TTL_SECONDS = 6 * 60 * 60
 _SHARE_PREVIEW_ONLY_SOURCES = {"pikpak", "transferit"}
@@ -63,7 +63,7 @@ def normalize_http_download_platform(value: Any) -> str:
         return "transferit"
     if normalized in {"onedrive", "one_drive", "1drv", "1drv.ms", "onedrive.live.com", "onedrive.com"} or "onedrive" in text or "1drv.ms" in text:
         return "onedrive"
-    if normalized in {"google_drive", "google-drive", "googledrive", "drive.google.com", "docs.google.com"} or "drive.google.com" in text or "docs.google.com" in text or "google drive" in text:
+    if normalized in {"google_drive", "google-drive", "googledrive", "drive.google.com", "docs.google.com", "drive.usercontent.google.com"} or "drive.google.com" in text or "docs.google.com" in text or "drive.usercontent.google.com" in text or "google drive" in text:
         return "google_drive"
     if normalized in {"pikpak", "mypikpak.com", "drive.mypikpak.com"} or "pikpak" in text or "mypikpak.com" in text:
         return "pikpak"
@@ -1645,6 +1645,9 @@ class HttpDownloadService:
         return bool(self._google_drive_folder_id_from_url(raw_url))
 
     def _google_drive_direct_url(self, raw_url: str) -> str:
+        parsed = urlparse(raw_url)
+        if (parsed.hostname or "").lower() == "drive.usercontent.google.com":
+            return raw_url
         file_id = self._google_drive_file_id_from_url(raw_url)
         return f"https://drive.usercontent.google.com/download?{urlencode({'id': file_id, 'export': 'download'})}"
 
@@ -1803,6 +1806,18 @@ class HttpDownloadService:
                 query[key] = str(fallback_query[key][0])
         return f"{parser.action}?{urlencode(query)}"
 
+    def _google_drive_cookie_header_from_session(self, session: aiohttp.ClientSession, url: str) -> str:
+        try:
+            cookies = session.cookie_jar.filter_cookies(url)
+        except Exception:
+            return ""
+        parts = []
+        for name, morsel in cookies.items():
+            value = getattr(morsel, "value", morsel)
+            if str(name or "").strip() and str(value or "").strip():
+                parts.append(f"{name}={value}")
+        return "; ".join(parts)
+
     async def _google_drive_resolve_confirm_url(self, url: str) -> Dict[str, Any]:
         timeout = aiohttp.ClientTimeout(total=30, connect=10)
         proxy = self._proxy_url() or None
@@ -1815,25 +1830,33 @@ class HttpDownloadService:
                 if response.status >= 400:
                     raise HttpDownloadError(f"Google Drive 返回 HTTP {response.status}")
                 if "text/html" not in content_type.lower():
+                    cookie_header = self._google_drive_cookie_header_from_session(session, str(response.url))
                     return {
                         "url": str(response.url),
                         "size_bytes": self._content_length_from_headers(response_headers),
                         "content_type": content_type,
                         "warning": "",
+                        "headers": {"Cookie": cookie_header} if cookie_header else {},
+                        "aria2_header": [f"Cookie: {cookie_header}"] if cookie_header else [],
                     }
         confirm_url = self._google_drive_confirm_url_from_warning_html(body, url)
+        cookie_header = self._google_drive_cookie_header_from_session(session, confirm_url or url)
         if not confirm_url:
             return {
                 "url": url,
                 "size_bytes": self._google_drive_size_from_warning_html(body),
                 "content_type": content_type,
                 "warning": "Google Drive 返回确认页，未解析到确认下载参数。",
+                "headers": {"Cookie": cookie_header} if cookie_header else {},
+                "aria2_header": [f"Cookie: {cookie_header}"] if cookie_header else [],
             }
         return {
             "url": confirm_url,
             "size_bytes": self._google_drive_size_from_warning_html(body),
             "content_type": content_type,
             "warning": "Google Drive 大文件已自动附加确认下载参数。",
+            "headers": {"Cookie": cookie_header} if cookie_header else {},
+            "aria2_header": [f"Cookie: {cookie_header}"] if cookie_header else [],
         }
 
     def _google_drive_dedupe_files(self, files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -3288,6 +3311,21 @@ class HttpDownloadService:
                         source_item["content_type"] = str(drive_resolved.get("content_type") or "")
                     if drive_resolved.get("warning"):
                         source_item["warning"] = str(drive_resolved.get("warning") or "")
+                    if drive_resolved.get("headers"):
+                        existing_headers = dict(source_item.get("headers") or {})
+                        existing_headers.update(dict(drive_resolved.get("headers") or {}))
+                        source_item["headers"] = existing_headers
+                    if drive_resolved.get("aria2_header"):
+                        existing_aria2_headers = [
+                            str(header).strip()
+                            for header in list(source_item.get("aria2_header") or [])
+                            if str(header or "").strip()
+                        ]
+                        for header in list(drive_resolved.get("aria2_header") or []):
+                            header_text = str(header or "").strip()
+                            if header_text and header_text not in existing_aria2_headers:
+                                existing_aria2_headers.append(header_text)
+                        source_item["aria2_header"] = existing_aria2_headers
                 except Exception as exc:
                     source_item["google_drive_confirm_error"] = self._sanitize_error(exc)
             item = await self.preview_url(
@@ -3619,6 +3657,205 @@ class HttpDownloadService:
             options["header"] = headers
         return options
 
+    async def _download_google_drive_item(self, item: Dict[str, Any], task=None, progress_callback=None) -> Dict[str, Any]:
+        raw_url = str(item.get("original_url") or item.get("url") or "").strip()
+        if not raw_url:
+            raise HttpDownloadError("Google Drive 下载缺少直链")
+        target_dir = str(item.get("target_dir") or self._download_root())
+        os.makedirs(target_dir, exist_ok=True)
+        final_path = str(item.get("final_path") or os.path.join(target_dir, item.get("filename") or "google-drive-file"))
+        filename = self._sanitize_filename(item.get("filename") or os.path.basename(final_path) or "google-drive-file")
+        relative_path = str(item.get("relative_path") or os.path.relpath(final_path, self._download_root()).replace("\\", "/"))
+        expected_total = int(item.get("size_bytes") or item.get("size") or 0)
+        headers = {
+            "User-Agent": _GOFILE_USER_AGENT,
+            "Accept": "application/octet-stream,application/zip,*/*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        }
+        headers.update({
+            str(key): str(value)
+            for key, value in dict(item.get("headers") or {}).items()
+            if str(key or "").strip() and str(value or "").strip()
+        })
+        if "Cookie" not in headers:
+            for header in list(item.get("aria2_header") or []):
+                header_text = str(header or "").strip()
+                if header_text.lower().startswith("cookie:"):
+                    headers["Cookie"] = header_text.split(":", 1)[1].strip()
+                    break
+
+        existing_size = os.path.getsize(final_path) if os.path.exists(final_path) else 0
+        if existing_size and expected_total and existing_size >= expected_total:
+            return {
+                "gid": str(item.get("gid") or f"google_drive:{item.get('file_id') or filename}"),
+                "name": os.path.basename(final_path) or filename,
+                "relative_path": relative_path,
+                "local_path": final_path,
+                "url": item.get("masked_url") or self._mask_url(raw_url),
+                "source": "google_drive",
+                "status": "completed",
+                "progress": 100,
+                "downloaded": existing_size,
+                "total": expected_total,
+                "size": existing_size,
+                "speed_bytes_per_sec": 0,
+                "file_id": item.get("file_id", ""),
+            }
+        cfg = self._config()
+        connect_timeout = max(10, int(getattr(cfg, "connect_timeout_seconds", 15) or 15))
+        read_timeout = max(30, int(getattr(cfg, "timeout_seconds", 60) or 60))
+        retry_count = max(1, int(getattr(cfg, "retry_count", 5) or 5))
+        retry_wait = max(0, int(getattr(cfg, "retry_wait_seconds", 5) or 5))
+        timeout = aiohttp.ClientTimeout(total=None, connect=connect_timeout, sock_read=read_timeout)
+        proxy = self._proxy_url() or None
+        downloaded = existing_size
+        speed_base = existing_size
+        started_at = time.monotonic()
+        last_emit_at = 0.0
+        row = {
+            "gid": str(item.get("gid") or f"google_drive:{item.get('file_id') or filename}"),
+            "name": filename,
+            "relative_path": relative_path,
+            "local_path": final_path,
+            "url": item.get("masked_url") or self._mask_url(raw_url),
+            "source": "google_drive",
+            "status": "downloading",
+            "progress": 0,
+            "downloaded": downloaded,
+            "total": expected_total,
+            "size": expected_total,
+            "speed_bytes_per_sec": 0,
+            "file_id": item.get("file_id", ""),
+        }
+
+        def current_file_size() -> int:
+            try:
+                return os.path.getsize(final_path)
+            except OSError:
+                return int(downloaded or 0)
+
+        async def emit_progress(force: bool = False) -> None:
+            nonlocal last_emit_at
+            now = time.monotonic()
+            if not force and now - last_emit_at < 0.8:
+                return
+            last_emit_at = now
+            elapsed = max(now - started_at, 0.001)
+            current_downloaded = current_file_size()
+            row["downloaded"] = current_downloaded
+            if str(row.get("status") or "") == "completed":
+                row["speed_bytes_per_sec"] = 0
+            else:
+                row["speed_bytes_per_sec"] = int(max(0, current_downloaded - speed_base) / elapsed)
+            if int(row.get("total") or 0) > 0:
+                progress_cap = 100 if str(row.get("status") or "") == "completed" else 99
+                row["progress"] = min(progress_cap, int(current_downloaded / int(row["total"]) * 100))
+            if progress_callback:
+                result = progress_callback(dict(row))
+                if inspect.isawaitable(result):
+                    await result
+
+        last_error: Optional[BaseException] = None
+        for attempt_index in range(retry_count):
+            if task:
+                await task.wait_if_paused()
+                if task.is_cancelled():
+                    raise HttpDownloadError("用户取消")
+
+            existing_size = current_file_size()
+            downloaded = existing_size
+            if existing_size and expected_total and existing_size >= expected_total:
+                row.update({"status": "completed", "progress": 100, "downloaded": existing_size, "size": existing_size})
+                await emit_progress(force=True)
+                return row
+
+            request_headers = dict(headers)
+            mode = "ab" if existing_size > 0 else "wb"
+            if existing_size > 0:
+                request_headers["Range"] = f"bytes={existing_size}-"
+
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.get(raw_url, headers=request_headers, allow_redirects=True, proxy=proxy) as response:
+                        if response.status == 416 and expected_total and existing_size >= expected_total:
+                            row.update({"status": "completed", "progress": 100, "downloaded": existing_size, "size": existing_size})
+                            await emit_progress(force=True)
+                            return row
+                        if response.status >= 400:
+                            raise HttpDownloadError(f"Google Drive 下载返回 HTTP {response.status}")
+                        response_headers = {k.lower(): v for k, v in response.headers.items()}
+                        content_type = str(response_headers.get("content-type") or "")
+                        if "text/html" in content_type.lower():
+                            raise HttpDownloadError("Google Drive 返回 HTML 页面，确认参数或访问权限已失效")
+                        content_range = str(response_headers.get("content-range") or "")
+                        content_total = self._content_length_from_headers(response_headers)
+                        if response.status != 206 and existing_size > 0:
+                            existing_size = 0
+                            downloaded = 0
+                            speed_base = 0
+                            mode = "wb"
+                        if content_total and "/" in content_range:
+                            total = max(expected_total, content_total)
+                        else:
+                            total = max(expected_total, content_total + downloaded if response.status == 206 and content_total else content_total)
+                        if total > 0:
+                            row["total"] = total
+                            row["size"] = total
+                        with open(final_path, mode + ("" if "b" in mode else "b")) as target:
+                            downloaded = target.tell()
+                            async for chunk in response.content.iter_chunked(1024 * 1024):
+                                if not chunk:
+                                    continue
+                                if task:
+                                    await task.wait_if_paused()
+                                    if task.is_cancelled():
+                                        raise HttpDownloadError("用户取消")
+                                target.write(chunk)
+                                target.flush()
+                                downloaded = target.tell()
+                                await emit_progress()
+                            target.flush()
+            except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError) as exc:
+                last_error = exc
+                downloaded = current_file_size()
+                await emit_progress(force=True)
+                if attempt_index < retry_count - 1:
+                    if retry_wait:
+                        await asyncio.sleep(retry_wait)
+                    continue
+                partial = f"，已保留 {downloaded} bytes" if downloaded else ""
+                raise HttpDownloadError(f"Google Drive 下载中断{partial}，可重试续传: {self._sanitize_error(exc)}") from exc
+
+            final_size = current_file_size()
+            downloaded = final_size
+            if expected_total and final_size < expected_total:
+                last_error = HttpDownloadError(f"Google Drive 下载不完整: {final_size}/{expected_total} bytes")
+                await emit_progress(force=True)
+                if attempt_index < retry_count - 1:
+                    if retry_wait:
+                        await asyncio.sleep(retry_wait)
+                    continue
+                raise last_error
+            break
+        else:
+            if last_error:
+                raise HttpDownloadError(f"Google Drive 下载失败: {self._sanitize_error(last_error)}") from last_error
+
+        final_size = os.path.getsize(final_path) if os.path.exists(final_path) else downloaded
+        if expected_total and final_size < expected_total:
+            raise HttpDownloadError(f"Google Drive 下载不完整: {final_size}/{expected_total} bytes")
+        row.update({
+            "name": os.path.basename(final_path) or filename,
+            "status": "completed",
+            "progress": 100,
+            "downloaded": final_size,
+            "total": max(int(row.get("total") or 0), final_size),
+            "size": max(int(row.get("size") or 0), final_size),
+            "speed_bytes_per_sec": 0,
+        })
+        await emit_progress(force=True)
+        return row
+
     async def _download_transferit_item(self, item: Dict[str, Any], task=None) -> Dict[str, Any]:
         raw_url = str(item.get("original_url") or item.get("url") or "").strip()
         if not raw_url:
@@ -3759,13 +3996,37 @@ class HttpDownloadService:
         resolved_urls = list(preview.get("resolved_urls") or [])
         source_items = list(preview.get("source_items") or [])
         source_modes = list(preview.get("source_modes") or [])
+        google_drive_items = [item for item in items if str(item.get("source") or "") == "google_drive"]
         transferit_items = [item for item in items if str(item.get("source") or "") == "transferit"]
-        aria2_items = [item for item in items if self._is_direct_download_item(item)]
+        aria2_items = [
+            item for item in items
+            if str(item.get("source") or "") not in {"google_drive", "transferit"}
+            and self._is_direct_download_item(item)
+        ]
 
         os.makedirs(self._download_root(), exist_ok=True)
         gids: List[str] = []
         download_files = []
         total_bytes = 0
+        for item in google_drive_items:
+            total_bytes += int(item.get("size_bytes") or 0)
+            gid = f"google_drive:{item.get('file_id') or item.get('filename')}"
+            item["gid"] = gid
+            download_files.append({
+                "gid": gid,
+                "name": item["filename"],
+                "relative_path": item["relative_path"],
+                "local_path": item["final_path"],
+                "url": item["masked_url"],
+                "original_url": item["url"],
+                "source": "google_drive",
+                "status": "pending",
+                "progress": 0,
+                "downloaded": 0,
+                "total": int(item.get("size_bytes") or 0),
+                "size": int(item.get("size_bytes") or 0),
+                "file_id": item.get("file_id", ""),
+            })
         for item in aria2_items:
             os.makedirs(item["target_dir"], exist_ok=True)
             options = self._aria2_options(item, item["target_dir"])
@@ -3841,6 +4102,8 @@ class HttpDownloadService:
         task.output_path = self._download_root()
         task.task_metadata["final_output_path"] = self._download_root()
         submit_parts = []
+        if google_drive_items:
+            submit_parts.append(f"{len(google_drive_items)} 个 Google Drive 下载")
         if gids:
             submit_parts.append(f"{len(gids)} 个 aria2 下载")
         if transferit_items:
@@ -3848,8 +4111,100 @@ class HttpDownloadService:
         task.update_progress(1, f"已提交 {'，'.join(submit_parts) if submit_parts else '0 个下载'}")
 
         started = time.monotonic()
+        google_success_files = []
+        google_failed_rows = []
         transfer_success_files = []
         transfer_failed_rows = []
+
+        def merge_download_row(row: Dict[str, Any]) -> None:
+            row_gid = str(row.get("gid") or "")
+            for existing in download_files:
+                if row_gid and str(existing.get("gid") or "") == row_gid:
+                    existing.update(row)
+                    return
+                if (
+                    str(existing.get("source") or "") == str(row.get("source") or "")
+                    and str(existing.get("relative_path") or "") == str(row.get("relative_path") or "")
+                ):
+                    existing.update(row)
+                    return
+            download_files.append(row)
+
+        def refresh_download_runtime() -> Dict[str, Any]:
+            active_rows = [row for row in download_files if str(row.get("status") or "") == "downloading"]
+            completed_rows = [row for row in download_files if str(row.get("status") or "") == "completed"]
+            failed_rows_now = [row for row in download_files if str(row.get("status") or "") == "failed"]
+            current_row = active_rows[0] if active_rows else {}
+            runtime = {
+                "status": "downloading",
+                "total_files": len(download_files),
+                "completed_files": len(completed_rows),
+                "failed_files": len(failed_items) + len(failed_rows_now),
+                "active_file_count": len(active_rows),
+                "transferred_bytes": sum(int(row.get("downloaded") or 0) for row in download_files),
+                "total_bytes": total_bytes,
+                "speed_bytes_per_sec": sum(int(row.get("speed_bytes_per_sec") or 0) for row in active_rows),
+                "current_file_name": str(current_row.get("name") or ""),
+                "current_relative_path": str(current_row.get("relative_path") or ""),
+            }
+            task.task_metadata["download_files"] = download_files
+            task.task_metadata["download_runtime"] = runtime
+            task.current_step = runtime.get("current_file_name") or "下载中"
+            total = max(1, int(runtime.get("total_bytes") or total_bytes or 0))
+            transferred = int(runtime.get("transferred_bytes") or 0)
+            task.progress = max(task.progress, 95 if total <= 1 else min(99, int(transferred / total * 100)))
+            return runtime
+
+        google_last_log_at = 0.0
+
+        def handle_google_progress(row: Dict[str, Any]) -> None:
+            nonlocal google_last_log_at
+            merge_download_row(row)
+            runtime = refresh_download_runtime()
+            now = time.monotonic()
+            if now - google_last_log_at > 5:
+                google_last_log_at = now
+                task.update_progress(task.progress, f"下载中 {runtime.get('completed_files', 0)}/{len(download_files)}")
+
+        if google_drive_items:
+            for index, item in enumerate(google_drive_items, start=1):
+                await task.wait_if_paused()
+                if task.is_cancelled():
+                    await self.cancel_task(task.id)
+                    raise HttpDownloadError("用户取消")
+                task.current_step = f"下载 Google Drive {index}/{len(google_drive_items)}"
+                task.update_progress(max(task.progress, 3), task.current_step)
+                try:
+                    row = await self._download_google_drive_item(item, task=task, progress_callback=handle_google_progress)
+                    google_success_files.append(row)
+                    merge_download_row(row)
+                except Exception as exc:
+                    partial_downloaded = 0
+                    partial_path = str(item.get("final_path") or "")
+                    if partial_path:
+                        with contextlib.suppress(OSError):
+                            partial_downloaded = os.path.getsize(partial_path)
+                    expected_size = int(item.get("size_bytes") or 0)
+                    failed_row = {
+                        "gid": str(item.get("gid") or f"google_drive:{item.get('file_id') or item.get('filename')}"),
+                        "name": item.get("filename") or "google-drive-file",
+                        "relative_path": item.get("relative_path") or "",
+                        "local_path": partial_path,
+                        "url": item.get("masked_url") or self._mask_url(str(item.get("url") or "")),
+                        "source": "google_drive",
+                        "status": "failed",
+                        "failure_reason": self._sanitize_error(exc),
+                        "progress": min(99, int(partial_downloaded / expected_size * 100)) if expected_size else 0,
+                        "downloaded": partial_downloaded,
+                        "total": expected_size,
+                        "size": expected_size,
+                        "speed_bytes_per_sec": 0,
+                        "file_id": item.get("file_id", ""),
+                    }
+                    google_failed_rows.append(failed_row)
+                    merge_download_row(failed_row)
+                refresh_download_runtime()
+
         if transferit_items:
             for index, item in enumerate(transferit_items, start=1):
                 await task.wait_if_paused()
@@ -3888,7 +4243,6 @@ class HttpDownloadService:
                         "progress": 0,
                     }
                     transfer_failed_rows.append(failed_row)
-                    failed_items.append(failed_row)
                     for existing in download_files:
                         if (
                             existing.get("gid") == failed_row.get("gid")
@@ -3921,20 +4275,27 @@ class HttpDownloadService:
                 if task.is_cancelled():
                     await self.cancel_task(task.id)
                     raise HttpDownloadError("用户取消")
-                aria_rows = [row for row in download_files if row.get("source") != "transferit"]
+                gid_set = set(gids)
+                aria_rows = [row for row in download_files if str(row.get("gid") or "") in gid_set]
                 rows, runtime, done, _failed = await self._poll_task(gids, aria_rows)
                 for row in rows:
                     for existing in download_files:
                         if existing.get("gid") == row.get("gid"):
                             existing.update(row)
                             break
+                google_done = len(google_success_files)
+                google_failed = len(google_failed_rows)
                 transfer_done = len(transfer_success_files)
                 transfer_failed = len(transfer_failed_rows)
                 runtime.update({
                     "total_files": len(download_files),
-                    "completed_files": int(runtime.get("completed_files") or 0) + transfer_done,
-                    "failed_files": int(runtime.get("failed_files") or 0) + transfer_failed,
-                    "transferred_bytes": int(runtime.get("transferred_bytes") or 0) + sum(int(row.get("downloaded") or 0) for row in transfer_success_files),
+                    "completed_files": int(runtime.get("completed_files") or 0) + google_done + transfer_done,
+                    "failed_files": int(runtime.get("failed_files") or 0) + google_failed + transfer_failed,
+                    "transferred_bytes": (
+                        int(runtime.get("transferred_bytes") or 0)
+                        + sum(int(row.get("downloaded") or 0) for row in google_success_files)
+                        + sum(int(row.get("downloaded") or 0) for row in transfer_success_files)
+                    ),
                     "total_bytes": total_bytes,
                 })
                 task.task_metadata["download_files"] = download_files
@@ -3958,6 +4319,7 @@ class HttpDownloadService:
         failed_rows = [row for row in download_files if row.get("status") == "failed"]
         duration_ms = int((time.monotonic() - started) * 1000)
         downloaded_bytes = sum(int(row.get("downloaded") or row.get("size") or 0) for row in success_files)
+        transferred_bytes = sum(int(row.get("downloaded") or 0) for row in download_files)
         task.task_metadata.update({
             "download_files": download_files,
             "failed_files": [*failed_items, *[row for row in failed_rows if row not in failed_items]],
@@ -3965,6 +4327,7 @@ class HttpDownloadService:
             "performance_metrics": {
                 "duration_ms": duration_ms,
                 "downloaded_bytes": downloaded_bytes,
+                "transferred_bytes": transferred_bytes,
                 "success_count": len(success_files),
                 "failed_count": len(failed_items) + len([row for row in failed_rows if row not in failed_items]),
                 "average_speed_bytes": int(downloaded_bytes / max(duration_ms / 1000, 1)) if downloaded_bytes else 0,
@@ -3976,14 +4339,23 @@ class HttpDownloadService:
             "total_files": len(download_files),
             "completed_files": len(success_files),
             "failed_files": len(merged_failed_rows),
-            "transferred_bytes": downloaded_bytes,
+            "transferred_bytes": transferred_bytes,
             "total_bytes": total_bytes,
         })
         runtime["status"] = final_status
         runtime["speed_bytes_per_sec"] = 0
         task.task_metadata["download_runtime"] = runtime
         if not success_files:
-            raise HttpDownloadError("没有任何文件下载成功")
+            reasons = []
+            for row in merged_failed_rows[:5]:
+                if not isinstance(row, dict):
+                    continue
+                reason = str(row.get("failure_reason") or row.get("reason") or "").strip()
+                target = str(row.get("name") or row.get("filename") or row.get("relative_path") or "").strip()
+                if reason:
+                    reasons.append(f"{target}: {reason}" if target else reason)
+            detail = "；".join(reason for reason in reasons if reason)
+            raise HttpDownloadError(f"没有任何文件下载成功：{detail}" if detail else "没有任何文件下载成功")
         try:
             pikpak_cleanup_result = await self.cleanup_completed_pikpak_transfer_items(success_files)
         except Exception as exc:
