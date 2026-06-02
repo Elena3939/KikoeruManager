@@ -237,6 +237,8 @@ def sanitize_http_download_item(item: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(item, dict):
         return {}
     out = dict(item)
+    out.pop("headers", None)
+    out.pop("aria2_header", None)
     raw_url = str(out.get("url") or out.get("original_url") or "")
     masked_url = str(out.get("masked_url") or "").strip()
     if raw_url and not masked_url:
@@ -340,6 +342,8 @@ class HttpDownloadService:
         self._rpc_id = 0
         self._gofile_guest_token_cache: tuple[str, float] = ("", 0.0)
         self._gofile_guest_token_lock = asyncio.Lock()
+        self._google_drive_access_token_cache: tuple[str, float] = ("", 0.0)
+        self._google_drive_access_token_lock = asyncio.Lock()
 
     def _config(self):
         return get_config().http_downloader
@@ -1654,6 +1658,212 @@ class HttpDownloadService:
     def _google_drive_direct_url_from_id(self, file_id: str) -> str:
         return f"https://drive.usercontent.google.com/download?{urlencode({'id': str(file_id or '').strip(), 'export': 'download'})}"
 
+    def _google_drive_api_download_url_from_id(self, file_id: str, resource_key: str = "") -> str:
+        query = {
+            "alt": "media",
+            "supportsAllDrives": "true",
+            "acknowledgeAbuse": "true",
+        }
+        if str(resource_key or "").strip():
+            query["resourceKey"] = str(resource_key or "").strip()
+        return f"https://www.googleapis.com/drive/v3/files/{str(file_id or '').strip()}?{urlencode(query)}"
+
+    def _google_drive_resource_key_from_url(self, raw_url: str) -> str:
+        parsed = urlparse(raw_url)
+        query = parse_qs(parsed.query or "")
+        for key in ("resourcekey", "resourceKey"):
+            values = query.get(key) or []
+            if values and str(values[0] or "").strip():
+                return str(values[0]).strip()
+        fragment_query = parse_qs(parsed.fragment or "")
+        for key in ("resourcekey", "resourceKey"):
+            values = fragment_query.get(key) or []
+            if values and str(values[0] or "").strip():
+                return str(values[0]).strip()
+        match = re.search(r"(?:resourcekey|resourceKey)=([^&#?]+)", raw_url)
+        return unquote(match.group(1)) if match else ""
+
+    def _google_drive_oauth_enabled(self) -> bool:
+        cfg = self._config()
+        return bool(
+            getattr(cfg, "google_drive_oauth_enabled", False)
+            and str(getattr(cfg, "google_drive_client_id", "") or "").strip()
+            and str(getattr(cfg, "google_drive_client_secret", "") or "").strip()
+            and str(getattr(cfg, "google_drive_refresh_token", "") or "").strip()
+        )
+
+    async def _google_drive_access_token(self, *, force_refresh: bool = False) -> str:
+        if not self._google_drive_oauth_enabled():
+            raise HttpDownloadError("Google Drive OAuth 未配置")
+        cached_token, expires_at = self._google_drive_access_token_cache
+        if cached_token and not force_refresh and time.time() < expires_at - 60:
+            return cached_token
+        async with self._google_drive_access_token_lock:
+            cached_token, expires_at = self._google_drive_access_token_cache
+            if cached_token and not force_refresh and time.time() < expires_at - 60:
+                return cached_token
+            cfg = self._config()
+            payload = {
+                "client_id": str(getattr(cfg, "google_drive_client_id", "") or "").strip(),
+                "client_secret": str(getattr(cfg, "google_drive_client_secret", "") or "").strip(),
+                "refresh_token": str(getattr(cfg, "google_drive_refresh_token", "") or "").strip(),
+                "grant_type": "refresh_token",
+            }
+            timeout = aiohttp.ClientTimeout(total=30, connect=10)
+            proxy = self._proxy_url() or None
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post("https://oauth2.googleapis.com/token", data=payload, proxy=proxy) as response:
+                    body = await response.text()
+                    if response.status >= 400:
+                        raise HttpDownloadError(f"Google Drive OAuth 刷新 token 失败: HTTP {response.status}: {body[:160]}")
+                    try:
+                        data = json.loads(body)
+                    except Exception as exc:
+                        raise HttpDownloadError("Google Drive OAuth 返回不是 JSON") from exc
+            token = str(data.get("access_token") or "").strip()
+            if not token:
+                raise HttpDownloadError("Google Drive OAuth 未返回 access_token")
+            expires_in = int(data.get("expires_in") or 3600)
+            self._google_drive_access_token_cache = (token, time.time() + max(60, expires_in))
+            return token
+
+    def _google_drive_api_headers(self, token: str, *, resource_keys: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "User-Agent": _GOFILE_USER_AGENT,
+        }
+        pairs = [
+            f"{file_id}/{resource_key}"
+            for file_id, resource_key in (resource_keys or {}).items()
+            if str(file_id or "").strip() and str(resource_key or "").strip()
+        ]
+        if pairs:
+            headers["X-Goog-Drive-Resource-Keys"] = ",".join(pairs)
+        return headers
+
+    def _google_drive_api_error_message(self, status: int, body: str) -> str:
+        message = ""
+        try:
+            data = json.loads(body or "{}")
+            error = data.get("error") if isinstance(data, dict) else {}
+            if isinstance(error, dict):
+                message = str(error.get("message") or "").strip()
+        except Exception:
+            message = ""
+        return f"Google Drive API 返回 HTTP {status}: {message or str(body or '')[:160]}"
+
+    async def _google_drive_api_json(self, url: str, *, resource_keys: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        last_body = ""
+        for attempt in range(2):
+            token = await self._google_drive_access_token(force_refresh=attempt > 0)
+            headers = self._google_drive_api_headers(token, resource_keys=resource_keys)
+            timeout = aiohttp.ClientTimeout(total=max(20, int(getattr(self._config(), "timeout_seconds", 60) or 60)), connect=10)
+            proxy = self._proxy_url() or None
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers=headers, allow_redirects=True, proxy=proxy) as response:
+                    body = await response.text(errors="ignore")
+                    last_body = body
+                    if response.status == 401 and attempt == 0:
+                        continue
+                    if response.status >= 400:
+                        raise HttpDownloadError(self._google_drive_api_error_message(response.status, body))
+                    try:
+                        data = json.loads(body)
+                    except Exception as exc:
+                        raise HttpDownloadError("Google Drive API 返回不是 JSON") from exc
+                    if not isinstance(data, dict):
+                        raise HttpDownloadError("Google Drive API 返回结构异常")
+                    return data
+        raise HttpDownloadError(self._google_drive_api_error_message(401, last_body))
+
+    async def _google_drive_api_file_metadata(self, file_id: str, resource_key: str = "") -> Dict[str, Any]:
+        file_id = str(file_id or "").strip()
+        if not file_id:
+            raise HttpDownloadError("Google Drive API 缺少文件 ID")
+        query = {
+            "fields": "id,name,mimeType,size,resourceKey,shortcutDetails",
+            "supportsAllDrives": "true",
+        }
+        if str(resource_key or "").strip():
+            query["resourceKey"] = str(resource_key or "").strip()
+        url = f"https://www.googleapis.com/drive/v3/files/{file_id}?{urlencode(query)}"
+        return await self._google_drive_api_json(
+            url,
+            resource_keys={file_id: resource_key} if resource_key else None,
+        )
+
+    def _google_drive_api_item_from_metadata(self, metadata: Dict[str, Any], raw_url: str, *, relative_dir: str = "") -> Optional[Dict[str, Any]]:
+        file_id = str(metadata.get("id") or "").strip()
+        if not file_id:
+            return None
+        mime_type = str(metadata.get("mimeType") or "").strip()
+        if mime_type == "application/vnd.google-apps.folder":
+            return None
+        name = self._sanitize_filename(metadata.get("name") or "google-drive-file", fallback="google-drive-file")
+        resource_key = str(metadata.get("resourceKey") or "").strip()
+        size_bytes = int(metadata.get("size") or 0)
+        direct_url = self._google_drive_api_download_url_from_id(file_id, resource_key)
+        return {
+            "source": "google_drive",
+            "share_url": self._mask_url(raw_url),
+            "url": direct_url,
+            "masked_url": self._mask_url(direct_url),
+            "name": name,
+            "filename": name,
+            "relative_dir": relative_dir.strip("/"),
+            "size_bytes": size_bytes,
+            "file_id": file_id,
+            "resource_key": resource_key,
+            "content_type": mime_type,
+            "google_drive_api": True,
+            "resumable": True,
+            "warning": "Google Drive 已使用 OAuth Drive API 下载。",
+        }
+
+    async def _google_drive_api_single_file_item(self, raw_url: str) -> Dict[str, Any]:
+        file_id = self._google_drive_file_id_from_url(raw_url)
+        resource_key = self._google_drive_resource_key_from_url(raw_url)
+        metadata = await self._google_drive_api_file_metadata(file_id, resource_key)
+        item = self._google_drive_api_item_from_metadata(metadata, raw_url)
+        if not item:
+            raise HttpDownloadError("Google Drive API 返回的不是可下载文件")
+        if resource_key and not item.get("resource_key"):
+            item["resource_key"] = resource_key
+            item["url"] = self._google_drive_api_download_url_from_id(file_id, resource_key)
+            item["masked_url"] = self._mask_url(item["url"])
+        return item
+
+    async def _collect_google_drive_folder_files_api(self, raw_url: str) -> Dict[str, Any]:
+        folder_id = self._google_drive_folder_id_from_url(raw_url)
+        if not folder_id:
+            raise HttpDownloadError("Google Drive 文件夹分享链接缺少文件夹 ID")
+        folder_resource_key = self._google_drive_resource_key_from_url(raw_url)
+        files: List[Dict[str, Any]] = []
+        page_token = ""
+        resource_keys = {folder_id: folder_resource_key} if folder_resource_key else None
+        while True:
+            query = {
+                "q": f"'{folder_id}' in parents and trashed=false",
+                "fields": "nextPageToken,files(id,name,mimeType,size,resourceKey,shortcutDetails)",
+                "pageSize": "100",
+                "includeItemsFromAllDrives": "true",
+                "supportsAllDrives": "true",
+            }
+            if page_token:
+                query["pageToken"] = page_token
+            url = f"https://www.googleapis.com/drive/v3/files?{urlencode(query)}"
+            data = await self._google_drive_api_json(url, resource_keys=resource_keys)
+            for row in list(data.get("files") or []):
+                if not isinstance(row, dict):
+                    continue
+                item = self._google_drive_api_item_from_metadata(row, raw_url)
+                if item:
+                    files.append(item)
+            page_token = str(data.get("nextPageToken") or "").strip()
+            if not page_token:
+                break
+        return {"folder_id": folder_id, "files": self._google_drive_dedupe_files(files), "source": "google_drive_api"}
+
     async def _fetch_text(self, url: str, *, headers: Optional[Dict[str, str]] = None) -> str:
         timeout = aiohttp.ClientTimeout(total=max(20, int(getattr(self._config(), "timeout_seconds", 60) or 60)), connect=10)
         proxy = self._proxy_url() or None
@@ -1787,6 +1997,33 @@ class HttpDownloadService:
         }.get(unit, 1)
         return int(value * multiplier)
 
+    def _google_drive_html_error_message(self, html_text: str) -> str:
+        text = html.unescape(str(html_text or ""))
+        normalized = re.sub(r"\s+", " ", text).lower()
+        chinese_text = text
+        if any(marker in normalized for marker in (
+            "quota exceeded",
+            "download quota",
+            "too many users have viewed or downloaded",
+            "too many users",
+            "exceeded the download quota",
+        )):
+            return "Google Drive 后端直链被配额/登录态拦截：Google 返回 Quota exceeded HTML 页；浏览器登录态可能仍可下载，但当前后端请求无法复用浏览器 Cookie，请稍后重试或换源"
+        if any(marker in normalized for marker in (
+            "request access",
+            "you need access",
+            "access denied",
+            "permission denied",
+            "you don't have access",
+        )) or any(marker in chinese_text for marker in (
+            "需要访问权限",
+            "请求访问权限",
+            "没有访问权限",
+            "权限不足",
+        )):
+            return "Google Drive 文件需要访问权限，当前分享不是公开可下载"
+        return "Google Drive 返回 HTML 页面，确认参数或访问权限已失效"
+
     def _google_drive_confirm_url_from_warning_html(self, html_text: str, fallback_url: str) -> str:
         parser = _GoogleDriveDownloadFormParser()
         parser.feed(str(html_text or ""))
@@ -1842,11 +2079,14 @@ class HttpDownloadService:
         confirm_url = self._google_drive_confirm_url_from_warning_html(body, url)
         cookie_header = self._google_drive_cookie_header_from_session(session, confirm_url or url)
         if not confirm_url:
+            warning = self._google_drive_html_error_message(body)
+            if warning == "Google Drive 返回 HTML 页面，确认参数或访问权限已失效":
+                warning = "Google Drive 返回确认页，未解析到确认下载参数。"
             return {
                 "url": url,
                 "size_bytes": self._google_drive_size_from_warning_html(body),
                 "content_type": content_type,
-                "warning": "Google Drive 返回确认页，未解析到确认下载参数。",
+                "warning": warning,
                 "headers": {"Cookie": cookie_header} if cookie_header else {},
                 "aria2_header": [f"Cookie: {cookie_header}"] if cookie_header else [],
             }
@@ -1906,6 +2146,11 @@ class HttpDownloadService:
         folder_id = self._google_drive_folder_id_from_url(raw_url)
         if not folder_id:
             raise HttpDownloadError("Google Drive 文件夹分享链接缺少文件夹 ID")
+        if self._google_drive_oauth_enabled():
+            try:
+                return await self._collect_google_drive_folder_files_api(raw_url)
+            except Exception as exc:
+                logger.warning("[HTTP下载] Google Drive API 解析文件夹失败，回退页面解析: %s", self._sanitize_error(exc))
         embedded_url = f"https://drive.google.com/embeddedfolderview?id={folder_id}#list"
         html_text = await self._fetch_text(
             embedded_url,
@@ -3063,6 +3308,16 @@ class HttpDownloadService:
                         resolved.append(download_url)
                         source_items.append(item)
                 else:
+                    if self._google_drive_oauth_enabled():
+                        try:
+                            item = await self._google_drive_api_single_file_item(raw_url)
+                            direct_url = str(item.get("url") or "")
+                            if direct_url:
+                                resolved.append(direct_url)
+                            source_items.append(item)
+                            continue
+                        except Exception as api_exc:
+                            logger.warning("[HTTP下载] Google Drive API 解析文件失败，回退直链: %s", self._sanitize_error(api_exc))
                     direct_url = self._google_drive_direct_url(raw_url)
                     resolved.append(direct_url)
                     source_items.append({
@@ -3071,6 +3326,7 @@ class HttpDownloadService:
                         "url": direct_url,
                         "masked_url": self._mask_url(direct_url),
                         "file_id": self._google_drive_file_id_from_url(raw_url),
+                        "resource_key": self._google_drive_resource_key_from_url(raw_url),
                     })
             except Exception as exc:
                 failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": self._sanitize_error(exc), "source": "google_drive"})
@@ -3298,42 +3554,69 @@ class HttpDownloadService:
             source_item = source_by_url.get(str(raw_url or "").strip())
             preview_url = raw_url
             if isinstance(source_item, dict) and source_item.get("source") == "google_drive":
-                try:
-                    drive_resolved = await self._google_drive_resolve_confirm_url(raw_url)
-                    if drive_resolved.get("url"):
-                        preview_url = str(drive_resolved.get("url") or raw_url)
-                        source_item["url"] = preview_url
-                        source_item["original_url"] = preview_url
-                        source_item["masked_url"] = self._mask_url(preview_url)
-                    if drive_resolved.get("size_bytes"):
-                        source_item["size_bytes"] = int(drive_resolved.get("size_bytes") or 0)
-                    if drive_resolved.get("content_type"):
-                        source_item["content_type"] = str(drive_resolved.get("content_type") or "")
-                    if drive_resolved.get("warning"):
-                        source_item["warning"] = str(drive_resolved.get("warning") or "")
-                    if drive_resolved.get("headers"):
-                        existing_headers = dict(source_item.get("headers") or {})
-                        existing_headers.update(dict(drive_resolved.get("headers") or {}))
-                        source_item["headers"] = existing_headers
-                    if drive_resolved.get("aria2_header"):
-                        existing_aria2_headers = [
-                            str(header).strip()
-                            for header in list(source_item.get("aria2_header") or [])
-                            if str(header or "").strip()
-                        ]
-                        for header in list(drive_resolved.get("aria2_header") or []):
-                            header_text = str(header or "").strip()
-                            if header_text and header_text not in existing_aria2_headers:
-                                existing_aria2_headers.append(header_text)
-                        source_item["aria2_header"] = existing_aria2_headers
-                except Exception as exc:
-                    source_item["google_drive_confirm_error"] = self._sanitize_error(exc)
-            item = await self.preview_url(
-                preview_url,
-                target_subdir=target_subdir,
-                conflict_policy=conflict_policy,
-                headers=dict(source_item.get("headers") or {}) if isinstance(source_item, dict) else None,
-            )
+                if source_item.get("google_drive_api"):
+                    filename = self._sanitize_filename(source_item.get("filename") or source_item.get("name") or "google-drive-file")
+                    subdir = "/".join([part for part in (target_subdir, source_item.get("relative_dir")) if str(part or "").strip()])
+                    target = self._resolve_target(filename, subdir, conflict_policy)
+                    item = {
+                        "ok": True,
+                        "url": str(source_item.get("url") or raw_url),
+                        "masked_url": source_item.get("masked_url") or self._mask_url(str(source_item.get("url") or raw_url)),
+                        "host": "www.googleapis.com",
+                        "source": "google_drive",
+                        "filename": target["filename"],
+                        "relative_path": target["relative_path"],
+                        "final_path": target["final_path"],
+                        "target_dir": target["target_dir"],
+                        "size_bytes": int(source_item.get("size_bytes") or 0),
+                        "content_type": str(source_item.get("content_type") or ""),
+                        "resumable": True,
+                        "warning": source_item.get("warning") or "Google Drive 已使用 OAuth Drive API 下载。",
+                    }
+                else:
+                    try:
+                        drive_resolved = await self._google_drive_resolve_confirm_url(raw_url)
+                        if drive_resolved.get("url"):
+                            preview_url = str(drive_resolved.get("url") or raw_url)
+                            source_item["url"] = preview_url
+                            source_item["original_url"] = preview_url
+                            source_item["masked_url"] = self._mask_url(preview_url)
+                        if drive_resolved.get("size_bytes"):
+                            source_item["size_bytes"] = int(drive_resolved.get("size_bytes") or 0)
+                        if drive_resolved.get("content_type"):
+                            source_item["content_type"] = str(drive_resolved.get("content_type") or "")
+                        if drive_resolved.get("warning"):
+                            source_item["warning"] = str(drive_resolved.get("warning") or "")
+                        if drive_resolved.get("headers"):
+                            existing_headers = dict(source_item.get("headers") or {})
+                            existing_headers.update(dict(drive_resolved.get("headers") or {}))
+                            source_item["headers"] = existing_headers
+                        if drive_resolved.get("aria2_header"):
+                            existing_aria2_headers = [
+                                str(header).strip()
+                                for header in list(source_item.get("aria2_header") or [])
+                                if str(header or "").strip()
+                            ]
+                            for header in list(drive_resolved.get("aria2_header") or []):
+                                header_text = str(header or "").strip()
+                                if header_text and header_text not in existing_aria2_headers:
+                                    existing_aria2_headers.append(header_text)
+                            source_item["aria2_header"] = existing_aria2_headers
+                    except Exception as exc:
+                        source_item["google_drive_confirm_error"] = self._sanitize_error(exc)
+                    item = await self.preview_url(
+                        preview_url,
+                        target_subdir=target_subdir,
+                        conflict_policy=conflict_policy,
+                        headers=dict(source_item.get("headers") or {}) if isinstance(source_item, dict) else None,
+                    )
+            else:
+                item = await self.preview_url(
+                    preview_url,
+                    target_subdir=target_subdir,
+                    conflict_policy=conflict_policy,
+                    headers=dict(source_item.get("headers") or {}) if isinstance(source_item, dict) else None,
+                )
             if (
                 isinstance(source_item, dict)
                 and not item.get("ok")
@@ -3391,8 +3674,10 @@ class HttpDownloadService:
                     "pikpak_account_id",
                     "pikpak_account_label",
                     "pikpak_transfer_dir",
+                    "resource_key",
+                    "google_drive_api",
                 ):
-                    if source_item.get(meta_key):
+                    if source_item.get(meta_key) is not None and source_item.get(meta_key) != "":
                         item[meta_key] = source_item.get(meta_key)
                 relative_dir = str(source_item.get("relative_dir") or "").strip("/")
                 if relative_dir:
@@ -3708,6 +3993,9 @@ class HttpDownloadService:
         retry_wait = max(0, int(getattr(cfg, "retry_wait_seconds", 5) or 5))
         timeout = aiohttp.ClientTimeout(total=None, connect=connect_timeout, sock_read=read_timeout)
         proxy = self._proxy_url() or None
+        google_drive_api = bool(item.get("google_drive_api"))
+        file_id = str(item.get("file_id") or "").strip()
+        resource_key = str(item.get("resource_key") or "").strip()
         downloaded = existing_size
         speed_base = existing_size
         started_at = time.monotonic()
@@ -3770,6 +4058,12 @@ class HttpDownloadService:
                 return row
 
             request_headers = dict(headers)
+            if google_drive_api:
+                token = await self._google_drive_access_token(force_refresh=attempt_index > 0)
+                request_headers.update(self._google_drive_api_headers(
+                    token,
+                    resource_keys={file_id: resource_key} if file_id and resource_key else None,
+                ))
             mode = "ab" if existing_size > 0 else "wb"
             if existing_size > 0:
                 request_headers["Range"] = f"bytes={existing_size}-"
@@ -3777,6 +4071,10 @@ class HttpDownloadService:
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     async with session.get(raw_url, headers=request_headers, allow_redirects=True, proxy=proxy) as response:
+                        if response.status == 401 and google_drive_api and attempt_index < retry_count - 1:
+                            self._google_drive_access_token_cache = ("", 0.0)
+                            last_error = HttpDownloadError("Google Drive OAuth access token 已失效，已刷新后重试")
+                            continue
                         if response.status == 416 and expected_total and existing_size >= expected_total:
                             row.update({"status": "completed", "progress": 100, "downloaded": existing_size, "size": existing_size})
                             await emit_progress(force=True)
@@ -3786,7 +4084,8 @@ class HttpDownloadService:
                         response_headers = {k.lower(): v for k, v in response.headers.items()}
                         content_type = str(response_headers.get("content-type") or "")
                         if "text/html" in content_type.lower():
-                            raise HttpDownloadError("Google Drive 返回 HTML 页面，确认参数或访问权限已失效")
+                            body = await response.text(errors="ignore")
+                            raise HttpDownloadError(self._google_drive_html_error_message(body))
                         content_range = str(response_headers.get("content-range") or "")
                         content_total = self._content_length_from_headers(response_headers)
                         if response.status != 206 and existing_size > 0:
@@ -4026,6 +4325,8 @@ class HttpDownloadService:
                 "total": int(item.get("size_bytes") or 0),
                 "size": int(item.get("size_bytes") or 0),
                 "file_id": item.get("file_id", ""),
+                "resource_key": item.get("resource_key", ""),
+                "google_drive_api": bool(item.get("google_drive_api")),
             })
         for item in aria2_items:
             os.makedirs(item["target_dir"], exist_ok=True)
@@ -4200,6 +4501,8 @@ class HttpDownloadService:
                         "size": expected_size,
                         "speed_bytes_per_sec": 0,
                         "file_id": item.get("file_id", ""),
+                        "resource_key": item.get("resource_key", ""),
+                        "google_drive_api": bool(item.get("google_drive_api")),
                     }
                     google_failed_rows.append(failed_row)
                     merge_download_row(failed_row)

@@ -7,6 +7,7 @@ from app.core.http_download_service import (
     HttpDownloadError,
     HttpDownloadService,
     sanitize_http_download_error,
+    sanitize_http_download_item,
     sanitize_http_download_metadata,
     sanitize_http_download_preview,
 )
@@ -381,6 +382,15 @@ def test_google_drive_folder_id_from_share_link(monkeypatch, tmp_path):
     assert service._google_drive_is_folder_url("https://drive.google.com/file/d/file-id/view") is False
 
 
+def test_google_drive_resource_key_from_share_link(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+
+    assert service._google_drive_resource_key_from_url("https://drive.google.com/file/d/file-id/view?resourcekey=0-key") == "0-key"
+    assert service._google_drive_resource_key_from_url("https://drive.google.com/drive/folders/folder-id#resourcekey=0-key") == "0-key"
+    assert service._google_drive_api_download_url_from_id("file-id", "0-key") == "https://www.googleapis.com/drive/v3/files/file-id?alt=media&supportsAllDrives=true&acknowledgeAbuse=true&resourceKey=0-key"
+
+
 def test_google_drive_confirm_url_from_warning_html(monkeypatch, tmp_path):
     bind_config(monkeypatch, tmp_path)
     service = HttpDownloadService()
@@ -401,6 +411,20 @@ def test_google_drive_confirm_url_from_warning_html(monkeypatch, tmp_path):
 
     assert url == "https://drive.usercontent.google.com/download?id=file-id&export=download&confirm=t&uuid=uuid-token"
     assert service._google_drive_size_from_warning_html(html) == int(1.5 * 1024 * 1024 * 1024)
+
+
+def test_google_drive_html_error_message_classifies_quota_and_access(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+
+    assert service._google_drive_html_error_message(
+        "<title>Google Drive - Quota exceeded</title>"
+        "Too many users have viewed or downloaded this file recently."
+    ) == "Google Drive 后端直链被配额/登录态拦截：Google 返回 Quota exceeded HTML 页；浏览器登录态可能仍可下载，但当前后端请求无法复用浏览器 Cookie，请稍后重试或换源"
+    assert service._google_drive_html_error_message(
+        "You need access. Request access from the owner."
+    ) == "Google Drive 文件需要访问权限，当前分享不是公开可下载"
+    assert service._google_drive_html_error_message("Google Drive unexpected html") == "Google Drive 返回 HTML 页面，确认参数或访问权限已失效"
 
 
 def test_onedrive_direct_url_adds_download_param(monkeypatch, tmp_path):
@@ -1173,6 +1197,87 @@ async def test_collect_google_drive_folder_files_falls_back_to_page_json(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_collect_google_drive_folder_files_uses_drive_api(monkeypatch, tmp_path):
+    bind_config(
+        monkeypatch,
+        tmp_path,
+        google_drive_oauth_enabled=True,
+        google_drive_client_id="client-id",
+        google_drive_client_secret="client-secret",
+        google_drive_refresh_token="refresh-token",
+    )
+    service = HttpDownloadService()
+    calls = []
+
+    async def fake_api_json(url, resource_keys=None):
+        calls.append((url, resource_keys))
+        return {
+            "files": [
+                {
+                    "id": "file-id",
+                    "name": "RJ01603546.zip",
+                    "mimeType": "application/zip",
+                    "size": "1610612736",
+                    "resourceKey": "0-file-key",
+                },
+                {
+                    "id": "folder-child-id",
+                    "name": "子目录",
+                    "mimeType": "application/vnd.google-apps.folder",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(service, "_google_drive_api_json", fake_api_json)
+
+    result = await service._collect_google_drive_folder_files("https://drive.google.com/drive/folders/folder-id?resourcekey=0-folder-key")
+
+    assert result["source"] == "google_drive_api"
+    assert len(result["files"]) == 1
+    assert result["files"][0]["google_drive_api"] is True
+    assert result["files"][0]["file_id"] == "file-id"
+    assert result["files"][0]["resource_key"] == "0-file-key"
+    assert result["files"][0]["size_bytes"] == 1610612736
+    assert calls[0][1] == {"folder-id": "0-folder-key"}
+    assert "includeItemsFromAllDrives=true" in calls[0][0]
+    assert "supportsAllDrives=true" in calls[0][0]
+
+
+@pytest.mark.asyncio
+async def test_resolve_google_drive_single_file_uses_drive_api(monkeypatch, tmp_path):
+    bind_config(
+        monkeypatch,
+        tmp_path,
+        google_drive_oauth_enabled=True,
+        google_drive_client_id="client-id",
+        google_drive_client_secret="client-secret",
+        google_drive_refresh_token="refresh-token",
+    )
+    service = HttpDownloadService()
+
+    async def fake_api_metadata(file_id, resource_key=""):
+        assert file_id == "file-id"
+        assert resource_key == "0-key"
+        return {
+            "id": "file-id",
+            "name": "voice.zip",
+            "mimeType": "application/zip",
+            "size": "6",
+            "resourceKey": "0-key",
+        }
+
+    monkeypatch.setattr(service, "_google_drive_api_file_metadata", fake_api_metadata)
+
+    result = await service.resolve_source_urls(["https://drive.google.com/file/d/file-id/view?resourcekey=0-key"])
+
+    item = result["source_items"][0]
+    assert item["google_drive_api"] is True
+    assert item["filename"] == "voice.zip"
+    assert item["size_bytes"] == 6
+    assert item["url"] == "https://www.googleapis.com/drive/v3/files/file-id?alt=media&supportsAllDrives=true&acknowledgeAbuse=true&resourceKey=0-key"
+
+
+@pytest.mark.asyncio
 async def test_preview_urls_falls_back_to_google_drive_folder_metadata_when_probe_fails(monkeypatch, tmp_path):
     bind_config(monkeypatch, tmp_path)
     service = HttpDownloadService()
@@ -1316,6 +1421,8 @@ async def test_preview_urls_uses_source_relative_dir_and_header(monkeypatch, tmp
     assert preview["items"][0]["source"] == "gofile"
     assert preview["items"][0]["relative_path"] == "batch/folder/voice.zip"
     assert preview["items"][0]["aria2_header"] == ["Cookie: accountToken=secret-token"]
+    assert "aria2_header" not in sanitize_http_download_item(preview["items"][0])
+    assert "headers" not in sanitize_http_download_item(preview["items"][0])
 
 
 @pytest.mark.asyncio
@@ -1648,6 +1755,33 @@ def test_retry_selection_items_keep_only_failed_and_incomplete_rows(tmp_path):
     assert [item["file_id"] for item in items] == ["file-004", "file-010"]
 
 
+def test_retry_selection_items_keep_google_drive_api_metadata(tmp_path):
+    service = HttpDownloadService()
+    metadata = {
+        "download_files": [
+            {
+                "source": "google_drive",
+                "name": "RJ01603546.zip",
+                "relative_path": "RJ01603546.zip",
+                "file_id": "drive-file-id",
+                "resource_key": "0-resource-key",
+                "google_drive_api": True,
+                "status": "failed",
+                "progress": 12,
+                "downloaded": 12,
+                "total": 100,
+            }
+        ],
+    }
+
+    items = service._retry_selection_items_from_task_metadata(metadata)
+
+    assert len(items) == 1
+    assert items[0]["file_id"] == "drive-file-id"
+    assert items[0]["resource_key"] == "0-resource-key"
+    assert items[0]["google_drive_api"] is True
+
+
 @pytest.mark.asyncio
 async def test_resolve_pikpak_materialize_filters_selected_failed_item(monkeypatch, tmp_path):
     bind_config(
@@ -1826,6 +1960,136 @@ async def test_download_google_drive_item_streams_with_cookie(monkeypatch, tmp_p
     assert progress_rows
     assert all(item["downloaded"] == item["file_size"] for item in progress_rows)
     assert any(item["file_size"] > 0 for item in progress_rows)
+
+
+@pytest.mark.asyncio
+async def test_download_google_drive_item_uses_drive_api_authorization(monkeypatch, tmp_path):
+    bind_config(
+        monkeypatch,
+        tmp_path,
+        google_drive_oauth_enabled=True,
+        google_drive_client_id="client-id",
+        google_drive_client_secret="client-secret",
+        google_drive_refresh_token="refresh-token",
+    )
+    service = HttpDownloadService()
+    target_dir = tmp_path / "downloads"
+    target_dir.mkdir()
+    captured = {}
+
+    async def fake_access_token(force_refresh=False):
+        captured.setdefault("force_refresh", []).append(force_refresh)
+        return "access-token"
+
+    class FakeContent:
+        async def iter_chunked(self, size):
+            assert size == 1024 * 1024
+            yield b"abcdef"
+
+    class FakeResponse:
+        status = 200
+        headers = {
+            "content-type": "application/octet-stream",
+            "content-length": "6",
+        }
+
+        def __init__(self):
+            self.content = FakeContent()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakeSession:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def get(self, url, **kwargs):
+            captured["url"] = url
+            captured["headers"] = kwargs.get("headers") or {}
+            return FakeResponse()
+
+    monkeypatch.setattr(service, "_google_drive_access_token", fake_access_token)
+    monkeypatch.setattr("app.core.http_download_service.aiohttp.ClientSession", FakeSession)
+
+    row = await service._download_google_drive_item({
+        "url": "https://www.googleapis.com/drive/v3/files/file-id?alt=media&supportsAllDrives=true&acknowledgeAbuse=true&resourceKey=0-key",
+        "masked_url": "https://www.googleapis.com/drive/v3/files/file-id?query=***",
+        "filename": "voice.zip",
+        "target_dir": str(target_dir),
+        "final_path": str(target_dir / "voice.zip"),
+        "relative_path": "voice.zip",
+        "size_bytes": 6,
+        "file_id": "file-id",
+        "resource_key": "0-key",
+        "google_drive_api": True,
+    })
+
+    assert captured["url"].startswith("https://www.googleapis.com/drive/v3/files/file-id")
+    assert captured["headers"]["Authorization"] == "Bearer access-token"
+    assert captured["headers"]["X-Goog-Drive-Resource-Keys"] == "file-id/0-key"
+    assert captured["force_refresh"] == [False]
+    assert (target_dir / "voice.zip").read_bytes() == b"abcdef"
+    assert row["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_download_google_drive_item_reports_quota_html(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    target_dir = tmp_path / "downloads"
+    target_dir.mkdir()
+
+    class FakeResponse:
+        status = 200
+        headers = {"content-type": "text/html; charset=utf-8"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def text(self, **_kwargs):
+            return (
+                "<title>Google Drive - Quota exceeded</title>"
+                "Too many users have viewed or downloaded this file recently."
+            )
+
+    class FakeSession:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def get(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr("app.core.http_download_service.aiohttp.ClientSession", FakeSession)
+
+    with pytest.raises(HttpDownloadError, match="后端直链被配额/登录态拦截"):
+        await service._download_google_drive_item({
+            "url": "https://drive.usercontent.google.com/download?id=file-id&export=download&confirm=t",
+            "filename": "voice.zip",
+            "target_dir": str(target_dir),
+            "final_path": str(target_dir / "voice.zip"),
+            "relative_path": "voice.zip",
+            "size_bytes": 6,
+            "file_id": "file-id",
+        })
+    assert not (target_dir / "voice.zip").exists()
 
 
 @pytest.mark.asyncio
