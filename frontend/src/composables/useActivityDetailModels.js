@@ -634,15 +634,20 @@ function buildFilteredPathSet(items) {
 
 function mapFilterDeleteItems(items) {
   if (!Array.isArray(items)) return []
-  return items.map((item) => ({
-    key: item?.relative_path || item?.path || item?.name || '',
-    path: item?.path || '',
-    relative_path: item?.relative_path || '',
-    name: item?.name || '',
-    type: item?.type || 'file',
-    sizeText: item?.size !== undefined && item?.size !== null ? formatBytes(item.size) : '',
-    error: item?.error || '',
-  }))
+  return items.map((item) => {
+    const path = item?.path || ''
+    const name = item?.name || ''
+    const relativePath = item?.relative_path || path || name || ''
+    return {
+      key: relativePath,
+      path,
+      relative_path: relativePath,
+      name,
+      type: item?.type || 'file',
+      sizeText: item?.size !== undefined && item?.size !== null ? formatBytes(item.size) : '',
+      error: item?.error || '',
+    }
+  })
 }
 
 function buildFilterDeleteTreeRows(items) {
@@ -1232,15 +1237,22 @@ function activityEntrySectionTitle(row) {
 }
 
 // ===================== 文件树图标 =====================
+function entryIconLookupText(item) {
+  return String(item?.label || item?.name || item?.relative_path || item?.path || item?.key || '').toLowerCase()
+}
+
+function isEntryDirectory(item) {
+  const type = String(item?.type || '').trim().toLowerCase()
+  return type === 'dir' || type === 'folder'
+}
+
 function resolveEntryIcon(item) {
   if (item?.icon) return item.icon
   const v = String(item?.variant || '').trim()
   if (v === 'warning') return AlertCircle
-  if (v === 'success') return CheckCircle2
-  if (v === 'added') return CheckCircle2
   if (v === 'changed') return RefreshCw
-  if (String(item?.type || '').trim() === 'dir') return Folder
-  const name = String(item?.label || item?.name || item?.path || '').toLowerCase()
+  if (isEntryDirectory(item)) return Folder
+  const name = entryIconLookupText(item)
   if (/\.(wav|flac|mp3|m4a|aac|ogg|opus|cue)$/i.test(name)) return Music
   if (/\.(jpg|jpeg|png|webp|gif|bmp|avif)$/i.test(name)) return ImageIcon
   if (/\.(mp4|mkv|avi|mov|wmv|webm|m4v)$/i.test(name)) return Film
@@ -1252,11 +1264,9 @@ function resolveEntryIcon(item) {
 function entryIconClass(item) {
   const v = String(item?.variant || '').trim()
   if (v === 'warning') return 'is-warning'
-  if (v === 'success') return 'is-success'
-  if (v === 'added') return 'is-added'
   if (v === 'changed') return 'is-changed'
-  if (String(item?.type || '').trim() === 'dir') return 'is-dir'
-  const name = String(item?.label || item?.name || item?.path || '').toLowerCase()
+  if (isEntryDirectory(item)) return 'is-dir'
+  const name = entryIconLookupText(item)
   if (/\.(wav|flac)$/i.test(name)) return 'is-audio-blue'
   if (/\.(mp3|m4a|ogg|aac|wma|opus|cue)$/i.test(name)) return 'is-audio-purple'
   if (/\.(jpg|jpeg|png|webp|gif|bmp|avif)$/i.test(name)) return 'is-image'

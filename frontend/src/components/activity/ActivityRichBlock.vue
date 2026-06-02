@@ -412,20 +412,24 @@
             <span
               class="entry-main-target"
               :class="{
-                'is-deleted': entry.variant === 'deleted',
                 'is-added': entry.variant === 'added',
                 'is-changed': entry.variant === 'changed'
               }"
             >
-              <component
-                :is="m.resolveEntryIcon(entry)"
-                :size="20"
-                :class="['entry-icon', m.entryIconClass(entry), { 'is-deleted': entry.variant === 'deleted' }]"
-              />
               <div class="entry-main-copy">
                 <div class="entry-title-row">
-                  <span :class="['entry-name', { 'is-deleted': entry.variant === 'deleted', 'is-added': entry.variant === 'added', 'is-changed': entry.variant === 'changed', 'is-failed': entry.variant === 'failed' || entry.variant === 'warning' }]">
-                    {{ entry.label || entry.name || entry.relative_path || '—' }}
+                  <span
+                    class="entry-primary-line"
+                    :class="{ 'is-deleted': entry.variant === 'deleted' }"
+                  >
+                    <component
+                      :is="m.resolveEntryIcon(entry)"
+                      :size="20"
+                      :class="['entry-icon', m.entryIconClass(entry), { 'is-deleted': entry.variant === 'deleted' }]"
+                    />
+                    <span :class="['entry-name', { 'is-deleted': entry.variant === 'deleted', 'is-added': entry.variant === 'added', 'is-changed': entry.variant === 'changed', 'is-failed': entry.variant === 'failed' || entry.variant === 'warning' }]">
+                      {{ entry.label || entry.name || entry.relative_path || '—' }}
+                    </span>
                   </span>
                   <span
                     v-for="badge in entry.badges || []"
@@ -1822,14 +1826,13 @@ function formatBytes(size) {
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
   min-width: 0;
   max-width: 100%;
   flex: 1;
 }
 
-/* 删除项的中划线特效（覆盖整行内容） */
-.entry-main-target.is-deleted::after {
+/* 删除项的中划线只覆盖图标到文件名，不扫过大小列。 */
+.entry-primary-line.is-deleted::after {
   content: '';
   position: absolute;
   left: 0;
@@ -1841,13 +1844,22 @@ function formatBytes(size) {
 }
 
 .entry-main-target.is-added {
-  border-radius: 8px;
-  background: linear-gradient(90deg, rgba(236, 253, 245, 0.9), rgba(255, 255, 255, 0));
+  background: transparent;
 }
 
 .entry-main-target.is-changed {
   border-radius: 8px;
   background: linear-gradient(90deg, rgba(239, 246, 255, 0.9), rgba(255, 255, 255, 0));
+}
+
+.entry-primary-line {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
 }
 
 .entry-icon {

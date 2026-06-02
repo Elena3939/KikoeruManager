@@ -882,7 +882,7 @@
 
 
 
-      <div class="pagination-wrap">
+      <div class="pagination-wrap km-pagination-wrap">
 
         <el-pagination
           v-model:current-page="currentPage"
@@ -890,7 +890,7 @@
           :page-sizes="PAGE_SIZES"
           :total="totalFiles"
           layout="total, sizes, prev, pager, next, jumper"
-          popper-class="library-pagination-size-popper"
+          popper-class="km-pagination-size-popper"
           background
         />
 
@@ -21997,183 +21997,6 @@ function statsStatusTextDisplay (stats) {
 
 
 
-.pagination-wrap {
-  margin-top: 18px;
-  display: flex;
-  justify-content: flex-end;
-}
-
-.pagination-wrap :deep(.el-pagination) {
-  --el-pagination-button-width: 34px;
-  --el-pagination-button-height: 34px;
-  --el-pagination-button-bg-color: transparent;
-  --el-pagination-hover-color: #0f172a;
-  gap: 10px;
-  color: #64748b;
-  font-weight: 700;
-}
-
-.pagination-wrap :deep(.el-pagination__total),
-.pagination-wrap :deep(.el-pagination__jump),
-.pagination-wrap :deep(.el-pagination__goto),
-.pagination-wrap :deep(.el-pagination__classifier) {
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.pagination-wrap :deep(.el-pagination.is-background .btn-prev),
-.pagination-wrap :deep(.el-pagination.is-background .btn-next),
-.pagination-wrap :deep(.el-pagination.is-background .el-pager li),
-.pagination-wrap :deep(.el-pagination__sizes .el-select__wrapper),
-.pagination-wrap :deep(.el-pagination__jump .el-input__wrapper) {
-  min-width: 34px;
-  height: 34px;
-  margin: 0;
-  border: 1px solid rgba(148, 163, 184, 0.26);
-  border-radius: 12px;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.82), rgba(248, 250, 252, 0.58)),
-    rgba(255, 255, 255, 0.62);
-  color: #334155;
-  box-shadow: none;
-  backdrop-filter: blur(16px) saturate(130%);
-  -webkit-backdrop-filter: blur(16px) saturate(130%);
-  transition:
-    background-color 0.22s ease,
-    border-color 0.22s ease,
-    color 0.22s ease,
-    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.pagination-wrap :deep(.el-pagination.is-background .btn-prev:hover:not(:disabled)),
-.pagination-wrap :deep(.el-pagination.is-background .btn-next:hover:not(:disabled)),
-.pagination-wrap :deep(.el-pagination.is-background .el-pager li:hover),
-.pagination-wrap :deep(.el-pagination__sizes .el-select__wrapper:hover),
-.pagination-wrap :deep(.el-pagination__sizes .el-select__wrapper.is-hovering),
-.pagination-wrap :deep(.el-pagination__jump .el-input__wrapper:hover),
-.pagination-wrap :deep(.el-pagination__jump .el-input__wrapper.is-focus) {
-  border-color: rgba(100, 116, 139, 0.36);
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(241, 245, 249, 0.7)),
-    rgba(255, 255, 255, 0.72);
-  color: #0f172a;
-  transform: translateY(-1px);
-}
-
-.pagination-wrap :deep(.el-pagination.is-background .el-pager li.is-active) {
-  border-color: rgba(15, 23, 42, 0.18);
-  background: #111827;
-  color: #ffffff;
-}
-
-.pagination-wrap :deep(.el-pagination.is-background .btn-prev:disabled),
-.pagination-wrap :deep(.el-pagination.is-background .btn-next:disabled),
-.pagination-wrap :deep(.el-pagination.is-background .btn-prev.is-disabled),
-.pagination-wrap :deep(.el-pagination.is-background .btn-next.is-disabled) {
-  background: rgba(241, 245, 249, 0.52);
-  color: #cbd5e1;
-  opacity: 0.7;
-  transform: none;
-}
-
-.pagination-wrap :deep(.el-pager) {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.pagination-wrap :deep(.el-pagination__sizes) {
-  margin-right: 0;
-}
-
-.pagination-wrap :deep(.el-pagination__sizes .el-select__wrapper) {
-  min-width: 116px;
-  padding: 0 12px;
-}
-
-.pagination-wrap :deep(.el-pagination__sizes .el-select__placeholder),
-.pagination-wrap :deep(.el-pagination__sizes .el-select__selected-item),
-.pagination-wrap :deep(.el-pagination__sizes .el-select__selected-item span),
-.pagination-wrap :deep(.el-pagination__jump .el-input__inner) {
-  color: #334155;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.pagination-wrap :deep(.el-pagination__sizes .el-select__caret),
-.pagination-wrap :deep(.el-pagination__sizes .el-icon) {
-  color: #94a3b8;
-}
-
-.pagination-wrap :deep(.el-pagination__jump .el-input__wrapper) {
-  width: 54px;
-  min-width: 54px;
-  padding: 0 10px;
-}
-
-.pagination-wrap :deep(.el-pagination__jump .el-input__inner) {
-  height: 32px;
-  padding: 0;
-  text-align: center;
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-}
-
-:global(.library-pagination-size-popper.el-popper) {
-  overflow: hidden;
-  border: 1px solid rgba(148, 163, 184, 0.24) !important;
-  border-radius: 14px !important;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.72)),
-    rgba(255, 255, 255, 0.82) !important;
-  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.14) !important;
-  backdrop-filter: blur(18px) saturate(135%) !important;
-  -webkit-backdrop-filter: blur(18px) saturate(135%) !important;
-}
-
-:global(.library-pagination-size-popper .el-select-dropdown) {
-  min-width: 116px !important;
-  background: transparent !important;
-  border: 0 !important;
-  box-shadow: none !important;
-}
-
-:global(.library-pagination-size-popper .el-select-dropdown__list) {
-  padding: 6px !important;
-}
-
-:global(.library-pagination-size-popper .el-select-dropdown__item) {
-  height: 32px !important;
-  margin: 2px 0 !important;
-  border-radius: 10px !important;
-  color: #475569 !important;
-  font-size: 12px !important;
-  font-weight: 700 !important;
-  transition:
-    background-color 0.18s ease,
-    color 0.18s ease,
-    transform 0.2s cubic-bezier(0.22, 1, 0.36, 1) !important;
-}
-
-:global(.library-pagination-size-popper .el-select-dropdown__item:hover),
-:global(.library-pagination-size-popper .el-select-dropdown__item.is-hovering) {
-  background: #eef0f3 !important;
-  color: #0f172a !important;
-  transform: translateY(-1px);
-}
-
-:global(.library-pagination-size-popper .el-select-dropdown__item.is-selected) {
-  background: #e2e6ec !important;
-  color: #111827 !important;
-}
-
-:global(.library-pagination-size-popper .el-popper__arrow::before) {
-  border-color: rgba(148, 163, 184, 0.24) !important;
-  background: rgba(255, 255, 255, 0.86) !important;
-}
-
 
 
 :deep(.el-tag) {
@@ -22220,7 +22043,9 @@ function statsStatusTextDisplay (stats) {
   align-items: center;
   justify-content: center;
   padding: 28px;
-  background: rgba(15, 23, 42, 0.34);
+  background: transparent !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
 :global(.subtitle-workbench-dialog) {
@@ -22228,8 +22053,54 @@ function statsStatusTextDisplay (stats) {
   max-height: calc(100vh - 56px);
 }
 
-:global(.subtitle-workbench-dialog .subtitle-workbench-shell) {
+:global(html:not(.kikoerumanager-dark):not(.dark) .subtitle-workbench-dialog .subtitle-workbench-shell) {
   margin: 0 auto;
+  background: #ffffff !important;
+  box-shadow: none !important;
+}
+
+:global(html:not(.kikoerumanager-dark):not(.dark) .subtitle-workbench-dialog .subtitle-workbench-body) {
+  background: #ffffff !important;
+  background-image: none !important;
+}
+
+:global(.subtitle-workbench-dialog :is(button, input, textarea, [tabindex]):focus),
+:global(.subtitle-workbench-dialog :is(button, input, textarea, [tabindex]):focus-visible),
+:global(.subtitle-workbench-dialog :focus-within) {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+:global(html:not(.kikoerumanager-dark):not(.dark) .subtitle-workbench-dialog :is(.bg-sky-50, .bg-blue-50, .bg-slate-50, .bg-slate-100)),
+:global(html:not(.kikoerumanager-dark):not(.dark) .subtitle-workbench-dialog [class*="bg-sky-50"]),
+:global(html:not(.kikoerumanager-dark):not(.dark) .subtitle-workbench-dialog [class*="bg-blue-50"]),
+:global(html:not(.kikoerumanager-dark):not(.dark) .subtitle-workbench-dialog [class*="bg-slate-50"]),
+:global(html:not(.kikoerumanager-dark):not(.dark) .subtitle-workbench-dialog [class*="bg-slate-100"]) {
+  background-color: #ffffff !important;
+  background-image: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-workbench-shell),
+:global(html.dark .subtitle-workbench-dialog .subtitle-workbench-shell) {
+  margin: 0 auto;
+  background: var(--km-dark-surface, #0d0e12) !important;
+  border-color: var(--km-dark-border, rgba(255, 255, 255, 0.15)) !important;
+  color: var(--km-dark-text, rgba(244, 244, 245, 0.88)) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-workbench-body),
+:global(html.dark .subtitle-workbench-dialog .subtitle-workbench-body) {
+  background: var(--km-dark-bg, #08090c) !important;
+  background-image: none !important;
+}
+
+:global(.subtitle-workbench-dialog :is(.ring-1, .ring-2)),
+:global(.subtitle-workbench-dialog [class*="ring-"]),
+:global(.subtitle-workbench-dialog [class*="shadow-"]) {
+  --tw-ring-offset-shadow: 0 0 #0000 !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
+  box-shadow: none !important;
 }
 
 :global(.subtitle-rename-overlay) {
