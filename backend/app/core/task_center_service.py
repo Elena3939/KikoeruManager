@@ -7,7 +7,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from .linked_subtitle_import_service import get_linked_subtitle_import_service
 from .task_engine import Task, TaskStatus, TaskType, get_task_engine
 from .json_safety import safe_json_value, safe_text
-from .http_download_service import sanitize_http_download_metadata
+from .http_download_service import (
+    build_http_download_batch_title,
+    http_download_platform_label,
+    http_download_platforms_from_metadata,
+    http_download_platforms_label,
+    sanitize_http_download_metadata,
+)
 from ..models.database import ConflictWork, SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -80,6 +86,12 @@ class TaskCenterService:
         "current_circle_query",
         "index_meta",
         "indexed_counts",
+        # HTTP 下载平台展示
+        "download_mode",
+        "source_modes",
+        "platforms",
+        "platform_label",
+        "url_count",
     )
 
     # summary 模式下 pending preview 仅保留这些键
@@ -1050,15 +1062,27 @@ class TaskCenterService:
             failed_files = list(metadata.get("failed_files") or [])
             download_runtime = dict(metadata.get("download_runtime") or {})
             download_mode = self._safe_text(metadata.get("download_mode")) or "http"
-            default_download_title = "PikPak 下载" if download_mode == "pikpak" else ("混合外链下载" if download_mode == "mixed" else "HTTP 外链下载")
+            platforms = http_download_platforms_from_metadata(metadata)
+            platform_label = self._safe_text(metadata.get("platform_label")) or http_download_platforms_label(platforms)
+            default_download_title = build_http_download_batch_title(
+                {
+                    **metadata,
+                    "platforms": platforms,
+                    "platform_label": platform_label,
+                },
+                item_count=len(download_files),
+                fallback_host=self._basename(source_path) or source_path,
+            )
             title = self._safe_text(metadata.get("batch_name")) or self._safe_text(metadata.get("source_label")) or default_download_title
             if len(download_files) == 1:
                 title = self._safe_text(download_files[0].get("name")) or title
             subtitle = self._safe_text(metadata.get("download_root")) or output_path or source_path
             source_label = source_label or default_download_title
-            source_action = source_action or ("manual_pikpak_download" if download_mode == "pikpak" else "manual_http_download")
+            source_action = source_action or (f"manual_{download_mode}_download" if download_mode not in {"http", "mixed"} else "manual_http_download")
             source_page = source_page or "asmr-sync"
             route_hint = self.DOMAIN_ROUTE_HINT["http_download"]
+            metadata["platforms"] = platforms
+            metadata["platform_label"] = platform_label
             total_bytes = int(
                 download_runtime.get("total_bytes")
                 or sum(int((item or {}).get("total") or (item or {}).get("size") or 0) for item in download_files)
@@ -1072,7 +1096,7 @@ class TaskCenterService:
             self._append_metric(metrics, "大小", self._format_bytes(total_bytes) if total_bytes else None)
             self._append_metric(metrics, "已下载", self._format_bytes(transferred) if transferred else None)
             self._append_metric(metrics, "速度", f"{self._format_bytes(speed)}/s" if speed else None)
-            self._append_metric(metrics, "来源", "PikPak" if download_mode == "pikpak" else ("混合" if download_mode == "mixed" else None))
+            self._append_metric(metrics, "来源", platform_label if platform_label and platform_label != "HTTP" else http_download_platform_label(download_mode))
         else:
             title = self._basename(source_path) or task.type.value
             subtitle = self._safe_text(metadata.get("work_name")) or self._safe_text(metadata.get("folder_path"))
@@ -1124,6 +1148,10 @@ class TaskCenterService:
             "title": title,
             "subtitle": subtitle,
             "source_label": source_label,
+            "platforms": list(metadata.get("platforms") or []),
+            "platform_label": self._safe_text(metadata.get("platform_label")),
+            "download_mode": self._safe_text(metadata.get("download_mode")),
+            "source_modes": list(metadata.get("source_modes") or []),
             "source_page": source_page,
             "source_action": source_action,
             "route_hint": route_hint,

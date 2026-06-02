@@ -260,6 +260,10 @@ import { AlertTriangle, Check, CloudDownload, Download, FileIcon, Globe2, Refres
 import AppDropdown from '../common/AppDropdown.vue'
 import AppLoadingAnimation from '../common/AppLoadingAnimation.vue'
 import { httpDownloadApi } from '../../api'
+import {
+  getHttpDownloadPlatformMeta,
+  httpDownloadPlatformsFromUrl,
+} from '../common/httpDownloadPlatformMeta.js'
 
 defineProps({
   hasTasks: { type: Boolean, default: false }
@@ -282,14 +286,6 @@ const previewLogs = ref([])
 const previewProgress = ref(0)
 const selectedPreviewKeys = ref(new Set())
 const failedSourceIcons = ref(new Set())
-
-const SOURCE_ICONS = {
-  gofile: 'https://gofile.io/favicon.ico',
-  transferit: 'https://transfer.it/favicon.ico',
-  onedrive: 'https://onedrive.live.com/favicon.ico',
-  google_drive: 'https://ssl.gstatic.com/docs/doclist/images/drive_2022q3_32dp.png',
-  pikpak: 'https://mypikpak.com/favicon.ico'
-}
 
 const conflictOptions = [
   { value: 'resume', label: '断点续传' },
@@ -475,22 +471,15 @@ function formatSize(bytes) {
 }
 
 function sourceLabel(source) {
-  return {
-    http: 'HTTP',
-    gofile: 'Gofile',
-    transferit: 'Transfer.it',
-    onedrive: 'OneDrive',
-    google_drive: 'Google Drive',
-    pikpak: 'PikPak'
-  }[source] || source || 'HTTP'
+  return getHttpDownloadPlatformMeta(source).label
 }
 
 function sourceKey(source) {
-  return String(source || 'http').replace(/[^a-z0-9_-]/gi, '_').toLowerCase()
+  return getHttpDownloadPlatformMeta(source).key
 }
 
 function sourceIcon(source) {
-  return SOURCE_ICONS[sourceKey(source)] || ''
+  return getHttpDownloadPlatformMeta(source).iconSrc || ''
 }
 
 function isSourceIconFailed(source) {
@@ -504,13 +493,7 @@ function markSourceIconFailed(source) {
 }
 
 function sourceFromUrl(url) {
-  const text = String(url || '').toLowerCase()
-  if (text.includes('gofile.io')) return 'gofile'
-  if (text.includes('transfer.it')) return 'transferit'
-  if (text.includes('1drv.ms') || text.includes('onedrive.')) return 'onedrive'
-  if (text.includes('drive.google.com') || text.includes('docs.google.com')) return 'google_drive'
-  if (text.includes('mypikpak.com') || text.includes('drive.mypikpak.com')) return 'pikpak'
-  return 'http'
+  return httpDownloadPlatformsFromUrl(url)
 }
 
 function previewItemTitle(item) {

@@ -30,7 +30,12 @@
           @click="onItemClick(item)"
         >
           <div class="notif-item-icon">
-            <component :is="severityIcon(item.severity)" :size="16" :stroke-width="2.2" />
+            <component
+              :is="notificationIcon(item)"
+              :size="16"
+              :stroke-width="2.2"
+              :class="notificationIconClass(item)"
+            />
           </div>
           <div class="notif-item-body">
             <div class="notif-item-title">{{ item.title }}</div>
@@ -73,6 +78,7 @@ import { useRouter } from 'vue-router'
 import { Bell, CheckCircle2, XCircle, AlertTriangle, Info, X, Loader2, ChevronDown } from 'lucide-vue-next'
 import { useNotifications } from '../../composables/useNotifications'
 import { getTaskDomainMeta } from '../common/taskDomainMeta'
+import { getHttpDownloadDisplayMeta } from '../common/httpDownloadPlatformMeta.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -91,9 +97,27 @@ const loadedUnreadCount = computed(() => items.value.filter(i => !i.is_read).len
 const hasMoreUnread = computed(() => hasMore.value && unreadCount.value > loadedUnreadCount.value)
 
 function domainLabel(item) {
+  if (isHttpDownloadNotification(item)) return getHttpDownloadDisplayMeta(item).label
   if (item.domain_label) return item.domain_label
   if (item.task_domain) return getTaskDomainMeta(item.task_domain).label
   return '任务'
+}
+
+function isHttpDownloadNotification(item) {
+  return String(item?.task_domain || item?.domain || '').trim() === 'http_download'
+}
+
+function notificationIcon(item) {
+  if (isHttpDownloadNotification(item)) {
+    return getHttpDownloadDisplayMeta(item).icon || severityIcon(item.severity)
+  }
+  return severityIcon(item.severity)
+}
+
+function notificationIconClass(item) {
+  return isHttpDownloadNotification(item) && getHttpDownloadDisplayMeta(item).icon
+    ? 'notif-platform-icon'
+    : ''
 }
 
 function severityIcon(severity) {
@@ -311,6 +335,18 @@ function onItemClick(item) {
 .notif-item-icon {
   flex-shrink: 0;
   margin-top: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+}
+
+.notif-platform-icon {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  border-radius: 3px;
 }
 
 .notif-item--success .notif-item-icon { color: #1f8f4e; }

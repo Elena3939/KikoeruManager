@@ -11622,16 +11622,26 @@ class LocalUploadStartRequest(BaseModel):
 
 
 def _serialize_http_download_task(task) -> dict:
-    from ..core.http_download_service import sanitize_http_download_item
+    from ..core.http_download_service import build_http_download_batch_title, sanitize_http_download_item
 
     metadata = dict(getattr(task, "task_metadata", None) or {})
     failed_files = list(metadata.get("failed_files") or [])
     status_value = task.status.value if hasattr(task.status, "value") else str(task.status or "")
     display_status = "partial_failed" if status_value == "completed" and failed_files else status_value
+    download_files = [
+        sanitize_http_download_item(item)
+        for item in list(metadata.get("download_files") or [])
+    ]
+    work_title = (
+        metadata.get("batch_name")
+        or metadata.get("source_label")
+        or build_http_download_batch_title(metadata, item_count=len(download_files))
+        or "HTTP 下载"
+    )
     return {
         "id": task.id,
         "rjcode": "",
-        "work_title": metadata.get("batch_name") or metadata.get("source_label") or "HTTP 外链下载",
+        "work_title": work_title,
         "source_label": metadata.get("source_label", ""),
         "status": status_value,
         "display_status": display_status,
@@ -11642,10 +11652,7 @@ def _serialize_http_download_task(task) -> dict:
         "started_at": task.started_at.isoformat() if getattr(task, "started_at", None) else None,
         "completed_at": task.completed_at.isoformat() if getattr(task, "completed_at", None) else None,
         "output_path": getattr(task, "output_path", ""),
-        "download_files": [
-            sanitize_http_download_item(item)
-            for item in list(metadata.get("download_files") or [])
-        ],
+        "download_files": download_files,
         "download_runtime": metadata.get("download_runtime", {}),
         "failed_files": [sanitize_http_download_item(item) for item in failed_files if isinstance(item, dict)],
         "progress_log": metadata.get("progress_log", []),
@@ -11663,6 +11670,8 @@ def _serialize_http_download_task(task) -> dict:
             "retry_count": metadata.get("retry_count", 0),
             "download_mode": metadata.get("download_mode", "http"),
             "source_modes": metadata.get("source_modes", []),
+            "platforms": metadata.get("platforms", []),
+            "platform_label": metadata.get("platform_label", ""),
         },
     }
 
@@ -11722,7 +11731,13 @@ async def http_download_preview(request: HttpDownloadPreviewRequest):
 
 @app.post("/api/http-download/start")
 async def http_download_start(request: HttpDownloadStartRequest):
-    from ..core.http_download_service import get_http_download_service, sanitize_http_download_preview
+    from ..core.http_download_service import (
+        build_http_download_batch_title,
+        get_http_download_service,
+        http_download_platforms_label,
+        normalize_http_download_platform,
+        sanitize_http_download_preview,
+    )
     from ..core.task_engine import Task, TaskType, get_task_engine
 
     urls = _http_download_urls_from_payload(request.urls)
@@ -11743,59 +11758,120 @@ async def http_download_start(request: HttpDownloadStartRequest):
     if not ok_items:
         return JSONResponse({"success": False, "message": "没有可下载直链", "preview": public_preview}, status_code=400)
 
-    first_host = str(ok_items[0].get("host") or "").strip()
-    source_modes = list(preview.get("source_modes") or [])
-    source_action = f"manual_{source_modes[0]}_download" if len(source_modes) == 1 and source_modes[0] != "http" else "manual_http_download"
-    download_mode = source_modes[0] if len(source_modes) == 1 else ("mixed" if source_modes else "http")
-    mode_titles = {
-        "pikpak": "PikPak 下载",
-        "gofile": "Gofile 下载",
-        "transferit": "Transfer.it 下载",
-        "onedrive": "OneDrive 下载",
-        "google_drive": "Google Drive 下载",
-    }
-    default_title = mode_titles.get(download_mode, "HTTP 外链下载")
-    label = str(request.batch_name or "").strip() or (f"{first_host} 等 {len(ok_items)} 项" if len(ok_items) > 1 else (ok_items[0].get("filename") or first_host or default_title))
-    task = Task(
-        task_type=TaskType.HTTP_DOWNLOAD,
-        source_path=first_host or "http-download",
-        metadata={
-            "urls": urls,
-            "url_count": len(urls),
-            "selected_keys": [
-                str(key or "").strip()
-                for key in (request.selected_keys or [])
-                if str(key or "").strip()
-            ],
-            "selected_items": [
-                {k: v for k, v in dict(item or {}).items() if k != "original_url"}
-                for item in public_preview.get("items") or []
-                if item.get("ok")
-            ],
-            "target_subdir": request.target_subdir,
-            "conflict_policy": request.conflict_policy,
-            "batch_name": label,
-            "download_mode": download_mode,
-            "source_modes": source_modes,
-            "task_domain": "http_download",
-            "task_kind": TaskType.HTTP_DOWNLOAD.value,
-            "source_page": "asmr-sync",
-            "source_action": source_action,
-            "source_label": label,
-            "business_key": f"http_download:{uuid.uuid4().hex}",
-            "preview_items": [
-                {k: v for k, v in dict(item or {}).items() if k != "url"}
-                for item in public_preview.get("items") or []
-            ],
-            "source_items": public_preview.get("source_items") or [],
-        },
+    def _item_source(item: dict) -> str:
+        return normalize_http_download_platform(
+            (item or {}).get("source")
+            or (item or {}).get("host")
+            or (item or {}).get("masked_url")
+            or (item or {}).get("url")
+        )
+
+    source_order: list[str] = []
+    ok_items_by_source: dict[str, list[dict]] = {}
+    for item in ok_items:
+        source = _item_source(item)
+        if source not in ok_items_by_source:
+            ok_items_by_source[source] = []
+            source_order.append(source)
+        ok_items_by_source[source].append(item)
+
+    urls_by_source: dict[str, list[str]] = {}
+    for raw_url in urls:
+        source = normalize_http_download_platform(service._provider_source(raw_url))
+        urls_by_source.setdefault(source, []).append(raw_url)
+
+    public_items_by_source: dict[str, list[dict]] = {}
+    for item in public_preview.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        public_items_by_source.setdefault(_item_source(item), []).append(item)
+
+    public_source_items_by_source: dict[str, list[dict]] = {}
+    for item in public_preview.get("source_items") or []:
+        if not isinstance(item, dict):
+            continue
+        public_source_items_by_source.setdefault(_item_source(item), []).append(item)
+
+    requested_batch_name = str(request.batch_name or "").strip()
+    engine = get_task_engine()
+    created_tasks = []
+    multi_platform = len(source_order) > 1
+
+    for source in source_order:
+        group_ok_items = ok_items_by_source[source]
+        group_public_items = public_items_by_source.get(source) or (
+            sanitize_http_download_preview({"items": group_ok_items}).get("items") or []
+        )
+        group_urls = urls_by_source.get(source) or urls
+        group_first_host = str(group_ok_items[0].get("host") or "").strip()
+        source_modes = [source]
+        source_action = f"manual_{source}_download" if source != "http" else "manual_http_download"
+        platform_label = http_download_platforms_label(source_modes)
+        default_title = build_http_download_batch_title(
+            {
+                "source_modes": source_modes,
+                "download_mode": source,
+                "url_count": len(group_ok_items),
+            },
+            item_count=len(group_ok_items),
+            fallback_host=group_first_host,
+        )
+        label = (
+            f"{requested_batch_name} · {platform_label}"
+            if requested_batch_name and multi_platform and platform_label != "HTTP"
+            else (requested_batch_name or default_title)
+        )
+        selected_keys = [
+            str(item.get("selection_key") or "").strip()
+            for item in group_public_items
+            if str(item.get("selection_key") or "").strip()
+        ]
+        task = Task(
+            task_type=TaskType.HTTP_DOWNLOAD,
+            source_path=group_first_host or f"{source}-download",
+            metadata={
+                "urls": group_urls,
+                "url_count": len(group_ok_items),
+                "source_url_count": len(group_urls),
+                "selected_keys": selected_keys,
+                "selected_items": [
+                    {k: v for k, v in dict(item or {}).items() if k != "original_url"}
+                    for item in group_public_items
+                    if item.get("ok")
+                ],
+                "target_subdir": request.target_subdir,
+                "conflict_policy": request.conflict_policy,
+                "batch_name": label,
+                "download_mode": source,
+                "source_modes": source_modes,
+                "platforms": source_modes,
+                "platform_label": platform_label,
+                "task_domain": "http_download",
+                "task_kind": TaskType.HTTP_DOWNLOAD.value,
+                "source_page": "asmr-sync",
+                "source_action": source_action,
+                "source_label": label,
+                "business_key": f"http_download:{source}:{uuid.uuid4().hex}",
+                "preview_items": [
+                    {k: v for k, v in dict(item or {}).items() if k != "url"}
+                    for item in group_public_items
+                ],
+                "source_items": public_source_items_by_source.get(source) or [],
+            },
+        )
+        await engine.submit(task)
+        created_tasks.append({"task_id": task.id, "id": task.id, "platform": source, "platform_label": platform_label})
+
+    message = (
+        f"已按平台创建 {len(created_tasks)} 个 HTTP 下载任务，共 {len(ok_items)} 个直链"
+        if len(created_tasks) > 1
+        else f"已创建 {created_tasks[0]['platform_label']} 下载任务，共 {len(ok_items)} 个直链"
     )
-    await get_task_engine().submit(task)
     return {
         "success": True,
-        "message": f"已创建 HTTP 下载任务，共 {len(ok_items)} 个直链",
-        "task": {"task_id": task.id, "id": task.id},
-        "tasks": [{"task_id": task.id, "id": task.id}],
+        "message": message,
+        "task": created_tasks[0],
+        "tasks": created_tasks,
         "preview": public_preview,
     }
 

@@ -40,6 +40,95 @@ _SHARE_PREVIEW_ONLY_SOURCES = {"pikpak", "transferit"}
 _GOFILE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 _GOFILE_LANGUAGE = "en-US"
 _GOFILE_WEBSITE_TOKEN_SALT = "g4f8fd9f12h14g"
+HTTP_DOWNLOAD_PLATFORM_LABELS = {
+    "http": "HTTP",
+    "gofile": "Gofile",
+    "transferit": "Transfer.it",
+    "onedrive": "OneDrive",
+    "google_drive": "Google Drive",
+    "pikpak": "PikPak",
+}
+
+
+def normalize_http_download_platform(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return "http"
+    normalized = re.sub(r"[^a-z0-9._-]+", "_", text)
+    if normalized in {"http", "https", "direct", "direct_link"}:
+        return "http"
+    if normalized in {"gofile", "gofile.io"} or "gofile.io" in text:
+        return "gofile"
+    if normalized in {"transferit", "transfer.it"} or "transfer.it" in text:
+        return "transferit"
+    if normalized in {"onedrive", "one_drive", "1drv", "1drv.ms", "onedrive.live.com", "onedrive.com"} or "onedrive" in text or "1drv.ms" in text:
+        return "onedrive"
+    if normalized in {"google_drive", "google-drive", "googledrive", "drive.google.com", "docs.google.com"} or "drive.google.com" in text or "docs.google.com" in text or "google drive" in text:
+        return "google_drive"
+    if normalized in {"pikpak", "mypikpak.com", "drive.mypikpak.com"} or "pikpak" in text or "mypikpak.com" in text:
+        return "pikpak"
+    return normalized if normalized in HTTP_DOWNLOAD_PLATFORM_LABELS else "http"
+
+
+def http_download_platform_label(value: Any) -> str:
+    return HTTP_DOWNLOAD_PLATFORM_LABELS.get(normalize_http_download_platform(value), "HTTP")
+
+
+def http_download_platforms_from_metadata(metadata: Dict[str, Any]) -> List[str]:
+    if not isinstance(metadata, dict):
+        return ["http"]
+    platforms: List[str] = []
+
+    def push(value: Any) -> None:
+        key = normalize_http_download_platform(value)
+        if key and key not in platforms:
+            platforms.append(key)
+
+    for value in list(metadata.get("source_modes") or []):
+        push(value)
+    for value in list(metadata.get("platforms") or []):
+        push(value)
+    for key in ("download_mode", "source_action", "source_label", "batch_name"):
+        push(metadata.get(key))
+    for item in list(metadata.get("download_files") or []):
+        if not isinstance(item, dict):
+            continue
+        push(item.get("source"))
+        push(item.get("url"))
+    for item in list(metadata.get("preview_items") or []):
+        if not isinstance(item, dict):
+            continue
+        push(item.get("source"))
+        push(item.get("masked_url") or item.get("url"))
+    if not platforms:
+        platforms.append("http")
+    return platforms
+
+
+def http_download_platforms_label(platforms: List[str]) -> str:
+    labels = [
+        HTTP_DOWNLOAD_PLATFORM_LABELS.get(normalize_http_download_platform(platform), str(platform or "").strip())
+        for platform in (platforms or [])
+        if str(platform or "").strip()
+    ]
+    labels = [label for index, label in enumerate(labels) if label and label not in labels[:index]]
+    specific = [label for label in labels if label != "HTTP"]
+    if not specific:
+        return "HTTP"
+    if len(specific) <= 2:
+        return " / ".join(specific)
+    return f"{' / '.join(specific[:2])} 等 {len(specific)} 平台"
+
+
+def build_http_download_batch_title(metadata: Dict[str, Any], item_count: int = 0, fallback_host: str = "") -> str:
+    platforms = http_download_platforms_from_metadata(metadata)
+    platform_label = http_download_platforms_label(platforms)
+    count = int(item_count or metadata.get("selected_count") or metadata.get("url_count") or 0)
+    if count > 1:
+        return f"{platform_label} 下载 {count} 项"
+    if count == 1:
+        return f"{platform_label} 下载"
+    return f"{platform_label} 下载" if platform_label != "HTTP" else (fallback_host or "HTTP 下载")
 
 
 class HttpDownloadError(ValueError):

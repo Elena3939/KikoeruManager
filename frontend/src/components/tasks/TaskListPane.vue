@@ -15,11 +15,11 @@
         @click="$emit('select', item.id)"
       >
         <component
-          :is="domainMeta(item.domain).icon"
+          :is="taskIcon(item)"
           :size="16"
           :stroke-width="2"
           class="mt-[3px] flex-shrink-0 transition-transform duration-300 group-hover:scale-110 group-hover:rotate-[-6deg]"
-          :class="domainMeta(item.domain).chipIcon"
+          :class="taskIconClass(item)"
         />
 
         <div class="flex min-w-0 flex-col gap-1">
@@ -31,7 +31,7 @@
                 class="inline-flex h-[18px] items-center rounded-full px-2 text-[10px] font-semibold"
                 :class="[domainMeta(item.domain).chipBg, domainMeta(item.domain).chipText]"
               >
-                {{ item.domain_label }}
+                {{ taskDomainLabel(item) }}
               </span>
               <StatusPill :status="item.status" :label="item.status_label" />
             </div>
@@ -139,6 +139,7 @@ import {
 import AppEmptyState from '../common/AppEmptyState.vue'
 import StatusPill from '../dashboard/StatusPill.vue'
 import { getTaskDomainMeta } from '../common/taskDomainMeta.js'
+import { getHttpDownloadDisplayMeta } from '../common/httpDownloadPlatformMeta.js'
 
 defineProps({
   filteredItems: { type: Array, default: () => [] },
@@ -158,6 +159,30 @@ defineEmits(['select', 'quick-filter', 'prev-page', 'next-page'])
 
 function domainMeta(domain) {
   return getTaskDomainMeta(domain)
+}
+
+function isHttpDownloadTask(item) {
+  return String(item?.domain || '').trim() === 'http_download'
+}
+
+function httpDisplayMeta(item) {
+  return getHttpDownloadDisplayMeta(item)
+}
+
+function taskIcon(item) {
+  if (isHttpDownloadTask(item)) return httpDisplayMeta(item).icon || domainMeta(item.domain).icon
+  return domainMeta(item.domain).icon
+}
+
+function taskIconClass(item) {
+  return isHttpDownloadTask(item) && httpDisplayMeta(item).icon
+    ? 'task-platform-icon'
+    : domainMeta(item.domain).chipIcon
+}
+
+function taskDomainLabel(item) {
+  if (isHttpDownloadTask(item)) return httpDisplayMeta(item).label || item.domain_label
+  return item.domain_label
 }
 
 // 摘要 piece 形如 "候选 66" / "DLsite 39"，把数字和名称拆开渲染成 stat strip
@@ -239,6 +264,13 @@ function summaryColor(piece, domain) {
 .task-card.is-active {
   background: rgba(15, 23, 42, 0.04);
   border-left-color: #0f172a;
+}
+
+.task-platform-icon {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  border-radius: 3px;
 }
 
 /* ---- 动画过渡 ---- */

@@ -57,7 +57,7 @@
         <span
           class="mt-0.5 inline-flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[10px] border border-slate-200 bg-white transition-transform duration-300 group-hover:scale-110 group-hover:rotate-[-6deg]"
         >
-          <component :is="domainMeta(task.domain).icon" :size="16" :stroke-width="1.8" :class="domainMeta(task.domain).chipIcon" />
+          <component :is="taskIcon(task)" :size="16" :stroke-width="1.8" :class="taskIconClass(task)" />
         </span>
 
         <!-- 主内容 -->
@@ -67,8 +67,8 @@
 
           <div class="mt-2 flex flex-wrap items-center gap-1.5">
             <span class="inline-flex h-[22px] items-center gap-1 rounded-[6px] border border-slate-200 bg-white px-2 text-[11px] font-medium text-slate-600">
-              <component :is="domainMeta(task.domain).icon" :size="11" :stroke-width="1.8" :class="domainMeta(task.domain).chipIcon" />
-              {{ task.domain_label }}
+              <component :is="taskIcon(task)" :size="11" :stroke-width="1.8" :class="taskChipIconClass(task)" />
+              {{ taskDomainLabel(task) }}
             </span>
             <span v-if="formatRJ(task.rjcode)" class="inline-flex h-[22px] items-center gap-1 rounded-[6px] bg-slate-50 px-2 text-[11px] tabular-nums text-slate-500">
               {{ formatRJ(task.rjcode) }}
@@ -117,6 +117,7 @@ import { Activity, ArrowRight, MoreVertical, PauseCircle, PlayCircle, RotateCcw,
 import AppEmptyState from '../common/AppEmptyState.vue'
 import StatusPill from './StatusPill.vue'
 import { getTaskDomainMeta } from '../common/taskDomainMeta.js'
+import { getHttpDownloadDisplayMeta } from '../common/httpDownloadPlatformMeta.js'
 
 defineProps({
   tasks: { type: Array, default: () => [] },
@@ -154,6 +155,36 @@ const ACTION_LABEL_MAP = {
 
 function domainMeta(domain) {
   return getTaskDomainMeta(domain)
+}
+
+function isHttpDownloadTask(task) {
+  return String(task?.domain || '').trim() === 'http_download'
+}
+
+function httpDisplayMeta(task) {
+  return getHttpDownloadDisplayMeta(task)
+}
+
+function taskIcon(task) {
+  if (isHttpDownloadTask(task)) return httpDisplayMeta(task).icon || domainMeta(task.domain).icon
+  return domainMeta(task.domain).icon
+}
+
+function taskIconClass(task) {
+  return isHttpDownloadTask(task) && httpDisplayMeta(task).icon
+    ? 'dash-platform-icon'
+    : domainMeta(task.domain).chipIcon
+}
+
+function taskChipIconClass(task) {
+  return isHttpDownloadTask(task) && httpDisplayMeta(task).icon
+    ? 'dash-platform-chip-icon'
+    : domainMeta(task.domain).chipIcon
+}
+
+function taskDomainLabel(task) {
+  if (isHttpDownloadTask(task)) return httpDisplayMeta(task).label || task.domain_label
+  return task.domain_label
 }
 
 function actionIcon(action) {
@@ -225,6 +256,22 @@ function formatRJ(value) {
 <style scoped>
 .dash-fade-up {
   animation: dash-fade-up 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.dash-platform-icon,
+.dash-platform-chip-icon {
+  object-fit: contain;
+  border-radius: 3px;
+}
+
+.dash-platform-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.dash-platform-chip-icon {
+  width: 11px;
+  height: 11px;
 }
 
 @keyframes dash-fade-up {
