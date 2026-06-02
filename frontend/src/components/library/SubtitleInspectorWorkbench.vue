@@ -77,8 +77,8 @@
             </div>
           </div>
           <div class="flex items-center gap-1.5 flex-wrap justify-end">
-            <button class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-medium border transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 active:scale-95" @click="view.buildAutoSubtitlePairs">
-              <Wand2 :size="12" class="text-emerald-500" />自动预配对
+            <button class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-medium border transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100" :disabled="view.subtitleInspectorBusy" title="已配置 AI 时优先用 AI 生成草稿，失败后自动回退规则预配对" @click="view.buildAutoSubtitlePairs">
+              <Wand2 :size="12" class="text-emerald-500" :class="{ 'is-spinning': view.subtitleAutoPairing }" />{{ view.subtitleAutoPairing ? 'AI 生成中' : '自动预配对' }}
             </button>
             <button :class="['inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-medium border transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] active:scale-95', view.subtitleSequenceMode ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300']" @click="view.setSubtitleSequenceMode(!view.subtitleSequenceMode)">
               <MousePointerClick :size="12" :class="view.subtitleSequenceMode ? 'text-slate-300' : 'text-blue-500'" />{{ view.subtitleSequenceMode ? '退出顺序点选' : '顺序点选配对' }}
@@ -452,6 +452,7 @@ const view = computed(() => ({
   subtitleManualPairs: [],
   subtitleSelectedManualPairId: '',
   subtitlePairApplying: false,
+  subtitleAutoPairing: false,
   subtitleManualApplyLabel: '',
   subtitleAudioFilterMode: 'all',
   subtitleSubtitleFilterMode: 'all',

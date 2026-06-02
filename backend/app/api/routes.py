@@ -1794,6 +1794,7 @@ class ConfigResponse(BaseModel):
     process_existing: Optional[dict] = None
     asmr_sync_step: Optional[dict] = None
     rj_subtitle: Optional[dict] = None
+    ai_subtitle_matching: Optional[dict] = None
     backup_zip: Optional[dict] = None
     email_watcher: Optional[dict] = None
     notification_email: Optional[dict] = None
@@ -1804,6 +1805,35 @@ class ConfigResponse(BaseModel):
 class HttpDownloaderSecretRevealRequest(BaseModel):
     key: str
     account_id: Optional[str] = None
+
+
+class AISubtitleSecretRevealRequest(BaseModel):
+    key: str
+
+
+class AISubtitleMatchTestRequest(BaseModel):
+    config: Optional[dict] = None
+
+
+class AISubtitleMatchModelsRequest(BaseModel):
+    config: Optional[dict] = None
+
+
+class AISubtitleProviderIconRequest(BaseModel):
+    model: str = ""
+    api_base: str = ""
+    proxy_url: str = ""
+
+
+class AISubtitleMatchPreviewRequest(BaseModel):
+    audio_files: List[dict] = []
+    subtitle_files: List[dict] = []
+    ai_match_mode: str = "ai_assist"
+    naming_strategy: str = "audio"
+    enable_metadata_match: bool = True
+    use_filter_rules: bool = False
+    subtitle_filter_rules: List[dict] = []
+    ai_confidence_threshold: Optional[int] = None
 
 
 # API路由
@@ -2168,6 +2198,16 @@ def _mask_notification_email_config(config) -> Optional[dict]:
     return data
 
 
+def _mask_ai_subtitle_matching_config(config) -> Optional[dict]:
+    """返回 AI 字幕配对配置，API Key 脱敏。"""
+    if not hasattr(config, 'ai_subtitle_matching'):
+        return None
+    data = config.ai_subtitle_matching.model_dump()
+    if data.get('api_key'):
+        data['api_key'] = '********'
+    return data
+
+
 def _mask_http_downloader_config(config) -> Optional[dict]:
     """返回 HTTP 下载配置，PikPak 密码和 token 脱敏。"""
     if not hasattr(config, 'http_downloader'):
@@ -2214,6 +2254,21 @@ def _read_notification_email_password_from_disk() -> str:
         return password if password != "********" else ""
     except Exception:
         logger.warning("[NOTIFICATION] 读取磁盘 notification_email 密码失败", exc_info=True)
+        return ""
+
+
+def _read_ai_subtitle_api_key_from_disk() -> str:
+    """读取磁盘原始 AI 字幕配对 API Key，避免脱敏占位符覆盖真实配置。"""
+    try:
+        config_path = _runtime_config_path_from_settings()
+        if not os.path.exists(config_path):
+            return ""
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        value = data.get("ai_subtitle_matching", {}).get("api_key", "")
+        return value if value != "********" else ""
+    except Exception:
+        logger.warning("[AI字幕] 读取磁盘 API Key 失败", exc_info=True)
         return ""
 
 
@@ -2330,6 +2385,7 @@ def get_configuration():
         process_existing=config.process_existing.model_dump() if hasattr(config, 'process_existing') else None,
         asmr_sync_step=config.asmr_sync_step.model_dump() if hasattr(config, 'asmr_sync_step') else None,
         rj_subtitle=config.rj_subtitle.model_dump() if hasattr(config, 'rj_subtitle') else None,
+        ai_subtitle_matching=_mask_ai_subtitle_matching_config(config),
         backup_zip=config.backup_zip.model_dump() if hasattr(config, 'backup_zip') else None,
         email_watcher=config.email_watcher.model_dump() if hasattr(config, 'email_watcher') else None,
         notification_email=_mask_notification_email_config(config),
@@ -2359,6 +2415,15 @@ def reveal_http_downloader_secret(payload: HttpDownloaderSecretRevealRequest):
     else:
         value = _read_http_downloader_secret_from_disk(key)
     return {"value": value}
+
+
+@app.post("/api/config/ai-subtitle-match/reveal-secret")
+def reveal_ai_subtitle_match_secret(payload: AISubtitleSecretRevealRequest):
+    """从本地配置文件读取 AI 字幕配对敏感字段，只供设置页显隐使用。"""
+    key = str(payload.key or "").strip()
+    if key != "api_key":
+        raise HTTPException(status_code=400, detail="不支持读取该敏感字段")
+    return {"value": _read_ai_subtitle_api_key_from_disk()}
 
 
 class SecurityGateVerifyRequest(BaseModel):
@@ -2642,6 +2707,23 @@ async def update_configuration(request: Request):
                 config_data['rj_subtitle'] = rj_subtitle_config.model_dump()
             except Exception as e:
                 logger.error(f"[RJ_SUBTITLE] 配置验证失败: {e}")
+
+        if 'ai_subtitle_matching' in config_data and config_data['ai_subtitle_matching']:
+            try:
+                from ..config.settings import AISubtitleMatchingConfig
+                ai_data = dict(config_data['ai_subtitle_matching'])
+                if 'api_key' not in ai_data or ai_data.get('api_key') == '********':
+                    current_cfg = get_config()
+                    current_key = getattr(current_cfg.ai_subtitle_matching, 'api_key', '')
+                    ai_data['api_key'] = (
+                        _read_ai_subtitle_api_key_from_disk()
+                        or (current_key if current_key != '********' else '')
+                    )
+                ai_cfg = AISubtitleMatchingConfig(**ai_data)
+                config_data['ai_subtitle_matching'] = ai_cfg.model_dump()
+            except Exception as e:
+                logger.error(f"[AI字幕] 配置验证失败: {e}")
+                raise HTTPException(status_code=400, detail=f"AI 字幕配对配置无效: {e}")
 
         if 'notification_email' in config_data and config_data['notification_email']:
             try:
@@ -10315,6 +10397,8 @@ class RJSubtitleStartRequest(BaseModel):
     naming_strategy: str = "audio"
     use_filter_rules: bool = False
     subtitle_filter_rules: List[dict] = []
+    ai_match_mode: str = "rule_ai_auto"
+    ai_confidence_threshold: Optional[int] = None
     batch_context: Optional[dict] = None
 
 
@@ -10334,6 +10418,8 @@ class RJSubtitleRerunRequest(BaseModel):
     naming_strategy: str = "audio"
     use_filter_rules: bool = False
     subtitle_filter_rules: List[dict] = []
+    ai_match_mode: str = "rule_ai_auto"
+    ai_confidence_threshold: Optional[int] = None
 
 
 class RJSubtitleAvailabilityRequest(BaseModel):
@@ -10347,6 +10433,164 @@ class RJSubtitleFolderSubtitleStateRequest(BaseModel):
 
 class RJSubtitleKikoeruSubtitleStateRequest(BaseModel):
     rjcode: str
+
+
+@app.post("/api/ai-subtitle-match/test")
+async def ai_subtitle_match_test(request: AISubtitleMatchTestRequest):
+    """测试 AI 字幕配对模型连接和 JSON 输出能力。"""
+    from ..core.ai_subtitle_match_service import get_ai_subtitle_match_service
+
+    try:
+        cfg_dict = request.config or {}
+        if not cfg_dict:
+            cfg_dict = get_config().ai_subtitle_matching.model_dump()
+        return await get_ai_subtitle_match_service().test_connection(
+            cfg_dict,
+            saved_api_key=_read_ai_subtitle_api_key_from_disk() or getattr(get_config().ai_subtitle_matching, 'api_key', ''),
+        )
+    except Exception as exc:
+        logger.error("[AI字幕] 测试连接失败", exc_info=True)
+        return {
+            "success": False,
+            "status": "failed",
+            "error": {
+                "code": "unknown_error",
+                "title": "测试失败",
+                "message": str(exc),
+                "suggestion": "检查后端日志和 AI 配置",
+                "raw_summary": str(exc)[:800],
+            },
+            "model": str((request.config or {}).get("model") or ""),
+            "duration_ms": 0,
+        }
+
+
+@app.post("/api/ai-subtitle-match/models")
+async def ai_subtitle_match_models(request: AISubtitleMatchModelsRequest):
+    """使用当前草稿配置获取模型列表。"""
+    from ..core.ai_subtitle_match_service import get_ai_subtitle_match_service
+
+    try:
+        cfg_dict = request.config or {}
+        if not cfg_dict:
+            cfg_dict = get_config().ai_subtitle_matching.model_dump()
+        return await get_ai_subtitle_match_service().list_models(
+            cfg_dict,
+            saved_api_key=_read_ai_subtitle_api_key_from_disk() or getattr(get_config().ai_subtitle_matching, 'api_key', ''),
+        )
+    except Exception as exc:
+        logger.error("[AI字幕] 获取模型列表失败", exc_info=True)
+        return {
+            "success": False,
+            "status": "failed",
+            "error": {
+                "code": "unknown_error",
+                "title": "获取模型失败",
+                "message": str(exc),
+                "suggestion": "检查后端日志和 AI 配置",
+                "raw_summary": str(exc)[:800],
+            },
+            "models": [],
+            "duration_ms": 0,
+        }
+
+
+@app.post("/api/ai-subtitle-match/provider-icon")
+async def ai_subtitle_match_provider_icon(request: AISubtitleProviderIconRequest):
+    """识别 AI 模型平台，并把对应 favicon 缓存在本地。"""
+    from ..core.ai_provider_icon_service import get_ai_provider_icon_service
+
+    try:
+        return await get_ai_provider_icon_service().resolve_provider_icon(
+            model=request.model,
+            api_base=request.api_base,
+            proxy_url=request.proxy_url,
+        )
+    except Exception as exc:
+        logger.warning("[AI字幕] 获取平台图标失败", exc_info=True)
+        return {
+            "success": False,
+            "key": "custom",
+            "label": "自定义模型服务",
+            "host": "",
+            "icon_path": "",
+            "icon_url": "",
+            "source": "error",
+            "error": str(exc)[:300],
+        }
+
+
+@app.get("/api/ai-subtitle-match/provider-icon/file/{filename}")
+async def ai_subtitle_match_provider_icon_file(filename: str):
+    """返回本地缓存的 AI 模型平台图标。"""
+    from ..core.ai_provider_icon_service import get_ai_provider_icon_service
+
+    file_path = get_ai_provider_icon_service().resolve_cached_file(filename)
+    if file_path is None:
+        raise HTTPException(status_code=404, detail="图标不存在")
+    media_type = mimetypes.guess_type(str(file_path))[0] or "image/x-icon"
+    return FileResponse(str(file_path), media_type=media_type)
+
+
+@app.get("/api/ai-subtitle-match/usage")
+async def ai_subtitle_match_usage(limit: int = 100):
+    """查看 AI 字幕配对 usage 摘要。"""
+    from ..core.ai_subtitle_match_service import get_ai_subtitle_match_service
+
+    return get_ai_subtitle_match_service().list_usage(limit=limit)
+
+
+@app.post("/api/ai-subtitle-match/preview")
+async def ai_subtitle_match_preview(request: AISubtitleMatchPreviewRequest):
+    """生成 AI 配对草稿。只返回建议，不写入文件。"""
+    from ..core.ai_subtitle_match_service import get_ai_subtitle_match_service
+    from ..core.rj_subtitle_service import get_rj_subtitle_service
+
+    try:
+        service = get_rj_subtitle_service()
+        audio_index = service._build_audio_index(
+            request.audio_files or [],
+            enable_metadata_match=bool(request.enable_metadata_match),
+        )
+        subtitle_files = request.subtitle_files or []
+        if request.use_filter_rules:
+            subtitle_files = service._apply_subtitle_filter_rules(
+                subtitle_files,
+                request.subtitle_filter_rules or [],
+            )
+        subtitle_groups = service._group_subtitles(subtitle_files)
+        empty_base = {
+            "matches": [],
+            "matched_group_count": 0,
+            "matched_subtitle_count": 0,
+            "unmatched_audio": [],
+            "unmatched_subtitles": [],
+        }
+        ai_config = get_config().ai_subtitle_matching
+        ai_config_for_preview = ai_config.model_dump() if hasattr(ai_config, "model_dump") else dict(ai_config or {})
+        # 配对台的“自动预配对”按钮按最新口径：只要 AI 总开关和模型配置可用，就优先用 AI 生成草稿。
+        # 这里不让“辅助草稿”子开关阻断 preview；正式 RJ 任务模式仍走保存的配置。
+        ai_config_for_preview["manual_assist_enabled"] = True
+        result = await get_ai_subtitle_match_service().build_auto_match_result(
+            config=ai_config_for_preview,
+            audio_index=audio_index,
+            subtitle_groups=subtitle_groups,
+            base_match_result=empty_base,
+            mode=request.ai_match_mode or "ai_assist",
+            naming_strategy=request.naming_strategy or "audio",
+            threshold=request.ai_confidence_threshold,
+        )
+        success_statuses = {"preview", "succeeded", "awaiting_manual"}
+        return {
+            "success": result.get("status") in success_statuses,
+            "status": result.get("status"),
+            "match_result": result.get("match_result") or empty_base,
+            "metadata": result.get("metadata") or {},
+            "error": result.get("error"),
+        }
+    except Exception as exc:
+        logger.error("[AI字幕] 生成配对草稿失败", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"AI 配对失败: {exc}")
 
 
 class LinkedSubtitleArchivePreviewRequest(BaseModel):
@@ -10651,6 +10895,8 @@ async def rj_subtitle_start(request: RJSubtitleStartRequest):
                     "force_rerun": request.force_rerun,
                     "skip_if_existing_subtitles": request.skip_if_existing_subtitles,
                     "naming_strategy": request.naming_strategy,
+                    "ai_match_mode": request.ai_match_mode,
+                    "ai_confidence_threshold": request.ai_confidence_threshold,
                     "source_directories": source_directories,
                     "scan_targets": scan_targets,
                     "created_tasks": [],
@@ -10753,6 +10999,8 @@ async def rj_subtitle_start(request: RJSubtitleStartRequest):
                     "naming_strategy": request.naming_strategy,
                     "use_filter_rules": request.use_filter_rules,
                     "subtitle_filter_rules": request.subtitle_filter_rules,
+                    "ai_match_mode": request.ai_match_mode,
+                    "ai_confidence_threshold": request.ai_confidence_threshold,
                     "batch_id": batch_id or None,
                     "kikoeru_checked_rjcode": (kikoeru_state or {}).get("checked_rjcode", rjcode),
                     "kikoeru_has_work": bool((kikoeru_state or {}).get("has_work")),
@@ -10790,6 +11038,8 @@ async def rj_subtitle_start(request: RJSubtitleStartRequest):
                 "force_rerun": request.force_rerun,
                 "skip_if_existing_subtitles": request.skip_if_existing_subtitles,
                 "naming_strategy": request.naming_strategy,
+                "ai_match_mode": request.ai_match_mode,
+                "ai_confidence_threshold": request.ai_confidence_threshold,
                 "source_directories": source_directories,
                 "scan_targets": scan_targets,
                 "created_tasks": created_tasks,
@@ -11071,6 +11321,8 @@ async def rj_subtitle_rerun_task(task_id: str, request: RJSubtitleRerunRequest):
             "naming_strategy": request.naming_strategy,
             "use_filter_rules": request.use_filter_rules,
             "subtitle_filter_rules": request.subtitle_filter_rules,
+            "ai_match_mode": request.ai_match_mode,
+            "ai_confidence_threshold": request.ai_confidence_threshold,
         })
         return {
             "success": True,

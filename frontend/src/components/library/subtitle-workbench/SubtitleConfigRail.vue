@@ -91,6 +91,58 @@
           </div>
 
           <div class="subtitle-filter-compact-panel">
+            <div class="subtitle-filter-compact-row subtitle-ai-mode-row">
+              <div class="subtitle-setting-main min-w-0">
+                <div class="subtitle-option-title">AI 配对模式</div>
+              </div>
+              <div class="subtitle-ai-mode-switch" role="radiogroup" aria-label="AI 配对模式">
+                <button
+                  v-for="option in aiModeOptions"
+                  :key="option.value"
+                  type="button"
+                  class="group/ai subtitle-ai-mode-option"
+                  :class="[option.tone, { active: resolvedAiMatchMode === option.value }]"
+                  role="radio"
+                  :aria-checked="resolvedAiMatchMode === option.value"
+                  @click="ctx.setSubtitleOption('aiMatchMode', option.value)"
+                >
+                  <component
+                    :is="option.icon"
+                    :class="['h-[12px] w-[12px] shrink-0 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/ai:scale-110 group-hover/ai:rotate-[8deg]', option.color]"
+                    :stroke-width="2.4"
+                  />
+                  <span>{{ option.label }}</span>
+                </button>
+              </div>
+            </div>
+
+            <div v-if="resolvedAiMatchMode !== 'rule'" class="subtitle-filter-compact-row subtitle-ai-threshold-row">
+              <div class="subtitle-setting-main min-w-0">
+                <div class="subtitle-option-title">AI 自动阈值</div>
+                <div class="subtitle-card-tip">{{ normalizedAiThreshold }} 分以上自动通过</div>
+              </div>
+              <div class="subtitle-stepper subtitle-threshold-stepper" role="group" aria-label="AI 自动阈值">
+                <input
+                  class="subtitle-stepper-input"
+                  type="number"
+                  :value="normalizedAiThreshold"
+                  min="0"
+                  max="100"
+                  step="1"
+                  @input="setAiConfidenceThreshold($event.target.value)"
+                  @blur="setAiConfidenceThreshold($event.target.value)"
+                />
+                <div class="subtitle-stepper-actions">
+                  <button type="button" class="subtitle-stepper-btn" aria-label="增加 AI 阈值" @click="adjustAiConfidenceThreshold(1)">
+                    <ChevronUp class="h-[11px] w-[11px]" :stroke-width="2.4" />
+                  </button>
+                  <button type="button" class="subtitle-stepper-btn" aria-label="减少 AI 阈值" @click="adjustAiConfidenceThreshold(-1)">
+                    <ChevronDown class="h-[11px] w-[11px]" :stroke-width="2.4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <div class="subtitle-filter-compact-row">
               <div class="subtitle-setting-main min-w-0">
                 <div class="subtitle-option-title">同名依据</div>
@@ -558,7 +610,10 @@ import {
   Loader2,
   WandSparkles,
   RefreshCw,
-  ArrowRightLeft
+  ArrowRightLeft,
+  Bot,
+  ClipboardList,
+  Sparkles
 } from 'lucide-vue-next'
 import AppDropdown from '../../common/AppDropdown.vue'
 
@@ -606,6 +661,20 @@ const namingOptions = [
   { value: 'subtitle', label: '字幕名', icon: FileText, color: 'text-violet-600', tone: 'tone-subtitle' }
 ]
 
+const aiModeOptions = [
+  { value: 'rule', label: '规则', icon: ClipboardList, color: 'text-slate-600', tone: 'tone-rule' },
+  { value: 'ai_auto', label: 'AI 自动', icon: Bot, color: 'text-cyan-600', tone: 'tone-ai-auto' },
+  { value: 'rule_ai_auto', label: '规则+AI', icon: Sparkles, color: 'text-emerald-600', tone: 'tone-rule-ai' },
+  { value: 'ai_assist', label: 'AI 草稿', icon: WandSparkles, color: 'text-violet-600', tone: 'tone-ai-assist' }
+]
+
+const resolvedAiMatchMode = computed(() => {
+  const mode = String(props.ctx?.subtitleOptions?.aiMatchMode || '').trim().toLowerCase()
+  return aiModeOptions.some(option => option.value === mode) ? mode : 'rule_ai_auto'
+})
+
+const normalizedAiThreshold = computed(() => normalizeAiConfidenceThreshold(props.ctx?.subtitleOptions?.aiConfidenceThreshold))
+
 const subtitleFilterRuleCount = computed(() => props.ctx?.subtitleOptions?.subtitleFilterRules?.length || 0)
 
 const enabledSubtitleFilterRuleCount = computed(() => (
@@ -626,12 +695,26 @@ function normalizeScanDepth(value) {
   return Math.max(1, Math.min(10, Math.round(numeric)))
 }
 
+function normalizeAiConfidenceThreshold(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return 85
+  return Math.max(0, Math.min(100, Math.round(numeric)))
+}
+
 function setScanDepth(value) {
   props.ctx?.setSubtitleOption?.('scanDepth', normalizeScanDepth(value))
 }
 
 function adjustScanDepth(delta) {
   setScanDepth(Number(props.ctx?.subtitleOptions?.scanDepth || 3) + delta)
+}
+
+function setAiConfidenceThreshold(value) {
+  props.ctx?.setSubtitleOption?.('aiConfidenceThreshold', normalizeAiConfidenceThreshold(value))
+}
+
+function adjustAiConfidenceThreshold(delta) {
+  setAiConfidenceThreshold(normalizedAiThreshold.value + delta)
 }
 
 const activeSubtitleFilterRuleIndex = computed(() => {
@@ -904,6 +987,90 @@ function removeActiveSubtitleFilterRule() {
   --option-accent: #7c3aed;
   --option-accent-soft: rgba(139, 92, 246, 0.16);
   --option-accent-border: rgba(124, 58, 237, 0.34);
+}
+
+.subtitle-ai-mode-row {
+  align-items: stretch;
+}
+
+.subtitle-ai-mode-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  width: 188px;
+  padding: 3px;
+  border: 1px solid #e2e8f0;
+  border-radius: 11px;
+  background: #f8fafc;
+}
+
+.subtitle-ai-mode-option {
+  --ai-option-soft: rgba(100, 116, 139, 0.12);
+  --ai-option-border: rgba(100, 116, 139, 0.24);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  height: 25px;
+  min-height: 24px;
+  padding: 4px 5px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #64748b;
+  font-size: 10.8px;
+  font-weight: 850;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.28s var(--ease-spring);
+}
+
+.subtitle-ai-mode-option:hover {
+  transform: translateY(-1px) scale(1.01);
+  color: #0f172a;
+  background: var(--ai-option-soft);
+  border-color: var(--ai-option-border);
+}
+
+.subtitle-ai-mode-option:active {
+  transform: scale(0.96);
+}
+
+.subtitle-ai-mode-option.active {
+  border-color: var(--ai-option-border);
+  background: var(--ai-option-soft);
+  color: #0f172a;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.76);
+}
+
+.subtitle-ai-mode-option.tone-rule {
+  --ai-option-soft: rgba(100, 116, 139, 0.14);
+  --ai-option-border: rgba(100, 116, 139, 0.28);
+}
+
+.subtitle-ai-mode-option.tone-ai-auto {
+  --ai-option-soft: rgba(6, 182, 212, 0.16);
+  --ai-option-border: rgba(8, 145, 178, 0.34);
+}
+
+.subtitle-ai-mode-option.tone-rule-ai {
+  --ai-option-soft: rgba(16, 185, 129, 0.16);
+  --ai-option-border: rgba(5, 150, 105, 0.34);
+}
+
+.subtitle-ai-mode-option.tone-ai-assist {
+  --ai-option-soft: rgba(139, 92, 246, 0.16);
+  --ai-option-border: rgba(124, 58, 237, 0.34);
+}
+
+.subtitle-ai-threshold-row {
+  align-items: center;
+}
+
+.subtitle-threshold-stepper {
+  width: 84px;
 }
 
 .subtitle-config-mode-title {

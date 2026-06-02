@@ -71,6 +71,14 @@ class TaskCenterService:
         "source_archive_path",
         "manual_match_completed",
         "linked_workbench_applied",
+        "ai_match_status",
+        "ai_match_mode",
+        "ai_auto_applied",
+        "ai_match_model",
+        "ai_confidence_threshold",
+        "ai_low_confidence_count",
+        "ai_unmatched_audio_count",
+        "ai_unmatched_subtitle_count",
         # 前端 list 页 getTaskSummary / getOutputPath 直接读
         "subtitle_dir",
         # 社团补全批量任务：Tasks.vue 详情面板 + Dashboard 任务卡需要这些
@@ -877,6 +885,8 @@ class TaskCenterService:
             self._append_metric(metrics, "下载", metadata.get("downloaded_count"))
             self._append_metric(metrics, "现有字幕", metadata.get("existing_subtitle_count"))
             self._append_metric(metrics, "写入", len(metadata.get("written_files") or []))
+            if metadata.get("ai_match_mode") and metadata.get("ai_match_mode") != "rule":
+                self._append_metric(metrics, "AI", "自动应用" if metadata.get("ai_auto_applied") else "待确认")
             if metadata.get("awaiting_manual_match"):
                 self._append_metric(metrics, "待手配", "是")
         elif domain == "asmr_sync":

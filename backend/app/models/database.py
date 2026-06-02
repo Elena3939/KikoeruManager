@@ -1218,6 +1218,61 @@ class PikPakStatusCache(Base):
         }
 
 
+class AISubtitleMatchUsage(Base):
+    """AI 字幕配对请求摘要。只存计数和错误摘要，不落完整 prompt/response。"""
+    __tablename__ = 'ai_subtitle_match_usage'
+
+    id = Column(String(36), primary_key=True)
+    created_at = Column(DateTime, default=get_local_now, index=True)
+    task_id = Column(String(36), index=True)
+    rjcode = Column(String(20), index=True)
+    mode = Column(String(30), nullable=False, default='')
+    model = Column(String(120), nullable=False, default='')
+    request_hash = Column(String(80), index=True)
+    audio_count = Column(Integer, default=0)
+    subtitle_group_count = Column(Integer, default=0)
+    matched_count = Column(Integer, default=0)
+    low_confidence_count = Column(Integer, default=0)
+    unmatched_audio_count = Column(Integer, default=0)
+    unmatched_subtitle_count = Column(Integer, default=0)
+    prompt_tokens = Column(Integer, default=0)
+    completion_tokens = Column(Integer, default=0)
+    total_tokens = Column(Integer, default=0)
+    duration_ms = Column(Integer, default=0)
+    status = Column(String(20), nullable=False, default='')
+    error_summary = Column(Text, default='')
+    auto_applied = Column(Boolean, default=False)
+
+    __table_args__ = (
+        Index('idx_ai_subtitle_usage_task_created', 'task_id', 'created_at'),
+        Index('idx_ai_subtitle_usage_rj_created', 'rjcode', 'created_at'),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'id': self.id,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'task_id': self.task_id or '',
+            'rjcode': self.rjcode or '',
+            'mode': self.mode or '',
+            'model': self.model or '',
+            'request_hash': self.request_hash or '',
+            'audio_count': int(self.audio_count or 0),
+            'subtitle_group_count': int(self.subtitle_group_count or 0),
+            'matched_count': int(self.matched_count or 0),
+            'low_confidence_count': int(self.low_confidence_count or 0),
+            'unmatched_audio_count': int(self.unmatched_audio_count or 0),
+            'unmatched_subtitle_count': int(self.unmatched_subtitle_count or 0),
+            'prompt_tokens': int(self.prompt_tokens or 0),
+            'completion_tokens': int(self.completion_tokens or 0),
+            'total_tokens': int(self.total_tokens or 0),
+            'duration_ms': int(self.duration_ms or 0),
+            'status': self.status or '',
+            'error_summary': self.error_summary or '',
+            'auto_applied': bool(self.auto_applied),
+        }
+
+
 # 数据库连接
 def _count_password_entries(db_path):
     if not os.path.exists(db_path):

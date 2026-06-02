@@ -13,6 +13,8 @@ requests>=2.31.0
 # httpx 当作原始字节，response.text 就是乱码，社团补全 / 关键字搜索全线挂掉。
 brotlicffi>=1.1.0
 httpx>=0.25.0
+socksio>=1.0.0
+litellm>=1.60.0
 pikpakapi==0.1.11
 transferit-py>=0.1.0rc1
 # 邮件模板块渲染后的 HTML 白名单清洗；缺失时会回退正则清洗，但邮件安全边界会变弱。

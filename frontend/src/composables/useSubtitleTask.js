@@ -1497,7 +1497,9 @@ export function useSubtitleTask ({
         enableMetadataMatch: subtitleOptions.value.enableMetadataMatch,
         namingStrategy: subtitleOptions.value.namingStrategy,
         useFilterRules: subtitleOptions.value.useFilterRules,
-        subtitleFilterRules: sanitizeSubtitleFilterRules(subtitleOptions.value.subtitleFilterRules)
+        subtitleFilterRules: sanitizeSubtitleFilterRules(subtitleOptions.value.subtitleFilterRules),
+        aiMatchMode: subtitleOptions.value.aiMatchMode,
+        aiConfidenceThreshold: subtitleOptions.value.aiConfidenceThreshold
       }
       const startItem = buildSubtitleRerunStartItem(task)
       const useStartFallback = !isSubtitleTaskLiveMode(task)

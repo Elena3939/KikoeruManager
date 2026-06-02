@@ -2764,6 +2764,10 @@ class TaskEngine:
             metadata['use_filter_rules'] = bool(overrides.get('use_filter_rules'))
         if 'subtitle_filter_rules' in overrides:
             metadata['subtitle_filter_rules'] = overrides.get('subtitle_filter_rules') or []
+        if 'ai_match_mode' in overrides:
+            metadata['ai_match_mode'] = str(overrides.get('ai_match_mode') or 'rule_ai_auto').lower()
+        if 'ai_confidence_threshold' in overrides:
+            metadata['ai_confidence_threshold'] = overrides.get('ai_confidence_threshold')
         task.task_metadata = metadata
         self.processing.discard(task.id)
         if task.rjcode:
@@ -4415,6 +4419,8 @@ class TaskEngine:
         naming_strategy = str(task.task_metadata.get('naming_strategy') or 'audio').lower()
         use_filter_rules = bool(task.task_metadata.get('use_filter_rules', False))
         subtitle_filter_rules = task.task_metadata.get('subtitle_filter_rules') or []
+        ai_match_mode = str(task.task_metadata.get('ai_match_mode') or 'rule_ai_auto').lower()
+        ai_confidence_threshold = task.task_metadata.get('ai_confidence_threshold')
 
         rjcode = task.task_metadata.get('rjcode') or self._extract_rjcode(folder_path) or "未知"
         task.rjcode = rjcode
@@ -4525,6 +4531,9 @@ class TaskEngine:
                 naming_strategy=naming_strategy,
                 use_filter_rules=use_filter_rules,
                 subtitle_filter_rules=subtitle_filter_rules,
+                ai_match_mode=ai_match_mode,
+                ai_confidence_threshold=ai_confidence_threshold,
+                task_id=task.id,
                 progress_callback=progress_callback,
                 file_progress_callback=file_progress_callback,
                 should_cancel=task.is_cancelled,
@@ -4565,6 +4574,16 @@ class TaskEngine:
                 'content_deduped_count': result.get('content_deduped_count', 0),
                 'content_deduped_files': result.get('content_deduped_files', []),
                 'awaiting_manual_match': result.get('awaiting_manual_match', False),
+                'ai_match_status': result.get('ai_match_status', task.task_metadata.get('ai_match_status', '')),
+                'ai_match_mode': result.get('ai_match_mode', ai_match_mode),
+                'ai_auto_applied': bool(result.get('ai_auto_applied', False)),
+                'ai_match_model': result.get('ai_match_model', task.task_metadata.get('ai_match_model', '')),
+                'ai_confidence_threshold': result.get('ai_confidence_threshold', ai_confidence_threshold),
+                'ai_low_confidence_count': result.get('ai_low_confidence_count', 0),
+                'ai_unmatched_audio_count': result.get('ai_unmatched_audio_count', 0),
+                'ai_unmatched_subtitle_count': result.get('ai_unmatched_subtitle_count', 0),
+                'ai_match_result': result.get('ai_match_result', {}),
+                'ai_match_error': result.get('ai_match_error', {}),
             })
 
             deduped_count = int(result.get('content_deduped_count') or 0)
@@ -4579,10 +4598,20 @@ class TaskEngine:
 
             if result.get('awaiting_manual_match'):
                 task.progress = 100
-                task.status = TaskStatus.COMPLETED
+                task.status = TaskStatus.WAITING_MANUAL
                 task.completed_at = datetime.now()
-                task.current_step = '已抓取原始字幕，等待筛选与匹配'
+                if result.get('ai_match_status') == 'failed':
+                    task.current_step = 'AI 配对失败，等待筛选与匹配'
+                elif result.get('ai_match_status'):
+                    task.current_step = 'AI 配对待确认，等待筛选与匹配'
+                else:
+                    task.current_step = '已抓取原始字幕，等待筛选与匹配'
                 append_progress_log(task.current_step, 100)
+                try:
+                    from .task_notification_service import enqueue_notification_check
+                    asyncio.create_task(enqueue_notification_check(task))
+                except Exception:
+                    logger.warning(f'[{rjcode}] 触发 AI/人工配对等待通知失败', exc_info=True)
                 logger.info(f'[{rjcode}] RJ 字幕原始抓取完成，等待用户筛选与匹配')
                 return
 
