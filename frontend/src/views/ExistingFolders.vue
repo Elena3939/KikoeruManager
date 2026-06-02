@@ -28,68 +28,113 @@
     <section class="existing-shell">
       <aside class="existing-sidebar">
         <div class="sidebar-card">
-          <div class="sidebar-head">
-            <div>
-              <div class="sidebar-overline">处理策略</div>
+          <div class="strategy-hero">
+            <div class="strategy-hero-main">
+              <div class="strategy-eyebrow">
+                <span class="strategy-eyebrow-icon"><FolderTree :size="16" :stroke-width="2.4" /></span>
+                <span>处理策略</span>
+              </div>
               <div class="sidebar-title">入库流水线</div>
             </div>
-            <span class="sidebar-count">{{ folders.length }}</span>
+            <div class="strategy-score">
+              <span class="strategy-score-value">{{ readyCount }}</span>
+              <span class="strategy-score-label">可处理</span>
+            </div>
           </div>
 
-          <div class="pipeline-list">
-            <div v-for="step in pipelineSteps" :key="step.label" class="pipeline-item">
-              <div class="pipeline-dot" :class="step.tone"><component :is="step.icon" :size="12" /></div>
-              <div>
-                <div class="pipeline-title">{{ step.label }}</div>
+          <div class="strategy-meter" :style="{ '--ready-percent': `${readyRatio}%` }">
+            <div class="strategy-meter-track"><span></span></div>
+            <div class="strategy-meter-meta">
+              <span>{{ readyRatio }}%</span>
+              <span>{{ selectedFolders.length }} 已选</span>
+            </div>
+          </div>
+
+          <div class="strategy-stats">
+            <div class="strategy-stat">
+              <span>总数</span>
+              <strong>{{ folders.length }}</strong>
+            </div>
+            <div class="strategy-stat">
+              <span>冲突</span>
+              <strong>{{ conflictCount }}</strong>
+            </div>
+            <div class="strategy-stat">
+              <span>可查重</span>
+              <strong>{{ checkableCount }}</strong>
+            </div>
+          </div>
+
+          <div class="pipeline-list" aria-label="处理流水线">
+            <div v-for="(step, index) in pipelineSteps" :key="step.label" class="pipeline-item">
+              <div class="pipeline-rail">
+                <div class="pipeline-dot" :class="step.tone"><component :is="step.icon" :size="16" :stroke-width="2.35" /></div>
+              </div>
+              <div class="pipeline-copy">
+                <div class="pipeline-title-row">
+                  <span class="pipeline-title">{{ step.label }}</span>
+                  <span class="pipeline-index">0{{ index + 1 }}</span>
+                </div>
                 <div class="pipeline-desc">{{ step.desc }}</div>
               </div>
             </div>
           </div>
 
+          <div class="strategy-section-head">
+            <span>执行选项</span>
+            <span>{{ autoClassify && checkDuplicates ? '双策略' : '自定义' }}</span>
+          </div>
+
           <div class="option-stack">
-            <div class="option-row">
+            <button
+              type="button"
+              class="option-row"
+              :class="{ checked: autoClassify }"
+              role="switch"
+              :aria-checked="autoClassify"
+              aria-label="自动分类入库"
+              @click="autoClassify = !autoClassify"
+            >
               <div class="option-row-main">
-                <MoveRight :size="14" />
+                <span class="option-icon classify"><MoveRight :size="16" :stroke-width="2.35" /></span>
                 <div>
                   <div class="option-row-title">自动分类入库</div>
                   <div class="option-row-desc">处理完成后移动到库存分类目录</div>
                 </div>
               </div>
-              <button
-                type="button"
-                class="ef-switch"
-                :class="{ checked: autoClassify }"
-                role="switch"
-                :aria-checked="autoClassify"
-                aria-label="自动分类入库"
-                @click="autoClassify = !autoClassify"
-              >
+              <span class="option-state">{{ autoClassify ? '开' : '关' }}</span>
+              <span class="ef-switch" :class="{ checked: autoClassify }" aria-hidden="true">
                 <span class="ef-switch-thumb"></span>
-              </button>
-            </div>
-            <div class="option-row">
+              </span>
+            </button>
+            <button
+              type="button"
+              class="option-row"
+              :class="{ checked: checkDuplicates }"
+              role="switch"
+              :aria-checked="checkDuplicates"
+              aria-label="扫描时查重"
+              @click="checkDuplicates = !checkDuplicates"
+            >
               <div class="option-row-main">
-                <ShieldCheck :size="14" />
+                <span class="option-icon duplicate"><ShieldCheck :size="16" :stroke-width="2.35" /></span>
                 <div>
                   <div class="option-row-title">扫描时查重</div>
                   <div class="option-row-desc">刷新列表时检查重复与关联作品</div>
                 </div>
               </div>
-              <button
-                type="button"
-                class="ef-switch"
-                :class="{ checked: checkDuplicates }"
-                role="switch"
-                :aria-checked="checkDuplicates"
-                aria-label="扫描时查重"
-                @click="checkDuplicates = !checkDuplicates"
-              >
+              <span class="option-state">{{ checkDuplicates ? '开' : '关' }}</span>
+              <span class="ef-switch" :class="{ checked: checkDuplicates }" aria-hidden="true">
                 <span class="ef-switch-thumb"></span>
-              </button>
-            </div>
+              </span>
+            </button>
           </div>
 
           <div class="sidebar-actions">
+            <div class="action-summary">
+              <span>已选 {{ selectedFolders.length }}</span>
+              <span>可执行 {{ selectedProcessableFolders.length }}</span>
+            </div>
             <button
               type="button"
               class="side-ep-action primary"
@@ -435,6 +480,12 @@ const filteredFolders = computed(() => {
 const selectedProcessableFolders = computed(() => selectedFolders.value.filter(isProcessable))
 const selectedCheckableFolders = computed(() => selectedFolders.value.filter(isCheckable))
 const readyCount = computed(() => folders.value.filter(isProcessable).length)
+const checkableCount = computed(() => folders.value.filter(isCheckable).length)
+const readyRatio = computed(() => {
+  const total = folders.value.length
+  if (!total) return 0
+  return Math.round((readyCount.value / total) * 100)
+})
 
 onMounted(() => {
   refreshWithCache()
@@ -1036,96 +1087,370 @@ function getConflictTypeLabel(conflictType) {
 /* ============================================================
  * 主体布局：左侧栏 + 右侧主区
  * ============================================================ */
-.existing-shell { display: grid; grid-template-columns: 310px minmax(0,1fr); gap: 18px; margin-top: 18px; }
+.existing-shell { display: grid; grid-template-columns: 292px minmax(0,1fr); gap: 18px; margin-top: 18px; }
+.existing-sidebar { min-width: 0; }
 .sidebar-card, .folders-card { border: 1px solid var(--ef-border); border-radius: 20px; background: var(--ef-surface); box-shadow: var(--ef-shadow); }
-.sidebar-card { padding: 16px; position: sticky; top: 18px; }
-.sidebar-head, .folder-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.sidebar-overline { color: var(--ef-faint); font-size: 11px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; }
-.sidebar-title { font-size: 17px; font-weight: 900; letter-spacing: -.03em; }
-.sidebar-count { min-width: 30px; height: 24px; border-radius: 999px; display: grid; place-items: center; background: var(--ef-surface-muted); color: var(--ef-text-soft); font-size: 12px; font-weight: 900; transition: background-color 0.25s ease, color 0.25s ease; }
-.pipeline-list { margin-top: 16px; display: grid; gap: 12px; }
-.pipeline-item { display: flex; gap: 10px; align-items: flex-start; padding: 10px; border-radius: 14px; background: var(--ef-surface-soft); border: 1px solid var(--ef-border); transition: border-color 0.25s ease, background-color 0.25s ease; }
-.pipeline-item:hover { border-color: var(--ef-border-strong); background: var(--ef-surface-hover); }
-.pipeline-dot { width: 26px; height: 26px; flex: 0 0 auto; border-radius: 11px; display: grid; place-items: center; transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
-.pipeline-item:hover .pipeline-dot { transform: scale(1.1); }
-.pipeline-dot.info { background: rgba(59, 130, 246, 0.12); color: #3b82f6; } .pipeline-dot.ok { background: rgba(16, 185, 129, 0.12); color: #10b981; } .pipeline-dot.warn { background: rgba(245, 158, 11, 0.12); color: #f59e0b; } .pipeline-dot.done { background: var(--ef-surface-muted); color: var(--ef-text); }
-.pipeline-title { font-size: 13px; font-weight: 900; }
-.pipeline-desc { margin-top: 2px; font-size: 11px; color: var(--ef-muted); line-height: 1.45; }
-.option-stack { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 16px; }
-.option-row { min-height: 58px; border: 1px solid var(--ef-border); border-radius: 14px; background: var(--ef-surface-soft); display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; transition: border-color 0.25s ease; }
-.option-row:hover { border-color: var(--ef-border-strong); }
+.sidebar-card {
+  position: sticky;
+  top: 18px;
+  overflow: hidden;
+  padding: 14px;
+  border-color: var(--ef-border);
+  background: var(--ef-surface);
+  box-shadow: none;
+}
+.folder-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.strategy-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 2px 0;
+}
+.strategy-hero-main { min-width: 0; }
+.strategy-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ef-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.strategy-eyebrow-icon {
+  width: auto;
+  height: auto;
+  display: inline-grid;
+  place-items: center;
+  color: #0891b2;
+  background: transparent;
+  transform: translateY(-1px);
+}
+.sidebar-title {
+  margin-top: 8px;
+  font-size: 22px;
+  font-weight: 950;
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+.strategy-score {
+  min-width: 60px;
+  border-radius: 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--ef-border-soft);
+  background: var(--ef-surface);
+  color: var(--ef-text);
+  text-align: right;
+  box-shadow: none;
+}
+.strategy-score-value {
+  display: block;
+  color: #0891b2;
+  font-size: 20px;
+  font-weight: 900;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.strategy-score-label {
+  display: block;
+  margin-top: 4px;
+  color: var(--ef-muted);
+  font-size: 10px;
+  font-weight: 800;
+}
+.strategy-meter {
+  margin-top: 14px;
+  padding: 0 2px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--ef-border-soft);
+  border-radius: 0;
+  background: var(--ef-surface);
+}
+.strategy-meter-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  border: 1px solid var(--ef-border-soft);
+  background: transparent;
+}
+.strategy-meter-track span {
+  display: block;
+  width: var(--ready-percent);
+  height: 100%;
+  border-radius: inherit;
+  background: #0891b2;
+  transition: width 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.strategy-meter-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 9px;
+  color: var(--ef-muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+.strategy-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  margin-top: 12px;
+  padding-bottom: 12px;
+  border: 0;
+  border-bottom: 1px solid var(--ef-border-soft);
+  border-radius: 0;
+  overflow: visible;
+}
+.strategy-stat {
+  min-width: 0;
+  padding: 0 9px;
+  border: 0;
+  border-right: 1px solid var(--ef-border-soft);
+  border-radius: 0;
+  background: var(--ef-surface);
+}
+.strategy-stat:first-child { padding-left: 2px; }
+.strategy-stat:last-child { border-right: 0; }
+.strategy-stat span {
+  display: block;
+  overflow: hidden;
+  color: var(--ef-faint);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.strategy-stat strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--ef-text);
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.pipeline-list {
+  margin-top: 14px;
+  display: grid;
+  gap: 0;
+  padding: 0 2px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--ef-border-soft);
+  border-radius: 0;
+  background: var(--ef-surface);
+}
+.pipeline-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 9px;
+  min-height: 48px;
+}
+.pipeline-item:last-child { min-height: 26px; }
+.pipeline-rail {
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+.pipeline-item:not(:last-child) .pipeline-rail::after {
+  content: '';
+  position: absolute;
+  top: 24px;
+  bottom: 2px;
+  width: 1px;
+  background: var(--ef-border-soft);
+}
+.pipeline-dot {
+  position: relative;
+  z-index: 1;
+  width: 18px;
+  height: 22px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  transform: translateY(-1px);
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.25s ease;
+}
+.pipeline-item:hover .pipeline-dot { transform: translateY(-2px) scale(1.08); }
+.pipeline-dot.info { color: #0284c7; }
+.pipeline-dot.ok { color: #059669; }
+.pipeline-dot.warn { color: #d97706; }
+.pipeline-dot.done { color: #4f46e5; }
+.pipeline-copy { min-width: 0; padding-top: 2px; }
+.pipeline-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.pipeline-title {
+  min-width: 0;
+  color: var(--ef-text);
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1.2;
+}
+.pipeline-index {
+  color: var(--ef-faint);
+  font-size: 10px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+.pipeline-desc { margin-top: 3px; font-size: 11px; color: var(--ef-muted); line-height: 1.45; }
+.strategy-section-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 12px 2px 8px;
+  color: var(--ef-faint);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.option-stack { display: grid; grid-template-columns: 1fr; gap: 8px; }
+.option-row {
+  width: 100%;
+  min-height: 58px;
+  border: 1px solid var(--ef-border-soft);
+  border-radius: 12px;
+  background: var(--ef-surface);
+  color: var(--ef-text);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: none;
+  transition:
+    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    border-color 0.25s ease,
+    background-color 0.25s ease;
+}
+.option-row:hover {
+  transform: translateY(-2px) scale(1.01);
+  border-color: var(--ef-border-strong);
+  background: var(--ef-surface);
+  box-shadow: none;
+}
+.option-row:active { transform: scale(0.97); transition: transform 0.12s ease; }
+.option-row.checked {
+  border-color: var(--ef-border-strong);
+  background: var(--ef-surface);
+}
 .option-row-main { min-width: 0; display: flex; align-items: center; gap: 10px; color: var(--ef-muted); }
+.option-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  color: var(--ef-text-soft);
+  background: transparent;
+  transform: translateY(-1px);
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.25s ease, color 0.25s ease;
+}
+.option-icon.classify { color: #0d9488; }
+.option-icon.duplicate { color: #059669; }
+.option-row:hover .option-icon { transform: translateY(-2px) rotate(-8deg) scale(1.08); }
+.option-row.checked .option-icon.classify { color: #0f766e; background: transparent; }
+.option-row.checked .option-icon.duplicate { color: #047857; background: transparent; }
 .option-row-title { color: var(--ef-text); font-size: 13px; font-weight: 900; line-height: 1.2; }
 .option-row-desc { margin-top: 3px; color: var(--ef-faint); font-size: 11px; line-height: 1.35; }
+.option-state {
+  min-width: 22px;
+  color: var(--ef-faint);
+  font-size: 11px;
+  font-weight: 900;
+  text-align: center;
+}
+.option-row.checked .option-state { color: var(--ef-text); }
 .ef-switch {
-  width: 30px;
-  height: 18px;
+  width: 32px;
+  height: 20px;
   flex: 0 0 auto;
-  border: 1px solid var(--ef-border-strong);
+  border: 1px solid var(--ef-border-soft);
   border-radius: 999px;
-  background: var(--ef-surface-muted);
+  background: transparent;
   padding: 2px;
   display: inline-flex;
   align-items: center;
   justify-content: flex-start;
   cursor: pointer;
-  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.08);
+  box-shadow: none;
   transition:
     transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
     background-color 0.25s ease,
-    border-color 0.25s ease,
-    box-shadow 0.25s ease;
+    border-color 0.25s ease;
 }
-.ef-switch:hover {
-  transform: translateY(-1px) scale(1.03);
-  border-color: var(--ef-border-strong);
-  background: var(--ef-surface-hover);
-}
-.ef-switch:active { transform: scale(0.94); transition: transform 0.12s ease; }
+.option-row:hover .ef-switch { transform: scale(1.04); border-color: var(--ef-border-strong); }
 .ef-switch.checked {
   justify-content: flex-end;
-  background: var(--ef-text-soft);
-  border-color: var(--ef-text-soft);
-  box-shadow: 0 3px 8px rgba(15, 23, 42, 0.1);
+  background: #0d9488;
+  border-color: #0d9488;
+  box-shadow: none;
 }
 .ef-switch-thumb {
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   border-radius: 999px;
   background: var(--ef-surface);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.18);
+  box-shadow: none;
   transition:
     background-color 0.25s ease,
-    box-shadow 0.25s ease,
     transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-.ef-switch:hover .ef-switch-thumb { transform: scale(1.04); }
-.ef-switch.checked .ef-switch-thumb { background: var(--ef-surface); }
+.option-row:hover .ef-switch-thumb { transform: scale(1.04); }
+.ef-switch.checked .ef-switch-thumb { background: #ffffff; }
 
 /* ============================================================
  * 侧边栏按钮（应用防闪烁规则）
  * ============================================================ */
-.sidebar-actions { margin-top: 16px; display: grid; gap: 9px; }
+.sidebar-actions {
+  margin-top: 14px;
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.action-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 2px 4px;
+  color: var(--ef-muted);
+  font-size: 11px;
+  font-weight: 850;
+}
 .side-ep-action {
   width: 100%;
-  min-height: 40px;
-  border: 1px solid var(--ef-border);
-  border-radius: 10px;
-  background: var(--ef-surface-soft);
+  min-height: 42px;
+  border: 1px solid var(--ef-border-soft);
+  border-radius: 13px;
+  background: var(--ef-surface);
   color: var(--ef-text-soft);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 7px;
-  padding: 0 11px;
+  padding: 0 12px;
   font-weight: 800;
   font-size: 13px;
   line-height: 1;
   cursor: pointer;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  box-shadow: none;
   transition:
     transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
-    box-shadow 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
     background-color 0.25s ease,
     border-color 0.25s ease,
     color 0.25s ease,
@@ -1134,35 +1459,35 @@ function getConflictTypeLabel(conflictType) {
 .side-ep-action:hover:not(:disabled) {
   transform: translateY(-2px) scale(1.02);
   border-color: var(--ef-border-strong);
-  background: var(--ef-surface-hover);
-  box-shadow: var(--ef-shadow-hover);
+  background: var(--ef-surface);
+  box-shadow: none;
 }
 .side-ep-action:active:not(:disabled) {
   transform: scale(0.96);
   transition: transform 0.12s ease;
 }
 .side-ep-action:disabled {
-  background: var(--ef-surface-soft);
-  border-color: var(--ef-border);
+  background: var(--ef-surface);
+  border-color: var(--ef-border-soft);
   color: var(--ef-faint);
   cursor: not-allowed;
   opacity: 1;
   box-shadow: none;
 }
 .side-ep-action.primary {
-  background: var(--ef-primary);
-  border-color: var(--ef-primary);
-  color: var(--ef-surface);
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.16);
+  background: #0f766e;
+  border-color: #0f766e;
+  color: #ffffff;
+  box-shadow: none;
 }
 .side-ep-action.primary:hover:not(:disabled) {
-  background: var(--ef-primary-hover);
-  border-color: var(--ef-primary-hover);
-  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.22);
+  background: #115e59;
+  border-color: #115e59;
+  box-shadow: none;
 }
 .side-ep-action.primary:disabled {
-  background: color-mix(in srgb, var(--ef-surface-muted) 72%, transparent);
-  border-color: var(--ef-border);
+  background: var(--ef-surface);
+  border-color: var(--ef-border-soft);
   color: var(--ef-faint);
   box-shadow: none;
 }
@@ -1427,5 +1752,6 @@ function getConflictTypeLabel(conflictType) {
     grid-template-columns: 1fr 1fr;
     gap: 6px;
   }
+  .action-summary { grid-column: 1 / -1; }
 }
 </style>
