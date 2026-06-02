@@ -166,33 +166,13 @@
 
           <div class="version-info">
             <span class="version-text">KikoeruManager</span>
-            <button
+            <AnimatedThemeToggler
               v-if="!isGateRoute"
-              type="button"
-              class="theme-toggle-button"
-              :class="{ 'is-dark': isDarkTheme }"
-              :aria-label="isDarkTheme ? '当前深色模式，点击切换到浅色模式' : '当前浅色模式，点击切换到深色模式'"
-              :title="isDarkTheme ? '当前深色模式，点击切换到浅色模式' : '当前浅色模式，点击切换到深色模式'"
-              @click="toggleTheme"
-            >
-              <Transition name="theme-icon" mode="out-in">
-                <Moon
-                  v-if="isDarkTheme"
-                  key="moon"
-                  class="theme-toggle-icon theme-toggle-icon-moon"
-                  :size="15"
-                  :stroke-width="2.5"
-                />
-                <Sun
-                  v-else
-                  key="sun"
-                  class="theme-toggle-icon theme-toggle-icon-sun"
-                  :size="15"
-                  :stroke-width="2.5"
-                />
-              </Transition>
-              <span class="theme-toggle-text">{{ isDarkTheme ? '深色' : '浅色' }}</span>
-            </button>
+              direction="ltr"
+              transition-variant="circle"
+              variant="ghost"
+              size="icon"
+            />
           </div>
         </div>
       </div>
@@ -231,11 +211,9 @@ import {
   KeyRound,
   ListTodo,
   Menu,
-  Moon,
   Package2,
   ScrollText,
   Settings2,
-  Sun,
   Tags,
   TriangleAlert
 } from 'lucide-vue-next'
@@ -258,6 +236,8 @@ import BlockedGate from './views/BlockedGate.vue'
 import BackgroundWorkbenchHost from './components/workbench/BackgroundWorkbenchHost.vue'
 import SystemPromptHost from './components/system/SystemPromptHost.vue'
 import NotificationBell from './components/system/NotificationBell.vue'
+import AnimatedThemeToggler from './components/magicui/AnimatedThemeToggler.vue'
+import { useTheme } from './composables/useTheme'
 import router from './router'
 
 const appVersion = '1.5.45'
@@ -266,10 +246,9 @@ const watcherStore = useWatcherStore()
 const conflictCount = ref(0)
 const watcherStatus = ref({ is_running: false, watch_path: '', pending_files: [] })
 const mobileNavOpen = ref(false)
-const themeStorageKey = 'kikoerumanager.theme'
 const sidebarPinnedStorageKey = 'kikoerumanager.sidebarPinned'
-const isDarkTheme = ref(false)
 const sidebarPinned = ref(false)
+const { applyTheme } = useTheme()
 
 // 路由切换时自动关闭移动端抽屉（点击菜单项后即关闭）
 watch(() => route.fullPath, () => {
@@ -320,7 +299,6 @@ const currentViewKey = computed(() => {
 let intervalId = null
 
 onMounted(async () => {
-  isDarkTheme.value = readInitialTheme()
   sidebarPinned.value = readInitialSidebarPinned()
   applyTheme()
   if (isGateRoute.value) return
@@ -363,40 +341,9 @@ async function toggleWatcher() {
   await refreshStatus()
 }
 
-function readInitialTheme() {
-  if (typeof window === 'undefined') return false
-  return window.localStorage.getItem(themeStorageKey) === 'dark'
-}
-
 function readInitialSidebarPinned() {
   if (typeof window === 'undefined') return false
   return window.localStorage.getItem(sidebarPinnedStorageKey) === 'true'
-}
-
-function applyTheme() {
-  if (typeof document === 'undefined') return
-  document.documentElement.classList.toggle('kikoerumanager-dark', isDarkTheme.value)
-  document.body.classList.toggle('kikoerumanager-dark', isDarkTheme.value)
-  const themeColorMeta = document.querySelector('meta[name="theme-color"]')
-  if (themeColorMeta) {
-    themeColorMeta.setAttribute('content', isDarkTheme.value ? '#08090d' : '#ffffff')
-  }
-}
-
-function persistTheme() {
-  if (typeof window !== 'undefined') {
-    window.localStorage.setItem(themeStorageKey, isDarkTheme.value ? 'dark' : 'light')
-  }
-}
-
-function commitThemeToggle() {
-  isDarkTheme.value = !isDarkTheme.value
-  applyTheme()
-  persistTheme()
-}
-
-function toggleTheme() {
-  commitThemeToggle()
 }
 
 function toggleSidebarPinned() {
