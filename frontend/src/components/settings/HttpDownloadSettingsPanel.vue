@@ -65,6 +65,47 @@
       </div>
 
       <div class="settings-card">
+        <div class="card-title">Google Drive OAuth</div>
+        <div class="field-stack">
+          <SettingsToggleRow v-model="config.http_downloader.google_drive_oauth_enabled" title="启用 Drive API 下载" subtitle="开启后 Google Drive 分享优先走 OAuth Drive API 下载；失败时回退现有公开直链解析。" />
+          <SettingsFieldCard label="Client ID" hint="Google Cloud OAuth 客户端 ID。">
+            <input v-model="config.http_downloader.google_drive_client_id" class="field-input" type="text" placeholder="xxxx.apps.googleusercontent.com" autocomplete="off">
+          </SettingsFieldCard>
+          <SettingsFieldCard label="Client Secret" hint="只保存在本地配置文件；设置页返回时会脱敏。">
+            <AnimatedPasswordInput
+              v-model="config.http_downloader.google_drive_client_secret"
+              :reveal-value="getRevealedGoogleDriveSecret('google_drive_client_secret')"
+              placeholder="OAuth client secret"
+              autocomplete="off"
+              @visibility-change="visible => handleGoogleDriveSecretVisibility('google_drive_client_secret', visible)"
+            />
+          </SettingsFieldCard>
+          <SettingsFieldCard label="Refresh Token" hint="需要 drive.readonly 权限；后端会自动换取短期 access token。">
+            <AnimatedPasswordInput
+              v-model="config.http_downloader.google_drive_refresh_token"
+              :reveal-value="getRevealedGoogleDriveSecret('google_drive_refresh_token')"
+              placeholder="OAuth refresh token"
+              autocomplete="off"
+              @visibility-change="visible => handleGoogleDriveSecretVisibility('google_drive_refresh_token', visible)"
+            />
+          </SettingsFieldCard>
+          <div class="google-drive-oauth-actions">
+            <input v-model="googleDriveAuthorizationCode" class="field-input" type="text" placeholder="粘贴 Google 授权码" autocomplete="off">
+            <button type="button" class="ghost-inline-btn" @click="copyGoogleDriveAuthUrl">
+              <ClipboardCopy :size="14" :stroke-width="2.4" />
+              授权链接
+            </button>
+            <button type="button" class="ghost-inline-btn" :disabled="googleDriveOAuthBusy" @click="exchangeGoogleDriveAuthorizationCode">
+              <LoaderCircle v-if="googleDriveOAuthBusy" :size="14" class="spin-icon" />
+              <RefreshCw v-else :size="14" :stroke-width="2.4" />
+              换取 Token
+            </button>
+          </div>
+          <div v-if="googleDriveOAuthMessage" class="pikpak-message" :class="googleDriveOAuthMessage.startsWith('✓') ? 'is-success' : googleDriveOAuthMessage.startsWith('✗') ? 'is-error' : 'is-info'">{{ googleDriveOAuthMessage }}</div>
+        </div>
+      </div>
+
+      <div class="settings-card">
         <div class="card-title">PikPak 分享解析</div>
         <div class="field-stack">
           <SettingsToggleRow v-model="config.http_downloader.pikpak_enabled" title="启用 PikPak 链接解析" subtitle="分享链接先解析为临时直链，再交给 aria2 下载；不处理验证码绕过。" />
@@ -306,7 +347,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { CheckCircle2, ChevronDown, ChevronRight, File, FileArchive, FileAudio, FileVideo, Folder, FolderOpen, LoaderCircle, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
+import { CheckCircle2, ChevronDown, ChevronRight, ClipboardCopy, File, FileArchive, FileAudio, FileVideo, Folder, FolderOpen, LoaderCircle, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
 import SettingsFieldCard from './SettingsFieldCard.vue'
 import SettingsNumberStepper from './SettingsNumberStepper.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
@@ -344,6 +385,11 @@ const pikpakTreeErrors = ref({})
 const pikpakTreeCache = ref({})
 const pikpakRevealedPasswords = ref({})
 const pikpakRevealLoadingIds = ref(new Set())
+const googleDriveRevealedSecrets = ref({})
+const googleDriveSecretLoadingKeys = ref(new Set())
+const googleDriveAuthorizationCode = ref('')
+const googleDriveOAuthBusy = ref(false)
+const googleDriveOAuthMessage = ref('')
 
 const config = computed(() => props.config)
 const pikpakAccounts = computed(() => {
@@ -773,6 +819,109 @@ function getRevealedPikPakPassword(accountId) {
   return pikpakRevealedPasswords.value[String(accountId || '')] || ''
 }
 
+function getRevealedGoogleDriveSecret(key) {
+  return googleDriveRevealedSecrets.value[String(key || '')] || ''
+}
+
+async function handleGoogleDriveSecretVisibility(key, visible) {
+  const secretKey = String(key || '')
+  if (!visible || !secretKey || getRevealedGoogleDriveSecret(secretKey) || googleDriveSecretLoadingKeys.value.has(secretKey)) return
+  const currentValue = props.config.http_downloader?.[secretKey]
+  if (currentValue !== '********') return
+  const nextLoading = new Set(googleDriveSecretLoadingKeys.value)
+  nextLoading.add(secretKey)
+  googleDriveSecretLoadingKeys.value = nextLoading
+  try {
+    const result = await configApi.revealHttpSecret({ key: secretKey })
+    googleDriveRevealedSecrets.value = {
+      ...googleDriveRevealedSecrets.value,
+      [secretKey]: result?.value || ''
+    }
+    if (!result?.value) {
+      ElMessage.warning('配置文件里没有可显示的 Google Drive OAuth 值')
+    }
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '读取 Google Drive OAuth 配置失败')
+  } finally {
+    const doneLoading = new Set(googleDriveSecretLoadingKeys.value)
+    doneLoading.delete(secretKey)
+    googleDriveSecretLoadingKeys.value = doneLoading
+  }
+}
+
+function googleDriveAuthUrl() {
+  const clientId = String(props.config.http_downloader.google_drive_client_id || '').trim()
+  if (!clientId) return ''
+  const redirectUri = 'http://localhost:5555/api/http-download/google-drive/oauth-callback'
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope: 'https://www.googleapis.com/auth/drive.readonly',
+    access_type: 'offline',
+    prompt: 'consent'
+  })
+  return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`
+}
+
+async function copyGoogleDriveAuthUrl() {
+  const url = googleDriveAuthUrl()
+  if (!url) {
+    ElMessage.warning('先填写 Google Drive Client ID')
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(url)
+    googleDriveOAuthMessage.value = '✓ 已复制 Google 授权链接'
+    ElMessage.success('已复制 Google 授权链接')
+  } catch {
+    googleDriveOAuthMessage.value = url
+    ElMessage.info('授权链接已显示在状态栏')
+  }
+}
+
+async function exchangeGoogleDriveAuthorizationCode() {
+  if (googleDriveOAuthBusy.value) return
+  const clientId = String(props.config.http_downloader.google_drive_client_id || '').trim()
+  const configuredClientSecret = String(props.config.http_downloader.google_drive_client_secret || '').trim()
+  const clientSecret = configuredClientSecret === '********'
+    ? String(getRevealedGoogleDriveSecret('google_drive_client_secret') || '').trim()
+    : configuredClientSecret
+  const authorizationCode = String(googleDriveAuthorizationCode.value || '').trim()
+  if (configuredClientSecret === '********' && !clientSecret) {
+    ElMessage.warning('先展开 Client Secret，或重新填写真实 Client Secret')
+    return
+  }
+  if (!clientId || !clientSecret || !authorizationCode) {
+    ElMessage.warning('Client ID、Client Secret 和授权码都要填')
+    return
+  }
+  googleDriveOAuthBusy.value = true
+  googleDriveOAuthMessage.value = '正在换取 Google Drive Refresh Token...'
+  try {
+    const result = await httpDownloadApi.googleDriveOAuthToken({
+      clientId,
+      clientSecret,
+      authorizationCode,
+      redirectUri: 'http://localhost:5555/api/http-download/google-drive/oauth-callback'
+    })
+    props.config.http_downloader.google_drive_refresh_token = result?.refresh_token || ''
+    googleDriveRevealedSecrets.value = {
+      ...googleDriveRevealedSecrets.value,
+      google_drive_refresh_token: result?.refresh_token || ''
+    }
+    googleDriveAuthorizationCode.value = ''
+    googleDriveOAuthMessage.value = '✓ 已换取 Refresh Token，保存配置后生效'
+    ElMessage.success('已换取 Refresh Token')
+  } catch (error) {
+    const detail = error?.response?.data?.detail || error?.message || 'Google Drive OAuth 换取失败'
+    googleDriveOAuthMessage.value = `✗ ${detail}`
+    ElMessage.error(detail)
+  } finally {
+    googleDriveOAuthBusy.value = false
+  }
+}
+
 async function handlePikPakPasswordVisibility(row, visible) {
   if (!visible) return
   const id = String(row?.id || '')
@@ -1094,6 +1243,13 @@ onMounted(() => {
 .mini-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .mini-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .field-stack { display: grid; gap: 12px; }
+
+.google-drive-oauth-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+}
 
 .settings-card {
   min-height: 0;
@@ -1959,7 +2115,8 @@ onMounted(() => {
 @media (max-width: 1200px) {
   .settings-grid.two,
   .mini-grid.two,
-  .mini-grid.three {
+  .mini-grid.three,
+  .google-drive-oauth-actions {
     grid-template-columns: 1fr;
   }
 }

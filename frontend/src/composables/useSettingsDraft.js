@@ -238,6 +238,10 @@ export const defaultConfig = {
     allow_private_network: false,
     conflict_policy: 'resume',
     gofile_token: '',
+    google_drive_oauth_enabled: false,
+    google_drive_client_id: '',
+    google_drive_client_secret: '',
+    google_drive_refresh_token: '',
     pikpak_enabled: false,
     pikpak_default_enabled: true,
     pikpak_label: '',
@@ -715,6 +719,18 @@ export function useSettingsDraft(options = {}) {
         snapshot.value?.http_downloader?.gofile_token === MASKED_PASSWORD
       ) {
         delete payload.http_downloader.gofile_token
+      }
+      if (
+        payload.http_downloader?.google_drive_client_secret === MASKED_PASSWORD &&
+        snapshot.value?.http_downloader?.google_drive_client_secret === MASKED_PASSWORD
+      ) {
+        delete payload.http_downloader.google_drive_client_secret
+      }
+      if (
+        payload.http_downloader?.google_drive_refresh_token === MASKED_PASSWORD &&
+        snapshot.value?.http_downloader?.google_drive_refresh_token === MASKED_PASSWORD
+      ) {
+        delete payload.http_downloader.google_drive_refresh_token
       }
       if (
         payload.ai_subtitle_matching?.api_key === MASKED_PASSWORD &&

@@ -1494,6 +1494,18 @@ export const httpDownloadApi = {
       timeout: payload.timeout ?? 180000
     })
     return response.data
+  },
+
+  googleDriveOAuthToken: async (payload = {}) => {
+    const response = await apiClient.post('/http-download/google-drive/oauth-token', {
+      client_id: payload.clientId || payload.client_id || '',
+      client_secret: payload.clientSecret || payload.client_secret || '',
+      authorization_code: payload.authorizationCode || payload.authorization_code || '',
+      redirect_uri: payload.redirectUri || payload.redirect_uri || 'http://localhost:5555/api/http-download/google-drive/oauth-callback'
+    }, {
+      timeout: payload.timeout ?? 45000
+    })
+    return response.data
   }
 }
 

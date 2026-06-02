@@ -308,6 +308,10 @@ class HttpDownloaderConfig(BaseModel):
     allow_private_network: bool = False
     conflict_policy: str = "resume"
     gofile_token: str = ""
+    google_drive_oauth_enabled: bool = False
+    google_drive_client_id: str = ""
+    google_drive_client_secret: str = ""
+    google_drive_refresh_token: str = ""
     pikpak_enabled: bool = False
     pikpak_default_enabled: bool = True
     pikpak_label: str = ""
