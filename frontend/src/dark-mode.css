@@ -2131,6 +2131,54 @@ html.kikoerumanager-dark .el-pagination.is-background .el-pager li:not(.is-disab
   color: var(--km-dark-primary-button-text) !important;
 }
 
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination.is-background .btn-prev,
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination.is-background .btn-next,
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination.is-background .el-pager li,
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__sizes .el-select__wrapper,
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__jump .el-input__wrapper {
+  background:
+    linear-gradient(180deg, rgba(52, 53, 58, 0.28), rgba(18, 19, 23, 0.42)),
+    rgba(20, 21, 25, 0.74) !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(242, 242, 246, 0.86) !important;
+  box-shadow: none !important;
+  outline: 1px solid rgba(255, 255, 255, 0.05) !important;
+  outline-offset: -2px !important;
+  text-shadow: none !important;
+  backdrop-filter: blur(10px) saturate(112%) !important;
+  -webkit-backdrop-filter: blur(10px) saturate(112%) !important;
+}
+
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination.is-background .btn-prev:hover:not(:disabled),
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination.is-background .btn-next:hover:not(:disabled),
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination.is-background .el-pager li:hover,
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination.is-background .el-pager li.is-active,
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__sizes .el-select__wrapper:hover,
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__sizes .el-select__wrapper.is-hovering,
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__jump .el-input__wrapper:hover,
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__jump .el-input__wrapper.is-focus {
+  background:
+    linear-gradient(180deg, rgba(62, 63, 69, 0.34), rgba(24, 25, 30, 0.48)),
+    rgba(28, 29, 34, 0.78) !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  color: rgba(250, 250, 252, 0.94) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__total,
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__jump,
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__goto,
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__classifier,
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__sizes .el-select__placeholder,
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__sizes .el-select__selected-item,
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__sizes .el-select__selected-item span,
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__jump .el-input__inner,
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__sizes .el-select__caret,
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__sizes .el-icon {
+  color: rgba(214, 214, 220, 0.78) !important;
+}
+
 html.kikoerumanager-dark .el-overlay {
   background: rgba(0, 0, 0, 0.52) !important;
 }
@@ -3972,7 +4020,7 @@ html.kikoerumanager-dark {
     box-shadow: none !important;
   }
 
-  html.kikoerumanager-dark body .library-pagination-size-popper.el-popper {
+  html.kikoerumanager-dark body .km-pagination-size-popper.el-popper {
     background:
       linear-gradient(180deg, rgba(48, 49, 54, 0.78), rgba(18, 19, 23, 0.92)),
       rgba(18, 19, 23, 0.86) !important;
@@ -3984,33 +4032,33 @@ html.kikoerumanager-dark {
     -webkit-backdrop-filter: blur(16px) saturate(110%) !important;
   }
 
-  html.kikoerumanager-dark body .library-pagination-size-popper .el-select-dropdown {
+  html.kikoerumanager-dark body .km-pagination-size-popper .el-select-dropdown {
     background: transparent !important;
     background-image: none !important;
     border: 0 !important;
     box-shadow: none !important;
   }
 
-  html.kikoerumanager-dark body .library-pagination-size-popper .el-select-dropdown__item {
+  html.kikoerumanager-dark body .km-pagination-size-popper .el-select-dropdown__item {
     color: rgba(214, 214, 220, 0.78) !important;
     background: transparent !important;
     background-image: none !important;
   }
 
-  html.kikoerumanager-dark body .library-pagination-size-popper .el-select-dropdown__item:hover,
-  html.kikoerumanager-dark body .library-pagination-size-popper .el-select-dropdown__item.is-hovering {
+  html.kikoerumanager-dark body .km-pagination-size-popper .el-select-dropdown__item:hover,
+  html.kikoerumanager-dark body .km-pagination-size-popper .el-select-dropdown__item.is-hovering {
     color: rgba(250, 250, 252, 0.96) !important;
     background: #333438 !important;
     background-image: none !important;
   }
 
-  html.kikoerumanager-dark body .library-pagination-size-popper .el-select-dropdown__item.is-selected {
+  html.kikoerumanager-dark body .km-pagination-size-popper .el-select-dropdown__item.is-selected {
     color: rgba(250, 250, 252, 0.98) !important;
     background: #3a3b40 !important;
     background-image: none !important;
   }
 
-  html.kikoerumanager-dark body .library-pagination-size-popper .el-popper__arrow::before {
+  html.kikoerumanager-dark body .km-pagination-size-popper .el-popper__arrow::before {
     background: #242529 !important;
     border-color: rgba(255, 255, 255, 0.14) !important;
   }

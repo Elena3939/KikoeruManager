@@ -1,7 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
-import CirclePager from './CirclePager.vue'
 import WorkCard from './WorkCard.vue'
 import WorkListRow from './WorkListRow.vue'
 
@@ -294,13 +293,16 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div class="works-pager">
-        <CirclePager
+      <div class="works-pager km-pagination-wrap">
+        <el-pagination
           v-model:current-page="currentPageModel"
           v-model:page-size="pageSizeModel"
           :page-sizes="pageSizes"
           :total="totalItems"
-          :label="pagerLabel"
+          :aria-label="`${pagerLabel}分页`"
+          layout="total, sizes, prev, pager, next, jumper"
+          popper-class="km-pagination-size-popper"
+          background
         />
       </div>
     </template>
@@ -442,6 +444,11 @@ onBeforeUnmount(() => {
   padding-top: 16px;
 }
 
+.works-pager :deep(.el-pagination) {
+  width: 100%;
+  justify-content: flex-end;
+}
+
 @keyframes viewportCellEntrance {
   from {
     opacity: 0;
@@ -463,6 +470,10 @@ onBeforeUnmount(() => {
 
 @media (max-width: 760px) {
   .works-pager {
+    justify-content: center;
+  }
+
+  .works-pager :deep(.el-pagination) {
     justify-content: center;
   }
 }

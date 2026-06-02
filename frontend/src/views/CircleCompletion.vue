@@ -790,13 +790,15 @@
                   </div>
                 </div>
               </div>
-              <div class="works-pager">
-                <CirclePager
+              <div class="works-pager km-pagination-wrap">
+                <el-pagination
                   v-model:current-page="comparePage"
                   v-model:page-size="comparePageSize"
                   :page-sizes="comparePageSizes"
                   :total="compareWorksFilteredCount"
-                  label="对比项"
+                  layout="total, sizes, prev, pager, next, jumper"
+                  popper-class="km-pagination-size-popper"
+                  background
                 />
               </div>
             </el-tab-pane>
@@ -923,7 +925,6 @@ import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
 import BackgroundFloatingCard from '../components/common/BackgroundFloatingCard.vue'
-import CirclePager from '../components/circle/CirclePager.vue'
 import CircleWorksViewport from '../components/circle/CircleWorksViewport.vue'
 import { showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 

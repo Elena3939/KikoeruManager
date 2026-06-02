@@ -258,6 +258,7 @@
                         :is="row._categoryIcon"
                         :size="12"
                         :stroke-width="2.6"
+                        :class="row._categoryIconClass"
                       />
                       <span>{{ row.category_label }}</span>
                     </span>
@@ -327,83 +328,19 @@
       </section>
 
       <footer class="activity-footer">
-        <div class="activity-footer-meta">
-          <span>第 {{ formatNumber(page) }} / {{ formatNumber(totalPages) }} 页</span>
-          <span>每页 {{ formatNumber(limit) }} 条</span>
-        </div>
-        <nav class="activity-pager" aria-label="操作记录分页">
-          <AppDropdown
-            v-model="limit"
-            :options="pageSizeOptions"
-            :width="116"
-            :menu-min-width="132"
-            :show-trigger-badge="false"
-            @update:model-value="onCustomPageSizeChange"
+        <nav class="activity-pager km-pagination-wrap" aria-label="操作记录分页">
+          <el-pagination
+            v-model:current-page="page"
+            v-model:page-size="limit"
+            :page-sizes="pageSizeOptions"
+            :total="total"
+            :disabled="loading"
+            layout="total, sizes, prev, pager, next, jumper"
+            popper-class="km-pagination-size-popper"
+            background
+            @size-change="onActivityPageSizeChange"
+            @current-change="onActivityPageChange"
           />
-          <div class="activity-pager-buttons">
-            <button
-              class="activity-pager-btn icon"
-              type="button"
-              :disabled="page <= 1 || loading"
-              title="第一页"
-              @click="goToPage(1)"
-            >
-              <ChevronsLeft :size="14" :stroke-width="2.4" />
-            </button>
-            <button
-              class="activity-pager-btn icon"
-              type="button"
-              :disabled="page <= 1 || loading"
-              title="上一页"
-              @click="goToPage(page - 1)"
-            >
-              <ChevronLeft :size="14" :stroke-width="2.4" />
-            </button>
-            <template v-for="item in pagerItems" :key="item.key">
-              <span v-if="item.type === 'ellipsis'" class="activity-pager-ellipsis">…</span>
-              <button
-                v-else
-                class="activity-pager-btn page"
-                :class="{ active: item.page === page }"
-                type="button"
-                :disabled="loading"
-                :aria-current="item.page === page ? 'page' : undefined"
-                @click="goToPage(item.page)"
-              >
-                {{ item.page }}
-              </button>
-            </template>
-            <button
-              class="activity-pager-btn icon"
-              type="button"
-              :disabled="page >= totalPages || loading"
-              title="下一页"
-              @click="goToPage(page + 1)"
-            >
-              <ChevronRight :size="14" :stroke-width="2.4" />
-            </button>
-            <button
-              class="activity-pager-btn icon"
-              type="button"
-              :disabled="page >= totalPages || loading"
-              title="最后一页"
-              @click="goToPage(totalPages)"
-            >
-              <ChevronsRight :size="14" :stroke-width="2.4" />
-            </button>
-          </div>
-          <form class="activity-pager-jump" @submit.prevent="submitPageJump">
-            <span>跳至</span>
-            <input
-              v-model="pageJumpInput"
-              class="activity-pager-jump-input"
-              type="text"
-              inputmode="numeric"
-              :disabled="loading"
-              :aria-label="`跳转页码，当前共 ${totalPages} 页`"
-            />
-            <span>页</span>
-          </form>
         </nav>
       </footer>
     </main>
@@ -466,11 +403,8 @@ import {
   AlertCircle,
   Archive,
   CheckCircle2,
-  ChevronLeft,
   Loader2,
   ChevronRight,
-  ChevronsLeft,
-  ChevronsRight,
   Clock,
   Database,
   FileDown,
@@ -504,6 +438,7 @@ import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
 import ActivityDetailBody from '../components/activity/ActivityDetailBody.vue'
+import { getHttpDownloadDisplayMeta } from '../components/common/httpDownloadPlatformMeta.js'
 
 const router = useRouter()
 
@@ -650,6 +585,7 @@ const categoryOptions = [
   { value: 'subtitle_crawl', label: '字幕爬取' },
   { value: 'subtitle_pair', label: '字幕配对' },
   { value: 'subtitle_import', label: '字幕补配' },
+  { value: 'http_download', label: 'HTTP 下载' },
   { value: 'extract', label: '解压' },
   { value: 'auto_import', label: '解压入库' },
   { value: 'process_existing', label: '已有目录处理' },
@@ -671,6 +607,7 @@ const categoryConfigs = {
   subtitle_crawl: { icon: Search, label: '字幕爬取', tone: 'indigo' },
   subtitle_pair: { icon: LinkIcon, label: '字幕配对', tone: 'violet' },
   subtitle_import: { icon: FileDown, label: '字幕补配', tone: 'fuchsia' },
+  http_download: { icon: FileDown, label: 'HTTP 下载', tone: 'cyan' },
   extract: { icon: Package, label: '解压', tone: 'teal' },
   auto_import: { icon: Database, label: '解压入库', tone: 'emerald' },
   process_existing: { icon: Folder, label: '已有目录处理', tone: 'lime' },
@@ -762,73 +699,28 @@ const statsDaysOptions = [
   { value: 30, label: '近 30 天' },
 ]
 
-const pageSizeOptions = [
-  { value: 30, label: '30 条/页' },
-  { value: 50, label: '50 条/页' },
-  { value: 100, label: '100 条/页' },
-  { value: 200, label: '200 条/页' },
-]
+const pageSizeOptions = [30, 50, 100, 200]
 
 const totalPages = computed(() => {
   const size = Math.max(1, Number(limit.value || 50))
   return Math.max(1, Math.ceil(Number(total.value || 0) / size))
 })
 
-const pageJumpInput = ref('1')
-
-const pagerItems = computed(() => {
-  const current = Math.min(totalPages.value, Math.max(1, Number(page.value || 1)))
-  const last = totalPages.value
-  const around = new Set([1, last, current - 1, current, current + 1])
-  if (current <= 3) {
-    around.add(2)
-    around.add(3)
-    around.add(4)
-  }
-  if (current >= last - 2) {
-    around.add(last - 1)
-    around.add(last - 2)
-    around.add(last - 3)
-  }
-  const pages = Array.from(around)
-    .filter((n) => n >= 1 && n <= last)
-    .sort((a, b) => a - b)
-
-  const out = []
-  let prev = 0
-  for (const n of pages) {
-    if (prev && n - prev > 1) {
-      out.push({ type: 'ellipsis', key: `e-${prev}-${n}` })
-    }
-    out.push({ type: 'page', key: `p-${n}`, page: n })
-    prev = n
-  }
-  return out
-})
-
-function goToPage(nextPage) {
+function normalizeActivityPage(nextPage) {
   const next = Math.min(totalPages.value, Math.max(1, Number(nextPage || 1)))
-  if (next === Number(page.value || 1)) return
-  page.value = next
-  pageJumpInput.value = String(next)
+  return Number.isFinite(next) ? next : 1
+}
+
+function onActivityPageChange(value) {
+  const next = normalizeActivityPage(value)
+  if (next !== Number(page.value || 1)) page.value = next
   loadList()
 }
 
-function onCustomPageSizeChange(value) {
+function onActivityPageSizeChange(value) {
   const nextLimit = Number(value || limit.value || 50)
   limit.value = Number.isFinite(nextLimit) && nextLimit > 0 ? nextLimit : 50
-  page.value = 1
-  pageJumpInput.value = '1'
-  loadList()
-}
-
-function submitPageJump() {
-  const raw = String(pageJumpInput.value || '').replace(/[^\d]/g, '')
-  if (!raw) {
-    pageJumpInput.value = String(page.value || 1)
-    return
-  }
-  goToPage(Number(raw))
+  onPageSizeChange()
 }
 
 // 一键重置所有筛选条件并立即重新查询
@@ -1326,11 +1218,20 @@ const timelineGroups = computed(() => {
       _statusTone: statusToneValue,
       _statusIcon: statusIcon(effective),
       _categoryIcon: catConfig.icon,
+      _categoryIconClass: '',
       _categoryToneClass: categoryToneClasses(catConfig.tone),
       _actionToneClass: actionToneClasses(statusToneValue),
       _humanAction: humanAction(row),
       _isRecovered: isRowRecovered(row),
       _rename: renameSegments(row)
+    }
+    if (row.category === 'http_download') {
+      const httpMeta = getHttpDownloadDisplayMeta(row)
+      viewRow._categoryIcon = httpMeta.icon || catConfig.icon
+      viewRow._categoryIconClass = httpMeta.icon ? 'activity-platform-icon' : ''
+      viewRow.category_label = httpMeta.label && httpMeta.label !== 'HTTP'
+        ? `${httpMeta.label} 下载`
+        : 'HTTP 下载'
     }
     const dt = row.created_at ? dayjs(row.created_at) : null
     let key
@@ -1648,14 +1549,9 @@ watch(() => filters.q, (val, old) => {
   }
 })
 
-watch(page, (val) => {
-  pageJumpInput.value = String(Math.min(totalPages.value, Math.max(1, Number(val || 1))))
-})
-
 watch(totalPages, (val) => {
   if (Number(page.value || 1) > val) {
     page.value = val
-    pageJumpInput.value = String(val)
   }
 })
 </script>
@@ -2432,6 +2328,14 @@ watch(totalPages, (val) => {
   font-weight: 720;
 }
 
+.activity-platform-icon {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  border-radius: 2px;
+  object-fit: contain;
+}
+
 .activity-action-label {
   color: var(--activity-muted);
   font-size: 12px;
@@ -2628,116 +2532,21 @@ watch(totalPages, (val) => {
 .activity-footer {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
   padding: 12px 16px 14px;
   border-top: 1px solid var(--activity-border);
   background: var(--activity-surface);
 }
 
-.activity-footer-meta {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--activity-muted);
-  font-size: 12px;
-  font-weight: 650;
-}
-
 .activity-pager {
-  display: inline-flex;
-  align-items: center;
+  width: 100%;
+  margin-top: 0;
+}
+
+.activity-pager :deep(.el-pagination) {
+  width: 100%;
   justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.activity-pager-buttons {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px;
-  border: 1px solid var(--activity-border);
-  border-radius: 12px;
-  background: var(--activity-surface-raised);
-}
-
-.activity-pager-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 28px;
-  height: 28px;
-  border: 0;
-  border-radius: 9px;
-  background: transparent;
-  color: var(--activity-muted);
-  font-size: 12px;
-  font-weight: 720;
-  cursor: pointer;
-  transition:
-    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
-    background-color 0.2s ease,
-    color 0.2s ease,
-    opacity 0.2s ease;
-}
-
-.activity-pager-btn.icon {
-  width: 28px;
-}
-
-.activity-pager-btn:hover:not(:disabled) {
-  transform: translateY(-1px) scale(1.02);
-  background: var(--activity-surface-soft);
-  color: var(--activity-text);
-}
-
-.activity-pager-btn:active:not(:disabled) {
-  transform: scale(0.96);
-}
-
-.activity-pager-btn.active {
-  background: #27272a;
-  color: #fafafa;
-}
-
-.activity-pager-btn:disabled {
-  cursor: not-allowed;
-  opacity: 0.42;
-}
-
-.activity-pager-ellipsis {
-  min-width: 18px;
-  color: var(--activity-subtle);
-  text-align: center;
-}
-
-.activity-pager-jump {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--activity-muted);
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.activity-pager-jump-input {
-  width: 48px;
-  height: 32px;
-  border: 1px solid var(--activity-border);
-  border-radius: 10px;
-  background: var(--activity-surface-raised);
-  color: var(--activity-text);
-  text-align: center;
-  font-size: 12px;
-  font-weight: 720;
-  outline: none;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-
-.activity-pager-jump-input:focus {
-  border-color: var(--activity-border-strong);
-  box-shadow: 0 0 0 3px rgba(82, 82, 91, 0.12);
 }
 
 .activity-detail-overlay {
@@ -2871,8 +2680,7 @@ watch(totalPages, (val) => {
   color: var(--activity-muted);
 }
 
-:global(html.kikoerumanager-dark .activity-page .page-head-btn.primary),
-:global(html.kikoerumanager-dark .activity-page .activity-pager-btn.active) {
+:global(html.kikoerumanager-dark .activity-page .page-head-btn.primary) {
   background: #17181d;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.12);
@@ -3022,6 +2830,10 @@ watch(totalPages, (val) => {
   }
 
   .activity-pager {
+    justify-content: flex-start;
+  }
+
+  .activity-pager :deep(.el-pagination) {
     justify-content: flex-start;
   }
 
