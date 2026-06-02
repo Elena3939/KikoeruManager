@@ -11,6 +11,7 @@ from app.core.http_download_service import (
     sanitize_http_download_preview,
 )
 from app.config.settings import HttpDownloaderConfig
+from app.core.task_engine import Task, TaskType
 
 
 class DummyStorage:
@@ -357,6 +358,7 @@ def test_share_provider_url_detection(monkeypatch, tmp_path):
     assert service._provider_source("https://transfer.it/t/iVqeTDhlyRbA") == "transferit"
     assert service._provider_source("https://1drv.ms/u/s!abc") == "onedrive"
     assert service._provider_source("https://drive.google.com/file/d/file-id/view?usp=sharing") == "google_drive"
+    assert service._provider_source("https://drive.usercontent.google.com/download?id=file-id&export=download") == "google_drive"
     assert service._provider_source("https://example.com/file.zip") == "http"
 
 
@@ -1744,6 +1746,230 @@ async def test_poll_task_aggregates_rpc_status(monkeypatch, tmp_path):
     assert runtime["speed_bytes_per_sec"] == 12
     assert next_rows[0]["progress"] == 40
     assert next_rows[1]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_download_google_drive_item_streams_with_cookie(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    target_dir = tmp_path / "downloads"
+    target_dir.mkdir()
+    captured = {}
+    progress_rows = []
+
+    class FakeContent:
+        async def iter_chunked(self, size):
+            assert size == 1024 * 1024
+            yield b"abc"
+            yield b"def"
+
+    class FakeResponse:
+        status = 200
+        headers = {
+            "content-type": "application/octet-stream",
+            "content-length": "6",
+        }
+
+        def __init__(self):
+            self.content = FakeContent()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakeSession:
+        def __init__(self, *args, **kwargs):
+            captured["session_kwargs"] = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def get(self, url, **kwargs):
+            captured["url"] = url
+            captured["headers"] = kwargs.get("headers") or {}
+            return FakeResponse()
+
+    monkeypatch.setattr("app.core.http_download_service.aiohttp.ClientSession", FakeSession)
+
+    def progress_callback(row):
+        progress_rows.append({
+            "downloaded": row.get("downloaded"),
+            "file_size": Path(row["local_path"]).stat().st_size,
+            "status": row.get("status"),
+        })
+
+    row = await service._download_google_drive_item(
+        {
+            "url": "https://drive.usercontent.google.com/download?id=file-id&export=download&confirm=t",
+            "masked_url": "https://drive.usercontent.google.com/download?query=***",
+            "filename": "voice.zip",
+            "target_dir": str(target_dir),
+            "final_path": str(target_dir / "voice.zip"),
+            "relative_path": "voice.zip",
+            "size_bytes": 6,
+            "headers": {"Cookie": "download_warning=token"},
+            "file_id": "file-id",
+        },
+        progress_callback=progress_callback,
+    )
+
+    assert captured["url"].startswith("https://drive.usercontent.google.com/download")
+    assert captured["headers"]["Cookie"] == "download_warning=token"
+    assert (target_dir / "voice.zip").read_bytes() == b"abcdef"
+    assert row["status"] == "completed"
+    assert row["downloaded"] == 6
+    assert progress_rows
+    assert all(item["downloaded"] == item["file_size"] for item in progress_rows)
+    assert any(item["file_size"] > 0 for item in progress_rows)
+
+
+@pytest.mark.asyncio
+async def test_download_google_drive_item_retries_with_range_after_timeout(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path, retry_count=2, retry_wait_seconds=0)
+    service = HttpDownloadService()
+    target_dir = tmp_path / "downloads"
+    target_dir.mkdir()
+    captured = {"headers": []}
+
+    class PartialContent:
+        async def iter_chunked(self, size):
+            assert size == 1024 * 1024
+            yield b"abc"
+            raise asyncio.TimeoutError("stalled")
+
+    class ResumeContent:
+        async def iter_chunked(self, size):
+            assert size == 1024 * 1024
+            yield b"def"
+
+    class FakeResponse:
+        def __init__(self, status, headers, content):
+            self.status = status
+            self.headers = headers
+            self.content = content
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakeSession:
+        def __init__(self, *args, **kwargs):
+            captured.setdefault("timeouts", []).append(kwargs.get("timeout"))
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def get(self, url, **kwargs):
+            captured["headers"].append(kwargs.get("headers") or {})
+            if len(captured["headers"]) == 1:
+                return FakeResponse(
+                    200,
+                    {"content-type": "application/octet-stream", "content-length": "6"},
+                    PartialContent(),
+                )
+            return FakeResponse(
+                206,
+                {"content-type": "application/octet-stream", "content-range": "bytes 3-5/6", "content-length": "3"},
+                ResumeContent(),
+            )
+
+    monkeypatch.setattr("app.core.http_download_service.aiohttp.ClientSession", FakeSession)
+
+    row = await service._download_google_drive_item({
+        "url": "https://drive.usercontent.google.com/download?id=file-id&export=download&confirm=t",
+        "masked_url": "https://drive.usercontent.google.com/download?query=***",
+        "filename": "voice.zip",
+        "target_dir": str(target_dir),
+        "final_path": str(target_dir / "voice.zip"),
+        "relative_path": "voice.zip",
+        "size_bytes": 6,
+        "file_id": "file-id",
+    })
+
+    assert captured["headers"][1]["Range"] == "bytes=3-"
+    assert (target_dir / "voice.zip").read_bytes() == b"abcdef"
+    assert row["status"] == "completed"
+    assert row["downloaded"] == 6
+    assert row["progress"] == 100
+
+
+@pytest.mark.asyncio
+async def test_start_download_task_uses_stream_for_google_drive(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    calls = {"aria2": 0, "google": 0}
+
+    async def fake_preview_urls(*_args, **_kwargs):
+        return {
+            "items": [{
+                "ok": True,
+                "source": "google_drive",
+                "url": "https://drive.usercontent.google.com/download?id=file-id&export=download&confirm=t",
+                "masked_url": "https://drive.usercontent.google.com/download?query=***",
+                "host": "drive.usercontent.google.com",
+                "filename": "voice.zip",
+                "relative_path": "voice.zip",
+                "final_path": str(tmp_path / "downloads" / "voice.zip"),
+                "target_dir": str(tmp_path / "downloads"),
+                "size_bytes": 6,
+                "file_id": "file-id",
+            }],
+            "resolved_urls": ["https://drive.usercontent.google.com/download?id=file-id&export=download&confirm=t"],
+            "source_items": [],
+            "failed_items": [],
+            "source_modes": ["google_drive"],
+        }
+
+    async def fake_rpc(*_args, **_kwargs):
+        calls["aria2"] += 1
+        return "aria2-gid"
+
+    async def fake_google(item, task=None, progress_callback=None):
+        calls["google"] += 1
+        row = {
+            "gid": item["gid"],
+            "name": item["filename"],
+            "relative_path": item["relative_path"],
+            "local_path": item["final_path"],
+            "url": item["masked_url"],
+            "source": "google_drive",
+            "status": "completed",
+            "progress": 100,
+            "downloaded": 6,
+            "total": 6,
+            "size": 6,
+            "speed_bytes_per_sec": 0,
+            "file_id": item.get("file_id", ""),
+        }
+        if progress_callback:
+            progress_callback(row)
+        return row
+
+    monkeypatch.setattr(service, "preview_urls", fake_preview_urls)
+    monkeypatch.setattr(service, "_rpc_call", fake_rpc)
+    monkeypatch.setattr(service, "_download_google_drive_item", fake_google)
+
+    task = Task(
+        task_type=TaskType.HTTP_DOWNLOAD,
+        source_path="drive.usercontent.google.com",
+        metadata={"urls": ["https://drive.google.com/file/d/file-id/view"]},
+    )
+
+    result = await service.start_download_task(task)
+
+    assert calls == {"aria2": 0, "google": 1}
+    assert result["downloaded_files"][0]["source"] == "google_drive"
+    assert task.task_metadata["download_runtime"]["completed_files"] == 1
 
 
 @pytest.mark.asyncio

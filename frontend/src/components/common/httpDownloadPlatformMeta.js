@@ -72,7 +72,7 @@ export const HTTP_DOWNLOAD_PLATFORM_META = {
     title: 'Google Drive 下载',
     icon: GOOGLE_DRIVE_ICON,
     iconSrc: PLATFORM_ICON_URLS.google_drive,
-    aliases: ['google_drive', 'google-drive', 'googledrive', 'drive.google.com', 'docs.google.com']
+    aliases: ['google_drive', 'google-drive', 'googledrive', 'drive.google.com', 'docs.google.com', 'drive.usercontent.google.com']
   },
   pikpak: {
     key: 'pikpak',
@@ -111,7 +111,7 @@ export function getHttpDownloadPlatformKey(value) {
   if (raw.includes('gofile.io')) return 'gofile'
   if (raw.includes('transfer.it')) return 'transferit'
   if (raw.includes('1drv.ms') || raw.includes('onedrive')) return 'onedrive'
-  if (raw.includes('drive.google.com') || raw.includes('docs.google.com') || raw.includes('google drive')) return 'google_drive'
+  if (raw.includes('drive.google.com') || raw.includes('docs.google.com') || raw.includes('drive.usercontent.google.com') || raw.includes('google drive')) return 'google_drive'
   if (raw.includes('mypikpak.com') || raw.includes('drive.mypikpak.com') || raw.includes('pikpak')) return 'pikpak'
   return HTTP_DOWNLOAD_PLATFORM_META[normalized] ? normalized : 'http'
 }
