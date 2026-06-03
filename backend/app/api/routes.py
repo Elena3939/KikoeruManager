@@ -11922,11 +11922,15 @@ def _serialize_http_download_task(task) -> dict:
     metadata = dict(getattr(task, "task_metadata", None) or {})
     failed_files = list(metadata.get("failed_files") or [])
     status_value = task.status.value if hasattr(task.status, "value") else str(task.status or "")
-    display_status = "partial_failed" if status_value == "completed" and failed_files else status_value
     download_files = [
         sanitize_http_download_item(item)
         for item in list(metadata.get("download_files") or [])
     ]
+    performance_metrics = metadata.get("performance_metrics") if isinstance(metadata.get("performance_metrics"), dict) else {}
+    success_count = int(performance_metrics.get("success_count") or 0)
+    if not success_count:
+        success_count = len([item for item in download_files if str((item or {}).get("status") or "") == "completed"])
+    display_status = "partial_failed" if failed_files and success_count > 0 else status_value
     work_title = (
         metadata.get("batch_name")
         or metadata.get("source_label")
@@ -11951,7 +11955,7 @@ def _serialize_http_download_task(task) -> dict:
         "download_runtime": metadata.get("download_runtime", {}),
         "failed_files": [sanitize_http_download_item(item) for item in failed_files if isinstance(item, dict)],
         "progress_log": metadata.get("progress_log", []),
-        "performance_metrics": metadata.get("performance_metrics", {}),
+        "performance_metrics": performance_metrics,
         "download_mode": metadata.get("download_mode", "http"),
         "session_id": metadata.get("session_id", ""),
         "queue_priority": metadata.get("queue_priority", metadata.get("priority", 100)),
@@ -12569,7 +12573,7 @@ async def http_download_cancel_task(task_id: str):
     task = engine.get_task(task_id)
     if not task or task.type != TaskType.HTTP_DOWNLOAD:
         raise HTTPException(status_code=404, detail="HTTP 下载任务不存在")
-    task.cancel()
+    engine.cancel_task(task_id)
     await get_http_download_service().cancel_task(task_id)
     return {"success": True, "message": "任务已取消"}
 

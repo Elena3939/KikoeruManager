@@ -165,10 +165,12 @@ def render_builtin_email(payload: dict) -> tuple:
     header_bg = _SEVERITY_COLORS.get({'completed': 'success', 'failed': 'danger', 'waiting_manual': 'warning'}.get(event_type, 'info'), '#0071e3')
     badge_bg = header_bg + '22'
     badge_fg = header_bg
-    event_icon = _EVENT_ICONS.get(event_type, '')
-    event_label = _EVENT_LABELS.get(event_type, event_type)
+    event_icon = str(payload.get('event_icon') or '').strip() or _EVENT_ICONS.get(event_type, '')
+    event_label = str(payload.get('event_label') or '').strip() or _EVENT_LABELS.get(event_type, event_type)
     rjcode_row = f'<div class="row"><span class="lbl">RJ 号</span><span class="val">{rjcode}</span></div>' if rjcode else ''
     subject_tpl = _DEFAULT_SUBJECT.get(event_type, '[KikoeruManager] 任务通知 — {title}')
+    if event_label and event_label != _EVENT_LABELS.get(event_type, event_type):
+        subject_tpl = '[KikoeruManager] {任务类型}{事件名称} — {任务标题}'
     subject_vars = _SafeFormatDict({
         'title': payload.get('title', ''),
         'domain_label': payload.get('domain_label', ''),
@@ -320,8 +322,8 @@ def _render_user_template(tpl, payload: dict) -> tuple:
         'domain_label': payload.get('domain_label', ''),
         'summary': payload.get('summary', ''),
         'rjcode': payload.get('rjcode', ''),
-        'event_label': _EVENT_LABELS.get(payload.get('event_type', ''), ''),
-        'event_icon': _EVENT_ICONS.get(payload.get('event_type', ''), ''),
+        'event_label': str(payload.get('event_label') or '').strip() or _EVENT_LABELS.get(payload.get('event_type', ''), ''),
+        'event_icon': str(payload.get('event_icon') or '').strip() or _EVENT_ICONS.get(payload.get('event_type', ''), ''),
         'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'severity': payload.get('severity', ''),
         'total_duration': total_duration,
@@ -450,6 +452,7 @@ def _build_stats_items(stats: dict) -> list:
         'total_files': '总文件数',
         'uploaded_count': '已上传',
         'downloaded': '已下载',
+        'success_count': '成功',
         'written': '已写入',
         'skipped': '已跳过',
         'filtered_count': '已过滤',
@@ -463,7 +466,7 @@ def _build_stats_items(stats: dict) -> list:
     preferred = [
         'circle_count', 'completed_circles', 'failed_circles',
         'works', 'local_owned', 'owned', 'duration', 'search_efficiency', 'downloadable', 'missing', 'dl_only',
-        'total_files', 'uploaded_count', 'downloaded', 'written', 'skipped', 'filtered_count',
+        'total_files', 'uploaded_count', 'downloaded', 'success_count', 'written', 'skipped', 'filtered_count',
         'failed_count', 'existing_subtitles', 'total_size',
     ]
     keys = [key for key in preferred if key not in hidden_keys and stats.get(key) not in (None, '')]
@@ -728,9 +731,9 @@ def render_blocks_email(blocks: list, payload: dict) -> tuple:
 
     # 拼装 payload 补充字段
     enriched = dict(payload)
-    if 'event_label' not in enriched:
+    if not str(enriched.get('event_label') or '').strip():
         enriched['event_label'] = _EVENT_LABELS.get(event_type, event_type)
-    if 'event_icon' not in enriched:
+    if not str(enriched.get('event_icon') or '').strip():
         enriched['event_icon'] = _EVENT_ICONS.get(event_type, '')
     if 'severity' not in enriched:
         enriched['severity'] = {'completed': 'success', 'failed': 'danger', 'waiting_manual': 'warning'}.get(event_type, 'info')
@@ -759,6 +762,8 @@ def render_blocks_email(blocks: list, payload: dict) -> tuple:
     subject_template = (payload.get('_subject_template') or '').strip() or _DEFAULT_SUBJECT.get(
         event_type, '[KikoeruManager] 任务通知 — {title}'
     )
+    if enriched.get('event_label') and enriched.get('event_label') != _EVENT_LABELS.get(event_type, event_type) and not (payload.get('_subject_template') or '').strip():
+        subject_template = '[KikoeruManager] {任务类型}{事件名称} — {任务标题}'
     subject = _subst(subject_template, enriched, escape=False)
 
     text_body = f"{enriched['event_icon']} {enriched['event_label']}\n\n" \

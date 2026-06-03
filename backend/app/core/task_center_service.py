@@ -135,6 +135,8 @@ class TaskCenterService:
         TaskStatus.WAITING_RETRY.value: "等待重试",
         TaskStatus.COMPLETED.value: "已完成",
         TaskStatus.FAILED.value: "失败",
+        TaskStatus.CANCELLED.value: "已取消",
+        "partial_failed": "部分成功",
     }
 
     STATUS_PRIORITY = {
@@ -143,8 +145,10 @@ class TaskCenterService:
         TaskStatus.WAITING_RETRY.value: 2,
         TaskStatus.PENDING.value: 3,
         TaskStatus.PAUSED.value: 4,
-        TaskStatus.FAILED.value: 5,
-        TaskStatus.COMPLETED.value: 6,
+        "partial_failed": 5,
+        TaskStatus.FAILED.value: 6,
+        TaskStatus.CANCELLED.value: 7,
+        TaskStatus.COMPLETED.value: 8,
     }
 
     DOMAIN_PRIORITY = {
@@ -394,24 +398,8 @@ class TaskCenterService:
         """任务列表/概览用轻量结构，避免轮询时反复传大 metadata。"""
         details = dict(item.get("details") or {})
         metadata = dict(details.get("metadata") or {}) if isinstance(details.get("metadata"), dict) else {}
-        summary_details: Dict[str, Any] = {}
-        for key in (
-            "recovered_notice",
-            "extract_stage",
-            "archive_size",
-            "extract_started_at",
-            "extract_finished_at",
-            "nested_archive_count",
-            "verify_mode",
-            "failure_stage",
-            "conflict_resolution_action",
-            "retry_result",
-            "retry_completed_at",
-            "manual_retry_password_requested",
-            "linked_conflict_retrying",
-        ):
-            if key in metadata:
-                summary_details.setdefault("metadata", {})[key] = self._json_safe(metadata.get(key))
+        summary_metadata = self._build_summary_metadata(metadata)
+        summary_details: Dict[str, Any] = {"metadata": summary_metadata} if summary_metadata else {}
 
         return {
             "id": self._safe_text(item.get("id")),
@@ -427,6 +415,10 @@ class TaskCenterService:
             "source_label": self._safe_text(item.get("source_label")),
             "source_page": self._safe_text(item.get("source_page")),
             "source_action": self._safe_text(item.get("source_action")),
+            "platforms": list(item.get("platforms") or metadata.get("platforms") or []),
+            "platform_label": self._safe_text(item.get("platform_label") or metadata.get("platform_label")),
+            "download_mode": self._safe_text(item.get("download_mode") or metadata.get("download_mode")),
+            "source_modes": list(item.get("source_modes") or metadata.get("source_modes") or []),
             "route_hint": self._safe_text(item.get("route_hint")),
             "status": self._safe_text(item.get("status")),
             "status_label": self._safe_text(item.get("status_label")),
@@ -817,6 +809,28 @@ class TaskCenterService:
         return True
 
     def _resolve_display_status(self, task: Task, domain: str, metadata: Dict[str, Any]) -> str:
+        cancel_text = " ".join(
+            self._safe_text(value)
+            for value in (
+                getattr(task, "error_message", ""),
+                getattr(task, "current_step", ""),
+                metadata.get("cancel_reason"),
+            )
+            if self._safe_text(value)
+        )
+        if task.is_cancelled() or "用户取消" in cancel_text:
+            return TaskStatus.CANCELLED.value
+        if domain == "http_download":
+            failed_files = list(metadata.get("failed_files") or [])
+            metrics = dict(metadata.get("performance_metrics") or {})
+            success_count = int(metrics.get("success_count") or 0)
+            if not success_count:
+                success_count = sum(
+                    1 for row in list(metadata.get("download_files") or [])
+                    if isinstance(row, dict) and self._safe_text(row.get("status")).lower() == "completed"
+                )
+            if failed_files and success_count > 0:
+                return "partial_failed"
         if domain == "rj_subtitle":
             if bool(metadata.get("manual_match_completed")):
                 return TaskStatus.COMPLETED.value
@@ -1736,7 +1750,7 @@ class TaskCenterService:
 
         recent_terminal_items = [
             item for item in items
-            if item.get("status") in {TaskStatus.COMPLETED.value, TaskStatus.FAILED.value}
+            if item.get("status") in {TaskStatus.COMPLETED.value, TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}
         ]
 
         return {
@@ -1748,6 +1762,7 @@ class TaskCenterService:
                 "processing": counts_by_status.get(TaskStatus.PROCESSING.value, 0),
                 "waiting_manual": counts_by_status.get(TaskStatus.WAITING_MANUAL.value, 0),
                 "waiting_retry": counts_by_status.get(TaskStatus.WAITING_RETRY.value, 0),
+                "partial_failed": counts_by_status.get("partial_failed", 0),
                 "failed": counts_by_status.get(TaskStatus.FAILED.value, 0),
             },
             "recent_items": [self._summary_item(item) for item in recent_terminal_items[:6]],

@@ -776,10 +776,35 @@ def build_download_notification_extra(task, *, title: str = "下载文件") -> d
     file_tree = _flat_to_tree(flat_rows)
     total_bytes = sum(int(r.get("size") or 0) for r in flat_rows if not r.get("is_dir"))
     work_cards = _build_download_work_cards(task, meta, flat_rows)
+    completed_count = sum(
+        1 for item in download_items
+        if isinstance(item, dict) and str(item.get("status") or "").lower() == "completed"
+    )
+    failed_logs = []
+    for item in failed_items[:20]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("relative_path") or item.get("name") or item.get("filename") or "未命名文件").strip()
+        reason = str(item.get("failure_reason") or item.get("reason") or "下载失败").strip()
+        failed_logs.append({
+            "level": "error",
+            "text": f"{name}: {reason}" if name else reason,
+            "ts": "",
+        })
+    retry_count = _safe_int(meta.get("auto_retry_attempts") or meta.get("retry_count"))
+    recent_logs = build_recent_logs(task, max_lines=40)
+    if retry_count and failed_items:
+        recent_logs.append({
+            "level": "warning",
+            "text": f"已自动重试 {retry_count} 轮，仍有 {len(failed_items)} 个文件失败",
+            "ts": "",
+        })
 
-    return {
+    result = {
         "stats": {
             "total_files": sum(1 for r in flat_rows if not r.get("is_dir")) or _safe_int(meta.get("selected_resource_count")),
+            "downloaded": completed_count,
+            "success_count": completed_count,
             "failed_count": len(failed_items),
             "uploaded_count": sum(1 for r in flat_rows if not r.get("is_dir") and "已上传" in (r.get("badges") or [])),
             "total_size": _format_bytes(total_bytes),
@@ -789,8 +814,11 @@ def build_download_notification_extra(task, *, title: str = "下载文件") -> d
         "download_files": file_tree[:200],
         "rj_work_cards": work_cards[:24],
         "download_work_cards": work_cards[:24],
-        "recent_logs": build_recent_logs(task, max_lines=30),
+        "recent_logs": recent_logs,
     }
+    if failed_logs:
+        result["error_logs"] = failed_logs
+    return result
 
 
 def _build_download_work_cards(task, meta: dict, flat_rows: list[dict]) -> list[dict]:

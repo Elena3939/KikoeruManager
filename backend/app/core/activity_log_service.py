@@ -752,6 +752,19 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
         summary = f"{getattr(tt, 'value', str(getattr(task, 'type', '')))} {status}"
 
     meta = task.task_metadata or {}
+    if tt == TaskType.HTTP_DOWNLOAD:
+        _http_meta = task.task_metadata or {}
+        _http_metrics = _http_meta.get("performance_metrics") if isinstance(_http_meta.get("performance_metrics"), dict) else {}
+        _http_success_count = int(_http_metrics.get("success_count") or 0)
+        if not _http_success_count:
+            _http_success_count = len([
+                item for item in list(_http_meta.get("download_files") or [])
+                if isinstance(item, dict) and str(item.get("status") or "") == "completed"
+            ])
+        _http_failed_count = int(_http_metrics.get("failed_count") or len(_http_meta.get("failed_files") or []) or 0)
+        if _http_success_count > 0 and _http_failed_count > 0:
+            status = "partial_success"
+
     if tt == TaskType.RJ_SUBTITLE_FETCH:
         if meta.get("awaiting_manual_match") and st == TaskStatus.COMPLETED:
             summary = "字幕已抓取，待筛选与配对"
@@ -863,8 +876,13 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             or (downloaded_bytes / max(duration_ms / 1000, 1) if downloaded_bytes > 0 and duration_ms > 0 else 0)
             or 0
         )
-        if st == TaskStatus.COMPLETED and success_count > 0:
-            summary_parts = [f"{platform_label} 下载 {success_count} 个文件"]
+        if success_count > 0:
+            summary_label = (
+                f"{platform_label} 下载部分成功：成功 {success_count} 个，失败 {failed_count} 个"
+                if failed_count > 0
+                else f"{platform_label} 下载 {success_count} 个文件"
+            )
+            summary_parts = [summary_label]
             if downloaded_bytes > 0:
                 summary_parts.append(_format_bytes(downloaded_bytes))
             if average_speed_bytes > 0:
