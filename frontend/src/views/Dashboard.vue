@@ -61,6 +61,7 @@ import {
   Archive,
   Captions,
   Database,
+  Download,
   FileArchive,
   ShieldAlert,
   Sparkles,
@@ -69,6 +70,7 @@ import {
 } from 'lucide-vue-next'
 import { conflictApi, processedArchiveApi, scanApi, taskCenterApi, watcherApi } from '../api'
 import { getTaskDomainMeta } from '../components/common/taskDomainMeta.js'
+import { getHttpDownloadDisplayMeta } from '../components/common/httpDownloadPlatformMeta.js'
 import DashboardHero from '../components/dashboard/DashboardHero.vue'
 import DashboardCommandStrip from '../components/dashboard/DashboardCommandStrip.vue'
 import DashboardActiveTasks from '../components/dashboard/DashboardActiveTasks.vue'
@@ -116,6 +118,7 @@ const domainCounts = computed(() => ({
   rj_subtitle: Number(taskCenterOverview.value?.counts_by_domain?.rj_subtitle || 0),
   subtitle_import: Number(taskCenterOverview.value?.counts_by_domain?.subtitle_import || 0),
   asmr_sync: Number(taskCenterOverview.value?.counts_by_domain?.asmr_sync || 0),
+  http_download: Number(taskCenterOverview.value?.counts_by_domain?.http_download || 0),
   upload: Number(taskCenterOverview.value?.counts_by_domain?.upload || 0),
   circle_completion: Number(taskCenterOverview.value?.counts_by_domain?.circle_completion || 0),
 }))
@@ -131,6 +134,7 @@ const kpiCards = computed(() => [
   { key: 'rj', label: 'RJ 字幕', value: domainCounts.value.rj_subtitle, icon: Captions, route: '/library' },
   { key: 'subtitle', label: '字幕补配', value: domainCounts.value.subtitle_import, icon: Sparkles, route: '/subtitle-import' },
   { key: 'asmr', label: 'ASMR 同步', value: domainCounts.value.asmr_sync, icon: UploadCloud, route: '/asmr-sync' },
+  { key: 'http', label: 'HTTP 下载', value: domainCounts.value.http_download, icon: Download, route: '/asmr-sync' },
   { key: 'upload', label: '库存上传', value: domainCounts.value.upload, icon: Upload, route: '/library' },
   { key: 'conflicts', label: '问题作品', value: stats.value.conflicts, icon: ShieldAlert, route: '/conflicts' },
 ])
@@ -197,6 +201,15 @@ const taskArchiveItems = computed(() => {
         processed_at: task.completed_at || task.updated_at || task.started_at || task.created_at,
         file_size: 0,
         summary: task.subtitle || task.current_step || '',
+        status_label: task.status_label || '',
+        error_message: task.error_message || '',
+        current_step: task.current_step || '',
+        source_label: task.source_label || '',
+        platform_label: task.platform_label || task.details?.metadata?.platform_label || '',
+        platforms: Array.isArray(task.platforms) ? task.platforms : (task.details?.metadata?.platforms || []),
+        download_mode: task.download_mode || task.details?.metadata?.download_mode || '',
+        source_modes: Array.isArray(task.source_modes) ? task.source_modes : (task.details?.metadata?.source_modes || []),
+        details: task.details || {},
         route_hint: task.route_hint,
       }
     })
@@ -217,12 +230,13 @@ const archiveDomainTabMeta = {
   subtitle_import: { key: 'subtitle_import', label: '字幕补配', icon: Sparkles, chipIcon: 'text-violet-600', chipBg: 'bg-violet-50', chipText: 'text-violet-700' },
   rj_subtitle: { key: 'rj_subtitle', label: 'RJ 字幕', icon: Captions, chipIcon: 'text-sky-600', chipBg: 'bg-sky-50', chipText: 'text-sky-700' },
   asmr_sync: { key: 'asmr_sync', label: 'ASMR', icon: UploadCloud, chipIcon: 'text-emerald-600', chipBg: 'bg-emerald-50', chipText: 'text-emerald-700' },
+  http_download: { key: 'http_download', label: 'HTTP 下载', icon: Download, chipIcon: 'text-orange-600', chipBg: 'bg-orange-50', chipText: 'text-orange-700' },
   upload: { key: 'upload', label: '库存上传', icon: Upload, chipIcon: 'text-blue-600', chipBg: 'bg-blue-50', chipText: 'text-blue-700' },
   circle_completion: { key: 'circle_completion', label: '社团补全', icon: Database, chipIcon: 'text-teal-600', chipBg: 'bg-teal-50', chipText: 'text-teal-700' },
   system: { key: 'system', label: '系统', icon: Activity, chipIcon: 'text-slate-600', chipBg: 'bg-slate-100', chipText: 'text-slate-700' },
 }
 
-const archiveDomainOrder = ['import', 'subtitle_import', 'rj_subtitle', 'asmr_sync', 'upload', 'circle_completion', 'system']
+const archiveDomainOrder = ['import', 'http_download', 'subtitle_import', 'rj_subtitle', 'asmr_sync', 'upload', 'circle_completion', 'system']
 
 const archiveDomainTabs = computed(() => {
   const domainCountMap = new Map()
@@ -552,9 +566,23 @@ function getArchiveTaskMeta(archive) {
   )
     .trim()
     .toLowerCase()
-  const known = ['import', 'rj_subtitle', 'subtitle_import', 'asmr_sync', 'upload', 'circle_completion', 'system']
+  const known = ['import', 'rj_subtitle', 'subtitle_import', 'asmr_sync', 'http_download', 'upload', 'circle_completion', 'system']
   const key = known.includes(domain) ? domain : 'import'
   const meta = getTaskDomainMeta(key)
+  if (key === 'http_download') {
+    const httpMeta = getHttpDownloadDisplayMeta(archive)
+    return {
+      key,
+      label: meta.label,
+      icon: httpMeta.icon || meta.icon,
+      iconWrap: meta.iconWrap,
+      chip: meta.chip,
+      chipIcon: httpMeta.icon ? 'dash-archive-platform-icon' : meta.chipIcon,
+      chipBg: meta.chipBg,
+      chipText: meta.chipText,
+      bar: meta.bar,
+    }
+  }
   return {
     key,
     label: meta.label,
@@ -568,10 +596,22 @@ function getArchiveTaskMeta(archive) {
   }
 }
 
-function getArchiveStatusMeta(status) {
-  const normalized = String(status || '').trim().toLowerCase()
+function getArchiveStatusMeta(value) {
+  const item = value && typeof value === 'object' ? value : null
+  const normalized = String(item?.status || value || '').trim().toLowerCase()
+  const cancelText = [
+    item?.status_label,
+    item?.error_message,
+    item?.current_step,
+    item?.summary,
+    item?.details?.metadata?.cancel_reason,
+  ].join(' ')
+  if (normalized === 'cancelled' || normalized === 'canceled' || cancelText.includes('用户取消')) {
+    return { key: 'cancelled', label: '已取消' }
+  }
   if (!normalized) return { key: 'unknown', label: '状态未知' }
   if (['completed', 'success', 'finished'].includes(normalized)) return { key: 'completed', label: '已完成' }
+  if (['partial_failed', 'partial_success'].includes(normalized)) return { key: 'partial_failed', label: '部分成功' }
   if (['failed', 'error'].includes(normalized)) return { key: 'failed', label: '失败' }
   if (['processing', 'running'].includes(normalized)) return { key: 'processing', label: '处理中' }
   if (['pending', 'waiting', 'queued'].includes(normalized)) return { key: 'pending', label: '待处理' }
