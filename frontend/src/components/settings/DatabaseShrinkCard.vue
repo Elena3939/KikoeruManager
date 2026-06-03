@@ -335,13 +335,13 @@ onBeforeUnmount(() => {
 
 .db-size-label {
   font-size: 11.5px;
-  color: #64748b;
+  color: var(--set-text-muted);
 }
 
 .db-size-value {
   font-size: 15px;
   font-weight: 600;
-  color: #0f172a;
+  color: var(--set-text-strong);
   letter-spacing: -0.1px;
   font-variant-numeric: tabular-nums;
 }
@@ -353,32 +353,32 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 8px;
   font-size: 12.5px;
-  color: #475569;
+  color: var(--set-text);
   line-height: 1.55;
 }
 
 .db-estimate-icon {
-  color: #10b981;
+  color: var(--set-success-text);
   flex-shrink: 0;
 }
 
 .db-estimate-text strong {
-  color: #047857;
+  color: var(--set-success-text);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
 .db-estimate-meta {
-  color: #94a3b8;
+  color: var(--set-text-muted);
   font-size: 11.5px;
 }
 
 .db-estimate-line.is-error {
-  color: #b91c1c;
+  color: var(--set-danger-text);
 }
 
 .db-estimate-line.is-error svg {
-  color: #dc2626;
+  color: var(--set-danger-text);
 }
 
 /* 操作按钮区 */
