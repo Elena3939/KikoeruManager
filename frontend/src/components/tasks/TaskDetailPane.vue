@@ -31,12 +31,12 @@
         <div class="flex-1 min-w-0">
           <div class="flex items-start justify-between gap-2.5">
             <h2 class="m-0 text-[17px] font-bold tracking-tight text-slate-900 leading-tight">{{ item.title }}</h2>
-            <StatusPill :status="item.status" :label="item.status_label" />
+            <StatusPill :status="statusForPill(item)" :label="statusLabelForPill(item)" />
           </div>
           <p v-if="item.subtitle" class="m-0 mt-1 text-[12.5px] leading-snug text-slate-500">{{ item.subtitle }}</p>
           <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px]">
             <span
-              class="inline-flex h-[20px] items-center rounded-full px-2 text-[11px] font-semibold"
+              class="task-domain-chip inline-flex h-[20px] items-center rounded-full px-2 text-[11px] font-semibold"
               :class="[domainMeta(item.domain).chipBg, domainMeta(item.domain).chipText]"
             >{{ taskDomainLabel(item) }}</span>
             <span v-if="formatRJCode(item.rjcode)" class="font-bold tabular-nums text-slate-700">{{ formatRJCode(item.rjcode) }}</span>
@@ -91,7 +91,7 @@
         </div>
 
         <div
-          v-if="item.error_message"
+          v-if="item.error_message && !isCancelledTask(item)"
           class="mt-2 flex max-h-[160px] items-start gap-1.5 overflow-y-auto rounded-[10px] border px-3 py-2 text-[11.5px] break-words detail-scroll"
           :class="item.status === 'completed'
             ? 'border-emerald-200 bg-gradient-to-br from-emerald-50 to-white text-emerald-800 shadow-[0_2px_8px_-4px_rgba(16,185,129,0.2)]'
@@ -405,12 +405,26 @@ function taskIcon(item) {
 function taskIconClass(item) {
   return isHttpDownloadTask(item) && httpDisplayMeta(item).icon
     ? 'task-platform-icon'
-    : domainMeta(item.domain).chipIcon
+    : ['task-domain-icon', domainMeta(item.domain).taskIconClass || 'task-domain-icon--system']
 }
 
 function taskDomainLabel(item) {
-  if (isHttpDownloadTask(item)) return httpDisplayMeta(item).label || item.domain_label
+  if (isHttpDownloadTask(item)) return item.domain_label || domainMeta(item.domain).label
   return item.domain_label
+}
+
+function isCancelledTask(item) {
+  const status = String(item?.status || '').trim().toLowerCase()
+  const text = [item?.status_label, item?.error_message, item?.current_step].join(' ')
+  return status === 'cancelled' || status === 'canceled' || text.includes('用户取消')
+}
+
+function statusForPill(item) {
+  return isCancelledTask(item) ? 'cancelled' : item?.status
+}
+
+function statusLabelForPill(item) {
+  return isCancelledTask(item) ? '已取消' : item?.status_label
 }
 
 function getTreeRowIconComponent(entry) {
@@ -744,11 +758,56 @@ function actionToneClass(action) {
   flex: 0 0 auto;
 }
 
+.task-domain-icon {
+  color: var(--task-domain-icon-color, #475569);
+  stroke: currentColor;
+  filter: none;
+  opacity: 1;
+}
+
+.task-domain-icon--import {
+  --task-domain-icon-color: #d97706;
+}
+
+.task-domain-icon--existing_folder {
+  --task-domain-icon-color: #0284c7;
+}
+
+.task-domain-icon--rj_subtitle {
+  --task-domain-icon-color: #0284c7;
+}
+
+.task-domain-icon--subtitle_import {
+  --task-domain-icon-color: #7c3aed;
+}
+
+.task-domain-icon--asmr_sync {
+  --task-domain-icon-color: #059669;
+}
+
+.task-domain-icon--http_download {
+  --task-domain-icon-color: #ea580c;
+}
+
+.task-domain-icon--upload {
+  --task-domain-icon-color: #2563eb;
+}
+
+.task-domain-icon--circle_completion {
+  --task-domain-icon-color: #0f766e;
+}
+
+.task-domain-icon--system {
+  --task-domain-icon-color: #64748b;
+}
+
 .task-platform-icon {
   width: 22px;
   height: 22px;
   object-fit: contain;
   border-radius: 4px;
+  filter: none;
+  opacity: 1;
 }
 
 .icon-folder {

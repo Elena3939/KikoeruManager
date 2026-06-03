@@ -1,9 +1,9 @@
 <template>
   <span
-    class="inline-flex h-[18px] flex-shrink-0 items-center gap-1 rounded-full border px-1.5 text-[10px] font-medium tracking-tight transition-all duration-300"
-    :class="pillClass"
+    class="status-pill inline-flex h-[18px] flex-shrink-0 items-center gap-1 rounded-full border px-1.5 text-[10px] font-medium tracking-tight transition-all duration-300"
+    :class="[pillClass, statusClass]"
   >
-    <span class="h-1.5 w-1.5 flex-shrink-0 rounded-full" :class="dotClass" />
+    <span class="status-pill-dot h-1.5 w-1.5 flex-shrink-0 rounded-full" :class="dotClass" />
     {{ label }}
   </span>
 </template>
@@ -18,9 +18,21 @@ const props = defineProps({
 
 const pillClass = computed(() => {
   const label = String(props.label || '').trim()
+  const s = String(props.status || '').toLowerCase()
   if (label === '重试中') return 'border-emerald-200 bg-emerald-50 text-emerald-700'
   if (label === '已解决') return 'border-emerald-200 bg-emerald-50 text-emerald-700'
+  if (label === '部分成功') return 'border-amber-200 bg-amber-50 text-amber-700'
+  if (['failed', 'error'].includes(s)) return 'border-rose-200 bg-rose-50 text-rose-700'
+  if (['processing', 'running'].includes(s)) return 'border-amber-200 bg-amber-50 text-amber-700'
+  if (['waiting_manual', 'waiting_retry', 'pending'].includes(s)) return 'border-indigo-200 bg-indigo-50 text-indigo-700'
+  if (['cancelled', 'canceled', 'paused'].includes(s)) return 'border-slate-200 bg-slate-100 text-slate-600'
+  if (['completed', 'success', 'finished'].includes(s)) return 'border-emerald-200 bg-emerald-50 text-emerald-700'
   return 'border-slate-200 bg-slate-50 text-slate-700'
+})
+
+const statusClass = computed(() => {
+  const s = String(props.status || '').toLowerCase().replace(/[^a-z0-9_-]+/g, '_') || 'unknown'
+  return `status-pill--${s}`
 })
 
 const dotClass = computed(() => {
@@ -28,8 +40,10 @@ const dotClass = computed(() => {
   const label = String(props.label || '').trim()
   if (label === '重试中') return 'bg-emerald-500 animate-pulse'
   if (label === '已解决') return 'bg-emerald-500'
+  if (s === 'partial_failed' || label === '部分成功') return 'bg-amber-500'
   if (['completed', 'success', 'finished'].includes(s)) return 'bg-emerald-500'
-  if (['failed', 'error', 'cancelled', 'canceled'].includes(s)) return 'bg-rose-500'
+  if (['failed', 'error'].includes(s)) return 'bg-rose-500'
+  if (['cancelled', 'canceled'].includes(s)) return 'bg-slate-400'
   if (['processing', 'running'].includes(s)) return 'bg-amber-500 animate-pulse'
   if (['waiting_manual', 'waiting_retry', 'pending'].includes(s)) return 'bg-indigo-500'
   if (s === 'paused') return 'bg-slate-400'
