@@ -200,12 +200,11 @@ function showProgress(task) {
 }
 
 function statusClass(task) {
-  if (task?.error_message === '用户取消') return 'cancelled'
   return String(task?.status || 'default')
 }
 
 function statusLabel(task) {
-  if (task?.error_message === '用户取消') return '已取消'
+  if (String(task?.status || '').toLowerCase() === 'cancelled' || task?.error_message === '用户取消') return '已取消'
   return task?.status_label || task?.status || '-'
 }
 
@@ -217,7 +216,8 @@ function isTerminalStatus(task) {
 function stepChipClass(task) {
   const s = String(task?.status || '').toLowerCase()
   if (['completed', 'success', 'finished'].includes(s)) return 'bg-emerald-50 text-emerald-700'
-  if (['failed', 'error', 'cancelled', 'canceled'].includes(s)) return 'bg-rose-50 text-rose-700'
+  if (['failed', 'error'].includes(s)) return 'bg-rose-50 text-rose-700'
+  if (['cancelled', 'canceled'].includes(s)) return 'bg-slate-100 text-slate-500'
   if (['processing', 'running'].includes(s)) return 'bg-amber-50 text-amber-700'
   if (['waiting_manual', 'waiting_retry', 'pending', 'paused'].includes(s)) return 'bg-slate-100 text-slate-500'
   return 'bg-slate-50 text-slate-500'
@@ -232,6 +232,7 @@ function statusIconColor(key) {
   if (key === 'waiting') return 'text-indigo-500'
   if (key === 'retry') return 'text-orange-500'
   if (key === 'failed') return 'text-rose-500'
+  if (key === 'cancelled') return 'text-slate-400'
   return 'text-slate-400'
 }
 
@@ -239,6 +240,7 @@ function statusValueColor(key, value) {
   const n = Number(value || 0)
   if (n <= 0) return 'text-slate-400'
   if (key === 'failed') return 'text-rose-600'
+  if (key === 'cancelled') return 'text-slate-500'
   if (key === 'processing') return 'text-amber-600'
   if (key === 'waiting') return 'text-indigo-600'
   if (key === 'retry') return 'text-orange-600'

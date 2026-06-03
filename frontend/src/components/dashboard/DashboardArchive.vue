@@ -118,8 +118,8 @@
                 {{ getMeta(archive).label }}
               </span>
               <span class="inline-flex h-[20px] items-center gap-1 rounded-[5px] bg-slate-50 px-1.5 text-[11px] font-medium text-slate-600">
-                <component :is="statusIcon(getStatusMeta(archive.status).key)" :size="11" :stroke-width="2" :class="statusIconColor(getStatusMeta(archive.status).key)" />
-                {{ getStatusMeta(archive.status).label }}
+                <component :is="statusIcon(getStatusMeta(archive).key)" :size="11" :stroke-width="2" :class="statusIconColor(getStatusMeta(archive).key)" />
+                {{ getStatusMeta(archive).label }}
               </span>
               <span v-if="archive.isVolumeGroup" class="inline-flex h-[20px] items-center rounded-[5px] bg-amber-50 px-1.5 text-[11px] font-semibold text-amber-700">{{ archive.volumes.length }} 分卷</span>
             </div>
@@ -128,7 +128,7 @@
         </div>
 
         <button
-          v-if="archive.source === 'processed_archive' && getStatusMeta(archive.status).key === 'failed'"
+          v-if="archive.source === 'processed_archive' && getStatusMeta(archive).key === 'failed'"
           type="button"
           class="group/btn inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-[7px] border border-slate-300 bg-slate-50 text-slate-600 shadow-[0_1px_0_rgba(15,23,42,0.04),inset_0_1px_0_rgba(255,255,255,0.8)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-110 hover:border-slate-400 hover:bg-white hover:text-slate-900 hover:shadow-[0_4px_10px_-4px_rgba(15,23,42,0.18)] active:scale-90 disabled:pointer-events-none disabled:opacity-50"
           :disabled="reprocessingId === archive.id"
@@ -189,10 +189,12 @@
 
 <script setup>
 import {
+  AlertCircle,
   Archive,
   Activity,
   ChevronLeft,
   ChevronRight,
+  MinusCircle,
   PauseCircle,
   RefreshCw,
   RotateCcw,
@@ -305,7 +307,9 @@ function goNextPage() {
 
 const STATUS_ICON = {
   completed: Sparkles,
+  partial_failed: AlertCircle,
   failed: XCircle,
+  cancelled: MinusCircle,
   processing: Activity,
   pending: PauseCircle,
   unknown: Activity,
@@ -317,7 +321,9 @@ function statusIcon(key) {
 
 function statusIconColor(key) {
   if (key === 'completed') return 'text-emerald-600'
+  if (key === 'partial_failed') return 'text-amber-600'
   if (key === 'failed') return 'text-rose-600'
+  if (key === 'cancelled') return 'text-slate-500'
   if (key === 'processing') return 'text-amber-600'
   if (key === 'pending') return 'text-indigo-600'
   return 'text-slate-500'
@@ -325,7 +331,9 @@ function statusIconColor(key) {
 
 function statusChipClass(key) {
   if (key === 'completed') return 'bg-emerald-50 text-emerald-700'
+  if (key === 'partial_failed') return 'bg-amber-50 text-amber-700'
   if (key === 'failed') return 'bg-rose-50 text-rose-700'
+  if (key === 'cancelled') return 'bg-slate-100 text-slate-600'
   if (key === 'processing') return 'bg-amber-50 text-amber-700'
   if (key === 'pending') return 'bg-slate-100 text-slate-600'
   return 'bg-slate-50 text-slate-500'
@@ -506,5 +514,12 @@ function statusChipClass(key) {
   font-weight: 600;
   color: rgb(100 116 139);
   line-height: 1;
+}
+
+.dash-archive-platform-icon {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  border-radius: 3px;
 }
 </style>

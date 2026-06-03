@@ -44,7 +44,7 @@
     <!-- 下方两卡片并排：KPI 栅格 + 上传区（≤lg 自动 stack） -->
     <div class="flex flex-col items-stretch gap-3 lg:flex-row">
       <div class="relative flex min-w-0 flex-1 flex-col rounded-[12px] border border-slate-200/80 bg-white px-4 py-3 shadow-[0_2px_8px_-6px_rgba(15,23,42,0.08)] transition-shadow duration-500 hover:shadow-[0_6px_16px_-10px_rgba(15,23,42,0.14)]">
-        <div class="relative grid h-full grid-cols-2 items-center gap-1.5 sm:grid-cols-3 lg:grid-cols-6">
+        <div class="relative grid h-full grid-cols-2 items-center gap-1.5 sm:grid-cols-3 lg:grid-cols-7">
           <button
             v-for="(item, index) in kpiCards"
             :key="item.key"
@@ -97,6 +97,7 @@ function kpiIconColorClass(key) {
   if (key === 'rj') return 'text-sky-600'
   if (key === 'subtitle') return 'text-violet-600'
   if (key === 'asmr') return 'text-emerald-600'
+  if (key === 'http') return 'text-orange-600'
   if (key === 'upload') return 'text-blue-600'
   if (key === 'conflicts') return 'text-rose-600'
   return 'text-slate-500'
