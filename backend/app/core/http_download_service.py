@@ -25,6 +25,11 @@ from urllib.request import Request, urlopen
 import aiohttp
 
 from ..config.settings import get_config
+from .google_drive_oauth import (
+    google_drive_oauth_client_missing_message,
+    resolve_google_drive_oauth_client,
+    resolve_google_drive_oauth_proxy_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1685,10 +1690,13 @@ class HttpDownloadService:
 
     def _google_drive_oauth_enabled(self) -> bool:
         cfg = self._config()
+        oauth_client = resolve_google_drive_oauth_client(
+            config=cfg,
+            mode=getattr(cfg, "google_drive_oauth_client_mode", "builtin"),
+        )
         return bool(
             getattr(cfg, "google_drive_oauth_enabled", False)
-            and str(getattr(cfg, "google_drive_client_id", "") or "").strip()
-            and str(getattr(cfg, "google_drive_client_secret", "") or "").strip()
+            and oauth_client
             and str(getattr(cfg, "google_drive_refresh_token", "") or "").strip()
         )
 
@@ -1703,14 +1711,23 @@ class HttpDownloadService:
             if cached_token and not force_refresh and time.time() < expires_at - 60:
                 return cached_token
             cfg = self._config()
+            oauth_client = resolve_google_drive_oauth_client(
+                config=cfg,
+                mode=getattr(cfg, "google_drive_oauth_client_mode", "builtin"),
+            )
+            if not oauth_client:
+                raise HttpDownloadError(google_drive_oauth_client_missing_message(
+                    getattr(cfg, "google_drive_oauth_client_mode", "builtin")
+                ))
             payload = {
-                "client_id": str(getattr(cfg, "google_drive_client_id", "") or "").strip(),
-                "client_secret": str(getattr(cfg, "google_drive_client_secret", "") or "").strip(),
+                "client_id": oauth_client.client_id,
                 "refresh_token": str(getattr(cfg, "google_drive_refresh_token", "") or "").strip(),
                 "grant_type": "refresh_token",
             }
+            if oauth_client.client_secret:
+                payload["client_secret"] = oauth_client.client_secret
             timeout = aiohttp.ClientTimeout(total=30, connect=10)
-            proxy = self._proxy_url() or None
+            proxy = resolve_google_drive_oauth_proxy_url(get_config()) or None
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post("https://oauth2.googleapis.com/token", data=payload, proxy=proxy) as response:
                     body = await response.text()

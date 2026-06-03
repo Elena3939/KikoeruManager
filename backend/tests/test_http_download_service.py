@@ -1962,6 +1962,62 @@ async def test_download_google_drive_item_streams_with_cookie(monkeypatch, tmp_p
     assert any(item["file_size"] > 0 for item in progress_rows)
 
 
+def test_google_drive_access_token_uses_builtin_oauth_client(monkeypatch, tmp_path):
+    bind_config(
+        monkeypatch,
+        tmp_path,
+        google_drive_oauth_enabled=True,
+        google_drive_oauth_client_mode="builtin",
+        google_drive_refresh_token="refresh-token",
+        proxy_url="127.0.0.1:7890",
+    )
+    monkeypatch.setenv("KIKOERUMANAGER_GOOGLE_DRIVE_CLIENT_ID", "builtin-client")
+    monkeypatch.delenv("KIKOERUMANAGER_GOOGLE_DRIVE_CLIENT_SECRET", raising=False)
+    service = HttpDownloadService()
+    captured = {}
+
+    class FakeResponse:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def text(self):
+            return '{"access_token":"access-token","expires_in":3600}'
+
+    class FakeSession:
+        def __init__(self, *_args, **kwargs):
+            captured["session_kwargs"] = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def post(self, url, **kwargs):
+            captured["url"] = url
+            captured["data"] = kwargs.get("data") or {}
+            captured["proxy"] = kwargs.get("proxy")
+            return FakeResponse()
+
+    monkeypatch.setattr("app.core.http_download_service.aiohttp.ClientSession", FakeSession)
+
+    token = asyncio.run(service._google_drive_access_token())
+
+    assert token == "access-token"
+    assert captured["url"] == "https://oauth2.googleapis.com/token"
+    assert captured["data"] == {
+        "client_id": "builtin-client",
+        "refresh_token": "refresh-token",
+        "grant_type": "refresh_token",
+    }
+    assert captured["proxy"] == "http://127.0.0.1:7890"
+
+
 @pytest.mark.asyncio
 async def test_download_google_drive_item_uses_drive_api_authorization(monkeypatch, tmp_path):
     bind_config(

@@ -309,9 +309,15 @@ class HttpDownloaderConfig(BaseModel):
     conflict_policy: str = "resume"
     gofile_token: str = ""
     google_drive_oauth_enabled: bool = False
+    google_drive_oauth_client_mode: str = "builtin"
     google_drive_client_id: str = ""
     google_drive_client_secret: str = ""
     google_drive_refresh_token: str = ""
+    google_drive_account_name: str = ""
+    google_drive_account_email: str = ""
+    google_drive_account_avatar_url: str = ""
+    google_drive_account_permission_id: str = ""
+    google_drive_account_cached_at: int = 0
     pikpak_enabled: bool = False
     pikpak_default_enabled: bool = True
     pikpak_label: str = ""

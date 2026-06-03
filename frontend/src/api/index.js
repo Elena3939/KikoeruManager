@@ -1501,9 +1501,22 @@ export const httpDownloadApi = {
       client_id: payload.clientId || payload.client_id || '',
       client_secret: payload.clientSecret || payload.client_secret || '',
       authorization_code: payload.authorizationCode || payload.authorization_code || '',
-      redirect_uri: payload.redirectUri || payload.redirect_uri || 'http://localhost:5555/api/http-download/google-drive/oauth-callback'
+      redirect_uri: payload.redirectUri || payload.redirect_uri || 'http://localhost:5555/api/http-download/google-drive/oauth-callback',
+      code_verifier: payload.codeVerifier || payload.code_verifier || ''
     }, {
       timeout: payload.timeout ?? 45000
+    })
+    return response.data
+  },
+
+  googleDriveOAuthBegin: async (payload = {}) => {
+    const response = await apiClient.post('/http-download/google-drive/oauth-begin', {
+      client_mode: payload.clientMode || payload.client_mode || 'builtin',
+      client_id: payload.clientId || payload.client_id || '',
+      client_secret: payload.clientSecret || payload.client_secret || '',
+      opener_origin: payload.openerOrigin || payload.opener_origin || ''
+    }, {
+      timeout: payload.timeout ?? 15000
     })
     return response.data
   }

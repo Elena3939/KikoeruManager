@@ -9,15 +9,18 @@ from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 import asyncio
+import base64
 from collections import defaultdict, deque
 import contextlib
+import hashlib
 import json
 import logging
 import mimetypes
 import os
+import secrets
 import sys
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 import html
 from pathlib import Path, PurePosixPath
 import re
@@ -44,6 +47,11 @@ from ..core.password_utils import (
     normalize_optional_text,
     normalize_password_value,
     normalize_rjcode_value,
+)
+from ..core.google_drive_oauth import (
+    google_drive_oauth_client_missing_message,
+    resolve_google_drive_oauth_client,
+    resolve_google_drive_oauth_proxy_url,
 )
 from ..config.settings import get_config, save_config
 from ..core.security_gate_service import COOKIE_NAME, get_security_gate_service
@@ -1512,6 +1520,7 @@ app.add_middleware(
 
 SECURITY_GATE_PUBLIC_API_PATHS = {
     "/api/health",
+    "/api/http-download/google-drive/oauth-callback",
     "/api/security-gate/status",
     "/api/security-gate/verify",
 }
@@ -11853,6 +11862,14 @@ class GoogleDriveOAuthTokenRequest(BaseModel):
     client_secret: str = ""
     authorization_code: str = ""
     redirect_uri: str = "http://localhost:5555/api/http-download/google-drive/oauth-callback"
+    code_verifier: str = ""
+
+
+class GoogleDriveOAuthBeginRequest(BaseModel):
+    client_mode: str = "builtin"
+    client_id: str = ""
+    client_secret: str = ""
+    opener_origin: str = ""
 
 
 class PikPakTransferDeleteRequest(BaseModel):
@@ -11865,6 +11882,10 @@ class PikPakAccountTestRequest(BaseModel):
     account_id: str = ""
     account: dict = Field(default_factory=dict)
     use_saved: bool = False
+
+
+_GOOGLE_DRIVE_OAUTH_STATE_TTL_SECONDS = 600
+_google_drive_oauth_states: dict[str, dict[str, Any]] = {}
 
 
 _circle_completion_refresh_history: dict[str, deque[float]] = defaultdict(deque)
@@ -11969,6 +11990,169 @@ def _http_download_urls_from_payload(urls: List[str]) -> list[str]:
             result.append(value)
             last_pikpak_index = len(result) - 1 if "mypikpak.com" in value or "drive.mypikpak.com" in value else None
     return result
+
+
+def _google_drive_oauth_redirect_uri(request: Request) -> str:
+    return str(request.url_for("http_download_google_drive_oauth_callback"))
+
+
+def _google_drive_pkce_verifier() -> str:
+    return secrets.token_urlsafe(64)[:128]
+
+
+def _google_drive_pkce_challenge(verifier: str) -> str:
+    digest = hashlib.sha256(str(verifier or "").encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _cleanup_google_drive_oauth_states() -> None:
+    now = time.time()
+    expired = [
+        key for key, value in _google_drive_oauth_states.items()
+        if now - float(value.get("created_at") or 0) > _GOOGLE_DRIVE_OAUTH_STATE_TTL_SECONDS
+    ]
+    for key in expired:
+        _google_drive_oauth_states.pop(key, None)
+
+
+def _normalize_google_drive_oauth_opener_origin(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "*"
+    if re.match(r"^https?://[^/\s]+$", text):
+        return text
+    return "*"
+
+
+def _google_drive_account_from_about_payload(data: dict) -> dict:
+    user = data.get("user") if isinstance(data, dict) else {}
+    if not isinstance(user, dict):
+        user = {}
+    return {
+        "name": str(user.get("displayName") or "").strip(),
+        "email": str(user.get("emailAddress") or "").strip(),
+        "avatar_url": str(user.get("photoLink") or "").strip(),
+        "permission_id": str(user.get("permissionId") or "").strip(),
+        "cached_at": int(time.time()),
+    }
+
+
+async def _exchange_google_drive_authorization_code(
+    *,
+    client_id: str,
+    client_secret: str,
+    authorization_code: str,
+    redirect_uri: str,
+    code_verifier: str = "",
+) -> dict:
+    client_id = str(client_id or "").strip()
+    client_secret = str(client_secret or "").strip()
+    authorization_code = str(authorization_code or "").strip()
+    redirect_uri = str(redirect_uri or "").strip()
+    code_verifier = str(code_verifier or "").strip()
+    if not client_id or not authorization_code:
+        raise HTTPException(status_code=400, detail="Client ID 和授权码不能为空")
+    proxy = ""
+    try:
+        import aiohttp
+
+        payload = {
+            "client_id": client_id,
+            "code": authorization_code,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        }
+        if client_secret:
+            payload["client_secret"] = client_secret
+        if code_verifier:
+            payload["code_verifier"] = code_verifier
+        timeout = aiohttp.ClientTimeout(total=30, connect=10)
+        proxy = resolve_google_drive_oauth_proxy_url(get_config())
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post("https://oauth2.googleapis.com/token", data=payload, proxy=proxy or None) as response:
+                body = await response.text()
+                if response.status >= 400:
+                    raise HTTPException(status_code=502, detail=f"Google OAuth 返回 HTTP {response.status}: {body[:160]}")
+                try:
+                    data = json.loads(body)
+                except Exception as exc:
+                    raise HTTPException(status_code=502, detail="Google OAuth 返回不是 JSON") from exc
+        refresh_token = str(data.get("refresh_token") or "").strip()
+        if not refresh_token:
+            raise HTTPException(status_code=502, detail="Google OAuth 未返回 refresh_token；请在授权弹窗里重新同意 Drive 访问权限")
+        account = {}
+        access_token = str(data.get("access_token") or "").strip()
+        if access_token:
+            about_url = "https://www.googleapis.com/drive/v3/about?fields=user(displayName,emailAddress,photoLink,permissionId)"
+            headers = {"Authorization": f"Bearer {access_token}"}
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.get(about_url, headers=headers, proxy=proxy or None) as response:
+                        body = await response.text()
+                        if response.status >= 400:
+                            logger.warning("Google Drive OAuth 账号信息读取失败: HTTP %s: %s", response.status, body[:160])
+                        else:
+                            account = _google_drive_account_from_about_payload(json.loads(body))
+            except Exception as exc:
+                logger.warning("Google Drive OAuth 账号信息读取失败，已跳过账号缓存: %s", exc)
+        return {
+            "success": True,
+            "refresh_token": refresh_token,
+            "scope": str(data.get("scope") or ""),
+            "token_type": str(data.get("token_type") or ""),
+            "expires_in": int(data.get("expires_in") or 0),
+            "account": account,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Google Drive OAuth 换取 refresh token 失败: %s", exc, exc_info=True)
+        error_text = str(exc) or exc.__class__.__name__
+        if isinstance(exc, asyncio.TimeoutError) or "timeout" in error_text.lower():
+            proxy_state = f"当前 OAuth 代理: {_mask_url_credentials(proxy)}" if proxy else "当前 OAuth 请求未配置代理"
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "Google Drive OAuth 换取超时：后端无法连接 https://oauth2.googleapis.com/token。"
+                    f"{proxy_state}，请检查 HTTP 下载代理或全局 metadata.http_proxy。"
+                ),
+            )
+        raise HTTPException(status_code=500, detail=f"Google Drive OAuth 换取失败: {str(exc)}")
+
+
+def _safe_json_for_inline_script(payload: Any) -> str:
+    return (
+        json.dumps(payload, ensure_ascii=False)
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
+def _google_drive_oauth_popup_html(payload: dict, target_origin: str = "*") -> str:
+    payload_json = _safe_json_for_inline_script(payload)
+    target_origin_json = _safe_json_for_inline_script(target_origin or "*")
+    safe_message = html.escape(str(payload.get("message") or "Google Drive 授权完成"))
+    safe_status = html.escape("授权成功" if payload.get("success") else "授权失败")
+    return f"""
+    <!doctype html>
+    <html lang="zh-CN"><head><meta charset="utf-8"><title>Google Drive OAuth</title></head>
+    <body style="font-family: system-ui, sans-serif; padding: 32px; color: #111827;">
+      <h2>{safe_status}</h2>
+      <p>{safe_message}</p>
+      <p style="color: #6b7280;">这个窗口会自动关闭。</p>
+      <script>
+        const payload = {payload_json};
+        const targetOrigin = {target_origin_json} || "*";
+        if (window.opener) {{
+          window.opener.postMessage({{ type: "kikoerumanager:google-drive-oauth", payload }}, targetOrigin);
+        }}
+        setTimeout(() => window.close(), 450);
+      </script>
+    </body></html>
+    """
 
 
 @app.get("/api/http-download/health")
@@ -12150,75 +12334,119 @@ async def http_download_start(request: HttpDownloadStartRequest):
     }
 
 
+@app.post("/api/http-download/google-drive/oauth-begin")
+async def http_download_google_drive_oauth_begin(payload: GoogleDriveOAuthBeginRequest, request: Request):
+    client_secret = str(payload.client_secret or "").strip()
+    if client_secret == "********":
+        current_secret = str(getattr(get_config().http_downloader, "google_drive_client_secret", "") or "")
+        client_secret = _read_http_downloader_secret_from_disk("google_drive_client_secret") or (
+            current_secret if current_secret != "********" else ""
+        )
+    oauth_client = resolve_google_drive_oauth_client(
+        config=get_config(),
+        mode=payload.client_mode,
+        client_id=payload.client_id,
+        client_secret=client_secret,
+    )
+    if not oauth_client:
+        raise HTTPException(status_code=400, detail=google_drive_oauth_client_missing_message(payload.client_mode))
+
+    _cleanup_google_drive_oauth_states()
+    state = secrets.token_urlsafe(32)
+    code_verifier = _google_drive_pkce_verifier()
+    redirect_uri = _google_drive_oauth_redirect_uri(request)
+    opener_origin = _normalize_google_drive_oauth_opener_origin(payload.opener_origin)
+    _google_drive_oauth_states[state] = {
+        "client_id": oauth_client.client_id,
+        "client_secret": oauth_client.client_secret,
+        "client_mode": oauth_client.mode,
+        "client_source": oauth_client.source,
+        "code_verifier": code_verifier,
+        "redirect_uri": redirect_uri,
+        "opener_origin": opener_origin,
+        "created_at": time.time(),
+    }
+    params = {
+        "client_id": oauth_client.client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "https://www.googleapis.com/auth/drive.readonly",
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+        "code_challenge": _google_drive_pkce_challenge(code_verifier),
+        "code_challenge_method": "S256",
+    }
+    return {
+        "success": True,
+        "auth_url": f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}",
+        "redirect_uri": redirect_uri,
+        "client_mode": oauth_client.mode,
+        "client_source": oauth_client.source,
+        "expires_in": _GOOGLE_DRIVE_OAUTH_STATE_TTL_SECONDS,
+    }
+
+
 @app.get("/api/http-download/google-drive/oauth-callback")
-async def http_download_google_drive_oauth_callback(code: str = "", error: str = ""):
-    safe_code = html.escape(str(code or ""))
-    safe_error = html.escape(str(error or ""))
-    if safe_error:
-        body = f"""
-        <!doctype html>
-        <html lang="zh-CN"><head><meta charset="utf-8"><title>Google Drive OAuth</title></head>
-        <body style="font-family: system-ui, sans-serif; padding: 32px;">
-          <h2>Google 授权失败</h2>
-          <p>{safe_error}</p>
-        </body></html>
-        """
+async def http_download_google_drive_oauth_callback(request: Request, code: str = "", error: str = "", state: str = ""):
+    _cleanup_google_drive_oauth_states()
+    state_key = str(state or "").strip()
+    session = _google_drive_oauth_states.pop(state_key, None) if state_key else None
+    target_origin = _normalize_google_drive_oauth_opener_origin(session.get("opener_origin") if session else "")
+
+    if not session:
+        body = _google_drive_oauth_popup_html({
+            "success": False,
+            "message": "Google Drive OAuth 会话已过期，请回到设置页重新登录",
+        }, target_origin)
         return Response(content=body, media_type="text/html; charset=utf-8", status_code=400)
-    body = f"""
-    <!doctype html>
-    <html lang="zh-CN"><head><meta charset="utf-8"><title>Google Drive OAuth</title></head>
-    <body style="font-family: system-ui, sans-serif; padding: 32px;">
-      <h2>Google Drive 授权码</h2>
-      <input value="{safe_code}" readonly onclick="this.select()" style="width: min(760px, 100%); padding: 10px 12px; font-size: 14px;">
-      <p>复制这个授权码，回到 KikoeruManager 设置页换取 Refresh Token。</p>
-    </body></html>
-    """
-    return Response(content=body, media_type="text/html; charset=utf-8")
+
+    if error:
+        body = _google_drive_oauth_popup_html({
+            "success": False,
+            "message": f"Google 授权失败: {str(error or '')[:160]}",
+        }, target_origin)
+        return Response(content=body, media_type="text/html; charset=utf-8", status_code=400)
+
+    authorization_code = str(code or "").strip()
+    if not authorization_code:
+        body = _google_drive_oauth_popup_html({
+            "success": False,
+            "message": "Google 回调没有返回授权码",
+        }, target_origin)
+        return Response(content=body, media_type="text/html; charset=utf-8", status_code=400)
+
+    try:
+        token_payload = await _exchange_google_drive_authorization_code(
+            client_id=session["client_id"],
+            client_secret=session["client_secret"],
+            authorization_code=authorization_code,
+            redirect_uri=session["redirect_uri"],
+            code_verifier=session.get("code_verifier", ""),
+        )
+        body = _google_drive_oauth_popup_html({
+            **token_payload,
+            "message": "已获取 Google Drive Refresh Token，回到设置页保存配置后生效",
+        }, target_origin)
+        return Response(content=body, media_type="text/html; charset=utf-8")
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        body = _google_drive_oauth_popup_html({
+            "success": False,
+            "message": detail,
+        }, target_origin)
+        return Response(content=body, media_type="text/html; charset=utf-8", status_code=exc.status_code)
 
 
 @app.post("/api/http-download/google-drive/oauth-token")
 async def http_download_google_drive_oauth_token(request: GoogleDriveOAuthTokenRequest):
-    client_id = str(request.client_id or "").strip()
-    client_secret = str(request.client_secret or "").strip()
-    authorization_code = str(request.authorization_code or "").strip()
-    redirect_uri = str(request.redirect_uri or "http://localhost:5555/api/http-download/google-drive/oauth-callback").strip()
-    if not client_id or not client_secret or not authorization_code:
-        raise HTTPException(status_code=400, detail="Client ID、Client Secret 和授权码不能为空")
-    try:
-        import aiohttp
-
-        payload = {
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "code": authorization_code,
-            "redirect_uri": redirect_uri,
-            "grant_type": "authorization_code",
-        }
-        timeout = aiohttp.ClientTimeout(total=30, connect=10)
-        proxy = str(getattr(getattr(get_config(), "http_downloader", None), "proxy_url", "") or "").strip()
-        if proxy and "://" not in proxy:
-            proxy = f"http://{proxy}"
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post("https://oauth2.googleapis.com/token", data=payload, proxy=proxy or None) as response:
-                body = await response.text()
-                if response.status >= 400:
-                    raise HTTPException(status_code=502, detail=f"Google OAuth 返回 HTTP {response.status}: {body[:160]}")
-                data = json.loads(body)
-        refresh_token = str(data.get("refresh_token") or "").strip()
-        if not refresh_token:
-            raise HTTPException(status_code=502, detail="Google OAuth 未返回 refresh_token；请确认授权链接使用 access_type=offline&prompt=consent")
-        return {
-            "success": True,
-            "refresh_token": refresh_token,
-            "scope": str(data.get("scope") or ""),
-            "token_type": str(data.get("token_type") or ""),
-            "expires_in": int(data.get("expires_in") or 0),
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error("Google Drive OAuth 换取 refresh token 失败: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Google Drive OAuth 换取失败: {str(exc)}")
+    return await _exchange_google_drive_authorization_code(
+        client_id=request.client_id,
+        client_secret=request.client_secret,
+        authorization_code=request.authorization_code,
+        redirect_uri=request.redirect_uri or "http://localhost:5555/api/http-download/google-drive/oauth-callback",
+        code_verifier=request.code_verifier,
+    )
 
 
 @app.get("/api/http-download/status")
