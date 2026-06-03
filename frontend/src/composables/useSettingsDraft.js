@@ -239,9 +239,15 @@ export const defaultConfig = {
     conflict_policy: 'resume',
     gofile_token: '',
     google_drive_oauth_enabled: false,
+    google_drive_oauth_client_mode: 'builtin',
     google_drive_client_id: '',
     google_drive_client_secret: '',
     google_drive_refresh_token: '',
+    google_drive_account_name: '',
+    google_drive_account_email: '',
+    google_drive_account_avatar_url: '',
+    google_drive_account_permission_id: '',
+    google_drive_account_cached_at: 0,
     pikpak_enabled: false,
     pikpak_default_enabled: true,
     pikpak_label: '',
@@ -492,7 +498,7 @@ function serializeConfig(config) {
     .map((profile, index) => sanitizeSynologyProfileForSave(profile, index + 1))
   payload.storage.libraries = (payload.storage.libraries || [])
     .map((library, index) => sanitizeLibraryForSave(library, index + 1))
-  return {
+  const serialized = {
     storage: payload.storage,
     processing: payload.processing,
     watcher: payload.watcher,
@@ -525,6 +531,15 @@ function serializeConfig(config) {
     notification_center: payload.notification_center,
     security_gate: payload.security_gate
   }
+  if (!serialized.http_downloader?.google_drive_refresh_token) {
+    serialized.http_downloader.google_drive_account_name = ''
+    serialized.http_downloader.google_drive_account_email = ''
+    serialized.http_downloader.google_drive_account_avatar_url = ''
+    serialized.http_downloader.google_drive_account_permission_id = ''
+    serialized.http_downloader.google_drive_account_cached_at = 0
+  }
+  serialized.http_downloader.google_drive_account_cached_at = Number(serialized.http_downloader.google_drive_account_cached_at || 0)
+  return serialized
 }
 
 function stripMaskedPikPakAccountSecrets(payload, snapshotConfig) {
