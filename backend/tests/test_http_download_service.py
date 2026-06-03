@@ -11,6 +11,7 @@ from app.core.http_download_service import (
     sanitize_http_download_metadata,
     sanitize_http_download_preview,
 )
+from app.core.notification_helper import build_download_notification_extra
 from app.config.settings import HttpDownloaderConfig
 from app.core.task_engine import Task, TaskType
 
@@ -2290,6 +2291,193 @@ async def test_start_download_task_uses_stream_for_google_drive(monkeypatch, tmp
     assert calls == {"aria2": 0, "google": 1}
     assert result["downloaded_files"][0]["source"] == "google_drive"
     assert task.task_metadata["download_runtime"]["completed_files"] == 1
+
+
+@pytest.mark.asyncio
+async def test_start_download_task_marks_partial_success_when_some_gids_fail(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    added_urls = []
+    status_by_gid = {
+        "gid-ok": {
+            "gid": "gid-ok",
+            "status": "complete",
+            "totalLength": "10",
+            "completedLength": "10",
+            "downloadSpeed": "0",
+            "files": [],
+        },
+        "gid-fail": {
+            "gid": "gid-fail",
+            "status": "error",
+            "totalLength": "12",
+            "completedLength": "3",
+            "downloadSpeed": "0",
+            "errorMessage": "HTTP 403",
+            "files": [],
+        },
+    }
+
+    async def fake_preview_urls(*_args, **_kwargs):
+        return {
+            "items": [
+                {
+                    "ok": True,
+                    "source": "http",
+                    "url": "https://example.test/ok.zip",
+                    "masked_url": "https://example.test/ok.zip",
+                    "filename": "ok.zip",
+                    "relative_path": "ok.zip",
+                    "final_path": str(tmp_path / "downloads" / "ok.zip"),
+                    "target_dir": str(tmp_path / "downloads"),
+                    "size_bytes": 10,
+                },
+                {
+                    "ok": True,
+                    "source": "http",
+                    "url": "https://example.test/fail.zip",
+                    "masked_url": "https://example.test/fail.zip",
+                    "filename": "fail.zip",
+                    "relative_path": "fail.zip",
+                    "final_path": str(tmp_path / "downloads" / "fail.zip"),
+                    "target_dir": str(tmp_path / "downloads"),
+                    "size_bytes": 12,
+                },
+            ],
+            "resolved_urls": ["https://example.test/ok.zip", "https://example.test/fail.zip"],
+            "source_items": [],
+            "source_modes": ["http"],
+        }
+
+    async def fake_rpc(method, params):
+        if method == "aria2.addUri":
+            added_urls.append(params[0][0])
+            return "gid-ok" if len(added_urls) == 1 else "gid-fail"
+        if method == "aria2.tellStatus":
+            return status_by_gid[params[0]]
+        raise AssertionError(method)
+
+    async def fake_cleanup(rows):
+        assert [row["name"] for row in rows] == ["ok.zip"]
+        return {"success": True, "requested_count": 0, "deleted_count": 0}
+
+    monkeypatch.setattr(service, "preview_urls", fake_preview_urls)
+    monkeypatch.setattr(service, "_rpc_call", fake_rpc)
+    monkeypatch.setattr(service, "cleanup_completed_pikpak_transfer_items", fake_cleanup)
+
+    task = Task(
+        task_type=TaskType.HTTP_DOWNLOAD,
+        source_path="example.test",
+        metadata={"urls": ["https://example.test/ok.zip", "https://example.test/fail.zip"]},
+    )
+
+    result = await service.start_download_task(task)
+
+    assert result["success"] is False
+    assert result["partial_success"] is True
+    assert result["status"] == "partial_failed"
+    assert [row["name"] for row in result["downloaded_files"]] == ["ok.zip"]
+    assert [row["name"] for row in result["failed_files"]] == ["fail.zip"]
+    assert result["failed_files"][0]["failure_reason"] == "HTTP 403"
+    assert task.task_metadata["performance_metrics"]["success_count"] == 1
+    assert task.task_metadata["performance_metrics"]["failed_count"] == 1
+
+
+def test_merge_download_attempt_rows_later_success_overrides_failed(tmp_path):
+    service = HttpDownloadService()
+
+    rows = service.merge_download_attempt_rows(
+        [{
+            "source": "pikpak",
+            "file_id": "file-a",
+            "name": "part01.rar",
+            "status": "failed",
+            "failure_reason": "timeout",
+            "downloaded": 0,
+        }],
+        [{
+            "source": "pikpak",
+            "file_id": "file-a",
+            "name": "part01.rar",
+            "status": "completed",
+            "downloaded": 1024,
+        }],
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["status"] == "completed"
+    assert rows[0]["downloaded"] == 1024
+    assert "failure_reason" not in rows[0]
+
+
+def test_merge_download_failed_rows_ignores_files_completed_by_retry(tmp_path):
+    service = HttpDownloadService()
+
+    download_files = [
+        {"source": "pikpak", "file_id": "file-a", "name": "ok-after-retry.rar", "status": "completed"},
+        {"source": "pikpak", "file_id": "file-b", "name": "still-bad.rar", "status": "failed", "failure_reason": "403"},
+    ]
+    failed_files = [
+        {"source": "pikpak", "file_id": "file-a", "name": "ok-after-retry.rar", "status": "failed", "failure_reason": "timeout"},
+        {"source": "pikpak", "file_id": "file-b", "name": "still-bad.rar", "status": "failed", "failure_reason": "403"},
+    ]
+
+    rows = service.merge_download_failed_rows(download_files, failed_files)
+
+    assert [row["file_id"] for row in rows] == ["file-b"]
+    assert rows[0]["failure_reason"] == "403"
+
+
+def test_build_retry_selection_for_task_keeps_only_failed_or_incomplete_rows(tmp_path):
+    service = HttpDownloadService()
+    task = Task(
+        task_type=TaskType.HTTP_DOWNLOAD,
+        source_path="pikpak",
+        metadata={
+            "download_files": [
+                {"source": "pikpak", "file_id": "file-ok", "name": "ok.rar", "status": "completed"},
+                {"source": "pikpak", "file_id": "file-pending", "name": "pending.rar", "status": "downloading", "downloaded": 3, "total": 10},
+            ],
+            "failed_files": [
+                {"source": "pikpak", "file_id": "file-ok", "name": "ok.rar", "status": "failed", "failure_reason": "old"},
+                {"source": "pikpak", "file_id": "file-fail", "name": "fail.rar", "status": "failed", "failure_reason": "403"},
+            ],
+        },
+    )
+
+    retry_items, retry_keys = service.build_retry_selection_for_task(task)
+
+    assert [item["file_id"] for item in retry_items] == ["file-fail", "file-pending"]
+    assert len(retry_keys) == 2
+    assert all(key.startswith("pikpak:") for key in retry_keys)
+
+
+def test_build_download_notification_extra_includes_failed_summary(tmp_path):
+    task = Task(
+        task_type=TaskType.HTTP_DOWNLOAD,
+        source_path="pikpak",
+        metadata={
+            "download_files": [
+                {"source": "pikpak", "file_id": "file-ok", "name": "ok.rar", "relative_path": "ok.rar", "status": "completed", "size": 1024},
+                {"source": "pikpak", "file_id": "file-fail", "name": "fail.rar", "relative_path": "fail.rar", "status": "failed", "failure_reason": "HTTP 403", "size": 2048},
+            ],
+            "failed_files": [
+                {"source": "pikpak", "file_id": "file-fail", "name": "fail.rar", "relative_path": "fail.rar", "status": "failed", "failure_reason": "HTTP 403"},
+            ],
+            "auto_retry_attempts": 2,
+            "progress_log": [
+                {"level": "info", "message": "下载中 7/10", "ts": "12:00:00"},
+            ],
+        },
+    )
+    task.current_step = "下载部分成功，成功 1 个，失败 1 个"
+
+    extra = build_download_notification_extra(task)
+
+    assert extra["stats"]["success_count"] == 1
+    assert extra["stats"]["failed_count"] == 1
+    assert extra["error_logs"][0]["text"] == "fail.rar: HTTP 403"
+    assert any("已自动重试 2 轮" in row["text"] for row in extra["recent_logs"])
 
 
 @pytest.mark.asyncio

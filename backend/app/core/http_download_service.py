@@ -3224,9 +3224,20 @@ class HttpDownloadService:
     def _retry_selection_items_from_task_metadata(self, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
         seen: set[str] = set()
+        completed_keys = {
+            self._download_attempt_row_key(row)
+            for row in list(metadata.get("download_files") or [])
+            if (
+                isinstance(row, dict)
+                and str(row.get("status") or "").strip().lower() == "completed"
+            )
+        }
 
         def add_row(row: Dict[str, Any]) -> None:
             if not isinstance(row, dict):
+                return
+            row_key = self._download_attempt_row_key(row)
+            if row_key and row_key in completed_keys:
                 return
             source = str(row.get("source") or "").strip().lower()
             if not source:
@@ -3257,6 +3268,84 @@ class HttpDownloadService:
                 continue
             add_row(row)
         return rows
+
+    def _download_attempt_row_key(self, row: Dict[str, Any]) -> str:
+        if not isinstance(row, dict):
+            return ""
+        source = str(row.get("source") or "http").strip().lower() or "http"
+        identity = (
+            str(row.get("file_id") or "").strip()
+            or str(row.get("download_file_id") or "").strip()
+            or str(row.get("pikpak_cleanup_file_id") or "").strip()
+            or str(row.get("share_id") or "").strip()
+            or str(row.get("relative_path") or "").strip()
+            or str(row.get("local_path") or "").strip()
+            or str(row.get("name") or row.get("filename") or "").strip()
+        )
+        if identity:
+            return f"{source}:{identity}"
+        return json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)
+
+    def merge_download_attempt_rows(self, *groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Merge rows from original download + retry attempts, with later attempts winning."""
+        merged: Dict[str, Dict[str, Any]] = {}
+        order: List[str] = []
+        for group in groups:
+            for row in group or []:
+                if not isinstance(row, dict):
+                    continue
+                key = self._download_attempt_row_key(row)
+                if not key:
+                    continue
+                if key not in merged:
+                    order.append(key)
+                next_row = {**merged.get(key, {}), **dict(row)}
+                if str(next_row.get("status") or "").strip().lower() == "completed":
+                    for stale_key in ("failure_reason", "reason", "error_message"):
+                        next_row.pop(stale_key, None)
+                merged[key] = next_row
+        return [merged[key] for key in order if key in merged]
+
+    def merge_download_failed_rows(
+        self,
+        download_files: List[Dict[str, Any]],
+        failed_files: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        completed_keys = {
+            self._download_attempt_row_key(item)
+            for item in list(download_files or [])
+            if (
+                isinstance(item, dict)
+                and str(item.get("status") or "").strip().lower() == "completed"
+            )
+        }
+        for row in list(failed_files or []) + [
+            item for item in list(download_files or [])
+            if isinstance(item, dict) and str(item.get("status") or "").strip().lower() == "failed"
+        ]:
+            if not isinstance(row, dict):
+                continue
+            key = self._download_attempt_row_key(row)
+            if key and key in completed_keys:
+                continue
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            rows.append(dict(row))
+        return rows
+
+    def build_retry_selection_for_task(self, task) -> tuple[List[Dict[str, Any]], List[str]]:
+        metadata = dict(getattr(task, "task_metadata", None) or {})
+        retry_items = self._retry_selection_items_from_task_metadata(metadata)
+        retry_keys = [
+            self._preview_item_selection_key(item)
+            for item in retry_items
+            if self._preview_item_selection_key(item)
+        ]
+        return retry_items, retry_keys
 
     async def resolve_source_urls(
         self,
@@ -4065,7 +4154,7 @@ class HttpDownloadService:
             if task:
                 await task.wait_if_paused()
                 if task.is_cancelled():
-                    raise HttpDownloadError("用户取消")
+                    raise asyncio.CancelledError()
 
             existing_size = current_file_size()
             downloaded = existing_size
@@ -4125,7 +4214,7 @@ class HttpDownloadService:
                                 if task:
                                     await task.wait_if_paused()
                                     if task.is_cancelled():
-                                        raise HttpDownloadError("用户取消")
+                                        raise asyncio.CancelledError()
                                 target.write(chunk)
                                 target.flush()
                                 downloaded = target.tell()
@@ -4489,13 +4578,16 @@ class HttpDownloadService:
                 await task.wait_if_paused()
                 if task.is_cancelled():
                     await self.cancel_task(task.id)
-                    raise HttpDownloadError("用户取消")
+                    raise asyncio.CancelledError()
                 task.current_step = f"下载 Google Drive {index}/{len(google_drive_items)}"
                 task.update_progress(max(task.progress, 3), task.current_step)
                 try:
                     row = await self._download_google_drive_item(item, task=task, progress_callback=handle_google_progress)
                     google_success_files.append(row)
                     merge_download_row(row)
+                except asyncio.CancelledError:
+                    await self.cancel_task(task.id)
+                    raise
                 except Exception as exc:
                     partial_downloaded = 0
                     partial_path = str(item.get("final_path") or "")
@@ -4530,7 +4622,7 @@ class HttpDownloadService:
                 await task.wait_if_paused()
                 if task.is_cancelled():
                     await self.cancel_task(task.id)
-                    raise HttpDownloadError("用户取消")
+                    raise asyncio.CancelledError()
                 task.current_step = f"下载 Transfer.it {index}/{len(transferit_items)}"
                 task.update_progress(max(task.progress, 3), task.current_step)
                 try:
@@ -4550,6 +4642,9 @@ class HttpDownloadService:
                             break
                     if not matched_row:
                         download_files.append(row)
+                except asyncio.CancelledError:
+                    await self.cancel_task(task.id)
+                    raise
                 except Exception as exc:
                     failed_row = {
                         "gid": f"transferit:{item.get('share_id') or item.get('filename')}",
@@ -4594,7 +4689,7 @@ class HttpDownloadService:
                 await task.wait_if_paused()
                 if task.is_cancelled():
                     await self.cancel_task(task.id)
-                    raise HttpDownloadError("用户取消")
+                    raise asyncio.CancelledError()
                 gid_set = set(gids)
                 aria_rows = [row for row in download_files if str(row.get("gid") or "") in gid_set]
                 rows, runtime, done, _failed = await self._poll_task(gids, aria_rows)
@@ -4699,9 +4794,12 @@ class HttpDownloadService:
             errors = list(pikpak_cleanup_result.get("errors") or [])
             first_error = str((errors[0] or {}).get("message") or "").strip() if errors else ""
             cleanup_suffix = f"，PikPak 清理失败: {first_error or '请在设置页手动清理'}"
-        task.update_progress(100, f"下载完成，成功 {len(success_files)} 个，失败 {len(merged_failed_rows)} 个{cleanup_suffix}")
+        final_message = "下载完成" if not merged_failed_rows else "下载部分成功"
+        task.update_progress(100, f"{final_message}，成功 {len(success_files)} 个，失败 {len(merged_failed_rows)} 个{cleanup_suffix}")
         return {
-            "success": True,
+            "success": not bool(merged_failed_rows),
+            "partial_success": bool(success_files and merged_failed_rows),
+            "status": final_status,
             "download_root": self._download_root(),
             "downloaded_files": success_files,
             "failed_files": merged_failed_rows,
@@ -4718,12 +4816,7 @@ class HttpDownloadService:
     async def reset_task_for_retry(self, task) -> None:
         metadata = dict(task.task_metadata or {})
         urls = list(metadata.get("urls") or [])
-        retry_items = self._retry_selection_items_from_task_metadata(metadata)
-        retry_keys = [
-            self._preview_item_selection_key(item)
-            for item in retry_items
-            if self._preview_item_selection_key(item)
-        ]
+        retry_items, retry_keys = self.build_retry_selection_for_task(task)
         from .task_engine import TaskStatus
 
         task.task_metadata["urls"] = urls

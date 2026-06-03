@@ -53,6 +53,21 @@ def _task_kind(task) -> str:
     return (task.type.value if hasattr(getattr(task, 'type', None), 'value') else str(getattr(task, 'type', '')))
 
 
+def _is_http_download_partial_success(task) -> bool:
+    meta = dict(getattr(task, 'task_metadata', None) or {})
+    if _task_kind(task) != 'http_download' and str(meta.get('task_domain') or '') != 'http_download':
+        return False
+    failed = list(meta.get('failed_files') or [])
+    metrics = meta.get('performance_metrics') if isinstance(meta.get('performance_metrics'), dict) else {}
+    success_count = int(metrics.get('success_count') or 0)
+    if not success_count:
+        success_count = sum(
+            1 for row in list(meta.get('download_files') or [])
+            if isinstance(row, dict) and str(row.get('status') or '').lower() == 'completed'
+        )
+    return bool(success_count and failed)
+
+
 def _get_group_tasks(group_key: str) -> list:
     try:
         from .task_engine import get_task_engine
@@ -125,7 +140,9 @@ def _final_event_type(group_key: str, group_type: str, current_task) -> str:
     """聚合组结束后综合判断最终事件类型"""
     if group_type == 'task':
         status = _task_status(current_task)
-        if status in ('failed', 'cancelled'):
+        if _is_http_download_partial_success(current_task):
+            return 'failed'
+        if status == 'failed':
             return 'failed'
         if status == 'waiting_manual':
             return 'waiting_manual'
@@ -140,7 +157,9 @@ def _final_event_type(group_key: str, group_type: str, current_task) -> str:
             if t_group_key != group_key:
                 continue
             st = _task_status(t)
-            if st in ('failed', 'cancelled'):
+            if _is_http_download_partial_success(t):
+                has_failed = True
+            elif st == 'failed':
                 has_failed = True
             elif st == 'waiting_manual':
                 has_waiting_manual = True
@@ -178,8 +197,12 @@ def _build_notification_info(event_type: str, group_key: str, group_type: str, c
     if not isinstance(route_hint, dict):
         route_hint = {'path': str(route_hint)} if route_hint else {}
 
+    is_partial_http = _is_http_download_partial_success(context_task)
     severity_map = {'completed': 'success', 'failed': 'danger', 'waiting_manual': 'warning'}
     label_map = {'completed': '已完成', 'failed': '执行失败', 'waiting_manual': '等待处理'}
+    if is_partial_http:
+        severity_map['failed'] = 'warning'
+        label_map['failed'] = '部分成功'
 
     if group_type != 'task':
         try:
@@ -187,7 +210,7 @@ def _build_notification_info(event_type: str, group_key: str, group_type: str, c
             engine = get_task_engine()
             group_tasks = [t for t in engine.tasks.values() if _resolve_group_key(t)[0] == group_key]
             total = len(group_tasks)
-            failed = sum(1 for t in group_tasks if _task_status(t) in ('failed', 'cancelled'))
+            failed = sum(1 for t in group_tasks if _task_status(t) == 'failed')
             if event_type == 'failed':
                 summary = f'{domain_label}批量任务结束，{failed}/{total} 个失败'
             elif event_type == 'waiting_manual':
@@ -214,6 +237,12 @@ def _build_notification_info(event_type: str, group_key: str, group_type: str, c
         title = str(meta.get('batch_name') or meta.get('source_label') or title or '').strip() or domain_label
         if group_type == 'task':
             summary = f'{domain_label}{label_map.get(event_type, event_type)}'
+        if is_partial_http:
+            metrics = meta.get('performance_metrics') if isinstance(meta.get('performance_metrics'), dict) else {}
+            success_count = int(metrics.get('success_count') or 0)
+            failed_count = int(metrics.get('failed_count') or len(meta.get('failed_files') or []) or 0)
+            if success_count or failed_count:
+                summary = f'{domain_label}部分成功：成功 {success_count} 个，失败 {failed_count} 个'
         route_query = dict(route_hint.get('query') or {})
         route_query.update({
             'platforms': ','.join(str(item) for item in platforms if str(item or '').strip()),
@@ -229,6 +258,8 @@ def _build_notification_info(event_type: str, group_key: str, group_type: str, c
         'title': title,
         'summary': summary,
         'severity': severity_map.get(event_type, 'info'),
+        'event_label': label_map.get(event_type, event_type),
+        'event_icon': '⚠️' if is_partial_http else '',
         'domain': domain,
         'domain_label': domain_label,
         'rjcode': rjcode,
@@ -293,8 +324,8 @@ async def _check_and_write(task) -> None:
         logger.info(f"[通知] 跳过 task={tid} 显式 notification_suppress=True")
         return
 
-    # 用户主动取消的任务不发通知
-    if status == 'failed' and getattr(task, 'error_message', '') == '用户取消':
+    # 用户主动取消只写操作记录，不写站内通知 / 邮件通知。
+    if status == 'cancelled' or (status == 'failed' and getattr(task, 'error_message', '') == '用户取消'):
         logger.info(f"[通知] 跳过 task={tid} 用户主动取消")
         return
 
@@ -316,8 +347,6 @@ async def _check_and_write(task) -> None:
         await loop.run_in_executor(None, _write_sync, event_key, 'waiting_manual', task, group_key, group_type, group_run_id)
         return
 
-    # cancelled 仅当用户开启 send_on_cancelled 时才写邮件 outbox，
-    # 但站内通知（inbox）始终落库，避免铃铛漏报
     if not _is_group_terminal(group_key, group_type, task.id):
         logger.info(f"[通知] 跳过 task={tid} group 尚未全部终态 group_key={group_key[:32]}")
         return
@@ -446,6 +475,8 @@ def _write_sync(event_key: str, event_type: str, task, group_key: str, group_typ
                     'event_type': event_type,
                     'title': info['title'],
                     'summary': info['summary'],
+                    'event_label': info.get('event_label') or '',
+                    'event_icon': info.get('event_icon') or '',
                     'domain': info['domain'],
                     'domain_label': info['domain_label'],
                     'rjcode': info['rjcode'],

@@ -167,7 +167,7 @@ def _is_success_status(value: Any) -> bool:
 
 
 def _is_failed_status(value: Any) -> bool:
-    return str(value or "").strip() in {"failed", "cancelled"}
+    return str(value or "").strip() == "failed"
 
 
 def _common_path_prefix(paths: list[str]) -> str:

@@ -21,6 +21,7 @@ class TaskStatus(str, Enum):
     WAITING_RETRY = "waiting_retry"  # 等待重试（未找到版本等）
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 class TaskType(str, Enum):
     EXTRACT = "extract"
@@ -65,7 +66,10 @@ class Task:
         self.created_at = datetime.now()
         self.started_at = None
         self.completed_at = None
-        self._cancelled = False
+        self._cancelled = (
+            status == TaskStatus.CANCELLED
+            or str((self.task_metadata or {}).get("cancel_reason") or "").strip() == "用户取消"
+        )
         self._pause_event = asyncio.Event()
         self._pause_event.set()
         self.rjcode = rjcode  # 作品的RJ号，用于重复检测
@@ -137,10 +141,13 @@ class Task:
     def cancel(self):
         """取消任务。同时 kill 正在跑的 7z 子进程，以免后台还在跑。"""
         self._cancelled = True
-        self.status = TaskStatus.FAILED
-        self.error_message = "用户取消"
+        self.status = TaskStatus.CANCELLED
+        self.error_message = None
         self.completed_at = datetime.now()
         self.current_step = "已取消"
+        if not isinstance(self.task_metadata, dict):
+            self.task_metadata = dict(self.task_metadata or {})
+        self.task_metadata["cancel_reason"] = "用户取消"
         # 取消优先级高于暂停：避免子进程被 kill 后又被 pause 逻辑卡住。
         if not self._pause_event.is_set():
             self._pause_event.set()
@@ -381,6 +388,7 @@ class TaskEngine:
             TaskStatus.WAITING_RETRY,
             TaskStatus.COMPLETED,
             TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
             TaskStatus.PAUSED,
         }
         for task_id in list(self.processing):
@@ -2818,6 +2826,7 @@ class TaskEngine:
         """取消任务"""
         if task_id in self.tasks:
             task = self.tasks[task_id]
+            should_log_immediately = task.status == TaskStatus.PENDING and task_id not in self.processing
             task.cancel()
             if task.type == TaskType.HTTP_DOWNLOAD:
                 try:
@@ -2825,6 +2834,13 @@ class TaskEngine:
                     asyncio.create_task(get_http_download_service().cancel_task(task_id))
                 except Exception:
                     logger.debug("取消 HTTP 下载 aria2 任务失败: task_id=%s", task_id, exc_info=True)
+            if should_log_immediately:
+                try:
+                    from .activity_log_service import log_task_lifecycle_event
+
+                    log_task_lifecycle_event(task)
+                except Exception:
+                    logger.warning("[操作记录] 取消未运行任务记录失败: task_id=%s", task_id, exc_info=True)
     
     def get_task(self, task_id: str) -> Optional[Task]:
         """获取任务"""
@@ -2859,13 +2875,14 @@ class TaskEngine:
             task.status = status
             if message:
                 task.current_step = message
-            if status in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+            if status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]:
                 task.completed_at = datetime.now()
             if status in {
                 TaskStatus.WAITING_MANUAL,
                 TaskStatus.WAITING_RETRY,
                 TaskStatus.COMPLETED,
                 TaskStatus.FAILED,
+                TaskStatus.CANCELLED,
                 TaskStatus.PAUSED,
             }:
                 self.processing.discard(task.id)
@@ -2896,7 +2913,7 @@ class TaskEngine:
     
     def get_completed_tasks(self) -> list[Task]:
         """获取已完成任务，按创建时间倒序排列"""
-        return sorted([t for t in self.tasks.values() if t.status in [TaskStatus.COMPLETED, TaskStatus.FAILED] and not self._is_hidden_task(t)],
+        return sorted([t for t in self.tasks.values() if t.status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED] and not self._is_hidden_task(t)],
                      key=lambda t: t.created_at, reverse=True)
 
     def _save_waiting_retry_task(self, task: Task, subtitle_folder: str, work_title: str, retry_reason: str, retry_after):
@@ -3386,6 +3403,10 @@ class TaskEngine:
         
         config = get_config()
         cleaned_paths = []
+
+        if task.type == TaskType.HTTP_DOWNLOAD:
+            logger.info("HTTP 下载任务失败/部分成功不清理下载根目录: %s", task.output_path)
+            return
         
         # 对于 PROCESS_EXISTING_FOLDER 类型，成功完成的任务不需要清理
         # 因为文件夹是直接从已有目录处理的，不是临时文件
@@ -4329,7 +4350,7 @@ class TaskEngine:
 
     async def _process_http_download(self, task: Task):
         """处理 HTTP 外链下载任务。"""
-        from .http_download_service import get_http_download_service
+        from .http_download_service import get_http_download_service, sanitize_http_download_item
 
         service = get_http_download_service()
         task.task_metadata.setdefault("download_files", [])
@@ -4341,8 +4362,128 @@ class TaskEngine:
         task.task_metadata.setdefault("source_action", "manual_http_download")
         task.task_metadata.setdefault("task_domain", "http_download")
         task.task_metadata.setdefault("task_kind", TaskType.HTTP_DOWNLOAD.value)
+
         try:
-            await service.start_download_task(task)
+            from ..config.settings import get_config
+
+            cfg_retry_count = int(getattr(get_config().http_downloader, "retry_count", 5) or 5)
+        except Exception:
+            cfg_retry_count = 5
+        max_auto_retries = int(task.task_metadata.get("http_download_auto_retry_limit", min(2, max(1, cfg_retry_count))) or 0)
+        max_auto_retries = max(0, min(3, max_auto_retries))
+        cumulative_download_files: List[Dict[str, Any]] = []
+        last_error = ""
+
+        def refresh_merged_attempt_state() -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+            nonlocal cumulative_download_files
+            attempt_rows = [
+                row for row in list(task.task_metadata.get("download_files") or [])
+                if isinstance(row, dict)
+            ]
+            cumulative_download_files = service.merge_download_attempt_rows(cumulative_download_files, attempt_rows)
+            merged_failed = service.merge_download_failed_rows(
+                cumulative_download_files,
+                [
+                    row for row in list(task.task_metadata.get("failed_files") or [])
+                    if isinstance(row, dict)
+                ],
+            )
+            completed = [
+                row for row in cumulative_download_files
+                if str(row.get("status") or "").strip().lower() == "completed"
+            ]
+            downloaded_bytes = sum(int((row or {}).get("downloaded") or (row or {}).get("size") or 0) for row in completed)
+            transferred_bytes = sum(int((row or {}).get("downloaded") or 0) for row in cumulative_download_files)
+            runtime = dict(task.task_metadata.get("download_runtime") or {})
+            runtime.update({
+                "status": "completed" if completed and not merged_failed else ("partial_failed" if completed else "failed"),
+                "total_files": len(cumulative_download_files),
+                "completed_files": len(completed),
+                "failed_files": len(merged_failed),
+                "active_file_count": 0,
+                "transferred_bytes": transferred_bytes,
+                "speed_bytes_per_sec": 0,
+            })
+            metrics = dict(task.task_metadata.get("performance_metrics") or {})
+            duration_ms = int(metrics.get("duration_ms") or 0)
+            metrics.update({
+                "downloaded_bytes": downloaded_bytes,
+                "transferred_bytes": transferred_bytes,
+                "success_count": len(completed),
+                "failed_count": len(merged_failed),
+                "average_speed_bytes": int(downloaded_bytes / max(duration_ms / 1000, 1)) if downloaded_bytes and duration_ms else int(metrics.get("average_speed_bytes") or 0),
+            })
+            task.task_metadata["download_files"] = cumulative_download_files
+            task.task_metadata["failed_files"] = merged_failed
+            task.task_metadata["download_runtime"] = runtime
+            task.task_metadata["performance_metrics"] = metrics
+            return completed, merged_failed
+
+        def finish_partial(completed: List[Dict[str, Any]], failed: List[Dict[str, Any]]) -> None:
+            message = f"下载部分成功，成功 {len(completed)} 个，失败 {len(failed)} 个"
+            if last_error:
+                message = f"{message}：{last_error}"
+            task.task_metadata["partial_success"] = True
+            task.task_metadata["failure_reason"] = message
+            task.task_metadata["http_download_final_status"] = "partial_failed"
+            task.task_metadata["auto_retry_exhausted"] = bool(task.task_metadata.get("auto_retry_attempts"))
+            task.fail(message)
+            task.progress = 100
+            task.current_step = message
+
+        try:
+            attempt_index = 0
+            while True:
+                if attempt_index > 0:
+                    retry_items, retry_keys = service.build_retry_selection_for_task(task)
+                    if not retry_items:
+                        break
+                    task.task_metadata["http_download_auto_retrying"] = True
+                    task.task_metadata["auto_retry_attempts"] = attempt_index
+                    task.task_metadata["retry_target_count"] = len(retry_items)
+                    task.task_metadata["selected_items"] = [
+                        sanitize_http_download_item(item)
+                        for item in retry_items
+                    ]
+                    task.task_metadata["selected_keys"] = retry_keys
+                    task.task_metadata["download_files"] = []
+                    task.task_metadata["download_runtime"] = {}
+                    task.task_metadata["failed_files"] = []
+                    task.task_metadata["performance_metrics"] = {}
+                    task.task_metadata["failure_reason"] = ""
+                    task.progress = 0
+                    service._append_control_log(
+                        task,
+                        f"自动重试失败文件，第 {attempt_index}/{max_auto_retries} 轮，共 {len(retry_items)} 个",
+                        "warning",
+                    )
+
+                try:
+                    await service.start_download_task(task)
+                    completed, failed = refresh_merged_attempt_state()
+                except Exception as exc:
+                    last_error = str(exc)
+                    completed, failed = refresh_merged_attempt_state()
+                    if failed and attempt_index < max_auto_retries and not task.is_cancelled():
+                        attempt_index += 1
+                        continue
+                    if completed and failed:
+                        finish_partial(completed, failed)
+                        return
+                    raise
+
+                if failed and attempt_index < max_auto_retries and not task.is_cancelled():
+                    attempt_index += 1
+                    continue
+                if failed:
+                    finish_partial(completed, failed)
+                    return
+
+                if attempt_index > 0:
+                    service._append_control_log(task, "自动重试完成，失败项已全部补齐", "success")
+                task.task_metadata["http_download_final_status"] = "completed"
+                task.complete()
+                return
         finally:
             if task.is_cancelled():
                 await service.cancel_task(task.id)
