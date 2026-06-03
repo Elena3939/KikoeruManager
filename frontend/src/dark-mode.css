@@ -2609,6 +2609,135 @@ html.kikoerumanager-dark {
     box-shadow: none !important;
   }
 
+  html.kikoerumanager-dark .tasks-page .task-domain-icon {
+    color: var(--task-domain-icon-color, #94a3b8) !important;
+    stroke: currentColor !important;
+    filter: none !important;
+    opacity: 1 !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-domain-icon--import {
+    --task-domain-icon-color: #f59e0b;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-domain-icon--existing_folder {
+    --task-domain-icon-color: #38bdf8;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-domain-icon--rj_subtitle {
+    --task-domain-icon-color: #38bdf8;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-domain-icon--subtitle_import {
+    --task-domain-icon-color: #a78bfa;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-domain-icon--asmr_sync {
+    --task-domain-icon-color: #34d399;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-domain-icon--http_download {
+    --task-domain-icon-color: #fb923c;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-domain-icon--upload {
+    --task-domain-icon-color: #60a5fa;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-domain-icon--circle_completion {
+    --task-domain-icon-color: #2dd4bf;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-domain-icon--system {
+    --task-domain-icon-color: #cbd5e1;
+  }
+
+  html.kikoerumanager-dark .tasks-page .task-platform-icon {
+    filter: none !important;
+    opacity: 1 !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .task-domain-chip,
+  html.kikoerumanager-dark body #app .tasks-page .status-pill {
+    box-shadow: none !important;
+    background-image: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .task-domain-chip.bg-amber-50 {
+    background: rgba(245, 158, 11, 0.18) !important;
+    color: #fbbf24 !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .task-domain-chip.bg-sky-50,
+  html.kikoerumanager-dark body #app .tasks-page .task-domain-chip.bg-blue-50 {
+    background: rgba(56, 189, 248, 0.16) !important;
+    color: #7dd3fc !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .task-domain-chip.bg-violet-50 {
+    background: rgba(167, 139, 250, 0.18) !important;
+    color: #c4b5fd !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .task-domain-chip.bg-emerald-50 {
+    background: rgba(52, 211, 153, 0.16) !important;
+    color: #86efac !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .task-domain-chip.bg-orange-50 {
+    background: rgba(251, 146, 60, 0.18) !important;
+    color: #fdba74 !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .task-domain-chip.bg-teal-50 {
+    background: rgba(45, 212, 191, 0.16) !important;
+    color: #5eead4 !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .task-domain-chip.bg-slate-100 {
+    background: rgba(148, 163, 184, 0.16) !important;
+    color: #cbd5e1 !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--failed,
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--error {
+    background: rgba(244, 63, 94, 0.16) !important;
+    border-color: rgba(251, 113, 133, 0.34) !important;
+    color: #fda4af !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--waiting_manual,
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--waiting_retry,
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--pending {
+    background: rgba(99, 102, 241, 0.16) !important;
+    border-color: rgba(129, 140, 248, 0.34) !important;
+    color: #c7d2fe !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--processing,
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--running,
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--partial_failed {
+    background: rgba(245, 158, 11, 0.16) !important;
+    border-color: rgba(251, 191, 36, 0.34) !important;
+    color: #fde68a !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--completed,
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--success,
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--finished {
+    background: rgba(34, 197, 94, 0.15) !important;
+    border-color: rgba(74, 222, 128, 0.32) !important;
+    color: #bbf7d0 !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--cancelled,
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--canceled,
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--paused {
+    background: rgba(148, 163, 184, 0.14) !important;
+    border-color: rgba(148, 163, 184, 0.28) !important;
+    color: #cbd5e1 !important;
+  }
+
   html.kikoerumanager-dark .tasks-page .task-list-pane > .border-t {
     background: rgba(8, 9, 12, 0.42) !important;
     border-color: var(--tasks-border) !important;
@@ -2694,6 +2823,45 @@ html.kikoerumanager-dark {
     box-shadow: none !important;
   }
 
+  html.kikoerumanager-dark body #app .tasks-page .status-pill .status-pill-dot {
+    background-image: none !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--failed .status-pill-dot,
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--error .status-pill-dot {
+    background: #fb7185 !important;
+    background-color: #fb7185 !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--waiting_manual .status-pill-dot,
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--waiting_retry .status-pill-dot,
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--pending .status-pill-dot {
+    background: #818cf8 !important;
+    background-color: #818cf8 !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--processing .status-pill-dot,
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--running .status-pill-dot,
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--partial_failed .status-pill-dot {
+    background: #fbbf24 !important;
+    background-color: #fbbf24 !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--completed .status-pill-dot,
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--success .status-pill-dot,
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--finished .status-pill-dot {
+    background: #4ade80 !important;
+    background-color: #4ade80 !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--cancelled .status-pill-dot,
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--canceled .status-pill-dot,
+  html.kikoerumanager-dark body #app .tasks-page .status-pill--paused .status-pill-dot {
+    background: #94a3b8 !important;
+    background-color: #94a3b8 !important;
+  }
+
   html.kikoerumanager-dark .tasks-page .detail-scroll > header {
     background: rgba(13, 14, 18, 0.96) !important;
     border-color: var(--tasks-border) !important;
@@ -2748,16 +2916,52 @@ html.kikoerumanager-dark {
     .tree-name,
     .tree-label-text,
     .tree-size,
-    .tree-main-target,
+    .tree-main-target
+  ) {
+    color: rgba(226, 226, 232, 0.78) !important;
+    filter: none !important;
+    text-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page :is(
     .icon-folder,
     .icon-file,
     .icon-text,
     .icon-audio,
     .icon-audio-lossless
   ) {
-    color: rgba(226, 226, 232, 0.78) !important;
     filter: none !important;
+    opacity: 1 !important;
     text-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .icon-folder {
+    color: #fbbf24 !important;
+    fill: rgba(251, 191, 36, 0.22) !important;
+    stroke: currentColor !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .icon-audio-lossless {
+    color: #60a5fa !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .icon-audio {
+    color: #a78bfa !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .icon-text {
+    color: #94a3b8 !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .icon-file {
+    color: #cbd5e1 !important;
+  }
+
+  html.kikoerumanager-dark .tasks-page .tree-row-filtered .tree-icon {
+    color: #94a3b8 !important;
+    fill: rgba(148, 163, 184, 0.14) !important;
+    stroke: #94a3b8 !important;
+    opacity: 0.88 !important;
   }
 
   html.kikoerumanager-dark .tasks-page .tree-expander {

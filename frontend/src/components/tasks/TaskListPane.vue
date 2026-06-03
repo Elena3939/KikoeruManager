@@ -28,12 +28,12 @@
             <span class="truncate text-[12.5px] font-bold text-slate-900 leading-tight">{{ item.title }}</span>
             <div class="flex flex-shrink-0 items-center gap-1">
               <span
-                class="inline-flex h-[18px] items-center rounded-full px-2 text-[10px] font-semibold"
+                class="task-domain-chip inline-flex h-[18px] items-center rounded-full px-2 text-[10px] font-semibold"
                 :class="[domainMeta(item.domain).chipBg, domainMeta(item.domain).chipText]"
               >
                 {{ taskDomainLabel(item) }}
               </span>
-              <StatusPill :status="item.status" :label="item.status_label" />
+              <StatusPill :status="statusForPill(item)" :label="statusLabelForPill(item)" />
             </div>
           </div>
 
@@ -50,7 +50,7 @@
               class="inline-flex min-w-0 items-start gap-0.5 text-slate-400"
             >
               <Activity :size="9" :stroke-width="2.3" class="mt-[2px] flex-shrink-0" />
-              <span class="break-words">{{ item.current_step }}</span>
+              <span class="break-words">{{ displayStep(item) }}</span>
             </span>
           </div>
 
@@ -177,12 +177,30 @@ function taskIcon(item) {
 function taskIconClass(item) {
   return isHttpDownloadTask(item) && httpDisplayMeta(item).icon
     ? 'task-platform-icon'
-    : domainMeta(item.domain).chipIcon
+    : ['task-domain-icon', domainMeta(item.domain).taskIconClass || 'task-domain-icon--system']
 }
 
 function taskDomainLabel(item) {
-  if (isHttpDownloadTask(item)) return httpDisplayMeta(item).label || item.domain_label
+  if (isHttpDownloadTask(item)) return item.domain_label || domainMeta(item.domain).label
   return item.domain_label
+}
+
+function isCancelledTask(item) {
+  const status = String(item?.status || '').trim().toLowerCase()
+  const text = [item?.status_label, item?.error_message, item?.current_step].join(' ')
+  return status === 'cancelled' || status === 'canceled' || text.includes('用户取消')
+}
+
+function statusForPill(item) {
+  return isCancelledTask(item) ? 'cancelled' : item?.status
+}
+
+function statusLabelForPill(item) {
+  return isCancelledTask(item) ? '已取消' : item?.status_label
+}
+
+function displayStep(item) {
+  return isCancelledTask(item) ? '用户取消' : item?.current_step
 }
 
 // 摘要 piece 形如 "候选 66" / "DLsite 39"，把数字和名称拆开渲染成 stat strip
@@ -266,11 +284,56 @@ function summaryColor(piece, domain) {
   border-left-color: #0f172a;
 }
 
+.task-domain-icon {
+  color: var(--task-domain-icon-color, #475569);
+  stroke: currentColor;
+  filter: none;
+  opacity: 1;
+}
+
+.task-domain-icon--import {
+  --task-domain-icon-color: #d97706;
+}
+
+.task-domain-icon--existing_folder {
+  --task-domain-icon-color: #0284c7;
+}
+
+.task-domain-icon--rj_subtitle {
+  --task-domain-icon-color: #0284c7;
+}
+
+.task-domain-icon--subtitle_import {
+  --task-domain-icon-color: #7c3aed;
+}
+
+.task-domain-icon--asmr_sync {
+  --task-domain-icon-color: #059669;
+}
+
+.task-domain-icon--http_download {
+  --task-domain-icon-color: #ea580c;
+}
+
+.task-domain-icon--upload {
+  --task-domain-icon-color: #2563eb;
+}
+
+.task-domain-icon--circle_completion {
+  --task-domain-icon-color: #0f766e;
+}
+
+.task-domain-icon--system {
+  --task-domain-icon-color: #64748b;
+}
+
 .task-platform-icon {
   width: 16px;
   height: 16px;
   object-fit: contain;
   border-radius: 3px;
+  filter: none;
+  opacity: 1;
 }
 
 /* ---- 动画过渡 ---- */

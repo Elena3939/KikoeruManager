@@ -140,6 +140,8 @@ const statusOptions = [
   { value: 'waiting_retry', label: '等待重试' },
   { value: 'pending', label: '待处理' },
   { value: 'paused', label: '已暂停' },
+  { value: 'partial_failed', label: '部分成功' },
+  { value: 'cancelled', label: '已取消' },
   { value: 'failed', label: '失败' },
   { value: 'completed', label: '已完成' },
 ]
@@ -162,8 +164,10 @@ function statusPriority(status) {
     waiting_retry: 2,
     pending: 3,
     paused: 4,
-    failed: 5,
-    completed: 6,
+    partial_failed: 5,
+    failed: 6,
+    cancelled: 7,
+    completed: 8,
   }
   return map[String(status || '')] ?? 99
 }
@@ -198,7 +202,7 @@ const listDigest = computed(() => {
     const status = String(item?.status || '').trim()
     if (ACTIVE_STATUSES.has(status)) digest.active += 1
     if (status === 'completed') digest.completed += 1
-    if (status === 'failed' || status === 'canceled' || status === 'cancelled') digest.failed += 1
+    if (status === 'failed') digest.failed += 1
   }
   return digest
 })
@@ -206,10 +210,11 @@ const listDigest = computed(() => {
 const selectedItem = computed(() => {
   if (!filteredItems.value.length) return null
   const summary = filteredItems.value.find((item) => item.id === selectedItemId.value) || filteredItems.value[0]
+  const normalizedSummary = normalizeCancelledTaskItem(summary)
   if (selectedItemDetail.value?.id === summary?.id) {
-    return { ...summary, ...selectedItemDetail.value }
+    return normalizeCancelledTaskItem({ ...normalizedSummary, ...selectedItemDetail.value })
   }
-  return summary
+  return normalizedSummary
 })
 
 watch(filteredItems, (nextItems) => {
@@ -427,6 +432,28 @@ async function fetchSelectedItemDetail(itemId, options = {}) {
 
 function showProgress(item) {
   return ['processing', 'pending', 'paused', 'waiting_retry'].includes(item?.status)
+}
+
+function isUserCancelledTask(item) {
+  const metadata = item?.details?.metadata || {}
+  const text = [
+    item?.status_label,
+    item?.error_message,
+    item?.current_step,
+    metadata.cancel_reason,
+  ].join(' ')
+  return String(item?.status || '').toLowerCase() === 'cancelled' || text.includes('用户取消')
+}
+
+function normalizeCancelledTaskItem(item) {
+  if (!item || !isUserCancelledTask(item)) return item
+  return {
+    ...item,
+    status: 'cancelled',
+    status_label: '已取消',
+    current_step: '用户取消',
+    error_message: '',
+  }
 }
 
 function getFileName(path) {
@@ -741,7 +768,7 @@ function getTaskSummary(item) {
     if (completedCount) pieces.push(`完成 ${completedCount}`)
     if (downloaded || totalSize) pieces.push(downloaded && totalSize ? `${downloaded} / ${totalSize}` : (downloaded || totalSize))
     if (speed) pieces.push(speed)
-    if (failedCount) pieces.push(`失败 ${failedCount}`)
+    if (failedCount && !isUserCancelledTask(item)) pieces.push(`失败 ${failedCount}`)
   } else if (item.domain === 'circle_completion') {
     const dlsiteCount = pickMetricValue(item, 'DLsite')
     const downloadableCount = pickMetricValue(item, '可下载')
@@ -973,7 +1000,7 @@ function shouldShowTaskMetaStep(item) {
   const statusLabel = String(item?.status_label || '').trim()
   if (!step) return false
   if (step === statusLabel) return false
-  if (['完成', '已完成', '处理中', '等待中', '待处理', '已暂停', '失败', '等待重试', '等待人工'].includes(step)) {
+  if (['完成', '已完成', '处理中', '等待中', '待处理', '已暂停', '部分成功', '失败', '等待重试', '等待人工'].includes(step)) {
     return false
   }
   return true
