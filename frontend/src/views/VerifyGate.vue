@@ -1,21 +1,21 @@
 <template>
-  <main class="gate-page relative min-h-screen flex items-center justify-center px-6 bg-white overflow-hidden">
+  <main class="gate-page relative min-h-screen flex items-center justify-center px-6 overflow-hidden">
     <section class="glass-card relative w-full max-w-[680px] rounded-[46px] px-10 sm:px-14 py-16 sm:py-20">
       <div class="relative z-10 w-full max-w-[520px] mx-auto">
         <header class="text-center mb-10">
           <div class="icon-glass mx-auto w-[70px] h-[70px] rounded-[24px] flex items-center justify-center mb-7">
-            <ShieldCheck class="w-8 h-8 text-zinc-900" :stroke-width="2.2" />
+            <ShieldCheck class="gate-icon w-8 h-8" :stroke-width="2.2" />
           </div>
 
-          <p class="text-sm tracking-wide text-zinc-500 font-medium mb-3">
+          <p class="gate-eyebrow mb-3">
             KikoeruManager 安全网关
           </p>
 
-          <h1 class="text-[46px] sm:text-[52px] leading-none font-semibold tracking-tight text-zinc-950 mb-5">
+          <h1 class="gate-title mb-5">
             安全验证
           </h1>
 
-          <p class="text-zinc-500 text-[16px] sm:text-[17px] leading-relaxed">
+          <p class="gate-description">
             使用 Google Authenticator 中的 6 位动态验证码进入系统。
           </p>
         </header>
@@ -76,7 +76,7 @@
 
       <template v-else>
         <CodeInput v-model="code" :error="!!errorText" :success="successGlow" @submit="verify" />
-        <label v-if="state.allow_remember_device" class="remember-row flex items-center gap-3 text-sm text-zinc-600 select-none">
+        <label v-if="state.allow_remember_device" class="remember-row select-none">
           <input v-model="remember" type="checkbox" class="remember-checkbox rounded">
           <span>记住此设备 {{ state.remember_days }} 天</span>
         </label>
@@ -287,30 +287,70 @@ async function copySecret() {
 
 <style scoped>
 .gate-page {
+  --gate-page-bg:
+    linear-gradient(180deg, #f6f7f9 0%, #eef1f5 100%);
+  --gate-card-bg: rgba(255, 255, 255, 0.62);
+  --gate-card-border: rgba(255, 255, 255, 0.82);
+  --gate-card-inner-border: rgba(255, 255, 255, 0.58);
+  --gate-card-shadow: none;
+  --gate-text: #101114;
+  --gate-text-muted: rgba(39, 44, 52, 0.64);
+  --gate-text-subtle: rgba(39, 44, 52, 0.48);
+  --gate-control-bg: rgba(255, 255, 255, 0.52);
+  --gate-control-bg-strong: rgba(255, 255, 255, 0.70);
+  --gate-control-border: rgba(255, 255, 255, 0.72);
+  --gate-control-hover-border: rgba(16, 17, 20, 0.20);
+  --gate-button-bg: rgba(16, 17, 20, 0.88);
+  --gate-button-bg-hover: rgba(16, 17, 20, 0.94);
+  --gate-button-text: #ffffff;
+  --gate-muted-button-bg: rgba(255, 255, 255, 0.54);
+  --gate-danger-bg: rgba(255, 241, 242, 0.74);
+  --gate-danger-text: #b42318;
+  --gate-info-bg: rgba(255, 255, 255, 0.46);
+  --gate-focus-ring: rgba(16, 17, 20, 0.08);
+  --gate-check-bg: rgba(255, 255, 255, 0.36);
+  --gate-check-border: rgba(16, 17, 20, 0.22);
+  background: var(--gate-page-bg);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+}
+
+:global(html.kikoerumanager-dark .gate-page),
+:global(body.kikoerumanager-dark .gate-page),
+:global(.kikoerumanager-dark .gate-page) {
+  --gate-page-bg:
+    linear-gradient(180deg, #090a0d 0%, #050609 100%);
+  --gate-card-bg: rgba(12, 13, 17, 0.62);
+  --gate-card-border: rgba(255, 255, 255, 0.20);
+  --gate-card-inner-border: rgba(255, 255, 255, 0.10);
+  --gate-card-shadow: none;
+  --gate-text: #f7f7f8;
+  --gate-text-muted: rgba(235, 235, 238, 0.64);
+  --gate-text-subtle: rgba(235, 235, 238, 0.46);
+  --gate-control-bg: rgba(255, 255, 255, 0.075);
+  --gate-control-bg-strong: rgba(255, 255, 255, 0.105);
+  --gate-control-border: rgba(255, 255, 255, 0.16);
+  --gate-control-hover-border: rgba(255, 255, 255, 0.30);
+  --gate-button-bg: rgba(246, 246, 248, 0.90);
+  --gate-button-bg-hover: rgba(255, 255, 255, 0.96);
+  --gate-button-text: #101114;
+  --gate-muted-button-bg: rgba(255, 255, 255, 0.09);
+  --gate-danger-bg: rgba(127, 29, 29, 0.24);
+  --gate-danger-text: #fca5a5;
+  --gate-info-bg: rgba(255, 255, 255, 0.08);
+  --gate-focus-ring: rgba(255, 255, 255, 0.11);
+  --gate-check-bg: rgba(255, 255, 255, 0.08);
+  --gate-check-border: rgba(255, 255, 255, 0.28);
 }
 
 .glass-card {
   position: relative;
   overflow: hidden;
   isolation: isolate;
-  background:
-    linear-gradient(
-      145deg,
-      rgba(255, 255, 255, 0.22) 0%,
-      rgba(255, 255, 255, 0.12) 26%,
-      rgba(255, 255, 255, 0.055) 52%,
-      rgba(255, 255, 255, 0.16) 100%
-    );
-  backdrop-filter: blur(230px) saturate(340%) brightness(1.16) contrast(1.04);
-  border: 1px solid rgba(255, 255, 255, 0.58);
-  box-shadow:
-    0 70px 190px rgba(15, 23, 42, 0.10),
-    inset 0 44px 90px rgba(255, 255, 255, 0.26),
-    inset 0 -54px 100px rgba(255, 255, 255, 0.10),
-    inset 0 3px 0 rgba(255, 255, 255, 0.92),
-    inset 0 -2px 0 rgba(255, 255, 255, 0.14),
-    0 0 0 1px rgba(255, 255, 255, 0.22);
+  background: var(--gate-card-bg);
+  backdrop-filter: blur(34px) saturate(1.12);
+  -webkit-backdrop-filter: blur(34px) saturate(1.12);
+  border: 1px solid var(--gate-card-border);
+  box-shadow: var(--gate-card-shadow);
   animation: panelIn 520ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -320,18 +360,14 @@ async function copySecret() {
   inset: 0;
   z-index: -1;
   border-radius: inherit;
-  background:
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.88) 0%,
-      rgba(255, 255, 255, 0.30) 18%,
-      rgba(255, 255, 255, 0.06) 48%,
-      rgba(255, 255, 255, 0.18) 100%
-    ),
-    radial-gradient(circle at 18% 8%, rgba(255, 255, 255, 0.55), transparent 28%),
-    radial-gradient(circle at 90% 82%, rgba(255, 255, 255, 0.16), transparent 32%);
-  mix-blend-mode: screen;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.24), transparent 44%);
   pointer-events: none;
+}
+
+:global(html.kikoerumanager-dark .glass-card::before),
+:global(body.kikoerumanager-dark .glass-card::before),
+:global(.kikoerumanager-dark .glass-card::before) {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 46%);
 }
 
 .glass-card::after {
@@ -339,32 +375,47 @@ async function copySecret() {
   position: absolute;
   inset: 1px;
   border-radius: inherit;
-  border: 1px solid rgba(255, 255, 255, 0.36);
+  border: 1px solid var(--gate-card-inner-border);
   pointer-events: none;
 }
 
 .icon-glass {
-  background:
-    linear-gradient(
-      145deg,
-      rgba(255, 255, 255, 0.30),
-      rgba(255, 255, 255, 0.08)
-    );
-  backdrop-filter: blur(90px) saturate(260%);
-  border: 1px solid rgba(255, 255, 255, 0.56);
-  box-shadow:
-    inset 0 18px 44px rgba(255, 255, 255, 0.24),
-    inset 0 -14px 34px rgba(255, 255, 255, 0.08),
-    0 18px 42px rgba(15, 23, 42, 0.08);
+  background: var(--gate-control-bg-strong);
+  backdrop-filter: blur(26px) saturate(1.08);
+  -webkit-backdrop-filter: blur(26px) saturate(1.08);
+  border: 1px solid var(--gate-control-border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .icon-glass:hover {
-  transform: translateY(-2px) scale(1.03);
-  box-shadow:
-    inset 0 18px 44px rgba(255, 255, 255, 0.28),
-    inset 0 -14px 34px rgba(255, 255, 255, 0.10),
-    0 22px 48px rgba(15, 23, 42, 0.10);
+  transform: translateY(-2px) scale(1.02);
+  border-color: var(--gate-control-hover-border);
+}
+
+.gate-icon {
+  color: var(--gate-text);
+}
+
+.gate-eyebrow {
+  color: var(--gate-text-subtle);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.gate-title {
+  color: var(--gate-text);
+  font-size: clamp(42px, 5vw, 52px);
+  line-height: 1;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.gate-description {
+  color: var(--gate-text-muted);
+  font-size: 16px;
+  line-height: 1.75;
 }
 
 .otp-grid {
@@ -375,83 +426,67 @@ async function copySecret() {
   animation: codeIn 460ms 90ms both cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-:deep(.otp-input) {
+.gate-page :deep(.otp-input) {
   width: 100%;
   height: 82px;
   outline: none !important;
   text-align: center;
-  color: #111827;
+  color: var(--gate-text);
   font-size: 34px;
   line-height: 1;
   font-weight: 500;
   letter-spacing: 0;
-  caret-color: #111827;
+  caret-color: var(--gate-text);
   border-radius: 24px;
-  border: 1px solid rgba(203, 213, 225, 0.72);
-  background:
-    linear-gradient(
-      145deg,
-      rgba(255, 255, 255, 0.98) 0%,
-      rgba(255, 255, 255, 0.86) 46%,
-      rgba(248, 250, 252, 0.78) 100%
-    );
-  backdrop-filter: blur(90px) saturate(220%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.96),
-    inset 0 -18px 34px rgba(241, 245, 249, 0.36),
-    0 16px 34px rgba(15, 23, 42, 0.055),
-    0 1px 2px rgba(15, 23, 42, 0.04);
+  border: 1px solid var(--gate-control-border) !important;
+  background-color: var(--gate-control-bg) !important;
+  background-image: none !important;
+  backdrop-filter: blur(24px) saturate(1.08);
+  -webkit-backdrop-filter: blur(24px) saturate(1.08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22) !important;
   appearance: none;
   -webkit-appearance: none;
   transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease, background .22s ease;
   animation: digitIn 420ms both cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-:deep(.otp-input:focus) {
+.gate-page :deep(.otp-input:focus) {
   transform: translateY(-3px) scale(1.025);
-  border-color: rgba(17, 24, 39, 0.30);
-  background:
-    linear-gradient(
-      145deg,
-      rgba(255, 255, 255, 1) 0%,
-      rgba(255, 255, 255, 0.94) 48%,
-      rgba(248, 250, 252, 0.86) 100%
-    );
+  border-color: var(--gate-control-hover-border) !important;
+  background-color: var(--gate-control-bg-strong) !important;
+  background-image: none !important;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 1),
-    inset 0 -16px 32px rgba(241, 245, 249, 0.28),
-    0 20px 42px rgba(15, 23, 42, 0.08),
-    0 0 0 4px rgba(17, 24, 39, 0.045);
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    0 0 0 4px var(--gate-focus-ring) !important;
 }
 
-:deep(.otp-input::-webkit-outer-spin-button),
-:deep(.otp-input::-webkit-inner-spin-button) {
+.gate-page :deep(.otp-input::-webkit-outer-spin-button),
+.gate-page :deep(.otp-input::-webkit-inner-spin-button) {
   margin: 0;
   appearance: none;
 }
 
-:deep(.otp-input:nth-child(1)) { animation-delay: 80ms; }
-:deep(.otp-input:nth-child(2)) { animation-delay: 120ms; }
-:deep(.otp-input:nth-child(3)) { animation-delay: 160ms; }
-:deep(.otp-input:nth-child(4)) { animation-delay: 200ms; }
-:deep(.otp-input:nth-child(5)) { animation-delay: 240ms; }
-:deep(.otp-input:nth-child(6)) { animation-delay: 280ms; }
+.gate-page :deep(.otp-input:nth-child(1)) { animation-delay: 80ms; }
+.gate-page :deep(.otp-input:nth-child(2)) { animation-delay: 120ms; }
+.gate-page :deep(.otp-input:nth-child(3)) { animation-delay: 160ms; }
+.gate-page :deep(.otp-input:nth-child(4)) { animation-delay: 200ms; }
+.gate-page :deep(.otp-input:nth-child(5)) { animation-delay: 240ms; }
+.gate-page :deep(.otp-input:nth-child(6)) { animation-delay: 280ms; }
 
 .otp-grid.is-error {
   animation: shake 360ms ease;
 }
 
-.otp-grid.is-error :deep(.otp-input) {
-  border-color: rgba(239, 68, 68, 0.48);
+.gate-page .otp-grid.is-error :deep(.otp-input) {
+  border-color: rgba(239, 68, 68, 0.48) !important;
   box-shadow:
-    inset 0 26px 60px rgba(255, 255, 255, 0.26),
-    0 0 0 6px rgba(239, 68, 68, 0.08),
-    0 22px 44px rgba(239, 68, 68, 0.08);
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 0 0 4px rgba(239, 68, 68, 0.10) !important;
 }
 
 .otp-grid.is-success :deep(.otp-input) {
   animation: successPulse 520ms ease;
-  border-color: rgba(17, 24, 39, 0.18);
+  border-color: var(--gate-control-hover-border);
 }
 
 .gate-state,
@@ -461,6 +496,7 @@ async function copySecret() {
   display: flex;
   align-items: center;
   gap: 10px;
+  color: var(--gate-text-muted);
 }
 
 .gate-state,
@@ -469,26 +505,22 @@ async function copySecret() {
   padding: 14px 16px;
   margin-bottom: 24px;
   border-radius: 22px;
-  color: #52525b;
   font-size: 14px;
   justify-content: center;
-  border: 1px solid rgba(255, 255, 255, 0.62);
-  background:
-    linear-gradient(
-      145deg,
-      rgba(255, 255, 255, 0.26) 0%,
-      rgba(255, 255, 255, 0.10) 48%,
-      rgba(255, 255, 255, 0.055) 100%
-    );
-  backdrop-filter: blur(130px) saturate(280%);
-  box-shadow:
-    inset 0 18px 44px rgba(255, 255, 255, 0.22),
-    0 18px 36px rgba(15, 23, 42, 0.06);
+  border: 1px solid var(--gate-control-border);
+  background: var(--gate-control-bg);
+  backdrop-filter: blur(24px) saturate(1.08);
+  -webkit-backdrop-filter: blur(24px) saturate(1.08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
 }
 
 .gate-alert.is-danger {
-  color: #b91c1c;
-  background: #fff1f2;
+  color: var(--gate-danger-text);
+  background: var(--gate-danger-bg);
+}
+
+.gate-alert.is-soft {
+  color: var(--gate-text-muted);
 }
 
 .setup-box {
@@ -497,19 +529,11 @@ async function copySecret() {
   padding: 18px;
   margin-bottom: 24px;
   border-radius: 28px;
-  background:
-    linear-gradient(
-      145deg,
-      rgba(255, 255, 255, 0.26) 0%,
-      rgba(255, 255, 255, 0.10) 48%,
-      rgba(255, 255, 255, 0.055) 100%
-    );
-  border: 1px solid rgba(255, 255, 255, 0.62);
-  box-shadow:
-    inset 0 26px 60px rgba(255, 255, 255, 0.28),
-    inset 0 -24px 48px rgba(255, 255, 255, 0.08),
-    0 22px 44px rgba(15, 23, 42, 0.07);
-  backdrop-filter: blur(130px) saturate(280%);
+  background: var(--gate-control-bg);
+  border: 1px solid var(--gate-control-border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(24px) saturate(1.08);
+  -webkit-backdrop-filter: blur(24px) saturate(1.08);
   animation: panelIn 420ms ease;
 }
 
@@ -525,7 +549,7 @@ async function copySecret() {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  color: #1d1d1f;
+  color: var(--gate-text);
   font-size: 12px;
   word-break: break-all;
   letter-spacing: 0;
@@ -547,9 +571,9 @@ async function copySecret() {
   height: 32px;
   padding: 0 10px;
   border-radius: 980px;
-  color: #111827;
-  background: rgba(255, 255, 255, 0.24);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.46);
+  color: var(--gate-text);
+  background: var(--gate-muted-button-bg);
+  border: 1px solid var(--gate-control-border);
 }
 
 .gate-button {
@@ -557,14 +581,12 @@ async function copySecret() {
   height: 58px;
   margin-top: 24px;
   border-radius: 980px;
-  color: #ffffff;
+  color: var(--gate-button-text);
   font-size: 16px;
   font-weight: 600;
   letter-spacing: 0;
-  background: rgba(17, 24, 39, 0.88);
-  box-shadow:
-    0 18px 35px rgba(15, 23, 42, 0.14),
-    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  background: var(--gate-button-bg);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
 }
 
 .gate-button:hover:not(:disabled),
@@ -573,10 +595,7 @@ async function copySecret() {
 }
 
 .gate-button:hover:not(:disabled) {
-  background: rgba(17, 24, 39, 0.94);
-  box-shadow:
-    0 22px 42px rgba(15, 23, 42, 0.17),
-    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  background: var(--gate-button-bg-hover);
 }
 
 .gate-button:hover:not(:disabled) svg,
@@ -595,24 +614,29 @@ async function copySecret() {
 
 .gate-button:disabled {
   opacity: 1;
-  background: rgba(17, 24, 39, 0.34);
+  color: var(--gate-text-subtle);
+  background: var(--gate-muted-button-bg);
   cursor: not-allowed;
 }
 
 .gate-button.is-muted {
-  color: #111827;
-  background: rgba(255, 255, 255, 0.24);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.46);
+  color: var(--gate-text);
+  background: var(--gate-muted-button-bg);
+  border: 1px solid var(--gate-control-border);
 }
 
 .remember-row {
+  justify-content: flex-start;
   margin-top: 22px;
+  font-size: 14px;
 }
 
 .remember-checkbox {
   width: 16px;
   height: 16px;
-  accent-color: #111827;
+  accent-color: var(--gate-text);
+  background: var(--gate-check-bg);
+  border-color: var(--gate-check-border);
 }
 
 .gate-message {
@@ -622,17 +646,19 @@ async function copySecret() {
   font-size: 13px;
   letter-spacing: 0;
   justify-content: center;
-  backdrop-filter: blur(90px) saturate(220%);
+  border: 1px solid var(--gate-control-border);
+  backdrop-filter: blur(22px) saturate(1.08);
+  -webkit-backdrop-filter: blur(22px) saturate(1.08);
 }
 
 .gate-message.is-error {
-  color: #b91c1c;
-  background: #fff1f2;
+  color: var(--gate-danger-text);
+  background: var(--gate-danger-bg);
 }
 
 .gate-message.is-info {
-  color: #1f2937;
-  background: rgba(255, 255, 255, 0.34);
+  color: var(--gate-text-muted);
+  background: var(--gate-info-bg);
 }
 
 .gate-msg-enter-active,
@@ -679,13 +705,14 @@ async function copySecret() {
     padding: 18px 14px;
     align-items: start;
   }
-  .gate-panel {
+  .glass-card {
     border-radius: 30px;
+    padding: 48px 24px;
   }
   .otp-grid {
     gap: 8px;
   }
-  :deep(.otp-input) {
+  .gate-page :deep(.otp-input) {
     height: 58px;
     border-radius: 18px;
     font-size: 24px;
