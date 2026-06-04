@@ -21,7 +21,7 @@
 - GHCR 镜像目标：`ghcr.io/elena3939/kikoerumanager`。
 - Docker Hub 镜像目标：`elena39/kikoerumanager`。
 - 当前产品是多工作台桌面化工具，不是传统后台管理系统。
-- 高频业务：库存主工作台、RJ 字幕工作台、任务中心、操作历史、问题作品、社团补全、下载 / 上传工作台、通知模板。
+- 高频业务：仪表盘、库存主工作台、RJ 字幕工作台、任务中心、操作历史、问题作品、社团补全、下载 / 上传工作台、HTTP 外链下载（含 PikPak / Google Drive / Gofile / OneDrive / Transfer.it）、百度网盘、AI 字幕配对、密码工作台、库存备份、安全网关、通知模板。
 
 ## 2. 技术栈与依赖
 
@@ -44,6 +44,8 @@
   - `@tiptap/core`：邮件 Block Editor 自定义扩展直接 import。
   - `lucide-vue-next`：全站图标唯一来源。
   - `@lottiefiles/dotlottie-vue` / `lottie-web`：动效。
+- 主题系统统一走 `frontend/src/composables/useTheme.ts`（light / dark / system 三态，挂 `dark` + `kikoerumanager-dark` 两个 class），暗色样式集中在 `frontend/src/dark-mode.css`；不要再造第二套主题状态机。
+- 加载态按钮统一复用 `frontend/src/components/ui/stateful-button.vue`，主题切换按钮统一复用 `frontend/src/components/magicui/AnimatedThemeToggler.vue`；不要每个按钮手写 spinner 或另起主题切换逻辑。
 - Vite 项目体积较大，`frontend/package.json` 的 `dev/build/preview` 和根 `Dockerfile` 都使用 `--max-old-space-size=4096`，不要降回 2048。
 
 ### Docker / 环境
@@ -69,6 +71,10 @@
 - 压缩包识别：`backend/app/core/file_processor.py`、`backend/app/core/archive_detection.py`
 - RJ 字幕：`backend/app/core/rj_subtitle_service.py`、`backend/app/core/linked_subtitle_import_service.py`
 - ASMR 下载 / 上传：`backend/app/core/asmr_resource_service.py`
+- HTTP 外链下载：`backend/app/core/http_download_service.py`（底层 aria2 RPC，含 PikPak / Google Drive / Gofile / OneDrive / Transfer.it 解析）、`backend/app/core/google_drive_oauth.py`
+- 百度网盘：`backend/app/core/baidu_netdisk_service.py`
+- AI 字幕配对：`backend/app/core/ai_subtitle_match_service.py`
+- 安全网关：`backend/app/core/security_gate_service.py`
 - 社团补全：`backend/app/core/circle_completion_service.py`、`backend/app/core/kikoeru_duplicate_service.py`
 - 冲突处理：`backend/app/core/conflict_resolution_service.py`
 - 通知：`backend/app/core/notification_template_service.py`、`notification_helper.py`、`task_notification_service.py`、`variable_registry.py`、`block_renderers/__init__.py`、`html_sanitizer.py`
@@ -78,13 +84,21 @@
 - 主布局：`frontend/src/App.vue`
 - 路由：`frontend/src/router/index.js`
 - API 封装：`frontend/src/api/index.js`
+- 仪表盘：`frontend/src/views/Dashboard.vue`
 - 库存页：`frontend/src/views/Library.vue`
+- 库存备份：`frontend/src/views/LibraryBackup.vue`
 - 任务中心：`frontend/src/views/Tasks.vue`
 - 操作历史：`frontend/src/views/ActivityHistory.vue`
 - 问题作品：`frontend/src/views/Conflicts.vue`
+- 已有文件夹处理：`frontend/src/views/ExistingFolders.vue`
 - 社团补全：`frontend/src/views/CircleCompletion.vue`
 - ASMR 同步：`frontend/src/views/ASMRSync.vue`
-- 设置页：`frontend/src/views/Settings.vue`
+- 百度网盘：`frontend/src/views/BaiduNetdisk.vue`
+- 密码工作台：`frontend/src/views/PasswordVault.vue`
+- 字幕导入：`frontend/src/views/SubtitleImport.vue`
+- 日志：`frontend/src/views/Logs.vue`
+- 安全网关闸页：`frontend/src/views/VerifyGate.vue`、`frontend/src/views/BlockedGate.vue`
+- 设置页：`frontend/src/views/Settings.vue`（按面板拆分为 `frontend/src/components/settings/*SettingsPanel.vue`，含 HTTP / AI 字幕 / 百度网盘 / 安全网关 / 通知等）
 
 ### 前端基座组件
 
@@ -98,6 +112,8 @@
 - 统一筛选下拉：`frontend/src/components/common/AppDropdown.vue`
 - 系统弹窗：`frontend/src/components/system/SystemPromptDialog.vue`、`SystemPromptHost.vue`、`frontend/src/composables/useSystemPrompt.js`
 - 通知中心：`frontend/src/components/system/NotificationBell.vue`、`frontend/src/composables/useNotifications.js`
+- 主题：`frontend/src/composables/useTheme.ts`、`frontend/src/components/magicui/AnimatedThemeToggler.vue`
+- 加载态按钮：`frontend/src/components/ui/stateful-button.vue`（loading / success / error 三态可复用动画）
 - Lottie 通用组件：`AppLoadingAnimation.vue`、`AppLottieIcon.vue`、`AppLottieSwitch.vue`、`AppLottieProgressBar.vue`
 
 ## 4. 配置与敏感数据
@@ -121,6 +137,32 @@
 - 系统确认 / 输入 / 提醒统一走 `useSystemPrompt`，不要新增散落的 `ElMessageBox.*`。
 - 页头按钮统一走 `.page-head-btn`，不要另起一套。
 - loading 遮罩绑定到页面内容区或 Modal 主体区，不要盖住整个页面或 Dialog 顶部按钮。
+
+### 5.1 弹窗聚焦态
+
+- 所有弹窗内的交互元素都不要有聚焦描边 / 聚焦投影 / ring。
+- 全局兜底已在 `frontend/src/App.vue` 用 `.el-dialog :is(button, input, textarea, [tabindex], [role="button"], .el-input__wrapper, .el-select__wrapper ...):focus / :focus-visible` 统一清掉 `outline`、`box-shadow`、`--tw-ring-*`。
+- 新弹窗里的自定义交互元素（chip、行、卡片、自绘按钮）要么落在上面的选择器族里，要么自己补 `:focus` / `:focus-visible` 去聚焦态，不要留浏览器或 Element Plus / Tailwind 默认蓝框。
+- 不要为了“可访问性”单独给弹窗元素加回聚焦描边，本项目统一靠 hover / active 动效表达交互。
+
+### 5.2 遮罩态规则
+
+- 弹窗遮罩统一走 `.el-overlay`，暗色态在 `frontend/src/dark-mode.css` 固定为 `rgba(0, 0, 0, 0.52)`。
+- 遮罩默认不加背景模糊（已统一移除 `backdrop-filter`）；只有字幕工作台 `.subtitle-workbench-overlay` 等少数容器保留模糊，新弹窗不要随手加 `backdrop-filter: blur()`。
+- 页面 / Modal 内的加载遮罩统一用 `.app-loading-mask`（或库存页 `.library-page-loading-mask`），绑定到内容区或 Modal 主体区，不要盖住整页或 Dialog 顶部按钮，暗色样式已在 `dark-mode.css` 适配。
+
+### 5.3 加载态按钮
+
+- 任何“点击后要等待异步结果”的按钮都复用 `frontend/src/components/ui/stateful-button.vue`，它内置 loading / success / error 三态动画，`@click` 返回 Promise 即可自动驱动。
+- 不要每个按钮手写 spinner、`v-if="loading"` 切图标或自管禁用态。
+- 需要纯图标态加载（如设置页内联按钮）时可用 `LoaderCircle` + `spin-icon`，但成组的主操作按钮优先 `stateful-button`。
+
+### 5.4 暗黑模式与移动端适配
+
+- 所有新页面 / 新弹窗默认就要做暗黑模式：用 `dark-mode.css` 的 `--km-dark-*` 语义变量，或在 `dark-mode.css` 里补 `html.kikoerumanager-dark ...` 规则，不要只做浅色态再说。
+- 主题状态只读 `useTheme`，类挂在 `html.dark` + `html.kikoerumanager-dark`；不要自管 localStorage 或另造暗色开关。
+- 所有新页面默认要做移动端适配：复用 `frontend/src/index.css` 已有响应式 helper（`.mobile-stack`、`.mobile-full-dialog`、`.is-mobile-hidden`、`.safe-touch-target`、`.safe-area-*` 等），≤640 普通 ElDialog 自动放大、带 `.mobile-full-dialog` / 已注册的弹窗自动全屏。
+- 新弹窗想在小屏全屏，给它加 `custom-class="mobile-full-dialog"`，不要自己写一套断点。
 
 ## 6. 当前重点变更红线
 
@@ -182,6 +224,15 @@
 - 上传任务行按 `source_dir` 匹配，避免多源上传时进度串行写错文件。
 - `DownloadTaskWorkbenchDialog.vue` 和 `UploadTaskWorkbenchDialog.vue` 的字段语义不要乱改：`download_files`、`upload_files`、`uploaded_files`、`progress_log`、`failure_reason`、`final_output_path`、`download_root`。
 - 本地复制入库、群晖上传都不能退回整文件 `read()`；必须流式分块并保留进度。
+
+### 6.6 HTTP 外链下载
+
+- `http_download_service.py` 是底层 aria2 RPC 下载，按平台拆解析：`http` / `gofile` / `transferit` / `onedrive` / `google_drive` / `pikpak`，平台标签走 `HTTP_DOWNLOAD_PLATFORM_LABELS`，不要散落硬编码。
+- `validate_url` 默认拒绝内网 / 本机 / link-local / metadata 地址，含 DNS rebinding 校验；只有 `allow_private_network` 显式开启才放行。
+- 配置在 `HttpDownloaderConfig`（`settings.py`），密码 / token / refresh_token 等敏感字段 `/api/config` 必须脱敏为 `********`，保存时回填磁盘真实值，不能把 `********` 写进配置。
+- PikPak 多账号在 `pikpak_accounts` 维护，状态有缓存表 `PikPakStatusCache`；token 失效要能用账号密码自动重登并回写。
+- 任务态语义要和任务中心 / 仪表盘对齐：`completed` / `partial_failed`（部分成功）/ 取消态，失败项支持自动重试和手动重试。
+- 前端入口：`HttpDownloadSettingsPanel.vue`（设置）、下载工作台与 ASMR 同步页；Google Drive OAuth 走 `google_drive_oauth.py`。
 
 ## 7. 业务链路红线
 
@@ -303,3 +354,7 @@
 - “上传预览 / 上传进度不对”：先看 `ServerUploadPreviewDialog.vue`、`UploadTaskWorkbenchDialog.vue`、`library_manager.py`、`task_engine.py`。
 - “任务中心 / 历史记录不对”：先看 `task_center_service.py`、`activity_log_service.py`、`Tasks.vue`、`ActivityHistory.vue`。
 - “通知邮件 / 模板 / 变量不对”：先看 `notification_template_service.py`、`block_renderers/__init__.py`、`variable_registry.py`、`notification_helper.py`。
+- “HTTP 外链 / PikPak / Google Drive / Gofile 下载不对”：先看 `http_download_service.py`、`google_drive_oauth.py`、`HttpDownloadSettingsPanel.vue`，确认 aria2 可用、代理和 token 有效。
+- “暗黑模式样式没生效 / 闪白”：先看 `useTheme.ts` 是否挂上 `html.dark` + `html.kikoerumanager-dark`，再看 `dark-mode.css` 是否补了对应选择器。
+- “弹窗有蓝色聚焦框 / 移动端弹窗没全屏”：先看 `App.vue` 的弹窗去聚焦兜底和 `index.css` 的响应式 helper / `.mobile-full-dialog`。
+- “按钮加载态闪烁 / 不复用”：统一换 `frontend/src/components/ui/stateful-button.vue`。

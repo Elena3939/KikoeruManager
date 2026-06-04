@@ -98,8 +98,8 @@
           <span>已匹配完成，已应用 {{ view.activeSubtitleInspectTask?.manual_match_applied_pairs || view.subtitleInspectorInfo.manualMatchAppliedPairs || 0 }} 组配对。若还要调整，可以继续重新筛选后再次应用。</span>
         </div>
 
-        <div class="overflow-x-auto pb-1">
-          <div class="grid min-w-[980px] gap-3 xl:min-w-0" style="grid-template-columns:minmax(280px,1fr) minmax(320px,360px) minmax(280px,1fr)">
+        <div class="subtitle-pairing-grid-wrap pb-1">
+          <div class="subtitle-pairing-grid">
             <div class="flex flex-col rounded-[13px] border border-slate-200 bg-white overflow-hidden">
             <div class="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-100 bg-slate-50/60">
               <div class="flex items-center gap-1.5 text-[12px] font-semibold text-slate-700"><Music :size="12" :stroke-width="2.2" class="text-sky-500" />原音频目录<span class="text-[11px] font-normal text-slate-400">{{ view.filteredSubtitleInspectorAudioFiles.length }} 项</span></div>
@@ -577,6 +577,14 @@ function getSubtitlePairRenamePreview(pair = {}) {
 </script>
 
 <style scoped>
+.subtitle-inspector-workbench-root :is(button, [role="button"], input[type="checkbox"]):not(:disabled) {
+  cursor: pointer;
+}
+
+.subtitle-inspector-workbench-root :is(button, input):disabled {
+  cursor: not-allowed;
+}
+
 .subtitle-inspector-workbench-root :is(button, input):focus,
 .subtitle-inspector-workbench-root :is(button, input):focus-visible,
 .subtitle-inspector-workbench-root :focus-within {
@@ -624,6 +632,25 @@ function getSubtitlePairRenamePreview(pair = {}) {
   box-shadow: none !important;
 }
 
+.subtitle-pairing-grid-wrap {
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+.subtitle-pairing-grid {
+  display: grid;
+  min-width: 0;
+  grid-template-columns:
+    minmax(210px, 1fr)
+    minmax(260px, 0.88fr)
+    minmax(210px, 1fr);
+  gap: 12px;
+}
+
+.subtitle-pairing-grid > * {
+  min-width: 0;
+}
+
 .is-spinning { animation: subtitle-spin 1s linear infinite; }
 .is-sequence-pulse { animation: subtitle-sequence-pulse 1.4s ease-in-out infinite; }
 @keyframes subtitle-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
@@ -636,4 +663,10 @@ function getSubtitlePairRenamePreview(pair = {}) {
 .subtitle-inspector-workbench-scroll { scrollbar-gutter: stable; }
 .subtitle-inspector-workbench-scroll::-webkit-scrollbar { width: 6px; }
 .subtitle-inspector-workbench-scroll::-webkit-scrollbar-thumb { border-radius: 999px; background: rgba(148, 163, 184, 0.36); }
+
+@media (max-width: 1180px) {
+  .subtitle-pairing-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 </style>

@@ -538,6 +538,7 @@ html.kikoerumanager-dark :is(
   .conflicts-action-btn.is-primary,
   .fp-dlg-btn-primary,
   .rpd-btn-primary,
+  .brp-btn-primary,
   .vrd-btn-primary,
   .save-bar-btn-primary,
   .blk-add-main-btn,
@@ -559,6 +560,7 @@ html.kikoerumanager-dark :is(
   .conflicts-action-btn.is-primary:hover,
   .fp-dlg-btn-primary:hover,
   .rpd-btn-primary:hover,
+  .brp-btn-primary:hover,
   .vrd-btn-primary:hover,
   .save-bar-btn-primary:hover,
   .blk-add-main-btn:hover,
@@ -2103,16 +2105,171 @@ html.kikoerumanager-dark :is(
   .cmw-diff-row,
   .cmw-stat-card,
   .cmw-path-chip,
-  .rpd-panel,
-  .rpd-card,
-  .vrd-panel,
-  .vrd-card,
-  .brp-panel,
-  .brp-card
+  .fp-dlg-window,
+  .rpd-window,
+  .brp-window,
+  .vrd-window
 ) {
   background: var(--km-dark-surface) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-window) {
+  background: var(--km-dark-surface) !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-window) :is(
+  .fp-dlg-header,
+  .rpd-header,
+  .brp-header,
+  .vrd-header,
+  .fp-dlg-tabs,
+  .fp-dlg-footer,
+  .rpd-footer,
+  .brp-footer,
+  .vrd-footer
+) {
+  background: var(--km-dark-surface) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-window) :is(
+  .fp-dlg-body,
+  .rpd-body,
+  .brp-body,
+  .vrd-body
+) {
+  background: var(--km-dark-bg) !important;
+  background-image: none !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-window) :is(
+  .fp-dlg-title,
+  .rpd-title,
+  .brp-title,
+  .vrd-title
+) {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-window) :is(
+  .fp-dlg-subtitle,
+  .rpd-subtitle,
+  .brp-subtitle,
+  .vrd-subtitle
+) {
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-window) :is(
+  .fp-dlg-pill,
+  .rpd-count-chip,
+  .brp-pill,
+  .vrd-pill
+) {
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-window) :is(
+  .fp-dlg-pill b,
+  .brp-pill b,
+  .vrd-pill b,
+  .rpd-count-chip
+) {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-window) :is(
+  .fp-dlg-pill.is-amber,
+  .fp-dlg-pill.is-emerald,
+  .brp-pill.is-active,
+  .brp-pill.is-amber,
+  .vrd-pill.is-amber,
+  .rpd-count-chip
+) {
+  background: rgba(37, 99, 235, 0.16) !important;
+  border-color: rgba(96, 165, 250, 0.32) !important;
+  color: #bfdbfe !important;
+}
+
+html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-window) :is(
+  .rpd-password-panel,
+  .brp-row,
+  .vrd-row,
+  .fp-tree-row
+) {
+  background: var(--km-dark-surface-soft) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-window) :is(
+  .rpd-input,
+  .brp-input,
+  .vrd-row-input
+) {
+  background: var(--km-dark-field) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-window) :is(
+  .rpd-input-shell,
+  .brp-input-shell,
+  .brp-list-head,
+  .fp-dlg-tree-head,
+  .fp-dlg-tree-scroll
+) {
+  background: transparent !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-window) :is(
+  .fp-dlg-close,
+  .rpd-close,
+  .brp-close,
+  .vrd-close,
+  .fp-dlg-btn-secondary,
+  .rpd-btn-secondary,
+  .brp-btn-secondary,
+  .vrd-btn-secondary,
+  .rpd-row-del
+) {
+  background: var(--km-dark-button-bg) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-window) :is(
+  .fp-dlg-close:hover,
+  .rpd-close:hover,
+  .brp-close:hover,
+  .vrd-close:hover,
+  .fp-dlg-btn-secondary:hover,
+  .rpd-btn-secondary:hover,
+  .brp-btn-secondary:hover,
+  .vrd-btn-secondary:hover,
+  .rpd-row-del:hover:not(:disabled)
+) {
+  background: var(--km-dark-button-bg-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark :is(
@@ -2251,8 +2408,7 @@ html.kikoerumanager-dark body :is(
   .dash-cmd-btn:not(:first-child),
   .dash-archive-refresh-btn,
   .dash-archive-pager-btn,
-  [data-section="dashboard-tasks"] button:not(.theme-toggle-button),
-  [data-section="dashboard-archive"] button:not(.theme-toggle-button)
+  .dash-task-menu-trigger
 ) {
   background: var(--km-dark-button-bg) !important;
   border-color: var(--km-dark-border) !important;
@@ -2265,8 +2421,7 @@ html.kikoerumanager-dark body :is(
   .dash-cmd-btn:not(:first-child):hover,
   .dash-archive-refresh-btn:hover,
   .dash-archive-pager-btn:hover,
-  [data-section="dashboard-tasks"] button:not(.theme-toggle-button):hover,
-  [data-section="dashboard-archive"] button:not(.theme-toggle-button):hover
+  .dash-task-menu-trigger:hover
 ) {
   background: var(--km-dark-button-bg-hover) !important;
   border-color: var(--km-dark-border-strong) !important;
@@ -4484,4 +4639,182 @@ html.kikoerumanager-dark body #app .library.library .lib-search-box .lib-search-
   color: currentColor !important;
   stroke: currentColor !important;
   opacity: 1 !important;
+}
+
+/* Dashboard 局部修正：概览任务图标 / 三点菜单 / 最近归档可读性 */
+html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .dash-task-icon-box.dash-task-icon-box {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .dash-task-menu-trigger.dash-task-menu-trigger {
+  background: rgba(255, 255, 255, 0.04) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  color: rgba(255, 255, 255, 0.82) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .dash-task-menu-trigger.dash-task-menu-trigger:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark body .dash-task-action-menu.dash-task-action-menu {
+  background: rgba(15, 23, 42, 0.96) !important;
+  background-image: none !important;
+  border-color: rgba(148, 163, 184, 0.18) !important;
+  color: #cbd5e1 !important;
+  box-shadow: 0 22px 58px rgba(0, 0, 0, 0.56) !important;
+}
+
+html.kikoerumanager-dark body .dash-task-action-menu .dash-task-action-menu-header span {
+  color: #e2e8f0 !important;
+}
+
+html.kikoerumanager-dark body .dash-task-action-menu .dash-task-action-menu-item {
+  color: #cbd5e1 !important;
+}
+
+html.kikoerumanager-dark body .dash-task-action-menu .dash-task-action-menu-item:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: #ffffff !important;
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.14) !important;
+}
+
+html.kikoerumanager-dark body .dash-task-action-menu .dash-task-action-menu-item--danger {
+  color: #fda4af !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-search.dash-archive-search {
+  background: var(--km-dark-surface-soft) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.11) !important;
+  color-scheme: dark;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-search-input.dash-archive-search-input {
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-search-input.dash-archive-search-input::placeholder {
+  color: rgba(255, 255, 255, 0.5) !important;
+  -webkit-text-fill-color: rgba(255, 255, 255, 0.5) !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-tab.dash-archive-tab.is-idle {
+  background: rgba(255, 255, 255, 0.06) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  color: #cbd5e1 !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-tab.dash-archive-tab.is-idle:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-tab.dash-archive-tab.is-active {
+  background: rgba(255, 255, 255, 0.14) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-tab-count--off {
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: #cbd5e1 !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-tab-count--on {
+  background: rgba(255, 255, 255, 0.2) !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-domain-chip,
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-volume-chip {
+  background: rgba(255, 255, 255, 0.07) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: #f8fafc !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-domain-chip--import {
+  background: rgba(245, 158, 11, 0.16) !important;
+  border-color: rgba(245, 158, 11, 0.22) !important;
+  color: #fde68a !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-domain-chip--existing_folder,
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-domain-chip--rj_subtitle {
+  background: rgba(20, 184, 166, 0.14) !important;
+  border-color: rgba(45, 212, 191, 0.2) !important;
+  color: #ccfbf1 !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-domain-chip--subtitle_import {
+  background: rgba(168, 85, 247, 0.14) !important;
+  border-color: rgba(196, 181, 253, 0.2) !important;
+  color: #ede9fe !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-domain-chip--asmr_sync,
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-domain-chip--circle_completion {
+  background: rgba(16, 185, 129, 0.14) !important;
+  border-color: rgba(110, 231, 183, 0.2) !important;
+  color: #d1fae5 !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-domain-chip--http_download {
+  background: rgba(249, 115, 22, 0.16) !important;
+  border-color: rgba(251, 146, 60, 0.22) !important;
+  color: #fed7aa !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-status-chip.dash-archive-status-chip {
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: #cbd5e1 !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-status-chip--completed,
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-status-chip--success,
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-status-chip--finished {
+  background: rgba(16, 185, 129, 0.14) !important;
+  color: #d1fae5 !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-status-chip--partial_failed {
+  background: rgba(245, 158, 11, 0.14) !important;
+  color: #fde68a !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-status-chip--failed {
+  background: rgba(244, 63, 94, 0.14) !important;
+  color: #fecdd3 !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-status-chip--pending,
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-status-chip--waiting_manual,
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-status-chip--waiting_retry {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #e2e8f0 !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-meta-time.dash-archive-meta-time,
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-meta-size.dash-archive-meta-size {
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
+  opacity: 1 !important;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.22) !important;
 }

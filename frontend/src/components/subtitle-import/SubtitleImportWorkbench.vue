@@ -2191,6 +2191,8 @@ const subtitleConfigCtx = computed(() => ({
 const subtitleTaskStageCtx = computed(() => ({
   subtitleQueueTasks: linkedTasks.value,
   visibleSubtitleTasks: visibleSubtitleTasks.value,
+  subtitleQueueLoading: (taskLoading.value || taskRefreshing.value) && !linkedTasks.value.length,
+  subtitleQueueRefreshing: taskRefreshing.value,
   activeSubtitleTask: activeTask.value,
   selectedSubtitleTaskId: String(selectedTaskId.value || ''),
   activeSubtitleWorkbenchStageLabel: activeSubtitleWorkbenchStageLabel.value,
@@ -2406,8 +2408,8 @@ const subtitleWorkbenchCtx = computed(() => ({
 .siw-shell {
   display: flex;
   width: 100%;
-  height: min(900px, calc(100dvh - 32px));
-  min-height: min(760px, calc(100dvh - 32px));
+  height: min(940px, calc(100dvh - 32px));
+  min-height: min(780px, calc(100dvh - 32px));
   max-height: calc(100dvh - 32px);
   flex-direction: column;
   overflow: hidden;
