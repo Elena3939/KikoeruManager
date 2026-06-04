@@ -81,6 +81,14 @@ export const HTTP_DOWNLOAD_PLATFORM_META = {
     icon: PIKPAK_ICON,
     iconSrc: PLATFORM_ICON_URLS.pikpak,
     aliases: ['pikpak', 'mypikpak.com', 'drive.mypikpak.com']
+  },
+  baidu_netdisk: {
+    key: 'baidu_netdisk',
+    label: '百度网盘',
+    title: '百度网盘下载',
+    icon: '',
+    iconSrc: '',
+    aliases: ['baidu_netdisk', 'baidu-netdisk', 'baidu', 'pan.baidu.com', 'yun.baidu.com', '百度网盘']
   }
 }
 
@@ -113,6 +121,7 @@ export function getHttpDownloadPlatformKey(value) {
   if (raw.includes('1drv.ms') || raw.includes('onedrive')) return 'onedrive'
   if (raw.includes('drive.google.com') || raw.includes('docs.google.com') || raw.includes('drive.usercontent.google.com') || raw.includes('google drive')) return 'google_drive'
   if (raw.includes('mypikpak.com') || raw.includes('drive.mypikpak.com') || raw.includes('pikpak')) return 'pikpak'
+  if (raw.includes('pan.baidu.com') || raw.includes('yun.baidu.com') || raw.includes('百度网盘') || raw.includes('baidu_netdisk') || raw.includes('baidu-netdisk')) return 'baidu_netdisk'
   return HTTP_DOWNLOAD_PLATFORM_META[normalized] ? normalized : 'http'
 }
 

@@ -159,6 +159,11 @@ export const configApi = {
     return response.data
   },
 
+  revealBaiduNetdiskSecret: async (payload) => {
+    const response = await apiClient.post('/config/baidu-netdisk/reveal-secret', payload)
+    return response.data
+  },
+
   revealAISubtitleSecret: async (payload) => {
     const response = await apiClient.post('/config/ai-subtitle-match/reveal-secret', payload)
     return response.data
@@ -1441,6 +1446,11 @@ export const httpDownloadApi = {
     return response.data
   },
 
+  retryFile: async (taskId, file = {}) => {
+    const response = await apiClient.post(`/http-download/task/${taskId}/retry-file`, { file })
+    return response.data
+  },
+
   pikpakStatus: async (payload = {}) => {
     const response = await apiClient.get('/http-download/pikpak/status', {
       params: {
@@ -1518,6 +1528,115 @@ export const httpDownloadApi = {
     }, {
       timeout: payload.timeout ?? 15000
     })
+    return response.data
+  }
+}
+
+export const baiduNetdiskApi = {
+  health: async () => {
+    const response = await apiClient.get('/baidu-netdisk/backend-health')
+    return response.data
+  },
+
+  preview: async (payload = {}) => {
+    const response = await apiClient.post('/baidu-netdisk/preview', {
+      urls: payload.urls || [],
+      target_subdir: payload.targetSubdir || payload.target_subdir || '',
+      output_folder_name: payload.outputFolderName || payload.output_folder_name || '',
+      batch_name: payload.batchName || payload.batch_name || '',
+      conflict_policy: payload.conflictPolicy || payload.conflict_policy || '',
+      selected_keys: payload.selectedKeys || payload.selected_keys || [],
+      selected_items: payload.selectedItems || payload.selected_items || []
+    }, {
+      timeout: payload.timeout ?? 45000,
+      signal: payload.signal
+    })
+    return response.data
+  },
+
+  start: async (payload = {}) => {
+    const response = await apiClient.post('/baidu-netdisk/start', {
+      urls: payload.urls || [],
+      target_subdir: payload.targetSubdir || payload.target_subdir || '',
+      output_folder_name: payload.outputFolderName || payload.output_folder_name || '',
+      batch_name: payload.batchName || payload.batch_name || '',
+      conflict_policy: payload.conflictPolicy || payload.conflict_policy || '',
+      selected_keys: payload.selectedKeys || payload.selected_keys || [],
+      selected_items: payload.selectedItems || payload.selected_items || []
+    })
+    return response.data
+  },
+
+  status: async () => {
+    const response = await apiClient.get('/baidu-netdisk/status')
+    return response.data
+  },
+
+  pause: async (taskId) => {
+    const response = await apiClient.post(`/baidu-netdisk/task/${taskId}/pause`)
+    return response.data
+  },
+
+  resume: async (taskId) => {
+    const response = await apiClient.post(`/baidu-netdisk/task/${taskId}/resume`)
+    return response.data
+  },
+
+  cancel: async (taskId) => {
+    const response = await apiClient.post(`/baidu-netdisk/task/${taskId}/cancel`)
+    return response.data
+  },
+
+  retry: async (taskId) => {
+    const response = await apiClient.post(`/baidu-netdisk/task/${taskId}/retry`)
+    return response.data
+  },
+
+  testAccount: async (payload = {}) => {
+    const response = await apiClient.post('/baidu-netdisk/account/test', {
+      cookie: payload.cookie || '',
+      persist: Boolean(payload.persist)
+    }, {
+      timeout: payload.timeout ?? 45000
+    })
+    return response.data
+  },
+
+  refreshAccount: async (payload = {}) => {
+    const response = await apiClient.post('/baidu-netdisk/account/refresh', {}, {
+      timeout: payload.timeout ?? 45000
+    })
+    return response.data
+  },
+
+  startOfficialLogin: async (payload = {}) => {
+    const response = await apiClient.post('/baidu-netdisk/account/official-login/start', {}, {
+      timeout: payload.timeout ?? 20000
+    })
+    return response.data
+  },
+
+  officialLoginStatus: async () => {
+    const response = await apiClient.get('/baidu-netdisk/account/official-login/status')
+    return response.data
+  },
+
+  completeOfficialLogin: async (payload = {}) => {
+    const response = await apiClient.post('/baidu-netdisk/account/official-login/complete', {
+      persist: payload.persist ?? true
+    }, {
+      timeout: payload.timeout ?? 45000
+    })
+    return response.data
+  },
+
+  closeOfficialLogin: async () => {
+    const response = await apiClient.post('/baidu-netdisk/account/official-login/close')
+    return response.data
+  },
+
+  unbindAccount: async () => {
+    const response = await apiClient.post('/baidu-netdisk/account/unbind')
     return response.data
   }
 }
@@ -1981,6 +2100,7 @@ export default {
   health: healthApi,
   asmrSync: asmrSyncApi,
   httpDownload: httpDownloadApi,
+  baiduNetdisk: baiduNetdiskApi,
   rjSubtitle: rjSubtitleApi,
   aiSubtitleMatch: aiSubtitleMatchApi,
   subtitleImport: subtitleImportApi,

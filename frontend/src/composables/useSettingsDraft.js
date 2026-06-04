@@ -4,6 +4,8 @@ import { showSystemConfirm } from './useSystemPrompt'
 import { useConfigStore } from '../stores'
 import { configApi } from '../api'
 
+const DEFAULT_BAIDUPCS_GO_PATH = 'tools/baidupcs-go/BaiduPCS-Go.exe'
+
 export const SYNOLOGY_PROFILE_FIELDS = [
   'base_url',
   'username',
@@ -248,6 +250,7 @@ export const defaultConfig = {
     google_drive_account_avatar_url: '',
     google_drive_account_permission_id: '',
     google_drive_account_cached_at: 0,
+    google_drive_oauth_expired: false,
     pikpak_enabled: false,
     pikpak_default_enabled: true,
     pikpak_label: '',
@@ -258,6 +261,27 @@ export const defaultConfig = {
     pikpak_transfer_dir: '/KikoeruManager',
     pikpak_auto_save_share: true,
     pikpak_accounts: []
+  },
+  baidu_netdisk: {
+    enabled: false,
+    download_root: '',
+    baidupcs_go_path: DEFAULT_BAIDUPCS_GO_PATH,
+    config_dir: '',
+    cookie: '',
+    max_parallel: 200,
+    max_download_load: '0',
+    conflict_policy: 'resume',
+    svip_speed_enabled: true,
+    account_name: '',
+    account_netdisk_name: '',
+    account_avatar_url: '',
+    account_uk: '',
+    vip_type: 0,
+    vip_label: '',
+    vip_level: '',
+    quota_bytes: 0,
+    used_bytes: 0,
+    account_cached_at: 0
   },
   auto_process: {
     check_duplicate: true,
@@ -472,6 +496,7 @@ function hydrateConfig(data = {}) {
     kikoeru_server: { ...defaultConfig.kikoeru_server, ...(data?.kikoeru_server || {}) },
     asmr_sync: { ...defaultConfig.asmr_sync, ...(data?.asmr_sync || {}), lrc_clean_patterns: data?.asmr_sync?.lrc_clean_patterns || defaultConfig.asmr_sync.lrc_clean_patterns },
     http_downloader: { ...defaultConfig.http_downloader, ...(data?.http_downloader || {}) },
+    baidu_netdisk: { ...defaultConfig.baidu_netdisk, ...(data?.baidu_netdisk || {}) },
     auto_process: { ...defaultConfig.auto_process, ...(data?.auto_process || {}) },
     process_existing: { ...defaultConfig.process_existing, ...(data?.process_existing || {}) },
     asmr_sync_step: { ...defaultConfig.asmr_sync_step, ...(data?.asmr_sync_step || {}) },
@@ -482,6 +507,10 @@ function hydrateConfig(data = {}) {
     notification_center: { ...defaultConfig.notification_center, ...(data?.notification_center || {}) },
     security_gate: { ...defaultConfig.security_gate, ...(data?.security_gate || {}) },
     classification: data?.classification || defaultConfig.classification
+  }
+
+  if (!String(next.baidu_netdisk.baidupcs_go_path || '').trim()) {
+    next.baidu_netdisk.baidupcs_go_path = DEFAULT_BAIDUPCS_GO_PATH
   }
 
   if (!next.storage.libraries.length) {
@@ -521,6 +550,7 @@ function serializeConfig(config) {
     kikoeru_server: payload.kikoeru_server,
     asmr_sync: payload.asmr_sync,
     http_downloader: payload.http_downloader,
+    baidu_netdisk: payload.baidu_netdisk,
     auto_process: payload.auto_process,
     process_existing: payload.process_existing,
     asmr_sync_step: payload.asmr_sync_step,
@@ -531,7 +561,11 @@ function serializeConfig(config) {
     notification_center: payload.notification_center,
     security_gate: payload.security_gate
   }
-  if (!serialized.http_downloader?.google_drive_refresh_token) {
+  const googleDriveHasAuthorizationState = Boolean(
+    serialized.http_downloader?.google_drive_refresh_token
+      || serialized.http_downloader?.google_drive_oauth_expired
+  )
+  if (!googleDriveHasAuthorizationState) {
     serialized.http_downloader.google_drive_account_name = ''
     serialized.http_downloader.google_drive_account_email = ''
     serialized.http_downloader.google_drive_account_avatar_url = ''
@@ -539,6 +573,14 @@ function serializeConfig(config) {
     serialized.http_downloader.google_drive_account_cached_at = 0
   }
   serialized.http_downloader.google_drive_account_cached_at = Number(serialized.http_downloader.google_drive_account_cached_at || 0)
+  serialized.http_downloader.google_drive_oauth_expired = Boolean(serialized.http_downloader.google_drive_oauth_expired)
+  serialized.baidu_netdisk.account_cached_at = Number(serialized.baidu_netdisk.account_cached_at || 0)
+  serialized.baidu_netdisk.vip_type = Number(serialized.baidu_netdisk.vip_type || 0)
+  serialized.baidu_netdisk.quota_bytes = Number(serialized.baidu_netdisk.quota_bytes || 0)
+  serialized.baidu_netdisk.used_bytes = Number(serialized.baidu_netdisk.used_bytes || 0)
+  if (!String(serialized.baidu_netdisk.baidupcs_go_path || '').trim()) {
+    serialized.baidu_netdisk.baidupcs_go_path = DEFAULT_BAIDUPCS_GO_PATH
+  }
   return serialized
 }
 
@@ -752,6 +794,12 @@ export function useSettingsDraft(options = {}) {
         snapshot.value?.ai_subtitle_matching?.api_key === MASKED_PASSWORD
       ) {
         delete payload.ai_subtitle_matching.api_key
+      }
+      if (
+        payload.baidu_netdisk?.cookie === MASKED_PASSWORD &&
+        snapshot.value?.baidu_netdisk?.cookie === MASKED_PASSWORD
+      ) {
+        delete payload.baidu_netdisk.cookie
       }
       stripMaskedPikPakAccountSecrets(payload, snapshot.value)
       await configStore.saveConfig(payload)
