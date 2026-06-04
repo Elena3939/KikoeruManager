@@ -60,6 +60,7 @@ import {
   Activity,
   Archive,
   Captions,
+  CloudDownload,
   Database,
   Download,
   FileArchive,
@@ -75,6 +76,8 @@ import DashboardHero from '../components/dashboard/DashboardHero.vue'
 import DashboardCommandStrip from '../components/dashboard/DashboardCommandStrip.vue'
 import DashboardActiveTasks from '../components/dashboard/DashboardActiveTasks.vue'
 import DashboardArchive from '../components/dashboard/DashboardArchive.vue'
+import { patchTaskCenterItemList } from '../composables/taskCenterEventUtils'
+import { showSystemConfirm } from '../composables/useSystemPrompt'
 
 const router = useRouter()
 
@@ -111,7 +114,11 @@ let refreshRequestId = 0
 let visibilityBound = false
 let lastConflictRefreshTime = 0
 let cachedConflictCount = 0
+let streamRefreshTimer = null
+let lastTaskCenterStreamEventAt = 0
 const CONFLICT_REFRESH_INTERVAL = 30000
+const STREAM_REFRESH_DEBOUNCE_MS = 500
+const FALLBACK_POLL_INTERVAL_MS = 30000
 
 const domainCounts = computed(() => ({
   import: Number(taskCenterOverview.value?.counts_by_domain?.import || 0),
@@ -119,6 +126,7 @@ const domainCounts = computed(() => ({
   subtitle_import: Number(taskCenterOverview.value?.counts_by_domain?.subtitle_import || 0),
   asmr_sync: Number(taskCenterOverview.value?.counts_by_domain?.asmr_sync || 0),
   http_download: Number(taskCenterOverview.value?.counts_by_domain?.http_download || 0),
+  baidu_netdisk: Number(taskCenterOverview.value?.counts_by_domain?.baidu_netdisk || 0),
   upload: Number(taskCenterOverview.value?.counts_by_domain?.upload || 0),
   circle_completion: Number(taskCenterOverview.value?.counts_by_domain?.circle_completion || 0),
 }))
@@ -133,8 +141,9 @@ const kpiCards = computed(() => [
   { key: 'import', label: '导入处理', value: domainCounts.value.import, icon: FileArchive, route: '/library' },
   { key: 'rj', label: 'RJ 字幕', value: domainCounts.value.rj_subtitle, icon: Captions, route: '/library' },
   { key: 'subtitle', label: '字幕补配', value: domainCounts.value.subtitle_import, icon: Sparkles, route: '/subtitle-import' },
-  { key: 'asmr', label: 'ASMR 同步', value: domainCounts.value.asmr_sync, icon: UploadCloud, route: '/asmr-sync' },
-  { key: 'http', label: 'HTTP 下载', value: domainCounts.value.http_download, icon: Download, route: '/asmr-sync' },
+  { key: 'asmr', label: 'ASMR 同步', value: domainCounts.value.asmr_sync, icon: UploadCloud, route: { path: '/asmr-sync', query: { tab: 'enhanced' } } },
+  { key: 'http', label: 'HTTP 下载', value: domainCounts.value.http_download, icon: Download, route: { path: '/asmr-sync', query: { tab: 'http' } } },
+  { key: 'baidu', label: '百度网盘', value: domainCounts.value.baidu_netdisk, icon: CloudDownload, route: { path: '/asmr-sync', query: { tab: 'baidu' } } },
   { key: 'upload', label: '库存上传', value: domainCounts.value.upload, icon: Upload, route: '/library' },
   { key: 'conflicts', label: '问题作品', value: stats.value.conflicts, icon: ShieldAlert, route: '/conflicts' },
 ])
@@ -146,39 +155,98 @@ const statusCards = computed(() => [
   { key: 'failed', label: '失败', value: Number(taskCenterOverview.value?.highlight_counts?.failed || 0) },
 ])
 
+function parseVolumeArchiveFilename(filename) {
+  const text = String(filename || '').trim()
+  if (!text) return null
+
+  let match = text.match(/^(.*)\.part(\d+)\.(rar|zip|7z|exe)$/i)
+  if (match) {
+    return {
+      groupKey: `${match[1].toLowerCase()}::${match[3].toLowerCase()}`,
+      displayName: `${match[1]}.${match[3].toLowerCase()}`,
+      volumeIndex: Number(match[2] || 0),
+    }
+  }
+
+  match = text.match(/^(.*)\.(zip|7z|rar)\.(\d{2,3})$/i)
+  if (match) {
+    return {
+      groupKey: `${match[1].toLowerCase()}::${match[2].toLowerCase()}`,
+      displayName: `${match[1]}.${match[2].toLowerCase()}`,
+      volumeIndex: Number(match[3] || 0),
+    }
+  }
+
+  match = text.match(/^(.*)\.(z|r)(\d{2,3})$/i)
+  if (match) {
+    const family = String(match[2] || '').toLowerCase()
+    return {
+      groupKey: `${match[1].toLowerCase()}::${family}`,
+      displayName: `${match[1]}.${family}`,
+      volumeIndex: Number(match[3] || 0),
+    }
+  }
+
+  return null
+}
+
 const groupedArchives = computed(() => {
   const groups = new Map()
   const singles = []
   for (const archive of archives.value) {
     const filename = String(archive.filename || '')
-    const volumeMatch = filename.match(/^(.*)\.part(\d+)\.(rar|zip|7z|exe)$/i)
-    if (!volumeMatch) {
+    const volumeInfo = parseVolumeArchiveFilename(filename)
+    if (!volumeInfo) {
       singles.push({ ...archive, source: 'processed_archive', isVolumeGroup: false })
       continue
     }
-    const baseName = volumeMatch[1]
-    const groupKey = `${baseName}_volume_group`
+    const groupKey = volumeInfo.groupKey
     if (!groups.has(groupKey)) {
       groups.set(groupKey, {
         id: archive.id,
         rjcode: archive.rjcode,
-        filename: `${baseName}（分卷组）`,
+        filename: `${volumeInfo.displayName}（分卷组）`,
         file_size: 0,
         process_count: archive.process_count || 1,
         processed_at: archive.processed_at || new Date(0).toISOString(),
         status: archive.status,
         isVolumeGroup: true,
         volumes: [],
+        volumeIndex: volumeInfo.volumeIndex || 0,
       })
     }
     const group = groups.get(groupKey)
     group.volumes.push(archive)
     group.file_size += Number(archive.file_size || 0)
+    if (archive.rjcode && !group.rjcode) group.rjcode = archive.rjcode
+    if (archive.status && group.status !== 'failed') group.status = archive.status
+    if (volumeInfo.volumeIndex && (!group.volumeIndex || volumeInfo.volumeIndex < group.volumeIndex)) {
+      group.volumeIndex = volumeInfo.volumeIndex
+      group.id = archive.id
+    }
     if (filename.toLowerCase().includes('.part1.')) {
       group.id = archive.id
     }
   }
-  return [...groups.values(), ...singles].map((item) => ({ ...item, source: item.source || 'processed_archive' }))
+  return [...groups.values(), ...singles]
+    .map((item) => {
+      if (!item.isVolumeGroup || !Array.isArray(item.volumes) || !item.volumes.length) {
+        return { ...item, source: item.source || 'processed_archive' }
+      }
+      const latestArchive = item.volumes.reduce((latest, current) => {
+        const latestTime = new Date(latest?.processed_at || 0).getTime()
+        const currentTime = new Date(current?.processed_at || 0).getTime()
+        return currentTime >= latestTime ? current : latest
+      }, item.volumes[0])
+      return {
+        ...item,
+        id: item.id || latestArchive?.id,
+        rjcode: item.rjcode || latestArchive?.rjcode,
+        processed_at: latestArchive?.processed_at || item.processed_at,
+        process_count: Math.max(...item.volumes.map((volume) => Number(volume?.process_count || 1))),
+        source: 'processed_archive',
+      }
+    })
 })
 
 const taskArchiveItems = computed(() => {
@@ -231,12 +299,13 @@ const archiveDomainTabMeta = {
   rj_subtitle: { key: 'rj_subtitle', label: 'RJ 字幕', icon: Captions, chipIcon: 'text-sky-600', chipBg: 'bg-sky-50', chipText: 'text-sky-700' },
   asmr_sync: { key: 'asmr_sync', label: 'ASMR', icon: UploadCloud, chipIcon: 'text-emerald-600', chipBg: 'bg-emerald-50', chipText: 'text-emerald-700' },
   http_download: { key: 'http_download', label: 'HTTP 下载', icon: Download, chipIcon: 'text-orange-600', chipBg: 'bg-orange-50', chipText: 'text-orange-700' },
+  baidu_netdisk: { key: 'baidu_netdisk', label: '百度网盘', icon: CloudDownload, chipIcon: 'text-blue-600', chipBg: 'bg-blue-50', chipText: 'text-blue-700' },
   upload: { key: 'upload', label: '库存上传', icon: Upload, chipIcon: 'text-blue-600', chipBg: 'bg-blue-50', chipText: 'text-blue-700' },
   circle_completion: { key: 'circle_completion', label: '社团补全', icon: Database, chipIcon: 'text-teal-600', chipBg: 'bg-teal-50', chipText: 'text-teal-700' },
   system: { key: 'system', label: '系统', icon: Activity, chipIcon: 'text-slate-600', chipBg: 'bg-slate-100', chipText: 'text-slate-700' },
 }
 
-const archiveDomainOrder = ['import', 'http_download', 'subtitle_import', 'rj_subtitle', 'asmr_sync', 'upload', 'circle_completion', 'system']
+const archiveDomainOrder = ['import', 'http_download', 'baidu_netdisk', 'subtitle_import', 'rj_subtitle', 'asmr_sync', 'upload', 'circle_completion', 'system']
 
 const archiveDomainTabs = computed(() => {
   const domainCountMap = new Map()
@@ -285,6 +354,7 @@ onMounted(async () => {
   await initializeDashboardPage()
   dashboardViewActive = true
   bindDashboardVisibilityRefresh()
+  bindTaskCenterStreamEvents()
   startDashboardPolling()
 })
 
@@ -292,11 +362,13 @@ onActivated(async () => {
   if (dashboardViewActive) return
   dashboardViewActive = true
   await refreshDashboardOnResume()
+  bindTaskCenterStreamEvents()
   startDashboardPolling()
 })
 
 onDeactivated(() => {
   dashboardViewActive = false
+  unbindTaskCenterStreamEvents()
   stopDashboardPolling()
 })
 
@@ -304,6 +376,7 @@ onUnmounted(() => {
   dashboardViewActive = false
   stopDashboardPolling()
   unbindDashboardVisibilityRefresh()
+  unbindTaskCenterStreamEvents()
   if (archiveSearchTimeout) {
     clearTimeout(archiveSearchTimeout)
     archiveSearchTimeout = null
@@ -320,8 +393,9 @@ function stopDashboardPolling() {
 function startDashboardPolling() {
   stopDashboardPolling()
   intervalId = setInterval(() => {
+    if (Date.now() - lastTaskCenterStreamEventAt < FALLBACK_POLL_INTERVAL_MS) return
     refreshData({ silent: true })
-  }, 3000)
+  }, FALLBACK_POLL_INTERVAL_MS)
 }
 
 function bindDashboardVisibilityRefresh() {
@@ -341,6 +415,50 @@ function unbindDashboardVisibilityRefresh() {
 function handleDashboardVisibilityRefresh() {
   if (!dashboardViewActive || document.visibilityState === 'hidden') return
   refreshData({ silent: true })
+}
+
+function bindTaskCenterStreamEvents() {
+  window.removeEventListener('kikoerumanager:task-center:changed', handleTaskCenterStreamEvent)
+  window.addEventListener('kikoerumanager:task-center:changed', handleTaskCenterStreamEvent)
+}
+
+function unbindTaskCenterStreamEvents() {
+  window.removeEventListener('kikoerumanager:task-center:changed', handleTaskCenterStreamEvent)
+  if (streamRefreshTimer) {
+    clearTimeout(streamRefreshTimer)
+    streamRefreshTimer = null
+  }
+}
+
+function scheduleDashboardStreamRefresh() {
+  if (!dashboardViewActive) return
+  if (streamRefreshTimer) clearTimeout(streamRefreshTimer)
+  streamRefreshTimer = setTimeout(() => {
+    streamRefreshTimer = null
+    refreshData({ silent: true })
+  }, STREAM_REFRESH_DEBOUNCE_MS)
+}
+
+function patchDashboardTaskOverview(payload) {
+  const current = taskCenterOverview.value || {}
+  taskCenterOverview.value = {
+    ...current,
+    active_items: patchTaskCenterItemList(current.active_items || [], payload),
+    recent_items: patchTaskCenterItemList(current.recent_items || [], payload),
+  }
+}
+
+function handleTaskCenterStreamEvent(event) {
+  const payload = event?.detail || {}
+  if (!payload?.type) return
+  lastTaskCenterStreamEventAt = Date.now()
+  if (payload.type === 'connected') {
+    refreshData({ silent: true })
+    return
+  }
+  if (payload.type !== 'task_center_changed') return
+  patchDashboardTaskOverview(payload)
+  scheduleDashboardStreamRefresh()
 }
 
 async function initializeDashboardPage() {
@@ -509,6 +627,19 @@ async function reprocessArchive(archiveId) {
 }
 
 async function handleTaskCenterAction(task, action) {
+  if (action === 'delete') {
+    try {
+      await showSystemConfirm({
+        title: '删除任务记录',
+        message: `确认删除「${task?.title || '该任务'}」的任务记录？`,
+        description: '只会清理任务中心记录，不会删除业务文件。',
+        tone: 'danger',
+        confirmText: '删除',
+      })
+    } catch (_) {
+      return
+    }
+  }
   try {
     const result = await taskCenterApi.action(task.id, action)
     if (result?.route_hint) await router.push(result.route_hint)
@@ -566,7 +697,7 @@ function getArchiveTaskMeta(archive) {
   )
     .trim()
     .toLowerCase()
-  const known = ['import', 'rj_subtitle', 'subtitle_import', 'asmr_sync', 'http_download', 'upload', 'circle_completion', 'system']
+  const known = ['import', 'rj_subtitle', 'subtitle_import', 'asmr_sync', 'http_download', 'baidu_netdisk', 'upload', 'circle_completion', 'system']
   const key = known.includes(domain) ? domain : 'import'
   const meta = getTaskDomainMeta(key)
   if (key === 'http_download') {

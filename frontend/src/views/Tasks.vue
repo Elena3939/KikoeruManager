@@ -73,6 +73,7 @@ import { ElMessage } from 'element-plus'
 import {
   Activity,
   Captions,
+  CloudDownload,
   Database,
   Download,
   FileArchive,
@@ -88,6 +89,8 @@ import TasksFilters from '../components/tasks/TasksFilters.vue'
 import TaskListPane from '../components/tasks/TaskListPane.vue'
 import TaskDetailPane from '../components/tasks/TaskDetailPane.vue'
 import { useViewport } from '../composables/useViewport'
+import { patchTaskCenterItemList, applyTaskCenterEventPatch } from '../composables/taskCenterEventUtils'
+import { showSystemConfirm } from '../composables/useSystemPrompt'
 
 const router = useRouter()
 const { isMobile } = useViewport()
@@ -116,7 +119,12 @@ const treeFilterMode = ref('all')
 let intervalId = null
 let queuedRefresh = false
 let searchDebounceTimer = null
+let streamRefreshTimer = null
+let streamDetailTimer = null
+let lastTaskCenterStreamEventAt = 0
 const DETAIL_REFRESH_INTERVAL_MS = 15000
+const STREAM_REFRESH_DEBOUNCE_MS = 500
+const FALLBACK_POLL_INTERVAL_MS = 30000
 let lastDetailFetchedAt = 0
 let lastDetailSyncSignature = ''
 
@@ -128,6 +136,7 @@ const domainOptions = [
   { value: 'subtitle_import', label: '字幕补配', icon: Sparkles },
   { value: 'asmr_sync', label: 'ASMR 同步', icon: UploadCloud },
   { value: 'http_download', label: 'HTTP 下载', icon: Download },
+  { value: 'baidu_netdisk', label: '百度网盘', icon: CloudDownload },
   { value: 'upload', label: '库存上传', icon: Upload },
   { value: 'circle_completion', label: '社团补全', icon: Database },
   { value: 'system', label: '系统任务', icon: Activity },
@@ -292,11 +301,21 @@ watch(pollingEnabled, (enabled) => {
 
 onMounted(async () => {
   await refreshTaskCenter(false, { silent: false })
+  window.addEventListener('kikoerumanager:task-center:changed', handleTaskCenterStreamEvent)
   startPolling()
 })
 
 onUnmounted(() => {
+  window.removeEventListener('kikoerumanager:task-center:changed', handleTaskCenterStreamEvent)
   stopPolling()
+  if (streamRefreshTimer) {
+    clearTimeout(streamRefreshTimer)
+    streamRefreshTimer = null
+  }
+  if (streamDetailTimer) {
+    clearTimeout(streamDetailTimer)
+    streamDetailTimer = null
+  }
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
     searchDebounceTimer = null
@@ -306,10 +325,11 @@ onUnmounted(() => {
 function startPolling() {
   if (intervalId || !pollingEnabled.value) return
   intervalId = setInterval(() => {
+    if (Date.now() - lastTaskCenterStreamEventAt < FALLBACK_POLL_INTERVAL_MS) return
     refreshTaskCenter(false, { silent: true }).catch((error) => {
       console.error('任务中心轮询失败:', error)
     })
-  }, 5000)
+  }, FALLBACK_POLL_INTERVAL_MS)
 }
 
 function stopPolling() {
@@ -347,6 +367,55 @@ function handlePrevPage() {
 function handleNextPage() {
   currentOffset.value += pageSize.value
   refreshTaskCenter(false, { silent: true })
+}
+
+function scheduleTaskCenterStreamRefresh() {
+  if (streamRefreshTimer) clearTimeout(streamRefreshTimer)
+  streamRefreshTimer = setTimeout(() => {
+    streamRefreshTimer = null
+    refreshTaskCenter(false, { silent: true }).catch((error) => {
+      console.error('任务中心 SSE 刷新失败:', error)
+    })
+  }, STREAM_REFRESH_DEBOUNCE_MS)
+}
+
+function scheduleSelectedTaskDetailRefresh(itemId) {
+  if (!itemId) return
+  if (streamDetailTimer) clearTimeout(streamDetailTimer)
+  streamDetailTimer = setTimeout(() => {
+    streamDetailTimer = null
+    fetchSelectedItemDetail(itemId, { silent: true }).catch((error) => {
+      console.error('任务详情 SSE 刷新失败:', error)
+    })
+  }, STREAM_REFRESH_DEBOUNCE_MS)
+}
+
+function handleTaskCenterStreamEvent(event) {
+  const payload = event?.detail || {}
+  if (!payload?.type) return
+  lastTaskCenterStreamEventAt = Date.now()
+  if (payload.type === 'connected') {
+    refreshTaskCenter(false, { silent: true }).catch((error) => {
+      console.error('任务中心 SSE 初始同步失败:', error)
+    })
+    return
+  }
+  if (payload.type !== 'task_center_changed') return
+
+  items.value = patchTaskCenterItemList(items.value, payload)
+  if (selectedItemDetail.value) {
+    selectedItemDetail.value = applyTaskCenterEventPatch(selectedItemDetail.value, payload)
+  }
+  scheduleTaskCenterStreamRefresh()
+
+  const selectedSummary = items.value.find((item) => item.id === selectedItemId.value)
+  if (selectedSummary && (
+    selectedSummary.id === payload.item_id ||
+    selectedSummary.engine_task_id === payload.engine_task_id ||
+    selectedSummary.entity_id === payload.engine_task_id
+  )) {
+    scheduleSelectedTaskDetailRefresh(selectedSummary.id)
+  }
 }
 
 async function refreshTaskCenter(showMessage = false, options = {}) {
@@ -662,6 +731,9 @@ function getOutputPath(item) {
   const metadata = details.metadata || {}
   const preview = details.preview || {}
   return (
+    metadata.final_output_path ||
+    metadata.renamed_output_path ||
+    item.output_path ||
     item.target_path ||
     metadata.subtitle_dir ||
     metadata.target_folder_path ||
@@ -755,7 +827,7 @@ function getTaskSummary(item) {
     if (duration) pieces.push(duration)
     if (failedFiles) pieces.push(`失败 ${failedFiles}`)
     if (item.subtitle) pieces.push(`来源 ${getFileName(item.subtitle)}`)
-  } else if (item.domain === 'http_download') {
+  } else if (item.domain === 'http_download' || item.domain === 'baidu_netdisk') {
     const source = pickMetricValue(item, '来源')
     const fileCount = pickMetricValue(item, '文件')
     const completedCount = pickMetricValue(item, '完成')
@@ -1007,6 +1079,19 @@ function shouldShowTaskMetaStep(item) {
 }
 
 async function handleTaskAction(item, action) {
+  if (action === 'delete') {
+    try {
+      await showSystemConfirm({
+        title: '删除任务记录',
+        message: `确认删除「${item?.title || '该任务'}」的任务记录？`,
+        description: '只会清理任务中心记录，不会删除业务文件。',
+        tone: 'danger',
+        confirmText: '删除',
+      })
+    } catch (_) {
+      return
+    }
+  }
   try {
     const result = await taskCenterApi.action(item.id, action)
     if (result?.route_hint) await router.push(result.route_hint)
