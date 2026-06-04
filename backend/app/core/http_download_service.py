@@ -24,7 +24,7 @@ from urllib.request import Request, urlopen
 
 import aiohttp
 
-from ..config.settings import get_config
+from ..config.settings import get_config, save_config
 from .google_drive_oauth import (
     google_drive_oauth_client_missing_message,
     resolve_google_drive_oauth_client,
@@ -941,6 +941,8 @@ class HttpDownloadService:
                 await self._save_pikpak_token_callback(client, account=account)
             except Exception as exc:
                 raise self._pikpak_error(exc, f"登录账号 {account.label}") from exc
+        else:
+            await self._ensure_pikpak_logged_in(client, account)
         return client
 
     async def _ensure_pikpak_logged_in(self, client, account: PikPakAccount) -> None:
@@ -948,6 +950,10 @@ class HttpDownloadService:
         try:
             if hasattr(client, "user_info"):
                 await client.user_info()
+            elif hasattr(client, "get_quota_info"):
+                await client.get_quota_info()
+            else:
+                return
         except Exception as exc:
             if not self._is_pikpak_token_error(exc) or not account.username or not account.password or account.password == "********":
                 raise self._pikpak_error(exc, f"校验账号 {account.label}") from exc
@@ -1700,6 +1706,40 @@ class HttpDownloadService:
             and str(getattr(cfg, "google_drive_refresh_token", "") or "").strip()
         )
 
+    @staticmethod
+    def _google_drive_oauth_refresh_expired(status: int, body: str) -> bool:
+        text = str(body or "")
+        error = ""
+        description = ""
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict):
+                error = str(data.get("error") or "").strip().lower()
+                description = str(data.get("error_description") or data.get("errorMessage") or "").strip().lower()
+        except Exception:
+            description = text.lower()
+        return (
+            int(status or 0) in {400, 401}
+            and (
+                error == "invalid_grant"
+                or "expired" in description
+                or "revoked" in description
+                or "refresh token" in description and "invalid" in description
+            )
+        )
+
+    def _clear_google_drive_oauth_authorization(self) -> None:
+        self._google_drive_access_token_cache = ("", 0.0)
+        try:
+            save_config({
+                "http_downloader": {
+                    "google_drive_refresh_token": "",
+                    "google_drive_oauth_expired": True,
+                }
+            })
+        except Exception:
+            logger.warning("[HTTP下载] Google Drive OAuth 过期状态写入配置失败", exc_info=True)
+
     async def _google_drive_access_token(self, *, force_refresh: bool = False) -> str:
         if not self._google_drive_oauth_enabled():
             raise HttpDownloadError("Google Drive OAuth 未配置")
@@ -1732,6 +1772,9 @@ class HttpDownloadService:
                 async with session.post("https://oauth2.googleapis.com/token", data=payload, proxy=proxy) as response:
                     body = await response.text()
                     if response.status >= 400:
+                        if self._google_drive_oauth_refresh_expired(response.status, body):
+                            self._clear_google_drive_oauth_authorization()
+                            raise HttpDownloadError("Google Drive OAuth 授权已过期或被撤销，请在设置页重新进行 Google 登录")
                         raise HttpDownloadError(f"Google Drive OAuth 刷新 token 失败: HTTP {response.status}: {body[:160]}")
                     try:
                         data = json.loads(body)
@@ -3269,6 +3312,44 @@ class HttpDownloadService:
             add_row(row)
         return rows
 
+    def build_retry_selection_for_file(self, task, file_row: Dict[str, Any]) -> tuple[List[Dict[str, Any]], List[str]]:
+        if not isinstance(file_row, dict):
+            return [], []
+        metadata = dict(getattr(task, "task_metadata", None) or {})
+        candidates = self._retry_selection_items_from_task_metadata(metadata)
+        wanted_key = self._download_attempt_row_key(file_row)
+        wanted_selection_key = self._preview_item_selection_key(file_row)
+        wanted_relative = str(file_row.get("relative_path") or "").strip().replace("\\", "/").strip("/").lower()
+        wanted_name = str(file_row.get("name") or file_row.get("filename") or "").strip().lower()
+        wanted_file_id = str(file_row.get("file_id") or file_row.get("download_file_id") or "").strip()
+
+        def matches(row: Dict[str, Any]) -> bool:
+            row_key = self._download_attempt_row_key(row)
+            if wanted_key and row_key == wanted_key:
+                return True
+            if wanted_selection_key and self._preview_item_selection_key(row) == wanted_selection_key:
+                return True
+            if wanted_file_id and wanted_file_id in {
+                str(row.get("file_id") or "").strip(),
+                str(row.get("download_file_id") or "").strip(),
+            }:
+                return True
+            row_relative = str(row.get("relative_path") or "").strip().replace("\\", "/").strip("/").lower()
+            if wanted_relative and row_relative == wanted_relative:
+                return True
+            row_name = str(row.get("name") or row.get("filename") or "").strip().lower()
+            return bool(wanted_name and row_name == wanted_name)
+
+        retry_items = [dict(row) for row in candidates if isinstance(row, dict) and matches(row)]
+        if not retry_items:
+            retry_items = [dict(file_row)]
+        retry_keys = [
+            self._preview_item_selection_key(item)
+            for item in retry_items
+            if self._preview_item_selection_key(item)
+        ]
+        return retry_items, retry_keys
+
     def _download_attempt_row_key(self, row: Dict[str, Any]) -> str:
         if not isinstance(row, dict):
             return ""
@@ -4022,6 +4103,9 @@ class HttpDownloadService:
 
     def _aria2_options(self, item: Dict[str, Any], target_dir: str) -> Dict[str, Any]:
         cfg = self._config()
+        source = str(item.get("source") or "").strip().lower()
+        split = max(1, int(getattr(cfg, "split", 8) or 8))
+        max_connection = max(1, int(getattr(cfg, "max_connection_per_server", 8) or 8))
         options = {
             "dir": target_dir,
             "out": item["filename"],
@@ -4030,12 +4114,14 @@ class HttpDownloadService:
             "retry-wait": str(max(0, int(getattr(cfg, "retry_wait_seconds", 5) or 5))),
             "connect-timeout": str(max(1, int(getattr(cfg, "connect_timeout_seconds", 15) or 15))),
             "timeout": str(max(1, int(getattr(cfg, "timeout_seconds", 60) or 60))),
-            "split": str(max(1, int(getattr(cfg, "split", 8) or 8))),
-            "max-connection-per-server": str(max(1, int(getattr(cfg, "max_connection_per_server", 8) or 8))),
+            "split": str(split),
+            "max-connection-per-server": str(max_connection),
             "min-split-size": str(getattr(cfg, "min_split_size", "1M") or "1M"),
             "auto-file-renaming": "false",
             "allow-overwrite": "true",
         }
+        if source == "pikpak":
+            options["user-agent"] = _GOFILE_USER_AGENT
         proxy = self._proxy_url()
         if proxy:
             options["all-proxy"] = proxy
@@ -4505,6 +4591,7 @@ class HttpDownloadService:
             "failed_files": failed_items,
             "progress_log": list(task.task_metadata.get("progress_log") or []),
             "final_output_path": self._download_root(),
+            "cleanup_mode": "files_only",
         })
         task.output_path = self._download_root()
         task.task_metadata["final_output_path"] = self._download_root()
@@ -4813,12 +4900,38 @@ class HttpDownloadService:
             return int(match.group(1))
         return int(headers.get("content-length") or 0)
 
-    async def reset_task_for_retry(self, task) -> None:
+    async def reset_task_for_retry(
+        self,
+        task,
+        *,
+        retry_items: Optional[List[Dict[str, Any]]] = None,
+        retry_keys: Optional[List[str]] = None,
+    ) -> None:
         metadata = dict(task.task_metadata or {})
         urls = list(metadata.get("urls") or [])
-        retry_items, retry_keys = self.build_retry_selection_for_task(task)
+        if retry_items is None or retry_keys is None:
+            retry_items, retry_keys = self.build_retry_selection_for_task(task)
         from .task_engine import TaskStatus
 
+        attempt_history = self.merge_download_attempt_rows(
+            [
+                item for item in list(metadata.get("download_attempt_history") or [])
+                if isinstance(item, dict)
+            ],
+            [
+                item for item in list(metadata.get("download_files") or [])
+                if isinstance(item, dict)
+            ],
+            [
+                item for item in list(metadata.get("failed_files") or [])
+                if isinstance(item, dict)
+            ],
+        )
+        if attempt_history:
+            task.task_metadata["download_attempt_history"] = [
+                sanitize_http_download_item(item)
+                for item in attempt_history
+            ]
         task.task_metadata["urls"] = urls
         if retry_items:
             task.task_metadata["selected_items"] = [

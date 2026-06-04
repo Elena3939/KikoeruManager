@@ -17,6 +17,12 @@ def _patch_google_drive_config(monkeypatch, **values):
         "google_drive_client_id": "",
         "google_drive_client_secret": "",
         "google_drive_refresh_token": "",
+        "google_drive_account_name": "",
+        "google_drive_account_email": "",
+        "google_drive_account_avatar_url": "",
+        "google_drive_account_permission_id": "",
+        "google_drive_account_cached_at": 0,
+        "google_drive_oauth_expired": False,
     }
     defaults.update(values)
     config = SimpleNamespace(
@@ -35,6 +41,58 @@ def _patch_google_drive_config(monkeypatch, **values):
         ),
     )
     return config
+
+
+def _patch_enforced_security_gate(monkeypatch, *, authenticated=False, blocked=False):
+    class Gate:
+        def is_enforced(self):
+            return True
+
+        def get_client_ip(self, _request):
+            return "127.0.0.1"
+
+        def get_active_blacklist(self, _ip):
+            return object() if blocked else None
+
+        def record_blocked_visit(self, _request, _blocked):
+            return None
+
+        def verify_cookie(self, _token):
+            return authenticated
+
+    monkeypatch.setattr(routes, "get_security_gate_service", lambda: Gate())
+
+
+def test_google_drive_oauth_begin_preflight_bypasses_security_gate(client: TestClient, monkeypatch):
+    _patch_enforced_security_gate(monkeypatch, authenticated=False)
+
+    response = client.options(
+        "/api/http-download/google-drive/oauth-begin",
+        headers={
+            "Origin": "http://localhost:5556",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5556"
+    assert response.headers["access-control-allow-credentials"] == "true"
+
+
+def test_security_gate_api_response_keeps_cors_headers(client: TestClient, monkeypatch):
+    _patch_enforced_security_gate(monkeypatch, authenticated=False)
+
+    response = client.post(
+        "/api/http-download/google-drive/oauth-begin",
+        json={"opener_origin": "http://localhost:5556"},
+        headers={"Origin": "http://localhost:5556"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["gate_required"] is True
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5556"
+    assert response.headers["access-control-allow-credentials"] == "true"
 
 
 def test_google_drive_oauth_begin_uses_builtin_client(client: TestClient, monkeypatch):
@@ -134,10 +192,12 @@ def test_google_drive_oauth_begin_custom_mode_without_client_returns_clear_error
 
 def test_google_drive_oauth_callback_exchanges_code_and_posts_message(client: TestClient, monkeypatch):
     routes._google_drive_oauth_states.clear()
+    saved_payloads = []
     state = "state-for-test"
     routes._google_drive_oauth_states[state] = {
         "client_id": "client-id",
         "client_secret": "client-secret",
+        "client_mode": "custom",
         "code_verifier": "pkce-verifier",
         "redirect_uri": "http://testserver/api/http-download/google-drive/oauth-callback",
         "opener_origin": "http://localhost:5556",
@@ -158,9 +218,17 @@ def test_google_drive_oauth_callback_exchanges_code_and_posts_message(client: Te
             "scope": "https://www.googleapis.com/auth/drive.readonly",
             "token_type": "Bearer",
             "expires_in": 3600,
+            "account": {
+                "name": "Elena",
+                "email": "elena@example.com",
+                "avatar_url": "https://example.com/avatar.jpg",
+                "permission_id": "perm-1",
+                "cached_at": 1234567890,
+            },
         }
 
     monkeypatch.setattr(routes, "_exchange_google_drive_authorization_code", fake_exchange_google_drive_authorization_code)
+    monkeypatch.setattr(routes, "save_config", lambda payload: saved_payloads.append(payload))
 
     response = client.get("/api/http-download/google-drive/oauth-callback", params={
         "state": state,
@@ -172,6 +240,22 @@ def test_google_drive_oauth_callback_exchanges_code_and_posts_message(client: Te
     assert "kikoerumanager:google-drive-oauth" in body
     assert "refresh-token" in body
     assert "http://localhost:5556" in body
+    assert "Google Drive 授权已保存到本地配置" in body
+    assert saved_payloads == [{
+        "http_downloader": {
+            "google_drive_oauth_enabled": True,
+            "google_drive_oauth_client_mode": "custom",
+            "google_drive_refresh_token": "refresh-token",
+            "google_drive_account_name": "Elena",
+            "google_drive_account_email": "elena@example.com",
+            "google_drive_account_avatar_url": "https://example.com/avatar.jpg",
+            "google_drive_account_permission_id": "perm-1",
+            "google_drive_account_cached_at": 1234567890,
+            "google_drive_oauth_expired": False,
+            "google_drive_client_id": "client-id",
+            "google_drive_client_secret": "client-secret",
+        }
+    }]
     assert state not in routes._google_drive_oauth_states
 
 

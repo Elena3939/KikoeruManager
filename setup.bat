@@ -135,7 +135,17 @@ cd ..
 echo [OK] Frontend installed
 
 echo.
-echo [4/4] Checking configuration...
+echo [4/5] Installing BaiduPCS-Go...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%scripts\install-baidupcs-go.ps1"
+if errorlevel 1 (
+    echo [WARNING] BaiduPCS-Go install failed. You can retry later:
+    echo   powershell -ExecutionPolicy Bypass -File scripts\install-baidupcs-go.ps1
+) else (
+    echo [OK] BaiduPCS-Go installed
+)
+
+echo.
+echo [5/5] Checking configuration...
 echo [OK] Configuration checked
 
 echo.

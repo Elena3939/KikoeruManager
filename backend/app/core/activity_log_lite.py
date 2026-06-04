@@ -412,6 +412,14 @@ def build_lite_item(row: Dict[str, Any]) -> Dict[str, Any]:
             "download_mode": str(detail.get("download_mode") or "").strip(),
             "source_modes": list(detail.get("source_modes") or []),
         })
+    elif category == "baidu_netdisk":
+        item.update({
+            "category_label": "百度网盘下载",
+            "platforms": ["baidu_netdisk"],
+            "platform_label": "百度网盘",
+            "download_mode": "baidu_netdisk",
+            "source_modes": ["baidu_netdisk"],
+        })
 
     # 单条重命名行：列表 UI 需要 old_name / new_name 才能渲染"原 / 新"对比块。
     # lite 路径默认不回传 detail，这里只挑必要字段精简下发，避免又把整段 detail JSON

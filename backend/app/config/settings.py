@@ -318,6 +318,7 @@ class HttpDownloaderConfig(BaseModel):
     google_drive_account_avatar_url: str = ""
     google_drive_account_permission_id: str = ""
     google_drive_account_cached_at: int = 0
+    google_drive_oauth_expired: bool = False
     pikpak_enabled: bool = False
     pikpak_default_enabled: bool = True
     pikpak_label: str = ""
@@ -328,6 +329,29 @@ class HttpDownloaderConfig(BaseModel):
     pikpak_transfer_dir: str = "/KikoeruManager"
     pikpak_auto_save_share: bool = True
     pikpak_accounts: List[PikPakAccountConfig] = Field(default_factory=list)
+
+
+class BaiduNetdiskConfig(BaseModel):
+    """百度网盘下载配置。"""
+    enabled: bool = False
+    download_root: str = ""
+    baidupcs_go_path: str = "tools/baidupcs-go/BaiduPCS-Go.exe"
+    config_dir: str = ""
+    cookie: str = ""
+    max_parallel: int = 200
+    max_download_load: str = "0"
+    conflict_policy: str = "resume"
+    svip_speed_enabled: bool = True
+    account_name: str = ""
+    account_netdisk_name: str = ""
+    account_avatar_url: str = ""
+    account_uk: str = ""
+    vip_type: int = 0
+    vip_label: str = ""
+    vip_level: str = ""
+    quota_bytes: int = 0
+    used_bytes: int = 0
+    account_cached_at: int = 0
 
 class AutoProcessConfig(BaseModel):
     """正常解压缩流程步骤配置"""
@@ -512,6 +536,7 @@ class AppConfig(BaseModel):
     kikoeru_server: KikoeruServerConfig = KikoeruServerConfig()
     asmr_sync: ASMRSyncConfig = ASMRSyncConfig()
     http_downloader: HttpDownloaderConfig = HttpDownloaderConfig()
+    baidu_netdisk: BaiduNetdiskConfig = BaiduNetdiskConfig()
     auto_process: AutoProcessConfig = AutoProcessConfig()
     process_existing: ProcessExistingFolderConfig = ProcessExistingFolderConfig()
     asmr_sync_step: ASMRSyncStepConfig = ASMRSyncStepConfig()
@@ -765,6 +790,17 @@ def load_config(config_path: str = None) -> AppConfig:
                         for key, value in defaults.items():
                             if key not in config_data['http_downloader']:
                                 config_data['http_downloader'][key] = value
+
+                    if 'baidu_netdisk' not in config_data or not config_data['baidu_netdisk']:
+                        config_data['baidu_netdisk'] = BaiduNetdiskConfig().model_dump()
+                        logger.info("添加缺失的 baidu_netdisk 配置，使用默认值")
+                    else:
+                        defaults = BaiduNetdiskConfig().model_dump()
+                        for key, value in defaults.items():
+                            if key not in config_data['baidu_netdisk']:
+                                config_data['baidu_netdisk'][key] = value
+                        if not str(config_data['baidu_netdisk'].get('baidupcs_go_path') or '').strip():
+                            config_data['baidu_netdisk']['baidupcs_go_path'] = defaults['baidupcs_go_path']
 
                     if 'rj_subtitle' not in config_data or not config_data['rj_subtitle']:
                         config_data['rj_subtitle'] = {

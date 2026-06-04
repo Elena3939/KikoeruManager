@@ -4,6 +4,7 @@ import threading
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
+from urllib.parse import parse_qsl, urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,24 @@ def _sse_broadcast(event: dict) -> None:
 
 _NON_TERMINAL = frozenset({'pending', 'processing', 'paused', 'waiting_retry'})
 _IMPORT_TASK_KINDS = frozenset({'auto_process', 'process_existing_folder', 'extract'})
+
+
+def _normalize_route_hint(route_hint) -> dict:
+    if isinstance(route_hint, dict):
+        normalized = dict(route_hint)
+    else:
+        normalized = {'path': str(route_hint)} if route_hint else {}
+    path = str(normalized.get('path') or '').strip()
+    if '?' not in path:
+        normalized['path'] = path
+        normalized['query'] = dict(normalized.get('query') or {})
+        return normalized
+    parsed = urlsplit(path)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query.update(dict(normalized.get('query') or {}))
+    normalized['path'] = parsed.path or path.split('?', 1)[0]
+    normalized['query'] = query
+    return normalized
 
 
 def _task_status(task) -> str:
@@ -193,9 +212,7 @@ def _build_notification_info(event_type: str, group_key: str, group_type: str, c
         rjcode = ''
         route_hint = {}
 
-    # route_hint 在不同 domain 序列化下可能是 str / None / dict，统一兜底成 dict
-    if not isinstance(route_hint, dict):
-        route_hint = {'path': str(route_hint)} if route_hint else {}
+    route_hint = _normalize_route_hint(route_hint)
 
     is_partial_http = _is_http_download_partial_success(context_task)
     severity_map = {'completed': 'success', 'failed': 'danger', 'waiting_manual': 'warning'}

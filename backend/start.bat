@@ -18,6 +18,16 @@ if not exist "%CONFIG_PATH%" (
     if exist "%~dp0config\config.yaml" copy /Y "%~dp0config\config.yaml" "%CONFIG_PATH%" >nul
 )
 
+set "BAIDUPCS_GO_DIR=%~dp0..\tools\baidupcs-go"
+set "BAIDUPCS_GO_EXE=%BAIDUPCS_GO_DIR%\BaiduPCS-Go.exe"
+if exist "%BAIDUPCS_GO_EXE%" (
+    set "PATH=%BAIDUPCS_GO_DIR%;%PATH%"
+    set "BAIDUPCS_GO_PATH=%BAIDUPCS_GO_EXE%"
+    echo [OK] BaiduPCS-Go found: %BAIDUPCS_GO_EXE%
+) else (
+    echo [INFO] BaiduPCS-Go not found. Run ..\scripts\install-baidupcs-go.ps1 if you need Baidu Netdisk downloads.
+)
+
 set "PYTHON_CMD="
 for %%V in (3.13 3.12 3.11 3.10) do (
     if not defined PYTHON_CMD (

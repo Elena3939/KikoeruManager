@@ -75,6 +75,16 @@ if errorlevel 1 (
     echo [OK] 7-Zip found
 )
 
+set "BAIDUPCS_GO_DIR=%ROOT_DIR%tools\baidupcs-go"
+set "BAIDUPCS_GO_EXE=%BAIDUPCS_GO_DIR%\BaiduPCS-Go.exe"
+if exist "%BAIDUPCS_GO_EXE%" (
+    set "PATH=%BAIDUPCS_GO_DIR%;%PATH%"
+    set "BAIDUPCS_GO_PATH=%BAIDUPCS_GO_EXE%"
+    echo [OK] BaiduPCS-Go found
+) else (
+    echo [INFO] BaiduPCS-Go not found. Run scripts\install-baidupcs-go.ps1 if you need Baidu Netdisk downloads.
+)
+
 REM Create directories
 if not exist "test_data\input" mkdir test_data\input
 if not exist "test_data\library" mkdir test_data\library
@@ -157,7 +167,7 @@ echo Press Ctrl+C to stop
 echo.
 
 REM Start backend in new window
-start "KikoeruManager Backend" cmd /k "chcp 65001 >nul && set ""PYTHONUTF8=1"" && set ""PYTHONIOENCODING=utf-8"" && cd /d %ROOT_DIR%backend && venv\Scripts\python.exe -m app.main"
+start "KikoeruManager Backend" cmd /k "chcp 65001 >nul && set ""PYTHONUTF8=1"" && set ""PYTHONIOENCODING=utf-8"" && set ""BAIDUPCS_GO_PATH=%BAIDUPCS_GO_PATH%"" && set ""PATH=%BAIDUPCS_GO_DIR%;%PATH%"" && cd /d %ROOT_DIR%backend && venv\Scripts\python.exe -m app.main"
 
 REM Wait for backend
 timeout /t 3 /nobreak >nul

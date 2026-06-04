@@ -111,6 +111,7 @@ backend/_conflicts/
 
 # Local runtime helper scripts output
 .runtime/
+tools/baidupcs-go/
 
 # pytest 临时目录（conftest.py 把 basetemp 重定向到这里规避 Windows %TEMP% 锁）
 backend/.pytest-tmp/

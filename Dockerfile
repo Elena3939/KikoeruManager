@@ -18,11 +18,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# 安装系统依赖（官方 7-Zip 24.08、unar 和 opencc）
+# 安装系统依赖（官方 7-Zip 24.08、BaiduPCS-Go、unar 和 opencc）
 # - 用 TARGETARCH（buildx 自动注入）选择 x64 / arm64 包，兼容 amd64 群晖和 ARM64 群晖。
 # - 显式 uninstall p7zip-full，避免 /usr/bin/7z 覆盖 /usr/local/bin/7zz 的 PATH 优先级。
 # - 构建末尾打印 `7zz -version`，构建失败或版本错位时立刻暴露，不会悄悄回退到旧 p7zip。
 ARG TARGETARCH
+ARG BAIDUPCS_GO_VERSION=4.0.1
 RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources && \
     apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -44,12 +45,30 @@ RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmwa
     && tar -xJf /tmp/7z.tar.xz -C /opt/7zip \
     && ln -sf /opt/7zip/7zz /usr/local/bin/7zz \
     && ln -sf /opt/7zip/7zz /usr/local/bin/7z \
-    && rm -f /tmp/7z.tar.xz /usr/bin/7z /usr/bin/7za /usr/bin/7zr \
+    && case "${TARGETARCH:-amd64}" in \
+        amd64|x86_64) BAIDUPCS_GO_PKG=BaiduPCS-Go-v${BAIDUPCS_GO_VERSION}-linux-amd64.zip ;; \
+        arm64|aarch64) BAIDUPCS_GO_PKG=BaiduPCS-Go-v${BAIDUPCS_GO_VERSION}-linux-arm64.zip ;; \
+        arm|armv7l) BAIDUPCS_GO_PKG=BaiduPCS-Go-v${BAIDUPCS_GO_VERSION}-linux-arm.zip ;; \
+        *) echo "Unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+       esac \
+    && wget --retry-connrefused --waitretry=5 --tries=3 -O /tmp/baidupcs-go.zip \
+        "https://github.com/qjfoidnh/BaiduPCS-Go/releases/download/v${BAIDUPCS_GO_VERSION}/${BAIDUPCS_GO_PKG}" \
+    && mkdir -p /tmp/baidupcs-go \
+    && python -c "import zipfile; zipfile.ZipFile('/tmp/baidupcs-go.zip').extractall('/tmp/baidupcs-go')" \
+    && find /tmp/baidupcs-go -type f -name BaiduPCS-Go -exec install -m 0755 {} /usr/local/bin/BaiduPCS-Go \; -quit \
+    && test -x /usr/local/bin/BaiduPCS-Go \
+    && ln -sf /usr/local/bin/BaiduPCS-Go /usr/local/bin/baidupcs-go \
+    && rm -f /tmp/7z.tar.xz /tmp/baidupcs-go.zip /usr/bin/7z /usr/bin/7za /usr/bin/7zr \
+    && rm -rf /tmp/baidupcs-go \
     && rm -rf /var/lib/apt/lists/* \
     && echo "===== 7-Zip version check =====" \
     && /usr/local/bin/7zz --help | head -3 \
     && /usr/local/bin/7zz --help | grep -q "24.08" \
     && echo "===== 7-Zip 24.08 installed OK =====" \
+    && echo "===== BaiduPCS-Go version check =====" \
+    && mkdir -p /tmp/baidupcs-go-config \
+    && BAIDUPCS_GO_CONFIG_DIR=/tmp/baidupcs-go-config /usr/local/bin/BaiduPCS-Go -v | head -5 \
+    && echo "===== BaiduPCS-Go installed OK =====" \
     && aria2c --version | head -1 \
     && which unar && unar --version 2>&1 | head -1 \
     && which lsar && echo "===== unar + lsar installed OK ====="
