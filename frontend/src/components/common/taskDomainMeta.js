@@ -1,6 +1,7 @@
 import {
   Activity,
   Captions,
+  CloudDownload,
   Database,
   Download,
   FileArchive,
@@ -100,6 +101,20 @@ export const TASK_DOMAIN_META = {
     chipText: 'text-orange-700',
     barIcon: 'text-orange-600',
     bar: 'bg-orange-500',
+    badgeHover: 'group-hover:bg-slate-900 group-hover:text-white',
+  },
+  baidu_netdisk: {
+    label: '百度网盘',
+    icon: CloudDownload,
+    chip: NEUTRAL_CHIP,
+    iconWrap: NEUTRAL_WRAP,
+    iconWrapActive: NEUTRAL_WRAP_ACTIVE,
+    chipIcon: 'text-blue-600',
+    taskIconClass: 'task-domain-icon--baidu_netdisk',
+    chipBg: 'bg-blue-50',
+    chipText: 'text-blue-700',
+    barIcon: 'text-blue-600',
+    bar: 'bg-blue-500',
     badgeHover: 'group-hover:bg-slate-900 group-hover:text-white',
   },
   upload: {

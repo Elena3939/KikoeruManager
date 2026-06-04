@@ -99,6 +99,10 @@ const routes = [
     }
   },
   {
+    path: '/baidu-netdisk',
+    redirect: { path: '/asmr-sync', query: { tab: 'baidu' } }
+  },
+  {
     path: '/library-backup',
     name: 'LibraryBackup',
     component: LibraryBackup,

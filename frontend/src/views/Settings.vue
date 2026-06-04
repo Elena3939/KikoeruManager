@@ -109,6 +109,15 @@
       </SettingsSectionPanel>
 
       <SettingsSectionPanel
+        v-else-if="activeSection === 'baiduNetdisk'"
+        kicker="Baidu Netdisk"
+        title="百度网盘"
+        description="配置 BaiduPCS-Go、官方账号绑定、SVIP 状态和百度网盘下载落盘规则。"
+      >
+        <BaiduNetdiskSettingsPanel :config="config" />
+      </SettingsSectionPanel>
+
+      <SettingsSectionPanel
         v-else-if="activeSection === 'maintenance'"
         kicker="Maintenance"
         title="维护与清理"
@@ -149,7 +158,7 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { Bell, Bot, Boxes, DownloadCloud, HardDrive, LifeBuoy, ScanSearch, ShieldCheck, TextSearch, Workflow, Settings2 as IconSettings, AlertCircle as IconAlertCircle, CheckCircle2 as IconCheckCircle2, Clock as IconClock } from 'lucide-vue-next'
+import { Bell, Bot, Boxes, CloudDownload, DownloadCloud, HardDrive, LifeBuoy, ScanSearch, ShieldCheck, TextSearch, Workflow, Settings2 as IconSettings, AlertCircle as IconAlertCircle, CheckCircle2 as IconCheckCircle2, Clock as IconClock } from 'lucide-vue-next'
 import SettingsSectionPanel from '../components/settings/SettingsSectionPanel.vue'
 import SettingsWorkbench from '../components/settings/SettingsWorkbench.vue'
 import StorageSettingsPanel from '../components/settings/StorageSettingsPanel.vue'
@@ -158,6 +167,7 @@ import RulesSettingsPanel from '../components/settings/RulesSettingsPanel.vue'
 import ServicesSettingsPanel from '../components/settings/ServicesSettingsPanel.vue'
 import AISubtitleSettingsPanel from '../components/settings/AISubtitleSettingsPanel.vue'
 import HttpDownloadSettingsPanel from '../components/settings/HttpDownloadSettingsPanel.vue'
+import BaiduNetdiskSettingsPanel from '../components/settings/BaiduNetdiskSettingsPanel.vue'
 import MaintenanceSettingsPanel from '../components/settings/MaintenanceSettingsPanel.vue'
 import FtsSettingsPanel from '../components/settings/FtsSettingsPanel.vue'
 import NotificationSettingsPanel from '../components/settings/NotificationSettingsPanel.vue'
@@ -174,6 +184,7 @@ const sectionKeyMap = {
   services: ['kikoeru_server', 'asmr_sync', 'asmr_sync_step', 'rj_subtitle', 'email_watcher'],
   aiSubtitle: ['ai_subtitle_matching'],
   httpDownload: ['http_downloader'],
+  baiduNetdisk: ['baidu_netdisk'],
   maintenance: ['password_cleanup', 'archive_cleanup', 'backup_zip'],
   fts: [],
   security: ['security_gate'],
@@ -226,6 +237,7 @@ const sections = [
   { id: 'services', title: '外部服务', short: 'Kikoeru、ASMR、RJ 字幕', icon: ScanSearch, keywords: ['kikoeru', 'asmr', 'subtitle', 'email', '外部服务'] },
   { id: 'aiSubtitle', title: 'AI 配对', short: '模型、Key、提示词、阈值', icon: Bot, keywords: ['ai', 'subtitle', 'match', 'model', 'prompt', '字幕配对', '模型', '提示词'] },
   { id: 'httpDownload', title: 'HTTP 下载', short: 'HTTP、Gofile、PikPak', icon: DownloadCloud, keywords: ['http', 'download', 'aria2', 'gofile', 'pikpak', '外链下载'] },
+  { id: 'baiduNetdisk', title: '百度网盘', short: 'BaiduPCS-Go、官方登录、SVIP', icon: CloudDownload, keywords: ['baidu', '百度网盘', 'BaiduPCS-Go', 'SVIP', '百度'] },
   { id: 'maintenance', title: '维护与清理', short: '清理、备份、压缩包', icon: LifeBuoy, keywords: ['cleanup', 'backup', 'archive', '维护'] },
   { id: 'fts', title: '全文搜索索引', short: 'FTS5 trigram 加速', icon: TextSearch, keywords: ['fts', 'search', 'trigram', '索引', '全文搜索', 'sqlite'] },
   { id: 'security', title: '安全门禁', short: '验证器、黑名单', icon: ShieldCheck, keywords: ['security', 'google authenticator', '门禁', '黑名单'] },
@@ -325,6 +337,7 @@ onMounted(() => {
   --set-nav-services-icon: #0891b2;
   --set-nav-ai-subtitle-icon: #0d9488;
   --set-nav-http-download-icon: #0284c7;
+  --set-nav-baidu-netdisk-icon: #2563eb;
   --set-nav-maintenance-icon: #c2410c;
   --set-nav-fts-icon: #4f46e5;
   --set-nav-security-icon: #15803d;
@@ -390,6 +403,7 @@ onMounted(() => {
   --set-nav-services-icon: #67e8f9;
   --set-nav-ai-subtitle-icon: #5eead4;
   --set-nav-http-download-icon: #8aaebe;
+  --set-nav-baidu-netdisk-icon: #93c5fd;
   --set-nav-maintenance-icon: #fdba74;
   --set-nav-fts-icon: #a5b4fc;
   --set-nav-security-icon: #86efac;

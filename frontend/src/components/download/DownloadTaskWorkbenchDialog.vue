@@ -292,7 +292,7 @@
 
 <script setup>
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
-import { Archive, AlertCircle, ArrowUpToLine, CheckCircle2, Clock3, Cloud, Download, HardDriveUpload, Minimize2, Pause, Play, RefreshCw, Search, TriangleAlert, X, XCircle, Zap } from 'lucide-vue-next'
+import { Archive, AlertCircle, ArrowUpToLine, CheckCircle2, Clock3, Cloud, CloudDownload, Download, HardDriveUpload, Minimize2, Pause, Play, RefreshCw, Search, TriangleAlert, X, XCircle, Zap } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import downloadIconAnimation from '../../assets/anime/download-icon-clean.json?url'
 import uploadToCloudAnimation from '../../assets/anime/Uploading to cloud.lottie'
@@ -315,6 +315,7 @@ const props = defineProps({
   transferMode: { type: String, default: 'download' },
   mergeTasks: { type: Boolean, default: true },
   compact: { type: Boolean, default: false },
+  enableFileRetry: { type: Boolean, default: false },
 })
 
 const emit = defineEmits([
@@ -482,6 +483,7 @@ function getTaskIcon(task) {
   if (props.preferUploadIcon && isUploadEnabled(task)) return ArrowUpToLine
   if (getTaskStageLabel(task).includes('上传')) return HardDriveUpload
   const mode = String(task?.task_metadata?.download_mode || task?.download_mode || '').trim()
+  if (mode === 'baidu_netdisk') return CloudDownload
   if (mode === 'pikpak') return Cloud
   if (['pending', 'waiting_retry'].includes(String(task?.display_status || task?.status || ''))) return Clock3
   return Download
@@ -632,14 +634,14 @@ function getTaskSecondaryLabel(task) {
     ]) || '上传任务'
   }
   const mode = String(task?.task_metadata?.download_mode || task?.download_mode || '').trim()
-  if (mode === 'http' || mode === 'pikpak' || mode === 'mixed') {
+  if (mode === 'http' || mode === 'pikpak' || mode === 'mixed' || mode === 'baidu_netdisk') {
     return pickDistinctLabel([
       task?.task_metadata?.workbench_subtitle,
       task?.task_metadata?.source_label,
       task?.source_label,
       task?.task_metadata?.rjcode,
       task?.rjcode,
-    ]) || (mode === 'pikpak' ? 'PikPak 下载' : 'HTTP 下载')
+    ]) || (mode === 'baidu_netdisk' ? '百度网盘下载' : mode === 'pikpak' ? 'PikPak 下载' : 'HTTP 下载')
   }
   return pickDistinctLabel([task?.task_metadata?.workbench_subtitle, task?.rjcode, task?.task_metadata?.rjcode]) || '未知 RJ'
 }
@@ -655,7 +657,7 @@ function getTaskLocalDownloadRoot(task) {
 function getTaskMergeKey(task) {
   if (isUploadMode.value) return `task:${String(task?.id || '').trim()}`
   const mode = String(task?.task_metadata?.download_mode || task?.download_mode || '').trim()
-  if (mode === 'http' || mode === 'pikpak' || mode === 'mixed') return `task:${String(task?.id || '').trim()}`
+  if (mode === 'http' || mode === 'pikpak' || mode === 'mixed' || mode === 'baidu_netdisk') return `task:${String(task?.id || '').trim()}`
   const sessionId = getTaskSessionId(task)
   const rjcode = getTaskRjcode(task)
   if (sessionId) return `session:${sessionId}::${rjcode || 'unknown'}`
@@ -1138,11 +1140,11 @@ function getDownloadRoot(task) {
 }
 
 function getFinalOutputPath(task) {
-  return task?.task_metadata?.final_output_path || task?.output_path || task?.task_metadata?.target_path || '处理中'
+  return task?.task_metadata?.final_output_path || task?.task_metadata?.renamed_output_path || task?.output_path || task?.task_metadata?.target_path || '处理中'
 }
 
 function getFinalOutputDisplay(task) {
-  const resolved = String(task?.task_metadata?.final_output_path || task?.output_path || task?.task_metadata?.target_path || '').trim()
+  const resolved = String(task?.task_metadata?.final_output_path || task?.task_metadata?.renamed_output_path || task?.output_path || task?.task_metadata?.target_path || '').trim()
   if (resolved) return resolved
   const status = String(task?.display_status || task?.status || '')
   if (isUploadMode.value) return ['completed', 'partial_failed', 'failed'].includes(status) ? '目标路径未返回' : '目标路径处理中'
@@ -1155,7 +1157,7 @@ function getFinalOutputDisplay(task) {
 function canRetryDownloadTask(task) {
   if (isUploadMode.value) return false
   const domain = String(task?.task_domain || task?.task_metadata?.task_domain || task?.task_metadata?.download_mode || '').trim()
-  if (domain === 'http_download' || domain === 'http') {
+  if (domain === 'http_download' || domain === 'http' || domain === 'baidu_netdisk') {
     return ['failed', 'partial_failed', 'completed'].includes(String(task?.display_status || task?.status || '')) && getFailureCount(task) > 0
   }
   return Boolean(String(task?.task_metadata?.session_id || task?.session_id || '').trim() && getFailureCount(task) > 0)
@@ -1198,8 +1200,16 @@ function getUnifiedFileRows(task) {
       downloadSpeedVisible: false,
       uploadSpeedVisible: false,
       index: Number(payload.index || 0),
+      rawFile: {},
     }
-    const next = { ...existing, name: payload.name || payload.file_name || existing.name, relative_path: payload.relative_path || existing.relative_path, total: Math.max(Number(payload.total || payload.size_bytes || 0), Number(existing.total || 0)), index: Number(payload.index || existing.index || 0) }
+    const next = {
+      ...existing,
+      name: payload.name || payload.file_name || existing.name,
+      relative_path: payload.relative_path || existing.relative_path,
+      total: Math.max(Number(payload.total || payload.size_bytes || 0), Number(existing.total || 0)),
+      index: Number(payload.index || existing.index || 0),
+      rawFile: { ...(existing.rawFile || {}), ...(payload.rawFile || payload || {}) },
+    }
     rows.set(rowKey, next)
     return next
   }
@@ -1274,7 +1284,17 @@ function getUnifiedFileRows(task) {
     row.downloadedBytes = Number(file.stage === 'upload' ? (row.total || 0) : (file.downloaded || row.downloadedBytes || 0))
     row.uploadedBytes = Number(file.stage === 'upload' ? (file.uploaded || 0) : 0)
     row.reason = String(file.reason || file.failure_reason || file.error_message || file.exception_type || '失败').trim()
-    row.retryable = Boolean(row.relative_path)
+    row.rawFile = { ...(row.rawFile || {}), ...file }
+    row.retryable = props.enableFileRetry && Boolean(
+      row.relative_path ||
+      file.relative_path ||
+      file.selection_key ||
+      file.file_id ||
+      file.download_file_id ||
+      file.content_id ||
+      file.name ||
+      file.filename
+    )
     row.tone = 'danger'
     const failedStage = String(file.stage || '').trim()
     const resolvedFailedStage = isUploadMode.value && !failedStage ? 'upload' : failedStage

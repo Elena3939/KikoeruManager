@@ -1,17 +1,17 @@
 <template>
-  <section class="asmr-card http-download-panel">
+  <section class="asmr-card http-download-panel" :class="{ 'is-baidu-netdisk': isBaidu }">
     <header class="asmr-card-head">
       <div class="asmr-card-head-title">
         <CloudDownload :size="14" :stroke-width="2.2" class="asmr-card-head-icon" />
         <div>
-          <h2>HTTP 外链下载</h2>
-          <p class="asmr-card-head-subtitle">HTTP 直链 / Gofile / Transfer.it / OneDrive / Google Drive / PikPak</p>
+          <h2>{{ panelTitle }}</h2>
+          <p class="asmr-card-head-subtitle">{{ panelSubtitle }}</p>
         </div>
       </div>
       <div class="asmr-card-head-actions">
         <button class="asmr-mini-btn" type="button" :disabled="healthLoading" @click="loadHealth">
           <RefreshCw :size="12" :stroke-width="2.4" :class="{ 'spin': healthLoading }" />
-          检测 aria2
+          {{ healthActionLabel }}
         </button>
         <button v-if="hasTasks" class="asmr-mini-btn is-primary" type="button" @click="$emit('open-workbench')">
           <Download :size="12" :stroke-width="2.4" />
@@ -31,13 +31,17 @@
         v-model="urlText"
         class="http-url-input"
         rows="5"
-        placeholder="粘贴 HTTP/HTTPS 直链或分享链接，一行一个。支持 Gofile、Transfer.it、OneDrive、Google Drive、PikPak。"
+        :placeholder="inputPlaceholder"
       ></textarea>
 
       <div class="http-download-options">
         <label class="http-field">
           <span>目标子目录</span>
           <input v-model.trim="targetSubdir" class="http-input" type="text" placeholder="可选，例如 gofile/RJ123456">
+        </label>
+        <label v-if="isBaidu" class="http-field">
+          <span>保存为文件夹名</span>
+          <input v-model.trim="outputFolderName" class="http-input" type="text" placeholder="可选，例如 RJ123456 完整版">
         </label>
         <label class="http-field">
           <span>冲突策略</span>
@@ -77,7 +81,7 @@
     >
       <div class="window http-preview-window panel-enter glass-shell relative w-full max-w-[1210px] aspect-[16/9] rounded-3xl flex flex-col overflow-hidden">
         <div class="window-header flex items-center justify-between px-7 py-4">
-          <h1 class="title text-2xl font-bold text-slate-900 tracking-tight">创建下载任务</h1>
+          <h1 class="title text-2xl font-bold text-slate-900 tracking-tight">创建{{ panelTitle }}任务</h1>
           <button type="button" class="interactive-chip close-button inline-flex size-10 items-center justify-center rounded-full text-slate-400 hover:text-slate-700" @click="previewDialogVisible = false">
             <X :size="20" :stroke-width="2" />
           </button>
@@ -135,9 +139,11 @@
                   </div>
                   <div class="summary-stack space-y-2 text-sm text-slate-600">
                     <div>目标子目录 <span>{{ targetSubdir || '下载根目录' }}</span></div>
+                    <div v-if="isBaidu">保存文件夹 <span>{{ outputFolderName || '按分享标题' }}</span></div>
                     <div>冲突策略 <span>{{ conflictPolicyLabel }}</span></div>
                     <div>批次名 <span>{{ batchName || '自动生成' }}</span></div>
                     <div>源链接 <span>{{ parsedUrls.length }} 个</span></div>
+                    <div v-if="isBaidu && health?.svip_speed">传输模式 <span>SVIP 高速</span></div>
                   </div>
                 </section>
 
@@ -227,6 +233,18 @@
                         <span>{{ sourceLabel(item.source) }}</span>
                         <span v-if="!item.ok">{{ item.reason }}</span>
                         <span v-else-if="item.warning" class="warn">{{ item.warning }}</span>
+                        <span v-if="isBaidu && (item.requires_pass_code || item.pass_code)" class="warn">{{ item.pass_code ? `提取码 ${item.pass_code}` : '缺提取码' }}</span>
+                      </div>
+                      <div v-if="isBaidu && item.requires_pass_code" class="baidu-pass-code-row" @click.stop>
+                        <input
+                          v-model.trim="item.pass_code"
+                          class="baidu-pass-code-input"
+                          type="text"
+                          maxlength="12"
+                          placeholder="输入提取码"
+                          @keyup.enter.stop="applyPassCodeAndPreview(item)"
+                        >
+                        <button type="button" class="baidu-pass-code-btn" :disabled="previewing || !item.pass_code" @click.stop="applyPassCodeAndPreview(item)">重新预览</button>
                       </div>
                     </div>
                   </div>
@@ -259,13 +277,14 @@ import { ElMessage } from 'element-plus'
 import { AlertTriangle, Check, CloudDownload, Download, FileIcon, Globe2, RefreshCw, Search, X } from 'lucide-vue-next'
 import AppDropdown from '../common/AppDropdown.vue'
 import AppLoadingAnimation from '../common/AppLoadingAnimation.vue'
-import { httpDownloadApi } from '../../api'
+import { baiduNetdiskApi, httpDownloadApi } from '../../api'
 import {
   getHttpDownloadPlatformMeta,
   httpDownloadPlatformsFromUrl,
 } from '../common/httpDownloadPlatformMeta.js'
 
-defineProps({
+const props = defineProps({
+  provider: { type: String, default: 'http' },
   hasTasks: { type: Boolean, default: false }
 })
 
@@ -273,6 +292,7 @@ const emit = defineEmits(['started', 'open-workbench'])
 
 const urlText = ref('')
 const targetSubdir = ref('')
+const outputFolderName = ref('')
 const batchName = ref('')
 const conflictPolicy = ref('resume')
 const previewing = ref(false)
@@ -293,13 +313,22 @@ const conflictOptions = [
   { value: 'skip', label: '已存在跳过' }
 ]
 
+const isBaidu = computed(() => String(props.provider || '').trim() === 'baidu')
+const activeApi = computed(() => isBaidu.value ? baiduNetdiskApi : httpDownloadApi)
+const panelTitle = computed(() => isBaidu.value ? '百度网盘下载' : 'HTTP 外链下载')
+const panelSubtitle = computed(() => isBaidu.value ? '百度分享链接 / 提取码 / BaiduPCS-Go / SVIP 高速' : 'HTTP 直链 / Gofile / Transfer.it / OneDrive / Google Drive / PikPak')
+const inputPlaceholder = computed(() => isBaidu.value
+  ? '粘贴百度网盘分享链接，一行一个。可以把提取码放在链接下一行，或直接使用带 ?pwd= 的分享链接。'
+  : '粘贴 HTTP/HTTPS 直链或分享链接，一行一个。支持 Gofile、Transfer.it、OneDrive、Google Drive、PikPak。'
+)
+const healthActionLabel = computed(() => isBaidu.value ? '检测 BaiduPCS-Go' : '检测 aria2')
+
 const parsedUrls = computed(() => {
-  return [...new Set(
-    String(urlText.value || '')
-      .split(/[\r\n]+/)
-      .map(item => item.trim())
-      .filter(Boolean)
-  )]
+  const rows = String(urlText.value || '')
+    .split(/[\r\n]+/)
+    .map(item => item.trim())
+    .filter(Boolean)
+  return isBaidu.value ? rows : [...new Set(rows)]
 })
 
 const okPreviewItems = computed(() => previewItems.value.filter(item => item.ok))
@@ -346,25 +375,31 @@ const previewStatusTitle = computed(() => {
 
 const previewStatusText = computed(() => {
   if (previewing.value) return `正在整理 ${parsedUrls.value.length} 个来源`
-  if (!previewItems.value.length) return '粘贴多个链接后一行一个，先预览再勾选下载。'
+  if (!previewItems.value.length) return isBaidu.value ? '分享链接和提取码可分行粘贴，先预览再勾选下载。' : '粘贴多个链接后一行一个，先预览再勾选下载。'
   const failed = previewItems.value.length - okPreviewCount.value
   return failed ? `${failed} 项解析失败或不可直接下载` : '解析完成，可以勾选需要下载的项目。'
 })
 
 const healthText = computed(() => {
-  if (!health.value) return '尚未检测 aria2'
+  if (!health.value) return isBaidu.value ? '尚未检测 BaiduPCS-Go' : '尚未检测 aria2'
   if (health.value.ok) {
+    if (isBaidu.value) {
+      const account = health.value.account || {}
+      const accountText = account.name || account.netdisk_name ? ` · ${account.name || account.netdisk_name}` : ''
+      const svip = health.value.svip_speed ? ' · SVIP 高速' : ''
+      return `BaiduPCS-Go 可用${accountText}${svip}`
+    }
     const pikpak = health.value.pikpak_enabled ? (health.value.pikpak_ready ? ' · PikPak 已配置' : ' · PikPak 缺配置') : ''
     const gofile = health.value.gofile_ready ? ' · Gofile 已配置' : ''
     return `aria2 可用${health.value.version?.version ? ` · ${health.value.version.version}` : ''}${gofile}${pikpak}`
   }
-  return health.value.message || 'aria2 不可用'
+  return health.value.message || (isBaidu.value ? 'BaiduPCS-Go 不可用' : 'aria2 不可用')
 })
 
 async function loadHealth() {
   healthLoading.value = true
   try {
-    health.value = await httpDownloadApi.health()
+    health.value = await activeApi.value.health()
   } catch (error) {
     health.value = { ok: false, message: error.response?.data?.detail || error.message || '检测失败' }
   } finally {
@@ -387,6 +422,24 @@ async function preview() {
   })
   try {
     const urls = parsedUrls.value
+    if (isBaidu.value) {
+      const result = await baiduNetdiskApi.preview({
+        urls,
+        targetSubdir: targetSubdir.value,
+        outputFolderName: outputFolderName.value,
+        conflictPolicy: conflictPolicy.value,
+        timeout: 45000
+      })
+      previewItems.value = result.items || []
+      previewNeedsMaterialize.value = true
+      selectedPreviewKeys.value = new Set((result.selected_keys || []).filter(Boolean))
+      previewProgress.value = 100
+      addPreviewLog(`解析完成，可下载 ${okPreviewCount.value} 项，缺提取码 ${Number(result.needs_pass_code_count || 0)} 项`, okPreviewCount.value ? 'success' : 'warning')
+      if (result.svip_speed) addPreviewLog('当前百度账号为 SVIP，将使用 BaiduPCS-Go 高速下载', 'success')
+      if (okPreviewCount.value) ElMessage.success(`可下载 ${okPreviewCount.value} 个分享`)
+      if (result.needs_pass_code_count) ElMessage.warning(`${result.needs_pass_code_count} 个分享需要补提取码`)
+      return
+    }
     for (let index = 0; index < urls.length; index += 1) {
       const url = urls[index]
       previewProgress.value = Math.max(8, Math.round((index / urls.length) * 92))
@@ -435,9 +488,10 @@ async function start() {
   starting.value = true
   try {
     addPreviewLog(`提交 ${selectedOkCount.value} 个选中下载项`)
-    const result = await httpDownloadApi.start({
+    const result = await activeApi.value.start({
       urls: parsedUrls.value,
       targetSubdir: targetSubdir.value,
+      outputFolderName: outputFolderName.value,
       conflictPolicy: conflictPolicy.value,
       batchName: batchName.value,
       selectedKeys: [...selectedPreviewKeys.value],
@@ -446,8 +500,8 @@ async function start() {
     const ids = (result.tasks || []).map(item => item.task_id || item.id).filter(Boolean)
     emit('started', ids)
     previewNeedsMaterialize.value = false
-    addPreviewLog(result.message || 'HTTP 下载任务已创建', 'success')
-    ElMessage.success(result.message || 'HTTP 下载任务已创建')
+    addPreviewLog(result.message || `${panelTitle.value}任务已创建`, 'success')
+    ElMessage.success(result.message || `${panelTitle.value}任务已创建`)
     previewDialogVisible.value = false
   } catch (error) {
     addPreviewLog(error.response?.data?.detail || '创建下载任务失败', 'error')
@@ -471,14 +525,17 @@ function formatSize(bytes) {
 }
 
 function sourceLabel(source) {
+  if (isBaidu.value) return '百度网盘'
   return getHttpDownloadPlatformMeta(source).label
 }
 
 function sourceKey(source) {
+  if (isBaidu.value) return 'baidu_netdisk'
   return getHttpDownloadPlatformMeta(source).key
 }
 
 function sourceIcon(source) {
+  if (isBaidu.value) return ''
   return getHttpDownloadPlatformMeta(source).iconSrc || ''
 }
 
@@ -493,12 +550,40 @@ function markSourceIconFailed(source) {
 }
 
 function sourceFromUrl(url) {
+  if (isBaidu.value) return 'baidu_netdisk'
   return httpDownloadPlatformsFromUrl(url)
 }
 
 function previewItemTitle(item) {
   if (item?.ok) return item.filename || item.name || '未命名文件'
   return `${sourceLabel(item?.source)} 预览失败`
+}
+
+function applyPassCodeAndPreview(item) {
+  const code = String(item?.pass_code || '').trim()
+  const shareUrl = String(item?.share_url || item?.url || item?.masked_url || '').trim()
+  if (!shareUrl || !code) return
+  const lines = String(urlText.value || '').split(/\r?\n/)
+  const normalizedShare = shareUrl.replace(/[?&](pwd|password|passcode|pass_code|code)=[^&#]*/ig, '')
+  let matched = false
+  const nextLines = []
+  for (let index = 0; index < lines.length; index += 1) {
+    const raw = lines[index]
+    const trimmed = raw.trim()
+    nextLines.push(raw)
+    if (!matched && trimmed && normalizedShare.includes(trimmed.replace(/[?&](pwd|password|passcode|pass_code|code)=[^&#]*/ig, ''))) {
+      const following = String(lines[index + 1] || '').trim()
+      if (!/^(?:提取码|访问码|密码|密碼|pwd|passcode|pass_code|code)\s*[:：= ]/i.test(following) && !/^[A-Za-z0-9]{4,12}$/.test(following)) {
+        nextLines.push(code)
+      }
+      matched = true
+    }
+  }
+  if (!matched) {
+    nextLines.push(shareUrl, code)
+  }
+  urlText.value = nextLines.join('\n')
+  preview()
 }
 
 function previewItemKey(item) {
@@ -686,6 +771,45 @@ onMounted(loadHealth)
 .http-download-options { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; }
 .http-field { display: grid; gap: 5px; min-width: 180px; color: var(--asmr-text); font-size: 12px; font-weight: 600; }
 .http-field.grow { flex: 1 1 240px; }
+.baidu-pass-code-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.baidu-pass-code-input {
+  width: 112px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid rgba(203, 213, 225, 0.92);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.92);
+  color: rgb(30, 41, 59);
+  font-size: 11px;
+  outline: none;
+}
+.baidu-pass-code-input:focus {
+  border-color: rgba(59, 130, 246, 0.72);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
+}
+.baidu-pass-code-btn {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid rgba(203, 213, 225, 0.86);
+  border-radius: 7px;
+  background: rgba(248, 250, 252, 0.9);
+  color: rgb(51, 65, 85);
+  font-size: 11px;
+  font-weight: 650;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.baidu-pass-code-btn:hover:not(:disabled) {
+  transform: translateY(-1px) scale(1.02);
+  border-color: rgba(148, 163, 184, 0.82);
+  background: #ffffff;
+}
+.baidu-pass-code-btn:active:not(:disabled) { transform: scale(0.96); }
+.baidu-pass-code-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .http-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .http-actions .asmr-mini-btn {
   position: relative;
@@ -1107,6 +1231,18 @@ onMounted(loadHealth)
   background: #121212 !important;
   border-color: rgba(255, 255, 255, 0.08) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-pass-code-input) {
+  background: #111111 !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: #f4f4f5 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-pass-code-btn) {
+  background: #1c1c1c !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #d4d4d4 !important;
 }
 
 :global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-progress) {

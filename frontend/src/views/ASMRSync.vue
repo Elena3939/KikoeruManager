@@ -117,6 +117,13 @@
         @open-workbench="resumeHttpDownloadWorkbench"
       />
 
+      <BaiduNetdiskPanel
+        v-else-if="activeWorkspaceTab === 'baidu'"
+        :has-tasks="baiduNetdiskWorkbenchTaskIds.length > 0"
+        @started="handleBaiduNetdiskStarted"
+        @open-workbench="resumeBaiduNetdiskWorkbench"
+      />
+
       <AsmrSubtitleScanPanel v-else v-model="subtitleFolder" />
     </Transition>
 
@@ -130,14 +137,44 @@
       source-path-label="下载根目录"
       :merge-tasks="false"
       :compact="true"
+      :enable-file-retry="true"
       @refresh="refreshHttpDownloadWorkbench({ silent: true })"
       @background="hideHttpDownloadWorkbenchToBackground"
       @close="closeHttpDownloadWorkbench"
       @retry-task="retryHttpDownloadTask"
+      @retry-file="retryHttpDownloadFile"
       @pause-task="pauseHttpDownloadTask"
       @resume-task="resumeHttpDownloadTask"
       @cancel-task="cancelHttpDownloadTask"
     />
+
+    <DownloadTaskWorkbenchDialog
+      v-model:visible="baiduNetdiskWorkbenchVisible"
+      :tasks="baiduNetdiskWorkbenchTasks"
+      :refreshing="baiduNetdiskWorkbenchRefreshing"
+      :retrying-keys="[...baiduNetdiskRetryingTaskIds]"
+      title="百度网盘下载"
+      subtitle="BaiduPCS-Go 下载任务进度"
+      source-path-label="下载根目录"
+      :merge-tasks="false"
+      :compact="true"
+      :enable-file-retry="false"
+      @refresh="refreshBaiduNetdiskWorkbench({ silent: true })"
+      @background="hideBaiduNetdiskWorkbenchToBackground"
+      @close="closeBaiduNetdiskWorkbench"
+      @retry-task="retryBaiduNetdiskTask"
+      @pause-task="pauseBaiduNetdiskTask"
+      @resume-task="resumeBaiduNetdiskTask"
+      @cancel-task="cancelBaiduNetdiskTask"
+    />
+
+    <Transition name="floating-card">
+      <BackgroundFloatingCard
+        v-if="showBaiduNetdiskBackgroundCard"
+        v-bind="baiduNetdiskBackgroundCardProps"
+        @action="handleBaiduNetdiskBackgroundCardAction"
+      />
+    </Transition>
 
     <Transition name="floating-card">
       <BackgroundFloatingCard
@@ -537,6 +574,7 @@
 
 <script setup>
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   Search,
@@ -558,7 +596,7 @@ import {
   Hourglass,
   Loader2,
 } from 'lucide-vue-next'
-import { asmrSyncApi, configApi, httpDownloadApi, libraryApi, taskApi } from '../api'
+import { asmrSyncApi, baiduNetdiskApi, configApi, httpDownloadApi, libraryApi, taskApi } from '../api'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
 import { useViewport } from '../composables/useViewport'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
@@ -569,13 +607,17 @@ import BackgroundFloatingCard from '../components/common/BackgroundFloatingCard.
 import DownloadTaskWorkbenchDialog from '../components/download/DownloadTaskWorkbenchDialog.vue'
 import CircleDownloadPreviewDialog from '../components/circle/CircleDownloadPreviewDialog.vue'
 import AsmrEnhancedDownloadPanel from '../components/asmr/AsmrEnhancedDownloadPanel.vue'
+import BaiduNetdiskPanel from '../components/asmr/BaiduNetdiskPanel.vue'
 import HttpDownloadPanel from '../components/asmr/HttpDownloadPanel.vue'
 import AsmrSubtitleScanPanel from '../components/asmr/AsmrSubtitleScanPanel.vue'
 
 const { isMobile: isMobileViewport } = useViewport()
+const route = useRoute()
+const router = useRouter()
 
 const ASMR_SYNC_DOWNLOAD_WORKBENCH_KEY = 'kikoerumanager.asmrSync.downloadWorkbench'
 const ASMR_SYNC_HTTP_DOWNLOAD_WORKBENCH_KEY = 'kikoerumanager.asmrSync.httpDownloadWorkbench'
+const ASMR_SYNC_BAIDU_NETDISK_WORKBENCH_KEY = 'kikoerumanager.asmrSync.baiduNetdiskWorkbench'
 
 const subtitleFolder = ref('')
 const scanning = ref(false)
@@ -601,7 +643,11 @@ const enhancedSessionDetail = ref(null)
 const enhancedPlans = ref([])
 const enhancedSessions = ref([])
 const selectedPlanSet = ref(new Set())
-const activeWorkspaceTab = ref('enhanced')
+const normalizeWorkspaceTab = (value) => {
+  const tab = String(value || '').trim().toLowerCase()
+  return ['enhanced', 'http', 'baidu', 'subtitle'].includes(tab) ? tab : 'enhanced'
+}
+const activeWorkspaceTab = ref(normalizeWorkspaceTab(route.query?.tab))
 const enhancedDownloadWorkbenchTaskIds = ref([])
 const enhancedDownloadWorkbenchTasks = ref([])
 const enhancedDownloadWorkbenchVisible = ref(false)
@@ -616,6 +662,13 @@ const httpDownloadWorkbenchBackgroundActive = ref(false)
 const httpDownloadWorkbenchRefreshing = ref(false)
 const httpDownloadRetryingTaskIds = ref(new Set())
 let httpDownloadWorkbenchTimer = null
+const baiduNetdiskWorkbenchTaskIds = ref([])
+const baiduNetdiskWorkbenchTasks = ref([])
+const baiduNetdiskWorkbenchVisible = ref(false)
+const baiduNetdiskWorkbenchBackgroundActive = ref(false)
+const baiduNetdiskWorkbenchRefreshing = ref(false)
+const baiduNetdiskRetryingTaskIds = ref(new Set())
+let baiduNetdiskWorkbenchTimer = null
 
 // Enhanced preview dialog state
 const enhancedPreviewVisible = ref(false)
@@ -736,6 +789,12 @@ const workspaceTabs = computed(() => [
     badge: httpDownloadWorkbenchTaskIds.value.length ? String(httpDownloadWorkbenchTaskIds.value.length) : ''
   },
   {
+    key: 'baidu',
+    label: '百度网盘下载',
+    icon: CloudDownload,
+    badge: baiduNetdiskWorkbenchTaskIds.value.length ? String(baiduNetdiskWorkbenchTaskIds.value.length) : ''
+  },
+  {
     key: 'subtitle',
     label: '字幕扫描',
     icon: FolderSearch,
@@ -838,6 +897,59 @@ const httpDownloadBackgroundCardProps = computed(() => ({
   detailText: httpDownloadBackgroundFailed.value
     ? (httpDownloadActiveBackgroundTask.value?.failure_reason || httpDownloadActiveBackgroundTask.value?.current_step || '下载失败，需要打开工作台处理。')
     : (httpDownloadActiveBackgroundTask.value?.current_step || '隐藏后继续保留 HTTP 下载队列和进度。'),
+  actions: [
+    { key: 'close', label: '关闭' },
+    { key: 'resume', label: '恢复工作台', variant: 'blue' }
+  ]
+}))
+
+const baiduNetdiskProcessingTasks = computed(() => baiduNetdiskWorkbenchTasks.value.filter(t => t.status === 'processing'))
+const baiduNetdiskPendingTasks = computed(() => baiduNetdiskWorkbenchTasks.value.filter(t => ['pending', 'paused', 'waiting_retry'].includes(String(t.status || ''))))
+const baiduNetdiskCompletedTasks = computed(() => baiduNetdiskWorkbenchTasks.value.filter(t => t.status === 'completed' && String(t.display_status || '') !== 'partial_failed'))
+const baiduNetdiskFailedTasks = computed(() => baiduNetdiskWorkbenchTasks.value.filter(t => ['failed', 'partial_failed'].includes(String(t.display_status || t.status || ''))))
+const showBaiduNetdiskBackgroundCard = computed(() => baiduNetdiskWorkbenchBackgroundActive.value && !baiduNetdiskWorkbenchVisible.value && baiduNetdiskWorkbenchTaskIds.value.length > 0)
+const baiduNetdiskActiveBackgroundTask = computed(() => baiduNetdiskProcessingTasks.value[0] || baiduNetdiskPendingTasks.value[0] || baiduNetdiskWorkbenchTasks.value[0] || null)
+const baiduNetdiskBackgroundPercent = computed(() => {
+  if (!baiduNetdiskWorkbenchTasks.value.length) return 0
+  const total = baiduNetdiskWorkbenchTasks.value.reduce((sum, t) => sum + Number(t.progress || 0), 0)
+  return Math.max(0, Math.min(100, Math.round(total / baiduNetdiskWorkbenchTasks.value.length)))
+})
+const baiduNetdiskBackgroundCompleted = computed(() => (
+  baiduNetdiskWorkbenchTasks.value.length > 0
+  && baiduNetdiskCompletedTasks.value.length === baiduNetdiskWorkbenchTasks.value.length
+  && baiduNetdiskFailedTasks.value.length === 0
+))
+const baiduNetdiskBackgroundFailed = computed(() => (
+  baiduNetdiskFailedTasks.value.length > 0
+  && baiduNetdiskProcessingTasks.value.length === 0
+  && baiduNetdiskPendingTasks.value.length === 0
+))
+const baiduNetdiskBackgroundCardProps = computed(() => ({
+  kind: 'download',
+  tone: baiduNetdiskBackgroundFailed.value ? 'amber' : 'blue',
+  title: baiduNetdiskBackgroundCompleted.value
+    ? '百度网盘下载已完成'
+    : baiduNetdiskBackgroundFailed.value
+      ? '百度网盘下载需要处理'
+      : '百度网盘下载正在后台运行',
+  badgeText: `下载 ${baiduNetdiskWorkbenchTasks.value.length} 项`,
+  subtitle: baiduNetdiskActiveBackgroundTask.value
+    ? `${baiduNetdiskActiveBackgroundTask.value.work_title || baiduNetdiskActiveBackgroundTask.value.source_label || '百度网盘下载'}`
+    : '保留 BaiduPCS-Go 下载队列与进度',
+  metaText: baiduNetdiskBackgroundFailed.value
+    ? `总进度: ${baiduNetdiskBackgroundPercent.value}% · 需要处理`
+    : `总进度: ${baiduNetdiskBackgroundPercent.value}%`,
+  percentage: baiduNetdiskBackgroundPercent.value,
+  completed: baiduNetdiskBackgroundCompleted.value,
+  metrics: [
+    { key: 'processing', label: '进行中', value: baiduNetdiskProcessingTasks.value.length, tone: 'info' },
+    { key: 'pending', label: '等待中', value: baiduNetdiskPendingTasks.value.length, tone: 'warning' },
+    { key: 'completed', label: '完成', value: baiduNetdiskCompletedTasks.value.length, tone: 'success' },
+    { key: 'failed', label: '失败', value: baiduNetdiskFailedTasks.value.length, tone: baiduNetdiskFailedTasks.value.length ? 'danger' : 'neutral' }
+  ],
+  detailText: baiduNetdiskBackgroundFailed.value
+    ? (baiduNetdiskActiveBackgroundTask.value?.failure_reason || baiduNetdiskActiveBackgroundTask.value?.current_step || '下载失败，需要打开工作台处理。')
+    : (baiduNetdiskActiveBackgroundTask.value?.current_step || '隐藏后继续保留百度网盘下载队列和进度。'),
   actions: [
     { key: 'close', label: '关闭' },
     { key: 'resume', label: '恢复工作台', variant: 'blue' }
@@ -1358,6 +1470,216 @@ async function retryHttpDownloadTask(task) {
   }
 }
 
+async function retryHttpDownloadFile(payload) {
+  const task = payload?.task || {}
+  const file = payload?.file || {}
+  const taskId = String(task?.id || task?.active_task_id || '').trim()
+  if (!taskId) return ElMessage.warning('无法识别 HTTP 下载任务')
+  const retryFile = {
+    ...(file?.rawFile || {}),
+    ...file,
+  }
+  delete retryFile.rawFile
+  const key = `${taskId}:${file?.relative_path || file?.name || file?.selection_key || 'file'}`
+  const next = new Set(httpDownloadRetryingTaskIds.value)
+  next.add(key)
+  httpDownloadRetryingTaskIds.value = next
+  try {
+    await httpDownloadApi.retryFile(taskId, retryFile)
+    ElMessage.success('已提交该文件重试')
+    await refreshHttpDownloadWorkbench({ silent: true })
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '提交单文件重试失败')
+  } finally {
+    const done = new Set(httpDownloadRetryingTaskIds.value)
+    done.delete(key)
+    httpDownloadRetryingTaskIds.value = done
+  }
+}
+
+// --- Baidu Netdisk Workbench Management ---
+
+function persistBaiduNetdiskWorkbenchState() {
+  try {
+    localStorage.setItem(ASMR_SYNC_BAIDU_NETDISK_WORKBENCH_KEY, JSON.stringify({
+      taskIds: baiduNetdiskWorkbenchTaskIds.value,
+      visible: baiduNetdiskWorkbenchVisible.value,
+      background: baiduNetdiskWorkbenchBackgroundActive.value
+    }))
+  } catch (_) {}
+}
+
+function hydrateBaiduNetdiskWorkbenchState() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(ASMR_SYNC_BAIDU_NETDISK_WORKBENCH_KEY) || '{}')
+    baiduNetdiskWorkbenchTaskIds.value = Array.isArray(raw.taskIds) ? raw.taskIds.filter(Boolean) : []
+    baiduNetdiskWorkbenchVisible.value = Boolean(raw.visible && baiduNetdiskWorkbenchTaskIds.value.length)
+    baiduNetdiskWorkbenchBackgroundActive.value = Boolean(raw.background && baiduNetdiskWorkbenchTaskIds.value.length)
+  } catch (_) {
+    baiduNetdiskWorkbenchTaskIds.value = []
+    baiduNetdiskWorkbenchVisible.value = false
+    baiduNetdiskWorkbenchBackgroundActive.value = false
+  }
+}
+
+function clearBaiduNetdiskWorkbenchState() {
+  baiduNetdiskWorkbenchTaskIds.value = []
+  baiduNetdiskWorkbenchTasks.value = []
+  baiduNetdiskWorkbenchVisible.value = false
+  baiduNetdiskWorkbenchBackgroundActive.value = false
+  stopBaiduNetdiskWorkbenchPolling()
+  try { localStorage.removeItem(ASMR_SYNC_BAIDU_NETDISK_WORKBENCH_KEY) } catch (_) {}
+}
+
+function stopBaiduNetdiskWorkbenchPolling() {
+  if (baiduNetdiskWorkbenchTimer) {
+    window.clearTimeout(baiduNetdiskWorkbenchTimer)
+    baiduNetdiskWorkbenchTimer = null
+  }
+}
+
+function startBaiduNetdiskWorkbenchPolling() {
+  if (!baiduNetdiskWorkbenchTaskIds.value.length) return
+  stopBaiduNetdiskWorkbenchPolling()
+  baiduNetdiskWorkbenchTimer = window.setTimeout(() => {
+    refreshBaiduNetdiskWorkbench()
+  }, 2000)
+}
+
+async function refreshBaiduNetdiskWorkbench(options = {}) {
+  const silent = Boolean(options?.silent)
+  if (!baiduNetdiskWorkbenchTaskIds.value.length) {
+    baiduNetdiskWorkbenchTasks.value = []
+    stopBaiduNetdiskWorkbenchPolling()
+    return
+  }
+  if (!silent) baiduNetdiskWorkbenchRefreshing.value = true
+  try {
+    const result = await baiduNetdiskApi.status()
+    const allTasks = Array.isArray(result.tasks) ? result.tasks : []
+    baiduNetdiskWorkbenchTasks.value = baiduNetdiskWorkbenchTaskIds.value
+      .map(id => allTasks.find(t => t.id === id))
+      .filter(Boolean)
+    baiduNetdiskWorkbenchTaskIds.value = baiduNetdiskWorkbenchTasks.value.map(t => t.id)
+    const stillActive = baiduNetdiskWorkbenchTasks.value.some(t => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(t.status || '')))
+    if (stillActive || baiduNetdiskWorkbenchVisible.value || baiduNetdiskWorkbenchBackgroundActive.value) startBaiduNetdiskWorkbenchPolling()
+    else stopBaiduNetdiskWorkbenchPolling()
+  } catch (error) {
+    console.error('刷新百度网盘下载工作台失败:', error)
+    startBaiduNetdiskWorkbenchPolling()
+  } finally {
+    if (!silent) baiduNetdiskWorkbenchRefreshing.value = false
+  }
+}
+
+async function handleBaiduNetdiskStarted(taskIds = []) {
+  const newTaskIds = Array.isArray(taskIds) ? taskIds.filter(Boolean) : []
+  if (!newTaskIds.length) return
+  baiduNetdiskWorkbenchTaskIds.value = [
+    ...newTaskIds,
+    ...baiduNetdiskWorkbenchTaskIds.value.filter(id => !newTaskIds.includes(id))
+  ]
+  baiduNetdiskWorkbenchVisible.value = true
+  baiduNetdiskWorkbenchBackgroundActive.value = false
+  persistBaiduNetdiskWorkbenchState()
+  await refreshBaiduNetdiskWorkbench()
+}
+
+function hideBaiduNetdiskWorkbenchToBackground() {
+  baiduNetdiskWorkbenchVisible.value = false
+  baiduNetdiskWorkbenchBackgroundActive.value = true
+}
+
+function resumeBaiduNetdiskWorkbench() {
+  baiduNetdiskWorkbenchVisible.value = true
+  baiduNetdiskWorkbenchBackgroundActive.value = false
+}
+
+function closeBaiduNetdiskWorkbench() {
+  clearBaiduNetdiskWorkbenchState()
+}
+
+function handleBaiduNetdiskBackgroundCardAction(action) {
+  if (action === 'resume') {
+    resumeBaiduNetdiskWorkbench()
+    return
+  }
+  if (action === 'close') {
+    closeBaiduNetdiskWorkbench()
+  }
+}
+
+function resolveBaiduNetdiskTaskId(task) {
+  return String(task?.id || task?.active_task_id || '').trim()
+}
+
+async function pauseBaiduNetdiskTask(task) {
+  const taskId = resolveBaiduNetdiskTaskId(task)
+  if (!taskId) return ElMessage.warning('无法识别百度网盘下载任务')
+  try {
+    await baiduNetdiskApi.pause(taskId)
+    ElMessage.success('已暂停')
+    await refreshBaiduNetdiskWorkbench({ silent: true })
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '暂停失败')
+  }
+}
+
+async function resumeBaiduNetdiskTask(task) {
+  const taskId = resolveBaiduNetdiskTaskId(task)
+  if (!taskId) return ElMessage.warning('无法识别百度网盘下载任务')
+  try {
+    await baiduNetdiskApi.resume(taskId)
+    ElMessage.success('已恢复')
+    await refreshBaiduNetdiskWorkbench({ silent: true })
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '恢复失败')
+  }
+}
+
+async function cancelBaiduNetdiskTask(task) {
+  const taskId = resolveBaiduNetdiskTaskId(task)
+  if (!taskId) return ElMessage.warning('无法识别百度网盘下载任务')
+  const title = String(task?.work_title || task?.source_label || '此下载任务').trim()
+  try {
+    await showSystemConfirm({
+      title: '取消百度网盘下载',
+      message: `确定要取消 ${title} 吗？`,
+      description: '取消会停止 BaiduPCS-Go 子进程，临时目录会保留，之后可重新开始利用已有分片续传。',
+      tone: 'danger',
+      confirmText: '取消下载',
+    })
+  } catch {
+    return
+  }
+  try {
+    await baiduNetdiskApi.cancel(taskId)
+    ElMessage.success('已取消')
+    await refreshBaiduNetdiskWorkbench({ silent: true })
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '取消失败')
+  }
+}
+
+async function retryBaiduNetdiskTask(task) {
+  const taskId = resolveBaiduNetdiskTaskId(task)
+  if (!taskId) return ElMessage.warning('无法识别百度网盘下载任务')
+  const next = new Set(baiduNetdiskRetryingTaskIds.value)
+  next.add(taskId)
+  baiduNetdiskRetryingTaskIds.value = next
+  try {
+    await baiduNetdiskApi.retry(taskId)
+    ElMessage.success('已提交重试')
+    await refreshBaiduNetdiskWorkbench({ silent: true })
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '提交重试失败')
+  } finally {
+    const done = new Set(baiduNetdiskRetryingTaskIds.value)
+    done.delete(taskId)
+    baiduNetdiskRetryingTaskIds.value = done
+  }
+}
+
 async function retryEnhancedDownloadTask(task) {
   const sessionId = String(task?.task_metadata?.session_id || task?.session_id || '').trim()
   const taskId = String(task?.id || '').trim()
@@ -1728,11 +2050,14 @@ async function initializeASMRSyncPage () {
   if (asmrSyncInitialized) return
   hydrateEnhancedDownloadWorkbenchState()
   hydrateHttpDownloadWorkbenchState()
+  hydrateBaiduNetdiskWorkbenchState()
   await loadSavedFolder()
   await loadWaitingRetryTasks()
   await refreshStatus()
   if (enhancedDownloadWorkbenchTaskIds.value.length) await refreshEnhancedDownloadWorkbench()
   if (httpDownloadWorkbenchTaskIds.value.length) await refreshHttpDownloadWorkbench()
+  if (baiduNetdiskWorkbenchTaskIds.value.length) await refreshBaiduNetdiskWorkbench()
+  activeWorkspaceTab.value = normalizeWorkspaceTab(route.query?.tab)
   if (subtitleFolder.value) {
     await scanFolder()
   }
@@ -1753,6 +2078,8 @@ onActivated(async () => {
   await loadEnhancedSessions()
   if (enhancedDownloadWorkbenchTaskIds.value.length) refreshEnhancedDownloadWorkbench()
   if (httpDownloadWorkbenchTaskIds.value.length) refreshHttpDownloadWorkbench()
+  if (baiduNetdiskWorkbenchTaskIds.value.length) refreshBaiduNetdiskWorkbench()
+  activeWorkspaceTab.value = normalizeWorkspaceTab(route.query?.tab)
   startStatusPolling()
 })
 
@@ -1764,6 +2091,7 @@ onDeactivated(() => {
 onBeforeUnmount(() => {
   stopEnhancedDownloadWorkbenchPolling()
   stopHttpDownloadWorkbenchPolling()
+  stopBaiduNetdiskWorkbenchPolling()
 })
 
 onUnmounted(() => {
@@ -1771,6 +2099,7 @@ onUnmounted(() => {
   stopStatusPolling()
   stopEnhancedDownloadWorkbenchPolling()
   stopHttpDownloadWorkbenchPolling()
+  stopBaiduNetdiskWorkbenchPolling()
 })
 
 watch(enhancedDownloadWorkbenchVisible, (visible) => {
@@ -1804,6 +2133,37 @@ watch(httpDownloadWorkbenchBackgroundActive, () => {
 watch(httpDownloadWorkbenchTaskIds, () => {
   persistHttpDownloadWorkbenchState()
 }, { deep: true })
+
+watch(baiduNetdiskWorkbenchVisible, (visible) => {
+  persistBaiduNetdiskWorkbenchState()
+  if (visible || baiduNetdiskWorkbenchBackgroundActive.value) startBaiduNetdiskWorkbenchPolling()
+  else stopBaiduNetdiskWorkbenchPolling()
+})
+
+watch(baiduNetdiskWorkbenchBackgroundActive, () => {
+  persistBaiduNetdiskWorkbenchState()
+  if (baiduNetdiskWorkbenchVisible.value || baiduNetdiskWorkbenchBackgroundActive.value) startBaiduNetdiskWorkbenchPolling()
+  else stopBaiduNetdiskWorkbenchPolling()
+})
+
+watch(baiduNetdiskWorkbenchTaskIds, () => {
+  persistBaiduNetdiskWorkbenchState()
+}, { deep: true })
+
+watch(() => route.query?.tab, (value) => {
+  activeWorkspaceTab.value = normalizeWorkspaceTab(value)
+})
+
+watch(activeWorkspaceTab, (value) => {
+  const nextTab = normalizeWorkspaceTab(value)
+  if (nextTab !== value) {
+    activeWorkspaceTab.value = nextTab
+    return
+  }
+  const currentTab = normalizeWorkspaceTab(route.query?.tab)
+  if (currentTab === nextTab) return
+  router.replace({ path: route.path, query: { ...route.query, tab: nextTab } }).catch(() => {})
+})
 </script>
 
 <style scoped>
