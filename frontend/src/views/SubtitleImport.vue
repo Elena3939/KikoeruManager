@@ -121,8 +121,16 @@
             <p class="subtitle-list-hint">单击查看详情，可重试候选搜索</p>
           </div>
           <div class="subtitle-list-scroll no-scrollbar">
+            <AppLoadingAnimation
+              v-if="pendingLoading && !pendingItems.length"
+              label="加载预检单"
+              description="正在同步字幕补配列表"
+              :size="88"
+              :min-height="260"
+              class="subtitle-list-loading"
+            />
             <AppEmptyState
-              v-if="pendingLoadedOnce && !pendingItems.length"
+              v-else-if="pendingLoadedOnce && !pendingItems.length"
               description="没有待处理的预检单"
               size="sm"
               class="my-auto"
@@ -364,7 +372,14 @@
 
         <!-- 右侧未选中占位 -->
         <section v-else class="subtitle-detail-pane subtitle-detail-placeholder">
-          <div class="subtitle-detail-placeholder-inner">
+          <AppLoadingAnimation
+            v-if="pendingLoading && !pendingItems.length"
+            label="加载预检单"
+            description="同步完成后会在这里显示预检详情"
+            :size="96"
+            :min-height="320"
+          />
+          <div v-else class="subtitle-detail-placeholder-inner">
             <Captions class="w-10 h-10 mb-3 text-slate-300" stroke-width="1.4" />
             <p class="text-sm font-medium text-slate-500">请从左侧选择一条预检单</p>
             <p class="text-xs text-slate-400 mt-1">点击列表项查看详情并执行补配</p>
@@ -1793,7 +1808,7 @@ button:disabled { cursor: not-allowed; }
 }
 
 .subtitle-import-workbench-modal {
-  width: min(1480px, 96vw);
+  width: min(1760px, calc(100vw - 16px));
   max-height: calc(100dvh - 32px);
   overflow: hidden;
   border-radius: 24px;

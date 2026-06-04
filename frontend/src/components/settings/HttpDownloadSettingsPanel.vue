@@ -69,14 +69,14 @@
         <div class="field-stack">
           <SettingsToggleRow v-model="config.http_downloader.google_drive_oauth_enabled" title="启用 Drive API 下载" subtitle="开启后 Google Drive 分享优先走 OAuth Drive API 下载；失败时回退现有公开直链解析。" />
           <div class="google-drive-oauth-actions">
-            <div class="google-drive-oauth-status" :class="{ 'is-ready': googleDriveOAuthConfigured }">
+            <div class="google-drive-oauth-status" :class="{ 'is-ready': googleDriveOAuthConfigured, 'is-expired': googleDriveOAuthExpired }">
               <CheckCircle2 :size="15" :stroke-width="2.4" />
               <span>{{ googleDriveOAuthStatusText }}</span>
             </div>
             <button type="button" class="ghost-inline-btn" :disabled="googleDriveOAuthBusy" @click="startGoogleDriveOAuth">
               <LoaderCircle v-if="googleDriveOAuthBusy" :size="14" class="spin-icon" />
               <LogIn v-else :size="14" :stroke-width="2.4" />
-              Google 登录
+              {{ googleDriveOAuthExpired ? '重新登录' : 'Google 登录' }}
             </button>
           </div>
           <div v-if="googleDriveAccountVisible" class="google-drive-account-card">
@@ -363,7 +363,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { CheckCircle2, ChevronDown, ChevronRight, File, FileArchive, FileAudio, FileVideo, Folder, FolderOpen, LoaderCircle, LogIn, Plus, Trash2 } from 'lucide-vue-next'
 import SettingsFieldCard from './SettingsFieldCard.vue'
@@ -415,6 +415,7 @@ const googleDriveOAuthBusy = ref(false)
 const googleDriveOAuthMessage = ref('')
 const googleDriveOAuthPopup = ref(null)
 const googleDriveOAuthPopupTimer = ref(null)
+const googleDriveExpiredNotified = ref(false)
 
 const config = computed(() => props.config)
 const googleDriveOAuthClientMode = computed({
@@ -525,18 +526,22 @@ const pikpakStatusText = computed(() => {
   return `${pikpakHealthyAccountCount.value}/${count || 0} 个账号可用，总容量 ${formatBytes(pikpakTotalQuota.value.limit)}，已用 ${pikpakTotalUsedPercent.value}%${suffix}`
 })
 const googleDriveOAuthConfigured = computed(() => Boolean(
-  props.config.http_downloader.google_drive_refresh_token
+  !props.config.http_downloader.google_drive_oauth_expired && (
+    props.config.http_downloader.google_drive_refresh_token
     || googleDriveRevealedSecrets.value.google_drive_refresh_token
+  )
 ))
+const googleDriveOAuthExpired = computed(() => Boolean(props.config.http_downloader.google_drive_oauth_expired))
 const googleDriveOAuthStatusText = computed(() => {
   if (googleDriveOAuthBusy.value) return '正在等待 Google 授权'
+  if (googleDriveOAuthExpired.value) return 'Google Drive 授权已过期'
   if (googleDriveOAuthConfigured.value) return '已授权 Drive 只读访问'
   return '未授权 Drive 只读访问'
 })
 const googleDriveAccountName = computed(() => String(props.config.http_downloader.google_drive_account_name || '').trim())
 const googleDriveAccountEmail = computed(() => String(props.config.http_downloader.google_drive_account_email || '').trim())
 const googleDriveAccountAvatar = computed(() => String(props.config.http_downloader.google_drive_account_avatar_url || '').trim())
-const googleDriveAccountVisible = computed(() => googleDriveOAuthConfigured.value && Boolean(
+const googleDriveAccountVisible = computed(() => Boolean(
   googleDriveAccountName.value || googleDriveAccountEmail.value
 ))
 const googleDriveAccountInitial = computed(() => {
@@ -545,7 +550,9 @@ const googleDriveAccountInitial = computed(() => {
 })
 const googleDriveAccountCachedText = computed(() => {
   const cachedAt = Number(props.config.http_downloader.google_drive_account_cached_at || 0)
-  return cachedAt ? `缓存于 ${formatDateTime(cachedAt)}` : '本地缓存'
+  const timeText = cachedAt ? formatDateTime(cachedAt) : ''
+  if (googleDriveOAuthExpired.value) return timeText ? `授权已过期 · ${timeText}` : '授权已过期'
+  return timeText ? `缓存于 ${timeText}` : '本地缓存'
 })
 const googleDriveAllowedMessageOrigins = computed(() => {
   const origins = new Set()
@@ -952,6 +959,7 @@ function handleGoogleDriveOAuthMessage(event) {
     return
   }
   props.config.http_downloader.google_drive_oauth_enabled = true
+  props.config.http_downloader.google_drive_oauth_expired = false
   props.config.http_downloader.google_drive_refresh_token = refreshToken
   const account = payload.account || {}
   props.config.http_downloader.google_drive_account_name = String(account.name || '').trim()
@@ -965,9 +973,18 @@ function handleGoogleDriveOAuthMessage(event) {
   }
   const accountLabel = props.config.http_downloader.google_drive_account_email || props.config.http_downloader.google_drive_account_name
   googleDriveOAuthMessage.value = accountLabel
-    ? `✓ Google Drive 已授权：${accountLabel}，保存配置后生效`
-    : '✓ Google Drive 已授权，保存配置后生效'
-  ElMessage.success(accountLabel ? `Google Drive 已授权：${accountLabel}` : 'Google Drive 已授权')
+    ? `✓ Google Drive 已授权并保存：${accountLabel}`
+    : '✓ Google Drive 已授权并保存'
+  ElMessage.success(accountLabel ? `Google Drive 已授权并保存：${accountLabel}` : 'Google Drive 已授权并保存')
+}
+
+function notifyGoogleDriveExpired() {
+  if (!googleDriveOAuthExpired.value || googleDriveExpiredNotified.value) return
+  googleDriveExpiredNotified.value = true
+  const label = googleDriveAccountEmail.value || googleDriveAccountName.value || '当前账号'
+  const detail = `Google Drive 授权已过期，请重新登录：${label}`
+  googleDriveOAuthMessage.value = `✗ ${detail}`
+  ElMessage.warning(detail)
 }
 
 async function startGoogleDriveOAuth() {
@@ -1325,6 +1342,15 @@ async function clearAllPikPakTransfers() {
 onMounted(() => {
   window.addEventListener('message', handleGoogleDriveOAuthMessage)
   loadPikPakCachedStatus()
+  notifyGoogleDriveExpired()
+})
+
+watch(googleDriveOAuthExpired, (expired) => {
+  if (!expired) {
+    googleDriveExpiredNotified.value = false
+    return
+  }
+  notifyGoogleDriveExpired()
 })
 
 onBeforeUnmount(() => {
@@ -1396,6 +1422,12 @@ onBeforeUnmount(() => {
   border-color: var(--set-success-border);
   background: var(--set-success-bg);
   color: var(--set-success-text);
+}
+
+.google-drive-oauth-status.is-expired {
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(127, 29, 29, 0.2);
+  color: #fecaca;
 }
 
 .google-drive-account-card {

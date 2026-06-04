@@ -74,7 +74,16 @@
       </button>
     </div>
 
-    <AppEmptyState v-if="!visibleTasks.length" :description="ctx.subtitleQueueTasks.length ? '当前筛选暂无任务' : '暂无字幕任务'" size="sm" />
+    <AppLoadingAnimation
+      v-if="ctx.subtitleQueueLoading"
+      label="加载任务队列"
+      description="正在同步字幕补配状态"
+      :size="82"
+      :min-height="260"
+      class="subtitle-queue-loading"
+    />
+
+    <AppEmptyState v-else-if="!visibleTasks.length" :description="ctx.subtitleQueueTasks.length ? '当前筛选暂无任务' : '暂无字幕任务'" size="sm" />
 
     <TransitionGroup v-else tag="div" name="sub-task-item" class="grid min-h-0 content-start gap-2 overflow-hidden">
       <button
@@ -208,6 +217,7 @@ import {
   Loader2, Trash2, XCircle
 } from 'lucide-vue-next'
 import AppEmptyState from '../../common/AppEmptyState.vue'
+import AppLoadingAnimation from '../../common/AppLoadingAnimation.vue'
 
 const props = defineProps({
   ctx: {

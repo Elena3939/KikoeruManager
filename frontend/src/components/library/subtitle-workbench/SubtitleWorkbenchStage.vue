@@ -198,9 +198,9 @@ const leftRailCollapsed = ref(false)
 const isRightCollapsed = computed(() => Boolean(props.ctx?.contextDrawerCtx?.drawerCollapsed))
 const gridClass = computed(() => {
   if (leftRailCollapsed.value && isRightCollapsed.value) return 'grid-cols-[56px_minmax(0,1fr)_56px]'
-  if (leftRailCollapsed.value) return 'grid-cols-[56px_minmax(0,2.64fr)_minmax(312px,0.86fr)]'
-  if (isRightCollapsed.value) return 'grid-cols-[minmax(236px,0.74fr)_minmax(0,2.82fr)_56px]'
-  return 'grid-cols-[minmax(224px,0.7fr)_minmax(0,2.28fr)_minmax(312px,0.86fr)]'
+  if (leftRailCollapsed.value) return 'grid-cols-[56px_minmax(0,1fr)_minmax(250px,0.24fr)]'
+  if (isRightCollapsed.value) return 'grid-cols-[minmax(196px,0.2fr)_minmax(0,1fr)_56px]'
+  return 'grid-cols-[minmax(196px,0.2fr)_minmax(0,1fr)_minmax(250px,0.24fr)]'
 })
 </script>
 

@@ -49,7 +49,15 @@
       </div>
     </header>
 
-    <AppEmptyState v-if="showOverview && !ctx.visibleSubtitleTasks.length" description="暂无字幕任务" size="sm" />
+    <AppLoadingAnimation
+      v-if="ctx.subtitleQueueLoading"
+      label="加载字幕任务"
+      description="正在同步补配队列"
+      :size="96"
+      :min-height="320"
+      class="subtitle-task-stage-loading"
+    />
+    <AppEmptyState v-else-if="showOverview && !ctx.visibleSubtitleTasks.length" description="暂无字幕任务" size="sm" />
     <div v-else class="subtitle-task-stage-scroll grid min-h-0 min-w-0 gap-3 overflow-auto">
       <!-- Active task log panel -->
       <div
@@ -319,6 +327,7 @@ import {
   Layers, Link2, ListTodo, Loader2, Search, ScrollText, Sparkles, Trash2, Wand2, XCircle
 } from 'lucide-vue-next'
 import AppEmptyState from '../../common/AppEmptyState.vue'
+import AppLoadingAnimation from '../../common/AppLoadingAnimation.vue'
 
 const props = defineProps({
   ctx: {
@@ -340,6 +349,8 @@ const emptyArray = []
 const defaultCtx = {
   subtitleQueueTasks: emptyArray,
   visibleSubtitleTasks: emptyArray,
+  subtitleQueueLoading: false,
+  subtitleQueueRefreshing: false,
   activeSubtitleTask: null,
   selectedSubtitleTaskId: '',
   subtitleTaskDetailPanels: emptyArray,
