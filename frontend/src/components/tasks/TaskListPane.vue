@@ -161,8 +161,8 @@ function domainMeta(domain) {
   return getTaskDomainMeta(domain)
 }
 
-function isHttpDownloadTask(item) {
-  return String(item?.domain || '').trim() === 'http_download'
+function isDownloadProviderTask(item) {
+  return ['http_download', 'baidu_netdisk'].includes(String(item?.domain || '').trim())
 }
 
 function httpDisplayMeta(item) {
@@ -170,18 +170,18 @@ function httpDisplayMeta(item) {
 }
 
 function taskIcon(item) {
-  if (isHttpDownloadTask(item)) return httpDisplayMeta(item).icon || domainMeta(item.domain).icon
+  if (isDownloadProviderTask(item)) return httpDisplayMeta(item).icon || domainMeta(item.domain).icon
   return domainMeta(item.domain).icon
 }
 
 function taskIconClass(item) {
-  return isHttpDownloadTask(item) && httpDisplayMeta(item).icon
+  return isDownloadProviderTask(item) && httpDisplayMeta(item).icon
     ? 'task-platform-icon'
     : ['task-domain-icon', domainMeta(item.domain).taskIconClass || 'task-domain-icon--system']
 }
 
 function taskDomainLabel(item) {
-  if (isHttpDownloadTask(item)) return item.domain_label || domainMeta(item.domain).label
+  if (isDownloadProviderTask(item)) return httpDisplayMeta(item).label || item.domain_label || domainMeta(item.domain).label
   return item.domain_label
 }
 

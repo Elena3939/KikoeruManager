@@ -50,14 +50,14 @@
       <article
         v-for="(task, index) in tasks"
         :key="task.id"
-        class="dash-fade-up group grid grid-cols-[36px_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-0 rounded-[10px] border border-slate-100 bg-white p-3 transition-colors duration-300 hover:border-slate-200 hover:bg-slate-50/50"
+        class="dash-fade-up group grid grid-cols-[40px_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-0 rounded-[10px] border border-slate-100 bg-white p-3 transition-colors duration-300 hover:border-slate-200 hover:bg-slate-50/50"
         :style="{ animationDelay: `${index * 40}ms` }"
       >
         <!-- 域图标 -->
         <span
-          class="mt-0.5 inline-flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[10px] border border-slate-200 bg-white transition-transform duration-300 group-hover:scale-110 group-hover:rotate-[-6deg]"
+          class="dash-task-icon-box mt-0.5 inline-flex h-10 w-10 flex-shrink-0 items-center justify-center transition-transform duration-300 group-hover:scale-110 group-hover:rotate-[-6deg]"
         >
-          <component :is="taskIcon(task)" :size="16" :stroke-width="1.8" :class="taskIconClass(task)" />
+          <component :is="taskIcon(task)" :size="20" :stroke-width="1.9" :class="taskIconClass(task)" />
         </span>
 
         <!-- 主内容 -->
@@ -95,12 +95,14 @@
           <StatusPill :status="statusClass(task)" :label="statusLabel(task)" />
           <button
             type="button"
-            class="inline-flex h-6 w-6 items-center justify-center rounded-[6px] text-slate-400 transition-all duration-200 hover:bg-slate-100 hover:text-slate-700"
-            :class="!task.actions?.length ? 'pointer-events-none opacity-30' : ''"
-            :title="task.actions?.length ? getActionLabel(task.actions[0]) : ''"
-            @click="task.actions?.length && $emit('action', task, task.actions[0])"
+            data-dashboard-task-action-trigger="1"
+            class="dash-task-menu-trigger group inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-transparent text-slate-400 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.06] hover:border-slate-200 hover:bg-slate-50 hover:text-slate-800 active:translate-y-0 active:scale-95"
+            aria-haspopup="menu"
+            :aria-expanded="taskActionMenu.visible && taskActionMenu.task?.id === task.id"
+            title="任务操作"
+            @click="openTaskActionMenu(task, $event)"
           >
-            <MoreVertical :size="13" :stroke-width="2" />
+            <MoreVertical :size="14" :stroke-width="2" class="transition-transform duration-300 group-hover:rotate-90 group-hover:scale-110" />
           </button>
         </div>
       </article>
@@ -109,11 +111,49 @@
     <div v-else class="mt-3 flex flex-1 items-center justify-center rounded-[12px] border border-dashed border-slate-200">
       <AppEmptyState description="当前没有需要关注的任务" size="default" />
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="taskActionMenu.visible"
+        ref="taskActionMenuPanel"
+        class="dash-task-action-menu fixed z-[2400] w-[200px] overflow-hidden rounded-[10px] border border-slate-200 p-1.5"
+        :style="{ left: `${taskActionMenu.x}px`, top: `${taskActionMenu.y}px` }"
+        role="menu"
+        @click.stop
+        @contextmenu.stop
+      >
+        <div class="dash-task-action-menu-header flex items-center px-2 py-1.5">
+          <span class="min-w-0 truncate text-[11px] font-semibold tracking-tight text-slate-700" :title="taskActionMenu.task?.title || ''">
+            {{ taskActionMenu.task?.title || '任务操作' }}
+          </span>
+        </div>
+
+        <button
+          v-for="action in taskMenuActions(taskActionMenu.task)"
+          :key="`${taskActionMenu.task?.id}-${action}`"
+          type="button"
+          class="dash-task-action-menu-item"
+          :class="actionToneClass(action)"
+          role="menuitem"
+          @click="runTaskAction(action)"
+        >
+          <component
+            :is="actionIcon(action)"
+            :size="14"
+            :stroke-width="2.2"
+            class="dash-task-action-menu-icon"
+            :class="actionIconClass(action)"
+          />
+          <span>{{ getActionLabel(action, taskActionMenu.task) }}</span>
+        </button>
+      </div>
+    </Teleport>
   </section>
 </template>
 
 <script setup>
-import { Activity, ArrowRight, MoreVertical, PauseCircle, PlayCircle, RotateCcw, RotateCw, XCircle } from 'lucide-vue-next'
+import { nextTick, onBeforeUnmount, ref } from 'vue'
+import { Activity, ArrowRight, MoreVertical, PauseCircle, PlayCircle, RotateCcw, RotateCw, Trash2, XCircle } from 'lucide-vue-next'
 import AppEmptyState from '../common/AppEmptyState.vue'
 import StatusPill from './StatusPill.vue'
 import { getTaskDomainMeta } from '../common/taskDomainMeta.js'
@@ -124,7 +164,18 @@ defineProps({
   statusCards: { type: Array, default: () => [] },
 })
 
-defineEmits(['go', 'action'])
+const emit = defineEmits(['go', 'action'])
+
+const MENU_WIDTH = 200
+const MENU_PADDING = 12
+
+const taskActionMenuPanel = ref(null)
+const taskActionMenu = ref({
+  visible: false,
+  x: 0,
+  y: 0,
+  task: null,
+})
 
 const STATUS_ICON_MAP = {
   processing: Activity,
@@ -139,7 +190,10 @@ const ACTION_ICON_MAP = {
   cancel: XCircle,
   retry: RotateCcw,
   retry_waiting: RotateCcw,
-  delete_waiting_retry: XCircle,
+  delete: Trash2,
+  delete_waiting_retry: Trash2,
+  open_route: ArrowRight,
+  open_tasks: ArrowRight,
   open_subtitle_import: ArrowRight,
 }
 
@@ -147,18 +201,132 @@ const ACTION_LABEL_MAP = {
   pause: '暂停',
   resume: '恢复',
   cancel: '取消',
+  delete: '删除',
   retry: '重试',
   retry_waiting: '立即重试',
   delete_waiting_retry: '移除',
+  open_route: '查看处理',
+  open_tasks: '查看任务详情',
   open_subtitle_import: '前往字幕补配',
 }
+
+function taskHasActions(task) {
+  return taskMenuActions(task).length > 0
+}
+
+function taskMenuActions(task) {
+  const explicitActions = Array.isArray(task?.actions)
+    ? task.actions.map(action => String(action || '').trim()).filter(Boolean)
+    : []
+  if (explicitActions.length) return explicitActions
+
+  const status = String(task?.status || '').trim().toLowerCase()
+  const isEngineTask = String(task?.id || '').startsWith('engine:')
+  if (isEngineTask && ['pending', 'processing', 'running'].includes(status)) return ['pause', 'cancel']
+  if (isEngineTask && status === 'paused') return ['resume', 'cancel']
+  if (isEngineTask && ['completed', 'success', 'finished', 'failed', 'error', 'cancelled', 'canceled'].includes(status)) {
+    return ['delete']
+  }
+  if (task?.route_hint) return ['open_route']
+  return ['open_tasks']
+}
+
+function clampMenuPosition(x, y) {
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || MENU_WIDTH
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 320
+  const safeX = Math.min(
+    Math.max(MENU_PADDING, Number(x || 0)),
+    Math.max(MENU_PADDING, viewportWidth - MENU_WIDTH - MENU_PADDING)
+  )
+  const panelHeight = taskActionMenuPanel.value?.offsetHeight || 44 + Math.max(1, taskMenuActions(taskActionMenu.value.task).length) * 33
+  const safeY = Math.min(
+    Math.max(MENU_PADDING, Number(y || 0)),
+    Math.max(MENU_PADDING, viewportHeight - panelHeight - MENU_PADDING)
+  )
+  return { x: safeX, y: safeY }
+}
+
+function openTaskActionMenu(task, event) {
+  event?.stopPropagation?.()
+  const rect = event?.currentTarget?.getBoundingClientRect?.()
+  const x = rect ? rect.right - MENU_WIDTH : MENU_PADDING
+  const y = rect ? rect.bottom + 6 : MENU_PADDING
+  const nextPosition = clampMenuPosition(x, y)
+  taskActionMenu.value = {
+    visible: true,
+    x: nextPosition.x,
+    y: nextPosition.y,
+    task,
+  }
+  bindTaskActionMenuDismiss()
+  nextTick(() => {
+    const adjusted = clampMenuPosition(taskActionMenu.value.x, taskActionMenu.value.y)
+    taskActionMenu.value = { ...taskActionMenu.value, ...adjusted }
+  })
+}
+
+function closeTaskActionMenu() {
+  if (!taskActionMenu.value.visible) return
+  taskActionMenu.value = {
+    visible: false,
+    x: 0,
+    y: 0,
+    task: null,
+  }
+  unbindTaskActionMenuDismiss()
+}
+
+function handleTaskActionMenuDismiss(event) {
+  if (!taskActionMenu.value.visible) return
+  const target = event?.target
+  if (taskActionMenuPanel.value && taskActionMenuPanel.value.contains(target)) return
+  if (target instanceof Element && target.closest('[data-dashboard-task-action-trigger="1"]')) return
+  closeTaskActionMenu()
+}
+
+function handleTaskActionMenuScroll() {
+  closeTaskActionMenu()
+}
+
+function bindTaskActionMenuDismiss() {
+  document.removeEventListener('mousedown', handleTaskActionMenuDismiss, true)
+  document.removeEventListener('click', handleTaskActionMenuDismiss, true)
+  document.removeEventListener('contextmenu', handleTaskActionMenuDismiss, true)
+  window.removeEventListener('scroll', handleTaskActionMenuScroll, true)
+  document.addEventListener('mousedown', handleTaskActionMenuDismiss, true)
+  document.addEventListener('click', handleTaskActionMenuDismiss, true)
+  document.addEventListener('contextmenu', handleTaskActionMenuDismiss, true)
+  window.addEventListener('scroll', handleTaskActionMenuScroll, true)
+}
+
+function unbindTaskActionMenuDismiss() {
+  document.removeEventListener('mousedown', handleTaskActionMenuDismiss, true)
+  document.removeEventListener('click', handleTaskActionMenuDismiss, true)
+  document.removeEventListener('contextmenu', handleTaskActionMenuDismiss, true)
+  window.removeEventListener('scroll', handleTaskActionMenuScroll, true)
+}
+
+function runTaskAction(action) {
+  const task = taskActionMenu.value.task
+  closeTaskActionMenu()
+  if (!task || !action) return
+  if (action === 'open_route' || action === 'open_tasks') {
+    emit('go', action === 'open_route' ? (task.route_hint || '/tasks') : '/tasks')
+    return
+  }
+  emit('action', task, action)
+}
+
+onBeforeUnmount(() => {
+  unbindTaskActionMenuDismiss()
+})
 
 function domainMeta(domain) {
   return getTaskDomainMeta(domain)
 }
 
-function isHttpDownloadTask(task) {
-  return String(task?.domain || '').trim() === 'http_download'
+function isDownloadProviderTask(task) {
+  return ['http_download', 'baidu_netdisk'].includes(String(task?.domain || '').trim())
 }
 
 function httpDisplayMeta(task) {
@@ -166,24 +334,24 @@ function httpDisplayMeta(task) {
 }
 
 function taskIcon(task) {
-  if (isHttpDownloadTask(task)) return httpDisplayMeta(task).icon || domainMeta(task.domain).icon
+  if (isDownloadProviderTask(task)) return httpDisplayMeta(task).icon || domainMeta(task.domain).icon
   return domainMeta(task.domain).icon
 }
 
 function taskIconClass(task) {
-  return isHttpDownloadTask(task) && httpDisplayMeta(task).icon
+  return isDownloadProviderTask(task) && httpDisplayMeta(task).icon
     ? 'dash-platform-icon'
     : domainMeta(task.domain).chipIcon
 }
 
 function taskChipIconClass(task) {
-  return isHttpDownloadTask(task) && httpDisplayMeta(task).icon
+  return isDownloadProviderTask(task) && httpDisplayMeta(task).icon
     ? 'dash-platform-chip-icon'
     : domainMeta(task.domain).chipIcon
 }
 
 function taskDomainLabel(task) {
-  if (isHttpDownloadTask(task)) return httpDisplayMeta(task).label || task.domain_label
+  if (isDownloadProviderTask(task)) return httpDisplayMeta(task).label || task.domain_label || domainMeta(task.domain).label
   return task.domain_label
 }
 
@@ -191,8 +359,25 @@ function actionIcon(action) {
   return ACTION_ICON_MAP[action] || ArrowRight
 }
 
-function getActionLabel(action) {
+function getActionLabel(action, task = null) {
+  if (action === 'open_route' && String(task?.route_hint || '').includes('subtitle')) return '前往字幕补配'
+  if (action === 'open_route' && String(task?.route_hint || '').includes('conflicts')) return '前往问题作品'
   return ACTION_LABEL_MAP[action] || action
+}
+
+function actionToneClass(action) {
+  if (action === 'cancel' || action === 'delete' || action === 'delete_waiting_retry') return 'dash-task-action-menu-item--danger'
+  if (action === 'pause') return 'dash-task-action-menu-item--warning'
+  if (action === 'resume') return 'dash-task-action-menu-item--success'
+  return ''
+}
+
+function actionIconClass(action) {
+  if (action === 'cancel' || action === 'delete' || action === 'delete_waiting_retry') return 'text-rose-600'
+  if (action === 'pause') return 'text-amber-600'
+  if (action === 'resume') return 'text-emerald-600'
+  if (action === 'retry' || action === 'retry_waiting') return 'text-amber-600'
+  return 'text-slate-500'
 }
 
 function showProgress(task) {
@@ -229,7 +414,7 @@ function statusIconFor(key) {
 
 function statusIconColor(key) {
   if (key === 'processing') return 'text-amber-500'
-  if (key === 'waiting') return 'text-indigo-500'
+  if (key === 'waiting') return 'text-slate-400'
   if (key === 'retry') return 'text-orange-500'
   if (key === 'failed') return 'text-rose-500'
   if (key === 'cancelled') return 'text-slate-400'
@@ -242,7 +427,7 @@ function statusValueColor(key, value) {
   if (key === 'failed') return 'text-rose-600'
   if (key === 'cancelled') return 'text-slate-500'
   if (key === 'processing') return 'text-amber-600'
-  if (key === 'waiting') return 'text-indigo-600'
+  if (key === 'waiting') return 'text-slate-600'
   if (key === 'retry') return 'text-orange-600'
   return 'text-slate-800'
 }
@@ -267,13 +452,157 @@ function formatRJ(value) {
 }
 
 .dash-platform-icon {
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
 }
 
 .dash-platform-chip-icon {
-  width: 11px;
-  height: 11px;
+  width: 12px;
+  height: 12px;
+}
+
+.dash-task-icon-box {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: inherit;
+}
+
+.dash-task-action-menu {
+  background: #ffffff;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 12px 28px -10px rgba(15, 23, 42, 0.18),
+    0 6px 16px -12px rgba(15, 23, 42, 0.12);
+  animation: dash-task-menu-enter 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform-origin: top right;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.dash-task-action-menu-item {
+  position: relative;
+  display: inline-flex;
+  min-height: 32px;
+  width: 100%;
+  cursor: pointer;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  padding: 0 9px;
+  color: #334155;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease,
+    transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 0.2s ease;
+}
+
+.dash-task-action-menu-item:hover {
+  background: rgb(248 250 252);
+  color: #0f172a;
+  transform: translateX(2px);
+  box-shadow: inset 0 0 0 1px rgb(226 232 240);
+}
+
+.dash-task-action-menu-item:active {
+  transform: translateX(2px) scale(0.98);
+}
+
+.dash-task-action-menu-icon {
+  flex-shrink: 0;
+  transition:
+    transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
+    color 0.2s ease;
+}
+
+.dash-task-action-menu-item:hover .dash-task-action-menu-icon {
+  transform: translateY(-1px) scale(1.12) rotate(-4deg);
+}
+
+.dash-task-action-menu-item--danger {
+  color: #be123c;
+}
+
+.dash-task-action-menu-item--danger:hover {
+  background: rgb(255 241 242);
+  color: #9f1239;
+  box-shadow: inset 0 0 0 1px rgb(254 205 211);
+}
+
+.dash-task-action-menu-item--warning:hover {
+  background: rgb(255 251 235);
+  box-shadow: inset 0 0 0 1px rgb(253 230 138);
+}
+
+.dash-task-action-menu-item--success:hover {
+  background: rgb(240 253 244);
+  box-shadow: inset 0 0 0 1px rgb(187 247 208);
+}
+
+@keyframes dash-task-menu-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+:global(html.kikoerumanager-dark) .dash-task-icon-box {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .dash-task-menu-trigger {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  color: rgba(255, 255, 255, 0.82) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .dash-task-menu-trigger:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark) .dash-task-action-menu {
+  background: rgba(15, 23, 42, 0.96) !important;
+  border-color: rgba(148, 163, 184, 0.18) !important;
+  box-shadow: 0 22px 58px rgba(0, 0, 0, 0.56) !important;
+}
+
+:global(html.kikoerumanager-dark) .dash-task-action-menu-header span {
+  color: #e2e8f0 !important;
+}
+
+:global(html.kikoerumanager-dark) .dash-task-action-menu-item {
+  color: #cbd5e1 !important;
+}
+
+:global(html.kikoerumanager-dark) .dash-task-action-menu-item:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: #ffffff !important;
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.14) !important;
+}
+
+:global(html.kikoerumanager-dark) .dash-task-action-menu-item--danger {
+  color: #fda4af;
+}
+
+:global(html.kikoerumanager-dark) .dash-task-action-menu-item--danger:hover {
+  background: rgba(244, 63, 94, 0.16);
+  color: #fecdd3;
+  box-shadow: inset 0 0 0 1px rgba(253, 164, 175, 0.28);
 }
 
 @keyframes dash-fade-up {

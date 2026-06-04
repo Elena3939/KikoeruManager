@@ -238,6 +238,7 @@ import SystemPromptHost from './components/system/SystemPromptHost.vue'
 import NotificationBell from './components/system/NotificationBell.vue'
 import AnimatedThemeToggler from './components/magicui/AnimatedThemeToggler.vue'
 import { useTheme } from './composables/useTheme'
+import { useTaskCenterStream } from './composables/useTaskCenterStream'
 import router from './router'
 
 const appVersion = '1.6.1'
@@ -249,6 +250,8 @@ const mobileNavOpen = ref(false)
 const sidebarPinnedStorageKey = 'kikoerumanager.sidebarPinned'
 const sidebarPinned = ref(false)
 const { applyTheme } = useTheme()
+const taskCenterStream = useTaskCenterStream()
+let taskCenterStreamStarted = false
 
 // 路由切换时自动关闭移动端抽屉（点击菜单项后即关闭）
 watch(() => route.fullPath, () => {
@@ -302,18 +305,21 @@ onMounted(async () => {
   sidebarPinned.value = readInitialSidebarPinned()
   applyTheme()
   if (isGateRoute.value) return
+  startTaskCenterStream()
   await refreshStatus()
   intervalId = setInterval(refreshStatus, 3000)
 })
 
 watch(isGateRoute, async (gateRoute) => {
   if (gateRoute) {
+    stopTaskCenterStream()
     if (intervalId) {
       clearInterval(intervalId)
       intervalId = null
     }
     return
   }
+  startTaskCenterStream()
   await refreshStatus()
   if (!intervalId) {
     intervalId = setInterval(refreshStatus, 3000)
@@ -321,11 +327,24 @@ watch(isGateRoute, async (gateRoute) => {
 })
 
 onUnmounted(() => {
+  stopTaskCenterStream()
   if (intervalId) {
     clearInterval(intervalId)
     intervalId = null
   }
 })
+
+function startTaskCenterStream() {
+  if (taskCenterStreamStarted) return
+  taskCenterStream.start()
+  taskCenterStreamStarted = true
+}
+
+function stopTaskCenterStream() {
+  if (!taskCenterStreamStarted) return
+  taskCenterStream.stop()
+  taskCenterStreamStarted = false
+}
 
 async function refreshStatus() {
   await watcherStore.fetchStatus()
@@ -608,8 +627,7 @@ html.kikoerumanager-dark .dash-icon-btn,
 html.kikoerumanager-dark .dash-cmd-btn:not(:first-child),
 html.kikoerumanager-dark .dash-archive-refresh-btn,
 html.kikoerumanager-dark .dash-archive-pager-btn,
-html.kikoerumanager-dark [data-section="dashboard-tasks"] button:not(.theme-toggle-button),
-html.kikoerumanager-dark [data-section="dashboard-archive"] button:not(.theme-toggle-button) {
+html.kikoerumanager-dark .dash-task-menu-trigger {
   background: var(--km-dark-button-bg) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
@@ -620,8 +638,7 @@ html.kikoerumanager-dark .dash-icon-btn:hover,
 html.kikoerumanager-dark .dash-cmd-btn:not(:first-child):hover,
 html.kikoerumanager-dark .dash-archive-refresh-btn:hover,
 html.kikoerumanager-dark .dash-archive-pager-btn:hover,
-html.kikoerumanager-dark [data-section="dashboard-tasks"] button:not(.theme-toggle-button):hover,
-html.kikoerumanager-dark [data-section="dashboard-archive"] button:not(.theme-toggle-button):hover {
+html.kikoerumanager-dark .dash-task-menu-trigger:hover {
   background: var(--km-dark-button-bg-hover) !important;
   border-color: var(--km-dark-border-strong) !important;
   color: var(--km-dark-text-strong) !important;
@@ -2022,14 +2039,40 @@ html.kikoerumanager-dark .subtitle-workbench-dialog .border-slate-300 {
   border-color: var(--km-dark-border) !important;
 }
 
-html.kikoerumanager-dark .subtitle-workbench-dialog button:not(.primary-cta),
+html.kikoerumanager-dark .subtitle-workbench-dialog :is(button, [role="button"], input[type="checkbox"]):not(:disabled) {
+  cursor: pointer !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog :is(button, input[type="checkbox"]):disabled {
+  cursor: not-allowed !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog button:not(
+  .primary-cta,
+  .subtitle-stage-tab,
+  .subtitle-context-tab,
+  .subtitle-ai-mode-option,
+  .subtitle-naming-option,
+  .subtitle-toggle-pill,
+  .subtitle-switch,
+  .subtitle-retarget-option
+),
 html.kikoerumanager-dark .subtitle-workbench-btn {
   background: var(--km-dark-button-bg) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark .subtitle-workbench-dialog button:not(.primary-cta):hover,
+html.kikoerumanager-dark .subtitle-workbench-dialog button:not(
+  .primary-cta,
+  .subtitle-stage-tab,
+  .subtitle-context-tab,
+  .subtitle-ai-mode-option,
+  .subtitle-naming-option,
+  .subtitle-toggle-pill,
+  .subtitle-switch,
+  .subtitle-retarget-option
+):hover,
 html.kikoerumanager-dark .subtitle-workbench-btn:hover {
   background: var(--km-dark-button-bg-hover) !important;
   border-color: var(--km-dark-border-strong) !important;
@@ -2080,8 +2123,7 @@ html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-queue-filter:focus
 }
 
 html.kikoerumanager-dark .subtitle-workbench-dialog .bg-slate-900,
-html.kikoerumanager-dark .subtitle-workbench-dialog .stage-tab-active,
-html.kikoerumanager-dark .subtitle-workbench-dialog .is-active {
+html.kikoerumanager-dark .subtitle-workbench-dialog .stage-tab-active {
   background: #020617 !important;
   border-color: var(--km-dark-border-strong) !important;
   color: #ffffff !important;
@@ -2090,11 +2132,12 @@ html.kikoerumanager-dark .subtitle-workbench-dialog .is-active {
 html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card :is(
   .subtitle-filter-row.active,
   .subtitle-naming-option.active,
-  .subtitle-toggle-pill.active
+  .subtitle-toggle-pill.active,
+  .subtitle-retarget-option.active
 ) {
-  background: #56575e !important;
-  background-image: none !important;
-  border-color: rgba(255, 255, 255, 0.42) !important;
+  background: var(--option-accent-soft, var(--pill-accent-soft, rgba(86, 87, 94, 0.8))) !important;
+  background-color: var(--option-accent-soft, var(--pill-accent-soft, rgba(86, 87, 94, 0.8))) !important;
+  border-color: var(--option-accent-border, var(--pill-accent-border, rgba(255, 255, 255, 0.42))) !important;
   color: #ffffff !important;
   outline: 0 !important;
   box-shadow: none !important;
@@ -2149,23 +2192,63 @@ html.kikoerumanager-dark .subtitle-workbench-dialog :is(
 }
 
 html.kikoerumanager-dark .subtitle-workbench-dialog :is(
-  button:not(.primary-cta).is-active,
-  button:not(.primary-cta)[class*="bg-slate-900"],
-  button:not(.primary-cta)[class*="bg-blue-"],
-  button:not(.primary-cta)[class*="bg-indigo-"]
+  button:not(.primary-cta):not(.subtitle-stage-tab):not(.subtitle-context-tab):not(.subtitle-ai-mode-option):not(.subtitle-naming-option):not(.subtitle-toggle-pill):not(.subtitle-switch):not(.subtitle-retarget-option).is-active,
+  button:not(.primary-cta):not(.subtitle-stage-tab):not(.subtitle-context-tab):not(.subtitle-ai-mode-option):not(.subtitle-naming-option):not(.subtitle-toggle-pill):not(.subtitle-switch):not(.subtitle-retarget-option)[class*="bg-slate-900"],
+  button:not(.primary-cta):not(.subtitle-stage-tab):not(.subtitle-context-tab):not(.subtitle-ai-mode-option):not(.subtitle-naming-option):not(.subtitle-toggle-pill):not(.subtitle-switch):not(.subtitle-retarget-option)[class*="bg-blue-"],
+  button:not(.primary-cta):not(.subtitle-stage-tab):not(.subtitle-context-tab):not(.subtitle-ai-mode-option):not(.subtitle-naming-option):not(.subtitle-toggle-pill):not(.subtitle-switch):not(.subtitle-retarget-option)[class*="bg-indigo-"]
 ) {
   background: #020617 !important;
   border-color: var(--km-dark-border-strong) !important;
   color: #ffffff !important;
 }
 
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-pairing-grid button[class*="border-blue-3"],
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-pairing-grid button[class*="border-blue-4"] {
+  background: linear-gradient(90deg, rgba(37, 99, 235, 0.3), rgba(14, 165, 233, 0.2), rgba(15, 23, 42, 0.76)) !important;
+  border-color: rgba(96, 165, 250, 0.78) !important;
+  color: #dbeafe !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-pairing-grid button[class*="border-violet-3"],
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-pairing-grid button[class*="border-violet-4"] {
+  background: linear-gradient(90deg, rgba(124, 58, 237, 0.32), rgba(217, 70, 239, 0.18), rgba(15, 23, 42, 0.76)) !important;
+  border-color: rgba(167, 139, 250, 0.82) !important;
+  color: #ede9fe !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-pairing-grid button[class*="border-amber-2"] {
+  background: rgba(146, 64, 14, 0.22) !important;
+  border-color: rgba(251, 191, 36, 0.55) !important;
+  color: #fde68a !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-pairing-grid :is(.bg-blue-600, .hover\:bg-blue-700:hover) {
+  background: #2563eb !important;
+  border-color: rgba(96, 165, 250, 0.72) !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-pairing-grid .bg-violet-600 {
+  background: #7c3aed !important;
+  border-color: rgba(167, 139, 250, 0.72) !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-pairing-grid :is(.text-blue-700, .text-blue-900) {
+  color: #bfdbfe !important;
+}
+
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-pairing-grid :is(.text-violet-700, .text-violet-900) {
+  color: #ddd6fe !important;
+}
+
 html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card button.subtitle-filter-row.active,
 html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card button.subtitle-naming-option.active,
-html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card button.subtitle-toggle-pill.active {
-  background: #56575e !important;
-  background-color: #56575e !important;
-  background-image: none !important;
-  border-color: rgba(255, 255, 255, 0.42) !important;
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card button.subtitle-toggle-pill.active,
+html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card button.subtitle-retarget-option.active {
+  background: var(--option-accent-soft, var(--pill-accent-soft, rgba(86, 87, 94, 0.8))) !important;
+  background-color: var(--option-accent-soft, var(--pill-accent-soft, rgba(86, 87, 94, 0.8))) !important;
+  border-color: var(--option-accent-border, var(--pill-accent-border, rgba(255, 255, 255, 0.42))) !important;
   color: #ffffff !important;
   outline: 0 !important;
   box-shadow: none !important;
@@ -3283,7 +3366,7 @@ html.kikoerumanager-dark .subtitle-import-workbench-dialog p {
 }
 
 html.kikoerumanager-dark .subtitle-import-workbench-dialog .subtitle-workbench-btn,
-html.kikoerumanager-dark .subtitle-import-workbench-dialog button:not(.primary-cta):not(.el-button--primary) {
+html.kikoerumanager-dark .subtitle-import-workbench-dialog .siw-action-btn {
   background: var(--km-dark-button-bg) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
@@ -3358,7 +3441,7 @@ html.kikoerumanager-dark .import-workbench-modal .bg-slate-100\/70 {
 }
 
 html.kikoerumanager-dark .import-workbench-modal .bg-slate-900,
-html.kikoerumanager-dark .import-workbench-modal .is-active {
+html.kikoerumanager-dark .import-workbench-modal .subtitle-queue-filter.is-active {
   background: #020617 !important;
   border-color: var(--km-dark-border-strong) !important;
   color: #ffffff !important;

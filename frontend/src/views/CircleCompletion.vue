@@ -866,6 +866,7 @@
       :tasks="trackedDownloadTasks"
       :refreshing="downloadWorkbenchRefreshing"
       :retrying-keys="[...retryingTaskIds]"
+      :enable-file-retry="true"
       @refresh="refreshDownloadWorkbench({ silent: true })"
       @background="hideDownloadWorkbenchToBackground"
       @close="closeDownloadWorkbench"

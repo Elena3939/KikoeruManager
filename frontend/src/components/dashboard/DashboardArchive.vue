@@ -14,64 +14,64 @@
           </p>
         </div>
       </div>
-      <el-button
-        class="dash-archive-refresh-btn"
-        :loading="archivesLoading"
+      <button
+        type="button"
+        class="dash-archive-refresh-btn group"
         :disabled="archivesLoading"
-        circle
-        plain
-        size="small"
         title="刷新归档记录"
         @click="$emit('refresh')"
       >
-        <template #icon>
-          <RefreshCw :size="14" :stroke-width="2.2" />
-        </template>
-      </el-button>
+        <RefreshCw
+          :size="14"
+          :stroke-width="2.2"
+          :class="archivesLoading ? 'animate-spin' : 'transition-transform duration-300 group-hover:rotate-180 group-hover:scale-110'"
+        />
+      </button>
     </header>
 
     <!-- 搜索 -->
     <div class="mt-3 flex-shrink-0">
-      <el-input
-        :model-value="searchQuery"
-        size="small"
-        placeholder="搜索 RJ / 文件名"
-        clearable
-        class="dash-archive-search"
-        @update:model-value="$emit('update:searchQuery', $event)"
-      >
-        <template #prefix>
-          <Search :size="13" :stroke-width="2.2" class="text-slate-400" />
-        </template>
-      </el-input>
+      <div class="dash-archive-search">
+        <Search :size="13" :stroke-width="2.2" class="dash-archive-search-icon" />
+        <input
+          class="dash-archive-search-input"
+          :value="searchQuery"
+          type="search"
+          placeholder="搜索 RJ / 文件名"
+          @input="$emit('update:searchQuery', $event.target.value)"
+        />
+        <button
+          v-if="searchQuery"
+          type="button"
+          class="dash-archive-search-clear"
+          title="清空搜索"
+          @click="$emit('update:searchQuery', '')"
+        >
+          <XCircle :size="13" :stroke-width="2.2" />
+        </button>
+      </div>
     </div>
 
     <!-- 域 tabs：极简 pill、无图标、活动态黑底白字、count 紧贴 label 的圆形 badge -->
-    <div class="mt-2 flex-shrink-0">
-      <el-radio-group
-        :model-value="domainFilter"
-        size="small"
-        class="dash-archive-tabs flex flex-wrap gap-1.5"
-        @update:model-value="$emit('update:domainFilter', $event)"
+    <div class="mt-2 flex flex-shrink-0 flex-wrap gap-1.5">
+      <button
+        v-for="tab in tabs"
+        :key="tab.key"
+        type="button"
+        class="dash-archive-tab group"
+        :class="domainFilter === tab.key ? 'is-active' : 'is-idle'"
+        :aria-pressed="domainFilter === tab.key"
+        @click="$emit('update:domainFilter', tab.key)"
       >
-        <el-radio-button
-          v-for="tab in tabs"
-          :key="tab.key"
-          :value="tab.key"
-          class="dash-archive-tab"
+        <span>{{ tab.label }}</span>
+        <span
+          v-if="tab.count > 0"
+          class="dash-archive-tab-count"
+          :class="domainFilter === tab.key ? 'dash-archive-tab-count--on' : 'dash-archive-tab-count--off'"
         >
-          <span class="inline-flex items-center gap-1.5">
-            <span>{{ tab.label }}</span>
-            <span
-              v-if="tab.count > 0"
-              class="dash-archive-tab-count"
-              :class="domainFilter === tab.key ? 'dash-archive-tab-count--on' : 'dash-archive-tab-count--off'"
-            >
-              {{ tab.count }}
-            </span>
-          </span>
-        </el-radio-button>
-      </el-radio-group>
+          {{ tab.count }}
+        </span>
+      </button>
     </div>
 
     <!-- 归档列表（前端分页切片，pageSize 按容器高度动态计算） -->
@@ -103,27 +103,30 @@
             <div class="flex flex-shrink-0 flex-col items-end gap-0.5">
               <span
                 v-if="archive.rjcode && getMeta(archive).key !== 'import'"
-                class="text-[11px] font-bold tabular-nums text-slate-500"
+                class="dash-archive-meta-rj"
               >{{ archive.rjcode }}</span>
-              <span class="text-[11px] tabular-nums text-slate-400">{{ formatDate(archive.processed_at) }}</span>
+              <span class="dash-archive-meta-time">{{ formatDate(archive.processed_at) }}</span>
             </div>
           </div>
           <!-- 标签行：domain（同色系无 icon，与左侧色块呼应） + status（留 icon） + 文件大小 -->
           <div class="mt-1.5 flex items-center justify-between gap-1.5">
             <div class="flex flex-wrap items-center gap-1.5">
               <span
-                class="inline-flex h-[20px] items-center rounded-[5px] px-1.5 text-[11px] font-semibold"
-                :class="[getMeta(archive).chipBg || 'bg-slate-100', getMeta(archive).chipText || 'text-slate-600']"
+                class="dash-archive-domain-chip"
+                :class="`dash-archive-domain-chip--${getMeta(archive).key || 'default'}`"
               >
                 {{ getMeta(archive).label }}
               </span>
-              <span class="inline-flex h-[20px] items-center gap-1 rounded-[5px] bg-slate-50 px-1.5 text-[11px] font-medium text-slate-600">
+              <span
+                class="dash-archive-status-chip"
+                :class="`dash-archive-status-chip--${getStatusMeta(archive).key}`"
+              >
                 <component :is="statusIcon(getStatusMeta(archive).key)" :size="11" :stroke-width="2" :class="statusIconColor(getStatusMeta(archive).key)" />
                 {{ getStatusMeta(archive).label }}
               </span>
-              <span v-if="archive.isVolumeGroup" class="inline-flex h-[20px] items-center rounded-[5px] bg-amber-50 px-1.5 text-[11px] font-semibold text-amber-700">{{ archive.volumes.length }} 分卷</span>
+              <span v-if="archive.isVolumeGroup" class="dash-archive-volume-chip">{{ archive.volumes.length }} 分卷</span>
             </div>
-            <span v-if="archive.file_size" class="flex-shrink-0 text-[11px] tabular-nums text-slate-400">{{ formatFileSize(archive.file_size) }}</span>
+            <span v-if="archive.file_size" class="dash-archive-meta-size">{{ formatFileSize(archive.file_size) }}</span>
           </div>
         </div>
 
@@ -199,7 +202,6 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
-  SlidersHorizontal,
   Sparkles,
   XCircle,
 } from 'lucide-vue-next'
@@ -325,19 +327,10 @@ function statusIconColor(key) {
   if (key === 'failed') return 'text-rose-600'
   if (key === 'cancelled') return 'text-slate-500'
   if (key === 'processing') return 'text-amber-600'
-  if (key === 'pending') return 'text-indigo-600'
+  if (key === 'pending') return 'text-slate-500'
   return 'text-slate-500'
 }
 
-function statusChipClass(key) {
-  if (key === 'completed') return 'bg-emerald-50 text-emerald-700'
-  if (key === 'partial_failed') return 'bg-amber-50 text-amber-700'
-  if (key === 'failed') return 'bg-rose-50 text-rose-700'
-  if (key === 'cancelled') return 'bg-slate-100 text-slate-600'
-  if (key === 'processing') return 'bg-amber-50 text-amber-700'
-  if (key === 'pending') return 'bg-slate-100 text-slate-600'
-  return 'bg-slate-50 text-slate-500'
-}
 </script>
 
 <style scoped>
@@ -351,82 +344,137 @@ function statusChipClass(key) {
 
 /* 刷新按钮 */
 .dash-archive-refresh-btn {
-  --el-button-size: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 28px;
   height: 28px;
   min-height: 28px;
   padding: 0;
+  border: 1px solid rgba(148, 163, 184, 0.48);
   border-radius: 8px;
-  border-color: rgba(148, 163, 184, 0.48);
   color: rgb(71 85 105);
   background: rgba(255, 255, 255, 0.95);
+  cursor: pointer;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .dash-archive-refresh-btn:hover {
   color: rgb(15 23 42);
   border-color: rgba(100, 116, 139, 0.62);
   background: rgb(255 255 255);
-  transform: translateY(-1px) scale(1.08);
+  transform: translateY(-2px) scale(1.02);
 }
 .dash-archive-refresh-btn:active {
-  transform: translateY(0) scale(0.92);
+  transform: scale(0.96);
+}
+.dash-archive-refresh-btn:disabled {
+  cursor: wait;
+  opacity: 0.55;
+  transform: none;
 }
 
 /* 搜索框对齐列表卡片风格 */
-.dash-archive-search :deep(.el-input__wrapper) {
+.dash-archive-search {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 22px;
+  align-items: center;
+  height: 30px;
+  padding: 0 6px 0 9px;
+  border: 1px solid rgb(241 245 249);
   border-radius: 8px;
   background: rgb(255 255 255);
   box-shadow: 0 0 0 1px rgb(241 245 249) inset;
-  padding: 0 8px;
-  transition: box-shadow 0.3s ease;
+  transition:
+    border-color 0.3s ease,
+    box-shadow 0.3s ease,
+    background-color 0.3s ease;
 }
-.dash-archive-search :deep(.el-input__wrapper:hover) {
+.dash-archive-search:hover {
   box-shadow: 0 0 0 1px rgb(226 232 240) inset;
 }
-.dash-archive-search :deep(.el-input__wrapper.is-focus) {
+.dash-archive-search:focus-within {
+  border-color: rgb(148 163 184);
   box-shadow: 0 0 0 1px rgb(148 163 184) inset;
 }
-.dash-archive-search :deep(.el-input__inner) {
+.dash-archive-search-icon {
+  color: rgb(148 163 184);
+}
+.dash-archive-search-input {
+  min-width: 0;
   height: 28px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
   font-size: 13px;
   color: rgb(30 41 59);
 }
-.dash-archive-search :deep(.el-input__inner::placeholder) {
+.dash-archive-search-input::-webkit-search-decoration,
+.dash-archive-search-input::-webkit-search-cancel-button {
+  display: none;
+}
+.dash-archive-search-input::placeholder {
   color: rgb(148 163 184);
 }
-.dash-archive-search :deep(.el-input__prefix) {
-  margin-right: 4px;
+.dash-archive-search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgb(148 163 184);
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.dash-archive-search-clear:hover {
+  transform: translateY(-2px) scale(1.02);
+  background: rgb(241 245 249);
+  color: rgb(71 85 105);
+}
+.dash-archive-search-clear:active {
+  transform: scale(0.96);
 }
 
-/* 域 tabs：用 el-radio-button 重写成极简 pill 风格 */
-.dash-archive-tabs {
-  --el-border-radius-base: 999px;
-}
-.dash-archive-tabs :deep(.el-radio-button__inner) {
+.dash-archive-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   height: 26px;
   padding: 0 11px;
+  border: 1px solid transparent;
+  border-radius: 999px;
   font-size: 12px;
   font-weight: 500;
   line-height: 24px;
-  border-radius: 999px !important;
-  border: 1px solid transparent;
+  cursor: pointer;
+  letter-spacing: 0;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.dash-archive-tab.is-idle {
   background: rgb(241 245 249);
   color: rgb(71 85 105);
   box-shadow: none;
-  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
 }
-.dash-archive-tabs :deep(.el-radio-button__inner:hover) {
+.dash-archive-tab.is-idle:hover {
+  transform: translateY(-2px) scale(1.02);
   color: rgb(15 23 42);
   background: rgb(226 232 240);
 }
-.dash-archive-tabs :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
-  color: #fff;
-  background: rgb(15 23 42);
-  border-color: rgb(15 23 42);
+.dash-archive-tab.is-active {
+  color: rgb(15 23 42);
+  background: rgb(226 232 240);
+  border-color: rgb(203 213 225);
   box-shadow: none;
 }
-.dash-archive-tabs :deep(.el-radio-button) {
-  margin: 0;
+.dash-archive-tab.is-active:hover {
+  transform: translateY(-2px) scale(1.02);
+}
+.dash-archive-tab:active {
+  transform: scale(0.96);
 }
 
 /* count badge：圆形、跟 label 紧贴 */
@@ -449,8 +497,119 @@ function statusChipClass(key) {
   background: rgba(148, 163, 184, 0.22);
 }
 .dash-archive-tab-count--on {
-  color: rgba(255, 255, 255, 0.95);
-  background: rgba(255, 255, 255, 0.2);
+  color: rgb(15 23 42);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.dash-archive-domain-chip,
+.dash-archive-volume-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.dash-archive-domain-chip--import {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.18);
+  color: rgb(146 64 14);
+}
+
+.dash-archive-domain-chip--existing_folder,
+.dash-archive-domain-chip--rj_subtitle {
+  background: rgba(20, 184, 166, 0.12);
+  border-color: rgba(20, 184, 166, 0.18);
+  color: rgb(15 118 110);
+}
+
+.dash-archive-domain-chip--subtitle_import {
+  background: rgba(168, 85, 247, 0.12);
+  border-color: rgba(168, 85, 247, 0.18);
+  color: rgb(126 34 206);
+}
+
+.dash-archive-domain-chip--asmr_sync,
+.dash-archive-domain-chip--circle_completion {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.18);
+  color: rgb(4 120 87);
+}
+
+.dash-archive-domain-chip--http_download {
+  background: rgba(249, 115, 22, 0.12);
+  border-color: rgba(249, 115, 22, 0.18);
+  color: rgb(194 65 12);
+}
+
+.dash-archive-domain-chip--baidu_netdisk,
+.dash-archive-domain-chip--upload,
+.dash-archive-domain-chip--system,
+.dash-archive-domain-chip--default,
+.dash-archive-volume-chip {
+  background: rgba(100, 116, 139, 0.12);
+  border-color: rgba(100, 116, 139, 0.18);
+  color: rgb(51 65 85);
+}
+
+.dash-archive-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-archive-status-chip--completed,
+.dash-archive-status-chip--success,
+.dash-archive-status-chip--finished {
+  background: rgba(16, 185, 129, 0.12);
+  color: rgb(4 120 87);
+}
+
+.dash-archive-status-chip--partial_failed {
+  background: rgba(245, 158, 11, 0.12);
+  color: rgb(180 83 9);
+}
+
+.dash-archive-status-chip--failed {
+  background: rgba(244, 63, 94, 0.12);
+  color: rgb(190 18 60);
+}
+
+.dash-archive-status-chip--cancelled,
+.dash-archive-status-chip--canceled {
+  background: rgba(148, 163, 184, 0.16);
+  color: rgb(71 85 105);
+}
+
+.dash-archive-status-chip--processing,
+.dash-archive-status-chip--running {
+  background: rgba(245, 158, 11, 0.12);
+  color: rgb(180 83 9);
+}
+
+.dash-archive-status-chip--pending,
+.dash-archive-status-chip--waiting_manual,
+.dash-archive-status-chip--waiting_retry {
+  background: rgba(100, 116, 139, 0.12);
+  color: rgb(71 85 105);
+}
+
+.dash-archive-status-chip--default {
+  background: rgba(148, 163, 184, 0.12);
+  color: rgb(71 85 105);
 }
 
 /* 分页 */
@@ -470,14 +629,14 @@ function statusChipClass(key) {
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .dash-archive-pager-btn:hover {
-  transform: translateY(-1px);
+  transform: translateY(-2px) scale(1.02);
   border-color: rgb(15 23 42);
   background: rgb(15 23 42);
   color: #fff;
   box-shadow: 0 4px 10px -4px rgba(15, 23, 42, 0.4);
 }
 .dash-archive-pager-btn:active:not(:disabled) {
-  transform: translateY(0) scale(0.92);
+  transform: scale(0.96);
 }
 .dash-archive-pager-btn:disabled {
   opacity: 0.35;
@@ -497,6 +656,27 @@ function statusChipClass(key) {
   border: 1px solid rgb(241 245 249);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0;
+}
+
+.dash-archive-meta-rj {
+  color: rgb(71 85 105);
+  font-size: 11px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.dash-archive-meta-time,
+.dash-archive-meta-size {
+  color: rgb(71 85 105);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.dash-archive-meta-size {
+  flex-shrink: 0;
 }
 .dash-archive-pager-current {
   font-size: 12px;
@@ -521,5 +701,175 @@ function statusChipClass(key) {
   height: 18px;
   object-fit: contain;
   border-radius: 3px;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-refresh-btn,
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-pager-btn {
+  background: var(--km-dark-surface-soft) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-refresh-btn:hover,
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-pager-btn:hover {
+  background: var(--km-dark-surface-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search {
+  background: var(--km-dark-surface-soft) !important;
+  border-color: var(--km-dark-border) !important;
+  box-shadow: inset 0 0 0 1px var(--km-dark-border-soft) !important;
+  color-scheme: dark;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search:focus-within {
+  border-color: var(--km-dark-border-strong) !important;
+  box-shadow: inset 0 0 0 1px var(--km-dark-border-strong) !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-input {
+  background: transparent !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
+  -webkit-text-fill-color: var(--km-dark-text-strong) !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-input::placeholder {
+  color: rgba(255, 255, 255, 0.48) !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-clear {
+  color: var(--km-dark-text-muted) !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-clear:hover {
+  background: var(--km-dark-surface-hover) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-tab.is-idle {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  color: #cbd5e1 !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-tab.is-idle:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-tab.is-active {
+  background: rgba(255, 255, 255, 0.14) !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-tab-count--off {
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: #cbd5e1 !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-tab-count--on {
+  background: rgba(255, 255, 255, 0.2) !important;
+  color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-domain-chip,
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-volume-chip {
+  background: rgba(255, 255, 255, 0.07) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: #f8fafc !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-domain-chip--import {
+  background: rgba(245, 158, 11, 0.16) !important;
+  border-color: rgba(245, 158, 11, 0.22) !important;
+  color: #fde68a !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-domain-chip--existing_folder,
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-domain-chip--rj_subtitle {
+  background: rgba(20, 184, 166, 0.14) !important;
+  border-color: rgba(45, 212, 191, 0.2) !important;
+  color: #ccfbf1 !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-domain-chip--subtitle_import {
+  background: rgba(168, 85, 247, 0.14) !important;
+  border-color: rgba(196, 181, 253, 0.2) !important;
+  color: #ede9fe !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-domain-chip--asmr_sync,
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-domain-chip--circle_completion {
+  background: rgba(16, 185, 129, 0.14) !important;
+  border-color: rgba(110, 231, 183, 0.2) !important;
+  color: #d1fae5 !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-domain-chip--http_download {
+  background: rgba(249, 115, 22, 0.16) !important;
+  border-color: rgba(251, 146, 60, 0.22) !important;
+  color: #fed7aa !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-status-chip {
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: #cbd5e1 !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-status-chip--completed,
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-status-chip--success,
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-status-chip--finished {
+  background: rgba(16, 185, 129, 0.14) !important;
+  color: #d1fae5 !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-status-chip--partial_failed {
+  background: rgba(245, 158, 11, 0.14) !important;
+  color: #fde68a !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-status-chip--failed {
+  background: rgba(244, 63, 94, 0.14) !important;
+  color: #fecdd3 !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-status-chip--pending,
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-status-chip--waiting_manual,
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-status-chip--waiting_retry {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #e2e8f0 !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-meta-rj,
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-meta-time,
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-meta-size {
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.22);
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-pager {
+  border-color: var(--km-dark-border) !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-pager-indicator {
+  background: var(--km-dark-surface-soft) !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-pager-current,
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-pager-total {
+  color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-pager-divider {
+  color: rgba(255, 255, 255, 0.48) !important;
 }
 </style>

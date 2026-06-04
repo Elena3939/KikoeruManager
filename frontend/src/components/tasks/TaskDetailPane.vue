@@ -359,6 +359,7 @@ import {
   PlayCircle,
   RefreshCw,
   RotateCcw,
+  Trash2,
   XCircle,
   Activity,
   ListFilter,
@@ -389,8 +390,8 @@ function domainMeta(domain) {
   return getTaskDomainMeta(domain)
 }
 
-function isHttpDownloadTask(item) {
-  return String(item?.domain || '').trim() === 'http_download'
+function isDownloadProviderTask(item) {
+  return ['http_download', 'baidu_netdisk'].includes(String(item?.domain || '').trim())
 }
 
 function httpDisplayMeta(item) {
@@ -398,18 +399,18 @@ function httpDisplayMeta(item) {
 }
 
 function taskIcon(item) {
-  if (isHttpDownloadTask(item)) return httpDisplayMeta(item).icon || domainMeta(item.domain).icon
+  if (isDownloadProviderTask(item)) return httpDisplayMeta(item).icon || domainMeta(item.domain).icon
   return domainMeta(item.domain).icon
 }
 
 function taskIconClass(item) {
-  return isHttpDownloadTask(item) && httpDisplayMeta(item).icon
+  return isDownloadProviderTask(item) && httpDisplayMeta(item).icon
     ? 'task-platform-icon'
     : ['task-domain-icon', domainMeta(item.domain).taskIconClass || 'task-domain-icon--system']
 }
 
 function taskDomainLabel(item) {
-  if (isHttpDownloadTask(item)) return item.domain_label || domainMeta(item.domain).label
+  if (isDownloadProviderTask(item)) return httpDisplayMeta(item).label || item.domain_label || domainMeta(item.domain).label
   return item.domain_label
 }
 
@@ -489,7 +490,8 @@ const ACTION_ICON_MAP = {
   cancel: XCircle,
   retry: RotateCcw,
   retry_waiting: RotateCcw,
-  delete_waiting_retry: XCircle,
+  delete: Trash2,
+  delete_waiting_retry: Trash2,
   open_subtitle_import: ArrowRight,
   open_circle_completion: ArrowRight,
   reindex_circle: RotateCcw,
@@ -499,6 +501,7 @@ const ACTION_LABEL_MAP = {
   pause: '暂停',
   resume: '恢复',
   cancel: '取消',
+  delete: '删除',
   retry: '重试',
   retry_waiting: '立即重试',
   delete_waiting_retry: '移除等待重试',
@@ -516,7 +519,7 @@ function getActionLabel(action) {
 }
 
 function actionToneClass(action) {
-  if (action === 'cancel' || action === 'delete_waiting_retry') {
+  if (action === 'cancel' || action === 'delete' || action === 'delete_waiting_retry') {
     return 'border-rose-200 bg-rose-50 text-rose-700 hover:border-rose-300 hover:bg-rose-100 hover:shadow-[0_8px_18px_-8px_rgba(225,29,72,0.3)]'
   }
   if (action === 'pause') {

@@ -97,25 +97,25 @@ const loadedUnreadCount = computed(() => items.value.filter(i => !i.is_read).len
 const hasMoreUnread = computed(() => hasMore.value && unreadCount.value > loadedUnreadCount.value)
 
 function domainLabel(item) {
-  if (isHttpDownloadNotification(item)) return getHttpDownloadDisplayMeta(item).label
+  if (isDownloadProviderNotification(item)) return getHttpDownloadDisplayMeta(item).label
   if (item.domain_label) return item.domain_label
   if (item.task_domain) return getTaskDomainMeta(item.task_domain).label
   return '任务'
 }
 
-function isHttpDownloadNotification(item) {
-  return String(item?.task_domain || item?.domain || '').trim() === 'http_download'
+function isDownloadProviderNotification(item) {
+  return ['http_download', 'baidu_netdisk'].includes(String(item?.task_domain || item?.domain || '').trim())
 }
 
 function notificationIcon(item) {
-  if (isHttpDownloadNotification(item)) {
+  if (isDownloadProviderNotification(item)) {
     return getHttpDownloadDisplayMeta(item).icon || severityIcon(item.severity)
   }
   return severityIcon(item.severity)
 }
 
 function notificationIconClass(item) {
-  return isHttpDownloadNotification(item) && getHttpDownloadDisplayMeta(item).icon
+  return isDownloadProviderNotification(item) && getHttpDownloadDisplayMeta(item).icon
     ? 'notif-platform-icon'
     : ''
 }
