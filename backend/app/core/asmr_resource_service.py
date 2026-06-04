@@ -1096,6 +1096,14 @@ class ASMRResourceService:
         session = await self.control_session(session_id, "cancel")
         cleaned = False
         download_root = ""
+        latest_metadata = self._get_latest_session_task_metadata(
+            session_id,
+            str(session.get("task_id") or "").strip(),
+        )
+        source_action = str(latest_metadata.get("source_action") or session.get("source_action") or "").strip()
+        if source_action in {"reimport_local_download_root", "reimport_downloaded_session"}:
+            logger.info("取消本地重导入会话，跳过用户下载目录清理: session_id=%s source_action=%s", session_id, source_action)
+            return {**session, "cleaned": False, "cleaned_path": ""}
         statistics = dict(session.get("statistics") or {})
         download_root = str(
             session.get("local_download_root")
@@ -1103,10 +1111,6 @@ class ASMRResourceService:
             or ""
         ).strip()
         if not download_root:
-            latest_metadata = self._get_latest_session_task_metadata(
-                session_id,
-                str(session.get("task_id") or "").strip(),
-            )
             download_root = str(latest_metadata.get("download_root") or "").strip()
         if download_root:
             await self._wait_session_tasks_released(session_id)

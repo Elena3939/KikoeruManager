@@ -79,6 +79,17 @@ popd
 echo Starting all services...
 echo.
 
+set "BAIDUPCS_GO_DIR=%~dp0tools\baidupcs-go"
+set "BAIDUPCS_GO_EXE=%BAIDUPCS_GO_DIR%\BaiduPCS-Go.exe"
+if exist "%BAIDUPCS_GO_EXE%" (
+    set "PATH=%BAIDUPCS_GO_DIR%;%PATH%"
+    set "BAIDUPCS_GO_PATH=%BAIDUPCS_GO_EXE%"
+    echo [OK] BaiduPCS-Go found: %BAIDUPCS_GO_EXE%
+) else (
+    echo [INFO] BaiduPCS-Go not found in tools\baidupcs-go
+    echo [INFO] Run: powershell -ExecutionPolicy Bypass -File scripts\install-baidupcs-go.ps1
+)
+
 if not exist "data\config" mkdir "data\config"
 set "CONFIG_PATH=%~dp0data\config\config.yaml"
 if not exist "%CONFIG_PATH%" (
@@ -94,7 +105,7 @@ for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":5556" ^| findstr "LISTENING
     taskkill /PID %%P /F >nul 2>&1
 )
 
-start "KikoeruManager Backend" cmd /k "chcp 65001 >nul && set ""PYTHONUTF8=1"" && set ""PYTHONIOENCODING=utf-8"" && set ""CONFIG_PATH=%CONFIG_PATH%"" && set ""DATA_PATH=%~dp0data"" && cd /d %~dp0backend && venv\Scripts\python.exe -m app.main"
+start "KikoeruManager Backend" cmd /k "chcp 65001 >nul && set ""PYTHONUTF8=1"" && set ""PYTHONIOENCODING=utf-8"" && set ""CONFIG_PATH=%CONFIG_PATH%"" && set ""DATA_PATH=%~dp0data"" && set ""BAIDUPCS_GO_PATH=%BAIDUPCS_GO_PATH%"" && set ""PATH=%BAIDUPCS_GO_DIR%;%PATH%"" && cd /d %~dp0backend && venv\Scripts\python.exe -m app.main"
 
 timeout /t 3 /nobreak >nul
 

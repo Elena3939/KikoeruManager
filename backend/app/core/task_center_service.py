@@ -14,6 +14,7 @@ from .http_download_service import (
     http_download_platforms_label,
     sanitize_http_download_metadata,
 )
+from .baidu_netdisk_service import build_baidu_netdisk_batch_title, sanitize_baidu_netdisk_item
 from ..models.database import ConflictWork, SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,12 @@ class TaskCenterService:
         "platforms",
         "platform_label",
         "url_count",
+        "output_folder_name",
+        "staging_dir",
+        "final_output_path",
+        "renamed_output_path",
+        "output_finalize_status",
+        "svip_speed",
     )
 
     # summary 模式下 pending preview 仅保留这些键
@@ -122,6 +129,7 @@ class TaskCenterService:
         "subtitle_import": "字幕补配",
         "asmr_sync": "ASMR 同步",
         "http_download": "HTTP 下载",
+        "baidu_netdisk": "百度网盘",
         "upload": "库存上传",
         "circle_completion": "社团补全",
         "system": "系统任务",
@@ -158,9 +166,10 @@ class TaskCenterService:
         "subtitle_import": 3,
         "asmr_sync": 4,
         "http_download": 5,
-        "upload": 6,
-        "circle_completion": 7,
-        "system": 8,
+        "baidu_netdisk": 6,
+        "upload": 7,
+        "circle_completion": 8,
+        "system": 9,
     }
 
     TASK_TYPE_TO_DOMAIN = {
@@ -169,6 +178,7 @@ class TaskCenterService:
         TaskType.RJ_SUBTITLE_FETCH: "rj_subtitle",
         TaskType.ASMR_SYNC_DOWNLOAD: "asmr_sync",
         TaskType.HTTP_DOWNLOAD: "http_download",
+        TaskType.BAIDU_NETDISK_DOWNLOAD: "baidu_netdisk",
         TaskType.LOCAL_LIBRARY_UPLOAD: "upload",
         TaskType.CIRCLE_COMPLETION_INDEX: "circle_completion",
         TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH: "circle_completion",
@@ -186,6 +196,7 @@ class TaskCenterService:
         "subtitle_import": "/subtitle-import",
         "asmr_sync": "/asmr-sync",
         "http_download": "/asmr-sync",
+        "baidu_netdisk": "/asmr-sync?tab=baidu",
         "upload": "/library",
         "circle_completion": "/circle-completion",
         "system": "/tasks",
@@ -790,16 +801,18 @@ class TaskCenterService:
             actions.extend(["pause", "cancel"])
         elif task.status == TaskStatus.PAUSED:
             actions.extend(["resume", "cancel"])
-        elif domain == "http_download" and task.status == TaskStatus.COMPLETED and list((task.task_metadata or {}).get("failed_files") or []):
-            actions.append("retry")
+        elif domain in {"http_download", "baidu_netdisk"} and task.status == TaskStatus.COMPLETED and list((task.task_metadata or {}).get("failed_files") or []):
+            actions.extend(["retry", "delete"])
         elif task.status == TaskStatus.FAILED and self._can_retry_engine_task(task, domain):
-            actions.append("retry")
+            actions.extend(["retry", "delete"])
+        elif task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
+            actions.append("delete")
         elif task.status == TaskStatus.WAITING_RETRY and domain == "asmr_sync":
             actions.extend(["retry_waiting", "delete_waiting_retry"])
         return actions
 
     def _can_retry_engine_task(self, task: Task, domain: str) -> bool:
-        if domain == "http_download":
+        if domain in {"http_download", "baidu_netdisk"}:
             return task.status in {TaskStatus.FAILED, TaskStatus.COMPLETED}
         if domain not in {"import", "system"}:
             return False
@@ -820,7 +833,7 @@ class TaskCenterService:
         )
         if task.is_cancelled() or "用户取消" in cancel_text:
             return TaskStatus.CANCELLED.value
-        if domain == "http_download":
+        if domain in {"http_download", "baidu_netdisk"}:
             failed_files = list(metadata.get("failed_files") or [])
             metrics = dict(metadata.get("performance_metrics") or {})
             success_count = int(metrics.get("success_count") or 0)
@@ -841,8 +854,19 @@ class TaskCenterService:
     def _serialize_engine_task(self, task: Task, *, mode: str = "detail") -> Dict[str, Any]:
         metadata = dict(task.task_metadata or {})
         domain = self._infer_domain(task)
-        if domain == "http_download":
+        if domain in {"http_download", "baidu_netdisk"}:
             metadata = sanitize_http_download_metadata(metadata)
+            if domain == "baidu_netdisk":
+                metadata["download_files"] = [
+                    sanitize_baidu_netdisk_item(item)
+                    for item in list(metadata.get("download_files") or [])
+                    if isinstance(item, dict)
+                ]
+                metadata["failed_files"] = [
+                    sanitize_baidu_netdisk_item(item)
+                    for item in list(metadata.get("failed_files") or [])
+                    if isinstance(item, dict)
+                ]
         source_path = self._safe_text(task.source_path)
         output_path = self._safe_text(task.output_path)
         resolved_target_path = (
@@ -1121,6 +1145,39 @@ class TaskCenterService:
             self._append_metric(metrics, "已下载", self._format_bytes(transferred) if transferred else None)
             self._append_metric(metrics, "速度", f"{self._format_bytes(speed)}/s" if speed else None)
             self._append_metric(metrics, "来源", platform_label if platform_label and platform_label != "HTTP" else http_download_platform_label(download_mode))
+        elif domain == "baidu_netdisk":
+            download_files = list(metadata.get("download_files") or [])
+            failed_files = list(metadata.get("failed_files") or [])
+            download_runtime = dict(metadata.get("download_runtime") or {})
+            total_bytes = int(
+                download_runtime.get("total_bytes")
+                or sum(int((item or {}).get("total") or (item or {}).get("size") or 0) for item in download_files)
+                or 0
+            )
+            transferred = int(download_runtime.get("transferred_bytes") or 0)
+            speed = int(download_runtime.get("speed_bytes_per_sec") or 0)
+            output_folder_name = self._safe_text(metadata.get("output_folder_name"))
+            final_output_path = self._safe_text(metadata.get("renamed_output_path")) or self._safe_text(metadata.get("final_output_path"))
+            title = self._safe_text(metadata.get("batch_name")) or self._safe_text(metadata.get("source_label")) or build_baidu_netdisk_batch_title(metadata, item_count=len(download_files))
+            if len(download_files) == 1:
+                title = self._safe_text(download_files[0].get("name")) or title
+            subtitle = final_output_path or self._safe_text(metadata.get("staging_dir")) or output_path or source_path
+            source_label = source_label or "百度网盘"
+            source_action = source_action or "manual_baidu_netdisk_download"
+            source_page = source_page or "asmr-sync"
+            route_hint = self.DOMAIN_ROUTE_HINT["baidu_netdisk"]
+            metadata["platforms"] = ["baidu_netdisk"]
+            metadata["platform_label"] = "百度网盘"
+            metadata["download_mode"] = "baidu_netdisk"
+            self._append_metric(metrics, "文件", len(download_files) if download_files else metadata.get("url_count"))
+            self._append_metric(metrics, "完成", download_runtime.get("completed_files"))
+            self._append_metric(metrics, "失败", len(failed_files) or download_runtime.get("failed_files"))
+            self._append_metric(metrics, "大小", self._format_bytes(total_bytes) if total_bytes else None)
+            self._append_metric(metrics, "已下载", self._format_bytes(transferred) if transferred else None)
+            self._append_metric(metrics, "速度", f"{self._format_bytes(speed)}/s" if speed else None)
+            self._append_metric(metrics, "保存为", output_folder_name)
+            self._append_metric(metrics, "最终目录", final_output_path)
+            self._append_metric(metrics, "模式", "SVIP 高速" if bool(metadata.get("svip_speed")) else "百度网盘")
         else:
             title = self._basename(source_path) or task.type.value
             subtitle = self._safe_text(metadata.get("work_name")) or self._safe_text(metadata.get("folder_path"))
@@ -1798,6 +1855,10 @@ class TaskCenterService:
             if normalized_action == "cancel":
                 engine.cancel_task(engine_task_id)
                 return {"success": True, "message": "任务已取消"}
+            if normalized_action == "delete":
+                if engine.remove_task(engine_task_id):
+                    return {"success": True, "message": "任务记录已删除"}
+                raise ValueError("任务不存在")
             if normalized_action == "retry":
                 if self._infer_domain(task) == "http_download":
                     if task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED}:
@@ -1810,6 +1871,18 @@ class TaskCenterService:
                         "success": True,
                         "message": "HTTP 下载任务已加入重试队列",
                         "route_hint": self.DOMAIN_ROUTE_HINT["http_download"],
+                    }
+                if self._infer_domain(task) == "baidu_netdisk":
+                    if task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED}:
+                        raise ValueError("任务仍在执行中，不能重试")
+                    from .baidu_netdisk_service import get_baidu_netdisk_service
+
+                    await get_baidu_netdisk_service().reset_task_for_retry(task)
+                    await engine.queue.put(task)
+                    return {
+                        "success": True,
+                        "message": "百度网盘下载任务已加入重试队列",
+                        "route_hint": self.DOMAIN_ROUTE_HINT["baidu_netdisk"],
                     }
                 if not self._can_retry_engine_task(task, self._infer_domain(task)):
                     raise ValueError("当前任务不支持重试")

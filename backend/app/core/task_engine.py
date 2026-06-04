@@ -32,6 +32,7 @@ class TaskType(str, Enum):
     PROCESS_EXISTING_FOLDER = "process_existing_folder"  # 处理已存在的文件夹（跳过解压）
     ASMR_SYNC_DOWNLOAD = "asmr_sync_download"  # ASMR 同步下载任务
     HTTP_DOWNLOAD = "http_download"  # HTTP 外链下载任务
+    BAIDU_NETDISK_DOWNLOAD = "baidu_netdisk_download"  # 百度网盘下载任务
     RJ_SUBTITLE_FETCH = "rj_subtitle_fetch"  # RJ 字幕抓取任务
     LOCAL_LIBRARY_UPLOAD = "local_library_upload"
     CIRCLE_COMPLETION_INDEX = "circle_completion_index"
@@ -40,6 +41,30 @@ class TaskType(str, Enum):
 
 class Task:
     """任务对象"""
+    _global_event_hook: Optional[Callable] = None
+    _EVENT_FIELDS = {"status", "progress", "current_step", "error_message", "started_at", "completed_at"}
+
+    def __setattr__(self, name, value):
+        old_value = getattr(self, name, None) if hasattr(self, name) else None
+        object.__setattr__(self, name, value)
+        if name not in self._EVENT_FIELDS:
+            return
+        if not getattr(self, "_events_initialized", False):
+            return
+        if getattr(self, "_suppress_auto_event", 0):
+            return
+        if old_value == value:
+            return
+        reason = "progress" if name in {"progress", "current_step"} else "status"
+        if name == "status":
+            status_value = value.value if hasattr(value, "value") else str(value or "")
+            reason = {
+                TaskStatus.COMPLETED.value: "completed",
+                TaskStatus.FAILED.value: "failed",
+                TaskStatus.CANCELLED.value: "cancelled",
+            }.get(status_value, "status")
+        self.mark_changed(reason)
+
     def __init__(
         self,
         task_type: TaskType,
@@ -52,6 +77,8 @@ class Task:
         status: Optional[TaskStatus] = None,
         rjcode: Optional[str] = None
     ):
+        self._events_initialized = False
+        self._suppress_auto_event = 0
         self.id = task_id if task_id else str(uuid.uuid4())
         self.type = task_type
         self.status = status if status else TaskStatus.PENDING
@@ -82,26 +109,62 @@ class Task:
         self._active_processes: List = []
         self._proc_lock = threading.Lock()
         self._stop_reason: Optional[str] = None  # 'cancel' | 'pause' | None
+        self._event_hook: Optional[Callable] = None
+        self._events_initialized = True
+
+    @classmethod
+    def set_global_event_hook(cls, hook: Optional[Callable]):
+        cls._global_event_hook = hook
+
+    def set_event_hook(self, hook: Optional[Callable]):
+        self._event_hook = hook
+
+    def mark_changed(self, reason: str = "status"):
+        hook = self._event_hook or self.__class__._global_event_hook
+        if not hook:
+            return
+        try:
+            hook(self, reason)
+        except Exception:
+            logger.debug("任务事件回调失败", exc_info=True)
+
+    def _set_state_silent(self):
+        task = self
+
+        class _SilentState:
+            def __enter__(self):
+                task._suppress_auto_event = int(getattr(task, "_suppress_auto_event", 0) or 0) + 1
+
+            def __exit__(self, exc_type, exc, tb):
+                task._suppress_auto_event = max(0, int(getattr(task, "_suppress_auto_event", 0) or 0) - 1)
+
+        return _SilentState()
 
     def start(self):
         """开始任务"""
-        self.status = TaskStatus.PROCESSING
-        self.started_at = datetime.now()
-        self.current_step = "处理中"
+        with self._set_state_silent():
+            self.status = TaskStatus.PROCESSING
+            self.started_at = datetime.now()
+            self.current_step = "处理中"
+        self.mark_changed("started")
     
     def complete(self):
         """完成任务"""
-        self.status = TaskStatus.COMPLETED
-        self.completed_at = datetime.now()
-        self.progress = 100
-        self.current_step = "完成"
+        with self._set_state_silent():
+            self.status = TaskStatus.COMPLETED
+            self.completed_at = datetime.now()
+            self.progress = 100
+            self.current_step = "完成"
+        self.mark_changed("completed")
     
     def fail(self, error: str):
         """任务失败"""
-        self.status = TaskStatus.FAILED
-        self.completed_at = datetime.now()
-        self.error_message = error
-        self.current_step = f"失败: {error}"
+        with self._set_state_silent():
+            self.status = TaskStatus.FAILED
+            self.completed_at = datetime.now()
+            self.error_message = error
+            self.current_step = f"失败: {error}"
+        self.mark_changed("failed")
     
     def pause(self):
         """暂停任务。会主动 kill 正在跑的 7z 子进程，让上层从 await 返回，
@@ -110,23 +173,29 @@ class Task:
         previous_status = self.status.value if isinstance(self.status, TaskStatus) else str(self.status or "")
         if previous_status == TaskStatus.PENDING.value:
             self.task_metadata["pause_origin_status"] = TaskStatus.PENDING.value
-        self.status = TaskStatus.PAUSED
-        self._pause_event.clear()
-        self._kill_active_processes('pause')
+        with self._set_state_silent():
+            self.status = TaskStatus.PAUSED
+            self._pause_event.clear()
+            self._kill_active_processes('pause')
+        self.mark_changed("status")
     
     def resume(self):
         """恢复任务"""
-        self.status = TaskStatus.PROCESSING
-        self._pause_event.set()
+        with self._set_state_silent():
+            self.status = TaskStatus.PROCESSING
+            self._pause_event.set()
+        self.mark_changed("status")
 
     def set_waiting_retry(self, reason: str, retry_after: datetime = None):
         """设置等待重试状态"""
-        self.status = TaskStatus.WAITING_RETRY
-        self.current_step = f"等待重试: {reason}"
+        with self._set_state_silent():
+            self.status = TaskStatus.WAITING_RETRY
+            self.current_step = f"等待重试: {reason}"
         self.task_metadata['retry_reason'] = reason
         self.task_metadata['retry_after'] = retry_after.isoformat() if retry_after else None
         self.task_metadata['retry_count'] = self.task_metadata.get('retry_count', 0) + 1
         logger.info(f"任务 {self.id} 进入等待重试状态: {reason}")
+        self.mark_changed("status")
 
     def can_retry_now(self) -> bool:
         """检查是否可以重试"""
@@ -140,11 +209,12 @@ class Task:
 
     def cancel(self):
         """取消任务。同时 kill 正在跑的 7z 子进程，以免后台还在跑。"""
-        self._cancelled = True
-        self.status = TaskStatus.CANCELLED
-        self.error_message = None
-        self.completed_at = datetime.now()
-        self.current_step = "已取消"
+        with self._set_state_silent():
+            self._cancelled = True
+            self.status = TaskStatus.CANCELLED
+            self.error_message = None
+            self.completed_at = datetime.now()
+            self.current_step = "已取消"
         if not isinstance(self.task_metadata, dict):
             self.task_metadata = dict(self.task_metadata or {})
         self.task_metadata["cancel_reason"] = "用户取消"
@@ -153,6 +223,7 @@ class Task:
             self._pause_event.set()
         self._kill_active_processes('cancel')
         logger.info(f"任务 {self.id} 已被用户取消")
+        self.mark_changed("cancelled")
     
     async def wait_if_paused(self):
         """如果暂停则等待"""
@@ -226,8 +297,9 @@ class Task:
         都写入 task_metadata['progress_log']，限长 60 条防止无限增长。
         同一句紧邻重复（常见于多次刷新进度）直接跳过，避免大量"解压中"刷屏。
         """
-        self.progress = min(100, max(0, progress))
-        self.current_step = step
+        with self._set_state_silent():
+            self.progress = min(100, max(0, progress))
+            self.current_step = step
         logger.info(f"任务 {self.id}: {step} ({progress}%)")
 
         try:
@@ -253,23 +325,26 @@ class Task:
             })
             # 限长 60 条：解压/入库平均 15~20 条，留足余量给重试场景。
             self.task_metadata["progress_log"] = logs[-60:]
+            self.mark_changed("progress")
         except Exception:
             # 日志写入失败不能影响主流程
             logger.debug("append progress_log 失败", exc_info=True)
 
     def reset_for_rerun(self, step: str = "等待重新执行"):
         """重置任务运行态，保留任务 ID 原地重跑。"""
-        self.status = TaskStatus.PENDING
-        self.progress = 0
-        self.current_step = step
-        self.error_message = None
-        self.started_at = None
-        self.completed_at = None
-        self._cancelled = False
-        self._pause_event.set()
+        with self._set_state_silent():
+            self.status = TaskStatus.PENDING
+            self.progress = 0
+            self.current_step = step
+            self.error_message = None
+            self.started_at = None
+            self.completed_at = None
+            self._cancelled = False
+            self._pause_event.set()
         with self._proc_lock:
             self._active_processes.clear()
             self._stop_reason = None
+        self.mark_changed("status")
 
     def ensure_business_context(self, domain: str, defaults: Optional[dict] = None):
         """为任务补齐业务上下文，供任务中心统一展示。"""
@@ -319,6 +394,15 @@ class TaskEngine:
         # ExtractService._archive_info_cache 后自然完成。用 set 强引用避免 GC 警告。
         # task.cancel() 时通过 register_process 联动 kill 子进程，协程会自动退出。
         self._background_precheck_tasks: set[asyncio.Task] = set()
+        Task.set_global_event_hook(self._emit_task_center_event)
+
+    def _emit_task_center_event(self, task: Task, reason: str = "progress") -> None:
+        try:
+            from .task_center_event_service import broadcast_task_center_changed
+            self._ensure_task_context(task)
+            broadcast_task_center_changed(task, reason=reason)
+        except Exception:
+            logger.debug("任务中心事件广播失败: task_id=%s", getattr(task, "id", ""), exc_info=True)
 
     def set_max_concurrent(self, max_concurrent: int):
         """动态更新最大并发数"""
@@ -475,6 +559,7 @@ class TaskEngine:
         self._ensure_task_context(task)
         self.tasks[task.id] = task
         await self.queue.put(task)
+        task.mark_changed("submitted")
         rjcode = self._extract_rjcode_from_path_tail(task.source_path) or "未知"
         logger.info(f"[{rjcode}] 任务提交 - ID: {task.id[:8]}..., 源文件: {os.path.basename(task.source_path)}")
         return task.id
@@ -523,6 +608,8 @@ class TaskEngine:
             return "asmr_sync"
         if task.type == TaskType.HTTP_DOWNLOAD:
             return "http_download"
+        if task.type == TaskType.BAIDU_NETDISK_DOWNLOAD:
+            return "baidu_netdisk"
         if task.type == TaskType.LOCAL_LIBRARY_UPLOAD:
             return "upload"
         if task.type in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH}:
@@ -531,6 +618,7 @@ class TaskEngine:
 
     def _ensure_task_context(self, task: Task):
         """给历史任务和新任务补齐统一上下文。"""
+        task.set_event_hook(self._emit_task_center_event)
         domain = self._infer_task_domain(task)
         metadata = dict(task.task_metadata or {})
         fallback_label = os.path.basename(str(task.source_path or "").rstrip("\\/")) or task.type.value
@@ -651,12 +739,13 @@ class TaskEngine:
                     status=self._coerce_task_status(row.status),
                     rjcode=metadata.get("rjcode") or metadata.get("target_rjcode") or "",
                 )
-                task.progress = int(row.progress or 0)
-                task.current_step = row.current_step or "等待筛选与配对"
-                task.error_message = row.error_message
-                task.created_at = row.created_at or task.created_at
-                task.started_at = row.started_at
-                task.completed_at = row.completed_at
+                with task._set_state_silent():
+                    task.progress = int(row.progress or 0)
+                    task.current_step = row.current_step or "等待筛选与配对"
+                    task.error_message = row.error_message
+                    task.created_at = row.created_at or task.created_at
+                    task.started_at = row.started_at
+                    task.completed_at = row.completed_at
                 self._ensure_task_context(task)
                 self.tasks[task.id] = task
                 loaded_count += 1
@@ -1116,6 +1205,7 @@ class TaskEngine:
             task.completed_at = task.completed_at or datetime.now()
         task.error_message = None
         task.current_step = f"已由后续成功任务覆盖: {superseded_by_task_id}"
+        task.mark_changed("completed")
 
     async def revive_superseded_local_upload_tasks(self, task_ids: Optional[list[str]] = None) -> list[str]:
         """修复旧逻辑误标记的本地上传任务，并重新入队。"""
@@ -2500,6 +2590,8 @@ class TaskEngine:
                     await self._process_asmr_sync_download(task)
                 elif task.type == TaskType.HTTP_DOWNLOAD:
                     await self._process_http_download(task)
+                elif task.type == TaskType.BAIDU_NETDISK_DOWNLOAD:
+                    await self._process_baidu_netdisk_download(task)
                 elif task.type == TaskType.RJ_SUBTITLE_FETCH:
                     await self._process_rj_subtitle_fetch(task)
                 elif task.type == TaskType.LOCAL_LIBRARY_UPLOAD:
@@ -2523,9 +2615,13 @@ class TaskEngine:
             # generic dispatcher 没有这个闭包，曾经误用过 → 任务被取消时（典型场景：用户暂停
             # 正在 _probe_password 跑 7zz 的 EXTRACT 任务）抛 NameError 把 cancel 流程整段毁掉。
             # 这里只写日志，task.cancel() 自身会更新状态、前端会反映，不再尝试写 progress_log。
-            logger.info(f"[{rjcode}] 任务已取消")
-            if not task.is_cancelled():
+            if task.status == TaskStatus.PAUSED and not task.is_cancelled():
+                logger.info(f"[{rjcode}] 任务已暂停")
+            elif not task.is_cancelled():
+                logger.info(f"[{rjcode}] 任务已取消")
                 task.cancel()
+            else:
+                logger.info(f"[{rjcode}] 任务已取消")
         except Exception as e:
             logger.error(f"[{rjcode}] 任务失败: {e}", exc_info=True)
             if task.type in {TaskType.EXTRACT, TaskType.AUTO_PROCESS, TaskType.PROCESS_EXISTING_FOLDER}:
@@ -2662,9 +2758,11 @@ class TaskEngine:
                     logger.debug(f"[Cron重试] 任务 {task_id} 已在执行中，跳过")
                     continue
                 logger.info(f"[Cron重试] 重试任务 {task_id}: {task.rjcode}")
-                task.status = TaskStatus.PENDING
-                task.current_step = "等待重试"
+                with task._set_state_silent():
+                    task.status = TaskStatus.PENDING
+                    task.current_step = "等待重试"
                 await self.queue.put(task)
+                task.mark_changed("submitted")
                 retry_count += 1
 
         if retry_count > 0:
@@ -2691,9 +2789,11 @@ class TaskEngine:
                 if task_id in self.processing:
                     logger.warning(f"[重试] 任务 {task_id} 已在处理中，跳过")
                     return False
-                task.status = TaskStatus.PENDING
-                task.current_step = "等待重试"
+                with task._set_state_silent():
+                    task.status = TaskStatus.PENDING
+                    task.current_step = "等待重试"
                 asyncio.create_task(self.queue.put(task))
+                task.mark_changed("submitted")
                 logger.info(f"[重试] 任务 {task_id} ({task.rjcode}) 已加入重试队列")
                 return True
             else:
@@ -2718,9 +2818,12 @@ class TaskEngine:
                     task.task_metadata = wt.task_metadata or {}
                     task.task_metadata['subtitle_folder'] = wt.subtitle_folder
                     task.task_metadata['work_title'] = wt.work_title
-                    task.current_step = "手动重试"
+                    with task._set_state_silent():
+                        task.current_step = "手动重试"
+                    self._ensure_task_context(task)
                     self.tasks[task.id] = task
                     asyncio.create_task(self.queue.put(task))
+                    task.mark_changed("submitted")
                     # 从等待重试表删除
                     db.delete(wt)
                     db.commit()
@@ -2783,6 +2886,7 @@ class TaskEngine:
         task.reset_for_rerun("等待重新抓取字幕")
         self._ensure_task_context(task)
         await self.queue.put(task)
+        task.mark_changed("submitted")
         logger.info("RJ 字幕任务已重新入队: %s", task.id)
         return task
 
@@ -2796,13 +2900,38 @@ class TaskEngine:
         if task_id in self.tasks:
             task = self.tasks[task_id]
             metadata = dict(task.task_metadata or {})
-            if task.status in {TaskStatus.FAILED, TaskStatus.COMPLETED} and task.type == TaskType.HTTP_DOWNLOAD:
+            if task.status in {TaskStatus.FAILED, TaskStatus.COMPLETED} and task.type in {TaskType.HTTP_DOWNLOAD, TaskType.BAIDU_NETDISK_DOWNLOAD}:
+                return
+            if task.status == TaskStatus.PAUSED and task.type == TaskType.BAIDU_NETDISK_DOWNLOAD:
+                metadata.pop("pause_origin_status", None)
+                task.task_metadata = metadata
+                with task._set_state_silent():
+                    task.status = TaskStatus.PENDING
+                    task._pause_event.set()
+                pending: list[Task] = []
+                already_queued = False
+                while True:
+                    try:
+                        queued_task = self.queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    if queued_task.id == task.id:
+                        already_queued = True
+                    pending.append(queued_task)
+                if task.id in self.processing:
+                    already_queued = True
+                if not already_queued:
+                    pending.append(task)
+                for queued_task in sorted(pending, key=self._task_queue_priority):
+                    self.queue.put_nowait(queued_task)
+                task.mark_changed("submitted")
                 return
             if task.status == TaskStatus.PAUSED and metadata.get("pause_origin_status") == TaskStatus.PENDING.value:
                 metadata.pop("pause_origin_status", None)
                 task.task_metadata = metadata
-                task.status = TaskStatus.PENDING
-                task._pause_event.set()
+                with task._set_state_silent():
+                    task.status = TaskStatus.PENDING
+                    task._pause_event.set()
                 pending: list[Task] = []
                 already_queued = False
                 while True:
@@ -2817,6 +2946,7 @@ class TaskEngine:
                     pending.append(task)
                 for queued_task in sorted(pending, key=self._task_queue_priority):
                     self.queue.put_nowait(queued_task)
+                task.mark_changed("submitted")
             else:
                 metadata.pop("pause_origin_status", None)
                 task.task_metadata = metadata
@@ -2834,6 +2964,12 @@ class TaskEngine:
                     asyncio.create_task(get_http_download_service().cancel_task(task_id))
                 except Exception:
                     logger.debug("取消 HTTP 下载 aria2 任务失败: task_id=%s", task_id, exc_info=True)
+            if task.type == TaskType.BAIDU_NETDISK_DOWNLOAD:
+                try:
+                    from .baidu_netdisk_service import get_baidu_netdisk_service
+                    asyncio.create_task(get_baidu_netdisk_service().cancel_task(task_id))
+                except Exception:
+                    logger.debug("取消百度网盘下载进程失败: task_id=%s", task_id, exc_info=True)
             if should_log_immediately:
                 try:
                     from .activity_log_service import log_task_lifecycle_event
@@ -2865,6 +3001,12 @@ class TaskEngine:
                 asyncio.create_task(get_http_download_service().cancel_task(task_id))
             except Exception:
                 logger.debug("清理 HTTP 下载 aria2 状态失败: task_id=%s", task_id, exc_info=True)
+        if task.type == TaskType.BAIDU_NETDISK_DOWNLOAD:
+            try:
+                from .baidu_netdisk_service import get_baidu_netdisk_service
+                asyncio.create_task(get_baidu_netdisk_service().cancel_task(task_id))
+            except Exception:
+                logger.debug("清理百度网盘下载进程状态失败: task_id=%s", task_id, exc_info=True)
         self.delete_task_snapshot(task_id)
         return True
     
@@ -2872,23 +3014,30 @@ class TaskEngine:
         """更新任务状态"""
         task = self.tasks.get(task_id)
         if task:
-            task.status = status
-            if message:
-                task.current_step = message
-            if status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]:
-                task.completed_at = datetime.now()
-            if status in {
-                TaskStatus.WAITING_MANUAL,
-                TaskStatus.WAITING_RETRY,
-                TaskStatus.COMPLETED,
-                TaskStatus.FAILED,
-                TaskStatus.CANCELLED,
-                TaskStatus.PAUSED,
-            }:
-                self.processing.discard(task.id)
-                if task.rjcode:
-                    self.unmark_rjcode_processing(task.rjcode)
+            with task._set_state_silent():
+                task.status = status
+                if message:
+                    task.current_step = message
+                if status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]:
+                    task.completed_at = datetime.now()
+                if status in {
+                    TaskStatus.WAITING_MANUAL,
+                    TaskStatus.WAITING_RETRY,
+                    TaskStatus.COMPLETED,
+                    TaskStatus.FAILED,
+                    TaskStatus.CANCELLED,
+                    TaskStatus.PAUSED,
+                }:
+                    self.processing.discard(task.id)
+                    if task.rjcode:
+                        self.unmark_rjcode_processing(task.rjcode)
             logger.info(f"任务 {task_id} 状态更新为: {status.value}")
+            reason = {
+                TaskStatus.COMPLETED: "completed",
+                TaskStatus.FAILED: "failed",
+                TaskStatus.CANCELLED: "cancelled",
+            }.get(status, "status")
+            task.mark_changed(reason)
             return True
         return False
     
@@ -4371,7 +4520,10 @@ class TaskEngine:
             cfg_retry_count = 5
         max_auto_retries = int(task.task_metadata.get("http_download_auto_retry_limit", min(2, max(1, cfg_retry_count))) or 0)
         max_auto_retries = max(0, min(3, max_auto_retries))
-        cumulative_download_files: List[Dict[str, Any]] = []
+        cumulative_download_files: List[Dict[str, Any]] = [
+            row for row in list(task.task_metadata.get("download_attempt_history") or [])
+            if isinstance(row, dict)
+        ]
         last_error = ""
 
         def refresh_merged_attempt_state() -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -4484,6 +4636,47 @@ class TaskEngine:
                 task.task_metadata["http_download_final_status"] = "completed"
                 task.complete()
                 return
+        finally:
+            if task.is_cancelled():
+                await service.cancel_task(task.id)
+
+    async def _process_baidu_netdisk_download(self, task: Task):
+        """处理百度网盘下载任务。"""
+        from .baidu_netdisk_service import get_baidu_netdisk_service
+
+        service = get_baidu_netdisk_service()
+        task.task_metadata.setdefault("download_files", [])
+        task.task_metadata.setdefault("download_runtime", {})
+        task.task_metadata.setdefault("failed_files", [])
+        task.task_metadata.setdefault("progress_log", [])
+        task.task_metadata.setdefault("download_mode", "baidu_netdisk")
+        task.task_metadata.setdefault("source_modes", ["baidu_netdisk"])
+        task.task_metadata.setdefault("platforms", ["baidu_netdisk"])
+        task.task_metadata.setdefault("platform_label", "百度网盘")
+        task.task_metadata.setdefault("source_page", "asmr-sync")
+        task.task_metadata.setdefault("source_action", "manual_baidu_netdisk_download")
+        task.task_metadata.setdefault("task_domain", "baidu_netdisk")
+        task.task_metadata.setdefault("task_kind", TaskType.BAIDU_NETDISK_DOWNLOAD.value)
+
+        try:
+            result = await service.start_download_task(task)
+            if result.get("skipped"):
+                task.task_metadata["baidu_netdisk_final_status"] = "skipped"
+                task.complete()
+                return
+            failed_files = list(result.get("failed_files") or task.task_metadata.get("failed_files") or [])
+            downloaded_files = list(result.get("downloaded_files") or [])
+            if downloaded_files and failed_files:
+                message = f"百度网盘下载部分成功，成功 {len(downloaded_files)} 个，失败 {len(failed_files)} 个"
+                task.task_metadata["partial_success"] = True
+                task.task_metadata["failure_reason"] = message
+                task.task_metadata["baidu_netdisk_final_status"] = "partial_failed"
+                task.fail(message)
+                task.progress = 100
+                task.current_step = message
+                return
+            task.task_metadata["baidu_netdisk_final_status"] = "completed"
+            task.complete()
         finally:
             if task.is_cancelled():
                 await service.cancel_task(task.id)

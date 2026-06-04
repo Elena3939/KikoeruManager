@@ -104,6 +104,13 @@ def _mask_http_downloader_config_for_log(value: dict) -> dict:
     return data
 
 
+def _mask_baidu_netdisk_config_for_log(value: dict) -> dict:
+    data = dict(value or {})
+    if data.get("cookie"):
+        data["cookie"] = "********"
+    return data
+
+
 def _synology_http_status(exc: Exception) -> int:
     """将群晖 API 错误码映射到合适的 HTTP 状态码。
     119: SID 过期/无效路径; 121: 无效参数; 401: 无权限; 408: 操作超时
@@ -1501,17 +1508,45 @@ async def backfill_auto_import_extract_activity_logs(
         raise HTTPException(status_code=500, detail=f"回填导入链操作记录字段失败: {str(e)}")
 
 
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5556",
+    "http://127.0.0.1:5556",
+]
+CORS_ALLOWED_ORIGIN_RE = re.compile(
+    r"^https?://(localhost|127\.0\.0\.1|0\.0\.0\.0|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$"
+)
+
+
+def _is_allowed_cors_origin(origin: str) -> bool:
+    text = str(origin or "").strip()
+    return text in CORS_ALLOWED_ORIGINS or bool(CORS_ALLOWED_ORIGIN_RE.match(text))
+
+
+def _append_vary_origin(response: Response) -> None:
+    current = str(response.headers.get("Vary") or "").strip()
+    values = [item.strip() for item in current.split(",") if item.strip()]
+    if not any(item.lower() == "origin" for item in values):
+        values.append("Origin")
+    response.headers["Vary"] = ", ".join(values)
+
+
+def _with_gate_cors_headers(request: Request, response: Response) -> Response:
+    origin = str(request.headers.get("origin") or "").strip()
+    if origin and _is_allowed_cors_origin(origin):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        _append_vary_origin(response)
+    return response
+
+
 # CORS配置
 app.add_middleware(
     CORSMiddleware,
     # 开发态前端走 5556，API 直连 5555，避免大量 /api 代理请求占满 Vite
     # 同源连接后把页面 HTML / JS 也一起堵住。由于安全门依赖 cookie，
     # 这里不能再用 allow_origins=["*"] + allow_credentials=True。
-    allow_origins=[
-        "http://localhost:5556",
-        "http://127.0.0.1:5556",
-    ],
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|0\.0\.0\.0|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$",
+    allow_origins=CORS_ALLOWED_ORIGINS,
+    allow_origin_regex=CORS_ALLOWED_ORIGIN_RE.pattern,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1534,6 +1569,7 @@ async def security_gate_middleware(request: Request, call_next):
 
     if (
         not service.is_enforced()
+        or request.method.upper() == "OPTIONS"
         or path in ("/verify", "/blocked", "/favicon.ico")
         or path.startswith("/assets/")
         or path.startswith("/docs")
@@ -1547,7 +1583,10 @@ async def security_gate_middleware(request: Request, call_next):
     if blocked:
         service.record_blocked_visit(request, blocked)
         if path.startswith("/api/"):
-            return JSONResponse({"detail": "当前来源已被系统阻止", "blocked": True}, status_code=403)
+            return _with_gate_cors_headers(
+                request,
+                JSONResponse({"detail": "当前来源已被系统阻止", "blocked": True}, status_code=403),
+            )
         return RedirectResponse(url="/blocked", status_code=303)
 
     token = request.cookies.get(COOKIE_NAME, "")
@@ -1555,7 +1594,10 @@ async def security_gate_middleware(request: Request, call_next):
         return await call_next(request)
 
     if path.startswith("/api/"):
-        return JSONResponse({"detail": "需要通过系统门禁验证", "gate_required": True}, status_code=401)
+        return _with_gate_cors_headers(
+            request,
+            JSONResponse({"detail": "需要通过系统门禁验证", "gate_required": True}, status_code=401),
+        )
     next_path_raw = str(request.url.path or "/")
     if request.url.query:
         next_path_raw = f"{next_path_raw}?{request.url.query}"
@@ -1803,6 +1845,7 @@ class ConfigResponse(BaseModel):
     kikoeru_server: Optional[dict] = None
     asmr_sync: Optional[dict] = None
     http_downloader: Optional[dict] = None
+    baidu_netdisk: Optional[dict] = None
     auto_process: Optional[dict] = None
     process_existing: Optional[dict] = None
     asmr_sync_step: Optional[dict] = None
@@ -1818,6 +1861,10 @@ class ConfigResponse(BaseModel):
 class HttpDownloaderSecretRevealRequest(BaseModel):
     key: str
     account_id: Optional[str] = None
+
+
+class BaiduNetdiskSecretRevealRequest(BaseModel):
+    key: str
 
 
 class AISubtitleSecretRevealRequest(BaseModel):
@@ -2106,6 +2153,39 @@ async def get_task_center_item(item_id: Optional[str] = None, engine_task_id: Op
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@app.get("/api/task-center/stream")
+async def stream_task_center_events(request: Request):
+    """任务中心实时变更事件流。"""
+    from ..core.task_center_event_service import sse_subscribe, sse_unsubscribe
+
+    loop = asyncio.get_event_loop()
+    sid, queue = sse_subscribe(loop)
+
+    async def generator():
+        try:
+            yield f"data: {json.dumps({'type': 'connected', 'reason': 'connected'}, ensure_ascii=False)}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=25)
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            sse_unsubscribe(sid)
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @app.get("/api/task-center/diagnose")
 async def diagnose_task_center_serialization():
     """诊断任务中心聚合中具体是哪条数据序列化失败。"""
@@ -2171,7 +2251,7 @@ async def cancel_task(task_id: str):
 @app.post("/api/tasks/batch-cancel-cleanup", summary="批量取消任务并清理已下载文件")
 async def batch_cancel_cleanup(request: Request):
     """批量取消任务并删除对应的已下载临时文件。"""
-    import shutil
+    from ..core.task_cleanup_service import cleanup_task_download_artifacts
     from ..core.task_engine import TaskStatus
     body = await request.json()
     task_ids = body.get("task_ids") or []
@@ -2186,20 +2266,32 @@ async def batch_cancel_cleanup(request: Request):
             continue
         if task.status in (TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED):
             engine.cancel_task(str(tid))
+            if task.type == TaskType.HTTP_DOWNLOAD:
+                try:
+                    from ..core.http_download_service import get_http_download_service
+
+                    await get_http_download_service().cancel_task(str(tid))
+                except Exception:
+                    logger.debug("等待 HTTP 下载取消失败: task_id=%s", tid, exc_info=True)
+            elif task.type == TaskType.BAIDU_NETDISK_DOWNLOAD:
+                try:
+                    from ..core.baidu_netdisk_service import get_baidu_netdisk_service
+
+                    await get_baidu_netdisk_service().cancel_task(str(tid))
+                except Exception:
+                    logger.debug("等待百度网盘下载取消失败: task_id=%s", tid, exc_info=True)
             cancelled += 1
-        download_root = str(
-            getattr(task, "task_metadata", {}).get("download_root")
-            or getattr(task, "source_path", "")
-            or ""
-        ).strip()
-        if download_root and os.path.isdir(download_root):
-            try:
-                _robust_rmtree(download_root)
-                cleaned += 1
-                logger.info(f"已清理下载目录: {download_root}")
-            except Exception:
-                logger.warning(f"清理下载目录失败: {download_root}")
-    return {"cancelled": cancelled, "cleaned": cleaned, "message": f"已取消 {cancelled} 个任务，清理 {cleaned} 个下载目录"}
+        cleanup_result = cleanup_task_download_artifacts(task)
+        cleaned += int(cleanup_result.get("cleaned") or 0)
+        logger.info(
+            "取消任务清理完成: task_id=%s mode=%s cleaned=%s skipped=%s errors=%s",
+            getattr(task, "id", ""),
+            cleanup_result.get("mode"),
+            cleanup_result.get("cleaned"),
+            len(cleanup_result.get("skipped_paths") or []),
+            len(cleanup_result.get("errors") or []),
+        )
+    return {"cancelled": cancelled, "cleaned": cleaned, "message": f"已取消 {cancelled} 个任务，清理 {cleaned} 个下载产物"}
 
 def _mask_notification_email_config(config) -> Optional[dict]:
     """返回 notification_email 配置，密码脱敏"""
@@ -2244,6 +2336,16 @@ def _mask_http_downloader_config(config) -> Optional[dict]:
                 account['encoded_token'] = '********'
     if data.get('gofile_token'):
         data['gofile_token'] = '********'
+    return data
+
+
+def _mask_baidu_netdisk_config(config) -> Optional[dict]:
+    """返回百度网盘配置，Cookie 脱敏。"""
+    if not hasattr(config, 'baidu_netdisk'):
+        return None
+    data = config.baidu_netdisk.model_dump()
+    if data.get('cookie'):
+        data['cookie'] = '********'
     return data
 
 
@@ -2301,6 +2403,21 @@ def _read_http_downloader_secret_from_disk(key: str) -> str:
         return value if value != "********" else ""
     except Exception:
         logger.warning("[HTTP下载] 读取磁盘敏感配置失败: %s", key, exc_info=True)
+        return ""
+
+
+def _read_baidu_netdisk_secret_from_disk(key: str) -> str:
+    """读取磁盘原始百度网盘敏感配置，避免把脱敏占位符写回。"""
+    try:
+        config_path = _runtime_config_path_from_settings()
+        if not os.path.exists(config_path):
+            return ""
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        value = data.get("baidu_netdisk", {}).get(key, "")
+        return value if value != "********" else ""
+    except Exception:
+        logger.warning("[百度网盘] 读取磁盘敏感配置失败: %s", key, exc_info=True)
         return ""
 
 
@@ -2398,6 +2515,7 @@ def get_configuration():
         kikoeru_server=config.kikoeru_server.model_dump() if hasattr(config, 'kikoeru_server') else None,
         asmr_sync=config.asmr_sync.model_dump() if hasattr(config, 'asmr_sync') else None,
         http_downloader=_mask_http_downloader_config(config),
+        baidu_netdisk=_mask_baidu_netdisk_config(config),
         auto_process=config.auto_process.model_dump() if hasattr(config, 'auto_process') else None,
         process_existing=config.process_existing.model_dump() if hasattr(config, 'process_existing') else None,
         asmr_sync_step=config.asmr_sync_step.model_dump() if hasattr(config, 'asmr_sync_step') else None,
@@ -2432,6 +2550,15 @@ def reveal_http_downloader_secret(payload: HttpDownloaderSecretRevealRequest):
     else:
         value = _read_http_downloader_secret_from_disk(key)
     return {"value": value}
+
+
+@app.post("/api/config/baidu-netdisk/reveal-secret")
+def reveal_baidu_netdisk_secret(payload: BaiduNetdiskSecretRevealRequest):
+    """从本地配置文件读取百度网盘 Cookie，只供设置页显隐使用。"""
+    key = str(payload.key or "").strip()
+    if key != "cookie":
+        raise HTTPException(status_code=400, detail="不支持读取该敏感字段")
+    return {"value": _read_baidu_netdisk_secret_from_disk(key)}
 
 
 @app.post("/api/config/ai-subtitle-match/reveal-secret")
@@ -2715,6 +2842,27 @@ async def update_configuration(request: Request):
             except Exception as e:
                 logger.error(f"[HTTP下载] 配置验证失败: {e}")
                 raise HTTPException(status_code=400, detail=f"HTTP 外链下载配置无效: {e}")
+
+        if 'baidu_netdisk' in config_data:
+            logger.info("[百度网盘] 接收到百度网盘下载配置: %s", _mask_baidu_netdisk_config_for_log(config_data['baidu_netdisk']))
+            try:
+                from ..config.settings import BaiduNetdiskConfig
+                baidu_data = dict(config_data['baidu_netdisk'])
+                current_cfg = get_config()
+                if not str(baidu_data.get('baidupcs_go_path') or '').strip():
+                    baidu_data['baidupcs_go_path'] = BaiduNetdiskConfig().baidupcs_go_path
+                if baidu_data.get('cookie') == '********' or 'cookie' not in baidu_data:
+                    current_cookie = getattr(current_cfg.baidu_netdisk, 'cookie', '')
+                    baidu_data['cookie'] = (
+                        _read_baidu_netdisk_secret_from_disk('cookie')
+                        or (current_cookie if current_cookie != '********' else '')
+                    )
+                baidu_config = BaiduNetdiskConfig(**baidu_data)
+                config_data['baidu_netdisk'] = baidu_config.model_dump()
+                logger.info("[百度网盘] 配置验证通过: enabled=%s, baidupcs_go_path=%s", baidu_config.enabled, baidu_config.baidupcs_go_path)
+            except Exception as e:
+                logger.error("[百度网盘] 配置验证失败: %s", e)
+                raise HTTPException(status_code=400, detail=f"百度网盘配置无效: {e}")
 
         if 'backup_zip' in config_data:
             try:
@@ -11857,6 +12005,43 @@ class HttpDownloadStartRequest(BaseModel):
     selected_items: List[dict] = []
 
 
+class HttpDownloadRetryFileRequest(BaseModel):
+    file: dict = Field(default_factory=dict)
+
+
+class BaiduNetdiskPreviewRequest(BaseModel):
+    urls: List[str]
+    target_subdir: str = ""
+    output_folder_name: str = ""
+    batch_name: str = ""
+    conflict_policy: str = ""
+    selected_keys: List[str] = []
+    selected_items: List[dict] = []
+
+
+class BaiduNetdiskStartRequest(BaseModel):
+    urls: List[str]
+    target_subdir: str = ""
+    output_folder_name: str = ""
+    batch_name: str = ""
+    conflict_policy: str = ""
+    selected_keys: List[str] = []
+    selected_items: List[dict] = []
+
+
+class BaiduNetdiskCancelRequest(BaseModel):
+    task_id: str = ""
+
+
+class BaiduNetdiskAccountTestRequest(BaseModel):
+    cookie: str = ""
+    persist: bool = False
+
+
+class BaiduNetdiskOfficialLoginCompleteRequest(BaseModel):
+    persist: bool = True
+
+
 class GoogleDriveOAuthTokenRequest(BaseModel):
     client_id: str = ""
     client_secret: str = ""
@@ -11917,13 +12102,17 @@ class LocalUploadStartRequest(BaseModel):
 
 
 def _serialize_http_download_task(task) -> dict:
+    from ..core.baidu_netdisk_service import build_baidu_netdisk_batch_title, sanitize_baidu_netdisk_item
     from ..core.http_download_service import build_http_download_batch_title, sanitize_http_download_item
 
     metadata = dict(getattr(task, "task_metadata", None) or {})
+    download_mode = str(metadata.get("download_mode") or "http")
+    is_baidu_netdisk = download_mode == "baidu_netdisk" or metadata.get("task_domain") == "baidu_netdisk"
     failed_files = list(metadata.get("failed_files") or [])
     status_value = task.status.value if hasattr(task.status, "value") else str(task.status or "")
+    sanitize_download_item = sanitize_baidu_netdisk_item if is_baidu_netdisk else sanitize_http_download_item
     download_files = [
-        sanitize_http_download_item(item)
+        sanitize_download_item(item)
         for item in list(metadata.get("download_files") or [])
     ]
     performance_metrics = metadata.get("performance_metrics") if isinstance(metadata.get("performance_metrics"), dict) else {}
@@ -11934,8 +12123,12 @@ def _serialize_http_download_task(task) -> dict:
     work_title = (
         metadata.get("batch_name")
         or metadata.get("source_label")
-        or build_http_download_batch_title(metadata, item_count=len(download_files))
-        or "HTTP 下载"
+        or (
+            build_baidu_netdisk_batch_title(metadata, item_count=len(download_files))
+            if is_baidu_netdisk
+            else build_http_download_batch_title(metadata, item_count=len(download_files))
+        )
+        or ("百度网盘下载" if is_baidu_netdisk else "HTTP 下载")
     )
     return {
         "id": task.id,
@@ -11953,24 +12146,29 @@ def _serialize_http_download_task(task) -> dict:
         "output_path": getattr(task, "output_path", ""),
         "download_files": download_files,
         "download_runtime": metadata.get("download_runtime", {}),
-        "failed_files": [sanitize_http_download_item(item) for item in failed_files if isinstance(item, dict)],
+        "failed_files": [sanitize_download_item(item) for item in failed_files if isinstance(item, dict)],
         "progress_log": metadata.get("progress_log", []),
         "performance_metrics": performance_metrics,
-        "download_mode": metadata.get("download_mode", "http"),
+        "download_mode": download_mode,
         "session_id": metadata.get("session_id", ""),
         "queue_priority": metadata.get("queue_priority", metadata.get("priority", 100)),
         "task_metadata": {
             "source_action": metadata.get("source_action", ""),
             "download_root": metadata.get("download_root", ""),
             "target_subdir": metadata.get("target_subdir", ""),
+            "output_folder_name": metadata.get("output_folder_name", ""),
+            "staging_dir": metadata.get("staging_dir", ""),
             "final_output_path": metadata.get("final_output_path", ""),
+            "renamed_output_path": metadata.get("renamed_output_path", ""),
+            "output_finalize_status": metadata.get("output_finalize_status", ""),
             "failure_reason": metadata.get("failure_reason", ""),
             "url_count": metadata.get("url_count", 0),
             "retry_count": metadata.get("retry_count", 0),
-            "download_mode": metadata.get("download_mode", "http"),
+            "download_mode": download_mode,
             "source_modes": metadata.get("source_modes", []),
             "platforms": metadata.get("platforms", []),
             "platform_label": metadata.get("platform_label", ""),
+            "svip_speed": bool(metadata.get("svip_speed")),
         },
     }
 
@@ -11993,6 +12191,16 @@ def _http_download_urls_from_payload(urls: List[str]) -> list[str]:
                         continue
             result.append(value)
             last_pikpak_index = len(result) - 1 if "mypikpak.com" in value or "drive.mypikpak.com" in value else None
+    return result
+
+
+def _baidu_netdisk_urls_from_payload(urls: List[str]) -> list[str]:
+    result = []
+    for raw in urls or []:
+        for line in re.split(r"[\r\n]+", str(raw or "")):
+            value = line.strip()
+            if value:
+                result.append(value)
     return result
 
 
@@ -12038,6 +12246,52 @@ def _google_drive_account_from_about_payload(data: dict) -> dict:
         "avatar_url": str(user.get("photoLink") or "").strip(),
         "permission_id": str(user.get("permissionId") or "").strip(),
         "cached_at": int(time.time()),
+    }
+
+
+def _persist_google_drive_oauth_payload(session: dict, token_payload: dict) -> dict:
+    refresh_token = str(token_payload.get("refresh_token") or "").strip()
+    if not refresh_token:
+        raise HTTPException(status_code=502, detail="Google OAuth 未返回 Refresh Token")
+
+    account = token_payload.get("account") if isinstance(token_payload.get("account"), dict) else {}
+    account_payload = {
+        "name": str(account.get("name") or "").strip(),
+        "email": str(account.get("email") or "").strip(),
+        "avatar_url": str(account.get("avatar_url") or "").strip(),
+        "permission_id": str(account.get("permission_id") or "").strip(),
+        "cached_at": int(account.get("cached_at") or time.time()),
+    } if account else {
+        "name": "",
+        "email": "",
+        "avatar_url": "",
+        "permission_id": "",
+        "cached_at": 0,
+    }
+    client_mode = str(session.get("client_mode") or "builtin").strip() or "builtin"
+    updates = {
+        "google_drive_oauth_enabled": True,
+        "google_drive_oauth_client_mode": client_mode,
+        "google_drive_refresh_token": refresh_token,
+        "google_drive_account_name": account_payload["name"],
+        "google_drive_account_email": account_payload["email"],
+        "google_drive_account_avatar_url": account_payload["avatar_url"],
+        "google_drive_account_permission_id": account_payload["permission_id"],
+        "google_drive_account_cached_at": account_payload["cached_at"],
+        "google_drive_oauth_expired": False,
+    }
+    if client_mode == "custom":
+        updates["google_drive_client_id"] = str(session.get("client_id") or "").strip()
+        updates["google_drive_client_secret"] = str(session.get("client_secret") or "").strip()
+    try:
+        save_config({"http_downloader": updates})
+    except Exception as exc:
+        logger.error("Google Drive OAuth 授权结果保存失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Google Drive OAuth 授权成功但保存配置失败: {str(exc)}") from exc
+    return {
+        **token_payload,
+        "account": account_payload,
+        "persisted": True,
     }
 
 
@@ -12428,9 +12682,10 @@ async def http_download_google_drive_oauth_callback(request: Request, code: str 
             redirect_uri=session["redirect_uri"],
             code_verifier=session.get("code_verifier", ""),
         )
+        token_payload = _persist_google_drive_oauth_payload(session, token_payload)
         body = _google_drive_oauth_popup_html({
             **token_payload,
-            "message": "已获取 Google Drive Refresh Token，回到设置页保存配置后生效",
+            "message": "Google Drive 授权已保存到本地配置",
         }, target_origin)
         return Response(content=body, media_type="text/html; charset=utf-8")
     except HTTPException as exc:
@@ -12471,6 +12726,306 @@ async def http_download_status():
     except Exception as exc:
         logger.error("获取 HTTP 下载状态失败: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取状态失败: {str(exc)}")
+
+
+@app.get("/api/baidu-netdisk/backend-health")
+async def baidu_netdisk_backend_health():
+    from ..core.baidu_netdisk_service import get_baidu_netdisk_service
+
+    try:
+        return await get_baidu_netdisk_service().health()
+    except Exception as exc:
+        logger.error("百度网盘后端健康检查失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"健康检查失败: {str(exc)}")
+
+
+@app.get("/api/baidu-netdisk/status")
+async def baidu_netdisk_status():
+    from ..core.baidu_netdisk_service import get_baidu_netdisk_service
+    from ..core.task_engine import TaskType, get_task_engine
+
+    try:
+        all_tasks = get_task_engine().get_all_tasks()
+        tasks = [task for task in all_tasks if task.type == TaskType.BAIDU_NETDISK_DOWNLOAD]
+        service = get_baidu_netdisk_service()
+        return {
+            "success": True,
+            "account": service.account_status(),
+            "official_login": service.official_login_status(),
+            "total_tasks": len(tasks),
+            "processing": len([t for t in tasks if t.status.value == "processing"]),
+            "pending": len([t for t in tasks if t.status.value == "pending"]),
+            "completed": len([t for t in tasks if t.status.value == "completed"]),
+            "failed": len([t for t in tasks if t.status.value == "failed"]),
+            "tasks": [_serialize_http_download_task(t) for t in tasks[:50]],
+        }
+    except Exception as exc:
+        logger.error("获取百度网盘状态失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取状态失败: {str(exc)}")
+
+
+@app.post("/api/baidu-netdisk/preview")
+async def baidu_netdisk_preview(request: BaiduNetdiskPreviewRequest):
+    from ..core.baidu_netdisk_service import get_baidu_netdisk_service, sanitize_baidu_netdisk_preview
+
+    urls = _baidu_netdisk_urls_from_payload(request.urls)
+    if not urls:
+        raise HTTPException(status_code=400, detail="至少需要一个百度网盘分享链接")
+    if len(urls) > 100:
+        raise HTTPException(status_code=400, detail="单次最多预览 100 行链接/提取码")
+    try:
+        preview = await get_baidu_netdisk_service().preview_urls(
+            urls,
+            target_subdir=request.target_subdir,
+            conflict_policy=request.conflict_policy,
+            output_folder_name=request.output_folder_name,
+        )
+        return sanitize_baidu_netdisk_preview(preview)
+    except Exception as exc:
+        logger.error("百度网盘预览失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"预览失败: {str(exc)}")
+
+
+@app.post("/api/baidu-netdisk/start")
+async def baidu_netdisk_start(request: BaiduNetdiskStartRequest):
+    from ..core.baidu_netdisk_service import (
+        build_baidu_netdisk_batch_title,
+        get_baidu_netdisk_service,
+        sanitize_baidu_netdisk_preview,
+    )
+    from ..core.task_engine import Task, TaskType, get_task_engine
+
+    urls = _baidu_netdisk_urls_from_payload(request.urls)
+    if not urls:
+        raise HTTPException(status_code=400, detail="至少需要一个百度网盘分享链接")
+    if len(urls) > 100:
+        raise HTTPException(status_code=400, detail="单次最多创建 100 行链接/提取码")
+
+    service = get_baidu_netdisk_service()
+    preview = await service.preview_urls(
+        urls,
+        target_subdir=request.target_subdir,
+        conflict_policy=request.conflict_policy,
+        output_folder_name=request.output_folder_name,
+    )
+    preview = service.filter_preview_selection(
+        preview,
+        selected_keys=request.selected_keys,
+        selected_items=request.selected_items,
+    )
+    public_preview = sanitize_baidu_netdisk_preview(preview)
+    ok_items = [item for item in preview.get("items") or [] if item.get("ok")]
+    if not ok_items:
+        return JSONResponse({"success": False, "message": "没有可下载的百度网盘分享", "preview": public_preview}, status_code=400)
+
+    requested_batch_name = str(request.batch_name or "").strip()
+    default_title = build_baidu_netdisk_batch_title({"url_count": len(ok_items)}, item_count=len(ok_items))
+    label = requested_batch_name or default_title
+    selected_keys = [
+        str(item.get("selection_key") or "").strip()
+        for item in public_preview.get("items") or []
+        if item.get("ok") and str(item.get("selection_key") or "").strip()
+    ]
+    task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={
+            "urls": urls,
+            "url_count": len(ok_items),
+            "source_url_count": len(urls),
+            "selected_keys": selected_keys,
+            "selected_items": [
+                {k: v for k, v in dict(item or {}).items() if k not in {"url", "original_url"}}
+                for item in public_preview.get("items") or []
+                if item.get("ok")
+            ],
+            "target_subdir": request.target_subdir,
+            "output_folder_name": request.output_folder_name,
+            "conflict_policy": request.conflict_policy,
+            "batch_name": label,
+            "download_mode": "baidu_netdisk",
+            "source_modes": ["baidu_netdisk"],
+            "platforms": ["baidu_netdisk"],
+            "platform_label": "百度网盘",
+            "svip_speed": bool(service.account_status().get("is_svip")),
+            "task_domain": "baidu_netdisk",
+            "task_kind": TaskType.BAIDU_NETDISK_DOWNLOAD.value,
+            "source_page": "asmr-sync",
+            "source_action": "manual_baidu_netdisk_download",
+            "source_label": label,
+            "business_key": f"baidu_netdisk:{uuid.uuid4().hex}",
+            "preview_items": [
+                {k: v for k, v in dict(item or {}).items() if k != "url"}
+                for item in public_preview.get("items") or []
+            ],
+            "source_items": public_preview.get("source_items") or [],
+        },
+    )
+    await get_task_engine().submit(task)
+    return {
+        "success": True,
+        "message": f"已创建百度网盘下载任务，共 {len(ok_items)} 项",
+        "task": {"task_id": task.id, "id": task.id, "platform": "baidu_netdisk", "platform_label": "百度网盘"},
+        "tasks": [{"task_id": task.id, "id": task.id, "platform": "baidu_netdisk", "platform_label": "百度网盘"}],
+        "preview": public_preview,
+    }
+
+
+@app.post("/api/baidu-netdisk/cancel")
+async def baidu_netdisk_cancel(request: BaiduNetdiskCancelRequest):
+    from ..core.baidu_netdisk_service import get_baidu_netdisk_service
+    from ..core.task_engine import TaskType, get_task_engine
+
+    task_id = str(request.task_id or "").strip()
+    if not task_id:
+        raise HTTPException(status_code=400, detail="task_id 不能为空")
+    engine = get_task_engine()
+    task = engine.get_task(task_id)
+    if not task or task.type != TaskType.BAIDU_NETDISK_DOWNLOAD:
+        raise HTTPException(status_code=404, detail="百度网盘下载任务不存在")
+    engine.cancel_task(task_id)
+    await get_baidu_netdisk_service().cancel_task(task_id)
+    return {"success": True, "message": "任务已取消"}
+
+
+@app.post("/api/baidu-netdisk/task/{task_id}/pause")
+async def baidu_netdisk_pause_task(task_id: str):
+    from ..core.baidu_netdisk_service import get_baidu_netdisk_service
+    from ..core.task_engine import TaskType, get_task_engine
+
+    engine = get_task_engine()
+    task = engine.get_task(task_id)
+    if not task or task.type != TaskType.BAIDU_NETDISK_DOWNLOAD:
+        raise HTTPException(status_code=404, detail="百度网盘下载任务不存在")
+    task.pause()
+    await get_baidu_netdisk_service().cancel_task(task_id)
+    task.task_metadata["cancel_reason"] = ""
+    task.task_metadata["pause_reason"] = "用户暂停"
+    return {"success": True, "message": "任务已暂停"}
+
+
+@app.post("/api/baidu-netdisk/task/{task_id}/resume")
+async def baidu_netdisk_resume_task(task_id: str):
+    from ..core.task_engine import TaskType, get_task_engine
+
+    engine = get_task_engine()
+    task = engine.get_task(task_id)
+    if not task or task.type != TaskType.BAIDU_NETDISK_DOWNLOAD:
+        raise HTTPException(status_code=404, detail="百度网盘下载任务不存在")
+    engine.resume_task(task_id)
+    return {"success": True, "message": "任务已恢复"}
+
+
+@app.post("/api/baidu-netdisk/task/{task_id}/cancel")
+async def baidu_netdisk_cancel_task(task_id: str):
+    from ..core.baidu_netdisk_service import get_baidu_netdisk_service
+    from ..core.task_engine import TaskType, get_task_engine
+
+    engine = get_task_engine()
+    task = engine.get_task(task_id)
+    if not task or task.type != TaskType.BAIDU_NETDISK_DOWNLOAD:
+        raise HTTPException(status_code=404, detail="百度网盘下载任务不存在")
+    engine.cancel_task(task_id)
+    await get_baidu_netdisk_service().cancel_task(task_id)
+    return {"success": True, "message": "任务已取消"}
+
+
+@app.post("/api/baidu-netdisk/task/{task_id}/retry")
+async def baidu_netdisk_retry_task(task_id: str):
+    from ..core.baidu_netdisk_service import get_baidu_netdisk_service
+    from ..core.task_engine import TaskStatus, TaskType, get_task_engine
+
+    engine = get_task_engine()
+    task = engine.get_task(task_id)
+    if not task or task.type != TaskType.BAIDU_NETDISK_DOWNLOAD:
+        raise HTTPException(status_code=404, detail="百度网盘下载任务不存在")
+    if task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED}:
+        raise HTTPException(status_code=400, detail="任务仍在执行中，不能重试")
+    await get_baidu_netdisk_service().reset_task_for_retry(task)
+    await engine.queue.put(task)
+    return {"success": True, "message": "任务已加入重试队列"}
+
+
+@app.post("/api/baidu-netdisk/account/test")
+async def baidu_netdisk_account_test(request: BaiduNetdiskAccountTestRequest):
+    from ..core.baidu_netdisk_service import get_baidu_netdisk_service
+
+    try:
+        return await get_baidu_netdisk_service().test_account(request.cookie, persist=request.persist)
+    except Exception as exc:
+        logger.error("检测百度网盘账号失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/baidu-netdisk/account/refresh")
+async def baidu_netdisk_account_refresh():
+    from ..core.baidu_netdisk_service import get_baidu_netdisk_service
+
+    try:
+        return await get_baidu_netdisk_service().refresh_account_status()
+    except Exception as exc:
+        logger.error("刷新百度网盘账号状态失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/baidu-netdisk/account/official-login/start")
+async def baidu_netdisk_account_official_login_start():
+    from ..core.baidu_netdisk_service import get_baidu_netdisk_service
+
+    try:
+        return await get_baidu_netdisk_service().start_official_login_session()
+    except Exception as exc:
+        logger.error("打开百度官方登录失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/baidu-netdisk/account/official-login/status")
+async def baidu_netdisk_account_official_login_status():
+    from ..core.baidu_netdisk_service import get_baidu_netdisk_service
+
+    try:
+        service = get_baidu_netdisk_service()
+        return {
+            "success": True,
+            "account": service.account_status(),
+            "official_login": service.official_login_status(),
+        }
+    except Exception as exc:
+        logger.error("读取百度官方登录状态失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/baidu-netdisk/account/official-login/complete")
+async def baidu_netdisk_account_official_login_complete(request: BaiduNetdiskOfficialLoginCompleteRequest):
+    from ..core.baidu_netdisk_service import get_baidu_netdisk_service
+
+    try:
+        return await get_baidu_netdisk_service().complete_official_login_session(persist=request.persist)
+    except Exception as exc:
+        logger.error("同步百度官方登录失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/baidu-netdisk/account/official-login/close")
+async def baidu_netdisk_account_official_login_close():
+    from ..core.baidu_netdisk_service import get_baidu_netdisk_service
+
+    try:
+        return await get_baidu_netdisk_service().close_official_login_session()
+    except Exception as exc:
+        logger.error("关闭百度官方登录窗口失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/baidu-netdisk/account/unbind")
+async def baidu_netdisk_account_unbind():
+    from ..core.baidu_netdisk_service import get_baidu_netdisk_service
+
+    try:
+        return get_baidu_netdisk_service().unbind_account()
+    except Exception as exc:
+        logger.error("解绑百度网盘账号失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.get("/api/http-download/pikpak/status")
@@ -12592,6 +13147,33 @@ async def http_download_retry_task(task_id: str):
     await get_http_download_service().reset_task_for_retry(task)
     await engine.queue.put(task)
     return {"success": True, "message": "任务已加入重试队列"}
+
+
+@app.post("/api/http-download/task/{task_id}/retry-file")
+async def http_download_retry_task_file(task_id: str, request: HttpDownloadRetryFileRequest):
+    from ..core.http_download_service import get_http_download_service, sanitize_http_download_item
+    from ..core.task_engine import TaskStatus, TaskType, get_task_engine
+
+    engine = get_task_engine()
+    task = engine.get_task(task_id)
+    if not task or task.type != TaskType.HTTP_DOWNLOAD:
+        raise HTTPException(status_code=404, detail="HTTP 下载任务不存在")
+    if task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED}:
+        raise HTTPException(status_code=400, detail="任务仍在执行中，不能重试")
+
+    file_row = request.file if isinstance(request.file, dict) else {}
+    if not file_row:
+        raise HTTPException(status_code=400, detail="缺少要重试的文件")
+
+    service = get_http_download_service()
+    retry_items, retry_keys = service.build_retry_selection_for_file(task, file_row)
+    if not retry_items:
+        raise HTTPException(status_code=400, detail="无法识别要重试的文件")
+
+    task.task_metadata["retry_file"] = sanitize_http_download_item(file_row)
+    await service.reset_task_for_retry(task, retry_items=retry_items, retry_keys=retry_keys)
+    await engine.queue.put(task)
+    return {"success": True, "message": "该文件已加入重试队列"}
 
 @app.post("/api/asmr-sync/scan")
 async def asmr_sync_scan(request: ASMRSyncScanRequest):

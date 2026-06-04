@@ -2019,6 +2019,60 @@ def test_google_drive_access_token_uses_builtin_oauth_client(monkeypatch, tmp_pa
     assert captured["proxy"] == "http://127.0.0.1:7890"
 
 
+def test_google_drive_access_token_marks_expired_refresh_token(monkeypatch, tmp_path):
+    bind_config(
+        monkeypatch,
+        tmp_path,
+        google_drive_oauth_enabled=True,
+        google_drive_oauth_client_mode="builtin",
+        google_drive_refresh_token="expired-refresh-token",
+        google_drive_account_name="Elena",
+        google_drive_account_email="elena@example.com",
+        google_drive_account_cached_at=1234567890,
+    )
+    monkeypatch.setenv("KIKOERUMANAGER_GOOGLE_DRIVE_CLIENT_ID", "builtin-client")
+    service = HttpDownloadService()
+    saved_payloads = []
+
+    class FakeResponse:
+        status = 400
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def text(self):
+            return '{"error":"invalid_grant","error_description":"Token has been expired or revoked."}'
+
+    class FakeSession:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def post(self, _url, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr("app.core.http_download_service.aiohttp.ClientSession", FakeSession)
+    monkeypatch.setattr("app.core.http_download_service.save_config", lambda payload: saved_payloads.append(payload))
+
+    with pytest.raises(HttpDownloadError, match="授权已过期或被撤销"):
+        asyncio.run(service._google_drive_access_token())
+
+    assert saved_payloads == [{
+        "http_downloader": {
+            "google_drive_refresh_token": "",
+            "google_drive_oauth_expired": True,
+        }
+    }]
+
+
 @pytest.mark.asyncio
 async def test_download_google_drive_item_uses_drive_api_authorization(monkeypatch, tmp_path):
     bind_config(
