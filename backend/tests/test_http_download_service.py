@@ -1705,6 +1705,74 @@ def test_preview_item_selection_key_survives_transferit_metadata_fallback():
     assert service._preview_item_selection_key(fallback_item) == service._preview_item_selection_key(resolved_item)
 
 
+def test_transferit_selection_key_uses_node_handle_when_available():
+    service = HttpDownloadService()
+    first = {
+        "ok": True,
+        "source": "transferit",
+        "share_url": "https://transfer.it/t/iVqeTDhlyRbA",
+        "share_id": "iVqeTDhlyRbA",
+        "filename": "a.zip",
+        "relative_path": "a.zip",
+        "size_bytes": 1,
+        "transferit_node_handle": "node-a",
+    }
+    second = {
+        **first,
+        "filename": "b.zip",
+        "relative_path": "b.zip",
+        "transferit_node_handle": "node-b",
+    }
+
+    assert service._preview_item_selection_key(first) != service._preview_item_selection_key(second)
+    assert service._download_attempt_row_key(first) != service._download_attempt_row_key(second)
+
+
+def test_transferit_retry_selection_keeps_failed_node_identity():
+    service = HttpDownloadService()
+    metadata = {
+        "download_files": [
+            {
+                "source": "transferit",
+                "name": "a.zip",
+                "relative_path": "a.zip",
+                "share_id": "share",
+                "transferit_node_handle": "node-a",
+                "status": "completed",
+                "progress": 100,
+                "downloaded": 10,
+                "total": 10,
+            },
+            {
+                "source": "transferit",
+                "name": "b.zip",
+                "relative_path": "b.zip",
+                "share_id": "share",
+                "transferit_node_handle": "node-b",
+                "status": "failed",
+                "progress": 0,
+                "downloaded": 0,
+                "total": 10,
+            },
+        ],
+        "failed_files": [
+            {
+                "source": "transferit",
+                "name": "b.zip",
+                "relative_path": "b.zip",
+                "share_id": "share",
+                "transferit_node_handle": "node-b",
+                "status": "failed",
+            }
+        ],
+    }
+
+    items = service._retry_selection_items_from_task_metadata(metadata)
+
+    assert len(items) == 1
+    assert items[0]["transferit_node_handle"] == "node-b"
+
+
 def test_retry_selection_items_keep_only_failed_and_incomplete_rows(tmp_path):
     service = HttpDownloadService()
     metadata = {
