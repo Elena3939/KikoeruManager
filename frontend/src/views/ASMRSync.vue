@@ -154,7 +154,7 @@
       :refreshing="baiduNetdiskWorkbenchRefreshing"
       :retrying-keys="[...baiduNetdiskRetryingTaskIds]"
       title="百度网盘下载"
-      subtitle="BaiduPCS-Go 下载任务进度"
+      subtitle="百度网盘直下任务进度"
       source-path-label="下载根目录"
       :merge-tasks="false"
       :compact="true"
@@ -935,7 +935,7 @@ const baiduNetdiskBackgroundCardProps = computed(() => ({
   badgeText: `下载 ${baiduNetdiskWorkbenchTasks.value.length} 项`,
   subtitle: baiduNetdiskActiveBackgroundTask.value
     ? `${baiduNetdiskActiveBackgroundTask.value.work_title || baiduNetdiskActiveBackgroundTask.value.source_label || '百度网盘下载'}`
-    : '保留 BaiduPCS-Go 下载队列与进度',
+    : '保留百度网盘直下队列与进度',
   metaText: baiduNetdiskBackgroundFailed.value
     ? `总进度: ${baiduNetdiskBackgroundPercent.value}% · 需要处理`
     : `总进度: ${baiduNetdiskBackgroundPercent.value}%`,
@@ -1645,7 +1645,7 @@ async function cancelBaiduNetdiskTask(task) {
     await showSystemConfirm({
       title: '取消百度网盘下载',
       message: `确定要取消 ${title} 吗？`,
-      description: '取消会停止 BaiduPCS-Go 子进程，临时目录会保留，之后可重新开始利用已有分片续传。',
+      description: '取消会停止当前直链下载，临时目录会保留，之后可重新开始利用已有分片续传。',
       tone: 'danger',
       confirmText: '取消下载',
     })
@@ -2238,14 +2238,14 @@ button:disabled { cursor: not-allowed; }
   --asmr-accent-hover: #ffffff;
   --asmr-card-shadow: none;
   --asmr-control-shadow: none;
-  --asmr-primary-bg: #e7e7eb;
-  --asmr-primary-bg-hover: #f4f4f5;
-  --asmr-primary-text: #111116;
-  --asmr-tab-active-bg: #e7e7eb;
-  --asmr-tab-active-border: rgba(255, 255, 255, 0.32);
-  --asmr-tab-active-text: #111116;
-  --asmr-tab-badge-bg: rgba(17, 17, 22, 0.1);
-  --asmr-tab-badge-text: #111116;
+  --asmr-primary-bg: #2b2c30;
+  --asmr-primary-bg-hover: #333438;
+  --asmr-primary-text: #f5f5f5;
+  --asmr-tab-active-bg: #2b2c30;
+  --asmr-tab-active-border: rgba(255, 255, 255, 0.2);
+  --asmr-tab-active-text: #f5f5f5;
+  --asmr-tab-badge-bg: rgba(255, 255, 255, 0.12);
+  --asmr-tab-badge-text: #f5f5f5;
   --asmr-info-bg: rgba(255, 255, 255, 0.1);
   --asmr-info-text: rgba(244, 244, 245, 0.88);
   --asmr-info-border: rgba(255, 255, 255, 0.14);
@@ -3482,3 +3482,8 @@ button:disabled { cursor: not-allowed; }
   }
 }
 </style>
+
+
+
+
+

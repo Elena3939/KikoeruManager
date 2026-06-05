@@ -4,8 +4,6 @@ import { showSystemConfirm } from './useSystemPrompt'
 import { useConfigStore } from '../stores'
 import { configApi } from '../api'
 
-const DEFAULT_BAIDUPCS_GO_PATH = 'tools/baidupcs-go/BaiduPCS-Go.exe'
-
 export const SYNOLOGY_PROFILE_FIELDS = [
   'base_url',
   'username',
@@ -265,8 +263,9 @@ export const defaultConfig = {
   baidu_netdisk: {
     enabled: false,
     download_root: '',
-    baidupcs_go_path: DEFAULT_BAIDUPCS_GO_PATH,
+    baidupcs_go_path: '',
     config_dir: '',
+    share_code_separator: '----',
     cookie: '',
     max_parallel: 200,
     max_download_load: '0',
@@ -279,6 +278,7 @@ export const defaultConfig = {
     vip_type: 0,
     vip_label: '',
     vip_level: '',
+    vip_expire_at: 0,
     quota_bytes: 0,
     used_bytes: 0,
     account_cached_at: 0
@@ -509,10 +509,6 @@ function hydrateConfig(data = {}) {
     classification: data?.classification || defaultConfig.classification
   }
 
-  if (!String(next.baidu_netdisk.baidupcs_go_path || '').trim()) {
-    next.baidu_netdisk.baidupcs_go_path = DEFAULT_BAIDUPCS_GO_PATH
-  }
-
   if (!next.storage.libraries.length) {
     next.storage.libraries = [normalizeLibraryConfig({ id: 'default-local', name: '默认库存', type: 'local', path: next.storage.library_path || '' }, 1)]
   }
@@ -576,10 +572,11 @@ function serializeConfig(config) {
   serialized.http_downloader.google_drive_oauth_expired = Boolean(serialized.http_downloader.google_drive_oauth_expired)
   serialized.baidu_netdisk.account_cached_at = Number(serialized.baidu_netdisk.account_cached_at || 0)
   serialized.baidu_netdisk.vip_type = Number(serialized.baidu_netdisk.vip_type || 0)
+  serialized.baidu_netdisk.vip_expire_at = Number(serialized.baidu_netdisk.vip_expire_at || 0)
   serialized.baidu_netdisk.quota_bytes = Number(serialized.baidu_netdisk.quota_bytes || 0)
   serialized.baidu_netdisk.used_bytes = Number(serialized.baidu_netdisk.used_bytes || 0)
-  if (!String(serialized.baidu_netdisk.baidupcs_go_path || '').trim()) {
-    serialized.baidu_netdisk.baidupcs_go_path = DEFAULT_BAIDUPCS_GO_PATH
+  if (!String(serialized.baidu_netdisk.share_code_separator || '').trim()) {
+    serialized.baidu_netdisk.share_code_separator = '----'
   }
   return serialized
 }
@@ -795,10 +792,7 @@ export function useSettingsDraft(options = {}) {
       ) {
         delete payload.ai_subtitle_matching.api_key
       }
-      if (
-        payload.baidu_netdisk?.cookie === MASKED_PASSWORD &&
-        snapshot.value?.baidu_netdisk?.cookie === MASKED_PASSWORD
-      ) {
+      if (payload.baidu_netdisk?.cookie === MASKED_PASSWORD) {
         delete payload.baidu_netdisk.cookie
       }
       stripMaskedPikPakAccountSecrets(payload, snapshot.value)
@@ -836,6 +830,15 @@ export function useSettingsDraft(options = {}) {
     }
   }
 
+  function markFieldsPersisted(sectionKey, fieldKeys = []) {
+    if (!sectionKey || !config.value?.[sectionKey] || !snapshot.value?.[sectionKey]) return
+    const keys = Array.isArray(fieldKeys) ? fieldKeys : [fieldKeys]
+    for (const key of keys) {
+      snapshot.value[sectionKey][key] = deepClone(config.value[sectionKey][key])
+    }
+    syncDigestsNow()
+  }
+
   return {
     config,
     defaultConfig,
@@ -851,6 +854,7 @@ export function useSettingsDraft(options = {}) {
     reloadConfigFromServer,
     resetAllConfig,
     resetSection,
+    markFieldsPersisted,
     serializeConfig
   }
 }
