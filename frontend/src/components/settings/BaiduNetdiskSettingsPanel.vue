@@ -4,24 +4,13 @@
       <div class="settings-card">
         <div class="card-title">百度网盘下载</div>
         <div class="field-stack">
-          <SettingsToggleRow v-model="config.baidu_netdisk.enabled" title="启用百度网盘下载" subtitle="独立于 HTTP 外链下载，走 BaiduPCS-Go 子进程执行。" />
+          <SettingsToggleRow v-model="config.baidu_netdisk.enabled" title="启用百度网盘下载" subtitle="通过百度官方登录态解析分享并直接下载。" />
           <div class="mini-grid three">
             <SettingsFieldCard label="下载根目录" hint="留空时使用待处理 input 目录或上层下载根目录。">
               <input v-model.trim="config.baidu_netdisk.download_root" class="field-input" type="text" placeholder="留空使用默认下载目录">
             </SettingsFieldCard>
-            <SettingsFieldCard label="BaiduPCS-Go 路径" hint="默认使用项目 tools 目录下的 BaiduPCS-Go，可改为绝对路径。">
-              <input v-model.trim="config.baidu_netdisk.baidupcs_go_path" class="field-input" type="text" placeholder="tools/baidupcs-go/BaiduPCS-Go.exe">
-            </SettingsFieldCard>
-            <SettingsFieldCard label="配置目录" hint="建议放在项目隔离配置下，避免污染用户全局配置。">
-              <input v-model.trim="config.baidu_netdisk.config_dir" class="field-input" type="text" placeholder="留空自动生成">
-            </SettingsFieldCard>
-          </div>
-          <div class="mini-grid three">
-            <SettingsFieldCard label="并发参数">
-              <SettingsNumberStepper v-model="config.baidu_netdisk.max_parallel" :min="1" :max="500" />
-            </SettingsFieldCard>
-            <SettingsFieldCard label="最大下载负载">
-              <input v-model.trim="config.baidu_netdisk.max_download_load" class="field-input" type="text" placeholder="0">
+            <SettingsFieldCard label="提取码分隔符" hint="支持“分享链接 + 分隔符 + 提取码”，例如链接----abcd。">
+              <input v-model.trim="config.baidu_netdisk.share_code_separator" class="field-input" type="text" placeholder="----">
             </SettingsFieldCard>
             <SettingsFieldCard label="冲突策略">
               <AppDropdown v-model="config.baidu_netdisk.conflict_policy" :options="conflictPolicyOptions" class="settings-field-dd" />
@@ -39,10 +28,10 @@
               <div class="baidu-bind-copy">
                 <span>百度官方登录</span>
                 <div class="baidu-official-login-main">
-                  <ShieldCheck :size="18" :stroke-width="2.4" />
+                  <img :src="baiduNetdiskIconUrl" alt="" class="baidu-platform-icon" draggable="false">
                   <div>
                     <strong>{{ baiduOfficialLoginTitle }}</strong>
-                    <small>{{ baiduOfficialLoginSubtitle }}</small>
+                    <small v-if="baiduOfficialLoginSubtitle">{{ baiduOfficialLoginSubtitle }}</small>
                   </div>
                 </div>
               </div>
@@ -105,16 +94,16 @@
               </div>
             </div>
 
-            <div class="baidu-account-actions">
+            <div v-if="baiduAccountStatusVisible" class="baidu-account-actions">
               <div
                 class="baidu-account-status"
                 :class="{
                   'is-ready': baiduAccountReady,
                   'is-active': baiduOfficialLoginActive,
-                  'is-loading': baiduTesting,
+                  'is-loading': baiduTesting || baiduAutoSyncing,
                   'is-error': baiduStatusMessage.startsWith('✗')
                 }"
-                :aria-busy="baiduTesting ? 'true' : undefined"
+                :aria-busy="baiduTesting || baiduAutoSyncing ? 'true' : undefined"
               >
                 <component :is="baiduAccountIcon" :size="15" :stroke-width="2.4" />
                 <span>{{ baiduAccountStatusText }}</span>
@@ -188,9 +177,6 @@
               </div>
             </div>
 
-            <div class="baidu-account-note">
-              <span>只展示百度官方接口返回的头像 / 名称 / VIP 信息。拿不到官方头像时，不使用仿制图。</span>
-            </div>
           </div>
         </div>
       </div>
@@ -199,10 +185,10 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { CheckCircle2, Crown, ExternalLink, LoaderCircle, RefreshCw, ShieldCheck, Trash2, TriangleAlert, XCircle } from 'lucide-vue-next'
+import baiduNetdiskIconUrl from '../../assets/platforms/baidu-netdisk.ico'
 import SettingsFieldCard from './SettingsFieldCard.vue'
-import SettingsNumberStepper from './SettingsNumberStepper.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
 import AppDropdown from '../common/AppDropdown.vue'
 import StatefulButton from '../ui/stateful-button.vue'
@@ -211,6 +197,7 @@ import { baiduNetdiskApi } from '../../api'
 const props = defineProps({
   config: { type: Object, required: true }
 })
+const emit = defineEmits(['persisted'])
 
 const conflictPolicyOptions = [
   { value: 'resume', label: '断点续传' },
@@ -221,6 +208,7 @@ const conflictPolicyOptions = [
 const baiduTesting = ref(false)
 const baiduAction = ref('')
 const baiduStatusMessage = ref('')
+const baiduAutoSyncing = ref(false)
 const baiduOfficialLogin = ref({
   active: false,
   browser: '',
@@ -229,6 +217,8 @@ const baiduOfficialLogin = ref({
   started_at: 0,
   login_url: ''
 })
+const BAIDU_OFFICIAL_LOGIN_POLL_MS = 1800
+let baiduOfficialLoginPollTimer = 0
 
 const baiduAvatarUrl = computed(() => String(props.config.baidu_netdisk.account_avatar_url || '').trim())
 const baiduAccountDisplayName = computed(() => {
@@ -241,6 +231,17 @@ const baiduVipLevelText = computed(() => {
   const level = String(props.config.baidu_netdisk.vip_level || '').trim()
   return level ? ` · 等级 ${level}` : ''
 })
+const baiduVipExpireAt = computed(() => Number(props.config.baidu_netdisk.vip_expire_at || 0))
+const baiduVipExpireText = computed(() => {
+  const timestamp = baiduVipExpireAt.value
+  if (!timestamp) return ''
+  const date = new Date(timestamp * 1000)
+  if (Number.isNaN(date.getTime())) return ''
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `会员截止日 ${year}/${month}/${day}`
+})
 const remainingBytes = computed(() => Math.max(0, Number(props.config.baidu_netdisk.quota_bytes || 0) - Number(props.config.baidu_netdisk.used_bytes || 0)))
 const baiduAccountVisible = computed(() => Boolean(
   props.config.baidu_netdisk.enabled && (
@@ -248,6 +249,7 @@ const baiduAccountVisible = computed(() => Boolean(
       || props.config.baidu_netdisk.account_netdisk_name
       || props.config.baidu_netdisk.account_avatar_url
       || Number(props.config.baidu_netdisk.vip_type || 0) > 0
+      || Number(props.config.baidu_netdisk.vip_expire_at || 0) > 0
       || Number(props.config.baidu_netdisk.quota_bytes || 0) > 0
   )
 ))
@@ -260,30 +262,34 @@ const baiduOfficialLoginTitle = computed(() => (
     ? '百度官方登录窗口已打开'
     : '打开百度官方登录'
 ))
-const baiduOfficialLoginSubtitle = computed(() => (
-  baiduOfficialLoginActive.value
-    ? `请在百度官方页面完成登录后点击“同步账号” · ${baiduOfficialLoginBrowserLabel.value}`
-    : '扫码、手机号或账号密码都在百度官方页面完成，系统只同步登录结果'
-))
+const baiduOfficialLoginSubtitle = computed(() => '通过登录状态同步获取用户信息')
 const baiduAccountCachedText = computed(() => {
   const cachedAt = Number(props.config.baidu_netdisk.account_cached_at || 0)
   if (!cachedAt) return '本地缓存'
   const date = new Date(cachedAt * 1000)
   if (Number.isNaN(date.getTime())) return '本地缓存'
-  return `缓存于 ${date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}`
+  return `上次刷新 ${date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}`
 })
+const baiduAccountStatusVisible = computed(() => Boolean(
+  baiduTesting.value
+    || baiduAutoSyncing.value
+    || baiduOfficialLoginActive.value
+    || baiduStatusMessage.value.startsWith('✗')
+    || baiduVipExpireText.value
+))
 const baiduAccountStatusText = computed(() => {
+  if (baiduAutoSyncing.value) return '检测到登录，正在自动同步百度账号...'
   if (baiduTesting.value && baiduAction.value === 'start') return '正在打开百度官方登录窗口...'
   if (baiduTesting.value && baiduAction.value === 'complete') return '正在同步百度登录状态...'
   if (baiduTesting.value && baiduAction.value === 'refresh') return '正在刷新百度账号和容量...'
+  if (baiduTesting.value && baiduAction.value === 'unbind') return '正在解绑百度账号...'
   if (baiduStatusMessage.value.startsWith('✗')) return baiduStatusMessage.value
-  if (baiduOfficialLoginActive.value) return `官方登录窗口已打开 · ${baiduOfficialLoginBrowserLabel.value}`
-  if (baiduAccountVisible.value) return `${baiduVipLabel.value} · ${formatBytes(remainingBytes.value)} 剩余`
-  if (baiduStatusMessage.value.startsWith('✓')) return baiduStatusMessage.value
-  return '未绑定百度账号'
+  if (baiduOfficialLoginActive.value) return `等待官方登录完成，会自动同步 · ${baiduOfficialLoginBrowserLabel.value}`
+  if (baiduVipExpireText.value) return `${baiduVipLabel.value} · ${baiduVipExpireText.value}`
+  return ''
 })
 const baiduAccountIcon = computed(() => {
-  if (baiduTesting.value) return LoaderCircle
+  if (baiduTesting.value || baiduAutoSyncing.value) return LoaderCircle
   if (baiduStatusMessage.value.startsWith('✗')) return TriangleAlert
   if (baiduAccountVisible.value) return baiduVipLabel.value.includes('SVIP') ? Crown : CheckCircle2
   if (baiduOfficialLoginActive.value) return ExternalLink
@@ -320,6 +326,7 @@ function mergeAccount(account = {}) {
       || String(account.netdisk_name || '').trim()
       || String(account.avatar_url || '').trim()
       || Number(account.vip_type || 0) > 0
+      || Number(account.vip_expire_at || 0) > 0
       || Number(account.quota_bytes || 0) > 0
       || Number(account.used_bytes || 0) > 0
   )
@@ -337,6 +344,7 @@ function mergeAccount(account = {}) {
   props.config.baidu_netdisk.vip_type = Number(account.vip_type || 0)
   props.config.baidu_netdisk.vip_label = String(account.vip_label || '').trim()
   props.config.baidu_netdisk.vip_level = String(account.vip_level || '').trim()
+  props.config.baidu_netdisk.vip_expire_at = Number(account.vip_expire_at || 0)
   props.config.baidu_netdisk.quota_bytes = Number(account.quota_bytes || 0)
   props.config.baidu_netdisk.used_bytes = Number(account.used_bytes || 0)
   props.config.baidu_netdisk.account_cached_at = configured ? Number(account.cached_at || Date.now() / 1000) : 0
@@ -344,6 +352,77 @@ function mergeAccount(account = {}) {
 
 function formatBaiduError(error, fallback) {
   return error?.response?.data?.detail || error?.message || fallback
+}
+
+function isBaiduLoginPendingError(message) {
+  return [
+    '未检测到百度登录态',
+    '请先在官方登录窗口完成登录',
+    'DevTools 未返回 Cookie'
+  ].some(fragment => String(message || '').includes(fragment))
+}
+
+function stopBaiduOfficialLoginPolling() {
+  if (!baiduOfficialLoginPollTimer) return
+  window.clearInterval(baiduOfficialLoginPollTimer)
+  baiduOfficialLoginPollTimer = 0
+}
+
+function startBaiduOfficialLoginPolling() {
+  stopBaiduOfficialLoginPolling()
+  if (!baiduOfficialLoginActive.value) return
+  baiduOfficialLoginPollTimer = window.setInterval(() => {
+    void pollBaiduOfficialLogin()
+  }, BAIDU_OFFICIAL_LOGIN_POLL_MS)
+}
+
+async function autoCompleteBaiduOfficialLogin() {
+  if (baiduTesting.value || baiduAutoSyncing.value || !baiduOfficialLoginActive.value) return false
+  baiduAutoSyncing.value = true
+  try {
+    const result = await baiduNetdiskApi.completeOfficialLogin({ persist: true })
+    setOfficialLoginState({ ...(result?.official_login || {}), active: false })
+    mergeAccount(result?.account || {})
+    emit('persisted')
+    stopBaiduOfficialLoginPolling()
+    baiduStatusMessage.value = `✓ ${baiduAccountDisplayName.value} 已自动同步`
+    return true
+  } catch (error) {
+    const message = formatBaiduError(error, '自动同步百度官方登录失败')
+    if (isBaiduLoginPendingError(message)) {
+      baiduStatusMessage.value = ''
+      return false
+    }
+    if (String(message).includes('窗口已关闭') || String(message).includes('没有正在进行')) {
+      setOfficialLoginState({ active: false })
+      stopBaiduOfficialLoginPolling()
+    }
+    baiduStatusMessage.value = `✗ ${message}`
+    return false
+  } finally {
+    baiduAutoSyncing.value = false
+  }
+}
+
+async function pollBaiduOfficialLogin() {
+  if (baiduTesting.value || baiduAutoSyncing.value) return
+  try {
+    const result = await baiduNetdiskApi.officialLoginStatus()
+    setOfficialLoginState(result?.official_login || {})
+    if (result?.account) {
+      mergeAccount(result.account)
+    }
+    if (!baiduOfficialLoginActive.value) {
+      stopBaiduOfficialLoginPolling()
+      return
+    }
+    await autoCompleteBaiduOfficialLogin()
+  } catch (error) {
+    const message = formatBaiduError(error, '刷新百度官方登录状态失败')
+    if (!isBaiduLoginPendingError(message)) {
+      baiduStatusMessage.value = `✗ ${message}`
+    }
+  }
 }
 
 async function runBaiduAction(action, fallbackMessage, runner) {
@@ -369,6 +448,11 @@ async function refreshBaiduOfficialLoginStatus() {
     if (result?.account) {
       mergeAccount(result.account)
     }
+    if (baiduOfficialLoginActive.value) {
+      startBaiduOfficialLoginPolling()
+    } else {
+      stopBaiduOfficialLoginPolling()
+    }
     baiduStatusMessage.value = ''
   })
 }
@@ -378,6 +462,7 @@ async function refreshBaiduAccountStatus() {
     const result = await baiduNetdiskApi.refreshAccount()
     setOfficialLoginState(result?.official_login || {})
     mergeAccount(result?.account || {})
+    emit('persisted')
     baiduStatusMessage.value = `✓ ${baiduAccountDisplayName.value} 状态已刷新`
   })
 }
@@ -386,15 +471,18 @@ async function startBaiduOfficialLogin() {
   return runBaiduAction('start', '打开百度官方登录失败', async () => {
     const result = await baiduNetdiskApi.startOfficialLogin()
     setOfficialLoginState(result?.official_login || { active: true, browser: result?.browser || '' })
-    baiduStatusMessage.value = `✓ 已打开百度官方登录窗口${result?.browser ? ` · ${result.browser}` : ''}`
+    startBaiduOfficialLoginPolling()
+    baiduStatusMessage.value = `✓ 已打开百度官方登录窗口${result?.browser ? ` · ${result.browser}` : ''}，登录完成后会自动同步`
   })
 }
 
 async function completeBaiduOfficialLogin() {
   return runBaiduAction('complete', '同步百度官方登录失败', async () => {
     const result = await baiduNetdiskApi.completeOfficialLogin({ persist: true })
-    setOfficialLoginState(result?.official_login || { active: false })
+    setOfficialLoginState({ ...(result?.official_login || {}), active: false })
     mergeAccount(result?.account || {})
+    emit('persisted')
+    stopBaiduOfficialLoginPolling()
     baiduStatusMessage.value = `✓ ${baiduAccountDisplayName.value} 已同步`
   })
 }
@@ -403,6 +491,7 @@ async function closeBaiduOfficialLogin() {
   return runBaiduAction('close', '关闭百度官方登录窗口失败', async () => {
     await baiduNetdiskApi.closeOfficialLogin()
     setOfficialLoginState({ active: false })
+    stopBaiduOfficialLoginPolling()
     baiduStatusMessage.value = '✓ 百度官方登录窗口已关闭'
   })
 }
@@ -421,16 +510,23 @@ async function unbindBaiduAccount() {
     props.config.baidu_netdisk.vip_type = 0
     props.config.baidu_netdisk.vip_label = ''
     props.config.baidu_netdisk.vip_level = ''
+    props.config.baidu_netdisk.vip_expire_at = 0
     props.config.baidu_netdisk.quota_bytes = 0
     props.config.baidu_netdisk.used_bytes = 0
     props.config.baidu_netdisk.account_cached_at = 0
     setOfficialLoginState({ active: false })
+    emit('persisted')
+    stopBaiduOfficialLoginPolling()
     baiduStatusMessage.value = '✓ 百度账号已解绑'
   })
 }
 
 onMounted(() => {
   void refreshBaiduOfficialLoginStatus()
+})
+
+onBeforeUnmount(() => {
+  stopBaiduOfficialLoginPolling()
 })
 </script>
 
@@ -490,9 +586,17 @@ onMounted(() => {
   min-width: 0;
   color: var(--set-text-strong);
 }
-.baidu-official-login-main svg {
+.baidu-official-login-main :is(svg, img) {
   flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+}
+.baidu-official-login-main svg {
   color: #2563eb;
+}
+.baidu-platform-icon {
+  object-fit: contain;
+  border-radius: 4px;
 }
 .baidu-official-login-main div {
   display: grid;
@@ -651,12 +755,6 @@ onMounted(() => {
   font-size: 13px;
   font-weight: 700;
 }
-.baidu-account-note {
-  color: var(--set-text-muted);
-  font-size: 11.5px;
-  line-height: 1.55;
-}
-
 .ghost-inline-btn {
   display: inline-flex;
   align-items: center;

@@ -5,3 +5,4 @@
 - onedrive.ico: https://onedrive.com/favicon.ico
 - google-drive.ico: https://ssl.gstatic.com/docs/doclist/images/infinite_arrow_favicon_5.ico
 - pikpak.png: https://mypikpak.com/favicon-32x32.png
+- baidu-netdisk.ico: https://nd-static.bdstatic.com/m-static/wp-brand/favicon.ico

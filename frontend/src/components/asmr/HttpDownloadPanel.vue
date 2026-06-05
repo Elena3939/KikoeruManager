@@ -9,10 +9,23 @@
         </div>
       </div>
       <div class="asmr-card-head-actions">
-        <button class="asmr-mini-btn" type="button" :disabled="healthLoading" @click="loadHealth">
-          <RefreshCw :size="12" :stroke-width="2.4" :class="{ 'spin': healthLoading }" />
+        <StatefulButton
+          class="asmr-mini-btn"
+          unstyled
+          :show-default-icons="false"
+          :success-hold="1000"
+          @click="loadHealth"
+        >
+          <template #prefix="{ state }">
+            <span class="asmr-health-action-icon" :class="`is-${state}`" aria-hidden="true">
+              <Loader2 v-if="state === 'loading'" :size="12" :stroke-width="2.4" />
+              <RefreshCw v-else-if="state === 'idle'" :size="12" :stroke-width="2.4" />
+              <Check v-else-if="state === 'success'" :size="12" :stroke-width="2.4" />
+              <X v-else :size="12" :stroke-width="2.4" />
+            </span>
+          </template>
           {{ healthActionLabel }}
-        </button>
+        </StatefulButton>
         <button v-if="hasTasks" class="asmr-mini-btn is-primary" type="button" @click="$emit('open-workbench')">
           <Download :size="12" :stroke-width="2.4" />
           下载工作台
@@ -229,11 +242,19 @@
                     </span>
                     <div class="http-preview-main">
                       <div class="download-list-name http-preview-name">{{ previewItemTitle(item) }}</div>
-                      <div class="http-preview-meta">
-                        <span>{{ sourceLabel(item.source) }}</span>
-                        <span v-if="!item.ok">{{ item.reason }}</span>
+                      <div v-if="!isBaidu || !item.ok || item.requires_pass_code || item.warning" class="http-preview-meta">
+                        <span class="http-preview-source-chip">{{ sourceLabel(item.source) }}</span>
+                        <span v-if="!item.ok" class="http-preview-reason">{{ item.reason }}</span>
                         <span v-else-if="item.warning" class="warn">{{ item.warning }}</span>
-                        <span v-if="isBaidu && (item.requires_pass_code || item.pass_code)" class="warn">{{ item.pass_code ? `提取码 ${item.pass_code}` : '缺提取码' }}</span>
+                        <span v-if="isBaidu && (item.requires_pass_code || item.pass_code)" class="http-preview-pass-chip" :class="{ warn: !item.pass_code }">{{ item.pass_code ? `提取码 ${item.pass_code}` : '缺提取码' }}</span>
+                      </div>
+                      <div v-if="!isBaidu && item.preview_summary" class="baidu-preview-summary">{{ item.preview_summary }}</div>
+                      <div v-if="shouldShowBaiduPreviewFiles(item)" class="baidu-preview-files">
+                        <div v-for="file in item.preview_files.slice(0, 5)" :key="`${previewItemKey(item)}-${file.path || file.name}`" class="baidu-preview-file">
+                          <span class="baidu-preview-file-type">{{ file.is_dir ? '目录' : '文件' }}</span>
+                          <span class="baidu-preview-file-name">{{ file.relative_path || file.name }}</span>
+                          <span v-if="!file.is_dir" class="baidu-preview-file-size">{{ formatSize(file.size_bytes || file.size) }}</span>
+                        </div>
                       </div>
                       <div v-if="isBaidu && item.requires_pass_code" class="baidu-pass-code-row" @click.stop>
                         <input
@@ -248,7 +269,7 @@
                       </div>
                     </div>
                   </div>
-                  <span v-if="item.ok" class="download-list-size text-xs text-slate-400 ml-4 tabular-nums">{{ formatSize(item.size_bytes) }}</span>
+                  <span v-if="shouldShowPreviewItemSize(item)" class="download-list-size text-xs text-slate-400 ml-4 tabular-nums">{{ formatSize(item.size_bytes) }}</span>
                 </label>
               </div>
             </div>
@@ -274,9 +295,10 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { AlertTriangle, Check, CloudDownload, Download, FileIcon, Globe2, RefreshCw, Search, X } from 'lucide-vue-next'
+import { AlertTriangle, Check, CloudDownload, Download, FileIcon, Globe2, Loader2, RefreshCw, Search, X } from 'lucide-vue-next'
 import AppDropdown from '../common/AppDropdown.vue'
 import AppLoadingAnimation from '../common/AppLoadingAnimation.vue'
+import StatefulButton from '../ui/stateful-button.vue'
 import { baiduNetdiskApi, httpDownloadApi } from '../../api'
 import {
   getHttpDownloadPlatformMeta,
@@ -316,12 +338,12 @@ const conflictOptions = [
 const isBaidu = computed(() => String(props.provider || '').trim() === 'baidu')
 const activeApi = computed(() => isBaidu.value ? baiduNetdiskApi : httpDownloadApi)
 const panelTitle = computed(() => isBaidu.value ? '百度网盘下载' : 'HTTP 外链下载')
-const panelSubtitle = computed(() => isBaidu.value ? '百度分享链接 / 提取码 / BaiduPCS-Go / SVIP 高速' : 'HTTP 直链 / Gofile / Transfer.it / OneDrive / Google Drive / PikPak')
+const panelSubtitle = computed(() => isBaidu.value ? '百度分享链接 / 提取码 / 官方登录态直下' : 'HTTP 直链 / Gofile / Transfer.it / OneDrive / Google Drive / PikPak')
 const inputPlaceholder = computed(() => isBaidu.value
-  ? '粘贴百度网盘分享链接，一行一个。可以把提取码放在链接下一行，或直接使用带 ?pwd= 的分享链接。'
+  ? '粘贴百度网盘分享链接，一行一个。支持链接----提取码、提取码下一行，或带 ?pwd= 的分享链接。'
   : '粘贴 HTTP/HTTPS 直链或分享链接，一行一个。支持 Gofile、Transfer.it、OneDrive、Google Drive、PikPak。'
 )
-const healthActionLabel = computed(() => isBaidu.value ? '检测 BaiduPCS-Go' : '检测 aria2')
+const healthActionLabel = computed(() => isBaidu.value ? '检测百度登录态' : '检测 aria2')
 
 const parsedUrls = computed(() => {
   const rows = String(urlText.value || '')
@@ -381,27 +403,35 @@ const previewStatusText = computed(() => {
 })
 
 const healthText = computed(() => {
-  if (!health.value) return isBaidu.value ? '尚未检测 BaiduPCS-Go' : '尚未检测 aria2'
+  if (healthLoading.value) return isBaidu.value ? '正在检测百度登录态...' : '正在检测 aria2...'
+  if (!health.value) return isBaidu.value ? '尚未检测百度登录态' : '尚未检测 aria2'
   if (health.value.ok) {
     if (isBaidu.value) {
       const account = health.value.account || {}
       const accountText = account.name || account.netdisk_name ? ` · ${account.name || account.netdisk_name}` : ''
       const svip = health.value.svip_speed ? ' · SVIP 高速' : ''
-      return `BaiduPCS-Go 可用${accountText}${svip}`
+      return `百度登录态可用${accountText}${svip}`
     }
     const pikpak = health.value.pikpak_enabled ? (health.value.pikpak_ready ? ' · PikPak 已配置' : ' · PikPak 缺配置') : ''
     const gofile = health.value.gofile_ready ? ' · Gofile 已配置' : ''
     return `aria2 可用${health.value.version?.version ? ` · ${health.value.version.version}` : ''}${gofile}${pikpak}`
   }
-  return health.value.message || (isBaidu.value ? 'BaiduPCS-Go 不可用' : 'aria2 不可用')
+  return health.value.message || (isBaidu.value ? '百度登录态不可用' : 'aria2 不可用')
 })
 
 async function loadHealth() {
+  const targetName = isBaidu.value ? '百度登录态' : 'aria2'
   healthLoading.value = true
   try {
     health.value = await activeApi.value.health()
+    if (health.value?.ok) {
+      ElMessage.success(`${targetName} 可用`)
+    } else {
+      ElMessage.warning(health.value?.message || `${targetName} 不可用`)
+    }
   } catch (error) {
     health.value = { ok: false, message: error.response?.data?.detail || error.message || '检测失败' }
+    ElMessage.error(health.value.message)
   } finally {
     healthLoading.value = false
   }
@@ -435,7 +465,7 @@ async function preview() {
       selectedPreviewKeys.value = new Set((result.selected_keys || []).filter(Boolean))
       previewProgress.value = 100
       addPreviewLog(`解析完成，可下载 ${okPreviewCount.value} 项，缺提取码 ${Number(result.needs_pass_code_count || 0)} 项`, okPreviewCount.value ? 'success' : 'warning')
-      if (result.svip_speed) addPreviewLog('当前百度账号为 SVIP，将使用 BaiduPCS-Go 高速下载', 'success')
+      if (result.svip_speed) addPreviewLog('当前百度账号为 SVIP，将使用官方登录态直接下载', 'success')
       if (okPreviewCount.value) ElMessage.success(`可下载 ${okPreviewCount.value} 个分享`)
       if (result.needs_pass_code_count) ElMessage.warning(`${result.needs_pass_code_count} 个分享需要补提取码`)
       return
@@ -474,9 +504,9 @@ async function preview() {
     }
     previewProgress.value = 100
     addPreviewLog(`解析完成，可下载 ${okPreviewCount.value} 项，失败 ${previewItems.value.length - okPreviewCount.value} 项`, okPreviewCount.value ? 'success' : 'warning')
-    if (previewNeedsMaterialize.value) addPreviewLog('部分分享链接会在开始下载时转存或调用专用下载器', 'warning')
+    if (previewNeedsMaterialize.value) addPreviewLog('部分分享链接会在开始下载时通过官方接口解析直链', 'warning')
     if (okPreviewCount.value) ElMessage.success(`可下载 ${okPreviewCount.value} 个链接`)
-    if (previewNeedsMaterialize.value) ElMessage.info('部分分享链接会在开始下载时转存或调用专用下载器')
+    if (previewNeedsMaterialize.value) ElMessage.info('部分分享链接会在开始下载时通过官方接口解析直链')
     if (previewItems.value.length - okPreviewCount.value) ElMessage.warning(`${previewItems.value.length - okPreviewCount.value} 个链接不可直接下载`)
   } finally {
     previewing.value = false
@@ -535,8 +565,7 @@ function sourceKey(source) {
 }
 
 function sourceIcon(source) {
-  if (isBaidu.value) return ''
-  return getHttpDownloadPlatformMeta(source).iconSrc || ''
+  return getHttpDownloadPlatformMeta(sourceKey(source)).iconSrc || getHttpDownloadPlatformMeta(source).iconSrc || ''
 }
 
 function isSourceIconFailed(source) {
@@ -557,6 +586,23 @@ function sourceFromUrl(url) {
 function previewItemTitle(item) {
   if (item?.ok) return item.filename || item.name || '未命名文件'
   return `${sourceLabel(item?.source)} 预览失败`
+}
+
+function shouldShowBaiduPreviewFiles(item) {
+  if (!isBaidu.value) return false
+  const files = Array.isArray(item?.preview_files) ? item.preview_files.filter(Boolean) : []
+  if (!files.length) return false
+  if (files.length > 1) return true
+  const title = String(item?.filename || item?.name || '').trim()
+  const file = files[0] || {}
+  const fileLabel = String(file.relative_path || file.name || '').trim()
+  return Boolean(fileLabel && fileLabel !== title)
+}
+
+function shouldShowPreviewItemSize(item) {
+  if (!item?.ok) return false
+  if (!isBaidu.value) return true
+  return !shouldShowBaiduPreviewFiles(item)
 }
 
 function applyPassCodeAndPreview(item) {
@@ -711,6 +757,7 @@ onMounted(loadHealth)
   color: var(--asmr-text);
   font-size: 12px;
   font-weight: 650;
+  cursor: pointer;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .asmr-mini-btn:hover:not(:disabled) {
@@ -733,6 +780,20 @@ onMounted(loadHealth)
   background: var(--asmr-primary-bg-hover);
   color: var(--asmr-primary-text);
   box-shadow: var(--asmr-control-shadow);
+}
+.asmr-health-action-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.asmr-health-action-icon.is-loading :deep(svg) {
+  animation: asmr-health-spin 0.4s linear infinite;
+}
+.asmr-health-action-icon.is-success :deep(svg) {
+  animation: asmr-health-pop 0.24s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.asmr-health-action-icon.is-error :deep(svg) {
+  animation: asmr-health-pop 0.24s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .http-download-body { display: grid; gap: 12px; }
 .http-download-health {
@@ -773,12 +834,16 @@ onMounted(loadHealth)
 .http-field.grow { flex: 1 1 240px; }
 .baidu-pass-code-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  margin-top: 6px;
+  gap: 8px;
+  margin-top: 2px;
+}
+.download-list-row.bad .baidu-pass-code-row {
+  padding-top: 1px;
 }
 .baidu-pass-code-input {
-  width: 112px;
+  width: 124px;
   height: 26px;
   padding: 0 8px;
   border: 1px solid rgba(203, 213, 225, 0.92);
@@ -794,7 +859,7 @@ onMounted(loadHealth)
 }
 .baidu-pass-code-btn {
   height: 26px;
-  padding: 0 8px;
+  padding: 0 10px;
   border: 1px solid rgba(203, 213, 225, 0.86);
   border-radius: 7px;
   background: rgba(248, 250, 252, 0.9);
@@ -1094,6 +1159,9 @@ onMounted(loadHealth)
   box-shadow: inset 0 0 0 1px rgba(254, 202, 202, 0.8);
   cursor: default;
 }
+.download-list-row.bad .download-list-main {
+  align-items: flex-start;
+}
 .http-preview-error-icon {
   width: 16px;
   height: 16px;
@@ -1101,6 +1169,8 @@ onMounted(loadHealth)
   align-items: center;
   justify-content: center;
   flex: 0 0 16px;
+  margin-top: 2px;
+  color: rgb(239, 68, 68);
 }
 .http-preview-empty {
   height: 100%;
@@ -1140,10 +1210,117 @@ onMounted(loadHealth)
   border-radius: 3px;
   display: block;
 }
-.http-preview-main { min-width: 0; flex: 1; }
-.http-preview-name { color: rgb(30, 41, 59); font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.http-preview-meta { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 1px; color: rgb(100, 116, 139); font-size: 10.5px; line-height: 1.25; }
+.http-preview-main {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 4px;
+}
+.http-preview-name {
+  color: rgb(30, 41, 59);
+  font-size: 13px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.download-list-row.bad .http-preview-name {
+  white-space: normal;
+  overflow: visible;
+  line-height: 1.3;
+}
+.http-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  color: rgb(100, 116, 139);
+  font-size: 10.5px;
+  line-height: 1.25;
+}
+.http-preview-source-chip,
+.http-preview-reason,
+.http-preview-pass-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 16px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+.http-preview-source-chip {
+  background: rgba(219, 234, 254, 0.7);
+  border-color: rgba(147, 197, 253, 0.34);
+  color: rgb(51, 65, 85);
+  font-weight: 650;
+}
+.http-preview-reason {
+  background: rgba(254, 226, 226, 0.72);
+  border-color: rgba(252, 165, 165, 0.38);
+  color: rgb(185, 28, 28);
+}
+.http-preview-pass-chip {
+  background: rgba(254, 243, 199, 0.7);
+  border-color: rgba(251, 191, 36, 0.3);
+  color: rgb(180, 83, 9);
+}
+.baidu-preview-summary {
+  color: rgb(71, 85, 105);
+  font-size: 11px;
+  line-height: 1.35;
+  font-weight: 650;
+}
+.baidu-preview-files {
+  display: grid;
+  gap: 5px;
+  max-width: min(680px, 100%);
+}
+.baidu-preview-file {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(203, 213, 225, 0.54);
+  background: rgba(248, 250, 252, 0.62);
+  color: rgb(51, 65, 85);
+  font-size: 11px;
+  line-height: 1.25;
+}
+.baidu-preview-file-type {
+  color: rgb(37, 99, 235);
+  font-weight: 750;
+}
+.baidu-preview-file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.baidu-preview-file-size {
+  color: rgb(100, 116, 139);
+  font-variant-numeric: tabular-nums;
+}
 .http-preview-meta .warn { color: rgb(180, 83, 9); }
+.download-list-row.bad .http-preview-meta {
+  color: rgb(153, 27, 27);
+}
+.download-list-row.bad .http-preview-meta .warn {
+  color: rgb(185, 28, 28);
+}
+.download-list-row.bad .http-preview-source-chip,
+.download-list-row.bad .http-preview-reason,
+.download-list-row.bad .http-preview-pass-chip {
+  background: rgba(254, 226, 226, 0.72);
+  border-color: rgba(252, 165, 165, 0.32);
+}
+.download-list-row.bad .http-preview-source-chip {
+  color: rgb(127, 29, 29);
+}
+.download-list-row.bad .http-preview-pass-chip {
+  color: rgb(185, 83, 0);
+}
 .tab-count {
   padding: 2px 5px;
   border-radius: 999px;
@@ -1178,6 +1355,11 @@ onMounted(loadHealth)
 }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+@keyframes asmr-health-spin { to { transform: rotate(360deg); } }
+@keyframes asmr-health-pop {
+  0% { transform: scale(0.82); opacity: 0.6; }
+  100% { transform: scale(1); opacity: 1; }
+}
 
 :global(html.kikoerumanager-dark .http-download-preview-modal.el-dialog) {
   background: transparent !important;
@@ -1274,6 +1456,32 @@ onMounted(loadHealth)
 :global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-log-row.is-warning),
 :global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-meta .warn) {
   color: #fbbf24 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-source-chip),
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-pass-chip),
+:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-file) {
+  background: #22242a !important;
+  color: #e5e7eb !important;
+  border-color: rgba(148, 163, 184, 0.2) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-reason) {
+  background: rgba(127, 29, 29, 0.24) !important;
+  color: #fecaca !important;
+  border: 1px solid rgba(248, 113, 113, 0.18) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-summary) {
+  color: #d4d4d8 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-file-type) {
+  color: #93c5fd !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-file-size) {
+  color: #a1a1aa !important;
 }
 
 :global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-log-row.is-error),
@@ -1402,3 +1610,12 @@ onMounted(loadHealth)
   }
 }
 </style>
+
+
+
+
+
+
+
+
+

@@ -1,4 +1,5 @@
 import { defineComponent, h } from 'vue'
+import baiduNetdiskIconUrl from '../../assets/platforms/baidu-netdisk.ico'
 import gofileIconUrl from '../../assets/platforms/gofile.png'
 import googleDriveIconUrl from '../../assets/platforms/google-drive.ico'
 import onedriveIconUrl from '../../assets/platforms/onedrive.ico'
@@ -6,6 +7,7 @@ import pikpakIconUrl from '../../assets/platforms/pikpak.png'
 import transferitIconUrl from '../../assets/platforms/transferit.ico'
 
 const PLATFORM_ICON_URLS = {
+  baidu_netdisk: baiduNetdiskIconUrl,
   gofile: gofileIconUrl,
   transferit: transferitIconUrl,
   onedrive: onedriveIconUrl,
@@ -32,6 +34,7 @@ const GOOGLE_DRIVE_ICON = createPlatformIconComponent(PLATFORM_ICON_URLS.google_
 const ONEDRIVE_ICON = createPlatformIconComponent(PLATFORM_ICON_URLS.onedrive, 'OneDrive')
 const PIKPAK_ICON = createPlatformIconComponent(PLATFORM_ICON_URLS.pikpak, 'PikPak')
 const TRANSFERIT_ICON = createPlatformIconComponent(PLATFORM_ICON_URLS.transferit, 'Transfer.it')
+const BAIDU_NETDISK_ICON = createPlatformIconComponent(PLATFORM_ICON_URLS.baidu_netdisk, '百度网盘')
 
 export const HTTP_DOWNLOAD_PLATFORM_META = {
   http: {
@@ -86,8 +89,8 @@ export const HTTP_DOWNLOAD_PLATFORM_META = {
     key: 'baidu_netdisk',
     label: '百度网盘',
     title: '百度网盘下载',
-    icon: '',
-    iconSrc: '',
+    icon: BAIDU_NETDISK_ICON,
+    iconSrc: PLATFORM_ICON_URLS.baidu_netdisk,
     aliases: ['baidu_netdisk', 'baidu-netdisk', 'baidu', 'pan.baidu.com', 'yun.baidu.com', '百度网盘']
   }
 }

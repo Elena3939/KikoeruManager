@@ -103,7 +103,7 @@
         v-else-if="activeSection === 'httpDownload'"
         kicker="HTTP Downloader"
         title="HTTP 下载"
-        description="配置 HTTP/HTTPS 外链、Gofile 分享和 PikPak 分享转存下载。"
+        description="配置 HTTP/HTTPS 外链、Gofile 分享和 PikPak 下载。"
       >
         <HttpDownloadSettingsPanel :config="config" />
       </SettingsSectionPanel>
@@ -112,9 +112,9 @@
         v-else-if="activeSection === 'baiduNetdisk'"
         kicker="Baidu Netdisk"
         title="百度网盘"
-        description="配置 BaiduPCS-Go、官方账号绑定、SVIP 状态和百度网盘下载落盘规则。"
+        description="配置官方账号绑定、分享直下和百度网盘下载落盘规则。"
       >
-        <BaiduNetdiskSettingsPanel :config="config" />
+        <BaiduNetdiskSettingsPanel :config="config" @persisted="handleBaiduNetdiskPersisted" />
       </SettingsSectionPanel>
 
       <SettingsSectionPanel
@@ -201,8 +201,26 @@ const {
   loadConfig,
   saveConfig,
   reloadConfigFromServer,
-  resetAllConfig
+  resetAllConfig,
+  markFieldsPersisted
 } = useSettingsDraft({ sectionKeyMap })
+
+const BAIDU_NETDISK_PERSISTED_FIELDS = [
+  'enabled',
+  'cookie',
+  'account_name',
+  'account_netdisk_name',
+  'account_avatar_url',
+  'account_uk',
+  'share_code_separator',
+  'vip_type',
+  'vip_label',
+  'vip_level',
+  'vip_expire_at',
+  'quota_bytes',
+  'used_bytes',
+  'account_cached_at'
+]
 
 const {
   profiles,
@@ -237,7 +255,7 @@ const sections = [
   { id: 'services', title: '外部服务', short: 'Kikoeru、ASMR、RJ 字幕', icon: ScanSearch, keywords: ['kikoeru', 'asmr', 'subtitle', 'email', '外部服务'] },
   { id: 'aiSubtitle', title: 'AI 配对', short: '模型、Key、提示词、阈值', icon: Bot, keywords: ['ai', 'subtitle', 'match', 'model', 'prompt', '字幕配对', '模型', '提示词'] },
   { id: 'httpDownload', title: 'HTTP 下载', short: 'HTTP、Gofile、PikPak', icon: DownloadCloud, keywords: ['http', 'download', 'aria2', 'gofile', 'pikpak', '外链下载'] },
-  { id: 'baiduNetdisk', title: '百度网盘', short: 'BaiduPCS-Go、官方登录、SVIP', icon: CloudDownload, keywords: ['baidu', '百度网盘', 'BaiduPCS-Go', 'SVIP', '百度'] },
+  { id: 'baiduNetdisk', title: '百度网盘', short: '官方登录、分享直下、SVIP', icon: CloudDownload, keywords: ['baidu', '百度网盘', '分享直下', 'SVIP', '百度'] },
   { id: 'maintenance', title: '维护与清理', short: '清理、备份、压缩包', icon: LifeBuoy, keywords: ['cleanup', 'backup', 'archive', '维护'] },
   { id: 'fts', title: '全文搜索索引', short: 'FTS5 trigram 加速', icon: TextSearch, keywords: ['fts', 'search', 'trigram', '索引', '全文搜索', 'sqlite'] },
   { id: 'security', title: '安全门禁', short: '验证器、黑名单', icon: ShieldCheck, keywords: ['security', 'google authenticator', '门禁', '黑名单'] },
@@ -266,6 +284,11 @@ async function refreshConfigRuntimeState() {
 function handleCreateLibrary(type) {
   const created = addStorageLibrary(type)
   selectedLibraryId.value = created.id
+}
+
+function handleBaiduNetdiskPersisted() {
+  markFieldsPersisted('baidu_netdisk', BAIDU_NETDISK_PERSISTED_FIELDS)
+  lastSavedAt.value = Date.now()
 }
 
 watch(libraryViewModels, (list) => {
@@ -370,10 +393,10 @@ onMounted(() => {
   --set-accent: #e5e7eb;
   --set-accent-hover: #ffffff;
   --set-accent-soft: rgba(255, 255, 255, 0.08);
-  --set-primary-bg: #e4e4e7;
-  --set-primary-bg-hover: #f4f4f5;
-  --set-primary-border: rgba(255, 255, 255, 0.36);
-  --set-primary-text: #18181b;
+  --set-primary-bg: #2b2c30;
+  --set-primary-bg-hover: #333438;
+  --set-primary-border: rgba(255, 255, 255, 0.14);
+  --set-primary-text: #f5f5f5;
   --set-chip-bg: #202023;
   --set-chip-bg-active: #2a2a2d;
   --set-chip-text: #d4d4d8;
@@ -487,3 +510,7 @@ onMounted(() => {
   }
 }
 </style>
+
+
+
+
