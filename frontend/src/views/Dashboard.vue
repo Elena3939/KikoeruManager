@@ -143,7 +143,6 @@ const kpiCards = computed(() => [
   { key: 'subtitle', label: '字幕补配', value: domainCounts.value.subtitle_import, icon: Sparkles, route: '/subtitle-import' },
   { key: 'asmr', label: 'ASMR 同步', value: domainCounts.value.asmr_sync, icon: UploadCloud, route: { path: '/asmr-sync', query: { tab: 'enhanced' } } },
   { key: 'http', label: 'HTTP 下载', value: domainCounts.value.http_download, icon: Download, route: { path: '/asmr-sync', query: { tab: 'http' } } },
-  { key: 'baidu', label: '百度网盘', value: domainCounts.value.baidu_netdisk, icon: CloudDownload, route: { path: '/asmr-sync', query: { tab: 'baidu' } } },
   { key: 'upload', label: '库存上传', value: domainCounts.value.upload, icon: Upload, route: '/library' },
   { key: 'conflicts', label: '问题作品', value: stats.value.conflicts, icon: ShieldAlert, route: '/conflicts' },
 ])

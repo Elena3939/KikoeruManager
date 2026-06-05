@@ -1,5 +1,5 @@
 <template>
-  <div class="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+  <div class="backup-page max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
     <AppPageHeader
       :icon="Archive"
       icon-color="var(--km-nav-backup-icon)"
@@ -18,7 +18,7 @@
       </button>
 
       <button
-        class="page-head-btn primary btn-pack"
+        class="page-head-btn primary is-primary btn-pack"
         type="button"
         :disabled="status.running || actionLoading"
         @click="startBackup"
@@ -651,8 +651,8 @@ button:disabled { cursor: not-allowed; }
 /* 保存：Save 图标 hover 时轻微下沉 + 缩放（模拟落盘动作） */
 .page-head-btn.btn-save:hover:not(:disabled) :deep(.page-head-btn-icon) {
   transform: translateY(1px) scale(1.12);
-  filter: drop-shadow(0 2px 4px rgba(59, 130, 246, 0.35));
-  color: #2563eb;
+  filter: drop-shadow(0 2px 4px rgba(15, 23, 42, 0.24));
+  color: #334155;
 }
 
 /* 开始打包：Play 三角 hover 时右移 + 放大（模拟启动） */
@@ -724,8 +724,8 @@ button:disabled { cursor: not-allowed; }
   box-shadow: 0 0 0 1px #94a3b8 inset;
 }
 .backup-format-dd :deep(.app-dd-trigger.is-open) {
-  border-color: rgba(59, 130, 246, 0.55);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5) inset;
+  border-color: rgba(51, 65, 85, 0.42);
+  box-shadow: 0 0 0 2px rgba(51, 65, 85, 0.16) inset;
 }
 
 /* ==============================================================
@@ -783,7 +783,7 @@ button:disabled { cursor: not-allowed; }
 }
 /* hover 时图标变蓝 + 反向旋转 360°（loading 中由 animate-spin 接管，避免冲突） */
 .lib-refresh-btn:hover:not(:disabled) .lib-refresh-btn-icon:not(.animate-spin) {
-  color: #2563eb;
+  color: #334155;
   transform: rotate(-360deg) scale(1.08);
 }
 
@@ -797,12 +797,12 @@ button:disabled { cursor: not-allowed; }
 
 /* loading 中按钮整体微微淡化 + 高亮蓝色边框，提示用户正在刷新 */
 .lib-refresh-btn.is-loading {
-  background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
-  border-color: rgba(59, 130, 246, 0.45);
-  color: #1d4ed8;
+  background: linear-gradient(180deg, #f8fafc 0%, #e2e8f0 100%);
+  border-color: rgba(51, 65, 85, 0.3);
+  color: #334155;
 }
 .lib-refresh-btn.is-loading .lib-refresh-btn-icon {
-  color: #2563eb;
+  color: #334155;
 }
 
 /* 进度条平滑过渡 */
@@ -845,7 +845,7 @@ button:disabled { cursor: not-allowed; }
 
 :deep(.el-input__wrapper.is-focus),
 :deep(.el-textarea__wrapper.is-focus) {
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5) inset !important;
+  box-shadow: 0 0 0 2px rgba(51, 65, 85, 0.18) inset !important;
 }
 
 /* 密码框眼睛图标特效 */
@@ -854,7 +854,79 @@ button:disabled { cursor: not-allowed; }
 }
 :deep(.el-input__password:hover) {
   transform: scale(1.15) rotate(5deg) !important;
-  color: #3b82f6 !important;
+  color: #334155 !important;
+}
+
+:global(html.kikoerumanager-dark .backup-page .page-head-btn.primary) {
+  background: var(--km-dark-primary-button-bg) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  color: var(--km-dark-primary-button-text) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .backup-page .page-head-btn.primary:hover) {
+  background: var(--km-dark-button-bg-hover) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .backup-page .backup-format-dd .app-dd-trigger.is-open),
+:global(html.kikoerumanager-dark .backup-page :is(.el-input__wrapper.is-focus, .el-textarea__wrapper.is-focus)) {
+  border-color: var(--km-dark-border-strong) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .backup-page .el-slider) {
+  --el-slider-main-bg-color: #e5e5e8;
+  --el-slider-runway-bg-color: #252529;
+  --el-color-primary: #e5e5e8;
+  --el-color-primary-light-3: #f5f5f5;
+}
+
+:global(html.kikoerumanager-dark .backup-page :is(.el-slider__runway, .el-input-number, .el-input-number__decrease, .el-input-number__increase)) {
+  background: #242427 !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .backup-page .el-slider__runway) {
+  background: #252529 !important;
+  background-image: none !important;
+}
+
+:global(html.kikoerumanager-dark .backup-page .el-slider__bar) {
+  background: #e5e5e8 !important;
+  background-image: none !important;
+}
+
+:global(html.kikoerumanager-dark .backup-page .el-slider__button) {
+  background: #f5f5f5 !important;
+  border-color: var(--km-dark-border-strong) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .backup-page .el-slider__button:hover),
+:global(html.kikoerumanager-dark .backup-page .el-slider__button-wrapper:hover .el-slider__button),
+:global(html.kikoerumanager-dark .backup-page :is(.el-input-number__decrease, .el-input-number__increase):hover) {
+  background: #2f2f34 !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+:global(html.kikoerumanager-dark .backup-page .el-slider__button:hover),
+:global(html.kikoerumanager-dark .backup-page .el-slider__button-wrapper:hover .el-slider__button) {
+  background: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark .backup-page .el-switch.is-checked .el-switch__core) {
+  background: var(--km-dark-button-bg-hover) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border-strong) !important;
 }
 
 </style>

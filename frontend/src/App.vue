@@ -769,7 +769,7 @@ html.kikoerumanager-dark .tasks-toolbar-btn,
 html.kikoerumanager-dark .subtitle-refresh-btn,
 html.kikoerumanager-dark .subtitle-action-btn:not(.is-primary),
 html.kikoerumanager-dark .subtitle-mini-btn,
-html.kikoerumanager-dark .page-head-btn:not(.is-primary),
+html.kikoerumanager-dark .page-head-btn:not(.is-primary):not(.primary),
 html.kikoerumanager-dark .lib-action-btn:not(.is-primary),
 html.kikoerumanager-dark .conflicts-action-btn.is-slate {
   background: var(--km-dark-button-bg) !important;
@@ -787,7 +787,7 @@ html.kikoerumanager-dark .tasks-toolbar-btn.is-on,
 html.kikoerumanager-dark .subtitle-refresh-btn:hover,
 html.kikoerumanager-dark .subtitle-action-btn:not(.is-primary):hover,
 html.kikoerumanager-dark .subtitle-mini-btn:hover,
-html.kikoerumanager-dark .page-head-btn:not(.is-primary):hover,
+html.kikoerumanager-dark .page-head-btn:not(.is-primary):not(.primary):hover,
 html.kikoerumanager-dark .lib-action-btn:not(.is-primary):hover,
 html.kikoerumanager-dark .conflicts-action-btn.is-slate:hover {
   background: var(--km-dark-button-bg-hover) !important;
@@ -799,6 +799,7 @@ html.kikoerumanager-dark .conflicts-action-btn.is-slate:hover {
 
 html.kikoerumanager-dark .el-button--primary,
 html.kikoerumanager-dark .subtitle-action-btn.is-primary,
+html.kikoerumanager-dark .page-head-btn.primary,
 html.kikoerumanager-dark .page-head-btn.is-primary,
 html.kikoerumanager-dark .lib-action-btn.is-primary,
 html.kikoerumanager-dark .conflicts-action-btn.is-primary {
@@ -1229,13 +1230,15 @@ html.kikoerumanager-dark .el-slider__runway {
 }
 
 html.kikoerumanager-dark .el-switch__core {
-  border-color: rgba(96, 165, 250, 0.3) !important;
-  background: rgba(30, 41, 59, 0.9) !important;
+  border-color: var(--km-dark-border) !important;
+  background: var(--km-dark-field) !important;
+  background-image: none !important;
 }
 
 html.kikoerumanager-dark .el-switch.is-checked .el-switch__core {
-  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%) !important;
-  border-color: rgba(147, 197, 253, 0.42) !important;
+  background: var(--km-dark-button-bg-hover) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border-strong) !important;
 }
 
 html.kikoerumanager-dark .log-action-btn,
@@ -3206,18 +3209,18 @@ html.kikoerumanager-dark .lib-move-modal .interactive-chip {
 
 html.kikoerumanager-dark .remote-folder-picker-modal .primary-cta,
 html.kikoerumanager-dark .server-upload-preview-modal .primary-cta {
-  background: #e7e7eb !important;
+  background: var(--km-dark-primary-button-bg) !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.28) !important;
-  color: #111116 !important;
+  color: var(--km-dark-primary-button-text) !important;
   box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .lib-move-modal .primary-cta {
-  background: #e7e7eb !important;
+  background: var(--km-dark-primary-button-bg) !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.28) !important;
-  color: #111116 !important;
+  color: var(--km-dark-primary-button-text) !important;
   box-shadow: none !important;
 }
 
@@ -3260,10 +3263,10 @@ html.kikoerumanager-dark .subtitle-page .subtitle-mini-btn {
 
 html.kikoerumanager-dark .subtitle-page .subtitle-segmented-item.is-active,
 html.kikoerumanager-dark .subtitle-page .subtitle-action-btn.is-primary {
-  background: #e7e7eb !important;
+  background: var(--km-dark-primary-button-bg) !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.28) !important;
-  color: #111116 !important;
+  color: var(--km-dark-primary-button-text) !important;
   box-shadow: none !important;
 }
 
@@ -3838,9 +3841,10 @@ html.kikoerumanager-dark .settings-page .save-bar-desc {
 }
 
 html.kikoerumanager-dark .settings-page .save-bar-btn-primary {
-  background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%) !important;
-  border-color: rgba(147, 197, 253, 0.42) !important;
-  color: #ffffff !important;
+  background: linear-gradient(180deg, #f4f4f5 0%, #e7e7eb 100%) !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  color: #111116 !important;
+  -webkit-text-fill-color: #111116 !important;
 }
 
 html.kikoerumanager-dark .settings-page .storage-stack,
@@ -4845,10 +4849,10 @@ html.kikoerumanager-dark .foot-btn:hover {
 }
 
 html.kikoerumanager-dark .foot-btn.primary {
-  background: #e7e7eb !important;
+  background: var(--km-dark-primary-button-bg) !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.26) !important;
-  color: #111116 !important;
+  color: var(--km-dark-primary-button-text) !important;
 }
 
 html.kikoerumanager-dark .detail-title,
@@ -6777,17 +6781,17 @@ html.kikoerumanager-dark .server-upload-preview-modal :is(
 }
 
 html.kikoerumanager-dark .server-upload-preview-modal .primary-cta {
-  background: #e7e7eb !important;
+  background: var(--km-dark-primary-button-bg) !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.28) !important;
-  color: #111116 !important;
+  color: var(--km-dark-primary-button-text) !important;
   box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .server-upload-preview-modal .primary-cta:hover:not(:disabled) {
-  background: #ffffff !important;
+  background: var(--km-dark-button-bg-hover) !important;
   border-color: rgba(255, 255, 255, 0.42) !important;
-  color: #0f1014 !important;
+  color: var(--km-dark-text-strong) !important;
   box-shadow: none !important;
 }
 
@@ -7021,17 +7025,17 @@ html.kikoerumanager-dark .remote-folder-picker-modal :is(
 }
 
 html.kikoerumanager-dark .remote-folder-picker-modal .primary-cta {
-  background: #e7e7eb !important;
+  background: var(--km-dark-primary-button-bg) !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.28) !important;
-  color: #111116 !important;
+  color: var(--km-dark-primary-button-text) !important;
   box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .remote-folder-picker-modal .primary-cta:hover:not(:disabled) {
-  background: #ffffff !important;
+  background: var(--km-dark-button-bg-hover) !important;
   border-color: rgba(255, 255, 255, 0.42) !important;
-  color: #0f1014 !important;
+  color: var(--km-dark-text-strong) !important;
   box-shadow: none !important;
 }
 

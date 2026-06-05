@@ -40,8 +40,8 @@ html.kikoerumanager-dark {
   --km-dark-shadow-soft: none;
   --km-dark-button-bg: #2b2c30;
   --km-dark-button-bg-hover: #333438;
-  --km-dark-primary-button-bg: #e7e7eb;
-  --km-dark-primary-button-text: #111116;
+  --km-dark-primary-button-bg: #2b2c30;
+  --km-dark-primary-button-text: #f5f5f5;
   --km-dark-focus: rgba(244, 244, 245, 0.26);
   --km-dark-matte: var(--km-dark-button-bg);
   --km-dark-matte-soft: var(--km-dark-surface-soft);
@@ -77,6 +77,65 @@ html.kikoerumanager-dark {
   --tw-gradient-from: var(--km-dark-surface) var(--tw-gradient-from-position);
   --tw-gradient-via: var(--km-dark-surface-soft) var(--tw-gradient-via-position);
   --tw-gradient-to: var(--km-dark-surface) var(--tw-gradient-to-position);
+}
+
+html.kikoerumanager-dark .el-message {
+  --el-message-bg-color: rgba(255, 255, 255, 0.82) !important;
+  --el-message-border-color: rgba(255, 255, 255, 0.7) !important;
+  background: var(--el-message-bg-color) !important;
+  border-color: var(--el-message-border-color) !important;
+}
+
+html.kikoerumanager-dark .el-message--info {
+  --el-message-bg-color: rgba(244, 248, 253, 0.85) !important;
+}
+
+html.kikoerumanager-dark .el-message--success {
+  --el-message-bg-color: rgba(240, 253, 244, 0.85) !important;
+}
+
+html.kikoerumanager-dark .el-message--warning {
+  --el-message-bg-color: rgba(255, 251, 235, 0.85) !important;
+}
+
+html.kikoerumanager-dark .el-message--error {
+  --el-message-bg-color: rgba(254, 242, 242, 0.85) !important;
+}
+
+html.kikoerumanager-dark .el-message--info .el-message__content {
+  color: #1e3a8a !important;
+  -webkit-text-fill-color: #1e3a8a !important;
+}
+
+html.kikoerumanager-dark .el-message--success .el-message__content {
+  color: #064e3b !important;
+  -webkit-text-fill-color: #064e3b !important;
+}
+
+html.kikoerumanager-dark .el-message--warning .el-message__content {
+  color: #78350f !important;
+  -webkit-text-fill-color: #78350f !important;
+}
+
+html.kikoerumanager-dark .el-message--error .el-message__content {
+  color: #7f1d1d !important;
+  -webkit-text-fill-color: #7f1d1d !important;
+}
+
+html.kikoerumanager-dark .el-message--info .el-message__icon {
+  color: #3b82f6 !important;
+}
+
+html.kikoerumanager-dark .el-message--success .el-message__icon {
+  color: #10b981 !important;
+}
+
+html.kikoerumanager-dark .el-message--warning .el-message__icon {
+  color: #f59e0b !important;
+}
+
+html.kikoerumanager-dark .el-message--error .el-message__icon {
+  color: #ef4444 !important;
 }
 
 html.kikoerumanager-dark,
@@ -181,8 +240,7 @@ html.kikoerumanager-dark :is(
   .el-select-dropdown,
   .el-cascader__dropdown,
   .el-tooltip__popper,
-  .el-notification,
-  .el-message
+  .el-notification
 ) {
   background: var(--km-dark-elevated) !important;
   border-color: var(--km-dark-border) !important;
@@ -468,7 +526,7 @@ html.kikoerumanager-dark [class*="bg-red-50"] {
 
 html.kikoerumanager-dark :is(
   .el-button:not(.el-button--primary):not(.el-button--danger):not(.el-button--success),
-  .page-head-btn:not(.is-primary),
+  .page-head-btn:not(.is-primary):not(.primary),
   .lib-btn,
   .lib-action-btn:not(.is-primary),
   .tasks-toolbar-btn,
@@ -498,7 +556,7 @@ html.kikoerumanager-dark :is(
 
 html.kikoerumanager-dark :is(
   .el-button:not(.el-button--primary):not(.el-button--danger):not(.el-button--success):hover,
-  .page-head-btn:not(.is-primary):hover,
+  .page-head-btn:not(.is-primary):not(.primary):hover,
   .lib-btn:hover,
   .lib-action-btn:not(.is-primary):hover,
   .tasks-toolbar-btn:hover,
@@ -532,6 +590,7 @@ html.kikoerumanager-dark :is(
 
 html.kikoerumanager-dark :is(
   .el-button--primary,
+  .page-head-btn.primary,
   .page-head-btn.is-primary,
   .lib-action-btn.is-primary,
   .subtitle-action-btn.is-primary,
@@ -540,7 +599,6 @@ html.kikoerumanager-dark :is(
   .rpd-btn-primary,
   .brp-btn-primary,
   .vrd-btn-primary,
-  .save-bar-btn-primary,
   .blk-add-main-btn,
   .tpl-btn-primary
 ) {
@@ -554,6 +612,7 @@ html.kikoerumanager-dark :is(
 
 html.kikoerumanager-dark :is(
   .el-button--primary:hover,
+  .page-head-btn.primary:hover,
   .page-head-btn.is-primary:hover,
   .lib-action-btn.is-primary:hover,
   .subtitle-action-btn.is-primary:hover,
@@ -562,13 +621,12 @@ html.kikoerumanager-dark :is(
   .rpd-btn-primary:hover,
   .brp-btn-primary:hover,
   .vrd-btn-primary:hover,
-  .save-bar-btn-primary:hover,
   .blk-add-main-btn:hover,
   .tpl-btn-primary:hover
 ) {
-  background: #f2f2f4 !important;
+  background: var(--km-dark-button-bg-hover) !important;
   background-image: none !important;
-  color: #0e0e12 !important;
+  color: var(--km-dark-text-strong) !important;
   box-shadow: none !important;
 }
 
@@ -733,16 +791,18 @@ html.kikoerumanager-dark body #app .password-vault .password-sort-dd .app-dd-tri
 }
 
 html.kikoerumanager-dark body #app .password-vault .vault-btn-primary {
-  background: #e7e7eb !important;
+  background: var(--km-dark-primary-button-bg) !important;
   background-image: none !important;
-  border-color: rgba(255, 255, 255, 0.28) !important;
-  color: #111116 !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: var(--km-dark-primary-button-text) !important;
   box-shadow: none !important;
 }
 
 html.kikoerumanager-dark body #app .password-vault .vault-btn-primary:hover {
-  background: #f4f4f5 !important;
-  color: #0e0e12 !important;
+  background: var(--km-dark-button-bg-hover) !important;
+  background-image: none !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark body #app .password-vault .vault-btn-danger {
@@ -1145,8 +1205,7 @@ html.kikoerumanager-dark body .vault-dialog-shell :is(
 }
 
 html.kikoerumanager-dark body .vault-dialog-shell .vault-dialog-icon,
-html.kikoerumanager-dark body .vault-dialog-shell .vault-icon-btn,
-html.kikoerumanager-dark body .vault-dialog-shell .animated-password-input__toggle {
+html.kikoerumanager-dark body .vault-dialog-shell .vault-icon-btn {
   background: #24252a !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.12) !important;
@@ -1160,9 +1219,16 @@ html.kikoerumanager-dark body .vault-dialog-shell .animated-password-input__togg
   box-shadow: none !important;
 }
 
+html.kikoerumanager-dark body .vault-dialog-shell .animated-password-input__toggle:hover {
+  background: transparent !important;
+  border-color: transparent !important;
+}
+
 html.kikoerumanager-dark body .vault-dialog-shell .animated-password-input__player {
-  filter: brightness(0) invert(1) !important;
-  opacity: 0.92 !important;
+  width: 26px !important;
+  height: 26px !important;
+  filter: none !important;
+  opacity: 1 !important;
 }
 
 html.kikoerumanager-dark body .vault-dialog-shell .vault-dialog-icon-cleanup {
@@ -1283,15 +1349,28 @@ html.kikoerumanager-dark body .vault-dialog-shell .vault-btn:hover {
 }
 
 html.kikoerumanager-dark body .vault-dialog-shell .vault-btn-primary {
-  background: #e7e7eb !important;
+  background: var(--km-dark-primary-button-bg) !important;
   background-image: none !important;
-  border-color: rgba(255, 255, 255, 0.28) !important;
-  color: #111116 !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: var(--km-dark-primary-button-text) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark body .vault-dialog-shell .vault-btn-primary:hover {
-  background: #f4f4f5 !important;
-  color: #0e0e12 !important;
+  background: var(--km-dark-button-bg-hover) !important;
+  background-image: none !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body .vault-dialog-shell .vault-btn-primary:disabled {
+  opacity: 1 !important;
+  background: #2a2b31 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: rgba(228, 228, 231, 0.5) !important;
+  -webkit-text-fill-color: rgba(228, 228, 231, 0.5) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark body .vault-dialog-shell .vault-btn-danger {
