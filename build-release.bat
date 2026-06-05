@@ -17,6 +17,14 @@ set "ICON_ICO=%BACKEND%\build\appIcon.ico"
 set "PYTHON_EXE=%BACKEND%\venv\Scripts\python.exe"
 set "DIST_EXE=%BACKEND%\dist\%PROJECT_NAME%.exe"
 set "TARGET_EXE=%ROOT%\..\%PROJECT_NAME%.exe"
+set "APP_VERSION=%KIKOERUMANAGER_VERSION%"
+if not defined APP_VERSION (
+  for /f "delims=" %%V in ('git describe --tags --abbrev^=0 --match "v*.*.*" 2^>nul') do if not defined APP_VERSION set "APP_VERSION=%%V"
+)
+if not defined APP_VERSION set "APP_VERSION=dev"
+if /I "%APP_VERSION:~0,1%"=="v" set "APP_VERSION=%APP_VERSION:~1%"
+set "APP_VERSION_FILE=%BACKEND%\app\version.txt"
+echo 打包版本号: %APP_VERSION%
 
 if not exist "%PYTHON_EXE%" (
   echo 未找到后端虚拟环境: %PYTHON_EXE%
@@ -84,12 +92,16 @@ if errorlevel 1 (
   exit /b 1
 )
 
-call "%PYTHON_EXE%" -m PyInstaller --onefile --noconsole --clean --name "%PROJECT_NAME%" --icon "%ICON_ICO%" --distpath "dist" --workpath "build" --specpath "." --paths "%ROOT%" --hidden-import pystray --hidden-import PIL --hidden-import PIL.Image --hidden-import qrcode --hidden-import qrcode.image.pil --hidden-import orjson %UNAR_BIN_ARGS% --add-data "..\frontend\dist;frontend/dist" --add-data "config;backend/config" --add-data "%ICON_PNG%;backend/appIcon.png" ..\desktop_app.py
+> "%APP_VERSION_FILE%" echo %APP_VERSION%
+
+call "%PYTHON_EXE%" -m PyInstaller --onefile --noconsole --clean --name "%PROJECT_NAME%" --icon "%ICON_ICO%" --distpath "dist" --workpath "build" --specpath "." --paths "%ROOT%" --hidden-import pystray --hidden-import PIL --hidden-import PIL.Image --hidden-import qrcode --hidden-import qrcode.image.pil --hidden-import orjson %UNAR_BIN_ARGS% --add-data "..\frontend\dist;frontend/dist" --add-data "config;backend/config" --add-data "%ICON_PNG%;backend/appIcon.png" --add-data "app\version.txt;backend/app" ..\desktop_app.py
 if errorlevel 1 (
+  if exist "%APP_VERSION_FILE%" del /q "%APP_VERSION_FILE%"
   popd
   echo 打包失败
   exit /b 1
 )
+if exist "%APP_VERSION_FILE%" del /q "%APP_VERSION_FILE%"
 popd
 
 copy /Y "%DIST_EXE%" "%TARGET_EXE%" >nul

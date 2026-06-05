@@ -6,6 +6,27 @@ APP_NAME = "KikoeruManager"
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 ICON_PATH = os.path.join(BACKEND_DIR, "app.ico")
+VERSION_FILE = os.path.join(BACKEND_DIR, "app", "version.txt")
+
+
+def resolve_app_version():
+    version = os.environ.get("KIKOERUMANAGER_VERSION", "").strip()
+    if not version:
+        try:
+            result = subprocess.run(
+                ["git", "describe", "--tags", "--abbrev=0", "--match", "v*.*.*"],
+                cwd=ROOT_DIR,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode == 0:
+                version = result.stdout.strip()
+        except Exception:
+            version = ""
+    if not version:
+        version = "dev"
+    return version[1:] if version.lower().startswith("v") else version
 
 def check_build_dependencies():
     try:
@@ -22,7 +43,7 @@ def build(console_mode=True):
     name = APP_NAME if console_mode else f"{APP_NAME}-noconsole"
 
     icon_option = [ICON_PATH] if os.path.exists(ICON_PATH) else []
-    datas = [('../frontend/dist', 'frontend/dist'), ('config', 'backend/config')]
+    datas = [('../frontend/dist', 'frontend/dist'), ('config', 'backend/config'), ('app/version.txt', 'backend/app')]
     binaries = []
     if os.path.exists(ICON_PATH):
         datas.append(('app.ico', 'backend'))
@@ -98,30 +119,39 @@ def main():
     os.chdir(BACKEND_DIR)
     if not check_build_dependencies():
         sys.exit(1)
-    
-    print("=" * 50)
-    print("Building kikoerumanager - two versions")
-    print("=" * 50)
-    
-    success = True
-    
-    print("\n[1/2] Building console version...")
-    if not build(console_mode=True):
-        success = False
-    
-    print("\n[2/2] Building no-console version...")
-    if not build(console_mode=False):
-        success = False
-    
-    if success:
-        print("\n" + "=" * 50)
-        print("Build complete!")
-        print("  - dist/kikoerumanager.exe (with console)")
-        print("  - dist/kikoerumanager-noconsole.exe (without console)")
+
+    app_version = resolve_app_version()
+    try:
+        with open(VERSION_FILE, 'w', encoding='utf-8') as f:
+            f.write(app_version + '\n')
+        print(f"打包版本号: {app_version}")
+
         print("=" * 50)
-    else:
-        print("\nBuild failed!")
-        sys.exit(1)
+        print("Building kikoerumanager - two versions")
+        print("=" * 50)
+
+        success = True
+
+        print("\n[1/2] Building console version...")
+        if not build(console_mode=True):
+            success = False
+
+        print("\n[2/2] Building no-console version...")
+        if not build(console_mode=False):
+            success = False
+
+        if success:
+            print("\n" + "=" * 50)
+            print("Build complete!")
+            print("  - dist/kikoerumanager.exe (with console)")
+            print("  - dist/kikoerumanager-noconsole.exe (without console)")
+            print("=" * 50)
+        else:
+            print("\nBuild failed!")
+            sys.exit(1)
+    finally:
+        if os.path.exists(VERSION_FILE):
+            os.remove(VERSION_FILE)
 
 if __name__ == '__main__':
     main()

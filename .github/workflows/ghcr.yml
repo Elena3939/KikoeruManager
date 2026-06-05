@@ -58,6 +58,8 @@ jobs:
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
+        build-args: |
+          KIKOERUMANAGER_VERSION=${{ github.ref_name }}
         no-cache: true
         platforms: linux/amd64
 

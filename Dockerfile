@@ -23,6 +23,7 @@ WORKDIR /app
 # - 显式 uninstall p7zip-full，避免 /usr/bin/7z 覆盖 /usr/local/bin/7zz 的 PATH 优先级。
 # - 构建末尾打印 `7zz -version`，构建失败或版本错位时立刻暴露，不会悄悄回退到旧 p7zip。
 ARG TARGETARCH
+ARG KIKOERUMANAGER_VERSION=dev
 ARG BAIDUPCS_GO_VERSION=4.0.1
 RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources && \
     apt-get update && apt-get install -y --no-install-recommends \
@@ -113,6 +114,7 @@ ENV CONFIG_PATH=/app/config/config.yaml
 ENV DATA_PATH=/app/data
 ENV PYTHONPATH=/app
 ENV STATIC_FILES_PATH=/app/static
+ENV KIKOERUMANAGER_VERSION=${KIKOERUMANAGER_VERSION}
 # 应用端口，可通过 docker run -e PORT=xxxx 覆盖
 ENV PORT=5555
 
