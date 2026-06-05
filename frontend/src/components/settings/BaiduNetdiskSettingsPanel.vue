@@ -16,6 +16,14 @@
               <AppDropdown v-model="config.baidu_netdisk.conflict_policy" :options="conflictPolicyOptions" class="settings-field-dd" />
             </SettingsFieldCard>
           </div>
+          <div class="mini-grid two">
+            <SettingsFieldCard label="下载线程数" hint="SVIP 建议 20，BaiduPCS-Go 支持范围 1~20。">
+              <SettingsNumberStepper v-model="config.baidu_netdisk.max_parallel" :min="1" :max="20" />
+            </SettingsFieldCard>
+            <SettingsFieldCard label="同时下载文件数" hint="SVIP 建议 5，BaiduPCS-Go 支持范围 1~5。">
+              <SettingsNumberStepper v-model="config.baidu_netdisk.max_download_load" :min="1" :max="5" />
+            </SettingsFieldCard>
+          </div>
           <SettingsToggleRow v-model="config.baidu_netdisk.svip_speed_enabled" title="SVIP 高速提示" subtitle="账号为 SVIP 时，工作台和任务中心显示高速模式。" />
         </div>
       </div>
@@ -189,6 +197,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { CheckCircle2, Crown, ExternalLink, LoaderCircle, RefreshCw, ShieldCheck, Trash2, TriangleAlert, XCircle } from 'lucide-vue-next'
 import baiduNetdiskIconUrl from '../../assets/platforms/baidu-netdisk.ico'
 import SettingsFieldCard from './SettingsFieldCard.vue'
+import SettingsNumberStepper from './SettingsNumberStepper.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
 import AppDropdown from '../common/AppDropdown.vue'
 import StatefulButton from '../ui/stateful-button.vue'
@@ -549,6 +558,7 @@ onBeforeUnmount(() => {
 }
 .settings-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .mini-grid { display: grid; gap: 10px; }
+.mini-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .mini-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .field-stack { display: grid; gap: 12px; }
 .baidu-bind-card {
@@ -876,6 +886,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 640px) {
   .settings-grid.two,
+  .mini-grid.two,
   .mini-grid.three,
   .baidu-account-meta-grid,
   .baidu-account-actions,

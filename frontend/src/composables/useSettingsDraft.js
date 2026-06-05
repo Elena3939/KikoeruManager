@@ -267,8 +267,8 @@ export const defaultConfig = {
     config_dir: '',
     share_code_separator: '----',
     cookie: '',
-    max_parallel: 200,
-    max_download_load: '0',
+    max_parallel: 20,
+    max_download_load: 5,
     conflict_policy: 'resume',
     svip_speed_enabled: true,
     account_name: '',
@@ -575,10 +575,18 @@ function serializeConfig(config) {
   serialized.baidu_netdisk.vip_expire_at = Number(serialized.baidu_netdisk.vip_expire_at || 0)
   serialized.baidu_netdisk.quota_bytes = Number(serialized.baidu_netdisk.quota_bytes || 0)
   serialized.baidu_netdisk.used_bytes = Number(serialized.baidu_netdisk.used_bytes || 0)
+  serialized.baidu_netdisk.max_parallel = clampNumber(serialized.baidu_netdisk.max_parallel, 20, 1, 20)
+  serialized.baidu_netdisk.max_download_load = clampNumber(serialized.baidu_netdisk.max_download_load, 5, 1, 5)
   if (!String(serialized.baidu_netdisk.share_code_separator || '').trim()) {
     serialized.baidu_netdisk.share_code_separator = '----'
   }
   return serialized
+}
+
+function clampNumber(value, fallback, min, max) {
+  const number = Number(value)
+  if (!Number.isFinite(number) || number < min) return fallback
+  return Math.min(max, Math.max(min, Math.trunc(number)))
 }
 
 function stripMaskedPikPakAccountSecrets(payload, snapshotConfig) {
