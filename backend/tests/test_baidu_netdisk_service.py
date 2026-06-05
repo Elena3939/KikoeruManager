@@ -1,3 +1,6 @@
+from pathlib import Path
+import time
+
 import pytest
 
 from app.api import routes
@@ -99,6 +102,50 @@ async def test_baidu_preview_reads_share_file_detail(monkeypatch):
     assert item["size_bytes"] == 1048576
 
 
+@pytest.mark.asyncio
+async def test_baidu_share_page_tokens_prefer_locals_mset_without_tplconfig(monkeypatch):
+    service = BaiduNetdiskService()
+    responses = []
+
+    class FakeResponse:
+        def __init__(self, body):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return self.body.encode("utf-8")
+
+    def fake_urlopen(request, timeout=20):
+        url = request.full_url
+        responses.append(url)
+        return FakeResponse(
+            """
+            <script>new BadJs({rules:{path: /(\\/s\\/\\w|.*)/}, loginstate: false});</script>
+            <script>window.yunData={bdstoken:'', uk:'0', loginstate:'0', share_uk:"bad", shareid:"bad"};</script>
+            <script>locals.mset({"page":{"nested":{"ok":true}},"uk":"1799206866","loginstate":1,"bdstoken":"bd-token","share_uk":"1635081079","shareid":60130084160});</script>
+            """
+        )
+
+    monkeypatch.setattr("app.core.baidu_netdisk_service.urlopen", fake_urlopen)
+
+    tokens = await service._fetch_share_page_tokens("179-Q_PpccuyitQ2b_boyDw", "BDUSS=test")
+
+    assert responses[0] == "https://pan.baidu.com/s/179-Q_PpccuyitQ2b_boyDw"
+    assert tokens == {
+        "bdstoken": "bd-token",
+        "uk": "1799206866",
+        "share_uk": "1635081079",
+        "shareid": "60130084160",
+        "sign": "",
+        "timestamp": "",
+    }
+
+
 def test_baidu_separator_rule_keeps_existing_pass_code_rules(monkeypatch):
     monkeypatch.setattr("app.api.routes.get_config", lambda: DummyConfig())
 
@@ -114,38 +161,155 @@ def test_baidu_separator_rule_keeps_existing_pass_code_rules(monkeypatch):
     assert legacy == ["https://pan.baidu.com/s/13EU1GlLvUULM43mkqhoZxA", "提取码 38a2"]
 
 
+def test_baidu_pcsgo_output_updates_download_runtime(monkeypatch):
+    service = BaiduNetdiskService()
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: DummyConfig())
+
+    task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={"progress_log": []},
+        status=TaskStatus.PROCESSING,
+        task_id="baidu-progress-test-task",
+    )
+    row = {
+        "name": "狩龙人拉格纳121.mp4",
+        "relative_path": "狩龙人拉格纳121.mp4",
+        "status": "downloading",
+        "progress": 0,
+        "downloaded": 0,
+        "total": 0,
+        "size": 0,
+        "speed_bytes_per_sec": 0,
+    }
+    download_files = [row]
+
+    service._update_pcsgo_transfer_progress(
+        task,
+        row,
+        download_files,
+        time.monotonic() - 5,
+        "下载中 12.5MiB/100MiB 12.5% 3.5MiB/s",
+        {"last_emit_at": 0.0, "last_log_at": 0.0},
+    )
+
+    assert row["progress"] == 12
+    assert row["downloaded"] == int(12.5 * 1024 * 1024)
+    assert row["total"] == 100 * 1024 * 1024
+    assert row["speed_bytes_per_sec"] == int(3.5 * 1024 * 1024)
+    assert task.task_metadata["download_runtime"]["transferred_bytes"] == row["downloaded"]
+    assert task.task_metadata["download_runtime"]["speed_bytes_per_sec"] == row["speed_bytes_per_sec"]
+    assert any("BaiduPCS-Go" in item["message"] for item in task.task_metadata["progress_log"])
+
+
 @pytest.mark.asyncio
-async def test_baidu_start_download_uses_official_sharedownload_direct_stream(monkeypatch, tmp_path):
+async def test_baidu_start_route_reuses_cached_preview_and_keeps_raw_selected_items(monkeypatch):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+
+    raw_preview = {
+        "success": True,
+        "source": "baidu_netdisk",
+        "source_label": "百度网盘",
+        "download_mode": "baidu_netdisk",
+        "items": [{
+            "ok": True,
+            "selection_key": "baidu:item",
+            "filename": "百度大文件",
+            "share_url": "https://pan.baidu.com/s/179-Q_PpccuyitQ2b_boyDw?pwd=0402",
+            "share_id": "179-Q_PpccuyitQ2b_boyDw",
+            "share_numeric_id": "60130084160",
+            "share_uk": "1635081079",
+            "bdstoken": "bd-token",
+            "randsk": "rand-sk",
+            "shorturl": "179-Q_PpccuyitQ2b_boyDw",
+            "share_sign": "share-sign",
+            "share_timestamp": "1780634067",
+            "share_files": [{
+                "name": "狩龙人拉格纳121.mp4",
+                "relative_path": "狩龙人拉格纳121.mp4",
+                "path": "/狩龙人拉格纳121.mp4",
+                "is_dir": False,
+                "size_bytes": 6,
+                "fs_id": "732325025154301",
+            }],
+        }],
+        "source_items": [],
+        "selected_keys": ["baidu:item"],
+        "ok_count": 1,
+        "failed_count": 0,
+        "selected_count": 1,
+    }
+    cache_key = service.raw_preview_cache_key(
+        ["https://pan.baidu.com/s/179-Q_PpccuyitQ2b_boyDw?pwd=0402"],
+        target_subdir="",
+        conflict_policy="resume",
+        output_folder_name="百度大文件测试",
+    )
+    service._raw_preview_cache[cache_key] = {"cached_at": __import__("time").monotonic(), "preview": raw_preview}
+    monkeypatch.setattr(service, "preview_urls", lambda *_args, **_kwargs: pytest.fail("缓存命中后不应重新预览"))
+    monkeypatch.setattr(service, "account_status", lambda: {"is_svip": False})
+
+    submitted = {}
+
+    class FakeEngine:
+        async def submit(self, task):
+            submitted["task"] = task
+            return task.id
+
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_baidu_netdisk_service", lambda: service)
+    monkeypatch.setattr("app.core.task_engine.get_task_engine", lambda: FakeEngine())
+
+    request = routes.BaiduNetdiskStartRequest(
+        urls=["https://pan.baidu.com/s/179-Q_PpccuyitQ2b_boyDw?pwd=0402"],
+        output_folder_name="百度大文件测试",
+        conflict_policy="resume",
+        selected_keys=["baidu:item"],
+        selected_items=[{"selection_key": "baidu:item"}],
+    )
+
+    result = await routes.baidu_netdisk_start(request)
+
+    assert result["success"] is True
+    assert submitted["task"].task_metadata["raw_preview_cache_key"] == cache_key
+    assert submitted["task"].task_metadata["raw_selected_items"][0]["share_files"][0]["name"] == "狩龙人拉格纳121.mp4"
+
+
+@pytest.mark.asyncio
+async def test_baidu_start_download_uses_pcsgo_temporary_transfer_and_cleans_remote_dir(monkeypatch, tmp_path):
     service = BaiduNetdiskService()
     config = DummyConfig()
     config.baidu_netdisk.download_root = str(tmp_path / "downloads")
     config.storage.temp_path = str(tmp_path / "temp")
     monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
 
-    captured = {"sharedownload": None, "stream_headers": None}
+    command_log = []
+    state = {}
+    remote_tmp_dir = "/km_20260605_153012_a1b2c3"
 
     async def fake_preview_urls(*_args, **_kwargs):
         return {
             "items": [{
                 "ok": True,
                 "selection_key": "baidu:item",
-                "filename": "RJ01534331",
-                "share_url": "https://pan.baidu.com/s/13EU1GlLvUULM43mkqhoZxA?pwd=38a2",
-                "share_id": "13EU1GlLvUULM43mkqhoZxA",
-                "share_numeric_id": "98765",
-                "share_uk": "share-uk",
+                "filename": "百度大文件",
+                "share_url": "https://pan.baidu.com/s/179-Q_PpccuyitQ2b_boyDw?pwd=0402",
+                "share_id": "179-Q_PpccuyitQ2b_boyDw",
+                "share_numeric_id": "60130084160",
+                "share_uk": "1635081079",
                 "bdstoken": "bd-token",
                 "randsk": "rand-sk",
-                "shorturl": "13EU1GlLvUULM43mkqhoZxA",
+                "shorturl": "179-Q_PpccuyitQ2b_boyDw",
                 "share_sign": "share-sign",
-                "share_timestamp": "1717420000",
+                "share_timestamp": "1780634067",
                 "share_files": [{
-                    "name": "RJ01534331.rar",
-                    "relative_path": "RJ01534331.rar",
-                    "path": "/RJ01534331.rar",
+                    "name": "狩龙人拉格纳121.mp4",
+                    "relative_path": "狩龙人拉格纳121.mp4",
+                    "path": "/狩龙人拉格纳121.mp4",
                     "is_dir": False,
                     "size_bytes": 6,
-                    "fs_id": "4436827288",
+                    "fs_id": "732325025154301",
                 }],
             }],
             "selected_keys": ["baidu:item"],
@@ -153,79 +317,173 @@ async def test_baidu_start_download_uses_official_sharedownload_direct_stream(mo
             "success": True,
         }
 
-    async def fake_fetch_form_json(url, cookie, *, data=None, referer="", timeout=20):
-        captured["sharedownload"] = {
-            "url": url,
-            "cookie": cookie,
-            "data": dict(data or {}),
-            "referer": referer,
-        }
-        return {"errno": 0, "list": [{"dlink": "https://d.pcs.baidu.com/file/rj.rar"}]}
-
-    class FakeContent:
-        async def iter_chunked(self, _size):
-            yield b"abc"
-            yield b"def"
-
-    class FakeResponse:
-        status = 200
-        headers = {"content-type": "application/octet-stream", "content-length": "6"}
-        content = FakeContent()
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return False
-
-    class FakeSession:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return False
-
-        def get(self, url, *, headers=None, allow_redirects=True, proxy=None):
-            captured["stream_headers"] = {
-                "url": url,
-                "headers": dict(headers or {}),
-                "allow_redirects": allow_redirects,
-                "proxy": proxy,
-            }
-            return FakeResponse()
+    async def fake_run_baidu_pcs_go_command(
+        args,
+        *,
+        env,
+        log_path,
+        task,
+        cancel_event,
+        ignore_task_cancel=False,
+        on_output=None,
+        heartbeat_message="",
+    ):
+        command_log.append({
+            "args": tuple(args[1:]),
+            "ignore_task_cancel": ignore_task_cancel,
+        })
+        command = args[1]
+        if command == "config":
+            if args[3] == "-savedir":
+                state["savedir"] = args[-1]
+            return
+        if command == "download":
+            savedir = args[args.index("--saveto") + 1]
+            downloaded = Path(savedir) / "狩龙人拉格纳121.mp4"
+            downloaded.parent.mkdir(parents=True, exist_ok=True)
+            downloaded.write_bytes(b"abcdef")
+            return
+        if command in {"login", "cd", "mkdir", "rm", "transfer"}:
+            return
+        raise AssertionError(f"unexpected command: {args}")
 
     monkeypatch.setattr(service, "preview_urls", fake_preview_urls)
-    monkeypatch.setattr(service, "_fetch_form_json", fake_fetch_form_json)
-    monkeypatch.setattr("app.core.baidu_netdisk_service.aiohttp.ClientSession", FakeSession)
+    monkeypatch.setattr(service, "_run_baidu_pcs_go_command", fake_run_baidu_pcs_go_command)
+    monkeypatch.setattr(service, "_resolve_baidu_pcs_go_path", lambda: "C:/fake/BaiduPCS-Go.exe")
+    monkeypatch.setattr(service, "_remote_temporary_transfer_dir", lambda _task: remote_tmp_dir)
+    monkeypatch.setattr(service, "_fetch_form_json", lambda *_args, **_kwargs: pytest.fail("不应该再请求官方 sharedownload"))
 
     task = Task(
         task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
         source_path="pan.baidu.com",
         metadata={
-            "urls": ["https://pan.baidu.com/s/13EU1GlLvUULM43mkqhoZxA?pwd=38a2"],
-            "batch_name": "百度直下测试",
+            "urls": ["https://pan.baidu.com/s/179-Q_PpccuyitQ2b_boyDw?pwd=0402"],
+            "batch_name": "百度大文件测试",
             "conflict_policy": "resume",
         },
         status=TaskStatus.PROCESSING,
-        task_id="baidu-test-task",
+        task_id="baidu-large-test-task",
     )
 
     result = await service.start_download_task(task)
 
     assert result["success"] is True
-    assert (tmp_path / "downloads" / "百度直下测试" / "RJ01534331.rar").read_bytes() == b"abcdef"
-    assert "api/sharedownload" in captured["sharedownload"]["url"]
-    assert "transfer" not in captured["sharedownload"]["url"]
-    assert captured["sharedownload"]["data"]["fid_list"] == "[4436827288]"
-    assert captured["sharedownload"]["data"]["primaryid"] == "98765"
-    assert captured["sharedownload"]["data"]["uk"] == "share-uk"
-    assert "BDCLND=rand-sk" in captured["sharedownload"]["cookie"]
-    assert captured["stream_headers"]["url"] == "https://d.pcs.baidu.com/file/rj.rar"
-    assert captured["stream_headers"]["headers"]["Cookie"].startswith("BDUSS=test")
-    assert captured["stream_headers"]["headers"]["User-Agent"].startswith("netdisk;")
+    assert (tmp_path / "downloads" / "百度大文件测试" / "狩龙人拉格纳121.mp4").read_bytes() == b"abcdef"
+    savedir = state["savedir"]
+    assert [item["args"] for item in command_log] == [
+        ("login", "-cookies=BDUSS=test; STOKEN=test; BDCLND=rand-sk"),
+        ("config", "set", "-savedir", savedir),
+        ("config", "set", "-max_parallel", "20"),
+        ("config", "set", "-max_download_load", "5"),
+        ("config", "set", "-max_download_rate", "0"),
+        ("config", "set", "-cache_size", "256KB"),
+        ("cd", "/"),
+        ("mkdir", remote_tmp_dir),
+        ("cd", remote_tmp_dir),
+        ("transfer", "https://pan.baidu.com/s/179-Q_PpccuyitQ2b_boyDw?pwd=0402", "--collect"),
+        ("download", remote_tmp_dir, "--saveto", savedir, "--mode", "locate", "-p", "20", "-l", "5", "--retry", "5"),
+        ("cd", "/"),
+        ("rm", remote_tmp_dir),
+    ]
+    assert all(not item["ignore_task_cancel"] for item in command_log[:-2])
+    assert all(item["ignore_task_cancel"] for item in command_log[-2:])
+    assert Path(savedir).name == "download"
+    assert remote_tmp_dir.startswith("/km_")
+    assert len(remote_tmp_dir) <= 32
+    assert any("临时转存" in item["message"] for item in task.task_metadata["progress_log"])
+    assert any("已删除百度网盘临时转存目录" in item["message"] for item in task.task_metadata["progress_log"])
     assert task.task_metadata["download_files"][0]["status"] == "completed"
-    assert task.task_metadata["download_files"][0]["downloaded"] == 6
-    assert task.task_metadata["download_runtime"]["completed_files"] == 1
+
+
+@pytest.mark.asyncio
+async def test_baidu_start_download_prefers_raw_selected_items_without_preview(monkeypatch, tmp_path):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.baidu_netdisk.download_root = str(tmp_path / "downloads")
+    config.storage.temp_path = str(tmp_path / "temp")
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+
+    command_log = []
+    state = {}
+    raw_item = {
+        "ok": True,
+        "selection_key": "baidu:item",
+        "filename": "百度大文件",
+        "share_url": "https://pan.baidu.com/s/179-Q_PpccuyitQ2b_boyDw?pwd=0402",
+        "share_id": "179-Q_PpccuyitQ2b_boyDw",
+        "share_numeric_id": "60130084160",
+        "share_uk": "1635081079",
+        "bdstoken": "bd-token",
+        "randsk": "rand-sk",
+        "shorturl": "179-Q_PpccuyitQ2b_boyDw",
+        "share_sign": "share-sign",
+        "share_timestamp": "1780634067",
+        "share_files": [{
+            "name": "狩龙人拉格纳121.mp4",
+            "relative_path": "狩龙人拉格纳121.mp4",
+            "path": "/狩龙人拉格纳121.mp4",
+            "is_dir": False,
+            "size_bytes": 6,
+            "fs_id": "732325025154301",
+        }],
+    }
+
+    async def fake_run_baidu_pcs_go_command(
+        args,
+        *,
+        env,
+        log_path,
+        task,
+        cancel_event,
+        ignore_task_cancel=False,
+        on_output=None,
+        heartbeat_message="",
+    ):
+        command_log.append({
+            "args": tuple(args[1:]),
+            "ignore_task_cancel": ignore_task_cancel,
+        })
+        command = args[1]
+        if command == "config":
+            if args[3] == "-savedir":
+                state["savedir"] = args[-1]
+            return
+        if command == "download":
+            savedir = args[args.index("--saveto") + 1]
+            downloaded = Path(savedir) / "狩龙人拉格纳121.mp4"
+            downloaded.parent.mkdir(parents=True, exist_ok=True)
+            downloaded.write_bytes(b"abcdef")
+            return
+        if command in {"login", "cd", "mkdir", "rm", "transfer"}:
+            return
+        raise AssertionError(f"unexpected command: {args}")
+
+    monkeypatch.setattr(service, "preview_urls", lambda *_args, **_kwargs: pytest.fail("raw_selected_items 已提供，不应重新预览"))
+    monkeypatch.setattr(service, "_run_baidu_pcs_go_command", fake_run_baidu_pcs_go_command)
+    monkeypatch.setattr(service, "_resolve_baidu_pcs_go_path", lambda: "C:/fake/BaiduPCS-Go.exe")
+    monkeypatch.setattr(service, "_remote_temporary_transfer_dir", lambda _task: "/km_20260605_153012_a1b2c3")
+    monkeypatch.setattr(service, "_fetch_form_json", lambda *_args, **_kwargs: pytest.fail("不应该再请求官方 sharedownload"))
+
+    task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={
+            "urls": ["https://pan.baidu.com/s/179-Q_PpccuyitQ2b_boyDw?pwd=0402"],
+            "raw_selected_items": [raw_item],
+            "batch_name": "百度大文件测试",
+            "conflict_policy": "resume",
+        },
+        status=TaskStatus.PROCESSING,
+        task_id="baidu-large-raw-selected-test-task",
+    )
+
+    result = await service.start_download_task(task)
+
+    assert result["success"] is True
+    assert (tmp_path / "downloads" / "百度大文件测试" / "狩龙人拉格纳121.mp4").read_bytes() == b"abcdef"
+    assert [item["args"] for item in command_log][0] == ("login", "-cookies=BDUSS=test; STOKEN=test; BDCLND=rand-sk")
+    assert any(
+        item["args"] == ("download", "/km_20260605_153012_a1b2c3", "--saveto", state["savedir"], "--mode", "locate", "-p", "20", "-l", "5", "--retry", "5")
+        for item in command_log
+    )
+    assert task.task_metadata["download_files"][0]["status"] == "completed"
