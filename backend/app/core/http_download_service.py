@@ -13,6 +13,7 @@ import secrets
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -23,6 +24,7 @@ from urllib.parse import parse_qs, urlencode, unquote, urljoin, urlparse, urlunp
 from urllib.request import Request, urlopen
 
 import aiohttp
+import httpx
 
 from ..config.settings import get_config, save_config
 from .google_drive_oauth import (
@@ -138,6 +140,10 @@ def build_http_download_batch_title(metadata: Dict[str, Any], item_count: int = 
 
 class HttpDownloadError(ValueError):
     """HTTP 外链下载的可预期业务错误。"""
+
+
+class _TransferitDownloadAbort(RuntimeError):
+    """内部控制异常：用于从 transferit-py 的同步流式回调里中止下载。"""
 
 
 class _GoogleDriveFolderHTMLParser(HTMLParser):
@@ -729,6 +735,7 @@ class HttpDownloadService:
         stable_source_id = (
             str(item.get("content_id") or "").strip()
             or str(item.get("file_id") or "").strip()
+            or str(item.get("transferit_node_handle") or "").strip()
             or str(item.get("download_file_id") or "").strip()
             or str(item.get("share_id") or "").strip()
         )
@@ -1471,6 +1478,52 @@ class HttpDownloadService:
         if source == "transferit":
             return False
         return bool(str(item.get("url") or "").strip())
+
+    def _transferit_api_client(self):
+        try:
+            import transferit
+        except Exception as exc:
+            raise HttpDownloadError("后端缺少 transferit-py 依赖，请重新安装 backend/requirements.txt") from exc
+
+        Transferit = getattr(transferit, "Transferit")
+        MegaAPI = getattr(transferit, "MegaAPI", None)
+        if MegaAPI is None:
+            return Transferit()
+
+        cfg = self._config()
+        timeout_seconds = max(30, int(getattr(cfg, "timeout_seconds", 60) or 60))
+        api = MegaAPI(timeout=timeout_seconds)
+        proxy = self._proxy_url() or None
+        if proxy and hasattr(api, "_http"):
+            try:
+                api._http.close()
+            except Exception:
+                pass
+            api._http = httpx.Client(
+                timeout=httpx.Timeout(timeout_seconds, connect=max(10, int(getattr(cfg, "connect_timeout_seconds", 15) or 15))),
+                http2=False,
+                proxy=proxy,
+                headers={"User-Agent": f"KikoeruManager transferit-py"},
+                trust_env=True,
+            )
+        return Transferit(api=api)
+
+    def _transferit_row_identity(self, item: Dict[str, Any]) -> str:
+        return (
+            str(item.get("transferit_node_handle") or "").strip()
+            or str(item.get("relative_path") or "").strip()
+            or str(item.get("filename") or item.get("name") or "").strip()
+        )
+
+    def _close_transferit_client(self, client) -> None:
+        if not client:
+            return
+        with contextlib.suppress(Exception):
+            client.close()
+        api = getattr(client, "api", None)
+        if getattr(client, "_owns_api", True) is False and api and hasattr(api, "close"):
+            with contextlib.suppress(Exception):
+                api.close()
 
     async def _fetch_json_once(self, url: str, *, method: str = "GET", headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         timeout = aiohttp.ClientTimeout(total=max(20, int(getattr(self._config(), "timeout_seconds", 60) or 60)), connect=10)
@@ -2323,7 +2376,7 @@ class HttpDownloadService:
             "504",
         ))
 
-    def _transferit_node_row(self, item: Any, index: int) -> Optional[Dict[str, Any]]:
+    def _transferit_node_row(self, item: Any, index: int, relative_dir: str = "") -> Optional[Dict[str, Any]]:
         if isinstance(item, dict):
             kind = str(item.get("type") or item.get("kind") or "").lower()
             if kind and "folder" in kind:
@@ -2335,9 +2388,21 @@ class HttpDownloadService:
                 or f"transferit-file-{index + 1}"
             )
             size = item.get("size") or item.get("byte_size") or item.get("bytes") or item.get("total_bytes") or 0
-            return {"name": str(name), "size_bytes": int(size or 0)}
+            handle = str(item.get("handle") or item.get("h") or item.get("id") or "").strip()
+            return {
+                "name": str(name),
+                "size_bytes": int(size or 0),
+                "transferit_node_handle": handle,
+                "relative_dir": relative_dir,
+            }
         if hasattr(item, "to_json_dict"):
-            return self._transferit_node_row(item.to_json_dict(), index)
+            row = self._transferit_node_row(item.to_json_dict(), index, relative_dir)
+            if row:
+                row["transferit_node_handle"] = (
+                    str(getattr(item, "handle", "") or "").strip()
+                    or str(row.get("transferit_node_handle") or "").strip()
+                )
+            return row
         is_file = getattr(item, "is_file", True)
         if callable(is_file):
             is_file = is_file()
@@ -2356,7 +2421,12 @@ class HttpDownloadService:
             or getattr(item, "total_bytes", 0)
             or 0
         )
-        return {"name": str(name), "size_bytes": int(size or 0)}
+        return {
+            "name": str(name),
+            "size_bytes": int(size or 0),
+            "transferit_node_handle": str(getattr(item, "handle", "") or "").strip(),
+            "relative_dir": relative_dir,
+        }
 
     def _transferit_metadata_row(self, metadata: Any, share_id: str) -> Optional[Dict[str, Any]]:
         if hasattr(metadata, "to_json_dict"):
@@ -2400,16 +2470,15 @@ class HttpDownloadService:
         share_id = self._transferit_id_from_url(raw_url)
         url = self._normalize_url(raw_url)
         password = self._transferit_password(raw_url) or None
-        try:
-            from transferit import Transferit
-        except Exception as exc:
-            raise HttpDownloadError("后端缺少 transferit-py 依赖，请重新安装 backend/requirements.txt") from exc
 
         metadata_row: Optional[Dict[str, Any]] = None
 
         def collect() -> List[Dict[str, Any]]:
-            with Transferit() as client:
+            client = self._transferit_api_client()
+            try:
                 info = client.info(url, password=password) if password else client.info(url)
+            finally:
+                self._close_transferit_client(client)
             rows: List[Dict[str, Any]] = []
             candidates: Any = info
             if isinstance(info, dict):
@@ -2420,8 +2489,68 @@ class HttpDownloadService:
                 candidates = list(candidates.values())
             if not isinstance(candidates, list):
                 candidates = [candidates]
+
+            def node_kind(node: Any) -> str:
+                raw_kind = getattr(node, "kind", None)
+                if raw_kind is None and isinstance(node, dict):
+                    raw_kind = node.get("kind") or node.get("type") or node.get("t")
+                text = str(raw_kind or "").lower()
+                if text in {"1", "folder"} or "folder" in text:
+                    return "folder"
+                if bool(getattr(node, "is_folder", False)):
+                    return "folder"
+                return "file"
+
+            folder_names: Dict[str, str] = {}
+            folder_parents: Dict[str, str] = {}
+            for node in candidates:
+                if node_kind(node) != "folder":
+                    continue
+                handle = str(
+                    getattr(node, "handle", "")
+                    or (node.get("handle") or node.get("h") or node.get("id") if isinstance(node, dict) else "")
+                    or ""
+                ).strip()
+                if not handle:
+                    continue
+                folder_names[handle] = self._sanitize_filename(
+                    str(
+                        getattr(node, "name", "")
+                        or (node.get("name") if isinstance(node, dict) else "")
+                        or handle
+                    ),
+                    fallback=handle,
+                )
+                folder_parents[handle] = str(
+                    getattr(node, "parent", "")
+                    or (node.get("parent") or node.get("p") if isinstance(node, dict) else "")
+                    or ""
+                ).strip()
+
+            folder_paths: Dict[str, str] = {}
+
+            def folder_path(handle: str) -> str:
+                handle = str(handle or "").strip()
+                if not handle or handle not in folder_names:
+                    return ""
+                if handle in folder_paths:
+                    return folder_paths[handle]
+                parent = folder_parents.get(handle, "")
+                parent_path = folder_path(parent) if parent and parent in folder_names else ""
+                path = "/".join(part for part in (parent_path, folder_names[handle]) if part)
+                folder_paths[handle] = path
+                return path
+
+            def node_relative_dir(node: Any) -> str:
+                parent = str(
+                    getattr(node, "parent", "")
+                    or (node.get("parent") or node.get("p") if isinstance(node, dict) else "")
+                    or ""
+                ).strip()
+                return folder_path(parent).strip("/")
+
             for index, item in enumerate(candidates):
-                row = self._transferit_node_row(item, index)
+                row = self._transferit_node_row(item, index, node_relative_dir(item))
                 if row:
                     rows.append(row)
             if not rows and isinstance(info, dict):
@@ -2429,7 +2558,7 @@ class HttpDownloadService:
                 if isinstance(nested, dict):
                     nested = list(nested.values())
                 for index, item in enumerate(nested):
-                    row = self._transferit_node_row(item, index)
+                    row = self._transferit_node_row(item, index, node_relative_dir(item))
                     if row:
                         rows.append(row)
             if not rows and not isinstance(info, dict) and hasattr(info, "to_json_dict"):
@@ -2438,7 +2567,7 @@ class HttpDownloadService:
                 if isinstance(candidates, dict):
                     candidates = list(candidates.values())
                 for index, item in enumerate(candidates):
-                    row = self._transferit_node_row(item, index)
+                    row = self._transferit_node_row(item, index, node_relative_dir(item))
                     if row:
                         rows.append(row)
             if not rows:
@@ -2458,8 +2587,11 @@ class HttpDownloadService:
             return rows
 
         def collect_metadata_row() -> Optional[Dict[str, Any]]:
-            with Transferit() as client:
+            client = self._transferit_api_client()
+            try:
                 metadata = client.metadata(url)
+            finally:
+                self._close_transferit_client(client)
             return self._transferit_metadata_row(metadata, share_id)
 
         files: List[Dict[str, Any]] = []
@@ -2516,6 +2648,8 @@ class HttpDownloadService:
                     "size_bytes": int(item.get("size_bytes") or 0),
                     "preview_only": True,
                     "share_id": share_id,
+                    "transferit_node_handle": str(item.get("transferit_node_handle") or ""),
+                    "relative_dir": str(item.get("relative_dir") or "").strip("/"),
                     "metadata_fallback": bool(item.get("metadata_fallback")),
                 }
                 for item in files
@@ -3239,7 +3373,7 @@ class HttpDownloadService:
             source = str(item.get("source") or "").strip().lower()
             if source not in _SHARE_PREVIEW_ONLY_SOURCES:
                 continue
-            for field in ("file_id", "content_id", "download_file_id"):
+            for field in ("file_id", "content_id", "download_file_id", "transferit_node_handle"):
                 value = str(item.get(field) or "").strip()
                 if value:
                     keys.add(f"{source}:id:{value}")
@@ -3253,7 +3387,7 @@ class HttpDownloadService:
         if not selection_filter:
             return True
         source_name = str(source or "").strip().lower()
-        file_id = str(item.get("id") or item.get("file_id") or item.get("content_id") or item.get("download_file_id") or "").strip()
+        file_id = str(item.get("id") or item.get("file_id") or item.get("content_id") or item.get("download_file_id") or item.get("transferit_node_handle") or "").strip()
         if file_id and f"{source_name}:id:{file_id}" in selection_filter:
             return True
         name = str(item.get("name") or item.get("filename") or "").strip().replace("\\", "/").strip("/")
@@ -3285,12 +3419,15 @@ class HttpDownloadService:
             source = str(row.get("source") or "").strip().lower()
             if not source:
                 return
-            identity = (
-                str(row.get("file_id") or "").strip()
-                or str(row.get("download_file_id") or "").strip()
-                or str(row.get("relative_path") or "").strip()
-                or str(row.get("name") or row.get("filename") or "").strip()
-            )
+            if source == "transferit":
+                identity = self._transferit_row_identity(row)
+            else:
+                identity = (
+                    str(row.get("file_id") or "").strip()
+                    or str(row.get("download_file_id") or "").strip()
+                    or str(row.get("relative_path") or "").strip()
+                    or str(row.get("name") or row.get("filename") or "").strip()
+                )
             key = f"{source}:{identity}" if identity else json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)
             if key in seen:
                 return
@@ -3354,15 +3491,18 @@ class HttpDownloadService:
         if not isinstance(row, dict):
             return ""
         source = str(row.get("source") or "http").strip().lower() or "http"
-        identity = (
-            str(row.get("file_id") or "").strip()
-            or str(row.get("download_file_id") or "").strip()
-            or str(row.get("pikpak_cleanup_file_id") or "").strip()
-            or str(row.get("share_id") or "").strip()
-            or str(row.get("relative_path") or "").strip()
-            or str(row.get("local_path") or "").strip()
-            or str(row.get("name") or row.get("filename") or "").strip()
-        )
+        if source == "transferit":
+            identity = self._transferit_row_identity(row) or str(row.get("share_id") or "").strip()
+        else:
+            identity = (
+                str(row.get("file_id") or "").strip()
+                or str(row.get("download_file_id") or "").strip()
+                or str(row.get("pikpak_cleanup_file_id") or "").strip()
+                or str(row.get("share_id") or "").strip()
+                or str(row.get("relative_path") or "").strip()
+                or str(row.get("local_path") or "").strip()
+                or str(row.get("name") or row.get("filename") or "").strip()
+            )
         if identity:
             return f"{source}:{identity}"
         return json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)
@@ -3905,6 +4045,7 @@ class HttpDownloadService:
                         "ok": True,
                         "url": source_item.get("url") or source_item.get("share_url") or "",
                         "masked_url": source_item.get("share_url") or "",
+                        "original_url": source_item.get("original_url") or source_item.get("url") or source_item.get("share_url") or "",
                         "host": "transfer.it" if source_name == "transferit" else "mypikpak.com",
                         "source": source_name,
                         "share_url": source_item.get("share_url"),
@@ -3913,6 +4054,7 @@ class HttpDownloadService:
                         "pikpak_cleanup_file_id": source_item.get("pikpak_cleanup_file_id"),
                         "pikpak_materialized": bool(source_item.get("pikpak_materialized")),
                         "share_id": source_item.get("share_id"),
+                        "transferit_node_handle": source_item.get("transferit_node_handle"),
                         "pikpak_account_id": source_item.get("pikpak_account_id"),
                         "pikpak_account_label": source_item.get("pikpak_account_label"),
                         "pikpak_transfer_dir": source_item.get("pikpak_transfer_dir"),
@@ -4347,7 +4489,7 @@ class HttpDownloadService:
         await emit_progress(force=True)
         return row
 
-    async def _download_transferit_item(self, item: Dict[str, Any], task=None) -> Dict[str, Any]:
+    async def _download_transferit_item(self, item: Dict[str, Any], task=None, progress_callback=None) -> Dict[str, Any]:
         raw_url = str(item.get("original_url") or item.get("url") or "").strip()
         if not raw_url:
             raise HttpDownloadError("Transfer.it 下载缺少分享链接")
@@ -4355,40 +4497,255 @@ class HttpDownloadService:
         os.makedirs(target_dir, exist_ok=True)
         final_path = str(item.get("final_path") or os.path.join(target_dir, item.get("filename") or "transferit-download"))
         filename = self._sanitize_filename(item.get("filename") or os.path.basename(final_path) or "transferit-download")
-        try:
-            from transferit import Transferit
-        except Exception as exc:
-            raise HttpDownloadError("后端缺少 transferit-py 依赖，请重新安装 backend/requirements.txt") from exc
+        relative_path = str(item.get("relative_path") or filename).replace("\\", "/")
+        expected_size = int(item.get("size_bytes") or item.get("total") or item.get("size") or 0)
+        gid = f"transferit:{self._transferit_row_identity(item) or item.get('share_id') or filename}"
+        row = {
+            "gid": gid,
+            "name": filename,
+            "relative_path": relative_path,
+            "local_path": final_path,
+            "url": item.get("masked_url") or self._mask_url(raw_url),
+            "source": "transferit",
+            "status": "downloading",
+            "progress": 0,
+            "downloaded": 0,
+            "total": expected_size,
+            "size": expected_size,
+            "speed_bytes_per_sec": 0,
+            "share_id": item.get("share_id", ""),
+            "transferit_node_handle": item.get("transferit_node_handle", ""),
+        }
+        cfg = self._config()
+        connect_timeout = max(10, int(getattr(cfg, "connect_timeout_seconds", 15) or 15))
+        read_timeout = max(30, int(getattr(cfg, "timeout_seconds", 60) or 60))
+        retry_count = max(1, int(getattr(cfg, "retry_count", 5) or 5))
+        retry_wait = max(0, int(getattr(cfg, "retry_wait_seconds", 5) or 5))
+        stall_timeout = max(read_timeout * 2, 120)
+        proxy = self._proxy_url() or None
 
-        def run_download() -> str:
-            download_dir = os.path.dirname(final_path) or target_dir
-            password = self._transferit_password(raw_url)
-            with Transferit() as client:
-                if password:
-                    result = client.download(raw_url, download_dir, password=password)
-                else:
-                    result = client.download(raw_url, download_dir)
-            expected_path = os.path.join(download_dir, filename)
-            if expected_path != final_path and os.path.exists(expected_path) and not os.path.exists(final_path):
-                os.replace(expected_path, final_path)
-                return final_path
-            paths = list(getattr(result, "paths", []) or [])
-            file_paths = [path for path in paths if os.path.isfile(path)]
-            if file_paths:
-                return file_paths[0]
-            return expected_path
+        progress_queue: asyncio.Queue = asyncio.Queue()
+        abort_event = threading.Event()
+        loop = asyncio.get_running_loop()
+        stream_state: Dict[str, Any] = {"response": None}
+
+        def publish_progress(payload: Dict[str, Any]) -> None:
+            try:
+                loop.call_soon_threadsafe(progress_queue.put_nowait, dict(payload))
+            except RuntimeError:
+                pass
+
+        def run_download_once() -> str:
+            client = self._transferit_api_client()
+            if not hasattr(client, "api") or not hasattr(getattr(client, "api", None), "fetch_transfer") or not hasattr(getattr(client, "api", None), "get_download_url"):
+                password = self._transferit_password(raw_url)
+                try:
+                    download_dir = os.path.dirname(final_path) or target_dir
+                    if password:
+                        result = client.download(raw_url, download_dir, password=password)
+                    else:
+                        result = client.download(raw_url, download_dir)
+                    expected_path = os.path.join(download_dir, filename)
+                    if expected_path != final_path and os.path.exists(expected_path) and not os.path.exists(final_path):
+                        os.replace(expected_path, final_path)
+                        return final_path
+                    paths = list(getattr(result, "paths", []) or [])
+                    file_paths = [path for path in paths if os.path.isfile(path)]
+                    if file_paths:
+                        return file_paths[0]
+                    return expected_path
+                finally:
+                    self._close_transferit_client(client)
+
+            from Cryptodome.Cipher import AES
+            from Cryptodome.Util import Counter
+            from transferit import MegaAPI
+            from transferit._crypto import a32_to_bytes, attr_key
+            from transferit._download import compute_folder_paths
+            from transferit._models import TransferNode
+
+            xh = MegaAPI.parse_xh(raw_url)
+            password = self._transferit_password(raw_url) or None
+            target_handle = str(item.get("transferit_node_handle") or "").strip()
+            target_identity = (
+                str(item.get("relative_path") or "").strip().replace("\\", "/").strip("/")
+                or str(item.get("filename") or item.get("name") or "").strip()
+            ).lower()
+
+            try:
+                node_dicts, pw_token = client.api.fetch_transfer(xh, password=password)
+                nodes = [TransferNode.from_dict(node) for node in node_dicts]
+                root = next((node.handle for node in nodes if node.is_folder and not node.parent), None)
+                folder_paths = compute_folder_paths(node_dicts, root) if root else {}
+                files = [node for node in nodes if node.is_file]
+                if not files:
+                    raise HttpDownloadError("Transfer.it 分享中没有可下载文件")
+
+                def node_rel(node) -> str:
+                    rel_dir = folder_paths.get(node.parent, "").strip("/")
+                    name = self._sanitize_filename(node.name or node.handle)
+                    return "/".join(part for part in (rel_dir, name) if part).strip("/")
+
+                selected = None
+                if target_handle:
+                    selected = next((node for node in files if node.handle == target_handle), None)
+                if selected is None and target_identity:
+                    selected = next((node for node in files if node_rel(node).lower() == target_identity), None)
+                if selected is None and target_identity:
+                    selected = next((node for node in files if self._sanitize_filename(node.name or node.handle).lower() == target_identity), None)
+                if selected is None and len(files) == 1:
+                    selected = files[0]
+                if selected is None:
+                    raise HttpDownloadError("Transfer.it 文件定位失败，请重新预览后再下载")
+
+                dl = client.api.get_download_url(xh, selected.handle, pw_token=pw_token)
+                download_url = str(dl.get("g") or "")
+                total_size = int(dl.get("s") or selected.size or expected_size or 0)
+                if not download_url:
+                    raise HttpDownloadError("Transfer.it 未返回下载地址")
+
+                out_path = Path(final_path)
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp_path = out_path.with_name(out_path.name + ".part")
+                if tmp_path.exists():
+                    with contextlib.suppress(OSError):
+                        tmp_path.unlink()
+
+                aes_key = attr_key(selected.key)
+                nonce = a32_to_bytes(selected.key[4:6])
+                ctr = Counter.new(64, prefix=nonce, initial_value=0)
+                cipher = AES.new(aes_key, AES.MODE_CTR, counter=ctr)
+                written = 0
+                started_at = time.monotonic()
+                last_emit_at = 0.0
+                last_progress_at = started_at
+
+                publish_progress({
+                    **row,
+                    "name": self._sanitize_filename(selected.name or filename),
+                    "status": "downloading",
+                    "downloaded": 0,
+                    "total": total_size,
+                    "size": total_size,
+                    "progress": 0,
+                    "speed_bytes_per_sec": 0,
+                    "transferit_node_handle": selected.handle,
+                })
+                with httpx.stream(
+                    "GET",
+                    download_url,
+                    timeout=httpx.Timeout(None, connect=connect_timeout, read=read_timeout),
+                    proxy=proxy,
+                    follow_redirects=True,
+                ) as response:
+                    stream_state["response"] = response
+                    response.raise_for_status()
+                    with tmp_path.open("wb") as target:
+                        for chunk in response.iter_bytes(1024 * 1024):
+                            if abort_event.is_set():
+                                raise _TransferitDownloadAbort("Transfer.it 下载已取消")
+                            if not chunk:
+                                if time.monotonic() - last_progress_at > stall_timeout:
+                                    raise TimeoutError(f"Transfer.it 下载 {stall_timeout}s 无进度")
+                                continue
+                            target.write(cipher.decrypt(chunk))
+                            written += len(chunk)
+                            last_progress_at = time.monotonic()
+                            now = last_progress_at
+                            if now - last_emit_at >= 0.8:
+                                last_emit_at = now
+                                elapsed = max(now - started_at, 0.001)
+                                publish_progress({
+                                    **row,
+                                    "name": self._sanitize_filename(selected.name or filename),
+                                    "status": "downloading",
+                                    "downloaded": written,
+                                    "total": total_size,
+                                    "size": total_size,
+                                    "progress": min(99, int(written / total_size * 100)) if total_size else 0,
+                                    "speed_bytes_per_sec": int(written / elapsed),
+                                    "transferit_node_handle": selected.handle,
+                                })
+                        target.flush()
+                if total_size and written < total_size:
+                    raise HttpDownloadError(f"Transfer.it 下载不完整: {written}/{total_size} bytes")
+                if out_path.exists():
+                    with contextlib.suppress(OSError):
+                        out_path.unlink()
+                tmp_path.replace(out_path)
+                return str(out_path)
+            finally:
+                stream_state["response"] = None
+                self._close_transferit_client(client)
 
         downloaded_path = ""
         last_error: Optional[BaseException] = None
-        for attempt in range(3):
+
+        async def drain_progress(download_task: asyncio.Task) -> None:
+            while not download_task.done():
+                pause_event = getattr(task, "_pause_event", None) if task else None
+                should_stop = bool(
+                    task
+                    and (
+                        task.is_cancelled()
+                        or (pause_event is not None and not pause_event.is_set())
+                    )
+                )
+                if should_stop:
+                    abort_event.set()
+                    response = stream_state.get("response")
+                    if response is not None:
+                        with contextlib.suppress(Exception):
+                            response.close()
+                try:
+                    progress_row = await asyncio.wait_for(progress_queue.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
+                row.update(progress_row)
+                if progress_callback:
+                    result = progress_callback(dict(row))
+                    if inspect.isawaitable(result):
+                        await result
+                if task:
+                    task.task_metadata["transferit_active_row"] = dict(row)
+            while not progress_queue.empty():
+                row.update(progress_queue.get_nowait())
+                if progress_callback:
+                    result = progress_callback(dict(row))
+                    if inspect.isawaitable(result):
+                        await result
+
+        for attempt in range(retry_count):
+            abort_event.clear()
+            if task:
+                await task.wait_if_paused()
+                if task.is_cancelled():
+                    raise asyncio.CancelledError()
             try:
-                downloaded_path = await asyncio.wait_for(asyncio.to_thread(run_download), timeout=None)
+                worker = asyncio.create_task(asyncio.to_thread(run_download_once))
+                watcher = asyncio.create_task(drain_progress(worker))
+                try:
+                    downloaded_path = await worker
+                finally:
+                    abort_event.set()
+                    await watcher
                 break
+            except _TransferitDownloadAbort as exc:
+                pause_event = getattr(task, "_pause_event", None) if task else None
+                if task and (
+                    task.is_cancelled()
+                    or (pause_event is not None and not pause_event.is_set())
+                ):
+                    raise asyncio.CancelledError()
+                last_error = exc
             except Exception as exc:
                 last_error = exc
                 if not self._is_transferit_transient_error(exc):
                     raise
-                if attempt < 2:
+            if attempt < retry_count - 1:
+                if retry_wait:
+                    await asyncio.sleep(retry_wait)
+                else:
                     await asyncio.sleep(1.5 * (attempt + 1))
         else:
             raise HttpDownloadError("Transfer.it 服务器忙，请稍后重试") from last_error
@@ -4409,8 +4766,8 @@ class HttpDownloadService:
         if not os.path.exists(final_path):
             raise HttpDownloadError("Transfer.it 下载完成后未找到输出文件")
         size = os.path.getsize(final_path) if os.path.exists(final_path) else 0
-        return {
-            "gid": f"transferit:{item.get('share_id') or filename}",
+        row.update({
+            "gid": gid,
             "name": os.path.basename(final_path) or filename,
             "relative_path": os.path.relpath(final_path, self._download_root()).replace("\\", "/"),
             "local_path": final_path,
@@ -4419,9 +4776,12 @@ class HttpDownloadService:
             "status": "completed",
             "progress": 100,
             "downloaded": size,
-            "total": size,
-            "size": size,
+            "total": max(int(row.get("total") or 0), size),
+            "size": max(int(row.get("size") or 0), size),
             "speed_bytes_per_sec": 0,
+        })
+        return {
+            **row,
         }
 
     async def start_download_task(self, task) -> Dict[str, Any]:
@@ -4550,8 +4910,10 @@ class HttpDownloadService:
             })
         for item in transferit_items:
             total_bytes += int(item.get("size_bytes") or 0)
+            gid = f"transferit:{self._transferit_row_identity(item) or item.get('share_id') or item.get('filename')}"
+            item["gid"] = gid
             download_files.append({
-                "gid": f"transferit:{item.get('share_id') or item.get('filename')}",
+                "gid": gid,
                 "name": item["filename"],
                 "relative_path": item["relative_path"],
                 "local_path": item["final_path"],
@@ -4563,6 +4925,8 @@ class HttpDownloadService:
                 "downloaded": 0,
                 "total": int(item.get("size_bytes") or 0),
                 "size": int(item.get("size_bytes") or 0),
+                "share_id": item.get("share_id", ""),
+                "transferit_node_handle": item.get("transferit_node_handle", ""),
             })
 
         self._task_gids[task.id] = gids
@@ -4650,6 +5014,7 @@ class HttpDownloadService:
             return runtime
 
         google_last_log_at = 0.0
+        transfer_last_log_at = 0.0
 
         def handle_google_progress(row: Dict[str, Any]) -> None:
             nonlocal google_last_log_at
@@ -4658,6 +5023,15 @@ class HttpDownloadService:
             now = time.monotonic()
             if now - google_last_log_at > 5:
                 google_last_log_at = now
+                task.update_progress(task.progress, f"下载中 {runtime.get('completed_files', 0)}/{len(download_files)}")
+
+        def handle_transfer_progress(row: Dict[str, Any]) -> None:
+            nonlocal transfer_last_log_at
+            merge_download_row(row)
+            runtime = refresh_download_runtime()
+            now = time.monotonic()
+            if now - transfer_last_log_at > 5:
+                transfer_last_log_at = now
                 task.update_progress(task.progress, f"下载中 {runtime.get('completed_files', 0)}/{len(download_files)}")
 
         if google_drive_items:
@@ -4713,62 +5087,42 @@ class HttpDownloadService:
                 task.current_step = f"下载 Transfer.it {index}/{len(transferit_items)}"
                 task.update_progress(max(task.progress, 3), task.current_step)
                 try:
-                    row = await self._download_transferit_item(item, task=task)
+                    row = await self._download_transferit_item(item, task=task, progress_callback=handle_transfer_progress)
                     transfer_success_files.append(row)
-                    matched_row = False
-                    for existing in download_files:
-                        if (
-                            existing.get("gid") == row.get("gid")
-                            or (
-                                existing.get("source") == "transferit"
-                                and existing.get("relative_path") == row.get("relative_path")
-                            )
-                        ):
-                            existing.update(row)
-                            matched_row = True
-                            break
-                    if not matched_row:
-                        download_files.append(row)
+                    merge_download_row(row)
                 except asyncio.CancelledError:
                     await self.cancel_task(task.id)
                     raise
                 except Exception as exc:
+                    partial_downloaded = 0
+                    partial_path = str(item.get("final_path") or "")
+                    if partial_path:
+                        with contextlib.suppress(OSError):
+                            partial_downloaded = os.path.getsize(partial_path)
+                        part_path = partial_path + ".part"
+                        with contextlib.suppress(OSError):
+                            partial_downloaded = max(partial_downloaded, os.path.getsize(part_path))
+                    expected_size = int(item.get("size_bytes") or 0)
                     failed_row = {
-                        "gid": f"transferit:{item.get('share_id') or item.get('filename')}",
+                        "gid": str(item.get("gid") or f"transferit:{self._transferit_row_identity(item) or item.get('share_id') or item.get('filename')}"),
                         "name": item.get("filename") or "transferit-download",
                         "relative_path": item.get("relative_path") or "",
-                        "local_path": item.get("final_path") or "",
+                        "local_path": partial_path,
                         "url": item.get("masked_url") or self._mask_url(str(item.get("url") or "")),
                         "source": "transferit",
                         "status": "failed",
                         "failure_reason": self._sanitize_error(exc),
-                        "progress": 0,
+                        "progress": min(99, int(partial_downloaded / expected_size * 100)) if expected_size else 0,
+                        "downloaded": partial_downloaded,
+                        "total": expected_size,
+                        "size": expected_size,
+                        "speed_bytes_per_sec": 0,
+                        "share_id": item.get("share_id", ""),
+                        "transferit_node_handle": item.get("transferit_node_handle", ""),
                     }
                     transfer_failed_rows.append(failed_row)
-                    for existing in download_files:
-                        if (
-                            existing.get("gid") == failed_row.get("gid")
-                            or (
-                                existing.get("source") == "transferit"
-                                and existing.get("relative_path") == failed_row.get("relative_path")
-                            )
-                        ):
-                            existing.update(failed_row)
-                            break
-                completed_transfer = len(transfer_success_files) + len(transfer_failed_rows)
-                task.task_metadata["download_files"] = download_files
-                task.task_metadata["download_runtime"] = {
-                    "status": "downloading",
-                    "total_files": len(download_files),
-                    "completed_files": len(transfer_success_files),
-                    "failed_files": len(failed_items) + len(transfer_failed_rows),
-                    "active_file_count": 1 if completed_transfer < len(transferit_items) else 0,
-                    "transferred_bytes": sum(int(row.get("downloaded") or 0) for row in transfer_success_files),
-                    "total_bytes": total_bytes,
-                    "speed_bytes_per_sec": 0,
-                    "current_file_name": str(item.get("filename") or ""),
-                    "current_relative_path": str(item.get("relative_path") or ""),
-                }
+                    merge_download_row(failed_row)
+                refresh_download_runtime()
 
         last_log_at = 0.0
         if gids:
