@@ -339,8 +339,8 @@ class BaiduNetdiskConfig(BaseModel):
     config_dir: str = ""
     share_code_separator: str = "----"
     cookie: str = ""
-    max_parallel: int = 200
-    max_download_load: str = "0"
+    max_parallel: int = 20
+    max_download_load: int = 5
     conflict_policy: str = "resume"
     svip_speed_enabled: bool = True
     account_name: str = ""
