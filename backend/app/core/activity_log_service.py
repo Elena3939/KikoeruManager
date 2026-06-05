@@ -850,15 +850,18 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             "uploaded_files": uploaded_files[:200],
         }
     elif tt in {TaskType.HTTP_DOWNLOAD, TaskType.BAIDU_NETDISK_DOWNLOAD}:
+        from .baidu_netdisk_service import sanitize_baidu_netdisk_item
+
         performance_metrics = meta.get("performance_metrics") if isinstance(meta.get("performance_metrics"), dict) else {}
         download_runtime = meta.get("download_runtime") if isinstance(meta.get("download_runtime"), dict) else {}
+        sanitize_download_item = sanitize_baidu_netdisk_item if tt == TaskType.BAIDU_NETDISK_DOWNLOAD else sanitize_http_download_item
         download_files = [
-            sanitize_http_download_item(item)
+            sanitize_download_item(item)
             for item in list(meta.get("download_files") or [])
             if isinstance(item, dict)
         ]
         failed_files = [
-            sanitize_http_download_item(item)
+            sanitize_download_item(item)
             for item in list(meta.get("failed_files") or [])
             if isinstance(item, dict)
         ]

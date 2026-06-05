@@ -335,8 +335,9 @@ class BaiduNetdiskConfig(BaseModel):
     """百度网盘下载配置。"""
     enabled: bool = False
     download_root: str = ""
-    baidupcs_go_path: str = "tools/baidupcs-go/BaiduPCS-Go.exe"
+    baidupcs_go_path: str = ""
     config_dir: str = ""
+    share_code_separator: str = "----"
     cookie: str = ""
     max_parallel: int = 200
     max_download_load: str = "0"
@@ -349,6 +350,7 @@ class BaiduNetdiskConfig(BaseModel):
     vip_type: int = 0
     vip_label: str = ""
     vip_level: str = ""
+    vip_expire_at: int = 0
     quota_bytes: int = 0
     used_bytes: int = 0
     account_cached_at: int = 0

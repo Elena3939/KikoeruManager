@@ -12195,13 +12195,40 @@ def _http_download_urls_from_payload(urls: List[str]) -> list[str]:
 
 
 def _baidu_netdisk_urls_from_payload(urls: List[str]) -> list[str]:
+    config = get_config()
+    separator = str(getattr(config.baidu_netdisk, "share_code_separator", "") or "----").strip()
     result = []
     for raw in urls or []:
         for line in re.split(r"[\r\n]+", str(raw or "")):
             value = line.strip()
             if value:
+                value = _normalize_baidu_netdisk_share_line(value, separator)
                 result.append(value)
     return result
+
+
+def _normalize_baidu_netdisk_share_line(value: str, separator: str) -> str:
+    text = str(value or "").strip()
+    if not text or not separator or separator not in text:
+        return text
+    left, right = text.rsplit(separator, 1)
+    share_url = left.strip()
+    code_text = right.strip()
+    if not share_url.lower().startswith(("http://", "https://")):
+        return text
+    if "pan.baidu.com" not in share_url.lower() and "yun.baidu.com" not in share_url.lower():
+        return text
+    match = re.search(
+        r"(?:提取码|访问码|密码|密碼|pwd|passcode|pass_code|code)?\s*[:：= ]?\s*([A-Za-z0-9]{4,12})$",
+        code_text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return text
+    code = match.group(1).strip()
+    if not code or re.search(r"[?&](?:pwd|password|passcode|pass_code|code)=", share_url, re.IGNORECASE):
+        return share_url
+    return f"{share_url}{'&' if '?' in share_url else '?'}pwd={quote(code)}"
 
 
 def _google_drive_oauth_redirect_uri(request: Request) -> str:
