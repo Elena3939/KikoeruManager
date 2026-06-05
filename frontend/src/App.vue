@@ -17,7 +17,7 @@
         </div>
         <div class="app-mobile-brand-copy">
           <span class="app-mobile-brand-text">KikoeruManager</span>
-          <span class="app-mobile-brand-version">v{{ appVersion }}</span>
+          <span class="app-mobile-brand-version">{{ appVersionLabel }}</span>
         </div>
       </div>
       <NotificationBell class="app-mobile-bell" />
@@ -46,7 +46,7 @@
           <div class="logo-copy">
             <span class="logo-text">KikoeruManager</span>
             <div class="logo-meta-row">
-              <span class="logo-subtitle">v{{ appVersion }}</span>
+              <span class="logo-subtitle">{{ appVersionLabel }}</span>
               <NotificationBell class="logo-bell" />
             </div>
           </div>
@@ -239,9 +239,10 @@ import NotificationBell from './components/system/NotificationBell.vue'
 import AnimatedThemeToggler from './components/magicui/AnimatedThemeToggler.vue'
 import { useTheme } from './composables/useTheme'
 import { useTaskCenterStream } from './composables/useTaskCenterStream'
+import { healthApi } from './api'
 import router from './router'
 
-const appVersion = '1.6.1'
+const appVersion = ref('dev')
 const route = useRoute()
 const watcherStore = useWatcherStore()
 const conflictCount = ref(0)
@@ -285,6 +286,11 @@ const routeComponentMap = {
   BlockedGate
 }
 const isGateRoute = computed(() => Boolean(route.meta?.gatePage))
+const appVersionLabel = computed(() => {
+  const version = String(appVersion.value || '').trim()
+  if (!version || version.toLowerCase() === 'dev') return 'dev'
+  return version.startsWith('v') ? version : `v${version}`
+})
 const currentViewComponent = computed(() => routeComponentMap[route.name] || Dashboard)
 const cachedViews = computed(() =>
   router
@@ -304,6 +310,7 @@ let intervalId = null
 onMounted(async () => {
   sidebarPinned.value = readInitialSidebarPinned()
   applyTheme()
+  await refreshAppVersion()
   if (isGateRoute.value) return
   startTaskCenterStream()
   await refreshStatus()
@@ -349,6 +356,16 @@ function stopTaskCenterStream() {
 async function refreshStatus() {
   await watcherStore.fetchStatus()
   watcherStatus.value = watcherStore.status
+}
+
+async function refreshAppVersion() {
+  try {
+    const health = await healthApi.check()
+    const version = String(health?.version || '').trim()
+    if (version) appVersion.value = version
+  } catch (error) {
+    console.warn('[App] 获取系统版本失败', error)
+  }
 }
 
 async function toggleWatcher() {

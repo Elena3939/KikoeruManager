@@ -5,6 +5,7 @@ WORKDIR /app
 # 安装系统依赖（官方 7-Zip 24.08、BaiduPCS-Go、unar）
 # 与根 Dockerfile 保持一致：支持多架构、排除旧 p7zip、构建期验证版本。
 ARG TARGETARCH
+ARG KIKOERUMANAGER_VERSION=dev
 ARG BAIDUPCS_GO_VERSION=4.0.1
 RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources && \
     apt-get update && apt-get install -y --no-install-recommends \
@@ -79,6 +80,7 @@ RUN mkdir -p /app/data /app/config
 ENV CONFIG_PATH=/app/config/config.yaml
 ENV DATA_PATH=/app/data
 ENV PYTHONPATH=/app
+ENV KIKOERUMANAGER_VERSION=${KIKOERUMANAGER_VERSION}
 
 # 暴露端口
 EXPOSE 8000

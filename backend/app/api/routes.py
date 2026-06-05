@@ -55,12 +55,13 @@ from ..core.google_drive_oauth import (
 )
 from ..config.settings import get_config, save_config
 from ..core.security_gate_service import COOKIE_NAME, get_security_gate_service
+from ..version import get_app_version
 
 # 初始化FastAPI应用
 app = FastAPI(
     title="KikoeruManager API",
     description="DLsite作品整理工具API",
-    version="1.5.47"
+    version=get_app_version()
 )
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 
@@ -138,7 +139,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "kikoerumanager",
-        "version": "1.5.48",
+        "version": get_app_version(),
         "timestamp": datetime.now().isoformat()
     }
 
