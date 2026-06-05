@@ -12829,12 +12829,21 @@ async def baidu_netdisk_start(request: BaiduNetdiskStartRequest):
         raise HTTPException(status_code=400, detail="单次最多创建 100 行链接/提取码")
 
     service = get_baidu_netdisk_service()
-    preview = await service.preview_urls(
+    raw_preview_cache_key = service.raw_preview_cache_key(
         urls,
         target_subdir=request.target_subdir,
         conflict_policy=request.conflict_policy,
         output_folder_name=request.output_folder_name,
     )
+    preview = service.get_cached_raw_preview(raw_preview_cache_key)
+    if not preview:
+        preview = await service.preview_urls(
+            urls,
+            target_subdir=request.target_subdir,
+            conflict_policy=request.conflict_policy,
+            output_folder_name=request.output_folder_name,
+        )
+        raw_preview_cache_key = str(preview.get("raw_preview_cache_key") or raw_preview_cache_key)
     preview = service.filter_preview_selection(
         preview,
         selected_keys=request.selected_keys,
@@ -12865,6 +12874,12 @@ async def baidu_netdisk_start(request: BaiduNetdiskStartRequest):
                 {k: v for k, v in dict(item or {}).items() if k not in {"url", "original_url"}}
                 for item in public_preview.get("items") or []
                 if item.get("ok")
+            ],
+            "raw_preview_cache_key": raw_preview_cache_key,
+            "raw_selected_items": [
+                dict(item or {})
+                for item in preview.get("items") or []
+                if isinstance(item, dict) and item.get("ok")
             ],
             "target_subdir": request.target_subdir,
             "output_folder_name": request.output_folder_name,

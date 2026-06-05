@@ -14,7 +14,11 @@ from .http_download_service import (
     http_download_platforms_label,
     sanitize_http_download_metadata,
 )
-from .baidu_netdisk_service import build_baidu_netdisk_batch_title, sanitize_baidu_netdisk_item
+from .baidu_netdisk_service import (
+    build_baidu_netdisk_batch_title,
+    sanitize_baidu_netdisk_item,
+    sanitize_baidu_netdisk_metadata,
+)
 from ..models.database import ConflictWork, SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -855,18 +859,10 @@ class TaskCenterService:
         metadata = dict(task.task_metadata or {})
         domain = self._infer_domain(task)
         if domain in {"http_download", "baidu_netdisk"}:
-            metadata = sanitize_http_download_metadata(metadata)
             if domain == "baidu_netdisk":
-                metadata["download_files"] = [
-                    sanitize_baidu_netdisk_item(item)
-                    for item in list(metadata.get("download_files") or [])
-                    if isinstance(item, dict)
-                ]
-                metadata["failed_files"] = [
-                    sanitize_baidu_netdisk_item(item)
-                    for item in list(metadata.get("failed_files") or [])
-                    if isinstance(item, dict)
-                ]
+                metadata = sanitize_baidu_netdisk_metadata(metadata)
+            else:
+                metadata = sanitize_http_download_metadata(metadata)
         source_path = self._safe_text(task.source_path)
         output_path = self._safe_text(task.output_path)
         resolved_target_path = (
@@ -1668,9 +1664,13 @@ class TaskCenterService:
                     "error": repr(exc),
                     "task_metadata_type": type(getattr(task, "task_metadata", None)).__name__,
                     "task_metadata_preview": self._json_safe(
-                        sanitize_http_download_metadata(getattr(task, "task_metadata", None))
-                        if getattr(getattr(task, "type", None), "value", getattr(task, "type", "")) == TaskType.HTTP_DOWNLOAD.value
-                        else getattr(task, "task_metadata", None)
+                        sanitize_baidu_netdisk_metadata(getattr(task, "task_metadata", None))
+                        if getattr(getattr(task, "type", None), "value", getattr(task, "type", "")) == TaskType.BAIDU_NETDISK_DOWNLOAD.value
+                        else (
+                            sanitize_http_download_metadata(getattr(task, "task_metadata", None))
+                            if getattr(getattr(task, "type", None), "value", getattr(task, "type", "")) == TaskType.HTTP_DOWNLOAD.value
+                            else getattr(task, "task_metadata", None)
+                        )
                     ),
                 })
 
