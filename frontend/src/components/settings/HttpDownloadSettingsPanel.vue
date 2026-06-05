@@ -2014,7 +2014,10 @@ onBeforeUnmount(() => {
   --set-border: rgba(255, 255, 255, 0.11);
   --set-border-strong: rgba(255, 255, 255, 0.18);
   --set-accent: #e5e7eb;
-  --set-primary-bg: #e4e4e7;
+  --set-primary-bg: #2b2c30;
+  --set-primary-bg-hover: #333438;
+  --set-primary-border: rgba(255, 255, 255, 0.14);
+  --set-primary-text: #f5f5f5;
   --set-success-bg: rgba(52, 211, 153, 0.13);
   --set-success-border: rgba(52, 211, 153, 0.28);
   --set-success-text: #86efac;

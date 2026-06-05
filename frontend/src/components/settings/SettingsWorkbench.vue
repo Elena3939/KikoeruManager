@@ -463,7 +463,7 @@ const filteredSections = computed(() => {
   gap: 16px;
 }
 
-/* 保存栏：白底 + 主按钮走 AGENTS.md 三段渐变 + 双层 glow */
+/* 保存栏：扁平悬浮条，避免暗色态里出现塑料感高光 */
 .save-bar {
   position: fixed;
   right: 24px;
@@ -499,16 +499,8 @@ const filteredSections = computed(() => {
   width: 8px;
   height: 8px;
   border-radius: 999px;
-  background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.6),
-    0 0 0 3px rgba(251, 191, 36, 0.18);
-  animation: save-bar-dot-pulse 1.8s ease-in-out infinite;
-}
-
-@keyframes save-bar-dot-pulse {
-  0%, 100% { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 0 0 3px rgba(251, 191, 36, 0.18); }
-  50%      { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 0 0 5px rgba(251, 191, 36, 0.06); }
+  background: #d6a23a;
+  box-shadow: 0 0 0 2px rgba(214, 162, 58, 0.14);
 }
 
 .save-bar-desc {
@@ -541,22 +533,25 @@ const filteredSections = computed(() => {
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-/* 主按钮：180deg 三段渐变 + inset 顶部高光 + 双层 glow shadow */
 .save-bar-btn-primary {
-  color: #ffffff;
-  background: linear-gradient(180deg, var(--set-accent-hover, #1f2937) 0%, var(--set-accent, #111827) 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.18),
-    0 6px 16px -6px rgba(2, 6, 23, 0.55),
-    0 2px 4px rgba(15, 23, 42, 0.25);
+  background: #e7e7eb;
+  border-color: rgba(255, 255, 255, 0.28);
+  color: #111116;
+  -webkit-text-fill-color: #111116;
+  background-image: none;
+  box-shadow: none;
+  text-shadow: none;
+}
+
+.save-bar-btn-primary svg {
+  color: #111116;
+  opacity: 0.82;
 }
 
 .save-bar-btn-primary:not(:disabled):hover {
   transform: translateY(-2px);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    0 14px 28px -10px rgba(2, 6, 23, 0.6),
-    0 4px 8px rgba(15, 23, 42, 0.3);
+  background: #f2f2f4;
+  box-shadow: none;
 }
 
 .save-bar-btn-primary:not(:disabled):active {
@@ -584,6 +579,46 @@ const filteredSections = computed(() => {
 .save-bar-btn:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+.save-bar-btn-primary:disabled {
+  opacity: 1;
+  background: #e7e7eb;
+  border-color: rgba(255, 255, 255, 0.28);
+  color: #111116;
+  -webkit-text-fill-color: #111116;
+  background-image: none;
+  box-shadow: none;
+  text-shadow: none;
+}
+
+.save-bar-btn-primary:disabled svg {
+  color: #111116;
+  opacity: 0.82;
+}
+
+:global(html.kikoerumanager-dark .settings-page .save-bar .save-bar-dot) {
+  background: #d6a23a !important;
+  box-shadow: 0 0 0 2px rgba(214, 162, 58, 0.14) !important;
+  animation: none !important;
+}
+
+:global(html.kikoerumanager-dark .settings-page .save-bar .save-bar-btn-primary),
+:global(html.kikoerumanager-dark .settings-page .save-bar .save-bar-btn-primary:disabled) {
+  opacity: 1 !important;
+  background: #e7e7eb !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  color: #111116 !important;
+  -webkit-text-fill-color: #111116 !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .settings-page .save-bar .save-bar-btn-primary svg),
+:global(html.kikoerumanager-dark .settings-page .save-bar .save-bar-btn-primary:disabled svg) {
+  color: #111116 !important;
+  opacity: 0.82 !important;
 }
 
 .spinning { animation: spin 1s linear infinite; }
