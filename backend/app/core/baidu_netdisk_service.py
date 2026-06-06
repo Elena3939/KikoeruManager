@@ -16,13 +16,16 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from datetime import datetime
+from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
-from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
+from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 import aiohttp
+import requests
 
 from ..config.settings import get_config, save_config
 from .http_download_service import sanitize_http_download_item
@@ -32,18 +35,25 @@ logger = logging.getLogger(__name__)
 BAIDU_NETDISK_LABEL = "百度网盘"
 BAIDU_NETDISK_PLATFORM = "baidu_netdisk"
 BAIDU_OFFICIAL_LOGIN_URL = "https://pan.baidu.com/"
+BAIDU_QR_GET_URL = "https://passport.baidu.com/v2/api/getqrcode"
+BAIDU_QR_UNICAST_URL = "https://passport.baidu.com/channel/unicast"
+BAIDU_QR_BDUSS_LOGIN_URL = "https://passport.baidu.com/v3/login/main/qrbdusslogin"
+BAIDU_QR_LOGIN_TTL_SECONDS = 180
 _BAIDU_WEB_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 _ILLEGAL_WINDOWS_CHARS = set('<>:"\\|?*')
 _BAIDU_COOKIE_PRIORITY = [
     "BDUSS",
     "BDUSS_BFESS",
     "STOKEN",
+    "STOKEN_BFESS",
     "PTOKEN",
+    "PTOKEN_BFESS",
     "BAIDUID",
     "BAIDUID_BFESS",
     "PANPSC",
     "BDCLND",
 ]
+_BAIDU_COOKIE_NAME_BY_UPPER = {name.upper(): name for name in _BAIDU_COOKIE_PRIORITY}
 _BAIDU_RAW_PREVIEW_CACHE_TTL_SECONDS = 10 * 60
 
 
@@ -208,6 +218,7 @@ class BaiduNetdiskService:
     def __init__(self):
         self._task_cancel_events: Dict[str, asyncio.Event] = {}
         self._official_login_session: Optional[Dict[str, Any]] = None
+        self._qr_login_sessions: Dict[str, Dict[str, Any]] = {}
         self._raw_preview_cache: Dict[str, Dict[str, Any]] = {}
 
     def _config(self):
@@ -223,6 +234,16 @@ class BaiduNetdiskService:
         if not root:
             root = os.path.join(get_config().storage.temp_path, "baidu_netdisk_downloads")
         return os.path.abspath(root)
+
+    def _configured_baidu_cookie(self) -> str:
+        cookie = str(getattr(self._config(), "cookie", "") or "").strip()
+        if not cookie or cookie == "********":
+            return ""
+        return cookie
+
+    def _has_baidu_login_cookie(self, cookie: str = "") -> bool:
+        value = str(cookie or "").strip() or self._configured_baidu_cookie()
+        return bool(self._cookie_value(value, "BDUSS") or self._cookie_value(value, "BDUSS_BFESS"))
 
     def raw_preview_cache_key(
         self,
@@ -471,16 +492,34 @@ class BaiduNetdiskService:
         for raw in urls or []:
             rows.extend(line.strip() for line in re.split(r"[\r\n]+", str(raw or "")) if line.strip())
         shares: List[Dict[str, str]] = []
+        seen: Dict[str, int] = {}
         last_index: Optional[int] = None
         for row in rows:
             if self._looks_like_baidu_url(row):
                 parsed = self._parse_share_url(row)
+                identity = self._share_input_identity(parsed.get("share_url") or row)
+                if identity in seen:
+                    existing_index = seen[identity]
+                    if parsed.get("pass_code") and not shares[existing_index].get("pass_code"):
+                        shares[existing_index]["pass_code"] = parsed["pass_code"]
+                        shares[existing_index]["share_url"] = self._append_share_pass_code(
+                            shares[existing_index].get("share_url") or "",
+                            parsed["pass_code"],
+                        )
+                    last_index = existing_index
+                    continue
                 shares.append(parsed)
+                seen[identity] = len(shares) - 1
                 last_index = len(shares) - 1
                 continue
             code = self._parse_pass_code_text(row)
-            if code and last_index is not None and not shares[last_index].get("pass_code"):
-                shares[last_index]["pass_code"] = code
+            if code and last_index is not None:
+                if not shares[last_index].get("pass_code"):
+                    shares[last_index]["pass_code"] = code
+                    shares[last_index]["share_url"] = self._append_share_pass_code(
+                        shares[last_index].get("share_url") or "",
+                        code,
+                    )
                 continue
             raise BaiduNetdiskError(f"无法识别百度网盘分享链接或提取码: {row[:80]}")
         return shares
@@ -504,6 +543,45 @@ class BaiduNetdiskService:
         match = re.search(r"/s/([A-Za-z0-9_-]+)", parsed.path or "")
         return match.group(1) if match else ""
 
+    def _share_input_identity(self, value: str) -> str:
+        text = str(value or "").strip()
+        text = re.sub(r"([?&])(?:pwd|password|passcode|pass_code|code)=[^&#]*", r"\1", text, flags=re.IGNORECASE)
+        text = re.sub(r"\?&", "?", text)
+        text = re.sub(r"[?&]($|#)", r"\1", text)
+        return text.rstrip("?&")
+
+    def _strip_share_pass_code_query(self, value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        parsed = urlparse(text)
+        if not parsed.query:
+            return text
+        query_pairs = [
+            (key, val)
+            for key, val in parse_qsl(parsed.query, keep_blank_values=True)
+            if str(key or "").lower() not in {"pwd", "password", "passcode", "pass_code", "code"}
+        ]
+        return parsed._replace(query=urlencode(query_pairs)).geturl()
+
+    def _share_url_has_pass_code(self, value: str) -> bool:
+        return bool(re.search(r"[?&](?:pwd|password|passcode|pass_code|code)=", str(value or ""), re.IGNORECASE))
+
+    def _append_share_pass_code(self, share_url: str, pass_code: str) -> str:
+        code = str(pass_code or "").strip()
+        if not code or self._share_url_has_pass_code(share_url):
+            return share_url
+        return f"{share_url}{'&' if '?' in share_url else '?'}pwd={quote(code)}"
+
+    def _pass_code_from_share_url(self, value: str) -> str:
+        parsed = urlparse(str(value or "").strip())
+        query = parse_qs(parsed.query or "")
+        for key in ("pwd", "password", "passcode", "pass_code", "code"):
+            values = query.get(key) or []
+            if values and str(values[0] or "").strip():
+                return str(values[0]).strip()
+        return ""
+
     def _parse_pass_code_text(self, value: str) -> str:
         text = str(value or "").strip()
         if not text:
@@ -521,6 +599,22 @@ class BaiduNetdiskService:
 
     def _parse_share_url(self, raw_url: str) -> Dict[str, str]:
         url = str(raw_url or "").strip()
+        separator = str(getattr(self._config(), "share_code_separator", "") or "----").strip()
+        inline_pass_code = ""
+        if separator and separator in url:
+            left, right = url.rsplit(separator, 1)
+            code = self._parse_pass_code_text(right)
+            if code and self._looks_like_baidu_url(left.strip()):
+                url = left.strip()
+                inline_pass_code = code
+        inline = re.search(
+            r"^(https?://\S+?)\s+(?:提取码|访问码|密码|密碼|pwd|passcode|pass_code|code)?\s*[:：= ]?\s*([A-Za-z0-9]{4,12})\s*$",
+            url,
+            re.IGNORECASE,
+        )
+        if inline and self._looks_like_baidu_url(inline.group(1)):
+            url = inline.group(1).strip()
+            inline_pass_code = inline.group(2).strip()
         parsed = urlparse(url)
         query = parse_qs(parsed.query or "")
         pass_code = ""
@@ -531,6 +625,8 @@ class BaiduNetdiskService:
                 break
         if not pass_code:
             pass_code = self._parse_pass_code_text(unquote(parsed.fragment or ""))
+        if not pass_code:
+            pass_code = inline_pass_code
         share_id = ""
         match = re.search(r"/s/([A-Za-z0-9_-]+)", parsed.path or "")
         if match:
@@ -543,8 +639,8 @@ class BaiduNetdiskService:
                     break
         title = f"百度网盘分享 {share_id[:10]}" if share_id else "百度网盘分享"
         cleaned = url
-        if pass_code and "pwd=" not in cleaned and "passcode=" not in cleaned and "pass_code=" not in cleaned:
-            cleaned = f"{cleaned}{'&' if '?' in cleaned else '?'}pwd={quote(pass_code)}"
+        if pass_code:
+            cleaned = self._append_share_pass_code(cleaned, pass_code)
         return {
             "share_url": cleaned,
             "raw_url": url,
@@ -563,11 +659,15 @@ class BaiduNetdiskService:
     ) -> Dict[str, Any]:
         detail = detail or {}
         detail_files = [row for row in list(detail.get("files") or []) if isinstance(row, dict)]
+        warning_text = str(detail.get("warning") or "").strip()
+        pass_code_invalid = bool(detail.get("pass_code_invalid"))
         missing_code = bool(detail.get("requires_pass_code")) or (
             not detail_files
+            and not warning_text
             and self._likely_requires_pass_code(share)
             and not share.get("pass_code")
         )
+        has_files = bool(detail_files)
         detail_title = str(detail.get("title") or "").strip()
         detail_file_count = _safe_int(detail.get("file_count") or len(detail_files))
         detail_folder_count = _safe_int(detail.get("folder_count"))
@@ -592,6 +692,7 @@ class BaiduNetdiskService:
             "share_timestamp": detail.get("share_timestamp") or "",
             "share_files": detail_files,
             "requires_pass_code": bool(missing_code),
+            "pass_code_invalid": pass_code_invalid,
             "filename": title,
             "name": title,
             "relative_path": "/".join(part for part in [self._safe_subdir(target_subdir), title] if part),
@@ -607,11 +708,16 @@ class BaiduNetdiskService:
             "preview_folder_count": detail_folder_count,
         }
         item["selection_key"] = self._selection_key(item)
+        item["ok"] = bool(item["ok"] and has_files)
         if missing_code:
-            item["reason"] = "需要输入提取码"
-            item["warning"] = "缺提取码，补充后重新预览"
-        elif detail.get("warning"):
-            item["warning"] = str(detail.get("warning") or "").strip()
+            item["reason"] = "提取码错误" if pass_code_invalid else "需要输入提取码"
+            item["warning"] = warning_text or ("提取码错误，请重新输入" if pass_code_invalid else "缺提取码，补充后重新预览")
+        elif not has_files:
+            item["reason"] = warning_text or "未读取到可下载文件"
+            if warning_text:
+                item["warning"] = warning_text
+        elif warning_text:
+            item["warning"] = warning_text
         else:
             item.pop("warning", None)
         return item
@@ -638,6 +744,10 @@ class BaiduNetdiskService:
         if not text:
             return fallback
         lowered = text.lower()
+        if any(fragment in lowered for fragment in ("http error 302", "redirect error", "infinite loop")):
+            return "百度分享接口跳转异常，已尝试兼容入口；仍失败请确认分享链接和提取码后重试"
+        if "params error" in lowered:
+            return "百度分享验证接口拒绝当前请求，请确认分享链接和提取码；若浏览器可正常打开，稍后重试或重新绑定百度登录态"
         if any(fragment in text for fragment in ("提取码", "访问码", "密码", "密码错误", "需要输入")):
             return text
         if any(fragment in text for fragment in ("提取", "验证失败", "校验失败")):
@@ -645,6 +755,23 @@ class BaiduNetdiskService:
         if any(fragment in lowered for fragment in ("verify", "pass", "pwd", "randsk")):
             return "需要输入提取码"
         return text
+
+    def _warning_indicates_pass_code(self, value: Any) -> bool:
+        text = str(value or "").strip()
+        lowered = text.lower()
+        return any(fragment in text for fragment in ("提取码", "访问码", "密码", "需要输入", "验证失败", "校验失败")) or any(
+            fragment in lowered for fragment in ("verify", "pass", "pwd", "randsk")
+        )
+
+    def _share_verify_error_is_pass_code_invalid(self, errno: int, message: Any) -> bool:
+        text = str(message or "").strip()
+        lowered = text.lower()
+        if errno in {-12, -9, 200025}:
+            return True
+        return (
+            any(fragment in text for fragment in ("提取码错误", "提取码输入错误", "提取码验证失败", "密码错误", "校验失败", "验证码错误"))
+            or any(fragment in lowered for fragment in ("invalid pass", "wrong pass", "pwd error"))
+        )
 
     def _likely_requires_pass_code(self, share: Dict[str, str]) -> bool:
         url = str(share.get("raw_url") or share.get("share_url") or "").lower()
@@ -708,26 +835,46 @@ class BaiduNetdiskService:
             raise BaiduNetdiskError("分享链接 shorturl 格式异常")
         pass_code = str(share.get("pass_code") or "").strip()
         share_url = f"https://pan.baidu.com/s/{feature}"
-        init_url = f"https://pan.baidu.com/share/init?surl={feature[1:]}"
-        tokens = await self._fetch_share_page_tokens(feature, cookie, referer=init_url if pass_code else "https://pan.baidu.com/disk/home")
+        init_url = self._share_init_url(feature)
+        tokens = await self._fetch_share_page_tokens(feature, cookie, referer="https://pan.baidu.com/disk/home")
         if pass_code:
-            verify_data = await self._verify_share_pass_code(feature, pass_code, tokens, cookie, init_url)
+            verify_data = await self._verify_share_pass_code(feature, pass_code, tokens, cookie, share_url)
             verify_errno = _safe_int(verify_data.get("errno", verify_data.get("err_no", 0)), 0)
             if verify_errno:
+                raw_verify_message = (
+                    verify_data.get("errmsg")
+                    or verify_data.get("show_msg")
+                    or verify_data.get("error_msg")
+                    or f"提取码验证失败 {verify_errno}"
+                )
+                verify_warning = self._share_preview_warning(
+                    raw_verify_message
+                )
+                pass_code_invalid = self._share_verify_error_is_pass_code_invalid(verify_errno, raw_verify_message)
+                if pass_code_invalid:
+                    verify_warning = "提取码错误，请重新输入"
+                if verify_warning == "需要输入提取码":
+                    verify_warning = "提取码验证失败，请确认提取码是否正确"
                 return {
                     "title": share.get("title") or "百度网盘分享",
                     "files": [],
                     "file_count": 0,
                     "folder_count": 0,
                     "total_size": 0,
-                    "requires_pass_code": True,
-                    "warning": self._share_preview_warning(verify_data.get("errmsg") or verify_data.get("show_msg") or verify_data.get("error_msg") or "提取码错误"),
+                    "requires_pass_code": pass_code_invalid,
+                    "pass_code_invalid": pass_code_invalid,
+                    "warning": verify_warning,
                 }
             randsk = str(verify_data.get("randsk") or "").strip()
             if randsk:
                 cookie = self._merge_cookie_header(cookie, {"BDCLND": randsk})
                 tokens["randsk"] = randsk
-        data = await self._fetch_share_list_payload(tokens, cookie, share_url, feature)
+                self._persist_cookie_patch({"BDCLND": randsk})
+            refreshed_tokens = await self._fetch_share_page_tokens(feature, cookie, referer=init_url)
+            refreshed_tokens["randsk"] = randsk or str(tokens.get("randsk") or "").strip()
+            tokens = refreshed_tokens
+        share_list_referer = init_url if pass_code else share_url
+        data = await self._fetch_share_list_payload(tokens, cookie, share_list_referer, feature)
         errno = _safe_int(data.get("errno", data.get("err_no", 0)), 0)
         if errno:
             warning = self._share_preview_warning(data.get("errmsg") or data.get("error_msg") or data.get("show_msg") or f"分享列表读取失败 {errno}")
@@ -737,7 +884,7 @@ class BaiduNetdiskService:
                 "file_count": 0,
                 "folder_count": 0,
                 "total_size": 0,
-                "requires_pass_code": bool(not pass_code and self._share_preview_warning(warning) == "需要输入提取码"),
+                "requires_pass_code": bool(not pass_code and self._warning_indicates_pass_code(warning)),
                 "warning": warning,
             }
         files = self._normalize_share_file_list(list(data.get("list") or []))
@@ -756,7 +903,7 @@ class BaiduNetdiskService:
         preview_files = files
         if len(files) == 1 and files[0].get("is_dir") and files[0].get("path"):
             try:
-                child_detail = await self._fetch_share_folder_preview(tokens, cookie, share_url, feature, files[0])
+                child_detail = await self._fetch_share_folder_preview(tokens, cookie, share_list_referer, feature, files[0])
                 if child_detail.get("files"):
                     preview_files = child_detail["files"]
             except Exception as exc:
@@ -787,29 +934,65 @@ class BaiduNetdiskService:
         cookie: str,
         referer: str,
     ) -> Dict[str, Any]:
-        query_payload: Dict[str, Any] = {
-            "t": str(int(time.time() * 1000)),
-        }
         shareid = str(tokens.get("shareid") or tokens.get("share_id") or "").strip()
         share_uk = str(tokens.get("share_uk") or "").strip()
+        bdstoken = str(tokens.get("bdstoken") or "").strip()
+        feature_surl = feature[1:] if str(feature or "").startswith("1") else str(feature or "").strip()
+        query_variants: List[tuple[Dict[str, Any], Dict[str, str], str]] = []
+        if feature_surl:
+            query_variants.append((
+                {
+                    "t": str(int(time.time() * 1000)),
+                    "surl": feature_surl,
+                    "channel": "chunlei",
+                    "web": "1",
+                    "app_id": "250528",
+                    "bdstoken": bdstoken,
+                    "logid": self._make_web_logid(cookie),
+                    "clienttype": "0",
+                    "dp-logid": self._make_dp_logid(),
+                },
+                {"pwd": pass_code, "vcode": "", "vcode_str": ""},
+                self._share_init_url(feature),
+            ))
         if shareid and share_uk:
-            query_payload.update({
-                "shareid": shareid,
-                "uk": share_uk,
-            })
-        else:
-            query_payload["surl"] = feature[1:]
-        verify_query = urlencode(query_payload)
-        return await self._fetch_form_json(
-            f"http://pan.baidu.com/share/verify?{verify_query}",
-            cookie,
-            data={
-                "pwd": pass_code,
-                "vcode": "",
-                "vcode_str": "",
-            },
-            referer=referer,
-        )
+            query_variants.append((
+                {
+                    "shareid": shareid,
+                    "time": str(int(time.time() * 1000)),
+                    "clienttype": "1",
+                    "uk": share_uk,
+                },
+                {
+                    "pwd": pass_code,
+                    "vcode": "null",
+                    "vcode_str": "null",
+                    "bdstoken": bdstoken,
+                },
+                referer,
+            ))
+        last_data: Dict[str, Any] = {}
+        for query_payload, form_data, request_referer in query_variants:
+            verify_query = urlencode({key: value for key, value in query_payload.items() if value != ""})
+            data = await self._fetch_form_json(
+                f"https://pan.baidu.com/share/verify?{verify_query}",
+                cookie,
+                data=form_data,
+                referer=request_referer,
+                use_requests=True,
+            )
+            last_data = data
+            errno = _safe_int(data.get("errno", data.get("err_no", 0)), 0)
+            if not errno:
+                return data
+            if errno in {-62, -63, -19}:
+                return {
+                    **data,
+                    "errmsg": data.get("errmsg") or data.get("show_msg") or "百度分享验证触发验证码，请在浏览器打开分享链接完成验证后重试",
+                }
+            if errno not in {9019}:
+                return data
+        return last_data or {"errno": 9019, "errmsg": "params error"}
 
     async def _fetch_share_folder_preview(
         self,
@@ -844,6 +1027,18 @@ class BaiduNetdiskService:
         ])
         return base64.b64encode(source.encode("utf-8", errors="ignore")).decode("ascii").rstrip("=")
 
+    def _make_web_logid(self, cookie: str) -> str:
+        baiduid = self._cookie_value(cookie, "BAIDUID") or self._cookie_value(cookie, "BAIDUID_BFESS")
+        return base64.b64encode(str(baiduid or "").encode("utf-8", errors="ignore")).decode("ascii")
+
+    def _make_dp_logid(self) -> str:
+        return f"{secrets.randbelow(9_000_000_000_000_000_000) + 1_000_000_000_000_000_000}{secrets.randbelow(100):02d}"
+
+    def _share_init_url(self, feature: str) -> str:
+        text = str(feature or "").strip()
+        surl = text[1:] if text.startswith("1") else text
+        return f"https://pan.baidu.com/share/init?surl={quote(surl)}"
+
     async def _fetch_share_list_payload(
         self,
         tokens: Dict[str, Any],
@@ -857,33 +1052,71 @@ class BaiduNetdiskService:
         share_uk = str(tokens.get("share_uk") or tokens.get("uk") or "").strip()
         shareid = str(tokens.get("shareid") or tokens.get("share_id") or "").strip()
         randsk = str(tokens.get("randsk") or "").strip() or self._cookie_value(cookie, "BDCLND")
-        query_payload = {
-            "bdstoken": tokens.get("bdstoken") or "",
-            "logid": self._make_share_logid(feature, cookie),
-            "t": str(int(time.time() * 1000)),
-            "channel": "chunlei",
-            "clienttype": "0",
-            "web": "1",
-            "app_id": "250528",
-            "uk": share_uk,
-            "shareid": shareid,
-            "sekey": randsk,
-            "shorturl": feature[1:],
-            "page": "1",
-            "num": "100",
-            "dir": str(dir_path or "/"),
-            "root": "1" if root else "0",
-            "order": "other",
-            "desc": "1",
-            "showempty": "0",
-        }
+        feature_surl = feature[1:] if str(feature or "").startswith("1") else str(feature or "").strip()
+        if root:
+            query_payload = {
+                "web": "5",
+                "app_id": "250528",
+                "desc": "1",
+                "showempty": "0",
+                "page": "1",
+                "num": "100",
+                "order": "time",
+                "shorturl": feature_surl,
+                "root": "1",
+                "view_mode": "1",
+                "channel": "chunlei",
+                "bdstoken": tokens.get("bdstoken") or "",
+                "logid": self._make_web_logid(cookie),
+                "clienttype": "0",
+                "dp-logid": self._make_dp_logid(),
+            }
+        else:
+            query_payload = {
+                "bdstoken": tokens.get("bdstoken") or "",
+                "logid": self._make_share_logid(feature, cookie),
+                "t": str(int(time.time() * 1000)),
+                "channel": "chunlei",
+                "clienttype": "0",
+                "web": "1",
+                "app_id": "250528",
+                "uk": share_uk,
+                "shareid": shareid,
+                "sekey": self._baidu_share_sekey(randsk),
+                "shorturl": feature_surl,
+                "page": "1",
+                "num": "100",
+                "dir": str(dir_path or "/"),
+                "root": "0",
+                "order": "other",
+                "desc": "1",
+                "showempty": "0",
+            }
         query = urlencode({key: value for key, value in query_payload.items() if value != ""})
-        return await self._fetch_json(
-            f"https://pan.baidu.com/share/list?{query}",
-            cookie,
-            timeout=20,
-            referer=share_url,
-        )
+        list_url = f"https://pan.baidu.com/share/list?{query}"
+        referers = []
+        for candidate in (
+            share_url,
+            self._share_init_url(feature),
+            f"https://pan.baidu.com/s/{feature}",
+            "https://pan.baidu.com/disk/home",
+        ):
+            clean = str(candidate or "").strip()
+            if clean and clean not in referers:
+                referers.append(clean)
+        last_error = ""
+        for referer in referers:
+            try:
+                return await self._fetch_json(list_url, cookie, timeout=20, referer=referer, use_requests=True)
+            except Exception as exc:
+                last_error = str(exc)
+                logger.debug("百度分享文件列表接口失败 referer=%s error=%s", referer, exc)
+        if root:
+            page_rows = self._extract_share_page_file_rows(tokens.get("_page_payload"))
+            if page_rows:
+                logger.info("百度分享文件列表接口失败，已从分享页内嵌数据恢复 %s 项", len(page_rows))
+                return {"errno": 0, "list": page_rows, "_source": "share_page_payload"}
+        raise BaiduNetdiskError(f"分享文件列表读取失败: {last_error or '接口无响应'}")
 
     def _cookie_value(self, cookie: str, name: str) -> str:
         target = str(name or "").strip()
@@ -927,14 +1160,14 @@ class BaiduNetdiskService:
         return vip_type >= 2 or "svip" in vip_label or "超级" in vip_label
 
     async def health(self) -> Dict[str, Any]:
-        ready = bool(str(getattr(self._config(), "cookie", "") or "").strip())
+        ready = self._has_baidu_login_cookie()
         result = {
-            "enabled": bool(getattr(self._config(), "enabled", False)),
+            "enabled": bool(getattr(self._config(), "enabled", False) and ready),
             "engine": "baidu_share_direct",
             "config_dir": self._config_dir(),
             "download_root": self._download_root(),
             "ok": ready,
-            "message": "百度登录态可用" if ready else "百度账号未登录",
+            "message": "百度登录态可用" if ready else "百度账号登录态缺少 BDUSS，请重新扫码或重新绑定 Cookie",
             "account": self.account_status(),
             "svip_speed": self._is_svip(),
         }
@@ -942,6 +1175,7 @@ class BaiduNetdiskService:
 
     def account_status(self) -> Dict[str, Any]:
         cfg = self._config()
+        ready = self._has_baidu_login_cookie()
         quota = max(0, _safe_int(getattr(cfg, "quota_bytes", 0)))
         used = max(0, _safe_int(getattr(cfg, "used_bytes", 0)))
         remaining = max(0, quota - used) if quota else 0
@@ -950,9 +1184,10 @@ class BaiduNetdiskService:
         if not vip_label:
             vip_label = "SVIP" if vip_type >= 2 else ("VIP" if vip_type == 1 else "普通账号")
         return {
-            "enabled": bool(getattr(cfg, "enabled", False)),
-            "configured": bool(str(getattr(cfg, "cookie", "") or "").strip()),
-            "ready": bool(str(getattr(cfg, "cookie", "") or "").strip()),
+            "enabled": bool(getattr(cfg, "enabled", False) and ready),
+            "configured": ready,
+            "ready": ready,
+            "login_cookie_valid": ready,
             "name": str(getattr(cfg, "account_name", "") or "").strip(),
             "netdisk_name": str(getattr(cfg, "account_netdisk_name", "") or "").strip(),
             "avatar_url": str(getattr(cfg, "account_avatar_url", "") or "").strip(),
@@ -988,6 +1223,9 @@ class BaiduNetdiskService:
     async def start_official_login_session(self) -> Dict[str, Any]:
         """启动隔离浏览器 Profile，让用户在百度官方页面完成登录。"""
         await self.close_official_login_session()
+        display_error = self._official_login_display_error()
+        if display_error:
+            raise BaiduNetdiskError(display_error)
         browser = self._find_official_login_browser()
         port = self._allocate_local_port()
         profile_dir = self._official_login_profile_dir()
@@ -1005,6 +1243,8 @@ class BaiduNetdiskService:
             "--window-position=120,80",
             f"--app={BAIDU_OFFICIAL_LOGIN_URL}",
         ]
+        if os.name != "nt" and self._is_container_runtime():
+            command.extend(["--no-sandbox", "--disable-dev-shm-usage"])
         try:
             proc = subprocess.Popen(
                 command,
@@ -1049,7 +1289,7 @@ class BaiduNetdiskService:
             self._official_login_session = None
             raise BaiduNetdiskError("百度官方登录窗口已关闭，请重新打开并完成登录")
         cookie_header, cookie_names = await self._read_baidu_cookies_from_devtools(_safe_int(session.get("port")))
-        result = await self.test_account(cookie_header, persist=persist)
+        result = await self.test_account(cookie_header, persist=persist, allow_quota_failure=True)
         account = dict(result.get("account") or {})
         account.update({
             "configured": True,
@@ -1080,30 +1320,424 @@ class BaiduNetdiskService:
                     proc.kill()
         return {"success": True, "message": "百度官方登录窗口已关闭"}
 
-    async def test_account(self, cookie: str = "", *, persist: bool = False) -> Dict[str, Any]:
-        cookie_value = str(cookie or "").strip() or str(getattr(self._config(), "cookie", "") or "").strip()
-        if not cookie_value or cookie_value == "********":
+    async def start_qr_login_session(self) -> Dict[str, Any]:
+        """创建百度 Passport 扫码登录会话，适配 Docker / 群晖无 GUI 部署。"""
+        self._cleanup_qr_login_sessions()
+        payload, cookie_header = await self._fetch_baidu_qr_login_payload()
+        errno = _safe_int(payload.get("errno"), -1)
+        if errno != 0:
+            raise BaiduNetdiskError(str(payload.get("errmsg") or payload.get("error_msg") or payload))
+        sign = str(payload.get("sign") or "").strip()
+        image_url = self._normalize_baidu_qr_image_url(str(payload.get("imgurl") or "").strip())
+        if not sign or not image_url:
+            raise BaiduNetdiskError(f"百度扫码登录二维码响应缺少 sign/imgurl: {payload}")
+
+        session_id = uuid.uuid4().hex
+        now = int(time.time())
+        session = {
+            "session_id": session_id,
+            "sign": sign,
+            "image_url": image_url,
+            "cookie": cookie_header,
+            "gid": self._baidu_qr_gid(),
+            "callback": f"tangram_guid_{self._timestamp_ms() + 1}",
+            "created_at": now,
+            "expires_at": now + BAIDU_QR_LOGIN_TTL_SECONDS,
+            "status": "waiting",
+            "message": "请使用百度网盘 App 扫码登录",
+        }
+        self._qr_login_sessions[session_id] = session
+        return {
+            "success": True,
+            "message": "百度扫码登录二维码已生成",
+            "qr_login": self._public_qr_login_status(session),
+        }
+
+    async def poll_qr_login_session(self, session_id: str, *, persist: bool = True) -> Dict[str, Any]:
+        """轮询百度扫码登录状态；确认后换取 Web Cookie 并保存账号。"""
+        self._cleanup_qr_login_sessions()
+        session = self._qr_login_sessions.get(str(session_id or "").strip())
+        if not session:
+            return {
+                "success": False,
+                "message": "百度扫码登录已过期，请重新生成二维码",
+                "qr_login": {
+                    "active": False,
+                    "status": "expired",
+                    "message": "二维码已过期，请重新生成",
+                },
+            }
+        if int(time.time()) >= _safe_int(session.get("expires_at")):
+            session["status"] = "expired"
+            session["message"] = "二维码已过期，请重新生成"
+            self._qr_login_sessions.pop(str(session.get("session_id") or ""), None)
+            return {"success": False, "message": session["message"], "qr_login": self._public_qr_login_status(session)}
+
+        try:
+            payload = await self._poll_baidu_qr_login_payload(session)
+        except asyncio.TimeoutError:
+            self._set_qr_login_status(session, "waiting", "等待扫码确认")
+            return {"success": True, "message": session["message"], "qr_login": self._public_qr_login_status(session)}
+        except Exception as exc:
+            text = str(exc)
+            if "Timeout" in text or "timed out" in text:
+                self._set_qr_login_status(session, "waiting", "等待扫码确认")
+                return {"success": True, "message": session["message"], "qr_login": self._public_qr_login_status(session)}
+            raise
+
+        channel_v = self._extract_qr_channel_value(payload)
+        if channel_v:
+            cookie_header, cookie_names = await self._complete_baidu_qr_login(session, channel_v)
+            result = await self.test_account(cookie_header, persist=persist, allow_quota_failure=True)
+            account = dict(result.get("account") or {})
+            account.update({
+                "configured": True,
+                "ready": True,
+                "login_method": "qr_login",
+            })
+            session["status"] = "completed"
+            session["message"] = "百度扫码登录已同步"
+            self._qr_login_sessions.pop(str(session.get("session_id") or ""), None)
+            result.update({
+                "message": "百度扫码登录已同步",
+                "account": account,
+                "cookie_names": cookie_names,
+                "qr_login": self._public_qr_login_status(session),
+            })
+            return result
+
+        status, message = self._normalize_qr_login_poll_status(payload)
+        self._set_qr_login_status(session, status, message)
+        if status in {"expired", "failed", "cancelled"}:
+            self._qr_login_sessions.pop(str(session.get("session_id") or ""), None)
+        return {"success": True, "message": session["message"], "qr_login": self._public_qr_login_status(session)}
+
+    def close_qr_login_session(self, session_id: str = "") -> Dict[str, Any]:
+        key = str(session_id or "").strip()
+        if key:
+            self._qr_login_sessions.pop(key, None)
+        else:
+            self._qr_login_sessions.clear()
+        return {"success": True, "message": "百度扫码登录已关闭", "qr_login": {"active": False, "status": "closed"}}
+
+    async def login_with_password(self, username: str, password: str, *, persist: bool = True) -> Dict[str, Any]:
+        """通过 BaiduPCS-Go 的账号密码登录拿到 Cookie；二次验证场景交给扫码登录。"""
+        login_name = str(username or "").strip()
+        login_password = str(password or "")
+        if not login_name:
+            raise BaiduNetdiskError("百度账号不能为空")
+        if not login_password:
+            raise BaiduNetdiskError("百度账号密码不能为空")
+
+        pcsgo_path = self._resolve_baidu_pcs_go_path()
+        work_root = os.path.join(str(get_config().storage.temp_path or tempfile.gettempdir()), "baidu_netdisk_login")
+        os.makedirs(work_root, exist_ok=True)
+        work_dir = tempfile.mkdtemp(prefix="pcsgo_login_", dir=work_root)
+        config_dir = os.path.join(work_dir, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        env = os.environ.copy()
+        env["BAIDUPCS_GO_CONFIG_DIR"] = config_dir
+        try:
+            returncode, output = await self._run_baidu_pcs_go_login_command(
+                [
+                    pcsgo_path,
+                    "login",
+                    f"--username={login_name}",
+                    f"--password={login_password}",
+                ],
+                env=env,
+                timeout=75,
+            )
+            cookie_header, cookie_names = self._cookie_header_from_pcsgo_config(config_dir)
+            if not cookie_header:
+                raise BaiduNetdiskError(self._baidu_password_login_error(output, returncode))
+            result = await self.test_account(cookie_header, persist=persist, allow_quota_failure=True)
+            account = dict(result.get("account") or {})
+            account.update({
+                "configured": True,
+                "ready": True,
+                "login_method": "password",
+            })
+            result.update({
+                "message": "百度账号密码登录已同步",
+                "account": account,
+                "cookie_names": cookie_names,
+            })
+            return result
+        finally:
+            with contextlib.suppress(Exception):
+                shutil.rmtree(work_dir, ignore_errors=True)
+
+    def _cleanup_qr_login_sessions(self) -> None:
+        now = int(time.time())
+        expired = [
+            key for key, session in self._qr_login_sessions.items()
+            if now >= _safe_int(session.get("expires_at"))
+        ]
+        for key in expired:
+            self._qr_login_sessions.pop(key, None)
+
+    def _public_qr_login_status(self, session: Dict[str, Any]) -> Dict[str, Any]:
+        status = str(session.get("status") or "").strip() or "waiting"
+        active = status not in {"completed", "expired", "failed", "cancelled", "closed"}
+        return {
+            "active": active,
+            "session_id": str(session.get("session_id") or "").strip() if active else "",
+            "status": status,
+            "message": str(session.get("message") or "").strip(),
+            "image_url": str(session.get("image_url") or "").strip() if active else "",
+            "created_at": _safe_int(session.get("created_at")),
+            "expires_at": _safe_int(session.get("expires_at")),
+        }
+
+    def _set_qr_login_status(self, session: Dict[str, Any], status: str, message: str) -> None:
+        """扫码状态只允许向前走，避免百度长轮询偶发 waiting 覆盖已扫码状态。"""
+        current = str(session.get("status") or "").strip() or "waiting"
+        next_status = str(status or "").strip() or "waiting"
+        rank = {
+            "waiting": 0,
+            "scanned": 1,
+            "confirmed": 2,
+            "completed": 3,
+            "expired": 9,
+            "failed": 9,
+            "cancelled": 9,
+            "closed": 9,
+        }
+        if rank.get(next_status, 0) < rank.get(current, 0):
+            return
+        session["status"] = next_status
+        session["message"] = str(message or "").strip()
+
+    def _baidu_qr_headers(self) -> Dict[str, str]:
+        return {
+            "User-Agent": _BAIDU_WEB_USER_AGENT,
+            "Accept": "application/json,text/javascript,*/*;q=0.01",
+            "Referer": "https://passport.baidu.com/v2/?login",
+        }
+
+    async def _fetch_baidu_qr_login_payload(self) -> tuple[Dict[str, Any], str]:
+        timeout = aiohttp.ClientTimeout(total=12, connect=5)
+        async with aiohttp.ClientSession(timeout=timeout, headers=self._baidu_qr_headers()) as session:
+            params = {
+                "lp": "pc",
+                "qrloginfrom": "pc",
+                "tpl": "netdisk",
+                "apiver": "v3",
+                "tt": self._timestamp_ms(),
+            }
+            async with session.get(BAIDU_QR_GET_URL, params=params) as response:
+                body = await response.text()
+                if response.status >= 400:
+                    raise BaiduNetdiskError(f"百度二维码接口返回 HTTP {response.status}")
+                cookie_header = self._cookies_from_response(response)
+        return self._parse_baidu_json_payload(body), cookie_header
+
+    async def _poll_baidu_qr_login_payload(self, session: Dict[str, Any]) -> Dict[str, Any]:
+        timeout = aiohttp.ClientTimeout(total=40, connect=5, sock_read=38)
+        headers = self._baidu_qr_headers()
+        cookie_header = str(session.get("cookie") or "").strip()
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+        callback = str(session.get("callback") or "").strip() or f"tangram_guid_{self._timestamp_ms() + 1}"
+        params = {
+            "channel_id": str(session.get("sign") or ""),
+            "tpl": "netdisk",
+            "gid": str(session.get("gid") or "").strip() or self._baidu_qr_gid(),
+            "apiver": "v3",
+            "callback": callback,
+            "tt": self._timestamp_ms(),
+            "_": self._timestamp_ms() + 2,
+        }
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as client:
+            async with client.get(BAIDU_QR_UNICAST_URL, params=params) as response:
+                body = await response.text()
+                if response.status >= 400:
+                    raise BaiduNetdiskError(f"百度扫码状态接口返回 HTTP {response.status}")
+                merged_cookie = self._merge_cookie_header(cookie_header, self._cookies_from_response(response, as_dict=True))
+                if merged_cookie:
+                    session["cookie"] = merged_cookie
+        return self._parse_baidu_json_payload(body)
+
+    async def _complete_baidu_qr_login(self, session: Dict[str, Any], bduss_token: str) -> tuple[str, List[str]]:
+        timeout = aiohttp.ClientTimeout(total=15, connect=5)
+        headers = self._baidu_qr_headers()
+        cookie_header = str(session.get("cookie") or "").strip()
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+        now_ms = self._timestamp_ms()
+        callback = f"bd__cbs__{uuid.uuid4().hex[:10]}"
+        params = {
+            "bduss": str(bduss_token or "").strip(),
+            "u": "https://pan.baidu.com/",
+            "tpl": "netdisk",
+            "apiver": "v3",
+            "loginVersion": "v4",
+            "qrcode": "1",
+            "time": now_ms // 1000,
+            "tt": now_ms,
+            "v": now_ms,
+            "callback": callback,
+        }
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as client:
+            async with client.get(BAIDU_QR_BDUSS_LOGIN_URL, params=params, allow_redirects=False) as response:
+                await response.text()
+                cookie_header = self._merge_cookie_header(cookie_header, self._cookies_from_response(response, as_dict=True))
+                if response.status >= 400:
+                    raise BaiduNetdiskError(f"百度扫码登录换取 Cookie 返回 HTTP {response.status}")
+        if not (self._cookie_value(cookie_header, "BDUSS") or self._cookie_value(cookie_header, "BDUSS_BFESS")):
+            raise BaiduNetdiskError("百度扫码已确认，但未返回 BDUSS 登录态")
+        cookie_names = [
+            name for name in _BAIDU_COOKIE_PRIORITY if self._cookie_value(cookie_header, name)
+        ]
+        return cookie_header, cookie_names
+
+    def _normalize_baidu_qr_image_url(self, value: str) -> str:
+        text = str(value or "").replace("\\/", "/").strip()
+        if text.startswith("//"):
+            return f"https:{text}"
+        if text.startswith("http://") or text.startswith("https://"):
+            return text
+        if text:
+            return f"https://{text.lstrip('/')}"
+        return ""
+
+    def _parse_baidu_json_payload(self, body: str) -> Dict[str, Any]:
+        text = str(body or "").strip()
+        if not text:
+            return {}
+        if text.startswith("{") and text.endswith("}"):
+            return self._decode_baidu_json_object(text)
+        match = re.search(r"\((\{.*\})\)\s*;?\s*$", text, re.S)
+        if match:
+            return self._decode_baidu_json_object(match.group(1))
+        match = re.search(r"(\{.*\})", text, re.S)
+        if match:
+            return self._decode_baidu_json_object(match.group(1))
+        raise BaiduNetdiskError(f"无法解析百度接口响应: {text[:160]}")
+
+    def _decode_baidu_json_object(self, text: str) -> Dict[str, Any]:
+        normalized = str(text or "").replace("\\/", "/")
+        data = json.loads(normalized)
+        if not isinstance(data, dict):
+            raise BaiduNetdiskError("百度接口响应不是 JSON 对象")
+        channel_v = data.get("channel_v")
+        if isinstance(channel_v, str) and channel_v.strip():
+            with contextlib.suppress(Exception):
+                data["channel_v"] = json.loads(channel_v)
+        return data
+
+    def _extract_qr_channel_value(self, payload: Dict[str, Any]) -> str:
+        channel = payload.get("channel_v")
+        if isinstance(channel, dict):
+            if _safe_int(channel.get("status"), 1) == 0:
+                return str(channel.get("v") or "").strip()
+        return str(payload.get("v") or payload.get("bduss") or "").strip()
+
+    def _normalize_qr_login_poll_status(self, payload: Dict[str, Any]) -> tuple[str, str]:
+        errno = _safe_int(payload.get("errno"), 1)
+        channel = payload.get("channel_v") if isinstance(payload, dict) else {}
+        channel_status = _safe_int(channel.get("status"), -1) if isinstance(channel, dict) else -1
+        if errno == 0 and channel_status == 1:
+            return "scanned", "已扫码，等待手机确认登录"
+        if errno == 0 and channel_status == 0:
+            return "confirmed", "已确认登录，正在同步账号"
+        if errno == 1:
+            return "waiting", "等待扫码"
+        if errno in {2, 3, 4, 5, 6}:
+            return "expired", "二维码已过期，请重新生成"
+        return "waiting", str(payload.get("errmsg") or payload.get("error_msg") or "等待扫码确认")
+
+    def _timestamp_ms(self) -> int:
+        return int(time.time() * 1000)
+
+    def _baidu_qr_gid(self) -> str:
+        return str(uuid.uuid4()).upper()
+
+    def _cookies_from_response(self, response, *, as_dict: bool = False):
+        values: Dict[str, str] = {}
+        with contextlib.suppress(Exception):
+            for key, morsel in response.cookies.items():
+                value = getattr(morsel, "value", "")
+                if key and value:
+                    values[str(key)] = str(value)
+        with contextlib.suppress(Exception):
+            for header in response.headers.getall("Set-Cookie", []):
+                jar = SimpleCookie()
+                jar.load(header)
+                for key, morsel in jar.items():
+                    value = getattr(morsel, "value", "")
+                    if key and value:
+                        values[str(key)] = str(value)
+        if as_dict:
+            return values
+        return self._merge_cookie_header("", values)
+
+    async def test_account(self, cookie: str = "", *, persist: bool = False, allow_quota_failure: bool = False) -> Dict[str, Any]:
+        cookie_value = str(cookie or "").strip() or self._configured_baidu_cookie()
+        if not cookie_value:
             raise BaiduNetdiskError("百度账号登录态不能为空")
+        if not self._has_baidu_login_cookie(cookie_value):
+            raise BaiduNetdiskError("百度账号登录态缺少 BDUSS，请重新扫码或重新绑定 Cookie")
         account = await self._fetch_account_by_web(cookie_value)
-        quota_payload = await self._fetch_quota_by_web(cookie_value)
-        account.update(quota_payload)
+        quota_warning = ""
+        try:
+            quota_payload = await self._fetch_quota_by_web(cookie_value)
+            account.update(quota_payload)
+        except Exception as exc:
+            if not allow_quota_failure:
+                raise
+            quota_warning = f"容量刷新失败: {self._sanitize_error(exc)}"
+            cfg = self._config()
+            for key in ("quota_bytes", "used_bytes", "vip_expire_at"):
+                cached_value = _safe_int(getattr(cfg, key, 0))
+                if cached_value > 0 and _safe_int(account.get(key)) <= 0:
+                    account[key] = cached_value
+                else:
+                    account.setdefault(key, cached_value)
         account["configured"] = True
         account["ready"] = True
         account["cached_at"] = int(time.time())
         if persist:
             self._persist_account(cookie_value, account)
-        return {
+        result = {
             "success": True,
-            "message": "百度账号检测成功",
+            "message": "百度账号检测成功" if not quota_warning else f"百度账号检测成功，{quota_warning}",
             "account": account,
         }
+        if quota_warning:
+            result["warning"] = quota_warning
+        return result
 
     async def refresh_account_status(self) -> Dict[str, Any]:
-        """强制从百度接口重新拉取账号与容量，并更新本地缓存。"""
-        result = await self.test_account("", persist=True)
-        result["message"] = "百度账号状态已刷新"
+        """刷新账号资料；容量接口异常时保留本地容量缓存，不阻断账号刷新。"""
+        result = await self.test_account("", persist=True, allow_quota_failure=True)
+        if result.get("warning"):
+            result["message"] = "百度账号状态已刷新，容量接口暂不可用，已保留本地容量缓存"
+        else:
+            result["message"] = "百度账号状态已刷新"
         result["official_login"] = self.official_login_status()
         return result
+
+    def _is_container_runtime(self) -> bool:
+        if os.path.exists("/.dockerenv"):
+            return True
+        with contextlib.suppress(Exception):
+            cgroup = Path("/proc/1/cgroup").read_text(encoding="utf-8", errors="ignore").lower()
+            return any(marker in cgroup for marker in ("docker", "containerd", "kubepods", "podman"))
+        return False
+
+    def _official_login_display_error(self) -> str:
+        if os.name == "nt":
+            return ""
+        if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+            return ""
+        runtime = "Docker/容器" if self._is_container_runtime() else "Linux 服务"
+        return (
+            f"当前后端运行在{runtime}无图形界面环境，无法弹出百度官方登录窗口。"
+            "请在设置页使用“扫码登录”或“手动 Cookie 绑定”；如果一定要用官方登录，"
+            "需要给容器安装 Chrome/Chromium 并配置 X11/VNC。"
+        )
 
     def _find_official_login_browser(self) -> Dict[str, str]:
         candidates: List[tuple[str, str]] = []
@@ -1139,7 +1773,10 @@ class BaiduNetdiskService:
             seen.add(clean_path)
             if os.path.exists(clean_path):
                 return {"name": name, "path": clean_path}
-        raise BaiduNetdiskError("没有找到可用于官方登录的 Chrome / Edge / Chromium 浏览器")
+        raise BaiduNetdiskError(
+            "没有找到可用于官方登录的 Chrome / Edge / Chromium 浏览器。"
+            "桌面环境请安装 Chrome/Edge/Chromium；Docker/群晖部署建议使用设置页的“扫码登录”。"
+        )
 
     def _allocate_local_port(self) -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -1280,29 +1917,101 @@ class BaiduNetdiskService:
         cfg.update({
             "enabled": True,
             "cookie": cookie,
-            "account_name": str(account.get("name") or account.get("username") or "").strip(),
-            "account_netdisk_name": str(account.get("netdisk_name") or "").strip(),
-            "account_avatar_url": str(account.get("avatar_url") or "").strip(),
-            "account_uk": str(account.get("uk") or "").strip(),
-            "vip_type": _safe_int(account.get("vip_type")),
-            "vip_label": str(account.get("vip_label") or "").strip(),
-            "vip_level": str(account.get("vip_level") or "").strip(),
-            "vip_expire_at": _safe_int(account.get("vip_expire_at")),
-            "quota_bytes": _safe_int(account.get("quota_bytes")),
-            "used_bytes": _safe_int(account.get("used_bytes")),
             "account_cached_at": _safe_int(account.get("cached_at") or int(time.time())),
         })
+        if "name" in account or "username" in account:
+            cfg["account_name"] = str(account.get("name") or account.get("username") or "").strip()
+        for source_key, target_key in (
+            ("netdisk_name", "account_netdisk_name"),
+            ("avatar_url", "account_avatar_url"),
+            ("uk", "account_uk"),
+            ("vip_label", "vip_label"),
+            ("vip_level", "vip_level"),
+        ):
+            if source_key in account:
+                cfg[target_key] = str(account.get(source_key) or "").strip()
+        for key in ("vip_type", "vip_expire_at", "quota_bytes", "used_bytes"):
+            if key in account:
+                cfg[key] = _safe_int(account.get(key))
         save_config({"baidu_netdisk": cfg})
 
-    async def _fetch_json(self, url: str, cookie: str, timeout: int = 20, referer: str = "") -> Dict[str, Any]:
+    def _persist_cookie_patch(self, extra: Dict[str, str]) -> None:
+        values = {
+            key: str(value or "").strip()
+            for key, value in (extra or {}).items()
+            if str(key or "").strip() and str(value or "").strip()
+        }
+        if not values:
+            return
+        try:
+            config_obj = get_config()
+            current = config_obj.model_dump() if hasattr(config_obj, "model_dump") else {}
+        except Exception as exc:
+            logger.debug("百度 Cookie 辅助字段读取配置失败: %s", exc)
+            return
+        cfg = dict(current.get("baidu_netdisk") or {})
+        current_cookie = str(cfg.get("cookie") or "")
+        if not (self._cookie_value(current_cookie, "BDUSS") or self._cookie_value(current_cookie, "BDUSS_BFESS")):
+            logger.debug("百度 Cookie 辅助字段未写入：当前配置缺少 BDUSS 登录态")
+            return
+        cookie = self._merge_cookie_header(current_cookie, values)
+        if cookie and cookie != current_cookie:
+            cfg["cookie"] = cookie
+            try:
+                save_config({"baidu_netdisk": cfg})
+            except Exception as exc:
+                logger.debug("百度 Cookie 辅助字段持久化失败: %s", exc)
+
+    def _baidu_web_api_headers(
+        self,
+        cookie: str,
+        *,
+        referer: str = "",
+        content_type: str = "",
+        browser_like: bool = False,
+    ) -> Dict[str, str]:
+        user_agent = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+        )
+        headers = {
+            "Cookie": cookie,
+            "User-Agent": user_agent,
+            "Accept": "application/json, text/javascript, */*; q=0.01" if browser_like else "application/json,text/plain,*/*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        if content_type:
+            headers["Content-Type"] = content_type
+        if referer:
+            headers["Referer"] = referer
+            if not browser_like:
+                parsed_referer = urlparse(referer)
+                if parsed_referer.scheme and parsed_referer.netloc:
+                    headers["Origin"] = f"{parsed_referer.scheme}://{parsed_referer.netloc}"
+        if browser_like:
+            headers.update({
+                "sec-ch-ua-platform": '"Windows"',
+                "sec-ch-ua": '"Chromium";v="126", "Google Chrome";v="126", "Not/A)Brand";v="99"',
+                "sec-ch-ua-mobile": "?0",
+            })
+        return headers
+
+    async def _fetch_json(
+        self,
+        url: str,
+        cookie: str,
+        timeout: int = 20,
+        referer: str = "",
+        *,
+        use_requests: bool = False,
+    ) -> Dict[str, Any]:
         def run() -> Dict[str, Any]:
-            headers = {
-                "Cookie": cookie,
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
-                "Accept": "application/json,text/plain,*/*",
-            }
-            if referer:
-                headers["Referer"] = referer
+            headers = self._baidu_web_api_headers(cookie, referer=referer, browser_like=use_requests)
+            if use_requests:
+                response = requests.get(url, headers=headers, timeout=timeout)
+                response.raise_for_status()
+                return response.json()
             request = Request(
                 url,
                 headers=headers,
@@ -1321,17 +2030,25 @@ class BaiduNetdiskService:
         data: Optional[Dict[str, str]] = None,
         referer: str = "",
         timeout: int = 20,
+        use_requests: bool = False,
     ) -> Dict[str, Any]:
         def run() -> Dict[str, Any]:
             body = urlencode({key: str(value or "") for key, value in (data or {}).items()}).encode("utf-8")
-            headers = {
-                "Cookie": cookie,
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
-                "Accept": "application/json,text/plain,*/*",
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            }
-            if referer:
-                headers["Referer"] = referer
+            headers = self._baidu_web_api_headers(
+                cookie,
+                referer=referer,
+                content_type="application/x-www-form-urlencoded; charset=UTF-8",
+                browser_like=use_requests,
+            )
+            if use_requests:
+                response = requests.post(
+                    url,
+                    data={key: str(value or "") for key, value in (data or {}).items()},
+                    headers=headers,
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+                return response.json()
             request = Request(url, data=body, headers=headers)
             with urlopen(request, timeout=timeout) as response:
                 body_text = response.read().decode("utf-8", errors="replace")
@@ -1343,18 +2060,42 @@ class BaiduNetdiskService:
         def run() -> Dict[str, Any]:
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
                 "Referer": referer or "https://pan.baidu.com/disk/home",
                 "Cookie": cookie,
             }
             if referer and "/share/init" in referer:
                 headers["Referer"] = referer
-            share_link = f"https://pan.baidu.com/s/{featurestr}"
-            request = Request(share_link, headers=headers)
-            with urlopen(request, timeout=20) as response:
-                body = response.read().decode("utf-8", errors="replace")
-            if "platform-non-found" in body or "error-404" in body:
-                raise BaiduNetdiskError("分享链接已失效")
-            payload = self._extract_share_page_local_payload(body)
+            urls = []
+            for candidate in (
+                self._share_init_url(featurestr),
+                f"https://pan.baidu.com/s/{featurestr}",
+            ):
+                if candidate not in urls:
+                    urls.append(candidate)
+            last_error = ""
+            payload: Dict[str, Any] = {}
+            session = requests.Session()
+            for share_link in urls:
+                try:
+                    response = session.get(
+                        share_link,
+                        headers=headers,
+                        timeout=20,
+                        allow_redirects=True,
+                    )
+                    response.raise_for_status()
+                    body = response.text
+                    if "platform-non-found" in body or "error-404" in body:
+                        raise BaiduNetdiskError("分享链接已失效")
+                    payload = self._extract_share_page_local_payload(body)
+                    break
+                except Exception as exc:
+                    last_error = str(exc)
+                    logger.debug("百度分享页参数读取失败 url=%s error=%s", share_link, exc)
+            if not payload:
+                raise BaiduNetdiskError(f"无法读取百度分享页登录参数: {last_error or '页面无响应'}")
             return {
                 "bdstoken": str(payload.get("bdstoken") or "").strip(),
                 "uk": str(payload.get("uk") or "").strip(),
@@ -1362,9 +2103,46 @@ class BaiduNetdiskService:
                 "shareid": str(payload.get("shareid") or "").strip(),
                 "sign": "",
                 "timestamp": "",
+                "_page_payload": payload,
             }
 
         return await asyncio.to_thread(run)
+
+    def _extract_share_page_file_rows(self, payload: Any) -> List[Dict[str, Any]]:
+        if not isinstance(payload, (dict, list)):
+            return []
+        rows = self._extract_file_rows_from_node(payload)
+        return [
+            dict(row)
+            for row in rows
+            if isinstance(row, dict) and self._looks_like_baidu_file_row(row)
+        ]
+
+    def _extract_file_rows_from_node(self, node: Any, depth: int = 0) -> List[Dict[str, Any]]:
+        if depth > 6:
+            return []
+        if isinstance(node, list):
+            rows = [row for row in node if isinstance(row, dict)]
+            return rows if rows and any(self._looks_like_baidu_file_row(row) for row in rows) else []
+        if not isinstance(node, dict):
+            return []
+
+        for key in ("file_list", "fileList", "filelist", "list", "files"):
+            if key not in node:
+                continue
+            rows = self._extract_file_rows_from_node(node.get(key), depth + 1)
+            if rows:
+                return rows
+
+        for value in node.values():
+            rows = self._extract_file_rows_from_node(value, depth + 1)
+            if rows:
+                return rows
+        return []
+
+    def _looks_like_baidu_file_row(self, row: Dict[str, Any]) -> bool:
+        keys = {str(key or "").lower() for key in row.keys()}
+        return bool(keys & {"server_filename", "path", "fs_id", "fsid", "isdir", "is_dir"})
 
     def _extract_share_page_local_payload(self, body: str) -> Dict[str, Any]:
         text = str(body or "")
@@ -1448,6 +2226,12 @@ class BaiduNetdiskService:
         ] + sorted(name for name in values if name not in _BAIDU_COOKIE_PRIORITY)
         return "; ".join(f"{name}={values[name]}" for name in ordered_names if values.get(name))
 
+    def _baidu_share_sekey(self, value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        return unquote(text)
+
     async def _fetch_account_by_web(self, cookie: str) -> Dict[str, Any]:
         endpoints = [
             "https://pan.baidu.com/rest/2.0/xpan/nas?method=uinfo",
@@ -1470,37 +2254,116 @@ class BaiduNetdiskService:
         endpoints = [
             "https://pan.baidu.com/api/quota?checkfree=1&checkexpire=1",
             "https://pan.baidu.com/rest/2.0/xpan/nas?method=quota",
+            "https://pan.baidu.com/api/quota?checkfree=1&checkexpire=1&web=1&app_id=250528",
+            "https://pan.baidu.com/api/quota?web=1&app_id=250528",
         ]
         last_error = ""
         for endpoint in endpoints:
             try:
                 data = await self._fetch_json(endpoint, cookie)
-                errno = _safe_int(data.get("errno", data.get("error_code", 0)), 0)
-                if errno and errno != 2:
-                    raise BaiduNetdiskError(str(data.get("error_msg") or data.get("errmsg") or data))
-                quota = _safe_int(data.get("total") or data.get("quota") or data.get("limit"), -1)
-                used = _safe_int(data.get("used") or data.get("usage"), -1)
-                if quota < 0 or used < 0:
-                    raise BaiduNetdiskError(f"容量接口缺少 total/used 字段: {data}")
-                return {
-                    "quota_bytes": quota,
-                    "used_bytes": used,
-                    "vip_expire_at": _first_timestamp_field(data, [
-                        "vip_expire_at",
-                        "vip_expire_time",
-                        "svip_expire_at",
-                        "svip_expire_time",
-                        "member_expire_at",
-                        "member_expire_time",
-                        "expire_at",
-                        "expire_time",
-                        "expire",
-                    ]),
-                }
+                return self._normalize_quota_payload(data)
             except Exception as exc:
                 last_error = str(exc)
                 logger.debug("百度容量接口失败: %s %s", endpoint, exc)
-        raise BaiduNetdiskError(f"百度容量刷新失败: {last_error or '接口无响应'}")
+        pcsgo_error = ""
+        try:
+            return await self._fetch_quota_by_pcsgo(cookie)
+        except Exception as exc:
+            pcsgo_error = str(exc)
+            logger.debug("BaiduPCS-Go 容量查询失败: %s", exc)
+        detail = last_error or "接口无响应"
+        if pcsgo_error:
+            detail = f"{detail}；BaiduPCS-Go: {pcsgo_error}"
+        raise BaiduNetdiskError(f"百度容量刷新失败: {detail}")
+
+    def _normalize_quota_payload(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        errno = _safe_int(data.get("errno", data.get("error_code", 0)), 0)
+        if errno and errno != 2:
+            raise BaiduNetdiskError(str(data.get("error_msg") or data.get("errmsg") or data))
+        payload = data.get("quota") if isinstance(data.get("quota"), dict) else data
+        quota = _safe_int(
+            payload.get("total")
+            or payload.get("quota")
+            or payload.get("limit")
+            or payload.get("total_bytes"),
+            -1,
+        )
+        used = _safe_int(
+            payload.get("used")
+            or payload.get("usage")
+            or payload.get("used_bytes"),
+            -1,
+        )
+        if quota < 0 or used < 0:
+            raise BaiduNetdiskError(f"容量接口缺少 total/used 字段: {data}")
+        return {
+            "quota_bytes": quota,
+            "used_bytes": used,
+            "vip_expire_at": _first_timestamp_field(data, [
+                "vip_expire_at",
+                "vip_expire_time",
+                "svip_expire_at",
+                "svip_expire_time",
+                "member_expire_at",
+                "member_expire_time",
+                "expire_at",
+                "expire_time",
+                "expire",
+            ]),
+        }
+
+    async def _fetch_quota_by_pcsgo(self, cookie: str) -> Dict[str, Any]:
+        pcsgo_path = self._resolve_baidu_pcs_go_path()
+        work_root = os.path.join(str(get_config().storage.temp_path or tempfile.gettempdir()), "baidu_netdisk_quota")
+        os.makedirs(work_root, exist_ok=True)
+        work_dir = tempfile.mkdtemp(prefix="pcsgo_quota_", dir=work_root)
+        config_dir = os.path.join(work_dir, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        env = os.environ.copy()
+        env["BAIDUPCS_GO_CONFIG_DIR"] = config_dir
+        try:
+            self._write_baidu_pcsgo_cookie_config(config_dir, cookie, workdir="/")
+            returncode, quota_output = await self._run_baidu_pcs_go_login_command(
+                [pcsgo_path, "quota"],
+                env=env,
+                timeout=30,
+            )
+            if returncode != 0:
+                raise BaiduNetdiskError(self._sanitize_error(quota_output or f"BaiduPCS-Go quota 返回退出码 {returncode}"))
+            return self._parse_pcsgo_quota_output(quota_output)
+        finally:
+            with contextlib.suppress(Exception):
+                shutil.rmtree(work_dir, ignore_errors=True)
+
+    def _parse_pcsgo_quota_output(self, output: str) -> Dict[str, Any]:
+        text = str(output or "")
+        pairs = re.findall(
+            r"([0-9]+(?:\.[0-9]+)?)\s*([KMGTPE]?i?B|[KMGTPE]?B)",
+            text,
+            re.I,
+        )
+        sizes = [self._parse_pcsgo_size(value, unit) for value, unit in pairs]
+        sizes = [size for size in sizes if size > 0]
+        if len(sizes) >= 2:
+            used, quota = sizes[0], sizes[1]
+            if used > quota:
+                quota, used = used, quota
+            return {
+                "quota_bytes": quota,
+                "used_bytes": used,
+                "vip_expire_at": 0,
+            }
+
+        total_match = re.search(r"(?:总|total|quota|limit)[^0-9]{0,20}([0-9]+(?:\.[0-9]+)?)\s*([KMGTPE]?i?B|[KMGTPE]?B)", text, re.I)
+        used_match = re.search(r"(?:已用|使用|used|usage)[^0-9]{0,20}([0-9]+(?:\.[0-9]+)?)\s*([KMGTPE]?i?B|[KMGTPE]?B)", text, re.I)
+        if total_match and used_match:
+            return {
+                "quota_bytes": self._parse_pcsgo_size(total_match.group(1), total_match.group(2)),
+                "used_bytes": self._parse_pcsgo_size(used_match.group(1), used_match.group(2)),
+                "vip_expire_at": 0,
+            }
+
+        raise BaiduNetdiskError(f"BaiduPCS-Go quota 输出无法解析: {self._sanitize_error(text[:300])}")
 
     def _normalize_account_payload(self, data: Dict[str, Any]) -> Dict[str, Any]:
         payload = data.get("user_info") if isinstance(data.get("user_info"), dict) else data
@@ -1886,12 +2749,14 @@ class BaiduNetdiskService:
         )
 
     def _share_download_cookie(self, row: Dict[str, Any]) -> str:
-        cookie = str(getattr(self._config(), "cookie", "") or "").strip()
-        if not cookie or cookie == "********":
+        cookie = self._configured_baidu_cookie()
+        if not cookie:
             raise BaiduNetdiskError("百度账号未登录，无法直接下载分享文件")
         randsk = str(row.get("randsk") or "").strip()
         if randsk:
             cookie = self._merge_cookie_header(cookie, {"BDCLND": randsk})
+        if not self._has_baidu_login_cookie(cookie):
+            raise BaiduNetdiskError("百度账号登录态缺少 BDUSS，请重新扫码或重新绑定 Cookie")
         return cookie
 
     def _resolve_baidu_pcs_go_path(self) -> str:
@@ -1917,6 +2782,270 @@ class BaiduNetdiskService:
             if os.path.exists(resolved):
                 return resolved
         raise BaiduNetdiskError("没有找到可用于百度分享大文件下载的 BaiduPCS-Go")
+
+    async def _run_baidu_pcs_go_login_command(
+        self,
+        args: List[str],
+        *,
+        env: Dict[str, str],
+        timeout: int = 75,
+    ) -> tuple[int, str]:
+        def run() -> tuple[int, str]:
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            try:
+                proc = subprocess.run(
+                    args,
+                    cwd=str(self._repo_root()),
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    timeout=timeout,
+                    creationflags=creationflags,
+                )
+            except subprocess.TimeoutExpired as exc:
+                output = self._decode_pcsgo_output(exc.output or b"")
+                raise BaiduNetdiskError(
+                    "百度账号密码登录超时，可能触发了验证码或安全验证，请改用扫码登录"
+                    + (f"；输出: {self._sanitize_error(output)}" if output else "")
+                ) from exc
+            output = self._decode_pcsgo_output(proc.stdout or b"")
+            return int(proc.returncode or 0), output
+
+        return await asyncio.to_thread(run)
+
+    def _cookie_header_from_pcsgo_config(self, config_dir: str) -> tuple[str, List[str]]:
+        config_path = os.path.join(config_dir, "pcs_config.json")
+        if not os.path.exists(config_path):
+            return "", []
+        try:
+            data = json.loads(Path(config_path).read_text(encoding="utf-8", errors="ignore"))
+        except Exception as exc:
+            raise BaiduNetdiskError(f"BaiduPCS-Go 登录配置读取失败: {exc}") from exc
+        values: Dict[str, str] = {}
+        self._collect_baidu_cookie_values(data, values)
+        if not (values.get("BDUSS") or values.get("BDUSS_BFESS")):
+            return "", []
+        ordered_names = [
+            name for name in _BAIDU_COOKIE_PRIORITY if values.get(name)
+        ] + sorted(name for name in values if name not in _BAIDU_COOKIE_PRIORITY)
+        return "; ".join(f"{name}={values[name]}" for name in ordered_names if values.get(name)), ordered_names
+
+    def _patch_baidu_pcsgo_config_cookie_fields(self, config_dir: str, cookie: str) -> None:
+        config_path = os.path.join(config_dir, "pcs_config.json")
+        if not os.path.exists(config_path):
+            return
+        values: Dict[str, str] = {}
+        self._collect_cookie_header_values(cookie, values)
+        field_map = {
+            "BDUSS": ("bduss", "BDUSS"),
+            "BDUSS_BFESS": ("bduss", "BDUSS"),
+            "STOKEN": ("stoken", "STOKEN"),
+            "STOKEN_BFESS": ("stoken", "STOKEN"),
+            "PTOKEN": ("ptoken", "PTOKEN"),
+            "PTOKEN_BFESS": ("ptoken", "PTOKEN"),
+            "BAIDUID": ("baiduid", "BAIDUID"),
+            "BAIDUID_BFESS": ("baiduid", "BAIDUID"),
+            "PANPSC": ("panpsc", "PANPSC"),
+            "BDCLND": ("bdclnd", "BDCLND"),
+        }
+        patch: Dict[str, str] = {}
+        for cookie_name, target_names in field_map.items():
+            value = values.get(cookie_name)
+            if not value:
+                continue
+            for target_name in target_names:
+                patch[target_name] = value
+        if not patch:
+            return
+        try:
+            data = json.loads(Path(config_path).read_text(encoding="utf-8", errors="ignore"))
+        except Exception as exc:
+            logger.debug("BaiduPCS-Go 配置补齐 Cookie 字段失败: %s", exc)
+            return
+        changed = self._patch_baidu_pcsgo_cookie_node(data, patch, cookie)
+        if not changed:
+            return
+        try:
+            Path(config_path).write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.debug("BaiduPCS-Go 配置写回 Cookie 字段失败: %s", exc)
+
+    def _write_baidu_pcsgo_cookie_config(self, config_dir: str, cookie: str, *, workdir: str = "/") -> str:
+        values: Dict[str, str] = {}
+        self._collect_cookie_header_values(cookie, values)
+        bduss = values.get("BDUSS") or values.get("BDUSS_BFESS") or ""
+        if not bduss:
+            raise BaiduNetdiskError("BaiduPCS-Go 配置缺少 BDUSS 登录态")
+
+        cfg = self._config()
+        uid = self._baidu_pcsgo_config_uid(cookie)
+        account_name = str(
+            getattr(cfg, "account_name", "")
+            or getattr(cfg, "account_netdisk_name", "")
+            or getattr(cfg, "username", "")
+            or "baidu"
+        ).strip()
+        savedir = str(getattr(cfg, "download_root", "") or "").strip()
+        if not savedir:
+            savedir = str(getattr(get_config().storage, "temp_path", "") or tempfile.gettempdir())
+        max_parallel, max_download_load = self._baidu_pcs_go_download_limits()
+        cookie_header = self._merge_cookie_header("", values)
+        config_path = os.path.join(config_dir, "pcs_config.json")
+        user = {
+            "uid": uid,
+            "name": account_name,
+            "sex": "",
+            "age": 0,
+            "bduss": bduss,
+            "ptoken": values.get("PTOKEN") or values.get("PTOKEN_BFESS") or "",
+            "stoken": values.get("STOKEN") or values.get("STOKEN_BFESS") or "",
+            "baiduid": values.get("BAIDUID") or values.get("BAIDUID_BFESS") or "",
+            "sboxtkn": "",
+            "panpsc": values.get("PANPSC") or "",
+            "bdclnd": values.get("BDCLND") or "",
+            "cookies": cookie_header,
+            "accesstoken": "",
+            "workdir": str(workdir or "/").strip() or "/",
+        }
+        data = {
+            "baidu_active_uid": uid,
+            "baidu_user_list": [user],
+            "appid": 266719,
+            "cache_size": 262144,
+            "max_parallel": max_parallel,
+            "max_upload_parallel": 4,
+            "max_download_load": max_download_load,
+            "max_upload_load": 4,
+            "max_download_rate": 0,
+            "max_upload_rate": 0,
+            "user_agent": _BAIDU_WEB_USER_AGENT,
+            "pcs_ua": "",
+            "pcs_addr": "pcs.baidu.com",
+            "pan_ua": "netdisk;P2SP;3.0.0.8;netdisk;11.12.3;ANG-AN00;android-android;10.0;JSbridge4.4.0;jointBridge;1.1.0;",
+            "savedir": os.path.abspath(savedir),
+            "enable_https": True,
+            "fix_pcs_addr": False,
+            "force_login_username": "",
+            "proxy": "",
+            "proxy_hostnames": "",
+            "local_addrs": "",
+            "no_check": True,
+            "ignore_illegal": True,
+            "u_policy": "skip",
+        }
+        os.makedirs(config_dir, exist_ok=True)
+        Path(config_path).write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return config_path
+
+    def _baidu_pcsgo_config_uid(self, cookie: str) -> int:
+        cfg = self._config()
+        for value in (
+            getattr(cfg, "account_uk", ""),
+            getattr(cfg, "uid", ""),
+            getattr(cfg, "uk", ""),
+        ):
+            text = str(value or "").strip()
+            if text.isdigit():
+                number = int(text)
+                if number > 0:
+                    return number
+        seed = (
+            self._cookie_value(cookie, "BDUSS")
+            or self._cookie_value(cookie, "BDUSS_BFESS")
+            or str(getattr(cfg, "account_name", "") or "").strip()
+            or "baidu"
+        )
+        return max(1, int(hashlib.sha1(seed.encode("utf-8", errors="ignore")).hexdigest()[:8], 16))
+
+    def _patch_baidu_pcsgo_cookie_node(self, node: Any, patch: Dict[str, str], cookie: str) -> bool:
+        changed = False
+        if isinstance(node, dict):
+            user_keys = {"bduss", "stoken", "ptoken", "baiduid", "cookies", "cookie"}
+            looks_like_user = any(str(key or "").lower() in user_keys for key in node)
+            if looks_like_user:
+                for key, value in patch.items():
+                    if value and str(node.get(key) or "").strip() != value:
+                        node[key] = value
+                        changed = True
+                if cookie:
+                    for cookie_key in ("cookie", "cookies"):
+                        if cookie_key in node and str(node.get(cookie_key) or "").strip() != cookie:
+                            node[cookie_key] = cookie
+                            changed = True
+                    if "cookies" not in node and "cookie" not in node:
+                        node["cookies"] = cookie
+                        changed = True
+            for value in node.values():
+                if self._patch_baidu_pcsgo_cookie_node(value, patch, cookie):
+                    changed = True
+            return changed
+        if isinstance(node, list):
+            for item in node:
+                if self._patch_baidu_pcsgo_cookie_node(item, patch, cookie):
+                    changed = True
+        return changed
+
+    def _collect_baidu_cookie_values(self, node: Any, values: Dict[str, str]) -> None:
+        if isinstance(node, dict):
+            cookie_text = node.get("cookie") or node.get("cookies")
+            if isinstance(cookie_text, str):
+                self._collect_cookie_header_values(cookie_text, values)
+            for key, value in node.items():
+                clean_key = str(key or "").strip()
+                upper_key = clean_key.upper()
+                canonical_key = _BAIDU_COOKIE_NAME_BY_UPPER.get(upper_key, clean_key)
+                if upper_key in _BAIDU_COOKIE_NAME_BY_UPPER and not isinstance(value, (dict, list)):
+                    clean_value = str(value or "").strip()
+                    if clean_value:
+                        values[canonical_key] = clean_value
+                elif clean_key in _BAIDU_COOKIE_PRIORITY and not isinstance(value, (dict, list)):
+                    clean_value = str(value or "").strip()
+                    if clean_value:
+                        values[clean_key] = clean_value
+                self._collect_baidu_cookie_values(value, values)
+            return
+        if isinstance(node, list):
+            for item in node:
+                self._collect_baidu_cookie_values(item, values)
+
+    def _collect_cookie_header_values(self, cookie: str, values: Dict[str, str]) -> None:
+        for part in str(cookie or "").split(";"):
+            if "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            clean_key = key.strip()
+            clean_value = value.strip()
+            if clean_key and clean_value:
+                values[clean_key] = clean_value
+
+    def _baidu_password_login_error(self, output: str, returncode: int = 0) -> str:
+        text = self._sanitize_error(output or "").strip()[:500]
+        lowered = text.lower()
+        verification_markers = (
+            "verify",
+            "captcha",
+            "sms",
+            "验证码",
+            "二次验证",
+            "安全验证",
+            "手机",
+            "邮箱",
+            "身份验证",
+        )
+        if any(marker in lowered or marker in text for marker in verification_markers):
+            return f"百度要求验证码或安全验证，账号密码登录无法在 Web 设置页继续，请改用扫码登录。{text}".strip()
+        if text:
+            return f"百度账号密码登录失败: {text}"
+        if returncode:
+            return f"百度账号密码登录失败，BaiduPCS-Go 返回退出码 {returncode}，请改用扫码登录"
+        return "百度账号密码登录没有拿到登录态，请改用扫码登录"
 
     def _bounded_pcsgo_int(self, value: Any, *, default: int, minimum: int, maximum: int) -> int:
         try:
@@ -1984,9 +3113,7 @@ class BaiduNetdiskService:
         share_url = str(row.get("share_url") or "").strip()
         if not share_url:
             raise BaiduNetdiskError("百度分享下载缺少 share_url")
-        pass_code = str(row.get("pass_code") or "").strip()
-        if pass_code and "pwd=" not in share_url.lower():
-            share_url = f"{share_url}{'&' if '?' in share_url else '?'}pwd={quote(pass_code)}"
+        pass_code = str(row.get("pass_code") or "").strip() or self._pass_code_from_share_url(share_url)
         cookie = self._share_download_cookie(row)
         expected_name = str(row.get("relative_path") or row.get("name") or "").strip()
         expected_size = _safe_int(row.get("total") or row.get("size"))
@@ -2005,13 +3132,7 @@ class BaiduNetdiskService:
         remote_tmp_created = False
         try:
             task.update_progress(max(2, task.progress), "准备百度网盘临时转存下载")
-            await self._run_baidu_pcs_go_command(
-                [pcsgo_path, "login", f"-cookies={cookie}"],
-                env=env,
-                log_path=log_path,
-                task=task,
-                cancel_event=cancel_event,
-            )
+            self._write_baidu_pcsgo_cookie_config(config_dir, cookie, workdir="/")
             for command in self._baidu_pcs_go_download_config_commands(pcsgo_path, savedir):
                 await self._run_baidu_pcs_go_command(
                     command,
@@ -2043,14 +3164,15 @@ class BaiduNetdiskService:
                 cancel_event=cancel_event,
             )
             task.update_progress(max(2, task.progress), "已创建百度网盘临时目录，开始转存")
-            await self._run_baidu_pcs_go_command(
-                [pcsgo_path, "transfer", share_url, "--collect"],
-                env=env,
-                log_path=log_path,
-                task=task,
-                cancel_event=cancel_event,
-                heartbeat_message="BaiduPCS-Go 正在转存分享文件",
+            await self._check_task_active(task, cancel_event)
+            await self._transfer_share_item_by_web(
+                row,
+                cookie,
+                remote_tmp_dir,
+                share_url=share_url,
+                pass_code=pass_code,
             )
+            self._append_log(task, f"百度网盘分享文件已转存到临时目录 {remote_tmp_dir}", "info")
             max_parallel, max_download_load = self._baidu_pcs_go_download_limits()
             self._append_log(
                 task,
@@ -2154,6 +3276,95 @@ class BaiduNetdiskService:
         random_part = secrets.token_hex(3)
         return f"/km_{timestamp}_{random_part}"
 
+    async def _transfer_share_item_by_web(
+        self,
+        row: Dict[str, Any],
+        cookie: str,
+        remote_tmp_dir: str,
+        *,
+        share_url: str,
+        pass_code: str = "",
+    ) -> Dict[str, Any]:
+        fs_id = str(row.get("fs_id") or row.get("fsid") or "").strip()
+        if not fs_id:
+            raise BaiduNetdiskError("百度分享转存缺少 fs_id")
+        shareid = str(row.get("share_numeric_id") or "").strip()
+        share_uk = str(row.get("share_uk") or "").strip()
+        randsk = str(row.get("randsk") or "").strip() or self._cookie_value(cookie, "BDCLND")
+        bdstoken = str(row.get("bdstoken") or "").strip()
+        shorturl = str(row.get("shorturl") or row.get("share_id") or "").strip()
+        if shorturl and not shorturl.startswith("1"):
+            shorturl = f"1{shorturl}"
+        if (not shareid or not share_uk or not randsk) and shorturl:
+            tokens = await self._fetch_share_page_tokens(shorturl, cookie, referer=share_url or "https://pan.baidu.com/disk/home")
+            shareid = shareid or str(tokens.get("shareid") or tokens.get("share_id") or "").strip()
+            share_uk = share_uk or str(tokens.get("share_uk") or tokens.get("uk") or "").strip()
+            bdstoken = bdstoken or str(tokens.get("bdstoken") or "").strip()
+            randsk = randsk or str(tokens.get("randsk") or "").strip()
+        if pass_code and shorturl and not randsk:
+            tokens = await self._fetch_share_page_tokens(shorturl, cookie, referer="https://pan.baidu.com/disk/home")
+            verify_data = await self._verify_share_pass_code(shorturl, pass_code, tokens, cookie, share_url)
+            errno = _safe_int(verify_data.get("errno", verify_data.get("err_no", 0)), 0)
+            if errno:
+                raise BaiduNetdiskError(self._baidu_api_error_message(verify_data, f"百度分享提取码验证失败 {errno}"))
+            randsk = str(verify_data.get("randsk") or "").strip()
+            if randsk:
+                cookie = self._merge_cookie_header(cookie, {"BDCLND": randsk})
+        if not shareid or not share_uk:
+            raise BaiduNetdiskError("百度分享转存缺少 shareid/share_uk")
+        if not randsk:
+            raise BaiduNetdiskError("百度分享转存缺少 randsk，请重新预览分享链接")
+
+        try:
+            fsid_value: Any = int(fs_id)
+        except Exception:
+            fsid_value = fs_id
+        query_payload = {
+            "shareid": shareid,
+            "from": share_uk,
+            "sekey": self._baidu_share_sekey(randsk),
+            "channel": "chunlei",
+            "web": "1",
+            "app_id": "250528",
+            "bdstoken": bdstoken,
+            "logid": self._make_web_logid(cookie),
+            "clienttype": "0",
+            "dp-logid": self._make_dp_logid(),
+            "ondup": "overwrite",
+            "async": "1",
+        }
+        transfer_url = "https://pan.baidu.com/share/transfer?" + urlencode({
+            key: value
+            for key, value in query_payload.items()
+            if value != ""
+        })
+        payload = {
+            "fsidlist": json.dumps([fsid_value], ensure_ascii=False),
+            "path": remote_tmp_dir,
+        }
+        referer = self._share_init_url(shorturl) if shorturl else (share_url or "https://pan.baidu.com/disk/home")
+        data = await self._fetch_form_json(
+            transfer_url,
+            cookie,
+            data=payload,
+            referer=referer,
+            timeout=60,
+            use_requests=True,
+        )
+        errno = _safe_int(data.get("errno", data.get("err_no", 0)), 0)
+        info_rows = data.get("info") if isinstance(data.get("info"), list) else []
+        item_errors = [
+            self._baidu_api_error_message(item, f"转存项失败 {item.get('errno')}")
+            for item in info_rows
+            if isinstance(item, dict) and _safe_int(item.get("errno"), 0)
+        ]
+        if errno or item_errors:
+            message = self._baidu_api_error_message(data, f"百度分享转存失败 {errno}")
+            if item_errors:
+                message = "；".join(item_errors) or message
+            raise BaiduNetdiskError(message)
+        return data
+
     async def _run_baidu_pcs_go_command(
         self,
         args: List[str],
@@ -2165,6 +3376,7 @@ class BaiduNetdiskService:
         ignore_task_cancel: bool = False,
         on_output: Optional[Callable[[str], None]] = None,
         heartbeat_message: str = "",
+        max_runtime_seconds: int = 0,
     ) -> None:
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
@@ -2188,7 +3400,9 @@ class BaiduNetdiskService:
             )
             reader.start()
             last_heartbeat_at = time.monotonic()
+            command_started_at = time.monotonic()
             pending_output = b""
+            command_output = bytearray()
             try:
                 while True:
                     if not ignore_task_cancel:
@@ -2204,11 +3418,28 @@ class BaiduNetdiskService:
                             continue
                         log_file.write(chunk)
                         log_file.flush()
+                        command_output.extend(chunk)
+                        if len(command_output) > 128 * 1024:
+                            del command_output[:len(command_output) - 128 * 1024]
                         pending_output = self._consume_pcsgo_output_chunk(pending_output + chunk, on_output)
                         last_heartbeat_at = time.monotonic()
                     code = proc.poll()
                     if code is not None:
                         break
+                    if max_runtime_seconds and time.monotonic() - command_started_at >= max_runtime_seconds:
+                        with contextlib.suppress(Exception):
+                            proc.terminate()
+                        with contextlib.suppress(Exception):
+                            await asyncio.to_thread(proc.wait, timeout=5)
+                        with contextlib.suppress(Exception):
+                            proc.kill()
+                        tail = self._sanitize_error(
+                            self._decode_pcsgo_output(bytes(command_output)) or self._read_text_tail(log_path)
+                        )
+                        raise BaiduNetdiskError(
+                            f"BaiduPCS-Go 命令执行超时 {max_runtime_seconds} 秒"
+                            + (f": {tail}" if tail else "")
+                        )
                     if heartbeat_message and time.monotonic() - last_heartbeat_at >= 15:
                         self._append_log(task, heartbeat_message, "info")
                         last_heartbeat_at = time.monotonic()
@@ -2233,12 +3464,18 @@ class BaiduNetdiskService:
                     break
                 if chunk:
                     log_file.write(chunk)
+                    command_output.extend(chunk)
+                    if len(command_output) > 128 * 1024:
+                        del command_output[:len(command_output) - 128 * 1024]
                     pending_output = self._consume_pcsgo_output_chunk(pending_output + chunk, on_output)
             if pending_output and on_output:
                 on_output(self._decode_pcsgo_output(pending_output))
         if proc.returncode != 0:
             tail = self._read_text_tail(log_path)
             raise BaiduNetdiskError(self._sanitize_error(tail or f"BaiduPCS-Go 返回退出码 {proc.returncode}"))
+        failure_message = self._pcsgo_command_failure_message(self._decode_pcsgo_output(bytes(command_output)))
+        if failure_message:
+            raise BaiduNetdiskError(failure_message)
 
     def _read_process_output(self, stream, output_queue: "queue.Queue[Optional[bytes]]") -> None:
         try:
@@ -2280,6 +3517,18 @@ class BaiduNetdiskService:
             except Exception:
                 continue
         return data.decode("utf-8", errors="replace")
+
+    def _pcsgo_command_failure_message(self, output: str) -> str:
+        for raw_line in str(output or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            lowered = line.lower()
+            if lowered.startswith("warning:"):
+                continue
+            if any(marker in line for marker in ("失败", "错误", "异常")) or " error" in lowered or lowered.startswith("error"):
+                return self._sanitize_error(line)
+        return ""
 
     def _update_pcsgo_transfer_progress(
         self,

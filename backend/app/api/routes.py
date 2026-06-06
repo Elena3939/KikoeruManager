@@ -112,6 +112,10 @@ def _mask_baidu_netdisk_config_for_log(value: dict) -> dict:
     return data
 
 
+def _has_baidu_login_cookie(value: str) -> bool:
+    return bool(re.search(r"(?:^|;\s*)BDUSS(?:_BFESS)?=", str(value or ""), re.I))
+
+
 def _synology_http_status(exc: Exception) -> int:
     """将群晖 API 错误码映射到合适的 HTTP 状态码。
     119: SID 过期/无效路径; 121: 无效参数; 401: 无权限; 408: 操作超时
@@ -2345,8 +2349,10 @@ def _mask_baidu_netdisk_config(config) -> Optional[dict]:
     if not hasattr(config, 'baidu_netdisk'):
         return None
     data = config.baidu_netdisk.model_dump()
-    if data.get('cookie'):
+    if _has_baidu_login_cookie(data.get('cookie') or ''):
         data['cookie'] = '********'
+    else:
+        data['cookie'] = ''
     return data
 
 
@@ -2852,12 +2858,15 @@ async def update_configuration(request: Request):
                 current_cfg = get_config()
                 if not str(baidu_data.get('baidupcs_go_path') or '').strip():
                     baidu_data['baidupcs_go_path'] = BaiduNetdiskConfig().baidupcs_go_path
-                if baidu_data.get('cookie') == '********' or 'cookie' not in baidu_data:
+                incoming_cookie = str(baidu_data.get('cookie') or '').strip()
+                if incoming_cookie == '********' or 'cookie' not in baidu_data:
                     current_cookie = getattr(current_cfg.baidu_netdisk, 'cookie', '')
                     baidu_data['cookie'] = (
                         _read_baidu_netdisk_secret_from_disk('cookie')
-                        or (current_cookie if current_cookie != '********' else '')
+                        or (current_cookie if _has_baidu_login_cookie(current_cookie) else '')
                     )
+                elif incoming_cookie and not _has_baidu_login_cookie(incoming_cookie):
+                    raise HTTPException(status_code=400, detail="百度网盘配置缺少 BDUSS 登录态，请重新扫码或重新绑定 Cookie")
                 baidu_config = BaiduNetdiskConfig(**baidu_data)
                 config_data['baidu_netdisk'] = baidu_config.model_dump()
                 logger.info("[百度网盘] 配置验证通过: enabled=%s, baidupcs_go_path=%s", baidu_config.enabled, baidu_config.baidupcs_go_path)
@@ -9346,73 +9355,75 @@ async def scan_existing_folders(check_duplicates: bool = True, force_refresh: bo
         force_refresh: 是否强制刷新缓存
     """
     async def generate_folders():
-        try:
-            config = get_config()
-            existing_folders_path = config.storage.existing_folders_path
-            
-            # 自动创建目录（如果不存在）
-            if not os.path.exists(existing_folders_path):
-                try:
-                    os.makedirs(existing_folders_path, exist_ok=True)
-                    logger.info(f"自动创建已存在文件夹目录: {existing_folders_path}")
-                except Exception as e:
-                    yield json.dumps({"error": f"无法创建目录: {str(e)}"}) + "\n"
-                    return
-            
-            # 第一步：快速列出所有 RJ 作品候选（支持 已有目录/社团名/RJxxxx 这种嵌套结构）
-            candidates = scan_existing_folder_candidates(existing_folders_path)
+        queue: asyncio.Queue[dict | None] = asyncio.Queue(maxsize=100)
+
+        async def emit(payload: dict):
+            await queue.put(payload)
+
+        async def scan_worker():
+            db = None
             folders = []
-            
-            yield json.dumps({
-                "type": "start",
-                "total": len(candidates),
-                "message": f"开始扫描，共 {len(candidates)} 个候选目录"
-            }) + "\n"
-            
-            # 先发送所有文件夹基本信息（立即可见）
-            for index, candidate in enumerate(candidates):
-                folder_info = _build_existing_folder_info(candidate)
-                
-                folders.append(folder_info)
-                
-                # 立即发送，让前端显示
-                yield json.dumps({
-                    "type": "folder",
-                    "index": index,
+            conflict_count = 0
+            try:
+                config = get_config()
+                existing_folders_path = config.storage.existing_folders_path
+
+                # 自动创建目录（如果不存在）
+                if not os.path.exists(existing_folders_path):
+                    try:
+                        os.makedirs(existing_folders_path, exist_ok=True)
+                        logger.info(f"自动创建已存在文件夹目录: {existing_folders_path}")
+                    except Exception as e:
+                        await emit({"type": "error", "error": f"无法创建目录: {str(e)}"})
+                        return
+
+                # 第一步：快速列出所有 RJ 作品候选（支持 已有目录/社团名/RJxxxx 这种嵌套结构）
+                candidates = await asyncio.to_thread(scan_existing_folder_candidates, existing_folders_path)
+
+                await emit({
+                    "type": "start",
                     "total": len(candidates),
-                    "folder": folder_info,
-                    "progress": f"{index + 1}/{len(candidates)}"
-                }) + "\n"
-            
-            # 第二步：后台逐个查重（如果有RJ号且需要检查）
-            if check_duplicates:
-                conflict_count = 0
-                
-                yield json.dumps({
-                    "type": "checking_start",
-                    "message": f"开始查重检查，共 {len(folders)} 个文件夹"
-                }) + "\n"
-                
-                # 获取数据库会话
-                from ..models.database import get_db
-                db = next(get_db())
-                
-                try:
+                    "message": f"开始扫描，共 {len(candidates)} 个候选目录"
+                })
+
+                # 先发送所有文件夹基本信息（立即可见）
+                for index, candidate in enumerate(candidates):
+                    folder_info = _build_existing_folder_info(candidate)
+                    folders.append(folder_info)
+
+                    await emit({
+                        "type": "folder",
+                        "index": index,
+                        "total": len(candidates),
+                        "folder": folder_info,
+                        "progress": f"{index + 1}/{len(candidates)}"
+                    })
+
+                # 第二步：后台逐个查重（如果有RJ号且需要检查）
+                if check_duplicates:
+                    await emit({
+                        "type": "checking_start",
+                        "message": f"开始查重检查，共 {len(folders)} 个文件夹"
+                    })
+
+                    from ..models.database import get_db
+                    db = next(get_db())
+
                     for index, folder_info in enumerate(folders):
                         item_path = folder_info["path"]
                         item = folder_info["name"]
                         rjcode = folder_info["rjcode"]
-                        
+
                         if not rjcode:
                             folder_info["status"] = "unrecognized"
-                            yield json.dumps({
+                            await emit({
                                 "type": "folder_update",
                                 "index": index,
                                 "folder": folder_info,
                                 "error": "无法提取RJ号"
-                            }) + "\n"
+                            })
                             continue
-                        
+
                         # 检查缓存
                         cache = None
                         if not force_refresh:
@@ -9423,7 +9434,7 @@ async def scan_existing_folders(check_duplicates: bool = True, force_refresh: bo
                                 ).first()
                             except Exception as e:
                                 logger.warning(f"查询缓存失败: {e}")
-                        
+
                         # 如果有缓存且不需要刷新，直接使用缓存
                         if cache and not force_refresh and not cache.needs_refresh:
                             folder_info["duplicate_info"] = cache.duplicate_info
@@ -9432,31 +9443,30 @@ async def scan_existing_folders(check_duplicates: bool = True, force_refresh: bo
                             folder_info["status"] = "cached"
                             if cache.duplicate_info:
                                 conflict_count += 1
-                            
-                            # 发送更新
-                            yield json.dumps({
+
+                            await emit({
                                 "type": "folder_update",
                                 "index": index,
                                 "folder": folder_info,
                                 "from_cache": True
-                            }) + "\n"
+                            })
                             continue
-                        
+
                         # 没有缓存，执行API查询
                         try:
                             from ..core.duplicate_service import get_duplicate_service
                             duplicate_service = get_duplicate_service()
-                            
+
                             # 添加延时避免429
                             if index > 0 and index % 5 == 0:
                                 await asyncio.sleep(1)
-                            
+
                             check_result = await duplicate_service.check_duplicate_enhanced(
-                                rjcode, 
+                                rjcode,
                                 check_linked_works=True,
                                 cue_languages=['CHI_HANS', 'CHI_HANT', 'ENG']
                             )
-                            
+
                             if check_result.is_duplicate:
                                 folder_info["duplicate_info"] = {
                                     "is_duplicate": True,
@@ -9466,20 +9476,20 @@ async def scan_existing_folders(check_duplicates: bool = True, force_refresh: bo
                                     "related_rjcodes": check_result.related_rjcodes,
                                     "analysis_info": check_result.analysis_info
                                 }
-                                
+
                                 # 获取推荐的解决选项
                                 resolution_options = await duplicate_service.get_conflict_resolution_options(check_result)
                                 folder_info["duplicate_info"]["resolution_options"] = _normalize_existing_folder_resolution_options(resolution_options)
                                 conflict_count += 1
-                            
+
                             folder_info["status"] = "checked"
-                            
+
                             # 计算文件夹大小
-                            file_count, folder_size = _collect_existing_folder_stats(item_path)
-                            
+                            file_count, folder_size = await asyncio.to_thread(_collect_existing_folder_stats, item_path)
+
                             folder_info["file_count"] = file_count
                             folder_info["folder_size"] = folder_size
-                            
+
                             # 保存到缓存
                             try:
                                 from ..models.database import ExistingFolderCache
@@ -9503,56 +9513,82 @@ async def scan_existing_folders(check_duplicates: bool = True, force_refresh: bo
                             except Exception as e:
                                 logger.warning(f"保存缓存失败: {e}")
                                 db.rollback()
-                            
-                            # 发送更新
-                            yield json.dumps({
+
+                            await emit({
                                 "type": "folder_update",
                                 "index": index,
                                 "folder": folder_info,
                                 "from_cache": False
-                            }) + "\n"
-                            
+                            })
+
                         except Exception as e:
                             logger.warning(f"查重检查失败 {rjcode}: {e}")
                             folder_info["status"] = "error"
-                            yield json.dumps({
+                            await emit({
                                 "type": "folder_update",
                                 "index": index,
                                 "folder": folder_info,
                                 "error": str(e)
-                            }) + "\n"
-                
-                finally:
+                            })
+
+                    await emit({
+                        "type": "complete",
+                        "count": len(folders),
+                        "conflict_count": conflict_count,
+                        "folders": folders,
+                        "message": f"扫描完成，找到 {len(folders)} 个文件夹" + (f"，其中 {conflict_count} 个可能有冲突" if conflict_count > 0 else "")
+                    })
+                else:
+                    await emit({
+                        "type": "complete",
+                        "count": len(folders),
+                        "conflict_count": 0,
+                        "folders": folders,
+                        "message": f"扫描完成，找到 {len(folders)} 个文件夹"
+                    })
+
+            except Exception as e:
+                logger.error(f"扫描已存在文件夹目录失败: {e}", exc_info=True)
+                await emit({"type": "error", "error": f"扫描失败: {str(e)}"})
+            finally:
+                if db is not None:
                     db.close()
-                
-                # 发送完成消息
-                yield json.dumps({
-                    "type": "complete",
-                    "count": len(folders),
-                    "conflict_count": conflict_count,
-                    "folders": folders,
-                    "message": f"扫描完成，找到 {len(folders)} 个文件夹" + (f"，其中 {conflict_count} 个可能有冲突" if conflict_count > 0 else "")
-                }) + "\n"
-            else:
-                # 不检查重复，直接完成
-                yield json.dumps({
-                    "type": "complete",
-                    "count": len(folders),
-                    "conflict_count": 0,
-                    "folders": folders,
-                    "message": f"扫描完成，找到 {len(folders)} 个文件夹"
-                }) + "\n"
-            
-        except Exception as e:
-            logger.error(f"扫描已存在文件夹目录失败: {e}", exc_info=True)
-            yield json.dumps({"type": "error", "error": f"扫描失败: {str(e)}"}) + "\n"
+                await queue.put(None)
+
+        worker = asyncio.create_task(scan_worker())
+        yield json.dumps({
+            "type": "start",
+            "total": 0,
+            "message": "准备扫描已有文件夹目录"
+        }) + "\n"
+
+        try:
+            while True:
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=4)
+                except asyncio.TimeoutError:
+                    yield json.dumps({
+                        "type": "heartbeat",
+                        "timestamp": datetime.now().isoformat(),
+                    }) + "\n"
+                    continue
+
+                if payload is None:
+                    break
+                yield json.dumps(payload) + "\n"
+        finally:
+            if not worker.done():
+                worker.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await worker
     
     return StreamingResponse(
         generate_folders(),
         media_type="application/x-ndjson",
         headers={
             "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no"
+            "X-Accel-Buffering": "no",
+            "Content-Encoding": "identity"
         }
     )
 
@@ -12037,10 +12073,26 @@ class BaiduNetdiskCancelRequest(BaseModel):
 class BaiduNetdiskAccountTestRequest(BaseModel):
     cookie: str = ""
     persist: bool = False
+    allow_quota_failure: bool = False
+
+
+class BaiduNetdiskPasswordLoginRequest(BaseModel):
+    username: str = ""
+    password: str = ""
+    persist: bool = True
 
 
 class BaiduNetdiskOfficialLoginCompleteRequest(BaseModel):
     persist: bool = True
+
+
+class BaiduNetdiskQrLoginPollRequest(BaseModel):
+    session_id: str = ""
+    persist: bool = True
+
+
+class BaiduNetdiskQrLoginCloseRequest(BaseModel):
+    session_id: str = ""
 
 
 class GoogleDriveOAuthTokenRequest(BaseModel):
@@ -12199,37 +12251,98 @@ def _baidu_netdisk_urls_from_payload(urls: List[str]) -> list[str]:
     config = get_config()
     separator = str(getattr(config.baidu_netdisk, "share_code_separator", "") or "----").strip()
     result = []
+    seen: dict[str, int] = {}
+    last_baidu_index: Optional[int] = None
     for raw in urls or []:
         for line in re.split(r"[\r\n]+", str(raw or "")):
             value = line.strip()
-            if value:
-                value = _normalize_baidu_netdisk_share_line(value, separator)
-                result.append(value)
+            if not value:
+                continue
+            normalized = _normalize_baidu_netdisk_share_line(value, separator)
+            if _is_baidu_netdisk_share_url(normalized):
+                key = _baidu_netdisk_share_identity(normalized)
+                if key in seen:
+                    existing_index = seen[key]
+                    if not _baidu_netdisk_share_has_code(result[existing_index]) and _baidu_netdisk_share_has_code(normalized):
+                        result[existing_index] = normalized
+                    last_baidu_index = existing_index
+                    continue
+                result.append(normalized)
+                seen[key] = len(result) - 1
+                last_baidu_index = len(result) - 1
+                continue
+            code = _baidu_netdisk_pass_code_from_text(value)
+            if code and last_baidu_index is not None:
+                if not _baidu_netdisk_share_has_code(result[last_baidu_index]):
+                    result[last_baidu_index] = _append_baidu_netdisk_pass_code(result[last_baidu_index], code)
+                continue
+            result.append(normalized)
     return result
+
+
+def _is_baidu_netdisk_share_url(value: str) -> bool:
+    text = str(value or "").strip().lower()
+    return text.startswith(("http://", "https://")) and (
+        "pan.baidu.com" in text
+        or "yun.baidu.com" in text
+        or "eyun.baidu.com" in text
+    )
+
+
+def _baidu_netdisk_pass_code_from_text(value: str) -> str:
+    match = re.search(
+        r"(?:提取码|访问码|密码|密碼|pwd|passcode|pass_code|code)?\s*[:：= ]?\s*([A-Za-z0-9]{4,12})$",
+        str(value or "").strip(),
+        re.IGNORECASE,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _baidu_netdisk_share_has_code(value: str) -> bool:
+    return bool(re.search(r"[?&](?:pwd|password|passcode|pass_code|code)=", str(value or ""), re.IGNORECASE))
+
+
+def _append_baidu_netdisk_pass_code(share_url: str, code: str) -> str:
+    if not code or _baidu_netdisk_share_has_code(share_url):
+        return share_url
+    return f"{share_url}{'&' if '?' in share_url else '?'}pwd={quote(code)}"
+
+
+def _baidu_netdisk_share_identity(value: str) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"([?&])(?:pwd|password|passcode|pass_code|code)=[^&#]*", r"\1", text, flags=re.IGNORECASE)
+    text = re.sub(r"\?&", "?", text)
+    text = re.sub(r"[?&]($|#)", r"\1", text)
+    return text.rstrip("?&")
 
 
 def _normalize_baidu_netdisk_share_line(value: str, separator: str) -> str:
     text = str(value or "").strip()
     if not text or not separator or separator not in text:
+        inline = re.search(
+            r"^(https?://\S+?)\s+(?:提取码|访问码|密码|密碼|pwd|passcode|pass_code|code)?\s*[:：= ]?\s*([A-Za-z0-9]{4,12})\s*$",
+            text,
+            re.IGNORECASE,
+        )
+        if not inline:
+            return text
+        share_url = inline.group(1).strip()
+        code = inline.group(2).strip()
+    else:
+        left, right = text.rsplit(separator, 1)
+        share_url = left.strip()
+        code_text = right.strip()
+        match = re.search(
+            r"(?:提取码|访问码|密码|密碼|pwd|passcode|pass_code|code)?\s*[:：= ]?\s*([A-Za-z0-9]{4,12})$",
+            code_text,
+            re.IGNORECASE,
+        )
+        if not match:
+            return text
+        code = match.group(1).strip()
+    if not _is_baidu_netdisk_share_url(share_url):
         return text
-    left, right = text.rsplit(separator, 1)
-    share_url = left.strip()
-    code_text = right.strip()
-    if not share_url.lower().startswith(("http://", "https://")):
-        return text
-    if "pan.baidu.com" not in share_url.lower() and "yun.baidu.com" not in share_url.lower():
-        return text
-    match = re.search(
-        r"(?:提取码|访问码|密码|密碼|pwd|passcode|pass_code|code)?\s*[:：= ]?\s*([A-Za-z0-9]{4,12})$",
-        code_text,
-        re.IGNORECASE,
-    )
-    if not match:
-        return text
-    code = match.group(1).strip()
-    if not code or re.search(r"[?&](?:pwd|password|passcode|pass_code|code)=", share_url, re.IGNORECASE):
-        return share_url
-    return f"{share_url}{'&' if '?' in share_url else '?'}pwd={quote(code)}"
+    return _append_baidu_netdisk_pass_code(share_url, code)
 
 
 def _google_drive_oauth_redirect_uri(request: Request) -> str:
@@ -12994,7 +13107,11 @@ async def baidu_netdisk_account_test(request: BaiduNetdiskAccountTestRequest):
     from ..core.baidu_netdisk_service import get_baidu_netdisk_service
 
     try:
-        return await get_baidu_netdisk_service().test_account(request.cookie, persist=request.persist)
+        return await get_baidu_netdisk_service().test_account(
+            request.cookie,
+            persist=request.persist,
+            allow_quota_failure=request.allow_quota_failure,
+        )
     except Exception as exc:
         logger.error("检测百度网盘账号失败: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
@@ -13008,6 +13125,21 @@ async def baidu_netdisk_account_refresh():
         return await get_baidu_netdisk_service().refresh_account_status()
     except Exception as exc:
         logger.error("刷新百度网盘账号状态失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/baidu-netdisk/account/password-login")
+async def baidu_netdisk_account_password_login(request: BaiduNetdiskPasswordLoginRequest):
+    from ..core.baidu_netdisk_service import get_baidu_netdisk_service
+
+    try:
+        return await get_baidu_netdisk_service().login_with_password(
+            request.username,
+            request.password,
+            persist=request.persist,
+        )
+    except Exception as exc:
+        logger.error("百度账号密码登录失败: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -13057,6 +13189,39 @@ async def baidu_netdisk_account_official_login_close():
         return await get_baidu_netdisk_service().close_official_login_session()
     except Exception as exc:
         logger.error("关闭百度官方登录窗口失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/baidu-netdisk/account/qr-login/start")
+async def baidu_netdisk_account_qr_login_start():
+    from ..core.baidu_netdisk_service import get_baidu_netdisk_service
+
+    try:
+        return await get_baidu_netdisk_service().start_qr_login_session()
+    except Exception as exc:
+        logger.error("生成百度扫码登录二维码失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/baidu-netdisk/account/qr-login/poll")
+async def baidu_netdisk_account_qr_login_poll(request: BaiduNetdiskQrLoginPollRequest):
+    from ..core.baidu_netdisk_service import get_baidu_netdisk_service
+
+    try:
+        return await get_baidu_netdisk_service().poll_qr_login_session(request.session_id, persist=request.persist)
+    except Exception as exc:
+        logger.error("轮询百度扫码登录状态失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/baidu-netdisk/account/qr-login/close")
+async def baidu_netdisk_account_qr_login_close(request: BaiduNetdiskQrLoginCloseRequest):
+    from ..core.baidu_netdisk_service import get_baidu_netdisk_service
+
+    try:
+        return get_baidu_netdisk_service().close_qr_login_session(request.session_id)
+    except Exception as exc:
+        logger.error("关闭百度扫码登录失败: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
 
 

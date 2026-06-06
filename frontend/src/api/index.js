@@ -1595,7 +1595,8 @@ export const baiduNetdiskApi = {
   testAccount: async (payload = {}) => {
     const response = await apiClient.post('/baidu-netdisk/account/test', {
       cookie: payload.cookie || '',
-      persist: Boolean(payload.persist)
+      persist: Boolean(payload.persist),
+      allow_quota_failure: Boolean(payload.allowQuotaFailure)
     }, {
       timeout: payload.timeout ?? 45000
     })
@@ -1605,6 +1606,17 @@ export const baiduNetdiskApi = {
   refreshAccount: async (payload = {}) => {
     const response = await apiClient.post('/baidu-netdisk/account/refresh', {}, {
       timeout: payload.timeout ?? 45000
+    })
+    return response.data
+  },
+
+  passwordLogin: async (payload = {}) => {
+    const response = await apiClient.post('/baidu-netdisk/account/password-login', {
+      username: payload.username || '',
+      password: payload.password || '',
+      persist: payload.persist ?? true
+    }, {
+      timeout: payload.timeout ?? 90000
     })
     return response.data
   },
@@ -1632,6 +1644,30 @@ export const baiduNetdiskApi = {
 
   closeOfficialLogin: async () => {
     const response = await apiClient.post('/baidu-netdisk/account/official-login/close')
+    return response.data
+  },
+
+  startQrLogin: async (payload = {}) => {
+    const response = await apiClient.post('/baidu-netdisk/account/qr-login/start', {}, {
+      timeout: payload.timeout ?? 20000
+    })
+    return response.data
+  },
+
+  pollQrLogin: async (payload = {}) => {
+    const response = await apiClient.post('/baidu-netdisk/account/qr-login/poll', {
+      session_id: payload.sessionId || '',
+      persist: payload.persist ?? true
+    }, {
+      timeout: payload.timeout ?? 45000
+    })
+    return response.data
+  },
+
+  closeQrLogin: async (payload = {}) => {
+    const response = await apiClient.post('/baidu-netdisk/account/qr-login/close', {
+      session_id: payload.sessionId || ''
+    })
     return response.data
   },
 
