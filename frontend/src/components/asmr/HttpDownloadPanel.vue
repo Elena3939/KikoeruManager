@@ -244,9 +244,9 @@
                       <div class="download-list-name http-preview-name">{{ previewItemTitle(item) }}</div>
                       <div v-if="!isBaidu || !item.ok || item.requires_pass_code || item.warning" class="http-preview-meta">
                         <span class="http-preview-source-chip">{{ sourceLabel(item.source) }}</span>
-                        <span v-if="!item.ok" class="http-preview-reason">{{ item.reason }}</span>
+                        <span v-if="!item.ok" class="http-preview-reason">{{ previewItemReason(item) }}</span>
                         <span v-else-if="item.warning" class="warn">{{ item.warning }}</span>
-                        <span v-if="isBaidu && (item.requires_pass_code || item.pass_code)" class="http-preview-pass-chip" :class="{ warn: !item.pass_code }">{{ item.pass_code ? `提取码 ${item.pass_code}` : '缺提取码' }}</span>
+                        <span v-if="isBaidu && (item.requires_pass_code || item.pass_code)" class="http-preview-pass-chip" :class="{ warn: !item.pass_code || item.pass_code_invalid }">{{ item.pass_code ? `提取码 ${item.pass_code}` : '缺提取码' }}</span>
                       </div>
                       <div v-if="!isBaidu && item.preview_summary" class="baidu-preview-summary">{{ item.preview_summary }}</div>
                       <div v-if="shouldShowBaiduPreviewFiles(item)" class="baidu-preview-files">
@@ -256,16 +256,16 @@
                           <span v-if="!file.is_dir" class="baidu-preview-file-size">{{ formatSize(file.size_bytes || file.size) }}</span>
                         </div>
                       </div>
-                      <div v-if="isBaidu && item.requires_pass_code" class="baidu-pass-code-row" @click.stop>
+                      <div v-if="isBaidu && item.requires_pass_code" class="baidu-pass-code-row" :class="{ invalid: item.pass_code_invalid }" @click.stop>
                         <input
                           v-model.trim="item.pass_code"
                           class="baidu-pass-code-input"
                           type="text"
                           maxlength="12"
-                          placeholder="输入提取码"
+                          placeholder="重新输入提取码"
                           @keyup.enter.stop="applyPassCodeAndPreview(item)"
                         >
-                        <button type="button" class="baidu-pass-code-btn" :disabled="previewing || !item.pass_code" @click.stop="applyPassCodeAndPreview(item)">重新预览</button>
+                        <button type="button" class="baidu-pass-code-btn" :disabled="previewing || !item.pass_code" @click.stop="applyPassCodeAndPreview(item)">验证并重新预览</button>
                       </div>
                     </div>
                   </div>
@@ -344,14 +344,121 @@ const inputPlaceholder = computed(() => isBaidu.value
   : '粘贴 HTTP/HTTPS 直链或分享链接，一行一个。支持 Gofile、Transfer.it、OneDrive、Google Drive、PikPak。'
 )
 const healthActionLabel = computed(() => isBaidu.value ? '检测百度登录态' : '检测 aria2')
+const BAIDU_SHARE_CODE_SEPARATOR = '----'
 
 const parsedUrls = computed(() => {
   const rows = String(urlText.value || '')
     .split(/[\r\n]+/)
     .map(item => item.trim())
     .filter(Boolean)
-  return isBaidu.value ? rows : [...new Set(rows)]
+  return isBaidu.value ? normalizeBaiduInputRows(rows) : [...new Set(rows)]
 })
+
+function normalizeBaiduInputRows(rows) {
+  const result = []
+  const seen = new Map()
+  let lastBaiduIndex = null
+  for (const row of rows || []) {
+    const value = String(row || '').trim()
+    if (!value) continue
+    const normalized = normalizeBaiduShareLine(value)
+    if (isBaiduShareUrl(normalized)) {
+      const key = baiduShareIdentity(normalized)
+      if (seen.has(key)) {
+        const existingIndex = seen.get(key)
+        if (!baiduShareHasCode(result[existingIndex]) && baiduShareHasCode(normalized)) {
+          result[existingIndex] = normalized
+        }
+        lastBaiduIndex = existingIndex
+        continue
+      }
+      result.push(normalized)
+      seen.set(key, result.length - 1)
+      lastBaiduIndex = result.length - 1
+      continue
+    }
+    const code = baiduPassCodeFromText(value)
+    if (code && lastBaiduIndex !== null) {
+      if (!baiduShareHasCode(result[lastBaiduIndex])) {
+        result[lastBaiduIndex] = appendBaiduPassCode(result[lastBaiduIndex], code)
+      }
+      continue
+    }
+    result.push(value)
+  }
+  return result
+}
+
+function normalizeBaiduShareLine(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  if (text.includes(BAIDU_SHARE_CODE_SEPARATOR)) {
+    const separatorIndex = text.lastIndexOf(BAIDU_SHARE_CODE_SEPARATOR)
+    const left = text.slice(0, separatorIndex).trim()
+    const right = text.slice(separatorIndex + BAIDU_SHARE_CODE_SEPARATOR.length).trim()
+    const code = baiduPassCodeFromText(right)
+    if (code && isBaiduShareUrl(left)) {
+      return appendBaiduPassCode(left, code)
+    }
+  }
+  const inline = text.match(
+    /^(https?:\/\/\S+?)\s+(?:提取码|访问码|密码|密碼|pwd|passcode|pass_code|code)?\s*[:：= ]?\s*([A-Za-z0-9]{4,12})\s*$/i,
+  )
+  if (inline && isBaiduShareUrl(inline[1])) {
+    return appendBaiduPassCode(inline[1].trim(), inline[2].trim())
+  }
+  return text
+}
+
+function isBaiduShareUrl(value) {
+  const text = String(value || '').trim().toLowerCase()
+  return text.startsWith('http://') || text.startsWith('https://')
+    ? (
+        text.includes('pan.baidu.com')
+        || text.includes('yun.baidu.com')
+        || text.includes('eyun.baidu.com')
+      )
+    : false
+}
+
+function baiduPassCodeFromText(value) {
+  const match = String(value || '').trim().match(
+    /(?:提取码|访问码|密码|密碼|pwd|passcode|pass_code|code)?\s*[:：= ]?\s*([A-Za-z0-9]{4,12})$/i,
+  )
+  return match ? match[1].trim() : ''
+}
+
+function baiduShareHasCode(value) {
+  return /[?&](?:pwd|password|passcode|pass_code|code)=/i.test(String(value || ''))
+}
+
+function appendBaiduPassCode(shareUrl, code) {
+  const normalizedCode = String(code || '').trim()
+  const normalizedUrl = String(shareUrl || '').trim()
+  if (!normalizedUrl || !normalizedCode || baiduShareHasCode(normalizedUrl)) return normalizedUrl
+  return `${normalizedUrl}${normalizedUrl.includes('?') ? '&' : '?'}pwd=${encodeURIComponent(normalizedCode)}`
+}
+
+function stripBaiduPassCode(shareUrl) {
+  return String(shareUrl || '').trim()
+    .replace(/([?&])(?:pwd|password|passcode|pass_code|code)=[^&#]*/ig, '$1')
+    .replace(/\?&/g, '?')
+    .replace(/[?&](#|$)/g, '$1')
+    .replace(/[?&]+$/g, '')
+}
+
+function replaceBaiduPassCode(shareUrl, code) {
+  return appendBaiduPassCode(stripBaiduPassCode(shareUrl), code)
+}
+
+function baiduShareIdentity(value) {
+  return stripBaiduPassCode(value)
+}
+
+function isBaiduPassCodeLine(value) {
+  const text = String(value || '').trim()
+  return Boolean(text && !isBaiduShareUrl(text) && baiduPassCodeFromText(text))
+}
 
 const okPreviewItems = computed(() => previewItems.value.filter(item => item.ok))
 const okPreviewCount = computed(() => okPreviewItems.value.length)
@@ -464,10 +571,22 @@ async function preview() {
       previewNeedsMaterialize.value = true
       selectedPreviewKeys.value = new Set((result.selected_keys || []).filter(Boolean))
       previewProgress.value = 100
-      addPreviewLog(`解析完成，可下载 ${okPreviewCount.value} 项，缺提取码 ${Number(result.needs_pass_code_count || 0)} 项`, okPreviewCount.value ? 'success' : 'warning')
+      const failedCount = Number(result.failed_count ?? Math.max(0, previewItems.value.length - okPreviewCount.value))
+      const needsPassCodeCount = Number(result.needs_pass_code_count || 0)
+      addPreviewLog(
+        `解析完成，可下载 ${okPreviewCount.value} 项，失败 ${failedCount} 项，需补提取码 ${needsPassCodeCount} 项`,
+        okPreviewCount.value ? 'success' : 'warning',
+      )
+      previewItems.value
+        .filter(item => !item.ok)
+        .slice(0, 5)
+        .forEach((item, index) => {
+          addPreviewLog(`[失败 ${index + 1}] ${previewItemReason(item)}`, item.requires_pass_code ? 'warning' : 'error')
+        })
       if (result.svip_speed) addPreviewLog('当前百度账号为 SVIP，将使用官方登录态直接下载', 'success')
       if (okPreviewCount.value) ElMessage.success(`可下载 ${okPreviewCount.value} 个分享`)
-      if (result.needs_pass_code_count) ElMessage.warning(`${result.needs_pass_code_count} 个分享需要补提取码`)
+      if (needsPassCodeCount) ElMessage.warning(`${needsPassCodeCount} 个分享需要补提取码`)
+      else if (!okPreviewCount.value && failedCount) ElMessage.error(previewItemReason(previewItems.value.find(item => !item.ok)) || '百度网盘预览失败')
       return
     }
     for (let index = 0; index < urls.length; index += 1) {
@@ -588,6 +707,14 @@ function previewItemTitle(item) {
   return `${sourceLabel(item?.source)} 预览失败`
 }
 
+function previewItemReason(item) {
+  const reason = String(item?.reason || '').trim()
+  const warning = String(item?.warning || '').trim()
+  if (reason && warning && (warning.includes(reason) || reason.includes(warning))) return warning
+  if (reason && warning && reason !== warning) return `${reason}：${warning}`
+  return reason || warning || '未读取到可下载文件'
+}
+
 function shouldShowBaiduPreviewFiles(item) {
   if (!isBaidu.value) return false
   const files = Array.isArray(item?.preview_files) ? item.preview_files.filter(Boolean) : []
@@ -610,25 +737,30 @@ function applyPassCodeAndPreview(item) {
   const shareUrl = String(item?.share_url || item?.url || item?.masked_url || '').trim()
   if (!shareUrl || !code) return
   const lines = String(urlText.value || '').split(/\r?\n/)
-  const normalizedShare = shareUrl.replace(/[?&](pwd|password|passcode|pass_code|code)=[^&#]*/ig, '')
+  const shareIdentity = baiduShareIdentity(shareUrl)
+  const fixedShareUrl = replaceBaiduPassCode(shareUrl, code)
   let matched = false
   const nextLines = []
   for (let index = 0; index < lines.length; index += 1) {
     const raw = lines[index]
     const trimmed = raw.trim()
-    nextLines.push(raw)
-    if (!matched && trimmed && normalizedShare.includes(trimmed.replace(/[?&](pwd|password|passcode|pass_code|code)=[^&#]*/ig, ''))) {
-      const following = String(lines[index + 1] || '').trim()
-      if (!/^(?:提取码|访问码|密码|密碼|pwd|passcode|pass_code|code)\s*[:：= ]/i.test(following) && !/^[A-Za-z0-9]{4,12}$/.test(following)) {
-        nextLines.push(code)
+    const normalizedLine = normalizeBaiduShareLine(trimmed)
+    if (!matched && trimmed && isBaiduShareUrl(normalizedLine) && baiduShareIdentity(normalizedLine) === shareIdentity) {
+      const indent = raw.match(/^\s*/)?.[0] || ''
+      nextLines.push(`${indent}${fixedShareUrl}`)
+      if (isBaiduPassCodeLine(lines[index + 1])) {
+        index += 1
       }
       matched = true
+      continue
     }
+    nextLines.push(raw)
   }
   if (!matched) {
-    nextLines.push(shareUrl, code)
+    nextLines.push(fixedShareUrl)
   }
   urlText.value = nextLines.join('\n')
+  addPreviewLog('已更新提取码，重新预览该分享', 'warning')
   preview()
 }
 
@@ -922,11 +1054,6 @@ onMounted(loadHealth)
   color: rgb(15, 23, 42);
   font-size: 13px;
   font-weight: 800;
-}
-.http-preview-status-text {
-  margin-top: 2px;
-  color: var(--asmr-text-muted);
-  font-size: 11.5px;
 }
 .http-preview-status-count {
   flex-shrink: 0;
@@ -1353,8 +1480,6 @@ onMounted(loadHealth)
 .http-policy-dd :deep(.app-dd-trigger-caret) {
   color: var(--asmr-text-strong);
 }
-.spin { animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
 @keyframes asmr-health-spin { to { transform: rotate(360deg); } }
 @keyframes asmr-health-pop {
   0% { transform: scale(0.82); opacity: 0.6; }

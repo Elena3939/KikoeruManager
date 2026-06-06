@@ -326,8 +326,6 @@ onBeforeUnmount(() => document.removeEventListener('click', handleDocumentClick)
 </script>
 <style scoped>
 .custom-preview-modal :deep(.el-dialog__header) { display: none; }
-.loader-icon { font-size: 28px; color: #64748b; }
-.loading-text { margin-top: 12px; color: #334155; font-weight: 600; letter-spacing: .2px; }
 .glass-shell { background: rgba(255,255,255,.7); backdrop-filter: blur(8px); border: 1px solid rgba(15,23,42,.06); }
 .dropdown-menu { backdrop-filter: blur(8px); }
 .tab-chip { transition: all .15s ease; }

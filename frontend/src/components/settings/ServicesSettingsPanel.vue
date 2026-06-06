@@ -619,7 +619,6 @@ onBeforeUnmount(() => {
 
 .mini-grid { display: grid; gap: 10px; }
 .mini-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.mini-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
 .pill-switch-grid {
   display: grid;
@@ -991,7 +990,6 @@ onBeforeUnmount(() => {
 @media (max-width: 1200px) {
   .settings-grid.two,
   .mini-grid.two,
-  .mini-grid.three,
   .pill-switch-grid { grid-template-columns: 1fr; }
   .service-result-grid { grid-template-columns: 1fr; }
 }

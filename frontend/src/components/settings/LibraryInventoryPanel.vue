@@ -262,8 +262,7 @@ function emitLibraryFlag(libraryId, key, value) {
   line-height: 1.5;
 }
 
-.editor-desc,
-.empty-desc {
+.editor-desc {
   color: var(--set-text-muted);
   font-size: 12.5px;
   line-height: 1.6;
@@ -526,21 +525,6 @@ function emitLibraryFlag(libraryId, key, value) {
   background: linear-gradient(135deg, rgba(254, 226, 226, 0.6) 0%, #ffffff 100%);
   border-color: rgba(244, 63, 94, 0.7);
   color: #be123c;
-}
-
-.empty-state {
-  display: grid;
-  place-items: center;
-  min-height: 240px;
-  text-align: center;
-  color: var(--set-text-muted);
-}
-
-.empty-title {
-  margin-top: 12px;
-  color: var(--set-text-strong);
-  font-size: 14px;
-  font-weight: 600;
 }
 
 .spinning {

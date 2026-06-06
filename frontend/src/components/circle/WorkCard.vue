@@ -546,26 +546,6 @@ function onCoverError(event) {
   border-color: color-mix(in srgb, var(--circle-tag-primary, #2563eb) 34%, transparent);
   background: color-mix(in srgb, var(--circle-surface, #ffffff) 78%, transparent);
 }
-.work-new-badge {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  height: 16px;
-  padding: 0 7px;
-  border-radius: 999px;
-  background: linear-gradient(135deg, #f97316 0%, #fb923c 100%);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: .04em;
-  box-shadow: 0 2px 6px rgba(249, 115, 22, 0.3);
-}
-.work-rj-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
 .work-new-flag {
   position: absolute;
   top: 8px;
