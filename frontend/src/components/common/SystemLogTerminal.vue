@@ -61,6 +61,31 @@ const rowVirtualizer = useVirtualizer(computed(() => ({
 const virtualRows = computed(() => rowVirtualizer.value.getVirtualItems())
 const totalSize = computed(() => rowVirtualizer.value.getTotalSize())
 
+function clampProgress(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return 0
+  return Math.max(0, Math.min(100, Math.round(numeric)))
+}
+
+function normalizeProgressTone(value) {
+  const tone = String(value || 'processing').trim().toLowerCase()
+  if (['success', 'error', 'waiting', 'paused'].includes(tone)) return tone
+  return 'processing'
+}
+
+function progressToneLabel(value) {
+  const tone = normalizeProgressTone(value)
+  if (tone === 'success') return '完成'
+  if (tone === 'error') return '异常'
+  if (tone === 'waiting') return '等待'
+  if (tone === 'paused') return '暂停'
+  return '进行中'
+}
+
+function isTaskProgressLine(line) {
+  return String(line?.kind || '') === 'task-progress' && hasProgress(line)
+}
+
 function measureRow(el) {
   if (el) rowVirtualizer.value.measureElement(el)
 }
@@ -262,8 +287,10 @@ onBeforeUnmount(() => {
             class="terminal-line"
             :class="[
               `is-${normalizeLevel(safeLines[virtualRow.index]?.level)}`,
+              `is-progress-${normalizeProgressTone(safeLines[virtualRow.index]?.taskProgress?.tone)}`,
               {
                 'has-progress': hasProgress(safeLines[virtualRow.index]),
+                'is-task-progress': isTaskProgressLine(safeLines[virtualRow.index]),
               },
             ]"
             :style="{ transform: `translateY(${virtualRow.start}px)` }"
@@ -275,7 +302,21 @@ onBeforeUnmount(() => {
             </span>
             <span class="terminal-source">{{ safeLines[virtualRow.index]?.source || 'system' }}</span>
             <span v-if="hasProgress(safeLines[virtualRow.index])" class="terminal-progress">{{ safeLines[virtualRow.index]?.progress }}%</span>
-            <span class="terminal-message">
+            <span v-if="isTaskProgressLine(safeLines[virtualRow.index])" class="terminal-message terminal-inline-progress">
+              <span class="terminal-inline-progress-main">
+                <span class="terminal-inline-progress-title">
+                  任务 {{ safeLines[virtualRow.index]?.taskProgress?.shortId || '--------' }}
+                </span>
+                <span class="terminal-inline-progress-bar" :style="{ '--inline-progress': `${clampProgress(safeLines[virtualRow.index]?.progress)}%` }">
+                  <span />
+                </span>
+                <span class="terminal-inline-progress-state">
+                  {{ progressToneLabel(safeLines[virtualRow.index]?.taskProgress?.tone) }} · {{ safeLines[virtualRow.index]?.taskProgress?.updatedLabel || '--:--:--' }}
+                </span>
+              </span>
+              <span class="terminal-inline-progress-detail">{{ safeLines[virtualRow.index]?.message || '处理中' }}</span>
+            </span>
+            <span v-else class="terminal-message">
               <template v-for="(token, tokenIndex) in shellTokens(safeLines[virtualRow.index]?.message)" :key="`${virtualRow.key}-${tokenIndex}`">
                 <span :class="`terminal-token is-${token.type}`">{{ token.value }}</span>
               </template>
@@ -543,6 +584,121 @@ onBeforeUnmount(() => {
   grid-column: auto;
 }
 
+.terminal-line.is-task-progress {
+  min-height: 44px;
+  background: rgba(14, 20, 25, 0.72);
+}
+
+.terminal-line.is-task-progress:hover {
+  background: rgba(20, 29, 36, 0.82);
+}
+
+.terminal-inline-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  white-space: normal;
+}
+
+.terminal-inline-progress-main {
+  display: grid;
+  grid-template-columns: auto minmax(140px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.terminal-inline-progress-title,
+.terminal-inline-progress-state,
+.terminal-inline-progress-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-inline-progress-title {
+  color: #e5e7eb;
+  font-size: 11.5px;
+  font-weight: 900;
+}
+
+.terminal-inline-progress-state {
+  color: #71717a;
+  font-size: 10.5px;
+  font-weight: 800;
+}
+
+.terminal-inline-progress-detail {
+  color: #a1a1aa;
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.terminal-inline-progress-bar {
+  position: relative;
+  overflow: hidden;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(63, 63, 70, 0.72);
+}
+
+.terminal-inline-progress-bar span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--inline-progress, 0%);
+  min-width: 8px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #22d3ee, #34d399);
+  box-shadow: 0 0 16px rgba(34, 211, 238, 0.22);
+  transition: width 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.terminal-line.is-progress-processing .terminal-inline-progress-bar span::after,
+.terminal-line.is-progress-waiting .terminal-inline-progress-bar span::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.28), transparent);
+  animation: terminal-progress-sheen 1.45s linear infinite;
+}
+
+.terminal-line.is-progress-success .terminal-progress,
+.terminal-line.is-progress-success .terminal-inline-progress-title {
+  color: #86efac;
+}
+
+.terminal-line.is-progress-success .terminal-inline-progress-bar span {
+  background: linear-gradient(90deg, #22c55e, #86efac);
+}
+
+.terminal-line.is-progress-error .terminal-progress,
+.terminal-line.is-progress-error .terminal-inline-progress-title {
+  color: #fda4af;
+}
+
+.terminal-line.is-progress-error .terminal-inline-progress-bar span {
+  background: linear-gradient(90deg, #fb7185, #fda4af);
+}
+
+.terminal-line.is-progress-waiting .terminal-progress,
+.terminal-line.is-progress-waiting .terminal-inline-progress-title {
+  color: #fde68a;
+}
+
+.terminal-line.is-progress-waiting .terminal-inline-progress-bar span {
+  background: linear-gradient(90deg, #f59e0b, #fde68a);
+}
+
+.terminal-line.is-progress-paused .terminal-progress,
+.terminal-line.is-progress-paused .terminal-inline-progress-title {
+  color: #c4b5fd;
+}
+
+.terminal-line.is-progress-paused .terminal-inline-progress-bar span {
+  background: linear-gradient(90deg, #8b5cf6, #c4b5fd);
+}
+
 .terminal-line.is-info .terminal-level { color: #93c5fd; }
 .terminal-line.is-success .terminal-level { color: #86efac; }
 .terminal-line.is-warning {
@@ -596,6 +752,11 @@ onBeforeUnmount(() => {
   47%, 100% { opacity: 0; }
 }
 
+@keyframes terminal-progress-sheen {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+
 @media (max-width: 720px) {
   .terminal-titlebar {
     grid-template-columns: 62px minmax(0, 1fr) auto;
@@ -631,6 +792,15 @@ onBeforeUnmount(() => {
 
   .terminal-message {
     grid-column: 1 / -1;
+  }
+
+  .terminal-inline-progress-main {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .terminal-inline-progress-bar {
+    grid-column: 1 / -1;
+    order: 3;
   }
 }
 </style>

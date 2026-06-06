@@ -138,6 +138,7 @@ import { VARIABLES } from './blockTypes.js'
 import { EmailImage } from './emailImageExtension.js'
 import { PreserveEmailAttributes } from './preserveEmailAttributes.js'
 import SlashMenu from './SlashMenu.vue'
+import { showSystemPrompt } from '../../../composables/useSystemPrompt'
 
 const props = defineProps({
   modelValue: { type: [Object, String], default: null },  // Tiptap JSON doc 或 HTML 字符串
@@ -428,9 +429,19 @@ const toolbarBtns = [
     cmd: 'link', title: '插入链接',
     icon: Link2,
     active: () => editor.value?.isActive('link'),
-    action: () => {
-      const url = window.prompt('链接地址', 'https://')
-      if (url) editor.value?.chain().focus().setLink({ href: url }).run()
+    action: async () => {
+      try {
+        const url = await showSystemPrompt({
+          title: '插入链接',
+          message: '输入要绑定到当前选中文本的链接地址。',
+          modelValue: editor.value?.getAttributes('link')?.href || 'https://',
+          placeholder: 'https://',
+          confirmText: '插入',
+          cancelText: '取消',
+        })
+        const href = String(url || '').trim()
+        if (href) editor.value?.chain().focus().setLink({ href }).run()
+      } catch {}
     },
   },
   {

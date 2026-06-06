@@ -355,6 +355,8 @@ import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 const LOG_PREVIEW_LIMIT = 900
 const LOG_FLUSH_INTERVAL = 120
 const LOG_STREAM_RECONNECT_MS = 2500
+const COMPACT_PROCESS_LOGS_KEY = 'kikoerumanager.logs.compact_process_noise'
+const TASK_PROGRESS_STALE_MS = 2 * 60 * 1000
 
 const logs = shallowRef([])
 const isPaused = ref(false)
@@ -371,7 +373,7 @@ const selectedLevels = ref(['INFO', 'WARNING', 'ERROR'])
 const selectedModules = ref([])
 const searchKeyword = ref('')
 const searchInputRef = ref(null)
-const compactProcessLogs = ref(localStorage.getItem('kikoerumanager.logs.compact_process_noise') === '1')
+const compactProcessLogs = ref(localStorage.getItem(COMPACT_PROCESS_LOGS_KEY) !== '0')
 
 const allLevels = ['DEBUG', 'INFO', 'WARNING', 'ERROR']
 
@@ -425,22 +427,42 @@ const filteredLogs = computed(() => {
   // 重新过滤掉，导致出现"X 总计 0 匹配"。这里在全历史模式下放行 keyword，
   // 仅保留级别 / 模块过滤，避免二次过滤造成搜索失效。
   const skipKeywordFilter = isFullSearch.value
+  const taskEndById = collectTaskEndState(logs.value)
+  const newestLogMs = getNewestLogTimeMs(logs.value)
+  const candidates = []
+  const latestProgressByTask = new Map()
 
-  return logs.value.filter((log) => {
+  logs.value.forEach((log, index) => {
     if (!lvlSet.has(log.level)) return false
     if (moduleSet && !moduleSet.has(log.module)) return false
+    const taskProgress = parseTaskProgressLog(log, index)
+    if (taskProgress) {
+      latestProgressByTask.set(taskProgress.taskId, taskProgress)
+      candidates.push({ type: 'task-progress', log, taskProgress })
+      return false
+    }
     if (compactProcessLogs.value && isProcessNoiseLog(log)) return false
-    if (!termCount || skipKeywordFilter) return true
+    if (!termCount || skipKeywordFilter) {
+      candidates.push({ type: 'log', log })
+      return true
+    }
     // 消费解析阶段预先缓存的 lower-case（messageLower / moduleLower / rawLineLower），
     // 这里不再 toLowerCase，单次过滤开销从 O(n·m) 降到 O(n·k)。
-    const msg = log.messageLower || ''
-    const mod = log.moduleLower || ''
-    const raw = log.rawLineLower || ''
-    for (let i = 0; i < termCount; i += 1) {
-      const term = terms[i]
-      if (!msg.includes(term) && !mod.includes(term) && !raw.includes(term)) return false
+    if (!matchesSearchTerms(log, terms)) {
+      return false
     }
+    candidates.push({ type: 'log', log })
     return true
+  })
+
+  return candidates.flatMap((entry) => {
+    if (entry.type !== 'task-progress') return [entry.log]
+
+    const latest = latestProgressByTask.get(entry.taskProgress.taskId)
+    if (!latest || latest.order !== entry.taskProgress.order) return []
+    if (isTaskProgressEnded(entry.taskProgress, taskEndById)) return []
+    if (isTaskProgressStale(entry.taskProgress, newestLogMs)) return []
+    return [buildTaskProgressTerminalLog(entry.log, entry.taskProgress)]
   })
 })
 
@@ -454,6 +476,7 @@ const hiddenProcessNoiseCount = computed(() => {
   for (const log of logs.value) {
     if (!lvlSet.has(log.level)) continue
     if (moduleSet && !moduleSet.has(log.module)) continue
+    if (parseTaskProgressLog(log)) continue
     if (isProcessNoiseLog(log)) count += 1
   }
   return count
@@ -464,6 +487,9 @@ const terminalLines = computed(() => filteredLogs.value.map((log) => ({
   time: log.time,
   level: log.level,
   source: log.module || inferSourceFromLevel(log.level),
+  kind: log.kind || 'log',
+  progress: log.progress ?? null,
+  taskProgress: log.taskProgress || null,
   message: log.displayMessage || log.message,
 })))
 
@@ -519,7 +545,171 @@ function toggleLevel(level) {
 
 function toggleCompactProcessLogs() {
   compactProcessLogs.value = !compactProcessLogs.value
-  localStorage.setItem('kikoerumanager.logs.compact_process_noise', compactProcessLogs.value ? '1' : '0')
+  localStorage.setItem(COMPACT_PROCESS_LOGS_KEY, compactProcessLogs.value ? '1' : '0')
+}
+
+function clampPercent(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return 0
+  return Math.max(0, Math.min(100, Math.round(numeric)))
+}
+
+function matchesSearchTerms(log, terms) {
+  const msg = log.messageLower || ''
+  const mod = log.moduleLower || ''
+  const raw = log.rawLineLower || ''
+  for (let i = 0; i < terms.length; i += 1) {
+    const term = terms[i]
+    if (!msg.includes(term) && !mod.includes(term) && !raw.includes(term)) return false
+  }
+  return true
+}
+
+function formatProgressTime(value) {
+  const text = String(value || '')
+  if (!text) return '--:--:--'
+  const dateMatch = text.match(/\d{4}-\d{2}-\d{2}\s+(\d{2}:\d{2}:\d{2})/)
+  if (dateMatch) return dateMatch[1]
+  return text.length > 8 ? text.slice(0, 8) : text
+}
+
+function parseLogTimeMs(value) {
+  const text = String(value || '').trim()
+  if (!text) return 0
+  const normalized = text.includes('T') ? text : text.replace(' ', 'T')
+  const date = new Date(normalized)
+  const ms = date.getTime()
+  return Number.isFinite(ms) ? ms : 0
+}
+
+function getNewestLogTimeMs(list) {
+  let newest = 0
+  for (const log of Array.isArray(list) ? list : []) {
+    const ms = parseLogTimeMs(log?.time)
+    if (ms > newest) newest = ms
+  }
+  return newest
+}
+
+function classifyProgressTone(text, progress, level) {
+  const normalizedLevel = String(level || '').toUpperCase()
+  if (normalizedLevel === 'ERROR' || /失败|错误|异常|Traceback|Exception|RuntimeError/.test(text)) return 'error'
+  if (/暂停|已暂停|等待/.test(text)) return 'waiting'
+  if (/取消|已取消|cancel/i.test(text)) return 'paused'
+  if (progress >= 100 || /完成|成功|已归档|已移动/.test(text)) return 'success'
+  return 'processing'
+}
+
+function classifyProgressPhase(text, moduleName) {
+  if (/解压|7z|unar|压缩包解压/.test(text)) return '解压'
+  if (/归档|已处理目录|processed/i.test(text)) return '归档'
+  if (/移动|搬移|move/i.test(text)) return '移动'
+  if (/上传|写入远端|群晖/.test(text)) return '上传'
+  if (/下载|拉取|同步/.test(text)) return '下载'
+  if (/重命名|改名/.test(text)) return '重命名'
+  if (/分类|整理/.test(text)) return '整理'
+  if (/清理|删除/.test(text)) return '清理'
+  if (/扫描|检查|验证|预检/.test(text)) return '检查'
+  return moduleName || '任务'
+}
+
+function buildProgressDetail(step) {
+  const text = String(step || '').replace(/\s+/g, ' ').trim()
+  if (text.length <= 96) return text
+  return `${text.slice(0, 94)}...`
+}
+
+function parseTaskProgressLog(log, order = 0) {
+  const message = String(log?.message || '')
+  const match = message.match(/任务\s+([0-9a-fA-F-]{8,36})\s*[:：]\s*(.+?)\s*[（(]\s*(\d{1,3})\s*%\s*[)）]\s*$/)
+  if (!match) return null
+
+  const taskId = match[1]
+  const step = match[2].trim()
+  const progress = clampPercent(match[3])
+  const context = `${log?.module || ''} ${step}`
+  const tone = classifyProgressTone(context, progress, log?.level)
+  const phase = classifyProgressPhase(context, log?.module || '')
+
+  return {
+    id: taskId,
+    taskId,
+    shortId: taskId.slice(0, 8),
+    title: `任务 ${taskId.slice(0, 8)}`,
+    phase,
+    detail: buildProgressDetail(step),
+    progress,
+    tone,
+    timestampMs: parseLogTimeMs(log?.time),
+    updatedAt: log?.time || '',
+    updatedLabel: formatProgressTime(log?.time),
+    order,
+  }
+}
+
+function parseTaskEndLog(log, order = 0) {
+  const message = String(log?.message || '')
+  const patterns = [
+    { re: /任务\s+([0-9a-fA-F-]{8,36})\s+已被用户取消/, tone: 'paused' },
+    { re: /任务\s+([0-9a-fA-F-]{8,36}).*(?:已取消|取消完成|被取消)/, tone: 'paused' },
+    { re: /任务\s+([0-9a-fA-F-]{8,36}).*(?:任务失败|处理失败|失败)/, tone: 'error' },
+    { re: /任务\s+([0-9a-fA-F-]{8,36}).*(?:任务完成|处理完成|成功完成)/, tone: 'success' },
+    { re: /任务\s+([0-9a-fA-F-]{8,36})\s+状态更新为:\s*(completed|failed|cancelled|canceled|paused)/i, tone: '' },
+  ]
+  for (const item of patterns) {
+    const match = message.match(item.re)
+    if (!match) continue
+    let tone = item.tone
+    if (!tone) {
+      const status = String(match[2] || '').toLowerCase()
+      if (status === 'completed') tone = 'success'
+      else if (status === 'failed') tone = 'error'
+      else tone = 'paused'
+    }
+    return {
+      taskId: match[1],
+      tone,
+      order,
+      timestampMs: parseLogTimeMs(log?.time),
+    }
+  }
+  return null
+}
+
+function collectTaskEndState(list) {
+  const result = new Map()
+  ;(Array.isArray(list) ? list : []).forEach((log, index) => {
+    const state = parseTaskEndLog(log, index)
+    if (!state) return
+    const previous = result.get(state.taskId)
+    if (!previous || state.order >= previous.order) {
+      result.set(state.taskId, state)
+    }
+  })
+  return result
+}
+
+function isTaskProgressEnded(progress, taskEndById) {
+  const endState = taskEndById.get(progress.taskId)
+  return Boolean(endState && endState.order > progress.order)
+}
+
+function isTaskProgressStale(progress, newestLogMs) {
+  if (!newestLogMs || !progress.timestampMs) return false
+  return newestLogMs - progress.timestampMs > TASK_PROGRESS_STALE_MS
+}
+
+function buildTaskProgressTerminalLog(log, progress) {
+  return {
+    ...log,
+    key: `${log.key}-task-progress`,
+    kind: 'task-progress',
+    module: progress.phase,
+    message: progress.detail,
+    displayMessage: progress.detail,
+    progress: progress.progress,
+    taskProgress: progress,
+  }
 }
 
 function isProcessNoiseLog(log) {
@@ -543,6 +733,7 @@ function isProcessNoiseLog(log) {
     /外层压缩包解压成功|解压成功，使用|解压了\s*\d+\s*个嵌套压缩包/,
     /密码.*探测通过|密码候选|尝试.*密码|使用.*密码|密码来源|指定密码/,
     /归档压缩包|压缩包已归档|检测到.*分卷.*归档|已记录压缩包归档信息|更新压缩包归档记录/,
+    /移动到媒体库|移动到:|字幕文件夹已移动|开始移动|移动完成/,
   ].some((pattern) => pattern.test(text))
 }
 
