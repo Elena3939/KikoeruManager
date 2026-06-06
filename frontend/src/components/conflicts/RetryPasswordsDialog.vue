@@ -8,14 +8,14 @@
       >
         <div class="rpd-window relative w-full max-w-[620px] max-h-[calc(100vh-3rem)] flex flex-col rounded-3xl overflow-hidden" @mousedown.stop>
           <!-- Header -->
-          <header class="rpd-header flex items-start justify-between gap-4 px-7 pt-6 pb-4 flex-none">
+          <header class="rpd-header flex items-start justify-between gap-4 px-6 pt-5 pb-3 flex-none">
             <div class="min-w-0 flex-1">
               <h1 class="rpd-title text-2xl font-bold tracking-tight">{{ title }}</h1>
               <p class="rpd-subtitle text-sm m-0 mt-1.5">{{ description }}</p>
             </div>
             <button
               type="button"
-              class="rpd-close inline-flex size-9 items-center justify-center rounded-full flex-shrink-0"
+              class="rpd-close inline-flex size-8 items-center justify-center rounded-full flex-shrink-0"
               title="关闭"
               @click="handleCancel"
             >
@@ -24,7 +24,7 @@
           </header>
 
           <!-- Body：密码队列面板 -->
-          <div class="rpd-body flex-1 min-h-0 overflow-y-auto px-7 py-4">
+          <div class="rpd-body flex-1 min-h-0 overflow-y-auto px-6 py-3">
             <section class="rpd-password-panel">
               <div class="rpd-panel-head">
                 <div>
@@ -78,19 +78,19 @@
           </div>
 
           <!-- Footer -->
-          <footer class="rpd-footer flex items-center justify-between gap-4 px-7 py-5 flex-none">
+          <footer class="rpd-footer flex items-center justify-between gap-4 px-6 py-3 flex-none">
             <p class="rpd-summary text-sm m-0">
               {{ effectiveCount ? `将尝试 ${effectiveCount} 个指定密码` : '未指定密码，将走密码库 / RJ 推导 / 默认密码' }}
             </p>
             <div class="flex items-center gap-3">
               <button
                 type="button"
-                class="rpd-btn-secondary px-6 h-10 rounded-xl font-bold"
+                class="rpd-btn-secondary px-5 h-9 rounded-xl font-bold"
                 @click="handleCancel"
               >取消</button>
               <button
                 type="button"
-                class="rpd-btn-primary px-7 h-10 rounded-xl font-bold text-white"
+                class="rpd-btn-primary px-6 h-9 rounded-xl font-bold text-white"
                 @click="handleConfirm"
               >{{ confirmText }}</button>
             </div>
@@ -282,19 +282,17 @@ function handleCancel() {
 
 /* Body */
 .rpd-body {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .rpd-password-panel {
-  border: 1px solid rgba(255, 255, 255, 0.34);
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.22);
-  padding: 14px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.56),
-    0 12px 30px rgba(15, 23, 42, 0.06);
-  backdrop-filter: blur(16px) saturate(135%);
-  -webkit-backdrop-filter: blur(16px) saturate(135%);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .rpd-panel-head {
@@ -302,13 +300,13 @@ function handleCancel() {
   align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
-  padding: 2px 2px 12px;
+  padding: 0 0 10px;
 }
 
 .rpd-panel-kicker {
-  margin: 0 0 3px;
+  margin: 0 0 2px;
   color: #94a3b8;
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -326,43 +324,43 @@ function handleCancel() {
   display: inline-flex;
   flex: none;
   align-items: center;
-  height: 28px;
-  border: 1px solid rgba(255, 255, 255, 0.36);
+  height: 24px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.28);
+  background: rgba(248, 250, 252, 0.52);
   padding: 0 10px;
   color: #475569;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 800;
 }
 
 .rpd-rows {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   padding: 0;
 }
 
 .rpd-row {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) 36px;
+  grid-template-columns: 32px minmax(0, 1fr) 34px;
   align-items: center;
-  gap: 10px;
-  min-height: 58px;
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.2);
-  padding: 8px 10px;
+  gap: 9px;
+  min-height: 50px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.12);
+  padding: 6px 8px;
 }
 
 .rpd-row-index {
   display: inline-flex;
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.28);
+  background: rgba(248, 250, 252, 0.55);
   font-size: 11.5px;
   font-weight: 800;
   color: #64748b;
@@ -386,31 +384,31 @@ function handleCancel() {
 
 .rpd-input {
   width: 100%;
-  height: 40px;
+  height: 38px;
   padding: 0 12px;
-  border: 1px solid rgba(255, 255, 255, 0.34);
+  border: 1px solid rgba(148, 163, 184, 0.26);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.34);
+  background: rgba(255, 255, 255, 0.62);
   color: #0f172a;
   font-size: 13px;
   font-weight: 700;
   outline: none;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   transition: background-color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
 .rpd-input::placeholder { color: #94a3b8; }
 
 .rpd-input:focus {
-  background: rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.9);
   border-color: rgba(15, 23, 42, 0.16);
   box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.045);
 }
 
 .rpd-row-del {
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  background: rgba(255, 255, 255, 0.18);
+  border: 0;
+  background: transparent;
   color: #94a3b8;
   cursor: pointer;
   transition: background-color 0.18s ease, color 0.18s ease;
@@ -428,37 +426,38 @@ function handleCancel() {
 
 .rpd-add {
   align-self: flex-start;
-  height: 34px;
-  margin-top: 12px;
-  padding: 0 15px;
-  border: 1px solid rgba(255, 255, 255, 0.34);
+  height: 30px;
+  margin-top: 8px;
+  padding: 0 10px;
+  border: 0;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.24);
+  background: transparent;
   color: #475569;
   font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
   letter-spacing: 0.01em;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .rpd-add:hover {
-  background: rgba(255, 255, 255, 0.9);
-  border-color: rgba(15, 23, 42, 0.18);
+  background: rgba(248, 250, 252, 0.7);
+  border-color: transparent;
   color: #0f172a;
   transform: translateY(-2px) scale(1.02);
 }
 
 /* Footer */
 .rpd-footer {
-  border-top: 1px solid rgba(255, 255, 255, 0.28);
-  background: rgba(255, 255, 255, 0.14);
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .rpd-summary {
   color: #64748b;
+  line-height: 1.35;
 }
 
 /* Buttons：与社团预览 primary-cta / secondary-cta 同款 */

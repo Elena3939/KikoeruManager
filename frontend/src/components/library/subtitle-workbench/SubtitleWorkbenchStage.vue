@@ -323,7 +323,7 @@ const gridClass = computed(() => {
               color 0.3s ease,
               border-color 0.3s ease,
               box-shadow 0.3s ease;
-  animation: rail-handle-attn 3.2s ease-in-out infinite;
+  animation: none;
 }
 
 .rail-handle-right {
@@ -410,6 +410,17 @@ const gridClass = computed(() => {
   border-color: rgba(255, 255, 255, 0.1) !important;
   background: #111216 !important;
   background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-workbench-stage > div > aside,
+:global(html.dark) .subtitle-workbench-stage > div > aside,
+:global(html.kikoerumanager-dark) .subtitle-workbench-stage :is([class*="bg-white"], [class*="bg-slate-50"], [class*="bg-slate-100"]),
+:global(html.dark) .subtitle-workbench-stage :is([class*="bg-white"], [class*="bg-slate-50"], [class*="bg-slate-100"]) {
+  background-color: #111216 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: rgba(246, 246, 248, 0.88) !important;
   box-shadow: none !important;
 }
 

@@ -36,7 +36,7 @@
       <div class="flex items-center justify-between gap-3 flex-wrap px-4 py-3 rounded-[12px] border border-slate-200 bg-white">
 
         <div class="flex items-center gap-2.5 min-w-0">
-          <span class="flex-shrink-0 inline-flex items-center justify-center w-8 h-8 rounded-[9px] bg-slate-50 border border-slate-200 text-slate-500"><FolderOpen :size="16" :stroke-width="2" /></span>
+          <span class="subtitle-folder-mark flex-shrink-0 inline-flex items-center justify-center w-8 h-8"><FolderOpen :size="18" :stroke-width="2.35" /></span>
 
           <span class="text-[14px] font-semibold text-slate-900 truncate">{{ getDisplayFolderTitle() }}</span>
         </div>
@@ -77,8 +77,11 @@
             </div>
           </div>
           <div class="flex items-center gap-1.5 flex-wrap justify-end">
-            <button class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-medium border transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100" :disabled="view.subtitleInspectorBusy" title="已配置 AI 时优先用 AI 生成草稿，失败后自动回退规则预配对" @click="view.buildAutoSubtitlePairs">
-              <Wand2 :size="12" class="text-emerald-500" :class="{ 'is-spinning': view.subtitleAutoPairing }" />{{ view.subtitleAutoPairing ? 'AI 生成中' : '自动预配对' }}
+            <button class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-semibold border border-cyan-200 bg-cyan-50 text-cyan-700 transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] hover:border-cyan-300 hover:bg-cyan-100 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100" :disabled="view.subtitleInspectorBusy || !view.subtitleInspectorAudioFiles.length || !view.subtitleInspectorSubtitleFiles.length" title="让 AI 直接生成配对草稿；确认后再点击导入。" @click="view.buildAISubtitlePairs">
+              <Bot :size="12" :stroke-width="2.2" :class="{ 'is-spinning': view.subtitleAutoPairing }" />{{ view.subtitleAutoPairing ? 'AI 配对中' : 'AI 配对' }}
+            </button>
+            <button class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-medium border transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100" :disabled="view.subtitleInspectorBusy || !view.subtitleInspectorAudioFiles.length || !view.subtitleInspectorSubtitleFiles.length" title="不用 AI，按文件名、轨道号和规范化标题生成规则草稿。" @click="view.buildRuleSubtitlePairs">
+              <Wand2 :size="12" class="text-emerald-500" />规则预配对
             </button>
             <button :class="['inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-medium border transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] active:scale-95', view.subtitleSequenceMode ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300']" @click="view.setSubtitleSequenceMode(!view.subtitleSequenceMode)">
               <MousePointerClick :size="12" :class="view.subtitleSequenceMode ? 'text-slate-300' : 'text-blue-500'" />{{ view.subtitleSequenceMode ? '退出顺序点选' : '顺序点选配对' }}
@@ -135,7 +138,7 @@
               <button type="button" class="w-full h-7 inline-flex items-center justify-center gap-1 rounded-lg text-[11.5px] font-semibold border transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed" :class="view.canAddSubtitleManualPair && !view.subtitleInspectorBusy ? 'border-blue-300 bg-blue-600 text-white hover:bg-blue-700' : 'border-slate-200 bg-slate-50 text-slate-400'" :disabled="!view.canAddSubtitleManualPair || view.subtitleInspectorBusy" :title="!view.canAddSubtitleManualPair ? '请先在左侧选一条音频，再在右侧选一条字幕，然后点此加入配对。' : ''" @click="view.addSubtitleManualPair?.()">加入手动配对</button>
             </div>
             <div class="flex-1 overflow-y-auto p-2 flex flex-col gap-1.5 min-h-[200px] max-h-[340px]">
-              <div v-if="!view.subtitleManualPairs.length" class="flex flex-col items-center justify-center py-6 gap-1 text-center"><div class="text-[11.5px] font-medium text-slate-500">还没有生成配对结果</div><div class="text-[10.5px] text-slate-400">可以先点"自动预配对"</div></div>
+              <div v-if="!view.subtitleManualPairs.length" class="flex flex-col items-center justify-center py-6 gap-1 text-center"><div class="text-[11.5px] font-medium text-slate-500">还没有生成配对结果</div><div class="text-[10.5px] text-slate-400">可以先点"AI 配对"或"规则预配对"</div></div>
               <button v-for="(pair, index) in view.subtitleManualPairs" :key="pair.id" type="button" class="w-full flex flex-col gap-1.5 p-2 rounded-[9px] border text-left transition-all duration-150" :class="[view.subtitleSelectedManualPairId === pair.id ? 'border-slate-400 bg-slate-100' : 'border-slate-200 bg-slate-50/60 hover:border-slate-300', pair.confidenceLevel === 'low' ? '!border-amber-200 !bg-amber-50/40' : '']" @click="view.setSubtitleSelectedManualPairId(pair.id)">
 
                 <div class="flex items-center justify-between gap-1">
@@ -370,6 +373,7 @@ import {
   FileSearch,
   Database,
   CircleX,
+  Bot,
   Wand2,
   MousePointerClick,
   ListOrdered,
@@ -480,6 +484,8 @@ const view = computed(() => ({
   canRerunSubtitleTask: () => false,
   rerunSubtitleTask: noop,
   buildAutoSubtitlePairs: noop,
+  buildAISubtitlePairs: noop,
+  buildRuleSubtitlePairs: noop,
   buildSequenceOrOrderedSubtitlePairs: noop,
   applySubtitleManualPairs: noop,
   setSubtitleSequenceMode: noop,
@@ -615,6 +621,48 @@ function getSubtitlePairRenamePreview(pair = {}) {
   background-color: #ffffff !important;
 }
 
+:global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep([class*="bg-white"]),
+:global(html.dark) .subtitle-inspector-workbench-root :deep([class*="bg-white"]) {
+  background-color: #242529 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(246, 246, 248, 0.88) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep(.bg-slate-50),
+:global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep(.bg-slate-50\/30),
+:global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep(.bg-slate-50\/40),
+:global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep(.bg-slate-50\/60),
+:global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep(.bg-slate-100),
+:global(html.dark) .subtitle-inspector-workbench-root :deep(.bg-slate-50),
+:global(html.dark) .subtitle-inspector-workbench-root :deep(.bg-slate-50\/30),
+:global(html.dark) .subtitle-inspector-workbench-root :deep(.bg-slate-50\/40),
+:global(html.dark) .subtitle-inspector-workbench-root :deep(.bg-slate-50\/60),
+:global(html.dark) .subtitle-inspector-workbench-root :deep(.bg-slate-100) {
+  background-color: #2b2c30 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(218, 218, 224, 0.72) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep(.bg-slate-900),
+:global(html.dark) .subtitle-inspector-workbench-root :deep(.bg-slate-900) {
+  background-color: #020617 !important;
+  color: #ffffff !important;
+  border-color: rgba(255, 255, 255, 0.24) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep(.bg-gradient-to-r),
+:global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep(.bg-gradient-to-br),
+:global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep(.bg-gradient-to-b),
+:global(html.dark) .subtitle-inspector-workbench-root :deep(.bg-gradient-to-r),
+:global(html.dark) .subtitle-inspector-workbench-root :deep(.bg-gradient-to-br),
+:global(html.dark) .subtitle-inspector-workbench-root :deep(.bg-gradient-to-b) {
+  background-color: #242529 !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
 .subtitle-inspector-workbench-root :deep(.shadow-sm),
 .subtitle-inspector-workbench-root :deep(.shadow),
 .subtitle-inspector-workbench-root :deep(.shadow-md),
@@ -630,6 +678,42 @@ function getSubtitlePairRenamePreview(pair = {}) {
   --tw-ring-offset-shadow: 0 0 #0000 !important;
   --tw-ring-shadow: 0 0 #0000 !important;
   box-shadow: none !important;
+}
+
+.subtitle-folder-mark {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #0284c7;
+  box-shadow: none;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.subtitle-folder-mark:hover {
+  background: transparent;
+  color: #0369a1;
+  transform: translateY(-2px) scale(1.04);
+}
+
+.subtitle-folder-mark :deep(svg) {
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.subtitle-folder-mark:hover :deep(svg) {
+  transform: rotate(-8deg) scale(1.12);
+}
+
+:global(html.kikoerumanager-dark) .subtitle-folder-mark,
+:global(html.dark) .subtitle-folder-mark {
+  background: transparent;
+  color: #38bdf8;
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-folder-mark:hover,
+:global(html.dark) .subtitle-folder-mark:hover {
+  background: transparent;
+  color: #7dd3fc;
 }
 
 .subtitle-pairing-grid-wrap {
