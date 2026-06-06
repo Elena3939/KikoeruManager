@@ -1471,12 +1471,6 @@ function getUnifiedFileRows(task) {
 .v1-status-line.warning { color: #9a5b00; }
 .v1-status-line.danger { color: #b91c1c; }
 .v1-status-icon { flex-shrink: 0; opacity: .92; }
-.v1-expanded-strip { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(24, 24, 27, 0.08); }
-.v1-strip-row + .v1-strip-row { margin-top: 10px; }
-.v1-strip-top { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 12px; margin-bottom: 5px; color: #52525b; font-size: 11px; align-items: end; }
-.v1-strip-name.waiting { font-style: italic; color: #71717a; }
-.v1-strip-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.v1-strip-size { white-space: nowrap; color: #71717a; font-variant-numeric: tabular-nums; }
 .v1-strip-track { width: 100%; height: 5px; overflow: hidden; border-radius: 999px; background: rgba(24, 24, 27, 0.08); }
 .v1-strip-fill { height: 100%; border-radius: 999px; background: #52525b; transition: width 0.8s cubic-bezier(0.22, 1, 0.36, 1), background 0.4s ease; }
 .v1-strip-fill.processing,.v1-strip-fill.neutral { background: linear-gradient(90deg, #27272a 0%, #52525b 100%); }
@@ -1548,9 +1542,6 @@ function getUnifiedFileRows(task) {
 .v1-shell.is-compact .v1-strip-track { height: 5px; }
 .v1-shell.is-compact .v1-log-row { font-size: 11px; gap: 8px; }
 .v1-shell.is-compact .v1-log-row + .v1-log-row { margin-top: 4px; }
-.v1-empty-state { display: grid; justify-items: center; gap: 8px; padding: 96px 24px; color: #71717a; }
-.v1-empty-title { color: #27272a; font-size: 18px; font-weight: 800; }
-.v1-empty-text { font-size: 13px; }
 .v1-footer { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 14px 36px 16px; background: rgba(255, 255, 255, 0.66); border-top: 1px solid rgba(24, 24, 27, 0.08); }
 .v1-footer-metrics,.v1-footer-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .v1-footer-block { display: grid; gap: 2px; }
@@ -1610,7 +1601,6 @@ function getUnifiedFileRows(task) {
 
 :global(html.kikoerumanager-dark .v1-subtitle),
 :global(html.kikoerumanager-dark .v1-task-meta),
-:global(html.kikoerumanager-dark .v1-strip-top),
 :global(html.kikoerumanager-dark .v1-file-row-side),
 :global(html.kikoerumanager-dark .v1-log-row),
 :global(html.kikoerumanager-dark .v1-footer-label) {
@@ -1732,8 +1722,7 @@ function getUnifiedFileRows(task) {
 
 :global(html.kikoerumanager-dark .v1-path-label),
 :global(html.kikoerumanager-dark .v1-detail-section-label),
-:global(html.kikoerumanager-dark .v1-log-time),
-:global(html.kikoerumanager-dark .v1-strip-size) {
+:global(html.kikoerumanager-dark .v1-log-time) {
   color: #71717a;
 }
 
@@ -1742,7 +1731,6 @@ function getUnifiedFileRows(task) {
   color: #d4d4d8;
 }
 
-:global(html.kikoerumanager-dark .v1-expanded-strip),
 :global(html.kikoerumanager-dark .v1-file-row + .v1-file-row) {
   border-top-color: rgba(255, 255, 255, 0.08);
 }

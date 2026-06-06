@@ -1371,8 +1371,6 @@ onBeforeUnmount(() => {
   color: #0f172a;
 }
 
-.crumb-btn-root { color: #475569; font-weight: 600; }
-
 .crumb-btn-disk { color: #1e293b; font-weight: 600; }
 
 .crumb-btn-current {

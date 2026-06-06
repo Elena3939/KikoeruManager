@@ -2515,29 +2515,6 @@ button:disabled { cursor: not-allowed; }
   transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* WorkCard 网格 TransitionGroup name="asmr-grid"，按 idx 阶梯延迟入场 */
-.asmr-grid-enter-active {
-  transition:
-    opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1),
-    transform 0.55s cubic-bezier(0.34, 1.56, 0.64, 1);
-  transition-delay: var(--asmr-grid-delay, 0ms);
-}
-.asmr-grid-leave-active {
-  transition: opacity 0.22s ease, transform 0.22s ease;
-  position: absolute;
-}
-.asmr-grid-enter-from {
-  opacity: 0;
-  transform: translateY(20px) scale(0.92);
-}
-.asmr-grid-leave-to {
-  opacity: 0;
-  transform: translateY(-10px) scale(0.95);
-}
-.asmr-grid-move {
-  transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
 /* lib-info-strip 数字翻页过渡（mode="out-in"）*/
 .asmr-num-flip-enter-active {
   transition:
@@ -2944,35 +2921,6 @@ button:disabled { cursor: not-allowed; }
 }
 
 /* ==============================================================
- * 增强工作台 - 批量操作工具栏
- * ============================================================ */
-.asmr-batch-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 14px;
-  border-radius: 10px;
-  background: var(--asmr-surface-soft);
-  border: 1px solid var(--asmr-border);
-}
-.asmr-batch-toolbar-info {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.asmr-batch-toolbar-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--asmr-text-strong);
-  letter-spacing: -0.1px;
-}
-.asmr-batch-toolbar-actions {
-  display: flex;
-  gap: 6px;
-}
-
-/* ==============================================================
  * 后台浮窗（.asmr-bg-card-*）已迁移至 index.css 全局 .floating-card 规范
  * ============================================================ */
 
@@ -3188,76 +3136,6 @@ button:disabled { cursor: not-allowed; }
 .asmr-link-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ==============================================================
- * 增强计划卡片（保留原 enhanced-plan）
- * ============================================================ */
-.enhanced-plan-card {
-  max-width: 248px;
-}
-.enhanced-plan-card :deep(.work-cover-wrapper) {
-  aspect-ratio: 1 / 0.82;
-}
-.enhanced-plan-card :deep(.work-card-body) {
-  gap: 6px;
-  padding: 10px 10px 12px;
-}
-.enhanced-plan-card :deep(.work-title) {
-  font-size: 12px;
-  line-height: 1.45;
-}
-.enhanced-plan-card :deep(.work-rj) {
-  display: none;
-}
-.enhanced-plan-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.enhanced-plan-meta-pill,
-.enhanced-plan-tag {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 20px;
-  padding: 0 8px;
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 800;
-  line-height: 1;
-  border: 1px solid transparent;
-}
-.enhanced-plan-meta-pill.is-code {
-  color: #4f6b95;
-  background: #f8fbff;
-  border-color: #d8e6fb;
-}
-.enhanced-plan-meta-pill.is-downloadable {
-  color: #216e56;
-  background: #edf9f3;
-  border-color: #cbeedd;
-}
-.enhanced-plan-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: auto;
-}
-.enhanced-plan-tag.is-primary {
-  color: var(--asmr-info-text);
-  background: var(--asmr-info-bg);
-  border-color: var(--asmr-info-border);
-}
-.enhanced-plan-tag.is-soft {
-  color: var(--asmr-chip-muted-text);
-  background: var(--asmr-chip-muted-bg);
-  border-color: var(--asmr-chip-muted-border);
-}
-.enhanced-plan-tag.is-muted {
-  color: var(--asmr-text-muted);
-  background: var(--asmr-surface-muted);
-  border-color: var(--asmr-border);
-}
-
-/* ==============================================================
  * el-dialog 圆角保留
  * ============================================================ */
 :deep(.el-dialog) {
@@ -3309,10 +3187,8 @@ button:disabled { cursor: not-allowed; }
  * 主要痛点：
  *   - .asmr-page padding 18/24/24 太大
  *   - .asmr-card-head/body padding 14/18 浪费空间
- *   - .asmr-batch-toolbar 横向 space-between 内容会被挤压换行
  *   - .asmr-task / .asmr-list-row 横向 flex 在窄屏挤压标题
  *   - .asmr-task-mapping label/value 横排在窄屏挤
- *   - WorkCard 的 enhanced-plan-card max-width:248 让 grid-cols-2 卡片偏小
  *   - Preview Dialog 已加 .mobile-full-dialog 全屏；表格内允许横向滚动
  *   - Enhanced Session Drawer ≤640 size 已经动态切到 100%
  * ============================================================ */
@@ -3355,33 +3231,6 @@ button:disabled { cursor: not-allowed; }
   .asmr-card-head-subtitle { font-size: 11px; }
   .asmr-card-body {
     padding: 12px;
-  }
-
-  /* 批量操作工具条：stack + 按钮按 grid 平分 */
-  .asmr-batch-toolbar {
-    flex-direction: column;
-    align-items: stretch;
-    padding: 8px 10px;
-    gap: 8px;
-  }
-  .asmr-batch-toolbar-info {
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .asmr-batch-toolbar-actions {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 6px;
-  }
-  .asmr-batch-toolbar-actions > .asmr-mini-btn {
-    width: 100%;
-    justify-content: center;
-    padding: 0 6px;
-  }
-  /* 第三个（"下载选中"）独占整行更易点 */
-  .asmr-batch-toolbar-actions > .asmr-mini-btn:nth-child(3) {
-    grid-column: 1 / -1;
   }
 
   /* asmr-card-head-actions 在 ≤640 改 grid 平分，避免挤成一团 */
@@ -3469,9 +3318,6 @@ button:disabled { cursor: not-allowed; }
     width: 100%;
     justify-content: center;
   }
-
-  /* enhanced-plan-card：解锁 max-width 让 grid-cols-2 撑满每列 */
-  .enhanced-plan-card { max-width: none; }
 
   /* Drawer 内 el-table：横滑 */
   :deep(.el-drawer__body) {

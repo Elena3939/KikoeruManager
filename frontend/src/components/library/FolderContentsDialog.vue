@@ -1177,7 +1177,6 @@ onMounted(() => {
   color: #1d4ed8;
 }
 
-.info-card,
 .selection-card {
   border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.52);
@@ -1187,21 +1186,6 @@ onMounted(() => {
     0 12px 32px rgba(15, 23, 42, 0.06);
   backdrop-filter: blur(18px) saturate(135%);
   padding: 12px 14px;
-}
-
-.info-label {
-  display: block;
-  margin-bottom: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #64748b;
-}
-
-.info-value {
-  display: block;
-  color: #0f172a;
-  line-height: 1.55;
-  font-weight: 600;
 }
 
 .action-card {
@@ -1318,15 +1302,6 @@ onMounted(() => {
   flex-direction: column;
   gap: 14px;
   padding-top: 14px;
-}
-
-.repair-preview-summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 13px;
-  color: #64748b;
 }
 
 .repair-preview-list {

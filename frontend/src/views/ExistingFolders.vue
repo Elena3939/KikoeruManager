@@ -10,19 +10,42 @@
         <Search :size="13" class="hero-search-icon" />
         <input v-model="searchQuery" class="hero-search-input" type="text" placeholder="搜索文件夹名、路径或 RJ 号" />
       </div>
-      <button type="button" class="ef-head-btn primary btn-refresh" :disabled="loading" @click="refreshWithCache">
-        <span class="page-head-btn-icon-swap-container">
-          <Loader2 :size="13" :stroke-width="2.6" class="page-head-btn-icon-slot animate-spin" :class="{ 'is-visible': loading }" />
-          <RefreshCw :size="13" :stroke-width="2.6" class="page-head-btn-icon-slot ef-head-btn-icon" :class="{ 'is-visible': !loading }" />
-        </span>
+      <StatefulButton
+        class="ef-head-btn primary btn-refresh"
+        unstyled
+        :show-default-icons="false"
+        :disabled="loading"
+        :success-hold="900"
+        @click="refreshWithCache"
+      >
+        <template #prefix="{ state }">
+          <span class="ef-head-btn-icon-wrap ef-stateful-icon" :class="`is-${state}`" aria-hidden="true">
+            <Loader2 v-if="state === 'loading' || loading" :size="13" :stroke-width="2.6" class="ef-head-state-icon animate-spin" />
+            <Check v-else-if="state === 'success'" :size="13" :stroke-width="2.6" class="ef-head-state-icon" />
+            <XCircle v-else-if="state === 'error'" :size="13" :stroke-width="2.6" class="ef-head-state-icon" />
+            <RefreshCw v-else :size="13" :stroke-width="2.6" class="ef-head-state-icon ef-head-btn-icon" />
+          </span>
+        </template>
         <span class="ef-head-btn-label">{{ loading ? '刷新中…' : '刷新列表' }}</span>
-      </button>
-      <button type="button" class="ef-head-btn ghost btn-rescan" :disabled="loading" @click="refreshForce">
-        <span class="ef-head-btn-icon-wrap">
-          <RotateCcw :size="13" :stroke-width="2.6" class="ef-head-btn-icon" />
-        </span>
+      </StatefulButton>
+      <StatefulButton
+        class="ef-head-btn ghost btn-rescan"
+        unstyled
+        :show-default-icons="false"
+        :disabled="loading"
+        :success-hold="900"
+        @click="refreshForce"
+      >
+        <template #prefix="{ state }">
+          <span class="ef-head-btn-icon-wrap ef-stateful-icon" :class="`is-${state}`" aria-hidden="true">
+            <Loader2 v-if="state === 'loading'" :size="13" :stroke-width="2.6" class="ef-head-state-icon animate-spin" />
+            <Check v-else-if="state === 'success'" :size="13" :stroke-width="2.6" class="ef-head-state-icon" />
+            <XCircle v-else-if="state === 'error'" :size="13" :stroke-width="2.6" class="ef-head-state-icon" />
+            <RotateCcw v-else :size="13" :stroke-width="2.6" class="ef-head-state-icon ef-head-btn-icon" />
+          </span>
+        </template>
         <span class="ef-head-btn-label">重新抓取</span>
-      </button>
+      </StatefulButton>
     </AppPageHeader>
 
     <section class="existing-shell">
@@ -135,34 +158,44 @@
               <span>已选 {{ selectedFolders.length }}</span>
               <span>可执行 {{ selectedProcessableFolders.length }}</span>
             </div>
-            <button
-              type="button"
+            <StatefulButton
               class="side-ep-action primary"
+              unstyled
+              :show-default-icons="false"
+              :success-hold="900"
               :disabled="selectedProcessableFolders.length === 0 || processing"
-              :aria-busy="processing"
               @click="handleProcess"
             >
-              <span class="side-button-icon-wrap">
-                <Loader2 v-if="processing" :size="13" :stroke-width="2.5" class="side-button-icon animate-spin" />
-                <Play v-else :size="13" :stroke-width="2.5" class="side-button-icon" />
-              </span>
+              <template #prefix="{ state }">
+                <span class="side-button-icon-wrap" :class="`is-${state}`" aria-hidden="true">
+                  <Loader2 v-if="state === 'loading' || processing" :size="13" :stroke-width="2.5" class="side-button-icon animate-spin" />
+                  <Check v-else-if="state === 'success'" :size="13" :stroke-width="2.5" class="side-button-icon" />
+                  <XCircle v-else-if="state === 'error'" :size="13" :stroke-width="2.5" class="side-button-icon" />
+                  <Play v-else :size="13" :stroke-width="2.5" class="side-button-icon" />
+                </span>
+              </template>
               <span class="side-action-label">处理选中</span>
               <span v-if="selectedProcessableFolders.length" class="side-action-count">{{ selectedProcessableFolders.length }}</span>
-            </button>
-            <button
-              type="button"
+            </StatefulButton>
+            <StatefulButton
               class="side-ep-action"
+              unstyled
+              :show-default-icons="false"
+              :success-hold="900"
               :disabled="selectedCheckableFolders.length === 0 || checkingDuplicates"
-              :aria-busy="checkingDuplicates"
               @click="checkSelectedDuplicates"
             >
-              <span class="side-button-icon-wrap">
-                <Loader2 v-if="checkingDuplicates" :size="13" :stroke-width="2.5" class="side-button-icon animate-spin" />
-                <SearchCheck v-else :size="13" :stroke-width="2.5" class="side-button-icon" />
-              </span>
+              <template #prefix="{ state }">
+                <span class="side-button-icon-wrap" :class="`is-${state}`" aria-hidden="true">
+                  <Loader2 v-if="state === 'loading' || checkingDuplicates" :size="13" :stroke-width="2.5" class="side-button-icon animate-spin" />
+                  <Check v-else-if="state === 'success'" :size="13" :stroke-width="2.5" class="side-button-icon" />
+                  <XCircle v-else-if="state === 'error'" :size="13" :stroke-width="2.5" class="side-button-icon" />
+                  <SearchCheck v-else :size="13" :stroke-width="2.5" class="side-button-icon" />
+                </span>
+              </template>
               <span class="side-action-label">检查选中项</span>
               <span v-if="selectedCheckableFolders.length" class="side-action-count">{{ selectedCheckableFolders.length }}</span>
-            </button>
+            </StatefulButton>
           </div>
         </div>
       </aside>
@@ -300,12 +333,39 @@
                 <button v-if="isConflict(folder)" type="button" class="card-action warning" @click="showDuplicateDetail(folder)">
                   <Eye :size="13" /> 查看冲突
                 </button>
-                <button v-else type="button" class="card-action primary" :disabled="processing || !isProcessable(folder)" @click="handleProcessSingle(folder)">
-                  <Play :size="13" /> {{ isUnrecognized(folder) ? '等待识别' : '重命名并入库' }}
-                </button>
-                <button type="button" class="card-action" :disabled="checkingDuplicates || !isCheckable(folder)" @click="handleRefreshFolder(folder)">
-                  <RefreshCw :size="13" :class="{ 'animate-spin': folder.status === 'checking' }" /> 查重
-                </button>
+                <StatefulButton
+                  v-else
+                  class="card-action primary"
+                  unstyled
+                  :show-default-icons="false"
+                  :success-hold="900"
+                  :disabled="processing || !isProcessable(folder)"
+                  @click="handleProcessSingle(folder)"
+                >
+                  <template #prefix="{ state }">
+                    <Loader2 v-if="state === 'loading'" :size="13" :stroke-width="2.5" class="card-action-icon animate-spin" />
+                    <Check v-else-if="state === 'success'" :size="13" :stroke-width="2.5" class="card-action-icon" />
+                    <XCircle v-else-if="state === 'error'" :size="13" :stroke-width="2.5" class="card-action-icon" />
+                    <Play v-else :size="13" :stroke-width="2.5" class="card-action-icon" />
+                  </template>
+                  {{ isUnrecognized(folder) ? '等待识别' : '重命名并入库' }}
+                </StatefulButton>
+                <StatefulButton
+                  class="card-action"
+                  unstyled
+                  :show-default-icons="false"
+                  :success-hold="900"
+                  :disabled="checkingDuplicates || !isCheckable(folder)"
+                  @click="handleRefreshFolder(folder)"
+                >
+                  <template #prefix="{ state }">
+                    <Loader2 v-if="state === 'loading' || folder.status === 'checking'" :size="13" :stroke-width="2.5" class="card-action-icon animate-spin" />
+                    <Check v-else-if="state === 'success'" :size="13" :stroke-width="2.5" class="card-action-icon" />
+                    <XCircle v-else-if="state === 'error'" :size="13" :stroke-width="2.5" class="card-action-icon" />
+                    <RefreshCw v-else :size="13" :stroke-width="2.5" class="card-action-icon" />
+                  </template>
+                  查重
+                </StatefulButton>
                 <button type="button" class="card-action danger" @click="handleDeleteFolder(folder)">
                   <Trash2 :size="13" /> 删除
                 </button>
@@ -438,6 +498,7 @@ import { apiFetchOptions, apiUrl, existingFolderApi } from '../api'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
+import StatefulButton from '../components/ui/stateful-button.vue'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
 
 const router = useRouter()
@@ -534,9 +595,11 @@ async function refreshFoldersWithOptions(forceRefresh = false) {
     const url = apiUrl(`/existing-folders/scan?check_duplicates=${checkDuplicates.value}&force_refresh=${forceRefresh}`)
     const response = await fetch(url, apiFetchOptions({ method: 'POST', headers: { Accept: 'application/x-ndjson' } }))
     await consumeNdjsonResponse(response, { forceRefresh })
+    return true
   } catch (error) {
     console.error('获取文件夹列表失败:', error)
     ElMessage.error('获取失败: ' + (error.message || '未知错误'))
+    return false
   } finally {
     loading.value = false
   }
@@ -555,9 +618,10 @@ async function refreshForce() {
       confirmText: '重新抓取'
     })
     await existingFolderApi.refreshCache()
-    await refreshFoldersWithOptions(true)
+    return await refreshFoldersWithOptions(true)
   } catch (error) {
     if (error !== 'cancel') ElMessage.error('刷新失败: ' + (error.message || '未知错误'))
+    return error === 'cancel' ? undefined : false
   }
 }
 
@@ -610,7 +674,7 @@ function getFolderState(folder) {
 async function handleProcess() {
   if (!selectedProcessableFolders.value.length) {
     ElMessage.warning('没有可处理的选中目录')
-    return
+    return false
   }
   processing.value = true
   try {
@@ -618,9 +682,11 @@ async function handleProcess() {
     resultData.value = { success: true, message: data.message, tasks: data.tasks || [] }
     resultDialogVisible.value = true
     selectedFolders.value = []
+    return true
   } catch (error) {
     resultData.value = { success: false, message: error.response?.data?.detail || error.message, tasks: [] }
     resultDialogVisible.value = true
+    return false
   } finally {
     processing.value = false
   }
@@ -629,15 +695,17 @@ async function handleProcess() {
 async function checkSelectedDuplicates() {
   if (!selectedCheckableFolders.value.length) {
     ElMessage.warning('没有可查重的选中目录')
-    return
+    return false
   }
   checkingDuplicates.value = true
   try {
     const data = await existingFolderApi.checkDuplicates(selectedCheckableFolders.value.map((folder) => folder.path), { checkLinkedWorks: true })
     applyDuplicateResults(data.results || [])
     ElMessage[data.duplicate_count > 0 ? 'warning' : 'success'](data.message || '查重完成')
+    return true
   } catch (error) {
     ElMessage.error('查重检查失败: ' + (error.response?.data?.detail || error.message))
+    return false
   } finally {
     checkingDuplicates.value = false
   }
@@ -714,7 +782,7 @@ async function handleDeleteFolder(row) {
 async function handleRefreshFolder(row) {
   if (!isCheckable(row)) {
     ElMessage.warning('这个目录还没有识别到 RJ 号，不能查重')
-    return
+    return false
   }
   checkingDuplicates.value = true
   try {
@@ -724,8 +792,10 @@ async function handleRefreshFolder(row) {
     const data = await existingFolderApi.checkDuplicates([row.path], { checkLinkedWorks: true })
     applyDuplicateResults(data.results || [])
     ElMessage[data.duplicate_count > 0 ? 'warning' : 'success'](data.duplicate_count > 0 ? '发现冲突' : '查重完成，无冲突')
+    return true
   } catch (error) {
     ElMessage.error('刷新失败: ' + (error.response?.data?.detail || error.message))
+    return false
   } finally {
     checkingDuplicates.value = false
   }
@@ -734,7 +804,7 @@ async function handleRefreshFolder(row) {
 async function handleProcessSingle(row) {
   if (!isProcessable(row)) {
     ElMessage.warning(isConflict(row) ? '这个目录有冲突，请先查看冲突详情' : '这个目录还没有识别到 RJ 号')
-    return
+    return false
   }
   try {
     await showSystemConfirm({
@@ -748,11 +818,14 @@ async function handleProcessSingle(row) {
     resultData.value = { success: true, message: data.message, tasks: data.tasks || [] }
     resultDialogVisible.value = true
     setTimeout(() => refreshWithCache(), 1000)
+    return true
   } catch (error) {
     if (error !== 'cancel') {
       resultData.value = { success: false, message: error.response?.data?.detail || error.message, tasks: [] }
       resultDialogVisible.value = true
+      return false
     }
+    return undefined
   } finally {
     processing.value = false
   }
@@ -903,6 +976,16 @@ function getConflictTypeLabel(conflictType) {
   flex-shrink: 0;
   transition: transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.3s ease;
 }
+.ef-head-btn :deep(.stateful-button__content),
+.side-ep-action :deep(.stateful-button__content),
+.card-action :deep(.stateful-button__content) {
+  gap: inherit;
+}
+.ef-head-btn :deep(.stateful-button__state),
+.side-ep-action :deep(.stateful-button__state),
+.card-action :deep(.stateful-button__state) {
+  min-width: 0;
+}
 .ef-head-btn :deep(svg) { flex-shrink: 0; }
 .ef-head-btn-icon-wrap {
   display: inline-flex;
@@ -973,6 +1056,10 @@ function getConflictTypeLabel(conflictType) {
 .ef-head-btn.btn-rescan:hover :deep(.ef-head-btn-icon) {
   transform: rotate(-180deg) scale(1.12);
 }
+.ef-head-state-icon {
+  flex: 0 0 auto;
+  transition: transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.2s ease;
+}
 
 .ef-head-btn-label {
   display: inline-block;
@@ -982,25 +1069,6 @@ function getConflictTypeLabel(conflictType) {
 .ef-head-btn.primary .ef-head-btn-label { min-width: 56px; }
 .ef-head-btn.ghost .ef-head-btn-label { min-width: 56px; }
 .ef-head-btn:hover .ef-head-btn-label { letter-spacing: 0.04em; }
-
-/* 图标 swap Transition */
-.ef-head-btn :deep(.ef-head-icon-swap-enter-active) {
-  transition:
-    opacity 0.2s cubic-bezier(0.22, 1, 0.36, 1),
-    transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-.ef-head-btn :deep(.ef-head-icon-swap-leave-active) {
-  transition: opacity 0.14s ease, transform 0.18s ease;
-  position: absolute;
-}
-.ef-head-btn :deep(.ef-head-icon-swap-enter-from) {
-  opacity: 0;
-  transform: scale(0.4) rotate(-90deg);
-}
-.ef-head-btn :deep(.ef-head-icon-swap-leave-to) {
-  opacity: 0;
-  transform: scale(0.4) rotate(90deg);
-}
 
 /* ============================================================
  * 顶部状态条 ef-info-strip（对齐 lib-info-strip 风格）
@@ -1502,6 +1570,13 @@ function getConflictTypeLabel(conflictType) {
   transition: transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.25s ease;
 }
 .side-ep-action:hover:not(:disabled) .side-button-icon { transform: rotate(-8deg) scale(1.08); }
+.side-ep-action :deep(.stateful-button__label) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 0;
+}
 .side-action-label { min-width: 0; white-space: nowrap; }
 .side-action-count {
   min-width: 20px;
@@ -1597,6 +1672,10 @@ function getConflictTypeLabel(conflictType) {
 .card-action.warning:hover { background: #fef3c7; border-color: #fcd34d; }
 .card-action.danger { background: var(--ef-surface); color: #dc2626; border-color: rgba(220,38,38,0.25); }
 .card-action.danger:hover { background: #fef2f2; border-color: #fca5a5; box-shadow: 0 4px 10px rgba(220,38,38,0.12); }
+.card-action-icon {
+  flex: 0 0 auto;
+  transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.2s ease;
+}
 
 /* ============================================================
  * 进出过渡：section / 网格 / 卡片

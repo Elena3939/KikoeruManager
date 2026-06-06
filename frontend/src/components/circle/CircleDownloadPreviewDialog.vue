@@ -1240,10 +1240,6 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   color: rgb(30, 41, 59);
 }
 
-.action-card {
-  padding: 24px;
-}
-
 .section-head {
   margin-bottom: 16px;
 }
@@ -1261,10 +1257,6 @@ body.kikoerumanager-dark .circle-download-preview-overlay {
   font-size: 12px;
   line-height: 1.45;
   color: rgb(100, 116, 139);
-}
-
-.compact-head {
-  margin-bottom: 18px;
 }
 
 .field-group {

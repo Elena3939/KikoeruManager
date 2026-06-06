@@ -2186,11 +2186,6 @@ onBeforeUnmount(() => {
   column-gap: 6px;
 }
 
-.fd-head-basic .fd-tree-grid,
-.fd-row-basic .fd-tree-grid {
-  grid-template-columns: minmax(0, 1fr) 72px;
-}
-
 .tree-col-size,
 .tree-size {
   display: flex;

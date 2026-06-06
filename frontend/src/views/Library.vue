@@ -4641,6 +4641,10 @@ const subtitleWorkbenchCtx = computed(() => ({
 
   buildAutoSubtitlePairs,
 
+  buildAISubtitlePairs,
+
+  buildRuleSubtitlePairs,
+
   buildSequenceOrOrderedSubtitlePairs,
 
   applySubtitleManualPairs,
@@ -13037,7 +13041,7 @@ async function buildAISubtitlePairs () {
 
     if (data?.status === 'disabled' || data?.status === 'skipped' || data?.success === false) {
 
-      if (data?.error?.message) ElMessage.warning(`AI 配对不可用，已改用规则预配对：${data.error.message}`)
+      if (data?.error?.message) ElMessage.warning(`AI 配对不可用：${data.error.message}`)
 
       return false
 
@@ -13091,7 +13095,7 @@ async function buildAISubtitlePairs () {
 
   } catch (error) {
 
-    ElMessage.warning('AI 配对不可用，已改用规则预配对: ' + (error.response?.data?.detail || error.message))
+    ElMessage.warning('AI 配对不可用: ' + (error.response?.data?.detail || error.message))
 
     return false
 
