@@ -945,11 +945,30 @@ class LinkedSubtitleImportService:
         }
 
     def _refresh_preview_execution_state(self, preview: Dict[str, Any]) -> Dict[str, Any]:
-        candidates = list(preview.get("candidates") or [])
+        target_rjcode = str(preview.get("target_rjcode") or "").strip()
+        candidates = self._prefer_deepest_target_rj_candidates(
+            list(preview.get("candidates") or []),
+            target_rjcode,
+        )
+        preview["candidates"] = candidates
         ready_candidates = [item for item in candidates if bool(item.get("ready_for_import"))]
         selected_candidate = preview.get("selected_candidate")
         if selected_candidate and not bool(selected_candidate.get("ready_for_import")):
             selected_candidate = None
+        if selected_candidate and candidates:
+            selected_key = (
+                str(selected_candidate.get("library_id") or "").strip(),
+                str(selected_candidate.get("folder_path") or "").strip(),
+            )
+            candidate_keys = {
+                (
+                    str(candidate.get("library_id") or "").strip(),
+                    str(candidate.get("folder_path") or "").strip(),
+                )
+                for candidate in candidates
+            }
+            if selected_key not in candidate_keys:
+                selected_candidate = None
         if not selected_candidate and len(ready_candidates) == 1:
             selected_candidate = ready_candidates[0]
 
@@ -1026,6 +1045,7 @@ class LinkedSubtitleImportService:
 
         preview.update({
             "selected_candidate": selected_candidate,
+            "candidate_count": len(candidates),
             "ready_candidate_count": len(ready_candidates),
             "treat_as_new_work": treat_as_new_work,
             "should_queue_pending": should_queue_pending,
@@ -1155,6 +1175,91 @@ class LinkedSubtitleImportService:
                 seen_paths.add(dedupe_key)
                 candidates.append(dedupe_key)
         return candidates
+
+    def _split_candidate_path_segments(self, folder_path: str) -> List[str]:
+        normalized = str(folder_path or "").strip().replace("\\", "/").rstrip("/")
+        return [segment for segment in normalized.split("/") if segment and segment != "."]
+
+    def _candidate_path_segments_equal(self, left: str, right: str, *, case_sensitive: bool) -> bool:
+        if case_sensitive:
+            return left == right
+        return left.casefold() == right.casefold()
+
+    def _is_candidate_ancestor_path(
+        self,
+        parent_segments: List[str],
+        child_segments: List[str],
+        *,
+        case_sensitive: bool,
+    ) -> bool:
+        if not parent_segments or len(parent_segments) >= len(child_segments):
+            return False
+        return all(
+            self._candidate_path_segments_equal(parent, child, case_sensitive=case_sensitive)
+            for parent, child in zip(parent_segments, child_segments)
+        )
+
+    def _segment_has_target_rjcode(self, segment: str, target_rjcode: str) -> bool:
+        normalized_target = str(target_rjcode or "").strip().upper()
+        if not normalized_target:
+            return False
+        return normalized_target in self._extract_all_rjcodes(segment)
+
+    def _prefer_deepest_target_rj_candidates(
+        self,
+        candidates: List[Dict[str, Any]],
+        target_rjcode: str,
+    ) -> List[Dict[str, Any]]:
+        normalized_target = str(target_rjcode or "").strip().upper()
+        if not normalized_target or len(candidates) < 2:
+            return candidates
+
+        enriched: List[Tuple[int, Dict[str, Any], List[str]]] = []
+        for index, candidate in enumerate(candidates):
+            folder_path = str(candidate.get("folder_path") or "").strip()
+            if not folder_path:
+                enriched.append((index, candidate, []))
+                continue
+            enriched.append((index, candidate, self._split_candidate_path_segments(folder_path)))
+
+        drop_indexes: set[int] = set()
+        for parent_index, parent, parent_segments in enriched:
+            library_id = str(parent.get("library_id") or "").strip()
+            if not library_id or not parent_segments:
+                continue
+            library_type = str(parent.get("library_type") or "").strip()
+            case_sensitive = library_type == "synology_filestation"
+            for child_index, child, child_segments in enriched:
+                if parent_index == child_index:
+                    continue
+                if str(child.get("library_id") or "").strip() != library_id:
+                    continue
+                if not self._is_candidate_ancestor_path(
+                    parent_segments,
+                    child_segments,
+                    case_sensitive=case_sensitive,
+                ):
+                    continue
+                if any(
+                    self._segment_has_target_rjcode(segment, normalized_target)
+                    for segment in child_segments[len(parent_segments):]
+                ):
+                    drop_indexes.add(parent_index)
+                    logger.info(
+                        "[字幕补配] 目标目录候选收敛到最里层 RJ 目录: rj=%s parent=%s child=%s",
+                        normalized_target,
+                        parent.get("folder_path") or "",
+                        child.get("folder_path") or "",
+                    )
+                    break
+
+        if not drop_indexes:
+            return candidates
+        return [
+            candidate
+            for index, candidate, _segments in enriched
+            if index not in drop_indexes
+        ]
 
     async def _locate_direct_rj_candidate(
         self,
@@ -1574,6 +1679,7 @@ class LinkedSubtitleImportService:
                 if cancelled_tasks:
                     await asyncio.gather(*cancelled_tasks, return_exceptions=True)
 
+        candidates = self._prefer_deepest_target_rj_candidates(candidates, target_rjcode)
         candidates.sort(
             key=lambda item: (
                 1 if item.get("has_existing_subtitles") else 0,

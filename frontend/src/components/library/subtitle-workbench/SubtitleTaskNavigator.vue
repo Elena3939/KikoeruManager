@@ -74,57 +74,89 @@
       </button>
     </div>
 
-    <AppLoadingAnimation
-      v-if="ctx.subtitleQueueLoading"
-      label="加载任务队列"
-      description="正在同步字幕补配状态"
-      :size="82"
-      :min-height="260"
-      class="subtitle-queue-loading"
-    />
+    <div class="subtitle-queue-body">
+      <AppLoadingAnimation
+        v-if="ctx.subtitleQueueLoading"
+        label="加载任务队列"
+        description="正在同步字幕补配状态"
+        :size="82"
+        :min-height="260"
+        class="subtitle-queue-loading"
+      />
 
-    <AppEmptyState v-else-if="!visibleTasks.length" :description="ctx.subtitleQueueTasks.length ? '当前筛选暂无任务' : '暂无字幕任务'" size="sm" />
+      <AppEmptyState v-else-if="!visibleTasks.length" :description="ctx.subtitleQueueTasks.length ? '当前筛选暂无任务' : '暂无字幕任务'" size="sm" />
 
-    <TransitionGroup v-else tag="div" name="sub-task-item" class="grid min-h-0 content-start gap-2 overflow-hidden">
-      <button
-        v-for="task in pagedTasks"
-        :key="task.id"
-        :ref="el => registerTaskRef(task.id, el)"
-        type="button"
-        class="group grid w-full gap-1 rounded-[12px] border bg-white px-2.5 py-1.5 text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
-        :class="getCardClass(task)"
-        :disabled="isTaskInteractionLocked(task)"
-        @click="handleTaskClick(task)"
-      >
-        <div class="flex items-center justify-between gap-2">
-          <span class="text-[12.5px] font-semibold tracking-[-0.02em] text-slate-900 truncate">{{ ctx.getTaskDisplayRJCode(task) }}</span>
+      <TransitionGroup v-else tag="div" name="sub-task-item" class="grid min-h-0 content-start gap-2 overflow-hidden">
+        <button
+          v-for="task in pagedTasks"
+          :key="task.id"
+          :ref="el => registerTaskRef(task.id, el)"
+          type="button"
+          class="group grid w-full gap-1 rounded-[12px] border bg-white px-2.5 py-1.5 text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+          :class="getCardClass(task)"
+          :disabled="isTaskInteractionLocked(task)"
+          @click="handleTaskClick(task)"
+        >
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-[12.5px] font-semibold tracking-[-0.02em] text-slate-900 truncate">{{ ctx.getTaskDisplayRJCode(task) }}</span>
 
-          <Transition name="subtitle-status-flip" mode="out-in">
-            <span
-              :key="`${task.id}-${getTaskStatusKey(task)}`"
-              class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9.5px] font-medium transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
-              :class="getStatusClass(task)"
-            >
-              <component :is="getStatusIcon(task)" class="h-2.5 w-2.5" :class="{ 'animate-spin': getTaskStatusKey(task) === 'processing' }" :stroke-width="2.4" />
-              {{ getStatusLabel(task) }}
+            <Transition name="subtitle-status-flip" mode="out-in">
+              <span
+                :key="`${task.id}-${getTaskStatusKey(task)}`"
+                class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9.5px] font-medium transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+                :class="getStatusClass(task)"
+              >
+                <component :is="getStatusIcon(task)" class="h-2.5 w-2.5" :class="{ 'animate-spin': getTaskStatusKey(task) === 'processing' }" :stroke-width="2.4" />
+                {{ getStatusLabel(task) }}
+              </span>
+            </Transition>
+          </div>
+
+          <div class="flex items-start gap-1 break-all text-[10.5px] font-medium leading-tight text-slate-900">
+            <Folder class="mt-px h-2.5 w-2.5 flex-shrink-0 text-amber-500" :stroke-width="2.4" />
+            <span class="line-clamp-1">{{ getDisplayFolderName(task) }}</span>
+          </div>
+
+          <div class="rounded-md bg-slate-50/80 px-1.5 py-0.5 text-[10px] leading-tight text-slate-500 line-clamp-1">
+            {{ getCurrentStep(task) }}
+          </div>
+
+          <div class="flex flex-wrap gap-0.5 text-[9px]">
+            <template v-if="ctx.isHistoryRestoredSubtitleTask?.(task) || ctx.isSelectionBackfillSubtitleTask?.(task)">
+              <span class="inline-flex items-center gap-0.5 rounded border border-slate-200 bg-slate-50 px-1 py-0.5 font-medium text-slate-700">
+                <Clock class="h-2 w-2 text-violet-500" :stroke-width="2.4" />
+                {{ ctx.isHistoryRestoredSubtitleTask?.(task) ? '历史恢复' : '结果回填' }}
+              </span>
+              <span
+                v-if="task.manual_match_completed"
+                class="inline-flex items-center gap-0.5 rounded border border-emerald-200 bg-emerald-50 px-1 py-0.5 font-medium text-emerald-700"
+              >
+                <CheckCheck class="h-2 w-2" :stroke-width="2.4" />
+                已匹配 {{ ctx.getSubtitleMatchedPairCount?.(task) || 0 }}
+              </span>
+              <span
+                v-else-if="task.awaiting_manual_match || task.status === 'awaiting_manual_match' || task.status === 'waiting_manual'"
+                class="inline-flex items-center gap-0.5 rounded border border-amber-200 bg-amber-50 px-1 py-0.5 font-medium text-amber-700"
+              >
+                <Link2 class="h-2 w-2" :stroke-width="2.4" />
+                待配对
+              </span>
+              <span
+                v-else
+                class="inline-flex items-center gap-0.5 rounded border border-slate-200 bg-slate-50 px-1 py-0.5 font-medium text-slate-700"
+              >
+                <Folder class="h-2 w-2 text-sky-500" :stroke-width="2.4" />
+                结果回看
+              </span>
+            </template>
+            <template v-else>
+            <span class="inline-flex items-center gap-0.5 rounded border border-slate-200 bg-slate-50 px-1 py-0.5 font-medium text-slate-900">
+              <Download class="h-2 w-2 text-sky-500" :stroke-width="2.4" />
+              下载 {{ task.downloaded_count || ctx.getSubtitleDownloadFiles(task).length }}
             </span>
-          </Transition>
-        </div>
-
-        <div class="flex items-start gap-1 break-all text-[10.5px] font-medium leading-tight text-slate-900">
-          <Folder class="mt-px h-2.5 w-2.5 flex-shrink-0 text-amber-500" :stroke-width="2.4" />
-          <span class="line-clamp-1">{{ getDisplayFolderName(task) }}</span>
-        </div>
-
-        <div class="rounded-md bg-slate-50/80 px-1.5 py-0.5 text-[10px] leading-tight text-slate-500 line-clamp-1">
-          {{ getCurrentStep(task) }}
-        </div>
-
-        <div class="flex flex-wrap gap-0.5 text-[9px]">
-          <template v-if="ctx.isHistoryRestoredSubtitleTask?.(task) || ctx.isSelectionBackfillSubtitleTask?.(task)">
-            <span class="inline-flex items-center gap-0.5 rounded border border-slate-200 bg-slate-50 px-1 py-0.5 font-medium text-slate-700">
-              <Clock class="h-2 w-2 text-violet-500" :stroke-width="2.4" />
-              {{ ctx.isHistoryRestoredSubtitleTask?.(task) ? '历史恢复' : '结果回填' }}
+            <span class="inline-flex items-center gap-0.5 rounded border border-slate-200 bg-slate-50 px-1 py-0.5 font-medium text-slate-900">
+              <FilePenLine class="h-2 w-2 text-emerald-500" :stroke-width="2.4" />
+              写入 {{ ctx.getSubtitleAppliedWrittenFiles?.(task).length || 0 }}
             </span>
             <span
               v-if="task.manual_match_completed"
@@ -134,54 +166,24 @@
               已匹配 {{ ctx.getSubtitleMatchedPairCount?.(task) || 0 }}
             </span>
             <span
+              v-if="isTaskInteractionLocked(task)"
+              class="inline-flex items-center gap-0.5 rounded border border-slate-300 bg-slate-100 px-1 py-0.5 font-medium text-slate-500"
+            >
+              <Clock class="h-2 w-2" :stroke-width="2.4" />
+              运行锁定
+            </span>
+            <span
               v-else-if="task.awaiting_manual_match || task.status === 'awaiting_manual_match' || task.status === 'waiting_manual'"
               class="inline-flex items-center gap-0.5 rounded border border-amber-200 bg-amber-50 px-1 py-0.5 font-medium text-amber-700"
             >
               <Link2 class="h-2 w-2" :stroke-width="2.4" />
               待配对
             </span>
-            <span
-              v-else
-              class="inline-flex items-center gap-0.5 rounded border border-slate-200 bg-slate-50 px-1 py-0.5 font-medium text-slate-700"
-            >
-              <Folder class="h-2 w-2 text-sky-500" :stroke-width="2.4" />
-              结果回看
-            </span>
-          </template>
-          <template v-else>
-          <span class="inline-flex items-center gap-0.5 rounded border border-slate-200 bg-slate-50 px-1 py-0.5 font-medium text-slate-900">
-            <Download class="h-2 w-2 text-sky-500" :stroke-width="2.4" />
-            下载 {{ task.downloaded_count || ctx.getSubtitleDownloadFiles(task).length }}
-          </span>
-          <span class="inline-flex items-center gap-0.5 rounded border border-slate-200 bg-slate-50 px-1 py-0.5 font-medium text-slate-900">
-            <FilePenLine class="h-2 w-2 text-emerald-500" :stroke-width="2.4" />
-            写入 {{ ctx.getSubtitleAppliedWrittenFiles?.(task).length || 0 }}
-          </span>
-          <span
-            v-if="task.manual_match_completed"
-            class="inline-flex items-center gap-0.5 rounded border border-emerald-200 bg-emerald-50 px-1 py-0.5 font-medium text-emerald-700"
-          >
-            <CheckCheck class="h-2 w-2" :stroke-width="2.4" />
-            已匹配 {{ ctx.getSubtitleMatchedPairCount?.(task) || 0 }}
-          </span>
-          <span
-            v-if="isTaskInteractionLocked(task)"
-            class="inline-flex items-center gap-0.5 rounded border border-slate-300 bg-slate-100 px-1 py-0.5 font-medium text-slate-500"
-          >
-            <Clock class="h-2 w-2" :stroke-width="2.4" />
-            运行锁定
-          </span>
-          <span
-            v-else-if="task.awaiting_manual_match || task.status === 'awaiting_manual_match' || task.status === 'waiting_manual'"
-            class="inline-flex items-center gap-0.5 rounded border border-amber-200 bg-amber-50 px-1 py-0.5 font-medium text-amber-700"
-          >
-            <Link2 class="h-2 w-2" :stroke-width="2.4" />
-            待配对
-          </span>
-          </template>
-        </div>
-      </button>
-    </TransitionGroup>
+            </template>
+          </div>
+        </button>
+      </TransitionGroup>
+    </div>
 
     <div v-if="totalPages > 1" class="flex items-center justify-between gap-2 px-0.5 pt-1">
       <button
@@ -330,12 +332,12 @@ function getStatusLabel(task) {
 function getStatusClass(task) {
   const status = getTaskStatusKey(task)
   if (task?.manual_match_completed || status === 'manual_match_completed') {
-    return 'border-emerald-200 bg-emerald-50 text-emerald-700 [animation:subtitleStatusGlow_1.6s_ease-in-out_infinite]'
+    return 'border-emerald-200 bg-emerald-50 text-emerald-700'
   }
   if (status === 'view_restored') return 'border-violet-200 bg-violet-50 text-violet-700'
   if (status === 'view_backfilled') return 'border-slate-200 bg-slate-50 text-slate-700'
   if (['processing', 'awaiting_manual_match', 'waiting_manual'].includes(status)) {
-    return 'border-sky-200 bg-sky-50 text-sky-700 [animation:subtitleStatusPulse_1.4s_ease-in-out_infinite]'
+    return 'border-sky-200 bg-sky-50 text-sky-700'
   }
   if (status === 'failed') return 'border-rose-200 bg-rose-50 text-rose-700'
   return 'border-slate-200 bg-slate-50 text-slate-600'
@@ -433,6 +435,41 @@ function getDisplayFolderName(task) {
   background-image: none !important;
 }
 
+:global(html.kikoerumanager-dark) .subtitle-task-navigator :deep([class*="bg-white"]),
+:global(html.dark) .subtitle-task-navigator :deep([class*="bg-white"]) {
+  background-color: #242529 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(246, 246, 248, 0.88) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-task-navigator :deep(.bg-slate-50),
+:global(html.kikoerumanager-dark) .subtitle-task-navigator :deep(.bg-slate-50\/80),
+:global(html.kikoerumanager-dark) .subtitle-task-navigator :deep(.bg-slate-100),
+:global(html.dark) .subtitle-task-navigator :deep(.bg-slate-50),
+:global(html.dark) .subtitle-task-navigator :deep(.bg-slate-50\/80),
+:global(html.dark) .subtitle-task-navigator :deep(.bg-slate-100) {
+  background-color: #2b2c30 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(218, 218, 224, 0.72) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-task-navigator :deep([class*="bg-emerald-"]),
+:global(html.kikoerumanager-dark) .subtitle-task-navigator :deep([class*="bg-sky-"]),
+:global(html.kikoerumanager-dark) .subtitle-task-navigator :deep([class*="bg-violet-"]),
+:global(html.kikoerumanager-dark) .subtitle-task-navigator :deep([class*="bg-amber-"]),
+:global(html.kikoerumanager-dark) .subtitle-task-navigator :deep([class*="bg-rose-"]),
+:global(html.dark) .subtitle-task-navigator :deep([class*="bg-emerald-"]),
+:global(html.dark) .subtitle-task-navigator :deep([class*="bg-sky-"]),
+:global(html.dark) .subtitle-task-navigator :deep([class*="bg-violet-"]),
+:global(html.dark) .subtitle-task-navigator :deep([class*="bg-amber-"]),
+:global(html.dark) .subtitle-task-navigator :deep([class*="bg-rose-"]) {
+  background-color: #242529 !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
 .subtitle-task-navigator :deep(.shadow-sm),
 .subtitle-task-navigator :deep(.shadow),
 .subtitle-task-navigator :deep(.shadow-md),
@@ -453,6 +490,11 @@ function getDisplayFolderName(task) {
 .subtitle-clear-menu-wrap {
   position: relative;
   flex: 0 0 auto;
+}
+
+.subtitle-queue-body {
+  min-height: 0;
+  overflow: hidden;
 }
 
 .subtitle-clear-trigger {

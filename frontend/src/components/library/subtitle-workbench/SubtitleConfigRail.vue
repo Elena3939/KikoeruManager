@@ -91,58 +91,6 @@
           </div>
 
           <div class="subtitle-filter-compact-panel">
-            <div class="subtitle-filter-compact-row subtitle-ai-mode-row">
-              <div class="subtitle-setting-main min-w-0">
-                <div class="subtitle-option-title">AI 配对模式</div>
-              </div>
-              <div class="subtitle-ai-mode-switch" role="radiogroup" aria-label="AI 配对模式">
-                <button
-                  v-for="option in aiModeOptions"
-                  :key="option.value"
-                  type="button"
-                  class="group/ai subtitle-ai-mode-option"
-                  :class="[option.tone, { active: resolvedAiMatchMode === option.value }]"
-                  role="radio"
-                  :aria-checked="resolvedAiMatchMode === option.value"
-                  @click="ctx.setSubtitleOption('aiMatchMode', option.value)"
-                >
-                  <component
-                    :is="option.icon"
-                    :class="['h-[12px] w-[12px] shrink-0 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/ai:scale-110 group-hover/ai:rotate-[8deg]', option.color]"
-                    :stroke-width="2.4"
-                  />
-                  <span>{{ option.label }}</span>
-                </button>
-              </div>
-            </div>
-
-            <div v-if="resolvedAiMatchMode !== 'rule'" class="subtitle-filter-compact-row subtitle-ai-threshold-row">
-              <div class="subtitle-setting-main min-w-0">
-                <div class="subtitle-option-title">AI 自动阈值</div>
-                <div class="subtitle-card-tip">{{ normalizedAiThreshold }} 分以上自动通过</div>
-              </div>
-              <div class="subtitle-stepper subtitle-threshold-stepper" role="group" aria-label="AI 自动阈值">
-                <input
-                  class="subtitle-stepper-input"
-                  type="number"
-                  :value="normalizedAiThreshold"
-                  min="0"
-                  max="100"
-                  step="1"
-                  @input="setAiConfidenceThreshold($event.target.value)"
-                  @blur="setAiConfidenceThreshold($event.target.value)"
-                />
-                <div class="subtitle-stepper-actions">
-                  <button type="button" class="subtitle-stepper-btn" aria-label="增加 AI 阈值" @click="adjustAiConfidenceThreshold(1)">
-                    <ChevronUp class="h-[11px] w-[11px]" :stroke-width="2.4" />
-                  </button>
-                  <button type="button" class="subtitle-stepper-btn" aria-label="减少 AI 阈值" @click="adjustAiConfidenceThreshold(-1)">
-                    <ChevronDown class="h-[11px] w-[11px]" :stroke-width="2.4" />
-                  </button>
-                </div>
-              </div>
-            </div>
-
             <div class="subtitle-filter-compact-row">
               <div class="subtitle-setting-main min-w-0">
                 <div class="subtitle-option-title">同名依据</div>
@@ -456,6 +404,73 @@
                 <span class="text-[11.5px] font-semibold tracking-[-0.005em] truncate">{{ row.label }}</span>
               </div>
               <div class="mt-1 text-[30px] font-black leading-none text-slate-900 tabular-nums tracking-[-0.04em] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/stat:-translate-y-0.5">{{ row.value }}</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- AI 配对策略 -->
+        <section class="subtitle-settings-block group/card">
+          <div class="flex items-center gap-3">
+            <span class="header-badge">
+              <Bot class="h-[16px] w-[16px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/card:scale-110 group-hover/card:rotate-[8deg]" :stroke-width="2.4" />
+            </span>
+            <div class="min-w-0">
+              <div class="subtitle-block-title">AI 配对策略</div>
+              <div class="subtitle-block-tip">只生成配对草稿，确认后再导入。</div>
+            </div>
+          </div>
+
+          <div class="subtitle-filter-compact-panel">
+            <div class="subtitle-filter-compact-row subtitle-ai-mode-row">
+              <div class="subtitle-setting-main min-w-0">
+                <div class="subtitle-option-title">配对模式</div>
+              </div>
+              <div class="subtitle-ai-mode-switch" role="radiogroup" aria-label="AI 配对模式">
+                <button
+                  v-for="option in aiModeOptions"
+                  :key="option.value"
+                  type="button"
+                  class="group/ai subtitle-ai-mode-option"
+                  :class="[option.tone, { active: resolvedAiMatchMode === option.value }]"
+                  role="radio"
+                  :aria-checked="resolvedAiMatchMode === option.value"
+                  @click="ctx.setSubtitleOption('aiMatchMode', option.value)"
+                >
+                  <component
+                    :is="option.icon"
+                    :class="['h-[12px] w-[12px] shrink-0 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/ai:scale-110 group-hover/ai:rotate-[8deg]', option.color]"
+                    :stroke-width="2.4"
+                  />
+                  <span>{{ option.label }}</span>
+                </button>
+              </div>
+            </div>
+
+            <div v-if="resolvedAiMatchMode !== 'rule'" class="subtitle-filter-compact-row subtitle-ai-threshold-row">
+              <div class="subtitle-setting-main min-w-0">
+                <div class="subtitle-option-title">自动阈值</div>
+                <div class="subtitle-card-tip">{{ normalizedAiThreshold }} 分以上高置信</div>
+              </div>
+              <div class="subtitle-stepper subtitle-threshold-stepper" role="group" aria-label="AI 自动阈值">
+                <input
+                  class="subtitle-stepper-input"
+                  type="number"
+                  :value="normalizedAiThreshold"
+                  min="0"
+                  max="100"
+                  step="1"
+                  @input="setAiConfidenceThreshold($event.target.value)"
+                  @blur="setAiConfidenceThreshold($event.target.value)"
+                />
+                <div class="subtitle-stepper-actions">
+                  <button type="button" class="subtitle-stepper-btn" aria-label="增加 AI 阈值" @click="adjustAiConfidenceThreshold(1)">
+                    <ChevronUp class="h-[11px] w-[11px]" :stroke-width="2.4" />
+                  </button>
+                  <button type="button" class="subtitle-stepper-btn" aria-label="减少 AI 阈值" @click="adjustAiConfidenceThreshold(-1)">
+                    <ChevronDown class="h-[11px] w-[11px]" :stroke-width="2.4" />
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </section>
@@ -1065,27 +1080,59 @@ function removeActiveSubtitleFilterRule() {
   --ai-option-border: rgba(124, 58, 237, 0.34);
 }
 
+:global(html.kikoerumanager-dark) .subtitle-config-card :is(.subtitle-naming-switch, .subtitle-ai-mode-switch, .subtitle-stepper),
+:global(html.dark) .subtitle-config-card :is(.subtitle-naming-switch, .subtitle-ai-mode-switch, .subtitle-stepper) {
+  background: #111216 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-config-card :is(.subtitle-naming-option, .subtitle-ai-mode-option),
+:global(html.dark) .subtitle-config-card :is(.subtitle-naming-option, .subtitle-ai-mode-option) {
+  color: rgba(214, 214, 220, 0.72) !important;
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-config-card :is(.subtitle-naming-option, .subtitle-ai-mode-option):hover,
+:global(html.dark) .subtitle-config-card :is(.subtitle-naming-option, .subtitle-ai-mode-option):hover {
+  color: rgba(250, 250, 252, 0.96) !important;
+  background: #2b2c30 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-config-card :is(.subtitle-naming-option.active, .subtitle-ai-mode-option.active),
+:global(html.dark) .subtitle-config-card :is(.subtitle-naming-option.active, .subtitle-ai-mode-option.active) {
+  color: #ffffff !important;
+  background: var(--option-accent-soft, var(--ai-option-soft, rgba(86, 87, 94, 0.8))) !important;
+  background-image: none !important;
+  border-color: var(--option-accent-border, var(--ai-option-border, rgba(255, 255, 255, 0.32))) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-config-card :is(.subtitle-stepper-input, .subtitle-stepper-btn),
+:global(html.dark) .subtitle-config-card :is(.subtitle-stepper-input, .subtitle-stepper-btn) {
+  background: transparent !important;
+  color: rgba(246, 246, 248, 0.9) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-config-card .subtitle-stepper-actions,
+:global(html.kikoerumanager-dark) .subtitle-config-card .subtitle-stepper-btn:first-child,
+:global(html.dark) .subtitle-config-card .subtitle-stepper-actions,
+:global(html.dark) .subtitle-config-card .subtitle-stepper-btn:first-child {
+  border-color: rgba(255, 255, 255, 0.14) !important;
+}
+
 .subtitle-ai-threshold-row {
   align-items: center;
 }
 
 .subtitle-threshold-stepper {
   width: 84px;
-}
-
-.subtitle-config-mode-title {
-  font-size: 15px;
-  line-height: 1.1;
-  font-weight: 800;
-  color: #0f172a;
-  letter-spacing: -0.02em;
-}
-
-.subtitle-config-mode-copy {
-  font-size: 11px;
-  line-height: 1.6;
-  color: #64748b;
-  max-width: 24ch;
 }
 
 .subtitle-option-stack,
@@ -1095,8 +1142,7 @@ function removeActiveSubtitleFilterRule() {
   min-height: 0;
 }
 
-.subtitle-settings-block,
-.subtitle-help-card {
+.subtitle-settings-block {
   display: grid;
   gap: 5px;
   padding: 6px;
@@ -1304,8 +1350,7 @@ function removeActiveSubtitleFilterRule() {
   white-space: nowrap;
 }
 
-.subtitle-settings-block:hover,
-.subtitle-help-card:hover {
+.subtitle-settings-block:hover {
   border-color: #cbd5e1;
   box-shadow: none;
 }
@@ -1392,11 +1437,6 @@ function removeActiveSubtitleFilterRule() {
   color: #0f172a;
 }
 
-.subtitle-block-head {
-  display: grid;
-  gap: 3px;
-}
-
 .subtitle-block-title {
   font-size: 12.5px;
   font-weight: 800;
@@ -1412,12 +1452,6 @@ function removeActiveSubtitleFilterRule() {
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 1;
-}
-
-.subtitle-setting-list,
-.subtitle-filter-list {
-  display: grid;
-  gap: 5px;
 }
 
 .subtitle-filter-compact-panel {
@@ -1442,29 +1476,6 @@ function removeActiveSubtitleFilterRule() {
   min-height: 34px;
 }
 
-.subtitle-setting-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 9px;
-  align-items: center;
-  padding: 5px 0;
-  border-bottom: 1px solid #f1f5f9;
-}
-
-.subtitle-setting-item:last-child {
-  border-bottom: none;
-  padding-bottom: 0;
-}
-
-.subtitle-setting-item:first-child {
-  padding-top: 0;
-}
-
-.subtitle-setting-item-stack {
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-}
-
 .subtitle-setting-main {
   display: grid;
   gap: 2px;
@@ -1478,10 +1489,6 @@ function removeActiveSubtitleFilterRule() {
   letter-spacing: -0.01em;
 }
 
-.subtitle-option-title-sm {
-  font-size: 12px;
-}
-
 .subtitle-card-tip {
   font-size: 10.5px;
   line-height: 1.35;
@@ -1490,10 +1497,6 @@ function removeActiveSubtitleFilterRule() {
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 1;
-}
-
-.subtitle-setting-item .subtitle-card-tip {
-  display: none;
 }
 
 .subtitle-filter-editor {
@@ -1506,18 +1509,6 @@ function removeActiveSubtitleFilterRule() {
   background: #fbfcfd;
 }
 
-.subtitle-filter-editor-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.subtitle-inline-btn {
-  flex-shrink: 0;
-}
-
-.subtitle-filter-row,
 .subtitle-filter-current-card {
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr) auto;
@@ -1534,18 +1525,6 @@ function removeActiveSubtitleFilterRule() {
   cursor: pointer;
   transition: all 0.28s var(--ease-spring);
   box-shadow: none;
-}
-
-.subtitle-filter-row:hover {
-  border-color: #cbd5e1;
-  transform: translateY(-1px) scale(1.01);
-  box-shadow: none;
-}
-
-.subtitle-filter-row.active {
-  border-color: #94a3b8;
-  background: #dfe3ea;
-  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
 }
 
 .subtitle-filter-rule-strip {
@@ -1630,19 +1609,6 @@ function removeActiveSubtitleFilterRule() {
   font-weight: 800;
   color: #475569;
   transition: all 0.28s var(--ease-spring);
-}
-
-.subtitle-filter-row:hover .subtitle-filter-index,
-.subtitle-filter-row.active .subtitle-filter-index {
-  transform: scale(1.04);
-  border-color: #cbd5e1;
-  background: #ffffff;
-  color: #0f172a;
-}
-
-.subtitle-filter-row:hover .subtitle-filter-summary-title,
-.subtitle-filter-row.active .subtitle-filter-summary-title {
-  color: #0f172a;
 }
 
 .subtitle-filter-summary {
@@ -1879,7 +1845,6 @@ function removeActiveSubtitleFilterRule() {
   overflow: hidden;
 }
 
-.subtitle-filter-row-top,
 .subtitle-filter-row-actions {
   display: flex;
   align-items: center;
@@ -1906,31 +1871,11 @@ function removeActiveSubtitleFilterRule() {
   color: #64748b;
 }
 
-.subtitle-filter-more-row {
-  min-height: 24px;
-  border: 1px dashed #cbd5e1;
-  border-radius: 9px;
-  background: #f8fafc;
-  color: #64748b;
-  font-size: 11px;
-  font-weight: 800;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.28s var(--ease-spring);
-}
-
 .subtitle-naming-option span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.subtitle-filter-more-row:hover {
-  transform: translateY(-1px);
-  border-color: #94a3b8;
-  background: #f1f5f9;
-  color: #0f172a;
 }
 
 .subtitle-pill-grid {
@@ -1997,12 +1942,6 @@ function removeActiveSubtitleFilterRule() {
   transition: all 0.3s var(--ease-spring);
 }
 
-.header-badge-amber {
-  background: linear-gradient(180deg, #f59e0b 0%, #d97706 100%);
-  border-color: #b45309;
-  box-shadow: 0 6px 14px rgba(217, 119, 6, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.2);
-}
-
 .header-badge-danger {
   background: #fff1f2;
   border-color: #fecdd3;
@@ -2057,10 +1996,6 @@ function removeActiveSubtitleFilterRule() {
   box-shadow: none;
 }
 
-.group\/card:hover .header-badge-amber {
-  box-shadow: 0 10px 20px rgba(217, 119, 6, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.22);
-}
-
 .group\/card:hover .header-badge-danger {
   box-shadow: 0 10px 20px rgba(244, 63, 94, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
@@ -2092,9 +2027,7 @@ function removeActiveSubtitleFilterRule() {
   .subtitle-filter-index,
   .subtitle-filter-target-mini,
   .subtitle-filter-target-badge,
-  .subtitle-filter-state,
-  .subtitle-tool-badge,
-  .subtitle-retarget-chip
+  .subtitle-filter-state
 ) {
   background: transparent !important;
   background-image: none !important;
@@ -2116,7 +2049,6 @@ function removeActiveSubtitleFilterRule() {
   .search-row,
   .subtitle-stepper,
   .subtitle-stepper-btn,
-  .subtitle-filter-more-row,
   .subtitle-toggle-pill
 ) {
   background: #ffffff !important;
@@ -2139,7 +2071,6 @@ function removeActiveSubtitleFilterRule() {
   .search-row,
   .subtitle-stepper,
   .subtitle-stepper-btn,
-  .subtitle-filter-more-row,
   .subtitle-toggle-pill
 ):hover {
   background: #ffffff !important;
@@ -2169,7 +2100,6 @@ function removeActiveSubtitleFilterRule() {
 }
 
 .subtitle-config-card :is(
-  .subtitle-filter-row.active,
   .subtitle-naming-option.active,
   .subtitle-toggle-pill.active,
   .subtitle-retarget-option.active
@@ -2188,8 +2118,7 @@ function removeActiveSubtitleFilterRule() {
   .subtitle-filter-empty-add:hover,
   .subtitle-filter-editor-toggle:hover,
   .search-row:hover,
-  .subtitle-toggle-pill:hover,
-  .subtitle-filter-more-row:hover
+  .subtitle-toggle-pill:hover
 ) {
   background: #ffffff !important;
   background-image: none !important;
@@ -2273,12 +2202,10 @@ function removeActiveSubtitleFilterRule() {
 }
 
 :global(html.kikoerumanager-dark) .subtitle-naming-switch,
+:global(html.kikoerumanager-dark) .subtitle-ai-mode-switch,
 :global(html.kikoerumanager-dark) .subtitle-settings-block,
-:global(html.kikoerumanager-dark) .subtitle-help-card,
 :global(html.kikoerumanager-dark) .subtitle-filter-editor,
 :global(html.kikoerumanager-dark) .subtitle-filter-detail,
-:global(html.kikoerumanager-dark) .subtitle-filter-row,
-:global(html.kikoerumanager-dark) .subtitle-filter-more-row,
 :global(html.kikoerumanager-dark) .subtitle-filter-empty,
 :global(html.kikoerumanager-dark) .subtitle-toggle-pill,
 :global(html.kikoerumanager-dark) .search-row {
@@ -2300,9 +2227,6 @@ function removeActiveSubtitleFilterRule() {
 }
 
 :global(html.kikoerumanager-dark) .subtitle-settings-block:hover,
-:global(html.kikoerumanager-dark) .subtitle-help-card:hover,
-:global(html.kikoerumanager-dark) .subtitle-filter-row:hover,
-:global(html.kikoerumanager-dark) .subtitle-filter-more-row:hover,
 :global(html.kikoerumanager-dark) .subtitle-toggle-pill:hover,
 :global(html.kikoerumanager-dark) .search-row:hover {
   background: #2d2e33 !important;
@@ -2311,12 +2235,12 @@ function removeActiveSubtitleFilterRule() {
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-filter-row.active,
 :global(html.kikoerumanager-dark) .subtitle-naming-option.active,
+:global(html.kikoerumanager-dark) .subtitle-ai-mode-option.active,
 :global(html.kikoerumanager-dark) .subtitle-toggle-pill.active {
-  background: var(--option-accent-soft, var(--pill-accent-soft, #45464b)) !important;
+  background: var(--option-accent-soft, var(--ai-option-soft, var(--pill-accent-soft, #45464b))) !important;
   background-image: none !important;
-  border-color: var(--option-accent-border, var(--pill-accent-border, rgba(255, 255, 255, 0.34))) !important;
+  border-color: var(--option-accent-border, var(--ai-option-border, var(--pill-accent-border, rgba(255, 255, 255, 0.34)))) !important;
   color: rgba(250, 250, 252, 0.96) !important;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16) !important;
 }
@@ -2340,10 +2264,26 @@ function removeActiveSubtitleFilterRule() {
   color: rgba(214, 214, 220, 0.72);
 }
 
+:global(html.kikoerumanager-dark) .subtitle-ai-mode-option {
+  color: rgba(214, 214, 220, 0.72) !important;
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
 :global(html.kikoerumanager-dark) .subtitle-naming-option:hover {
   background: var(--option-accent-soft);
   border-color: var(--option-accent-border);
   color: rgba(250, 250, 252, 0.96);
+}
+
+:global(html.kikoerumanager-dark) .subtitle-ai-mode-option:hover {
+  background: var(--ai-option-soft) !important;
+  background-image: none !important;
+  border-color: var(--ai-option-border) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: none !important;
 }
 
 :global(html.kikoerumanager-dark) .subtitle-tool-btn {
@@ -2379,24 +2319,16 @@ function removeActiveSubtitleFilterRule() {
 
 :global(html.kikoerumanager-dark) .subtitle-block-title,
 :global(html.kikoerumanager-dark) .subtitle-option-title,
-:global(html.kikoerumanager-dark) .subtitle-config-mode-title,
 :global(html.kikoerumanager-dark) .subtitle-filter-detail-title,
-:global(html.kikoerumanager-dark) .subtitle-filter-summary-title,
-:global(html.kikoerumanager-dark) .subtitle-filter-row:hover .subtitle-filter-summary-title,
-:global(html.kikoerumanager-dark) .subtitle-filter-row.active .subtitle-filter-summary-title {
+:global(html.kikoerumanager-dark) .subtitle-filter-summary-title {
   color: rgba(250, 250, 252, 0.96) !important;
 }
 
 :global(html.kikoerumanager-dark) .subtitle-block-tip,
 :global(html.kikoerumanager-dark) .subtitle-card-tip,
-:global(html.kikoerumanager-dark) .subtitle-config-mode-copy,
 :global(html.kikoerumanager-dark) .subtitle-filter-summary-pattern,
 :global(html.kikoerumanager-dark) .subtitle-filter-field > span {
   color: rgba(214, 214, 220, 0.66) !important;
-}
-
-:global(html.kikoerumanager-dark) .subtitle-setting-item {
-  border-color: rgba(255, 255, 255, 0.1) !important;
 }
 
 :global(html.kikoerumanager-dark) .subtitle-depth-control,
@@ -2472,12 +2404,10 @@ function removeActiveSubtitleFilterRule() {
 }
 
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-settings-block),
-:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-help-card),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-naming-switch),
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-ai-mode-switch),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-editor),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-detail),
-:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-row),
-:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-more-row),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-empty),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-toggle-pill),
 :global(html.kikoerumanager-dark .subtitle-config-card .search-row) {
@@ -2505,13 +2435,13 @@ function removeActiveSubtitleFilterRule() {
   border-color: rgba(251, 113, 133, 0.22) !important;
 }
 
-:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-row.active),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-naming-option.active),
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-ai-mode-option.active),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-toggle-pill.active),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-retarget-option.active) {
-  background: var(--option-accent-soft, var(--pill-accent-soft, #56575e)) !important;
+  background: var(--option-accent-soft, var(--ai-option-soft, var(--pill-accent-soft, #56575e))) !important;
   background-image: none !important;
-  border-color: var(--option-accent-border, var(--pill-accent-border, rgba(255, 255, 255, 0.42))) !important;
+  border-color: var(--option-accent-border, var(--ai-option-border, var(--pill-accent-border, rgba(255, 255, 255, 0.42)))) !important;
   color: #ffffff !important;
   outline: 1px solid rgba(255, 255, 255, 0.2) !important;
   outline-offset: -1px !important;
@@ -2584,7 +2514,7 @@ function removeActiveSubtitleFilterRule() {
   stroke: currentColor !important;
 }
 
-:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card button:not(.primary-cta, .subtitle-switch, .subtitle-naming-option, .subtitle-toggle-pill, .subtitle-tool-btn, .subtitle-retarget-option)) {
+:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card button:not(.primary-cta, .subtitle-switch, .subtitle-naming-option, .subtitle-ai-mode-option, .subtitle-toggle-pill, .subtitle-tool-btn, .subtitle-retarget-option)) {
   background: #2b2c30 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.15) !important;
@@ -2592,7 +2522,7 @@ function removeActiveSubtitleFilterRule() {
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card button:not(.primary-cta, .subtitle-switch, .subtitle-naming-option, .subtitle-toggle-pill, .subtitle-tool-btn, .subtitle-retarget-option):hover) {
+:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card button:not(.primary-cta, .subtitle-switch, .subtitle-naming-option, .subtitle-ai-mode-option, .subtitle-toggle-pill, .subtitle-tool-btn, .subtitle-retarget-option):hover) {
   background: #333438 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.22) !important;
@@ -2600,14 +2530,14 @@ function removeActiveSubtitleFilterRule() {
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card .subtitle-filter-row.active),
 :global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card .subtitle-naming-option.active),
+:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card .subtitle-ai-mode-option.active),
 :global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card .subtitle-toggle-pill.active),
 :global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card .subtitle-retarget-option.active) {
-  background: var(--option-accent-soft, var(--pill-accent-soft, #56575e)) !important;
-  background-color: var(--option-accent-soft, var(--pill-accent-soft, #56575e)) !important;
+  background: var(--option-accent-soft, var(--ai-option-soft, var(--pill-accent-soft, #56575e))) !important;
+  background-color: var(--option-accent-soft, var(--ai-option-soft, var(--pill-accent-soft, #56575e))) !important;
   background-image: none !important;
-  border-color: var(--option-accent-border, var(--pill-accent-border, rgba(255, 255, 255, 0.42))) !important;
+  border-color: var(--option-accent-border, var(--ai-option-border, var(--pill-accent-border, rgba(255, 255, 255, 0.42)))) !important;
   color: #ffffff !important;
   outline: 1px solid rgba(255, 255, 255, 0.2) !important;
   outline-offset: -1px !important;
@@ -2616,17 +2546,13 @@ function removeActiveSubtitleFilterRule() {
 
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-block-title),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-option-title),
-:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-config-mode-title),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-detail-title),
-:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-summary-title),
-:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-row:hover .subtitle-filter-summary-title),
-:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-row.active .subtitle-filter-summary-title) {
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-summary-title) {
   color: rgba(250, 250, 252, 0.96) !important;
 }
 
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-block-tip),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-card-tip),
-:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-config-mode-copy),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-summary-pattern),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-current-pattern),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-field > span) {
@@ -2646,10 +2572,6 @@ function removeActiveSubtitleFilterRule() {
   border-color: rgba(255, 255, 255, 0.14) !important;
   color: rgba(244, 244, 245, 0.82) !important;
   box-shadow: none !important;
-}
-
-:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-setting-item) {
-  border-color: rgba(255, 255, 255, 0.1) !important;
 }
 
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-current-card),
@@ -2726,18 +2648,8 @@ function removeActiveSubtitleFilterRule() {
 }
 
 @media (max-width: 960px) {
-  .subtitle-setting-item {
-    grid-template-columns: 1fr;
-    align-items: start;
-  }
-
   .subtitle-pill-grid {
     grid-template-columns: 1fr;
-  }
-
-  .subtitle-filter-editor-head {
-    flex-direction: column;
-    align-items: stretch;
   }
 
   .subtitle-filter-target {

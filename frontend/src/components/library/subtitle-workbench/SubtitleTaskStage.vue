@@ -63,7 +63,7 @@
       <div
         v-if="showOverview && ctx.activeSubtitleTask"
         :key="ctx.activeSubtitleTask.id"
-        class="rounded-[16px] border border-slate-200/80 bg-white p-4 shadow-[0_2px_12px_rgba(15,23,42,0.04)]"
+        class="subtitle-active-log-panel rounded-[16px] border border-slate-200/80 bg-white p-4 shadow-[0_2px_12px_rgba(15,23,42,0.04)]"
       >
         <div class="flex items-center justify-between gap-3">
           <div class="flex items-center gap-2.5 min-w-0">
@@ -880,6 +880,44 @@ function getTaskMetaItems(task) {
   background-image: none !important;
 }
 
+:global(html.kikoerumanager-dark) .subtitle-task-stage-root :deep([class*="bg-white"]),
+:global(html.dark) .subtitle-task-stage-root :deep([class*="bg-white"]) {
+  background-color: #242529 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(246, 246, 248, 0.88) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-task-stage-root :deep(.bg-slate-50),
+:global(html.kikoerumanager-dark) .subtitle-task-stage-root :deep(.bg-slate-50\/60),
+:global(html.kikoerumanager-dark) .subtitle-task-stage-root :deep(.bg-slate-100),
+:global(html.kikoerumanager-dark) .subtitle-task-stage-root :deep(.bg-slate-100\/90),
+:global(html.kikoerumanager-dark) .subtitle-task-stage-root :deep(.bg-slate-100\/95),
+:global(html.dark) .subtitle-task-stage-root :deep(.bg-slate-50),
+:global(html.dark) .subtitle-task-stage-root :deep(.bg-slate-50\/60),
+:global(html.dark) .subtitle-task-stage-root :deep(.bg-slate-100),
+:global(html.dark) .subtitle-task-stage-root :deep(.bg-slate-100\/90),
+:global(html.dark) .subtitle-task-stage-root :deep(.bg-slate-100\/95) {
+  background-color: #2b2c30 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(218, 218, 224, 0.72) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-task-stage-root :deep(.bg-slate-900),
+:global(html.dark) .subtitle-task-stage-root :deep(.bg-slate-900) {
+  background-color: #020617 !important;
+  color: #ffffff !important;
+  border-color: rgba(255, 255, 255, 0.24) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-task-stage-root :deep(.bg-gradient-to-b),
+:global(html.dark) .subtitle-task-stage-root :deep(.bg-gradient-to-b) {
+  background-color: #242529 !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
 .subtitle-task-stage-root :deep(.shadow-sm),
 .subtitle-task-stage-root :deep(.shadow),
 .subtitle-task-stage-root :deep(.shadow-md),
@@ -898,8 +936,15 @@ function getTaskMetaItems(task) {
 }
 
 .subtitle-task-stage-scroll {
+  align-content: start;
+  align-items: start;
   padding-right: 2px;
   scrollbar-gutter: stable;
+}
+
+.subtitle-active-log-panel {
+  align-self: start;
+  min-width: 0;
 }
 
 .subtitle-task-stage-scroll::-webkit-scrollbar {
