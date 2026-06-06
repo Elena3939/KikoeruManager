@@ -55,3 +55,70 @@ def test_baidu_netdisk_account_refresh_forces_remote_account_sync(client: TestCl
     data = response.json()
     assert data["account"]["quota_bytes"] == 2 * 1024**4
     assert data["account"]["remaining_bytes"] == 1024**4
+
+
+def test_baidu_netdisk_account_test_passes_allow_quota_failure(client: TestClient, monkeypatch):
+    _disable_security_gate(monkeypatch)
+    calls = []
+
+    class FakeBaiduNetdiskService:
+        async def test_account(self, cookie, *, persist=False, allow_quota_failure=False):
+            calls.append({
+                "cookie": cookie,
+                "persist": persist,
+                "allow_quota_failure": allow_quota_failure,
+            })
+            return {
+                "success": True,
+                "message": "百度账号检测成功，容量刷新失败: HTTP 400",
+                "warning": "容量刷新失败: HTTP 400",
+                "account": {
+                    "enabled": True,
+                    "configured": True,
+                    "ready": True,
+                    "name": "tester",
+                },
+            }
+
+    monkeypatch.setattr(
+        baidu_netdisk_service,
+        "get_baidu_netdisk_service",
+        lambda: FakeBaiduNetdiskService(),
+    )
+
+    response = client.post("/api/baidu-netdisk/account/test", json={
+        "cookie": "BDUSS=test",
+        "persist": True,
+        "allow_quota_failure": True,
+    })
+
+    assert response.status_code == 200
+    assert calls == [{
+        "cookie": "BDUSS=test",
+        "persist": True,
+        "allow_quota_failure": True,
+    }]
+    data = response.json()
+    assert data["success"] is True
+    assert data["warning"] == "容量刷新失败: HTTP 400"
+
+
+def test_baidu_netdisk_config_mask_only_marks_real_login_cookie():
+    cached_only = routes._mask_baidu_netdisk_config(SimpleNamespace(
+        baidu_netdisk=SimpleNamespace(model_dump=lambda: {
+            "enabled": True,
+            "cookie": "BDCLND=randsk",
+            "account_name": "cached-name",
+        })
+    ))
+    real_login = routes._mask_baidu_netdisk_config(SimpleNamespace(
+        baidu_netdisk=SimpleNamespace(model_dump=lambda: {
+            "enabled": True,
+            "cookie": "BDUSS=test; STOKEN=test",
+            "account_name": "tester",
+        })
+    ))
+
+    assert cached_only["cookie"] == ""
+    assert cached_only["account_name"] == "cached-name"
+    assert real_login["cookie"] == "********"
