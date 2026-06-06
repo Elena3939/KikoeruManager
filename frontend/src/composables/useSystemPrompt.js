@@ -52,7 +52,7 @@ function normalizeOptions(mode, options = {}) {
     placeholder: String(options.placeholder || '').trim(),
     modelValue: options.modelValue === null || options.modelValue === undefined ? '' : String(options.modelValue),
     inputType: options.inputType === 'textarea' ? 'textarea' : (options.inputType || 'text'),
-    width: Number(options.width) > 0 ? Number(options.width) : 420,
+    width: Number(options.width) > 0 ? Number(options.width) : 580,
     validator: typeof options.validator === 'function' ? options.validator : null,
     confirmLoading: Boolean(options.confirmLoading),
     confirmDisabled: Boolean(options.confirmDisabled)

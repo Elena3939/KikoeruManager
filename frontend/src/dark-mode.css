@@ -2100,8 +2100,6 @@ html.kikoerumanager-dark :is(
   .blk-preview-frame,
   .blk-inspector,
   .tpl-rte-wrap,
-  .tpl-rte-editor,
-  .tpl-preview,
   .tpl-panel,
   .rte-wrap,
   .rte-toolbar,
@@ -2273,8 +2271,7 @@ html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-wind
   .fp-dlg-pill.is-emerald,
   .brp-pill.is-active,
   .brp-pill.is-amber,
-  .vrd-pill.is-amber,
-  .rpd-count-chip
+  .vrd-pill.is-amber
 ) {
   background: rgba(37, 99, 235, 0.16) !important;
   border-color: rgba(96, 165, 250, 0.32) !important;
@@ -2282,7 +2279,7 @@ html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-wind
 }
 
 html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-window) :is(
-  .rpd-password-panel,
+  .rpd-row,
   .brp-row,
   .vrd-row,
   .fp-tree-row
