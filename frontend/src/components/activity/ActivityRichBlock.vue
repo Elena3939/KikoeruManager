@@ -1092,15 +1092,6 @@ function formatBytes(size) {
   margin-left: 2px;
 }
 
-/* 头部右侧的描述（社团补全的 section.description） */
-.panel-meta {
-  font-size: 11px;
-  font-weight: 500;
-  color: rgba(15, 23, 42, 0.5);
-  letter-spacing: 0;
-  text-transform: none;
-}
-
 .panel-toggle {
   margin-left: auto;
   display: inline-flex;
@@ -1381,27 +1372,6 @@ function formatBytes(size) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* circle-flag 已迁移到 Tailwind 内联类 */
-
-.circle-item.status-owned {
-  background: rgba(52, 199, 89, 0.04);
-  border-color: rgba(52, 199, 89, 0.16);
-}
-
-.circle-item.status-missing {
-  background: rgba(255, 59, 48, 0.04);
-  border-color: rgba(255, 59, 48, 0.16);
-}
-
-.panel-meta {
-  margin-left: 4px;
-  font-size: 10px;
-  font-weight: 500;
-  color: rgba(15, 23, 42, 0.45);
-  letter-spacing: 0;
-  text-transform: none;
 }
 
 .circle-sources {
@@ -1696,7 +1666,6 @@ function formatBytes(size) {
 }
 
 :global(html.kikoerumanager-dark) .panel-head-count,
-:global(html.kikoerumanager-dark) .panel-meta,
 :global(html.kikoerumanager-dark) .entry-eyebrow,
 :global(html.kikoerumanager-dark) .entry-section-desc,
 :global(html.kikoerumanager-dark) .highlight-label,
@@ -2063,9 +2032,6 @@ function formatBytes(size) {
     max-width: 100%;
     word-break: break-all;
     overflow-wrap: anywhere;
-  }
-  .metric-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .metric-cell {
     min-width: 0;
