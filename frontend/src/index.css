@@ -342,20 +342,6 @@ pre:hover::-webkit-scrollbar-track {
     color: rgb(100, 116, 139);
   }
 
-  .custom-preview-modal .loader-icon {
-    font-size: 28px;
-    color: #64748b;
-    opacity: 0.8;
-  }
-
-  .custom-preview-modal .loading-text {
-    margin-top: 12px;
-    font-size: 15px;
-    font-weight: 700;
-    letter-spacing: 0.2px;
-    color: #334155;
-  }
-
   .app-loading-mask {
     position: absolute;
     inset: 0;

@@ -2150,7 +2150,6 @@ html.kikoerumanager-dark .subtitle-workbench-dialog .stage-tab-active {
 }
 
 html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card :is(
-  .subtitle-filter-row.active,
   .subtitle-naming-option.active,
   .subtitle-toggle-pill.active,
   .subtitle-retarget-option.active
@@ -2262,7 +2261,6 @@ html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-pairing-grid :is(.
   color: #ddd6fe !important;
 }
 
-html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card button.subtitle-filter-row.active,
 html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card button.subtitle-naming-option.active,
 html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card button.subtitle-toggle-pill.active,
 html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card button.subtitle-retarget-option.active {
@@ -2393,78 +2391,6 @@ html.kikoerumanager-dark .floating-card .floating-action-btn-rose:hover {
   border-color: rgba(255, 255, 255, 0.24) !important;
   color: #ffffff !important;
   box-shadow: none !important;
-}
-
-html.kikoerumanager-dark .sp-shell > div {
-  background: var(--km-dark-sidebar) !important;
-  border-color: var(--km-dark-border) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow: 0 24px 58px rgba(0, 0, 0, 0.56), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
-}
-
-html.kikoerumanager-dark .sp-shell > div > div {
-  background: var(--km-dark-field) !important;
-  border-color: var(--km-dark-border) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .sp-shell h3,
-html.kikoerumanager-dark .sp-shell .text-slate-900,
-html.kikoerumanager-dark .sp-shell .text-slate-800 {
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .sp-shell .text-slate-600,
-html.kikoerumanager-dark .sp-shell .text-slate-500,
-html.kikoerumanager-dark .sp-shell .text-slate-400 {
-  color: var(--km-dark-text-muted) !important;
-}
-
-html.kikoerumanager-dark .sp-shell .bg-slate-50,
-html.kikoerumanager-dark .sp-shell .bg-slate-100 {
-  background: var(--km-dark-surface) !important;
-  border-color: var(--km-dark-border) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .sp-shell input,
-html.kikoerumanager-dark .sp-shell textarea {
-  background: var(--km-dark-field) !important;
-  border-color: rgba(255, 255, 255, 0.28) !important;
-  color: var(--km-dark-text) !important;
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
-    0 0 0 3px rgba(255, 255, 255, 0.08) !important;
-}
-
-html.kikoerumanager-dark .sp-shell input:focus,
-html.kikoerumanager-dark .sp-shell textarea:focus {
-  background: #090a0f !important;
-  border-color: rgba(255, 255, 255, 0.42) !important;
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.12),
-    0 0 0 3px rgba(255, 255, 255, 0.12) !important;
-}
-
-html.kikoerumanager-dark .sp-shell button:not([class*="bg-rose"]):not([class*="bg-red"]):not([class*="bg-emerald"]) {
-  background: var(--km-dark-button-bg) !important;
-  border-color: var(--km-dark-border) !important;
-  color: var(--km-dark-text) !important;
-}
-
-html.kikoerumanager-dark .sp-shell button:not([class*="bg-rose"]):not([class*="bg-red"]):not([class*="bg-emerald"]):hover {
-  background: var(--km-dark-button-bg-hover) !important;
-  border-color: var(--km-dark-border-strong) !important;
-  color: var(--km-dark-text-strong) !important;
-}
-
-html.kikoerumanager-dark .sp-shell button[class*="bg-slate-900"],
-html.kikoerumanager-dark .sp-shell button[class*="bg-blue-"],
-html.kikoerumanager-dark .sp-shell button[class*="bg-indigo-"] {
-  background: #020617 !important;
-  border-color: var(--km-dark-border-strong) !important;
-  color: #ffffff !important;
-  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.16) !important;
 }
 
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog).el-dialog,
@@ -3497,7 +3423,6 @@ html.kikoerumanager-dark .import-workbench-modal .shadow-\[0_20px_60px_rgba\(15\
 html.kikoerumanager-dark .import-workbench-modal .subtitle-config-card,
 html.kikoerumanager-dark .import-workbench-modal .subtitle-option-stack,
 html.kikoerumanager-dark .import-workbench-modal .subtitle-settings-block,
-html.kikoerumanager-dark .import-workbench-modal .subtitle-setting-item,
 html.kikoerumanager-dark .import-workbench-modal .subtitle-filter-editor,
 html.kikoerumanager-dark .import-workbench-modal .subtitle-filter-detail,
 html.kikoerumanager-dark .import-workbench-modal .search-row {
@@ -3555,7 +3480,6 @@ html.kikoerumanager-dark .import-workbench-modal .subtitle-naming-switch {
 
 html.kikoerumanager-dark .import-workbench-modal .subtitle-naming-option,
 html.kikoerumanager-dark .import-workbench-modal .subtitle-toggle-pill,
-html.kikoerumanager-dark .import-workbench-modal .subtitle-filter-row,
 html.kikoerumanager-dark .import-workbench-modal .subtitle-filter-target-badge,
 html.kikoerumanager-dark .import-workbench-modal button[class*="bg-white"],
 html.kikoerumanager-dark .import-workbench-modal button[class*="bg-slate-50"] {
@@ -3566,7 +3490,6 @@ html.kikoerumanager-dark .import-workbench-modal button[class*="bg-slate-50"] {
 
 html.kikoerumanager-dark .import-workbench-modal .subtitle-naming-option:hover,
 html.kikoerumanager-dark .import-workbench-modal .subtitle-toggle-pill:hover,
-html.kikoerumanager-dark .import-workbench-modal .subtitle-filter-row:hover,
 html.kikoerumanager-dark .import-workbench-modal button[class*="bg-white"]:hover:not(:disabled),
 html.kikoerumanager-dark .import-workbench-modal button[class*="bg-slate-50"]:hover:not(:disabled) {
   background: var(--km-dark-surface-hover) !important;
@@ -3575,8 +3498,7 @@ html.kikoerumanager-dark .import-workbench-modal button[class*="bg-slate-50"]:ho
 }
 
 html.kikoerumanager-dark .import-workbench-modal .subtitle-naming-option.active,
-html.kikoerumanager-dark .import-workbench-modal .subtitle-toggle-pill.active,
-html.kikoerumanager-dark .import-workbench-modal .subtitle-filter-row.active {
+html.kikoerumanager-dark .import-workbench-modal .subtitle-toggle-pill.active {
   background: #020617 !important;
   border-color: var(--km-dark-border-strong) !important;
   color: #ffffff !important;
@@ -5620,51 +5542,6 @@ html.kikoerumanager-dark .detail-body .path {
   border-color: rgba(147, 197, 253, 0.34);
   color: #f8fafc;
   box-shadow: 0 8px 18px rgba(37, 99, 235, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.1);
-}
-
-.theme-toggle-text {
-  display: none;
-}
-
-.theme-toggle-icon {
-  flex: 0 0 auto;
-  width: 18px;
-  height: 18px;
-  margin: 0;
-  position: relative;
-  z-index: 1;
-  transition: color 0.3s ease, filter 0.3s ease, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.theme-toggle-button:hover .theme-toggle-icon {
-  transform: rotate(-12deg) scale(1.1);
-}
-
-.theme-toggle-icon-sun {
-  color: #f59e0b;
-  filter: drop-shadow(0 0 5px rgba(245, 158, 11, 0.26));
-}
-
-.theme-toggle-icon-moon {
-  color: #2563eb;
-  filter: drop-shadow(0 0 5px rgba(37, 99, 235, 0.24));
-}
-
-.theme-icon-enter-active,
-.theme-icon-leave-active {
-  transition: opacity 0.28s ease, transform 0.42s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.28s ease;
-}
-
-.theme-icon-enter-from {
-  opacity: 0;
-  transform: rotate(-110deg) scale(0.25);
-  filter: blur(5px);
-}
-
-.theme-icon-leave-to {
-  opacity: 0;
-  transform: rotate(110deg) scale(0.25);
-  filter: blur(5px);
 }
 
 :global(html.kikoerumanager-dark) {
