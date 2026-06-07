@@ -106,12 +106,31 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+if exist "requirements-test.txt" (
+    echo Installing Python test packages...
+    venv\Scripts\python.exe -m pip install -r requirements-test.txt
+    if errorlevel 1 (
+        echo [ERROR] Backend test dependency install failed
+        pause
+        exit /b 1
+    )
+)
 venv\Scripts\python.exe -c "import click,uvicorn,fastapi,orjson,qrcode" >nul 2>&1
 if errorlevel 1 (
     echo [INFO] Backend dependencies incomplete, retrying installation...
     venv\Scripts\python.exe -m pip install -r requirements.txt
     if errorlevel 1 (
         echo [ERROR] Backend dependency repair failed
+        pause
+        exit /b 1
+    )
+)
+venv\Scripts\python.exe -c "import pytest" >nul 2>&1
+if errorlevel 1 (
+    echo [INFO] Pytest dependencies incomplete, repairing...
+    venv\Scripts\python.exe -m pip install -r requirements-test.txt
+    if errorlevel 1 (
+        echo [ERROR] Pytest dependency repair failed
         pause
         exit /b 1
     )
