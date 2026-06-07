@@ -4053,6 +4053,40 @@ function getUploadBackgroundTargetLabel(task) {
   box-shadow: none;
 }
 
+.circle-works-loading-state :deep(.app-loading-animation__copy) {
+  display: grid;
+  gap: 8px;
+  text-align: center;
+}
+
+.circle-works-loading-state :deep(.app-loading-animation__label) {
+  color: var(--circle-text, #111827);
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.35;
+  letter-spacing: 0;
+}
+
+.circle-works-loading-state :deep(.app-loading-animation__description) {
+  color: var(--circle-text-secondary, #64748b);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.55;
+  letter-spacing: 0;
+}
+
+:global(html.kikoerumanager-dark) .circle-works-loading-state :deep(.app-loading-animation__label),
+:global(body.kikoerumanager-dark) .circle-works-loading-state :deep(.app-loading-animation__label) {
+  color: rgba(244, 247, 255, 0.95);
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.26);
+}
+
+:global(html.kikoerumanager-dark) .circle-works-loading-state :deep(.app-loading-animation__description),
+:global(body.kikoerumanager-dark) .circle-works-loading-state :deep(.app-loading-animation__description) {
+  color: rgba(192, 206, 235, 0.84);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.22);
+}
+
 .circle-complete-state {
   flex: 1;
   min-height: 340px;

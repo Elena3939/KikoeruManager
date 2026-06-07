@@ -1007,6 +1007,15 @@ pre:hover::-webkit-scrollbar-track {
   background: transparent;
   border: 0;
   box-shadow: none;
+  -webkit-appearance: none;
+  appearance: textfield;
+}
+
+.app-container .km-pagination-wrap .el-pagination__jump .el-input__inner::-webkit-outer-spin-button,
+.app-container .km-pagination-wrap .el-pagination__jump .el-input__inner::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
 }
 
 .km-pagination-size-popper.el-popper {

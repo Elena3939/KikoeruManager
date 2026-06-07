@@ -124,8 +124,10 @@ let lastTaskCenterStreamEventAt = 0
 const DETAIL_REFRESH_INTERVAL_MS = 15000
 const STREAM_REFRESH_DEBOUNCE_MS = 500
 const FALLBACK_POLL_INTERVAL_MS = 30000
+const FALLBACK_POLL_MAX_INTERVAL_MS = 120000
 let lastDetailFetchedAt = 0
 let lastDetailSyncSignature = ''
+let fallbackPollDelayMs = FALLBACK_POLL_INTERVAL_MS
 
 const domainOptions = [
   { value: 'all', label: '全部', icon: ListChecks },
@@ -304,11 +306,17 @@ watch(pollingEnabled, (enabled) => {
 onMounted(async () => {
   await refreshTaskCenter(false, { silent: false })
   window.addEventListener('kikoerumanager:task-center:changed', handleTaskCenterStreamEvent)
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+  }
   startPolling()
 })
 
 onUnmounted(() => {
   window.removeEventListener('kikoerumanager:task-center:changed', handleTaskCenterStreamEvent)
+  if (typeof document !== 'undefined') {
+    document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }
   stopPolling()
   if (streamRefreshTimer) {
     clearTimeout(streamRefreshTimer)
@@ -326,18 +334,47 @@ onUnmounted(() => {
 
 function startPolling() {
   if (intervalId || !pollingEnabled.value) return
-  intervalId = setInterval(() => {
-    if (Date.now() - lastTaskCenterStreamEventAt < FALLBACK_POLL_INTERVAL_MS) return
-    refreshTaskCenter(false, { silent: true }).catch((error) => {
+  if (isDocumentHidden()) return
+  intervalId = setTimeout(async () => {
+    intervalId = null
+    if (!pollingEnabled.value || isDocumentHidden()) return
+    if (Date.now() - lastTaskCenterStreamEventAt < FALLBACK_POLL_INTERVAL_MS) {
+      fallbackPollDelayMs = FALLBACK_POLL_INTERVAL_MS
+      startPolling()
+      return
+    }
+    try {
+      await refreshTaskCenter(false, { silent: true })
+      fallbackPollDelayMs = FALLBACK_POLL_INTERVAL_MS
+    } catch (error) {
+      fallbackPollDelayMs = Math.min(fallbackPollDelayMs * 2, FALLBACK_POLL_MAX_INTERVAL_MS)
       console.error('任务中心轮询失败:', error)
-    })
-  }, FALLBACK_POLL_INTERVAL_MS)
+    } finally {
+      startPolling()
+    }
+  }, fallbackPollDelayMs)
 }
 
 function stopPolling() {
   if (!intervalId) return
-  clearInterval(intervalId)
+  clearTimeout(intervalId)
   intervalId = null
+}
+
+function isDocumentHidden() {
+  return typeof document !== 'undefined' && document.hidden
+}
+
+function handleVisibilityChange() {
+  if (isDocumentHidden()) {
+    stopPolling()
+    return
+  }
+  fallbackPollDelayMs = FALLBACK_POLL_INTERVAL_MS
+  refreshTaskCenter(false, { silent: true }).catch((error) => {
+    console.error('任务中心恢复可见刷新失败:', error)
+  })
+  startPolling()
 }
 
 function resetFilters() {

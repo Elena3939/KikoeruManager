@@ -784,26 +784,36 @@ function formatRJ(value) {
 }
 
 :global(html.kikoerumanager-dark) .dash-task-pager {
+  position: relative;
+  z-index: 1;
+  margin-bottom: 0 !important;
+  background: #101012 !important;
+  background-color: #101012 !important;
+  background-image: none !important;
   border-color: rgba(255, 255, 255, 0.1) !important;
-  color: #e5e7eb !important;
+  color: rgba(226, 232, 240, 0.72) !important;
+  box-shadow: none !important;
 }
 
 :global(html.kikoerumanager-dark) .dash-task-pager b {
-  color: #ffffff !important;
-  -webkit-text-fill-color: #ffffff !important;
+  color: #f8fafc !important;
+  -webkit-text-fill-color: #f8fafc !important;
 }
 
 :global(html.kikoerumanager-dark) .dash-task-pager-indicator {
-  background: rgba(255, 255, 255, 0.06) !important;
-  border-color: rgba(255, 255, 255, 0.16) !important;
-  color: #f8fafc !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
+  align-items: center;
+  background: var(--km-dark-surface-soft) !important;
+  background-color: var(--km-dark-surface-soft) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
 }
 
 :global(html.kikoerumanager-dark) .dash-task-pager-current,
 :global(html.kikoerumanager-dark) .dash-task-pager-total {
-  color: #ffffff !important;
-  -webkit-text-fill-color: #ffffff !important;
+  color: #f8fafc !important;
+  -webkit-text-fill-color: #f8fafc !important;
 }
 
 :global(html.kikoerumanager-dark) .dash-task-pager-divider {
@@ -811,22 +821,27 @@ function formatRJ(value) {
 }
 
 :global(html.kikoerumanager-dark) .dash-task-pager-btn {
-  background: rgba(255, 255, 255, 0.06) !important;
-  border-color: rgba(255, 255, 255, 0.12) !important;
-  color: #e5e7eb !important;
-  box-shadow: none !important;
+  background: var(--km-dark-surface-soft) !important;
+  background-color: var(--km-dark-surface-soft) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
 }
 
 :global(html.kikoerumanager-dark) .dash-task-pager-btn:hover {
-  background: rgba(255, 255, 255, 0.11) !important;
-  border-color: rgba(255, 255, 255, 0.2) !important;
+  background: var(--km-dark-surface-hover) !important;
+  background-color: var(--km-dark-surface-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
   color: #ffffff !important;
 }
 
 :global(html.kikoerumanager-dark) .dash-task-pager-btn:disabled {
-  background: rgba(255, 255, 255, 0.035) !important;
+  background: rgba(255, 255, 255, 0.04) !important;
+  background-color: rgba(255, 255, 255, 0.04) !important;
   border-color: rgba(255, 255, 255, 0.08) !important;
   color: rgba(255, 255, 255, 0.42) !important;
+  box-shadow: none !important;
 }
 
 :global(html.kikoerumanager-dark) .dash-task-action-menu {

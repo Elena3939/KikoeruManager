@@ -101,6 +101,7 @@ frontend/vite.config.js.timestamp-*.mjs
 .codegraph/
 .codex/
 .codex-backups/
+.codex-chrome-profile/
 .codex-temp-visibility/
 .codex-temp/
 .cursor/

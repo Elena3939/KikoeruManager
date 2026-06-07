@@ -226,7 +226,7 @@ import NotificationBell from './components/system/NotificationBell.vue'
 import AnimatedThemeToggler from './components/magicui/AnimatedThemeToggler.vue'
 import { useTheme } from './composables/useTheme'
 import { useTaskCenterStream } from './composables/useTaskCenterStream'
-import { healthApi } from './api'
+import { healthApi, watcherApi } from './api'
 import router from './router'
 
 const appVersion = ref('dev')
@@ -276,7 +276,9 @@ const currentViewKey = computed(() => {
 })
 let intervalId = null
 let statusRefreshing = false
+let statusFailureCount = 0
 const WATCHER_STATUS_POLL_MS = 15000
+const WATCHER_STATUS_POLL_MAX_MS = 120000
 
 onMounted(async () => {
   sidebarPinned.value = readInitialSidebarPinned()
@@ -330,29 +332,56 @@ function stopTaskCenterStream() {
 
 function startStatusPolling() {
   if (intervalId) return
-  intervalId = setInterval(() => {
-    if (typeof document !== 'undefined' && document.hidden) return
-    refreshStatus()
-  }, WATCHER_STATUS_POLL_MS)
+  scheduleStatusPolling(WATCHER_STATUS_POLL_MS)
 }
 
 function stopStatusPolling() {
   if (!intervalId) return
-  clearInterval(intervalId)
+  clearTimeout(intervalId)
   intervalId = null
 }
 
 function handleVisibilityChange() {
-  if (typeof document === 'undefined' || document.hidden || isGateRoute.value) return
+  if (typeof document === 'undefined' || isGateRoute.value) return
+  if (document.hidden) {
+    stopStatusPolling()
+    return
+  }
+  statusFailureCount = 0
   refreshStatus()
+  if (!intervalId) startStatusPolling()
+}
+
+function scheduleStatusPolling(delay = WATCHER_STATUS_POLL_MS) {
+  stopStatusPolling()
+  intervalId = setTimeout(async () => {
+    intervalId = null
+    if (isGateRoute.value) return
+    if (typeof document !== 'undefined' && document.hidden) {
+      stopStatusPolling()
+      return
+    }
+    const ok = await refreshStatus()
+    const nextDelay = ok
+      ? WATCHER_STATUS_POLL_MS
+      : Math.min(WATCHER_STATUS_POLL_MAX_MS, WATCHER_STATUS_POLL_MS * 2 ** Math.min(statusFailureCount, 3))
+    scheduleStatusPolling(nextDelay)
+  }, delay)
 }
 
 async function refreshStatus() {
-  if (statusRefreshing) return
+  if (statusRefreshing) return true
   statusRefreshing = true
   try {
-    await watcherStore.fetchStatus()
-    watcherStatus.value = watcherStore.status
+    const status = await watcherApi.status()
+    watcherStore.status = status
+    watcherStatus.value = status
+    statusFailureCount = 0
+    return true
+  } catch (error) {
+    statusFailureCount += 1
+    console.warn('[App] 获取监视器状态失败', error)
+    return false
   } finally {
     statusRefreshing = false
   }

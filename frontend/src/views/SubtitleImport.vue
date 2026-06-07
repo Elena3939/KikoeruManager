@@ -135,34 +135,67 @@
               size="sm"
               class="my-auto"
             />
-            <button
-              v-for="item in pendingItems"
-              :key="item.id"
-              type="button"
-              class="subtitle-list-card"
-              :class="{ 'is-active': item.id === activePendingId }"
-              @click="activePendingId = item.id"
+            <TransitionGroup
+              v-else
+              :key="pendingListPage"
+              name="subtitle-list-page"
+              tag="div"
+              class="subtitle-list-page-stack"
+              :class="`is-${pendingListPageDirection}`"
             >
-              <div class="subtitle-list-card-row">
-                <strong class="subtitle-list-card-title">
-                  {{ getDisplayRJCode(item.preview?.target_rjcode || item.preview?.source_rjcode) || '未识别 RJ' }}
-                  <ChevronRight class="w-3.5 h-3.5 subtitle-list-card-chev" />
-                </strong>
-                <span class="lib-chip" :class="item.can_execute ? 'lib-chip-success' : 'lib-chip-warning'">
-                  {{ item.can_execute ? '可执行' : '仅查看' }}
-                </span>
-              </div>
-              <div class="subtitle-list-card-source">
-                {{ item.preview?.source_label || getFileName(item.source_path) }}
-              </div>
-              <div class="subtitle-list-card-meta">
-                <span class="subtitle-list-card-arrow">
-                  <span class="font-mono">{{ getDisplayRJCode(item.preview?.source_rjcode) || '-' }}</span>
-                  <ArrowRight class="w-3 h-3 mx-1 inline" />
-                  <span class="font-mono">{{ getDisplayRJCode(item.preview?.target_rjcode) || '-' }}</span>
-                </span>
-                <span class="subtitle-list-card-count">{{ item.preview?.subtitle_count ?? 0 }} 字幕</span>
-              </div>
+              <button
+                v-for="item in pagedPendingItems"
+                :key="item.id"
+                type="button"
+                class="subtitle-list-card"
+                :class="{ 'is-active': item.id === activePendingId }"
+                @click="activePendingId = item.id"
+              >
+                <div class="subtitle-list-card-row">
+                  <strong class="subtitle-list-card-title">
+                    {{ getDisplayRJCode(item.preview?.target_rjcode || item.preview?.source_rjcode) || '未识别 RJ' }}
+                    <ChevronRight class="w-3.5 h-3.5 subtitle-list-card-chev" />
+                  </strong>
+                  <span class="lib-chip" :class="item.can_execute ? 'lib-chip-success' : 'lib-chip-warning'">
+                    {{ item.can_execute ? '可执行' : '仅查看' }}
+                  </span>
+                </div>
+                <div class="subtitle-list-card-source">
+                  {{ item.preview?.source_label || getFileName(item.source_path) }}
+                </div>
+                <div class="subtitle-list-card-meta">
+                  <span class="subtitle-list-card-arrow">
+                    <span class="font-mono">{{ getDisplayRJCode(item.preview?.source_rjcode) || '-' }}</span>
+                    <ArrowRight class="w-3 h-3 mx-1 inline" />
+                    <span class="font-mono">{{ getDisplayRJCode(item.preview?.target_rjcode) || '-' }}</span>
+                  </span>
+                  <span class="subtitle-list-card-count">{{ item.preview?.subtitle_count ?? 0 }} 字幕</span>
+                </div>
+              </button>
+            </TransitionGroup>
+          </div>
+          <div
+            v-if="pendingListTotalPages > 1"
+            class="subtitle-list-pager"
+          >
+            <button
+              type="button"
+              class="subtitle-list-page-btn"
+              :disabled="pendingListPage <= 1"
+              @click="setPendingListPage(pendingListPage - 1)"
+            >
+              上一页
+            </button>
+            <span class="subtitle-list-page-indicator">
+              {{ pendingListPage }} / {{ pendingListTotalPages }}
+            </span>
+            <button
+              type="button"
+              class="subtitle-list-page-btn"
+              :disabled="pendingListPage >= pendingListTotalPages"
+              @click="setPendingListPage(pendingListPage + 1)"
+            >
+              下一页
             </button>
           </div>
         </aside>
@@ -653,7 +686,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { subtitleImportApi } from '../api'
 import SubtitleImportWorkbench from '../components/subtitle-import/SubtitleImportWorkbench.vue'
@@ -693,6 +726,7 @@ const route = useRoute()
 const LEGACY_SUBTITLE_OPTIONS_KEY = 'kikoeru.ui.library.rjSubtitleOptions'
 const SUBTITLE_IMPORT_OPTIONS_KEY = 'kikoeru.ui.subtitleImport.workbenchOptions'
 const SUBTITLE_IMPORT_WORKBENCH_ID = 'subtitle-import-workbench'
+const PENDING_LIST_PAGE_SIZE = 6
 
 const workbenchManager = useBackgroundWorkbenchManager()
 
@@ -783,6 +817,15 @@ function buildSubtitleEntryTreeRows(entries = []) {
     })
   }
   return rows
+}
+
+function getPagedItems(items = [], page = 1, pageSize = PENDING_LIST_PAGE_SIZE) {
+  const source = Array.isArray(items) ? items : []
+  const safePageSize = Math.max(1, Number(pageSize) || PENDING_LIST_PAGE_SIZE)
+  const totalPages = Math.max(1, Math.ceil(source.length / safePageSize))
+  const safePage = Math.min(Math.max(1, Number(page) || 1), totalPages)
+  const start = (safePage - 1) * safePageSize
+  return source.slice(start, start + safePageSize)
 }
 
 function getDisplayRJCode(value = '') {
@@ -880,6 +923,48 @@ const {
   getSubtitleWorkbenchFilterOptions,
   openImportedTask,
   candidateKey
+})
+
+const pendingListPage = ref(1)
+const pendingListPageDirection = ref('next')
+const pendingListTotalPages = computed(() => (
+  Math.max(1, Math.ceil(pendingItems.value.length / PENDING_LIST_PAGE_SIZE))
+))
+const pagedPendingItems = computed(() => (
+  getPagedItems(pendingItems.value, pendingListPage.value, PENDING_LIST_PAGE_SIZE)
+))
+
+function setPendingListPage(page) {
+  const next = Math.min(Math.max(1, Number(page) || 1), pendingListTotalPages.value)
+  pendingListPageDirection.value = next >= pendingListPage.value ? 'next' : 'prev'
+  pendingListPage.value = next
+  const currentPageIds = new Set(pagedPendingItems.value.map(item => item.id))
+  if (!currentPageIds.has(activePendingId.value)) {
+    activePendingId.value = pagedPendingItems.value[0]?.id || ''
+  }
+}
+
+function syncPendingListPageForActive() {
+  const index = pendingItems.value.findIndex(item => item.id === activePendingId.value)
+  if (index < 0) return
+  const targetPage = Math.floor(index / PENDING_LIST_PAGE_SIZE) + 1
+  if (targetPage !== pendingListPage.value) {
+    pendingListPageDirection.value = targetPage >= pendingListPage.value ? 'next' : 'prev'
+    pendingListPage.value = targetPage
+  }
+}
+
+watch(pendingListTotalPages, total => {
+  if (pendingListPage.value > total) pendingListPage.value = total
+  if (pendingListPage.value < 1) pendingListPage.value = 1
+})
+
+watch(activePendingId, () => {
+  syncPendingListPageForActive()
+})
+
+watch(() => pendingItems.value.map(item => item.id).join('|'), () => {
+  syncPendingListPageForActive()
 })
 </script>
 <style scoped>
@@ -1271,6 +1356,94 @@ button:disabled { cursor: not-allowed; }
   flex-direction: column;
   gap: 6px;
   min-height: 240px;
+}
+.subtitle-list-page-stack {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+.subtitle-list-page-stack .subtitle-list-card:nth-child(1) { transition-delay: 0ms; }
+.subtitle-list-page-stack .subtitle-list-card:nth-child(2) { transition-delay: 18ms; }
+.subtitle-list-page-stack .subtitle-list-card:nth-child(3) { transition-delay: 36ms; }
+.subtitle-list-page-stack .subtitle-list-card:nth-child(4) { transition-delay: 54ms; }
+.subtitle-list-page-stack .subtitle-list-card:nth-child(5) { transition-delay: 72ms; }
+.subtitle-list-page-stack .subtitle-list-card:nth-child(6) { transition-delay: 90ms; }
+.subtitle-list-page-enter-active {
+  transition:
+    opacity 0.26s ease,
+    transform 0.34s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.subtitle-list-page-leave-active {
+  position: absolute;
+  inset-inline: 0;
+  transition:
+    opacity 0.16s ease,
+    transform 0.2s ease;
+}
+.subtitle-list-page-stack.is-next .subtitle-list-page-enter-from {
+  opacity: 0;
+  transform: translateX(22px) scale(0.985);
+}
+.subtitle-list-page-stack.is-prev .subtitle-list-page-enter-from {
+  opacity: 0;
+  transform: translateX(-22px) scale(0.985);
+}
+.subtitle-list-page-stack.is-next .subtitle-list-page-leave-to {
+  opacity: 0;
+  transform: translateX(-16px) scale(0.985);
+}
+.subtitle-list-page-stack.is-prev .subtitle-list-page-leave-to {
+  opacity: 0;
+  transform: translateX(16px) scale(0.985);
+}
+.subtitle-list-page-move {
+  transition: transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.subtitle-list-pager {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--subtitle-border);
+  background: var(--subtitle-panel);
+}
+.subtitle-list-page-btn {
+  min-height: 30px;
+  border: 1px solid var(--subtitle-border);
+  border-radius: 9px;
+  background: var(--subtitle-panel);
+  color: var(--subtitle-text-muted);
+  padding: 0 11px;
+  font-size: 11.5px;
+  font-weight: 700;
+  transition: var(--subtitle-control-motion);
+}
+.subtitle-list-page-btn:hover:not(:disabled) {
+  border-color: var(--subtitle-border-strong);
+  color: var(--subtitle-text);
+  transform: translateY(-2px) scale(1.02);
+}
+.subtitle-list-page-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+.subtitle-list-page-btn:disabled {
+  opacity: 0.45;
+}
+.subtitle-list-page-indicator {
+  min-width: 62px;
+  border: 1px solid var(--subtitle-border);
+  border-radius: 9px;
+  background: var(--subtitle-primary-soft);
+  color: var(--subtitle-text-muted);
+  padding: 7px 9px;
+  text-align: center;
+  font-size: 11.5px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
 }
 
 /* 列表卡片：和 conflicts-list-card 同款 */
@@ -1665,8 +1838,8 @@ button:disabled { cursor: not-allowed; }
   transition: var(--subtitle-control-motion);
 }
 .subtitle-candidate-radio.is-checked {
-  border-color: var(--subtitle-text);
-  background: var(--subtitle-text);
+  border-color: var(--subtitle-success);
+  background: var(--subtitle-success);
 }
 .subtitle-candidate-radio-dot {
   width: 6px;
@@ -1974,11 +2147,41 @@ button:disabled { cursor: not-allowed; }
 :global(html.kikoerumanager-dark) .subtitle-refresh-btn:hover,
 :global(html.kikoerumanager-dark) .subtitle-action-btn:hover,
 :global(html.kikoerumanager-dark) .subtitle-mini-btn:hover,
+:global(html.kikoerumanager-dark) .subtitle-list-page-btn:hover,
 :global(html.kikoerumanager-dark) .subtitle-list-card:hover,
 :global(html.kikoerumanager-dark) .subtitle-candidate-card:hover {
   background: var(--km-dark-surface-hover);
   border-color: var(--subtitle-border-strong);
   box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark body #app .subtitle-page .subtitle-shell),
+:global(body.kikoerumanager-dark #app .subtitle-page .subtitle-shell) {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .subtitle-page .subtitle-detail-pane),
+:global(html.kikoerumanager-dark body #app .subtitle-page .subtitle-detail-header),
+:global(body.kikoerumanager-dark #app .subtitle-page .subtitle-detail-pane),
+:global(body.kikoerumanager-dark #app .subtitle-page .subtitle-detail-header) {
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-list-pager,
+:global(html.kikoerumanager-dark) .subtitle-list-page-btn {
+  background: var(--subtitle-panel);
+  border-color: var(--subtitle-border);
+}
+
+:global(html.kikoerumanager-dark) .subtitle-list-page-indicator {
+  background: var(--subtitle-primary-soft);
+  border-color: var(--subtitle-border);
+  color: var(--subtitle-text-muted);
 }
 
 :global(html.kikoerumanager-dark) .subtitle-action-btn.is-primary {
@@ -2082,19 +2285,29 @@ button:disabled { cursor: not-allowed; }
 }
 
 :global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-candidate-card.is-selected,
-:global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-card.is-selected) {
-  background: rgba(244, 206, 117, 0.16) !important;
-  border-color: rgba(244, 206, 117, 0.24);
+:global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-card.is-selected),
+:global(html.kikoerumanager-dark body #app .subtitle-page .subtitle-detail-body .subtitle-candidate-card.is-selected),
+:global(body.kikoerumanager-dark #app .subtitle-page .subtitle-detail-body .subtitle-candidate-card.is-selected) {
+  background: rgba(141, 223, 187, 0.12) !important;
+  border-color: rgba(141, 223, 187, 0.34) !important;
 }
 
-:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-candidate-radio {
+:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-candidate-radio,
+:global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-radio) {
   background: var(--km-dark-bg);
   border-color: var(--subtitle-border-strong);
 }
 
-:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-candidate-radio.is-checked {
-  background: var(--km-dark-text-strong);
-  border-color: var(--km-dark-text-strong);
+:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-candidate-radio.is-checked,
+:global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-radio.is-checked) {
+  background: #34d399;
+  border-color: #34d399;
+  box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.16);
+}
+
+:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-candidate-radio-dot,
+:global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-radio-dot) {
+  background: #06291f;
 }
 
 :global(html.kikoerumanager-dark) .subtitle-import-workbench-overlay {

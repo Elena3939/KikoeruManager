@@ -369,19 +369,39 @@ const backupHistory = ref([])
 let timer = null
 let libraryBackupInitialized = false
 let libraryBackupViewActive = false
+const BACKUP_STATUS_POLL_INTERVAL_MS = 1000
+const BACKUP_STATUS_POLL_MAX_INTERVAL_MS = 120000
+let backupStatusPollDelayMs = BACKUP_STATUS_POLL_INTERVAL_MS
 
 function stopPolling() {
   if (timer) {
-    clearInterval(timer)
+    clearTimeout(timer)
     timer = null
   }
 }
 
 function startPolling() {
   stopPolling()
-  timer = setInterval(() => {
-    fetchBackupStatus(false)
-  }, 1000)
+  if (!libraryBackupViewActive || isDocumentHidden()) return
+  timer = setTimeout(async () => {
+    timer = null
+    if (!libraryBackupViewActive || isDocumentHidden()) return
+    await fetchBackupStatus(false)
+  }, backupStatusPollDelayMs)
+}
+
+function isDocumentHidden() {
+  return typeof document !== 'undefined' && document.hidden
+}
+
+function handleVisibilityChange() {
+  if (isDocumentHidden()) {
+    stopPolling()
+    return
+  }
+  if (!libraryBackupViewActive) return
+  backupStatusPollDelayMs = BACKUP_STATUS_POLL_INTERVAL_MS
+  fetchBackupStatus(false)
 }
 
 async function loadConfig() {
@@ -466,6 +486,7 @@ async function saveBackupConfig(showSuccess = true) {
 async function fetchBackupStatus(showError = true) {
   try {
     const result = await backupApi.status()
+    backupStatusPollDelayMs = BACKUP_STATUS_POLL_INTERVAL_MS
     status.value = {
       ...status.value,
       ...(result || {})
@@ -478,6 +499,8 @@ async function fetchBackupStatus(showError = true) {
       fetchBackupHistory()
     }
   } catch (error) {
+    backupStatusPollDelayMs = Math.min(backupStatusPollDelayMs * 2, BACKUP_STATUS_POLL_MAX_INTERVAL_MS)
+    if (status.value.running) startPolling()
     if (showError) {
       ElMessage.error('获取库存打包状态失败：' + (error.response?.data?.detail || error.message))
     }
@@ -587,6 +610,10 @@ onMounted(async () => {
     libraryBackupInitialized = true
   }
   libraryBackupViewActive = true
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+  }
+  if (status.value.running) startPolling()
 })
 
 onActivated(async () => {
@@ -603,6 +630,9 @@ onDeactivated(() => {
 
 onBeforeUnmount(() => {
   libraryBackupViewActive = false
+  if (typeof document !== 'undefined') {
+    document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }
   stopPolling()
 })
 </script>

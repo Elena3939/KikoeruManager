@@ -236,6 +236,7 @@ import { showSystemConfirm } from '../../composables/useSystemPrompt'
 const activityInfo = ref(null)
 const activityLoading = ref(false)
 let activityPollTimer = null
+let visibilityBound = false
 
 /** 保证 loading 态最少持续 ms 毫秒，让动画有时间播完 */
 function withMinDuration(promise, ms = 600) {
@@ -299,8 +300,15 @@ async function fetchActivity() {
 }
 
 function startActivityPolling() {
+  if (typeof document !== 'undefined' && document.hidden) return
   stopActivityPolling()
-  activityPollTimer = setInterval(fetchActivity, 1400)
+  activityPollTimer = setInterval(() => {
+    if (typeof document !== 'undefined' && document.hidden) {
+      stopActivityPolling()
+      return
+    }
+    fetchActivity()
+  }, 1400)
 }
 
 function stopActivityPolling() {
@@ -408,8 +416,15 @@ async function fetchLibrary() {
 }
 
 function startLibraryPolling() {
+  if (typeof document !== 'undefined' && document.hidden) return
   stopLibraryPolling()
-  libraryPollTimer = setInterval(fetchLibrary, 1400)
+  libraryPollTimer = setInterval(() => {
+    if (typeof document !== 'undefined' && document.hidden) {
+      stopLibraryPolling()
+      return
+    }
+    fetchLibrary()
+  }, 1400)
 }
 
 function stopLibraryPolling() {
@@ -454,12 +469,34 @@ async function rebuildLibrary() {
 }
 
 // ─── 生命周期 ───────────────────────────────────────────────
+function handleVisibilityChange() {
+  if (typeof document === 'undefined' || document.hidden) return
+  fetchActivity()
+  fetchLibrary()
+  if (activityBusy.value) startActivityPolling()
+  if (libraryBusy.value) startLibraryPolling()
+}
+
+function bindVisibilityChange() {
+  if (visibilityBound || typeof document === 'undefined') return
+  visibilityBound = true
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+}
+
+function unbindVisibilityChange() {
+  if (!visibilityBound || typeof document === 'undefined') return
+  visibilityBound = false
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+}
+
 onMounted(() => {
+  bindVisibilityChange()
   fetchActivity()
   fetchLibrary()
 })
 
 onBeforeUnmount(() => {
+  unbindVisibilityChange()
   stopActivityPolling()
   stopLibraryPolling()
 })
