@@ -474,9 +474,19 @@ class ASMRDownloadService:
                                 children = first_item.get('children', [])
                                 if children:
                                     logger.info(f"[ASMR] 第一个子项目结构: {list(children[0].keys())}")
-                                    logger.info(f"[ASMR] 第一个子项目详情: {children[0]}")
+                                    logger.info(
+                                        "[ASMR] 第一个子项目摘要: title=%s size=%s has_download=%s",
+                                        children[0].get("title"),
+                                        children[0].get("size"),
+                                        bool(children[0].get("mediaDownloadUrl") or children[0].get("media_download_url")),
+                                    )
                             else:
-                                logger.info(f"[ASMR] 第一个文件详情: {first_item}")
+                                logger.info(
+                                    "[ASMR] 第一个文件摘要: title=%s size=%s has_download=%s",
+                                    first_item.get("title"),
+                                    first_item.get("size"),
+                                    bool(first_item.get("mediaDownloadUrl") or first_item.get("media_download_url")),
+                                )
 
                         return data
                     elif response.status == 404:
