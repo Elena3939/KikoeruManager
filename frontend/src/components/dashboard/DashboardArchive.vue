@@ -443,17 +443,21 @@ function statusIconColor(key) {
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
-  gap: 4px;
-  max-width: 94px;
-  height: 22px;
-  padding: 0 7px;
+  gap: 6px;
+  max-width: none;
+  height: 24px;
+  padding: 0 10px;
   border: 1px solid transparent;
   border-radius: 7px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
-  line-height: 20px;
+  font-family: inherit;
+  line-height: 22px;
   cursor: pointer;
   letter-spacing: 0;
+  white-space: nowrap;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .dash-archive-tab-rail {
@@ -461,8 +465,8 @@ function statusIconColor(key) {
   flex-shrink: 0;
   align-items: center;
   gap: 5px;
-  min-height: 24px;
-  max-height: 28px;
+  min-height: 27px;
+  max-height: 30px;
   overflow-x: auto;
   overflow-y: hidden;
   padding: 0 1px 3px;
@@ -478,12 +482,6 @@ function statusIconColor(key) {
 .dash-archive-tab-rail::-webkit-scrollbar-thumb {
   border-radius: 999px;
   background: rgba(148, 163, 184, 0.38);
-}
-.dash-archive-tab > span:first-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .dash-archive-tab.is-idle {
   background: rgb(241 245 249);
@@ -515,10 +513,10 @@ function statusIconColor(key) {
   justify-content: center;
   flex-shrink: 0;
   min-width: 15px;
-  height: 14px;
+  height: 15px;
   padding: 0 4px;
   border-radius: 5px;
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   line-height: 1;
