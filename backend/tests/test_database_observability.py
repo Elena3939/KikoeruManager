@@ -98,3 +98,20 @@ def test_activity_log_rollups_schema_migration_adds_missing_columns_and_indexes(
     assert "latest_activity_at" in columns
     assert "idx_activity_rollup_type_value" in indexes
     assert "idx_activity_rollup_category_status" in indexes
+
+
+def test_task_phase_metrics_schema_migration_adds_missing_columns_and_indexes():
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE task_phase_metrics (id VARCHAR(36) PRIMARY KEY)"))
+        database._migrate_task_phase_metrics_schema(conn)
+
+    with engine.connect() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(task_phase_metrics)")).fetchall()}
+        indexes = {row[1] for row in conn.execute(text("PRAGMA index_list(task_phase_metrics)")).fetchall()}
+
+    assert "duration_ms" in columns
+    assert "bytes_total" in columns
+    assert "detail_json" in columns
+    assert "idx_task_phase_metrics_task_phase" in indexes
+    assert "idx_task_phase_metrics_type_phase" in indexes

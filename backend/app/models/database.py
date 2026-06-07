@@ -110,6 +110,34 @@ class TaskCenterItem(Base):
         Index('idx_task_center_items_domain_status', 'domain', 'status'),
         Index('idx_task_center_items_updated_at', 'updated_at'),
     )
+
+
+class TaskPhaseMetric(Base):
+    """任务阶段耗时指标。
+
+    这是旁路观测表：只记录任务某个阶段的耗时/吞吐，不参与任务状态流转。
+    """
+    __tablename__ = 'task_phase_metrics'
+
+    id = Column(String(36), primary_key=True)
+    task_id = Column(String(36), index=True)
+    task_type = Column(String(60), index=True)
+    phase = Column(String(80), index=True)
+    resource = Column(String(40), index=True)
+    status = Column(String(24), index=True)
+    duration_ms = Column(Integer, nullable=False, default=0)
+    bytes_total = Column(BigInteger, nullable=False, default=0)
+    items_total = Column(Integer, nullable=False, default=0)
+    detail_json = Column(JSON)
+    started_at = Column(DateTime, index=True)
+    ended_at = Column(DateTime, index=True)
+    created_at = Column(DateTime, default=get_local_now, index=True)
+
+    __table_args__ = (
+        Index('idx_task_phase_metrics_task_phase', 'task_id', 'phase'),
+        Index('idx_task_phase_metrics_type_phase', 'task_type', 'phase'),
+        Index('idx_task_phase_metrics_created_at', 'created_at'),
+    )
     
 class WorkMetadata(Base):
     """作品元数据表"""
@@ -770,6 +798,8 @@ class ActivityLog(Base):
         Index('idx_activity_created_category', 'created_at', 'category'),
         Index('idx_activity_category_batch', 'category', 'batch_id'),
         Index('idx_activity_category_session', 'category', 'session_key'),
+        Index('idx_activity_status_created', 'status', 'created_at'),
+        Index('idx_activity_category_status_created', 'category', 'status', 'created_at'),
     )
 
     def to_dict(self):
@@ -1810,6 +1840,7 @@ def init_db():
         # === 性能物化表：兼容已存在老表的增量列/索引 ===
         _migrate_task_center_items_schema(conn)
         _migrate_activity_log_rollups_schema(conn)
+        _migrate_task_phase_metrics_schema(conn)
 
         # === Phase 2: activity_logs 迁移 ===
         _migrate_activity_logs_phase2(conn)
@@ -1948,6 +1979,56 @@ def _migrate_activity_log_rollups_schema(conn) -> None:
         _db_logger.warning("[数据库] activity_log_rollups 迁移失败（非致命）", exc_info=True)
 
 
+def _migrate_task_phase_metrics_schema(conn) -> None:
+    """任务阶段耗时指标表兼容迁移。"""
+    try:
+        existing_columns = _read_table_columns(conn, "task_phase_metrics")
+        if not existing_columns:
+            return
+        _add_missing_columns(
+            conn,
+            "task_phase_metrics",
+            existing_columns,
+            [
+                ("task_id", "VARCHAR(36)"),
+                ("task_type", "VARCHAR(60)"),
+                ("phase", "VARCHAR(80)"),
+                ("resource", "VARCHAR(40)"),
+                ("status", "VARCHAR(24)"),
+                ("duration_ms", "INTEGER DEFAULT 0"),
+                ("bytes_total", "BIGINT DEFAULT 0"),
+                ("items_total", "INTEGER DEFAULT 0"),
+                ("detail_json", "JSON"),
+                ("started_at", "DATETIME"),
+                ("ended_at", "DATETIME"),
+                ("created_at", "DATETIME"),
+            ],
+        )
+        _create_indexes_if_not_exists(
+            conn,
+            (
+                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_task_id ON task_phase_metrics(task_id)",
+                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_task_type ON task_phase_metrics(task_type)",
+                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_phase ON task_phase_metrics(phase)",
+                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_resource ON task_phase_metrics(resource)",
+                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_status ON task_phase_metrics(status)",
+                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_started_at ON task_phase_metrics(started_at)",
+                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_ended_at ON task_phase_metrics(ended_at)",
+                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_created_at ON task_phase_metrics(created_at)",
+                "CREATE INDEX IF NOT EXISTS idx_task_phase_metrics_task_phase ON task_phase_metrics(task_id, phase)",
+                "CREATE INDEX IF NOT EXISTS idx_task_phase_metrics_type_phase ON task_phase_metrics(task_type, phase)",
+                "CREATE INDEX IF NOT EXISTS idx_task_phase_metrics_created_at ON task_phase_metrics(created_at)",
+            ),
+            "task_phase_metrics",
+        )
+        try:
+            conn.commit()
+        except Exception:
+            pass
+    except Exception:
+        _db_logger.warning("[数据库] task_phase_metrics 迁移失败（非致命）", exc_info=True)
+
+
 def _migrate_activity_log_daily_stats(conn) -> None:
     """Phase 4A 日聚合表迁移：
     - Base.metadata.create_all 已负责建表
@@ -2010,6 +2091,8 @@ def _migrate_activity_logs_phase2(conn) -> None:
         "CREATE INDEX IF NOT EXISTS ix_activity_logs_parent_id ON activity_logs(parent_id)",
         "CREATE INDEX IF NOT EXISTS idx_activity_category_batch ON activity_logs(category, batch_id)",
         "CREATE INDEX IF NOT EXISTS idx_activity_category_session ON activity_logs(category, session_key)",
+        "CREATE INDEX IF NOT EXISTS idx_activity_status_created ON activity_logs(status, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_activity_category_status_created ON activity_logs(category, status, created_at)",
     ):
         try:
             conn.execute(text(index_sql))
