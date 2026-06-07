@@ -4,8 +4,10 @@ import logging
 import os
 import re
 import shutil
+import time
 import uuid
 from collections import defaultdict
+from copy import deepcopy
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -14,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..config.settings import get_config
 from ..models.database import ASMRDownloadSession, ASMRResourceRecord, ASMRWork, SessionLocal
 from .resource_budget_service import get_resource_budget_service
+from .ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +45,8 @@ class ASMRResourceService:
         self.asmr_service = asmr_service
         self._global_upload_lock = asyncio.Lock()
         self._synology_clients: Dict[str, Any] = {}
+        self._remote_source_cache: TTLCache = TTLCache(max_size=512, ttl_seconds=1800, name="asmr.remote_source")
+        self._remote_source_inflight: Dict[str, asyncio.Future] = {}
 
     def _build_synology_config_signature(self, synology_config: Any) -> str:
         if synology_config is None:
@@ -489,12 +494,56 @@ class ASMRResourceService:
             "selected": False,
         }
 
-    async def fetch_remote_resources(self, rjcode: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-        normalized_rjcode = self.normalize_rjcode(rjcode)
+    async def _fetch_remote_source_payload(self, normalized_rjcode: str) -> Tuple[Dict[str, Any], List[Any]]:
         work_info = await self.asmr_service.fetch_work_info(normalized_rjcode)
         if not work_info:
             raise ValueError(f"未找到作品 {normalized_rjcode}")
         tracks = await self.asmr_service.fetch_track_list(normalized_rjcode)
+        return dict(work_info or {}), list(tracks or [])
+
+    async def _get_remote_source_payload(self, normalized_rjcode: str, *, refresh: bool = False) -> Tuple[Dict[str, Any], List[Any]]:
+        cache_key = self.normalize_rjcode(normalized_rjcode)
+        if not refresh:
+            cached = self._remote_source_cache.get(cache_key)
+            if cached is not None:
+                work_info, tracks = cached
+                return deepcopy(work_info), deepcopy(tracks)
+
+        future = self._remote_source_inflight.get(cache_key)
+        if future is not None and not future.done():
+            work_info, tracks = await future
+            return deepcopy(work_info), deepcopy(tracks)
+
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        self._remote_source_inflight[cache_key] = future
+        started_at = time.monotonic()
+        try:
+            payload = await self._fetch_remote_source_payload(cache_key)
+            self._remote_source_cache[cache_key] = deepcopy(payload)
+            future.set_result(deepcopy(payload))
+            elapsed_ms = int((time.monotonic() - started_at) * 1000)
+            if elapsed_ms >= 1000:
+                logger.info("[ASMR增强] 远程资源源数据拉取耗时: rj=%s elapsed=%sms", cache_key, elapsed_ms)
+            work_info, tracks = payload
+            return deepcopy(work_info), deepcopy(tracks)
+        except Exception as exc:
+            future.set_exception(exc)
+            future.add_done_callback(lambda item: item.exception())
+            raise
+        finally:
+            self._remote_source_inflight.pop(cache_key, None)
+
+    def invalidate_remote_source_cache(self, rjcode: str = "") -> None:
+        normalized = self.normalize_rjcode(rjcode)
+        if normalized:
+            self._remote_source_cache.pop(normalized, None)
+        else:
+            self._remote_source_cache.clear()
+
+    async def fetch_remote_resources(self, rjcode: str, *, refresh: bool = False) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+        normalized_rjcode = self.normalize_rjcode(rjcode)
+        work_info, tracks = await self._get_remote_source_payload(normalized_rjcode, refresh=refresh)
         flat_files = self.asmr_service._flatten_tracks(tracks or [])
         resources = [
             self._build_remote_resource(normalized_rjcode, work_info, file_info)
@@ -1558,12 +1607,11 @@ class ASMRResourceService:
         refresh: bool = True,
         emit_activity_log: bool = True,
     ) -> Dict[str, Any]:
-        del refresh
         from .activity_log_service import log_asmr_sync_event
 
         normalized_rjcode = self.normalize_rjcode(rjcode)
         try:
-            work_info, remote_resources = await self.fetch_remote_resources(normalized_rjcode)
+            work_info, remote_resources = await self.fetch_remote_resources(normalized_rjcode, refresh=bool(refresh))
             local_resources = self.scan_local_resources(folder_path) if folder_path else []
             matched_resources, missing_resources, local_only_resources, pairing_conflicts = self._match_remote_with_local(local_resources, remote_resources)
 
@@ -2074,7 +2122,9 @@ class ASMRResourceService:
         try:
             from .library_manager import get_library_manager
 
-            await get_library_manager().ensure_stats(force=True, library_id=library_id)
+            manager = get_library_manager()
+            await manager.ensure_stats(force=True, library_id=library_id)
+            manager.notify_index_upsert_by_path(folder_path)
         except Exception:
             logger.warning("[库存] 上传完成后刷新库存统计失败 library=%s path=%s", library_id, folder_path, exc_info=True)
 

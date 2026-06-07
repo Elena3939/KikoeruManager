@@ -7,7 +7,12 @@ from app.core.asmr_resource_service import ASMRResourceService
 
 
 class FakeASMRService:
+    def __init__(self):
+        self.work_info_calls = 0
+        self.track_calls = 0
+
     async def fetch_work_info(self, rjcode):
+        self.work_info_calls += 1
         return {
             "id": 1,
             "title": f"作品 {rjcode}",
@@ -16,6 +21,7 @@ class FakeASMRService:
         }
 
     async def fetch_track_list(self, rjcode):
+        self.track_calls += 1
         return [{"title": "root"}]
 
     def _flatten_tracks(self, tracks):
@@ -132,6 +138,32 @@ async def test_build_download_plan_marks_existing_and_missing_resources(monkeypa
     assert len(result["selectable_resources"]) == 1
     assert result["selectable_resources"][0]["resource_type"] == "subtitle"
     assert result["selectable_resources"][0]["selected"] is True
+
+
+@pytest.mark.anyio
+async def test_fetch_remote_resources_caches_source_but_rebuilds_resource_ids():
+    fake = FakeASMRService()
+    service = ASMRResourceService(asmr_service=fake)
+
+    _, first_resources = await service.fetch_remote_resources("RJ123456")
+    _, second_resources = await service.fetch_remote_resources("RJ123456")
+
+    assert fake.work_info_calls == 1
+    assert fake.track_calls == 1
+    assert first_resources[0]["relative_path"] == second_resources[0]["relative_path"]
+    assert first_resources[0]["id"] != second_resources[0]["id"]
+
+
+@pytest.mark.anyio
+async def test_fetch_remote_resources_refresh_bypasses_source_cache():
+    fake = FakeASMRService()
+    service = ASMRResourceService(asmr_service=fake)
+
+    await service.fetch_remote_resources("RJ123456")
+    await service.fetch_remote_resources("RJ123456", refresh=True)
+
+    assert fake.work_info_calls == 2
+    assert fake.track_calls == 2
 
 
 @pytest.mark.asyncio

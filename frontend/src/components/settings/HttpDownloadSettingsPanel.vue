@@ -26,10 +26,43 @@
               v-model="config.http_downloader.proxy_platforms"
               :options="httpProxyPlatformOptions"
               multiple
-              class="settings-field-dd"
+              class="settings-field-dd http-proxy-platform-dd"
+              menu-class="http-proxy-platform-menu"
               placeholder="全部直连"
               :menu-min-width="260"
-            />
+            >
+              <template #trigger="{ open, toggle, hasSelection }">
+                <button
+                  type="button"
+                  class="http-proxy-trigger"
+                  :class="{ 'is-open': open, 'is-placeholder': !hasSelection }"
+                  @click="toggle"
+                >
+                  <span v-if="selectedHttpProxyPlatformOptions.length" class="http-proxy-trigger-icons">
+                    <span
+                      v-for="option in selectedHttpProxyPlatformOptions"
+                      :key="option.value"
+                      class="http-proxy-icon-chip"
+                      :title="option.label"
+                    >
+                      <component :is="option.icon" :size="15" :stroke-width="2.3" />
+                    </span>
+                  </span>
+                  <span v-else class="http-proxy-trigger-placeholder">全部直连</span>
+                  <ChevronDown :size="14" :stroke-width="2.4" class="http-proxy-trigger-caret" :class="{ 'is-open': open }" />
+                </button>
+              </template>
+              <template #option="{ option, isActive }">
+                <span class="http-proxy-option-icon">
+                  <component :is="option.icon" :size="16" :stroke-width="2.3" />
+                </span>
+                <span class="http-proxy-option-main">
+                  <span class="http-proxy-option-label">{{ option.label }}</span>
+                  <span class="http-proxy-option-desc">{{ option.description }}</span>
+                </span>
+                <Check v-if="isActive" :size="14" :stroke-width="2.7" class="http-proxy-option-check" />
+              </template>
+            </AppDropdown>
           </SettingsFieldCard>
 
           <div class="mini-grid three">
@@ -161,8 +194,8 @@
                 <input v-else v-model="row.account.label" class="field-input" type="text" placeholder="备注名">
                 <input v-if="row.legacy" v-model="config.http_downloader.pikpak_username" class="field-input" type="text" placeholder="邮箱或手机号（可带国家码）" @blur="normalizePikPakAccountUsername(row)">
                 <input v-else v-model="row.account.username" class="field-input" type="text" placeholder="邮箱或手机号（可带国家码）" @blur="normalizePikPakAccountUsername(row)">
-                <AnimatedPasswordInput v-if="row.legacy" v-model="config.http_downloader.pikpak_password" :reveal-value="getRevealedPikPakPassword(row.id)" placeholder="密码" autocomplete="new-password" @visibility-change="visible => handlePikPakPasswordVisibility(row, visible)" />
-                <AnimatedPasswordInput v-else v-model="row.account.password" :reveal-value="getRevealedPikPakPassword(row.id)" placeholder="密码" autocomplete="new-password" @visibility-change="visible => handlePikPakPasswordVisibility(row, visible)" />
+                <AnimatedPasswordInput v-if="row.legacy" v-model="config.http_downloader.pikpak_password" compact :reveal-value="getRevealedPikPakPassword(row.id)" placeholder="密码" autocomplete="new-password" @visibility-change="visible => handlePikPakPasswordVisibility(row, visible)" />
+                <AnimatedPasswordInput v-else v-model="row.account.password" compact :reveal-value="getRevealedPikPakPassword(row.id)" placeholder="密码" autocomplete="new-password" @visibility-change="visible => handlePikPakPasswordVisibility(row, visible)" />
                 <input v-if="row.legacy" v-model="config.http_downloader.pikpak_transfer_dir" class="field-input" type="text" placeholder="/KikoeruManager">
                 <input v-else v-model="row.account.transfer_dir" class="field-input" type="text" placeholder="/KikoeruManager">
                 <span v-if="getPikPakUsernameHint(row.legacy ? config.http_downloader.pikpak_username : row.account?.username)" class="pikpak-account-note">
@@ -376,7 +409,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { CheckCircle2, ChevronDown, ChevronRight, File, FileArchive, FileAudio, FileVideo, Folder, FolderOpen, LoaderCircle, LogIn, Plus, Trash2 } from 'lucide-vue-next'
+import { Check, CheckCircle2, ChevronDown, ChevronRight, File, FileArchive, FileAudio, FileVideo, Folder, FolderOpen, Link, LoaderCircle, LogIn, Plus, Trash2 } from 'lucide-vue-next'
 import SettingsFieldCard from './SettingsFieldCard.vue'
 import SettingsNumberStepper from './SettingsNumberStepper.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
@@ -384,6 +417,7 @@ import StatefulButton from '../ui/stateful-button.vue'
 import PikPakStateIcon from './PikPakStateIcon.vue'
 import AppDropdown from '../common/AppDropdown.vue'
 import AnimatedPasswordInput from '../common/AnimatedPasswordInput.vue'
+import { HTTP_DOWNLOAD_PLATFORM_META } from '../common/httpDownloadPlatformMeta'
 import { API_BASE, configApi, httpDownloadApi } from '../../api'
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
 
@@ -406,7 +440,10 @@ const httpProxyPlatformOptions = [
   { value: 'onedrive', label: 'OneDrive', description: 'OneDrive 分享直链解析。' },
   { value: 'google_drive', label: 'Google Drive', description: 'Drive OAuth、API、确认页和文件下载。' },
   { value: 'pikpak', label: 'PikPak', description: 'PikPak 登录、转存、解析和文件下载。' }
-]
+].map(option => ({
+  ...option,
+  icon: HTTP_DOWNLOAD_PLATFORM_META[option.value]?.icon || Link
+}))
 const googleDriveOAuthClientModeOptions = [
   { value: 'builtin', label: '内置应用' },
   { value: 'custom', label: '自定义' }
@@ -437,6 +474,13 @@ const googleDriveOAuthPopupTimer = ref(null)
 const googleDriveExpiredNotified = ref(false)
 
 const config = computed(() => props.config)
+const selectedHttpProxyPlatformOptions = computed(() => {
+  const selected = Array.isArray(props.config.http_downloader.proxy_platforms)
+    ? props.config.http_downloader.proxy_platforms
+    : []
+  const selectedSet = new Set(selected)
+  return httpProxyPlatformOptions.filter(option => selectedSet.has(option.value))
+})
 const googleDriveOAuthClientMode = computed({
   get: () => props.config.http_downloader.google_drive_oauth_client_mode || 'builtin',
   set: (value) => {
@@ -1579,13 +1623,13 @@ onBeforeUnmount(() => {
 
 .field-input {
   width: 100%;
-  min-height: 38px;
-  padding: 0 12px;
+  min-height: 36px;
+  padding: 0 11px;
   border: 1px solid var(--set-border);
-  border-radius: 10px;
+  border-radius: 9px;
   background: var(--set-field-bg);
   color: var(--set-text-strong);
-  font-size: 13.5px;
+  font-size: 13px;
   outline: none;
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
@@ -1609,13 +1653,13 @@ onBeforeUnmount(() => {
 
 .settings-field-dd :deep(.app-dd-trigger) {
   width: 100%;
-  min-height: 38px;
-  height: 38px;
-  padding: 0 12px;
-  border-radius: 10px;
+  min-height: 36px;
+  height: 36px;
+  padding: 0 11px;
+  border-radius: 9px;
   background: var(--set-field-bg);
   border: 1px solid var(--set-border);
-  font-size: 13.5px;
+  font-size: 13px;
   justify-content: space-between;
   box-shadow: none;
 }
@@ -1627,14 +1671,185 @@ onBeforeUnmount(() => {
   box-shadow: none;
 }
 
+.http-proxy-platform-dd :deep(.app-dd-trigger-anchor) {
+  width: 100%;
+}
+
+.http-proxy-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 4px 10px;
+  border: 1px solid var(--set-border);
+  border-radius: 10px;
+  background: var(--set-field-bg);
+  color: var(--set-text-strong);
+  cursor: pointer;
+  outline: none;
+  box-shadow: none;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.http-proxy-trigger:hover,
+.http-proxy-trigger.is-open {
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
+}
+
+.http-proxy-trigger:focus,
+.http-proxy-trigger:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.http-proxy-trigger-icons {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 8px;
+  align-items: center;
+  overflow: hidden;
+}
+
+.http-proxy-icon-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--set-text);
+}
+
+.http-proxy-icon-chip :deep(.http-platform-icon),
+.http-proxy-option-icon :deep(.http-platform-icon) {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  border-radius: 0;
+}
+
+.http-proxy-trigger-placeholder {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--set-text-muted);
+  font-size: 13px;
+  text-align: left;
+}
+
+.http-proxy-trigger-caret {
+  flex: 0 0 auto;
+  color: var(--set-text-muted);
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.http-proxy-trigger-caret.is-open {
+  transform: rotate(180deg);
+}
+
+.http-proxy-option-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  color: var(--set-text);
+}
+
+.http-proxy-option-main {
+  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 1px;
+}
+
+.http-proxy-option-label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--set-text-strong);
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.http-proxy-option-desc {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--set-text-muted);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.http-proxy-option-check {
+  flex: 0 0 auto;
+  color: var(--set-text-strong);
+}
+
+:global(.http-proxy-platform-menu) {
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.96));
+  border: 1px solid rgba(203, 213, 225, 0.82);
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.14);
+}
+
+:global(.http-proxy-platform-menu .app-dd-item) {
+  min-height: 48px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: transparent;
+  gap: 9px;
+  transform-origin: center;
+}
+
+:global(.http-proxy-platform-menu .app-dd-item:hover) {
+  background: rgba(226, 232, 240, 0.6);
+}
+
+:global(.http-proxy-platform-menu .app-dd-item.is-active) {
+  background: linear-gradient(135deg, rgba(226, 232, 240, 0.9), rgba(241, 245, 249, 0.96));
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.22);
+}
+
+:global(html.kikoerumanager-dark .http-proxy-platform-menu) {
+  background:
+    linear-gradient(180deg, rgba(24, 31, 42, 0.98), rgba(15, 23, 42, 0.98));
+  border-color: rgba(71, 85, 105, 0.72);
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.35);
+}
+
+:global(html.kikoerumanager-dark .http-proxy-platform-menu .app-dd-item:hover) {
+  background: rgba(51, 65, 85, 0.64);
+}
+
+:global(html.kikoerumanager-dark .http-proxy-platform-menu .app-dd-item.is-active) {
+  background: linear-gradient(135deg, rgba(51, 65, 85, 0.92), rgba(30, 41, 59, 0.96));
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.18);
+}
+
 .ghost-inline-btn,
 .icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 34px;
-  border-radius: 10px;
+  height: 32px;
+  border-radius: 9px;
   border: 1px solid var(--pikpak-control-border, var(--set-border));
   background: var(--set-surface);
   color: var(--set-text);
@@ -1648,7 +1863,7 @@ onBeforeUnmount(() => {
 .ghost-inline-btn { padding: 0 14px; }
 
 .ghost-inline-btn.compact {
-  height: 30px;
+  height: 28px;
   padding: 0 10px;
   border-radius: 8px;
   font-size: 12px;
@@ -1722,15 +1937,15 @@ onBeforeUnmount(() => {
 
 .pikpak-account-list {
   display: grid;
-  gap: 6px;
+  gap: 4px;
 }
 
 .pikpak-account-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 8px;
+  gap: 7px;
   align-items: center;
-  padding: 8px 0 0;
+  padding: 7px 0 0;
   border-radius: 0;
   border: 0;
   border-top: 1px solid var(--pikpak-row-divider, var(--set-border-soft, var(--set-border)));
@@ -1755,8 +1970,8 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-width: 34px;
-  height: 32px;
+  min-width: 32px;
+  height: 30px;
   color: var(--set-text-muted);
   font-size: 12px;
   font-weight: 700;
@@ -1778,7 +1993,7 @@ onBeforeUnmount(() => {
 .pikpak-account-fields {
   display: grid;
   grid-template-columns: minmax(150px, 0.9fr) minmax(170px, 1fr) minmax(160px, 1fr) minmax(170px, 1fr);
-  gap: 8px;
+  gap: 7px;
 }
 
 .pikpak-account-note {

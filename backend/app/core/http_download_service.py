@@ -826,11 +826,24 @@ class HttpDownloadService:
         if not keys:
             return preview
 
+        selected_overrides = {
+            self._preview_item_selection_key(item): self._http_selected_item_overrides(item)
+            for item in (selected_items or [])
+            if isinstance(item, dict) and self._preview_item_selection_key(item)
+        }
         out = dict(preview or {})
-        items = [
-            item for item in list(out.get("items") or [])
-            if isinstance(item, dict) and self._preview_item_selection_key(item) in keys
-        ]
+        items = []
+        for item in list(out.get("items") or []):
+            if not isinstance(item, dict):
+                continue
+            key = self._preview_item_selection_key(item)
+            if key not in keys:
+                continue
+            merged = dict(item)
+            overrides = selected_overrides.get(key) or {}
+            if overrides:
+                merged.update(overrides)
+            items.append(merged)
         out["items"] = items
         ok_count = sum(1 for item in items if item.get("ok"))
         out["ok_count"] = ok_count
@@ -838,6 +851,20 @@ class HttpDownloadService:
         out["success"] = ok_count > 0
         out["selected_count"] = len(items)
         return out
+
+    def _http_selected_item_overrides(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(item, dict):
+            return {}
+        custom_name = str(item.get("custom_name") or item.get("custom_filename") or "").strip()
+        custom_extract_password = str(item.get("custom_extract_password") or item.get("extract_password") or "").strip()
+        overrides: Dict[str, Any] = {}
+        if custom_name:
+            overrides["custom_name"] = custom_name
+        if custom_extract_password:
+            overrides["custom_extract_password"] = custom_extract_password
+        if bool(item.get("custom_group_folder")):
+            overrides["custom_group_folder"] = True
+        return overrides
 
     def _normalize_url(self, raw_url: str) -> str:
         url = str(raw_url or "").strip()
@@ -2153,6 +2180,17 @@ class HttpDownloadService:
         }.get(unit, 1)
         return int(value * multiplier)
 
+    def _google_drive_filename_from_warning_html(self, html_text: str) -> str:
+        text = html.unescape(str(html_text or ""))
+        match = re.search(
+            r'class=["\']uc-name-size["\'][^>]*>\s*<a\b[^>]*>([^<]+)</a>',
+            text,
+            re.IGNORECASE,
+        )
+        if not match:
+            return ""
+        return self._sanitize_filename(match.group(1), fallback="")
+
     def _google_drive_html_error_message(self, html_text: str) -> str:
         text = html.unescape(str(html_text or ""))
         normalized = re.sub(r"\s+", " ", text).lower()
@@ -2243,6 +2281,7 @@ class HttpDownloadService:
                 "size_bytes": self._google_drive_size_from_warning_html(body),
                 "content_type": content_type,
                 "warning": warning,
+                "filename": self._google_drive_filename_from_warning_html(body),
                 "headers": {"Cookie": cookie_header} if cookie_header else {},
                 "aria2_header": [f"Cookie: {cookie_header}"] if cookie_header else [],
             }
@@ -2251,6 +2290,7 @@ class HttpDownloadService:
             "size_bytes": self._google_drive_size_from_warning_html(body),
             "content_type": content_type,
             "warning": "Google Drive 大文件已自动附加确认下载参数。",
+            "filename": self._google_drive_filename_from_warning_html(body),
             "headers": {"Cookie": cookie_header} if cookie_header else {},
             "aria2_header": [f"Cookie: {cookie_header}"] if cookie_header else [],
         }
@@ -3895,6 +3935,130 @@ class HttpDownloadService:
             "relative_path": os.path.relpath(final_path, root).replace("\\", "/"),
         }
 
+    def _split_custom_archive_filename(self, filename: str) -> tuple[str, str]:
+        value = str(filename or "").strip()
+        lower = value.lower()
+        for suffix in (".tar.gz", ".tar.bz2", ".tar.xz"):
+            if lower.endswith(suffix):
+                return value[:-len(suffix)], value[-len(suffix):]
+        volume_match = re.match(r"^(?P<stem>.+?)[._\-\s]+z(?P<index>\d{2})$", value, re.IGNORECASE)
+        if volume_match:
+            return volume_match.group("stem").strip() or value, f".z{volume_match.group('index')}"
+        stem, ext = os.path.splitext(value)
+        return stem or value, ext
+
+    def _filename_with_extract_password(self, name: str, password: str, ext: str = "") -> str:
+        safe_name = self._sanitize_filename(name, "download")
+        safe_password = self._sanitize_filename(password, "")
+        if safe_password:
+            safe_name = self._render_filename_password_template(safe_name, safe_password)
+        return f"{safe_name}{ext or ''}"
+
+    def _render_filename_password_template(self, name: str, password: str) -> str:
+        extract_config = getattr(get_config(), "extract", None)
+        templates = list(getattr(extract_config, "filename_password_sniff_templates", None) or [])
+        for template in templates:
+            raw = str(template or "").strip()
+            if not raw or "{password}" not in raw:
+                continue
+            rendered = raw.replace("{name}", name).replace("{password}", password)
+            if "{name}" not in raw:
+                rendered = f"{name}{rendered}"
+            rendered = self._sanitize_filename(rendered, "")
+            if rendered:
+                return rendered
+        return f"{name}({password})"
+
+    def _apply_custom_download_name_to_item(
+        self,
+        item: Dict[str, Any],
+        *,
+        conflict_policy: str = "",
+    ) -> Dict[str, Any]:
+        custom_name = str(item.get("custom_name") or item.get("custom_filename") or "").strip()
+        custom_password = str(item.get("custom_extract_password") or item.get("extract_password") or "").strip()
+        if not custom_name and not custom_password:
+            return item
+
+        current_name = self._sanitize_filename(item.get("filename") or item.get("name") or "download.bin")
+        stem, ext = self._split_custom_archive_filename(current_name)
+        if not custom_name:
+            custom_name = stem or current_name
+        else:
+            custom_stem, custom_ext = self._split_custom_archive_filename(custom_name)
+            if custom_ext:
+                custom_name = custom_stem
+                ext = custom_ext
+        safe_custom_name = self._sanitize_filename(custom_name, stem or "download")
+        use_group_folder = bool(item.get("custom_group_folder"))
+        target_name = f"{safe_custom_name}{ext or ''}" if use_group_folder else self._filename_with_extract_password(safe_custom_name, custom_password, ext)
+        relative_path = str(item.get("relative_path") or current_name).replace("\\", "/").strip("/")
+        parent = os.path.dirname(relative_path.replace("/", os.sep))
+        if use_group_folder:
+            folder_name = self._filename_with_extract_password(safe_custom_name, custom_password, "")
+            parent = os.path.join(parent, folder_name) if parent else folder_name
+
+        root = self._download_root()
+        target_dir = self._safe_join(root, self._safe_subdir(parent))
+        final_path = self._safe_join(target_dir, target_name)
+        policy = str(conflict_policy or getattr(self._config(), "conflict_policy", "resume") or "resume").strip().lower()
+        if policy == "rename" and (os.path.exists(final_path) or os.path.exists(final_path + ".aria2")):
+            final_path = self._append_collision_suffix(final_path)
+            target_name = os.path.basename(final_path)
+        elif policy == "skip" and os.path.exists(final_path):
+            raise HttpDownloadError(f"目标文件已存在: {final_path}")
+
+        next_item = dict(item)
+        next_item.update({
+            "filename": target_name,
+            "name": target_name,
+            "relative_path": os.path.relpath(final_path, root).replace("\\", "/"),
+            "final_path": final_path,
+            "target_dir": os.path.dirname(final_path),
+            "custom_rename_applied": True,
+        })
+        return next_item
+
+    async def _preview_google_drive_download_item(
+        self,
+        source_item: Dict[str, Any],
+        *,
+        target_subdir: str = "",
+        conflict_policy: str = "",
+    ) -> Dict[str, Any]:
+        raw_url = str(source_item.get("url") or source_item.get("original_url") or "").strip()
+        if not raw_url:
+            raise HttpDownloadError("Google Drive 下载缺少直链")
+        probe = await self._google_drive_probe_download(raw_url)
+        status = int(probe.get("status") or 0)
+        if status >= 400:
+            raise HttpDownloadError(f"Google Drive 返回 HTTP {status}")
+        content_type = str(probe.get("content_type") or "")
+        if "text/html" in content_type.lower():
+            raise HttpDownloadError(str(source_item.get("warning") or "Google Drive 返回 HTML 页面，确认参数或访问权限已失效"))
+        filename = (
+            self._filename_from_headers({"content-disposition": str(probe.get("content_disposition") or "")})
+            or self._sanitize_filename(source_item.get("filename") or source_item.get("name") or "google-drive-file")
+        )
+        subdir = "/".join([part for part in (target_subdir, source_item.get("relative_dir")) if str(part or "").strip()])
+        target = self._resolve_target(filename, subdir, conflict_policy)
+        return {
+            "ok": True,
+            "url": str(probe.get("url") or raw_url),
+            "masked_url": source_item.get("masked_url") or self._mask_url(str(probe.get("url") or raw_url)),
+            "host": urlparse(str(probe.get("url") or raw_url)).hostname or "drive.usercontent.google.com",
+            "source": "google_drive",
+            "share_url": source_item.get("share_url"),
+            "filename": target["filename"],
+            "relative_path": target["relative_path"],
+            "final_path": target["final_path"],
+            "target_dir": target["target_dir"],
+            "size_bytes": int(probe.get("content_length") or source_item.get("size_bytes") or 0),
+            "content_type": content_type,
+            "resumable": "bytes" in str(probe.get("content_range") or "").lower(),
+            "warning": source_item.get("warning") or "",
+        }
+
     async def preview_urls(
         self,
         urls: List[str],
@@ -3957,6 +4121,9 @@ class HttpDownloadService:
                             source_item["size_bytes"] = int(drive_resolved.get("size_bytes") or 0)
                         if drive_resolved.get("content_type"):
                             source_item["content_type"] = str(drive_resolved.get("content_type") or "")
+                        if drive_resolved.get("filename"):
+                            source_item["filename"] = str(drive_resolved.get("filename") or "")
+                            source_item["name"] = str(drive_resolved.get("filename") or "")
                         if drive_resolved.get("warning"):
                             source_item["warning"] = str(drive_resolved.get("warning") or "")
                         if drive_resolved.get("headers"):
@@ -3976,12 +4143,19 @@ class HttpDownloadService:
                             source_item["aria2_header"] = existing_aria2_headers
                     except Exception as exc:
                         source_item["google_drive_confirm_error"] = self._sanitize_error(exc)
-                    item = await self.preview_url(
-                        preview_url,
-                        target_subdir=target_subdir,
-                        conflict_policy=conflict_policy,
-                        headers=dict(source_item.get("headers") or {}) if isinstance(source_item, dict) else None,
-                    )
+                    try:
+                        item = await self._preview_google_drive_download_item(
+                            source_item,
+                            target_subdir=target_subdir,
+                            conflict_policy=conflict_policy,
+                        )
+                    except Exception:
+                        item = await self.preview_url(
+                            preview_url,
+                            target_subdir=target_subdir,
+                            conflict_policy=conflict_policy,
+                            headers=dict(source_item.get("headers") or {}) if isinstance(source_item, dict) else None,
+                        )
             else:
                 item = await self.preview_url(
                     preview_url,
@@ -4904,7 +5078,11 @@ class HttpDownloadService:
             selected_keys=list(metadata.get("selected_keys") or []),
             selected_items=selected_items,
         )
-        items = [item for item in preview.get("items") or [] if item.get("ok")]
+        items = [
+            self._apply_custom_download_name_to_item(item, conflict_policy=conflict_policy)
+            for item in (preview.get("items") or [])
+            if item.get("ok")
+        ]
         failed_items = [item for item in preview.get("items") or [] if not item.get("ok")]
         if not items:
             reasons = []
@@ -5282,7 +5460,33 @@ class HttpDownloadService:
             },
         })
         merged_failed_rows = [*failed_items, *[row for row in failed_rows if row not in failed_items]]
-        final_status = "completed" if success_files and not merged_failed_rows else "partial_failed"
+        if success_files and not merged_failed_rows:
+            final_status = "completed"
+        elif success_files:
+            final_status = "partial_failed"
+        else:
+            final_status = "failed"
+        try:
+            from .task_phase_metric_service import get_task_phase_metric_service
+
+            task_type = getattr(getattr(task, "type", None), "value", getattr(task, "type", ""))
+            await get_task_phase_metric_service().record_async(
+                task_id=str(getattr(task, "id", "") or ""),
+                task_type=str(task_type or ""),
+                phase="http_download",
+                resource="network_download",
+                status=final_status,
+                duration_ms=duration_ms,
+                bytes_total=downloaded_bytes,
+                items_total=len(success_files),
+                detail={
+                    "failed_count": len(merged_failed_rows),
+                    "transferred_bytes": transferred_bytes,
+                    "source": "http_download_service",
+                },
+            )
+        except Exception:
+            logger.warning("[HTTP下载] 记录任务阶段指标失败 task_id=%s", getattr(task, "id", ""), exc_info=True)
         runtime.update({
             "total_files": len(download_files),
             "completed_files": len(success_files),

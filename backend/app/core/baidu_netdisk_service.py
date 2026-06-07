@@ -415,6 +415,17 @@ class BaiduNetdiskService:
         text = text.replace("/", "_").strip().rstrip(" .")
         return text[:180] or fallback
 
+    def _default_download_batch_folder_name(self) -> str:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fallback = f"{BAIDU_NETDISK_LABEL}_{timestamp}"
+        return self._sanitize_folder_name(fallback, fallback=fallback)
+
+    def _download_batch_folder_name(self, metadata: Dict[str, Any]) -> str:
+        existing = str((metadata or {}).get("download_batch_folder_name") or "").strip()
+        if existing:
+            return self._sanitize_folder_name(existing, fallback=self._default_download_batch_folder_name())
+        return self._default_download_batch_folder_name()
+
     def _sanitize_path_part(self, value: Any, fallback: str = "未命名") -> str:
         text = str(value or "").strip()
         text = re.sub(r'[<>:"\\|?*\x00-\x1f]+', "_", text)
@@ -505,6 +516,8 @@ class BaiduNetdiskService:
             overrides["custom_name"] = custom_name
         if custom_extract_password:
             overrides["custom_extract_password"] = custom_extract_password
+        if bool(item.get("custom_group_folder")):
+            overrides["custom_group_folder"] = True
         if custom_file_names:
             overrides["custom_file_names"] = custom_file_names
         return overrides
@@ -2705,6 +2718,8 @@ class BaiduNetdiskService:
         if not custom_name and not custom_password:
             return rows
         if len(rows) != 1:
+            if bool(item.get("custom_group_folder")):
+                return self._apply_custom_group_folder_to_rows(rows, custom_name, custom_password)
             for row in rows:
                 row["custom_rename_skipped"] = True
                 row["custom_rename_skip_reason"] = "多文件分享不自动套用单文件重命名"
@@ -2716,6 +2731,71 @@ class BaiduNetdiskService:
             row["relative_path"] = custom_relative_path
             row["custom_rename_applied"] = True
         return rows
+
+    def _apply_custom_group_folder_to_rows(
+        self,
+        rows: List[Dict[str, Any]],
+        custom_name: str,
+        custom_password: str,
+    ) -> List[Dict[str, Any]]:
+        folder_name = self._filename_with_extract_password(custom_name, custom_password, "")
+        if not folder_name:
+            return rows
+        has_explicit_file_selection = any(
+            isinstance(row, dict) and bool(row.get("custom_file_rename_applied"))
+            for row in rows
+        )
+
+        def original_parent(row: Dict[str, Any]) -> str:
+            original = str(
+                row.get("original_relative_path")
+                or row.get("relative_path")
+                or row.get("name")
+                or ""
+            ).replace("\\", "/").strip("/")
+            return os.path.dirname(original.replace("/", os.sep))
+
+        selected_parent_dirs = {
+            original_parent(row)
+            for row in rows
+            if isinstance(row, dict) and (
+                bool(row.get("custom_file_rename_applied")) or not has_explicit_file_selection
+            )
+        }
+        has_unrelated_same_level = any(
+            isinstance(row, dict)
+            and not bool(row.get("custom_file_rename_applied"))
+            and original_parent(row) in selected_parent_dirs
+            for row in rows
+        )
+        if has_explicit_file_selection and not has_unrelated_same_level:
+            for row in rows:
+                if isinstance(row, dict) and bool(row.get("custom_file_rename_applied")) and custom_password:
+                    row["custom_extract_password"] = custom_password
+            return rows
+
+        next_rows: List[Dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if has_explicit_file_selection and not bool(row.get("custom_file_rename_applied")):
+                next_rows.append(row)
+                continue
+            relative_path = str(row.get("relative_path") or row.get("name") or "").strip()
+            if not relative_path:
+                next_rows.append(row)
+                continue
+            next_row = dict(row)
+            next_row["relative_path"] = self._safe_relative_path(
+                os.path.join(folder_name, relative_path),
+                relative_path,
+            )
+            next_row["custom_group_folder"] = folder_name
+            next_row["custom_group_folder_applied"] = True
+            if custom_password:
+                next_row["custom_extract_password"] = custom_password
+            next_rows.append(next_row)
+        return next_rows
 
     def _apply_custom_file_override_to_row(self, row: Dict[str, Any], overrides: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
         if not isinstance(row, dict) or not overrides:
@@ -2797,6 +2877,9 @@ class BaiduNetdiskService:
         for suffix in (".tar.gz", ".tar.bz2", ".tar.xz"):
             if lower.endswith(suffix):
                 return value[:-len(suffix)], value[-len(suffix):]
+        volume_match = re.match(r"^(?P<stem>.+?)[._\-\s]+z(?P<index>\d{2})$", value, re.IGNORECASE)
+        if volume_match:
+            return volume_match.group("stem").strip() or value, f".z{volume_match.group('index')}"
         stem, ext = os.path.splitext(value)
         return stem or value, ext
 
@@ -2816,14 +2899,14 @@ class BaiduNetdiskService:
         download_root = self._download_root()
         final_base_dir = self._safe_join(download_root, target_subdir)
         os.makedirs(final_base_dir, exist_ok=True)
-        fallback_folder = output_folder_name or self._sanitize_folder_name(
-            str(metadata.get("batch_name") or items[0].get("filename") or "百度网盘下载")
-        )
-        final_dir = self._safe_join(final_base_dir, fallback_folder)
+        batch_folder = self._download_batch_folder_name(metadata)
+        final_dir = self._safe_join(final_base_dir, batch_folder)
         final_dir = self._resolve_final_dir_for_policy(final_dir, conflict_policy)
         if conflict_policy == "skip" and os.path.exists(final_dir):
             task.task_metadata.update({
                 "download_root": download_root,
+                "download_batch_folder_name": batch_folder,
+                "requested_output_folder_name": output_folder_name,
                 "final_output_path": final_dir,
                 "output_finalize_status": "skipped_existing",
                 "download_runtime": {
@@ -2853,6 +2936,8 @@ class BaiduNetdiskService:
         total_bytes = sum(int(item.get("size") or 0) for item in download_files)
         task.task_metadata.update({
             "download_root": download_root,
+            "download_batch_folder_name": batch_folder,
+            "requested_output_folder_name": output_folder_name,
             "staging_dir": staging_dir,
             "final_output_path": final_dir,
             "renamed_output_path": "",
@@ -2923,7 +3008,47 @@ class BaiduNetdiskService:
         success_files = [row for row in download_files if row.get("status") == "completed"]
         failed_files = [row for row in download_files if row.get("status") == "failed"]
         if not success_files:
+            duration_ms = int((time.monotonic() - started) * 1000)
+            transferred_bytes = sum(int(row.get("downloaded") or 0) for row in download_files)
             task.task_metadata["failed_files"] = failed_files
+            task.task_metadata["performance_metrics"] = {
+                "duration_ms": duration_ms,
+                "downloaded_bytes": 0,
+                "transferred_bytes": transferred_bytes,
+                "success_count": 0,
+                "failed_count": len(failed_files),
+                "average_speed_bytes": 0,
+            }
+            runtime = dict(task.task_metadata.get("download_runtime") or {})
+            runtime.update({
+                "status": "failed",
+                "completed_files": 0,
+                "failed_files": len(failed_files),
+                "active_file_count": 0,
+                "transferred_bytes": transferred_bytes,
+                "speed_bytes_per_sec": 0,
+            })
+            task.task_metadata["download_runtime"] = runtime
+            try:
+                from .task_phase_metric_service import get_task_phase_metric_service
+
+                task_type = getattr(getattr(task, "type", None), "value", getattr(task, "type", ""))
+                await get_task_phase_metric_service().record_async(
+                    task_id=str(getattr(task, "id", "") or ""),
+                    task_type=str(task_type or ""),
+                    phase="baidu_netdisk_download",
+                    resource="network_download",
+                    status="failed",
+                    duration_ms=duration_ms,
+                    bytes_total=transferred_bytes,
+                    items_total=0,
+                    detail={
+                        "failed_count": len(failed_files),
+                        "source": "baidu_netdisk_service",
+                    },
+                )
+            except Exception:
+                logger.warning("[百度网盘] 记录失败阶段指标失败 task_id=%s", getattr(task, "id", ""), exc_info=True)
             raise BaiduNetdiskError(self._first_failure_reason(failed_files) or "没有任何百度网盘文件下载成功")
 
         finalized = await asyncio.to_thread(self._finalize_output, staging_dir, final_dir, conflict_policy, len(items))
@@ -2954,6 +3079,26 @@ class BaiduNetdiskService:
                 "average_speed_bytes": int(downloaded_bytes / max(duration_ms / 1000, 1)) if downloaded_bytes else 0,
             },
         })
+        try:
+            from .task_phase_metric_service import get_task_phase_metric_service
+
+            task_type = getattr(getattr(task, "type", None), "value", getattr(task, "type", ""))
+            await get_task_phase_metric_service().record_async(
+                task_id=str(getattr(task, "id", "") or ""),
+                task_type=str(task_type or ""),
+                phase="baidu_netdisk_download",
+                resource="network_download",
+                status="completed" if not failed_files else "partial_failed",
+                duration_ms=duration_ms,
+                bytes_total=downloaded_bytes,
+                items_total=len(success_files),
+                detail={
+                    "failed_count": len(failed_files),
+                    "source": "baidu_netdisk_service",
+                },
+            )
+        except Exception:
+            logger.warning("[百度网盘] 记录下载阶段指标失败 task_id=%s", getattr(task, "id", ""), exc_info=True)
         runtime = dict(task.task_metadata.get("download_runtime") or {})
         runtime.update({
             "status": "completed" if not failed_files else "partial_failed",
