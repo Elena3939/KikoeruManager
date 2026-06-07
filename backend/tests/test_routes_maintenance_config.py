@@ -27,7 +27,7 @@ def test_resource_budget_config_defaults_are_conservative():
         disk_io_local=2,
         archive_cpu=0,
         remote_fs=4,
-        network_download=2,
+        network_download=5,
         sqlite_write=0,
     )
 
@@ -43,7 +43,7 @@ def test_get_config_includes_resource_budget(client, monkeypatch):
         "disk_io_local": 2,
         "archive_cpu": 0,
         "remote_fs": 4,
-        "network_download": 2,
+        "network_download": 5,
         "sqlite_write": 0,
     }
 
@@ -106,6 +106,16 @@ def test_activity_log_compact_config_reads_environment(monkeypatch):
         "min_detail_bytes": 4096,
         "max_rows": 1200,
         "time_budget_seconds": 3.5,
+    }
+
+
+def test_task_phase_metric_cleanup_config_reads_environment(monkeypatch):
+    monkeypatch.setenv("KIKOERUMANAGER_TASK_PHASE_METRIC_RETAIN_DAYS", "9")
+    monkeypatch.setenv("KIKOERUMANAGER_TASK_PHASE_METRIC_MAX_ITEMS", "1234")
+
+    assert routes._task_phase_metric_cleanup_config() == {
+        "retain_days": 9,
+        "max_items": 1234,
     }
 
 
@@ -261,6 +271,195 @@ def test_resource_budget_snapshot_endpoint(client, monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["resources"]["remote_fs"]["active"] == 2
+
+
+def test_system_storage_info_uses_ttl_cache(client, monkeypatch):
+    routes._SYSTEM_STORAGE_INFO_CACHE.update({"key": None, "expires_at": 0.0, "payload": None})
+
+    class Storage:
+        temp_path = "D:/temp"
+        library_path = "D:/library"
+        input_path = "D:/input"
+
+    class Extract:
+        max_concurrent_extractions = 0
+
+    class Processing:
+        max_workers = 4
+
+    class Config:
+        storage = Storage()
+        extract = Extract()
+        processing = Processing()
+
+    class Service:
+        def _resolve_extract_concurrency(self):
+            return 3, "auto: 测试"
+
+    calls = {"detect": 0}
+
+    class ExtractService:
+        @staticmethod
+        def _detect_storage_type(path):
+            calls["detect"] += 1
+            return "ssd"
+
+        def _resolve_extract_concurrency(self):
+            return Service()._resolve_extract_concurrency()
+
+    monkeypatch.setattr(routes, "get_config", lambda: Config())
+    monkeypatch.setattr("app.core.extract_service.ExtractService", ExtractService)
+
+    first = client.get("/api/system/storage-info")
+    second = client.get("/api/system/storage-info")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["primary_type"] == "ssd"
+    assert second.json()["resolved_limit"] == 3
+    assert calls["detect"] == 3
+
+
+def test_library_storage_info_returns_cached_value_when_refresh_times_out(client, monkeypatch):
+    routes._LIBRARY_STORAGE_INFO_CACHE.clear()
+
+    class Library:
+        id = "nas"
+        name = "NAS"
+        type = "synology_filestation"
+        synology = object()
+
+    class SlowClient:
+        async def get_storage_info(self):
+            import asyncio
+
+            await asyncio.sleep(0.05)
+            return {
+                "total_size_bytes": 20,
+                "used_size_bytes": 10,
+                "free_size_bytes": 10,
+                "free_space_gb": 0,
+                "volumes": [],
+            }
+
+    class Manager:
+        def get_library_definition(self, library_id):
+            assert library_id == "nas"
+            return Library()
+
+        def get_cached_synology_client(self, synology):
+            return SlowClient()
+
+    monkeypatch.setattr(routes, "get_library_manager", lambda: Manager())
+    monkeypatch.setattr(routes, "_LIBRARY_STORAGE_INFO_STALE_TIMEOUT_SECONDS", 0.001)
+    routes._LIBRARY_STORAGE_INFO_CACHE["nas"] = {
+        "expires_at": 0.0,
+        "payload": {
+            "library_id": "nas",
+            "library_name": "NAS",
+            "total_size_bytes": 100,
+            "used_size_bytes": 40,
+            "free_size_bytes": 60,
+            "free_space_gb": 60,
+            "volumes": [],
+            "stale": False,
+            "cached_at": "2026-01-01T00:00:00",
+        },
+    }
+
+    response = client.get("/api/library/storage-info", params={"library_id": "nas"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["free_size_bytes"] == 60
+    assert payload["stale"] is True
+    assert payload["stale_reason"] == "timeout"
+
+
+def test_remote_fs_health_snapshot_endpoint(client, monkeypatch):
+    class Manager:
+        def remote_health_snapshot(self):
+            return {
+                "total": 1,
+                "degraded_count": 1,
+                "items": [{
+                    "library_id": "nas-main",
+                    "library_name": "NAS",
+                    "status": "degraded",
+                    "failure_count": 2,
+                    "circuit_remaining_seconds": 30,
+                }],
+                "generated_at": "2026-01-01T00:00:00",
+            }
+
+    monkeypatch.setattr(routes, "get_library_manager", lambda: Manager())
+
+    response = client.get("/api/system/remote-fs-health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["degraded_count"] == 1
+    assert payload["items"][0]["library_id"] == "nas-main"
+    assert payload["items"][0]["circuit_remaining_seconds"] == 30
+
+
+def test_task_phase_metrics_endpoint_returns_items_and_summary(client, monkeypatch):
+    class Service:
+        def list_recent(self, *, task_id="", limit=100):
+            return [{
+                "task_id": task_id or "task-1",
+                "phase": "download",
+                "duration_ms": 120,
+            }]
+
+        def summarize_recent(self, *, task_id="", limit=1000):
+            return {
+                "sample_count": 1,
+                "group_count": 1,
+                "groups": [{
+                    "task_type": "http_download",
+                    "phase": "download",
+                    "duration_p95_ms": 120,
+                }],
+            }
+
+    monkeypatch.setattr(
+        "app.core.task_phase_metric_service.get_task_phase_metric_service",
+        lambda: Service(),
+    )
+
+    response = client.get("/api/system/task-phase-metrics", params={"task_id": "task-1", "limit": 20})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["task_id"] == "task-1"
+    assert payload["summary"]["groups"][0]["duration_p95_ms"] == 120
+
+
+def test_task_phase_metrics_cleanup_endpoint(client, monkeypatch):
+    captured = {}
+
+    class Service:
+        def cleanup(self, **kwargs):
+            captured.update(kwargs)
+            return {
+                "deleted": 3,
+                "remaining": 10,
+                "retain_days": kwargs["retain_days"],
+                "max_items": kwargs["max_items"],
+            }
+
+    monkeypatch.setattr(
+        "app.core.task_phase_metric_service.get_task_phase_metric_service",
+        lambda: Service(),
+    )
+
+    response = client.post("/api/system/task-phase-metrics/cleanup", params={"retain_days": 7, "max_items": 300})
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] == 3
+    assert captured == {"retain_days": 7, "max_items": 300}
 
 
 def test_slow_api_resource_budget_snapshot_only_keeps_active_and_waiting(monkeypatch):

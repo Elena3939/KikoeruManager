@@ -182,6 +182,7 @@ class TaskCenterService:
         TaskType.PROCESS_EXISTING_FOLDER: "existing_folder",
         TaskType.RJ_SUBTITLE_FETCH: "rj_subtitle",
         TaskType.ASMR_SYNC_DOWNLOAD: "asmr_sync",
+        TaskType.LIBRARY_FOLDER_COMPLETION_PREVIEW: "asmr_sync",
         TaskType.HTTP_DOWNLOAD: "http_download",
         TaskType.BAIDU_NETDISK_DOWNLOAD: "baidu_netdisk",
         TaskType.BAIDU_NETDISK_UPLOAD: "baidu_netdisk",
@@ -996,24 +997,38 @@ class TaskCenterService:
                 self._append_metric(metrics, "待手配", "是")
         elif domain == "asmr_sync":
             is_reimport_task = source_action in {"reimport_local_download_root", "reimport_downloaded_session"}
-            title = self._safe_text(metadata.get("work_title")) or rjcode or self._basename(source_path) or ("直接入库任务" if is_reimport_task else "ASMR 同步任务")
+            is_folder_completion = source_action == "folder_completion"
+            is_folder_completion_preview = task.type == TaskType.LIBRARY_FOLDER_COMPLETION_PREVIEW
+            if is_folder_completion_preview:
+                title = "补全文件夹预览"
+            elif is_folder_completion:
+                title = self._safe_text(metadata.get("work_title")) or rjcode or self._basename(source_path) or "补全文件夹下载"
+            else:
+                title = self._safe_text(metadata.get("work_title")) or rjcode or self._basename(source_path) or ("直接入库任务" if is_reimport_task else "ASMR 同步任务")
             subtitle = self._safe_text(metadata.get("subtitle_folder")) or source_path
-            source_label = source_label or ("直接入库" if is_reimport_task else "ASMR 同步下载")
+            source_label = source_label or ("音声补全 / 补全文件夹" if is_folder_completion else ("直接入库" if is_reimport_task else "ASMR 同步下载"))
             source_action = source_action or ("reimport_downloaded_session" if is_reimport_task else "asmr_sync_start")
-            source_page = source_page or ("circle-completion" if is_reimport_task else "asmr-sync")
+            source_page = source_page or ("library" if is_folder_completion else ("circle-completion" if is_reimport_task else "asmr-sync"))
             sync_result = dict(metadata.get("sync_result") or {})
             verify_summary = dict(metadata.get("verify_summary") or {})
             upload_summary = dict(metadata.get("upload_summary") or {})
             performance_metrics = dict(metadata.get("performance_metrics") or {})
-            self._append_metric(metrics, "RJ", rjcode or metadata.get("actual_rjcode"))
-            self._append_metric(metrics, "资源数", metadata.get("selected_resource_count") or len(metadata.get("download_files") or []))
-            self._append_metric(metrics, "失败文件", len(metadata.get("failed_files") or []))
-            self._append_metric(metrics, "MD5失败", verify_summary.get("failed"))
-            self._append_metric(metrics, "已上传", upload_summary.get("uploaded"))
-            self._append_metric(metrics, "上传大小", self._format_bytes(performance_metrics.get("uploaded_bytes")) if performance_metrics.get("uploaded_bytes") else None)
-            self._append_metric(metrics, "平均上传", f"{self._format_bytes(performance_metrics.get('average_upload_speed_bytes'))}/s" if performance_metrics.get("average_upload_speed_bytes") else None)
-            self._append_metric(metrics, "耗时", self._format_duration_ms(performance_metrics.get("duration_ms")) if performance_metrics.get("duration_ms") else None)
-            self._append_metric(metrics, "已写入", sync_result.get("downloaded_files"))
+            if is_folder_completion_preview:
+                folder_summary = dict(metadata.get("folder_completion_summary") or {})
+                self._append_metric(metrics, "目录", metadata.get("selected_count"))
+                self._append_metric(metrics, "可补全", folder_summary.get("downloadable_count") or metadata.get("downloadable_count"))
+                self._append_metric(metrics, "缺失文件", folder_summary.get("missing_file_count") or metadata.get("missing_file_count"))
+                self._append_metric(metrics, "预计", self._format_bytes(folder_summary.get("estimated_bytes")) if folder_summary.get("estimated_bytes") else None)
+            else:
+                self._append_metric(metrics, "RJ", rjcode or metadata.get("actual_rjcode"))
+                self._append_metric(metrics, "资源数", metadata.get("selected_resource_count") or len(metadata.get("download_files") or []))
+                self._append_metric(metrics, "失败文件", len(metadata.get("failed_files") or []))
+                self._append_metric(metrics, "MD5失败", verify_summary.get("failed"))
+                self._append_metric(metrics, "已上传", upload_summary.get("uploaded"))
+                self._append_metric(metrics, "上传大小", self._format_bytes(performance_metrics.get("uploaded_bytes")) if performance_metrics.get("uploaded_bytes") else None)
+                self._append_metric(metrics, "平均上传", f"{self._format_bytes(performance_metrics.get('average_upload_speed_bytes'))}/s" if performance_metrics.get("average_upload_speed_bytes") else None)
+                self._append_metric(metrics, "耗时", self._format_duration_ms(performance_metrics.get("duration_ms")) if performance_metrics.get("duration_ms") else None)
+                self._append_metric(metrics, "已写入", sync_result.get("downloaded_files"))
             if is_reimport_task:
                 self._append_metric(
                     metrics,

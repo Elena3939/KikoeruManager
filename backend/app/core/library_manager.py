@@ -656,6 +656,17 @@ class SynologyFileStationClient:
             return
         raise SynologyError(f"远程库存暂时退化，已熔断 {remaining:.0f} 秒后重试")
 
+    def remote_health_snapshot(self) -> dict[str, Any]:
+        remaining = self._remote_circuit_remaining_seconds()
+        session_open = bool(self._session and not self._session.closed)
+        return {
+            "status": "degraded" if remaining > 0 else "healthy",
+            "failure_count": int(self._remote_failures or 0),
+            "circuit_remaining_seconds": int(round(remaining)),
+            "session_open": session_open,
+            "has_sid": bool(self._sid),
+        }
+
     async def close(self) -> None:
         """关闭持久化 HTTP session（可选，进程退出时 GC 会处理）。"""
         if self._session and not self._session.closed:
@@ -1593,6 +1604,35 @@ class LibraryManager:
                 await client.close()
             except Exception:
                 logger.warning("关闭 Synology 客户端失败", exc_info=True)
+
+    def remote_health_snapshot(self) -> dict[str, Any]:
+        """返回远程库存当前健康状态，不触发登录或远程探测。"""
+        libraries = self._active_libraries()
+        items: list[dict[str, Any]] = []
+        for library in libraries:
+            if library.type != "synology_filestation":
+                continue
+            client = self.get_cached_synology_client(library.synology) if library.synology else None
+            health = client.remote_health_snapshot() if client else {
+                "status": "unconfigured",
+                "failure_count": 0,
+                "circuit_remaining_seconds": 0,
+                "session_open": False,
+                "has_sid": False,
+            }
+            items.append({
+                "library_id": library.id,
+                "library_name": library.name,
+                "type": library.type,
+                **health,
+            })
+        degraded_count = sum(1 for item in items if item.get("status") == "degraded")
+        return {
+            "total": len(items),
+            "degraded_count": degraded_count,
+            "items": items,
+            "generated_at": datetime.now().isoformat(),
+        }
 
     def load_config(self) -> dict[str, Any]:
         return load_library_config()

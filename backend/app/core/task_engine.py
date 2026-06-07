@@ -39,6 +39,7 @@ class TaskType(str, Enum):
     BAIDU_NETDISK_UPLOAD = "baidu_netdisk_upload"  # 百度网盘上传任务
     RJ_SUBTITLE_FETCH = "rj_subtitle_fetch"  # RJ 字幕抓取任务
     LOCAL_LIBRARY_UPLOAD = "local_library_upload"
+    LIBRARY_FOLDER_COMPLETION_PREVIEW = "library_folder_completion_preview"
     CIRCLE_COMPLETION_INDEX = "circle_completion_index"
     CIRCLE_COMPLETION_REFRESH_SELECTED = "circle_completion_refresh_selected"
     CIRCLE_COMPLETION_DOWNLOAD_BATCH = "circle_completion_download_batch"
@@ -764,6 +765,8 @@ class TaskEngine:
             return "baidu_netdisk"
         if task.type == TaskType.LOCAL_LIBRARY_UPLOAD:
             return "upload"
+        if task.type == TaskType.LIBRARY_FOLDER_COMPLETION_PREVIEW:
+            return "asmr_sync"
         if task.type in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH}:
             return "circle_completion"
         return "system"
@@ -2866,6 +2869,8 @@ class TaskEngine:
                     await self._process_rj_subtitle_fetch(task)
                 elif task.type == TaskType.LOCAL_LIBRARY_UPLOAD:
                     await self._process_local_library_upload(task)
+                elif task.type == TaskType.LIBRARY_FOLDER_COMPLETION_PREVIEW:
+                    await self._process_library_folder_completion_preview(task)
                 elif task.type == TaskType.CIRCLE_COMPLETION_INDEX:
                     await self._process_circle_completion_index(task)
                 elif task.type == TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED:
@@ -5310,6 +5315,33 @@ class TaskEngine:
         except Exception as e:
             logger.error(f"[{rjcode}] RJ 字幕抓取任务失败: {e}", exc_info=True)
             task.fail(str(e))
+
+    async def _process_library_folder_completion_preview(self, task: Task):
+        """处理库存页“补全文件夹”后台预览任务。"""
+        from .library_folder_completion_service import get_library_folder_completion_service
+
+        metadata = dict(task.task_metadata or {})
+        library_id = str(metadata.get("library_id") or "").strip()
+        selected_paths = list(metadata.get("selected_paths") or [])
+        if not library_id:
+            raise ValueError("缺少库存")
+        if not selected_paths:
+            raise ValueError("没有选中要补全的目录")
+
+        task.update_progress(8, "解析选中目录")
+        result = await get_library_folder_completion_service().build_preview(
+            library_id,
+            selected_paths,
+            progress_callback=lambda pct, step: task.update_progress(pct, step),
+            cancel_callback=task.is_cancelled,
+        )
+        task.task_metadata["folder_completion_preview_result"] = result
+        task.task_metadata["folder_completion_summary"] = result.get("summary") or {}
+        task.task_metadata["downloadable_count"] = int((result.get("summary") or {}).get("downloadable_count") or 0)
+        task.task_metadata["missing_file_count"] = int((result.get("summary") or {}).get("missing_file_count") or 0)
+        task.touch_metadata("folder_completion_preview")
+        task.update_progress(100, "补全预览完成")
+        task.complete()
 
     async def _process_circle_completion_index(self, task: Task):
         """处理社团补全索引任务"""
