@@ -52,8 +52,8 @@
       </div>
     </div>
 
-    <!-- 域 tabs：极简 pill、无图标、活动态黑底白字、count 紧贴 label 的圆形 badge -->
-    <div class="mt-2 flex flex-shrink-0 flex-wrap gap-1.5">
+    <!-- 域 tabs：固定高度横向 rail，避免标签过多时撑高归档面板 -->
+    <div class="dash-archive-tab-rail mt-2">
       <button
         v-for="tab in tabs"
         :key="tab.key"
@@ -442,17 +442,48 @@ function statusIconColor(key) {
 .dash-archive-tab {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 26px;
-  padding: 0 11px;
+  flex: 0 0 auto;
+  gap: 4px;
+  max-width: 94px;
+  height: 22px;
+  padding: 0 7px;
   border: 1px solid transparent;
-  border-radius: 999px;
-  font-size: 12px;
+  border-radius: 7px;
+  font-size: 11px;
   font-weight: 500;
-  line-height: 24px;
+  line-height: 20px;
   cursor: pointer;
   letter-spacing: 0;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.dash-archive-tab-rail {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  max-height: 28px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0 1px 3px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.38) transparent;
+}
+.dash-archive-tab-rail::-webkit-scrollbar {
+  height: 4px;
+}
+.dash-archive-tab-rail::-webkit-scrollbar-track {
+  background: transparent;
+}
+.dash-archive-tab-rail::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.38);
+}
+.dash-archive-tab > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .dash-archive-tab.is-idle {
   background: rgb(241 245 249);
@@ -477,16 +508,17 @@ function statusIconColor(key) {
   transform: scale(0.96);
 }
 
-/* count badge：圆形、跟 label 紧贴 */
+/* count badge：紧凑跟随 label，不抢宽度 */
 .dash-archive-tab-count {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 18px;
-  height: 16px;
-  padding: 0 5px;
-  border-radius: 999px;
-  font-size: 10.5px;
+  flex-shrink: 0;
+  min-width: 15px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 5px;
+  font-size: 10px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   line-height: 1;
@@ -754,6 +786,14 @@ function statusIconColor(key) {
   background: rgba(255, 255, 255, 0.06) !important;
   border-color: rgba(255, 255, 255, 0.08) !important;
   color: #cbd5e1 !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-tab-rail {
+  scrollbar-color: rgba(148, 163, 184, 0.28) transparent;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-tab-rail::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.28);
 }
 
 :global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-tab.is-idle:hover {

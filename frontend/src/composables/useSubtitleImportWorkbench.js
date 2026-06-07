@@ -31,7 +31,7 @@ export function useSubtitleImportWorkbench({
     priority: 72,
     actions: ['resume', 'close'],
     onClose: () => {
-      resetImportWorkbenchSession()
+      closeImportWorkbench()
     }
   })
 
@@ -76,6 +76,7 @@ export function useSubtitleImportWorkbench({
     total: 0,
     processing: 0,
     completed: 0,
+    manualCompleted: 0,
     failed: 0,
     clearable: 0,
     selectedTaskId: '',
@@ -125,7 +126,8 @@ export function useSubtitleImportWorkbench({
     })
   }
 
-  function resetImportWorkbenchSession() {
+  function resetImportWorkbenchSession(options = {}) {
+    const { clearDrafts = true } = options
     workbenchDialogVisible.value = false
     workbenchBackgroundActive.value = false
     workbenchDialogInitialized.value = false
@@ -134,12 +136,15 @@ export function useSubtitleImportWorkbench({
       total: 0,
       processing: 0,
       completed: 0,
+      manualCompleted: 0,
       failed: 0,
       clearable: 0,
       selectedTaskId: '',
       activeTask: null
     }
-    clearPersistedWorkbenchSession()
+    if (clearDrafts) {
+      clearPersistedWorkbenchSession()
+    }
   }
 
   watch(() => route.query.taskId, (value) => {
@@ -255,8 +260,28 @@ export function useSubtitleImportWorkbench({
     workbenchManager.backgroundWorkbench(SUBTITLE_IMPORT_WORKBENCH_ID)
   }
 
-  function closeImportWorkbench() {
-    workbenchManager.closeWorkbench(SUBTITLE_IMPORT_WORKBENCH_ID)
+  function closeImportWorkbench(options = {}) {
+    const summary = workbenchBackgroundSummary.value || {}
+    const total = Number(summary.total || 0)
+    const manualCompleted = Number(summary.manualCompleted || 0)
+    const defaultPreserveSession = total <= 0 || manualCompleted < total
+    const { preserveSession = defaultPreserveSession } = options
+    if (preserveSession) {
+      workbenchDialogVisible.value = false
+      workbenchBackgroundActive.value = false
+      workbenchManager.patchWorkbenchState(SUBTITLE_IMPORT_WORKBENCH_ID, {
+        visible: false,
+        backgroundActive: false,
+        cardVisible: false,
+        dismissed: true,
+        restorable: Boolean(activeWorkbenchTaskId.value),
+        payload: {
+          activeTaskId: String(activeWorkbenchTaskId.value || '')
+        }
+      })
+      return
+    }
+    resetImportWorkbenchSession({ clearDrafts: true })
   }
 
   function handleWorkbenchStateChange(payload) {
@@ -264,6 +289,7 @@ export function useSubtitleImportWorkbench({
       total: Number(payload?.total || 0),
       processing: Number(payload?.processing || 0),
       completed: Number(payload?.completed || 0),
+      manualCompleted: Number(payload?.manualCompleted || 0),
       failed: Number(payload?.failed || 0),
       clearable: Number(payload?.clearable || 0),
       selectedTaskId: String(payload?.selectedTaskId || ''),

@@ -32,7 +32,12 @@
       </AppEmptyState>
     </div>
 
-    <div v-else class="subtitle-inspector-workbench-scroll flex min-h-0 flex-col gap-3 overflow-auto p-3" v-app-loading="{ loading: view.subtitleInspectorBusy, text: '正在处理字幕目录...', size: 124 }">
+    <div
+      v-else
+      class="subtitle-inspector-workbench-scroll flex min-h-0 flex-col gap-3 overflow-auto p-3"
+      :class="{ 'is-pairing-mode': showPairing && !showTree }"
+      v-app-loading="{ loading: view.subtitleInspectorLoading || view.subtitleInspectorDeleting || view.subtitlePairApplying, text: '正在处理字幕目录...', size: 124 }"
+    >
       <div class="flex items-center justify-between gap-3 flex-wrap px-4 py-3 rounded-[12px] border border-slate-200 bg-white">
 
         <div class="flex items-center gap-2.5 min-w-0">
@@ -61,7 +66,7 @@
         </div>
       </div>
 
-      <div v-if="showPairing" class="flex flex-col gap-3">
+      <div v-if="showPairing" class="subtitle-pairing-stage flex min-h-0 flex-col gap-3">
         <div class="grid gap-3 px-4 py-3.5 rounded-[12px] border border-slate-200 bg-white">
 
           <div class="flex flex-col gap-1.5 min-w-0">
@@ -101,7 +106,12 @@
           <span>已匹配完成，已应用 {{ view.activeSubtitleInspectTask?.manual_match_applied_pairs || view.subtitleInspectorInfo.manualMatchAppliedPairs || 0 }} 组配对。若还要调整，可以继续重新筛选后再次应用。</span>
         </div>
 
-        <div class="subtitle-pairing-grid-wrap pb-1">
+        <div v-if="view.subtitleInspectorInfo.audioLoadError" class="flex items-start gap-2 px-4 py-2.5 rounded-[10px] border border-amber-200 bg-amber-50 text-[12.5px] text-amber-800">
+          <AlertTriangle :size="14" :stroke-width="2.2" class="mt-0.5 flex-shrink-0 text-amber-500" />
+          <span>原音频目录读取失败：{{ view.subtitleInspectorInfo.audioLoadError }}。字幕目录已保留，可先检查任务写入目录或重新选择目标目录。</span>
+        </div>
+
+        <div class="subtitle-pairing-grid-wrap flex min-h-0 flex-1 pb-1">
           <div class="subtitle-pairing-grid">
             <div class="flex flex-col rounded-[13px] border border-slate-200 bg-white overflow-hidden">
             <div class="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-100 bg-slate-50/60">
@@ -368,6 +378,7 @@ import {
   Hash,
   Link,
   Link2,
+  AlertTriangle,
   Music,
   FileText,
   FileSearch,
@@ -717,13 +728,18 @@ function getSubtitlePairRenamePreview(pair = {}) {
 }
 
 .subtitle-pairing-grid-wrap {
+  flex: 1 1 auto;
   min-width: 0;
+  min-height: 360px;
   overflow-x: hidden;
 }
 
 .subtitle-pairing-grid {
   display: grid;
+  flex: 1 1 auto;
   min-width: 0;
+  width: 100%;
+  min-height: 0;
   grid-template-columns:
     minmax(210px, 1fr)
     minmax(260px, 0.88fr)
@@ -733,6 +749,15 @@ function getSubtitlePairRenamePreview(pair = {}) {
 
 .subtitle-pairing-grid > * {
   min-width: 0;
+  min-height: 360px;
+}
+
+.subtitle-inspector-workbench-scroll.is-pairing-mode {
+  overflow: hidden;
+}
+
+.subtitle-pairing-stage {
+  flex: 1 1 auto;
 }
 
 .is-spinning { animation: subtitle-spin 1s linear infinite; }

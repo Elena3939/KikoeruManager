@@ -323,6 +323,8 @@ const subtitleInspectorInfo = ref({
   folderPath: '',
   subtitleDir: '',
   sourceMode: '',
+  audioLoadError: '',
+  subtitleLoadError: '',
   totalFiles: 0,
   totalSize: 0
 })
@@ -716,15 +718,16 @@ function canRetargetTask(task) {
 }
 
 function canClearTask(task) {
-  const status = String(task?.status || '').toLowerCase()
-  return Boolean(task && (isFailedTask(task) || isCompletedTask(task) || isAwaitingManualTask(task) || status === 'waiting_manual'))
+  return Boolean(task && (isFailedTask(task) || task.manual_match_completed))
 }
 
 function canAutoClearTaskOnClose(task) {
-  const status = String(task?.status || '').toLowerCase()
   if (!task) return false
-  if (isAwaitingManualTask(task) || status === 'waiting_manual') return false
-  return isFailedTask(task) || isCompletedTask(task)
+  const sourceMode = String(task?.source_mode || '').trim().toLowerCase()
+  if (!['linked_translation_archive_import', 'subtitle_folder_import'].includes(sourceMode)) {
+    return false
+  }
+  return Boolean(task.manual_match_completed)
 }
 
 async function selectWorkbenchTask(taskId, options = {}) {
@@ -889,7 +892,8 @@ async function closeWorkbenchAndCleanupCompleted() {
         console.warn('[字幕补配] 关闭工作台时清理任务失败', task.id, error)
       }
     })
-    emit('close')
+    const remainingTasks = linkedTasks.value.filter(task => !canAutoClearTaskOnClose(task))
+    emit('close', { preserveSession: remainingTasks.length > 0 })
   } finally {
     workbenchClosing.value = false
   }
@@ -1121,6 +1125,8 @@ function clearSubtitleInspectorState() {
     folderPath: '',
     subtitleDir: '',
     sourceMode: '',
+    audioLoadError: '',
+    subtitleLoadError: '',
     totalFiles: 0,
     totalSize: 0
   }
@@ -1155,10 +1161,15 @@ async function inspectSubtitleTask(task, options = {}) {
     const audioLibraryId = task.target_library_id || task.library_id || ''
     const subtitleLibraryId = task.subtitle_library_id || audioLibraryId
     const audioFolderPath = String(task.target_folder_path || task.folder_path || '').trim()
-    const [subtitleData, audioData] = await Promise.all([
+    const [subtitleResult, audioResult] = await Promise.allSettled([
       libraryApi.browserFolderContents(subtitleLibraryId, task.subtitle_dir),
       audioFolderPath ? libraryApi.browserFolderContents(audioLibraryId, audioFolderPath) : Promise.resolve({ items: [] })
     ])
+    const subtitleData = subtitleResult.status === 'fulfilled' ? subtitleResult.value : null
+    const audioData = audioResult.status === 'fulfilled' ? audioResult.value : { items: [] }
+    if (!subtitleData) {
+      throw subtitleResult.reason
+    }
     if (inspectSeq !== subtitleInspectRequestSeq || (activeTask.value?.id && activeTask.value.id !== task.id)) {
       return
     }
@@ -1175,6 +1186,10 @@ async function inspectSubtitleTask(task, options = {}) {
       folderPath: audioFolderPath,
       subtitleDir: subtitleData.folder_path || task.subtitle_dir,
       sourceMode: task.source_mode || '',
+      audioLoadError: audioResult.status === 'rejected'
+        ? decodePossibleMojibake(audioResult.reason?.response?.data?.detail || audioResult.reason?.message || '音频目录读取失败')
+        : '',
+      subtitleLoadError: '',
       totalFiles: subtitleData.total_files || 0,
       totalSize: (subtitleData.items || []).reduce((sum, item) => sum + (item.size || 0), 0)
     }
@@ -2227,6 +2242,7 @@ const workbenchStatePayload = computed(() => ({
   total: linkedTasks.value.length,
   processing: processingTaskCount.value,
   completed: completedTaskCount.value,
+  manualCompleted: linkedTasks.value.filter(task => task.manual_match_completed).length,
   failed: failedTaskCount.value,
   clearable: clearableTaskCount.value,
   selectedTaskId: String(selectedTaskId.value || ''),
@@ -2283,11 +2299,16 @@ watch(activeSubtitleWorkbenchStage, async (stage) => {
   if (stage !== 'pairing' && stage !== 'tree') return
   const task = activeTask.value
   if (!task?.subtitle_dir) return
+  const hasLoadedSubtitleContext = subtitleInspectorInfo.value.taskId === task.id
+    && subtitleInspectorInfo.value.subtitleDir === task.subtitle_dir
+    && subtitleInspectorItems.value.length
+  const hasLoadedPairingContext = hasLoadedSubtitleContext
+    && (stage !== 'pairing' || subtitleInspectorAudioItems.value.length || subtitleInspectorInfo.value.folderPath)
   if (subtitleInspectorInfo.value.taskId === task.id
-      && subtitleInspectorItems.value.length) {
+      && hasLoadedPairingContext) {
     return
   }
-  await inspectSubtitleTask(task)
+  await inspectSubtitleTask(task, { force: stage === 'pairing' })
 })
 
 const subtitleClearableTaskCounts = computed(() => ({

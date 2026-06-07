@@ -1123,6 +1123,8 @@ class ExtractService:
         lower_path = str(archive_path).lower()
         if re.search(r"\.7z\.\d{3}$", lower_path):
             return False
+        if re.search(r"\.part\d+$", lower_path):
+            return False
         if lower_path.endswith(".rar") or bool(re.search(r"\.part0*1\.rar$", lower_path)):
             return True
         with contextlib.suppress(Exception):
@@ -1497,6 +1499,7 @@ class ExtractService:
             raise Exception("找不到 7z 可执行文件。请安装 7-Zip 并确保它在 PATH 中，或在配置中指定正确路径。")
 
         archive_path = task.source_path
+        original_archive_path = archive_path
 
         # 检查是否被取消
         if task.is_cancelled():
@@ -1634,12 +1637,23 @@ class ExtractService:
         else:
             # 3.5 如果密码库是按文件名匹配到的，且条目里带 RJ 号，则只注入 RJ 提示。
             # 不改源文件名，避免监控链路还在等旧路径导致超时。
-            password_lookup_path = str(
-                (task.task_metadata or {}).get("embedded_zip_source_path")
-                or ((task.task_metadata or {}).get("exe_e_remap") or {}).get("source_path")
-                or archive_path
+            password_lookup_paths = [
+                (task.task_metadata or {}).get("embedded_zip_source_path"),
+                ((task.task_metadata or {}).get("exe_e_remap") or {}).get("source_path"),
+                ((task.task_metadata or {}).get("zip_numeric_remap") or {}).get("source_path"),
+                ((task.task_metadata or {}).get("part_exe_remap") or {}).get("source_path"),
+                original_archive_path,
+                archive_path,
+            ]
+            password_candidates = await self._get_password_candidates_for_archive_paths(password_lookup_paths)
+            password_lookup_path = next(
+                (
+                    str(item or "").strip()
+                    for item in password_lookup_paths
+                    if str(item or "").strip()
+                ),
+                archive_path,
             )
-            password_candidates = await self._get_password_candidates_for_archive(password_lookup_path)
             hinted_rjcode = self._apply_filename_password_rj_hint(password_lookup_path, task, password_candidates)
 
         # 检查暂停和取消
@@ -4517,6 +4531,28 @@ class ExtractService:
             return candidates
         finally:
             db.close()
+
+    async def _get_password_candidates_for_archive_paths(
+        self,
+        archive_paths: List[Optional[str]],
+    ) -> List[Dict[str, Optional[str]]]:
+        """把多个路径来源合并成一组密码候选。
+
+        用于文件名/后缀被规范化后，仍保留原始路径带来的 RJ / 文件名嗅探线索。
+        """
+        merged: List[Dict[str, Optional[str]]] = []
+        seen = set()
+        for archive_path in archive_paths:
+            normalized_path = str(archive_path or "").strip()
+            if not normalized_path:
+                continue
+            for item in await self._get_password_candidates_for_archive(normalized_path):
+                password = item.get("password")
+                if not password or password in seen:
+                    continue
+                seen.add(password)
+                merged.append(item)
+        return merged
 
     async def _get_passwords_for_archive(self, archive_path: str) -> List[str]:
         candidates = await self._get_password_candidates_for_archive(archive_path)
