@@ -3,7 +3,7 @@
       <!-- 主操作：扫描 -->
       <button
         type="button"
-        class="dash-cmd-btn group inline-flex h-9 w-full cursor-pointer items-center justify-center gap-1.5 rounded-[9px] bg-blue-600 px-3.5 text-[13px] font-semibold text-white shadow-[0_1px_4px_rgba(37,99,235,0.3)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:bg-blue-700 active:translate-y-0 active:scale-95 disabled:pointer-events-none disabled:opacity-60 sm:w-auto sm:justify-start"
+        class="dash-cmd-btn dash-cmd-scan group inline-flex h-9 w-full cursor-pointer items-center justify-center gap-1.5 rounded-[9px] bg-blue-600 px-3.5 text-[13px] font-semibold text-white shadow-[0_1px_4px_rgba(37,99,235,0.3)] transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:bg-blue-700 active:translate-y-0 active:scale-95 disabled:pointer-events-none disabled:opacity-60 sm:w-auto sm:justify-start"
         :disabled="scanning"
         @click="$emit('scan')"
       >

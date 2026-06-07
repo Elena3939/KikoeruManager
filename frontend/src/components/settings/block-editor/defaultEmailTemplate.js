@@ -36,6 +36,20 @@ export const DEFAULT_EMAIL_HTML = `<table width="100%" cellpadding="0" cellspaci
 
 export const DEFAULT_SUBJECT = '[KikoeruManager] {任务类型}{事件名称} · {任务标题}'
 
+export function isStandardEmailHtml(html) {
+  const source = String(html || '')
+  if (!source.trim()) return false
+  return [
+    EMAIL_HEADER_URL,
+    '{事件图标}',
+    '{事件名称}',
+    '{任务标题}',
+    '{摘要}',
+    '{业务数据块}',
+    'KikoeruManager',
+  ].every(token => source.includes(token))
+}
+
 // ─── 积木版默认模板：把上面那段 HTML 拆成多个独立、可单独编辑的块 ───────
 //
 // 设计原则：
@@ -79,6 +93,30 @@ export function buildDefaultEmailBlocks() {
         contentJson: null,
         htmlCache: `<h1 style="margin:8px 0 0 0;text-align:center;font-size:24px;line-height:1.34;font-weight:700;color:#16181d;">{任务标题}</h1>
 <p style="margin:12px auto 0 auto;max-width:480px;text-align:center;font-size:14px;line-height:1.75;color:#5d6470;">{摘要}</p>`,
+      },
+    },
+    {
+      id: _uid('duration_badge'),
+      type: 'rich_text',
+      enabled: true,
+      schemaVersion: 1,
+      props: {
+        contentJson: null,
+        htmlCache: `<p style="margin:10px 0 0 0;text-align:center;font-size:12px;line-height:1.6;color:#4338ca;font-weight:650;">{总耗时}</p>`,
+      },
+    },
+    {
+      id: _uid('stats'),
+      type: 'stats_grid',
+      enabled: true,
+      schemaVersion: 1,
+      props: {
+        columns: 3,
+        items: [
+          { key: 'total_files', label: '总文件数', icon: '' },
+          { key: 'total_size', label: '总大小', icon: '' },
+          { key: 'duration', label: '耗时', icon: '' },
+        ],
       },
     },
     {

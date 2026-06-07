@@ -120,6 +120,7 @@ export const BLOCK_TYPES = {
       { key: 'sourceKey', label: '数据来源',     type: 'data_source', default: 'file_tree',
         options: [
           { value: 'file_tree',       label: '通用文件树' },
+          { value: 'rj_work_cards',   label: 'RJ 作品卡片' },
           { value: 'circle_batch_summary', label: '批量社团补全汇总' },
           { value: 'download_files',  label: '下载文件列表（兼容旧模板，实际使用通用文件树）' },
         ] },
@@ -195,6 +196,7 @@ export const VARIABLES = [
   { key: '严重程度',  aliasEn: 'severity',         example: 'success' },
   { key: '总文件数',  aliasEn: 'stats.total_files',example: '10' },
   { key: '总大小',    aliasEn: 'stats.total_size', example: '256 MB' },
+  { key: '总耗时',    aliasEn: 'stats.duration',   example: '12.4s' },
   { key: '业务数据块', aliasEn: 'payload_sections', example: '自动渲染统计 / 文件树 / 日志' },
   { key: '统计网格',  aliasEn: 'stats_grid_section', example: '自动渲染统计网格' },
   { key: '文件树',    aliasEn: 'file_tree_section',  example: '自动渲染文件清单' },

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { ElMessage } from 'element-plus'
 import {
@@ -54,7 +54,7 @@ const statusMeta = computed(() => {
 const rowVirtualizer = useVirtualizer(computed(() => ({
   count: lineCount.value,
   getScrollElement: () => scrollRef.value,
-  estimateSize: () => 34,
+  estimateSize: () => 32,
   overscan: 12,
 })))
 
@@ -84,10 +84,6 @@ function progressToneLabel(value) {
 
 function isTaskProgressLine(line) {
   return String(line?.kind || '') === 'task-progress' && hasProgress(line)
-}
-
-function measureRow(el) {
-  if (el) rowVirtualizer.value.measureElement(el)
 }
 
 function formatTime(value) {
@@ -204,16 +200,12 @@ function scrollToBottom() {
   if (autoScrollRaf) return
   autoScrollRaf = window.requestAnimationFrame(() => {
     autoScrollRaf = 0
-    nextTick(() => {
-      rowVirtualizer.value.measure()
-      if (!lineCount.value) return
-      rowVirtualizer.value.scrollToIndex(lineCount.value - 1, { align: 'end' })
-    })
+    if (!lineCount.value) return
+    rowVirtualizer.value.scrollToIndex(lineCount.value - 1, { align: 'end' })
   })
 }
 
 watch(lineCount, () => {
-  nextTick(() => rowVirtualizer.value.measure())
   if (autoScroll.value && !userPinnedHistory.value) scrollToBottom()
 })
 
@@ -282,7 +274,6 @@ onBeforeUnmount(() => {
           <div
             v-for="virtualRow in virtualRows"
             :key="virtualRow.key"
-            :ref="measureRow"
             :data-index="virtualRow.index"
             class="terminal-line"
             :class="[
@@ -293,7 +284,7 @@ onBeforeUnmount(() => {
                 'is-task-progress': isTaskProgressLine(safeLines[virtualRow.index]),
               },
             ]"
-            :style="{ transform: `translateY(${virtualRow.start}px)` }"
+            :style="{ transform: `translate3d(0, ${virtualRow.start}px, 0)` }"
           >
             <span class="terminal-time">{{ formatTime(safeLines[virtualRow.index]?.time) }}</span>
             <span class="terminal-level">
@@ -303,18 +294,16 @@ onBeforeUnmount(() => {
             <span class="terminal-source">{{ safeLines[virtualRow.index]?.source || 'system' }}</span>
             <span v-if="hasProgress(safeLines[virtualRow.index])" class="terminal-progress">{{ safeLines[virtualRow.index]?.progress }}%</span>
             <span v-if="isTaskProgressLine(safeLines[virtualRow.index])" class="terminal-message terminal-inline-progress">
-              <span class="terminal-inline-progress-main">
-                <span class="terminal-inline-progress-title">
-                  任务 {{ safeLines[virtualRow.index]?.taskProgress?.shortId || '--------' }}
-                </span>
-                <span class="terminal-inline-progress-bar" :style="{ '--inline-progress': `${clampProgress(safeLines[virtualRow.index]?.progress)}%` }">
-                  <span />
-                </span>
-                <span class="terminal-inline-progress-state">
-                  {{ progressToneLabel(safeLines[virtualRow.index]?.taskProgress?.tone) }} · {{ safeLines[virtualRow.index]?.taskProgress?.updatedLabel || '--:--:--' }}
-                </span>
+              <span class="terminal-inline-progress-title">
+                任务 {{ safeLines[virtualRow.index]?.taskProgress?.shortId || '--------' }}
               </span>
               <span class="terminal-inline-progress-detail">{{ safeLines[virtualRow.index]?.message || '处理中' }}</span>
+              <span class="terminal-inline-progress-bar" :style="{ '--inline-progress': `${clampProgress(safeLines[virtualRow.index]?.progress)}%` }">
+                <span />
+              </span>
+              <span class="terminal-inline-progress-state">
+                {{ progressToneLabel(safeLines[virtualRow.index]?.taskProgress?.tone) }} · {{ safeLines[virtualRow.index]?.taskProgress?.updatedLabel || '--:--:--' }}
+              </span>
             </span>
             <span v-else class="terminal-message">
               <template v-for="(token, tokenIndex) in shellTokens(safeLines[virtualRow.index]?.message)" :key="`${virtualRow.key}-${tokenIndex}`">
@@ -496,6 +485,7 @@ onBeforeUnmount(() => {
   overflow: auto;
   padding: 10px 0;
   background: #09090b;
+  contain: strict;
   scrollbar-color: rgba(113, 113, 122, 0.7) transparent;
 }
 
@@ -518,6 +508,7 @@ onBeforeUnmount(() => {
 .terminal-virtual-canvas {
   position: relative;
   width: 100%;
+  contain: layout style paint;
 }
 
 .terminal-line {
@@ -526,14 +517,17 @@ onBeforeUnmount(() => {
   left: 0;
   display: grid;
   grid-template-columns: 72px 76px 92px 46px minmax(0, 1fr);
-  align-items: start;
+  align-items: center;
   gap: 8px;
-  min-height: 30px;
-  padding: 6px 14px;
+  min-height: 32px;
+  padding: 5px 14px;
   border-left: none;
   color: #d4d4d8;
   font-size: 11.5px;
-  line-height: 1.55;
+  line-height: 1.35;
+  contain: layout style paint;
+  transform: translateZ(0);
+  will-change: transform;
 }
 
 .terminal-line:hover {
@@ -585,7 +579,7 @@ onBeforeUnmount(() => {
 }
 
 .terminal-line.is-task-progress {
-  min-height: 44px;
+  min-height: 32px;
   background: rgba(14, 20, 25, 0.72);
 }
 
@@ -594,18 +588,12 @@ onBeforeUnmount(() => {
 }
 
 .terminal-inline-progress {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  white-space: normal;
-}
-
-.terminal-inline-progress-main {
   display: grid;
-  grid-template-columns: auto minmax(140px, 1fr) auto;
+  grid-template-columns: auto minmax(120px, 0.44fr) minmax(180px, 1fr) auto;
   align-items: center;
   gap: 8px;
   min-width: 0;
+  white-space: nowrap;
 }
 
 .terminal-inline-progress-title,
@@ -632,13 +620,13 @@ onBeforeUnmount(() => {
 .terminal-inline-progress-detail {
   color: #a1a1aa;
   font-size: 11px;
-  line-height: 1.25;
+  line-height: 1.2;
 }
 
 .terminal-inline-progress-bar {
   position: relative;
   overflow: hidden;
-  height: 8px;
+  height: 7px;
   border-radius: 999px;
   background: rgba(63, 63, 70, 0.72);
 }
@@ -794,13 +782,17 @@ onBeforeUnmount(() => {
     grid-column: 1 / -1;
   }
 
-  .terminal-inline-progress-main {
+  .terminal-inline-progress {
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
   .terminal-inline-progress-bar {
     grid-column: 1 / -1;
     order: 3;
+  }
+
+  .terminal-inline-progress-detail {
+    display: none;
   }
 }
 </style>

@@ -814,63 +814,65 @@
 
       <LibraryRowContextMenu
 
-        :key="libraryRowContextMenu.renderKey"
+        :visible="libraryRowContextMenuProps.visible"
 
-        :visible="libraryRowContextMenu.visible"
+        :x="libraryRowContextMenuProps.x"
 
-        :x="libraryRowContextMenu.x"
+        :y="libraryRowContextMenuProps.y"
 
-        :y="libraryRowContextMenu.y"
+        :row="libraryRowContextMenuProps.row"
 
-        :row="libraryRowContextMenu.row"
+        :batch-mode="libraryRowContextMenuProps.batchMode"
 
-        :batch-mode="libraryRowContextMenu.batchMode"
+        :selected-count="libraryRowContextMenuProps.selectedCount"
 
-        :selected-count="selectedRows.length"
+        :show-locate="libraryRowContextMenuProps.showLocate"
 
-        :show-locate="Boolean(libraryRowContextMenu.row && isSearchResultRow(libraryRowContextMenu.row) && !libraryRowContextMenu.row.is_directory)"
+        :show-view="libraryRowContextMenuProps.showView"
 
-        :show-view="Boolean(libraryRowContextMenu.row && canViewLibraryRow(libraryRowContextMenu.row))"
+        :show-open="libraryRowContextMenuProps.showOpen"
 
-        :show-open="Boolean(libraryRowContextMenu.row && !isRemoteCurrentLibrary)"
+        :show-open-direct="libraryRowContextMenuProps.showOpenDirect"
 
-        :show-open-direct="Boolean(libraryRowContextMenu.row && !isRemoteCurrentLibrary)"
+        :disable-rename="libraryRowContextMenuProps.disableRename"
 
-        :disable-rename="!isWritableCurrentLibrary || apiRenameBusy"
+        :disable-api-rename="libraryRowContextMenuProps.disableApiRename"
 
-        :disable-api-rename="libraryRowContextMenu.batchMode ? (!selectedApiRenameRows.length || apiRenameBusy) : (!canApiRenameRow(libraryRowContextMenu.row) || apiRenameBusy)"
+        :api-rename-running="libraryRowContextMenuProps.apiRenameRunning"
 
-        :api-rename-running="libraryRowContextMenu.batchMode ? apiRenameBusy : Boolean(libraryRowContextMenu.row && (apiRenamingId === libraryRowContextMenu.row.id || isBatchApiRenameRunning(libraryRowContextMenu.row)))"
+        :api-batch-target="libraryRowContextMenuProps.apiBatchTarget"
 
-        :api-batch-target="libraryRowContextMenu.batchMode || Boolean(libraryRowContextMenu.row && isBatchApiRenameTarget(libraryRowContextMenu.row))"
+        :disable-subtitle="libraryRowContextMenuProps.disableSubtitle"
 
-        :disable-subtitle="libraryRowContextMenu.batchMode ? (!selectedSubtitleCandidates.length || subtitleSubmitting) : !canFetchRJSubtitle(libraryRowContextMenu.row)"
+        :disable-manage="libraryRowContextMenuProps.disableManage"
 
-        :disable-manage="!libraryRowContextMenu.row?.is_directory"
+        :disable-delete="libraryRowContextMenuProps.disableDelete"
 
-        :disable-delete="!isWritableCurrentLibrary || (libraryRowContextMenu.batchMode && batchDeleting)"
+        :show-move="libraryRowContextMenuProps.showMove"
 
-        :show-move="Boolean(libraryRowContextMenu.row && !isRemoteCurrentLibrary)"
+        :disable-move="libraryRowContextMenuProps.disableMove"
 
-        :disable-move="!isWritableCurrentLibrary || moveDialogState.submitting || directMoveSubmitting || (libraryRowContextMenu.batchMode && !selectedRows.length)"
+        :show-upload="libraryRowContextMenuProps.showUpload"
 
-        :show-upload="Boolean(libraryRowContextMenu.row?.path && !isRemoteCurrentLibrary)"
+        :disable-upload="libraryRowContextMenuProps.disableUpload"
 
-        :disable-upload="!hasRemoteUploadLibraries || localUploadSubmitting || (libraryRowContextMenu.batchMode && selectedUploadCount === 0)"
+        :show-baidu-upload="libraryRowContextMenuProps.showBaiduUpload"
 
-        :show-auto-circle-group="libraryRowContextMenu.batchMode ? Boolean(selectedAutoCircleGroupRows.length) : canAutoCircleGroupRow(libraryRowContextMenu.row)"
+        :disable-baidu-upload="libraryRowContextMenuProps.disableBaiduUpload"
 
-        :disable-auto-circle-group="libraryRowContextMenu.batchMode ? (!selectedAutoCircleGroupRows.length || Boolean(autoCircleGroupRunningId)) : (!isWritableCurrentLibrary || Boolean(autoCircleGroupRunningId))"
+        :show-auto-circle-group="libraryRowContextMenuProps.showAutoCircleGroup"
 
-        :auto-circle-group-running="libraryRowContextMenu.batchMode ? batchAutoCircleGrouping : Boolean(libraryRowContextMenu.row && autoCircleGroupRunningId === libraryRowContextMenu.row.id)"
+        :disable-auto-circle-group="libraryRowContextMenuProps.disableAutoCircleGroup"
 
-        :show-compute-size="libraryRowContextMenu.batchMode ? Boolean(!isRemoteCurrentLibrary && (!currentPath.value || currentPath.value === browseRootPath.value)) : Boolean(libraryRowContextMenu.row?.is_directory && !isRemoteCurrentLibrary && (!currentPath.value || currentPath.value === browseRootPath.value))"
+        :auto-circle-group-running="libraryRowContextMenuProps.autoCircleGroupRunning"
 
-        :disable-compute-size="libraryRowContextMenu.batchMode ? (batchComputingSize || !selectedDirectoryRows.length) : false"
+        :show-compute-size="libraryRowContextMenuProps.showComputeSize"
 
-        :disable-filter-delete="!selectedFilterDeleteRows.length || !isWritableCurrentLibrary"
+        :disable-compute-size="libraryRowContextMenuProps.disableComputeSize"
 
-        :computing-size-id="computingSizeId"
+        :disable-filter-delete="libraryRowContextMenuProps.disableFilterDelete"
+
+        :computing-size-id="libraryRowContextMenuProps.computingSizeId"
 
         @close="closeLibraryRowContextMenu"
 
@@ -925,6 +927,73 @@
       @submit="submitLocalUpload"
 
     />
+
+    <el-dialog
+      v-model="baiduUploadDialogVisible"
+      title="上传到百度网盘"
+      width="720px"
+      custom-class="mobile-full-dialog library-simple-dialog"
+      :close-on-click-modal="!baiduUploadSubmitting"
+    >
+      <div class="space-y-4">
+        <div class="rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 text-[13px] text-slate-600">
+          已选 {{ baiduUploadSourceItems.length }} 项，上传任务会进入任务中心。
+        </div>
+        <el-form :model="baiduUploadForm" label-position="top" class="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-1">
+          <el-form-item label="上传模式">
+            <AppDropdown
+              v-model="baiduUploadForm.mode"
+              :options="baiduUploadModeOptions"
+              class="w-full"
+            />
+          </el-form-item>
+          <el-form-item label="远端目录">
+            <el-input v-model="baiduUploadForm.remoteDir" placeholder="/KikoeruManager" />
+          </el-form-item>
+          <el-form-item label="创建子目录">
+            <el-input v-model="baiduUploadForm.createRemoteSubdir" placeholder="可选，例如 RJ备份" />
+          </el-form-item>
+          <el-form-item label="同名策略">
+            <AppDropdown
+              v-model="baiduUploadForm.conflictPolicy"
+              :options="baiduUploadPolicyOptions"
+              class="w-full"
+            />
+          </el-form-item>
+          <template v-if="baiduUploadForm.mode === 'compress'">
+            <el-form-item label="压缩密码">
+              <el-input v-model="baiduUploadForm.password" type="password" show-password placeholder="必填" />
+            </el-form-item>
+            <el-form-item label="压缩格式">
+              <AppDropdown
+                v-model="baiduUploadForm.archiveFormat"
+                :options="baiduUploadArchiveFormatOptions"
+                class="w-full"
+              />
+            </el-form-item>
+            <el-form-item label="压缩强度">
+              <el-slider v-model="baiduUploadForm.compressionLevel" :min="1" :max="9" :step="1" show-input />
+            </el-form-item>
+            <el-form-item label="压缩线程数">
+              <el-input-number v-model="baiduUploadForm.compressionThreads" :min="0" :max="64" class="w-full" />
+            </el-form-item>
+            <el-form-item label="上传后清理本地压缩包">
+              <div class="flex h-10 items-center">
+                <el-switch v-model="baiduUploadForm.cleanupLocalArchive" />
+              </div>
+            </el-form-item>
+          </template>
+        </el-form>
+      </div>
+      <template #footer>
+        <div class="flex items-center justify-end gap-2">
+          <el-button :disabled="baiduUploadSubmitting" @click="closeBaiduUploadDialog">取消</el-button>
+          <el-button type="primary" :loading="baiduUploadSubmitting" @click="submitBaiduUpload">
+            {{ baiduUploadSubmitting ? '创建中...' : '创建上传任务' }}
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
 
 
 
@@ -1662,7 +1731,7 @@ import { classifyLibraryEntryKind, libraryEntryIconFor, libraryEntryMetaFor } fr
 
 import { ElMessage } from 'element-plus'
 
-import { aiSubtitleMatchApi, configApi, libraryApi, localUploadApi, rjSubtitleApi, taskApi, synologyOtpRequired } from '../api'
+import { aiSubtitleMatchApi, baiduNetdiskApi, configApi, libraryApi, localUploadApi, rjSubtitleApi, taskApi, synologyOtpRequired } from '../api'
 
 import { showSystemAlert, showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 
@@ -1821,6 +1890,10 @@ const tableMarqueeState = ref({
   startY: 0,
   currentX: 0,
   currentY: 0,
+  startScrollX: 0,
+  startScrollY: 0,
+  currentScrollX: 0,
+  currentScrollY: 0,
   hostLeft: 0,
   hostTop: 0,
   pointerId: null,
@@ -1851,6 +1924,10 @@ const suppressMarqueeClickUntil = ref(0)
 
 const TABLE_MARQUEE_START_DISTANCE = 10
 
+const TABLE_MARQUEE_AUTO_SCROLL_EDGE = 86
+
+const TABLE_MARQUEE_AUTO_SCROLL_MAX_SPEED = 28
+
 const TABLE_ITEM_DRAG_START_DISTANCE = 8
 
 const TABLE_BLANK_DOUBLE_CLICK_DELAY = 420
@@ -1867,6 +1944,8 @@ let tableMarqueeMoveFrame = null
 
 let tableMarqueePendingPoint = null
 
+let tableMarqueeAutoScrollFrame = null
+
 let tableItemDragMoveFrame = null
 
 let tableItemDragPendingPoint = null
@@ -1879,7 +1958,7 @@ let pathBreadcrumbDragOpenTimer = null
 
 let pathBreadcrumbDragCloseTimer = null
 
-const libraryRowContextMenu = ref({ visible: false, x: 0, y: 0, row: null, batchMode: false, renderKey: 0 })
+const libraryRowContextMenu = ref({ visible: false, x: 0, y: 0, row: null, batchMode: false })
 
 const moveDialogState = ref({ visible: false, sourceLibraryId: '', initialPath: '', items: [], submitting: false })
 
@@ -1916,6 +1995,8 @@ const suppressSelectionChange = ref(false)
 const apiRenamingId = ref(null)
 
 const batchApiRenameRunningIds = ref(new Set())
+
+const batchAutoCircleRunningIds = ref(new Set())
 
 const autoCircleGroupRunningId = ref(null)
 
@@ -2010,6 +2091,42 @@ const localUploadDialogVisible = ref(false)
 const localUploadSubmitting = ref(false)
 
 const localUploadForm = ref({ targetLibraryId: '', targetSubdir: '' })
+
+const baiduUploadDialogVisible = ref(false)
+
+const baiduUploadSubmitting = ref(false)
+
+const pendingBaiduUploadOverrideRows = ref(null)
+
+const baiduUploadForm = ref({
+  mode: 'compress',
+  remoteDir: '/KikoeruManager',
+  createRemoteSubdir: '',
+  conflictPolicy: 'skip',
+  password: '',
+  archiveFormat: 'zip',
+  compressionLevel: 9,
+  compressionThreads: 0,
+  dictionarySizeMb: 0,
+  solidArchive: true,
+  cleanupLocalArchive: false
+})
+
+const baiduUploadModeOptions = [
+  { value: 'compress', label: '压缩后上传' },
+  { value: 'direct', label: '跳过压缩直接上传' }
+]
+
+const baiduUploadPolicyOptions = [
+  { value: 'skip', label: '跳过同名' },
+  { value: 'overwrite', label: '覆盖同名' },
+  { value: 'rsync', label: '增量同步' }
+]
+
+const baiduUploadArchiveFormatOptions = [
+  { value: 'zip', label: '.zip' },
+  { value: '7z', label: '.7z' }
+]
 
 const trackedUploadTaskIds = ref([])
 
@@ -3357,13 +3474,17 @@ const isAtComputeSizeRoot = computed(() => !currentPath.value || currentPath.val
 
 const tableMarqueeBoxStyle = computed(() => {
   const state = tableMarqueeState.value
-  const left = Math.min(state.startX, state.currentX)
-  const top = Math.min(state.startY, state.currentY)
-  const width = Math.abs(state.currentX - state.startX)
-  const height = Math.abs(state.currentY - state.startY)
+  const startDocX = Number(state.startX || 0) + Number(state.startScrollX || 0)
+  const startDocY = Number(state.startY || 0) + Number(state.startScrollY || 0)
+  const currentDocX = Number(state.currentX || 0) + Number(state.currentScrollX || 0)
+  const currentDocY = Number(state.currentY || 0) + Number(state.currentScrollY || 0)
+  const left = Math.min(startDocX, currentDocX) - Number(state.currentScrollX || 0)
+  const top = Math.min(startDocY, currentDocY) - Number(state.currentScrollY || 0)
+  const width = Math.abs(currentDocX - startDocX)
+  const height = Math.abs(currentDocY - startDocY)
   return {
-    left: `${Math.max(0, left)}px`,
-    top: `${Math.max(0, top)}px`,
+    left: `${left}px`,
+    top: `${top}px`,
     width: `${Math.max(1, width)}px`,
     height: `${Math.max(1, height)}px`
   }
@@ -3395,6 +3516,54 @@ const dragMoveConflictSummary = computed(() => {
   const conflictCount = dragMoveConflictState.value.conflicts.length
   const itemCount = dragMoveConflictState.value.items.length
   return `${itemCount} 项中有 ${conflictCount} 项会与目标目录同名`
+})
+
+const libraryRowContextMenuProps = computed(() => {
+  const menu = libraryRowContextMenu.value
+  const row = menu.row
+  const batchMode = Boolean(menu.batchMode)
+  const hasRow = Boolean(row)
+  const localLibrary = !isRemoteCurrentLibrary.value
+  const rootComputeScope = !currentPath.value || currentPath.value === browseRootPath.value
+
+  return {
+    visible: Boolean(menu.visible),
+    x: Number(menu.x || 0),
+    y: Number(menu.y || 0),
+    row,
+    batchMode,
+    selectedCount: selectedRows.value.length,
+    showLocate: Boolean(hasRow && isSearchResultRow(row) && !row?.is_directory),
+    showView: Boolean(hasRow && canViewLibraryRow(row)),
+    showOpen: Boolean(hasRow && localLibrary),
+    showOpenDirect: Boolean(hasRow && localLibrary),
+    disableRename: !isWritableCurrentLibrary.value || apiRenameBusy.value,
+    disableApiRename: batchMode ? (!selectedApiRenameRows.value.length || apiRenameBusy.value) : (!canApiRenameRow(row) || apiRenameBusy.value),
+    apiRenameRunning: batchMode ? apiRenameBusy.value : Boolean(hasRow && (apiRenamingId.value === row?.id || isBatchApiRenameRunning(row))),
+    apiBatchTarget: batchMode || Boolean(hasRow && isBatchApiRenameTarget(row)),
+    disableSubtitle: batchMode ? (!selectedSubtitleCandidates.value.length || subtitleSubmitting.value) : !canFetchRJSubtitle(row),
+    disableManage: !row?.is_directory,
+    disableDelete: !isWritableCurrentLibrary.value || (batchMode && batchDeleting.value),
+    showMove: Boolean(hasRow && localLibrary),
+    disableMove: !isWritableCurrentLibrary.value || moveDialogState.value.submitting || directMoveSubmitting.value || (batchMode && !selectedRows.value.length),
+    showUpload: Boolean(row?.path && localLibrary),
+    disableUpload: !hasRemoteUploadLibraries.value || localUploadSubmitting.value || (batchMode && selectedUploadCount.value === 0),
+    showBaiduUpload: Boolean(row?.path && localLibrary),
+    disableBaiduUpload: baiduUploadSubmitting.value || (batchMode && selectedUploadCount.value === 0),
+    showAutoCircleGroup: batchMode ? Boolean(selectedAutoCircleGroupRows.value.length) : canAutoCircleGroupRow(row),
+    disableAutoCircleGroup: batchMode
+      ? (!selectedAutoCircleGroupRows.value.length || batchAutoCircleGrouping.value || Boolean(autoCircleGroupRunningId.value))
+      : (!isWritableCurrentLibrary.value || batchAutoCircleGrouping.value || Boolean(autoCircleGroupRunningId.value)),
+    autoCircleGroupRunning: batchMode
+      ? batchAutoCircleGrouping.value
+      : Boolean(hasRow && (autoCircleGroupRunningId.value === row?.id || batchAutoCircleRunningIds.value.has(row?.id))),
+    showComputeSize: batchMode
+      ? Boolean(localLibrary && rootComputeScope)
+      : Boolean(row?.is_directory && localLibrary && rootComputeScope),
+    disableComputeSize: batchMode ? (batchComputingSize.value || !selectedDirectoryRows.value.length) : false,
+    disableFilterDelete: !selectedFilterDeleteRows.value.length || !isWritableCurrentLibrary.value,
+    computingSizeId: computingSizeId.value
+  }
 })
 
 function isPathBreadcrumbDropTarget (segment) {
@@ -3905,6 +4074,19 @@ const selectedUploadSourceItems = computed(() => effectiveUploadSourceRows.value
 
   is_directory: row?.is_directory !== false,
 
+})).filter(item => item.path))
+
+const effectiveBaiduUploadSourceRows = computed(() => {
+  const override = pendingBaiduUploadOverrideRows.value
+  if (Array.isArray(override) && override.length) return override.filter(row => row?.path)
+  return selectedUploadRows.value
+})
+
+const baiduUploadSourceItems = computed(() => effectiveBaiduUploadSourceRows.value.map(row => ({
+  name: row?.name || getFileName(row?.path || ''),
+  path: row?.path || '',
+  size: Number(row?.size || 0),
+  is_directory: row?.is_directory !== false,
 })).filter(item => item.path))
 
 const canFilterDeleteCurrentFolder = computed(() => {
@@ -5225,8 +5407,6 @@ async function resumeLibraryPage () {
 
 onMounted(async () => {
 
-  bindLibraryContextMenuDismiss()
-
   bindLibraryMarqueeDismiss()
 
   bindLibraryKeydown()
@@ -5347,8 +5527,6 @@ onMounted(async () => {
 
 onActivated(async () => {
 
-  bindLibraryContextMenuDismiss()
-
   if (libraryViewActive) return
 
   libraryViewActive = true
@@ -5374,8 +5552,6 @@ onDeactivated(() => {
   closeMediaPreviewDialog()
 
   closeLibraryRowContextMenu()
-
-  unbindLibraryContextMenuDismiss()
 
   unbindLibraryMarqueeDismiss()
 
@@ -5421,8 +5597,6 @@ onBeforeUnmount(() => {
   closeMediaPreviewDialog()
 
   closeLibraryRowContextMenu()
-
-  unbindLibraryContextMenuDismiss()
 
   unbindLibraryMarqueeDismiss()
 
@@ -6866,7 +7040,7 @@ async function autoCircleGroup (row) {
 
   }
 
-  if (autoCircleGroupRunningId.value) return
+  if (autoCircleGroupRunningId.value || batchAutoCircleGrouping.value) return
 
   autoCircleGroupRunningId.value = row.id
 
@@ -6884,13 +7058,11 @@ async function autoCircleGroup (row) {
 
     }
 
-    await Promise.all([
+    if (data?.success && !data?.skipped) {
+      pruneRowsFromCurrentViewByPaths([row.path])
+    }
 
-      refreshLibrary(),
-
-      isRemoteCurrentLibrary.value ? Promise.resolve() : refreshStats(false, { silent: true, refreshLibraryId: selectedLibraryId.value })
-
-    ])
+    refreshCurrentLibraryAndStatsInBackground()
 
   } catch (error) {
 
@@ -7262,6 +7434,8 @@ function onTableMarqueePointerDown (event) {
   const append = isMarqueeAppendEvent(event)
   const baseSelectedPaths = append ? new Set(selectedRowPaths.value) : new Set()
   const startKey = Array.from(baseSelectedPaths).sort().join('\n')
+  const startScrollX = getTableMarqueeScrollX()
+  const startScrollY = getTableMarqueeScrollY()
 
   tableMarqueeRowSnapshot = collectTableMarqueeRows(host)
 
@@ -7272,6 +7446,10 @@ function onTableMarqueePointerDown (event) {
     startY: event.clientY,
     currentX: event.clientX,
     currentY: event.clientY,
+    startScrollX,
+    startScrollY,
+    currentScrollX: startScrollX,
+    currentScrollY: startScrollY,
     hostLeft: 0,
     hostTop: 0,
     pointerId: event.pointerId,
@@ -7291,6 +7469,7 @@ function onTableMarqueePointerDown (event) {
   window.addEventListener('pointermove', onTableMarqueePointerMove, { passive: false })
   window.addEventListener('pointerup', onTableMarqueePointerUp, { passive: false })
   window.addEventListener('pointercancel', onTableMarqueePointerUp, { passive: false })
+  window.addEventListener('wheel', onTableMarqueeWheel, { passive: false })
 
 }
 
@@ -7329,6 +7508,28 @@ function onTableMarqueePointerMove (event) {
 
 
 
+function onTableMarqueeWheel (event) {
+
+  const state = tableMarqueeState.value
+
+  if (!state.active || !state.visible) return
+
+  event.preventDefault()
+
+  const deltaX = normalizeTableMarqueeWheelDelta(event.deltaX || 0, event.deltaMode)
+  const deltaY = normalizeTableMarqueeWheelDelta(event.deltaY || 0, event.deltaMode)
+
+  scrollTableMarqueeViewportBy(deltaX, deltaY)
+
+  state.currentScrollX = getTableMarqueeScrollX()
+  state.currentScrollY = getTableMarqueeScrollY()
+
+  updateTableMarqueeSelection()
+
+}
+
+
+
 function processTableMarqueePointerPoint ({ clientX, clientY }) {
 
   const state = tableMarqueeState.value
@@ -7339,8 +7540,13 @@ function processTableMarqueePointerPoint ({ clientX, clientY }) {
 
   state.currentX = clientX
   state.currentY = clientY
+  state.currentScrollX = getTableMarqueeScrollX()
+  state.currentScrollY = getTableMarqueeScrollY()
 
-  const moved = Math.hypot(state.currentX - state.startX, state.currentY - state.startY) >= TABLE_MARQUEE_START_DISTANCE
+  const moved = Math.hypot(
+    (state.currentX + state.currentScrollX) - (state.startX + state.startScrollX),
+    (state.currentY + state.currentScrollY) - (state.startY + state.startScrollY)
+  ) >= TABLE_MARQUEE_START_DISTANCE
 
   if (!moved && !state.visible) return
 
@@ -7355,6 +7561,8 @@ function processTableMarqueePointerPoint ({ clientX, clientY }) {
     if (document?.body) document.body.dataset.libraryMarqueeSelecting = '1'
 
   }
+
+  updateTableMarqueeAutoScroll()
 
   updateTableMarqueeSelection()
 
@@ -7402,6 +7610,205 @@ function onTableMarqueePointerUp (event) {
 
 
 
+function getTableMarqueeScrollX () {
+
+  const container = resolveTableMarqueeScrollContainer()
+
+  return Number(container?.scrollLeft || 0)
+
+}
+
+
+
+function getTableMarqueeScrollY () {
+
+  const container = resolveTableMarqueeScrollContainer()
+
+  return Number(container?.scrollTop || 0)
+
+}
+
+
+
+function resolveTableMarqueeScrollContainer () {
+
+  const host = tableMarqueeRef.value
+
+  const candidates = [
+    host?.closest?.('.content-shell'),
+    host?.closest?.('.main-content'),
+    document.querySelector?.('.content-shell'),
+    document.scrollingElement,
+    document.documentElement,
+    document.body
+  ].filter(Boolean)
+
+  for (const candidate of candidates) {
+
+    const canScrollY = Number(candidate.scrollHeight || 0) > Number(candidate.clientHeight || 0) + 1
+    const canScrollX = Number(candidate.scrollWidth || 0) > Number(candidate.clientWidth || 0) + 1
+
+    if (canScrollY || canScrollX) return candidate
+
+  }
+
+  return document.scrollingElement || document.documentElement || document.body
+
+}
+
+
+
+function getTableMarqueeScrollViewportRect () {
+
+  const container = resolveTableMarqueeScrollContainer()
+
+  if (container && container !== document.scrollingElement && container !== document.documentElement && container !== document.body) {
+
+    return container.getBoundingClientRect()
+
+  }
+
+  return {
+    left: 0,
+    top: 0,
+    right: Math.max(1, window.innerWidth || document.documentElement?.clientWidth || 0),
+    bottom: Math.max(1, window.innerHeight || document.documentElement?.clientHeight || 0),
+    width: Math.max(1, window.innerWidth || document.documentElement?.clientWidth || 0),
+    height: Math.max(1, window.innerHeight || document.documentElement?.clientHeight || 0)
+  }
+
+}
+
+
+
+function normalizeTableMarqueeWheelDelta (delta, mode = 0) {
+
+  const value = Number(delta || 0)
+
+  if (!value) return 0
+
+  if (mode === 1) return value * 40
+
+  if (mode === 2) return value * Math.max(1, window.innerHeight || 800)
+
+  return value
+
+}
+
+
+
+function scrollTableMarqueeViewportBy (deltaX, deltaY) {
+
+  const x = Number(deltaX || 0)
+  const y = Number(deltaY || 0)
+
+  if (!x && !y) return
+
+  const container = resolveTableMarqueeScrollContainer()
+
+  if (container && typeof container.scrollBy === 'function') {
+
+    container.scrollBy({ left: x, top: y, behavior: 'auto' })
+
+    return
+
+  }
+
+  window.scrollBy({ left: x, top: y, behavior: 'auto' })
+
+}
+
+
+
+function getTableMarqueeAutoScrollDelta () {
+
+  const state = tableMarqueeState.value
+
+  if (!state.active || !state.visible) return { x: 0, y: 0 }
+
+  const viewport = getTableMarqueeScrollViewportRect()
+  const edge = TABLE_MARQUEE_AUTO_SCROLL_EDGE
+  const speed = TABLE_MARQUEE_AUTO_SCROLL_MAX_SPEED
+  let x = 0
+  let y = 0
+
+  if (state.currentY < viewport.top + edge) {
+    y = -Math.ceil(((viewport.top + edge - state.currentY) / edge) * speed)
+  } else if (state.currentY > viewport.bottom - edge) {
+    y = Math.ceil(((state.currentY - (viewport.bottom - edge)) / edge) * speed)
+  }
+
+  if (state.currentX < viewport.left + edge) {
+    x = -Math.ceil(((viewport.left + edge - state.currentX) / edge) * speed)
+  } else if (state.currentX > viewport.right - edge) {
+    x = Math.ceil(((state.currentX - (viewport.right - edge)) / edge) * speed)
+  }
+
+  return { x, y }
+
+}
+
+
+
+function updateTableMarqueeAutoScroll () {
+
+  const { x, y } = getTableMarqueeAutoScrollDelta()
+
+  if (!x && !y) {
+    stopTableMarqueeAutoScroll()
+    return
+  }
+
+  if (tableMarqueeAutoScrollFrame !== null) return
+
+  tableMarqueeAutoScrollFrame = window.requestAnimationFrame(runTableMarqueeAutoScroll)
+
+}
+
+
+
+function runTableMarqueeAutoScroll () {
+
+  tableMarqueeAutoScrollFrame = null
+
+  const state = tableMarqueeState.value
+
+  if (!state.active || !state.visible) return
+
+  const { x, y } = getTableMarqueeAutoScrollDelta()
+
+  if (!x && !y) return
+
+  const prevX = getTableMarqueeScrollX()
+  const prevY = getTableMarqueeScrollY()
+
+  scrollTableMarqueeViewportBy(x, y)
+
+  state.currentScrollX = getTableMarqueeScrollX()
+  state.currentScrollY = getTableMarqueeScrollY()
+
+  if (state.currentScrollX !== prevX || state.currentScrollY !== prevY) {
+    updateTableMarqueeSelection()
+  }
+
+  tableMarqueeAutoScrollFrame = window.requestAnimationFrame(runTableMarqueeAutoScroll)
+
+}
+
+
+
+function stopTableMarqueeAutoScroll () {
+
+  if (tableMarqueeAutoScrollFrame === null) return
+
+  window.cancelAnimationFrame(tableMarqueeAutoScrollFrame)
+
+  tableMarqueeAutoScrollFrame = null
+
+}
+
+
+
 function stopTableMarqueeTracking () {
 
   const host = tableMarqueeRef.value
@@ -7424,6 +7831,10 @@ function stopTableMarqueeTracking () {
 
   window.removeEventListener('pointercancel', onTableMarqueePointerUp)
 
+  window.removeEventListener('wheel', onTableMarqueeWheel)
+
+  stopTableMarqueeAutoScroll()
+
   if (tableMarqueeMoveFrame !== null) {
 
     window.cancelAnimationFrame(tableMarqueeMoveFrame)
@@ -7444,6 +7855,10 @@ function stopTableMarqueeTracking () {
     visible: false,
     pointerId: null,
     hasMoved: false,
+    startScrollX: 0,
+    startScrollY: 0,
+    currentScrollX: 0,
+    currentScrollY: 0,
     baseSelectedPaths: new Set(),
     modifierRow: null,
     lastSelectionKey: ''
@@ -7569,6 +7984,8 @@ function collectTableMarqueeRows (host = tableMarqueeRef.value) {
   if (!host) return []
 
   const rowEls = Array.from(host.querySelectorAll('.lib-file-table-row'))
+  const scrollX = getTableMarqueeScrollX()
+  const scrollY = getTableMarqueeScrollY()
 
   return rowEls.map((rowEl, fallbackIndex) => {
 
@@ -7583,10 +8000,10 @@ function collectTableMarqueeRows (host = tableMarqueeRef.value) {
       path: row?.path || '',
       selectable: Boolean(row?.path && isLibraryRowSelectable(row)),
       rect: {
-        left: rect.left,
-        right: rect.right,
-        top: rect.top,
-        bottom: rect.bottom
+        left: rect.left + scrollX,
+        right: rect.right + scrollX,
+        top: rect.top + scrollY,
+        bottom: rect.bottom + scrollY
       }
     }
 
@@ -7600,13 +8017,21 @@ function updateTableMarqueeSelection () {
 
   const state = tableMarqueeState.value
 
-  const left = Math.min(state.startX, state.currentX)
+  state.currentScrollX = getTableMarqueeScrollX()
+  state.currentScrollY = getTableMarqueeScrollY()
 
-  const right = Math.max(state.startX, state.currentX)
+  const startDocX = Number(state.startX || 0) + Number(state.startScrollX || 0)
+  const startDocY = Number(state.startY || 0) + Number(state.startScrollY || 0)
+  const currentDocX = Number(state.currentX || 0) + Number(state.currentScrollX || 0)
+  const currentDocY = Number(state.currentY || 0) + Number(state.currentScrollY || 0)
 
-  const top = Math.min(state.startY, state.currentY)
+  const left = Math.min(startDocX, currentDocX)
 
-  const bottom = Math.max(state.startY, state.currentY)
+  const right = Math.max(startDocX, currentDocX)
+
+  const top = Math.min(startDocY, currentDocY)
+
+  const bottom = Math.max(startDocY, currentDocY)
 
   const nextPaths = new Set(state.append ? state.baseSelectedPaths : [])
 
@@ -8483,6 +8908,102 @@ function openLocalUploadDialog (rowOverride = null) {
 
 }
 
+async function openBaiduUploadDialog (rowOverride = null) {
+  if (isRemoteCurrentLibrary.value) {
+    ElMessage.warning('请先切换到本地库存后再上传到百度网盘')
+    return
+  }
+  if (rowOverride) {
+    const overrideRows = (Array.isArray(rowOverride) ? rowOverride : [rowOverride]).filter(row => row?.path)
+    if (!overrideRows.length) {
+      ElMessage.warning('行数据无效无法上传')
+      return
+    }
+    pendingBaiduUploadOverrideRows.value = overrideRows
+  } else {
+    pendingBaiduUploadOverrideRows.value = null
+  }
+  if (!effectiveBaiduUploadSourceRows.value.length) {
+    ElMessage.warning('请先选中要上传的项目')
+    return
+  }
+  baiduUploadDialogVisible.value = true
+  hydrateBaiduUploadDialogDefaults()
+}
+
+async function hydrateBaiduUploadDialogDefaults () {
+  try {
+    const config = await configApi.get()
+    if (!baiduUploadDialogVisible.value || baiduUploadSubmitting.value) return
+    const backup = config?.backup_zip || {}
+    const baidu = config?.baidu_netdisk || {}
+    baiduUploadForm.value = {
+      ...baiduUploadForm.value,
+      mode: 'compress',
+      remoteDir: backup.baidu_upload_remote_dir || baidu.upload_default_remote_dir || '/KikoeruManager',
+      createRemoteSubdir: backup.baidu_upload_create_subdir || '',
+      conflictPolicy: backup.baidu_upload_conflict_policy || baidu.upload_conflict_policy || 'skip',
+      password: backup.password || '',
+      archiveFormat: backup.archive_format || 'zip',
+      compressionLevel: backup.compression_level ?? 9,
+      compressionThreads: backup.compression_threads ?? 0,
+      dictionarySizeMb: backup.dictionary_size_mb ?? 0,
+      solidArchive: backup.solid_archive ?? true,
+      cleanupLocalArchive: backup.baidu_upload_cleanup_local_archive ?? false
+    }
+  } catch (error) {
+    console.warn('读取百度上传默认配置失败:', error)
+  }
+}
+
+function closeBaiduUploadDialog () {
+  if (baiduUploadSubmitting.value) return
+  baiduUploadDialogVisible.value = false
+  pendingBaiduUploadOverrideRows.value = null
+}
+
+async function submitBaiduUpload () {
+  if (baiduUploadSubmitting.value) return
+  const selectedPaths = baiduUploadSourceItems.value.map(item => item.path).filter(Boolean)
+  if (!selectedPaths.length) {
+    ElMessage.warning('请先选中要上传的项目')
+    return
+  }
+  if (baiduUploadForm.value.mode === 'compress' && !String(baiduUploadForm.value.password || '').trim()) {
+    ElMessage.warning('压缩后上传需要填写压缩密码')
+    return
+  }
+  baiduUploadSubmitting.value = true
+  try {
+    const result = await baiduNetdiskApi.startUpload({
+      sourcePaths: selectedPaths,
+      remoteDir: baiduUploadForm.value.remoteDir || '/KikoeruManager',
+      createRemoteSubdir: baiduUploadForm.value.createRemoteSubdir || '',
+      compressEnabled: baiduUploadForm.value.mode === 'compress',
+      backupZipOptions: {
+        password: baiduUploadForm.value.password || '',
+        archive_format: baiduUploadForm.value.archiveFormat || 'zip',
+        compression_level: baiduUploadForm.value.compressionLevel ?? 9,
+        compression_threads: baiduUploadForm.value.compressionThreads ?? 0,
+        dictionary_size_mb: baiduUploadForm.value.dictionarySizeMb ?? 0,
+        solid_archive: baiduUploadForm.value.solidArchive ?? true
+      },
+      conflictPolicy: baiduUploadForm.value.conflictPolicy || 'skip',
+      cleanupLocalArchive: baiduUploadForm.value.cleanupLocalArchive ?? false,
+      batchName: baiduUploadSourceItems.value.length === 1
+        ? baiduUploadSourceItems.value[0].name
+        : `百度网盘上传 ${baiduUploadSourceItems.value.length} 项`
+    })
+    ElMessage.success(result?.message || '百度网盘上传任务已创建')
+    baiduUploadDialogVisible.value = false
+    pendingBaiduUploadOverrideRows.value = null
+  } catch (error) {
+    ElMessage.error('创建百度网盘上传任务失败：' + (error.response?.data?.detail || error.message))
+  } finally {
+    baiduUploadSubmitting.value = false
+  }
+}
+
 
 
 async function submitLocalUpload () {
@@ -8539,35 +9060,29 @@ async function submitLocalUpload () {
 
     const createdTaskIds = []
 
+    const requestPayload = {
 
+      source_library_id: selectedLibraryId.value,
 
-    for (const selectedPath of selectedPaths) {
+      source_base_path: sourceBasePath,
 
-      const requestPayload = {
+      selected_paths: selectedPaths,
 
-        source_library_id: selectedLibraryId.value,
+      target_library_id: targetLibraryId,
 
-        source_base_path: sourceBasePath,
+      target_subdir: targetSubdir,
 
-        selected_paths: [selectedPath],
+      circle_name: ''
 
-        target_library_id: targetLibraryId,
+    }
 
-        target_subdir: targetSubdir,
+    const result = await localUploadApi.start(requestPayload)
 
-        circle_name: ''
+    if (result?.task_id) {
 
-      }
+      createdTaskIds.push(result.task_id)
 
-      const result = await localUploadApi.start(requestPayload)
-
-      if (result?.task_id) {
-
-        createdTaskIds.push(result.task_id)
-
-        rememberUploadTaskId(result.task_id)
-
-      }
+      rememberUploadTaskId(result.task_id)
 
     }
 
@@ -8583,7 +9098,7 @@ async function submitLocalUpload () {
 
     await refreshUploadWorkbench()
 
-    ElMessage.success(`已创建 ${createdTaskIds.length || selectedPaths.length} 个目录上传任务`)
+    ElMessage.success(result?.message || `已创建 ${selectedPaths.length} 个目录上传任务`)
 
     clearSelection()
 
@@ -16028,8 +16543,7 @@ function closeLibraryRowContextMenu () {
     x: 0,
     y: 0,
     row: null,
-    batchMode: false,
-    renderKey: Number(libraryRowContextMenu.value.renderKey || 0)
+    batchMode: false
   }
 
 }
@@ -16063,8 +16577,7 @@ function openLibraryRowContextMenuAtPosition (row, x, y) {
     x: safeX,
     y: safeY,
     row,
-    batchMode,
-    renderKey: Number(libraryRowContextMenu.value.renderKey || 0) + 1
+    batchMode
   }
 
   // 二次校准：实际渲染后量出菜单真实高度，必要时上移避免遮挡分页等下方控件
@@ -16304,35 +16817,6 @@ function onMobileCardMenuClick ({ row, event }) {
 }
 
 
-function handleLibraryPageClickCloseContextMenu (event) {
-
-  if (!libraryRowContextMenu.value.visible) return
-
-  const target = event?.target
-
-  if (target instanceof Element && target.closest('[data-library-row-menu="1"]')) return
-
-  closeLibraryRowContextMenu()
-
-}
-
-
-function bindLibraryContextMenuDismiss () {
-
-  document.removeEventListener('click', handleLibraryPageClickCloseContextMenu, true)
-
-  document.addEventListener('click', handleLibraryPageClickCloseContextMenu, true)
-
-}
-
-
-function unbindLibraryContextMenuDismiss () {
-
-  document.removeEventListener('click', handleLibraryPageClickCloseContextMenu, true)
-
-}
-
-
 async function handleLibraryRowContextMenuAction (action) {
 
   const row = libraryRowContextMenu.value.row
@@ -16346,6 +16830,8 @@ async function handleLibraryRowContextMenuAction (action) {
     if (action === 'move') return openMoveDialog(selectedRows.value)
 
     if (action === 'upload') return openLocalUploadDialog()
+
+    if (action === 'baidu_upload') return openBaiduUploadDialog()
 
     if (action === 'auto_circle_group') return handleBatchAutoCircleGroup()
 
@@ -16377,6 +16863,8 @@ async function handleLibraryRowContextMenuAction (action) {
   if (action === 'move') return openMoveDialog([row])
 
   if (action === 'upload') return openLocalUploadDialog(row)
+
+  if (action === 'baidu_upload') return openBaiduUploadDialog(row)
 
   if (action === 'auto_circle_group') return autoCircleGroup(row)
 
@@ -16602,6 +17090,94 @@ async function refreshAfterMove (sourceLibraryId, targetLibraryId) {
 
 
 
+function pruneRowsFromCurrentViewByPaths (paths) {
+
+  const movedPaths = new Set((Array.isArray(paths) ? paths : [])
+    .map(path => String(path || '').trim())
+    .filter(Boolean))
+
+  if (!movedPaths.size) return
+
+  files.value = files.value.filter(row => !row?.path || !movedPaths.has(row.path))
+  totalFiles.value = Math.max(0, Number(totalFiles.value || 0) - movedPaths.size)
+  selectedRows.value = selectedRows.value.filter(row => row?.path && !movedPaths.has(row.path))
+  selectedRowPaths.value = new Set(selectedRows.value.map(row => row.path).filter(Boolean))
+
+}
+
+
+
+function pruneMovedRowsFromCurrentView (result) {
+
+  pruneRowsFromCurrentViewByPaths((Array.isArray(result?.moved) ? result.moved : [])
+    .map(item => item?.source))
+
+}
+
+
+
+function replaceRowPathInCurrentView (oldPath, newPath, nextName = '') {
+
+  const sourcePath = String(oldPath || '').trim()
+  const targetPath = String(newPath || '').trim()
+
+  if (!sourcePath || !targetPath || sourcePath === targetPath) return
+
+  const row = files.value.find(item => item?.path === sourcePath)
+
+  if (!row) return
+
+  row.path = targetPath
+  row.name = nextName || getFileName(targetPath) || row.name
+
+  selectedRows.value = selectedRows.value.map(item => item?.path === sourcePath ? row : item)
+
+  const nextSelectedPaths = new Set(selectedRowPaths.value)
+
+  if (nextSelectedPaths.delete(sourcePath)) nextSelectedPaths.add(targetPath)
+
+  selectedRowPaths.value = nextSelectedPaths
+
+}
+
+
+
+function refreshAfterMoveInBackground (sourceLibraryId, targetLibraryId) {
+
+  refreshAfterMove(sourceLibraryId, targetLibraryId).catch((error) => {
+    ElMessage.warning('移动已完成，但刷新列表失败：' + (error?.response?.data?.detail || error?.message || '未知错误'))
+  })
+
+}
+
+
+
+function refreshCurrentLibraryAndStatsInBackground (messagePrefix = '操作已完成') {
+
+  Promise.all([
+    refreshLibrary({ silent: true }),
+    isRemoteCurrentLibrary.value ? Promise.resolve() : refreshStats(false, { silent: true, refreshLibraryId: selectedLibraryId.value })
+  ]).catch((error) => {
+    ElMessage.warning(`${messagePrefix}，但刷新列表失败：` + (error?.response?.data?.detail || error?.message || '未知错误'))
+  })
+
+}
+
+
+
+function refreshAfterMutationInBackground ({ deletedBytes = 0, deletedFolderCount = 0, libraryId = selectedLibraryId.value, messagePrefix = '操作已完成' } = {}) {
+
+  Promise.all([
+    refreshLibrary({ silent: true }),
+    refreshStatsAfterMutation({ deletedBytes, deletedFolderCount, libraryId })
+  ]).catch((error) => {
+    ElMessage.warning(`${messagePrefix}，但刷新列表失败：` + (error?.response?.data?.detail || error?.message || '未知错误'))
+  })
+
+}
+
+
+
 async function executeLibraryMove ({ sourceLibraryId, targetLibraryId, targetPath, items, conflictStrategy = 'suffix' }) {
 
   const result = await libraryApi.browserMove(
@@ -16620,9 +17196,11 @@ async function executeLibraryMove ({ sourceLibraryId, targetLibraryId, targetPat
 
   notifyMoveResult(result)
 
+  pruneMovedRowsFromCurrentView(result)
+
   clearSelection()
 
-  await refreshAfterMove(sourceLibraryId, targetLibraryId)
+  refreshAfterMoveInBackground(sourceLibraryId, targetLibraryId)
 
   return result
 
@@ -16728,17 +17306,17 @@ async function renameItem (row) {
 
   try {
 
-    await libraryApi.browserRename(renameForm.value.libraryId || selectedLibraryId.value, renameForm.value.path, renameForm.value.newName)
+    const data = await libraryApi.browserRename(renameForm.value.libraryId || selectedLibraryId.value, renameForm.value.path, renameForm.value.newName)
 
     ElMessage.success('重命名成功')
 
-    await Promise.all([
+    const nextPath = data?.new_path || data?.path || ''
 
-      refreshLibrary(),
+    if (nextPath) {
+      replaceRowPathInCurrentView(renameForm.value.path, nextPath, renameForm.value.newName)
+    }
 
-      isRemoteCurrentLibrary.value ? Promise.resolve() : refreshStats(false, { silent: true, refreshLibraryId: selectedLibraryId.value })
-
-    ])
+    refreshCurrentLibraryAndStatsInBackground('重命名已完成')
 
   } catch (error) {
 
@@ -16766,13 +17344,11 @@ async function apiRenameItem (row) {
 
     ElMessage.success(data.message || 'API 重命名成功')
 
-    await Promise.all([
+    if (data?.path) {
+      replaceRowPathInCurrentView(row.path, data.path, data.new_name || '')
+    }
 
-      refreshLibrary(),
-
-      isRemoteCurrentLibrary.value ? Promise.resolve() : refreshStats(false, { silent: true, refreshLibraryId: selectedLibraryId.value })
-
-    ])
+    refreshCurrentLibraryAndStatsInBackground('API 重命名已完成')
 
   } catch (error) {
 
@@ -16851,21 +17427,14 @@ async function deleteItem (row) {
 
     ElMessage.success('删除成功')
 
-    await Promise.all([
+    pruneRowsFromCurrentViewByPaths([row.path])
 
-      refreshLibrary(),
-
-      refreshStatsAfterMutation({
-
-        deletedBytes: preview.size || 0,
-
-        deletedFolderCount: preview.folder_count || 0,
-
-        libraryId: selectedLibraryId.value
-
-      })
-
-    ])
+    refreshAfterMutationInBackground({
+      deletedBytes: preview.size || 0,
+      deletedFolderCount: preview.folder_count || 0,
+      libraryId: selectedLibraryId.value,
+      messagePrefix: '删除已完成'
+    })
 
   } catch (error) {
 
@@ -16887,48 +17456,47 @@ async function handleBatchComputeSize () {
 
   batchComputingSize.value = true
 
-  let successCount = 0
+  try {
 
-  let failCount = 0
+    const result = await libraryApi.computeFolderSizes(targets.map(row => row.path))
 
-  for (const row of targets) {
+    const results = Array.isArray(result?.results) ? result.results : []
 
-    computingSizeId.value = row.id
+    const sizeByPath = new Map(results
+      .filter(item => item?.success)
+      .map(item => [String(item.path || ''), Number(item.size || 0)]))
 
-    try {
-
-      const result = await libraryApi.computeFolderSize(row.path)
-
-      const sizeBytes = result?.size ?? 0
-
+    for (const row of targets) {
+      if (!sizeByPath.has(row.path)) continue
       const target = files.value.find(f => f.id === row.id)
-
       if (target) {
-        target.size = sizeBytes
+        target.size = sizeByPath.get(row.path) || 0
         target.size_status = 'ready'
       }
+    }
 
-      successCount++
+    const successCount = Number(result?.success_count || sizeByPath.size)
+    const failCount = Number(result?.failed_count || Math.max(0, targets.length - successCount))
 
-    } catch {
+    if (failCount === 0) {
 
-      failCount++
+      ElMessage.success(`批量计算完成：${successCount} 个文件夹大小已更新`)
+
+    } else {
+
+      ElMessage.warning(`批量计算：${successCount} 个成功，${failCount} 个失败`)
 
     }
 
-  }
+  } catch (error) {
 
-  computingSizeId.value = null
+    ElMessage.error('批量计算大小失败：' + (error.response?.data?.detail || error.message || '未知错误'))
 
-  batchComputingSize.value = false
+  } finally {
 
-  if (failCount === 0) {
+    computingSizeId.value = null
 
-    ElMessage.success(`批量计算完成：${successCount} 个文件夹大小已更新`)
-
-  } else {
-
-    ElMessage.warning(`批量计算：${successCount} 个成功，${failCount} 个失败`)
+    batchComputingSize.value = false
 
   }
 
@@ -16966,23 +17534,16 @@ async function handleBatchDelete () {
 
     ElMessage.success(`批量删除完成：成功 ${result.success_count || 0} 项`)
 
+    pruneRowsFromCurrentViewByPaths(paths)
+
     clearSelection()
 
-    await Promise.all([
-
-      refreshLibrary(),
-
-      refreshStatsAfterMutation({
-
-        deletedBytes: preview.total_size || 0,
-
-        deletedFolderCount: preview.total_folder_count || 0,
-
-        libraryId: selectedLibraryId.value
-
-      })
-
-    ])
+    refreshAfterMutationInBackground({
+      deletedBytes: preview.total_size || 0,
+      deletedFolderCount: preview.total_folder_count || 0,
+      libraryId: selectedLibraryId.value,
+      messagePrefix: '批量删除已完成'
+    })
 
   } catch (error) {
 
@@ -17038,34 +17599,125 @@ async function handleBatchAutoCircleGroup () {
 
   batchAutoCircleGrouping.value = true
 
+  batchAutoCircleRunningIds.value = new Set(targetRows.map(row => row.id).filter(Boolean))
+
   const results = []
 
   try {
 
+    autoCircleGroupRunningId.value = targetRows[0]?.id || null
+
+    const rowByPath = new Map(targetRows.map(row => [row.path, row]))
+
+    const batchData = await libraryApi.batchAutoCircleGroup(
+      selectedLibraryId.value,
+      targetRows.map(row => row.path).filter(Boolean)
+    )
+
+    const batchResults = Array.isArray(batchData?.results) ? batchData.results : []
+
+    const fallbackRows = []
+
+    const handledPaths = new Set()
+
+    for (const item of batchResults) {
+
+      const itemPath = String(item?.path || item?.row_path || '').trim()
+
+      if (itemPath) handledPaths.add(itemPath)
+
+      const row = rowByPath.get(itemPath)
+
+      if (item?.need_api_rename && row) {
+
+        fallbackRows.push(row)
+
+        continue
+
+      }
+
+      results.push({
+        path: itemPath || row?.path || '',
+        success: Boolean(item?.success),
+        skipped: Boolean(item?.skipped),
+        message: item?.message || (item?.success ? '已按社团分类' : ''),
+        error: item?.error || item?.detail || ''
+      })
+
+    }
+
     for (const row of targetRows) {
 
-      autoCircleGroupRunningId.value = row.id
-
-      try {
-
-        const data = await runAutoCircleGroupForRow(row)
-
-        results.push({
-          path: row.path,
-          success: Boolean(data?.success),
-          skipped: Boolean(data?.skipped),
-          message: data?.message || '已按社团分类'
-        })
-
-      } catch (error) {
+      if (!handledPaths.has(row.path)) {
 
         results.push({
           path: row.path,
           success: false,
-          error: error.response?.data?.detail || error.message || '未知错误'
+          error: '批量接口未返回该项目结果'
         })
 
       }
+
+    }
+
+    batchAutoCircleRunningIds.value = new Set(fallbackRows.map(row => row.id).filter(Boolean))
+
+    const concurrency = Math.min(4, Math.max(1, fallbackRows.length))
+
+    let cursor = 0
+
+    const runNext = async () => {
+
+      while (cursor < fallbackRows.length) {
+
+        const currentIndex = cursor
+
+        cursor += 1
+
+        const row = fallbackRows[currentIndex]
+
+        autoCircleGroupRunningId.value = row.id
+
+        batchAutoCircleRunningIds.value = new Set([...batchAutoCircleRunningIds.value, row.id])
+
+        try {
+
+          const data = await runAutoCircleGroupForRow(row)
+
+          results.push({
+            path: row.path,
+            success: Boolean(data?.success),
+            skipped: Boolean(data?.skipped),
+            message: data?.message || '已按社团分类'
+          })
+
+        } catch (error) {
+
+          results.push({
+            path: row.path,
+            success: false,
+            error: error.response?.data?.detail || error.message || '未知错误'
+          })
+
+        } finally {
+
+          const nextRunning = new Set(batchAutoCircleRunningIds.value)
+
+          nextRunning.delete(row.id)
+
+          batchAutoCircleRunningIds.value = nextRunning
+
+          autoCircleGroupRunningId.value = nextRunning.values().next().value || null
+
+        }
+
+      }
+
+    }
+
+    if (fallbackRows.length) {
+
+      await Promise.all(Array.from({ length: concurrency }, () => runNext()))
 
     }
 
@@ -17089,13 +17741,11 @@ async function handleBatchAutoCircleGroup () {
 
     }
 
-    await Promise.all([
+    pruneRowsFromCurrentViewByPaths(results
+      .filter(item => item.success && !item.skipped)
+      .map(item => item.path))
 
-      refreshLibrary(),
-
-      isRemoteCurrentLibrary.value ? Promise.resolve() : refreshStats(false, { silent: true, refreshLibraryId: selectedLibraryId.value })
-
-    ])
+    refreshCurrentLibraryAndStatsInBackground()
 
   } catch (error) {
 
@@ -17104,6 +17754,8 @@ async function handleBatchAutoCircleGroup () {
   } finally {
 
     autoCircleGroupRunningId.value = null
+
+    batchAutoCircleRunningIds.value = new Set()
 
     batchAutoCircleGrouping.value = false
 
@@ -17179,7 +17831,13 @@ async function handleBatchApiRename () {
 
           const data = await libraryApi.apiRename(row.path, selectedLibraryId.value)
 
-          results.push({ path: row.path, success: true, message: data.message || 'API 重命名成功' })
+          results.push({
+            path: row.path,
+            success: true,
+            nextPath: data?.path || '',
+            nextName: data?.new_name || '',
+            message: data.message || 'API 重命名成功'
+          })
 
         } catch (error) {
 
@@ -17219,13 +17877,11 @@ async function handleBatchApiRename () {
 
     }
 
-    await Promise.all([
+    results
+      .filter(item => item.success && item.nextPath)
+      .forEach(item => replaceRowPathInCurrentView(item.path, item.nextPath, item.nextName))
 
-      refreshLibrary(),
-
-      isRemoteCurrentLibrary.value ? Promise.resolve() : refreshStats(false, { silent: true, refreshLibraryId: selectedLibraryId.value })
-
-    ])
+    refreshCurrentLibraryAndStatsInBackground('批量 API 重命名已完成')
 
   } catch (error) {
 
@@ -17273,21 +17929,12 @@ async function openFolderContentsDialog (row) {
 
 async function handleFolderDialogMutated ({ deletedBytes = 0, deletedFolderCount = 0 } = {}) {
 
-  await Promise.all([
-
-    refreshLibrary({ silent: true }),
-
-    refreshStatsAfterMutation({
-
-      deletedBytes,
-
-      deletedFolderCount,
-
-      libraryId: folderDialogLibraryId.value || selectedLibraryId.value
-
-    })
-
-  ])
+  refreshAfterMutationInBackground({
+    deletedBytes,
+    deletedFolderCount,
+    libraryId: folderDialogLibraryId.value || selectedLibraryId.value,
+    messagePrefix: '文件管理操作已完成'
+  })
 
 }
 
@@ -17531,33 +18178,36 @@ async function openSubtitleInspectorFilterDeleteDialog () {
 
 async function handleFilterDeleteDeleted ({ deletedBytes = 0, deletedFolderCount = 0 } = {}) {
 
-  await Promise.all([
+  refreshLibrary({ silent: true }).catch((error) => {
+    ElMessage.warning('删除过滤已完成，但刷新列表失败：' + (error?.response?.data?.detail || error?.message || '未知错误'))
+  })
 
-    refreshLibrary({ silent: true }),
+  refreshStatsAfterMutation({
+    deletedBytes,
+    deletedFolderCount,
+    libraryId: filterDeleteDialogLibraryId.value || selectedLibraryId.value
+  }).catch((error) => {
+    ElMessage.warning('删除过滤已完成，但刷新统计失败：' + (error?.response?.data?.detail || error?.message || '未知错误'))
+  })
 
-    folderDialogVisible.value && folderDialogRef.value?.reload ? folderDialogRef.value.reload() : Promise.resolve(),
+  if (folderDialogVisible.value && folderDialogRef.value?.reload) {
+    folderDialogRef.value.reload().catch((error) => {
+      ElMessage.warning('删除过滤已完成，但刷新文件管理列表失败：' + (error?.response?.data?.detail || error?.message || '未知错误'))
+    })
+  }
 
+  if (
     subtitleDialogVisible.value &&
 
     String(subtitleInspectorInfo.value.folderPath || subtitleInspectorInfo.value.subtitleDir || '').trim() &&
 
     filterDeleteDialogTargetPaths.value.includes(String(subtitleInspectorInfo.value.folderPath || subtitleInspectorInfo.value.subtitleDir || '').trim())
 
-      ? reloadSubtitleInspector()
-
-      : Promise.resolve(),
-
-    refreshStatsAfterMutation({
-
-      deletedBytes,
-
-      deletedFolderCount,
-
-      libraryId: filterDeleteDialogLibraryId.value || selectedLibraryId.value
-
+  ) {
+    reloadSubtitleInspector().catch((error) => {
+      ElMessage.warning('删除过滤已完成，但刷新字幕检查器失败：' + (error?.response?.data?.detail || error?.message || '未知错误'))
     })
-
-  ])
+  }
 
 }
 
@@ -17929,7 +18579,7 @@ function isLibraryRowOperating (row) {
   return apiRenamingId.value === row.id ||
     computingSizeId.value === row.id ||
     autoCircleGroupRunningId.value === row.id ||
-    (batchAutoCircleGrouping.value && autoCircleGroupRunningId.value === row.id) ||
+    batchAutoCircleRunningIds.value.has(row.id) ||
     isBatchApiRenameRunning(row)
 
 }

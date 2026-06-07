@@ -140,7 +140,10 @@ html.kikoerumanager-dark .el-message--error .el-message__icon {
 
 html.kikoerumanager-dark,
 html.kikoerumanager-dark body,
-body.kikoerumanager-dark,
+body.kikoerumanager-dark {
+  background: var(--km-dark-bg) !important;
+}
+
 html.kikoerumanager-dark #app,
 html.kikoerumanager-dark .app-container,
 html.kikoerumanager-dark .main-frame,
@@ -278,7 +281,25 @@ html.kikoerumanager-dark :is(
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark :is(
+html.kikoerumanager-dark #app :is(
+  .el-input__wrapper,
+  .el-textarea__inner,
+  .el-select__wrapper,
+  .el-input-number,
+  .el-radio-button__inner,
+  .el-date-editor,
+  input,
+  textarea,
+  select
+),
+html.kikoerumanager-dark body > :is(
+  .el-overlay,
+  .el-popper,
+  .el-message-box,
+  .custom-preview-overlay,
+  .vault-modal-layer,
+  .system-prompt-overlay
+) :is(
   .el-input__wrapper,
   .el-textarea__inner,
   .el-select__wrapper,
@@ -297,16 +318,40 @@ html.kikoerumanager-dark :is(
   text-shadow: none !important;
 }
 
-html.kikoerumanager-dark :is(.el-input__inner, .el-select__input, input, textarea, select)::placeholder {
+html.kikoerumanager-dark #app :is(.el-input__inner, .el-select__input, input, textarea, select)::placeholder,
+html.kikoerumanager-dark body > :is(
+  .el-overlay,
+  .el-popper,
+  .el-message-box,
+  .custom-preview-overlay,
+  .vault-modal-layer,
+  .system-prompt-overlay
+) :is(.el-input__inner, .el-select__input, input, textarea, select)::placeholder {
   color: var(--km-dark-text-subtle) !important;
 }
 
-html.kikoerumanager-dark :is(.el-input__wrapper:hover, .el-textarea__inner:hover, input:hover, textarea:hover, select:hover) {
+html.kikoerumanager-dark #app :is(.el-input__wrapper:hover, .el-textarea__inner:hover, input:hover, textarea:hover, select:hover),
+html.kikoerumanager-dark body > :is(
+  .el-overlay,
+  .el-popper,
+  .el-message-box,
+  .custom-preview-overlay,
+  .vault-modal-layer,
+  .system-prompt-overlay
+) :is(.el-input__wrapper:hover, .el-textarea__inner:hover, input:hover, textarea:hover, select:hover) {
   border-color: var(--km-dark-border-strong) !important;
   box-shadow: none !important;
 }
 
-html.kikoerumanager-dark :is(.el-input__wrapper.is-focus, .el-textarea__inner:focus, input:focus, textarea:focus, select:focus) {
+html.kikoerumanager-dark #app :is(.el-input__wrapper.is-focus, .el-textarea__inner:focus, input:focus, textarea:focus, select:focus),
+html.kikoerumanager-dark body > :is(
+  .el-overlay,
+  .el-popper,
+  .el-message-box,
+  .custom-preview-overlay,
+  .vault-modal-layer,
+  .system-prompt-overlay
+) :is(.el-input__wrapper.is-focus, .el-textarea__inner:focus, input:focus, textarea:focus, select:focus) {
   border-color: var(--km-dark-border-strong) !important;
   box-shadow: none !important;
   outline: none !important;
@@ -334,7 +379,7 @@ html.kikoerumanager-dark .el-table--enable-row-hover .el-table__body tr:hover > 
   background: var(--km-dark-surface-hover) !important;
 }
 
-html.kikoerumanager-dark :is(
+html.kikoerumanager-dark #app :is(
   .bg-white,
   .bg-white\/95,
   .bg-white\/90,
@@ -348,16 +393,16 @@ html.kikoerumanager-dark :is(
   .bg-gray-50,
   .bg-zinc-50
 ),
-html.kikoerumanager-dark [class*="bg-white"],
-html.kikoerumanager-dark [class*="bg-slate-50"],
-html.kikoerumanager-dark [class*="bg-neutral-50"],
-html.kikoerumanager-dark [class*="bg-gray-50"],
-html.kikoerumanager-dark [class*="bg-zinc-50"] {
+html.kikoerumanager-dark #app [class*="bg-white"],
+html.kikoerumanager-dark #app [class*="bg-slate-50"],
+html.kikoerumanager-dark #app [class*="bg-neutral-50"],
+html.kikoerumanager-dark #app [class*="bg-gray-50"],
+html.kikoerumanager-dark #app [class*="bg-zinc-50"] {
   background: var(--km-dark-surface) !important;
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark :is(
+html.kikoerumanager-dark #app :is(
   .bg-slate-100,
   .bg-slate-100\/95,
   .bg-slate-100\/90,
@@ -366,28 +411,28 @@ html.kikoerumanager-dark :is(
   .bg-gray-100,
   .bg-zinc-100
 ),
-html.kikoerumanager-dark [class*="bg-slate-100"],
-html.kikoerumanager-dark [class*="bg-neutral-100"],
-html.kikoerumanager-dark [class*="bg-gray-100"],
-html.kikoerumanager-dark [class*="bg-zinc-100"] {
+html.kikoerumanager-dark #app [class*="bg-slate-100"],
+html.kikoerumanager-dark #app [class*="bg-neutral-100"],
+html.kikoerumanager-dark #app [class*="bg-gray-100"],
+html.kikoerumanager-dark #app [class*="bg-zinc-100"] {
   background: var(--km-dark-surface-soft) !important;
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark [class*="from-white"],
-html.kikoerumanager-dark [class*="via-white"],
-html.kikoerumanager-dark [class*="to-white"],
-html.kikoerumanager-dark [class*="from-slate-50"],
-html.kikoerumanager-dark [class*="via-slate-50"],
-html.kikoerumanager-dark [class*="to-slate-50"],
-html.kikoerumanager-dark [class*="from-gray-50"],
-html.kikoerumanager-dark [class*="to-gray-50"] {
+html.kikoerumanager-dark #app [class*="from-white"],
+html.kikoerumanager-dark #app [class*="via-white"],
+html.kikoerumanager-dark #app [class*="to-white"],
+html.kikoerumanager-dark #app [class*="from-slate-50"],
+html.kikoerumanager-dark #app [class*="via-slate-50"],
+html.kikoerumanager-dark #app [class*="to-slate-50"],
+html.kikoerumanager-dark #app [class*="from-gray-50"],
+html.kikoerumanager-dark #app [class*="to-gray-50"] {
   --tw-gradient-from: var(--km-dark-surface) var(--tw-gradient-from-position) !important;
   --tw-gradient-via: var(--km-dark-surface-soft) var(--tw-gradient-via-position) !important;
   --tw-gradient-to: var(--km-dark-surface) var(--tw-gradient-to-position) !important;
 }
 
-html.kikoerumanager-dark :is(
+html.kikoerumanager-dark #app :is(
   .border-slate-100,
   .border-slate-100\/80,
   .border-slate-200,
@@ -399,16 +444,16 @@ html.kikoerumanager-dark :is(
   .divide-slate-100 > :not([hidden]) ~ :not([hidden]),
   .divide-slate-200 > :not([hidden]) ~ :not([hidden])
 ),
-html.kikoerumanager-dark [class*="border-slate-100"],
-html.kikoerumanager-dark [class*="border-slate-200"],
-html.kikoerumanager-dark [class*="border-gray-100"],
-html.kikoerumanager-dark [class*="border-gray-200"],
-html.kikoerumanager-dark [class*="border-neutral-100"],
-html.kikoerumanager-dark [class*="border-neutral-200"] {
+html.kikoerumanager-dark #app [class*="border-slate-100"],
+html.kikoerumanager-dark #app [class*="border-slate-200"],
+html.kikoerumanager-dark #app [class*="border-gray-100"],
+html.kikoerumanager-dark #app [class*="border-gray-200"],
+html.kikoerumanager-dark #app [class*="border-neutral-100"],
+html.kikoerumanager-dark #app [class*="border-neutral-200"] {
   border-color: var(--km-dark-border) !important;
 }
 
-html.kikoerumanager-dark :is(
+html.kikoerumanager-dark #app :is(
   .text-slate-950,
   .text-slate-900,
   .text-slate-800,
@@ -420,16 +465,16 @@ html.kikoerumanager-dark :is(
   .text-zinc-800,
   .hover\:text-slate-900:hover
 ),
-html.kikoerumanager-dark [class*="text-slate-900"],
-html.kikoerumanager-dark [class*="text-slate-800"],
-html.kikoerumanager-dark [class*="text-gray-900"],
-html.kikoerumanager-dark [class*="text-gray-800"],
-html.kikoerumanager-dark [class*="text-zinc-900"],
-html.kikoerumanager-dark [class*="text-zinc-800"] {
+html.kikoerumanager-dark #app [class*="text-slate-900"],
+html.kikoerumanager-dark #app [class*="text-slate-800"],
+html.kikoerumanager-dark #app [class*="text-gray-900"],
+html.kikoerumanager-dark #app [class*="text-gray-800"],
+html.kikoerumanager-dark #app [class*="text-zinc-900"],
+html.kikoerumanager-dark #app [class*="text-zinc-800"] {
   color: var(--km-dark-text-strong) !important;
 }
 
-html.kikoerumanager-dark :is(
+html.kikoerumanager-dark #app :is(
   .text-slate-700,
   .text-slate-600,
   .text-gray-700,
@@ -438,16 +483,16 @@ html.kikoerumanager-dark :is(
   .text-zinc-600,
   .hover\:text-slate-700:hover
 ),
-html.kikoerumanager-dark [class*="text-slate-700"],
-html.kikoerumanager-dark [class*="text-slate-600"],
-html.kikoerumanager-dark [class*="text-gray-700"],
-html.kikoerumanager-dark [class*="text-gray-600"],
-html.kikoerumanager-dark [class*="text-zinc-700"],
-html.kikoerumanager-dark [class*="text-zinc-600"] {
+html.kikoerumanager-dark #app [class*="text-slate-700"],
+html.kikoerumanager-dark #app [class*="text-slate-600"],
+html.kikoerumanager-dark #app [class*="text-gray-700"],
+html.kikoerumanager-dark #app [class*="text-gray-600"],
+html.kikoerumanager-dark #app [class*="text-zinc-700"],
+html.kikoerumanager-dark #app [class*="text-zinc-600"] {
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark :is(
+html.kikoerumanager-dark #app :is(
   .text-slate-500,
   .text-slate-400,
   .text-slate-300,
@@ -456,70 +501,70 @@ html.kikoerumanager-dark :is(
   .text-zinc-500,
   .text-zinc-400
 ),
-html.kikoerumanager-dark [class*="text-slate-500"],
-html.kikoerumanager-dark [class*="text-slate-400"],
-html.kikoerumanager-dark [class*="text-slate-300"],
-html.kikoerumanager-dark [class*="text-gray-500"],
-html.kikoerumanager-dark [class*="text-gray-400"],
-html.kikoerumanager-dark [class*="text-zinc-500"],
-html.kikoerumanager-dark [class*="text-zinc-400"] {
+html.kikoerumanager-dark #app [class*="text-slate-500"],
+html.kikoerumanager-dark #app [class*="text-slate-400"],
+html.kikoerumanager-dark #app [class*="text-slate-300"],
+html.kikoerumanager-dark #app [class*="text-gray-500"],
+html.kikoerumanager-dark #app [class*="text-gray-400"],
+html.kikoerumanager-dark #app [class*="text-zinc-500"],
+html.kikoerumanager-dark #app [class*="text-zinc-400"] {
   color: var(--km-dark-text-muted) !important;
 }
 
-html.kikoerumanager-dark :is(.bg-blue-50, .bg-sky-50, .bg-indigo-50, .bg-violet-50),
-html.kikoerumanager-dark [class*="bg-blue-50"],
-html.kikoerumanager-dark [class*="bg-sky-50"],
-html.kikoerumanager-dark [class*="bg-indigo-50"],
-html.kikoerumanager-dark [class*="bg-violet-50"] {
+html.kikoerumanager-dark #app :is(.bg-blue-50, .bg-sky-50, .bg-indigo-50, .bg-violet-50),
+html.kikoerumanager-dark #app [class*="bg-blue-50"],
+html.kikoerumanager-dark #app [class*="bg-sky-50"],
+html.kikoerumanager-dark #app [class*="bg-indigo-50"],
+html.kikoerumanager-dark #app [class*="bg-violet-50"] {
   background: var(--km-dark-info-bg) !important;
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark :is(
+html.kikoerumanager-dark #app :is(
   .border-blue-200,
   .border-sky-200,
   .border-indigo-200,
   .border-violet-200
 ),
-html.kikoerumanager-dark [class*="border-blue-200"],
-html.kikoerumanager-dark [class*="border-sky-200"],
-html.kikoerumanager-dark [class*="border-indigo-200"],
-html.kikoerumanager-dark [class*="border-violet-200"] {
+html.kikoerumanager-dark #app [class*="border-blue-200"],
+html.kikoerumanager-dark #app [class*="border-sky-200"],
+html.kikoerumanager-dark #app [class*="border-indigo-200"],
+html.kikoerumanager-dark #app [class*="border-violet-200"] {
   border-color: var(--km-dark-border-strong) !important;
 }
 
-html.kikoerumanager-dark :is(
+html.kikoerumanager-dark #app :is(
   .bg-emerald-50,
   .bg-green-50,
   .from-emerald-50,
   .to-emerald-50
 ),
-html.kikoerumanager-dark [class*="bg-emerald-50"],
-html.kikoerumanager-dark [class*="bg-green-50"] {
+html.kikoerumanager-dark #app [class*="bg-emerald-50"],
+html.kikoerumanager-dark #app [class*="bg-green-50"] {
   background: var(--km-dark-green-bg) !important;
   color: #d9fbe8 !important;
 }
 
-html.kikoerumanager-dark :is(
+html.kikoerumanager-dark #app :is(
   .bg-amber-50,
   .bg-yellow-50,
   .from-amber-50,
   .to-amber-50
 ),
-html.kikoerumanager-dark [class*="bg-amber-50"],
-html.kikoerumanager-dark [class*="bg-yellow-50"] {
+html.kikoerumanager-dark #app [class*="bg-amber-50"],
+html.kikoerumanager-dark #app [class*="bg-yellow-50"] {
   background: var(--km-dark-amber-bg) !important;
   color: #fff1c2 !important;
 }
 
-html.kikoerumanager-dark :is(
+html.kikoerumanager-dark #app :is(
   .bg-rose-50,
   .bg-red-50,
   .from-rose-50,
   .to-rose-50
 ),
-html.kikoerumanager-dark [class*="bg-rose-50"],
-html.kikoerumanager-dark [class*="bg-red-50"] {
+html.kikoerumanager-dark #app [class*="bg-rose-50"],
+html.kikoerumanager-dark #app [class*="bg-red-50"] {
   background: var(--km-dark-red-bg) !important;
   color: #ffe1e4 !important;
 }
@@ -1427,8 +1472,6 @@ html.kikoerumanager-dark :is(
   .task-file-tree-card,
   .conflicts-list-pane,
   .conflicts-detail-pane,
-  .conflicts-detail-panel,
-  .conflicts-detail-section,
   .conflicts-list-card,
   .conflicts-empty,
   .settings-card,
@@ -2426,7 +2469,7 @@ html.kikoerumanager-dark .subtitle-workbench-overlay {
   background: rgba(0, 0, 0, 0.58) !important;
 }
 
-html.kikoerumanager-dark body :is(
+html.kikoerumanager-dark body #app :is(
   .bg-blue-600,
   .bg-blue-500,
   .bg-indigo-600,
@@ -2440,19 +2483,19 @@ html.kikoerumanager-dark body :is(
   .from-indigo-600,
   .to-indigo-600
 ),
-html.kikoerumanager-dark body [class*="bg-blue-600"],
-html.kikoerumanager-dark body [class*="bg-blue-500"],
-html.kikoerumanager-dark body [class*="bg-indigo-600"],
-html.kikoerumanager-dark body [class*="bg-indigo-500"],
-html.kikoerumanager-dark body [class*="bg-sky-600"],
-html.kikoerumanager-dark body [class*="bg-sky-500"] {
+html.kikoerumanager-dark body #app [class*="bg-blue-600"],
+html.kikoerumanager-dark body #app [class*="bg-blue-500"],
+html.kikoerumanager-dark body #app [class*="bg-indigo-600"],
+html.kikoerumanager-dark body #app [class*="bg-indigo-500"],
+html.kikoerumanager-dark body #app [class*="bg-sky-600"],
+html.kikoerumanager-dark body #app [class*="bg-sky-500"] {
   background: var(--km-dark-primary-button-bg) !important;
   border-color: rgba(255, 255, 255, 0.3) !important;
   color: var(--km-dark-primary-button-text) !important;
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.42) !important;
 }
 
-html.kikoerumanager-dark body :is(
+html.kikoerumanager-dark body #app :is(
   .hover\:bg-blue-600:hover,
   .hover\:bg-blue-500:hover,
   .hover\:bg-indigo-600:hover,
@@ -2464,12 +2507,33 @@ html.kikoerumanager-dark body :is(
   color: #0e0e12 !important;
 }
 
-html.kikoerumanager-dark body [data-section="dashboard-command"] :is(
+html.kikoerumanager-dark body .subtitle-workbench-dialog :is(
+  .hover\:bg-blue-600:hover,
+  .hover\:bg-blue-500:hover,
+  .hover\:bg-indigo-600:hover,
+  .hover\:bg-indigo-500:hover,
+  .hover\:bg-sky-600:hover,
+  .hover\:bg-sky-500:hover,
+  [class*="hover:bg-blue-600"]:hover,
+  [class*="hover:bg-blue-500"]:hover,
+  [class*="hover:bg-indigo-600"]:hover,
+  [class*="hover:bg-indigo-500"]:hover,
+  [class*="hover:bg-sky-600"]:hover,
+  [class*="hover:bg-sky-500"]:hover
+) {
+  background: #333438 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-command"] :is(
   .bg-blue-600,
   .dash-cmd-btn:first-child,
   .dash-cmd-btn
 ),
-html.kikoerumanager-dark body [data-section="dashboard-hero"] :is(
+html.kikoerumanager-dark body #app [data-section="dashboard-hero"] :is(
   .bg-slate-900,
   .hover\:bg-slate-800:hover
 ) {
@@ -2479,7 +2543,50 @@ html.kikoerumanager-dark body [data-section="dashboard-hero"] :is(
   box-shadow: 0 14px 30px rgba(0, 0, 0, 0.44), inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
 }
 
-html.kikoerumanager-dark body :is(
+html.kikoerumanager-dark body #app [data-section="dashboard-command"] .dash-cmd-scan.dash-cmd-scan {
+  background:
+    linear-gradient(180deg, rgba(31, 34, 41, 0.98) 0%, rgba(18, 21, 28, 0.98) 100%) !important;
+  border: 1px solid rgba(96, 165, 250, 0.38) !important;
+  color: #dbeafe !important;
+  text-shadow: none !important;
+  box-shadow:
+    0 0 0 1px rgba(59, 130, 246, 0.1),
+    0 8px 20px rgba(0, 0, 0, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 3px 0 0 rgba(56, 189, 248, 0.58) !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-command"] .dash-cmd-scan.dash-cmd-scan svg {
+  color: #38bdf8 !important;
+  stroke: currentColor !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-command"] .dash-cmd-scan.dash-cmd-scan:hover {
+  background:
+    linear-gradient(180deg, rgba(39, 44, 54, 1) 0%, rgba(24, 29, 39, 1) 100%) !important;
+  border-color: rgba(125, 211, 252, 0.52) !important;
+  color: #eff6ff !important;
+  box-shadow:
+    0 0 0 1px rgba(56, 189, 248, 0.16),
+    0 10px 24px rgba(0, 0, 0, 0.32),
+    0 0 14px rgba(56, 189, 248, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.13),
+    inset 3px 0 0 rgba(125, 211, 252, 0.78) !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-command"] .dash-cmd-scan.dash-cmd-scan:disabled {
+  background:
+    linear-gradient(180deg, rgba(31, 34, 41, 0.72) 0%, rgba(18, 21, 28, 0.72) 100%) !important;
+  border-color: rgba(96, 165, 250, 0.22) !important;
+  color: rgba(219, 234, 254, 0.58) !important;
+  box-shadow:
+    0 0 0 1px rgba(59, 130, 246, 0.06),
+    0 8px 18px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    inset 3px 0 0 rgba(56, 189, 248, 0.28) !important;
+}
+
+html.kikoerumanager-dark body #app :is(
   .dash-icon-btn,
   .dash-cmd-btn:not(:first-child),
   .dash-archive-refresh-btn,
@@ -2492,7 +2599,7 @@ html.kikoerumanager-dark body :is(
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
 }
 
-html.kikoerumanager-dark body :is(
+html.kikoerumanager-dark body #app :is(
   .dash-icon-btn:hover,
   .dash-cmd-btn:not(:first-child):hover,
   .dash-archive-refresh-btn:hover,
@@ -2504,7 +2611,7 @@ html.kikoerumanager-dark body :is(
   color: var(--km-dark-text-strong) !important;
 }
 
-html.kikoerumanager-dark body :is(
+html.kikoerumanager-dark body #app :is(
   .dash-kpi,
   .dash-status-chip,
   .dash-kpi:hover,
@@ -2515,7 +2622,7 @@ html.kikoerumanager-dark body :is(
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark body :is(
+html.kikoerumanager-dark body #app :is(
   .lib-info-strip,
   .conflicts-info-strip
 ) {
@@ -3102,7 +3209,9 @@ html.kikoerumanager-dark {
   html.kikoerumanager-dark .tasks-page .tasks-main > .detail-scroll section,
   html.kikoerumanager-dark .tasks-page .tasks-main > .detail-scroll .mx-4 {
     background: transparent !important;
+    background-image: none !important;
     border-color: var(--tasks-border) !important;
+    box-shadow: none !important;
   }
 
   html.kikoerumanager-dark .tasks-page .tasks-main > .detail-scroll :is(
@@ -4740,9 +4849,9 @@ html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .dash-task-m
 }
 
 html.kikoerumanager-dark body .dash-task-action-menu.dash-task-action-menu {
-  background: rgba(15, 23, 42, 0.96) !important;
+  background: #101012 !important;
   background-image: none !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
   color: #cbd5e1 !important;
   box-shadow: 0 22px 58px rgba(0, 0, 0, 0.56) !important;
 }
@@ -4756,9 +4865,9 @@ html.kikoerumanager-dark body .dash-task-action-menu .dash-task-action-menu-item
 }
 
 html.kikoerumanager-dark body .dash-task-action-menu .dash-task-action-menu-item:hover {
-  background: rgba(255, 255, 255, 0.06) !important;
+  background: #1d1e22 !important;
   color: #ffffff !important;
-  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.14) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
 }
 
 html.kikoerumanager-dark body .dash-task-action-menu .dash-task-action-menu-item--danger {
@@ -4893,4 +5002,120 @@ html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-arch
   -webkit-text-fill-color: #ffffff !important;
   opacity: 1 !important;
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.22) !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-pager.dash-archive-pager {
+  background: rgba(8, 10, 15, 0.98) !important;
+  background-image: none !important;
+  border-top-color: rgba(255, 255, 255, 0.1) !important;
+  color: #e5e7eb !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-pager b {
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-pager-indicator.dash-archive-pager-indicator {
+  background: rgba(255, 255, 255, 0.06) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  color: #f8fafc !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-pager-current.dash-archive-pager-current,
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-pager-total.dash-archive-pager-total {
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-pager-divider.dash-archive-pager-divider {
+  color: rgba(255, 255, 255, 0.48) !important;
+  -webkit-text-fill-color: rgba(255, 255, 255, 0.48) !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-pager-btn.dash-archive-pager-btn {
+  background: rgba(255, 255, 255, 0.06) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #e5e7eb !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-pager-btn.dash-archive-pager-btn:hover {
+  background: rgba(255, 255, 255, 0.11) !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-archive"] .dash-archive-pager-btn.dash-archive-pager-btn:disabled {
+  background: rgba(255, 255, 255, 0.035) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  color: rgba(255, 255, 255, 0.42) !important;
+}
+
+/* 外部油猴 VoiceLinks 弹窗挂在 body 下，不属于 KikoeruManager。
+   暗色兜底里有 body / :is(...) 级规则，这里恢复脚本自己的文字填充和 tag 配色。 */
+html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"]),
+html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] *) {
+  box-sizing: content-box !important;
+  font-family: Arial, Helvetica, sans-serif !important;
+  font-weight: 400 !important;
+  text-shadow: none !important;
+  filter: none !important;
+  opacity: 1 !important;
+}
+
+html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"]) {
+  color: #f6f6f6 !important;
+  -webkit-text-fill-color: #f6f6f6 !important;
+}
+
+html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] [class*="_voice-title"]),
+html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] [class*="_ignored"]) {
+  font-weight: 700 !important;
+}
+
+html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] a) {
+  color: pink !important;
+  -webkit-text-fill-color: pink !important;
+}
+
+html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] [class*="_tag-yellow"]) {
+  background-color: #fff8e1 !important;
+  color: #f57f17 !important;
+  -webkit-text-fill-color: #f57f17 !important;
+}
+
+html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] [class*="_tag-orange"]) {
+  background-color: #ffebcc !important;
+  color: #f04000 !important;
+  -webkit-text-fill-color: #f04000 !important;
+}
+
+html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] [class*="_tag-green"]) {
+  background-color: #dcf5e4 !important;
+  color: #34a853 !important;
+  -webkit-text-fill-color: #34a853 !important;
+}
+
+html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] [class*="_tag-pink"]) {
+  background-color: #ffd9e7 !important;
+  color: #f032a7 !important;
+  -webkit-text-fill-color: #f032a7 !important;
+}
+
+html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] [class*="_tag-darkblue"]) {
+  background-color: #d2e7fa !important;
+  color: #0d47a1 !important;
+  -webkit-text-fill-color: #0d47a1 !important;
+}
+
+html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] [class*="_tag-gray"]) {
+  background-color: #e0e0e0 !important;
+  color: #424242 !important;
+  -webkit-text-fill-color: #424242 !important;
 }

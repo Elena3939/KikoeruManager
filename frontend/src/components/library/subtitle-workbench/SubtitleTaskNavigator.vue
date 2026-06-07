@@ -3,11 +3,11 @@
     ref="rootRef"
     class="subtitle-task-navigator grid h-full min-h-0 grid-rows-[auto_auto_minmax(0,1fr)_auto] gap-2.5"
   >
-    <div class="flex items-center justify-between gap-2">
+    <div class="subtitle-queue-header flex items-center justify-between gap-2">
       <div class="min-w-0">
-        <div class="flex items-center gap-1.5 text-[14px] font-semibold tracking-[-0.015em] text-slate-900">
+        <div class="flex min-w-0 items-center gap-1.5 text-[14px] font-semibold tracking-[-0.015em] text-slate-900">
           <ListTodo class="h-3.5 w-3.5 text-violet-500" :stroke-width="2.2" />
-          <span>执行队列</span>
+          <span class="truncate">执行队列</span>
         </div>
       </div>
 
@@ -490,6 +490,17 @@ function getDisplayFolderName(task) {
 .subtitle-clear-menu-wrap {
   position: relative;
   flex: 0 0 auto;
+  min-width: 0;
+}
+
+.subtitle-task-navigator {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.subtitle-queue-header {
+  min-width: 0;
+  overflow: visible;
 }
 
 .subtitle-queue-body {
@@ -499,9 +510,12 @@ function getDisplayFolderName(task) {
 
 .subtitle-clear-trigger {
   display: inline-flex;
+  max-width: 84px;
   min-height: 30px;
   align-items: center;
+  justify-content: center;
   gap: 5px;
+  overflow: hidden;
   white-space: nowrap;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
@@ -511,6 +525,12 @@ function getDisplayFolderName(task) {
   font-size: 11.5px;
   font-weight: 700;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.subtitle-clear-trigger span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .subtitle-clear-trigger:hover:not(:disabled) {
@@ -666,6 +686,8 @@ function getDisplayFolderName(task) {
   border: 1px solid #e2e8f0;
   border-radius: 12px;
   background: #ffffff;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .subtitle-queue-filter {
@@ -807,6 +829,51 @@ function getDisplayFolderName(task) {
 :global(html.kikoerumanager-dark .subtitle-queue-count.is-active),
 :global(html.kikoerumanager-dark .subtitle-queue-count.has-value) {
   color: rgba(250, 250, 252, 0.94) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-navigator :is(.text-violet-500, .text-violet-600, .text-violet-700)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-navigator :is(.text-violet-500, .text-violet-600, .text-violet-700)) {
+  color: #a78bfa !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-navigator :is(.text-amber-500, .text-amber-600, .text-amber-700)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-navigator :is(.text-amber-500, .text-amber-600, .text-amber-700)) {
+  color: #fbbf24 !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-navigator :is(.text-sky-500, .text-sky-600, .text-sky-700)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-navigator :is(.text-sky-500, .text-sky-600, .text-sky-700)) {
+  color: #38bdf8 !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-navigator :is(.text-emerald-500, .text-emerald-600, .text-emerald-700)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-navigator :is(.text-emerald-500, .text-emerald-600, .text-emerald-700)) {
+  color: #34d399 !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-navigator :is(.text-rose-500, .text-rose-600, .text-rose-700)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-navigator :is(.text-rose-500, .text-rose-600, .text-rose-700)) {
+  color: #fb7185 !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-queue-dot.bg-amber-400),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-queue-dot.bg-amber-400) {
+  background: #fbbf24 !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-queue-dot.bg-sky-500),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-queue-dot.bg-sky-500) {
+  background: #38bdf8 !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-queue-dot.bg-emerald-500),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-queue-dot.bg-emerald-500) {
+  background: #34d399 !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-queue-dot.bg-rose-500),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-queue-dot.bg-rose-500) {
+  background: #fb7185 !important;
 }
 
 .subtitle-status-flip-enter-active,

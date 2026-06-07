@@ -780,6 +780,11 @@ export const libraryApi = {
     return response.data
   },
 
+  computeFolderSizes: async (paths) => {
+    const response = await apiClient.post('/library/browser/compute-folder-sizes', { paths })
+    return response.data
+  },
+
   getStatsLogs: async ({ libraryId = null, lines = 200 } = {}) => {
     const response = await apiClient.get('/library/browser/stats/logs', {
       params: {
@@ -1036,6 +1041,14 @@ export const libraryApi = {
       library_id: libraryId,
       row_path: rowPath,
       preview
+    })
+    return response.data
+  },
+
+  batchAutoCircleGroup: async (libraryId, rowPaths) => {
+    const response = await apiClient.post('/library/batch-auto-circle-group', {
+      library_id: libraryId,
+      row_paths: Array.isArray(rowPaths) ? rowPaths : []
     })
     return response.data
   }
@@ -1563,6 +1576,22 @@ export const baiduNetdiskApi = {
       conflict_policy: payload.conflictPolicy || payload.conflict_policy || '',
       selected_keys: payload.selectedKeys || payload.selected_keys || [],
       selected_items: payload.selectedItems || payload.selected_items || []
+    })
+    return response.data
+  },
+
+  startUpload: async (payload = {}) => {
+    const response = await apiClient.post('/baidu-netdisk/upload/start', {
+      source_paths: payload.sourcePaths || payload.source_paths || [],
+      remote_dir: payload.remoteDir || payload.remote_dir || '/KikoeruManager',
+      create_remote_subdir: payload.createRemoteSubdir || payload.create_remote_subdir || '',
+      compress_enabled: Boolean(payload.compressEnabled ?? payload.compress_enabled),
+      backup_zip_options: payload.backupZipOptions || payload.backup_zip_options || {},
+      conflict_policy: payload.conflictPolicy || payload.conflict_policy || 'skip',
+      cleanup_local_archive: Boolean(payload.cleanupLocalArchive ?? payload.cleanup_local_archive),
+      batch_name: payload.batchName || payload.batch_name || ''
+    }, {
+      timeout: payload.timeout ?? 600000
     })
     return response.data
   },

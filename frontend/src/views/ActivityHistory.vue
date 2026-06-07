@@ -1107,7 +1107,7 @@ const sparkLastPoint = computed(() => {
   }
 })
 
-// 全部分类（不限于前 5），给可滑动列表用
+// 全部分类（不限于前 5），直接在概览区自然铺开，避免面板内再套滚动层
 const allCategories = computed(() => {
   const arr = Array.isArray(stats.by_category) ? stats.by_category : []
   if (!arr.length) return []
@@ -1987,6 +1987,10 @@ watch(totalPages, (val) => {
   background: var(--activity-surface);
 }
 
+.activity-filter-panel {
+  align-self: start;
+}
+
 .activity-panel-title {
   display: flex;
   align-items: center;
@@ -2028,20 +2032,6 @@ watch(totalPages, (val) => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px 12px;
-  max-height: 132px;
-  overflow-y: auto;
-  padding-right: 4px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(113, 113, 122, 0.28) transparent;
-}
-
-.activity-category-list::-webkit-scrollbar {
-  width: 4px;
-}
-
-.activity-category-list::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: rgba(113, 113, 122, 0.28);
 }
 
 .activity-category-row {

@@ -1,4 +1,9 @@
 :root {
+  color: #111827;
+  background: #dfe7ef;
+}
+
+#app {
   font-family:
     "Inter",
     -apple-system,
@@ -13,8 +18,6 @@
     "Microsoft YaHei UI",
     "Microsoft YaHei",
     sans-serif;
-  color: #111827;
-  background: #dfe7ef;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -34,10 +37,6 @@
   letter-spacing: 0;
 }
 
-* {
-  box-sizing: border-box;
-}
-
 html,
 body,
 #app {
@@ -49,7 +48,77 @@ body {
   min-height: 100vh;
 }
 
-button,
-input {
+#app,
+#app *,
+body > :is(
+  .el-overlay,
+  .el-popper,
+  .el-message,
+  .el-message-box,
+  .el-notification,
+  .el-loading-mask,
+  .custom-preview-overlay,
+  .vault-modal-layer,
+  .system-prompt-overlay,
+  .background-workbench-host,
+  .library-context-menu,
+  .library-search-overlay,
+  .app-dropdown-menu,
+  .notification-popover,
+  .block-type-picker,
+  .subtitle-import-workbench-teleport,
+  .download-task-workbench-teleport,
+  .conflict-workbench-teleport
+),
+body > :is(
+  .el-overlay,
+  .el-popper,
+  .el-message,
+  .el-message-box,
+  .el-notification,
+  .el-loading-mask,
+  .custom-preview-overlay,
+  .vault-modal-layer,
+  .system-prompt-overlay,
+  .background-workbench-host,
+  .library-context-menu,
+  .library-search-overlay,
+  .app-dropdown-menu,
+  .notification-popover,
+  .block-type-picker,
+  .subtitle-import-workbench-teleport,
+  .download-task-workbench-teleport,
+  .conflict-workbench-teleport
+) * {
+  box-sizing: border-box;
+}
+
+#app :is(button, input),
+body > :is(
+  .el-overlay,
+  .el-popper,
+  .el-message,
+  .el-message-box,
+  .el-notification,
+  .el-loading-mask,
+  .custom-preview-overlay,
+  .vault-modal-layer,
+  .system-prompt-overlay,
+  .background-workbench-host,
+  .library-context-menu,
+  .library-search-overlay,
+  .app-dropdown-menu,
+  .notification-popover,
+  .block-type-picker,
+  .subtitle-import-workbench-teleport,
+  .download-task-workbench-teleport,
+  .conflict-workbench-teleport
+) :is(button, input) {
   font: inherit;
+}
+
+:where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"]),
+:where([id^="voicelink-"][id$="-voice-popup"][class*="_voicepopup"] *) {
+  box-sizing: content-box !important;
+  font-family: Arial, Helvetica, sans-serif !important;
 }

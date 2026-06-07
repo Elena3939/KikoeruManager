@@ -414,6 +414,16 @@ function onCoverError(event) {
   background: var(--circle-work-card-selected-bg, radial-gradient(circle at top right, rgba(37, 99, 235, 0.08), transparent 38%), linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(244, 248, 255, 0.98) 100%));
   transform: translateY(-1px);
 }
+.work-card.selected::after {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  z-index: 13;
+  border-radius: 14px 14px 0 0;
+  background: linear-gradient(90deg, transparent, var(--circle-primary, #2563eb), transparent);
+  pointer-events: none;
+}
 .work-card.selected:hover {
   transform: translateY(-3px) scale(1.01);
 }
@@ -737,7 +747,8 @@ function onCoverError(event) {
 /* ── CV 名 ── */
 .work-cv {
   font-size: 9px;
-  color: var(--circle-primary, #0ea5e9);
+  color: #0ea5e9;
+  -webkit-text-fill-color: currentColor;
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
@@ -864,6 +875,154 @@ function onCoverError(event) {
   background: var(--circle-chip-bg, rgba(248, 250, 252, 0.72));
   color: var(--circle-text-subtle, #8a97a8);
   border-color: var(--circle-chip-border, rgba(226, 232, 240, 0.86));
+}
+
+:global(html.kikoerumanager-dark .work-card),
+:global(body.kikoerumanager-dark .work-card) {
+  --circle-text: rgba(226, 232, 240, 0.88);
+  --circle-text-strong: rgba(248, 250, 252, 0.94);
+  --circle-text-muted: rgba(203, 213, 225, 0.74);
+  --circle-text-subtle: rgba(148, 163, 184, 0.72);
+  --circle-tag-primary: #2563eb;
+  --circle-tag-success: #059669;
+  --circle-tag-danger: #dc2626;
+  --circle-tag-warning: #d97706;
+  --circle-tag-orange: #ea580c;
+  --circle-tag-violet: #7e22ce;
+  --circle-tag-indigo: #4f46e5;
+  --circle-chip-bg: rgba(248, 250, 252, 0.10);
+  --circle-chip-border: rgba(226, 232, 240, 0.18);
+  color: rgba(226, 232, 240, 0.88);
+}
+
+:global(html.kikoerumanager-dark .work-card.selected),
+:global(body.kikoerumanager-dark .work-card.selected) {
+  border-color: rgba(255, 255, 255, 0.78);
+  background:
+    radial-gradient(circle at top right, rgba(255, 255, 255, 0.16), transparent 42%),
+    linear-gradient(180deg, rgba(34, 39, 48, 0.98) 0%, rgba(23, 25, 31, 0.98) 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 0 0 2px rgba(255, 255, 255, 0.22),
+    0 0 24px rgba(255, 255, 255, 0.20),
+    0 18px 36px rgba(0, 0, 0, 0.36);
+}
+
+:global(html.kikoerumanager-dark .work-card.selected .work-card-select-ring),
+:global(body.kikoerumanager-dark .work-card.selected .work-card-select-ring) {
+  border-color: rgba(255, 255, 255, 0.86);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.10),
+    0 0 0 3px rgba(255, 255, 255, 0.16),
+    0 0 18px rgba(255, 255, 255, 0.22);
+}
+
+:global(html.kikoerumanager-dark .work-card.selected::after),
+:global(body.kikoerumanager-dark .work-card.selected::after) {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.88), transparent);
+}
+
+:global(html.kikoerumanager-dark .work-card .work-title),
+:global(body.kikoerumanager-dark .work-card .work-title) {
+  color: rgba(248, 250, 252, 0.92);
+}
+
+:global(html.kikoerumanager-dark .work-card .work-rj),
+:global(html.kikoerumanager-dark .work-card .work-linked),
+:global(html.kikoerumanager-dark .work-card .work-release-inline),
+:global(body.kikoerumanager-dark .work-card .work-rj),
+:global(body.kikoerumanager-dark .work-card .work-linked),
+:global(body.kikoerumanager-dark .work-card .work-release-inline) {
+  color: rgba(203, 213, 225, 0.78);
+}
+
+:global(html.kikoerumanager-dark .tag-chip),
+:global(body.kikoerumanager-dark .tag-chip) {
+  background: rgba(248, 250, 252, 0.12) !important;
+  border-color: rgba(226, 232, 240, 0.22) !important;
+  color: #cbd5e1 !important;
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark .tag-chip.is-primary),
+:global(body.kikoerumanager-dark .tag-chip.is-primary) {
+  background: rgba(37, 99, 235, 0.22) !important;
+  border-color: rgba(96, 165, 250, 0.46) !important;
+  color: #93c5fd !important;
+}
+
+:global(html.kikoerumanager-dark .tag-chip.is-success),
+:global(body.kikoerumanager-dark .tag-chip.is-success) {
+  background: rgba(5, 150, 105, 0.22) !important;
+  border-color: rgba(52, 211, 153, 0.46) !important;
+  color: #6ee7b7 !important;
+}
+
+:global(html.kikoerumanager-dark .tag-chip.is-danger),
+:global(body.kikoerumanager-dark .tag-chip.is-danger) {
+  background: rgba(220, 38, 38, 0.22) !important;
+  border-color: rgba(248, 113, 113, 0.48) !important;
+  color: #fca5a5 !important;
+}
+
+:global(html.kikoerumanager-dark .tag-chip.is-disabled),
+:global(html.kikoerumanager-dark .tag-chip.is-subtitle-none),
+:global(body.kikoerumanager-dark .tag-chip.is-disabled),
+:global(body.kikoerumanager-dark .tag-chip.is-subtitle-none) {
+  background: rgba(248, 250, 252, 0.12) !important;
+  border-color: rgba(226, 232, 240, 0.22) !important;
+  color: #cbd5e1 !important;
+}
+
+:global(html.kikoerumanager-dark .tag-chip.is-repair),
+:global(body.kikoerumanager-dark .tag-chip.is-repair) {
+  background: rgba(234, 88, 12, 0.22) !important;
+  border-color: rgba(251, 146, 60, 0.46) !important;
+  color: #fdba74 !important;
+}
+
+:global(html.kikoerumanager-dark .tag-chip.is-subtitle),
+:global(body.kikoerumanager-dark .tag-chip.is-subtitle) {
+  background: rgba(79, 70, 229, 0.22) !important;
+  border-color: rgba(129, 140, 248, 0.46) !important;
+  color: #c7d2fe !important;
+}
+
+:global(html.kikoerumanager-dark .tag-chip.is-bonus),
+:global(body.kikoerumanager-dark .tag-chip.is-bonus) {
+  background: rgba(126, 34, 206, 0.22) !important;
+  border-color: rgba(192, 132, 252, 0.46) !important;
+  color: #d8b4fe !important;
+}
+
+:global(html.kikoerumanager-dark .work-release-chip),
+:global(body.kikoerumanager-dark .work-release-chip) {
+  background: rgba(37, 99, 235, 0.24) !important;
+  border-color: rgba(96, 165, 250, 0.52) !important;
+  color: #bfdbfe !important;
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.10);
+}
+
+:global(html.kikoerumanager-dark .work-unreleased-flag),
+:global(body.kikoerumanager-dark .work-unreleased-flag) {
+  background: rgba(15, 23, 42, 0.72) !important;
+  border-color: rgba(96, 165, 250, 0.58) !important;
+  color: #bfdbfe !important;
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark .work-card:hover .work-unreleased-flag),
+:global(body.kikoerumanager-dark .work-card:hover .work-unreleased-flag) {
+  background: rgba(30, 41, 59, 0.78) !important;
+  border-color: rgba(147, 197, 253, 0.68) !important;
+}
+
+:global(html.kikoerumanager-dark .work-cv),
+:global(body.kikoerumanager-dark .work-cv) {
+  color: #38bdf8 !important;
+  -webkit-text-fill-color: #38bdf8 !important;
+  text-shadow: 0 0 0.5px rgba(14, 165, 233, 0.45), 0 0 8px rgba(14, 165, 233, 0.16);
+  font-weight: 700;
 }
 
 /* ── 迷你操作按钮 ── */

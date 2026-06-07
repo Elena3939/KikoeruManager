@@ -248,6 +248,39 @@
                         <span v-else-if="item.warning" class="warn">{{ item.warning }}</span>
                         <span v-if="isBaidu && (item.requires_pass_code || item.pass_code)" class="http-preview-pass-chip" :class="{ warn: !item.pass_code || item.pass_code_invalid }">{{ item.pass_code ? `提取码 ${item.pass_code}` : '缺提取码' }}</span>
                       </div>
+                      <div v-if="isBaidu && item.ok" class="baidu-item-actions" @click.stop>
+                        <button type="button" class="baidu-inline-action" :class="{ active: item._rename_open }" @click.stop="toggleBaiduRenameEditor(item)">
+                          <PencilLine :size="11" :stroke-width="2.4" />
+                          <span>{{ item._rename_open ? '收起命名' : '重命名/密码' }}</span>
+                        </button>
+                        <span v-if="baiduCustomNamePreview(item)" class="baidu-custom-preview">{{ baiduCustomNamePreview(item) }}</span>
+                      </div>
+                      <div v-if="isBaidu && item.ok && item._rename_open" class="baidu-rename-panel" @click.stop>
+                        <label class="baidu-rename-field">
+                          <span>保存名称</span>
+                          <input
+                            v-model.trim="item.custom_name"
+                            class="baidu-rename-input"
+                            type="text"
+                            maxlength="160"
+                            :placeholder="defaultBaiduCustomName(item)"
+                          >
+                        </label>
+                        <label class="baidu-rename-field">
+                          <span><KeyRound :size="10" :stroke-width="2.5" /> 解压密码</span>
+                          <input
+                            v-model.trim="item.custom_extract_password"
+                            class="baidu-rename-input"
+                            type="text"
+                            maxlength="128"
+                            placeholder="可选，按密码嗅探模板写入文件名"
+                          >
+                        </label>
+                        <button type="button" class="baidu-inline-action clear" :disabled="!item.custom_name && !item.custom_extract_password" @click.stop="clearBaiduCustomNaming(item)">
+                          <X :size="11" :stroke-width="2.4" />
+                          <span>清除</span>
+                        </button>
+                      </div>
                       <div v-if="!isBaidu && item.preview_summary" class="baidu-preview-summary">{{ item.preview_summary }}</div>
                       <div v-if="shouldShowBaiduPreviewFiles(item)" class="baidu-preview-files">
                         <div v-for="file in item.preview_files.slice(0, 5)" :key="`${previewItemKey(item)}-${file.path || file.name}`" class="baidu-preview-file">
@@ -295,7 +328,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { AlertTriangle, Check, CloudDownload, Download, FileIcon, Globe2, Loader2, RefreshCw, Search, X } from 'lucide-vue-next'
+import { AlertTriangle, Check, CloudDownload, Download, FileIcon, Globe2, KeyRound, Loader2, PencilLine, RefreshCw, Search, X } from 'lucide-vue-next'
 import AppDropdown from '../common/AppDropdown.vue'
 import AppLoadingAnimation from '../common/AppLoadingAnimation.vue'
 import StatefulButton from '../ui/stateful-button.vue'
@@ -644,7 +677,7 @@ async function start() {
       conflictPolicy: conflictPolicy.value,
       batchName: batchName.value,
       selectedKeys: [...selectedPreviewKeys.value],
-      selectedItems: selectedOkItems.value
+      selectedItems: isBaidu.value ? syncBaiduCustomNamingPayload(selectedOkItems.value) : selectedOkItems.value
     })
     const ids = (result.tasks || []).map(item => item.task_id || item.id).filter(Boolean)
     emit('started', ids)
@@ -715,6 +748,56 @@ function previewItemReason(item) {
   return reason || warning || '未读取到可下载文件'
 }
 
+function toggleBaiduRenameEditor(item) {
+  if (!item) return
+  item._rename_open = !item._rename_open
+  if (item._rename_open && !item.custom_name) {
+    item.custom_name = defaultBaiduCustomName(item)
+  }
+}
+
+function clearBaiduCustomNaming(item) {
+  if (!item) return
+  item.custom_name = ''
+  item.custom_extract_password = ''
+}
+
+function defaultBaiduCustomName(item) {
+  const title = String(item?.filename || item?.name || '').trim()
+  const files = Array.isArray(item?.preview_files) ? item.preview_files.filter(Boolean) : []
+  const file = files.length === 1 ? files[0] : null
+  const sourceName = String(file?.relative_path || file?.name || title || '').split(/[\\/]/).filter(Boolean).pop() || title
+  return splitFilename(sourceName).name || sourceName || '百度网盘文件'
+}
+
+function baiduCustomNamePreview(item) {
+  const customName = String(item?.custom_name || '').trim()
+  const customPassword = String(item?.custom_extract_password || '').trim()
+  if (!customName && !customPassword) return ''
+  const baseName = customName || defaultBaiduCustomName(item)
+  const ext = baiduSingleFileExtension(item)
+  return `${baseName}${customPassword ? `(${customPassword})` : ''}${ext}`
+}
+
+function baiduSingleFileExtension(item) {
+  const files = Array.isArray(item?.preview_files) ? item.preview_files.filter(file => file && !file.is_dir) : []
+  if (files.length !== 1) return ''
+  return splitFilename(String(files[0]?.name || files[0]?.relative_path || '')).ext
+}
+
+function splitFilename(value) {
+  const filename = String(value || '').split(/[\\/]/).filter(Boolean).pop() || ''
+  const lower = filename.toLowerCase()
+  for (const suffix of ['.tar.gz', '.tar.bz2', '.tar.xz']) {
+    if (lower.endsWith(suffix)) {
+      return { name: filename.slice(0, -suffix.length), ext: filename.slice(-suffix.length) }
+    }
+  }
+  const index = filename.lastIndexOf('.')
+  if (index > 0) return { name: filename.slice(0, index), ext: filename.slice(index) }
+  return { name: filename, ext: '' }
+}
+
 function shouldShowBaiduPreviewFiles(item) {
   if (!isBaidu.value) return false
   const files = Array.isArray(item?.preview_files) ? item.preview_files.filter(Boolean) : []
@@ -762,6 +845,14 @@ function applyPassCodeAndPreview(item) {
   urlText.value = nextLines.join('\n')
   addPreviewLog('已更新提取码，重新预览该分享', 'warning')
   preview()
+}
+
+function syncBaiduCustomNamingPayload(items) {
+  return (items || []).map(item => ({
+    ...item,
+    custom_name: String(item?.custom_name || '').trim(),
+    custom_extract_password: String(item?.custom_extract_password || '').trim(),
+  }))
 }
 
 function previewItemKey(item) {
@@ -973,6 +1064,101 @@ onMounted(loadHealth)
 }
 .download-list-row.bad .baidu-pass-code-row {
   padding-top: 1px;
+}
+.baidu-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.baidu-inline-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid rgba(203, 213, 225, 0.82);
+  border-radius: 7px;
+  background: rgba(248, 250, 252, 0.86);
+  color: rgb(71, 85, 105);
+  font-size: 11px;
+  font-weight: 700;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.baidu-inline-action:hover:not(:disabled) {
+  transform: translateY(-1px) scale(1.02);
+  border-color: rgba(148, 163, 184, 0.9);
+  background: #ffffff;
+}
+.baidu-inline-action:active:not(:disabled) { transform: scale(0.96); }
+.baidu-inline-action:disabled { opacity: 0.48; cursor: not-allowed; }
+.baidu-inline-action.active {
+  border-color: rgba(59, 130, 246, 0.42);
+  background: rgba(239, 246, 255, 0.92);
+  color: rgb(29, 78, 216);
+}
+.baidu-inline-action.clear {
+  align-self: end;
+  color: rgb(100, 116, 139);
+}
+.baidu-custom-preview {
+  min-width: 0;
+  max-width: min(420px, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgb(37, 99, 235);
+  font-size: 11px;
+  font-weight: 700;
+}
+.baidu-rename-panel {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid rgba(203, 213, 225, 0.72);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.78);
+}
+.baidu-rename-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: rgb(100, 116, 139);
+  font-size: 10px;
+  font-weight: 800;
+}
+.baidu-rename-field span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.baidu-rename-input {
+  width: 100%;
+  height: 26px;
+  min-width: 0;
+  padding: 0 8px;
+  border: 1px solid rgba(203, 213, 225, 0.92);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.94);
+  color: rgb(30, 41, 59);
+  font-size: 11px;
+  outline: none;
+}
+.baidu-rename-input:focus {
+  border-color: rgba(59, 130, 246, 0.72);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
+}
+@media (max-width: 720px) {
+  .baidu-rename-panel {
+    grid-template-columns: 1fr;
+  }
+  .baidu-inline-action.clear {
+    justify-self: start;
+  }
 }
 .baidu-pass-code-input {
   width: 124px;
@@ -1544,6 +1730,37 @@ onMounted(loadHealth)
   background: #111111 !important;
   border-color: rgba(255, 255, 255, 0.14) !important;
   color: #f4f4f5 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-rename-panel) {
+  background: #121212 !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-rename-field) {
+  color: #a3a3a3 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-rename-input) {
+  background: #111111 !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: #f4f4f5 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-inline-action) {
+  background: #1c1c1c !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #d4d4d4 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-inline-action.active) {
+  background: rgba(37, 99, 235, 0.16) !important;
+  border-color: rgba(96, 165, 250, 0.32) !important;
+  color: #bfdbfe !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-custom-preview) {
+  color: #93c5fd !important;
 }
 
 :global(html.kikoerumanager-dark .http-download-preview-modal .baidu-pass-code-btn) {

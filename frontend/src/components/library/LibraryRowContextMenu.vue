@@ -1,7 +1,7 @@
 <template>
   <Teleport to="body">
     <div
-      v-if="visible"
+      v-show="visible"
       ref="panelRef"
       data-library-row-menu="1"
       class="menu-panel fixed z-[2400] w-[200px] overflow-hidden rounded-[10px] border border-slate-200 bg-white p-1.5"
@@ -102,6 +102,17 @@
         </button>
 
         <button
+          v-if="showBaiduUpload"
+          type="button"
+          class="menu-item"
+          :disabled="disableBaiduUpload"
+          @click="emit('action', 'baidu_upload')"
+        >
+          <CloudUpload :size="14" :stroke-width="2.2" class="menu-item-icon text-sky-600" />
+          <span>{{ batchMode ? '批量上传到百度网盘' : '上传到百度网盘' }}</span>
+        </button>
+
+        <button
           v-if="showAutoCircleGroup"
           type="button"
           class="menu-item"
@@ -185,7 +196,7 @@
 
 <script setup>
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { Captions, Copy, ExternalLink, Eye, FolderCog, FolderInput, FolderOpen, HardDrive, MapPin, Pencil, Sparkles, Tags, Trash2, UploadCloud } from 'lucide-vue-next'
+import { Captions, CloudUpload, Copy, ExternalLink, Eye, FolderCog, FolderInput, FolderOpen, HardDrive, MapPin, Pencil, Sparkles, Tags, Trash2, UploadCloud } from 'lucide-vue-next'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -212,6 +223,8 @@ const props = defineProps({
   disableMove: { type: Boolean, default: false },
   showUpload: { type: Boolean, default: false },
   disableUpload: { type: Boolean, default: false },
+  showBaiduUpload: { type: Boolean, default: false },
+  disableBaiduUpload: { type: Boolean, default: false },
   showAutoCircleGroup: { type: Boolean, default: false },
   disableAutoCircleGroup: { type: Boolean, default: false },
   autoCircleGroupRunning: { type: Boolean, default: false },
@@ -238,15 +251,13 @@ function handleWindowScroll () {
 }
 
 function bindGlobalListeners () {
-  document.addEventListener('mousedown', handleOutsidePointerDown, true)
-  document.addEventListener('click', handleOutsidePointerDown, true)
+  document.addEventListener('pointerdown', handleOutsidePointerDown, true)
   document.addEventListener('contextmenu', handleOutsideContextMenu, true)
   window.addEventListener('scroll', handleWindowScroll, true)
 }
 
 function unbindGlobalListeners () {
-  document.removeEventListener('mousedown', handleOutsidePointerDown, true)
-  document.removeEventListener('click', handleOutsidePointerDown, true)
+  document.removeEventListener('pointerdown', handleOutsidePointerDown, true)
   document.removeEventListener('contextmenu', handleOutsideContextMenu, true)
   window.removeEventListener('scroll', handleWindowScroll, true)
 }

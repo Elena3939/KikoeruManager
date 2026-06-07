@@ -370,17 +370,15 @@ const storageHintText = computed(() => {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 9px 3px 7px;
+  min-height: 24px;
+  padding: 2px 8px 2px 7px;
   border-radius: 999px;
   font-size: 11.5px;
   font-weight: 600;
   letter-spacing: 0.1px;
   border: 1px solid transparent;
-  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.storage-chip:hover {
-  transform: translateY(-1px) scale(1.04);
+  cursor: default;
+  user-select: none;
 }
 
 .storage-chip.tone-emerald {
@@ -398,10 +396,31 @@ const storageHintText = computed(() => {
 }
 
 .storage-chip.tone-slate {
-  background: linear-gradient(180deg, rgba(241, 245, 249, 0.95), rgba(226, 232, 240, 0.85));
-  border-color: rgba(100, 116, 139, 0.22);
-  color: #475569;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 1px 2px rgba(100, 116, 139, 0.12);
+  background: rgba(100, 116, 139, 0.12);
+  border-color: rgba(100, 116, 139, 0.2);
+  color: #64748b;
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark) .storage-chip.tone-emerald {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(52, 211, 153, 0.22);
+  color: #7dd3ae;
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark) .storage-chip.tone-amber {
+  background: rgba(217, 119, 6, 0.14);
+  border-color: rgba(251, 191, 36, 0.24);
+  color: #d7ba7d;
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark) .storage-chip.tone-slate {
+  background: rgba(148, 163, 184, 0.09);
+  border-color: rgba(148, 163, 184, 0.16);
+  color: rgba(203, 213, 225, 0.78);
+  box-shadow: none;
 }
 
 @media (max-width: 1200px) {

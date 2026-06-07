@@ -1,9 +1,7 @@
 <template>
   <div class="task-list-pane">
-    <TransitionGroup
+    <div
       v-if="filteredItems.length"
-      tag="div"
-      name="task-card"
       class="task-list-scroll flex flex-1 min-h-0 flex-col gap-2 overflow-auto p-2.5"
     >
       <button
@@ -69,9 +67,9 @@
           </div>
 
           <!-- 摘要：图标 + 数字 紧凑 stat strip（hover 显示标签） -->
-          <div v-if="getTaskSummary(item).length" class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          <div v-if="item.summaryPieces?.length" class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
             <span
-              v-for="(piece, sIndex) in getTaskSummary(item)"
+              v-for="(piece, sIndex) in item.summaryPieces"
               :key="`${item.id}-summary-${sIndex}`"
               class="inline-flex items-center gap-0.5 text-[11px] font-bold tabular-nums leading-tight"
               :class="summaryColor(piece, item.domain)"
@@ -87,7 +85,7 @@
           </div>
         </div>
       </button>
-    </TransitionGroup>
+    </div>
 
     <!-- 空态：移动端 wrapper padding 收紧到 px-3 py-4，桌面保留宽松 px-6 py-10 -->
     <div v-else class="flex flex-1 min-h-0 items-center justify-center px-3 py-4 md:px-6 md:py-10">
@@ -152,7 +150,6 @@ defineProps({
   showProgress: { type: Function, required: true },
   shouldShowStep: { type: Function, required: true },
   getRecoveredNotice: { type: Function, required: true },
-  getTaskSummary: { type: Function, required: true },
 })
 
 defineEmits(['select', 'quick-filter', 'prev-page', 'next-page'])
