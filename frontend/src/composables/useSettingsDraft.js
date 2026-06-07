@@ -386,7 +386,7 @@ export const defaultConfig = {
     disk_io_local: 2,
     archive_cpu: 0,
     remote_fs: 4,
-    network_download: 2,
+    network_download: 5,
     sqlite_write: 0
   },
   security_gate: {

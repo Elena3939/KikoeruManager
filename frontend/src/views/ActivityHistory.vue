@@ -13,6 +13,8 @@
           <input
             v-model="filters.q"
             class="page-head-search-input"
+            autocomplete="off"
+            spellcheck="false"
             :placeholder="searchPlaceholder"
             @input="onSearchInput"
             @keyup.enter="applySearchImmediately"
@@ -552,21 +554,36 @@ const searchEngineHint = computed(() => {
 })
 
 let _searchStatusPollTimer = null
+const SEARCH_STATUS_POLL_INTERVAL_MS = 1500
 function startSearchStatusPolling() {
   // 重建中每 1.5s 拉一次进度，结束后再拉一次状态切换 hint
   if (_searchStatusPollTimer) return
-  _searchStatusPollTimer = setInterval(async () => {
+  if (isDocumentHidden()) return
+  _searchStatusPollTimer = setTimeout(async () => {
+    _searchStatusPollTimer = null
     await loadSearchStatus()
-    if (!searchStatus.value?.rebuild?.running) {
-      stopSearchStatusPolling()
-    }
-  }, 1500)
+    if (searchStatus.value?.rebuild?.running) startSearchStatusPolling()
+  }, SEARCH_STATUS_POLL_INTERVAL_MS)
 }
 function stopSearchStatusPolling() {
   if (_searchStatusPollTimer) {
-    clearInterval(_searchStatusPollTimer)
+    clearTimeout(_searchStatusPollTimer)
     _searchStatusPollTimer = null
   }
+}
+
+function isDocumentHidden() {
+  return typeof document !== 'undefined' && document.hidden
+}
+
+async function handleActivityHistoryVisibilityChange() {
+  handleVisibilityRefresh()
+  if (isDocumentHidden()) {
+    stopSearchStatusPolling()
+    return
+  }
+  await loadSearchStatus()
+  if (searchStatus.value?.rebuild?.running) startSearchStatusPolling()
 }
 
 async function onClickRebuildFts() {
@@ -1512,7 +1529,11 @@ onMounted(async () => {
     startSearchStatusPolling()
   }
   if (typeof document !== 'undefined') {
-    visibilityHandler = () => handleVisibilityRefresh()
+    visibilityHandler = () => {
+      handleActivityHistoryVisibilityChange().catch((error) => {
+        console.error('操作历史恢复可见刷新失败:', error)
+      })
+    }
     document.addEventListener('visibilitychange', visibilityHandler)
   }
 })
@@ -1644,9 +1665,12 @@ watch(totalPages, (val) => {
   height: 100%;
   border: 0;
   outline: 0;
+  appearance: none;
+  -webkit-appearance: none;
   background: transparent;
   color: var(--activity-text);
   font-size: 13px;
+  box-shadow: none;
 }
 
 .page-head-search-input::placeholder {
@@ -2661,6 +2685,29 @@ watch(totalPages, (val) => {
   color: #ffffff;
   background: transparent !important;
   background-image: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .activity-page .page-head-search-input),
+:global(html.kikoerumanager-dark body #app .activity-page .page-head-search-input:hover),
+:global(html.kikoerumanager-dark body #app .activity-page .page-head-search-input:focus) {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  border: 0 !important;
+  outline: 0 !important;
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark body #app .activity-page .page-head-search-input:-webkit-autofill),
+:global(html.kikoerumanager-dark body #app .activity-page .page-head-search-input:-webkit-autofill:hover),
+:global(html.kikoerumanager-dark body #app .activity-page .page-head-search-input:-webkit-autofill:focus) {
+  -webkit-text-fill-color: #ffffff !important;
+  caret-color: #ffffff !important;
+  box-shadow: 0 0 0 1000px #17181d inset !important;
+  transition: background-color 9999s ease-out 0s !important;
 }
 
 :global(html.kikoerumanager-dark .activity-page .page-head-search-input::placeholder) {

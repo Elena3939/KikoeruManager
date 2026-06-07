@@ -281,6 +281,7 @@ onBeforeUnmount(() => {
               `is-progress-${normalizeProgressTone(safeLines[virtualRow.index]?.taskProgress?.tone)}`,
               {
                 'has-progress': hasProgress(safeLines[virtualRow.index]),
+                'has-inline-progress': hasProgress(safeLines[virtualRow.index]) && !isTaskProgressLine(safeLines[virtualRow.index]),
                 'is-task-progress': isTaskProgressLine(safeLines[virtualRow.index]),
               },
             ]"
@@ -292,14 +293,18 @@ onBeforeUnmount(() => {
               {{ levelLabel(safeLines[virtualRow.index]?.level) }}
             </span>
             <span class="terminal-source">{{ safeLines[virtualRow.index]?.source || 'system' }}</span>
-            <span v-if="hasProgress(safeLines[virtualRow.index])" class="terminal-progress">{{ safeLines[virtualRow.index]?.progress }}%</span>
-            <span v-if="isTaskProgressLine(safeLines[virtualRow.index])" class="terminal-message terminal-inline-progress">
+            <span v-if="hasProgress(safeLines[virtualRow.index]) && !isTaskProgressLine(safeLines[virtualRow.index])" class="terminal-progress">{{ safeLines[virtualRow.index]?.progress }}%</span>
+            <span
+              v-if="isTaskProgressLine(safeLines[virtualRow.index])"
+              class="terminal-message terminal-inline-progress"
+              :title="safeLines[virtualRow.index]?.message || '处理中'"
+            >
               <span class="terminal-inline-progress-head">
                 <span class="terminal-inline-progress-title">
                   任务 {{ safeLines[virtualRow.index]?.taskProgress?.shortId || '--------' }}
                 </span>
                 <span class="terminal-inline-progress-state">
-                  {{ progressToneLabel(safeLines[virtualRow.index]?.taskProgress?.tone) }} · 持续 {{ safeLines[virtualRow.index]?.taskProgress?.durationLabel || '00:00:00' }}
+                  {{ progressToneLabel(safeLines[virtualRow.index]?.taskProgress?.tone) }} · 持续 {{ safeLines[virtualRow.index]?.taskProgress?.durationLabel || '00:00:00' }} · {{ clampProgress(safeLines[virtualRow.index]?.progress) }}%
                 </span>
               </span>
               <span class="terminal-inline-progress-bar" :style="{ '--inline-progress': `${clampProgress(safeLines[virtualRow.index]?.progress)}%` }">
@@ -307,7 +312,7 @@ onBeforeUnmount(() => {
               </span>
               <span class="terminal-inline-progress-detail">{{ safeLines[virtualRow.index]?.message || '处理中' }}</span>
             </span>
-            <span v-else class="terminal-message">
+            <span v-else class="terminal-message" :title="safeLines[virtualRow.index]?.message || ''">
               <template v-for="(token, tokenIndex) in shellTokens(safeLines[virtualRow.index]?.message)" :key="`${virtualRow.key}-${tokenIndex}`">
                 <span :class="`terminal-token is-${token.type}`">{{ token.value }}</span>
               </template>
@@ -572,11 +577,12 @@ onBeforeUnmount(() => {
 .terminal-message {
   grid-column: 4 / -1;
   min-width: 0;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.terminal-line.has-progress .terminal-message {
+.terminal-line.has-inline-progress .terminal-message {
   grid-column: auto;
 }
 
@@ -595,6 +601,7 @@ onBeforeUnmount(() => {
   align-items: stretch;
   gap: 5px;
   min-width: 0;
+  overflow: hidden;
   white-space: nowrap;
 }
 

@@ -86,6 +86,9 @@ export function useSubtitleImportArchive({
   })
 
   onMounted(() => {
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handlePendingRefreshVisibilityChange)
+    }
     startPendingRefreshPolling()
   })
 
@@ -98,6 +101,9 @@ export function useSubtitleImportArchive({
   })
 
   onUnmounted(() => {
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', handlePendingRefreshVisibilityChange)
+    }
     stopAutoImportPolling()
     stopPendingRefreshPolling()
   })
@@ -204,16 +210,30 @@ export function useSubtitleImportArchive({
 
   function stopPendingRefreshPolling() {
     if (pendingRefreshTimer) {
-      clearInterval(pendingRefreshTimer)
+      clearTimeout(pendingRefreshTimer)
       pendingRefreshTimer = null
     }
   }
 
   function startPendingRefreshPolling() {
     if (pendingRefreshTimer) return
-    pendingRefreshTimer = setInterval(() => {
+    if (route.path !== '/subtitle-import') return
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+    pendingRefreshTimer = setTimeout(() => {
+      pendingRefreshTimer = null
       queuePendingRefresh({ silent: true })
+      startPendingRefreshPolling()
     }, PENDING_REFRESH_INTERVAL_MS)
+  }
+
+  function handlePendingRefreshVisibilityChange() {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      stopPendingRefreshPolling()
+      return
+    }
+    if (route.path !== '/subtitle-import') return
+    queuePendingRefresh({ silent: true })
+    startPendingRefreshPolling()
   }
 
   function queuePendingRefresh(options = {}) {

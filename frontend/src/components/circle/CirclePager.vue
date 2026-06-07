@@ -135,11 +135,10 @@ onBeforeUnmount(() => {
       <label>Go to</label>
       <input
         v-model="jumpValue"
-        type="number"
+        type="text"
         inputmode="numeric"
+        pattern="[0-9]*"
         aria-label="跳转页码"
-        min="1"
-        :max="pageCount"
         class="circle-pager-jump-input"
         @blur="submitJump"
       />
@@ -312,21 +311,27 @@ onBeforeUnmount(() => {
 }
 
 .circle-pager-jump-input {
+  display: block;
   width: 64px;
   padding: 0 8px;
   font-size: 12px;
   font-weight: 600;
+  line-height: 28px;
   text-align: center;
   background: var(--pager-surface) !important;
+  background-clip: padding-box;
   border-color: var(--pager-border) !important;
   color: var(--pager-strong) !important;
+  caret-color: var(--pager-strong);
   box-shadow: none !important;
+  -webkit-appearance: none;
   appearance: textfield;
 }
 
 .circle-pager-jump-input::-webkit-outer-spin-button,
 .circle-pager-jump-input::-webkit-inner-spin-button {
   margin: 0;
+  -webkit-appearance: none;
   appearance: none;
 }
 

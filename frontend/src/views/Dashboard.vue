@@ -121,10 +121,12 @@ const CONFLICT_REFRESH_INTERVAL = 30000
 const STREAM_REFRESH_DEBOUNCE_MS = 500
 const ARCHIVE_STREAM_REFRESH_DEBOUNCE_MS = 350
 const FALLBACK_POLL_INTERVAL_MS = 30000
+const FALLBACK_POLL_MAX_INTERVAL_MS = 120000
 const STREAM_FULL_REFRESH_MIN_INTERVAL_MS = 2500
 const DASHBOARD_ARCHIVE_LIMIT = 120
 let lastTaskCenterFullRefreshAt = 0
 let archivesRequestId = 0
+let dashboardPollFailureCount = 0
 
 const domainCounts = computed(() => ({
   import: Number(taskCenterOverview.value?.counts_by_domain?.import || 0),
@@ -404,17 +406,32 @@ onUnmounted(() => {
 
 function stopDashboardPolling() {
   if (intervalId) {
-    clearInterval(intervalId)
+    clearTimeout(intervalId)
     intervalId = null
   }
 }
 
 function startDashboardPolling() {
+  if (!dashboardViewActive) return
+  scheduleDashboardPolling(FALLBACK_POLL_INTERVAL_MS)
+}
+
+function scheduleDashboardPolling(delay = FALLBACK_POLL_INTERVAL_MS) {
   stopDashboardPolling()
-  intervalId = setInterval(() => {
-    if (Date.now() - lastTaskCenterStreamEventAt < FALLBACK_POLL_INTERVAL_MS) return
-    refreshData({ silent: true })
-  }, FALLBACK_POLL_INTERVAL_MS)
+  intervalId = setTimeout(async () => {
+    intervalId = null
+    if (!dashboardViewActive) return
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+    if (Date.now() - lastTaskCenterStreamEventAt < FALLBACK_POLL_INTERVAL_MS) {
+      scheduleDashboardPolling(FALLBACK_POLL_INTERVAL_MS)
+      return
+    }
+    const ok = await refreshData({ silent: true })
+    const nextDelay = ok
+      ? FALLBACK_POLL_INTERVAL_MS
+      : Math.min(FALLBACK_POLL_MAX_INTERVAL_MS, FALLBACK_POLL_INTERVAL_MS * 2 ** Math.min(dashboardPollFailureCount, 2))
+    scheduleDashboardPolling(nextDelay)
+  }, delay)
 }
 
 function bindDashboardVisibilityRefresh() {
@@ -433,7 +450,9 @@ function unbindDashboardVisibilityRefresh() {
 
 function handleDashboardVisibilityRefresh() {
   if (!dashboardViewActive || document.visibilityState === 'hidden') return
+  dashboardPollFailureCount = 0
   refreshData({ silent: true })
+  if (!intervalId) startDashboardPolling()
 }
 
 function bindTaskCenterStreamEvents() {
@@ -516,7 +535,7 @@ async function refreshData(options = {}) {
   const { silent = false, forceConflictRefresh = false } = options
   if (refreshRunning) {
     refreshPending = true
-    return
+    return true
   }
   refreshRunning = true
   const currentRequestId = ++refreshRequestId
@@ -550,11 +569,15 @@ async function refreshData(options = {}) {
       completed: Number(overview?.counts_by_status?.completed || 0),
       conflicts: cachedConflictCount,
     }
+    dashboardPollFailureCount = 0
+    return true
   } catch (error) {
+    dashboardPollFailureCount += 1
     console.error('获取概览失败:', error)
     if (!silent) {
       ElMessage.error('获取概览失败: ' + (error.response?.data?.detail || error.message))
     }
+    return false
   } finally {
     refreshRunning = false
     if (!silent) loading.value = false

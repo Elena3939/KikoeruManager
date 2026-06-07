@@ -73,7 +73,7 @@
     </section>
 
     <!-- 主卡片 -->
-    <section class="rounded-2xl border border-slate-200/80 bg-white/90 p-4 shadow-[0_12px_40px_-12px_rgba(15,23,42,0.12)] backdrop-blur">
+    <section class="vault-main-panel rounded-2xl border border-slate-200/80 bg-white/90 p-4 shadow-[0_12px_40px_-12px_rgba(15,23,42,0.12)] backdrop-blur">
       <!-- Loading -->
       <div v-if="loading" class="grid min-h-[420px] place-items-center gap-4 rounded-2xl border border-slate-100 bg-slate-50/50 p-10">
         <AppLoadingAnimation :size="132" variant="block" />
@@ -944,6 +944,68 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
 :deep(.password-table td.el-table__cell) { border-bottom-color: rgba(226, 232, 240, 0.7); }
 :deep(.password-table .el-table__row) { transition: all 0.25s ease; }
 :deep(.password-table .el-table__row:hover) { background: #f8fafc !important; }
+
+:global(html.kikoerumanager-dark body #app .password-vault .vault-toolbar-shell.vault-toolbar-shell),
+:global(html.kikoerumanager-dark body #app .password-vault .vault-toolbar-panel.vault-toolbar-panel),
+:global(html.kikoerumanager-dark body #app .password-vault .vault-main-panel.vault-main-panel),
+:global(body.kikoerumanager-dark #app .password-vault .vault-toolbar-shell.vault-toolbar-shell),
+:global(body.kikoerumanager-dark #app .password-vault .vault-toolbar-panel.vault-toolbar-panel),
+:global(body.kikoerumanager-dark #app .password-vault .vault-main-panel.vault-main-panel) {
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .password-vault .password-table.el-table),
+:global(html.kikoerumanager-dark body #app .password-vault .password-table .el-table__inner-wrapper),
+:global(html.kikoerumanager-dark body #app .password-vault .password-table .el-table__body-wrapper),
+:global(html.kikoerumanager-dark body #app .password-vault .password-table .el-table__header-wrapper),
+:global(body.kikoerumanager-dark #app .password-vault .password-table.el-table),
+:global(body.kikoerumanager-dark #app .password-vault .password-table .el-table__inner-wrapper),
+:global(body.kikoerumanager-dark #app .password-vault .password-table .el-table__body-wrapper),
+:global(body.kikoerumanager-dark #app .password-vault .password-table .el-table__header-wrapper) {
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .password-vault .password-table th.el-table__cell),
+:global(html.kikoerumanager-dark body #app .password-vault .password-table td.el-table__cell),
+:global(html.kikoerumanager-dark body #app .password-vault .password-table tr),
+:global(body.kikoerumanager-dark #app .password-vault .password-table th.el-table__cell),
+:global(body.kikoerumanager-dark #app .password-vault .password-table td.el-table__cell),
+:global(body.kikoerumanager-dark #app .password-vault .password-table tr) {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+:global(html.kikoerumanager-dark body #app .password-vault .password-table th.el-table__cell),
+:global(body.kikoerumanager-dark #app .password-vault .password-table th.el-table__cell) {
+  border-bottom-color: rgba(148, 163, 184, 0.18) !important;
+}
+
+:global(html.kikoerumanager-dark body #app .password-vault .password-table td.el-table__cell),
+:global(body.kikoerumanager-dark #app .password-vault .password-table td.el-table__cell) {
+  border-bottom-color: rgba(148, 163, 184, 0.12) !important;
+}
+
+:global(html.kikoerumanager-dark body #app .password-vault .password-table .el-table__row:hover > td.el-table__cell),
+:global(body.kikoerumanager-dark #app .password-vault .password-table .el-table__row:hover > td.el-table__cell) {
+  background: rgba(59, 130, 246, 0.08) !important;
+}
+
+:global(html.kikoerumanager-dark body #app .password-vault .vault-mobile-card.vault-mobile-card),
+:global(body.kikoerumanager-dark #app .password-vault .vault-mobile-card.vault-mobile-card) {
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .password-vault .vault-mobile-card.vault-mobile-card.is-selected),
+:global(body.kikoerumanager-dark #app .password-vault .vault-mobile-card.vault-mobile-card.is-selected) {
+  background: rgba(59, 130, 246, 0.08) !important;
+  border-color: rgba(96, 165, 250, 0.38) !important;
+}
 
 .vault-row-actions {
   display: inline-flex;
