@@ -5,6 +5,7 @@
       isVisible ? 'is-visible' : 'is-hidden',
       disabled ? 'is-disabled' : '',
       isMaskedSecret ? 'is-masked-secret' : '',
+      compact ? 'is-compact' : '',
     ]"
   >
     <input
@@ -77,6 +78,10 @@ const props = defineProps({
   revealValue: {
     type: String,
     default: '',
+  },
+  compact: {
+    type: Boolean,
+    default: false,
   },
 })
 
@@ -280,6 +285,13 @@ onBeforeUnmount(() => {
   transition: box-shadow 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
+.animated-password-input.is-compact .animated-password-input__field {
+  min-height: 36px;
+  padding-right: 48px;
+  border-radius: 9px;
+  font-size: 13px;
+}
+
 .animated-password-input__field:focus {
   box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.95), 0 0 0 4px rgba(191, 219, 254, 0.42);
 }
@@ -329,6 +341,17 @@ onBeforeUnmount(() => {
   width: 34px;
   height: 34px;
   pointer-events: none;
+}
+
+.animated-password-input.is-compact .animated-password-input__toggle {
+  right: 7px;
+  width: 34px;
+  height: 34px;
+}
+
+.animated-password-input.is-compact .animated-password-input__player {
+  width: 29px;
+  height: 29px;
 }
 
 :global(html.kikoerumanager-dark .animated-password-input__field),

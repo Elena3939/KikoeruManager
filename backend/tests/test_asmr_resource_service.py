@@ -1,10 +1,18 @@
+import os
+from contextlib import asynccontextmanager
+
 import pytest
 
 from app.core.asmr_resource_service import ASMRResourceService
 
 
 class FakeASMRService:
+    def __init__(self):
+        self.work_info_calls = 0
+        self.track_calls = 0
+
     async def fetch_work_info(self, rjcode):
+        self.work_info_calls += 1
         return {
             "id": 1,
             "title": f"作品 {rjcode}",
@@ -13,6 +21,7 @@ class FakeASMRService:
         }
 
     async def fetch_track_list(self, rjcode):
+        self.track_calls += 1
         return [{"title": "root"}]
 
     def _flatten_tracks(self, tracks):
@@ -129,3 +138,81 @@ async def test_build_download_plan_marks_existing_and_missing_resources(monkeypa
     assert len(result["selectable_resources"]) == 1
     assert result["selectable_resources"][0]["resource_type"] == "subtitle"
     assert result["selectable_resources"][0]["selected"] is True
+
+
+@pytest.mark.anyio
+async def test_fetch_remote_resources_caches_source_but_rebuilds_resource_ids():
+    fake = FakeASMRService()
+    service = ASMRResourceService(asmr_service=fake)
+
+    _, first_resources = await service.fetch_remote_resources("RJ123456")
+    _, second_resources = await service.fetch_remote_resources("RJ123456")
+
+    assert fake.work_info_calls == 1
+    assert fake.track_calls == 1
+    assert first_resources[0]["relative_path"] == second_resources[0]["relative_path"]
+    assert first_resources[0]["id"] != second_resources[0]["id"]
+
+
+@pytest.mark.anyio
+async def test_fetch_remote_resources_refresh_bypasses_source_cache():
+    fake = FakeASMRService()
+    service = ASMRResourceService(asmr_service=fake)
+
+    await service.fetch_remote_resources("RJ123456")
+    await service.fetch_remote_resources("RJ123456", refresh=True)
+
+    assert fake.work_info_calls == 2
+    assert fake.track_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_upload_to_local_uses_disk_io_budget_and_reports_progress(monkeypatch, tmp_path):
+    service = create_service()
+    source_path = tmp_path / "source.bin"
+    source_path.write_bytes(b"a" * (300 * 1024))
+    calls = []
+    progress_rows = []
+
+    class Budget:
+        @asynccontextmanager
+        async def acquire(self, resource, *, weight=1, reason=""):
+            calls.append((resource, weight, reason))
+            yield
+
+    monkeypatch.setattr("app.core.asmr_resource_service.get_resource_budget_service", lambda: Budget())
+
+    result = await service._upload_to_local(
+        str(source_path),
+        str(tmp_path / "library"),
+        "RJ123456/source.bin",
+        progress_callback=lambda uploaded, total: progress_rows.append((uploaded, total)),
+    )
+
+    assert calls == [("disk_io_local", 1, "asmr.upload_local")]
+    assert os.path.exists(result)
+    assert open(result, "rb").read() == source_path.read_bytes()
+    assert progress_rows[-1] == (300 * 1024, 300 * 1024)
+
+
+@pytest.mark.asyncio
+async def test_upload_to_local_preserves_cancel_behavior(monkeypatch, tmp_path):
+    service = create_service()
+    source_path = tmp_path / "source.bin"
+    source_path.write_bytes(b"a" * 1024)
+
+    class Budget:
+        @asynccontextmanager
+        async def acquire(self, resource, *, weight=1, reason=""):
+            yield
+
+    monkeypatch.setattr("app.core.asmr_resource_service.get_resource_budget_service", lambda: Budget())
+
+    result = await service._upload_to_local(
+        str(source_path),
+        str(tmp_path / "library"),
+        "RJ123456/source.bin",
+        cancel_check=lambda: True,
+    )
+
+    assert result == ""

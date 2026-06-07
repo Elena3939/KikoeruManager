@@ -392,6 +392,20 @@ const filteredSections = computed(() => {
   box-shadow: none;
 }
 
+:global(html.kikoerumanager-dark body #app .settings-page .settings-sidebar-shell.settings-sidebar-shell),
+:global(body.kikoerumanager-dark #app .settings-page .settings-sidebar-shell.settings-sidebar-shell) {
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .settings-page .settings-search.settings-search),
+:global(body.kikoerumanager-dark #app .settings-page .settings-search.settings-search) {
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
 .sidebar-footer {
   margin-top: 14px;
   padding-top: 12px;

@@ -70,14 +70,25 @@ def test_scan_existing_folder_candidates_keeps_multiple_nested_works_separate(tm
     assert by_rjcode["RJ02222222"]["source_root_name"] == "社团A"
 
 
-def test_scan_existing_folder_candidates_keeps_unrecognized_top_folder(tmp_path):
+def test_scan_existing_folder_candidates_skips_unrecognized_top_folder(tmp_path):
     existing_root = _mkdir(tmp_path / "existing")
     unknown = _mkdir(existing_root / "社团A" / "没有RJ")
     (unknown / "note.txt").write_text("no rj here", encoding="utf-8")
 
     candidates = scan_existing_folder_candidates(str(existing_root))
 
+    assert candidates == []
+
+
+def test_scan_existing_folder_candidates_does_not_return_circle_folder_when_nested_work_exists(tmp_path):
+    existing_root = _mkdir(tmp_path / "existing")
+    circle = _mkdir(existing_root / "Whisp")
+    work_dir = _mkdir(circle / "[Whisp][RJ01234567] 作品")
+    (work_dir / "track01.wav").write_text("audio", encoding="utf-8")
+
+    candidates = scan_existing_folder_candidates(str(existing_root))
+
     assert len(candidates) == 1
-    assert candidates[0]["path"] == str(existing_root / "社团A")
-    assert candidates[0]["rjcode"] is None
-    assert candidates[0]["rjcode_source"] == "unrecognized"
+    assert candidates[0]["path"] == str(work_dir)
+    assert candidates[0]["rjcode"] == "RJ01234567"
+    assert candidates[0]["source_root_name"] == "Whisp"

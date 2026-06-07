@@ -169,19 +169,46 @@
     />
 
     <Transition name="floating-card">
-      <BackgroundFloatingCard
-        v-if="showBaiduNetdiskBackgroundCard"
-        v-bind="baiduNetdiskBackgroundCardProps"
-        @action="handleBaiduNetdiskBackgroundCardAction"
-      />
-    </Transition>
-
-    <Transition name="floating-card">
-      <BackgroundFloatingCard
-        v-if="showHttpDownloadBackgroundCard"
-        v-bind="httpDownloadBackgroundCardProps"
-        @action="handleHttpDownloadBackgroundCardAction"
-      />
+      <div v-if="visibleBackgroundFloatingCards.length" class="asmr-floating-pager">
+        <div v-if="visibleBackgroundFloatingCards.length > 1" class="asmr-floating-pager-controls">
+          <button
+            type="button"
+            class="asmr-floating-page-btn"
+            title="上一张"
+            @click="switchBackgroundFloatingCard(-1)"
+          >
+            <ChevronLeft :size="15" :stroke-width="2.4" />
+          </button>
+          <div class="asmr-floating-page-dots">
+            <button
+              v-for="(card, index) in visibleBackgroundFloatingCards"
+              :key="card.id"
+              type="button"
+              class="asmr-floating-page-dot"
+              :class="{ 'is-active': index === activeBackgroundFloatingCardIndex }"
+              :title="card.label"
+              @click="setBackgroundFloatingCardIndex(index)"
+            />
+          </div>
+          <button
+            type="button"
+            class="asmr-floating-page-btn"
+            title="下一张"
+            @click="switchBackgroundFloatingCard(1)"
+          >
+            <ChevronRight :size="15" :stroke-width="2.4" />
+          </button>
+        </div>
+        <Transition :name="backgroundFloatingCardTransitionName" mode="out-in">
+          <BackgroundFloatingCard
+            v-if="activeBackgroundFloatingCard"
+            :key="activeBackgroundFloatingCard.id"
+            v-bind="activeBackgroundFloatingCard.props"
+            :hosted="true"
+            @action="handleVisibleBackgroundFloatingCardAction"
+          />
+        </Transition>
+      </div>
     </Transition>
 
     <!-- Enhanced Download Workbench Dialog -->
@@ -217,14 +244,6 @@
       :direct-loading="locatingRJ"
       @submit="handlePreviewSubmit"
     />
-
-    <Transition name="floating-card">
-      <BackgroundFloatingCard
-        v-if="showEnhancedDownloadBackgroundCard"
-        v-bind="enhancedDownloadBackgroundCardProps"
-        @action="handleEnhancedDownloadBackgroundCardAction"
-      />
-    </Transition>
 
     <!-- 扫描结果 -->
     <Transition name="asmr-section">
@@ -597,6 +616,8 @@ import {
   Activity,
   Hourglass,
   Loader2,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-vue-next'
 import { asmrSyncApi, baiduNetdiskApi, configApi, httpDownloadApi, libraryApi, taskApi } from '../api'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
@@ -620,6 +641,8 @@ const router = useRouter()
 const ASMR_SYNC_DOWNLOAD_WORKBENCH_KEY = 'kikoerumanager.asmrSync.downloadWorkbench'
 const ASMR_SYNC_HTTP_DOWNLOAD_WORKBENCH_KEY = 'kikoerumanager.asmrSync.httpDownloadWorkbench'
 const ASMR_SYNC_BAIDU_NETDISK_WORKBENCH_KEY = 'kikoerumanager.asmrSync.baiduNetdiskWorkbench'
+const ASMR_SYNC_STATUS_POLL_MS = 3000
+const ASMR_SYNC_STATUS_POLL_MAX_MS = 120000
 
 const subtitleFolder = ref('')
 const scanning = ref(false)
@@ -712,6 +735,7 @@ const enhancedUpload = ref({
   libraryId: ''
 })
 let statusInterval = null
+let statusFailureCount = 0
 let asmrSyncInitialized = false
 let asmrSyncViewActive = false
 
@@ -958,6 +982,76 @@ const baiduNetdiskBackgroundCardProps = computed(() => ({
   ]
 }))
 
+const activeBackgroundFloatingCardIndex = ref(0)
+const backgroundFloatingCardDirection = ref(1)
+const visibleBackgroundFloatingCards = computed(() => {
+  const cards = []
+  if (showBaiduNetdiskBackgroundCard.value) {
+    cards.push({
+      id: 'baidu-netdisk',
+      label: '百度网盘下载',
+      props: baiduNetdiskBackgroundCardProps.value,
+      onAction: handleBaiduNetdiskBackgroundCardAction
+    })
+  }
+  if (showHttpDownloadBackgroundCard.value) {
+    cards.push({
+      id: 'http-download',
+      label: 'HTTP 外链下载',
+      props: httpDownloadBackgroundCardProps.value,
+      onAction: handleHttpDownloadBackgroundCardAction
+    })
+  }
+  if (showEnhancedDownloadBackgroundCard.value) {
+    cards.push({
+      id: 'enhanced-download',
+      label: 'ASMR 增强下载',
+      props: enhancedDownloadBackgroundCardProps.value,
+      onAction: handleEnhancedDownloadBackgroundCardAction
+    })
+  }
+  return cards
+})
+const activeBackgroundFloatingCard = computed(() => visibleBackgroundFloatingCards.value[activeBackgroundFloatingCardIndex.value] || visibleBackgroundFloatingCards.value[0] || null)
+const backgroundFloatingCardTransitionName = computed(() => (
+  backgroundFloatingCardDirection.value >= 0
+    ? 'asmr-floating-card-page-next'
+    : 'asmr-floating-card-page-prev'
+))
+
+function setBackgroundFloatingCardIndex(index) {
+  const cards = visibleBackgroundFloatingCards.value
+  if (!cards.length) return
+  const nextIndex = Math.max(0, Math.min(cards.length - 1, Number(index || 0)))
+  if (nextIndex === activeBackgroundFloatingCardIndex.value) return
+  backgroundFloatingCardDirection.value = nextIndex > activeBackgroundFloatingCardIndex.value ? 1 : -1
+  activeBackgroundFloatingCardIndex.value = nextIndex
+}
+
+function switchBackgroundFloatingCard(step) {
+  const cards = visibleBackgroundFloatingCards.value
+  if (cards.length <= 1) return
+  const direction = Number(step || 1) >= 0 ? 1 : -1
+  backgroundFloatingCardDirection.value = direction
+  activeBackgroundFloatingCardIndex.value = (activeBackgroundFloatingCardIndex.value + direction + cards.length) % cards.length
+}
+
+function handleVisibleBackgroundFloatingCardAction(action) {
+  activeBackgroundFloatingCard.value?.onAction?.(action)
+}
+
+watch(visibleBackgroundFloatingCards, (cards, previousCards = []) => {
+  if (!cards.length) {
+    activeBackgroundFloatingCardIndex.value = 0
+    return
+  }
+  const activeId = previousCards[activeBackgroundFloatingCardIndex.value]?.id
+  const nextIndex = activeId ? cards.findIndex(card => card.id === activeId) : -1
+  activeBackgroundFloatingCardIndex.value = nextIndex >= 0
+    ? nextIndex
+    : Math.min(activeBackgroundFloatingCardIndex.value, cards.length - 1)
+}, { flush: 'sync' })
+
 // 格式化下次重试时间
 const formatNextRetryTime = (isoString) => {
   if (!isoString) return '未知'
@@ -990,7 +1084,7 @@ const getStatusText = (status) => {
 }
 
 const getResourceTypeLabel = (type) => {
-  const map = { audio: '音频', subtitle: '字幕', cover: '封面', other: '其他' }
+  const map = { audio: '音频', subtitle: '字幕', cover: '图片', other: '其他' }
   return map[type] || type || '资源'
 }
 
@@ -2055,6 +2149,7 @@ const handleSelectionChange = (selection) => {
 }
 
 const refreshStatus = async () => {
+  if (refreshing.value) return true
   refreshing.value = true
   try {
     const result = await asmrSyncApi.status()
@@ -2063,8 +2158,12 @@ const refreshStatus = async () => {
       const item = scanResults.value.find(i => i.rjcode === task.rjcode)
       if (item) item.status = task.status === 'processing' ? 'downloading' : task.status
     })
+    statusFailureCount = 0
+    return true
   } catch (error) {
+    statusFailureCount += 1
     console.error('获取状态失败:', error)
+    return false
   } finally {
     refreshing.value = false
   }
@@ -2080,14 +2179,37 @@ const formatSize = (bytes) => {
 
 function stopStatusPolling () {
   if (statusInterval) {
-    clearInterval(statusInterval)
+    clearTimeout(statusInterval)
     statusInterval = null
   }
 }
 
 function startStatusPolling () {
+  if (!asmrSyncViewActive) return
+  scheduleStatusPolling(ASMR_SYNC_STATUS_POLL_MS)
+}
+
+function scheduleStatusPolling (delay = ASMR_SYNC_STATUS_POLL_MS) {
   stopStatusPolling()
-  statusInterval = setInterval(refreshStatus, 3000)
+  statusInterval = setTimeout(async () => {
+    statusInterval = null
+    if (!asmrSyncViewActive) return
+    if (typeof document !== 'undefined' && document.hidden) {
+      return
+    }
+    const ok = await refreshStatus()
+    const nextDelay = ok
+      ? ASMR_SYNC_STATUS_POLL_MS
+      : Math.min(ASMR_SYNC_STATUS_POLL_MAX_MS, ASMR_SYNC_STATUS_POLL_MS * 2 ** Math.min(statusFailureCount, 5))
+    scheduleStatusPolling(nextDelay)
+  }, delay)
+}
+
+function handleASMRSyncVisibilityChange () {
+  if (!asmrSyncViewActive || (typeof document !== 'undefined' && document.hidden)) return
+  statusFailureCount = 0
+  refreshStatus()
+  if (!statusInterval) startStatusPolling()
 }
 
 async function initializeASMRSyncPage () {
@@ -2111,6 +2233,9 @@ async function initializeASMRSyncPage () {
 onMounted(async () => {
   await initializeASMRSyncPage()
   asmrSyncViewActive = true
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', handleASMRSyncVisibilityChange)
+  }
   startStatusPolling()
 })
 
@@ -2133,6 +2258,9 @@ onDeactivated(() => {
 })
 
 onBeforeUnmount(() => {
+  if (typeof document !== 'undefined') {
+    document.removeEventListener('visibilitychange', handleASMRSyncVisibilityChange)
+  }
   stopEnhancedDownloadWorkbenchPolling()
   stopHttpDownloadWorkbenchPolling()
   stopBaiduNetdiskWorkbenchPolling()
@@ -2141,6 +2269,9 @@ onBeforeUnmount(() => {
 onUnmounted(() => {
   asmrSyncViewActive = false
   stopStatusPolling()
+  if (typeof document !== 'undefined') {
+    document.removeEventListener('visibilitychange', handleASMRSyncVisibilityChange)
+  }
   stopEnhancedDownloadWorkbenchPolling()
   stopHttpDownloadWorkbenchPolling()
   stopBaiduNetdiskWorkbenchPolling()
@@ -2583,6 +2714,166 @@ button:disabled { cursor: not-allowed; }
 .lib-info-value > b { display: inline-block; transform-origin: center; }
 
 /* 后台浮动卡片 transition 已迁移至 index.css 全局 .floating-card-* 规范 */
+
+.asmr-floating-pager {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 2120;
+  width: min(92vw, 440px);
+  perspective: 1200px;
+  pointer-events: auto;
+}
+
+.asmr-floating-pager :deep(.floating-card) {
+  position: relative;
+  right: auto;
+  bottom: auto;
+  width: 100%;
+  transform-origin: center right;
+}
+
+.asmr-floating-pager-controls {
+  position: absolute;
+  right: 12px;
+  top: -34px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 7px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.10);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.asmr-floating-page-btn,
+.asmr-floating-page-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  outline: none;
+  box-shadow: none;
+  color: #64748b;
+  background: transparent;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.asmr-floating-page-btn:focus,
+.asmr-floating-page-btn:focus-visible,
+.asmr-floating-page-dot:focus,
+.asmr-floating-page-dot:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.asmr-floating-page-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+}
+
+.asmr-floating-page-btn:hover {
+  color: #2563eb;
+  background: rgba(37, 99, 235, 0.09);
+  transform: translateY(-1px) scale(1.05);
+}
+
+.asmr-floating-page-btn:active {
+  transform: scale(0.94);
+}
+
+.asmr-floating-page-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.asmr-floating-page-dot {
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border-radius: 999px;
+  background: #cbd5e1;
+}
+
+.asmr-floating-page-dot.is-active {
+  width: 17px;
+  background: #2563eb;
+}
+
+.asmr-floating-card-page-next-enter-active,
+.asmr-floating-card-page-next-leave-active,
+.asmr-floating-card-page-prev-enter-active,
+.asmr-floating-card-page-prev-leave-active {
+  transition:
+    opacity 0.24s ease,
+    transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.asmr-floating-card-page-next-enter-from {
+  opacity: 0;
+  transform: translateX(26px) rotateY(-16deg) scale(0.96);
+}
+
+.asmr-floating-card-page-next-leave-to {
+  opacity: 0;
+  transform: translateX(-26px) rotateY(16deg) scale(0.96);
+}
+
+.asmr-floating-card-page-prev-enter-from {
+  opacity: 0;
+  transform: translateX(-26px) rotateY(16deg) scale(0.96);
+}
+
+.asmr-floating-card-page-prev-leave-to {
+  opacity: 0;
+  transform: translateX(26px) rotateY(-16deg) scale(0.96);
+}
+
+html.kikoerumanager-dark .asmr-floating-pager-controls {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(28, 29, 34, 0.92);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+html.kikoerumanager-dark .asmr-floating-page-btn,
+html.kikoerumanager-dark .asmr-floating-page-dot {
+  color: rgba(244, 244, 245, 0.7);
+}
+
+html.kikoerumanager-dark .asmr-floating-page-btn:hover {
+  color: #f8fafc;
+  background: rgba(255, 255, 255, 0.10);
+}
+
+html.kikoerumanager-dark .asmr-floating-page-dot {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+html.kikoerumanager-dark .asmr-floating-page-dot.is-active {
+  background: #93c5fd;
+}
+
+@media (max-width: 640px) {
+  .asmr-floating-pager {
+    left: 12px;
+    right: 12px;
+    bottom: max(12px, env(safe-area-inset-bottom));
+    width: auto;
+  }
+
+  .asmr-floating-pager-controls {
+    right: 10px;
+    top: -32px;
+  }
+}
 
 /* ==============================================================
  * 顶部状态条 lib-info-strip（对齐 Library / Conflicts / SubtitleImport）

@@ -436,6 +436,156 @@ onMounted(() => {
   --set-shadow-hover: 0 20px 42px rgba(0, 0, 0, 0.32);
 }
 
+:global(html.kikoerumanager-dark body #app .settings-page .settings-card.settings-card),
+:global(html.kikoerumanager-dark body #app .settings-page .settings-panel.settings-panel),
+:global(html.kikoerumanager-dark body #app .settings-page .config-section.config-section),
+:global(html.kikoerumanager-dark body #app .settings-page .notification-card.notification-card),
+:global(html.kikoerumanager-dark body #app .settings-page .template-card.template-card),
+:global(html.kikoerumanager-dark body #app .settings-page .rule-card.rule-card),
+:global(html.kikoerumanager-dark body #app .settings-page .rule-row.rule-row),
+:global(html.kikoerumanager-dark body #app .settings-page .filter-rule-row.filter-rule-row),
+:global(html.kikoerumanager-dark body #app .settings-page .mapping-row.mapping-row),
+:global(html.kikoerumanager-dark body #app .settings-page .step-card.step-card),
+:global(html.kikoerumanager-dark body #app .settings-page .cleanup-card.cleanup-card),
+:global(html.kikoerumanager-dark body #app .settings-page .stat-card.stat-card),
+:global(html.kikoerumanager-dark body #app .settings-page .profile-panel.profile-panel),
+:global(html.kikoerumanager-dark body #app .settings-page .profile-header.profile-header),
+:global(html.kikoerumanager-dark body #app .settings-page .profile-status-strip.profile-status-strip),
+:global(html.kikoerumanager-dark body #app .settings-page .toggle-card.toggle-card),
+:global(html.kikoerumanager-dark body #app .settings-page .settings-toggle-row.settings-toggle-row),
+:global(html.kikoerumanager-dark body #app .settings-page .library-card.library-card),
+:global(html.kikoerumanager-dark body #app .settings-page .inventory-list.inventory-list),
+:global(html.kikoerumanager-dark body #app .settings-page .inventory-editor.inventory-editor),
+:global(html.kikoerumanager-dark body #app .settings-page .db-shrink.db-shrink),
+:global(html.kikoerumanager-dark body #app .settings-page .notif-domain-block.notif-domain-block),
+:global(html.kikoerumanager-dark body #app .settings-page .tpl-card.tpl-card),
+:global(body.kikoerumanager-dark #app .settings-page .settings-card.settings-card),
+:global(body.kikoerumanager-dark #app .settings-page .settings-panel.settings-panel),
+:global(body.kikoerumanager-dark #app .settings-page .config-section.config-section),
+:global(body.kikoerumanager-dark #app .settings-page .notification-card.notification-card),
+:global(body.kikoerumanager-dark #app .settings-page .template-card.template-card),
+:global(body.kikoerumanager-dark #app .settings-page .rule-card.rule-card),
+:global(body.kikoerumanager-dark #app .settings-page .rule-row.rule-row),
+:global(body.kikoerumanager-dark #app .settings-page .filter-rule-row.filter-rule-row),
+:global(body.kikoerumanager-dark #app .settings-page .mapping-row.mapping-row),
+:global(body.kikoerumanager-dark #app .settings-page .step-card.step-card),
+:global(body.kikoerumanager-dark #app .settings-page .cleanup-card.cleanup-card),
+:global(body.kikoerumanager-dark #app .settings-page .stat-card.stat-card),
+:global(body.kikoerumanager-dark #app .settings-page .profile-panel.profile-panel),
+:global(body.kikoerumanager-dark #app .settings-page .profile-header.profile-header),
+:global(body.kikoerumanager-dark #app .settings-page .profile-status-strip.profile-status-strip),
+:global(body.kikoerumanager-dark #app .settings-page .toggle-card.toggle-card),
+:global(body.kikoerumanager-dark #app .settings-page .settings-toggle-row.settings-toggle-row),
+:global(body.kikoerumanager-dark #app .settings-page .library-card.library-card),
+:global(body.kikoerumanager-dark #app .settings-page .inventory-list.inventory-list),
+:global(body.kikoerumanager-dark #app .settings-page .inventory-editor.inventory-editor),
+:global(body.kikoerumanager-dark #app .settings-page .db-shrink.db-shrink),
+:global(body.kikoerumanager-dark #app .settings-page .notif-domain-block.notif-domain-block),
+:global(body.kikoerumanager-dark #app .settings-page .tpl-card.tpl-card) {
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+.settings-page :deep(.storage-field-input),
+.settings-page :deep(.field-input),
+.settings-page :deep(.lib-input),
+.settings-page :deep(.profile-input),
+.settings-page :deep(.baidu-cookie-input),
+.settings-page :deep(.bi-input),
+.settings-page :deep(.bi-stats-input),
+.settings-page :deep(.stepper-input),
+.settings-page :deep(.range-input) {
+  font-size: 12.5px !important;
+  line-height: 1.35 !important;
+}
+
+.settings-page :deep(.storage-field-input),
+.settings-page :deep(.field-input),
+.settings-page :deep(.lib-input),
+.settings-page :deep(.profile-input),
+.settings-page :deep(.baidu-cookie-input) {
+  min-height: 34px;
+  padding-right: 10px;
+  padding-left: 10px;
+  border-radius: 8px;
+}
+
+.settings-page :deep(.settings-field-dd .app-dd-trigger),
+.settings-page :deep(.app-dd-trigger),
+.settings-page :deep(.settings-number-stepper),
+.settings-page :deep(.settings-range-stepper),
+.settings-page :deep(.profile-actions .profile-action-btn),
+.settings-page :deep(.service-inline-row .field-input) {
+  min-height: 34px;
+  height: 34px;
+  border-radius: 8px;
+  font-size: 12.5px !important;
+}
+
+.settings-page :deep(.app-dd-trigger) {
+  padding-right: 9px;
+  padding-left: 10px;
+  gap: 5px;
+}
+
+.settings-page :deep(.settings-field-dd .app-dd-trigger-value),
+.settings-page :deep(.settings-field-dd .app-dd-trigger-label),
+.settings-page :deep(.settings-field-dd .app-dd-item-label),
+.settings-page :deep(.settings-field-dd .app-dd-item-description),
+.settings-page :deep(.app-dd-trigger-value),
+.settings-page :deep(.app-dd-trigger-label),
+.settings-page :deep(.app-dd-item-label),
+.settings-page :deep(.app-dd-item-description) {
+  font-size: 12.5px !important;
+  line-height: 1.25 !important;
+}
+
+.settings-page :deep(.settings-field-dd .app-dd-trigger-value),
+.settings-page :deep(.settings-field-dd .app-dd-item-label),
+.settings-page :deep(.app-dd-trigger-value),
+.settings-page :deep(.app-dd-item-label) {
+  font-weight: 500 !important;
+}
+
+.settings-page :deep(.settings-field-dd .app-dd-trigger-icon),
+.settings-page :deep(.settings-field-dd .app-dd-trigger-caret),
+.settings-page :deep(.app-dd-trigger-icon),
+.settings-page :deep(.app-dd-trigger-caret) {
+  width: 14px !important;
+  height: 14px !important;
+}
+
+.settings-page :deep(.settings-number-stepper) {
+  grid-template-columns: 36px minmax(66px, 1fr) 36px;
+  max-width: 172px;
+}
+
+.settings-page :deep(.settings-range-stepper) {
+  max-width: 172px;
+}
+
+.settings-page :deep(.sfc) {
+  gap: 5px;
+}
+
+.settings-page :deep(.sfc-label) {
+  font-size: 11.5px !important;
+}
+
+.settings-page :deep(.sfc-hint),
+.settings-page :deep(.storage-card-desc),
+.settings-page :deep(.settings-section-subtitle) {
+  font-size: 11px !important;
+  line-height: 1.45;
+}
+
+.settings-page :deep(.settings-card-title),
+.settings-page :deep(.storage-card-title),
+.settings-page :deep(.card-title) {
+  font-size: 13px !important;
+}
+
 /* 移动端紧凑边距 */
 @media (max-width: 640px) {
   .settings-page {

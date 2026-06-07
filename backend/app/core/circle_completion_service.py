@@ -10,6 +10,7 @@ import time
 import unicodedata
 import uuid
 from collections import defaultdict
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -221,6 +222,7 @@ class CircleCompletionService:
         self._asmr_probe_cache: TTLCache = TTLCache(max_size=2048, ttl_seconds=3600, name="circle.asmr_probe")
         # metadata / canonical 单条体积大，限严些；1h TTL 足以覆盖一次社团补全流程。
         self._metadata_cache: TTLCache = TTLCache(max_size=512, ttl_seconds=3600, name="circle.metadata")
+        self._completion_view_cache: TTLCache = TTLCache(max_size=128, ttl_seconds=600, name="circle.completion_view")
         # ⚠ canonical cache 必须够大装下"大社团一次索引涉及的所有链路 RJ"：
         # 实测 RaRo（304 件）展开后涉及 ~1600 个 RJ，旧 max_size=1024 会触发 LRU 淘汰，
         # wave1 批量预热写进 1600 条但留下最后 1024 条，前 ~600 条全被踢出，
@@ -259,6 +261,31 @@ class CircleCompletionService:
         #   - 后续 arrival 直接 await 现有 Future、零网络
         # Future 完成后立刻清出字典，让后续真正 refresh 的 path 仍能触网。
         self._metadata_inflight: Dict[str, asyncio.Future] = {}
+
+    def _completion_view_cache_key(
+        self,
+        circle_id_or_query: str,
+        *,
+        only_missing: bool = False,
+        only_downloadable: bool = False,
+        include_dl_only: bool = True,
+    ) -> str:
+        return "|".join([
+            str(circle_id_or_query or "").strip(),
+            "missing=1" if only_missing else "missing=0",
+            "downloadable=1" if only_downloadable else "downloadable=0",
+            "dlonly=1" if include_dl_only else "dlonly=0",
+        ])
+
+    def invalidate_completion_view_cache(self, circle_id: str = "") -> int:
+        normalized = str(circle_id or "").strip()
+        if not normalized:
+            size = len(self._completion_view_cache)
+            self._completion_view_cache.clear()
+            return size
+        return self._completion_view_cache.invalidate_predicate(
+            lambda key: isinstance(key, str) and key.startswith(f"{normalized}|")
+        )
 
     def normalize_circle_name(self, value: Any) -> str:
         text = unicodedata.normalize("NFKC", str(value or "")).strip().lower()
@@ -3883,6 +3910,7 @@ class CircleCompletionService:
             db.close()
         # P8：记录完成时间戳，用于 TTL 判断"下一次索引是否还需要 await 全量同步"。
         self._local_owned_sync_state["last_completed_at"] = time.monotonic()
+        self.invalidate_completion_view_cache()
         return {"owned_count": len(merged)}
 
     async def sync_owned_for_rj(self, rjcode: str, folder_path: str = "", library_id: str = "") -> None:
@@ -3986,6 +4014,11 @@ class CircleCompletionService:
             reverse_match_count,
             ",".join(sorted(affected_circle_ids)) if affected_circle_ids else "<无>",
         )
+        if affected_circle_ids:
+            for affected_circle_id in affected_circle_ids:
+                self.invalidate_completion_view_cache(affected_circle_id)
+        else:
+            self.invalidate_completion_view_cache()
 
         # === SSE 广播：通知前端"该 RJ 已入库，请刷新相关社团" ===
         # 不挂 NotificationInbox（不是真正的"通知"，只是数据变更信号），所以走轻量事件类型。
@@ -4135,6 +4168,7 @@ class CircleCompletionService:
                     normalized_filter.append(normalized)
 
         db = SessionLocal()
+        changed = False
         try:
             query = db.query(CircleWork).filter(CircleWork.circle_id == circle_id)
             if normalized_filter is not None:
@@ -4165,12 +4199,15 @@ class CircleCompletionService:
                 if hit and (new_is_bonus != bool(row.is_bonus_work) or new_has_bonus != bool(row.has_bonus)):
                     row.is_bonus_work = new_is_bonus
                     row.has_bonus = new_has_bonus
+                    changed = True
             db.commit()
         except Exception:
             db.rollback()
             logger.warning("[社团补全] 同步 bonus 字段到 circle_works 失败 circle_id=%s", circle_id, exc_info=True)
         finally:
             db.close()
+        if changed:
+            self.invalidate_completion_view_cache(circle_id)
         return bonus_updates
 
     async def index_circle_catalog(
@@ -5188,6 +5225,7 @@ class CircleCompletionService:
         self._schedule_circle_bonus_refresh(circle_id, bonus_lookup_rjcodes)
 
         report(97, "生成社团视图摘要", circle_id=circle_id)
+        self.invalidate_completion_view_cache(circle_id)
         summary = await self.build_circle_completion_view(circle_id)
         indexed_counts = {
             "works": len(summary.get("works") or []),
@@ -5468,6 +5506,15 @@ class CircleCompletionService:
         circle_id_or_query = str(circle_id_or_query or "").strip()
         if not circle_id_or_query:
             raise ValueError("缺少社团标识")
+        cache_key = self._completion_view_cache_key(
+            circle_id_or_query,
+            only_missing=only_missing,
+            only_downloadable=only_downloadable,
+            include_dl_only=include_dl_only,
+        )
+        cached_result = self._completion_view_cache.get(cache_key)
+        if cached_result is not None:
+            return deepcopy(cached_result)
 
         db = SessionLocal()
         try:
@@ -5740,6 +5787,7 @@ class CircleCompletionService:
             # 写入由 index_circle_catalog / refresh_circle_works / email_watcher 直入负责。
         finally:
             db.close()
+        self._completion_view_cache[cache_key] = deepcopy(result)
         return result
 
     async def preview_batch_download(
@@ -6338,6 +6386,7 @@ class CircleCompletionService:
                     "refreshed_items": refreshed_items[:50],
                 },
             )
+            self.invalidate_completion_view_cache(circle_id)
             return {
                 "circle_id": circle_id,
                 "circle_name": catalog.circle_name,

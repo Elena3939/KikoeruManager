@@ -40,7 +40,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Database as IconDatabase, RefreshCw as IconRefreshCw } from 'lucide-vue-next'
 import { Badge } from '@/components/ui/badge'
 import { libraryApi } from '../../api'
@@ -57,8 +57,10 @@ const emit = defineEmits(['status-change'])
 
 const status = ref(null)
 const rebuilding = ref(false)
+const fetching = ref(false)
 let pollTimer = null
 let lastFetchedFor = null
+const POLL_INTERVAL_MS = 1200
 
 const libraryId = computed(() => (props.library?.id ? String(props.library.id) : ''))
 const libraryName = computed(() => props.library?.name || libraryId.value || '当前库存')
@@ -135,13 +137,28 @@ watch(libraryId, (id) => {
   fetchStatus()
 }, { immediate: true })
 
+onMounted(() => {
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+  }
+})
+
 onBeforeUnmount(() => {
   stopPolling()
+  if (typeof document !== 'undefined') {
+    document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }
 })
 
 async function fetchStatus() {
   const id = libraryId.value
   if (!id) return
+  if (typeof document !== 'undefined' && document.hidden) {
+    stopPolling()
+    return
+  }
+  if (fetching.value) return
+  fetching.value = true
   try {
     const data = await libraryApi.getIndexStatus(id)
     status.value = data
@@ -154,20 +171,43 @@ async function fetchStatus() {
   } catch (error) {
     // 静默：状态查询失败不应该影响页面其他功能
     status.value = { status: 'idle', error: error?.message || String(error) }
+  } finally {
+    fetching.value = false
   }
 }
 
 function startPolling() {
   stopPolling()
+  if (typeof document !== 'undefined' && document.hidden) return
   // syncing 期间 1.2s 一次轮询，让圆环还能看到数字补跳增长。
   // 后端每 0.5s 上报一次，前后端一起构成“近似实时”进度。
-  pollTimer = setInterval(fetchStatus, 1200)
+  pollTimer = setTimeout(async () => {
+    pollTimer = null
+    await fetchStatus()
+    if (statusName.value === 'syncing') startPolling()
+  }, POLL_INTERVAL_MS)
 }
 
 function stopPolling() {
   if (pollTimer) {
-    clearInterval(pollTimer)
+    clearTimeout(pollTimer)
     pollTimer = null
+  }
+}
+
+function handleVisibilityChange() {
+  if (typeof document === 'undefined') return
+  if (document.hidden) {
+    stopPolling()
+    return
+  }
+  if (!status.value && libraryId.value) {
+    fetchStatus()
+    return
+  }
+  if (statusName.value === 'syncing') {
+    fetchStatus()
+    startPolling()
   }
 }
 

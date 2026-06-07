@@ -2,9 +2,13 @@
 BackupZipService 集成测试
 """
 import asyncio
+import hashlib
 import json
 import os
 import tempfile
+from datetime import datetime
+from types import SimpleNamespace
+from contextlib import asynccontextmanager
 
 import pytest
 from unittest.mock import Mock, patch, MagicMock, AsyncMock
@@ -95,6 +99,80 @@ class TestBuildManifest:
         assert "mtime" in entry
         assert entry["size"] == 128
         assert isinstance(entry["mtime"], float)
+
+
+class TestIndexedDirSize:
+    """测试库存备份目录大小优先复用 ready 索引"""
+
+    def test_get_dir_size_uses_ready_local_library_index(self, temp_dir):
+        service = BackupZipService()
+        index_service = MagicMock()
+        index_service.is_ready.return_value = True
+        index_service.get_library_size.return_value = 12345
+        library = SimpleNamespace(
+            id="lib-local",
+            enabled=True,
+            type="local",
+            root_path=temp_dir,
+            path=temp_dir,
+        )
+
+        with patch("app.core.backup_zip_service.os.walk") as mock_walk, \
+                patch("app.core.library_manager.load_library_config", return_value={"libraries": [library]}), \
+                patch("app.core.library_index.get_library_index_service", return_value=index_service):
+            assert service._get_dir_size(temp_dir) == 12345
+
+        mock_walk.assert_not_called()
+        index_service.is_ready.assert_called_once_with("lib-local")
+        index_service.get_library_size.assert_called_once_with("lib-local")
+
+    def test_get_dir_size_falls_back_when_index_not_ready(self, temp_dir):
+        fp = os.path.join(temp_dir, "data.bin")
+        with open(fp, "wb") as f:
+            f.write(b"x" * 7)
+
+        service = BackupZipService()
+        index_service = MagicMock()
+        index_service.is_ready.return_value = False
+        library = SimpleNamespace(
+            id="lib-local",
+            enabled=True,
+            type="local",
+            root_path=temp_dir,
+            path=temp_dir,
+        )
+
+        with patch("app.core.library_manager.load_library_config", return_value={"libraries": [library]}), \
+                patch("app.core.library_index.get_library_index_service", return_value=index_service):
+            assert service._get_dir_size(temp_dir) == 7
+
+        index_service.get_library_size.assert_not_called()
+
+    def test_get_dir_size_falls_back_for_subdirectory(self, temp_dir):
+        subdir = os.path.join(temp_dir, "sub")
+        os.makedirs(subdir, exist_ok=True)
+        fp = os.path.join(subdir, "data.bin")
+        with open(fp, "wb") as f:
+            f.write(b"x" * 9)
+
+        service = BackupZipService()
+        index_service = MagicMock()
+        index_service.is_ready.return_value = True
+        index_service.get_library_size.return_value = 999
+        library = SimpleNamespace(
+            id="lib-local",
+            enabled=True,
+            type="local",
+            root_path=temp_dir,
+            path=temp_dir,
+        )
+
+        with patch("app.core.library_manager.load_library_config", return_value={"libraries": [library]}), \
+                patch("app.core.library_index.get_library_index_service", return_value=index_service):
+            assert service._get_dir_size(subdir) == 9
+
+        index_service.is_ready.assert_not_called()
+        index_service.get_library_size.assert_not_called()
 
 
 # ── 2. TestSplitIntoChunks ───────────────────────────────────
@@ -223,6 +301,163 @@ class TestBuild7zParams:
                 "zip", 3, 0, "pw", "/out/a.zip"
             )
         assert "-mmt=16" in params
+
+
+class TestBackupResourceBudget:
+    """测试备份压缩接入本地磁盘 IO 预算"""
+
+    @pytest.mark.asyncio
+    async def test_backup_scan_uses_disk_io_budget(self, temp_dir):
+        svc = BackupZipService()
+        source_path = os.path.join(temp_dir, "source")
+        os.makedirs(source_path, exist_ok=True)
+        with open(os.path.join(source_path, "a.txt"), "w", encoding="utf-8") as fp:
+            fp.write("hello")
+        calls = []
+        config = SimpleNamespace(
+            backup_zip=SimpleNamespace(
+                source_path=source_path,
+                output_dir=temp_dir,
+                path_copy_target="",
+                copy_structure_before_zip=False,
+                password="pw",
+                archive_format="zip",
+                compression_level=5,
+                compression_threads=1,
+                dictionary_size_mb=0,
+                solid_archive=True,
+            ),
+            extract=SimpleNamespace(seven_zip_path="7z"),
+        )
+
+        class Budget:
+            @asynccontextmanager
+            async def acquire(self, resource, *, weight=1, reason=""):
+                calls.append((resource, weight, reason))
+                yield
+
+        with patch("app.core.backup_zip_service.get_config", return_value=config), \
+                patch("app.core.backup_zip_service.get_resource_budget_service", return_value=Budget()), \
+                patch.object(svc, "_get_last_backup_end_time", return_value=datetime(2000, 1, 1)), \
+                patch.object(svc, "_find_7z_executable", return_value="7z"), \
+                patch.object(svc, "_save_checkpoint"), \
+                patch.object(svc, "_compress_chunks", new_callable=AsyncMock), \
+                patch.object(svc, "_finalize_success", new_callable=AsyncMock):
+            await svc._run()
+
+        assert calls[:2] == [
+            ("disk_io_local", 1, "backup_zip.scan_size"),
+            ("disk_io_local", 1, "backup_zip.scan_manifest"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_resume_manifest_validation_uses_disk_io_budget(self, temp_dir):
+        svc = BackupZipService()
+        source_path = os.path.join(temp_dir, "source")
+        os.makedirs(source_path, exist_ok=True)
+        with open(os.path.join(source_path, "a.txt"), "w", encoding="utf-8") as fp:
+            fp.write("hello")
+        manifest = BackupZipService._build_manifest(source_path)
+        svc._file_manifest = manifest
+        calls = []
+        config = SimpleNamespace(
+            backup_zip=SimpleNamespace(
+                password="pw",
+                compression_threads=1,
+                dictionary_size_mb=0,
+                solid_archive=True,
+            ),
+            extract=SimpleNamespace(seven_zip_path="7z"),
+        )
+        checkpoint = {
+            "source_path": source_path,
+            "archive_path": os.path.join(temp_dir, "backup.zip"),
+            "archive_format": "zip",
+            "compression_level": 5,
+            "password_hash": hashlib.sha256(b"pw").hexdigest(),
+        }
+
+        class Budget:
+            @asynccontextmanager
+            async def acquire(self, resource, *, weight=1, reason=""):
+                calls.append((resource, weight, reason))
+                yield
+
+        with patch("app.core.backup_zip_service.get_config", return_value=config), \
+                patch("app.core.backup_zip_service.get_resource_budget_service", return_value=Budget()), \
+                patch.object(svc, "_find_7z_executable", return_value="7z"), \
+                patch.object(svc, "_compress_chunks", new_callable=AsyncMock), \
+                patch.object(svc, "_finalize_success", new_callable=AsyncMock):
+            await svc._run_resume(checkpoint)
+
+        assert calls == [("disk_io_local", 1, "backup_zip.scan_manifest")]
+
+    @pytest.mark.asyncio
+    async def test_single_chunk_uses_disk_io_budget(self, temp_dir):
+        svc = BackupZipService()
+        calls = []
+
+        class Budget:
+            @asynccontextmanager
+            async def acquire(self, resource, *, weight=1, reason=""):
+                calls.append((resource, weight, reason))
+                yield
+
+        with patch("app.core.backup_zip_service.get_resource_budget_service", return_value=Budget()), \
+                patch.object(svc, "_run_7z", new_callable=AsyncMock, return_value=0):
+            await svc._compress_chunks(
+                seven_zip="7z",
+                archive_format="zip",
+                compression_level=5,
+                threads=2,
+                password="pw",
+                archive_path=os.path.join(temp_dir, "test.zip"),
+                source_parent=temp_dir,
+                source_name="source",
+                dict_size_mb=0,
+                solid=True,
+                total_chunks=1,
+            )
+
+        assert calls == [("disk_io_local", 1, "backup_zip.compress")]
+
+    @pytest.mark.asyncio
+    async def test_multi_chunk_uses_disk_io_budget_per_chunk(self, temp_dir):
+        svc = BackupZipService()
+        svc._chunks = [
+            [{"path": "a.txt", "size": 10, "mtime": 1.0}],
+            [{"path": "b.txt", "size": 20, "mtime": 1.0}],
+        ]
+        svc._current_chunk_index = 0
+        calls = []
+
+        class Budget:
+            @asynccontextmanager
+            async def acquire(self, resource, *, weight=1, reason=""):
+                calls.append((resource, weight, reason))
+                yield
+
+        with patch("app.core.backup_zip_service.get_resource_budget_service", return_value=Budget()), \
+                patch.object(svc, "_run_7z", new_callable=AsyncMock, return_value=0), \
+                patch.object(svc, "_save_checkpoint"):
+            await svc._compress_chunks(
+                seven_zip="7z",
+                archive_format="zip",
+                compression_level=5,
+                threads=2,
+                password="pw",
+                archive_path=os.path.join(temp_dir, "test.zip"),
+                source_parent=temp_dir,
+                source_name="source",
+                dict_size_mb=0,
+                solid=True,
+                total_chunks=2,
+            )
+
+        assert calls == [
+            ("disk_io_local", 1, "backup_zip.compress_chunk"),
+            ("disk_io_local", 1, "backup_zip.compress_chunk"),
+        ]
 
     def test_custom_dictionary_size(self):
         params = BackupZipService._build_7z_params(

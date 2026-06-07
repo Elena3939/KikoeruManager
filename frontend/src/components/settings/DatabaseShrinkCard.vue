@@ -107,6 +107,7 @@ const estimateError = ref('')
 const status = ref(null)
 const isLoading = ref(false)
 let pollTimer = null
+let visibilityBound = false
 
 const sizes = computed(() => {
   // running / done / error 阶段优先显示状态机里的现场尺寸；idle 阶段用 estimate 接口的快照
@@ -200,8 +201,15 @@ async function pullStatus() {
 }
 
 function startPolling() {
+  if (typeof document !== 'undefined' && document.hidden) return
   stopPolling()
-  pollTimer = setInterval(pullStatus, 1500)
+  pollTimer = setInterval(() => {
+    if (typeof document !== 'undefined' && document.hidden) {
+      stopPolling()
+      return
+    }
+    pullStatus()
+  }, 1500)
 }
 
 function stopPolling() {
@@ -259,7 +267,26 @@ async function dismissResult() {
   }
 }
 
+async function handleVisibilityChange() {
+  if (typeof document === 'undefined' || document.hidden) return
+  await pullStatus()
+  if (isRunning.value) startPolling()
+}
+
+function bindVisibilityChange() {
+  if (visibilityBound || typeof document === 'undefined') return
+  visibilityBound = true
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+}
+
+function unbindVisibilityChange() {
+  if (!visibilityBound || typeof document === 'undefined') return
+  visibilityBound = false
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+}
+
 onMounted(async () => {
+  bindVisibilityChange()
   // 先看后端有没有"正在跑"的任务（比如刚刷新页面）
   try {
     const pending = await databaseMaintenanceApi.shrinkStatus()
@@ -274,6 +301,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  unbindVisibilityChange()
   stopPolling()
 })
 </script>

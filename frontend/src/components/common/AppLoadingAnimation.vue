@@ -29,8 +29,8 @@
 <script setup>
 import { computed } from 'vue'
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
-import loadingCatAnimation from '../../assets/anime/Loading Cat.lottie'
-import insiderLoadingAnimation from '../../assets/anime/Insider-loading.lottie'
+import loadingCatAnimation from '../../assets/anime/Loading Cat.lottie?url'
+import insiderLoadingAnimation from '../../assets/anime/Insider-loading.lottie?url'
 
 const props = defineProps({
   label: {

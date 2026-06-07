@@ -5,6 +5,9 @@ import os
 import shutil
 import tempfile
 import threading
+import time
+import json
+import hashlib
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from enum import Enum
@@ -36,6 +39,7 @@ class TaskType(str, Enum):
     BAIDU_NETDISK_UPLOAD = "baidu_netdisk_upload"  # 百度网盘上传任务
     RJ_SUBTITLE_FETCH = "rj_subtitle_fetch"  # RJ 字幕抓取任务
     LOCAL_LIBRARY_UPLOAD = "local_library_upload"
+    LIBRARY_FOLDER_COMPLETION_PREVIEW = "library_folder_completion_preview"
     CIRCLE_COMPLETION_INDEX = "circle_completion_index"
     CIRCLE_COMPLETION_REFRESH_SELECTED = "circle_completion_refresh_selected"
     CIRCLE_COMPLETION_DOWNLOAD_BATCH = "circle_completion_download_batch"
@@ -44,6 +48,12 @@ class Task:
     """任务对象"""
     _global_event_hook: Optional[Callable] = None
     _EVENT_FIELDS = {"status", "progress", "current_step", "error_message", "started_at", "completed_at"}
+    _PROGRESS_REFRESH_PATTERN = re.compile(
+        r"(\d+(?:\.\d+)?\s*(?:%|b/s|kb/s|mb/s|gb/s|bps|kb|mb|gb|bytes?|个/秒|项/秒|文件/秒))"
+        r"|(\b(?:eta|speed|速度|速率|剩余|已传|已下载|downloaded|uploaded)\b)"
+        r"|(\d+\s*/\s*\d+)",
+        re.IGNORECASE,
+    )
 
     def __setattr__(self, name, value):
         old_value = getattr(self, name, None) if hasattr(self, name) else None
@@ -111,6 +121,9 @@ class Task:
         self._proc_lock = threading.Lock()
         self._stop_reason: Optional[str] = None  # 'cancel' | 'pause' | None
         self._event_hook: Optional[Callable] = None
+        self._last_progress_event_at = 0.0
+        self._last_progress_event_progress: Optional[int] = None
+        self._metadata_version = 0
         self._events_initialized = True
 
     @classmethod
@@ -128,6 +141,13 @@ class Task:
             hook(self, reason)
         except Exception:
             logger.debug("任务事件回调失败", exc_info=True)
+
+    def touch_metadata(self, reason: str = "metadata"):
+        self._metadata_version = int(getattr(self, "_metadata_version", 0) or 0) + 1
+        self.mark_changed(reason)
+
+    def metadata_version(self) -> int:
+        return int(getattr(self, "_metadata_version", 0) or 0)
 
     def _set_state_silent(self):
         task = self
@@ -298,10 +318,11 @@ class Task:
         都写入 task_metadata['progress_log']，限长 60 条防止无限增长。
         同一句紧邻重复（常见于多次刷新进度）直接跳过，避免大量"解压中"刷屏。
         """
+        normalized_progress = min(100, max(0, int(progress or 0)))
         with self._set_state_silent():
-            self.progress = min(100, max(0, progress))
+            self.progress = normalized_progress
             self.current_step = step
-        logger.info(f"任务 {self.id}: {step} ({progress}%)")
+        logger.info(f"任务 {self.id}: {step} ({normalized_progress}%)")
 
         try:
             if not isinstance(self.task_metadata, dict):
@@ -310,12 +331,24 @@ class Task:
             text = str(step or "").strip()
             if not text:
                 return
+            last_text = ""
             last = logs[-1] if logs else None
             if isinstance(last, dict):
                 last_text = str(last.get("message") or last.get("text") or "").strip()
                 last_progress = last.get("progress")
                 if last_text == text and last_progress == self.progress:
                     return
+            now_ts = time.monotonic()
+            force_emit = self._should_force_progress_emit(text, normalized_progress)
+            progress_delta = abs(normalized_progress - int(self._last_progress_event_progress or 0))
+            if (
+                not force_emit
+                and self._last_progress_event_at > 0
+                and progress_delta < 1
+                and (now_ts - self._last_progress_event_at) < 0.75
+                and self._is_high_frequency_progress_refresh(text, last_text)
+            ):
+                return
             now = datetime.now()
             logs.append({
                 "time": now.isoformat(),
@@ -326,10 +359,109 @@ class Task:
             })
             # 限长 60 条：解压/入库平均 15~20 条，留足余量给重试场景。
             self.task_metadata["progress_log"] = logs[-60:]
+            self._metadata_version = int(getattr(self, "_metadata_version", 0) or 0) + 1
+            self._last_progress_event_at = now_ts
+            self._last_progress_event_progress = normalized_progress
             self.mark_changed("progress")
         except Exception:
             # 日志写入失败不能影响主流程
             logger.debug("append progress_log 失败", exc_info=True)
+
+    def _should_force_progress_emit(self, step: str, progress: int) -> bool:
+        if progress in {0, 100}:
+            return True
+        text = str(step or "")
+        force_tokens = (
+            "完成",
+            "失败",
+            "取消",
+            "暂停",
+            "等待",
+            "重试",
+            "冲突",
+            "错误",
+            "校验失败",
+        )
+        return any(token in text for token in force_tokens)
+
+    @classmethod
+    def _is_high_frequency_progress_refresh(cls, current_step: str, previous_step: str = "") -> bool:
+        """识别下载/上传/扫描里的数值型刷新，避免吞掉真实阶段切换。"""
+        text = str(current_step or "").strip()
+        previous = str(previous_step or "").strip()
+        if not text:
+            return False
+        if not cls._PROGRESS_REFRESH_PATTERN.search(text) and not cls._PROGRESS_REFRESH_PATTERN.search(previous):
+            return False
+
+        def normalize(value: str) -> str:
+            value = str(value or "").lower()
+            value = cls._PROGRESS_REFRESH_PATTERN.sub("#", value)
+            value = re.sub(r"\s+", " ", value).strip()
+            return value.rstrip("# ").strip()
+
+        return normalize(text) == normalize(previous)
+
+    @staticmethod
+    def _is_key_progress_log_item(item: dict) -> bool:
+        text = str(item.get("message") or item.get("text") or "").strip()
+        level = str(item.get("level") or "").strip().lower()
+        if level in {"error", "warning", "warn", "success"}:
+            return True
+        key_tokens = (
+            "完成",
+            "失败",
+            "取消",
+            "暂停",
+            "等待",
+            "重试",
+            "冲突",
+            "错误",
+            "校验失败",
+            "远端校验失败",
+        )
+        return any(token in text for token in key_tokens)
+
+    @classmethod
+    def compact_progress_log_for_persistence(cls, metadata: dict, status: TaskStatus | str) -> dict:
+        """压缩落库用 progress_log，运行中 task_metadata 不受影响。"""
+        next_metadata = dict(metadata or {})
+        logs = [item for item in list(next_metadata.get("progress_log") or []) if isinstance(item, dict)]
+        if len(logs) <= 24:
+            return next_metadata
+
+        status_value = status.value if isinstance(status, TaskStatus) else str(status or "")
+        if status_value in {TaskStatus.FAILED.value, TaskStatus.CANCELLED.value, TaskStatus.WAITING_MANUAL.value, TaskStatus.WAITING_RETRY.value}:
+            target_limit = 36
+            head_count = 6
+            tail_count = 18
+        else:
+            target_limit = 24
+            head_count = 4
+            tail_count = 12
+
+        selected: dict[int, dict] = {}
+        for index, item in enumerate(logs[:head_count]):
+            selected[index] = item
+        for index in range(max(0, len(logs) - tail_count), len(logs)):
+            selected[index] = logs[index]
+        for index, item in enumerate(logs):
+            if cls._is_key_progress_log_item(item):
+                selected[index] = item
+
+        compacted = [selected[index] for index in sorted(selected)]
+        if len(compacted) > target_limit:
+            head = compacted[:head_count]
+            tail = compacted[-max(1, target_limit - head_count):]
+            compacted = head + tail
+
+        next_metadata["progress_log"] = compacted
+        next_metadata["progress_log_compacted"] = {
+            "original_count": len(logs),
+            "retained_count": len(compacted),
+            "compacted_at": datetime.now().isoformat(),
+        }
+        return next_metadata
 
     def reset_for_rerun(self, step: str = "等待重新执行"):
         """重置任务运行态，保留任务 ID 原地重跑。"""
@@ -345,6 +477,7 @@ class Task:
         with self._proc_lock:
             self._active_processes.clear()
             self._stop_reason = None
+        self._metadata_version = int(getattr(self, "_metadata_version", 0) or 0) + 1
         self.mark_changed("status")
 
     def ensure_business_context(self, domain: str, defaults: Optional[dict] = None):
@@ -363,7 +496,11 @@ class Task:
         metadata.setdefault("business_key", defaults.get("business_key") or self.id)
         self.session_id = metadata.get("session_id")
         self.business_key = metadata.get("business_key")
-        self.task_metadata = metadata
+        if metadata != (self.task_metadata or {}):
+            self.task_metadata = metadata
+            self._metadata_version = int(getattr(self, "_metadata_version", 0) or 0) + 1
+        else:
+            self.task_metadata = metadata
 
 def get_conflict_type_name(conflict_type: str) -> str:
     """获取冲突类型的中文名称"""
@@ -395,12 +532,27 @@ class TaskEngine:
         # ExtractService._archive_info_cache 后自然完成。用 set 强引用避免 GC 警告。
         # task.cancel() 时通过 register_process 联动 kill 子进程，协程会自动退出。
         self._background_precheck_tasks: set[asyncio.Task] = set()
+        self._task_center_version = 0
+        self._task_center_version_lock = threading.Lock()
+        self._persisted_task_snapshot_versions: dict[str, tuple] = {}
+        self._materialized_task_center_item_versions: dict[str, tuple] = {}
         Task.set_global_event_hook(self._emit_task_center_event)
+
+    def _bump_task_center_version(self) -> int:
+        with self._task_center_version_lock:
+            self._task_center_version += 1
+            return self._task_center_version
+
+    def get_task_center_version(self) -> int:
+        with self._task_center_version_lock:
+            return self._task_center_version
 
     def _emit_task_center_event(self, task: Task, reason: str = "progress") -> None:
         try:
             from .task_center_event_service import broadcast_task_center_changed
             self._ensure_task_context(task)
+            self._bump_task_center_version()
+            self.persist_task_center_item_snapshot(task)
             broadcast_task_center_changed(task, reason=reason)
         except Exception:
             logger.debug("任务中心事件广播失败: task_id=%s", getattr(task, "id", ""), exc_info=True)
@@ -613,6 +765,8 @@ class TaskEngine:
             return "baidu_netdisk"
         if task.type == TaskType.LOCAL_LIBRARY_UPLOAD:
             return "upload"
+        if task.type == TaskType.LIBRARY_FOLDER_COMPLETION_PREVIEW:
+            return "asmr_sync"
         if task.type in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH}:
             return "circle_completion"
         return "system"
@@ -646,11 +800,75 @@ class TaskEngine:
             or action in {"RETRY", "KEEP_NEW", "MERGE", "RENAME_VOLUMES"}
         )
 
+    def _task_snapshot_version_key(self, task: Task) -> tuple:
+        status_value = task.status.value if isinstance(task.status, TaskStatus) else str(task.status or "")
+        type_value = task.type.value if isinstance(task.type, TaskType) else str(task.type or "")
+        metadata_fp = self._task_metadata_fingerprint(task.task_metadata)
+        return (
+            type_value,
+            status_value,
+            str(task.source_path or ""),
+            str(task.output_path or ""),
+            int(task.progress or 0),
+            str(task.current_step or ""),
+            str(task.error_message or ""),
+            task.created_at.isoformat() if task.created_at else "",
+            task.started_at.isoformat() if task.started_at else "",
+            task.completed_at.isoformat() if task.completed_at else "",
+            int(task.metadata_version()),
+            metadata_fp,
+        )
+
+    @staticmethod
+    def _task_metadata_fingerprint(metadata: Any) -> tuple[int, str]:
+        try:
+            payload = json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
+        except Exception:
+            payload = repr(metadata)
+        digest = hashlib.blake2b(payload.encode("utf-8", errors="replace"), digest_size=16).hexdigest()
+        return len(payload), digest
+
+    def _should_persist_task_snapshot(self, task: Task, version_key: tuple) -> bool:
+        previous = self._persisted_task_snapshot_versions.get(task.id)
+        if previous is None:
+            return True
+        if previous != version_key:
+            return True
+        status_value = task.status.value if isinstance(task.status, TaskStatus) else str(task.status or "")
+        return status_value in {
+            TaskStatus.COMPLETED.value,
+            TaskStatus.FAILED.value,
+            TaskStatus.CANCELLED.value,
+            TaskStatus.WAITING_MANUAL.value,
+            TaskStatus.WAITING_RETRY.value,
+        }
+
+    def _should_upsert_task_center_item_snapshot(self, task: Task, item: Dict[str, Any]) -> bool:
+        item_id = str(item.get("id") or "").strip()
+        if not item_id:
+            return False
+        item_fp = self._task_metadata_fingerprint(item)
+        previous = self._materialized_task_center_item_versions.get(item_id)
+        if previous != item_fp:
+            return True
+        status_value = task.status.value if isinstance(task.status, TaskStatus) else str(task.status or "")
+        return status_value in {
+            TaskStatus.COMPLETED.value,
+            TaskStatus.FAILED.value,
+            TaskStatus.CANCELLED.value,
+            TaskStatus.WAITING_MANUAL.value,
+            TaskStatus.WAITING_RETRY.value,
+        }
+
     def persist_task_snapshot(self, task: Task) -> None:
         """把需要跨重启保留的任务快照写入 tasks 表。"""
         from ..models.database import SessionLocal, Task as TaskRecord
 
         self._ensure_task_context(task)
+        version_key = self._task_snapshot_version_key(task)
+        if not self._should_persist_task_snapshot(task, version_key):
+            self.persist_task_center_item_snapshot(task)
+            return
         db = SessionLocal()
         try:
             record = db.query(TaskRecord).filter(TaskRecord.id == task.id).first()
@@ -668,13 +886,41 @@ class TaskEngine:
             record.created_at = task.created_at
             record.started_at = task.started_at
             record.completed_at = task.completed_at
-            record.task_metadata = dict(task.task_metadata or {})
+            record.task_metadata = Task.compact_progress_log_for_persistence(
+                dict(task.task_metadata or {}),
+                task.status,
+            )
             db.commit()
+            self._persisted_task_snapshot_versions[task.id] = version_key
         except Exception:
             logger.warning("[任务持久化] 写入任务快照失败: task_id=%s", getattr(task, "id", ""), exc_info=True)
             db.rollback()
         finally:
             db.close()
+        self.persist_task_center_item_snapshot(task)
+
+    def persist_task_center_item_snapshot(self, task: Task) -> None:
+        """旁路写入任务中心物化快照，供后续 SQL 分页读路径切换前对照。"""
+        self._ensure_task_context(task)
+        try:
+            from .task_center_materialization_service import get_task_center_materialization_service
+            from .task_center_service import get_task_center_service
+
+            item = get_task_center_service()._safe_serialize_engine_task(task, mode="summary")
+            if not item:
+                return
+            item_id = str(item.get("id") or "").strip()
+            if not self._should_upsert_task_center_item_snapshot(task, item):
+                return
+            service = get_task_center_materialization_service()
+            service.upsert_engine_item(
+                item,
+                version=self.get_task_center_version(),
+                metadata=dict(task.task_metadata or {}),
+            )
+            self._materialized_task_center_item_versions[item_id] = self._task_metadata_fingerprint(item)
+        except Exception:
+            logger.warning("[任务中心物化] 生成任务快照失败: task_id=%s", getattr(task, "id", ""), exc_info=True)
 
     def delete_task_snapshot(self, task_id: str) -> None:
         """删除任务快照，避免用户清理后重启又恢复。"""
@@ -687,11 +933,19 @@ class TaskEngine:
         try:
             db.query(TaskRecord).filter(TaskRecord.id == normalized_task_id).delete()
             db.commit()
+            self._persisted_task_snapshot_versions.pop(normalized_task_id, None)
+            self._materialized_task_center_item_versions.pop(f"engine:{normalized_task_id}", None)
         except Exception:
             logger.warning("[任务持久化] 删除任务快照失败: task_id=%s", normalized_task_id, exc_info=True)
             db.rollback()
         finally:
             db.close()
+        try:
+            from .task_center_materialization_service import get_task_center_materialization_service
+
+            get_task_center_materialization_service().delete_engine_item(normalized_task_id)
+        except Exception:
+            logger.warning("[任务中心物化] 删除任务中心快照失败: task_id=%s", normalized_task_id, exc_info=True)
 
     def _coerce_task_type(self, value: str) -> Optional[TaskType]:
         normalized = str(value or "").strip()
@@ -2615,6 +2869,8 @@ class TaskEngine:
                     await self._process_rj_subtitle_fetch(task)
                 elif task.type == TaskType.LOCAL_LIBRARY_UPLOAD:
                     await self._process_local_library_upload(task)
+                elif task.type == TaskType.LIBRARY_FOLDER_COMPLETION_PREVIEW:
+                    await self._process_library_folder_completion_preview(task)
                 elif task.type == TaskType.CIRCLE_COMPLETION_INDEX:
                     await self._process_circle_completion_index(task)
                 elif task.type == TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED:
@@ -5059,6 +5315,33 @@ class TaskEngine:
         except Exception as e:
             logger.error(f"[{rjcode}] RJ 字幕抓取任务失败: {e}", exc_info=True)
             task.fail(str(e))
+
+    async def _process_library_folder_completion_preview(self, task: Task):
+        """处理库存页“补全文件夹”后台预览任务。"""
+        from .library_folder_completion_service import get_library_folder_completion_service
+
+        metadata = dict(task.task_metadata or {})
+        library_id = str(metadata.get("library_id") or "").strip()
+        selected_paths = list(metadata.get("selected_paths") or [])
+        if not library_id:
+            raise ValueError("缺少库存")
+        if not selected_paths:
+            raise ValueError("没有选中要补全的目录")
+
+        task.update_progress(8, "解析选中目录")
+        result = await get_library_folder_completion_service().build_preview(
+            library_id,
+            selected_paths,
+            progress_callback=lambda pct, step: task.update_progress(pct, step),
+            cancel_callback=task.is_cancelled,
+        )
+        task.task_metadata["folder_completion_preview_result"] = result
+        task.task_metadata["folder_completion_summary"] = result.get("summary") or {}
+        task.task_metadata["downloadable_count"] = int((result.get("summary") or {}).get("downloadable_count") or 0)
+        task.task_metadata["missing_file_count"] = int((result.get("summary") or {}).get("missing_file_count") or 0)
+        task.touch_metadata("folder_completion_preview")
+        task.update_progress(100, "补全预览完成")
+        task.complete()
 
     async def _process_circle_completion_index(self, task: Task):
         """处理社团补全索引任务"""

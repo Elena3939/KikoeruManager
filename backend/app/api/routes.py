@@ -32,6 +32,11 @@ import yaml
 # Create logger instance
 logger = logging.getLogger(__name__)
 
+_SYSTEM_STORAGE_INFO_CACHE: Dict[str, Any] = {"key": None, "expires_at": 0.0, "payload": None}
+_LIBRARY_STORAGE_INFO_CACHE: Dict[str, Dict[str, Any]] = {}
+_STORAGE_INFO_TTL_SECONDS = 60.0
+_LIBRARY_STORAGE_INFO_STALE_TIMEOUT_SECONDS = 0.35
+
 from ..models.database import init_db, get_db, get_db_path_info, ActivityLog, ASMRDownloadSession, SessionLocal
 from ..core.task_engine import TaskEngine, Task, TaskType, get_task_engine
 from ..core.watcher import get_watcher
@@ -437,6 +442,21 @@ def _enrich_lite_items_with_batch_summary(
         return
 
     try:
+        from ..core.activity_log_rollup_service import get_activity_log_rollup_service
+
+        rollup_stats = get_activity_log_rollup_service().summary_for_batch_ids(db, batch_ids)
+        if rollup_stats and all(bid in rollup_stats for bid in batch_ids):
+            for it in candidates:
+                bid = str(it.get("batch_id") or "").strip()
+                s = rollup_stats.get(bid)
+                if not s or int(s.get("child_total_count") or 0) <= 0:
+                    continue
+                it.update(s)
+            return
+    except Exception:
+        logger.warning("[操作记录] lite 批次 rollup 读取失败，回退即时 SQL 聚合", exc_info=True)
+
+    try:
         rows = (
             db.query(
                 ActivityLog.batch_id,
@@ -524,6 +544,7 @@ def list_activity_logs(
     """
     from ..core.activity_log_service import CATEGORY_LABELS
     from ..core.activity_log_writer import (
+        get_activity_log_lite_item_cache,
         get_activity_log_query_cache,
         get_activity_log_row_dict_cache,
         get_activity_log_writer,
@@ -676,9 +697,12 @@ def list_activity_logs(
         )
         page_ids = [row[0] for row in page_id_rows if row and row[0]]
 
+        lite_item_cache = get_activity_log_lite_item_cache()
+        lite_hits = lite_item_cache.get_many(page_ids)
         row_cache = get_activity_log_row_dict_cache()
-        cache_hits = row_cache.get_many(page_ids)
-        missing_ids = [rid for rid in page_ids if str(rid) not in cache_hits]
+        row_candidate_ids = [rid for rid in page_ids if str(rid) not in lite_hits]
+        cache_hits = row_cache.get_many(row_candidate_ids)
+        missing_ids = [rid for rid in row_candidate_ids if str(rid) not in cache_hits]
         fresh_dict_map: Dict[str, Dict[str, Any]] = {}
         if missing_ids:
             fresh_orm_rows = (
@@ -695,11 +719,21 @@ def list_activity_logs(
             row_cache.put_many(fresh_pairs)
 
         items: List[Dict[str, Any]] = []
+        fresh_lite_pairs = []
         for rid in page_ids:
             key = str(rid)
+            cached_lite = lite_hits.get(key)
+            if cached_lite is not None:
+                items.append(cached_lite)
+                continue
             row_dict = cache_hits.get(key) or fresh_dict_map.get(key)
-            if row_dict is not None:
-                items.append(build_lite_item(row_dict))
+            if row_dict is None:
+                continue
+            lite_item = build_lite_item(row_dict)
+            items.append(lite_item)
+            fresh_lite_pairs.append((rid, lite_item))
+        if fresh_lite_pairs:
+            lite_item_cache.put_many(fresh_lite_pairs)
 
         # lite 路径不走 aggregator，失败行没人给打"已被覆盖"标记。
         # 这里对当前页的失败行做一次批量回查：同 RJ 的后续 success / partial_success
@@ -1513,6 +1547,38 @@ async def backfill_auto_import_extract_activity_logs(
         raise HTTPException(status_code=500, detail=f"回填导入链操作记录字段失败: {str(e)}")
 
 
+@app.post("/api/activity-logs/rollups/backfill")
+def backfill_activity_log_rollups(limit_groups: int = 2000):
+    """后台回填操作历史轻量 rollup。"""
+    from ..core.activity_log_rollup_service import get_activity_log_rollup_service
+
+    try:
+        return get_activity_log_rollup_service().trigger_backfill(limit_groups=limit_groups)
+    except Exception as e:
+        logger.error(f"启动操作历史 rollup 回填失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"启动操作历史 rollup 回填失败: {str(e)}")
+
+
+@app.get("/api/activity-logs/rollups/backfill/status")
+def activity_log_rollup_backfill_status():
+    """读取操作历史 rollup 后台回填状态。"""
+    from ..core.activity_log_rollup_service import get_activity_log_rollup_backfill_state
+
+    return get_activity_log_rollup_backfill_state()
+
+
+@app.get("/api/activity-logs/rollups/diff")
+def diff_activity_log_rollups(limit_groups: int = 2000):
+    """对照操作历史 rollup 与原始 activity_logs 聚合计数。"""
+    from ..core.activity_log_rollup_service import get_activity_log_rollup_service
+
+    try:
+        return get_activity_log_rollup_service().diff(limit_groups=limit_groups)
+    except Exception as e:
+        logger.error(f"校验操作历史 rollup 失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"校验操作历史 rollup 失败: {str(e)}")
+
+
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5556",
     "http://127.0.0.1:5556",
@@ -1565,6 +1631,76 @@ SECURITY_GATE_PUBLIC_API_PATHS = {
     "/api/security-gate/verify",
 }
 
+_SLOW_API_LOG_THRESHOLD_SECONDS = float(os.getenv("KIKOERUMANAGER_SLOW_API_SECONDS", "0.5") or 0.5)
+_SLOW_API_QUERY_ALLOWLIST = {
+    "category",
+    "include_stats",
+    "library_id",
+    "limit",
+    "lite",
+    "mode",
+    "offset",
+    "page",
+    "page_size",
+    "q",
+    "query",
+    "status",
+    "type",
+}
+
+
+def _slow_api_query_snapshot(request: Request) -> Dict[str, str]:
+    params: Dict[str, str] = {}
+    for key, value in request.query_params.multi_items():
+        if key in _SLOW_API_QUERY_ALLOWLIST:
+            params[key] = str(value)[:120]
+    return params
+
+
+def _slow_api_resource_budget_snapshot() -> Dict[str, Dict[str, int]]:
+    """慢请求日志里的资源预算摘要，只保留活跃/等待计数。"""
+    try:
+        from ..core.resource_budget_service import get_resource_budget_service
+
+        snapshot = get_resource_budget_service().snapshot()
+        resources = snapshot.get("resources") if isinstance(snapshot, dict) else {}
+        if not isinstance(resources, dict):
+            return {}
+        result: Dict[str, Dict[str, int]] = {}
+        for name, state in resources.items():
+            if not isinstance(state, dict):
+                continue
+            active = int(state.get("active") or 0)
+            waiting = int(state.get("waiting") or 0)
+            if active <= 0 and waiting <= 0:
+                continue
+            result[str(name)] = {"active": active, "waiting": waiting}
+        return result
+    except Exception:
+        return {}
+
+
+async def _call_next_with_perf_log(request: Request, call_next):
+    started = time.perf_counter()
+    response = await call_next(request)
+    elapsed = time.perf_counter() - started
+    path = request.url.path
+    if (
+        path.startswith("/api/")
+        and _SLOW_API_LOG_THRESHOLD_SECONDS > 0
+        and elapsed >= _SLOW_API_LOG_THRESHOLD_SECONDS
+    ):
+        logger.warning(
+            "[慢请求] %s %s %.0fms status=%s query=%s resource_budget=%s",
+            request.method,
+            path,
+            elapsed * 1000,
+            getattr(response, "status_code", "-"),
+            _slow_api_query_snapshot(request),
+            _slow_api_resource_budget_snapshot(),
+        )
+    return response
+
 
 @app.middleware("http")
 async def security_gate_middleware(request: Request, call_next):
@@ -1581,7 +1717,7 @@ async def security_gate_middleware(request: Request, call_next):
         or path.startswith("/openapi.json")
         or path in SECURITY_GATE_PUBLIC_API_PATHS
     ):
-        return await call_next(request)
+        return await _call_next_with_perf_log(request, call_next)
 
     ip_address = service.get_client_ip(request)
     blocked = service.get_active_blacklist(ip_address)
@@ -1596,7 +1732,7 @@ async def security_gate_middleware(request: Request, call_next):
 
     token = request.cookies.get(COOKIE_NAME, "")
     if service.verify_cookie(token):
-        return await call_next(request)
+        return await _call_next_with_perf_log(request, call_next)
 
     if path.startswith("/api/"):
         return _with_gate_cors_headers(
@@ -1609,15 +1745,47 @@ async def security_gate_middleware(request: Request, call_next):
     next_path = quote(next_path_raw, safe="/")
     return RedirectResponse(url=f"/verify?next={next_path}", status_code=303)
 
-# 通知定期清理协程（每24h清一次超7天的已读通知）
+def _notification_cleanup_config() -> tuple[int, int]:
+    """读取通知清理策略，避免后台任务使用硬编码保留期。"""
+    cfg = getattr(get_config(), "notification_center", None)
+    retain_days = int(getattr(cfg, "retain_days", 30) or 30)
+    max_items = int(getattr(cfg, "max_items", 200) or 200)
+    return max(1, retain_days), max(1, max_items)
+
+
+def _activity_log_compact_config() -> dict:
+    """后台操作记录压缩参数。用环境变量微调，默认保持温和。"""
+    return {
+        "older_than_days": max(1, int(os.getenv("KIKOERUMANAGER_ACTIVITY_COMPACT_DAYS", "30") or 30)),
+        "min_detail_bytes": max(0, int(os.getenv("KIKOERUMANAGER_ACTIVITY_COMPACT_MIN_BYTES", str(8 * 1024)) or (8 * 1024))),
+        "max_rows": max(100, int(os.getenv("KIKOERUMANAGER_ACTIVITY_COMPACT_MAX_ROWS", "5000") or 5000)),
+        "time_budget_seconds": max(1.0, float(os.getenv("KIKOERUMANAGER_ACTIVITY_COMPACT_SECONDS", "8.0") or 8.0)),
+    }
+
+
+def _task_phase_metric_cleanup_config() -> dict:
+    """任务阶段指标清理参数。只清理性能观测表，不影响业务数据。"""
+    return {
+        "retain_days": max(1, int(os.getenv("KIKOERUMANAGER_TASK_PHASE_METRIC_RETAIN_DAYS", "14") or 14)),
+        "max_items": max(100, int(os.getenv("KIKOERUMANAGER_TASK_PHASE_METRIC_MAX_ITEMS", "5000") or 5000)),
+    }
+
+
+# 通知定期清理协程（每24h按 notification_center.retain_days / max_items 清理已读通知）
 async def _periodic_notification_cleanup():
     while True:
         try:
             await asyncio.sleep(24 * 3600)
             from ..core.task_notification_service import cleanup_old_notifications
-            deleted = cleanup_old_notifications(retain_days=7)
+            retain_days, max_items = _notification_cleanup_config()
+            deleted = cleanup_old_notifications(retain_days=retain_days, max_items=max_items)
             if deleted > 0:
-                logger.info(f"[通知清理] 已清理 {deleted} 条超过7天的旧通知")
+                logger.info(
+                    "[通知清理] 已清理 %s 条旧通知 retain_days=%s max_items=%s",
+                    deleted,
+                    retain_days,
+                    max_items,
+                )
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -1632,13 +1800,8 @@ async def _periodic_activity_log_compact():
         try:
             from ..core.activity_log_compactor import compact_old_activity_logs
 
-            # 单次最多扫 5000 行，超时 8 秒后让出。剩下的下次再来。
-            result = compact_old_activity_logs(
-                older_than_days=30,
-                min_detail_bytes=8 * 1024,
-                max_rows=5000,
-                time_budget_seconds=8.0,
-            )
+            # 单次有行数和时间预算，剩下的下次再来。
+            result = compact_old_activity_logs(**_activity_log_compact_config())
             if result.get("updated"):
                 logger.info(
                     "[操作记录] 自动压缩 %d 行，节省 %.2f MB",
@@ -1649,6 +1812,28 @@ async def _periodic_activity_log_compact():
             break
         except Exception as e:
             logger.warning(f"[操作记录] 自动压缩异常: {e}")
+        await asyncio.sleep(24 * 3600)
+
+
+# 任务阶段指标后台清理协程（每 24h 控制观测表体积）
+async def _periodic_task_phase_metric_cleanup():
+    await asyncio.sleep(45 * 60)
+    while True:
+        try:
+            from ..core.task_phase_metric_service import get_task_phase_metric_service
+
+            result = get_task_phase_metric_service().cleanup(**_task_phase_metric_cleanup_config())
+            if result.get("deleted"):
+                logger.info(
+                    "[任务阶段指标] 自动清理 %s 条 retain_days=%s max_items=%s",
+                    result.get("deleted", 0),
+                    result.get("retain_days"),
+                    result.get("max_items"),
+                )
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning(f"[任务阶段指标] 自动清理异常: {e}")
         await asyncio.sleep(24 * 3600)
 
 
@@ -1724,6 +1909,9 @@ async def startup_event():
 
     # 启动操作记录定期压缩任务（每天压缩 30 天前的大 detail，避免无限膨胀）
     asyncio.create_task(_periodic_activity_log_compact())
+
+    # 启动任务阶段指标清理任务（性能观测表只保留近期样本）
+    asyncio.create_task(_periodic_task_phase_metric_cleanup())
 
 # 关闭事件
 @app.on_event("shutdown")
@@ -1863,6 +2051,7 @@ class ConfigResponse(BaseModel):
     email_watcher: Optional[dict] = None
     notification_email: Optional[dict] = None
     notification_center: Optional[dict] = None
+    resource_budget: Optional[dict] = None
     security_gate: Optional[dict] = None
 
 
@@ -2203,6 +2392,44 @@ async def diagnose_task_center_serialization():
     return await service.diagnose_serialization_failures()
 
 
+@app.post("/api/task-center/materialized/backfill")
+async def backfill_task_center_materialized_items():
+    """回填任务中心物化快照，并返回旧聚合器对照 diff。"""
+    from ..core.task_center_service import get_task_center_service
+
+    service = get_task_center_service()
+    try:
+        return await service.backfill_materialized_items()
+    except Exception as exc:
+        logger.error("回填任务中心物化快照失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"回填任务中心物化快照失败: {str(exc)}")
+
+
+@app.get("/api/task-center/materialized/list")
+async def list_task_center_materialized_items(
+    domain: Optional[str] = None,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    offset: int = 0,
+    limit: int = 200,
+):
+    """读取任务中心物化表预览，用于切换正式读路径前验证。"""
+    from ..core.task_center_service import get_task_center_service
+
+    service = get_task_center_service()
+    try:
+        return service.list_materialized_items(
+            domain=domain,
+            status=status,
+            search=search,
+            offset=offset,
+            limit=limit,
+        )
+    except Exception as exc:
+        logger.error("读取任务中心物化快照失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"读取任务中心物化快照失败: {str(exc)}")
+
+
 @app.post("/api/task-center/{item_id}/action")
 async def execute_task_center_action(item_id: str, payload: TaskCenterActionRequest):
     """执行任务中心统一动作。"""
@@ -2535,6 +2762,7 @@ def get_configuration():
         email_watcher=config.email_watcher.model_dump() if hasattr(config, 'email_watcher') else None,
         notification_email=_mask_notification_email_config(config),
         notification_center=config.notification_center.model_dump() if hasattr(config, 'notification_center') else None,
+        resource_budget=config.resource_budget.model_dump() if hasattr(config, 'resource_budget') else None,
         security_gate=get_security_gate_service().sanitize_config() if hasattr(config, 'security_gate') else None,
     )
 
@@ -2681,7 +2909,7 @@ def unblock_security_gate_item(item_id: str, payload: SecurityGateUnblockRequest
 
 
 @app.get("/api/system/storage-info")
-def get_storage_info():
+def get_storage_info(refresh: bool = False):
     """返回 temp_path / library_path / input_path 所在盘的存储类型探测结果。
 
     前端设置页用它在"解压并发"下拉旁展示实际生效值（例如 "auto → 检测到 SSD，并发 3"）。
@@ -2690,6 +2918,23 @@ def get_storage_info():
 
     cfg = get_config()
     storage_cfg = getattr(cfg, 'storage', None)
+    cache_key = (
+        str(getattr(storage_cfg, "temp_path", "") or ""),
+        str(getattr(storage_cfg, "library_path", "") or ""),
+        str(getattr(storage_cfg, "input_path", "") or ""),
+        int(getattr(cfg.extract, 'max_concurrent_extractions', 0) or 0),
+        int(getattr(cfg.processing, 'max_workers', 1) or 1),
+    )
+    now = time.monotonic()
+    cached_payload = _SYSTEM_STORAGE_INFO_CACHE.get("payload")
+    if (
+        not refresh
+        and cached_payload is not None
+        and _SYSTEM_STORAGE_INFO_CACHE.get("key") == cache_key
+        and float(_SYSTEM_STORAGE_INFO_CACHE.get("expires_at") or 0.0) > now
+    ):
+        return dict(cached_payload)
+
     probe_targets = []
     for attr, label in (
         ("temp_path", "临时目录"),
@@ -2710,7 +2955,7 @@ def get_storage_info():
     resolved_limit, resolved_reason = service._resolve_extract_concurrency()
     primary_type = probe_targets[0]["type"] if probe_targets else "unknown"
 
-    return {
+    payload = {
         "primary_type": primary_type,  # 'ssd' / 'hdd' / 'unknown'
         "probes": probe_targets,
         "resolved_limit": resolved_limit,
@@ -2718,6 +2963,51 @@ def get_storage_info():
         "configured": int(getattr(cfg.extract, 'max_concurrent_extractions', 0) or 0),
         "max_workers": int(getattr(cfg.processing, 'max_workers', 1) or 1),
     }
+    _SYSTEM_STORAGE_INFO_CACHE.update({
+        "key": cache_key,
+        "expires_at": now + _STORAGE_INFO_TTL_SECONDS,
+        "payload": dict(payload),
+    })
+    return payload
+
+
+@app.get("/api/system/resource-budget")
+def get_resource_budget_snapshot():
+    """返回全局资源预算运行态，用于压测和现场调参。"""
+    from ..core.resource_budget_service import get_resource_budget_service
+
+    return get_resource_budget_service().snapshot()
+
+
+@app.get("/api/system/remote-fs-health")
+def get_remote_fs_health_snapshot():
+    """返回远程库存健康状态，不触发远程探测。"""
+    return get_library_manager().remote_health_snapshot()
+
+
+@app.get("/api/system/task-phase-metrics")
+def get_task_phase_metrics(task_id: Optional[str] = None, limit: int = 100):
+    """返回最近任务阶段耗时指标，用于定位下载/上传/解压等慢阶段。"""
+    from ..core.task_phase_metric_service import get_task_phase_metric_service
+
+    service = get_task_phase_metric_service()
+    items = service.list_recent(task_id=task_id or "", limit=limit)
+    summary = service.summarize_recent(task_id=task_id or "", limit=max(limit, 1000))
+    return {"items": items, "total": len(items), "summary": summary}
+
+
+@app.post("/api/system/task-phase-metrics/cleanup")
+def cleanup_task_phase_metrics(retain_days: Optional[int] = None, max_items: Optional[int] = None):
+    """手动清理任务阶段耗时指标，控制观测表增长。"""
+    from ..core.task_phase_metric_service import get_task_phase_metric_service
+
+    config = _task_phase_metric_cleanup_config()
+    if retain_days is not None:
+        config["retain_days"] = max(1, int(retain_days))
+    if max_items is not None:
+        config["max_items"] = max(100, int(max_items))
+    return get_task_phase_metric_service().cleanup(**config)
+
 
 @app.post("/api/config")
 async def update_configuration(request: Request):
@@ -2933,6 +3223,15 @@ async def update_configuration(request: Request):
                 config_data['notification_center'] = nc_cfg.model_dump()
             except Exception as e:
                 logger.error(f"[NOTIFICATION] notification_center 配置验证失败: {e}")
+
+        if 'resource_budget' in config_data and config_data['resource_budget']:
+            try:
+                from ..config.settings import ResourceBudgetConfig
+                rb_cfg = ResourceBudgetConfig(**config_data['resource_budget'])
+                config_data['resource_budget'] = rb_cfg.model_dump()
+            except Exception as e:
+                logger.error(f"[资源预算] resource_budget 配置验证失败: {e}")
+                raise HTTPException(status_code=400, detail=f"资源预算配置无效: {e}")
 
         if 'security_gate' in config_data and config_data['security_gate']:
             try:
@@ -3667,6 +3966,12 @@ def _sse_payload(event: str, payload: Dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _log_file_signature(log_file: str) -> tuple[int, int]:
+    """日志流空闲轮询用的轻量文件签名。"""
+    stat_result = os.stat(log_file)
+    return int(stat_result.st_size), int(getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1_000_000_000)))
+
+
 @app.get("/api/logs")
 async def get_logs(lines: int = 100, since_offset: int = -1):
     """获取日志文件内容。
@@ -3705,6 +4010,7 @@ async def stream_logs(request: Request, lines: int = 300, since_offset: int = -1
         current_offset = max(-1, int(since_offset or -1))
         last_heartbeat_at = time.monotonic()
         active_log_path = ""
+        active_log_signature: tuple[int, int] | None = None
         sent_missing_notice = False
         try:
             while True:
@@ -3723,6 +4029,10 @@ async def stream_logs(request: Request, lines: int = 300, since_offset: int = -1
                 active_log_path = log_file
                 payload = await asyncio.to_thread(_read_log_payload, log_file, line_limit, current_offset)
                 current_offset = int(payload.get("next_offset") or 0)
+                try:
+                    active_log_signature = _log_file_signature(log_file)
+                except OSError:
+                    active_log_signature = None
                 yield _sse_payload("connected", {
                     **payload,
                     "path": os.path.basename(log_file),
@@ -3759,6 +4069,24 @@ async def stream_logs(request: Request, lines: int = 300, since_offset: int = -1
                 if log_file != active_log_path:
                     active_log_path = log_file
                     current_offset = -1
+                    active_log_signature = None
+
+                try:
+                    current_signature = _log_file_signature(log_file)
+                except OSError:
+                    await asyncio.sleep(1)
+                    continue
+
+                if active_log_signature == current_signature:
+                    now = time.monotonic()
+                    if now - last_heartbeat_at >= 20:
+                        last_heartbeat_at = now
+                        yield _sse_payload("heartbeat", {
+                            "next_offset": current_offset,
+                            "time": datetime.now().isoformat(),
+                        })
+                    await asyncio.sleep(1)
+                    continue
 
                 try:
                     payload = await asyncio.to_thread(_read_log_payload, log_file, line_limit, current_offset)
@@ -3767,6 +4095,7 @@ async def stream_logs(request: Request, lines: int = 300, since_offset: int = -1
                     continue
 
                 current_offset = int(payload.get("next_offset") or current_offset or 0)
+                active_log_signature = current_signature
                 log_lines = payload.get("logs") or []
                 if log_lines:
                     event_name = "reset" if payload.get("is_full") else "log"
@@ -5767,19 +6096,55 @@ async def test_library_connection(request: Request):
 
 
 @app.get("/api/library/storage-info")
-async def get_library_storage_info(library_id: str):
+async def get_library_storage_info(library_id: str, refresh: bool = False):
     try:
         manager = get_library_manager()
         library = manager.get_library_definition(library_id)
         if library.type != "synology_filestation" or not library.synology:
             raise HTTPException(status_code=400, detail="目标库存不是群晖库存")
         client = manager.get_cached_synology_client(library.synology)
-        storage_info = await client.get_storage_info()
-        return {
-            "library_id": library.id,
-            "library_name": library.name,
-            **storage_info,
-        }
+
+        cache_key = str(library.id or library_id or "").strip()
+        now = time.monotonic()
+        cached = _LIBRARY_STORAGE_INFO_CACHE.get(cache_key)
+        cached_payload = dict(cached.get("payload") or {}) if isinstance(cached, dict) else None
+        if (
+            not refresh
+            and cached_payload
+            and float(cached.get("expires_at") or 0.0) > now
+        ):
+            return dict(cached_payload)
+
+        async def _load_storage_info() -> Dict[str, Any]:
+            storage_info = await client.get_storage_info()
+            payload = {
+                "library_id": library.id,
+                "library_name": library.name,
+                **storage_info,
+                "stale": False,
+                "cached_at": datetime.now().isoformat(),
+            }
+            _LIBRARY_STORAGE_INFO_CACHE[cache_key] = {
+                "expires_at": time.monotonic() + _STORAGE_INFO_TTL_SECONDS,
+                "payload": dict(payload),
+            }
+            return payload
+
+        if cached_payload and not refresh:
+            refresh_task = asyncio.create_task(_load_storage_info())
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(refresh_task),
+                    timeout=_LIBRARY_STORAGE_INFO_STALE_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                refresh_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+                stale_payload = dict(cached_payload)
+                stale_payload["stale"] = True
+                stale_payload["stale_reason"] = "timeout"
+                return stale_payload
+
+        return await _load_storage_info()
     except HTTPException:
         raise
     except Exception as e:
@@ -7024,6 +7389,18 @@ class LibraryListSubdirectoriesRequest(BaseModel):
     path: Optional[str] = ""
 
 
+class LibraryFolderCompletionPreviewRequest(BaseModel):
+    """库存页“补全文件夹”预览请求。"""
+    library_id: str
+    selected_paths: List[str] = []
+
+
+class LibraryFolderCompletionStartRequest(BaseModel):
+    """库存页“补全文件夹”启动请求。"""
+    library_id: str
+    items: List[dict] = []
+
+
 @app.post("/api/library/list-subdirectories")
 async def list_library_subdirectories(request: LibraryListSubdirectoriesRequest):
     """列出指定库存路径下一级子目录（不递归）。"""
@@ -7043,6 +7420,123 @@ async def list_library_subdirectories(request: LibraryListSubdirectoriesRequest)
     except Exception as e:
         _log_synology_err(f"列子目录失败: {e}", e)
         raise HTTPException(status_code=_synology_http_status(e), detail=f"列子目录失败: {str(e)}")
+
+
+@app.post("/api/library/folder-completion/preview")
+async def preview_library_folder_completion(request: LibraryFolderCompletionPreviewRequest):
+    from ..core.library_folder_completion_service import get_library_folder_completion_service
+
+    try:
+        return await get_library_folder_completion_service().build_preview(
+            request.library_id,
+            list(request.selected_paths or []),
+        )
+    except HTTPException:
+        raise
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error("库存补全文件夹预览失败: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"库存补全文件夹预览失败: {str(e)}")
+
+
+@app.post("/api/library/folder-completion/preview/start")
+async def start_library_folder_completion_preview(request: LibraryFolderCompletionPreviewRequest):
+    from ..core.task_engine import Task, TaskStatus, TaskType, get_task_engine
+
+    try:
+        selected_paths = [str(path or "").strip() for path in list(request.selected_paths or []) if str(path or "").strip()]
+        if not request.library_id:
+            raise ValueError("缺少库存")
+        if not selected_paths:
+            raise ValueError("没有选中要补全的目录")
+        task = Task(
+            task_type=TaskType.LIBRARY_FOLDER_COMPLETION_PREVIEW,
+            source_path=selected_paths[0],
+            auto_classify=False,
+            metadata={
+                "library_id": request.library_id,
+                "selected_paths": selected_paths,
+                "selected_count": len(selected_paths),
+                "task_domain": "asmr_sync",
+                "source_page": "library",
+                "source_action": "folder_completion",
+                "source_label": "音声补全 / 补全文件夹预览",
+                "business_key": f"{request.library_id}:folder_completion_preview:{uuid.uuid4().hex[:8]}",
+            },
+        )
+        task.ensure_business_context("asmr_sync", {
+            "source_page": "library",
+            "source_action": "folder_completion",
+            "source_label": "音声补全 / 补全文件夹预览",
+            "business_key": task.task_metadata["business_key"],
+        })
+        await get_task_engine().submit(task)
+        return {
+            "success": True,
+            "job_id": task.id,
+            "status": task.status.value if isinstance(task.status, TaskStatus) else str(task.status),
+            "progress": int(task.progress or 0),
+            "current_step": task.current_step,
+        }
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("启动库存补全文件夹预览任务失败: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"启动库存补全文件夹预览任务失败: {str(e)}")
+
+
+@app.get("/api/library/folder-completion/preview/jobs/{job_id}")
+async def get_library_folder_completion_preview_job(job_id: str):
+    from ..core.task_engine import TaskType, get_task_engine
+
+    task = get_task_engine().get_task(job_id)
+    if not task or task.type != TaskType.LIBRARY_FOLDER_COMPLETION_PREVIEW:
+        raise HTTPException(status_code=404, detail="补全文件夹预览任务不存在")
+    metadata = dict(task.task_metadata or {})
+    return {
+        "success": True,
+        "job_id": task.id,
+        "status": task.status.value if hasattr(task.status, "value") else str(task.status or ""),
+        "progress": int(task.progress or 0),
+        "current_step": task.current_step,
+        "error_message": task.error_message,
+        "result": metadata.get("folder_completion_preview_result") or {},
+        "summary": metadata.get("folder_completion_summary") or {},
+        "selected_count": int(metadata.get("selected_count") or 0),
+        "downloadable_count": int(metadata.get("downloadable_count") or 0),
+        "missing_file_count": int(metadata.get("missing_file_count") or 0),
+        "started_at": task.started_at.isoformat() if task.started_at else None,
+        "finished_at": task.completed_at.isoformat() if task.completed_at else None,
+    }
+
+
+@app.post("/api/library/folder-completion/start")
+async def start_library_folder_completion(request: LibraryFolderCompletionStartRequest):
+    from ..core.library_folder_completion_service import get_library_folder_completion_service
+
+    try:
+        return await get_library_folder_completion_service().start_downloads(
+            request.library_id,
+            list(request.items or []),
+        )
+    except HTTPException:
+        raise
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error("启动库存补全文件夹任务失败: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"启动库存补全文件夹任务失败: {str(e)}")
 
 
 @app.post("/api/library/browser/mojibake-preview")
@@ -11790,6 +12284,34 @@ async def rj_subtitle_manual_complete(
         source_mode = str(task.task_metadata.get("source_mode") or "").strip().lower()
         if source_mode in {"linked_translation_archive_import", "subtitle_folder_import"}:
             try:
+                from ..models.database import ConflictWork
+
+                source_path = str(
+                    task.task_metadata.get("source_archive_path")
+                    or task.task_metadata.get("source_subtitle_folder_path")
+                    or ""
+                ).strip()
+                conflict_query = db.query(ConflictWork).filter(
+                    ConflictWork.conflict_type == "LINKED_SUBTITLE_IMPORT",
+                    ConflictWork.status == "IMPORTED",
+                )
+                if source_path:
+                    conflict_query = conflict_query.filter(ConflictWork.new_path == source_path)
+                else:
+                    conflict_query = conflict_query.filter(ConflictWork.task_id == task_id)
+                for conflict in conflict_query.all():
+                    analysis_info = dict(conflict.analysis_info or {})
+                    import_summary = dict(analysis_info.get("import_result_summary") or {})
+                    import_summary["manual_match_completed"] = True
+                    import_summary["manual_match_completed_at"] = datetime.now().isoformat()
+                    import_summary["manual_match_applied_pairs"] = applied_pairs
+                    analysis_info["import_result_summary"] = import_summary
+                    conflict.analysis_info = analysis_info
+                db.commit()
+            except Exception:
+                db.rollback()
+                logger.warning("[字幕补配] 标记预检单配对完成失败: task_id=%s", task_id, exc_info=True)
+            try:
                 engine.persist_task_snapshot(task)
             except Exception:
                 logger.warning("[任务中心] 字幕补配完成后保留任务快照失败: task_id=%s", task_id, exc_info=True)
@@ -12242,6 +12764,7 @@ class ASMRSyncEnhancedPlanRequest(BaseModel):
     audio_formats: List[str] = []
     subtitle_languages: List[str] = []
     include_existing: bool = False
+    refresh: bool = False
 
 
 class ASMRSyncEnhancedStartRequest(BaseModel):
@@ -14011,7 +14534,7 @@ async def asmr_sync_enhanced_plan(request: ASMRSyncEnhancedPlanRequest):
                 rjcode=normalized_rjcode,
                 folder_path=str(request.folder_path or "").strip(),
                 filters=filters,
-                refresh=True,
+                refresh=bool(request.refresh),
             )
             plans.append(plan)
         except Exception as exc:

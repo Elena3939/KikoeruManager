@@ -4,6 +4,8 @@ import pytest
 from pathlib import Path
 
 from app.core.http_download_service import (
+    GOOGLE_DRIVE_PROBE_BYTES,
+    GOOGLE_DRIVE_STREAM_CHUNK_BYTES,
     HttpDownloadError,
     HttpDownloadService,
     sanitize_http_download_error,
@@ -30,6 +32,7 @@ class DummyHttpDownloader:
     download_root = ""
     aria2_path = "aria2c"
     proxy_url = ""
+    proxy_platforms = ["http", "gofile", "transferit", "onedrive", "google_drive", "pikpak"]
     max_concurrent_downloads = 3
     split = 8
     max_connection_per_server = 8
@@ -174,6 +177,28 @@ def test_mask_url_hides_credentials(monkeypatch, tmp_path):
 
     assert service._mask_url("https://user:secret@example.com/file.zip?token=abc") == "https://***:***@example.com/file.zip?query=***"
     assert service._mask_url("https://example.com/file.zip?token=abc") == "https://example.com/file.zip?query=***"
+
+
+def test_proxy_url_defaults_to_all_http_download_platforms(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path, proxy_url="127.0.0.1:7890")
+    service = HttpDownloadService()
+
+    assert service._proxy_url("http") == "http://127.0.0.1:7890"
+    assert service._proxy_url("gofile") == "http://127.0.0.1:7890"
+    assert service._proxy_url("transferit") == "http://127.0.0.1:7890"
+    assert service._proxy_url("onedrive") == "http://127.0.0.1:7890"
+    assert service._proxy_url("google_drive") == "http://127.0.0.1:7890"
+    assert service._proxy_url("pikpak") == "http://127.0.0.1:7890"
+
+
+def test_proxy_url_only_applies_to_selected_platforms(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path, proxy_url="http://127.0.0.1:7890", proxy_platforms=["gofile"])
+    service = HttpDownloadService()
+
+    assert service._proxy_url("gofile") == "http://127.0.0.1:7890"
+    assert service._proxy_url("http") == ""
+    assert service._proxy_url("pikpak") == ""
+    assert service._proxy_url("google_drive") == ""
 
 
 def test_sanitize_preview_masks_url_and_removes_original_url():
@@ -426,6 +451,59 @@ def test_google_drive_html_error_message_classifies_quota_and_access(monkeypatch
         "You need access. Request access from the owner."
     ) == "Google Drive 文件需要访问权限，当前分享不是公开可下载"
     assert service._google_drive_html_error_message("Google Drive unexpected html") == "Google Drive 返回 HTML 页面，确认参数或访问权限已失效"
+
+
+@pytest.mark.asyncio
+async def test_google_drive_probe_uses_small_range_without_changing_stream_chunk(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    captured = {}
+
+    class FakeContent:
+        async def read(self, size):
+            captured["read_size"] = size
+            return b"PK\x03\x04" + b"x" * 64
+
+    class FakeResponse:
+        status = 206
+        url = "https://drive.usercontent.google.com/download?id=file-id"
+        headers = {
+            "content-type": "application/octet-stream",
+            "content-range": f"bytes 0-{GOOGLE_DRIVE_PROBE_BYTES - 1}/10485760",
+            "content-length": str(GOOGLE_DRIVE_PROBE_BYTES),
+        }
+
+        def __init__(self):
+            self.content = FakeContent()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakeSession:
+        def __init__(self, *args, **kwargs):
+            captured["session_kwargs"] = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def get(self, url, **kwargs):
+            captured["headers"] = kwargs.get("headers") or {}
+            return FakeResponse()
+
+    monkeypatch.setattr("app.core.http_download_service.aiohttp.ClientSession", FakeSession)
+
+    result = await service._google_drive_probe_download("https://drive.usercontent.google.com/download?id=file-id")
+
+    assert captured["headers"]["Range"] == f"bytes=0-{GOOGLE_DRIVE_PROBE_BYTES - 1}"
+    assert captured["read_size"] == GOOGLE_DRIVE_PROBE_BYTES
+    assert result["prefix"].startswith("504b0304")
+    assert GOOGLE_DRIVE_STREAM_CHUNK_BYTES > GOOGLE_DRIVE_PROBE_BYTES
 
 
 def test_onedrive_direct_url_adds_download_param(monkeypatch, tmp_path):
@@ -1042,7 +1120,7 @@ async def test_resolve_gofile_requires_configured_token(monkeypatch, tmp_path):
     async def fake_guest_token():
         return "guest-token"
 
-    async def fake_fetch_json(url, headers=None, method="GET"):
+    async def fake_fetch_json(url, headers=None, method="GET", platform="http"):
         assert url == "https://api.gofile.io/contents/content-id"
         assert headers["Authorization"] == "Bearer guest-token"
         return {"status": "ok", "data": {"id": "content-id", "type": "folder", "children": {}}}
@@ -1064,7 +1142,7 @@ async def test_fetch_json_retries_transient_errors(monkeypatch, tmp_path):
     async def fake_sleep(_seconds):
         return None
 
-    async def fake_fetch_json_once(url, headers=None, method="GET"):
+    async def fake_fetch_json_once(url, headers=None, method="GET", platform="http"):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -1084,7 +1162,7 @@ async def test_gofile_guest_token_caches(monkeypatch, tmp_path):
     service = HttpDownloadService()
     calls = 0
 
-    async def fake_fetch_json(url, headers=None, method="GET"):
+    async def fake_fetch_json(url, headers=None, method="GET", platform="http"):
         nonlocal calls
         calls += 1
         assert url == "https://api.gofile.io/accounts"
@@ -1103,7 +1181,7 @@ async def test_resolve_gofile_folder_files(monkeypatch, tmp_path):
     bind_config(monkeypatch, tmp_path, gofile_token="secret-token")
     service = HttpDownloadService()
 
-    async def fake_fetch_json(url, headers=None, method="GET"):
+    async def fake_fetch_json(url, headers=None, method="GET", platform="http"):
         assert url == "https://api.gofile.io/contents/content-id"
         assert headers["Authorization"] == "Bearer secret-token"
         assert headers["X-Website-Token"] == service._gofile_website_token("secret-token")
@@ -1144,7 +1222,7 @@ async def test_collect_google_drive_folder_files_from_embedded_folder_view(monke
       <a class="flip-entry-title" href="https://drive.google.com/file/d/{file_id}/view?usp=drive_web">RJ01581253.zip</a>
     </body></html>"""
 
-    async def fake_fetch_text(url, headers=None):
+    async def fake_fetch_text(url, headers=None, platform="http"):
         assert url == "https://drive.google.com/embeddedfolderview?id=folder-id#list"
         assert headers["User-Agent"]
         return page
@@ -1178,7 +1256,7 @@ async def test_collect_google_drive_folder_files_falls_back_to_page_json(monkeyp
     """
     fetched = []
 
-    async def fake_fetch_text(url, headers=None):
+    async def fake_fetch_text(url, headers=None, platform="http"):
         fetched.append(url)
         if "embeddedfolderview" in url:
             return "<html><body>empty</body></html>"
@@ -1378,6 +1456,61 @@ async def test_preview_urls_keeps_google_drive_folder_filename(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_preview_urls_uses_google_drive_range_probe_after_confirm(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+
+    async def fake_resolve_source_urls(urls, materialize=False):
+        return {
+            "urls": ["https://drive.usercontent.google.com/download?id=file-id&export=download"],
+            "source_items": [{
+                "source": "google_drive",
+                "share_url": "https://drive.google.com/file/d/file-id/view?usp=sharing",
+                "url": "https://drive.usercontent.google.com/download?id=file-id&export=download",
+                "masked_url": "https://drive.usercontent.google.com/download?query=***",
+                "file_id": "file-id",
+            }],
+            "failed_items": [],
+            "source_modes": ["google_drive"],
+        }
+
+    async def fake_resolve_confirm_url(raw_url):
+        return {
+            "url": f"{raw_url}&confirm=t&uuid=uuid-token",
+            "size_bytes": 3614072708,
+            "content_type": "text/html; charset=utf-8",
+            "warning": "Google Drive 大文件已自动附加确认下载参数。",
+            "filename": "RJ01635924.rar",
+        }
+
+    async def fake_probe_download(raw_url):
+        assert "confirm=t" in raw_url
+        return {
+            "status": 206,
+            "url": raw_url,
+            "content_type": "application/octet-stream",
+            "content_length": 3614072708,
+            "content_range": "bytes 0-31/3614072708",
+            "content_disposition": 'attachment; filename="RJ01635924.rar"',
+            "prefix": "52617221",
+        }
+
+    monkeypatch.setattr(service, "resolve_source_urls", fake_resolve_source_urls)
+    monkeypatch.setattr(service, "_google_drive_resolve_confirm_url", fake_resolve_confirm_url)
+    monkeypatch.setattr(service, "_google_drive_probe_download", fake_probe_download)
+
+    preview = await service.preview_urls(["https://drive.google.com/file/d/file-id/view?usp=sharing"])
+
+    assert preview["success"] is True
+    assert preview["items"][0]["source"] == "google_drive"
+    assert preview["items"][0]["filename"] == "RJ01635924.rar"
+    assert preview["items"][0]["relative_path"] == "RJ01635924.rar"
+    assert preview["items"][0]["size_bytes"] == 3614072708
+    assert preview["items"][0]["resumable"] is True
+    assert "confirm=t" in preview["items"][0]["url"]
+
+
+@pytest.mark.asyncio
 async def test_preview_urls_uses_source_relative_dir_and_header(monkeypatch, tmp_path):
     bind_config(monkeypatch, tmp_path)
     service = HttpDownloadService()
@@ -1427,7 +1560,7 @@ async def test_preview_urls_uses_source_relative_dir_and_header(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
-async def test_preview_urls_falls_back_to_gofile_metadata_when_cdn_probe_fails(monkeypatch, tmp_path):
+async def test_preview_urls_rejects_gofile_when_cdn_probe_fails(monkeypatch, tmp_path):
     bind_config(monkeypatch, tmp_path)
     service = HttpDownloadService()
 
@@ -1457,11 +1590,97 @@ async def test_preview_urls_falls_back_to_gofile_metadata_when_cdn_probe_fails(m
 
     preview = await service.preview_urls(["https://gofile.io/d/jrygB9"])
 
-    assert preview["success"] is True
+    assert preview["success"] is False
+    assert preview["items"][0]["ok"] is False
+    assert preview["items"][0]["source"] == "gofile"
     assert preview["items"][0]["filename"] == "RJ01581253@SP.zip"
-    assert preview["items"][0]["relative_path"] == "jrygB9/RJ01581253@SP.zip"
-    assert preview["items"][0]["size_bytes"] == 4804731653
-    assert "Gofile CDN" in preview["items"][0]["warning"]
+    assert "Gofile CDN 预览校验失败" in preview["items"][0]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_preview_urls_rejects_gofile_small_cdn_error_response(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+
+    async def fake_resolve_source_urls(urls, materialize=False):
+        return {
+            "urls": ["https://store-na-phx-3.gofile.io/download/web/id/RJ01621622.zip"],
+            "source_items": [{
+                "source": "gofile",
+                "share_url": "https://gofile.io/d/jrygB9",
+                "url": "https://store-na-phx-3.gofile.io/download/web/id/RJ01621622.zip",
+                "masked_url": "https://store-na-phx-3.gofile.io/download/web/id/RJ01621622.zip",
+                "filename": "RJ01621622.zip",
+                "size_bytes": 3983571968,
+                "headers": {"Cookie": "accountToken=secret-token"},
+                "aria2_header": ["Cookie: accountToken=secret-token"],
+            }],
+            "failed_items": [],
+            "source_modes": ["gofile"],
+        }
+
+    async def fake_preview_url(raw_url, target_subdir="", conflict_policy="", headers=None):
+        return {
+            "ok": True,
+            "url": raw_url,
+            "masked_url": raw_url,
+            "host": "store-na-phx-3.gofile.io",
+            "source": "http",
+            "filename": "RJ01621622.zip",
+            "relative_path": "RJ01621622.zip",
+            "final_path": str(tmp_path / "downloads" / "RJ01621622.zip"),
+            "target_dir": str(tmp_path / "downloads"),
+            "size_bytes": 10240,
+            "content_type": "text/html; charset=utf-8",
+        }
+
+    monkeypatch.setattr(service, "resolve_source_urls", fake_resolve_source_urls)
+    monkeypatch.setattr(service, "preview_url", fake_preview_url)
+
+    preview = await service.preview_urls(["https://gofile.io/d/jrygB9"])
+
+    assert preview["success"] is False
+    assert preview["items"][0]["ok"] is False
+    assert preview["items"][0]["source"] == "gofile"
+    assert "错误页" in preview["items"][0]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_poll_task_marks_small_gofile_completion_failed(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+    local_path = tmp_path / "downloads" / "RJ01621622.zip"
+    local_path.parent.mkdir(parents=True)
+    local_path.write_bytes(b"<html>bad</html>")
+    row = {
+        "gid": "gid-1",
+        "name": "RJ01621622.zip",
+        "relative_path": "RJ01621622.zip",
+        "local_path": str(local_path),
+        "source": "gofile",
+        "status": "pending",
+        "expected_size_bytes": 3983571968,
+    }
+
+    async def fake_tell_status(gid):
+        return {
+            "gid": gid,
+            "status": "complete",
+            "totalLength": "10240",
+            "completedLength": "10240",
+            "downloadSpeed": "0",
+        }
+
+    monkeypatch.setattr(service, "_tell_status", fake_tell_status)
+
+    rows, runtime, done, failed_count = await service._poll_task(["gid-1"], [row])
+
+    assert done is True
+    assert failed_count == 1
+    assert runtime["failed_files"] == 1
+    assert rows[0]["status"] == "failed"
+    assert "Gofile 下载结果大小异常" in rows[0]["failure_reason"]
+    assert not local_path.exists()
 
 
 @pytest.mark.asyncio
@@ -1630,6 +1849,108 @@ def test_filter_preview_selection_keeps_only_selected_items(tmp_path):
     assert filtered["failed_count"] == 0
     assert filtered["selected_count"] == 1
     assert filtered["items"][0]["filename"] == "b.zip"
+
+
+def test_filter_preview_selection_merges_custom_name_overrides(tmp_path):
+    service = HttpDownloadService()
+    preview = {
+        "success": True,
+        "items": [
+            {"ok": True, "source": "http", "masked_url": "https://example.com/a.zip", "filename": "a.zip"},
+            {"ok": True, "source": "http", "masked_url": "https://example.com/b.zip", "filename": "b.zip"},
+        ],
+        "ok_count": 2,
+        "failed_count": 0,
+    }
+    selected_key = service._preview_item_selection_key(preview["items"][0])
+
+    filtered = service.filter_preview_selection(
+        preview,
+        selected_keys=[selected_key],
+        selected_items=[{
+            **preview["items"][0],
+            "custom_name": "铁大哥人妻",
+            "custom_extract_password": "southplus",
+            "custom_group_folder": True,
+        }],
+    )
+
+    assert filtered["selected_count"] == 1
+    assert filtered["items"][0]["filename"] == "a.zip"
+    assert filtered["items"][0]["custom_name"] == "铁大哥人妻"
+    assert filtered["items"][0]["custom_extract_password"] == "southplus"
+    assert filtered["items"][0]["custom_group_folder"] is True
+
+
+def test_apply_custom_download_name_to_http_item_uses_password_suffix(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+
+    item = service._apply_custom_download_name_to_item({
+        "ok": True,
+        "source": "http",
+        "filename": "voice.zip",
+        "relative_path": "voice.zip",
+        "custom_name": "RJ01635924",
+        "custom_extract_password": "southplus",
+    })
+
+    assert item["filename"] == "RJ01635924(southplus).zip"
+    assert item["relative_path"] == "RJ01635924(southplus).zip"
+    assert Path(item["final_path"]).name == "RJ01635924(southplus).zip"
+    assert item["custom_rename_applied"] is True
+
+
+def test_apply_custom_download_name_to_http_split_volume_without_group_folder(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+
+    item = service._apply_custom_download_name_to_item({
+        "ok": True,
+        "source": "http",
+        "filename": "铁大哥人妻-z01",
+        "relative_path": "铁大哥人妻-z01",
+        "custom_name": "铁大哥人妻",
+        "custom_extract_password": "southplus",
+    })
+
+    assert item["filename"] == "铁大哥人妻(southplus).z01"
+    assert item["relative_path"] == "铁大哥人妻(southplus).z01"
+
+
+def test_apply_custom_download_name_to_http_split_volume_accepts_full_custom_filename(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+
+    item = service._apply_custom_download_name_to_item({
+        "ok": True,
+        "source": "http",
+        "filename": "铁大哥人妻-z01",
+        "relative_path": "铁大哥人妻-z01",
+        "custom_name": "铁大哥人妻.z01",
+    })
+
+    assert item["filename"] == "铁大哥人妻.z01"
+    assert item["relative_path"] == "铁大哥人妻.z01"
+
+
+def test_apply_custom_download_name_to_http_split_volume_with_group_folder(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+
+    item = service._apply_custom_download_name_to_item({
+        "ok": True,
+        "source": "http",
+        "filename": "铁大哥人妻-z01",
+        "relative_path": "同级/铁大哥人妻-z01",
+        "custom_name": "铁大哥人妻",
+        "custom_extract_password": "southplus",
+        "custom_group_folder": True,
+    })
+
+    assert item["filename"] == "铁大哥人妻.z01"
+    assert item["relative_path"] == "同级/铁大哥人妻(southplus)/铁大哥人妻.z01"
+    assert Path(item["target_dir"]).name == "铁大哥人妻(southplus)"
 
 
 def test_preview_item_selection_key_survives_materialized_url_change():
@@ -1962,7 +2283,7 @@ async def test_download_google_drive_item_streams_with_cookie(monkeypatch, tmp_p
 
     class FakeContent:
         async def iter_chunked(self, size):
-            assert size == 1024 * 1024
+            assert size == GOOGLE_DRIVE_STREAM_CHUNK_BYTES
             yield b"abc"
             yield b"def"
 
@@ -2281,13 +2602,13 @@ async def test_download_google_drive_item_retries_with_range_after_timeout(monke
 
     class PartialContent:
         async def iter_chunked(self, size):
-            assert size == 1024 * 1024
+            assert size == GOOGLE_DRIVE_STREAM_CHUNK_BYTES
             yield b"abc"
             raise asyncio.TimeoutError("stalled")
 
     class ResumeContent:
         async def iter_chunked(self, size):
-            assert size == 1024 * 1024
+            assert size == GOOGLE_DRIVE_STREAM_CHUNK_BYTES
             yield b"def"
 
     class FakeResponse:
@@ -2502,6 +2823,63 @@ async def test_start_download_task_marks_partial_success_when_some_gids_fail(mon
     assert [row["name"] for row in result["failed_files"]] == ["fail.zip"]
     assert result["failed_files"][0]["failure_reason"] == "HTTP 403"
     assert task.task_metadata["performance_metrics"]["success_count"] == 1
+    assert task.task_metadata["performance_metrics"]["failed_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_start_download_task_marks_failed_when_all_gids_fail(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path)
+    service = HttpDownloadService()
+
+    async def fake_preview_urls(*_args, **_kwargs):
+        return {
+            "items": [
+                {
+                    "ok": True,
+                    "source": "http",
+                    "url": "https://example.test/fail.zip",
+                    "masked_url": "https://example.test/fail.zip",
+                    "filename": "fail.zip",
+                    "relative_path": "fail.zip",
+                    "final_path": str(tmp_path / "downloads" / "fail.zip"),
+                    "target_dir": str(tmp_path / "downloads"),
+                    "size_bytes": 12,
+                },
+            ],
+            "resolved_urls": ["https://example.test/fail.zip"],
+            "source_items": [],
+            "source_modes": ["http"],
+        }
+
+    async def fake_rpc(method, params):
+        if method == "aria2.addUri":
+            return "gid-fail"
+        if method == "aria2.tellStatus":
+            return {
+                "gid": params[0],
+                "status": "error",
+                "totalLength": "12",
+                "completedLength": "3",
+                "downloadSpeed": "0",
+                "errorMessage": "HTTP 403",
+                "files": [],
+            }
+        raise AssertionError(method)
+
+    monkeypatch.setattr(service, "preview_urls", fake_preview_urls)
+    monkeypatch.setattr(service, "_rpc_call", fake_rpc)
+
+    task = Task(
+        task_type=TaskType.HTTP_DOWNLOAD,
+        source_path="example.test",
+        metadata={"urls": ["https://example.test/fail.zip"]},
+    )
+
+    with pytest.raises(HttpDownloadError, match="没有任何文件下载成功"):
+        await service.start_download_task(task)
+
+    assert task.task_metadata["download_runtime"]["status"] == "failed"
+    assert task.task_metadata["performance_metrics"]["success_count"] == 0
     assert task.task_metadata["performance_metrics"]["failed_count"] == 1
 
 

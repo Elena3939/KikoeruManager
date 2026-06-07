@@ -2812,7 +2812,9 @@ class LinkedSubtitleImportService:
         return self._refresh_preview_execution_state(next_preview)
 
     def _serialize_pending_record(self, conflict: ConflictWork) -> Dict[str, Any]:
-        preview = dict((conflict.analysis_info or {}).get("preview") or {})
+        analysis_info = dict(conflict.analysis_info or {})
+        preview = dict(analysis_info.get("preview") or {})
+        import_result_summary = dict(analysis_info.get("import_result_summary") or {})
         preview.setdefault("target_rjcode", self._extract_rjcode((conflict.new_metadata or {}).get("target_rjcode") or ""))
         preview.setdefault("source_rjcode", self._extract_rjcode((conflict.new_metadata or {}).get("source_rjcode") or ""))
         preview.setdefault("source_label", (conflict.new_metadata or {}).get("source_label") or "")
@@ -2820,16 +2822,27 @@ class LinkedSubtitleImportService:
         preview["source_rjcode"] = self._extract_rjcode(preview.get("source_rjcode") or "")
         preview["target_rjcode"] = self._extract_rjcode(preview.get("target_rjcode") or "")
         preview = self._refresh_preview_execution_state(preview)
+        if import_result_summary:
+            preview["import_result_summary"] = import_result_summary
+            preview["linked_workbench_task_id"] = import_result_summary.get("task_id") or ""
+            preview["awaiting_manual_match"] = bool(import_result_summary.get("awaiting_manual_match"))
         return {
             "id": conflict.id,
             "task_id": conflict.task_id,
             "status": conflict.status,
             "created_at": conflict.created_at.isoformat() if conflict.created_at else None,
             "source_path": conflict.new_path,
-            "source_mode": (conflict.analysis_info or {}).get("source_mode") or self.PENDING_SOURCE_MODE,
+            "source_mode": analysis_info.get("source_mode") or self.PENDING_SOURCE_MODE,
             "preview": preview,
-            "can_execute": self._can_execute_pending_import(preview),
+            "can_execute": str(conflict.status or "").upper() == "PENDING" and self._can_execute_pending_import(preview),
         }
+
+    def _is_imported_record_awaiting_manual_match(self, row: ConflictWork) -> bool:
+        if str(row.status or "").upper() != "IMPORTED":
+            return False
+        analysis_info = dict(row.analysis_info or {})
+        import_result_summary = dict(analysis_info.get("import_result_summary") or {})
+        return bool(import_result_summary.get("awaiting_manual_match")) and not bool(import_result_summary.get("manual_match_completed"))
 
     def _should_refresh_pending_record(
         self,
@@ -3005,7 +3018,7 @@ class LinkedSubtitleImportService:
         try:
             rows = db.query(ConflictWork).filter(
                 ConflictWork.conflict_type == self.PENDING_CONFLICT_TYPE,
-                ConflictWork.status == "PENDING",
+                ConflictWork.status.in_(["PENDING", "IMPORTED"]),
             ).order_by(ConflictWork.created_at.desc()).all()
             for row in rows:
                 db.expunge(row)
@@ -3017,6 +3030,12 @@ class LinkedSubtitleImportService:
         decisions: List[Dict[str, Any]] = []
         for row in rows:
             try:
+                if self._is_imported_record_awaiting_manual_match(row):
+                    items.append(self._serialize_pending_record(row))
+                    continue
+                if str(row.status or "").upper() != "PENDING":
+                    continue
+
                 original_preview = dict((row.analysis_info or {}).get("preview") or {})
                 preview = await self._repair_cached_preview_rj_fields(
                     original_preview,

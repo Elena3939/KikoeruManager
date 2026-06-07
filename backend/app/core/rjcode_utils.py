@@ -70,7 +70,7 @@ def scan_existing_folder_candidates(existing_root: str, *, max_depth: int = 4) -
     """扫描已有文件夹目录，返回真正可处理的 RJ 作品候选目录。
 
     顶层就是 RJ 目录时返回顶层；顶层是社团/合集容器时，继续向内找 RJ 目录。
-    如果某个顶层目录完全找不到 RJ，保留一条未识别候选，方便前端提示用户。
+    顶层目录完全找不到 RJ 时跳过，避免把社团目录当成待处理作品。
     """
     base = os.path.abspath(os.path.normpath(str(existing_root or "")))
     if not base or not os.path.isdir(base):
@@ -134,9 +134,7 @@ def scan_existing_folder_candidates(existing_root: str, *, max_depth: int = 4) -
             continue
         if entry.name.startswith(".") or entry.name.lower() in IGNORED_SCAN_DIRS:
             continue
-        found = walk(entry.path, entry.path, 1)
-        if not found:
-            add_candidate(entry.path, None, entry.path, 1, "unrecognized")
+        walk(entry.path, entry.path, 1)
 
-    candidates.sort(key=lambda item: (0 if item.get("rjcode") else 1, str(item.get("relative_path") or "").lower()))
+    candidates.sort(key=lambda item: str(item.get("relative_path") or "").lower())
     return candidates

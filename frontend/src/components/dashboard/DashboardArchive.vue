@@ -227,10 +227,7 @@ const props = defineProps({
 
 defineEmits(['refresh', 'reprocess', 'change-page', 'update:searchQuery', 'update:domainFilter'])
 
-// 单条卡片估算高度（含 8px gap）：article p-2.5 + 两行内容 ≈ 66px + 8px gap = 74px
-const ITEM_HEIGHT = 74
-// 面板内除列表区以外固定占用的高度（header + search + tabs + pager + 内外边距估算）
-const FIXED_OVERHEAD = 44 + 38 + 34 + 46 + 28
+const DEFAULT_PAGE_SIZE = 6
 
 const panelRef = ref(null)
 const panelHeight = ref(0)
@@ -262,12 +259,10 @@ watch(() => props.filteredArchives.length, () => {
   requestAnimationFrame(measurePanel)
 })
 
-// 动态 pageSize：用面板总高减固定占位算可用列表空间
+// 固定 pageSize：归档本身已经有分页，不再按面板高度扩张当前页，避免移动端出现长列表滚动框。
 const effectivePageSize = computed(() => {
-  const h = panelHeight.value
-  if (!h) return Math.max(3, Number(props.pageSize) || 6)
-  const listSpace = Math.max(0, h - FIXED_OVERHEAD)
-  return Math.max(3, Math.floor(listSpace / ITEM_HEIGHT))
+  const requestedSize = Math.max(3, Number(props.pageSize) || DEFAULT_PAGE_SIZE)
+  return Math.min(DEFAULT_PAGE_SIZE, requestedSize)
 })
 
 // 内部维护当前页，避免被父组件的轮询/反应式更新反复重置回 1
@@ -460,28 +455,26 @@ function statusIconColor(key) {
   text-rendering: geometricPrecision;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
+:global(#app [data-section="dashboard-archive"] .dash-archive-tab.dash-archive-tab) {
+  font-family: var(--font-body), -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 22px;
+}
 .dash-archive-tab-rail {
   display: flex;
   flex-shrink: 0;
   align-items: center;
   gap: 5px;
-  min-height: 27px;
-  max-height: 30px;
+  min-height: 31px;
+  max-height: 32px;
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 0 1px 3px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(148, 163, 184, 0.38) transparent;
+  padding: 3px 1px 4px;
+  scrollbar-width: none;
 }
 .dash-archive-tab-rail::-webkit-scrollbar {
-  height: 4px;
-}
-.dash-archive-tab-rail::-webkit-scrollbar-track {
-  background: transparent;
-}
-.dash-archive-tab-rail::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.38);
+  display: none;
 }
 .dash-archive-tab.is-idle {
   background: rgb(241 245 249);
@@ -521,6 +514,11 @@ function statusIconColor(key) {
   font-variant-numeric: tabular-nums;
   line-height: 1;
   transition: color 0.2s ease, background-color 0.2s ease;
+}
+:global(#app [data-section="dashboard-archive"] .dash-archive-tab-count.dash-archive-tab-count) {
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
 }
 .dash-archive-tab-count--off {
   color: rgb(100 116 139);
@@ -787,11 +785,7 @@ function statusIconColor(key) {
 }
 
 :global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-tab-rail {
-  scrollbar-color: rgba(148, 163, 184, 0.28) transparent;
-}
-
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-tab-rail::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.28);
+  scrollbar-width: none;
 }
 
 :global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-tab.is-idle:hover {

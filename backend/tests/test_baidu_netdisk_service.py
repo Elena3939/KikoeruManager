@@ -1,13 +1,15 @@
 import asyncio
 import json
+import os
 from pathlib import Path
+import re
 import time
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 
 from app.api import routes
-from app.core.baidu_netdisk_service import BaiduNetdiskService
+from app.core.baidu_netdisk_service import BaiduNetdiskError, BaiduNetdiskService
 from app.core.task_engine import Task, TaskStatus, TaskType
 
 
@@ -425,6 +427,153 @@ def test_baidu_custom_name_skips_multi_file_share():
 
     assert [row["relative_path"] for row in rows] == ["track01.wav", "track02.wav"]
     assert all(row["custom_rename_skipped"] is True for row in rows)
+
+
+def test_baidu_custom_group_folder_keeps_split_volume_base_consistent(monkeypatch):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.extract = type("ExtractConfig", (), {
+        "filename_password_sniff_templates": ["{name}（{password}）"],
+    })()
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+
+    rows = service._apply_custom_download_name_to_rows(
+        {
+            "custom_name": "铁大哥人妻",
+            "custom_extract_password": "southplus",
+            "custom_group_folder": True,
+            "custom_file_names": {
+                "fs-z01": {"custom_name": "铁大哥人妻"},
+                "fs-z02": {"custom_name": "铁大哥人妻"},
+                "fs-zip": {"custom_name": "铁大哥人妻"},
+            },
+        },
+        [
+            {"fs_id": "fs-z01", "name": "铁大哥人妻-z01", "relative_path": "铁大哥人妻-z01"},
+            {"fs_id": "fs-z02", "name": "铁大哥人妻-z02", "relative_path": "铁大哥人妻-z02"},
+            {"fs_id": "fs-zip", "name": "铁大哥人妻.zip", "relative_path": "铁大哥人妻.zip"},
+            {"fs_id": "fs-note", "name": "readme.txt", "relative_path": "readme.txt"},
+        ],
+    )
+
+    volume_rows = rows[:3]
+    note_row = rows[3]
+    assert [row["name"] for row in volume_rows] == ["铁大哥人妻.z01", "铁大哥人妻.z02", "铁大哥人妻.zip"]
+    assert [os.path.basename(row["relative_path"]) for row in volume_rows] == ["铁大哥人妻.z01", "铁大哥人妻.z02", "铁大哥人妻.zip"]
+    assert all(os.path.dirname(row["relative_path"]) == "铁大哥人妻（southplus）" for row in volume_rows)
+    assert all(row["custom_group_folder_applied"] is True for row in volume_rows)
+    assert note_row["relative_path"] == "readme.txt"
+    assert not note_row.get("custom_group_folder_applied")
+
+
+def test_baidu_custom_group_folder_does_not_create_subdir_when_only_selected_volumes(monkeypatch):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.extract = type("ExtractConfig", (), {
+        "filename_password_sniff_templates": ["{name}（{password}）"],
+    })()
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+
+    rows = service._apply_custom_download_name_to_rows(
+        {
+            "custom_name": "铁大哥人妻",
+            "custom_extract_password": "southplus",
+            "custom_group_folder": True,
+            "custom_file_names": {
+                "fs-z01": {"custom_name": "铁大哥人妻"},
+                "fs-z02": {"custom_name": "铁大哥人妻"},
+                "fs-zip": {"custom_name": "铁大哥人妻"},
+            },
+        },
+        [
+            {"fs_id": "fs-z01", "name": "铁大哥人妻-z01", "relative_path": "铁大哥人妻-z01"},
+            {"fs_id": "fs-z02", "name": "铁大哥人妻-z02", "relative_path": "铁大哥人妻-z02"},
+            {"fs_id": "fs-zip", "name": "铁大哥人妻.zip", "relative_path": "铁大哥人妻.zip"},
+        ],
+    )
+
+    assert [row["relative_path"] for row in rows] == ["铁大哥人妻.z01", "铁大哥人妻.z02", "铁大哥人妻.zip"]
+    assert all(not row.get("custom_group_folder_applied") for row in rows)
+
+
+def test_baidu_custom_file_names_apply_to_multi_file_share(monkeypatch):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.extract = type("ExtractConfig", (), {
+        "filename_password_sniff_templates": ["{name}（{password}）"],
+    })()
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+
+    rows = service._apply_custom_download_name_to_rows(
+        {
+            "custom_file_names": {
+                "fs-001": {
+                    "custom_name": "RJ01609723.7z",
+                    "custom_extract_password": "southplus@mzh1051",
+                },
+                "folder/RJ01609723.7z.002": {
+                    "custom_name": "RJ01609723.7z",
+                },
+            },
+        },
+        [
+            {
+                "fs_id": "fs-001",
+                "name": "RJ01609723.7z.001",
+                "relative_path": "folder/RJ01609723.7z.001",
+                "original_relative_path": "folder/RJ01609723.7z.001",
+            },
+            {
+                "fs_id": "fs-002",
+                "name": "RJ01609723.7z.002",
+                "relative_path": "folder/RJ01609723.7z.002",
+                "original_relative_path": "folder/RJ01609723.7z.002",
+            },
+        ],
+    )
+
+    assert rows[0]["name"] == "RJ01609723.7z（southplus@mzh1051）.001"
+    assert rows[0]["relative_path"] == os.path.join("folder", "RJ01609723.7z（southplus@mzh1051）.001")
+    assert rows[0]["custom_file_rename_applied"] is True
+    assert rows[1]["name"] == "RJ01609723.7z.002"
+    assert rows[1]["relative_path"] == os.path.join("folder", "RJ01609723.7z.002")
+    assert rows[1]["custom_file_rename_applied"] is True
+
+
+def test_baidu_filter_preview_selection_merges_custom_file_names():
+    service = BaiduNetdiskService()
+
+    preview = {
+        "items": [{
+            "ok": True,
+            "selection_key": "baidu:item",
+            "share_id": "share-id",
+            "share_url": "https://pan.baidu.com/s/share?pwd=0402",
+            "filename": "RJ01609723",
+            "share_files": [{
+                "name": "RJ01609723.7z.001",
+                "relative_path": "RJ01609723/RJ01609723.7z.001",
+                "path": "/RJ01609723/RJ01609723.7z.001",
+                "fs_id": "fs-001",
+            }],
+        }],
+    }
+
+    filtered = service.filter_preview_selection(
+        preview,
+        selected_items=[{
+            "selection_key": "baidu:item",
+            "custom_file_names": {
+                "fs-001": {
+                    "custom_name": "RJ01609723.7z",
+                    "custom_extract_password": "southplus@mzh1051",
+                },
+            },
+        }],
+    )
+
+    assert filtered["items"][0]["custom_file_names"]["fs-001"]["custom_name"] == "RJ01609723.7z"
+    assert filtered["items"][0]["custom_file_names"]["fs-001"]["custom_extract_password"] == "southplus@mzh1051"
 
 
 @pytest.mark.asyncio
@@ -1142,7 +1291,14 @@ async def test_baidu_start_download_uses_pcsgo_temporary_transfer_and_cleans_rem
     result = await service.start_download_task(task)
 
     assert result["success"] is True
-    assert (tmp_path / "downloads" / "百度大文件测试" / "狩龙人拉格纳121.mp4").read_bytes() == b"abcdef"
+    batch_folder = task.task_metadata["download_batch_folder_name"]
+    assert re.fullmatch(r"百度网盘_\d{8}_\d{6}", batch_folder)
+    assert task.task_metadata["requested_output_folder_name"] == ""
+    assert (tmp_path / "downloads" / batch_folder / "狩龙人拉格纳121.mp4").read_bytes() == b"abcdef"
+    assert Path(task.task_metadata["final_output_path"]).name == batch_folder
+    assert not (tmp_path / "downloads" / ".baidu-netdisk-staging" / "baidu-large-test-task").exists()
+    assert task.task_metadata["staging_cleanup"]["success"] is True
+    assert task.task_metadata["staging_cleanup"]["cleaned"] is True
     savedir = state["savedir"]
     assert [item["args"] for item in command_log] == [
         ("config", "set", "-savedir", savedir),
@@ -1179,6 +1335,131 @@ async def test_baidu_start_download_uses_pcsgo_temporary_transfer_and_cleans_rem
     assert any("临时转存" in item["message"] for item in task.task_metadata["progress_log"])
     assert any("已删除百度网盘临时转存目录" in item["message"] for item in task.task_metadata["progress_log"])
     assert task.task_metadata["download_files"][0]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_baidu_start_download_records_failed_phase_metric_when_all_files_fail(monkeypatch, tmp_path):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.baidu_netdisk.download_root = str(tmp_path / "downloads")
+    config.storage.temp_path = str(tmp_path / "temp")
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+    recorded = []
+
+    async def fake_preview_urls(*_args, **_kwargs):
+        return {
+            "items": [{
+                "ok": True,
+                "selection_key": "baidu:item",
+                "filename": "失败文件",
+                "share_url": "https://pan.baidu.com/s/fail?pwd=0402",
+                "share_id": "fail",
+                "share_files": [{
+                    "name": "fail.zip",
+                    "relative_path": "fail.zip",
+                    "path": "/fail.zip",
+                    "is_dir": False,
+                    "size_bytes": 12,
+                    "fs_id": "1001",
+                }],
+            }],
+            "selected_keys": ["baidu:item"],
+            "ok_count": 1,
+            "success": True,
+        }
+
+    async def fake_download_guarded(_task, _staging_dir, row, *_args, **_kwargs):
+        row.update({
+            "status": "failed",
+            "failure_reason": "HTTP 403",
+            "downloaded": 3,
+        })
+
+    class MetricService:
+        async def record_async(self, **kwargs):
+            recorded.append(kwargs)
+
+    monkeypatch.setattr(service, "preview_urls", fake_preview_urls)
+    monkeypatch.setattr(service, "_download_share_item_guarded", fake_download_guarded)
+    monkeypatch.setattr(
+        "app.core.task_phase_metric_service.get_task_phase_metric_service",
+        lambda: MetricService(),
+    )
+
+    task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={
+            "urls": ["https://pan.baidu.com/s/fail?pwd=0402"],
+            "batch_name": "百度失败测试",
+            "conflict_policy": "resume",
+        },
+        status=TaskStatus.PROCESSING,
+        task_id="baidu-failed-metric-test",
+    )
+
+    with pytest.raises(BaiduNetdiskError, match="HTTP 403"):
+        await service.start_download_task(task)
+
+    assert task.task_metadata["download_runtime"]["status"] == "failed"
+    assert task.task_metadata["performance_metrics"]["success_count"] == 0
+    assert task.task_metadata["performance_metrics"]["failed_count"] == 1
+    assert recorded[0]["status"] == "failed"
+    assert recorded[0]["phase"] == "baidu_netdisk_download"
+    assert recorded[0]["bytes_total"] == 3
+
+
+def test_baidu_completed_staging_cleanup_rejects_non_task_path(tmp_path):
+    service = BaiduNetdiskService()
+    download_root = tmp_path / "downloads"
+    user_dir = tmp_path / "manual"
+    user_file = user_dir / "keep.txt"
+    user_dir.mkdir(parents=True)
+    user_file.write_text("keep", encoding="utf-8")
+
+    task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={"progress_log": []},
+        status=TaskStatus.PROCESSING,
+        task_id="baidu-safe-cleanup-test",
+    )
+
+    result = service._cleanup_completed_staging_dir(task, str(user_dir), str(download_root))
+
+    assert result["success"] is False
+    assert result["reason"] == "outside_staging_parent"
+    assert user_file.read_text(encoding="utf-8") == "keep"
+
+
+def test_baidu_download_file_concurrency_respects_network_budget(monkeypatch):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.baidu_netdisk.max_download_load = 5
+    config.resource_budget = type("ResourceBudget", (), {
+        "enabled": True,
+        "network_download": 3,
+    })()
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+
+    assert service._baidu_download_file_concurrency(8) == 3
+
+    config.resource_budget.network_download = 0
+    assert service._baidu_download_file_concurrency(8) == 5
+
+
+def test_baidu_remote_temporary_transfer_dir_is_unique_per_row(monkeypatch):
+    service = BaiduNetdiskService()
+    monkeypatch.setattr(service, "_remote_temporary_transfer_dir", lambda _task: "/km_20260605_153012_a1b2c3")
+
+    first = service._remote_temporary_transfer_dir_for_row(None, {"fs_id": "fs-001", "_remote_transfer_scope": 0})
+    second = service._remote_temporary_transfer_dir_for_row(None, {"fs_id": "fs-002", "_remote_transfer_scope": 1})
+
+    assert first != second
+    assert first.startswith("/km_20260605_153012_a1b2c3_")
+    assert second.startswith("/km_20260605_153012_a1b2c3_")
+    assert service._is_safe_remote_temporary_transfer_dir(first)
+    assert service._is_safe_remote_temporary_transfer_dir(second)
 
 
 @pytest.mark.asyncio
@@ -1415,7 +1696,9 @@ async def test_baidu_start_download_prefers_raw_selected_items_without_preview(m
     result = await service.start_download_task(task)
 
     assert result["success"] is True
-    assert (tmp_path / "downloads" / "百度大文件测试" / "狩龙人拉格纳121.mp4").read_bytes() == b"abcdef"
+    batch_folder = task.task_metadata["download_batch_folder_name"]
+    assert re.fullmatch(r"百度网盘_\d{8}_\d{6}", batch_folder)
+    assert (tmp_path / "downloads" / batch_folder / "狩龙人拉格纳121.mp4").read_bytes() == b"abcdef"
     assert [item["args"] for item in command_log][0] == ("config", "set", "-savedir", state["savedir"])
     config_user = written_config["baidu_user_list"][0]
     assert config_user["bduss"] == "test"
