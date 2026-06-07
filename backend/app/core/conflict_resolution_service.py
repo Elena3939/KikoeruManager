@@ -16,6 +16,7 @@ from ..core.extract_service import ExtractService
 from ..core.filter_service import FilterService
 from ..core.folder_compare_service import get_folder_compare_service
 from ..core.library_manager import get_library_manager
+from ..core.resource_budget_service import get_resource_budget_service
 from ..core.task_engine import Task, TaskType
 
 logger = logging.getLogger(__name__)
@@ -1074,7 +1075,12 @@ class ConflictResolutionService:
             message=f"把 {os.path.basename(source_path)} 放入合并工作区",
         )
         staged_archive_path = os.path.join(workspace, os.path.basename(source_path))
-        await asyncio.to_thread(shutil.copy2, source_path, staged_archive_path)
+        await self._copy_to_stage_with_budget(
+            source_path,
+            staged_archive_path,
+            is_dir=False,
+            reason="conflict.preview_stage_archive",
+        )
 
         self._update_merge_preview_job(
             job, stage="extract", stage_label="解压新包",
@@ -1457,7 +1463,12 @@ class ConflictResolutionService:
             source_path = session.staged_root  # 此时 staged_root 存放的是原始源目录
             staged_dir = os.path.join(session.workspace, os.path.basename(source_path))
             logger.info("合并执行：开始暂存源目录 %s -> %s", source_path, staged_dir)
-            await asyncio.to_thread(shutil.copytree, source_path, staged_dir)
+            await self._copy_to_stage_with_budget(
+                source_path,
+                staged_dir,
+                is_dir=True,
+                reason="conflict.merge_stage_dir",
+            )
             filter_task = Task(
                 task_type=TaskType.FILTER,
                 source_path=staged_dir,
@@ -1551,6 +1562,14 @@ class ConflictResolutionService:
         os.makedirs(temp_root, exist_ok=True)
         return tempfile.mkdtemp(prefix=f"conflict_{conflict_id}_", dir=temp_root)
 
+    async def _copy_to_stage_with_budget(self, source_path: str, target_path: str, *, is_dir: bool, reason: str) -> None:
+        async with get_resource_budget_service().acquire("disk_io_local", reason=reason):
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            if is_dir:
+                await asyncio.to_thread(shutil.copytree, source_path, target_path)
+            else:
+                await asyncio.to_thread(shutil.copy2, source_path, target_path)
+
     async def _stage_new_source(self, conflict, workspace: str) -> str:
         # 兜底找回 source：DB 里 conflict.new_path 可能是已经被搬走 / 清理的临时路径，
         # 真实数据其实在 {library_path}/_conflicts/{basename}。
@@ -1565,7 +1584,12 @@ class ConflictResolutionService:
 
         if os.path.isfile(source_path):
             staged_archive_path = os.path.join(workspace, os.path.basename(source_path))
-            await asyncio.to_thread(shutil.copy2, source_path, staged_archive_path)
+            await self._copy_to_stage_with_budget(
+                source_path,
+                staged_archive_path,
+                is_dir=False,
+                reason="conflict.stage_archive",
+            )
             extract_task = Task(
                 task_type=TaskType.EXTRACT,
                 source_path=staged_archive_path,
@@ -1578,7 +1602,12 @@ class ConflictResolutionService:
             staged_root = extracted_path
         else:
             staged_root = os.path.join(workspace, os.path.basename(source_path))
-            await asyncio.to_thread(shutil.copytree, source_path, staged_root)
+            await self._copy_to_stage_with_budget(
+                source_path,
+                staged_root,
+                is_dir=True,
+                reason="conflict.stage_dir",
+            )
 
         filter_task = Task(
             task_type=TaskType.FILTER,

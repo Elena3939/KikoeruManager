@@ -142,12 +142,16 @@ class ActivityLogWriter:
             return
         # 延迟导入避免循环依赖
         from ..models.database import ActivityLog, SessionLocal
+        from .activity_log_rollup_service import get_activity_log_rollup_service
+        from .resource_budget_service import get_resource_budget_service
 
         db = SessionLocal()
         try:
-            db.bulk_save_objects([ActivityLog(**payload) for payload in batch])
-            self._upsert_daily_stats(db, batch)
-            db.commit()
+            with get_resource_budget_service().acquire_sync("sqlite_write", reason="activity_log.flush"):
+                db.bulk_save_objects([ActivityLog(**payload) for payload in batch])
+                self._upsert_daily_stats(db, batch)
+                get_activity_log_rollup_service().upsert_from_payloads(db, batch)
+                db.commit()
             self._last_write_ts = time.time()
             return
         except Exception:
@@ -161,9 +165,11 @@ class ActivityLogWriter:
             try:
                 db2 = SessionLocal()
                 try:
-                    db2.add(ActivityLog(**payload))
-                    self._upsert_daily_stats(db2, [payload])
-                    db2.commit()
+                    with get_resource_budget_service().acquire_sync("sqlite_write", reason="activity_log.flush_one"):
+                        db2.add(ActivityLog(**payload))
+                        self._upsert_daily_stats(db2, [payload])
+                        get_activity_log_rollup_service().upsert_from_payloads(db2, [payload])
+                        db2.commit()
                     self._last_write_ts = time.time()
                 except Exception:
                     db2.rollback()

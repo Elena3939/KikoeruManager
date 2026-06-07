@@ -431,12 +431,16 @@ const filteredLogs = computed(() => {
   const newestLogMs = getNewestLogTimeMs(logs.value)
   const candidates = []
   const latestProgressByTask = new Map()
+  const firstProgressMsByTask = new Map()
 
   logs.value.forEach((log, index) => {
     if (!lvlSet.has(log.level)) return false
     if (moduleSet && !moduleSet.has(log.module)) return false
     const taskProgress = parseTaskProgressLog(log, index)
     if (taskProgress) {
+      if (taskProgress.timestampMs && !firstProgressMsByTask.has(taskProgress.taskId)) {
+        firstProgressMsByTask.set(taskProgress.taskId, taskProgress.timestampMs)
+      }
       latestProgressByTask.set(taskProgress.taskId, taskProgress)
       candidates.push({ type: 'task-progress', log, taskProgress })
       return false
@@ -454,6 +458,14 @@ const filteredLogs = computed(() => {
     candidates.push({ type: 'log', log })
     return true
   })
+
+  for (const progress of latestProgressByTask.values()) {
+    const startedMs = firstProgressMsByTask.get(progress.taskId) || progress.timestampMs || 0
+    const endedMs = progress.timestampMs || startedMs
+    progress.startedMs = startedMs
+    progress.durationMs = Math.max(0, endedMs - startedMs)
+    progress.durationLabel = formatProgressDuration(progress.durationMs)
+  }
 
   return candidates.flatMap((entry) => {
     if (entry.type !== 'task-progress') return [entry.log]
@@ -571,6 +583,16 @@ function formatProgressTime(value) {
   const dateMatch = text.match(/\d{4}-\d{2}-\d{2}\s+(\d{2}:\d{2}:\d{2})/)
   if (dateMatch) return dateMatch[1]
   return text.length > 8 ? text.slice(0, 8) : text
+}
+
+function formatProgressDuration(value) {
+  const ms = Math.max(0, Number(value) || 0)
+  const totalSeconds = Math.floor(ms / 1000)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  const pad = (part) => String(part).padStart(2, '0')
+  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`
 }
 
 function parseLogTimeMs(value) {

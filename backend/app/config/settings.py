@@ -4,7 +4,7 @@ import logging
 import threading
 import time
 import tempfile
-from typing import Optional, List, List, Callable
+from typing import Optional, List, Callable
 from pydantic import BaseModel, Field
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileModifiedEvent
@@ -297,6 +297,7 @@ class HttpDownloaderConfig(BaseModel):
     download_root: str = ""
     aria2_path: str = "aria2c"
     proxy_url: str = ""
+    proxy_platforms: List[str] = Field(default_factory=lambda: ["http", "gofile", "transferit", "onedrive", "google_drive", "pikpak"])
     max_concurrent_downloads: int = 3
     split: int = 8
     max_connection_per_server: int = 8
@@ -502,6 +503,16 @@ class NotificationCenterConfig(BaseModel):
     unread_highlight_enabled: bool = True
 
 
+class ResourceBudgetConfig(BaseModel):
+    """跨业务资源预算：限制慢盘、远程库、下载等链路互相打满。"""
+    enabled: bool = True
+    disk_io_local: int = 2
+    archive_cpu: int = 0
+    remote_fs: int = 4
+    network_download: int = 5
+    sqlite_write: int = 0
+
+
 class SecurityGateConfig(BaseModel):
     """Google Authenticator 系统门禁配置"""
     enabled: bool = False
@@ -557,6 +568,7 @@ class AppConfig(BaseModel):
     email_watcher: EmailWatcherConfig = EmailWatcherConfig()
     notification_email: NotificationEmailConfig = NotificationEmailConfig()
     notification_center: NotificationCenterConfig = NotificationCenterConfig()
+    resource_budget: ResourceBudgetConfig = ResourceBudgetConfig()
     security_gate: SecurityGateConfig = SecurityGateConfig()
 
 # 全局配置实例

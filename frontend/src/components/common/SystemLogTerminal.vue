@@ -54,7 +54,7 @@ const statusMeta = computed(() => {
 const rowVirtualizer = useVirtualizer(computed(() => ({
   count: lineCount.value,
   getScrollElement: () => scrollRef.value,
-  estimateSize: () => 32,
+  estimateSize: (index) => isTaskProgressLine(safeLines.value[index]) ? 62 : 32,
   overscan: 12,
 })))
 
@@ -294,16 +294,18 @@ onBeforeUnmount(() => {
             <span class="terminal-source">{{ safeLines[virtualRow.index]?.source || 'system' }}</span>
             <span v-if="hasProgress(safeLines[virtualRow.index])" class="terminal-progress">{{ safeLines[virtualRow.index]?.progress }}%</span>
             <span v-if="isTaskProgressLine(safeLines[virtualRow.index])" class="terminal-message terminal-inline-progress">
-              <span class="terminal-inline-progress-title">
-                任务 {{ safeLines[virtualRow.index]?.taskProgress?.shortId || '--------' }}
+              <span class="terminal-inline-progress-head">
+                <span class="terminal-inline-progress-title">
+                  任务 {{ safeLines[virtualRow.index]?.taskProgress?.shortId || '--------' }}
+                </span>
+                <span class="terminal-inline-progress-state">
+                  {{ progressToneLabel(safeLines[virtualRow.index]?.taskProgress?.tone) }} · 持续 {{ safeLines[virtualRow.index]?.taskProgress?.durationLabel || '00:00:00' }}
+                </span>
               </span>
-              <span class="terminal-inline-progress-detail">{{ safeLines[virtualRow.index]?.message || '处理中' }}</span>
               <span class="terminal-inline-progress-bar" :style="{ '--inline-progress': `${clampProgress(safeLines[virtualRow.index]?.progress)}%` }">
                 <span />
               </span>
-              <span class="terminal-inline-progress-state">
-                {{ progressToneLabel(safeLines[virtualRow.index]?.taskProgress?.tone) }} · {{ safeLines[virtualRow.index]?.taskProgress?.updatedLabel || '--:--:--' }}
-              </span>
+              <span class="terminal-inline-progress-detail">{{ safeLines[virtualRow.index]?.message || '处理中' }}</span>
             </span>
             <span v-else class="terminal-message">
               <template v-for="(token, tokenIndex) in shellTokens(safeLines[virtualRow.index]?.message)" :key="`${virtualRow.key}-${tokenIndex}`">
@@ -579,7 +581,7 @@ onBeforeUnmount(() => {
 }
 
 .terminal-line.is-task-progress {
-  min-height: 32px;
+  min-height: 62px;
   background: rgba(14, 20, 25, 0.72);
 }
 
@@ -589,11 +591,19 @@ onBeforeUnmount(() => {
 
 .terminal-inline-progress {
   display: grid;
-  grid-template-columns: auto minmax(120px, 0.44fr) minmax(180px, 1fr) auto;
-  align-items: center;
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 5px;
   min-width: 0;
   white-space: nowrap;
+}
+
+.terminal-inline-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
 }
 
 .terminal-inline-progress-title,
@@ -615,12 +625,14 @@ onBeforeUnmount(() => {
   color: #71717a;
   font-size: 10.5px;
   font-weight: 800;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .terminal-inline-progress-detail {
   color: #a1a1aa;
   font-size: 11px;
-  line-height: 1.2;
+  line-height: 1.25;
 }
 
 .terminal-inline-progress-bar {
@@ -783,16 +795,16 @@ onBeforeUnmount(() => {
   }
 
   .terminal-inline-progress {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 5px;
   }
 
-  .terminal-inline-progress-bar {
-    grid-column: 1 / -1;
-    order: 3;
+  .terminal-inline-progress-head {
+    gap: 8px;
   }
 
   .terminal-inline-progress-detail {
-    display: none;
+    display: block;
   }
 }
 </style>

@@ -75,6 +75,7 @@ export function useSubtitleImportWorkbench({
   const workbenchBackgroundSummary = ref({
     total: 0,
     processing: 0,
+    awaiting: 0,
     completed: 0,
     manualCompleted: 0,
     failed: 0,
@@ -87,12 +88,13 @@ export function useSubtitleImportWorkbench({
     const summary = workbenchBackgroundSummary.value || {}
     const total = Number(summary.total || 0)
     const processing = Number(summary.processing || 0)
+    const awaiting = Number(summary.awaiting || 0)
     const completed = Number(summary.completed || 0)
     const failed = Number(summary.failed || 0)
     const activeTask = summary.activeTask || null
     const percentage = total > 0 ? Math.max(0, Math.min(100, Math.round(((completed + failed) / total) * 100))) : 0
-    const tone = processing > 0 ? 'info' : failed > 0 ? 'warning' : completed > 0 ? 'success' : 'neutral'
-    const label = processing > 0 ? '后台运行中' : failed > 0 ? '可回看' : completed > 0 ? '已完成' : '待处理'
+    const tone = processing > 0 ? 'info' : awaiting > 0 ? 'warning' : failed > 0 ? 'warning' : completed > 0 ? 'success' : 'neutral'
+    const label = processing > 0 ? '后台运行中' : awaiting > 0 ? '待配对' : failed > 0 ? '可回看' : completed > 0 ? '已完成' : '待处理'
 
     workbenchManager.patchWorkbenchState(SUBTITLE_IMPORT_WORKBENCH_ID, {
       title: '字幕补配工作台',
@@ -120,6 +122,7 @@ export function useSubtitleImportWorkbench({
       metrics: [
         { key: 'total', label: '全部', value: total, tone: 'neutral' },
         { key: 'processing', label: '进行中', value: processing, tone: processing > 0 ? 'info' : 'neutral' },
+        { key: 'awaiting', label: '待配对', value: awaiting, tone: awaiting > 0 ? 'warning' : 'neutral' },
         { key: 'completed', label: '完成', value: completed, tone: completed > 0 ? 'success' : 'neutral' },
         { key: 'failed', label: '失败', value: failed, tone: failed > 0 ? 'danger' : 'neutral' }
       ]
@@ -135,6 +138,7 @@ export function useSubtitleImportWorkbench({
     workbenchBackgroundSummary.value = {
       total: 0,
       processing: 0,
+      awaiting: 0,
       completed: 0,
       manualCompleted: 0,
       failed: 0,
@@ -288,6 +292,7 @@ export function useSubtitleImportWorkbench({
     workbenchBackgroundSummary.value = {
       total: Number(payload?.total || 0),
       processing: Number(payload?.processing || 0),
+      awaiting: Number(payload?.awaiting || 0),
       completed: Number(payload?.completed || 0),
       manualCompleted: Number(payload?.manualCompleted || 0),
       failed: Number(payload?.failed || 0),

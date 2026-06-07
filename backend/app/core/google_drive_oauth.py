@@ -62,7 +62,24 @@ def normalize_google_drive_proxy_url(value: Any) -> str:
     return text
 
 
+def _google_drive_proxy_enabled(config: Any = None) -> bool:
+    http_downloader = getattr(config, "http_downloader", None) or config
+    raw_platforms = getattr(http_downloader, "proxy_platforms", None)
+    if raw_platforms is None:
+        return True
+    if not isinstance(raw_platforms, list):
+        raw_platforms = [raw_platforms]
+    for value in raw_platforms:
+        text = _clean(value).lower().replace("-", "_")
+        if text in {"google_drive", "googledrive", "drive.google.com", "docs.google.com", "drive.usercontent.google.com"}:
+            return True
+    return False
+
+
 def resolve_google_drive_oauth_proxy_url(config: Any = None) -> str:
+    if not _google_drive_proxy_enabled(config):
+        return ""
+
     http_downloader = getattr(config, "http_downloader", None) or config
     proxy = normalize_google_drive_proxy_url(getattr(http_downloader, "proxy_url", ""))
     if proxy:

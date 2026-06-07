@@ -16,10 +16,21 @@
             <SettingsFieldCard label="aria2 路径" hint="Docker 内默认 aria2c；Windows 可填 aria2c.exe 绝对路径。">
               <input v-model="config.http_downloader.aria2_path" class="field-input" type="text" placeholder="aria2c">
             </SettingsFieldCard>
-            <SettingsFieldCard label="HTTP 代理" hint="仅用于 HTTP 外链下载，和 asmr.one 代理分离。">
+            <SettingsFieldCard label="HTTP 代理" hint="代理地址本身，和 asmr.one 代理分离。">
               <input v-model="config.http_downloader.proxy_url" class="field-input" type="text" placeholder="http://127.0.0.1:7890">
             </SettingsFieldCard>
           </div>
+
+          <SettingsFieldCard label="代理适用范围" hint="只让选中的 HTTP 下载来源走上面的代理；不选则全部直连。">
+            <AppDropdown
+              v-model="config.http_downloader.proxy_platforms"
+              :options="httpProxyPlatformOptions"
+              multiple
+              class="settings-field-dd"
+              placeholder="全部直连"
+              :menu-min-width="260"
+            />
+          </SettingsFieldCard>
 
           <div class="mini-grid three">
             <SettingsFieldCard label="并发下载">
@@ -387,6 +398,14 @@ const httpConflictPolicyOptions = [
 ]
 const httpEngineOptions = [
   { value: 'aria2', label: 'aria2' }
+]
+const httpProxyPlatformOptions = [
+  { value: 'http', label: 'HTTP 直链', description: '普通 HTTP/HTTPS 文件直链与未知来源。' },
+  { value: 'gofile', label: 'Gofile', description: 'Gofile 分享解析和文件下载。' },
+  { value: 'transferit', label: 'Transfer.it', description: 'Transfer.it 分享解析和专用下载。' },
+  { value: 'onedrive', label: 'OneDrive', description: 'OneDrive 分享直链解析。' },
+  { value: 'google_drive', label: 'Google Drive', description: 'Drive OAuth、API、确认页和文件下载。' },
+  { value: 'pikpak', label: 'PikPak', description: 'PikPak 登录、转存、解析和文件下载。' }
 ]
 const googleDriveOAuthClientModeOptions = [
   { value: 'builtin', label: '内置应用' },

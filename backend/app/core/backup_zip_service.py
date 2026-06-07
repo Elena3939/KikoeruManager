@@ -13,6 +13,7 @@ from typing import Optional, List, Dict, Tuple
 
 from ..config.settings import get_config
 from ..models.database import get_db, BackupRecord
+from .resource_budget_service import get_resource_budget_service
 
 logger = logging.getLogger(__name__)
 
@@ -360,14 +361,16 @@ class BackupZipService:
 
             # 计算压缩前大小
             self._set_progress(0, "计算库存大小")
-            self._pre_size = await asyncio.to_thread(self._get_dir_size, source_path)
+            async with get_resource_budget_service().acquire("disk_io_local", reason="backup_zip.scan_size"):
+                self._pre_size = await asyncio.to_thread(self._get_dir_size, source_path)
             self._status["total_bytes"] = self._pre_size
             pre_size_gb = self._pre_size / (1024 * 1024 * 1024)
             self._append_log(f"待压缩库存大小: {pre_size_gb:.2f} GB")
 
             # 构建文件清单（用于断点续传）
             self._set_progress(0, "构建文件清单")
-            self._file_manifest = await asyncio.to_thread(self._build_manifest, source_path)
+            async with get_resource_budget_service().acquire("disk_io_local", reason="backup_zip.scan_manifest"):
+                self._file_manifest = await asyncio.to_thread(self._build_manifest, source_path)
             self._append_log(f"文件清单: {len(self._file_manifest)} 个文件")
 
             if backup_config.copy_structure_before_zip:
@@ -457,7 +460,8 @@ class BackupZipService:
                 raise RuntimeError("密码与断点记录不一致，无法恢复")
 
             # 校验文件清单
-            current_manifest = await asyncio.to_thread(self._build_manifest, source_path)
+            async with get_resource_budget_service().acquire("disk_io_local", reason="backup_zip.scan_manifest"):
+                current_manifest = await asyncio.to_thread(self._build_manifest, source_path)
             if not self._validate_manifest(self._file_manifest, current_manifest):
                 self._append_log("警告: 部分文件已变更，将重新压缩变更的块")
 
@@ -522,7 +526,8 @@ class BackupZipService:
             self._append_log(f"压缩格式: {archive_format}，压缩强度: {compression_level}")
             self._append_log(f"输出文件: {archive_path}")
 
-            return_code = await self._run_7z(cmd, source_parent)
+            async with get_resource_budget_service().acquire("disk_io_local", reason="backup_zip.compress"):
+                return_code = await self._run_7z(cmd, source_parent)
             if return_code != 0:
                 self._cleanup_file(archive_path)
                 raise RuntimeError(f"7z 执行失败，返回码: {return_code}")
@@ -550,7 +555,8 @@ class BackupZipService:
                 self._set_progress(chunk_progress_base, f"压缩块 {i+1}/{total_chunks}")
                 self._append_log(f"压缩块 {i+1}/{total_chunks}，{len(chunk)} 个文件")
 
-                return_code = await self._run_7z(cmd, source_parent)
+                async with get_resource_budget_service().acquire("disk_io_local", reason="backup_zip.compress_chunk"):
+                    return_code = await self._run_7z(cmd, source_parent)
                 if return_code != 0:
                     raise RuntimeError(f"7z 块 {i+1} 执行失败，返回码: {return_code}")
 
@@ -902,6 +908,10 @@ class BackupZipService:
             db.close()
 
     def _get_dir_size(self, path: str) -> int:
+        indexed_size = self._get_indexed_library_size(path)
+        if indexed_size is not None:
+            return indexed_size
+
         total_size = 0
         try:
             for root, _, files in os.walk(path):
@@ -912,6 +922,40 @@ class BackupZipService:
         except Exception as e:
             logger.error(f"计算目录大小失败: {path}, {e}")
         return total_size
+
+    def _get_indexed_library_size(self, path: str) -> Optional[int]:
+        """source_path 精确等于本地库存根时，复用 ready 库存索引大小。"""
+        try:
+            from .library_index import get_library_index_service
+            from .library_manager import load_library_config
+
+            target_path = os.path.normcase(os.path.abspath(path))
+            libraries = load_library_config().get("libraries") or []
+            for library in libraries:
+                if not getattr(library, "enabled", True):
+                    continue
+                if getattr(library, "type", "local") != "local":
+                    continue
+                root_path = getattr(library, "root_path", "") or getattr(library, "path", "")
+                if not root_path:
+                    continue
+                library_root = os.path.normcase(os.path.abspath(root_path))
+                if target_path != library_root:
+                    continue
+
+                service = get_library_index_service()
+                if not service.is_ready(library.id):
+                    return None
+                size = int(service.get_library_size(library.id) or 0)
+                logger.info(
+                    "[BackupZip] 目录大小走库存索引 library=%s size=%s",
+                    library.id,
+                    size,
+                )
+                return size
+        except Exception:
+            logger.warning("[BackupZip] 库存索引大小读取失败，回退目录扫描", exc_info=True)
+        return None
 
     def _save_backup_record(self, filename, output_path, source_path,
                             pre_size, post_size, duration, speed_avg, ratio):

@@ -540,45 +540,52 @@
       </main>
     </section>
 
-    <el-dialog v-model="resultDialogVisible" width="560px" class="existing-dialog result-dialog" :show-close="false">
-      <template #header>
-        <div class="dialog-header">
-          <div class="dialog-title-wrap">
-            <div class="dialog-icon" :class="resultData.success ? 'success' : 'warning'">
-              <CheckCircle2 v-if="resultData.success" :size="18" />
-              <AlertTriangle v-else :size="18" />
-            </div>
-            <div>
-              <div class="dialog-title">任务创建结果</div>
-              <div class="dialog-subtitle">{{ resultData.success ? '任务已进入队列，可在任务中心查看进度' : '请检查错误信息后重试' }}</div>
-            </div>
-          </div>
-          <button type="button" class="dialog-close" @click="resultDialogVisible = false">
-            <XCircle :size="18" />
-          </button>
-        </div>
-      </template>
+    <Teleport to="body">
+      <Transition name="ef-result-dialog">
+        <div v-if="resultDialogVisible" class="ef-result-overlay" role="presentation" @click.self="closeResultDialog">
+          <section class="ef-result-dialog" role="dialog" aria-modal="true" aria-labelledby="ef-result-title">
+            <header class="ef-result-header">
+              <div class="dialog-title-wrap">
+                <div class="dialog-icon" :class="resultData.success ? 'success' : 'warning'">
+                  <CheckCircle2 v-if="resultData.success" :size="18" />
+                  <AlertTriangle v-else :size="18" />
+                </div>
+                <div>
+                  <div id="ef-result-title" class="dialog-title">任务创建结果</div>
+                  <div class="dialog-subtitle">{{ resultData.success ? '任务已进入队列，可在任务中心查看进度' : '请检查错误信息后重试' }}</div>
+                </div>
+              </div>
+              <button type="button" class="dialog-close" title="关闭" @click="closeResultDialog">
+                <XCircle :size="18" />
+              </button>
+            </header>
 
-      <div class="result-panel" :class="resultData.success ? 'success' : 'warning'">
-        <div class="result-title">{{ resultData.success ? '已创建处理任务' : '创建失败' }}</div>
-        <div class="result-message">{{ resultData.message }}</div>
-      </div>
+            <div class="ef-result-body">
+              <div class="result-panel" :class="resultData.success ? 'success' : 'warning'">
+                <div class="result-title">{{ resultData.success ? '已创建处理任务' : '创建失败' }}</div>
+                <div class="result-message">{{ resultData.message }}</div>
+              </div>
 
-      <div v-if="resultData.tasks?.length" class="task-list">
-        <div class="task-list-title">任务明细</div>
-        <div v-for="task in resultData.tasks" :key="task.task_id" class="task-row">
-          <span class="task-id">{{ task.task_id.substring(0, 8) }}</span>
-          <span class="task-path">{{ getFolderName(task.folder_path) }}</span>
-          <span class="task-status">已排队</span>
+              <div v-if="resultData.tasks?.length" class="task-list">
+                <div class="task-list-title">任务明细</div>
+                <div class="task-list-scroll">
+                  <div v-for="task in resultData.tasks" :key="task.task_id" class="task-row">
+                    <span class="task-id">{{ task.task_id.substring(0, 8) }}</span>
+                    <span class="task-path">{{ getFolderName(task.folder_path) }}</span>
+                    <span class="task-status">已排队</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <footer class="dialog-footer ef-result-footer">
+              <button type="button" class="dialog-ep-btn" @click="closeResultDialog">关闭</button>
+              <button type="button" class="dialog-ep-btn primary" @click="goToTasks">查看任务队列</button>
+            </footer>
+          </section>
         </div>
-      </div>
-      <template #footer>
-        <div class="dialog-footer">
-          <el-button class="dialog-ep-btn" @click="resultDialogVisible = false">关闭</el-button>
-          <el-button class="dialog-ep-btn primary" @click="goToTasks">查看任务队列</el-button>
-        </div>
-      </template>
-    </el-dialog>
+      </Transition>
+    </Teleport>
 
     <el-dialog
       v-model="duplicateDetailVisible"
@@ -914,7 +921,7 @@ watch(folderVirtualRowHeight, () => {
   nextTick(() => folderRowVirtualizer.value.measure())
 })
 
-async function consumeNdjsonResponse(response, { forceRefresh = false } = {}) {
+async function consumeNdjsonResponse(response, { forceRefresh = false, silent = false } = {}) {
   if (!response.ok) throw new Error(`HTTP ${response.status}`)
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
@@ -937,7 +944,7 @@ async function consumeNdjsonResponse(response, { forceRefresh = false } = {}) {
         conflictCount.value = folderStats.value.conflictCount
         let msg = data.message || `扫描完成，找到 ${folders.value.length} 个文件夹`
         if (forceRefresh) msg += '，已重新抓取'
-        ElMessage.success(msg)
+        if (!silent) ElMessage.success(msg)
       } else if (data.type === 'error') {
         ElMessage.error(data.error || '扫描失败')
       }
@@ -946,7 +953,7 @@ async function consumeNdjsonResponse(response, { forceRefresh = false } = {}) {
   flushPendingFolderChanges()
 }
 
-async function refreshFoldersWithOptions(forceRefresh = false) {
+async function refreshFoldersWithOptions(forceRefresh = false, { silent = false } = {}) {
   loading.value = true
   cancelPendingFolderFlush()
   folderIndexByPath.clear()
@@ -956,7 +963,7 @@ async function refreshFoldersWithOptions(forceRefresh = false) {
   try {
     const url = apiUrl(`/existing-folders/scan?check_duplicates=${checkDuplicates.value}&force_refresh=${forceRefresh}`)
     const response = await fetch(url, apiFetchOptions({ method: 'POST', headers: { Accept: 'application/x-ndjson' } }))
-    await consumeNdjsonResponse(response, { forceRefresh })
+    await consumeNdjsonResponse(response, { forceRefresh, silent })
     return true
   } catch (error) {
     console.error('获取文件夹列表失败:', error)
@@ -969,6 +976,10 @@ async function refreshFoldersWithOptions(forceRefresh = false) {
 
 function refreshWithCache() {
   return refreshFoldersWithOptions(false)
+}
+
+function closeResultDialog() {
+  resultDialogVisible.value = false
 }
 
 async function refreshForce() {
@@ -1061,7 +1072,7 @@ async function submitProcessFolders(targets, { title, message, confirmText = '�
     resultData.value = { success: true, message: data.message, tasks: data.tasks || [] }
     resultDialogVisible.value = true
     if (clearSelection) selectedFolderPaths.value = []
-    if (refreshDelay) setTimeout(() => refreshWithCache(), refreshDelay)
+    if (refreshDelay) setTimeout(() => refreshFoldersWithOptions(false, { silent: true }), refreshDelay)
     return true
   } catch (error) {
     if (error !== 'cancel') {
@@ -2475,10 +2486,69 @@ function getConflictTypeLabel(conflictType) {
 .ef-grid-enter-from { opacity: 0; transform: translateY(20px) scale(0.94); }
 .ef-grid-leave-to   { opacity: 0; transform: translateY(-10px) scale(0.96); }
 .ef-grid-move { transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1); }
-.result-dialog :deep(.el-dialog) { border-radius: 22px; overflow: hidden; background: var(--ef-surface); border: 1px solid var(--ef-border); box-shadow: 0 24px 70px rgba(15,23,42,.2); }
-.result-dialog :deep(.el-dialog__header) { margin: 0; padding: 18px 18px 0; }
-.result-dialog :deep(.el-dialog__body) { padding: 16px 18px; }
-.result-dialog :deep(.el-dialog__footer) { padding: 0 18px 18px; }
+.ef-result-dialog-enter-active,
+.ef-result-dialog-leave-active {
+  transition: opacity 0.22s ease;
+}
+.ef-result-dialog-enter-active .ef-result-dialog,
+.ef-result-dialog-leave-active .ef-result-dialog {
+  transition: transform 0.26s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.22s ease;
+}
+.ef-result-dialog-enter-from,
+.ef-result-dialog-leave-to {
+  opacity: 0;
+}
+.ef-result-dialog-enter-from .ef-result-dialog,
+.ef-result-dialog-leave-to .ef-result-dialog {
+  opacity: 0;
+  transform: translateY(8px) scale(0.985);
+}
+.ef-result-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 3600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.48);
+}
+.ef-result-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(82vh, 680px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.9)),
+    var(--ef-surface);
+  box-shadow: 0 28px 76px rgba(15, 23, 42, 0.22), 0 10px 26px rgba(15, 23, 42, 0.1);
+}
+.ef-result-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 20px 20px 16px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+}
+.ef-result-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 20px;
+}
+.ef-result-footer {
+  flex: 0 0 auto;
+  padding: 0 20px 20px;
+}
+.ef-result-dialog :is(button, [tabindex]):focus,
+.ef-result-dialog :is(button, [tabindex]):focus-visible,
+.ef-result-dialog :focus-within {
+  outline: none !important;
+  box-shadow: none;
+}
 .dialog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
 .dialog-title-wrap { display: flex; align-items: center; gap: 12px; }
 .dialog-icon { width: 38px; height: 38px; border-radius: 14px; display: grid; place-items: center; }
@@ -2643,6 +2713,13 @@ function getConflictTypeLabel(conflictType) {
 }
 .duplicate-footer { width: 100%; }
 .task-list-title { color: var(--ef-text); font-size: 12px; font-weight: 900; }
+.task-list-scroll {
+  display: grid;
+  gap: 8px;
+  max-height: min(280px, 42vh);
+  overflow: auto;
+  padding-right: 2px;
+}
 .task-row, .linked-row { display: grid; grid-template-columns: 92px 1fr auto; gap: 10px; align-items: center; padding: 10px 12px; border-radius: 12px; background: var(--ef-surface-soft); border: 1px solid var(--ef-border); color: var(--ef-muted); font-size: 12px; transition: border-color 0.25s ease, background-color 0.25s ease; }
 .task-row:hover, .linked-row:hover { border-color: var(--ef-border-strong); background: var(--ef-surface-hover); }
 .task-id { font-weight: 900; color: var(--ef-text); font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
@@ -2650,10 +2727,10 @@ function getConflictTypeLabel(conflictType) {
 .task-status { height: 22px; border-radius: 999px; display: inline-flex; align-items: center; padding: 0 9px; background: var(--ef-surface-muted); color: var(--ef-text-soft); border: 1px solid var(--ef-border); font-size: 11px; font-weight: 600; }
 
 .dialog-footer { display: flex; justify-content: flex-end; gap: 9px; }
-.dialog-ep-btn { height: 34px; border-radius: 10px; font-weight: 700; transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s ease, opacity 0.25s ease; }
+.dialog-ep-btn { height: 34px; border: 1px solid var(--ef-border-soft); border-radius: 10px; background: var(--ef-surface); color: var(--ef-muted); padding: 0 14px; font-weight: 700; cursor: pointer; transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s ease, opacity 0.25s ease, background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease; }
 .dialog-ep-btn:hover { transform: translateY(-2px) scale(1.02); }
 .dialog-ep-btn:active { transform: scale(0.96); transition: transform 0.12s ease; }
-.dialog-ep-btn.primary { --el-button-bg-color: #111827; --el-button-border-color: #111827; --el-button-text-color: #fff; --el-button-hover-bg-color: #1f2937; --el-button-hover-border-color: #1f2937; --el-button-hover-text-color: #fff; box-shadow: 0 6px 14px rgba(15,23,42,0.18); }
+.dialog-ep-btn.primary { background: #111827; border-color: #111827; color: #fff; box-shadow: 0 6px 14px rgba(15,23,42,0.18); }
 .dialog-ep-btn.primary:hover { box-shadow: 0 10px 22px rgba(15,23,42,0.26); }
 
 .detail-card { border: 1px solid var(--ef-border); border-radius: 14px; padding: 12px; background: var(--ef-surface-soft); transition: border-color 0.25s ease, background-color 0.25s ease; }
@@ -2735,6 +2812,32 @@ function getConflictTypeLabel(conflictType) {
     padding-left: 12px;
     padding-right: 12px;
   }
+  .ef-result-overlay {
+    align-items: flex-end;
+    padding: 12px;
+  }
+  .ef-result-dialog {
+    width: 100%;
+    max-height: calc(100dvh - 24px);
+    border-radius: 18px;
+  }
+  .ef-result-header,
+  .ef-result-body,
+  .ef-result-footer {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+  .task-row {
+    grid-template-columns: 78px minmax(0, 1fr);
+  }
+  .task-status {
+    grid-column: 1 / -1;
+    width: fit-content;
+  }
+  .ef-result-footer {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
   .duplicate-compare-grid,
   .duplicate-diff-strip {
     grid-template-columns: 1fr;
@@ -2764,5 +2867,24 @@ function getConflictTypeLabel(conflictType) {
     gap: 6px;
   }
   .action-summary { grid-column: 1 / -1; }
+}
+
+:global(html.kikoerumanager-dark) .ef-result-overlay,
+:global(html.dark) .ef-result-overlay {
+  background: rgba(0, 0, 0, 0.52);
+}
+
+:global(html.kikoerumanager-dark) .ef-result-dialog,
+:global(html.dark) .ef-result-dialog {
+  border-color: rgba(148, 163, 184, 0.2);
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(2, 6, 23, 0.94)),
+    var(--km-dark-card);
+  box-shadow: 0 28px 76px rgba(0, 0, 0, 0.42), 0 10px 26px rgba(0, 0, 0, 0.26);
+}
+
+:global(html.kikoerumanager-dark) .ef-result-header,
+:global(html.dark) .ef-result-header {
+  border-bottom-color: rgba(148, 163, 184, 0.16);
 }
 </style>

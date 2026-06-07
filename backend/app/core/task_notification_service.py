@@ -74,7 +74,7 @@ def _task_kind(task) -> str:
 
 def _is_http_download_partial_success(task) -> bool:
     meta = dict(getattr(task, 'task_metadata', None) or {})
-    if _task_kind(task) != 'http_download' and str(meta.get('task_domain') or '') != 'http_download':
+    if _task_kind(task) not in {'http_download', 'baidu_netdisk_download'} and str(meta.get('task_domain') or '') not in {'http_download', 'baidu_netdisk'}:
         return False
     failed = list(meta.get('failed_files') or [])
     metrics = meta.get('performance_metrics') if isinstance(meta.get('performance_metrics'), dict) else {}
@@ -241,11 +241,15 @@ def _build_notification_info(event_type: str, group_key: str, group_type: str, c
 
     meta = dict(context_task.task_metadata or {})
     task_kind = _task_kind(context_task)
-    if task_kind == 'http_download' or domain == 'http_download':
+    if task_kind in {'http_download', 'baidu_netdisk_download'} or domain in {'http_download', 'baidu_netdisk'}:
         try:
-            from .http_download_service import http_download_platforms_from_metadata, http_download_platforms_label
-            platforms = http_download_platforms_from_metadata(meta)
-            platform_label = str(meta.get('platform_label') or '').strip() or http_download_platforms_label(platforms)
+            if task_kind == 'baidu_netdisk_download' or domain == 'baidu_netdisk':
+                platforms = ['baidu_netdisk']
+                platform_label = str(meta.get('platform_label') or '').strip() or '百度网盘'
+            else:
+                from .http_download_service import http_download_platforms_from_metadata, http_download_platforms_label
+                platforms = http_download_platforms_from_metadata(meta)
+                platform_label = str(meta.get('platform_label') or '').strip() or http_download_platforms_label(platforms)
         except Exception:
             platforms = list(meta.get('platforms') or meta.get('source_modes') or [])
             platform_label = str(meta.get('platform_label') or '').strip() or domain_label
@@ -822,34 +826,79 @@ def delete_notification(item_id: str) -> bool:
         db.close()
 
 
-def cleanup_old_notifications(retain_days: int = 30, max_items: int = 200) -> int:
-    """清理过期和超量通知"""
+def cleanup_old_notifications(retain_days: int = 30, max_items: int = 200, outbox_max_items: int | None = None) -> int:
+    """清理过期和超量通知。
+
+    outbox 只清理 sent/failed 终态记录，不碰 pending/sending，避免误删待发送邮件。
+    """
     from ..models.database import SessionLocal, NotificationInboxItem, NotificationOutbox
     db = SessionLocal()
     deleted = 0
     try:
         cutoff = datetime.now() - timedelta(days=retain_days)
+        active_outbox_inbox_ids = (
+            db.query(NotificationOutbox.inbox_item_id)
+            .filter(
+                NotificationOutbox.status.in_(["pending", "sending"]),
+                NotificationOutbox.inbox_item_id.isnot(None),
+            )
+        )
         old_items = db.query(NotificationInboxItem).filter(
             NotificationInboxItem.is_read == True,
-            NotificationInboxItem.created_at < cutoff
+            NotificationInboxItem.created_at < cutoff,
+            ~NotificationInboxItem.id.in_(active_outbox_inbox_ids),
         ).all()
         for item in old_items:
-            db.query(NotificationOutbox).filter(NotificationOutbox.inbox_item_id == item.id).delete()
+            db.query(NotificationOutbox).filter(
+                NotificationOutbox.inbox_item_id == item.id,
+                NotificationOutbox.status.in_(["sent", "failed"]),
+            ).delete(synchronize_session=False)
             db.delete(item)
             deleted += 1
         count = db.query(NotificationInboxItem).count()
         if count > max_items:
             oldest = (
                 db.query(NotificationInboxItem)
-                .filter(NotificationInboxItem.is_read == True)
+                .filter(
+                    NotificationInboxItem.is_read == True,
+                    ~NotificationInboxItem.id.in_(active_outbox_inbox_ids),
+                )
                 .order_by(NotificationInboxItem.created_at)
                 .limit(count - max_items)
                 .all()
             )
             for item in oldest:
-                db.query(NotificationOutbox).filter(NotificationOutbox.inbox_item_id == item.id).delete()
+                db.query(NotificationOutbox).filter(
+                    NotificationOutbox.inbox_item_id == item.id,
+                    NotificationOutbox.status.in_(["sent", "failed"]),
+                ).delete(synchronize_session=False)
                 db.delete(item)
                 deleted += 1
+        terminal_outbox = db.query(NotificationOutbox).filter(
+            NotificationOutbox.status.in_(["sent", "failed"]),
+            NotificationOutbox.created_at < cutoff,
+        )
+        deleted += int(terminal_outbox.delete(synchronize_session=False) or 0)
+        safe_outbox_max = max(1, int(outbox_max_items if outbox_max_items is not None else max_items))
+        outbox_count = db.query(NotificationOutbox).filter(NotificationOutbox.status.in_(["sent", "failed"])).count()
+        if outbox_count > safe_outbox_max:
+            oldest_outbox_ids = [
+                row.id
+                for row in (
+                    db.query(NotificationOutbox.id)
+                    .filter(NotificationOutbox.status.in_(["sent", "failed"]))
+                    .order_by(NotificationOutbox.created_at)
+                    .limit(outbox_count - safe_outbox_max)
+                    .all()
+                )
+            ]
+            if oldest_outbox_ids:
+                deleted += int(
+                    db.query(NotificationOutbox)
+                    .filter(NotificationOutbox.id.in_(oldest_outbox_ids))
+                    .delete(synchronize_session=False)
+                    or 0
+                )
         db.commit()
         return deleted
     except Exception:

@@ -32,6 +32,7 @@ from .google_drive_oauth import (
     resolve_google_drive_oauth_client,
     resolve_google_drive_oauth_proxy_url,
 )
+from .resource_budget_service import get_resource_budget_service
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,9 @@ _SHARE_PREVIEW_ONLY_SOURCES = {"pikpak", "transferit"}
 _GOFILE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 _GOFILE_LANGUAGE = "en-US"
 _GOFILE_WEBSITE_TOKEN_SALT = "g4f8fd9f12h14g"
+_GOFILE_CDN_ERROR_CONTENT_TYPES = ("text/html", "application/json", "text/plain")
+GOOGLE_DRIVE_PROBE_BYTES = 1024
+GOOGLE_DRIVE_STREAM_CHUNK_BYTES = 1024 * 1024
 HTTP_DOWNLOAD_PLATFORM_LABELS = {
     "http": "HTTP",
     "gofile": "Gofile",
@@ -55,6 +59,7 @@ HTTP_DOWNLOAD_PLATFORM_LABELS = {
     "google_drive": "Google Drive",
     "pikpak": "PikPak",
 }
+HTTP_DOWNLOAD_PROXY_PLATFORMS = tuple(HTTP_DOWNLOAD_PLATFORM_LABELS.keys())
 
 
 def normalize_http_download_platform(value: Any) -> str:
@@ -413,7 +418,25 @@ class HttpDownloadService:
             "expired",
         ))
 
-    def _proxy_url(self) -> str:
+    def _proxy_platforms(self) -> set[str]:
+        raw_values = getattr(self._config(), "proxy_platforms", None)
+        if raw_values is None:
+            return set(HTTP_DOWNLOAD_PROXY_PLATFORMS)
+        if not isinstance(raw_values, list):
+            raw_values = [raw_values]
+        platforms = {
+            normalize_http_download_platform(value)
+            for value in raw_values
+            if str(value or "").strip()
+        }
+        return {platform for platform in platforms if platform in HTTP_DOWNLOAD_PLATFORM_LABELS}
+
+    def _proxy_enabled_for(self, platform: Any = "http") -> bool:
+        return normalize_http_download_platform(platform) in self._proxy_platforms()
+
+    def _proxy_url(self, platform: Any = "http") -> str:
+        if not self._proxy_enabled_for(platform):
+            return ""
         proxy = str(getattr(self._config(), "proxy_url", "") or "").strip()
         if not proxy:
             proxy = str(getattr(getattr(get_config(), "metadata", None), "http_proxy", "") or "").strip()
@@ -724,6 +747,24 @@ class HttpDownloadService:
             return "google_drive"
         return "http"
 
+    def _gofile_cdn_preview_failure_reason(self, item: Dict[str, Any], source_item: Dict[str, Any]) -> str:
+        if str(source_item.get("source") or "").strip().lower() != "gofile":
+            return ""
+        if not isinstance(item, dict) or not item.get("ok"):
+            reason = str((item or {}).get("reason") or (item or {}).get("failure_reason") or "").strip()
+            return f"Gofile CDN 预览校验失败，已阻止下载，避免保存源站错误页: {reason or '源站未返回可校验的文件响应'}"
+        content_type = str(item.get("content_type") or "").strip().lower()
+        if any(marker in content_type for marker in _GOFILE_CDN_ERROR_CONTENT_TYPES):
+            return f"Gofile CDN 返回 {content_type or '非文件响应'}，已阻止下载，避免把错误页保存为压缩包"
+        api_size = int(source_item.get("size_bytes") or 0)
+        probed_size = int(item.get("size_bytes") or 0)
+        if api_size > 0 and probed_size > 0 and probed_size < api_size:
+            return (
+                f"Gofile CDN 返回大小 {probed_size} bytes，小于 API 文件大小 {api_size} bytes，"
+                "已阻止下载，避免保存不完整的错误响应"
+            )
+        return ""
+
     def _preview_item_selection_key(self, item: Dict[str, Any]) -> str:
         """Build a public-safe stable key used by the UI to select preview rows."""
         if not isinstance(item, dict):
@@ -926,7 +967,7 @@ class HttpDownloadService:
         httpx_args: Dict[str, Any] = {
             "timeout": max(10, int(getattr(cfg, "timeout_seconds", 60) or 60)),
         }
-        proxy = self._proxy_url()
+        proxy = self._proxy_url("pikpak")
         if proxy:
             async_client_params = inspect.signature(httpx.AsyncClient).parameters
             httpx_args["proxy" if "proxy" in async_client_params else "proxies"] = proxy
@@ -1493,7 +1534,7 @@ class HttpDownloadService:
         cfg = self._config()
         timeout_seconds = max(30, int(getattr(cfg, "timeout_seconds", 60) or 60))
         api = MegaAPI(timeout=timeout_seconds)
-        proxy = self._proxy_url() or None
+        proxy = self._proxy_url("transferit") or None
         if proxy and hasattr(api, "_http"):
             try:
                 api._http.close()
@@ -1525,9 +1566,9 @@ class HttpDownloadService:
             with contextlib.suppress(Exception):
                 api.close()
 
-    async def _fetch_json_once(self, url: str, *, method: str = "GET", headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    async def _fetch_json_once(self, url: str, *, method: str = "GET", headers: Optional[Dict[str, str]] = None, platform: Any = "http") -> Dict[str, Any]:
         timeout = aiohttp.ClientTimeout(total=max(20, int(getattr(self._config(), "timeout_seconds", 60) or 60)), connect=10)
-        proxy = self._proxy_url() or None
+        proxy = self._proxy_url(platform) or None
         async with aiohttp.ClientSession(timeout=timeout) as session:
             request_method = str(method or "GET").upper()
             request = session.post if request_method == "POST" else session.get
@@ -1543,11 +1584,11 @@ class HttpDownloadService:
             raise HttpDownloadError("源站 API 返回结构异常")
         return data
 
-    async def _fetch_json(self, url: str, *, method: str = "GET", headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    async def _fetch_json(self, url: str, *, method: str = "GET", headers: Optional[Dict[str, str]] = None, platform: Any = "http") -> Dict[str, Any]:
         last_error: Optional[Exception] = None
         for attempt in range(3):
             try:
-                return await self._fetch_json_once(url, method=method, headers=headers)
+                return await self._fetch_json_once(url, method=method, headers=headers, platform=platform)
             except HttpDownloadError:
                 raise
             except Exception as exc:
@@ -1586,6 +1627,7 @@ class HttpDownloadService:
                 "https://api.gofile.io/accounts",
                 method="POST",
                 headers={"User-Agent": _GOFILE_USER_AGENT, "X-BL": _GOFILE_LANGUAGE},
+                platform="gofile",
             )
             if str(data.get("status") or "").lower() != "ok":
                 raise HttpDownloadError(f"Gofile 创建访客账号失败: {data.get('status') or 'unknown'}")
@@ -1636,6 +1678,7 @@ class HttpDownloadService:
                 "X-BL": _GOFILE_LANGUAGE,
                 "User-Agent": _GOFILE_USER_AGENT,
             },
+            platform="gofile",
         )
         if str(data.get("status") or "").lower() != "ok":
             raise HttpDownloadError(f"Gofile 解析失败: {data.get('status') or 'unknown'}")
@@ -1820,7 +1863,7 @@ class HttpDownloadService:
             if oauth_client.client_secret:
                 payload["client_secret"] = oauth_client.client_secret
             timeout = aiohttp.ClientTimeout(total=30, connect=10)
-            proxy = resolve_google_drive_oauth_proxy_url(get_config()) or None
+            proxy = resolve_google_drive_oauth_proxy_url(get_config()) if self._proxy_enabled_for("google_drive") else ""
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post("https://oauth2.googleapis.com/token", data=payload, proxy=proxy) as response:
                     body = await response.text()
@@ -1871,7 +1914,7 @@ class HttpDownloadService:
             token = await self._google_drive_access_token(force_refresh=attempt > 0)
             headers = self._google_drive_api_headers(token, resource_keys=resource_keys)
             timeout = aiohttp.ClientTimeout(total=max(20, int(getattr(self._config(), "timeout_seconds", 60) or 60)), connect=10)
-            proxy = self._proxy_url() or None
+            proxy = self._proxy_url("google_drive") or None
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url, headers=headers, allow_redirects=True, proxy=proxy) as response:
                     body = await response.text(errors="ignore")
@@ -1977,9 +2020,9 @@ class HttpDownloadService:
                 break
         return {"folder_id": folder_id, "files": self._google_drive_dedupe_files(files), "source": "google_drive_api"}
 
-    async def _fetch_text(self, url: str, *, headers: Optional[Dict[str, str]] = None) -> str:
+    async def _fetch_text(self, url: str, *, headers: Optional[Dict[str, str]] = None, platform: Any = "http") -> str:
         timeout = aiohttp.ClientTimeout(total=max(20, int(getattr(self._config(), "timeout_seconds", 60) or 60)), connect=10)
-        proxy = self._proxy_url() or None
+        proxy = self._proxy_url(platform) or None
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url, headers=headers or {}, allow_redirects=True, proxy=proxy) as response:
                 body = await response.text(errors="ignore")
@@ -1989,11 +2032,11 @@ class HttpDownloadService:
 
     async def _google_drive_probe_download(self, url: str) -> Dict[str, Any]:
         timeout = aiohttp.ClientTimeout(total=30, connect=10)
-        proxy = self._proxy_url() or None
-        headers = {"User-Agent": _GOFILE_USER_AGENT, "Range": "bytes=0-1023"}
+        proxy = self._proxy_url("google_drive") or None
+        headers = {"User-Agent": _GOFILE_USER_AGENT, "Range": f"bytes=0-{GOOGLE_DRIVE_PROBE_BYTES - 1}"}
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url, headers=headers, allow_redirects=True, proxy=proxy) as response:
-                chunk = await response.content.read(1024)
+                chunk = await response.content.read(GOOGLE_DRIVE_PROBE_BYTES)
                 response_headers = {k.lower(): v for k, v in response.headers.items()}
                 return {
                     "status": response.status,
@@ -2170,7 +2213,7 @@ class HttpDownloadService:
 
     async def _google_drive_resolve_confirm_url(self, url: str) -> Dict[str, Any]:
         timeout = aiohttp.ClientTimeout(total=30, connect=10)
-        proxy = self._proxy_url() or None
+        proxy = self._proxy_url("google_drive") or None
         headers = {"User-Agent": _GOFILE_USER_AGENT}
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url, headers=headers, allow_redirects=True, proxy=proxy) as response:
@@ -2271,6 +2314,7 @@ class HttpDownloadService:
                 "User-Agent": _GOFILE_USER_AGENT,
                 "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             },
+            platform="google_drive",
         )
         files = self._google_drive_files_from_embedded_html(html_text, raw_url)
         if not files:
@@ -2281,6 +2325,7 @@ class HttpDownloadService:
                     "User-Agent": _GOFILE_USER_AGENT,
                     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
                 },
+                platform="google_drive",
             )
             for payload in self._google_drive_extract_json_arrays(html_text):
                 for row in self._google_drive_find_folder_rows(payload):
@@ -2305,7 +2350,7 @@ class HttpDownloadService:
 
     async def _extract_html_download_links(self, raw_url: str, *, source: str) -> List[Dict[str, Any]]:
         timeout = aiohttp.ClientTimeout(total=30, connect=10)
-        proxy = self._proxy_url() or None
+        proxy = self._proxy_url(source) or None
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(raw_url, allow_redirects=True, proxy=proxy) as response:
                 body = await response.text(errors="ignore")
@@ -3944,12 +3989,29 @@ class HttpDownloadService:
                     conflict_policy=conflict_policy,
                     headers=dict(source_item.get("headers") or {}) if isinstance(source_item, dict) else None,
                 )
+            if isinstance(source_item, dict) and source_item.get("source") == "gofile":
+                gofile_failure_reason = self._gofile_cdn_preview_failure_reason(item, source_item)
+                if gofile_failure_reason:
+                    item = {
+                        "ok": False,
+                        "url": str(source_item.get("url") or raw_url),
+                        "masked_url": source_item.get("masked_url") or self._mask_url(str(source_item.get("url") or raw_url)),
+                        "reason": gofile_failure_reason,
+                        "source": "gofile",
+                        "share_url": source_item.get("share_url"),
+                        "filename": source_item.get("filename") or source_item.get("name"),
+                        "size_bytes": int(source_item.get("size_bytes") or 0),
+                        "content_id": source_item.get("content_id"),
+                    }
             if (
                 isinstance(source_item, dict)
                 and not item.get("ok")
                 and source_item.get("source") in {"gofile", "google_drive"}
                 and source_item.get("filename")
             ):
+                if source_item.get("source") == "gofile":
+                    items.append(item)
+                    continue
                 try:
                     subdir = "/".join([part for part in (target_subdir, source_item.get("relative_dir")) if str(part or "").strip()])
                     source_name = str(source_item.get("source") or "http")
@@ -4109,7 +4171,7 @@ class HttpDownloadService:
             size = 0
             content_type = ""
             timeout = aiohttp.ClientTimeout(total=20, connect=8)
-            proxy = self._proxy_url() or None
+            proxy = self._proxy_url(self._direct_link_preview_provider(url)) or None
             request_headers = dict(headers or {})
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 try:
@@ -4264,7 +4326,7 @@ class HttpDownloadService:
         }
         if source == "pikpak":
             options["user-agent"] = _GOFILE_USER_AGENT
-        proxy = self._proxy_url()
+        proxy = self._proxy_url(source or "http")
         if proxy:
             options["all-proxy"] = proxy
         headers = [
@@ -4277,6 +4339,10 @@ class HttpDownloadService:
         return options
 
     async def _download_google_drive_item(self, item: Dict[str, Any], task=None, progress_callback=None) -> Dict[str, Any]:
+        async with get_resource_budget_service().acquire("network_download", reason="http.google_drive"):
+            return await self._download_google_drive_item_inner(item, task=task, progress_callback=progress_callback)
+
+    async def _download_google_drive_item_inner(self, item: Dict[str, Any], task=None, progress_callback=None) -> Dict[str, Any]:
         raw_url = str(item.get("original_url") or item.get("url") or "").strip()
         if not raw_url:
             raise HttpDownloadError("Google Drive 下载缺少直链")
@@ -4326,7 +4392,7 @@ class HttpDownloadService:
         retry_count = max(1, int(getattr(cfg, "retry_count", 5) or 5))
         retry_wait = max(0, int(getattr(cfg, "retry_wait_seconds", 5) or 5))
         timeout = aiohttp.ClientTimeout(total=None, connect=connect_timeout, sock_read=read_timeout)
-        proxy = self._proxy_url() or None
+        proxy = self._proxy_url("google_drive") or None
         google_drive_api = bool(item.get("google_drive_api"))
         file_id = str(item.get("file_id") or "").strip()
         resource_key = str(item.get("resource_key") or "").strip()
@@ -4373,9 +4439,25 @@ class HttpDownloadService:
                 progress_cap = 100 if str(row.get("status") or "") == "completed" else 99
                 row["progress"] = min(progress_cap, int(current_downloaded / int(row["total"]) * 100))
             if progress_callback:
-                result = progress_callback(dict(row))
+                public_row = {key: value for key, value in row.items() if not str(key).startswith("_")}
+                result = progress_callback(public_row)
                 if inspect.isawaitable(result):
                     await result
+
+        def should_flush_download_file(force: bool = False) -> bool:
+            if force:
+                return True
+            now = time.monotonic()
+            last_flush_at = float(row.get("_last_flush_at") or 0)
+            last_flush_downloaded = int(row.get("_last_flush_downloaded") or 0)
+            current_downloaded = int(downloaded or 0)
+            if now - last_flush_at >= 1.0:
+                return True
+            return current_downloaded - last_flush_downloaded >= 8 * 1024 * 1024
+
+        def mark_download_file_flushed() -> None:
+            row["_last_flush_at"] = time.monotonic()
+            row["_last_flush_downloaded"] = int(downloaded or 0)
 
         last_error: Optional[BaseException] = None
         for attempt_index in range(retry_count):
@@ -4436,7 +4518,7 @@ class HttpDownloadService:
                             row["size"] = total
                         with open(final_path, mode + ("" if "b" in mode else "b")) as target:
                             downloaded = target.tell()
-                            async for chunk in response.content.iter_chunked(1024 * 1024):
+                            async for chunk in response.content.iter_chunked(GOOGLE_DRIVE_STREAM_CHUNK_BYTES):
                                 if not chunk:
                                     continue
                                 if task:
@@ -4444,10 +4526,13 @@ class HttpDownloadService:
                                     if task.is_cancelled():
                                         raise asyncio.CancelledError()
                                 target.write(chunk)
-                                target.flush()
                                 downloaded = target.tell()
+                                if should_flush_download_file():
+                                    target.flush()
+                                    mark_download_file_flushed()
                                 await emit_progress()
                             target.flush()
+                            mark_download_file_flushed()
             except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError) as exc:
                 last_error = exc
                 downloaded = current_file_size()
@@ -4486,10 +4571,16 @@ class HttpDownloadService:
             "size": max(int(row.get("size") or 0), final_size),
             "speed_bytes_per_sec": 0,
         })
+        row.pop("_last_flush_at", None)
+        row.pop("_last_flush_downloaded", None)
         await emit_progress(force=True)
         return row
 
     async def _download_transferit_item(self, item: Dict[str, Any], task=None, progress_callback=None) -> Dict[str, Any]:
+        async with get_resource_budget_service().acquire("network_download", reason="http.transferit"):
+            return await self._download_transferit_item_inner(item, task=task, progress_callback=progress_callback)
+
+    async def _download_transferit_item_inner(self, item: Dict[str, Any], task=None, progress_callback=None) -> Dict[str, Any]:
         raw_url = str(item.get("original_url") or item.get("url") or "").strip()
         if not raw_url:
             raise HttpDownloadError("Transfer.it 下载缺少分享链接")
@@ -4522,7 +4613,7 @@ class HttpDownloadService:
         retry_count = max(1, int(getattr(cfg, "retry_count", 5) or 5))
         retry_wait = max(0, int(getattr(cfg, "retry_wait_seconds", 5) or 5))
         stall_timeout = max(read_timeout * 2, 120)
-        proxy = self._proxy_url() or None
+        proxy = self._proxy_url("transferit") or None
 
         progress_queue: asyncio.Queue = asyncio.Queue()
         abort_event = threading.Event()
@@ -4899,6 +4990,7 @@ class HttpDownloadService:
                 "downloaded": 0,
                 "total": int(item.get("size_bytes") or 0),
                 "size": int(item.get("size_bytes") or 0),
+                "expected_size_bytes": int(item.get("size_bytes") or 0),
                 "file_id": item.get("file_id", ""),
                 "download_file_id": item.get("download_file_id", ""),
                 "pikpak_cleanup_file_id": item.get("pikpak_cleanup_file_id", ""),
@@ -5372,8 +5464,28 @@ class HttpDownloadService:
             row["speed_bytes_per_sec"] = row_speed
             row["progress"] = 100 if aria_status == "complete" else (int(done / total * 100) if total else 0)
             if aria_status == "complete":
-                row["status"] = "completed"
-                completed += 1
+                expected_size = int(row.get("expected_size_bytes") or 0)
+                if (
+                    str(row.get("source") or "").strip().lower() == "gofile"
+                    and expected_size > 0
+                    and done < expected_size
+                ):
+                    row["status"] = "failed"
+                    row["failure_reason"] = (
+                        f"Gofile 下载结果大小异常: 实际 {done} bytes，小于 API 文件大小 {expected_size} bytes，"
+                        "可能下载到了源站错误页"
+                    )
+                    row["total"] = expected_size
+                    row["size"] = expected_size
+                    row["progress"] = min(99, int(done / expected_size * 100)) if expected_size else 0
+                    failed_count += 1
+                    local_path = str(row.get("local_path") or "").strip()
+                    if local_path and done <= max(64 * 1024, int(expected_size * 0.01)):
+                        with contextlib.suppress(OSError):
+                            os.remove(local_path)
+                else:
+                    row["status"] = "completed"
+                    completed += 1
             elif aria_status in {"error", "removed"}:
                 row["status"] = "failed"
                 row["failure_reason"] = status.get("errorMessage") or aria_status

@@ -26,6 +26,7 @@ from ...models.database import (
     LibraryIndexStatus,
     SessionLocal,
 )
+from ..resource_budget_service import get_resource_budget_service
 from .types import (
     IndexEntry,
     IndexStatus,
@@ -135,15 +136,16 @@ class SnapshotStore:
 
     @contextmanager
     def _session(self) -> Iterator[Session]:
-        db = self._session_factory()
-        try:
-            yield db
-            db.commit()
-        except Exception:
-            db.rollback()
-            raise
-        finally:
-            db.close()
+        with get_resource_budget_service().acquire_sync("sqlite_write", reason="library_index.write"):
+            db = self._session_factory()
+            try:
+                yield db
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                db.close()
 
     # ========== Entry 写入 ==========
 
