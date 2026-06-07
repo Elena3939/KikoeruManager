@@ -751,7 +751,7 @@ function buildRetargetSourceRJCode(task) {
 }
 
 function ensureSelectedWorkbenchTask(tasks = []) {
-  const preferredId = String(props.taskId || selectedTaskId.value || '')
+  const preferredId = String(selectedTaskId.value || props.taskId || '')
   const matched = (preferredId && tasks.find(task => task.id === preferredId)) || tasks[0] || null
   if (!matched) {
     selectedTaskId.value = ''
