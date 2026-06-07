@@ -1799,6 +1799,9 @@ class TaskCenterListResponse(BaseModel):
     limit: int
     mode: str
     generated_at: str
+    counts_by_domain: Dict[str, int] = Field(default_factory=dict)
+    counts_by_status: Dict[str, int] = Field(default_factory=dict)
+    highlight_counts: Dict[str, int] = Field(default_factory=dict)
 
 
 class TaskCenterItemResponse(BaseModel):
@@ -5103,6 +5106,7 @@ async def resolve_conflict(conflict_id: str, action: dict):
             db.commit()
             raise
 
+        archive_record = None
         if conflict.new_path:
             archive_record = db.query(ProcessedArchive).filter(
                 ProcessedArchive.filename == os.path.basename(str(conflict.new_path))
@@ -5112,6 +5116,8 @@ async def resolve_conflict(conflict_id: str, action: dict):
                 archive_record.processed_at = datetime.now()
 
         db.commit()
+        if archive_record:
+            _broadcast_processed_archive_changed_safe(archive_record)
         # MERGE / SKIP 完成后同步把原 waiting 那条 task_finished 行回写成
         # "已合并" / "已跳过"，否则操作记录的关联事件依然停留在"等待处理"。
         # 同步函数 + 内部 commit，下沉到线程池避免阻塞事件循环。
@@ -5310,6 +5316,7 @@ async def resolve_conflict(conflict_id: str, action: dict):
                         archive_record.status = 'completed'
                         archive_record.processed_at = datetime.now()
                         db.commit()
+                        _broadcast_processed_archive_changed_safe(archive_record)
                         logger.info(f"冲突解决后更新 ProcessedArchive 状态为 completed: {filename}")
             else:
                 # 如果是已解压的文件夹，直接移动
@@ -5337,6 +5344,7 @@ async def resolve_conflict(conflict_id: str, action: dict):
                     archive_record.status = 'completed'
                     archive_record.processed_at = datetime.now()
                     db.commit()
+                    _broadcast_processed_archive_changed_safe(archive_record)
                     logger.info(f"冲突解决后更新 ProcessedArchive 状态为 completed (KEEP_OLD): {filename}")
             
             conflict.status = "KEEP_OLD"
@@ -5403,6 +5411,7 @@ async def resolve_conflict(conflict_id: str, action: dict):
                         archive_record.status = 'completed'
                         archive_record.processed_at = datetime.now()
                         db.commit()
+                        _broadcast_processed_archive_changed_safe(archive_record)
                         logger.info(f"冲突解决后更新 ProcessedArchive 状态为 completed: {filename}")
             
             conflict.status = "MERGE"
@@ -5442,6 +5451,7 @@ async def resolve_conflict(conflict_id: str, action: dict):
                     archive_record.status = 'completed'
                     archive_record.processed_at = datetime.now()
                     db.commit()
+                    _broadcast_processed_archive_changed_safe(archive_record)
                     logger.info(f"冲突解决后更新 ProcessedArchive 状态为 completed (SKIP): {filename}")
             
             conflict.status = "SKIP"
@@ -6915,6 +6925,66 @@ async def compute_folder_size(request: Request):
         raise HTTPException(status_code=500, detail=f"计算文件夹大小失败: {str(e)}")
 
 
+@app.post("/api/library/browser/compute-folder-sizes")
+async def compute_folder_sizes(request: Request):
+    """批量计算并缓存文件夹大小，减少库存页右键批量操作的 HTTP 往返。"""
+    try:
+        data = await request.json()
+        paths = data.get("paths") or []
+        if not isinstance(paths, list) or not paths:
+            raise HTTPException(status_code=400, detail="缺少文件夹路径列表")
+
+        normalized_paths = []
+        for raw_path in paths:
+            folder_path = str(raw_path or "").strip()
+            if not folder_path:
+                continue
+            normalized_paths.append(folder_path)
+
+        if not normalized_paths:
+            raise HTTPException(status_code=400, detail="缺少有效文件夹路径")
+
+        manager = get_library_manager()
+
+        def _compute_one(folder_path: str) -> dict:
+            if not os.path.isdir(folder_path):
+                return {
+                    "path": folder_path,
+                    "success": False,
+                    "error": "文件夹不存在",
+                }
+            try:
+                return {
+                    "path": folder_path,
+                    "success": True,
+                    "size": manager._cached_path_size(folder_path),
+                }
+            except Exception as exc:
+                return {
+                    "path": folder_path,
+                    "success": False,
+                    "error": str(exc),
+                }
+
+        def _compute_batch() -> list[dict]:
+            return [_compute_one(path) for path in normalized_paths]
+
+        results = await asyncio.to_thread(_compute_batch)
+        success_count = sum(1 for item in results if item.get("success"))
+        failed_count = len(results) - success_count
+        return {
+            "message": "批量计算文件夹大小完成",
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "results": results,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"批量计算文件夹大小失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"批量计算文件夹大小失败: {str(e)}")
+
+
 @app.get("/api/library/browser/stats/logs")
 async def get_library_browser_stats_logs(library_id: Optional[str] = None, lines: int = 200):
     try:
@@ -7602,6 +7672,12 @@ class LibraryAutoCircleGroupRequest(BaseModel):
     preview: bool = False
 
 
+class LibraryBatchAutoCircleGroupRequest(BaseModel):
+    """批量按社团把 RJ 文件夹移动到《库根》/《社团名》/ 下。"""
+    library_id: str
+    row_paths: List[str]
+
+
 def _parse_circle_name_from_folder(folder_name: str) -> str:
     """从文件夹名解析社团名。
     
@@ -7627,21 +7703,12 @@ def _parse_circle_name_from_folder(folder_name: str) -> str:
     return ""
 
 
-@app.post("/api/library/auto-circle-group")
-async def auto_circle_group_by_rj(request: LibraryAutoCircleGroupRequest):
-    """自动按社团把 RJ 文件夹移动到 库根/社团名/ 下。
-
-    社团名从文件夹名直接解析（默认模板 [社团][RJxxx]xxx）。
-    解析失败则返回 need_api_rename=True，由前端串联先调 API 重命名后再次发起。
-    """
+def _resolve_local_auto_circle_group_context(library_id: str):
     from ..core.library_manager import get_library_manager
 
-    library_id = str(request.library_id or "").strip()
-    row_path = str(request.row_path or "").strip()
+    library_id = str(library_id or "").strip()
     if not library_id:
         raise HTTPException(status_code=400, detail="缺少 library_id")
-    if not row_path:
-        raise HTTPException(status_code=400, detail="缺少 row_path")
 
     manager = get_library_manager()
     try:
@@ -7650,6 +7717,20 @@ async def auto_circle_group_by_rj(request: LibraryAutoCircleGroupRequest):
         raise HTTPException(status_code=404, detail=f"库存不存在: {exc}")
     if library.type != "local":
         raise HTTPException(status_code=400, detail="按社团分类仅支持本地库")
+    return manager, library
+
+
+async def _auto_circle_group_by_path(
+    manager,
+    library,
+    library_id: str,
+    row_path: str,
+    *,
+    preview: bool = False,
+) -> Dict[str, Any]:
+    row_path = str(row_path or "").strip()
+    if not row_path:
+        raise HTTPException(status_code=400, detail="缺少 row_path")
 
     abs_row_path = os.path.abspath(row_path)
     if not os.path.isdir(abs_row_path):
@@ -7699,7 +7780,7 @@ async def auto_circle_group_by_rj(request: LibraryAutoCircleGroupRequest):
             "message": f"已经在《{safe_circle_name}》目录下，无需移动",
         }
 
-    if request.preview:
+    if preview:
         return {
             "success": True,
             "preview": True,
@@ -7744,6 +7825,90 @@ async def auto_circle_group_by_rj(request: LibraryAutoCircleGroupRequest):
         "final_path": final_path or os.path.join(target_circle_dir, os.path.basename(abs_row_path)),
         "message": f"已移动到《{safe_circle_name}》",
         "result": result,
+    }
+
+
+@app.post("/api/library/auto-circle-group")
+async def auto_circle_group_by_rj(request: LibraryAutoCircleGroupRequest):
+    """自动按社团把 RJ 文件夹移动到 库根/社团名/ 下。
+
+    社团名从文件夹名直接解析（默认模板 [社团][RJxxx]xxx）。
+    解析失败则返回 need_api_rename=True，由前端串联先调 API 重命名后再次发起。
+    """
+    library_id = str(request.library_id or "").strip()
+    manager, library = _resolve_local_auto_circle_group_context(library_id)
+    return await _auto_circle_group_by_path(
+        manager,
+        library,
+        library_id,
+        request.row_path,
+        preview=bool(request.preview),
+    )
+
+
+@app.post("/api/library/batch-auto-circle-group")
+async def batch_auto_circle_group_by_rj(request: LibraryBatchAutoCircleGroupRequest):
+    """批量自动按社团分类。
+
+    这里不自动串联 API 重命名；识别不到社团前缀的项会返回 need_api_rename，
+    前端继续复用原来的单项重命名兜底链路，保证行为不缩水。
+    """
+    library_id = str(request.library_id or "").strip()
+    row_paths = [str(path or "").strip() for path in (request.row_paths or []) if str(path or "").strip()]
+    if not row_paths:
+        raise HTTPException(status_code=400, detail="缺少 row_paths")
+
+    manager, library = _resolve_local_auto_circle_group_context(library_id)
+
+    results = []
+    success_count = 0
+    skipped_count = 0
+    need_api_rename_count = 0
+    failed_count = 0
+
+    for row_path in row_paths:
+        try:
+            data = await _auto_circle_group_by_path(
+                manager,
+                library,
+                library_id,
+                row_path,
+                preview=False,
+            )
+            data["path"] = row_path
+            if data.get("success"):
+                if data.get("skipped"):
+                    skipped_count += 1
+                else:
+                    success_count += 1
+            elif data.get("need_api_rename"):
+                need_api_rename_count += 1
+            else:
+                failed_count += 1
+            results.append(data)
+        except HTTPException as exc:
+            failed_count += 1
+            results.append({
+                "path": row_path,
+                "success": False,
+                "error": str(exc.detail or exc),
+            })
+        except Exception as exc:
+            failed_count += 1
+            logger.error("[batch-auto-circle-group] %s 分类失败: %s", row_path, exc, exc_info=True)
+            results.append({
+                "path": row_path,
+                "success": False,
+                "error": str(exc),
+            })
+
+    return {
+        "message": "批量按社团分类完成",
+        "success_count": success_count,
+        "skipped_count": skipped_count,
+        "need_api_rename_count": need_api_rename_count,
+        "failed_count": failed_count,
+        "results": results,
     }
 
 
@@ -9406,8 +9571,21 @@ async def scan_existing_folders(check_duplicates: bool = True, force_refresh: bo
                         "message": f"开始查重检查，共 {len(folders)} 个文件夹"
                     })
 
-                    from ..models.database import get_db
+                    from ..core.duplicate_service import get_duplicate_service
+                    from ..models.database import ExistingFolderCache, get_db
                     db = next(get_db())
+                    duplicate_service = get_duplicate_service()
+                    cache_by_path = {}
+                    if not force_refresh:
+                        try:
+                            paths = [item["path"] for item in folders if item.get("path") and item.get("rjcode")]
+                            if paths:
+                                cache_rows = db.query(ExistingFolderCache).filter(
+                                    ExistingFolderCache.folder_path.in_(paths)
+                                ).all()
+                                cache_by_path = {row.folder_path: row for row in cache_rows}
+                        except Exception as e:
+                            logger.warning(f"批量查询已有文件夹缓存失败: {e}")
 
                     for index, folder_info in enumerate(folders):
                         item_path = folder_info["path"]
@@ -9425,15 +9603,7 @@ async def scan_existing_folders(check_duplicates: bool = True, force_refresh: bo
                             continue
 
                         # 检查缓存
-                        cache = None
-                        if not force_refresh:
-                            try:
-                                from ..models.database import ExistingFolderCache
-                                cache = db.query(ExistingFolderCache).filter(
-                                    ExistingFolderCache.folder_path == item_path
-                                ).first()
-                            except Exception as e:
-                                logger.warning(f"查询缓存失败: {e}")
+                        cache = None if force_refresh else cache_by_path.get(item_path)
 
                         # 如果有缓存且不需要刷新，直接使用缓存
                         if cache and not force_refresh and not cache.needs_refresh:
@@ -9454,9 +9624,6 @@ async def scan_existing_folders(check_duplicates: bool = True, force_refresh: bo
 
                         # 没有缓存，执行API查询
                         try:
-                            from ..core.duplicate_service import get_duplicate_service
-                            duplicate_service = get_duplicate_service()
-
                             # 添加延时避免429
                             if index > 0 and index % 5 == 0:
                                 await asyncio.sleep(1)
@@ -9642,6 +9809,7 @@ async def check_existing_folders_duplicates(request: Request):
         "cue_languages": ["CHI_HANS", "CHI_HANT", "ENG"]
     }
     """
+    db = None
     try:
         data = await request.json()
         folder_paths = data.get("folders", [])
@@ -9655,11 +9823,61 @@ async def check_existing_folders_duplicates(request: Request):
         duplicate_service = get_duplicate_service()
         config = get_config()
         existing_folders_path = config.storage.existing_folders_path
-        candidates = scan_existing_folder_candidates(existing_folders_path)
+        candidates = None
+        try:
+            from ..models.database import ExistingFolderCache, get_db
+            db = next(get_db())
+        except Exception as e:
+            logger.warning(f"打开已有文件夹缓存数据库失败，查重结果仅返回前端: {e}")
         
+        resolved_items = []
         results = []
         for requested_path in folder_paths:
-            resolved = _resolve_existing_folder_candidate_path(requested_path, existing_folders_path, candidates)
+            normalized_requested_path = os.path.abspath(os.path.normpath(str(requested_path or "")))
+            folder_name = os.path.basename(normalized_requested_path.rstrip("\\/")) or normalized_requested_path
+            rjcode = extract_rjcode(folder_name)
+            if (
+                rjcode
+                and _is_path_under_base(normalized_requested_path, existing_folders_path)
+                and os.path.isdir(normalized_requested_path)
+            ):
+                relative_path, source_root, source_root_name, is_nested = _existing_folder_source_root(normalized_requested_path, existing_folders_path)
+                resolved = {
+                    "ok": True,
+                    "path": normalized_requested_path,
+                    "folder_name": folder_name,
+                    "rjcode": rjcode,
+                    "resolved_from": normalized_requested_path,
+                    "source_root": source_root,
+                    "source_root_name": source_root_name,
+                    "relative_path": relative_path,
+                    "is_nested": is_nested,
+                    "scan_depth": len([part for part in relative_path.split("/") if part and part != "."]),
+                    "rjcode_source": "folder_name",
+                }
+            else:
+                if candidates is None:
+                    candidates = scan_existing_folder_candidates(existing_folders_path)
+                resolved = _resolve_existing_folder_candidate_path(requested_path, existing_folders_path, candidates)
+            resolved_items.append((requested_path, resolved))
+
+        cache_by_path = {}
+        if db is not None:
+            try:
+                resolved_paths = [
+                    item[1].get("path")
+                    for item in resolved_items
+                    if item[1].get("ok") and item[1].get("path")
+                ]
+                if resolved_paths:
+                    cache_rows = db.query(ExistingFolderCache).filter(
+                        ExistingFolderCache.folder_path.in_(resolved_paths)
+                    ).all()
+                    cache_by_path = {row.folder_path: row for row in cache_rows}
+            except Exception as cache_error:
+                logger.warning(f"批量读取已有文件夹查重缓存失败: {cache_error}")
+
+        for requested_path, resolved in resolved_items:
             folder_path = resolved.get("path") or requested_path
             folder_name = resolved.get("folder_name") or os.path.basename(str(folder_path).rstrip("\\/"))
             rjcode = resolved.get("rjcode")
@@ -9699,6 +9917,45 @@ async def check_existing_folders_duplicates(request: Request):
                     # 获取推荐的解决选项
                     resolution_options = await duplicate_service.get_conflict_resolution_options(check_result)
                     result["resolution_options"] = _normalize_existing_folder_resolution_options(resolution_options)
+
+                if db is not None:
+                    try:
+                        file_count, folder_size = await asyncio.to_thread(_collect_existing_folder_stats, folder_path)
+                        duplicate_info = None
+                        if check_result.is_duplicate:
+                            duplicate_info = {
+                                "is_duplicate": True,
+                                "conflict_type": check_result.conflict_type,
+                                "direct_duplicate": check_result.direct_duplicate,
+                                "linked_works_found": check_result.linked_works_found,
+                                "related_rjcodes": check_result.related_rjcodes,
+                                "analysis_info": check_result.analysis_info,
+                                "resolution_options": result.get("resolution_options"),
+                            }
+                        cache = cache_by_path.get(folder_path)
+                        if cache:
+                            cache.folder_name = folder_name
+                            cache.rjcode = rjcode
+                            cache.duplicate_info = duplicate_info
+                            cache.file_count = file_count
+                            cache.folder_size = folder_size
+                            cache.updated_at = datetime.now()
+                            cache.needs_refresh = False
+                        else:
+                            cache = ExistingFolderCache(
+                                folder_path=folder_path,
+                                folder_name=folder_name,
+                                rjcode=rjcode,
+                                duplicate_info=duplicate_info,
+                                file_count=file_count,
+                                folder_size=folder_size,
+                            )
+                            db.add(cache)
+                            cache_by_path[folder_path] = cache
+                        db.commit()
+                    except Exception as cache_error:
+                        logger.warning(f"保存已有文件夹查重缓存失败: {folder_path}, error={cache_error}")
+                        db.rollback()
                 
                 results.append(result)
                 
@@ -9726,6 +9983,9 @@ async def check_existing_folders_duplicates(request: Request):
     except Exception as e:
         logger.error(f"批量查重检查失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"检查失败: {str(e)}")
+    finally:
+        if db is not None:
+            db.close()
 
 @app.post("/api/existing-folders/process")
 async def process_existing_folders(request: Request):
@@ -9769,11 +10029,37 @@ async def process_existing_folders(request: Request):
         engine = get_task_engine()
         created_tasks = []
         batch_id = str(uuid.uuid4())
+        cache_by_path = {}
+        try:
+            from ..models.database import ExistingFolderCache, get_db
+            db = next(get_db())
+            try:
+                cache_rows = db.query(ExistingFolderCache).filter(
+                    ExistingFolderCache.folder_path.in_([item["path"] for item in valid_folders])
+                ).all()
+                cache_by_path = {row.folder_path: row for row in cache_rows}
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"读取已有文件夹查重缓存失败，将保留任务内预检: {e}")
 
         for folder_info in valid_folders:
             folder_path = folder_info["path"]
             folder_name = folder_info["folder_name"]
             inferred_rjcode = folder_info.get("rjcode")
+            cache = cache_by_path.get(folder_path)
+            cached_duplicate_info = getattr(cache, "duplicate_info", None) if cache else None
+            skip_duplicate_precheck = (
+                bool(cache)
+                and not bool(getattr(cache, "needs_refresh", False))
+                and (
+                    cached_duplicate_info is None
+                    or (
+                        isinstance(cached_duplicate_info, dict)
+                        and cached_duplicate_info.get("is_duplicate") is False
+                    )
+                )
+            )
             task = Task(
                 task_type=TaskType.PROCESS_EXISTING_FOLDER,
                 source_path=folder_path,
@@ -9800,6 +10086,8 @@ async def process_existing_folders(request: Request):
                     "inferred_rjcode": inferred_rjcode,
                     "rjcode": inferred_rjcode,
                     "auto_classify": bool(auto_classify),
+                    "skip_duplicate_precheck": bool(skip_duplicate_precheck),
+                    "duplicate_precheck_source": "existing_folder_cache" if skip_duplicate_precheck else "",
                 }
             )
             await engine.submit(task)
@@ -12070,6 +12358,17 @@ class BaiduNetdiskCancelRequest(BaseModel):
     task_id: str = ""
 
 
+class BaiduNetdiskUploadStartRequest(BaseModel):
+    source_paths: List[str] = []
+    remote_dir: str = "/KikoeruManager"
+    create_remote_subdir: str = ""
+    compress_enabled: bool = False
+    backup_zip_options: Dict[str, Any] = Field(default_factory=dict)
+    conflict_policy: str = "skip"
+    cleanup_local_archive: bool = False
+    batch_name: str = ""
+
+
 class BaiduNetdiskAccountTestRequest(BaseModel):
     cookie: str = ""
     persist: bool = False
@@ -12278,6 +12577,14 @@ def _baidu_netdisk_urls_from_payload(urls: List[str]) -> list[str]:
                 continue
             result.append(normalized)
     return result
+
+
+def _broadcast_processed_archive_changed_safe(archive) -> None:
+    try:
+        from ..core.task_center_event_service import broadcast_processed_archive_changed
+        broadcast_processed_archive_changed(archive)
+    except Exception:
+        logger.debug("广播归档更新事件失败", exc_info=True)
 
 
 def _is_baidu_netdisk_share_url(value: str) -> bool:
@@ -13027,6 +13334,93 @@ async def baidu_netdisk_start(request: BaiduNetdiskStartRequest):
     }
 
 
+@app.post("/api/baidu-netdisk/upload/start")
+async def baidu_netdisk_upload_start(request: BaiduNetdiskUploadStartRequest):
+    from ..core.backup_zip_service import get_backup_zip_service
+    from ..core.baidu_netdisk_service import get_baidu_netdisk_service
+    from ..core.task_engine import Task, TaskType, get_task_engine
+
+    source_paths = [os.path.abspath(str(path)) for path in request.source_paths if str(path or "").strip()]
+    if not source_paths and request.compress_enabled:
+        backup_options = dict(request.backup_zip_options or {})
+        fallback_source = str(backup_options.get("source_path") or get_config().backup_zip.source_path or get_config().storage.library_path or "").strip()
+        if fallback_source:
+            source_paths = [os.path.abspath(fallback_source)]
+    source_paths = list(dict.fromkeys(source_paths))
+    if not source_paths:
+        raise HTTPException(status_code=400, detail="没有选中要上传的本地文件或目录")
+    for path in source_paths:
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail=f"本地路径不存在: {path}")
+
+    service = get_baidu_netdisk_service()
+    remote_dir = service._join_remote_dir(request.remote_dir or "/KikoeruManager", request.create_remote_subdir or "")
+    conflict_policy = service._upload_conflict_policy(request.conflict_policy)
+    upload_sources = source_paths
+    cleanup_allowed_paths: list[str] = []
+    archive_path = ""
+
+    try:
+        if request.compress_enabled:
+            archive_path = await get_backup_zip_service().create_archive_for_paths(
+                source_paths,
+                options=dict(request.backup_zip_options or {}),
+                output_name=request.batch_name or "",
+            )
+            upload_sources = [archive_path]
+            cleanup_allowed_paths = [archive_path]
+
+        batch_name = (
+            str(request.batch_name or "").strip()
+            or (os.path.basename(upload_sources[0].rstrip("\\/")) if len(upload_sources) == 1 else f"百度网盘上传 {len(upload_sources)} 项")
+        )
+        task = Task(
+            task_type=TaskType.BAIDU_NETDISK_UPLOAD,
+            source_path=upload_sources[0],
+            output_path=remote_dir,
+            metadata={
+                "source_paths": upload_sources,
+                "original_source_paths": source_paths,
+                "remote_dir": remote_dir,
+                "create_remote_subdir": "",
+                "conflict_policy": conflict_policy,
+                "cleanup_local_archive": bool(request.cleanup_local_archive and archive_path),
+                "cleanup_allowed_paths": cleanup_allowed_paths,
+                "compressed_before_upload": bool(request.compress_enabled),
+                "local_archive_path": archive_path,
+                "batch_name": batch_name,
+                "source_count": len(source_paths),
+                "source_page": "library",
+                "source_action": "manual_baidu_netdisk_upload",
+                "source_label": batch_name,
+                "task_domain": "baidu_netdisk",
+                "task_kind": TaskType.BAIDU_NETDISK_UPLOAD.value,
+                "platforms": ["baidu_netdisk"],
+                "platform_label": "百度网盘",
+                "business_key": f"baidu_netdisk_upload:{uuid.uuid4().hex}",
+                "upload_files": [],
+                "uploaded_files": [],
+                "failed_files": [],
+                "upload_runtime": {},
+                "progress_log": [],
+            },
+        )
+        task_id = await get_task_engine().submit(task)
+        return {
+            "success": True,
+            "message": f"已创建百度网盘上传任务：{batch_name}",
+            "task": {"task_id": task_id, "id": task_id, "platform": "baidu_netdisk", "platform_label": "百度网盘"},
+            "tasks": [{"task_id": task_id, "id": task_id, "platform": "baidu_netdisk", "platform_label": "百度网盘"}],
+            "remote_dir": remote_dir,
+            "local_archive_path": archive_path,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("创建百度网盘上传任务失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"创建百度网盘上传任务失败: {str(exc)}")
+
+
 @app.post("/api/baidu-netdisk/cancel")
 async def baidu_netdisk_cancel(request: BaiduNetdiskCancelRequest):
     from ..core.baidu_netdisk_service import get_baidu_netdisk_service
@@ -13037,8 +13431,8 @@ async def baidu_netdisk_cancel(request: BaiduNetdiskCancelRequest):
         raise HTTPException(status_code=400, detail="task_id 不能为空")
     engine = get_task_engine()
     task = engine.get_task(task_id)
-    if not task or task.type != TaskType.BAIDU_NETDISK_DOWNLOAD:
-        raise HTTPException(status_code=404, detail="百度网盘下载任务不存在")
+    if not task or task.type not in {TaskType.BAIDU_NETDISK_DOWNLOAD, TaskType.BAIDU_NETDISK_UPLOAD}:
+        raise HTTPException(status_code=404, detail="百度网盘任务不存在")
     engine.cancel_task(task_id)
     await get_baidu_netdisk_service().cancel_task(task_id)
     return {"success": True, "message": "任务已取消"}
@@ -13051,8 +13445,8 @@ async def baidu_netdisk_pause_task(task_id: str):
 
     engine = get_task_engine()
     task = engine.get_task(task_id)
-    if not task or task.type != TaskType.BAIDU_NETDISK_DOWNLOAD:
-        raise HTTPException(status_code=404, detail="百度网盘下载任务不存在")
+    if not task or task.type not in {TaskType.BAIDU_NETDISK_DOWNLOAD, TaskType.BAIDU_NETDISK_UPLOAD}:
+        raise HTTPException(status_code=404, detail="百度网盘任务不存在")
     task.pause()
     await get_baidu_netdisk_service().cancel_task(task_id)
     task.task_metadata["cancel_reason"] = ""
@@ -13066,8 +13460,8 @@ async def baidu_netdisk_resume_task(task_id: str):
 
     engine = get_task_engine()
     task = engine.get_task(task_id)
-    if not task or task.type != TaskType.BAIDU_NETDISK_DOWNLOAD:
-        raise HTTPException(status_code=404, detail="百度网盘下载任务不存在")
+    if not task or task.type not in {TaskType.BAIDU_NETDISK_DOWNLOAD, TaskType.BAIDU_NETDISK_UPLOAD}:
+        raise HTTPException(status_code=404, detail="百度网盘任务不存在")
     engine.resume_task(task_id)
     return {"success": True, "message": "任务已恢复"}
 
@@ -13079,8 +13473,8 @@ async def baidu_netdisk_cancel_task(task_id: str):
 
     engine = get_task_engine()
     task = engine.get_task(task_id)
-    if not task or task.type != TaskType.BAIDU_NETDISK_DOWNLOAD:
-        raise HTTPException(status_code=404, detail="百度网盘下载任务不存在")
+    if not task or task.type not in {TaskType.BAIDU_NETDISK_DOWNLOAD, TaskType.BAIDU_NETDISK_UPLOAD}:
+        raise HTTPException(status_code=404, detail="百度网盘任务不存在")
     engine.cancel_task(task_id)
     await get_baidu_netdisk_service().cancel_task(task_id)
     return {"success": True, "message": "任务已取消"}
@@ -13093,11 +13487,26 @@ async def baidu_netdisk_retry_task(task_id: str):
 
     engine = get_task_engine()
     task = engine.get_task(task_id)
-    if not task or task.type != TaskType.BAIDU_NETDISK_DOWNLOAD:
-        raise HTTPException(status_code=404, detail="百度网盘下载任务不存在")
+    if not task or task.type not in {TaskType.BAIDU_NETDISK_DOWNLOAD, TaskType.BAIDU_NETDISK_UPLOAD}:
+        raise HTTPException(status_code=404, detail="百度网盘任务不存在")
     if task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED}:
         raise HTTPException(status_code=400, detail="任务仍在执行中，不能重试")
-    await get_baidu_netdisk_service().reset_task_for_retry(task)
+    if task.type == TaskType.BAIDU_NETDISK_UPLOAD:
+        task.task_metadata["upload_files"] = []
+        task.task_metadata["uploaded_files"] = []
+        task.task_metadata["failed_files"] = []
+        task.task_metadata["upload_runtime"] = {}
+        task.task_metadata["failure_reason"] = ""
+        task.status = TaskStatus.PENDING
+        task.progress = 0
+        task.current_step = "等待重新上传"
+        task.error_message = None
+        task.started_at = None
+        task.completed_at = None
+        task._cancelled = False
+        task._pause_event.set()
+    else:
+        await get_baidu_netdisk_service().reset_task_for_retry(task)
     await engine.queue.put(task)
     return {"success": True, "message": "任务已加入重试队列"}
 

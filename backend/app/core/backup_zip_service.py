@@ -209,6 +209,68 @@ class BackupZipService:
         self._task = asyncio.create_task(self._run())
         return self.get_status()
 
+    async def create_archive_for_paths(
+        self,
+        source_paths: List[str],
+        *,
+        options: Optional[Dict] = None,
+        output_name: str = "",
+    ) -> str:
+        """按请求参数临时打包指定路径，不改全局库存打包配置。"""
+        if self._task and not self._task.done():
+            raise RuntimeError("库存打包任务正在执行中，请完成或取消后再创建百度网盘上传压缩包")
+        config = get_config()
+        backup_config = config.backup_zip
+        opts = dict(options or {})
+        normalized_sources = [os.path.abspath(str(path)) for path in source_paths if str(path or "").strip()]
+        if not normalized_sources:
+            raise RuntimeError("没有选中要打包的本地路径")
+        missing = [path for path in normalized_sources if not os.path.exists(path)]
+        if missing:
+            raise RuntimeError(f"待打包路径不存在: {missing[0]}")
+
+        output_dir = os.path.abspath(str(opts.get("output_dir") or backup_config.output_dir or config.storage.temp_path).strip())
+        os.makedirs(output_dir, exist_ok=True)
+        archive_format = str(opts.get("archive_format") or backup_config.archive_format or "zip").lower()
+        if archive_format not in {"zip", "7z"}:
+            raise RuntimeError(f"不支持的压缩格式: {archive_format}")
+        compression_level = max(1, min(9, int(opts.get("compression_level") or backup_config.compression_level or 9)))
+        threads = int(opts.get("compression_threads") if opts.get("compression_threads") is not None else backup_config.compression_threads or 0)
+        password = str(opts.get("password") if opts.get("password") is not None else backup_config.password or "").strip()
+        if not password:
+            raise RuntimeError("压缩密码不能为空")
+
+        safe_name = self._safe_archive_stem(output_name or opts.get("archive_name") or self._default_archive_stem(normalized_sources))
+        archive_path = self._unique_path(os.path.join(output_dir, f"{safe_name}.{archive_format}"))
+        seven_zip = self._find_7z_executable(config.extract.seven_zip_path)
+        dict_size_mb = int(opts.get("dictionary_size_mb") if opts.get("dictionary_size_mb") is not None else getattr(backup_config, "dictionary_size_mb", 0) or 0)
+        solid = bool(opts.get("solid_archive") if opts.get("solid_archive") is not None else getattr(backup_config, "solid_archive", True))
+
+        if len(normalized_sources) == 1:
+            common_parent = os.path.dirname(normalized_sources[0].rstrip("\\/"))
+        else:
+            common_parent = os.path.commonpath(normalized_sources)
+            if os.path.isfile(common_parent):
+                common_parent = os.path.dirname(common_parent)
+            if not os.path.isdir(common_parent):
+                common_parent = os.path.dirname(normalized_sources[0])
+        rel_sources = [os.path.relpath(path, common_parent) for path in normalized_sources]
+        cmd_args = self._build_7z_params(
+            archive_format,
+            compression_level,
+            threads,
+            password,
+            archive_path,
+            dict_size_mb,
+            solid,
+        )
+        cmd = [seven_zip] + cmd_args + rel_sources
+        return_code = await self._run_7z(cmd, common_parent)
+        if return_code != 0:
+            self._cleanup_file(archive_path)
+            raise RuntimeError(f"7z 执行失败，返回码: {return_code}")
+        return archive_path
+
     async def cancel(self) -> dict:
         if not self._task or self._task.done():
             return self.get_status()
@@ -798,6 +860,17 @@ class BackupZipService:
             if not candidate.exists():
                 return str(candidate)
             counter += 1
+
+    def _safe_archive_stem(self, value: str) -> str:
+        text = str(value or "").strip() or "百度网盘上传"
+        text = re.sub(r'[<>:"\\|?*\x00-\x1f]+', "_", text)
+        text = re.sub(r"\s+", " ", text).strip(" .")
+        return (text or "百度网盘上传")[:120]
+
+    def _default_archive_stem(self, source_paths: List[str]) -> str:
+        if len(source_paths) == 1:
+            return os.path.basename(str(source_paths[0]).rstrip("\\/")) or "百度网盘上传"
+        return f"百度网盘上传_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
     def _find_7z_executable(self, configured_path: str) -> str:
         configured = (configured_path or "").strip()

@@ -688,6 +688,7 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
         TaskType.ASMR_SYNC_DOWNLOAD: CATEGORY_ASMR_SYNC,
         TaskType.HTTP_DOWNLOAD: CATEGORY_HTTP_DOWNLOAD,
         TaskType.BAIDU_NETDISK_DOWNLOAD: CATEGORY_BAIDU_NETDISK,
+        TaskType.BAIDU_NETDISK_UPLOAD: CATEGORY_BAIDU_NETDISK,
         TaskType.LOCAL_LIBRARY_UPLOAD: CATEGORY_UPLOAD,
         TaskType.CIRCLE_COMPLETION_INDEX: CATEGORY_CIRCLE_COMPLETION,
         TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED: CATEGORY_CIRCLE_COMPLETION,
@@ -848,6 +849,70 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             "average_upload_speed_bytes": average_upload_speed_bytes,
             "duration_ms": duration_ms,
             "uploaded_files": uploaded_files[:200],
+        }
+    elif tt == TaskType.BAIDU_NETDISK_UPLOAD:
+        upload_runtime = meta.get("upload_runtime") if isinstance(meta.get("upload_runtime"), dict) else {}
+        upload_files = [
+            item for item in list(meta.get("upload_files") or [])
+            if isinstance(item, dict)
+        ]
+        uploaded_files = [
+            item for item in list(meta.get("uploaded_files") or [])
+            if isinstance(item, dict)
+        ]
+        failed_files = [
+            item for item in list(meta.get("failed_files") or [])
+            if isinstance(item, dict)
+        ]
+        remote_dir = str(meta.get("remote_dir") or "").strip()
+        uploaded_bytes = int(
+            upload_runtime.get("transferred_bytes")
+            or sum(int((item or {}).get("uploaded") or (item or {}).get("size") or (item or {}).get("size_bytes") or 0) for item in uploaded_files)
+            or 0
+        )
+        total_bytes = int(
+            upload_runtime.get("total_bytes")
+            or sum(int((item or {}).get("size") or (item or {}).get("size_bytes") or 0) for item in upload_files)
+            or uploaded_bytes
+            or 0
+        )
+        success_count = int(upload_runtime.get("completed_files") or len(uploaded_files) or 0)
+        failed_count = int(upload_runtime.get("failed_files") or len(failed_files) or 0)
+        duration_ms = int(meta.get("duration_ms") or _duration_ms_for_task(task) or 0)
+        average_upload_speed_bytes = int(
+            upload_runtime.get("average_speed_bytes")
+            or (uploaded_bytes / max(duration_ms / 1000, 1) if uploaded_bytes > 0 and duration_ms > 0 else 0)
+            or 0
+        )
+        if success_count > 0:
+            summary_label = (
+                f"百度网盘上传部分成功：成功 {success_count} 个，失败 {failed_count} 个"
+                if failed_count > 0
+                else f"百度网盘上传 {success_count} 个文件"
+            )
+            summary_parts = [summary_label]
+            if uploaded_bytes > 0:
+                summary_parts.append(_format_bytes(uploaded_bytes))
+            if average_upload_speed_bytes > 0:
+                summary_parts.append(f"平均 {_format_bytes(average_upload_speed_bytes)}/s")
+            if duration_ms > 0:
+                summary_parts.append(f"耗时 {_format_duration_ms(duration_ms)}")
+            summary = " / ".join(summary_parts)[:4000]
+        detail = {
+            "remote_dir": remote_dir or None,
+            "source_action": str(meta.get("source_action") or "").strip() or None,
+            "source_page": str(meta.get("source_page") or "").strip() or None,
+            "platforms": ["baidu_netdisk"],
+            "platform_label": "百度网盘",
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "uploaded_bytes": uploaded_bytes,
+            "total_bytes": total_bytes,
+            "average_upload_speed_bytes": average_upload_speed_bytes,
+            "duration_ms": duration_ms,
+            "upload_files": upload_files[:200],
+            "uploaded_files": uploaded_files[:200],
+            "failed_files": failed_files[:200],
         }
     elif tt in {TaskType.HTTP_DOWNLOAD, TaskType.BAIDU_NETDISK_DOWNLOAD}:
         from .baidu_netdisk_service import sanitize_baidu_netdisk_item

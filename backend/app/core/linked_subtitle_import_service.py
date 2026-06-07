@@ -991,7 +991,6 @@ class LinkedSubtitleImportService:
         if is_translation_work:
             should_queue_pending = (
                 bool(source_rjcode)
-                and not source_exists_in_kikoeru
                 and (
                     target_needs_subtitle_in_kikoeru
                     or not kikoeru_route_confident

@@ -5482,6 +5482,19 @@ class LibraryManager:
     def _normalize_library_sort_order(self, sort_order: Optional[str]) -> str:
         return "asc" if str(sort_order).lower() == "asc" else "desc"
 
+    @staticmethod
+    def _natural_name_key(name: Any) -> tuple[tuple[int, Any], ...]:
+        raw = str(name or "").casefold()
+        parts: list[tuple[int, Any]] = []
+        for part in re.split(r"(\d+)", raw):
+            if not part:
+                continue
+            if part.isdigit():
+                parts.append((1, int(part), len(part)))
+            else:
+                parts.append((0, part))
+        return tuple(parts)
+
     def _sort_local_items(self, items: list[dict[str, Any]], sort_by: str, sort_order: str) -> list[dict[str, Any]]:
         normalized_sort_by = self._normalize_library_sort_by(sort_by)
         normalized_sort_order = self._normalize_library_sort_order(sort_order)
@@ -5489,7 +5502,7 @@ class LibraryManager:
             return sorted(
                 items,
                 key=lambda value: (
-                    value.get("name", "").lower(),
+                    self._natural_name_key(value.get("name", "")),
                     -float(value.get("_sort_time") or 0),
                     -int(value.get("size") or 0),
                 ),
@@ -5500,7 +5513,7 @@ class LibraryManager:
                 items,
                 key=lambda value: (
                     float(value.get("_sort_time") or 0),
-                    value.get("name", "").lower(),
+                    self._natural_name_key(value.get("name", "")),
                     -int(value.get("size") or 0),
                 ),
                 reverse=normalized_sort_order == "desc",
@@ -5510,7 +5523,7 @@ class LibraryManager:
                 items,
                 key=lambda value: (
                     int(value.get("size") or 0),
-                    value.get("name", "").lower(),
+                    self._natural_name_key(value.get("name", "")),
                     -float(value.get("_sort_time") or 0),
                 ),
             )
@@ -5518,7 +5531,7 @@ class LibraryManager:
             items,
             key=lambda value: (
                 -int(value.get("size") or 0),
-                value.get("name", "").lower(),
+                self._natural_name_key(value.get("name", "")),
                 -float(value.get("_sort_time") or 0),
             ),
         )
@@ -5530,7 +5543,7 @@ class LibraryManager:
             return sorted(
                 items,
                 key=lambda value: (
-                    value.get("name", "").lower(),
+                    self._natural_name_key(value.get("name", "")),
                     -float(value.get("_mtime") or 0),
                 ),
                 reverse=normalized_sort_order == "desc",
@@ -5540,7 +5553,7 @@ class LibraryManager:
                 items,
                 key=lambda value: (
                     float(value.get("_mtime") or 0),
-                    value.get("name", "").lower(),
+                    self._natural_name_key(value.get("name", "")),
                 ),
                 reverse=normalized_sort_order == "desc",
             )
@@ -5550,7 +5563,7 @@ class LibraryManager:
                 key=lambda value: (
                     value.get("size") is None,
                     int(value.get("size") or 0),
-                    value.get("name", "").lower(),
+                    self._natural_name_key(value.get("name", "")),
                     -float(value.get("_mtime") or 0),
                 ),
             )
@@ -5559,7 +5572,7 @@ class LibraryManager:
             key=lambda value: (
                 value.get("size") is None,
                 -int(value.get("size") or 0),
-                value.get("name", "").lower(),
+                self._natural_name_key(value.get("name", "")),
                 -float(value.get("_mtime") or 0),
             ),
         )

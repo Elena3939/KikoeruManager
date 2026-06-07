@@ -335,6 +335,10 @@ class BaiduNetdiskConfig(BaseModel):
     """百度网盘下载配置。"""
     enabled: bool = False
     download_root: str = ""
+    upload_default_remote_dir: str = "/KikoeruManager"
+    upload_conflict_policy: str = "skip"
+    upload_max_parallel: int = 4
+    upload_max_load: int = 4
     baidupcs_go_path: str = ""
     config_dir: str = ""
     share_code_separator: str = "----"
@@ -441,6 +445,11 @@ class BackupZipConfig(BaseModel):
     compression_threads: int = 0
     dictionary_size_mb: int = 0    # 0=自动根据压缩级别选择
     solid_archive: bool = True     # 7z格式启用固实压缩（提升压缩率）
+    baidu_upload_enabled: bool = False
+    baidu_upload_remote_dir: str = "/KikoeruManager"
+    baidu_upload_create_subdir: str = ""
+    baidu_upload_conflict_policy: str = "skip"
+    baidu_upload_cleanup_local_archive: bool = False
 
 class EmailWatcherConfig(BaseModel):
     """DLsite 邮件监听配置（IMAP IDLE + fallback 轮询）"""
@@ -840,29 +849,9 @@ def load_config(config_path: str = None) -> AppConfig:
                                 config_data['rj_subtitle'][key] = value
 
                     if 'backup_zip' not in config_data or not config_data['backup_zip']:
-                        config_data['backup_zip'] = {
-                            'enabled': False,
-                            'source_path': '',
-                            'output_dir': '',
-                            'path_copy_target': '',
-                            'copy_structure_before_zip': True,
-                            'password': '',
-                            'archive_format': 'zip',
-                            'compression_level': 9,
-                            'compression_threads': 0
-                        }
+                        config_data['backup_zip'] = BackupZipConfig().model_dump()
                     else:
-                        defaults = {
-                            'enabled': False,
-                            'source_path': '',
-                            'output_dir': '',
-                            'path_copy_target': '',
-                            'copy_structure_before_zip': True,
-                            'password': '',
-                            'archive_format': 'zip',
-                            'compression_level': 9,
-                            'compression_threads': 0
-                        }
+                        defaults = BackupZipConfig().model_dump()
                         for key, value in defaults.items():
                             if key not in config_data['backup_zip']:
                                 config_data['backup_zip'][key] = value
