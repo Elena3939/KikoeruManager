@@ -604,6 +604,28 @@
 
               type="button"
 
+              class="lib-btn lib-btn-icon-tinted lib-icon-folder-completion lib-batch-action-btn"
+
+              :disabled="!selectedFolderCompletionRows.length"
+
+              @click="openFolderCompletionDialog(selectedFolderCompletionRows)"
+
+            >
+
+              <IconFolderSync :size="14" :stroke-width="2.2" />
+
+              <span>批量补全文件夹</span>
+
+              <span v-if="selectedFolderCompletionRows.length" class="lib-badge">{{ selectedFolderCompletionRows.length }}</span>
+
+            </button>
+
+            <button
+
+              v-if="!isRemoteCurrentLibrary"
+
+              type="button"
+
               class="lib-btn lib-btn-icon-tinted lib-icon-batch-move lib-batch-action-btn"
 
               :disabled="!isWritableCurrentLibrary || moveDialogState.submitting || directMoveSubmitting || !selectedRows.length"
@@ -866,6 +888,10 @@
 
         :auto-circle-group-running="libraryRowContextMenuProps.autoCircleGroupRunning"
 
+        :show-folder-completion="libraryRowContextMenuProps.showFolderCompletion"
+
+        :disable-folder-completion="libraryRowContextMenuProps.disableFolderCompletion"
+
         :show-compute-size="libraryRowContextMenuProps.showComputeSize"
 
         :disable-compute-size="libraryRowContextMenuProps.disableComputeSize"
@@ -932,65 +958,144 @@
       v-model="baiduUploadDialogVisible"
       title="上传到百度网盘"
       width="720px"
-      custom-class="mobile-full-dialog library-simple-dialog"
+      custom-class="mobile-full-dialog library-simple-dialog baidu-upload-dialog"
       :close-on-click-modal="!baiduUploadSubmitting"
     >
-      <div class="space-y-4">
-        <div class="rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 text-[13px] text-slate-600">
-          已选 {{ baiduUploadSourceItems.length }} 项，上传任务会进入任务中心。
+      <section class="baidu-upload-shell">
+        <div class="baidu-upload-summary">
+          <div class="baidu-upload-summary-icon">
+            <IconUpload :size="20" :stroke-width="2.4" />
+          </div>
+          <div class="baidu-upload-summary-main">
+            <div class="baidu-upload-summary-title">
+              已选 {{ baiduUploadSourceItems.length }} 项
+            </div>
+            <div class="baidu-upload-summary-sub">
+              上传任务会进入任务中心，后台按队列执行。
+            </div>
+          </div>
+          <div class="baidu-upload-summary-pill">
+            {{ baiduUploadForm.mode === 'compress' ? '压缩上传' : '直接上传' }}
+          </div>
         </div>
-        <el-form :model="baiduUploadForm" label-position="top" class="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-1">
-          <el-form-item label="上传模式">
-            <AppDropdown
-              v-model="baiduUploadForm.mode"
-              :options="baiduUploadModeOptions"
-              class="w-full"
-            />
-          </el-form-item>
-          <el-form-item label="远端目录">
-            <el-input v-model="baiduUploadForm.remoteDir" placeholder="/KikoeruManager" />
-          </el-form-item>
-          <el-form-item label="创建子目录">
-            <el-input v-model="baiduUploadForm.createRemoteSubdir" placeholder="可选，例如 RJ备份" />
-          </el-form-item>
-          <el-form-item label="同名策略">
-            <AppDropdown
-              v-model="baiduUploadForm.conflictPolicy"
-              :options="baiduUploadPolicyOptions"
-              class="w-full"
-            />
-          </el-form-item>
-          <template v-if="baiduUploadForm.mode === 'compress'">
-            <el-form-item label="压缩密码">
-              <el-input v-model="baiduUploadForm.password" type="password" show-password placeholder="必填" />
-            </el-form-item>
-            <el-form-item label="压缩格式">
-              <AppDropdown
-                v-model="baiduUploadForm.archiveFormat"
-                :options="baiduUploadArchiveFormatOptions"
-                class="w-full"
-              />
-            </el-form-item>
-            <el-form-item label="压缩强度">
-              <el-slider v-model="baiduUploadForm.compressionLevel" :min="1" :max="9" :step="1" show-input />
-            </el-form-item>
-            <el-form-item label="压缩线程数">
-              <el-input-number v-model="baiduUploadForm.compressionThreads" :min="0" :max="64" class="w-full" />
-            </el-form-item>
-            <el-form-item label="上传后清理本地压缩包">
-              <div class="flex h-10 items-center">
-                <el-switch v-model="baiduUploadForm.cleanupLocalArchive" />
+
+        <div class="baidu-upload-panels">
+          <section class="baidu-upload-panel">
+            <header class="baidu-upload-panel-head">
+              <IconFolderInput :size="16" :stroke-width="2.3" />
+              <span>目标位置</span>
+            </header>
+            <div class="baidu-upload-grid">
+              <label class="baidu-upload-field">
+                <span class="baidu-upload-label">上传模式</span>
+                <AppDropdown
+                  v-model="baiduUploadForm.mode"
+                  :options="baiduUploadModeOptions"
+                  class="w-full baidu-upload-dd"
+                />
+              </label>
+              <label class="baidu-upload-field">
+                <span class="baidu-upload-label">同名策略</span>
+                <AppDropdown
+                  v-model="baiduUploadForm.conflictPolicy"
+                  :options="baiduUploadPolicyOptions"
+                  class="w-full baidu-upload-dd"
+                />
+              </label>
+              <label class="baidu-upload-field baidu-upload-field-wide">
+                <span class="baidu-upload-label">远端目录</span>
+                <el-input v-model="baiduUploadForm.remoteDir" placeholder="/KikoeruManager" />
+              </label>
+              <label class="baidu-upload-field baidu-upload-field-wide">
+                <span class="baidu-upload-label">创建子目录</span>
+                <el-input v-model="baiduUploadForm.createRemoteSubdir" placeholder="可选，例如 RJ备份" />
+              </label>
+            </div>
+          </section>
+
+          <section class="baidu-upload-panel" :class="{ 'is-muted': baiduUploadForm.mode !== 'compress' }">
+            <header class="baidu-upload-panel-head">
+              <IconArchive :size="16" :stroke-width="2.3" />
+              <span>压缩设置</span>
+              <span v-if="baiduUploadForm.mode !== 'compress'" class="baidu-upload-panel-note">直接上传时不生效</span>
+            </header>
+            <div class="baidu-upload-grid">
+              <label class="baidu-upload-field">
+                <span class="baidu-upload-label">压缩格式</span>
+                <AppDropdown
+                  v-model="baiduUploadForm.archiveFormat"
+                  :options="baiduUploadArchiveFormatOptions"
+                  class="w-full baidu-upload-dd"
+                  :disabled="baiduUploadForm.mode !== 'compress'"
+                />
+              </label>
+              <label class="baidu-upload-field">
+                <span class="baidu-upload-label">压缩线程数</span>
+                <el-input-number
+                  v-model="baiduUploadForm.compressionThreads"
+                  :min="0"
+                  :max="64"
+                  class="w-full"
+                  :disabled="baiduUploadForm.mode !== 'compress'"
+                />
+              </label>
+              <label class="baidu-upload-field baidu-upload-field-wide">
+                <span class="baidu-upload-label">压缩密码</span>
+                <el-input
+                  v-model="baiduUploadForm.password"
+                  type="password"
+                  show-password
+                  placeholder="压缩上传时必填"
+                  :disabled="baiduUploadForm.mode !== 'compress'"
+                />
+              </label>
+              <div class="baidu-upload-field baidu-upload-field-wide">
+                <div class="baidu-upload-label-row">
+                  <span class="baidu-upload-label">压缩强度</span>
+                  <span class="baidu-upload-hint">{{ baiduUploadForm.compressionLevel }}/9</span>
+                </div>
+                <el-slider
+                  v-model="baiduUploadForm.compressionLevel"
+                  :min="1"
+                  :max="9"
+                  :step="1"
+                  show-input
+                  :disabled="baiduUploadForm.mode !== 'compress'"
+                />
               </div>
-            </el-form-item>
-          </template>
-        </el-form>
-      </div>
+              <label class="baidu-upload-toggle baidu-upload-field-wide">
+                <div>
+                  <span class="baidu-upload-label">上传后清理本地压缩包</span>
+                  <span class="baidu-upload-toggle-sub">只清理本次生成的临时压缩包。</span>
+                </div>
+                <el-switch
+                  v-model="baiduUploadForm.cleanupLocalArchive"
+                  :disabled="baiduUploadForm.mode !== 'compress'"
+                />
+              </label>
+            </div>
+          </section>
+        </div>
+      </section>
       <template #footer>
-        <div class="flex items-center justify-end gap-2">
-          <el-button :disabled="baiduUploadSubmitting" @click="closeBaiduUploadDialog">取消</el-button>
-          <el-button type="primary" :loading="baiduUploadSubmitting" @click="submitBaiduUpload">
-            {{ baiduUploadSubmitting ? '创建中...' : '创建上传任务' }}
-          </el-button>
+        <div class="baidu-upload-footer">
+          <button
+            type="button"
+            class="baidu-upload-cancel"
+            :disabled="baiduUploadSubmitting"
+            @click="closeBaiduUploadDialog"
+          >
+            取消
+          </button>
+          <StatefulButton
+            tone="primary"
+            size="default"
+            class="baidu-upload-submit"
+            :disabled="baiduUploadSubmitting"
+            @click="submitBaiduUpload"
+          >
+            创建上传任务
+          </StatefulButton>
         </div>
       </template>
     </el-dialog>
@@ -1482,6 +1587,24 @@
 
     />
 
+    <LibraryFolderCompletionDialog
+
+      v-model="folderCompletionDialogVisible"
+
+      :library-id="selectedLibraryId"
+
+      :rows="folderCompletionRows"
+
+      :initial-job-id="folderCompletionPreviewJob.jobId"
+
+      @completed="handleFolderCompletionCreated"
+
+      @preview-started="handleFolderCompletionPreviewStarted"
+
+      @preview-updated="handleFolderCompletionPreviewUpdated"
+
+    />
+
 
 
     <FilterDeleteDialog
@@ -1654,6 +1777,15 @@
       />
     </Transition>
 
+    <Transition name="floating-card">
+      <BackgroundFloatingCard
+        v-if="showFolderCompletionBackgroundCard"
+        v-bind="folderCompletionBackgroundCardProps"
+        :stack-index="folderCompletionBackgroundStackIndex"
+        @action="handleFolderCompletionBackgroundCardAction"
+      />
+    </Transition>
+
   </div>
 
 </template>
@@ -1689,6 +1821,7 @@ import {
   FilterX as IconFilterX,
 
   Upload as IconUpload,
+  Archive as IconArchive,
 
   ListTodo as IconListTodo,
 
@@ -1712,6 +1845,8 @@ import {
   Layers as IconLayers,
 
   FolderInput as IconFolderInput,
+
+  FolderSync as IconFolderSync,
 
   FolderOpen as IconFolderOpen,
 
@@ -1762,6 +1897,8 @@ import FilterDeleteDialog from '../components/library/FilterDeleteDialog.vue'
 
 import FolderContentsDialog from '../components/library/FolderContentsDialog.vue'
 
+import LibraryFolderCompletionDialog from '../components/library/LibraryFolderCompletionDialog.vue'
+
 import LibraryMoveDialog from '../components/library/LibraryMoveDialog.vue'
 
 import LibraryRowContextMenu from '../components/library/LibraryRowContextMenu.vue'
@@ -1773,6 +1910,7 @@ import LibrarySearchBox from '../components/library/LibrarySearchBox.vue'
 import LibraryMobileCard from '../components/library/LibraryMobileCard.vue'
 
 import AppDropdown from '../components/common/AppDropdown.vue'
+import StatefulButton from '@/components/ui/stateful-button.vue'
 import { Badge } from '@/components/ui/badge'
 import BackgroundFloatingCard from '../components/common/BackgroundFloatingCard.vue'
 
@@ -1860,6 +1998,12 @@ const batchComputingSize = ref(false)
 
 const batchRenaming = ref(false)
 const batchAutoCircleGrouping = ref(false)
+const folderCompletionDialogVisible = ref(false)
+const folderCompletionRows = ref([])
+const folderCompletionPreviewJob = ref(createFolderCompletionPreviewJobState())
+const folderCompletionPreviewDismissed = ref(false)
+
+let folderCompletionPreviewTimer = null
 
 const tableRef = ref(null)
 
@@ -3439,6 +3583,71 @@ const filterDeleteBackgroundCardProps = computed(() => {
   }
 })
 
+const folderCompletionPreviewActive = computed(() => ['pending', 'processing', 'running'].includes(String(folderCompletionPreviewJob.value.status || '')))
+
+const folderCompletionPreviewCompleted = computed(() => String(folderCompletionPreviewJob.value.status || '') === 'completed')
+
+const folderCompletionPreviewFailed = computed(() => ['failed', 'cancelled', 'canceled'].includes(String(folderCompletionPreviewJob.value.status || '')))
+
+const showFolderCompletionBackgroundCard = computed(() => (
+  !folderCompletionDialogVisible.value
+  && !folderCompletionPreviewDismissed.value
+  && Boolean(folderCompletionPreviewJob.value.jobId)
+  && (folderCompletionPreviewActive.value || folderCompletionPreviewCompleted.value || folderCompletionPreviewFailed.value)
+))
+
+const folderCompletionBackgroundStackIndex = computed(() => {
+  let index = 0
+  if (showSubtitleBackgroundCard.value) index += 1
+  if (showFilterDeleteBackgroundCard.value) index += 1
+  return index
+})
+
+const folderCompletionBackgroundCardProps = computed(() => {
+  const job = folderCompletionPreviewJob.value
+  const summary = job.summary || {}
+  const selectedCount = Number(job.selectedCount || summary.target_count || 0)
+  const downloadableCount = Number(summary.downloadable_count || job.downloadableCount || 0)
+  const missingCount = Number(summary.missing_file_count || job.missingFileCount || 0)
+  const skippedCount = Number(summary.skipped_count || 0)
+  const estimatedBytes = Number(summary.estimated_bytes || 0)
+  const status = String(job.status || '')
+  const failed = folderCompletionPreviewFailed.value
+  const completed = folderCompletionPreviewCompleted.value
+  const tone = failed ? 'rose' : completed ? 'emerald' : 'primary'
+  const actions = [
+    { key: 'resume', label: completed ? '打开预览结果' : '打开预览', variant: tone },
+  ]
+  if (completed || failed) actions.push({ key: 'dismiss', label: '收起' })
+
+  return {
+    kind: 'asmr',
+    tone,
+    title: completed
+      ? '补全文件夹预览已完成'
+      : failed
+        ? '补全文件夹预览失败'
+        : '补全文件夹预览正在后台运行',
+    badgeText: '音声补全',
+    subtitle: selectedCount ? `已选择 ${selectedCount} 个目录` : '库存页补全文件夹',
+    metaText: `进度: ${Math.max(0, Math.min(100, Number(job.progress || 0)))}%`,
+    percentage: Number(job.progress || 0),
+    completed,
+    metrics: [
+      { key: 'selected', label: '目录', value: selectedCount || '-', tone: 'neutral' },
+      { key: 'downloadable', label: '可补全', value: downloadableCount, tone: downloadableCount ? 'success' : 'neutral' },
+      { key: 'missing', label: '缺失', value: missingCount, tone: missingCount ? 'warning' : 'neutral' },
+      { key: 'skipped', label: '跳过', value: skippedCount, tone: skippedCount ? 'danger' : 'neutral' },
+      { key: 'size', label: '预计', value: estimatedBytes ? formatFileSize(estimatedBytes) : '0 B', tone: 'info' },
+    ],
+    detailText: failed
+      ? (job.errorMessage || '预览任务失败')
+      : (job.currentStep || (completed ? '可以打开预览结果创建下载任务。' : '正在后台检查 ASMR.one 与本地文件。')),
+    actions,
+    progressKey: `${job.jobId || 'folder-completion'}-${status}`,
+  }
+})
+
 
 
 const currentLibrary = computed(() => libraries.value.find(item => item.id === selectedLibraryId.value) || null)
@@ -3557,6 +3766,8 @@ const libraryRowContextMenuProps = computed(() => {
     autoCircleGroupRunning: batchMode
       ? batchAutoCircleGrouping.value
       : Boolean(hasRow && (autoCircleGroupRunningId.value === row?.id || batchAutoCircleRunningIds.value.has(row?.id))),
+    showFolderCompletion: batchMode ? Boolean(selectedFolderCompletionRows.value.length) : canCompleteFolderRow(row),
+    disableFolderCompletion: batchMode ? !selectedFolderCompletionRows.value.length : !canCompleteFolderRow(row),
     showComputeSize: batchMode
       ? Boolean(localLibrary && rootComputeScope)
       : Boolean(row?.is_directory && localLibrary && rootComputeScope),
@@ -5293,6 +5504,8 @@ const selectedApiRenameRows = computed(() => selectedRows.value.filter(row => ca
 
 const selectedAutoCircleGroupRows = computed(() => selectedRows.value.filter(row => canAutoCircleGroupRow(row)))
 
+const selectedFolderCompletionRows = computed(() => selectedRows.value.filter(row => canCompleteFolderRow(row)))
+
 const apiRenameBusy = computed(() => Boolean(apiRenamingId.value) || batchRenaming.value || batchAutoCircleGrouping.value)
 
 
@@ -5410,6 +5623,8 @@ onMounted(async () => {
   bindLibraryMarqueeDismiss()
 
   bindLibraryKeydown()
+
+  window.addEventListener('kikoerumanager:task-center:changed', handleFolderCompletionTaskCenterEvent)
 
   nextTick(() => bindPathBreadcrumbResizeObserver())
 
@@ -5605,6 +5820,10 @@ onBeforeUnmount(() => {
   stopLibraryPolling()
 
   stopUploadWorkbenchPolling()
+
+  stopFolderCompletionPreviewPolling()
+
+  window.removeEventListener('kikoerumanager:task-center:changed', handleFolderCompletionTaskCenterEvent)
 
   unbindLibraryKeydown()
 
@@ -6994,6 +7213,16 @@ function canAutoCircleGroupRow (row) {
   const detectedRJ = String(row?.rjcode || extractRJCode(row?.path || row?.name) || '').trim()
 
   return Boolean(detectedRJ)
+
+}
+
+function canCompleteFolderRow (row) {
+
+  if (!row?.is_directory || !row?.path) return false
+
+  if (isRemoteCurrentLibrary.value || !isWritableCurrentLibrary.value) return false
+
+  return true
 
 }
 
@@ -16835,6 +17064,8 @@ async function handleLibraryRowContextMenuAction (action) {
 
     if (action === 'auto_circle_group') return handleBatchAutoCircleGroup()
 
+    if (action === 'folder_completion') return openFolderCompletionDialog(selectedFolderCompletionRows.value)
+
     if (action === 'api_rename') return handleBatchApiRename()
 
     if (action === 'subtitle') return openRJSubtitleDialog(selectedSubtitleCandidates.value)
@@ -16867,6 +17098,8 @@ async function handleLibraryRowContextMenuAction (action) {
   if (action === 'baidu_upload') return openBaiduUploadDialog(row)
 
   if (action === 'auto_circle_group') return autoCircleGroup(row)
+
+  if (action === 'folder_completion') return openFolderCompletionDialog([row])
 
   if (action === 'api_rename') return apiRenameItem(row)
 
@@ -16983,6 +17216,261 @@ function openMoveDialog (rows, initialPathOverride = '') {
     })),
 
     submitting: false
+
+  }
+
+}
+
+
+function openFolderCompletionDialog (rows = []) {
+
+  if (folderCompletionPreviewActive.value && folderCompletionPreviewJob.value.jobId) {
+
+    folderCompletionPreviewDismissed.value = false
+
+    folderCompletionDialogVisible.value = true
+
+    ElMessage.info('已有补全文件夹预览正在后台运行，已打开当前预览')
+
+    return
+
+  }
+
+  const candidates = (Array.isArray(rows) ? rows : [])
+    .filter(row => canCompleteFolderRow(row))
+
+  if (!candidates.length) {
+
+    ElMessage.warning('未选中可补全的本地文件夹')
+
+    return
+
+  }
+
+  folderCompletionRows.value = candidates
+
+  resetFolderCompletionPreviewJob()
+
+  folderCompletionDialogVisible.value = true
+
+}
+
+
+function handleFolderCompletionCreated () {
+
+  folderCompletionPreviewDismissed.value = true
+
+  stopFolderCompletionPreviewPolling()
+
+  clearSelection()
+
+  refreshCurrentLibraryAndStatsInBackground('补全任务已创建')
+
+}
+
+function createFolderCompletionPreviewJobState () {
+
+  return {
+
+    jobId: '',
+
+    status: 'idle',
+
+    progress: 0,
+
+    currentStep: '',
+
+    errorMessage: '',
+
+    result: null,
+
+    summary: {},
+
+    selectedCount: 0,
+
+    downloadableCount: 0,
+
+    missingFileCount: 0,
+
+    startedAt: null,
+
+    finishedAt: null,
+
+  }
+
+}
+
+
+function resetFolderCompletionPreviewJob () {
+
+  stopFolderCompletionPreviewPolling()
+
+  folderCompletionPreviewDismissed.value = false
+
+  folderCompletionPreviewJob.value = createFolderCompletionPreviewJobState()
+
+}
+
+
+function normalizeFolderCompletionPreviewJob (job = {}, previous = folderCompletionPreviewJob.value) {
+
+  const result = job?.result || previous.result || null
+
+  const summary = job?.summary || result?.summary || previous.summary || {}
+
+  return {
+
+    jobId: String(job?.job_id || job?.jobId || previous.jobId || ''),
+
+    status: String(job?.status || previous.status || 'idle'),
+
+    progress: Number(job?.progress ?? previous.progress ?? 0),
+
+    currentStep: String(job?.current_step || job?.currentStep || previous.currentStep || ''),
+
+    errorMessage: String(job?.error_message || job?.errorMessage || previous.errorMessage || ''),
+
+    result,
+
+    summary,
+
+    selectedCount: Number(job?.selected_count || previous.selectedCount || summary.target_count || 0),
+
+    downloadableCount: Number(job?.downloadable_count || previous.downloadableCount || summary.downloadable_count || 0),
+
+    missingFileCount: Number(job?.missing_file_count || previous.missingFileCount || summary.missing_file_count || 0),
+
+    startedAt: job?.started_at || job?.startedAt || previous.startedAt || null,
+
+    finishedAt: job?.finished_at || job?.finishedAt || previous.finishedAt || null,
+
+  }
+
+}
+
+
+function handleFolderCompletionPreviewStarted (job = {}) {
+
+  folderCompletionPreviewDismissed.value = false
+
+  folderCompletionPreviewJob.value = {
+
+    ...normalizeFolderCompletionPreviewJob(job),
+
+    selectedCount: folderCompletionRows.value.length || Number(job?.selected_count || 0),
+
+  }
+
+  startFolderCompletionPreviewPolling()
+
+}
+
+
+function handleFolderCompletionPreviewUpdated (job = {}) {
+
+  folderCompletionPreviewJob.value = normalizeFolderCompletionPreviewJob(job)
+
+  if (!folderCompletionPreviewActive.value) stopFolderCompletionPreviewPolling()
+
+}
+
+
+function startFolderCompletionPreviewPolling () {
+
+  stopFolderCompletionPreviewPolling()
+
+  if (!folderCompletionPreviewJob.value.jobId) return
+
+  folderCompletionPreviewTimer = window.setInterval(refreshFolderCompletionPreviewJob, 1600)
+
+}
+
+
+function stopFolderCompletionPreviewPolling () {
+
+  if (!folderCompletionPreviewTimer) return
+
+  window.clearInterval(folderCompletionPreviewTimer)
+
+  folderCompletionPreviewTimer = null
+
+}
+
+
+async function refreshFolderCompletionPreviewJob () {
+
+  const jobId = folderCompletionPreviewJob.value.jobId
+
+  if (!jobId) return
+
+  try {
+
+    const job = await libraryApi.getFolderCompletionPreviewJob(jobId)
+
+    handleFolderCompletionPreviewUpdated(job)
+
+  } catch (error) {
+
+    folderCompletionPreviewJob.value = {
+
+      ...folderCompletionPreviewJob.value,
+
+      status: 'failed',
+
+      errorMessage: error?.response?.data?.detail || error?.message || '刷新补全预览状态失败',
+
+    }
+
+    stopFolderCompletionPreviewPolling()
+
+  }
+
+}
+
+
+function handleFolderCompletionTaskCenterEvent (event) {
+
+  const payload = event?.detail || {}
+
+  if (payload?.type !== 'task_center_changed') return
+
+  const jobId = folderCompletionPreviewJob.value.jobId
+
+  if (!jobId) return
+
+  const payloadTaskId = String(payload.engine_task_id || payload.task_id || payload.item_id || payload.entity_id || '')
+
+  if (payloadTaskId !== jobId) return
+
+  refreshFolderCompletionPreviewJob()
+
+}
+
+
+function resumeFolderCompletionPreviewDialog () {
+
+  if (!folderCompletionPreviewJob.value.jobId) return
+
+  folderCompletionPreviewDismissed.value = false
+
+  folderCompletionDialogVisible.value = true
+
+}
+
+
+function handleFolderCompletionBackgroundCardAction (action) {
+
+  if (action === 'resume') {
+
+    resumeFolderCompletionPreviewDialog()
+
+    return
+
+  }
+
+  if (action === 'dismiss') {
+
+    folderCompletionPreviewDismissed.value = true
 
   }
 
@@ -18545,6 +19033,8 @@ function libraryRowClassName ({ row, rowIndex = -1 }) {
 
   if (isLibraryRowOperating(row)) classes.push('library-row-operating')
 
+  if (isLibraryRowApiRenaming(row)) classes.push('library-row-api-renaming')
+
   if (libraryRowContextMenu.value.visible && libraryRowContextMenu.value.row?.path && row?.path === libraryRowContextMenu.value.row.path) classes.push('library-row-context-active')
 
   if (row?.path && selectedRowPaths.value.has(row.path)) {
@@ -18581,6 +19071,14 @@ function isLibraryRowOperating (row) {
     autoCircleGroupRunningId.value === row.id ||
     batchAutoCircleRunningIds.value.has(row.id) ||
     isBatchApiRenameRunning(row)
+
+}
+
+function isLibraryRowApiRenaming (row) {
+
+  if (!row) return false
+
+  return apiRenamingId.value === row.id || isBatchApiRenameRunning(row)
 
 }
 
@@ -18947,6 +19445,104 @@ function statsStatusTextDisplay (stats) {
 
 .media-preview-dialog button:not(:disabled) {
   cursor: pointer;
+}
+
+:global(html.kikoerumanager-dark .media-preview-dialog) {
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  background: rgba(17, 18, 22, 0.9) !important;
+  box-shadow:
+    0 24px 72px rgba(0, 0, 0, 0.48),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
+  backdrop-filter: blur(22px) saturate(135%) !important;
+  -webkit-backdrop-filter: blur(22px) saturate(135%) !important;
+}
+
+:global(html.kikoerumanager-dark .media-preview-dialog > header) {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  background: rgba(23, 24, 29, 0.96) !important;
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.08) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+:global(html.kikoerumanager-dark .media-preview-dialog > header :is(.text-slate-900, .text-slate-700)) {
+  color: #f4f4f5 !important;
+}
+
+:global(html.kikoerumanager-dark .media-preview-dialog > header :is(.text-slate-600, .text-slate-500, .text-slate-400)) {
+  color: #d4d4d8 !important;
+}
+
+:global(html.kikoerumanager-dark .media-preview-dialog > header :is(.border-white\/50, .border-white\/55, .border-white\/60, .border-white\/70)) {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+:global(html.kikoerumanager-dark .media-preview-dialog > header :is(.bg-white\/24, .bg-white\/26, .bg-white\/28, .bg-white\/30, .bg-white\/34)) {
+  background: #1d1e23 !important;
+}
+
+:global(html.kikoerumanager-dark .media-preview-dialog > header button) {
+  color: #d4d4d8 !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .media-preview-dialog > header button:hover:not(:disabled)) {
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  background: #2b2c30 !important;
+  color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark .media-preview-dialog > header button:disabled) {
+  color: rgba(212, 212, 216, 0.36) !important;
+  opacity: 1 !important;
+}
+
+:global(html.kikoerumanager-dark .media-preview-dialog > div) {
+  background: #08090c !important;
+}
+
+:global(html.kikoerumanager-dark .media-preview-dialog .media-preview-image) {
+  background: transparent !important;
+}
+
+:global(html.kikoerumanager-dark .media-preview-dialog .media-preview-image-wrapper) {
+  background: transparent !important;
+}
+
+:global(html.kikoerumanager-dark .media-preview-dialog > div > button) {
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  background: rgba(29, 30, 35, 0.88) !important;
+  color: #e5e7eb !important;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28) !important;
+}
+
+:global(html.kikoerumanager-dark .media-preview-dialog > div > button:hover:not(:disabled)) {
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  background: #333438 !important;
+  color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark .media-preview-dialog :is(.bg-white\/60, .bg-white\/70)) {
+  background: #17181d !important;
+}
+
+:global(html.kikoerumanager-dark .media-preview-dialog :is(.bg-slate-50, .from-slate-50, .to-slate-200)) {
+  background: #1d1e23 !important;
+  background-image: none !important;
+}
+
+:global(html.kikoerumanager-dark .media-preview-dialog :is(.text-slate-900, .text-slate-800, .text-slate-700)) {
+  color: #f4f4f5 !important;
+}
+
+:global(html.kikoerumanager-dark .media-preview-dialog :is(.text-slate-600, .text-slate-500, .text-slate-400)) {
+  color: #a1a1aa !important;
+}
+
+:global(html.kikoerumanager-dark .media-preview-dialog code) {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #1d1e23 !important;
+  color: #e5e7eb !important;
 }
 
 .media-preview-image-next {
@@ -21110,6 +21706,34 @@ function statsStatusTextDisplay (stats) {
 
 }
 
+:deep(.library-page-loading-mask .app-loading-mask__mount) {
+
+  position: relative;
+
+  z-index: 2;
+
+  display: flex;
+
+  min-height: 360px;
+
+  align-items: center;
+
+  justify-content: center;
+
+  pointer-events: none;
+
+}
+
+:deep(.library-page-loading-mask .app-loading-animation__player) {
+
+  opacity: 1;
+
+  visibility: visible;
+
+  filter: drop-shadow(0 16px 30px rgba(15, 23, 42, 0.18));
+
+}
+
 
 
 .library {
@@ -21284,6 +21908,48 @@ function statsStatusTextDisplay (stats) {
 
   padding: 12px 18px 18px;
 
+}
+
+:global(html.kikoerumanager-dark body #app .library .main-card),
+:global(html.kikoerumanager-dark body #app .library .main-card .el-card__header),
+:global(html.kikoerumanager-dark body #app .library .main-card .el-card__body),
+:global(body.kikoerumanager-dark #app .library .main-card),
+:global(body.kikoerumanager-dark #app .library .main-card .el-card__header),
+:global(body.kikoerumanager-dark #app .library .main-card .el-card__body) {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library .lib-info-strip),
+:global(html.kikoerumanager-dark body #app .library .lib-file-table),
+:global(body.kikoerumanager-dark #app .library .lib-info-strip),
+:global(body.kikoerumanager-dark #app .library .lib-file-table) {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border-soft, rgba(255, 255, 255, 0.09)) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library .lib-info-strip::before),
+:global(html.kikoerumanager-dark body #app .library .lib-info-strip::after),
+:global(html.kikoerumanager-dark body #app .library .lib-file-table::before),
+:global(html.kikoerumanager-dark body #app .library .lib-file-table::after),
+:global(body.kikoerumanager-dark #app .library .lib-info-strip::before),
+:global(body.kikoerumanager-dark #app .library .lib-info-strip::after),
+:global(body.kikoerumanager-dark #app .library .lib-file-table::before),
+:global(body.kikoerumanager-dark #app .library .lib-file-table::after) {
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  opacity: 0 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library .lib-file-table-head),
+:global(body.kikoerumanager-dark #app .library .lib-file-table-head) {
+  background: transparent !important;
+  background-image: none !important;
 }
 
 
@@ -22417,11 +23083,11 @@ function statsStatusTextDisplay (stats) {
   transform: translateY(8px) scale(0.98);
 }
 
-:global(html.kikoerumanager-dark) .drag-move-conflict-overlay {
+:global(html.kikoerumanager-dark .drag-move-conflict-overlay) {
   background: rgba(0, 0, 0, 0.24);
 }
 
-:global(html.kikoerumanager-dark) .drag-move-conflict-panel {
+:global(html.kikoerumanager-dark .drag-move-conflict-panel) {
   border-color: rgba(255, 255, 255, 0.14);
   background:
     linear-gradient(180deg, rgba(48, 49, 54, 0.78), rgba(18, 19, 23, 0.9)),
@@ -22429,59 +23095,59 @@ function statsStatusTextDisplay (stats) {
   color: rgba(250, 250, 252, 0.94);
 }
 
-:global(html.kikoerumanager-dark) .drag-move-conflict-head {
+:global(html.kikoerumanager-dark .drag-move-conflict-head) {
   border-color: rgba(255, 255, 255, 0.1);
 }
 
-:global(html.kikoerumanager-dark) .drag-move-conflict-icon,
-:global(html.kikoerumanager-dark) .drag-move-conflict-close,
-:global(html.kikoerumanager-dark) .drag-move-conflict-target,
-:global(html.kikoerumanager-dark) .drag-move-conflict-list li,
-:global(html.kikoerumanager-dark) .drag-move-conflict-btn {
+:global(html.kikoerumanager-dark .drag-move-conflict-icon),
+:global(html.kikoerumanager-dark .drag-move-conflict-close),
+:global(html.kikoerumanager-dark .drag-move-conflict-target),
+:global(html.kikoerumanager-dark .drag-move-conflict-list li),
+:global(html.kikoerumanager-dark .drag-move-conflict-btn) {
   border-color: rgba(255, 255, 255, 0.14);
   background: #2b2c30;
   color: rgba(226, 232, 240, 0.86);
   box-shadow: none;
 }
 
-:global(html.kikoerumanager-dark) .drag-move-conflict-title-block h3,
-:global(html.kikoerumanager-dark) .drag-move-conflict-target b,
-:global(html.kikoerumanager-dark) .drag-move-conflict-list span {
+:global(html.kikoerumanager-dark .drag-move-conflict-title-block h3),
+:global(html.kikoerumanager-dark .drag-move-conflict-target b),
+:global(html.kikoerumanager-dark .drag-move-conflict-list span) {
   color: rgba(250, 250, 252, 0.96);
 }
 
-:global(html.kikoerumanager-dark) .drag-move-conflict-title-block p,
-:global(html.kikoerumanager-dark) .drag-move-conflict-target span,
-:global(html.kikoerumanager-dark) .drag-move-conflict-list em,
-:global(html.kikoerumanager-dark) .drag-move-conflict-list .drag-move-conflict-more {
+:global(html.kikoerumanager-dark .drag-move-conflict-title-block p),
+:global(html.kikoerumanager-dark .drag-move-conflict-target span),
+:global(html.kikoerumanager-dark .drag-move-conflict-list em),
+:global(html.kikoerumanager-dark .drag-move-conflict-list .drag-move-conflict-more) {
   color: rgba(214, 214, 220, 0.66);
 }
 
-:global(html.kikoerumanager-dark) .drag-move-conflict-close:hover:not(:disabled),
-:global(html.kikoerumanager-dark) .drag-move-conflict-btn:hover:not(:disabled) {
+:global(html.kikoerumanager-dark .drag-move-conflict-close:hover:not(:disabled)),
+:global(html.kikoerumanager-dark .drag-move-conflict-btn:hover:not(:disabled)) {
   border-color: rgba(255, 255, 255, 0.2);
   background: #333438;
   color: rgba(250, 250, 252, 0.96);
 }
 
-:global(html.kikoerumanager-dark) .drag-move-conflict-btn.is-primary {
+:global(html.kikoerumanager-dark .drag-move-conflict-btn.is-primary) {
   border-color: rgba(255, 255, 255, 0.22);
   background: #e7e7eb;
   color: #111116;
 }
 
-:global(html.kikoerumanager-dark) .drag-move-conflict-btn.is-primary:hover:not(:disabled) {
+:global(html.kikoerumanager-dark .drag-move-conflict-btn.is-primary:hover:not(:disabled)) {
   background: #f2f2f4;
   color: #0e0e12;
 }
 
-:global(html.kikoerumanager-dark) .drag-move-conflict-btn.is-danger {
+:global(html.kikoerumanager-dark .drag-move-conflict-btn.is-danger) {
   border-color: rgba(248, 113, 113, 0.28);
   background: rgba(127, 29, 29, 0.42);
   color: #fecaca;
 }
 
-:global(html.kikoerumanager-dark) .drag-move-conflict-btn.is-danger:hover:not(:disabled) {
+:global(html.kikoerumanager-dark .drag-move-conflict-btn.is-danger:hover:not(:disabled)) {
   background: rgba(153, 27, 27, 0.58);
   color: #fee2e2;
 }
@@ -22601,6 +23267,25 @@ function statsStatusTextDisplay (stats) {
   filter: drop-shadow(0 4px 8px rgba(37, 99, 235, 0.18));
 }
 
+.lib-file-table-row.library-row-api-renaming {
+  position: relative;
+  overflow: hidden;
+}
+
+.lib-file-table-row.library-row-api-renaming::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-110%);
+  background: linear-gradient(90deg, transparent, rgba(251, 191, 36, 0.34), transparent);
+  animation: library-api-rename-sweep 1.18s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.lib-file-table-row.library-row-api-renaming .file-icon {
+  animation: library-api-rename-icon 0.92s ease-in-out infinite;
+}
+
 @keyframes library-row-operating-sweep {
   0% { transform: translateX(-120%); opacity: 0; }
   18% { opacity: 1; }
@@ -22615,6 +23300,68 @@ function statsStatusTextDisplay (stats) {
 @keyframes library-row-operating-pulse {
   0%, 100% { opacity: 0.72; transform: scale(1); }
   50% { opacity: 1; transform: scale(1.08); }
+}
+
+@keyframes library-api-rename-sweep {
+  0% { transform: translateX(-110%); opacity: 0; }
+  18% { opacity: 1; }
+  100% { transform: translateX(110%); opacity: 0; }
+}
+
+@keyframes library-api-rename-icon {
+  0%, 100% { transform: rotate(-8deg) scale(1.04); filter: drop-shadow(0 4px 8px rgba(245, 158, 11, 0.14)); }
+  50% { transform: rotate(8deg) scale(1.16); filter: drop-shadow(0 7px 14px rgba(245, 158, 11, 0.28)); }
+}
+
+:global(html.kikoerumanager-dark body #app .library .lib-file-table-row.library-row-operating),
+:global(body.kikoerumanager-dark #app .library .lib-file-table-row.library-row-operating) {
+  background:
+    linear-gradient(
+      105deg,
+      #1d1e23 0%,
+      #25262b 24%,
+      rgba(245, 158, 11, 0.26) 42%,
+      #2b2c30 58%,
+      rgba(245, 158, 11, 0.16) 72%,
+      #1d1e23 100%
+    ) !important;
+  background-size: 300% 100% !important;
+  animation: library-row-operating-flow 1.18s linear infinite !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.18) !important;
+  transform: translate3d(0, 0, 0) !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library .lib-file-table-row.library-row-operating:hover),
+:global(html.kikoerumanager-dark body #app .library .lib-file-table-row.library-row-operating.library-row-context-active),
+:global(html.kikoerumanager-dark body #app .library .lib-file-table-row.library-row-operating.library-row-marquee-selected),
+:global(body.kikoerumanager-dark #app .library .lib-file-table-row.library-row-operating:hover),
+:global(body.kikoerumanager-dark #app .library .lib-file-table-row.library-row-operating.library-row-context-active),
+:global(body.kikoerumanager-dark #app .library .lib-file-table-row.library-row-operating.library-row-marquee-selected) {
+  background:
+    linear-gradient(
+      105deg,
+      #25262b 0%,
+      #2b2c30 24%,
+      rgba(245, 158, 11, 0.3) 42%,
+      #333438 58%,
+      rgba(245, 158, 11, 0.18) 72%,
+      #25262b 100%
+    ) !important;
+  background-size: 300% 100% !important;
+  animation: library-row-operating-flow 1.18s linear infinite !important;
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.24) !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library .lib-file-table-row.library-row-api-renaming::after),
+:global(body.kikoerumanager-dark #app .library .lib-file-table-row.library-row-api-renaming::after) {
+  background: linear-gradient(90deg, transparent, rgba(245, 158, 11, 0.32), transparent) !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library .lib-file-table-row.library-row-api-renaming .file-icon),
+:global(body.kikoerumanager-dark #app .library .lib-file-table-row.library-row-api-renaming .file-icon) {
+  animation: library-api-rename-icon 0.92s ease-in-out infinite !important;
+  filter: drop-shadow(0 6px 12px rgba(245, 158, 11, 0.24)) !important;
 }
 
 .empty-text { color: #c0c4cc; }
@@ -23265,6 +24012,393 @@ function statsStatusTextDisplay (stats) {
 .name-preview { padding: 8px 12px; background: #f8f9fa; border: 1px solid #e4e7ed; border-radius: 4px; color: #606266; }
 
 /* .floating-card / .floating-chip / .floating-action-btn 等系列样式已迁移到 index.css 全局规范，本页不再重复定义 */
+
+.baidu-upload-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.baidu-upload-summary,
+.baidu-upload-panel {
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  background: #ffffff;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+}
+
+.baidu-upload-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 16px;
+}
+
+.baidu-upload-summary-icon {
+  display: inline-flex;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  background: #f1f5f9;
+  color: #334155;
+}
+
+.baidu-upload-summary-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.baidu-upload-summary-title {
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.25;
+  color: #111827;
+}
+
+.baidu-upload-summary-sub {
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #64748b;
+}
+
+.baidu-upload-summary-pill,
+.baidu-upload-panel-note {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.baidu-upload-summary-pill {
+  padding: 6px 10px;
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  background: #f8fafc;
+  color: #334155;
+}
+
+.baidu-upload-panels {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+.baidu-upload-panel {
+  padding: 14px;
+  border-radius: 16px;
+}
+
+.baidu-upload-panel.is-muted {
+  opacity: 0.74;
+}
+
+.baidu-upload-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: #1f2937;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.baidu-upload-panel-head svg {
+  color: #475569;
+}
+
+.baidu-upload-panel-note {
+  margin-left: auto;
+  padding: 3px 8px;
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.baidu-upload-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.baidu-upload-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.baidu-upload-field-wide {
+  grid-column: 1 / -1;
+}
+
+.baidu-upload-label,
+.baidu-upload-toggle-sub,
+.baidu-upload-hint {
+  display: block;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.baidu-upload-label {
+  font-weight: 700;
+  color: #475569;
+}
+
+.baidu-upload-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.baidu-upload-hint,
+.baidu-upload-toggle-sub {
+  color: #64748b;
+}
+
+.baidu-upload-toggle {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 46px;
+  padding: 10px 12px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 14px;
+  background: #f8fafc;
+}
+
+.baidu-upload-toggle-sub {
+  margin-top: 3px;
+  font-size: 11px;
+}
+
+.baidu-upload-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.baidu-upload-cancel {
+  min-height: 38px;
+  min-width: 92px;
+  border: 1px solid rgba(203, 213, 225, 0.95);
+  border-radius: 999px;
+  background: #ffffff;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.baidu-upload-cancel:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.02);
+  background: #f8fafc;
+}
+
+.baidu-upload-cancel:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.baidu-upload-cancel:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.baidu-upload-submit {
+  min-width: 136px;
+}
+
+:global(.baidu-upload-dialog.el-dialog) {
+  overflow: hidden;
+  border-radius: 18px;
+  background: #f8fafc;
+  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.2);
+}
+
+:global(.baidu-upload-dialog .el-dialog__header) {
+  padding: 18px 20px 12px !important;
+  margin: 0 !important;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+  background: #ffffff;
+}
+
+:global(.baidu-upload-dialog .el-dialog__title) {
+  color: #111827;
+  font-size: 17px !important;
+  font-weight: 800;
+}
+
+:global(.baidu-upload-dialog .el-dialog__body) {
+  padding: 16px 18px !important;
+  background: #f8fafc;
+}
+
+:global(.baidu-upload-dialog .el-dialog__footer) {
+  padding: 12px 18px 16px !important;
+  border-top: 1px solid rgba(226, 232, 240, 0.9);
+  background: #ffffff;
+}
+
+:global(.baidu-upload-dialog .el-input__wrapper),
+:global(.baidu-upload-dialog .el-input-number),
+:global(.baidu-upload-dialog .app-dd-trigger) {
+  min-height: 38px;
+  border-radius: 12px;
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  background: #ffffff !important;
+  box-shadow: none !important;
+}
+
+:global(.baidu-upload-dialog .el-input__wrapper:hover),
+:global(.baidu-upload-dialog .el-input__wrapper.is-focus),
+:global(.baidu-upload-dialog .el-input-number:hover),
+:global(.baidu-upload-dialog .app-dd-trigger:hover),
+:global(.baidu-upload-dialog .app-dd-trigger.is-open) {
+  border-color: rgba(148, 163, 184, 0.95);
+  background: #ffffff !important;
+  box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.14) !important;
+}
+
+:global(.baidu-upload-dialog .el-input-number .el-input__wrapper) {
+  border: 0;
+}
+
+:global(.baidu-upload-dialog .el-input-number__decrease),
+:global(.baidu-upload-dialog .el-input-number__increase) {
+  border-color: rgba(226, 232, 240, 0.95) !important;
+  background: #f8fafc !important;
+  color: #475569 !important;
+}
+
+:global(.baidu-upload-dialog .el-slider__runway) {
+  background: #e5e7eb !important;
+}
+
+:global(.baidu-upload-dialog .el-slider__bar) {
+  background: #475569 !important;
+}
+
+:global(.baidu-upload-dialog .el-slider__button) {
+  border-color: #475569 !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-dialog.el-dialog) {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #111216 !important;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.46);
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-dialog .el-dialog__header),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .el-dialog__footer) {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  background: #17181d !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-dialog .el-dialog__body) {
+  background: #111216 !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-dialog .el-dialog__title) {
+  color: #f4f4f5 !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-summary),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-panel) {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  background: #17181d !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-summary-icon),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-summary-pill),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-panel-note),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-toggle) {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  background: #1d1e23 !important;
+  color: #e5e7eb !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-summary-title),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-panel-head),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-label) {
+  color: #f4f4f5 !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-summary-sub),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-hint),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-toggle-sub) {
+  color: #a1a1aa !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-panel-head svg),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-summary-icon svg) {
+  color: #e5e7eb !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-dialog .el-input__wrapper),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .el-input-number),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .app-dd-trigger) {
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  background: #1d1e23 !important;
+  color: #f4f4f5 !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-dialog .el-input__wrapper:hover),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .el-input__wrapper.is-focus),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .el-input-number:hover),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .app-dd-trigger:hover),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .app-dd-trigger.is-open) {
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  background: #25262b !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-dialog .el-input__inner),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .app-dd-trigger-value),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .app-dd-trigger-label),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .app-dd-trigger-icon),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .app-dd-trigger-caret) {
+  color: #f4f4f5 !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-dialog .el-input-number__decrease),
+:global(html.kikoerumanager-dark .baidu-upload-dialog .el-input-number__increase) {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  background: #17181d !important;
+  color: #d4d4d8 !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-dialog .el-slider__runway) {
+  background: #2b2c30 !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-dialog .el-slider__bar) {
+  background: #d4d4d8 !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-dialog .el-slider__button) {
+  border-color: #d4d4d8 !important;
+  background: #111216 !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-cancel) {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: #1d1e23;
+  color: #f4f4f5;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-cancel:hover:not(:disabled)) {
+  background: #25262b;
+}
 
 .mapped-path-box { display: flex; flex-direction: column; gap: 10px; }
 

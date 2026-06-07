@@ -142,6 +142,36 @@ async def test_build_view_does_not_trigger_bonus_lazy_refresh(
 
 
 @pytest.mark.asyncio
+async def test_build_view_cache_can_be_invalidated(
+    service: CircleCompletionService,
+    db_session,
+) -> None:
+    _seed_circle(
+        db_session,
+        circle_id="circle_view_cache",
+        canonical_rjcode="RJ01392204",
+        is_bonus_work_in_circle_work=False,
+    )
+
+    first = await service.build_circle_completion_view("circle_view_cache")
+    row = (
+        db_session.query(CircleWork)
+        .filter(CircleWork.canonical_rjcode == "RJ01392204")
+        .one()
+    )
+    row.title = "缓存失效后的标题"
+    db_session.commit()
+
+    cached = await service.build_circle_completion_view("circle_view_cache")
+    service.invalidate_completion_view_cache("circle_view_cache")
+    refreshed = await service.build_circle_completion_view("circle_view_cache")
+
+    assert first["works"][0]["title"] != "缓存失效后的标题"
+    assert cached["works"][0]["title"] != "缓存失效后的标题"
+    assert refreshed["works"][0]["title"] == "缓存失效后的标题"
+
+
+@pytest.mark.asyncio
 async def test_refresh_circle_bonus_fields_syncs_updates_to_circle_works(
     service: CircleCompletionService,
     db_session,

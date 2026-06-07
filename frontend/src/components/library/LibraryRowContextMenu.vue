@@ -125,15 +125,29 @@
         </button>
 
         <button
+          v-if="showFolderCompletion"
           type="button"
           class="menu-item"
-          :class="{ 'bg-amber-50/70': apiBatchTarget }"
+          :disabled="disableFolderCompletion"
+          @click="emit('action', 'folder_completion')"
+        >
+          <FolderSync :size="14" :stroke-width="2.2" class="menu-item-icon text-sky-600" />
+          <span>{{ batchMode ? '批量补全文件夹' : '补全文件夹' }}</span>
+        </button>
+
+        <button
+          type="button"
+          class="menu-item"
+          :class="{ 'bg-amber-50/70': apiBatchTarget, 'menu-item-running menu-item-api-running': apiRenameRunning }"
           :disabled="disableApiRename"
           @click="emit('action', 'api_rename')"
         >
           <Sparkles :size="14" :stroke-width="2.2" class="menu-item-icon text-amber-600" />
           <span>{{ batchMode ? '批量 API 重命名' : 'API 重命名' }}</span>
-          <span v-if="apiRenameRunning" class="ml-auto text-[10px] text-amber-700">运行中</span>
+          <span v-if="apiRenameRunning" class="menu-running-badge">
+            <span class="menu-running-dot"></span>
+            <span>运行中</span>
+          </span>
         </button>
 
         <button
@@ -196,7 +210,7 @@
 
 <script setup>
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { Captions, CloudUpload, Copy, ExternalLink, Eye, FolderCog, FolderInput, FolderOpen, HardDrive, MapPin, Pencil, Sparkles, Tags, Trash2, UploadCloud } from 'lucide-vue-next'
+import { Captions, CloudUpload, Copy, ExternalLink, Eye, FolderCog, FolderInput, FolderOpen, FolderSync, HardDrive, MapPin, Pencil, Sparkles, Tags, Trash2, UploadCloud } from 'lucide-vue-next'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -228,6 +242,8 @@ const props = defineProps({
   showAutoCircleGroup: { type: Boolean, default: false },
   disableAutoCircleGroup: { type: Boolean, default: false },
   autoCircleGroupRunning: { type: Boolean, default: false },
+  showFolderCompletion: { type: Boolean, default: false },
+  disableFolderCompletion: { type: Boolean, default: false },
   disableFilterDelete: { type: Boolean, default: false },
 })
 
@@ -357,6 +373,53 @@ onBeforeUnmount(() => {
   box-shadow: inset 0 0 0 1px rgb(254 205 211);
 }
 
+.menu-item-running {
+  overflow: hidden;
+}
+
+.menu-item-running::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-115%);
+  background: linear-gradient(90deg, transparent, rgba(251, 191, 36, 0.2), transparent);
+  animation: menu-running-sweep 1.25s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.menu-item-api-running {
+  background: rgba(254, 243, 199, 0.76);
+  color: #92400e;
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.24);
+}
+
+.menu-item-api-running .menu-item-icon {
+  animation: menu-running-icon 0.95s ease-in-out infinite;
+}
+
+.menu-running-badge {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  border-radius: 999px;
+  padding: 2px 6px;
+  background: rgba(245, 158, 11, 0.14);
+  color: #92400e;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.menu-running-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  animation: menu-running-dot 0.86s ease-in-out infinite;
+}
+
 @keyframes menu-enter {
   from {
     opacity: 0;
@@ -366,5 +429,42 @@ onBeforeUnmount(() => {
     opacity: 1;
     transform: translateY(0) scale(1);
   }
+}
+
+@keyframes menu-running-sweep {
+  0% { transform: translateX(-115%); opacity: 0; }
+  20% { opacity: 1; }
+  100% { transform: translateX(115%); opacity: 0; }
+}
+
+@keyframes menu-running-icon {
+  0%, 100% { transform: scale(1) rotate(0deg); }
+  50% { transform: scale(1.18) rotate(-10deg); }
+}
+
+@keyframes menu-running-dot {
+  0%, 100% { opacity: 0.45; transform: scale(0.76); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+:global(html.kikoerumanager-dark) .menu-panel {
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  background: #0d0e12 !important;
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.38) !important;
+}
+
+:global(html.kikoerumanager-dark) .menu-item-api-running {
+  background: rgba(245, 158, 11, 0.12) !important;
+  color: #f4ce75 !important;
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.26) !important;
+}
+
+:global(html.kikoerumanager-dark) .menu-item-running::before {
+  background: linear-gradient(90deg, transparent, rgba(245, 158, 11, 0.24), transparent) !important;
+}
+
+:global(html.kikoerumanager-dark) .menu-running-badge {
+  background: rgba(245, 158, 11, 0.16) !important;
+  color: #f4ce75 !important;
 }
 </style>
