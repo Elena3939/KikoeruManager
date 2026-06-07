@@ -1121,6 +1121,8 @@ class ExtractService:
 
     def _is_rar_archive(self, archive_path: str) -> bool:
         lower_path = str(archive_path).lower()
+        if re.search(r"\.7z\.\d{3}$", lower_path):
+            return False
         if lower_path.endswith(".rar") or bool(re.search(r"\.part0*1\.rar$", lower_path)):
             return True
         with contextlib.suppress(Exception):
@@ -1356,6 +1358,44 @@ class ExtractService:
         for key, value in values.items():
             task.task_metadata[key] = value
 
+    @staticmethod
+    def _redact_command_args(cmd: List[str]) -> List[str]:
+        """日志输出用：隐藏 7z/unar 命令里的明文密码参数。"""
+        redacted: List[str] = []
+        mask_next = False
+        for arg in cmd:
+            value = str(arg)
+            if mask_next:
+                redacted.append("******")
+                mask_next = False
+                continue
+            lower = value.lower()
+            if lower in {"-p", "--password"}:
+                redacted.append(value)
+                mask_next = True
+                continue
+            if lower.startswith("-p") and len(value) > 2:
+                redacted.append("-p******")
+                continue
+            redacted.append(value)
+        return redacted
+
+    @staticmethod
+    def _format_command_for_log(cmd: List[str]) -> str:
+        return " ".join(ExtractService._redact_command_args(cmd))
+
+    def _get_cached_embedded_zip_offset(self, archive_path: str, task: Optional[Task]) -> Optional[int]:
+        metadata = getattr(task, "task_metadata", None) or {}
+        cached_path = str(metadata.get("embedded_zip_source_path") or "").strip()
+        if cached_path and os.path.abspath(cached_path) != os.path.abspath(archive_path):
+            return None
+        raw_offset = metadata.get("embedded_zip_offset")
+        try:
+            offset = int(raw_offset)
+        except (TypeError, ValueError):
+            return None
+        return offset if offset > 0 else None
+
     def _copy_embedded_zip_payload(self, source_path: str, offset: int) -> str:
         temp_root = str(getattr(self.config.storage, "temp_path", "") or "").strip()
         if not temp_root:
@@ -1383,11 +1423,31 @@ class ExtractService:
                 os.remove(view_path)
             raise
 
-    async def _prepare_embedded_zip_archive(self, archive_path: str, task: Task) -> Optional[str]:
-        """把 MP4/其它前缀壳里的 ZIP payload 剥成临时干净 ZIP。"""
-        offset = detect_embedded_zip_offset(archive_path)
+    async def _prepare_embedded_zip_archive(
+        self,
+        archive_path: str,
+        task: Task,
+        *,
+        materialize: bool = True,
+    ) -> Optional[str]:
+        """记录或生成 MP4/其它前缀壳里的 ZIP payload 临时视图。"""
+        offset = self._get_cached_embedded_zip_offset(archive_path, task)
+        if offset is None:
+            offset = detect_embedded_zip_offset(archive_path)
         if offset is None:
             return None
+        if not materialize:
+            self._set_extract_meta(
+                task,
+                embedded_zip_source_path=archive_path,
+                embedded_zip_offset=offset,
+            )
+            logger.info(
+                "[Extract] 检测到带前缀伪装 ZIP，先尝试原文件直解: source=%s offset=%s",
+                archive_path,
+                offset,
+            )
+            return archive_path
         task.update_progress(12, "检测到伪装 ZIP，正在剥离前缀")
         view_path = await asyncio.to_thread(self._copy_embedded_zip_payload, archive_path, offset)
         try:
@@ -1419,6 +1479,13 @@ class ExtractService:
             if os.path.exists(view_path):
                 os.remove(view_path)
                 logger.info("[Extract] 已清理伪装 ZIP 临时视图: %s", view_path)
+
+    async def _cleanup_extract_runtime_state(self, task: Task) -> None:
+        """收口解压运行期临时状态清理，避免失败/取消分支漏还原。"""
+        self._cleanup_embedded_zip_view(task)
+        await self._rollback_exe_e_remap(task)
+        await self._rollback_zip_numeric_remap(task)
+        await self._rollback_part_exe_remap(task)
 
     async def extract(self, task: Task) -> Optional[str]:
         """
@@ -1455,9 +1522,13 @@ class ExtractService:
         # 2. 修复后缀名
         self._set_extract_meta(task, extract_stage="detect_type")
         task.update_progress(10, "检测文件类型")
-        embedded_zip_view_path = await self._prepare_embedded_zip_archive(archive_path, task)
-        if embedded_zip_view_path:
-            archive_path = embedded_zip_view_path
+        embedded_zip_direct_path = await self._prepare_embedded_zip_archive(
+            archive_path,
+            task,
+            materialize=False,
+        )
+        if embedded_zip_direct_path:
+            archive_path = embedded_zip_direct_path
         else:
             archive_path = await self._repair_extension(archive_path)
 
@@ -1501,7 +1572,13 @@ class ExtractService:
                 task.update_progress(17, "重命名自解压分卷为标准多卷格式")
                 volume_set = await self._remap_exe_e_sequence(volume_set, task)
                 archive_path = volume_set.entry_path or volume_set.volumes[0]
-                if archive_path != task.source_path:
+                exe_e_remap_meta = (task.task_metadata or {}).get('exe_e_remap') or {}
+                if exe_e_remap_meta.get('mode') == 'temporary_view':
+                    logger.info(
+                        f"[Extract] 自解压分卷使用临时视图解压，保留原始 source_path: "
+                        f"{task.source_path} -> {archive_path}"
+                    )
+                elif archive_path != task.source_path:
                     logger.info(
                         f"[Extract] 自解压分卷已重命名: {task.source_path} -> {archive_path}"
                     )
@@ -1559,6 +1636,7 @@ class ExtractService:
             # 不改源文件名，避免监控链路还在等旧路径导致超时。
             password_lookup_path = str(
                 (task.task_metadata or {}).get("embedded_zip_source_path")
+                or ((task.task_metadata or {}).get("exe_e_remap") or {}).get("source_path")
                 or archive_path
             )
             password_candidates = await self._get_password_candidates_for_archive(password_lookup_path)
@@ -1568,7 +1646,7 @@ class ExtractService:
         await task.wait_if_paused()
         if task.is_cancelled():
             logger.info(f"任务 {task.id} 在等待分卷后被取消")
-            self._cleanup_embedded_zip_view(task)
+            await self._cleanup_extract_runtime_state(task)
             return None
 
         # 4. 获取压缩包内文件列表
@@ -1606,11 +1684,58 @@ class ExtractService:
             )
         except Exception:
             await self._cleanup_extract_path(output_path)
-            self._cleanup_embedded_zip_view(task)
-            await self._rollback_exe_e_remap(task)
-            await self._rollback_zip_numeric_remap(task)
-            await self._rollback_part_exe_remap(task)
+            await self._cleanup_extract_runtime_state(task)
             raise
+
+        embedded_source_path = str((task.task_metadata or {}).get("embedded_zip_source_path") or "").strip()
+        embedded_view_path = str((task.task_metadata or {}).get("embedded_zip_view_path") or "").strip()
+        if (
+            not success
+            and embedded_source_path
+            and not embedded_view_path
+            and extract_failure_reason not in {"cancelled", "disk_full"}
+            and not task.is_cancelled()
+        ):
+            logger.warning(
+                "[Extract] 伪装 ZIP 原文件直解失败，回退为剥离 payload 临时视图后重试: source=%s reason=%s",
+                embedded_source_path,
+                extract_failure_reason,
+            )
+            await self._cleanup_extract_attempt(output_path)
+            view_path = await self._prepare_embedded_zip_archive(
+                embedded_source_path,
+                task,
+                materialize=True,
+            )
+            if view_path:
+                archive_path = view_path
+                task.update_progress(24, "读取伪装 ZIP 临时视图内容")
+                archive_info = await self._get_archive_info(
+                    archive_path,
+                    password_candidates=password_candidates,
+                    task=task,
+                )
+                archive_info_from_listing = archive_info is not None
+                if not archive_info:
+                    logger.warning("伪装 ZIP 临时视图预读取失败，回退为直接尝试解压: %s", archive_path)
+                    archive_info = ArchiveInfo(archive_path, [], None)
+                self._set_extract_meta(
+                    task,
+                    extract_stage="extract_embedded_zip_view",
+                    extract_verified=False,
+                )
+                task.update_progress(30, "重试解压伪装 ZIP 临时视图")
+                try:
+                    success, success_password, extract_failure_reason = await self._try_extract(
+                        archive_info,
+                        output_path,
+                        task,
+                        password_candidates=password_candidates,
+                    )
+                except Exception:
+                    await self._cleanup_extract_path(output_path)
+                    await self._cleanup_extract_runtime_state(task)
+                    raise
 
         if not success:
             # 用户取消：task.cancel() 里已经把状态写成 "用户取消"，不要再 task.fail()
@@ -1619,10 +1744,7 @@ class ExtractService:
                 logger.info(f"任务 {task.id}: 用户取消，跳过失败标记")
                 await self._cleanup_extract_path(output_path)
                 # 取消时也尝试把自解压分卷文件名还原（避免 .exe + .eNN 留下乱七八糟改名结果）
-                await self._rollback_exe_e_remap(task)
-                await self._rollback_zip_numeric_remap(task)
-                await self._rollback_part_exe_remap(task)
-                self._cleanup_embedded_zip_view(task)
+                await self._cleanup_extract_runtime_state(task)
                 return None
             # 更新任务状态为失败，并设置更准确的错误信息
             if extract_failure_reason == "disk_full":
@@ -1642,13 +1764,8 @@ class ExtractService:
             logger.error(f"任务 {task.id}: {error_msg}")
             # 清理已创建的解压目录（包括部分解压的残留文件）
             await self._cleanup_extract_path(output_path)
-            # 自解压分卷重命名失败时，把文件名还原回 .exe + .eNN，方便用户手工排查
-            await self._rollback_exe_e_remap(task)
-            # .zip + .NNN 非标准分卷重命名失败时，把文件名还原回 .zip + .NNN
-            await self._rollback_zip_numeric_remap(task)
-            # .partN.exe WinRAR 自解压分卷重命名失败时，把文件名还原回 .partN.exe
-            await self._rollback_part_exe_remap(task)
-            self._cleanup_embedded_zip_view(task)
+            await self._cleanup_extract_runtime_state(task)
+            # 自解压 / 非标准分卷重命名还原已在 _cleanup_extract_runtime_state 里统一处理。
             return None
 
         try:
@@ -1676,16 +1793,19 @@ class ExtractService:
             if task.is_cancelled():
                 logger.info(f"任务 {task.id} 在解压完成后被取消，清理已解压文件")
                 await self._cleanup_extract_path(output_path)
-                self._cleanup_embedded_zip_view(task)
+                await self._cleanup_extract_runtime_state(task)
                 return None
 
             # 7. 验证解压完整性
             if archive_info_from_listing:
                 verify_mode = "sample" if len([item for item in archive_info.file_list if not item.get('is_dir')]) > self.VERIFY_FULL_FILE_LIMIT else "full"
                 self._set_extract_meta(task, extract_stage="verify", verify_mode=verify_mode)
-                task.update_progress(90, "验证解压完整性")
-                if not await self._verify_extraction(archive_info, output_path):
-                    raise Exception("解压验证失败，文件不完整")
+                if bool((task.task_metadata or {}).get("extract_verified")):
+                    logger.info("解压完整性已在解压阶段验证，跳过外层重复校验: %s", archive_path)
+                else:
+                    task.update_progress(90, "验证解压完整性")
+                    if not await self._verify_extraction(archive_info, output_path):
+                        raise Exception("解压验证失败，文件不完整")
             else:
                 logger.warning("解压前未能读取到压缩包目录，跳过基于清单的完整性校验: %s", archive_path)
 
@@ -1727,14 +1847,11 @@ class ExtractService:
                 raise RuntimeError(f"解压失败：文件名疑似乱码（样本：{garbled_sample}，评分：{final_garbled_score:.1f}）")
 
             self._set_extract_meta(task, extract_stage="done", extract_finished_at=datetime.now().isoformat())
-            self._cleanup_embedded_zip_view(task)
+            await self._cleanup_extract_runtime_state(task)
             return output_path
         except Exception:
             await self._cleanup_extract_path(output_path)
-            self._cleanup_embedded_zip_view(task)
-            await self._rollback_exe_e_remap(task)
-            await self._rollback_zip_numeric_remap(task)
-            await self._rollback_part_exe_remap(task)
+            await self._cleanup_extract_runtime_state(task)
             raise
 
     def _pick_filename_matched_rjcode(self, password_candidates: List[Dict[str, Optional[str]]]) -> Optional[str]:
@@ -2569,12 +2686,12 @@ class ExtractService:
         if parent_password:
             add(parent_password)
         add("")  # 无密码
-        for pwd in self.config.extract.password_list:
-            add(pwd)
         # 密码库查询只做一次，包含 RJ/文件名/通用条目
         vault_candidates = await self._get_password_candidates_for_archive(archive_path)
         for item in vault_candidates:
             add(item.get("password"))
+        for pwd in self.config.extract.password_list:
+            add(pwd)
 
         def clean_output() -> None:
             """清理上次失败尝试留下的残留文件"""
@@ -3495,13 +3612,13 @@ class ExtractService:
         ordered = [exe_path] + [path for _, path in e_volumes]
         return VolumeSet(base_name, ordered, 'exe_e_sequence', entry_path=exe_path)
 
-    def _probe_sfx_inner_format(self, exe_path: str) -> str:
-        """扫描 SFX 头部，识别内嵌档真实格式。
+    def _probe_sfx_inner_payload(self, exe_path: str) -> Tuple[str, Optional[int]]:
+        """扫描 SFX 头部，识别内嵌档真实格式和 payload 起始偏移。
 
         国产 .exe + .eNN 工具的 SFX 头部通常较小（几 KB），内嵌档魔数会在前几 MB
         出现。这里扫前 8MB 找到第一个匹配即返回。
 
-        Returns: '7z' / 'rar' / 'unknown'
+        Returns: (format, offset)，format 为 '7z' / 'rar' / 'unknown'
         """
         SCAN_SIZE = 8 * 1024 * 1024  # 8MB
         signatures = (
@@ -3514,7 +3631,7 @@ class ExtractService:
                 chunk = f.read(SCAN_SIZE)
         except Exception as exc:
             logger.warning(f"[ExeESequence] 扫描 SFX 头部失败: {exc}")
-            return 'unknown'
+            return 'unknown', None
 
         best_offset = None
         best_fmt = 'unknown'
@@ -3533,7 +3650,27 @@ class ExtractService:
                 f"[ExeESequence] 前 {SCAN_SIZE//1024//1024}MB 未找到 7z/RAR 魔数: "
                 f"{os.path.basename(exe_path)}"
             )
-        return best_fmt
+        return best_fmt, best_offset
+
+    def _probe_sfx_inner_format(self, exe_path: str) -> str:
+        """兼容旧调用：只返回 SFX 内嵌档格式。"""
+        inner_format, _ = self._probe_sfx_inner_payload(exe_path)
+        return inner_format
+
+    def _copy_sfx_payload_first_volume(self, source_path: str, offset: int, target_path: str) -> None:
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        with open(source_path, 'rb') as src, open(target_path, 'wb') as dst:
+            src.seek(offset)
+            shutil.copyfileobj(src, dst, 8 * 1024 * 1024)
+
+    def _link_or_copy_file(self, source_path: str, target_path: str) -> str:
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        try:
+            os.link(source_path, target_path)
+            return "hardlink"
+        except Exception:
+            shutil.copy2(source_path, target_path)
+            return "copy"
 
     async def _remap_exe_e_sequence(
         self,
@@ -3554,7 +3691,7 @@ class ExtractService:
             return volume_set
 
         exe_path = volume_set.entry_path or volume_set.volumes[0]
-        inner_format = self._probe_sfx_inner_format(exe_path)
+        inner_format, payload_offset = self._probe_sfx_inner_payload(exe_path)
 
         if inner_format == 'rar':
             new_type = 'part'
@@ -3562,14 +3699,86 @@ class ExtractService:
             def make_name(idx: int) -> str:
                 return f"{volume_set.base_name}.part{idx}.rar"
         else:
-            # 7z 或 unknown 都默认走 7z 命名（实测国产 SFX 大多是 7z 流）；
-            # 若实际是 RAR 但探测失败，最终走到 unar 兜底也能多救一次。
+            # 7z 或 unknown 都默认走 7z 命名（实测国产 SFX 大多是 7z 流）。
+            # 注意：首卷 .exe 可能带 SFX stub，不能直接改名为 .7z.001；
+            # 必须从 7z 魔数处剥离出干净首卷，否则 7zz 会报 Headers Error。
             new_type = '7z_volume_with_ext'
 
             def make_name(idx: int) -> str:
                 return f"{volume_set.base_name}.7z.{idx:03d}"
 
         directory = os.path.dirname(volume_set.volumes[0])
+
+        if new_type == '7z_volume_with_ext' and payload_offset and payload_offset > 0:
+            temp_root = str(getattr(self.config.storage, "temp_path", "") or "").strip() or None
+            temp_dir = tempfile.mkdtemp(
+                prefix="kikoerumanager_sfx_7z_view_",
+                dir=temp_root,
+            )
+            new_volumes: List[str] = [
+                os.path.join(temp_dir, make_name(idx))
+                for idx, _ in enumerate(volume_set.volumes, start=1)
+            ]
+            linked_files: List[Dict[str, str]] = []
+            try:
+                await asyncio.to_thread(
+                    self._copy_sfx_payload_first_volume,
+                    exe_path,
+                    payload_offset,
+                    new_volumes[0],
+                )
+                linked_files.append({
+                    'source': exe_path,
+                    'view': new_volumes[0],
+                    'mode': 'payload_copy',
+                })
+                for source_path, view_path in zip(volume_set.volumes[1:], new_volumes[1:]):
+                    mode = await asyncio.to_thread(
+                        self._link_or_copy_file,
+                        source_path,
+                        view_path,
+                    )
+                    linked_files.append({
+                        'source': source_path,
+                        'view': view_path,
+                        'mode': mode,
+                    })
+                logger.info(
+                    "[ExeESequence] 已创建 7z SFX 临时分卷视图: source=%s offset=%s dir=%s",
+                    exe_path,
+                    payload_offset,
+                    temp_dir,
+                )
+            except Exception as exc:
+                await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
+                logger.error(
+                    "[ExeESequence] 创建 7z SFX 临时分卷视图失败，回退原始分卷: %s",
+                    exc,
+                )
+                return volume_set
+
+            if task is not None:
+                self._set_extract_meta(
+                    task,
+                    exe_e_remap={
+                        'inner_format': inner_format,
+                        'naming': new_type,
+                        'mode': 'temporary_view',
+                        'source_path': exe_path,
+                        'sfx_payload_offset': payload_offset,
+                        'temp_dir': temp_dir,
+                        'view_map': linked_files,
+                        'rename_map': [],
+                    },
+                )
+
+            return VolumeSet(
+                volume_set.base_name,
+                new_volumes,
+                new_type,
+                entry_path=new_volumes[0],
+            )
+
         rename_map: List[Tuple[str, str]] = []
         new_volumes: List[str] = []
         for idx, volume_path in enumerate(volume_set.volumes, start=1):
@@ -3638,6 +3847,19 @@ class ExtractService:
         meta = (task.task_metadata or {}).get('exe_e_remap')
         if not meta or not isinstance(meta, dict):
             return
+
+        if meta.get('mode') == 'temporary_view':
+            temp_dir = str(meta.get('temp_dir') or '').strip()
+            if temp_dir and os.path.isdir(temp_dir):
+                try:
+                    await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
+                    logger.info(f"[ExeESequence] 已清理 7z SFX 临时分卷视图: {temp_dir}")
+                except Exception as exc:
+                    logger.error(f"[ExeESequence] 清理 7z SFX 临时分卷视图失败: {temp_dir}, error={exc}")
+            if task.task_metadata is not None:
+                task.task_metadata.pop('exe_e_remap', None)
+            return
+
         rename_map = meta.get('rename_map') or []
         if not rename_map:
             return
@@ -4151,6 +4373,22 @@ class ExtractService:
                 if lower.endswith(suffix):
                     add(candidate[:-len(suffix)])
                     break
+
+        try:
+            current = Path(archive_path).parent
+            depth = 0
+            while current and str(current):
+                if current.name:
+                    add(current.name)
+                parent = current.parent
+                if parent == current:
+                    break
+                current = parent
+                depth += 1
+                if depth >= 6:
+                    break
+        except Exception:
+            logger.debug("构建文件名密码嗅探父目录候选失败: %s", archive_path, exc_info=True)
 
         return targets
 
@@ -4747,6 +4985,10 @@ class ExtractService:
             if cached is not None:
                 logger.info(f"[7z][cache] 命中预读取缓存，跳过 list: {archive_path}")
                 return cached
+            plain_zip_info = self._get_plain_zip_archive_info(archive_path)
+            if plain_zip_info is not None:
+                self._save_cached_archive_info(archive_path, plain_zip_info)
+                return plain_zip_info
 
         if password_candidates is None:
             # 指定密码重试：从 task 元数据读取，只用指定密码，不查密码库
@@ -4787,11 +5029,11 @@ class ExtractService:
             # 获取RJ号相关密码
             rj_passwords = self._get_rj_passwords(archive_path)
 
-            # 构建密码列表：RJ号密码优先，然后密码库密码，最后是配置中的默认密码
+            # 构建密码列表：普通未加密包占多数，list 阶段先试空密码，少启动无效密码子进程。
             password_list = []
+            password_list.append("")  # 无密码
             password_list.extend(rj_passwords)  # RJ号密码（RJ号, RJ号+1, RJ号-1）
             password_list.extend(vault_passwords)  # 密码库密码
-            password_list.append("")  # 无密码
             password_list.extend(self.config.extract.password_list)  # 默认密码
 
         # 去重（保持顺序）
@@ -4968,7 +5210,7 @@ class ExtractService:
 
         for index, cmd in enumerate(commands):
             try:
-                logger.debug(f"[7z] 执行命令: {' '.join(cmd)}")
+                logger.debug("[7z] 执行命令: %s", self._format_command_for_log(cmd))
                 result = await self._run_7z_command(cmd, task=task)
                 if result.returncode != 0:
                     logger.warning(
@@ -5058,6 +5300,39 @@ class ExtractService:
         if not has_file:
             return None
         return "plain"
+
+    def _get_plain_zip_archive_info(self, archive_path: str) -> Optional[ArchiveInfo]:
+        """标准未加密 ZIP 快路径：用 zipfile 读中央目录，少跑一次 7zz list。"""
+        if not archive_path:
+            return None
+        if self._probe_zip_no_password_status(archive_path) != "plain":
+            return None
+        import zipfile as _zipfile
+        try:
+            file_list: List[Dict] = []
+            with _zipfile.ZipFile(archive_path, "r") as zf:
+                for info in zf.infolist():
+                    if not (info.flag_bits & 0x800) and any(ord(c) > 127 for c in str(info.filename or "")):
+                        logger.info(
+                            "[zip快路径] 检测到非 UTF-8 flag 的非 ASCII 文件名，回退 7zz list 编码探测: %s",
+                            archive_path,
+                        )
+                        return None
+                    file_list.append({
+                        "name": str(info.filename or "").replace("\\", "/"),
+                        "size": int(info.file_size or 0),
+                        "is_dir": bool(info.is_dir()),
+                    })
+        except (OSError, _zipfile.BadZipFile, _zipfile.LargeZipFile):
+            return None
+        except Exception:
+            logger.debug("[zip快路径] 读取中央目录失败: %s", archive_path, exc_info=True)
+            return None
+        if not file_list:
+            return None
+        archive_info = ArchiveInfo(archive_path, file_list, "")
+        logger.info("[zip快路径] 标准未加密 ZIP 直接读取中央目录: %s entries=%s", archive_path, len(file_list))
+        return archive_info
 
     def _detect_best_encoding(self, raw_bytes: bytes) -> str:
         """
@@ -5542,6 +5817,7 @@ class ExtractService:
                     if not await self._verify_extraction(archive_info, output_path):
                         await self._cleanup_extract_attempt(output_path)
                         return False, None, "extract_incomplete"
+                    self._set_extract_meta(task, extract_verified=True)
                     # 记录成功使用的密码
                     if password and password in vault_passwords:
                         await self._record_password_usage(
@@ -5907,8 +6183,7 @@ class ExtractService:
         task: Optional[Task] = None,
     ) -> subprocess.CompletedProcess:
         """运行7z命令。传入 task 后会把子进程登记到 task 上，cancel/pause 能立刻 kill。"""
-        # 记录命令（显示密码用于调试）
-        logger.info(f"执行7z命令: {' '.join(cmd)}")
+        logger.info("执行7z命令: %s", self._format_command_for_log(cmd))
 
         semaphore = self._get_7z_semaphore()
         is_extract_command = self._is_extract_subprocess_command(cmd)
@@ -7105,6 +7380,16 @@ class ExtractService:
                 return False, None, "partial_output"
 
             if result.returncode == 0:
+                payload_summary = await self._summarize_extracted_payload(output_path)
+                if payload_summary["nonempty_file_count"] <= 0 or payload_summary["total_bytes"] <= 0:
+                    await self._cleanup_extract_attempt(output_path)
+                    logger.warning(
+                        "unar 返回 rc=0 但未产生非空产物，拒绝接受本次 RAR 解压: archive=%s files=%s total_bytes=%s",
+                        archive_info.path,
+                        payload_summary["file_count"],
+                        payload_summary["total_bytes"],
+                    )
+                    return False, None, "partial_output"
                 # 乱码修复：若 lsar 预检未指定编码（或预检不可用），用事后扫描兜底。
                 # 若 lsar 已预检确定编码，则理论上此步骤无需重试，快速跳过。
                 if detected_unar_encoding is None:
@@ -8453,7 +8738,7 @@ class ExtractService:
         if password:
             cmd.extend(["-p", password])
         cmd.append(archive_path)
-        logger.info("执行 unar 命令: %s", " ".join(cmd))
+        logger.info("执行 unar 命令: %s", self._format_command_for_log(cmd))
         return await self._run_subprocess_command(cmd, task=task, running_step="unar 解压中")
 
 class VolumeSet:

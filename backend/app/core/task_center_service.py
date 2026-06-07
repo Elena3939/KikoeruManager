@@ -34,6 +34,7 @@ class TaskCenterService:
     # pending / conflict 走数据库 + 可能有远程查询，单独缓存避免每次重建都触发
     PENDING_CACHE_TTL_SECONDS = 5.0
     CONFLICT_CACHE_TTL_SECONDS = 3.0
+    WAITING_RETRY_CACHE_TTL_SECONDS = 3.0
 
     # summary 模式输出的 details.metadata 仅保留这些键，避免对完整 task_metadata 做 json_safe 深拷贝
     # 注意：必须涵盖任务中心内部 dedup / merge 逻辑会读的字段，否则会破坏行为
@@ -183,6 +184,7 @@ class TaskCenterService:
         TaskType.ASMR_SYNC_DOWNLOAD: "asmr_sync",
         TaskType.HTTP_DOWNLOAD: "http_download",
         TaskType.BAIDU_NETDISK_DOWNLOAD: "baidu_netdisk",
+        TaskType.BAIDU_NETDISK_UPLOAD: "baidu_netdisk",
         TaskType.LOCAL_LIBRARY_UPLOAD: "upload",
         TaskType.CIRCLE_COMPLETION_INDEX: "circle_completion",
         TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH: "circle_completion",
@@ -220,6 +222,8 @@ class TaskCenterService:
         self._pending_cache_at = 0.0
         self._conflict_cache: Optional[List[ConflictWork]] = None
         self._conflict_cache_at = 0.0
+        self._waiting_retry_cache: Optional[List[Dict[str, Any]]] = None
+        self._waiting_retry_cache_at = 0.0
 
     def _safe_iso(self, value: Optional[datetime]) -> Optional[str]:
         return value.isoformat() if value else None
@@ -451,14 +455,21 @@ class TaskCenterService:
             "details": summary_details,
         }
 
-    def _engine_signature(self) -> Tuple[Any, ...]:
+    def _engine_tasks_snapshot(self) -> List[Task]:
+        """取一份与 TaskEngine.get_all_tasks 等价的轻量快照，供签名和序列化复用。"""
+        engine = get_task_engine()
+        for task in engine.tasks.values():
+            engine._ensure_task_context(task)
+        tasks = [task for task in engine.tasks.values() if not engine._is_hidden_task(task)]
+        return sorted(tasks, key=lambda task: task.created_at, reverse=True)
+
+    def _engine_signature_from_tasks(self, tasks: List[Task]) -> Tuple[Any, ...]:
         """内存里就能算出的引擎任务签名，避免每次缓存校验都查库。
 
         变化敏感字段（status / progress / current_step / error / completed_at）足以驱动
         UI 刷新；conflict / pending 走自己的 TTL 缓存，整体缓存仍受 TTL 兜底。
         """
         engine = get_task_engine()
-        tasks = engine.get_all_tasks()
         task_signature = tuple(
             (
                 task.id,
@@ -475,6 +486,9 @@ class TaskCenterService:
             task_signature,
             len(getattr(engine, "processing", set()) or set()),
         )
+
+    def _engine_signature(self) -> Tuple[Any, ...]:
+        return self._engine_signature_from_tasks(self._engine_tasks_snapshot())
 
     def _item_metadata(self, item: Dict[str, Any]) -> Dict[str, Any]:
         details = dict(item.get("details") or {})
@@ -842,8 +856,9 @@ class TaskCenterService:
             metrics = dict(metadata.get("performance_metrics") or {})
             success_count = int(metrics.get("success_count") or 0)
             if not success_count:
+                transfer_rows = list(metadata.get("download_files") or []) + list(metadata.get("upload_files") or [])
                 success_count = sum(
-                    1 for row in list(metadata.get("download_files") or [])
+                    1 for row in transfer_rows
                     if isinstance(row, dict) and self._safe_text(row.get("status")).lower() == "completed"
                 )
             if failed_files and success_count > 0:
@@ -853,6 +868,17 @@ class TaskCenterService:
                 return TaskStatus.COMPLETED.value
             if task.status == TaskStatus.COMPLETED:
                 return TaskStatus.PENDING.value
+        if domain == "asmr_sync" and task.status == TaskStatus.COMPLETED:
+            failed_files = list(metadata.get("failed_files") or [])
+            verification_failures = list(metadata.get("verification_failures") or [])
+            failure_reason = self._safe_text(metadata.get("failure_reason"))
+            metrics = dict(metadata.get("performance_metrics") or {})
+            success_count = int(metrics.get("success_count") or 0)
+            if not success_count:
+                transfer_rows = list(metadata.get("downloaded_resources") or []) + list(metadata.get("uploaded_files") or [])
+                success_count = len([row for row in transfer_rows if isinstance(row, dict)])
+            if success_count > 0 and (failed_files or verification_failures or failure_reason):
+                return "partial_failed"
         return task.status.value
 
     def _serialize_engine_task(self, task: Task, *, mode: str = "detail") -> Dict[str, Any]:
@@ -1141,6 +1167,35 @@ class TaskCenterService:
             self._append_metric(metrics, "已下载", self._format_bytes(transferred) if transferred else None)
             self._append_metric(metrics, "速度", f"{self._format_bytes(speed)}/s" if speed else None)
             self._append_metric(metrics, "来源", platform_label if platform_label and platform_label != "HTTP" else http_download_platform_label(download_mode))
+        elif domain == "baidu_netdisk" and task.type == TaskType.BAIDU_NETDISK_UPLOAD:
+            upload_files = list(metadata.get("upload_files") or [])
+            failed_files = list(metadata.get("failed_files") or [])
+            upload_runtime = dict(metadata.get("upload_runtime") or {})
+            total_bytes = int(
+                upload_runtime.get("total_bytes")
+                or sum(int((item or {}).get("size") or (item or {}).get("size_bytes") or 0) for item in upload_files)
+                or 0
+            )
+            transferred = int(upload_runtime.get("transferred_bytes") or 0)
+            speed = int(upload_runtime.get("speed_bytes_per_sec") or 0)
+            remote_dir = self._safe_text(metadata.get("remote_dir"))
+            title = self._safe_text(metadata.get("batch_name")) or self._safe_text(metadata.get("source_label")) or "百度网盘上传"
+            if len(upload_files) == 1:
+                title = self._safe_text(upload_files[0].get("name")) or title
+            subtitle = remote_dir or output_path or source_path
+            source_label = source_label or "百度网盘上传"
+            source_action = source_action or "manual_baidu_netdisk_upload"
+            source_page = source_page or "library"
+            route_hint = self.DOMAIN_ROUTE_HINT["baidu_netdisk"]
+            metadata["platforms"] = ["baidu_netdisk"]
+            metadata["platform_label"] = "百度网盘"
+            self._append_metric(metrics, "文件", len(upload_files) if upload_files else metadata.get("source_count"))
+            self._append_metric(metrics, "完成", upload_runtime.get("completed_files"))
+            self._append_metric(metrics, "失败", len(failed_files) or upload_runtime.get("failed_files"))
+            self._append_metric(metrics, "大小", self._format_bytes(total_bytes) if total_bytes else None)
+            self._append_metric(metrics, "已上传", self._format_bytes(transferred) if transferred else None)
+            self._append_metric(metrics, "速度", f"{self._format_bytes(speed)}/s" if speed else None)
+            self._append_metric(metrics, "远端目录", remote_dir)
         elif domain == "baidu_netdisk":
             download_files = list(metadata.get("download_files") or [])
             failed_files = list(metadata.get("failed_files") or [])
@@ -1543,6 +1598,59 @@ class TaskCenterService:
             logger.exception("[任务中心] 读取问题作品列表失败，当前轮次已跳过 conflict items")
             return list(self._conflict_cache or [])
 
+    def _get_waiting_retry_items_cached(self) -> List[Dict[str, Any]]:
+        """waiting retry 单独 TTL 缓存，避免任务中心刷新频繁时反复查库。"""
+        now = time.monotonic()
+        if (
+            self._waiting_retry_cache is not None
+            and now - self._waiting_retry_cache_at <= self.WAITING_RETRY_CACHE_TTL_SECONDS
+        ):
+            return list(self._waiting_retry_cache)
+        try:
+            fetched = get_task_engine().get_waiting_retry_tasks_from_db()
+            self._waiting_retry_cache = list(fetched or [])
+            self._waiting_retry_cache_at = now
+            return list(self._waiting_retry_cache)
+        except Exception:
+            logger.exception("[任务中心] 读取等待重试任务失败，当前轮次已跳过 waiting retry items")
+            return list(self._waiting_retry_cache or [])
+
+    def _build_overview_counts(self, items: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
+        counts_by_domain = {
+            key: 0 for key in self.DOMAIN_LABELS.keys()
+            if key != "all"
+        }
+        counts_by_status = {
+            key: 0 for key in self.STATUS_LABELS.keys()
+        }
+
+        for item in items:
+            domain = self._safe_text(item.get("domain"))
+            status = self._safe_text(item.get("status"))
+            if domain in counts_by_domain:
+                counts_by_domain[domain] += 1
+            if status in counts_by_status:
+                counts_by_status[status] += 1
+
+        return {
+            "counts_by_domain": counts_by_domain,
+            "counts_by_status": counts_by_status,
+            "highlight_counts": {
+                "processing": counts_by_status.get(TaskStatus.PROCESSING.value, 0),
+                "waiting_total": (
+                    counts_by_status.get(TaskStatus.PENDING.value, 0)
+                    + counts_by_status.get(TaskStatus.PAUSED.value, 0)
+                    + counts_by_status.get(TaskStatus.WAITING_MANUAL.value, 0)
+                    + counts_by_status.get(TaskStatus.WAITING_RETRY.value, 0)
+                ),
+                "completed": counts_by_status.get(TaskStatus.COMPLETED.value, 0),
+                "waiting_manual": counts_by_status.get(TaskStatus.WAITING_MANUAL.value, 0),
+                "waiting_retry": counts_by_status.get(TaskStatus.WAITING_RETRY.value, 0),
+                "partial_failed": counts_by_status.get("partial_failed", 0),
+                "failed": counts_by_status.get(TaskStatus.FAILED.value, 0),
+            },
+        }
+
     async def _build_all_items(self, *, mode: str = "detail") -> List[Dict[str, Any]]:
         """根据 mode 选择 detail / summary 两套独立缓存。summary 跳过重 IO。"""
         now = time.monotonic()
@@ -1559,24 +1667,29 @@ class TaskCenterService:
             cache_at = self._detail_cache_at
             ttl = self.CACHE_TTL_SECONDS
 
+        engine_tasks_snapshot: Optional[List[Task]] = None
+
         # 热路径：缓存未过期且引擎签名未变，直接返回。签名计算只走内存。
         if cache_data is not None and now - cache_at <= ttl:
-            engine_signature_now = self._engine_signature()
+            engine_tasks_snapshot = self._engine_tasks_snapshot()
+            engine_signature_now = self._engine_signature_from_tasks(engine_tasks_snapshot)
             if engine_signature_now == cache_signature:
                 return list(cache_data)
         else:
             engine_signature_now = None
 
         if engine_signature_now is None:
-            engine_signature_now = self._engine_signature()
+            engine_tasks_snapshot = self._engine_tasks_snapshot()
+            engine_signature_now = self._engine_signature_from_tasks(engine_tasks_snapshot)
 
         # 冷路径：重建。engine tasks 走对应 mode 的序列化；pending / conflict 走子集缓存。
-        engine = get_task_engine()
+        if engine_tasks_snapshot is None:
+            engine_tasks_snapshot = self._engine_tasks_snapshot()
         items: List[Dict[str, Any]] = [
             serialized
             for serialized in (
                 self._safe_serialize_engine_task(task, mode=mode)
-                for task in engine.get_all_tasks()
+                for task in engine_tasks_snapshot
             )
             if serialized
         ]
@@ -1591,7 +1704,7 @@ class TaskCenterService:
             if serialized
         )
 
-        waiting_retry_items = engine.get_waiting_retry_tasks_from_db()
+        waiting_retry_items = self._get_waiting_retry_items_cached()
         items.extend(
             serialized
             for serialized in (
@@ -1730,6 +1843,7 @@ class TaskCenterService:
         except Exception:
             logger.exception("[任务中心] _build_all_items 顶层异常，返回空列表兜底")
             items = []
+        counts = self._build_overview_counts(items)
         try:
             items = self._filter_items(items, domain=domain, status=status, search=search)
         except Exception:
@@ -1748,6 +1862,7 @@ class TaskCenterService:
             "limit": safe_limit,
             "mode": normalized_mode,
             "generated_at": datetime.now().isoformat(),
+            **counts,
         }
 
     async def get_item(
@@ -1778,21 +1893,8 @@ class TaskCenterService:
         except Exception:
             logger.exception("[任务中心] get_overview 顶层异常，返回零数据兜底")
             items = []
-        counts_by_domain = {
-            key: 0 for key in self.DOMAIN_LABELS.keys()
-            if key != "all"
-        }
-        counts_by_status = {
-            key: 0 for key in self.STATUS_LABELS.keys()
-        }
-
-        for item in items:
-            domain = self._safe_text(item.get("domain"))
-            status = self._safe_text(item.get("status"))
-            if domain in counts_by_domain:
-                counts_by_domain[domain] += 1
-            if status in counts_by_status:
-                counts_by_status[status] += 1
+        counts = self._build_overview_counts(items)
+        counts_by_status = counts["counts_by_status"]
 
         active_items = [
             item for item in items
@@ -1813,17 +1915,9 @@ class TaskCenterService:
         return {
             "generated_at": datetime.now().isoformat(),
             "total": len(items),
-            "counts_by_domain": counts_by_domain,
-            "counts_by_status": counts_by_status,
-            "highlight_counts": {
-                "processing": counts_by_status.get(TaskStatus.PROCESSING.value, 0),
-                "waiting_manual": counts_by_status.get(TaskStatus.WAITING_MANUAL.value, 0),
-                "waiting_retry": counts_by_status.get(TaskStatus.WAITING_RETRY.value, 0),
-                "partial_failed": counts_by_status.get("partial_failed", 0),
-                "failed": counts_by_status.get(TaskStatus.FAILED.value, 0),
-            },
-            "recent_items": [self._summary_item(item) for item in recent_terminal_items[:6]],
-            "active_items": [self._summary_item(item) for item in active_items[:6]],
+            **counts,
+            "recent_items": [self._summary_item(item) for item in recent_terminal_items[:60]],
+            "active_items": [self._summary_item(item) for item in active_items[:60]],
         }
 
     async def execute_action(self, item_id: str, action: str) -> Dict[str, Any]:

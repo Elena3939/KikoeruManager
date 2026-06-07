@@ -38,6 +38,126 @@ _DEFAULT_USER_TEMPLATE_NAME = '通用通知 · 极简白'
 _DEFAULT_USER_SUBJECT = '[KikoeruManager] {任务类型}{事件名称} · {任务标题}'
 
 
+def _uid(prefix: str) -> str:
+    return f'blk_{prefix}_{uuid.uuid4().hex[:12]}'
+
+
+def _default_white_template_blocks() -> list:
+    return [
+        {
+            'id': _uid('header_image'),
+            'type': 'rich_text',
+            'enabled': True,
+            'schemaVersion': 1,
+            'props': {
+                'contentJson': None,
+                'htmlCache': (
+                    f'<p style="margin:0;"><img src="{_EMAIL_HEADER_URL}" alt="KikoeruManager Mail" '
+                    'style="display:block;width:100%;max-width:100%;height:auto;border:0;border-radius:12px;'
+                    'outline:none;text-decoration:none;"></p>'
+                ),
+            },
+        },
+        {
+            'id': _uid('event_meta'),
+            'type': 'rich_text',
+            'enabled': True,
+            'schemaVersion': 1,
+            'props': {
+                'contentJson': None,
+                'htmlCache': (
+                    '<p style="margin:18px 0 0 0;text-align:center;font-size:13px;line-height:1.5;'
+                    'color:#7b4fb4;font-weight:700;">{事件图标} {事件名称} · {时间}</p>'
+                ),
+            },
+        },
+        {
+            'id': _uid('title_summary'),
+            'type': 'rich_text',
+            'enabled': True,
+            'schemaVersion': 1,
+            'props': {
+                'contentJson': None,
+                'htmlCache': (
+                    '<h1 style="margin:8px 0 0 0;text-align:center;font-size:24px;line-height:1.34;'
+                    'font-weight:700;color:#16181d;">{任务标题}</h1>'
+                    '<p style="margin:12px auto 0 auto;max-width:480px;text-align:center;font-size:14px;'
+                    'line-height:1.75;color:#5d6470;">{摘要}</p>'
+                ),
+            },
+        },
+        {
+            'id': _uid('duration_badge'),
+            'type': 'rich_text',
+            'enabled': True,
+            'schemaVersion': 1,
+            'props': {
+                'contentJson': None,
+                'htmlCache': (
+                    '<p style="margin:10px 0 0 0;text-align:center;font-size:12px;line-height:1.6;'
+                    'color:#4338ca;font-weight:650;">{总耗时}</p>'
+                ),
+            },
+        },
+        {
+            'id': _uid('stats'),
+            'type': 'stats_grid',
+            'enabled': True,
+            'schemaVersion': 1,
+            'props': {
+                'columns': 3,
+                'items': [
+                    {'key': 'total_files', 'label': '总文件数', 'icon': ''},
+                    {'key': 'total_size', 'label': '总大小', 'icon': ''},
+                    {'key': 'duration', 'label': '耗时', 'icon': ''},
+                ],
+            },
+        },
+        {
+            'id': _uid('rj_card'),
+            'type': 'file_tree',
+            'enabled': True,
+            'schemaVersion': 1,
+            'props': {'title': 'RJ 作品', 'sourceKey': 'rj_work_cards', 'maxItems': 6},
+        },
+        {
+            'id': _uid('files'),
+            'type': 'file_tree',
+            'enabled': True,
+            'schemaVersion': 1,
+            'props': {'title': '文件清单', 'sourceKey': 'file_tree', 'maxItems': 9999},
+        },
+        {
+            'id': _uid('logs'),
+            'type': 'task_log',
+            'enabled': True,
+            'schemaVersion': 1,
+            'props': {'title': '执行日志', 'sourceKey': 'recent_logs', 'maxLines': 8},
+        },
+        {
+            'id': _uid('hr'),
+            'type': 'divider',
+            'enabled': True,
+            'schemaVersion': 1,
+            'props': {'color': '#eceef3', 'margin': 18},
+        },
+        {
+            'id': _uid('footer'),
+            'type': 'rich_text',
+            'enabled': True,
+            'schemaVersion': 1,
+            'props': {
+                'contentJson': None,
+                'htmlCache': (
+                    '<p style="margin:0;text-align:center;font-size:12px;line-height:1.7;color:#8a9099;">'
+                    '此邮件由 <strong style="color:#4f5661;font-weight:650;">KikoeruManager</strong> '
+                    '自动生成。任务详情可在桌面端任务中心查看。</p>'
+                ),
+            },
+        },
+    ]
+
+
 def _default_white_template_html() -> str:
     return """<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f7f8fa;padding:34px 0;">
 <tr><td align="center">
@@ -62,6 +182,7 @@ def ensure_default_email_templates() -> None:
     db = SessionLocal()
     try:
         html_template = _default_white_template_html()
+        blocks = _default_white_template_blocks()
         item = (
             db.query(NotificationTemplate)
             .filter(NotificationTemplate.name == _DEFAULT_USER_TEMPLATE_NAME)
@@ -75,8 +196,8 @@ def ensure_default_email_templates() -> None:
                 channel='email',
                 event_types=['completed', 'failed', 'waiting_manual'],
                 task_domains=[],
-                editor_mode='html',
-                blocks=[],
+                editor_mode='blocks',
+                blocks=blocks,
                 subject_template=_DEFAULT_USER_SUBJECT,
                 html_template=html_template,
                 text_template='{事件名称}\n{任务标题}\n{摘要}',
@@ -90,7 +211,8 @@ def ensure_default_email_templates() -> None:
             item.channel = 'email'
             item.event_types = ['completed', 'failed', 'waiting_manual']
             item.task_domains = []
-            item.editor_mode = 'html'
+            item.editor_mode = 'blocks'
+            item.blocks = blocks
             item.subject_template = item.subject_template or _DEFAULT_USER_SUBJECT
             item.text_template = item.text_template or '{事件名称}\n{任务标题}\n{摘要}'
             item.enabled = True
@@ -739,6 +861,9 @@ def render_blocks_email(blocks: list, payload: dict) -> tuple:
         enriched['severity'] = {'completed': 'success', 'failed': 'danger', 'waiting_manual': 'warning'}.get(event_type, 'info')
     if 'created_at_text' not in enriched:
         enriched['created_at_text'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    stats = enriched.get('stats')
+    if isinstance(stats, dict) and not stats.get('duration') and stats.get('total_duration'):
+        stats['duration'] = stats.get('total_duration')
 
     html_parts = []
     for block in blocks:

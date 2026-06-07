@@ -136,3 +136,19 @@ def broadcast_task_center_changed(task, reason: str = "progress") -> None:
 
 async def broadcast_task_center_changed_async(task, reason: str = "progress") -> None:
     broadcast_task_center_changed(task, reason=reason)
+
+
+def broadcast_processed_archive_changed(archive, reason: str = "archive_changed") -> None:
+    """广播已处理归档记录变化，复用任务中心 SSE 通道驱动概览刷新。"""
+    try:
+        broadcast_event({
+            "type": "processed_archive_changed",
+            "reason": str(reason or "archive_changed"),
+            "archive_id": str(getattr(archive, "id", "") or ""),
+            "filename": str(getattr(archive, "filename", "") or ""),
+            "status": str(getattr(archive, "status", "") or ""),
+            "processed_at": getattr(getattr(archive, "processed_at", None), "isoformat", lambda: "")(),
+            "updated_at": datetime.now().isoformat(),
+        })
+    except Exception:
+        logger.debug("构建归档 SSE 事件失败", exc_info=True)

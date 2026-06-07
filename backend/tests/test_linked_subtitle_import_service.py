@@ -1,3 +1,6 @@
+from types import SimpleNamespace
+
+from app.core.classifier import SmartClassifier
 from app.core.linked_subtitle_import_service import LinkedSubtitleImportService
 
 
@@ -75,3 +78,29 @@ def test_prefer_deepest_target_rj_candidate_keeps_separate_libraries():
     result = service._prefer_deepest_target_rj_candidates(candidates, "RJ01582352")
 
     assert result == candidates
+
+
+def test_classifier_skips_original_duplicate_when_translation_should_supply_subtitles():
+    classifier = SmartClassifier()
+    task = SimpleNamespace(task_metadata={
+        "linked_subtitle_preview": {
+            "source_rjcode": "RJ01616588",
+            "target_rjcode": "RJ01603646",
+            "is_translation_work": True,
+            "kikoeru_needs_subtitle": True,
+            "kikoeru_target_is_empty_shell": False,
+        },
+    })
+    linked_works = {
+        "RJ01616588": SimpleNamespace(work_type="translation", lang="CHI_HANT"),
+        "RJ01603646": SimpleNamespace(work_type="original", lang="JPN"),
+    }
+
+    should_skip = classifier._should_skip_linked_duplicate_for_subtitle_import(
+        "RJ01616588",
+        "RJ01603646",
+        linked_works,
+        task,
+    )
+
+    assert should_skip is True

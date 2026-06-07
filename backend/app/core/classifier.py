@@ -140,6 +140,20 @@ class SmartClassifier:
             linked_work = linked_works.get(linked_rj) if linked_works else None
             work_type = str(getattr(linked_work, "work_type", "") or "")
             lang = str(getattr(linked_work, "lang", "") or "")
+            if self._should_skip_linked_duplicate_for_subtitle_import(
+                normalized_rj,
+                linked_rj,
+                linked_works,
+                task,
+            ):
+                logger.info(
+                    "[预检] 关联 RJ 命中原作但当前翻译作应进入字幕补配，跳过普通重复: "
+                    "current=%s linked=%s path=%s",
+                    normalized_rj,
+                    linked_rj,
+                    existing_path,
+                )
+                continue
             logger.info(
                 "[预检] 库存索引命中关联 RJ: current=%s linked=%s path=%s",
                 normalized_rj,
@@ -178,6 +192,45 @@ class SmartClassifier:
 
         logger.info("[预检] 库存索引未命中当前 RJ / 关联 RJ: %s", normalized_rj)
         return False
+
+    def _should_skip_linked_duplicate_for_subtitle_import(
+        self,
+        current_rjcode: str,
+        linked_rjcode: str,
+        linked_works: Dict,
+        task: Task,
+    ) -> bool:
+        """翻译作补配原作字幕时，关联原作命中库存不算普通重复。"""
+        metadata = dict(getattr(task, "task_metadata", None) or {})
+        preview = dict(metadata.get("linked_subtitle_preview") or {})
+        if not preview:
+            return False
+        if not bool(preview.get("is_translation_work")):
+            return False
+        if not bool(preview.get("kikoeru_needs_subtitle")):
+            return False
+        if bool(preview.get("kikoeru_target_is_empty_shell")):
+            return False
+
+        normalized_current = str(current_rjcode or "").strip().upper()
+        normalized_linked = str(linked_rjcode or "").strip().upper()
+        preview_source = str(preview.get("source_rjcode") or "").strip().upper()
+        preview_target = str(preview.get("target_rjcode") or "").strip().upper()
+        if preview_source and preview_source != normalized_current:
+            return False
+        if preview_target and preview_target != normalized_linked:
+            return False
+
+        current_work = linked_works.get(normalized_current) if linked_works else None
+        linked_work = linked_works.get(normalized_linked) if linked_works else None
+        current_type = str(getattr(current_work, "work_type", "") or "").strip().lower()
+        current_lang = str(getattr(current_work, "lang", "") or "").strip().upper()
+        linked_type = str(getattr(linked_work, "work_type", "") or "").strip().lower()
+        if current_type not in {"translation", "child_translation"}:
+            return False
+        if current_lang not in {"CHI_HANS", "CHI_HANT", "ENG"}:
+            return False
+        return linked_type == "original"
     
     async def _check_kikoeru_server(self, rjcode: str, task: Task) -> bool:
         """

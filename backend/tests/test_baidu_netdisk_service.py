@@ -383,6 +383,50 @@ def test_baidu_share_sekey_decodes_encoded_randsk_once():
     assert service._baidu_share_sekey("plain+value=") == "plain+value="
 
 
+def test_baidu_custom_name_uses_filename_password_template(monkeypatch):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.extract = type("ExtractConfig", (), {
+        "filename_password_sniff_templates": ["{name}（{password}）"],
+    })()
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+
+    rows = service._apply_custom_download_name_to_rows(
+        {
+            "custom_name": "RJ01534331",
+            "custom_extract_password": "SOUTH+",
+        },
+        [{
+            "name": "RJ01534331.rar",
+            "relative_path": "RJ01534331.rar",
+            "original_name": "RJ01534331.rar",
+            "original_relative_path": "RJ01534331.rar",
+        }],
+    )
+
+    assert rows[0]["name"] == "RJ01534331（SOUTH+）.rar"
+    assert rows[0]["relative_path"] == "RJ01534331（SOUTH+）.rar"
+    assert rows[0]["custom_rename_applied"] is True
+
+
+def test_baidu_custom_name_skips_multi_file_share():
+    service = BaiduNetdiskService()
+
+    rows = service._apply_custom_download_name_to_rows(
+        {
+            "custom_name": "RJ01534331",
+            "custom_extract_password": "SOUTH+",
+        },
+        [
+            {"name": "track01.wav", "relative_path": "track01.wav"},
+            {"name": "track02.wav", "relative_path": "track02.wav"},
+        ],
+    )
+
+    assert [row["relative_path"] for row in rows] == ["track01.wav", "track02.wav"]
+    assert all(row["custom_rename_skipped"] is True for row in rows)
+
+
 @pytest.mark.asyncio
 async def test_baidu_web_transfer_uses_decoded_sekey(monkeypatch):
     service = BaiduNetdiskService()
@@ -569,6 +613,33 @@ def test_baidu_pcsgo_output_updates_download_runtime(monkeypatch):
     assert task.task_metadata["download_runtime"]["transferred_bytes"] == row["downloaded"]
     assert task.task_metadata["download_runtime"]["speed_bytes_per_sec"] == row["speed_bytes_per_sec"]
     assert any("BaiduPCS-Go" in item["message"] for item in task.task_metadata["progress_log"])
+
+
+def test_baidu_upload_args_and_remote_dir_are_normalized(monkeypatch):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.baidu_netdisk.upload_max_parallel = 8
+    config.baidu_netdisk.upload_max_load = 6
+    config.baidu_netdisk.upload_conflict_policy = "rsync"
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+
+    remote_dir = service._join_remote_dir("KikoeruManager//备份", "RJ:001/../今日")
+    args = service._baidu_pcs_go_upload_args("BaiduPCS-Go", ["D:/ASMR/RJ001"], remote_dir, service._upload_conflict_policy("overwrite"))
+
+    assert remote_dir == "/KikoeruManager/备份/RJ_001/今日"
+    assert args == [
+        "BaiduPCS-Go",
+        "upload",
+        "-p",
+        "8",
+        "-l",
+        "6",
+        "--policy",
+        "overwrite",
+        "D:/ASMR/RJ001",
+        "/KikoeruManager/备份/RJ_001/今日",
+    ]
+    assert service._upload_conflict_policy("bad") == "rsync"
 
 
 def test_baidu_pcsgo_config_cookie_fields_are_patched(tmp_path):
@@ -1108,6 +1179,133 @@ async def test_baidu_start_download_uses_pcsgo_temporary_transfer_and_cleans_rem
     assert any("临时转存" in item["message"] for item in task.task_metadata["progress_log"])
     assert any("已删除百度网盘临时转存目录" in item["message"] for item in task.task_metadata["progress_log"])
     assert task.task_metadata["download_files"][0]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_baidu_start_download_cancels_and_retries_remote_cleanup(monkeypatch, tmp_path):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.storage.temp_path = str(tmp_path / "temp")
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+    monkeypatch.setattr(service, "_resolve_baidu_pcs_go_path", lambda: "C:/fake/BaiduPCS-Go.exe")
+    monkeypatch.setattr(service, "_remote_temporary_transfer_dir", lambda _task: "/km_20260605_153012_a1b2c3")
+
+    command_log = []
+
+    async def fake_preview_urls(*_args, **_kwargs):
+        return {
+            "items": [{
+                "ok": True,
+                "selection_key": "baidu:item",
+                "filename": "百度大文件",
+                "share_url": "https://pan.baidu.com/s/179-Q_PpccuyitQ2b_boyDw?pwd=0402",
+                "share_id": "179-Q_PpccuyitQ2b_boyDw",
+                "share_numeric_id": "60130084160",
+                "share_uk": "1635081079",
+                "bdstoken": "bd-token",
+                "randsk": "rand-sk",
+                "shorturl": "179-Q_PpccuyitQ2b_boyDw",
+                "share_sign": "share-sign",
+                "share_timestamp": "1780634067",
+                "share_files": [{
+                    "name": "狩龙人拉格纳121.mp4",
+                    "relative_path": "狩龙人拉格纳121.mp4",
+                    "path": "/狩龙人拉格纳121.mp4",
+                    "is_dir": False,
+                    "size_bytes": 6,
+                    "fs_id": "732325025154301",
+                }],
+            }],
+            "selected_keys": ["baidu:item"],
+            "ok_count": 1,
+            "success": True,
+        }
+
+    async def fake_run_baidu_pcs_go_command(
+        args,
+        *,
+        env,
+        log_path,
+        task,
+        cancel_event,
+        ignore_task_cancel=False,
+        on_output=None,
+        heartbeat_message="",
+        max_runtime_seconds=0,
+    ):
+        command_log.append(tuple(args[1:]))
+        command = args[1]
+        if command == "download":
+            raise asyncio.CancelledError()
+        return
+
+    transfer_calls = []
+
+    async def fake_web_transfer(row, cookie, remote_tmp_dir_arg, *, share_url, pass_code=""):
+        transfer_calls.append({
+            "remote_tmp_dir": remote_tmp_dir_arg,
+            "share_url": share_url,
+            "pass_code": pass_code,
+        })
+        return {"errno": 0}
+
+    monkeypatch.setattr(service, "preview_urls", fake_preview_urls)
+    monkeypatch.setattr(service, "_run_baidu_pcs_go_command", fake_run_baidu_pcs_go_command)
+    monkeypatch.setattr(service, "_transfer_share_item_by_web", fake_web_transfer)
+
+    task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={
+            "urls": ["https://pan.baidu.com/s/179-Q_PpccuyitQ2b_boyDw?pwd=0402"],
+            "batch_name": "百度大文件测试",
+            "conflict_policy": "resume",
+        },
+        status=TaskStatus.PROCESSING,
+        task_id="baidu-cancel-test-task",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.start_download_task(task)
+
+    assert transfer_calls == [{
+        "remote_tmp_dir": "/km_20260605_153012_a1b2c3",
+        "share_url": "https://pan.baidu.com/s/179-Q_PpccuyitQ2b_boyDw?pwd=0402",
+        "pass_code": "0402",
+    }]
+    assert command_log.count(("cd", "/")) >= 2
+    assert command_log.count(("rm", "/km_20260605_153012_a1b2c3")) >= 1
+
+
+@pytest.mark.asyncio
+async def test_baidu_remote_cleanup_rejects_unsafe_path(monkeypatch, tmp_path):
+    service = BaiduNetdiskService()
+    command_log = []
+
+    async def fake_run_baidu_pcs_go_command(*args, **kwargs):
+        command_log.append(args)
+
+    monkeypatch.setattr(service, "_run_baidu_pcs_go_command", fake_run_baidu_pcs_go_command)
+
+    task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={"progress_log": []},
+        status=TaskStatus.PROCESSING,
+        task_id="baidu-unsafe-cleanup-test",
+    )
+
+    await service._cleanup_remote_temporary_transfer_dir(
+        "C:/fake/BaiduPCS-Go.exe",
+        "/",
+        env={},
+        log_path=str(tmp_path / "baidupcs-go.log"),
+        task=task,
+        retry_delayed=True,
+    )
+
+    assert command_log == []
+    assert any("跳过异常百度网盘临时目录清理" in item["message"] for item in task.task_metadata["progress_log"])
 
 
 @pytest.mark.asyncio

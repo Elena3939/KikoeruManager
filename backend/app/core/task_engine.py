@@ -33,6 +33,7 @@ class TaskType(str, Enum):
     ASMR_SYNC_DOWNLOAD = "asmr_sync_download"  # ASMR 同步下载任务
     HTTP_DOWNLOAD = "http_download"  # HTTP 外链下载任务
     BAIDU_NETDISK_DOWNLOAD = "baidu_netdisk_download"  # 百度网盘下载任务
+    BAIDU_NETDISK_UPLOAD = "baidu_netdisk_upload"  # 百度网盘上传任务
     RJ_SUBTITLE_FETCH = "rj_subtitle_fetch"  # RJ 字幕抓取任务
     LOCAL_LIBRARY_UPLOAD = "local_library_upload"
     CIRCLE_COMPLETION_INDEX = "circle_completion_index"
@@ -1124,6 +1125,7 @@ class TaskEngine:
                 next_metadata.pop("resolution_error", None)
                 if task.output_path:
                     next_metadata["resolution_output_path"] = task.output_path
+                archive_record = None
                 if conflict.new_path:
                     archive_record = db.query(ProcessedArchive).filter(
                         ProcessedArchive.filename == os.path.basename(str(conflict.new_path))
@@ -1177,6 +1179,12 @@ class TaskEngine:
 
             conflict.new_metadata = next_metadata
             db.commit()
+            if task.status == TaskStatus.COMPLETED and archive_record:
+                try:
+                    from .task_center_event_service import broadcast_processed_archive_changed
+                    broadcast_processed_archive_changed(archive_record)
+                except Exception:
+                    logger.debug("广播归档更新事件失败", exc_info=True)
         except Exception:
             logger.warning("冲突解决任务收尾失败: task_id=%s conflict_id=%s", task.id, conflict_id, exc_info=True)
             db.rollback()
@@ -1804,6 +1812,11 @@ class TaskEngine:
                                 f"target={preview.get('target_rjcode', '')} "
                                 f"reason={linked_result.get('reason') or preview.get('reason') or 'conditions_not_met'}"
                             )
+                            if preview:
+                                task.task_metadata = {
+                                    **(task.task_metadata or {}),
+                                    "linked_subtitle_preview": preview,
+                                }
 
                             if not config.auto_process.check_duplicate:
                                 logger.info(f"[{rjcode}] 预检查重已禁用，跳过")
@@ -2322,11 +2335,15 @@ class TaskEngine:
                 logger.debug(f"[{rjcode}] 已有文件夹任务RJ号: {rjcode}")
                 resolution_mode = str((task.task_metadata or {}).get('existing_folder_resolution') or '').strip().upper()
                 skip_conflict_retry_precheck = self._should_skip_conflict_retry_precheck(task)
+                skip_duplicate_precheck = bool((task.task_metadata or {}).get("skip_duplicate_precheck"))
                 if skip_conflict_retry_precheck:
                     logger.info(f"[{rjcode}] 问题作品处理任务，跳过重复预检")
                     task.update_progress(5, "准备处理")
                 elif resolution_mode in {"KEEP_NEW", "MERGE"}:
                     logger.info(f"[{rjcode}] 已指定冲突处理方案 {resolution_mode}，跳过重复预检")
+                    task.update_progress(5, "准备处理")
+                elif skip_duplicate_precheck:
+                    logger.info(f"[{rjcode}] 已有文件夹查重缓存确认无冲突，跳过重复预检")
                     task.update_progress(5, "准备处理")
                 elif config.process_existing.check_duplicate and rjcode and task.auto_classify:
                     # 步骤0: 预检重复
@@ -2592,6 +2609,8 @@ class TaskEngine:
                     await self._process_http_download(task)
                 elif task.type == TaskType.BAIDU_NETDISK_DOWNLOAD:
                     await self._process_baidu_netdisk_download(task)
+                elif task.type == TaskType.BAIDU_NETDISK_UPLOAD:
+                    await self._process_baidu_netdisk_upload(task)
                 elif task.type == TaskType.RJ_SUBTITLE_FETCH:
                     await self._process_rj_subtitle_fetch(task)
                 elif task.type == TaskType.LOCAL_LIBRARY_UPLOAD:
@@ -2900,9 +2919,9 @@ class TaskEngine:
         if task_id in self.tasks:
             task = self.tasks[task_id]
             metadata = dict(task.task_metadata or {})
-            if task.status in {TaskStatus.FAILED, TaskStatus.COMPLETED} and task.type in {TaskType.HTTP_DOWNLOAD, TaskType.BAIDU_NETDISK_DOWNLOAD}:
+            if task.status in {TaskStatus.FAILED, TaskStatus.COMPLETED} and task.type in {TaskType.HTTP_DOWNLOAD, TaskType.BAIDU_NETDISK_DOWNLOAD, TaskType.BAIDU_NETDISK_UPLOAD}:
                 return
-            if task.status == TaskStatus.PAUSED and task.type == TaskType.BAIDU_NETDISK_DOWNLOAD:
+            if task.status == TaskStatus.PAUSED and task.type in {TaskType.BAIDU_NETDISK_DOWNLOAD, TaskType.BAIDU_NETDISK_UPLOAD}:
                 metadata.pop("pause_origin_status", None)
                 task.task_metadata = metadata
                 with task._set_state_silent():
@@ -2964,7 +2983,7 @@ class TaskEngine:
                     asyncio.create_task(get_http_download_service().cancel_task(task_id))
                 except Exception:
                     logger.debug("取消 HTTP 下载 aria2 任务失败: task_id=%s", task_id, exc_info=True)
-            if task.type == TaskType.BAIDU_NETDISK_DOWNLOAD:
+            if task.type in {TaskType.BAIDU_NETDISK_DOWNLOAD, TaskType.BAIDU_NETDISK_UPLOAD}:
                 try:
                     from .baidu_netdisk_service import get_baidu_netdisk_service
                     asyncio.create_task(get_baidu_netdisk_service().cancel_task(task_id))
@@ -3001,7 +3020,7 @@ class TaskEngine:
                 asyncio.create_task(get_http_download_service().cancel_task(task_id))
             except Exception:
                 logger.debug("清理 HTTP 下载 aria2 状态失败: task_id=%s", task_id, exc_info=True)
-        if task.type == TaskType.BAIDU_NETDISK_DOWNLOAD:
+        if task.type in {TaskType.BAIDU_NETDISK_DOWNLOAD, TaskType.BAIDU_NETDISK_UPLOAD}:
             try:
                 from .baidu_netdisk_service import get_baidu_netdisk_service
                 asyncio.create_task(get_baidu_netdisk_service().cancel_task(task_id))
@@ -3824,6 +3843,11 @@ class TaskEngine:
                     existing_record.processed_at = datetime.now()
                     existing_record.status = 'completed'
                     db.commit()
+                    try:
+                        from .task_center_event_service import broadcast_processed_archive_changed
+                        broadcast_processed_archive_changed(existing_record)
+                    except Exception:
+                        logger.debug("广播归档更新事件失败", exc_info=True)
                     
                     # 重新查询验证更新
                     db.expire_all()
@@ -3868,6 +3892,9 @@ class TaskEngine:
         # ZIP 分卷：主卷 .zip 或分卷成员 .zXX 都接受
         zip_main_match = re.search(r'^(.*)\.zip$', filename, re.IGNORECASE)
         zip_split_match = re.search(r'^(.*)\.z(\d{2})$', filename, re.IGNORECASE)
+        # 国产 SFX 自解压分卷：主卷 .exe + 兄弟 .eNN
+        exe_main_match = re.search(r'^(.*)\.exe$', filename, re.IGNORECASE)
+        exe_split_match = re.search(r'^(.*)\.e(\d{2})$', filename, re.IGNORECASE)
         # 7z 分卷：任意 .7z.NNN 成员都接受（不再只匹配 .7z.001）
         seven_z_member_match = re.search(r'^(.*)\.7z\.(\d{3})$', filename, re.IGNORECASE)
         # ZIP 数字分卷：_remap_zip_numeric_split 标准化后的 .zip.NNN 格式（如 .zip.001/.zip.002）
@@ -3880,6 +3907,7 @@ class TaskEngine:
             f"[Archive] 匹配结果 - part={part_match is not None}, "
             f"no_ext_part={no_ext_part_match is not None}, "
             f"zip_main={zip_main_match is not None}, zip_split={zip_split_match is not None}, "
+            f"exe_main={exe_main_match is not None}, exe_split={exe_split_match is not None}, "
             f"7z_member={seven_z_member_match is not None}, "
             f"zip_numeric_member={zip_numeric_member_match is not None}, "
             f"rar_main={rar_main_match is not None}, "
@@ -3936,6 +3964,19 @@ class TaskEngine:
                     if volume_path not in files_to_archive:
                         files_to_archive.append(volume_path)
             logger.info(f"检测到 ZIP 分卷压缩包，共 {len(files_to_archive)} 个文件: {[os.path.basename(f) for f in files_to_archive]}")
+        elif exe_main_match or exe_split_match:
+            # 国产 SFX 自解压分卷：source_path 可能是 .exe 主卷或 .eNN 成员，
+            # 一律按 base_name 聚合 .exe + 全部 .eNN 兄弟卷。
+            base_name = (exe_main_match or exe_split_match).group(1)
+            exe_main_path = os.path.join(source_dir, f"{base_name}.exe")
+            if os.path.exists(exe_main_path) and exe_main_path not in files_to_archive:
+                files_to_archive.append(exe_main_path)
+            for f in os.listdir(source_dir):
+                if re.match(rf'^{re.escape(base_name)}\.e\d{{2}}$', f, re.IGNORECASE):
+                    volume_path = os.path.join(source_dir, f)
+                    if volume_path not in files_to_archive:
+                        files_to_archive.append(volume_path)
+            logger.info(f"检测到自解压分卷压缩包，共 {len(files_to_archive)} 个文件: {[os.path.basename(f) for f in files_to_archive]}")
         elif rar_main_match:
             # 旧式 RAR 主卷（task.source_path 为 .rar 文件）：同目录可能有 .r00/.r01 兄弟卷，
             # 一起聚合归档，避免主卷移走后 .rXX 残留在待处理目录。
@@ -4075,6 +4116,12 @@ class TaskEngine:
                         logger.info(f"已记录压缩包归档信息: {main_filename}, 时间: {now}")
                     
                     db.commit()
+                    changed_archive = existing_record or archive_record
+                    try:
+                        from .task_center_event_service import broadcast_processed_archive_changed
+                        broadcast_processed_archive_changed(changed_archive)
+                    except Exception:
+                        logger.debug("广播归档更新事件失败", exc_info=True)
                 except Exception as e:
                     logger.error(f"记录压缩包归档信息失败: {e}")
                     db.rollback()
@@ -4101,10 +4148,12 @@ class TaskEngine:
         排序约定（数字越小越靠前，即越靠近"首卷"）：
         - 0/1: .partN.ext / .partN  -> 按 N 升序，.part1 必然最小
         - 2:   .7z.NNN              -> 按 NNN 升序，.001 在最前
-        - 3:   .zip 主卷             -> 在 .zXX 之前
-        - 4:   .zXX                 -> 按 N 升序
-        - 5:   .rar 主卷             -> 在 .rXX 之前
-        - 6:   .rXX                 -> 按 N 升序
+        - 3:   .exe 主卷             -> 在 .eNN 之前
+        - 4:   .eNN                 -> 按 N 升序
+        - 5:   .zip 主卷             -> 在 .zXX 之前
+        - 6:   .zXX                 -> 按 N 升序
+        - 7:   .rar 主卷             -> 在 .rXX 之前
+        - 8:   .rXX                 -> 按 N 升序
         - 9:   其他单文件 / 未知格式
 
         排序结果保证 list[0] 是分卷组首卷，后续写 ProcessedArchive 记录时
@@ -4126,19 +4175,26 @@ class TaskEngine:
             if m:
                 return (2, int(m.group(1)), name)
 
-            if name.endswith('.zip'):
+            if name.endswith('.exe'):
                 return (3, 0, name)
 
-            m = re.search(r'\.z(\d{2})$', name, re.IGNORECASE)
+            m = re.search(r'\.e(\d{2})$', name, re.IGNORECASE)
             if m:
                 return (4, int(m.group(1)), name)
 
-            if name.endswith('.rar'):
+            if name.endswith('.zip'):
                 return (5, 0, name)
+
+            m = re.search(r'\.z(\d{2})$', name, re.IGNORECASE)
+            if m:
+                return (6, int(m.group(1)), name)
+
+            if name.endswith('.rar'):
+                return (7, 0, name)
 
             m = re.search(r'\.r(\d{2})$', name, re.IGNORECASE)
             if m:
-                return (6, int(m.group(1)), name)
+                return (8, int(m.group(1)), name)
 
             return (9, 0, name)
 
@@ -4183,6 +4239,8 @@ class TaskEngine:
 
                 task.update_progress(3, "准备直接入库任务" if is_reimport_task else "准备增强下载任务")
                 await get_asmr_resource_service().process_download_task(task)
+                if task.status == TaskStatus.PROCESSING:
+                    task.complete()
                 logger.info(f"[{rjcode}] {'直接入库' if is_reimport_task else 'ASMR 增强下载'}任务完成")
                 return
 
@@ -4676,6 +4734,46 @@ class TaskEngine:
                 task.current_step = message
                 return
             task.task_metadata["baidu_netdisk_final_status"] = "completed"
+            task.complete()
+        finally:
+            if task.is_cancelled():
+                await service.cancel_task(task.id)
+
+    async def _process_baidu_netdisk_upload(self, task: Task):
+        """处理百度网盘上传任务。"""
+        from .baidu_netdisk_service import get_baidu_netdisk_service
+
+        service = get_baidu_netdisk_service()
+        task.task_metadata.setdefault("upload_files", [])
+        task.task_metadata.setdefault("uploaded_files", [])
+        task.task_metadata.setdefault("failed_files", [])
+        task.task_metadata.setdefault("upload_runtime", {})
+        task.task_metadata.setdefault("progress_log", [])
+        task.task_metadata.setdefault("platforms", ["baidu_netdisk"])
+        task.task_metadata.setdefault("platform_label", "百度网盘")
+        task.task_metadata.setdefault("source_page", "library")
+        task.task_metadata.setdefault("source_action", "manual_baidu_netdisk_upload")
+        task.task_metadata.setdefault("task_domain", "baidu_netdisk")
+        task.task_metadata.setdefault("task_kind", TaskType.BAIDU_NETDISK_UPLOAD.value)
+
+        try:
+            result = await service.start_upload_task(task)
+            uploaded_files = list(result.get("uploaded_files") or task.task_metadata.get("uploaded_files") or [])
+            failed_files = list(result.get("failed_files") or task.task_metadata.get("failed_files") or [])
+            if uploaded_files and failed_files:
+                message = f"百度网盘上传部分成功，成功 {len(uploaded_files)} 个，失败 {len(failed_files)} 个"
+                task.task_metadata["partial_success"] = True
+                task.task_metadata["failure_reason"] = message
+                task.task_metadata["baidu_netdisk_upload_final_status"] = "partial_failed"
+                task.fail(message)
+                task.progress = 100
+                task.current_step = message
+                return
+            if failed_files and not uploaded_files:
+                message = service._first_failure_reason(failed_files) or "百度网盘上传失败"
+                task.task_metadata["baidu_netdisk_upload_final_status"] = "failed"
+                raise RuntimeError(message)
+            task.task_metadata["baidu_netdisk_upload_final_status"] = "completed"
             task.complete()
         finally:
             if task.is_cancelled():
