@@ -11852,6 +11852,12 @@ async def rj_subtitle_clear_task(task_id: str):
             and metadata.get("awaiting_manual_match")
             and not metadata.get("manual_match_completed")
         ):
+            raise HTTPException(status_code=400, detail="字幕补配仍在等待筛选与配对，不能清理")
+
+        if (
+            source_mode in {"linked_translation_archive_import", "subtitle_folder_import"}
+            and metadata.get("manual_match_completed")
+        ):
             workbench_root = str(metadata.get("linked_workbench_root_dir") or "").strip()
             if workbench_root:
                 try:
