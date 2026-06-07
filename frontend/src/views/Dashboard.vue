@@ -793,6 +793,8 @@ function getArchiveStatusMeta(value) {
   if (['partial_failed', 'partial_success'].includes(normalized)) return { key: 'partial_failed', label: '部分成功' }
   if (['failed', 'error'].includes(normalized)) return { key: 'failed', label: '失败' }
   if (['processing', 'running'].includes(normalized)) return { key: 'processing', label: '处理中' }
+  if (['waiting_manual', 'awaiting_manual_match', 'manual_required'].includes(normalized)) return { key: 'waiting_manual', label: '等待人工' }
+  if (['waiting_retry', 'retry_waiting'].includes(normalized)) return { key: 'waiting_retry', label: '等待重试' }
   if (['pending', 'waiting', 'queued'].includes(normalized)) return { key: 'pending', label: '待处理' }
   return { key: 'unknown', label: normalized }
 }
@@ -828,7 +830,6 @@ function getArchiveStatusMeta(value) {
   /* 子组件内部的 overflow-auto / overflow-hidden + flex-1 列表区松绑：
      让内容自然撑开高度（整页滚动而不是内部小框滚动） */
   .dashboard-page-shell :deep([data-section="dashboard-tasks"] .overflow-auto),
-  .dashboard-page-shell :deep([data-section="dashboard-archive"] .overflow-hidden),
   .dashboard-page-shell :deep([data-section="dashboard-archive"] .overflow-auto) {
     overflow: visible !important;
     flex: 0 0 auto !important;

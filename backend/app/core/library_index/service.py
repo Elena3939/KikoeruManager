@@ -27,6 +27,7 @@ from typing import Any, Optional, Sequence, Union
 
 from .local_scanner import LocalScanner
 from .remote_scanner import RemoteScanner
+from ..resource_budget_service import get_resource_budget_service
 from .snapshot_store import SnapshotStore, get_snapshot_store
 from .types import IndexEntry, IndexStatus
 
@@ -240,20 +241,21 @@ class LibraryIndexService:
             buffer: list[IndexEntry] = []
             written = 0
             last_progress_report = time.time()
-            async for entry in scanner.scan(library_id, client, root_path):
-                buffer.append(entry)
-                if len(buffer) >= chunk_size:
-                    written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
-                    buffer.clear()
-                    now = time.time()
-                    if now - last_progress_report >= 0.5:
-                        self._store.upsert_status(
-                            library_id,
-                            status='syncing',
-                            watcher_mode='disabled',
-                            total_entries=written,
-                        )
-                        last_progress_report = now
+            async with get_resource_budget_service().acquire("remote_fs", weight=2, reason="library_index.remote_rebuild"):
+                async for entry in scanner.scan(library_id, client, root_path):
+                    buffer.append(entry)
+                    if len(buffer) >= chunk_size:
+                        written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
+                        buffer.clear()
+                        now = time.time()
+                        if now - last_progress_report >= 0.5:
+                            self._store.upsert_status(
+                                library_id,
+                                status='syncing',
+                                watcher_mode='disabled',
+                                total_entries=written,
+                            )
+                            last_progress_report = now
             if buffer:
                 written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
 

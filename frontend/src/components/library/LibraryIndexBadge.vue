@@ -40,7 +40,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Database as IconDatabase, RefreshCw as IconRefreshCw } from 'lucide-vue-next'
 import { Badge } from '@/components/ui/badge'
 import { libraryApi } from '../../api'
@@ -57,6 +57,7 @@ const emit = defineEmits(['status-change'])
 
 const status = ref(null)
 const rebuilding = ref(false)
+const fetching = ref(false)
 let pollTimer = null
 let lastFetchedFor = null
 
@@ -135,13 +136,25 @@ watch(libraryId, (id) => {
   fetchStatus()
 }, { immediate: true })
 
+onMounted(() => {
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+  }
+})
+
 onBeforeUnmount(() => {
   stopPolling()
+  if (typeof document !== 'undefined') {
+    document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }
 })
 
 async function fetchStatus() {
   const id = libraryId.value
   if (!id) return
+  if (typeof document !== 'undefined' && document.hidden) return
+  if (fetching.value) return
+  fetching.value = true
   try {
     const data = await libraryApi.getIndexStatus(id)
     status.value = data
@@ -154,6 +167,8 @@ async function fetchStatus() {
   } catch (error) {
     // 静默：状态查询失败不应该影响页面其他功能
     status.value = { status: 'idle', error: error?.message || String(error) }
+  } finally {
+    fetching.value = false
   }
 }
 
@@ -168,6 +183,18 @@ function stopPolling() {
   if (pollTimer) {
     clearInterval(pollTimer)
     pollTimer = null
+  }
+}
+
+function handleVisibilityChange() {
+  if (typeof document === 'undefined' || document.hidden) return
+  if (!status.value && libraryId.value) {
+    fetchStatus()
+    return
+  }
+  if (statusName.value === 'syncing') {
+    fetchStatus()
+    startPolling()
   }
 }
 

@@ -212,10 +212,12 @@ class TaskCenterService:
         # detail 模式缓存（给 get_item 用）
         self._detail_cache: Optional[List[Dict[str, Any]]] = None
         self._detail_cache_signature: Optional[Tuple[Any, ...]] = None
+        self._detail_cache_engine_version: Optional[int] = None
         self._detail_cache_at = 0.0
         # summary 模式缓存（给 list / overview 用）
         self._summary_cache: Optional[List[Dict[str, Any]]] = None
         self._summary_cache_signature: Optional[Tuple[Any, ...]] = None
+        self._summary_cache_engine_version: Optional[int] = None
         self._summary_cache_at = 0.0
         # 子集缓存：pending imports / active conflicts，单独 TTL，避免每次重建都查库
         self._pending_cache: Optional[List[Dict[str, Any]]] = None
@@ -224,6 +226,8 @@ class TaskCenterService:
         self._conflict_cache_at = 0.0
         self._waiting_retry_cache: Optional[List[Dict[str, Any]]] = None
         self._waiting_retry_cache_at = 0.0
+        # summary 模式单任务快照缓存：任务未变化时避免重复 metadata 清洗和指标构建。
+        self._summary_engine_item_cache: Dict[str, Tuple[Tuple[Any, ...], Dict[str, Any]]] = {}
 
     def _safe_iso(self, value: Optional[datetime]) -> Optional[str]:
         return value.isoformat() if value else None
@@ -489,6 +493,47 @@ class TaskCenterService:
 
     def _engine_signature(self) -> Tuple[Any, ...]:
         return self._engine_signature_from_tasks(self._engine_tasks_snapshot())
+
+    def _engine_task_summary_cache_key(self, task: Task) -> Tuple[Any, ...]:
+        return (
+            task.id,
+            getattr(getattr(task, "status", None), "value", str(getattr(task, "status", ""))),
+            int(getattr(task, "progress", 0) or 0),
+            self._safe_text(getattr(task, "current_step", "")),
+            self._safe_text(getattr(task, "error_message", "")),
+            self._safe_iso(getattr(task, "started_at", None)),
+            self._safe_iso(getattr(task, "completed_at", None)),
+            int(getattr(task, "metadata_version", lambda: 0)()),
+        )
+
+    def _serialize_engine_task_cached(self, task: Task, *, mode: str = "detail") -> Optional[Dict[str, Any]]:
+        if self._safe_text(mode).lower() != "summary":
+            return self._safe_serialize_engine_task(task, mode=mode)
+
+        cache_key = self._engine_task_summary_cache_key(task)
+        cached = self._summary_engine_item_cache.get(task.id)
+        if cached and cached[0] == cache_key:
+            return dict(cached[1])
+
+        serialized = self._safe_serialize_engine_task(task, mode=mode)
+        if serialized:
+            self._summary_engine_item_cache[task.id] = (cache_key, dict(serialized))
+        return serialized
+
+    def _prune_summary_engine_item_cache(self, task_ids: set[str]) -> None:
+        for task_id in list(self._summary_engine_item_cache):
+            if task_id not in task_ids:
+                self._summary_engine_item_cache.pop(task_id, None)
+
+    def _engine_change_version(self) -> Optional[int]:
+        """事件期维护的任务中心版本号；旧引擎实例缺字段时回退签名扫描。"""
+        getter = getattr(get_task_engine(), "get_task_center_version", None)
+        if not callable(getter):
+            return None
+        try:
+            return int(getter())
+        except Exception:
+            return None
 
     def _item_metadata(self, item: Dict[str, Any]) -> Dict[str, Any]:
         details = dict(item.get("details") or {})
@@ -1134,6 +1179,14 @@ class TaskCenterService:
             download_mode = self._safe_text(metadata.get("download_mode")) or "http"
             platforms = http_download_platforms_from_metadata(metadata)
             platform_label = self._safe_text(metadata.get("platform_label")) or http_download_platforms_label(platforms)
+            current_file_name = self._safe_text(download_runtime.get("current_file_name"))
+            primary_file_name = ""
+            for file_row in download_files:
+                if not isinstance(file_row, dict):
+                    continue
+                primary_file_name = self._safe_text(file_row.get("name")) or self._safe_text(file_row.get("filename"))
+                if primary_file_name:
+                    break
             default_download_title = build_http_download_batch_title(
                 {
                     **metadata,
@@ -1146,7 +1199,14 @@ class TaskCenterService:
             title = self._safe_text(metadata.get("batch_name")) or self._safe_text(metadata.get("source_label")) or default_download_title
             if len(download_files) == 1:
                 title = self._safe_text(download_files[0].get("name")) or title
-            subtitle = self._safe_text(metadata.get("download_root")) or output_path or source_path
+            subtitle = (
+                self._safe_text(metadata.get("workbench_subtitle"))
+                or current_file_name
+                or primary_file_name
+                or self._safe_text(metadata.get("download_root"))
+                or output_path
+                or source_path
+            )
             source_label = source_label or default_download_title
             source_action = source_action or (f"manual_{download_mode}_download" if download_mode not in {"http", "mixed"} else "manual_http_download")
             source_page = source_page or "asmr-sync"
@@ -1167,6 +1227,7 @@ class TaskCenterService:
             self._append_metric(metrics, "已下载", self._format_bytes(transferred) if transferred else None)
             self._append_metric(metrics, "速度", f"{self._format_bytes(speed)}/s" if speed else None)
             self._append_metric(metrics, "来源", platform_label if platform_label and platform_label != "HTTP" else http_download_platform_label(download_mode))
+            self._append_metric(metrics, "目录", self._safe_text(metadata.get("download_root")) or output_path or source_path)
         elif domain == "baidu_netdisk" and task.type == TaskType.BAIDU_NETDISK_UPLOAD:
             upload_files = list(metadata.get("upload_files") or [])
             failed_files = list(metadata.get("failed_files") or [])
@@ -1659,21 +1720,30 @@ class TaskCenterService:
         if is_summary:
             cache_data = self._summary_cache
             cache_signature = self._summary_cache_signature
+            cache_engine_version = self._summary_cache_engine_version
             cache_at = self._summary_cache_at
             ttl = self.SUMMARY_CACHE_TTL_SECONDS
         else:
             cache_data = self._detail_cache
             cache_signature = self._detail_cache_signature
+            cache_engine_version = self._detail_cache_engine_version
             cache_at = self._detail_cache_at
             ttl = self.CACHE_TTL_SECONDS
 
         engine_tasks_snapshot: Optional[List[Task]] = None
+        engine_version_now = self._engine_change_version()
 
-        # 热路径：缓存未过期且引擎签名未变，直接返回。签名计算只走内存。
+        # 热路径：缓存未过期且事件期版本号未变，直接返回，避免为签名扫描所有任务。
         if cache_data is not None and now - cache_at <= ttl:
+            if engine_version_now is not None and engine_version_now == cache_engine_version:
+                return list(cache_data)
             engine_tasks_snapshot = self._engine_tasks_snapshot()
             engine_signature_now = self._engine_signature_from_tasks(engine_tasks_snapshot)
             if engine_signature_now == cache_signature:
+                if is_summary:
+                    self._summary_cache_engine_version = engine_version_now
+                else:
+                    self._detail_cache_engine_version = engine_version_now
                 return list(cache_data)
         else:
             engine_signature_now = None
@@ -1685,10 +1755,12 @@ class TaskCenterService:
         # 冷路径：重建。engine tasks 走对应 mode 的序列化；pending / conflict 走子集缓存。
         if engine_tasks_snapshot is None:
             engine_tasks_snapshot = self._engine_tasks_snapshot()
+        if is_summary:
+            self._prune_summary_engine_item_cache({task.id for task in engine_tasks_snapshot})
         items: List[Dict[str, Any]] = [
             serialized
             for serialized in (
-                self._safe_serialize_engine_task(task, mode=mode)
+                self._serialize_engine_task_cached(task, mode=mode)
                 for task in engine_tasks_snapshot
             )
             if serialized
@@ -1748,12 +1820,86 @@ class TaskCenterService:
         if is_summary:
             self._summary_cache = list(items)
             self._summary_cache_signature = engine_signature_now
+            self._summary_cache_engine_version = engine_version_now
             self._summary_cache_at = completed_at
         else:
             self._detail_cache = list(items)
             self._detail_cache_signature = engine_signature_now
+            self._detail_cache_engine_version = engine_version_now
             self._detail_cache_at = completed_at
         return items
+
+    async def backfill_materialized_items(self) -> Dict[str, Any]:
+        """用旧聚合器输出回填任务中心物化表，并返回对照 diff。
+
+        当前阶段只作为迁移/诊断入口，不改变 list_items 的读路径。
+        """
+        from .task_center_materialization_service import get_task_center_materialization_service
+
+        engine_tasks_snapshot = self._engine_tasks_snapshot()
+        metadata_by_task_id = {
+            task.id: dict(getattr(task, "task_metadata", None) or {})
+            for task in engine_tasks_snapshot
+        }
+        items = await self._build_all_items(mode="summary")
+        service = get_task_center_materialization_service()
+        version = self._engine_change_version() or 0
+        upserted = service.upsert_items(
+            items,
+            version=version,
+            metadata_by_task_id=metadata_by_task_id,
+        )
+        valid_item_ids = {
+            self._safe_text(item.get("id"))
+            for item in items
+        }
+        pruned = service.prune_items(valid_item_ids)
+        diff = service.diff_items(items)
+        return {
+            "item_count": len(items),
+            "engine_item_count": len([item for item in items if self._safe_text(item.get("id")).startswith("engine:")]),
+            "upserted": upserted,
+            "pruned": pruned,
+            "version": version,
+            **diff,
+        }
+
+    def list_materialized_items(
+        self,
+        *,
+        domain: Optional[str] = None,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        """任务中心物化表 SQL 读路径预览，暂不接管正式 API。"""
+        from .task_center_materialization_service import get_task_center_materialization_service
+
+        service = get_task_center_materialization_service()
+        result = service.list_items(
+            domain=domain,
+            status=status,
+            search=search,
+            limit=500,
+            offset=0,
+        )
+        filtered_items = self._sort_items(list(result.get("items") or []))
+        safe_limit = max(1, min(int(limit or 200), 500))
+        safe_offset = max(0, int(offset or 0))
+        return {
+            "items": filtered_items[safe_offset:safe_offset + safe_limit],
+            "total": int(result.get("total") or len(filtered_items)),
+            "offset": safe_offset,
+            "limit": safe_limit,
+            **service.build_counts(),
+            "mode": "materialized_summary",
+            "generated_at": datetime.now().isoformat(),
+        }
+
+    def list_materialized_engine_items(self, **kwargs) -> Dict[str, Any]:
+        """兼容旧诊断接口名。"""
+        return self.list_materialized_items(**kwargs)
 
     async def diagnose_serialization_failures(self) -> Dict[str, Any]:
         engine = get_task_engine()
@@ -1836,6 +1982,19 @@ class TaskCenterService:
         normalized_mode = self._safe_text(mode).lower() or "detail"
         safe_limit = max(1, min(int(limit or 200), 500))
         safe_offset = max(0, int(offset or 0))
+        if normalized_mode == "summary" and os.getenv("KIKOERUMANAGER_TASK_CENTER_MATERIALIZED_SUMMARY", "").strip().lower() in {"1", "true", "yes", "on"}:
+            try:
+                materialized = self.list_materialized_items(
+                    domain=domain,
+                    status=status,
+                    search=search,
+                    limit=safe_limit,
+                    offset=safe_offset,
+                )
+                if materialized.get("items") or int(materialized.get("total") or 0) > 0:
+                    return materialized
+            except Exception:
+                logger.warning("[任务中心] 物化 summary 读路径失败，回退旧聚合", exc_info=True)
         # 顶层防御：底层任意环节抛错都回退到"空列表 + 200"，避免整个任务中心
         # 因为单条任务序列化异常被拖成 500。具体异常已经在底层 logger.exception 记录。
         try:

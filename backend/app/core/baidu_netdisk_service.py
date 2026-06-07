@@ -29,6 +29,7 @@ import requests
 
 from ..config.settings import get_config, save_config
 from .http_download_service import sanitize_http_download_item
+from .resource_budget_service import get_resource_budget_service
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +159,17 @@ def sanitize_baidu_netdisk_item(item: Dict[str, Any]) -> Dict[str, Any]:
     out.pop("pass_code", None)
     out.pop("custom_extract_password", None)
     out.pop("extract_password", None)
+    out.pop("custom_file_names", None)
+    if isinstance(out.get("preview_files"), list):
+        clean_preview_files = []
+        for file_item in out.get("preview_files") or []:
+            if not isinstance(file_item, dict):
+                continue
+            clean_file = dict(file_item)
+            clean_file.pop("custom_extract_password", None)
+            clean_file.pop("extract_password", None)
+            clean_preview_files.append(clean_file)
+        out["preview_files"] = clean_preview_files
     out.pop("share_files", None)
     out.pop("share_tokens", None)
     return out
@@ -482,16 +494,66 @@ class BaiduNetdiskService:
         out["selected_count"] = len(items)
         return out
 
-    def _baidu_selected_item_overrides(self, item: Dict[str, Any]) -> Dict[str, str]:
+    def _baidu_selected_item_overrides(self, item: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(item, dict):
             return {}
         custom_name = str(item.get("custom_name") or item.get("custom_filename") or "").strip()
         custom_extract_password = str(item.get("custom_extract_password") or item.get("extract_password") or "").strip()
-        overrides: Dict[str, str] = {}
+        custom_file_names = self._baidu_selected_file_overrides(item)
+        overrides: Dict[str, Any] = {}
         if custom_name:
             overrides["custom_name"] = custom_name
         if custom_extract_password:
             overrides["custom_extract_password"] = custom_extract_password
+        if custom_file_names:
+            overrides["custom_file_names"] = custom_file_names
+        return overrides
+
+    def _baidu_selected_file_overrides(self, item: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
+        overrides: Dict[str, Dict[str, str]] = {}
+
+        def add_override(source: Any, base: Optional[Dict[str, Any]] = None) -> None:
+            if not isinstance(source, dict):
+                return
+            custom_name = str(source.get("custom_name") or source.get("custom_filename") or "").strip()
+            custom_extract_password = str(source.get("custom_extract_password") or source.get("extract_password") or "").strip()
+            if not custom_name and not custom_extract_password:
+                return
+            merged = dict(base or {})
+            merged.update(source)
+            normalized = {
+                "custom_name": custom_name,
+                "custom_extract_password": custom_extract_password,
+                "fs_id": str(merged.get("fs_id") or merged.get("fsid") or "").strip(),
+                "path": str(merged.get("path") or merged.get("remote_path") or "").strip(),
+                "relative_path": str(merged.get("relative_path") or "").strip(),
+                "name": str(merged.get("name") or "").strip(),
+            }
+            keys = [
+                normalized["fs_id"],
+                normalized["path"],
+                normalized["relative_path"],
+                normalized["name"],
+            ]
+            for key in keys:
+                if key:
+                    overrides[key] = normalized
+
+        raw_overrides = item.get("custom_file_names") or item.get("custom_file_overrides")
+        if isinstance(raw_overrides, dict):
+            for key, value in raw_overrides.items():
+                base = {"relative_path": str(key or "").strip()}
+                if isinstance(value, str):
+                    add_override({"custom_name": value}, base)
+                else:
+                    add_override(value, base)
+        elif isinstance(raw_overrides, list):
+            for value in raw_overrides:
+                add_override(value)
+
+        for file_item in list(item.get("preview_files") or []):
+            add_override(file_item)
+
         return overrides
 
     def _preview_from_raw_items(self, items: List[Dict[str, Any]], metadata: Dict[str, Any]) -> Dict[str, Any]:
@@ -771,7 +833,7 @@ class BaiduNetdiskService:
             "resumable": True,
             "is_dir": True,
             "source_label": BAIDU_NETDISK_LABEL,
-            "preview_files": detail_files[:8],
+            "preview_files": detail_files,
             "preview_summary": preview_summary,
             "preview_file_count": detail_file_count,
             "preview_folder_count": detail_folder_count,
@@ -2635,6 +2697,9 @@ class BaiduNetdiskService:
     def _apply_custom_download_name_to_rows(self, item: Dict[str, Any], rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not rows:
             return rows
+        file_overrides = self._baidu_selected_file_overrides(item)
+        if file_overrides:
+            rows = [self._apply_custom_file_override_to_row(row, file_overrides) for row in rows]
         custom_name = str(item.get("custom_name") or item.get("custom_filename") or "").strip()
         custom_password = str(item.get("custom_extract_password") or item.get("extract_password") or "").strip()
         if not custom_name and not custom_password:
@@ -2651,6 +2716,38 @@ class BaiduNetdiskService:
             row["relative_path"] = custom_relative_path
             row["custom_rename_applied"] = True
         return rows
+
+    def _apply_custom_file_override_to_row(self, row: Dict[str, Any], overrides: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
+        if not isinstance(row, dict) or not overrides:
+            return row
+        candidates = [
+            str(row.get("fs_id") or "").strip(),
+            str(row.get("remote_path") or row.get("path") or "").strip(),
+            str(row.get("original_relative_path") or "").strip(),
+            str(row.get("relative_path") or "").strip(),
+            str(row.get("original_name") or row.get("name") or "").strip(),
+        ]
+        override = next((overrides.get(key) for key in candidates if key and overrides.get(key)), None)
+        if not override:
+            return row
+        custom_name = str(override.get("custom_name") or override.get("custom_filename") or "").strip()
+        custom_password = str(override.get("custom_extract_password") or override.get("extract_password") or "").strip()
+        if not custom_name and not custom_password:
+            return row
+        proxy_item = {
+            "custom_name": custom_name,
+            "custom_extract_password": custom_password,
+        }
+        custom_relative_path = self._custom_download_relative_path(proxy_item, str(row.get("relative_path") or ""))
+        if not custom_relative_path:
+            return row
+        next_row = dict(row)
+        next_row["name"] = os.path.basename(custom_relative_path.replace("\\", "/"))
+        next_row["relative_path"] = custom_relative_path
+        next_row["custom_name"] = custom_name
+        next_row["custom_extract_password"] = custom_password
+        next_row["custom_file_rename_applied"] = True
+        return next_row
 
     def _custom_download_relative_path(self, item: Dict[str, Any], relative_path: str) -> str:
         custom_name = self._sanitize_path_part(
@@ -2787,31 +2884,41 @@ class BaiduNetdiskService:
         started = time.monotonic()
 
         try:
-            for index, row in enumerate(download_files):
-                await self._check_task_active(task, cancel_event)
-                row["status"] = "downloading"
-                self._refresh_runtime(task, download_files, started=started, current=row)
-                task.update_progress(max(2, task.progress), f"下载百度网盘文件 {index + 1}/{len(download_files)}")
-                try:
-                    await self._download_share_item(task, staging_dir, row, download_files, started, cancel_event)
-                    row["status"] = "completed"
-                    row["progress"] = 100
-                    row["speed_bytes_per_sec"] = 0
-                except asyncio.CancelledError:
-                    if str(getattr(task.status, "value", task.status) or "") == "paused" and not task.is_cancelled():
-                        row["status"] = "paused"
-                        row["failure_reason"] = "任务已暂停"
-                    else:
-                        row["status"] = "cancelled"
-                    raise
-                except Exception as exc:
-                    row["status"] = "failed"
-                    row["speed_bytes_per_sec"] = 0
-                    row["failure_reason"] = self._sanitize_error(exc)
-                self._refresh_runtime(task, download_files, started=started, current={})
+            max_concurrent = self._baidu_download_file_concurrency(len(download_files))
+            task.task_metadata["download_runtime"]["active_file_limit"] = max_concurrent
+            if max_concurrent > 1:
+                self._append_log(task, f"百度网盘文件下载并发：{max_concurrent} 个", "info")
+            budget_limit = self._network_download_budget_limit()
+            _max_parallel, max_download_load = self._baidu_pcs_go_download_limits()
+            if budget_limit > 0 and budget_limit < max_download_load:
+                self._append_log(
+                    task,
+                    f"全局下载资源预算限制为 {budget_limit}，百度网盘同时文件配置 {max_download_load} 已按预算收敛",
+                    "info",
+                )
+            if len(download_files) > 1 and max_concurrent > 1:
+                for row_index, row in enumerate(download_files):
+                    row["_remote_transfer_scope"] = row_index
+            semaphore = asyncio.Semaphore(max_concurrent)
+            await asyncio.gather(*[
+                self._download_share_item_guarded(
+                    task,
+                    staging_dir,
+                    row,
+                    index,
+                    download_files,
+                    started,
+                    cancel_event,
+                    semaphore,
+                )
+                for index, row in enumerate(download_files)
+            ])
         finally:
             if self._task_cancel_events.get(task.id) is cancel_event:
                 self._task_cancel_events.pop(task.id, None)
+            for row in download_files:
+                if isinstance(row, dict):
+                    row.pop("_remote_transfer_scope", None)
 
         success_files = [row for row in download_files if row.get("status") == "completed"]
         failed_files = [row for row in download_files if row.get("status") == "failed"]
@@ -2820,6 +2927,12 @@ class BaiduNetdiskService:
             raise BaiduNetdiskError(self._first_failure_reason(failed_files) or "没有任何百度网盘文件下载成功")
 
         finalized = await asyncio.to_thread(self._finalize_output, staging_dir, final_dir, conflict_policy, len(items))
+        staging_cleanup = await asyncio.to_thread(
+            self._cleanup_completed_staging_dir,
+            task,
+            staging_dir,
+            download_root,
+        )
         duration_ms = int((time.monotonic() - started) * 1000)
         downloaded_bytes = self._directory_size(finalized) if os.path.exists(finalized) else 0
         for row in success_files:
@@ -2831,6 +2944,7 @@ class BaiduNetdiskService:
             "final_output_path": finalized,
             "renamed_output_path": finalized,
             "output_finalize_status": "completed",
+            "staging_cleanup": staging_cleanup,
             "performance_metrics": {
                 "duration_ms": duration_ms,
                 "downloaded_bytes": downloaded_bytes,
@@ -3375,6 +3489,58 @@ class BaiduNetdiskService:
         )
         return max_parallel, max_download_load
 
+    def _baidu_download_file_concurrency(self, file_count: int = 0) -> int:
+        _max_parallel, max_download_load = self._baidu_pcs_go_download_limits()
+        budget_limit = self._network_download_budget_limit()
+        count = max(1, int(file_count or 1))
+        if budget_limit > 0:
+            return max(1, min(count, max_download_load, budget_limit))
+        return max(1, min(count, max_download_load))
+
+    def _network_download_budget_limit(self) -> int:
+        cfg = getattr(get_config(), "resource_budget", None)
+        if cfg is None or not bool(getattr(cfg, "enabled", True)):
+            return 0
+        try:
+            return max(0, int(getattr(cfg, "network_download", 0) or 0))
+        except Exception:
+            return 0
+
+    async def _download_share_item_guarded(
+        self,
+        task,
+        staging_dir: str,
+        row: Dict[str, Any],
+        index: int,
+        download_files: List[Dict[str, Any]],
+        started: float,
+        cancel_event: asyncio.Event,
+        semaphore: asyncio.Semaphore,
+    ) -> None:
+        async with semaphore:
+            await self._check_task_active(task, cancel_event)
+            row["status"] = "downloading"
+            self._refresh_runtime(task, download_files, started=started, current=row)
+            task.update_progress(max(2, task.progress), f"下载百度网盘文件 {index + 1}/{len(download_files)}")
+            try:
+                await self._download_share_item(task, staging_dir, row, download_files, started, cancel_event)
+                row["status"] = "completed"
+                row["progress"] = 100
+                row["speed_bytes_per_sec"] = 0
+            except asyncio.CancelledError:
+                if str(getattr(task.status, "value", task.status) or "") == "paused" and not task.is_cancelled():
+                    row["status"] = "paused"
+                    row["failure_reason"] = "任务已暂停"
+                else:
+                    row["status"] = "cancelled"
+                raise
+            except Exception as exc:
+                row["status"] = "failed"
+                row["speed_bytes_per_sec"] = 0
+                row["failure_reason"] = self._sanitize_error(exc)
+            finally:
+                self._refresh_runtime(task, download_files, started=started, current={})
+
     def _baidu_pcs_go_upload_limits(self) -> tuple[int, int]:
         cfg = self._config()
         max_parallel = self._bounded_pcsgo_int(
@@ -3504,7 +3670,7 @@ class BaiduNetdiskService:
         env = os.environ.copy()
         env["BAIDUPCS_GO_CONFIG_DIR"] = config_dir
         log_path = os.path.join(work_dir, "baidupcs-go.log")
-        remote_tmp_dir = self._remote_temporary_transfer_dir(task)
+        remote_tmp_dir = self._remote_temporary_transfer_dir_for_row(task, row)
         remote_tmp_created = False
         try:
             task.update_progress(max(2, task.progress), "准备百度网盘临时转存下载")
@@ -3557,22 +3723,23 @@ class BaiduNetdiskService:
             )
             task.update_progress(max(2, task.progress), "百度网盘转存完成，开始高速下载")
             progress_state = {"last_emit_at": 0.0, "last_log_at": 0.0}
-            await self._run_baidu_pcs_go_command(
-                self._baidu_pcs_go_download_args(pcsgo_path, remote_tmp_dir, savedir),
-                env=env,
-                log_path=log_path,
-                task=task,
-                cancel_event=cancel_event,
-                heartbeat_message="BaiduPCS-Go 正在高速下载临时目录",
-                on_output=lambda line: self._update_pcsgo_transfer_progress(
-                    task,
-                    row,
-                    download_files,
-                    started,
-                    line,
-                    progress_state,
-                ),
-            )
+            async with get_resource_budget_service().acquire("network_download", reason="baidu.pcsgo_download"):
+                await self._run_baidu_pcs_go_command(
+                    self._baidu_pcs_go_download_args(pcsgo_path, remote_tmp_dir, savedir),
+                    env=env,
+                    log_path=log_path,
+                    task=task,
+                    cancel_event=cancel_event,
+                    heartbeat_message="BaiduPCS-Go 正在高速下载临时目录",
+                    on_output=lambda line: self._update_pcsgo_transfer_progress(
+                        task,
+                        row,
+                        download_files,
+                        started,
+                        line,
+                        progress_state,
+                    ),
+                )
             downloaded_path = self._find_baidu_pcs_go_downloaded_file(savedir, expected_name, expected_size)
             if not downloaded_path:
                 tail = self._read_text_tail(log_path)
@@ -3631,13 +3798,23 @@ class BaiduNetdiskService:
             cancel_event,
         )
 
-    def _remote_temporary_transfer_dir(self, task) -> str:
+    def _remote_temporary_transfer_dir(self, task, row: Optional[Dict[str, Any]] = None) -> str:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         random_part = secrets.token_hex(3)
         return f"/km_{timestamp}_{random_part}"
 
+    def _remote_temporary_transfer_dir_for_row(self, task, row: Dict[str, Any]) -> str:
+        base_dir = self._remote_temporary_transfer_dir(task)
+        suffix = ""
+        if isinstance(row, dict) and "_remote_transfer_scope" in row:
+            raw = str(row.get("fs_id") or row.get("relative_path") or row.get("name") or "").strip()
+            if raw:
+                digest = hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:6]
+                suffix = f"_{digest}"
+        return f"{base_dir}{suffix}"
+
     def _is_safe_remote_temporary_transfer_dir(self, remote_tmp_dir: str) -> bool:
-        return bool(re.fullmatch(r"/km_\d{8}_\d{6}_[0-9a-f]{6}", str(remote_tmp_dir or "").strip()))
+        return bool(re.fullmatch(r"/km_\d{8}_\d{6}_[0-9a-f]{6}(?:_[0-9a-f]{6})?", str(remote_tmp_dir or "").strip()))
 
     def _remote_cleanup_error_is_missing(self, exc: Exception) -> bool:
         text = self._sanitize_error(exc).lower()
@@ -4292,12 +4469,14 @@ class BaiduNetdiskService:
         total_bytes = sum(int(row.get("total") or row.get("size") or 0) for row in download_files)
         transferred = sum(int(row.get("downloaded") or (row.get("size") if row.get("status") == "completed" else 0) or 0) for row in download_files)
         speed = sum(int(row.get("speed_bytes_per_sec") or 0) for row in active)
+        previous_runtime = dict(task.task_metadata.get("download_runtime") or {})
         runtime = {
             "status": "downloading",
             "total_files": len(download_files),
             "completed_files": len(completed),
             "failed_files": len(failed),
             "active_file_count": len(active),
+            "active_file_limit": int(previous_runtime.get("active_file_limit") or 0),
             "transferred_bytes": transferred,
             "total_bytes": total_bytes,
             "speed_bytes_per_sec": speed,
@@ -4360,6 +4539,46 @@ class BaiduNetdiskService:
                     os.remove(target)
             shutil.move(entry, target)
         return final_dir
+
+    def _cleanup_completed_staging_dir(self, task, staging_dir: str, download_root: str) -> Dict[str, Any]:
+        staging = os.path.abspath(os.path.normpath(str(staging_dir or "")))
+        root = os.path.abspath(os.path.normpath(str(download_root or "")))
+        result = {
+            "success": False,
+            "cleaned": False,
+            "path": staging,
+            "reason": "",
+        }
+        if not staging or not root:
+            result["reason"] = "missing_path"
+            return result
+        staging_parent = os.path.abspath(os.path.normpath(os.path.join(root, ".baidu-netdisk-staging")))
+        try:
+            common = os.path.commonpath([staging_parent, staging])
+        except ValueError:
+            result["reason"] = "outside_staging_parent"
+            return result
+        if common != staging_parent or staging == staging_parent:
+            result["reason"] = "outside_staging_parent"
+            return result
+        task_id = str(getattr(task, "id", "") or "").strip()
+        basename = os.path.basename(staging)
+        if task_id and basename != task_id and task_id[:8] not in basename:
+            result["reason"] = "not_task_staging_dir"
+            return result
+        if not os.path.exists(staging):
+            result.update({"success": True, "cleaned": False, "reason": "missing"})
+            return result
+        try:
+            shutil.rmtree(staging)
+            result.update({"success": True, "cleaned": True, "reason": "removed"})
+            with contextlib.suppress(OSError):
+                os.rmdir(staging_parent)
+            self._append_log(task, "已清理百度网盘本地临时下载目录", "info")
+        except Exception as exc:
+            result["reason"] = self._sanitize_error(exc)
+            self._append_log(task, f"百度网盘本地临时下载目录清理失败: {result['reason']}", "warning")
+        return result
 
     def _directory_size(self, path: str) -> int:
         if os.path.isfile(path):

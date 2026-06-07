@@ -216,7 +216,7 @@ const resolvedHeroAnimation = computed(() => props.heroAnimation || heroAnimatio
 const resolvedHeroIcon = computed(() => props.heroIcon || heroIconMap[resolvedKind.value] || Upload)
 const compactLayout = computed(() => resolvedKind.value !== 'upload')
 const showHeroAnimation = computed(() => !compactLayout.value && Boolean(resolvedHeroAnimation.value))
-const showProgressLottie = computed(() => !compactLayout.value)
+const showProgressLottie = computed(() => props.completed || !compactLayout.value)
 const progressAnimationSrc = computed(() => props.progressAnimation || progressAnimation)
 const successAnimationSrc = computed(() => props.successAnimation || successConfettiAnimation)
 const safePercentage = computed(() => Math.max(0, Math.min(100, Number(props.percentage || 0))))

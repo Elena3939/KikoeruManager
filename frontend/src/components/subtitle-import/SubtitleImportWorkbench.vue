@@ -601,10 +601,10 @@ function getRJSubtitleTaskStatusType(task) {
 function getTaskStatusLabel(task) {
   if (!task) return '未知状态'
   if (task.manual_match_completed) return '已完成补配'
+  if (task.awaiting_manual_match) return '待筛选与配对'
   if (task.status === 'processing') return '处理中'
   if (task.status === 'pending') return '排队中'
   if (task.status === 'failed') return '执行失败'
-  if (task.awaiting_manual_match) return '待筛选与配对'
   if (task.status === 'completed') return '已完成'
   return task.status || '未知状态'
 }
@@ -626,11 +626,11 @@ function isFailedTask(task) {
 }
 
 function isCompletedTask(task) {
-  return Boolean(task?.manual_match_completed || String(task?.status || '').toLowerCase() === 'completed')
+  return Boolean(task?.manual_match_completed)
 }
 
 function isProcessingTask(task) {
-  return Boolean(String(task?.status || '').toLowerCase() === 'processing' || String(task?.status || '').toLowerCase() === 'pending' || task?.awaiting_manual_match)
+  return Boolean(String(task?.status || '').toLowerCase() === 'processing' || String(task?.status || '').toLowerCase() === 'pending')
 }
 
 function isAwaitingManualTask(task) {
@@ -2241,6 +2241,7 @@ onUnmounted(() => {
 const workbenchStatePayload = computed(() => ({
   total: linkedTasks.value.length,
   processing: processingTaskCount.value,
+  awaiting: awaitingTaskCount.value,
   completed: completedTaskCount.value,
   manualCompleted: linkedTasks.value.filter(task => task.manual_match_completed).length,
   failed: failedTaskCount.value,

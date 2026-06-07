@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..config.settings import get_config
 from ..models.database import ASMRDownloadSession, ASMRResourceRecord, ASMRWork, SessionLocal
+from .resource_budget_service import get_resource_budget_service
 
 logger = logging.getLogger(__name__)
 
@@ -1668,19 +1669,20 @@ class ASMRResourceService:
         os.makedirs(os.path.dirname(destination), exist_ok=True)
         uploaded = 0
         total_size = os.path.getsize(source_path) if os.path.exists(source_path) else 0
-        with open(source_path, "rb") as src, open(destination, "wb") as dst:
-            while True:
-                if cancel_check and cancel_check():
-                    return ""
-                if pause_wait:
-                    await pause_wait()
-                chunk = src.read(1024 * 256)
-                if not chunk:
-                    break
-                dst.write(chunk)
-                uploaded += len(chunk)
-                if progress_callback:
-                    progress_callback(uploaded, total_size)
+        async with get_resource_budget_service().acquire("disk_io_local", reason="asmr.upload_local"):
+            with open(source_path, "rb") as src, open(destination, "wb") as dst:
+                while True:
+                    if cancel_check and cancel_check():
+                        return ""
+                    if pause_wait:
+                        await pause_wait()
+                    chunk = src.read(1024 * 256)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+                    uploaded += len(chunk)
+                    if progress_callback:
+                        progress_callback(uploaded, total_size)
         return destination
 
     async def _upload_to_synology(

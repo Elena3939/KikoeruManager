@@ -55,6 +55,36 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
-    assetsDir: 'assets'
+    assetsDir: 'assets',
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined
+          if (
+            id.includes('/vue/')
+            || id.includes('/vue-router/')
+            || id.includes('/pinia/')
+            || id.includes('/element-plus/')
+            || id.includes('/@element-plus/')
+            || id.includes('/reka-ui/')
+          ) {
+            return 'vendor-ui'
+          }
+          if (id.includes('/@tanstack/') || id.includes('/ag-grid-')) {
+            return 'vendor-table'
+          }
+          if (id.includes('/@tiptap/')) {
+            return 'vendor-editor'
+          }
+          if (id.includes('/@lottiefiles/') || id.includes('/lottie-web/')) {
+            return 'vendor-lottie'
+          }
+          if (id.includes('/lucide-vue-next/')) {
+            return 'vendor-icons'
+          }
+          return 'vendor'
+        }
+      }
+    }
   }
 })

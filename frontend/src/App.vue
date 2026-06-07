@@ -181,12 +181,14 @@
     <el-container class="main-frame">
       <el-main class="main-content main-shell">
         <div class="content-shell">
-          <keep-alive :include="cachedViews">
-            <component
-              :is="currentViewComponent"
-              :key="currentViewKey"
-            />
-          </keep-alive>
+          <RouterView v-slot="{ Component }">
+            <keep-alive :include="cachedViews">
+              <component
+                :is="Component"
+                :key="currentViewKey"
+              />
+            </keep-alive>
+          </RouterView>
         </div>
       </el-main>
     </el-container>
@@ -197,7 +199,7 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { RouterView, useRoute } from 'vue-router'
 import {
   Archive,
   Boxes,
@@ -218,21 +220,6 @@ import {
   TriangleAlert
 } from 'lucide-vue-next'
 import { useWatcherStore } from './stores'
-import Dashboard from './views/Dashboard.vue'
-import Tasks from './views/Tasks.vue'
-import Conflicts from './views/Conflicts.vue'
-import Settings from './views/Settings.vue'
-import Logs from './views/Logs.vue'
-import Library from './views/Library.vue'
-import PasswordVault from './views/PasswordVault.vue'
-import ExistingFolders from './views/ExistingFolders.vue'
-import ASMRSync from './views/ASMRSync.vue'
-import LibraryBackup from './views/LibraryBackup.vue'
-import SubtitleImport from './views/SubtitleImport.vue'
-import ActivityHistory from './views/ActivityHistory.vue'
-import CircleCompletion from './views/CircleCompletion.vue'
-import VerifyGate from './views/VerifyGate.vue'
-import BlockedGate from './views/BlockedGate.vue'
 import BackgroundWorkbenchHost from './components/workbench/BackgroundWorkbenchHost.vue'
 import SystemPromptHost from './components/system/SystemPromptHost.vue'
 import NotificationBell from './components/system/NotificationBell.vue'
@@ -268,30 +255,12 @@ watch(mobileNavOpen, (open) => {
     document.body.classList.remove('app-mobile-nav-locked')
   }
 })
-const routeComponentMap = {
-  Dashboard,
-  Tasks,
-  Conflicts,
-  Settings,
-  Logs,
-  Library,
-  PasswordVault,
-  ExistingFolders,
-  ASMRSync,
-  CircleCompletion,
-  LibraryBackup,
-  SubtitleImport,
-  ActivityHistory,
-  VerifyGate,
-  BlockedGate
-}
 const isGateRoute = computed(() => Boolean(route.meta?.gatePage))
 const appVersionLabel = computed(() => {
   const version = String(appVersion.value || '').trim()
   if (!version || version.toLowerCase() === 'dev') return 'dev'
   return version.startsWith('v') ? version : `v${version}`
 })
-const currentViewComponent = computed(() => routeComponentMap[route.name] || Dashboard)
 const cachedViews = computed(() =>
   router
     .getRoutes()
@@ -306,38 +275,44 @@ const currentViewKey = computed(() => {
   return String(route.fullPath || route.path || '')
 })
 let intervalId = null
+let statusRefreshing = false
+const WATCHER_STATUS_POLL_MS = 15000
 
 onMounted(async () => {
   sidebarPinned.value = readInitialSidebarPinned()
   applyTheme()
   await refreshAppVersion()
   if (isGateRoute.value) return
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+  }
   startTaskCenterStream()
   await refreshStatus()
-  intervalId = setInterval(refreshStatus, 3000)
+  startStatusPolling()
 })
 
 watch(isGateRoute, async (gateRoute) => {
   if (gateRoute) {
     stopTaskCenterStream()
-    if (intervalId) {
-      clearInterval(intervalId)
-      intervalId = null
+    stopStatusPolling()
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
     return
   }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+  }
   startTaskCenterStream()
   await refreshStatus()
-  if (!intervalId) {
-    intervalId = setInterval(refreshStatus, 3000)
-  }
+  startStatusPolling()
 })
 
 onUnmounted(() => {
   stopTaskCenterStream()
-  if (intervalId) {
-    clearInterval(intervalId)
-    intervalId = null
+  stopStatusPolling()
+  if (typeof document !== 'undefined') {
+    document.removeEventListener('visibilitychange', handleVisibilityChange)
   }
 })
 
@@ -353,9 +328,34 @@ function stopTaskCenterStream() {
   taskCenterStreamStarted = false
 }
 
+function startStatusPolling() {
+  if (intervalId) return
+  intervalId = setInterval(() => {
+    if (typeof document !== 'undefined' && document.hidden) return
+    refreshStatus()
+  }, WATCHER_STATUS_POLL_MS)
+}
+
+function stopStatusPolling() {
+  if (!intervalId) return
+  clearInterval(intervalId)
+  intervalId = null
+}
+
+function handleVisibilityChange() {
+  if (typeof document === 'undefined' || document.hidden || isGateRoute.value) return
+  refreshStatus()
+}
+
 async function refreshStatus() {
-  await watcherStore.fetchStatus()
-  watcherStatus.value = watcherStore.status
+  if (statusRefreshing) return
+  statusRefreshing = true
+  try {
+    await watcherStore.fetchStatus()
+    watcherStatus.value = watcherStore.status
+  } finally {
+    statusRefreshing = false
+  }
 }
 
 async function refreshAppVersion() {

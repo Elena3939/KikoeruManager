@@ -26,6 +26,7 @@ import subprocess
 import asyncio
 import sys
 import threading
+import queue
 import filetype
 import tempfile
 from collections import OrderedDict
@@ -45,8 +46,11 @@ from ..core.password_utils import (
     normalize_rjcode_value,
 )
 from ..core.json_safety import safe_json_value, sqlite_safe_text
+from ..core.resource_budget_service import get_resource_budget_service
 
 logger = logging.getLogger(__name__)
+
+_TEMP_CREATE_TIMEOUT_SECONDS = float(os.getenv("KIKOERUMANAGER_TEMP_CREATE_TIMEOUT_SECONDS", "3.0") or 3.0)
 
 # Windows 上隐藏子进程窗口的标志
 if sys.platform == 'win32':
@@ -1398,21 +1402,84 @@ class ExtractService:
             return None
         return offset if offset > 0 else None
 
-    def _copy_embedded_zip_payload(self, source_path: str, offset: int) -> str:
+    def _configured_temp_root(self) -> Optional[str]:
         temp_root = str(getattr(self.config.storage, "temp_path", "") or "").strip()
-        if not temp_root:
-            temp_root = tempfile.gettempdir()
-        try:
-            os.makedirs(temp_root, exist_ok=True)
-        except OSError:
-            temp_root = tempfile.gettempdir()
-            os.makedirs(temp_root, exist_ok=True)
+        return temp_root or None
 
-        fd, view_path = tempfile.mkstemp(
-            prefix="kikoerumanager_embedded_zip_",
-            suffix=".zip",
-            dir=temp_root,
-        )
+    @staticmethod
+    def _mkstemp_in_root(prefix: str, suffix: str, temp_root: str) -> Tuple[int, str]:
+        os.makedirs(temp_root, exist_ok=True)
+        return tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=temp_root)
+
+    @staticmethod
+    def _mkdtemp_in_root(prefix: str, temp_root: str) -> str:
+        os.makedirs(temp_root, exist_ok=True)
+        return tempfile.mkdtemp(prefix=prefix, dir=temp_root)
+
+    @staticmethod
+    async def _call_with_daemon_timeout(func: Callable[..., Any], timeout: float, *args: Any) -> Any:
+        result_queue: "queue.Queue[Tuple[bool, Any]]" = queue.Queue(maxsize=1)
+
+        def runner() -> None:
+            try:
+                result_queue.put_nowait((True, func(*args)))
+            except Exception as exc:
+                result_queue.put_nowait((False, exc))
+
+        worker = threading.Thread(target=runner, daemon=True)
+        worker.start()
+        deadline = time.monotonic() + max(0.1, float(timeout or 0.1))
+        while time.monotonic() < deadline:
+            try:
+                ok, value = result_queue.get_nowait()
+            except queue.Empty:
+                await asyncio.sleep(0.05)
+                continue
+            if ok:
+                return value
+            raise value
+        raise TimeoutError(f"临时路径创建超过 {timeout:.1f}s")
+
+    async def _create_temp_file_with_fallback(self, prefix: str, suffix: str, reason: str) -> Tuple[int, str]:
+        temp_root = self._configured_temp_root()
+        if temp_root:
+            try:
+                return await self._call_with_daemon_timeout(
+                    self._mkstemp_in_root,
+                    _TEMP_CREATE_TIMEOUT_SECONDS,
+                    prefix,
+                    suffix,
+                    temp_root,
+                )
+            except (TimeoutError, OSError) as exc:
+                logger.warning(
+                    "[ExtractService] 配置临时目录创建文件失败，回退系统 temp: reason=%s root=%s error=%s",
+                    reason,
+                    temp_root,
+                    exc,
+                )
+        return await asyncio.to_thread(self._mkstemp_in_root, prefix, suffix, tempfile.gettempdir())
+
+    async def _create_temp_dir_with_fallback(self, prefix: str, reason: str) -> str:
+        temp_root = self._configured_temp_root()
+        if temp_root:
+            try:
+                return await self._call_with_daemon_timeout(
+                    self._mkdtemp_in_root,
+                    _TEMP_CREATE_TIMEOUT_SECONDS,
+                    prefix,
+                    temp_root,
+                )
+            except (TimeoutError, OSError) as exc:
+                logger.warning(
+                    "[ExtractService] 配置临时目录创建失败，回退系统 temp: reason=%s root=%s error=%s",
+                    reason,
+                    temp_root,
+                    exc,
+                )
+        return await asyncio.to_thread(self._mkdtemp_in_root, prefix, tempfile.gettempdir())
+
+    def _copy_embedded_zip_payload(self, source_path: str, offset: int, fd: int, view_path: str) -> str:
         try:
             with os.fdopen(fd, "wb") as dst, open(source_path, "rb") as src:
                 src.seek(offset)
@@ -1451,7 +1518,13 @@ class ExtractService:
             )
             return archive_path
         task.update_progress(12, "检测到伪装 ZIP，正在剥离前缀")
-        view_path = await asyncio.to_thread(self._copy_embedded_zip_payload, archive_path, offset)
+        async with get_resource_budget_service().acquire("disk_io_local", reason="extract.embedded_zip_copy"):
+            fd, view_path = await self._create_temp_file_with_fallback(
+                "kikoerumanager_embedded_zip_",
+                ".zip",
+                "extract.embedded_zip_copy",
+            )
+            view_path = await asyncio.to_thread(self._copy_embedded_zip_payload, archive_path, offset, fd, view_path)
         try:
             view_size = os.path.getsize(view_path)
         except OSError:
@@ -3724,10 +3797,9 @@ class ExtractService:
         directory = os.path.dirname(volume_set.volumes[0])
 
         if new_type == '7z_volume_with_ext' and payload_offset and payload_offset > 0:
-            temp_root = str(getattr(self.config.storage, "temp_path", "") or "").strip() or None
-            temp_dir = tempfile.mkdtemp(
-                prefix="kikoerumanager_sfx_7z_view_",
-                dir=temp_root,
+            temp_dir = await self._create_temp_dir_with_fallback(
+                "kikoerumanager_sfx_7z_view_",
+                "extract.sfx_volume_view",
             )
             new_volumes: List[str] = [
                 os.path.join(temp_dir, make_name(idx))
@@ -3735,23 +3807,25 @@ class ExtractService:
             ]
             linked_files: List[Dict[str, str]] = []
             try:
-                await asyncio.to_thread(
-                    self._copy_sfx_payload_first_volume,
-                    exe_path,
-                    payload_offset,
-                    new_volumes[0],
-                )
+                async with get_resource_budget_service().acquire("disk_io_local", reason="extract.sfx_payload_copy"):
+                    await asyncio.to_thread(
+                        self._copy_sfx_payload_first_volume,
+                        exe_path,
+                        payload_offset,
+                        new_volumes[0],
+                    )
                 linked_files.append({
                     'source': exe_path,
                     'view': new_volumes[0],
                     'mode': 'payload_copy',
                 })
                 for source_path, view_path in zip(volume_set.volumes[1:], new_volumes[1:]):
-                    mode = await asyncio.to_thread(
-                        self._link_or_copy_file,
-                        source_path,
-                        view_path,
-                    )
+                    async with get_resource_budget_service().acquire("disk_io_local", reason="extract.sfx_volume_view"):
+                        mode = await asyncio.to_thread(
+                            self._link_or_copy_file,
+                            source_path,
+                            view_path,
+                        )
                     linked_files.append({
                         'source': source_path,
                         'view': view_path,
@@ -6230,7 +6304,7 @@ class ExtractService:
                     max(31, int(task.progress or 0)),
                     f"等待解压槽位（当前并发上限 {self.__class__._seven_zip_semaphore_limit or 1}）",
                 )
-            async with semaphore:
+            async with semaphore, get_resource_budget_service().acquire("archive_cpu", reason="extract.7z"):
                 if task is not None and is_extract_command:
                     task.update_progress(max(40, int(task.progress or 0)), "解压子进程已启动")
                 # Windows 上隐藏子进程窗口，避免闪烁
@@ -6535,7 +6609,7 @@ class ExtractService:
             return None
 
         semaphore = self._get_7z_semaphore()
-        async with semaphore:
+        async with semaphore, get_resource_budget_service().acquire("archive_cpu", reason="extract.probe_magic"):
             try:
                 process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
             except Exception as e:
@@ -6733,7 +6807,7 @@ class ExtractService:
             kwargs['creationflags'] = _CNW
 
         semaphore = self._get_7z_semaphore()
-        async with semaphore:
+        async with semaphore, get_resource_budget_service().acquire("archive_cpu", reason="extract.probe_entry"):
             try:
                 process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
             except Exception as e:
@@ -6828,7 +6902,7 @@ class ExtractService:
             kwargs['creationflags'] = _CNW
 
         semaphore = self._get_7z_semaphore()
-        async with semaphore:
+        async with semaphore, get_resource_budget_service().acquire("archive_cpu", reason="extract.probe_full_test"):
             try:
                 process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
             except Exception as e:
@@ -7012,7 +7086,7 @@ class ExtractService:
             kwargs['creationflags'] = _CNW
 
         semaphore = self._get_7z_semaphore()
-        async with semaphore:
+        async with semaphore, get_resource_budget_service().acquire("archive_cpu", reason="extract.probe_stream"):
             try:
                 process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
             except Exception as e:
@@ -7168,7 +7242,7 @@ class ExtractService:
                     max(31, int(task.progress or 0)),
                     f"等待解压槽位（当前并发上限 {self.__class__._seven_zip_semaphore_limit or 1}）",
                 )
-            async with semaphore:
+            async with semaphore, get_resource_budget_service().acquire("archive_cpu", reason="extract.subprocess"):
                 if task is not None and running_step:
                     task.update_progress(max(40, int(task.progress or 0)), running_step)
                 kwargs = {

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from pathlib import Path
 import time
 from urllib.parse import parse_qs, urlparse
@@ -425,6 +426,86 @@ def test_baidu_custom_name_skips_multi_file_share():
 
     assert [row["relative_path"] for row in rows] == ["track01.wav", "track02.wav"]
     assert all(row["custom_rename_skipped"] is True for row in rows)
+
+
+def test_baidu_custom_file_names_apply_to_multi_file_share(monkeypatch):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.extract = type("ExtractConfig", (), {
+        "filename_password_sniff_templates": ["{name}（{password}）"],
+    })()
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+
+    rows = service._apply_custom_download_name_to_rows(
+        {
+            "custom_file_names": {
+                "fs-001": {
+                    "custom_name": "RJ01609723.7z",
+                    "custom_extract_password": "southplus@mzh1051",
+                },
+                "folder/RJ01609723.7z.002": {
+                    "custom_name": "RJ01609723.7z",
+                },
+            },
+        },
+        [
+            {
+                "fs_id": "fs-001",
+                "name": "RJ01609723.7z.001",
+                "relative_path": "folder/RJ01609723.7z.001",
+                "original_relative_path": "folder/RJ01609723.7z.001",
+            },
+            {
+                "fs_id": "fs-002",
+                "name": "RJ01609723.7z.002",
+                "relative_path": "folder/RJ01609723.7z.002",
+                "original_relative_path": "folder/RJ01609723.7z.002",
+            },
+        ],
+    )
+
+    assert rows[0]["name"] == "RJ01609723.7z（southplus@mzh1051）.001"
+    assert rows[0]["relative_path"] == os.path.join("folder", "RJ01609723.7z（southplus@mzh1051）.001")
+    assert rows[0]["custom_file_rename_applied"] is True
+    assert rows[1]["name"] == "RJ01609723.7z.002"
+    assert rows[1]["relative_path"] == os.path.join("folder", "RJ01609723.7z.002")
+    assert rows[1]["custom_file_rename_applied"] is True
+
+
+def test_baidu_filter_preview_selection_merges_custom_file_names():
+    service = BaiduNetdiskService()
+
+    preview = {
+        "items": [{
+            "ok": True,
+            "selection_key": "baidu:item",
+            "share_id": "share-id",
+            "share_url": "https://pan.baidu.com/s/share?pwd=0402",
+            "filename": "RJ01609723",
+            "share_files": [{
+                "name": "RJ01609723.7z.001",
+                "relative_path": "RJ01609723/RJ01609723.7z.001",
+                "path": "/RJ01609723/RJ01609723.7z.001",
+                "fs_id": "fs-001",
+            }],
+        }],
+    }
+
+    filtered = service.filter_preview_selection(
+        preview,
+        selected_items=[{
+            "selection_key": "baidu:item",
+            "custom_file_names": {
+                "fs-001": {
+                    "custom_name": "RJ01609723.7z",
+                    "custom_extract_password": "southplus@mzh1051",
+                },
+            },
+        }],
+    )
+
+    assert filtered["items"][0]["custom_file_names"]["fs-001"]["custom_name"] == "RJ01609723.7z"
+    assert filtered["items"][0]["custom_file_names"]["fs-001"]["custom_extract_password"] == "southplus@mzh1051"
 
 
 @pytest.mark.asyncio
@@ -1143,6 +1224,9 @@ async def test_baidu_start_download_uses_pcsgo_temporary_transfer_and_cleans_rem
 
     assert result["success"] is True
     assert (tmp_path / "downloads" / "百度大文件测试" / "狩龙人拉格纳121.mp4").read_bytes() == b"abcdef"
+    assert not (tmp_path / "downloads" / ".baidu-netdisk-staging" / "baidu-large-test-task").exists()
+    assert task.task_metadata["staging_cleanup"]["success"] is True
+    assert task.task_metadata["staging_cleanup"]["cleaned"] is True
     savedir = state["savedir"]
     assert [item["args"] for item in command_log] == [
         ("config", "set", "-savedir", savedir),
@@ -1179,6 +1263,59 @@ async def test_baidu_start_download_uses_pcsgo_temporary_transfer_and_cleans_rem
     assert any("临时转存" in item["message"] for item in task.task_metadata["progress_log"])
     assert any("已删除百度网盘临时转存目录" in item["message"] for item in task.task_metadata["progress_log"])
     assert task.task_metadata["download_files"][0]["status"] == "completed"
+
+
+def test_baidu_completed_staging_cleanup_rejects_non_task_path(tmp_path):
+    service = BaiduNetdiskService()
+    download_root = tmp_path / "downloads"
+    user_dir = tmp_path / "manual"
+    user_file = user_dir / "keep.txt"
+    user_dir.mkdir(parents=True)
+    user_file.write_text("keep", encoding="utf-8")
+
+    task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={"progress_log": []},
+        status=TaskStatus.PROCESSING,
+        task_id="baidu-safe-cleanup-test",
+    )
+
+    result = service._cleanup_completed_staging_dir(task, str(user_dir), str(download_root))
+
+    assert result["success"] is False
+    assert result["reason"] == "outside_staging_parent"
+    assert user_file.read_text(encoding="utf-8") == "keep"
+
+
+def test_baidu_download_file_concurrency_respects_network_budget(monkeypatch):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.baidu_netdisk.max_download_load = 5
+    config.resource_budget = type("ResourceBudget", (), {
+        "enabled": True,
+        "network_download": 3,
+    })()
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+
+    assert service._baidu_download_file_concurrency(8) == 3
+
+    config.resource_budget.network_download = 0
+    assert service._baidu_download_file_concurrency(8) == 5
+
+
+def test_baidu_remote_temporary_transfer_dir_is_unique_per_row(monkeypatch):
+    service = BaiduNetdiskService()
+    monkeypatch.setattr(service, "_remote_temporary_transfer_dir", lambda _task: "/km_20260605_153012_a1b2c3")
+
+    first = service._remote_temporary_transfer_dir_for_row(None, {"fs_id": "fs-001", "_remote_transfer_scope": 0})
+    second = service._remote_temporary_transfer_dir_for_row(None, {"fs_id": "fs-002", "_remote_transfer_scope": 1})
+
+    assert first != second
+    assert first.startswith("/km_20260605_153012_a1b2c3_")
+    assert second.startswith("/km_20260605_153012_a1b2c3_")
+    assert service._is_safe_remote_temporary_transfer_dir(first)
+    assert service._is_safe_remote_temporary_transfer_dir(second)
 
 
 @pytest.mark.asyncio
