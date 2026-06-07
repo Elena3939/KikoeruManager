@@ -28,6 +28,7 @@ backend/venv/
 
 # Node
 node_modules/
+.npm-cache/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -109,13 +110,19 @@ frontend/vite.config.js.timestamp-*.mjs
 # Backend / view scratch dirs
 backend/tempView/
 backend/_conflicts/
+backend/pytest_tmp*/
 
 # Local runtime helper scripts output
 .runtime/
+output/
 tools/baidupcs-go/
+tools/7zz-*/
+.tmp-baidupcs-*/
+.tmp_existing_folder_demo_data.py
 
 # pytest 临时目录（conftest.py 把 basetemp 重定向到这里规避 Windows %TEMP% 锁）
-backend/.pytest-tmp/
+backend/.pytest-tmp*/
+.pytest-tmp*/
 .pytest_cache/
 
 # 本地开发测试文件（不入仓库）

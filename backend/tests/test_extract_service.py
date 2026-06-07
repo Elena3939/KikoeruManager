@@ -319,6 +319,49 @@ class TestExtractService:
 
         assert extract_service._is_rar_archive(archive_path) is False
 
+    def test_part_no_ext_volume_is_not_rar_fast_path(self, extract_service, temp_dir):
+        """无扩展 .part1/.part2 分卷不能因为 RAR 魔数误走 unar 快路径。"""
+        archive_path = os.path.join(temp_dir, 'RJ01624471.part1')
+        with open(archive_path, 'wb') as f:
+            f.write(b'Rar!\x1A\x07\x01\x00')
+
+        assert extract_service._is_rar_archive(archive_path) is False
+
+    @pytest.mark.asyncio
+    async def test_password_candidates_keep_original_path_after_rename(self, extract_service):
+        """文件被规范化后，仍要从原始路径/父目录嗅探密码。"""
+        old_enabled = extract_service.config.extract.filename_password_sniff_enabled
+        old_templates = list(extract_service.config.extract.filename_password_sniff_templates or [])
+        extract_service.config.extract.filename_password_sniff_enabled = True
+        extract_service.config.extract.filename_password_sniff_templates = [
+            "{name}({password})",
+        ]
+
+        async def fake_candidates(path):
+            return [
+                {
+                    "entry_id": None,
+                    "password": password,
+                    "source": "文件名嗅探",
+                    "rjcode": None,
+                    "filename": os.path.basename(path),
+                }
+                for password in extract_service._get_filename_sniff_passwords(path)
+            ]
+
+        extract_service._get_password_candidates_for_archive = fake_candidates
+
+        try:
+            candidates = await extract_service._get_password_candidates_for_archive_paths([
+                "/input/RJ01624471(20260531南+ 冒险者本体)/RJ01624471.part1",
+                "/input/RJ01624471.part1",
+            ])
+        finally:
+            extract_service.config.extract.filename_password_sniff_enabled = old_enabled
+            extract_service.config.extract.filename_password_sniff_templates = old_templates
+
+        assert [item["password"] for item in candidates] == ["20260531南+ 冒险者本体"]
+
     @pytest.mark.asyncio
     async def test_remap_exe_e_sequence_rar_inner(self, extract_service, temp_dir):
         """RAR 内嵌档：remap 应改名为 .part1.rar / .part2.rar / ..."""
