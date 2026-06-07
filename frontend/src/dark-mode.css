@@ -2454,6 +2454,23 @@ html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__sizes .el
   color: rgba(214, 214, 220, 0.78) !important;
 }
 
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__jump .el-input,
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__jump .el-input__inner {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  -webkit-appearance: none !important;
+  appearance: textfield !important;
+}
+
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__jump .el-input__inner::-webkit-outer-spin-button,
+html.kikoerumanager-dark body #app .km-pagination-wrap .el-pagination__jump .el-input__inner::-webkit-inner-spin-button {
+  margin: 0 !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+}
+
 html.kikoerumanager-dark .el-overlay {
   background: rgba(0, 0, 0, 0.52) !important;
 }
@@ -2466,7 +2483,10 @@ html.kikoerumanager-dark .custom-preview-overlay {
 }
 
 html.kikoerumanager-dark .subtitle-workbench-overlay {
-  background: rgba(0, 0, 0, 0.58) !important;
+  background: transparent !important;
+  background-image: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
 html.kikoerumanager-dark body #app :is(
@@ -4846,6 +4866,66 @@ html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .dash-task-m
   background: rgba(255, 255, 255, 0.08) !important;
   border-color: rgba(255, 255, 255, 0.12) !important;
   color: #ffffff !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .dash-task-pager.dash-task-pager {
+  position: relative;
+  z-index: 1;
+  background: #101012 !important;
+  background-color: #101012 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: rgba(226, 232, 240, 0.72) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .dash-task-pager.dash-task-pager b {
+  color: #f8fafc !important;
+  -webkit-text-fill-color: #f8fafc !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .dash-task-pager-indicator.dash-task-pager-indicator {
+  align-items: center;
+  background: var(--km-dark-surface-soft) !important;
+  background-color: var(--km-dark-surface-soft) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .dash-task-pager-current.dash-task-pager-current,
+html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .dash-task-pager-total.dash-task-pager-total {
+  color: #f8fafc !important;
+  -webkit-text-fill-color: #f8fafc !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .dash-task-pager-divider.dash-task-pager-divider {
+  color: rgba(255, 255, 255, 0.48) !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .dash-task-pager-btn.dash-task-pager-btn {
+  background: var(--km-dark-surface-soft) !important;
+  background-color: var(--km-dark-surface-soft) !important;
+  background-image: none !important;
+  border-color: var(--km-dark-border) !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .dash-task-pager-btn.dash-task-pager-btn:hover {
+  background: var(--km-dark-surface-hover) !important;
+  background-color: var(--km-dark-surface-hover) !important;
+  border-color: var(--km-dark-border-strong) !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .dash-task-pager-btn.dash-task-pager-btn:disabled {
+  background: rgba(255, 255, 255, 0.04) !important;
+  background-color: rgba(255, 255, 255, 0.04) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  color: rgba(255, 255, 255, 0.42) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark body .dash-task-action-menu.dash-task-action-menu {

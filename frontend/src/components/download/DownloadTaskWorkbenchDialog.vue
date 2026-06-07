@@ -878,8 +878,34 @@ function isTaskPaused(task) {
   return String(task?.display_status || task?.status || '') === 'paused'
 }
 
+function getDownloadTaskDomain(task) {
+  return String(
+    task?.task_domain ||
+    task?.type ||
+    task?.task_kind ||
+    task?.task_metadata?.task_domain ||
+    task?.task_metadata?.task_kind ||
+    task?.task_metadata?.download_mode ||
+    task?.download_mode ||
+    '',
+  ).trim()
+}
+
+function isDownloadOnlyTask(task) {
+  const domain = getDownloadTaskDomain(task)
+  return [
+    'baidu_netdisk',
+    'baidu_netdisk_download',
+    'http_download',
+    'http',
+    'pikpak',
+    'mixed',
+  ].includes(domain)
+}
+
 function isUploadEnabled(task) {
   if (isUploadMode.value) return true
+  if (isDownloadOnlyTask(task)) return false
   const explicitUpload = Boolean(
     task?.task_metadata?.upload_options?.enabled ||
     task?.upload_options?.enabled ||
@@ -908,6 +934,7 @@ function getVisibleDownloadSpeed(task) {
 }
 
 function getVisibleUploadSpeed(task) {
+  if (!isUploadMode.value && !isUploadEnabled(task)) return 0
   if (isTaskPaused(task)) return 0
   const runtime = getUploadRuntime(task)
   const runtimeSpeed = Number(runtime?.speed_bytes_per_sec || 0)
@@ -916,6 +943,7 @@ function getVisibleUploadSpeed(task) {
 }
 
 function getUploadEtaSeconds(task) {
+  if (!isUploadMode.value && !isUploadEnabled(task)) return 0
   const runtime = getUploadRuntime(task)
   const runtimeEta = Number(runtime?.eta_seconds || 0)
   if (runtimeEta > 0) return runtimeEta
@@ -954,6 +982,7 @@ function getDownloadTotalBytes(task) {
 }
 
 function getUploadTotalBytes(task) {
+  if (!isUploadMode.value && !isUploadEnabled(task)) return 0
   const runtimeBytes = Number(getUploadRuntime(task)?.total_bytes || 0)
   if (runtimeBytes > 0) return runtimeBytes
   const uploadFiles = Array.isArray(task?.upload_files) ? task.upload_files : []

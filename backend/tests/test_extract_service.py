@@ -5,7 +5,9 @@ import pytest
 import os
 import subprocess
 import tempfile
+import time
 import zipfile
+from contextlib import asynccontextmanager
 from unittest.mock import Mock, AsyncMock, patch
 
 from app.core.archive_detection import detect_embedded_zip_offset
@@ -102,6 +104,87 @@ class TestExtractService:
             assert task.task_metadata['embedded_zip_source_path'] == disguised_path
             extract_service._cleanup_embedded_zip_view(task)
             assert not os.path.exists(view_path)
+        finally:
+            extract_service.config.storage.temp_path = old_temp_path
+
+    @pytest.mark.asyncio
+    async def test_prepare_embedded_zip_archive_uses_disk_io_budget(self, extract_service, temp_dir):
+        """伪装 ZIP payload 复制会占用本地磁盘 IO 预算。"""
+        disguised_path = os.path.join(temp_dir, 'movie.mp4')
+        self.create_prefixed_zip(disguised_path)
+        old_temp_path = extract_service.config.storage.temp_path
+        extract_service.config.storage.temp_path = temp_dir
+        task = Mock()
+        task.task_metadata = {}
+        task.update_progress = Mock()
+        calls = []
+
+        class Budget:
+            @asynccontextmanager
+            async def acquire(self, resource, *, weight=1, reason=""):
+                calls.append((resource, weight, reason))
+                yield
+
+        try:
+            with patch("app.core.extract_service.get_resource_budget_service", return_value=Budget()):
+                view_path = await extract_service._prepare_embedded_zip_archive(disguised_path, task)
+
+            assert view_path is not None
+            assert calls == [("disk_io_local", 1, "extract.embedded_zip_copy")]
+            extract_service._cleanup_embedded_zip_view(task)
+        finally:
+            extract_service.config.storage.temp_path = old_temp_path
+
+    @pytest.mark.asyncio
+    async def test_prepare_embedded_zip_archive_probe_only_does_not_copy_disk_io_budget(self, extract_service, temp_dir):
+        """仅记录 embedded ZIP offset 时不创建临时视图，也不占用复制预算。"""
+        disguised_path = os.path.join(temp_dir, 'movie.mp4')
+        self.create_prefixed_zip(disguised_path)
+        task = Mock()
+        task.task_metadata = {}
+        task.update_progress = Mock()
+        calls = []
+
+        class Budget:
+            @asynccontextmanager
+            async def acquire(self, resource, *, weight=1, reason=""):
+                calls.append((resource, weight, reason))
+                yield
+
+        with patch("app.core.extract_service.get_resource_budget_service", return_value=Budget()):
+            result = await extract_service._prepare_embedded_zip_archive(disguised_path, task, materialize=False)
+
+        assert result == disguised_path
+        assert calls == []
+        assert task.task_metadata["embedded_zip_source_path"] == disguised_path
+        assert "embedded_zip_view_path" not in task.task_metadata
+
+    @pytest.mark.asyncio
+    async def test_temp_dir_creation_falls_back_when_configured_temp_blocks(self, extract_service, temp_dir):
+        """配置 temp 创建卡住时，应快速回退系统 temp，避免解压临时视图阻塞。"""
+        calls = []
+        old_temp_path = extract_service.config.storage.temp_path
+        extract_service.config.storage.temp_path = os.path.join(temp_dir, "slow-temp")
+
+        def slow_mkdtemp(prefix, temp_root):
+            calls.append((prefix, temp_root))
+            time.sleep(2)
+            return os.path.join(temp_root, prefix + "late")
+
+        try:
+            with patch("app.core.extract_service._TEMP_CREATE_TIMEOUT_SECONDS", 0.1), \
+                    patch.object(extract_service, "_mkdtemp_in_root", side_effect=slow_mkdtemp), \
+                    patch("app.core.extract_service.tempfile.gettempdir", return_value=temp_dir):
+                view_dir = await extract_service._create_temp_dir_with_fallback(
+                    "kikoerumanager_sfx_7z_view_",
+                    "test",
+                )
+
+            assert view_dir == os.path.join(temp_dir, "kikoerumanager_sfx_7z_view_late")
+            assert calls == [
+                ("kikoerumanager_sfx_7z_view_", os.path.join(temp_dir, "slow-temp")),
+                ("kikoerumanager_sfx_7z_view_", temp_dir),
+            ]
         finally:
             extract_service.config.storage.temp_path = old_temp_path
 
@@ -310,6 +393,44 @@ class TestExtractService:
 
         await extract_service._rollback_exe_e_remap(task)
         assert not os.path.exists(os.path.dirname(new_set.entry_path))
+
+    @pytest.mark.asyncio
+    async def test_remap_exe_e_sequence_7z_inner_uses_disk_io_budget(self, extract_service, temp_dir):
+        """SFX 7z 临时分卷视图的 payload 复制和伴随卷视图都占用本地磁盘 IO 预算。"""
+        base = os.path.join(temp_dir, 'arc')
+        sfx_prefix = b'MZ\x00\x00' + (b'\x00' * 512)
+        with open(base + '.exe', 'wb') as f:
+            f.write(sfx_prefix)
+            f.write(b'7z\xBC\xAF\x27\x1C')
+            f.write(b'\x00' * 64)
+        for suffix in ('.e01', '.e02'):
+            with open(base + suffix, 'wb') as f:
+                f.write(b'\x00' * 32)
+
+        original_set = extract_service._detect_volume_set(base + '.exe')
+        assert original_set is not None and original_set.type == 'exe_e_sequence'
+
+        task = Mock()
+        task.task_metadata = {}
+        calls = []
+
+        class Budget:
+            @asynccontextmanager
+            async def acquire(self, resource, *, weight=1, reason=""):
+                calls.append((resource, weight, reason))
+                yield
+
+        with patch("app.core.extract_service.get_resource_budget_service", return_value=Budget()):
+            new_set = await extract_service._remap_exe_e_sequence(original_set, task)
+
+        assert new_set.type == '7z_volume_with_ext'
+        assert calls == [
+            ("disk_io_local", 1, "extract.sfx_payload_copy"),
+            ("disk_io_local", 1, "extract.sfx_volume_view"),
+            ("disk_io_local", 1, "extract.sfx_volume_view"),
+        ]
+
+        await extract_service._rollback_exe_e_remap(task)
 
     def test_7z_split_volume_is_not_rar_fast_path(self, extract_service, temp_dir):
         """7z 分卷首卷不能因为内容探测误走 RAR/unar 快路径。"""
@@ -878,6 +999,8 @@ class TestExtractService:
                     args=['unar'], returncode=1,
                     stdout=b'', stderr=b'Failed! (Wrong password?)',
                 )
+            with open(os.path.join(output_path, 'voice.wav'), 'wb') as fp:
+                fp.write(b'audio')
             return subprocess.CompletedProcess(
                 args=['unar'], returncode=0, stdout=b'', stderr=b'',
             )

@@ -2307,6 +2307,86 @@ html.kikoerumanager-dark .lib-move-modal .fm-loading-desc {
   color: var(--km-dark-text-muted) !important;
 }
 
+html.kikoerumanager-dark .lib-move-modal .footer-row {
+  border-top-color: rgba(255, 255, 255, 0.1) !important;
+  background: #17181d !important;
+  background-image: none !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .src-chip,
+html.kikoerumanager-dark .lib-move-modal .target-chip,
+html.kikoerumanager-dark .lib-move-modal .src-chip-more {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  background: #1d1e23 !important;
+  background-image: none !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .src-chip span,
+html.kikoerumanager-dark .lib-move-modal .target-chip span {
+  color: inherit !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .target-chip-path {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .target-chip svg:not(.src-chip-folder) {
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .conflict-pill {
+  border-color: rgba(245, 158, 11, 0.28) !important;
+  background: rgba(245, 158, 11, 0.14) !important;
+  color: var(--km-dark-amber) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .secondary-cta,
+html.kikoerumanager-dark .lib-move-modal .primary-cta {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-width: 112px;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  box-shadow: none !important;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .secondary-cta {
+  background: #1d1e23 !important;
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .secondary-cta:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.02);
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  background: #25262b !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .primary-cta {
+  background: #2b2c30 !important;
+  color: #ffffff !important;
+  font-weight: 800 !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .primary-cta:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.02);
+  border-color: rgba(255, 255, 255, 0.26) !important;
+  background: #333438 !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .secondary-cta:active:not(:disabled),
+html.kikoerumanager-dark .lib-move-modal .primary-cta:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+html.kikoerumanager-dark .lib-move-modal .secondary-cta:disabled,
+html.kikoerumanager-dark .lib-move-modal .primary-cta:disabled {
+  cursor: not-allowed !important;
+  opacity: 0.5 !important;
+}
+
 @media (max-width: 640px) {
   .lib-move-modal.el-dialog {
     width: 100vw !important;

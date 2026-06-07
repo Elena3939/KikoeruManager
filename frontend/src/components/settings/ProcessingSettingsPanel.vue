@@ -108,17 +108,53 @@
         </div>
       </div>
     </div>
+
+    <div class="settings-card performance-diagnostics-card">
+      <div class="card-title diagnostics-title">
+        <span>运行诊断</span>
+        <StatefulButton
+          class="diagnostics-refresh-btn"
+          size="sm"
+          tone="neutral"
+          @click="loadPerformanceDiagnostics"
+        >
+          <template #prefix>
+            <RefreshCw :size="14" :stroke-width="2.4" />
+          </template>
+          刷新
+        </StatefulButton>
+      </div>
+
+      <div class="diagnostics-grid">
+        <div class="diagnostics-tile">
+          <span class="diagnostics-label">资源预算</span>
+          <strong>{{ resourceBudgetSummary }}</strong>
+          <span class="diagnostics-sub">{{ resourceBudgetDetail }}</span>
+        </div>
+        <div class="diagnostics-tile">
+          <span class="diagnostics-label">远程库存</span>
+          <strong>{{ remoteHealthSummary }}</strong>
+          <span class="diagnostics-sub">{{ remoteHealthDetail }}</span>
+        </div>
+        <div class="diagnostics-tile">
+          <span class="diagnostics-label">慢阶段</span>
+          <strong>{{ phaseMetricSummary }}</strong>
+          <span class="diagnostics-sub">{{ phaseMetricDetail }}</span>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { HardDrive, HelpCircle, Zap } from 'lucide-vue-next'
+import { HardDrive, HelpCircle, RefreshCw, Zap } from 'lucide-vue-next'
 import SettingsFieldCard from './SettingsFieldCard.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
 import SettingsToggleChip from './SettingsToggleChip.vue'
 import SettingsRangeStepper from './SettingsRangeStepper.vue'
 import AppDropdown from '../common/AppDropdown.vue'
+import StatefulButton from '../ui/stateful-button.vue'
 import { systemApi } from '../../api'
 
 const props = defineProps({
@@ -192,6 +228,9 @@ const sevenZipThreadOptions = [
 
 const storageInfo = ref(null)
 const storageInfoLoading = ref(false)
+const resourceBudgetSnapshot = ref(null)
+const remoteHealthSnapshot = ref(null)
+const taskPhaseMetricSnapshot = ref(null)
 
 async function loadStorageInfo() {
   storageInfoLoading.value = true
@@ -206,6 +245,17 @@ async function loadStorageInfo() {
 }
 
 onMounted(loadStorageInfo)
+
+async function loadPerformanceDiagnostics() {
+  const [resourceBudget, remoteHealth, phaseMetrics] = await Promise.all([
+    systemApi.resourceBudget(),
+    systemApi.remoteFsHealth(),
+    systemApi.taskPhaseMetrics({ limit: 50 })
+  ])
+  resourceBudgetSnapshot.value = resourceBudget
+  remoteHealthSnapshot.value = remoteHealth
+  taskPhaseMetricSnapshot.value = phaseMetrics
+}
 
 // 配置里 storage.temp_path 改变时，重新探测
 watch(
@@ -268,6 +318,62 @@ const storageHintText = computed(() => {
     : 'auto 模式会推荐 1'
   return `当前固定并发 ${configured}（检测到 ${typeLabel}，${autoHint}；若想让后端自动适配，请改回"自动"）`
 })
+
+const resourceBudgetSummary = computed(() => {
+  const resources = resourceBudgetSnapshot.value?.resources || {}
+  const active = Object.values(resources).reduce((sum, item) => sum + Number(item?.active || 0), 0)
+  const waiting = Object.values(resources).reduce((sum, item) => sum + Number(item?.waiting || 0), 0)
+  if (!resourceBudgetSnapshot.value) return '未读取'
+  return waiting > 0 ? `${active} 活跃 / ${waiting} 等待` : `${active} 活跃`
+})
+
+const resourceBudgetDetail = computed(() => {
+  const resources = resourceBudgetSnapshot.value?.resources || {}
+  const busy = Object.entries(resources)
+    .filter(([, item]) => Number(item?.active || 0) > 0 || Number(item?.waiting || 0) > 0)
+    .map(([name, item]) => `${name} ${Number(item?.active || 0)}/${Number(item?.configured_limit || 0)}`)
+  return busy.length ? busy.slice(0, 3).join('，') : '暂无占用'
+})
+
+const remoteHealthSummary = computed(() => {
+  const snapshot = remoteHealthSnapshot.value
+  if (!snapshot) return '未读取'
+  const total = Number(snapshot.total || 0)
+  const degraded = Number(snapshot.degraded_count || 0)
+  if (!total) return '无远程库'
+  return degraded > 0 ? `${degraded}/${total} 退化` : `${total} 正常`
+})
+
+const remoteHealthDetail = computed(() => {
+  const items = Array.isArray(remoteHealthSnapshot.value?.items) ? remoteHealthSnapshot.value.items : []
+  const degraded = items.find(item => item?.status === 'degraded')
+  if (degraded) {
+    return `${degraded.library_name || degraded.library_id} ${Number(degraded.circuit_remaining_seconds || 0)}s 后重试`
+  }
+  return items.length ? '所有远程库可用' : '未配置群晖库存'
+})
+
+const phaseMetricSummary = computed(() => {
+  const groups = taskPhaseMetricSnapshot.value?.summary?.groups || []
+  if (!groups.length) return '未采样'
+  const first = groups[0]
+  return `${first.phase || '-'} p95 ${formatDurationMs(first.duration_p95_ms)}`
+})
+
+const phaseMetricDetail = computed(() => {
+  const groups = taskPhaseMetricSnapshot.value?.summary?.groups || []
+  if (!groups.length) return '暂无任务阶段指标'
+  const first = groups[0]
+  return `${first.task_type || 'task'} / ${first.resource || '-'}，样本 ${Number(first.count || 0)}`
+})
+
+function formatDurationMs(value) {
+  const ms = Number(value || 0)
+  if (!Number.isFinite(ms) || ms <= 0) return '0ms'
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  if (ms < 60000) return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`
+  return `${(ms / 60000).toFixed(1)}m`
+}
 </script>
 
 <style scoped>
@@ -325,6 +431,55 @@ const storageHintText = computed(() => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.diagnostics-title {
+  justify-content: space-between;
+}
+
+.diagnostics-refresh-btn {
+  min-width: 82px;
+}
+
+.diagnostics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.diagnostics-tile {
+  display: grid;
+  gap: 5px;
+  min-height: 86px;
+  padding: 12px 13px;
+  border: 1px solid var(--set-border);
+  border-radius: 8px;
+  background: var(--set-field-bg);
+}
+
+.diagnostics-label {
+  color: var(--set-text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.diagnostics-tile strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--set-text-strong);
+  font-size: 17px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diagnostics-sub {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--set-text-subtle);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* SettingsFieldCard 默认 slot 里裸 input 的统一外观 */
@@ -425,7 +580,8 @@ const storageHintText = computed(() => {
 
 @media (max-width: 1200px) {
   .settings-grid.two,
-  .pill-switch-grid {
+  .pill-switch-grid,
+  .diagnostics-grid {
     grid-template-columns: 1fr;
   }
 }

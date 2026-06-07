@@ -142,12 +142,16 @@ class ActivityLogWriter:
             return
         # 延迟导入避免循环依赖
         from ..models.database import ActivityLog, SessionLocal
+        from .activity_log_rollup_service import get_activity_log_rollup_service
+        from .resource_budget_service import get_resource_budget_service
 
         db = SessionLocal()
         try:
-            db.bulk_save_objects([ActivityLog(**payload) for payload in batch])
-            self._upsert_daily_stats(db, batch)
-            db.commit()
+            with get_resource_budget_service().acquire_sync("sqlite_write", reason="activity_log.flush"):
+                db.bulk_save_objects([ActivityLog(**payload) for payload in batch])
+                self._upsert_daily_stats(db, batch)
+                get_activity_log_rollup_service().upsert_from_payloads(db, batch)
+                db.commit()
             self._last_write_ts = time.time()
             return
         except Exception:
@@ -161,9 +165,11 @@ class ActivityLogWriter:
             try:
                 db2 = SessionLocal()
                 try:
-                    db2.add(ActivityLog(**payload))
-                    self._upsert_daily_stats(db2, [payload])
-                    db2.commit()
+                    with get_resource_budget_service().acquire_sync("sqlite_write", reason="activity_log.flush_one"):
+                        db2.add(ActivityLog(**payload))
+                        self._upsert_daily_stats(db2, [payload])
+                        get_activity_log_rollup_service().upsert_from_payloads(db2, [payload])
+                        db2.commit()
                     self._last_write_ts = time.time()
                 except Exception:
                     db2.rollback()
@@ -430,3 +436,58 @@ def get_activity_log_row_dict_cache() -> _ActivityLogRowDictCache:
             if _ROW_DICT_CACHE is None:
                 _ROW_DICT_CACHE = _ActivityLogRowDictCache()
     return _ROW_DICT_CACHE
+
+
+class _ActivityLogLiteItemCache:
+    """按 id 缓存 lite 列表 item，避免写入频繁时重复从大 detail 提取 chips。"""
+
+    def __init__(self, max_entries: int = 10000) -> None:
+        self._max_entries = max(128, int(max_entries))
+        self._lock = threading.Lock()
+        self._entries: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+
+    def get_many(self, row_ids) -> Dict[str, Dict[str, Any]]:
+        out: Dict[str, Dict[str, Any]] = {}
+        with self._lock:
+            for rid in row_ids:
+                if rid is None:
+                    continue
+                key = str(rid)
+                item = self._entries.get(key)
+                if item is None:
+                    continue
+                self._entries.move_to_end(key)
+                out[key] = dict(item)
+        return out
+
+    def put_many(self, pairs) -> None:
+        with self._lock:
+            for rid, item in pairs:
+                if rid is None or not isinstance(item, dict):
+                    continue
+                key = str(rid)
+                self._entries[key] = dict(item)
+                self._entries.move_to_end(key)
+                while len(self._entries) > self._max_entries:
+                    self._entries.popitem(last=False)
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._entries.clear()
+
+    def stats(self) -> Dict[str, int]:
+        with self._lock:
+            return {"size": len(self._entries), "max_entries": self._max_entries}
+
+
+_LITE_ITEM_CACHE: Optional[_ActivityLogLiteItemCache] = None
+_LITE_ITEM_CACHE_LOCK = threading.Lock()
+
+
+def get_activity_log_lite_item_cache() -> _ActivityLogLiteItemCache:
+    global _LITE_ITEM_CACHE
+    if _LITE_ITEM_CACHE is None:
+        with _LITE_ITEM_CACHE_LOCK:
+            if _LITE_ITEM_CACHE is None:
+                _LITE_ITEM_CACHE = _ActivityLogLiteItemCache()
+    return _LITE_ITEM_CACHE

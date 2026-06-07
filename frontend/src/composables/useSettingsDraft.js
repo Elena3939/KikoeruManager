@@ -227,6 +227,7 @@ export const defaultConfig = {
     download_root: '',
     aria2_path: 'aria2c',
     proxy_url: '',
+    proxy_platforms: ['http', 'gofile', 'transferit', 'onedrive', 'google_drive', 'pikpak'],
     max_concurrent_downloads: 3,
     split: 8,
     max_connection_per_server: 8,
@@ -380,6 +381,14 @@ export const defaultConfig = {
     poll_interval_seconds: 20,
     unread_highlight_enabled: true
   },
+  resource_budget: {
+    enabled: true,
+    disk_io_local: 2,
+    archive_cpu: 0,
+    remote_fs: 4,
+    network_download: 5,
+    sqlite_write: 0
+  },
   security_gate: {
     enabled: false,
     secret: '',
@@ -470,6 +479,15 @@ function pickFields(source = {}, keys = []) {
   }, {})
 }
 
+function normalizeHttpProxyPlatforms(value) {
+  const allowed = new Set(defaultConfig.http_downloader.proxy_platforms)
+  if (value == null) return [...defaultConfig.http_downloader.proxy_platforms]
+  const values = Array.isArray(value) ? value : [value]
+  return values
+    .map(item => String(item || '').trim())
+    .filter(item => allowed.has(item))
+}
+
 function hydrateConfig(data = {}) {
   const next = {
     storage: {
@@ -505,6 +523,7 @@ function hydrateConfig(data = {}) {
     email_watcher: { ...defaultConfig.email_watcher, ...(data?.email_watcher || {}) },
     notification_email: { ...defaultConfig.notification_email, ...(data?.notification_email || {}) },
     notification_center: { ...defaultConfig.notification_center, ...(data?.notification_center || {}) },
+    resource_budget: { ...defaultConfig.resource_budget, ...(data?.resource_budget || {}) },
     security_gate: { ...defaultConfig.security_gate, ...(data?.security_gate || {}) },
     classification: data?.classification || defaultConfig.classification
   }
@@ -514,6 +533,7 @@ function hydrateConfig(data = {}) {
   }
   if (!next.storage.default_library_id) next.storage.default_library_id = next.storage.libraries[0]?.id || ''
   if (!next.storage.default_extract_library_id) next.storage.default_extract_library_id = next.storage.default_library_id
+  next.http_downloader.proxy_platforms = normalizeHttpProxyPlatforms(next.http_downloader.proxy_platforms)
   return next
 }
 
@@ -555,8 +575,10 @@ function serializeConfig(config) {
     email_watcher: payload.email_watcher,
     notification_email: payload.notification_email,
     notification_center: payload.notification_center,
+    resource_budget: payload.resource_budget,
     security_gate: payload.security_gate
   }
+  serialized.http_downloader.proxy_platforms = normalizeHttpProxyPlatforms(serialized.http_downloader.proxy_platforms)
   const googleDriveHasAuthorizationState = Boolean(
     serialized.http_downloader?.google_drive_refresh_token
       || serialized.http_downloader?.google_drive_oauth_expired

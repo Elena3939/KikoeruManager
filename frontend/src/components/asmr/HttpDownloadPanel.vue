@@ -78,7 +78,7 @@
         </button>
         <button class="asmr-mini-btn is-primary" type="button" :disabled="starting || !selectedOkCount" @click="start">
           <Download :size="12" :stroke-width="2.4" />
-          {{ starting ? '创建中...' : `开始下载 (${selectedOkCount})` }}
+          {{ starting ? '创建中...' : `开始下载 (${selectedDownloadFileCount})` }}
         </button>
       </div>
     </div>
@@ -123,6 +123,27 @@
             <span class="tab-count">{{ chip.selected }}/{{ chip.total }}</span>
           </button>
           <button type="button" class="tab-chip tab-chip-idle ml-auto px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] border" :disabled="!selectedOkCount" @click="clearPreviewSelection">清空</button>
+        </div>
+        <div v-if="!isBaidu && hasHttpSelectedSplitVolumeItems" class="http-volume-batch-strip mx-7 mb-2">
+          <span class="http-volume-batch-label">选中分卷批量命名</span>
+          <input
+            v-model.trim="httpBatchVolumeName"
+            class="baidu-rename-input"
+            type="text"
+            maxlength="160"
+            :placeholder="inferHttpSplitVolumeBase()"
+          >
+          <input
+            v-model.trim="httpBatchExtractPassword"
+            class="baidu-rename-input"
+            type="text"
+            maxlength="128"
+            placeholder="这组解压密码，可选"
+          >
+          <button type="button" class="baidu-inline-action volume" @click.stop="applyHttpSelectedSplitVolumeNaming">
+            <PencilLine :size="11" :stroke-width="2.4" />
+            <span>套用到选中分卷</span>
+          </button>
         </div>
 
         <div class="http-preview-content content-grid flex-1 flex gap-4 px-7 py-2 min-h-0">
@@ -180,7 +201,7 @@
               <div>
                 <h2>下载列表</h2>
               </div>
-              <span>{{ previewItems.length }} 项</span>
+              <span>{{ previewDownloadFileCount }} 文件 / {{ previewItems.length }} 分享</span>
             </div>
             <div class="download-list-scroll flex-1 overflow-auto no-scrollbar">
               <div v-if="previewing && !previewItems.length" class="http-preview-empty">
@@ -248,14 +269,14 @@
                         <span v-else-if="item.warning" class="warn">{{ item.warning }}</span>
                         <span v-if="isBaidu && (item.requires_pass_code || item.pass_code)" class="http-preview-pass-chip" :class="{ warn: !item.pass_code || item.pass_code_invalid }">{{ item.pass_code ? `提取码 ${item.pass_code}` : '缺提取码' }}</span>
                       </div>
-                      <div v-if="isBaidu && item.ok" class="baidu-item-actions" @click.stop>
+                      <div v-if="item.ok" class="baidu-item-actions" @click.stop>
                         <button type="button" class="baidu-inline-action" :class="{ active: item._rename_open }" @click.stop="toggleBaiduRenameEditor(item)">
                           <PencilLine :size="11" :stroke-width="2.4" />
                           <span>{{ item._rename_open ? '收起命名' : '重命名/密码' }}</span>
                         </button>
                         <span v-if="baiduCustomNamePreview(item)" class="baidu-custom-preview">{{ baiduCustomNamePreview(item) }}</span>
                       </div>
-                      <div v-if="isBaidu && item.ok && item._rename_open" class="baidu-rename-panel" @click.stop>
+                      <div v-if="item.ok && item._rename_open" class="baidu-rename-panel" @click.stop>
                         <label class="baidu-rename-field">
                           <span>保存名称</span>
                           <input
@@ -276,17 +297,88 @@
                             placeholder="可选，按密码嗅探模板写入文件名"
                           >
                         </label>
-                        <button type="button" class="baidu-inline-action clear" :disabled="!item.custom_name && !item.custom_extract_password" @click.stop="clearBaiduCustomNaming(item)">
+                        <button type="button" class="baidu-inline-action clear" :disabled="!hasBaiduCustomNaming(item)" @click.stop="clearBaiduCustomNaming(item)">
                           <X :size="11" :stroke-width="2.4" />
                           <span>清除</span>
                         </button>
                       </div>
+                      <div v-if="isBaidu && item.ok && item._rename_open && hasBaiduSplitVolumeFiles(item)" class="baidu-volume-batch-panel" @click.stop>
+                        <div class="baidu-volume-batch-title">
+                          <span>分卷批量命名</span>
+                          <button type="button" class="baidu-inline-action ghost" @click.stop="selectBaiduSplitVolumeFiles(item, true)">全选分卷</button>
+                          <button type="button" class="baidu-inline-action ghost" @click.stop="selectBaiduSplitVolumeFiles(item, false)">清空选择</button>
+                        </div>
+                        <label class="baidu-rename-field">
+                          <span>统一保存名</span>
+                          <input
+                            v-model.trim="item._batch_volume_name"
+                            class="baidu-rename-input"
+                            type="text"
+                            maxlength="160"
+                            :placeholder="inferBaiduSplitVolumeBase(item)"
+                          >
+                        </label>
+                        <label class="baidu-rename-field">
+                          <span><KeyRound :size="10" :stroke-width="2.5" /> 这组解压密码</span>
+                          <input
+                            v-model.trim="item._batch_extract_password"
+                            class="baidu-rename-input"
+                            type="text"
+                            maxlength="128"
+                            placeholder="可选，写入这组文件夹名"
+                          >
+                        </label>
+                        <button type="button" class="baidu-inline-action volume" :disabled="!hasBaiduSelectedSplitVolumeFiles(item)" @click.stop="applyBaiduSelectedSplitVolumeNaming(item)">
+                          <PencilLine :size="11" :stroke-width="2.4" />
+                          <span>套用到选中分卷</span>
+                        </button>
+                      </div>
                       <div v-if="!isBaidu && item.preview_summary" class="baidu-preview-summary">{{ item.preview_summary }}</div>
                       <div v-if="shouldShowBaiduPreviewFiles(item)" class="baidu-preview-files">
-                        <div v-for="file in item.preview_files.slice(0, 5)" :key="`${previewItemKey(item)}-${file.path || file.name}`" class="baidu-preview-file">
-                          <span class="baidu-preview-file-type">{{ file.is_dir ? '目录' : '文件' }}</span>
-                          <span class="baidu-preview-file-name">{{ file.relative_path || file.name }}</span>
-                          <span v-if="!file.is_dir" class="baidu-preview-file-size">{{ formatSize(file.size_bytes || file.size) }}</span>
+                        <div
+                          v-for="node in baiduPreviewTreeRows(item)"
+                          :key="`${previewItemKey(item)}-${node.key}`"
+                          class="baidu-preview-tree-row"
+                          :class="{ 'is-dir': node.isDir, 'is-file': !node.isDir, 'is-root-child': node.depth <= 0 }"
+                          :style="{ '--tree-depth': node.depth }"
+                        >
+                          <span class="baidu-preview-tree-guide" aria-hidden="true"></span>
+                          <span class="baidu-preview-file-check-slot">
+                            <input
+                              v-if="isBaidu && item._rename_open && !node.isDir && baiduSplitVolumeInfo(node.file)"
+                              v-model="node.file._batch_selected"
+                              class="baidu-preview-file-check"
+                              type="checkbox"
+                              @click.stop
+                            >
+                          </span>
+                          <span class="baidu-preview-file-type">{{ node.isDir ? '目录' : '文件' }}</span>
+                          <div class="baidu-preview-file-main">
+                            <span class="baidu-preview-file-name">{{ node.name }}</span>
+                            <div v-if="isBaidu && item._rename_open && !node.isDir" class="baidu-file-rename-grid" @click.stop>
+                              <label class="baidu-file-rename-field">
+                                <span>保存名称</span>
+                                <input
+                                  v-model.trim="node.file.custom_name"
+                                  class="baidu-rename-input"
+                                  type="text"
+                                  maxlength="160"
+                                  :placeholder="defaultBaiduPreviewFileName(node.file)"
+                                >
+                              </label>
+                              <label class="baidu-file-rename-field">
+                                <span>解压密码</span>
+                                <input
+                                  v-model.trim="node.file.custom_extract_password"
+                                  class="baidu-rename-input"
+                                  type="text"
+                                  maxlength="128"
+                                  placeholder="可选"
+                                >
+                              </label>
+                            </div>
+                          </div>
+                          <span v-if="!node.isDir" class="baidu-preview-file-size">{{ formatSize(node.file?.size_bytes || node.file?.size) }}</span>
                         </div>
                       </div>
                       <div v-if="isBaidu && item.requires_pass_code" class="baidu-pass-code-row" :class="{ invalid: item.pass_code_invalid }" @click.stop>
@@ -311,7 +403,7 @@
 
         <div class="footer-row px-7 py-3 flex items-center justify-between">
           <div class="summary text-sm text-slate-500 font-medium">
-            已选 <span class="summary-strong text-slate-900">{{ selectedOkCount }}</span> 个文件，共 <span class="summary-strong text-slate-900">{{ formatSize(selectedTotalBytes) }}</span>
+            已选 <span class="summary-strong text-slate-900">{{ selectedDownloadFileCount }}</span> 个文件，共 <span class="summary-strong text-slate-900">{{ formatSize(selectedTotalBytes) }}</span>
           </div>
           <div class="footer-actions flex items-center gap-3">
             <button type="button" class="primary-cta px-10 h-11 rounded-xl font-bold text-white" :disabled="starting || !selectedOkCount" @click="start">
@@ -361,6 +453,8 @@ const previewLogs = ref([])
 const previewProgress = ref(0)
 const selectedPreviewKeys = ref(new Set())
 const failedSourceIcons = ref(new Set())
+const httpBatchVolumeName = ref('')
+const httpBatchExtractPassword = ref('')
 
 const conflictOptions = [
   { value: 'resume', label: '断点续传' },
@@ -495,9 +589,21 @@ function isBaiduPassCodeLine(value) {
 
 const okPreviewItems = computed(() => previewItems.value.filter(item => item.ok))
 const okPreviewCount = computed(() => okPreviewItems.value.length)
+const previewDownloadFileCount = computed(() => okPreviewItems.value.reduce((sum, item) => sum + previewItemFileCount(item), 0))
 const selectedOkItems = computed(() => okPreviewItems.value.filter(item => selectedPreviewKeys.value.has(previewItemKey(item))))
 const selectedOkCount = computed(() => selectedOkItems.value.length)
+const selectedDownloadFileCount = computed(() => selectedOkItems.value.reduce((sum, item) => sum + previewItemFileCount(item), 0))
 const selectedTotalBytes = computed(() => selectedOkItems.value.reduce((sum, item) => sum + Number(item.size_bytes || item.size || 0), 0))
+const httpSelectedSplitVolumeItems = computed(() => {
+  if (isBaidu.value) return []
+  const rows = selectedOkItems.value
+    .map(item => ({ item, info: baiduSplitVolumeInfo(item) }))
+    .filter(entry => entry.info && entry.info.base)
+  const hasMain = rows.some(entry => entry.info.suffix === '.zip')
+  const hasPart = rows.some(entry => /^\.z\d{2}$/i.test(entry.info.suffix))
+  return hasMain && hasPart ? rows : []
+})
+const hasHttpSelectedSplitVolumeItems = computed(() => httpSelectedSplitVolumeItems.value.length > 1)
 const allPreviewSelectionState = computed(() => {
   if (!okPreviewCount.value || !selectedOkCount.value) return 'none'
   return selectedOkCount.value === okPreviewCount.value ? 'all' : 'partial'
@@ -584,6 +690,8 @@ async function preview() {
   previewItems.value = []
   previewNeedsMaterialize.value = false
   selectedPreviewKeys.value = new Set()
+  httpBatchVolumeName.value = ''
+  httpBatchExtractPassword.value = ''
   previewProgress.value = 8
   previewLogs.value = []
   addPreviewLog(`开始生成 ${parsedUrls.value.length} 个来源的预览`)
@@ -677,7 +785,7 @@ async function start() {
       conflictPolicy: conflictPolicy.value,
       batchName: batchName.value,
       selectedKeys: [...selectedPreviewKeys.value],
-      selectedItems: isBaidu.value ? syncBaiduCustomNamingPayload(selectedOkItems.value) : selectedOkItems.value
+      selectedItems: syncBaiduCustomNamingPayload(selectedOkItems.value)
     })
     const ids = (result.tasks || []).map(item => item.task_id || item.id).filter(Boolean)
     emit('started', ids)
@@ -754,12 +862,38 @@ function toggleBaiduRenameEditor(item) {
   if (item._rename_open && !item.custom_name) {
     item.custom_name = defaultBaiduCustomName(item)
   }
+  if (item._rename_open) {
+    prepareBaiduSplitVolumeBatch(item)
+    baiduPreviewFiles(item).forEach(file => {
+      if (!file || file.is_dir) return
+      if (!String(file.custom_name || '').trim()) {
+        file.custom_name = defaultBaiduPreviewFileName(file)
+      }
+    })
+  }
 }
 
 function clearBaiduCustomNaming(item) {
   if (!item) return
   item.custom_name = ''
   item.custom_extract_password = ''
+  item.custom_group_folder = false
+  baiduPreviewFiles(item).forEach(file => {
+    file.custom_name = ''
+    file.custom_extract_password = ''
+    file._batch_selected = false
+  })
+}
+
+function hasBaiduCustomNaming(item) {
+  if (!item) return false
+  if (String(item.custom_name || '').trim()) return true
+  if (String(item.custom_extract_password || '').trim()) return true
+  return baiduPreviewFiles(item).some(file => (
+    file
+    && !file.is_dir
+    && (String(file.custom_name || '').trim() || String(file.custom_extract_password || '').trim())
+  ))
 }
 
 function defaultBaiduCustomName(item) {
@@ -780,7 +914,7 @@ function baiduCustomNamePreview(item) {
 }
 
 function baiduSingleFileExtension(item) {
-  const files = Array.isArray(item?.preview_files) ? item.preview_files.filter(file => file && !file.is_dir) : []
+  const files = baiduPreviewFiles(item).filter(file => file && !file.is_dir)
   if (files.length !== 1) return ''
   return splitFilename(String(files[0]?.name || files[0]?.relative_path || '')).ext
 }
@@ -798,9 +932,172 @@ function splitFilename(value) {
   return { name: filename, ext: '' }
 }
 
+function baiduSplitVolumeInfo(file) {
+  const sourceName = String(file?.name || file?.filename || file?.relative_path || '').split(/[\\/]/).filter(Boolean).pop() || ''
+  const trimmed = sourceName.trim()
+  if (!trimmed) return null
+  let match = trimmed.match(/^(.*?)\.z(\d{2})$/i)
+  if (match) {
+    return {
+      base: match[1].trim(),
+      index: Number(match[2]),
+      suffix: `.z${match[2].padStart(2, '0')}`,
+      needsFullName: false,
+    }
+  }
+  match = trimmed.match(/^(.*?)([._\-\s]+z)(\d{2})$/i)
+  if (match) {
+    return {
+      base: match[1].trim(),
+      index: Number(match[3]),
+      suffix: `.z${match[3].padStart(2, '0')}`,
+      needsFullName: true,
+    }
+  }
+  match = trimmed.match(/^(.*?)\.zip$/i)
+  if (match) {
+    return {
+      base: match[1].trim(),
+      index: 10000,
+      suffix: '.zip',
+      needsFullName: false,
+    }
+  }
+  return null
+}
+
+function httpPreviewParentDir(item) {
+  const relative = String(item?.relative_path || item?.filename || item?.name || '').replace(/\\/g, '/').trim()
+  const parts = relative.split('/').filter(Boolean)
+  parts.pop()
+  return parts.join('/')
+}
+
+function inferHttpSplitVolumeBase() {
+  const counts = new Map()
+  httpSelectedSplitVolumeItems.value.forEach(({ info }) => {
+    const base = String(info.base || '').trim()
+    if (!base) return
+    counts.set(base, (counts.get(base) || 0) + 1)
+  })
+  let best = ''
+  let bestCount = 0
+  counts.forEach((count, base) => {
+    if (count > bestCount || (count === bestCount && base.length > best.length)) {
+      best = base
+      bestCount = count
+    }
+  })
+  return best || '统一文件名'
+}
+
+function httpSelectedHasUnrelatedSameLevel() {
+  const selectedKeys = new Set(httpSelectedSplitVolumeItems.value.map(({ item }) => previewItemKey(item)))
+  const selectedParents = new Set(httpSelectedSplitVolumeItems.value.map(({ item }) => httpPreviewParentDir(item)))
+  return okPreviewItems.value.some(item => (
+    !selectedKeys.has(previewItemKey(item))
+    && selectedParents.has(httpPreviewParentDir(item))
+  ))
+}
+
+function applyHttpSelectedSplitVolumeNaming() {
+  const entries = httpSelectedSplitVolumeItems.value
+  if (!entries.length) return
+  const base = String(httpBatchVolumeName.value || '').trim() || inferHttpSplitVolumeBase()
+  const password = String(httpBatchExtractPassword.value || '').trim()
+  const useGroupFolder = Boolean(password && httpSelectedHasUnrelatedSameLevel())
+  entries
+    .sort((a, b) => a.info.index - b.info.index)
+    .forEach(({ item, info }) => {
+      item.custom_name = base
+      item.custom_extract_password = password
+      item.custom_group_folder = useGroupFolder
+    })
+  addPreviewLog(`已把 ${entries.length} 个选中分卷统一为 ${base}.z01 / ${base}.zip`, 'success')
+}
+
+function baiduSplitVolumeFiles(item) {
+  const files = baiduPreviewFiles(item)
+    .filter(file => file && !file.is_dir)
+    .map(file => ({ file, info: baiduSplitVolumeInfo(file) }))
+    .filter(entry => entry.info && entry.info.base)
+  if (files.length < 2) return []
+  const hasMain = files.some(entry => entry.info.suffix === '.zip')
+  const hasPart = files.some(entry => /^\.z\d{2}$/i.test(entry.info.suffix))
+  return hasMain && hasPart ? files : []
+}
+
+function hasBaiduSplitVolumeFiles(item) {
+  return baiduSplitVolumeFiles(item).length > 1
+}
+
+function prepareBaiduSplitVolumeBatch(item) {
+  if (!item || !hasBaiduSplitVolumeFiles(item)) return
+  if (!String(item._batch_volume_name || '').trim()) {
+    item._batch_volume_name = inferBaiduSplitVolumeBase(item)
+  }
+  baiduSplitVolumeFiles(item).forEach(({ file }) => {
+    if (typeof file._batch_selected !== 'boolean') {
+      file._batch_selected = true
+    }
+  })
+}
+
+function selectBaiduSplitVolumeFiles(item, selected) {
+  baiduSplitVolumeFiles(item).forEach(({ file }) => {
+    file._batch_selected = Boolean(selected)
+  })
+}
+
+function selectedBaiduSplitVolumeFiles(item) {
+  return baiduSplitVolumeFiles(item).filter(({ file }) => Boolean(file._batch_selected))
+}
+
+function hasBaiduSelectedSplitVolumeFiles(item) {
+  return selectedBaiduSplitVolumeFiles(item).length > 0
+}
+
+function inferBaiduSplitVolumeBase(item) {
+  const entries = baiduSplitVolumeFiles(item)
+  const counts = new Map()
+  entries.forEach(({ info }) => {
+    const base = String(info.base || '').trim()
+    if (!base) return
+    counts.set(base, (counts.get(base) || 0) + 1)
+  })
+  let best = ''
+  let bestCount = 0
+  counts.forEach((count, base) => {
+    if (count > bestCount || (count === bestCount && base.length > best.length)) {
+      best = base
+      bestCount = count
+    }
+  })
+  const explicit = String(item?.custom_name || '').trim()
+  return best || (explicit ? (splitFilename(explicit).name || explicit) : defaultBaiduCustomName(item))
+}
+
+function applyBaiduSelectedSplitVolumeNaming(item) {
+  if (!item) return
+  const entries = selectedBaiduSplitVolumeFiles(item)
+  if (!entries.length) return
+  const base = String(item._batch_volume_name || '').trim() || inferBaiduSplitVolumeBase(item)
+  const password = String(item._batch_extract_password || '').trim()
+  item.custom_name = base
+  item.custom_extract_password = password
+  item.custom_group_folder = true
+  entries
+    .sort((a, b) => a.info.index - b.info.index)
+    .forEach(({ file, info }) => {
+      file.custom_name = info.needsFullName ? `${base}${info.suffix}` : base
+      file.custom_extract_password = ''
+    })
+  addPreviewLog(`已把 ${entries.length} 个选中分卷统一为 ${base}.z01 / ${base}.zip`, 'success')
+}
+
 function shouldShowBaiduPreviewFiles(item) {
   if (!isBaidu.value) return false
-  const files = Array.isArray(item?.preview_files) ? item.preview_files.filter(Boolean) : []
+  const files = baiduPreviewFiles(item)
   if (!files.length) return false
   if (files.length > 1) return true
   const title = String(item?.filename || item?.name || '').trim()
@@ -813,6 +1110,82 @@ function shouldShowPreviewItemSize(item) {
   if (!item?.ok) return false
   if (!isBaidu.value) return true
   return !shouldShowBaiduPreviewFiles(item)
+}
+
+function baiduPreviewFiles(item) {
+  return Array.isArray(item?.preview_files) ? item.preview_files.filter(Boolean) : []
+}
+
+function baiduPreviewFileKey(file) {
+  return String(file?.fs_id || file?.path || file?.relative_path || file?.name || '').trim()
+}
+
+function baiduPreviewTreeRows(item) {
+  const files = baiduPreviewFiles(item)
+  const rows = []
+  const dirs = new Map()
+
+  files
+    .map(file => ({ file, parts: baiduPreviewPathParts(file) }))
+    .filter(entry => entry.parts.length)
+    .sort((a, b) => {
+      const aPath = a.parts.join('/').toLowerCase()
+      const bPath = b.parts.join('/').toLowerCase()
+      const aDir = Boolean(a.file?.is_dir)
+      const bDir = Boolean(b.file?.is_dir)
+      if (aDir !== bDir) return aDir ? -1 : 1
+      return aPath.localeCompare(bPath, 'zh-CN')
+    })
+    .forEach(({ file, parts }) => {
+      const isDir = Boolean(file?.is_dir)
+      const fileDepth = Math.max(0, parts.length - 1)
+      const dirParts = isDir ? parts : parts.slice(0, -1)
+      dirParts.forEach((_, index) => {
+        const pathParts = dirParts.slice(0, index + 1)
+        const dirKey = `dir:${pathParts.join('/')}`
+        if (dirs.has(dirKey)) return
+        dirs.set(dirKey, true)
+        rows.push({
+          key: dirKey,
+          name: pathParts[pathParts.length - 1],
+          depth: index,
+          isDir: true,
+          file: null,
+        })
+      })
+      if (!isDir) {
+        rows.push({
+          key: `file:${baiduPreviewFileKey(file) || parts.join('/')}`,
+          name: parts[parts.length - 1],
+          depth: fileDepth,
+          isDir: false,
+          file,
+        })
+      }
+    })
+
+  return rows
+}
+
+function baiduPreviewPathParts(file) {
+  const path = String(file?.relative_path || file?.name || '').replace(/\\/g, '/').trim()
+  return path.split('/').map(part => part.trim()).filter(Boolean)
+}
+
+function defaultBaiduPreviewFileName(file) {
+  const sourceName = String(file?.name || file?.relative_path || '').split(/[\\/]/).filter(Boolean).pop() || ''
+  return splitFilename(sourceName).name || sourceName || '百度网盘文件'
+}
+
+function previewItemFileCount(item) {
+  if (!isBaidu.value) return item?.ok ? 1 : 0
+  const previewFiles = baiduPreviewFiles(item)
+  const directFiles = previewFiles.filter(file => file && !file.is_dir).length
+  if (directFiles) return directFiles
+  const previewCount = Number(item?.preview_file_count || 0)
+  const folderCount = Number(item?.preview_folder_count || 0)
+  if (previewCount > folderCount) return previewCount - folderCount
+  return item?.ok ? 1 : 0
 }
 
 function applyPassCodeAndPreview(item) {
@@ -852,7 +1225,30 @@ function syncBaiduCustomNamingPayload(items) {
     ...item,
     custom_name: String(item?.custom_name || '').trim(),
     custom_extract_password: String(item?.custom_extract_password || '').trim(),
+    custom_group_folder: Boolean(item?.custom_group_folder),
+    custom_file_names: buildBaiduCustomFileOverrides(item),
   }))
+}
+
+function buildBaiduCustomFileOverrides(item) {
+  const overrides = {}
+  baiduPreviewFiles(item).forEach(file => {
+    if (!file || file.is_dir) return
+    const key = baiduPreviewFileKey(file)
+    if (!key) return
+    const customName = String(file.custom_name || '').trim()
+    const customPassword = String(file.custom_extract_password || '').trim()
+    if (!customName && !customPassword) return
+    overrides[key] = {
+      custom_name: customName,
+      custom_extract_password: customPassword,
+      fs_id: String(file.fs_id || '').trim(),
+      path: String(file.path || '').trim(),
+      relative_path: String(file.relative_path || '').trim(),
+      name: String(file.name || '').trim(),
+    }
+  })
+  return overrides
 }
 
 function previewItemKey(item) {
@@ -1102,6 +1498,15 @@ onMounted(loadHealth)
   align-self: end;
   color: rgb(100, 116, 139);
 }
+.baidu-inline-action.ghost {
+  height: 22px;
+  padding: 0 7px;
+  color: rgb(71, 85, 105);
+}
+.baidu-inline-action.volume {
+  align-self: end;
+  color: rgb(30, 64, 175);
+}
 .baidu-custom-preview {
   min-width: 0;
   max-width: min(420px, 100%);
@@ -1152,8 +1557,32 @@ onMounted(loadHealth)
   border-color: rgba(59, 130, 246, 0.72);
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
 }
+.baidu-volume-batch-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+  padding: 8px;
+  border: 1px solid rgba(147, 197, 253, 0.42);
+  border-radius: 8px;
+  background: rgba(239, 246, 255, 0.58);
+}
+.baidu-volume-batch-title {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: rgb(30, 64, 175);
+  font-size: 11px;
+  font-weight: 800;
+}
 @media (max-width: 720px) {
   .baidu-rename-panel {
+    grid-template-columns: 1fr;
+  }
+  .baidu-volume-batch-panel {
     grid-template-columns: 1fr;
   }
   .baidu-inline-action.clear {
@@ -1587,9 +2016,10 @@ onMounted(loadHealth)
   gap: 5px;
   max-width: min(680px, 100%);
 }
-.baidu-preview-file {
+.baidu-preview-tree-row {
+  --tree-depth: 0;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: calc(var(--tree-depth) * 18px) auto auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   min-height: 24px;
@@ -1601,15 +2031,70 @@ onMounted(loadHealth)
   font-size: 11px;
   line-height: 1.25;
 }
+.baidu-preview-tree-row.is-dir {
+  background: rgba(239, 246, 255, 0.72);
+  border-color: rgba(147, 197, 253, 0.42);
+}
+.baidu-preview-tree-row.is-file {
+  background: rgba(248, 250, 252, 0.62);
+}
+.baidu-preview-tree-guide {
+  width: 100%;
+  height: 100%;
+  min-height: 20px;
+  border-right: 1px solid rgba(148, 163, 184, 0.28);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  border-bottom-right-radius: 6px;
+}
+.baidu-preview-tree-row.is-root-child .baidu-preview-tree-guide {
+  border-color: transparent;
+}
+.baidu-preview-file-check-slot {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.baidu-preview-file-check {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: rgb(37, 99, 235);
+}
 .baidu-preview-file-type {
   color: rgb(37, 99, 235);
   font-weight: 750;
+}
+.baidu-preview-tree-row.is-dir .baidu-preview-file-type {
+  color: rgb(14, 116, 144);
+}
+.baidu-preview-tree-row.is-file .baidu-preview-file-type {
+  color: rgb(37, 99, 235);
 }
 .baidu-preview-file-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.baidu-preview-file-main {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+.baidu-file-rename-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.baidu-file-rename-field {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  color: rgb(100, 116, 139);
+  font-size: 10px;
+  font-weight: 700;
 }
 .baidu-preview-file-size {
   color: rgb(100, 116, 139);

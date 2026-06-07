@@ -233,6 +233,21 @@ export const systemApi = {
   storageInfo: async () => {
     const response = await apiClient.get('/system/storage-info')
     return response.data
+  },
+
+  resourceBudget: async () => {
+    const response = await apiClient.get('/system/resource-budget')
+    return response.data
+  },
+
+  remoteFsHealth: async () => {
+    const response = await apiClient.get('/system/remote-fs-health')
+    return response.data
+  },
+
+  taskPhaseMetrics: async (params = {}) => {
+    const response = await apiClient.get('/system/task-phase-metrics', { params })
+    return response.data
   }
 }
 
@@ -804,6 +819,30 @@ export const libraryApi = {
     const response = await apiClient.post('/library/browser/folder-contents', {
       library_id: libraryId,
       path
+    })
+    return response.data
+  },
+
+  previewFolderCompletion: async (payload) => {
+    const response = await apiClient.post('/library/folder-completion/preview', payload, {
+      timeout: 10 * 60 * 1000
+    })
+    return response.data
+  },
+
+  startFolderCompletionPreview: async (payload) => {
+    const response = await apiClient.post('/library/folder-completion/preview/start', payload)
+    return response.data
+  },
+
+  getFolderCompletionPreviewJob: async (jobId) => {
+    const response = await apiClient.get(`/library/folder-completion/preview/jobs/${jobId}`)
+    return response.data
+  },
+
+  startFolderCompletion: async (payload) => {
+    const response = await apiClient.post('/library/folder-completion/start', payload, {
+      timeout: 5 * 60 * 1000
     })
     return response.data
   },

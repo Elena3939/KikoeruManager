@@ -18,6 +18,7 @@ from urllib.parse import quote, unquote
 import aiohttp
 
 from ..config.settings import get_config, get_config_file_path
+from .resource_budget_service import get_resource_budget_service
 from .ttl_cache import TTLCache
 
 
@@ -413,8 +414,11 @@ SYNOLOGY_FILESTATION_ERROR_MESSAGES: dict[int, str] = {
     117: "Target file or folder already exists",
     118: "Target file or folder does not exist or was moved",
     119: "目标路径无效、不存在，或当前账号无权访问",
+    408: "FileStation 请求超时或远程服务繁忙",
     414: "目标文件已存在",
 }
+
+SYNOLOGY_REMOTE_DEGRADED_ERROR_CODES = {408}
 
 
 def _synology_error_message(api: str, code: Optional[int]) -> Optional[str]:
@@ -572,6 +576,8 @@ class SynologyFileStationClient:
         self._preferred_upload_variant_name: Optional[str] = "minimal_form"
         # 持久化 HTTP session，避免每次请求重建 TCP 连接
         self._session: Optional[aiohttp.ClientSession] = None
+        self._remote_failures = 0
+        self._remote_circuit_until = 0.0
 
     @staticmethod
     def build_cache_auth_signature(config: SynologyConfig) -> str:
@@ -591,6 +597,75 @@ class SynologyFileStationClient:
             timeout = aiohttp.ClientTimeout(total=None if timeout_value <= 0 else timeout_value)
             self._session = aiohttp.ClientSession(timeout=timeout)
         return self._session
+
+    def _remote_circuit_remaining_seconds(self) -> float:
+        return max(0.0, self._remote_circuit_until - time.monotonic())
+
+    def _is_transport_error(self, exc: Exception) -> bool:
+        if isinstance(exc, (FileNotFoundError, PermissionError)):
+            return False
+        if isinstance(exc, SynologyError) and self._synology_error_code(exc) in SYNOLOGY_REMOTE_DEGRADED_ERROR_CODES:
+            return True
+        return isinstance(exc, (
+            aiohttp.ClientError,
+            ConnectionError,
+            TimeoutError,
+            asyncio.TimeoutError,
+        ))
+
+    def _synology_error_code(self, exc: Exception) -> Optional[int]:
+        message = str(exc or "")
+        patterns = [
+            r"code\s+(\d+)\b",
+            r'"code"\s*:\s*(\d+)\b',
+            r"'code'\s*:\s*(\d+)\b",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, message, re.IGNORECASE)
+            if match:
+                try:
+                    return int(match.group(1))
+                except Exception:
+                    return None
+        return None
+
+    def _record_remote_failure(self, api: str, exc: Exception) -> None:
+        if not self._is_transport_error(exc):
+            return
+        self._remote_failures += 1
+        timeout_seconds = max(30.0, min(180.0, 15.0 * self._remote_failures))
+        self._remote_circuit_until = time.monotonic() + timeout_seconds
+        logger.warning(
+            "[远程库存] %s 失败，已熔断 %.0f 秒 (failures=%s): %s",
+            api,
+            timeout_seconds,
+            self._remote_failures,
+            exc,
+        )
+
+    def _record_remote_success(self) -> None:
+        if self._remote_failures or self._remote_circuit_until:
+            self._remote_failures = 0
+            self._remote_circuit_until = 0.0
+
+    def _check_remote_circuit(self, api: str) -> None:
+        remaining = self._remote_circuit_remaining_seconds()
+        if remaining <= 0:
+            return
+        if api in {"SYNO.API.Auth"}:
+            return
+        raise SynologyError(f"远程库存暂时退化，已熔断 {remaining:.0f} 秒后重试")
+
+    def remote_health_snapshot(self) -> dict[str, Any]:
+        remaining = self._remote_circuit_remaining_seconds()
+        session_open = bool(self._session and not self._session.closed)
+        return {
+            "status": "degraded" if remaining > 0 else "healthy",
+            "failure_count": int(self._remote_failures or 0),
+            "circuit_remaining_seconds": int(round(remaining)),
+            "session_open": session_open,
+            "has_sid": bool(self._sid),
+        }
 
     async def close(self) -> None:
         """关闭持久化 HTTP session（可选，进程退出时 GC 会处理）。"""
@@ -614,87 +689,105 @@ class SynologyFileStationClient:
                 ) from decode_exc
 
     async def _request(self, api: str, method: str, version: int, params: dict[str, Any], files=None):
+        self._check_remote_circuit(api)
         # 最多重试一次：第一次如遇 SID 过期（code 119）自动重登录后重试
-        for _attempt in range(2):
-            session = self._ensure_session()
-            if not self._sid and api != "SYNO.API.Auth":
-                await self._login(session)
+        async with get_resource_budget_service().acquire("remote_fs", reason=f"synology.{api}.{method}"):
+            started = time.perf_counter()
+            try:
+                for _attempt in range(2):
+                    session = self._ensure_session()
+                    if not self._sid and api != "SYNO.API.Auth":
+                        await self._login(session)
 
-            payload = {"api": api, "method": method, "version": str(version), **params}
-            if self._sid and api != "SYNO.API.Auth":
-                payload["_sid"] = self._sid
+                    payload = {"api": api, "method": method, "version": str(version), **params}
+                    if self._sid and api != "SYNO.API.Auth":
+                        payload["_sid"] = self._sid
 
-            url = f"{self.config.base_url.rstrip('/')}/webapi/entry.cgi"
-            if files:
-                form = aiohttp.FormData()
-                query_payload = {
-                    "api": api,
-                    "method": method,
-                    "version": str(version),
-                }
-                if self._sid and api != "SYNO.API.Auth":
-                    query_payload["_sid"] = self._sid
-                for key, value in params.items():
-                    form.add_field(key, str(value))
-                for file_key, file_value in files:
-                    form.add_field(file_key, file_value[0], filename=file_value[1], content_type="application/octet-stream")
-                async with session.post(url, params=query_payload, data=form, ssl=self.config.verify_ssl) as response:
-                    data = await self._read_response_payload(response, api)
-            else:
-                async with session.get(url, params=payload, ssl=self.config.verify_ssl) as response:
-                    data = await self._read_response_payload(response, api)
+                    url = f"{self.config.base_url.rstrip('/')}/webapi/entry.cgi"
+                    if files:
+                        form = aiohttp.FormData()
+                        query_payload = {
+                            "api": api,
+                            "method": method,
+                            "version": str(version),
+                        }
+                        if self._sid and api != "SYNO.API.Auth":
+                            query_payload["_sid"] = self._sid
+                        for key, value in params.items():
+                            form.add_field(key, str(value))
+                        for file_key, file_value in files:
+                            form.add_field(file_key, file_value[0], filename=file_value[1], content_type="application/octet-stream")
+                        async with session.post(url, params=query_payload, data=form, ssl=self.config.verify_ssl) as response:
+                            data = await self._read_response_payload(response, api)
+                    else:
+                        async with session.get(url, params=payload, ssl=self.config.verify_ssl) as response:
+                            data = await self._read_response_payload(response, api)
 
-            if not data.get("success"):
-                error_code = int((data.get("error") or {}).get("code") or 0)
-                if _attempt == 0 and error_code == 119:
-                    # SID 过期 — 清除 SID，下一轮循环重新登录
-                    logger.info("群晖 SID 过期（code 119），自动重新登录: api=%s", api)
-                    self._sid = None
-                    continue
-                raise SynologyError(_format_synology_error(api, "\u6587\u4ef6\u7ad9\u8bf7\u6c42", data))
-            return data.get("data") or {}
+                    if not data.get("success"):
+                        error_code = int((data.get("error") or {}).get("code") or 0)
+                        if _attempt == 0 and error_code == 119:
+                            # SID 过期 — 清除 SID，下一轮循环重新登录
+                            logger.info("群晖 SID 过期（code 119），自动重新登录: api=%s", api)
+                            self._sid = None
+                            continue
+                        raise SynologyError(_format_synology_error(api, "\u6587\u4ef6\u7ad9\u8bf7\u6c42", data))
+                    self._record_remote_success()
+                    elapsed = time.perf_counter() - started
+                    if elapsed >= 2.0:
+                        logger.info("[远程库存] 慢请求 %s.%s %.0fms", api, method, elapsed * 1000)
+                    return data.get("data") or {}
+            except Exception as exc:
+                self._record_remote_failure(api, exc)
+                raise
         return {}  # 不可达，仅供类型检查器
 
     async def stream_download(self, path: str, *, chunk_size: int = 1024 * 256):
         """从群晖 FileStation 流式读取单个文件。"""
         normalized_path = str(PurePosixPath(path or "/"))
+        self._check_remote_circuit("SYNO.FileStation.Download")
         for attempt in range(2):
-            session = self._ensure_session()
-            if not self._sid:
-                await self._login(session)
+            async with get_resource_budget_service().acquire("remote_fs", reason="synology.download"):
+                try:
+                    session = self._ensure_session()
+                    if not self._sid:
+                        await self._login(session)
 
-            api_path, api_version = await self._resolve_api_route(
-                session,
-                "SYNO.FileStation.Download",
-                default_path="entry.cgi",
-                default_version=2,
-            )
-            url = f"{self.config.base_url.rstrip('/')}/webapi/{api_path.lstrip('/')}"
-            params = {
-                "api": "SYNO.FileStation.Download",
-                "method": "download",
-                "version": str(api_version),
-                "path": normalized_path,
-                "mode": "open",
-                "_sid": self._sid,
-            }
-            async with session.get(url, params=params, ssl=self.config.verify_ssl) as response:
-                content_type = str(response.headers.get("Content-Type") or "").lower()
-                if "application/json" in content_type or "text/json" in content_type:
-                    data = await self._read_response_payload(response, "SYNO.FileStation.Download")
-                    error_code = int((data.get("error") or {}).get("code") or 0)
-                    if attempt == 0 and error_code == 119:
-                        logger.info("群晖 SID 过期（code 119），自动重新登录: api=%s", "SYNO.FileStation.Download")
-                        self._sid = None
-                        continue
-                    raise SynologyError(_format_synology_error("SYNO.FileStation.Download", "下载文件", data))
-                if response.status >= 400:
-                    snippet = (await response.text()).strip()[:200]
-                    raise SynologyError(f"群晖文件下载失败: HTTP {response.status} {snippet}")
-                async for chunk in response.content.iter_chunked(chunk_size):
-                    if chunk:
-                        yield chunk
-                return
+                    api_path, api_version = await self._resolve_api_route(
+                        session,
+                        "SYNO.FileStation.Download",
+                        default_path="entry.cgi",
+                        default_version=2,
+                    )
+                    url = f"{self.config.base_url.rstrip('/')}/webapi/{api_path.lstrip('/')}"
+                    params = {
+                        "api": "SYNO.FileStation.Download",
+                        "method": "download",
+                        "version": str(api_version),
+                        "path": normalized_path,
+                        "mode": "open",
+                        "_sid": self._sid,
+                    }
+                    async with session.get(url, params=params, ssl=self.config.verify_ssl) as response:
+                        content_type = str(response.headers.get("Content-Type") or "").lower()
+                        if "application/json" in content_type or "text/json" in content_type:
+                            data = await self._read_response_payload(response, "SYNO.FileStation.Download")
+                            error_code = int((data.get("error") or {}).get("code") or 0)
+                            if attempt == 0 and error_code == 119:
+                                logger.info("群晖 SID 过期（code 119），自动重新登录: api=%s", "SYNO.FileStation.Download")
+                                self._sid = None
+                                continue
+                            raise SynologyError(_format_synology_error("SYNO.FileStation.Download", "下载文件", data))
+                        if response.status >= 400:
+                            snippet = (await response.text()).strip()[:200]
+                            raise SynologyError(f"群晖文件下载失败: HTTP {response.status} {snippet}")
+                        self._record_remote_success()
+                        async for chunk in response.content.iter_chunked(chunk_size):
+                            if chunk:
+                                yield chunk
+                        return
+                except Exception as exc:
+                    self._record_remote_failure("SYNO.FileStation.Download", exc)
+                    raise
 
     def _is_error_code(self, exc: Exception, code: int) -> bool:
         message = str(exc)
@@ -1215,6 +1308,7 @@ class SynologyFileStationClient:
         remote_name: Optional[str] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ):
+        self._check_remote_circuit("SYNO.FileStation.Upload")
         normalized_path = str(PurePosixPath(dest_folder or "/"))
         overwrite_value = "true" if overwrite else "false"
         local_file_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
@@ -1367,21 +1461,24 @@ class SynologyFileStationClient:
                             sorted(query.keys()),
                             sorted(form.keys()),
                         )
-                        await self._post_file_upload(
-                            session,
-                            upload_url,
-                            "SYNO.FileStation.Upload",
-                            query,
-                            form,
-                            local_path,
-                            remote_name=remote_name,
-                            quote_fields=variant["quote_fields"],
-                            include_content_type=variant["include_content_type"],
-                            progress_callback=progress_callback,
-                        )
+                        async with get_resource_budget_service().acquire("remote_fs", reason="synology.upload"):
+                            await self._post_file_upload(
+                                session,
+                                upload_url,
+                                "SYNO.FileStation.Upload",
+                                query,
+                                form,
+                                local_path,
+                                remote_name=remote_name,
+                                quote_fields=variant["quote_fields"],
+                                include_content_type=variant["include_content_type"],
+                                progress_callback=progress_callback,
+                            )
+                        self._record_remote_success()
                         self._preferred_upload_variant_name = str(variant.get("name") or "").strip() or None
                         return
                     except Exception as exc:
+                        self._record_remote_failure("SYNO.FileStation.Upload", exc)
                         logger.warning(
                             "[SynologyUpload] 变体失败 %s/%s name=%s attempt=%s/%s path=%s error=%s",
                             index + 1,
@@ -1507,6 +1604,35 @@ class LibraryManager:
                 await client.close()
             except Exception:
                 logger.warning("关闭 Synology 客户端失败", exc_info=True)
+
+    def remote_health_snapshot(self) -> dict[str, Any]:
+        """返回远程库存当前健康状态，不触发登录或远程探测。"""
+        libraries = self._active_libraries()
+        items: list[dict[str, Any]] = []
+        for library in libraries:
+            if library.type != "synology_filestation":
+                continue
+            client = self.get_cached_synology_client(library.synology) if library.synology else None
+            health = client.remote_health_snapshot() if client else {
+                "status": "unconfigured",
+                "failure_count": 0,
+                "circuit_remaining_seconds": 0,
+                "session_open": False,
+                "has_sid": False,
+            }
+            items.append({
+                "library_id": library.id,
+                "library_name": library.name,
+                "type": library.type,
+                **health,
+            })
+        degraded_count = sum(1 for item in items if item.get("status") == "degraded")
+        return {
+            "total": len(items),
+            "degraded_count": degraded_count,
+            "items": items,
+            "generated_at": datetime.now().isoformat(),
+        }
 
     def load_config(self) -> dict[str, Any]:
         return load_library_config()

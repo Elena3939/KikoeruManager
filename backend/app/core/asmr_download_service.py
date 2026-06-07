@@ -15,9 +15,12 @@ from datetime import datetime
 from yarl import URL
 
 from ..config.settings import get_config
+from .resource_budget_service import get_resource_budget_service
 from .ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
+
+ASMR_DOWNLOAD_STREAM_CHUNK_BYTES = 256 * 1024
 
 # 语言优先级定义（数字越小优先级越高）
 LANGUAGE_PRIORITY = {
@@ -471,9 +474,19 @@ class ASMRDownloadService:
                                 children = first_item.get('children', [])
                                 if children:
                                     logger.info(f"[ASMR] 第一个子项目结构: {list(children[0].keys())}")
-                                    logger.info(f"[ASMR] 第一个子项目详情: {children[0]}")
+                                    logger.info(
+                                        "[ASMR] 第一个子项目摘要: title=%s size=%s has_download=%s",
+                                        children[0].get("title"),
+                                        children[0].get("size"),
+                                        bool(children[0].get("mediaDownloadUrl") or children[0].get("media_download_url")),
+                                    )
                             else:
-                                logger.info(f"[ASMR] 第一个文件详情: {first_item}")
+                                logger.info(
+                                    "[ASMR] 第一个文件摘要: title=%s size=%s has_download=%s",
+                                    first_item.get("title"),
+                                    first_item.get("size"),
+                                    bool(first_item.get("mediaDownloadUrl") or first_item.get("media_download_url")),
+                                )
 
                         return data
                     elif response.status == 404:
@@ -654,7 +667,7 @@ class ASMRDownloadService:
                 push_log(f"{os.path.basename(dest_path)} 开始请求资源，第 {attempt + 1}/{max_retries} 次尝试")
                 push_log(f"{os.path.basename(dest_path)} 等待源站响应", "info")
 
-                async with session.get(
+                async with get_resource_budget_service().acquire("network_download", reason="asmr.download_file"), session.get(
                     request_url,
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=None, connect=10, sock_connect=10, sock_read=timeout),
@@ -751,7 +764,7 @@ class ASMRDownloadService:
                     last_progress_reported_at = time.monotonic()
                     last_signal_check_at = last_progress_reported_at
                     with open(write_path, mode) as f:
-                        async for chunk in response.content.iter_chunked(8192):
+                        async for chunk in response.content.iter_chunked(ASMR_DOWNLOAD_STREAM_CHUNK_BYTES):
                             # ── 暂停 / 取消信号检查 ──
                             now_monotonic = time.monotonic()
                             if now_monotonic - last_signal_check_at >= 0.25:

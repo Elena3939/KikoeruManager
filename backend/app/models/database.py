@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import stat
 import threading
+import time
 from typing import Any, Callable, Dict, Optional
 
 import orjson
@@ -81,6 +82,62 @@ class Task(Base):
     started_at = Column(DateTime)
     completed_at = Column(DateTime)
     task_metadata = Column(JSON)  # renamed from metadata to avoid SQLAlchemy reserved word
+
+
+class TaskCenterItem(Base):
+    """任务中心事件期物化快照。
+
+    当前阶段只做旁路写入和对照校验，任务中心 API 仍走旧聚合链路。
+    """
+    __tablename__ = 'task_center_items'
+
+    item_id = Column(String(80), primary_key=True)
+    engine_task_id = Column(String(36), index=True)
+    domain = Column(String(40), index=True)
+    status = Column(String(24), index=True)
+    kind = Column(String(60))
+    title = Column(Text)
+    source_page = Column(String(80))
+    source_action = Column(String(120))
+    business_key = Column(Text, index=True)
+    searchable_text = Column(Text)
+    payload_json = Column(JSON)
+    version = Column(Integer, default=0)
+    created_at = Column(DateTime, default=get_local_now, index=True)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now, index=True)
+
+    __table_args__ = (
+        Index('idx_task_center_items_domain_status', 'domain', 'status'),
+        Index('idx_task_center_items_updated_at', 'updated_at'),
+    )
+
+
+class TaskPhaseMetric(Base):
+    """任务阶段耗时指标。
+
+    这是旁路观测表：只记录任务某个阶段的耗时/吞吐，不参与任务状态流转。
+    """
+    __tablename__ = 'task_phase_metrics'
+
+    id = Column(String(36), primary_key=True)
+    task_id = Column(String(36), index=True)
+    task_type = Column(String(60), index=True)
+    phase = Column(String(80), index=True)
+    resource = Column(String(40), index=True)
+    status = Column(String(24), index=True)
+    duration_ms = Column(Integer, nullable=False, default=0)
+    bytes_total = Column(BigInteger, nullable=False, default=0)
+    items_total = Column(Integer, nullable=False, default=0)
+    detail_json = Column(JSON)
+    started_at = Column(DateTime, index=True)
+    ended_at = Column(DateTime, index=True)
+    created_at = Column(DateTime, default=get_local_now, index=True)
+
+    __table_args__ = (
+        Index('idx_task_phase_metrics_task_phase', 'task_id', 'phase'),
+        Index('idx_task_phase_metrics_type_phase', 'task_type', 'phase'),
+        Index('idx_task_phase_metrics_created_at', 'created_at'),
+    )
     
 class WorkMetadata(Base):
     """作品元数据表"""
@@ -741,6 +798,8 @@ class ActivityLog(Base):
         Index('idx_activity_created_category', 'created_at', 'category'),
         Index('idx_activity_category_batch', 'category', 'batch_id'),
         Index('idx_activity_category_session', 'category', 'session_key'),
+        Index('idx_activity_status_created', 'status', 'created_at'),
+        Index('idx_activity_category_status_created', 'category', 'status', 'created_at'),
     )
 
     def to_dict(self):
@@ -781,6 +840,35 @@ class ActivityLogDailyStats(Base):
     __table_args__ = (
         Index('idx_activity_daily_date', 'date'),
         Index('idx_activity_daily_category', 'category'),
+    )
+
+
+class ActivityLogRollup(Base):
+    """操作审计轻量 rollup。
+
+    当前阶段按 batch_id / session_key / task_id 三种稳定关联键维护计数和最新活动时间，
+    用于替代列表期 N+1 子任务状态回查，并为后续深度树形物化提供基础数据。
+    """
+    __tablename__ = 'activity_log_rollups'
+
+    rollup_key = Column(String(180), primary_key=True)
+    rollup_type = Column(String(24), index=True)
+    group_value = Column(String(140), index=True)
+    category = Column(String(40), index=True)
+    parent_log_id = Column(String(36), index=True)
+    latest_log_id = Column(String(36))
+    child_count = Column(Integer, nullable=False, default=0)
+    success_count = Column(Integer, nullable=False, default=0)
+    failed_count = Column(Integer, nullable=False, default=0)
+    partial_count = Column(Integer, nullable=False, default=0)
+    waiting_count = Column(Integer, nullable=False, default=0)
+    latest_status = Column(String(24), default='')
+    latest_activity_at = Column(DateTime, index=True)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    __table_args__ = (
+        Index('idx_activity_rollup_type_value', 'rollup_type', 'group_value'),
+        Index('idx_activity_rollup_category_status', 'category', 'latest_status'),
     )
 
 
@@ -946,6 +1034,83 @@ class ASMRDownloadSession(Base):
 
 import logging
 _db_logger = logging.getLogger(__name__)
+
+_SLOW_SQL_LOG_THRESHOLD_SECONDS = float(os.getenv("KIKOERUMANAGER_SLOW_SQL_SECONDS", "0.2") or 0.2)
+_SLOW_SQL_MAX_TEXT_LEN = 320
+_SLOW_SQL_MAX_PARAM_ITEMS = 8
+
+
+def _compact_sql_for_log(statement: Any) -> str:
+    text_value = " ".join(str(statement or "").split())
+    if len(text_value) <= _SLOW_SQL_MAX_TEXT_LEN:
+        return text_value
+    return text_value[:_SLOW_SQL_MAX_TEXT_LEN] + "..."
+
+
+def _summarize_sql_param(value: Any) -> str:
+    if value is None:
+        return "None"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, bytes):
+        return f"bytes[{len(value)}]"
+    if isinstance(value, str):
+        return f"str[{len(value)}]"
+    if isinstance(value, (list, tuple, set)):
+        return f"{type(value).__name__}[{len(value)}]"
+    if isinstance(value, dict):
+        return f"dict[{len(value)}]"
+    return type(value).__name__
+
+
+def _summarize_sql_params(parameters: Any) -> Any:
+    if parameters in (None, (), [], {}):
+        return None
+    try:
+        if isinstance(parameters, dict):
+            items = list(parameters.items())[:_SLOW_SQL_MAX_PARAM_ITEMS]
+            result = {str(key): _summarize_sql_param(value) for key, value in items}
+            if len(parameters) > _SLOW_SQL_MAX_PARAM_ITEMS:
+                result["..."] = f"+{len(parameters) - _SLOW_SQL_MAX_PARAM_ITEMS}"
+            return result
+        if isinstance(parameters, (list, tuple)):
+            items = list(parameters)[:_SLOW_SQL_MAX_PARAM_ITEMS]
+            result = [_summarize_sql_param(value) for value in items]
+            if len(parameters) > _SLOW_SQL_MAX_PARAM_ITEMS:
+                result.append(f"+{len(parameters) - _SLOW_SQL_MAX_PARAM_ITEMS}")
+            return result
+        return _summarize_sql_param(parameters)
+    except Exception:
+        return type(parameters).__name__
+
+
+def _slow_sql_before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+    if _SLOW_SQL_LOG_THRESHOLD_SECONDS <= 0:
+        return
+    context._kikoerumanager_sql_started_at = time.perf_counter()
+
+
+def _slow_sql_after_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+    if _SLOW_SQL_LOG_THRESHOLD_SECONDS <= 0:
+        return
+    started_at = getattr(context, "_kikoerumanager_sql_started_at", None)
+    if not started_at:
+        return
+    elapsed = time.perf_counter() - started_at
+    if elapsed < _SLOW_SQL_LOG_THRESHOLD_SECONDS:
+        return
+    _db_logger.warning(
+        "[数据库] 慢 SQL %.3fs executemany=%s rowcount=%s sql=%s params=%s",
+        elapsed,
+        bool(executemany),
+        getattr(cursor, "rowcount", None),
+        _compact_sql_for_log(statement),
+        _summarize_sql_params(parameters),
+    )
 
 class NotificationTemplate(Base):
     """通知邮件模板表"""
@@ -1465,6 +1630,10 @@ def _sqlite_pragma_on_connect(dbapi_connection, connection_record):
             pass
 
 
+event.listen(engine, "before_cursor_execute", _slow_sql_before_cursor_execute)
+event.listen(engine, "after_cursor_execute", _slow_sql_after_cursor_execute)
+
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 _init_db_lock = threading.RLock()
 _init_db_done = False
@@ -1668,6 +1837,11 @@ def init_db():
             )
             _db_logger.info(f"[数据库] notification_templates 新增列: {column_name}")
 
+        # === 性能物化表：兼容已存在老表的增量列/索引 ===
+        _migrate_task_center_items_schema(conn)
+        _migrate_activity_log_rollups_schema(conn)
+        _migrate_task_phase_metrics_schema(conn)
+
         # === Phase 2: activity_logs 迁移 ===
         _migrate_activity_logs_phase2(conn)
 
@@ -1683,6 +1857,176 @@ def init_db():
         _migrate_activity_log_daily_stats(conn)
 
     _db_logger.info(f"[数据库] 表创建完成")
+
+
+def _read_table_columns(conn, table_name: str) -> set[str]:
+    result = conn.execute(text(f"PRAGMA table_info({table_name})"))
+    return {row[1] for row in result.fetchall()}
+
+
+def _add_missing_columns(conn, table_name: str, existing_columns: set[str], columns: list[tuple[str, str]]) -> None:
+    for column_name, column_type in columns:
+        if column_name in existing_columns:
+            continue
+        conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
+        existing_columns.add(column_name)
+        _db_logger.info(f"[数据库] {table_name} 新增列: {column_name}")
+
+
+def _create_indexes_if_not_exists(conn, index_sqls: tuple[str, ...], table_name: str) -> None:
+    for index_sql in index_sqls:
+        try:
+            conn.execute(text(index_sql))
+        except Exception:
+            _db_logger.warning(f"[数据库] {table_name} 建索引失败: {index_sql}", exc_info=True)
+
+
+def _migrate_task_center_items_schema(conn) -> None:
+    """任务中心物化表兼容迁移。
+
+    Base.metadata.create_all 只会建缺失表，不会给已存在表补新增列。
+    """
+    try:
+        existing_columns = _read_table_columns(conn, "task_center_items")
+        if not existing_columns:
+            return
+        _add_missing_columns(
+            conn,
+            "task_center_items",
+            existing_columns,
+            [
+                ("engine_task_id", "VARCHAR(36)"),
+                ("domain", "VARCHAR(40)"),
+                ("status", "VARCHAR(24)"),
+                ("kind", "VARCHAR(60)"),
+                ("title", "TEXT"),
+                ("source_page", "VARCHAR(80)"),
+                ("source_action", "VARCHAR(120)"),
+                ("business_key", "TEXT"),
+                ("searchable_text", "TEXT"),
+                ("payload_json", "JSON"),
+                ("version", "INTEGER DEFAULT 0"),
+                ("created_at", "DATETIME"),
+                ("updated_at", "DATETIME"),
+            ],
+        )
+        _create_indexes_if_not_exists(
+            conn,
+            (
+                "CREATE INDEX IF NOT EXISTS ix_task_center_items_engine_task_id ON task_center_items(engine_task_id)",
+                "CREATE INDEX IF NOT EXISTS ix_task_center_items_domain ON task_center_items(domain)",
+                "CREATE INDEX IF NOT EXISTS ix_task_center_items_status ON task_center_items(status)",
+                "CREATE INDEX IF NOT EXISTS ix_task_center_items_business_key ON task_center_items(business_key)",
+                "CREATE INDEX IF NOT EXISTS ix_task_center_items_created_at ON task_center_items(created_at)",
+                "CREATE INDEX IF NOT EXISTS ix_task_center_items_updated_at ON task_center_items(updated_at)",
+                "CREATE INDEX IF NOT EXISTS idx_task_center_items_domain_status ON task_center_items(domain, status)",
+                "CREATE INDEX IF NOT EXISTS idx_task_center_items_updated_at ON task_center_items(updated_at)",
+            ),
+            "task_center_items",
+        )
+        try:
+            conn.commit()
+        except Exception:
+            pass
+    except Exception:
+        _db_logger.warning("[数据库] task_center_items 迁移失败（非致命）", exc_info=True)
+
+
+def _migrate_activity_log_rollups_schema(conn) -> None:
+    """操作历史 rollup 表兼容迁移。"""
+    try:
+        existing_columns = _read_table_columns(conn, "activity_log_rollups")
+        if not existing_columns:
+            return
+        _add_missing_columns(
+            conn,
+            "activity_log_rollups",
+            existing_columns,
+            [
+                ("rollup_type", "VARCHAR(24)"),
+                ("group_value", "VARCHAR(140)"),
+                ("category", "VARCHAR(40)"),
+                ("parent_log_id", "VARCHAR(36)"),
+                ("latest_log_id", "VARCHAR(36)"),
+                ("child_count", "INTEGER DEFAULT 0"),
+                ("success_count", "INTEGER DEFAULT 0"),
+                ("failed_count", "INTEGER DEFAULT 0"),
+                ("partial_count", "INTEGER DEFAULT 0"),
+                ("waiting_count", "INTEGER DEFAULT 0"),
+                ("latest_status", "VARCHAR(24) DEFAULT ''"),
+                ("latest_activity_at", "DATETIME"),
+                ("updated_at", "DATETIME"),
+            ],
+        )
+        _create_indexes_if_not_exists(
+            conn,
+            (
+                "CREATE INDEX IF NOT EXISTS ix_activity_log_rollups_rollup_type ON activity_log_rollups(rollup_type)",
+                "CREATE INDEX IF NOT EXISTS ix_activity_log_rollups_group_value ON activity_log_rollups(group_value)",
+                "CREATE INDEX IF NOT EXISTS ix_activity_log_rollups_category ON activity_log_rollups(category)",
+                "CREATE INDEX IF NOT EXISTS ix_activity_log_rollups_parent_log_id ON activity_log_rollups(parent_log_id)",
+                "CREATE INDEX IF NOT EXISTS ix_activity_log_rollups_latest_activity_at ON activity_log_rollups(latest_activity_at)",
+                "CREATE INDEX IF NOT EXISTS idx_activity_rollup_type_value ON activity_log_rollups(rollup_type, group_value)",
+                "CREATE INDEX IF NOT EXISTS idx_activity_rollup_category_status ON activity_log_rollups(category, latest_status)",
+            ),
+            "activity_log_rollups",
+        )
+        try:
+            conn.commit()
+        except Exception:
+            pass
+    except Exception:
+        _db_logger.warning("[数据库] activity_log_rollups 迁移失败（非致命）", exc_info=True)
+
+
+def _migrate_task_phase_metrics_schema(conn) -> None:
+    """任务阶段耗时指标表兼容迁移。"""
+    try:
+        existing_columns = _read_table_columns(conn, "task_phase_metrics")
+        if not existing_columns:
+            return
+        _add_missing_columns(
+            conn,
+            "task_phase_metrics",
+            existing_columns,
+            [
+                ("task_id", "VARCHAR(36)"),
+                ("task_type", "VARCHAR(60)"),
+                ("phase", "VARCHAR(80)"),
+                ("resource", "VARCHAR(40)"),
+                ("status", "VARCHAR(24)"),
+                ("duration_ms", "INTEGER DEFAULT 0"),
+                ("bytes_total", "BIGINT DEFAULT 0"),
+                ("items_total", "INTEGER DEFAULT 0"),
+                ("detail_json", "JSON"),
+                ("started_at", "DATETIME"),
+                ("ended_at", "DATETIME"),
+                ("created_at", "DATETIME"),
+            ],
+        )
+        _create_indexes_if_not_exists(
+            conn,
+            (
+                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_task_id ON task_phase_metrics(task_id)",
+                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_task_type ON task_phase_metrics(task_type)",
+                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_phase ON task_phase_metrics(phase)",
+                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_resource ON task_phase_metrics(resource)",
+                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_status ON task_phase_metrics(status)",
+                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_started_at ON task_phase_metrics(started_at)",
+                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_ended_at ON task_phase_metrics(ended_at)",
+                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_created_at ON task_phase_metrics(created_at)",
+                "CREATE INDEX IF NOT EXISTS idx_task_phase_metrics_task_phase ON task_phase_metrics(task_id, phase)",
+                "CREATE INDEX IF NOT EXISTS idx_task_phase_metrics_type_phase ON task_phase_metrics(task_type, phase)",
+                "CREATE INDEX IF NOT EXISTS idx_task_phase_metrics_created_at ON task_phase_metrics(created_at)",
+            ),
+            "task_phase_metrics",
+        )
+        try:
+            conn.commit()
+        except Exception:
+            pass
+    except Exception:
+        _db_logger.warning("[数据库] task_phase_metrics 迁移失败（非致命）", exc_info=True)
 
 
 def _migrate_activity_log_daily_stats(conn) -> None:
@@ -1747,6 +2091,8 @@ def _migrate_activity_logs_phase2(conn) -> None:
         "CREATE INDEX IF NOT EXISTS ix_activity_logs_parent_id ON activity_logs(parent_id)",
         "CREATE INDEX IF NOT EXISTS idx_activity_category_batch ON activity_logs(category, batch_id)",
         "CREATE INDEX IF NOT EXISTS idx_activity_category_session ON activity_logs(category, session_key)",
+        "CREATE INDEX IF NOT EXISTS idx_activity_status_created ON activity_logs(status, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_activity_category_status_created ON activity_logs(category, status, created_at)",
     ):
         try:
             conn.execute(text(index_sql))

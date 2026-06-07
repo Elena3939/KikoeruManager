@@ -1,20 +1,21 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import Dashboard from '../views/Dashboard.vue'
-import Tasks from '../views/Tasks.vue'
-import Conflicts from '../views/Conflicts.vue'
-import Settings from '../views/Settings.vue'
-import Logs from '../views/Logs.vue'
-import Library from '../views/Library.vue'
-import PasswordVault from '../views/PasswordVault.vue'
-import ExistingFolders from '../views/ExistingFolders.vue'
-import ASMRSync from '../views/ASMRSync.vue'
-import LibraryBackup from '../views/LibraryBackup.vue'
-import SubtitleImport from '../views/SubtitleImport.vue'
-import ActivityHistory from '../views/ActivityHistory.vue'
-import CircleCompletion from '../views/CircleCompletion.vue'
-import VerifyGate from '../views/VerifyGate.vue'
-import BlockedGate from '../views/BlockedGate.vue'
 import { securityGateApi } from '../api'
+
+const Dashboard = () => import('../views/Dashboard.vue')
+const Tasks = () => import('../views/Tasks.vue')
+const Conflicts = () => import('../views/Conflicts.vue')
+const Settings = () => import('../views/Settings.vue')
+const Logs = () => import('../views/Logs.vue')
+const Library = () => import('../views/Library.vue')
+const PasswordVault = () => import('../views/PasswordVault.vue')
+const ExistingFolders = () => import('../views/ExistingFolders.vue')
+const ASMRSync = () => import('../views/ASMRSync.vue')
+const LibraryBackup = () => import('../views/LibraryBackup.vue')
+const SubtitleImport = () => import('../views/SubtitleImport.vue')
+const ActivityHistory = () => import('../views/ActivityHistory.vue')
+const CircleCompletion = () => import('../views/CircleCompletion.vue')
+const VerifyGate = () => import('../views/VerifyGate.vue')
+const BlockedGate = () => import('../views/BlockedGate.vue')
 
 const routes = [
   {

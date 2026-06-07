@@ -14,7 +14,13 @@
   >
     <div class="upload-floating-head">
       <div class="flex min-w-0 items-center gap-2.5 pr-2">
-        <div class="floating-hero-icon" :class="`is-${resolvedKind}`">
+        <div
+          class="floating-hero-icon"
+          :class="[
+            `is-${resolvedKind}`,
+            { 'has-hero-animation': showHeroAnimation }
+          ]"
+        >
           <DotLottieVue
             v-if="showHeroAnimation"
             :src="resolvedHeroAnimation"
@@ -50,9 +56,10 @@
 
     <DotLottieVue
       v-if="showProgressLottie && completed"
+      :key="successLottieKey"
       :src="successAnimationSrc"
       autoplay
-      loop
+      :loop="false"
       :render-config="{ autoResize: true, devicePixelRatio: 2 }"
       background="transparent"
       class="floating-progress-lottie floating-progress-lottie-success"
@@ -149,7 +156,7 @@ import {
   X
 } from 'lucide-vue-next'
 import uploadToCloudAnimation from '../../assets/anime/Uploading to cloud.lottie'
-import downloadAnimation from '../../assets/anime/download icon.lottie'
+import downloadAnimation from '../../assets/anime/download-icon-clean.json?url'
 import progressAnimation from '../../assets/anime/Loading Bar  Progress Bar.lottie'
 import successConfettiAnimation from '../../assets/anime/success confetti.lottie'
 import translateAnimation from '../../assets/anime/Translate.lottie'
@@ -215,8 +222,8 @@ const resolvedKind = computed(() => {
 const resolvedHeroAnimation = computed(() => props.heroAnimation || heroAnimationMap[resolvedKind.value] || '')
 const resolvedHeroIcon = computed(() => props.heroIcon || heroIconMap[resolvedKind.value] || Upload)
 const compactLayout = computed(() => resolvedKind.value !== 'upload')
-const showHeroAnimation = computed(() => !compactLayout.value && Boolean(resolvedHeroAnimation.value))
-const showProgressLottie = computed(() => !compactLayout.value)
+const showHeroAnimation = computed(() => ['upload', 'download', 'asmr'].includes(resolvedKind.value) && Boolean(resolvedHeroAnimation.value))
+const showProgressLottie = computed(() => props.completed || !compactLayout.value)
 const progressAnimationSrc = computed(() => props.progressAnimation || progressAnimation)
 const successAnimationSrc = computed(() => props.successAnimation || successConfettiAnimation)
 const safePercentage = computed(() => Math.max(0, Math.min(100, Number(props.percentage || 0))))
@@ -225,6 +232,7 @@ const progressPercentStyle = computed(() => ({
   '--floating-progress': `${safePercentage.value}%`
 }))
 const progressLottieKey = computed(() => props.progressKey || `${resolvedKind.value}-${props.completed ? 'done' : 'run'}`)
+const successLottieKey = computed(() => `${props.progressKey || resolvedKind.value}-success-${props.completed ? 'play' : 'idle'}`)
 
 const normalizedMetrics = computed(() => props.metrics
   .filter(Boolean)
@@ -475,6 +483,29 @@ onBeforeUnmount(() => {
 .floating-hero-static-icon {
   width: 18px;
   height: 18px;
+}
+
+.background-floating-card.is-compact .floating-hero-lottie {
+  width: 30px;
+  height: 30px;
+}
+
+.background-floating-card.is-compact .floating-hero-icon.has-hero-animation {
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .background-floating-card.is-compact .floating-hero-icon.has-hero-animation {
+  border-color: transparent !important;
+  background: transparent !important;
+  color: inherit !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .background-floating-card .floating-hero-icon.has-hero-animation .floating-hero-lottie {
+  filter: none !important;
+  color: inherit !important;
 }
 
 .background-floating-card.floating-card-tone-emerald .floating-chip-title {

@@ -65,6 +65,7 @@
             tag="div"
             name="asmr-grid"
             class="enhanced-plan-grid"
+            :class="{ 'is-single': plans.length === 1 }"
           >
             <WorkCard
               v-for="(plan, idx) in plans"
@@ -94,11 +95,20 @@
               <template #tags>
                 <div class="enhanced-plan-tags">
                   <span class="enhanced-plan-tag is-primary">资源构成</span>
-                  <span v-for="group in (plan.grouped_resources || []).slice(0, 3)" :key="group.group_key" class="enhanced-plan-tag is-soft">
-                    {{ getResourceTypeLabel(group.resource_type) }} x{{ group.count }}
+                  <span
+                    v-for="group in visibleResourceGroups(plan)"
+                    :key="group.group_key"
+                    class="enhanced-plan-tag is-soft"
+                    :title="formatResourceGroupTitle(group)"
+                  >
+                    {{ formatResourceGroupLabel(group) }}
                   </span>
-                  <span v-if="(plan.grouped_resources || []).length > 3" class="enhanced-plan-tag is-muted">
-                    +{{ (plan.grouped_resources || []).length - 3 }}
+                  <span
+                    v-if="hiddenResourceGroupCount(plan) > 0"
+                    class="enhanced-plan-tag is-muted"
+                    :title="hiddenResourceGroupTitle(plan)"
+                  >
+                    另 {{ hiddenResourceGroupCount(plan) }} 组
                   </span>
                 </div>
               </template>
@@ -115,7 +125,7 @@
 import { Download as DownloadIcon, Search, Sparkles } from 'lucide-vue-next'
 import WorkCard from '../circle/WorkCard.vue'
 
-defineProps({
+const props = defineProps({
   input: { type: String, default: '' },
   plans: { type: Array, default: () => [] },
   selectedRjcodes: { type: Array, default: () => [] },
@@ -135,6 +145,79 @@ defineEmits([
   'download-selected',
   'toggle-plan'
 ])
+
+const resourceTypeLabelMap = {
+  audio: '音频',
+  subtitle: '字幕',
+  cover: '图片',
+  other: '其他',
+}
+
+const languageLabelMap = {
+  CHI_HANS: '简中',
+  CHI_SIMP: '简中',
+  CHI_HANT: '繁中',
+  CHI_TRAD: '繁中',
+  JPN: '日文',
+  JAP: '日文',
+  ENG: '英文',
+}
+
+function normalizeResourceType(type) {
+  return String(type || 'other').trim().toLowerCase()
+}
+
+function resourceTypeLabel(type) {
+  const normalized = normalizeResourceType(type)
+  return resourceTypeLabelMap[normalized] || props.getResourceTypeLabel?.(type) || type || '资源'
+}
+
+function resourceExtensionLabel(extension) {
+  const ext = String(extension || '').trim().replace(/^\./, '').toUpperCase()
+  return ext && ext !== 'OTHER' ? ext : ''
+}
+
+function resourceLanguageLabel(language) {
+  const key = String(language || '').trim().toUpperCase()
+  return languageLabelMap[key] || key
+}
+
+function formatResourceGroupLabel(group) {
+  const type = normalizeResourceType(group?.resource_type)
+  const parts = [resourceTypeLabel(type)]
+  const language = resourceLanguageLabel(group?.language)
+  const extension = resourceExtensionLabel(group?.extension)
+  if (type === 'subtitle' && language) parts.push(language)
+  if (extension) parts.push(extension)
+  return `${parts.join(' ')} x${Number(group?.count || 0)}`
+}
+
+function formatResourceGroupTitle(group) {
+  const selected = Number(group?.selected_count || 0)
+  const count = Number(group?.count || 0)
+  const selectedText = selected && selected !== count ? `，默认选中 ${selected}` : ''
+  return `${formatResourceGroupLabel(group)}${selectedText}`
+}
+
+function visibleResourceGroups(plan) {
+  return Array.isArray(plan?.grouped_resources)
+    ? plan.grouped_resources.slice(0, 5)
+    : []
+}
+
+function hiddenResourceGroups(plan) {
+  return Array.isArray(plan?.grouped_resources)
+    ? plan.grouped_resources.slice(5)
+    : []
+}
+
+function hiddenResourceGroupCount(plan) {
+  return hiddenResourceGroups(plan).length
+}
+
+function hiddenResourceGroupTitle(plan) {
+  return hiddenResourceGroups(plan).map(formatResourceGroupLabel).join(' / ')
+}
 </script>
 
 <style scoped>
@@ -289,24 +372,33 @@ defineEmits([
 }
 .enhanced-plan-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 360px));
   gap: 12px;
+  justify-content: start;
 }
 @media (min-width: 768px) {
   .enhanced-plan-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(280px, 360px));
   }
 }
 @media (min-width: 1280px) {
   .enhanced-plan-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(292px, 360px));
   }
+}
+.enhanced-plan-grid.is-single {
+  grid-template-columns: minmax(0, min(100%, 860px));
 }
 .enhanced-plan-card {
   max-width: none;
   width: 100%;
   min-height: 0;
   height: auto;
+}
+.enhanced-plan-grid.is-single .enhanced-plan-card {
+  display: grid;
+  grid-template-columns: minmax(260px, 46%) minmax(0, 1fr);
+  align-items: stretch;
 }
 .enhanced-plan-card :deep(.work-cover-wrapper) {
   height: clamp(148px, 18vw, 206px);
@@ -324,12 +416,28 @@ defineEmits([
   object-fit: contain;
   object-position: center;
 }
+.enhanced-plan-grid.is-single .enhanced-plan-card :deep(.work-cover-wrapper) {
+  height: auto;
+  min-height: 238px;
+  border-right: 1px solid var(--asmr-border);
+  border-bottom: 0;
+}
+.enhanced-plan-grid.is-single .enhanced-plan-card :deep(.work-cover) {
+  object-fit: cover;
+}
 .enhanced-plan-card :deep(.work-card-body) {
   display: grid;
   grid-template-rows: minmax(34px, auto) auto auto;
   gap: 8px;
   min-height: 132px;
   padding: 10px 12px 12px;
+}
+.enhanced-plan-grid.is-single .enhanced-plan-card :deep(.work-card-body) {
+  align-content: center;
+  grid-template-rows: auto auto auto;
+  gap: 12px;
+  min-height: 238px;
+  padding: 18px 20px;
 }
 .enhanced-plan-card :deep(.work-title) {
   font-size: 12.5px;
@@ -338,6 +446,12 @@ defineEmits([
   min-height: calc(1.35em * 2);
   max-height: calc(1.35em * 2);
   word-break: break-all;
+}
+.enhanced-plan-grid.is-single .enhanced-plan-card :deep(.work-title) {
+  font-size: 15px;
+  line-height: 1.45;
+  min-height: 0;
+  max-height: calc(1.45em * 3);
 }
 .enhanced-plan-card :deep(.work-rj),
 .enhanced-plan-card :deep(.work-cv) {
@@ -397,6 +511,10 @@ defineEmits([
   max-height: 45px;
   overflow: hidden;
 }
+.enhanced-plan-grid.is-single .enhanced-plan-tags {
+  gap: 7px;
+  max-height: none;
+}
 .enhanced-plan-tag.is-primary {
   background: var(--asmr-info-bg);
   color: var(--asmr-info-text);
@@ -408,6 +526,33 @@ defineEmits([
 .enhanced-plan-tag.is-muted {
   background: var(--asmr-surface-muted);
   color: var(--asmr-text-muted);
+}
+@media (max-width: 760px) {
+  .enhanced-plan-grid,
+  .enhanced-plan-grid.is-single {
+    grid-template-columns: 1fr;
+  }
+
+  .enhanced-plan-grid.is-single .enhanced-plan-card {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .enhanced-plan-grid.is-single .enhanced-plan-card :deep(.work-cover-wrapper) {
+    height: clamp(168px, 52vw, 240px);
+    min-height: 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--asmr-border);
+  }
+
+  .enhanced-plan-grid.is-single .enhanced-plan-card :deep(.work-cover) {
+    object-fit: contain;
+  }
+
+  .enhanced-plan-grid.is-single .enhanced-plan-card :deep(.work-card-body) {
+    min-height: 0;
+    padding: 12px;
+  }
 }
 .asmr-section-enter-active {
   transition:

@@ -181,12 +181,14 @@
     <el-container class="main-frame">
       <el-main class="main-content main-shell">
         <div class="content-shell">
-          <keep-alive :include="cachedViews">
-            <component
-              :is="currentViewComponent"
-              :key="currentViewKey"
-            />
-          </keep-alive>
+          <RouterView v-slot="{ Component }">
+            <keep-alive :include="cachedViews">
+              <component
+                :is="Component"
+                :key="currentViewKey"
+              />
+            </keep-alive>
+          </RouterView>
         </div>
       </el-main>
     </el-container>
@@ -197,7 +199,7 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { RouterView, useRoute } from 'vue-router'
 import {
   Archive,
   Boxes,
@@ -218,28 +220,13 @@ import {
   TriangleAlert
 } from 'lucide-vue-next'
 import { useWatcherStore } from './stores'
-import Dashboard from './views/Dashboard.vue'
-import Tasks from './views/Tasks.vue'
-import Conflicts from './views/Conflicts.vue'
-import Settings from './views/Settings.vue'
-import Logs from './views/Logs.vue'
-import Library from './views/Library.vue'
-import PasswordVault from './views/PasswordVault.vue'
-import ExistingFolders from './views/ExistingFolders.vue'
-import ASMRSync from './views/ASMRSync.vue'
-import LibraryBackup from './views/LibraryBackup.vue'
-import SubtitleImport from './views/SubtitleImport.vue'
-import ActivityHistory from './views/ActivityHistory.vue'
-import CircleCompletion from './views/CircleCompletion.vue'
-import VerifyGate from './views/VerifyGate.vue'
-import BlockedGate from './views/BlockedGate.vue'
 import BackgroundWorkbenchHost from './components/workbench/BackgroundWorkbenchHost.vue'
 import SystemPromptHost from './components/system/SystemPromptHost.vue'
 import NotificationBell from './components/system/NotificationBell.vue'
 import AnimatedThemeToggler from './components/magicui/AnimatedThemeToggler.vue'
 import { useTheme } from './composables/useTheme'
 import { useTaskCenterStream } from './composables/useTaskCenterStream'
-import { healthApi } from './api'
+import { healthApi, watcherApi } from './api'
 import router from './router'
 
 const appVersion = ref('dev')
@@ -268,30 +255,12 @@ watch(mobileNavOpen, (open) => {
     document.body.classList.remove('app-mobile-nav-locked')
   }
 })
-const routeComponentMap = {
-  Dashboard,
-  Tasks,
-  Conflicts,
-  Settings,
-  Logs,
-  Library,
-  PasswordVault,
-  ExistingFolders,
-  ASMRSync,
-  CircleCompletion,
-  LibraryBackup,
-  SubtitleImport,
-  ActivityHistory,
-  VerifyGate,
-  BlockedGate
-}
 const isGateRoute = computed(() => Boolean(route.meta?.gatePage))
 const appVersionLabel = computed(() => {
   const version = String(appVersion.value || '').trim()
   if (!version || version.toLowerCase() === 'dev') return 'dev'
   return version.startsWith('v') ? version : `v${version}`
 })
-const currentViewComponent = computed(() => routeComponentMap[route.name] || Dashboard)
 const cachedViews = computed(() =>
   router
     .getRoutes()
@@ -306,38 +275,46 @@ const currentViewKey = computed(() => {
   return String(route.fullPath || route.path || '')
 })
 let intervalId = null
+let statusRefreshing = false
+let statusFailureCount = 0
+const WATCHER_STATUS_POLL_MS = 15000
+const WATCHER_STATUS_POLL_MAX_MS = 120000
 
 onMounted(async () => {
   sidebarPinned.value = readInitialSidebarPinned()
   applyTheme()
   await refreshAppVersion()
   if (isGateRoute.value) return
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+  }
   startTaskCenterStream()
   await refreshStatus()
-  intervalId = setInterval(refreshStatus, 3000)
+  startStatusPolling()
 })
 
 watch(isGateRoute, async (gateRoute) => {
   if (gateRoute) {
     stopTaskCenterStream()
-    if (intervalId) {
-      clearInterval(intervalId)
-      intervalId = null
+    stopStatusPolling()
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
     return
   }
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+  }
   startTaskCenterStream()
   await refreshStatus()
-  if (!intervalId) {
-    intervalId = setInterval(refreshStatus, 3000)
-  }
+  startStatusPolling()
 })
 
 onUnmounted(() => {
   stopTaskCenterStream()
-  if (intervalId) {
-    clearInterval(intervalId)
-    intervalId = null
+  stopStatusPolling()
+  if (typeof document !== 'undefined') {
+    document.removeEventListener('visibilitychange', handleVisibilityChange)
   }
 })
 
@@ -353,9 +330,61 @@ function stopTaskCenterStream() {
   taskCenterStreamStarted = false
 }
 
+function startStatusPolling() {
+  if (intervalId) return
+  scheduleStatusPolling(WATCHER_STATUS_POLL_MS)
+}
+
+function stopStatusPolling() {
+  if (!intervalId) return
+  clearTimeout(intervalId)
+  intervalId = null
+}
+
+function handleVisibilityChange() {
+  if (typeof document === 'undefined' || isGateRoute.value) return
+  if (document.hidden) {
+    stopStatusPolling()
+    return
+  }
+  statusFailureCount = 0
+  refreshStatus()
+  if (!intervalId) startStatusPolling()
+}
+
+function scheduleStatusPolling(delay = WATCHER_STATUS_POLL_MS) {
+  stopStatusPolling()
+  intervalId = setTimeout(async () => {
+    intervalId = null
+    if (isGateRoute.value) return
+    if (typeof document !== 'undefined' && document.hidden) {
+      stopStatusPolling()
+      return
+    }
+    const ok = await refreshStatus()
+    const nextDelay = ok
+      ? WATCHER_STATUS_POLL_MS
+      : Math.min(WATCHER_STATUS_POLL_MAX_MS, WATCHER_STATUS_POLL_MS * 2 ** Math.min(statusFailureCount, 3))
+    scheduleStatusPolling(nextDelay)
+  }, delay)
+}
+
 async function refreshStatus() {
-  await watcherStore.fetchStatus()
-  watcherStatus.value = watcherStore.status
+  if (statusRefreshing) return true
+  statusRefreshing = true
+  try {
+    const status = await watcherApi.status()
+    watcherStore.status = status
+    watcherStatus.value = status
+    statusFailureCount = 0
+    return true
+  } catch (error) {
+    statusFailureCount += 1
+    console.warn('[App] 获取监视器状态失败', error)
+    return false
+  } finally {
+    statusRefreshing = false
+  }
 }
 
 async function refreshAppVersion() {

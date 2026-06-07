@@ -426,9 +426,12 @@ def build_notification_extra_for_task(task) -> dict[str, Any]:
     kind = str(meta.get("task_kind") or getattr(getattr(task, "type", None), "value", "") or "").strip()
 
     # ─── 第一优先：按真实 task kind 路由 ───
-    if kind == "asmr_sync_download":
-        return build_download_notification_extra(task, title="下载文件")
+    if kind in {"asmr_sync_download", "baidu_netdisk_download", "http_download"}:
+        title = "百度网盘文件" if kind == "baidu_netdisk_download" else "下载文件"
+        return build_download_notification_extra(task, title=title)
     if kind == "local_library_upload":
+        return build_upload_notification_extra(task)
+    if kind == "baidu_netdisk_upload":
         return build_upload_notification_extra(task)
     if kind == "rj_subtitle_fetch":
         return build_subtitle_notification_extra(task)
@@ -442,8 +445,9 @@ def build_notification_extra_for_task(task) -> dict[str, Any]:
     # ─── 兜底：按 domain 路由（kind 未识别时） ───
     if domain == "upload":
         return build_upload_notification_extra(task)
-    if domain == "asmr_sync":
-        return build_download_notification_extra(task, title="下载文件")
+    if domain in {"asmr_sync", "http_download", "baidu_netdisk"}:
+        title = "百度网盘文件" if domain == "baidu_netdisk" else "下载文件"
+        return build_download_notification_extra(task, title=title)
     if domain == "rj_subtitle":
         return build_subtitle_notification_extra(task)
     if domain == "circle_completion":

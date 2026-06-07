@@ -121,6 +121,78 @@ class TestTaskEngine:
         
         assert sample_task.progress == 50
         assert sample_task.current_step == "测试中"
+
+    def test_task_update_progress_throttles_duplicate_events(self, sample_task):
+        """高频重复进度只更新当前状态，不重复刷 progress_log / 任务中心事件。"""
+        events = []
+        sample_task.set_event_hook(lambda task, reason: events.append((task.progress, reason)))
+
+        sample_task.update_progress(50, "下载中")
+        sample_task.update_progress(50, "下载中 1.2MB/s")
+
+        assert sample_task.progress == 50
+        assert sample_task.current_step == "下载中 1.2MB/s"
+        assert len(sample_task.task_metadata["progress_log"]) == 1
+        assert events == [(50, "progress")]
+
+    def test_task_update_progress_keeps_same_percent_stage_change(self, sample_task):
+        """同百分比的真实阶段切换不能被进度节流吞掉。"""
+        events = []
+        sample_task.set_event_hook(lambda task, reason: events.append((task.current_step, reason)))
+
+        sample_task.update_progress(50, "下载中")
+        sample_task.update_progress(50, "校验文件")
+
+        messages = [item["message"] for item in sample_task.task_metadata["progress_log"]]
+        assert messages == ["下载中", "校验文件"]
+        assert events == [("下载中", "progress"), ("校验文件", "progress")]
+
+    def test_task_update_progress_throttles_numeric_refresh_with_same_base_step(self, sample_task):
+        """同阶段的速度/数量刷新仍然节流，降低 metadata 写入和 SSE 风暴。"""
+        events = []
+        sample_task.set_event_hook(lambda task, reason: events.append((task.current_step, reason)))
+
+        sample_task.update_progress(50, "上传中 1.2MB/s")
+        sample_task.update_progress(50, "上传中 1.8MB/s")
+
+        messages = [item["message"] for item in sample_task.task_metadata["progress_log"]]
+        assert messages == ["上传中 1.2MB/s"]
+        assert sample_task.current_step == "上传中 1.8MB/s"
+        assert events == [("上传中 1.2MB/s", "progress")]
+
+    def test_task_update_progress_always_records_terminal_step(self, sample_task):
+        """终态进度不能被节流吞掉。"""
+        sample_task.update_progress(99, "下载中")
+        sample_task.update_progress(100, "完成")
+
+        messages = [item["message"] for item in sample_task.task_metadata["progress_log"]]
+        assert messages[-1] == "完成"
+        assert sample_task.progress == 100
+
+    def test_compact_progress_log_for_persistence_keeps_key_steps(self):
+        """落库压缩只压缩副本，并保留首尾与关键节点。"""
+        logs = [
+            {
+                "message": f"下载中 {index}",
+                "progress": index % 100,
+                "level": "info",
+            }
+            for index in range(40)
+        ]
+        logs[20] = {"message": "等待人工确认", "progress": 50, "level": "warning"}
+        logs[-1] = {"message": "完成", "progress": 100, "level": "success"}
+        metadata = {"progress_log": logs, "download_files": [{"name": "a.zip"}]}
+
+        compacted = Task.compact_progress_log_for_persistence(metadata, TaskStatus.COMPLETED)
+
+        assert len(metadata["progress_log"]) == 40
+        assert len(compacted["progress_log"]) <= 24
+        messages = [item["message"] for item in compacted["progress_log"]]
+        assert "下载中 0" in messages
+        assert "等待人工确认" in messages
+        assert messages[-1] == "完成"
+        assert compacted["progress_log_compacted"]["original_count"] == 40
+        assert compacted["download_files"] == [{"name": "a.zip"}]
     
     @pytest.mark.asyncio
     async def test_wait_if_paused(self, sample_task):
@@ -216,3 +288,36 @@ class TestTaskEngine:
         assert updated == 1
         assert row.new_path == new_path
         assert row.new_metadata["new_path_recovered_from"] == old_path
+
+    def test_task_snapshot_version_skips_unchanged_running_task(self, engine, sample_task):
+        """运行中任务同一快照版本重复持久化时可以跳过 SQLite 写入。"""
+        sample_task.start()
+        sample_task.update_progress(30, "下载中")
+        version_key = engine._task_snapshot_version_key(sample_task)
+
+        assert engine._should_persist_task_snapshot(sample_task, version_key) is True
+
+        engine._persisted_task_snapshot_versions[sample_task.id] = version_key
+
+        assert engine._should_persist_task_snapshot(sample_task, version_key) is False
+
+    def test_task_snapshot_version_persists_after_in_place_metadata_change(self, engine, sample_task):
+        """metadata 原地变化必须继续落库，业务链路不一定会调用 touch_metadata。"""
+        sample_task.start()
+        version_key = engine._task_snapshot_version_key(sample_task)
+        engine._persisted_task_snapshot_versions[sample_task.id] = version_key
+
+        sample_task.task_metadata["download_runtime"] = {"completed_files": 1}
+        next_version_key = engine._task_snapshot_version_key(sample_task)
+
+        assert next_version_key != version_key
+        assert engine._should_persist_task_snapshot(sample_task, next_version_key) is True
+
+    def test_task_snapshot_version_always_persists_terminal_task(self, engine, sample_task):
+        """终态任务重复调用仍允许落库，保证完成/失败/取消快照不会被节流吞掉。"""
+        sample_task.start()
+        sample_task.complete()
+        version_key = engine._task_snapshot_version_key(sample_task)
+        engine._persisted_task_snapshot_versions[sample_task.id] = version_key
+
+        assert engine._should_persist_task_snapshot(sample_task, version_key) is True
