@@ -54,7 +54,7 @@
             type="button"
             class="siw-action-btn is-close"
             :disabled="workbenchClosing"
-            title="关闭并清理已结束任务"
+            title="关闭工作台，并只清理已完成或失败任务；待配对任务会保留"
             @click="closeWorkbenchAndCleanupCompleted"
           >
             <component :is="workbenchClosing ? Loader2 : X" class="siw-action-icon" :class="{ 'is-spinning': workbenchClosing }" :stroke-width="2.4" />
@@ -340,6 +340,7 @@ const subtitleSubtitleFilterMode = ref('all')
 const TASK_STATUS_REFRESH_MS = 4000
 let taskStatusTimer = null
 let skipTaskDraftPersistence = false
+let subtitleInspectRequestSeq = 0
 
 const workbenchLoading = computed(() => {
   return taskLoading.value && !taskLoadedOnce.value
@@ -565,6 +566,27 @@ function getTaskSourceRJCode(task) {
   return sourceRJ && sourceRJ !== folderRJ ? sourceRJ : ''
 }
 
+function preserveSubtitleTaskWorkspaceFields(task, previousTask) {
+  if (!task || !previousTask || task.id !== previousTask.id) return task
+  const next = { ...task }
+  ;[
+    'subtitle_dir',
+    'subtitle_library_id',
+    'target_library_id',
+    'library_id',
+    'target_folder_path',
+    'folder_path',
+    'source_mode',
+    'source_archive_path',
+    'source_subtitle_folder_path'
+  ].forEach(key => {
+    if ((next[key] === undefined || next[key] === null || next[key] === '') && previousTask[key]) {
+      next[key] = previousTask[key]
+    }
+  })
+  return next
+}
+
 function getRJSubtitleTaskStatusType(task) {
   const state = getTaskStateClass(task)
   if (state === 'failed') return 'danger'
@@ -698,6 +720,13 @@ function canClearTask(task) {
   return Boolean(task && (isFailedTask(task) || isCompletedTask(task) || isAwaitingManualTask(task) || status === 'waiting_manual'))
 }
 
+function canAutoClearTaskOnClose(task) {
+  const status = String(task?.status || '').toLowerCase()
+  if (!task) return false
+  if (isAwaitingManualTask(task) || status === 'waiting_manual') return false
+  return isFailedTask(task) || isCompletedTask(task)
+}
+
 async function selectWorkbenchTask(taskId, options = {}) {
   const normalized = String(taskId || '')
   if (!normalized) return
@@ -774,10 +803,12 @@ async function refreshTaskStatus(showMessage = false, options = {}) {
   }
   try {
     const data = await rjSubtitleApi.status()
+    const previousTasksById = new Map(linkedTasks.value.map(task => [task.id, task]))
     linkedTasks.value = sortLinkedTasks(
       (data.tasks || [])
         .filter(task => isLinkedSubtitleWorkbenchTask(task))
         .map(task => normalizeRJSubtitleTaskPayload(task))
+        .map(task => preserveSubtitleTaskWorkspaceFields(task, previousTasksById.get(task.id)))
     )
     taskLoadedOnce.value = true
 
@@ -796,7 +827,7 @@ async function refreshTaskStatus(showMessage = false, options = {}) {
       : ''
     if (inspect && activeTask.value.subtitle_dir) {
       await inspectSubtitleTask(activeTask.value, { force: forceInspect })
-    } else if (!activeTask.value.subtitle_dir) {
+    } else if (inspect && !activeTask.value.subtitle_dir) {
       clearSubtitleInspectorState()
     }
     if (showMessage) ElMessage.success('字幕补配任务状态已刷新')
@@ -849,7 +880,7 @@ async function closeWorkbenchAndCleanupCompleted() {
   if (workbenchClosing.value) return
   workbenchClosing.value = true
   try {
-    const clearableTasks = linkedTasks.value.filter(task => canClearTask(task))
+    const clearableTasks = linkedTasks.value.filter(task => canAutoClearTaskOnClose(task))
     await runWithConcurrency(clearableTasks, 6, async (task) => {
       try {
         await rjSubtitleApi.clearTask(task.id)
@@ -1105,8 +1136,9 @@ function clearSubtitleInspectorState() {
 async function inspectSubtitleTask(task, options = {}) {
   const { force = false } = options
   if (!task?.subtitle_dir) return
+  const inspectSeq = ++subtitleInspectRequestSeq
   if (task?.id && task.id !== selectedTaskId.value) {
-    selectWorkbenchTask(task.id)
+    await selectWorkbenchTask(task.id, { inspect: false })
   }
   if (
     !force &&
@@ -1127,6 +1159,9 @@ async function inspectSubtitleTask(task, options = {}) {
       libraryApi.browserFolderContents(subtitleLibraryId, task.subtitle_dir),
       audioFolderPath ? libraryApi.browserFolderContents(audioLibraryId, audioFolderPath) : Promise.resolve({ items: [] })
     ])
+    if (inspectSeq !== subtitleInspectRequestSeq || (activeTask.value?.id && activeTask.value.id !== task.id)) {
+      return
+    }
     skipTaskDraftPersistence = true
     subtitleInspectorSearch.value = ''
     subtitleInspectorItems.value = subtitleData.items || []
@@ -1166,6 +1201,9 @@ async function inspectSubtitleTask(task, options = {}) {
       console.warn('[subtitle-inspector] 忽略 Vue 过渡残留错误:', error.message)
     } else {
       const message = decodePossibleMojibake(error.response?.data?.detail || error.message)
+      if (inspectSeq !== subtitleInspectRequestSeq || (activeTask.value?.id && activeTask.value.id !== task.id)) {
+        return
+      }
       clearSubtitleInspectorState()
       if (activeTask.value?.id === task.id) {
         activeTask.value = {

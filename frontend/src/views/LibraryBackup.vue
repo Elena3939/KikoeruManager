@@ -29,6 +29,17 @@
       </button>
 
       <button
+        class="page-head-btn ghost is-blue btn-baidu-upload"
+        type="button"
+        :disabled="status.running || actionLoading || !backupConfig.baidu_upload_enabled"
+        @click="startBackupAndUpload"
+      >
+        <Loader2 v-if="actionLoading && !status.running" :size="13" :stroke-width="2.4" class="animate-spin" />
+        <CloudUpload v-else :size="13" :stroke-width="2.4" class="page-head-btn-icon" />
+        <span class="page-head-btn-label">打包并上传</span>
+      </button>
+
+      <button
         class="page-head-btn ghost is-amber btn-resume"
         type="button"
         :disabled="!status.has_checkpoint || status.running || actionLoading"
@@ -127,6 +138,36 @@
               </div>
             </el-form-item>
           </el-form>
+
+          <div class="backup-upload-section">
+            <div class="backup-upload-section-head">
+              <div>
+                <h3 class="backup-upload-section-title">百度网盘上传</h3>
+                <p class="backup-upload-section-desc">打包完成后创建任务中心里的百度网盘上传任务</p>
+              </div>
+              <el-switch v-model="backupConfig.baidu_upload_enabled" />
+            </div>
+            <el-form :model="backupConfig" label-position="top" class="backup-upload-section-form" :class="{ 'opacity-50 pointer-events-none grayscale-[0.5]': !backupConfig.baidu_upload_enabled }">
+              <el-form-item label="远端目录">
+                <el-input v-model="backupConfig.baidu_upload_remote_dir" placeholder="/KikoeruManager" />
+              </el-form-item>
+              <el-form-item label="创建子目录">
+                <el-input v-model="backupConfig.baidu_upload_create_subdir" placeholder="可选，例如 2026-06" />
+              </el-form-item>
+              <el-form-item label="同名策略">
+                <AppDropdown
+                  v-model="backupConfig.baidu_upload_conflict_policy"
+                  :options="baiduUploadPolicyOptions"
+                  class="backup-format-dd"
+                />
+              </el-form-item>
+              <el-form-item label="上传后清理本地压缩包">
+                <div class="w-full flex items-center h-10">
+                  <el-switch v-model="backupConfig.baidu_upload_cleanup_local_archive" />
+                </div>
+              </el-form-item>
+            </el-form>
+          </div>
         </div>
       </section>
 
@@ -266,9 +307,10 @@ import {
   RotateCcw,
   XCircle,
   RefreshCw,
-  Loader2
+  Loader2,
+  CloudUpload
 } from 'lucide-vue-next'
-import { configApi, backupApi } from '../api'
+import { configApi, backupApi, baiduNetdiskApi } from '../api'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppLottieProgressBar from '../components/common/AppLottieProgressBar.vue'
@@ -278,6 +320,12 @@ import AppDropdown from '../components/common/AppDropdown.vue'
 const archiveFormatOptions = [
   { value: 'zip', label: '.zip' },
   { value: '7z', label: '.7z' }
+]
+
+const baiduUploadPolicyOptions = [
+  { value: 'skip', label: '跳过同名' },
+  { value: 'overwrite', label: '覆盖同名' },
+  { value: 'rsync', label: '增量同步' }
 ]
 
 const saving = ref(false)
@@ -305,7 +353,14 @@ const backupConfig = ref({
   password: '',
   archive_format: 'zip',
   compression_level: 9,
-  compression_threads: 0
+  compression_threads: 0,
+  dictionary_size_mb: 0,
+  solid_archive: true,
+  baidu_upload_enabled: false,
+  baidu_upload_remote_dir: '/KikoeruManager',
+  baidu_upload_create_subdir: '',
+  baidu_upload_conflict_policy: 'skip',
+  baidu_upload_cleanup_local_archive: false
 })
 const backupHistory = ref([])
 
@@ -389,7 +444,12 @@ async function saveBackupConfig(showSuccess = true) {
         compression_level: backupConfig.value.compression_level ?? 9,
         compression_threads: backupConfig.value.compression_threads ?? 0,
         dictionary_size_mb: backupConfig.value.dictionary_size_mb ?? 0,
-        solid_archive: backupConfig.value.solid_archive ?? true
+        solid_archive: backupConfig.value.solid_archive ?? true,
+        baidu_upload_enabled: backupConfig.value.baidu_upload_enabled ?? false,
+        baidu_upload_remote_dir: backupConfig.value.baidu_upload_remote_dir || '/KikoeruManager',
+        baidu_upload_create_subdir: backupConfig.value.baidu_upload_create_subdir || '',
+        baidu_upload_conflict_policy: backupConfig.value.baidu_upload_conflict_policy || 'skip',
+        baidu_upload_cleanup_local_archive: backupConfig.value.baidu_upload_cleanup_local_archive ?? false
       }
     })
     if (showSuccess) {
@@ -442,6 +502,50 @@ async function startBackup() {
     ElMessage.success('库存打包任务已启动')
   } catch (error) {
     ElMessage.error('启动库存打包失败：' + (error.response?.data?.detail || error.message))
+  } finally {
+    actionLoading.value = false
+  }
+}
+
+async function startBackupAndUpload() {
+  if (!backupConfig.value.enabled) {
+    ElMessage.warning('请先启用库存打包功能')
+    return
+  }
+  if (!backupConfig.value.baidu_upload_enabled) {
+    ElMessage.warning('请先启用百度网盘上传')
+    return
+  }
+  if (!backupConfig.value.password?.trim()) {
+    ElMessage.warning('请先填写压缩密码')
+    return
+  }
+  try {
+    actionLoading.value = true
+    await saveBackupConfig(false)
+    const sourcePath = backupConfig.value.source_path || ''
+    const result = await baiduNetdiskApi.startUpload({
+      sourcePaths: [sourcePath].filter(Boolean),
+      remoteDir: backupConfig.value.baidu_upload_remote_dir || '/KikoeruManager',
+      createRemoteSubdir: backupConfig.value.baidu_upload_create_subdir || '',
+      compressEnabled: true,
+      backupZipOptions: {
+        source_path: backupConfig.value.source_path || '',
+        output_dir: backupConfig.value.output_dir || '',
+        password: backupConfig.value.password || '',
+        archive_format: backupConfig.value.archive_format || 'zip',
+        compression_level: backupConfig.value.compression_level ?? 9,
+        compression_threads: backupConfig.value.compression_threads ?? 0,
+        dictionary_size_mb: backupConfig.value.dictionary_size_mb ?? 0,
+        solid_archive: backupConfig.value.solid_archive ?? true
+      },
+      conflictPolicy: backupConfig.value.baidu_upload_conflict_policy || 'skip',
+      cleanupLocalArchive: backupConfig.value.baidu_upload_cleanup_local_archive ?? false,
+      batchName: '库存打包上传'
+    })
+    ElMessage.success(result?.message || '百度网盘上传任务已创建')
+  } catch (error) {
+    ElMessage.error('创建百度网盘上传任务失败：' + (error.response?.data?.detail || error.message))
   } finally {
     actionLoading.value = false
   }
@@ -728,6 +832,59 @@ button:disabled { cursor: not-allowed; }
   box-shadow: 0 0 0 2px rgba(51, 65, 85, 0.16) inset;
 }
 
+.backup-upload-section {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid rgb(226 232 240);
+}
+
+.backup-upload-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.backup-upload-section-title {
+  color: rgb(15 23 42);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.backup-upload-section-desc {
+  margin-top: 4px;
+  color: rgb(100 116 139);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.backup-upload-section-form {
+  display: grid;
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+  column-gap: 20px;
+  row-gap: 8px;
+}
+
+@media (min-width: 768px) {
+  .backup-upload-section-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1024px) {
+  .backup-upload-section-form {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .backup-upload-section-head {
+    align-items: center;
+  }
+}
+
 /* ==============================================================
  * 历史记录刷新按钮 lib-refresh-btn
  *  - 28px 高 ghost 小按钮
@@ -877,6 +1034,18 @@ button:disabled { cursor: not-allowed; }
 :global(html.kikoerumanager-dark .backup-page :is(.el-input__wrapper.is-focus, .el-textarea__wrapper.is-focus)) {
   border-color: var(--km-dark-border-strong) !important;
   box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .backup-page .backup-upload-section) {
+  border-top-color: var(--km-dark-border) !important;
+}
+
+:global(html.kikoerumanager-dark .backup-page .backup-upload-section-title) {
+  color: var(--km-dark-text-strong) !important;
+}
+
+:global(html.kikoerumanager-dark .backup-page .backup-upload-section-desc) {
+  color: var(--km-dark-text-muted) !important;
 }
 
 :global(html.kikoerumanager-dark .backup-page .el-slider) {

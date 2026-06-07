@@ -56,7 +56,7 @@
               v-for="task in filteredTasks"
               :key="task.id"
               class="v1-task-card"
-              :class="{ expanded: expandedTaskIds.has(task.id) }"
+              :class="[taskCardToneClass(task), { expanded: expandedTaskIds.has(task.id) }]"
               @click="toggleExpanded(task.id)"
             >
               <div class="v1-task-summary">
@@ -193,6 +193,16 @@
                       </div>
 
                       <div v-if="getUnifiedFileRows(task).length" class="v1-detail-section">
+                        <div class="v1-detail-section-head">
+                          <div>
+                            <div class="v1-detail-section-label">文件明细</div>
+                            <div class="v1-detail-section-subtitle">
+                              {{ getPrimaryFileProgressLabel(task) }}
+                              <span v-if="getFailureCount(task) > 0"> · 失败 {{ getFailureCount(task) }} 个</span>
+                            </div>
+                          </div>
+                          <div class="v1-detail-section-count">{{ getUnifiedFileRows(task).length }} 项</div>
+                        </div>
                         <div class="v1-file-list">
                           <div
                             v-for="file in getUnifiedFileRows(task)"
@@ -460,6 +470,16 @@ function statusToneClass(task) {
   if (tone === 'danger') return 'danger'
   if (['pending', 'paused', 'waiting_retry'].includes(String(task?.status || ''))) return 'pending'
   return 'processing'
+}
+
+function taskCardToneClass(task) {
+  const tone = getTaskTone(task)
+  if (tone === 'warning') return 'is-warning'
+  if (tone === 'danger') return 'is-danger'
+  if (tone === 'success') return 'is-success'
+  if (isTaskProcessing(task)) return 'is-processing'
+  if (isTaskPaused(task)) return 'is-paused'
+  return 'is-pending'
 }
 
 function fileToneClass(file) {
@@ -1419,13 +1439,26 @@ function getUnifiedFileRows(task) {
 .v1-icon-button:hover { background: rgba(244, 244, 245, 0.92); color: #18181b; transform: translateY(-1px) scale(1.03); border-color: rgba(24, 24, 27, 0.18); box-shadow: 0 8px 18px rgba(24, 24, 27, 0.1); }
 .v1-icon-button:active { transform: translateY(0) scale(0.98); }
 .v1-icon-button.spinning svg { animation: v1-refresh-spin .9s linear infinite; }
-.v1-body { flex: 1; overflow-y: auto; padding: 14px 36px 12px; background: rgba(244, 244, 245, 0.46); }
-.v1-task-card { position: relative; margin-bottom: 12px; border: 1px solid rgba(24, 24, 27, 0.1); border-radius: 16px; background: rgba(255, 255, 255, 0.78); box-shadow: 0 8px 22px rgba(24, 24, 27, 0.07); overflow: hidden; cursor: pointer; transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease, background-color .22s ease; }
+.v1-body { flex: 1; overflow-y: auto; padding: 14px 36px 12px; background: rgba(248, 250, 252, 0.74); }
+.v1-task-card { position: relative; margin-bottom: 10px; border: 1px solid rgba(148, 163, 184, 0.24); border-radius: 14px; background: rgba(255, 255, 255, 0.9); box-shadow: 0 8px 18px rgba(15, 23, 42, 0.045); overflow: hidden; cursor: pointer; transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease, background-color .22s ease; }
 .v1-task-card::before {
-  display: none;
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: #64748b;
+  opacity: 0.7;
 }
-.v1-task-card:hover { transform: translateY(-2px); box-shadow: 0 14px 30px rgba(24, 24, 27, 0.1); border-color: rgba(24, 24, 27, 0.18); background: rgba(255, 255, 255, 0.9); }
-.v1-task-card.expanded { box-shadow: 0 16px 34px rgba(24, 24, 27, 0.12); border-color: rgba(24, 24, 27, 0.2); }
+.v1-task-card.is-processing::before { background: #2563eb; }
+.v1-task-card.is-success::before { background: #0f766e; }
+.v1-task-card.is-warning::before { background: #d97706; }
+.v1-task-card.is-danger::before { background: #dc2626; }
+.v1-task-card.is-paused::before,
+.v1-task-card.is-pending::before { background: #94a3b8; }
+.v1-task-card.is-warning { border-color: rgba(217, 119, 6, 0.28); background: linear-gradient(90deg, rgba(255, 251, 235, 0.72), rgba(255, 255, 255, 0.92) 22%); }
+.v1-task-card.is-danger { border-color: rgba(220, 38, 38, 0.26); background: linear-gradient(90deg, rgba(254, 242, 242, 0.74), rgba(255, 255, 255, 0.92) 22%); }
+.v1-task-card:hover { transform: translateY(-2px); box-shadow: 0 12px 26px rgba(15, 23, 42, 0.08); border-color: rgba(100, 116, 139, 0.3); background: rgba(255, 255, 255, 0.96); }
+.v1-task-card.expanded { box-shadow: 0 14px 30px rgba(15, 23, 42, 0.09); border-color: rgba(100, 116, 139, 0.34); }
 .v1-task-summary { display: flex; align-items: center; gap: 14px; padding: 13px 16px; min-height: 76px; }
 .v1-task-icon { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 64px; height: 64px; flex-shrink: 0; overflow: visible; }
 .v1-task-icon-fallback { position: absolute; z-index: 1; opacity: 0.92; }
@@ -1478,7 +1511,7 @@ function getUnifiedFileRows(task) {
 .v1-strip-fill.upload-success { background: linear-gradient(90deg, #52525b 0%, #71717a 100%); }
 .v1-strip-fill.success { background: linear-gradient(90deg, #52525b 0%, #71717a 100%); }
 .v1-strip-fill.danger { background: #dc2626; }
-.v1-task-detail { position: relative; padding: 0 16px 14px; background: rgba(250, 250, 250, 0.74); border-top: 1px solid rgba(24, 24, 27, 0.08); }
+.v1-task-detail { position: relative; padding: 0 16px 14px; background: rgba(248, 250, 252, 0.76); border-top: 1px solid rgba(148, 163, 184, 0.2); }
 .v1-task-detail::before {
   content: "";
   position: absolute;
@@ -1495,10 +1528,14 @@ function getUnifiedFileRows(task) {
 .v1-path-label,.v1-detail-section-label { color: #71717a; font-size: 10px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; }
 .v1-path-value { margin-top: 5px; color: #3f3f46; font-size: 12px; line-height: 1.45; word-break: break-all; }
 .v1-detail-section { margin-top: 12px; }
+.v1-detail-section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.v1-detail-section-subtitle { margin-top: 3px; color: #64748b; font-size: 11px; font-weight: 650; }
+.v1-detail-section-count { flex-shrink: 0; border-radius: 999px; border: 1px solid rgba(148, 163, 184, 0.28); background: rgba(255, 255, 255, 0.86); color: #475569; font-size: 10.5px; font-weight: 800; line-height: 20px; padding: 0 8px; }
 .v1-file-list,.v1-log-list { margin-top: 8px; }
-.v1-file-row { padding: 7px 0; }
-.v1-file-row + .v1-file-row { border-top: 1px solid rgba(24, 24, 27, 0.08); }
-.v1-file-row-top { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 5px; align-items: flex-end; }
+.v1-file-list { display: grid; gap: 6px; }
+.v1-file-row { padding: 8px 10px; border: 1px solid rgba(226, 232, 240, 0.86); border-radius: 10px; background: rgba(255, 255, 255, 0.82); }
+.v1-file-row + .v1-file-row { border-top: 1px solid rgba(226, 232, 240, 0.86); }
+.v1-file-row-top { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; align-items: flex-end; }
 .v1-file-row-main,.v1-file-row-side { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .v1-file-row-main { min-width: 0; flex: 1; }
 .v1-file-row-name { color: #27272a; font-size: 11px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1506,7 +1543,9 @@ function getUnifiedFileRows(task) {
 .v1-file-chip { display: inline-flex; align-items: center; min-height: 19px; padding: 0 7px; border-radius: 999px; font-size: 9px; font-weight: 800; }
 .v1-file-chip.success { background: #f4f4f5; color: #52525b; }
 .v1-file-chip.danger { background: #fee2e2; color: #b91c1c; }
-.v1-file-retry { border: none; background: transparent; color: #dc2626; font-size: 12px; font-weight: 700; cursor: pointer; }
+.v1-file-retry { border: 1px solid rgba(220, 38, 38, 0.22); border-radius: 999px; background: rgba(254, 242, 242, 0.72); color: #dc2626; font-size: 11px; font-weight: 800; line-height: 22px; padding: 0 8px; cursor: pointer; transition: transform .18s ease, background-color .18s ease, border-color .18s ease; }
+.v1-file-retry:hover:not(:disabled) { transform: translateY(-1px); background: rgba(254, 226, 226, 0.9); border-color: rgba(220, 38, 38, 0.32); }
+.v1-file-retry:disabled { opacity: .55; cursor: not-allowed; }
 .v1-file-reason { margin-top: 6px; color: #b91c1c; font-size: 11px; line-height: 1.45; }
 .v1-log-row { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 9px; color: #52525b; font-size: 11px; line-height: 1.45; }
 .v1-log-row + .v1-log-row { margin-top: 4px; }

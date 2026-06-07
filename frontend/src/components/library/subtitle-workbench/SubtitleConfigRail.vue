@@ -1307,8 +1307,8 @@ function removeActiveSubtitleFilterRule() {
 }
 
 .subtitle-display-block {
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
 }
 
 .subtitle-display-block .subtitle-inline-section-head {
@@ -1890,11 +1890,11 @@ function removeActiveSubtitleFilterRule() {
   --pill-accent-border: rgba(100, 116, 139, 0.24);
   display: inline-flex;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: center;
   gap: 5px;
   min-width: 0;
   min-height: 28px;
-  padding: 4px 7px;
+  padding: 4px 9px;
   border-radius: 9px;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
@@ -1903,6 +1903,11 @@ function removeActiveSubtitleFilterRule() {
   font-weight: 750;
   cursor: pointer;
   transition: all 0.28s var(--ease-spring);
+}
+
+.subtitle-toggle-pill span {
+  min-width: max-content;
+  white-space: nowrap;
 }
 
 .subtitle-toggle-pill:hover {
@@ -2544,6 +2549,63 @@ function removeActiveSubtitleFilterRule() {
   box-shadow: none !important;
 }
 
+:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card :is(
+  .subtitle-depth-control,
+  .subtitle-quick-toggle,
+  .subtitle-stepper,
+  .subtitle-stepper-input,
+  .subtitle-stepper-btn,
+  .subtitle-naming-switch,
+  .subtitle-ai-mode-switch,
+  .subtitle-toggle-pill,
+  .subtitle-retarget-option,
+  .subtitle-filter-current-card,
+  .subtitle-filter-nav-btn,
+  .subtitle-filter-add-icon-btn,
+  .subtitle-filter-empty-add,
+  .search-row
+)) {
+  background: #24252a !important;
+  background-color: #24252a !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card :is(
+  .subtitle-depth-control,
+  .subtitle-quick-toggle,
+  .subtitle-stepper,
+  .subtitle-stepper-btn,
+  .subtitle-toggle-pill,
+  .subtitle-retarget-option,
+  .subtitle-filter-current-card,
+  .subtitle-filter-nav-btn,
+  .subtitle-filter-add-icon-btn,
+  .subtitle-filter-empty-add,
+  .search-row
+):hover),
+:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card .subtitle-stepper:focus-within) {
+  background: #303136 !important;
+  background-color: #303136 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card .subtitle-stepper-input) {
+  background: transparent !important;
+  background-color: transparent !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card .subtitle-stepper-actions),
+:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card .subtitle-stepper-btn:first-child) {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-block-title),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-option-title),
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-detail-title),
@@ -2561,6 +2623,72 @@ function removeActiveSubtitleFilterRule() {
 
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-current-name) {
   color: rgba(250, 250, 252, 0.92) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-depth-control),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-quick-toggle),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-stepper),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-stepper-btn),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-filter-editor),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-filter-rule-strip),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-filter-current-card),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-filter-nav-btn),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-filter-add-icon-btn),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-depth-control),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-quick-toggle),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-stepper),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-stepper-btn),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-filter-editor),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-filter-rule-strip),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-filter-current-card),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-filter-nav-btn),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-filter-add-icon-btn) {
+  background: #24252a !important;
+  background-color: #24252a !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-depth-control:hover),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-quick-toggle:hover),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-stepper:hover),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-stepper:focus-within),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-stepper-btn:hover),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-filter-current-card:hover),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-filter-nav-btn:hover:not(:disabled)),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-filter-add-icon-btn:hover),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-depth-control:hover),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-quick-toggle:hover),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-stepper:hover),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-stepper:focus-within),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-stepper-btn:hover),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-filter-current-card:hover),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-filter-nav-btn:hover:not(:disabled)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-filter-add-icon-btn:hover) {
+  background: #303136 !important;
+  background-color: #303136 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-stepper-input),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-stepper-input) {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-stepper-actions),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-stepper-btn:first-child),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-stepper-actions),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-stepper-btn:first-child) {
+  border-color: rgba(255, 255, 255, 0.12) !important;
 }
 
 :global(html.kikoerumanager-dark .subtitle-config-card .subtitle-filter-index),

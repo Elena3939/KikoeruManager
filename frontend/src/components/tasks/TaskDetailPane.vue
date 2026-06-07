@@ -894,4 +894,50 @@ function actionToneClass(action) {
 .detail-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
+
+:global(html.kikoerumanager-dark .tasks-page .tasks-main > .detail-scroll) {
+  background: #08090c !important;
+  background-color: #08090c !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+}
+
+:global(html.kikoerumanager-dark body #app .tasks-page .tasks-main > .detail-scroll > header) {
+  background: #101012 !important;
+  background-color: #101012 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+}
+
+:global(html.kikoerumanager-dark .tasks-page .tasks-main > .detail-scroll section),
+:global(html.kikoerumanager-dark .tasks-page .tasks-main > .detail-scroll .mx-4) {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .tasks-page .tasks-main > .detail-scroll > section),
+:global(html.kikoerumanager-dark body #app .tasks-page .tasks-main > .detail-scroll > .mx-4) {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .tasks-page .tasks-main > .detail-scroll :is(.bg-white, .bg-white\/95, .bg-slate-50, .bg-slate-100)) {
+  background: #101012 !important;
+  background-color: #101012 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: #e2e8f0 !important;
+}
+
+:global(html.kikoerumanager-dark .tasks-page .tasks-main > .detail-scroll code),
+:global(html.kikoerumanager-dark .tasks-page .task-file-tree-card),
+:global(html.kikoerumanager-dark .tasks-page .task-file-tree) {
+  background: #05060a !important;
+  background-color: #05060a !important;
+  background-image: none !important;
+}
 </style>

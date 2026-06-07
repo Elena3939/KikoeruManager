@@ -747,7 +747,10 @@ function stripTrailingAudioExtension(value = '') {
 }
 
 function formatSubtitleEntryDisplay(entry = '') {
-  const normalized = String(entry || '').replace(/\\/g, '/')
+  const raw = typeof entry === 'object' && entry !== null
+    ? (entry.relative_path || entry.path || entry.name || '')
+    : entry
+  const normalized = String(raw || '').replace(/\\/g, '/')
   if (!normalized) return ''
   const parts = normalized.split('/')
   const fileName = parts.pop() || ''
@@ -921,9 +924,9 @@ button:disabled { cursor: not-allowed; }
   flex-direction: column;
   gap: 12px;
   min-height: 0;
-  padding: 14px;
-  border-radius: 18px;
-  border: 1px solid var(--subtitle-border);
+  padding: 12px 0 0;
+  border-radius: 0;
+  border: 0;
   background: #ffffff;
   box-shadow: var(--subtitle-shadow);
   overflow: hidden;
@@ -1170,7 +1173,9 @@ button:disabled { cursor: not-allowed; }
   flex: 1;
   min-height: 0;
   display: flex;
-  gap: 14px;
+  gap: 16px;
+  border-top: 1px solid var(--subtitle-border);
+  padding-top: 12px;
 }
 
 /* 左侧 list-pane / source-pane */
@@ -1357,9 +1362,10 @@ button:disabled { cursor: not-allowed; }
   display: flex;
   flex-direction: column;
   min-width: 0;
-  border-radius: 16px;
+  border-radius: 0;
   background: var(--subtitle-panel);
-  border: 1px solid var(--subtitle-border);
+  border: 0;
+  border-left: 1px solid var(--subtitle-border);
   box-shadow: none;
   overflow: hidden;
 }
@@ -1367,7 +1373,7 @@ button:disabled { cursor: not-allowed; }
 .subtitle-detail-header {
   position: relative;
   flex-shrink: 0;
-  padding: 18px 20px;
+  padding: 8px 20px 16px;
   border-bottom: 1px solid var(--subtitle-border);
   background: #ffffff;
   overflow: hidden;
@@ -1432,10 +1438,10 @@ button:disabled { cursor: not-allowed; }
 .subtitle-detail-body {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 18px 18px;
+  padding: 14px 20px 20px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 0;
   background: transparent;
 }
 
@@ -1461,21 +1467,21 @@ button:disabled { cursor: not-allowed; }
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding: 14px 16px;
-  border-radius: 14px;
-  border: 1px solid;
+  padding: 10px 0 14px;
+  border-radius: 0;
+  border: 0;
+  border-bottom: 1px solid var(--subtitle-border);
   font-size: 12.5px;
   line-height: 1.6;
 }
 .subtitle-detail-alert p { margin: 0; }
 .subtitle-detail-alert.is-info {
-  background: #ffffff;
-  border-color: var(--subtitle-border);
+  background: transparent;
   color: var(--subtitle-text-muted);
 }
 .subtitle-detail-alert.is-warning {
-  background: rgba(254, 243, 199, 0.55);
-  border-color: rgba(245, 158, 11, 0.2);
+  background: transparent;
+  border-color: rgba(245, 158, 11, 0.28);
   color: #92400e;
 }
 
@@ -1485,18 +1491,19 @@ button:disabled { cursor: not-allowed; }
 .subtitle-info-card {
   display: flex;
   flex-direction: column;
-  border-radius: 14px;
-  background: var(--subtitle-panel);
-  border: 1px solid var(--subtitle-border);
-  overflow: hidden;
+  border-radius: 0;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--subtitle-border);
+  overflow: visible;
 }
 .subtitle-info-card-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 11px 14px;
-  border-bottom: 1px solid var(--subtitle-border);
-  background: #ffffff;
+  padding: 15px 0 10px;
+  border-bottom: 0;
+  background: transparent;
 }
 .subtitle-info-card-header h3 {
   margin: 0;
@@ -1506,7 +1513,7 @@ button:disabled { cursor: not-allowed; }
   letter-spacing: -0.2px;
 }
 .subtitle-info-card-body {
-  padding: 14px;
+  padding: 0 0 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1516,7 +1523,10 @@ button:disabled { cursor: not-allowed; }
 .subtitle-meta-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 0;
+  border: 1px solid var(--subtitle-border);
+  border-radius: 12px;
+  overflow: hidden;
 }
 @media (min-width: 720px) {
   .subtitle-meta-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -1525,10 +1535,12 @@ button:disabled { cursor: not-allowed; }
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: #ffffff;
-  border: 1px solid var(--subtitle-border);
+  padding: 11px 13px;
+  border-radius: 0;
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--subtitle-border);
+  border-bottom: 1px solid var(--subtitle-border);
   min-width: 0;
 }
 .subtitle-meta-item.is-wide { grid-column: 1 / -1; }
@@ -1566,10 +1578,10 @@ button:disabled { cursor: not-allowed; }
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 8px 10px;
-  border-radius: 10px;
-  background: #ffffff;
-  border: 1px solid var(--subtitle-border);
+  padding: 8px 0;
+  border-radius: 0;
+  background: transparent;
+  border: 0;
   font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
   font-size: 11.5px;
   max-height: 240px;
@@ -1607,29 +1619,36 @@ button:disabled { cursor: not-allowed; }
 .subtitle-candidate-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
+  border: 1px solid var(--subtitle-border);
+  border-radius: 12px;
+  overflow: hidden;
 }
 .subtitle-candidate-card {
   position: relative;
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding: 12px;
-  border-radius: 12px;
-  border: 1px solid var(--subtitle-border);
-  background: var(--subtitle-panel);
+  padding: 13px 14px;
+  border-radius: 0;
+  border: 0;
+  border-bottom: 1px solid var(--subtitle-border);
+  background: transparent;
   text-align: left;
   transition: var(--subtitle-control-motion);
 }
+.subtitle-candidate-card:last-child {
+  border-bottom: 0;
+}
 .subtitle-candidate-card:hover {
   border-color: var(--subtitle-border-strong);
-  background: #ffffff;
-  transform: translateY(-2px) scale(1.01);
+  background: var(--subtitle-primary-soft);
+  transform: none;
   box-shadow: none;
 }
 .subtitle-candidate-card.is-selected {
-  border-color: var(--subtitle-border-strong);
-  background: #ffffff;
+  border-color: var(--subtitle-border);
+  background: rgba(15, 23, 42, 0.035);
   box-shadow: none;
 }
 .subtitle-candidate-radio {
@@ -1692,7 +1711,7 @@ button:disabled { cursor: not-allowed; }
 .subtitle-detail-footer {
   display: flex;
   justify-content: flex-end;
-  padding-top: 4px;
+  padding-top: 16px;
 }
 
 /* ==============================================================
@@ -1993,15 +2012,89 @@ button:disabled { cursor: not-allowed; }
 }
 
 :global(html.kikoerumanager-dark) .subtitle-detail-alert.is-info {
-  background: var(--km-dark-info-bg);
-  border-color: var(--km-dark-border);
-  color: var(--km-dark-text);
+  background: transparent !important;
+  border-color: var(--subtitle-border);
+  color: var(--km-dark-text-muted);
+  box-shadow: none !important;
+}
+
+:global(body.kikoerumanager-dark .subtitle-detail-alert),
+:global(body.kikoerumanager-dark .subtitle-detail-alert.is-info),
+:global(body.kikoerumanager-dark .subtitle-detail-alert.is-warning),
+:global(html.kikoerumanager-dark body .subtitle-detail-alert),
+:global(html.kikoerumanager-dark body .subtitle-detail-alert.is-info),
+:global(html.kikoerumanager-dark body .subtitle-detail-alert.is-warning) {
+  background: transparent !important;
+  box-shadow: none !important;
 }
 
 :global(html.kikoerumanager-dark) .subtitle-detail-alert.is-warning {
-  background: var(--km-dark-amber-bg);
+  background: transparent !important;
   border-color: rgba(244, 206, 117, 0.28);
   color: var(--km-dark-amber);
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-detail-pane,
+:global(body.kikoerumanager-dark .subtitle-detail-pane) {
+  background: transparent;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-detail-header,
+:global(body.kikoerumanager-dark .subtitle-detail-header) {
+  overflow: visible;
+}
+
+:global(html.kikoerumanager-dark .subtitle-detail-bg-glyph),
+:global(body.kikoerumanager-dark .subtitle-detail-bg-glyph) {
+  display: none;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-info-card,
+:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-info-card-header,
+:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-meta-item,
+:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-tree,
+:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-candidate-card,
+:global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-info-card),
+:global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-info-card-header),
+:global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-meta-item),
+:global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-tree),
+:global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-card) {
+  background: transparent !important;
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-info-card {
+  border-color: var(--subtitle-border);
+}
+
+:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-meta-grid,
+:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-candidate-list,
+:global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-meta-grid),
+:global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-list) {
+  background: transparent;
+  border-color: var(--subtitle-border);
+}
+
+:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-candidate-card:hover,
+:global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-card:hover) {
+  background: var(--km-dark-surface-hover) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-candidate-card.is-selected,
+:global(body.kikoerumanager-dark .subtitle-detail-body .subtitle-candidate-card.is-selected) {
+  background: rgba(244, 206, 117, 0.16) !important;
+  border-color: rgba(244, 206, 117, 0.24);
+}
+
+:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-candidate-radio {
+  background: var(--km-dark-bg);
+  border-color: var(--subtitle-border-strong);
+}
+
+:global(html.kikoerumanager-dark) .subtitle-detail-body .subtitle-candidate-radio.is-checked {
+  background: var(--km-dark-text-strong);
+  border-color: var(--km-dark-text-strong);
 }
 
 :global(html.kikoerumanager-dark) .subtitle-import-workbench-overlay {

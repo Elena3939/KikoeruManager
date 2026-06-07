@@ -192,10 +192,12 @@
       :retrying-keys="[...enhancedRetryingTaskIds]"
       title="ASMR 增强下载"
       subtitle="增强下载任务进度"
+      :enable-file-retry="true"
       @refresh="refreshEnhancedDownloadWorkbench({ silent: true })"
       @background="hideEnhancedDownloadWorkbenchToBackground"
       @close="closeEnhancedDownloadWorkbench"
       @retry-task="retryEnhancedDownloadTask"
+      @retry-file="retryEnhancedDownloadFile"
       @pause-task="handlePauseEnhancedDownloadTask"
       @resume-task="handleResumeEnhancedDownloadTask"
       @cancel-task="handleCancelEnhancedDownloadTask"
@@ -1689,13 +1691,7 @@ async function retryEnhancedDownloadTask(task) {
   try {
     if (sessionId) {
       const response = await asmrSyncApi.retryFailedSession(sessionId)
-      const nextTaskId = String(response?.session?.task_id || '').trim()
-      if (nextTaskId && nextTaskId !== taskId) {
-        enhancedDownloadWorkbenchTaskIds.value = [
-          nextTaskId,
-          ...enhancedDownloadWorkbenchTaskIds.value.filter(id => id !== nextTaskId && id !== taskId)
-        ]
-      }
+      focusEnhancedRetryWorkbench(response?.session?.task_id, taskId)
     } else if (taskId) {
       await asmrSyncApi.retry(taskId)
     }
@@ -1707,6 +1703,45 @@ async function retryEnhancedDownloadTask(task) {
     const done = new Set(enhancedRetryingTaskIds.value)
     done.delete(taskId)
     enhancedRetryingTaskIds.value = done
+  }
+}
+
+async function retryEnhancedDownloadFile(payload) {
+  const task = payload?.task || {}
+  const file = payload?.file || {}
+  const sessionId = String(task?.task_metadata?.session_id || task?.session_id || '').trim()
+  const taskId = String(task?.id || '').trim()
+  const relativePath = String(file?.relative_path || file?.rawFile?.relative_path || file?.rawFile?.name || file?.name || '').trim()
+  if (!sessionId || !relativePath) return ElMessage.warning('没有找到可重试的失败文件')
+
+  const retryKey = `${taskId}:${relativePath}`
+  const next = new Set(enhancedRetryingTaskIds.value)
+  next.add(retryKey)
+  enhancedRetryingTaskIds.value = next
+  try {
+    const response = await asmrSyncApi.retrySessionFiles(sessionId, [relativePath])
+    focusEnhancedRetryWorkbench(response?.session?.task_id, taskId)
+    ElMessage.success('已提交单文件重试')
+    await refreshEnhancedDownloadWorkbench({ silent: true })
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '提交单文件重试失败')
+  } finally {
+    const done = new Set(enhancedRetryingTaskIds.value)
+    done.delete(retryKey)
+    enhancedRetryingTaskIds.value = done
+  }
+}
+
+function focusEnhancedRetryWorkbench(nextTaskId, previousTaskId = '') {
+  const normalizedTaskId = String(nextTaskId || '').trim()
+  if (!normalizedTaskId) return
+  enhancedDownloadWorkbenchTaskIds.value = [normalizedTaskId]
+  enhancedDownloadWorkbenchVisible.value = true
+  enhancedDownloadWorkbenchBackgroundActive.value = false
+  persistEnhancedDownloadWorkbenchState()
+  const previous = String(previousTaskId || '').trim()
+  if (previous && previous !== normalizedTaskId) {
+    enhancedDownloadWorkbenchTasks.value = enhancedDownloadWorkbenchTasks.value.filter(task => String(task?.id || '') !== previous)
   }
 }
 
@@ -1856,11 +1891,20 @@ const resumeTask = async (taskId) => {
 
 const retryFailed = async (taskId) => {
   try {
-    const result = await asmrSyncApi.retry(taskId)
-    ElMessage.success(result.message)
+    const task = tasks.value.find(item => String(item.id || '') === String(taskId || ''))
+    const sessionId = String(task?.session_id || task?.task_metadata?.session_id || '').trim()
+    if (sessionId) {
+      const response = await asmrSyncApi.retryFailedSession(sessionId)
+      focusEnhancedRetryWorkbench(response?.session?.task_id, taskId)
+      ElMessage.success('已重新提交失败文件')
+      await refreshEnhancedDownloadWorkbench({ silent: true })
+    } else {
+      const result = await asmrSyncApi.retry(taskId)
+      ElMessage.success(result.message)
+    }
     await refreshStatus()
   } catch (error) {
-    ElMessage.error('重试失败')
+    ElMessage.error(error.response?.data?.detail || '重试失败')
   }
 }
 
@@ -2928,27 +2972,53 @@ button:disabled { cursor: not-allowed; }
  * 下载任务 asmr-task 卡片
  * ============================================================ */
 .asmr-task {
+  position: relative;
+  overflow: hidden;
   padding: 14px 16px;
   border-radius: 12px;
   border: 1px solid var(--asmr-border);
   background: var(--asmr-surface);
-  transition: border-color 0.18s ease, background-color 0.18s ease;
+  transition: border-color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+.asmr-task::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--asmr-text-muted);
+  opacity: 0.72;
+}
+.asmr-task:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
 }
 .asmr-task.is-completed {
   border-color: var(--asmr-success-border);
-  background: var(--asmr-success-bg);
+  background: var(--asmr-surface);
+}
+.asmr-task.is-completed::before {
+  background: var(--asmr-success-text);
 }
 .asmr-task.is-failed {
   border-color: var(--asmr-danger-border);
-  background: var(--asmr-danger-bg);
+  background: linear-gradient(90deg, var(--asmr-danger-bg), var(--asmr-surface) 18%);
+}
+.asmr-task.is-failed::before {
+  background: var(--asmr-danger-text);
 }
 .asmr-task.is-paused {
   border-color: var(--asmr-chip-muted-border);
-  background: var(--asmr-chip-muted-bg);
+  background: var(--asmr-surface);
+}
+.asmr-task.is-paused::before {
+  background: var(--asmr-text-muted);
 }
 .asmr-task.is-processing {
   border-color: var(--asmr-info-border);
-  background: var(--asmr-info-bg);
+  background: linear-gradient(90deg, var(--asmr-info-bg), var(--asmr-surface) 18%);
+}
+.asmr-task.is-processing::before {
+  background: var(--asmr-accent);
 }
 .asmr-task-head {
   display: flex;
@@ -3010,8 +3080,7 @@ button:disabled { cursor: not-allowed; }
 .asmr-task-details-summary.is-slate:hover { color: var(--asmr-text-strong); }
 .asmr-task-details-body {
   margin-top: 8px;
-  display: flex;
-  flex-direction: column;
+  display: grid;
   gap: 6px;
 }
 
@@ -3039,9 +3108,11 @@ button:disabled { cursor: not-allowed; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 10px;
-  border-radius: 6px;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 9px;
   background: var(--asmr-danger-bg);
+  border: 1px solid var(--asmr-danger-border);
   font-size: 11.5px;
 }
 
@@ -3049,14 +3120,15 @@ button:disabled { cursor: not-allowed; }
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
-  border-radius: 6px;
-  background: var(--asmr-surface-soft);
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--asmr-border);
+  background: var(--asmr-surface);
   font-size: 11.5px;
   min-width: 0;
 }
 .asmr-task-file-progress {
-  width: 80px;
+  width: 92px;
   flex-shrink: 0;
 }
 .asmr-task-file-progress-bar {

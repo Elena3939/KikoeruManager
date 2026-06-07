@@ -715,7 +715,7 @@
               </div>
 
               <!-- List -->
-              <div class="compare-works-list" v-auto-animate>
+              <div class="compare-works-list" v-auto-animate="compareAutoAnimateOptions">
                 <div v-for="item in pagedCompareWorks" :key="`compare-${item.workRjcode}`" class="compare-work-item">
                   <div class="compare-work-row flex items-start justify-between gap-4">
                     <!-- Title & Badges -->
@@ -1609,6 +1609,10 @@ const ownedWorksSearchQuery = ref('')
 const ownedWorksFilterType = ref('all') // 'all', 'original', 'simplified', 'traditional', 'subtitle', 'bonus'
 const compareSearchQuery = ref('')
 const compareSourceFilter = ref('all') // 'all', 'kikoeru', 'dlsite', 'asmr_one', 'missing'
+const compareAutoAnimateOptions = {
+  duration: 240,
+  easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+}
 
 watch(ownedWorksSearchQuery, () => { ownedPage.value = 1 })
 watch(compareSearchQuery, () => { comparePage.value = 1 })
@@ -1630,6 +1634,15 @@ function isStrictTrue(value) {
 function isBonusDisplayWork(item) {
   return isStrictTrue(item?.is_bonus_work)
 }
+
+const detailWorksByCanonical = computed(() => {
+  const map = new Map()
+  for (const item of Array.isArray(detail.works) ? detail.works : []) {
+    const code = String(item?.canonical_rjcode || '').trim()
+    if (code) map.set(code, item)
+  }
+  return map
+})
 
 function setOwnedWorksFilter(type) {
   if (ownedWorksFilterType.value === type) return
@@ -1863,7 +1876,7 @@ function prioritizeChangedWorks(codes = []) {
   })
 }
 
-const pagedCompareWorks = computed(() => {
+const filteredCompareWorks = computed(() => {
   let list = compareWorks.value
 
   if (compareSourceFilter.value !== 'all') {
@@ -1887,7 +1900,6 @@ const pagedCompareWorks = computed(() => {
     })
   }
 
-  // 发售日排序
   if (worksReleaseSort.value === 'asc' || worksReleaseSort.value === 'desc') {
     const direction = worksReleaseSort.value === 'asc' ? 1 : -1
     list = [...list].sort((a, b) => {
@@ -1897,34 +1909,16 @@ const pagedCompareWorks = computed(() => {
     })
   }
 
-  const size = Number(comparePageSize.value || 10)
-  const start = (comparePage.value - 1) * size
-  return list.slice(start, start + size)
+  return list
 })
 
-const compareWorksFilteredCount = computed(() => {
-  let list = compareWorks.value
-  if (compareSourceFilter.value !== 'all') {
-    list = list.filter(item => {
-      switch (compareSourceFilter.value) {
-        case 'kikoeru': return item.statusKey === 'owned'
-        case 'dlsite': return !!item.sourceCompare.dlsite.all_rjcodes.length
-        case 'asmr_one': return !!item.sourceCompare.asmr_one.primary_rjcode
-        case 'missing': return !item.sourceCompare.kikoeru.primary_rjcode && !item.sourceCompare.dlsite.all_rjcodes.length && !item.sourceCompare.asmr_one.primary_rjcode
-        default: return true
-      }
-    })
-  }
-  const query = compareSearchQuery.value.trim().toLowerCase()
-  if (query) {
-    list = list.filter(item => {
-      const rjcode = item.workRjcode.toLowerCase()
-      const title = item.title.toLowerCase()
-      return rjcode.includes(query) || title.includes(query)
-    })
-  }
-  return list.length
+const pagedCompareWorks = computed(() => {
+  const size = Number(comparePageSize.value || 10)
+  const start = (comparePage.value - 1) * size
+  return filteredCompareWorks.value.slice(start, start + size)
 })
+
+const compareWorksFilteredCount = computed(() => filteredCompareWorks.value.length)
 
 const compareWorksStats = computed(() => {
   const all = compareWorks.value
@@ -1939,7 +1933,7 @@ const compareWorksStats = computed(() => {
 })
 const selectedCanonicalRJCodes = computed(() => [...selectedCanonicals.value])
 const selectedDownloadableRJCodes = computed(() => selectedCanonicalRJCodes.value.filter(code => {
-  const item = (detail.works || []).find(work => work.canonical_rjcode === code)
+  const item = detailWorksByCanonical.value.get(code)
   return Boolean(item?.has_asmr_one)
 }))
 const activeSelectableWorks = computed(() => {
@@ -1950,14 +1944,22 @@ const activeSelectableWorks = computed(() => {
 const selectedActiveCanonicalRJCodes = computed(() => activeSelectableWorks.value
   .map(item => item?.canonical_rjcode)
   .filter(code => code && selectedCanonicals.value.has(code)))
+const activeSelectableWorksByCanonical = computed(() => {
+  const map = new Map()
+  for (const item of activeSelectableWorks.value) {
+    const code = String(item?.canonical_rjcode || '').trim()
+    if (code) map.set(code, item)
+  }
+  return map
+})
 const selectedActiveDownloadableRJCodes = computed(() => selectedActiveCanonicalRJCodes.value.filter(code => {
-  const item = activeSelectableWorks.value.find(work => work.canonical_rjcode === code)
+  const item = activeSelectableWorksByCanonical.value.get(code)
   return Boolean(item?.has_asmr_one)
 }))
 function getPreviewRequestedRjcodes(canonicalCodes = []) {
   const mapping = {}
   canonicalCodes.forEach(code => {
-    const item = (detail.works || []).find(work => work.canonical_rjcode === code)
+    const item = detailWorksByCanonical.value.get(code)
     if (!item) return
     const candidates = [
       item.download_plan?.rjcode,
@@ -4051,6 +4053,122 @@ function getUploadBackgroundTargetLabel(task) {
   box-shadow: none;
 }
 
+.circle-complete-state {
+  flex: 1;
+  min-height: 340px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px 16px;
+  overflow: hidden;
+}
+
+.circle-complete-visual {
+  position: relative;
+  width: min(320px, 42vw);
+  max-width: 100%;
+  aspect-ratio: 1.05;
+  display: grid;
+  place-items: end center;
+  overflow: visible;
+}
+
+.circle-complete-visual::before {
+  content: '';
+  position: absolute;
+  inset: 4% -10% -4%;
+  z-index: 0;
+  border-radius: 28px;
+  background: transparent;
+  pointer-events: none;
+}
+
+.circle-complete-image {
+  display: block;
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: min(320px, 42vw, 48vh);
+  height: auto;
+  object-fit: contain;
+  opacity: 0;
+  transform: translateY(8px) scale(0.96);
+  transition:
+    opacity 0.28s ease,
+    transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.circle-complete-image.is-revealed {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.circle-complete-confetti {
+  position: absolute;
+  inset: -22% -24% -8%;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.circle-complete-confetti-player {
+  width: 100%;
+  height: 100%;
+}
+
+.complete-confetti-enter-active,
+.complete-confetti-leave-active {
+  transition:
+    opacity 0.24s ease,
+    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.complete-confetti-enter-from,
+.complete-confetti-leave-to {
+  opacity: 0;
+  transform: scale(0.96);
+}
+
+.circle-complete-copy {
+  display: flex;
+  justify-content: center;
+}
+
+.circle-complete-stats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.circle-complete-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--circle-label-border, rgba(226, 232, 240, 0.72));
+  background: var(--circle-label-surface, rgba(248, 250, 252, 0.86));
+  color: var(--circle-text-muted, #64748b);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.circle-complete-pill.owned {
+  color: var(--circle-tag-success, #059669);
+  border-color: color-mix(in srgb, var(--circle-tag-success, #059669) 22%, transparent);
+  background: color-mix(in srgb, var(--circle-tag-success, #059669) 8%, transparent);
+}
+
+:global(html.kikoerumanager-dark .circle-page .circle-complete-visual::before),
+:global(body.kikoerumanager-dark .circle-page .circle-complete-visual::before) {
+  background:
+    radial-gradient(ellipse at 50% 58%, rgba(255, 255, 255, 0.90) 0%, rgba(246, 242, 255, 0.76) 42%, rgba(246, 242, 255, 0.34) 68%, rgba(246, 242, 255, 0.00) 86%);
+  filter: blur(10px);
+}
+
 /* 页头现在走共享组件 components/common/AppPageHeader.vue，这里只保留原 circle-hero 外边距与右侧 slot 内嵌样式 */
 .circle-page-header {
   margin: 8px 8px 0;
@@ -4702,9 +4820,7 @@ function getUploadBackgroundTargetLabel(task) {
   border-radius: 13px;
   background: var(--circle-surface-elevated, linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.94) 100%));
   color: var(--circle-text, #334155);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--circle-surface, #fff) 72%, transparent),
-    0 1px 2px rgba(15, 23, 42, 0.035);
+  box-shadow: none;
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
@@ -4712,9 +4828,7 @@ function getUploadBackgroundTargetLabel(task) {
   transform: translateY(-2px) scale(1.02);
   border-color: var(--circle-border-strong, rgba(148, 163, 184, 0.92));
   background: var(--circle-hover-bg, #ffffff);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.96),
-    0 8px 18px rgba(15, 23, 42, 0.075);
+  box-shadow: none;
 }
 .status-filter-trigger:active {
   transform: scale(0.96);
@@ -4722,10 +4836,7 @@ function getUploadBackgroundTargetLabel(task) {
 .status-filter-trigger.is-open {
   border-color: var(--circle-border-strong, rgba(148, 163, 184, 0.96));
   background: var(--circle-surface-elevated, #ffffff);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--circle-surface, #fff) 72%, transparent),
-    0 0 0 3px color-mix(in srgb, var(--circle-primary, #94a3b8) 14%, transparent),
-    0 8px 18px rgba(15, 23, 42, 0.075);
+  box-shadow: none;
 }
 .status-filter-trigger__content {
   position: relative;
@@ -4920,7 +5031,7 @@ function getUploadBackgroundTargetLabel(task) {
   color: var(--circle-text, #334155);
   font-size: 12px;
   font-weight: 700;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  box-shadow: none;
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
@@ -4928,7 +5039,7 @@ function getUploadBackgroundTargetLabel(task) {
   transform: translateY(-2px) scale(1.02);
   border-color: color-mix(in srgb, var(--circle-primary, #2563eb) 30%, transparent);
   color: var(--circle-primary, #1d4ed8);
-  box-shadow: 0 8px 18px color-mix(in srgb, var(--circle-primary, #2563eb) 16%, transparent);
+  box-shadow: none;
 }
 .release-sort-button:active {
   transform: scale(0.96);
@@ -5992,11 +6103,16 @@ function getUploadBackgroundTargetLabel(task) {
   border-radius: 0 0 10px 10px;
   background: var(--circle-surface-elevated, #ffffff);
   overflow: hidden;
+  contain: layout paint;
+  isolation: isolate;
 }
 .compare-work-item {
   padding: 16px;
   color: var(--circle-text, #334155);
-  transition: background 0.2s ease;
+  backface-visibility: hidden;
+  transform: translateZ(0);
+  will-change: transform, opacity;
+  transition: background-color 0.2s ease;
 }
 .compare-work-item + .compare-work-item {
   border-top: 1px solid var(--circle-border-soft, rgba(226, 232, 240, 0.7));
@@ -6309,6 +6425,22 @@ function getUploadBackgroundTargetLabel(task) {
 
   /* works-card padding 紧凑 */
   .works-card { padding: 12px; gap: 10px; }
+
+  .circle-complete-state {
+    min-height: 260px;
+    padding: 16px 10px;
+  }
+  .circle-complete-visual {
+    width: min(220px, 72vw);
+  }
+  .circle-complete-image {
+    max-width: min(220px, 72vw, 36vh);
+  }
+  .circle-complete-pill {
+    min-height: 24px;
+    padding: 0 9px;
+    font-size: 11px;
+  }
 
   /* 模板里的 Tailwind utility 包装：flex items-center justify-between 在 ≤640 改 column */
   .works-card > div.flex.items-center.justify-between {

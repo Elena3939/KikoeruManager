@@ -34,7 +34,6 @@
         :show-progress="showProgress"
         :should-show-step="shouldShowTaskMetaStep"
         :get-recovered-notice="getRecoveredNotice"
-        :get-task-summary="getTaskSummary"
         @select="(id) => (selectedItemId = id)"
         @quick-filter="applyQuickFilter"
         @prev-page="handlePrevPage"
@@ -186,6 +185,9 @@ const filteredItems = computed(() => {
   if (activeOnly.value) {
     next = next.filter((item) => ACTIVE_STATUSES.has(String(item?.status || '').trim()))
   }
+  if (sortKey.value === 'updated_desc') {
+    return next.map(withTaskSummaryPieces)
+  }
   next.sort((a, b) => {
     if (sortKey.value === 'created_desc') {
       return safeTimestamp(b?.created_at) - safeTimestamp(a?.created_at)
@@ -202,7 +204,7 @@ const filteredItems = computed(() => {
     }
     return safeTimestamp(b?.updated_at || b?.created_at) - safeTimestamp(a?.updated_at || a?.created_at)
   })
-  return next
+  return next.map(withTaskSummaryPieces)
 })
 
 const listDigest = computed(() => {
@@ -379,6 +381,30 @@ function scheduleTaskCenterStreamRefresh() {
   }, STREAM_REFRESH_DEBOUNCE_MS)
 }
 
+function isStructureChangingTaskCenterEvent(payload = {}) {
+  const reason = String(payload?.reason || '').trim().toLowerCase()
+  const status = String(payload?.status || '').trim().toLowerCase()
+  const structuralReasons = new Set([
+    'created',
+    'submitted',
+    'deleted',
+    'removed',
+    'cleanup',
+    'completed',
+    'failed',
+    'cancelled',
+    'canceled',
+    'waiting_manual',
+    'waiting_retry',
+    'status',
+    'action',
+  ])
+  return (
+    structuralReasons.has(reason) ||
+    ['completed', 'failed', 'cancelled', 'waiting_manual', 'waiting_retry', 'partial_failed'].includes(status)
+  )
+}
+
 function scheduleSelectedTaskDetailRefresh(itemId) {
   if (!itemId) return
   if (streamDetailTimer) clearTimeout(streamDetailTimer)
@@ -406,7 +432,9 @@ function handleTaskCenterStreamEvent(event) {
   if (selectedItemDetail.value) {
     selectedItemDetail.value = applyTaskCenterEventPatch(selectedItemDetail.value, payload)
   }
-  scheduleTaskCenterStreamRefresh()
+  if (isStructureChangingTaskCenterEvent(payload)) {
+    scheduleTaskCenterStreamRefresh()
+  }
 
   const selectedSummary = items.value.find((item) => item.id === selectedItemId.value)
   if (selectedSummary && (
@@ -414,7 +442,9 @@ function handleTaskCenterStreamEvent(event) {
     selectedSummary.engine_task_id === payload.engine_task_id ||
     selectedSummary.entity_id === payload.engine_task_id
   )) {
-    scheduleSelectedTaskDetailRefresh(selectedSummary.id)
+    if (isStructureChangingTaskCenterEvent(payload)) {
+      scheduleSelectedTaskDetailRefresh(selectedSummary.id)
+    }
   }
 }
 
@@ -438,13 +468,10 @@ async function refreshTaskCenter(showMessage = false, options = {}) {
     if (currentStatus.value !== 'all') params.status = currentStatus.value
     if (debouncedSearchQuery.value) params.search = debouncedSearchQuery.value
 
-    const [overviewData, listData] = await Promise.all([
-      taskCenterApi.overview({ _t: Date.now() }),
-      taskCenterApi.list(params),
-    ])
+    const listData = await taskCenterApi.list(params)
 
-    overviewHighlightCounts.value = overviewData?.highlight_counts || {}
-    overviewDomainCounts.value = overviewData?.counts_by_domain || {}
+    overviewHighlightCounts.value = listData?.highlight_counts || {}
+    overviewDomainCounts.value = listData?.counts_by_domain || {}
 
     const nextItems = Array.isArray(listData) ? listData : (listData?.items || [])
     items.value = nextItems
@@ -864,6 +891,14 @@ function getTaskSummary(item) {
   return dedupeSummaryPieces(pieces).slice(0, 6)
 }
 
+function withTaskSummaryPieces(item) {
+  if (!item) return item
+  return {
+    ...item,
+    summaryPieces: getTaskSummary(item),
+  }
+}
+
 function mapFilteredItems(item) {
   const details = item?.details || {}
   const metadata = details.metadata || {}
@@ -933,8 +968,69 @@ function mapFileTreeItems(item) {
   })).filter((row) => row.relative_path || row.name)
 }
 
+let fileTreeCacheSignature = ''
+let fileTreeCacheResult = []
+
+function buildFileTreeArraySignature(rows) {
+  if (!Array.isArray(rows) || !rows.length) return '0'
+  let checksum = 0
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index] || {}
+    const text = [
+      row.relative_path,
+      row.path,
+      row.name,
+      row.status,
+      row.type,
+      row.size,
+      row.size_bytes,
+    ].join('|')
+    for (let i = 0; i < text.length; i += 1) {
+      checksum = ((checksum * 31) + text.charCodeAt(i)) >>> 0
+    }
+  }
+  return `${rows.length}:${checksum}`
+}
+
+function buildFileTreeExpandedSignature() {
+  const entries = Object.entries(treeExpandedState.value || {})
+    .filter(([, value]) => value !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+  if (!entries.length) return ''
+  return entries.map(([key, value]) => `${key}:${value ? 1 : 0}`).join(',')
+}
+
+function buildFileTreeCacheSignature(item) {
+  if (!item) return ''
+  const metadata = item?.details?.metadata || {}
+  return [
+    item.id || '',
+    treeFilterMode.value || 'all',
+    buildFileTreeExpandedSignature(),
+    metadata.file_tree_root_label || '',
+    metadata.final_output_path || '',
+    metadata.output_path || '',
+    metadata.target_path || '',
+    metadata.folder_path || '',
+    item.output_path || '',
+    item.target_path || '',
+    item.source_path || '',
+    buildFileTreeArraySignature(metadata.file_tree_items),
+    buildFileTreeArraySignature(metadata.upload_files),
+    buildFileTreeArraySignature(metadata.uploaded_files),
+    buildFileTreeArraySignature(metadata.download_files),
+    buildFileTreeArraySignature(metadata.filtered_items),
+    buildFileTreeArraySignature(metadata.filtered_files),
+    buildFileTreeArraySignature(metadata.filtered_dirs),
+  ].join('||')
+}
+
 function buildTaskFileTreeSections(item) {
   if (!item) return []
+  const cacheSignature = buildFileTreeCacheSignature(item)
+  if (cacheSignature && cacheSignature === fileTreeCacheSignature) {
+    return fileTreeCacheResult
+  }
   const metadata = item?.details?.metadata || {}
   const removedItems = mapFilteredItems(item)
   const sourceItems = []
@@ -951,7 +1047,11 @@ function buildTaskFileTreeSections(item) {
   } else if (Array.isArray(metadata.download_files) && metadata.download_files.length) {
     sourceItems.push(...mapDownloadFiles(item))
   }
-  if (!sourceItems.length && !removedItems.length) return []
+  if (!sourceItems.length && !removedItems.length) {
+    fileTreeCacheSignature = cacheSignature
+    fileTreeCacheResult = []
+    return fileTreeCacheResult
+  }
 
   const mergedMap = new Map()
   for (const current of sourceItems) {
@@ -997,7 +1097,9 @@ function buildTaskFileTreeSections(item) {
     directoryKeys: directoryKeyList,
     allExpanded,
   }
-  return section.rows.length ? [section] : []
+  fileTreeCacheSignature = cacheSignature
+  fileTreeCacheResult = section.rows.length ? [section] : []
+  return fileTreeCacheResult
 }
 
 const selectedItemFileTreeSections = computed(() => buildTaskFileTreeSections(selectedItem.value))

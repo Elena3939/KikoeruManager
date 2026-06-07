@@ -104,81 +104,96 @@
           :style="{ width: navWidth + 'px' }"
         >
           <div class="nav-section-title px-4 pt-3 pb-1">远程库存目录</div>
-          <div class="nav-scroll flex-1 min-h-0 overflow-y-auto no-scrollbar pb-3">
-            <ul class="nav-tree">
-              <li class="nav-item">
-                <div
-                  class="nav-row"
-                  :class="{
-                    'nav-row-active': normalizePath(currentPath) === normalizePath(rootPath)
-                  }"
-                  :style="{ paddingLeft: '12px' }"
-                  @click="navigateToPath(rootPath)"
-                  :title="rootPath"
-                >
-                  <button
-                    type="button"
-                    class="nav-expander"
-                    :disabled="loading || submitting"
-                    @click.stop="toggleRootExpand"
+          <div ref="navScrollRef" class="nav-scroll flex-1 min-h-0 overflow-y-auto no-scrollbar pb-3">
+            <div class="nav-virtual-canvas" :style="navVirtualCanvasStyle">
+              <div
+                v-for="virtualRow in navVirtualRows"
+                :key="virtualRow.key"
+                class="nav-virtual-row"
+                :style="{ transform: `translateY(${virtualRow.start}px)` }"
+              >
+                <template v-if="flattenedNavRows[virtualRow.index]">
+                  <div
+                    v-if="flattenedNavRows[virtualRow.index].type === 'root'"
+                    class="nav-row"
+                    :class="{
+                      'nav-row-active': normalizedCurrentPath === normalizedRootPath
+                    }"
+                    :style="{ paddingLeft: '12px' }"
+                    @click="navigateToPath(rootPath)"
+                    :title="rootPath"
                   >
-                    <ChevronDown
-                      v-if="navTreeState.rootExpanded"
-                      :size="14"
-                      :stroke-width="2.2"
-                      class="text-slate-400"
-                    />
-                    <ChevronRight
-                      v-else
-                      :size="14"
-                      :stroke-width="2.2"
-                      class="text-slate-400"
-                    />
-                  </button>
-                  <HardDrive :size="14" :stroke-width="2.2" class="nav-disk-icon" />
-                  <span class="nav-row-name">{{ library?.name || '库存根' }}</span>
-                </div>
-
-                <ul v-if="navTreeState.rootExpanded" class="nav-children">
-                  <li
-                    v-if="navTreeState.rootLoading"
-                    class="nav-row-meta"
-                    style="padding-left: 32px"
-                  >
-                    <Loader2 :size="12" :stroke-width="2.2" class="animate-spin text-slate-400" />
-                    <span>加载中...</span>
-                  </li>
-                  <li
-                    v-else-if="navTreeState.rootError"
-                    class="nav-row-meta nav-row-meta-error"
-                    style="padding-left: 32px"
-                  >
-                    {{ navTreeState.rootError }}
-                  </li>
-                  <template v-else>
-                    <RemoteFolderPickerNavNode
-                      v-for="child in (navTreeState.rootChildren || [])"
-                      :key="child.path"
-                      :node="child"
-                      :depth="1"
-                      :tree-state="navTreeState"
-                      :current-path="currentPath"
-                      :loading="loading"
-                      :submitting="submitting"
-                      @navigate="navigateToPath"
-                      @toggle="toggleNodeExpand"
-                    />
-                    <li
-                      v-if="navTreeState.rootChildren && !navTreeState.rootChildren.length"
-                      class="nav-row-meta"
-                      style="padding-left: 32px"
+                    <button
+                      type="button"
+                      class="nav-expander"
+                      :disabled="loading || submitting"
+                      @click.stop="toggleRootExpand"
                     >
-                      <span>（空）</span>
-                    </li>
-                  </template>
-                </ul>
-              </li>
-            </ul>
+                      <ChevronDown
+                        v-if="navTreeState.rootExpanded"
+                        :size="14"
+                        :stroke-width="2.2"
+                        class="text-slate-400"
+                      />
+                      <ChevronRight
+                        v-else
+                        :size="14"
+                        :stroke-width="2.2"
+                        class="text-slate-400"
+                      />
+                    </button>
+                    <HardDrive :size="14" :stroke-width="2.2" class="nav-disk-icon" />
+                    <span class="nav-row-name">{{ library?.name || '库存根' }}</span>
+                  </div>
+
+                  <div
+                    v-else-if="flattenedNavRows[virtualRow.index].type === 'folder'"
+                    class="nav-row"
+                    :class="{ 'nav-row-active': flattenedNavRows[virtualRow.index].normalizedPath === normalizedCurrentPath }"
+                    :style="{ paddingLeft: `${flattenedNavRows[virtualRow.index].depth * 14 + 12}px` }"
+                    :title="flattenedNavRows[virtualRow.index].path"
+                    @click="navigateToPath(flattenedNavRows[virtualRow.index].path)"
+                  >
+                    <button
+                      type="button"
+                      class="nav-expander"
+                      :disabled="loading || submitting"
+                      @click.stop="toggleNodeExpand(flattenedNavRows[virtualRow.index].path)"
+                    >
+                      <ChevronDown
+                        v-if="flattenedNavRows[virtualRow.index].expanded"
+                        :size="13"
+                        :stroke-width="2.2"
+                        class="text-slate-400"
+                      />
+                      <ChevronRight
+                        v-else
+                        :size="13"
+                        :stroke-width="2.2"
+                        class="text-slate-400"
+                      />
+                    </button>
+                    <Folder :size="13" :stroke-width="2.2" class="nav-folder-icon" />
+                    <span class="nav-row-name">{{ flattenedNavRows[virtualRow.index].name }}</span>
+                  </div>
+
+                  <div
+                    v-else
+                    class="nav-row-meta"
+                    :class="{ 'nav-row-meta-error': flattenedNavRows[virtualRow.index].error }"
+                    :style="{ paddingLeft: `${flattenedNavRows[virtualRow.index].depth * 14 + 18}px` }"
+                  >
+                    <Loader2
+                      v-if="flattenedNavRows[virtualRow.index].loading"
+                      :size="12"
+                      :stroke-width="2.2"
+                      class="animate-spin text-slate-400"
+                    />
+                    <span>{{ flattenedNavRows[virtualRow.index].label }}</span>
+                  </div>
+                </template>
+              </div>
+            </div>
           </div>
         </aside>
 
@@ -352,12 +367,14 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { useVirtualizer } from '@tanstack/vue-virtual'
 import {
   AlertCircle,
   ArrowRight,
   ArrowUp,
   ChevronDown,
   ChevronRight,
+  Folder,
   HardDrive,
   Loader2,
   RefreshCw,
@@ -367,7 +384,6 @@ import {
 import { ElMessage } from 'element-plus'
 
 import { libraryApi } from '../../api'
-import RemoteFolderPickerNavNode from './RemoteFolderPickerNavNode.vue'
 import AppEmptyState from './AppEmptyState.vue'
 import { classifyLibraryEntryKind, libraryEntryMetaFor } from '../library/_libraryFileKind.js'
 
@@ -400,6 +416,7 @@ const error = ref('')
 const selectedFolderPath = ref('')
 const searchKeyword = ref('')
 const listScrollRef = ref(null)
+const navScrollRef = ref(null)
 
 // 索引搜索状态：keyword 非空时改用全库搜索（索引 + 文件系统兜底）替代当前目录的 folders
 const indexResults = ref([])
@@ -427,6 +444,8 @@ const navTreeState = reactive({
   rootError: '',
   nodes: {} // path -> { expanded, children, loading, error }
 })
+
+const NAV_ROW_HEIGHT = 39
 
 // ---------------- 计算属性 ----------------
 
@@ -460,6 +479,45 @@ const breadcrumbs = computed(() => {
 // 是否处于「索引搜索」模式（搜索框非空）。
 // 此时 list 数据源切换为索引返回的全库结果（含深层目录），不再只看当前目录子项。
 const inIndexSearchMode = computed(() => String(searchKeyword.value || '').trim().length > 0)
+
+const normalizedCurrentPath = computed(() => normalizePath(currentPath.value))
+const normalizedRootPath = computed(() => normalizePath(rootPath.value))
+
+const flattenedNavRows = computed(() => {
+  const rows = [{
+    type: 'root',
+    key: `root:${rootPath.value || library.value?.id || 'root'}`,
+    path: rootPath.value,
+    normalizedPath: normalizedRootPath.value,
+    depth: 0
+  }]
+  if (!navTreeState.rootExpanded) return rows
+  if (navTreeState.rootLoading) {
+    rows.push({ type: 'meta', key: 'root:loading', depth: 1, label: '加载中...', loading: true })
+    return rows
+  }
+  if (navTreeState.rootError) {
+    rows.push({ type: 'meta', key: 'root:error', depth: 1, label: navTreeState.rootError, error: true })
+    return rows
+  }
+  appendNavChildrenRows(rows, navTreeState.rootChildren || [], 1)
+  if (navTreeState.rootChildren && !navTreeState.rootChildren.length) {
+    rows.push({ type: 'meta', key: 'root:empty', depth: 1, label: '（空）' })
+  }
+  return rows
+})
+
+const navRowVirtualizer = useVirtualizer(computed(() => ({
+  count: flattenedNavRows.value.length,
+  getScrollElement: () => navScrollRef.value,
+  estimateSize: () => NAV_ROW_HEIGHT,
+  overscan: 12,
+})))
+
+const navVirtualRows = computed(() => navRowVirtualizer.value.getVirtualItems())
+const navVirtualCanvasStyle = computed(() => ({
+  height: `${navRowVirtualizer.value.getTotalSize()}px`
+}))
 
 const filteredFolders = computed(() => {
   const source = inIndexSearchMode.value ? indexResults.value : folders.value
@@ -746,7 +804,6 @@ async function initFromProps () {
   }
   const initialAbsolute = resolveInitialAbsolutePath()
   await loadFolders(initialAbsolute || '')
-  // 加载左侧根节点子项
   navTreeState.rootExpanded = true
   await loadNavRoot()
 }
@@ -843,7 +900,7 @@ async function loadNavRoot () {
   try {
     const data = await libraryApi.browserListFolders(library.value.id, '', { includeFiles: false })
     if (data?.browse_root_path) rootPath.value = data.browse_root_path
-    navTreeState.rootChildren = (data?.folders || []).map(item => ({ name: item.name, path: item.path }))
+    navTreeState.rootChildren = normalizeNavChildren(data?.folders || [])
   } catch (err) {
     navTreeState.rootError = err?.response?.data?.detail || err?.message || '读取目录失败'
     navTreeState.rootChildren = []
@@ -859,7 +916,7 @@ async function loadNavChildrenForPath (path) {
   node.error = ''
   try {
     const data = await libraryApi.browserListFolders(library.value.id, path, { includeFiles: false })
-    node.children = (data?.folders || []).map(item => ({ name: item.name, path: item.path }))
+    node.children = normalizeNavChildren(data?.folders || [])
   } catch (err) {
     node.error = err?.response?.data?.detail || err?.message || '读取目录失败'
     node.children = []
@@ -870,16 +927,62 @@ async function loadNavChildrenForPath (path) {
 
 function ensureNodeEntry (path) {
   if (!navTreeState.nodes[path]) {
-    navTreeState.nodes[path] = { expanded: false, children: null, loading: false, error: '' }
+    navTreeState.nodes[path] = {
+      expanded: false,
+      children: null,
+      loading: false,
+      error: '',
+      normalizedPath: normalizePath(path)
+    }
   }
   return navTreeState.nodes[path]
 }
 
+function normalizeNavChildren (list) {
+  return (Array.isArray(list) ? list : [])
+    .filter(item => item?.is_directory !== false)
+    .map(item => ({
+      name: item?.name || '',
+      path: item?.path || '',
+      normalizedPath: normalizePath(item?.path || '')
+    }))
+    .filter(item => item.path)
+}
+
+function appendNavChildrenRows (rows, children, depth) {
+  for (const child of children || []) {
+    const state = navTreeState.nodes[child.path] || null
+    const expanded = Boolean(state?.expanded)
+    rows.push({
+      type: 'folder',
+      key: child.path,
+      name: child.name,
+      path: child.path,
+      normalizedPath: child.normalizedPath || normalizePath(child.path),
+      depth,
+      expanded
+    })
+    if (!expanded) continue
+    if (state?.loading) {
+      rows.push({ type: 'meta', key: `${child.path}:loading`, depth: depth + 1, label: '加载中...', loading: true })
+      continue
+    }
+    if (state?.error) {
+      rows.push({ type: 'meta', key: `${child.path}:error`, depth: depth + 1, label: state.error, error: true })
+      continue
+    }
+    if (Array.isArray(state?.children)) {
+      appendNavChildrenRows(rows, state.children, depth + 1)
+      if (!state.children.length) {
+        rows.push({ type: 'meta', key: `${child.path}:empty`, depth: depth + 1, label: '（空）' })
+      }
+    }
+  }
+}
+
 function syncNavTreeFromLoad (path, root, list) {
   if (!path || !root) return
-  const dirsOnly = (list || [])
-    .filter(item => item?.is_directory !== false)
-    .map(item => ({ name: item.name, path: item.path }))
+  const dirsOnly = normalizeNavChildren(list)
   if (normalizePath(path) === normalizePath(root)) {
     navTreeState.rootChildren = dirsOnly
     navTreeState.rootExpanded = true
@@ -1348,13 +1451,23 @@ onBeforeUnmount(() => {
   color: #94a3b8;
 }
 
-.nav-tree {
-  list-style: none;
-  margin: 0;
-  padding: 0 6px;
+.nav-scroll {
+  padding-left: 6px;
+  padding-right: 6px;
+  contain: strict;
 }
 
-.nav-item { list-style: none; }
+.nav-virtual-canvas {
+  position: relative;
+  width: 100%;
+}
+
+.nav-virtual-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
 
 .nav-row {
   display: flex;
@@ -1413,18 +1526,19 @@ onBeforeUnmount(() => {
 
 .nav-row-active .nav-disk-icon { color: #475569; }
 
+.nav-folder-icon {
+  color: #f59e0b;
+  fill: currentColor;
+  stroke: currentColor;
+  flex-shrink: 0;
+}
+
 .nav-row-name {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.nav-children {
-  list-style: none;
-  margin: 0;
-  padding: 0;
 }
 
 .nav-row-meta {

@@ -115,10 +115,16 @@ let visibilityBound = false
 let lastConflictRefreshTime = 0
 let cachedConflictCount = 0
 let streamRefreshTimer = null
+let archiveStreamRefreshTimer = null
 let lastTaskCenterStreamEventAt = 0
 const CONFLICT_REFRESH_INTERVAL = 30000
 const STREAM_REFRESH_DEBOUNCE_MS = 500
+const ARCHIVE_STREAM_REFRESH_DEBOUNCE_MS = 350
 const FALLBACK_POLL_INTERVAL_MS = 30000
+const STREAM_FULL_REFRESH_MIN_INTERVAL_MS = 2500
+const DASHBOARD_ARCHIVE_LIMIT = 120
+let lastTaskCenterFullRefreshAt = 0
+let archivesRequestId = 0
 
 const domainCounts = computed(() => ({
   import: Number(taskCenterOverview.value?.counts_by_domain?.import || 0),
@@ -149,6 +155,20 @@ const kpiCards = computed(() => [
 
 const statusCards = computed(() => [
   { key: 'processing', label: '处理中', value: Number(taskCenterOverview.value?.highlight_counts?.processing || 0) },
+  {
+    key: 'waiting_total',
+    label: '等待中',
+    value: Number(
+      taskCenterOverview.value?.highlight_counts?.waiting_total
+      ?? (
+        Number(taskCenterOverview.value?.counts_by_status?.pending || 0)
+        + Number(taskCenterOverview.value?.counts_by_status?.paused || 0)
+        + Number(taskCenterOverview.value?.counts_by_status?.waiting_manual || 0)
+        + Number(taskCenterOverview.value?.counts_by_status?.waiting_retry || 0)
+      )
+    ),
+  },
+  { key: 'completed', label: '已完成', value: Number(taskCenterOverview.value?.highlight_counts?.completed || taskCenterOverview.value?.counts_by_status?.completed || 0) },
   { key: 'waiting', label: '等待人工', value: Number(taskCenterOverview.value?.highlight_counts?.waiting_manual || 0) },
   { key: 'retry', label: '等待重试', value: Number(taskCenterOverview.value?.highlight_counts?.waiting_retry || 0) },
   { key: 'failed', label: '失败', value: Number(taskCenterOverview.value?.highlight_counts?.failed || 0) },
@@ -427,6 +447,10 @@ function unbindTaskCenterStreamEvents() {
     clearTimeout(streamRefreshTimer)
     streamRefreshTimer = null
   }
+  if (archiveStreamRefreshTimer) {
+    clearTimeout(archiveStreamRefreshTimer)
+    archiveStreamRefreshTimer = null
+  }
 }
 
 function scheduleDashboardStreamRefresh() {
@@ -434,8 +458,19 @@ function scheduleDashboardStreamRefresh() {
   if (streamRefreshTimer) clearTimeout(streamRefreshTimer)
   streamRefreshTimer = setTimeout(() => {
     streamRefreshTimer = null
+    const now = Date.now()
+    if (now - lastTaskCenterFullRefreshAt < STREAM_FULL_REFRESH_MIN_INTERVAL_MS) return
     refreshData({ silent: true })
   }, STREAM_REFRESH_DEBOUNCE_MS)
+}
+
+function scheduleArchiveStreamRefresh() {
+  if (!dashboardViewActive) return
+  if (archiveStreamRefreshTimer) clearTimeout(archiveStreamRefreshTimer)
+  archiveStreamRefreshTimer = setTimeout(() => {
+    archiveStreamRefreshTimer = null
+    fetchProcessedArchives({ silent: true })
+  }, ARCHIVE_STREAM_REFRESH_DEBOUNCE_MS)
 }
 
 function patchDashboardTaskOverview(payload) {
@@ -451,8 +486,13 @@ function handleTaskCenterStreamEvent(event) {
   const payload = event?.detail || {}
   if (!payload?.type) return
   lastTaskCenterStreamEventAt = Date.now()
+  if (payload.type === 'processed_archive_changed') {
+    scheduleArchiveStreamRefresh()
+    return
+  }
   if (payload.type === 'connected') {
     refreshData({ silent: true })
+    fetchProcessedArchives({ silent: true })
     return
   }
   if (payload.type !== 'task_center_changed') return
@@ -482,21 +522,26 @@ async function refreshData(options = {}) {
   const currentRequestId = ++refreshRequestId
   if (!silent) loading.value = true
   try {
-    const overview = await taskCenterApi.overview({ _t: Date.now() })
-    if (currentRequestId !== refreshRequestId) return
-    taskCenterOverview.value = overview || taskCenterOverview.value
-
     const now = Date.now()
     const shouldRefreshConflicts =
       forceConflictRefresh || !lastConflictRefreshTime || now - lastConflictRefreshTime >= CONFLICT_REFRESH_INTERVAL
-    if (shouldRefreshConflicts) {
-      try {
-        const data = await conflictApi.count()
-        cachedConflictCount = Number(data?.count || 0)
-        lastConflictRefreshTime = now
-      } catch (error) {
-        console.error('获取问题作品数量失败:', error)
-      }
+
+    const overviewPromise = taskCenterApi.overview({ _t: now })
+    const conflictCountPromise = shouldRefreshConflicts
+      ? conflictApi.count().catch((error) => {
+          console.error('获取问题作品数量失败:', error)
+          return null
+        })
+      : Promise.resolve(null)
+
+    const [overview, conflictCount] = await Promise.all([overviewPromise, conflictCountPromise])
+    if (currentRequestId !== refreshRequestId) return
+    taskCenterOverview.value = overview || taskCenterOverview.value
+    lastTaskCenterFullRefreshAt = Date.now()
+
+    if (conflictCount) {
+      cachedConflictCount = Number(conflictCount?.count || 0)
+      lastConflictRefreshTime = now
     }
 
     stats.value = {
@@ -567,6 +612,7 @@ async function fetchWatcherStatus() {
 
 async function fetchProcessedArchives(options = {}) {
   const { silent = false, scan = false } = options
+  const currentRequestId = ++archivesRequestId
   archivesLoading.value = true
   try {
     if (scan) {
@@ -575,11 +621,12 @@ async function fetchProcessedArchives(options = {}) {
     const params = {
       sort_by: archiveSortBy.value,
       sort_order: archiveSortOrder.value,
-      limit: 500,
+      limit: DASHBOARD_ARCHIVE_LIMIT,
       offset: 0,
     }
     if (archiveSearchQuery.value) params.search = archiveSearchQuery.value
     const data = await processedArchiveApi.list(params)
+    if (currentRequestId !== archivesRequestId) return
     archives.value = data?.archives || []
     archiveTotal.value = Number(data?.total || archives.value.length)
     if (!silent) ElMessage.success('刷新成功')
@@ -587,7 +634,9 @@ async function fetchProcessedArchives(options = {}) {
     console.error('获取已处理压缩包列表失败:', error)
     if (!silent) ElMessage.error('获取已处理压缩包列表失败')
   } finally {
-    archivesLoading.value = false
+    if (currentRequestId === archivesRequestId) {
+      archivesLoading.value = false
+    }
   }
 }
 

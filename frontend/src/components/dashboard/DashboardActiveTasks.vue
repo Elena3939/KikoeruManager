@@ -22,7 +22,7 @@
     <!-- 状态 summary chips（合并自 DashboardStatusPanel） -->
     <div
       v-if="statusCards.length"
-      class="mt-2.5 grid flex-shrink-0 grid-cols-2 gap-1.5 sm:grid-cols-4"
+      class="mt-2.5 grid flex-shrink-0 grid-cols-2 gap-1.5 sm:grid-cols-3 xl:grid-cols-6"
     >
       <div
         v-for="item in statusCards"
@@ -48,7 +48,7 @@
     <!-- 任务列表 -->
     <div v-if="tasks.length" class="mt-3 flex flex-1 flex-col gap-2 overflow-auto">
       <article
-        v-for="(task, index) in tasks"
+        v-for="(task, index) in pagedTasks"
         :key="task.id"
         class="dash-fade-up group grid grid-cols-[40px_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-0 rounded-[10px] border border-slate-100 bg-white p-3 transition-colors duration-300 hover:border-slate-200 hover:bg-slate-50/50"
         :style="{ animationDelay: `${index * 40}ms` }"
@@ -112,6 +112,43 @@
       <AppEmptyState description="当前没有需要关注的任务" size="default" />
     </div>
 
+    <div
+      v-if="tasks.length && totalPages > 1"
+      class="dash-task-pager mt-2.5 flex flex-shrink-0 items-center justify-between gap-2 border-t border-slate-100 pt-2.5"
+    >
+      <span class="text-[11px] font-medium tracking-wide text-slate-400">
+        共 <b class="text-slate-700 tabular-nums">{{ tasks.length }}</b> 条任务
+      </span>
+
+      <div class="flex items-center gap-1">
+        <button
+          type="button"
+          class="dash-task-pager-btn group"
+          :disabled="internalPage <= 1"
+          aria-label="上一页任务"
+          @click="goPrevPage"
+        >
+          <ChevronLeft :size="12" :stroke-width="2.4" class="transition-transform duration-300 group-hover:-translate-x-0.5" />
+        </button>
+
+        <div class="dash-task-pager-indicator">
+          <span class="dash-task-pager-current">{{ internalPage }}</span>
+          <span class="dash-task-pager-divider">/</span>
+          <span class="dash-task-pager-total">{{ totalPages }}</span>
+        </div>
+
+        <button
+          type="button"
+          class="dash-task-pager-btn group"
+          :disabled="internalPage >= totalPages"
+          aria-label="下一页任务"
+          @click="goNextPage"
+        >
+          <ChevronRight :size="12" :stroke-width="2.4" class="transition-transform duration-300 group-hover:translate-x-0.5" />
+        </button>
+      </div>
+    </div>
+
     <Teleport to="body">
       <div
         v-if="taskActionMenu.visible"
@@ -152,14 +189,14 @@
 </template>
 
 <script setup>
-import { nextTick, onBeforeUnmount, ref } from 'vue'
-import { Activity, ArrowRight, MoreVertical, PauseCircle, PlayCircle, RotateCcw, RotateCw, Trash2, XCircle } from 'lucide-vue-next'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { Activity, ArrowRight, CheckCircle2, ChevronLeft, ChevronRight, Clock3, MoreVertical, PauseCircle, PlayCircle, RotateCcw, RotateCw, Trash2, XCircle } from 'lucide-vue-next'
 import AppEmptyState from '../common/AppEmptyState.vue'
 import StatusPill from './StatusPill.vue'
 import { getTaskDomainMeta } from '../common/taskDomainMeta.js'
 import { getHttpDownloadDisplayMeta } from '../common/httpDownloadPlatformMeta.js'
 
-defineProps({
+const props = defineProps({
   tasks: { type: Array, default: () => [] },
   statusCards: { type: Array, default: () => [] },
 })
@@ -168,8 +205,10 @@ const emit = defineEmits(['go', 'action'])
 
 const MENU_WIDTH = 200
 const MENU_PADDING = 12
+const PAGE_SIZE = 6
 
 const taskActionMenuPanel = ref(null)
+const internalPage = ref(1)
 const taskActionMenu = ref({
   visible: false,
   x: 0,
@@ -179,6 +218,8 @@ const taskActionMenu = ref({
 
 const STATUS_ICON_MAP = {
   processing: Activity,
+  waiting_total: Clock3,
+  completed: CheckCircle2,
   waiting: PauseCircle,
   retry: RotateCw,
   failed: XCircle,
@@ -208,6 +249,43 @@ const ACTION_LABEL_MAP = {
   open_route: '查看处理',
   open_tasks: '查看任务详情',
   open_subtitle_import: '前往字幕补配',
+}
+
+const totalPages = computed(() => {
+  const total = Array.isArray(props.tasks) ? props.tasks.length : 0
+  return Math.max(1, Math.ceil(total / PAGE_SIZE))
+})
+
+const pagedTasks = computed(() => {
+  const list = Array.isArray(props.tasks) ? props.tasks : []
+  const safePage = Math.min(Math.max(1, internalPage.value), totalPages.value)
+  const start = (safePage - 1) * PAGE_SIZE
+  return list.slice(start, start + PAGE_SIZE)
+})
+
+watch(
+  () => props.tasks.map((task) => task?.id || '').join('|'),
+  () => {
+    if (internalPage.value > totalPages.value) internalPage.value = totalPages.value
+    if (internalPage.value < 1) internalPage.value = 1
+  }
+)
+
+watch(totalPages, (max) => {
+  if (internalPage.value > max) internalPage.value = max
+  if (internalPage.value < 1) internalPage.value = 1
+})
+
+function goPrevPage() {
+  if (internalPage.value <= 1) return
+  closeTaskActionMenu()
+  internalPage.value -= 1
+}
+
+function goNextPage() {
+  if (internalPage.value >= totalPages.value) return
+  closeTaskActionMenu()
+  internalPage.value += 1
 }
 
 function taskHasActions(task) {
@@ -381,25 +459,27 @@ function actionIconClass(action) {
 }
 
 function showProgress(task) {
-  return ['processing', 'pending', 'paused', 'waiting_retry'].includes(task?.status)
+  return ['processing', 'pending', 'paused', 'waiting_retry'].includes(effectiveStatus(task))
 }
 
 function statusClass(task) {
-  return String(task?.status || 'default')
+  return effectiveStatus(task) || 'default'
 }
 
 function statusLabel(task) {
-  if (String(task?.status || '').toLowerCase() === 'cancelled' || task?.error_message === '用户取消') return '已取消'
+  const status = effectiveStatus(task)
+  if (status === 'cancelled' || task?.error_message === '用户取消') return '已取消'
+  if (status === 'completed') return '已完成'
   return task?.status_label || task?.status || '-'
 }
 
 function isTerminalStatus(task) {
-  const s = String(task?.status || '').toLowerCase()
+  const s = effectiveStatus(task)
   return ['completed', 'success', 'finished', 'failed', 'error', 'cancelled', 'canceled'].includes(s)
 }
 
 function stepChipClass(task) {
-  const s = String(task?.status || '').toLowerCase()
+  const s = effectiveStatus(task)
   if (['completed', 'success', 'finished'].includes(s)) return 'bg-emerald-50 text-emerald-700'
   if (['failed', 'error'].includes(s)) return 'bg-rose-50 text-rose-700'
   if (['cancelled', 'canceled'].includes(s)) return 'bg-slate-100 text-slate-500'
@@ -408,12 +488,21 @@ function stepChipClass(task) {
   return 'bg-slate-50 text-slate-500'
 }
 
+function effectiveStatus(task) {
+  const status = String(task?.status || '').toLowerCase()
+  const progress = Number(task?.progress || 0)
+  if (['processing', 'running'].includes(status) && progress >= 100) return 'completed'
+  return status
+}
+
 function statusIconFor(key) {
   return STATUS_ICON_MAP[key] || Activity
 }
 
 function statusIconColor(key) {
   if (key === 'processing') return 'text-amber-500'
+  if (key === 'waiting_total') return 'text-indigo-500'
+  if (key === 'completed') return 'text-emerald-500'
   if (key === 'waiting') return 'text-slate-400'
   if (key === 'retry') return 'text-orange-500'
   if (key === 'failed') return 'text-rose-500'
@@ -427,6 +516,8 @@ function statusValueColor(key, value) {
   if (key === 'failed') return 'text-rose-600'
   if (key === 'cancelled') return 'text-slate-500'
   if (key === 'processing') return 'text-amber-600'
+  if (key === 'waiting_total') return 'text-indigo-600'
+  if (key === 'completed') return 'text-emerald-600'
   if (key === 'waiting') return 'text-slate-600'
   if (key === 'retry') return 'text-orange-600'
   return 'text-slate-800'
@@ -439,6 +530,56 @@ function formatRJ(value) {
   return match ? `RJ${match[1]}` : text
 }
 </script>
+
+<style scoped>
+:global(html.kikoerumanager-dark [data-section="dashboard-tasks"]) {
+  background: #101012 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: #f8fafc !important;
+  box-shadow: 0 22px 58px rgba(0, 0, 0, 0.46), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+}
+
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"]) {
+  background: #101012 !important;
+  background-color: #101012 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: #f8fafc !important;
+}
+
+:global(html.kikoerumanager-dark [data-section="dashboard-tasks"] .border-dashed),
+:global(html.kikoerumanager-dark [data-section="dashboard-tasks"] .bg-white),
+:global(html.kikoerumanager-dark [data-section="dashboard-tasks"] .bg-slate-50),
+:global(html.kikoerumanager-dark [data-section="dashboard-tasks"] .bg-slate-100),
+:global(html.kikoerumanager-dark [data-section="dashboard-tasks"] [class*="bg-blue-50"]),
+:global(html.kikoerumanager-dark [data-section="dashboard-tasks"] [class*="bg-sky-50"]),
+:global(html.kikoerumanager-dark [data-section="dashboard-tasks"] [class*="bg-indigo-50"]),
+:global(html.kikoerumanager-dark [data-section="dashboard-tasks"] [class*="bg-violet-50"]) {
+  background: #17181b !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: #e2e8f0 !important;
+}
+
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] :is(.border-dashed, .bg-white, .bg-slate-50, .bg-slate-100, [class*="bg-blue-50"], [class*="bg-sky-50"], [class*="bg-indigo-50"], [class*="bg-violet-50"])) {
+  background: #17181b !important;
+  background-color: #17181b !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: #e2e8f0 !important;
+}
+
+:global(html.kikoerumanager-dark [data-section="dashboard-tasks"] .border-dashed) {
+  background: #101012 !important;
+}
+
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .border-dashed) {
+  background: #101012 !important;
+  background-color: #101012 !important;
+  background-image: none !important;
+}
+</style>
 
 <style scoped>
 .dash-fade-up {
@@ -466,6 +607,73 @@ function formatRJ(value) {
   border: 0;
   box-shadow: none;
   color: inherit;
+}
+
+.dash-task-pager-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid rgb(226 232 240);
+  border-radius: 7px;
+  background: #ffffff;
+  color: rgb(71 85 105);
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.dash-task-pager-btn:hover {
+  transform: translateY(-2px) scale(1.02);
+  border-color: rgb(15 23 42);
+  background: rgb(15 23 42);
+  color: #ffffff;
+  box-shadow: 0 4px 10px -4px rgba(15, 23, 42, 0.4);
+}
+
+.dash-task-pager-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.dash-task-pager-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.dash-task-pager-indicator {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 7px;
+  background: rgb(248 250 252);
+  border: 1px solid rgb(241 245 249);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+.dash-task-pager-current {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgb(15 23 42);
+  line-height: 1;
+}
+
+.dash-task-pager-divider {
+  font-size: 10px;
+  color: rgb(203 213 225);
+  margin: 0 1px;
+}
+
+.dash-task-pager-total {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: rgb(100 116 139);
+  line-height: 1;
 }
 
 .dash-task-action-menu {
@@ -573,6 +781,52 @@ function formatRJ(value) {
   background: rgba(255, 255, 255, 0.08) !important;
   border-color: rgba(255, 255, 255, 0.12) !important;
   color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark) .dash-task-pager {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: #e5e7eb !important;
+}
+
+:global(html.kikoerumanager-dark) .dash-task-pager b {
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark) .dash-task-pager-indicator {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  color: #f8fafc !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
+}
+
+:global(html.kikoerumanager-dark) .dash-task-pager-current,
+:global(html.kikoerumanager-dark) .dash-task-pager-total {
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark) .dash-task-pager-divider {
+  color: rgba(255, 255, 255, 0.48) !important;
+}
+
+:global(html.kikoerumanager-dark) .dash-task-pager-btn {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #e5e7eb !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .dash-task-pager-btn:hover {
+  background: rgba(255, 255, 255, 0.11) !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark) .dash-task-pager-btn:disabled {
+  background: rgba(255, 255, 255, 0.035) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  color: rgba(255, 255, 255, 0.42) !important;
 }
 
 :global(html.kikoerumanager-dark) .dash-task-action-menu {

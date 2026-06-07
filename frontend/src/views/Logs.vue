@@ -327,7 +327,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, shallowRef, triggerRef, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import {
   Terminal,
   Copy,
@@ -353,7 +353,7 @@ import SystemLogTerminal from '../components/common/SystemLogTerminal.vue'
 import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 
 const LOG_PREVIEW_LIMIT = 900
-const LOG_FLUSH_INTERVAL = 120
+const LOG_FLUSH_INTERVAL = 48
 const LOG_STREAM_RECONNECT_MS = 2500
 const COMPACT_PROCESS_LOGS_KEY = 'kikoerumanager.logs.compact_process_noise'
 const TASK_PROGRESS_STALE_MS = 2 * 60 * 1000
@@ -899,7 +899,6 @@ async function refreshLogs(force = false) {
       logs.value = parseLogLines(logLines, 'full-')
     }
 
-    triggerRef(logs)
     // OOM 修复：每次刷新后兜底瘦身，一次清 1/2 而不是 1/6，避免每 4 秒触发的
     // 刷新回调让 map 长期贴顶。
     trimMapByOldest(parseCache, parseCacheMax.value, Math.max(200, Math.floor(parseCacheMax.value / 2)))
@@ -936,7 +935,6 @@ function appendParsedLogs(lines, keyPrefix = 'stream-', { reset = false } = {}) 
     const combined = [...logs.value, ...parsed]
     logs.value = combined.length > logLimit.value ? combined.slice(combined.length - logLimit.value) : combined
   }
-  triggerRef(logs)
   trimMapByOldest(parseCache, parseCacheMax.value, Math.max(200, Math.floor(parseCacheMax.value / 2)))
 }
 
@@ -1076,7 +1074,6 @@ async function clearLogs() {
       tone: 'warning'
     })
     logs.value = []
-    triggerRef(logs)
     parseCache.clear()
     pendingStreamLines = []
     if (fullSearchAbortController) {
@@ -1224,7 +1221,6 @@ async function gotoFullSearchPage(cursor) {
     lastSearchStoppedEarly.value = !!data?.stopped_early
     logIdCounter = 0
     logs.value = parseLogLines(lines, `search-${cursor}-`)
-    triggerRef(logs)
     lastFetchMs.value = Math.round(performance.now() - t0)
   } catch (err) {
     // 用户取消的旧请求（AbortController.abort）：静默

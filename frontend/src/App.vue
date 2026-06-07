@@ -391,7 +391,37 @@ function toggleSidebarPinned() {
 </script>
 
 <style>
-body {
+.app-container {
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Microsoft YaHei",
+    sans-serif;
+}
+
+body > :is(
+  .el-overlay,
+  .el-popper,
+  .el-message,
+  .el-message-box,
+  .el-notification,
+  .el-loading-mask,
+  .custom-preview-overlay,
+  .vault-modal-layer,
+  .system-prompt-overlay,
+  .background-workbench-host,
+  .library-context-menu,
+  .library-search-overlay,
+  .app-dropdown-menu,
+  .notification-popover,
+  .block-type-picker,
+  .subtitle-import-workbench-teleport,
+  .download-task-workbench-teleport,
+  .conflict-workbench-teleport
+) {
   font-family:
     -apple-system,
     BlinkMacSystemFont,
@@ -580,8 +610,6 @@ html.kikoerumanager-dark .content-shell {
 
 html.kikoerumanager-dark [data-section="dashboard-hero"] .bg-white,
 html.kikoerumanager-dark [data-section="dashboard-command"] .bg-white,
-html.kikoerumanager-dark [data-section="dashboard-tasks"],
-html.kikoerumanager-dark [data-section="dashboard-tasks"] .bg-white,
 html.kikoerumanager-dark [data-section="dashboard-archive"],
 html.kikoerumanager-dark [data-section="dashboard-archive"] .bg-white,
 html.kikoerumanager-dark .task-list-pane,
@@ -595,8 +623,6 @@ html.kikoerumanager-dark .el-card {
 
 html.kikoerumanager-dark [data-section="dashboard-hero"] .bg-slate-50,
 html.kikoerumanager-dark [data-section="dashboard-hero"] .bg-slate-100,
-html.kikoerumanager-dark [data-section="dashboard-tasks"] .bg-slate-50,
-html.kikoerumanager-dark [data-section="dashboard-tasks"] .bg-slate-100,
 html.kikoerumanager-dark [data-section="dashboard-archive"] .bg-slate-50,
 html.kikoerumanager-dark [data-section="dashboard-archive"] .bg-slate-100 {
   background: var(--km-dark-field) !important;
@@ -699,8 +725,9 @@ html.kikoerumanager-dark .dash-kpi:hover .group-hover\:bg-slate-900 {
 }
 
 html.kikoerumanager-dark [data-section="dashboard-tasks"] .border-dashed {
-  background: var(--km-dark-field) !important;
-  border-color: var(--km-dark-border) !important;
+  background: #101012 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
 }
 
 html.kikoerumanager-dark [data-section="dashboard-hero"] .border-dashed,
@@ -958,17 +985,13 @@ html.kikoerumanager-dark .task-card.is-active {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04) !important;
 }
 
-html.kikoerumanager-dark .tasks-toolbar-search-input,
-html.kikoerumanager-dark input,
-html.kikoerumanager-dark textarea,
-html.kikoerumanager-dark select {
+html.kikoerumanager-dark #app :is(.tasks-toolbar-search-input, input, textarea, select) {
   background: rgba(15, 23, 42, 0.9) !important;
   border-color: var(--km-dark-border) !important;
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark input::placeholder,
-html.kikoerumanager-dark textarea::placeholder {
+html.kikoerumanager-dark #app :is(input, textarea)::placeholder {
   color: rgba(148, 163, 184, 0.72) !important;
 }
 
@@ -1044,13 +1067,13 @@ html.kikoerumanager-dark .app-dd-badge.tone-violet {
   color: #dbeafe !important;
 }
 
-html.kikoerumanager-dark [class*="bg-white"],
-html.kikoerumanager-dark [class*="bg-slate-50"],
-html.kikoerumanager-dark [class*="from-white"],
-html.kikoerumanager-dark [class*="to-slate-50"],
-html.kikoerumanager-dark [class*="via-white"],
-html.kikoerumanager-dark [class*="border-slate-100"],
-html.kikoerumanager-dark [class*="border-slate-200"] {
+html.kikoerumanager-dark #app [class*="bg-white"],
+html.kikoerumanager-dark #app [class*="bg-slate-50"],
+html.kikoerumanager-dark #app [class*="from-white"],
+html.kikoerumanager-dark #app [class*="to-slate-50"],
+html.kikoerumanager-dark #app [class*="via-white"],
+html.kikoerumanager-dark #app [class*="border-slate-100"],
+html.kikoerumanager-dark #app [class*="border-slate-200"] {
   --tw-gradient-from: rgba(15, 23, 42, 0.94) var(--tw-gradient-from-position) !important;
   --tw-gradient-via: rgba(30, 41, 59, 0.9) var(--tw-gradient-via-position) !important;
   --tw-gradient-to: rgba(15, 23, 42, 0.88) var(--tw-gradient-to-position) !important;
@@ -1059,49 +1082,49 @@ html.kikoerumanager-dark [class*="border-slate-200"] {
   color: var(--km-dark-text) !important;
 }
 
-html.kikoerumanager-dark [class*="text-slate-900"],
-html.kikoerumanager-dark [class*="text-slate-800"],
-html.kikoerumanager-dark [class*="text-slate-700"],
-html.kikoerumanager-dark [class*="text-gray-900"],
-html.kikoerumanager-dark [class*="text-gray-800"] {
+html.kikoerumanager-dark #app [class*="text-slate-900"],
+html.kikoerumanager-dark #app [class*="text-slate-800"],
+html.kikoerumanager-dark #app [class*="text-slate-700"],
+html.kikoerumanager-dark #app [class*="text-gray-900"],
+html.kikoerumanager-dark #app [class*="text-gray-800"] {
   color: var(--km-dark-text-strong) !important;
 }
 
-html.kikoerumanager-dark [class*="text-slate-600"],
-html.kikoerumanager-dark [class*="text-slate-500"],
-html.kikoerumanager-dark [class*="text-slate-400"],
-html.kikoerumanager-dark [class*="text-gray-600"],
-html.kikoerumanager-dark [class*="text-gray-500"] {
+html.kikoerumanager-dark #app [class*="text-slate-600"],
+html.kikoerumanager-dark #app [class*="text-slate-500"],
+html.kikoerumanager-dark #app [class*="text-slate-400"],
+html.kikoerumanager-dark #app [class*="text-gray-600"],
+html.kikoerumanager-dark #app [class*="text-gray-500"] {
   color: var(--km-dark-text-muted) !important;
 }
 
-html.kikoerumanager-dark [class*="bg-emerald-50"],
-html.kikoerumanager-dark [class*="border-emerald-200"] {
+html.kikoerumanager-dark #app [class*="bg-emerald-50"],
+html.kikoerumanager-dark #app [class*="border-emerald-200"] {
   background: var(--km-dark-green-bg) !important;
   border-color: rgba(110, 231, 183, 0.32) !important;
   color: #d1fae5 !important;
 }
 
-html.kikoerumanager-dark [class*="bg-amber-50"],
-html.kikoerumanager-dark [class*="border-amber-200"] {
+html.kikoerumanager-dark #app [class*="bg-amber-50"],
+html.kikoerumanager-dark #app [class*="border-amber-200"] {
   background: var(--km-dark-amber-bg) !important;
   border-color: rgba(252, 211, 77, 0.34) !important;
   color: #fef3c7 !important;
 }
 
-html.kikoerumanager-dark [class*="bg-red-50"],
-html.kikoerumanager-dark [class*="bg-rose-50"],
-html.kikoerumanager-dark [class*="border-red-"],
-html.kikoerumanager-dark [class*="border-rose-"] {
+html.kikoerumanager-dark #app [class*="bg-red-50"],
+html.kikoerumanager-dark #app [class*="bg-rose-50"],
+html.kikoerumanager-dark #app [class*="border-red-"],
+html.kikoerumanager-dark #app [class*="border-rose-"] {
   background: var(--km-dark-red-bg) !important;
   border-color: rgba(253, 164, 175, 0.34) !important;
   color: #ffe4e6 !important;
 }
 
-html.kikoerumanager-dark [class*="bg-violet-50"],
-html.kikoerumanager-dark [class*="bg-blue-50"],
-html.kikoerumanager-dark [class*="border-violet-200"],
-html.kikoerumanager-dark [class*="border-blue-200"] {
+html.kikoerumanager-dark #app [class*="bg-violet-50"],
+html.kikoerumanager-dark #app [class*="bg-blue-50"],
+html.kikoerumanager-dark #app [class*="border-violet-200"],
+html.kikoerumanager-dark #app [class*="border-blue-200"] {
   background: var(--km-dark-blue-bg) !important;
   border-color: rgba(147, 197, 253, 0.34) !important;
   color: #dbeafe !important;
@@ -3540,11 +3563,6 @@ html.kikoerumanager-dark .existing-page .app-page-header-actions {
 html.kikoerumanager-dark .existing-page .existing-shell {
   background: transparent !important;
   box-shadow: none !important;
-}
-
-html.kikoerumanager-dark .existing-page .existing-sidebar,
-html.kikoerumanager-dark .existing-page .existing-main {
-  background: transparent !important;
 }
 
 html.kikoerumanager-dark .existing-page .app-empty-state,

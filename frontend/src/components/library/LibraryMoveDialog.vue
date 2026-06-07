@@ -2,7 +2,6 @@
   <el-dialog
     :model-value="visible"
     :show-close="false"
-    destroy-on-close
     class="custom-preview-modal lib-move-modal"
     align-center
     modal-class="custom-preview-overlay lib-move-overlay"
@@ -456,6 +455,7 @@ const selectedFolderPath = ref('')
 const searchKeyword = ref('')
 const pathInput = ref('')
 const listScrollRef = ref(null)
+let folderSizeHydrateToken = 0
 
 const conflictDialogOpen = ref(false)
 const pendingTargetSnapshot = ref(null)
@@ -783,6 +783,7 @@ async function initFromProps () {
 }
 
 function resetState () {
+  folderSizeHydrateToken += 1
   currentLibraryId.value = ''
   currentPath.value = ''
   rootPath.value = ''
@@ -799,8 +800,6 @@ function resetState () {
   indexReady.value = false
   indexSearchToken += 1
   if (indexSearchTimer) { clearTimeout(indexSearchTimer); indexSearchTimer = null }
-  // 清空导航树
-  for (const key of Object.keys(navTreeState)) delete navTreeState[key]
 }
 
 function ensureLibraryEntry (libraryId) {
@@ -903,6 +902,7 @@ async function selectLibraryRoot (lib) {
 
 async function loadFolders (path) {
   if (!currentLibraryId.value) return
+  const token = ++folderSizeHydrateToken
   loading.value = true
   error.value = ''
   selectedFolderPath.value = ''
@@ -916,7 +916,7 @@ async function loadFolders (path) {
       currentLibraryId.value,
       targetPath,
       {
-        computeSize: !isAtRoot,
+        computeSize: false,
         computeSizeCap: FOLDER_SIZE_COMPUTE_CAP,
         // 右侧文件列表既显示子目录也显示文件（参考库存页风格），文件不可作为目标
         includeFiles: true
@@ -929,15 +929,64 @@ async function loadFolders (path) {
     searchKeyword.value = ''
     // 同步进导航树缓存
     syncNavTreeFromLoad(currentLibraryId.value, currentPath.value, rootPath.value, folders.value)
-    await ensureNavPathVisible(currentLibraryId.value, currentPath.value)
     await nextTick()
     listScrollRef.value?.scrollTo?.({ top: 0 })
+    ensureNavPathVisibleInBackground(currentLibraryId.value, currentPath.value)
+    if (!isAtRoot) {
+      hydrateFolderSizesInBackground({
+        token,
+        libraryId: currentLibraryId.value,
+        path: currentPath.value,
+      })
+    }
   } catch (err) {
     folders.value = []
     error.value = err?.response?.data?.detail || err?.message || '读取目录失败'
   } finally {
     loading.value = false
   }
+}
+
+function ensureNavPathVisibleInBackground (libraryId, path) {
+  ensureNavPathVisible(libraryId, path).catch(error => {
+    console.warn('后台展开移动弹窗目录树失败:', error)
+  })
+}
+
+function hydrateFolderSizesInBackground ({ token, libraryId, path }) {
+  const directoryPaths = folders.value
+    .filter(item => item?.is_directory !== false)
+    .filter(item => String(item?.size_status || '') !== 'ready')
+    .map(item => String(item?.path || '').trim())
+    .filter(Boolean)
+    .slice(0, FOLDER_SIZE_COMPUTE_CAP)
+
+  if (!directoryPaths.length) return
+
+  libraryApi.computeFolderSizes(directoryPaths)
+    .then(result => {
+      if (token !== folderSizeHydrateToken) return
+      if (libraryId !== currentLibraryId.value) return
+      if (normalizePath(path) !== normalizePath(currentPath.value)) return
+      const results = Array.isArray(result?.results) ? result.results : []
+      const sizeByPath = new Map(results
+        .filter(item => item?.success)
+        .map(item => [normalizePath(item.path), Number(item.size || 0)]))
+      if (!sizeByPath.size) return
+      folders.value = folders.value.map(item => {
+        const key = normalizePath(item?.path)
+        if (!sizeByPath.has(key)) return item
+        return {
+          ...item,
+          size: sizeByPath.get(key) || 0,
+          size_status: 'ready',
+        }
+      })
+      syncNavTreeFromLoad(currentLibraryId.value, currentPath.value, rootPath.value, folders.value)
+    })
+    .catch(error => {
+      console.warn('后台补齐移动弹窗目录大小失败:', error)
+    })
 }
 
 async function ensureNavPathVisible (libraryId, path) {

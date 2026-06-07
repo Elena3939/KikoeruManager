@@ -44,6 +44,7 @@ const SAMPLE_VARS = {
   '时间':      '2024-01-01 12:00:00',
   '总文件数':  '3',
   '总大小':    '256 MB',
+  '总耗时':    '12.4s',
 }
 
 // 英文别名 → 中文 key，前端解析时也支持用户写老 key
@@ -58,6 +59,8 @@ const VAR_ALIASES = {
   severity:            '严重程度',
   'stats.total_files': '总文件数',
   'stats.total_size':  '总大小',
+  'stats.duration':    '总耗时',
+  total_duration:      '总耗时',
 }
 
 /**

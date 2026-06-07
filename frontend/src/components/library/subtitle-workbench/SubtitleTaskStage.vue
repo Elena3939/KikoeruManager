@@ -58,7 +58,11 @@
       class="subtitle-task-stage-loading"
     />
     <AppEmptyState v-else-if="showOverview && !ctx.visibleSubtitleTasks.length" description="暂无字幕任务" size="sm" />
-    <div v-else class="subtitle-task-stage-scroll grid min-h-0 min-w-0 gap-3 overflow-auto">
+    <div
+      v-else
+      class="subtitle-task-stage-scroll grid min-h-0 min-w-0 gap-3 overflow-auto"
+      :class="{ 'is-immersive-overview': immersive && showOverview }"
+    >
       <!-- Active task log panel -->
       <div
         v-if="showOverview && ctx.activeSubtitleTask"
@@ -83,7 +87,7 @@
           </span>
         </div>
 
-        <div class="mt-3 rounded-[12px] border border-slate-100 bg-gradient-to-b from-[#fafcff] to-white">
+        <div class="subtitle-active-log-body mt-3 rounded-[12px] border border-slate-100 bg-gradient-to-b from-[#fafcff] to-white">
           <div
             v-if="shouldShowMetaPanel(ctx.activeSubtitleTask)"
             class="border-b border-slate-100 px-3 py-3"
@@ -136,7 +140,7 @@
               {{ ctx.activeSubtitleTask.progress_log?.length || 0 }} 条
             </span>
           </div>
-          <div v-if="ctx.activeSubtitleTaskProgressLogs.length" class="subtitle-workbench-scrollbar max-h-[220px] overflow-auto px-3 py-3">
+          <div v-if="ctx.activeSubtitleTaskProgressLogs.length" class="subtitle-log-stream-scroll subtitle-workbench-scrollbar overflow-auto px-3 py-3">
             <TransitionGroup tag="div" name="sub-log-item" class="task-log-stream">
               <div
                 v-for="(entry, idx) in ctx.activeSubtitleTaskProgressLogs"
@@ -942,9 +946,43 @@ function getTaskMetaItems(task) {
   scrollbar-gutter: stable;
 }
 
+.subtitle-task-stage-scroll.is-immersive-overview {
+  grid-template-rows: minmax(0, 1fr);
+  align-content: stretch;
+  align-items: stretch;
+  overflow: hidden;
+}
+
 .subtitle-active-log-panel {
   align-self: start;
   min-width: 0;
+}
+
+.subtitle-task-stage-scroll.is-immersive-overview .subtitle-active-log-panel {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  align-self: stretch;
+}
+
+.subtitle-active-log-body {
+  min-height: 0;
+}
+
+.subtitle-task-stage-scroll.is-immersive-overview .subtitle-active-log-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.subtitle-log-stream-scroll {
+  max-height: 220px;
+}
+
+.subtitle-task-stage-scroll.is-immersive-overview .subtitle-log-stream-scroll {
+  max-height: none;
+  flex: 1 1 auto;
+  min-height: 280px;
 }
 
 .subtitle-task-stage-scroll::-webkit-scrollbar {

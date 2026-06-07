@@ -198,9 +198,9 @@ const leftRailCollapsed = ref(false)
 const isRightCollapsed = computed(() => Boolean(props.ctx?.contextDrawerCtx?.drawerCollapsed))
 const gridClass = computed(() => {
   if (leftRailCollapsed.value && isRightCollapsed.value) return 'grid-cols-[56px_minmax(0,1fr)_56px]'
-  if (leftRailCollapsed.value) return 'grid-cols-[56px_minmax(0,1fr)_minmax(250px,0.24fr)]'
-  if (isRightCollapsed.value) return 'grid-cols-[minmax(196px,0.2fr)_minmax(0,1fr)_56px]'
-  return 'grid-cols-[minmax(196px,0.2fr)_minmax(0,1fr)_minmax(250px,0.24fr)]'
+  if (leftRailCollapsed.value) return 'grid-cols-[56px_minmax(0,1fr)_minmax(292px,0.26fr)]'
+  if (isRightCollapsed.value) return 'grid-cols-[minmax(252px,0.22fr)_minmax(0,1fr)_56px]'
+  return 'grid-cols-[minmax(252px,0.22fr)_minmax(0,1fr)_minmax(292px,0.26fr)]'
 })
 </script>
 
@@ -477,16 +477,19 @@ const gridClass = computed(() => {
 }
 
 :global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-stage-tab.is-overview.is-active .subtitle-stage-tab-icon),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-stage-tab.is-overview .subtitle-stage-tab-icon),
 :global(html.dark .subtitle-workbench-dialog .subtitle-stage-tab.is-overview.is-active .subtitle-stage-tab-icon) {
   color: #38bdf8 !important;
 }
 
 :global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-stage-tab.is-pairing.is-active .subtitle-stage-tab-icon),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-stage-tab.is-pairing .subtitle-stage-tab-icon),
 :global(html.dark .subtitle-workbench-dialog .subtitle-stage-tab.is-pairing.is-active .subtitle-stage-tab-icon) {
   color: #34d399 !important;
 }
 
 :global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-stage-tab.is-tree.is-active .subtitle-stage-tab-icon),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-stage-tab.is-tree .subtitle-stage-tab-icon),
 :global(html.dark .subtitle-workbench-dialog .subtitle-stage-tab.is-tree.is-active .subtitle-stage-tab-icon) {
   color: #a78bfa !important;
 }

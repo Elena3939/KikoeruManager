@@ -185,7 +185,11 @@
 
         <footer class="lib-suggest-foot">
           <span class="lib-suggest-foot-hint">
-            <kbd>↑</kbd><kbd>↓</kbd> 选中 · <kbd>↵</kbd> 跳转 · <kbd>Esc</kbd> 收起
+            <span class="lib-suggest-key-group"><kbd>↑</kbd><kbd>↓</kbd><span>选中</span></span>
+            <span class="lib-suggest-sep">·</span>
+            <span class="lib-suggest-key-group"><kbd>↵</kbd><span>跳转</span></span>
+            <span class="lib-suggest-sep">·</span>
+            <span class="lib-suggest-key-group"><kbd>Esc</kbd><span>收起</span></span>
           </span>
           <button
             v-if="hasMoreResults || items.length"
@@ -913,7 +917,7 @@ onBeforeUnmount(() => {
   left: 0;
   right: 0;
   z-index: 60;
-  min-width: 320px;
+  min-width: min(360px, calc(100vw - 24px));
   max-width: 520px;
   border-radius: 14px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.78));
@@ -1182,9 +1186,9 @@ onBeforeUnmount(() => {
 }
 
 .lib-suggest-foot {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
   padding: 6px 12px 8px;
   border-top: 1px solid rgba(15, 23, 42, 0.05);
@@ -1194,9 +1198,24 @@ onBeforeUnmount(() => {
 .lib-suggest-foot-hint {
   font-size: 10.5px;
   color: #94a3b8;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.lib-suggest-key-group {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 3px;
+}
+
+.lib-suggest-sep {
+  flex: 0 0 auto;
+  opacity: 0.55;
 }
 
 .lib-suggest-foot-hint kbd {
@@ -1217,7 +1236,12 @@ onBeforeUnmount(() => {
 .lib-suggest-foot-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
   gap: 4px;
+  min-width: 150px;
+  max-width: 176px;
+  min-height: 34px;
   padding: 4px 10px;
   border-radius: 7px;
   border: 0;
@@ -1225,10 +1249,17 @@ onBeforeUnmount(() => {
   color: white;
   font-size: 11px;
   font-weight: 700;
+  line-height: 1.2;
   cursor: pointer;
   letter-spacing: 0.2px;
   transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.18s ease;
   box-shadow: 0 8px 18px -10px rgba(2, 132, 199, 0.6);
+}
+
+.lib-suggest-foot-btn span {
+  min-width: 0;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .lib-suggest-foot-btn:hover {

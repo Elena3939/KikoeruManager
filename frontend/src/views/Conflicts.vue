@@ -11,15 +11,25 @@
         <AppLoadingAnimation variant="inline" :size="14" />
         {{ batchActionLabel || '批量处理中' }}
       </span>
-      <button
-        type="button"
+      <StatefulButton
         class="conflicts-refresh-btn"
+        type="button"
+        unstyled
+        :show-default-icons="false"
+        :success-hold="900"
         :disabled="loading || batchRunning"
         @click="fetchConflicts"
       >
-        <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': loading }" />
+        <template #prefix="{ state }">
+          <span class="conflicts-refresh-icon-wrap" :class="`is-${state}`" aria-hidden="true">
+            <Loader2 v-if="state === 'loading' || loading" :size="14" :stroke-width="2.5" class="conflicts-refresh-state-icon animate-spin" />
+            <CheckCircle2 v-else-if="state === 'success'" :size="14" :stroke-width="2.5" class="conflicts-refresh-state-icon" />
+            <AlertCircle v-else-if="state === 'error'" :size="14" :stroke-width="2.5" class="conflicts-refresh-state-icon" />
+            <RefreshCw v-else :size="14" :stroke-width="2.5" class="conflicts-refresh-state-icon conflicts-refresh-idle-icon" />
+          </span>
+        </template>
         刷新
-      </button>
+      </StatefulButton>
     </AppPageHeader>
 
     <!-- 状态信息条：替代原顶部 inline chip -->
@@ -750,6 +760,7 @@ import VolumeRenameDialog from '../components/conflicts/VolumeRenameDialog.vue'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
+import StatefulButton from '../components/ui/stateful-button.vue'
 import { libraryEntryIconFor, libraryEntryMetaFor } from '../components/library/_libraryFileKind'
 import { conflictApi, taskCenterApi } from '../api'
 import { showSystemAlert, showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
@@ -2295,7 +2306,10 @@ async function handleSkip(conflict) {
   try {
     await showSystemConfirm({
       title: '跳过当前压缩包',
-      message: `将直接删除待处理来源：${getConflictSourcePath(conflict)}`,
+      description: formatConflictLabel(conflict),
+      message: '将删除本次导入留下的待处理来源，并把该问题项标记为已跳过。',
+      currentLabel: '待删除来源',
+      currentValue: getConflictSourcePath(conflict),
       tone: 'warning',
       confirmText: '确认跳过',
       cancelText: '取消'
@@ -2452,11 +2466,10 @@ async function handleBatchSkip() {
   try {
     await showSystemConfirm({
       title: '批量跳过确认',
-      message: [
-        `将批量跳过 ${targets.length} 项，并删除它们的待处理来源。`,
-        '',
-        buildPathPreview(targets.map(conflict => getConflictSourcePath(conflict)))
-      ].join('\n'),
+      description: `已选择 ${targets.length} 个可跳过的问题项`,
+      message: `将跳过 ${targets.length} 项，并逐项删除待处理来源。`,
+      currentLabel: '来源预览',
+      currentValue: buildPathPreview(targets.map(conflict => getConflictSourcePath(conflict))),
       tone: 'warning',
       confirmText: '确认批量跳过',
       cancelText: '取消'
@@ -2906,7 +2919,21 @@ button:disabled {
               background-color 0.18s ease,
               color 0.18s ease;
 }
-.conflicts-refresh-btn :deep(svg) {
+.conflicts-refresh-btn :deep(.stateful-button__content) {
+  gap: 6px;
+}
+
+.conflicts-refresh-btn :deep(.stateful-button__state) {
+  display: inline-flex;
+}
+
+.conflicts-refresh-icon-wrap,
+.conflicts-refresh-state-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.conflicts-refresh-idle-icon {
   transition: transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .conflicts-refresh-btn:hover {
@@ -2916,7 +2943,7 @@ button:disabled {
   transform: translateY(-2px) scale(1.02);
   box-shadow: 0 6px 16px -6px rgba(15, 23, 42, 0.18);
 }
-.conflicts-refresh-btn:hover:not(:disabled) :deep(svg) {
+.conflicts-refresh-btn:hover:not(:disabled) .conflicts-refresh-idle-icon {
   transform: rotate(180deg);
 }
 .conflicts-refresh-btn:active:not(:disabled) { transform: scale(0.96); }
@@ -3304,6 +3331,37 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.conflicts-list-scroll:hover,
+.conflicts-list-scroll:focus-within {
+  scrollbar-color: rgba(148, 163, 184, 0.55) transparent;
+}
+
+.conflicts-list-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.conflicts-list-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.conflicts-list-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  background-clip: content-box;
+}
+
+.conflicts-list-scroll:hover::-webkit-scrollbar-thumb,
+.conflicts-list-scroll:focus-within::-webkit-scrollbar-thumb {
+  background-color: rgba(148, 163, 184, 0.55);
+}
+
+.conflicts-list-scroll:hover::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(100, 116, 139, 0.72);
 }
 
 /* 筛选为空时的列表内嵌空态（保留上方筛选按钮可见）*/

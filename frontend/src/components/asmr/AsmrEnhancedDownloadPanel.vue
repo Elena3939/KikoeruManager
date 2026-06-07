@@ -87,7 +87,7 @@
               </template>
               <template #meta>
                 <div class="enhanced-plan-meta">
-                  <span class="enhanced-plan-meta-pill is-code">RJ {{ plan.rjcode }}</span>
+                  <span class="enhanced-plan-meta-pill is-code">{{ plan.rjcode }}</span>
                   <span class="enhanced-plan-meta-pill is-downloadable">{{ plan.summary?.selectable_total || 0 }} 个可下载</span>
                 </div>
               </template>
@@ -304,18 +304,43 @@ defineEmits([
 }
 .enhanced-plan-card {
   max-width: none;
+  width: 100%;
+  min-height: 0;
+  height: auto;
 }
 .enhanced-plan-card :deep(.work-cover-wrapper) {
-  height: 134px;
+  height: clamp(148px, 18vw, 206px);
+  aspect-ratio: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at 50% 38%, rgba(255, 255, 255, 0.82), transparent 42%),
+    var(--circle-work-cover-bg, linear-gradient(135deg, rgba(241, 245, 249, 0.96), rgba(248, 250, 252, 0.82)));
+}
+.enhanced-plan-card :deep(.work-cover) {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
 }
 .enhanced-plan-card :deep(.work-card-body) {
-  padding: 10px;
+  display: grid;
+  grid-template-rows: minmax(34px, auto) auto auto;
+  gap: 8px;
+  min-height: 132px;
+  padding: 10px 12px 12px;
 }
 .enhanced-plan-card :deep(.work-title) {
-  font-size: 12px;
+  font-size: 12.5px;
   line-height: 1.35;
+  height: auto;
+  min-height: calc(1.35em * 2);
+  max-height: calc(1.35em * 2);
+  word-break: break-all;
 }
-.enhanced-plan-card :deep(.work-rj) {
+.enhanced-plan-card :deep(.work-rj),
+.enhanced-plan-card :deep(.work-cv) {
   display: none;
 }
 .enhanced-plan-cover-placeholder {
@@ -339,12 +364,13 @@ defineEmits([
   align-items: center;
   gap: 5px;
   flex-wrap: wrap;
-  margin-top: 6px;
+  min-width: 0;
 }
 .enhanced-plan-meta-pill,
 .enhanced-plan-tag {
   display: inline-flex;
   align-items: center;
+  max-width: 100%;
   height: 20px;
   padding: 0 7px;
   border-radius: 999px;
@@ -352,6 +378,8 @@ defineEmits([
   font-weight: 650;
   line-height: 1;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .enhanced-plan-meta-pill.is-code {
   background: var(--asmr-chip-muted-bg);
@@ -365,7 +393,9 @@ defineEmits([
   display: flex;
   gap: 5px;
   flex-wrap: wrap;
-  margin-top: 8px;
+  min-width: 0;
+  max-height: 45px;
+  overflow: hidden;
 }
 .enhanced-plan-tag.is-primary {
   background: var(--asmr-info-bg);
@@ -455,6 +485,12 @@ defineEmits([
   }
   .asmr-batch-toolbar-actions > .asmr-mini-btn:nth-child(3) {
     grid-column: 1 / -1;
+  }
+  .enhanced-plan-grid {
+    grid-template-columns: 1fr;
+  }
+  .enhanced-plan-card :deep(.work-cover-wrapper) {
+    height: clamp(160px, 52vw, 220px);
   }
 }
 </style>

@@ -324,7 +324,7 @@ import { Check, Code2, Eye, LayoutTemplate, Maximize2, RefreshCw, X } from 'luci
 import { notificationApi } from '../../api'
 import SettingsSwitch from './SettingsSwitch.vue'
 import NotificationBlockEditor from './block-editor/NotificationBlockEditor.vue'
-import { DEFAULT_EMAIL_HTML, DEFAULT_SUBJECT, buildDefaultEmailBlocks } from './block-editor/defaultEmailTemplate.js'
+import { DEFAULT_EMAIL_HTML, DEFAULT_SUBJECT, buildDefaultEmailBlocks, isStandardEmailHtml } from './block-editor/defaultEmailTemplate.js'
 import { renderBlockMini, buildSamplePayload } from './block-editor/blockMiniRenderers.js'
 
 const props = defineProps({
@@ -739,7 +739,11 @@ watch(() => props.visible, (v) => {
     }
   }
   form.html_template = beautifyHtml(form.html_template)
-  onHtmlTemplateChange(form.html_template)
+  if (form.editor_mode === 'blocks' && shouldUseDefaultBlocks(form.html_template) && (!form.blocks.length || isLegacyDefaultMirror(form.blocks, form.html_template))) {
+    form.blocks = buildDefaultEmailBlocks()
+  } else {
+    onHtmlTemplateChange(form.html_template)
+  }
   preview.subject = ''
   preview.html = ''
   preview.text = ''
@@ -893,7 +897,12 @@ function isLegacyDefaultMirror(blocks, htmlTemplate) {
   const html = (htmlTemplate || '').trim()
   const def = DEFAULT_EMAIL_HTML.trim()
   // 两种判定：明确标记为 html 镜像，或者 cache/html 仍然是默认 HTML
-  return isMirror || cache === def || html === def
+  return isMirror || cache === def || html === def || isStandardEmailHtml(cache) || isStandardEmailHtml(html)
+}
+
+function shouldUseDefaultBlocks(htmlTemplate = form.html_template) {
+  const html = String(htmlTemplate || '').trim()
+  return html === DEFAULT_EMAIL_HTML.trim() || isStandardEmailHtml(html)
 }
 
 function resetToDefaultBlocks() {
@@ -909,10 +918,10 @@ function syncHtmlMirrorBlock() {
 
 function setEditorMode(mode) {
   if (mode === form.editor_mode) return
-  if (mode === 'blocks' && !form.blocks.length) {
+  if (mode === 'blocks' && (!form.blocks.length || isLegacyDefaultMirror(form.blocks, form.html_template))) {
     // 默认 HTML 转积木：用拆分好的多个独立块；
     // 用户已自定义过 HTML 时才退回“整段 HTML 镜像为单个富文本块”。
-    if ((form.html_template || '').trim() === DEFAULT_EMAIL_HTML.trim()) {
+    if (shouldUseDefaultBlocks()) {
       form.blocks = buildDefaultEmailBlocks()
     } else {
       form.blocks = [createHtmlMirrorBlock()]

@@ -158,9 +158,10 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { Bell, Bot, Boxes, CloudDownload, DownloadCloud, HardDrive, LifeBuoy, ScanSearch, ShieldCheck, TextSearch, Workflow, Settings2 as IconSettings, AlertCircle as IconAlertCircle, CheckCircle2 as IconCheckCircle2, Clock as IconClock } from 'lucide-vue-next'
+import { Bell, Bot, Boxes, DownloadCloud, HardDrive, LifeBuoy, ScanSearch, ShieldCheck, TextSearch, Workflow, Settings2 as IconSettings, AlertCircle as IconAlertCircle, CheckCircle2 as IconCheckCircle2, Clock as IconClock } from 'lucide-vue-next'
 import SettingsSectionPanel from '../components/settings/SettingsSectionPanel.vue'
 import SettingsWorkbench from '../components/settings/SettingsWorkbench.vue'
+import BaiduNetdiskNavIcon from '../components/settings/BaiduNetdiskNavIcon.vue'
 import StorageSettingsPanel from '../components/settings/StorageSettingsPanel.vue'
 import ProcessingSettingsPanel from '../components/settings/ProcessingSettingsPanel.vue'
 import RulesSettingsPanel from '../components/settings/RulesSettingsPanel.vue'
@@ -255,7 +256,7 @@ const sections = [
   { id: 'services', title: '外部服务', short: 'Kikoeru、ASMR、RJ 字幕', icon: ScanSearch, keywords: ['kikoeru', 'asmr', 'subtitle', 'email', '外部服务'] },
   { id: 'aiSubtitle', title: 'AI 配对', short: '模型、Key、提示词、阈值', icon: Bot, keywords: ['ai', 'subtitle', 'match', 'model', 'prompt', '字幕配对', '模型', '提示词'] },
   { id: 'httpDownload', title: 'HTTP 下载', short: 'HTTP、Gofile、PikPak', icon: DownloadCloud, keywords: ['http', 'download', 'aria2', 'gofile', 'pikpak', '外链下载'] },
-  { id: 'baiduNetdisk', title: '百度网盘', short: '官方登录、分享直下、SVIP', icon: CloudDownload, keywords: ['baidu', '百度网盘', '分享直下', 'SVIP', '百度'] },
+  { id: 'baiduNetdisk', title: '百度网盘', short: '官方登录、分享直下、SVIP', icon: BaiduNetdiskNavIcon, keywords: ['baidu', '百度网盘', '分享直下', 'SVIP', '百度'] },
   { id: 'maintenance', title: '维护与清理', short: '清理、备份、压缩包', icon: LifeBuoy, keywords: ['cleanup', 'backup', 'archive', '维护'] },
   { id: 'fts', title: '全文搜索索引', short: 'FTS5 trigram 加速', icon: TextSearch, keywords: ['fts', 'search', 'trigram', '索引', '全文搜索', 'sqlite'] },
   { id: 'security', title: '安全门禁', short: '验证器、黑名单', icon: ShieldCheck, keywords: ['security', 'google authenticator', '门禁', '黑名单'] },

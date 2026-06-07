@@ -358,12 +358,20 @@ function handleConfirm() {
 .sp-description,
 .sp-message {
   margin: 0;
-  color: #52637a;
-  font-size: 15px;
+  color: #53657c;
+  font-family:
+    Inter,
+    "SF Pro Text",
+    "Segoe UI",
+    "PingFang SC",
+    "Microsoft YaHei",
+    sans-serif;
+  font-size: 14px;
   font-weight: 500;
   letter-spacing: 0;
-  line-height: 1.75;
+  line-height: 1.85;
   overflow-wrap: anywhere;
+  text-align: left;
 }
 
 .sp-description {
@@ -373,6 +381,15 @@ function handleConfirm() {
 .sp-description.is-preline,
 .sp-message.is-preline {
   white-space: pre-line;
+}
+
+.sp-card.is-confirm-focusable .sp-message {
+  max-width: 100%;
+  color: #53657c;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.85;
+  word-break: break-word;
 }
 
 .sp-info-block {
@@ -607,7 +624,8 @@ function handleConfirm() {
 }
 
 :global(html.kikoerumanager-dark .sp-card::before) {
-  background: linear-gradient(120deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0) 44%);
+  display: none;
+  background: none;
 }
 
 :global(html.kikoerumanager-dark .sp-header),

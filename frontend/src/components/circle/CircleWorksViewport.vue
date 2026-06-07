@@ -70,6 +70,28 @@ const rowCount = computed(() => {
   if (!pagedItems.value.length) return 0
   return Math.ceil(pagedItems.value.length / columnCount.value)
 })
+const itemViewModels = computed(() => pagedItems.value.map((item, index) => {
+  const code = String(item?.canonical_rjcode || '').trim()
+  return {
+    item,
+    index,
+    key: itemKey(item, index),
+    code,
+    selected: Boolean(code && props.selectedCodes?.has?.(code)),
+    flashed: Boolean(code && props.flashedCodes?.has?.(code)),
+  }
+}))
+const rowViewModels = computed(() => {
+  const columns = Math.max(1, columnCount.value)
+  const rows = []
+  for (let start = 0; start < itemViewModels.value.length; start += columns) {
+    rows.push(itemViewModels.value.slice(start, start + columns).map((viewModel, offset) => ({
+      ...viewModel,
+      columnIndex: offset,
+    })))
+  }
+  return rows
+})
 const usePlainRender = computed(() => viewportWidth.value > 0 && viewportWidth.value <= 640)
 const virtualRowHeight = computed(() => {
   if (!isCardMode.value) return viewportWidth.value <= 640 ? 58 : 60
@@ -122,26 +144,8 @@ function itemKey(item, fallbackIndex) {
   )
 }
 
-function isSelected(item) {
-  const code = item?.canonical_rjcode
-  return Boolean(code && props.selectedCodes?.has?.(code))
-}
-
-function isFlashed(item) {
-  const code = item?.canonical_rjcode
-  return Boolean(code && props.flashedCodes?.has?.(code))
-}
-
 function getRowItems(rowIndex) {
-  const start = rowIndex * columnCount.value
-  return pagedItems.value
-    .slice(start, start + columnCount.value)
-    .map((item, offset) => ({
-      item,
-      absoluteIndex: start + offset,
-      columnIndex: offset,
-      key: itemKey(item, start + offset),
-    }))
+  return rowViewModels.value[rowIndex] || []
 }
 
 function triggerViewportMotion() {
@@ -212,18 +216,18 @@ onBeforeUnmount(() => {
     <template v-else>
       <div v-if="usePlainRender" class="circle-work-plain" :class="[`is-${mode}`]" :style="{ gridTemplateColumns }">
         <div
-          v-for="(item, index) in pagedItems"
-          :key="itemKey(item, index)"
+          v-for="viewModel in itemViewModels"
+          :key="viewModel.key"
           class="circle-work-plain-cell"
           :class="[`is-${mode}`, { 'is-motion-active': motionActive }]"
-          :style="{ '--cell-index': index % Math.max(1, columnCount) }"
+          :style="{ '--cell-index': viewModel.index % Math.max(1, columnCount) }"
         >
           <WorkCard
             v-if="mode === 'card'"
-            :item="item"
+            :item="viewModel.item"
             :card-index="0"
-            :selected="isSelected(item)"
-            :status-flash="isFlashed(item)"
+            :selected="viewModel.selected"
+            :status-flash="viewModel.flashed"
             :corner-label="cornerLabel"
             @select="emit('select', $event)"
             @preview="emit('preview', $event)"
@@ -231,10 +235,10 @@ onBeforeUnmount(() => {
           />
           <WorkListRow
             v-else
-            :item="item"
+            :item="viewModel.item"
             :row-index="0"
-            :selected="isSelected(item)"
-            :status-flash="isFlashed(item)"
+            :selected="viewModel.selected"
+            :status-flash="viewModel.flashed"
             :image-field="imageField"
             :corner-label="cornerLabel"
             @select="emit('select', $event)"
@@ -269,8 +273,8 @@ onBeforeUnmount(() => {
                 v-if="mode === 'card'"
                 :item="cell.item"
                 :card-index="0"
-                :selected="isSelected(cell.item)"
-                :status-flash="isFlashed(cell.item)"
+                :selected="cell.selected"
+                :status-flash="cell.flashed"
                 :corner-label="cornerLabel"
                 @select="emit('select', $event)"
                 @preview="emit('preview', $event)"
@@ -280,8 +284,8 @@ onBeforeUnmount(() => {
                 v-else
                 :item="cell.item"
                 :row-index="0"
-                :selected="isSelected(cell.item)"
-                :status-flash="isFlashed(cell.item)"
+                :selected="cell.selected"
+                :status-flash="cell.flashed"
                 :image-field="imageField"
                 :corner-label="cornerLabel"
                 @select="emit('select', $event)"
