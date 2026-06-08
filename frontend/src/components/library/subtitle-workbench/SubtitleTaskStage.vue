@@ -440,7 +440,7 @@ function statusPillClass(key) {
   const k = String(key || '').toLowerCase()
   if (['completed', 'manual_match_completed'].includes(k)) return 'border border-emerald-200 bg-emerald-50 text-emerald-700'
   if (k === 'failed') return 'border border-rose-200 bg-rose-50 text-rose-700'
-  if (['processing', 'awaiting_manual_match'].includes(k)) return 'border border-sky-200 bg-sky-50 text-sky-700'
+  if (['processing', 'awaiting', 'awaiting_manual_match', 'waiting_manual'].includes(k)) return 'border border-sky-200 bg-sky-50 text-sky-700'
   if (k === 'view_restored') return 'border border-violet-200 bg-violet-50 text-violet-700'
   if (k === 'view_backfilled') return 'border border-slate-200 bg-slate-50 text-slate-700'
   return 'border border-slate-200 bg-slate-50 text-slate-600'
@@ -451,7 +451,7 @@ function statusIcon(key) {
   if (['completed', 'manual_match_completed'].includes(k)) return CheckCircle2
   if (k === 'failed') return XCircle
   if (k === 'processing') return Loader2
-  if (k === 'awaiting_manual_match') return Hand
+  if (['awaiting', 'awaiting_manual_match', 'waiting_manual'].includes(k)) return Hand
   if (k === 'view_restored') return History
   if (k === 'view_backfilled') return Layers
   return Clock
@@ -461,7 +461,7 @@ function statusIconColor(key) {
   const k = String(key || '').toLowerCase()
   if (['completed', 'manual_match_completed'].includes(k)) return 'text-emerald-500'
   if (k === 'failed') return 'text-rose-500'
-  if (['processing', 'awaiting_manual_match'].includes(k)) return 'text-sky-500'
+  if (['processing', 'awaiting', 'awaiting_manual_match', 'waiting_manual'].includes(k)) return 'text-sky-500'
   if (k === 'view_restored') return 'text-violet-500'
   if (k === 'view_backfilled') return 'text-slate-500'
   return 'text-slate-400'

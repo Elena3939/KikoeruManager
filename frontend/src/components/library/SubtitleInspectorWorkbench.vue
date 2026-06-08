@@ -22,7 +22,19 @@
     </div>
 
     <div
-      v-if="!view.subtitleInspectorInfo.subtitleDir && pendingInProgressTask"
+      v-if="!view.subtitleInspectorInfo.subtitleDir && activeTaskMissingSubtitleDir"
+      class="grid min-h-[320px] place-items-center px-6 py-10"
+    >
+      <div class="max-w-[520px] rounded-[14px] border border-amber-200 bg-amber-50 px-4 py-3 text-center">
+        <AlertTriangle class="mx-auto mb-2 h-6 w-6 text-amber-500" :stroke-width="2.2" />
+        <div class="text-[13px] font-semibold text-amber-800">当前待配对任务缺少工作台字幕目录</div>
+        <div class="mt-1 text-[11.5px] leading-relaxed text-amber-700">
+          中间区暂时无法读取原始字幕文件。任务队列会保留，刷新后如果目录恢复会自动加载。
+        </div>
+      </div>
+    </div>
+    <div
+      v-else-if="!view.subtitleInspectorInfo.subtitleDir && pendingInProgressTask"
       class="relative min-h-[320px]"
       v-app-loading="{ loading: true, text: pendingLoadingText, size: 124 }"
     ></div>
@@ -104,6 +116,11 @@
 
           <CheckCircle2 :size="14" :stroke-width="2.2" class="text-emerald-500 flex-shrink-0" />
           <span>已匹配完成，已应用 {{ view.activeSubtitleInspectTask?.manual_match_applied_pairs || view.subtitleInspectorInfo.manualMatchAppliedPairs || 0 }} 组配对。若还要调整，可以继续重新筛选后再次应用。</span>
+        </div>
+
+        <div v-if="view.subtitleInspectorInfo.subtitleLoadError" class="flex items-start gap-2 px-4 py-2.5 rounded-[10px] border border-rose-200 bg-rose-50 text-[12.5px] text-rose-800">
+          <AlertTriangle :size="14" :stroke-width="2.2" class="mt-0.5 flex-shrink-0 text-rose-500" />
+          <span>字幕工作台目录读取失败：{{ view.subtitleInspectorInfo.subtitleLoadError }}</span>
         </div>
 
         <div v-if="view.subtitleInspectorInfo.audioLoadError" class="flex items-start gap-2 px-4 py-2.5 rounded-[10px] border border-amber-200 bg-amber-50 text-[12.5px] text-amber-800">
@@ -442,13 +459,43 @@ const props = defineProps({
 
 const emptySet = new Set()
 const noop = () => {}
-const view = computed(() => ({
+
+function arrayOrEmpty(value) {
+  return Array.isArray(value) ? value : []
+}
+
+function setOrEmpty(value) {
+  return value instanceof Set ? value : emptySet
+}
+
+function objectOrEmpty(value) {
+  return value && typeof value === 'object' ? value : {}
+}
+
+function normalizeSequenceSelection(value) {
+  const selection = objectOrEmpty(value)
+  return {
+    audioPaths: arrayOrEmpty(selection.audioPaths),
+    subtitlePaths: arrayOrEmpty(selection.subtitlePaths)
+  }
+}
+
+function normalizeMatchSelection(value) {
+  const selection = objectOrEmpty(value)
+  return {
+    audioPath: selection.audioPath || '',
+    subtitlePath: selection.subtitlePath || ''
+  }
+}
+
+const viewDefaults = {
   subtitleInspectorInfo: {},
   subtitleInspectorBusy: false,
   subtitleInspectorLoading: false,
   subtitleInspectorDeleting: false,
   subtitleInspectorHasDirectories: false,
   subtitleInspectorAudioFiles: [],
+  subtitleInspectorSubtitleFiles: [],
   subtitleInspectorFlatTree: [],
   subtitleInspectorSelectedRows: [],
   subtitleInspectorSelectedIds: emptySet,
@@ -526,19 +573,61 @@ const view = computed(() => ({
   toggleSubtitleInspectorExpand: noop,
   openSubtitleRenameDialog: noop,
   deleteSubtitleTreeEntry: noop,
-  ...(props.ctx || {})
-}))
+}
+
+const view = computed(() => {
+  const merged = {
+    ...viewDefaults,
+    ...(props.ctx || {})
+  }
+  return {
+    ...merged,
+    subtitleInspectorInfo: objectOrEmpty(merged.subtitleInspectorInfo),
+    subtitleInspectorAudioFiles: arrayOrEmpty(merged.subtitleInspectorAudioFiles),
+    subtitleInspectorSubtitleFiles: arrayOrEmpty(merged.subtitleInspectorSubtitleFiles),
+    subtitleInspectorFlatTree: arrayOrEmpty(merged.subtitleInspectorFlatTree),
+    subtitleInspectorSelectedRows: arrayOrEmpty(merged.subtitleInspectorSelectedRows),
+    inspectableSubtitleTasks: arrayOrEmpty(merged.inspectableSubtitleTasks),
+    subtitleSequenceSelection: normalizeSequenceSelection(merged.subtitleSequenceSelection),
+    subtitleManualPairs: arrayOrEmpty(merged.subtitleManualPairs),
+    filteredSubtitleInspectorAudioFiles: arrayOrEmpty(merged.filteredSubtitleInspectorAudioFiles),
+    filteredSubtitleInspectorSubtitleFiles: arrayOrEmpty(merged.filteredSubtitleInspectorSubtitleFiles),
+    activeSubtitleTaskProgressLogs: arrayOrEmpty(merged.activeSubtitleTaskProgressLogs),
+    subtitleInspectorSelectedIds: setOrEmpty(merged.subtitleInspectorSelectedIds),
+    subtitleInspectorExpandedIds: setOrEmpty(merged.subtitleInspectorExpandedIds),
+    subtitleMatchSelection: normalizeMatchSelection(merged.subtitleMatchSelection)
+  }
+})
 const showPairing = computed(() => ['all', 'pairing'].includes(props.stageMode))
 const showTree = computed(() => ['all', 'tree'].includes(props.stageMode))
+
+function isAwaitingManualTask(task) {
+  const status = String(task?.status || '').toLowerCase()
+  return Boolean(
+    task?.awaiting_manual_match ||
+    ['waiting_manual', 'awaiting_manual_match', 'awaiting'].includes(status)
+  )
+}
+
+function isRuntimePendingTask(task) {
+  const status = String(task?.status || '').toLowerCase()
+  if (!['pending', 'processing'].includes(status)) return false
+  return !task?.manual_match_completed && !isAwaitingManualTask(task)
+}
+
+const activeTaskMissingSubtitleDir = computed(() => {
+  const task = view.value.activeSubtitleInspectTask || view.value.activeSubtitleTask
+  return Boolean(task && isAwaitingManualTask(task) && !view.value.subtitleInspectorInfo?.subtitleDir)
+})
 
 const pendingInProgressTask = computed(() => {
   const candidates = [view.value.activeSubtitleTask, view.value.subtitleBackgroundActiveTask]
   for (const task of candidates) {
     if (!task) continue
-    if (['pending', 'processing'].includes(task.status)) return task
+    if (isRuntimePendingTask(task)) return task
   }
   const tasks = Array.isArray(view.value.inspectableSubtitleTasks) ? view.value.inspectableSubtitleTasks : []
-  return tasks.find(task => ['pending', 'processing'].includes(task?.status)) || null
+  return tasks.find(task => isRuntimePendingTask(task)) || null
 })
 
 const pendingLoadingText = computed(() => {
@@ -753,11 +842,12 @@ function getSubtitlePairRenamePreview(pair = {}) {
 }
 
 .subtitle-inspector-workbench-scroll.is-pairing-mode {
-  overflow: hidden;
+  overflow: auto;
 }
 
 .subtitle-pairing-stage {
   flex: 1 1 auto;
+  min-height: 0;
 }
 
 .is-spinning { animation: subtitle-spin 1s linear infinite; }

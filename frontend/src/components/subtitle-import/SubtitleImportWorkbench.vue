@@ -166,6 +166,7 @@ import { Captions, Folder, FolderOpen, Loader2, Minimize2, RefreshCw, Trash2, X 
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
 import { aiSubtitleMatchApi, libraryApi, rjSubtitleApi, subtitleImportApi } from '../../api'
 import { runWithConcurrency } from '../../composables/useAsyncBatch'
+import { useRealtimeEvents } from '../../composables/useRealtimeEvents'
 import { libraryEntryIconFor, libraryEntryMetaFor } from '../library/_libraryFileKind'
 import FilterDeleteDialog from '../library/FilterDeleteDialog.vue'
 import SubtitleWorkbenchStage from '../library/subtitle-workbench/SubtitleWorkbenchStage.vue'
@@ -186,6 +187,7 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['close', 'hide-background', 'select-task', 'state-change'])
+const realtimeEvents = useRealtimeEvents()
 
 const LEGACY_SUBTITLE_OPTIONS_KEY = 'kikoeru.ui.library.rjSubtitleOptions'
 const SUBTITLE_IMPORT_OPTIONS_KEY = 'kikoeru.ui.subtitleImport.workbenchOptions'
@@ -339,7 +341,7 @@ const subtitlePairApplying = ref(false)
 const subtitleAutoPairing = ref(false)
 const subtitleAudioFilterMode = ref('all')
 const subtitleSubtitleFilterMode = ref('all')
-const TASK_STATUS_REFRESH_MS = 4000
+const TASK_STATUS_REFRESH_MS = 30000
 let taskStatusTimer = null
 let skipTaskDraftPersistence = false
 let subtitleInspectRequestSeq = 0
@@ -534,17 +536,29 @@ watch([
 
 function normalizeRJSubtitleTaskPayload(task) {
   const trimTail = (items, limit) => Array.isArray(items) ? items.slice(-limit) : []
-  return {
+  const normalized = {
     ...task,
     search_attempts: Array.isArray(task?.search_attempts) ? task.search_attempts : [],
     download_files: trimTail(task?.download_files, 24),
     progress_log: trimTail(task?.progress_log, 24)
   }
+  const subtitleDir = getTaskWorkbenchSubtitleDir(normalized)
+  if (subtitleDir && !String(normalized.subtitle_dir || '').trim()) {
+    normalized.subtitle_dir = subtitleDir
+  }
+  return normalized
 }
 
 function getFileName(path) {
   if (!path) return ''
   return String(path).split(/[\\/]/).pop()
+}
+
+function getTaskWorkbenchSubtitleDir(task) {
+  const subtitleDir = String(task?.subtitle_dir || '').trim()
+  if (subtitleDir) return subtitleDir
+  const workbenchRoot = String(task?.linked_workbench_root_dir || '').trim()
+  return workbenchRoot ? joinFolderPath(workbenchRoot, 'subtitles') : ''
 }
 
 function candidateKey(candidate) {
@@ -580,12 +594,17 @@ function preserveSubtitleTaskWorkspaceFields(task, previousTask) {
     'folder_path',
     'source_mode',
     'source_archive_path',
-    'source_subtitle_folder_path'
+    'source_subtitle_folder_path',
+    'linked_workbench_root_dir'
   ].forEach(key => {
     if ((next[key] === undefined || next[key] === null || next[key] === '') && previousTask[key]) {
       next[key] = previousTask[key]
     }
   })
+  const subtitleDir = getTaskWorkbenchSubtitleDir(next)
+  if (subtitleDir && !String(next.subtitle_dir || '').trim()) {
+    next.subtitle_dir = subtitleDir
+  }
   return next
 }
 
@@ -712,7 +731,7 @@ function canRetryTask(task) {
 function canRetargetTask(task) {
   if (!task) return false
   if (task?.manual_match_completed) return false
-  if (!String(task?.subtitle_dir || '').trim()) return false
+  if (!getTaskWorkbenchSubtitleDir(task)) return false
   const sourceMode = String(task?.source_mode || '').trim().toLowerCase()
   return ['linked_translation_archive_import', 'subtitle_folder_import'].includes(sourceMode)
 }
@@ -739,9 +758,9 @@ async function selectWorkbenchTask(taskId, options = {}) {
   if (props.visible && options.sync !== false && props.taskId !== normalized) {
     emit('select-task', normalized)
   }
-  if (matchedTask?.subtitle_dir && options.inspect !== false) {
+  if (getTaskWorkbenchSubtitleDir(matchedTask) && options.inspect !== false) {
     await inspectSubtitleTask(matchedTask, { force: true })
-  } else if (matchedTask && !matchedTask.subtitle_dir) {
+  } else if (matchedTask && !getTaskWorkbenchSubtitleDir(matchedTask)) {
     clearSubtitleInspectorState()
   }
 }
@@ -828,9 +847,9 @@ async function refreshTaskStatus(showMessage = false, options = {}) {
     subtitleCleanupSummary.value = activeTask.value?.linked_subtitle_cleanup_result
       ? buildCleanupSummary(activeTask.value.linked_subtitle_cleanup_result)
       : ''
-    if (inspect && activeTask.value.subtitle_dir) {
+    if (inspect && getTaskWorkbenchSubtitleDir(activeTask.value)) {
       await inspectSubtitleTask(activeTask.value, { force: forceInspect })
-    } else if (inspect && !activeTask.value.subtitle_dir) {
+    } else if (inspect && !getTaskWorkbenchSubtitleDir(activeTask.value)) {
       clearSubtitleInspectorState()
     }
     if (showMessage) ElMessage.success('字幕补配任务状态已刷新')
@@ -949,7 +968,7 @@ async function loadRetargetPreview(task = activeTask.value, options = {}) {
 
   retargetPreviewLoading.value = true
   try {
-    const previewResult = await subtitleImportApi.previewFolder(task.subtitle_dir, {
+    const previewResult = await subtitleImportApi.previewFolder(getTaskWorkbenchSubtitleDir(task), {
       preferredLibraryId: task.target_library_id || task.library_id || undefined,
       sourceRJCodeHint: buildRetargetSourceRJCode(task)
     })
@@ -995,7 +1014,7 @@ async function retargetActiveTask() {
         .filter(rule => String(rule.pattern || '').trim())
     }
 
-    const result = await subtitleImportApi.importFolder(task.subtitle_dir, commonOptions)
+    const result = await subtitleImportApi.importFolder(getTaskWorkbenchSubtitleDir(task), commonOptions)
     await refreshTaskStatus(false, { inspect: true, forceInspect: true })
     if (result?.task?.id) {
       selectWorkbenchTask(result.task.id)
@@ -1141,7 +1160,8 @@ function clearSubtitleInspectorState() {
 
 async function inspectSubtitleTask(task, options = {}) {
   const { force = false } = options
-  if (!task?.subtitle_dir) return
+  const subtitleDir = getTaskWorkbenchSubtitleDir(task)
+  if (!subtitleDir) return
   const inspectSeq = ++subtitleInspectRequestSeq
   if (task?.id && task.id !== selectedTaskId.value) {
     await selectWorkbenchTask(task.id, { inspect: false })
@@ -1149,7 +1169,7 @@ async function inspectSubtitleTask(task, options = {}) {
   if (
     !force &&
     subtitleInspectorInfo.value.taskId === task.id &&
-    subtitleInspectorInfo.value.subtitleDir === task.subtitle_dir &&
+    subtitleInspectorInfo.value.subtitleDir === subtitleDir &&
     !subtitleInspectorLoading.value
   ) {
     return
@@ -1162,7 +1182,7 @@ async function inspectSubtitleTask(task, options = {}) {
     const subtitleLibraryId = task.subtitle_library_id || audioLibraryId
     const audioFolderPath = String(task.target_folder_path || task.folder_path || '').trim()
     const [subtitleResult, audioResult] = await Promise.allSettled([
-      libraryApi.browserFolderContents(subtitleLibraryId, task.subtitle_dir),
+      libraryApi.browserFolderContents(subtitleLibraryId, subtitleDir),
       audioFolderPath ? libraryApi.browserFolderContents(audioLibraryId, audioFolderPath) : Promise.resolve({ items: [] })
     ])
     const subtitleData = subtitleResult.status === 'fulfilled' ? subtitleResult.value : null
@@ -1184,7 +1204,7 @@ async function inspectSubtitleTask(task, options = {}) {
       audioLibraryId,
       subtitleLibraryId,
       folderPath: audioFolderPath,
-      subtitleDir: subtitleData.folder_path || task.subtitle_dir,
+      subtitleDir: subtitleData.folder_path || subtitleDir,
       sourceMode: task.source_mode || '',
       audioLoadError: audioResult.status === 'rejected'
         ? decodePossibleMojibake(audioResult.reason?.response?.data?.detail || audioResult.reason?.message || '音频目录读取失败')
@@ -1219,16 +1239,28 @@ async function inspectSubtitleTask(task, options = {}) {
       if (inspectSeq !== subtitleInspectRequestSeq || (activeTask.value?.id && activeTask.value.id !== task.id)) {
         return
       }
-      clearSubtitleInspectorState()
-      if (activeTask.value?.id === task.id) {
-        activeTask.value = {
-          ...activeTask.value,
-          status: 'failed',
-          error_message: message,
-          current_step: message,
-          awaiting_manual_match: false
-        }
+      skipTaskDraftPersistence = true
+      subtitleInspectorSearch.value = ''
+      subtitleInspectorItems.value = []
+      subtitleInspectorAudioItems.value = []
+      subtitleInspectorExpandedIds.value = new Set()
+      subtitleInspectorSelectedIds.value = new Set()
+      subtitleInspectorLastSelectedId.value = ''
+      resetSubtitleManualMatchState()
+      subtitleInspectorInfo.value = {
+        taskId: task.id,
+        libraryId: task.target_library_id || task.library_id || '',
+        audioLibraryId: task.target_library_id || task.library_id || '',
+        subtitleLibraryId: task.subtitle_library_id || task.target_library_id || task.library_id || '',
+        folderPath: String(task.target_folder_path || task.folder_path || '').trim(),
+        subtitleDir,
+        sourceMode: task.source_mode || '',
+        audioLoadError: '',
+        subtitleLoadError: message || '字幕目录读取失败',
+        totalFiles: 0,
+        totalSize: 0
       }
+      skipTaskDraftPersistence = false
       ElMessage.error('加载字幕目录失败: ' + message)
     }
   } finally {
@@ -1238,7 +1270,7 @@ async function inspectSubtitleTask(task, options = {}) {
 }
 
 async function reloadSubtitleInspector() {
-  if (!activeTask.value?.subtitle_dir) return
+  if (!getTaskWorkbenchSubtitleDir(activeTask.value)) return
   await inspectSubtitleTask(activeTask.value, { force: true })
 }
 
@@ -2202,17 +2234,58 @@ const canRetargetActiveTask = computed(() => {
 
 function stopTaskStatusPolling() {
   if (taskStatusTimer) {
-    window.clearInterval(taskStatusTimer)
+    window.clearTimeout(taskStatusTimer)
     taskStatusTimer = null
   }
 }
 
 function startTaskStatusPolling() {
   if (taskStatusTimer || (!props.visible && !props.backgroundActive)) return
-  taskStatusTimer = window.setInterval(() => {
+  taskStatusTimer = window.setTimeout(async () => {
+    taskStatusTimer = null
     if (!props.visible && !props.backgroundActive) return
-    refreshTaskStatus(false, { inspect: false, silent: true })
+    if (!realtimeEvents.connected.value) {
+      await refreshTaskStatus(false, { inspect: false, silent: true })
+    }
+    startTaskStatusPolling()
   }, TASK_STATUS_REFRESH_MS)
+}
+
+function normalizeTaskRealtimeEvent(detail = {}) {
+  if (detail.type === 'task.center.changed') return detail.payload || {}
+  return detail
+}
+
+function patchLinkedTaskFromRealtimeEvent(payload = {}) {
+  const taskId = String(payload.engine_task_id || payload.entity_id || '').trim()
+  if (!taskId) return false
+  const domain = String(payload.domain || '').trim()
+  if (domain && domain !== 'subtitle_import') return false
+  let changed = false
+  linkedTasks.value = sortLinkedTasks(linkedTasks.value.map(task => {
+    if (String(task?.id || '') !== taskId) return task
+    changed = true
+    return preserveSubtitleTaskWorkspaceFields({
+      ...task,
+      status: payload.status || task.status,
+      progress: Number(payload.progress ?? task.progress ?? 0),
+      current_step: payload.current_step || task.current_step,
+    }, task)
+  }))
+  if (activeTask.value?.id === taskId) {
+    activeTask.value = linkedTasks.value.find(task => task.id === taskId) || activeTask.value
+  }
+  return changed
+}
+
+function handleTaskRealtimeEvent(event) {
+  const payload = normalizeTaskRealtimeEvent(event?.detail || {})
+  if (payload?.type !== 'task_center_changed') return
+  if (!patchLinkedTaskFromRealtimeEvent(payload)) return
+  const status = String(payload.status || '').trim()
+  if (['completed', 'failed', 'cancelled', 'waiting_manual'].includes(status)) {
+    refreshTaskStatus(false, { inspect: props.visible, forceInspect: props.visible, silent: true })
+  }
 }
 
 watch(() => [props.visible, props.backgroundActive], async ([visible, backgroundActive]) => {
@@ -2234,7 +2307,12 @@ watch(activeTask, async (task) => {
   await loadRetargetPreview(task, { force: false, showMessage: false })
 }, { immediate: true })
 
+onMounted(() => {
+  window.addEventListener('kikoerumanager:events:message', handleTaskRealtimeEvent)
+})
+
 onUnmounted(() => {
+  window.removeEventListener('kikoerumanager:events:message', handleTaskRealtimeEvent)
   stopTaskStatusPolling()
 })
 
@@ -2277,12 +2355,13 @@ const subtitleTaskManualFilter = ref('all')
 watch(() => activeTask.value?.id, async (taskId) => {
   if (!taskId || !props.visible) return
   const task = activeTask.value
-  if (!task?.subtitle_dir) {
+  const subtitleDir = getTaskWorkbenchSubtitleDir(task)
+  if (!subtitleDir) {
     clearSubtitleInspectorState()
     return
   }
   if (subtitleInspectorInfo.value.taskId === taskId
-      && subtitleInspectorInfo.value.subtitleDir === task.subtitle_dir
+      && subtitleInspectorInfo.value.subtitleDir === subtitleDir
       && subtitleInspectorItems.value.length) {
     return
   }
@@ -2299,9 +2378,10 @@ watch(activeSubtitleWorkbenchStage, async (stage) => {
       : 'pairing'
   if (stage !== 'pairing' && stage !== 'tree') return
   const task = activeTask.value
-  if (!task?.subtitle_dir) return
+  const subtitleDir = getTaskWorkbenchSubtitleDir(task)
+  if (!subtitleDir) return
   const hasLoadedSubtitleContext = subtitleInspectorInfo.value.taskId === task.id
-    && subtitleInspectorInfo.value.subtitleDir === task.subtitle_dir
+    && subtitleInspectorInfo.value.subtitleDir === subtitleDir
     && subtitleInspectorItems.value.length
   const hasLoadedPairingContext = hasLoadedSubtitleContext
     && (stage !== 'pairing' || subtitleInspectorAudioItems.value.length || subtitleInspectorInfo.value.folderPath)

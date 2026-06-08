@@ -321,7 +321,7 @@ function getStatusLabel(task) {
   if (task?.manual_match_completed || status === 'manual_match_completed') return '已匹配完成'
   if (status === 'completed') return '已完成'
   if (['processing'].includes(status)) return '执行中'
-  if (['awaiting_manual_match', 'waiting_manual'].includes(status)) return '待手动配对'
+  if (['awaiting', 'awaiting_manual_match', 'waiting_manual'].includes(status)) return '待手动配对'
   if (status === 'view_restored') return '恢复查看'
   if (status === 'view_backfilled') return '已回填'
   if (status === 'failed') return '失败'
@@ -336,7 +336,7 @@ function getStatusClass(task) {
   }
   if (status === 'view_restored') return 'border-violet-200 bg-violet-50 text-violet-700'
   if (status === 'view_backfilled') return 'border-slate-200 bg-slate-50 text-slate-700'
-  if (['processing', 'awaiting_manual_match', 'waiting_manual'].includes(status)) {
+  if (['processing', 'awaiting', 'awaiting_manual_match', 'waiting_manual'].includes(status)) {
     return 'border-sky-200 bg-sky-50 text-sky-700'
   }
   if (status === 'failed') return 'border-rose-200 bg-rose-50 text-rose-700'
@@ -347,7 +347,7 @@ function getStatusIcon(task) {
   const status = getTaskStatusKey(task)
   if (task?.manual_match_completed || status === 'manual_match_completed') return CheckCircle2
   if (status === 'processing') return Loader2
-  if (['awaiting_manual_match', 'waiting_manual'].includes(status)) return Link2
+  if (['awaiting', 'awaiting_manual_match', 'waiting_manual'].includes(status)) return Link2
   if (status === 'failed') return XCircle
   if (status === 'view_backfilled') return ListTodo
   return Clock
@@ -397,7 +397,7 @@ function handleTaskClick(task) {
 function statDotClass(key) {
   const k = String(key || '').toLowerCase()
   if (k === 'all' || k === 'total') return 'bg-slate-700'
-  if (k === 'pending' || k === 'waiting' || k === 'waiting_manual' || k === 'awaiting_manual_match') return 'bg-amber-400'
+  if (k === 'pending' || k === 'waiting' || k === 'awaiting' || k === 'waiting_manual' || k === 'awaiting_manual_match') return 'bg-amber-400'
   if (k === 'processing') return 'bg-sky-500'
   if (k === 'clearable') return 'bg-slate-400'
   if (k === 'completed' || k === 'matched' || k === 'manual_match_completed') return 'bg-emerald-500'
@@ -818,8 +818,9 @@ function getDisplayFolderName(task) {
   color: #ffffff !important;
 }
 
-:global(html.kikoerumanager-dark .subtitle-queue-active-mark) {
-  background: rgba(250, 250, 252, 0.92) !important;
+:global(html.kikoerumanager-dark .subtitle-queue-active-mark),
+:global(html.dark .subtitle-queue-active-mark) {
+  background: #8b5cf6 !important;
 }
 
 :global(html.kikoerumanager-dark .subtitle-queue-count) {

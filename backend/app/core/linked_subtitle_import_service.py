@@ -1334,6 +1334,7 @@ class LinkedSubtitleImportService:
                 sort_by="name",
                 sort_order="asc",
                 force_refresh=force_refresh,
+                remote_warmup_retries=1,
             )
             items = list(result.get("files") or [])
             total = int(result.get("total") or len(items))
@@ -1612,7 +1613,53 @@ class LinkedSubtitleImportService:
                 seen_paths.add(dedupe_key)
                 candidates.append(summary)
 
+        if candidates:
+            candidates = self._prefer_deepest_target_rj_candidates(candidates, target_rjcode)
+            candidates.sort(
+                key=lambda item: (
+                    1 if item.get("has_existing_subtitles") else 0,
+                    item.get("library_name") or "",
+                    item.get("folder_path") or "",
+                )
+            )
+            logger.info(
+                "[字幕补配] 本地/快照目标目录已命中，跳过远程同步搜索: rj=%s candidate_count=%s",
+                target_rjcode,
+                len(candidates),
+            )
+            return {
+                "candidates": candidates,
+                "search_status": "matched",
+                "search_reason": "",
+            }
+
         remote_search_pending = False
+        if remote_libraries:
+            try:
+                health = self.library_manager.remote_health_snapshot()
+                health_items = list((health or {}).get("items") or [])
+                degraded_remote_ids = {
+                    str(item.get("library_id") or "").strip()
+                    for item in health_items
+                    if str(item.get("status") or "").strip().lower() == "degraded"
+                }
+            except Exception:
+                degraded_remote_ids = set()
+            if degraded_remote_ids:
+                logger.info(
+                    "[字幕补配] 远程目标目录搜索跳过熔断库存: rj=%s libraries=%s",
+                    target_rjcode,
+                    sorted(degraded_remote_ids),
+                )
+            searchable_remote_libraries = [
+                library
+                for library in remote_libraries
+                if str(library.get("id") or "").strip() not in degraded_remote_ids
+            ]
+            if degraded_remote_ids and not searchable_remote_libraries:
+                remote_search_pending = True
+                logger.info("[字幕补配] 远程库存处于熔断状态，目标目录暂挂起: rj=%s", target_rjcode)
+            remote_libraries = searchable_remote_libraries
         if remote_libraries:
             remote_tasks: dict[asyncio.Task, Dict[str, Any]] = {
                 asyncio.create_task(collect_library_candidates(library)): library
@@ -1669,6 +1716,9 @@ class LinkedSubtitleImportService:
                 if not remote_match_found and remote_search_uncertain:
                     remote_search_pending = True
                     logger.info("[字幕补配] 远程目标目录暂未检出: rj=%s", target_rjcode)
+                elif degraded_remote_ids and not remote_match_found:
+                    remote_search_pending = True
+                    logger.info("[字幕补配] 存在熔断远程库未搜索，目标目录状态暂不判死: rj=%s", target_rjcode)
             finally:
                 cancelled_tasks = []
                 for task in remote_tasks:
@@ -1810,9 +1860,14 @@ class LinkedSubtitleImportService:
                 self._is_kikoeru_result_reliable(_prefetched_target_kikoeru) if target_rjcode else True
             )
         else:
-            target_coro = _safe_kikoeru(target_rjcode) if target_rjcode else _noop_kikoeru()
-            (source_kikoeru_result, source_kikoeru_query_ok), (target_kikoeru_result, target_kikoeru_query_ok) = \
-                await asyncio.gather(source_coro, target_coro)
+            if source_rjcode and target_rjcode and source_rjcode == target_rjcode:
+                source_kikoeru_result, source_kikoeru_query_ok = await source_coro
+                target_kikoeru_result = source_kikoeru_result
+                target_kikoeru_query_ok = source_kikoeru_query_ok
+            else:
+                target_coro = _safe_kikoeru(target_rjcode) if target_rjcode else _noop_kikoeru()
+                (source_kikoeru_result, source_kikoeru_query_ok), (target_kikoeru_result, target_kikoeru_query_ok) = \
+                    await asyncio.gather(source_coro, target_coro)
 
         source_exists_in_kikoeru = bool(source_kikoeru_result and source_kikoeru_result.is_found)
         target_exists_in_kikoeru = bool(target_kikoeru_result and target_kikoeru_result.is_found)
