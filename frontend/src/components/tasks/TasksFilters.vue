@@ -76,7 +76,7 @@
             :class="activeOnly ? 'bg-emerald-500' : 'bg-slate-400'"
           />
         </span>
-        {{ activeOnly ? '仅活跃' : '全部' }}
+        {{ activeOnly ? '仅活跃' : '全部任务' }}
       </button>
 
       <!-- 重置 -->
@@ -333,6 +333,13 @@ const sortDropdownOptions = [
     gap: 4px;
     justify-content: center;
     font-size: 12px;
+  }
+}
+
+@media (min-width: 641px) {
+  :global(.app-dd-menu.tasks-filter-dd-menu) {
+    max-height: none;
+    overflow-y: visible;
   }
 }
 </style>
