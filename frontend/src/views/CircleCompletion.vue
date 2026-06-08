@@ -837,6 +837,8 @@
     <CircleDownloadPreviewDialog
       v-model:visible="previewDialogVisible"
       :loading="previewLoading"
+      :loading-label="previewProgressLabel"
+      :loading-description="previewProgressDescription"
       :starting="starting"
       :plans="previewPlans"
       :libraries="libraries"
@@ -928,12 +930,14 @@ import AppDropdown from '../components/common/AppDropdown.vue'
 import BackgroundFloatingCard from '../components/common/BackgroundFloatingCard.vue'
 import CircleWorksViewport from '../components/circle/CircleWorksViewport.vue'
 import { showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
+import { useRealtimeEvents } from '../composables/useRealtimeEvents'
 
 const CIRCLE_COMPLETION_TARGET_SUBDIRS_KEY = 'kikoerumanager.circleCompletion.targetSubdirs'
 const CIRCLE_COMPLETION_DOWNLOAD_WORKBENCH_KEY = 'kikoerumanager.circleCompletion.downloadWorkbench'
 const CIRCLE_COMPLETION_REFRESH_JOB_KEY = 'kikoerumanager.circleCompletion.refreshJob'
 const CIRCLE_COMPLETION_INDEX_JOB_KEY = 'kikoerumanager.circleCompletion.indexJob'
 const CIRCLE_COMPLETION_UPLOAD_WORKBENCH_KEY = 'kikoerumanager.circleCompletion.uploadWorkbench'
+const realtimeEvents = useRealtimeEvents()
 function getJobProgressPercent(job) {
   const value = Number(job?.progress || 0)
   if (!Number.isFinite(value)) return 0
@@ -958,6 +962,8 @@ const indexing = ref(false)
 const emailCheckLoading = ref(false)
 const previewing = ref(false)
 const previewLoading = ref(false)
+const previewProgressLabel = ref('正在分析资源结构并生成下载计划...')
+const previewProgressDescription = ref('聚合资源分组、语言版本和推荐项')
 const starting = ref(false)
 const activeCircleId = ref('')
 const circleDetailLoading = ref(false)
@@ -975,11 +981,14 @@ const detail = reactive({
   works: []
 })
 const CIRCLE_DETAIL_CACHE_TTL = 5 * 60 * 1000
-const CIRCLE_DETAIL_PREFETCH_LIMIT = 2
+const CIRCLE_DETAIL_PREFETCH_LIMIT = 1
+const DOWNLOAD_PREVIEW_JOB_THRESHOLD = 8
 const circleDetailCache = new Map()
 let circleDetailRequestSeq = 0
 let circleDetailAbortController = null
 let circleDetailPrefetchTimer = null
+let circleDetailPrefetchIdleId = null
+let circleDetailPrefetchIdleIsTimeout = false
 let circleDetailPrefetchRunning = false
 const filters = reactive({
   onlyMissing: false,
@@ -1315,6 +1324,8 @@ const refreshJob = reactive({
 let refreshJobTimer = null
 let refreshJobAutoHideTimer = null
 const cancellingRefreshJob = ref(false)
+const JOB_FALLBACK_POLL_INTERVAL_MS = 30000
+const handledCircleTerminalTasks = new Set()
 const downloadSettings = reactive({
   downloadBasePath: '',
   targetLibraryId: '',
@@ -2121,6 +2132,7 @@ const canCancelRefreshJob = computed(() => isRefreshJobActive.value)
 onMounted(async () => {
   window.addEventListener('kikoerumanager:notification:new', handleNewReleaseNotification)
   window.addEventListener('kikoerumanager:circle:owned-synced', handleCircleOwnedSynced)
+  window.addEventListener('kikoerumanager:events:message', handleCircleTaskRealtimeEvent)
   hydrateIndexJobState()
   hydrateRefreshJobState()
   hydrateDownloadWorkbenchState()
@@ -2171,6 +2183,7 @@ onActivated(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('kikoerumanager:notification:new', handleNewReleaseNotification)
   window.removeEventListener('kikoerumanager:circle:owned-synced', handleCircleOwnedSynced)
+  window.removeEventListener('kikoerumanager:events:message', handleCircleTaskRealtimeEvent)
   if (_circleOwnedSyncedTimer) {
     clearTimeout(_circleOwnedSyncedTimer)
     _circleOwnedSyncedTimer = null
@@ -2182,6 +2195,12 @@ onBeforeUnmount(() => {
   if (circleDetailPrefetchTimer) {
     clearTimeout(circleDetailPrefetchTimer)
     circleDetailPrefetchTimer = null
+  }
+  if (circleDetailPrefetchIdleId !== null) {
+    if (!circleDetailPrefetchIdleIsTimeout && typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(circleDetailPrefetchIdleId)
+    else clearTimeout(circleDetailPrefetchIdleId)
+    circleDetailPrefetchIdleId = null
+    circleDetailPrefetchIdleIsTimeout = false
   }
   if (circleDetailAbortController) {
     circleDetailAbortController.abort()
@@ -3170,6 +3189,97 @@ function applyRefreshJob(payload = {}) {
   persistRefreshJobState()
 }
 
+function patchIndexJobFromTaskEvent(payload = {}) {
+  indexJob.visible = true
+  indexJob.job_id = String(payload.engine_task_id || payload.entity_id || indexJob.job_id || '')
+  indexJob.status = payload.status || indexJob.status || ''
+  indexJob.progress = Number(payload.progress ?? indexJob.progress ?? 0)
+  indexJob.current_step = payload.current_step || indexJob.current_step || ''
+  persistIndexJobState()
+}
+
+function patchRefreshJobFromTaskEvent(payload = {}) {
+  refreshJob.visible = true
+  refreshJob.job_id = String(payload.engine_task_id || payload.entity_id || refreshJob.job_id || '')
+  refreshJob.status = payload.status || refreshJob.status || ''
+  refreshJob.progress = Number(payload.progress ?? refreshJob.progress ?? 0)
+  refreshJob.current_step = payload.current_step || refreshJob.current_step || ''
+  if (refreshJob.status !== 'completed') {
+    stopRefreshJobAutoHide()
+    refreshJob.auto_hide_at = ''
+  }
+  persistRefreshJobState()
+}
+
+function normalizeCircleTaskEvent(detail = {}) {
+  if (detail.type === 'task.center.changed') return detail.payload || {}
+  return detail
+}
+
+function isTerminalTaskStatus(status) {
+  return ['completed', 'failed', 'cancelled', 'canceled'].includes(String(status || '').trim().toLowerCase())
+}
+
+function handleCircleTaskRealtimeEvent(event) {
+  const payload = normalizeCircleTaskEvent(event?.detail || {})
+  if (payload?.type !== 'task_center_changed') return
+  const taskId = String(payload.engine_task_id || payload.entity_id || '').trim()
+  if (!taskId) return
+  const domain = String(payload.domain || '').trim()
+  if (domain && domain !== 'circle_completion') return
+
+  if (indexJob.job_id && taskId === indexJob.job_id) {
+    patchIndexJobFromTaskEvent(payload)
+    if (isTerminalTaskStatus(payload.status)) {
+      const key = `index:${taskId}:${payload.status}`
+      if (!handledCircleTerminalTasks.has(key)) {
+        handledCircleTerminalTasks.add(key)
+        stopIndexJobPolling()
+        pollIndexJob(taskId)
+      }
+    }
+    return
+  }
+
+  if (refreshJob.job_id && taskId === refreshJob.job_id) {
+    patchRefreshJobFromTaskEvent(payload)
+    if (isTerminalTaskStatus(payload.status)) {
+      const key = `refresh:${taskId}:${payload.status}`
+      if (!handledCircleTerminalTasks.has(key)) {
+        handledCircleTerminalTasks.add(key)
+        stopRefreshJobPolling()
+        pollRefreshJob(taskId, { silentFinish: true })
+      }
+    }
+  }
+}
+
+function scheduleIndexJobFallbackPoll(jobId) {
+  stopIndexJobPolling()
+  indexJobTimer = window.setTimeout(() => {
+    indexJobTimer = null
+    if (!indexJob.job_id || String(indexJob.job_id) !== String(jobId)) return
+    if (!realtimeEvents.connected.value) {
+      pollIndexJob(jobId)
+      return
+    }
+    scheduleIndexJobFallbackPoll(jobId)
+  }, JOB_FALLBACK_POLL_INTERVAL_MS)
+}
+
+function scheduleRefreshJobFallbackPoll(jobId) {
+  stopRefreshJobPolling()
+  refreshJobTimer = window.setTimeout(() => {
+    refreshJobTimer = null
+    if (!refreshJob.job_id || String(refreshJob.job_id) !== String(jobId)) return
+    if (!realtimeEvents.connected.value) {
+      pollRefreshJob(jobId, { silentFinish: true })
+      return
+    }
+    scheduleRefreshJobFallbackPoll(jobId)
+  }, JOB_FALLBACK_POLL_INTERVAL_MS)
+}
+
 async function pollIndexJob(jobId) {
   stopIndexJobPolling()
   try {
@@ -3199,9 +3309,7 @@ async function pollIndexJob(jobId) {
       }
       return
     }
-    indexJobTimer = window.setTimeout(() => {
-      pollIndexJob(jobId)
-    }, 800)
+    scheduleIndexJobFallbackPoll(jobId)
   } catch (error) {
     indexing.value = false
     // 404 说明任务已不存在（后端重启），直接清除进度卡
@@ -3253,9 +3361,7 @@ async function pollRefreshJob(jobId, options = {}) {
       clearRefreshJobState()
       return
     }
-    refreshJobTimer = window.setTimeout(() => {
-      pollRefreshJob(jobId, { silentFinish: true })
-    }, 1000)
+    scheduleRefreshJobFallbackPoll(jobId)
   } catch (error) {
     refreshingCurrentCircle.value = false
     // 404 说明任务已不存在（后端重启），直接清除进度卡
@@ -3272,9 +3378,7 @@ async function pollRefreshJob(jobId, options = {}) {
     if (!silentFinish) {
       ElMessage.error(error.response?.data?.detail || '查询批量刷新进度失败')
     }
-    refreshJobTimer = window.setTimeout(() => {
-      pollRefreshJob(jobId, { silentFinish: true })
-    }, 2000)
+    scheduleRefreshJobFallbackPoll(jobId)
   }
 }
 
@@ -3338,18 +3442,37 @@ async function searchCachedCircles() {
 }
 
 function scheduleCircleDetailPrefetch() {
+  if (circleDetailLoading.value || circleDetailAbortController) return
   if (circleDetailPrefetchTimer) {
     window.clearTimeout(circleDetailPrefetchTimer)
     circleDetailPrefetchTimer = null
   }
+  if (circleDetailPrefetchIdleId !== null) {
+    if (!circleDetailPrefetchIdleIsTimeout && typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(circleDetailPrefetchIdleId)
+    else window.clearTimeout(circleDetailPrefetchIdleId)
+    circleDetailPrefetchIdleId = null
+    circleDetailPrefetchIdleIsTimeout = false
+  }
   circleDetailPrefetchTimer = window.setTimeout(() => {
     circleDetailPrefetchTimer = null
-    prefetchNeighborCircleDetails().catch(() => {})
+    const run = () => {
+      circleDetailPrefetchIdleId = null
+      circleDetailPrefetchIdleIsTimeout = false
+      if (circleDetailLoading.value || circleDetailAbortController) return
+      prefetchNeighborCircleDetails().catch(() => {})
+    }
+    if (typeof window.requestIdleCallback === 'function') {
+      circleDetailPrefetchIdleIsTimeout = false
+      circleDetailPrefetchIdleId = window.requestIdleCallback(run, { timeout: 1200 })
+    } else {
+      circleDetailPrefetchIdleIsTimeout = true
+      circleDetailPrefetchIdleId = window.setTimeout(run, 300)
+    }
   }, 450)
 }
 
 async function prefetchNeighborCircleDetails() {
-  if (circleDetailPrefetchRunning || circleDetailLoading.value) return
+  if (circleDetailPrefetchRunning || circleDetailLoading.value || circleDetailAbortController) return
   const list = Array.isArray(displayCircleList.value) ? displayCircleList.value : []
   if (!list.length || !activeCircleId.value) return
   const activeIndex = list.findIndex(circle => String(circle?.circle_id || '') === activeCircleId.value)
@@ -3369,6 +3492,7 @@ async function prefetchNeighborCircleDetails() {
       const result = await circleCompletionApi.getCircleDetail(circleId, {
         includeDlOnly: filters.includeDlOnly
       })
+      if (circleDetailLoading.value || circleDetailAbortController) break
       setCachedCircleDetail(circleId, result)
     }
   } finally {
@@ -3621,6 +3745,33 @@ function openLocalUploadDialogForTask(task) {
   openLocalUploadDialogWithSources([source])
 }
 
+function waitForPreviewPoll(ms) {
+  return new Promise(resolve => window.setTimeout(resolve, ms))
+}
+
+async function requestBatchDownloadPreview(payload, selectedCount) {
+  if (selectedCount <= DOWNLOAD_PREVIEW_JOB_THRESHOLD) {
+    previewProgressLabel.value = '正在分析资源结构并生成下载计划...'
+    previewProgressDescription.value = '聚合资源分组、语言版本和推荐项'
+    return await circleCompletionApi.previewBatchDownload(payload)
+  }
+
+  const started = await circleCompletionApi.startPreviewBatchDownload(payload)
+  let job = started
+  while (job && ['pending', 'processing'].includes(String(job.status || ''))) {
+    previewProgressLabel.value = `${job.current_step || '正在生成下载预览'} · ${Math.max(0, Math.min(100, Number(job.progress || 0)))}%`
+    previewProgressDescription.value = `已提交 ${Number(job.selected_count || selectedCount)} 个作品，耗时 ${formatElapsed(job.elapsed_seconds || 0)}`
+    await waitForPreviewPoll(800)
+    job = await circleCompletionApi.getPreviewBatchDownloadJobStatus(started.job_id)
+  }
+  if (job?.status === 'completed') {
+    previewProgressLabel.value = '下载预览已生成'
+    previewProgressDescription.value = `共生成 ${Number(job.result?.planned_count || 0)} 个下载计划`
+    return job.result || {}
+  }
+  throw new Error(job?.error_message || '生成下载预览失败')
+}
+
 async function openBatchPreview(singleCanonical = '') {
   const codes = singleCanonical ? [singleCanonical] : selectedActiveDownloadableRJCodes.value
   if (!codes.length) {
@@ -3632,11 +3783,11 @@ async function openBatchPreview(singleCanonical = '') {
   previewLoading.value = true
   previewPlans.value = []
   try {
-    const result = await circleCompletionApi.previewBatchDownload({
+    const result = await requestBatchDownloadPreview({
       circle_id: detail.circle_id,
       canonical_rjcodes: codes,
       requested_rjcodes: getPreviewRequestedRjcodes(codes)
-    })
+    }, codes.length)
     previewPlans.value = result.plans || []
     downloadSettings.downloadBasePath = result.download_base_path || downloadSettings.downloadBasePath || ''
     if (!downloadSettings.targetLibraryId) {
@@ -3647,10 +3798,12 @@ async function openBatchPreview(singleCanonical = '') {
     }
   } catch (error) {
     previewDialogVisible.value = false
-    ElMessage.error(error.response?.data?.detail || '生成下载预览失败')
+    ElMessage.error(error.response?.data?.detail || error.message || '生成下载预览失败')
   } finally {
     previewing.value = false
     previewLoading.value = false
+    previewProgressLabel.value = '正在分析资源结构并生成下载计划...'
+    previewProgressDescription.value = '聚合资源分组、语言版本和推荐项'
   }
 }
 async function startBatchDownload(payload = {}) {

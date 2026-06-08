@@ -230,6 +230,7 @@ class CircleCompletionService:
         self._canonical_cache: TTLCache = TTLCache(max_size=16384, ttl_seconds=3600, name="circle.canonical")
         # Kikoeru state 同样按"链路 RJ × 多语言版本"展开，给充足上限避免 wave2b 命中失败。
         self._kikoeru_state_cache: TTLCache = TTLCache(max_size=8192, ttl_seconds=600, name="circle.kikoeru_state")
+        self._download_preview_jobs: TTLCache = TTLCache(max_size=32, ttl_seconds=3600, name="circle.download_preview_jobs")
         # 下面两个原本就有 expires_at 字段，结构不变以兼容现有读写。
         self._kikoeru_circle_id_cache: Dict[str, tuple[str, float]] = {}
         self._local_download_fallback_cache: Dict[str, Any] = {"expires_at": 0.0, "data": {}}
@@ -1477,7 +1478,6 @@ class CircleCompletionService:
             .all()
         )
         session_by_rj: Dict[str, Dict[str, Any]] = {}
-        stale_rows_corrected = False
         for row in rows:
             session = row.to_dict()
             statistics = dict(session.get("statistics") or {})
@@ -1485,19 +1485,9 @@ class CircleCompletionService:
             local_count = int(session.get("local_downloaded_count") or 0)
             # 详情页切换频繁，这里优先使用数据库中已持久化的下载状态，
             # 避免每次点击社团都触发大量磁盘 exists / walk 检查。
-            local_root_exists = bool(local_root and os.path.isdir(local_root))
             # 只有明确的 local_download_ready 标志才视为「已下载可入库」，
             # 不能用 local_count > 0 兜底，避免下载了一半的临时文件被误判为完成。
-            local_ready = bool(local_root_exists and session.get("local_download_ready"))
-            if not local_root_exists and (
-                bool(session.get("local_download_ready"))
-                or local_count > 0
-                or str(row.local_download_root or "").strip()
-            ):
-                row.local_download_ready = False
-                row.local_download_root = None
-                row.local_downloaded_count = 0
-                stale_rows_corrected = True
+            local_ready = bool(local_root and session.get("local_download_ready"))
             if not local_ready:
                 continue
             normalized_rj = self.normalize_rjcode(session.get("rjcode"))
@@ -1508,12 +1498,6 @@ class CircleCompletionService:
                     "downloaded_count": local_count,
                     "updated_at": session.get("updated_at"),
                 }
-        if stale_rows_corrected:
-            try:
-                db.commit()
-            except Exception:
-                db.rollback()
-                logger.warning("[社团补全] 自动清理失效本地下载标记失败", exc_info=True)
 
         result: Dict[str, Dict[str, Any]] = {}
         for canonical, candidates in canonical_candidates.items():
@@ -1522,19 +1506,6 @@ class CircleCompletionService:
                 if matched:
                     result[canonical] = matched
                     break
-        unresolved = {
-            canonical: candidates
-            for canonical, candidates in canonical_candidates.items()
-            if canonical and canonical not in result
-        }
-        if unresolved:
-            fallback_roots = self._scan_local_download_root_fallback()
-            for canonical, candidates in unresolved.items():
-                for code in candidates:
-                    matched = fallback_roots.get(code)
-                    if matched:
-                        result[canonical] = matched
-                        break
         return result
 
     def _scan_local_download_root_fallback(self) -> Dict[str, Dict[str, Any]]:
@@ -5313,6 +5284,16 @@ class CircleCompletionService:
         """
         from sqlalchemy import or_ as sa_or, func as sa_func
 
+        started_at = time.perf_counter()
+        stage_costs: Dict[str, int] = {}
+        last_stage_at = started_at
+
+        def mark_stage(name: str) -> None:
+            nonlocal last_stage_at
+            now = time.perf_counter()
+            stage_costs[name] = int((now - last_stage_at) * 1000)
+            last_stage_at = now
+
         normalized = self.normalize_circle_name(keyword)
         safe_limit = max(1, int(limit))
 
@@ -5345,6 +5326,7 @@ class CircleCompletionService:
                 collected_ids.append(row.circle_id)
                 if len(out) >= safe_limit:
                     break
+            mark_stage("catalog_query")
 
             if collected_ids:
                 # === 完整 owned 计算（与右侧详情对齐）===
@@ -5388,6 +5370,7 @@ class CircleCompletionService:
                         s["local_owned"] += 1
                     if is_server_owned or is_local_owned:
                         s["owned"] += 1
+                mark_stage("stats_query")
 
                 for item in out:
                     stats = stats_map.get(item["circle_id"], {})
@@ -5432,6 +5415,7 @@ class CircleCompletionService:
                         age_seconds = now_local.timestamp() - anchor.timestamp()
                         if 0 <= age_seconds <= window_seconds:
                             new_work_48h_map[tr.circle_id] = new_work_48h_map.get(tr.circle_id, 0) + 1
+                mark_stage("new_work_query")
 
                 # 批量统计未发售：左侧目录只提示仍未满足的预售作品，口径和右侧
                 # 缺失作品区保持一致。已收录 / 本地已有的历史状态不再污染目录徽章。
@@ -5466,7 +5450,18 @@ class CircleCompletionService:
                     # 新口径下让它指向 48h 数值，不会出现"显示 24h 但其实是 48h"
                     # 之外的语义偏差，因为本来产品定义就是 48h 内为新作。
                     item["new_works_24h_count"] = new_work_48h_map.get(cid, 0)
+                mark_stage("unreleased_query")
 
+            elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+            if elapsed_ms >= 300:
+                logger.info(
+                    "[社团补全·目录耗时] keyword=%s limit=%s returned=%s elapsed=%sms stages=%s",
+                    keyword,
+                    safe_limit,
+                    len(out),
+                    elapsed_ms,
+                    stage_costs,
+                )
             return out
         finally:
             db.close()
@@ -5516,6 +5511,16 @@ class CircleCompletionService:
         if cached_result is not None:
             return deepcopy(cached_result)
 
+        started_at = time.perf_counter()
+        last_stage_at = started_at
+        stage_costs: Dict[str, int] = {}
+
+        def mark_stage(name: str) -> None:
+            nonlocal last_stage_at
+            now = time.perf_counter()
+            stage_costs[name] = int((now - last_stage_at) * 1000)
+            last_stage_at = now
+
         db = SessionLocal()
         try:
             catalog = db.query(CircleCatalog).filter(CircleCatalog.circle_id == circle_id_or_query).first()
@@ -5553,7 +5558,9 @@ class CircleCompletionService:
                     "link_type": str(link_row.link_type or ""),
                     "lang": str(link_row.lang or ""),
                 }
+            mark_stage("db_query")
             local_download_session_map = self._build_local_download_session_map(db, works, link_map_by_canonical)
+            mark_stage("local_download_map")
 
             metadata_lookup_rjcodes: List[str] = []
             for row in works:
@@ -5567,6 +5574,7 @@ class CircleCompletionService:
                     if normalized_candidate and normalized_candidate not in metadata_lookup_rjcodes:
                         metadata_lookup_rjcodes.append(normalized_candidate)
             metadata_map_all = self._load_cached_metadata_map(db, metadata_lookup_rjcodes)
+            mark_stage("metadata_map")
 
             # ★ bonus 字段补刷已移到 ``index_circle_catalog`` / ``refresh_circle_works``
             #   写路径里：浏览路径不再做任何外部 HTTP 探测，row.is_bonus_work /
@@ -5783,11 +5791,32 @@ class CircleCompletionService:
                 "filtered_count": len(visible_items),
                 "works": visible_items,
             }
+            mark_stage("payload_build")
+            try:
+                json_size = len(json.dumps(result, ensure_ascii=False, default=str).encode("utf-8"))
+            except Exception:
+                json_size = 0
             # 详情视图全程纯读，不再需要 db.commit()。
             # 写入由 index_circle_catalog / refresh_circle_works / email_watcher 直入负责。
         finally:
             db.close()
         self._completion_view_cache[cache_key] = deepcopy(result)
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        if elapsed_ms >= 300:
+            logger.info(
+                "[社团补全·详情耗时] circle_id=%s works=%s visible=%s elapsed=%sms stages=%s json_bytes=%s filters=%s",
+                result.get("circle_id") or circle_id_or_query,
+                len(works),
+                len(result.get("works") or []),
+                elapsed_ms,
+                stage_costs,
+                json_size,
+                {
+                    "only_missing": bool(only_missing),
+                    "only_downloadable": bool(only_downloadable),
+                    "include_dl_only": bool(include_dl_only),
+                },
+            )
         return result
 
     async def preview_batch_download(
@@ -5813,10 +5842,18 @@ class CircleCompletionService:
             db.close()
 
         requested_rjcodes = dict(requested_rjcodes or {})
-        plans = []
-        for row in rows:
+        started_at = time.perf_counter()
+        plan_sem = asyncio.Semaphore(4)
+        stage_stats = {
+            "selected_count": len(canonical_rjcodes or []),
+            "db_rows": len(rows),
+            "plan_build_ms": 0,
+            "postprocess_ms": 0,
+        }
+
+        async def build_row_plan(row: CircleWork) -> Optional[Dict[str, Any]]:
             if not row.has_asmr_one:
-                continue
+                return None
             explicit_candidates = []
             for candidate in requested_rjcodes.get(str(row.canonical_rjcode or "").strip(), []) or []:
                 normalized = self.normalize_rjcode(candidate)
@@ -5843,13 +5880,17 @@ class CircleCompletionService:
             if not resolved_rjcode:
                 raise ValueError(f"未找到可下载作品 {row.display_rjcode or row.canonical_rjcode}")
 
-            plan = await self.asmr_resource_service.build_download_plan(
-                rjcode=resolved_rjcode,
-                folder_path="",
-                filters={},
-                refresh=True,
-                emit_activity_log=False,
-            )
+            async with plan_sem:
+                plan_started = time.perf_counter()
+                plan = await self.asmr_resource_service.build_download_plan(
+                    rjcode=resolved_rjcode,
+                    folder_path="",
+                    filters={},
+                    refresh=False,
+                    emit_activity_log=False,
+                )
+                stage_stats["plan_build_ms"] += int((time.perf_counter() - plan_started) * 1000)
+            post_started = time.perf_counter()
             skip_reasons = self._build_filter_skip_reasons(plan.get("selectable_resources") or [])
             kept_resources = []
             filtered_out_resources = []
@@ -5878,12 +5919,26 @@ class CircleCompletionService:
             plan["requested_rjcode"] = row.display_rjcode or row.canonical_rjcode
             plan["resolved_rjcode"] = resolved_rjcode
             plan["display_rjcodes"] = row.linked_rjcodes or [row.display_rjcode]
-            plans.append(plan)
+            stage_stats["postprocess_ms"] += int((time.perf_counter() - post_started) * 1000)
+            return plan
+
+        plan_results = await asyncio.gather(*(build_row_plan(row) for row in rows))
+        plans = [plan for plan in plan_results if plan]
 
         manager = get_library_manager()
         libraries = manager.list_libraries()
         default_library = next((item for item in libraries if item.get("is_default")), None) or (libraries[0] if libraries else {})
         download_base_path = os.path.join(get_config().storage.temp_path, "asmr_enhanced")
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        if elapsed_ms >= 500 or len(rows) >= 3:
+            logger.info(
+                "[社团补全·下载预览耗时] circle_id=%s selected=%s plans=%s elapsed=%sms stats=%s",
+                circle_id,
+                len(canonical_rjcodes or []),
+                len(plans),
+                elapsed_ms,
+                stage_stats,
+            )
 
         return {
             "circle_id": circle_id,
@@ -5894,6 +5949,91 @@ class CircleCompletionService:
             "default_target_library_id": str(default_library.get("id") or ""),
             "default_target_subdir": "",
         }
+
+    def _download_preview_job_snapshot(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "job_id": str(payload.get("job_id") or ""),
+            "status": str(payload.get("status") or ""),
+            "progress": int(payload.get("progress") or 0),
+            "current_step": str(payload.get("current_step") or ""),
+            "circle_id": str(payload.get("circle_id") or ""),
+            "selected_count": int(payload.get("selected_count") or 0),
+            "started_at": payload.get("started_at"),
+            "finished_at": payload.get("finished_at"),
+            "elapsed_seconds": float(payload.get("elapsed_seconds") or 0),
+            "error_message": str(payload.get("error_message") or ""),
+            "result": deepcopy(payload.get("result") or {}),
+        }
+
+    async def start_download_preview_job(
+        self,
+        circle_id: str,
+        canonical_rjcodes: List[str],
+        requested_rjcodes: Optional[Dict[str, List[str]]] = None,
+    ) -> Dict[str, Any]:
+        job_id = uuid.uuid4().hex
+        started_at = datetime.now()
+        payload: Dict[str, Any] = {
+            "job_id": job_id,
+            "status": "pending",
+            "progress": 0,
+            "current_step": "等待生成下载预览",
+            "circle_id": str(circle_id or "").strip(),
+            "selected_count": len(canonical_rjcodes or []),
+            "started_at": started_at.isoformat(),
+            "finished_at": None,
+            "elapsed_seconds": 0.0,
+            "error_message": "",
+            "result": {},
+        }
+        self._download_preview_jobs[job_id] = payload
+
+        async def runner() -> None:
+            payload["status"] = "processing"
+            payload["progress"] = 10
+            payload["current_step"] = "正在生成下载预览"
+            try:
+                result = await self.preview_batch_download(
+                    circle_id,
+                    canonical_rjcodes,
+                    requested_rjcodes,
+                )
+                payload["status"] = "completed"
+                payload["progress"] = 100
+                payload["current_step"] = "下载预览已生成"
+                payload["result"] = result
+            except Exception as exc:
+                payload["status"] = "failed"
+                payload["progress"] = 100
+                payload["current_step"] = "下载预览生成失败"
+                payload["error_message"] = str(exc)
+                logger.warning(
+                    "[社团补全·下载预览任务] 失败: job=%s circle_id=%s selected=%s error=%s",
+                    job_id,
+                    circle_id,
+                    len(canonical_rjcodes or []),
+                    exc,
+                    exc_info=True,
+                )
+            finally:
+                finished_at = datetime.now()
+                payload["finished_at"] = finished_at.isoformat()
+                payload["elapsed_seconds"] = max(0.0, (finished_at - started_at).total_seconds())
+
+        asyncio.create_task(runner(), name=f"circle-download-preview:{job_id}")
+        return self._download_preview_job_snapshot(payload)
+
+    def get_download_preview_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        payload = self._download_preview_jobs.get(str(job_id or "").strip())
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("status") in {"pending", "processing"}:
+            try:
+                started_at = datetime.fromisoformat(str(payload.get("started_at") or ""))
+                payload["elapsed_seconds"] = max(0.0, (datetime.now() - started_at).total_seconds())
+            except Exception:
+                pass
+        return self._download_preview_job_snapshot(payload)
 
     async def refresh_circle_works(
         self,
