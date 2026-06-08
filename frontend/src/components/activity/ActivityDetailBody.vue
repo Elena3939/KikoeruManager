@@ -497,6 +497,9 @@ const outputPathDisplay = computed(() => {
   return (
     detail.output_path
     || detail.target_path
+    || detail.renamed_output_path
+    || detail.final_output_path
+    || detail.staging_dir
     || ''
   )
 })
@@ -630,6 +633,13 @@ async function copyText(value) {
   background: rgba(15, 23, 42, 0.05);
   color: #475569;
   border: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.detail-icon :deep(.http-platform-icon) {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  object-fit: contain;
 }
 
 .detail-icon.detail-tone-success {

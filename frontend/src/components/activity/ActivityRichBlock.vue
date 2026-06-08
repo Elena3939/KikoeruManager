@@ -1702,6 +1702,50 @@ function formatBytes(size) {
   border-color: rgba(255, 255, 255, 0.12);
 }
 
+:global(html.kikoerumanager-dark .activity-detail-panel .entry-tree-box) {
+  scrollbar-color: rgba(113, 113, 122, 0.82) transparent;
+}
+
+:global(html.kikoerumanager-dark .activity-detail-panel .tree-row) {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  background: #17181d !important;
+}
+
+:global(html.kikoerumanager-dark .activity-detail-panel .tree-row:hover) {
+  border-color: rgba(148, 163, 184, 0.42) !important;
+  background: #202126 !important;
+}
+
+:global(html.kikoerumanager-dark .activity-detail-panel .entry-name),
+:global(html.kikoerumanager-dark .activity-detail-panel .entry-name.is-added),
+:global(html.kikoerumanager-dark .activity-detail-panel .entry-name.is-changed),
+:global(html.kikoerumanager-dark .activity-detail-panel .entry-name.is-failed) {
+  color: #f4f4f5 !important;
+}
+
+:global(html.kikoerumanager-dark .activity-detail-panel .entry-meta-text),
+:global(html.kikoerumanager-dark .activity-detail-panel .entry-size) {
+  color: rgba(212, 212, 216, 0.74) !important;
+}
+
+:global(html.kikoerumanager-dark .activity-detail-panel .entry-inline-badge) {
+  border-color: rgba(96, 165, 250, 0.28) !important;
+  background: rgba(30, 64, 175, 0.26) !important;
+  color: #bfdbfe !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .activity-detail-panel .entry-icon.is-file),
+:global(html.kikoerumanager-dark .activity-detail-panel .entry-icon.is-text) {
+  color: #a1a1aa !important;
+}
+
+:global(html.kikoerumanager-dark .activity-detail-panel .entry-icon.is-video),
+:global(html.kikoerumanager-dark .activity-detail-panel .entry-icon.is-audio-blue),
+:global(html.kikoerumanager-dark .activity-detail-panel .entry-icon.is-audio-purple) {
+  color: #93c5fd !important;
+}
+
 .entry-tree-box {
   max-height: 360px;
   overflow: auto;

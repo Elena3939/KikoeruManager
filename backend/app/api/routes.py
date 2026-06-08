@@ -394,6 +394,55 @@ def _looks_like_partial_success(summary: str, detail: Optional[Dict[str, Any]]) 
     return False
 
 
+def _enrich_baidu_netdisk_activity_detail_from_task(row: Dict[str, Any], db: Session) -> None:
+    """详情页按 task_id 从任务表补全百度网盘文件清单的脱敏扩展字段。"""
+    if not isinstance(row, dict):
+        return
+    if str(row.get("category") or "").strip() != "baidu_netdisk":
+        return
+    task_id = str(row.get("task_id") or "").strip()
+    if not task_id:
+        return
+    detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+    needs_password_or_rename = not any(
+        bool(item.get("has_extract_password") or item.get("custom_file_names"))
+        for item in list(detail.get("download_files") or [])
+        if isinstance(item, dict)
+    )
+    if list(detail.get("download_files") or []) and not needs_password_or_rename:
+        return
+    try:
+        from ..core.baidu_netdisk_service import sanitize_baidu_netdisk_item
+        from ..models.database import Task as TaskRecord
+
+        task = db.query(TaskRecord).filter(TaskRecord.id == task_id).first()
+        metadata = task.task_metadata if task and isinstance(task.task_metadata, dict) else {}
+        if not metadata:
+            return
+        enriched = dict(detail)
+        for key in ("download_files", "failed_files"):
+            raw_items = [item for item in list(metadata.get(key) or []) if isinstance(item, dict)]
+            if raw_items:
+                enriched[key] = [sanitize_baidu_netdisk_item(item) for item in raw_items[:200]]
+        for key in (
+            "download_root",
+            "target_subdir",
+            "output_folder_name",
+            "staging_dir",
+            "final_output_path",
+            "renamed_output_path",
+            "output_finalize_status",
+            "download_mode",
+            "platform_label",
+        ):
+            value = metadata.get(key)
+            if value not in (None, "", []):
+                enriched[key] = value
+        row["detail"] = enriched
+    except Exception:
+        logger.debug("[操作记录] 百度网盘详情按任务补全失败: task_id=%s", task_id, exc_info=True)
+
+
 def _enrich_lite_items_with_batch_summary(
     items: List[Dict[str, Any]],
     db: Session,
@@ -1253,6 +1302,11 @@ def get_activity_log_detail(
             _enrich_lite_items_with_batch_summary([main_row], db, force=True)
     except Exception:
         logger.debug("[操作记录] detail 批次状态聚合回填失败（不阻断主流程）", exc_info=True)
+    try:
+        if isinstance(main_row, dict):
+            _enrich_baidu_netdisk_activity_detail_from_task(main_row, db)
+    except Exception:
+        logger.debug("[操作记录] detail 百度网盘字段回填失败（不阻断主流程）", exc_info=True)
 
     return {
         "row": main_row,

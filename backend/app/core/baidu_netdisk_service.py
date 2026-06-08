@@ -148,6 +148,7 @@ def sanitize_baidu_netdisk_item(item: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(item, dict):
         return {}
     out = sanitize_http_download_item(item)
+    has_extract_password = bool(str(item.get("custom_extract_password") or item.get("extract_password") or "").strip())
     out.pop("cookie", None)
     out.pop("bdstoken", None)
     out.pop("randsk", None)
@@ -159,13 +160,37 @@ def sanitize_baidu_netdisk_item(item: Dict[str, Any]) -> Dict[str, Any]:
     out.pop("pass_code", None)
     out.pop("custom_extract_password", None)
     out.pop("extract_password", None)
-    out.pop("custom_file_names", None)
+    custom_file_names = out.pop("custom_file_names", None)
+    sanitized_file_names: Dict[str, Dict[str, str]] = {}
+    if isinstance(custom_file_names, dict):
+        for key, value in custom_file_names.items():
+            if not isinstance(value, dict):
+                continue
+            custom_name = str(value.get("custom_name") or value.get("custom_filename") or "").strip()
+            file_has_password = bool(str(value.get("custom_extract_password") or value.get("extract_password") or "").strip())
+            if file_has_password:
+                has_extract_password = True
+            if custom_name or file_has_password:
+                sanitized_file_names[str(key)] = {
+                    "custom_name": custom_name,
+                    "has_extract_password": file_has_password,
+                    "fs_id": str(value.get("fs_id") or value.get("fsid") or "").strip(),
+                    "path": str(value.get("path") or value.get("remote_path") or "").strip(),
+                    "relative_path": str(value.get("relative_path") or "").strip(),
+                    "name": str(value.get("name") or "").strip(),
+                }
+    if sanitized_file_names:
+        out["custom_file_names"] = sanitized_file_names
+    if has_extract_password:
+        out["has_extract_password"] = True
     if isinstance(out.get("preview_files"), list):
         clean_preview_files = []
         for file_item in out.get("preview_files") or []:
             if not isinstance(file_item, dict):
                 continue
             clean_file = dict(file_item)
+            if str(clean_file.get("custom_extract_password") or clean_file.get("extract_password") or "").strip():
+                clean_file["has_extract_password"] = True
             clean_file.pop("custom_extract_password", None)
             clean_file.pop("extract_password", None)
             clean_preview_files.append(clean_file)
