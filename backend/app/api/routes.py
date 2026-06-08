@@ -58,6 +58,7 @@ from ..core.google_drive_oauth import (
     resolve_google_drive_oauth_client,
     resolve_google_drive_oauth_proxy_url,
 )
+from ..core.log_sanitizer import sanitize_for_log, sanitize_text_for_log
 from ..config.settings import get_config, save_config
 from ..core.security_gate_service import COOKIE_NAME, get_security_gate_service
 from ..version import get_app_version
@@ -90,7 +91,7 @@ def _route_path_basename(value: Any) -> str:
 
 
 def _mask_http_downloader_config_for_log(value: dict) -> dict:
-    data = dict(value or {})
+    data = dict(sanitize_for_log(value or {}))
     if "proxy_url" in data:
         data["proxy_url"] = _mask_url_credentials(data.get("proxy_url") or "")
     for key in ("google_drive_client_secret", "google_drive_refresh_token"):
@@ -118,7 +119,7 @@ def _mask_http_downloader_config_for_log(value: dict) -> dict:
 
 
 def _mask_baidu_netdisk_config_for_log(value: dict) -> dict:
-    data = dict(value or {})
+    data = dict(sanitize_for_log(value or {}))
     if data.get("cookie"):
         data["cookie"] = "********"
     return data
@@ -1693,14 +1694,19 @@ SECURITY_GATE_PUBLIC_API_PATHS = {
 }
 
 _SLOW_API_LOG_THRESHOLD_SECONDS = float(os.getenv("KIKOERUMANAGER_SLOW_API_SECONDS", "0.5") or 0.5)
+_IMPORTANT_API_4XX_STATUSES = {400, 401, 403, 409, 422}
 _SLOW_API_QUERY_ALLOWLIST = {
     "category",
+    "circle_id",
     "include_stats",
+    "include_dl_only",
     "library_id",
     "limit",
     "lite",
     "mode",
     "offset",
+    "only_downloadable",
+    "only_missing",
     "page",
     "page_size",
     "q",
@@ -1716,6 +1722,23 @@ def _slow_api_query_snapshot(request: Request) -> Dict[str, str]:
         if key in _SLOW_API_QUERY_ALLOWLIST:
             params[key] = str(value)[:120]
     return params
+
+
+def _slow_api_context_snapshot(request: Request) -> Dict[str, Any]:
+    context = getattr(request.state, "slow_api_context", None)
+    if not isinstance(context, dict):
+        return {}
+    safe: Dict[str, Any] = {}
+    for key, value in context.items():
+        if value is None:
+            continue
+        if isinstance(value, (bool, int, float)):
+            safe[key] = value
+        elif isinstance(value, (list, tuple, set)):
+            safe[key] = len(value)
+        else:
+            safe[key] = str(value)[:120]
+    return safe
 
 
 def _slow_api_resource_budget_snapshot() -> Dict[str, Dict[str, int]]:
@@ -1742,25 +1765,67 @@ def _slow_api_resource_budget_snapshot() -> Dict[str, Dict[str, int]]:
 
 
 async def _call_next_with_perf_log(request: Request, call_next):
+    request_id = str(request.headers.get("X-Request-ID") or "").strip()[:80] or uuid.uuid4().hex[:12]
+    request.state.request_id = request_id
     started = time.perf_counter()
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed = time.perf_counter() - started
+        if request.url.path.startswith("/api/"):
+            logger.exception(
+                "[API请求] request_id=%s method=%s path=%s status=exception elapsed_ms=%.0f query=%s context=%s resource_budget=%s",
+                request_id,
+                request.method,
+                request.url.path,
+                elapsed * 1000,
+                _slow_api_query_snapshot(request),
+                _slow_api_context_snapshot(request),
+                _slow_api_resource_budget_snapshot(),
+            )
+        raise
     elapsed = time.perf_counter() - started
     path = request.url.path
-    if (
-        path.startswith("/api/")
-        and _SLOW_API_LOG_THRESHOLD_SECONDS > 0
-        and elapsed >= _SLOW_API_LOG_THRESHOLD_SECONDS
-    ):
-        logger.warning(
-            "[慢请求] %s %s %.0fms status=%s query=%s resource_budget=%s",
-            request.method,
-            path,
-            elapsed * 1000,
-            getattr(response, "status_code", "-"),
-            _slow_api_query_snapshot(request),
-            _slow_api_resource_budget_snapshot(),
-        )
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    if path.startswith("/api/"):
+        is_slow = _SLOW_API_LOG_THRESHOLD_SECONDS > 0 and elapsed >= _SLOW_API_LOG_THRESHOLD_SECONDS
+        is_error = status_code >= 500
+        is_important_4xx = status_code in _IMPORTANT_API_4XX_STATUSES
+        if is_slow or is_error or is_important_4xx:
+            log_method = logger.error if is_error else logger.warning
+            log_method(
+                "[API请求] request_id=%s method=%s path=%s status=%s elapsed_ms=%.0f query=%s context=%s resource_budget=%s slow=%s",
+                request_id,
+                request.method,
+                path,
+                status_code,
+                elapsed * 1000,
+                _slow_api_query_snapshot(request),
+                _slow_api_context_snapshot(request),
+                _slow_api_resource_budget_snapshot(),
+                is_slow,
+            )
+    try:
+        response.headers["X-Request-ID"] = request_id
+    except Exception:
+        pass
     return response
+
+
+def _log_gate_api_rejection(request: Request, status_code: int, reason: str) -> None:
+    request_id = str(request.headers.get("X-Request-ID") or "").strip()[:80] or uuid.uuid4().hex[:12]
+    request.state.request_id = request_id
+    logger.warning(
+        "[API请求] request_id=%s method=%s path=%s status=%s reason=%s query=%s context=%s resource_budget=%s",
+        request_id,
+        request.method,
+        request.url.path,
+        status_code,
+        reason,
+        _slow_api_query_snapshot(request),
+        _slow_api_context_snapshot(request),
+        _slow_api_resource_budget_snapshot(),
+    )
 
 
 @app.middleware("http")
@@ -1785,10 +1850,13 @@ async def security_gate_middleware(request: Request, call_next):
     if blocked:
         service.record_blocked_visit(request, blocked)
         if path.startswith("/api/"):
-            return _with_gate_cors_headers(
+            _log_gate_api_rejection(request, 403, "security_gate_blocked")
+            response = _with_gate_cors_headers(
                 request,
                 JSONResponse({"detail": "当前来源已被系统阻止", "blocked": True}, status_code=403),
             )
+            response.headers["X-Request-ID"] = getattr(request.state, "request_id", "")
+            return response
         return RedirectResponse(url="/blocked", status_code=303)
 
     token = request.cookies.get(COOKIE_NAME, "")
@@ -1796,10 +1864,13 @@ async def security_gate_middleware(request: Request, call_next):
         return await _call_next_with_perf_log(request, call_next)
 
     if path.startswith("/api/"):
-        return _with_gate_cors_headers(
+        _log_gate_api_rejection(request, 401, "security_gate_required")
+        response = _with_gate_cors_headers(
             request,
             JSONResponse({"detail": "需要通过系统门禁验证", "gate_required": True}, status_code=401),
         )
+        response.headers["X-Request-ID"] = getattr(request.state, "request_id", "")
+        return response
     next_path_raw = str(request.url.path or "/")
     if request.url.query:
         next_path_raw = f"{next_path_raw}?{request.url.query}"
@@ -2428,6 +2499,39 @@ async def stream_task_center_events(request: Request):
     async def generator():
         try:
             yield f"data: {json.dumps({'type': 'connected', 'reason': 'connected'}, ensure_ascii=False)}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=25)
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            sse_unsubscribe(sid)
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.get("/api/events/stream")
+async def stream_realtime_events(request: Request):
+    """统一业务实时事件流。"""
+    from ..core.realtime_event_service import sse_subscribe, sse_unsubscribe
+
+    loop = asyncio.get_event_loop()
+    sid, queue = sse_subscribe(loop)
+
+    async def generator():
+        try:
+            yield f"data: {json.dumps({'type': 'connected'}, ensure_ascii=False)}\n\n"
             while True:
                 if await request.is_disconnected():
                     break
@@ -3082,12 +3186,18 @@ async def update_configuration(request: Request):
     from ..config.settings import save_config, ClassificationRule, FilterRule, PathMappingRule
     try:
         config_data = await request.json()
-        logger.info(f"接收到配置保存请求，classification: {config_data.get('classification')}")
+        logger.info(
+            "接收到配置保存请求: keys=%s classification=%s filter_rules=%s path_mapping_rules=%s",
+            sorted(config_data.keys()) if isinstance(config_data, dict) else [],
+            len(config_data.get('classification') or []) if isinstance(config_data, dict) else 0,
+            len(((config_data.get('filter') or {}).get('rules') or [])) if isinstance(config_data, dict) else 0,
+            len(((config_data.get('path_mapping') or {}).get('rules') or [])) if isinstance(config_data, dict) else 0,
+        )
         
         # 记录重命名模板用于调试
         if 'rename' in config_data and config_data['rename']:
             template = config_data['rename'].get('template', 'NOT SET')
-            logger.info(f"[CONFIG SAVE] 接收到的模板: '{template}'")
+            logger.debug(f"[CONFIG SAVE] 接收到的模板: '{template}'")
         
         # 确保 classification 字段格式正确
         if 'classification' in config_data and config_data['classification']:
@@ -3099,12 +3209,12 @@ async def update_configuration(request: Request):
                     # 使用 Pydantic 验证每个规则
                     rule = ClassificationRule(**rule_data_cleaned)
                     validated_rules.append(rule.dict())
-                    logger.info(f"规则验证通过: {rule_data_cleaned}")
+                    logger.debug(f"规则验证通过: {rule_data_cleaned}")
                 except Exception as e:
                     logger.warning(f"分类规则验证失败: {rule_data}, 错误: {e}")
                     # 跳过无效规则
             config_data['classification'] = validated_rules
-            logger.info(f"验证后的分类规则: {validated_rules}")
+            logger.debug(f"验证后的分类规则: {validated_rules}")
         
         # 确保 filter 字段格式正确
         if 'filter' in config_data and config_data['filter'] and 'rules' in config_data['filter']:
@@ -3117,12 +3227,12 @@ async def update_configuration(request: Request):
                     # 使用 Pydantic 验证
                     rule = FilterRule(**rule_data)
                     validated_filter_rules.append(rule.dict())
-                    logger.info(f"过滤规则验证通过: {rule_data}")
+                    logger.debug(f"过滤规则验证通过: {rule_data}")
                 except Exception as e:
                     logger.warning(f"过滤规则验证失败: {rule_data}, 错误: {e}")
                     # 跳过无效规则
             config_data['filter']['rules'] = validated_filter_rules
-            logger.info(f"验证后的过滤规则数: {len(validated_filter_rules)}")
+            logger.debug(f"验证后的过滤规则数: {len(validated_filter_rules)}")
         
         # 确保 path_mapping 字段格式正确
         if 'path_mapping' in config_data and config_data['path_mapping'] and 'rules' in config_data['path_mapping']:
@@ -3131,16 +3241,24 @@ async def update_configuration(request: Request):
                 try:
                     rule = PathMappingRule(**rule_data)
                     validated_path_rules.append(rule.dict())
-                    logger.info(f"路径映射规则验证通过: {rule_data}")
+                    logger.debug(f"路径映射规则验证通过: {rule_data}")
                 except Exception as e:
                     logger.warning(f"路径映射规则验证失败: {rule_data}, 错误: {e}")
                     # 跳过无效规则
             config_data['path_mapping']['rules'] = validated_path_rules
-            logger.info(f"验证后的路径映射规则数: {len(validated_path_rules)}")
+            logger.debug(f"验证后的路径映射规则数: {len(validated_path_rules)}")
         
         # 处理 Kikoeru 服务器配置
         if 'kikoeru_server' in config_data:
-            logger.info(f"[KIKOERU] 接收到 Kikoeru 服务器配置: {config_data['kikoeru_server']}")
+            logger.info(
+                "[KIKOERU] 接收到 Kikoeru 服务器配置: %s",
+                sanitize_for_log({
+                    "enabled": (config_data.get("kikoeru_server") or {}).get("enabled"),
+                    "server_url": (config_data.get("kikoeru_server") or {}).get("server_url"),
+                    "username": (config_data.get("kikoeru_server") or {}).get("username"),
+                    "has_token": bool((config_data.get("kikoeru_server") or {}).get("api_token")),
+                }),
+            )
             try:
                 # 验证 KikoeruServerConfig
                 from ..config.settings import KikoeruServerConfig
@@ -3151,11 +3269,16 @@ async def update_configuration(request: Request):
                 logger.error(f"[KIKOERU] Kikoeru 配置验证失败: {e}")
                 # 如果验证失败，保留原始配置
         else:
-            logger.info("[KIKOERU] 未接收到 Kikoeru 服务器配置")
+            logger.debug("[KIKOERU] 未接收到 Kikoeru 服务器配置")
 
         # 处理 ASMR 同步配置
         if 'asmr_sync' in config_data:
-            logger.info(f"[ASMR] 接收到 ASMR 同步配置: {config_data['asmr_sync']}")
+            logger.info(
+                "[ASMR] 接收到 ASMR 同步配置: enabled=%s retry_cron=%s max_concurrent_downloads=%s",
+                (config_data.get("asmr_sync") or {}).get("enabled"),
+                (config_data.get("asmr_sync") or {}).get("retry_cron"),
+                (config_data.get("asmr_sync") or {}).get("max_concurrent_downloads"),
+            )
             try:
                 from ..config.settings import ASMRSyncConfig
                 asmr_config = ASMRSyncConfig(**config_data['asmr_sync'])
@@ -3164,7 +3287,7 @@ async def update_configuration(request: Request):
             except Exception as e:
                 logger.error(f"[ASMR] ASMR 同步配置验证失败: {e}")
         else:
-            logger.info("[ASMR] 未接收到 ASMR 同步配置")
+            logger.debug("[ASMR] 未接收到 ASMR 同步配置")
 
         if 'http_downloader' in config_data:
             logger.info("[HTTP下载] 接收到 HTTP 外链下载配置: %s", _mask_http_downloader_config_for_log(config_data['http_downloader']))
@@ -3320,7 +3443,11 @@ async def update_configuration(request: Request):
                 raise HTTPException(status_code=400, detail=f"安全门禁配置无效: {e}")
 
         result = save_config(config_data)
-        logger.info(f"配置已保存，分类规则数: {len(config_data.get('classification', []))}")
+        logger.info(
+            "配置已保存: keys=%s classification=%s",
+            sorted(config_data.keys()),
+            len(config_data.get('classification', [])),
+        )
 
         if 'kikoeru_server' in config_data:
             try:
@@ -3338,7 +3465,7 @@ async def update_configuration(request: Request):
         # 重新读取配置文件确保数据已写入
         current_config = get_config()
         get_task_engine()
-        logger.info(f"当前配置中的分类规则: {[r.dict() for r in current_config.classification]}")
+        logger.debug(f"当前配置中的分类规则: {[r.dict() for r in current_config.classification]}")
 
         # 如果密码清理配置变更，重启清理服务
         if 'password_cleanup' in config_data:
@@ -4536,7 +4663,7 @@ async def get_conflicts(include_stats: bool = False):
             ConflictWork.conflict_type != "LINKED_SUBTITLE_IMPORT",
         ).all()
         _t_query_ms = (time.monotonic() - _t_query_start) * 1000
-        logger.info(
+        logger.debug(
             "[/api/conflicts] include_stats=%s db_query=%.0fms count=%s",
             include_stats, _t_query_ms, len(conflicts),
         )
@@ -4594,7 +4721,7 @@ async def get_conflicts(include_stats: bool = False):
             per_conflict_actions.append(actions)
 
         _t_phase1_ms = (time.monotonic() - _t_phase1_start) * 1000
-        logger.info(
+        logger.debug(
             "[/api/conflicts] phase1_serial=%.0fms (status_recover + actions × %s)",
             _t_phase1_ms, len(conflicts),
         )
@@ -4656,7 +4783,7 @@ async def get_conflicts(include_stats: bool = False):
 
         contexts = await asyncio.gather(*(_build_context(c) for c in conflicts)) if conflicts else []
         _t_phase2_ms = (time.monotonic() - _t_phase2_start) * 1000
-        logger.info(
+        logger.debug(
             "[/api/conflicts] phase2_parallel_context=%.0fms (× %s)",
             _t_phase2_ms, len(conflicts),
         )
@@ -4699,9 +4826,15 @@ async def get_conflicts(include_stats: bool = False):
                 }
             )
         _t_total_ms = (time.monotonic() - _route_t_start) * 1000
-        logger.info(
-            "[/api/conflicts] 完成 total=%.0fms include_stats=%s items=%s",
-            _t_total_ms, include_stats, len(conflict_items),
+        _conflict_log = logger.info if include_stats or _t_total_ms >= (_SLOW_API_LOG_THRESHOLD_SECONDS * 1000) else logger.debug
+        _conflict_log(
+            "[/api/conflicts] 完成 total=%.0fms include_stats=%s items=%s db_query=%.0fms phase1_serial=%.0fms phase2_parallel_context=%.0fms",
+            _t_total_ms,
+            include_stats,
+            len(conflict_items),
+            _t_query_ms,
+            _t_phase1_ms,
+            _t_phase2_ms,
         )
         return {
             "conflicts": conflict_items
@@ -11372,7 +11505,7 @@ async def get_kikoeru_token():
         if not service.config.username or not service.config.password:
             raise HTTPException(status_code=400, detail="请先配置用户名和密码")
 
-        logger.info(f"[Kikoeru] 使用服务器地址: {service.config.server_url}")
+        logger.info(f"[Kikoeru] 使用服务器地址: {_mask_url_credentials(service.config.server_url)}")
         logger.info(f"[Kikoeru] 使用用户名: {service.config.username}")
 
         # 调用登录方法获取 Token
@@ -11391,7 +11524,7 @@ async def get_kikoeru_token():
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"获取 Kikoeru Token 失败: {e}")
+        logger.error("获取 Kikoeru Token 失败: %s", sanitize_text_for_log(e))
         raise HTTPException(status_code=500, detail=f"获取 Token 失败: {str(e)}")
 
 
@@ -12532,6 +12665,7 @@ async def rj_subtitle_status():
                     "downloaded_count": task.task_metadata.get("downloaded_count", 0),
                     "existing_subtitle_count": task.task_metadata.get("existing_subtitle_count", 0),
                     "subtitle_dir": task.task_metadata.get("subtitle_dir", ""),
+                    "linked_workbench_root_dir": task.task_metadata.get("linked_workbench_root_dir", ""),
                     "written_files": task.task_metadata.get("written_files", []),
                     "skipped_files": task.task_metadata.get("skipped_files", []),
                     "write_errors": task.task_metadata.get("write_errors", []),
@@ -12688,15 +12822,22 @@ async def execute_linked_subtitle_archive_import(request: LinkedSubtitleArchiveI
 
 
 @app.post("/api/subtitle-import/folder/preview")
-async def preview_linked_subtitle_folder_import(request: LinkedSubtitleFolderPreviewRequest):
+async def preview_linked_subtitle_folder_import(
+    payload: LinkedSubtitleFolderPreviewRequest,
+    http_request: Request,
+):
     from ..core.linked_subtitle_import_service import get_linked_subtitle_import_service
 
     try:
+        http_request.state.slow_api_context = {
+            "preferred_library_id": payload.preferred_library_id,
+            "source_rjcode_hint": payload.source_rjcode_hint,
+        }
         service = get_linked_subtitle_import_service()
         preview = await service.preview_subtitle_folder_import(
-            request.folder_path,
-            preferred_library_id=request.preferred_library_id,
-            source_rjcode_hint=request.source_rjcode_hint,
+            payload.folder_path,
+            preferred_library_id=payload.preferred_library_id,
+            source_rjcode_hint=payload.source_rjcode_hint,
         )
         return {"success": True, "preview": preview}
     except FileNotFoundError as e:
@@ -12709,19 +12850,29 @@ async def preview_linked_subtitle_folder_import(request: LinkedSubtitleFolderPre
 
 
 @app.post("/api/subtitle-import/folder/import")
-async def execute_linked_subtitle_folder_import(request: LinkedSubtitleFolderImportRequest):
+async def execute_linked_subtitle_folder_import(
+    payload: LinkedSubtitleFolderImportRequest,
+    http_request: Request,
+):
     from ..core.linked_subtitle_import_service import get_linked_subtitle_import_service
 
     try:
+        http_request.state.slow_api_context = {
+            "preferred_library_id": payload.preferred_library_id,
+            "target_library_id": payload.target_library_id,
+            "source_rjcode_hint": payload.source_rjcode_hint,
+            "use_filter_rules": bool(payload.use_filter_rules),
+            "subtitle_filter_rules": len(payload.subtitle_filter_rules or []),
+        }
         service = get_linked_subtitle_import_service()
         result = await service.execute_subtitle_folder_import(
-            request.folder_path,
-            preferred_library_id=request.preferred_library_id,
-            target_library_id=request.target_library_id,
-            target_folder_path=request.target_folder_path,
-            source_rjcode_hint=request.source_rjcode_hint,
-            use_filter_rules=request.use_filter_rules,
-            subtitle_filter_rules=request.subtitle_filter_rules,
+            payload.folder_path,
+            preferred_library_id=payload.preferred_library_id,
+            target_library_id=payload.target_library_id,
+            target_folder_path=payload.target_folder_path,
+            source_rjcode_hint=payload.source_rjcode_hint,
+            use_filter_rules=payload.use_filter_rules,
+            subtitle_filter_rules=payload.subtitle_filter_rules,
         )
         try:
             from ..core.activity_log_service import log_from_subtitle_import_result
@@ -12729,7 +12880,7 @@ async def execute_linked_subtitle_folder_import(request: LinkedSubtitleFolderImp
             log_from_subtitle_import_result(
                 "folder_import",
                 result if isinstance(result, dict) else {},
-                folder_path=request.folder_path,
+                folder_path=payload.folder_path,
             )
         except Exception:
             logger.debug("[操作记录] 文件夹补配记录失败", exc_info=True)
@@ -13352,11 +13503,15 @@ async def _exchange_google_drive_authorization_code(
                     async with session.get(about_url, headers=headers, proxy=proxy or None) as response:
                         body = await response.text()
                         if response.status >= 400:
-                            logger.warning("Google Drive OAuth 账号信息读取失败: HTTP %s: %s", response.status, body[:160])
+                            logger.warning(
+                                "Google Drive OAuth 账号信息读取失败: HTTP %s: %s",
+                                response.status,
+                                sanitize_text_for_log(body, max_length=160),
+                            )
                         else:
                             account = _google_drive_account_from_about_payload(json.loads(body))
             except Exception as exc:
-                logger.warning("Google Drive OAuth 账号信息读取失败，已跳过账号缓存: %s", exc)
+                logger.warning("Google Drive OAuth 账号信息读取失败，已跳过账号缓存: %s", sanitize_text_for_log(exc))
         return {
             "success": True,
             "refresh_token": refresh_token,
@@ -13368,7 +13523,7 @@ async def _exchange_google_drive_authorization_code(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error("Google Drive OAuth 换取 refresh token 失败: %s", exc, exc_info=True)
+        logger.error("Google Drive OAuth 换取 refresh token 失败: %s", sanitize_text_for_log(exc))
         error_text = str(exc) or exc.__class__.__name__
         if isinstance(exc, asyncio.TimeoutError) or "timeout" in error_text.lower():
             proxy_state = f"当前 OAuth 代理: {_mask_url_credentials(proxy)}" if proxy else "当前 OAuth 请求未配置代理"
@@ -14078,7 +14233,7 @@ async def baidu_netdisk_account_test(request: BaiduNetdiskAccountTestRequest):
             allow_quota_failure=request.allow_quota_failure,
         )
     except Exception as exc:
-        logger.error("检测百度网盘账号失败: %s", exc, exc_info=True)
+        logger.error("检测百度网盘账号失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -14089,7 +14244,7 @@ async def baidu_netdisk_account_refresh():
     try:
         return await get_baidu_netdisk_service().refresh_account_status()
     except Exception as exc:
-        logger.error("刷新百度网盘账号状态失败: %s", exc, exc_info=True)
+        logger.error("刷新百度网盘账号状态失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -14104,7 +14259,7 @@ async def baidu_netdisk_account_password_login(request: BaiduNetdiskPasswordLogi
             persist=request.persist,
         )
     except Exception as exc:
-        logger.error("百度账号密码登录失败: %s", exc, exc_info=True)
+        logger.error("百度账号密码登录失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -14909,16 +15064,31 @@ async def asmr_sync_enhanced_reimport_local_download(request: ASMRReimportLocalD
 
 
 @app.post("/api/circle-completion/index")
-async def circle_completion_index(request: CircleCompletionIndexRequest):
+async def circle_completion_index(
+    payload: CircleCompletionIndexRequest,
+    http_request: Request,
+):
     from ..core.circle_completion_service import get_circle_completion_service
 
     try:
+        http_request.state.slow_api_context = {
+            "circle_query": payload.circle_query,
+            "force_refresh": bool(payload.force_refresh),
+            "include_dlsite": bool(payload.include_dlsite),
+            "include_kikoeru": bool(payload.include_kikoeru),
+            "only_new_works": bool(payload.only_new_works),
+            "deprecated_sync_api": True,
+        }
+        logger.warning(
+            "[社团补全] 同步索引接口已弃用，建议使用 /api/circle-completion/index/start: circle_query=%s",
+            payload.circle_query,
+        )
         result = await get_circle_completion_service().index_circle_catalog(
-            request.circle_query,
-            force_refresh=bool(request.force_refresh),
-            include_dlsite=bool(request.include_dlsite),
-            include_kikoeru=bool(request.include_kikoeru),
-            only_new_works=bool(request.only_new_works),
+            payload.circle_query,
+            force_refresh=bool(payload.force_refresh),
+            include_dlsite=bool(payload.include_dlsite),
+            include_kikoeru=bool(payload.include_kikoeru),
+            only_new_works=bool(payload.only_new_works),
         )
         return {"success": True, **result}
     except ValueError as exc:
@@ -15101,6 +15271,7 @@ async def circle_completion_all_circle_names():
 
 @app.get("/api/circle-completion/circles/{circle_id}")
 async def circle_completion_detail(
+    http_request: Request,
     circle_id: str,
     only_missing: bool = False,
     only_downloadable: bool = False,
@@ -15109,6 +15280,12 @@ async def circle_completion_detail(
     from ..core.circle_completion_service import get_circle_completion_service
 
     try:
+        http_request.state.slow_api_context = {
+            "circle_id": circle_id,
+            "only_missing": bool(only_missing),
+            "only_downloadable": bool(only_downloadable),
+            "include_dl_only": bool(include_dl_only),
+        }
         result = await get_circle_completion_service().build_circle_completion_view(
             circle_id,
             only_missing=bool(only_missing),
@@ -15149,14 +15326,22 @@ async def circle_completion_cover(filename: str):
 
 
 @app.post("/api/circle-completion/download/preview")
-async def circle_completion_download_preview(request: CircleCompletionDownloadPreviewRequest):
+async def circle_completion_download_preview(
+    payload: CircleCompletionDownloadPreviewRequest,
+    http_request: Request,
+):
     from ..core.circle_completion_service import get_circle_completion_service
 
     try:
+        http_request.state.slow_api_context = {
+            "circle_id": payload.circle_id,
+            "selected_count": len(payload.canonical_rjcodes or []),
+            "requested_rjcode_groups": len(payload.requested_rjcodes or {}),
+        }
         result = await get_circle_completion_service().preview_batch_download(
-            request.circle_id,
-            request.canonical_rjcodes,
-            request.requested_rjcodes,
+            payload.circle_id,
+            payload.canonical_rjcodes,
+            payload.requested_rjcodes,
         )
         return {"success": True, **result}
     except ValueError as exc:
@@ -15166,18 +15351,75 @@ async def circle_completion_download_preview(request: CircleCompletionDownloadPr
         raise HTTPException(status_code=500, detail=f"预览批量下载失败: {str(exc)}")
 
 
-@app.post("/api/circle-completion/refresh-selected")
-async def circle_completion_refresh_selected(request: CircleCompletionRefreshSelectedRequest):
+@app.post("/api/circle-completion/download/preview/start")
+async def circle_completion_download_preview_start(
+    payload: CircleCompletionDownloadPreviewRequest,
+    http_request: Request,
+):
     from ..core.circle_completion_service import get_circle_completion_service
 
     try:
+        http_request.state.slow_api_context = {
+            "circle_id": payload.circle_id,
+            "selected_count": len(payload.canonical_rjcodes or []),
+            "requested_rjcode_groups": len(payload.requested_rjcodes or {}),
+            "job_api": True,
+        }
+        result = await get_circle_completion_service().start_download_preview_job(
+            payload.circle_id,
+            payload.canonical_rjcodes,
+            payload.requested_rjcodes,
+        )
+        return {"success": True, **result}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("启动社团批量下载预览任务失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"启动预览任务失败: {str(exc)}")
+
+
+@app.get("/api/circle-completion/download/preview/jobs/{job_id}")
+async def circle_completion_download_preview_job_status(job_id: str):
+    from ..core.circle_completion_service import get_circle_completion_service
+
+    try:
+        result = get_circle_completion_service().get_download_preview_job(job_id)
+        if result is None:
+            raise ValueError("下载预览任务不存在")
+        return {"success": True, **result}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("查询社团批量下载预览任务失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"查询预览任务失败: {str(exc)}")
+
+
+@app.post("/api/circle-completion/refresh-selected")
+async def circle_completion_refresh_selected(
+    payload: CircleCompletionRefreshSelectedRequest,
+    http_request: Request,
+):
+    from ..core.circle_completion_service import get_circle_completion_service
+
+    try:
+        http_request.state.slow_api_context = {
+            "circle_id": payload.circle_id,
+            "selected_count": len(payload.canonical_rjcodes or []),
+            "force_refresh": bool(payload.force_refresh),
+            "deprecated_sync_api": True,
+        }
+        logger.warning(
+            "[社团补全] 同步刷新接口已弃用，建议使用 /api/circle-completion/refresh-selected/start: circle_id=%s selected_count=%s",
+            payload.circle_id,
+            len(payload.canonical_rjcodes or []),
+        )
         force_refresh, force_refresh_reason = _resolve_circle_completion_force_refresh(
-            request.circle_id,
-            bool(request.force_refresh),
+            payload.circle_id,
+            bool(payload.force_refresh),
         )
         result = await get_circle_completion_service().refresh_circle_works(
-            request.circle_id,
-            request.canonical_rjcodes,
+            payload.circle_id,
+            payload.canonical_rjcodes,
             force_refresh=force_refresh,
         )
         return {

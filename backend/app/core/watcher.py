@@ -120,6 +120,27 @@ class FolderWatcher:
         """动态获取最新配置"""
         return get_config()
 
+    def _broadcast_status(self, reason: str = "status") -> None:
+        try:
+            from .realtime_event_service import broadcast_event
+
+            payload = {
+                "is_running": bool(self.is_running),
+                "watch_path": self.config.storage.input_path,
+                "pending_files": list(self.pending_files),
+            }
+            broadcast_event({
+                "type": "watcher.status.changed",
+                "reason": reason,
+                "id": "watcher",
+                "domain": "watcher",
+                "status": "running" if self.is_running else "stopped",
+                "current_step": f"{len(self.pending_files)} 个待处理文件" if self.pending_files else "",
+                "payload": payload,
+            })
+        except Exception:
+            logger.debug("广播 watcher 实时状态失败", exc_info=True)
+
     def _get_excluded_paths(self):
         """获取所有应该排除的路径（pending + processed）"""
         return self.pending_files | self._processed_files
@@ -181,6 +202,7 @@ class FolderWatcher:
 
         self.is_running = True
         logger.info(f"文件夹监视器已启动: {watch_path}")
+        self._broadcast_status("started")
 
     def stop(self):
         """停止监视器"""
@@ -196,6 +218,7 @@ class FolderWatcher:
 
         self.is_running = False
         logger.info("文件夹监视器已停止")
+        self._broadcast_status("stopped")
 
     def _on_archive_detected(self, file_path: str):
         """检测到压缩包"""
@@ -209,16 +232,16 @@ class FolderWatcher:
             return
 
         self.pending_files.add(file_path)
-        logger.info(f"检测到新文件: {file_path}")
-        logger.info(f"auto_start配置: {self.config.watcher.auto_start}")
+        logger.info("检测到新压缩包: path=%s auto_start=%s", file_path, self.config.watcher.auto_start)
+        self._broadcast_status("pending_added")
 
         # 创建自动处理任务
         if self.config.watcher.auto_start:
-            logger.info(f"准备创建处理任务: {file_path}")
+            logger.debug(f"准备创建处理任务: {file_path}")
             # 使用保存的事件循环来调度任务
             if self._loop and self._loop.is_running():
                 asyncio.run_coroutine_threadsafe(self._process_file(file_path), self._loop)
-                logger.info(f"任务已调度: {file_path}")
+                logger.debug(f"任务已调度: {file_path}")
             else:
                 logger.error(f"事件循环未就绪，无法调度任务: {file_path}")
         else:
@@ -226,7 +249,7 @@ class FolderWatcher:
 
     async def _process_file(self, file_path: str):
         """处理文件（使用 FileProcessor 统一流程）"""
-        logger.info(f"[Watcher] 开始处理文件: {file_path}")
+        logger.debug(f"[Watcher] 开始处理文件: {file_path}")
         original_path = file_path
 
         try:
@@ -349,6 +372,7 @@ class FolderWatcher:
             self._processed_files.add(file_path)
         finally:
             self.pending_files.discard(original_path)
+            self._broadcast_status("pending_removed")
 
     async def _periodic_scan(self):
         """定期扫描文件夹"""
