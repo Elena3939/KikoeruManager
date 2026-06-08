@@ -108,7 +108,7 @@
           :disabled="disableBaiduUpload"
           @click="emit('action', 'baidu_upload')"
         >
-          <CloudUpload :size="14" :stroke-width="2.2" class="menu-item-icon text-sky-600" />
+          <img :src="baiduNetdiskIcon" alt="" class="menu-item-icon menu-item-platform-icon" />
           <span>{{ batchMode ? '批量上传到百度网盘' : '上传到百度网盘' }}</span>
         </button>
 
@@ -210,7 +210,8 @@
 
 <script setup>
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { Captions, CloudUpload, Copy, ExternalLink, Eye, FolderCog, FolderInput, FolderOpen, FolderSync, HardDrive, MapPin, Pencil, Sparkles, Tags, Trash2, UploadCloud } from 'lucide-vue-next'
+import { Captions, Copy, ExternalLink, Eye, FolderCog, FolderInput, FolderOpen, FolderSync, HardDrive, MapPin, Pencil, Sparkles, Tags, Trash2, UploadCloud } from 'lucide-vue-next'
+import baiduNetdiskIcon from '../../assets/platforms/baidu-netdisk.ico'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -349,6 +350,12 @@ onBeforeUnmount(() => {
   transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.2s ease;
 }
 
+.menu-item-platform-icon {
+  width: 15px;
+  height: 15px;
+  object-fit: contain;
+}
+
 .menu-item:hover .menu-item-icon {
   transform: translateY(-1px) scale(1.12) rotate(-4deg);
 }
@@ -361,6 +368,10 @@ onBeforeUnmount(() => {
 
 .menu-item:disabled .menu-item-icon {
   color: #cbd5e1 !important;
+}
+
+.menu-item:disabled .menu-item-platform-icon {
+  filter: grayscale(1);
 }
 
 .menu-item-danger {

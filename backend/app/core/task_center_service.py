@@ -1000,7 +1000,7 @@ class TaskCenterService:
             is_folder_completion = source_action == "folder_completion"
             is_folder_completion_preview = task.type == TaskType.LIBRARY_FOLDER_COMPLETION_PREVIEW
             if is_folder_completion_preview:
-                title = "补全文件夹预览"
+                title = "补全文件夹检查"
             elif is_folder_completion:
                 title = self._safe_text(metadata.get("work_title")) or rjcode or self._basename(source_path) or "补全文件夹下载"
             else:

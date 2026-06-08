@@ -7444,7 +7444,7 @@ class LibraryListSubdirectoriesRequest(BaseModel):
 
 
 class LibraryFolderCompletionPreviewRequest(BaseModel):
-    """库存页“补全文件夹”预览请求。"""
+    """库存页“补全文件夹”检查请求。"""
     library_id: str
     selected_paths: List[str] = []
 
@@ -7494,8 +7494,8 @@ async def preview_library_folder_completion(request: LibraryFolderCompletionPrev
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        logger.error("库存补全文件夹预览失败: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"库存补全文件夹预览失败: {str(e)}")
+        logger.error("库存补全文件夹检查失败: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"库存补全文件夹检查失败: {str(e)}")
 
 
 @app.post("/api/library/folder-completion/preview/start")
@@ -7519,14 +7519,14 @@ async def start_library_folder_completion_preview(request: LibraryFolderCompleti
                 "task_domain": "asmr_sync",
                 "source_page": "library",
                 "source_action": "folder_completion",
-                "source_label": "音声补全 / 补全文件夹预览",
+                "source_label": "音声补全 / 补全文件夹检查",
                 "business_key": f"{request.library_id}:folder_completion_preview:{uuid.uuid4().hex[:8]}",
             },
         )
         task.ensure_business_context("asmr_sync", {
             "source_page": "library",
             "source_action": "folder_completion",
-            "source_label": "音声补全 / 补全文件夹预览",
+            "source_label": "音声补全 / 补全文件夹检查",
             "business_key": task.task_metadata["business_key"],
         })
         await get_task_engine().submit(task)
@@ -7542,8 +7542,8 @@ async def start_library_folder_completion_preview(request: LibraryFolderCompleti
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error("启动库存补全文件夹预览任务失败: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"启动库存补全文件夹预览任务失败: {str(e)}")
+        logger.error("启动库存补全文件夹检查任务失败: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"启动库存补全文件夹检查任务失败: {str(e)}")
 
 
 @app.get("/api/library/folder-completion/preview/jobs/{job_id}")
@@ -7552,7 +7552,7 @@ async def get_library_folder_completion_preview_job(job_id: str):
 
     task = get_task_engine().get_task(job_id)
     if not task or task.type != TaskType.LIBRARY_FOLDER_COMPLETION_PREVIEW:
-        raise HTTPException(status_code=404, detail="补全文件夹预览任务不存在")
+        raise HTTPException(status_code=404, detail="补全文件夹检查任务不存在")
     metadata = dict(task.task_metadata or {})
     return {
         "success": True,
