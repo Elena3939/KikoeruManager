@@ -262,23 +262,41 @@
 
 
 
-      <div class="lib-toolbar-switcher" :class="{ 'is-batch-mode': selectedRowPaths.size && !tableItemDragState.visible }">
+      <div class="lib-toolbar-switcher">
 
       <div
-        class="lib-path-toolbar lib-toolbar-panel"
-        :class="{ 'is-visible': !selectedRowPaths.size || tableItemDragState.visible }"
-        :aria-hidden="selectedRowPaths.size && !tableItemDragState.visible ? 'true' : 'false'"
+        class="lib-path-toolbar lib-toolbar-panel is-visible"
+        aria-hidden="false"
       >
 
         <div class="lib-path-left">
 
-          <button type="button" class="lib-btn lib-btn-ghost lib-btn-compact" :disabled="!canGoParent" @click="goToParent">
-
-            <IconArrowLeft :size="14" :stroke-width="2.4" />
-
-            <span>{{ backButtonLabel }}</span>
-
-          </button>
+          <div class="lib-path-leading-slot">
+            <Transition name="lib-path-leading-swap" mode="out-in">
+              <button
+                v-if="selectedRowPaths.size"
+                key="selection-count"
+                type="button"
+                class="lib-selection-count-pill lib-selection-count-button"
+                title="清空选择"
+                @click="clearSelection"
+              >
+                <IconCheckSquare :size="13" :stroke-width="2.4" />
+                <span>已选 <b>{{ selectedRowPaths.size }}</b> 项</span>
+              </button>
+              <button
+                v-else
+                key="back-button"
+                type="button"
+                class="lib-btn lib-btn-ghost lib-btn-compact"
+                :disabled="!canGoParent"
+                @click="goToParent"
+              >
+                <IconArrowLeft :size="14" :stroke-width="2.4" />
+                <span>{{ backButtonLabel }}</span>
+              </button>
+            </Transition>
+          </div>
 
           <nav ref="pathBreadcrumbRef" class="lib-path-breadcrumb" aria-label="当前层级路径">
             <template
@@ -443,244 +461,9 @@
 
           </button>
 
-          <button
-
-            v-if="!isRemoteCurrentLibrary"
-
-            type="button"
-
-            class="lib-btn lib-btn-icon-tinted lib-icon-upload"
-
-            :disabled="selectedUploadCount === 0 || !hasRemoteUploadLibraries"
-
-            @click="() => openLocalUploadDialog()"
-
-          >
-
-            <IconUpload :size="14" :stroke-width="2.2" />
-
-            <span>上传到服务器</span>
-
-          </button>
-
         </div>
 
       </div>
-
-
-
-        <div
-          class="lib-batch-bar lib-toolbar-panel"
-          :class="{ 'is-visible': selectedRowPaths.size && !tableItemDragState.visible }"
-          :aria-hidden="selectedRowPaths.size && !tableItemDragState.visible ? 'false' : 'true'"
-        >
-
-          <div class="lib-batch-info">
-
-            <div class="lib-batch-count-pill">
-
-              <IconCheckSquare :size="14" :stroke-width="2.4" />
-
-              <span>已选 <b>{{ selectedRowPaths.size }}</b> 项</span>
-
-            </div>
-
-            <button type="button" class="lib-batch-clear" @click="clearSelection" title="取消选择">
-
-              <IconX :size="13" :stroke-width="2.4" />
-
-              <span>清空</span>
-
-            </button>
-
-          </div>
-
-          <div class="lib-batch-actions">
-
-            <button
-
-              type="button"
-
-              class="lib-btn lib-btn-icon-tinted lib-icon-subtitle-batch"
-
-              :disabled="!selectedSubtitleCandidates.length || subtitleSubmitting"
-
-              @click="openRJSubtitleDialog(selectedSubtitleCandidates)"
-
-            >
-
-              <IconCaptions :size="14" :stroke-width="2.2" />
-
-              <span>批量抓字幕</span>
-
-              <span v-if="selectedSubtitleCandidates.length" class="lib-badge">{{ selectedSubtitleCandidates.length }}</span>
-
-            </button>
-
-            <button
-
-              type="button"
-
-              class="lib-btn lib-btn-icon-tinted lib-icon-filter-delete"
-
-              :disabled="!selectedFilterDeleteRows.length || !isWritableCurrentLibrary"
-
-              @click="openSelectedFilterDeleteDialog"
-
-            >
-
-              <IconFilterX :size="14" :stroke-width="2.2" />
-
-              <span>删过滤预审</span>
-
-            </button>
-
-            <button
-
-              v-if="!isRemoteCurrentLibrary && isAtComputeSizeRoot"
-
-              type="button"
-
-
-              :class="['lib-btn lib-btn-icon-tinted lib-icon-compute-size lib-batch-action-btn', { 'is-executing': batchComputingSize }]"
-
-              :disabled="batchComputingSize || !selectedDirectoryRows.length"
-
-              @click="handleBatchComputeSize"
-
-            >
-
-              <IconHardDrive :size="14" :stroke-width="2.2" />
-
-              <span>批量计算大小</span>
-
-              <span v-if="batchComputingSize" class="lib-badge">计算中</span>
-
-            </button>
-
-            <button
-
-              type="button"
-
-              :class="['lib-btn lib-btn-icon-tinted lib-icon-batch-delete lib-batch-action-btn', { 'is-executing': batchDeleting }]"
-
-              :disabled="!isWritableCurrentLibrary || batchDeleting"
-
-              @click="handleBatchDelete"
-
-            >
-
-              <IconTrash :size="14" :stroke-width="2.2" />
-
-              <span>批量删除</span>
-
-            </button>
-
-            <button
-
-              v-if="!isRemoteCurrentLibrary"
-
-              type="button"
-
-              :class="['lib-btn lib-btn-icon-tinted lib-icon-auto-circle-group lib-batch-action-btn', { 'is-executing': batchAutoCircleGrouping }]"
-
-              :disabled="!selectedAutoCircleGroupRows.length || Boolean(autoCircleGroupRunningId) || batchAutoCircleGrouping"
-
-              @click="handleBatchAutoCircleGroup"
-
-            >
-
-              <IconTags :size="14" :stroke-width="2.2" />
-
-              <span>批量按社团分类</span>
-
-              <span v-if="selectedAutoCircleGroupRows.length" class="lib-badge">{{ selectedAutoCircleGroupRows.length }}</span>
-
-            </button>
-
-            <button
-
-              v-if="!isRemoteCurrentLibrary"
-
-              type="button"
-
-              class="lib-btn lib-btn-icon-tinted lib-icon-folder-completion lib-batch-action-btn"
-
-              :disabled="!selectedFolderCompletionRows.length"
-
-              @click="openFolderCompletionDialog(selectedFolderCompletionRows)"
-
-            >
-
-              <IconFolderSync :size="14" :stroke-width="2.2" />
-
-              <span>批量补全文件夹</span>
-
-              <span v-if="selectedFolderCompletionRows.length" class="lib-badge">{{ selectedFolderCompletionRows.length }}</span>
-
-            </button>
-
-            <button
-
-              v-if="!isRemoteCurrentLibrary"
-
-              type="button"
-
-              class="lib-btn lib-btn-icon-tinted lib-icon-batch-move lib-batch-action-btn"
-
-              :disabled="!isWritableCurrentLibrary || moveDialogState.submitting || directMoveSubmitting || !selectedRows.length"
-
-              @click="openMoveDialog(selectedRows)"
-
-            >
-
-              <IconFolderInput :size="14" :stroke-width="2.2" />
-
-              <span>批量移动</span>
-
-            </button>
-
-            <button
-
-              type="button"
-
-              :class="['lib-btn lib-btn-icon-tinted lib-icon-api-rename lib-batch-action-btn', { 'is-executing': batchRenaming }]"
-
-              :disabled="!selectedApiRenameRows.length || apiRenameBusy"
-
-              @click="handleBatchApiRename"
-
-            >
-
-              <IconPencil :size="14" :stroke-width="2.2" />
-
-              <span>批量 API 重命名</span>
-
-            </button>
-
-            <button
-
-              v-if="!isRemoteCurrentLibrary"
-
-              type="button"
-
-              class="lib-btn lib-btn-icon-tinted lib-icon-upload"
-
-              :disabled="selectedUploadCount === 0 || !hasRemoteUploadLibraries"
-
-              @click="() => openLocalUploadDialog()"
-
-            >
-
-              <IconUpload :size="14" :stroke-width="2.2" />
-
-              <span>上传到服务器</span>
-
-            </button>
-
-          </div>
-
-        </div>
 
       </div>
 
@@ -701,8 +484,6 @@
         style="margin-bottom: 14px"
 
       />
-
-
 
       <div
         v-if="!isMobileViewport"
@@ -798,9 +579,15 @@
           :style="tableItemDragGhostStyle"
         >
           <span class="lib-table-drag-icon-stack">
-            <IconFile v-if="tableItemDragFileCount" :size="15" :stroke-width="2.3" class="lib-table-drag-file-icon" />
-            <IconFolderTree v-if="tableItemDragFolderCount" :size="16" :stroke-width="2.3" class="lib-table-drag-folder-icon" />
-            <IconFolderInput v-if="tableItemDragState.canDrop" :size="15" :stroke-width="2.3" class="lib-table-drag-move-icon" />
+            <component
+              :is="item.icon"
+              v-for="(item, index) in tableItemDragIconItems"
+              :key="item.kind"
+              class="lib-table-drag-kind-icon file-icon"
+              :class="[item.className, `is-stack-${index}`, { 'is-single': tableItemDragIconItems.length === 1 }]"
+              :size="tableItemDragIconItems.length > 1 ? 16 : 17"
+              :stroke-width="2.3"
+            />
           </span>
           <span class="lib-table-drag-count">{{ tableItemDragCountText }}</span>
           <span v-if="tableItemDragState.targetName" class="lib-table-drag-target">
@@ -955,18 +742,19 @@
     />
 
     <Teleport to="body">
-      <div
-        v-if="baiduUploadDialogVisible"
-        class="custom-preview-overlay baidu-upload-preview-overlay"
-        @click.self="closeBaiduUploadDialog"
-      >
-        <section class="custom-preview-modal server-upload-preview-modal baidu-upload-preview-modal" role="dialog" aria-modal="true" aria-label="上传到百度网盘">
-          <div class="window panel-enter glass-shell relative w-full max-w-[1210px] aspect-[16/9] rounded-3xl flex flex-col overflow-hidden">
-          <header class="window-header flex items-center justify-between px-8 py-6">
+      <Transition name="baidu-upload-dialog" appear>
+        <div
+          v-if="baiduUploadDialogVisible"
+          class="custom-preview-overlay baidu-upload-preview-overlay"
+          @click.self="closeBaiduUploadDialog"
+        >
+          <section class="custom-preview-modal baidu-upload-preview-modal baidu-upload-modal" role="dialog" aria-modal="true" aria-label="上传到百度网盘">
+          <div class="window panel-enter glass-shell baidu-upload-window relative w-full max-w-none rounded-3xl flex flex-col overflow-hidden">
+          <header class="window-header baidu-upload-header flex items-center justify-between px-8 py-6">
             <h1 class="title text-2xl font-bold text-slate-900 tracking-tight">上传到百度网盘</h1>
             <button
               type="button"
-              class="interactive-chip close-button inline-flex size-10 items-center justify-center rounded-full text-slate-400 hover:text-slate-700"
+              class="interactive-chip close-button baidu-upload-close-button inline-flex size-10 items-center justify-center rounded-full text-slate-400 hover:text-slate-700"
               :disabled="baiduUploadSubmitting"
               aria-label="关闭"
               @click="closeBaiduUploadDialog"
@@ -975,136 +763,155 @@
             </button>
           </header>
 
-          <div class="tabs-row px-8 pt-1 pb-3 flex items-center gap-2 overflow-hidden">
-            <span class="tab-chip tab-chip-active px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] whitespace-nowrap flex items-center gap-1 border">{{ baiduUploadModeLabel }}</span>
-            <span class="tab-chip tab-chip-idle px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] whitespace-nowrap flex items-center gap-1 border">{{ baiduUploadConflictPolicyLabel }}</span>
-            <button
-              type="button"
-              class="tab-chip tab-chip-idle restore-button shrink-0 px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] border"
-              :disabled="baiduUploadSubmitting"
-              @click="baiduUploadForm.mode = baiduUploadForm.mode === 'compress' ? 'direct' : 'compress'"
-            >
-              {{ baiduUploadForm.mode === 'compress' ? '切到直接上传' : '切到压缩上传' }}
-            </button>
-          </div>
-
-          <div class="content-grid flex-1 flex gap-6 px-8 py-2 min-h-0">
-            <aside class="left-column w-[380px] flex flex-col gap-6">
-              <section class="glass-panel glass-card upload-settings-card baidu-upload-settings-card flex-1 rounded-2xl p-6 overflow-y-auto no-scrollbar">
+          <div class="content-grid baidu-upload-content flex-1 flex gap-6 px-8 py-2 min-h-0">
+            <div class="left-column baidu-upload-left-column flex flex-col gap-6">
+              <section class="glass-panel glass-card upload-settings-card baidu-upload-settings-card-panel flex-1 rounded-2xl p-6 overflow-y-auto no-scrollbar">
                 <div class="section-head space-y-1">
                   <h2>上传设置</h2>
-                  <p>确认百度网盘目录、同名处理和上传前压缩设置，创建后进入任务中心后台执行。</p>
+                  <p>{{ baiduUploadSourceTypeText }} · {{ baiduUploadRemotePathPreview }}</p>
                 </div>
 
-                <div class="baidu-upload-form-grid select-grid grid grid-cols-2 gap-4">
-                  <label class="baidu-upload-field field-group space-y-2">
-                    <span>上传模式</span>
+                <div class="baidu-upload-config-stack">
+                  <div class="baidu-upload-setting-row">
+                    <div class="baidu-upload-setting-copy">
+                      <label>上传模式</label>
+                      <p>{{ baiduUploadForm.mode === 'compress' ? '先生成临时压缩包，再上传单个包。' : '保留原文件和目录结构直接上传。' }}</p>
+                    </div>
                     <AppDropdown
                       v-model="baiduUploadForm.mode"
                       :options="baiduUploadModeOptions"
                       class="baidu-upload-dd"
                     />
-                  </label>
-                  <label class="baidu-upload-field field-group space-y-2">
-                    <span>同名处理</span>
+                  </div>
+
+                  <div class="baidu-upload-setting-row">
+                    <div class="baidu-upload-setting-copy">
+                      <label>同名处理</label>
+                      <p>{{ baiduUploadForm.mode === 'compress' ? '压缩包只按整包处理，不做增量同步。' : '直接上传可对目录做增量同步。' }}</p>
+                    </div>
                     <AppDropdown
                       v-model="baiduUploadForm.conflictPolicy"
-                      :options="baiduUploadPolicyOptions"
+                      :options="availableBaiduUploadPolicyOptions"
                       class="baidu-upload-dd"
                     />
-                  </label>
-                  <label class="baidu-upload-field field-group space-y-2 baidu-upload-field-wide">
-                    <span>网盘目录</span>
+                  </div>
+
+                  <div class="baidu-upload-setting-row is-column">
+                    <div class="baidu-upload-setting-copy">
+                      <label>网盘目录</label>
+                      <p>百度网盘内的基础上传目录。</p>
+                    </div>
                     <input
                       v-model="baiduUploadForm.remoteDir"
                       class="interactive-field field-input baidu-upload-input flex h-9 w-full rounded-lg border border-slate-200/70 bg-white/55 py-2 px-2.5 text-sm text-slate-800"
                       placeholder="/KikoeruManager"
                     />
-                  </label>
-                  <label class="baidu-upload-field field-group space-y-2 baidu-upload-field-wide">
-                    <span>任务子目录</span>
+                  </div>
+
+                  <div class="baidu-upload-setting-row is-column">
+                    <div class="baidu-upload-setting-copy">
+                      <label>任务子目录</label>
+                      <p>可选；用于把本次任务归到独立子目录。</p>
+                    </div>
                     <input
                       v-model="baiduUploadForm.createRemoteSubdir"
                       class="interactive-field field-input baidu-upload-input flex h-9 w-full rounded-lg border border-slate-200/70 bg-white/55 py-2 px-2.5 text-sm text-slate-800"
                       placeholder="留空则直接上传到网盘目录"
                     />
-                  </label>
+                  </div>
                 </div>
 
-                <div class="baidu-upload-path-stack">
-                  <p>网盘目录: <span>{{ baiduUploadNormalizedRemoteDir }}</span></p>
-                  <p>任务子目录: <span>{{ baiduUploadForm.createRemoteSubdir || '-' }}</span></p>
-                  <p>最终上传位置: <span>{{ baiduUploadRemotePathPreview }}</span></p>
+                <div class="baidu-upload-path-stack space-y-1.5">
+                  <p class="target-path text-xs text-slate-500 leading-relaxed">网盘目录: <span class="text-slate-700 break-all">{{ baiduUploadNormalizedRemoteDir }}</span></p>
+                  <p class="target-path text-xs text-slate-500 leading-relaxed">任务子目录: <span class="text-slate-700 break-all">{{ baiduUploadForm.createRemoteSubdir || '-' }}</span></p>
+                  <p class="target-path text-xs text-slate-500 leading-relaxed">最终上传位置: <span class="text-slate-700 break-all">{{ baiduUploadRemotePathPreview }}</span></p>
                 </div>
 
-                <div class="baidu-upload-compress-block" :class="{ disabled: baiduUploadForm.mode !== 'compress' }">
-                  <div class="baidu-upload-compress-head">
+                <section class="baidu-upload-compress-block space-y-4" :class="{ disabled: baiduUploadForm.mode !== 'compress' }">
+                  <div class="section-head compact-head baidu-upload-compress-head">
                     <h2>压缩设置</h2>
                     <span>{{ baiduUploadForm.mode === 'compress' ? '上传前生成临时压缩包' : '直接上传时跳过' }}</span>
                   </div>
-                  <div class="baidu-upload-compress-grid select-grid grid grid-cols-2 gap-4">
-                    <label class="baidu-upload-field field-group space-y-2">
-                      <span>压缩格式</span>
+
+                  <div v-if="baiduUploadForm.mode !== 'compress'" class="baidu-upload-direct-note">
+                    当前为直接上传模式，不会生成临时压缩包，也不会使用压缩密码、压缩强度或线程设置。
+                  </div>
+
+                  <div v-else class="baidu-upload-config-stack">
+                    <div class="baidu-upload-setting-row">
+                      <div class="baidu-upload-setting-copy">
+                        <label>压缩格式</label>
+                        <p>决定临时包扩展名和压缩方式。</p>
+                      </div>
                       <AppDropdown
                         v-model="baiduUploadForm.archiveFormat"
                         :options="baiduUploadArchiveFormatOptions"
                         class="baidu-upload-dd"
-                        :disabled="baiduUploadForm.mode !== 'compress'"
                       />
-                    </label>
-                    <label class="baidu-upload-field field-group space-y-2">
-                      <span>线程数</span>
-                      <div class="interactive-field field-input baidu-upload-stepper" :class="{ disabled: baiduUploadForm.mode !== 'compress' }">
-                        <button type="button" :disabled="baiduUploadForm.mode !== 'compress'" @click="adjustBaiduCompressionThreads(-1)">−</button>
-                        <input
-                          v-model.number="baiduUploadForm.compressionThreads"
-                          type="number"
-                          min="0"
-                          max="64"
-                          :disabled="baiduUploadForm.mode !== 'compress'"
-                          @change="normalizeBaiduCompressionThreads"
-                        />
-                        <button type="button" :disabled="baiduUploadForm.mode !== 'compress'" @click="adjustBaiduCompressionThreads(1)">+</button>
+                    </div>
+
+                    <div class="baidu-upload-setting-row is-column">
+                      <div class="baidu-upload-setting-copy">
+                        <label>压缩密码</label>
+                        <p>压缩上传必填，创建任务前校验。</p>
                       </div>
-                    </label>
-                    <label class="baidu-upload-field field-group space-y-2 baidu-upload-field-wide">
-                      <span>压缩密码</span>
-                      <input
+                      <AnimatedPasswordInput
                         v-model="baiduUploadForm.password"
-                        type="password"
-                        class="interactive-field field-input baidu-upload-input flex h-9 w-full rounded-lg border border-slate-200/70 bg-white/55 py-2 px-2.5 text-sm text-slate-800"
+                        class="baidu-upload-password-control"
                         placeholder="压缩上传必须填写"
-                        :disabled="baiduUploadForm.mode !== 'compress'"
+                        autocomplete="new-password"
+                        compact
                       />
-                    </label>
-                    <div class="baidu-upload-field field-group space-y-2 baidu-upload-field-wide">
-                      <div class="baidu-upload-label-row">
-                        <span>压缩强度</span>
+                    </div>
+
+                    <div class="baidu-upload-setting-row is-column">
+                      <div class="baidu-upload-setting-copy is-horizontal">
+                        <span>
+                          <label>压缩强度</label>
+                          <p>数值越高压缩越慢，临时包通常更小。</p>
+                        </span>
                         <b>{{ baiduUploadForm.compressionLevel }}/9</b>
                       </div>
-                      <div class="baidu-upload-range-row" :class="{ disabled: baiduUploadForm.mode !== 'compress' }">
+                      <div class="baidu-upload-range-row">
                         <input
                           v-model.number="baiduUploadForm.compressionLevel"
                           type="range"
                           min="1"
                           max="9"
                           step="1"
-                          :disabled="baiduUploadForm.mode !== 'compress'"
                         />
                         <div class="interactive-field field-input baidu-upload-stepper compact">
-                          <button type="button" :disabled="baiduUploadForm.mode !== 'compress'" @click="adjustBaiduCompressionLevel(-1)">−</button>
+                          <button type="button" @click="adjustBaiduCompressionLevel(-1)">−</button>
                           <input
                             v-model.number="baiduUploadForm.compressionLevel"
                             type="number"
                             min="1"
                             max="9"
-                            :disabled="baiduUploadForm.mode !== 'compress'"
                             @change="normalizeBaiduCompressionLevel"
                           />
-                          <button type="button" :disabled="baiduUploadForm.mode !== 'compress'" @click="adjustBaiduCompressionLevel(1)">+</button>
+                          <button type="button" @click="adjustBaiduCompressionLevel(1)">+</button>
                         </div>
                       </div>
                     </div>
+
+                    <div class="baidu-upload-setting-row">
+                      <div class="baidu-upload-setting-copy">
+                        <label>线程数</label>
+                        <p>0 表示使用压缩器默认线程。</p>
+                      </div>
+                      <div class="interactive-field field-input baidu-upload-stepper">
+                        <button type="button" @click="adjustBaiduCompressionThreads(-1)">−</button>
+                        <input
+                          v-model.number="baiduUploadForm.compressionThreads"
+                          type="number"
+                          min="0"
+                          max="64"
+                          @change="normalizeBaiduCompressionThreads"
+                        />
+                        <button type="button" @click="adjustBaiduCompressionThreads(1)">+</button>
+                      </div>
+                    </div>
+
                     <label class="baidu-upload-cleanup">
                       <span>
                         <strong>上传完成后清理临时包</strong>
@@ -1112,54 +919,139 @@
                       </span>
                       <input
                         v-model="baiduUploadForm.cleanupLocalArchive"
+                        class="baidu-upload-cleanup-input"
                         type="checkbox"
                         :disabled="baiduUploadForm.mode !== 'compress'"
                       />
+                      <span
+                        class="baidu-upload-cleanup-box"
+                        :class="{ checked: baiduUploadForm.cleanupLocalArchive, disabled: baiduUploadForm.mode !== 'compress' }"
+                        aria-hidden="true"
+                      />
                     </label>
                   </div>
-                </div>
+                </section>
               </section>
-            </aside>
+            </div>
 
             <section class="glass-panel glass-card tree-panel baidu-upload-tree-panel flex-1 rounded-2xl flex flex-col overflow-hidden">
-              <div class="tree-scroll baidu-upload-tree-scroll flex-1 p-4 overflow-auto no-scrollbar">
-                <div v-if="!baiduUploadSourceItems.length" class="preview-empty">当前没有可上传内容</div>
-                <div v-else class="baidu-upload-tree-list">
-                  <div
-                    v-for="item in baiduUploadSourceItems"
-                    :key="item.path"
-                    class="tree-row baidu-upload-tree-row flex items-center justify-between gap-4 rounded-md"
+              <div class="baidu-upload-tree-head">
+                <div>
+                  <h2>待上传内容</h2>
+                  <p>{{ baiduUploadSelectedTypeText }} / 共 {{ baiduUploadSourceTypeText }}</p>
+                </div>
+                <div class="baidu-upload-tree-head-actions">
+                  <button
+                    type="button"
+                    class="baidu-upload-tree-toggle"
+                    :disabled="baiduUploadPreviewLoading || !baiduUploadDirectoryRows.length"
+                    @click="toggleAllBaiduUploadTreeExpanded"
                   >
-                    <div class="baidu-upload-tree-main">
-                      <span class="tree-checkbox tree-checkbox-on baidu-upload-tree-checkbox">
-                        <IconCheckSquare :size="14" :stroke-width="2.4" />
+                    {{ baiduUploadAllExpanded ? '全部收起' : '全部展开' }}
+                  </button>
+                  <label class="baidu-upload-select-all" @click.stop>
+                    <input
+                      type="checkbox"
+                      class="baidu-upload-native-checkbox"
+                      :checked="baiduUploadAllSelectionState === 'all'"
+                      :indeterminate.prop="baiduUploadAllSelectionState === 'partial'"
+                      :disabled="baiduUploadPreviewLoading || !baiduUploadTreeRows.length"
+                      aria-label="切换全部待上传内容"
+                      @change="toggleAllBaiduUploadItems"
+                    />
+                    <span>全选</span>
+                  </label>
+                  <span>{{ formatSize(baiduUploadSelectedTotalBytes) }}</span>
+                </div>
+              </div>
+              <div class="tree-scroll flex-1 p-4 overflow-auto no-scrollbar">
+                <div v-if="baiduUploadPreviewLoading" class="preview-empty baidu-upload-tree-loading">
+                  <AppLoadingAnimation
+                    label="正在读取文件树..."
+                    description="同步目录结构、百度网盘路径和上传计划"
+                    :size="168"
+                    :min-height="260"
+                  />
+                </div>
+                <div v-else-if="!baiduUploadVisibleTreeRows.length" class="preview-empty">当前没有可上传内容</div>
+                <TransitionGroup
+                  v-else
+                  name="baidu-upload-tree-row"
+                  tag="div"
+                  class="baidu-upload-tree-list"
+                  :css="false"
+                  @before-enter="beforeBaiduUploadTreeRowEnter"
+                  @enter="enterBaiduUploadTreeRow"
+                  @leave="leaveBaiduUploadTreeRow"
+                >
+                  <div
+                    v-for="item in baiduUploadVisibleTreeRows"
+                    :key="item.id || item.path"
+                    class="tree-row baidu-upload-tree-row flex items-center py-1.5 px-2 rounded-md group"
+                    :class="{ 'tree-row-selected': isBaiduUploadItemSelected(item) }"
+                    :style="{ paddingLeft: `${8 + item.depth * 18}px` }"
+                    @click="handleBaiduUploadTreeRowClick(item)"
+                  >
+                    <div class="tree-main flex items-center gap-2 flex-1 min-w-0">
+                      <button
+                        v-if="item.is_directory"
+                        type="button"
+                        class="baidu-upload-tree-expander"
+                        @click.stop="toggleBaiduUploadTreeExpanded(item)"
+                      >
+                        <IconChevronDown
+                          v-if="isBaiduUploadTreeExpanded(item)"
+                          :size="16"
+                          :stroke-width="2.2"
+                        />
+                        <IconChevronRight
+                          v-else
+                          :size="16"
+                          :stroke-width="2.2"
+                        />
+                      </button>
+                      <span v-else class="baidu-upload-expander-spacer" />
+                      <input
+                        type="checkbox"
+                        class="baidu-upload-native-checkbox"
+                        :checked="isBaiduUploadItemSelected(item)"
+                        :aria-label="`${isBaiduUploadItemSelected(item) ? '取消选择' : '选择'} ${item.name}`"
+                        @click.stop
+                        @change.stop="toggleBaiduUploadItemSelection(item)"
+                      />
+                      <span class="baidu-upload-file-icon" :class="{ 'is-folder': item.is_directory, 'is-filled': getBaiduUploadTreeIconMeta(item).fillIcon }">
+                        <component
+                          :is="getBaiduUploadTreeIconMeta(item).icon"
+                          :size="18"
+                          :stroke-width="2.2"
+                          :style="{ color: getBaiduUploadTreeIconMeta(item).color }"
+                        />
                       </span>
-                      <IconFolderTree v-if="item.is_directory" :size="20" :stroke-width="2.2" class="tree-icon tree-icon-fill baidu-upload-tree-icon" />
-                      <IconFile v-else :size="20" :stroke-width="2.2" class="tree-icon baidu-upload-tree-icon" />
-                      <span class="tree-name baidu-upload-tree-name">
+                      <span class="tree-name baidu-upload-tree-name text-sm text-slate-800 truncate font-medium" :title="item.path">
                         {{ item.name }}
-                        <small class="node-title-muted">{{ item.path }}</small>
+                        <span class="node-title-muted">{{ item.path }}</span>
                       </span>
                     </div>
-                    <span class="tree-size baidu-upload-tree-size">{{ formatSize(item.size) }}</span>
+                    <span class="tree-size baidu-upload-tree-size text-xs text-slate-400 ml-4 tabular-nums">{{ formatSize(item.size) }}</span>
                   </div>
-                </div>
+                </TransitionGroup>
               </div>
             </section>
           </div>
 
-          <footer class="footer-row px-8 py-6 flex items-center justify-between">
+          <footer class="footer-row baidu-upload-footer px-8 py-6 flex items-center justify-between">
             <div class="summary text-sm text-slate-500 font-medium">
-              <span class="summary-strong text-slate-900">{{ baiduUploadSourceItems.length }}</span>
+              <span class="summary-strong text-slate-900">{{ baiduUploadSelectedItems.length }}</span>
               项内容待上传，共
               <span class="summary-strong text-slate-900">{{ formatSize(baiduUploadSelectedTotalBytes) }}</span>
             </div>
             <div class="footer-actions flex items-center gap-3">
               <StatefulButton
+                unstyled
                 tone="primary"
                 size="default"
                 class="primary-cta baidu-upload-primary-cta px-10 h-11 rounded-xl font-bold text-white"
-                :disabled="baiduUploadSubmitting || !baiduUploadSourceItems.length"
+                :disabled="baiduUploadSubmitting || !baiduUploadSelectedItems.length"
                 @click="submitBaiduUpload"
               >
                 <IconUpload :size="16" :stroke-width="2.4" />
@@ -1167,7 +1059,7 @@
               </StatefulButton>
               <button
                 type="button"
-                class="secondary-cta interactive-button px-10 h-11 rounded-xl font-bold"
+                class="secondary-cta interactive-button baidu-upload-secondary-cta px-10 h-11 rounded-xl font-bold"
                 :disabled="baiduUploadSubmitting"
                 @click="closeBaiduUploadDialog"
               >
@@ -1176,8 +1068,9 @@
             </div>
           </footer>
           </div>
-        </section>
-      </div>
+          </section>
+        </div>
+      </Transition>
     </Teleport>
 
 
@@ -1908,7 +1801,6 @@ import {
   Trash2 as IconTrash,
 
   Pencil as IconPencil,
-  File as IconFile,
   FileText as IconFileText,
   Folder as IconFolderTree,
   Music as IconMusic,
@@ -1931,6 +1823,8 @@ import {
   FolderOpen as IconFolderOpen,
 
   ChevronLeft as IconChevronLeft,
+
+  ChevronDown as IconChevronDown,
 
   ChevronRight as IconChevronRight,
 
@@ -1991,6 +1885,7 @@ import LibrarySearchBox from '../components/library/LibrarySearchBox.vue'
 import LibraryMobileCard from '../components/library/LibraryMobileCard.vue'
 
 import AppDropdown from '../components/common/AppDropdown.vue'
+import AnimatedPasswordInput from '../components/common/AnimatedPasswordInput.vue'
 import StatefulButton from '@/components/ui/stateful-button.vue'
 import { Badge } from '@/components/ui/badge'
 import BackgroundFloatingCard from '../components/common/BackgroundFloatingCard.vue'
@@ -2323,6 +2218,16 @@ const baiduUploadSubmitting = ref(false)
 
 const pendingBaiduUploadOverrideRows = ref(null)
 
+const baiduUploadSelectedPathSet = ref(new Set())
+
+const baiduUploadPreviewLoading = ref(false)
+
+const baiduUploadPreviewRows = ref([])
+
+const baiduUploadPreviewToken = ref(0)
+
+const baiduUploadExpandedPathSet = ref(new Set())
+
 const baiduUploadForm = ref({
   mode: 'compress',
   remoteDir: '/KikoeruManager',
@@ -2347,6 +2252,8 @@ const baiduUploadPolicyOptions = [
   { value: 'overwrite', label: '覆盖同名' },
   { value: 'rsync', label: '增量同步' }
 ]
+
+const baiduUploadCompressPolicyValues = new Set(['skip', 'overwrite'])
 
 const baiduUploadArchiveFormatOptions = [
   { value: 'zip', label: '.zip' },
@@ -3783,9 +3690,30 @@ const tableItemDragGhostStyle = computed(() => ({
   transform: `translate3d(${tableItemDragState.value.currentX + 14}px, ${tableItemDragState.value.currentY + 14}px, 0)`
 }))
 
-const tableItemDragFolderCount = computed(() => tableItemDragState.value.items.filter(row => row?.is_directory).length)
+const tableItemDragIconItems = computed(() => {
+  const seenKinds = new Set()
+  const iconItems = []
 
-const tableItemDragFileCount = computed(() => tableItemDragState.value.items.length - tableItemDragFolderCount.value)
+  for (const row of tableItemDragState.value.items || []) {
+    const kind = classifyLibraryEntryKind(row)
+    if (seenKinds.has(kind)) continue
+    seenKinds.add(kind)
+    iconItems.push({
+      kind,
+      icon: libraryEntryIconFor(row),
+      className: `icon-${kind}`
+    })
+    if (iconItems.length >= 3) break
+  }
+
+  if (iconItems.length) return iconItems
+
+  return [{
+    kind: 'file',
+    icon: libraryEntryIconFor({ name: 'file' }),
+    className: 'icon-file'
+  }]
+})
 
 const tableItemDragCountText = computed(() => {
   const count = tableItemDragState.value.items.length
@@ -4066,7 +3994,7 @@ const estimatedCurrentPathBreadcrumbWidth = computed(() => {
 
   if (!segments.length) return 0
 
-  const iconWidth = 26
+  const iconWidth = 23 * segments.length
 
   const containerPadding = 20
 
@@ -4094,13 +4022,13 @@ const shouldCollapseCurrentPathBreadcrumb = computed(() => {
 
   const segments = currentPathBreadcrumbSegments.value
 
-  if (segments.length <= 5) return false
+  if (segments.length <= 3) return false
 
   const availableWidth = Number(pathBreadcrumbWidth.value || 0)
 
   if (!availableWidth) return false
 
-  return estimatedCurrentPathBreadcrumbWidth.value > availableWidth - 8
+  return estimatedCurrentPathBreadcrumbWidth.value > availableWidth - 24
 
 })
 
@@ -4384,7 +4312,44 @@ const baiduUploadSourcePreviewItems = computed(() => baiduUploadSourceItems.valu
 
 const baiduUploadHiddenSourceCount = computed(() => Math.max(0, baiduUploadSourceItems.value.length - baiduUploadSourcePreviewItems.value.length))
 
-const baiduUploadSelectedTotalBytes = computed(() => baiduUploadSourceItems.value.reduce((total, item) => total + Number(item.size || 0), 0))
+const baiduUploadTreeRows = computed(() => {
+  if (baiduUploadPreviewRows.value.length) return baiduUploadPreviewRows.value
+  return baiduUploadSourceItems.value.map((item, index) => ({
+    ...item,
+    id: `source:${index}:${item.path}`,
+    depth: 0,
+    rootPath: item.path,
+    ancestorPaths: [],
+    is_source_root: true,
+  }))
+})
+
+const baiduUploadDirectoryRows = computed(() => baiduUploadTreeRows.value.filter(item => item.is_directory))
+
+const baiduUploadVisibleTreeRows = computed(() => {
+  const expanded = baiduUploadExpandedPathSet.value
+  return baiduUploadTreeRows.value.filter(item => {
+    const ancestors = item.ancestorPaths || []
+    return !ancestors.length || ancestors.every(path => expanded.has(path))
+  })
+})
+
+const baiduUploadAllExpanded = computed(() => {
+  const directories = baiduUploadDirectoryRows.value
+  return directories.length > 0 && directories.every(item => baiduUploadExpandedPathSet.value.has(item.path))
+})
+
+const baiduUploadSelectedRows = computed(() => {
+  const selected = baiduUploadSelectedPathSet.value
+  return baiduUploadTreeRows.value.filter(item => selected.has(item.path))
+})
+
+const baiduUploadSelectedItems = computed(() => {
+  const selected = baiduUploadSelectedPathSet.value
+  return baiduUploadSelectedRows.value.filter(item => !(item.ancestorPaths || []).some(path => selected.has(path)))
+})
+
+const baiduUploadSelectedTotalBytes = computed(() => baiduUploadSelectedItems.value.reduce((total, item) => total + Number(item.size || 0), 0))
 
 const baiduUploadSourceTypeText = computed(() => {
   const folders = baiduUploadSourceItems.value.filter(item => item.is_directory).length
@@ -4394,9 +4359,33 @@ const baiduUploadSourceTypeText = computed(() => {
   return `${files} 个文件`
 })
 
+const baiduUploadSelectedTypeText = computed(() => {
+  const folders = baiduUploadSelectedItems.value.filter(item => item.is_directory).length
+  const files = baiduUploadSelectedItems.value.length - folders
+  if (folders && files) return `已选 ${folders} 个目录 / ${files} 个文件`
+  if (folders) return `已选 ${folders} 个目录`
+  return `已选 ${files} 个文件`
+})
+
+const baiduUploadAllSelectionState = computed(() => {
+  const total = baiduUploadTreeRows.value.length
+  const selected = baiduUploadSelectedRows.value.length
+  if (!total || selected === 0) return 'none'
+  return selected === total ? 'all' : 'partial'
+})
+
 const baiduUploadModeLabel = computed(() => baiduUploadModeOptions.find(item => item.value === baiduUploadForm.value.mode)?.label || '压缩后上传')
 
-const baiduUploadConflictPolicyLabel = computed(() => baiduUploadPolicyOptions.find(item => item.value === baiduUploadForm.value.conflictPolicy)?.label || '跳过同名')
+const availableBaiduUploadPolicyOptions = computed(() => (
+  baiduUploadForm.value.mode === 'compress'
+    ? baiduUploadPolicyOptions.filter(item => baiduUploadCompressPolicyValues.has(item.value))
+    : baiduUploadPolicyOptions
+))
+
+const baiduUploadConflictPolicyLabel = computed(() => {
+  const normalized = normalizeBaiduUploadConflictPolicyValue(baiduUploadForm.value.conflictPolicy, baiduUploadForm.value.mode)
+  return baiduUploadPolicyOptions.find(item => item.value === normalized)?.label || '跳过同名'
+})
 
 const baiduUploadNormalizedRemoteDir = computed(() => {
   const root = String(baiduUploadForm.value.remoteDir || '/KikoeruManager').trim().replace(/\/+$/g, '') || '/KikoeruManager'
@@ -4430,6 +4419,302 @@ function normalizeBaiduCompressionLevel () {
 function adjustBaiduCompressionLevel (delta) {
   baiduUploadForm.value.compressionLevel = clampBaiduNumber(Number(baiduUploadForm.value.compressionLevel || 1) + delta, 1, 9)
 }
+
+function normalizeBaiduUploadConflictPolicyValue (policy, mode = baiduUploadForm.value.mode) {
+  const value = String(policy || 'skip')
+  if (mode === 'compress' && !baiduUploadCompressPolicyValues.has(value)) return 'skip'
+  return baiduUploadPolicyOptions.some(item => item.value === value) ? value : 'skip'
+}
+
+function normalizeBaiduUploadConflictPolicy () {
+  baiduUploadForm.value.conflictPolicy = normalizeBaiduUploadConflictPolicyValue(
+    baiduUploadForm.value.conflictPolicy,
+    baiduUploadForm.value.mode
+  )
+}
+
+function setBaiduUploadMode (mode) {
+  baiduUploadForm.value.mode = mode === 'direct' ? 'direct' : 'compress'
+  normalizeBaiduUploadConflictPolicy()
+}
+
+function getBaiduUploadTreeIconMeta (item) {
+  return libraryEntryMetaFor({
+    ...item,
+    type: item?.is_directory ? 'dir' : 'file',
+    entry_type: item?.is_directory ? 'dir' : 'file',
+  })
+}
+
+const BAIDU_UPLOAD_TREE_ROW_ANIMATION_MS = 280
+
+function clearBaiduUploadTreeRowAnimation (el) {
+  if (!el) return
+  el._baiduUploadTreeRowCleanup?.()
+  el._baiduUploadTreeRowCleanup = null
+  el.style.overflow = ''
+  el.style.maxHeight = ''
+  el.style.opacity = ''
+  el.style.transform = ''
+  el.style.marginTop = ''
+  el.style.marginBottom = ''
+  el.style.paddingTop = ''
+  el.style.paddingBottom = ''
+  el.style.transition = ''
+}
+
+function finishBaiduUploadTreeRowAnimation (el, done) {
+  let finished = false
+  const finish = () => {
+    if (finished) return
+    finished = true
+    clearBaiduUploadTreeRowAnimation(el)
+    done?.()
+  }
+  const timer = window.setTimeout(finish, BAIDU_UPLOAD_TREE_ROW_ANIMATION_MS + 120)
+  el._baiduUploadTreeRowCleanup = () => {
+    window.clearTimeout(timer)
+  }
+  return finish
+}
+
+function setBaiduUploadTreeRowTransition (el) {
+  el.style.transition = [
+    `opacity ${BAIDU_UPLOAD_TREE_ROW_ANIMATION_MS}ms ease`,
+    `transform ${BAIDU_UPLOAD_TREE_ROW_ANIMATION_MS}ms cubic-bezier(0.34, 1.56, 0.64, 1)`,
+    `max-height ${BAIDU_UPLOAD_TREE_ROW_ANIMATION_MS}ms ease`,
+    `margin ${BAIDU_UPLOAD_TREE_ROW_ANIMATION_MS}ms ease`,
+    `padding-top ${BAIDU_UPLOAD_TREE_ROW_ANIMATION_MS}ms ease`,
+    `padding-bottom ${BAIDU_UPLOAD_TREE_ROW_ANIMATION_MS}ms ease`,
+  ].join(', ')
+}
+
+function beforeBaiduUploadTreeRowEnter (el) {
+  clearBaiduUploadTreeRowAnimation(el)
+  el.style.overflow = 'hidden'
+  el.style.maxHeight = '0px'
+  el.style.opacity = '0'
+  el.style.transform = 'translate3d(0, -10px, 0) scaleY(0.96)'
+  el.style.marginTop = '-6px'
+  el.style.marginBottom = '-6px'
+  el.style.paddingTop = '0px'
+  el.style.paddingBottom = '0px'
+}
+
+function enterBaiduUploadTreeRow (el, done) {
+  const targetHeight = Math.max(el.scrollHeight, 40)
+  setBaiduUploadTreeRowTransition(el)
+  finishBaiduUploadTreeRowAnimation(el, done)
+  void el.offsetHeight
+  el.style.maxHeight = `${targetHeight}px`
+  el.style.opacity = '1'
+  el.style.transform = 'translate3d(0, 0, 0) scaleY(1)'
+  el.style.marginTop = ''
+  el.style.marginBottom = ''
+  el.style.paddingTop = ''
+  el.style.paddingBottom = ''
+}
+
+function leaveBaiduUploadTreeRow (el, done) {
+  clearBaiduUploadTreeRowAnimation(el)
+  el.style.overflow = 'hidden'
+  el.style.maxHeight = `${Math.max(el.scrollHeight, 40)}px`
+  el.style.opacity = '1'
+  el.style.transform = 'translate3d(0, 0, 0) scaleY(1)'
+  el.style.marginTop = '0px'
+  el.style.marginBottom = '0px'
+  setBaiduUploadTreeRowTransition(el)
+  finishBaiduUploadTreeRowAnimation(el, done)
+  void el.offsetHeight
+  el.style.maxHeight = '0px'
+  el.style.opacity = '0'
+  el.style.transform = 'translate3d(0, -10px, 0) scaleY(0.96)'
+  el.style.marginTop = '-6px'
+  el.style.marginBottom = '-6px'
+  el.style.paddingTop = '0px'
+  el.style.paddingBottom = '0px'
+}
+
+function getBaiduUploadChildPath (basePath, relativeParts) {
+  const base = String(basePath || '').replace(/[\\/]+$/g, '')
+  const parts = Array.isArray(relativeParts) ? relativeParts.filter(Boolean) : []
+  if (!base || !parts.length) return base
+  const separator = base.includes('\\') ? '\\' : '/'
+  return `${base}${separator}${parts.join(separator)}`
+}
+
+function createBaiduUploadSourceTreeRow (item, index) {
+  return {
+    ...item,
+    id: `baidu-source:${index}:${item.path}`,
+    depth: 0,
+    rootPath: item.path,
+    ancestorPaths: [],
+    is_source_root: true,
+  }
+}
+
+function buildBaiduUploadTreeRowsForFolder (sourceItem, index, contentItems) {
+  const rootPath = String(sourceItem.path || '')
+  const fileItems = Array.isArray(contentItems) ? contentItems : []
+  const rowsByPath = new Map()
+  const rootRow = createBaiduUploadSourceTreeRow(sourceItem, index)
+  rootRow.id = `baidu-root:${index}:${rootPath}`
+  rootRow.size = 0
+  rowsByPath.set(rootPath, rootRow)
+
+  fileItems.forEach((fileItem, fileIndex) => {
+    const relativePath = String(fileItem?.relative_path || fileItem?.name || '').replace(/\\/g, '/')
+    const parts = relativePath.split('/').map(part => part.trim()).filter(Boolean)
+    if (!parts.length) return
+    const ancestorPaths = [rootPath]
+    for (let depthIndex = 0; depthIndex < parts.length - 1; depthIndex += 1) {
+      const dirParts = parts.slice(0, depthIndex + 1)
+      const dirPath = getBaiduUploadChildPath(rootPath, dirParts)
+      if (!rowsByPath.has(dirPath)) {
+        rowsByPath.set(dirPath, {
+          id: `baidu-dir:${index}:${dirPath}`,
+          name: dirParts[dirParts.length - 1],
+          path: dirPath,
+          size: 0,
+          is_directory: true,
+          depth: depthIndex + 1,
+          rootPath,
+          ancestorPaths: [...ancestorPaths],
+          relative_path: dirParts.join('/'),
+        })
+      }
+      ancestorPaths.push(dirPath)
+    }
+    const filePath = String(fileItem?.path || getBaiduUploadChildPath(rootPath, parts))
+    const size = Number(fileItem?.size || 0)
+    rowsByPath.set(filePath, {
+      id: `baidu-file:${index}:${fileIndex}:${filePath}`,
+      name: fileItem?.name || parts[parts.length - 1] || getFileName(filePath),
+      path: filePath,
+      size,
+      is_directory: false,
+      depth: parts.length,
+      rootPath,
+      ancestorPaths,
+      relative_path: relativePath,
+    })
+    ancestorPaths.forEach(path => {
+      const row = rowsByPath.get(path)
+      if (row) row.size = Number(row.size || 0) + size
+    })
+  })
+
+  if (!Number(rootRow.size || 0)) rootRow.size = Number(sourceItem.size || 0)
+
+  return [...rowsByPath.values()].sort((left, right) => {
+    if (left.path === rootPath) return -1
+    if (right.path === rootPath) return 1
+    const leftRelative = String(left.relative_path || left.name || '')
+    const rightRelative = String(right.relative_path || right.name || '')
+    return leftRelative.localeCompare(rightRelative, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })
+  })
+}
+
+async function hydrateBaiduUploadPreviewRows () {
+  const token = baiduUploadPreviewToken.value + 1
+  baiduUploadPreviewToken.value = token
+  baiduUploadPreviewLoading.value = true
+  try {
+    const sourceItems = baiduUploadSourceItems.value
+    const groups = await Promise.all(sourceItems.map(async (item, index) => {
+      if (!item.is_directory) return [createBaiduUploadSourceTreeRow(item, index)]
+      try {
+        const data = selectedLibraryId.value
+          ? await libraryApi.browserFolderContents(selectedLibraryId.value, item.path)
+          : await libraryApi.folderContents(item.path)
+        return buildBaiduUploadTreeRowsForFolder(item, index, data?.items || [])
+      } catch (error) {
+        console.warn('读取百度上传文件树失败:', error)
+        return [createBaiduUploadSourceTreeRow(item, index)]
+      }
+    }))
+    if (baiduUploadPreviewToken.value !== token) return
+    baiduUploadPreviewRows.value = groups.flat()
+    resetBaiduUploadExpandedState()
+    resetBaiduUploadSelection()
+  } finally {
+    if (baiduUploadPreviewToken.value === token) baiduUploadPreviewLoading.value = false
+  }
+}
+
+function resetBaiduUploadSelection () {
+  baiduUploadSelectedPathSet.value = new Set(baiduUploadTreeRows.value.map(item => item.path).filter(Boolean))
+}
+
+function resetBaiduUploadExpandedState () {
+  baiduUploadExpandedPathSet.value = new Set(baiduUploadDirectoryRows.value.map(item => item.path).filter(Boolean))
+}
+
+function isBaiduUploadTreeExpanded (item) {
+  return baiduUploadExpandedPathSet.value.has(item?.path)
+}
+
+function toggleBaiduUploadTreeExpanded (item) {
+  const path = item?.path
+  if (!path || !item?.is_directory) return
+  const next = new Set(baiduUploadExpandedPathSet.value)
+  if (next.has(path)) next.delete(path)
+  else next.add(path)
+  baiduUploadExpandedPathSet.value = next
+}
+
+function toggleAllBaiduUploadTreeExpanded () {
+  if (baiduUploadAllExpanded.value) {
+    baiduUploadExpandedPathSet.value = new Set()
+    return
+  }
+  resetBaiduUploadExpandedState()
+}
+
+function isBaiduUploadItemSelected (item) {
+  return baiduUploadSelectedPathSet.value.has(item?.path)
+}
+
+function handleBaiduUploadTreeRowClick (item) {
+  if (item?.is_directory) {
+    toggleBaiduUploadTreeExpanded(item)
+    return
+  }
+  toggleBaiduUploadItemSelection(item)
+}
+
+function toggleBaiduUploadItemSelection (item) {
+  const path = item?.path
+  if (!path) return
+  const next = new Set(baiduUploadSelectedPathSet.value)
+  const descendants = baiduUploadTreeRows.value
+    .filter(row => (row.ancestorPaths || []).includes(path))
+    .map(row => row.path)
+    .filter(Boolean)
+  if (next.has(path)) {
+    next.delete(path)
+    descendants.forEach(childPath => next.delete(childPath))
+  } else {
+    next.add(path)
+    descendants.forEach(childPath => next.add(childPath))
+  }
+  ;(item.ancestorPaths || []).forEach(ancestorPath => next.delete(ancestorPath))
+  baiduUploadSelectedPathSet.value = next
+}
+
+function toggleAllBaiduUploadItems () {
+  if (baiduUploadAllSelectionState.value === 'all') {
+    baiduUploadSelectedPathSet.value = new Set()
+    return
+  }
+  resetBaiduUploadSelection()
+}
+
+watch(
+  () => [baiduUploadForm.value.mode, baiduUploadForm.value.conflictPolicy],
+  () => normalizeBaiduUploadConflictPolicy()
+)
 
 const canFilterDeleteCurrentFolder = computed(() => {
 
@@ -8331,7 +8616,6 @@ function shouldIgnoreMarqueeOutsideDismissTarget (target) {
     '.el-overlay',
     '.el-popper',
     '.el-message',
-    '.lib-batch-bar',
     '.lib-path-toolbar',
     '.page-head-btn',
     '.lib-btn'
@@ -9323,8 +9607,12 @@ async function openBaiduUploadDialog (rowOverride = null) {
     ElMessage.warning('请先选中要上传的项目')
     return
   }
+  baiduUploadPreviewRows.value = []
+  resetBaiduUploadExpandedState()
+  resetBaiduUploadSelection()
   baiduUploadDialogVisible.value = true
   hydrateBaiduUploadDialogDefaults()
+  hydrateBaiduUploadPreviewRows()
 }
 
 async function hydrateBaiduUploadDialogDefaults () {
@@ -9347,6 +9635,7 @@ async function hydrateBaiduUploadDialogDefaults () {
       solidArchive: backup.solid_archive ?? true,
       cleanupLocalArchive: backup.baidu_upload_cleanup_local_archive ?? false
     }
+    normalizeBaiduUploadConflictPolicy()
   } catch (error) {
     console.warn('读取百度上传默认配置失败:', error)
   }
@@ -9356,11 +9645,16 @@ function closeBaiduUploadDialog () {
   if (baiduUploadSubmitting.value) return
   baiduUploadDialogVisible.value = false
   pendingBaiduUploadOverrideRows.value = null
+  baiduUploadSelectedPathSet.value = new Set()
+  baiduUploadPreviewRows.value = []
+  baiduUploadExpandedPathSet.value = new Set()
+  baiduUploadPreviewToken.value += 1
+  baiduUploadPreviewLoading.value = false
 }
 
 async function submitBaiduUpload () {
   if (baiduUploadSubmitting.value) return
-  const selectedPaths = baiduUploadSourceItems.value.map(item => item.path).filter(Boolean)
+  const selectedPaths = baiduUploadSelectedItems.value.map(item => item.path).filter(Boolean)
   if (!selectedPaths.length) {
     ElMessage.warning('请先选中要上传的项目')
     return
@@ -9369,6 +9663,7 @@ async function submitBaiduUpload () {
     ElMessage.warning('压缩后上传需要填写压缩密码')
     return
   }
+  normalizeBaiduUploadConflictPolicy()
   baiduUploadSubmitting.value = true
   try {
     const result = await baiduNetdiskApi.startUpload({
@@ -9386,9 +9681,9 @@ async function submitBaiduUpload () {
       },
       conflictPolicy: baiduUploadForm.value.conflictPolicy || 'skip',
       cleanupLocalArchive: baiduUploadForm.value.cleanupLocalArchive ?? false,
-      batchName: baiduUploadSourceItems.value.length === 1
-        ? baiduUploadSourceItems.value[0].name
-        : `百度网盘上传 ${baiduUploadSourceItems.value.length} 项`
+      batchName: baiduUploadSelectedItems.value.length === 1
+        ? baiduUploadSelectedItems.value[0].name
+        : `百度网盘上传 ${baiduUploadSelectedItems.value.length} 项`
     })
     ElMessage.success(result?.message || '百度网盘上传任务已创建')
     baiduUploadDialogVisible.value = false
@@ -21075,64 +21370,6 @@ function statsStatusTextDisplay (stats) {
 .lib-btn-icon-tinted.lib-icon-api-rename svg { color: #7c3aed; }
 .lib-btn-icon-tinted.lib-icon-auto-circle-group svg { color: #9333ea; }
 
-.lib-batch-action-btn {
-
-  position: relative;
-
-  overflow: visible;
-
-}
-
-.lib-batch-action-btn.is-executing {
-
-  color: #312e81;
-
-  border-color: rgba(165, 180, 252, 0.9);
-
-  background:
-    linear-gradient(135deg, rgba(238, 242, 255, 0.98), rgba(255, 255, 255, 0.94)),
-    linear-gradient(90deg, rgba(99, 102, 241, 0), rgba(99, 102, 241, 0.2), rgba(99, 102, 241, 0));
-
-  box-shadow: 0 10px 26px rgba(79, 70, 229, 0.16), 0 1px 0 rgba(255, 255, 255, 0.95) inset;
-
-}
-
-.lib-batch-action-btn.is-executing::before {
-
-  content: "";
-
-  position: absolute;
-
-  inset: 0;
-
-  transform: translateX(-120%);
-
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.72), transparent);
-
-  animation: library-row-operating-sweep 1.35s ease-in-out infinite;
-
-  pointer-events: none;
-
-}
-
-.lib-batch-action-btn.is-executing svg {
-
-  color: #4338ca;
-
-  animation: library-row-operating-pulse 0.95s ease-in-out infinite;
-
-}
-
-.lib-batch-action-btn.is-executing .lib-badge {
-
-  color: #3730a3;
-
-  background: rgba(199, 210, 254, 0.72);
-
-}
-
-
-
 /* 下拉菜单 */
 
 :deep(.lib-dropdown-popper .el-dropdown-menu) {
@@ -21314,18 +21551,6 @@ function statsStatusTextDisplay (stats) {
 
 }
 
-.lib-toolbar-switcher.is-batch-mode .lib-path-toolbar {
-
-  transform: translateY(-4px) scale(0.995);
-
-}
-
-.lib-toolbar-switcher:not(.is-batch-mode) .lib-batch-bar {
-
-  transform: translateY(4px) scale(0.995);
-
-}
-
 /* 路径工具栏 */
 
 .lib-path-toolbar {
@@ -21372,7 +21597,7 @@ function statsStatusTextDisplay (stats) {
 
   flex: 1 1 0;
 
-  overflow: visible;
+  overflow: hidden;
 
 }
 
@@ -21397,6 +21622,165 @@ function statsStatusTextDisplay (stats) {
 .lib-path-right > .lib-scope-switch {
 
   flex: 0 0 auto;
+
+}
+
+.lib-path-leading-slot {
+
+  display: inline-grid;
+
+  align-items: center;
+
+  justify-items: start;
+
+  flex: 0 0 auto;
+
+  min-width: 104px;
+
+}
+
+.lib-path-leading-slot > * {
+
+  grid-area: 1 / 1;
+
+}
+
+.lib-path-leading-swap-enter-active,
+.lib-path-leading-swap-leave-active {
+
+  transition:
+    opacity 0.16s ease,
+    filter 0.18s ease,
+    transform 0.26s cubic-bezier(0.34, 1.56, 0.64, 1);
+
+}
+
+.lib-path-leading-swap-enter-from {
+
+  opacity: 0;
+
+  filter: blur(4px);
+
+  transform: translateY(6px) scale(0.92);
+
+}
+
+.lib-path-leading-swap-leave-to {
+
+  opacity: 0;
+
+  filter: blur(3px);
+
+  transform: translateY(-6px) scale(0.94);
+
+}
+
+.lib-selection-count-pill {
+
+  display: inline-flex;
+
+  align-items: center;
+
+  flex: 0 0 auto;
+
+  gap: 5px;
+
+  min-height: 26px;
+
+  padding: 0 9px;
+
+  border: 1px solid rgba(203, 213, 225, 0.72);
+
+  border-radius: 999px;
+
+  background: rgba(248, 250, 252, 0.78);
+
+  color: #475569;
+
+  font-size: 12px;
+
+  font-weight: 560;
+
+  line-height: 1;
+
+  white-space: nowrap;
+
+  box-shadow: none;
+
+  backdrop-filter: blur(8px);
+
+  -webkit-backdrop-filter: blur(8px);
+
+}
+
+.lib-selection-count-button {
+
+  min-height: 34px;
+
+  padding: 0 12px;
+
+  border-radius: 10px;
+
+  cursor: pointer;
+
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+
+}
+
+.lib-selection-count-button:hover {
+
+  transform: translateY(-2px) scale(1.02);
+
+}
+
+.lib-selection-count-button:active {
+
+  transform: scale(0.96);
+
+}
+
+.lib-selection-count-button:focus,
+.lib-selection-count-button:focus-visible {
+
+  outline: none;
+
+  box-shadow: none;
+
+}
+
+.lib-selection-count-pill svg {
+
+  color: #0f766e;
+
+}
+
+.lib-selection-count-pill b {
+
+  color: #0f172a;
+
+  font-size: 12.5px;
+
+  font-weight: 760;
+
+}
+
+:global(html.kikoerumanager-dark .library .lib-selection-count-pill),
+:global(html.dark .library .lib-selection-count-pill) {
+
+  border-color: rgba(255, 255, 255, 0.16) !important;
+
+  background: rgba(255, 255, 255, 0.075) !important;
+
+  color: rgba(228, 228, 231, 0.76) !important;
+
+  box-shadow: none !important;
+
+}
+
+:global(html.kikoerumanager-dark .library .lib-selection-count-pill b),
+:global(html.dark .library .lib-selection-count-pill b) {
+
+  color: rgba(250, 250, 252, 0.96) !important;
 
 }
 
@@ -21513,7 +21897,9 @@ function statsStatusTextDisplay (stats) {
 
 .lib-path-crumb.is-current {
 
-  max-width: min(340px, 26vw);
+  flex: 1 1 auto;
+
+  max-width: none;
 
 }
 
@@ -21683,6 +22069,85 @@ function statsStatusTextDisplay (stats) {
 
 }
 
+:global(html.kikoerumanager-dark .lib-path-popover),
+:global(html.dark .lib-path-popover) {
+
+  border-color: rgba(255, 255, 255, 0.14) !important;
+
+  background: #111217 !important;
+
+  color: rgba(228, 228, 234, 0.84) !important;
+
+  box-shadow:
+    0 14px 36px -18px rgba(0, 0, 0, 0.72),
+    0 0 0 1px rgba(255, 255, 255, 0.05) inset !important;
+
+}
+
+:global(html.kikoerumanager-dark .lib-path-popover .el-popper__arrow::before),
+:global(html.dark .lib-path-popover .el-popper__arrow::before) {
+
+  border-color: rgba(255, 255, 255, 0.14) !important;
+
+  background: #111217 !important;
+
+  box-shadow: none !important;
+
+}
+
+:global(html.kikoerumanager-dark .lib-path-popover .lib-path-popover-item),
+:global(html.dark .lib-path-popover .lib-path-popover-item) {
+
+  background: transparent !important;
+
+  color: rgba(236, 236, 242, 0.9) !important;
+
+  box-shadow: none !important;
+
+}
+
+:global(html.kikoerumanager-dark .lib-path-popover .lib-path-popover-item:hover),
+:global(html.kikoerumanager-dark .lib-path-popover .lib-path-popover-item:focus-visible),
+:global(html.dark .lib-path-popover .lib-path-popover-item:hover),
+:global(html.dark .lib-path-popover .lib-path-popover-item:focus-visible) {
+
+  background: rgba(255, 255, 255, 0.08) !important;
+
+  color: rgba(255, 255, 255, 0.96) !important;
+
+  box-shadow: none !important;
+
+}
+
+:global(html.kikoerumanager-dark .lib-path-popover .lib-path-popover-item span),
+:global(html.dark .lib-path-popover .lib-path-popover-item span) {
+
+  color: inherit !important;
+
+}
+
+:global(html.kikoerumanager-dark .lib-path-popover .lib-path-popover-item.is-drop-target),
+:global(html.dark .lib-path-popover .lib-path-popover-item.is-drop-target) {
+
+  background: rgba(14, 165, 233, 0.14) !important;
+
+  color: #7dd3fc !important;
+
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.24) !important;
+
+}
+
+:global(html.kikoerumanager-dark .lib-path-popover .lib-path-popover-item.is-drop-blocked),
+:global(html.dark .lib-path-popover .lib-path-popover-item.is-drop-blocked) {
+
+  background: rgba(248, 113, 113, 0.12) !important;
+
+  color: #fca5a5 !important;
+
+  box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.24) !important;
+
+}
+
 .lib-path-crumb.is-current:hover {
 
   color: #111827;
@@ -21775,135 +22240,13 @@ function statsStatusTextDisplay (stats) {
 
 
 
-/* 批量选择栏（顶部浮动）— 简洁中性 */
-
-.lib-batch-bar {
-
-  position: sticky;
-
-  top: 0;
-
-  z-index: 20;
-
-  display: flex;
-
-  align-items: center;
-
-  justify-content: space-between;
-
-  flex-wrap: wrap;
-
-  gap: 12px;
-
-  padding: 10px 14px;
-
-  margin-bottom: 0;
-
-  border-radius: 14px;
-
-  background: rgba(255, 255, 255, 0.96);
-
-  border: 1px solid rgba(226, 232, 240, 0.85);
-
-  box-shadow: 0 8px 20px -12px rgba(15, 23, 42, 0.12);
-
-  backdrop-filter: blur(10px);
-
-  -webkit-backdrop-filter: blur(10px);
-
-}
-
-.lib-batch-info { display: flex; align-items: center; gap: 10px; }
-
-.lib-batch-count-pill {
-
-  display: inline-flex;
-
-  align-items: center;
-
-  gap: 6px;
-
-  padding: 5px 12px;
-
-  border-radius: 999px;
-
-  background: rgba(241, 245, 249, 0.9);
-
-  border: 1px solid rgba(203, 213, 225, 0.8);
-
-  color: #334155;
-
-  font-size: 13px;
-
-  font-weight: 500;
-
-}
-
-.lib-batch-count-pill b { font-weight: 700; font-size: 14px; color: #0f172a; }
-
-.lib-batch-clear {
-
-  display: inline-flex;
-
-  align-items: center;
-
-  gap: 4px;
-
-  padding: 4px 10px;
-
-  border-radius: 8px;
-
-  background: transparent;
-
-  border: 1px solid transparent;
-
-  color: #475569;
-
-  font-size: 12.5px;
-
-  cursor: pointer;
-
-  transition: all 0.25s ease;
-
-}
-
-.lib-batch-clear:hover {
-
-  background: rgba(255, 255, 255, 0.6);
-
-  border-color: rgba(203, 213, 225, 0.8);
-
-  color: #0f172a;
-
-}
-
-.lib-batch-actions {
-
-  display: flex;
-
-  align-items: center;
-
-  gap: 8px;
-
-  flex-wrap: wrap;
-
-}
-
-
-
 @media (max-width: 860px) {
 
   .lib-search { max-width: none; }
 
-  .lib-batch-bar { flex-direction: column; align-items: stretch; }
-
   .lib-path-toolbar { align-items: center; }
 
-  .lib-path-right,
-
-  .lib-batch-actions,
-
-  .lib-batch-info { flex-wrap: wrap; }
+  .lib-path-right { flex-wrap: wrap; }
 
   .lib-path-right {
 
@@ -22993,7 +23336,7 @@ function statsStatusTextDisplay (stats) {
   position: fixed;
   left: 0;
   top: 0;
-  z-index: 80;
+  z-index: 2300;
   pointer-events: none;
   display: inline-flex;
   align-items: center;
@@ -23030,32 +23373,33 @@ function statsStatusTextDisplay (stats) {
   flex: 0 0 28px;
 }
 
-.lib-table-drag-file-icon,
-.lib-table-drag-folder-icon,
-.lib-table-drag-move-icon {
+.lib-table-drag-kind-icon {
   position: absolute;
   filter: drop-shadow(0 3px 4px rgba(15, 23, 42, 0.16));
 }
 
-.lib-table-drag-file-icon {
-  left: 1px;
-  top: 5px;
-  color: #64748b;
-  transform: rotate(-7deg);
+.lib-table-drag-kind-icon.is-single {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
 }
 
-.lib-table-drag-folder-icon {
-  left: 7px;
+.lib-table-drag-kind-icon.is-stack-0:not(.is-single) {
+  left: 0;
+  top: 7px;
+  transform: rotate(-8deg);
+}
+
+.lib-table-drag-kind-icon.is-stack-1 {
+  left: 9px;
   top: 2px;
-  color: #f59e0b;
-  fill: currentColor;
-  stroke: currentColor;
+  transform: rotate(7deg);
 }
 
-.lib-table-drag-move-icon {
+.lib-table-drag-kind-icon.is-stack-2 {
   right: -2px;
   bottom: -1px;
-  color: #0284c7;
+  transform: rotate(2deg) scale(0.92);
 }
 
 .lib-table-drag-count {
@@ -24270,32 +24614,245 @@ function statsStatusTextDisplay (stats) {
 }
 
 .baidu-upload-preview-modal {
+  --baidu-upload-shell: rgba(247, 248, 250, 0.96);
+  --baidu-upload-header: rgba(255, 255, 255, 0.8);
+  --baidu-upload-footer: rgba(255, 255, 255, 0.72);
+  --baidu-upload-panel: rgba(255, 255, 255, 0.78);
+  --baidu-upload-panel-strong: #ffffff;
+  --baidu-upload-field: rgba(248, 250, 252, 0.92);
+  --baidu-upload-field-hover: #ffffff;
+  --baidu-upload-row-hover: rgba(15, 23, 42, 0.045);
+  --baidu-upload-border: rgba(15, 23, 42, 0.1);
+  --baidu-upload-border-strong: rgba(15, 23, 42, 0.16);
+  --baidu-upload-text: #1f2937;
+  --baidu-upload-text-strong: #0f172a;
+  --baidu-upload-muted: #64748b;
+  --baidu-upload-faint: #94a3b8;
+  --baidu-upload-folder: #d09a1f;
+  --baidu-upload-file: #64748b;
   width: min(1210px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
 }
 
-.baidu-upload-preview-modal .window {
+:global(html.kikoerumanager-dark .baidu-upload-preview-modal) {
+  --baidu-upload-shell: #202126;
+  --baidu-upload-header: #2a2b30;
+  --baidu-upload-footer: #2a2b30;
+  --baidu-upload-panel: #15161a;
+  --baidu-upload-panel-strong: #1b1c20;
+  --baidu-upload-field: #24252a;
+  --baidu-upload-field-hover: #2c2d32;
+  --baidu-upload-row-hover: rgba(255, 255, 255, 0.055);
+  --baidu-upload-border: rgba(255, 255, 255, 0.13);
+  --baidu-upload-border-strong: rgba(255, 255, 255, 0.2);
+  --baidu-upload-text: rgba(228, 228, 231, 0.86);
+  --baidu-upload-text-strong: rgba(250, 250, 252, 0.96);
+  --baidu-upload-muted: rgba(214, 214, 220, 0.66);
+  --baidu-upload-faint: rgba(214, 214, 220, 0.46);
+  --baidu-upload-folder: #d59f2d;
+  --baidu-upload-file: rgba(214, 214, 220, 0.72);
+}
+
+:global(html.dark .baidu-upload-preview-modal) {
+  --baidu-upload-shell: #202126;
+  --baidu-upload-header: #2a2b30;
+  --baidu-upload-footer: #2a2b30;
+  --baidu-upload-panel: #15161a;
+  --baidu-upload-panel-strong: #1b1c20;
+  --baidu-upload-field: #24252a;
+  --baidu-upload-field-hover: #2c2d32;
+  --baidu-upload-row-hover: rgba(255, 255, 255, 0.055);
+  --baidu-upload-border: rgba(255, 255, 255, 0.13);
+  --baidu-upload-border-strong: rgba(255, 255, 255, 0.2);
+  --baidu-upload-text: rgba(228, 228, 231, 0.86);
+  --baidu-upload-text-strong: rgba(250, 250, 252, 0.96);
+  --baidu-upload-muted: rgba(214, 214, 220, 0.66);
+  --baidu-upload-faint: rgba(214, 214, 220, 0.46);
+  --baidu-upload-folder: #d59f2d;
+  --baidu-upload-file: rgba(214, 214, 220, 0.72);
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-preview-modal .baidu-upload-window),
+:global(html.dark .baidu-upload-preview-modal .baidu-upload-window) {
+  border-color: var(--baidu-upload-border) !important;
+  background: var(--baidu-upload-shell) !important;
+  color: var(--baidu-upload-text) !important;
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.5) !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-preview-modal .baidu-upload-header),
+:global(html.kikoerumanager-dark .baidu-upload-preview-modal .baidu-upload-footer),
+:global(html.dark .baidu-upload-preview-modal .baidu-upload-header),
+:global(html.dark .baidu-upload-preview-modal .baidu-upload-footer) {
+  border-color: var(--baidu-upload-border) !important;
+  background: var(--baidu-upload-footer) !important;
+  color: var(--baidu-upload-text) !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-preview-modal .baidu-upload-settings-card),
+:global(html.kikoerumanager-dark .baidu-upload-preview-modal .baidu-upload-tree-panel),
+:global(html.dark .baidu-upload-preview-modal .baidu-upload-settings-card),
+:global(html.dark .baidu-upload-preview-modal .baidu-upload-tree-panel) {
+  border-color: var(--baidu-upload-border) !important;
+  background: var(--baidu-upload-panel) !important;
+  color: var(--baidu-upload-text) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-preview-modal .baidu-upload-tree-row),
+:global(html.dark .baidu-upload-preview-modal .baidu-upload-tree-row) {
+  background: transparent !important;
+  color: var(--baidu-upload-text) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-preview-modal .baidu-upload-tree-row:hover),
+:global(html.dark .baidu-upload-preview-modal .baidu-upload-tree-row:hover) {
+  border-color: var(--baidu-upload-border) !important;
+  background: var(--baidu-upload-row-hover) !important;
+  color: var(--baidu-upload-text-strong) !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-preview-modal .baidu-upload-close-button),
+:global(html.kikoerumanager-dark .baidu-upload-preview-modal .baidu-upload-secondary-cta),
+:global(html.dark .baidu-upload-preview-modal .baidu-upload-close-button),
+:global(html.dark .baidu-upload-preview-modal .baidu-upload-secondary-cta) {
+  border-color: var(--baidu-upload-border) !important;
+  background: var(--baidu-upload-field) !important;
+  color: var(--baidu-upload-text) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-preview-modal .baidu-upload-close-button:hover),
+:global(html.kikoerumanager-dark .baidu-upload-preview-modal .baidu-upload-secondary-cta:hover),
+:global(html.dark .baidu-upload-preview-modal .baidu-upload-close-button:hover),
+:global(html.dark .baidu-upload-preview-modal .baidu-upload-secondary-cta:hover) {
+  border-color: var(--baidu-upload-border-strong) !important;
+  background: var(--baidu-upload-field-hover) !important;
+  color: var(--baidu-upload-text-strong) !important;
+}
+
+.baidu-upload-preview-modal,
+.baidu-upload-preview-modal * {
+  box-sizing: border-box;
+}
+
+.baidu-upload-window {
+  height: min(780px, calc(100dvh - 32px));
   max-height: calc(100dvh - 32px);
+  border: 1px solid var(--baidu-upload-border) !important;
+  background: var(--baidu-upload-shell) !important;
+  color: var(--baidu-upload-text);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.5);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.baidu-upload-header {
+  flex: 0 0 auto;
+  border-color: var(--baidu-upload-border) !important;
+  background: var(--baidu-upload-header) !important;
+}
+
+.baidu-upload-header {
+  min-height: 94px;
+  border-bottom: 1px solid var(--baidu-upload-border);
+}
+
+.baidu-upload-footer {
+  flex: 0 0 auto;
+  min-height: 86px;
+  border-top: 1px solid var(--baidu-upload-border);
+  border-color: var(--baidu-upload-border) !important;
+  background: var(--baidu-upload-footer) !important;
+}
+
+.baidu-upload-title {
+  margin: 0;
+  color: var(--baidu-upload-text-strong) !important;
+  line-height: 1;
 }
 
 .baidu-upload-preview-modal .section-head {
-  margin-bottom: 22px;
+  margin-bottom: 18px;
 }
 
 .baidu-upload-preview-modal .section-head h2,
-.baidu-upload-compress-head h2 {
+.baidu-upload-compress-head h2,
+.baidu-upload-tree-head h2 {
   margin: 0 0 8px;
-  color: #334155;
+  color: var(--baidu-upload-text-strong) !important;
   font-size: 14px;
   font-weight: 700;
   line-height: 1.25;
 }
 
-.baidu-upload-preview-modal .section-head p {
+.baidu-upload-preview-modal .section-head p,
+.baidu-upload-tree-head p {
   margin: 0;
-  color: #475569;
-  font-size: 14px;
-  line-height: 1.55;
+  color: var(--baidu-upload-muted) !important;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.baidu-upload-tabs {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--baidu-upload-border);
+  background: var(--baidu-upload-shell);
+}
+
+.baidu-upload-preview-modal .tab-chip {
+  min-height: 30px;
+  border-color: var(--baidu-upload-border) !important;
+  background: var(--baidu-upload-field) !important;
+  color: var(--baidu-upload-muted) !important;
+  box-shadow: none !important;
+  cursor: default;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.baidu-upload-preview-modal button.tab-chip {
+  cursor: pointer;
+}
+
+.baidu-upload-preview-modal .tab-chip:hover {
+  transform: translateY(-1px);
+  background: var(--baidu-upload-field-hover) !important;
+  color: var(--baidu-upload-text-strong) !important;
+}
+
+.baidu-upload-preview-modal .tab-chip-active {
+  border-color: var(--baidu-upload-border-strong) !important;
+  background: var(--baidu-upload-panel-strong) !important;
+  color: var(--baidu-upload-text-strong) !important;
+}
+
+.baidu-upload-preview-modal .restore-button {
+  margin-left: auto;
+}
+
+.baidu-upload-content {
+  overflow: hidden;
+  background: var(--baidu-upload-shell);
+}
+
+.baidu-upload-left {
+  width: 410px;
+  min-width: 360px;
+  max-width: 430px;
+}
+
+.baidu-upload-settings-card,
+.baidu-upload-tree-panel {
+  min-height: 0;
+  border: 1px solid var(--baidu-upload-border) !important;
+  background: var(--baidu-upload-panel) !important;
+  color: var(--baidu-upload-text);
+  box-shadow: none !important;
+  outline: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
 .baidu-upload-field-wide,
@@ -24303,32 +24860,61 @@ function statsStatusTextDisplay (stats) {
   grid-column: 1 / -1;
 }
 
+.baidu-upload-field {
+  display: flex !important;
+  min-width: 0;
+  flex-direction: column !important;
+  align-items: stretch !important;
+  gap: 8px !important;
+}
+
 .baidu-upload-field > span,
+.baidu-upload-field > label,
+.baidu-upload-label-row label,
 .baidu-upload-label-row span {
-  color: #334155;
+  color: var(--baidu-upload-text-strong) !important;
   font-size: 13px;
   font-weight: 650;
+}
+
+.baidu-upload-dd {
+  display: block;
+  width: 100%;
+  min-width: 0;
 }
 
 .baidu-upload-dd :deep(.app-dd-trigger) {
   width: 100%;
   min-height: 36px;
-  border: 1px solid rgba(226, 232, 240, 0.95);
+  justify-content: space-between;
+  border: 1px solid var(--baidu-upload-border) !important;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.55);
-  color: #1f2937;
-  box-shadow: none;
+  background: var(--baidu-upload-field) !important;
+  color: var(--baidu-upload-text) !important;
+  box-shadow: none !important;
+}
+
+.baidu-upload-dd :deep(.app-dd-trigger:hover),
+.baidu-upload-dd :deep(.app-dd-trigger.is-open) {
+  border-color: var(--baidu-upload-border-strong) !important;
+  background: var(--baidu-upload-field-hover) !important;
+  color: var(--baidu-upload-text-strong) !important;
+  box-shadow: none !important;
 }
 
 .baidu-upload-input {
+  border-color: var(--baidu-upload-border) !important;
+  background: var(--baidu-upload-field) !important;
+  color: var(--baidu-upload-text) !important;
   outline: none;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .baidu-upload-input:hover:not(:disabled),
 .baidu-upload-input:focus {
-  border-color: rgba(100, 116, 139, 0.42);
-  background: rgba(255, 255, 255, 0.92);
+  border-color: var(--baidu-upload-border-strong) !important;
+  background: var(--baidu-upload-field-hover) !important;
+  box-shadow: none !important;
 }
 
 .baidu-upload-path-stack {
@@ -24340,20 +24926,20 @@ function statsStatusTextDisplay (stats) {
 
 .baidu-upload-path-stack p {
   margin: 0;
-  color: #64748b;
+  color: var(--baidu-upload-muted) !important;
   font-size: 12px;
   line-height: 1.45;
 }
 
 .baidu-upload-path-stack span {
-  color: #334155;
+  color: var(--baidu-upload-text-strong) !important;
   overflow-wrap: anywhere;
 }
 
 .baidu-upload-compress-block {
   margin-top: 28px;
   padding-top: 22px;
-  border-top: 1px solid rgba(226, 232, 240, 0.82);
+  border-top: 1px solid var(--baidu-upload-border);
 }
 
 .baidu-upload-compress-block.disabled {
@@ -24370,7 +24956,7 @@ function statsStatusTextDisplay (stats) {
 
 .baidu-upload-compress-head h2 {
   margin: 0;
-  color: #334155;
+  color: var(--baidu-upload-text-strong) !important;
   font-size: 14px;
   font-weight: 700;
 }
@@ -24379,10 +24965,10 @@ function statsStatusTextDisplay (stats) {
   display: inline-flex;
   min-height: 24px;
   align-items: center;
-  border: 1px solid rgba(203, 213, 225, 0.9);
+  border: 1px solid var(--baidu-upload-border);
   border-radius: 999px;
   padding: 0 10px;
-  color: #64748b;
+  color: var(--baidu-upload-muted) !important;
   font-size: 11px;
   font-weight: 800;
   white-space: nowrap;
@@ -24397,7 +24983,9 @@ function statsStatusTextDisplay (stats) {
   grid-template-columns: 34px minmax(0, 1fr) 34px;
   overflow: hidden;
   height: 36px;
+  border: 1px solid var(--baidu-upload-border) !important;
   border-radius: 8px;
+  background: var(--baidu-upload-field) !important;
 }
 
 .baidu-upload-stepper.compact {
@@ -24410,7 +24998,7 @@ function statsStatusTextDisplay (stats) {
   min-width: 0;
   border: 0;
   background: transparent;
-  color: #334155;
+  color: var(--baidu-upload-text) !important;
   text-align: center;
 }
 
@@ -24422,11 +25010,11 @@ function statsStatusTextDisplay (stats) {
 
 .baidu-upload-stepper button:hover:not(:disabled) {
   transform: scale(1.06);
-  background: rgba(226, 232, 240, 0.62);
+  background: var(--baidu-upload-row-hover);
 }
 
 .baidu-upload-stepper input {
-  border-inline: 1px solid rgba(226, 232, 240, 0.95);
+  border-inline: 1px solid var(--baidu-upload-border);
   outline: none;
   font-weight: 700;
 }
@@ -24439,7 +25027,7 @@ function statsStatusTextDisplay (stats) {
 }
 
 .baidu-upload-label-row b {
-  color: #64748b;
+  color: var(--baidu-upload-muted) !important;
   font-size: 12px;
 }
 
@@ -24451,17 +25039,26 @@ function statsStatusTextDisplay (stats) {
 
 .baidu-upload-range-row input[type='range'] {
   flex: 1 1 auto;
-  accent-color: #111827;
+  accent-color: var(--baidu-upload-text-strong);
 }
 
 .baidu-upload-cleanup {
+  position: relative;
+  display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   padding: 13px 14px;
-  border: 1px solid rgba(226, 232, 240, 0.95);
+  border: 1px solid var(--baidu-upload-border);
   border-radius: 16px;
-  background: rgba(248, 250, 252, 0.72);
+  background: var(--baidu-upload-field);
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.baidu-upload-cleanup:hover {
+  border-color: var(--baidu-upload-border-strong);
+  background: var(--baidu-upload-field-hover);
 }
 
 .baidu-upload-cleanup strong,
@@ -24470,37 +25067,102 @@ function statsStatusTextDisplay (stats) {
 }
 
 .baidu-upload-cleanup strong {
-  color: #334155;
+  color: var(--baidu-upload-text-strong) !important;
   font-size: 13px;
 }
 
 .baidu-upload-cleanup small {
   margin-top: 3px;
-  color: #64748b;
+  color: var(--baidu-upload-muted) !important;
   font-size: 11px;
 }
 
-.baidu-upload-cleanup input {
-  width: 18px;
-  height: 18px;
-  accent-color: #111827;
+.baidu-upload-cleanup-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.baidu-upload-cleanup-box {
+  position: relative;
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--baidu-upload-border-strong);
+  border-radius: 6px;
+  background: var(--baidu-upload-panel);
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.baidu-upload-cleanup-box::after {
+  position: absolute;
+  width: 9px;
+  height: 5px;
+  border-bottom: 2px solid var(--baidu-upload-shell);
+  border-left: 2px solid var(--baidu-upload-shell);
+  content: '';
+  opacity: 0;
+  transform: rotate(-45deg) scale(0.72);
+  transition: all 0.2s ease;
+}
+
+.baidu-upload-cleanup-box.checked {
+  border-color: var(--baidu-upload-text-strong);
+  background: var(--baidu-upload-text-strong);
+}
+
+.baidu-upload-cleanup-box.checked::after {
+  opacity: 1;
+  transform: rotate(-45deg) scale(1);
 }
 
 .baidu-upload-stepper.disabled,
 .baidu-upload-range-row.disabled,
 .baidu-upload-input:disabled,
-.baidu-upload-cleanup:has(input:disabled) {
+.baidu-upload-cleanup:has(input:disabled),
+.baidu-upload-cleanup-box.disabled {
   opacity: 0.52;
+  cursor: not-allowed;
 }
 
 .baidu-upload-tree-panel {
   min-width: 0;
 }
 
+.baidu-upload-tree-head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--baidu-upload-border);
+}
+
+.baidu-upload-tree-head h2 {
+  margin-bottom: 4px;
+}
+
+.baidu-upload-tree-head > span {
+  color: var(--baidu-upload-text-strong);
+  font-size: 13px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.baidu-upload-tree-scroll {
+  padding: 14px !important;
+}
+
 .baidu-upload-tree-list {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 8px;
 }
 
 .baidu-upload-tree-row {
@@ -24508,54 +25170,110 @@ function statsStatusTextDisplay (stats) {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  min-height: 36px;
-  padding: 6px 8px;
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--baidu-upload-text);
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.baidu-upload-tree-row:hover {
+  transform: translateY(-1px);
+  border-color: var(--baidu-upload-border);
+  background: var(--baidu-upload-row-hover);
 }
 
 .baidu-upload-tree-main {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
 }
 
-.baidu-upload-tree-checkbox {
+.baidu-upload-file-icon {
   display: inline-flex;
-  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
   align-items: center;
   justify-content: center;
+  border: 1px solid var(--baidu-upload-border);
+  border-radius: 10px;
+  background: var(--baidu-upload-field);
+  color: var(--baidu-upload-file);
 }
 
-.baidu-upload-tree-icon {
-  flex: 0 0 auto;
-  color: #d39a1f;
+.baidu-upload-file-icon.is-folder {
+  color: var(--baidu-upload-folder);
+}
+
+.baidu-upload-file-icon.is-folder svg {
   fill: currentColor;
 }
 
 .baidu-upload-tree-name {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   min-width: 0;
   overflow: hidden;
-  color: #334155;
+  color: var(--baidu-upload-text-strong) !important;
+}
+
+.baidu-upload-tree-name b {
+  display: block;
+  overflow: hidden;
+  color: inherit;
   font-size: 14px;
-  font-weight: 750;
+  font-weight: 760;
+  line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .baidu-upload-tree-name small {
-  margin-left: 10px;
-  color: #94a3b8;
+  display: block;
+  overflow: hidden;
+  color: var(--baidu-upload-faint) !important;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 600;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.baidu-upload-tree-meta {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.baidu-upload-kind {
+  display: inline-flex;
+  min-width: 44px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--baidu-upload-border);
+  border-radius: 999px;
+  background: var(--baidu-upload-field);
+  color: var(--baidu-upload-muted);
+  font-size: 11px;
+  font-weight: 750;
 }
 
 .baidu-upload-tree-size {
   flex: 0 0 auto;
+  color: var(--baidu-upload-muted) !important;
+  font-size: 13px;
+  font-weight: 700;
   white-space: nowrap;
 }
 
 .baidu-upload-primary-cta :deep(svg),
-.baidu-upload-preview-modal .close-button svg {
+.baidu-upload-close-button svg {
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -24567,10 +25285,1181 @@ function statsStatusTextDisplay (stats) {
   transform: rotate(-8deg) scale(1.06);
 }
 
+.baidu-upload-close-button,
+.baidu-upload-secondary-cta {
+  border: 1px solid var(--baidu-upload-border);
+  background: var(--baidu-upload-field);
+  color: var(--baidu-upload-text) !important;
+  box-shadow: none;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.baidu-upload-close-button:hover,
+.baidu-upload-secondary-cta:hover {
+  transform: translateY(-2px) scale(1.02);
+  border-color: var(--baidu-upload-border-strong);
+  background: var(--baidu-upload-field-hover);
+  color: var(--baidu-upload-text-strong) !important;
+}
+
+.baidu-upload-close-button:active,
+.baidu-upload-secondary-cta:active {
+  transform: scale(0.96);
+}
+
+.baidu-upload-preview-modal .summary,
+.baidu-upload-preview-modal .summary-strong {
+  color: var(--baidu-upload-muted) !important;
+}
+
+.baidu-upload-preview-modal .summary-strong {
+  color: var(--baidu-upload-text-strong) !important;
+}
+
+.baidu-upload-preview-modal :is(button, input, [role='button'], .app-dd-trigger):focus,
+.baidu-upload-preview-modal :is(button, input, [role='button'], .app-dd-trigger):focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.baidu-upload-settings-card::-webkit-scrollbar,
+.baidu-upload-tree-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.baidu-upload-settings-card::-webkit-scrollbar-thumb,
+.baidu-upload-tree-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.38);
+  background-clip: padding-box;
+}
+
+.baidu-upload-modal {
+  --baidu-upload-field: rgba(248, 250, 252, 0.72);
+  --baidu-upload-field-hover: rgba(255, 255, 255, 0.92);
+  --baidu-upload-border: rgba(15, 23, 42, 0.12);
+  --baidu-upload-border-strong: rgba(15, 23, 42, 0.28);
+  --baidu-upload-text: #1f2937;
+  --baidu-upload-text-strong: #0f172a;
+  --baidu-upload-muted: #64748b;
+  --baidu-upload-faint: #94a3b8;
+  --baidu-upload-folder: #d39a1f;
+  --baidu-upload-file: #64748b;
+  width: min(1440px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-modal),
+:global(html.dark .baidu-upload-modal) {
+  --baidu-upload-field: rgba(43, 44, 48, 0.84);
+  --baidu-upload-field-hover: rgba(56, 57, 62, 0.9);
+  --baidu-upload-border: rgba(255, 255, 255, 0.15);
+  --baidu-upload-border-strong: rgba(255, 255, 255, 0.28);
+  --baidu-upload-text: rgba(244, 244, 245, 0.88);
+  --baidu-upload-text-strong: rgba(250, 250, 252, 0.96);
+  --baidu-upload-muted: rgba(214, 214, 220, 0.68);
+  --baidu-upload-faint: rgba(161, 161, 170, 0.78);
+  --baidu-upload-folder: #f0b849;
+  --baidu-upload-file: rgba(214, 214, 220, 0.78);
+}
+
+.baidu-upload-modal .baidu-upload-window {
+  width: 100%;
+  height: min(900px, calc(100dvh - 24px));
+  max-height: calc(100dvh - 24px);
+  border-color: rgba(15, 23, 42, 0.06) !important;
+  background: rgba(255, 255, 255, 0.7) !important;
+  color: var(--baidu-upload-text);
+  box-shadow: 0 28px 80px rgba(15, 23, 42, 0.22);
+}
+
+.baidu-upload-left-column {
+  width: 460px;
+  min-width: 420px;
+  max-width: 480px;
+  flex: 0 0 460px;
+}
+
+.baidu-upload-settings-card-panel {
+  padding: 24px !important;
+}
+
+.baidu-upload-config-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.baidu-upload-setting-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 168px;
+  align-items: center;
+  gap: 18px;
+  min-width: 0;
+}
+
+.baidu-upload-setting-row.is-column {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.baidu-upload-setting-copy {
+  min-width: 0;
+}
+
+.baidu-upload-setting-copy.is-horizontal {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.baidu-upload-setting-copy label {
+  display: block;
+  color: var(--baidu-upload-text-strong) !important;
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.baidu-upload-setting-copy p {
+  margin: 4px 0 0;
+  color: var(--baidu-upload-muted) !important;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.baidu-upload-setting-copy b {
+  flex: 0 0 auto;
+  color: var(--baidu-upload-text-strong);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.baidu-upload-setting-row > .baidu-upload-dd,
+.baidu-upload-setting-row > .baidu-upload-stepper {
+  width: 168px;
+  min-width: 168px;
+}
+
+.baidu-upload-setting-row.is-column > .baidu-upload-input {
+  width: 100%;
+}
+
+.baidu-upload-modal .baidu-upload-dd :deep(.app-dd-trigger),
+.baidu-upload-modal .baidu-upload-input,
+.baidu-upload-modal .baidu-upload-stepper,
+.baidu-upload-modal .baidu-upload-cleanup {
+  border-color: var(--baidu-upload-border) !important;
+  background: var(--baidu-upload-field) !important;
+  color: var(--baidu-upload-text) !important;
+  box-shadow: none !important;
+}
+
+.baidu-upload-modal .baidu-upload-dd :deep(.app-dd-trigger) {
+  min-height: 36px;
+  justify-content: space-between;
+}
+
+.baidu-upload-modal .baidu-upload-dd :deep(.app-dd-trigger:hover),
+.baidu-upload-modal .baidu-upload-dd :deep(.app-dd-trigger.is-open),
+.baidu-upload-modal .baidu-upload-input:hover:not(:disabled),
+.baidu-upload-modal .baidu-upload-input:focus {
+  border-color: var(--baidu-upload-border-strong) !important;
+  background: var(--baidu-upload-field-hover) !important;
+}
+
+.baidu-upload-setting-row.is-column > .baidu-upload-password-control {
+  width: 100%;
+}
+
+.baidu-upload-modal .baidu-upload-password-control :deep(.animated-password-input__field) {
+  min-height: 36px;
+  border: 1px solid var(--baidu-upload-border) !important;
+  border-radius: 8px;
+  padding: 0 46px 0 10px;
+  background: var(--baidu-upload-field) !important;
+  color: var(--baidu-upload-text) !important;
+  -webkit-text-fill-color: var(--baidu-upload-text) !important;
+  box-shadow: none !important;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.baidu-upload-modal .baidu-upload-password-control :deep(.animated-password-input__field:hover),
+.baidu-upload-modal .baidu-upload-password-control :deep(.animated-password-input__field:focus) {
+  border-color: var(--baidu-upload-border-strong) !important;
+  background: var(--baidu-upload-field-hover) !important;
+  box-shadow: none !important;
+}
+
+.baidu-upload-modal .baidu-upload-password-control :deep(.animated-password-input__toggle) {
+  right: 7px;
+  width: 32px;
+  height: 32px;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.baidu-upload-modal .baidu-upload-password-control :deep(.animated-password-input__toggle:focus),
+.baidu-upload-modal .baidu-upload-password-control :deep(.animated-password-input__toggle:focus-visible) {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.baidu-upload-modal .baidu-upload-password-control :deep(.animated-password-input__player) {
+  width: 28px;
+  height: 28px;
+}
+
+.baidu-upload-path-stack {
+  padding: 12px 0 4px;
+}
+
+.baidu-upload-direct-note {
+  border: 1px solid var(--baidu-upload-border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: var(--baidu-upload-field);
+  color: var(--baidu-upload-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.baidu-upload-modal .baidu-upload-stepper {
+  grid-template-columns: 38px minmax(0, 1fr) 38px;
+  height: 36px;
+}
+
+.baidu-upload-modal .baidu-upload-stepper.compact {
+  width: 122px;
+  flex: 0 0 122px;
+}
+
+.baidu-upload-range-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 122px;
+  align-items: center;
+  gap: 16px;
+}
+
+.baidu-upload-cleanup {
+  min-height: 62px;
+}
+
+.baidu-upload-tree-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--baidu-upload-text-strong);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.baidu-upload-select-checkbox {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+}
+
+.baidu-upload-file-icon {
+  color: var(--baidu-upload-file) !important;
+}
+
+.baidu-upload-file-icon.is-folder {
+  border-color: color-mix(in srgb, var(--baidu-upload-folder) 36%, transparent);
+  background: color-mix(in srgb, var(--baidu-upload-folder) 13%, transparent);
+  color: var(--baidu-upload-folder) !important;
+}
+
+.baidu-upload-file-icon.is-folder svg {
+  fill: currentColor;
+}
+
+.baidu-upload-modal .tree-row {
+  min-height: 48px;
+  cursor: pointer;
+}
+
+.baidu-upload-modal .tree-row .tree-main {
+  min-width: 0;
+}
+
+.baidu-upload-modal .tree-row-selected {
+  background: rgba(15, 23, 42, 0.04);
+}
+
+/* 百度网盘上传：视觉对齐“上传到服务器”的磨砂白玻璃，但保留百度业务表单。 */
+.baidu-upload-modal {
+  --baidu-upload-shell: rgba(255, 255, 255, 0.72);
+  --baidu-upload-header: transparent;
+  --baidu-upload-footer: transparent;
+  --baidu-upload-panel: transparent;
+  --baidu-upload-panel-strong: rgba(71, 85, 105, 0.9);
+  --baidu-upload-field: rgba(255, 255, 255, 0.34);
+  --baidu-upload-field-hover: rgba(255, 255, 255, 0.58);
+  --baidu-upload-row-hover: rgba(15, 23, 42, 0.035);
+  --baidu-upload-row-selected: rgba(15, 23, 42, 0.052);
+  --baidu-upload-border: rgba(226, 232, 240, 0.72);
+  --baidu-upload-border-strong: rgba(148, 163, 184, 0.76);
+  width: min(1470px, calc(100vw - 36px));
+}
+
+.baidu-upload-modal .baidu-upload-window {
+  height: min(830px, calc(100dvh - 36px));
+  max-height: calc(100dvh - 36px);
+  border: 1px solid rgba(15, 23, 42, 0.06) !important;
+  background: var(--baidu-upload-shell) !important;
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.13);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.baidu-upload-modal .baidu-upload-header,
+.baidu-upload-modal .baidu-upload-footer,
+.baidu-upload-modal .baidu-upload-content {
+  border-color: rgba(226, 232, 240, 0.72) !important;
+  background: transparent !important;
+}
+
+.baidu-upload-modal .baidu-upload-header {
+  min-height: 92px;
+  padding-bottom: 18px !important;
+}
+
+.baidu-upload-modal .tabs-row {
+  border: 0;
+  background: transparent !important;
+}
+
+.baidu-upload-modal .baidu-upload-footer {
+  min-height: 98px;
+}
+
+.baidu-upload-modal .baidu-upload-settings-card-panel,
+.baidu-upload-modal .baidu-upload-tree-panel {
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.baidu-upload-modal .baidu-upload-settings-card-panel {
+  padding: 42px 32px 28px !important;
+}
+
+.baidu-upload-modal .baidu-upload-tree-panel {
+  padding: 34px 20px 24px;
+}
+
+.baidu-upload-modal .baidu-upload-tree-head {
+  padding: 0 0 18px;
+  border-bottom: 0;
+}
+
+.baidu-upload-modal .baidu-upload-tree-scroll {
+  padding: 0 !important;
+}
+
+.baidu-upload-modal .baidu-upload-tree-list {
+  gap: 6px;
+}
+
+.baidu-upload-tree-row-move,
+.baidu-upload-tree-row-enter-active,
+.baidu-upload-tree-row-leave-active {
+  transition:
+    opacity 0.22s ease,
+    transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1),
+    max-height 0.24s ease,
+    margin 0.24s ease,
+    padding-top 0.24s ease,
+    padding-bottom 0.24s ease;
+}
+
+.baidu-upload-tree-row-enter-from,
+.baidu-upload-tree-row-leave-to {
+  max-height: 0 !important;
+  margin-top: -6px;
+  margin-bottom: -6px;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  opacity: 0;
+  transform: translate3d(0, -8px, 0) scaleY(0.96);
+}
+
+.baidu-upload-tree-row-enter-to,
+.baidu-upload-tree-row-leave-from {
+  max-height: 48px;
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scaleY(1);
+}
+
+.baidu-upload-tree-row-leave-active {
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.baidu-upload-modal .baidu-upload-tree-row {
+  min-height: 40px;
+  gap: 12px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent !important;
+}
+
+.baidu-upload-modal .baidu-upload-tree-row:hover {
+  transform: none;
+  border-color: transparent;
+  background: var(--baidu-upload-row-hover) !important;
+}
+
+.baidu-upload-modal .baidu-upload-tree-row.tree-row-selected {
+  border-color: transparent;
+  background: var(--baidu-upload-row-selected) !important;
+  box-shadow: none;
+}
+
+.baidu-upload-tree-loading {
+  min-height: 100%;
+  padding: 28px 16px;
+  color: var(--baidu-upload-muted) !important;
+}
+
+.baidu-upload-tree-loading :deep(.app-loading-animation) {
+  width: 100%;
+}
+
+.baidu-upload-tree-loading :deep(.app-loading-animation__label) {
+  color: var(--baidu-upload-text-strong) !important;
+}
+
+.baidu-upload-tree-loading :deep(.app-loading-animation__description) {
+  color: var(--baidu-upload-muted) !important;
+}
+
+.baidu-upload-modal .baidu-upload-tree-row .tree-main {
+  gap: 9px;
+}
+
+.baidu-upload-tree-expander,
+.baidu-upload-expander-spacer {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+
+.baidu-upload-tree-expander {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  padding: 0;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: color 0.18s ease, background-color 0.18s ease, transform 0.18s ease;
+}
+
+.baidu-upload-tree-expander:hover {
+  transform: none;
+  background: rgba(15, 23, 42, 0.055);
+  color: #64748b;
+}
+
+.baidu-upload-modal .baidu-upload-file-icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  border: 0;
+  border-radius: 0;
+  background: transparent !important;
+  color: var(--baidu-upload-file) !important;
+}
+
+.baidu-upload-modal .baidu-upload-file-icon.is-folder {
+  color: #f59e0b !important;
+}
+
+.baidu-upload-modal .baidu-upload-file-icon:not(.is-folder) {
+  color: #7c3aed !important;
+}
+
+.baidu-upload-modal .baidu-upload-file-icon svg {
+  display: block;
+}
+
+.baidu-upload-modal .baidu-upload-file-icon.is-filled svg {
+  fill: currentColor;
+}
+
+.baidu-upload-modal .baidu-upload-tree-name {
+  display: block;
+  color: #1e293b !important;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.baidu-upload-modal .baidu-upload-tree-name .node-title-muted {
+  margin-left: 8px;
+  color: #94a3b8 !important;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.baidu-upload-modal .baidu-upload-tree-size {
+  color: #94a3b8 !important;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.baidu-upload-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 750;
+  cursor: pointer;
+  user-select: none;
+}
+
+.baidu-upload-tree-toggle {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(226, 232, 240, 0.86);
+  border-radius: 999px;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.36);
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+
+.baidu-upload-tree-toggle:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(203, 213, 225, 0.82);
+  background: rgba(255, 255, 255, 0.58);
+  color: #334155;
+}
+
+.baidu-upload-tree-toggle:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.baidu-upload-native-checkbox {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  margin: 0;
+  accent-color: #111827;
+  cursor: pointer;
+}
+
+.baidu-upload-native-checkbox:focus,
+.baidu-upload-native-checkbox:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.baidu-upload-modal .baidu-upload-close-button {
+  border: 0 !important;
+  background: transparent !important;
+  color: #94a3b8 !important;
+  box-shadow: none !important;
+}
+
+.baidu-upload-modal .baidu-upload-close-button:hover {
+  transform: none;
+  background: transparent !important;
+  color: #64748b !important;
+}
+
+.baidu-upload-modal .baidu-upload-close-button:active {
+  transform: scale(0.96);
+}
+
+.baidu-upload-modal .baidu-upload-dd :deep(.app-dd-trigger),
+.baidu-upload-modal .baidu-upload-input,
+.baidu-upload-modal .baidu-upload-stepper,
+.baidu-upload-modal .baidu-upload-cleanup,
+.baidu-upload-modal .baidu-upload-direct-note {
+  border-color: rgba(226, 232, 240, 0.9) !important;
+  background: rgba(255, 255, 255, 0.34) !important;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.baidu-upload-modal .baidu-upload-dd :deep(.app-dd-trigger:hover),
+.baidu-upload-modal .baidu-upload-dd :deep(.app-dd-trigger.is-open),
+.baidu-upload-modal .baidu-upload-input:hover:not(:disabled),
+.baidu-upload-modal .baidu-upload-input:focus,
+.baidu-upload-modal .baidu-upload-cleanup:hover {
+  background: rgba(255, 255, 255, 0.56) !important;
+}
+
+/* 百度上传暗黑态最终兜底：压过前面的浅色玻璃块，去掉阴影和蓝紫文件色。 */
+:global(html.kikoerumanager-dark .baidu-upload-modal),
+:global(html.dark .baidu-upload-modal) {
+  --baidu-upload-shell: #202126;
+  --baidu-upload-header: #292a2f;
+  --baidu-upload-footer: #292a2f;
+  --baidu-upload-panel: #15161a;
+  --baidu-upload-panel-strong: #333438;
+  --baidu-upload-field: #2b2c30;
+  --baidu-upload-field-hover: #333438;
+  --baidu-upload-row-hover: rgba(255, 255, 255, 0.055);
+  --baidu-upload-row-selected: rgba(255, 255, 255, 0.1);
+  --baidu-upload-border: rgba(255, 255, 255, 0.13);
+  --baidu-upload-border-strong: rgba(255, 255, 255, 0.22);
+  --baidu-upload-text: rgba(228, 228, 231, 0.86);
+  --baidu-upload-text-strong: rgba(250, 250, 252, 0.96);
+  --baidu-upload-muted: rgba(214, 214, 220, 0.66);
+  --baidu-upload-faint: rgba(161, 161, 170, 0.78);
+  --baidu-upload-folder: #d9a43a;
+  --baidu-upload-file: rgba(214, 214, 220, 0.78);
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-modal) :is(
+  .baidu-upload-window,
+  .baidu-upload-header,
+  .baidu-upload-footer,
+  .baidu-upload-content,
+  .baidu-upload-settings-card-panel,
+  .baidu-upload-tree-panel,
+  .baidu-upload-tree-row,
+  .baidu-upload-tree-row.tree-row-selected,
+  .baidu-upload-tree-toggle,
+  .baidu-upload-primary-cta,
+  .baidu-upload-secondary-cta,
+  .baidu-upload-close-button,
+  .baidu-upload-dd .app-dd-trigger,
+  .baidu-upload-input,
+  .baidu-upload-stepper,
+  .baidu-upload-cleanup,
+  .baidu-upload-direct-note,
+  [class*="shadow"]
+),
+:global(html.dark .baidu-upload-modal) :is(
+  .baidu-upload-window,
+  .baidu-upload-header,
+  .baidu-upload-footer,
+  .baidu-upload-content,
+  .baidu-upload-settings-card-panel,
+  .baidu-upload-tree-panel,
+  .baidu-upload-tree-row,
+  .baidu-upload-tree-row.tree-row-selected,
+  .baidu-upload-tree-toggle,
+  .baidu-upload-primary-cta,
+  .baidu-upload-secondary-cta,
+  .baidu-upload-close-button,
+  .baidu-upload-dd .app-dd-trigger,
+  .baidu-upload-input,
+  .baidu-upload-stepper,
+  .baidu-upload-cleanup,
+  .baidu-upload-direct-note,
+  [class*="shadow"]
+) {
+  box-shadow: none !important;
+  text-shadow: none !important;
+  filter: none !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-modal .baidu-upload-window),
+:global(html.dark .baidu-upload-modal .baidu-upload-window) {
+  border-color: var(--baidu-upload-border) !important;
+  background: var(--baidu-upload-shell) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-modal) :is(.baidu-upload-header, .baidu-upload-footer),
+:global(html.dark .baidu-upload-modal) :is(.baidu-upload-header, .baidu-upload-footer) {
+  border-color: var(--baidu-upload-border) !important;
+  background: var(--baidu-upload-header) !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-modal) :is(.baidu-upload-content, .baidu-upload-settings-card-panel, .baidu-upload-tree-panel),
+:global(html.dark .baidu-upload-modal) :is(.baidu-upload-content, .baidu-upload-settings-card-panel, .baidu-upload-tree-panel) {
+  background: var(--baidu-upload-panel) !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-modal) :is(.baidu-upload-dd .app-dd-trigger, .baidu-upload-input, .baidu-upload-stepper, .baidu-upload-cleanup, .baidu-upload-direct-note),
+:global(html.dark .baidu-upload-modal) :is(.baidu-upload-dd .app-dd-trigger, .baidu-upload-input, .baidu-upload-stepper, .baidu-upload-cleanup, .baidu-upload-direct-note) {
+  border-color: var(--baidu-upload-border) !important;
+  background: var(--baidu-upload-field) !important;
+  color: var(--baidu-upload-text) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-modal) :is(.baidu-upload-dd .app-dd-trigger:hover, .baidu-upload-dd .app-dd-trigger.is-open, .baidu-upload-input:hover:not(:disabled), .baidu-upload-input:focus, .baidu-upload-cleanup:hover),
+:global(html.dark .baidu-upload-modal) :is(.baidu-upload-dd .app-dd-trigger:hover, .baidu-upload-dd .app-dd-trigger.is-open, .baidu-upload-input:hover:not(:disabled), .baidu-upload-input:focus, .baidu-upload-cleanup:hover) {
+  border-color: var(--baidu-upload-border-strong) !important;
+  background: var(--baidu-upload-field-hover) !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-modal .baidu-upload-tree-row.tree-row-selected),
+:global(html.dark .baidu-upload-modal .baidu-upload-tree-row.tree-row-selected) {
+  background: var(--baidu-upload-row-selected) !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-modal .baidu-upload-file-icon:not(.is-folder)),
+:global(html.kikoerumanager-dark .baidu-upload-modal .baidu-upload-file-icon:not(.is-folder) svg),
+:global(html.dark .baidu-upload-modal .baidu-upload-file-icon:not(.is-folder)),
+:global(html.dark .baidu-upload-modal .baidu-upload-file-icon:not(.is-folder) svg) {
+  color: var(--baidu-upload-file) !important;
+  stroke: currentColor !important;
+  filter: none !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-modal .baidu-upload-file-icon.is-folder),
+:global(html.dark .baidu-upload-modal .baidu-upload-file-icon.is-folder) {
+  color: var(--baidu-upload-folder) !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-modal .baidu-upload-primary-cta),
+:global(html.dark .baidu-upload-modal .baidu-upload-primary-cta) {
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  background: #1d1e23 !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-modal .baidu-upload-primary-cta:hover:not(:disabled)),
+:global(html.dark .baidu-upload-modal .baidu-upload-primary-cta:hover:not(:disabled)) {
+  border-color: rgba(255, 255, 255, 0.26) !important;
+  background: #28292f !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-modal .baidu-upload-native-checkbox),
+:global(html.dark .baidu-upload-modal .baidu-upload-native-checkbox) {
+  accent-color: #d4d4d8;
+}
+
+/* 百度上传暗黑态：跟服务器弹窗一致，去掉上下灰条，只保留深色玻璃层级。 */
+:global(html.kikoerumanager-dark .baidu-upload-modal),
+:global(html.dark .baidu-upload-modal) {
+  --baidu-upload-shell: rgba(13, 14, 17, 0.96);
+  --baidu-upload-header: transparent;
+  --baidu-upload-footer: transparent;
+  --baidu-upload-panel: rgba(8, 9, 12, 0.42);
+  --baidu-upload-field: rgba(255, 255, 255, 0.058);
+  --baidu-upload-field-hover: rgba(255, 255, 255, 0.085);
+  --baidu-upload-row-hover: rgba(255, 255, 255, 0.045);
+  --baidu-upload-row-selected: rgba(255, 255, 255, 0.062);
+  --baidu-upload-border: rgba(255, 255, 255, 0.13);
+  --baidu-upload-border-strong: rgba(255, 255, 255, 0.22);
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-modal .baidu-upload-window),
+:global(html.dark .baidu-upload-modal .baidu-upload-window) {
+  background: var(--baidu-upload-shell) !important;
+  background-image: none !important;
+  border-color: var(--baidu-upload-border) !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+  backdrop-filter: blur(12px) saturate(108%) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(108%) !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-modal) :is(.baidu-upload-header, .baidu-upload-footer, .baidu-upload-content),
+:global(html.dark .baidu-upload-modal) :is(.baidu-upload-header, .baidu-upload-footer, .baidu-upload-content) {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-modal) :is(.baidu-upload-settings-card-panel, .baidu-upload-tree-panel),
+:global(html.dark .baidu-upload-modal) :is(.baidu-upload-settings-card-panel, .baidu-upload-tree-panel) {
+  background: var(--baidu-upload-panel) !important;
+  background-image: none !important;
+  border-color: var(--baidu-upload-border) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-modal) :is(.baidu-upload-tree-row.tree-row-selected, .baidu-upload-tree-row.tree-row-selected:hover),
+:global(html.dark .baidu-upload-modal) :is(.baidu-upload-tree-row.tree-row-selected, .baidu-upload-tree-row.tree-row-selected:hover) {
+  background: var(--baidu-upload-row-selected) !important;
+  border-color: var(--baidu-upload-border) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-modal) :is(.baidu-upload-tree-toggle, .baidu-upload-dd .app-dd-trigger, .baidu-upload-input, .baidu-upload-stepper, .baidu-upload-cleanup, .baidu-upload-direct-note),
+:global(html.dark .baidu-upload-modal) :is(.baidu-upload-tree-toggle, .baidu-upload-dd .app-dd-trigger, .baidu-upload-input, .baidu-upload-stepper, .baidu-upload-cleanup, .baidu-upload-direct-note) {
+  background: var(--baidu-upload-field) !important;
+  background-image: none !important;
+  border-color: var(--baidu-upload-border) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .baidu-upload-modal) .baidu-upload-password-control :deep(.animated-password-input__field),
+:global(html.dark .baidu-upload-modal) .baidu-upload-password-control :deep(.animated-password-input__field) {
+  background: var(--baidu-upload-field) !important;
+  background-image: none !important;
+  border-color: var(--baidu-upload-border) !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-window.window.glass-shell),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-window.window.glass-shell) {
+  background: rgba(13, 14, 17, 0.96) !important;
+  background-color: rgba(13, 14, 17, 0.96) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  filter: none !important;
+  backdrop-filter: blur(12px) saturate(108%) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(108%) !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal :is(.baidu-upload-header.baidu-upload-header, .baidu-upload-footer.baidu-upload-footer, .baidu-upload-content.baidu-upload-content)),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal :is(.baidu-upload-header.baidu-upload-header, .baidu-upload-footer.baidu-upload-footer, .baidu-upload-content.baidu-upload-content)) {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  filter: none !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal :is(.baidu-upload-settings-card-panel.baidu-upload-settings-card-panel, .baidu-upload-tree-panel.baidu-upload-tree-panel)),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal :is(.baidu-upload-settings-card-panel.baidu-upload-settings-card-panel, .baidu-upload-tree-panel.baidu-upload-tree-panel)) {
+  background: rgba(8, 9, 12, 0.42) !important;
+  background-color: rgba(8, 9, 12, 0.42) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal :is(.baidu-upload-tree-row.tree-row-selected, .baidu-upload-tree-row.tree-row-selected:hover)),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal :is(.baidu-upload-tree-row.tree-row-selected, .baidu-upload-tree-row.tree-row-selected:hover)) {
+  background: rgba(255, 255, 255, 0.062) !important;
+  background-color: rgba(255, 255, 255, 0.062) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-file-icon:not(.is-folder)),
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-file-icon:not(.is-folder) :is(svg, path)),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-file-icon:not(.is-folder)),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-file-icon:not(.is-folder) :is(svg, path)) {
+  color: rgba(214, 214, 220, 0.78) !important;
+  stroke: currentColor !important;
+  filter: none !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal :is(.baidu-upload-primary-cta.baidu-upload-primary-cta, .baidu-upload-secondary-cta.baidu-upload-secondary-cta, .baidu-upload-close-button.baidu-upload-close-button, .baidu-upload-tree-toggle.baidu-upload-tree-toggle)),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal :is(.baidu-upload-primary-cta.baidu-upload-primary-cta, .baidu-upload-secondary-cta.baidu-upload-secondary-cta, .baidu-upload-close-button.baidu-upload-close-button, .baidu-upload-tree-toggle.baidu-upload-tree-toggle)) {
+  box-shadow: none !important;
+  text-shadow: none !important;
+  filter: none !important;
+}
+
+/* 百度上传暗黑态：去掉最外层 section 的方形底，保留内部圆角弹窗。 */
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal) {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+/* 百度上传暗黑态：修正压缩清理卡片和树头控件的浅色残留。 */
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-cleanup.baidu-upload-cleanup),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-cleanup.baidu-upload-cleanup) {
+  background: rgba(255, 255, 255, 0.045) !important;
+  background-color: rgba(255, 255, 255, 0.045) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  color: rgba(228, 228, 231, 0.86) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-cleanup.baidu-upload-cleanup:hover),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-cleanup.baidu-upload-cleanup:hover) {
+  background: rgba(255, 255, 255, 0.072) !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-cleanup strong),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-cleanup strong) {
+  color: rgba(250, 250, 252, 0.96) !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-cleanup small),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-cleanup small) {
+  color: rgba(214, 214, 220, 0.64) !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-cleanup-box.baidu-upload-cleanup-box),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-cleanup-box.baidu-upload-cleanup-box) {
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  background: rgba(255, 255, 255, 0.07) !important;
+  background-color: rgba(255, 255, 255, 0.07) !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-cleanup-box.baidu-upload-cleanup-box.checked),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-cleanup-box.baidu-upload-cleanup-box.checked) {
+  border-color: rgba(244, 244, 245, 0.86) !important;
+  background: rgba(244, 244, 245, 0.86) !important;
+  background-color: rgba(244, 244, 245, 0.86) !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-cleanup-box.baidu-upload-cleanup-box.checked::after),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-cleanup-box.baidu-upload-cleanup-box.checked::after) {
+  border-color: rgba(12, 13, 16, 0.92) !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-tree-toggle.baidu-upload-tree-toggle),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-tree-toggle.baidu-upload-tree-toggle) {
+  background: rgba(255, 255, 255, 0.058) !important;
+  background-color: rgba(255, 255, 255, 0.058) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  color: rgba(228, 228, 231, 0.72) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-tree-toggle.baidu-upload-tree-toggle:hover:not(:disabled)),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-tree-toggle.baidu-upload-tree-toggle:hover:not(:disabled)) {
+  background: rgba(255, 255, 255, 0.092) !important;
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  color: rgba(250, 250, 252, 0.94) !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-tree-toggle.baidu-upload-tree-toggle:disabled),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-tree-toggle.baidu-upload-tree-toggle:disabled) {
+  background: rgba(255, 255, 255, 0.04) !important;
+  color: rgba(214, 214, 220, 0.46) !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-select-all.baidu-upload-select-all),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-select-all.baidu-upload-select-all) {
+  color: rgba(228, 228, 231, 0.84) !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox) {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  place-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.28) !important;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.075) !important;
+  background-color: rgba(255, 255, 255, 0.075) !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox::after),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox::after) {
+  width: 8px;
+  height: 4px;
+  border-bottom: 2px solid rgba(12, 13, 16, 0.92);
+  border-left: 2px solid rgba(12, 13, 16, 0.92);
+  content: '';
+  opacity: 0;
+  transform: rotate(-45deg) scale(0.72);
+  transition: all 0.18s ease;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox:checked),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox:checked) {
+  border-color: rgba(244, 244, 245, 0.88) !important;
+  background: rgba(244, 244, 245, 0.88) !important;
+  background-color: rgba(244, 244, 245, 0.88) !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox:checked::after),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox:checked::after) {
+  opacity: 1;
+  transform: rotate(-45deg) scale(1);
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox:indeterminate),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox:indeterminate) {
+  border-color: rgba(244, 244, 245, 0.78) !important;
+  background: rgba(244, 244, 245, 0.72) !important;
+  background-color: rgba(244, 244, 245, 0.72) !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox:indeterminate::after),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox:indeterminate::after) {
+  width: 8px;
+  height: 2px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(12, 13, 16, 0.92);
+  opacity: 1;
+  transform: none;
+}
+
+.baidu-upload-dialog-enter-active,
+.baidu-upload-dialog-leave-active {
+  transition: opacity 0.24s ease;
+}
+
+.baidu-upload-dialog-enter-from,
+.baidu-upload-dialog-leave-to {
+  opacity: 0;
+}
+
+.baidu-upload-dialog-enter-active .baidu-upload-window,
+.baidu-upload-dialog-leave-active .baidu-upload-window {
+  transform-origin: 50% 44%;
+  transition:
+    opacity 0.28s ease,
+    filter 0.28s ease,
+    transform 0.42s cubic-bezier(0.34, 1.56, 0.64, 1);
+  will-change: opacity, filter, transform;
+}
+
+.baidu-upload-dialog-enter-from .baidu-upload-window {
+  opacity: 0;
+  filter: blur(10px);
+  transform: translate3d(0, 18px, 0) scale(0.965);
+}
+
+.baidu-upload-dialog-leave-to .baidu-upload-window {
+  opacity: 0;
+  filter: blur(6px);
+  transform: translate3d(0, 12px, 0) scale(0.982);
+}
+
+.baidu-upload-dialog-enter-active :is(
+  .baidu-upload-header,
+  .baidu-upload-settings-card-panel,
+  .baidu-upload-tree-panel,
+  .baidu-upload-footer
+) {
+  transition:
+    opacity 0.32s ease,
+    transform 0.46s cubic-bezier(0.34, 1.56, 0.64, 1);
+  will-change: opacity, transform;
+}
+
+.baidu-upload-dialog-enter-from :is(
+  .baidu-upload-header,
+  .baidu-upload-settings-card-panel,
+  .baidu-upload-tree-panel,
+  .baidu-upload-footer
+) {
+  opacity: 0;
+  transform: translate3d(0, 14px, 0);
+}
+
+.baidu-upload-dialog-enter-active .baidu-upload-header {
+  transition-delay: 0.04s;
+}
+
+.baidu-upload-dialog-enter-active .baidu-upload-settings-card-panel {
+  transition-delay: 0.08s;
+}
+
+.baidu-upload-dialog-enter-active .baidu-upload-tree-panel {
+  transition-delay: 0.12s;
+}
+
+.baidu-upload-dialog-enter-active .baidu-upload-footer {
+  transition-delay: 0.15s;
+}
+
+.baidu-upload-close-button,
+.baidu-upload-close-button svg {
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
+}
+
+.baidu-upload-close-button:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.04) !important;
+}
+
+.baidu-upload-close-button:hover:not(:disabled) svg {
+  transform: rotate(90deg) scale(1.08);
+}
+
+.baidu-upload-close-button:active:not(:disabled) {
+  transform: scale(0.96) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .baidu-upload-dialog-enter-active,
+  .baidu-upload-dialog-leave-active,
+  .baidu-upload-dialog-enter-active .baidu-upload-window,
+  .baidu-upload-dialog-leave-active .baidu-upload-window,
+  .baidu-upload-dialog-enter-active :is(
+    .baidu-upload-header,
+    .baidu-upload-settings-card-panel,
+    .baidu-upload-tree-panel,
+    .baidu-upload-footer
+  ) {
+    transition: opacity 0.12s ease !important;
+  }
+
+  .baidu-upload-dialog-enter-from .baidu-upload-window,
+  .baidu-upload-dialog-leave-to .baidu-upload-window,
+  .baidu-upload-dialog-enter-from :is(
+    .baidu-upload-header,
+    .baidu-upload-settings-card-panel,
+    .baidu-upload-tree-panel,
+    .baidu-upload-footer
+  ) {
+    filter: none !important;
+    transform: none !important;
+  }
+}
+
 @media (max-width: 760px) {
   .baidu-upload-preview-modal {
     width: 100vw;
     max-height: 100dvh;
+  }
+
+  .baidu-upload-window {
+    height: 100dvh;
+    max-height: 100dvh;
+    border-radius: 0 !important;
+  }
+
+  .baidu-upload-content {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .baidu-upload-left {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
   }
 
   .baidu-upload-form-grid {
@@ -24581,8 +26470,21 @@ function statsStatusTextDisplay (stats) {
     min-height: 220px;
   }
 
+  .baidu-upload-tree-row,
+  .baidu-upload-tree-meta,
+  .baidu-upload-footer,
+  .baidu-upload-preview-modal .footer-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .baidu-upload-preview-modal .footer-actions,
+  .baidu-upload-preview-modal .footer-actions > * {
+    width: 100%;
+  }
+
   .baidu-upload-tree-name small {
-    display: none;
+    white-space: normal;
   }
 }
 
