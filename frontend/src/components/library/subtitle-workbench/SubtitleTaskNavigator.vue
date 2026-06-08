@@ -812,15 +812,15 @@ function getDisplayFolderName(task) {
 }
 
 :global(html.kikoerumanager-dark .subtitle-queue-filter.is-active) {
-  background: #34353a !important;
+  background: #24252a !important;
   background-image: none !important;
-  border-color: rgba(255, 255, 255, 0.26) !important;
-  color: #ffffff !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  color: rgba(244, 244, 245, 0.9) !important;
 }
 
 :global(html.kikoerumanager-dark .subtitle-queue-active-mark),
 :global(html.dark .subtitle-queue-active-mark) {
-  background: #8b5cf6 !important;
+  background: #8f96a3 !important;
 }
 
 :global(html.kikoerumanager-dark .subtitle-queue-count) {
@@ -875,6 +875,11 @@ function getDisplayFolderName(task) {
 :global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-queue-dot.bg-rose-500),
 :global(html.dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-queue-dot.bg-rose-500) {
   background: #fb7185 !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-queue-dot.bg-slate-700),
+:global(html.dark .subtitle-workbench-dialog .subtitle-task-navigator .subtitle-queue-dot.bg-slate-700) {
+  background: #8f96a3 !important;
 }
 
 .subtitle-status-flip-enter-active,

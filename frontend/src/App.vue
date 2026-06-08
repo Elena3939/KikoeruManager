@@ -2207,10 +2207,10 @@ html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-queue-filter:hover
 }
 
 html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-queue-filter.is-active {
-  background: #34353a !important;
+  background: #24252a !important;
   background-image: none !important;
-  border-color: rgba(255, 255, 255, 0.26) !important;
-  color: #ffffff !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  color: rgba(244, 244, 245, 0.9) !important;
 }
 
 html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-queue-filter:focus,
@@ -2288,10 +2288,10 @@ html.kikoerumanager-dark .subtitle-workbench-dialog :is(
 }
 
 html.kikoerumanager-dark .subtitle-workbench-dialog :is(
-  button:not(.primary-cta):not(.subtitle-stage-tab):not(.subtitle-context-tab):not(.subtitle-ai-mode-option):not(.subtitle-naming-option):not(.subtitle-toggle-pill):not(.subtitle-switch):not(.subtitle-retarget-option).is-active,
-  button:not(.primary-cta):not(.subtitle-stage-tab):not(.subtitle-context-tab):not(.subtitle-ai-mode-option):not(.subtitle-naming-option):not(.subtitle-toggle-pill):not(.subtitle-switch):not(.subtitle-retarget-option)[class*="bg-slate-900"],
-  button:not(.primary-cta):not(.subtitle-stage-tab):not(.subtitle-context-tab):not(.subtitle-ai-mode-option):not(.subtitle-naming-option):not(.subtitle-toggle-pill):not(.subtitle-switch):not(.subtitle-retarget-option)[class*="bg-blue-"],
-  button:not(.primary-cta):not(.subtitle-stage-tab):not(.subtitle-context-tab):not(.subtitle-ai-mode-option):not(.subtitle-naming-option):not(.subtitle-toggle-pill):not(.subtitle-switch):not(.subtitle-retarget-option)[class*="bg-indigo-"]
+  button:not(.primary-cta):not(.subtitle-stage-tab):not(.subtitle-context-tab):not(.subtitle-queue-filter):not(.subtitle-ai-mode-option):not(.subtitle-naming-option):not(.subtitle-toggle-pill):not(.subtitle-switch):not(.subtitle-retarget-option).is-active,
+  button:not(.primary-cta):not(.subtitle-stage-tab):not(.subtitle-context-tab):not(.subtitle-queue-filter):not(.subtitle-ai-mode-option):not(.subtitle-naming-option):not(.subtitle-toggle-pill):not(.subtitle-switch):not(.subtitle-retarget-option)[class*="bg-slate-900"],
+  button:not(.primary-cta):not(.subtitle-stage-tab):not(.subtitle-context-tab):not(.subtitle-queue-filter):not(.subtitle-ai-mode-option):not(.subtitle-naming-option):not(.subtitle-toggle-pill):not(.subtitle-switch):not(.subtitle-retarget-option)[class*="bg-blue-"],
+  button:not(.primary-cta):not(.subtitle-stage-tab):not(.subtitle-context-tab):not(.subtitle-queue-filter):not(.subtitle-ai-mode-option):not(.subtitle-naming-option):not(.subtitle-toggle-pill):not(.subtitle-switch):not(.subtitle-retarget-option)[class*="bg-indigo-"]
 ) {
   background: #020617 !important;
   border-color: var(--km-dark-border-strong) !important;

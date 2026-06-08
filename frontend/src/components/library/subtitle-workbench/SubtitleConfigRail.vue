@@ -2770,6 +2770,223 @@ function removeActiveSubtitleFilterRule() {
   box-shadow: none !important;
 }
 
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card :is(
+  .subtitle-depth-control,
+  .subtitle-quick-toggle,
+  .subtitle-stepper,
+  .subtitle-stepper-btn,
+  .subtitle-naming-switch,
+  .subtitle-ai-mode-switch,
+  .subtitle-filter-editor,
+  .subtitle-filter-detail,
+  .subtitle-filter-current-summary,
+  .subtitle-filter-current-card,
+  .subtitle-filter-nav-btn,
+  .subtitle-filter-add-icon-btn,
+  .subtitle-filter-empty-add,
+  .subtitle-filter-empty,
+  .subtitle-retarget-option,
+  .subtitle-toggle-pill,
+  .search-row,
+  .subtitle-native-input
+)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card :is(
+  .subtitle-depth-control,
+  .subtitle-quick-toggle,
+  .subtitle-stepper,
+  .subtitle-stepper-btn,
+  .subtitle-naming-switch,
+  .subtitle-ai-mode-switch,
+  .subtitle-filter-editor,
+  .subtitle-filter-detail,
+  .subtitle-filter-current-summary,
+  .subtitle-filter-current-card,
+  .subtitle-filter-nav-btn,
+  .subtitle-filter-add-icon-btn,
+  .subtitle-filter-empty-add,
+  .subtitle-filter-empty,
+  .subtitle-retarget-option,
+  .subtitle-toggle-pill,
+  .search-row,
+  .subtitle-native-input
+)) {
+  background: #24252a !important;
+  background-color: #24252a !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card :is(
+  .subtitle-naming-option.active,
+  .subtitle-ai-mode-option.active,
+  .subtitle-toggle-pill.active,
+  .subtitle-retarget-option.active
+)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card :is(
+  .subtitle-naming-option.active,
+  .subtitle-ai-mode-option.active,
+  .subtitle-toggle-pill.active,
+  .subtitle-retarget-option.active
+)) {
+  background: rgba(59, 60, 66, 0.96) !important;
+  background-color: rgba(59, 60, 66, 0.96) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  outline: none !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card :is(
+  .subtitle-naming-option:hover,
+  .subtitle-ai-mode-option:hover,
+  .subtitle-toggle-pill:hover,
+  .subtitle-retarget-option:hover,
+  .subtitle-stepper-btn:hover,
+  .subtitle-filter-current-card:hover,
+  .subtitle-filter-nav-btn:hover:not(:disabled),
+  .subtitle-filter-add-icon-btn:hover,
+  .subtitle-filter-empty-add:hover,
+  .subtitle-filter-editor-toggle:hover,
+  .search-row:hover
+)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card :is(
+  .subtitle-naming-option:hover,
+  .subtitle-ai-mode-option:hover,
+  .subtitle-toggle-pill:hover,
+  .subtitle-retarget-option:hover,
+  .subtitle-stepper-btn:hover,
+  .subtitle-filter-current-card:hover,
+  .subtitle-filter-nav-btn:hover:not(:disabled),
+  .subtitle-filter-add-icon-btn:hover,
+  .subtitle-filter-empty-add:hover,
+  .subtitle-filter-editor-toggle:hover,
+  .search-row:hover
+)) {
+  background: #303136 !important;
+  background-color: #303136 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-switch),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-switch) {
+  background: #34353a !important;
+  background-color: #34353a !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-switch.checked),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-switch.checked) {
+  background: var(--switch-accent) !important;
+  background-color: var(--switch-accent) !important;
+  border-color: var(--switch-accent-dark) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-switch-knob),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card .subtitle-switch-knob) {
+  background: #a7abb5 !important;
+  background-color: #a7abb5 !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card :is(
+  .subtitle-block-title,
+  .subtitle-option-title,
+  .subtitle-filter-detail-title,
+  .subtitle-filter-summary-title,
+  .subtitle-filter-current-name,
+  .subtitle-stepper-input,
+  .subtitle-native-input
+)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card :is(
+  .subtitle-block-title,
+  .subtitle-option-title,
+  .subtitle-filter-detail-title,
+  .subtitle-filter-summary-title,
+  .subtitle-filter-current-name,
+  .subtitle-stepper-input,
+  .subtitle-native-input
+)) {
+  color: rgba(250, 250, 252, 0.96) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card :is(
+  .subtitle-block-tip,
+  .subtitle-card-tip,
+  .subtitle-quick-label,
+  .subtitle-inline-section-tip,
+  .subtitle-filter-summary-pattern,
+  .subtitle-filter-current-pattern,
+  .subtitle-filter-field > span
+)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card :is(
+  .subtitle-block-tip,
+  .subtitle-card-tip,
+  .subtitle-quick-label,
+  .subtitle-inline-section-tip,
+  .subtitle-filter-summary-pattern,
+  .subtitle-filter-current-pattern,
+  .subtitle-filter-field > span
+)) {
+  color: rgba(214, 214, 220, 0.66) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card :is(
+  .subtitle-filter-index,
+  .subtitle-filter-target-mini,
+  .subtitle-filter-target-badge,
+  .subtitle-filter-state,
+  .search-chip
+)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card :is(
+  .subtitle-filter-index,
+  .subtitle-filter-target-mini,
+  .subtitle-filter-target-badge,
+  .subtitle-filter-state,
+  .search-chip
+)) {
+  background: #303136 !important;
+  background-color: #303136 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: rgba(244, 244, 245, 0.82) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card :deep(.app-dd-root)),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card :deep(.app-dd-menu)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card :deep(.app-dd-root)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card :deep(.app-dd-menu)) {
+  --app-dd-trigger-bg: #24252a;
+  --app-dd-trigger-bg-hover: #303136;
+  --app-dd-trigger-bg-open: #303136;
+  --app-dd-item-hover-bg: #303136;
+  --app-dd-item-active-bg: #3b3c42;
+  --app-dd-item-active-hover-bg: #3b3c42;
+  --app-dd-focus-ring: transparent;
+}
+
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card :deep(.app-dd-trigger)),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card :deep(.app-dd-trigger:hover)),
+:global(html.kikoerumanager-dark .subtitle-workbench-dialog .subtitle-config-card :deep(.app-dd-trigger.is-open)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card :deep(.app-dd-trigger)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card :deep(.app-dd-trigger:hover)),
+:global(html.dark .subtitle-workbench-dialog .subtitle-config-card :deep(.app-dd-trigger.is-open)) {
+  background: #24252a !important;
+  background-color: #24252a !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+}
+
 @keyframes danger-pulse {
   0%, 100% { transform: scale(1); }
   50% { transform: scale(1.08); }
