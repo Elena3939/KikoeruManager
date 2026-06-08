@@ -64,6 +64,23 @@ def test_resource_budget_zero_limit_is_passthrough(monkeypatch):
     assert sorted(asyncio.run(run())) == [0, 1, 2, 3]
 
 
+def test_resource_budget_sqlite_write_zero_is_serialized(monkeypatch):
+    class LegacyBudget:
+        enabled = True
+        sqlite_write = 0
+
+    class LegacyConfig:
+        resource_budget = LegacyBudget()
+
+    monkeypatch.setattr("app.core.resource_budget_service.get_config", lambda: LegacyConfig())
+    service = ResourceBudgetService()
+
+    snapshot = service.snapshot()
+
+    assert snapshot["resources"]["sqlite_write"]["configured_limit"] == 1
+    assert snapshot["resources"]["sqlite_write"]["passthrough"] is False
+
+
 def test_resource_budget_snapshot_reports_active_tokens(monkeypatch):
     monkeypatch.setattr("app.core.resource_budget_service.get_config", lambda: _Config())
     service = ResourceBudgetService()

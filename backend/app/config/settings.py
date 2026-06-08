@@ -510,7 +510,7 @@ class ResourceBudgetConfig(BaseModel):
     archive_cpu: int = 0
     remote_fs: int = 4
     network_download: int = 5
-    sqlite_write: int = 0
+    sqlite_write: int = 1
 
 
 class SecurityGateConfig(BaseModel):
