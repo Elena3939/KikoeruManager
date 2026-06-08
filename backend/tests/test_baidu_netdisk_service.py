@@ -429,6 +429,44 @@ def test_baidu_custom_name_skips_multi_file_share():
     assert all(row["custom_rename_skipped"] is True for row in rows)
 
 
+def test_baidu_preview_strips_virtual_common_parent_without_real_dir():
+    service = BaiduNetdiskService()
+
+    rows = service._strip_virtual_common_parent_from_preview_files([
+        {
+            "name": "RJ01635228.7z.001kk",
+            "relative_path": "RJ01635228.7z/RJ01635228.7z.001kk",
+            "is_dir": False,
+        },
+        {
+            "name": "RJ01635228.7z.002kk",
+            "relative_path": "RJ01635228.7z/RJ01635228.7z.002kk",
+            "is_dir": False,
+        },
+    ])
+
+    assert [row["relative_path"] for row in rows] == [
+        "RJ01635228.7z.001kk",
+        "RJ01635228.7z.002kk",
+    ]
+
+
+def test_baidu_preview_keeps_real_root_dir():
+    service = BaiduNetdiskService()
+
+    rows = service._strip_virtual_common_parent_from_preview_files([
+        {"name": "RJ123456", "relative_path": "RJ123456", "is_dir": True},
+        {"name": "track01.wav", "relative_path": "RJ123456/track01.wav", "is_dir": False},
+        {"name": "track02.wav", "relative_path": "RJ123456/track02.wav", "is_dir": False},
+    ])
+
+    assert [row["relative_path"] for row in rows] == [
+        "RJ123456",
+        "RJ123456/track01.wav",
+        "RJ123456/track02.wav",
+    ]
+
+
 def test_baidu_custom_group_folder_keeps_split_volume_base_consistent(monkeypatch):
     service = BaiduNetdiskService()
     config = DummyConfig()
@@ -1517,6 +1555,7 @@ async def test_baidu_start_download_cancels_and_retries_remote_cleanup(monkeypat
         command_log.append(tuple(args[1:]))
         command = args[1]
         if command == "download":
+            task.cancel()
             raise asyncio.CancelledError()
         return
 
@@ -1556,6 +1595,10 @@ async def test_baidu_start_download_cancels_and_retries_remote_cleanup(monkeypat
     }]
     assert command_log.count(("cd", "/")) >= 2
     assert command_log.count(("rm", "/km_20260605_153012_a1b2c3")) >= 1
+    assert task.task_metadata["download_runtime"]["status"] == "cancelled"
+    assert task.task_metadata["output_finalize_status"] == "cancelled"
+    assert task.task_metadata["staging_cleanup"]["success"] is True
+    assert not (tmp_path / "temp" / "baidu_netdisk_downloads" / ".baidu-netdisk-staging" / "baidu-cancel-test-task").exists()
 
 
 @pytest.mark.asyncio

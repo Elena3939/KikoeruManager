@@ -1041,7 +1041,8 @@ class ASMRDownloadSession(Base):
 import logging
 _db_logger = logging.getLogger(__name__)
 
-_SLOW_SQL_LOG_THRESHOLD_SECONDS = float(os.getenv("KIKOERUMANAGER_SLOW_SQL_SECONDS", "0.2") or 0.2)
+_SLOW_SQL_DEBUG_THRESHOLD_SECONDS = float(os.getenv("KIKOERUMANAGER_SLOW_SQL_SECONDS", "0.2") or 0.2)
+_SLOW_SQL_WARNING_THRESHOLD_SECONDS = float(os.getenv("KIKOERUMANAGER_SLOW_SQL_WARNING_SECONDS", "1.0") or 1.0)
 _SLOW_SQL_MAX_TEXT_LEN = 320
 _SLOW_SQL_MAX_PARAM_ITEMS = 8
 
@@ -1095,21 +1096,31 @@ def _summarize_sql_params(parameters: Any) -> Any:
 
 
 def _slow_sql_before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
-    if _SLOW_SQL_LOG_THRESHOLD_SECONDS <= 0:
+    if _SLOW_SQL_DEBUG_THRESHOLD_SECONDS <= 0 and _SLOW_SQL_WARNING_THRESHOLD_SECONDS <= 0:
         return
     context._kikoerumanager_sql_started_at = time.perf_counter()
 
 
 def _slow_sql_after_cursor_execute(conn, cursor, statement, parameters, context, executemany):
-    if _SLOW_SQL_LOG_THRESHOLD_SECONDS <= 0:
+    if _SLOW_SQL_DEBUG_THRESHOLD_SECONDS <= 0 and _SLOW_SQL_WARNING_THRESHOLD_SECONDS <= 0:
         return
     started_at = getattr(context, "_kikoerumanager_sql_started_at", None)
     if not started_at:
         return
     elapsed = time.perf_counter() - started_at
-    if elapsed < _SLOW_SQL_LOG_THRESHOLD_SECONDS:
+    active_thresholds = [
+        threshold
+        for threshold in (_SLOW_SQL_DEBUG_THRESHOLD_SECONDS, _SLOW_SQL_WARNING_THRESHOLD_SECONDS)
+        if threshold > 0
+    ]
+    if not active_thresholds or elapsed < min(active_thresholds):
         return
-    _db_logger.warning(
+    log_method = (
+        _db_logger.warning
+        if _SLOW_SQL_WARNING_THRESHOLD_SECONDS > 0 and elapsed >= _SLOW_SQL_WARNING_THRESHOLD_SECONDS
+        else _db_logger.debug
+    )
+    log_method(
         "[数据库] 慢 SQL %.3fs executemany=%s rowcount=%s sql=%s params=%s",
         elapsed,
         bool(executemany),
