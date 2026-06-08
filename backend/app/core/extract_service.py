@@ -164,6 +164,22 @@ class ExtractService:
         '.pdf':  (0, (b'%PDF-',)),
         '.psd':  (0, (b'8BPS',)),
     }
+
+    _DISK_FULL_MARKERS: Tuple[str, ...] = (
+        "磁盘空间不足",
+        "空间不足",
+        "there is not enough space",
+        "not enough space",
+        "no space left on device",
+        "cannot set length for output file",
+        "write error",
+        "disk full",
+    )
+
+    @classmethod
+    def _looks_like_disk_full_error(cls, text: str) -> bool:
+        lowered = str(text or "").lower()
+        return any(marker in lowered for marker in cls._DISK_FULL_MARKERS)
     # #3 负缓存：按 "压缩包指纹 × 密码哈希" 记忆失败组合，进程内重试任务时直接跳过。
     _password_negative_cache: Dict[Tuple[str, str], float] = {}
     PASSWORD_NEGATIVE_CACHE_MAX: int = 4096       # 简单兜底，避免长跑任务无限增长
@@ -2827,12 +2843,9 @@ class ExtractService:
                             password or "无密码",
                         )
                         return True, password or None
-                    stderr_lower = (result.stderr or b"").decode('utf-8', errors='ignore').lower()
-                    if any(m in stderr_lower for m in (
-                        "no space left on device",
-                        "not enough space",
-                        "disk full",
-                    )):
+                    stderr_text = (result.stderr or b"").decode('utf-8', errors='ignore')
+                    stderr_lower = stderr_text.lower()
+                    if self._looks_like_disk_full_error(stderr_text):
                         unar_disk_full = True
                         break
                     if any(m in stderr_lower for m in (
@@ -5662,7 +5675,7 @@ class ExtractService:
             if is_rar_archive else None
         )
         if self.config.extract.prefer_unar_for_rar and is_rar_archive:
-            if self._find_unar_executable():
+            if self._find_unar_executable() and garbled_toc_sample:
                 unar_passwords = unique_passwords
                 if "" in unique_passwords:
                     no_password_probe = await self._probe_password(
@@ -5695,7 +5708,13 @@ class ExtractService:
                 if unar_reason == "disk_full":
                     return False, None, "disk_full"
                 if unar_reason == "wrong_password":
-                    return False, None, "wrong_password"
+                    logger.warning(
+                        "RAR unar fast-path 判定所有密码失败，继续回退到 7zz 验证，避免 unar 对 RAR5/AES 误报密码错误: %s",
+                        archive_info.path,
+                    )
+                    await self._cleanup_extract_attempt(output_path)
+                    # 继续进入下面的 7zz 流程。7zz 探测 / 完整解压会重新定性；
+                    # 如果密码真的错，后面仍会返回 wrong_password。
                 if garbled_toc_sample and unar_reason != "partial_output":
                     logger.error(
                         "RAR 目录清单已疑似乱码且 unar 未能处理，拒绝回退 7zz 以免产出乱码文件: archive=%s sample=%s reason=%s",
@@ -5716,6 +5735,11 @@ class ExtractService:
                     garbled_toc_sample,
                 )
                 return False, None, "garbled_filename"
+            elif self._find_unar_executable():
+                logger.debug(
+                    "RAR 目录清单未检测到乱码，跳过 unar fast-path，直接使用 7zz 处理 RAR5/AES: %s",
+                    archive_info.path,
+                )
 
         # #3 负缓存：同一压缩包同一密码近期失败过，直接跳过；指纹拿不到就不缓存。
         archive_fingerprint = self._archive_fingerprint(archive_info.path)
@@ -5951,15 +5975,7 @@ class ExtractService:
                 stderr_text = (result.stderr or b"").decode('utf-8', errors='ignore')
                 stderr_lower = stderr_text.lower()
 
-                disk_full_markers = (
-                    "磁盘空间不足",
-                    "there is not enough space",
-                    "not enough space",
-                    "no space left on device",
-                    "cannot set length for output file",
-                    "write error",
-                )
-                if any(marker in stderr_lower or marker in stderr_text for marker in disk_full_markers):
+                if self._looks_like_disk_full_error(stderr_text):
                     logger.error(
                         "检测到解压目标磁盘空间不足，停止密码重试: %s",
                         stderr_text[:300] if stderr_text else "(无错误文本)",
@@ -6056,6 +6072,13 @@ class ExtractService:
         # 1) 预读目录成功 或 曾经命中明确的加密错误 → 视为密码错误（用户多半是密码库没录对）
         # 2) 否则若曾遇到疑似损坏特征 → 判损坏
         # 3) 其他兜底 → 密码错误
+        if last_corrupt_stderr and self._looks_like_disk_full_error(last_corrupt_stderr):
+            logger.error(
+                "所有密码尝试失败，最后一次错误命中磁盘空间不足，优先判定为 disk_full: %s",
+                last_corrupt_stderr[:300],
+            )
+            return False, None, "disk_full"
+
         if listing_available or encountered_wrong_password:
             if last_corrupt_stderr:
                 logger.warning(
@@ -7558,12 +7581,7 @@ class ExtractService:
                 continue
 
             # 磁盘满（继续试更多密码也没用）
-            disk_full_markers = (
-                "no space left on device",
-                "not enough space",
-                "disk full",
-            )
-            if any(m in stderr_lower for m in disk_full_markers):
+            if self._looks_like_disk_full_error(stderr_text):
                 last_disk_full = True
                 logger.error(
                     "unar 解压失败：磁盘空间不足: %s",

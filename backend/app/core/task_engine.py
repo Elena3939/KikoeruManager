@@ -4926,6 +4926,8 @@ class TaskEngine:
 
                 try:
                     await service.start_download_task(task)
+                    if task.is_cancelled():
+                        raise asyncio.CancelledError()
                     completed, failed = refresh_merged_attempt_state()
                 except Exception as exc:
                     last_error = str(exc)
@@ -4947,6 +4949,8 @@ class TaskEngine:
 
                 if attempt_index > 0:
                     service._append_control_log(task, "自动重试完成，失败项已全部补齐", "success")
+                if task.is_cancelled():
+                    raise asyncio.CancelledError()
                 task.task_metadata["http_download_final_status"] = "completed"
                 task.complete()
                 return
