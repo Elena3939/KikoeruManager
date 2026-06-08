@@ -128,8 +128,7 @@ for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":5556" ^| findstr "LISTENING
     taskkill /PID %%P /T /F >nul 2>&1
 )
 
-set "BACKEND_CMD=title KikoeruManager Backend && chcp 65001 >nul && set PYTHONUTF8=1 && set PYTHONIOENCODING=utf-8 && set CONFIG_PATH=%CONFIG_PATH% && set DATA_PATH=%~dp0data && set BAIDUPCS_GO_PATH=%BAIDUPCS_GO_PATH% && set PATH=%BAIDUPCS_GO_DIR%;%PATH% && cd /d "%~dp0backend" && venv\Scripts\python.exe -m app.main"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/k', $env:BACKEND_CMD -PassThru; Set-Content -LiteralPath $env:BACKEND_PID_FILE -Value $p.Id -Encoding ASCII"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:PYTHONUTF8 = '1'; $env:PYTHONIOENCODING = 'utf-8'; $env:CONFIG_PATH = '%CONFIG_PATH%'; $env:DATA_PATH = '%~dp0data'; $env:BAIDUPCS_GO_PATH = '%BAIDUPCS_GO_PATH%'; $env:PATH = '%BAIDUPCS_GO_DIR%;' + $env:PATH; $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/k', 'title KikoeruManager Backend && chcp 65001 >nul && venv\Scripts\python.exe -m app.main' -WorkingDirectory '%~dp0backend' -PassThru; Set-Content -LiteralPath '%BACKEND_PID_FILE%' -Value $p.Id -Encoding ASCII"
 
 timeout /t 3 /nobreak >nul
 
