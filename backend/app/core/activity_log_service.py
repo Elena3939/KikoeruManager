@@ -25,6 +25,13 @@ from .http_download_service import (
 logger = logging.getLogger(__name__)
 
 
+def _activity_path_basename(value: Any) -> str:
+    text = str(value or "").strip().rstrip("/\\")
+    if not text:
+        return ""
+    return text.replace("\\", "/").rsplit("/", 1)[-1]
+
+
 # 持久化分类（与前端筛选、图表一致）
 CATEGORY_SUBTITLE_CRAWL = "subtitle_crawl"
 CATEGORY_SUBTITLE_PAIR = "subtitle_pair"
@@ -1256,8 +1263,11 @@ def log_api_rename_action(
 ) -> None:
     normalized_source_path = str(source_path or "").strip()
     normalized_new_path = str(new_path or "").strip()
-    normalized_old_name = str(old_name or "").strip() or (os.path.basename(normalized_source_path) if normalized_source_path else "")
-    normalized_new_name = str(new_name or "").strip() or (os.path.basename(normalized_new_path) if normalized_new_path else "")
+    requested_new_name = str(new_name or "").strip()
+    actual_new_name = _activity_path_basename(normalized_new_path)
+    normalized_old_name = str(old_name or "").strip() or _activity_path_basename(normalized_source_path)
+    # 成功路径以实际返回的新路径为准；失败路径没有 new_path 时保留用户输入的新名。
+    normalized_new_name = actual_new_name or requested_new_name
     normalized_error = str(error or "").strip()
     normalized_status = str(status or ("success" if success else "failed")).strip() or ("success" if success else "failed")
     summary_target = normalized_new_name or normalized_old_name or "未命名"
@@ -1271,6 +1281,7 @@ def log_api_rename_action(
         "rename_key": normalized_source_path or normalized_new_path or None,
         "old_name": normalized_old_name or None,
         "new_name": normalized_new_name or None,
+        "requested_new_name": requested_new_name if requested_new_name and requested_new_name != normalized_new_name else None,
         "old_path": normalized_source_path or None,
         "new_path": normalized_new_path or None,
         "batch_id": str(batch_id or "").strip() or None,
@@ -1338,7 +1349,13 @@ def log_batch_manual_rename_result(
         status = "partial_success"
     elif success_count <= 0:
         status = "failed"
-    summary = f"批量乱码修复完成，成功 {success_count} 项，失败 {failed_count} 项"
+    context = str(rename_context or "").strip()
+    action_label = "批量重命名"
+    if context == "folder_contents_mojibake_repair":
+        action_label = "批量乱码修复"
+    elif context == "subtitle_manual_match_pair":
+        action_label = "字幕配对重命名"
+    summary = f"{action_label}完成，成功 {success_count} 项，失败 {failed_count} 项"
     write_activity_log(
         category=CATEGORY_PIPELINE_RENAME,
         action="batch_manual_rename",

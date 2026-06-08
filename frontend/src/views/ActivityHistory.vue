@@ -1329,6 +1329,12 @@ function compactPath(path) {
   return `${head}…${tail}`
 }
 
+function pathBasename(path) {
+  const text = String(path || '').trim().replace(/[\\/]+$/, '')
+  if (!text) return ''
+  return text.replace(/\\/g, '/').split('/').pop() || ''
+}
+
 function onClearSearch() {
   filters.q = ''
   applyFilters()
@@ -1430,9 +1436,19 @@ function renameSegments(row) {
 
   const failed = String(row.status || '') === 'failed'
   const detail = row.detail && typeof row.detail === 'object' ? row.detail : {}
+  const oldPath = String(detail.old_path || row.source_path || '').trim()
+  const newPath = String(detail.new_path || '').trim()
   let oldName = String(detail.old_name || '').trim()
   let newName = String(detail.new_name || '').trim()
   let reason = String(detail.error || detail.reason || '').trim()
+
+  const oldNameFromPath = pathBasename(oldPath)
+  const newNameFromPath = pathBasename(newPath)
+  if (!oldName && oldNameFromPath) oldName = oldNameFromPath
+  if (!newName && newNameFromPath) newName = newNameFromPath
+  if (newNameFromPath && oldName && newName === oldName && newNameFromPath !== oldName) {
+    newName = newNameFromPath
+  }
 
   // 兜底：从 summary 字符串里 split ' -> '。后端模板写的就是 'old -> new'，失败时尾巴加 '：err'。
   if (!oldName && !newName) {
