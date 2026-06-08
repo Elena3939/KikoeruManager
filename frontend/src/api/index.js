@@ -2069,6 +2069,16 @@ export const circleCompletionApi = {
     return response.data
   },
 
+  startPreviewBatchDownload: async (payload) => {
+    const response = await apiClient.post('/circle-completion/download/preview/start', payload)
+    return response.data
+  },
+
+  getPreviewBatchDownloadJobStatus: async (jobId) => {
+    const response = await apiClient.get(`/circle-completion/download/preview/jobs/${jobId}`)
+    return response.data
+  },
+
   refreshSelectedWorks: async (payload) => {
     const response = await apiClient.post('/circle-completion/refresh-selected', payload)
     return response.data

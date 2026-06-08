@@ -9,7 +9,7 @@
     @update:model-value="emit('update:visible', $event)"
   >
     <div v-if="loading" class="window circle-download-preview-window panel-enter glass-shell relative w-full max-w-[1210px] aspect-[16/9] rounded-3xl flex flex-col overflow-hidden dialog-loading-overlay is-loading">
-      <AppLoadingAnimation label="正在分析资源结构并生成下载计划..." description="聚合资源分组、语言版本和推荐项" :size="168" :min-height="260" />
+      <AppLoadingAnimation :label="loadingLabel" :description="loadingDescription" :size="168" :min-height="260" />
     </div>
     
     <div v-else class="window circle-download-preview-window panel-enter glass-shell relative w-full max-w-[1210px] aspect-[16/9] rounded-3xl flex flex-col overflow-hidden">
@@ -397,6 +397,8 @@ import { configApi, libraryApi } from '../../api'
 const props = defineProps({
   visible: { type: Boolean, default: false },
   loading: { type: Boolean, default: false },
+  loadingLabel: { type: String, default: '正在分析资源结构并生成下载计划...' },
+  loadingDescription: { type: String, default: '聚合资源分组、语言版本和推荐项' },
   starting: { type: Boolean, default: false },
   actionMode: { type: String, default: 'download' },
   plans: { type: Array, default: () => [] },
