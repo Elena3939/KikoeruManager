@@ -954,151 +954,231 @@
 
     />
 
-    <el-dialog
-      v-model="baiduUploadDialogVisible"
-      title="上传到百度网盘"
-      width="720px"
-      custom-class="mobile-full-dialog library-simple-dialog baidu-upload-dialog"
-      :close-on-click-modal="!baiduUploadSubmitting"
-    >
-      <section class="baidu-upload-shell">
-        <div class="baidu-upload-summary">
-          <div class="baidu-upload-summary-icon">
-            <IconUpload :size="20" :stroke-width="2.4" />
-          </div>
-          <div class="baidu-upload-summary-main">
-            <div class="baidu-upload-summary-title">
-              已选 {{ baiduUploadSourceItems.length }} 项
-            </div>
-            <div class="baidu-upload-summary-sub">
-              上传任务会进入任务中心，后台按队列执行。
-            </div>
-          </div>
-          <div class="baidu-upload-summary-pill">
-            {{ baiduUploadForm.mode === 'compress' ? '压缩上传' : '直接上传' }}
-          </div>
-        </div>
+    <Teleport to="body">
+      <div
+        v-if="baiduUploadDialogVisible"
+        class="custom-preview-overlay baidu-upload-preview-overlay"
+        @click.self="closeBaiduUploadDialog"
+      >
+        <section class="custom-preview-modal server-upload-preview-modal baidu-upload-preview-modal" role="dialog" aria-modal="true" aria-label="上传到百度网盘">
+          <div class="window panel-enter glass-shell relative w-full max-w-[1210px] aspect-[16/9] rounded-3xl flex flex-col overflow-hidden">
+          <header class="window-header flex items-center justify-between px-8 py-6">
+            <h1 class="title text-2xl font-bold text-slate-900 tracking-tight">上传到百度网盘</h1>
+            <button
+              type="button"
+              class="interactive-chip close-button inline-flex size-10 items-center justify-center rounded-full text-slate-400 hover:text-slate-700"
+              :disabled="baiduUploadSubmitting"
+              aria-label="关闭"
+              @click="closeBaiduUploadDialog"
+            >
+              <IconX :size="20" :stroke-width="2" />
+            </button>
+          </header>
 
-        <div class="baidu-upload-panels">
-          <section class="baidu-upload-panel">
-            <header class="baidu-upload-panel-head">
-              <IconFolderInput :size="16" :stroke-width="2.3" />
-              <span>目标位置</span>
-            </header>
-            <div class="baidu-upload-grid">
-              <label class="baidu-upload-field">
-                <span class="baidu-upload-label">上传模式</span>
-                <AppDropdown
-                  v-model="baiduUploadForm.mode"
-                  :options="baiduUploadModeOptions"
-                  class="w-full baidu-upload-dd"
-                />
-              </label>
-              <label class="baidu-upload-field">
-                <span class="baidu-upload-label">同名策略</span>
-                <AppDropdown
-                  v-model="baiduUploadForm.conflictPolicy"
-                  :options="baiduUploadPolicyOptions"
-                  class="w-full baidu-upload-dd"
-                />
-              </label>
-              <label class="baidu-upload-field baidu-upload-field-wide">
-                <span class="baidu-upload-label">远端目录</span>
-                <el-input v-model="baiduUploadForm.remoteDir" placeholder="/KikoeruManager" />
-              </label>
-              <label class="baidu-upload-field baidu-upload-field-wide">
-                <span class="baidu-upload-label">创建子目录</span>
-                <el-input v-model="baiduUploadForm.createRemoteSubdir" placeholder="可选，例如 RJ备份" />
-              </label>
-            </div>
-          </section>
+          <div class="tabs-row px-8 pt-1 pb-3 flex items-center gap-2 overflow-hidden">
+            <span class="tab-chip tab-chip-active px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] whitespace-nowrap flex items-center gap-1 border">{{ baiduUploadModeLabel }}</span>
+            <span class="tab-chip tab-chip-idle px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] whitespace-nowrap flex items-center gap-1 border">{{ baiduUploadConflictPolicyLabel }}</span>
+            <button
+              type="button"
+              class="tab-chip tab-chip-idle restore-button shrink-0 px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] border"
+              :disabled="baiduUploadSubmitting"
+              @click="baiduUploadForm.mode = baiduUploadForm.mode === 'compress' ? 'direct' : 'compress'"
+            >
+              {{ baiduUploadForm.mode === 'compress' ? '切到直接上传' : '切到压缩上传' }}
+            </button>
+          </div>
 
-          <section class="baidu-upload-panel" :class="{ 'is-muted': baiduUploadForm.mode !== 'compress' }">
-            <header class="baidu-upload-panel-head">
-              <IconArchive :size="16" :stroke-width="2.3" />
-              <span>压缩设置</span>
-              <span v-if="baiduUploadForm.mode !== 'compress'" class="baidu-upload-panel-note">直接上传时不生效</span>
-            </header>
-            <div class="baidu-upload-grid">
-              <label class="baidu-upload-field">
-                <span class="baidu-upload-label">压缩格式</span>
-                <AppDropdown
-                  v-model="baiduUploadForm.archiveFormat"
-                  :options="baiduUploadArchiveFormatOptions"
-                  class="w-full baidu-upload-dd"
-                  :disabled="baiduUploadForm.mode !== 'compress'"
-                />
-              </label>
-              <label class="baidu-upload-field">
-                <span class="baidu-upload-label">压缩线程数</span>
-                <el-input-number
-                  v-model="baiduUploadForm.compressionThreads"
-                  :min="0"
-                  :max="64"
-                  class="w-full"
-                  :disabled="baiduUploadForm.mode !== 'compress'"
-                />
-              </label>
-              <label class="baidu-upload-field baidu-upload-field-wide">
-                <span class="baidu-upload-label">压缩密码</span>
-                <el-input
-                  v-model="baiduUploadForm.password"
-                  type="password"
-                  show-password
-                  placeholder="压缩上传时必填"
-                  :disabled="baiduUploadForm.mode !== 'compress'"
-                />
-              </label>
-              <div class="baidu-upload-field baidu-upload-field-wide">
-                <div class="baidu-upload-label-row">
-                  <span class="baidu-upload-label">压缩强度</span>
-                  <span class="baidu-upload-hint">{{ baiduUploadForm.compressionLevel }}/9</span>
+          <div class="content-grid flex-1 flex gap-6 px-8 py-2 min-h-0">
+            <aside class="left-column w-[380px] flex flex-col gap-6">
+              <section class="glass-panel glass-card upload-settings-card baidu-upload-settings-card flex-1 rounded-2xl p-6 overflow-y-auto no-scrollbar">
+                <div class="section-head space-y-1">
+                  <h2>上传设置</h2>
+                  <p>确认百度网盘目录、同名处理和上传前压缩设置，创建后进入任务中心后台执行。</p>
                 </div>
-                <el-slider
-                  v-model="baiduUploadForm.compressionLevel"
-                  :min="1"
-                  :max="9"
-                  :step="1"
-                  show-input
-                  :disabled="baiduUploadForm.mode !== 'compress'"
-                />
+
+                <div class="baidu-upload-form-grid select-grid grid grid-cols-2 gap-4">
+                  <label class="baidu-upload-field field-group space-y-2">
+                    <span>上传模式</span>
+                    <AppDropdown
+                      v-model="baiduUploadForm.mode"
+                      :options="baiduUploadModeOptions"
+                      class="baidu-upload-dd"
+                    />
+                  </label>
+                  <label class="baidu-upload-field field-group space-y-2">
+                    <span>同名处理</span>
+                    <AppDropdown
+                      v-model="baiduUploadForm.conflictPolicy"
+                      :options="baiduUploadPolicyOptions"
+                      class="baidu-upload-dd"
+                    />
+                  </label>
+                  <label class="baidu-upload-field field-group space-y-2 baidu-upload-field-wide">
+                    <span>网盘目录</span>
+                    <input
+                      v-model="baiduUploadForm.remoteDir"
+                      class="interactive-field field-input baidu-upload-input flex h-9 w-full rounded-lg border border-slate-200/70 bg-white/55 py-2 px-2.5 text-sm text-slate-800"
+                      placeholder="/KikoeruManager"
+                    />
+                  </label>
+                  <label class="baidu-upload-field field-group space-y-2 baidu-upload-field-wide">
+                    <span>任务子目录</span>
+                    <input
+                      v-model="baiduUploadForm.createRemoteSubdir"
+                      class="interactive-field field-input baidu-upload-input flex h-9 w-full rounded-lg border border-slate-200/70 bg-white/55 py-2 px-2.5 text-sm text-slate-800"
+                      placeholder="留空则直接上传到网盘目录"
+                    />
+                  </label>
+                </div>
+
+                <div class="baidu-upload-path-stack">
+                  <p>网盘目录: <span>{{ baiduUploadNormalizedRemoteDir }}</span></p>
+                  <p>任务子目录: <span>{{ baiduUploadForm.createRemoteSubdir || '-' }}</span></p>
+                  <p>最终上传位置: <span>{{ baiduUploadRemotePathPreview }}</span></p>
+                </div>
+
+                <div class="baidu-upload-compress-block" :class="{ disabled: baiduUploadForm.mode !== 'compress' }">
+                  <div class="baidu-upload-compress-head">
+                    <h2>压缩设置</h2>
+                    <span>{{ baiduUploadForm.mode === 'compress' ? '上传前生成临时压缩包' : '直接上传时跳过' }}</span>
+                  </div>
+                  <div class="baidu-upload-compress-grid select-grid grid grid-cols-2 gap-4">
+                    <label class="baidu-upload-field field-group space-y-2">
+                      <span>压缩格式</span>
+                      <AppDropdown
+                        v-model="baiduUploadForm.archiveFormat"
+                        :options="baiduUploadArchiveFormatOptions"
+                        class="baidu-upload-dd"
+                        :disabled="baiduUploadForm.mode !== 'compress'"
+                      />
+                    </label>
+                    <label class="baidu-upload-field field-group space-y-2">
+                      <span>线程数</span>
+                      <div class="interactive-field field-input baidu-upload-stepper" :class="{ disabled: baiduUploadForm.mode !== 'compress' }">
+                        <button type="button" :disabled="baiduUploadForm.mode !== 'compress'" @click="adjustBaiduCompressionThreads(-1)">−</button>
+                        <input
+                          v-model.number="baiduUploadForm.compressionThreads"
+                          type="number"
+                          min="0"
+                          max="64"
+                          :disabled="baiduUploadForm.mode !== 'compress'"
+                          @change="normalizeBaiduCompressionThreads"
+                        />
+                        <button type="button" :disabled="baiduUploadForm.mode !== 'compress'" @click="adjustBaiduCompressionThreads(1)">+</button>
+                      </div>
+                    </label>
+                    <label class="baidu-upload-field field-group space-y-2 baidu-upload-field-wide">
+                      <span>压缩密码</span>
+                      <input
+                        v-model="baiduUploadForm.password"
+                        type="password"
+                        class="interactive-field field-input baidu-upload-input flex h-9 w-full rounded-lg border border-slate-200/70 bg-white/55 py-2 px-2.5 text-sm text-slate-800"
+                        placeholder="压缩上传必须填写"
+                        :disabled="baiduUploadForm.mode !== 'compress'"
+                      />
+                    </label>
+                    <div class="baidu-upload-field field-group space-y-2 baidu-upload-field-wide">
+                      <div class="baidu-upload-label-row">
+                        <span>压缩强度</span>
+                        <b>{{ baiduUploadForm.compressionLevel }}/9</b>
+                      </div>
+                      <div class="baidu-upload-range-row" :class="{ disabled: baiduUploadForm.mode !== 'compress' }">
+                        <input
+                          v-model.number="baiduUploadForm.compressionLevel"
+                          type="range"
+                          min="1"
+                          max="9"
+                          step="1"
+                          :disabled="baiduUploadForm.mode !== 'compress'"
+                        />
+                        <div class="interactive-field field-input baidu-upload-stepper compact">
+                          <button type="button" :disabled="baiduUploadForm.mode !== 'compress'" @click="adjustBaiduCompressionLevel(-1)">−</button>
+                          <input
+                            v-model.number="baiduUploadForm.compressionLevel"
+                            type="number"
+                            min="1"
+                            max="9"
+                            :disabled="baiduUploadForm.mode !== 'compress'"
+                            @change="normalizeBaiduCompressionLevel"
+                          />
+                          <button type="button" :disabled="baiduUploadForm.mode !== 'compress'" @click="adjustBaiduCompressionLevel(1)">+</button>
+                        </div>
+                      </div>
+                    </div>
+                    <label class="baidu-upload-cleanup">
+                      <span>
+                        <strong>上传完成后清理临时包</strong>
+                        <small>只删除本次生成的压缩包，原始库存不受影响。</small>
+                      </span>
+                      <input
+                        v-model="baiduUploadForm.cleanupLocalArchive"
+                        type="checkbox"
+                        :disabled="baiduUploadForm.mode !== 'compress'"
+                      />
+                    </label>
+                  </div>
+                </div>
+              </section>
+            </aside>
+
+            <section class="glass-panel glass-card tree-panel baidu-upload-tree-panel flex-1 rounded-2xl flex flex-col overflow-hidden">
+              <div class="tree-scroll baidu-upload-tree-scroll flex-1 p-4 overflow-auto no-scrollbar">
+                <div v-if="!baiduUploadSourceItems.length" class="preview-empty">当前没有可上传内容</div>
+                <div v-else class="baidu-upload-tree-list">
+                  <div
+                    v-for="item in baiduUploadSourceItems"
+                    :key="item.path"
+                    class="tree-row baidu-upload-tree-row flex items-center justify-between gap-4 rounded-md"
+                  >
+                    <div class="baidu-upload-tree-main">
+                      <span class="tree-checkbox tree-checkbox-on baidu-upload-tree-checkbox">
+                        <IconCheckSquare :size="14" :stroke-width="2.4" />
+                      </span>
+                      <IconFolderTree v-if="item.is_directory" :size="20" :stroke-width="2.2" class="tree-icon tree-icon-fill baidu-upload-tree-icon" />
+                      <IconFile v-else :size="20" :stroke-width="2.2" class="tree-icon baidu-upload-tree-icon" />
+                      <span class="tree-name baidu-upload-tree-name">
+                        {{ item.name }}
+                        <small class="node-title-muted">{{ item.path }}</small>
+                      </span>
+                    </div>
+                    <span class="tree-size baidu-upload-tree-size">{{ formatSize(item.size) }}</span>
+                  </div>
+                </div>
               </div>
-              <label class="baidu-upload-toggle baidu-upload-field-wide">
-                <div>
-                  <span class="baidu-upload-label">上传后清理本地压缩包</span>
-                  <span class="baidu-upload-toggle-sub">只清理本次生成的临时压缩包。</span>
-                </div>
-                <el-switch
-                  v-model="baiduUploadForm.cleanupLocalArchive"
-                  :disabled="baiduUploadForm.mode !== 'compress'"
-                />
-              </label>
+            </section>
+          </div>
+
+          <footer class="footer-row px-8 py-6 flex items-center justify-between">
+            <div class="summary text-sm text-slate-500 font-medium">
+              <span class="summary-strong text-slate-900">{{ baiduUploadSourceItems.length }}</span>
+              项内容待上传，共
+              <span class="summary-strong text-slate-900">{{ formatSize(baiduUploadSelectedTotalBytes) }}</span>
             </div>
-          </section>
-        </div>
-      </section>
-      <template #footer>
-        <div class="baidu-upload-footer">
-          <button
-            type="button"
-            class="baidu-upload-cancel"
-            :disabled="baiduUploadSubmitting"
-            @click="closeBaiduUploadDialog"
-          >
-            取消
-          </button>
-          <StatefulButton
-            tone="primary"
-            size="default"
-            class="baidu-upload-submit"
-            :disabled="baiduUploadSubmitting"
-            @click="submitBaiduUpload"
-          >
-            创建上传任务
-          </StatefulButton>
-        </div>
-      </template>
-    </el-dialog>
+            <div class="footer-actions flex items-center gap-3">
+              <StatefulButton
+                tone="primary"
+                size="default"
+                class="primary-cta baidu-upload-primary-cta px-10 h-11 rounded-xl font-bold text-white"
+                :disabled="baiduUploadSubmitting || !baiduUploadSourceItems.length"
+                @click="submitBaiduUpload"
+              >
+                <IconUpload :size="16" :stroke-width="2.4" />
+                创建上传任务
+              </StatefulButton>
+              <button
+                type="button"
+                class="secondary-cta interactive-button px-10 h-11 rounded-xl font-bold"
+                :disabled="baiduUploadSubmitting"
+                @click="closeBaiduUploadDialog"
+              >
+                取消
+              </button>
+            </div>
+          </footer>
+          </div>
+        </section>
+      </div>
+    </Teleport>
 
 
 
@@ -3590,10 +3670,7 @@ const folderCompletionPreviewCompleted = computed(() => String(folderCompletionP
 const folderCompletionPreviewFailed = computed(() => ['failed', 'cancelled', 'canceled'].includes(String(folderCompletionPreviewJob.value.status || '')))
 
 const showFolderCompletionBackgroundCard = computed(() => (
-  !folderCompletionDialogVisible.value
-  && !folderCompletionPreviewDismissed.value
-  && Boolean(folderCompletionPreviewJob.value.jobId)
-  && (folderCompletionPreviewActive.value || folderCompletionPreviewCompleted.value || folderCompletionPreviewFailed.value)
+  false
 ))
 
 const folderCompletionBackgroundStackIndex = computed(() => {
@@ -3616,7 +3693,7 @@ const folderCompletionBackgroundCardProps = computed(() => {
   const completed = folderCompletionPreviewCompleted.value
   const tone = failed ? 'rose' : completed ? 'emerald' : 'primary'
   const actions = [
-    { key: 'resume', label: completed ? '打开预览结果' : '打开预览', variant: tone },
+    { key: 'resume', label: completed ? '打开检查结果' : '打开检查', variant: tone },
   ]
   if (completed || failed) actions.push({ key: 'dismiss', label: '收起' })
 
@@ -3624,10 +3701,10 @@ const folderCompletionBackgroundCardProps = computed(() => {
     kind: 'asmr',
     tone,
     title: completed
-      ? '补全文件夹预览已完成'
+      ? '补全文件夹检查已完成'
       : failed
-        ? '补全文件夹预览失败'
-        : '补全文件夹预览正在后台运行',
+        ? '补全文件夹检查失败'
+        : '补全文件夹检查正在后台运行',
     badgeText: '音声补全',
     subtitle: selectedCount ? `已选择 ${selectedCount} 个目录` : '库存页补全文件夹',
     metaText: `进度: ${Math.max(0, Math.min(100, Number(job.progress || 0)))}%`,
@@ -3641,8 +3718,8 @@ const folderCompletionBackgroundCardProps = computed(() => {
       { key: 'size', label: '预计', value: estimatedBytes ? formatFileSize(estimatedBytes) : '0 B', tone: 'info' },
     ],
     detailText: failed
-      ? (job.errorMessage || '预览任务失败')
-      : (job.currentStep || (completed ? '可以打开预览结果创建下载任务。' : '正在后台检查 ASMR.one 与本地文件。')),
+      ? (job.errorMessage || '检查任务失败')
+      : (job.currentStep || (completed ? '可以打开检查结果创建下载任务。' : '正在后台检查 ASMR.one 与本地文件。')),
     actions,
     progressKey: `${job.jobId || 'folder-completion'}-${status}`,
   }
@@ -4299,6 +4376,57 @@ const baiduUploadSourceItems = computed(() => effectiveBaiduUploadSourceRows.val
   size: Number(row?.size || 0),
   is_directory: row?.is_directory !== false,
 })).filter(item => item.path))
+
+const baiduUploadSourcePreviewItems = computed(() => baiduUploadSourceItems.value.slice(0, 5))
+
+const baiduUploadHiddenSourceCount = computed(() => Math.max(0, baiduUploadSourceItems.value.length - baiduUploadSourcePreviewItems.value.length))
+
+const baiduUploadSelectedTotalBytes = computed(() => baiduUploadSourceItems.value.reduce((total, item) => total + Number(item.size || 0), 0))
+
+const baiduUploadSourceTypeText = computed(() => {
+  const folders = baiduUploadSourceItems.value.filter(item => item.is_directory).length
+  const files = baiduUploadSourceItems.value.length - folders
+  if (folders && files) return `${folders} 个目录 / ${files} 个文件`
+  if (folders) return `${folders} 个目录`
+  return `${files} 个文件`
+})
+
+const baiduUploadModeLabel = computed(() => baiduUploadModeOptions.find(item => item.value === baiduUploadForm.value.mode)?.label || '压缩后上传')
+
+const baiduUploadConflictPolicyLabel = computed(() => baiduUploadPolicyOptions.find(item => item.value === baiduUploadForm.value.conflictPolicy)?.label || '跳过同名')
+
+const baiduUploadNormalizedRemoteDir = computed(() => {
+  const root = String(baiduUploadForm.value.remoteDir || '/KikoeruManager').trim().replace(/\/+$/g, '') || '/KikoeruManager'
+  return root.startsWith('/') ? root : `/${root}`
+})
+
+const baiduUploadRemotePathPreview = computed(() => {
+  const root = baiduUploadNormalizedRemoteDir.value
+  const subdir = String(baiduUploadForm.value.createRemoteSubdir || '').trim().replace(/^\/+|\/+$/g, '')
+  return subdir ? `${root}/${subdir}` : root
+})
+
+function clampBaiduNumber (value, min, max) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return min
+  return Math.min(max, Math.max(min, Math.round(numeric)))
+}
+
+function normalizeBaiduCompressionThreads () {
+  baiduUploadForm.value.compressionThreads = clampBaiduNumber(baiduUploadForm.value.compressionThreads, 0, 64)
+}
+
+function adjustBaiduCompressionThreads (delta) {
+  baiduUploadForm.value.compressionThreads = clampBaiduNumber(Number(baiduUploadForm.value.compressionThreads || 0) + delta, 0, 64)
+}
+
+function normalizeBaiduCompressionLevel () {
+  baiduUploadForm.value.compressionLevel = clampBaiduNumber(baiduUploadForm.value.compressionLevel, 1, 9)
+}
+
+function adjustBaiduCompressionLevel (delta) {
+  baiduUploadForm.value.compressionLevel = clampBaiduNumber(Number(baiduUploadForm.value.compressionLevel || 1) + delta, 1, 9)
+}
 
 const canFilterDeleteCurrentFolder = computed(() => {
 
@@ -17230,7 +17358,7 @@ function openFolderCompletionDialog (rows = []) {
 
     folderCompletionDialogVisible.value = true
 
-    ElMessage.info('已有补全文件夹预览正在后台运行，已打开当前预览')
+    ElMessage.info('已有补全文件夹检查正在后台运行，已打开当前检查')
 
     return
 
@@ -17417,7 +17545,7 @@ async function refreshFolderCompletionPreviewJob () {
 
       status: 'failed',
 
-      errorMessage: error?.response?.data?.detail || error?.message || '刷新补全预览状态失败',
+      errorMessage: error?.response?.data?.detail || error?.message || '刷新补全检查状态失败',
 
     }
 
@@ -24013,141 +24141,177 @@ function statsStatusTextDisplay (stats) {
 
 /* .floating-card / .floating-chip / .floating-action-btn 等系列样式已迁移到 index.css 全局规范，本页不再重复定义 */
 
-.baidu-upload-shell {
+.baidu-upload-preview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2100;
   display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.baidu-upload-summary,
-.baidu-upload-panel {
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  background: #ffffff;
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
-}
-
-.baidu-upload-summary {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px;
-  border-radius: 16px;
-}
-
-.baidu-upload-summary-icon {
-  display: inline-flex;
-  width: 42px;
-  height: 42px;
-  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  border-radius: 14px;
-  background: #f1f5f9;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.52);
+}
+
+.baidu-upload-preview-modal {
+  width: min(1210px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+}
+
+.baidu-upload-preview-modal .window {
+  max-height: calc(100dvh - 32px);
+}
+
+.baidu-upload-preview-modal .section-head {
+  margin-bottom: 22px;
+}
+
+.baidu-upload-preview-modal .section-head h2,
+.baidu-upload-compress-head h2 {
+  margin: 0 0 8px;
   color: #334155;
-}
-
-.baidu-upload-summary-main {
-  min-width: 0;
-  flex: 1;
-}
-
-.baidu-upload-summary-title {
-  font-size: 15px;
-  font-weight: 800;
-  line-height: 1.25;
-  color: #111827;
-}
-
-.baidu-upload-summary-sub {
-  margin-top: 3px;
-  font-size: 12px;
-  line-height: 1.45;
-  color: #64748b;
-}
-
-.baidu-upload-summary-pill,
-.baidu-upload-panel-note {
-  display: inline-flex;
-  align-items: center;
-  white-space: nowrap;
-  border-radius: 999px;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
+  line-height: 1.25;
 }
 
-.baidu-upload-summary-pill {
-  padding: 6px 10px;
-  border: 1px solid rgba(203, 213, 225, 0.9);
-  background: #f8fafc;
-  color: #334155;
-}
-
-.baidu-upload-panels {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
-}
-
-.baidu-upload-panel {
-  padding: 14px;
-  border-radius: 16px;
-}
-
-.baidu-upload-panel.is-muted {
-  opacity: 0.74;
-}
-
-.baidu-upload-panel-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-  color: #1f2937;
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.baidu-upload-panel-head svg {
+.baidu-upload-preview-modal .section-head p {
+  margin: 0;
   color: #475569;
+  font-size: 14px;
+  line-height: 1.55;
 }
 
-.baidu-upload-panel-note {
-  margin-left: auto;
-  padding: 3px 8px;
-  border: 1px solid rgba(203, 213, 225, 0.9);
-  background: #f8fafc;
-  color: #64748b;
-  font-size: 11px;
+.baidu-upload-field-wide,
+.baidu-upload-cleanup {
+  grid-column: 1 / -1;
 }
 
-.baidu-upload-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+.baidu-upload-field > span,
+.baidu-upload-label-row span {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 650;
 }
 
-.baidu-upload-field {
+.baidu-upload-dd :deep(.app-dd-trigger) {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.55);
+  color: #1f2937;
+  box-shadow: none;
+}
+
+.baidu-upload-input {
+  outline: none;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.baidu-upload-input:hover:not(:disabled),
+.baidu-upload-input:focus {
+  border-color: rgba(100, 116, 139, 0.42);
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.baidu-upload-path-stack {
+  margin-top: 18px;
   display: flex;
-  min-width: 0;
   flex-direction: column;
   gap: 7px;
 }
 
-.baidu-upload-field-wide {
-  grid-column: 1 / -1;
-}
-
-.baidu-upload-label,
-.baidu-upload-toggle-sub,
-.baidu-upload-hint {
-  display: block;
+.baidu-upload-path-stack p {
+  margin: 0;
+  color: #64748b;
   font-size: 12px;
-  line-height: 1.35;
+  line-height: 1.45;
 }
 
-.baidu-upload-label {
+.baidu-upload-path-stack span {
+  color: #334155;
+  overflow-wrap: anywhere;
+}
+
+.baidu-upload-compress-block {
+  margin-top: 28px;
+  padding-top: 22px;
+  border-top: 1px solid rgba(226, 232, 240, 0.82);
+}
+
+.baidu-upload-compress-block.disabled {
+  opacity: 0.76;
+}
+
+.baidu-upload-compress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.baidu-upload-compress-head h2 {
+  margin: 0;
+  color: #334155;
+  font-size: 14px;
   font-weight: 700;
-  color: #475569;
+}
+
+.baidu-upload-compress-head span {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  border-radius: 999px;
+  padding: 0 10px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.baidu-upload-compress-grid {
+  min-width: 0;
+}
+
+.baidu-upload-stepper {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 34px;
+  overflow: hidden;
+  height: 36px;
+  border-radius: 8px;
+}
+
+.baidu-upload-stepper.compact {
+  width: 108px;
+  flex: 0 0 108px;
+}
+
+.baidu-upload-stepper button,
+.baidu-upload-stepper input {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: #334155;
+  text-align: center;
+}
+
+.baidu-upload-stepper button {
+  cursor: pointer;
+  font-size: 17px;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.baidu-upload-stepper button:hover:not(:disabled) {
+  transform: scale(1.06);
+  background: rgba(226, 232, 240, 0.62);
+}
+
+.baidu-upload-stepper input {
+  border-inline: 1px solid rgba(226, 232, 240, 0.95);
+  outline: none;
+  font-weight: 700;
 }
 
 .baidu-upload-label-row {
@@ -24157,247 +24321,152 @@ function statsStatusTextDisplay (stats) {
   gap: 12px;
 }
 
-.baidu-upload-hint,
-.baidu-upload-toggle-sub {
+.baidu-upload-label-row b {
   color: #64748b;
+  font-size: 12px;
 }
 
-.baidu-upload-toggle {
-  flex-direction: row;
+.baidu-upload-range-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.baidu-upload-range-row input[type='range'] {
+  flex: 1 1 auto;
+  accent-color: #111827;
+}
+
+.baidu-upload-cleanup {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  min-height: 46px;
-  padding: 10px 12px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  border-radius: 14px;
-  background: #f8fafc;
+  padding: 13px 14px;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 16px;
+  background: rgba(248, 250, 252, 0.72);
 }
 
-.baidu-upload-toggle-sub {
+.baidu-upload-cleanup strong,
+.baidu-upload-cleanup small {
+  display: block;
+}
+
+.baidu-upload-cleanup strong {
+  color: #334155;
+  font-size: 13px;
+}
+
+.baidu-upload-cleanup small {
   margin-top: 3px;
+  color: #64748b;
   font-size: 11px;
 }
 
-.baidu-upload-footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
+.baidu-upload-cleanup input {
+  width: 18px;
+  height: 18px;
+  accent-color: #111827;
 }
 
-.baidu-upload-cancel {
-  min-height: 38px;
-  min-width: 92px;
-  border: 1px solid rgba(203, 213, 225, 0.95);
-  border-radius: 999px;
-  background: #ffffff;
+.baidu-upload-stepper.disabled,
+.baidu-upload-range-row.disabled,
+.baidu-upload-input:disabled,
+.baidu-upload-cleanup:has(input:disabled) {
+  opacity: 0.52;
+}
+
+.baidu-upload-tree-panel {
+  min-width: 0;
+}
+
+.baidu-upload-tree-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.baidu-upload-tree-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 36px;
+  padding: 6px 8px;
+}
+
+.baidu-upload-tree-main {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.baidu-upload-tree-checkbox {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+}
+
+.baidu-upload-tree-icon {
+  flex: 0 0 auto;
+  color: #d39a1f;
+  fill: currentColor;
+}
+
+.baidu-upload-tree-name {
+  min-width: 0;
+  overflow: hidden;
   color: #334155;
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 14px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.baidu-upload-tree-name small {
+  margin-left: 10px;
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.baidu-upload-tree-size {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.baidu-upload-primary-cta :deep(svg),
+.baidu-upload-preview-modal .close-button svg {
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.baidu-upload-cancel:hover:not(:disabled) {
+.baidu-upload-primary-cta:hover:not(:disabled) {
   transform: translateY(-2px) scale(1.02);
-  background: #f8fafc;
 }
 
-.baidu-upload-cancel:active:not(:disabled) {
-  transform: scale(0.96);
+.baidu-upload-primary-cta:hover:not(:disabled) :deep(svg) {
+  transform: rotate(-8deg) scale(1.06);
 }
 
-.baidu-upload-cancel:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
+@media (max-width: 760px) {
+  .baidu-upload-preview-modal {
+    width: 100vw;
+    max-height: 100dvh;
+  }
 
-.baidu-upload-submit {
-  min-width: 136px;
-}
+  .baidu-upload-form-grid {
+    grid-template-columns: 1fr;
+  }
 
-:global(.baidu-upload-dialog.el-dialog) {
-  overflow: hidden;
-  border-radius: 18px;
-  background: #f8fafc;
-  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.2);
-}
+  .baidu-upload-tree-panel {
+    min-height: 220px;
+  }
 
-:global(.baidu-upload-dialog .el-dialog__header) {
-  padding: 18px 20px 12px !important;
-  margin: 0 !important;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
-  background: #ffffff;
-}
-
-:global(.baidu-upload-dialog .el-dialog__title) {
-  color: #111827;
-  font-size: 17px !important;
-  font-weight: 800;
-}
-
-:global(.baidu-upload-dialog .el-dialog__body) {
-  padding: 16px 18px !important;
-  background: #f8fafc;
-}
-
-:global(.baidu-upload-dialog .el-dialog__footer) {
-  padding: 12px 18px 16px !important;
-  border-top: 1px solid rgba(226, 232, 240, 0.9);
-  background: #ffffff;
-}
-
-:global(.baidu-upload-dialog .el-input__wrapper),
-:global(.baidu-upload-dialog .el-input-number),
-:global(.baidu-upload-dialog .app-dd-trigger) {
-  min-height: 38px;
-  border-radius: 12px;
-  border: 1px solid rgba(203, 213, 225, 0.9);
-  background: #ffffff !important;
-  box-shadow: none !important;
-}
-
-:global(.baidu-upload-dialog .el-input__wrapper:hover),
-:global(.baidu-upload-dialog .el-input__wrapper.is-focus),
-:global(.baidu-upload-dialog .el-input-number:hover),
-:global(.baidu-upload-dialog .app-dd-trigger:hover),
-:global(.baidu-upload-dialog .app-dd-trigger.is-open) {
-  border-color: rgba(148, 163, 184, 0.95);
-  background: #ffffff !important;
-  box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.14) !important;
-}
-
-:global(.baidu-upload-dialog .el-input-number .el-input__wrapper) {
-  border: 0;
-}
-
-:global(.baidu-upload-dialog .el-input-number__decrease),
-:global(.baidu-upload-dialog .el-input-number__increase) {
-  border-color: rgba(226, 232, 240, 0.95) !important;
-  background: #f8fafc !important;
-  color: #475569 !important;
-}
-
-:global(.baidu-upload-dialog .el-slider__runway) {
-  background: #e5e7eb !important;
-}
-
-:global(.baidu-upload-dialog .el-slider__bar) {
-  background: #475569 !important;
-}
-
-:global(.baidu-upload-dialog .el-slider__button) {
-  border-color: #475569 !important;
-}
-
-:global(html.kikoerumanager-dark .baidu-upload-dialog.el-dialog) {
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: #111216 !important;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.46);
-}
-
-:global(html.kikoerumanager-dark .baidu-upload-dialog .el-dialog__header),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .el-dialog__footer) {
-  border-color: rgba(255, 255, 255, 0.1) !important;
-  background: #17181d !important;
-}
-
-:global(html.kikoerumanager-dark .baidu-upload-dialog .el-dialog__body) {
-  background: #111216 !important;
-}
-
-:global(html.kikoerumanager-dark .baidu-upload-dialog .el-dialog__title) {
-  color: #f4f4f5 !important;
-}
-
-:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-summary),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-panel) {
-  border-color: rgba(255, 255, 255, 0.1) !important;
-  background: #17181d !important;
-  box-shadow: none !important;
-}
-
-:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-summary-icon),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-summary-pill),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-panel-note),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-toggle) {
-  border-color: rgba(255, 255, 255, 0.12) !important;
-  background: #1d1e23 !important;
-  color: #e5e7eb !important;
-}
-
-:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-summary-title),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-panel-head),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-label) {
-  color: #f4f4f5 !important;
-}
-
-:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-summary-sub),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-hint),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-toggle-sub) {
-  color: #a1a1aa !important;
-}
-
-:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-panel-head svg),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-summary-icon svg) {
-  color: #e5e7eb !important;
-}
-
-:global(html.kikoerumanager-dark .baidu-upload-dialog .el-input__wrapper),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .el-input-number),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .app-dd-trigger) {
-  border-color: rgba(255, 255, 255, 0.13) !important;
-  background: #1d1e23 !important;
-  color: #f4f4f5 !important;
-  box-shadow: none !important;
-}
-
-:global(html.kikoerumanager-dark .baidu-upload-dialog .el-input__wrapper:hover),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .el-input__wrapper.is-focus),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .el-input-number:hover),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .app-dd-trigger:hover),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .app-dd-trigger.is-open) {
-  border-color: rgba(255, 255, 255, 0.22) !important;
-  background: #25262b !important;
-  box-shadow: none !important;
-}
-
-:global(html.kikoerumanager-dark .baidu-upload-dialog .el-input__inner),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .app-dd-trigger-value),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .app-dd-trigger-label),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .app-dd-trigger-icon),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .app-dd-trigger-caret) {
-  color: #f4f4f5 !important;
-}
-
-:global(html.kikoerumanager-dark .baidu-upload-dialog .el-input-number__decrease),
-:global(html.kikoerumanager-dark .baidu-upload-dialog .el-input-number__increase) {
-  border-color: rgba(255, 255, 255, 0.12) !important;
-  background: #17181d !important;
-  color: #d4d4d8 !important;
-}
-
-:global(html.kikoerumanager-dark .baidu-upload-dialog .el-slider__runway) {
-  background: #2b2c30 !important;
-}
-
-:global(html.kikoerumanager-dark .baidu-upload-dialog .el-slider__bar) {
-  background: #d4d4d8 !important;
-}
-
-:global(html.kikoerumanager-dark .baidu-upload-dialog .el-slider__button) {
-  border-color: #d4d4d8 !important;
-  background: #111216 !important;
-}
-
-:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-cancel) {
-  border-color: rgba(255, 255, 255, 0.14);
-  background: #1d1e23;
-  color: #f4f4f5;
-}
-
-:global(html.kikoerumanager-dark .baidu-upload-dialog .baidu-upload-cancel:hover:not(:disabled)) {
-  background: #25262b;
+  .baidu-upload-tree-name small {
+    display: none;
+  }
 }
 
 .mapped-path-box { display: flex; flex-direction: column; gap: 10px; }

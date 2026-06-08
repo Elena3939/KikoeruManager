@@ -31,7 +31,7 @@ class FolderCompletionTarget:
 
 
 class LibraryFolderCompletionService:
-    """库存页“补全文件夹”：本地 RJ 目录缺失资源预览与下载任务创建。"""
+    """库存页“补全文件夹”：本地 RJ 目录缺失资源检查与下载任务创建。"""
 
     def __init__(self):
         self.manager = get_library_manager()
@@ -147,7 +147,7 @@ class LibraryFolderCompletionService:
                 seen.add(key)
                 targets.append(target)
                 if len(targets) > MAX_FOLDER_COMPLETION_TARGETS:
-                    raise ValueError(f"一次最多预览 {MAX_FOLDER_COMPLETION_TARGETS} 个 RJ 文件夹，请缩小选择范围")
+                    raise ValueError(f"一次最多检查 {MAX_FOLDER_COMPLETION_TARGETS} 个 RJ 文件夹，请缩小选择范围")
 
         if not targets and not skipped:
             raise ValueError("没有识别到可补全的 RJ 文件夹")
@@ -268,7 +268,7 @@ class LibraryFolderCompletionService:
             }
             return item, None
         except Exception as exc:
-            logger.warning("[补全文件夹] 预览失败 rj=%s path=%s: %s", target.rjcode, target.folder_path, exc, exc_info=True)
+            logger.warning("[补全文件夹] 检查失败 rj=%s path=%s: %s", target.rjcode, target.folder_path, exc, exc_info=True)
             return None, {
                 "path": target.folder_path,
                 "name": target.folder_name,

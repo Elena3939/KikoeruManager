@@ -5240,3 +5240,33 @@ html.kikoerumanager-dark body :where([id^="voicelink-"][id$="-voice-popup"][clas
   color: #424242 !important;
   -webkit-text-fill-color: #424242 !important;
 }
+
+html.kikoerumanager-dark .server-upload-preview-modal .baidu-upload-dd .app-dd-trigger,
+html.kikoerumanager-dark .server-upload-preview-modal .baidu-upload-stepper,
+html.kikoerumanager-dark .server-upload-preview-modal .baidu-upload-input,
+html.kikoerumanager-dark .server-upload-preview-modal .baidu-upload-cleanup {
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  background: rgba(43, 44, 48, 0.84) !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .baidu-upload-stepper input {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: var(--km-dark-text) !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .section-head h2,
+html.kikoerumanager-dark .server-upload-preview-modal .baidu-upload-compress-head h2,
+html.kikoerumanager-dark .baidu-upload-field > span,
+html.kikoerumanager-dark .baidu-upload-label-row span,
+html.kikoerumanager-dark .baidu-upload-cleanup strong {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .section-head p,
+html.kikoerumanager-dark .baidu-upload-path-stack p,
+html.kikoerumanager-dark .baidu-upload-path-stack span,
+html.kikoerumanager-dark .baidu-upload-cleanup small {
+  color: var(--km-dark-text-muted) !important;
+}
