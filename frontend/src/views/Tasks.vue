@@ -29,6 +29,7 @@
         :current-offset="currentOffset"
         :page-size="pageSize"
         :selected-id="selectedItem?.id || ''"
+        :page-direction="pageDirection"
         :digest="listDigest"
         :format-r-j-code="formatRJCode"
         :show-progress="showProgress"
@@ -36,6 +37,8 @@
         :get-recovered-notice="getRecoveredNotice"
         @select="(id) => (selectedItemId = id)"
         @quick-filter="applyQuickFilter"
+        @page-size-change="handlePageSizeChange"
+        @go-page="handleGoPage"
         @prev-page="handlePrevPage"
         @next-page="handleNextPage"
       />
@@ -100,9 +103,11 @@ const items = ref([])
 const totalItems = ref(0)
 const pageSize = ref(80)
 const currentOffset = ref(0)
+const pageDirection = ref('next')
 const selectedItemId = ref('')
 const selectedItemDetail = ref(null)
 const detailLoading = ref(false)
+const shouldAutoSelectVisibleTask = ref(true)
 const currentDomain = ref('all')
 const currentStatus = ref('all')
 const searchQuery = ref('')
@@ -221,10 +226,15 @@ const listDigest = computed(() => {
 })
 
 const selectedItem = computed(() => {
-  if (!filteredItems.value.length) return null
-  const summary = filteredItems.value.find((item) => item.id === selectedItemId.value) || filteredItems.value[0]
-  const normalizedSummary = normalizeCancelledTaskItem(summary)
-  if (selectedItemDetail.value?.id === summary?.id) {
+  const summary = filteredItems.value.find((item) => item.id === selectedItemId.value)
+  if (!summary && selectedItemDetail.value?.id === selectedItemId.value) {
+    return normalizeCancelledTaskItem(selectedItemDetail.value)
+  }
+  if (!summary && !filteredItems.value.length) return null
+  const visibleSummary = summary || filteredItems.value[0]
+  if (!visibleSummary) return null
+  const normalizedSummary = normalizeCancelledTaskItem(visibleSummary)
+  if (selectedItemDetail.value?.id === visibleSummary?.id) {
     return normalizeCancelledTaskItem({ ...normalizedSummary, ...selectedItemDetail.value })
   }
   return normalizedSummary
@@ -232,11 +242,13 @@ const selectedItem = computed(() => {
 
 watch(filteredItems, (nextItems) => {
   if (!nextItems.length) {
-    selectedItemId.value = ''
+    if (shouldAutoSelectVisibleTask.value) selectedItemId.value = ''
+    shouldAutoSelectVisibleTask.value = false
     return
   }
-  if (!nextItems.some((item) => item.id === selectedItemId.value)) {
+  if (shouldAutoSelectVisibleTask.value || !selectedItemId.value) {
     selectedItemId.value = nextItems[0].id
+    shouldAutoSelectVisibleTask.value = false
   }
 }, { immediate: true })
 
@@ -281,6 +293,7 @@ function shouldRefreshDetail(nextItems) {
 }
 
 watch([currentDomain, currentStatus], () => {
+  shouldAutoSelectVisibleTask.value = true
   currentOffset.value = 0
   refreshTaskCenter(false, { silent: true }).catch((error) => {
     console.error('任务中心筛选刷新失败:', error)
@@ -291,6 +304,7 @@ watch(searchQuery, () => {
   if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
   searchDebounceTimer = setTimeout(() => {
     debouncedSearchQuery.value = String(searchQuery.value || '').trim()
+    shouldAutoSelectVisibleTask.value = true
     currentOffset.value = 0
     refreshTaskCenter(false, { silent: true }).catch((error) => {
       console.error('任务中心搜索刷新失败:', error)
@@ -304,6 +318,7 @@ watch(pollingEnabled, (enabled) => {
 })
 
 onMounted(async () => {
+  shouldAutoSelectVisibleTask.value = true
   await refreshTaskCenter(false, { silent: false })
   window.addEventListener('kikoerumanager:task-center:changed', handleTaskCenterStreamEvent)
   if (typeof document !== 'undefined') {
@@ -378,6 +393,7 @@ function handleVisibilityChange() {
 }
 
 function resetFilters() {
+  shouldAutoSelectVisibleTask.value = true
   currentDomain.value = 'all'
   currentStatus.value = 'all'
   activeOnly.value = false
@@ -390,6 +406,7 @@ function resetFilters() {
 }
 
 function applyQuickFilter(domain, status) {
+  shouldAutoSelectVisibleTask.value = true
   currentDomain.value = domain
   currentStatus.value = status
   currentOffset.value = 0
@@ -399,13 +416,36 @@ function applyQuickFilter(domain, status) {
 }
 
 function handlePrevPage() {
+  pageDirection.value = 'prev'
   currentOffset.value = Math.max(0, currentOffset.value - pageSize.value)
   refreshTaskCenter(false, { silent: true })
 }
 
 function handleNextPage() {
+  pageDirection.value = 'next'
   currentOffset.value += pageSize.value
   refreshTaskCenter(false, { silent: true })
+}
+
+function handleGoPage(page) {
+  const normalized = Math.max(1, Number(page) || 1)
+  const nextOffset = (normalized - 1) * pageSize.value
+  if (nextOffset === currentOffset.value) return
+  pageDirection.value = nextOffset < currentOffset.value ? 'prev' : 'next'
+  currentOffset.value = nextOffset
+  refreshTaskCenter(false, { silent: true })
+}
+
+function handlePageSizeChange(nextSize) {
+  const normalized = Math.max(1, Number(nextSize) || pageSize.value)
+  if (normalized === pageSize.value) return
+  const currentPageIndex = Math.floor(currentOffset.value / Math.max(pageSize.value, 1))
+  pageSize.value = normalized
+  currentOffset.value = Math.max(0, currentPageIndex * normalized)
+  pageDirection.value = 'next'
+  refreshTaskCenter(false, { silent: true }).catch((error) => {
+    console.error('任务中心页容量刷新失败:', error)
+  })
 }
 
 function scheduleTaskCenterStreamRefresh() {

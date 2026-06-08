@@ -2864,6 +2864,47 @@ html.kikoerumanager-dark {
     scrollbar-color: #333438 transparent !important;
   }
 
+  html.kikoerumanager-dark body #app .tasks-page .task-list-pager {
+    background: var(--tasks-panel) !important;
+    border-color: var(--tasks-border) !important;
+    color: var(--tasks-text) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .task-list-pager-button {
+    background: var(--tasks-matte) !important;
+    border-color: var(--tasks-border) !important;
+    color: rgba(242, 242, 246, 0.86) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .task-list-pager-button:hover:not(:disabled) {
+    background: var(--tasks-matte-strong) !important;
+    border-color: var(--tasks-border-strong) !important;
+    color: rgba(250, 250, 252, 0.94) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .task-list-pager-button.is-active {
+    background: rgba(244, 244, 245, 0.18) !important;
+    border-color: rgba(244, 244, 245, 0.34) !important;
+    color: rgba(250, 250, 252, 0.96) !important;
+    box-shadow: none !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .task-list-pager-button:disabled {
+    background: rgba(255, 255, 255, 0.06) !important;
+    border-color: rgba(255, 255, 255, 0.1) !important;
+    color: rgba(214, 214, 220, 0.38) !important;
+    opacity: 1 !important;
+  }
+
+  html.kikoerumanager-dark body #app .tasks-page .task-list-pager-summary,
+  html.kikoerumanager-dark body #app .tasks-page .task-list-pager-range,
+  html.kikoerumanager-dark body #app .tasks-page .task-list-pager-indicator {
+    color: rgba(248, 248, 250, 0.88) !important;
+  }
+
   html.kikoerumanager-dark .tasks-page .task-tree-actions {
     gap: 6px !important;
     padding: 0 !important;

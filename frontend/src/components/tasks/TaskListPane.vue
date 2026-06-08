@@ -1,128 +1,168 @@
 <template>
-  <div class="task-list-pane">
-    <div
-      v-if="filteredItems.length"
-      class="task-list-scroll flex flex-1 min-h-0 flex-col gap-2 overflow-auto p-2.5"
-    >
-      <button
-        v-for="item in filteredItems"
-        :key="item.id"
-        type="button"
-        class="task-card group"
-        :class="{ 'is-active': selectedId === item.id }"
-        @click="$emit('select', item.id)"
+  <div ref="paneRef" class="task-list-pane">
+    <Transition :name="pageTransitionName" mode="out-in">
+      <div
+        v-if="filteredItems.length"
+        :key="pageKey"
+        class="task-list-scroll flex flex-1 min-h-0 flex-col gap-2 p-2.5"
       >
-        <component
-          :is="taskIcon(item)"
-          :size="16"
-          :stroke-width="2"
-          class="mt-[3px] flex-shrink-0 transition-transform duration-300 group-hover:scale-110 group-hover:rotate-[-6deg]"
-          :class="taskIconClass(item)"
-        />
+        <button
+          v-for="item in filteredItems"
+          :key="item.id"
+          type="button"
+          class="task-card group"
+          :class="{ 'is-active': selectedId === item.id }"
+          @click="$emit('select', item.id)"
+        >
+          <component
+            :is="taskIcon(item)"
+            :size="16"
+            :stroke-width="2"
+            class="mt-[3px] flex-shrink-0 transition-transform duration-300 group-hover:scale-110 group-hover:rotate-[-6deg]"
+            :class="taskIconClass(item)"
+          />
 
-        <div class="flex min-w-0 flex-col gap-1">
-          <!-- 第一行：标题 | 域 chip（无 icon） + 状态 -->
-          <div class="flex items-center justify-between gap-2">
-            <span class="truncate text-[12.5px] font-bold text-slate-900 leading-tight">{{ item.title }}</span>
-            <div class="flex flex-shrink-0 items-center gap-1">
+          <div class="flex min-w-0 flex-col gap-1">
+            <!-- 第一行：标题 | 域 chip（无 icon） + 状态 -->
+            <div class="flex items-center justify-between gap-2">
+              <span class="truncate text-[12.5px] font-bold text-slate-900 leading-tight">{{ item.title }}</span>
+              <div class="flex flex-shrink-0 items-center gap-1">
+                <span
+                  class="task-domain-chip inline-flex h-[18px] items-center rounded-full px-2 text-[10px] font-semibold"
+                  :class="[domainMeta(item.domain).chipBg, domainMeta(item.domain).chipText]"
+                >
+                  {{ taskDomainLabel(item) }}
+                </span>
+                <StatusPill :status="statusForPill(item)" :label="statusLabelForPill(item)" />
+              </div>
+            </div>
+
+            <!-- 第二行：RJ + 副标题/来源/步骤 一行内联 -->
+            <div v-if="formatRJCode(item.rjcode) || item.subtitle || shouldShowStep(item) || (item.source_label && item.source_label !== item.title && item.source_label !== item.subtitle)" class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10.5px] text-slate-500 leading-tight">
+              <span v-if="formatRJCode(item.rjcode)" class="flex-shrink-0 font-bold tabular-nums text-amber-700">{{ formatRJCode(item.rjcode) }}</span>
+              <span v-if="item.subtitle" class="min-w-0 break-words">{{ item.subtitle }}</span>
               <span
-                class="task-domain-chip inline-flex h-[18px] items-center rounded-full px-2 text-[10px] font-semibold"
-                :class="[domainMeta(item.domain).chipBg, domainMeta(item.domain).chipText]"
+                v-if="item.source_label && item.source_label !== item.title && item.source_label !== item.subtitle"
+                class="min-w-0 break-words text-slate-400"
+              >· {{ item.source_label }}</span>
+              <span
+                v-if="shouldShowStep(item)"
+                class="inline-flex min-w-0 items-start gap-0.5 text-slate-400"
               >
-                {{ taskDomainLabel(item) }}
+                <Activity :size="9" :stroke-width="2.3" class="mt-[2px] flex-shrink-0" />
+                <span class="break-words">{{ displayStep(item) }}</span>
               </span>
-              <StatusPill :status="statusForPill(item)" :label="statusLabelForPill(item)" />
+            </div>
+
+            <!-- 进度条 -->
+            <div v-if="showProgress(item)" class="flex items-center gap-1.5">
+              <div class="h-1 flex-1 overflow-hidden rounded-full bg-slate-100">
+                <div class="h-full rounded-full transition-all duration-700 ease-out" :class="domainMeta(item.domain).bar" :style="{ width: `${item.progress}%` }" />
+              </div>
+              <span class="text-[10px] font-bold tabular-nums text-slate-600">{{ item.progress }}%</span>
+            </div>
+
+            <!-- 已恢复 -->
+            <div v-if="getRecoveredNotice(item)" class="flex items-start gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">
+              <CheckCircle :size="10" :stroke-width="2.3" class="mt-px flex-shrink-0 text-emerald-600" />
+              <span>{{ getRecoveredNotice(item) }}</span>
+            </div>
+
+            <!-- 摘要：图标 + 数字 紧凑 stat strip（hover 显示标签） -->
+            <div v-if="item.summaryPieces?.length" class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+              <span
+                v-for="(piece, sIndex) in item.summaryPieces"
+                :key="`${item.id}-summary-${sIndex}`"
+                class="inline-flex items-center gap-0.5 text-[11px] font-bold tabular-nums leading-tight"
+                :class="summaryColor(piece, item.domain)"
+                :title="extractSummaryLabel(piece) || piece"
+              >
+                <component
+                  :is="summaryIcon(piece)"
+                  :size="11"
+                  :stroke-width="2.3"
+                />
+                {{ extractSummaryValue(piece) }}
+              </span>
             </div>
           </div>
+        </button>
+      </div>
+      <div v-else :key="`empty-${pageKey}`" class="flex flex-1 min-h-0 items-center justify-center px-3 py-4 md:px-6 md:py-10">
+        <AppEmptyState description="当前筛选条件下没有任务" size="lg" />
+      </div>
+    </Transition>
 
-          <!-- 第二行：RJ + 副标题/来源/步骤 一行内联 -->
-          <div v-if="formatRJCode(item.rjcode) || item.subtitle || shouldShowStep(item) || (item.source_label && item.source_label !== item.title && item.source_label !== item.subtitle)" class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10.5px] text-slate-500 leading-tight">
-            <span v-if="formatRJCode(item.rjcode)" class="flex-shrink-0 font-bold tabular-nums text-amber-700">{{ formatRJCode(item.rjcode) }}</span>
-            <span v-if="item.subtitle" class="min-w-0 break-words">{{ item.subtitle }}</span>
-            <span
-              v-if="item.source_label && item.source_label !== item.title && item.source_label !== item.subtitle"
-              class="min-w-0 break-words text-slate-400"
-            >· {{ item.source_label }}</span>
-            <span
-              v-if="shouldShowStep(item)"
-              class="inline-flex min-w-0 items-start gap-0.5 text-slate-400"
-            >
-              <Activity :size="9" :stroke-width="2.3" class="mt-[2px] flex-shrink-0" />
-              <span class="break-words">{{ displayStep(item) }}</span>
-            </span>
-          </div>
+    <div v-if="totalItems > pageSize" ref="pagerRef" class="task-list-pager">
+      <div class="task-list-pager-summary">
+        <span class="task-list-pager-range">{{ pageStart }}-{{ pageEnd }}</span>
+        <span>共 {{ totalItems }} 条</span>
+      </div>
 
-          <!-- 进度条 -->
-          <div v-if="showProgress(item)" class="flex items-center gap-1.5">
-            <div class="h-1 flex-1 overflow-hidden rounded-full bg-slate-100">
-              <div class="h-full rounded-full transition-all duration-700 ease-out" :class="domainMeta(item.domain).bar" :style="{ width: `${item.progress}%` }" />
-            </div>
-            <span class="text-[10px] font-bold tabular-nums text-slate-600">{{ item.progress }}%</span>
-          </div>
+      <div class="task-list-pager-controls">
+        <button
+          type="button"
+          class="task-list-pager-button task-list-pager-icon group"
+          :disabled="currentPage <= 1"
+          title="第一页"
+          @click="goToPage(1)"
+        >
+          <ChevronsLeft :size="13" :stroke-width="2.3" class="transition-transform duration-300 group-hover:-translate-x-0.5" />
+        </button>
+        <button
+          type="button"
+          class="task-list-pager-button task-list-pager-icon group"
+          :disabled="currentPage <= 1"
+          title="上一页"
+          @click="$emit('prev-page')"
+        >
+          <ChevronLeft :size="13" :stroke-width="2.3" class="transition-transform duration-300 group-hover:-translate-x-0.5" />
+        </button>
 
-          <!-- 已恢复 -->
-          <div v-if="getRecoveredNotice(item)" class="flex items-start gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">
-            <CheckCircle :size="10" :stroke-width="2.3" class="mt-px flex-shrink-0 text-emerald-600" />
-            <span>{{ getRecoveredNotice(item) }}</span>
-          </div>
+        <button
+          v-for="page in visiblePages"
+          :key="page"
+          type="button"
+          class="task-list-pager-button task-list-pager-number"
+          :class="{ 'is-active': page === currentPage }"
+          @click="goToPage(page)"
+        >
+          {{ page }}
+        </button>
 
-          <!-- 摘要：图标 + 数字 紧凑 stat strip（hover 显示标签） -->
-          <div v-if="item.summaryPieces?.length" class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-            <span
-              v-for="(piece, sIndex) in item.summaryPieces"
-              :key="`${item.id}-summary-${sIndex}`"
-              class="inline-flex items-center gap-0.5 text-[11px] font-bold tabular-nums leading-tight"
-              :class="summaryColor(piece, item.domain)"
-              :title="extractSummaryLabel(piece) || piece"
-            >
-              <component
-                :is="summaryIcon(piece)"
-                :size="11"
-                :stroke-width="2.3"
-              />
-              {{ extractSummaryValue(piece) }}
-            </span>
-          </div>
-        </div>
-      </button>
-    </div>
-
-    <!-- 空态：移动端 wrapper padding 收紧到 px-3 py-4，桌面保留宽松 px-6 py-10 -->
-    <div v-else class="flex flex-1 min-h-0 items-center justify-center px-3 py-4 md:px-6 md:py-10">
-      <AppEmptyState description="当前筛选条件下没有任务" size="lg" />
-    </div>
-
-    <div v-if="totalItems > pageSize" class="flex items-center justify-center gap-2 border-t border-slate-200 px-3 py-2.5">
-      <button
-        type="button"
-        class="group inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-slate-200 bg-white text-slate-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-110 hover:border-slate-300 hover:bg-slate-50 active:scale-90 disabled:pointer-events-none disabled:opacity-40"
-        :disabled="currentOffset <= 0"
-        @click="$emit('prev-page')"
-      >
-        <ChevronLeft :size="13" :stroke-width="2.3" class="transition-transform duration-300 group-hover:-translate-x-0.5" />
-      </button>
-      <span class="text-[11.5px] tabular-nums text-slate-600">
-        {{ Math.floor(currentOffset / pageSize) + 1 }} / {{ Math.ceil(totalItems / pageSize) }}
-      </span>
-      <button
-        type="button"
-        class="group inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-slate-200 bg-white text-slate-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-110 hover:border-slate-300 hover:bg-slate-50 active:scale-90 disabled:pointer-events-none disabled:opacity-40"
-        :disabled="currentOffset + pageSize >= totalItems"
-        @click="$emit('next-page')"
-      >
-        <ChevronRight :size="13" :stroke-width="2.3" class="transition-transform duration-300 group-hover:translate-x-0.5" />
-      </button>
+        <button
+          type="button"
+          class="task-list-pager-button task-list-pager-icon group"
+          :disabled="currentPage >= totalPages"
+          title="下一页"
+          @click="$emit('next-page')"
+        >
+          <ChevronRight :size="13" :stroke-width="2.3" class="transition-transform duration-300 group-hover:translate-x-0.5" />
+        </button>
+        <button
+          type="button"
+          class="task-list-pager-button task-list-pager-icon group"
+          :disabled="currentPage >= totalPages"
+          title="最后一页"
+          @click="goToPage(totalPages)"
+        >
+          <ChevronsRight :size="13" :stroke-width="2.3" class="transition-transform duration-300 group-hover:translate-x-0.5" />
+        </button>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   Activity,
   AlertCircle,
   CheckCircle,
   ChevronLeft,
   ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Circle,
   CloudDownload,
   Database,
@@ -139,11 +179,12 @@ import StatusPill from '../dashboard/StatusPill.vue'
 import { getTaskDomainMeta } from '../common/taskDomainMeta.js'
 import { getHttpDownloadDisplayMeta } from '../common/httpDownloadPlatformMeta.js'
 
-defineProps({
+const props = defineProps({
   filteredItems: { type: Array, default: () => [] },
   totalItems: { type: Number, default: 0 },
   currentOffset: { type: Number, default: 0 },
   pageSize: { type: Number, default: 80 },
+  pageDirection: { type: String, default: 'next' },
   selectedId: { type: String, default: '' },
   digest: { type: Object, default: () => ({ active: 0, completed: 0, failed: 0 }) },
   formatRJCode: { type: Function, required: true },
@@ -152,7 +193,80 @@ defineProps({
   getRecoveredNotice: { type: Function, required: true },
 })
 
-defineEmits(['select', 'quick-filter', 'prev-page', 'next-page'])
+const emit = defineEmits(['select', 'quick-filter', 'page-size-change', 'prev-page', 'next-page', 'go-page'])
+
+const paneRef = ref(null)
+const pagerRef = ref(null)
+
+let resizeObserver = null
+let measureRaf = 0
+
+const pageKey = computed(() => `${props.currentOffset}-${props.pageSize}-${props.filteredItems.map(item => item?.id || '').join('|')}`)
+const pageTransitionName = computed(() => props.pageDirection === 'prev' ? 'task-page-prev' : 'task-page-next')
+const totalPages = computed(() => Math.max(1, Math.ceil(props.totalItems / Math.max(props.pageSize, 1))))
+const currentPage = computed(() => Math.min(totalPages.value, Math.floor(props.currentOffset / Math.max(props.pageSize, 1)) + 1))
+const pageStart = computed(() => props.totalItems ? props.currentOffset + 1 : 0)
+const pageEnd = computed(() => Math.min(props.totalItems, props.currentOffset + props.filteredItems.length))
+const visiblePages = computed(() => {
+  const total = totalPages.value
+  const current = currentPage.value
+  const windowSize = total >= 10 ? 5 : Math.min(total, 7)
+  let start = Math.max(1, current - Math.floor(windowSize / 2))
+  let end = Math.min(total, start + windowSize - 1)
+  start = Math.max(1, end - windowSize + 1)
+  return Array.from({ length: end - start + 1 }, (_, index) => start + index)
+})
+
+function goToPage(page) {
+  const normalized = Math.min(Math.max(1, Number(page) || 1), totalPages.value)
+  if (normalized === currentPage.value) return
+  emit('go-page', normalized)
+}
+
+function estimatePageSize() {
+  const pane = paneRef.value
+  if (!pane) return
+  const paneHeight = pane.clientHeight || 0
+  if (paneHeight <= 0) return
+
+  const pagerHeight = pagerRef.value?.offsetHeight || 48
+  const listPadding = 20
+  const cardGap = 8
+  const sampleCard = pane.querySelector('.task-card')
+  const cardHeight = sampleCard?.offsetHeight || 82
+  const availableHeight = Math.max(0, paneHeight - pagerHeight - listPadding)
+  const nextSize = Math.max(1, Math.floor((availableHeight + cardGap) / (cardHeight + cardGap)))
+
+  if (Number.isFinite(nextSize) && nextSize !== props.pageSize) {
+    emit('page-size-change', nextSize)
+  }
+}
+
+function schedulePageSizeMeasure() {
+  if (typeof window === 'undefined') return
+  if (measureRaf) window.cancelAnimationFrame(measureRaf)
+  measureRaf = window.requestAnimationFrame(() => {
+    measureRaf = 0
+    estimatePageSize()
+  })
+}
+
+watch(() => [props.filteredItems.length, props.totalItems], () => {
+  nextTick(schedulePageSizeMeasure)
+})
+
+onMounted(() => {
+  nextTick(schedulePageSizeMeasure)
+  if (typeof ResizeObserver !== 'undefined' && paneRef.value) {
+    resizeObserver = new ResizeObserver(schedulePageSizeMeasure)
+    resizeObserver.observe(paneRef.value)
+  }
+})
+
+onUnmounted(() => {
+  if (resizeObserver) resizeObserver.disconnect()
+  if (measureRaf && typeof window !== 'undefined') window.cancelAnimationFrame(measureRaf)
+})
 
 function domainMeta(domain) {
   return getTaskDomainMeta(domain)
@@ -258,6 +372,89 @@ function summaryColor(piece, domain) {
   overflow: hidden;
 }
 
+.task-list-scroll {
+  overflow: hidden;
+}
+
+.task-list-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 48px;
+  padding: 8px 10px;
+  border-top: 1px solid rgb(226 232 240);
+}
+
+.task-list-pager-summary {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.task-list-pager-range {
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-list-pager-controls {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.task-list-pager-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  border: 1px solid rgb(226 232 240);
+  border-radius: 8px;
+  background: #ffffff;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.task-list-pager-button:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.02);
+  border-color: rgb(203 213 225);
+  background: rgb(248 250 252);
+  color: #0f172a;
+}
+
+.task-list-pager-button:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.task-list-pager-button:disabled {
+  pointer-events: none;
+  opacity: 0.42;
+}
+
+.task-list-pager-icon {
+  width: 28px;
+}
+
+.task-list-pager-number {
+  min-width: 28px;
+  padding: 0 8px;
+}
+
+.task-list-pager-number.is-active {
+  border-color: #0f172a;
+  background: #0f172a;
+  color: #ffffff;
+}
+
 /* ---- 任务卡片 ---- */
 .task-card {
   display: grid;
@@ -350,15 +547,42 @@ function summaryColor(piece, domain) {
   transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-/* ---- 滚动条 ---- */
-.task-list-scroll::-webkit-scrollbar {
-  width: 6px;
+.task-page-next-enter-active,
+.task-page-next-leave-active,
+.task-page-prev-enter-active,
+.task-page-prev-leave-active {
+  transition: opacity 0.22s ease, transform 0.32s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-.task-list-scroll::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.4);
-  border-radius: 999px;
+
+.task-page-next-enter-from {
+  opacity: 0;
+  transform: translateX(18px);
 }
-.task-list-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(100, 116, 139, 0.55);
+
+.task-page-next-leave-to {
+  opacity: 0;
+  transform: translateX(-18px);
+}
+
+.task-page-prev-enter-from {
+  opacity: 0;
+  transform: translateX(-18px);
+}
+
+.task-page-prev-leave-to {
+  opacity: 0;
+  transform: translateX(18px);
+}
+
+@media (max-width: 520px) {
+  .task-list-pager {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .task-list-pager-controls {
+    width: 100%;
+    overflow: hidden;
+  }
 }
 </style>
