@@ -2,6 +2,7 @@ import { ref, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { rjSubtitleApi } from '../api'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
+import { useRealtimeEvents } from './useRealtimeEvents'
 
 export function useSubtitleTask ({
   selectedLibraryId,
@@ -17,6 +18,7 @@ export function useSubtitleTask ({
   ensureSubtitleInspectorFocus
 }) {
   // ─── Owned reactive state ────────────────────────────────────────────────
+  const realtimeEvents = useRealtimeEvents()
   const subtitleTasks = ref([])
   const subtitleActiveTaskId = ref('')
   const subtitleTaskFilter = ref('all')
@@ -29,6 +31,7 @@ export function useSubtitleTask ({
   const subtitleIssueExpandedMap = ref({})
   const subtitleTaskRerunId = ref('')
   let subtitleStatusPollTimer = null
+  let subtitleRealtimeStarted = false
 
   // ─── Constants ───────────────────────────────────────────────────────────
   const linkedSubtitleImportSourceModes = new Set(['linked_translation_archive_import', 'subtitle_folder_import'])
@@ -1331,8 +1334,80 @@ export function useSubtitleTask ({
     clearSubtitleStatusPoll()
     if (!subtitleDialogSessionActive.value) return
     if ((items || []).some(item => ['pending', 'processing'].includes(item?.status))) {
-      subtitleStatusPollTimer = setTimeout(() => refreshRJSubtitleStatus(false, { silent: true }), 3000)
+      subtitleStatusPollTimer = setTimeout(() => {
+        subtitleStatusPollTimer = null
+        if (!subtitleDialogSessionActive.value) return
+        if (!effectiveSubtitleTasks.value.some(item => ['pending', 'processing'].includes(item?.status))) return
+        if (!realtimeEvents.connected.value) {
+          refreshRJSubtitleStatus(false, { silent: true })
+          return
+        }
+        scheduleSubtitleStatusPoll(effectiveSubtitleTasks.value)
+      }, 30000)
     }
+  }
+
+  function normalizeSubtitleRealtimeEvent (detail = {}) {
+    if (detail.type === 'task.center.changed') return detail.payload || {}
+    return detail
+  }
+
+  function patchSubtitleTaskFromRealtimeEvent (payload = {}) {
+    const taskId = String(payload.engine_task_id || payload.entity_id || '').trim()
+    if (!taskId) return false
+    const domain = String(payload.domain || '').trim()
+    if (domain && domain !== 'rj_subtitle') return false
+    let changed = false
+    subtitleTasks.value = subtitleTasks.value.map(task => {
+      if (String(task?.id || '') !== taskId) return task
+      changed = true
+      return {
+        ...task,
+        status: payload.status || task.status,
+        progress: Number(payload.progress ?? task.progress ?? 0),
+        current_step: payload.current_step || task.current_step,
+        is_optimistic: false,
+      }
+    })
+    if (!changed && ['pending', 'processing'].includes(String(payload.status || ''))) {
+      subtitleTasks.value = sortSubtitleTasksForWorkbench([
+        ...subtitleTasks.value,
+        normalizeRJSubtitleTaskPayload({
+          id: taskId,
+          status: payload.status,
+          progress: payload.progress,
+          current_step: payload.current_step,
+          created_at: payload.updated_at,
+        })
+      ])
+      changed = true
+    }
+    if (!changed) return false
+    syncSubtitleInspectorTaskState()
+    syncSubtitleSelectionState()
+    return true
+  }
+
+  function handleSubtitleRealtimeEvent (event) {
+    const payload = normalizeSubtitleRealtimeEvent(event?.detail || {})
+    if (payload?.type !== 'task_center_changed') return
+    if (!patchSubtitleTaskFromRealtimeEvent(payload)) return
+    const status = String(payload.status || '').trim()
+    if (['completed', 'failed', 'cancelled', 'waiting_manual'].includes(status)) {
+      refreshRJSubtitleStatus(false, { silent: true })
+    }
+  }
+
+  function startSubtitleRealtimeEvents () {
+    if (subtitleRealtimeStarted || typeof window === 'undefined') return
+    window.addEventListener('kikoerumanager:events:message', handleSubtitleRealtimeEvent)
+    subtitleRealtimeStarted = true
+  }
+
+  function stopSubtitleRealtimeEvents () {
+    if (!subtitleRealtimeStarted || typeof window === 'undefined') return
+    window.removeEventListener('kikoerumanager:events:message', handleSubtitleRealtimeEvent)
+    subtitleRealtimeStarted = false
   }
 
   // ─── Async API functions ─────────────────────────────────────────────────
@@ -1712,6 +1787,8 @@ export function useSubtitleTask ({
     createOptimisticSubtitleTask,
     clearSubtitleStatusPoll,
     scheduleSubtitleStatusPoll,
+    startSubtitleRealtimeEvents,
+    stopSubtitleRealtimeEvents,
     refreshRJSubtitleStatus,
     clearCurrentSubtitleTask,
     clearSubtitleTasksByScope,

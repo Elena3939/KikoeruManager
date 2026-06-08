@@ -1951,6 +1951,7 @@ import { aiSubtitleMatchApi, baiduNetdiskApi, configApi, libraryApi, localUpload
 import { showSystemAlert, showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 
 import { useSubtitleTask } from '../composables/useSubtitleTask'
+import { useRealtimeEvents } from '../composables/useRealtimeEvents'
 
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
 
@@ -2001,6 +2002,7 @@ import SubtitleWorkbenchStage from '../components/library/subtitle-workbench/Sub
 import { useViewport } from '../composables/useViewport'
 
 const { isMobile: isMobileViewport } = useViewport()
+const realtimeEvents = useRealtimeEvents()
 
 
 
@@ -2082,6 +2084,7 @@ const folderCompletionPreviewJob = ref(createFolderCompletionPreviewJobState())
 const folderCompletionPreviewDismissed = ref(false)
 
 let folderCompletionPreviewTimer = null
+const FOLDER_COMPLETION_FALLBACK_POLL_MS = 30000
 
 const tableRef = ref(null)
 
@@ -3507,6 +3510,10 @@ const {
   clearSubtitleStatusPoll,
 
   scheduleSubtitleStatusPoll,
+
+  startSubtitleRealtimeEvents,
+
+  stopSubtitleRealtimeEvents,
 
   refreshRJSubtitleStatus,
 
@@ -5746,7 +5753,9 @@ onMounted(async () => {
 
   bindLibraryKeydown()
 
-  window.addEventListener('kikoerumanager:task-center:changed', handleFolderCompletionTaskCenterEvent)
+  startSubtitleRealtimeEvents()
+
+  window.addEventListener('kikoerumanager:events:message', handleFolderCompletionRealtimeEvent)
 
   nextTick(() => bindPathBreadcrumbResizeObserver())
 
@@ -5945,7 +5954,9 @@ onBeforeUnmount(() => {
 
   stopFolderCompletionPreviewPolling()
 
-  window.removeEventListener('kikoerumanager:task-center:changed', handleFolderCompletionTaskCenterEvent)
+  stopSubtitleRealtimeEvents()
+
+  window.removeEventListener('kikoerumanager:events:message', handleFolderCompletionRealtimeEvent)
 
   unbindLibraryKeydown()
 
@@ -17526,7 +17537,8 @@ function handleFolderCompletionPreviewUpdated (job = {}) {
 
   folderCompletionPreviewJob.value = normalizeFolderCompletionPreviewJob(job)
 
-  if (!folderCompletionPreviewActive.value) stopFolderCompletionPreviewPolling()
+  if (folderCompletionPreviewActive.value) startFolderCompletionPreviewPolling()
+  else stopFolderCompletionPreviewPolling()
 
 }
 
@@ -17535,9 +17547,17 @@ function startFolderCompletionPreviewPolling () {
 
   stopFolderCompletionPreviewPolling()
 
-  if (!folderCompletionPreviewJob.value.jobId) return
+  if (!folderCompletionPreviewJob.value.jobId || !folderCompletionPreviewActive.value) return
 
-  folderCompletionPreviewTimer = window.setInterval(refreshFolderCompletionPreviewJob, 1600)
+  folderCompletionPreviewTimer = window.setTimeout(() => {
+    folderCompletionPreviewTimer = null
+    if (!folderCompletionPreviewActive.value) return
+    if (!realtimeEvents.connected.value) {
+      refreshFolderCompletionPreviewJob()
+      return
+    }
+    startFolderCompletionPreviewPolling()
+  }, FOLDER_COMPLETION_FALLBACK_POLL_MS)
 
 }
 
@@ -17546,7 +17566,7 @@ function stopFolderCompletionPreviewPolling () {
 
   if (!folderCompletionPreviewTimer) return
 
-  window.clearInterval(folderCompletionPreviewTimer)
+  window.clearTimeout(folderCompletionPreviewTimer)
 
   folderCompletionPreviewTimer = null
 
@@ -17584,9 +17604,30 @@ async function refreshFolderCompletionPreviewJob () {
 }
 
 
-function handleFolderCompletionTaskCenterEvent (event) {
+function normalizeFolderCompletionRealtimePayload (detail = {}) {
+  if (detail.type === 'task.center.changed') return detail.payload || {}
+  if (detail.type === 'library.index.status.changed') {
+    return { type: 'library_index_status_changed', ...(detail.payload || {}) }
+  }
+  return detail
+}
 
-  const payload = event?.detail || {}
+
+function patchFolderCompletionPreviewFromTaskEvent (payload = {}) {
+  const status = String(payload.status || folderCompletionPreviewJob.value.status || 'running')
+  folderCompletionPreviewJob.value = normalizeFolderCompletionPreviewJob({
+    job_id: folderCompletionPreviewJob.value.jobId,
+    status,
+    progress: payload.progress,
+    current_step: payload.current_step,
+    error_message: payload.error_message || payload.failure_reason || payload.error || ''
+  })
+}
+
+
+function handleFolderCompletionRealtimeEvent (event) {
+
+  const payload = normalizeFolderCompletionRealtimePayload(event?.detail || {})
 
   if (payload?.type === 'library_index_status_changed') {
 
@@ -17605,6 +17646,18 @@ function handleFolderCompletionTaskCenterEvent (event) {
   const payloadTaskId = String(payload.engine_task_id || payload.task_id || payload.item_id || payload.entity_id || '')
 
   if (payloadTaskId !== jobId) return
+
+  patchFolderCompletionPreviewFromTaskEvent(payload)
+
+  if (folderCompletionPreviewActive.value) {
+
+    startFolderCompletionPreviewPolling()
+
+    return
+
+  }
+
+  stopFolderCompletionPreviewPolling()
 
   refreshFolderCompletionPreviewJob()
 

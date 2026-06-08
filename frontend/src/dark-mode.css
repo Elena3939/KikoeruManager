@@ -5322,3 +5322,107 @@ html.kikoerumanager-dark .baidu-upload-path-stack span,
 html.kikoerumanager-dark .baidu-upload-cleanup small {
   color: var(--km-dark-text-muted) !important;
 }
+
+html.kikoerumanager-dark .subtitle-import-workbench-dialog :is(
+  .subtitle-task-navigator [class*="bg-white"],
+  .subtitle-task-navigator [class*="bg-slate-50"],
+  .subtitle-task-navigator [class*="bg-slate-100"],
+  .subtitle-task-navigator [class*="bg-amber-"],
+  .subtitle-task-navigator [class*="bg-emerald-"],
+  .subtitle-task-navigator [class*="bg-sky-"],
+  .subtitle-task-navigator [class*="bg-blue-"],
+  .subtitle-task-navigator [class*="bg-violet-"],
+  .subtitle-task-navigator [class*="bg-rose-"],
+  .subtitle-context-drawer [class*="bg-white"],
+  .subtitle-context-drawer [class*="bg-slate-50"],
+  .subtitle-context-drawer [class*="bg-slate-100"],
+  .subtitle-config-card [class*="bg-white"],
+  .subtitle-config-card [class*="bg-slate-50"],
+  .subtitle-config-card [class*="bg-slate-100"],
+  .subtitle-inspector-workbench-root [class*="bg-white"],
+  .subtitle-inspector-workbench-root [class*="bg-slate-50"],
+  .subtitle-inspector-workbench-root [class*="bg-slate-100"]
+) {
+  background: var(--km-dark-surface-soft, #242529) !important;
+  background-color: var(--km-dark-surface-soft, #242529) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(246, 246, 248, 0.88) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .subtitle-import-workbench-dialog .subtitle-task-navigator :is(
+  .subtitle-task-card,
+  .subtitle-queue-filter,
+  .subtitle-clear-trigger,
+  .subtitle-clear-menu-panel,
+  .subtitle-clear-menu-item,
+  .subtitle-clear-menu-count,
+  span[class*="bg-"],
+  div[class*="bg-"]
+) {
+  background: var(--km-dark-surface-soft, #242529) !important;
+  background-color: var(--km-dark-surface-soft, #242529) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .subtitle-import-workbench-dialog .subtitle-task-navigator .subtitle-task-card:hover {
+  background: var(--km-dark-surface-hover, #333438) !important;
+  background-color: var(--km-dark-surface-hover, #333438) !important;
+  border-color: rgba(255, 255, 255, 0.24) !important;
+}
+
+html.kikoerumanager-dark .subtitle-import-workbench-dialog .subtitle-task-navigator :is(
+  [class*="text-amber-"],
+  [class*="text-emerald-"],
+  [class*="text-sky-"],
+  [class*="text-blue-"],
+  [class*="text-violet-"],
+  [class*="text-rose-"]
+) {
+  color: rgba(220, 220, 228, 0.86) !important;
+}
+
+html.kikoerumanager-dark .subtitle-import-workbench-dialog :is(
+  .subtitle-task-navigator button,
+  .subtitle-context-drawer button,
+  .subtitle-config-card button,
+  .subtitle-inspector-workbench-root button
+):not(.subtitle-switch):not(.subtitle-context-tab.is-active):not(.subtitle-naming-option.active):not(.subtitle-ai-mode-option.active):not(.subtitle-toggle-pill.active):not(.subtitle-retarget-option.active):not([class*="bg-blue-600"]):not([class*="bg-slate-900"]) {
+  background: var(--km-dark-button-bg, #2b2c30) !important;
+  background-color: var(--km-dark-button-bg, #2b2c30) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  color: rgba(244, 244, 245, 0.88) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .subtitle-import-workbench-dialog :is(
+  .subtitle-task-navigator button,
+  .subtitle-context-drawer button,
+  .subtitle-config-card button,
+  .subtitle-inspector-workbench-root button
+):not(:disabled):not(.subtitle-switch):not(.subtitle-context-tab.is-active):not(.subtitle-naming-option.active):not(.subtitle-ai-mode-option.active):not(.subtitle-toggle-pill.active):not(.subtitle-retarget-option.active):not([class*="bg-blue-600"]):not([class*="bg-slate-900"]):hover {
+  background: var(--km-dark-button-bg-hover, #333438) !important;
+  background-color: var(--km-dark-button-bg-hover, #333438) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .subtitle-import-workbench-dialog .subtitle-inspector-workbench-root :is(
+  [class*="bg-amber-"],
+  [class*="bg-rose-"],
+  [class*="bg-cyan-"],
+  [class*="bg-blue-"],
+  [class*="bg-violet-"]
+) {
+  background-color: rgba(43, 44, 48, 0.92) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  box-shadow: none !important;
+}
