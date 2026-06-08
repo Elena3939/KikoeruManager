@@ -51,6 +51,8 @@ class IndexStatus:
     last_full_scan_at: Optional[int] = None
     last_event_at: Optional[int] = None
     total_entries: int = 0
+    total_size_bytes: int = 0
+    folder_count: int = 0
     error: Optional[str] = None
     updated_at: int = 0
 

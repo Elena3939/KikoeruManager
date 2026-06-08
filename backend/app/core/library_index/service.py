@@ -98,6 +98,9 @@ class LibraryIndexService:
             library_id,
             status='syncing',
             watcher_mode='disabled',
+            total_entries=0,
+            total_size_bytes=0,
+            folder_count=0,
             error=None,
         )
 
@@ -111,11 +114,20 @@ class LibraryIndexService:
             # （total_entries 在 syncing 期间语义 = 已扫描数，ready 后 = 总数）。
             buffer: list[IndexEntry] = []
             written = 0
+            total_size = 0
+            folder_count = 0
             last_progress_report = time.time()
             for entry in scanner.scan(library_id, root_path):
                 buffer.append(entry)
+                size_delta, folder_delta = self._entry_stats(entry)
+                total_size += size_delta
+                folder_count += folder_delta
                 if len(buffer) >= chunk_size:
-                    written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
+                    written += self._store.bulk_upsert(
+                        buffer,
+                        chunk_size=chunk_size,
+                        maintain_status_stats=False,
+                    )
                     buffer.clear()
                     now = time.time()
                     if now - last_progress_report >= 0.5:
@@ -124,10 +136,16 @@ class LibraryIndexService:
                             status='syncing',
                             watcher_mode='disabled',
                             total_entries=written,
+                            total_size_bytes=total_size,
+                            folder_count=folder_count,
                         )
                         last_progress_report = now
             if buffer:
-                written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
+                written += self._store.bulk_upsert(
+                    buffer,
+                    chunk_size=chunk_size,
+                    maintain_status_stats=False,
+                )
 
             now_ms = int(time.time() * 1000)
             status = self._store.upsert_status(
@@ -136,6 +154,8 @@ class LibraryIndexService:
                 watcher_mode='disabled',
                 last_full_scan_at=now_ms,
                 total_entries=written,
+                total_size_bytes=total_size,
+                folder_count=folder_count,
                 error=None,
             )
             elapsed = time.time() - started
@@ -162,6 +182,9 @@ class LibraryIndexService:
             library_id,
             status='syncing',
             watcher_mode='disabled',
+            total_entries=0,
+            total_size_bytes=0,
+            folder_count=0,
             error=None,
         )
 
@@ -197,7 +220,12 @@ class LibraryIndexService:
                 return existing
             # 远程扫描耗时较长，没拿到锁不阻塞，直接返回当前状态
             return existing or self._store.upsert_status(
-                library_id, status='syncing', watcher_mode='disabled',
+                library_id,
+                status='syncing',
+                watcher_mode='disabled',
+                total_entries=0,
+                total_size_bytes=0,
+                folder_count=0,
             )
         try:
             return await self._do_rebuild_remote(
@@ -223,6 +251,9 @@ class LibraryIndexService:
             library_id,
             status='syncing',
             watcher_mode='disabled',
+            total_entries=0,
+            total_size_bytes=0,
+            folder_count=0,
             error=None,
         )
 
@@ -240,12 +271,21 @@ class LibraryIndexService:
             # 同时每 0.5s 上报一次 syncing 进度，让前端圆环能看到实时增长。
             buffer: list[IndexEntry] = []
             written = 0
+            total_size = 0
+            folder_count = 0
             last_progress_report = time.time()
             async with get_resource_budget_service().acquire("remote_fs", weight=2, reason="library_index.remote_rebuild"):
                 async for entry in scanner.scan(library_id, client, root_path):
                     buffer.append(entry)
+                    size_delta, folder_delta = self._entry_stats(entry)
+                    total_size += size_delta
+                    folder_count += folder_delta
                     if len(buffer) >= chunk_size:
-                        written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
+                        written += self._store.bulk_upsert(
+                            buffer,
+                            chunk_size=chunk_size,
+                            maintain_status_stats=False,
+                        )
                         buffer.clear()
                         now = time.time()
                         if now - last_progress_report >= 0.5:
@@ -254,10 +294,16 @@ class LibraryIndexService:
                                 status='syncing',
                                 watcher_mode='disabled',
                                 total_entries=written,
+                                total_size_bytes=total_size,
+                                folder_count=folder_count,
                             )
                             last_progress_report = now
             if buffer:
-                written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
+                written += self._store.bulk_upsert(
+                    buffer,
+                    chunk_size=chunk_size,
+                    maintain_status_stats=False,
+                )
 
             now_ms = int(time.time() * 1000)
             status = self._store.upsert_status(
@@ -266,6 +312,8 @@ class LibraryIndexService:
                 watcher_mode='disabled',
                 last_full_scan_at=now_ms,
                 total_entries=written,
+                total_size_bytes=total_size,
+                folder_count=folder_count,
                 error=None,
             )
             elapsed = time.time() - started
@@ -298,6 +346,9 @@ class LibraryIndexService:
             library_id,
             status='syncing',
             watcher_mode='disabled',
+            total_entries=0,
+            total_size_bytes=0,
+            folder_count=0,
             error=None,
         )
 
@@ -321,6 +372,18 @@ class LibraryIndexService:
         self._pending_tasks.add(task)
         task.add_done_callback(self._pending_tasks.discard)
         return status
+
+    @staticmethod
+    def _entry_stats(entry: IndexEntry) -> tuple[int, int]:
+        if entry.entry_type == 'file':
+            return max(0, int(entry.size or 0)), 0
+        if (
+            entry.entry_type == 'dir'
+            and bool(entry.relative_path)
+            and (entry.parent_path or '') == ''
+        ):
+            return 0, 1
+        return 0, 0
 
     # ========== self_mutation ==========
     # 业务自身写操作（rename / delete / move / 解压落地 / 字幕落盘）完成后
@@ -369,6 +432,40 @@ class LibraryIndexService:
                 library_id, deletes,
             )
         return result
+
+    def handle_self_mutation_move(
+        self,
+        *,
+        source_library_id: str,
+        target_library_id: str,
+        old_relative_path: str,
+        new_relative_path: str,
+        old_absolute_path: str,
+        new_absolute_path: str,
+    ) -> int:
+        """移动/重命名索引 fast-path，不扫磁盘。
+
+        - 同库：单条 SQL UPDATE 前缀改写。
+        - 跨库：数据库内 INSERT...SELECT 搬迁，再批量删除源子树。
+
+        返回命中的索引条数；0 表示旧索引缺失，调用方可 fallback 到扫新子树。
+        """
+        if source_library_id == target_library_id:
+            return self._store.move_subtree_same_library(
+                source_library_id,
+                old_relative_path=old_relative_path,
+                new_relative_path=new_relative_path,
+                old_absolute_path=old_absolute_path,
+                new_absolute_path=new_absolute_path,
+            )
+        return self._store.move_subtree_between_libraries(
+            source_library_id,
+            target_library_id,
+            old_relative_path=old_relative_path,
+            new_relative_path=new_relative_path,
+            old_absolute_path=old_absolute_path,
+            new_absolute_path=new_absolute_path,
+        )
 
     # ========== self_mutation：增量 upsert 子树 ==========
     # 业务自身写操作（解压入库 / rename / 远程上传 / 字幕落盘 / 冲突重绑等）
@@ -607,7 +704,19 @@ class LibraryIndexService:
         return self._store.get_entry(library_id, relative_path)
 
     def get_library_size(self, library_id: str) -> int:
-        return self._store.sum_library_size(library_id)
+        stats = self._store.get_library_stats(library_id)
+        return int(stats.get("total_size_bytes") or 0)
+
+    def get_library_stats(
+        self,
+        library_id: str,
+        *,
+        parent_path: str = '',
+    ) -> dict[str, int]:
+        return self._store.get_library_stats(
+            library_id,
+            parent_path=parent_path,
+        )
 
 
 _default_service: Optional[LibraryIndexService] = None

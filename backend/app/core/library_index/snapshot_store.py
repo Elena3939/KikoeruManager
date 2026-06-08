@@ -152,9 +152,26 @@ class SnapshotStore:
     def upsert(self, entry: IndexEntry) -> None:
         """写入或更新一行索引，(library_id, relative_path) 作为自然主键。"""
         with self._session() as db:
+            entry = _sqlite_safe_entry(entry)
+            old = self._get_existing_stats_map(db, entry.library_id, [entry.relative_path])
+            old_size, old_folders = old.get(entry.relative_path, (0, 0))
+            new_size, new_folders = self._entry_stats(entry)
             self._upsert_one(db, entry)
+            self._apply_status_delta(
+                db,
+                entry.library_id,
+                size_delta=new_size - old_size,
+                folder_delta=new_folders - old_folders,
+                entry_delta=0 if entry.relative_path in old else 1,
+            )
 
-    def bulk_upsert(self, entries: Iterable[IndexEntry], *, chunk_size: int = 500) -> int:
+    def bulk_upsert(
+        self,
+        entries: Iterable[IndexEntry],
+        *,
+        chunk_size: int = 500,
+        maintain_status_stats: bool = True,
+    ) -> int:
         """批量写入 / 更新，返回实际写入条数。
 
         主路径使用 SQLite 原生 UPSERT，避免逐条 SELECT + ORM 物化。
@@ -171,11 +188,23 @@ class SnapshotStore:
         payload = list(deduped.values())
         try:
             with self._session() as db:
+                deltas = (
+                    self._build_bulk_upsert_status_deltas(db, payload)
+                    if maintain_status_stats else {}
+                )
                 for i in range(0, len(payload), chunk_size):
                     chunk = payload[i:i + chunk_size]
                     db.execute(
                         text(_BULK_UPSERT_SQL),
                         [self._entry_to_upsert_params(item) for item in chunk],
+                    )
+                for library_id, delta in deltas.items():
+                    self._apply_status_delta(
+                        db,
+                        library_id,
+                        size_delta=delta["size"],
+                        folder_delta=delta["folders"],
+                        entry_delta=delta["entries"],
                     )
             return len(payload)
         except Exception:
@@ -183,9 +212,21 @@ class SnapshotStore:
 
         written = 0
         with self._session() as db:
+            deltas = (
+                self._build_bulk_upsert_status_deltas(db, payload)
+                if maintain_status_stats else {}
+            )
             for item in payload:
                 self._upsert_one(db, item)
                 written += 1
+            for library_id, delta in deltas.items():
+                self._apply_status_delta(
+                    db,
+                    library_id,
+                    size_delta=delta["size"],
+                    folder_delta=delta["folders"],
+                    entry_delta=delta["entries"],
+                )
         return written
 
     def _upsert_one(self, db: Session, entry: IndexEntry) -> None:
@@ -244,19 +285,517 @@ class SnapshotStore:
             "indexed_at": entry.indexed_at or _now_ms(),
         }
 
+    @staticmethod
+    def _entry_stats(entry: IndexEntry) -> tuple[int, int]:
+        if entry.entry_type == 'file':
+            return max(0, int(entry.size or 0)), 0
+        if (
+            entry.entry_type == 'dir'
+            and bool(entry.relative_path)
+            and (entry.parent_path or '') == ''
+        ):
+            return 0, 1
+        return 0, 0
+
+    @staticmethod
+    def _row_stats(row: LibraryIndexEntry) -> tuple[int, int]:
+        if row.entry_type == 'file':
+            return max(0, int(row.size or 0)), 0
+        if (
+            row.entry_type == 'dir'
+            and bool(row.relative_path)
+            and (row.parent_path or '') == ''
+        ):
+            return 0, 1
+        return 0, 0
+
+    def _get_existing_stats_map(
+        self,
+        db: Session,
+        library_id: str,
+        relative_paths: Iterable[str],
+    ) -> dict[str, tuple[int, int]]:
+        paths = list(dict.fromkeys(relative_paths))
+        if not paths:
+            return {}
+        result: dict[str, tuple[int, int]] = {}
+        chunk_size = 500
+        for i in range(0, len(paths), chunk_size):
+            rows = (
+                db.query(LibraryIndexEntry)
+                .filter(
+                    LibraryIndexEntry.library_id == library_id,
+                    LibraryIndexEntry.relative_path.in_(paths[i:i + chunk_size]),
+                )
+                .all()
+            )
+            for row in rows:
+                result[row.relative_path] = self._row_stats(row)
+        return result
+
+    def _build_bulk_upsert_status_deltas(
+        self,
+        db: Session,
+        payload: list[IndexEntry],
+    ) -> dict[str, dict[str, int]]:
+        by_library: dict[str, list[IndexEntry]] = {}
+        for item in payload:
+            by_library.setdefault(item.library_id, []).append(item)
+
+        deltas: dict[str, dict[str, int]] = {}
+        for library_id, items in by_library.items():
+            old = self._get_existing_stats_map(
+                db,
+                library_id,
+                [item.relative_path for item in items],
+            )
+            size_delta = 0
+            folder_delta = 0
+            entry_delta = 0
+            for item in items:
+                old_size, old_folders = old.get(item.relative_path, (0, 0))
+                new_size, new_folders = self._entry_stats(item)
+                size_delta += new_size - old_size
+                folder_delta += new_folders - old_folders
+                if item.relative_path not in old:
+                    entry_delta += 1
+            if size_delta or folder_delta or entry_delta:
+                deltas[library_id] = {
+                    "size": size_delta,
+                    "folders": folder_delta,
+                    "entries": entry_delta,
+                }
+        return deltas
+
+    def _apply_status_delta(
+        self,
+        db: Session,
+        library_id: str,
+        *,
+        size_delta: int = 0,
+        folder_delta: int = 0,
+        entry_delta: int = 0,
+    ) -> None:
+        if not (size_delta or folder_delta or entry_delta):
+            return
+        row = (
+            db.query(LibraryIndexStatus)
+            .filter(LibraryIndexStatus.library_id == library_id)
+            .first()
+        )
+        if row is None or row.status not in {'ready', 'syncing'}:
+            return
+        row.total_size_bytes = max(0, int(row.total_size_bytes or 0) + int(size_delta or 0))
+        row.folder_count = max(0, int(row.folder_count or 0) + int(folder_delta or 0))
+        row.total_entries = max(0, int(row.total_entries or 0) + int(entry_delta or 0))
+        row.updated_at = _now_ms()
+        db.flush()
+        self._broadcast_status_change(self._row_to_status(row), reason="library_index_delta")
+
+    def _query_stats_delta(self, q) -> tuple[int, int, int]:
+        entry_count = int(q.with_entities(func.count(LibraryIndexEntry.id)).scalar() or 0)
+        total_size = int(
+            q.filter(LibraryIndexEntry.entry_type == 'file')
+            .with_entities(func.coalesce(func.sum(LibraryIndexEntry.size), 0))
+            .scalar() or 0
+        )
+        folder_count = int(
+            q.filter(
+                LibraryIndexEntry.entry_type == 'dir',
+                LibraryIndexEntry.relative_path != '',
+                func.coalesce(LibraryIndexEntry.parent_path, '') == '',
+            )
+            .with_entities(func.count(LibraryIndexEntry.id))
+            .scalar() or 0
+        )
+        return max(0, total_size), max(0, folder_count), max(0, entry_count)
+
+    @staticmethod
+    def _normalize_relative_path(value: Optional[str]) -> str:
+        return str(value or "").strip("/")
+
+    @staticmethod
+    def _escape_like(value: str) -> str:
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    @classmethod
+    def _subtree_like_pattern(cls, relative_path: str) -> str:
+        return f"{cls._escape_like(relative_path)}/%"
+
+    @staticmethod
+    def _relative_parent(relative_path: str) -> str:
+        value = str(relative_path or "").strip("/")
+        if "/" not in value:
+            return ""
+        return value.rsplit("/", 1)[0]
+
+    @staticmethod
+    def _relative_name(relative_path: str) -> str:
+        value = str(relative_path or "").strip("/")
+        if not value:
+            return ""
+        return value.rsplit("/", 1)[-1]
+
+    @staticmethod
+    def _relative_depth(relative_path: str) -> int:
+        value = str(relative_path or "").strip("/")
+        return 0 if not value else value.count("/") + 1
+
+    @staticmethod
+    def _replace_prefix(value: Optional[str], old_prefix: str, new_prefix: str) -> str:
+        current = str(value or "")
+        if current == old_prefix:
+            return new_prefix
+        if old_prefix and current.startswith(old_prefix):
+            return new_prefix + current[len(old_prefix):]
+        return current
+
+    def _subtree_query(self, db: Session, library_id: str, relative_path: str):
+        normalized = self._normalize_relative_path(relative_path)
+        q = db.query(LibraryIndexEntry).filter(LibraryIndexEntry.library_id == library_id)
+        if not normalized:
+            return q
+        return q.filter(
+            or_(
+                LibraryIndexEntry.relative_path == normalized,
+                LibraryIndexEntry.relative_path.like(
+                    self._subtree_like_pattern(normalized),
+                    escape="\\",
+                ),
+            ),
+        )
+
+    def _delete_subtree_in_session(
+        self,
+        db: Session,
+        library_id: str,
+        relative_path: str,
+    ) -> tuple[int, int, int, int]:
+        q = self._subtree_query(db, library_id, relative_path)
+        total_size, folder_count, entry_count = self._query_stats_delta(q)
+        deleted = q.delete(synchronize_session=False)
+        self._apply_status_delta(
+            db,
+            library_id,
+            size_delta=-total_size,
+            folder_delta=-folder_count,
+            entry_delta=-entry_count,
+        )
+        return deleted, total_size, folder_count, entry_count
+
+    def _transform_subtree_entry(
+        self,
+        entry: IndexEntry,
+        *,
+        target_library_id: str,
+        old_relative: str,
+        new_relative: str,
+        old_absolute: str,
+        new_absolute: str,
+        depth_delta: int,
+        indexed_at: int,
+    ) -> IndexEntry:
+        next_relative = self._replace_prefix(entry.relative_path, old_relative, new_relative)
+        next_absolute = self._replace_prefix(entry.absolute_path, old_absolute, new_absolute)
+        if entry.relative_path == old_relative:
+            next_parent = self._relative_parent(new_relative)
+            next_name = self._relative_name(new_relative) or entry.name
+        else:
+            next_parent = self._replace_prefix(entry.parent_path, old_relative, new_relative)
+            next_name = entry.name
+        next_depth = None if entry.depth is None else max(0, int(entry.depth or 0) + depth_delta)
+        return replace(
+            entry,
+            library_id=target_library_id,
+            relative_path=next_relative,
+            absolute_path=next_absolute,
+            parent_path=next_parent,
+            name=next_name,
+            depth=next_depth,
+            indexed_at=indexed_at,
+        )
+
+    def move_subtree_same_library(
+        self,
+        library_id: str,
+        *,
+        old_relative_path: str,
+        new_relative_path: str,
+        old_absolute_path: str,
+        new_absolute_path: str,
+    ) -> int:
+        """同库移动索引 fast-path：单条 UPDATE 改写子树路径，不扫磁盘。"""
+        old_rel = self._normalize_relative_path(old_relative_path)
+        new_rel = self._normalize_relative_path(new_relative_path)
+        if not old_rel or not new_rel or old_rel == new_rel:
+            return 0
+        old_abs = str(old_absolute_path or "")
+        new_abs = str(new_absolute_path or "")
+        if not old_abs or not new_abs:
+            return 0
+
+        new_parent = self._relative_parent(new_rel)
+        new_name = self._relative_name(new_rel)
+        depth_delta = self._relative_depth(new_rel) - self._relative_depth(old_rel)
+        now = _now_ms()
+        with self._session() as db:
+            root_row = (
+                db.query(LibraryIndexEntry)
+                .filter(
+                    LibraryIndexEntry.library_id == library_id,
+                    LibraryIndexEntry.relative_path == old_rel,
+                )
+                .first()
+            )
+            if root_row is None:
+                return 0
+            old_size, old_folders = self._row_stats(root_row)
+            moved_root = self._transform_subtree_entry(
+                self._row_to_entry(root_row),
+                target_library_id=library_id,
+                old_relative=old_rel,
+                new_relative=new_rel,
+                old_absolute=old_abs,
+                new_absolute=new_abs,
+                depth_delta=depth_delta,
+                indexed_at=now,
+            )
+            new_size, new_folders = self._entry_stats(moved_root)
+
+            deleted, target_size, target_folders, target_entries = self._delete_subtree_in_session(
+                db,
+                library_id,
+                new_rel,
+            )
+
+            result = db.execute(
+                text(
+                    """
+                    UPDATE library_index_entries
+                       SET relative_path = CASE
+                               WHEN relative_path = :old_rel THEN :new_rel
+                               ELSE :new_rel || substr(relative_path, :old_rel_suffix_start)
+                           END,
+                           absolute_path = CASE
+                               WHEN absolute_path = :old_abs THEN :new_abs
+                               ELSE :new_abs || substr(absolute_path, :old_abs_suffix_start)
+                           END,
+                           parent_path = CASE
+                               WHEN relative_path = :old_rel THEN :new_parent
+                               WHEN parent_path = :old_rel THEN :new_rel
+                               WHEN parent_path LIKE :old_child_like ESCAPE '\\'
+                                   THEN :new_rel || substr(parent_path, :old_rel_suffix_start)
+                               ELSE parent_path
+                           END,
+                           name = CASE
+                               WHEN relative_path = :old_rel THEN :new_name
+                               ELSE name
+                           END,
+                           depth = CASE
+                               WHEN depth IS NULL THEN NULL
+                               ELSE depth + :depth_delta
+                           END,
+                           indexed_at = :indexed_at
+                     WHERE library_id = :library_id
+                       AND (
+                           relative_path = :old_rel
+                           OR relative_path LIKE :old_child_like ESCAPE '\\'
+                       )
+                    """
+                ),
+                {
+                    "library_id": library_id,
+                    "old_rel": old_rel,
+                    "new_rel": new_rel,
+                    "old_abs": old_abs,
+                    "new_abs": new_abs,
+                    "new_parent": new_parent,
+                    "new_name": new_name,
+                    "old_child_like": self._subtree_like_pattern(old_rel),
+                    "old_rel_suffix_start": len(old_rel) + 1,
+                    "old_abs_suffix_start": len(old_abs) + 1,
+                    "depth_delta": depth_delta,
+                    "indexed_at": now,
+                },
+            )
+            moved = int(result.rowcount or 0)
+            if moved:
+                self._apply_status_delta(
+                    db,
+                    library_id,
+                    size_delta=-target_size + (new_size - old_size),
+                    folder_delta=-target_folders + (new_folders - old_folders),
+                    entry_delta=-target_entries,
+                )
+            elif deleted:
+                logger.warning(
+                    "[索引] 同库移动 fast-path 未命中旧子树，但已删除目标旧索引 library=%s old=%s new=%s",
+                    library_id,
+                    old_rel,
+                    new_rel,
+                )
+            return moved
+
+    def move_subtree_between_libraries(
+        self,
+        source_library_id: str,
+        target_library_id: str,
+        *,
+        old_relative_path: str,
+        new_relative_path: str,
+        old_absolute_path: str,
+        new_absolute_path: str,
+        chunk_size: int = 500,
+    ) -> int:
+        """跨库移动索引 fast-path：数据库内 INSERT...SELECT 搬迁，不扫磁盘。"""
+        old_rel = self._normalize_relative_path(old_relative_path)
+        new_rel = self._normalize_relative_path(new_relative_path)
+        if not old_rel or not new_rel:
+            return 0
+        old_abs = str(old_absolute_path or "")
+        new_abs = str(new_absolute_path or "")
+        if not old_abs or not new_abs:
+            return 0
+
+        depth_delta = self._relative_depth(new_rel) - self._relative_depth(old_rel)
+        now = _now_ms()
+        new_parent = self._relative_parent(new_rel)
+        new_name = self._relative_name(new_rel)
+        with self._session() as db:
+            source_q = self._subtree_query(db, source_library_id, old_rel)
+            source_size, _source_folders, source_entries = self._query_stats_delta(source_q)
+            if not source_entries:
+                return 0
+
+            source_root = (
+                db.query(LibraryIndexEntry.entry_type)
+                .filter(
+                    LibraryIndexEntry.library_id == source_library_id,
+                    LibraryIndexEntry.relative_path == old_rel,
+                )
+                .first()
+            )
+            inserted_top_folders = (
+                1
+                if source_root is not None
+                and source_root[0] == 'dir'
+                and new_parent == ''
+                else 0
+            )
+
+            _, target_size, target_folders, target_entries = self._delete_subtree_in_session(
+                db,
+                target_library_id,
+                new_rel,
+            )
+
+            insert_result = db.execute(
+                text(
+                    """
+                    INSERT INTO library_index_entries (
+                        library_id,
+                        entry_type,
+                        relative_path,
+                        absolute_path,
+                        name,
+                        rjcode,
+                        parent_path,
+                        size,
+                        file_count,
+                        mtime,
+                        depth,
+                        indexed_at
+                    )
+                    SELECT
+                        :target_library_id,
+                        entry_type,
+                        CASE
+                            WHEN relative_path = :old_rel THEN :new_rel
+                            ELSE :new_rel || substr(relative_path, :old_rel_suffix_start)
+                        END,
+                        CASE
+                            WHEN absolute_path = :old_abs THEN :new_abs
+                            ELSE :new_abs || substr(absolute_path, :old_abs_suffix_start)
+                        END,
+                        CASE
+                            WHEN relative_path = :old_rel THEN :new_name
+                            ELSE name
+                        END,
+                        rjcode,
+                        CASE
+                            WHEN relative_path = :old_rel THEN :new_parent
+                            WHEN parent_path = :old_rel THEN :new_rel
+                            WHEN parent_path LIKE :old_child_like ESCAPE '\\'
+                                THEN :new_rel || substr(parent_path, :old_rel_suffix_start)
+                            ELSE parent_path
+                        END,
+                        size,
+                        file_count,
+                        mtime,
+                        CASE
+                            WHEN depth IS NULL THEN NULL
+                            ELSE depth + :depth_delta
+                        END,
+                        :indexed_at
+                    FROM library_index_entries
+                    WHERE library_id = :source_library_id
+                      AND (
+                          relative_path = :old_rel
+                          OR relative_path LIKE :old_child_like ESCAPE '\\'
+                      )
+                    """
+                ),
+                {
+                    "source_library_id": source_library_id,
+                    "target_library_id": target_library_id,
+                    "old_rel": old_rel,
+                    "new_rel": new_rel,
+                    "old_abs": old_abs,
+                    "new_abs": new_abs,
+                    "new_parent": new_parent,
+                    "new_name": new_name,
+                    "old_child_like": self._subtree_like_pattern(old_rel),
+                    "old_rel_suffix_start": len(old_rel) + 1,
+                    "old_abs_suffix_start": len(old_abs) + 1,
+                    "depth_delta": depth_delta,
+                    "indexed_at": now,
+                },
+            )
+            inserted = int(insert_result.rowcount or source_entries)
+
+            self._delete_subtree_in_session(db, source_library_id, old_rel)
+
+            self._apply_status_delta(
+                db,
+                target_library_id,
+                size_delta=-target_size + source_size,
+                folder_delta=-target_folders + inserted_top_folders,
+                entry_delta=-target_entries + inserted,
+            )
+            return inserted
+
     # ========== Entry 删除 ==========
 
     def delete_by_relative_path(self, library_id: str, relative_path: str) -> int:
         """删除单行。"""
         with self._session() as db:
-            return (
+            q = (
                 db.query(LibraryIndexEntry)
                 .filter(
                     LibraryIndexEntry.library_id == library_id,
                     LibraryIndexEntry.relative_path == relative_path,
                 )
-                .delete(synchronize_session=False)
             )
+            total_size, folder_count, entry_count = self._query_stats_delta(q)
+            deleted = q.delete(synchronize_session=False)
+            self._apply_status_delta(
+                db,
+                library_id,
+                size_delta=-total_size,
+                folder_delta=-folder_count,
+                entry_delta=-entry_count,
+            )
+            return deleted
 
     def delete_subtree(self, library_id: str, relative_path: str) -> int:
         """删除指定 relative_path 自身 + 所有后代。
@@ -278,7 +817,16 @@ class SnapshotStore:
                         LibraryIndexEntry.relative_path.like(prefix + '%'),
                     ),
                 )
-            return q.delete(synchronize_session=False)
+            total_size, folder_count, entry_count = self._query_stats_delta(q)
+            deleted = q.delete(synchronize_session=False)
+            self._apply_status_delta(
+                db,
+                library_id,
+                size_delta=-total_size,
+                folder_delta=-folder_count,
+                entry_delta=-entry_count,
+            )
+            return deleted
 
     def delete_library(self, library_id: str) -> int:
         """整库清空（rebuild 前调用）。"""
@@ -542,6 +1090,30 @@ class SnapshotStore:
             )
             return int(total or 0)
 
+    def get_library_stats(
+        self,
+        library_id: str,
+        *,
+        parent_path: Optional[str] = '',
+    ) -> dict[str, int]:
+        """读取持久化聚合快照。
+
+        parent_path 参数保留给旧调用方兼容；聚合快照按库存根维护，不在统计接口
+        热路径上重新按目录过滤 / SUM。
+        """
+        with self._session() as db:
+            row = (
+                db.query(LibraryIndexStatus)
+                .filter(LibraryIndexStatus.library_id == library_id)
+                .first()
+            )
+            if row is None:
+                return {"folder_count": 0, "total_size_bytes": 0}
+            return {
+                "folder_count": int(row.folder_count or 0),
+                "total_size_bytes": int(row.total_size_bytes or 0),
+            }
+
     def count_library_entries(
         self,
         library_id: str,
@@ -576,6 +1148,8 @@ class SnapshotStore:
         last_full_scan_at: Optional[int] = None,
         last_event_at: Optional[int] = None,
         total_entries: Optional[int] = None,
+        total_size_bytes: Optional[int] = None,
+        folder_count: Optional[int] = None,
         error: Optional[str] = ...,  # type: ignore[assignment]
     ) -> IndexStatus:
         """写入状态。error 默认省略不动；显式传 None 才会清空。"""
@@ -594,6 +1168,8 @@ class SnapshotStore:
                     last_full_scan_at=last_full_scan_at,
                     last_event_at=last_event_at,
                     total_entries=total_entries or 0,
+                    total_size_bytes=total_size_bytes or 0,
+                    folder_count=folder_count or 0,
                     error=error if error is not ... else None,
                     updated_at=now,
                 )
@@ -609,11 +1185,16 @@ class SnapshotStore:
                     row.last_event_at = last_event_at
                 if total_entries is not None:
                     row.total_entries = total_entries
+                if total_size_bytes is not None:
+                    row.total_size_bytes = max(0, int(total_size_bytes or 0))
+                if folder_count is not None:
+                    row.folder_count = max(0, int(folder_count or 0))
                 if error is not ...:
                     row.error = error
                 row.updated_at = now
             db.flush()
             snapshot = self._row_to_status(row)
+            self._broadcast_status_change(snapshot, reason="library_index_status")
         return snapshot
 
     def delete_status(self, library_id: str) -> int:
@@ -650,11 +1231,19 @@ class SnapshotStore:
                     conditions.append(LibraryIndexEntry.relative_path.like(f"{p}/%"))
                 if not conditions:
                     continue
-                deleted += (
+                q = (
                     db.query(LibraryIndexEntry)
                     .filter(LibraryIndexEntry.library_id == library_id)
                     .filter(or_(*conditions))
-                    .delete(synchronize_session=False)
+                )
+                total_size, folder_count, entry_count = self._query_stats_delta(q)
+                deleted += q.delete(synchronize_session=False)
+                self._apply_status_delta(
+                    db,
+                    library_id,
+                    size_delta=-total_size,
+                    folder_delta=-folder_count,
+                    entry_delta=-entry_count,
                 )
         return deleted
 
@@ -719,9 +1308,20 @@ class SnapshotStore:
             last_full_scan_at=row.last_full_scan_at,
             last_event_at=row.last_event_at,
             total_entries=int(row.total_entries or 0),
+            total_size_bytes=int(row.total_size_bytes or 0),
+            folder_count=int(row.folder_count or 0),
             error=row.error,
             updated_at=int(row.updated_at or 0),
         )
+
+    @staticmethod
+    def _broadcast_status_change(status: IndexStatus, *, reason: str) -> None:
+        try:
+            from ..task_center_event_service import broadcast_library_index_status_changed
+
+            broadcast_library_index_status_changed(status, reason=reason)
+        except Exception:
+            logger.debug("[索引] 广播状态变更失败 library=%s", status.library_id, exc_info=True)
 
 
 _default_store: Optional[SnapshotStore] = None

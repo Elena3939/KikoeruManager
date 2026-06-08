@@ -214,6 +214,86 @@ def test_cross_library_move_synchronizes_both_indexes(isolated_index, tmp_path):
     assert os.path.normcase(dest_hits[0].absolute_path) == os.path.normcase(str(new_dir))
 
 
+def test_same_library_move_rewrites_index_without_rescan(isolated_index):
+    """同库目录移动只改索引路径前缀，不重新扫上万文件。"""
+    service: LibraryIndexService = isolated_index["service"]
+    store: SnapshotStore = isolated_index["store"]
+    library_root: Path = isolated_index["library_root"]
+    library_id = "lib_move_same"
+
+    _mark_index_ready(store, library_id)
+    old_dir = _create_rj_dir(library_root, "RJ00000020")
+    service.upsert_subtree_local(library_id, str(library_root), str(old_dir))
+    old_status = service.get_status(library_id)
+
+    new_parent = library_root / "移動先"
+    new_parent.mkdir()
+    new_dir = new_parent / old_dir.name
+    old_dir.rename(new_dir)
+    old_rel = os.path.relpath(str(old_dir), str(library_root)).replace("\\", "/")
+    new_rel = os.path.relpath(str(new_dir), str(library_root)).replace("\\", "/")
+
+    moved = service.handle_self_mutation_move(
+        source_library_id=library_id,
+        target_library_id=library_id,
+        old_relative_path=old_rel,
+        new_relative_path=new_rel,
+        old_absolute_path=str(old_dir),
+        new_absolute_path=str(new_dir),
+    )
+
+    assert moved >= 2
+    assert service.find_by_rjcode("RJ00000020", library_id)[0].relative_path == new_rel
+    assert store.get_entry(library_id, old_rel) is None
+    moved_file = store.get_entry(library_id, f"{new_rel}/RJ00000020_track1.mp3")
+    assert moved_file is not None
+    assert os.path.normcase(moved_file.absolute_path) == os.path.normcase(str(new_dir / "RJ00000020_track1.mp3"))
+    new_status = service.get_status(library_id)
+    assert new_status is not None and old_status is not None
+    assert new_status.total_entries == old_status.total_entries
+    assert new_status.total_size_bytes == old_status.total_size_bytes
+
+
+def test_cross_library_move_copies_index_snapshot_without_rescan(isolated_index, tmp_path):
+    """跨库移动用 INSERT...SELECT 复制旧索引快照，不依赖目标文件系统扫描。"""
+    service: LibraryIndexService = isolated_index["service"]
+    store: SnapshotStore = isolated_index["store"]
+    src_root: Path = isolated_index["library_root"]
+    dest_root = tmp_path / "library_dest_fast"
+    dest_root.mkdir()
+    src_id = "lib_move_src"
+    dest_id = "lib_move_dest"
+    _mark_index_ready(store, src_id)
+    _mark_index_ready(store, dest_id)
+
+    old_dir = _create_rj_dir(src_root, "RJ00000021")
+    service.upsert_subtree_local(src_id, str(src_root), str(old_dir))
+    dest_parent = dest_root / "移動先"
+    dest_parent.mkdir()
+    new_dir = dest_parent / old_dir.name
+    old_dir.rename(new_dir)
+    old_rel = os.path.relpath(str(old_dir), str(src_root)).replace("\\", "/")
+    new_rel = os.path.relpath(str(new_dir), str(dest_root)).replace("\\", "/")
+
+    moved = service.handle_self_mutation_move(
+        source_library_id=src_id,
+        target_library_id=dest_id,
+        old_relative_path=old_rel,
+        new_relative_path=new_rel,
+        old_absolute_path=str(old_dir),
+        new_absolute_path=str(new_dir),
+    )
+
+    assert moved >= 2
+    assert service.find_by_rjcode("RJ00000021", src_id) == []
+    dest_hits = service.find_by_rjcode("RJ00000021", dest_id)
+    assert len(dest_hits) == 1
+    assert dest_hits[0].relative_path == new_rel
+    moved_file = store.get_entry(dest_id, f"{new_rel}/RJ00000021_track1.mp3")
+    assert moved_file is not None
+    assert os.path.normcase(moved_file.absolute_path) == os.path.normcase(str(new_dir / "RJ00000021_track1.mp3"))
+
+
 # ---------- Case 6：非法 UTF-8 文件名不能拖垮索引 ----------
 
 def test_snapshot_store_escapes_surrogate_paths_before_sqlite_write(isolated_index):
@@ -264,3 +344,39 @@ def test_upsert_subtree_local_accepts_single_file_path(isolated_index):
     assert hit is not None
     assert hit.entry_type == "file"
     assert hit.size == 4
+
+
+def test_index_status_keeps_persisted_size_snapshot_with_deltas(isolated_index):
+    """统计卡片读 status 聚合快照；业务变更只做差量加减。"""
+    service: LibraryIndexService = isolated_index["service"]
+    store: SnapshotStore = isolated_index["store"]
+    library_root: Path = isolated_index["library_root"]
+    library_id = "lib_stats_snapshot"
+
+    _mark_index_ready(store, library_id)
+    top_dir = library_root / "RJ00000013"
+    top_dir.mkdir()
+    audio_file = top_dir / "track.wav"
+    audio_file.write_bytes(b"abcd")
+
+    service.upsert_subtree_local(library_id, str(library_root), str(top_dir))
+    status = service.get_status(library_id)
+    assert status is not None
+    assert status.total_size_bytes == 4
+    assert status.folder_count == 1
+    assert service.get_library_size(library_id) == 4
+
+    audio_file.write_bytes(b"abcdefghij")
+    service.upsert_subtree_local(library_id, str(library_root), str(top_dir))
+    status = service.get_status(library_id)
+    assert status is not None
+    assert status.total_size_bytes == 10
+    assert status.folder_count == 1
+    assert service.get_library_size(library_id) == 10
+
+    service.handle_self_mutation_delete(library_id, "RJ00000013")
+    status = service.get_status(library_id)
+    assert status is not None
+    assert status.total_size_bytes == 0
+    assert status.folder_count == 0
+    assert service.get_library_size(library_id) == 0

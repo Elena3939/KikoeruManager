@@ -152,3 +152,26 @@ def broadcast_processed_archive_changed(archive, reason: str = "archive_changed"
         })
     except Exception:
         logger.debug("构建归档 SSE 事件失败", exc_info=True)
+
+
+def broadcast_library_index_status_changed(status, reason: str = "library_index_status") -> None:
+    """广播库存索引状态变化，驱动库存页统计快照实时更新。"""
+    try:
+        if status is None:
+            return
+        broadcast_event({
+            "type": "library_index_status_changed",
+            "reason": str(reason or "library_index_status"),
+            "library_id": str(getattr(status, "library_id", "") or ""),
+            "status": str(getattr(status, "status", "") or ""),
+            "watcher_mode": getattr(status, "watcher_mode", None),
+            "total_entries": int(getattr(status, "total_entries", 0) or 0),
+            "total_size_bytes": int(getattr(status, "total_size_bytes", 0) or 0),
+            "folder_count": int(getattr(status, "folder_count", 0) or 0),
+            "last_full_scan_at": getattr(status, "last_full_scan_at", None),
+            "last_event_at": getattr(status, "last_event_at", None),
+            "error": getattr(status, "error", None),
+            "updated_at": int(getattr(status, "updated_at", 0) or 0),
+        })
+    except Exception:
+        logger.debug("构建库存索引 SSE 事件失败", exc_info=True)

@@ -1313,6 +1313,8 @@ class LibraryIndexStatus(Base):
     last_full_scan_at = Column(BigInteger)
     last_event_at = Column(BigInteger)
     total_entries = Column(Integer, default=0)
+    total_size_bytes = Column(BigInteger, default=0)
+    folder_count = Column(Integer, default=0)
     error = Column(Text)
     updated_at = Column(BigInteger, nullable=False)
 
@@ -1324,6 +1326,8 @@ class LibraryIndexStatus(Base):
             'last_full_scan_at': self.last_full_scan_at,
             'last_event_at': self.last_event_at,
             'total_entries': int(self.total_entries or 0),
+            'total_size_bytes': int(self.total_size_bytes or 0),
+            'folder_count': int(self.folder_count or 0),
             'error': self.error,
             'updated_at': int(self.updated_at or 0),
         }
@@ -1841,6 +1845,7 @@ def init_db():
         _migrate_task_center_items_schema(conn)
         _migrate_activity_log_rollups_schema(conn)
         _migrate_task_phase_metrics_schema(conn)
+        _migrate_library_index_status_schema(conn)
 
         # === Phase 2: activity_logs 迁移 ===
         _migrate_activity_logs_phase2(conn)
@@ -1879,6 +1884,57 @@ def _create_indexes_if_not_exists(conn, index_sqls: tuple[str, ...], table_name:
             conn.execute(text(index_sql))
         except Exception:
             _db_logger.warning(f"[数据库] {table_name} 建索引失败: {index_sql}", exc_info=True)
+
+
+def _migrate_library_index_status_schema(conn) -> None:
+    """库存索引状态表补聚合快照列。
+
+    total_size_bytes / folder_count 只在首次补列时从索引 entries 回填一次；
+    后续由 library_index self_mutation 差量维护，统计接口不再每次 SUM。
+    """
+    try:
+        existing_columns = _read_table_columns(conn, "library_index_status")
+        if not existing_columns:
+            return
+        missing_total_size = "total_size_bytes" not in existing_columns
+        missing_folder_count = "folder_count" not in existing_columns
+        _add_missing_columns(
+            conn,
+            "library_index_status",
+            existing_columns,
+            [
+                ("total_size_bytes", "BIGINT DEFAULT 0"),
+                ("folder_count", "INTEGER DEFAULT 0"),
+            ],
+        )
+        if not (missing_total_size or missing_folder_count):
+            return
+        conn.execute(
+            text(
+                """
+                UPDATE library_index_status
+                SET
+                  total_size_bytes = COALESCE((
+                    SELECT SUM(e.size)
+                    FROM library_index_entries e
+                    WHERE e.library_id = library_index_status.library_id
+                      AND e.entry_type = 'file'
+                  ), 0),
+                  folder_count = COALESCE((
+                    SELECT COUNT(1)
+                    FROM library_index_entries e
+                    WHERE e.library_id = library_index_status.library_id
+                      AND e.entry_type = 'dir'
+                      AND e.relative_path != ''
+                      AND COALESCE(e.parent_path, '') = ''
+                  ), 0)
+                WHERE status IN ('ready', 'syncing', 'error')
+                """
+            )
+        )
+        _db_logger.info("[数据库] library_index_status 聚合快照列已回填")
+    except Exception:
+        _db_logger.warning("[数据库] library_index_status 聚合快照迁移失败（非致命）", exc_info=True)
 
 
 def _migrate_task_center_items_schema(conn) -> None:
