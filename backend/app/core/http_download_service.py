@@ -355,6 +355,7 @@ class HttpDownloadService:
         self._daemon: Optional[Aria2Daemon] = None
         self._daemon_lock = asyncio.Lock()
         self._task_gids: Dict[str, List[str]] = {}
+        self._active_download_tasks: Dict[str, asyncio.Task] = {}
         self._rpc_id = 0
         self._gofile_guest_token_cache: tuple[str, float] = ("", 0.0)
         self._gofile_guest_token_lock = asyncio.Lock()
@@ -4545,6 +4546,10 @@ class HttpDownloadService:
 
         existing_size = os.path.getsize(final_path) if os.path.exists(final_path) else 0
         if existing_size and expected_total and existing_size >= expected_total:
+            if task:
+                await task.wait_if_paused()
+                if task.is_cancelled():
+                    raise asyncio.CancelledError()
             return {
                 "gid": str(item.get("gid") or f"google_drive:{item.get('file_id') or filename}"),
                 "name": os.path.basename(final_path) or filename,
@@ -4643,6 +4648,10 @@ class HttpDownloadService:
             existing_size = current_file_size()
             downloaded = existing_size
             if existing_size and expected_total and existing_size >= expected_total:
+                if task:
+                    await task.wait_if_paused()
+                    if task.is_cancelled():
+                        raise asyncio.CancelledError()
                 row.update({"status": "completed", "progress": 100, "downloaded": existing_size, "size": existing_size})
                 await emit_progress(force=True)
                 return row
@@ -4734,6 +4743,10 @@ class HttpDownloadService:
                 raise HttpDownloadError(f"Google Drive 下载失败: {self._sanitize_error(last_error)}") from last_error
 
         final_size = os.path.getsize(final_path) if os.path.exists(final_path) else downloaded
+        if task:
+            await task.wait_if_paused()
+            if task.is_cancelled():
+                raise asyncio.CancelledError()
         if expected_total and final_size < expected_total:
             raise HttpDownloadError(f"Google Drive 下载不完整: {final_size}/{expected_total} bytes")
         row.update({
@@ -5050,6 +5063,17 @@ class HttpDownloadService:
         }
 
     async def start_download_task(self, task) -> Dict[str, Any]:
+        task_id = str(getattr(task, "id", "") or "").strip()
+        current_task = asyncio.current_task()
+        if task_id and current_task is not None:
+            self._active_download_tasks[task_id] = current_task
+        try:
+            return await self._start_download_task_inner(task)
+        finally:
+            if task_id and self._active_download_tasks.get(task_id) is current_task:
+                self._active_download_tasks.pop(task_id, None)
+
+    async def _start_download_task_inner(self, task) -> Dict[str, Any]:
         metadata = dict(task.task_metadata or {})
         raw_urls = list(metadata.get("urls") or [])
         if not raw_urls:
@@ -5531,6 +5555,8 @@ class HttpDownloadService:
             errors = list(pikpak_cleanup_result.get("errors") or [])
             first_error = str((errors[0] or {}).get("message") or "").strip() if errors else ""
             cleanup_suffix = f"，PikPak 清理失败: {first_error or '请在设置页手动清理'}"
+        if task.is_cancelled():
+            raise asyncio.CancelledError()
         final_message = "下载完成" if not merged_failed_rows else "下载部分成功"
         task.update_progress(100, f"{final_message}，成功 {len(success_files)} 个，失败 {len(merged_failed_rows)} 个{cleanup_suffix}")
         return {
@@ -5728,6 +5754,9 @@ class HttpDownloadService:
                 await self._rpc_call("aria2.unpause", [gid])
 
     async def cancel_task(self, task_id: str) -> None:
+        active_task = self._active_download_tasks.pop(task_id, None)
+        if active_task and not active_task.done():
+            active_task.cancel()
         for gid in self._task_gids.get(task_id, []):
             with contextlib.suppress(Exception):
                 await self._rpc_call("aria2.remove", [gid])
