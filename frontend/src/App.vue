@@ -225,7 +225,7 @@ import SystemPromptHost from './components/system/SystemPromptHost.vue'
 import NotificationBell from './components/system/NotificationBell.vue'
 import AnimatedThemeToggler from './components/magicui/AnimatedThemeToggler.vue'
 import { useTheme } from './composables/useTheme'
-import { useTaskCenterStream } from './composables/useTaskCenterStream'
+import { useRealtimeEvents } from './composables/useRealtimeEvents'
 import { healthApi, watcherApi } from './api'
 import router from './router'
 
@@ -238,8 +238,10 @@ const mobileNavOpen = ref(false)
 const sidebarPinnedStorageKey = 'kikoerumanager.sidebarPinned'
 const sidebarPinned = ref(false)
 const { applyTheme } = useTheme()
-const taskCenterStream = useTaskCenterStream()
-let taskCenterStreamStarted = false
+const realtimeEvents = useRealtimeEvents()
+let realtimeEventsStarted = false
+let unsubscribeWatcherStatus = null
+let unsubscribeRealtimeConnected = null
 
 // 路由切换时自动关闭移动端抽屉（点击菜单项后即关闭）
 watch(() => route.fullPath, () => {
@@ -277,7 +279,7 @@ const currentViewKey = computed(() => {
 let intervalId = null
 let statusRefreshing = false
 let statusFailureCount = 0
-const WATCHER_STATUS_POLL_MS = 15000
+const WATCHER_STATUS_FALLBACK_MS = 30000
 const WATCHER_STATUS_POLL_MAX_MS = 120000
 
 onMounted(async () => {
@@ -288,14 +290,14 @@ onMounted(async () => {
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', handleVisibilityChange)
   }
-  startTaskCenterStream()
+  startRealtimeEvents()
   await refreshStatus()
   startStatusPolling()
 })
 
 watch(isGateRoute, async (gateRoute) => {
   if (gateRoute) {
-    stopTaskCenterStream()
+    stopRealtimeEvents()
     stopStatusPolling()
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', handleVisibilityChange)
@@ -305,34 +307,46 @@ watch(isGateRoute, async (gateRoute) => {
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', handleVisibilityChange)
   }
-  startTaskCenterStream()
+  startRealtimeEvents()
   await refreshStatus()
   startStatusPolling()
 })
 
 onUnmounted(() => {
-  stopTaskCenterStream()
+  stopRealtimeEvents()
   stopStatusPolling()
   if (typeof document !== 'undefined') {
     document.removeEventListener('visibilitychange', handleVisibilityChange)
   }
 })
 
-function startTaskCenterStream() {
-  if (taskCenterStreamStarted) return
-  taskCenterStream.start()
-  taskCenterStreamStarted = true
+function startRealtimeEvents() {
+  if (realtimeEventsStarted) return
+  realtimeEvents.start()
+  unsubscribeWatcherStatus = realtimeEvents.subscribe('watcher.status.changed', handleWatcherStatusEvent)
+  unsubscribeRealtimeConnected = realtimeEvents.subscribe('connected', () => {
+    refreshStatus()
+  })
+  realtimeEventsStarted = true
 }
 
-function stopTaskCenterStream() {
-  if (!taskCenterStreamStarted) return
-  taskCenterStream.stop()
-  taskCenterStreamStarted = false
+function stopRealtimeEvents() {
+  if (!realtimeEventsStarted) return
+  if (unsubscribeWatcherStatus) {
+    unsubscribeWatcherStatus()
+    unsubscribeWatcherStatus = null
+  }
+  if (unsubscribeRealtimeConnected) {
+    unsubscribeRealtimeConnected()
+    unsubscribeRealtimeConnected = null
+  }
+  realtimeEvents.stop()
+  realtimeEventsStarted = false
 }
 
 function startStatusPolling() {
   if (intervalId) return
-  scheduleStatusPolling(WATCHER_STATUS_POLL_MS)
+  scheduleStatusPolling(WATCHER_STATUS_FALLBACK_MS)
 }
 
 function stopStatusPolling() {
@@ -348,11 +362,11 @@ function handleVisibilityChange() {
     return
   }
   statusFailureCount = 0
-  refreshStatus()
+  if (!realtimeEvents.connected.value) refreshStatus()
   if (!intervalId) startStatusPolling()
 }
 
-function scheduleStatusPolling(delay = WATCHER_STATUS_POLL_MS) {
+function scheduleStatusPolling(delay = WATCHER_STATUS_FALLBACK_MS) {
   stopStatusPolling()
   intervalId = setTimeout(async () => {
     intervalId = null
@@ -361,12 +375,23 @@ function scheduleStatusPolling(delay = WATCHER_STATUS_POLL_MS) {
       stopStatusPolling()
       return
     }
+    if (realtimeEvents.connected.value) {
+      scheduleStatusPolling(WATCHER_STATUS_FALLBACK_MS)
+      return
+    }
     const ok = await refreshStatus()
     const nextDelay = ok
-      ? WATCHER_STATUS_POLL_MS
-      : Math.min(WATCHER_STATUS_POLL_MAX_MS, WATCHER_STATUS_POLL_MS * 2 ** Math.min(statusFailureCount, 3))
+      ? WATCHER_STATUS_FALLBACK_MS
+      : Math.min(WATCHER_STATUS_POLL_MAX_MS, WATCHER_STATUS_FALLBACK_MS * 2 ** Math.min(statusFailureCount, 3))
     scheduleStatusPolling(nextDelay)
   }, delay)
+}
+
+function handleWatcherStatusEvent(event) {
+  const payload = event?.payload || {}
+  watcherStore.status = payload
+  watcherStatus.value = payload
+  statusFailureCount = 0
 }
 
 async function refreshStatus() {

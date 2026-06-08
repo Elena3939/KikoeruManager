@@ -93,9 +93,11 @@ import TaskDetailPane from '../components/tasks/TaskDetailPane.vue'
 import { useViewport } from '../composables/useViewport'
 import { patchTaskCenterItemList, applyTaskCenterEventPatch } from '../composables/taskCenterEventUtils'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
+import { useRealtimeEvents } from '../composables/useRealtimeEvents'
 
 const router = useRouter()
 const { isMobile } = useViewport()
+const realtimeEvents = useRealtimeEvents()
 
 const loading = ref(false)
 const refreshing = ref(false)
@@ -320,7 +322,7 @@ watch(pollingEnabled, (enabled) => {
 onMounted(async () => {
   shouldAutoSelectVisibleTask.value = true
   await refreshTaskCenter(false, { silent: false })
-  window.addEventListener('kikoerumanager:task-center:changed', handleTaskCenterStreamEvent)
+  window.addEventListener('kikoerumanager:events:message', handleTaskCenterStreamEvent)
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', handleVisibilityChange)
   }
@@ -328,7 +330,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  window.removeEventListener('kikoerumanager:task-center:changed', handleTaskCenterStreamEvent)
+  window.removeEventListener('kikoerumanager:events:message', handleTaskCenterStreamEvent)
   if (typeof document !== 'undefined') {
     document.removeEventListener('visibilitychange', handleVisibilityChange)
   }
@@ -353,7 +355,7 @@ function startPolling() {
   intervalId = setTimeout(async () => {
     intervalId = null
     if (!pollingEnabled.value || isDocumentHidden()) return
-    if (Date.now() - lastTaskCenterStreamEventAt < FALLBACK_POLL_INTERVAL_MS) {
+    if (realtimeEvents.connected.value) {
       fallbackPollDelayMs = FALLBACK_POLL_INTERVAL_MS
       startPolling()
       return
@@ -386,7 +388,7 @@ function handleVisibilityChange() {
     return
   }
   fallbackPollDelayMs = FALLBACK_POLL_INTERVAL_MS
-  refreshTaskCenter(false, { silent: true }).catch((error) => {
+  if (!realtimeEvents.connected.value) refreshTaskCenter(false, { silent: true }).catch((error) => {
     console.error('任务中心恢复可见刷新失败:', error)
   })
   startPolling()
@@ -493,8 +495,14 @@ function scheduleSelectedTaskDetailRefresh(itemId) {
   }, STREAM_REFRESH_DEBOUNCE_MS)
 }
 
+function normalizeRealtimeTaskCenterEvent(detail = {}) {
+  if (detail.type === 'task.center.changed') return detail.payload || {}
+  if (detail.type === 'connected') return { type: 'connected' }
+  return detail
+}
+
 function handleTaskCenterStreamEvent(event) {
-  const payload = event?.detail || {}
+  const payload = normalizeRealtimeTaskCenterEvent(event?.detail || {})
   if (!payload?.type) return
   lastTaskCenterStreamEventAt = Date.now()
   if (payload.type === 'connected') {

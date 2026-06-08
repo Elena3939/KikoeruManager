@@ -78,8 +78,10 @@ import DashboardActiveTasks from '../components/dashboard/DashboardActiveTasks.v
 import DashboardArchive from '../components/dashboard/DashboardArchive.vue'
 import { patchTaskCenterItemList } from '../composables/taskCenterEventUtils'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
+import { useRealtimeEvents } from '../composables/useRealtimeEvents'
 
 const router = useRouter()
+const realtimeEvents = useRealtimeEvents()
 
 const loading = ref(false)
 const scanning = ref(false)
@@ -422,7 +424,7 @@ function scheduleDashboardPolling(delay = FALLBACK_POLL_INTERVAL_MS) {
     intervalId = null
     if (!dashboardViewActive) return
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
-    if (Date.now() - lastTaskCenterStreamEventAt < FALLBACK_POLL_INTERVAL_MS) {
+    if (realtimeEvents.connected.value) {
       scheduleDashboardPolling(FALLBACK_POLL_INTERVAL_MS)
       return
     }
@@ -451,17 +453,17 @@ function unbindDashboardVisibilityRefresh() {
 function handleDashboardVisibilityRefresh() {
   if (!dashboardViewActive || document.visibilityState === 'hidden') return
   dashboardPollFailureCount = 0
-  refreshData({ silent: true })
+  if (!realtimeEvents.connected.value) refreshData({ silent: true })
   if (!intervalId) startDashboardPolling()
 }
 
 function bindTaskCenterStreamEvents() {
-  window.removeEventListener('kikoerumanager:task-center:changed', handleTaskCenterStreamEvent)
-  window.addEventListener('kikoerumanager:task-center:changed', handleTaskCenterStreamEvent)
+  window.removeEventListener('kikoerumanager:events:message', handleTaskCenterStreamEvent)
+  window.addEventListener('kikoerumanager:events:message', handleTaskCenterStreamEvent)
 }
 
 function unbindTaskCenterStreamEvents() {
-  window.removeEventListener('kikoerumanager:task-center:changed', handleTaskCenterStreamEvent)
+  window.removeEventListener('kikoerumanager:events:message', handleTaskCenterStreamEvent)
   if (streamRefreshTimer) {
     clearTimeout(streamRefreshTimer)
     streamRefreshTimer = null
@@ -470,6 +472,15 @@ function unbindTaskCenterStreamEvents() {
     clearTimeout(archiveStreamRefreshTimer)
     archiveStreamRefreshTimer = null
   }
+}
+
+function normalizeRealtimeDashboardEvent(detail = {}) {
+  if (detail.type === 'task.center.changed') return detail.payload || {}
+  if (detail.type === 'processed_archive.changed') {
+    return { type: 'processed_archive_changed', ...(detail.payload || {}) }
+  }
+  if (detail.type === 'connected') return { type: 'connected' }
+  return detail
 }
 
 function scheduleDashboardStreamRefresh() {
@@ -502,7 +513,7 @@ function patchDashboardTaskOverview(payload) {
 }
 
 function handleTaskCenterStreamEvent(event) {
-  const payload = event?.detail || {}
+  const payload = normalizeRealtimeDashboardEvent(event?.detail || {})
   if (!payload?.type) return
   lastTaskCenterStreamEventAt = Date.now()
   if (payload.type === 'processed_archive_changed') {

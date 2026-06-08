@@ -106,9 +106,55 @@ def _should_emit(event: dict[str, Any]) -> bool:
     return True
 
 
+def _broadcast_realtime_event(event: dict[str, Any]) -> None:
+    try:
+        from .realtime_event_service import broadcast_event as broadcast_realtime_event
+
+        event_type = str(event.get("type") or "")
+        if event_type == "task_center_changed":
+            broadcast_realtime_event({
+                "type": "task.center.changed",
+                "reason": event.get("reason") or "progress",
+                "id": event.get("item_id") or event.get("engine_task_id") or "",
+                "domain": event.get("domain") or "",
+                "status": event.get("status") or "",
+                "progress": int(event.get("progress") or 0),
+                "current_step": event.get("current_step") or "",
+                "updated_at": event.get("updated_at") or datetime.now().isoformat(),
+                "payload": dict(event),
+            })
+            return
+
+        if event_type == "processed_archive_changed":
+            broadcast_realtime_event({
+                "type": "processed_archive.changed",
+                "reason": event.get("reason") or "archive_changed",
+                "id": event.get("archive_id") or "",
+                "domain": "processed_archive",
+                "status": event.get("status") or "",
+                "updated_at": event.get("updated_at") or datetime.now().isoformat(),
+                "payload": dict(event),
+            })
+            return
+
+        if event_type == "library_index_status_changed":
+            broadcast_realtime_event({
+                "type": "library.index.status.changed",
+                "reason": event.get("reason") or "library_index_status",
+                "id": event.get("library_id") or "",
+                "domain": "library_index",
+                "status": event.get("status") or "",
+                "updated_at": event.get("updated_at") or datetime.now().isoformat(),
+                "payload": dict(event),
+            })
+    except Exception:
+        logger.debug("桥接统一实时事件失败", exc_info=True)
+
+
 def broadcast_event(event: dict[str, Any]) -> None:
     if not event or not _should_emit(event):
         return
+    _broadcast_realtime_event(event)
     with _subscribers_lock:
         subscribers = list(_subscribers.values())
     if not subscribers:

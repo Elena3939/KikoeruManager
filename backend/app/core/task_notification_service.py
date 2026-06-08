@@ -32,8 +32,42 @@ def sse_unsubscribe(sid: int) -> None:
         _sse_subscribers.pop(sid, None)
 
 
+def _broadcast_realtime_notification(event: dict) -> None:
+    try:
+        from .realtime_event_service import broadcast_event as broadcast_realtime_event
+
+        event_type = str((event or {}).get('type') or '').strip()
+        if event_type == 'new_notification':
+            item = event.get('item') if isinstance(event.get('item'), dict) else {}
+            broadcast_realtime_event({
+                'type': 'notification.new',
+                'reason': 'created',
+                'id': str(item.get('id') or ''),
+                'domain': 'notification',
+                'status': 'unread',
+                'updated_at': datetime.now().isoformat(),
+                'payload': dict(event),
+            })
+            return
+
+        if event_type == 'circle_owned_synced':
+            canonicals = event.get('canonicals') if isinstance(event.get('canonicals'), list) else []
+            broadcast_realtime_event({
+                'type': 'circle.owned.synced',
+                'reason': 'owned_synced',
+                'id': str(event.get('rjcode') or (canonicals[0] if canonicals else '') or ''),
+                'domain': 'circle_completion',
+                'status': 'completed',
+                'updated_at': datetime.now().isoformat(),
+                'payload': dict(event),
+            })
+    except Exception:
+        logger.debug("桥接通知统一实时事件失败", exc_info=True)
+
+
 def _sse_broadcast(event: dict) -> None:
     """从任意线程安全地推送事件到所有已连接 SSE 客户端"""
+    _broadcast_realtime_notification(event)
     with _sse_lock:
         subs = list(_sse_subscribers.values())
     for q, loop in subs:
