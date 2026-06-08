@@ -322,7 +322,7 @@ class Task:
         with self._set_state_silent():
             self.progress = normalized_progress
             self.current_step = step
-        logger.info(f"任务 {self.id}: {step} ({normalized_progress}%)")
+        logger.debug(f"任务 {self.id}: {step} ({normalized_progress}%)")
 
         try:
             if not isinstance(self.task_metadata, dict):

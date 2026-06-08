@@ -32,6 +32,7 @@ from .google_drive_oauth import (
     resolve_google_drive_oauth_client,
     resolve_google_drive_oauth_proxy_url,
 )
+from .log_sanitizer import sanitize_text_for_log
 from .resource_budget_service import get_resource_budget_service
 
 logger = logging.getLogger(__name__)
@@ -318,7 +319,7 @@ def sanitize_http_download_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
 
 def sanitize_http_download_error(value: Any) -> str:
     """Mask URL-like substrings that may appear inside exception messages."""
-    text = str(value or "")
+    text = sanitize_text_for_log(value)
     if not text:
         return ""
     return re.sub(
@@ -974,8 +975,8 @@ class HttpDownloadService:
                 next_accounts.append(data)
             if updated:
                 await asyncio.to_thread(save_config, {"http_downloader": {"pikpak_accounts": next_accounts}})
-        except Exception:
-            logger.warning("[PikPak] 保存刷新后的 token 失败", exc_info=True)
+        except Exception as exc:
+            logger.warning("[PikPak] 保存刷新后的 token 失败: %s", sanitize_http_download_error(exc))
 
     async def _pikpak_client(self, account_id: str = "", *, account: Optional[PikPakAccount] = None):
         cfg = self._config()

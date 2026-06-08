@@ -81,7 +81,7 @@ class FileProcessor:
         Returns:
             创建的任务对象，如果未创建任务则返回 None
         """
-        logger.info(f"[FileProcessor] 开始处理文件: {file_path}")
+        logger.debug(f"[FileProcessor] 开始处理文件: {file_path}")
         original_path = file_path
 
         try:
@@ -94,10 +94,10 @@ class FileProcessor:
 
             # 2. 等待文件稳定
             if wait_stable:
-                logger.info(f"[FileProcessor] 等待文件稳定: {file_path}")
+                logger.debug(f"[FileProcessor] 等待文件稳定: {file_path}")
                 try:
                     await self.wait_file_stable(file_path, max_wait=max_wait)
-                    logger.info(f"[FileProcessor] 文件已稳定: {file_path}")
+                    logger.debug(f"[FileProcessor] 文件已稳定: {file_path}")
                 except TimeoutError:
                     logger.error(f"[FileProcessor] 等待文件稳定超时: {file_path}")
                     if mark_processed:
@@ -132,7 +132,7 @@ class FileProcessor:
                 resume_fn=resume_fn,
                 mark_processed=mark_processed
             )
-            logger.info(f"[FileProcessor] 规范化后路径: {file_path}")
+            logger.debug(f"[FileProcessor] 规范化后路径: {file_path}")
 
             # 5. 检查是否已在任务队列中
             engine = get_task_engine()
@@ -141,7 +141,7 @@ class FileProcessor:
                 for t in engine.get_all_tasks()
             )
             if existing:
-                logger.info(f"[FileProcessor] 文件已在任务队列中: {file_path}")
+                logger.debug(f"[FileProcessor] 文件已在任务队列中: {file_path}")
                 if mark_processed:
                     mark_processed(file_path)
                 if isinstance(report, dict):
@@ -149,7 +149,7 @@ class FileProcessor:
                 return None
 
             # 6. 创建任务
-            logger.info(f"[FileProcessor] 创建任务: {file_path}")
+            logger.debug(f"[FileProcessor] 创建任务: {file_path}")
             merged_metadata = dict(task_metadata or {})
             if isinstance(batch_context, dict):
                 merged_metadata.update({
@@ -177,7 +177,11 @@ class FileProcessor:
             )
 
             await engine.submit(task)
-            logger.info(f"[FileProcessor] 任务已提交: {task.id}")
+            logger.info(
+                "[FileProcessor] 任务已提交: task_id=%s source=%s",
+                task.id,
+                os.path.basename(file_path),
+            )
             if isinstance(report, dict):
                 report["created_count"] = int(report.get("created_count") or 0) + 1
 
@@ -433,11 +437,11 @@ class FileProcessor:
             if match:
                 # 提取 base_name，只移除分卷后缀
                 base_name = re.sub(pattern, '', filename)
-                logger.info(f"[FileProcessor] 检测到分卷模式: {filename}, base_name={base_name}")
+                logger.debug(f"[FileProcessor] 检测到分卷模式: {filename}, base_name={base_name}")
 
                 # 查找所有分卷
                 volumes = self._find_all_volumes(directory, base_name, pattern)
-                logger.info(f"[FileProcessor] 找到 {len(volumes)} 个分卷: {[os.path.basename(v) for v in volumes]}")
+                logger.debug(f"[FileProcessor] 找到 {len(volumes)} 个分卷: {[os.path.basename(v) for v in volumes]}")
 
                 # 分卷组需要至少2个文件
                 if len(volumes) > 1:
@@ -484,7 +488,7 @@ class FileProcessor:
                     logger.debug(f"[FileProcessor] 文件大小稳定 ({stable_count}/{required_stable}): {file_path}")
                 else:
                     if previous_size != -1:
-                        logger.info(f"[FileProcessor] 文件仍在复制中: {file_path} ({previous_size} -> {current_size} bytes)")
+                        logger.debug(f"[FileProcessor] 文件仍在复制中: {file_path} ({previous_size} -> {current_size} bytes)")
                     stable_count = 0
 
                 previous_size = current_size
@@ -578,14 +582,14 @@ class FileProcessor:
         )
 
         if is_potential_volume:
-            logger.info(f"[FileProcessor] 检测到可能是分卷文件，等待其他分卷: {basename}")
+            logger.debug(f"[FileProcessor] 检测到可能是分卷文件，等待其他分卷: {basename}")
             # 等待一段时间让其他分卷文件出现
             await asyncio.sleep(10)
 
             # 重新检测分卷组
             volume_set = self.detect_volume_set(file_path)
             if volume_set:
-                logger.info(f"[FileProcessor] 等待后检测到分卷组: {volume_set.base_name}")
+                logger.debug(f"[FileProcessor] 等待后检测到分卷组: {volume_set.base_name}")
                 return await self._process_volume_set(
                     file_path, volume_set,
                     is_processed=is_processed,
@@ -612,7 +616,7 @@ class FileProcessor:
                         f"[FileProcessor] 分卷首卷 (.part1) 尚未出现，暂不创建任务: {basename}"
                     )
                     return None
-                logger.info(f"[FileProcessor] 等待后仍未检测到分卷组，作为普通文件处理: {basename}")
+                logger.debug(f"[FileProcessor] 等待后仍未检测到分卷组，作为普通文件处理: {basename}")
                 return file_path
 
         return file_path
@@ -652,7 +656,7 @@ class FileProcessor:
             normalized_path = await extract_service.normalize_archive_filename(file_path)
 
             if normalized_path != file_path:
-                logger.info(f"[FileProcessor] 文件已规范化: {file_path} -> {normalized_path}")
+                logger.debug(f"[FileProcessor] 文件已规范化: {file_path} -> {normalized_path}")
                 # 标记新路径为已处理
                 if mark_processed:
                     mark_processed(normalized_path)
@@ -807,17 +811,17 @@ class FileProcessor:
         volumes = []
         try:
             files = os.listdir(directory)
-            logger.info(f"[FileProcessor] _find_all_volumes: directory={directory}, base_name={base_name}, pattern={pattern}")
-            logger.info(f"[FileProcessor] 目录中的文件: {files}")
+            logger.debug(f"[FileProcessor] _find_all_volumes: directory={directory}, base_name={base_name}, pattern={pattern}")
+            logger.debug(f"[FileProcessor] 目录中的文件: {files}")
             for file in files:
                 if file.startswith(base_name) and re.search(pattern, file, re.IGNORECASE):
                     volumes.append(os.path.join(directory, file))
-                    logger.info(f"[FileProcessor] 匹配到分卷: {file}")
+                    logger.debug(f"[FileProcessor] 匹配到分卷: {file}")
         except Exception as e:
             logger.error(f"[FileProcessor] 列出目录失败: {e}")
 
         result = sorted(volumes, key=self._volume_sort_key)
-        logger.info(f"[FileProcessor] 最终分卷列表: {[os.path.basename(v) for v in result]}")
+        logger.debug(f"[FileProcessor] 最终分卷列表: {[os.path.basename(v) for v in result]}")
         return result
 
     def _detect_archive_by_magic(self, path: str) -> bool:
@@ -854,7 +858,7 @@ class FileProcessor:
 
             for magic, file_type in magic_bytes.items():
                 if header.startswith(magic):
-                    logger.info(f"[FileProcessor] 通过魔数检测到压缩文件: {path} (类型: {file_type})")
+                    logger.debug(f"[FileProcessor] 通过魔数检测到压缩文件: {path} (类型: {file_type})")
                     return True
 
             return False
