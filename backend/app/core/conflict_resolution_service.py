@@ -1196,6 +1196,7 @@ class ConflictResolutionService:
             except (TypeError, ValueError):
                 pass
         job.updated_at = time.time()
+        self._broadcast_merge_preview_job(job)
 
     def _fail_merge_preview_job(self, job: Optional["MergePreviewJob"], error: str) -> None:
         if not job:
@@ -1207,6 +1208,36 @@ class ConflictResolutionService:
         job.message = msg
         job.error = msg
         job.updated_at = time.time()
+        self._broadcast_merge_preview_job(job)
+
+    def _broadcast_merge_preview_job(self, job: "MergePreviewJob") -> None:
+        try:
+            from .realtime_event_service import broadcast_event
+
+            updated_at = datetime.fromtimestamp(job.updated_at or time.time()).isoformat()
+            broadcast_event({
+                "type": "job.conflict_merge_preview.changed",
+                "reason": job.stage or "progress",
+                "id": job.id,
+                "domain": "conflict_resolution",
+                "status": job.status,
+                "progress": int(job.percent or 0),
+                "current_step": job.message or job.stage_label or "",
+                "updated_at": updated_at,
+                "payload": {
+                    "job_id": job.id,
+                    "conflict_id": job.conflict_id,
+                    "status": job.status,
+                    "stage": job.stage,
+                    "stage_label": job.stage_label,
+                    "message": job.message,
+                    "percent": int(job.percent or 0),
+                    "error": job.error,
+                    "updated_at": job.updated_at,
+                },
+            })
+        except Exception:
+            logger.debug("广播合并预览实时事件失败", exc_info=True)
 
     def _serialize_merge_preview_job(self, job: "MergePreviewJob") -> dict[str, Any]:
         return {
