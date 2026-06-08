@@ -1124,9 +1124,9 @@ function baiduPreviewTreeRows(item) {
   const files = baiduPreviewFiles(item)
   const rows = []
   const dirs = new Map()
+  const entries = normalizeBaiduPreviewTreeEntries(item, files)
 
-  files
-    .map(file => ({ file, parts: baiduPreviewPathParts(file) }))
+  entries
     .filter(entry => entry.parts.length)
     .sort((a, b) => {
       const aPath = a.parts.join('/').toLowerCase()
@@ -1165,6 +1165,29 @@ function baiduPreviewTreeRows(item) {
     })
 
   return rows
+}
+
+function normalizeBaiduPreviewTreeEntries(item, files) {
+  const entries = files.map(file => ({
+    file,
+    parts: baiduPreviewPathParts(file),
+    isDir: Boolean(file?.is_dir),
+  }))
+  if (item?.preview_root_is_folder) return entries
+
+  const fileEntries = entries.filter(entry => !entry.isDir && entry.parts.length > 1)
+  if (fileEntries.length <= 1) return entries
+
+  const commonRoot = fileEntries[0].parts[0]
+  if (!commonRoot || !fileEntries.every(entry => entry.parts[0] === commonRoot)) return entries
+  if (!entries.every(entry => !entry.parts.length || entry.parts[0] === commonRoot)) return entries
+  const explicitRootDir = entries.some(entry => entry.isDir && entry.parts.length === 1 && entry.parts[0] === commonRoot)
+  if (explicitRootDir) return entries
+
+  return entries.map(entry => {
+    if (entry.parts.length <= 1 || entry.parts[0] !== commonRoot) return entry
+    return { ...entry, parts: entry.parts.slice(1) }
+  })
 }
 
 function baiduPreviewPathParts(file) {
@@ -2286,8 +2309,7 @@ onMounted(loadHealth)
 }
 
 :global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-source-chip),
-:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-pass-chip),
-:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-file) {
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-pass-chip) {
   background: #22242a !important;
   color: #e5e7eb !important;
   border-color: rgba(148, 163, 184, 0.2) !important;
@@ -2303,8 +2325,41 @@ onMounted(loadHealth)
   color: #d4d4d8 !important;
 }
 
+:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-tree-row) {
+  background: #202124 !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: #e5e7eb !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-tree-row.is-dir) {
+  background: #1d2428 !important;
+  border-color: rgba(125, 211, 252, 0.16) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-tree-row.is-file) {
+  background: #242527 !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-tree-guide) {
+  border-right-color: rgba(148, 163, 184, 0.18) !important;
+  border-bottom-color: rgba(148, 163, 184, 0.12) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-tree-row.is-root-child .baidu-preview-tree-guide) {
+  border-color: transparent !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-file-name) {
+  color: #f4f4f5 !important;
+}
+
 :global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-file-type) {
   color: #93c5fd !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-tree-row.is-dir .baidu-preview-file-type) {
+  color: #67e8f9 !important;
 }
 
 :global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-file-size) {
