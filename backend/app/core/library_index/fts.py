@@ -441,9 +441,36 @@ def rebuild_library_index_fts(
         )
 
 
+def _broadcast_library_fts_state(snapshot: Dict[str, Any]) -> None:
+    try:
+        from ..realtime_event_service import broadcast_event
+
+        status = str(snapshot.get("state") or "idle")
+        indexed = int(snapshot.get("indexed_entries") or 0)
+        total = int(snapshot.get("total_entries") or 0)
+        progress = 100 if status in {"done", "error"} else (min(99, int(indexed * 100 / total)) if total > 0 else 0)
+        broadcast_event({
+            "type": "maintenance.fts.changed",
+            "reason": "library_index",
+            "id": "library_index_fts",
+            "domain": "maintenance",
+            "status": status,
+            "progress": progress,
+            "current_step": "库存索引全文搜索重建中" if status == "running" else "",
+            "payload": {
+                "kind": "library_index",
+                "rebuild": dict(snapshot),
+            },
+        })
+    except Exception:
+        logger.debug("[索引] 广播库存 FTS 实时状态失败", exc_info=True)
+
+
 def _set_rebuild_state(**updates: Any) -> None:
     with _REBUILD_STATE_LOCK:
         _REBUILD_STATE.update(updates)
+        snapshot = dict(_REBUILD_STATE)
+    _broadcast_library_fts_state(snapshot)
 
 
 def get_library_index_fts_rebuild_state() -> Dict[str, Any]:

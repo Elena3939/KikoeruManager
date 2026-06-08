@@ -91,6 +91,7 @@ class LibraryIndexService:
         chunk_size: int,
     ) -> IndexStatus:
         started = time.time()
+        rebuild_started_ms = int(started * 1000)
         logger.info("[索引] 开始重建本地库存 library=%s root=%s", library_id, root_path)
 
         # 起始置 syncing；error 显式 None 清理上一轮失败痕迹
@@ -105,10 +106,6 @@ class LibraryIndexService:
         )
 
         try:
-            removed = self._store.delete_library(library_id)
-            if removed:
-                logger.info("[索引] 清掉旧索引 library=%s removed=%s", library_id, removed)
-
             scanner = self._local_scanner_factory()
             # 手动分块，每足块写盘 + 每 0.5s 上报一次 syncing 进度
             # （total_entries 在 syncing 期间语义 = 已扫描数，ready 后 = 总数）。
@@ -147,6 +144,11 @@ class LibraryIndexService:
                     maintain_status_stats=False,
                 )
 
+            stale_removed = self._store.delete_stale_library_entries(
+                library_id,
+                indexed_before_ms=rebuild_started_ms,
+                chunk_size=chunk_size,
+            )
             now_ms = int(time.time() * 1000)
             status = self._store.upsert_status(
                 library_id,
@@ -160,8 +162,8 @@ class LibraryIndexService:
             )
             elapsed = time.time() - started
             logger.info(
-                "[索引] 重建完成 library=%s entries=%s elapsed=%.2fs",
-                library_id, written, elapsed,
+                "[索引] 重建完成 library=%s entries=%s stale_removed=%s elapsed=%.2fs",
+                library_id, written, stale_removed, elapsed,
             )
             return status
         except Exception as exc:  # noqa: BLE001 顶层兑底
@@ -242,6 +244,7 @@ class LibraryIndexService:
         chunk_size: int,
     ) -> IndexStatus:
         started = time.time()
+        rebuild_started_ms = int(started * 1000)
         logger.info(
             "[索引] 开始重建远程库存 library=%s root=%s",
             library_id, root_path,
@@ -258,13 +261,6 @@ class LibraryIndexService:
         )
 
         try:
-            removed = self._store.delete_library(library_id)
-            if removed:
-                logger.info(
-                    "[索引] 清掉旧索引 library=%s removed=%s",
-                    library_id, removed,
-                )
-
             scanner = self._remote_scanner_factory()
 
             # 流式：每攒满 chunk_size 就 bulk_upsert 一次，避免内存堆积。
@@ -305,6 +301,11 @@ class LibraryIndexService:
                     maintain_status_stats=False,
                 )
 
+            stale_removed = self._store.delete_stale_library_entries(
+                library_id,
+                indexed_before_ms=rebuild_started_ms,
+                chunk_size=chunk_size,
+            )
             now_ms = int(time.time() * 1000)
             status = self._store.upsert_status(
                 library_id,
@@ -318,8 +319,8 @@ class LibraryIndexService:
             )
             elapsed = time.time() - started
             logger.info(
-                "[索引] 远程重建完成 library=%s entries=%s elapsed=%.2fs",
-                library_id, written, elapsed,
+                "[索引] 远程重建完成 library=%s entries=%s stale_removed=%s elapsed=%.2fs",
+                library_id, written, stale_removed, elapsed,
             )
             return status
         except Exception as exc:  # noqa: BLE001 顶层兜底
