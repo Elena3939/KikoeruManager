@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import logging
 
+from .log_sanitizer import mask_url_for_log, sanitize_text_for_log
+
 logger = logging.getLogger(__name__)
 
 MASKED_SECRET = "********"
@@ -164,6 +166,27 @@ def _normalize_error(exc: Exception) -> Dict[str, str]:
         "message": raw[:500] or title,
         "suggestion": suggestion,
         "raw_summary": raw[:800],
+    }
+
+
+def _ai_config_log_summary(config: Dict[str, Any]) -> Dict[str, Any]:
+    base_url = _safe_text(config.get("api_base")) or "https://api.openai.com/v1"
+    return {
+        "model": _safe_text(config.get("model")),
+        "base_url": mask_url_for_log(base_url),
+        "provider": "azure" if _is_azure_config(config) else "openai_compatible",
+        "has_api_key": bool(_safe_text(config.get("api_key"))),
+        "has_proxy": bool(_safe_text(config.get("proxy_url"))),
+        "timeout": _safe_int(config.get("timeout_seconds"), 30),
+        "retries": _safe_int(config.get("max_retries"), 2),
+    }
+
+
+def _ai_error_log_summary(error: Dict[str, str]) -> Dict[str, str]:
+    return {
+        "code": _safe_text(error.get("code")),
+        "title": _safe_text(error.get("title")),
+        "raw_summary": sanitize_text_for_log(error.get("raw_summary"), max_length=240),
     }
 
 
@@ -321,7 +344,9 @@ class AISubtitleMatchService:
     async def list_models(self, raw_config: Any, *, saved_api_key: str = "") -> Dict[str, Any]:
         config = self._normalize_runtime_config(raw_config, saved_api_key=saved_api_key)
         started = time.perf_counter()
+        logger.info("[AI字幕] 获取模型列表开始: %s", _ai_config_log_summary(config))
         if not config.get("api_key"):
+            logger.warning("[AI字幕] 获取模型列表跳过: API Key 未配置 model=%s", config.get("model", ""))
             return {
                 "success": False,
                 "status": "failed",
@@ -360,21 +385,37 @@ class AISubtitleMatchService:
                 raise RuntimeError(f"{response.status_code} {response.reason_phrase}: {summary}")
             payload = response.json()
             models = self._normalize_model_entries(payload, config, is_azure=is_azure)
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            logger.info(
+                "[AI字幕] 获取模型列表完成: model_count=%s duration_ms=%s base_url=%s provider=%s",
+                len(models),
+                duration_ms,
+                mask_url_for_log(config.get("api_base") or "https://api.openai.com/v1"),
+                "azure" if is_azure else "openai_compatible",
+            )
             return {
                 "success": True,
                 "status": "ok",
                 "message": f"已获取 {len(models)} 个模型",
                 "models": models,
-                "duration_ms": int((time.perf_counter() - started) * 1000),
+                "duration_ms": duration_ms,
                 "base_url": config.get("api_base") or "https://api.openai.com/v1",
             }
         except Exception as exc:
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            error = _normalize_error(exc)
+            logger.warning(
+                "[AI字幕] 获取模型列表失败: duration_ms=%s config=%s error=%s",
+                duration_ms,
+                _ai_config_log_summary(config),
+                _ai_error_log_summary(error),
+            )
             return {
                 "success": False,
                 "status": "failed",
-                "error": _normalize_error(exc),
+                "error": error,
                 "models": [],
-                "duration_ms": int((time.perf_counter() - started) * 1000),
+                "duration_ms": duration_ms,
                 "base_url": config.get("api_base") or "https://api.openai.com/v1",
             }
 
@@ -594,6 +635,13 @@ class AISubtitleMatchService:
         started = time.perf_counter()
 
         if not runtime_config.get("enabled") or resolved_mode not in {"ai_auto", "rule_ai_auto", "ai_assist"}:
+            logger.debug(
+                "[AI字幕] 自动配对跳过: reason=disabled_or_inactive mode=%s enabled=%s task_id=%s rj=%s",
+                resolved_mode,
+                bool(runtime_config.get("enabled")),
+                task_id,
+                rjcode,
+            )
             return {
                 "used": False,
                 "status": "skipped",
@@ -607,6 +655,12 @@ class AISubtitleMatchService:
                 },
             }
         if resolved_mode in {"ai_auto", "rule_ai_auto"} and not runtime_config.get("auto_apply_enabled"):
+            logger.debug(
+                "[AI字幕] 自动配对跳过: reason=auto_apply_disabled mode=%s task_id=%s rj=%s",
+                resolved_mode,
+                task_id,
+                rjcode,
+            )
             return {
                 "used": False,
                 "status": "disabled",
@@ -620,6 +674,12 @@ class AISubtitleMatchService:
                 },
             }
         if resolved_mode == "ai_assist" and not runtime_config.get("manual_assist_enabled"):
+            logger.debug(
+                "[AI字幕] 自动配对跳过: reason=manual_assist_disabled mode=%s task_id=%s rj=%s",
+                resolved_mode,
+                task_id,
+                rjcode,
+            )
             return {
                 "used": False,
                 "status": "disabled",
@@ -664,6 +724,19 @@ class AISubtitleMatchService:
         )
         request_hash = self._request_hash(runtime_config, payload)
         request_item_count = len(payload["audio_files"]) + len(payload["subtitle_groups"])
+        logger.info(
+            "[AI字幕] 自动配对开始: task_id=%s rj=%s mode=%s model=%s audio=%s subtitle_groups=%s preserved=%s threshold=%s request_hash=%s config=%s",
+            task_id,
+            rjcode,
+            resolved_mode,
+            runtime_config.get("model", ""),
+            len(payload["audio_files"]),
+            len(payload["subtitle_groups"]),
+            len(preserved),
+            resolved_threshold,
+            request_hash[:12],
+            _ai_config_log_summary(runtime_config),
+        )
         if request_item_count > int(runtime_config.get("max_items_per_request") or 120):
             unmatched_audio, unmatched_subtitles = self._build_unmatched(audio_index, subtitle_groups, preserved_audio, preserved_groups)
             match_result = {
@@ -674,6 +747,14 @@ class AISubtitleMatchService:
                 "unmatched_subtitles": unmatched_subtitles,
                 "ai_validation_errors": [f"request_too_large:{request_item_count}>{runtime_config.get('max_items_per_request')}"],
             }
+            logger.warning(
+                "[AI字幕] 自动配对转人工: reason=request_too_large task_id=%s rj=%s items=%s limit=%s preserved=%s",
+                task_id,
+                rjcode,
+                request_item_count,
+                runtime_config.get("max_items_per_request"),
+                len(preserved),
+            )
             return {
                 "used": True,
                 "status": "awaiting_manual",
@@ -711,6 +792,17 @@ class AISubtitleMatchService:
                 "ai_validation_errors": [],
                 "ai_duplicate_outputs": duplicate_outputs,
             }
+            logger.info(
+                "[AI字幕] 自动配对无可请求项: task_id=%s rj=%s mode=%s status=%s preserved=%s unmatched_audio=%s unmatched_subtitles=%s duplicate_outputs=%s",
+                task_id,
+                rjcode,
+                resolved_mode,
+                status,
+                len(preserved),
+                len(unmatched_audio),
+                len(unmatched_subtitles),
+                len(duplicate_outputs),
+            )
             return {
                 "used": resolved_mode == "rule_ai_auto",
                 "status": status,
@@ -813,6 +905,23 @@ class AISubtitleMatchService:
                 error_summary=";".join(validation_errors + duplicate_outputs)[:800],
                 auto_applied=auto_safe,
             )
+            logger.info(
+                "[AI字幕] 自动配对完成: task_id=%s rj=%s mode=%s status=%s auto_safe=%s ai_matches=%s final_matches=%s low_confidence=%s validation_errors=%s duplicate_outputs=%s unmatched_audio=%s unmatched_subtitles=%s tokens=%s duration_ms=%s",
+                task_id,
+                rjcode,
+                resolved_mode,
+                status,
+                auto_safe,
+                len(ai_matches),
+                len(final_matches),
+                len(low_confidence),
+                len(validation_errors),
+                len(duplicate_outputs),
+                len(unmatched_audio),
+                len(unmatched_subtitles),
+                usage.get("total_tokens", 0),
+                duration_ms,
+            )
             return {
                 "used": True,
                 "status": status,
@@ -852,6 +961,16 @@ class AISubtitleMatchService:
                 error_summary=normalized.get("raw_summary", ""),
                 auto_applied=False,
             )
+            logger.warning(
+                "[AI字幕] 自动配对失败: task_id=%s rj=%s mode=%s model=%s request_hash=%s duration_ms=%s error=%s",
+                task_id,
+                rjcode,
+                resolved_mode,
+                runtime_config.get("model", ""),
+                request_hash[:12],
+                duration_ms,
+                _ai_error_log_summary(normalized),
+            )
             return {
                 "used": True,
                 "status": "failed",
@@ -874,7 +993,13 @@ class AISubtitleMatchService:
     async def test_connection(self, raw_config: Any, *, saved_api_key: str = "") -> Dict[str, Any]:
         config = self._normalize_runtime_config(raw_config, saved_api_key=saved_api_key)
         started = time.perf_counter()
+        logger.info("[AI字幕] 连接测试开始: %s", _ai_config_log_summary(config))
         if not config.get("model") or not config.get("api_key"):
+            logger.warning(
+                "[AI字幕] 连接测试跳过: model_configured=%s api_key_configured=%s",
+                bool(config.get("model")),
+                bool(config.get("api_key")),
+            )
             return {
                 "success": False,
                 "status": "failed",
@@ -897,12 +1022,19 @@ class AISubtitleMatchService:
             matches = response.get("matches") or []
             if not isinstance(matches, list):
                 raise ValueError("json_output_failed: matches 必须是数组")
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            logger.info(
+                "[AI字幕] 连接测试成功: model=%s duration_ms=%s matched_count=%s",
+                config.get("model", ""),
+                duration_ms,
+                len(matches),
+            )
             return {
                 "success": True,
                 "status": "ok",
                 "message": "模型连接正常，JSON 输出可用",
                 "model": config.get("model", ""),
-                "duration_ms": int((time.perf_counter() - started) * 1000),
+                "duration_ms": duration_ms,
                 "capabilities": {"json_output": True},
                 "sample": {
                     "matched_count": len(matches),
@@ -917,12 +1049,19 @@ class AISubtitleMatchService:
                     "title": "AI 配置不完整",
                     "suggestion": "检查模型名、API Key 和 LiteLLM 依赖是否可用",
                 })
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            logger.warning(
+                "[AI字幕] 连接测试失败: model=%s duration_ms=%s error=%s",
+                config.get("model", ""),
+                duration_ms,
+                _ai_error_log_summary(error),
+            )
             return {
                 "success": False,
                 "status": "failed",
                 "error": error,
                 "model": config.get("model", ""),
-                "duration_ms": int((time.perf_counter() - started) * 1000),
+                "duration_ms": duration_ms,
             }
 
     async def record_usage(self, **kwargs) -> None:

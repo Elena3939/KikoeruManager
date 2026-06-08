@@ -16,9 +16,12 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app.core.kikoeru_duplicate_service import (
+    KikoeruCheckResult,
     KikoeruDuplicateService,
     KikoeruServerConfig,
 )
@@ -181,3 +184,37 @@ def test_maybe_cache_writes_strict_match(service: KikoeruDuplicateService) -> No
     cached = service._get_cache("RJ01407907")
     assert cached is not None, "exact 命中应该写入缓存"
     assert cached.matched_rjcode == "RJ01407907"
+
+
+def test_safe_headers_for_log_masks_authorization(service: KikoeruDuplicateService) -> None:
+    headers = service._safe_headers_for_log({
+        "Accept": "application/json",
+        "Authorization": "Bearer secret-token-value",
+    })
+
+    rendered = repr(headers)
+    assert "secret-token-value" not in rendered
+    assert "Bearer ********" in rendered or headers.get("Authorization") == "********"
+    assert headers["Accept"] == "application/json"
+
+
+@pytest.mark.asyncio
+async def test_check_duplicate_reuses_inflight_for_same_rj(service: KikoeruDuplicateService, monkeypatch) -> None:
+    calls = 0
+
+    async def fake_impl(rjcode, use_cache=True, extra_match_rjcodes=None):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.01)
+        return KikoeruCheckResult(is_found=True, rjcode=rjcode, matched_rjcode=rjcode)
+
+    monkeypatch.setattr(service, "_check_duplicate_impl", fake_impl)
+
+    first, second = await asyncio.gather(
+        service.check_duplicate("RJ01234567"),
+        service.check_duplicate("RJ01234567"),
+    )
+
+    assert calls == 1
+    assert first.rjcode == "RJ01234567"
+    assert second.rjcode == "RJ01234567"

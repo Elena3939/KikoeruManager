@@ -7,7 +7,7 @@ import asyncio
 import re
 import time
 import difflib
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass, field
 import aiohttp
 from datetime import datetime, timedelta
@@ -15,6 +15,7 @@ from urllib.parse import quote
 
 from ..config.settings import get_config, save_config
 from ..core.dlsite_service import get_dlsite_service
+from .log_sanitizer import mask_url_for_log, sanitize_for_log, sanitize_text_for_log
 from .ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,7 @@ class KikoeruDuplicateService:
         # 时复用 raw data 重新 _parse_search_result（CPU 操作，不打 HTTP），就能给
         # 广义匹配一次机会而不需要触网。TTL 跟 _cache 一致。
         self._search_response_cache: TTLCache = TTLCache(max_size=2048, ttl_seconds=cache_ttl, name="kikoeru.search_raw")
+        self._duplicate_inflight: Dict[Tuple[str, bool, Tuple[str, ...]], asyncio.Future] = {}
         self._session: Optional[aiohttp.ClientSession] = None
 
     def _get_circle_id_cache(self, keyword: str) -> int:
@@ -160,8 +162,12 @@ class KikoeruDuplicateService:
             session = await self._get_session()
             login_url = f"{self.config.server_url}/api/auth/me"
             
-            logger.info(f"[Kikoeru] 正在登录: {self.config.username}")
-            logger.info(f"[Kikoeru] 登录URL: {login_url}")
+            logger.info(
+                "[Kikoeru] 正在登录: username=%s server=%s",
+                self.config.username,
+                mask_url_for_log(self.config.server_url),
+            )
+            logger.debug("[Kikoeru] 登录URL: %s", mask_url_for_log(login_url))
             
             headers = {
                 'Accept': 'application/json',
@@ -179,14 +185,14 @@ class KikoeruDuplicateService:
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=self.config.timeout)
             ) as response:
-                logger.info(f"[Kikoeru] 登录响应状态: {response.status}")
+                logger.debug(f"[Kikoeru] 登录响应状态: {response.status}")
                 content_type = response.headers.get('Content-Type', '')
-                logger.info(f"[Kikoeru] 响应Content-Type: {content_type}")
+                logger.debug(f"[Kikoeru] 响应Content-Type: {content_type}")
                 
                 if response.status == 200:
                     if 'application/json' in content_type:
                         data = await response.json()
-                        logger.info(f"[Kikoeru] 登录响应keys: {list(data.keys())}")
+                        logger.debug(f"[Kikoeru] 登录响应keys: {list(data.keys())}")
                         
                         token = data.get('token')
                         
@@ -200,25 +206,24 @@ class KikoeruDuplicateService:
                             logger.error(f"[Kikoeru] 未找到token，可用字段: {list(data.keys())}")
                             return False
                     else:
-                        text = await response.text()
-                        logger.error(f"[Kikoeru] 响应非JSON: {text[:300]}")
+                        text = sanitize_text_for_log(await response.text(), max_length=300)
+                        logger.error(f"[Kikoeru] 响应非JSON: {text}")
                         return False
                         
                 elif response.status == 401:
-                    error_text = await response.text()
                     logger.error(f"[Kikoeru] 登录401错误: 用户名或密码错误")
                     return False
                 elif response.status == 422:
-                    error_text = await response.text()
-                    logger.error(f"[Kikoeru] 登录422错误: 参数格式错误 - {error_text[:300]}")
+                    error_text = sanitize_text_for_log(await response.text(), max_length=300)
+                    logger.error(f"[Kikoeru] 登录422错误: 参数格式错误 - {error_text}")
                     return False
                 else:
-                    error_text = await response.text()
-                    logger.error(f"[Kikoeru] 登录失败 {response.status}: {error_text[:300]}")
+                    error_text = sanitize_text_for_log(await response.text(), max_length=300)
+                    logger.error(f"[Kikoeru] 登录失败 {response.status}: {error_text}")
                     return False
                     
         except Exception as e:
-            logger.error(f"[Kikoeru] 登录异常: {e}")
+            logger.error("[Kikoeru] 登录异常: %s", sanitize_text_for_log(e))
             return False
     
     def _save_token_to_config(self, token: str, expires: int):
@@ -233,7 +238,7 @@ class KikoeruDuplicateService:
             save_config(config_to_save)
             logger.info("[Kikoeru] Token 已保存到配置文件")
         except Exception as e:
-            logger.error(f"[Kikoeru] 保存 Token 失败: {e}")
+            logger.error("[Kikoeru] 保存 Token 失败: %s", sanitize_text_for_log(e))
     
     async def _ensure_valid_token(self) -> bool:
         """确保有有效的 Token，如果没有或过期则自动获取"""
@@ -366,11 +371,22 @@ class KikoeruDuplicateService:
         if self.config.api_token:
             # 支持 Bearer Token 认证
             headers['Authorization'] = f'Bearer {self.config.api_token}'
-            logger.debug(f"[Kikoeru] 使用 Token 认证: {self.config.api_token[:20]}...")
+            logger.debug("[Kikoeru] 使用 Token 认证: ***")
         else:
             logger.debug("[Kikoeru] 未配置 API Token，使用无认证请求")
         
         return headers
+
+    @staticmethod
+    def _safe_headers_for_log(headers: Dict[str, str]) -> Dict[str, str]:
+        return sanitize_for_log(dict(headers or {}), max_string=200)
+
+    @staticmethod
+    def _compact_response_for_log(data: Any, max_length: int = 1200) -> str:
+        text = repr(sanitize_for_log(data, max_string=200))
+        if len(text) <= max_length:
+            return text
+        return text[:max_length] + "...<truncated>"
 
     def _get_page_headers(self, keyword: str) -> Dict[str, str]:
         headers = {
@@ -969,6 +985,45 @@ class KikoeruDuplicateService:
         use_cache: bool = True,
         extra_match_rjcodes: Optional[Set[str]] = None,
     ) -> KikoeruCheckResult:
+        normalized_rjcode = self._normalize_rjcode(rjcode)
+        extra_key = tuple(sorted(
+            self._normalize_rjcode(item)
+            for item in (extra_match_rjcodes or set())
+            if str(item or "").strip()
+        ))
+        inflight_key = (normalized_rjcode, bool(use_cache), extra_key)
+        existing = self._duplicate_inflight.get(inflight_key)
+        if existing is not None and not existing.done():
+            logger.debug("[Kikoeru] 复用进行中的查重请求: rj=%s extra=%s", normalized_rjcode, len(extra_key))
+            return await asyncio.shield(existing)
+
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        self._duplicate_inflight[inflight_key] = future
+        try:
+            result = await self._check_duplicate_impl(
+                normalized_rjcode,
+                use_cache=use_cache,
+                extra_match_rjcodes=set(extra_key) if extra_key else extra_match_rjcodes,
+            )
+            if not future.done():
+                future.set_result(result)
+            return result
+        except BaseException as exc:
+            if not future.done():
+                future.set_exception(exc)
+                future.add_done_callback(lambda item: item.exception())
+            raise
+        finally:
+            if self._duplicate_inflight.get(inflight_key) is future:
+                self._duplicate_inflight.pop(inflight_key, None)
+
+    async def _check_duplicate_impl(
+        self,
+        rjcode: str,
+        use_cache: bool = True,
+        extra_match_rjcodes: Optional[Set[str]] = None,
+    ) -> KikoeruCheckResult:
         """检查作品是否在 Kikoeru 服务器中。
 
         Args:
@@ -1047,19 +1102,19 @@ class KikoeruDuplicateService:
 
             session = await self._get_session()
 
-            logger.info(f"[Kikoeru] 正在查询: {rjcode}")
-            logger.info(f"[Kikoeru] 请求 URL: {url}")
-            logger.info(f"[Kikoeru] 请求头: {headers}")
+            logger.debug("[Kikoeru] 正在查询: %s", rjcode)
+            logger.debug("[Kikoeru] 请求 URL: %s", mask_url_for_log(url))
+            logger.debug("[Kikoeru] 请求头: %s", self._safe_headers_for_log(headers))
 
             async with session.get(
                 url,
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=self.config.timeout)
             ) as response:
-                logger.info(f"[Kikoeru] 响应状态: {response.status}")
+                logger.debug(f"[Kikoeru] 响应状态: {response.status}")
 
                 if response.status == 401:
-                    error_text = await response.text()
+                    error_text = sanitize_text_for_log(await response.text(), max_length=500)
                     logger.warning(f"[Kikoeru] Token 过期或无效，尝试重新登录: {rjcode}")
 
                     if self.config.username and self.config.password:
@@ -1094,7 +1149,7 @@ class KikoeruDuplicateService:
                                     return result
 
                     logger.error(f"[Kikoeru] 认证失败: {rjcode}")
-                    logger.error(f"[Kikoeru] 响应内容: {error_text[:500]}")
+                    logger.debug("[Kikoeru] 认证失败响应内容: %s", error_text)
                     return KikoeruCheckResult(
                         is_found=False,
                         rjcode=rjcode,
@@ -1102,9 +1157,9 @@ class KikoeruDuplicateService:
                     )
 
                 if response.status != 200:
-                    error_text = await response.text()
-                    logger.warning(f"[Kikoeru] 服务器返回错误: {response.status}")
-                    logger.warning(f"[Kikoeru] 错误响应: {error_text[:500]}")
+                    error_text = sanitize_text_for_log(await response.text(), max_length=500)
+                    logger.warning(f"[Kikoeru] 服务器返回错误: rj={rjcode} status={response.status}")
+                    logger.debug("[Kikoeru] 错误响应: %s", error_text)
                     return KikoeruCheckResult(
                         is_found=False,
                         rjcode=rjcode,
@@ -1112,7 +1167,7 @@ class KikoeruDuplicateService:
                     )
 
                 data = await response.json()
-                logger.info(f"[Kikoeru] 响应数据: {data}")
+                logger.debug("[Kikoeru] 响应数据: %s", self._compact_response_for_log(data))
                 # ★ 写 raw response cache（正常路径），下次同 RJ 带新 linkage 进来
                 # 时可复用 raw 重 parse 不重新 search。
                 self._search_response_cache[rjcode] = (data, datetime.now())

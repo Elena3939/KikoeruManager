@@ -29,17 +29,13 @@ def cleanup_task_download_artifacts(task: Any) -> Dict[str, Any]:
 
     if source_action in _REIMPORT_SOURCE_ACTIONS or cleanup_mode == "none":
         result["mode"] = "skipped"
-        logger.info(
-            "跳过本地重导入目录清理: task_id=%s source_action=%s cleanup_mode=%s",
-            getattr(task, "id", ""),
-            source_action,
-            cleanup_mode,
-        )
+        _log_cleanup_result(task, result, source_action=source_action, cleanup_mode=cleanup_mode)
         return result
 
     if task_type == "http_download" or cleanup_mode == "files_only":
         result["mode"] = "files_only"
         _cleanup_download_files(task, metadata, result)
+        _log_cleanup_result(task, result, source_action=source_action, cleanup_mode=cleanup_mode)
         return result
 
     owned_roots = _task_owned_cleanup_roots(task, metadata, task_type)
@@ -47,11 +43,28 @@ def cleanup_task_download_artifacts(task: Any) -> Dict[str, Any]:
         result["mode"] = "owned_roots"
         for root in owned_roots:
             _remove_directory(root, result)
+        _log_cleanup_result(task, result, source_action=source_action, cleanup_mode=cleanup_mode)
         return result
 
     result["mode"] = "files_only"
     _cleanup_download_files(task, metadata, result)
+    _log_cleanup_result(task, result, source_action=source_action, cleanup_mode=cleanup_mode)
     return result
+
+
+def _log_cleanup_result(task: Any, result: Dict[str, Any], *, source_action: str, cleanup_mode: str) -> None:
+    log_method = logger.warning if result.get("errors") else logger.info
+    log_method(
+        "下载产物清理摘要: task_id=%s task_type=%s mode=%s source_action=%s cleanup_mode=%s cleaned=%s skipped=%s errors=%s",
+        getattr(task, "id", ""),
+        _value(getattr(task, "type", "")),
+        result.get("mode"),
+        source_action,
+        cleanup_mode,
+        result.get("cleaned", 0),
+        len(result.get("skipped_paths") or []),
+        len(result.get("errors") or []),
+    )
 
 
 def _cleanup_download_files(task: Any, metadata: Dict[str, Any], result: Dict[str, Any]) -> None:

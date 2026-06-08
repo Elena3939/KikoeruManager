@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileModifiedEvent
 
+from ..core.log_sanitizer import sanitize_for_log
+
 class SynologyLibraryConfig(BaseModel):
     """群晖库存配置"""
     base_url: str = ""
@@ -633,9 +635,13 @@ def load_config(config_path: str = None) -> AppConfig:
                     with open(config_path, 'r', encoding='utf-8') as f:
                         config_data = yaml.safe_load(f) or {}
 
-                    logger.info(f"YAML 加载的原始数据: {config_data}")
-                    logger.info(f"YAML 中的 classification: {config_data.get('classification')}")
-                    logger.info(f"YAML 中的 classification 数量: {len(config_data.get('classification', []))}")
+                    logger.info(
+                        "YAML 配置已加载: path=%s top_keys=%s classification=%s",
+                        config_path,
+                        len(config_data),
+                        len(config_data.get('classification', []) or []),
+                    )
+                    logger.debug("YAML 配置顶层键: %s", sorted(config_data.keys()))
 
                     if 'classification' in config_data and config_data['classification']:
                         validated_rules = []
@@ -684,7 +690,7 @@ def load_config(config_path: str = None) -> AppConfig:
                         if 'use_japanese_metadata' not in config_data['rename']:
                             config_data['rename']['use_japanese_metadata'] = False
                             logger.info("添加缺失的 use_japanese_metadata 配置，默认为 False")
-                        logger.info(f"[CONFIG] rename.template = '{config_data['rename'].get('template', 'NOT SET')}'")
+                        logger.debug(f"[CONFIG] rename.template = '{config_data['rename'].get('template', 'NOT SET')}'")
 
                     if 'password_cleanup' not in config_data or not config_data['password_cleanup']:
                         config_data['password_cleanup'] = {
@@ -871,16 +877,25 @@ def load_config(config_path: str = None) -> AppConfig:
                     _config = AppConfig(**config_data)
                     _config_loaded_mtime = os.path.getmtime(config_path) if os.path.exists(config_path) else 0.0
                     _config_last_error = ""
-                    logger.info(f"[CONFIG] 加载后 template = '{_config.rename.template}'")
-                    logger.info(f"[CONFIG] storage.input_path = '{_config.storage.input_path}'")
-                    logger.info(f"[CONFIG] storage.library_path = '{_config.storage.library_path}'")
-                    logger.info(f"[CONFIG] storage.temp_path = '{_config.storage.temp_path}'")
-                    logger.info(f"[CONFIG] storage.processed_archives_path = '{_config.storage.processed_archives_path}'")
-                    logger.info(f"AppConfig 创建成功")
-                    logger.info(f"AppConfig 中的 classification: {_config.classification}")
-                    logger.info(f"AppConfig 中的 classification 数量: {len(_config.classification)}")
+                    logger.info(
+                        "[CONFIG] 配置加载完成: path=%s top_keys=%s libraries=%s classification=%s template=%r",
+                        config_path,
+                        len(config_data),
+                        len(_config.storage.libraries),
+                        len(_config.classification),
+                        _config.rename.template,
+                    )
+                    logger.debug(
+                        "[CONFIG] 存储路径摘要: %s",
+                        sanitize_for_log({
+                            "input_path": _config.storage.input_path,
+                            "library_path": _config.storage.library_path,
+                            "temp_path": _config.storage.temp_path,
+                            "processed_archives_path": _config.storage.processed_archives_path,
+                        }),
+                    )
                     for i, rule in enumerate(_config.classification):
-                        logger.info(f"规则 {i}: type={rule.type}, enabled={rule.enabled}, custom_name={rule.custom_name}")
+                        logger.debug(f"规则 {i}: type={rule.type}, enabled={rule.enabled}, custom_name={rule.custom_name}")
                 except Exception as e:
                     _config_last_error = str(e)
                     logger.error(f"配置文件加载失败，使用默认配置: {e}")
@@ -928,7 +943,8 @@ def save_config(config_data: dict, config_path: str = None) -> AppConfig:
     
     logger = logging.getLogger(__name__)
     config_path = _resolve_config_path(config_path)
-    logger.info(f"保存配置到: {config_path}")
+    incoming_keys = sorted((config_data or {}).keys())
+    logger.info("保存配置请求: path=%s keys=%s", config_path, incoming_keys)
 
     with _config_lock:
         _config_write_in_progress = True
@@ -937,14 +953,14 @@ def save_config(config_data: dict, config_path: str = None) -> AppConfig:
             if os.path.exists(config_path):
                 with open(config_path, 'r', encoding='utf-8') as f:
                     existing_config = yaml.safe_load(f) or {}
-                    logger.info(f"读取现有配置: {len(existing_config)} 个顶层键")
+                    logger.debug(f"读取现有配置: {len(existing_config)} 个顶层键")
 
             merged_config = deep_merge(existing_config, config_data)
-            logger.info(f"合并后配置: {len(merged_config)} 个顶层键")
+            logger.debug(f"合并后配置: {len(merged_config)} 个顶层键")
 
             try:
                 test_config = AppConfig(**merged_config)
-                logger.info("配置验证通过")
+                logger.debug("配置验证通过")
             except Exception as e:
                 logger.error(f"配置验证失败: {e}")
                 if _config:
@@ -960,7 +976,12 @@ def save_config(config_data: dict, config_path: str = None) -> AppConfig:
             _config_loaded_path = config_path
             _config_loaded_mtime = next_mtime
             _config_last_error = ""
-            logger.info("配置已成功保存并原子更新")
+            logger.info(
+                "配置已成功保存并原子更新: path=%s top_keys=%s updated_keys=%s",
+                config_path,
+                len(merged_config),
+                incoming_keys,
+            )
             return _config
         except Exception as e:
             _config_last_error = str(e)

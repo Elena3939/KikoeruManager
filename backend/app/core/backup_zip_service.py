@@ -256,6 +256,16 @@ class BackupZipService:
             if not os.path.isdir(common_parent):
                 common_parent = os.path.dirname(normalized_sources[0])
         rel_sources = [os.path.relpath(path, common_parent) for path in normalized_sources]
+        started = time.perf_counter()
+        logger.info(
+            "[BackupZip] 临时打包开始: sources=%s output_dir=%s format=%s level=%s threads=%s solid=%s",
+            len(normalized_sources),
+            output_dir,
+            archive_format,
+            compression_level,
+            threads,
+            solid,
+        )
         cmd_args = self._build_7z_params(
             archive_format,
             compression_level,
@@ -266,11 +276,30 @@ class BackupZipService:
             solid,
         )
         cmd = [seven_zip] + cmd_args + rel_sources
-        return_code = await self._run_7z(cmd, common_parent)
-        if return_code != 0:
-            self._cleanup_file(archive_path)
-            raise RuntimeError(f"7z 执行失败，返回码: {return_code}")
-        return archive_path
+        try:
+            return_code = await self._run_7z(cmd, common_parent)
+            if return_code != 0:
+                self._cleanup_file(archive_path)
+                raise RuntimeError(f"7z 执行失败，返回码: {return_code}")
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            size = os.path.getsize(archive_path) if os.path.exists(archive_path) else 0
+            logger.info(
+                "[BackupZip] 临时打包完成: output=%s size=%s elapsed_ms=%s",
+                archive_path,
+                size,
+                elapsed_ms,
+            )
+            return archive_path
+        except Exception as exc:
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            logger.warning(
+                "[BackupZip] 临时打包失败: sources=%s output=%s elapsed_ms=%s error=%s",
+                len(normalized_sources),
+                archive_path,
+                elapsed_ms,
+                exc,
+            )
+            raise
 
     async def cancel(self) -> dict:
         if not self._task or self._task.done():

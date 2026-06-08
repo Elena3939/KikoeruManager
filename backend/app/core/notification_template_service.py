@@ -734,6 +734,16 @@ def create_template(data: dict) -> dict:
         db.add(item)
         db.commit()
         db.refresh(item)
+        logger.info(
+            "[通知模板] 已创建: id=%s name=%s channel=%s mode=%s enabled=%s blocks=%s html_len=%s",
+            item.id,
+            item.name,
+            item.channel,
+            item.editor_mode,
+            item.enabled,
+            len(item.blocks or []),
+            len(item.html_template or ""),
+        )
         return item.to_dict()
     except Exception:
         db.rollback()
@@ -756,6 +766,16 @@ def update_template(template_id: str, data: dict) -> Optional[dict]:
                 setattr(item, field, data[field])
         db.commit()
         db.refresh(item)
+        logger.info(
+            "[通知模板] 已更新: id=%s name=%s changed_keys=%s mode=%s enabled=%s blocks=%s html_len=%s",
+            item.id,
+            item.name,
+            sorted(data.keys()),
+            item.editor_mode,
+            item.enabled,
+            len(item.blocks or []),
+            len(item.html_template or ""),
+        )
         return item.to_dict()
     except Exception:
         db.rollback()
@@ -771,6 +791,7 @@ def delete_template(template_id: str) -> bool:
         item = db.query(NotificationTemplate).filter(NotificationTemplate.id == template_id).first()
         if not item:
             return False
+        logger.info("[通知模板] 已删除: id=%s name=%s channel=%s mode=%s", item.id, item.name, item.channel, item.editor_mode)
         db.delete(item)
         db.commit()
         return True
