@@ -4383,25 +4383,7 @@ html.kikoerumanager-dark {
     color: rgba(186, 230, 253, 0.86) !important;
   }
 
-  html.kikoerumanager-dark body #app .library .lib-table-drag-file-icon {
-    color: rgba(205, 205, 211, 0.78) !important;
-  }
-
-  html.kikoerumanager-dark body #app .library .lib-table-drag-folder-icon {
-    color: #d99a25 !important;
-    fill: currentColor !important;
-    stroke: currentColor !important;
-  }
-
-  html.kikoerumanager-dark body #app .library .lib-table-drag-move-icon {
-    color: #7dd3fc !important;
-  }
-
-  html.kikoerumanager-dark body #app .library :is(
-    .lib-table-drag-file-icon,
-    .lib-table-drag-folder-icon,
-    .lib-table-drag-move-icon
-  ) {
+  html.kikoerumanager-dark body #app .library .lib-table-drag-kind-icon {
     filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.28)) !important;
   }
 
@@ -5425,4 +5407,85 @@ html.kikoerumanager-dark .subtitle-import-workbench-dialog .subtitle-inspector-w
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.15) !important;
   box-shadow: none !important;
+}
+
+/* 上传到服务器最终暗黑兜底：运行时最后压掉上下灰条、重阴影。 */
+html.kikoerumanager-dark body .server-upload-preview-modal :is(.window, .glass-shell) {
+  background: rgba(13, 14, 17, 0.96) !important;
+  background-color: rgba(13, 14, 17, 0.96) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  filter: none !important;
+  backdrop-filter: blur(12px) saturate(108%) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(108%) !important;
+}
+
+html.kikoerumanager-dark body .server-upload-preview-modal :is(
+  .window-header,
+  .tabs-row,
+  .footer-row
+) {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  filter: none !important;
+}
+
+html.kikoerumanager-dark body .server-upload-preview-modal :is(
+  .glass-panel,
+  .glass-card,
+  .tree-panel,
+  .upload-settings-card
+) {
+  background: rgba(8, 9, 12, 0.42) !important;
+  background-color: rgba(8, 9, 12, 0.42) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  filter: none !important;
+}
+
+html.kikoerumanager-dark body .server-upload-preview-modal :is(
+  .tree-row-selected,
+  .tree-row-selected:hover
+) {
+  background: rgba(255, 255, 255, 0.062) !important;
+  background-color: rgba(255, 255, 255, 0.062) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark body .server-upload-preview-modal :is(
+  .tab-chip,
+  .tab-chip-active,
+  .tab-chip-partial
+) {
+  background: rgba(255, 255, 255, 0.058) !important;
+  background-color: rgba(255, 255, 255, 0.058) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  filter: none !important;
+}
+
+html.kikoerumanager-dark body .server-upload-preview-modal .tree-icon:not(.tree-icon-kind-dir),
+html.kikoerumanager-dark body .server-upload-preview-modal .tree-icon:not(.tree-icon-kind-dir) :is(svg, path) {
+  color: rgba(214, 214, 220, 0.78) !important;
+  stroke: currentColor !important;
+  filter: none !important;
+}
+
+html.kikoerumanager-dark body .server-upload-preview-modal .tree-icon-kind-dir {
+  color: #d9a43a !important;
+  filter: none !important;
 }
