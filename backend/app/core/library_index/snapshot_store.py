@@ -837,6 +837,60 @@ class SnapshotStore:
                 .delete(synchronize_session=False)
             )
 
+    def delete_stale_library_entries(
+        self,
+        library_id: str,
+        *,
+        indexed_before_ms: int,
+        chunk_size: int = 500,
+    ) -> int:
+        """分块删除全量重建后未被本轮扫描刷新到的旧行。
+
+        rebuild 主路径会先 upsert 新快照，再按 indexed_at 边界清 stale。
+        这里故意不用一条大 DELETE，避免 SQLite 写锁和 FTS 删除触发器长时间占用。
+        """
+        chunk_size = max(1, int(chunk_size or 500))
+        cutoff = int(indexed_before_ms or 0)
+        deleted_total = 0
+        started = time.time()
+        while True:
+            with self._session() as db:
+                rows = (
+                    db.query(LibraryIndexEntry.id)
+                    .filter(
+                        LibraryIndexEntry.library_id == library_id,
+                        LibraryIndexEntry.indexed_at < cutoff,
+                    )
+                    .order_by(LibraryIndexEntry.id.asc())
+                    .limit(chunk_size)
+                    .all()
+                )
+                ids = [row.id for row in rows]
+                if not ids:
+                    break
+                deleted = (
+                    db.query(LibraryIndexEntry)
+                    .filter(LibraryIndexEntry.id.in_(ids))
+                    .delete(synchronize_session=False)
+                )
+                deleted_total += int(deleted or 0)
+            if deleted_total and deleted_total % (chunk_size * 10) == 0:
+                logger.info(
+                    "[索引] stale 分块清理中 library=%s deleted=%s cutoff=%s",
+                    library_id,
+                    deleted_total,
+                    cutoff,
+                )
+        if deleted_total:
+            logger.info(
+                "[索引] stale 分块清理完成 library=%s deleted=%s elapsed=%.2fs cutoff=%s",
+                library_id,
+                deleted_total,
+                time.time() - started,
+                cutoff,
+            )
+        return deleted_total
+
     # ========== Entry 查询 ==========
 
     def find_by_rjcode(

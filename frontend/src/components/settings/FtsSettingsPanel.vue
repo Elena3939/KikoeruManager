@@ -231,12 +231,15 @@ import {
 import { ElMessage } from 'element-plus'
 import { activityLogApi, databaseMaintenanceApi } from '../../api'
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
+import { useRealtimeEvents } from '../../composables/useRealtimeEvents'
 
 // ─── Activity Logs FTS ───────────────────────────────────────
+const realtimeEvents = useRealtimeEvents()
 const activityInfo = ref(null)
 const activityLoading = ref(false)
 let activityPollTimer = null
 let visibilityBound = false
+const FTS_FALLBACK_POLL_MS = 30000
 
 /** 保证 loading 态最少持续 ms 毫秒，让动画有时间播完 */
 function withMinDuration(promise, ms = 600) {
@@ -302,18 +305,24 @@ async function fetchActivity() {
 function startActivityPolling() {
   if (typeof document !== 'undefined' && document.hidden) return
   stopActivityPolling()
-  activityPollTimer = setInterval(() => {
+  activityPollTimer = setTimeout(() => {
+    activityPollTimer = null
     if (typeof document !== 'undefined' && document.hidden) {
       stopActivityPolling()
       return
     }
-    fetchActivity()
-  }, 1400)
+    if (!activityBusy.value) return
+    if (!realtimeEvents.connected.value) {
+      fetchActivity()
+      return
+    }
+    startActivityPolling()
+  }, FTS_FALLBACK_POLL_MS)
 }
 
 function stopActivityPolling() {
   if (activityPollTimer) {
-    clearInterval(activityPollTimer)
+    clearTimeout(activityPollTimer)
     activityPollTimer = null
   }
 }
@@ -418,18 +427,24 @@ async function fetchLibrary() {
 function startLibraryPolling() {
   if (typeof document !== 'undefined' && document.hidden) return
   stopLibraryPolling()
-  libraryPollTimer = setInterval(() => {
+  libraryPollTimer = setTimeout(() => {
+    libraryPollTimer = null
     if (typeof document !== 'undefined' && document.hidden) {
       stopLibraryPolling()
       return
     }
-    fetchLibrary()
-  }, 1400)
+    if (!libraryBusy.value) return
+    if (!realtimeEvents.connected.value) {
+      fetchLibrary()
+      return
+    }
+    startLibraryPolling()
+  }, FTS_FALLBACK_POLL_MS)
 }
 
 function stopLibraryPolling() {
   if (libraryPollTimer) {
-    clearInterval(libraryPollTimer)
+    clearTimeout(libraryPollTimer)
     libraryPollTimer = null
   }
 }
@@ -489,13 +504,71 @@ function unbindVisibilityChange() {
   document.removeEventListener('visibilitychange', handleVisibilityChange)
 }
 
+function mergeActivityFtsRealtimeState(rebuild = {}) {
+  const previous = activityInfo.value || {}
+  activityInfo.value = {
+    ...previous,
+    fts_enabled: previous.fts_enabled ?? true,
+    rebuild: {
+      ...(previous.rebuild || {}),
+      ...rebuild,
+    },
+  }
+}
+
+function mergeLibraryFtsRealtimeState(rebuild = {}) {
+  const previous = libraryInfo.value || {}
+  libraryInfo.value = {
+    ...previous,
+    fts_enabled: previous.fts_enabled ?? true,
+    state: rebuild.state || previous.state,
+    indexed_entries: Number(rebuild.indexed_entries ?? previous.indexed_entries ?? previous.fts_row_count ?? 0),
+    total_entries: Number(rebuild.total_entries ?? previous.total_entries ?? previous.row_count ?? 0),
+    rebuild: {
+      ...(previous.rebuild || {}),
+      ...rebuild,
+    },
+  }
+}
+
+function handleFtsRealtimeEvent(event) {
+  const detail = event?.detail || {}
+  if (detail.type !== 'maintenance.fts.changed') return
+  const payload = detail.payload || {}
+  const kind = String(payload.kind || detail.reason || '')
+  const rebuild = payload.rebuild || {}
+
+  if (kind === 'activity_logs') {
+    mergeActivityFtsRealtimeState(rebuild)
+    if (rebuild.running) {
+      startActivityPolling()
+      return
+    }
+    stopActivityPolling()
+    fetchActivity()
+    return
+  }
+
+  if (kind === 'library_index') {
+    mergeLibraryFtsRealtimeState(rebuild)
+    if ((rebuild.state || detail.status) === 'running') {
+      startLibraryPolling()
+      return
+    }
+    stopLibraryPolling()
+    fetchLibrary()
+  }
+}
+
 onMounted(() => {
   bindVisibilityChange()
+  window.addEventListener('kikoerumanager:events:message', handleFtsRealtimeEvent)
   fetchActivity()
   fetchLibrary()
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('kikoerumanager:events:message', handleFtsRealtimeEvent)
   unbindVisibilityChange()
   stopActivityPolling()
   stopLibraryPolling()

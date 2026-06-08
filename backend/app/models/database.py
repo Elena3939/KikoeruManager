@@ -351,6 +351,8 @@ class CircleWork(Base):
 
     __table_args__ = (
         Index('idx_circle_work_unique', 'circle_id', 'canonical_rjcode', unique=True),
+        Index('idx_circle_works_circle_updated', 'circle_id', 'updated_at'),
+        Index('idx_circle_works_circle_asmr', 'circle_id', 'has_asmr_one'),
     )
 
     def to_dict(self):
@@ -1004,6 +1006,10 @@ class ASMRDownloadSession(Base):
     completed_at = Column(DateTime)
     created_at = Column(DateTime, default=get_local_now)
     updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    __table_args__ = (
+        Index('idx_asmr_download_sessions_rj_updated', 'rjcode', 'updated_at'),
+    )
 
     def to_dict(self):
         return {
@@ -1806,8 +1812,20 @@ def init_db():
                     "ON circle_works(email_watcher_first_seen_at)"
                 )
             )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_circle_works_circle_updated "
+                    "ON circle_works(circle_id, updated_at)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_circle_works_circle_asmr "
+                    "ON circle_works(circle_id, has_asmr_one)"
+                )
+            )
         except Exception:
-            _db_logger.warning("[数据库] circle_works.email_watcher_first_seen_at 索引创建失败", exc_info=True)
+            _db_logger.warning("[数据库] circle_works 社团补全索引创建失败", exc_info=True)
         result = conn.execute(text("PRAGMA table_info(asmr_download_sessions)"))
         session_columns = {row[1] for row in result.fetchall()}
         session_missing_columns = []
@@ -1824,6 +1842,15 @@ def init_db():
                     f"ALTER TABLE asmr_download_sessions ADD COLUMN {column_name} {column_type} DEFAULT {default_value}"
                 )
             )
+        try:
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_asmr_download_sessions_rj_updated "
+                    "ON asmr_download_sessions(rjcode, updated_at)"
+                )
+            )
+        except Exception:
+            _db_logger.warning("[数据库] asmr_download_sessions.rjcode/updated_at 索引创建失败", exc_info=True)
 
         result = conn.execute(text("PRAGMA table_info(notification_templates)"))
         template_columns = {row[1] for row in result.fetchall()}
@@ -2615,6 +2642,40 @@ _FTS_REBUILD_LOCK = _fts_threading.Lock()
 _FTS_REBUILD_THREAD: Optional[_fts_threading.Thread] = None
 
 
+def _broadcast_activity_fts_state(snapshot: Dict[str, Any]) -> None:
+    try:
+        from ..core.realtime_event_service import broadcast_event
+
+        running = bool(snapshot.get("running"))
+        copied = int(snapshot.get("copied") or 0)
+        total = int(snapshot.get("total") or 0)
+        ok = snapshot.get("ok")
+        if running:
+            status = "running"
+        elif ok is True:
+            status = "done"
+        elif ok is False:
+            status = "error"
+        else:
+            status = "idle"
+        progress = 100 if status in {"done", "error"} else (min(99, int(copied * 100 / total)) if total > 0 else 0)
+        broadcast_event({
+            "type": "maintenance.fts.changed",
+            "reason": "activity_logs",
+            "id": "activity_logs_fts",
+            "domain": "maintenance",
+            "status": status,
+            "progress": progress,
+            "current_step": "操作记录全文搜索索引重建中" if running else "",
+            "payload": {
+                "kind": "activity_logs",
+                "rebuild": dict(snapshot),
+            },
+        })
+    except Exception:
+        _db_logger.debug("[数据库] 广播 activity_logs FTS 实时状态失败", exc_info=True)
+
+
 def get_activity_logs_fts_rebuild_state() -> Dict[str, Any]:
     """快照当前重建状态（线程安全）。"""
     with _FTS_REBUILD_LOCK:
@@ -2626,6 +2687,8 @@ def _do_rebuild_activity_logs_fts(target: str) -> None:
         with _FTS_REBUILD_LOCK:
             _FTS_REBUILD_STATE["copied"] = int(copied)
             _FTS_REBUILD_STATE["total"] = int(total)
+            snapshot = dict(_FTS_REBUILD_STATE)
+        _broadcast_activity_fts_state(snapshot)
 
     try:
         result = rebuild_activity_logs_fts(target_tokenizer=target, progress_cb=_progress)
@@ -2636,16 +2699,22 @@ def _do_rebuild_activity_logs_fts(target: str) -> None:
                 _FTS_REBUILD_STATE["total"] = int(result.get("total") or 0)
             if result.get("copied") is not None:
                 _FTS_REBUILD_STATE["copied"] = int(result.get("copied") or 0)
+            snapshot = dict(_FTS_REBUILD_STATE)
+        _broadcast_activity_fts_state(snapshot)
     except Exception as exc:
         _db_logger.warning("[数据库] FTS 重建失败", exc_info=True)
         with _FTS_REBUILD_LOCK:
             _FTS_REBUILD_STATE["ok"] = False
             _FTS_REBUILD_STATE["reason"] = f"exception: {exc}"
+            snapshot = dict(_FTS_REBUILD_STATE)
+        _broadcast_activity_fts_state(snapshot)
     finally:
         import time as _time
         with _FTS_REBUILD_LOCK:
             _FTS_REBUILD_STATE["running"] = False
             _FTS_REBUILD_STATE["finished_at"] = _time.time()
+            snapshot = dict(_FTS_REBUILD_STATE)
+        _broadcast_activity_fts_state(snapshot)
 
 
 def trigger_activity_logs_fts_rebuild(target_tokenizer: str = _FTS_PREFERRED_TOKENIZE) -> Dict[str, Any]:
@@ -2666,6 +2735,8 @@ def trigger_activity_logs_fts_rebuild(target_tokenizer: str = _FTS_PREFERRED_TOK
             "ok": None,
             "reason": "",
         })
+        snapshot = dict(_FTS_REBUILD_STATE)
+    _broadcast_activity_fts_state(snapshot)
     thread = _fts_threading.Thread(
         target=_do_rebuild_activity_logs_fts,
         args=(target,),

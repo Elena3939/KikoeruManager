@@ -98,10 +98,13 @@ import { Sparkles, RefreshCw, Loader2, CheckCircle2, AlertCircle } from 'lucide-
 import { ElMessage } from 'element-plus'
 import { databaseMaintenanceApi } from '../../api'
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
+import { useRealtimeEvents } from '../../composables/useRealtimeEvents'
 
 const olderThanDays = 30
 const minDetailBytes = 8 * 1024
+const SHRINK_FALLBACK_POLL_MS = 30000
 
+const realtimeEvents = useRealtimeEvents()
 const estimate = ref(null)
 const estimateError = ref('')
 const status = ref(null)
@@ -203,18 +206,24 @@ async function pullStatus() {
 function startPolling() {
   if (typeof document !== 'undefined' && document.hidden) return
   stopPolling()
-  pollTimer = setInterval(() => {
+  pollTimer = setTimeout(() => {
+    pollTimer = null
     if (typeof document !== 'undefined' && document.hidden) {
       stopPolling()
       return
     }
-    pullStatus()
-  }, 1500)
+    if (!isRunning.value) return
+    if (!realtimeEvents.connected.value) {
+      pullStatus()
+      return
+    }
+    startPolling()
+  }, SHRINK_FALLBACK_POLL_MS)
 }
 
 function stopPolling() {
   if (pollTimer) {
-    clearInterval(pollTimer)
+    clearTimeout(pollTimer)
     pollTimer = null
   }
 }
@@ -285,8 +294,24 @@ function unbindVisibilityChange() {
   document.removeEventListener('visibilitychange', handleVisibilityChange)
 }
 
+function handleDatabaseShrinkRealtimeEvent(event) {
+  const detail = event?.detail || {}
+  if (detail.type !== 'maintenance.database_shrink.changed') return
+  const payload = detail.payload || {}
+  status.value = payload
+  if (payload.state === 'running') {
+    startPolling()
+    return
+  }
+  stopPolling()
+  if (payload.state === 'done' || payload.state === 'error') {
+    refresh()
+  }
+}
+
 onMounted(async () => {
   bindVisibilityChange()
+  window.addEventListener('kikoerumanager:events:message', handleDatabaseShrinkRealtimeEvent)
   // 先看后端有没有"正在跑"的任务（比如刚刷新页面）
   try {
     const pending = await databaseMaintenanceApi.shrinkStatus()
@@ -301,6 +326,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('kikoerumanager:events:message', handleDatabaseShrinkRealtimeEvent)
   unbindVisibilityChange()
   stopPolling()
 })

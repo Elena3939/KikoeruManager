@@ -132,11 +132,47 @@ def _resolve_db_path() -> str:
 # 状态读写
 # ---------------------------------------------------------------------------
 
+def _broadcast_shrink_state(snapshot: Dict[str, Any]) -> None:
+    try:
+        from .realtime_event_service import broadcast_event
+
+        stage = str(snapshot.get("stage") or "")
+        state = str(snapshot.get("state") or "idle")
+        progress_by_stage = {
+            "compact": 20,
+            "checkpoint": 45,
+            "vacuum": 70,
+            "post_checkpoint": 88,
+            "finalize": 95,
+        }
+        if state in {"done", "error"}:
+            progress = 100
+        elif state == "running":
+            progress = progress_by_stage.get(stage, 5)
+        else:
+            progress = 0
+        broadcast_event({
+            "type": "maintenance.database_shrink.changed",
+            "reason": stage or state,
+            "id": "database_shrink",
+            "domain": "maintenance",
+            "status": state,
+            "progress": progress,
+            "current_step": str(snapshot.get("stage_label") or ""),
+            "updated_at": str(snapshot.get("heartbeat") or _now_iso()),
+            "payload": dict(snapshot),
+        })
+    except Exception:
+        logger.debug("[数据库瘦身] 广播实时状态失败", exc_info=True)
+
+
 def _set_state(**updates: Any) -> None:
     with _STATE_LOCK:
         for key, value in updates.items():
             _STATE[key] = value
         _STATE["heartbeat"] = _now_iso()
+        snapshot = dict(_STATE)
+    _broadcast_shrink_state(snapshot)
 
 
 def get_status() -> Dict[str, Any]:
@@ -461,6 +497,7 @@ def start_shrink(*, older_than_days: int = 30, min_detail_bytes: int = 8192) -> 
     min_detail_bytes = max(0, int(min_detail_bytes or 0))
 
     if not _RUN_LOCK.acquire(blocking=False):
+        logger.info("[数据库瘦身] 启动请求被忽略：已有任务运行中")
         return {"started": False, "already_running": True, "status": get_status()}
 
     # acquire 成功后把状态切回 running 之前先重置一遍，避免上一轮 done 的字段污染
@@ -492,4 +529,9 @@ def start_shrink(*, older_than_days: int = 30, min_detail_bytes: int = 8192) -> 
         daemon=True,
     )
     thread.start()
+    logger.info(
+        "[数据库瘦身] 已启动: older_than_days=%s min_detail_bytes=%s",
+        older_than_days,
+        min_detail_bytes,
+    )
     return {"started": True, "already_running": False, "status": get_status()}
