@@ -762,7 +762,7 @@ import AppDropdown from '../components/common/AppDropdown.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import StatefulButton from '../components/ui/stateful-button.vue'
 import { libraryEntryIconFor, libraryEntryMetaFor } from '../components/library/_libraryFileKind'
-import { conflictApi, taskCenterApi } from '../api'
+import { conflictApi } from '../api'
 import { showSystemAlert, showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 
 const ACTIVE_CONFLICT_STORAGE_KEY = 'kikoerumanager-conflicts-active-id'
@@ -812,6 +812,7 @@ const conflictFilter = ref('all')
 const retryPollers = new Map()
 const processingPollers = new Map()
 const localRetryingConflictIds = reactive({})
+const handledTerminalTaskEvents = new Set()
 const filenamePreviewState = reactive({})
 
 const batchRetryDialogVisible = ref(false)
@@ -1076,6 +1077,7 @@ onMounted(() => {
   fetchConflicts()
   // ESC 关闭文件名预览弹窗。
   window.addEventListener('keydown', _onFpDlgKeydown)
+  window.addEventListener('kikoerumanager:events:message', handleConflictRealtimeEvent)
 })
 
 // 路由启用了 keep-alive（router/index.js 中 cache: true），切走再切回来组件不会重新 mount，
@@ -1089,6 +1091,7 @@ onActivated(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', _onFpDlgKeydown)
+  window.removeEventListener('kikoerumanager:events:message', handleConflictRealtimeEvent)
   for (const timerId of retryPollers.values()) {
     clearTimeout(timerId)
   }
@@ -1139,7 +1142,6 @@ async function fetchConflicts() {
         }
       })
       reconcileLocalRetryingConflicts()
-      ensureProcessingPollers()
       syncSelectedConflicts()
       syncActiveConflict()
     } catch (error) {
@@ -1726,139 +1728,69 @@ function buildPathPreview(paths) {
   return lines.join('\n')
 }
 
-function startRetryPoller(taskId, conflictId) {
-  if (retryPollers.has(taskId)) return
-  let attempts = 0
-  const maxAttempts = 120
-  const scheduleNext = () => {
-    const delay = attempts < 10 ? 1500 : 5000
-    const timerId = setTimeout(poll, delay)
-    retryPollers.set(taskId, timerId)
-  }
+function startRetryPoller() {}
 
-  const poll = async () => {
-    attempts++
-    try {
-      const task = await taskCenterApi.getItem({ engine_task_id: taskId })
-      if (task) {
-        const taskStatus = String(task.status || '').trim().toLowerCase()
-        if (taskStatus === 'completed') {
-          retryPollers.delete(taskId)
-          markConflictRetrying(conflictId, false)
-          await fetchConflicts()
-          if (!conflicts.value.some(item => item.id === conflictId)) {
-            ElMessage.success('重试成功，已移出问题作品')
-          } else {
-            ElMessage.warning('重试任务已完成，但问题项仍在列表，请手动刷新确认')
-          }
-          return
-        }
-        if (taskStatus === 'failed') {
-          retryPollers.delete(taskId)
-          markConflictRetrying(conflictId, false)
-          await fetchConflicts()
-          ElMessage.warning(task.error_message ? `重试失败：${task.error_message}` : '重试失败，请查看任务详情')
-          return
-        }
-      } else {
-        await fetchConflicts()
-        const conflict = conflicts.value.find(item => item.id === conflictId)
-        if (!shouldKeepLocalRetrying(conflict)) {
-          retryPollers.delete(taskId)
-          markConflictRetrying(conflictId, false)
-          return
-        }
-      }
-      if (attempts % 4 === 0) {
-        await fetchConflicts()
-      }
-    } catch (_) {
-    }
-    if (attempts < maxAttempts && retryPollers.has(taskId)) {
-      scheduleNext()
-    } else {
-      retryPollers.delete(taskId)
-      markConflictRetrying(conflictId, false)
-      await fetchConflicts()
-    }
-  }
+function ensureProcessingPollers() {}
 
-  const timerId = setTimeout(poll, 1000)
-  retryPollers.set(taskId, timerId)
+function ensureProcessingPoller() {}
+
+function startProcessingPoller() {}
+
+function normalizeTaskCenterRealtimeEvent(detail = {}) {
+  if (detail.type === 'task.center.changed') return detail.payload || {}
+  return detail
 }
 
-function ensureProcessingPollers() {
-  for (const conflict of conflicts.value) {
-    if (!isConflictProcessing(conflict) || isConflictRetrying(conflict)) continue
-    const action = getConflictResolutionAction(conflict) || 'KEEP_NEW'
-    const taskId = String(conflict?.linked_task?.id || conflict?.new_metadata?.resolution_task_id || conflict?.task_id || '').trim()
-    if (!taskId) continue
-    const linkedStatus = String(conflict?.linked_task?.status || '').trim().toLowerCase()
-    if (['completed', 'failed', 'cancelled', 'canceled'].includes(linkedStatus)) continue
-    ensureProcessingPoller(taskId, conflict.id, action)
-  }
+function getConflictTaskId(conflict) {
+  return String(
+    conflict?.linked_task?.id ||
+    conflict?.new_metadata?.resolution_task_id ||
+    conflict?.task_id ||
+    ''
+  ).trim()
 }
 
-function ensureProcessingPoller(taskId, conflictId, action = 'KEEP_NEW') {
-  const normalizedTaskId = String(taskId || '').trim()
-  const normalizedConflictId = String(conflictId || '').trim()
-  if (!normalizedTaskId || !normalizedConflictId || processingPollers.has(normalizedTaskId)) return
-  startProcessingPoller(normalizedTaskId, normalizedConflictId, action)
-}
+function handleConflictRealtimeEvent(event) {
+  const payload = normalizeTaskCenterRealtimeEvent(event?.detail || {})
+  if (payload?.type !== 'task_center_changed') return
+  const taskId = String(payload.engine_task_id || payload.entity_id || '').trim()
+  if (!taskId) return
 
-function startProcessingPoller(taskId, conflictId, action = 'KEEP_NEW') {
-  let attempts = 0
-  const maxAttempts = 240
-  const scheduleNext = () => {
-    const delay = attempts < 30 ? 1200 : 3000
-    const timerId = setTimeout(poll, delay)
-    processingPollers.set(taskId, timerId)
+  const conflict = conflicts.value.find(item => getConflictTaskId(item) === taskId)
+  if (!conflict) return
+  const action = getConflictResolutionAction(conflict) || (isConflictRetrying(conflict) ? 'RETRY' : 'KEEP_NEW')
+  updateConflictLinkedTask(conflict.id, {
+    engine_task_id: taskId,
+    entity_id: taskId,
+    status: payload.status,
+    progress: payload.progress,
+    current_step: payload.current_step,
+    error_message: payload.error_message,
+  }, action)
+
+  const status = String(payload.status || '').trim().toLowerCase()
+  if (!['completed', 'failed', 'cancelled', 'canceled'].includes(status)) return
+  const terminalKey = `${taskId}:${status}`
+  if (handledTerminalTaskEvents.has(terminalKey)) return
+  handledTerminalTaskEvents.add(terminalKey)
+  if (handledTerminalTaskEvents.size > 120) {
+    handledTerminalTaskEvents.delete(handledTerminalTaskEvents.values().next().value)
   }
 
-  const poll = async () => {
-    attempts++
-    try {
-      const task = await taskCenterApi.getItem({ engine_task_id: taskId, _t: Date.now() })
-      if (task) {
-        const taskStatus = String(task.status || '').trim().toLowerCase()
-        updateConflictLinkedTask(conflictId, task, action)
-        if (taskStatus === 'completed') {
-          processingPollers.delete(taskId)
-          await fetchConflicts()
-          if (!conflicts.value.some(item => item.id === conflictId)) {
-            ElMessage.success(action === 'KEEP_NEW' ? '保留新版完成，已自动刷新' : '问题处理完成，已自动刷新')
-          }
-          return
-        }
-        if (taskStatus === 'failed') {
-          processingPollers.delete(taskId)
-          await fetchConflicts()
-          ElMessage.warning(task.error_message ? `问题处理失败：${task.error_message}` : '问题处理失败，请查看任务详情')
-          return
-        }
-      } else {
-        await fetchConflicts()
-        const conflict = conflicts.value.find(item => item.id === conflictId)
-        if (!isConflictProcessing(conflict)) {
-          processingPollers.delete(taskId)
-          return
-        }
-      }
-      if (attempts % 5 === 0) {
-        await fetchConflicts()
-      }
-    } catch (_) {
-    }
-    if (attempts < maxAttempts && processingPollers.has(taskId)) {
-      scheduleNext()
-    } else {
-      processingPollers.delete(taskId)
-      await fetchConflicts()
-    }
+  if (action === 'RETRY') {
+    markConflictRetrying(conflict.id, false)
   }
-
-  const timerId = setTimeout(poll, 800)
-  processingPollers.set(taskId, timerId)
+  fetchConflicts().then(() => {
+    if (status === 'completed' && action === 'RETRY' && !conflicts.value.some(item => item.id === conflict.id)) {
+      ElMessage.success('重试成功，已移出问题作品')
+    } else if (status === 'failed' && action === 'RETRY') {
+      ElMessage.warning(payload.error_message ? `重试失败：${payload.error_message}` : '重试失败，请查看任务详情')
+    } else if (status === 'completed' && action !== 'RETRY' && !conflicts.value.some(item => item.id === conflict.id)) {
+      ElMessage.success(action === 'KEEP_NEW' ? '保留新版完成，已自动刷新' : '问题处理完成，已自动刷新')
+    } else if (status === 'failed' && action !== 'RETRY') {
+      ElMessage.warning(payload.error_message ? `问题处理失败：${payload.error_message}` : '问题处理失败，请查看任务详情')
+    }
+  })
 }
 
 function updateConflictLinkedTask(conflictId, task, action = 'KEEP_NEW') {

@@ -286,7 +286,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref, watch, watchEffect } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue'
 import { ElMessage } from 'element-plus'
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
 import { 
@@ -307,6 +307,7 @@ import {
   XSquare
 } from 'lucide-vue-next'
 import { activityLogApi, libraryApi } from '../../api'
+import { useRealtimeEvents } from '../../composables/useRealtimeEvents'
 import { libraryEntryIconFor, libraryEntryMetaFor } from './_libraryFileKind'
 
 const text = {
@@ -371,6 +372,7 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['update:modelValue', 'deleted', 'state-change', 'dismiss-background'])
+const realtimeEvents = useRealtimeEvents()
 
 const visible = computed({
   get: () => props.modelValue,
@@ -708,6 +710,55 @@ function clearFilterDeletePoll () {
   }
 }
 
+function scheduleFilterDeleteStatusFallback (jobId) {
+  clearFilterDeletePoll()
+  if (!jobId) return
+  filterDeletePollTimer = setTimeout(() => {
+    filterDeletePollTimer = null
+    if (!['pending', 'running'].includes(filterDeletePreviewInfo.value.status || 'pending')) return
+    if (!realtimeEvents.connected.value) {
+      pollFilterDeletePreviewStatus(jobId)
+      return
+    }
+    scheduleFilterDeleteStatusFallback(jobId)
+  }, 30000)
+}
+
+function applyFilterDeletePreviewSummary (data = {}) {
+  filterDeletePreviewInfo.value = {
+    ...filterDeletePreviewInfo.value,
+    selectedCount: Number(data?.selected_count ?? filterDeletePreviewInfo.value.selectedCount ?? 0),
+    selectedSize: Number(data?.selected_size ?? filterDeletePreviewInfo.value.selectedSize ?? 0),
+    selectedSizeExact: data?.selected_size_exact !== false,
+    sizeDisabled: data?.size_disabled === true,
+    status: data?.status || filterDeletePreviewInfo.value.status || 'idle',
+    scannedEntries: Number(data?.scanned_entries ?? filterDeletePreviewInfo.value.scannedEntries ?? 0),
+    discoveredEntries: Number(data?.discovered_entries ?? filterDeletePreviewInfo.value.discoveredEntries ?? 0),
+    pendingDirectories: Number(data?.pending_directories ?? filterDeletePreviewInfo.value.pendingDirectories ?? 0),
+    currentPath: displayFilterDeletePath(data?.current_path || filterDeletePreviewInfo.value.currentPath || ''),
+    progressMessage: data?.progress_message || filterDeletePreviewInfo.value.progressMessage || '',
+    warning: data?.warning || filterDeletePreviewInfo.value.warning || '',
+    error: data?.error || filterDeletePreviewInfo.value.error || ''
+  }
+}
+
+function handleFilterDeleteRealtimeEvent (event) {
+  const detail = event?.detail || {}
+  if (detail.type !== 'job.filter_delete_preview.changed') return
+  const payload = detail.payload || {}
+  const jobId = String(payload.job_id || detail.id || '').trim()
+  if (!jobId || jobId !== filterDeleteJobId.value) return
+  applyFilterDeletePreviewSummary(payload)
+  if (['pending', 'running'].includes(payload.status || 'pending')) {
+    filterDeleteLoading.value = true
+    scheduleFilterDeleteStatusFallback(jobId)
+    return
+  }
+  filterDeleteLoading.value = false
+  clearFilterDeletePoll()
+  pollFilterDeletePreviewStatus(jobId)
+}
+
 function teardownFilterDeleteScrollObserver () {
   if (filterDeleteScrollRafId) {
     cancelAnimationFrame(filterDeleteScrollRafId)
@@ -829,10 +880,7 @@ async function pollFilterDeletePreviewStatus (jobId) {
     applyFilterDeletePreviewData(data, { preserveSelection: true })
     if (['pending', 'running'].includes(data?.status || 'pending')) {
       filterDeleteLoading.value = true
-      clearFilterDeletePoll()
-      filterDeletePollTimer = setTimeout(() => {
-        pollFilterDeletePreviewStatus(jobId)
-      }, 1200)
+      scheduleFilterDeleteStatusFallback(jobId)
       return
     }
     filterDeleteLoading.value = false
@@ -1908,7 +1956,12 @@ defineExpose({
   requestStopDeletion: requestCancelFilterDeleteDeletion
 })
 
+onMounted(() => {
+  window.addEventListener('kikoerumanager:events:message', handleFilterDeleteRealtimeEvent)
+})
+
 onBeforeUnmount(() => {
+  window.removeEventListener('kikoerumanager:events:message', handleFilterDeleteRealtimeEvent)
   window.removeEventListener('keydown', handleDialogKeydown)
   if (filterDeleteLoading.value && filterDeleteJobId.value) {
     libraryApi.cancelFilterDeletePreview({ jobId: filterDeleteJobId.value }).catch(() => {})

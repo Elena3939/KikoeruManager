@@ -120,6 +120,20 @@ class FolderCompareService:
         target_path: str,
     ) -> str:
         compare_items = self.build_compare_items(new_root, existing_root)
+        summary = self.build_summary(compare_items)
+        decision_counts: Dict[str, int] = {}
+        for value in decisions.values():
+            key = str(value or "default")
+            decision_counts[key] = decision_counts.get(key, 0) + 1
+        logger.info(
+            "冲突合并开始: target=%s items=%s files=%s dirs=%s summary=%s decisions=%s",
+            target_path,
+            len(compare_items),
+            summary.get("total_files", 0),
+            summary.get("total_dirs", 0),
+            summary,
+            decision_counts,
+        )
         merged_dir = self._build_merged_directory(new_root, existing_root, compare_items, decisions)
         try:
             return self.safe_replace_directory(merged_dir, target_path)

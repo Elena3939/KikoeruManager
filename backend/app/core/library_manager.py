@@ -1411,7 +1411,7 @@ class SynologyFileStationClient:
         preferred_variant_name = str(self._preferred_upload_variant_name or "").strip()
         per_variant_retry_limit = 3
         if preferred_variant_name:
-            logger.info("[SynologyUpload] 命中已缓存成功变体: %s", preferred_variant_name)
+            logger.debug("[SynologyUpload] 命中已缓存成功变体: %s", preferred_variant_name)
             payload_variants = sorted(
                 payload_variants,
                 key=lambda item: (
@@ -1447,7 +1447,7 @@ class SynologyFileStationClient:
                             query.setdefault("_sid", self._sid)
                             if "_sid" in form:
                                 form["_sid"] = self._sid
-                        logger.info(
+                        logger.debug(
                             "[SynologyUpload] 尝试变体 %s/%s name=%s attempt=%s/%s path=%s local=%s size=%s api_path=%s api_version=%s query_keys=%s form_keys=%s",
                             index + 1,
                             len(payload_variants),
@@ -1480,7 +1480,7 @@ class SynologyFileStationClient:
                         return
                     except Exception as exc:
                         self._record_remote_failure("SYNO.FileStation.Upload", exc)
-                        logger.warning(
+                        logger.debug(
                             "[SynologyUpload] 变体失败 %s/%s name=%s attempt=%s/%s path=%s error=%s",
                             index + 1,
                             len(payload_variants),
@@ -1507,7 +1507,7 @@ class SynologyFileStationClient:
                                 if progress_callback:
                                     progress_callback(local_file_size, local_file_size)
                                 return
-                            logger.info(
+                            logger.warning(
                                 "[SynologyUpload] %s 后远端校验未命中，停止当前文件上传 path=%s local_size=%s",
                                 error_code,
                                 remote_file_path,
@@ -1528,7 +1528,7 @@ class SynologyFileStationClient:
                                 return
                             if attempt < per_variant_retry_limit:
                                 retry_wait = min(8.0, 1.5 * attempt)
-                                logger.warning(
+                                logger.debug(
                                     "[SynologyUpload] 检测到可恢复网络中断，准备重试同一变体 name=%s attempt=%s/%s wait=%.1fs",
                                     variant.get("name"),
                                     attempt,
@@ -1540,6 +1540,13 @@ class SynologyFileStationClient:
                         break
 
         if last_error:
+            logger.warning(
+                "[SynologyUpload] 上传失败摘要: path=%s local=%s size=%s error=%s",
+                remote_file_path,
+                local_path,
+                local_file_size,
+                last_error,
+            )
             raise last_error
 
 
@@ -1707,7 +1714,7 @@ class LibraryManager:
         force_refresh: bool = False,
     ) -> Optional[dict[str, Any]]:
         if force_refresh:
-            logger.info(
+            logger.debug(
                 "远程搜索绕过缓存: library=%s current_path=%s keyword=%s reason=force_refresh",
                 cache_key[0],
                 cache_key[1],
@@ -1721,7 +1728,7 @@ class LibraryManager:
         if expires_at <= time.time():
             self._remote_search_result_cache.pop(cache_key, None)
             return None
-        logger.info(
+        logger.debug(
             "远程搜索命中缓存: library=%s current_path=%s keyword=%s cache=%s total=%s ttl_remaining=%.1fs",
             cache_key[0],
             cache_key[1],
@@ -1740,7 +1747,7 @@ class LibraryManager:
         total = int(data.get("total", 0) or 0)
         cache_kind = "empty" if total <= 0 else "result"
         ttl_seconds = self._remote_empty_search_cache_ttl_seconds() if cache_kind == "empty" else self._remote_search_cache_ttl_seconds()
-        logger.info(
+        logger.debug(
             "远程搜索写入缓存: library=%s current_path=%s keyword=%s cache=%s total=%s ttl=%.1fs",
             cache_key[0],
             cache_key[1],
@@ -2093,6 +2100,7 @@ class LibraryManager:
         force_refresh: bool = False,
         search_exact: bool = False,
         search_result_kind: str = "all",
+        remote_warmup_retries: int = 3,
     ) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if str(search or "").strip():
@@ -2120,6 +2128,7 @@ class LibraryManager:
                 force_refresh=force_refresh,
                 search_exact=search_exact,
                 search_result_kind=search_result_kind,
+                remote_warmup_retries=remote_warmup_retries,
             )
         if library.type == "local":
             return await asyncio.to_thread(self._list_local_files, library, page, page_size, search, current_path, sort_by, sort_order)
@@ -3125,6 +3134,7 @@ class LibraryManager:
         force_refresh: bool = False,
         search_exact: bool = False,
         search_result_kind: str = "all",
+        remote_warmup_retries: int = 3,
     ) -> dict[str, Any]:
         normalized_keyword = str(keyword or "").strip()
         requested_library = self.get_library_definition(library_id) if library_id else None
@@ -3147,6 +3157,7 @@ class LibraryManager:
                         force_refresh=force_refresh,
                         search_exact=search_exact,
                         search_result_kind=search_result_kind,
+                        remote_warmup_retries=remote_warmup_retries,
                     )
                 ): library
                 for library in remote_libraries
@@ -3229,6 +3240,7 @@ class LibraryManager:
             force_refresh=force_refresh,
             search_exact=search_exact,
             search_result_kind=search_result_kind,
+            remote_warmup_retries=remote_warmup_retries,
         )
 
     def _normalize_search_result_kind(self, value: str) -> str:
@@ -3760,7 +3772,7 @@ class LibraryManager:
         poll_count = 0
         last_probe: dict[str, Any] = {}
 
-        logger.info(
+        logger.debug(
             "远程搜索开始轮询等待: task_id=%s timeout=%.1fs",
             task_id,
             timeout_seconds,
@@ -3779,7 +3791,7 @@ class LibraryManager:
                 last_probe = probe or {}
                 finished = last_probe.get("finished", False)
                 probe_total = int(last_probe.get("total", 0) or 0)
-                logger.info(
+                logger.debug(
                     "远程搜索状态轮询: task_id=%s poll=%d elapsed=%.1fs finished=%s total=%d",
                     task_id,
                     poll_count,
@@ -3885,6 +3897,7 @@ class LibraryManager:
         page_size: int,
         sort_by: str,
         sort_direction: str,
+        max_warmup_retries: int = 3,
     ) -> tuple[list[dict[str, Any]], int]:
         request_key = (
             library_id,
@@ -3893,10 +3906,11 @@ class LibraryManager:
             min(max(page_size, 200), LIBRARY_SEARCH_RESULT_LIMIT),
             sort_by,
             sort_direction,
+            max(1, int(max_warmup_retries or 1)),
         )
         existing_task = self._remote_search_tasks.get(request_key)
         if existing_task and not existing_task.done():
-            logger.info(
+            logger.debug(
                 "远程搜索复用进行中的请求: library=%s scope=%s keyword=%s",
                 library_id,
                 scope_path,
@@ -3906,7 +3920,7 @@ class LibraryManager:
 
         async def _execute_search() -> tuple[list[dict[str, Any]], int]:
             request_limit = request_key[3]
-            max_warmup_retries = 3
+            max_warmup_retries = request_key[6]
             retry_delay = 2.0
             attempt = 0
             consecutive_start_errors = 0
@@ -3916,7 +3930,7 @@ class LibraryManager:
                 task_id = None
                 attempt_start = time.time()
                 try:
-                    logger.info(
+                    logger.debug(
                         "远程搜索开始: scope=%s keyword=%s recursive=%s attempt=%d/%d",
                         scope_path,
                         keyword,
@@ -3929,7 +3943,7 @@ class LibraryManager:
                     if not task_id:
                         raise RuntimeError("群晖搜索接口未返回 taskid")
                     consecutive_start_errors = 0
-                    logger.info(
+                    logger.debug(
                         "远程搜索任务已创建: scope=%s keyword=%s task_id=%s attempt=%d/%d",
                         scope_path,
                         keyword,
@@ -3963,7 +3977,7 @@ class LibraryManager:
                         if not page_items or offset >= page_total:
                             break
                     attempt_seconds = max(0.0, time.time() - attempt_start)
-                    logger.info(
+                    logger.debug(
                         "远程搜索结果: scope=%s keyword=%s task_id=%s attempt=%d/%d attempt_time=%.1fs raw_items=%s total=%s",
                         scope_path,
                         keyword,
@@ -3978,7 +3992,7 @@ class LibraryManager:
                         return raw_items[:LIBRARY_SEARCH_RESULT_LIMIT], total
 
                     if attempt_seconds >= 3.0:
-                        logger.info(
+                        logger.debug(
                             "远程搜索耗时%.1fs仍无结果，判定为真空: scope=%s keyword=%s",
                             attempt_seconds,
                             scope_path,
@@ -3987,7 +4001,7 @@ class LibraryManager:
                         return [], 0
 
                     if attempt < max_warmup_retries:
-                        logger.info(
+                        logger.debug(
                             "远程搜索秒回空结果(索引预热中)，%.1fs后重试: scope=%s keyword=%s attempt=%d/%d",
                             retry_delay,
                             scope_path,
@@ -4048,10 +4062,12 @@ class LibraryManager:
         force_refresh: bool = False,
         search_exact: bool = False,
         search_result_kind: str = "all",
+        remote_warmup_retries: int = 3,
     ) -> dict[str, Any]:
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
 
+        search_started = time.monotonic()
         client = self.get_cached_synology_client(library.synology)
         cache_key = self._build_remote_search_cache_key(
             library_id=library.id,
@@ -4066,6 +4082,14 @@ class LibraryManager:
         )
         cached_result = self._get_cached_remote_search_result(cache_key, force_refresh=force_refresh)
         if cached_result is not None:
+            logger.info(
+                "远程库存搜索摘要: library=%s keyword=%s cache=hit total=%s returned=%s scopes=0 elapsed=%.0fms",
+                library.id,
+                str(search or "").strip(),
+                int(cached_result.get("total", 0) or 0),
+                len(cached_result.get("files") or []),
+                (time.monotonic() - search_started) * 1000,
+            )
             return cached_result
         browse_root, search_root = self._resolve_remote_target_path(library, current_path)
         keyword = str(search or "").strip()
@@ -4080,7 +4104,7 @@ class LibraryManager:
         remote_sort_by = "name" if normalized_sort_by == "name" else "mtime"
         remote_sort_direction = "asc" if normalized_sort_order == "asc" else "desc"
         search_scopes = await self._resolve_remote_search_scopes(client, api_search_root)
-        logger.info(
+        logger.debug(
             "远程库存搜索: library=%s browse_root=%s search_root=%s api_search_root=%s keyword=%s scopes=%s",
             library.id,
             browse_root,
@@ -4103,6 +4127,7 @@ class LibraryManager:
                         page_size=page_size,
                         sort_by=remote_sort_by,
                         sort_direction=remote_sort_direction,
+                        max_warmup_retries=remote_warmup_retries,
                     )
                 ): scope_path
                 for scope_path in search_scopes
@@ -4117,7 +4142,7 @@ class LibraryManager:
                         total += scope_total
                         collected_raw_items.extend(raw_items)
                         if raw_items or scope_total:
-                            logger.info(
+                            logger.debug(
                                 "远程 RJ 搜索提前命中: library=%s keyword=%s scope=%s raw_items=%s total=%s",
                                 library.id,
                                 keyword,
@@ -4143,6 +4168,7 @@ class LibraryManager:
                     page_size=page_size,
                     sort_by=remote_sort_by,
                     sort_direction=remote_sort_direction,
+                    max_warmup_retries=remote_warmup_retries,
                 )
                 search_scope_count += 1
                 total += scope_total
@@ -4267,6 +4293,17 @@ class LibraryManager:
             "search_exact": bool(search_exact),
             "search_result_kind": self._normalize_search_result_kind(search_result_kind),
         }
+        logger.info(
+            "远程库存搜索摘要: library=%s keyword=%s cache=miss scopes=%s attempts=%s elapsed=%.0fms raw_total=%s total=%s returned=%s",
+            library.id,
+            keyword,
+            len(search_scopes),
+            max(1, int(remote_warmup_retries or 1)),
+            (time.monotonic() - search_started) * 1000,
+            total,
+            deduped_total,
+            len(page_items),
+        )
         return self._set_cached_remote_search_result(cache_key, result)
 
     async def rename(self, library_id: str, path: str, new_name: str) -> dict[str, Any]:
@@ -6777,7 +6814,51 @@ class LibraryManager:
             raise KeyError(job_id)
         job.update(fields)
         job["updated_at"] = time.time()
+        self._broadcast_filter_preview_job(job)
         return job
+
+    def _broadcast_filter_preview_job(self, job: dict[str, Any]) -> None:
+        try:
+            from .realtime_event_service import broadcast_event
+
+            status = str(job.get("status") or "pending")
+            updated_ts = float(job.get("updated_at") or time.time())
+            scanned = int(job.get("scanned_entries") or 0)
+            discovered = int(job.get("discovered_entries") or 0)
+            pending = int(job.get("pending_directories") or 0)
+            selected_count = int(job.get("selected_count") or 0)
+            selected_size = int(job.get("selected_size") or 0)
+            broadcast_event({
+                "type": "job.filter_delete_preview.changed",
+                "reason": status,
+                "id": str(job.get("job_id") or ""),
+                "domain": "library",
+                "status": status,
+                "current_step": str(job.get("progress_message") or ""),
+                "updated_at": datetime.fromtimestamp(updated_ts).isoformat(),
+                "payload": {
+                    "job_id": job.get("job_id"),
+                    "library_id": job.get("library_id"),
+                    "library_name": job.get("library_name"),
+                    "folder_name": job.get("folder_name"),
+                    "folder_path": job.get("folder_path"),
+                    "status": status,
+                    "current_path": job.get("current_path") or "",
+                    "progress_message": job.get("progress_message") or "",
+                    "selected_count": selected_count,
+                    "selected_size": selected_size,
+                    "selected_size_exact": bool(job.get("selected_size_exact", True)),
+                    "size_disabled": bool(job.get("size_disabled", False)),
+                    "scanned_entries": scanned,
+                    "discovered_entries": discovered,
+                    "pending_directories": pending,
+                    "warning": job.get("warning") or "",
+                    "error": job.get("error") or "",
+                    "updated_at": updated_ts,
+                },
+            })
+        except Exception:
+            logger.debug("广播删除过滤预审实时事件失败", exc_info=True)
 
     def _build_filter_preview_job_response(self, job: dict[str, Any]) -> dict[str, Any]:
         return {
