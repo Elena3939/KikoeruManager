@@ -9,6 +9,7 @@ import shutil
 import stat
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -1569,6 +1570,12 @@ class LibraryManager:
         # 删除过滤预审任务：完成后不会被显式清理 ⇒ 用 LRU 上限兜底（不设 TTL，避免进行中任务被清）
         self._filter_preview_jobs: TTLCache = TTLCache(max_size=32, ttl_seconds=0, name="library.filter_preview_jobs")
         self._filter_preview_tasks: dict[str, asyncio.Task] = {}
+        # 本地库存索引 upsert 可能要 stat 上万文件并分批写 SQLite。
+        # 移动/重命名接口只负责文件系统变更，索引追赶放到单 worker 后台串行执行。
+        self._local_index_upsert_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="library-index-upsert",
+        )
         # 全局 Synology client 缓存：避免每次操作重复登录（key = base_url::username::auth_sig）
         self._synology_client_cache: dict[str, SynologyFileStationClient] = {}
         self._load_persisted_stats()
@@ -1604,6 +1611,16 @@ class LibraryManager:
                 await client.close()
             except Exception:
                 logger.warning("关闭 Synology 客户端失败", exc_info=True)
+
+    def shutdown_background_workers(self) -> None:
+        """应用关闭时停止 LibraryManager 持有的后台 worker。"""
+        executor = getattr(self, "_local_index_upsert_executor", None)
+        if executor is None:
+            return
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            logger.warning("关闭本地库存索引后台 worker 失败", exc_info=True)
 
     def remote_health_snapshot(self) -> dict[str, Any]:
         """返回远程库存当前健康状态，不触发登录或远程探测。"""
@@ -2392,6 +2409,94 @@ class LibraryManager:
                 library.id, len(absolute_paths or []), exc_info=True,
             )
 
+    def _notify_index_self_mutation_move_batch(
+        self,
+        source_library: LibraryDefinition,
+        target_library: LibraryDefinition,
+        moved_items: list[dict[str, Any]],
+    ) -> None:
+        """本地移动后的索引追赶：删除旧子树 + upsert 新子树，后台串行执行。
+
+        同卷移动目录本身通常是 rename，真正慢的是：
+        - 删除旧索引前统计旧子树；
+        - 扫描新目录里几千 / 上万文件并写 SQLite。
+
+        这些都不应该卡住移动接口的 HTTP 响应。
+        """
+        if not moved_items:
+            return
+
+        def _sync_runner() -> None:
+            try:
+                from .library_index import get_library_index_service
+                service = get_library_index_service()
+                source_ready = service.is_ready(source_library.id)
+                target_ready = service.is_ready(target_library.id)
+                target_root = target_library.root_path or ""
+
+                for item in moved_items:
+                    source_path = str(item.get("source") or "")
+                    dest_path = str(item.get("destination") or "")
+                    if not source_path or not dest_path:
+                        continue
+                    old_rel = self._index_relative_path(source_library, source_path)
+                    new_rel = self._index_relative_path(target_library, dest_path)
+                    if not new_rel:
+                        continue
+
+                    moved = 0
+                    if old_rel and source_ready and target_ready:
+                        moved = service.handle_self_mutation_move(
+                            source_library_id=source_library.id,
+                            target_library_id=target_library.id,
+                            old_relative_path=old_rel,
+                            new_relative_path=new_rel,
+                            old_absolute_path=source_path,
+                            new_absolute_path=dest_path,
+                        )
+                    if moved:
+                        logger.debug(
+                            "[索引] 移动 fast-path 完成 source=%s target=%s entries=%s",
+                            source_path,
+                            dest_path,
+                            moved,
+                        )
+                        continue
+
+                    # 旧索引缺失或某个库存未 ready：退回后台扫新落点。
+                    # 这里仍然不阻塞移动接口；同时先删目标旧子树，避免 overwrite 后残留旧文件索引。
+                    if source_ready and old_rel:
+                        service.handle_self_mutation_batch(source_library.id, deletes=[old_rel])
+                    if target_ready:
+                        service.handle_self_mutation_batch(target_library.id, deletes=[new_rel])
+                        service.upsert_subtree_local(target_library.id, target_root, dest_path)
+            except Exception:
+                logger.warning(
+                    "[索引] 本地移动索引追赶失败 source=%s target=%s count=%s",
+                    source_library.id,
+                    target_library.id,
+                    len(moved_items),
+                    exc_info=True,
+                )
+
+        try:
+            future = self._local_index_upsert_executor.submit(_sync_runner)
+            self._track_index_upsert_future(future)
+        except RuntimeError:
+            logger.warning(
+                "[索引] 本地 upsert executor 已关闭，跳过移动索引追赶 source=%s target=%s",
+                source_library.id,
+                target_library.id,
+            )
+        except Exception:
+            logger.debug(
+                "[索引] 本地移动索引追赶调度失败，退化为同步执行 source=%s target=%s",
+                source_library.id,
+                target_library.id,
+                exc_info=True,
+            )
+            _sync_runner()
+
     def _notify_index_self_mutation_upsert_subtree(
         self,
         library: LibraryDefinition,
@@ -2437,17 +2542,17 @@ class LibraryManager:
         library: LibraryDefinition,
         absolute_path: str,
     ) -> None:
-        """本地子树 upsert 调度：避免 async 上下文里同步扫盘阻塞 event loop。
+        """本地子树 upsert 调度：后台串行扫盘，避免阻塞业务接口。
 
         I/O 风险：本地 LocalScanner 对每个文件都会 os.stat。
         - 本地 SSD 上 100 个文件大约 5-20ms（可忽略）
         - NAS / SMB / NFS 挂载上同样规模可能 200-1000ms
-        - fastapi async handler 在 event loop 上同步扫盘会 hang 其他请求
+        - 几千 / 上万图片的目录会把移动接口拖到前端 axios 超时
 
-        所以：检测到当前有 running loop（即调用方在 event loop 里跑）就扔
-        到默认 ThreadPoolExecutor，让 event loop 继续处理其他请求；同步
-        worker thread（如 to_thread 内部）直接走同步路径，反正 worker 本来
-        就是干这种活的。
+        移动接口本身已在 asyncio.to_thread 内执行；如果这里继续同步扫盘，
+        HTTP 响应会等索引追赶完成才返回。统一扔到单 worker executor：
+        - 用户操作先返回；
+        - SQLite 索引写入串行，避免和操作历史 writer 互相打锁。
         """
         from .library_index import get_library_index_service
         service = get_library_index_service()
@@ -2463,27 +2568,19 @@ class LibraryManager:
                 )
 
         try:
-            loop = asyncio.get_running_loop()
+            future = self._local_index_upsert_executor.submit(_sync_runner)
+            self._track_index_upsert_future(future)
         except RuntimeError:
-            loop = None
-
-        if loop is not None:
-            # async 上下文：扔到默认 ThreadPoolExecutor，不阻塞 event loop
-            try:
-                concurrent_future = loop.run_in_executor(None, _sync_runner)
-                task = asyncio.ensure_future(asyncio.wrap_future(concurrent_future))
-                self._track_index_upsert_task(task)
-            except Exception:
-                # run_in_executor 罕见失败时退化为同步执行（仍优于完全跳过）
-                logger.debug(
-                    "[索引] run_in_executor 调度失败，退化为同步扫盘 library=%s",
-                    library.id, exc_info=True,
-                )
-                _sync_runner()
-            return
-
-        # 同步上下文（worker thread）：直接执行，阻塞当前 worker 但不影响 event loop
-        _sync_runner()
+            logger.warning(
+                "[索引] 本地 upsert executor 已关闭，跳过索引追赶 library=%s path=%s",
+                library.id, absolute_path,
+            )
+        except Exception:
+            logger.debug(
+                "[索引] 本地 upsert 调度失败，退化为同步扫盘 library=%s",
+                library.id, exc_info=True,
+            )
+            _sync_runner()
 
     def _dispatch_remote_upsert_subtree(
         self,
@@ -2877,27 +2974,31 @@ class LibraryManager:
     def _collect_local_stats_via_index(
         self, library: LibraryDefinition,
     ) -> Optional[dict[str, Any]]:
-        """索引 ready 时直接返回 stats（size / folder_count 都走 SQLite）。"""
+        """从索引状态表读取持久化聚合快照，不在热路径 SUM entries。"""
         try:
             from .library_index import get_library_index_service
             service = get_library_index_service()
-            if not service.is_ready(library.id):
+            status = service.get_status(library.id)
+            if not status or status.status == 'idle':
                 return None
-            parent_path = self._index_parent_path_for_browse_root(library)
-            folder_count = len([
-                entry for entry in service.list_children(library.id, parent_path, entry_type='dir')
-                if not self._should_skip_entry(entry.name)
-            ])
-            total_size = int(service.get_library_size(library.id) or 0)
+            total_size = int(status.total_size_bytes or 0)
+            stats_status = 'ready' if status.status == 'ready' else status.status
             return {
                 "library_id": library.id,
                 "library_name": library.name,
                 "library_type": library.type,
-                "status": "ready",
-                "folder_count": folder_count,
+                "status": stats_status,
+                "folder_count": int(status.folder_count or 0),
                 "total_size_bytes": total_size,
                 "total_size_gb": _gb(total_size),
                 "scan_mode": "library_index",
+                "index_status": status.status,
+                "progress_done": int(status.total_entries or 0),
+                "progress_total": 0,
+                "progress_percent": 0.0,
+                "last_completed_at": (status.last_full_scan_at / 1000) if status.last_full_scan_at else None,
+                "updated_at": (status.updated_at / 1000) if status.updated_at else time.time(),
+                "last_error": status.error,
             }
         except Exception:
             logger.warning("本地 stats 走索引异常，fallback lib=%s",
@@ -2907,37 +3008,36 @@ class LibraryManager:
     async def _collect_remote_stats_via_index(
         self, library: LibraryDefinition,
     ) -> Optional[dict[str, Any]]:
-        """远程 stats 索引快速路径：size / folder_count 都走 SQLite。"""
+        """远程 stats 索引快照路径：只读 library_index_status 聚合字段。"""
         try:
             from .library_index import get_library_index_service
             service = get_library_index_service()
-            if not service.is_ready(library.id):
+            status = service.get_status(library.id)
+            if not status or status.status == 'idle':
                 return None
-            parent_path = self._index_parent_path_for_browse_root(library)
-            folder_count = len([
-                entry for entry in service.list_children(library.id, parent_path, entry_type='dir')
-                if not self._should_skip_entry(entry.name)
-            ])
-            total_size = int(service.get_library_size(library.id) or 0)
+            total_size = int(status.total_size_bytes or 0)
             self._append_stats_log(
                 library,
                 "INFO",
-                f"远程统计走索引 folders={folder_count} size={_gb(total_size)}GB",
+                f"远程统计读取索引快照 folders={int(status.folder_count or 0)} size={_gb(total_size)}GB",
             )
             return {
                 "library_id": library.id,
                 "library_name": library.name,
                 "library_type": library.type,
-                "status": "ready",
-                "folder_count": folder_count,
+                "status": 'ready' if status.status == 'ready' else status.status,
+                "folder_count": int(status.folder_count or 0),
                 "total_size_bytes": total_size,
                 "total_size_gb": _gb(total_size),
                 "scan_mode": "library_index",
-                "progress_done": 1,
-                "progress_total": 1,
-                "progress_percent": 100.0,
+                "index_status": status.status,
+                "progress_done": int(status.total_entries or 0),
+                "progress_total": 0,
+                "progress_percent": 0.0,
                 "warning_count": 0,
-                "last_error": None,
+                "last_error": status.error,
+                "last_completed_at": (status.last_full_scan_at / 1000) if status.last_full_scan_at else None,
+                "updated_at": (status.updated_at / 1000) if status.updated_at else time.time(),
             }
         except Exception:
             logger.warning("远程 stats 走索引异常，fallback lib=%s",
@@ -4828,13 +4928,11 @@ class LibraryManager:
 
         # 索引同步：源库 delete 旧子树（可批量），目标库逐个 upsert 新子树
         if success:
-            old_paths = [str(item.get("source") or "") for item in success if item.get("source")]
-            if old_paths:
-                self._notify_index_self_mutation_delete_batch(source_library, old_paths)
-            for item in success:
-                dest = str(item.get("destination") or "")
-                if dest:
-                    self._notify_index_self_mutation_upsert_subtree(target_library, dest)
+            self._notify_index_self_mutation_move_batch(
+                source_library,
+                target_library,
+                list(success),
+            )
 
         self._append_stats_log(
             source_library,
@@ -4892,67 +4990,16 @@ class LibraryManager:
 
     async def ensure_stats(self, force: bool = False, library_id: Optional[str] = None) -> dict[str, Any]:
         cfg = self.load_config()
-        ttl = int(cfg["stats_cache_ttl_seconds"])
-        target_library_id = library_id or None
-        for library in self._active_libraries(cfg):
-            cached = self._stats_cache.get(library.id)
-            expired = not cached or (time.time() - cached.get("updated_at", 0)) > ttl
-            task = self._stats_tasks.get(library.id)
-            if library.type == "synology_filestation" and cached and cached.get("status") == "pending" and (task is None or task.done()):
-                cached["status"] = "error"
-                cached["warning"] = "库存统计任务已中断，请手动重新统计"
-                cached["updated_at"] = time.time()
-                self._stats_cache[library.id] = cached
-                self._persist_stats()
-                task = None
-            force_this_library = force and (not target_library_id or library.id == target_library_id)
-            # 本地库和远程库统一策略：只在明确 force=True 时才触发扫描，避免启动/页面加载时自动遍历网络驱动器
-            should_refresh = force_this_library
-            if should_refresh:
-                if not self._stats_index_ready(library):
-                    self._stats_cache[library.id] = {
-                        "library_id": library.id,
-                        "library_name": library.name,
-                        "library_type": library.type,
-                        "status": "idle",
-                        "folder_count": int((cached or {}).get("folder_count", 0) or 0),
-                        "total_size_bytes": int((cached or {}).get("total_size_bytes", 0) or 0),
-                        "total_size_gb": _gb(int((cached or {}).get("total_size_bytes", 0) or 0)),
-                        "health": self._health_for_library(library, float(cfg["health_warning_free_gb"])),
-                        "last_completed_at": (cached or {}).get("last_completed_at"),
-                        "updated_at": time.time(),
-                        "scan_mode": "index_required",
-                        "warning": "索引未就绪，请先重建索引后再刷新统计",
-                    }
-                    self._persist_stats()
-                    self._append_stats_log(library, "WARN", "索引未就绪，跳过刷新统计以避免磁盘 IO")
-                    continue
-                if task is None or task.done():
-                    self._stats_cache[library.id] = {
-                        "library_id": library.id,
-                        "library_name": library.name,
-                        "library_type": library.type,
-                        "status": "pending",
-                        "folder_count": int((cached or {}).get("folder_count", 0) or 0),
-                        "total_size_bytes": int((cached or {}).get("total_size_bytes", 0) or 0),
-                        "total_size_gb": _gb(int((cached or {}).get("total_size_bytes", 0) or 0)),
-                        "health": self._health_for_library(library, float(cfg["health_warning_free_gb"])),
-                        "last_completed_at": (cached or {}).get("last_completed_at"),
-                        "updated_at": time.time(),
-                    }
-                    if library.type == "synology_filestation":
-                        self._persist_stats()
-                        self._append_stats_log(library, "INFO", "远程统计任务已启动")
-                    task = asyncio.create_task(self._refresh_stats_for_library(library))
-                    self._stats_tasks[library.id] = task
-
         libraries = []
         total_folders = 0
         total_bytes = 0
         warning_free_gb = float(cfg["health_warning_free_gb"])
         for library in self._active_libraries(cfg):
-            cached = self._stats_cache.get(library.id)
-            if not cached:
+            if library.type == "local":
+                cached = self._collect_local_stats_via_index(library)
+            else:
+                cached = await self._collect_remote_stats_via_index(library)
+            if cached is None:
                 cached = {
                     "library_id": library.id,
                     "library_name": library.name,
@@ -4961,9 +5008,13 @@ class LibraryManager:
                     "folder_count": 0,
                     "total_size_bytes": 0,
                     "total_size_gb": 0,
-                    "health": self._health_for_library(library, warning_free_gb),
                     "last_completed_at": None,
+                    "updated_at": time.time(),
+                    "scan_mode": "index_required",
+                    "warning": "索引未就绪，请先重建索引",
                 }
+            cached["health"] = self._health_for_library(library, warning_free_gb)
+            self._stats_cache[library.id] = cached
             libraries.append(cached)
             total_folders += int(cached.get("folder_count", 0) or 0)
             total_bytes += int(cached.get("total_size_bytes", 0) or 0)
@@ -7883,7 +7934,7 @@ class LibraryManager:
             "total_size_bytes": 0,
             "total_size_gb": 0,
             "scan_mode": "index_required",
-            "warning": "索引未就绪，请先重建索引后再刷新统计",
+            "warning": "索引未就绪，请先重建索引",
         }
 
     async def _collect_remote_stats(self, library: LibraryDefinition) -> dict[str, Any]:
@@ -7908,7 +7959,7 @@ class LibraryManager:
             "progress_percent": 0.0,
             "warning_count": 0,
             "last_error": None,
-            "warning": "索引未就绪，请先重建索引后再刷新统计",
+            "warning": "索引未就绪，请先重建索引",
         }
         client = self.get_cached_synology_client(library.synology)
         start_path = self._normalize_remote_path(library.browse_root_path or library.root_path)
@@ -8079,6 +8130,12 @@ def get_library_manager() -> LibraryManager:
     if _library_manager is None:
         _library_manager = LibraryManager()
     return _library_manager
+
+
+def shutdown_library_manager_background_workers() -> None:
+    if _library_manager is None:
+        return
+    _library_manager.shutdown_background_workers()
 
 
 

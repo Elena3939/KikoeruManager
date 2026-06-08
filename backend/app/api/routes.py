@@ -44,7 +44,7 @@ from ..core.password_cleanup import get_cleanup_service
 from ..core.processed_archive_cleanup import get_processed_archive_cleanup_service
 from ..core.backup_zip_service import get_backup_zip_service
 from ..core.file_processor import get_file_processor
-from ..core.library_manager import get_library_manager, SynologyError
+from ..core.library_manager import get_library_manager, shutdown_library_manager_background_workers, SynologyError
 from ..core.library_index import get_library_index_service
 from ..core.rjcode_utils import extract_rjcode, extract_rjcode_from_path, scan_existing_folder_candidates
 from ..core.password_utils import (
@@ -1982,6 +1982,12 @@ async def shutdown_event():
     # 停止监视器
     watcher = get_watcher()
     watcher.stop()
+
+    # 停止库存后台 worker（本地索引追赶等）
+    try:
+        shutdown_library_manager_background_workers()
+    except Exception:
+        logger.warning("关闭库存后台 worker 失败", exc_info=True)
 
     # 停止密码库智能清理服务
     cleanup_service = get_cleanup_service()
@@ -6224,6 +6230,8 @@ def _index_status_to_dict(status, fallback_library_id: Optional[str] = None) -> 
             "status": "idle",
             "watcher_mode": None,
             "total_entries": 0,
+            "total_size_bytes": 0,
+            "folder_count": 0,
             "last_full_scan_at": None,
             "last_event_at": None,
             "error": None,
@@ -6234,6 +6242,8 @@ def _index_status_to_dict(status, fallback_library_id: Optional[str] = None) -> 
         "status": status.status,
         "watcher_mode": status.watcher_mode,
         "total_entries": status.total_entries,
+        "total_size_bytes": status.total_size_bytes,
+        "folder_count": status.folder_count,
         "last_full_scan_at": status.last_full_scan_at,
         "last_event_at": status.last_event_at,
         "error": status.error,

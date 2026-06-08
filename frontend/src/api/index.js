@@ -1071,6 +1071,10 @@ export const libraryApi = {
       target_path: targetPath || '',
       conflict_strategy: options.conflictStrategy || 'suffix',
       overwrite: !!options.overwrite
+    }, {
+      // 同卷移动通常很快，但大目录移动后的库存索引追赶 / 慢盘元数据刷新可能超过默认 60s。
+      // 库存移动是明确的用户操作，交给后端返回真实结果，不让 axios 本地误判超时。
+      timeout: options.timeout ?? 0
     })
     return response.data
   },

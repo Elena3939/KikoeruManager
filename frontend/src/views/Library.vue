@@ -28,7 +28,7 @@
 
         </Badge>
 
-        <LibraryIndexBadge :library="currentLibrary" />
+        <LibraryIndexBadge :library="currentLibrary" @status-change="handleLibraryIndexStatusChange" />
 
       </template>
 
@@ -198,7 +198,7 @@
 
               class="lib-btn lib-btn-icon-tinted lib-icon-stats"
 
-              :disabled="statsLoading && !canCancelStats"
+              :disabled="statsLoading"
 
               @click="handleStatsAction"
 
@@ -206,7 +206,7 @@
 
               <IconBarChart :size="14" :stroke-width="2.2" />
 
-              <span>{{ canCancelStats ? '取消统计' : '刷新统计' }}</span>
+              <span>刷新快照</span>
 
             </button>
 
@@ -2032,8 +2032,6 @@ const statsLoading = ref(false)
 
 const listPolling = ref(false)
 
-const statsPolling = ref(false)
-
 const files = ref([])
 
 const totalFiles = ref(0)
@@ -2935,8 +2933,6 @@ const labels = {
   allLibraries: '\u5168\u90e8\u5e93\u5b58'
 
 }
-
-let statsPollTimer = null
 
 let listPollTimer = null
 
@@ -3875,9 +3871,9 @@ function isPathBreadcrumbDropBlocked (segment) {
 // 当前选中行中的目录行（供批量计算使用）
 const selectedDirectoryRows = computed(() => selectedRows.value.filter(r => r?.is_directory))
 
-const aggregatePending = computed(() => Object.values(statsMap.value).some(item => item?.status === 'pending'))
+const aggregatePending = computed(() => Object.values(statsMap.value).some(item => ['pending', 'syncing'].includes(item?.status)))
 
-const remoteIdleLibraries = computed(() => libraries.value.filter(item => item.type === 'synology_filestation' && ['idle', undefined].includes(statsMap.value[item.id]?.status)).length)
+const unindexedLibraries = computed(() => libraries.value.filter(item => ['idle', undefined].includes(statsMap.value[item.id]?.status)).length)
 
 const countedLibraries = computed(() => libraries.value.filter(item => {
 
@@ -3889,9 +3885,7 @@ const countedLibraries = computed(() => libraries.value.filter(item => {
 
 const currentStatsProgress = computed(() => Math.max(0, Math.min(100, Number(currentStats.value?.progress_percent || 0))))
 
-const showCurrentStatsProgress = computed(() => currentStats.value?.status === 'pending' && currentStatsProgress.value > 0)
-
-const canCancelStats = computed(() => currentStats.value?.status === 'pending')
+const showCurrentStatsProgress = computed(() => ['pending', 'syncing'].includes(currentStats.value?.status) && currentStatsProgress.value > 0)
 
 const aggregateProgress = computed(() => {
 
@@ -3899,7 +3893,7 @@ const aggregateProgress = computed(() => {
 
     .map(item => statsMap.value[item.id])
 
-    .filter(item => item && ['ready', 'pending'].includes(item.status))
+    .filter(item => item && ['ready', 'pending', 'syncing'].includes(item.status))
 
   if (!relevant.length) return 0
 
@@ -3927,15 +3921,17 @@ const aggregateSizeText = computed(() => {
 
   const base = formatGB(aggregateStats.value.total_size_gb)
 
-  return remoteIdleLibraries.value > 0 ? `${base}\uff08\u4ec5\u5df2\u7edf\u8ba1\u5e93\uff09` : base
+  return unindexedLibraries.value > 0 ? `${base}\uff08\u4ec5\u5df2\u5efa\u7d22\u5f15\u5e93\uff09` : base
 
 })
 
 const aggregateSummary = computed(() => {
 
-  if (aggregatePending.value) return `\u7edf\u8ba1\u8fdb\u884c\u4e2d\uff0c\u5df2\u5b8c\u6210 ${aggregateProgress.value.toFixed(0)}%`
+  if (aggregatePending.value) return aggregateProgress.value > 0
+    ? `\u7d22\u5f15\u540c\u6b65\u4e2d\uff0c\u5df2\u5b8c\u6210 ${aggregateProgress.value.toFixed(0)}%`
+    : '\u7d22\u5f15\u540c\u6b65\u4e2d\uff0c\u7edf\u8ba1\u5feb\u7167\u5b9e\u65f6\u66f4\u65b0'
 
-  if (remoteIdleLibraries.value > 0) return `\u5f53\u524d\u4ec5\u5305\u542b ${countedLibraries.value}/${libraries.value.length} \u4e2a\u5df2\u7edf\u8ba1\u5e93`
+  if (unindexedLibraries.value > 0) return `\u5f53\u524d\u4ec5\u5305\u542b ${countedLibraries.value}/${libraries.value.length} \u4e2a\u5df2\u5efa\u7d22\u5f15\u5e93`
 
   return `\u5171 ${libraries.value.length} \u4e2a\u5e93`
 
@@ -3949,13 +3945,13 @@ const aggregateDetail = computed(() => {
 
     return ts
 
-      ? `\u540e\u53f0\u7ee7\u7eed\u66f4\u65b0\u4e2d\uff0c\u5f53\u524d\u4f18\u5148\u663e\u793a\u5df2\u4fdd\u5b58\u7ed3\u679c\uff0c\u6700\u8fd1\u7edf\u8ba1\u4e8e ${formatDate(ts * 1000)}`
+      ? `\u540e\u53f0\u7ee7\u7eed\u540c\u6b65\u7d22\u5f15\uff0c\u5f53\u524d\u663e\u793a\u5df2\u7d22\u5f15\u5feb\u7167\uff0c\u6700\u8fd1\u5b8c\u6574\u91cd\u5efa\u4e8e ${formatDate(ts * 1000)}`
 
-      : '\u540e\u53f0\u7ee7\u7eed\u66f4\u65b0\u4e2d\uff0c\u7edf\u8ba1\u7ed3\u679c\u4f1a\u81ea\u52a8\u5237\u65b0'
+      : '\u540e\u53f0\u6b63\u5728\u540c\u6b65\u7d22\u5f15\uff0c\u7edf\u8ba1\u5feb\u7167\u4f1a\u81ea\u52a8\u5237\u65b0'
 
   }
 
-  if (remoteIdleLibraries.value > 0) return '\u672a\u624b\u52a8\u7edf\u8ba1\u7684\u8fdc\u7a0b\u5e93\u4e0d\u4f1a\u8ba1\u5165\u603b\u6587\u4ef6\u5939\u6570\u548c\u603b\u5927\u5c0f'
+  if (unindexedLibraries.value > 0) return '\u672a\u5efa\u7d22\u5f15\u7684\u5e93\u4e0d\u4f1a\u8ba1\u5165\u603b\u6587\u4ef6\u5939\u6570\u548c\u603b\u5927\u5c0f'
 
   const ts = aggregateLastCompletedAt.value
 
@@ -5680,8 +5676,6 @@ function unbindLibraryKeydown () {
 
 function stopLibraryPolling () {
 
-  clearStatsPoll()
-
   clearListPoll()
 
   clearSubtitleStatusPoll()
@@ -6008,8 +6002,6 @@ watch(uploadWorkbenchVisible, () => {
   persistUploadWorkbenchState()
 
   if (uploadWorkbenchVisible.value) {
-
-    clearStatsPoll()
 
     clearListPoll()
 
@@ -6615,36 +6607,6 @@ function restoreLibraryState (libraryId) {
 
 
 
-function clearStatsPoll () {
-
-  if (statsPollTimer) {
-
-    clearTimeout(statsPollTimer)
-
-    statsPollTimer = null
-
-  }
-
-}
-
-
-
-function scheduleStatsPoll (items) {
-
-  clearStatsPoll()
-
-  if (uploadWorkbenchVisible.value) return
-
-  if ((items || []).some(item => item?.status === 'pending')) {
-
-    statsPollTimer = setTimeout(() => refreshStats(false, { silent: true }), 1500)
-
-  }
-
-}
-
-
-
 function clearListPoll () {
 
   if (listPollTimer) {
@@ -6676,16 +6638,123 @@ function scheduleListPoll (items) {
 }
 
 
+function statusTimestampToSeconds (value) {
+
+  const numeric = Number(value || 0)
+
+  if (!Number.isFinite(numeric) || numeric <= 0) return null
+
+  return numeric > 10000000000 ? numeric / 1000 : numeric
+
+}
+
+
+
+function gbFromBytes (bytes) {
+
+  return Number((Math.max(0, Number(bytes || 0)) / (1024 ** 3)).toFixed(2))
+
+}
+
+
+
+function rebuildAggregateStatsFromStatsMap () {
+
+  const activeStats = libraries.value
+
+    .map(item => statsMap.value[item.id])
+
+    .filter(Boolean)
+
+  const totalBytes = activeStats.reduce((sum, item) => sum + Math.max(0, Number(item.total_size_bytes || 0)), 0)
+
+  const folderCount = activeStats.reduce((sum, item) => sum + Math.max(0, Number(item.folder_count || 0)), 0)
+
+  aggregateStats.value = {
+
+    folder_count: folderCount,
+
+    total_size_bytes: totalBytes,
+
+    total_size_gb: gbFromBytes(totalBytes)
+
+  }
+
+}
+
+
+
+function handleLibraryIndexStatusChange (status) {
+
+  const libraryId = String(status?.library_id || currentLibrary.value?.id || '').trim()
+
+  if (!libraryId) return
+
+  const library = libraries.value.find(item => item.id === libraryId) || currentLibrary.value || {}
+
+  const rawStatus = String(status?.status || 'idle')
+
+  const statsStatus = ['ready', 'syncing', 'error'].includes(rawStatus) ? rawStatus : 'idle'
+
+  const totalBytes = Math.max(0, Number(status?.total_size_bytes || 0))
+
+  const nextStats = {
+
+    ...(statsMap.value[libraryId] || {}),
+
+    library_id: libraryId,
+
+    library_name: status?.library_name || library.name || libraryId,
+
+    library_type: status?.library_type || library.type || 'local',
+
+    status: statsStatus,
+
+    index_status: rawStatus,
+
+    folder_count: Math.max(0, Number(status?.folder_count || 0)),
+
+    total_size_bytes: totalBytes,
+
+    total_size_gb: gbFromBytes(totalBytes),
+
+    scan_mode: rawStatus === 'idle' ? 'index_required' : 'library_index',
+
+    progress_done: Math.max(0, Number(status?.total_entries || 0)),
+
+    progress_total: 0,
+
+    progress_percent: rawStatus === 'ready' ? 100 : 0,
+
+    last_completed_at: statusTimestampToSeconds(status?.last_full_scan_at),
+
+    updated_at: statusTimestampToSeconds(status?.updated_at) || (Date.now() / 1000),
+
+    last_error: status?.error || null,
+
+    warning: rawStatus === 'idle' ? '索引未就绪，请先重建索引' : (status?.error || null)
+
+  }
+
+  statsMap.value = {
+
+    ...statsMap.value,
+
+    [libraryId]: nextStats
+
+  }
+
+  rebuildAggregateStatsFromStatsMap()
+
+}
+
+
 
 async function refreshStats (forceRefresh = false, options = {}) {
 
   const { silent = false, refreshLibraryId = null } = options
 
-  clearStatsPoll()
-
-  if (silent) statsPolling.value = true
-
-  else statsLoading.value = true
+  if (!silent) statsLoading.value = true
 
   try {
 
@@ -6699,17 +6768,13 @@ async function refreshStats (forceRefresh = false, options = {}) {
 
     aggregateStats.value = data.all_libraries || { folder_count: 0, total_size_gb: 0, total_size_bytes: 0 }
 
-    scheduleStatsPoll(data.libraries || [])
-
   } catch (error) {
 
     ElMessage.error(error.response?.data?.detail || error.message || '获取统计失败')
 
   } finally {
 
-    if (silent) statsPolling.value = false
-
-    else statsLoading.value = false
+    if (!silent) statsLoading.value = false
 
   }
 
@@ -6718,44 +6783,7 @@ async function refreshStats (forceRefresh = false, options = {}) {
 
 
 async function handleStatsAction () {
-
-  if (canCancelStats.value) {
-
-    await cancelStats()
-
-    return
-
-  }
-
   await refreshStats(true, { refreshLibraryId: selectedLibraryId.value })
-
-}
-
-
-
-async function cancelStats () {
-
-  if (!selectedLibraryId.value) return
-
-  statsLoading.value = true
-
-  try {
-
-    const data = await libraryApi.cancelStats(selectedLibraryId.value)
-
-    ElMessage.success(data.message || '统计任务已取消')
-
-    await refreshStats(false, { silent: true })
-
-  } catch (error) {
-
-    ElMessage.error(error.response?.data?.detail || error.message || '取消统计失败')
-
-  } finally {
-
-    statsLoading.value = false
-
-  }
 
 }
 
@@ -17560,6 +17588,14 @@ function handleFolderCompletionTaskCenterEvent (event) {
 
   const payload = event?.detail || {}
 
+  if (payload?.type === 'library_index_status_changed') {
+
+    handleLibraryIndexStatusChange(payload)
+
+    return
+
+  }
+
   if (payload?.type !== 'task_center_changed') return
 
   const jobId = folderCompletionPreviewJob.value.jobId
@@ -18803,7 +18839,7 @@ async function handleFilterDeleteDeleted ({ deletedBytes = 0, deletedFolderCount
     deletedFolderCount,
     libraryId: filterDeleteDialogLibraryId.value || selectedLibraryId.value
   }).catch((error) => {
-    ElMessage.warning('删除过滤已完成，但刷新统计失败：' + (error?.response?.data?.detail || error?.message || '未知错误'))
+    ElMessage.warning('删除过滤已完成，但刷新快照失败：' + (error?.response?.data?.detail || error?.message || '未知错误'))
   })
 
   if (folderDialogVisible.value && folderDialogRef.value?.reload) {
@@ -19254,7 +19290,11 @@ function formatGB (value) {
 
 function statsSizeText (stats) {
 
-  if (!stats || stats.status === 'pending') return '统计更新中'
+  if (!stats) return '等待索引'
+
+  if (stats.status === 'pending') return '统计更新中'
+
+  if (stats.status === 'syncing') return formatGB(stats.total_size_gb)
 
   if (stats.status === 'unsupported') return '暂不支持远程容量统计'
 
@@ -19270,6 +19310,8 @@ function statsStatusText (status) {
 
   if (status === 'pending') return '后台正在更新'
 
+  if (status === 'syncing') return '索引同步中'
+
   if (status === 'unsupported') return '当前仅显示健康状态'
 
   return '等待统计'
@@ -19280,15 +19322,17 @@ function statsStatusText (status) {
 
 function statsSizeCardText (stats) {
 
-  if (!stats) return '\u7b49\u5f85\u7edf\u8ba1'
+  if (!stats) return '\u7b49\u5f85\u7d22\u5f15'
 
   if (stats.status === 'pending') return '\u7edf\u8ba1\u66f4\u65b0\u4e2d'
 
-  if (stats.status === 'idle') return '\u672a\u624b\u52a8\u7edf\u8ba1'
+  if (stats.status === 'syncing') return formatGB(stats.total_size_gb)
 
-  if (stats.status === 'canceled') return '\u5df2\u53d6\u6d88\uff0c\u4fdd\u7559\u5f53\u524d\u8fdb\u5ea6'
+  if (stats.status === 'idle') return '\u7d22\u5f15\u672a\u5efa'
 
-  if (stats.status === 'error') return '\u7edf\u8ba1\u4e2d\u65ad\uff0c\u4fdd\u7559\u5df2\u5b8c\u6210\u6570\u636e'
+  if (stats.status === 'canceled') return '\u5df2\u53d6\u6d88\uff0c\u4fdd\u7559\u5feb\u7167'
+
+  if (stats.status === 'error') return formatGB(stats.total_size_gb)
 
   if (stats.status === 'unsupported') return '\u6682\u4e0d\u652f\u6301\u5f53\u524d\u7edf\u8ba1'
 
@@ -19318,11 +19362,19 @@ function statsStatusCardText (stats) {
 
   }
 
-  if (status === 'canceled') return '\u5df2\u624b\u52a8\u53d6\u6d88\uff0c\u4ecd\u4fdd\u7559\u5df2\u7edf\u8ba1\u8fdb\u5ea6'
+  if (status === 'syncing') {
 
-  if (status === 'error') return stats?.last_error || '\u7edf\u8ba1\u4e2d\u9014\u51fa\u73b0\u5f02\u5e38\uff0c\u8bf7\u67e5\u770b\u8fdc\u7a0b\u7edf\u8ba1\u65e5\u5fd7'
+    const done = Number(stats?.progress_done || 0)
 
-  if (status === 'idle') return '\u8fdc\u7a0b\u5e93\u9ed8\u8ba4\u4e0d\u81ea\u52a8\u5168\u91cf\u7edf\u8ba1\uff0c\u8bf7\u624b\u52a8\u70b9\u5237\u65b0\u7edf\u8ba1'
+    return done > 0 ? `\u7d22\u5f15\u540c\u6b65\u4e2d\uff0c\u5df2\u7d22\u5f15 ${done.toLocaleString()} \u9879` : '\u7d22\u5f15\u540c\u6b65\u4e2d\uff0c\u5feb\u7167\u4f1a\u81ea\u52a8\u66f4\u65b0'
+
+  }
+
+  if (status === 'canceled') return '\u5df2\u624b\u52a8\u53d6\u6d88\uff0c\u4ecd\u4fdd\u7559\u5feb\u7167'
+
+  if (status === 'error') return stats?.last_error || '\u7d22\u5f15\u540c\u6b65\u4e2d\u65ad\uff0c\u4fdd\u7559\u5df2\u7d22\u5f15\u5feb\u7167'
+
+  if (status === 'idle') return '\u7d22\u5f15\u672a\u5efa\uff0c\u8bf7\u70b9\u91cd\u5efa\u7d22\u5f15'
 
   if (status === 'unsupported') return '\u5f53\u524d\u4ec5\u663e\u793a\u5065\u5eb7\u72b6\u6001'
 
@@ -19400,9 +19452,13 @@ function healthDetail (health) {
 
 function statsSizeLabel (stats) {
 
-  if (!stats || stats.status === 'pending') return '统计更新中'
+  if (!stats) return '等待索引'
 
-  if (stats.status === 'idle') return '未统计'
+  if (stats.status === 'pending') return '统计更新中'
+
+  if (stats.status === 'syncing') return formatGB(stats.total_size_gb)
+
+  if (stats.status === 'idle') return '索引未建'
 
   if (stats.status === 'unsupported') return '暂不支持远程容量统计'
 
@@ -19420,7 +19476,7 @@ function statsStatusLabel (stats) {
 
     const ts = stats?.last_completed_at || stats?.updated_at
 
-    return ts ? `统计于 ${formatDate(ts * 1000)}` : '统计已就绪'
+    return ts ? `快照更新于 ${formatDate(ts * 1000)}` : '索引快照已就绪'
 
   }
 
@@ -19428,11 +19484,13 @@ function statsStatusLabel (stats) {
 
     const ts = stats?.last_completed_at
 
-    return ts ? `后台更新中，上次统计于 ${formatDate(ts * 1000)}` : '后台正在更新'
+    return ts ? `后台更新中，上次快照于 ${formatDate(ts * 1000)}` : '后台正在更新'
 
   }
 
-  if (status === 'idle') return '未手动统计，沿用已保存结果'
+  if (status === 'syncing') return '索引同步中，快照实时更新'
+
+  if (status === 'idle') return '索引未建，请先重建索引'
 
   if (status === 'unsupported') return '当前仅显示健康状态'
 
@@ -19444,9 +19502,13 @@ function statsStatusLabel (stats) {
 
 function statsSizeTextDisplay (stats) {
 
-  if (!stats || stats.status === 'pending') return '统计更新中'
+  if (!stats) return '等待索引'
 
-  if (stats.status === 'idle') return '未统计'
+  if (stats.status === 'pending') return '统计更新中'
+
+  if (stats.status === 'syncing') return formatGB(stats.total_size_gb)
+
+  if (stats.status === 'idle') return '索引未建'
 
   if (stats.status === 'unsupported') return '暂不支持远程容量统计'
 
@@ -19464,7 +19526,7 @@ function statsStatusTextDisplay (stats) {
 
     const ts = stats?.last_completed_at || stats?.updated_at
 
-    return ts ? `统计于 ${formatDate(ts * 1000)}` : '统计已就绪'
+    return ts ? `快照更新于 ${formatDate(ts * 1000)}` : '索引快照已就绪'
 
   }
 
@@ -19472,11 +19534,13 @@ function statsStatusTextDisplay (stats) {
 
     const ts = stats?.last_completed_at
 
-    return ts ? `后台更新中，上次统计于 ${formatDate(ts * 1000)}` : '后台正在更新'
+    return ts ? `后台更新中，上次快照于 ${formatDate(ts * 1000)}` : '后台正在更新'
 
   }
 
-  if (status === 'idle') return '未手动统计，沿用已保存结果'
+  if (status === 'syncing') return '索引同步中，快照实时更新'
+
+  if (status === 'idle') return '索引未建，请先重建索引'
 
   if (status === 'unsupported') return '当前仅显示健康状态'
 

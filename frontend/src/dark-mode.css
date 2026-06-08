@@ -4353,6 +4353,58 @@ html.kikoerumanager-dark {
     outline: 0 !important;
   }
 
+  html.kikoerumanager-dark body #app .library .lib-table-drag-ghost {
+    background:
+      linear-gradient(180deg, rgba(58, 59, 64, 0.92), rgba(33, 34, 39, 0.96)),
+      rgba(34, 35, 40, 0.94) !important;
+    border-color: rgba(255, 255, 255, 0.18) !important;
+    color: rgba(248, 248, 250, 0.92) !important;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.08),
+      0 16px 34px rgba(0, 0, 0, 0.46) !important;
+    text-shadow: none !important;
+    backdrop-filter: blur(14px) saturate(112%) !important;
+    -webkit-backdrop-filter: blur(14px) saturate(112%) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-table-drag-ghost.is-droppable {
+    background:
+      linear-gradient(180deg, rgba(18, 55, 69, 0.72), rgba(28, 34, 42, 0.96)),
+      rgba(30, 38, 45, 0.94) !important;
+    border-color: rgba(125, 211, 252, 0.34) !important;
+    color: rgba(224, 242, 254, 0.94) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-table-drag-target {
+    color: rgba(205, 205, 211, 0.66) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-table-drag-ghost.is-droppable .lib-table-drag-target {
+    color: rgba(186, 230, 253, 0.86) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-table-drag-file-icon {
+    color: rgba(205, 205, 211, 0.78) !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-table-drag-folder-icon {
+    color: #d99a25 !important;
+    fill: currentColor !important;
+    stroke: currentColor !important;
+  }
+
+  html.kikoerumanager-dark body #app .library .lib-table-drag-move-icon {
+    color: #7dd3fc !important;
+  }
+
+  html.kikoerumanager-dark body #app .library :is(
+    .lib-table-drag-file-icon,
+    .lib-table-drag-folder-icon,
+    .lib-table-drag-move-icon
+  ) {
+    filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.28)) !important;
+  }
+
   html.kikoerumanager-dark body #app .library .lib-file-table-row.library-row-marquee-selected {
     background-color: #3a3b40 !important;
     border-color: transparent !important;
