@@ -79,6 +79,29 @@ popd
 echo Starting all services...
 echo.
 
+set "RUN_DIR=%~dp0data\run"
+set "BACKEND_PID_FILE=%RUN_DIR%\backend-terminal.pid"
+set "FRONTEND_PID_FILE=%RUN_DIR%\frontend-terminal.pid"
+if not exist "%RUN_DIR%" mkdir "%RUN_DIR%"
+
+echo [INFO] Closing existing KikoeruManager service terminals...
+if exist "%BACKEND_PID_FILE%" (
+    for /f "usebackq delims=" %%P in ("%BACKEND_PID_FILE%") do (
+        echo [INFO] Close previous backend terminal tree: %%P
+        taskkill /PID %%P /T /F >nul 2>&1
+    )
+    del /q "%BACKEND_PID_FILE%" >nul 2>&1
+)
+if exist "%FRONTEND_PID_FILE%" (
+    for /f "usebackq delims=" %%P in ("%FRONTEND_PID_FILE%") do (
+        echo [INFO] Close previous frontend terminal tree: %%P
+        taskkill /PID %%P /T /F >nul 2>&1
+    )
+    del /q "%FRONTEND_PID_FILE%" >nul 2>&1
+)
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$currentPid = $PID; $root = '%~dp0'.TrimEnd('\'); $backend = Join-Path $root 'backend'; $frontend = Join-Path $root 'frontend'; $targets = Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $currentPid -and $_.ParentProcessId -ne $currentPid -and $_.Name -in @('cmd.exe','powershell.exe','pwsh.exe') -and ($_.CommandLine -like '*KikoeruManager Backend*' -or $_.CommandLine -like '*KikoeruManager Frontend*' -or ($_.CommandLine -like ('*' + $backend + '*') -and $_.CommandLine -like '*venv\Scripts\python.exe -m app.main*') -or ($_.CommandLine -like ('*' + $frontend + '*') -and $_.CommandLine -like '*npm run dev*')) }; foreach ($target in $targets) { Write-Host ('[INFO] Close terminal tree: PID ' + $target.ProcessId + ' ' + $target.Name); taskkill /PID $($target.ProcessId) /T /F | Out-Null }"
+timeout /t 1 /nobreak >nul
+
 set "BAIDUPCS_GO_DIR=%~dp0tools\baidupcs-go"
 set "BAIDUPCS_GO_EXE=%BAIDUPCS_GO_DIR%\BaiduPCS-Go.exe"
 if exist "%BAIDUPCS_GO_EXE%" (
@@ -98,14 +121,15 @@ if not exist "%CONFIG_PATH%" (
 
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":5555" ^| findstr "LISTENING"') do (
     echo [INFO] Stop process on 5555: %%P
-    taskkill /PID %%P /F >nul 2>&1
+    taskkill /PID %%P /T /F >nul 2>&1
 )
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":5556" ^| findstr "LISTENING"') do (
     echo [INFO] Stop process on 5556: %%P
-    taskkill /PID %%P /F >nul 2>&1
+    taskkill /PID %%P /T /F >nul 2>&1
 )
 
-start "KikoeruManager Backend" cmd /k "chcp 65001 >nul && set ""PYTHONUTF8=1"" && set ""PYTHONIOENCODING=utf-8"" && set ""CONFIG_PATH=%CONFIG_PATH%"" && set ""DATA_PATH=%~dp0data"" && set ""BAIDUPCS_GO_PATH=%BAIDUPCS_GO_PATH%"" && set ""PATH=%BAIDUPCS_GO_DIR%;%PATH%"" && cd /d %~dp0backend && venv\Scripts\python.exe -m app.main"
+set "BACKEND_CMD=title KikoeruManager Backend && chcp 65001 >nul && set PYTHONUTF8=1 && set PYTHONIOENCODING=utf-8 && set CONFIG_PATH=%CONFIG_PATH% && set DATA_PATH=%~dp0data && set BAIDUPCS_GO_PATH=%BAIDUPCS_GO_PATH% && set PATH=%BAIDUPCS_GO_DIR%;%PATH% && cd /d "%~dp0backend" && venv\Scripts\python.exe -m app.main"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/k', $env:BACKEND_CMD -PassThru; Set-Content -LiteralPath $env:BACKEND_PID_FILE -Value $p.Id -Encoding ASCII"
 
 timeout /t 3 /nobreak >nul
 
@@ -131,7 +155,8 @@ if errorlevel 1 (
     exit /b 1
 )
 
-start "KikoeruManager Frontend" cmd /k "cd /d %~dp0frontend && npm run dev"
+set "FRONTEND_CMD=title KikoeruManager Frontend && cd /d "%~dp0frontend" && npm run dev"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/k', $env:FRONTEND_CMD -PassThru; Set-Content -LiteralPath $env:FRONTEND_PID_FILE -Value $p.Id -Encoding ASCII"
 
 echo ========================================
 echo Services started!
