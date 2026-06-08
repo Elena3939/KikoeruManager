@@ -10,6 +10,7 @@ import {
   CirclePlay,
   Copy,
   Info,
+  Maximize2,
   RotateCcw,
   Terminal,
   Trash2,
@@ -33,6 +34,8 @@ const emit = defineEmits(['clear', 'reconnect'])
 const scrollRef = ref(null)
 const autoScroll = ref(props.autoScrollDefault)
 const userPinnedHistory = ref(false)
+const detailDialogVisible = ref(false)
+const selectedLine = ref(null)
 
 let autoScrollRaf = 0
 
@@ -60,6 +63,7 @@ const rowVirtualizer = useVirtualizer(computed(() => ({
 
 const virtualRows = computed(() => rowVirtualizer.value.getVirtualItems())
 const totalSize = computed(() => rowVirtualizer.value.getTotalSize())
+const selectedLineText = computed(() => selectedLine.value ? lineText(selectedLine.value, true) : '')
 
 function clampProgress(value) {
   const numeric = Number(value)
@@ -147,18 +151,34 @@ function shellTokens(text) {
   })
 }
 
-function lineText(line) {
+function logMessage(line, preferFull = false) {
+  if (!line) return ''
+  if (preferFull) {
+    return String(line.fullMessage || line.rawLine || line.message || '')
+  }
+  return String(line.message || line.fullMessage || line.rawLine || '')
+}
+
+function isLineTruncated(line) {
+  return Boolean(line?.isTruncated)
+}
+
+function hasLineDetail(line) {
+  return isLineTruncated(line) || logMessage(line, true).length > 180
+}
+
+function lineText(line, preferFull = false) {
   const time = formatTime(line?.time)
   const level = levelLabel(line?.level).toUpperCase()
   const source = String(line?.source || 'system')
   const progress = line?.progress !== null && line?.progress !== undefined && Number.isFinite(Number(line.progress))
     ? ` ${Number(line.progress)}%`
     : ''
-  return `[${time}] ${level} ${source}${progress} ${String(line?.message || '')}`
+  return `[${time}] ${level} ${source}${progress} ${logMessage(line, preferFull)}`
 }
 
 function allText() {
-  return safeLines.value.map(lineText).join('\n')
+  return safeLines.value.map((line) => lineText(line, true)).join('\n')
 }
 
 async function copyLogs() {
@@ -173,6 +193,23 @@ async function copyLogs() {
   } catch {
     ElMessage.error('复制失败，浏览器未授权剪贴板')
   }
+}
+
+async function copySelectedLine() {
+  const text = selectedLineText.value
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('已复制完整日志')
+  } catch {
+    ElMessage.error('复制失败，浏览器未授权剪贴板')
+  }
+}
+
+function openLineDetail(line) {
+  if (!hasLineDetail(line)) return
+  selectedLine.value = line
+  detailDialogVisible.value = true
 }
 
 function clearLogs() {
@@ -283,6 +320,8 @@ onBeforeUnmount(() => {
                 'has-progress': hasProgress(safeLines[virtualRow.index]),
                 'has-inline-progress': hasProgress(safeLines[virtualRow.index]) && !isTaskProgressLine(safeLines[virtualRow.index]),
                 'is-task-progress': isTaskProgressLine(safeLines[virtualRow.index]),
+                'is-truncated': isLineTruncated(safeLines[virtualRow.index]),
+                'has-detail': hasLineDetail(safeLines[virtualRow.index]),
               },
             ]"
             :style="{ transform: `translate3d(0, ${virtualRow.start}px, 0)` }"
@@ -297,7 +336,7 @@ onBeforeUnmount(() => {
             <span
               v-if="isTaskProgressLine(safeLines[virtualRow.index])"
               class="terminal-message terminal-inline-progress"
-              :title="safeLines[virtualRow.index]?.message || '处理中'"
+              :title="logMessage(safeLines[virtualRow.index]) || '处理中'"
             >
               <span class="terminal-inline-progress-head">
                 <span class="terminal-inline-progress-title">
@@ -310,12 +349,29 @@ onBeforeUnmount(() => {
               <span class="terminal-inline-progress-bar" :style="{ '--inline-progress': `${clampProgress(safeLines[virtualRow.index]?.progress)}%` }">
                 <span />
               </span>
-              <span class="terminal-inline-progress-detail">{{ safeLines[virtualRow.index]?.message || '处理中' }}</span>
+              <span class="terminal-inline-progress-detail">{{ logMessage(safeLines[virtualRow.index]) || '处理中' }}</span>
             </span>
-            <span v-else class="terminal-message" :title="safeLines[virtualRow.index]?.message || ''">
-              <template v-for="(token, tokenIndex) in shellTokens(safeLines[virtualRow.index]?.message)" :key="`${virtualRow.key}-${tokenIndex}`">
-                <span :class="`terminal-token is-${token.type}`">{{ token.value }}</span>
-              </template>
+            <span
+              v-else
+              class="terminal-message"
+              :class="{ 'has-detail': hasLineDetail(safeLines[virtualRow.index]) }"
+              :title="hasLineDetail(safeLines[virtualRow.index]) ? '点击查看完整日志' : logMessage(safeLines[virtualRow.index])"
+              @click="openLineDetail(safeLines[virtualRow.index])"
+            >
+              <span class="terminal-message-text">
+                <template v-for="(token, tokenIndex) in shellTokens(logMessage(safeLines[virtualRow.index]))" :key="`${virtualRow.key}-${tokenIndex}`">
+                  <span :class="`terminal-token is-${token.type}`">{{ token.value }}</span>
+                </template>
+              </span>
+              <button
+                v-if="hasLineDetail(safeLines[virtualRow.index])"
+                type="button"
+                class="terminal-detail-button"
+                title="查看完整日志"
+                @click.stop="openLineDetail(safeLines[virtualRow.index])"
+              >
+                <Maximize2 :size="11" :stroke-width="2.4" />
+              </button>
             </span>
           </div>
         </div>
@@ -327,6 +383,29 @@ onBeforeUnmount(() => {
         <span v-else>{{ autoScroll ? '自动滚动' : '查看历史' }}</span>
       </div>
     </div>
+
+    <el-dialog
+      v-model="detailDialogVisible"
+      title="完整日志"
+      width="min(920px, calc(100vw - 32px))"
+      custom-class="system-log-detail-dialog mobile-full-dialog"
+      append-to-body
+    >
+      <div class="terminal-detail">
+        <div class="terminal-detail-meta">
+          <span>{{ formatTime(selectedLine?.time) }}</span>
+          <span>{{ levelLabel(selectedLine?.level) }}</span>
+          <span>{{ selectedLine?.source || 'system' }}</span>
+        </div>
+        <pre class="terminal-detail-content">{{ selectedLineText }}</pre>
+      </div>
+      <template #footer>
+        <button type="button" class="terminal-detail-copy" @click="copySelectedLine">
+          <Copy :size="14" :stroke-width="2.35" />
+          复制完整日志
+        </button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -582,6 +661,60 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
+.terminal-message.has-detail {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.terminal-message-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-detail-button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(103, 232, 249, 0.42);
+  border-radius: 7px;
+  background: rgba(8, 145, 178, 0.14);
+  color: #67e8f9;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.terminal-detail-button:hover {
+  transform: translateY(-2px) scale(1.02);
+  border-color: rgba(103, 232, 249, 0.72);
+  background: rgba(8, 145, 178, 0.24);
+  color: #cffafe;
+}
+
+.terminal-detail-button:active {
+  transform: scale(0.96);
+}
+
+.terminal-detail-button:focus,
+.terminal-detail-button:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.terminal-detail-button:hover :deep(svg) {
+  transform: rotate(-8deg);
+}
+
+.terminal-detail-button :deep(svg) {
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
 .terminal-line.has-inline-progress .terminal-message {
   grid-column: auto;
 }
@@ -752,6 +885,114 @@ onBeforeUnmount(() => {
   color: #fda4af;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+:global(.system-log-detail-dialog) {
+  border: 1px solid rgba(39, 39, 42, 0.96);
+  border-radius: 14px;
+  background: #09090b;
+  color: #d4d4d8;
+}
+
+:global(.system-log-detail-dialog .el-dialog__header) {
+  margin: 0;
+  border-bottom: 1px solid rgba(63, 63, 70, 0.85);
+  padding: 14px 16px;
+  background: #18181b;
+}
+
+:global(.system-log-detail-dialog .el-dialog__title) {
+  color: #e4e4e7;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+:global(.system-log-detail-dialog .el-dialog__body) {
+  padding: 0;
+}
+
+:global(.system-log-detail-dialog .el-dialog__footer) {
+  border-top: 1px solid rgba(39, 39, 42, 0.76);
+  padding: 12px 16px;
+  background: #09090b;
+}
+
+.terminal-detail {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px 16px;
+}
+
+.terminal-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.terminal-detail-meta span {
+  border: 1px solid rgba(82, 82, 91, 0.72);
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: #a1a1aa;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.terminal-detail-content {
+  max-height: min(58vh, 620px);
+  overflow: auto;
+  margin: 0;
+  border: 1px solid rgba(63, 63, 70, 0.85);
+  border-radius: 10px;
+  padding: 12px;
+  background: #050506;
+  color: #e4e4e7;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  scrollbar-color: rgba(113, 113, 122, 0.7) transparent;
+}
+
+.terminal-detail-copy {
+  display: inline-flex;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid rgba(82, 82, 91, 0.78);
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: rgba(24, 24, 27, 0.82);
+  color: #e4e4e7;
+  font-size: 12px;
+  font-weight: 900;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.terminal-detail-copy:hover {
+  transform: translateY(-2px) scale(1.02);
+  border-color: rgba(161, 161, 170, 0.86);
+  background: rgba(39, 39, 42, 0.95);
+  color: #fff;
+}
+
+.terminal-detail-copy:active {
+  transform: scale(0.96);
+}
+
+.terminal-detail-copy:focus,
+.terminal-detail-copy:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.terminal-detail-copy:hover :deep(svg) {
+  transform: rotate(-8deg);
+}
+
+.terminal-detail-copy :deep(svg) {
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 @keyframes terminal-cursor {

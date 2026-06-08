@@ -503,6 +503,9 @@ const terminalLines = computed(() => filteredLogs.value.map((log) => ({
   progress: log.progress ?? null,
   taskProgress: log.taskProgress || null,
   message: log.displayMessage || log.message,
+  fullMessage: log.message,
+  rawLine: log.rawLine,
+  isTruncated: Boolean(log.isTruncated),
 })))
 
 const terminalSubtitle = computed(() => {
@@ -761,12 +764,14 @@ function isProcessNoiseLog(log) {
     /远程搜索(绕过缓存|命中缓存|写入缓存|开始轮询等待|状态轮询|复用进行中的请求|开始:|任务已创建|结果:|耗时.*真空|秒回空结果|秒回空结果.*重试)/,
     /远程库存搜索:\s*library=|远程 RJ 搜索提前命中/,
     /完整配置内容|原始配置|用户配置路径|分类规则\d+|过滤规则\d+|路径映射规则\d+|Kikoeru服务器配置|ASMR配置/,
+    /接收到配置保存请求|保存配置请求: path=|配置已成功保存并原子更新|配置已保存: keys=\[/,
     /\[Kikoeru\].*(登录URL|响应Content-Type|登录响应keys|请求 URL|请求头|响应状态|响应数据)/,
     /\[ASMR\].*(获取文件列表|第一个项目结构|第一个文件夹名称|第一个子项目结构|第一个子项目摘要|第一个文件摘要|解析后第一个文件|构建下载链接|下载文件 \(\d+\/)/,
     /\[筛选\].*(共有 \d+ 条筛选规则|规则\d+|前5个文件名示例|文件被规则|title=|path=)/,
     /作品 .* 共有 \d+ 个文件|筛选后剩余 \d+ 个文件/,
     /\[SynologyUpload\].*(命中已缓存成功变体|尝试变体|变体失败|检测到可恢复网络中断)/,
     /\[\/api\/conflicts\].*(解析参数完成|数据查询完成|详情组装完成|请求完成|db_query|phase1|phase2|items)/,
+    /\[字幕补配\].*(目标目录候选收敛到最里层 RJ 目录|目标目录搜索库存列表|开始搜索目标目录|目标目录搜索结果|目标目录搜索完成|远程目标目录未命中，等待后重试|命中目录规则直查:.*path=)/,
   ].some((pattern) => pattern.test(text))
 }
 
