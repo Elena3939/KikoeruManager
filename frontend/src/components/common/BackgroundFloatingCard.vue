@@ -55,14 +55,14 @@
     </div>
 
     <DotLottieVue
-      v-if="showProgressLottie && completed"
+      v-if="completed"
       :key="successLottieKey"
       :src="successAnimationSrc"
       autoplay
       :loop="false"
       :render-config="{ autoResize: true, devicePixelRatio: 2 }"
       background="transparent"
-      class="floating-progress-lottie floating-progress-lottie-success"
+      class="floating-progress-lottie floating-progress-lottie-success background-floating-success-lottie"
     />
 
     <DotLottieVue
@@ -85,13 +85,12 @@
       {{ progressPercentText }}
     </span>
     <div
-      v-else
+      v-else-if="!completed"
       class="floating-progress-ring"
       :style="progressPercentStyle"
       aria-hidden="true"
     >
-      <CheckSquare v-if="completed" :size="16" :stroke-width="2.4" />
-      <span v-else>{{ progressPercentText }}</span>
+      <span>{{ progressPercentText }}</span>
     </div>
 
     <div v-if="normalizedMetrics.length" class="floating-chip-row-compact">
@@ -488,6 +487,22 @@ onBeforeUnmount(() => {
 .background-floating-card.is-compact .floating-hero-lottie {
   width: 30px;
   height: 30px;
+}
+
+.background-floating-success-lottie {
+  z-index: 2;
+  filter: drop-shadow(0 8px 16px rgba(14, 165, 233, 0.18));
+}
+
+.background-floating-card.is-compact .background-floating-success-lottie {
+  right: 0;
+  top: -2px;
+  width: 76px;
+  height: 76px;
+}
+
+.background-floating-card.is-completed .upload-floating-head {
+  padding-right: 78px;
 }
 
 .background-floating-card.is-compact .floating-hero-icon.has-hero-animation {

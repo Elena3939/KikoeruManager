@@ -82,11 +82,11 @@
             </span>
           </div>
 
-          <div v-if="showProgress(task)" class="mt-2.5 flex items-center gap-2">
-            <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100">
-              <div class="h-full rounded-full transition-all duration-700 ease-out" :class="domainMeta(task.domain).bar" :style="{ width: `${task.progress}%` }" />
+          <div v-if="showProgress(task)" class="dash-task-progress mt-2.5 flex items-center gap-2">
+            <div class="dash-task-progress-track h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100">
+              <div class="dash-task-progress-fill h-full rounded-full transition-all duration-700 ease-out" :class="domainMeta(task.domain).bar" :style="{ width: `${task.progress}%` }" />
             </div>
-            <span class="text-[11px] tabular-nums text-slate-500">{{ task.progress }}%</span>
+            <span class="dash-task-progress-percent text-[11px] tabular-nums text-slate-500">{{ task.progress }}%</span>
           </div>
         </div>
 
@@ -872,6 +872,113 @@ function formatRJ(value) {
   background: rgba(244, 63, 94, 0.16);
   color: #fecdd3;
   box-shadow: inset 0 0 0 1px rgba(253, 164, 175, 0.28);
+}
+
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .dash-task-progress-track.dash-task-progress-track) {
+  background: rgba(255, 255, 255, 0.16) !important;
+  background-color: rgba(255, 255, 255, 0.16) !important;
+  background-image: none !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    inset 0 1px 1px rgba(0, 0, 0, 0.28) !important;
+}
+
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .dash-task-progress-fill.dash-task-progress-fill) {
+  background-image: linear-gradient(90deg, rgba(251, 191, 36, 0.98), rgba(245, 158, 11, 0.94)) !important;
+  background-color: #f59e0b !important;
+  box-shadow:
+    0 0 0 1px rgba(254, 243, 199, 0.24),
+    0 0 14px rgba(245, 158, 11, 0.42) !important;
+}
+
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .dash-task-progress-percent.dash-task-progress-percent) {
+  color: #f8fafc !important;
+  -webkit-text-fill-color: #f8fafc !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.36) !important;
+}
+
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill.status-pill) {
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--failed),
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--error) {
+  background: rgba(244, 63, 94, 0.17) !important;
+  border-color: rgba(251, 113, 133, 0.4) !important;
+  color: #fecdd3 !important;
+}
+
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--waiting_manual),
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--waiting_retry),
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--pending) {
+  background: rgba(99, 102, 241, 0.18) !important;
+  border-color: rgba(129, 140, 248, 0.42) !important;
+  color: #e0e7ff !important;
+}
+
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--processing),
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--running),
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--partial_failed) {
+  background: rgba(245, 158, 11, 0.18) !important;
+  border-color: rgba(251, 191, 36, 0.42) !important;
+  color: #fef3c7 !important;
+}
+
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--completed),
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--success),
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--finished) {
+  background: rgba(34, 197, 94, 0.17) !important;
+  border-color: rgba(74, 222, 128, 0.38) !important;
+  color: #dcfce7 !important;
+}
+
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--cancelled),
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--canceled),
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--paused) {
+  background: rgba(148, 163, 184, 0.16) !important;
+  border-color: rgba(203, 213, 225, 0.28) !important;
+  color: #e2e8f0 !important;
+}
+
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill .status-pill-dot.status-pill-dot) {
+  background-image: none !important;
+  box-shadow: 0 0 0 2px rgba(8, 9, 12, 0.95), 0 0 10px currentColor !important;
+  opacity: 1 !important;
+}
+
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--failed .status-pill-dot),
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--error .status-pill-dot) {
+  background: #fb7185 !important;
+  background-color: #fb7185 !important;
+}
+
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--waiting_manual .status-pill-dot),
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--waiting_retry .status-pill-dot),
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--pending .status-pill-dot) {
+  background: #a5b4fc !important;
+  background-color: #a5b4fc !important;
+}
+
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--processing .status-pill-dot),
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--running .status-pill-dot),
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--partial_failed .status-pill-dot) {
+  background: #fbbf24 !important;
+  background-color: #fbbf24 !important;
+}
+
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--completed .status-pill-dot),
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--success .status-pill-dot),
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--finished .status-pill-dot) {
+  background: #4ade80 !important;
+  background-color: #4ade80 !important;
+}
+
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--cancelled .status-pill-dot),
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--canceled .status-pill-dot),
+:global(html.kikoerumanager-dark body #app [data-section="dashboard-tasks"] .status-pill--paused .status-pill-dot) {
+  background: #cbd5e1 !important;
+  background-color: #cbd5e1 !important;
 }
 
 @keyframes dash-fade-up {

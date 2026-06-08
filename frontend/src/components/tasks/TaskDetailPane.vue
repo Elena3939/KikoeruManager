@@ -235,14 +235,13 @@
               <span class="h-1 w-1 rounded-full bg-emerald-500" />
               {{ section.label }}
             </span>
-            <div class="task-tree-actions">
+            <div v-if="section.removedCount > 0" class="task-tree-actions">
               <button
                 v-for="option in treeFilterOptions"
                 :key="option.value"
-                v-show="option.value === 'all' || section.removedCount > 0"
                 type="button"
                 class="task-tree-filter-button"
-                :class="{ 'task-tree-filter-button--active': treeFilterMode === option.value || (option.value === 'all' && !section.removedCount) }"
+                :class="{ 'task-tree-filter-button--active': treeFilterMode === option.value }"
                 @click="$emit('update:treeFilterMode', option.value)"
               >
                 <component :is="option.icon" :size="12" :stroke-width="2.4" class="task-tree-filter-button__icon" />
@@ -264,7 +263,7 @@
                 :stroke-width="2.4"
                 class="task-tree-toggle__icon"
               />
-              <span>{{ section.allExpanded ? '收起全部' : '展开全部' }}</span>
+              <span>{{ section.allExpanded ? '收起文件树' : '展开文件树' }}</span>
             </button>
           </div>
         </div>
@@ -351,10 +350,7 @@ import {
   CheckCircle,
   ChevronDown,
   ChevronRight,
-  File,
-  FileText,
-  Folder,
-  Music,
+  FolderOpen,
   PauseCircle,
   PlayCircle,
   RefreshCw,
@@ -368,6 +364,7 @@ import AppEmptyState from '../common/AppEmptyState.vue'
 import StatusPill from '../dashboard/StatusPill.vue'
 import { getTaskDomainMeta } from '../common/taskDomainMeta.js'
 import { getHttpDownloadDisplayMeta } from '../common/httpDownloadPlatformMeta.js'
+import { classifyLibraryEntryKind, libraryEntryIconFor } from '../library/_libraryFileKind.js'
 
 defineProps({
   item: { type: Object, default: null },
@@ -429,20 +426,35 @@ function statusLabelForPill(item) {
 }
 
 function getTreeRowIconComponent(entry) {
-  if (entry?.type === 'dir') return Folder
-  const label = String(entry?.label || '').toLowerCase()
-  if (/\.(wav|flac|mp3|m4a|ogg|aac|wma)$/.test(label)) return Music
-  if (/\.(txt|md|json|cue|srt|ass|ssa|vtt|lrc)$/.test(label)) return FileText
-  return File
+  if (isTreeDirectory(entry) && entry?.expanded) return FolderOpen
+  return libraryEntryIconFor(normalizeTreeRowForFileKind(entry))
 }
 
 function getTreeRowIconClass(entry) {
-  if (entry?.type === 'dir') return 'icon-folder'
-  const label = String(entry?.label || '').toLowerCase()
-  if (/\.(wav|flac)$/.test(label)) return 'icon-audio-lossless'
-  if (/\.(mp3|m4a|ogg|aac|wma)$/.test(label)) return 'icon-audio'
-  if (/\.(txt|md|json|cue|srt|ass|ssa|vtt|lrc)$/.test(label)) return 'icon-text'
-  return 'icon-file'
+  const kind = classifyLibraryEntryKind(normalizeTreeRowForFileKind(entry))
+  return kind === 'dir' ? 'icon-folder' : `icon-${kind}`
+}
+
+function normalizeTreeRowForFileKind(entry) {
+  const name = entry?.label || entry?.name || entry?.relative_path || entry?.path || ''
+  if (isTreeDirectory(entry)) {
+    return {
+      type: 'dir',
+      name,
+    }
+  }
+  return {
+    type: entry?.type,
+    name,
+  }
+}
+
+function isTreeDirectory(entry) {
+  if (!entry) return false
+  const type = String(entry.type || entry.entry_type || '').toLowerCase()
+  if (type === 'dir' || type === 'directory') return true
+  if (entry.is_directory === true) return true
+  return Boolean(entry.hasChildren)
 }
 
 function getGarbledDiagnostic(item) {
@@ -480,8 +492,8 @@ function buildGarbledSummary(info) {
 }
 
 const treeFilterOptions = [
-  { value: 'all', label: '全部', icon: ListFilter },
-  { value: 'removed', label: '被过滤', icon: XCircle },
+  { value: 'all', label: '显示全部', icon: ListFilter },
+  { value: 'removed', label: '只看被过滤', icon: XCircle },
 ]
 
 const ACTION_ICON_MAP = {
@@ -546,35 +558,38 @@ function actionToneClass(action) {
 .task-tree-actions {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px;
-  border: 1px solid #dbe3ee;
-  border-radius: 14px;
-  background: #fff;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.05);
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .task-tree-filter-button {
   display: inline-flex;
-  height: 28px;
+  height: 30px;
   cursor: pointer;
   align-items: center;
   gap: 5px;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  padding: 0 10px;
+  border: 1px solid #dbe3ee;
+  border-radius: 9px;
+  background: #ffffff;
+  padding: 0 11px;
   color: #475569;
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 700;
   line-height: 1;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: all 0.24s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .task-tree-filter-button:hover {
-  transform: translateY(-1px) scale(1.03);
+  transform: translateY(-1px) scale(1.01);
+  border-color: #cbd5e1;
   background: #f8fafc;
   color: #0f172a;
+  box-shadow: 0 5px 12px -10px rgba(15, 23, 42, 0.22);
 }
 
 .task-tree-filter-button:active {
@@ -582,14 +597,15 @@ function actionToneClass(action) {
 }
 
 .task-tree-filter-button--active {
-  background: #0f172a;
-  color: #fff;
-  box-shadow: 0 7px 16px rgba(15, 23, 42, 0.2);
+  border-color: #94a3b8;
+  background: #f1f5f9;
+  color: #0f172a;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.04);
 }
 
 .task-tree-filter-button--active:hover {
-  background: #0f172a;
-  color: #fff;
+  background: #e2e8f0;
+  color: #0f172a;
 }
 
 .task-tree-filter-button__icon {
@@ -607,22 +623,23 @@ function actionToneClass(action) {
   align-items: center;
   gap: 6px;
   padding: 0 13px;
-  border: 1px solid #bbf7d0;
-  border-radius: 12px;
-  background: #f0fdf4;
-  color: #047857;
+  border: 1px solid #dbe3ee;
+  border-radius: 9px;
+  background: #ffffff;
+  color: #334155;
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 700;
   line-height: 1;
-  box-shadow: 0 8px 18px rgba(16, 185, 129, 0.1);
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: all 0.24s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .task-tree-toggle:hover {
-  transform: translateY(-2px) scale(1.03);
-  border-color: #34d399;
-  background: #ecfdf5;
-  box-shadow: 0 12px 22px rgba(16, 185, 129, 0.16);
+  transform: translateY(-1px) scale(1.01);
+  border-color: #cbd5e1;
+  background: #f8fafc;
+  color: #0f172a;
+  box-shadow: 0 5px 12px -10px rgba(15, 23, 42, 0.22);
 }
 
 .task-tree-toggle:active {
@@ -826,6 +843,22 @@ function actionToneClass(action) {
   color: #7c3aed;
 }
 
+.icon-image {
+  color: #f97316;
+}
+
+.icon-video {
+  color: #6366f1;
+}
+
+.icon-pdf {
+  color: #dc2626;
+}
+
+.icon-archive {
+  color: #d97706;
+}
+
 .icon-text {
   color: #64748b;
 }
@@ -939,5 +972,43 @@ function actionToneClass(action) {
   background: #05060a !important;
   background-color: #05060a !important;
   background-image: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-icon.icon-folder) {
+  color: #fbbf24 !important;
+  fill: rgba(251, 191, 36, 0.22) !important;
+  stroke: currentColor !important;
+}
+
+:global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-icon.icon-audio-lossless) {
+  color: #60a5fa !important;
+}
+
+:global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-icon.icon-audio) {
+  color: #a78bfa !important;
+}
+
+:global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-icon.icon-image) {
+  color: #fb923c !important;
+}
+
+:global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-icon.icon-video) {
+  color: #818cf8 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-icon.icon-pdf) {
+  color: #f87171 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-icon.icon-archive) {
+  color: #f59e0b !important;
+}
+
+:global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-icon.icon-text) {
+  color: #94a3b8 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-icon.icon-file) {
+  color: #cbd5e1 !important;
 }
 </style>

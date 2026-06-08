@@ -135,7 +135,7 @@ let lastDetailSyncSignature = ''
 let fallbackPollDelayMs = FALLBACK_POLL_INTERVAL_MS
 
 const domainOptions = [
-  { value: 'all', label: '全部', icon: ListChecks },
+  { value: 'all', label: '全部类型', icon: ListChecks },
   { value: 'import', label: '导入处理', icon: FileArchive },
   { value: 'existing_folder', label: '已有文件夹', icon: FolderInput },
   { value: 'rj_subtitle', label: 'RJ 字幕', icon: Captions },
