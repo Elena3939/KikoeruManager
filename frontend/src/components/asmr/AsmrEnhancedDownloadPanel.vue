@@ -86,30 +86,30 @@
                   <DownloadIcon class="enhanced-plan-cover-icon" />
                 </div>
               </template>
-              <template #meta>
-                <div class="enhanced-plan-meta">
-                  <span class="enhanced-plan-meta-pill is-code">{{ plan.rjcode }}</span>
-                  <span class="enhanced-plan-meta-pill is-downloadable">{{ plan.summary?.selectable_total || 0 }} 个可下载</span>
-                </div>
-              </template>
+              <template #meta><span class="enhanced-plan-meta-spacer" /></template>
               <template #tags>
-                <div class="enhanced-plan-tags">
-                  <span class="enhanced-plan-tag is-primary">资源构成</span>
-                  <span
-                    v-for="group in visibleResourceGroups(plan)"
-                    :key="group.group_key"
-                    class="enhanced-plan-tag is-soft"
-                    :title="formatResourceGroupTitle(group)"
-                  >
-                    {{ formatResourceGroupLabel(group) }}
-                  </span>
-                  <span
-                    v-if="hiddenResourceGroupCount(plan) > 0"
-                    class="enhanced-plan-tag is-muted"
-                    :title="hiddenResourceGroupTitle(plan)"
-                  >
-                    另 {{ hiddenResourceGroupCount(plan) }} 组
-                  </span>
+                <div class="enhanced-plan-floating-meta">
+                  <div class="enhanced-plan-meta">
+                    <span class="enhanced-plan-meta-pill is-code">{{ plan.rjcode }}</span>
+                    <span class="enhanced-plan-meta-pill is-downloadable">{{ plan.summary?.selectable_total || 0 }} 个可下载</span>
+                  </div>
+                  <div class="enhanced-plan-tags">
+                    <span
+                      v-for="group in visibleResourceGroups(plan)"
+                      :key="group.group_key"
+                      class="enhanced-plan-tag is-soft"
+                      :title="formatResourceGroupTitle(group)"
+                    >
+                      {{ formatResourceGroupLabel(group) }}
+                    </span>
+                    <span
+                      v-if="hiddenResourceGroupCount(plan) > 0"
+                      class="enhanced-plan-tag is-muted"
+                      :title="hiddenResourceGroupTitle(plan)"
+                    >
+                      另 {{ hiddenResourceGroupCount(plan) }} 组
+                    </span>
+                  </div>
                 </div>
               </template>
               <template #actions><span /></template>
@@ -394,6 +394,7 @@ function hiddenResourceGroupTitle(plan) {
   width: 100%;
   min-height: 0;
   height: auto;
+  position: relative;
 }
 .enhanced-plan-grid.is-single .enhanced-plan-card {
   display: grid;
@@ -427,17 +428,17 @@ function hiddenResourceGroupTitle(plan) {
 }
 .enhanced-plan-card :deep(.work-card-body) {
   display: grid;
-  grid-template-rows: minmax(34px, auto) auto auto;
+  grid-template-rows: minmax(34px, auto) auto;
   gap: 8px;
   min-height: 132px;
-  padding: 10px 12px 12px;
+  padding: 10px 12px 64px;
 }
 .enhanced-plan-grid.is-single .enhanced-plan-card :deep(.work-card-body) {
   align-content: center;
-  grid-template-rows: auto auto auto;
+  grid-template-rows: auto auto;
   gap: 12px;
   min-height: 238px;
-  padding: 18px 20px;
+  padding: 18px 20px 74px;
 }
 .enhanced-plan-card :deep(.work-title) {
   font-size: 12.5px;
@@ -457,6 +458,9 @@ function hiddenResourceGroupTitle(plan) {
 .enhanced-plan-card :deep(.work-cv) {
   display: none;
 }
+.enhanced-plan-meta-spacer {
+  display: none;
+}
 .enhanced-plan-cover-placeholder {
   width: 40px;
   height: 40px;
@@ -472,6 +476,34 @@ function hiddenResourceGroupTitle(plan) {
   width: 20px;
   height: 20px;
   color: var(--asmr-info-text);
+}
+.enhanced-plan-floating-meta {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: grid;
+  gap: 7px;
+  padding: 10px 11px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--asmr-surface, #ffffff) 56%, transparent);
+  border: 1px solid color-mix(in srgb, var(--asmr-border, rgba(148, 163, 184, 0.26)) 52%, transparent);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(14px) saturate(1.08);
+  -webkit-backdrop-filter: blur(14px) saturate(1.08);
+  opacity: 0.58;
+  transform: translateY(3px);
+  transition: opacity .24s ease, transform .24s ease, background-color .24s ease, border-color .24s ease, box-shadow .24s ease;
+  pointer-events: none;
+  z-index: 8;
+}
+.enhanced-plan-card:hover .enhanced-plan-floating-meta,
+.enhanced-plan-card.selected .enhanced-plan-floating-meta {
+  opacity: 0.98;
+  transform: translateY(0);
+  background: color-mix(in srgb, var(--asmr-surface, #ffffff) 78%, transparent);
+  border-color: color-mix(in srgb, var(--asmr-border, rgba(148, 163, 184, 0.26)) 82%, transparent);
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.12);
 }
 .enhanced-plan-meta {
   display: flex;
@@ -508,7 +540,7 @@ function hiddenResourceGroupTitle(plan) {
   gap: 5px;
   flex-wrap: wrap;
   min-width: 0;
-  max-height: 45px;
+  max-height: 42px;
   overflow: hidden;
 }
 .enhanced-plan-grid.is-single .enhanced-plan-tags {
@@ -551,7 +583,7 @@ function hiddenResourceGroupTitle(plan) {
 
   .enhanced-plan-grid.is-single .enhanced-plan-card :deep(.work-card-body) {
     min-height: 0;
-    padding: 12px;
+    padding: 12px 12px 66px;
   }
 }
 .asmr-section-enter-active {

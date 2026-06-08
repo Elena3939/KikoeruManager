@@ -1803,8 +1803,31 @@ function getUnifiedFileRows(task) {
   border-top-color: rgba(255, 255, 255, 0.08);
 }
 
+:global(html.kikoerumanager-dark .v1-file-row) {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(18, 18, 19, 0.72);
+}
+
 :global(html.kikoerumanager-dark .v1-strip-track) {
   background: rgba(255, 255, 255, 0.1);
+}
+
+:global(html.kikoerumanager-dark .v1-strip-fill.processing),
+:global(html.kikoerumanager-dark .v1-strip-fill.neutral) {
+  background: linear-gradient(90deg, #ffffff 0%, #dbeafe 100%);
+}
+
+:global(html.kikoerumanager-dark .v1-strip-fill.upload) {
+  background: linear-gradient(90deg, #ffffff 0%, #e0e7ff 100%);
+}
+
+:global(html.kikoerumanager-dark .v1-strip-fill.upload-success),
+:global(html.kikoerumanager-dark .v1-strip-fill.success) {
+  background: linear-gradient(90deg, #ffffff 0%, #dcfce7 100%);
+}
+
+:global(html.kikoerumanager-dark .v1-strip-fill.danger) {
+  background: #f87171;
 }
 
 :global(html.kikoerumanager-dark .v1-footer-divider) {
