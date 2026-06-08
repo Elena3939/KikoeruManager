@@ -944,7 +944,7 @@ def save_config(config_data: dict, config_path: str = None) -> AppConfig:
     logger = logging.getLogger(__name__)
     config_path = _resolve_config_path(config_path)
     incoming_keys = sorted((config_data or {}).keys())
-    logger.info("保存配置请求: path=%s keys=%s", config_path, incoming_keys)
+    logger.debug("保存配置请求: path=%s keys=%s", config_path, incoming_keys)
 
     with _config_lock:
         _config_write_in_progress = True
@@ -976,7 +976,7 @@ def save_config(config_data: dict, config_path: str = None) -> AppConfig:
             _config_loaded_path = config_path
             _config_loaded_mtime = next_mtime
             _config_last_error = ""
-            logger.info(
+            logger.debug(
                 "配置已成功保存并原子更新: path=%s top_keys=%s updated_keys=%s",
                 config_path,
                 len(merged_config),

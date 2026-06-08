@@ -875,6 +875,7 @@ class BaiduNetdiskService:
             "preview_summary": preview_summary,
             "preview_file_count": detail_file_count,
             "preview_folder_count": detail_folder_count,
+            "preview_root_is_folder": bool(detail.get("preview_root_is_folder")),
         }
         item["selection_key"] = self._selection_key(item)
         item["ok"] = bool(item["ok"] and has_files)
@@ -1067,16 +1068,19 @@ class BaiduNetdiskService:
                 "requires_pass_code": False,
                 "warning": "分享文件列表为空",
             }
-        root_files = [item for item in files if str(item.get("relative_path") or "").strip().count("/") == 0]
         title = files[0].get("name") or share.get("title") or "百度网盘分享"
         preview_files = files
+        preview_root_is_folder = False
         if len(files) == 1 and files[0].get("is_dir") and files[0].get("path"):
+            preview_root_is_folder = True
             try:
                 child_detail = await self._fetch_share_folder_preview(tokens, cookie, share_list_referer, feature, files[0])
                 if child_detail.get("files"):
                     preview_files = child_detail["files"]
             except Exception as exc:
                 logger.info("百度网盘分享文件夹预览读取失败: %s", exc)
+        else:
+            preview_files = self._strip_virtual_common_parent_from_preview_files(preview_files)
         total_size = sum(_safe_int(item.get("size_bytes")) for item in preview_files)
         return {
             "title": title,
@@ -1092,8 +1096,55 @@ class BaiduNetdiskService:
             "shorturl": feature,
             "share_sign": str(tokens.get("sign") or "").strip(),
             "share_timestamp": str(tokens.get("timestamp") or "").strip(),
-            "root_files": root_files,
+            "preview_root_is_folder": preview_root_is_folder,
         }
+
+    def _strip_virtual_common_parent_from_preview_files(self, files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        non_dirs = [item for item in files if isinstance(item, dict) and not item.get("is_dir")]
+        if len(non_dirs) <= 1:
+            return files
+        split_paths = []
+        for item in non_dirs:
+            parts = [
+                part.strip()
+                for part in str(item.get("relative_path") or item.get("name") or "").replace("\\", "/").strip("/").split("/")
+                if part.strip()
+            ]
+            if len(parts) <= 1:
+                return files
+            split_paths.append(parts)
+        common_parent = split_paths[0][0]
+        if not common_parent or any(parts[0] != common_parent for parts in split_paths):
+            return files
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            parts = [
+                part.strip()
+                for part in str(item.get("relative_path") or item.get("name") or "").replace("\\", "/").strip("/").split("/")
+                if part.strip()
+            ]
+            if parts and parts[0] != common_parent:
+                return files
+        root_dir_exists = any(
+            isinstance(item, dict)
+            and item.get("is_dir")
+            and str(item.get("relative_path") or item.get("name") or "").replace("\\", "/").strip("/") == common_parent
+            for item in files
+        )
+        if root_dir_exists:
+            return files
+        stripped: List[Dict[str, Any]] = []
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            next_item = dict(item)
+            raw_path = str(next_item.get("relative_path") or next_item.get("name") or "").replace("\\", "/").strip("/")
+            parts = [part for part in raw_path.split("/") if part]
+            if len(parts) > 1 and parts[0] == common_parent:
+                next_item["relative_path"] = "/".join(parts[1:])
+            stripped.append(next_item)
+        return stripped
 
     async def _verify_share_pass_code(
         self,
@@ -3023,6 +3074,16 @@ class BaiduNetdiskService:
                 )
                 for index, row in enumerate(download_files)
             ])
+        except asyncio.CancelledError:
+            if task.is_cancelled():
+                await self._finalize_cancelled_download_task(
+                    task,
+                    download_files,
+                    started=started,
+                    staging_dir=staging_dir,
+                    download_root=download_root,
+                )
+            raise
         finally:
             if self._task_cancel_events.get(task.id) is cancel_event:
                 self._task_cancel_events.pop(task.id, None)
@@ -4170,8 +4231,10 @@ class BaiduNetdiskService:
                 close_fds=True,
                 creationflags=creationflags,
             )
-            if hasattr(task, "register_process"):
+            registered_process = False
+            if not ignore_task_cancel and hasattr(task, "register_process"):
                 task.register_process(proc)
+                registered_process = True
             output_queue: queue.Queue[Optional[bytes]] = queue.Queue()
             reader = threading.Thread(
                 target=self._read_process_output,
@@ -4233,7 +4296,7 @@ class BaiduNetdiskService:
                     proc.kill()
                 raise
             finally:
-                if hasattr(task, "unregister_process"):
+                if registered_process and hasattr(task, "unregister_process"):
                     task.unregister_process(proc)
                 with contextlib.suppress(Exception):
                     reader.join(timeout=1)
@@ -4709,6 +4772,61 @@ class BaiduNetdiskService:
                     os.remove(target)
             shutil.move(entry, target)
         return final_dir
+
+    async def _finalize_cancelled_download_task(
+        self,
+        task,
+        download_files: List[Dict[str, Any]],
+        *,
+        started: float,
+        staging_dir: str,
+        download_root: str,
+    ) -> None:
+        for row in download_files:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("status") or "") != "completed":
+                row["status"] = "cancelled"
+                row["failure_reason"] = "用户取消"
+            row["speed_bytes_per_sec"] = 0
+
+        completed = [row for row in download_files if str(row.get("status") or "") == "completed"]
+        failed = [row for row in download_files if str(row.get("status") or "") == "failed"]
+        total_bytes = sum(int(row.get("total") or row.get("size") or 0) for row in download_files)
+        transferred = sum(
+            int(row.get("downloaded") or (row.get("size") if row.get("status") == "completed" else 0) or 0)
+            for row in download_files
+        )
+        runtime = dict(task.task_metadata.get("download_runtime") or {})
+        runtime.update({
+            "status": "cancelled",
+            "total_files": len(download_files),
+            "completed_files": len(completed),
+            "failed_files": len(failed),
+            "active_file_count": 0,
+            "transferred_bytes": transferred,
+            "total_bytes": total_bytes,
+            "speed_bytes_per_sec": 0,
+            "current_file_name": "",
+            "current_relative_path": "",
+            "elapsed_seconds": int(time.monotonic() - started),
+            "speed_label": "百度网盘 SVIP 高速" if self._is_svip() else "百度网盘下载",
+        })
+        task.task_metadata["download_files"] = download_files
+        task.task_metadata["download_runtime"] = runtime
+        task.task_metadata["failed_files"] = failed
+        task.task_metadata["cancel_reason"] = "用户取消"
+        task.task_metadata["failure_reason"] = ""
+        task.task_metadata["output_finalize_status"] = "cancelled"
+        self._append_log(task, "百度网盘下载已取消，清理本地临时下载目录", "info")
+        task.task_metadata["staging_cleanup"] = await asyncio.to_thread(
+            self._cleanup_completed_staging_dir,
+            task,
+            staging_dir,
+            download_root,
+        )
+        task.current_step = "已取消"
+        task.mark_changed("cancelled")
 
     def _cleanup_completed_staging_dir(self, task, staging_dir: str, download_root: str) -> Dict[str, Any]:
         staging = os.path.abspath(os.path.normpath(str(staging_dir or "")))

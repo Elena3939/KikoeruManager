@@ -1244,7 +1244,7 @@ class LinkedSubtitleImportService:
                     for segment in child_segments[len(parent_segments):]
                 ):
                     drop_indexes.add(parent_index)
-                    logger.info(
+                    logger.debug(
                         "[字幕补配] 目标目录候选收敛到最里层 RJ 目录: rj=%s parent=%s child=%s",
                         normalized_target,
                         parent.get("folder_path") or "",
@@ -1293,7 +1293,7 @@ class LinkedSubtitleImportService:
             if not os.path.isdir(direct_path):
                 return None
 
-        logger.info(
+        logger.debug(
             "[字幕补配] 命中目录规则直查: library=%s rj=%s path=%s",
             library_id,
             target_rjcode,
@@ -1318,7 +1318,7 @@ class LinkedSubtitleImportService:
         last_items: List[Dict[str, Any]] = []
         for round_index, (force_refresh, delay_seconds) in enumerate(search_rounds, start=1):
             if delay_seconds > 0:
-                logger.info(
+                logger.debug(
                     "[字幕补配] 远程目标目录未命中，等待后重试: library=%s rj=%s round=%s delay=%.1fs force_refresh=%s",
                     library_id,
                     target_rjcode,
@@ -1339,7 +1339,7 @@ class LinkedSubtitleImportService:
             items = list(result.get("files") or [])
             total = int(result.get("total") or len(items))
             last_items = items
-            logger.info(
+            logger.debug(
                 "[字幕补配] 目标目录搜索结果: library=%s total=%s returned=%s round=%s force_refresh=%s",
                 library_id,
                 total,
@@ -1501,7 +1501,7 @@ class LinkedSubtitleImportService:
                 item.get("name") or "",
             ),
         )
-        logger.info(
+        logger.debug(
             "[字幕补配] 目标目录搜索库存列表: rj=%s libraries=%s",
             target_rjcode,
             [
@@ -1550,7 +1550,7 @@ class LinkedSubtitleImportService:
             if not library_id:
                 return {"summaries": [], "uncertain": False}
 
-            logger.info(
+            logger.debug(
                 "[字幕补配] 开始搜索目标目录: library=%s type=%s rj=%s",
                 library_id,
                 library.get("type") or "",
@@ -1568,7 +1568,7 @@ class LinkedSubtitleImportService:
                 logger.warning("[字幕补配] 搜索目标目录失败: library=%s rj=%s error=%s", library_id, target_rjcode, exc)
                 return {"summaries": [], "uncertain": True}
 
-            logger.info(
+            logger.debug(
                 "[字幕补配] 目标目录搜索完成: library=%s type=%s total=%s",
                 library_id,
                 library.get("type") or "",
@@ -1623,9 +1623,13 @@ class LinkedSubtitleImportService:
                 )
             )
             logger.info(
-                "[字幕补配] 本地/快照目标目录已命中，跳过远程同步搜索: rj=%s candidate_count=%s",
+                "[字幕补配] 目标目录搜索摘要: rj=%s status=matched candidate_count=%s local_libraries=%s remote_libraries=%s preferred_library=%s remote_skipped=%s",
                 target_rjcode,
                 len(candidates),
+                len(local_libraries),
+                len(remote_libraries),
+                preferred_library_id or "",
+                True,
             )
             return {
                 "candidates": candidates,
@@ -1736,10 +1740,22 @@ class LinkedSubtitleImportService:
                 item.get("folder_path") or "",
             )
         )
+        search_status = "matched" if candidates else ("pending_remote" if remote_search_pending else "not_found")
+        search_reason = "" if candidates else (self.REMOTE_PENDING_REASON if remote_search_pending else "库存中未找到原作目录")
+        logger.info(
+            "[字幕补配] 目标目录搜索摘要: rj=%s status=%s candidate_count=%s local_libraries=%s remote_libraries=%s preferred_library=%s remote_pending=%s",
+            target_rjcode,
+            search_status,
+            len(candidates),
+            len(local_libraries),
+            len(remote_libraries),
+            preferred_library_id or "",
+            remote_search_pending,
+        )
         return {
             "candidates": candidates,
-            "search_status": "matched" if candidates else ("pending_remote" if remote_search_pending else "not_found"),
-            "search_reason": "" if candidates else (self.REMOTE_PENDING_REASON if remote_search_pending else "库存中未找到原作目录"),
+            "search_status": search_status,
+            "search_reason": search_reason,
         }
 
     async def _resolve_translation_target_rjcode(self, source_rjcode: str, translation_info: Any) -> str:

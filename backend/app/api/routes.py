@@ -3180,15 +3180,34 @@ def cleanup_task_phase_metrics(retain_days: Optional[int] = None, max_items: Opt
     return get_task_phase_metric_service().cleanup(**config)
 
 
+_CONFIG_SAVE_INFO_DEDUP_SECONDS = 30.0
+_CONFIG_SAVE_INFO_LAST: Dict[str, float] = {}
+_QUIET_CONFIG_SAVE_KEYS = {"rj_subtitle"}
+
+
+def _should_log_config_save_info(keys: List[str]) -> bool:
+    normalized = tuple(sorted(str(key or "").strip() for key in keys if str(key or "").strip()))
+    if not normalized:
+        return False
+    if set(normalized).issubset(_QUIET_CONFIG_SAVE_KEYS):
+        return False
+    signature = ",".join(normalized)
+    now = time.monotonic()
+    last = _CONFIG_SAVE_INFO_LAST.get(signature, 0.0)
+    _CONFIG_SAVE_INFO_LAST[signature] = now
+    return now - last >= _CONFIG_SAVE_INFO_DEDUP_SECONDS
+
+
 @app.post("/api/config")
 async def update_configuration(request: Request):
     """更新配置"""
     from ..config.settings import save_config, ClassificationRule, FilterRule, PathMappingRule
     try:
         config_data = await request.json()
-        logger.info(
+        config_keys = sorted(config_data.keys()) if isinstance(config_data, dict) else []
+        logger.debug(
             "接收到配置保存请求: keys=%s classification=%s filter_rules=%s path_mapping_rules=%s",
-            sorted(config_data.keys()) if isinstance(config_data, dict) else [],
+            config_keys,
             len(config_data.get('classification') or []) if isinstance(config_data, dict) else 0,
             len(((config_data.get('filter') or {}).get('rules') or [])) if isinstance(config_data, dict) else 0,
             len(((config_data.get('path_mapping') or {}).get('rules') or [])) if isinstance(config_data, dict) else 0,
@@ -3443,11 +3462,14 @@ async def update_configuration(request: Request):
                 raise HTTPException(status_code=400, detail=f"安全门禁配置无效: {e}")
 
         result = save_config(config_data)
-        logger.info(
-            "配置已保存: keys=%s classification=%s",
-            sorted(config_data.keys()),
-            len(config_data.get('classification', [])),
-        )
+        if _should_log_config_save_info(config_keys):
+            logger.info(
+                "配置保存摘要: keys=%s classification=%s",
+                config_keys,
+                len(config_data.get('classification', [])),
+            )
+        else:
+            logger.debug("配置已保存: keys=%s classification=%s", config_keys, len(config_data.get('classification', [])))
 
         if 'kikoeru_server' in config_data:
             try:
@@ -14067,6 +14089,8 @@ async def baidu_netdisk_upload_start(request: BaiduNetdiskUploadStartRequest):
     service = get_baidu_netdisk_service()
     remote_dir = service._join_remote_dir(request.remote_dir or "/KikoeruManager", request.create_remote_subdir or "")
     conflict_policy = service._upload_conflict_policy(request.conflict_policy)
+    if request.compress_enabled and conflict_policy == "rsync":
+        conflict_policy = "skip"
     upload_sources = source_paths
     cleanup_allowed_paths: list[str] = []
     archive_path = ""
