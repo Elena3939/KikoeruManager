@@ -1794,6 +1794,12 @@ function getUnifiedFileRows(task) {
   color: #71717a;
 }
 
+:global(html.kikoerumanager-dark .v1-detail-section-count) {
+  background: rgba(39, 39, 42, 0.82);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #d4d4d8;
+}
+
 :global(html.kikoerumanager-dark .v1-path-value),
 :global(html.kikoerumanager-dark .v1-footer-action) {
   color: #d4d4d8;

@@ -6,6 +6,7 @@
     class="custom-preview-modal server-upload-preview-modal"
     align-center
     modal-class="custom-preview-overlay"
+    transition="upload-preview-dialog"
     @update:model-value="emit('update:visible', $event)"
   >
     <div v-if="previewLoading" class="window panel-enter glass-shell relative w-full max-w-[1210px] aspect-[16/9] rounded-3xl flex flex-col overflow-hidden dialog-loading-overlay">
@@ -1441,6 +1442,148 @@ function classifyRowKind (row) {
   .secondary-cta {
     width: 100%;
     height: 42px !important;
+  }
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.server-upload-preview-modal.server-upload-preview-modal.server-upload-preview-modal .window.window.glass-shell.glass-shell),
+:global(html.dark .custom-preview-modal.server-upload-preview-modal.server-upload-preview-modal.server-upload-preview-modal .window.window.glass-shell.glass-shell) {
+  background: rgba(13, 14, 17, 0.96) !important;
+  background-color: rgba(13, 14, 17, 0.96) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  filter: none !important;
+  backdrop-filter: blur(12px) saturate(108%) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(108%) !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.server-upload-preview-modal.server-upload-preview-modal.server-upload-preview-modal :is(.window-header.window-header, .tabs-row.tabs-row, .footer-row.footer-row, .content-grid.content-grid, .left-column.left-column)),
+:global(html.dark .custom-preview-modal.server-upload-preview-modal.server-upload-preview-modal.server-upload-preview-modal :is(.window-header.window-header, .tabs-row.tabs-row, .footer-row.footer-row, .content-grid.content-grid, .left-column.left-column)) {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  filter: none !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.server-upload-preview-modal.server-upload-preview-modal.server-upload-preview-modal :is(.glass-panel.glass-panel, .glass-card.glass-card, .tree-panel.tree-panel, .upload-settings-card.upload-settings-card)),
+:global(html.dark .custom-preview-modal.server-upload-preview-modal.server-upload-preview-modal.server-upload-preview-modal :is(.glass-panel.glass-panel, .glass-card.glass-card, .tree-panel.tree-panel, .upload-settings-card.upload-settings-card)) {
+  background: rgba(8, 9, 12, 0.42) !important;
+  background-color: rgba(8, 9, 12, 0.42) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.server-upload-preview-modal.server-upload-preview-modal.server-upload-preview-modal .tree-row-selected.tree-row-selected),
+:global(html.kikoerumanager-dark .custom-preview-modal.server-upload-preview-modal.server-upload-preview-modal.server-upload-preview-modal .tree-row-selected.tree-row-selected:hover),
+:global(html.dark .custom-preview-modal.server-upload-preview-modal.server-upload-preview-modal.server-upload-preview-modal .tree-row-selected.tree-row-selected),
+:global(html.dark .custom-preview-modal.server-upload-preview-modal.server-upload-preview-modal.server-upload-preview-modal .tree-row-selected.tree-row-selected:hover) {
+  background: rgba(255, 255, 255, 0.062) !important;
+  background-color: rgba(255, 255, 255, 0.062) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.server-upload-preview-modal.server-upload-preview-modal.server-upload-preview-modal .tree-icon:not(.tree-icon-kind-dir)),
+:global(html.kikoerumanager-dark .custom-preview-modal.server-upload-preview-modal.server-upload-preview-modal.server-upload-preview-modal .tree-icon:not(.tree-icon-kind-dir) :is(svg, path)),
+:global(html.dark .custom-preview-modal.server-upload-preview-modal.server-upload-preview-modal.server-upload-preview-modal .tree-icon:not(.tree-icon-kind-dir)),
+:global(html.dark .custom-preview-modal.server-upload-preview-modal.server-upload-preview-modal.server-upload-preview-modal .tree-icon:not(.tree-icon-kind-dir) :is(svg, path)) {
+  color: rgba(214, 214, 220, 0.78) !important;
+  stroke: currentColor !important;
+  filter: none !important;
+}
+
+:global(html.kikoerumanager-dark .custom-preview-modal.server-upload-preview-modal.server-upload-preview-modal.server-upload-preview-modal .tree-icon-kind-dir),
+:global(html.dark .custom-preview-modal.server-upload-preview-modal.server-upload-preview-modal.server-upload-preview-modal .tree-icon-kind-dir) {
+  color: #d9a43a !important;
+  filter: none !important;
+}
+
+:global(.upload-preview-dialog-enter-active),
+:global(.upload-preview-dialog-leave-active) {
+  transition: opacity 0.24s ease;
+}
+
+:global(.upload-preview-dialog-enter-from),
+:global(.upload-preview-dialog-leave-to) {
+  opacity: 0;
+}
+
+:global(.upload-preview-dialog-enter-active .server-upload-preview-modal .window),
+:global(.upload-preview-dialog-leave-active .server-upload-preview-modal .window) {
+  transform-origin: 50% 44%;
+  transition:
+    opacity 0.28s ease,
+    filter 0.28s ease,
+    transform 0.42s cubic-bezier(0.34, 1.56, 0.64, 1);
+  will-change: opacity, filter, transform;
+}
+
+:global(.upload-preview-dialog-enter-from .server-upload-preview-modal .window) {
+  opacity: 0;
+  filter: blur(10px);
+  transform: translate3d(0, 18px, 0) scale(0.965);
+}
+
+:global(.upload-preview-dialog-leave-to .server-upload-preview-modal .window) {
+  opacity: 0;
+  filter: blur(6px);
+  transform: translate3d(0, 12px, 0) scale(0.982);
+}
+
+:global(.upload-preview-dialog-enter-active .server-upload-preview-modal :is(.window-header, .tabs-row, .upload-settings-card, .tree-panel, .footer-row)) {
+  transition:
+    opacity 0.32s ease,
+    transform 0.46s cubic-bezier(0.34, 1.56, 0.64, 1);
+  will-change: opacity, transform;
+}
+
+:global(.upload-preview-dialog-enter-from .server-upload-preview-modal :is(.window-header, .tabs-row, .upload-settings-card, .tree-panel, .footer-row)) {
+  opacity: 0;
+  transform: translate3d(0, 14px, 0);
+}
+
+:global(.upload-preview-dialog-enter-active .server-upload-preview-modal .window-header) {
+  transition-delay: 0.04s;
+}
+
+:global(.upload-preview-dialog-enter-active .server-upload-preview-modal .tabs-row) {
+  transition-delay: 0.06s;
+}
+
+:global(.upload-preview-dialog-enter-active .server-upload-preview-modal .upload-settings-card) {
+  transition-delay: 0.08s;
+}
+
+:global(.upload-preview-dialog-enter-active .server-upload-preview-modal .tree-panel) {
+  transition-delay: 0.12s;
+}
+
+:global(.upload-preview-dialog-enter-active .server-upload-preview-modal .footer-row) {
+  transition-delay: 0.15s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :global(.upload-preview-dialog-enter-active),
+  :global(.upload-preview-dialog-leave-active),
+  :global(.upload-preview-dialog-enter-active .server-upload-preview-modal .window),
+  :global(.upload-preview-dialog-leave-active .server-upload-preview-modal .window),
+  :global(.upload-preview-dialog-enter-active .server-upload-preview-modal :is(.window-header, .tabs-row, .upload-settings-card, .tree-panel, .footer-row)) {
+    transition: opacity 0.12s ease !important;
+  }
+
+  :global(.upload-preview-dialog-enter-from .server-upload-preview-modal .window),
+  :global(.upload-preview-dialog-leave-to .server-upload-preview-modal .window),
+  :global(.upload-preview-dialog-enter-from .server-upload-preview-modal :is(.window-header, .tabs-row, .upload-settings-card, .tree-panel, .footer-row)) {
+    filter: none !important;
+    transform: none !important;
   }
 }
 </style>

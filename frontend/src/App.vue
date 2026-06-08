@@ -7062,4 +7062,123 @@ html.kikoerumanager-dark .remote-folder-picker-modal :is(
   background: rgba(255, 255, 255, 0.1) !important;
 }
 
+/* 上传预览暗黑态最终兜底：移除浮夸阴影和蓝紫文件色，只保留边框层级。 */
+html.kikoerumanager-dark .server-upload-preview-modal :is(
+  .window,
+  .glass-shell,
+  .window-header,
+  .tabs-row,
+  .footer-row,
+  .glass-panel,
+  .glass-card,
+  .tree-panel,
+  .tree-scroll,
+  .tree-row,
+  .tree-row-selected,
+  .tab-chip,
+  .tab-chip-active,
+  .tab-chip-partial,
+  .field-input,
+  .select-button,
+  .picker-button,
+  .dropdown-panel,
+  .target-path,
+  .primary-cta,
+  .secondary-cta,
+  .interactive-chip,
+  .close-button,
+  [class*="shadow"]
+) {
+  box-shadow: none !important;
+  text-shadow: none !important;
+  filter: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .tree-row-selected,
+html.kikoerumanager-dark .server-upload-preview-modal .tree-row-selected:hover {
+  background: rgba(255, 255, 255, 0.105) !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .primary-cta {
+  background: #1d1e23 !important;
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .primary-cta:hover:not(:disabled) {
+  background: #28292f !important;
+  border-color: rgba(255, 255, 255, 0.26) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .tree-icon:not(.tree-icon-kind-dir),
+html.kikoerumanager-dark .server-upload-preview-modal .tree-icon:not(.tree-icon-kind-dir) :is(svg, path) {
+  color: rgba(214, 214, 220, 0.78) !important;
+  stroke: currentColor !important;
+  filter: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .tree-icon-kind-dir {
+  color: #d9a43a !important;
+  filter: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .tree-checkbox-on,
+html.kikoerumanager-dark .server-upload-preview-modal .tree-checkbox-partial {
+  background: #d4d4d8 !important;
+  border-color: #d4d4d8 !important;
+  color: #111217 !important;
+  box-shadow: none !important;
+}
+
+/* 上传到服务器暗黑态：顶部/底部不再单独铺灰条，整窗统一深色玻璃底。 */
+html.kikoerumanager-dark .server-upload-preview-modal :is(.window, .glass-shell) {
+  background: rgba(13, 14, 17, 0.96) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+  backdrop-filter: blur(12px) saturate(108%) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(108%) !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal :is(.window-header, .tabs-row, .footer-row, .content-grid, .left-column) {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal :is(.glass-panel, .glass-card, .tree-panel) {
+  background: rgba(8, 9, 12, 0.42) !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal :is(.tab-chip, .tab-chip-active, .tab-chip-partial) {
+  background: rgba(255, 255, 255, 0.055) !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  color: rgba(244, 244, 245, 0.88) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal :is(.tab-chip:hover, .tab-chip-active:hover, .tab-chip-partial:hover) {
+  background: rgba(255, 255, 255, 0.085) !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .server-upload-preview-modal .tree-row-selected,
+html.kikoerumanager-dark .server-upload-preview-modal .tree-row-selected:hover {
+  background: rgba(255, 255, 255, 0.062) !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  box-shadow: none !important;
+}
+
 </style>

@@ -1669,28 +1669,22 @@ onMounted(() => {
   display: none;
 }
 
-:global(html.kikoerumanager-dark .glass-shell),
-:global(html.dark .glass-shell) {
+:global(html.kikoerumanager-dark :is(.folder-dialog, .mojibake-preview-dialog) .glass-shell),
+:global(html.dark :is(.folder-dialog, .mojibake-preview-dialog) .glass-shell) {
   background: #111216 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.12) !important;
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark .glass-shell::before),
-:global(html.dark .glass-shell::before) {
+:global(html.kikoerumanager-dark :is(.folder-dialog, .mojibake-preview-dialog) .glass-shell::before),
+:global(html.dark :is(.folder-dialog, .mojibake-preview-dialog) .glass-shell::before) {
   display: none !important;
   content: none !important;
 }
 
-:global(html.kikoerumanager-dark .window-header),
-:global(html.kikoerumanager-dark .fm-body),
-:global(html.kikoerumanager-dark .toolbar-row),
-:global(html.kikoerumanager-dark .tree-head),
-:global(html.dark .window-header),
-:global(html.dark .fm-body),
-:global(html.dark .toolbar-row),
-:global(html.dark .tree-head) {
+:global(html.kikoerumanager-dark :is(.folder-dialog, .mojibake-preview-dialog) :is(.window-header, .fm-body, .toolbar-row, .tree-head)),
+:global(html.dark :is(.folder-dialog, .mojibake-preview-dialog) :is(.window-header, .fm-body, .toolbar-row, .tree-head)) {
   background: #17181d !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.1) !important;
@@ -1699,18 +1693,8 @@ onMounted(() => {
   text-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark .glass-card),
-:global(html.kikoerumanager-dark .tree-panel),
-:global(html.kikoerumanager-dark .selection-card),
-:global(html.kikoerumanager-dark .search-shell),
-:global(html.kikoerumanager-dark .fm-badge),
-:global(html.kikoerumanager-dark .fm-count-pill),
-:global(html.dark .glass-card),
-:global(html.dark .tree-panel),
-:global(html.dark .selection-card),
-:global(html.dark .search-shell),
-:global(html.dark .fm-badge),
-:global(html.dark .fm-count-pill) {
+:global(html.kikoerumanager-dark :is(.folder-dialog, .mojibake-preview-dialog) :is(.glass-card, .tree-panel, .selection-card, .search-shell, .fm-badge, .fm-count-pill)),
+:global(html.dark :is(.folder-dialog, .mojibake-preview-dialog) :is(.glass-card, .tree-panel, .selection-card, .search-shell, .fm-badge, .fm-count-pill)) {
   background: #1d1e23 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.12) !important;
@@ -1718,28 +1702,24 @@ onMounted(() => {
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark .tree-row),
-:global(html.dark .tree-row) {
+:global(html.kikoerumanager-dark :is(.folder-dialog, .mojibake-preview-dialog) .tree-row),
+:global(html.dark :is(.folder-dialog, .mojibake-preview-dialog) .tree-row) {
   background: transparent !important;
   background-image: none !important;
   color: rgba(226, 226, 232, 0.84) !important;
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark .tree-row:hover),
-:global(html.kikoerumanager-dark .tree-row-selected),
-:global(html.dark .tree-row:hover),
-:global(html.dark .tree-row-selected) {
+:global(html.kikoerumanager-dark :is(.folder-dialog, .mojibake-preview-dialog) :is(.tree-row:hover, .tree-row-selected)),
+:global(html.dark :is(.folder-dialog, .mojibake-preview-dialog) :is(.tree-row:hover, .tree-row-selected)) {
   background: #2b2c30 !important;
   background-image: none !important;
   color: rgba(250, 250, 252, 0.96) !important;
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark .action-card),
-:global(html.kikoerumanager-dark .close-button),
-:global(html.dark .action-card),
-:global(html.dark .close-button) {
+:global(html.kikoerumanager-dark :is(.folder-dialog, .mojibake-preview-dialog) :is(.action-card, .close-button)),
+:global(html.dark :is(.folder-dialog, .mojibake-preview-dialog) :is(.action-card, .close-button)) {
   background: #2b2c30 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.15) !important;
@@ -1747,10 +1727,8 @@ onMounted(() => {
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark .action-card:hover:not(:disabled)),
-:global(html.kikoerumanager-dark .close-button:hover),
-:global(html.dark .action-card:hover:not(:disabled)),
-:global(html.dark .close-button:hover) {
+:global(html.kikoerumanager-dark :is(.folder-dialog, .mojibake-preview-dialog) :is(.action-card:hover:not(:disabled), .close-button:hover)),
+:global(html.dark :is(.folder-dialog, .mojibake-preview-dialog) :is(.action-card:hover:not(:disabled), .close-button:hover)) {
   background: #333438 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.22) !important;
