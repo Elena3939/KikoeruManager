@@ -28,7 +28,7 @@ def test_resource_budget_config_defaults_are_conservative():
         archive_cpu=0,
         remote_fs=4,
         network_download=5,
-        sqlite_write=0,
+        sqlite_write=1,
     )
 
 
@@ -44,7 +44,7 @@ def test_get_config_includes_resource_budget(client, monkeypatch):
         "archive_cpu": 0,
         "remote_fs": 4,
         "network_download": 5,
-        "sqlite_write": 0,
+        "sqlite_write": 1,
     }
 
 

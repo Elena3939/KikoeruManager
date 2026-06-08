@@ -57,9 +57,14 @@ class ResourceBudgetService:
         if cfg is None or not bool(getattr(cfg, "enabled", True)):
             return 0
         try:
-            return max(0, int(getattr(cfg, resource, 0) or 0))
+            limit = max(0, int(getattr(cfg, resource, 0) or 0))
         except Exception:
             return 0
+        # SQLite 只有单写者。resource_budget 启用时即使旧配置里 sqlite_write=0，
+        # 也把操作历史 / 库存索引这两条高频写链路收敛成单写队列，避免 database is locked。
+        if resource == "sqlite_write":
+            return max(1, limit)
+        return limit
 
     async def _semaphore_for(self, resource: str) -> asyncio.Semaphore | None:
         limit = self._configured_limit(resource)

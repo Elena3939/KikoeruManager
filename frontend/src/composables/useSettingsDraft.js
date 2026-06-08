@@ -387,7 +387,7 @@ export const defaultConfig = {
     archive_cpu: 0,
     remote_fs: 4,
     network_download: 5,
-    sqlite_write: 0
+    sqlite_write: 1
   },
   security_gate: {
     enabled: false,
