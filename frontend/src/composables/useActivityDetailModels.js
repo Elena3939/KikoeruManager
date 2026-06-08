@@ -1050,6 +1050,132 @@ function asmrSyncEntrySections(row) {
   }]
 }
 
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    const text = String(value || '').trim()
+    if (text) return text
+  }
+  return ''
+}
+
+function baiduCustomFileOverrideFor(item, overrides) {
+  if (!item || typeof item !== 'object' || !overrides || typeof overrides !== 'object') return null
+  const keys = [
+    item.fs_id,
+    item.fsid,
+    item.path,
+    item.remote_path,
+    item.relative_path,
+    item.name,
+  ].map((value) => String(value || '').trim()).filter(Boolean)
+  for (const key of keys) {
+    const direct = overrides[key]
+    if (direct && typeof direct === 'object') return direct
+  }
+  const normalizedKeys = new Set(keys.map((value) => value.replace(/\\/g, '/').toLowerCase()))
+  for (const value of Object.values(overrides)) {
+    if (!value || typeof value !== 'object') continue
+    const candidates = [
+      value.fs_id,
+      value.fsid,
+      value.path,
+      value.remote_path,
+      value.relative_path,
+      value.name,
+    ].map((it) => String(it || '').trim().replace(/\\/g, '/').toLowerCase()).filter(Boolean)
+    if (candidates.some((candidate) => normalizedKeys.has(candidate))) return value
+  }
+  return null
+}
+
+function mapBaiduDownloadFileItems(items) {
+  return (Array.isArray(items) ? items : []).slice(0, 200).map((item, index) => {
+    if (!item || typeof item !== 'object') return null
+    const overrides = item.custom_file_names && typeof item.custom_file_names === 'object' ? item.custom_file_names : {}
+    const fileOverride = baiduCustomFileOverrideFor(item, overrides)
+    const customName = firstNonEmpty(item.custom_name, item.custom_filename, fileOverride?.custom_name, fileOverride?.custom_filename)
+    const originalName = firstNonEmpty(item.name, item.file_name, item.remote_path, item.path, item.relative_path, `文件 ${index + 1}`)
+    const relativePath = firstNonEmpty(item.relative_path, item.path, item.remote_path, originalName)
+    const status = String(item.status || '').trim()
+    const hasPassword = Boolean(item.has_extract_password || fileOverride?.has_extract_password)
+    const originalRelativePath = firstNonEmpty(item.original_relative_path, item.original_name)
+    const wasRenamed = Boolean(
+      customName
+      || item.custom_rename_applied
+      || item.custom_file_rename_applied
+      || item.custom_group_folder_applied
+      || (originalRelativePath && originalRelativePath !== relativePath)
+    )
+    const badges = []
+    if (wasRenamed) badges.push(`重命名为 ${getFileName(relativePath) || customName || relativePath}`)
+    if (hasPassword) badges.push('指定密码')
+    if (status === 'completed') badges.push('已完成')
+    else if (status === 'failed') badges.push('失败')
+    const metaParts = []
+    if (wasRenamed) metaParts.push(`${originalRelativePath || originalName} -> ${relativePath}`)
+    const targetPath = firstNonEmpty(item.local_path, item.target_path, item.output_path)
+    if (targetPath) metaParts.push(targetPath)
+    const downloaded = Number(item.downloaded || 0)
+    const total = Number(item.total || item.size || item.size_bytes || 0)
+    if (downloaded > 0 && total > 0 && downloaded < total) metaParts.push(`${formatBytes(downloaded)} / ${formatBytes(total)}`)
+    return {
+      key: `baidu-download-${index}-${relativePath || originalName}`,
+      path: relativePath,
+      relative_path: relativePath,
+      name: customName || getFileName(relativePath) || originalName,
+      type: item.is_dir ? 'dir' : 'file',
+      sizeText: total > 0 ? formatBytes(total) : '',
+      metaText: metaParts.join(' · '),
+      error: String(item.error || item.failure_reason || '').trim(),
+      badges,
+      variant: status === 'failed' ? 'failed' : '',
+    }
+  }).filter(Boolean)
+}
+
+function baiduNetdiskEntrySections(row) {
+  const d = row?.detail
+  if (!d || typeof d !== 'object') return []
+  if (String(row?.category || '').trim() !== 'baidu_netdisk') return []
+  const downloadFiles = mapBaiduDownloadFileItems(d.download_files)
+  const failedFiles = mapBaiduDownloadFileItems(d.failed_files).map((item) => ({ ...item, variant: 'failed' }))
+  if (!downloadFiles.length && !failedFiles.length) return []
+  const totalBytes = downloadFiles.reduce((sum, item) => {
+    const raw = String(item.sizeText || '').trim()
+    const m = raw.match(/^([\d.]+)\s*(B|KB|MB|GB|TB)$/i)
+    if (!m) return sum
+    const power = { B: 0, KB: 1, MB: 2, GB: 3, TB: 4 }[m[2].toUpperCase()] ?? 0
+    return sum + Number(m[1] || 0) * (1024 ** power)
+  }, 0)
+  const passwordCount = downloadFiles.filter((it) => (it.badges || []).includes('指定密码')).length
+  const renamedCount = downloadFiles.filter((it) => (it.badges || []).some((badge) => String(badge).startsWith('重命名为 '))).length
+  const titleParts = [`${downloadFiles.length || failedFiles.length} 个文件`]
+  if (totalBytes > 0) titleParts.push(formatBytes(totalBytes))
+  if (renamedCount > 0) titleParts.push(`重命名 ${renamedCount}`)
+  if (passwordCount > 0) titleParts.push(`指定密码 ${passwordCount}`)
+  const description = [
+    firstNonEmpty(d.renamed_output_path, d.final_output_path, d.staging_dir, d.download_root),
+    d.output_folder_name ? `保存为：${d.output_folder_name}` : '',
+  ].filter(Boolean).join(' · ')
+  const sections = []
+  if (downloadFiles.length) {
+    sections.push({
+      key: 'baidu-download-files',
+      title: `下载文件（${titleParts.join(' · ')}）`,
+      description,
+      rows: buildFilterDeleteTreeRows(downloadFiles),
+    })
+  }
+  if (failedFiles.length) {
+    sections.push({
+      key: 'baidu-failed-files',
+      title: `下载失败（${failedFiles.length}）`,
+      rows: buildFilterDeleteTreeRows(failedFiles),
+    })
+  }
+  return sections
+}
+
 function deleteEntrySections(row) {
   const d = row?.detail
   if (!d || typeof d !== 'object') return []
@@ -1219,6 +1345,7 @@ function activityEntrySections(row) {
   return [
     ...conflictResolutionEntrySections(row),
     ...asmrSyncEntrySections(row),
+    ...baiduNetdiskEntrySections(row),
     ...deleteEntrySections(row),
     ...importFilteredEntrySections(row),
     ...subtitleBatchEntrySections(row),
@@ -1230,6 +1357,7 @@ function activityEntrySectionTitle(row) {
   const d = row?.detail
   if (d && typeof d === 'object' && d.mode === 'subtitle_batch_start') return '批量详情'
   if (String(row?.category || '').trim() === 'conflict_resolution') return '问题作品处理'
+  if (String(row?.category || '').trim() === 'baidu_netdisk') return '百度网盘'
   if (['asmr_sync', 'upload'].includes(String(row?.category || '').trim())) return '文件树'
   if (String(row?.category || '').trim() === 'pipeline_delete') return '文件树'
   if (['auto_import', 'process_existing'].includes(String(row?.category || '').trim())) return '处理清单'

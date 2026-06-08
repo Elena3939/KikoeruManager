@@ -441,7 +441,7 @@ import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
 import ActivityDetailBody from '../components/activity/ActivityDetailBody.vue'
-import { getHttpDownloadDisplayMeta } from '../components/common/httpDownloadPlatformMeta.js'
+import { getHttpDownloadDisplayMeta, getHttpDownloadPlatformMeta } from '../components/common/httpDownloadPlatformMeta.js'
 
 const router = useRouter()
 
@@ -627,7 +627,7 @@ const categoryConfigs = {
   subtitle_pair: { icon: LinkIcon, label: '字幕配对', tone: 'violet' },
   subtitle_import: { icon: FileDown, label: '字幕补配', tone: 'fuchsia' },
   http_download: { icon: FileDown, label: 'HTTP 下载', tone: 'cyan' },
-  baidu_netdisk: { icon: CloudDownload, label: '百度网盘', tone: 'sky' },
+  baidu_netdisk: { icon: getHttpDownloadPlatformMeta('baidu_netdisk').icon || CloudDownload, label: '百度网盘', tone: 'sky' },
   extract: { icon: Package, label: '解压', tone: 'teal' },
   auto_import: { icon: Database, label: '解压入库', tone: 'emerald' },
   process_existing: { icon: Folder, label: '已有目录处理', tone: 'lime' },
@@ -1252,6 +1252,11 @@ const timelineGroups = computed(() => {
       viewRow.category_label = httpMeta.label && httpMeta.label !== 'HTTP'
         ? `${httpMeta.label} 下载`
         : 'HTTP 下载'
+    } else if (row.category === 'baidu_netdisk') {
+      const baiduMeta = getHttpDownloadPlatformMeta('baidu_netdisk')
+      viewRow._categoryIcon = baiduMeta.icon || catConfig.icon
+      viewRow._categoryIconClass = baiduMeta.icon ? 'activity-platform-icon' : ''
+      viewRow.category_label = '百度网盘'
     }
     const dt = row.created_at ? dayjs(row.created_at) : null
     let key
