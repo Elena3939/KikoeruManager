@@ -37,7 +37,7 @@
           </div>
           <div class="notif-domain-chips">
             <button
-              v-for="d in NOTIF_DOMAINS"
+              v-for="d in NOTIFICATION_TASK_DOMAINS"
               :key="d.value"
               type="button"
               class="notif-domain-chip"
@@ -93,7 +93,12 @@
             <input v-model="config.notification_email.username" class="field-input" type="text" placeholder="your@qq.com">
           </SettingsFieldCard>
           <SettingsFieldCard label="发件密码 / 授权码">
-            <AnimatedPasswordInput v-model="config.notification_email.password" placeholder="QQ 邮箱需填授权码" />
+            <AnimatedPasswordInput
+              v-model="config.notification_email.password"
+              :reveal-value="notificationEmailRevealedPassword"
+              placeholder="QQ 邮箱需填授权码"
+              @visibility-change="handleNotificationEmailPasswordVisibility"
+            />
           </SettingsFieldCard>
         </div>
         <div class="field-stack">
@@ -123,14 +128,16 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import { Activity, Bell, Captions, Database, FileArchive, Mail, Sparkles, Upload, UploadCloud } from 'lucide-vue-next'
+import { Mail } from 'lucide-vue-next'
+import { ElMessage } from 'element-plus'
 import SettingsFieldCard from './SettingsFieldCard.vue'
 import SettingsNumberStepper from './SettingsNumberStepper.vue'
 import SettingsSwitch from './SettingsSwitch.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
 import NotificationTemplatesPanel from './NotificationTemplatesPanel.vue'
 import AnimatedPasswordInput from '../common/AnimatedPasswordInput.vue'
-import { notificationApi } from '../../api'
+import { configApi, notificationApi } from '../../api'
+import { NOTIFICATION_TASK_DOMAINS } from './notificationDomainOptions.js'
 
 const props = defineProps({
   config: { type: Object, required: true }
@@ -151,17 +158,6 @@ function applySmtpPreset(preset) {
   props.config.notification_email.smtp_ssl = preset.smtp_ssl
   props.config.notification_email.smtp_starttls = preset.smtp_starttls
 }
-
-// 通知邮件按 domain 过滤
-const NOTIF_DOMAINS = [
-  { value: 'import', label: '导入处理', icon: FileArchive },
-  { value: 'rj_subtitle', label: 'RJ 字幕', icon: Captions },
-  { value: 'subtitle_import', label: '字幕补配', icon: Sparkles },
-  { value: 'asmr_sync', label: 'ASMR 同步', icon: UploadCloud },
-  { value: 'upload', label: '库存上传', icon: Upload },
-  { value: 'circle_completion', label: '社团补全', icon: Database },
-  { value: 'system', label: '系统任务', icon: Activity }
-]
 
 const notifDomainHint = computed(() => {
   const list = props.config?.notification_email?.enabled_domains || []
@@ -188,8 +184,29 @@ function toggleDomain(domain) {
 function setAllDomains(selectAll) {
   if (!props.config?.notification_email) return
   props.config.notification_email.enabled_domains = selectAll
-    ? NOTIF_DOMAINS.map(d => d.value)
+    ? NOTIFICATION_TASK_DOMAINS.map(d => d.value)
     : []
+}
+
+const notificationEmailRevealedPassword = ref('')
+const notificationEmailRevealLoading = ref(false)
+
+async function handleNotificationEmailPasswordVisibility(visible) {
+  if (!visible) return
+  const currentPassword = props.config?.notification_email?.password
+  if (currentPassword !== '********' || notificationEmailRevealedPassword.value || notificationEmailRevealLoading.value) return
+  notificationEmailRevealLoading.value = true
+  try {
+    const result = await configApi.revealNotificationEmailSecret({ key: 'password' })
+    notificationEmailRevealedPassword.value = result?.value || ''
+    if (!result?.value) {
+      ElMessage.warning('配置文件里没有可显示的原始授权码')
+    }
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '读取已保存授权码失败')
+  } finally {
+    notificationEmailRevealLoading.value = false
+  }
 }
 
 // 通知邮件测试
@@ -391,6 +408,8 @@ async function doTestEmail() {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
   margin-bottom: 10px;
   font-size: 13px;
   font-weight: 500;
@@ -424,6 +443,11 @@ async function doTestEmail() {
   transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
+.notif-domain-chip svg {
+  flex-shrink: 0;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
 .notif-domain-chip:hover {
   transform: translateY(-1px) scale(1.04);
   border-color: var(--set-border-strong);
@@ -431,6 +455,8 @@ async function doTestEmail() {
   background: var(--set-surface-hover);
   box-shadow: none;
 }
+
+.notif-domain-chip:hover svg { transform: rotate(-8deg); }
 
 .notif-domain-chip.is-active {
   color: var(--set-tag-info-text);
