@@ -158,12 +158,22 @@ function logMessage(line, preferFull = false) {
   return String(line.message || line.fullMessage || line.rawLine || '')
 }
 
-function isLineTruncated(line) {
-  return Boolean(line?.isTruncated)
+function originalLogMessage(line) {
+  if (!line) return ''
+  const message = String(line.message || '')
+  const fullMessage = String(line.fullMessage || '')
+  const rawLine = String(line.rawLine || '')
+  if (fullMessage && fullMessage !== message) return fullMessage
+  return rawLine || fullMessage || message
 }
 
-function hasLineDetail(line) {
-  return isLineTruncated(line) || logMessage(line, true).length > 180
+function hasHiddenOriginalDetail(line) {
+  if (!line) return false
+  return originalLogMessage(line) !== logMessage(line)
+}
+
+function isLineTruncated(line) {
+  return Boolean(line?.isTruncated)
 }
 
 function lineKey(line, index) {
@@ -176,7 +186,7 @@ function isLineExpanded(line, index) {
 }
 
 function estimateExpandedLineSize(line) {
-  const text = logMessage(line, true)
+  const text = originalLogMessage(line)
   const width = Number(scrollRef.value?.clientWidth || 920)
   const detailWidth = width <= 720 ? Math.max(280, width - 28) : Math.max(360, width - 332)
   const charsPerRow = Math.max(44, Math.floor(detailWidth / 7.4))
@@ -221,19 +231,56 @@ async function copyLogs() {
   }
 }
 
-function toggleLineDetail(line, index) {
-  if (!hasLineDetail(line)) return
+function toggleLineDetail(line, index, event) {
+  if (!line) return
   const key = lineKey(line, index)
-  expandedLineKey.value = expandedLineKey.value === key ? null : key
+  if (expandedLineKey.value === key) {
+    expandedLineKey.value = null
+    nextTick(() => rowVirtualizer.value.measure())
+    return
+  }
+  const row = event?.currentTarget
+  if (!isLineTruncated(line) && !hasHiddenOriginalDetail(line) && !isTerminalRowClipped(row)) return
+  expandedLineKey.value = key
   nextTick(() => rowVirtualizer.value.measure())
 }
 
 function visibleLineMessage(line, index) {
-  return isLineExpanded(line, index) ? logMessage(line, true) : logMessage(line)
+  if (isLineExpanded(line, index)) return originalLogMessage(line)
+  const message = logMessage(line)
+  if (isLineTruncated(line) || hasHiddenOriginalDetail(line)) return `${message}...`
+  return message
 }
 
 function measureTerminalLine(element) {
   if (element) rowVirtualizer.value.measureElement(element)
+}
+
+function isTerminalRowClipped(row) {
+  if (!row || typeof row.querySelector !== 'function' || typeof document === 'undefined') return false
+  const message = row.querySelector('.terminal-message')
+  const messageText = row.querySelector('.terminal-message-text')
+  if (!message || !messageText) return false
+
+  const availableWidth = message.getBoundingClientRect().width
+  if (!availableWidth) return false
+
+  const sourceStyle = window.getComputedStyle(messageText)
+  const probe = document.createElement('span')
+  probe.textContent = messageText.textContent || ''
+  probe.style.position = 'fixed'
+  probe.style.left = '-9999px'
+  probe.style.bottom = '-9999px'
+  probe.style.visibility = 'hidden'
+  probe.style.pointerEvents = 'none'
+  probe.style.whiteSpace = 'pre'
+  probe.style.font = sourceStyle.font
+  probe.style.letterSpacing = sourceStyle.letterSpacing
+  document.body.appendChild(probe)
+  const naturalWidth = probe.getBoundingClientRect().width
+  probe.remove()
+
+  return naturalWidth > availableWidth + 1
 }
 
 function clearLogs() {
@@ -355,6 +402,7 @@ onBeforeUnmount(() => {
             :key="virtualRow.key"
             :ref="measureTerminalLine"
             :data-index="virtualRow.index"
+            :data-line-key="lineKey(safeLines[virtualRow.index], virtualRow.index)"
             class="terminal-line"
             :class="[
               `is-${normalizeLevel(safeLines[virtualRow.index]?.level)}`,
@@ -364,12 +412,12 @@ onBeforeUnmount(() => {
                 'has-inline-progress': hasProgress(safeLines[virtualRow.index]) && !isTaskProgressLine(safeLines[virtualRow.index]),
                 'is-task-progress': isTaskProgressLine(safeLines[virtualRow.index]),
                 'is-truncated': isLineTruncated(safeLines[virtualRow.index]),
-                'has-detail': hasLineDetail(safeLines[virtualRow.index]),
+                'can-toggle-detail': !isTaskProgressLine(safeLines[virtualRow.index]),
                 'is-expanded': isLineExpanded(safeLines[virtualRow.index], virtualRow.index),
               },
             ]"
             :style="{ transform: `translate3d(0, ${virtualRow.start}px, 0)` }"
-            @click="!isTaskProgressLine(safeLines[virtualRow.index]) && toggleLineDetail(safeLines[virtualRow.index], virtualRow.index)"
+            @click="!isTaskProgressLine(safeLines[virtualRow.index]) && toggleLineDetail(safeLines[virtualRow.index], virtualRow.index, $event)"
           >
             <span class="terminal-time">{{ formatTime(safeLines[virtualRow.index]?.time) }}</span>
             <span class="terminal-level">
@@ -399,8 +447,7 @@ onBeforeUnmount(() => {
             <span
               v-else
               class="terminal-message"
-              :class="{ 'has-detail': hasLineDetail(safeLines[virtualRow.index]) }"
-              :title="hasLineDetail(safeLines[virtualRow.index]) ? (isLineExpanded(safeLines[virtualRow.index], virtualRow.index) ? '点击收起完整日志' : '点击展开完整日志') : logMessage(safeLines[virtualRow.index])"
+              :title="isLineExpanded(safeLines[virtualRow.index], virtualRow.index) ? '点击收起原始日志' : '点击查看原始日志'"
             >
               <span class="terminal-message-text">
                 <template v-for="(token, tokenIndex) in shellTokens(visibleLineMessage(safeLines[virtualRow.index], virtualRow.index))" :key="`${virtualRow.key}-${tokenIndex}`">
@@ -638,7 +685,7 @@ onBeforeUnmount(() => {
   padding-bottom: 9px;
 }
 
-.terminal-line.has-detail {
+.terminal-line.can-toggle-detail {
   cursor: pointer;
 }
 
@@ -683,6 +730,8 @@ onBeforeUnmount(() => {
 }
 
 .terminal-message {
+  display: flex;
+  align-items: center;
   grid-column: 4 / -1;
   min-width: 0;
   overflow: hidden;
@@ -690,14 +739,7 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-.terminal-message.has-detail {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-}
-
-.terminal-line.is-expanded .terminal-message.has-detail {
+.terminal-line.is-expanded .terminal-message {
   display: block;
   overflow: visible;
   text-overflow: clip;
@@ -705,6 +747,9 @@ onBeforeUnmount(() => {
 }
 
 .terminal-message-text {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -717,6 +762,12 @@ onBeforeUnmount(() => {
   text-overflow: clip;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.terminal-line.is-expanded .terminal-token {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .terminal-line.has-inline-progress .terminal-message {
