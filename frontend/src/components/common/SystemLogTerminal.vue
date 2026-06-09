@@ -6,8 +6,6 @@ import {
   AlertTriangle,
   Bug,
   CheckCircle2,
-  ChevronDown,
-  ChevronUp,
   CirclePause,
   CirclePlay,
   Copy,
@@ -178,14 +176,14 @@ function isLineExpanded(line, index) {
 }
 
 function estimateExpandedLineSize(line) {
-  const text = lineText(line, true)
+  const text = logMessage(line, true)
   const width = Number(scrollRef.value?.clientWidth || 920)
   const detailWidth = width <= 720 ? Math.max(280, width - 28) : Math.max(360, width - 332)
   const charsPerRow = Math.max(44, Math.floor(detailWidth / 7.4))
   const visualLineCount = String(text || '')
     .split(/\r\n|\n|\r/)
     .reduce((sum, segment) => sum + Math.max(1, Math.ceil(segment.length / charsPerRow)), 0)
-  return Math.max(96, 54 + visualLineCount * 18)
+  return Math.max(54, 18 + visualLineCount * 18)
 }
 
 function estimateLineSize(index) {
@@ -223,23 +221,15 @@ async function copyLogs() {
   }
 }
 
-async function copySelectedLine() {
-  const index = safeLines.value.findIndex((line, lineIndex) => isLineExpanded(line, lineIndex))
-  const text = index >= 0 ? lineText(safeLines.value[index], true) : ''
-  if (!text) return
-  try {
-    await navigator.clipboard.writeText(text)
-    ElMessage.success('已复制完整日志')
-  } catch {
-    ElMessage.error('复制失败，浏览器未授权剪贴板')
-  }
-}
-
 function toggleLineDetail(line, index) {
   if (!hasLineDetail(line)) return
   const key = lineKey(line, index)
   expandedLineKey.value = expandedLineKey.value === key ? null : key
   nextTick(() => rowVirtualizer.value.measure())
+}
+
+function visibleLineMessage(line, index) {
+  return isLineExpanded(line, index) ? logMessage(line, true) : logMessage(line)
 }
 
 function measureTerminalLine(element) {
@@ -379,6 +369,7 @@ onBeforeUnmount(() => {
               },
             ]"
             :style="{ transform: `translate3d(0, ${virtualRow.start}px, 0)` }"
+            @click="!isTaskProgressLine(safeLines[virtualRow.index]) && toggleLineDetail(safeLines[virtualRow.index], virtualRow.index)"
           >
             <span class="terminal-time">{{ formatTime(safeLines[virtualRow.index]?.time) }}</span>
             <span class="terminal-level">
@@ -409,34 +400,14 @@ onBeforeUnmount(() => {
               v-else
               class="terminal-message"
               :class="{ 'has-detail': hasLineDetail(safeLines[virtualRow.index]) }"
-              :title="hasLineDetail(safeLines[virtualRow.index]) ? '点击展开完整日志' : logMessage(safeLines[virtualRow.index])"
-              @click="toggleLineDetail(safeLines[virtualRow.index], virtualRow.index)"
+              :title="hasLineDetail(safeLines[virtualRow.index]) ? (isLineExpanded(safeLines[virtualRow.index], virtualRow.index) ? '点击收起完整日志' : '点击展开完整日志') : logMessage(safeLines[virtualRow.index])"
             >
               <span class="terminal-message-text">
-                <template v-for="(token, tokenIndex) in shellTokens(logMessage(safeLines[virtualRow.index]))" :key="`${virtualRow.key}-${tokenIndex}`">
+                <template v-for="(token, tokenIndex) in shellTokens(visibleLineMessage(safeLines[virtualRow.index], virtualRow.index))" :key="`${virtualRow.key}-${tokenIndex}`">
                   <span :class="`terminal-token is-${token.type}`">{{ token.value }}</span>
                 </template>
               </span>
-              <button
-                v-if="hasLineDetail(safeLines[virtualRow.index])"
-                type="button"
-                class="terminal-detail-button"
-                :title="isLineExpanded(safeLines[virtualRow.index], virtualRow.index) ? '收起完整日志' : '展开完整日志'"
-                @click.stop="toggleLineDetail(safeLines[virtualRow.index], virtualRow.index)"
-              >
-                <component :is="isLineExpanded(safeLines[virtualRow.index], virtualRow.index) ? ChevronUp : ChevronDown" :size="12" :stroke-width="2.6" />
-              </button>
             </span>
-            <div
-              v-if="!isTaskProgressLine(safeLines[virtualRow.index]) && isLineExpanded(safeLines[virtualRow.index], virtualRow.index)"
-              class="terminal-expanded-detail"
-            >
-              <pre class="terminal-expanded-content">{{ lineText(safeLines[virtualRow.index], true) }}</pre>
-              <button type="button" class="terminal-expanded-copy" title="复制完整日志" @click.stop="copySelectedLine">
-                <Copy :size="13" :stroke-width="2.35" />
-                复制
-              </button>
-            </div>
           </div>
         </div>
       </div>
@@ -667,6 +638,10 @@ onBeforeUnmount(() => {
   padding-bottom: 9px;
 }
 
+.terminal-line.has-detail {
+  cursor: pointer;
+}
+
 .terminal-line.is-expanded .terminal-time,
 .terminal-line.is-expanded .terminal-level,
 .terminal-line.is-expanded .terminal-source,
@@ -722,6 +697,13 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
+.terminal-line.is-expanded .terminal-message.has-detail {
+  display: block;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
 .terminal-message-text {
   min-width: 0;
   overflow: hidden;
@@ -729,111 +711,12 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-.terminal-detail-button {
-  display: inline-flex;
-  flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
-  cursor: pointer;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid rgba(103, 232, 249, 0.42);
-  border-radius: 7px;
-  background: rgba(8, 145, 178, 0.14);
-  color: #67e8f9;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.terminal-detail-button:hover {
-  transform: translateY(-2px) scale(1.02);
-  border-color: rgba(103, 232, 249, 0.72);
-  background: rgba(8, 145, 178, 0.24);
-  color: #cffafe;
-}
-
-.terminal-detail-button:active {
-  transform: scale(0.96);
-}
-
-.terminal-detail-button:focus,
-.terminal-detail-button:focus-visible {
-  outline: none;
-  box-shadow: none;
-}
-
-.terminal-detail-button:hover :deep(svg) {
-  transform: rotate(-8deg);
-}
-
-.terminal-detail-button :deep(svg) {
-  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.terminal-expanded-detail {
-  position: relative;
-  grid-column: 4 / -1;
-  min-width: 0;
-  margin-top: 5px;
-  border: 1px solid rgba(63, 63, 70, 0.84);
-  border-radius: 9px;
-  padding: 9px 52px 10px 11px;
-  background: #050506;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
-}
-
-.terminal-expanded-content {
+.terminal-line.is-expanded .terminal-message-text {
+  display: block;
   overflow: visible;
-  margin: 0;
-  color: #e4e4e7;
-  font: inherit;
-  font-size: 11.5px;
-  line-height: 1.55;
+  text-overflow: clip;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
-}
-
-.terminal-expanded-copy {
-  position: absolute;
-  top: 7px;
-  right: 7px;
-  display: inline-flex;
-  cursor: pointer;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  border: 1px solid rgba(82, 82, 91, 0.78);
-  border-radius: 7px;
-  padding: 5px 7px;
-  background: rgba(24, 24, 27, 0.88);
-  color: #d4d4d8;
-  font-size: 11px;
-  font-weight: 900;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.terminal-expanded-copy:hover {
-  transform: translateY(-2px) scale(1.02);
-  border-color: rgba(161, 161, 170, 0.86);
-  background: rgba(39, 39, 42, 0.96);
-  color: #fff;
-}
-
-.terminal-expanded-copy:active {
-  transform: scale(0.96);
-}
-
-.terminal-expanded-copy:focus,
-.terminal-expanded-copy:focus-visible {
-  outline: none;
-  box-shadow: none;
-}
-
-.terminal-expanded-copy:hover :deep(svg) {
-  transform: rotate(-8deg);
-}
-
-.terminal-expanded-copy :deep(svg) {
-  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .terminal-line.has-inline-progress .terminal-message {
@@ -1053,11 +936,6 @@ onBeforeUnmount(() => {
 
   .terminal-message {
     grid-column: 1 / -1;
-  }
-
-  .terminal-expanded-detail {
-    grid-column: 1 / -1;
-    padding-right: 48px;
   }
 
   .terminal-inline-progress {
