@@ -139,48 +139,48 @@
             </div>
             <div class="px-2 pt-2"><input :value="view.subtitleInspectorAudioSearch" class="w-full h-7 px-2 rounded-lg bg-slate-50 border border-slate-200 text-[11.5px] placeholder-slate-400 outline-none focus:bg-white focus:border-slate-400 transition-all duration-150" placeholder="搜索音频名..." :disabled="view.subtitleInspectorBusy" @input="view.setSubtitleInspectorAudioSearch($event.target.value)" /></div>
             <div class="flex-1 overflow-y-auto p-2 flex flex-col gap-0.5 min-h-[200px] max-h-[340px]">
-              <button v-for="audio in view.filteredSubtitleInspectorAudioFiles" :key="audio.path" type="button" class="group/sequence-row w-full flex flex-col gap-0.5 px-2.5 py-2 rounded-[10px] border text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.01] active:scale-[0.97]" :class="[view.getSubtitleSequenceIndex('audio', audio.path) ? 'border-blue-400 bg-gradient-to-r from-blue-100 via-sky-50 to-white shadow-[0_8px_22px_rgba(37,99,235,0.22)] ring-2 ring-blue-200/70' : view.subtitleMatchSelection.audioPath === audio.path ? 'border-blue-300 bg-blue-50 shadow-[0_6px_18px_rgba(37,99,235,0.16)]' : view.isAudioPaired(audio.path) ? 'border-slate-200 bg-white' : 'border-transparent bg-slate-50/60 hover:border-blue-200 hover:bg-blue-50/50']" @click="view.selectSubtitleAudio(audio)">
+              <button v-for="audio in view.filteredSubtitleInspectorAudioFiles" :key="audio.path" type="button" class="subtitle-pairing-row subtitle-pairing-audio-row group/sequence-row w-full flex flex-col gap-0.5 px-2.5 py-2 rounded-[10px] border text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.01] active:scale-[0.97]" :class="[view.getSubtitleSequenceIndex('audio', audio.path) ? 'subtitle-pairing-row-sequence' : view.subtitleMatchSelection.audioPath === audio.path ? 'subtitle-pairing-row-selected' : view.isAudioPaired(audio.path) ? 'subtitle-pairing-row-paired' : 'subtitle-pairing-row-idle', view.isAudioSuspicious(audio.path) ? 'subtitle-pairing-row-suspicious' : '']" @click="view.selectSubtitleAudio(audio)">
 
                 <div class="flex items-center gap-1 flex-wrap">
-                  <span v-if="view.isAudioPaired(audio.path)" class="text-[9.5px] font-semibold text-slate-500">已配对</span>
-                  <span v-if="view.isAudioSuspicious(audio.path)" class="text-[9.5px] font-semibold text-amber-600">待确认</span>
+                  <span v-if="view.isAudioPaired(audio.path)" class="subtitle-pairing-row-chip subtitle-pairing-row-chip-paired text-[9.5px] font-semibold">已配对</span>
+                  <span v-if="view.isAudioSuspicious(audio.path)" class="subtitle-pairing-row-chip subtitle-pairing-row-chip-warning text-[9.5px] font-semibold">待确认</span>
                   <span v-if="view.getSubtitleSequenceIndex('audio', audio.path)" class="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-blue-600 px-1.5 text-[10px] font-black text-white shadow-[0_4px_12px_rgba(37,99,235,0.35)] ring-2 ring-white">#{{ view.getSubtitleSequenceIndex('audio', audio.path) }}</span>
 
                 </div>
-                <div class="text-[11.5px] font-semibold text-slate-800 truncate transition-colors duration-300 group-hover/sequence-row:text-blue-700" :class="view.getSubtitleSequenceIndex('audio', audio.path) ? 'text-blue-900' : ''">{{ formatSubtitleItemName(audio) }}</div>
-                <div class="text-[10px] text-slate-400 truncate">{{ audio.relative_path || audio.name }}</div>
+                <div class="subtitle-pairing-row-name text-[11.5px] font-semibold truncate transition-colors duration-300">{{ formatSubtitleItemName(audio) }}</div>
+                <div class="subtitle-pairing-row-path text-[10px] truncate">{{ audio.relative_path || audio.name }}</div>
               </button>
             </div>
           </div>
 
-          <div class="flex flex-col rounded-[13px] border border-slate-200 bg-white overflow-hidden">
-            <div class="flex items-center justify-between gap-1 px-3 py-2 border-b border-slate-100 bg-slate-50/60">
-              <div class="flex items-center gap-1.5 text-[12px] font-semibold text-slate-700"><Link2 :size="12" :stroke-width="2.2" class="text-blue-500" />配对结果</div>
+          <div class="subtitle-pair-results-panel flex flex-col rounded-[13px] border border-slate-200 bg-white overflow-hidden">
+            <div class="subtitle-pair-results-header flex items-center justify-between gap-1 px-3 py-2 border-b border-slate-100 bg-slate-50/60">
+              <div class="subtitle-pair-results-title flex items-center gap-1.5 text-[12px] font-semibold text-slate-700"><Link2 :size="12" :stroke-width="2.2" class="text-blue-500" />配对结果</div>
               <div class="flex items-center gap-0.5">
-                <button type="button" class="px-1.5 py-1 rounded-lg text-[10.5px] font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed" :disabled="view.subtitleInspectorBusy || (!view.subtitleSequenceSelection.audioPaths.length && !view.subtitleSequenceSelection.subtitlePaths.length)" @click="view.clearSubtitleSequenceSelection">清空顺序</button>
-                <button type="button" class="px-1.5 py-1 rounded-lg text-[10.5px] font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed" :disabled="view.subtitleInspectorBusy || !view.subtitleManualPairs.length" @click="view.clearSubtitleManualPairs">清空配对</button>
+                <button type="button" class="subtitle-pair-clear-action px-1.5 py-1 rounded-lg text-[10.5px] font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed" :disabled="view.subtitleInspectorBusy || (!view.subtitleSequenceSelection.audioPaths.length && !view.subtitleSequenceSelection.subtitlePaths.length)" @click="view.clearSubtitleSequenceSelection">清空顺序</button>
+                <button type="button" class="subtitle-pair-clear-action px-1.5 py-1 rounded-lg text-[10.5px] font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed" :disabled="view.subtitleInspectorBusy || !view.subtitleManualPairs.length" @click="view.clearSubtitleManualPairs">清空配对</button>
               </div>
             </div>
             <div class="px-2 pt-2">
-              <button type="button" class="w-full h-7 inline-flex items-center justify-center gap-1 rounded-lg text-[11.5px] font-semibold border transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed" :class="view.canAddSubtitleManualPair && !view.subtitleInspectorBusy ? 'border-blue-300 bg-blue-600 text-white hover:bg-blue-700' : 'border-slate-200 bg-slate-50 text-slate-400'" :disabled="!view.canAddSubtitleManualPair || view.subtitleInspectorBusy" :title="!view.canAddSubtitleManualPair ? '请先在左侧选一条音频，再在右侧选一条字幕，然后点此加入配对。' : ''" @click="view.addSubtitleManualPair?.()">加入手动配对</button>
+              <button type="button" class="subtitle-pair-add-button w-full h-7 inline-flex items-center justify-center gap-1 rounded-lg text-[11.5px] font-semibold border transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed" :class="view.canAddSubtitleManualPair && !view.subtitleInspectorBusy ? 'is-ready' : 'is-disabled'" :disabled="!view.canAddSubtitleManualPair || view.subtitleInspectorBusy" :title="!view.canAddSubtitleManualPair ? '请先在左侧选一条音频，再在右侧选一条字幕，然后点此加入配对。' : ''" @click="view.addSubtitleManualPair?.()">加入手动配对</button>
             </div>
             <div class="flex-1 overflow-y-auto p-2 flex flex-col gap-1.5 min-h-[200px] max-h-[340px]">
-              <div v-if="!view.subtitleManualPairs.length" class="flex flex-col items-center justify-center py-6 gap-1 text-center"><div class="text-[11.5px] font-medium text-slate-500">还没有生成配对结果</div><div class="text-[10.5px] text-slate-400">可以先点"AI 配对"或"规则预配对"</div></div>
-              <button v-for="(pair, index) in view.subtitleManualPairs" :key="pair.id" type="button" class="w-full flex flex-col gap-1.5 p-2 rounded-[9px] border text-left transition-all duration-150" :class="[view.subtitleSelectedManualPairId === pair.id ? 'border-slate-400 bg-slate-100' : 'border-slate-200 bg-slate-50/60 hover:border-slate-300', pair.confidenceLevel === 'low' ? '!border-amber-200 !bg-amber-50/40' : '']" @click="view.setSubtitleSelectedManualPairId(pair.id)">
+              <div v-if="!view.subtitleManualPairs.length" class="subtitle-pair-empty flex flex-col items-center justify-center py-6 gap-1 text-center"><div class="text-[11.5px] font-medium text-slate-500">还没有生成配对结果</div><div class="text-[10.5px] text-slate-400">可以先点"AI 配对"或"规则预配对"</div></div>
+              <button v-for="(pair, index) in view.subtitleManualPairs" :key="pair.id" type="button" class="subtitle-pair-card w-full flex flex-col gap-1.5 p-2 rounded-[9px] border text-left transition-all duration-150" :class="[view.subtitleSelectedManualPairId === pair.id ? 'subtitle-pair-card-selected' : '', pair.confidenceLevel === 'low' ? 'subtitle-pair-card-low-confidence' : '']" @click="view.setSubtitleSelectedManualPairId(pair.id)">
 
                 <div class="flex items-center justify-between gap-1">
                   <div class="flex items-center gap-1">
-                    <span class="text-[9.5px] font-semibold" :class="pair.confidenceLevel === 'low' ? 'text-amber-600' : 'text-slate-500'">{{ view.getSubtitlePairConfidenceLabel(pair.confidenceLevel) }}</span>
+                    <span class="subtitle-pair-confidence text-[9.5px] font-semibold" :class="pair.confidenceLevel === 'low' ? 'subtitle-pair-confidence-low' : ''">{{ view.getSubtitlePairConfidenceLabel(pair.confidenceLevel) }}</span>
 
-                    <span class="text-[9.5px] text-slate-400">配对 {{ index + 1 }}</span>
+                    <span class="subtitle-pair-index text-[9.5px] text-slate-400">配对 {{ index + 1 }}</span>
                   </div>
-                  <button type="button" class="text-[10px] text-rose-500 hover:text-rose-700 font-semibold px-1" :disabled="view.subtitleInspectorBusy" @click.stop="view.removeSubtitleManualPair(pair.id)">移除</button>
+                  <button type="button" class="subtitle-pair-remove text-[10px] font-semibold px-1" :disabled="view.subtitleInspectorBusy" @click.stop="view.removeSubtitleManualPair(pair.id)">移除</button>
                 </div>
-                <div class="text-[10px] text-slate-400 truncate">{{ pair.matchReason || '手动配对' }}</div>
+                <div class="subtitle-pair-reason text-[10px] text-slate-400 truncate">{{ pair.matchReason || '手动配对' }}</div>
                 <div class="flex items-center gap-1 min-w-0">
-                  <div class="flex-1 min-w-0"><div class="flex items-center gap-1 min-w-0"><Music v-if="getSubtitlePairRenamePreview(pair).kind === 'audio'" :size="9" class="text-sky-500 flex-shrink-0" /><FileText v-else :size="9" class="text-violet-500 flex-shrink-0" /><span class="text-[10px] font-medium text-slate-600 truncate" :title="getSubtitlePairRenamePreview(pair).before">{{ getSubtitlePairRenamePreview(pair).before }}</span></div></div>
-                  <ArrowRight :size="10" class="text-slate-400 flex-shrink-0" />
-                  <div class="flex-1 min-w-0"><div class="flex items-center gap-1 min-w-0"><Music v-if="getSubtitlePairRenamePreview(pair).kind === 'audio'" :size="9" class="text-sky-500 flex-shrink-0" /><FileText v-else :size="9" class="text-violet-500 flex-shrink-0" /><span class="text-[10px] font-medium text-emerald-700 truncate" :title="getSubtitlePairRenamePreview(pair).after">{{ getSubtitlePairRenamePreview(pair).after }}</span></div></div>
+                  <div class="flex-1 min-w-0"><div class="flex items-center gap-1 min-w-0"><Music v-if="getSubtitlePairRenamePreview(pair).kind === 'audio'" :size="9" class="subtitle-pair-audio-icon text-sky-500 flex-shrink-0" /><FileText v-else :size="9" class="subtitle-pair-subtitle-icon text-violet-500 flex-shrink-0" /><span class="subtitle-pair-before text-[10px] font-medium text-slate-600 truncate" :title="getSubtitlePairRenamePreview(pair).before">{{ getSubtitlePairRenamePreview(pair).before }}</span></div></div>
+                  <ArrowRight :size="10" class="subtitle-pair-arrow text-slate-400 flex-shrink-0" />
+                  <div class="flex-1 min-w-0"><div class="flex items-center gap-1 min-w-0"><Music v-if="getSubtitlePairRenamePreview(pair).kind === 'audio'" :size="9" class="subtitle-pair-audio-icon text-sky-500 flex-shrink-0" /><FileText v-else :size="9" class="subtitle-pair-subtitle-icon text-violet-500 flex-shrink-0" /><span class="subtitle-pair-after text-[10px] font-medium text-emerald-700 truncate" :title="getSubtitlePairRenamePreview(pair).after">{{ getSubtitlePairRenamePreview(pair).after }}</span></div></div>
                 </div>
               </button>
             </div>
@@ -195,16 +195,16 @@
             </div>
             <div class="px-2 pt-2"><input :value="view.subtitleInspectorSubtitleSearch" class="w-full h-7 px-2 rounded-lg bg-slate-50 border border-slate-200 text-[11.5px] placeholder-slate-400 outline-none focus:bg-white focus:border-slate-400 transition-all duration-150" placeholder="搜索字幕名..." :disabled="view.subtitleInspectorBusy" @input="view.setSubtitleInspectorSubtitleSearch($event.target.value)" /></div>
             <div class="flex-1 overflow-y-auto p-2 flex flex-col gap-0.5 min-h-[200px] max-h-[340px]">
-              <button v-for="subtitle in view.filteredSubtitleInspectorSubtitleFiles" :key="subtitle.path" type="button" class="group/sequence-row w-full flex flex-col gap-0.5 px-2.5 py-2 rounded-[10px] border text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.01] active:scale-[0.97]" :class="[view.getSubtitleSequenceIndex('subtitle', subtitle.path) ? 'border-violet-400 bg-gradient-to-r from-violet-100 via-fuchsia-50 to-white shadow-[0_8px_22px_rgba(124,58,237,0.22)] ring-2 ring-violet-200/70' : view.subtitleMatchSelection.subtitlePath === subtitle.path ? 'border-violet-300 bg-violet-50 shadow-[0_6px_18px_rgba(124,58,237,0.16)]' : view.isSubtitlePaired(subtitle.path) ? 'border-slate-200 bg-white' : 'border-transparent bg-slate-50/60 hover:border-violet-200 hover:bg-violet-50/50']" @click="view.selectSubtitleFile(subtitle)">
+              <button v-for="subtitle in view.filteredSubtitleInspectorSubtitleFiles" :key="subtitle.path" type="button" class="subtitle-pairing-row subtitle-pairing-subtitle-row group/sequence-row w-full flex flex-col gap-0.5 px-2.5 py-2 rounded-[10px] border text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.01] active:scale-[0.97]" :class="[view.getSubtitleSequenceIndex('subtitle', subtitle.path) ? 'subtitle-pairing-row-sequence' : view.subtitleMatchSelection.subtitlePath === subtitle.path ? 'subtitle-pairing-row-selected' : view.isSubtitlePaired(subtitle.path) ? 'subtitle-pairing-row-paired' : 'subtitle-pairing-row-idle', view.isSubtitleSuspicious(subtitle.path) ? 'subtitle-pairing-row-suspicious' : '']" @click="view.selectSubtitleFile(subtitle)">
 
                 <div class="flex items-center gap-1 flex-wrap">
-                  <span v-if="view.isSubtitlePaired(subtitle.path)" class="text-[9.5px] font-semibold text-slate-500">已配对</span>
-                  <span v-if="view.isSubtitleSuspicious(subtitle.path)" class="text-[9.5px] font-semibold text-amber-600">待确认</span>
+                  <span v-if="view.isSubtitlePaired(subtitle.path)" class="subtitle-pairing-row-chip subtitle-pairing-row-chip-paired text-[9.5px] font-semibold">已配对</span>
+                  <span v-if="view.isSubtitleSuspicious(subtitle.path)" class="subtitle-pairing-row-chip subtitle-pairing-row-chip-warning text-[9.5px] font-semibold">待确认</span>
                   <span v-if="view.getSubtitleSequenceIndex('subtitle', subtitle.path)" class="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-violet-600 px-1.5 text-[10px] font-black text-white shadow-[0_4px_12px_rgba(124,58,237,0.35)] ring-2 ring-white">#{{ view.getSubtitleSequenceIndex('subtitle', subtitle.path) }}</span>
 
                 </div>
-                <div class="text-[11.5px] font-semibold text-slate-800 truncate transition-colors duration-300 group-hover/sequence-row:text-violet-700" :class="view.getSubtitleSequenceIndex('subtitle', subtitle.path) ? 'text-violet-900' : ''">{{ formatSubtitleItemName(subtitle) }}</div>
-                <div class="text-[10px] text-slate-400 truncate">{{ subtitle.relative_path || subtitle.name }}</div>
+                <div class="subtitle-pairing-row-name text-[11.5px] font-semibold truncate transition-colors duration-300">{{ formatSubtitleItemName(subtitle) }}</div>
+                <div class="subtitle-pairing-row-path text-[10px] truncate">{{ subtitle.relative_path || subtitle.name }}</div>
               </button>
             </div>
           </div>
@@ -227,14 +227,14 @@
       </div>
 
       <div v-if="showTree" class="grid gap-3">
-        <div class="group/search flex items-center gap-2 rounded-[12px] border border-slate-200 bg-slate-50/60 px-3 py-2 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] focus-within:border-sky-400 focus-within:bg-white focus-within:shadow-[0_0_0_3px_rgba(56,189,248,0.15)] hover:border-slate-300">
+        <div class="subtitle-tree-search-shell group/search flex items-center gap-2 rounded-[12px] border border-slate-200 bg-slate-50/60 px-3 py-2 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] focus-within:border-sky-400 focus-within:bg-white focus-within:shadow-[0_0_0_3px_rgba(56,189,248,0.15)] hover:border-slate-300">
           <Search :size="14" :stroke-width="2.2" class="shrink-0 text-slate-400 transition-all duration-300 group-focus-within/search:rotate-[-8deg] group-focus-within/search:scale-110 group-focus-within/search:text-sky-600" />
           <input
             :value="view.subtitleInspectorSearch"
             type="text"
             placeholder="搜索字幕文件名或路径..."
             :disabled="view.subtitleInspectorBusy"
-            class="min-w-0 flex-1 border-0 bg-transparent p-0 text-[13px] font-medium text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-0 disabled:cursor-not-allowed disabled:opacity-60"
+            class="subtitle-tree-search-input min-w-0 flex-1 border-0 bg-transparent p-0 text-[13px] font-medium text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-0 disabled:cursor-not-allowed disabled:opacity-60"
             @input="view.setSubtitleInspectorSearch($event.target.value)"
           >
           <button
@@ -249,18 +249,18 @@
         </div>
 
         <Transition name="sub-stage-fade">
-          <div v-if="view.subtitleInspectorSelectedRows.length" class="flex items-center justify-between gap-3 rounded-[12px] border border-indigo-200 bg-gradient-to-br from-indigo-50/70 via-white to-white px-3.5 py-2.5 shadow-[0_2px_8px_rgba(79,70,229,0.05)]">
+          <div v-if="view.subtitleInspectorSelectedRows.length" class="subtitle-tree-selection-bar flex items-center justify-between gap-3 rounded-[12px] border border-indigo-200 bg-gradient-to-br from-indigo-50/70 via-white to-white px-3.5 py-2.5 shadow-[0_2px_8px_rgba(79,70,229,0.05)]">
             <div class="flex items-center gap-2">
-              <span class="inline-flex h-6 w-6 items-center justify-center rounded-[7px] bg-indigo-500 text-white">
+              <span class="subtitle-tree-selection-icon inline-flex h-6 w-6 items-center justify-center rounded-[7px] bg-indigo-500 text-white">
                 <CheckSquare :size="12" :stroke-width="2.4" />
               </span>
-              <span class="text-[12.5px] font-semibold text-indigo-700">已选 {{ view.subtitleInspectorSelectedRows.length }} 项</span>
-              <span class="hidden text-[11px] text-indigo-600/70 md:inline">支持 Ctrl+A · Ctrl/Cmd 点击 · Shift 范围</span>
+              <span class="subtitle-tree-selection-count text-[12.5px] font-semibold text-indigo-700">已选 {{ view.subtitleInspectorSelectedRows.length }} 项</span>
+              <span class="subtitle-tree-selection-help hidden text-[11px] text-indigo-600/70 md:inline">支持 Ctrl+A · Ctrl/Cmd 点击 · Shift 范围</span>
             </div>
             <div class="flex items-center gap-1.5">
               <button
                 type="button"
-                class="group/btn inline-flex items-center gap-1 rounded-[8px] border border-rose-300 bg-white px-3 py-1.5 text-[12px] font-medium text-rose-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-rose-500 hover:bg-rose-500 hover:text-white hover:shadow-[0_4px_12px_rgba(244,63,94,0.25)] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0 disabled:hover:scale-100"
+                class="subtitle-tree-selection-danger group/btn inline-flex items-center gap-1 rounded-[8px] border border-rose-300 bg-white px-3 py-1.5 text-[12px] font-medium text-rose-600 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-rose-500 hover:bg-rose-500 hover:text-white hover:shadow-[0_4px_12px_rgba(244,63,94,0.25)] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0 disabled:hover:scale-100"
                 :disabled="view.subtitleInspectorBusy && !view.subtitleInspectorDeleting"
                 @click="view.batchDeleteSubtitleTreeEntries"
               >
@@ -269,7 +269,7 @@
               </button>
               <button
                 type="button"
-                class="group/btn inline-flex items-center gap-1 rounded-[8px] border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-medium text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-40"
+                class="subtitle-tree-selection-secondary group/btn inline-flex items-center gap-1 rounded-[8px] border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-medium text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 hover:bg-slate-50 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-40"
                 :disabled="view.subtitleInspectorBusy"
                 @click="view.clearSubtitleInspectorSelection"
               >
@@ -306,10 +306,10 @@
             <div
               v-for="row in view.subtitleInspectorFlatTree"
               :key="row.id"
-              class="group/row grid cursor-pointer grid-cols-[40px_minmax(0,1fr)_96px_156px_112px] items-center gap-2 border-b border-slate-50 px-3 py-2 transition-all duration-200 ease-out last:border-b-0 hover:bg-slate-50/60"
+              class="subtitle-tree-row group/row grid cursor-pointer grid-cols-[40px_minmax(0,1fr)_96px_156px_112px] items-center gap-2 border-b border-slate-50 px-3 py-2 transition-all duration-200 ease-out last:border-b-0"
               :class="[
-                row.type === 'dir' ? 'bg-slate-50/30' : '',
-                view.subtitleInspectorSelectedIds.has(row.id) ? '!bg-indigo-50/70 ring-1 ring-inset ring-indigo-200' : ''
+                row.type === 'dir' ? 'subtitle-tree-row-dir' : '',
+                view.subtitleInspectorSelectedIds.has(row.id) ? 'subtitle-tree-row-selected' : ''
               ]"
               @click="view.handleSubtitleInspectorRowClick(row, $event)"
             >
@@ -339,7 +339,7 @@
                   </button>
                   <span v-else-if="row.depth > 0" class="inline-block h-5 w-5 shrink-0"></span>
                   <span
-                    class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/row:rotate-[6deg] group-hover/row:scale-110"
+                    class="subtitle-tree-row-icon inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/row:rotate-[6deg] group-hover/row:scale-110"
                     :class="row.type === 'dir' ? 'bg-amber-50 text-amber-600 ring-1 ring-inset ring-amber-100' : ''"
                     :style="row.type === 'file' ? subtitleRowChipStyle(row) : null"
                   >
@@ -347,11 +347,11 @@
                     <FolderOpen v-else-if="row.type === 'dir'" :size="12" :stroke-width="2.2" />
                     <component v-else :is="libraryEntryIconFor(row)" :size="12" :stroke-width="2.2" />
                   </span>
-                  <span class="truncate text-[13px] font-medium text-slate-900" :title="row.name">{{ row.name }}</span>
+                  <span class="subtitle-tree-row-name truncate text-[13px] font-medium text-slate-900" :title="row.name">{{ row.name }}</span>
                 </div>
               </div>
-              <div class="text-[12px] font-medium tabular-nums text-slate-600">{{ view.formatFileSize(row.size) }}</div>
-              <div class="text-[12px] tabular-nums text-slate-500">{{ view.formatDate(row.modified_time) }}</div>
+              <div class="subtitle-tree-row-size text-[12px] font-medium tabular-nums text-slate-600">{{ view.formatFileSize(row.size) }}</div>
+              <div class="subtitle-tree-row-time text-[12px] tabular-nums text-slate-500">{{ view.formatDate(row.modified_time) }}</div>
               <div class="flex w-[60px] items-center justify-center gap-1 justify-self-end" @click.stop>
                 <button
                   v-if="row.type === 'file'"
@@ -698,6 +698,188 @@ function getSubtitlePairRenamePreview(pair = {}) {
   box-shadow: none !important;
 }
 
+.subtitle-tree-row-selected {
+  background-color: rgba(238, 242, 255, 0.78);
+  border-color: #c7d2fe;
+  box-shadow: inset 0 0 0 1px rgba(199, 210, 254, 0.72);
+}
+
+.subtitle-tree-row:hover {
+  background-color: rgba(248, 250, 252, 0.62);
+}
+
+.subtitle-tree-row-dir {
+  background-color: rgba(248, 250, 252, 0.36);
+}
+
+.subtitle-pair-results-panel {
+  background: #ffffff;
+}
+
+.subtitle-pairing-row {
+  position: relative;
+  overflow: hidden;
+  background: rgba(248, 250, 252, 0.72);
+  border-color: rgba(226, 232, 240, 0.92);
+  color: #0f172a;
+}
+
+.subtitle-pairing-row-idle:hover {
+  background: #f8fbff;
+  border-color: #93c5fd;
+}
+
+.subtitle-pairing-subtitle-row.subtitle-pairing-row-idle:hover {
+  background: #fbf7ff;
+  border-color: #c4b5fd;
+}
+
+.subtitle-pairing-row-paired {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  box-shadow: inset 0 0 0 1px rgba(203, 213, 225, 0.42);
+}
+
+.subtitle-pairing-row-selected {
+  background: #eff6ff;
+  border-color: #60a5fa;
+  box-shadow:
+    inset 0 0 0 1px rgba(96, 165, 250, 0.38),
+    0 8px 24px rgba(37, 99, 235, 0.16);
+}
+
+.subtitle-pairing-subtitle-row.subtitle-pairing-row-selected {
+  background: #f5f3ff;
+  border-color: #a78bfa;
+  box-shadow:
+    inset 0 0 0 1px rgba(167, 139, 250, 0.38),
+    0 8px 24px rgba(124, 58, 237, 0.16);
+}
+
+.subtitle-pairing-row-sequence {
+  background: #eef6ff;
+  border-color: #38bdf8;
+  box-shadow:
+    inset 0 0 0 1px rgba(14, 165, 233, 0.32),
+    0 8px 24px rgba(14, 165, 233, 0.18);
+}
+
+.subtitle-pairing-subtitle-row.subtitle-pairing-row-sequence {
+  background: #f6f1ff;
+  border-color: #a78bfa;
+  box-shadow:
+    inset 0 0 0 1px rgba(139, 92, 246, 0.32),
+    0 8px 24px rgba(139, 92, 246, 0.18);
+}
+
+.subtitle-pairing-row-suspicious {
+  border-color: #f59e0b;
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.18);
+}
+
+.subtitle-pairing-row-name {
+  color: #1e293b;
+}
+
+.subtitle-pairing-audio-row:hover .subtitle-pairing-row-name,
+.subtitle-pairing-audio-row.subtitle-pairing-row-selected .subtitle-pairing-row-name,
+.subtitle-pairing-audio-row.subtitle-pairing-row-sequence .subtitle-pairing-row-name {
+  color: #1d4ed8;
+}
+
+.subtitle-pairing-subtitle-row:hover .subtitle-pairing-row-name,
+.subtitle-pairing-subtitle-row.subtitle-pairing-row-selected .subtitle-pairing-row-name,
+.subtitle-pairing-subtitle-row.subtitle-pairing-row-sequence .subtitle-pairing-row-name {
+  color: #6d28d9;
+}
+
+.subtitle-pairing-row-path {
+  color: #64748b;
+}
+
+.subtitle-pairing-row-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 5px;
+  padding: 1px 4px;
+}
+
+.subtitle-pairing-row-chip-paired {
+  background: rgba(226, 232, 240, 0.82);
+  color: #475569;
+}
+
+.subtitle-pairing-row-chip-warning {
+  background: rgba(254, 243, 199, 0.9);
+  color: #b45309;
+}
+
+.subtitle-pair-add-button.is-ready {
+  background: #f8fafc;
+  border-color: #38bdf8;
+  color: #0369a1;
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.16);
+}
+
+.subtitle-pair-add-button.is-ready:hover:not(:disabled) {
+  background: #ecfeff;
+  border-color: #0ea5e9;
+  color: #075985;
+}
+
+.subtitle-pair-add-button.is-disabled {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+  color: #94a3b8;
+}
+
+.subtitle-pair-card {
+  background: rgba(248, 250, 252, 0.72);
+  border-color: #e2e8f0;
+}
+
+.subtitle-pair-card:hover {
+  background: #f8fbff;
+  border-color: #93c5fd;
+  transform: translateY(-1px);
+}
+
+.subtitle-pair-card-selected {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.42);
+}
+
+.subtitle-pair-card-low-confidence {
+  background: #fffbeb;
+  border-color: #fcd34d;
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.18);
+}
+
+.subtitle-pair-card-selected.subtitle-pair-card-low-confidence {
+  background: #fff7ed;
+  border-color: #f59e0b;
+}
+
+.subtitle-pair-confidence {
+  color: #64748b;
+}
+
+.subtitle-pair-confidence-low {
+  color: #d97706;
+}
+
+.subtitle-pair-remove {
+  border-radius: 6px;
+  background: transparent;
+  color: #e11d48;
+}
+
+.subtitle-pair-remove:hover:not(:disabled) {
+  background: #fff1f2;
+  color: #be123c;
+}
+
 .subtitle-inspector-workbench-root :deep(.bg-slate-50),
 .subtitle-inspector-workbench-root :deep(.bg-slate-50\/30),
 .subtitle-inspector-workbench-root :deep(.bg-slate-50\/40),
@@ -750,6 +932,405 @@ function getSubtitlePairRenamePreview(pair = {}) {
   background-color: #020617 !important;
   color: #ffffff !important;
   border-color: rgba(255, 255, 255, 0.24) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-search-input),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-search-input) {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-search-input:focus),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-search-input:focus) {
+  background: transparent !important;
+  background-color: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-selection-bar),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-selection-bar) {
+  background: #202127 !important;
+  background-image: none !important;
+  border-color: rgba(139, 92, 246, 0.34) !important;
+  color: rgba(244, 244, 245, 0.92) !important;
+  box-shadow: inset 3px 0 0 rgba(139, 92, 246, 0.82) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-selection-icon),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-selection-icon) {
+  background: #7c3aed !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-selection-count),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-selection-count) {
+  color: #c4b5fd !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-selection-help),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-selection-help) {
+  color: rgba(196, 181, 253, 0.68) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root :is(.subtitle-tree-selection-secondary, .subtitle-tree-selection-danger)),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root :is(.subtitle-tree-selection-secondary, .subtitle-tree-selection-danger)) {
+  background: #28292f !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  color: rgba(244, 244, 245, 0.9) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-selection-danger),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-selection-danger) {
+  color: #fecdd3 !important;
+  border-color: rgba(244, 63, 94, 0.32) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-selection-danger:hover:not(:disabled)),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-selection-danger:hover:not(:disabled)) {
+  background: #9f2537 !important;
+  border-color: rgba(254, 205, 211, 0.42) !important;
+  color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-selection-secondary:hover:not(:disabled)),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-selection-secondary:hover:not(:disabled)) {
+  background: #32333a !important;
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row) {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row-dir),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row-dir) {
+  background: #242529 !important;
+  background-color: #242529 !important;
+  background-image: none !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row:hover),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row:hover) {
+  background: #303136 !important;
+  background-image: none !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row-selected),
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row-selected:hover),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row-selected),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row-selected:hover) {
+  background: #252333 !important;
+  background-color: #252333 !important;
+  background-image: none !important;
+  border-color: rgba(167, 139, 250, 0.28) !important;
+  color: #f8fafc !important;
+  box-shadow:
+    inset 3px 0 0 rgba(139, 92, 246, 0.92),
+    inset 0 0 0 1px rgba(167, 139, 250, 0.18) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row-selected .subtitle-tree-row-name),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row-selected .subtitle-tree-row-name) {
+  color: #f8fafc !important;
+  font-weight: 650 !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row-selected :is(.subtitle-tree-row-size, .subtitle-tree-row-time)),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row-selected :is(.subtitle-tree-row-size, .subtitle-tree-row-time)) {
+  color: rgba(226, 232, 240, 0.68) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row-selected .subtitle-tree-row-icon),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row-selected .subtitle-tree-row-icon) {
+  background: rgba(139, 92, 246, 0.22) !important;
+  color: #c4b5fd !important;
+  box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.28) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row input[type="checkbox"]),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row input[type="checkbox"]) {
+  accent-color: #8b5cf6;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-row),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-row) {
+  background: #23252b !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  color: rgba(226, 232, 240, 0.9) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-row:hover),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-row:hover) {
+  background: #282c34 !important;
+  border-color: rgba(56, 189, 248, 0.3) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-subtitle-row:hover),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-subtitle-row:hover) {
+  border-color: rgba(167, 139, 250, 0.36) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-row-paired),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-row-paired) {
+  background: #26282e !important;
+  border-color: rgba(148, 163, 184, 0.34) !important;
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.12) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-audio-row.subtitle-pairing-row-selected),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-audio-row.subtitle-pairing-row-selected) {
+  background: #172a3d !important;
+  border-color: rgba(56, 189, 248, 0.72) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(125, 211, 252, 0.18),
+    0 0 0 2px rgba(56, 189, 248, 0.1) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-subtitle-row.subtitle-pairing-row-selected),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-subtitle-row.subtitle-pairing-row-selected) {
+  background: #27213a !important;
+  border-color: rgba(167, 139, 250, 0.78) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(196, 181, 253, 0.18),
+    0 0 0 2px rgba(167, 139, 250, 0.1) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-audio-row.subtitle-pairing-row-sequence),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-audio-row.subtitle-pairing-row-sequence) {
+  background: #112c3a !important;
+  border-color: rgba(14, 165, 233, 0.82) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(56, 189, 248, 0.2),
+    0 0 0 2px rgba(14, 165, 233, 0.11) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-subtitle-row.subtitle-pairing-row-sequence),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-subtitle-row.subtitle-pairing-row-sequence) {
+  background: #2a213d !important;
+  border-color: rgba(139, 92, 246, 0.82) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(167, 139, 250, 0.2),
+    0 0 0 2px rgba(139, 92, 246, 0.11) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-row-suspicious),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-row-suspicious) {
+  background: #2b271f !important;
+  border-color: rgba(245, 158, 11, 0.56) !important;
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.16) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-row-name),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-row-name) {
+  color: rgba(244, 244, 245, 0.94) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-audio-row:hover .subtitle-pairing-row-name),
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-audio-row.subtitle-pairing-row-selected .subtitle-pairing-row-name),
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-audio-row.subtitle-pairing-row-sequence .subtitle-pairing-row-name),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-audio-row:hover .subtitle-pairing-row-name),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-audio-row.subtitle-pairing-row-selected .subtitle-pairing-row-name),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-audio-row.subtitle-pairing-row-sequence .subtitle-pairing-row-name) {
+  color: #7dd3fc !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-subtitle-row:hover .subtitle-pairing-row-name),
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-subtitle-row.subtitle-pairing-row-selected .subtitle-pairing-row-name),
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-subtitle-row.subtitle-pairing-row-sequence .subtitle-pairing-row-name),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-subtitle-row:hover .subtitle-pairing-row-name),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-subtitle-row.subtitle-pairing-row-selected .subtitle-pairing-row-name),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-subtitle-row.subtitle-pairing-row-sequence .subtitle-pairing-row-name) {
+  color: #c4b5fd !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-row-path),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-row-path) {
+  color: rgba(203, 213, 225, 0.62) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-row-chip-paired),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-row-chip-paired) {
+  background: rgba(71, 85, 105, 0.42) !important;
+  color: rgba(226, 232, 240, 0.86) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-row-chip-warning),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pairing-row-chip-warning) {
+  background: rgba(245, 158, 11, 0.2) !important;
+  color: #fbbf24 !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-results-panel),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-results-panel) {
+  background: #202127 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: rgba(244, 244, 245, 0.92) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-results-header),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-results-header) {
+  background: #1b1c22 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-results-title),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-results-title) {
+  color: #f8fafc !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-clear-action),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-clear-action) {
+  background: transparent !important;
+  color: rgba(203, 213, 225, 0.7) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-clear-action:hover:not(:disabled)),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-clear-action:hover:not(:disabled)) {
+  background: #2d2f36 !important;
+  color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-add-button.is-ready),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-add-button.is-ready) {
+  background: #242832 !important;
+  background-image: none !important;
+  border-color: rgba(56, 189, 248, 0.42) !important;
+  color: #7dd3fc !important;
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.1) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-add-button.is-ready:hover:not(:disabled)),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-add-button.is-ready:hover:not(:disabled)) {
+  background: #26313c !important;
+  border-color: rgba(125, 211, 252, 0.58) !important;
+  color: #bae6fd !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-add-button.is-disabled),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-add-button.is-disabled) {
+  background: #242529 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  color: rgba(203, 213, 225, 0.48) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-empty > div:first-child),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-empty > div:first-child) {
+  color: rgba(226, 232, 240, 0.78) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-empty > div:last-child),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-empty > div:last-child) {
+  color: rgba(148, 163, 184, 0.82) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-card),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-card) {
+  background: #23252b !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  color: rgba(226, 232, 240, 0.9) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-card:hover),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-card:hover) {
+  background: #282c34 !important;
+  border-color: rgba(56, 189, 248, 0.3) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-card-low-confidence),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-card-low-confidence) {
+  background: #2b271f !important;
+  background-image: none !important;
+  border-color: rgba(245, 158, 11, 0.42) !important;
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.14) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-card-selected),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-card-selected) {
+  background: #202a3b !important;
+  background-image: none !important;
+  border-color: rgba(96, 165, 250, 0.5) !important;
+  box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.18) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-card-selected.subtitle-pair-card-low-confidence),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-card-selected.subtitle-pair-card-low-confidence) {
+  background: #2a2926 !important;
+  border-color: rgba(251, 191, 36, 0.56) !important;
+  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.18) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-confidence),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-confidence) {
+  color: rgba(203, 213, 225, 0.82) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-confidence-low),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-confidence-low) {
+  color: #fbbf24 !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-index),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-index),
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-reason),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-reason) {
+  color: rgba(148, 163, 184, 0.82) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-before),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-before) {
+  color: rgba(226, 232, 240, 0.78) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-after),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-after) {
+  color: #5eead4 !important;
+  font-weight: 650 !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-arrow),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-arrow) {
+  color: rgba(148, 163, 184, 0.68) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-audio-icon),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-audio-icon) {
+  color: #38bdf8 !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-subtitle-icon),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-subtitle-icon) {
+  color: #a78bfa !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-remove),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-remove) {
+  border-radius: 6px !important;
+  background: rgba(127, 29, 29, 0.18) !important;
+  color: #fecdd3 !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-remove:hover:not(:disabled)),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-remove:hover:not(:disabled)) {
+  background: #9f1239 !important;
+  color: #ffffff !important;
 }
 
 :global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep(.bg-gradient-to-r),

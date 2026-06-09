@@ -1463,19 +1463,13 @@ async function batchDeleteSubtitleTreeEntries() {
   subtitleInspectorDeleting.value = true
   try {
     const targetLibraryId = subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId
-    // 全部是文件（无目录）时可以安全并发删除；含目录时保留串行 + 长路径优先，
-    // 避免"父目录已删，子文件路径不存在"导致并发删除时报错。
-    const allFiles = sortedRows.every(row => !(row.is_dir || row.isDir || row.type === 'dir'))
-    if (allFiles) {
-      await runWithConcurrency(sortedRows, 6, async (row) => {
-        const path = resolveSubtitleEntryPath(row)
-        await libraryApi.browserDelete(targetLibraryId, path, true)
-      })
-    } else {
-      for (const row of sortedRows) {
-        const path = resolveSubtitleEntryPath(row)
-        await libraryApi.browserDelete(targetLibraryId, path, true)
-      }
+    const paths = sortedRows.map(row => resolveSubtitleEntryPath(row)).filter(Boolean)
+    const result = await libraryApi.browserBatchDelete(targetLibraryId, paths, true, {
+      batchId: `subtitle-tree-delete-${Date.now()}`
+    })
+    const failed = result?.failed_paths || []
+    if (failed.length) {
+      throw new Error(failed[0]?.error || failed[0]?.path || '部分字幕文件删除失败')
     }
     clearSubtitleInspectorSelection()
     ElMessage.success(`已删除 ${sortedRows.length} 项`)
@@ -2029,10 +2023,34 @@ async function applySubtitleManualPairs() {
     // 把 batch 返回的 results 按"原始 items 索引"建表，方便容忍部分失败 + 错位回填
     const buildResultMap = (result) => {
       const map = new Map()
-      for (const r of (result?.results || [])) {
-        if (r && Number.isInteger(r.index)) map.set(r.index, r)
-      }
+      ;(result?.results || []).forEach((r, fallbackIndex) => {
+        if (!r) return
+        const resultIndex = Number(r.index)
+        const index = Number.isInteger(resultIndex) ? resultIndex : fallbackIndex
+        if (!map.has(index)) map.set(index, r)
+      })
       return map
+    }
+
+    const getBatchRenameFailedItems = (result) => {
+      const failed = [
+        ...(Array.isArray(result?.failed) ? result.failed : []),
+        ...(Array.isArray(result?.failed_items) ? result.failed_items : [])
+      ]
+      const seen = new Set()
+      return failed.filter(item => {
+        const key = `${item?.index ?? ''}::${item?.path || item?.source_path || ''}::${item?.error || ''}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+    }
+
+    const assertBatchRenameSucceeded = (result, phaseLabel) => {
+      const failedFirst = getBatchRenameFailedItems(result)[0]
+      if (failedFirst) {
+        throw new Error(`${phaseLabel}失败：${failedFirst.error || '未知错误'}（${failedFirst.path || failedFirst.source_path || ''}）`)
+      }
     }
 
     // —— Phase 1：source_path → temp_name
@@ -2052,9 +2070,10 @@ async function applySubtitleManualPairs() {
           phaseOneRenamed.push(pair)
         }
       })
-      const failedFirst = (result?.failed || [])[0]
-      if (failedFirst) {
-        throw new Error(`重命名为临时名失败：${failedFirst.error || '未知错误'}（${failedFirst.path || ''}）`)
+      assertBatchRenameSucceeded(result, '重命名为临时名')
+      const missingTempPath = bucketPairs.find(pair => !pair.temp_path)
+      if (missingTempPath) {
+        throw new Error(`重命名为临时名失败：后端未返回新路径（${missingTempPath.source_path || missingTempPath.current_name || ''}）`)
       }
     }
 
@@ -2074,17 +2093,24 @@ async function applySubtitleManualPairs() {
           phaseTwoRenamed.push(pair)
         }
       })
-      const failedFirst = (result?.failed || [])[0]
-      if (failedFirst) {
-        throw new Error(`重命名为目标名失败：${failedFirst.error || '未知错误'}（${failedFirst.path || ''}）`)
+      assertBatchRenameSucceeded(result, '重命名为目标名')
+      const missingFinalPath = bucketPairs.find(pair => !pair.final_path)
+      if (missingFinalPath) {
+        throw new Error(`重命名为目标名失败：后端未返回新路径（${missingFinalPath.temp_path || missingFinalPath.target_name || ''}）`)
       }
     }
 
-    // —— Phase 3：删除未用字幕（仍走并发，删除接口暂无 batch endpoint）
+    // —— Phase 3：删除未用字幕
     if (unusedSubtitleRows.length) {
-      await runWithConcurrency(unusedSubtitleRows, 6, async (subtitle) => {
-        await libraryApi.browserDelete(subtitleLibraryId, resolveSubtitleEntryPath(subtitle), true)
+      const deletePaths = unusedSubtitleRows.map(subtitle => resolveSubtitleEntryPath(subtitle)).filter(Boolean)
+      const deleteResult = await libraryApi.browserBatchDelete(subtitleLibraryId, deletePaths, true, {
+        skipActivityLog: true,
+        batchId: `subtitle-manual-unused-${Date.now()}`
       })
+      const failedDelete = (deleteResult?.failed_paths || [])[0]
+      if (failedDelete) {
+        throw new Error(`删除未用字幕失败：${failedDelete.error || failedDelete.path || '未知错误'}`)
+      }
     }
 
     const currentTaskId = activeTask.value?.id || props.taskId
