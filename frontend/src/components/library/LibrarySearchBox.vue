@@ -17,13 +17,13 @@
           :stroke-width="2.2"
           :class="{ 'lib-search-filter-fill': currentFilterMeta.fillIcon }"
         />
-        <span v-if="kindFilter !== 'all'" class="lib-search-filter-dot" />
       </button>
       <input
         ref="inputRef"
         v-model="innerKeyword"
         type="text"
         class="lib-search-input"
+        :class="{ 'has-clear-action': innerKeyword }"
         :placeholder="placeholder"
         spellcheck="false"
         autocomplete="off"
@@ -709,17 +709,6 @@ onBeforeUnmount(() => {
   transform: translateY(-50%) rotate(-4deg) scale(1.08);
 }
 
-.lib-search-filter-dot {
-  position: absolute;
-  top: 3px;
-  right: 3px;
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: #ef4444;
-  box-shadow: 0 0 0 2px #fff;
-}
-
 /* lucide 默认 fill="none"，需要 fill 的地方明确赋 currentColor（文件夹主调） */
 .lib-search-filter-fill {
   fill: currentColor;
@@ -825,15 +814,19 @@ onBeforeUnmount(() => {
 .lib-search-input {
   width: 100%;
   height: 34px;
-  /* 右侧预留空间：展开图标 26px + 清除 X 22px + 间距 */
-  padding: 0 64px 0 34px;
+  /* 右侧默认只预留展开图标；有输入内容时再预留清除 X。 */
+  padding: 0 38px 0 34px;
   border-radius: 10px;
   border: 1px solid rgba(203, 213, 225, 0.8);
   background: rgba(248, 250, 252, 0.7);
-  font-size: 13px;
+  font-size: 11px;
   color: #0f172a;
   outline: none;
   transition: all 0.25s ease;
+}
+
+.lib-search-input.has-clear-action {
+  padding-right: 64px;
 }
 
 .lib-search-input::placeholder { color: #94a3b8; }
