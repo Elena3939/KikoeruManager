@@ -221,9 +221,20 @@ let previewPollTimer = null
 const selectedItems = computed(() => items.value.filter(item => selectedKeys.value.has(item.key)))
 const loadingText = computed(() => currentStep.value || '正在检查 ASMR.one 与本地文件...')
 const emptyStateDescription = computed(() => {
-  if (skipped.value.length) return '没有识别到可补全的 RJ 文件夹'
+  if (skipped.value.length) {
+    const upToDateCount = skipped.value.filter(isUpToDateSkipped).length
+    if (upToDateCount === skipped.value.length) return '已检查，当前没有缺失文件'
+    if (upToDateCount > 0) return `没有可创建的补全任务，其中 ${upToDateCount} 项已是完整状态`
+    return '没有可创建的补全任务'
+  }
   return '没有需要补全的文件夹'
 })
+
+function isUpToDateSkipped (row) {
+  const status = String(row?.status || '').trim().toLowerCase()
+  const reason = String(row?.reason || '').trim()
+  return status === 'up_to_date' || reason === '没有缺失文件'
+}
 
 watch(() => props.modelValue, (visible) => {
   if (visible) {

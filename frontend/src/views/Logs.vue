@@ -352,7 +352,6 @@ import AppDropdown from '../components/common/AppDropdown.vue'
 import SystemLogTerminal from '../components/common/SystemLogTerminal.vue'
 import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 
-const LOG_PREVIEW_LIMIT = 900
 const LOG_FLUSH_INTERVAL = 48
 const LOG_STREAM_RECONNECT_MS = 2500
 const COMPACT_PROCESS_LOGS_KEY = 'kikoerumanager.logs.compact_process_noise'
@@ -641,8 +640,7 @@ function classifyProgressPhase(text, moduleName) {
 
 function buildProgressDetail(step) {
   const text = String(step || '').replace(/\s+/g, ' ').trim()
-  if (text.length <= 96) return text
-  return `${text.slice(0, 94)}...`
+  return text
 }
 
 function parseTaskProgressLog(log, order = 0) {
@@ -820,13 +818,7 @@ function trimMapByOldest(map, maxSize, trimCount) {
 
 function buildDisplayMessage(message) {
   const text = String(message || '')
-  if (text.length <= LOG_PREVIEW_LIMIT) {
-    return { displayMessage: text, isTruncated: false }
-  }
-  return {
-    displayMessage: `${text.slice(0, LOG_PREVIEW_LIMIT)}...（已截断，点击查看完整）`,
-    isTruncated: true,
-  }
+  return { displayMessage: text, isTruncated: false }
 }
 
 function parseLogLine(line) {

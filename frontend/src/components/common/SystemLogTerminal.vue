@@ -248,7 +248,6 @@ function toggleLineDetail(line, index, event) {
 function visibleLineMessage(line, index) {
   if (isLineExpanded(line, index)) return originalLogMessage(line)
   const message = logMessage(line)
-  if (isLineTruncated(line) || hasHiddenOriginalDetail(line)) return `${message}...`
   return message
 }
 

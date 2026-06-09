@@ -1731,6 +1731,20 @@ function getUnifiedFileRows(task) {
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.24);
 }
 
+:global(html.kikoerumanager-dark .v1-task-card.is-warning) {
+  border-color: rgba(245, 158, 11, 0.3);
+  background:
+    linear-gradient(90deg, rgba(146, 64, 14, 0.26), rgba(24, 24, 27, 0.92) 24%),
+    rgba(24, 24, 27, 0.94);
+}
+
+:global(html.kikoerumanager-dark .v1-task-card.is-danger) {
+  border-color: rgba(248, 113, 113, 0.28);
+  background:
+    linear-gradient(90deg, rgba(127, 29, 29, 0.3), rgba(24, 24, 27, 0.92) 24%),
+    rgba(24, 24, 27, 0.94);
+}
+
 :global(html.kikoerumanager-dark .v1-task-card::before) {
   display: none;
 }
@@ -1740,6 +1754,22 @@ function getUnifiedFileRows(task) {
   border-color: rgba(255, 255, 255, 0.18);
   background: rgba(32, 32, 35, 0.96);
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
+}
+
+:global(html.kikoerumanager-dark .v1-task-card.is-warning:hover),
+:global(html.kikoerumanager-dark .v1-task-card.is-warning.expanded) {
+  border-color: rgba(245, 158, 11, 0.38);
+  background:
+    linear-gradient(90deg, rgba(146, 64, 14, 0.34), rgba(32, 32, 35, 0.96) 24%),
+    rgba(32, 32, 35, 0.96);
+}
+
+:global(html.kikoerumanager-dark .v1-task-card.is-danger:hover),
+:global(html.kikoerumanager-dark .v1-task-card.is-danger.expanded) {
+  border-color: rgba(248, 113, 113, 0.38);
+  background:
+    linear-gradient(90deg, rgba(127, 29, 29, 0.38), rgba(32, 32, 35, 0.96) 24%),
+    rgba(32, 32, 35, 0.96);
 }
 
 :global(html.kikoerumanager-dark .v1-inline-action.primary),
@@ -1753,6 +1783,15 @@ function getUnifiedFileRows(task) {
 
 :global(html.kikoerumanager-dark .v1-inline-action.primary) {
   background: rgba(63, 63, 70, 0.78);
+}
+
+:global(html.kikoerumanager-dark .v1-task-icon.warning),
+:global(html.kikoerumanager-dark .v1-status-line.warning) {
+  color: #fbbf24;
+}
+
+:global(html.kikoerumanager-dark .v1-task-icon.danger) {
+  color: #f87171;
 }
 
 :global(html.kikoerumanager-dark .v1-inline-action.danger),

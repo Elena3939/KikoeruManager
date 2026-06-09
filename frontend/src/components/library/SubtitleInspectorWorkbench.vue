@@ -1,5 +1,5 @@
 ﻿<template>
-  <div :class="immersive ? 'subtitle-inspector-workbench-root flex h-full min-h-0 flex-col overflow-hidden' : 'flex flex-col min-h-0 rounded-[18px] border border-slate-200 bg-white'">
+  <div :class="immersive ? 'subtitle-inspector-workbench-root flex h-full min-h-0 flex-col overflow-hidden' : 'subtitle-inspector-workbench-root flex flex-col min-h-0 rounded-[18px] border border-slate-200 bg-white'">
     <div v-if="!immersive" class="flex items-center justify-between gap-3 px-5 py-3.5 border-b border-slate-100">
       <div class="flex flex-col gap-0.5 min-w-0">
         <div class="flex items-center gap-2">
@@ -956,9 +956,9 @@ function getSubtitlePairRenamePreview(pair = {}) {
 :global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-selection-bar) {
   background: #202127 !important;
   background-image: none !important;
-  border-color: rgba(139, 92, 246, 0.34) !important;
+  border-color: rgba(139, 92, 246, 0.26) !important;
   color: rgba(244, 244, 245, 0.92) !important;
-  box-shadow: inset 3px 0 0 rgba(139, 92, 246, 0.82) !important;
+  box-shadow: inset 0 0 0 1px rgba(139, 92, 246, 0.16) !important;
 }
 
 :global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-selection-icon),
@@ -1034,9 +1034,7 @@ function getSubtitlePairRenamePreview(pair = {}) {
   background-image: none !important;
   border-color: rgba(167, 139, 250, 0.28) !important;
   color: #f8fafc !important;
-  box-shadow:
-    inset 3px 0 0 rgba(139, 92, 246, 0.92),
-    inset 0 0 0 1px rgba(167, 139, 250, 0.18) !important;
+  box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.18) !important;
 }
 
 :global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row-selected .subtitle-tree-row-name),
@@ -1055,6 +1053,24 @@ function getSubtitlePairRenamePreview(pair = {}) {
   background: rgba(139, 92, 246, 0.22) !important;
   color: #c4b5fd !important;
   box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.28) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row-selected button),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row-selected button),
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-tree-row-selected button),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-tree-row-selected button) {
+  background: #303142 !important;
+  background-image: none !important;
+  border-color: rgba(196, 181, 253, 0.26) !important;
+  box-shadow: inset 0 0 0 1px rgba(196, 181, 253, 0.1) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row-selected button:hover:not(:disabled)),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row-selected button:hover:not(:disabled)),
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-tree-row-selected button:hover:not(:disabled)),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-tree-row-selected button:hover:not(:disabled)) {
+  background: #37394d !important;
+  border-color: rgba(196, 181, 253, 0.38) !important;
 }
 
 :global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-tree-row input[type="checkbox"]),
@@ -1331,6 +1347,123 @@ function getSubtitlePairRenamePreview(pair = {}) {
 :global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-pair-remove:hover:not(:disabled)) {
   background: #9f1239 !important;
   color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-tree-selection-bar),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-tree-selection-bar) {
+  background: #202127 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: rgba(244, 244, 245, 0.94) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-tree-selection-count),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-tree-selection-count) {
+  color: #c4b5fd !important;
+}
+
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-tree-selection-help),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-tree-selection-help) {
+  color: rgba(196, 181, 253, 0.72) !important;
+}
+
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-tree-row-selected),
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-tree-row-selected:hover),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-tree-row-selected),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-tree-row-selected:hover) {
+  background: #252633 !important;
+  background-color: #252633 !important;
+  background-image: none !important;
+  border-color: rgba(196, 181, 253, 0.2) !important;
+  color: #f8fafc !important;
+  box-shadow: inset 0 0 0 1px rgba(196, 181, 253, 0.14) !important;
+}
+
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-tree-row-selected .subtitle-tree-row-name),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-tree-row-selected .subtitle-tree-row-name) {
+  color: #ffffff !important;
+  font-weight: 700 !important;
+}
+
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-tree-row-selected :is(.subtitle-tree-row-size, .subtitle-tree-row-time)),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-tree-row-selected :is(.subtitle-tree-row-size, .subtitle-tree-row-time)) {
+  color: rgba(226, 232, 240, 0.72) !important;
+}
+
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-tree-row-selected .subtitle-tree-row-icon),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-tree-row-selected .subtitle-tree-row-icon) {
+  background: #33364a !important;
+  color: #c4b5fd !important;
+  box-shadow: inset 0 0 0 1px rgba(196, 181, 253, 0.22) !important;
+}
+
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-pair-card),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-pair-card) {
+  background: #23252b !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  color: rgba(244, 244, 245, 0.92) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-pair-card:hover),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-pair-card:hover) {
+  background: #2a2d34 !important;
+  border-color: rgba(125, 211, 252, 0.32) !important;
+}
+
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-pair-card-low-confidence),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-pair-card-low-confidence) {
+  background: #2b271f !important;
+  background-image: none !important;
+  border-color: rgba(245, 158, 11, 0.46) !important;
+  color: rgba(244, 244, 245, 0.93) !important;
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.16) !important;
+}
+
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-pair-card-selected),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-pair-card-selected) {
+  background: #202a3b !important;
+  background-image: none !important;
+  border-color: rgba(96, 165, 250, 0.54) !important;
+  color: #f8fafc !important;
+  box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.2) !important;
+}
+
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-pair-card-selected.subtitle-pair-card-low-confidence),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-pair-card-selected.subtitle-pair-card-low-confidence) {
+  background: #2c2922 !important;
+  border-color: rgba(251, 191, 36, 0.62) !important;
+  color: #f8fafc !important;
+  box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.18) !important;
+}
+
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-pair-confidence),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-pair-confidence),
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-pair-before),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-pair-before) {
+  color: rgba(226, 232, 240, 0.84) !important;
+}
+
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-pair-confidence-low),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-pair-confidence-low) {
+  color: #fbbf24 !important;
+}
+
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-pair-index),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-pair-index),
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-pair-reason),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-pair-reason),
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-pair-arrow),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-pair-arrow) {
+  color: rgba(203, 213, 225, 0.72) !important;
+}
+
+:global(html.kikoerumanager-dark #app .subtitle-inspector-workbench-root .subtitle-pair-after),
+:global(html.dark #app .subtitle-inspector-workbench-root .subtitle-pair-after) {
+  color: #5eead4 !important;
+  font-weight: 700 !important;
 }
 
 :global(html.kikoerumanager-dark) .subtitle-inspector-workbench-root :deep(.bg-gradient-to-r),

@@ -1367,6 +1367,12 @@ function humanAction(row) {
     return status === 'success' ? '解压完成' : '解压失败'
   }
   if (cat === 'auto_import') {
+    if (action === 'batch_start') {
+      if (status === 'success' || status === 'completed') return '已提交解压'
+      if (status === 'partial_success') return '部分提交解压'
+      if (status === 'failed') return '提交解压失败'
+      return '创建解压任务'
+    }
     if (status === 'success') return '入库完成'
     if (status === 'partial_success') {
       // 真有失败子任务才叫"部分入库"；纯转入问题作品 / 软失败 → "转入问题作品"
@@ -1376,6 +1382,12 @@ function humanAction(row) {
     if (status === 'incomplete') return '未正常结束'
   }
   if (cat === 'process_existing') {
+    if (action === 'batch_start') {
+      if (status === 'success' || status === 'completed') return '已提交处理'
+      if (status === 'partial_success') return '部分提交处理'
+      if (status === 'failed') return '提交处理失败'
+      return '创建处理任务'
+    }
     if (status === 'success') return '处理完成'
     if (status === 'partial_success') return '部分处理'
     if (status === 'failed') return '处理失败'

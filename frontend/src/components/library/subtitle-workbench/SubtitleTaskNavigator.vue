@@ -92,18 +92,18 @@
           :key="task.id"
           :ref="el => registerTaskRef(task.id, el)"
           type="button"
-          class="group grid w-full gap-1 rounded-[12px] border bg-white px-2.5 py-1.5 text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+          class="group grid w-full gap-1.5 rounded-[12px] border bg-white px-2.5 py-2 text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
           :class="getCardClass(task)"
           :disabled="isTaskInteractionLocked(task)"
           @click="handleTaskClick(task)"
         >
-          <div class="flex items-center justify-between gap-2">
-            <span class="text-[12.5px] font-semibold tracking-[-0.02em] text-slate-900 truncate">{{ ctx.getTaskDisplayRJCode(task) }}</span>
+          <div class="flex items-start justify-between gap-2">
+            <span class="subtitle-task-title text-[12.5px] font-semibold tracking-[-0.02em] text-slate-900">{{ ctx.getTaskDisplayRJCode(task) }}</span>
 
             <Transition name="subtitle-status-flip" mode="out-in">
               <span
                 :key="`${task.id}-${getTaskStatusKey(task)}`"
-                class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9.5px] font-medium transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+                class="inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[9.5px] font-medium whitespace-nowrap transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
                 :class="getStatusClass(task)"
               >
                 <component :is="getStatusIcon(task)" class="h-2.5 w-2.5" :class="{ 'animate-spin': getTaskStatusKey(task) === 'processing' }" :stroke-width="2.4" />
@@ -112,16 +112,16 @@
             </Transition>
           </div>
 
-          <div class="flex items-start gap-1 break-all text-[10.5px] font-medium leading-tight text-slate-900">
+          <div class="flex items-start gap-1 text-[10.5px] font-medium leading-tight text-slate-900">
             <Folder class="mt-px h-2.5 w-2.5 flex-shrink-0 text-amber-500" :stroke-width="2.4" />
-            <span class="line-clamp-1">{{ getDisplayFolderName(task) }}</span>
+            <span class="subtitle-task-folder-name min-w-0 flex-1">{{ getDisplayFolderName(task) }}</span>
           </div>
 
-          <div class="rounded-md bg-slate-50/80 px-1.5 py-0.5 text-[10px] leading-tight text-slate-500 line-clamp-1">
+          <div class="subtitle-task-step rounded-md bg-slate-50/80 px-1.5 py-1 text-[10px] leading-snug text-slate-500">
             {{ getCurrentStep(task) }}
           </div>
 
-          <div class="flex flex-wrap gap-0.5 text-[9px]">
+          <div class="flex flex-wrap gap-1 text-[9px]">
             <template v-if="ctx.isHistoryRestoredSubtitleTask?.(task) || ctx.isSelectionBackfillSubtitleTask?.(task)">
               <span class="inline-flex items-center gap-0.5 rounded border border-slate-200 bg-slate-50 px-1 py-0.5 font-medium text-slate-700">
                 <Clock class="h-2 w-2 text-violet-500" :stroke-width="2.4" />
@@ -506,6 +506,27 @@ function getDisplayFolderName(task) {
 .subtitle-queue-body {
   min-height: 0;
   overflow: hidden;
+}
+
+.subtitle-task-title,
+.subtitle-task-folder-name,
+.subtitle-task-step {
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+}
+
+.subtitle-task-title {
+  flex: 1 1 auto;
+  -webkit-line-clamp: 2;
+}
+
+.subtitle-task-folder-name,
+.subtitle-task-step {
+  -webkit-line-clamp: 2;
 }
 
 .subtitle-clear-trigger {

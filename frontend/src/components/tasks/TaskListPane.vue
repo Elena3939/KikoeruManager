@@ -1,6 +1,6 @@
 <template>
   <div ref="paneRef" class="task-list-pane">
-    <Transition :name="pageTransitionName" mode="out-in">
+    <Transition :name="pageTransitionName" mode="out-in" @after-enter="schedulePageSizeMeasure">
       <div
         v-if="filteredItems.length"
         :key="pageKey"
@@ -200,6 +200,7 @@ const pagerRef = ref(null)
 
 let resizeObserver = null
 let measureRaf = 0
+let measureTimer = 0
 
 const pageKey = computed(() => `${props.currentOffset}-${props.pageSize}-${props.filteredItems.map(item => item?.id || '').join('|')}`)
 const pageTransitionName = computed(() => props.pageDirection === 'prev' ? 'task-page-prev' : 'task-page-next')
@@ -223,19 +224,56 @@ function goToPage(page) {
   emit('go-page', normalized)
 }
 
+function numericCssValue(style, property, fallback = 0) {
+  if (!style) return fallback
+  const value = Number.parseFloat(style.getPropertyValue(property))
+  return Number.isFinite(value) ? value : fallback
+}
+
 function estimatePageSize() {
   const pane = paneRef.value
   if (!pane) return
   const paneHeight = pane.clientHeight || 0
   if (paneHeight <= 0) return
 
-  const pagerHeight = pagerRef.value?.offsetHeight || 48
-  const listPadding = 20
-  const cardGap = 8
-  const sampleCard = pane.querySelector('.task-card')
-  const cardHeight = sampleCard?.offsetHeight || 82
-  const availableHeight = Math.max(0, paneHeight - pagerHeight - listPadding)
-  const nextSize = Math.max(1, Math.floor((availableHeight + cardGap) / (cardHeight + cardGap)))
+  const list = pane.querySelector('.task-list-scroll')
+  const listStyle = typeof window !== 'undefined' && list ? window.getComputedStyle(list) : null
+  const paddingTop = numericCssValue(listStyle, 'padding-top', 10)
+  const paddingBottom = numericCssValue(listStyle, 'padding-bottom', 10)
+  const cardGap = numericCssValue(listStyle, 'row-gap', 8) || numericCssValue(listStyle, 'gap', 8)
+  const safetySpace = 8
+  const listHeight = list?.clientHeight || Math.max(0, paneHeight - (pagerRef.value?.offsetHeight || 48))
+  const availableHeight = Math.max(0, listHeight - paddingTop - paddingBottom - safetySpace)
+  const cards = Array.from(pane.querySelectorAll('.task-card'))
+  if (props.filteredItems.length && cards.length === 0) {
+    scheduleDelayedPageSizeMeasure()
+    return
+  }
+
+  const measuredHeights = cards
+    .map((card) => card.getBoundingClientRect?.().height || card.offsetHeight || 0)
+    .filter((height) => Number.isFinite(height) && height > 0)
+  const averageCardHeight = measuredHeights.length
+    ? measuredHeights.reduce((total, height) => total + height, 0) / measuredHeights.length
+    : 82
+
+  let usedHeight = 0
+  let exactFitCount = 0
+  for (const height of measuredHeights) {
+    const nextUsedHeight = usedHeight + height + (exactFitCount > 0 ? cardGap : 0)
+    if (nextUsedHeight > availableHeight) break
+    usedHeight = nextUsedHeight
+    exactFitCount += 1
+  }
+
+  let nextSize = Math.max(1, exactFitCount || Math.floor((availableHeight + cardGap) / (averageCardHeight + cardGap)))
+  if (exactFitCount >= cards.length && props.currentOffset + props.filteredItems.length < props.totalItems) {
+    const sortedHeights = [...measuredHeights].sort((a, b) => a - b)
+    const typicalHeight = sortedHeights[Math.floor(sortedHeights.length / 2)] || averageCardHeight
+    const remainingHeight = Math.max(0, availableHeight - usedHeight)
+    const extraCount = Math.floor((remainingHeight + cardGap) / (typicalHeight + cardGap))
+    nextSize += Math.max(0, extraCount)
+  }
 
   if (Number.isFinite(nextSize) && nextSize !== props.pageSize) {
     emit('page-size-change', nextSize)
@@ -251,7 +289,16 @@ function schedulePageSizeMeasure() {
   })
 }
 
-watch(() => [props.filteredItems.length, props.totalItems], () => {
+function scheduleDelayedPageSizeMeasure() {
+  if (typeof window === 'undefined') return
+  if (measureTimer) window.clearTimeout(measureTimer)
+  measureTimer = window.setTimeout(() => {
+    measureTimer = 0
+    schedulePageSizeMeasure()
+  }, 360)
+}
+
+watch(() => [pageKey.value, props.totalItems], () => {
   nextTick(schedulePageSizeMeasure)
 })
 
@@ -266,6 +313,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (resizeObserver) resizeObserver.disconnect()
   if (measureRaf && typeof window !== 'undefined') window.cancelAnimationFrame(measureRaf)
+  if (measureTimer && typeof window !== 'undefined') window.clearTimeout(measureTimer)
 })
 
 function domainMeta(domain) {
