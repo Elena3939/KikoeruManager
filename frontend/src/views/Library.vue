@@ -14732,52 +14732,87 @@ async function applySubtitleManualPairs () {
 
       }))
 
-
-
-    for (const pair of phaseOne) {
-
-      const operationLibraryId = pair.kind === 'audio' ? audioLibraryId : subtitleLibraryId
-
-      const renameResult = await libraryApi.browserRename(operationLibraryId, pair.source_path, pair.temp_name, {
-
-        skipActivityLog: true,
-
-        renameContext: 'subtitle_manual_match_pair'
-
+    const groupByLibrary = (items) => {
+      const buckets = new Map()
+      items.forEach((item) => {
+        const libraryId = item.kind === 'audio' ? audioLibraryId : subtitleLibraryId
+        if (!buckets.has(libraryId)) buckets.set(libraryId, [])
+        buckets.get(libraryId).push(item)
       })
-
-      pair.temp_path = renameResult?.new_path || joinPath(String(pair.source_path || '').replace(/[\\/][^\\/]+$/, ''), pair.temp_name)
-
-      phaseOneCompleted.push(pair)
-
+      return buckets
     }
 
-
-
-    for (const pair of phaseOne) {
-
-      const operationLibraryId = pair.kind === 'audio' ? audioLibraryId : subtitleLibraryId
-
-      const renameResult = await libraryApi.browserRename(operationLibraryId, pair.temp_path, pair.target_name, {
-
-        skipActivityLog: true,
-
-        renameContext: 'subtitle_manual_match_pair'
-
+    const buildResultMap = (result) => {
+      const map = new Map()
+      ;(result?.results || []).forEach((item, index) => {
+        map.set(Number.isInteger(item?.index) ? item.index : index, item)
       })
-
-      pair.final_path = renameResult?.new_path || joinPath(String(pair.temp_path || '').replace(/[\\/][^\\/]+$/, ''), pair.target_name)
-
-      phaseTwoCompleted.push(pair)
-
+      return map
     }
 
+    const assertBatchRenameSucceeded = (result, phaseLabel) => {
+      const failed = result?.failed_items || result?.failed || []
+      if (failed.length) {
+        const first = failed[0]
+        throw new Error(`${phaseLabel}失败：${first.error || first.path || '未知错误'}`)
+      }
+    }
 
+    const phaseOneBuckets = groupByLibrary(phaseOne)
+    for (const [operationLibraryId, bucketPairs] of phaseOneBuckets) {
+      const items = bucketPairs.map(pair => ({ path: pair.source_path, new_name: pair.temp_name }))
+      const result = await libraryApi.browserBatchRename(operationLibraryId, items, {
+        skipActivityLog: true,
+        renameContext: 'subtitle_manual_match_pair'
+      })
+      const resultMap = buildResultMap(result)
+      bucketPairs.forEach((pair, index) => {
+        const renameResult = resultMap.get(index)
+        if (renameResult?.new_path) {
+          pair.temp_path = renameResult.new_path
+          phaseOneCompleted.push(pair)
+        }
+      })
+      assertBatchRenameSucceeded(result, '重命名为临时名')
+      const missingTempPath = bucketPairs.find(pair => !pair.temp_path)
+      if (missingTempPath) {
+        throw new Error(`重命名为临时名失败：后端未返回新路径（${missingTempPath.source_path || missingTempPath.current_name || ''}）`)
+      }
+    }
 
-    for (const subtitle of unusedSubtitleRows) {
+    const phaseTwoBuckets = groupByLibrary(phaseOne)
+    for (const [operationLibraryId, bucketPairs] of phaseTwoBuckets) {
+      const items = bucketPairs.map(pair => ({ path: pair.temp_path, new_name: pair.target_name }))
+      const result = await libraryApi.browserBatchRename(operationLibraryId, items, {
+        skipActivityLog: true,
+        renameContext: 'subtitle_manual_match_pair'
+      })
+      const resultMap = buildResultMap(result)
+      bucketPairs.forEach((pair, index) => {
+        const renameResult = resultMap.get(index)
+        if (renameResult?.new_path) {
+          pair.final_path = renameResult.new_path
+          phaseTwoCompleted.push(pair)
+        }
+      })
+      assertBatchRenameSucceeded(result, '重命名为目标名')
+      const missingFinalPath = bucketPairs.find(pair => !pair.final_path)
+      if (missingFinalPath) {
+        throw new Error(`重命名为目标名失败：后端未返回新路径（${missingFinalPath.temp_path || missingFinalPath.target_name || ''}）`)
+      }
+    }
 
-      await libraryApi.browserDelete(subtitleLibraryId, resolveSubtitleEntryPath(subtitle), true)
-
+    if (unusedSubtitleRows.length) {
+      const deleteResult = await libraryApi.browserBatchDelete(
+        subtitleLibraryId,
+        unusedSubtitleRows.map(subtitle => resolveSubtitleEntryPath(subtitle)).filter(Boolean),
+        true,
+        { skipActivityLog: true, batchId: `subtitle-manual-unused-${Date.now()}` }
+      )
+      const failedDelete = (deleteResult?.failed_paths || [])[0]
+      if (failedDelete) {
+        throw new Error(`删除未用字幕失败：${failedDelete.error || failedDelete.path || '未知错误'}`)
+      }
     }
 
 
@@ -16851,26 +16886,17 @@ async function batchDeleteSubtitleTreeEntries () {
   try {
 
     const batchId = `subtitle-delete-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-
-    for (const row of sortedRows) {
-
-      const path = resolveSubtitleEntryPath(row)
-
-      await libraryApi.browserDelete(
-
-        subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value,
-
-        path,
-
-        true,
-
-        { batchId }
-
-      )
-
+    const paths = sortedRows.map(row => resolveSubtitleEntryPath(row)).filter(Boolean)
+    const result = await libraryApi.browserBatchDelete(
+      subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId || selectedLibraryId.value,
+      paths,
+      true,
+      { batchId }
+    )
+    const failed = result?.failed_paths || []
+    if (failed.length) {
+      throw new Error(failed[0]?.error || failed[0]?.path || '部分字幕文件删除失败')
     }
-
-
 
     clearSubtitleInspectorSelection()
 
@@ -18906,59 +18932,19 @@ async function handleBatchApiRename () {
 
   batchApiRenameTargetIds.value = new Set(targetRows.map(row => row.id))
 
-  batchApiRenameRunningIds.value = new Set()
+  batchApiRenameRunningIds.value = new Set(targetRows.map(row => row.id))
 
   try {
 
-    const concurrency = Math.min(4, Math.max(1, targetRows.length))
-
-    const results = []
-
-    let cursor = 0
-
-    const runNext = async () => {
-
-      while (cursor < targetRows.length) {
-
-        const currentIndex = cursor
-
-        cursor += 1
-
-        const row = targetRows[currentIndex]
-
-        batchApiRenameRunningIds.value = new Set([...batchApiRenameRunningIds.value, row.id])
-
-        try {
-
-          const data = await libraryApi.apiRename(row.path, selectedLibraryId.value)
-
-          results.push({
-            path: row.path,
-            success: true,
-            nextPath: data?.path || '',
-            nextName: data?.new_name || '',
-            message: data.message || 'API 重命名成功'
-          })
-
-        } catch (error) {
-
-          results.push({ path: row.path, success: false, error: error.response?.data?.detail || error.message })
-
-        } finally {
-
-          const nextRunning = new Set(batchApiRenameRunningIds.value)
-
-          nextRunning.delete(row.id)
-
-          batchApiRenameRunningIds.value = nextRunning
-
-        }
-
-      }
-
-    }
-
-    await Promise.all(Array.from({ length: concurrency }, () => runNext()))
+    const response = await libraryApi.batchApiRename(targetRows.map(row => row.path), selectedLibraryId.value)
+    const results = (response?.results || []).map(item => ({
+      path: item.path,
+      success: Boolean(item.success),
+      nextPath: item.new_path || item.nextPath || '',
+      nextName: item.new_name || item.nextName || '',
+      message: item.message || 'API 重命名成功',
+      error: item.error || ''
+    }))
 
     const successCount = results.filter(item => item.success).length
 

@@ -862,36 +862,50 @@ async function applyMojibakeRepair () {
   try {
     let successCount = 0
     const failed = []
-    const pathReplacements = []
     const operations = [...selectedRepairRows.value].sort(compareRepairRowsForApply)
-    for (const row of operations) {
-      const effectivePath = remapRepairPath(row.path, pathReplacements)
-      try {
-        const nextName = String(row.nextName || '').trim()
-        if (!nextName || nextName === row.currentName) {
-          failed.push({
-            name: `${row.itemType === 'dir' ? '目录' : '文件'} ${row.currentName}`,
-            reason: row.needsManualInput ? '未填写新的名称' : '目标名称无变化'
-          })
-          continue
-        }
-        const result = await libraryApi.browserRename(props.libraryId, effectivePath, nextName, {
-          renameContext: 'folder_contents_mojibake_repair'
-        })
-        const nextPath = String(result?.new_path || '').trim()
-        if (nextPath && nextPath !== effectivePath) {
-          pathReplacements.push({
-            oldPath: effectivePath,
-            newPath: nextPath
-          })
-        }
-        successCount += 1
-      } catch (error) {
+    const renameItems = []
+    const rowByIndex = new Map()
+    operations.forEach((row) => {
+      const nextName = String(row.nextName || '').trim()
+      if (!nextName || nextName === row.currentName) {
         failed.push({
           name: `${row.itemType === 'dir' ? '目录' : '文件'} ${row.currentName}`,
-          reason: error.response?.data?.detail || error.message
+          reason: row.needsManualInput ? '未填写新的名称' : '目标名称无变化'
         })
+        return
       }
+      const index = renameItems.length
+      renameItems.push({
+        path: row.path,
+        new_name: nextName,
+        current_name: row.currentName
+      })
+      rowByIndex.set(index, row)
+    })
+
+    if (renameItems.length) {
+      const result = await libraryApi.browserBatchRename(props.libraryId, renameItems, {
+        renameContext: 'folder_contents_mojibake_repair'
+      })
+      successCount += Number(result?.success_count || 0)
+      const failedItems = [
+        ...(Array.isArray(result?.failed) ? result.failed : []),
+        ...(Array.isArray(result?.failed_items) ? result.failed_items : [])
+      ]
+      const seen = new Set()
+      failedItems.forEach((item) => {
+        const index = Number(item?.index)
+        const row = rowByIndex.get(Number.isInteger(index) ? index : -1)
+        const key = `${index}::${item?.path || item?.source_path || ''}::${item?.error || ''}`
+        if (seen.has(key)) return
+        seen.add(key)
+        failed.push({
+          name: row
+            ? `${row.itemType === 'dir' ? '目录' : '文件'} ${row.currentName}`
+            : (item?.path || item?.source_path || '未知项'),
+          reason: item?.error || '重命名失败'
+        })
+      })
     }
 
     repairPreviewVisible.value = false

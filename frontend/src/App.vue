@@ -2152,7 +2152,12 @@ html.kikoerumanager-dark .subtitle-workbench-dialog button:not(
   .subtitle-naming-option,
   .subtitle-toggle-pill,
   .subtitle-switch,
-  .subtitle-retarget-option
+  .subtitle-retarget-option,
+  .subtitle-pair-card,
+  .subtitle-pairing-row,
+  .subtitle-pair-add-button,
+  .subtitle-pair-remove,
+  .subtitle-pair-clear-action
 ),
 html.kikoerumanager-dark .subtitle-workbench-btn {
   background: var(--km-dark-button-bg) !important;
@@ -2168,7 +2173,12 @@ html.kikoerumanager-dark .subtitle-workbench-dialog button:not(
   .subtitle-naming-option,
   .subtitle-toggle-pill,
   .subtitle-switch,
-  .subtitle-retarget-option
+  .subtitle-retarget-option,
+  .subtitle-pair-card,
+  .subtitle-pairing-row,
+  .subtitle-pair-add-button,
+  .subtitle-pair-remove,
+  .subtitle-pair-clear-action
 ):hover,
 html.kikoerumanager-dark .subtitle-workbench-btn:hover {
   background: var(--km-dark-button-bg-hover) !important;
@@ -2944,6 +2954,145 @@ html.kikoerumanager-dark .filter-delete-dialog .el-progress-bar__inner::after {
 
 html.kikoerumanager-dark .filter-delete-dialog .preview-empty {
   color: var(--km-dark-text-muted) !important;
+}
+
+/* 删除预审最终去蓝兜底：压住组件 scoped 渐变、slate/navy 表头和 indigo 忙碌按钮。 */
+html.kikoerumanager-dark #app .filter-delete-dialog .window,
+html.kikoerumanager-dark #app .filter-delete-dialog .glass-shell {
+  background:
+    linear-gradient(180deg, rgba(30, 30, 33, 0.96), rgba(13, 13, 15, 0.98)),
+    #111113 !important;
+  background-image:
+    linear-gradient(180deg, rgba(30, 30, 33, 0.96), rgba(13, 13, 15, 0.98)) !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark #app .filter-delete-dialog .window-header,
+html.kikoerumanager-dark #app .filter-delete-dialog .toolbar-row,
+html.kikoerumanager-dark #app .filter-delete-dialog .tree-head,
+html.kikoerumanager-dark #app .filter-delete-dialog .window > .flex.items-center.justify-end,
+html.kikoerumanager-dark #app .filter-delete-dialog [class*="border-t"][class*="bg-slate-50"] {
+  background: #171719 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark #app .filter-delete-dialog .fm-body {
+  background: #121214 !important;
+  background-image: none !important;
+}
+
+html.kikoerumanager-dark #app .filter-delete-dialog .filter-delete-alert.el-alert--warning {
+  background: rgba(48, 42, 30, 0.72) !important;
+  background-image: none !important;
+  border-color: rgba(245, 158, 11, 0.24) !important;
+  color: rgba(238, 229, 208, 0.82) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark #app .filter-delete-dialog .filter-delete-alert.el-alert--warning .el-alert__icon {
+  color: rgba(253, 230, 138, 0.78) !important;
+}
+
+html.kikoerumanager-dark #app .filter-delete-dialog .filter-delete-alert.el-alert--warning .el-alert__title {
+  color: rgba(238, 229, 208, 0.82) !important;
+}
+
+html.kikoerumanager-dark #app .filter-delete-dialog .tree-panel,
+html.kikoerumanager-dark #app .filter-delete-dialog .glass-panel,
+html.kikoerumanager-dark #app .filter-delete-dialog .glass-card {
+  background: #1d1d20 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  outline-color: rgba(255, 255, 255, 0.035) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark #app .filter-delete-dialog .tree-scroll {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark #app .filter-delete-dialog .tree-row:hover,
+html.kikoerumanager-dark #app .filter-delete-dialog .tree-row-selected {
+  background: #333336 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark #app .filter-delete-dialog .fd-type-tag {
+  cursor: pointer !important;
+}
+
+html.kikoerumanager-dark #app .filter-delete-dialog .fd-type-tag:disabled {
+  cursor: not-allowed !important;
+}
+
+html.kikoerumanager-dark #app .filter-delete-dialog .fd-type-tag-active {
+  background: rgba(245, 158, 11, 0.24) !important;
+  background-image: none !important;
+  border-color: rgba(251, 191, 36, 0.68) !important;
+  color: #fef3c7 !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(251, 191, 36, 0.18),
+    0 0 0 3px rgba(245, 158, 11, 0.06) !important;
+}
+
+html.kikoerumanager-dark #app .filter-delete-dialog .fd-type-tag-active:hover:not(:disabled) {
+  background: rgba(245, 158, 11, 0.32) !important;
+  border-color: rgba(251, 191, 36, 0.82) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(251, 191, 36, 0.24),
+    0 0 0 3px rgba(245, 158, 11, 0.1) !important;
+}
+
+html.kikoerumanager-dark #app .filter-delete-dialog .fd-type-tag-partial {
+  background: rgba(245, 158, 11, 0.11) !important;
+  background-image: none !important;
+  border-color: rgba(251, 191, 36, 0.36) !important;
+  color: rgba(254, 243, 199, 0.86) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark #app .filter-delete-dialog .fd-type-tag-active .fd-type-count {
+  background: rgba(251, 191, 36, 0.34) !important;
+  background-image: none !important;
+  border-color: rgba(251, 191, 36, 0.42) !important;
+  color: #fff7ed !important;
+}
+
+html.kikoerumanager-dark #app .filter-delete-dialog .tree-checkbox-on,
+html.kikoerumanager-dark #app .filter-delete-dialog .tree-checkbox-partial,
+html.kikoerumanager-dark #app .filter-delete-dialog .fd-type-count {
+  background: #3b3b3f !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark #app .filter-delete-dialog .action-card-primary,
+html.kikoerumanager-dark #app .filter-delete-dialog button[class*="bg-indigo"] {
+  background: #3a3a3e !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  color: rgba(250, 250, 252, 0.96) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark #app .filter-delete-dialog .action-card-primary:hover:not(:disabled),
+html.kikoerumanager-dark #app .filter-delete-dialog button[class*="bg-indigo"]:hover:not(:disabled) {
+  background: #444448 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  box-shadow: none !important;
 }
 
 html.kikoerumanager-dark .remote-folder-picker-modal.el-dialog,
