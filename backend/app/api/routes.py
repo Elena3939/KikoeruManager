@@ -2206,6 +2206,10 @@ class BaiduNetdiskSecretRevealRequest(BaseModel):
     key: str
 
 
+class NotificationEmailSecretRevealRequest(BaseModel):
+    key: str
+
+
 class AISubtitleSecretRevealRequest(BaseModel):
     key: str
 
@@ -2972,6 +2976,15 @@ def reveal_baidu_netdisk_secret(payload: BaiduNetdiskSecretRevealRequest):
     if key != "cookie":
         raise HTTPException(status_code=400, detail="不支持读取该敏感字段")
     return {"value": _read_baidu_netdisk_secret_from_disk(key)}
+
+
+@app.post("/api/config/notification-email/reveal-secret")
+def reveal_notification_email_secret(payload: NotificationEmailSecretRevealRequest):
+    """从本地配置文件读取通知邮件授权码，只供设置页显隐使用。"""
+    key = str(payload.key or "").strip()
+    if key != "password":
+        raise HTTPException(status_code=400, detail="不支持读取该敏感字段")
+    return {"value": _read_notification_email_password_from_disk()}
 
 
 @app.post("/api/config/ai-subtitle-match/reveal-secret")

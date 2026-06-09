@@ -326,6 +326,7 @@ import SettingsSwitch from './SettingsSwitch.vue'
 import NotificationBlockEditor from './block-editor/NotificationBlockEditor.vue'
 import { DEFAULT_EMAIL_HTML, DEFAULT_SUBJECT, buildDefaultEmailBlocks, isStandardEmailHtml } from './block-editor/defaultEmailTemplate.js'
 import { renderBlockMini, buildSamplePayload } from './block-editor/blockMiniRenderers.js'
+import { NOTIFICATION_TASK_DOMAIN_OPTIONS } from './notificationDomainOptions.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -339,15 +340,7 @@ const EVENT_OPTIONS = [
   { value: 'waiting_manual', label: '等待人工处理' }
 ]
 
-const DOMAIN_OPTIONS = [
-  { value: 'import', label: '导入处理' },
-  { value: 'rj_subtitle', label: 'RJ 字幕' },
-  { value: 'subtitle_import', label: '字幕补配' },
-  { value: 'asmr_sync', label: 'ASMR 同步' },
-  { value: 'upload', label: '库存上传' },
-  { value: 'circle_completion', label: '社团补全' },
-  { value: 'system', label: '系统任务' }
-]
+const DOMAIN_OPTIONS = NOTIFICATION_TASK_DOMAIN_OPTIONS
 
 const DEFAULT_FORM = () => ({
   name: '',

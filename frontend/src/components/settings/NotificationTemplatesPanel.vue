@@ -137,19 +137,12 @@ import { ElMessage } from 'element-plus'
 import { notificationApi } from '../../api'
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
 import NotificationTemplateEditor from './NotificationTemplateEditor.vue'
-import { PRESET_TEMPLATES } from './block-editor/presetTemplates.js'
 import { buildDefaultEmailBlocks } from './block-editor/defaultEmailTemplate.js'
+import { PRESET_TEMPLATES } from './block-editor/presetTemplates.js'
+import { NOTIFICATION_TASK_DOMAIN_LABELS } from './notificationDomainOptions.js'
 
 const EVENT_LABEL = { completed: '完成', failed: '失败', waiting_manual: '等待人工' }
-const DOMAIN_LABEL = {
-  import: '导入处理',
-  rj_subtitle: 'RJ 字幕',
-  subtitle_import: '字幕补配',
-  asmr_sync: 'ASMR 同步',
-  upload: '库存上传',
-  circle_completion: '社团补全',
-  system: '系统任务'
-}
+const DOMAIN_LABEL = NOTIFICATION_TASK_DOMAIN_LABELS
 
 const templates = ref([])
 const loading = ref(false)
@@ -301,7 +294,9 @@ defineExpose({ reload })
 .tpl-panel .card-title {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
+  min-width: 0;
 }
 
 .tpl-panel-count {
@@ -436,7 +431,7 @@ defineExpose({ reload })
 
 .tpl-panel-desc {
   font-size: 12px;
-  color: rgba(29, 29, 31, 0.55);
+  color: var(--set-text-muted);
   line-height: 1.55;
 }
 
@@ -445,9 +440,9 @@ defineExpose({ reload })
   padding: 22px 18px;
   text-align: center;
   font-size: 13px;
-  color: rgba(29, 29, 31, 0.5);
-  background: rgba(0, 0, 0, 0.02);
-  border: 1px dashed rgba(29, 29, 31, 0.1);
+  color: var(--set-text-muted);
+  background: var(--set-surface-soft);
+  border: 1px dashed var(--set-border);
   border-radius: 12px;
   display: flex;
   align-items: center;
@@ -481,17 +476,20 @@ defineExpose({ reload })
 
 .tpl-card-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 6px;
 }
 
 .tpl-card-title-wrap {
-  flex: 1;
+  flex: 1 1 320px;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
+  padding-top: 3px;
 }
 
 .tpl-card-name {
@@ -529,13 +527,17 @@ defineExpose({ reload })
 .tpl-card-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 4px;
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  max-width: 100%;
 }
 
 .tpl-action {
   width: 28px;
   height: 28px;
+  flex: 0 0 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -547,11 +549,18 @@ defineExpose({ reload })
   transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
+.tpl-action svg {
+  flex-shrink: 0;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
 .tpl-action:hover {
   background: var(--set-surface-hover);
   color: var(--set-text-strong);
   transform: translateY(-1px);
 }
+
+.tpl-action:hover svg { transform: rotate(-8deg); }
 
 .tpl-action:active {
   transform: scale(0.94);
@@ -563,11 +572,15 @@ defineExpose({ reload })
 }
 
 .tpl-action--upgrade {
+  width: auto;
+  min-width: 0;
+  height: 28px;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 10px;
-  border-radius: 6px;
+  padding: 0 10px;
+  border-radius: 8px;
   font-size: 11.5px;
   font-weight: 600;
   color: var(--set-text-strong, #1d1d1f);
@@ -648,5 +661,37 @@ defineExpose({ reload })
 
 .spin-once {
   animation: spin-once 0.7s linear infinite;
+}
+
+@media (max-width: 640px) {
+  .tpl-panel-spacer { display: none; }
+
+  .tpl-panel-action,
+  .tpl-create-wrap {
+    flex: 1 1 auto;
+  }
+
+  .tpl-panel-action {
+    justify-content: center;
+  }
+
+  .tpl-create-wrap .tpl-panel-action {
+    width: 100%;
+  }
+
+  .tpl-create-menu {
+    left: 0;
+    right: auto;
+    width: min(310px, calc(100vw - 40px));
+  }
+
+  .tpl-card-title-wrap,
+  .tpl-card-actions {
+    flex-basis: 100%;
+  }
+
+  .tpl-card-actions {
+    justify-content: flex-start;
+  }
 }
 </style>

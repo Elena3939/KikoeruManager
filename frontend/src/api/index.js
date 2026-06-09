@@ -164,6 +164,11 @@ export const configApi = {
     return response.data
   },
 
+  revealNotificationEmailSecret: async (payload) => {
+    const response = await apiClient.post('/config/notification-email/reveal-secret', payload)
+    return response.data
+  },
+
   revealAISubtitleSecret: async (payload) => {
     const response = await apiClient.post('/config/ai-subtitle-match/reveal-secret', payload)
     return response.data
