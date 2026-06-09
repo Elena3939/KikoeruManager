@@ -114,12 +114,15 @@
         <span>运行诊断</span>
         <StatefulButton
           class="diagnostics-refresh-btn"
-          size="sm"
-          tone="neutral"
+          unstyled
+          :success-hold="1200"
+          aria-label="刷新运行诊断"
           @click="loadPerformanceDiagnostics"
         >
-          <template #prefix>
-            <RefreshCw :size="14" :stroke-width="2.4" />
+          <template #prefix="{ state }">
+            <LoaderCircle v-if="state === 'loading'" class="diagnostics-refresh-icon is-spinning" :size="14" :stroke-width="2.4" />
+            <Check v-else-if="state === 'success'" class="diagnostics-refresh-icon" :size="14" :stroke-width="2.6" />
+            <RefreshCw v-else class="diagnostics-refresh-icon" :size="14" :stroke-width="2.4" />
           </template>
           刷新
         </StatefulButton>
@@ -148,7 +151,7 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { HardDrive, HelpCircle, RefreshCw, Zap } from 'lucide-vue-next'
+import { Check, HardDrive, HelpCircle, LoaderCircle, RefreshCw, Zap } from 'lucide-vue-next'
 import SettingsFieldCard from './SettingsFieldCard.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
 import SettingsToggleChip from './SettingsToggleChip.vue'
@@ -438,7 +441,77 @@ function formatDurationMs(value) {
 }
 
 .diagnostics-refresh-btn {
-  min-width: 82px;
+  --stateful-button-icon-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 76px;
+  height: 34px;
+  padding: 0 13px;
+  border: 1px solid var(--set-border);
+  border-radius: 10px;
+  background: var(--set-surface);
+  color: var(--set-text);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.05px;
+  box-shadow: none;
+  outline: none;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.diagnostics-refresh-btn :deep(.stateful-button__content) {
+  gap: 6px;
+}
+
+.diagnostics-refresh-btn :deep(.stateful-button__state) {
+  width: 14px;
+  height: 14px;
+}
+
+.diagnostics-refresh-icon {
+  flex: 0 0 auto;
+  color: currentColor;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.diagnostics-refresh-btn:not(:disabled):hover {
+  transform: translateY(-2px) scale(1.02);
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
+  color: var(--set-text-strong);
+}
+
+.diagnostics-refresh-btn:not(:disabled):hover .diagnostics-refresh-icon:not(.is-spinning) {
+  transform: rotate(-28deg) scale(1.1);
+}
+
+.diagnostics-refresh-btn:not(:disabled):active {
+  transform: scale(0.96);
+}
+
+.diagnostics-refresh-btn[aria-busy="true"] {
+  color: var(--set-text-strong);
+  cursor: progress;
+}
+
+:global(html.kikoerumanager-dark .settings-page .diagnostics-refresh-btn),
+:global(html.dark .settings-page .diagnostics-refresh-btn) {
+  background: rgba(255, 255, 255, 0.045);
+  border-color: rgba(255, 255, 255, 0.11);
+  color: rgba(244, 244, 245, 0.82);
+}
+
+:global(html.kikoerumanager-dark .settings-page .diagnostics-refresh-btn:hover),
+:global(html.dark .settings-page .diagnostics-refresh-btn:hover) {
+  background: rgba(255, 255, 255, 0.075);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: #f5f5f5;
+}
+
+.diagnostics-refresh-icon.is-spinning {
+  animation: diagnostics-refresh-spin 0.72s linear infinite;
 }
 
 .diagnostics-grid {
@@ -576,6 +649,10 @@ function formatDurationMs(value) {
   border-color: rgba(148, 163, 184, 0.16);
   color: rgba(203, 213, 225, 0.78);
   box-shadow: none;
+}
+
+@keyframes diagnostics-refresh-spin {
+  to { transform: rotate(360deg); }
 }
 
 @media (max-width: 1200px) {
