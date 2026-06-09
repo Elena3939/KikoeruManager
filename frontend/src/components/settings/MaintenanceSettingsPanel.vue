@@ -116,7 +116,7 @@ const archiveFormatOptions = [
 .settings-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
 .mini-grid { display: grid; gap: 10px; }
-.mini-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.mini-grid.two { grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); }
 
 .field-stack {
   display: grid;

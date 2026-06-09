@@ -59,10 +59,12 @@ function updateValue(value) {
 <style scoped>
 .settings-range-stepper {
   display: grid;
-  grid-template-columns: minmax(160px, 1fr) minmax(132px, 188px);
+  grid-template-columns: minmax(72px, 1fr) minmax(128px, auto);
   gap: 12px;
   align-items: center;
   width: 100%;
+  max-width: min(100%, 360px);
+  min-width: 0;
 }
 
 .range-shell {

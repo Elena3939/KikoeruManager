@@ -562,7 +562,7 @@ onMounted(() => {
 }
 
 .settings-page :deep(.settings-range-stepper) {
-  max-width: 172px;
+  max-width: min(100%, 360px);
 }
 
 .settings-page :deep(.sfc) {
