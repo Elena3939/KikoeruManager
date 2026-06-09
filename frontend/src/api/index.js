@@ -1016,17 +1016,24 @@ export const libraryApi = {
     return response.data
   },
 
-  browserBatchDelete: async (libraryId, paths, confirmed = false) => {
+  browserBatchDelete: async (libraryId, paths, confirmed = false, options = {}) => {
     const response = await apiClient.post('/library/browser/batch-delete', {
       library_id: libraryId,
       paths,
-      confirmed
+      confirmed,
+      skip_activity_log: options.skipActivityLog ?? false,
+      batch_id: options.batchId || '',
+      known_items: options.knownItems || []
     })
     return response.data
   },
 
-  batchApiRename: async (paths) => {
-    const response = await apiClient.post('/library/batch-api-rename', { paths })
+  batchApiRename: async (paths, libraryId = null) => {
+    const payload = { paths }
+    if (libraryId) payload.library_id = libraryId
+    const response = await apiClient.post('/library/batch-api-rename', payload, {
+      timeout: 5 * 60 * 1000
+    })
     return response.data
   },
 

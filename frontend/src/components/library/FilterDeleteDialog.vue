@@ -38,20 +38,20 @@
 
       <!-- 加载遮罩仅覆盖 body 区，避免遮住「隐藏到后台」和「关闭」按钮 -->
       <div
-        class="fm-body flex min-h-0 flex-1 flex-col px-6 pb-5"
+        class="fm-body flex min-h-0 flex-1 flex-col px-6 pt-3 pb-5"
         v-app-loading="{ loading: filterDeleteBusy, text: '正在生成删除预审...', size: 120 }"
       >
-        <div class="space-y-2 mb-3">
-          <el-alert type="warning" :closable="false" show-icon class="filter-delete-alert !rounded-xl !border !border-amber-200/60 !bg-amber-50/50" :title="text.tipReview" />
+        <div class="filter-delete-alert-stack space-y-2 mb-3">
+          <el-alert type="warning" :closable="false" show-icon class="filter-delete-alert filter-delete-alert-warning !rounded-xl !border" :title="text.tipReview" />
           <el-alert
             v-if="filterDeletePreviewInfo.truncated"
             type="warning"
             :closable="false"
             show-icon
-            class="filter-delete-alert !rounded-xl !border !border-amber-200/60 !bg-amber-50/50"
+            class="filter-delete-alert filter-delete-alert-warning !rounded-xl !border"
             :title="filterDeletePreviewInfo.truncatedReason || text.tipTruncated"
           />
-          <el-alert v-if="filterDeletePreviewInfo.warning" type="warning" :closable="false" show-icon class="filter-delete-alert !rounded-xl !border !border-amber-200/60 !bg-amber-50/50" :title="filterDeletePreviewInfo.warning" />
+          <el-alert v-if="filterDeletePreviewInfo.warning" type="warning" :closable="false" show-icon class="filter-delete-alert filter-delete-alert-warning !rounded-xl !border" :title="filterDeletePreviewInfo.warning" />
           <el-alert v-if="filterDeletePreviewInfo.error" type="error" :closable="false" show-icon class="filter-delete-alert !rounded-xl !border !border-red-200/60 !bg-red-50/50" :title="filterDeletePreviewInfo.error" />
         </div>
 
@@ -262,7 +262,7 @@
         <button v-if="filterDeleteDeleting" type="button" class="px-4 py-2 rounded-xl text-sm font-medium text-slate-600 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 transition-all cursor-pointer shadow-sm active:scale-[0.98]" @click="requestCancelFilterDeleteDeletion()">
           {{ text.stopDelete }}
         </button>
-        <button v-if="filterDeleteBusy" type="button" class="px-4 py-2 rounded-xl text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 transition-all cursor-pointer shadow-md shadow-indigo-200 active:scale-[0.98]" @click="hideFilterDeleteToBackground">
+        <button v-if="filterDeleteBusy" type="button" class="action-card action-card-primary" @click="hideFilterDeleteToBackground">
           {{ text.hideBackground }}
         </button>
         <button v-else type="button" class="px-4 py-2 rounded-xl text-sm font-medium text-slate-600 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 transition-all cursor-pointer shadow-sm active:scale-[0.98]" @click="closeFilterDeleteDialog">
@@ -1513,34 +1513,52 @@ async function confirmFilterDeleteSelection () {
     const batchId = `filter-delete-${filterDeleteSessionKey.value || Date.now()}`
     const succeededPaths = []
     const failedItems = []
-    for (let index = 0; index < paths.length; index += 1) {
-      if (filterDeleteDeleteCancelRequested.value) break
-      const path = paths[index]
+    if (!filterDeleteDeleteCancelRequested.value) {
       filterDeletePreviewInfo.value = {
         ...filterDeletePreviewInfo.value,
-        deleteDone: successCount,
+        deleteDone: 0,
         deleteTotal: paths.length,
-        deleteFailed: failedCount,
-        progressMessage: `\u6b63\u5728\u5220\u9664 ${index + 1} / ${paths.length}: ${getFileName(path) || path}`
+        deleteFailed: 0,
+        progressMessage: `正在批量删除 ${paths.length} 项`
       }
       try {
-        await libraryApi.browserDelete(props.libraryId, path, true, {
+        const result = await libraryApi.browserBatchDelete(props.libraryId, paths, true, {
           skipActivityLog: true,
-          batchId
+          batchId,
+          knownItems: selectedRootItems
         })
-        successCount += 1
-        succeededPaths.push(path)
-        deletedBytes += Number(sizeByPath.get(path) || 0)
-        deletedFolderCount += Number(folderCountByPath.get(path) || 0)
+        const failedPathMap = new Map((result?.failed_paths || []).map(item => [String(item?.path || ''), item]))
+        paths.forEach(path => {
+          const failed = failedPathMap.get(path)
+          if (failed) {
+            failedCount += 1
+            failedItems.push({
+              path,
+              name: getFileName(path),
+              type: 'dir',
+              size: Number(sizeByPath.get(path) || 0),
+              status: 'failed',
+              error: failed.error || '删除失败'
+            })
+            return
+          }
+          successCount += 1
+          succeededPaths.push(path)
+          deletedBytes += Number(sizeByPath.get(path) || 0)
+          deletedFolderCount += Number(folderCountByPath.get(path) || 0)
+        })
       } catch (error) {
-        failedCount += 1
-        failedItems.push({
-          path,
-          name: getFileName(path),
-          type: 'dir',
-          size: Number(sizeByPath.get(path) || 0),
-          status: 'failed',
-          error: error?.response?.data?.detail || error?.message || '删除失败'
+        const errorMessage = error?.response?.data?.detail || error?.message || '删除失败'
+        paths.forEach(path => {
+          failedCount += 1
+          failedItems.push({
+            path,
+            name: getFileName(path),
+            type: 'dir',
+            size: Number(sizeByPath.get(path) || 0),
+            status: 'failed',
+            error: errorMessage
+          })
         })
       }
     }
@@ -1997,8 +2015,8 @@ onBeforeUnmount(() => {
   position: relative;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.34)),
-    radial-gradient(circle at top left, rgba(191, 219, 254, 0.18), transparent 34%),
-    radial-gradient(circle at top right, rgba(186, 230, 253, 0.14), transparent 28%);
+    radial-gradient(circle at top left, rgba(245, 158, 11, 0.1), transparent 34%),
+    radial-gradient(circle at top right, rgba(148, 163, 184, 0.12), transparent 28%);
   backdrop-filter: blur(28px) saturate(155%);
   -webkit-backdrop-filter: blur(28px) saturate(155%);
   border: 1px solid rgba(255, 255, 255, 0.42);
@@ -2062,25 +2080,55 @@ onBeforeUnmount(() => {
   transform: translateY(-0.5px);
 }
 
+.filter-delete-alert-warning {
+  background: rgba(245, 158, 11, 0.11) !important;
+  border-color: rgba(217, 119, 6, 0.22) !important;
+  color: #92400e !important;
+  box-shadow: none !important;
+}
+
+.filter-delete-alert-warning :deep(.el-alert__title),
+.filter-delete-alert-warning :deep(.el-alert__description) {
+  color: inherit !important;
+}
+
+.filter-delete-alert-warning :deep(.el-alert__icon) {
+  color: rgba(180, 83, 9, 0.82) !important;
+}
+
 .fd-type-tag {
+  cursor: pointer;
+  user-select: none;
   box-shadow: 0 2px 5px rgba(15, 23, 42, 0.03);
 }
 
+.fd-type-tag:not(:disabled):hover {
+  transform: translateY(-1px);
+}
+
+.fd-type-tag:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .fd-type-tag-active {
-  background: rgba(238, 242, 255, 0.8);
-  border-color: rgba(199, 210, 254, 0.8);
-  color: #4338ca;
+  background: rgba(245, 158, 11, 0.2);
+  border-color: rgba(217, 119, 6, 0.48);
+  color: #78350f;
+  box-shadow:
+    inset 0 0 0 1px rgba(245, 158, 11, 0.16),
+    0 6px 14px rgba(217, 119, 6, 0.12);
 }
 
 .fd-type-tag-active:hover {
-  background: rgba(238, 242, 255, 1);
-  border-color: rgba(165, 180, 252, 1);
+  background: rgba(245, 158, 11, 0.28);
+  border-color: rgba(217, 119, 6, 0.62);
 }
 
 .fd-type-tag-partial {
-  background: rgba(245, 243, 255, 0.6);
-  border-color: rgba(221, 214, 254, 0.6);
-  color: #6d28d9;
+  background: rgba(120, 113, 108, 0.12);
+  border-color: rgba(120, 113, 108, 0.24);
+  color: #57534e;
 }
 
 .fd-type-tag-inactive {
@@ -2104,6 +2152,12 @@ onBeforeUnmount(() => {
   border: 1px solid rgba(0, 0, 0, 0.03);
 }
 
+.fd-type-tag-active .fd-type-count {
+  background: rgba(251, 191, 36, 0.32);
+  border-color: rgba(217, 119, 6, 0.22);
+  color: #78350f;
+}
+
 .action-card {
   display: inline-flex;
   align-items: center;
@@ -2115,7 +2169,7 @@ onBeforeUnmount(() => {
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.52);
   background: rgba(255, 255, 255, 0.42);
-  color: #0f172a;
+  color: #18181b;
   font-size: 12px;
   font-weight: 600;
   box-shadow:
@@ -2161,16 +2215,16 @@ onBeforeUnmount(() => {
 }
 
 .action-card-primary {
-  border-color: rgba(59, 130, 246, 0.26);
-  background: rgba(59, 130, 246, 0.9);
+  border-color: rgba(17, 24, 39, 0.22);
+  background: rgba(31, 41, 55, 0.92);
   color: #fff;
-  box-shadow: 0 12px 30px rgba(59, 130, 246, 0.24);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.18);
 }
 
 .action-card-primary:hover {
-  border-color: rgba(37, 99, 235, 0.32);
-  background: rgba(37, 99, 235, 0.94);
-  box-shadow: 0 14px 34px rgba(37, 99, 235, 0.3);
+  border-color: rgba(17, 24, 39, 0.34);
+  background: rgba(17, 24, 39, 0.94);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.22);
 }
 
 .action-card-warning {
@@ -2214,7 +2268,7 @@ onBeforeUnmount(() => {
   width: 100%;
   border: none;
   background: transparent;
-  color: #0f172a;
+  color: #18181b;
   font-size: 13px;
   outline: none;
 }
@@ -2419,19 +2473,19 @@ onBeforeUnmount(() => {
 
 .icon-folder {
   color: #64748b;
-  fill: #eff6ff;
+  fill: #f3f4f6;
 }
 
 .tree-checkbox-on {
-  background: #111827;
+  background: #27272a;
   color: #fff;
-  border-color: #111827;
+  border-color: #27272a;
   box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
 }
 
 .tree-checkbox-partial {
   background: rgba(15, 23, 42, 0.08);
-  color: #111827;
+  color: #27272a;
   border-color: rgba(15, 23, 42, 0.14);
 }
 
