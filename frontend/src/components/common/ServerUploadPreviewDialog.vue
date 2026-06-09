@@ -155,8 +155,14 @@
             <div v-if="!previewGroups.length" class="preview-empty">当前没有可上传的目录</div>
             <template v-else>
               <div v-if="previewVirtualTopPadding" class="preview-virtual-spacer" :style="{ height: `${previewVirtualTopPadding}px` }" />
-              <div class="tree-list space-y-1">
-                <div v-for="item in previewVisibleRows" :key="item.id" class="tree-node">
+              <TransitionGroup
+                name="server-upload-tree-row"
+                tag="div"
+                class="tree-list server-upload-tree-list space-y-1"
+                :css="previewTreeAnimationEnabled"
+              >
+                <div v-for="item in previewVisibleRows" :key="item.id" class="tree-node server-upload-tree-row-shell">
+                  <div class="server-upload-tree-row-clip">
                   <template v-if="item.kind === 'group'">
                   <div
                     class="tree-row plan-node-header flex items-center py-1.5 px-2 rounded-md group cursor-pointer"
@@ -169,8 +175,11 @@
                         class="tree-expander p-0.5 rounded"
                         @click.stop="toggleGroupExpand(item.group)"
                       >
-                        <ChevronDown v-if="item.group.rootExpanded !== false" :size="17" class="text-slate-400" />
-                        <ChevronRight v-else :size="17" class="text-slate-400" />
+                        <ChevronRight
+                          :size="17"
+                          class="server-upload-tree-expander-icon text-slate-400"
+                          :class="{ 'is-expanded': item.group.rootExpanded !== false }"
+                        />
                       </button>
                       <button
                         type="button"
@@ -212,8 +221,11 @@
                         class="tree-expander p-0.5 rounded"
                         @click.stop="toggleExpand(item.group, item.row)"
                       >
-                        <ChevronDown v-if="item.group.expandedIds.has(item.row.id)" :size="17" class="text-slate-400" />
-                        <ChevronRight v-else :size="17" class="text-slate-400" />
+                        <ChevronRight
+                          :size="17"
+                          class="server-upload-tree-expander-icon text-slate-400"
+                          :class="{ 'is-expanded': item.group.expandedIds.has(item.row.id) }"
+                        />
                       </button>
                       <span v-else class="expander-spacer" />
                       <button
@@ -241,8 +253,9 @@
                     <span v-if="item.row.size_bytes" class="tree-size text-xs text-slate-400 ml-4 tabular-nums">{{ formatSize(item.row.size_bytes) }}</span>
                   </div>
                   </template>
+                  </div>
                 </div>
-              </div>
+              </TransitionGroup>
               <div v-if="previewVirtualBottomPadding" class="preview-virtual-spacer" :style="{ height: `${previewVirtualBottomPadding}px` }" />
             </template>
           </div>
@@ -299,6 +312,7 @@ const emit = defineEmits(['update:visible', 'submit'])
 const PREVIEW_ROW_HEIGHT = 41
 const PREVIEW_OVERSCAN = 12
 const PREVIEW_VIRTUAL_THRESHOLD = 180
+const SERVER_UPLOAD_TREE_ANIMATION_ROW_LIMIT = 120
 
 const previewLoading = ref(false)
 const previewGroups = shallowRef([])
@@ -428,6 +442,11 @@ const previewVisibleRows = computed(() => {
   const { start, end } = previewVirtualRange.value
   return previewFlatRows.value.slice(start, end)
 })
+const previewTreeAnimationEnabled = computed(() => (
+  !previewUseVirtual.value &&
+  previewFlatRows.value.length <= SERVER_UPLOAD_TREE_ANIMATION_ROW_LIMIT &&
+  previewVisibleRows.value.length <= SERVER_UPLOAD_TREE_ANIMATION_ROW_LIMIT
+))
 const previewVirtualTopPadding = computed(() => previewUseVirtual.value ? previewVirtualRange.value.start * PREVIEW_ROW_HEIGHT : 0)
 const previewVirtualBottomPadding = computed(() => previewUseVirtual.value ? Math.max(0, (previewFlatRows.value.length - previewVirtualRange.value.end) * PREVIEW_ROW_HEIGHT) : 0)
 
@@ -1256,6 +1275,57 @@ function classifyRowKind (row) {
   flex: 0 0 auto;
   pointer-events: none;
 }
+.server-upload-tree-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-anchor: none;
+}
+.server-upload-tree-list > * + * {
+  margin-top: 0 !important;
+}
+.server-upload-tree-row-shell {
+  display: grid;
+  grid-template-rows: 1fr;
+  overflow: hidden;
+  opacity: 1;
+  transform-origin: top;
+  transform: translate3d(0, 0, 0);
+}
+.server-upload-tree-row-enter-active,
+.server-upload-tree-row-leave-active {
+  transition:
+    grid-template-rows 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.18s ease,
+    transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.server-upload-tree-row-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+.server-upload-tree-row-move {
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.server-upload-tree-row-enter-from,
+.server-upload-tree-row-leave-to {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translate3d(0, -4px, 0);
+}
+.server-upload-tree-row-enter-to,
+.server-upload-tree-row-leave-from {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+}
+.server-upload-tree-row-leave-active { pointer-events: none; }
+.server-upload-tree-expander-icon {
+  transform: rotate(0deg);
+  transition: transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.server-upload-tree-expander-icon.is-expanded {
+  transform: rotate(90deg);
+}
 .tree-row-selected { background: rgba(15,23,42,.04); }
 .field-input { transition: border-color .15s ease; }
 .field-input:focus { border-color: rgba(17,24,39,.45); }
@@ -1268,6 +1338,11 @@ function classifyRowKind (row) {
 .picker-button:not(:disabled):hover { border-color: rgba(17,24,39,0.32); }
 .picker-clear { transition: background-color .15s ease, color .15s ease; }
 .picker-clear:hover { background: rgba(15,23,42,0.08); }
+.tree-expander,
+.tree-expander svg,
+.server-upload-tree-expander-icon {
+  cursor: pointer;
+}
 .tree-checkbox { cursor: pointer; transition: border-color .15s ease, background-color .15s ease, transform .15s ease; }
 .tree-checkbox:hover { transform: scale(1.04); }
 /* 顶层颜色交给 inline :style（由 helper meta.color 赋值），这里只保留过渡动画。 */

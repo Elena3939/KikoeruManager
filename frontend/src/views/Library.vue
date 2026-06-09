@@ -749,7 +749,18 @@
           @click.self="closeBaiduUploadDialog"
         >
           <section class="custom-preview-modal baidu-upload-preview-modal baidu-upload-modal" role="dialog" aria-modal="true" aria-label="上传到百度网盘">
-          <div class="window panel-enter glass-shell baidu-upload-window relative w-full max-w-none rounded-3xl flex flex-col overflow-hidden">
+          <div
+            v-if="baiduUploadDialogLoading"
+            class="window panel-enter glass-shell baidu-upload-window baidu-upload-dialog-loading-shell dialog-loading-overlay relative w-full max-w-none rounded-3xl flex flex-col overflow-hidden"
+          >
+            <AppLoadingAnimation
+              :label="baiduUploadDialogLoadingText"
+              :description="baiduUploadDialogLoadingDescription"
+              :size="168"
+              :min-height="260"
+            />
+          </div>
+          <div v-else class="window panel-enter glass-shell baidu-upload-window relative w-full max-w-none rounded-3xl flex flex-col overflow-hidden">
           <header class="window-header baidu-upload-header flex items-center justify-between px-8 py-6">
             <h1 class="title text-2xl font-bold text-slate-900 tracking-tight">上传到百度网盘</h1>
             <button
@@ -949,92 +960,92 @@
                   >
                     {{ baiduUploadAllExpanded ? '全部收起' : '全部展开' }}
                   </button>
-                  <label class="baidu-upload-select-all" @click.stop>
-                    <input
-                      type="checkbox"
-                      class="baidu-upload-native-checkbox"
-                      :checked="baiduUploadAllSelectionState === 'all'"
-                      :indeterminate.prop="baiduUploadAllSelectionState === 'partial'"
-                      :disabled="baiduUploadPreviewLoading || !baiduUploadTreeRows.length"
-                      aria-label="切换全部待上传内容"
-                      @change="toggleAllBaiduUploadItems"
-                    />
+                  <button
+                    type="button"
+                    class="baidu-upload-select-all"
+                    :disabled="baiduUploadPreviewLoading || !baiduUploadTreeRows.length"
+                    @click.stop="toggleAllBaiduUploadItems"
+                  >
+                    <span
+                      class="tree-checkbox baidu-upload-tree-checkbox relative flex size-4 shrink-0 items-center justify-center rounded-[4px] border"
+                      :class="baiduUploadAllSelectionState === 'all' ? 'tree-checkbox-on' : (baiduUploadAllSelectionState === 'partial' ? 'tree-checkbox-partial' : 'tree-checkbox-off')"
+                      aria-hidden="true"
+                    >
+                      <IconCheck v-if="baiduUploadAllSelectionState === 'all'" :size="14" />
+                      <span v-else-if="baiduUploadAllSelectionState === 'partial'" class="checkbox-minus" />
+                    </span>
                     <span>全选</span>
-                  </label>
+                  </button>
                   <span>{{ formatSize(baiduUploadSelectedTotalBytes) }}</span>
                 </div>
               </div>
-              <div class="tree-scroll flex-1 p-4 overflow-auto no-scrollbar">
-                <div v-if="baiduUploadPreviewLoading" class="preview-empty baidu-upload-tree-loading">
-                  <AppLoadingAnimation
-                    label="正在读取文件树..."
-                    description="同步目录结构、百度网盘路径和上传计划"
-                    :size="168"
-                    :min-height="260"
-                  />
-                </div>
-                <div v-else-if="!baiduUploadVisibleTreeRows.length" class="preview-empty">当前没有可上传内容</div>
-                <TransitionGroup
-                  v-else
-                  name="baidu-upload-tree-row"
-                  tag="div"
-                  class="baidu-upload-tree-list"
-                  :css="false"
-                  @before-enter="beforeBaiduUploadTreeRowEnter"
-                  @enter="enterBaiduUploadTreeRow"
-                  @leave="leaveBaiduUploadTreeRow"
-                >
-                  <div
-                    v-for="item in baiduUploadVisibleTreeRows"
-                    :key="item.id || item.path"
-                    class="tree-row baidu-upload-tree-row flex items-center py-1.5 px-2 rounded-md group"
-                    :class="{ 'tree-row-selected': isBaiduUploadItemSelected(item) }"
-                    :style="{ paddingLeft: `${8 + item.depth * 18}px` }"
-                    @click="handleBaiduUploadTreeRowClick(item)"
+              <div ref="baiduUploadTreeScrollRef" class="tree-scroll flex-1 p-4 overflow-auto no-scrollbar" @scroll="onBaiduUploadTreeScroll">
+                <div v-if="!baiduUploadVisibleTreeRows.length" class="preview-empty">当前没有可上传内容</div>
+                <template v-else>
+                  <div v-if="baiduUploadVirtualTopPadding" class="preview-virtual-spacer" :style="{ height: `${baiduUploadVirtualTopPadding}px` }" />
+                  <TransitionGroup
+                    name="baidu-upload-tree-row"
+                    tag="div"
+                    class="tree-list baidu-upload-tree-list space-y-1"
+                    :css="baiduUploadTreeAnimationEnabled"
                   >
-                    <div class="tree-main flex items-center gap-2 flex-1 min-w-0">
-                      <button
-                        v-if="item.is_directory"
-                        type="button"
-                        class="baidu-upload-tree-expander"
-                        @click.stop="toggleBaiduUploadTreeExpanded(item)"
-                      >
-                        <IconChevronDown
-                          v-if="isBaiduUploadTreeExpanded(item)"
-                          :size="16"
-                          :stroke-width="2.2"
-                        />
-                        <IconChevronRight
-                          v-else
-                          :size="16"
-                          :stroke-width="2.2"
-                        />
-                      </button>
-                      <span v-else class="baidu-upload-expander-spacer" />
-                      <input
-                        type="checkbox"
-                        class="baidu-upload-native-checkbox"
-                        :checked="isBaiduUploadItemSelected(item)"
-                        :aria-label="`${isBaiduUploadItemSelected(item) ? '取消选择' : '选择'} ${item.name}`"
-                        @click.stop
-                        @change.stop="toggleBaiduUploadItemSelection(item)"
-                      />
-                      <span class="baidu-upload-file-icon" :class="{ 'is-folder': item.is_directory, 'is-filled': getBaiduUploadTreeIconMeta(item).fillIcon }">
-                        <component
-                          :is="getBaiduUploadTreeIconMeta(item).icon"
-                          :size="18"
-                          :stroke-width="2.2"
-                          :style="{ color: getBaiduUploadTreeIconMeta(item).color }"
-                        />
-                      </span>
-                      <span class="tree-name baidu-upload-tree-name text-sm text-slate-800 truncate font-medium" :title="item.path">
-                        {{ item.name }}
-                        <span class="node-title-muted">{{ item.path }}</span>
-                      </span>
+                    <div
+                      v-for="item in baiduUploadRenderedTreeRows"
+                      :key="item.id || item.path"
+                      class="baidu-upload-tree-row-shell"
+                    >
+                      <div class="baidu-upload-tree-row-clip">
+                        <div
+                          class="tree-row baidu-upload-tree-row flex items-center py-1.5 px-2 rounded-md group"
+                          :class="{ 'tree-row-selected': getBaiduUploadItemSelectionState(item) !== 'none' }"
+                          :style="{ paddingLeft: `${8 + item.depth * 18}px` }"
+                          @click="handleBaiduUploadTreeRowClick(item)"
+                        >
+                          <div class="tree-main flex items-center gap-2 flex-1 min-w-0">
+                            <button
+                              v-if="item.is_directory"
+                              type="button"
+                              class="baidu-upload-tree-expander"
+                              @click.stop="toggleBaiduUploadTreeExpanded(item)"
+                            >
+                              <IconChevronRight
+                                :size="16"
+                                :stroke-width="2.2"
+                                class="baidu-upload-tree-expander-icon"
+                                :class="{ 'is-expanded': isBaiduUploadTreeExpanded(item) }"
+                              />
+                            </button>
+                            <span v-else class="baidu-upload-expander-spacer" />
+                            <button
+                              type="button"
+                              class="tree-checkbox baidu-upload-tree-checkbox relative flex size-4 shrink-0 items-center justify-center rounded-[4px] border"
+                              :class="getBaiduUploadItemSelectionState(item) === 'all' ? 'tree-checkbox-on' : (getBaiduUploadItemSelectionState(item) === 'partial' ? 'tree-checkbox-partial' : 'tree-checkbox-off')"
+                              :aria-label="`${getBaiduUploadItemSelectionState(item) === 'none' ? '选择' : '取消选择'} ${item.name}`"
+                              @click.stop="toggleBaiduUploadItemSelection(item)"
+                            >
+                              <IconCheck v-if="getBaiduUploadItemSelectionState(item) === 'all'" :size="14" />
+                              <span v-else-if="getBaiduUploadItemSelectionState(item) === 'partial'" class="checkbox-minus" />
+                            </button>
+                            <span class="baidu-upload-file-icon" :class="{ 'is-folder': item.is_directory, 'is-filled': getBaiduUploadTreeIconMeta(item).fillIcon }">
+                              <component
+                                :is="getBaiduUploadTreeIconMeta(item).icon"
+                                :size="18"
+                                :stroke-width="2.2"
+                                :style="{ color: getBaiduUploadTreeIconMeta(item).color }"
+                              />
+                            </span>
+                            <span class="tree-name baidu-upload-tree-name text-sm text-slate-800 truncate font-medium" :title="item.path">
+                              {{ item.name }}
+                              <span class="node-title-muted">{{ item.path }}</span>
+                            </span>
+                          </div>
+                          <span class="tree-size baidu-upload-tree-size text-xs text-slate-400 ml-4 tabular-nums">{{ formatSize(item.size) }}</span>
+                        </div>
+                      </div>
                     </div>
-                    <span class="tree-size baidu-upload-tree-size text-xs text-slate-400 ml-4 tabular-nums">{{ formatSize(item.size) }}</span>
-                  </div>
-                </TransitionGroup>
+                  </TransitionGroup>
+                  <div v-if="baiduUploadVirtualBottomPadding" class="preview-virtual-spacer" :style="{ height: `${baiduUploadVirtualBottomPadding}px` }" />
+                </template>
               </div>
             </section>
           </div>
@@ -1787,6 +1798,8 @@ import {
 
   BarChart3 as IconBarChart,
 
+  Check as IconCheck,
+
   CheckSquare as IconCheckSquare,
 
   ArrowLeft as IconArrowLeft,
@@ -1823,8 +1836,6 @@ import {
   FolderOpen as IconFolderOpen,
 
   ChevronLeft as IconChevronLeft,
-
-  ChevronDown as IconChevronDown,
 
   ChevronRight as IconChevronRight,
 
@@ -2227,6 +2238,30 @@ const baiduUploadPreviewRows = ref([])
 const baiduUploadPreviewToken = ref(0)
 
 const baiduUploadExpandedPathSet = ref(new Set())
+
+const baiduUploadTreeScrollRef = ref(null)
+
+const baiduUploadTreeScrollTop = ref(0)
+
+const baiduUploadTreeViewportHeight = ref(420)
+
+const BAIDU_UPLOAD_TREE_ROW_HEIGHT = 70
+
+const BAIDU_UPLOAD_TREE_OVERSCAN = 10
+
+const BAIDU_UPLOAD_TREE_VIRTUAL_THRESHOLD = 220
+
+const BAIDU_UPLOAD_TREE_ANIMATION_ROW_LIMIT = 120
+
+const baiduUploadDialogLoading = computed(() => baiduUploadPreviewLoading.value || baiduUploadSubmitting.value)
+
+const baiduUploadDialogLoadingText = computed(() => (
+  baiduUploadSubmitting.value ? '正在创建百度网盘上传任务...' : '正在生成上传预览树...'
+))
+
+const baiduUploadDialogLoadingDescription = computed(() => (
+  baiduUploadSubmitting.value ? '保存上传设置、压缩参数和网盘目录' : '同步目录结构、百度网盘路径和上传计划'
+))
 
 const baiduUploadForm = ref({
   mode: 'compress',
@@ -3978,87 +4013,164 @@ const currentPathBreadcrumbSegments = computed(() => {
 
 })
 
-const currentPathBreadcrumbHiddenSegments = computed(() => {
+const PATH_BREADCRUMB_LEADING_SEGMENT_COUNT = 2
 
-  const segments = currentPathBreadcrumbSegments.value
+const PATH_BREADCRUMB_WIDTH_BUFFER = 8
 
-  if (!shouldCollapseCurrentPathBreadcrumb.value) return []
+const PATH_BREADCRUMB_ITEM_GAP = 8
 
-  return segments.slice(2, -1)
+const PATH_BREADCRUMB_SEPARATOR_WIDTH = 14
 
-})
+const PATH_BREADCRUMB_CONTAINER_PADDING = 4
 
-const estimatedCurrentPathBreadcrumbWidth = computed(() => {
+const PATH_BREADCRUMB_ELLIPSIS_WIDTH = 24
 
-  const segments = currentPathBreadcrumbSegments.value
+const PATH_BREADCRUMB_SEGMENT_TEXT_MAX_WIDTH = 220
 
-  if (!segments.length) return 0
+const PATH_BREADCRUMB_CURRENT_TEXT_MAX_WIDTH = 294
 
-  const iconWidth = 23 * segments.length
+function estimatePathBreadcrumbLabelWidth (label) {
 
-  const containerPadding = 20
+  return Array.from(String(label || '')).reduce((sum, char) => {
 
-  const separatorWidth = 18 * Math.max(0, segments.length - 1)
-
-  const segmentWidth = segments.reduce((sum, segment) => {
-
-    const label = String(segment?.label || '')
-
-    const rawWidth = Array.from(label).reduce((innerSum, char) => {
-
-      return innerSum + (/[\u3000-\u9fff\u3040-\u30ff\uff00-\uffef]/.test(char) ? 14 : 8)
-
-    }, 12)
-
-    return sum + Math.min(rawWidth, segment?.current ? 340 : 220)
+    return sum + (/[\u3000-\u9fff\u3040-\u30ff\uff00-\uffef]/.test(char) ? 14 : 8)
 
   }, 0)
 
-  return iconWidth + containerPadding + separatorWidth + segmentWidth
+}
 
-})
+function estimatePathBreadcrumbSegmentWidth (segment) {
 
-const shouldCollapseCurrentPathBreadcrumb = computed(() => {
+  const labelWidth = estimatePathBreadcrumbLabelWidth(segment?.label)
+
+  const textWidth = Math.min(
+    labelWidth,
+    segment?.current ? PATH_BREADCRUMB_CURRENT_TEXT_MAX_WIDTH : PATH_BREADCRUMB_SEGMENT_TEXT_MAX_WIDTH
+  )
+
+  return 21 + textWidth
+
+}
+
+function estimatePathBreadcrumbItemsWidth (segments, hasEllipsis = false) {
+
+  const crumbCount = segments.length + (hasEllipsis ? 1 : 0)
+
+  const separatorCount = Math.max(0, crumbCount - 1)
+
+  const flexItemCount = crumbCount + separatorCount
+
+  const gapWidth = PATH_BREADCRUMB_ITEM_GAP * Math.max(0, flexItemCount - 1)
+
+  const separatorWidth = PATH_BREADCRUMB_SEPARATOR_WIDTH * separatorCount
+
+  const crumbWidth = segments.reduce((sum, segment) => {
+
+    return sum + estimatePathBreadcrumbSegmentWidth(segment)
+
+  }, hasEllipsis ? PATH_BREADCRUMB_ELLIPSIS_WIDTH : 0)
+
+  return PATH_BREADCRUMB_CONTAINER_PADDING + gapWidth + separatorWidth + crumbWidth
+
+}
+
+const currentPathBreadcrumbLayout = computed(() => {
 
   const segments = currentPathBreadcrumbSegments.value
 
-  if (segments.length <= 3) return false
+  const createSegmentItem = (segment, index, prefix = 'segment') => ({
+    type: 'segment',
+    key: `${prefix}-${segment.path || segment.label}-${index}`,
+    segment
+  })
+
+  const createFullLayout = () => ({
+    hiddenSegments: [],
+    displayItems: segments.map((segment, index) => createSegmentItem(segment, index))
+  })
+
+  if (segments.length <= 3) return createFullLayout()
 
   const availableWidth = Number(pathBreadcrumbWidth.value || 0)
 
-  if (!availableWidth) return false
+  if (!availableWidth) return createFullLayout()
 
-  return estimatedCurrentPathBreadcrumbWidth.value > availableWidth - 24
+  const effectiveWidth = Math.max(0, availableWidth - PATH_BREADCRUMB_WIDTH_BUFFER)
+
+  if (estimatePathBreadcrumbItemsWidth(segments) <= effectiveWidth) return createFullLayout()
+
+  const leadingCount = Math.min(PATH_BREADCRUMB_LEADING_SEGMENT_COUNT, segments.length - 1)
+
+  const leadingSegments = segments.slice(0, leadingCount)
+
+  const middleSegments = segments.slice(leadingCount, -1)
+
+  const currentSegment = segments[segments.length - 1]
+
+  let visibleMiddleSegments = []
+
+  let hiddenSegments = middleSegments.slice()
+
+  for (let index = middleSegments.length - 1; index >= 0; index -= 1) {
+
+    const candidateVisibleMiddleSegments = [middleSegments[index], ...visibleMiddleSegments]
+
+    const candidateHiddenSegments = middleSegments.slice(0, index)
+
+    const candidateDisplaySegments = [
+      ...leadingSegments,
+      ...candidateVisibleMiddleSegments,
+      currentSegment
+    ]
+
+    if (estimatePathBreadcrumbItemsWidth(candidateDisplaySegments, candidateHiddenSegments.length > 0) <= effectiveWidth) {
+
+      visibleMiddleSegments = candidateVisibleMiddleSegments
+
+      hiddenSegments = candidateHiddenSegments
+
+    } else {
+
+      break
+
+    }
+
+  }
+
+  const displayItems = [
+    ...leadingSegments.map((segment, index) => createSegmentItem(segment, index))
+  ]
+
+  if (hiddenSegments.length) {
+
+    displayItems.push({ type: 'ellipsis', key: 'path-ellipsis' })
+
+  }
+
+  const trailingSegments = [...visibleMiddleSegments, currentSegment]
+
+  trailingSegments.forEach((segment, index) => {
+
+    displayItems.push(createSegmentItem(segment, index, 'segment-tail'))
+
+  })
+
+  return {
+    hiddenSegments,
+    displayItems
+  }
+
+})
+
+const currentPathBreadcrumbHiddenSegments = computed(() => {
+
+  return currentPathBreadcrumbLayout.value.hiddenSegments
 
 })
 
 const currentPathBreadcrumbDisplayItems = computed(() => {
 
-  const segments = currentPathBreadcrumbSegments.value
-
-  if (!currentPathBreadcrumbHiddenSegments.value.length) {
-
-    return segments.map((segment, index) => ({
-      type: 'segment',
-      key: `segment-${segment.path || segment.label}-${index}`,
-      segment
-    }))
-
-  }
-
-  return [
-    ...segments.slice(0, 2).map((segment, index) => ({
-      type: 'segment',
-      key: `segment-${segment.path || segment.label}-${index}`,
-      segment
-    })),
-    { type: 'ellipsis', key: 'path-ellipsis' },
-    ...segments.slice(-1).map((segment, index) => ({
-      type: 'segment',
-      key: `segment-tail-${segment.path || segment.label}-${index}`,
-      segment
-    }))
-  ]
+  return currentPathBreadcrumbLayout.value.displayItems
 
 })
 
@@ -4334,10 +4446,70 @@ const baiduUploadVisibleTreeRows = computed(() => {
   })
 })
 
+const baiduUploadTreeUseVirtual = computed(() => baiduUploadVisibleTreeRows.value.length > BAIDU_UPLOAD_TREE_VIRTUAL_THRESHOLD)
+
+const baiduUploadVirtualRange = computed(() => {
+  const total = baiduUploadVisibleTreeRows.value.length
+  if (!baiduUploadTreeUseVirtual.value) return { start: 0, end: total }
+  const viewport = Math.max(baiduUploadTreeViewportHeight.value || 420, BAIDU_UPLOAD_TREE_ROW_HEIGHT)
+  const visibleCount = Math.ceil(viewport / BAIDU_UPLOAD_TREE_ROW_HEIGHT) + BAIDU_UPLOAD_TREE_OVERSCAN * 2
+  const maxStart = Math.max(0, total - visibleCount)
+  const start = Math.min(
+    maxStart,
+    Math.max(0, Math.floor((baiduUploadTreeScrollTop.value || 0) / BAIDU_UPLOAD_TREE_ROW_HEIGHT) - BAIDU_UPLOAD_TREE_OVERSCAN)
+  )
+  return { start, end: Math.min(total, start + visibleCount) }
+})
+
+const baiduUploadRenderedTreeRows = computed(() => {
+  const { start, end } = baiduUploadVirtualRange.value
+  return baiduUploadVisibleTreeRows.value.slice(start, end)
+})
+
+const baiduUploadVirtualTopPadding = computed(() => (
+  baiduUploadTreeUseVirtual.value ? baiduUploadVirtualRange.value.start * BAIDU_UPLOAD_TREE_ROW_HEIGHT : 0
+))
+
+const baiduUploadVirtualBottomPadding = computed(() => (
+  baiduUploadTreeUseVirtual.value
+    ? Math.max(0, (baiduUploadVisibleTreeRows.value.length - baiduUploadVirtualRange.value.end) * BAIDU_UPLOAD_TREE_ROW_HEIGHT)
+    : 0
+))
+
+const baiduUploadTreeAnimationEnabled = computed(() => (
+  !baiduUploadTreeUseVirtual.value &&
+  baiduUploadTreeRows.value.length <= BAIDU_UPLOAD_TREE_ANIMATION_ROW_LIMIT &&
+  baiduUploadVisibleTreeRows.value.length <= BAIDU_UPLOAD_TREE_ANIMATION_ROW_LIMIT
+))
+
 const baiduUploadAllExpanded = computed(() => {
   const directories = baiduUploadDirectoryRows.value
   return directories.length > 0 && directories.every(item => baiduUploadExpandedPathSet.value.has(item.path))
 })
+
+function updateBaiduUploadTreeViewportHeight () {
+  const viewportHeight = Number(baiduUploadTreeScrollRef.value?.clientHeight || 0)
+  baiduUploadTreeViewportHeight.value = Math.max(240, viewportHeight || 420)
+}
+
+function onBaiduUploadTreeScroll () {
+  baiduUploadTreeScrollTop.value = Number(baiduUploadTreeScrollRef.value?.scrollTop || 0)
+  updateBaiduUploadTreeViewportHeight()
+}
+
+function resetBaiduUploadTreeScroll () {
+  baiduUploadTreeScrollTop.value = 0
+  nextTick(() => {
+    if (baiduUploadTreeScrollRef.value) baiduUploadTreeScrollRef.value.scrollTop = 0
+    updateBaiduUploadTreeViewportHeight()
+  })
+}
+
+watch(
+  () => [baiduUploadDialogVisible.value, baiduUploadVisibleTreeRows.value.length],
+  () => nextTick(updateBaiduUploadTreeViewportHeight),
+  { flush: 'post' }
+)
 
 const baiduUploadSelectedRows = computed(() => {
   const selected = baiduUploadSelectedPathSet.value
@@ -4446,95 +4618,6 @@ function getBaiduUploadTreeIconMeta (item) {
   })
 }
 
-const BAIDU_UPLOAD_TREE_ROW_ANIMATION_MS = 280
-
-function clearBaiduUploadTreeRowAnimation (el) {
-  if (!el) return
-  el._baiduUploadTreeRowCleanup?.()
-  el._baiduUploadTreeRowCleanup = null
-  el.style.overflow = ''
-  el.style.maxHeight = ''
-  el.style.opacity = ''
-  el.style.transform = ''
-  el.style.marginTop = ''
-  el.style.marginBottom = ''
-  el.style.paddingTop = ''
-  el.style.paddingBottom = ''
-  el.style.transition = ''
-}
-
-function finishBaiduUploadTreeRowAnimation (el, done) {
-  let finished = false
-  const finish = () => {
-    if (finished) return
-    finished = true
-    clearBaiduUploadTreeRowAnimation(el)
-    done?.()
-  }
-  const timer = window.setTimeout(finish, BAIDU_UPLOAD_TREE_ROW_ANIMATION_MS + 120)
-  el._baiduUploadTreeRowCleanup = () => {
-    window.clearTimeout(timer)
-  }
-  return finish
-}
-
-function setBaiduUploadTreeRowTransition (el) {
-  el.style.transition = [
-    `opacity ${BAIDU_UPLOAD_TREE_ROW_ANIMATION_MS}ms ease`,
-    `transform ${BAIDU_UPLOAD_TREE_ROW_ANIMATION_MS}ms cubic-bezier(0.34, 1.56, 0.64, 1)`,
-    `max-height ${BAIDU_UPLOAD_TREE_ROW_ANIMATION_MS}ms ease`,
-    `margin ${BAIDU_UPLOAD_TREE_ROW_ANIMATION_MS}ms ease`,
-    `padding-top ${BAIDU_UPLOAD_TREE_ROW_ANIMATION_MS}ms ease`,
-    `padding-bottom ${BAIDU_UPLOAD_TREE_ROW_ANIMATION_MS}ms ease`,
-  ].join(', ')
-}
-
-function beforeBaiduUploadTreeRowEnter (el) {
-  clearBaiduUploadTreeRowAnimation(el)
-  el.style.overflow = 'hidden'
-  el.style.maxHeight = '0px'
-  el.style.opacity = '0'
-  el.style.transform = 'translate3d(0, -10px, 0) scaleY(0.96)'
-  el.style.marginTop = '-6px'
-  el.style.marginBottom = '-6px'
-  el.style.paddingTop = '0px'
-  el.style.paddingBottom = '0px'
-}
-
-function enterBaiduUploadTreeRow (el, done) {
-  const targetHeight = Math.max(el.scrollHeight, 40)
-  setBaiduUploadTreeRowTransition(el)
-  finishBaiduUploadTreeRowAnimation(el, done)
-  void el.offsetHeight
-  el.style.maxHeight = `${targetHeight}px`
-  el.style.opacity = '1'
-  el.style.transform = 'translate3d(0, 0, 0) scaleY(1)'
-  el.style.marginTop = ''
-  el.style.marginBottom = ''
-  el.style.paddingTop = ''
-  el.style.paddingBottom = ''
-}
-
-function leaveBaiduUploadTreeRow (el, done) {
-  clearBaiduUploadTreeRowAnimation(el)
-  el.style.overflow = 'hidden'
-  el.style.maxHeight = `${Math.max(el.scrollHeight, 40)}px`
-  el.style.opacity = '1'
-  el.style.transform = 'translate3d(0, 0, 0) scaleY(1)'
-  el.style.marginTop = '0px'
-  el.style.marginBottom = '0px'
-  setBaiduUploadTreeRowTransition(el)
-  finishBaiduUploadTreeRowAnimation(el, done)
-  void el.offsetHeight
-  el.style.maxHeight = '0px'
-  el.style.opacity = '0'
-  el.style.transform = 'translate3d(0, -10px, 0) scaleY(0.96)'
-  el.style.marginTop = '-6px'
-  el.style.marginBottom = '-6px'
-  el.style.paddingTop = '0px'
-  el.style.paddingBottom = '0px'
-}
-
 function getBaiduUploadChildPath (basePath, relativeParts) {
   const base = String(basePath || '').replace(/[\\/]+$/g, '')
   const parts = Array.isArray(relativeParts) ? relativeParts.filter(Boolean) : []
@@ -4638,6 +4721,7 @@ async function hydrateBaiduUploadPreviewRows () {
     baiduUploadPreviewRows.value = groups.flat()
     resetBaiduUploadExpandedState()
     resetBaiduUploadSelection()
+    resetBaiduUploadTreeScroll()
   } finally {
     if (baiduUploadPreviewToken.value === token) baiduUploadPreviewLoading.value = false
   }
@@ -4672,8 +4756,17 @@ function toggleAllBaiduUploadTreeExpanded () {
   resetBaiduUploadExpandedState()
 }
 
-function isBaiduUploadItemSelected (item) {
-  return baiduUploadSelectedPathSet.value.has(item?.path)
+function getBaiduUploadItemSelectionState (item) {
+  const path = item?.path
+  if (!path) return 'none'
+  const selected = baiduUploadSelectedPathSet.value
+  if (selected.has(path)) return 'all'
+  if (!item?.is_directory) return 'none'
+  const descendants = baiduUploadTreeRows.value.filter(row => (row.ancestorPaths || []).includes(path))
+  if (!descendants.length) return 'none'
+  const selectedDescendantCount = descendants.filter(row => selected.has(row.path)).length
+  if (selectedDescendantCount === descendants.length) return 'all'
+  return selectedDescendantCount > 0 ? 'partial' : 'none'
 }
 
 function handleBaiduUploadTreeRowClick (item) {
@@ -4692,7 +4785,7 @@ function toggleBaiduUploadItemSelection (item) {
     .filter(row => (row.ancestorPaths || []).includes(path))
     .map(row => row.path)
     .filter(Boolean)
-  if (next.has(path)) {
+  if (getBaiduUploadItemSelectionState(item) === 'all') {
     next.delete(path)
     descendants.forEach(childPath => next.delete(childPath))
   } else {
@@ -6042,6 +6135,8 @@ onMounted(async () => {
 
   window.addEventListener('kikoerumanager:events:message', handleFolderCompletionRealtimeEvent)
 
+  window.addEventListener('resize', updateBaiduUploadTreeViewportHeight)
+
   nextTick(() => bindPathBreadcrumbResizeObserver())
 
   // \u5148\u6062\u590d\u5220\u9664\u8fc7\u6ee4\u540e\u53f0\u72b6\u6001\uff0c\u907f\u514d\u9875\u9762\u521d\u59cb\u5316\u540e\u88ab\u8986\u76d6
@@ -6242,6 +6337,8 @@ onBeforeUnmount(() => {
   stopSubtitleRealtimeEvents()
 
   window.removeEventListener('kikoerumanager:events:message', handleFolderCompletionRealtimeEvent)
+
+  window.removeEventListener('resize', updateBaiduUploadTreeViewportHeight)
 
   unbindLibraryKeydown()
 
@@ -9610,6 +9707,7 @@ async function openBaiduUploadDialog (rowOverride = null) {
   baiduUploadPreviewRows.value = []
   resetBaiduUploadExpandedState()
   resetBaiduUploadSelection()
+  resetBaiduUploadTreeScroll()
   baiduUploadDialogVisible.value = true
   hydrateBaiduUploadDialogDefaults()
   hydrateBaiduUploadPreviewRows()
@@ -9648,6 +9746,7 @@ function closeBaiduUploadDialog () {
   baiduUploadSelectedPathSet.value = new Set()
   baiduUploadPreviewRows.value = []
   baiduUploadExpandedPathSet.value = new Set()
+  resetBaiduUploadTreeScroll()
   baiduUploadPreviewToken.value += 1
   baiduUploadPreviewLoading.value = false
 }
@@ -25668,43 +25767,71 @@ function statsStatusTextDisplay (stats) {
   padding: 0 !important;
 }
 
-.baidu-upload-modal .baidu-upload-tree-list {
-  gap: 6px;
+.baidu-upload-modal .preview-virtual-spacer {
+  flex: 0 0 auto;
+  pointer-events: none;
 }
 
-.baidu-upload-tree-row-move,
+.baidu-upload-modal .baidu-upload-tree-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-anchor: none;
+}
+
+.baidu-upload-modal .baidu-upload-tree-list > * + * {
+  margin-top: 0 !important;
+}
+
+.baidu-upload-tree-row-shell {
+  display: grid;
+  grid-template-rows: 1fr;
+  overflow: hidden;
+  opacity: 1;
+  transform-origin: top;
+  transform: translate3d(0, 0, 0);
+}
+
 .baidu-upload-tree-row-enter-active,
 .baidu-upload-tree-row-leave-active {
   transition:
-    opacity 0.22s ease,
-    transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1),
-    max-height 0.24s ease,
-    margin 0.24s ease,
-    padding-top 0.24s ease,
-    padding-bottom 0.24s ease;
+    grid-template-rows 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.18s ease,
+    transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.baidu-upload-tree-row-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.baidu-upload-tree-row-move {
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .baidu-upload-tree-row-enter-from,
 .baidu-upload-tree-row-leave-to {
-  max-height: 0 !important;
-  margin-top: -6px;
-  margin-bottom: -6px;
-  padding-top: 0 !important;
-  padding-bottom: 0 !important;
+  grid-template-rows: 0fr;
   opacity: 0;
-  transform: translate3d(0, -8px, 0) scaleY(0.96);
+  transform: translate3d(0, -4px, 0);
 }
 
 .baidu-upload-tree-row-enter-to,
 .baidu-upload-tree-row-leave-from {
-  max-height: 48px;
+  grid-template-rows: 1fr;
   opacity: 1;
-  transform: translate3d(0, 0, 0) scaleY(1);
+  transform: translate3d(0, 0, 0);
 }
 
-.baidu-upload-tree-row-leave-active {
-  overflow: hidden;
-  pointer-events: none;
+.baidu-upload-tree-row-leave-active { pointer-events: none; }
+
+.baidu-upload-tree-expander-icon {
+  transform: rotate(0deg);
+  transition: transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.baidu-upload-tree-expander-icon.is-expanded {
+  transform: rotate(90deg);
 }
 
 .baidu-upload-modal .baidu-upload-tree-row {
@@ -25728,21 +25855,22 @@ function statsStatusTextDisplay (stats) {
   box-shadow: none;
 }
 
-.baidu-upload-tree-loading {
-  min-height: 100%;
-  padding: 28px 16px;
+.baidu-upload-dialog-loading-shell {
+  align-items: center;
+  justify-content: center;
+  padding: 32px 18px;
   color: var(--baidu-upload-muted) !important;
 }
 
-.baidu-upload-tree-loading :deep(.app-loading-animation) {
+.baidu-upload-dialog-loading-shell :deep(.app-loading-animation) {
   width: 100%;
 }
 
-.baidu-upload-tree-loading :deep(.app-loading-animation__label) {
+.baidu-upload-dialog-loading-shell :deep(.app-loading-animation__label) {
   color: var(--baidu-upload-text-strong) !important;
 }
 
-.baidu-upload-tree-loading :deep(.app-loading-animation__description) {
+.baidu-upload-dialog-loading-shell :deep(.app-loading-animation__description) {
   color: var(--baidu-upload-muted) !important;
 }
 
@@ -25768,6 +25896,11 @@ function statsStatusTextDisplay (stats) {
   color: #94a3b8;
   cursor: pointer;
   transition: color 0.18s ease, background-color 0.18s ease, transform 0.18s ease;
+}
+
+.baidu-upload-tree-expander svg,
+.baidu-upload-tree-expander-icon {
+  cursor: pointer;
 }
 
 .baidu-upload-tree-expander:hover {
@@ -25827,11 +25960,19 @@ function statsStatusTextDisplay (stats) {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  border: 0;
+  padding: 0;
+  background: transparent;
   color: #0f172a;
   font-size: 13px;
   font-weight: 750;
   cursor: pointer;
   user-select: none;
+}
+
+.baidu-upload-select-all:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .baidu-upload-tree-toggle {
@@ -25863,19 +26004,45 @@ function statsStatusTextDisplay (stats) {
   cursor: not-allowed;
 }
 
-.baidu-upload-native-checkbox {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
-  margin: 0;
-  accent-color: #111827;
+.baidu-upload-modal .tree-checkbox {
   cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease, transform 0.15s ease;
 }
 
-.baidu-upload-native-checkbox:focus,
-.baidu-upload-native-checkbox:focus-visible {
-  outline: none !important;
-  box-shadow: none !important;
+.baidu-upload-modal .tree-checkbox:hover:not(:disabled) {
+  transform: scale(1.04);
+}
+
+.baidu-upload-modal .tree-checkbox:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.baidu-upload-modal .tree-checkbox-on,
+.baidu-upload-modal .tree-checkbox-partial {
+  border-color: #111827;
+  background: #111827;
+  color: #fff;
+}
+
+.baidu-upload-modal .tree-checkbox-off {
+  border-color: rgba(15, 23, 42, 0.12);
+  background: rgba(255, 255, 255, 0.7);
+  color: transparent;
+}
+
+.baidu-upload-modal .tree-row:hover .tree-checkbox-off,
+.baidu-upload-select-all:hover:not(:disabled) .tree-checkbox-off {
+  border-color: rgba(15, 23, 42, 0.3);
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.baidu-upload-modal .checkbox-minus {
+  display: inline-block;
+  width: 10px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
 }
 
 .baidu-upload-modal .baidu-upload-close-button {
@@ -26045,11 +26212,6 @@ function statsStatusTextDisplay (stats) {
 :global(html.dark .baidu-upload-modal .baidu-upload-primary-cta:hover:not(:disabled)) {
   border-color: rgba(255, 255, 255, 0.26) !important;
   background: #28292f !important;
-}
-
-:global(html.kikoerumanager-dark .baidu-upload-modal .baidu-upload-native-checkbox),
-:global(html.dark .baidu-upload-modal .baidu-upload-native-checkbox) {
-  accent-color: #d4d4d8;
 }
 
 /* 百度上传暗黑态：跟服务器弹窗一致，去掉上下灰条，只保留深色玻璃层级。 */
@@ -26266,63 +26428,29 @@ function statsStatusTextDisplay (stats) {
   color: rgba(228, 228, 231, 0.84) !important;
 }
 
-:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox),
-:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox) {
-  appearance: none;
-  -webkit-appearance: none;
-  display: inline-grid;
-  width: 16px;
-  height: 16px;
-  place-content: center;
-  border: 1px solid rgba(255, 255, 255, 0.28) !important;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.075) !important;
-  background-color: rgba(255, 255, 255, 0.075) !important;
-  background-image: none !important;
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .tree-checkbox-on),
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .tree-checkbox-partial),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .tree-checkbox-on),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .tree-checkbox-partial) {
+  border-color: #d4d4d8 !important;
+  background: #d4d4d8 !important;
+  color: #111217 !important;
   box-shadow: none !important;
 }
 
-:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox::after),
-:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox::after) {
-  width: 8px;
-  height: 4px;
-  border-bottom: 2px solid rgba(12, 13, 16, 0.92);
-  border-left: 2px solid rgba(12, 13, 16, 0.92);
-  content: '';
-  opacity: 0;
-  transform: rotate(-45deg) scale(0.72);
-  transition: all 0.18s ease;
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .tree-checkbox-off),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .tree-checkbox-off) {
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  background: rgba(30, 31, 35, 0.74) !important;
+  color: transparent !important;
 }
 
-:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox:checked),
-:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox:checked) {
-  border-color: rgba(244, 244, 245, 0.88) !important;
-  background: rgba(244, 244, 245, 0.88) !important;
-  background-color: rgba(244, 244, 245, 0.88) !important;
-}
-
-:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox:checked::after),
-:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox:checked::after) {
-  opacity: 1;
-  transform: rotate(-45deg) scale(1);
-}
-
-:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox:indeterminate),
-:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox:indeterminate) {
-  border-color: rgba(244, 244, 245, 0.78) !important;
-  background: rgba(244, 244, 245, 0.72) !important;
-  background-color: rgba(244, 244, 245, 0.72) !important;
-}
-
-:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox:indeterminate::after),
-:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-native-checkbox.baidu-upload-native-checkbox:indeterminate::after) {
-  width: 8px;
-  height: 2px;
-  border: 0;
-  border-radius: 999px;
-  background: rgba(12, 13, 16, 0.92);
-  opacity: 1;
-  transform: none;
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .tree-row:hover .tree-checkbox-off),
+:global(html.kikoerumanager-dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-select-all:hover:not(:disabled) .tree-checkbox-off),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .tree-row:hover .tree-checkbox-off),
+:global(html.dark .custom-preview-modal.baidu-upload-modal.baidu-upload-modal.baidu-upload-modal .baidu-upload-select-all:hover:not(:disabled) .tree-checkbox-off) {
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  background: rgba(48, 49, 54, 0.88) !important;
 }
 
 .baidu-upload-dialog-enter-active,
