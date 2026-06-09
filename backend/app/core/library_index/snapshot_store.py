@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from typing import Iterable, Iterator, Optional, Sequence, Union
 
-from sqlalchemy import func, or_, text
+from sqlalchemy import and_, func, or_, text
 from sqlalchemy.orm import Session
 
 from ...models.database import (
@@ -135,7 +135,7 @@ class SnapshotStore:
         self._session_factory = session_factory
 
     @contextmanager
-    def _session(self) -> Iterator[Session]:
+    def _write_session(self) -> Iterator[Session]:
         with get_resource_budget_service().acquire_sync("sqlite_write", reason="library_index.write"):
             db = self._session_factory()
             try:
@@ -147,11 +147,19 @@ class SnapshotStore:
             finally:
                 db.close()
 
+    @contextmanager
+    def _read_session(self) -> Iterator[Session]:
+        db = self._session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
     # ========== Entry 写入 ==========
 
     def upsert(self, entry: IndexEntry) -> None:
         """写入或更新一行索引，(library_id, relative_path) 作为自然主键。"""
-        with self._session() as db:
+        with self._write_session() as db:
             entry = _sqlite_safe_entry(entry)
             old = self._get_existing_stats_map(db, entry.library_id, [entry.relative_path])
             old_size, old_folders = old.get(entry.relative_path, (0, 0))
@@ -187,7 +195,7 @@ class SnapshotStore:
         chunk_size = max(1, int(chunk_size or 500))
         payload = list(deduped.values())
         try:
-            with self._session() as db:
+            with self._write_session() as db:
                 deltas = (
                     self._build_bulk_upsert_status_deltas(db, payload)
                     if maintain_status_stats else {}
@@ -211,7 +219,7 @@ class SnapshotStore:
             logger.warning("[索引] 原生批量 UPSERT 失败，回退逐条写入", exc_info=True)
 
         written = 0
-        with self._session() as db:
+        with self._write_session() as db:
             deltas = (
                 self._build_bulk_upsert_status_deltas(db, payload)
                 if maintain_status_stats else {}
@@ -415,12 +423,18 @@ class SnapshotStore:
         return str(value or "").strip("/")
 
     @staticmethod
-    def _escape_like(value: str) -> str:
-        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    def _subtree_range_bounds(relative_path: str) -> tuple[str, str]:
+        """返回 literal 子树前缀范围，稳定命中 (library_id, relative_path) 索引。"""
+        prefix = f"{relative_path}/"
+        return prefix, f"{relative_path}0"
 
     @classmethod
-    def _subtree_like_pattern(cls, relative_path: str) -> str:
-        return f"{cls._escape_like(relative_path)}/%"
+    def _subtree_column_condition(cls, column, relative_path: str):
+        lower, upper = cls._subtree_range_bounds(relative_path)
+        return or_(
+            column == relative_path,
+            and_(column >= lower, column < upper),
+        )
 
     @staticmethod
     def _relative_parent(relative_path: str) -> str:
@@ -455,15 +469,7 @@ class SnapshotStore:
         q = db.query(LibraryIndexEntry).filter(LibraryIndexEntry.library_id == library_id)
         if not normalized:
             return q
-        return q.filter(
-            or_(
-                LibraryIndexEntry.relative_path == normalized,
-                LibraryIndexEntry.relative_path.like(
-                    self._subtree_like_pattern(normalized),
-                    escape="\\",
-                ),
-            ),
-        )
+        return q.filter(self._subtree_column_condition(LibraryIndexEntry.relative_path, normalized))
 
     def _delete_subtree_in_session(
         self,
@@ -582,7 +588,8 @@ class SnapshotStore:
                        parent_path = CASE
                            WHEN relative_path = :old_rel THEN :new_parent
                            WHEN parent_path = :old_rel THEN :new_rel
-                           WHEN parent_path LIKE :old_child_like ESCAPE '\\'
+                           WHEN parent_path >= :old_child_lower
+                            AND parent_path < :old_child_upper
                                THEN :new_rel || substr(parent_path, :old_rel_suffix_start)
                            ELSE parent_path
                        END,
@@ -598,7 +605,10 @@ class SnapshotStore:
                  WHERE library_id = :library_id
                    AND (
                        relative_path = :old_rel
-                       OR relative_path LIKE :old_child_like ESCAPE '\\'
+                       OR (
+                           relative_path >= :old_child_lower
+                           AND relative_path < :old_child_upper
+                       )
                    )
                 """
             ),
@@ -610,7 +620,8 @@ class SnapshotStore:
                 "new_abs": new_abs,
                 "new_parent": new_parent,
                 "new_name": new_name,
-                "old_child_like": self._subtree_like_pattern(old_rel),
+                "old_child_lower": self._subtree_range_bounds(old_rel)[0],
+                "old_child_upper": self._subtree_range_bounds(old_rel)[1],
                 "old_rel_suffix_start": len(old_rel) + 1,
                 "old_abs_suffix_start": len(old_abs) + 1,
                 "depth_delta": depth_delta,
@@ -645,7 +656,7 @@ class SnapshotStore:
         new_absolute_path: str,
     ) -> int:
         """同库移动索引 fast-path：单条 UPDATE 改写子树路径，不扫磁盘。"""
-        with self._session() as db:
+        with self._write_session() as db:
             return self._move_subtree_same_library_in_session(
                 db,
                 library_id,
@@ -665,7 +676,7 @@ class SnapshotStore:
         if not items:
             return []
         results: list[int] = []
-        with self._session() as db:
+        with self._write_session() as db:
             for item in items:
                 moved = self._move_subtree_same_library_in_session(
                     db,
@@ -765,7 +776,8 @@ class SnapshotStore:
                     CASE
                         WHEN relative_path = :old_rel THEN :new_parent
                         WHEN parent_path = :old_rel THEN :new_rel
-                        WHEN parent_path LIKE :old_child_like ESCAPE '\\'
+                        WHEN parent_path >= :old_child_lower
+                         AND parent_path < :old_child_upper
                             THEN :new_rel || substr(parent_path, :old_rel_suffix_start)
                         ELSE parent_path
                     END,
@@ -781,7 +793,10 @@ class SnapshotStore:
                 WHERE library_id = :source_library_id
                   AND (
                       relative_path = :old_rel
-                      OR relative_path LIKE :old_child_like ESCAPE '\\'
+                      OR (
+                          relative_path >= :old_child_lower
+                          AND relative_path < :old_child_upper
+                      )
                   )
                 """
             ),
@@ -794,7 +809,8 @@ class SnapshotStore:
                 "new_abs": new_abs,
                 "new_parent": new_parent,
                 "new_name": new_name,
-                "old_child_like": self._subtree_like_pattern(old_rel),
+                "old_child_lower": self._subtree_range_bounds(old_rel)[0],
+                "old_child_upper": self._subtree_range_bounds(old_rel)[1],
                 "old_rel_suffix_start": len(old_rel) + 1,
                 "old_abs_suffix_start": len(old_abs) + 1,
                 "depth_delta": depth_delta,
@@ -826,7 +842,7 @@ class SnapshotStore:
         chunk_size: int = 500,
     ) -> int:
         """跨库移动索引 fast-path：数据库内 INSERT...SELECT 搬迁，不扫磁盘。"""
-        with self._session() as db:
+        with self._write_session() as db:
             return self._move_subtree_between_libraries_in_session(
                 db,
                 source_library_id,
@@ -848,7 +864,7 @@ class SnapshotStore:
         if not items:
             return []
         results: list[int] = []
-        with self._session() as db:
+        with self._write_session() as db:
             for item in items:
                 moved = self._move_subtree_between_libraries_in_session(
                     db,
@@ -866,7 +882,7 @@ class SnapshotStore:
 
     def delete_by_relative_path(self, library_id: str, relative_path: str) -> int:
         """删除单行。"""
-        with self._session() as db:
+        with self._write_session() as db:
             q = (
                 db.query(LibraryIndexEntry)
                 .filter(
@@ -893,18 +909,12 @@ class SnapshotStore:
         if relative_path is None:
             return 0
         normalized = relative_path.strip('/')
-        prefix = (normalized + '/') if normalized else ''
-        with self._session() as db:
+        with self._write_session() as db:
             q = db.query(LibraryIndexEntry).filter(
                 LibraryIndexEntry.library_id == library_id,
             )
             if normalized:
-                q = q.filter(
-                    or_(
-                        LibraryIndexEntry.relative_path == normalized,
-                        LibraryIndexEntry.relative_path.like(prefix + '%'),
-                    ),
-                )
+                q = q.filter(self._subtree_column_condition(LibraryIndexEntry.relative_path, normalized))
             total_size, folder_count, entry_count = self._query_stats_delta(q)
             deleted = q.delete(synchronize_session=False)
             self._apply_status_delta(
@@ -918,7 +928,7 @@ class SnapshotStore:
 
     def delete_library(self, library_id: str) -> int:
         """整库清空（rebuild 前调用）。"""
-        with self._session() as db:
+        with self._write_session() as db:
             return (
                 db.query(LibraryIndexEntry)
                 .filter(LibraryIndexEntry.library_id == library_id)
@@ -942,7 +952,7 @@ class SnapshotStore:
         deleted_total = 0
         started = time.time()
         while True:
-            with self._session() as db:
+            with self._write_session() as db:
                 rows = (
                     db.query(LibraryIndexEntry.id)
                     .filter(
@@ -1007,7 +1017,7 @@ class SnapshotStore:
             scope_ids = [str(item) for item in library_id if item]
             if not scope_ids:
                 scope_ids = None
-        with self._session() as db:
+        with self._read_session() as db:
             q = db.query(LibraryIndexEntry).filter(LibraryIndexEntry.rjcode == rjcode)
             if scope_ids:
                 if len(scope_ids) == 1:
@@ -1045,7 +1055,7 @@ class SnapshotStore:
         if not name_like:
             return []
         scope_ids = self._normalize_scope_ids(library_id)
-        with self._session() as db:
+        with self._read_session() as db:
             try:
                 fts_result = self._find_by_name_fts(
                     db,
@@ -1197,7 +1207,7 @@ class SnapshotStore:
         entry_type: Optional[str] = None,
     ) -> list[IndexEntry]:
         """列指定 parent_path 的直接子项。parent_path='' 表示库根的一级子项。"""
-        with self._session() as db:
+        with self._read_session() as db:
             q = db.query(LibraryIndexEntry).filter(
                 LibraryIndexEntry.library_id == library_id,
                 LibraryIndexEntry.parent_path == (parent_path or ''),
@@ -1208,7 +1218,7 @@ class SnapshotStore:
             return [self._row_to_entry(row) for row in q.all()]
 
     def get_entry(self, library_id: str, relative_path: str) -> Optional[IndexEntry]:
-        with self._session() as db:
+        with self._read_session() as db:
             row = (
                 db.query(LibraryIndexEntry)
                 .filter(
@@ -1221,7 +1231,7 @@ class SnapshotStore:
 
     def sum_library_size(self, library_id: str) -> int:
         """库存所有文件条目的总大小（字节）。目录行不累加，避免重复计数。"""
-        with self._session() as db:
+        with self._read_session() as db:
             total = (
                 db.query(func.coalesce(func.sum(LibraryIndexEntry.size), 0))
                 .filter(
@@ -1243,7 +1253,7 @@ class SnapshotStore:
         parent_path 参数保留给旧调用方兼容；聚合快照按库存根维护，不在统计接口
         热路径上重新按目录过滤 / SUM。
         """
-        with self._session() as db:
+        with self._read_session() as db:
             row = (
                 db.query(LibraryIndexStatus)
                 .filter(LibraryIndexStatus.library_id == library_id)
@@ -1262,7 +1272,7 @@ class SnapshotStore:
         *,
         entry_type: Optional[str] = None,
     ) -> int:
-        with self._session() as db:
+        with self._read_session() as db:
             q = db.query(func.count(LibraryIndexEntry.id)).filter(
                 LibraryIndexEntry.library_id == library_id,
             )
@@ -1273,7 +1283,7 @@ class SnapshotStore:
     # ========== Status ==========
 
     def get_status(self, library_id: str) -> Optional[IndexStatus]:
-        with self._session() as db:
+        with self._read_session() as db:
             row = (
                 db.query(LibraryIndexStatus)
                 .filter(LibraryIndexStatus.library_id == library_id)
@@ -1296,7 +1306,7 @@ class SnapshotStore:
     ) -> IndexStatus:
         """写入状态。error 默认省略不动；显式传 None 才会清空。"""
         now = _now_ms()
-        with self._session() as db:
+        with self._write_session() as db:
             row = (
                 db.query(LibraryIndexStatus)
                 .filter(LibraryIndexStatus.library_id == library_id)
@@ -1340,7 +1350,7 @@ class SnapshotStore:
         return snapshot
 
     def delete_status(self, library_id: str) -> int:
-        with self._session() as db:
+        with self._write_session() as db:
             return (
                 db.query(LibraryIndexStatus)
                 .filter(LibraryIndexStatus.library_id == library_id)
@@ -1355,22 +1365,26 @@ class SnapshotStore:
         """批量删除多个子树（自身 + 所有后代），单事务执行。
 
         每个 path 的匹配规则与 delete_subtree 一致：
-        relative_path == p OR relative_path LIKE p + '/%'
+        relative_path == p OR p + '/' <= relative_path < p + '0'
 
         SQLite 的 OR 条件长度有限，超过 200 个路径时分批，避免 SQL 超长。
         """
-        paths = [p for p in relative_paths if p is not None]
+        paths = [
+            self._normalize_relative_path(p)
+            for p in relative_paths
+            if p is not None and self._normalize_relative_path(p)
+        ]
         if not paths:
             return 0
+        paths = list(dict.fromkeys(paths))
         chunk_size = 200
         deleted = 0
-        with self._session() as db:
+        with self._write_session() as db:
             for i in range(0, len(paths), chunk_size):
                 chunk = paths[i:i + chunk_size]
                 conditions = []
                 for p in chunk:
-                    conditions.append(LibraryIndexEntry.relative_path == p)
-                    conditions.append(LibraryIndexEntry.relative_path.like(f"{p}/%"))
+                    conditions.append(self._subtree_column_condition(LibraryIndexEntry.relative_path, p))
                 if not conditions:
                     continue
                 q = (
@@ -1390,7 +1404,7 @@ class SnapshotStore:
         return deleted
 
     def list_all_status(self) -> list[IndexStatus]:
-        with self._session() as db:
+        with self._read_session() as db:
             rows = db.query(LibraryIndexStatus).all()
             return [self._row_to_status(row) for row in rows]
 

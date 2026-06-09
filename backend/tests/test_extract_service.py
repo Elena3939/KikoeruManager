@@ -3,6 +3,7 @@
 """
 import pytest
 import os
+import asyncio
 import subprocess
 import tempfile
 import time
@@ -1228,6 +1229,45 @@ class TestExtractService:
         extract_service._probe_by_magic.assert_not_awaited()
         extract_service._probe_by_smallest_entry.assert_not_awaited()
         extract_service._probe_by_full_test.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_list_command_does_not_wait_for_extract_semaphore(self, extract_service):
+        """7zz l 属于清单预读，不应占用真正的解压槽。"""
+        class DummyStream:
+            async def read(self, _size):
+                return b""
+
+        class DummyProcess:
+            stdout = DummyStream()
+            stderr = DummyStream()
+            returncode = 0
+
+            async def wait(self):
+                return 0
+
+            def kill(self):
+                self.returncode = -9
+
+        ExtractService._seven_zip_semaphore = asyncio.Semaphore(1)
+        ExtractService._seven_zip_semaphore_limit = 1
+        await ExtractService._seven_zip_semaphore.acquire()
+        ExtractService._seven_zip_inspect_semaphore = None
+        ExtractService._seven_zip_inspect_semaphore_limit = None
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            AsyncMock(return_value=DummyProcess()),
+        ) as create_proc:
+            try:
+                result = await extract_service._run_7z_command(
+                    ["7zz", "l", "-ba", "archive.zip"],
+                    command_timeout=1.0,
+                )
+            finally:
+                ExtractService._seven_zip_semaphore.release()
+
+        assert result.returncode == 0
+        create_proc.assert_awaited_once()
 
     def test_archive_file_list_garbled_sample_detects_rar_toc_mojibake(self, extract_service):
         """RAR TOC 已经乱码时，不应继续交给 7zz fallback 产出同样乱码的文件。"""

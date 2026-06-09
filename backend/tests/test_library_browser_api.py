@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+from app.api import routes as routes_module
 from app.config.settings import LibraryConfigItem, StorageConfig
 from app.core import library_manager as library_manager_module
 
@@ -121,3 +122,80 @@ def test_local_batch_rename_keeps_request_index_and_remaps_child_paths(monkeypat
             "destination": os.path.normcase(os.path.normpath(str(library_root / "new" / "renamed.wav"))),
         },
     ]
+
+
+def test_local_batch_rename_can_skip_index_mutation(monkeypatch, tmp_path):
+    library_root = tmp_path / "library"
+    subtitle_dir = library_root / "_kikoerumanager_subtitle_workbench" / "linked" / "task" / "subtitles"
+    subtitle_dir.mkdir(parents=True)
+    source = subtitle_dir / "track1.vtt"
+    source.write_text("WEBVTT", encoding="utf-8")
+
+    manager = object.__new__(library_manager_module.LibraryManager)
+    monkeypatch.setattr(manager, "_assert_local_path_in_library", lambda _library, _path: None)
+    monkeypatch.setattr(manager, "_invalidate_local_search_cache", lambda _library_id: None)
+    moved_items = []
+    monkeypatch.setattr(
+        manager,
+        "_notify_index_self_mutation_move_batch",
+        lambda _source_library, _target_library, items: moved_items.extend(items),
+    )
+    monkeypatch.setattr(library_manager_module, "_stats_log_file_path", lambda: str(tmp_path / "stats.log"))
+
+    library = library_manager_module.LibraryDefinition(
+        id="local-a",
+        name="本地 A",
+        type="local",
+        path=str(library_root),
+        enabled=True,
+    )
+
+    result = manager._local_batch_rename(
+        library,
+        [{"index": 0, "path": str(source), "new_name": "track1.fixed.vtt"}],
+        skip_index_mutation=True,
+    )
+
+    assert result["success_count"] == 1
+    assert result["failed"] == []
+    assert (subtitle_dir / "track1.fixed.vtt").exists()
+    assert moved_items == []
+
+
+def test_subtitle_manual_match_batch_rename_skips_index_mutation(client, monkeypatch):
+    captured = {}
+
+    class FakeLibraryManager:
+        async def batch_rename(self, library_id, items, *, skip_index_mutation=False):
+            captured["library_id"] = library_id
+            captured["items"] = items
+            captured["skip_index_mutation"] = skip_index_mutation
+            return {
+                "results": [
+                    {
+                        "index": item["index"],
+                        "path": item["path"],
+                        "source_path": item["path"],
+                        "new_name": item["new_name"],
+                        "new_path": item["path"].replace("old.vtt", "new.vtt"),
+                    }
+                    for item in items
+                ],
+                "failed": [],
+            }
+
+    monkeypatch.setattr(routes_module, "get_library_manager", lambda: FakeLibraryManager())
+
+    response = client.post(
+        "/api/library/browser/batch-rename",
+        json={
+            "library_id": "local-a",
+            "items": [{"path": "/library/workbench/old.vtt", "new_name": "new.vtt"}],
+            "skip_activity_log": True,
+            "rename_context": "subtitle_manual_match_pair",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["library_id"] == "local-a"
+    assert captured["skip_index_mutation"] is True

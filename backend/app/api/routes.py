@@ -8004,7 +8004,13 @@ async def rename_library_browser_item(request: Request):
         if not path or not new_name:
             raise HTTPException(status_code=400, detail="缺少必要参数")
         manager = get_library_manager()
-        result = await manager.rename(library_id, path, new_name)
+        skip_index_mutation = rename_context == "subtitle_manual_match_pair"
+        result = await manager.rename(
+            library_id,
+            path,
+            new_name,
+            skip_index_mutation=skip_index_mutation,
+        )
         try:
             from ..core.activity_log_service import log_api_rename_action
             if not skip_activity_log:
@@ -8118,7 +8124,12 @@ async def batch_rename_library_browser_items(request: Request):
                 "current_name": current_name,
             })
 
-        batch_result = await manager.batch_rename(library_id, normalized_items)
+        skip_index_mutation = rename_context == "subtitle_manual_match_pair"
+        batch_result = await manager.batch_rename(
+            library_id,
+            normalized_items,
+            skip_index_mutation=skip_index_mutation,
+        )
         raw_success_results = list(batch_result.get("results") or [])
         raw_failed_results = list(batch_result.get("failed") or [])
 

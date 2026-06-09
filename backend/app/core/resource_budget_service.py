@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 RESOURCE_BUDGET_NAMES = (
     "disk_io_local",
     "archive_cpu",
+    "archive_inspect",
     "remote_fs",
     "network_download",
     "sqlite_write",

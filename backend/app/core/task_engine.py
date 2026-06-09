@@ -532,6 +532,7 @@ class TaskEngine:
         # ExtractService._archive_info_cache 后自然完成。用 set 强引用避免 GC 警告。
         # task.cancel() 时通过 register_process 联动 kill 子进程，协程会自动退出。
         self._background_precheck_tasks: set[asyncio.Task] = set()
+        self._background_precheck_by_task_id: dict[str, asyncio.Task] = {}
         self._task_center_version = 0
         self._task_center_version_lock = threading.Lock()
         self._persisted_task_snapshot_versions: dict[str, tuple] = {}
@@ -579,6 +580,80 @@ class TaskEngine:
             await precheck_task
         except (asyncio.CancelledError, Exception):
             pass
+
+    def _handle_background_precheck_done(
+        self,
+        precheck_task: asyncio.Task,
+        *,
+        task_id: str,
+        label: str,
+        source_path: str,
+    ) -> None:
+        self._background_precheck_tasks.discard(precheck_task)
+        if self._background_precheck_by_task_id.get(task_id) is precheck_task:
+            self._background_precheck_by_task_id.pop(task_id, None)
+        if precheck_task.cancelled():
+            return
+        try:
+            archive_info = precheck_task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.warning(
+                "[%s] 后台 list 预检异常，后续解压/预检会自行重试: source=%s error=%s",
+                label,
+                os.path.basename(str(source_path or "")),
+                exc,
+            )
+            return
+
+        if archive_info is not None:
+            logger.info(
+                "[%s] 后台 list 预检完成，已写入压缩包清单缓存: source=%s",
+                label,
+                os.path.basename(str(source_path or "")),
+            )
+
+    def _start_background_archive_precheck(
+        self,
+        extract_service: Any,
+        task: Task,
+        *,
+        label: Optional[str] = None,
+    ) -> Optional[asyncio.Task]:
+        source_path = str(getattr(task, "source_path", "") or "")
+        if not source_path or not os.path.isfile(source_path):
+            return None
+
+        existing_task = self._background_precheck_by_task_id.get(task.id)
+        if existing_task is not None and not existing_task.done():
+            return existing_task
+        if existing_task is not None:
+            self._background_precheck_by_task_id.pop(task.id, None)
+
+        resolved_label = (
+            label
+            or self._get_effective_rjcode(task)
+            or self._extract_rjcode_from_path_tail(source_path)
+            or "未知"
+        )
+        precheck_task = asyncio.create_task(extract_service.precheck_archive(task))
+        self._background_precheck_tasks.add(precheck_task)
+        self._background_precheck_by_task_id[task.id] = precheck_task
+        precheck_task.add_done_callback(
+            lambda done_task: self._handle_background_precheck_done(
+                done_task,
+                task_id=task.id,
+                label=resolved_label,
+                source_path=source_path,
+            )
+        )
+        logger.info(
+            "[%s] 已并行启动压缩包清单预读（写缓存，不占解压槽）: source=%s",
+            resolved_label,
+            os.path.basename(source_path),
+        )
+        return precheck_task
 
     def is_rjcode_processing(self, rjcode: str) -> bool:
         """检查RJ号是否正在被处理"""
@@ -714,7 +789,22 @@ class TaskEngine:
         await self.queue.put(task)
         task.mark_changed("submitted")
         rjcode = self._extract_rjcode_from_path_tail(task.source_path) or "未知"
-        logger.info(f"[{rjcode}] 任务提交 - ID: {task.id[:8]}..., 源文件: {os.path.basename(task.source_path)}")
+        if task.type == TaskType.AUTO_PROCESS and not self._should_skip_conflict_retry_precheck(task):
+            try:
+                from .extract_service import ExtractService
+
+                self._start_background_archive_precheck(
+                    ExtractService(),
+                    task,
+                    label=rjcode,
+                )
+            except Exception:
+                logger.debug(
+                    "[%s] 提交阶段启动压缩包清单预热失败，后续处理流程会自行重试",
+                    rjcode,
+                    exc_info=True,
+                )
+        logger.info(f"[{rjcode}] 任务提交 - ID: {task.id}, 源文件: {os.path.basename(task.source_path)}")
         return task.id
 
     def _task_queue_priority(self, task: Task) -> tuple[int, datetime]:
@@ -1874,10 +1964,10 @@ class TaskEngine:
                 classifier = SmartClassifier()
                 skip_retry_precheck = self._should_skip_conflict_retry_precheck(task)
 
-                # 方案 B 并行 list 预检：在 RJ 已知后 fire-and-forget 启动后台协程，
+                # 方案 B 并行 list 预检：fire-and-forget 启动后台协程，
                 # 协程跑完 7zz l 后写入 ExtractService._archive_info_cache，
                 # 步骤 1 解压时内部 _get_archive_info 命中缓存秒回，消除重复 list。
-                # skip_retry_precheck / RJ 未知场景保持 None，避免无效启动。
+                # 预检只占清单/探测槽，不能阻塞正式解压槽。
                 precheck_task: Optional[asyncio.Task] = None
 
                 # 步骤0: 预检（先字幕补配，再普通查重）
@@ -1939,15 +2029,14 @@ class TaskEngine:
                                 )
                         logger.info(f"[{rjcode}] 提取到的RJ号: {rjcode}")
 
-                        # 方案 B 并行预检：RJ 已知 + 文件存在 → 后台启动 list 协程。
-                        # 协程跑完写 _archive_info_cache 让步骤 1 命中缓存；若提前走早返回
-                        # （重复 / 字幕补配命中 / 包损坏），通过 task.cancel() 联动 kill 子进程。
-                        # set 强引用避免 RuntimeWarning，done_callback 自动清理引用。
-                        if rjcode and os.path.isfile(task.source_path):
-                            precheck_task = asyncio.create_task(extract_service.precheck_archive(task))
-                            self._background_precheck_tasks.add(precheck_task)
-                            precheck_task.add_done_callback(self._background_precheck_tasks.discard)
-                            logger.info(f"[{rjcode}] 已并行启动压缩包清单预读（写缓存）")
+                        # 方案 B 并行预检：文件存在就启动 list 协程，哪怕 RJ 仍未知。
+                        # 协程跑完写 _archive_info_cache 让步骤 1 / 多 RJ 预检命中缓存；
+                        # 若提前走早返回（重复 / 字幕补配命中 / 包损坏），再取消以省掉无效 7zz l。
+                        precheck_task = self._start_background_archive_precheck(
+                            extract_service,
+                            task,
+                            label=rjcode or "未知",
+                        )
 
                         linked_result = {"handled": False, "reason": "not_run", "preview": {}}
                         if not rjcode:
@@ -2203,15 +2292,13 @@ class TaskEngine:
                         await self._abort_precheck(precheck_task)
                         raise
 
-                # 等待并行预检完成（让步骤 1 解压时的 _get_archive_info 命中缓存）。
-                # list 失败也不阻塞主流程：步骤 1 的 _get_archive_info 会自己再尝试一遍。
+                # 不等待后台 list 预检。预检和正式解压不共享槽位，预检结果只是缓存优化；
+                # 如果这里 await，解压槽空闲时反而会被慢清单拖住。
                 if precheck_task is not None and not precheck_task.done():
-                    try:
-                        await precheck_task
-                    except Exception as _precheck_exc:
-                        logger.warning(
-                            f"[{rjcode}] 后台 list 预检异常，步骤 1 解压将自行重试: {_precheck_exc}"
-                        )
+                    logger.info(
+                        f"[{rjcode}] 后台 list 预检仍在运行，步骤1解压不等待；"
+                        "清单完成后会自动写缓存"
+                    )
 
                 # 步骤1: 解压
                 logger.info(f"[{rjcode}] 步骤1: 解压")
