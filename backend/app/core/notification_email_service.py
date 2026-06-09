@@ -10,6 +10,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
 
+from .log_sanitizer import sanitize_text_for_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -137,7 +139,7 @@ async def send_notification_email(subject: str, html_body: str, text_body: str =
     except Exception as e:
         logger.error(
             "[通知邮件] 发送失败 host=%s port=%s err_type=%s err=%s subject=%r",
-            cfg.smtp_host, cfg.smtp_port, type(e).__name__, e, subject, exc_info=True,
+            cfg.smtp_host, cfg.smtp_port, type(e).__name__, sanitize_text_for_log(e), subject,
         )
         return False
 

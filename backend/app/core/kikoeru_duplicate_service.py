@@ -1636,8 +1636,7 @@ class KikoeruDuplicateService:
             dlsite_service = get_dlsite_service()
             linked_works = await dlsite_service.get_linked_works(rjcode) or {}
         except Exception as e:
-            logger.error(f"[Kikoeru关联查询] 获取关联作品失败 {rjcode}: {e}")
-            logger.exception(e)
+            logger.warning("[Kikoeru关联查询] 获取关联作品失败 %s: %s", rjcode, e)
             linked_works = {}
 
         # 把链路展开成已规范化的 RJ 集合（含主 RJ 自身），供广义匹配使用。
@@ -1700,8 +1699,7 @@ class KikoeruDuplicateService:
                     results.update(related_translation_results)
 
         except Exception as e:
-            logger.error(f"[Kikoeru关联查询] 关联查询过程异常 {rjcode}: {e}")
-            logger.exception(e)
+            logger.warning("[Kikoeru关联查询] 关联查询过程异常 %s: %s", rjcode, e)
 
         return results
 

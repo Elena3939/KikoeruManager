@@ -15,7 +15,7 @@ from datetime import datetime
 from yarl import URL
 
 from ..config.settings import get_config
-from .log_sanitizer import mask_url_for_log, sanitize_for_log
+from .log_sanitizer import mask_url_for_log, sanitize_for_log, sanitize_text_for_log
 from .resource_budget_service import get_resource_budget_service
 from .ttl_cache import TTLCache
 
@@ -1144,7 +1144,7 @@ class ASMRDownloadService:
             logger.info(f"作品 {actual_rjcode} 下载完成，成功 {len(result['downloaded_files'])} 个，失败 {len(failed_files)} 个")
 
         except Exception as e:
-            logger.error(f"下载作品失败: {e}", exc_info=True)
+            logger.error("下载作品失败: %s", sanitize_text_for_log(e))
             result['error'] = str(e)
 
         return result

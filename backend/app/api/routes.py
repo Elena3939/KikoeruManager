@@ -135,6 +135,10 @@ def _synology_http_status(exc: Exception) -> int:
     以上均视为上游服务（群晖）异常，返回 502 Bad Gateway。
     """
     msg = str(exc)
+    if isinstance(exc, SynologyError):
+        if "远程库存暂时退化" in msg:
+            return 503
+        return 502
     for code in (119, 121, 401, 408):
         if re.search(rf'"code"\s*:\s*{code}\b', msg) or re.search(rf"'code'\s*:\s*{code}\b", msg):
             return 502
@@ -4082,6 +4086,101 @@ _LOG_LINE_LEVEL_RE = re.compile(
     r'^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+\[(\w+)\]'
     r'|^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+-\s+\S+\s+-\s+(\w+)\s+-'
 )
+_LOG_LINE_STRUCT_RE = re.compile(
+    r'^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+\[(\w+)\]\s+\S+\s+-\s+(.+)$'
+    r'|^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+-\s+\S+\s+-\s+(\w+)\s+-\s+(.+)$'
+)
+_LOG_TRACEBACK_BLOCK_PREFIX = "__KIKOERUMANAGER_LOG_BLOCK__"
+_LOG_TRACEBACK_FRAGMENT_RE = re.compile(
+    r'^(File ".+", line \d+, in .+'
+    r'|During handling of the above exception'
+    r'|The above exception was the direct cause'
+    r'|Traceback \(most recent call last\):'
+    r'|[A-Za-z_][\w.]+(?:Error|Exception)(?::|$)'
+    r'|[\^~]{3,})'
+)
+
+
+def _parse_log_entry_line(line: str) -> tuple[str, str, str]:
+    match = _LOG_LINE_STRUCT_RE.match(str(line or ""))
+    if not match:
+        return "", "ERROR", str(line or "")
+    return (
+        match.group(1) or match.group(4) or "",
+        (match.group(2) or match.group(5) or "ERROR").upper(),
+        match.group(3) or match.group(6) or "",
+    )
+
+
+def _looks_like_traceback_fragment(line: str) -> bool:
+    return bool(_LOG_TRACEBACK_FRAGMENT_RE.match(str(line or "").strip()))
+
+
+def _build_traceback_log_block(previous_line: str, stack_lines: List[str], *, fragment: bool = False) -> str:
+    time_text, level_text, message = _parse_log_entry_line(previous_line)
+    raw_lines = ([previous_line] if previous_line else []) + stack_lines
+    stack_count = len(stack_lines)
+    notice = (
+        f"异常堆栈片段已折叠 {stack_count} 行，点击查看完整"
+        if fragment
+        else f"异常堆栈已折叠 {stack_count} 行，点击查看完整"
+    )
+    summary = f"{message}（{notice}）" if message else notice
+    payload = {
+        "type": "traceback",
+        "time": time_text,
+        "level": level_text,
+        "message": summary,
+        "full_message": "\n".join(raw_lines),
+        "raw_line": "\n".join(raw_lines),
+    }
+    return _LOG_TRACEBACK_BLOCK_PREFIX + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _compact_traceback_log_lines(lines: List[str]) -> List[str]:
+    """把 Python traceback 折叠成单条日志视图，避免前端系统日志被调用栈刷屏。"""
+    if not lines:
+        return []
+
+    compacted: List[str] = []
+    index = 0
+    total = len(lines)
+    while index < total:
+        line = str(lines[index] or "")
+        if line != "Traceback (most recent call last):" and not _LOG_LINE_LEVEL_RE.match(line):
+            run_end = index + 1
+            while run_end < total:
+                next_line = str(lines[run_end] or "")
+                if next_line == "Traceback (most recent call last):" or _LOG_LINE_LEVEL_RE.match(next_line):
+                    break
+                run_end += 1
+            run_lines = [str(item or "") for item in lines[index:run_end]]
+            if any(_looks_like_traceback_fragment(item) for item in run_lines):
+                previous_line = ""
+                if compacted and _LOG_LINE_LEVEL_RE.match(str(compacted[-1] or "")):
+                    previous_line = compacted.pop()
+                compacted.append(_build_traceback_log_block(previous_line, run_lines, fragment=True))
+                index = run_end
+                continue
+
+        if line != "Traceback (most recent call last):":
+            compacted.append(line)
+            index += 1
+            continue
+
+        stack_lines = [line]
+        index += 1
+        while index < total:
+            next_line = str(lines[index] or "")
+            if _LOG_LINE_LEVEL_RE.match(next_line):
+                break
+            stack_lines.append(next_line)
+            index += 1
+
+        previous_line = compacted.pop() if compacted else ""
+        compacted.append(_build_traceback_log_block(previous_line, stack_lines))
+
+    return compacted
 
 
 def _resolve_main_log_path() -> Optional[str]:
@@ -4153,7 +4252,7 @@ def _tail_lines(path: str, n: int) -> List[str]:
                 break
     text = data.decode('utf-8', errors='ignore')
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return lines[-n:]
+    return _compact_traceback_log_lines(lines)[-n:]
 
 
 def _read_log_payload(log_file: str, line_limit: int, since_offset: int = -1) -> Dict[str, Any]:
@@ -4170,6 +4269,7 @@ def _read_log_payload(log_file: str, line_limit: int, since_offset: int = -1) ->
         with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
             f.seek(since_offset)
             new_lines = [l.strip() for l in f.read().splitlines() if l.strip()]
+        new_lines = _compact_traceback_log_lines(new_lines)
         if len(new_lines) > line_limit:
             new_lines = new_lines[-line_limit:]
         return {"logs": new_lines, "next_offset": file_size, "is_full": False}
@@ -4332,7 +4432,7 @@ async def stream_logs(request: Request, lines: int = 300, since_offset: int = -1
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.warning("[系统日志流] SSE 异常: %s", exc, exc_info=True)
+            logger.warning("[系统日志流] SSE 异常: %s", sanitize_text_for_log(exc))
             yield _sse_payload("stream_error", {
                 "message": str(exc),
                 "time": datetime.now().isoformat(),
@@ -4521,7 +4621,7 @@ async def search_logs(
     except HTTPException:
         raise
     except Exception as e:
-        logger.warning("[日志检索] 失败 q=%r levels=%r: %s", kw_raw, levels, e, exc_info=True)
+        logger.warning("[日志检索] 失败 q=%r levels=%r: %s", kw_raw, levels, sanitize_text_for_log(e))
         raise HTTPException(status_code=500, detail=f"日志检索失败: {str(e)}")
 
 
@@ -4606,7 +4706,7 @@ async def cleanup_logs(payload: LogCleanupRequest):
     try:
         result = await asyncio.to_thread(_run)
     except Exception as exc:  # pragma: no cover - 兜底
-        logger.exception("[日志管理] 清理日志失败")
+        logger.warning("[日志管理] 清理日志失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"清理日志失败: {exc}")
 
     logger.info(
@@ -7582,8 +7682,8 @@ async def get_library_browser_stats_logs(library_id: Optional[str] = None, lines
         manager = get_library_manager()
         return manager.read_stats_logs(library_id=library_id, lines=lines)
     except Exception as e:
-        logger.error(f"鑾峰彇搴撳瓨缁熻鏃ュ織澶辫触: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"鑾峰彇搴撳瓨缁熻鏃ュ織澶辫触: {str(e)}")
+        logger.error("获取库存统计日志失败: %s", sanitize_text_for_log(e))
+        raise HTTPException(status_code=500, detail=f"获取库存统计日志失败: {str(e)}")
 
 
 @app.post("/api/library/browser/folder-contents")
@@ -11068,7 +11168,7 @@ async def get_linked_works(
         }
         
     except Exception as e:
-        logger.error(f"获取关联作品失败 {rjcode}: {e}", exc_info=True)
+        logger.warning("获取关联作品失败 %s: %s", rjcode, e)
         raise HTTPException(status_code=500, detail=f"获取关联作品失败: {str(e)}")
 
 
@@ -11122,7 +11222,7 @@ async def check_linked_works_in_library(
         }
         
     except Exception as e:
-        logger.error(f"检查库中关联作品失败 {rjcode}: {e}", exc_info=True)
+        logger.warning("检查库中关联作品失败 %s: %s", rjcode, e)
         raise HTTPException(status_code=500, detail=f"检查失败: {str(e)}")
 
 
@@ -11491,8 +11591,7 @@ async def check_kikoeru_duplicate(
                 "checked_at": result.checked_at.isoformat() if result.checked_at else None
             }
     except Exception as e:
-        logger.error(f"[Kikoeru查重] 查询失败: {rjcode}, 错误: {e}")
-        logger.exception(e)
+        logger.warning("[Kikoeru查重] 查询失败: %s, 错误: %s", rjcode, e)
         raise HTTPException(status_code=500, detail=f"查重检查失败: {str(e)}")
     finally:
         logger.info(f"[Kikoeru查重] 查询结束: {rjcode}")
@@ -11622,7 +11721,7 @@ async def ai_subtitle_match_test(request: AISubtitleMatchTestRequest):
             saved_api_key=_read_ai_subtitle_api_key_from_disk() or getattr(get_config().ai_subtitle_matching, 'api_key', ''),
         )
     except Exception as exc:
-        logger.error("[AI字幕] 测试连接失败", exc_info=True)
+        logger.warning("[AI字幕] 测试连接失败: %s", exc)
         return {
             "success": False,
             "status": "failed",
@@ -11652,7 +11751,7 @@ async def ai_subtitle_match_models(request: AISubtitleMatchModelsRequest):
             saved_api_key=_read_ai_subtitle_api_key_from_disk() or getattr(get_config().ai_subtitle_matching, 'api_key', ''),
         )
     except Exception as exc:
-        logger.error("[AI字幕] 获取模型列表失败", exc_info=True)
+        logger.warning("[AI字幕] 获取模型列表失败: %s", exc)
         return {
             "success": False,
             "status": "failed",
@@ -11680,7 +11779,7 @@ async def ai_subtitle_match_provider_icon(request: AISubtitleProviderIconRequest
             proxy_url=request.proxy_url,
         )
     except Exception as exc:
-        logger.warning("[AI字幕] 获取平台图标失败", exc_info=True)
+        logger.warning("[AI字幕] 获取平台图标失败: %s", sanitize_text_for_log(exc))
         return {
             "success": False,
             "key": "custom",
@@ -12929,8 +13028,8 @@ async def cleanup_linked_subtitle_workbench(task_id: str):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"瀛楀箷琛ラ厤宸ヤ綔鍙版枃鏈竻鐞嗗け璐? {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"娓呯悊澶辫触: {str(e)}")
+        logger.error("字幕补配工作台文件清理失败: %s", sanitize_text_for_log(e))
+        raise HTTPException(status_code=500, detail=f"清理失败: {str(e)}")
 
 
 @app.get("/api/rj-subtitle/connectivity-test")
@@ -12942,7 +13041,7 @@ async def rj_subtitle_connectivity_test():
         service = get_asmr_download_service()
         return await service.test_connectivity()
     except Exception as e:
-        logger.error(f"RJ 字幕连通性测试失败: {e}", exc_info=True)
+        logger.error("RJ 字幕连通性测试失败: %s", sanitize_text_for_log(e))
         raise HTTPException(status_code=500, detail=f"连通性测试失败: {str(e)}")
 
 
@@ -13463,7 +13562,7 @@ def _persist_google_drive_oauth_payload(session: dict, token_payload: dict) -> d
     try:
         save_config({"http_downloader": updates})
     except Exception as exc:
-        logger.error("Google Drive OAuth 授权结果保存失败: %s", exc, exc_info=True)
+        logger.warning("Google Drive OAuth 授权结果保存失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"Google Drive OAuth 授权成功但保存配置失败: {str(exc)}") from exc
     return {
         **token_payload,
@@ -13601,7 +13700,7 @@ async def http_download_health():
     try:
         return await get_http_download_service().health()
     except Exception as exc:
-        logger.error("HTTP 下载健康检查失败: %s", exc, exc_info=True)
+        logger.warning("HTTP 下载健康检查失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"健康检查失败: {str(exc)}")
 
 
@@ -13622,7 +13721,7 @@ async def http_download_preview(request: HttpDownloadPreviewRequest):
         )
         return sanitize_http_download_preview(preview)
     except Exception as exc:
-        logger.error("HTTP 下载预览失败: %s", exc, exc_info=True)
+        logger.warning("HTTP 下载预览失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"预览失败: {str(exc)}")
 
 
@@ -13905,7 +14004,7 @@ async def http_download_status():
             "tasks": [_serialize_http_download_task(t) for t in tasks[:50]],
         }
     except Exception as exc:
-        logger.error("获取 HTTP 下载状态失败: %s", exc, exc_info=True)
+        logger.warning("获取 HTTP 下载状态失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"获取状态失败: {str(exc)}")
 
 
@@ -13916,7 +14015,7 @@ async def baidu_netdisk_backend_health():
     try:
         return await get_baidu_netdisk_service().health()
     except Exception as exc:
-        logger.error("百度网盘后端健康检查失败: %s", exc, exc_info=True)
+        logger.warning("百度网盘后端健康检查失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"健康检查失败: {str(exc)}")
 
 
@@ -13941,7 +14040,7 @@ async def baidu_netdisk_status():
             "tasks": [_serialize_http_download_task(t) for t in tasks[:50]],
         }
     except Exception as exc:
-        logger.error("获取百度网盘状态失败: %s", exc, exc_info=True)
+        logger.warning("获取百度网盘状态失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"获取状态失败: {str(exc)}")
 
 
@@ -13963,7 +14062,7 @@ async def baidu_netdisk_preview(request: BaiduNetdiskPreviewRequest):
         )
         return sanitize_baidu_netdisk_preview(preview)
     except Exception as exc:
-        logger.error("百度网盘预览失败: %s", exc, exc_info=True)
+        logger.warning("百度网盘预览失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"预览失败: {str(exc)}")
 
 
@@ -14152,7 +14251,7 @@ async def baidu_netdisk_upload_start(request: BaiduNetdiskUploadStartRequest):
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error("创建百度网盘上传任务失败: %s", exc, exc_info=True)
+        logger.warning("创建百度网盘上传任务失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"创建百度网盘上传任务失败: {str(exc)}")
 
 
@@ -14294,7 +14393,7 @@ async def baidu_netdisk_account_official_login_start():
     try:
         return await get_baidu_netdisk_service().start_official_login_session()
     except Exception as exc:
-        logger.error("打开百度官方登录失败: %s", exc, exc_info=True)
+        logger.warning("打开百度官方登录失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -14310,7 +14409,7 @@ async def baidu_netdisk_account_official_login_status():
             "official_login": service.official_login_status(),
         }
     except Exception as exc:
-        logger.error("读取百度官方登录状态失败: %s", exc, exc_info=True)
+        logger.warning("读取百度官方登录状态失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -14321,7 +14420,7 @@ async def baidu_netdisk_account_official_login_complete(request: BaiduNetdiskOff
     try:
         return await get_baidu_netdisk_service().complete_official_login_session(persist=request.persist)
     except Exception as exc:
-        logger.error("同步百度官方登录失败: %s", exc, exc_info=True)
+        logger.warning("同步百度官方登录失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -14332,7 +14431,7 @@ async def baidu_netdisk_account_official_login_close():
     try:
         return await get_baidu_netdisk_service().close_official_login_session()
     except Exception as exc:
-        logger.error("关闭百度官方登录窗口失败: %s", exc, exc_info=True)
+        logger.warning("关闭百度官方登录窗口失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -14343,7 +14442,7 @@ async def baidu_netdisk_account_qr_login_start():
     try:
         return await get_baidu_netdisk_service().start_qr_login_session()
     except Exception as exc:
-        logger.error("生成百度扫码登录二维码失败: %s", exc, exc_info=True)
+        logger.warning("生成百度扫码登录二维码失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -14354,7 +14453,7 @@ async def baidu_netdisk_account_qr_login_poll(request: BaiduNetdiskQrLoginPollRe
     try:
         return await get_baidu_netdisk_service().poll_qr_login_session(request.session_id, persist=request.persist)
     except Exception as exc:
-        logger.error("轮询百度扫码登录状态失败: %s", exc, exc_info=True)
+        logger.warning("轮询百度扫码登录状态失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -14365,7 +14464,7 @@ async def baidu_netdisk_account_qr_login_close(request: BaiduNetdiskQrLoginClose
     try:
         return get_baidu_netdisk_service().close_qr_login_session(request.session_id)
     except Exception as exc:
-        logger.error("关闭百度扫码登录失败: %s", exc, exc_info=True)
+        logger.warning("关闭百度扫码登录失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -14376,7 +14475,7 @@ async def baidu_netdisk_account_unbind():
     try:
         return get_baidu_netdisk_service().unbind_account()
     except Exception as exc:
-        logger.error("解绑百度网盘账号失败: %s", exc, exc_info=True)
+        logger.warning("解绑百度网盘账号失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -14392,7 +14491,7 @@ async def http_download_pikpak_status(include_files: bool = False, limit: int = 
             force_refresh=force_refresh,
         )
     except Exception as exc:
-        logger.error("获取 PikPak 状态失败: %s", exc, exc_info=True)
+        logger.warning("获取 PikPak 状态失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -14406,7 +14505,7 @@ async def http_download_pikpak_test_account(request: PikPakAccountTestRequest):
             account["use_saved"] = True
         return await get_http_download_service().test_pikpak_account(account, account_id=request.account_id)
     except Exception as exc:
-        logger.error("检测 PikPak 账号失败: %s", exc, exc_info=True)
+        logger.warning("检测 PikPak 账号失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -14417,7 +14516,7 @@ async def http_download_pikpak_files(limit: int = 100, root: bool = False, accou
     try:
         return await get_http_download_service().pikpak_transfer_files(limit=limit, root=root, account_id=account_id, parent_id=parent_id)
     except Exception as exc:
-        logger.error("获取 PikPak 转存目录失败: %s", exc, exc_info=True)
+        logger.warning("获取 PikPak 转存目录失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -14428,7 +14527,7 @@ async def http_download_pikpak_delete(request: PikPakTransferDeleteRequest):
     try:
         return await get_http_download_service().delete_pikpak_transfer_items(request.ids, permanent=request.permanent, account_id=request.account_id)
     except Exception as exc:
-        logger.error("删除 PikPak 转存文件失败: %s", exc, exc_info=True)
+        logger.warning("删除 PikPak 转存文件失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -14439,7 +14538,7 @@ async def http_download_pikpak_clear():
     try:
         return await get_http_download_service().clear_all_pikpak_transfer_space()
     except Exception as exc:
-        logger.error("清空 PikPak 转存空间失败: %s", exc, exc_info=True)
+        logger.warning("清空 PikPak 转存空间失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -14653,7 +14752,7 @@ async def asmr_sync_preview(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"预览下载任务失败: {e}", exc_info=True)
+        logger.error("预览下载任务失败: %s", sanitize_text_for_log(e))
         raise HTTPException(status_code=500, detail=f"预览失败: {str(e)}")
 
 
@@ -14709,7 +14808,7 @@ async def asmr_sync_start(request: ASMRSyncStartRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"开始同步下载失败: {e}", exc_info=True)
+        logger.error("开始同步下载失败: %s", sanitize_text_for_log(e))
         raise HTTPException(status_code=500, detail=f"启动失败: {str(e)}")
 
 
@@ -14888,7 +14987,7 @@ async def asmr_sync_enhanced_locate_rj(request: ASMRSyncLocateRJRequest):
             try:
                 matches = await manager.find_rj_in_libraries(rj, library_ids=library_ids)
             except Exception as exc:
-                logger.warning("locate-rj 失败: rj=%s err=%s", rj, exc, exc_info=True)
+                logger.warning("locate-rj 失败: rj=%s err=%s", rj, sanitize_text_for_log(exc))
                 matches = []
             return {"rjcode": rj, "matches": matches}
 
@@ -14907,7 +15006,7 @@ async def asmr_sync_enhanced_dashboard():
             "dashboard": get_asmr_resource_service().get_dashboard_summary(),
         }
     except Exception as exc:
-        logger.error("获取增强下载看板失败: %s", exc, exc_info=True)
+        logger.error("获取增强下载看板失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"获取监控看板失败: {str(exc)}")
 
 
@@ -14921,7 +15020,7 @@ async def asmr_sync_enhanced_sessions(limit: int = 50):
             "sessions": get_asmr_resource_service().list_sessions(limit=limit),
         }
     except Exception as exc:
-        logger.error("获取增强下载会话列表失败: %s", exc, exc_info=True)
+        logger.error("获取增强下载会话列表失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"获取会话列表失败: {str(exc)}")
 
 
@@ -14937,7 +15036,7 @@ async def asmr_sync_enhanced_session_detail(session_id: str):
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
-        logger.error("获取增强下载会话详情失败: %s", exc, exc_info=True)
+        logger.error("获取增强下载会话详情失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"获取会话详情失败: {str(exc)}")
 
 
@@ -14953,7 +15052,7 @@ async def asmr_sync_enhanced_session_priority(session_id: str, request: ASMRSync
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
-        logger.error("调整增强下载会话优先级失败: %s", exc, exc_info=True)
+        logger.error("调整增强下载会话优先级失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"调整优先级失败: {str(exc)}")
 
 
@@ -14969,7 +15068,7 @@ async def asmr_sync_enhanced_session_pause(session_id: str):
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
-        logger.error("暂停增强下载会话失败: %s", exc, exc_info=True)
+        logger.error("暂停增强下载会话失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"暂停会话失败: {str(exc)}")
 
 
@@ -14985,7 +15084,7 @@ async def asmr_sync_enhanced_session_resume(session_id: str):
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
-        logger.error("恢复增强下载会话失败: %s", exc, exc_info=True)
+        logger.error("恢复增强下载会话失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"恢复会话失败: {str(exc)}")
 
 
@@ -15009,7 +15108,7 @@ async def asmr_sync_enhanced_session_cancel(session_id: str, request: Request):
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
-        logger.error("取消增强下载会话失败: %s", exc, exc_info=True)
+        logger.error("取消增强下载会话失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"取消会话失败: {str(exc)}")
 
 
@@ -15025,7 +15124,7 @@ async def asmr_sync_enhanced_session_retry_failed(session_id: str):
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
-        logger.error("重试增强下载会话失败资源失败: %s", exc, exc_info=True)
+        logger.error("重试增强下载会话失败资源失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"重试失败资源失败: {str(exc)}")
 
 
@@ -15041,7 +15140,7 @@ async def asmr_sync_enhanced_session_retry_files(session_id: str, request: ASMRR
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
-        logger.error("重试增强下载会话指定失败文件失败: %s", exc, exc_info=True)
+        logger.error("重试增强下载会话指定失败文件失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"重试指定失败文件失败: {str(exc)}")
 
 
@@ -15061,7 +15160,7 @@ async def asmr_sync_enhanced_session_reimport_downloaded(session_id: str, reques
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
-        logger.error("从本地已下载内容重新入库失败: %s", exc, exc_info=True)
+        logger.error("从本地已下载内容重新入库失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"重新入库失败: {str(exc)}")
 
 
@@ -15083,7 +15182,7 @@ async def asmr_sync_enhanced_reimport_local_download(request: ASMRReimportLocalD
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
-        logger.error("从本地下载目录直接入库失败: %s", exc, exc_info=True)
+        logger.error("从本地下载目录直接入库失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"从本地下载目录直接入库失败: {str(exc)}")
 
 
@@ -15118,7 +15217,7 @@ async def circle_completion_index(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
-        logger.error("社团索引失败: %s", exc, exc_info=True)
+        logger.error("社团索引失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"建立社团索引失败: {str(exc)}")
 
 
@@ -15206,7 +15305,7 @@ async def circle_completion_index_start(request: CircleCompletionIndexJobRequest
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
-        logger.error("启动社团索引任务失败: %s", exc, exc_info=True)
+        logger.error("启动社团索引任务失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"启动社团索引任务失败: {str(exc)}")
 
 
@@ -15252,7 +15351,7 @@ async def circle_completion_index_job_status(job_id: str):
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
-        logger.error("查询社团索引任务失败: %s", exc, exc_info=True)
+        logger.error("查询社团索引任务失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"查询社团索引任务失败: {str(exc)}")
 
 
@@ -15264,7 +15363,7 @@ async def circle_completion_circles(keyword: str = "", limit: int = 30):
         circles = await get_circle_completion_service().search_circles(keyword, limit=limit)
         return {"success": True, "circles": circles}
     except Exception as exc:
-        logger.error("查询社团索引失败: %s", exc, exc_info=True)
+        logger.error("查询社团索引失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"查询社团索引失败: {str(exc)}")
 
 
@@ -15276,7 +15375,7 @@ async def circle_completion_recent(limit: int = 20):
         circles = await get_circle_completion_service().list_recent_indexes(limit=limit)
         return {"success": True, "circles": circles}
     except Exception as exc:
-        logger.error("查询最近社团索引失败: %s", exc, exc_info=True)
+        logger.error("查询最近社团索引失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"查询最近社团索引失败: {str(exc)}")
 
 
@@ -15289,7 +15388,7 @@ async def circle_completion_all_circle_names():
         names = [c["circle_name"] for c in circles if c.get("circle_name")]
         return {"success": True, "names": names, "total": len(names)}
     except Exception as exc:
-        logger.error("获取所有社团名失败: %s", exc, exc_info=True)
+        logger.error("获取所有社团名失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"获取所有社团名失败: {str(exc)}")
 
 
@@ -15320,7 +15419,7 @@ async def circle_completion_detail(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
-        logger.error("查询社团补全详情失败: %s", exc, exc_info=True)
+        logger.error("查询社团补全详情失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"查询社团补全详情失败: {str(exc)}")
 
 
@@ -15371,7 +15470,7 @@ async def circle_completion_download_preview(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
-        logger.error("预览社团批量下载失败: %s", exc, exc_info=True)
+        logger.error("预览社团批量下载失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"预览批量下载失败: {str(exc)}")
 
 
@@ -15398,7 +15497,7 @@ async def circle_completion_download_preview_start(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
-        logger.error("启动社团批量下载预览任务失败: %s", exc, exc_info=True)
+        logger.error("启动社团批量下载预览任务失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"启动预览任务失败: {str(exc)}")
 
 
@@ -15414,7 +15513,7 @@ async def circle_completion_download_preview_job_status(job_id: str):
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
-        logger.error("查询社团批量下载预览任务失败: %s", exc, exc_info=True)
+        logger.error("查询社团批量下载预览任务失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"查询预览任务失败: {str(exc)}")
 
 
@@ -15457,7 +15556,7 @@ async def circle_completion_refresh_selected(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
-        logger.error("批量刷新社团作品状态失败: %s", exc, exc_info=True)
+        logger.error("批量刷新社团作品状态失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"批量刷新社团作品状态失败: {str(exc)}")
 
 
@@ -15527,7 +15626,7 @@ async def circle_completion_refresh_selected_start(request: CircleCompletionRefr
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
-        logger.error("启动批量刷新社团作品任务失败: %s", exc, exc_info=True)
+        logger.error("启动批量刷新社团作品任务失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"启动批量刷新社团作品任务失败: {str(exc)}")
 
 
@@ -15570,7 +15669,7 @@ async def circle_completion_refresh_selected_job_status(job_id: str):
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
-        logger.error("查询批量刷新社团作品任务失败: %s", exc, exc_info=True)
+        logger.error("查询批量刷新社团作品任务失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"查询批量刷新社团作品任务失败: {str(exc)}")
 
 
@@ -15837,7 +15936,7 @@ async def local_upload_start(request: LocalUploadStartRequest):
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error("本地库存上传到群晖失败: %s", exc, exc_info=True)
+        logger.error("本地库存上传到群晖失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"上传失败: {str(exc)}")
 
 
@@ -15920,7 +16019,7 @@ async def local_upload_status(task_ids: str = "", include_hidden: bool = True):
             ],
         }
     except Exception as exc:
-        logger.error("获取本地上传任务状态失败: %s", exc, exc_info=True)
+        logger.error("获取本地上传任务状态失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"获取上传状态失败: {str(exc)}")
 
 
