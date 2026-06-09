@@ -1274,12 +1274,27 @@ function getTaskMetaItems(task) {
 .task-log-message {
   min-width: 0;
   border-radius: 9px;
-  background: #ffffff;
+  background: transparent;
   color: #1e293b;
   font-size: 12px;
   font-weight: 500;
   line-height: 1.55;
   word-break: break-word;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) :is(.subtitle-task-stage-root, .subtitle-task-card) .task-log-row),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) :is(.subtitle-task-stage-root, .subtitle-task-card) .task-log-row) {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) :is(.subtitle-task-stage-root, .subtitle-task-card) .task-log-message),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) :is(.subtitle-task-stage-root, .subtitle-task-card) .task-log-message) {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  color: rgba(244, 244, 245, 0.9) !important;
 }
 
 .sub-log-item-enter-active {

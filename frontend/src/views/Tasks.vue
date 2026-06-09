@@ -441,10 +441,10 @@ function handleGoPage(page) {
 function handlePageSizeChange(nextSize) {
   const normalized = Math.max(1, Number(nextSize) || pageSize.value)
   if (normalized === pageSize.value) return
-  const currentPageIndex = Math.floor(currentOffset.value / Math.max(pageSize.value, 1))
+  const anchorOffset = currentOffset.value
   pageSize.value = normalized
-  currentOffset.value = Math.max(0, currentPageIndex * normalized)
-  pageDirection.value = 'next'
+  currentOffset.value = Math.max(0, Math.floor(anchorOffset / normalized) * normalized)
+  pageDirection.value = currentOffset.value < anchorOffset ? 'prev' : 'next'
   refreshTaskCenter(false, { silent: true }).catch((error) => {
     console.error('任务中心页容量刷新失败:', error)
   })

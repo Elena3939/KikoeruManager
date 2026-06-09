@@ -1237,8 +1237,8 @@ function removeActiveSubtitleFilterRule() {
 }
 
 .subtitle-retarget-option {
-  --option-accent-soft: rgba(139, 92, 246, 0.14);
-  --option-accent-border: rgba(124, 58, 237, 0.34);
+  --option-accent-soft: #303136;
+  --option-accent-border: rgba(255, 255, 255, 0.22);
   display: grid;
   min-width: 0;
   gap: 2px;
@@ -2314,12 +2314,34 @@ function removeActiveSubtitleFilterRule() {
   box-shadow: none !important;
 }
 
+:global(html.kikoerumanager-dark) .subtitle-retarget-option.active,
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-retarget-option.active),
+:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card .subtitle-retarget-option.active) {
+  background: #303136 !important;
+  background-color: #303136 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  color: #ffffff !important;
+  outline: 1px solid rgba(255, 255, 255, 0.14) !important;
+  outline-offset: -1px !important;
+  box-shadow: none !important;
+}
+
 :global(html.kikoerumanager-dark) .subtitle-retarget-main {
   color: rgba(250, 250, 252, 0.94) !important;
 }
 
 :global(html.kikoerumanager-dark) .subtitle-retarget-path {
   color: rgba(214, 214, 220, 0.66) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-retarget-option.active .subtitle-retarget-main,
+:global(html.kikoerumanager-dark) .subtitle-retarget-option.active .subtitle-retarget-path,
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-retarget-option.active .subtitle-retarget-main),
+:global(html.kikoerumanager-dark .subtitle-config-card .subtitle-retarget-option.active .subtitle-retarget-path),
+:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card .subtitle-retarget-option.active .subtitle-retarget-main),
+:global(html.kikoerumanager-dark body #app .library .subtitle-workbench-dialog .subtitle-config-card .subtitle-retarget-option.active .subtitle-retarget-path) {
+  color: #ffffff !important;
 }
 
 :global(html.kikoerumanager-dark) .subtitle-block-title,

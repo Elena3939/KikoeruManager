@@ -86,11 +86,15 @@
     </div>
 
     <!-- 归档列表（前端分页切片，pageSize 按容器高度动态计算） -->
-    <div v-if="filteredArchives.length" class="mt-2.5 flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
+    <div
+      v-if="filteredArchives.length"
+      ref="listRef"
+      class="mt-2.5 flex min-h-0 flex-1 flex-col gap-2 overflow-hidden"
+    >
       <article
         v-for="(archive, index) in pagedArchives"
         :key="archive.id"
-        class="dash-fade-up group grid grid-cols-[22px_minmax(0,1fr)_auto] items-start gap-2.5 rounded-[10px] border border-slate-100 bg-white p-2.5 transition-colors duration-300 hover:border-slate-200 hover:bg-slate-50/50"
+        class="dash-archive-row dash-fade-up group grid grid-cols-[22px_minmax(0,1fr)_auto] items-start gap-2.5 rounded-[10px] border border-slate-100 bg-white p-2.5 transition-colors duration-300 hover:border-slate-200 hover:bg-slate-50/50"
         :style="{ animationDelay: `${index * 35}ms` }"
       >
         <component
@@ -216,7 +220,7 @@ import {
   Sparkles,
   XCircle,
 } from 'lucide-vue-next'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppDropdown from '../common/AppDropdown.vue'
 import AppEmptyState from '../common/AppEmptyState.vue'
 
@@ -240,6 +244,7 @@ const props = defineProps({
 defineEmits(['refresh', 'reprocess', 'change-page', 'update:searchQuery', 'update:domainFilter'])
 
 const DEFAULT_PAGE_SIZE = 6
+const MIN_PAGE_SIZE = 3
 
 const domainDropdownOptions = computed(() =>
   props.tabs.map((tab) => ({
@@ -251,43 +256,77 @@ const domainDropdownOptions = computed(() =>
 )
 
 const panelRef = ref(null)
-const panelHeight = ref(0)
+const listRef = ref(null)
+const listViewportHeight = ref(0)
+const archiveRowHeight = ref(0)
+const archiveRowGap = ref(8)
 let resizeObserver = null
+let measureRaf = null
 
 function measurePanel() {
-  const el = panelRef.value
-  if (!el) return
-  panelHeight.value = el.clientHeight || 0
+  const listEl = listRef.value
+  if (!listEl) return
+
+  listViewportHeight.value = listEl.clientHeight || 0
+
+  const styles = window.getComputedStyle(listEl)
+  const measuredGap = Number.parseFloat(styles.rowGap || styles.gap || '')
+  archiveRowGap.value = Number.isFinite(measuredGap) ? measuredGap : 8
+
+  const rowEl = listEl.querySelector('.dash-archive-row')
+  if (rowEl) {
+    archiveRowHeight.value = rowEl.getBoundingClientRect().height || 0
+  }
+}
+
+function scheduleMeasurePanel() {
+  if (measureRaf) cancelAnimationFrame(measureRaf)
+  measureRaf = requestAnimationFrame(() => {
+    measureRaf = null
+    measurePanel()
+  })
 }
 
 onMounted(() => {
-  measurePanel()
+  nextTick(scheduleMeasurePanel)
   if (typeof ResizeObserver !== 'undefined' && panelRef.value) {
-    resizeObserver = new ResizeObserver(measurePanel)
+    resizeObserver = new ResizeObserver(scheduleMeasurePanel)
     resizeObserver.observe(panelRef.value)
   }
 })
 
 onBeforeUnmount(() => {
+  if (measureRaf) {
+    cancelAnimationFrame(measureRaf)
+    measureRaf = null
+  }
   if (resizeObserver) {
     try { resizeObserver.disconnect() } catch (_) {}
     resizeObserver = null
   }
 })
 
-// 数据 / 过滤变化时重新测一遍，避免布局抖动错位
-watch(() => props.filteredArchives.length, () => {
-  requestAnimationFrame(measurePanel)
-})
-
-// 固定 pageSize：归档本身已经有分页，不再按面板高度扩张当前页，避免移动端出现长列表滚动框。
-const effectivePageSize = computed(() => {
-  const requestedSize = Math.max(3, Number(props.pageSize) || DEFAULT_PAGE_SIZE)
-  return Math.min(DEFAULT_PAGE_SIZE, requestedSize)
-})
-
 // 内部维护当前页，避免被父组件的轮询/反应式更新反复重置回 1
 const internalPage = ref(1)
+
+// 数据 / 过滤 / 当前页变化后重新测行高，避免不同标题换行导致页容量偏差。
+watch(
+  () => [props.filteredArchives.length, internalPage.value],
+  () => nextTick(scheduleMeasurePanel),
+  { flush: 'post' },
+)
+
+// 按列表实际可用高度算当前页容量，避免桌面侧栏只显示 6 条后底部大片空白。
+const effectivePageSize = computed(() => {
+  const requestedSize = Math.max(MIN_PAGE_SIZE, Number(props.pageSize) || DEFAULT_PAGE_SIZE)
+  const rowHeight = archiveRowHeight.value
+  const viewportHeight = listViewportHeight.value
+  const rowGap = archiveRowGap.value
+  if (!rowHeight || !viewportHeight) return Math.min(DEFAULT_PAGE_SIZE, requestedSize)
+
+  const fitCount = Math.floor((viewportHeight + rowGap) / (rowHeight + rowGap))
+  return Math.min(requestedSize, Math.max(MIN_PAGE_SIZE, fitCount))
+})
 
 const totalPages = computed(() => {
   const list = props.filteredArchives.length || 0

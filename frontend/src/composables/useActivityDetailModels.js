@@ -403,6 +403,11 @@ function finalStatusLabel(row) {
     if (row?.category === 'pipeline_filter') return '删除✔'
     if (row?.category === 'subtitle_import') return '配对✔'
     if (['extract', 'auto_import', 'process_existing'].includes(String(row?.category || ''))) {
+      if (row?.action === 'batch_start') {
+        if (ss.includes('partial_success')) return '部分提交'
+        if (ss.includes('failed')) return '提交异常'
+        return '已提交'
+      }
       // 子任务里出现 partial_success（典型：原作目录已有字幕，作品转入问题作品列表），
       // 整批不能再标成纯"入库✔"。
       // - 真实部分失败（ss 含 'failed'）→ "部分入库"
@@ -420,7 +425,7 @@ function finalStatusLabel(row) {
 
 function finalStatusClass(row) {
   const l = finalStatusLabel(row)
-  if (['配对✔', '删除✔', '入库✔', '完成✔', '已修复✔'].includes(l)) return 'is-final-success'
+  if (['配对✔', '删除✔', '入库✔', '完成✔', '已修复✔', '已提交'].includes(l)) return 'is-final-success'
   // "部分..." 或"转入问题作品"都属于 partial 黄色态（语义上未完全成功，但不是失败）
   if (l.includes('部分') || l.includes('问题作品')) return 'is-final-partial'
   return 'is-final-failed'
@@ -1671,6 +1676,12 @@ function humanAction(row) {
   }
   if (cat === 'extract') return status === 'success' ? '压缩包解压完成' : '压缩包解压失败'
   if (cat === 'auto_import') {
+    if (action === 'batch_start') {
+      if (status === 'success' || status === 'completed') return '已提交解压任务'
+      if (status === 'partial_success') return '部分提交解压任务'
+      if (status === 'failed') return '提交解压任务失败'
+      return '创建解压任务'
+    }
     if (status === 'success') return '解压入库完成'
     if (status === 'partial_success') {
       return isPurelyProblemListPartial(row) ? '转入问题作品' : '解压入库部分成功'
@@ -1678,7 +1689,15 @@ function humanAction(row) {
     if (status === 'failed') return '解压入库失败'
     if (status === 'incomplete') return '解压入库未正常结束'
   }
-  if (cat === 'process_existing') return status === 'success' ? '已有目录处理完成' : '已有目录处理失败'
+  if (cat === 'process_existing') {
+    if (action === 'batch_start') {
+      if (status === 'success' || status === 'completed') return '已提交已有目录处理'
+      if (status === 'partial_success') return '部分提交已有目录处理'
+      if (status === 'failed') return '提交已有目录处理失败'
+      return '创建已有目录处理任务'
+    }
+    return status === 'success' ? '已有目录处理完成' : '已有目录处理失败'
+  }
   if (cat === 'upload') {
     if (status === 'success') return '库存上传完成'
     if (status === 'failed') return '库存上传失败'

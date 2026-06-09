@@ -71,7 +71,7 @@ import {
 } from 'lucide-vue-next'
 import { conflictApi, processedArchiveApi, scanApi, taskCenterApi, watcherApi } from '../api'
 import { getTaskDomainMeta } from '../components/common/taskDomainMeta.js'
-import { getHttpDownloadDisplayMeta } from '../components/common/httpDownloadPlatformMeta.js'
+import { getHttpDownloadDisplayMeta, getHttpDownloadPlatformMeta } from '../components/common/httpDownloadPlatformMeta.js'
 import DashboardHero from '../components/dashboard/DashboardHero.vue'
 import DashboardCommandStrip from '../components/dashboard/DashboardCommandStrip.vue'
 import DashboardActiveTasks from '../components/dashboard/DashboardActiveTasks.vue'
@@ -272,6 +272,70 @@ const groupedArchives = computed(() => {
     })
 })
 
+function parseMetricBytes(value) {
+  const text = String(value || '').trim().replace(/,/g, '')
+  if (!text) return 0
+  const match = text.match(/([0-9]+(?:\.[0-9]+)?)\s*([kmgtp]?i?b|bytes?|字节)?/i)
+  if (!match) return 0
+  const amount = Number(match[1])
+  if (!Number.isFinite(amount) || amount <= 0) return 0
+  const unit = String(match[2] || 'B').toLowerCase()
+  const multiplierMap = {
+    b: 1,
+    byte: 1,
+    bytes: 1,
+    kb: 1024,
+    kib: 1024,
+    mb: 1024 ** 2,
+    mib: 1024 ** 2,
+    gb: 1024 ** 3,
+    gib: 1024 ** 3,
+    tb: 1024 ** 4,
+    tib: 1024 ** 4,
+    pb: 1024 ** 5,
+    pib: 1024 ** 5,
+    '字节': 1,
+  }
+  const multiplier = multiplierMap[unit] || 1
+  return Math.round(amount * multiplier)
+}
+
+function resolveTaskArchiveSize(task) {
+  const metrics = Array.isArray(task?.metrics) ? task.metrics : []
+  const metricLabels = ['大小', '下载大小', '上传大小']
+  for (const label of metricLabels) {
+    const metric = metrics.find((item) => String(item?.label || '').trim() === label)
+    const bytes = parseMetricBytes(metric?.value)
+    if (bytes > 0) return bytes
+  }
+
+  const metadata = task?.details?.metadata || {}
+  const runtimeCandidates = [
+    metadata?.download_runtime?.total_bytes,
+    metadata?.upload_runtime?.total_bytes,
+    metadata?.performance_metrics?.downloaded_bytes,
+    metadata?.performance_metrics?.uploaded_bytes,
+    metadata?.archive_size,
+    metadata?.archive_size_bytes,
+    metadata?.output_size_bytes,
+    metadata?.extract_output_bytes,
+  ]
+  for (const value of runtimeCandidates) {
+    const bytes = Number(value || 0)
+    if (Number.isFinite(bytes) && bytes > 0) return Math.round(bytes)
+  }
+
+  const fileRows = [
+    ...(Array.isArray(metadata?.download_files) ? metadata.download_files : []),
+    ...(Array.isArray(metadata?.upload_files) ? metadata.upload_files : []),
+    ...(Array.isArray(metadata?.uploaded_files) ? metadata.uploaded_files : []),
+  ]
+  const summed = fileRows.reduce((sum, item) => (
+    sum + Number(item?.total || item?.size || item?.size_bytes || item?.uploaded_bytes || 0)
+  ), 0)
+  return Number.isFinite(summed) && summed > 0 ? Math.round(summed) : 0
+}
+
 const taskArchiveItems = computed(() => {
   const items = Array.isArray(taskCenterOverview.value?.recent_items) ? taskCenterOverview.value.recent_items : []
   const active = Array.isArray(taskCenterOverview.value?.active_items) ? taskCenterOverview.value.active_items : []
@@ -290,7 +354,7 @@ const taskArchiveItems = computed(() => {
         domain,
         task_kind: task.kind || task.type || '',
         processed_at: task.completed_at || task.updated_at || task.started_at || task.created_at,
-        file_size: 0,
+        file_size: resolveTaskArchiveSize(task),
         summary: task.subtitle || task.current_step || '',
         status_label: task.status_label || '',
         error_message: task.error_message || '',
@@ -300,6 +364,7 @@ const taskArchiveItems = computed(() => {
         platforms: Array.isArray(task.platforms) ? task.platforms : (task.details?.metadata?.platforms || []),
         download_mode: task.download_mode || task.details?.metadata?.download_mode || '',
         source_modes: Array.isArray(task.source_modes) ? task.source_modes : (task.details?.metadata?.source_modes || []),
+        metrics: Array.isArray(task.metrics) ? task.metrics : [],
         details: task.details || {},
         route_hint: task.route_hint,
       }
@@ -791,6 +856,20 @@ function getArchiveTaskMeta(archive) {
       iconWrap: meta.iconWrap,
       chip: meta.chip,
       chipIcon: httpMeta.icon ? 'dash-archive-platform-icon' : meta.chipIcon,
+      chipBg: meta.chipBg,
+      chipText: meta.chipText,
+      bar: meta.bar,
+    }
+  }
+  if (key === 'baidu_netdisk') {
+    const baiduMeta = getHttpDownloadPlatformMeta('baidu_netdisk')
+    return {
+      key,
+      label: meta.label,
+      icon: baiduMeta.icon || meta.icon,
+      iconWrap: meta.iconWrap,
+      chip: meta.chip,
+      chipIcon: baiduMeta.icon ? 'dash-archive-platform-icon' : meta.chipIcon,
       chipBg: meta.chipBg,
       chipText: meta.chipText,
       bar: meta.bar,

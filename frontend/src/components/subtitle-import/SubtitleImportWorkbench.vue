@@ -1031,6 +1031,11 @@ function decodePossibleMojibake(value) {
   return String(value || '').trim()
 }
 
+function isSubtitleDirectoryMissingError(error) {
+  const detail = decodePossibleMojibake(error?.response?.data?.detail || error?.message || '')
+  return /目标文件夹不存在|未找到目录摘要/.test(detail)
+}
+
 function compareSubtitleWorkbenchNames(left, right) {
   return String(left || '').localeCompare(String(right || ''), 'zh-Hans-CN-u-kn-true')
 }
@@ -1239,29 +1244,49 @@ async function inspectSubtitleTask(task, options = {}) {
       if (inspectSeq !== subtitleInspectRequestSeq || (activeTask.value?.id && activeTask.value.id !== task.id)) {
         return
       }
-      skipTaskDraftPersistence = true
-      subtitleInspectorSearch.value = ''
-      subtitleInspectorItems.value = []
-      subtitleInspectorAudioItems.value = []
-      subtitleInspectorExpandedIds.value = new Set()
-      subtitleInspectorSelectedIds.value = new Set()
-      subtitleInspectorLastSelectedId.value = ''
-      resetSubtitleManualMatchState()
-      subtitleInspectorInfo.value = {
-        taskId: task.id,
-        libraryId: task.target_library_id || task.library_id || '',
-        audioLibraryId: task.target_library_id || task.library_id || '',
-        subtitleLibraryId: task.subtitle_library_id || task.target_library_id || task.library_id || '',
-        folderPath: String(task.target_folder_path || task.folder_path || '').trim(),
-        subtitleDir,
-        sourceMode: task.source_mode || '',
-        audioLoadError: '',
-        subtitleLoadError: message || '字幕目录读取失败',
-        totalFiles: 0,
-        totalSize: 0
+      if (isSubtitleDirectoryMissingError(error)) {
+        const hasCurrentTaskSnapshot = subtitleInspectorInfo.value.taskId === task.id && (
+          subtitleInspectorItems.value.length ||
+          subtitleInspectorAudioItems.value.length ||
+          subtitleManualPairs.value.length
+        )
+        if (hasCurrentTaskSnapshot) {
+          subtitleInspectorInfo.value = {
+            ...subtitleInspectorInfo.value,
+            subtitleLoadError: message || '字幕目录读取失败'
+          }
+          ElMessage.warning('字幕目录暂时不可用，已保留当前配对快照')
+        } else {
+          clearSubtitleInspectorState()
+          ElMessage.info(task.status === 'processing'
+            ? '字幕任务仍在执行，目录生成后会自动可见'
+            : '当前字幕目录还未生成，或历史恢复的旧目录已失效')
+        }
+      } else {
+        skipTaskDraftPersistence = true
+        subtitleInspectorSearch.value = ''
+        subtitleInspectorItems.value = []
+        subtitleInspectorAudioItems.value = []
+        subtitleInspectorExpandedIds.value = new Set()
+        subtitleInspectorSelectedIds.value = new Set()
+        subtitleInspectorLastSelectedId.value = ''
+        resetSubtitleManualMatchState()
+        subtitleInspectorInfo.value = {
+          taskId: task.id,
+          libraryId: task.target_library_id || task.library_id || '',
+          audioLibraryId: task.target_library_id || task.library_id || '',
+          subtitleLibraryId: task.subtitle_library_id || task.target_library_id || task.library_id || '',
+          folderPath: String(task.target_folder_path || task.folder_path || '').trim(),
+          subtitleDir,
+          sourceMode: task.source_mode || '',
+          audioLoadError: '',
+          subtitleLoadError: message || '字幕目录读取失败',
+          totalFiles: 0,
+          totalSize: 0
+        }
+        skipTaskDraftPersistence = false
+        ElMessage.error('加载字幕目录失败: ' + message)
       }
-      skipTaskDraftPersistence = false
-      ElMessage.error('加载字幕目录失败: ' + message)
     }
   } finally {
     skipTaskDraftPersistence = false
