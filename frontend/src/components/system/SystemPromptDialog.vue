@@ -39,7 +39,21 @@
 
         <section v-if="hasBody" class="sp-body">
           <div v-if="options.message && options.html" class="sp-message" v-html="options.message" />
-          <div v-else-if="options.message" class="sp-message is-preline">{{ options.message }}</div>
+          <div v-else-if="options.message" class="sp-message">
+            <template
+              v-for="line in messageLines"
+              :key="line.key"
+            >
+              <span
+                v-if="line.text"
+                class="sp-message-line"
+                :class="`is-${line.variant}`"
+              >
+                {{ line.text }}
+              </span>
+              <span v-else class="sp-message-gap" aria-hidden="true" />
+            </template>
+          </div>
 
           <div v-if="options.currentValue" class="sp-info-block">
             <span class="sp-info-label">{{ options.currentLabel || '当前项' }}</span>
@@ -141,6 +155,40 @@ const isConfirmDialog = computed(() => options.value.mode === 'confirm')
 const headerDescription = computed(() => {
   if (options.value.description) return options.value.description
   return ''
+})
+function getMessageLineVariant(text) {
+  if (/^(名称|大小|总大小)\s*[:：]/.test(text)) return 'meta'
+  if (/不可恢复/.test(text)) return 'danger'
+  if (/^(确定|确认|是否)/.test(text)) return 'lead'
+  return 'normal'
+}
+
+const messageLines = computed(() => {
+  if (!options.value.message || options.value.html) return []
+  return String(options.value.message)
+    .split(/\r?\n/)
+    .flatMap((line, index) => {
+      const text = line.trim()
+      if (!text) {
+        return [{ key: `${index}-blank`, text, variant: 'normal' }]
+      }
+
+      const dangerSuffix = text.match(/^(.*?)(此操作不可恢复[。.!！]*)$/)
+      if (dangerSuffix?.[1]?.trim()) {
+        const leadText = dangerSuffix[1].trim()
+        const dangerText = dangerSuffix[2].trim()
+        return [
+          { key: `${index}-lead`, text: leadText, variant: getMessageLineVariant(leadText) },
+          { key: `${index}-danger`, text: dangerText, variant: 'danger' }
+        ]
+      }
+
+      return {
+        key: `${index}-${text || 'blank'}`,
+        text,
+        variant: getMessageLineVariant(text)
+      }
+    })
 })
 const hasBody = computed(() => {
   return Boolean(
@@ -390,6 +438,30 @@ function handleConfirm() {
   font-weight: 500;
   line-height: 1.85;
   word-break: break-word;
+}
+
+.sp-message-line {
+  display: block;
+}
+
+.sp-message-line.is-lead {
+  color: #334155;
+  font-weight: 700;
+}
+
+.sp-message-line.is-meta {
+  color: #64748b;
+  font-weight: 650;
+}
+
+.sp-message-line.is-danger {
+  color: #be123c;
+  font-weight: 800;
+}
+
+.sp-message-gap {
+  display: block;
+  height: 12px;
 }
 
 .sp-info-block {
@@ -643,6 +715,23 @@ function handleConfirm() {
 :global(html.kikoerumanager-dark .sp-message),
 :global(html.kikoerumanager-dark .sp-info-value) {
   color: var(--km-dark-text);
+}
+
+:global(html.kikoerumanager-dark .sp-card.is-danger .sp-message) {
+  color: rgba(226, 232, 240, 0.78);
+}
+
+:global(html.kikoerumanager-dark .sp-card.is-danger .sp-message-line.is-lead) {
+  color: #f8fafc;
+  font-weight: 750;
+}
+
+:global(html.kikoerumanager-dark .sp-card.is-danger .sp-message-line.is-meta) {
+  color: rgba(203, 213, 225, 0.78);
+}
+
+:global(html.kikoerumanager-dark .sp-card.is-danger .sp-message-line.is-danger) {
+  color: #fecdd3;
 }
 
 :global(html.kikoerumanager-dark .sp-info-label) {
