@@ -2737,6 +2737,12 @@ class LibraryManager:
         for path in paths:
             try:
                 service.upsert_subtree_local(library.id, root, path)
+            except FileNotFoundError:
+                logger.debug(
+                    "[索引] 本地子树已不存在，跳过 upsert library=%s path=%s",
+                    library.id,
+                    path,
+                )
             except Exception:
                 logger.warning(
                     "[索引] 本地子树 upsert 失败 library=%s path=%s",
@@ -4582,10 +4588,23 @@ class LibraryManager:
         )
         return self._set_cached_remote_search_result(cache_key, result)
 
-    async def rename(self, library_id: str, path: str, new_name: str) -> dict[str, Any]:
+    async def rename(
+        self,
+        library_id: str,
+        path: str,
+        new_name: str,
+        *,
+        skip_index_mutation: bool = False,
+    ) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if library.type == "local":
-            return await asyncio.to_thread(self._local_rename, library, path, new_name)
+            return await asyncio.to_thread(
+                self._local_rename,
+                library,
+                path,
+                new_name,
+                skip_index_mutation=skip_index_mutation,
+            )
         new_name = self._validate_remote_new_name(new_name)
         _, target_path = self._resolve_remote_operation_path(
             library,
@@ -4626,26 +4645,35 @@ class LibraryManager:
                 )
             raise
         new_path = str(PurePosixPath(target_path).parent / new_name)
-        self._notify_index_self_mutation_move_batch(
-            library,
-            library,
-            [{"source": target_path, "destination": new_path}],
-        )
+        if not skip_index_mutation:
+            self._notify_index_self_mutation_move_batch(
+                library,
+                library,
+                [{"source": target_path, "destination": new_path}],
+            )
         self._append_stats_log(library, "INFO", f"重命名 path={target_path} -> {new_name}")
         return {"message": "重命名成功", "new_path": new_path}
 
-    def _local_rename(self, library: LibraryDefinition, path: str, new_name: str) -> dict[str, Any]:
+    def _local_rename(
+        self,
+        library: LibraryDefinition,
+        path: str,
+        new_name: str,
+        *,
+        skip_index_mutation: bool = False,
+    ) -> dict[str, Any]:
         self._assert_local_path_in_library(library, path)
         parent_dir = os.path.dirname(path)
         new_path = os.path.join(parent_dir, new_name)
         os.rename(path, new_path)
         # 文件夹改名后 keyword→matches 里旧 path 不再有效
         self._invalidate_local_search_cache(library.id)
-        self._notify_index_self_mutation_move_batch(
-            library,
-            library,
-            [{"source": path, "destination": new_path}],
-        )
+        if not skip_index_mutation:
+            self._notify_index_self_mutation_move_batch(
+                library,
+                library,
+                [{"source": path, "destination": new_path}],
+            )
         self._append_stats_log(library, "INFO", f"重命名 path={path} -> {new_name}")
         return {"message": "重命名成功", "new_path": new_path}
 
@@ -4653,6 +4681,8 @@ class LibraryManager:
         self,
         library_id: str,
         items: list[dict[str, str]],
+        *,
+        skip_index_mutation: bool = False,
     ) -> dict[str, Any]:
         """批量重命名。
 
@@ -4679,13 +4709,24 @@ class LibraryManager:
         if library.type != "local":
             # 远程库存（群晖 FileStation）走单条 rename 路径，远程 API 没有原生批接口；
             # 但仍然把索引同步聚合成 1 次。这种场景较少见，先简单循环 + 集中 sync。
-            return await self._batch_rename_remote_collected(library, items)
-        return await asyncio.to_thread(self._local_batch_rename, library, items)
+            return await self._batch_rename_remote_collected(
+                library,
+                items,
+                skip_index_mutation=skip_index_mutation,
+            )
+        return await asyncio.to_thread(
+            self._local_batch_rename,
+            library,
+            items,
+            skip_index_mutation=skip_index_mutation,
+        )
 
     def _local_batch_rename(
         self,
         library: LibraryDefinition,
         items: list[dict[str, str]],
+        *,
+        skip_index_mutation: bool = False,
     ) -> dict[str, Any]:
         results: list[dict[str, Any]] = []
         failed: list[dict[str, Any]] = []
@@ -4738,7 +4779,12 @@ class LibraryManager:
             self._invalidate_local_search_cache(library.id)
 
         # 一次性索引移动通知：后台 micro-batch，命中索引 fast-path 时不扫磁盘。
-        if moved_index_items:
+        #
+        # 字幕补配工作台的两阶段临时改名不应进入库存索引：这些路径位于
+        # _kikoerumanager_subtitle_workbench 下，最终 manual-complete 会发布到真实
+        # RJ/subtitles 并单独刷新目标目录。这里追临时文件只会制造滞后 upsert 和
+        # FileNotFoundError。
+        if moved_index_items and not skip_index_mutation:
             self._notify_index_self_mutation_move_batch(library, library, moved_index_items)
 
         # 聚合 stats_log（合并成 1 次 open / write，原本 N 次）
@@ -4769,6 +4815,8 @@ class LibraryManager:
         self,
         library: "LibraryDefinition",
         items: list[dict[str, str]],
+        *,
+        skip_index_mutation: bool = False,
     ) -> dict[str, Any]:
         """远程库批量重命名：单条 rename 走原 API，但索引同步聚合一次。"""
         results: list[dict[str, Any]] = []
@@ -4818,7 +4866,7 @@ class LibraryManager:
             except Exception as exc:
                 failed.append({"index": request_index, "path": path, "source_path": source_path, "new_name": new_name, "error": str(exc)})
 
-        if moved_index_items:
+        if moved_index_items and not skip_index_mutation:
             self._notify_index_self_mutation_move_batch(library, library, moved_index_items)
         self._append_stats_log(
             library, "INFO",

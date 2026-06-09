@@ -39,6 +39,46 @@ class TestTaskEngine:
         assert sample_task.id == task_id
         assert len(engine.tasks) == 1
         assert engine.tasks[task_id] == sample_task
+
+    @pytest.mark.asyncio
+    async def test_submit_auto_process_file_starts_background_precheck(self, engine, sample_task, tmp_path, monkeypatch):
+        """提交文件型自动处理任务时，先启动后台清单预热。"""
+        source = tmp_path / "RJ00000001.zip"
+        source.write_bytes(b"dummy")
+        sample_task.source_path = str(source)
+        calls = []
+
+        def fake_start_background_precheck(extract_service, task, *, label=None):
+            calls.append((task.id, label))
+            return None
+
+        monkeypatch.setattr(engine, "_start_background_archive_precheck", fake_start_background_precheck)
+
+        await engine.submit(sample_task)
+
+        assert calls == [(sample_task.id, "RJ00000001")]
+
+    @pytest.mark.asyncio
+    async def test_background_precheck_reuses_existing_task(self, engine, sample_task, tmp_path):
+        """同一任务已经有后台预热时，不重复启动第二个 7zz l。"""
+        source = tmp_path / "RJ00000002.zip"
+        source.write_bytes(b"dummy")
+        sample_task.source_path = str(source)
+        started = 0
+
+        class FakeExtractService:
+            async def precheck_archive(self, task):
+                nonlocal started
+                started += 1
+                await asyncio.sleep(0)
+                return None
+
+        first = engine._start_background_archive_precheck(FakeExtractService(), sample_task, label="RJ00000002")
+        second = engine._start_background_archive_precheck(FakeExtractService(), sample_task, label="RJ00000002")
+
+        assert first is second
+        await first
+        assert started == 1
     
     @pytest.mark.asyncio
     async def test_get_task(self, engine, sample_task):

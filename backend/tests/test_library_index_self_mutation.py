@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -66,6 +67,29 @@ def _create_rj_dir(library_root: Path, rjcode: str, *, content: str = "audio") -
 def _mark_index_ready(store: SnapshotStore, library_id: str) -> None:
     """跳过 rebuild 直接置 ready，模拟"用户上次手动重建过、之后没再扫"的场景。"""
     store.upsert_status(library_id, status="ready", watcher_mode="disabled")
+
+
+def _manual_entry(
+    relative_path: str,
+    *,
+    library_id: str,
+    rjcode: str,
+    entry_type: str = "dir",
+) -> IndexEntry:
+    return IndexEntry(
+        library_id=library_id,
+        entry_type=entry_type,
+        relative_path=relative_path,
+        absolute_path=f"/library/{relative_path}",
+        name=relative_path.rsplit("/", 1)[-1],
+        rjcode=rjcode,
+        parent_path=relative_path.rsplit("/", 1)[0] if "/" in relative_path else "",
+        size=123 if entry_type == "file" else 0,
+        file_count=0,
+        mtime=1000,
+        depth=relative_path.count("/") + 1 if relative_path else 0,
+        indexed_at=1000,
+    )
 
 
 # ---------- Case 1：upsert 后跨库搜索能命中 ----------
@@ -487,3 +511,62 @@ def test_index_status_keeps_persisted_size_snapshot_with_deltas(isolated_index):
     assert status.total_size_bytes == 0
     assert status.folder_count == 0
     assert service.get_library_size(library_id) == 0
+
+
+def test_delete_subtree_treats_percent_and_underscore_as_literal_path_chars(isolated_index):
+    """子树删除不能把 relative_path 里的 %/_ 当 LIKE 通配符误删兄弟目录。"""
+    store: SnapshotStore = isolated_index["store"]
+    library_id = "lib_literal_subtree"
+
+    store.bulk_upsert([
+        _manual_entry("社团/a%_b", library_id=library_id, rjcode="RJ00000014"),
+        _manual_entry("社团/a%_b/track.mp3", library_id=library_id, rjcode="RJ00000014", entry_type="file"),
+        _manual_entry("社团/aXyb", library_id=library_id, rjcode="RJ00000015"),
+        _manual_entry("社团/aXyb/track.mp3", library_id=library_id, rjcode="RJ00000015", entry_type="file"),
+    ])
+
+    deleted = store.delete_subtree(library_id, "社团/a%_b")
+
+    assert deleted == 2
+    assert store.get_entry(library_id, "社团/a%_b") is None
+    assert store.get_entry(library_id, "社团/a%_b/track.mp3") is None
+    assert store.get_entry(library_id, "社团/aXyb") is not None
+    assert store.get_entry(library_id, "社团/aXyb/track.mp3") is not None
+
+
+def test_snapshot_store_reads_do_not_wait_for_sqlite_write_budget(monkeypatch, isolated_index):
+    """库存 stats/search/list 读路径不能排在 library_index.write 队列后面。"""
+    import app.core.library_index.snapshot_store as snapshot_store_module
+
+    store: SnapshotStore = isolated_index["store"]
+    library_id = "lib_read_budget"
+    calls = []
+
+    class Budget:
+        @contextmanager
+        def acquire_sync(self, resource, *, weight=1, reason=""):
+            calls.append((resource, weight, reason))
+            yield
+
+    monkeypatch.setattr(snapshot_store_module, "get_resource_budget_service", lambda: Budget())
+
+    store.bulk_upsert([
+        _manual_entry("社团/RJ00000016", library_id=library_id, rjcode="RJ00000016"),
+    ])
+    store.upsert_status(
+        library_id,
+        status="ready",
+        watcher_mode="disabled",
+        total_entries=1,
+        total_size_bytes=123,
+        folder_count=1,
+    )
+    calls.clear()
+
+    assert store.get_status(library_id) is not None
+    assert store.get_library_stats(library_id) == {"folder_count": 1, "total_size_bytes": 123}
+    assert store.find_by_rjcode(library_id, "RJ00000016")
+    assert store.get_entry(library_id, "社团/RJ00000016") is not None
+    assert store.count_library_entries(library_id) == 1
+
+    assert calls == []

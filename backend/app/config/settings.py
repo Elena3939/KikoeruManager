@@ -510,6 +510,7 @@ class ResourceBudgetConfig(BaseModel):
     enabled: bool = True
     disk_io_local: int = 2
     archive_cpu: int = 0
+    archive_inspect: int = 0
     remote_fs: int = 4
     network_download: int = 5
     sqlite_write: int = 1

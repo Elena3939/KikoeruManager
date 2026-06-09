@@ -97,6 +97,8 @@ class ExtractService:
     _seven_zip_check_lock: Optional[asyncio.Lock] = None
     _seven_zip_semaphore: Optional[asyncio.Semaphore] = None
     _seven_zip_semaphore_limit: Optional[int] = None
+    _seven_zip_inspect_semaphore: Optional[asyncio.Semaphore] = None
+    _seven_zip_inspect_semaphore_limit: Optional[int] = None
     # 存储类型探测结果缓存：{ "C:\\" -> "ssd", "/dev/sda" -> "hdd", ... }
     # 探测失败的目录会缓存为 "unknown"，下次也不再重复试。
     _storage_type_cache: Dict[str, str] = {}
@@ -124,6 +126,12 @@ class ExtractService:
     PROBE_FULL_TEST_TIMEOUT: float = 600.0        # 无法轻量定性时，最多花 10 分钟做不落盘 t 验证
     PROBE_BYTES: int = 2 * 1024 * 1024            # 流式探测读到 2MB 即认为解压流可信
     PROBE_TIMEOUT_SECONDS: float = 30.0           # 单次流式探测最多等 30s，超时回退完整解压
+    LIST_TIMEOUT_SECONDS: float = float(os.getenv("KIKOERUMANAGER_7Z_LIST_TIMEOUT_SECONDS", "180") or 180)
+    PRECHECK_LIST_TIMEOUT_SECONDS: float = float(os.getenv("KIKOERUMANAGER_7Z_PRECHECK_LIST_TIMEOUT_SECONDS", "90") or 90)
+    INSPECT_CONCURRENCY_LIMIT: int = max(
+        1,
+        int(os.getenv("KIKOERUMANAGER_7Z_INSPECT_CONCURRENCY", "1") or 1),
+    )
 
     # 按文件后缀识别的魔数表：(偏移量, (候选签名, ...))。
     # 有后缀在这里就能用“解压前几十字节 + 对照魔数”秒级判定密码是否正确，
@@ -1350,6 +1358,17 @@ class ExtractService:
             logger.info("设置 7z 并发上限: %s (%s)", limit, reason)
         return self.__class__._seven_zip_semaphore
 
+    def _get_7z_inspect_semaphore(self) -> asyncio.Semaphore:
+        limit = max(1, int(self.INSPECT_CONCURRENCY_LIMIT or 1))
+        if (
+            self.__class__._seven_zip_inspect_semaphore is None
+            or self.__class__._seven_zip_inspect_semaphore_limit != limit
+        ):
+            self.__class__._seven_zip_inspect_semaphore = asyncio.Semaphore(limit)
+            self.__class__._seven_zip_inspect_semaphore_limit = limit
+            logger.info("设置 7z 清单/探测并发上限: %s", limit)
+        return self.__class__._seven_zip_inspect_semaphore
+
     def _get_seven_zip_mmt_args(self) -> List[str]:
         """返回给 7z 的多线程参数。空字符串=不传，让 7z 自己决定。"""
         raw = str(getattr(self.config.extract, 'seven_zip_threads', '') or '').strip()
@@ -1372,7 +1391,18 @@ class ExtractService:
         if len(cmd) < 2:
             return False
         action = str(cmd[1] or "").strip().lower()
-        return action in {"x", "e"}
+        if action not in {"x", "e"}:
+            return False
+        return "-so" not in {str(arg).strip().lower() for arg in cmd[2:]}
+
+    @staticmethod
+    def _is_inspect_subprocess_command(cmd: List[str]) -> bool:
+        if len(cmd) < 2:
+            return False
+        action = str(cmd[1] or "").strip().lower()
+        if action in {"l", "t"}:
+            return True
+        return action in {"x", "e"} and "-so" in {str(arg).strip().lower() for arg in cmd[2:]}
 
     def _set_extract_meta(self, task: Task, **values):
         if task.task_metadata is None:
@@ -5092,6 +5122,8 @@ class ExtractService:
         password_candidates: Optional[List[Dict[str, Optional[str]]]] = None,
         use_cache: bool = True,
         task: Optional[Task] = None,
+        list_timeout: Optional[float] = None,
+        update_task_progress: bool = True,
     ) -> Optional[ArchiveInfo]:
         """获取压缩包信息（文件列表、大小等）
 
@@ -5173,6 +5205,8 @@ class ExtractService:
                 password,
                 task=task,
                 filename_encoding=self._manual_filename_encoding_from_task(task),
+                command_timeout=list_timeout,
+                update_task_progress=update_task_progress,
             )
             if file_list is not None:
                 # 判断密码来源
@@ -5310,7 +5344,13 @@ class ExtractService:
             ]
         else:
             precheck_candidates = None
-        return await self._get_archive_info(target_path, password_candidates=precheck_candidates, task=task)
+        return await self._get_archive_info(
+            target_path,
+            password_candidates=precheck_candidates,
+            task=task,
+            list_timeout=self.PRECHECK_LIST_TIMEOUT_SECONDS,
+            update_task_progress=False,
+        )
 
     async def _list_archive_contents(
         self,
@@ -5318,6 +5358,8 @@ class ExtractService:
         password: str = "",
         task: Optional[Task] = None,
         filename_encoding: Optional[Union[str, int]] = None,
+        command_timeout: Optional[float] = None,
+        update_task_progress: bool = True,
     ) -> Optional[List[Dict]]:
         """列出压缩包内容，自动检测最佳编码
 
@@ -5334,7 +5376,12 @@ class ExtractService:
         for index, cmd in enumerate(commands):
             try:
                 logger.debug("[7z] 执行命令: %s", self._format_command_for_log(cmd))
-                result = await self._run_7z_command(cmd, task=task)
+                result = await self._run_7z_command(
+                    cmd,
+                    task=task,
+                    command_timeout=command_timeout,
+                    update_task_progress=update_task_progress,
+                )
                 if result.returncode != 0:
                     logger.warning(
                         f"[7z] 列出压缩包内容失败，返回码: {result.returncode}, 错误: {result.stderr.decode('utf-8', errors='ignore')[:500]}"
@@ -6314,21 +6361,35 @@ class ExtractService:
         capture_stdout: bool = True,
         max_captured_bytes: int = 4 * 1024 * 1024,
         task: Optional[Task] = None,
+        command_timeout: Optional[float] = None,
+        update_task_progress: bool = True,
     ) -> subprocess.CompletedProcess:
         """运行7z命令。传入 task 后会把子进程登记到 task 上，cancel/pause 能立刻 kill。"""
         logger.info("执行7z命令: %s", self._format_command_for_log(cmd))
 
-        semaphore = self._get_7z_semaphore()
         is_extract_command = self._is_extract_subprocess_command(cmd)
+        is_inspect_command = self._is_inspect_subprocess_command(cmd)
+        semaphore = self._get_7z_semaphore() if is_extract_command else self._get_7z_inspect_semaphore()
+        slot_limit = (
+            self.__class__._seven_zip_semaphore_limit
+            if is_extract_command
+            else self.__class__._seven_zip_inspect_semaphore_limit
+        ) or 1
+        slot_label = "解压槽位" if is_extract_command else "清单/探测槽位"
+        timeout_seconds = command_timeout
+        if timeout_seconds is None and is_inspect_command:
+            timeout_seconds = self.LIST_TIMEOUT_SECONDS
 
         try:
-            if task is not None and is_extract_command and self._is_semaphore_locked(semaphore):
+            if task is not None and update_task_progress and self._is_semaphore_locked(semaphore):
                 task.update_progress(
                     max(31, int(task.progress or 0)),
-                    f"等待解压槽位（当前并发上限 {self.__class__._seven_zip_semaphore_limit or 1}）",
+                    f"等待{slot_label}（当前并发上限 {slot_limit}）",
                 )
-            async with semaphore, get_resource_budget_service().acquire("archive_cpu", reason="extract.7z"):
-                if task is not None and is_extract_command:
+            budget_resource = "archive_cpu" if is_extract_command else "archive_inspect"
+            budget_reason = "extract.7z" if is_extract_command else "extract.7z_inspect"
+            async with semaphore, get_resource_budget_service().acquire(budget_resource, reason=budget_reason):
+                if task is not None and update_task_progress and is_extract_command:
                     task.update_progress(max(40, int(task.progress or 0)), "解压子进程已启动")
                 # Windows 上隐藏子进程窗口，避免闪烁
                 kwargs = {
@@ -6369,7 +6430,7 @@ class ExtractService:
                             except Exception:
                                 pass
 
-                try:
+                async def wait_for_process_output():
                     await asyncio.gather(
                         read_stream(process.stdout, stdout_data, is_stdout=True),
                         read_stream(process.stderr, stderr_data)
@@ -6377,19 +6438,50 @@ class ExtractService:
 
                     return_code = await process.wait()
                     await asyncio.sleep(0.1)
-                except asyncio.CancelledError:
-                    # 协程级取消（asyncio.Task.cancel()）不同于 task.cancel()：
-                    # task.cancel() 会通过 _active_processes 主动 kill 子进程；
-                    # 单纯的 asyncio.Task.cancel() 只让本协程退出，注册过的 7z 子进程
-                    # 不会被自动 kill。这里显式 kill，避免并发场景下 list 子进程在
-                    # 协程被取消后继续后台跑，浪费 CPU / IO（方案 B 并行查重+list 依赖）。
+                    return return_code
+
+                async def terminate_process():
                     if process.returncode is None:
                         try:
                             process.kill()
                         except ProcessLookupError:
                             pass
                         except Exception:
-                            logger.debug("CancelledError 时 kill 7z 子进程失败（忽略）", exc_info=True)
+                            logger.debug("kill 7z 子进程失败（忽略）", exc_info=True)
+                        try:
+                            await asyncio.wait_for(process.wait(), timeout=2.0)
+                        except Exception:
+                            pass
+
+                try:
+                    if timeout_seconds and timeout_seconds > 0:
+                        try:
+                            return_code = await asyncio.wait_for(
+                                wait_for_process_output(),
+                                timeout=timeout_seconds,
+                            )
+                        except asyncio.TimeoutError:
+                            await terminate_process()
+                            message = (
+                                f"7z命令超时 ({timeout_seconds:.1f}s): "
+                                f"{self._format_command_for_log(cmd)}"
+                            )
+                            logger.warning(message)
+                            return subprocess.CompletedProcess(
+                                args=cmd,
+                                returncode=-9,
+                                stdout=bytes(stdout_data),
+                                stderr=message.encode("utf-8", errors="ignore"),
+                            )
+                    else:
+                        return_code = await wait_for_process_output()
+                except asyncio.CancelledError:
+                    # 协程级取消（asyncio.Task.cancel()）不同于 task.cancel()：
+                    # task.cancel() 会通过 _active_processes 主动 kill 子进程；
+                    # 单纯的 asyncio.Task.cancel() 只让本协程退出，注册过的 7z 子进程
+                    # 不会被自动 kill。这里显式 kill，避免并发场景下 list 子进程在
+                    # 协程被取消后继续后台跑，浪费 CPU / IO（方案 B 并行查重+list 依赖）。
+                    await terminate_process()
                     raise
                 finally:
                     if task is not None:
@@ -6438,6 +6530,8 @@ class ExtractService:
                             capture_stdout=capture_stdout,
                             max_captured_bytes=max_captured_bytes,
                             task=task,
+                            command_timeout=command_timeout,
+                            update_task_progress=update_task_progress,
                         )
                     return subprocess.CompletedProcess(
                         args=cmd,
@@ -6631,8 +6725,8 @@ class ExtractService:
                 return False
             return None
 
-        semaphore = self._get_7z_semaphore()
-        async with semaphore, get_resource_budget_service().acquire("archive_cpu", reason="extract.probe_magic"):
+        semaphore = self._get_7z_inspect_semaphore()
+        async with semaphore, get_resource_budget_service().acquire("archive_inspect", reason="extract.probe_magic"):
             try:
                 process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
             except Exception as e:
@@ -6829,8 +6923,8 @@ class ExtractService:
             from subprocess import CREATE_NO_WINDOW as _CNW
             kwargs['creationflags'] = _CNW
 
-        semaphore = self._get_7z_semaphore()
-        async with semaphore, get_resource_budget_service().acquire("archive_cpu", reason="extract.probe_entry"):
+        semaphore = self._get_7z_inspect_semaphore()
+        async with semaphore, get_resource_budget_service().acquire("archive_inspect", reason="extract.probe_entry"):
             try:
                 process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
             except Exception as e:
@@ -6924,8 +7018,8 @@ class ExtractService:
             from subprocess import CREATE_NO_WINDOW as _CNW
             kwargs['creationflags'] = _CNW
 
-        semaphore = self._get_7z_semaphore()
-        async with semaphore, get_resource_budget_service().acquire("archive_cpu", reason="extract.probe_full_test"):
+        semaphore = self._get_7z_inspect_semaphore()
+        async with semaphore, get_resource_budget_service().acquire("archive_inspect", reason="extract.probe_full_test"):
             try:
                 process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
             except Exception as e:
@@ -7108,8 +7202,8 @@ class ExtractService:
             from subprocess import CREATE_NO_WINDOW as _CNW
             kwargs['creationflags'] = _CNW
 
-        semaphore = self._get_7z_semaphore()
-        async with semaphore, get_resource_budget_service().acquire("archive_cpu", reason="extract.probe_stream"):
+        semaphore = self._get_7z_inspect_semaphore()
+        async with semaphore, get_resource_budget_service().acquire("archive_inspect", reason="extract.probe_stream"):
             try:
                 process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
             except Exception as e:
