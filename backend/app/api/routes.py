@@ -8086,104 +8086,91 @@ async def batch_rename_library_browser_items(request: Request):
         manager = get_library_manager()
         batch_prefix = "mojibake" if rename_context == "folder_contents_mojibake_repair" else "manual-rename"
         batch_id = requested_batch_id or f"{batch_prefix}-{uuid.uuid4().hex}"
-        path_replacements: list[dict[str, str]] = []
-        results = []
-        success_count = 0
-        failed_count = 0
+        normalized_items: list[dict[str, str]] = []
+        item_lookup: dict[int, dict] = {}
+        invalid_results: list[dict] = []
 
-        def remap_path(raw_path: str) -> str:
-            current = str(raw_path or "").replace("\\", "/").rstrip("/")
-            for replacement in path_replacements:
-                old_path = str(replacement.get("old_path") or "").replace("\\", "/").rstrip("/")
-                new_path = str(replacement.get("new_path") or "").replace("\\", "/").rstrip("/")
-                if not old_path or not new_path:
-                    continue
-                if current == old_path:
-                    current = new_path
-                    continue
-                if current.startswith(f"{old_path}/"):
-                    current = f"{new_path}{current[len(old_path):]}"
-            return current
-
-        for item in items:
-            source_path = str((item or {}).get("path") or "").strip()
-            new_name = str((item or {}).get("new_name") or "").strip()
-            current_name = str((item or {}).get("current_name") or _route_path_basename(source_path) or "").strip()
-            mapped_path = remap_path(source_path)
-            if not mapped_path or not new_name or new_name == current_name:
-                failed_count += 1
-                error_text = "目标名称无效或无变化"
-                if not skip_activity_log and mapped_path:
-                    log_api_rename_action(
-                        action="batch_rename_item",
-                        success=False,
-                        source_path=mapped_path,
-                        old_name=current_name,
-                        new_name=new_name,
-                        batch_id=batch_id,
-                        library_id=str(library_id or "") or None,
-                        error=error_text,
-                        status="failed",
-                        extra_detail={"rename_context": rename_context} if rename_context else None,
-                    )
-                results.append({
+        for index, item in enumerate(items):
+            item = item or {}
+            source_path = str(item.get("path") or "").strip()
+            new_name = str(item.get("new_name") or "").strip()
+            current_name = str(item.get("current_name") or _route_path_basename(source_path) or "").strip()
+            item_lookup[index] = {
+                "path": source_path,
+                "new_name": new_name,
+                "current_name": current_name,
+            }
+            if not source_path or not new_name or new_name == current_name:
+                invalid_results.append({
+                    "index": index,
                     "path": source_path,
+                    "source_path": source_path,
                     "old_name": current_name,
                     "new_name": new_name,
                     "success": False,
-                    "error": error_text,
+                    "error": "目标名称无效或无变化",
                 })
                 continue
-            try:
-                rename_result = await manager.rename(library_id, mapped_path, new_name)
-                new_path = str(rename_result.get("new_path") or "").strip()
-                if new_path and new_path != mapped_path:
-                    path_replacements.append({"old_path": mapped_path, "new_path": new_path})
-                if not skip_activity_log:
-                    log_api_rename_action(
-                        action="batch_rename_item",
-                        success=True,
-                        source_path=mapped_path,
-                        new_path=new_path,
-                        old_name=current_name,
-                        new_name=new_name,
-                        batch_id=batch_id,
-                        library_id=str(library_id or "") or None,
-                        extra_detail={"rename_context": rename_context} if rename_context else None,
-                    )
-                success_count += 1
-                results.append({
-                    "path": mapped_path,
-                    "old_name": current_name,
-                    "new_name": new_name,
-                    "new_path": new_path,
-                    "success": True,
-                })
-            except Exception as exc:
-                failed_count += 1
-                error_text = str(getattr(exc, "detail", "") or exc)
-                if not skip_activity_log:
-                    log_api_rename_action(
-                        action="batch_rename_item",
-                        success=False,
-                        source_path=mapped_path,
-                        old_name=current_name,
-                        new_name=new_name,
-                        batch_id=batch_id,
-                        library_id=str(library_id or "") or None,
-                        error=error_text,
-                        status="failed",
-                        extra_detail={"rename_context": rename_context} if rename_context else None,
-                    )
-                results.append({
-                    "path": mapped_path,
-                    "old_name": current_name,
-                    "new_name": new_name,
-                    "success": False,
-                    "error": error_text,
-                })
+            normalized_items.append({
+                "index": index,
+                "path": source_path,
+                "new_name": new_name,
+                "current_name": current_name,
+            })
+
+        batch_result = await manager.batch_rename(library_id, normalized_items)
+        raw_success_results = list(batch_result.get("results") or [])
+        raw_failed_results = list(batch_result.get("failed") or [])
+
+        results: list[dict] = []
+        for item in raw_success_results:
+            index = int(item.get("index") or 0)
+            request_item = item_lookup.get(index, {})
+            results.append({
+                "index": index,
+                "path": str(item.get("path") or request_item.get("path") or "").strip(),
+                "source_path": str(item.get("source_path") or request_item.get("path") or "").strip(),
+                "old_name": str(request_item.get("current_name") or _route_path_basename(item.get("path")) or "").strip(),
+                "new_name": str(item.get("new_name") or request_item.get("new_name") or "").strip(),
+                "new_path": str(item.get("new_path") or "").strip(),
+                "success": True,
+            })
+
+        failed_items: list[dict] = []
+        for item in raw_failed_results:
+            index = int(item.get("index") or 0)
+            request_item = item_lookup.get(index, {})
+            failed_items.append({
+                "index": index,
+                "path": str(item.get("path") or request_item.get("path") or "").strip(),
+                "source_path": str(item.get("source_path") or request_item.get("path") or "").strip(),
+                "old_name": str(request_item.get("current_name") or _route_path_basename(item.get("path")) or "").strip(),
+                "new_name": str(item.get("new_name") or request_item.get("new_name") or "").strip(),
+                "success": False,
+                "error": str(item.get("error") or "重命名失败"),
+            })
+        failed_items.extend(invalid_results)
+        results.extend(failed_items)
+        results.sort(key=lambda item: int(item.get("index") or 0))
+
+        success_count = len([item for item in results if item.get("success")])
+        failed_count = len([item for item in results if not item.get("success")])
 
         if not skip_activity_log:
+            for item in results:
+                log_api_rename_action(
+                    action="batch_rename_item",
+                    success=bool(item.get("success")),
+                    source_path=str(item.get("path") or item.get("source_path") or "").strip(),
+                    new_path=str(item.get("new_path") or "").strip() or None,
+                    old_name=str(item.get("old_name") or "").strip(),
+                    new_name=str(item.get("new_name") or "").strip(),
+                    batch_id=batch_id,
+                    library_id=str(library_id or "") or None,
+                    error=str(item.get("error") or "").strip() or None,
+                    status="failed" if not item.get("success") else "success",
+                    extra_detail={"rename_context": rename_context} if rename_context else None,
+                )
             log_batch_manual_rename_result(
                 batch_id=batch_id,
                 total_count=len(items),
@@ -8197,6 +8184,7 @@ async def batch_rename_library_browser_items(request: Request):
             "batch_id": batch_id,
             "success_count": success_count,
             "failed_count": failed_count,
+            "failed": [item for item in results if not item.get("success")],
             "failed_items": [item for item in results if not item.get("success")],
             "results": results,
         }
@@ -8283,20 +8271,36 @@ async def delete_library_browser_item(request: Request):
 async def batch_delete_library_browser_items(request: Request):
     paths: list[str] = []
     library_id = None
+    skip_activity_log = False
     batch_id = ""
     try:
         data = await request.json()
         paths = [str(p or "").strip() for p in (data.get("paths") or []) if str(p or "").strip()]
         library_id = data.get("library_id")
         confirmed = data.get("confirmed", False)
+        skip_activity_log = bool(data.get("skip_activity_log"))
+        batch_id = str(data.get("batch_id") or "").strip()
+        known_items = data.get("known_items") if isinstance(data.get("known_items"), list) else []
         if not paths:
             raise HTTPException(status_code=400, detail="路径列表不能为空")
         manager = get_library_manager()
         result = await manager.batch_delete(library_id, paths, confirmed=confirmed)
+        if confirmed and isinstance(result, dict):
+            failed_paths = result.get("failed_paths") or []
+            failed_set = {
+                str((item or {}).get("path") or "").strip()
+                for item in failed_paths
+                if isinstance(item, dict)
+            }
+            result["success_paths"] = [path for path in paths if path not in failed_set]
+            result["failed_paths"] = failed_paths
+            result["index_mutation_queued"] = int(result.get("success_count") or 0) > 0
+            if batch_id:
+                result["batch_id"] = batch_id
         try:
             from ..core.activity_log_service import log_api_delete_action, log_batch_api_delete_result
-            if confirmed and isinstance(result, dict):
-                batch_id = str(data.get("batch_id") or "").strip() or str(uuid.uuid4())
+            if confirmed and isinstance(result, dict) and not skip_activity_log:
+                batch_id = batch_id or str(uuid.uuid4())
                 success_count = int(result.get("success_count") or 0)
                 failed_paths = result.get("failed_paths") or []
                 failed_count = len(failed_paths) if isinstance(failed_paths, list) else 0
@@ -8308,16 +8312,26 @@ async def batch_delete_library_browser_items(request: Request):
                         p = str((item or {}).get("path") or "").strip()
                         if p:
                             failed_map[p] = str((item or {}).get("error") or "").strip()
+                known_lookup = {}
+                for item in known_items:
+                    if not isinstance(item, dict):
+                        continue
+                    item_path = str(item.get("path") or "").strip()
+                    if item_path:
+                        known_lookup[item_path] = item
 
                 for p in paths:
                     err = failed_map.get(p, "")
                     ok = not bool(err)
+                    known = known_lookup.get(p, {})
+                    item_name = str(known.get("name") or os.path.basename(p) or "").strip()
+                    item_type = str(known.get("type") or known.get("item_type") or "unknown").strip() or "unknown"
                     log_api_delete_action(
                         action="batch_delete_item",
                         success=ok,
                         source_path=p,
-                        item_name=os.path.basename(p),
-                        item_type="unknown",
+                        item_name=item_name,
+                        item_type=item_type,
                         library_id=str(library_id or "") or None,
                         error=err,
                         batch_id=batch_id,
@@ -8347,7 +8361,7 @@ async def batch_delete_library_browser_items(request: Request):
         _log_synology_err(f"库存批量删除失败: {e}", e)
         try:
             from ..core.activity_log_service import log_batch_api_delete_result
-            if paths:
+            if paths and not skip_activity_log:
                 log_batch_api_delete_result(
                     batch_id=batch_id,
                     total_count=len(paths),
@@ -9162,8 +9176,12 @@ async def api_rename_library_file(request: Request):
         data = await request.json()
         file_path = str(data.get("path") or "").strip()
         library_id = data.get("library_id")
-        manager = get_library_manager() if library_id else None
+        manager = get_library_manager()
         library = manager.get_library_definition(library_id) if library_id else None
+        if library is None and file_path:
+            library = manager.find_local_library_for_path(file_path)
+            if library:
+                library_id = library.id
         is_remote_library = bool(library and library.type == "synology_filestation")
         
         if not file_path:
@@ -9306,8 +9324,8 @@ async def api_rename_library_file(request: Request):
             return {"message": "名称已是最新，无需重命名", "name": new_name}
 
         # 执行重命名
-        if is_remote_library:
-            await manager.rename(library_id, file_path, new_name)
+        if library:
+            await manager.rename(library.id, file_path, new_name)
         else:
             os.rename(file_path, new_path)
         logger.info(f"API重命名成功: {file_path} -> {new_path}")
@@ -9524,73 +9542,61 @@ async def batch_delete_library_items(request: Request):
     """批量删除库内文件或文件夹"""
     try:
         data = await request.json()
-        paths = data.get("paths", [])
+        paths = [str(path or "").strip() for path in (data.get("paths", []) or []) if str(path or "").strip()]
         confirmed = data.get("confirmed", False)
+        library_id = data.get("library_id")
         
         if not paths:
             raise HTTPException(status_code=400, detail="路径列表不能为空")
-        
-        # 安全检查
-        config = get_config()
-        library_path = config.storage.library_path
-        
-        for path in paths:
-            if not path.startswith(library_path):
-                raise HTTPException(status_code=403, detail="只能删除库内的文件")
-            if not os.path.exists(path):
-                raise HTTPException(status_code=404, detail=f"路径不存在：{path}")
-        
-        if not confirmed:
-            # 返回需要确认的信息
-            import shutil
-            total_count = len(paths)
 
-            _paths_snap = list(paths)
-            def _calc_total_size():
-                _sz = 0
-                for _path in _paths_snap:
-                    if os.path.isdir(_path):
-                        for _dp, _dn, _fn in os.walk(_path):
-                            for _f in _fn:
-                                try:
-                                    _sz += os.path.getsize(os.path.join(_dp, _f))
-                                except Exception:
-                                    pass
-                    else:
-                        try:
-                            _sz += os.path.getsize(_path)
-                        except Exception:
-                            pass
-                return _sz
-            total_size = await asyncio.to_thread(_calc_total_size)
-            
+        manager = get_library_manager()
+        fixed_library = manager.get_library_definition(library_id) if library_id else None
+        grouped: dict[str, dict[str, Any]] = {}
+        for path in paths:
+            library = fixed_library or manager.find_local_library_for_path(path)
+            if library is None:
+                raise HTTPException(status_code=403, detail=f"只能删除库存内的文件：{path}")
+            grouped.setdefault(library.id, {"library": library, "paths": []})["paths"].append(path)
+
+        if not confirmed:
+            previews = []
+            for group in grouped.values():
+                previews.append(await manager.batch_delete(group["library"].id, group["paths"], confirmed=False))
+            size_disabled = any(bool(item.get("size_disabled")) for item in previews if isinstance(item, dict))
+            total_size = None if size_disabled else sum(int((item or {}).get("total_size") or 0) for item in previews)
             return {
                 "need_confirm": True,
-                "total_count": total_count,
-                "total_size": total_size
+                "total_count": len(paths),
+                "total_size": total_size,
+                "size_disabled": size_disabled,
             }
-        
-        # 执行删除
+
         success_count = 0
-        failed_paths = []
-        
-        for path in paths:
+        failed_paths: list[dict[str, str]] = []
+        success_paths: list[str] = []
+        for group in grouped.values():
             try:
-                if os.path.isdir(path):
-                    _robust_rmtree(path)
-                    logger.info(f"批量删除 - 删除文件夹：{path}")
-                else:
-                    os.remove(path)
-                    logger.info(f"批量删除 - 删除文件：{path}")
-                success_count += 1
+                result = await manager.batch_delete(group["library"].id, group["paths"], confirmed=True)
+                group_failed = result.get("failed_paths") or []
+                failed_lookup = {
+                    str((item or {}).get("path") or "").strip()
+                    for item in group_failed
+                    if isinstance(item, dict)
+                }
+                failed_paths.extend(group_failed)
+                group_success_paths = [path for path in group["paths"] if path not in failed_lookup]
+                success_paths.extend(group_success_paths)
+                success_count += int(result.get("success_count") or len(group_success_paths))
             except Exception as e:
-                logger.error(f"批量删除失败：{path}, {e}")
-                failed_paths.append({"path": path, "error": str(e)})
-        
+                logger.error(f"批量删除失败：library={group['library'].id}, {e}", exc_info=True)
+                failed_paths.extend({"path": path, "error": str(e)} for path in group["paths"])
+
         return {
-            "message": f"批量删除完成",
+            "message": "批量删除完成",
             "success_count": success_count,
-            "failed_paths": failed_paths
+            "success_paths": success_paths,
+            "failed_paths": failed_paths,
+            "index_mutation_queued": success_count > 0,
         }
         
     except HTTPException:
@@ -9611,11 +9617,19 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
         
         if not paths:
             raise HTTPException(status_code=400, detail="路径列表不能为空")
-        
-        # 验证路径
+
+        manager = get_library_manager()
+        request_library = manager.get_library_definition(library_id) if library_id else None
+
+        # 验证路径。远程库路径由 manager.rename/FileStation 负责校验，本地库仍先做快速存在性检查。
         for path in paths:
-            if not os.path.exists(path):
-                raise HTTPException(status_code=404, detail=f"路径不存在：{path}")
+            raw_path = str(path or "").strip()
+            item_library = request_library
+            if item_library is None:
+                item_library = manager.find_local_library_for_path(raw_path)
+            if not item_library or item_library.type != "synology_filestation":
+                if not os.path.exists(raw_path):
+                    raise HTTPException(status_code=404, detail=f"路径不存在：{raw_path}")
         
         # 创建任务 ID
         import uuid
@@ -9629,14 +9643,25 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
             from ..core.activity_log_service import log_api_rename_action, log_batch_api_rename_result
             
             results = []
+            manager = get_library_manager()
+            request_library = manager.get_library_definition(library_id) if library_id else None
+            rename_plans_by_library: dict[str, dict[str, Any]] = {}
+
+            def _plan_library(path_value: str):
+                if request_library is not None:
+                    return request_library
+                return manager.find_local_library_for_path(path_value)
+
             for path in paths:
                 path = str(path or "").strip()
+                item_library = _plan_library(path)
+                item_is_remote = bool(item_library and item_library.type == "synology_filestation")
                 child_rjcode = ""
-                old_name = os.path.basename(path) if path else ""
+                old_name = str(PurePosixPath(path).name) if item_is_remote else (os.path.basename(path) if path else "")
                 new_name = ""
                 try:
                     # 提取 RJ 号
-                    rj_match = re.search(r'[RVB]J\d{6,8}', os.path.basename(path), re.IGNORECASE)
+                    rj_match = re.search(r'[RVB]J\d{6,8}', old_name, re.IGNORECASE)
                     if not rj_match:
                         log_api_rename_action(
                             action="batch_api_rename_item",
@@ -9651,6 +9676,22 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                             "path": path,
                             "success": False,
                             "error": "无法提取 RJ 号"
+                        })
+                        continue
+                    if item_library is None:
+                        log_api_rename_action(
+                            action="batch_api_rename_item",
+                            success=False,
+                            source_path=path,
+                            old_name=old_name,
+                            batch_id=batch_id,
+                            library_id=str(library_id or "") or None,
+                            error="无法匹配库存库",
+                        )
+                        results.append({
+                            "path": path,
+                            "success": False,
+                            "error": "无法匹配库存库"
                         })
                         continue
                     
@@ -9683,11 +9724,15 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                             return name
                         new_name = f"{rjcode} {sanitize_filename(work_name)}"
                     
-                    # 执行重命名
-                    parent_dir = os.path.dirname(path)
-                    new_path = os.path.join(parent_dir, new_name)
+                    # 只生成计划；真实重命名按 library 聚合后一次 manager.batch_rename()。
+                    if item_is_remote:
+                        parent_dir = str(PurePosixPath(path).parent)
+                        new_path = str(PurePosixPath(parent_dir) / new_name)
+                    else:
+                        parent_dir = os.path.dirname(path)
+                        new_path = os.path.join(parent_dir, new_name)
                     
-                    if os.path.exists(new_path) and new_path != path:
+                    if not item_is_remote and os.path.exists(new_path) and new_path != path:
                         log_api_rename_action(
                             action="batch_api_rename_item",
                             success=False,
@@ -9724,24 +9769,19 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                             "new_name": new_name
                         })
                     else:
-                        os.rename(path, new_path)
-                        log_api_rename_action(
-                            action="batch_api_rename_item",
-                            success=True,
-                            source_path=path,
-                            new_path=new_path,
-                            old_name=old_name,
-                            new_name=new_name,
-                            rjcode=child_rjcode or None,
-                            batch_id=batch_id,
-                            library_id=str(library_id or "") or None,
+                        bucket = rename_plans_by_library.setdefault(
+                            item_library.id,
+                            {"library": item_library, "items": [], "meta": {}},
                         )
-                        results.append({
+                        index = len(bucket["items"])
+                        bucket["items"].append({"index": index, "path": path, "new_name": new_name})
+                        bucket["meta"][index] = {
                             "path": path,
-                            "success": True,
                             "new_path": new_path,
-                            "new_name": new_name
-                        })
+                            "old_name": old_name,
+                            "new_name": new_name,
+                            "rjcode": child_rjcode,
+                        }
                     
                 except Exception as e:
                     logger.error(f"批量 API 重命名失败：{path}, {e}")
@@ -9764,6 +9804,70 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                         "success": False,
                         "error": str(e)
                     })
+
+            for bucket in rename_plans_by_library.values():
+                item_library = bucket["library"]
+                try:
+                    batch_result = await manager.batch_rename(item_library.id, bucket["items"])
+                except Exception as exc:
+                    for index, meta in bucket["meta"].items():
+                        log_api_rename_action(
+                            action="batch_api_rename_item",
+                            success=False,
+                            source_path=meta["path"],
+                            old_name=meta["old_name"],
+                            new_name=meta["new_name"],
+                            rjcode=meta["rjcode"] or None,
+                            batch_id=batch_id,
+                            library_id=item_library.id,
+                            error=str(exc),
+                        )
+                        results.append({"path": meta["path"], "success": False, "error": str(exc)})
+                    continue
+
+                failed_by_index = {
+                    int(item.get("index") or 0): str(item.get("error") or "重命名失败")
+                    for item in (batch_result.get("failed") or [])
+                }
+                success_indexes = {
+                    int(item.get("index") or 0): item
+                    for item in (batch_result.get("results") or [])
+                }
+                for index, meta in bucket["meta"].items():
+                    error = failed_by_index.get(index, "")
+                    if error:
+                        log_api_rename_action(
+                            action="batch_api_rename_item",
+                            success=False,
+                            source_path=meta["path"],
+                            old_name=meta["old_name"],
+                            new_name=meta["new_name"],
+                            rjcode=meta["rjcode"] or None,
+                            batch_id=batch_id,
+                            library_id=item_library.id,
+                            error=error,
+                        )
+                        results.append({"path": meta["path"], "success": False, "error": error})
+                        continue
+                    rename_result = success_indexes.get(index) or {}
+                    new_path = str(rename_result.get("new_path") or meta["new_path"])
+                    log_api_rename_action(
+                        action="batch_api_rename_item",
+                        success=True,
+                        source_path=meta["path"],
+                        new_path=new_path,
+                        old_name=meta["old_name"],
+                        new_name=meta["new_name"],
+                        rjcode=meta["rjcode"] or None,
+                        batch_id=batch_id,
+                        library_id=item_library.id,
+                    )
+                    results.append({
+                        "path": meta["path"],
+                        "success": True,
+                        "new_path": new_path,
+                        "new_name": meta["new_name"],
+                    })
             
             # 保存结果（可选：保存到文件或数据库）
             logger.info(f"批量 API重命名完成：batch_id={batch_id}, success={sum(1 for r in results if r['success'])}/{len(results)}")
@@ -9778,13 +9882,20 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                 )
             except Exception:
                 logger.debug("[操作记录] 批量 API 重命名汇总记录失败", exc_info=True)
+            return results
         
-        background_tasks.add_task(process_batch)
+        results = await process_batch()
+        success_count = sum(1 for item in results if item.get("success"))
+        failed_count = sum(1 for item in results if not item.get("success"))
         
         return {
             "batch_id": batch_id,
-            "message": f"已创建批量重命名任务，共 {len(paths)} 项",
-            "total_count": len(paths)
+            "message": f"批量重命名完成，共 {len(paths)} 项",
+            "total_count": len(paths),
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "results": results,
+            "failed": [item for item in results if not item.get("success")],
         }
         
     except HTTPException:

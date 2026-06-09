@@ -294,6 +294,113 @@ def test_cross_library_move_copies_index_snapshot_without_rescan(isolated_index,
     assert os.path.normcase(moved_file.absolute_path) == os.path.normcase(str(new_dir / "RJ00000021_track1.mp3"))
 
 
+def test_move_many_rewrites_multiple_same_library_subtrees_in_one_call(isolated_index):
+    """批量 rename/move 入口要一次提交多个同库前缀改写。"""
+    service: LibraryIndexService = isolated_index["service"]
+    store: SnapshotStore = isolated_index["store"]
+    library_root: Path = isolated_index["library_root"]
+    library_id = "lib_move_many_same"
+
+    _mark_index_ready(store, library_id)
+    old_a = _create_rj_dir(library_root, "RJ00000022")
+    old_b = _create_rj_dir(library_root, "RJ00000023")
+    service.upsert_subtree_local(library_id, str(library_root), str(old_a))
+    service.upsert_subtree_local(library_id, str(library_root), str(old_b))
+    target_parent = library_root / "批量移动"
+    target_parent.mkdir()
+    new_a = target_parent / old_a.name
+    new_b = target_parent / old_b.name
+    old_a.rename(new_a)
+    old_b.rename(new_b)
+
+    old_rel_a = os.path.relpath(str(old_a), str(library_root)).replace("\\", "/")
+    old_rel_b = os.path.relpath(str(old_b), str(library_root)).replace("\\", "/")
+    new_rel_a = os.path.relpath(str(new_a), str(library_root)).replace("\\", "/")
+    new_rel_b = os.path.relpath(str(new_b), str(library_root)).replace("\\", "/")
+
+    moved = service.handle_self_mutation_move_many([
+        {
+            "source_library_id": library_id,
+            "target_library_id": library_id,
+            "old_relative_path": old_rel_a,
+            "new_relative_path": new_rel_a,
+            "old_absolute_path": str(old_a),
+            "new_absolute_path": str(new_a),
+        },
+        {
+            "source_library_id": library_id,
+            "target_library_id": library_id,
+            "old_relative_path": old_rel_b,
+            "new_relative_path": new_rel_b,
+            "old_absolute_path": str(old_b),
+            "new_absolute_path": str(new_b),
+        },
+    ])
+
+    assert moved[0] >= 2
+    assert moved[1] >= 2
+    assert store.get_entry(library_id, old_rel_a) is None
+    assert store.get_entry(library_id, old_rel_b) is None
+    assert store.get_entry(library_id, new_rel_a) is not None
+    assert store.get_entry(library_id, new_rel_b) is not None
+
+
+def test_move_many_copies_multiple_cross_library_subtrees(isolated_index, tmp_path):
+    """跨库批量移动应按库对分组，并返回每个 move 的命中数。"""
+    service: LibraryIndexService = isolated_index["service"]
+    store: SnapshotStore = isolated_index["store"]
+    src_root: Path = isolated_index["library_root"]
+    dest_root = tmp_path / "library_dest_many"
+    dest_root.mkdir()
+    src_id = "lib_move_many_src"
+    dest_id = "lib_move_many_dest"
+    _mark_index_ready(store, src_id)
+    _mark_index_ready(store, dest_id)
+
+    old_a = _create_rj_dir(src_root, "RJ00000024")
+    old_b = _create_rj_dir(src_root, "RJ00000025")
+    service.upsert_subtree_local(src_id, str(src_root), str(old_a))
+    service.upsert_subtree_local(src_id, str(src_root), str(old_b))
+
+    target_parent = dest_root / "跨库"
+    target_parent.mkdir()
+    new_a = target_parent / old_a.name
+    new_b = target_parent / old_b.name
+    old_a.rename(new_a)
+    old_b.rename(new_b)
+
+    old_rel_a = os.path.relpath(str(old_a), str(src_root)).replace("\\", "/")
+    old_rel_b = os.path.relpath(str(old_b), str(src_root)).replace("\\", "/")
+    new_rel_a = os.path.relpath(str(new_a), str(dest_root)).replace("\\", "/")
+    new_rel_b = os.path.relpath(str(new_b), str(dest_root)).replace("\\", "/")
+
+    moved = service.handle_self_mutation_move_many([
+        {
+            "source_library_id": src_id,
+            "target_library_id": dest_id,
+            "old_relative_path": old_rel_a,
+            "new_relative_path": new_rel_a,
+            "old_absolute_path": str(old_a),
+            "new_absolute_path": str(new_a),
+        },
+        {
+            "source_library_id": src_id,
+            "target_library_id": dest_id,
+            "old_relative_path": old_rel_b,
+            "new_relative_path": new_rel_b,
+            "old_absolute_path": str(old_b),
+            "new_absolute_path": str(new_b),
+        },
+    ])
+
+    assert moved[0] >= 2
+    assert moved[1] >= 2
+    assert service.find_by_rjcode("RJ00000024", src_id) == []
+    assert service.find_by_rjcode("RJ00000025", src_id) == []
+    assert store.get_entry(dest_id, new_rel_a) is not None
+    assert store.get_entry(dest_id, new_rel_b) is not None
+
+
 # ---------- Case 6：非法 UTF-8 文件名不能拖垮索引 ----------
 
 def test_snapshot_store_escapes_surrogate_paths_before_sqlite_write(isolated_index):

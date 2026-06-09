@@ -818,11 +818,8 @@ class LinkedSubtitleImportService:
         try:
             if not subtitle_directory_absolute_path:
                 return
-            self.library_manager._notify_index_self_mutation_delete(
-                library, subtitle_directory_absolute_path,
-            )
-            self.library_manager._notify_index_self_mutation_upsert_subtree(
-                library, subtitle_directory_absolute_path,
+            self.library_manager._enqueue_index_replace_subtree_many(
+                library, [subtitle_directory_absolute_path],
             )
         except Exception:
             logger.debug(

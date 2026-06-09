@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from app.config.settings import LibraryConfigItem, StorageConfig
@@ -65,3 +66,58 @@ def test_library_browser_endpoints_support_multi_library(client, monkeypatch, tm
     stats_response = client.get("/api/library/browser/stats", params={"force_refresh": "true"})
     assert stats_response.status_code == 200
     assert "all_libraries" in stats_response.json()
+
+
+def test_local_batch_rename_keeps_request_index_and_remaps_child_paths(monkeypatch, tmp_path):
+    library_root = tmp_path / "library"
+    parent = library_root / "old"
+    parent.mkdir(parents=True)
+    child = parent / "track.wav"
+    child.write_bytes(b"demo")
+
+    manager = object.__new__(library_manager_module.LibraryManager)
+    monkeypatch.setattr(manager, "_assert_local_path_in_library", lambda _library, _path: None)
+    monkeypatch.setattr(manager, "_invalidate_local_search_cache", lambda _library_id: None)
+    moved_items = []
+    monkeypatch.setattr(
+        manager,
+        "_notify_index_self_mutation_move_batch",
+        lambda _source_library, _target_library, items: moved_items.extend(items),
+    )
+    monkeypatch.setattr(library_manager_module, "_stats_log_file_path", lambda: str(tmp_path / "stats.log"))
+
+    library = library_manager_module.LibraryDefinition(
+        id="local-a",
+        name="本地 A",
+        type="local",
+        path=str(library_root),
+        enabled=True,
+    )
+
+    result = manager._local_batch_rename(library, [
+        {"index": 3, "path": str(parent), "new_name": "new"},
+        {"index": 4, "path": str(child), "new_name": "renamed.wav"},
+    ])
+
+    assert result["success_count"] == 2
+    assert result["failed"] == []
+    assert [item["index"] for item in result["results"]] == [3, 4]
+    assert result["results"][1]["source_path"] == str(child)
+    assert (library_root / "new" / "renamed.wav").exists()
+    normalized_moves = [
+        {
+            "source": os.path.normcase(os.path.normpath(item["source"])),
+            "destination": os.path.normcase(os.path.normpath(item["destination"])),
+        }
+        for item in moved_items
+    ]
+    assert normalized_moves == [
+        {
+            "source": os.path.normcase(os.path.normpath(str(parent))),
+            "destination": os.path.normcase(os.path.normpath(str(library_root / "new"))),
+        },
+        {
+            "source": os.path.normcase(os.path.normpath(str(library_root / "new" / "track.wav"))),
+            "destination": os.path.normcase(os.path.normpath(str(library_root / "new" / "renamed.wav"))),
+        },
+    ]

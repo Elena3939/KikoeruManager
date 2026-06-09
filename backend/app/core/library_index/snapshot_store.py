@@ -515,8 +515,9 @@ class SnapshotStore:
             indexed_at=indexed_at,
         )
 
-    def move_subtree_same_library(
+    def _move_subtree_same_library_in_session(
         self,
+        db: Session,
         library_id: str,
         *,
         old_relative_path: str,
@@ -524,7 +525,6 @@ class SnapshotStore:
         old_absolute_path: str,
         new_absolute_path: str,
     ) -> int:
-        """同库移动索引 fast-path：单条 UPDATE 改写子树路径，不扫磁盘。"""
         old_rel = self._normalize_relative_path(old_relative_path)
         new_rel = self._normalize_relative_path(new_relative_path)
         if not old_rel or not new_rel or old_rel == new_rel:
@@ -538,106 +538,149 @@ class SnapshotStore:
         new_name = self._relative_name(new_rel)
         depth_delta = self._relative_depth(new_rel) - self._relative_depth(old_rel)
         now = _now_ms()
-        with self._session() as db:
-            root_row = (
-                db.query(LibraryIndexEntry)
-                .filter(
-                    LibraryIndexEntry.library_id == library_id,
-                    LibraryIndexEntry.relative_path == old_rel,
-                )
-                .first()
+        root_row = (
+            db.query(LibraryIndexEntry)
+            .filter(
+                LibraryIndexEntry.library_id == library_id,
+                LibraryIndexEntry.relative_path == old_rel,
             )
-            if root_row is None:
-                return 0
-            old_size, old_folders = self._row_stats(root_row)
-            moved_root = self._transform_subtree_entry(
-                self._row_to_entry(root_row),
-                target_library_id=library_id,
-                old_relative=old_rel,
-                new_relative=new_rel,
-                old_absolute=old_abs,
-                new_absolute=new_abs,
-                depth_delta=depth_delta,
-                indexed_at=now,
-            )
-            new_size, new_folders = self._entry_stats(moved_root)
+            .first()
+        )
+        if root_row is None:
+            return 0
+        old_size, old_folders = self._row_stats(root_row)
+        moved_root = self._transform_subtree_entry(
+            self._row_to_entry(root_row),
+            target_library_id=library_id,
+            old_relative=old_rel,
+            new_relative=new_rel,
+            old_absolute=old_abs,
+            new_absolute=new_abs,
+            depth_delta=depth_delta,
+            indexed_at=now,
+        )
+        new_size, new_folders = self._entry_stats(moved_root)
 
-            deleted, target_size, target_folders, target_entries = self._delete_subtree_in_session(
+        deleted, target_size, target_folders, target_entries = self._delete_subtree_in_session(
+            db,
+            library_id,
+            new_rel,
+        )
+
+        result = db.execute(
+            text(
+                """
+                UPDATE library_index_entries
+                   SET relative_path = CASE
+                           WHEN relative_path = :old_rel THEN :new_rel
+                           ELSE :new_rel || substr(relative_path, :old_rel_suffix_start)
+                       END,
+                       absolute_path = CASE
+                           WHEN absolute_path = :old_abs THEN :new_abs
+                           ELSE :new_abs || substr(absolute_path, :old_abs_suffix_start)
+                       END,
+                       parent_path = CASE
+                           WHEN relative_path = :old_rel THEN :new_parent
+                           WHEN parent_path = :old_rel THEN :new_rel
+                           WHEN parent_path LIKE :old_child_like ESCAPE '\\'
+                               THEN :new_rel || substr(parent_path, :old_rel_suffix_start)
+                           ELSE parent_path
+                       END,
+                       name = CASE
+                           WHEN relative_path = :old_rel THEN :new_name
+                           ELSE name
+                       END,
+                       depth = CASE
+                           WHEN depth IS NULL THEN NULL
+                           ELSE depth + :depth_delta
+                       END,
+                       indexed_at = :indexed_at
+                 WHERE library_id = :library_id
+                   AND (
+                       relative_path = :old_rel
+                       OR relative_path LIKE :old_child_like ESCAPE '\\'
+                   )
+                """
+            ),
+            {
+                "library_id": library_id,
+                "old_rel": old_rel,
+                "new_rel": new_rel,
+                "old_abs": old_abs,
+                "new_abs": new_abs,
+                "new_parent": new_parent,
+                "new_name": new_name,
+                "old_child_like": self._subtree_like_pattern(old_rel),
+                "old_rel_suffix_start": len(old_rel) + 1,
+                "old_abs_suffix_start": len(old_abs) + 1,
+                "depth_delta": depth_delta,
+                "indexed_at": now,
+            },
+        )
+        moved = int(result.rowcount or 0)
+        if moved:
+            self._apply_status_delta(
                 db,
                 library_id,
+                size_delta=-target_size + (new_size - old_size),
+                folder_delta=-target_folders + (new_folders - old_folders),
+                entry_delta=-target_entries,
+            )
+        elif deleted:
+            logger.warning(
+                "[索引] 同库移动 fast-path 未命中旧子树，但已删除目标旧索引 library=%s old=%s new=%s",
+                library_id,
+                old_rel,
                 new_rel,
             )
+        return moved
 
-            result = db.execute(
-                text(
-                    """
-                    UPDATE library_index_entries
-                       SET relative_path = CASE
-                               WHEN relative_path = :old_rel THEN :new_rel
-                               ELSE :new_rel || substr(relative_path, :old_rel_suffix_start)
-                           END,
-                           absolute_path = CASE
-                               WHEN absolute_path = :old_abs THEN :new_abs
-                               ELSE :new_abs || substr(absolute_path, :old_abs_suffix_start)
-                           END,
-                           parent_path = CASE
-                               WHEN relative_path = :old_rel THEN :new_parent
-                               WHEN parent_path = :old_rel THEN :new_rel
-                               WHEN parent_path LIKE :old_child_like ESCAPE '\\'
-                                   THEN :new_rel || substr(parent_path, :old_rel_suffix_start)
-                               ELSE parent_path
-                           END,
-                           name = CASE
-                               WHEN relative_path = :old_rel THEN :new_name
-                               ELSE name
-                           END,
-                           depth = CASE
-                               WHEN depth IS NULL THEN NULL
-                               ELSE depth + :depth_delta
-                           END,
-                           indexed_at = :indexed_at
-                     WHERE library_id = :library_id
-                       AND (
-                           relative_path = :old_rel
-                           OR relative_path LIKE :old_child_like ESCAPE '\\'
-                       )
-                    """
-                ),
-                {
-                    "library_id": library_id,
-                    "old_rel": old_rel,
-                    "new_rel": new_rel,
-                    "old_abs": old_abs,
-                    "new_abs": new_abs,
-                    "new_parent": new_parent,
-                    "new_name": new_name,
-                    "old_child_like": self._subtree_like_pattern(old_rel),
-                    "old_rel_suffix_start": len(old_rel) + 1,
-                    "old_abs_suffix_start": len(old_abs) + 1,
-                    "depth_delta": depth_delta,
-                    "indexed_at": now,
-                },
+    def move_subtree_same_library(
+        self,
+        library_id: str,
+        *,
+        old_relative_path: str,
+        new_relative_path: str,
+        old_absolute_path: str,
+        new_absolute_path: str,
+    ) -> int:
+        """同库移动索引 fast-path：单条 UPDATE 改写子树路径，不扫磁盘。"""
+        with self._session() as db:
+            return self._move_subtree_same_library_in_session(
+                db,
+                library_id,
+                old_relative_path=old_relative_path,
+                new_relative_path=new_relative_path,
+                old_absolute_path=old_absolute_path,
+                new_absolute_path=new_absolute_path,
             )
-            moved = int(result.rowcount or 0)
-            if moved:
-                self._apply_status_delta(
+
+    def move_subtrees_same_library(
+        self,
+        library_id: str,
+        moves: Iterable[dict[str, str]],
+    ) -> list[int]:
+        """同库批量移动索引 fast-path：所有前缀改写放在一个事务里。"""
+        items = list(moves or [])
+        if not items:
+            return []
+        results: list[int] = []
+        with self._session() as db:
+            for item in items:
+                moved = self._move_subtree_same_library_in_session(
                     db,
                     library_id,
-                    size_delta=-target_size + (new_size - old_size),
-                    folder_delta=-target_folders + (new_folders - old_folders),
-                    entry_delta=-target_entries,
+                    old_relative_path=str(item.get("old_relative_path") or ""),
+                    new_relative_path=str(item.get("new_relative_path") or ""),
+                    old_absolute_path=str(item.get("old_absolute_path") or ""),
+                    new_absolute_path=str(item.get("new_absolute_path") or ""),
                 )
-            elif deleted:
-                logger.warning(
-                    "[索引] 同库移动 fast-path 未命中旧子树，但已删除目标旧索引 library=%s old=%s new=%s",
-                    library_id,
-                    old_rel,
-                    new_rel,
-                )
-            return moved
+                results.append(moved)
+        return results
 
-    def move_subtree_between_libraries(
+    def _move_subtree_between_libraries_in_session(
         self,
+        db: Session,
         source_library_id: str,
         target_library_id: str,
         *,
@@ -645,9 +688,7 @@ class SnapshotStore:
         new_relative_path: str,
         old_absolute_path: str,
         new_absolute_path: str,
-        chunk_size: int = 500,
     ) -> int:
-        """跨库移动索引 fast-path：数据库内 INSERT...SELECT 搬迁，不扫磁盘。"""
         old_rel = self._normalize_relative_path(old_relative_path)
         new_rel = self._normalize_relative_path(new_relative_path)
         if not old_rel or not new_rel:
@@ -661,118 +702,165 @@ class SnapshotStore:
         now = _now_ms()
         new_parent = self._relative_parent(new_rel)
         new_name = self._relative_name(new_rel)
-        with self._session() as db:
-            source_q = self._subtree_query(db, source_library_id, old_rel)
-            source_size, _source_folders, source_entries = self._query_stats_delta(source_q)
-            if not source_entries:
-                return 0
+        source_q = self._subtree_query(db, source_library_id, old_rel)
+        source_size, _source_folders, source_entries = self._query_stats_delta(source_q)
+        if not source_entries:
+            return 0
 
-            source_root = (
-                db.query(LibraryIndexEntry.entry_type)
-                .filter(
-                    LibraryIndexEntry.library_id == source_library_id,
-                    LibraryIndexEntry.relative_path == old_rel,
+        source_root = (
+            db.query(LibraryIndexEntry.entry_type)
+            .filter(
+                LibraryIndexEntry.library_id == source_library_id,
+                LibraryIndexEntry.relative_path == old_rel,
+            )
+            .first()
+        )
+        inserted_top_folders = (
+            1
+            if source_root is not None
+            and source_root[0] == 'dir'
+            and new_parent == ''
+            else 0
+        )
+
+        _, target_size, target_folders, target_entries = self._delete_subtree_in_session(
+            db,
+            target_library_id,
+            new_rel,
+        )
+
+        insert_result = db.execute(
+            text(
+                """
+                INSERT INTO library_index_entries (
+                    library_id,
+                    entry_type,
+                    relative_path,
+                    absolute_path,
+                    name,
+                    rjcode,
+                    parent_path,
+                    size,
+                    file_count,
+                    mtime,
+                    depth,
+                    indexed_at
                 )
-                .first()
-            )
-            inserted_top_folders = (
-                1
-                if source_root is not None
-                and source_root[0] == 'dir'
-                and new_parent == ''
-                else 0
-            )
+                SELECT
+                    :target_library_id,
+                    entry_type,
+                    CASE
+                        WHEN relative_path = :old_rel THEN :new_rel
+                        ELSE :new_rel || substr(relative_path, :old_rel_suffix_start)
+                    END,
+                    CASE
+                        WHEN absolute_path = :old_abs THEN :new_abs
+                        ELSE :new_abs || substr(absolute_path, :old_abs_suffix_start)
+                    END,
+                    CASE
+                        WHEN relative_path = :old_rel THEN :new_name
+                        ELSE name
+                    END,
+                    rjcode,
+                    CASE
+                        WHEN relative_path = :old_rel THEN :new_parent
+                        WHEN parent_path = :old_rel THEN :new_rel
+                        WHEN parent_path LIKE :old_child_like ESCAPE '\\'
+                            THEN :new_rel || substr(parent_path, :old_rel_suffix_start)
+                        ELSE parent_path
+                    END,
+                    size,
+                    file_count,
+                    mtime,
+                    CASE
+                        WHEN depth IS NULL THEN NULL
+                        ELSE depth + :depth_delta
+                    END,
+                    :indexed_at
+                FROM library_index_entries
+                WHERE library_id = :source_library_id
+                  AND (
+                      relative_path = :old_rel
+                      OR relative_path LIKE :old_child_like ESCAPE '\\'
+                  )
+                """
+            ),
+            {
+                "source_library_id": source_library_id,
+                "target_library_id": target_library_id,
+                "old_rel": old_rel,
+                "new_rel": new_rel,
+                "old_abs": old_abs,
+                "new_abs": new_abs,
+                "new_parent": new_parent,
+                "new_name": new_name,
+                "old_child_like": self._subtree_like_pattern(old_rel),
+                "old_rel_suffix_start": len(old_rel) + 1,
+                "old_abs_suffix_start": len(old_abs) + 1,
+                "depth_delta": depth_delta,
+                "indexed_at": now,
+            },
+        )
+        inserted = int(insert_result.rowcount or source_entries)
 
-            _, target_size, target_folders, target_entries = self._delete_subtree_in_session(
+        self._delete_subtree_in_session(db, source_library_id, old_rel)
+
+        self._apply_status_delta(
+            db,
+            target_library_id,
+            size_delta=-target_size + source_size,
+            folder_delta=-target_folders + inserted_top_folders,
+            entry_delta=-target_entries + inserted,
+        )
+        return inserted
+
+    def move_subtree_between_libraries(
+        self,
+        source_library_id: str,
+        target_library_id: str,
+        *,
+        old_relative_path: str,
+        new_relative_path: str,
+        old_absolute_path: str,
+        new_absolute_path: str,
+        chunk_size: int = 500,
+    ) -> int:
+        """跨库移动索引 fast-path：数据库内 INSERT...SELECT 搬迁，不扫磁盘。"""
+        with self._session() as db:
+            return self._move_subtree_between_libraries_in_session(
                 db,
+                source_library_id,
                 target_library_id,
-                new_rel,
+                old_relative_path=old_relative_path,
+                new_relative_path=new_relative_path,
+                old_absolute_path=old_absolute_path,
+                new_absolute_path=new_absolute_path,
             )
 
-            insert_result = db.execute(
-                text(
-                    """
-                    INSERT INTO library_index_entries (
-                        library_id,
-                        entry_type,
-                        relative_path,
-                        absolute_path,
-                        name,
-                        rjcode,
-                        parent_path,
-                        size,
-                        file_count,
-                        mtime,
-                        depth,
-                        indexed_at
-                    )
-                    SELECT
-                        :target_library_id,
-                        entry_type,
-                        CASE
-                            WHEN relative_path = :old_rel THEN :new_rel
-                            ELSE :new_rel || substr(relative_path, :old_rel_suffix_start)
-                        END,
-                        CASE
-                            WHEN absolute_path = :old_abs THEN :new_abs
-                            ELSE :new_abs || substr(absolute_path, :old_abs_suffix_start)
-                        END,
-                        CASE
-                            WHEN relative_path = :old_rel THEN :new_name
-                            ELSE name
-                        END,
-                        rjcode,
-                        CASE
-                            WHEN relative_path = :old_rel THEN :new_parent
-                            WHEN parent_path = :old_rel THEN :new_rel
-                            WHEN parent_path LIKE :old_child_like ESCAPE '\\'
-                                THEN :new_rel || substr(parent_path, :old_rel_suffix_start)
-                            ELSE parent_path
-                        END,
-                        size,
-                        file_count,
-                        mtime,
-                        CASE
-                            WHEN depth IS NULL THEN NULL
-                            ELSE depth + :depth_delta
-                        END,
-                        :indexed_at
-                    FROM library_index_entries
-                    WHERE library_id = :source_library_id
-                      AND (
-                          relative_path = :old_rel
-                          OR relative_path LIKE :old_child_like ESCAPE '\\'
-                      )
-                    """
-                ),
-                {
-                    "source_library_id": source_library_id,
-                    "target_library_id": target_library_id,
-                    "old_rel": old_rel,
-                    "new_rel": new_rel,
-                    "old_abs": old_abs,
-                    "new_abs": new_abs,
-                    "new_parent": new_parent,
-                    "new_name": new_name,
-                    "old_child_like": self._subtree_like_pattern(old_rel),
-                    "old_rel_suffix_start": len(old_rel) + 1,
-                    "old_abs_suffix_start": len(old_abs) + 1,
-                    "depth_delta": depth_delta,
-                    "indexed_at": now,
-                },
-            )
-            inserted = int(insert_result.rowcount or source_entries)
-
-            self._delete_subtree_in_session(db, source_library_id, old_rel)
-
-            self._apply_status_delta(
-                db,
-                target_library_id,
-                size_delta=-target_size + source_size,
-                folder_delta=-target_folders + inserted_top_folders,
-                entry_delta=-target_entries + inserted,
-            )
-            return inserted
+    def move_subtrees_between_libraries(
+        self,
+        source_library_id: str,
+        target_library_id: str,
+        moves: Iterable[dict[str, str]],
+    ) -> list[int]:
+        """跨库批量移动索引 fast-path：所有搬迁放在一个事务里。"""
+        items = list(moves or [])
+        if not items:
+            return []
+        results: list[int] = []
+        with self._session() as db:
+            for item in items:
+                moved = self._move_subtree_between_libraries_in_session(
+                    db,
+                    source_library_id,
+                    target_library_id,
+                    old_relative_path=str(item.get("old_relative_path") or ""),
+                    new_relative_path=str(item.get("new_relative_path") or ""),
+                    old_absolute_path=str(item.get("old_absolute_path") or ""),
+                    new_absolute_path=str(item.get("new_absolute_path") or ""),
+                )
+                results.append(moved)
+        return results
 
     # ========== Entry 删除 ==========
 
