@@ -4265,10 +4265,27 @@ function getUploadBackgroundTargetLabel(task) {
 .circle-complete-visual::before {
   content: '';
   position: absolute;
-  inset: 4% -10% -4%;
+  inset: 2% -18% -10%;
   z-index: 0;
-  border-radius: 28px;
-  background: transparent;
+  border-radius: 46% 46% 42% 42%;
+  background:
+    radial-gradient(ellipse at 50% 62%, rgba(255, 255, 255, 0.76) 0%, rgba(248, 245, 255, 0.48) 34%, rgba(196, 185, 220, 0.18) 58%, rgba(196, 185, 220, 0) 78%);
+  filter: blur(18px);
+  opacity: 0.9;
+  transform: translateY(6px);
+  pointer-events: none;
+}
+
+.circle-complete-visual::after {
+  content: '';
+  position: absolute;
+  inset: 22% -4% 6%;
+  z-index: 0;
+  border-radius: 999px;
+  background:
+    radial-gradient(ellipse at 50% 70%, color-mix(in srgb, var(--circle-tag-success, #059669) 16%, transparent) 0%, transparent 62%);
+  filter: blur(26px);
+  opacity: 0.72;
   pointer-events: none;
 }
 
@@ -4349,11 +4366,36 @@ function getUploadBackgroundTargetLabel(task) {
   background: color-mix(in srgb, var(--circle-tag-success, #059669) 8%, transparent);
 }
 
+:global(html.kikoerumanager-dark .circle-page .circle-complete-state),
+:global(body.kikoerumanager-dark .circle-page .circle-complete-state) {
+  min-height: 180px;
+  padding: 32px 16px;
+}
+
+:global(html.kikoerumanager-dark .circle-page .circle-complete-visual),
+:global(body.kikoerumanager-dark .circle-page .circle-complete-visual) {
+  display: none;
+}
+
 :global(html.kikoerumanager-dark .circle-page .circle-complete-visual::before),
 :global(body.kikoerumanager-dark .circle-page .circle-complete-visual::before) {
-  background:
-    radial-gradient(ellipse at 50% 58%, rgba(255, 255, 255, 0.90) 0%, rgba(246, 242, 255, 0.76) 42%, rgba(246, 242, 255, 0.34) 68%, rgba(246, 242, 255, 0.00) 86%);
-  filter: blur(10px);
+  display: none;
+}
+
+:global(html.kikoerumanager-dark .circle-page .circle-complete-visual::after),
+:global(body.kikoerumanager-dark .circle-page .circle-complete-visual::after) {
+  display: none;
+}
+
+:global(html.kikoerumanager-dark .circle-page .circle-complete-confetti),
+:global(body.kikoerumanager-dark .circle-page .circle-complete-confetti) {
+  display: none;
+}
+
+:global(html.kikoerumanager-dark .circle-page .circle-complete-image),
+:global(body.kikoerumanager-dark .circle-page .circle-complete-image) {
+  display: none;
+  filter: none;
 }
 
 /* 页头现在走共享组件 components/common/AppPageHeader.vue，这里只保留原 circle-hero 外边距与右侧 slot 内嵌样式 */
@@ -4392,10 +4434,13 @@ function getUploadBackgroundTargetLabel(task) {
 }
 .hero-search-input :deep(.el-input__inner) {
   height: 26px;
-  font-size: 11.5px;
+  font-size: 12px !important;
+  font-weight: 600 !important;
   color: var(--circle-text-strong, rgb(30 41 59));
 }
 .hero-search-input :deep(.el-input__inner::placeholder) {
+  font-size: 12px !important;
+  font-weight: 600 !important;
   color: var(--circle-placeholder, rgb(148 163 184));
 }
 .hero-btn {
@@ -4404,8 +4449,9 @@ function getUploadBackgroundTargetLabel(task) {
   padding: 0 10px;
   margin: 0 !important;
   border-radius: 8px;
-  font-size: 11.5px;
-  font-weight: 500;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
@@ -4489,9 +4535,9 @@ function getUploadBackgroundTargetLabel(task) {
   border-radius: 999px;
   background: var(--circle-surface, #ffffff);
   color: var(--circle-text, #334155);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -4879,6 +4925,14 @@ function getUploadBackgroundTargetLabel(task) {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+}
+.toolbar-actions .batch-action-button {
+  min-width: 96px;
+  height: 32px;
+  padding: 0 14px;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
 }
 .metric-pill {
   display: inline-flex;
@@ -5395,7 +5449,7 @@ function getUploadBackgroundTargetLabel(task) {
   min-width: 0;
 }
 .circle-list-item.has-new-work .circle-list-header {
-  padding-left: 45px;
+  padding-left: 0;
 }
 .circle-list-name {
   display: inline-flex;
@@ -5420,26 +5474,51 @@ function getUploadBackgroundTargetLabel(task) {
 }
 .circle-corner-new-badge {
   position: absolute;
-  top: 8px;
-  left: 10px;
+  top: -9px;
+  left: 9px;
+  z-index: 3;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 17px;
-  padding: 0 7px;
+  height: 18px;
+  padding: 0 9px;
   border-radius: 999px;
   font-size: 9px;
   font-weight: 800;
   line-height: 1;
-  letter-spacing: .06em;
-  color: var(--circle-tag-success, #047857);
+  letter-spacing: .08em;
+  color: #fff;
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--circle-tag-success-soft, #ecfdf5) 92%, #ffffff) 0%, color-mix(in srgb, var(--circle-tag-success, #059669) 9%, #ffffff) 100%);
-  border: 1px solid color-mix(in srgb, var(--circle-tag-success, #059669) 30%, transparent);
+    linear-gradient(135deg, #34d399 0%, var(--circle-tag-success, #059669) 72%, #047857 100%);
+  border: 1px solid color-mix(in srgb, var(--circle-tag-success, #059669) 42%, #ffffff);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 6px 14px color-mix(in srgb, var(--circle-tag-success, #059669) 16%, transparent);
+    inset 0 1px 0 rgba(255, 255, 255, 0.38),
+    0 8px 16px color-mix(in srgb, var(--circle-tag-success, #059669) 20%, transparent);
   pointer-events: none;
+}
+.circle-corner-new-badge::before {
+  content: '';
+  position: absolute;
+  left: -7px;
+  top: 7px;
+  width: 10px;
+  height: 19px;
+  border-radius: 8px 0 0 8px;
+  background: linear-gradient(180deg, #10b981 0%, #047857 100%);
+  transform: skewY(-17deg);
+  z-index: -1;
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.2);
+}
+.circle-corner-new-badge::after {
+  content: '';
+  position: absolute;
+  left: 1px;
+  bottom: -5px;
+  width: 0;
+  height: 0;
+  border-top: 5px solid #047857;
+  border-left: 7px solid transparent;
+  filter: drop-shadow(0 2px 2px rgba(5, 150, 105, 0.14));
 }
 .circle-list-id {
   font-size: 11px;
