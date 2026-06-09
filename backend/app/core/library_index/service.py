@@ -468,6 +468,46 @@ class LibraryIndexService:
             new_absolute_path=new_absolute_path,
         )
 
+    def handle_self_mutation_move_many(
+        self,
+        moves: list[dict[str, str]],
+    ) -> list[int]:
+        """批量移动/重命名索引 fast-path，按库组合并到尽量少的事务。"""
+        if not moves:
+            return []
+
+        results = [0 for _ in moves]
+        same_library_groups: dict[str, list[dict[str, str]]] = {}
+        cross_library_groups: dict[tuple[str, str], list[dict[str, str]]] = {}
+
+        for index, raw in enumerate(moves):
+            item = dict(raw or {})
+            item["_index"] = index
+            source_library_id = str(item.get("source_library_id") or "").strip()
+            target_library_id = str(item.get("target_library_id") or "").strip()
+            if not source_library_id or not target_library_id:
+                continue
+            if source_library_id == target_library_id:
+                same_library_groups.setdefault(source_library_id, []).append(item)
+            else:
+                cross_library_groups.setdefault((source_library_id, target_library_id), []).append(item)
+
+        for library_id, group in same_library_groups.items():
+            moved_counts = self._store.move_subtrees_same_library(library_id, group)
+            for item, moved in zip(group, moved_counts):
+                results[int(item["_index"])] = int(moved or 0)
+
+        for (source_library_id, target_library_id), group in cross_library_groups.items():
+            moved_counts = self._store.move_subtrees_between_libraries(
+                source_library_id,
+                target_library_id,
+                group,
+            )
+            for item, moved in zip(group, moved_counts):
+                results[int(item["_index"])] = int(moved or 0)
+
+        return results
+
     # ========== self_mutation：增量 upsert 子树 ==========
     # 业务自身写操作（解压入库 / rename / 远程上传 / 字幕落盘 / 冲突重绑等）
     # 完成后调用，把刚刚创建/落地的子树立即扫描 + bulk_upsert 到索引，

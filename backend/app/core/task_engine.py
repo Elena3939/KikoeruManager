@@ -5123,6 +5123,34 @@ class TaskEngine:
             task.update_progress(5, "准备扫描 RJ 文件夹")
             task.task_metadata['download_files'] = []
             task.task_metadata['progress_log'] = []
+            cleaned_subtitle_dir = ''
+            cleaned_library_id = library_id
+
+            def enqueue_subtitle_index_replace(subtitle_dir: str) -> None:
+                if not subtitle_dir or not library_id:
+                    return
+                try:
+                    manager = get_library_manager()
+                    library = manager.get_library_definition(library_id)
+                    manager._enqueue_index_replace_subtree_many(library, [subtitle_dir])
+                except Exception:
+                    logger.debug(
+                        "[索引] RJ 字幕抓取后 replace subtitles 索引失败 library=%s path=%s",
+                        library_id, subtitle_dir, exc_info=True,
+                    )
+
+            def enqueue_cleaned_subtitle_index_delete() -> None:
+                if not cleaned_subtitle_dir or not cleaned_library_id:
+                    return
+                try:
+                    manager = get_library_manager()
+                    library = manager.get_library_definition(cleaned_library_id)
+                    manager._enqueue_index_delete_many(library, [cleaned_subtitle_dir])
+                except Exception:
+                    logger.debug(
+                        "[索引] RJ 字幕强制清理后 delete subtitles 索引失败 library=%s path=%s",
+                        cleaned_library_id, cleaned_subtitle_dir, exc_info=True,
+                    )
 
             def append_progress_log(message: str, progress: Optional[int] = None, level: str = 'info'):
                 if not message:
@@ -5149,9 +5177,10 @@ class TaskEngine:
                     library_id=library_id,
                 )
                 deleted_subtitles = int(cleanup_result.get('deleted_subtitles') or 0)
+                cleaned_subtitle_dir = str(cleanup_result.get('subtitle_dir') or '')
                 task.task_metadata.update({
                     'force_rerun_deleted_subtitles': deleted_subtitles,
-                    'force_rerun_cleared_subtitle_dir': cleanup_result.get('subtitle_dir', ''),
+                    'force_rerun_cleared_subtitle_dir': cleaned_subtitle_dir,
                     'existing_subtitle_count': 0,
                     'subtitle_dir': '',
                     'written_files': [],
@@ -5285,10 +5314,12 @@ class TaskEngine:
             if not result.get('success'):
                 error_message = result.get('error', 'RJ 字幕抓取失败')
                 append_progress_log(error_message, task.progress, 'error')
+                enqueue_cleaned_subtitle_index_delete()
                 task.fail(error_message)
                 return
 
             if result.get('awaiting_manual_match'):
+                enqueue_subtitle_index_replace(str(result.get('subtitle_dir') or ''))
                 task.progress = 100
                 task.status = TaskStatus.WAITING_MANUAL
                 task.completed_at = datetime.now()
@@ -5310,6 +5341,11 @@ class TaskEngine:
             written_count = len(result.get('written_files', []))
             skipped_count = len(result.get('skipped_files', []))
             unmatched_count = len(result.get('match_result', {}).get('unmatched_audio', []))
+            subtitle_dir = str(result.get('subtitle_dir') or '')
+            if subtitle_dir:
+                enqueue_subtitle_index_replace(subtitle_dir)
+            else:
+                enqueue_cleaned_subtitle_index_delete()
             task.update_progress(100, f"完成，写入 {written_count} 个字幕")
             task.complete()
             if result.get('partial'):
@@ -5318,6 +5354,10 @@ class TaskEngine:
 
         except Exception as e:
             logger.error(f"[{rjcode}] RJ 字幕抓取任务失败: {e}", exc_info=True)
+            try:
+                enqueue_cleaned_subtitle_index_delete()
+            except Exception:
+                logger.debug("[索引] RJ 字幕异常清理后 delete subtitles 索引兜底失败", exc_info=True)
             task.fail(str(e))
 
     async def _process_library_folder_completion_preview(self, task: Task):

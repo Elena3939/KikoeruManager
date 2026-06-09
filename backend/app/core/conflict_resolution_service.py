@@ -1567,9 +1567,12 @@ class ConflictResolutionService:
                     library_id, exc_info=True,
                 )
                 return
+            if existing_path and os.path.abspath(existing_path) == os.path.abspath(final_path):
+                manager._enqueue_index_replace_subtree_many(library, [final_path])
+                return
             if existing_path:
-                manager._notify_index_self_mutation_delete(library, existing_path)
-            manager._notify_index_self_mutation_upsert_subtree(library, final_path)
+                manager._enqueue_index_delete_many(library, [existing_path])
+            manager._enqueue_index_upsert_subtree_many(library, [final_path])
         except Exception:
             logger.debug(
                 "[索引] 冲突解决后通知索引失败 library_id=%s final=%s",

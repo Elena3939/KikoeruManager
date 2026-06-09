@@ -519,13 +519,12 @@ class SmartClassifier:
                     or normalized_abs.startswith(conflict_root + os.sep)
                 ):
                     return  # _conflicts 不参与索引
-            if existing_path and os.path.abspath(existing_path) != os.path.abspath(normalized_final):
-                # KEEP_NEW / MERGE 的 final 路径跟 existing 不同 → 旧路径条目要清掉
-                manager._notify_index_self_mutation_delete(target_library, existing_path)
-            elif existing_path:
-                # final == existing：先把旧子树清掉，等下面 upsert 重新写一遍，避免孤儿
-                manager._notify_index_self_mutation_delete(target_library, existing_path)
-            manager._notify_index_self_mutation_upsert_subtree(target_library, normalized_final)
+            if existing_path and os.path.abspath(existing_path) == os.path.abspath(normalized_final):
+                manager._enqueue_index_replace_subtree_many(target_library, [normalized_final])
+                return
+            if existing_path:
+                manager._enqueue_index_delete_many(target_library, [existing_path])
+            manager._enqueue_index_upsert_subtree_many(target_library, [normalized_final])
         except Exception:
             logger.debug(
                 "[索引] classify 后通知索引 upsert 失败 path=%s", final_path, exc_info=True,
