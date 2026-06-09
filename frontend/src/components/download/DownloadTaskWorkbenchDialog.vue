@@ -1561,9 +1561,9 @@ function getUnifiedFileRows(task) {
 .v1-detail-section-subtitle { margin-top: 3px; color: #64748b; font-size: 11px; font-weight: 650; }
 .v1-detail-section-count { flex-shrink: 0; border-radius: 999px; border: 1px solid rgba(148, 163, 184, 0.28); background: rgba(255, 255, 255, 0.86); color: #475569; font-size: 10.5px; font-weight: 800; line-height: 20px; padding: 0 8px; }
 .v1-file-list,.v1-log-list { margin-top: 8px; }
-.v1-file-list { display: grid; gap: 6px; }
-.v1-file-row { padding: 8px 10px; border: 1px solid rgba(226, 232, 240, 0.86); border-radius: 10px; background: rgba(255, 255, 255, 0.82); }
-.v1-file-row + .v1-file-row { border-top: 1px solid rgba(226, 232, 240, 0.86); }
+.v1-file-list { display: grid; gap: 0; }
+.v1-file-row { padding: 6px 0 8px; border: 0; border-radius: 0; background: transparent; }
+.v1-file-row + .v1-file-row { border-top: 1px solid rgba(226, 232, 240, 0.78); padding-top: 8px; }
 .v1-file-row-top { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; align-items: flex-end; }
 .v1-file-row-main,.v1-file-row-side { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .v1-file-row-main { min-width: 0; flex: 1; }
@@ -1810,8 +1810,7 @@ function getUnifiedFileRows(task) {
 }
 
 :global(html.kikoerumanager-dark .v1-file-row) {
-  border-color: rgba(255, 255, 255, 0.08);
-  background: rgba(18, 18, 19, 0.72);
+  background: transparent;
 }
 
 :global(html.kikoerumanager-dark .v1-strip-track) {

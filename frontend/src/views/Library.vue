@@ -155,6 +155,8 @@
 
               :library-ids="globalSearchLibraryIds"
 
+              placeholder="搜索文件名或 RJ"
+
               @locate="onSuggestLocate"
 
               @open-overlay="onOpenSearchOverlay"
@@ -21074,8 +21076,6 @@ function statsStatusTextDisplay (stats) {
 
 .library :deep(.library-select-dd .app-dd-trigger),
 .library :deep(.lib-search-box .lib-search-input),
-.library :deep(.lib-search-box .lib-search-filter),
-.library :deep(.lib-search-box .lib-search-expand),
 .library .lib-btn-icon-tinted {
 
   border-color: var(--lib-liquid-border) !important;
@@ -21098,10 +21098,6 @@ function statsStatusTextDisplay (stats) {
 .library :deep(.library-select-dd .app-dd-trigger.is-open),
 .library :deep(.lib-search-box .lib-search-input:hover),
 .library :deep(.lib-search-box .lib-search-input:focus),
-.library :deep(.lib-search-box .lib-search-filter:hover),
-.library :deep(.lib-search-box .lib-search-filter.is-active),
-.library :deep(.lib-search-box .lib-search-filter.is-open),
-.library :deep(.lib-search-box .lib-search-expand:hover),
 .library .lib-btn-icon-tinted:hover {
 
   border-color: var(--lib-liquid-border-strong) !important;
@@ -21115,7 +21111,38 @@ function statsStatusTextDisplay (stats) {
 .library :deep(.lib-search-box .lib-search-filter),
 .library :deep(.lib-search-box .lib-search-expand) {
 
-  border: 1px solid rgba(255, 255, 255, 0.28);
+  border: 0 !important;
+
+  background: transparent !important;
+
+  box-shadow: none !important;
+
+  outline: 0 !important;
+
+  backdrop-filter: none !important;
+
+  -webkit-backdrop-filter: none !important;
+
+}
+
+.library :deep(.lib-search-box .lib-search-filter:hover),
+.library :deep(.lib-search-box .lib-search-filter.is-active),
+.library :deep(.lib-search-box .lib-search-filter.is-open),
+.library :deep(.lib-search-box .lib-search-expand:hover) {
+
+  border-color: transparent !important;
+
+  background: transparent !important;
+
+  box-shadow: none !important;
+
+  outline: 0 !important;
+
+}
+
+.library :deep(.lib-search-box .lib-search-input) {
+
+  font-size: 11px !important;
 
 }
 
@@ -21424,6 +21451,8 @@ function statsStatusTextDisplay (stats) {
 .lib-btn-icon-tinted {
 
   color: #334155;
+
+  font-size: 12px;
 
   background: var(--lib-liquid-bg);
 
@@ -21911,6 +21940,7 @@ function statsStatusTextDisplay (stats) {
   position: relative;
   padding: 4px 0;
   border-radius: 0;
+  font-size: 12px;
   background: transparent !important;
   box-shadow: none !important;
 }

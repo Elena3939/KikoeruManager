@@ -29,10 +29,43 @@
       </button>
     </header>
 
-    <!-- 搜索 -->
-    <div class="mt-3 flex-shrink-0">
+    <!-- 搜索 + 类型筛选：合成一个紧凑筛选条，减少最近归档面板的纵向占用 -->
+    <div class="dash-archive-filterbar mt-3">
       <div class="dash-archive-search">
-        <Search :size="13" :stroke-width="2.2" class="dash-archive-search-icon" />
+        <AppDropdown
+          :model-value="domainFilter"
+          :options="domainDropdownOptions"
+          class="dash-archive-search-filter-dd"
+          menu-class="dash-archive-domain-dd-menu"
+          :menu-min-width="220"
+          :show-trigger-badge="false"
+          @update:model-value="$emit('update:domainFilter', $event)"
+        >
+          <template #trigger="{ open, selected, toggle, triggerText }">
+            <button
+              type="button"
+              class="dash-archive-search-filter-trigger"
+              :class="{ 'is-open': open, 'is-filtered': domainFilter !== 'all' }"
+              :title="`归档类型：${selected?.label || triggerText}`"
+              aria-label="选择归档类型"
+              @click="toggle"
+            >
+              <Search :size="14" :stroke-width="2.25" class="dash-archive-search-filter-icon" />
+              <ChevronDown
+                :size="10"
+                :stroke-width="2.6"
+                class="dash-archive-search-filter-caret"
+                :class="{ 'is-open': open }"
+              />
+            </button>
+          </template>
+          <template #option="{ option, isActive }">
+            <span class="dash-archive-domain-option" :class="{ 'is-active': isActive }">
+              <span class="dash-archive-domain-option-label">{{ option.label }}</span>
+              <span v-if="option.count > 0" class="dash-archive-domain-option-count">{{ option.count }}</span>
+            </span>
+          </template>
+        </AppDropdown>
         <input
           class="dash-archive-search-input"
           :value="searchQuery"
@@ -50,28 +83,6 @@
           <XCircle :size="13" :stroke-width="2.2" />
         </button>
       </div>
-    </div>
-
-    <!-- 域 tabs：固定高度横向 rail，避免标签过多时撑高归档面板 -->
-    <div class="dash-archive-tab-rail mt-2">
-      <button
-        v-for="tab in tabs"
-        :key="tab.key"
-        type="button"
-        class="dash-archive-tab group"
-        :class="domainFilter === tab.key ? 'is-active' : 'is-idle'"
-        :aria-pressed="domainFilter === tab.key"
-        @click="$emit('update:domainFilter', tab.key)"
-      >
-        <span>{{ tab.label }}</span>
-        <span
-          v-if="tab.count > 0"
-          class="dash-archive-tab-count"
-          :class="domainFilter === tab.key ? 'dash-archive-tab-count--on' : 'dash-archive-tab-count--off'"
-        >
-          {{ tab.count }}
-        </span>
-      </button>
     </div>
 
     <!-- 归档列表（前端分页切片，pageSize 按容器高度动态计算） -->
@@ -206,6 +217,7 @@ import {
   XCircle,
 } from 'lucide-vue-next'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import AppDropdown from '../common/AppDropdown.vue'
 import AppEmptyState from '../common/AppEmptyState.vue'
 
 const props = defineProps({
@@ -228,6 +240,15 @@ const props = defineProps({
 defineEmits(['refresh', 'reprocess', 'change-page', 'update:searchQuery', 'update:domainFilter'])
 
 const DEFAULT_PAGE_SIZE = 6
+
+const domainDropdownOptions = computed(() =>
+  props.tabs.map((tab) => ({
+    value: tab.key,
+    label: tab.label,
+    count: Number(tab.count) || 0,
+    suffix: tab.count > 0 ? String(tab.count) : '',
+  })),
+)
 
 const panelRef = ref(null)
 const panelHeight = ref(0)
@@ -368,31 +389,109 @@ function statusIconColor(key) {
   transform: none;
 }
 
-/* 搜索框对齐列表卡片风格 */
-.dash-archive-search {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) 22px;
-  align-items: center;
-  height: 30px;
-  padding: 0 6px 0 9px;
-  border: 1px solid rgb(241 245 249);
+.dash-archive-filterbar {
+  display: block;
+  min-height: 38px;
+  padding: 3px;
+  border: 1px solid rgb(226 232 240);
   border-radius: 8px;
-  background: rgb(255 255 255);
-  box-shadow: 0 0 0 1px rgb(241 245 249) inset;
+  background: rgb(248 250 252);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.86),
+    0 1px 2px rgba(15, 23, 42, 0.03);
+  flex-shrink: 0;
   transition:
     border-color 0.3s ease,
     box-shadow 0.3s ease,
     background-color 0.3s ease;
 }
-.dash-archive-search:hover {
-  box-shadow: 0 0 0 1px rgb(226 232 240) inset;
+.dash-archive-filterbar:hover {
+  border-color: rgb(203 213 225);
+  background: rgb(255 255 255);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
 }
-.dash-archive-search:focus-within {
+.dash-archive-filterbar:focus-within {
   border-color: rgb(148 163 184);
-  box-shadow: 0 0 0 1px rgb(148 163 184) inset;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 0 0 2px rgba(148, 163, 184, 0.14);
 }
-.dash-archive-search-icon {
-  color: rgb(148 163 184);
+
+/* 搜索区内嵌在筛选条内，避免上下两个独立输入框抢空间 */
+.dash-archive-search {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) 22px;
+  align-items: center;
+  min-width: 0;
+  height: 32px;
+  padding: 0 5px 0 0;
+}
+
+.dash-archive-search-filter-dd {
+  display: block;
+  width: 30px;
+  height: 32px;
+}
+.dash-archive-search-filter-dd :deep(.app-dd-trigger-anchor) {
+  display: block;
+  width: 30px;
+  height: 32px;
+}
+.dash-archive-search-filter-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 30px;
+  margin: 1px 0 1px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: rgb(100 116 139);
+  cursor: pointer;
+  transition: color 0.2s ease, transform 0.2s ease;
+}
+.dash-archive-search-filter-trigger:hover {
+  color: rgb(30 41 59);
+  background: transparent;
+}
+.dash-archive-search-filter-trigger.is-open {
+  color: rgb(15 23 42);
+  background: transparent;
+  transform: none;
+}
+.dash-archive-search-filter-trigger.is-filtered {
+  color: rgb(30 41 59);
+}
+.dash-archive-search-filter-trigger.is-filtered::after {
+  content: '';
+  position: absolute;
+  right: 3px;
+  top: 6px;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgb(37 99 235);
+  box-shadow: 0 0 0 2px rgb(248 250 252);
+}
+.dash-archive-search-filter-trigger:active {
+  transform: scale(0.94);
+}
+.dash-archive-search-filter-icon {
+  flex-shrink: 0;
+}
+.dash-archive-search-filter-caret {
+  position: absolute;
+  right: 2px;
+  bottom: 5px;
+  color: currentColor;
+  opacity: 0.74;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.dash-archive-search-filter-caret.is-open {
+  transform: rotate(180deg);
 }
 .dash-archive-search-input {
   min-width: 0;
@@ -434,99 +533,54 @@ function statusIconColor(key) {
   transform: scale(0.96);
 }
 
-.dash-archive-tab {
+:global(.dash-archive-domain-dd-menu .app-dd-item) {
+  position: relative;
+  min-height: 34px;
+  border-radius: 9px;
+  padding: 0;
+  overflow: hidden;
+}
+:global(.dash-archive-domain-dd-menu .app-dd-item.is-active) {
+  background: transparent;
+}
+:global(.dash-archive-domain-dd-menu .dash-archive-domain-option) {
   display: inline-flex;
   align-items: center;
-  flex: 0 0 auto;
-  gap: 6px;
-  max-width: none;
-  height: 24px;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 34px;
   padding: 0 10px;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  font-size: 12px;
-  font-weight: 500;
-  font-family: inherit;
-  line-height: 22px;
-  cursor: pointer;
-  letter-spacing: 0;
-  white-space: nowrap;
-  -webkit-font-smoothing: antialiased;
-  text-rendering: geometricPrecision;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  border-radius: 9px;
+  color: rgb(51 65 85);
+  transition: background-color 0.18s ease, color 0.18s ease;
 }
-:global(#app [data-section="dashboard-archive"] .dash-archive-tab.dash-archive-tab) {
-  font-family: var(--font-body), -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 22px;
-}
-.dash-archive-tab-rail {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 5px;
-  min-height: 31px;
-  max-height: 32px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding: 3px 1px 4px;
-  scrollbar-width: none;
-}
-.dash-archive-tab-rail::-webkit-scrollbar {
-  display: none;
-}
-.dash-archive-tab.is-idle {
+:global(.dash-archive-domain-dd-menu .app-dd-item:hover .dash-archive-domain-option) {
   background: rgb(241 245 249);
-  color: rgb(71 85 105);
-  box-shadow: none;
-}
-.dash-archive-tab.is-idle:hover {
-  transform: translateY(-2px) scale(1.02);
   color: rgb(15 23 42);
-  background: rgb(226 232 240);
 }
-.dash-archive-tab.is-active {
+:global(.dash-archive-domain-dd-menu .dash-archive-domain-option.is-active) {
+  background: rgb(226 232 240);
   color: rgb(15 23 42);
-  background: rgb(226 232 240);
-  border-color: rgb(203 213 225);
-  box-shadow: none;
 }
-.dash-archive-tab.is-active:hover {
-  transform: translateY(-2px) scale(1.02);
-}
-.dash-archive-tab:active {
-  transform: scale(0.96);
-}
-
-/* count badge：紧凑跟随 label，不抢宽度 */
-.dash-archive-tab-count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  min-width: 15px;
-  height: 15px;
-  padding: 0 4px;
-  border-radius: 5px;
-  font-size: 10.5px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-  transition: color 0.2s ease, background-color 0.2s ease;
-}
-:global(#app [data-section="dashboard-archive"] .dash-archive-tab-count.dash-archive-tab-count) {
-  font-size: 10.5px;
+:global(.dash-archive-domain-dd-menu .dash-archive-domain-option-label) {
+  font-size: 13px;
   font-weight: 700;
   line-height: 1;
 }
-.dash-archive-tab-count--off {
-  color: rgb(100 116 139);
-  background: rgba(148, 163, 184, 0.22);
+:global(.dash-archive-domain-dd-menu .dash-archive-domain-option.is-active .dash-archive-domain-option-label) {
+  font-weight: 800;
 }
-.dash-archive-tab-count--on {
-  color: rgb(15 23 42);
-  background: rgba(255, 255, 255, 0.58);
+:global(.dash-archive-domain-dd-menu .dash-archive-domain-option-count) {
+  margin-left: auto;
+  color: rgb(100 116 139);
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+:global(.dash-archive-domain-dd-menu .dash-archive-domain-option.is-active .dash-archive-domain-option-count) {
+  color: rgb(30 41 59);
 }
 
 .dash-archive-domain-chip,
@@ -675,10 +729,12 @@ function statusIconColor(key) {
 /* 页码指示器 */
 .dash-archive-pager-indicator {
   display: inline-flex;
-  align-items: baseline;
-  gap: 2px;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 52px;
   height: 24px;
-  padding: 0 9px;
+  padding: 0 8px;
   border-radius: 7px;
   background: rgb(248 250 252);
   border: 1px solid rgb(241 245 249);
@@ -710,18 +766,19 @@ function statusIconColor(key) {
   font-size: 12px;
   font-weight: 700;
   color: rgb(15 23 42);
-  line-height: 1;
+  line-height: 24px;
 }
 .dash-archive-pager-divider {
-  font-size: 10px;
+  font-size: 12px;
+  font-weight: 600;
   color: rgb(203 213 225);
-  margin: 0 1px;
+  line-height: 24px;
 }
 .dash-archive-pager-total {
-  font-size: 10.5px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 700;
   color: rgb(100 116 139);
-  line-height: 1;
+  line-height: 24px;
 }
 
 .dash-archive-platform-icon {
@@ -746,16 +803,25 @@ function statusIconColor(key) {
   color: #ffffff !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search {
-  background: var(--km-dark-surface-soft) !important;
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-filterbar {
+  background: rgba(255, 255, 255, 0.045) !important;
   border-color: var(--km-dark-border) !important;
-  box-shadow: inset 0 0 0 1px var(--km-dark-border-soft) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.055),
+    0 1px 2px rgba(0, 0, 0, 0.18) !important;
   color-scheme: dark;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search:focus-within {
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-filterbar:focus-within {
   border-color: var(--km-dark-border-strong) !important;
-  box-shadow: inset 0 0 0 1px var(--km-dark-border-strong) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 0 0 2px rgba(255, 255, 255, 0.055) !important;
+}
+
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search {
+  background: transparent !important;
+  box-shadow: none !important;
 }
 
 :global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-input {
@@ -778,37 +844,68 @@ function statusIconColor(key) {
   color: var(--km-dark-text-strong) !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-tab.is-idle {
-  background: rgba(255, 255, 255, 0.06) !important;
-  border-color: rgba(255, 255, 255, 0.08) !important;
-  color: #cbd5e1 !important;
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-filter-trigger {
+  color: var(--km-dark-text-muted) !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-tab-rail {
-  scrollbar-width: none;
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-filter-trigger:hover,
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-filter-trigger.is-open {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: var(--km-dark-text-strong) !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-tab.is-idle:hover {
-  background: rgba(255, 255, 255, 0.1) !important;
-  border-color: rgba(255, 255, 255, 0.14) !important;
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-filter-trigger.is-filtered {
+  color: var(--km-dark-text-strong) !important;
+}
+
+:global(html.dark) .dashboard-archive .dash-archive-search-filter-trigger,
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-filter-trigger {
+  color: rgba(226, 232, 240, 0.78) !important;
+}
+
+:global(html.dark) .dashboard-archive .dash-archive-search-filter-trigger:hover,
+:global(html.dark) .dashboard-archive .dash-archive-search-filter-trigger.is-open,
+:global(html.dark) .dashboard-archive .dash-archive-search-filter-trigger.is-filtered,
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-filter-trigger:hover,
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-filter-trigger.is-open,
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-filter-trigger.is-filtered {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: #f8fafc !important;
+}
+
+:global(html.dark) .dashboard-archive .dash-archive-search-filter-trigger.is-filtered::after,
+:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-search-filter-trigger.is-filtered::after {
+  background: #93c5fd !important;
+  box-shadow: 0 0 0 2px rgba(24, 25, 29, 0.98) !important;
+}
+
+:global(html.dark .dash-archive-domain-dd-menu .dash-archive-domain-option),
+:global(html.kikoerumanager-dark .dash-archive-domain-dd-menu .dash-archive-domain-option) {
+  color: rgba(244, 244, 245, 0.82) !important;
+}
+
+:global(html.dark .dash-archive-domain-dd-menu .app-dd-item:hover .dash-archive-domain-option),
+:global(html.kikoerumanager-dark .dash-archive-domain-dd-menu .app-dd-item:hover .dash-archive-domain-option) {
+  background: rgba(255, 255, 255, 0.075) !important;
   color: #ffffff !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-tab.is-active {
-  background: rgba(255, 255, 255, 0.14) !important;
-  border-color: rgba(255, 255, 255, 0.2) !important;
+:global(html.dark .dash-archive-domain-dd-menu .dash-archive-domain-option.is-active),
+:global(html.kikoerumanager-dark .dash-archive-domain-dd-menu .dash-archive-domain-option.is-active) {
+  background: rgba(255, 255, 255, 0.105) !important;
   color: #ffffff !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-tab-count--off {
-  background: rgba(255, 255, 255, 0.12) !important;
-  color: #cbd5e1 !important;
+:global(html.dark .dash-archive-domain-dd-menu .dash-archive-domain-option-count),
+:global(html.kikoerumanager-dark .dash-archive-domain-dd-menu .dash-archive-domain-option-count),
+:global(html.dark .dash-archive-domain-dd-menu .dash-archive-domain-option.is-active .dash-archive-domain-option-count),
+:global(html.kikoerumanager-dark .dash-archive-domain-dd-menu .dash-archive-domain-option.is-active .dash-archive-domain-option-count) {
+  color: rgba(226, 232, 240, 0.8) !important;
 }
 
-:global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-tab-count--on {
-  background: rgba(255, 255, 255, 0.2) !important;
-  color: #ffffff !important;
-}
 
 :global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-domain-chip,
 :global(html.kikoerumanager-dark) .dashboard-archive .dash-archive-volume-chip {
