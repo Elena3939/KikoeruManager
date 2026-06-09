@@ -19,6 +19,7 @@ from urllib.parse import quote, unquote
 import aiohttp
 
 from ..config.settings import get_config, get_config_file_path
+from .log_sanitizer import sanitize_text_for_log
 from .resource_budget_service import get_resource_budget_service
 from .ttl_cache import TTLCache
 
@@ -448,6 +449,10 @@ class SynologyError(RuntimeError):
     """群晖 API 通信错误（可预期的认证/权限/参数/超时错误）。日志只打 WARNING，不打堆栈。"""
 
 
+class SynologyTransportError(SynologyError):
+    """群晖远程连接错误（DNS/TCP/TLS/超时/断连）。"""
+
+
 @dataclass
 class SynologyConfig:
     base_url: str = ""
@@ -605,6 +610,8 @@ class SynologyFileStationClient:
     def _is_transport_error(self, exc: Exception) -> bool:
         if isinstance(exc, (FileNotFoundError, PermissionError)):
             return False
+        if isinstance(exc, SynologyTransportError):
+            return True
         if isinstance(exc, SynologyError) and self._synology_error_code(exc) in SYNOLOGY_REMOTE_DEGRADED_ERROR_CODES:
             return True
         return isinstance(exc, (
@@ -613,6 +620,37 @@ class SynologyFileStationClient:
             TimeoutError,
             asyncio.TimeoutError,
         ))
+
+    def _wrap_transport_error(self, api: str, action: str, exc: Exception) -> SynologyError:
+        base_url = str(self.config.base_url or "").rstrip("/")
+        detail = str(exc) or exc.__class__.__name__
+        if isinstance(exc, aiohttp.ClientSSLError):
+            return SynologyTransportError(f"群晖{action}失败：TLS/SSL 握手失败（{detail}）")
+        if isinstance(exc, aiohttp.ClientConnectorError):
+            host = getattr(exc, "host", None) or ""
+            port = getattr(exc, "port", None) or ""
+            target = f"{host}:{port}" if host and port else base_url
+            return SynologyTransportError(f"群晖{action}失败：无法连接到 {target}（{detail}）")
+        if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+            return SynologyTransportError(f"群晖{action}失败：请求超时（{detail}）")
+        if isinstance(exc, (aiohttp.ClientConnectionError, ConnectionError)):
+            return SynologyTransportError(f"群晖{action}失败：连接被中断（{detail}）")
+        if isinstance(exc, aiohttp.ClientError):
+            return SynologyTransportError(f"群晖{action}失败：HTTP 客户端错误（{detail}）")
+        return SynologyTransportError(f"群晖{action}失败：远程通信异常（{detail}）")
+
+    def _raise_wrapped_transport_error(self, api: str, action: str, exc: Exception) -> None:
+        if isinstance(exc, SynologyError):
+            if not getattr(exc, "_remote_failure_recorded", False):
+                self._record_remote_failure(api, exc)
+                setattr(exc, "_remote_failure_recorded", True)
+            raise exc
+        if not self._is_transport_error(exc):
+            raise exc
+        wrapped = self._wrap_transport_error(api, action, exc)
+        self._record_remote_failure(api, wrapped)
+        setattr(wrapped, "_remote_failure_recorded", True)
+        raise wrapped from exc
 
     def _synology_error_code(self, exc: Exception) -> Optional[int]:
         message = str(exc or "")
@@ -685,7 +723,7 @@ class SynologyFileStationClient:
                 content_type = response.headers.get("Content-Type", "")
                 snippet = (body or "").strip().replace("\n", " ")
                 snippet = snippet[:200]
-                raise RuntimeError(
+                raise SynologyError(
                     f"群晖 FileStation 响应解析失败: API={api}, HTTP {response.status}, Content-Type={content_type}, Body={snippet}"
                 ) from decode_exc
 
@@ -738,8 +776,7 @@ class SynologyFileStationClient:
                         logger.info("[远程库存] 慢请求 %s.%s %.0fms", api, method, elapsed * 1000)
                     return data.get("data") or {}
             except Exception as exc:
-                self._record_remote_failure(api, exc)
-                raise
+                self._raise_wrapped_transport_error(api, "文件站请求", exc)
         return {}  # 不可达，仅供类型检查器
 
     async def stream_download(self, path: str, *, chunk_size: int = 1024 * 256):
@@ -787,8 +824,7 @@ class SynologyFileStationClient:
                                 yield chunk
                         return
                 except Exception as exc:
-                    self._record_remote_failure("SYNO.FileStation.Download", exc)
-                    raise
+                    self._raise_wrapped_transport_error("SYNO.FileStation.Download", "下载文件", exc)
 
     def _is_error_code(self, exc: Exception, code: int) -> bool:
         message = str(exc)
@@ -919,8 +955,13 @@ class SynologyFileStationClient:
             "version": "1",
             "query": api_name,
         }
-        async with session.get(url, params=params, ssl=self.config.verify_ssl) as response:
-            data = await self._read_response_payload(response, "SYNO.API.Info")
+        try:
+            async with session.get(url, params=params, ssl=self.config.verify_ssl) as response:
+                data = await self._read_response_payload(response, "SYNO.API.Info")
+        except SynologyError:
+            raise
+        except Exception as exc:
+            self._raise_wrapped_transport_error("SYNO.API.Info", "查询 API 信息", exc)
 
         path = default_path
         version = default_version
@@ -953,8 +994,15 @@ class SynologyFileStationClient:
             params["device_id"] = self.config.device_id
         if self.config.enable_device_token:
             params["enable_device_token"] = "yes"
-        async with session.get(url, params=params, ssl=self.config.verify_ssl) as response:
-            data = await response.json()
+        try:
+            async with session.get(url, params=params, ssl=self.config.verify_ssl) as response:
+                data = await self._read_response_payload(response, "SYNO.API.Auth")
+        except SynologyError:
+            self._sid = None
+            raise
+        except Exception as exc:
+            self._sid = None
+            self._raise_wrapped_transport_error("SYNO.API.Auth", "登录", exc)
         if not data.get("success") and (data.get("error") or {}).get("code") == 403:
             auth_errors = (data.get("error") or {}).get("errors") or {}
             auth_types = [item.get("type") for item in auth_errors.get("types") or [] if item.get("type")]
@@ -973,23 +1021,29 @@ class SynologyFileStationClient:
         return self._device_id
 
     async def get_storage_info(self) -> dict[str, Any]:
-        session = self._ensure_session()
-        if not self._sid:
-            await self._login(session)
         api_name = "SYNO.Core.System"
-        path, version = await self._resolve_api_route(session, api_name, default_path="entry.cgi", default_version=1)
-        url = f"{self.config.base_url.rstrip('/')}/webapi/{path.lstrip('/')}"
-        params = {
-            "api": api_name,
-            "method": "info",
-            "version": str(version),
-            "type": "storage",
-            "_sid": self._sid,
-        }
-        async with session.get(url, params=params, ssl=self.config.verify_ssl) as response:
-            data = await self._read_response_payload(response, api_name)
-        if not data.get("success"):
-            raise SynologyError(_format_synology_error(api_name, "查询群晖存储信息", data))
+        self._check_remote_circuit(api_name)
+        try:
+            session = self._ensure_session()
+            if not self._sid:
+                await self._login(session)
+            path, version = await self._resolve_api_route(session, api_name, default_path="entry.cgi", default_version=1)
+            url = f"{self.config.base_url.rstrip('/')}/webapi/{path.lstrip('/')}"
+            params = {
+                "api": api_name,
+                "method": "info",
+                "version": str(version),
+                "type": "storage",
+                "_sid": self._sid,
+            }
+            async with session.get(url, params=params, ssl=self.config.verify_ssl) as response:
+                data = await self._read_response_payload(response, api_name)
+            if not data.get("success"):
+                raise SynologyError(_format_synology_error(api_name, "查询群晖存储信息", data))
+        except SynologyError:
+            raise
+        except Exception as exc:
+            self._raise_wrapped_transport_error(api_name, "查询存储信息", exc)
         storage = data.get("data") or {}
         volumes = (
             storage.get("vol_info")
@@ -2233,8 +2287,8 @@ class LibraryManager:
             except asyncio.TimeoutError:
                 logger.warning("跨库查 RJ 超时: rj=%s lib=%s", normalized_rj, library.id)
                 return library, []
-            except Exception:
-                logger.warning("跨库查 RJ 失败: rj=%s lib=%s", normalized_rj, library.id, exc_info=True)
+            except Exception as exc:
+                logger.warning("跨库查 RJ 失败: rj=%s lib=%s err=%s", normalized_rj, library.id, sanitize_text_for_log(exc))
                 return library, []
             return library, list(data.get("files") or [])
 
@@ -5538,8 +5592,8 @@ class LibraryManager:
         except Exception:
             try:
                 await self._retry_remote_delete(client, stage_path)
-            except Exception:
-                logger.warning("清理远程阶段目录失败: %s", stage_path, exc_info=True)
+            except Exception as exc:
+                logger.warning("清理远程阶段目录失败: %s err=%s", stage_path, sanitize_text_for_log(exc))
             raise
 
     async def merge_remote_directory_with_local(
@@ -5623,8 +5677,8 @@ class LibraryManager:
         except Exception:
             try:
                 await self._retry_remote_delete(client, stage_path)
-            except Exception:
-                logger.warning("清理远程合并阶段目录失败: %s", stage_path, exc_info=True)
+            except Exception as exc:
+                logger.warning("清理远程合并阶段目录失败: %s err=%s", stage_path, sanitize_text_for_log(exc))
             raise
 
     def _assert_local_path_in_library(self, library: LibraryDefinition, path: str):
@@ -6060,8 +6114,8 @@ class LibraryManager:
 
             try:
                 children = await self._list_remote_directory(client, current_path)
-            except Exception:
-                logger.warning("远程递归列目录失败: path=%s", current_path, exc_info=True)
+            except Exception as exc:
+                logger.warning("远程递归列目录失败: path=%s err=%s", current_path, sanitize_text_for_log(exc))
                 continue
 
             for child in children:

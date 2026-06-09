@@ -3207,8 +3207,8 @@ class HttpDownloadService:
                     for r in (root_listing.get("files") or [])
                 ]
                 logger.info("[PikPak诊断] 转存后根目录(%s 项)=%s", len(root_rows), root_rows)
-            except Exception:
-                logger.warning("[PikPak诊断] 列根目录失败", exc_info=True)
+            except Exception as exc:
+                logger.warning("[PikPak诊断] 列根目录失败: %s", exc)
             try:
                 dir_listing = await self.pikpak_transfer_files(client=client, parent_id=parent_id or "", root=False, limit=200)
                 dir_rows = [
@@ -3216,10 +3216,10 @@ class HttpDownloadService:
                     for r in (dir_listing.get("files") or [])
                 ]
                 logger.info("[PikPak诊断] 转存目录 parent_id=%s(%s 项)=%s", parent_id, len(dir_rows), dir_rows)
-            except Exception:
-                logger.warning("[PikPak诊断] 列转存目录失败", exc_info=True)
-        except Exception:
-            logger.warning("[PikPak诊断] 诊断日志输出失败", exc_info=True)
+            except Exception as exc:
+                logger.warning("[PikPak诊断] 列转存目录失败: %s", exc)
+        except Exception as exc:
+            logger.warning("[PikPak诊断] 诊断日志输出失败: %s", exc)
         id_map.update(self._extract_pikpak_restore_id_map(result, file_ids))
         restore_container_id = str(result.get("file_id") or "").strip() if isinstance(result, dict) else ""
         if restore_container_id:

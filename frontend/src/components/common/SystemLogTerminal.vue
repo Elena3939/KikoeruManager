@@ -1,16 +1,17 @@
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { ElMessage } from 'element-plus'
 import {
   AlertTriangle,
   Bug,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   CirclePause,
   CirclePlay,
   Copy,
   Info,
-  Maximize2,
   RotateCcw,
   Terminal,
   Trash2,
@@ -34,10 +35,10 @@ const emit = defineEmits(['clear', 'reconnect'])
 const scrollRef = ref(null)
 const autoScroll = ref(props.autoScrollDefault)
 const userPinnedHistory = ref(false)
-const detailDialogVisible = ref(false)
-const selectedLine = ref(null)
+const expandedLineKey = ref(null)
 
 let autoScrollRaf = 0
+let resizeObserver = null
 
 const safeLines = computed(() => Array.isArray(props.lines) ? props.lines : [])
 const lineCount = computed(() => safeLines.value.length)
@@ -57,13 +58,13 @@ const statusMeta = computed(() => {
 const rowVirtualizer = useVirtualizer(computed(() => ({
   count: lineCount.value,
   getScrollElement: () => scrollRef.value,
-  estimateSize: (index) => isTaskProgressLine(safeLines.value[index]) ? 62 : 32,
+  estimateSize: estimateLineSize,
+  measureElement: (element) => element?.getBoundingClientRect().height || 32,
   overscan: 12,
 })))
 
 const virtualRows = computed(() => rowVirtualizer.value.getVirtualItems())
 const totalSize = computed(() => rowVirtualizer.value.getTotalSize())
-const selectedLineText = computed(() => selectedLine.value ? lineText(selectedLine.value, true) : '')
 
 function clampProgress(value) {
   const numeric = Number(value)
@@ -167,6 +168,33 @@ function hasLineDetail(line) {
   return isLineTruncated(line) || logMessage(line, true).length > 180
 }
 
+function lineKey(line, index) {
+  if (line?.id !== null && line?.id !== undefined) return String(line.id)
+  return `${index}:${formatTime(line?.time)}:${levelLabel(line?.level)}:${logMessage(line, true).slice(0, 80)}`
+}
+
+function isLineExpanded(line, index) {
+  return Boolean(expandedLineKey.value && expandedLineKey.value === lineKey(line, index))
+}
+
+function estimateExpandedLineSize(line) {
+  const text = lineText(line, true)
+  const width = Number(scrollRef.value?.clientWidth || 920)
+  const detailWidth = width <= 720 ? Math.max(280, width - 28) : Math.max(360, width - 332)
+  const charsPerRow = Math.max(44, Math.floor(detailWidth / 7.4))
+  const visualLineCount = String(text || '')
+    .split(/\r\n|\n|\r/)
+    .reduce((sum, segment) => sum + Math.max(1, Math.ceil(segment.length / charsPerRow)), 0)
+  return Math.max(96, 54 + visualLineCount * 18)
+}
+
+function estimateLineSize(index) {
+  const line = safeLines.value[index]
+  if (isTaskProgressLine(line)) return 62
+  if (isLineExpanded(line, index)) return estimateExpandedLineSize(line)
+  return 32
+}
+
 function lineText(line, preferFull = false) {
   const time = formatTime(line?.time)
   const level = levelLabel(line?.level).toUpperCase()
@@ -196,7 +224,8 @@ async function copyLogs() {
 }
 
 async function copySelectedLine() {
-  const text = selectedLineText.value
+  const index = safeLines.value.findIndex((line, lineIndex) => isLineExpanded(line, lineIndex))
+  const text = index >= 0 ? lineText(safeLines.value[index], true) : ''
   if (!text) return
   try {
     await navigator.clipboard.writeText(text)
@@ -206,10 +235,15 @@ async function copySelectedLine() {
   }
 }
 
-function openLineDetail(line) {
+function toggleLineDetail(line, index) {
   if (!hasLineDetail(line)) return
-  selectedLine.value = line
-  detailDialogVisible.value = true
+  const key = lineKey(line, index)
+  expandedLineKey.value = expandedLineKey.value === key ? null : key
+  nextTick(() => rowVirtualizer.value.measure())
+}
+
+function measureTerminalLine(element) {
+  if (element) rowVirtualizer.value.measureElement(element)
 }
 
 function clearLogs() {
@@ -243,6 +277,10 @@ function scrollToBottom() {
 }
 
 watch(lineCount, () => {
+  if (expandedLineKey.value && !safeLines.value.some((line, index) => lineKey(line, index) === expandedLineKey.value)) {
+    expandedLineKey.value = null
+  }
+  nextTick(() => rowVirtualizer.value.measure())
   if (autoScroll.value && !userPinnedHistory.value) scrollToBottom()
 })
 
@@ -250,11 +288,25 @@ watch(() => props.status, () => {
   if (autoScroll.value && !userPinnedHistory.value) scrollToBottom()
 })
 
+watch(expandedLineKey, () => {
+  nextTick(() => rowVirtualizer.value.measure())
+})
+
+onMounted(() => {
+  if (typeof ResizeObserver === 'undefined' || !scrollRef.value) return
+  resizeObserver = new ResizeObserver(() => {
+    nextTick(() => rowVirtualizer.value.measure())
+  })
+  resizeObserver.observe(scrollRef.value)
+})
+
 onBeforeUnmount(() => {
   if (autoScrollRaf) {
     window.cancelAnimationFrame(autoScrollRaf)
     autoScrollRaf = 0
   }
+  resizeObserver?.disconnect()
+  resizeObserver = null
 })
 </script>
 
@@ -311,6 +363,7 @@ onBeforeUnmount(() => {
           <div
             v-for="virtualRow in virtualRows"
             :key="virtualRow.key"
+            :ref="measureTerminalLine"
             :data-index="virtualRow.index"
             class="terminal-line"
             :class="[
@@ -322,6 +375,7 @@ onBeforeUnmount(() => {
                 'is-task-progress': isTaskProgressLine(safeLines[virtualRow.index]),
                 'is-truncated': isLineTruncated(safeLines[virtualRow.index]),
                 'has-detail': hasLineDetail(safeLines[virtualRow.index]),
+                'is-expanded': isLineExpanded(safeLines[virtualRow.index], virtualRow.index),
               },
             ]"
             :style="{ transform: `translate3d(0, ${virtualRow.start}px, 0)` }"
@@ -355,8 +409,8 @@ onBeforeUnmount(() => {
               v-else
               class="terminal-message"
               :class="{ 'has-detail': hasLineDetail(safeLines[virtualRow.index]) }"
-              :title="hasLineDetail(safeLines[virtualRow.index]) ? '点击查看完整日志' : logMessage(safeLines[virtualRow.index])"
-              @click="openLineDetail(safeLines[virtualRow.index])"
+              :title="hasLineDetail(safeLines[virtualRow.index]) ? '点击展开完整日志' : logMessage(safeLines[virtualRow.index])"
+              @click="toggleLineDetail(safeLines[virtualRow.index], virtualRow.index)"
             >
               <span class="terminal-message-text">
                 <template v-for="(token, tokenIndex) in shellTokens(logMessage(safeLines[virtualRow.index]))" :key="`${virtualRow.key}-${tokenIndex}`">
@@ -367,12 +421,22 @@ onBeforeUnmount(() => {
                 v-if="hasLineDetail(safeLines[virtualRow.index])"
                 type="button"
                 class="terminal-detail-button"
-                title="查看完整日志"
-                @click.stop="openLineDetail(safeLines[virtualRow.index])"
+                :title="isLineExpanded(safeLines[virtualRow.index], virtualRow.index) ? '收起完整日志' : '展开完整日志'"
+                @click.stop="toggleLineDetail(safeLines[virtualRow.index], virtualRow.index)"
               >
-                <Maximize2 :size="11" :stroke-width="2.4" />
+                <component :is="isLineExpanded(safeLines[virtualRow.index], virtualRow.index) ? ChevronUp : ChevronDown" :size="12" :stroke-width="2.6" />
               </button>
             </span>
+            <div
+              v-if="!isTaskProgressLine(safeLines[virtualRow.index]) && isLineExpanded(safeLines[virtualRow.index], virtualRow.index)"
+              class="terminal-expanded-detail"
+            >
+              <pre class="terminal-expanded-content">{{ lineText(safeLines[virtualRow.index], true) }}</pre>
+              <button type="button" class="terminal-expanded-copy" title="复制完整日志" @click.stop="copySelectedLine">
+                <Copy :size="13" :stroke-width="2.35" />
+                复制
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -383,29 +447,6 @@ onBeforeUnmount(() => {
         <span v-else>{{ autoScroll ? '自动滚动' : '查看历史' }}</span>
       </div>
     </div>
-
-    <el-dialog
-      v-model="detailDialogVisible"
-      title="完整日志"
-      width="min(920px, calc(100vw - 32px))"
-      custom-class="system-log-detail-dialog mobile-full-dialog"
-      append-to-body
-    >
-      <div class="terminal-detail">
-        <div class="terminal-detail-meta">
-          <span>{{ formatTime(selectedLine?.time) }}</span>
-          <span>{{ levelLabel(selectedLine?.level) }}</span>
-          <span>{{ selectedLine?.source || 'system' }}</span>
-        </div>
-        <pre class="terminal-detail-content">{{ selectedLineText }}</pre>
-      </div>
-      <template #footer>
-        <button type="button" class="terminal-detail-copy" @click="copySelectedLine">
-          <Copy :size="14" :stroke-width="2.35" />
-          复制完整日志
-        </button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -620,6 +661,19 @@ onBeforeUnmount(() => {
   background: rgba(39, 39, 42, 0.58);
 }
 
+.terminal-line.is-expanded {
+  align-items: flex-start;
+  padding-top: 7px;
+  padding-bottom: 9px;
+}
+
+.terminal-line.is-expanded .terminal-time,
+.terminal-line.is-expanded .terminal-level,
+.terminal-line.is-expanded .terminal-source,
+.terminal-line.is-expanded .terminal-progress {
+  padding-top: 2px;
+}
+
 .terminal-time {
   color: #71717a;
   font-variant-numeric: tabular-nums;
@@ -712,6 +766,73 @@ onBeforeUnmount(() => {
 }
 
 .terminal-detail-button :deep(svg) {
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.terminal-expanded-detail {
+  position: relative;
+  grid-column: 4 / -1;
+  min-width: 0;
+  margin-top: 5px;
+  border: 1px solid rgba(63, 63, 70, 0.84);
+  border-radius: 9px;
+  padding: 9px 52px 10px 11px;
+  background: #050506;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.terminal-expanded-content {
+  overflow: visible;
+  margin: 0;
+  color: #e4e4e7;
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.terminal-expanded-copy {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  display: inline-flex;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid rgba(82, 82, 91, 0.78);
+  border-radius: 7px;
+  padding: 5px 7px;
+  background: rgba(24, 24, 27, 0.88);
+  color: #d4d4d8;
+  font-size: 11px;
+  font-weight: 900;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.terminal-expanded-copy:hover {
+  transform: translateY(-2px) scale(1.02);
+  border-color: rgba(161, 161, 170, 0.86);
+  background: rgba(39, 39, 42, 0.96);
+  color: #fff;
+}
+
+.terminal-expanded-copy:active {
+  transform: scale(0.96);
+}
+
+.terminal-expanded-copy:focus,
+.terminal-expanded-copy:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.terminal-expanded-copy:hover :deep(svg) {
+  transform: rotate(-8deg);
+}
+
+.terminal-expanded-copy :deep(svg) {
   transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -887,114 +1008,6 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-:global(.system-log-detail-dialog) {
-  border: 1px solid rgba(39, 39, 42, 0.96);
-  border-radius: 14px;
-  background: #09090b;
-  color: #d4d4d8;
-}
-
-:global(.system-log-detail-dialog .el-dialog__header) {
-  margin: 0;
-  border-bottom: 1px solid rgba(63, 63, 70, 0.85);
-  padding: 14px 16px;
-  background: #18181b;
-}
-
-:global(.system-log-detail-dialog .el-dialog__title) {
-  color: #e4e4e7;
-  font-size: 14px;
-  font-weight: 900;
-}
-
-:global(.system-log-detail-dialog .el-dialog__body) {
-  padding: 0;
-}
-
-:global(.system-log-detail-dialog .el-dialog__footer) {
-  border-top: 1px solid rgba(39, 39, 42, 0.76);
-  padding: 12px 16px;
-  background: #09090b;
-}
-
-.terminal-detail {
-  display: grid;
-  gap: 10px;
-  padding: 14px 16px 16px;
-}
-
-.terminal-detail-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.terminal-detail-meta span {
-  border: 1px solid rgba(82, 82, 91, 0.72);
-  border-radius: 999px;
-  padding: 3px 8px;
-  color: #a1a1aa;
-  font-size: 11px;
-  font-weight: 800;
-}
-
-.terminal-detail-content {
-  max-height: min(58vh, 620px);
-  overflow: auto;
-  margin: 0;
-  border: 1px solid rgba(63, 63, 70, 0.85);
-  border-radius: 10px;
-  padding: 12px;
-  background: #050506;
-  color: #e4e4e7;
-  font-size: 12px;
-  line-height: 1.55;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-  scrollbar-color: rgba(113, 113, 122, 0.7) transparent;
-}
-
-.terminal-detail-copy {
-  display: inline-flex;
-  cursor: pointer;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  border: 1px solid rgba(82, 82, 91, 0.78);
-  border-radius: 8px;
-  padding: 8px 12px;
-  background: rgba(24, 24, 27, 0.82);
-  color: #e4e4e7;
-  font-size: 12px;
-  font-weight: 900;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.terminal-detail-copy:hover {
-  transform: translateY(-2px) scale(1.02);
-  border-color: rgba(161, 161, 170, 0.86);
-  background: rgba(39, 39, 42, 0.95);
-  color: #fff;
-}
-
-.terminal-detail-copy:active {
-  transform: scale(0.96);
-}
-
-.terminal-detail-copy:focus,
-.terminal-detail-copy:focus-visible {
-  outline: none;
-  box-shadow: none;
-}
-
-.terminal-detail-copy:hover :deep(svg) {
-  transform: rotate(-8deg);
-}
-
-.terminal-detail-copy :deep(svg) {
-  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
 @keyframes terminal-cursor {
   0%, 46% { opacity: 1; }
   47%, 100% { opacity: 0; }
@@ -1040,6 +1053,11 @@ onBeforeUnmount(() => {
 
   .terminal-message {
     grid-column: 1 / -1;
+  }
+
+  .terminal-expanded-detail {
+    grid-column: 1 / -1;
+    padding-right: 48px;
   }
 
   .terminal-inline-progress {

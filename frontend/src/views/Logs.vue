@@ -356,6 +356,7 @@ const LOG_PREVIEW_LIMIT = 900
 const LOG_FLUSH_INTERVAL = 48
 const LOG_STREAM_RECONNECT_MS = 2500
 const COMPACT_PROCESS_LOGS_KEY = 'kikoerumanager.logs.compact_process_noise'
+const LOG_BLOCK_PREFIX = '__KIKOERUMANAGER_LOG_BLOCK__'
 const TASK_PROGRESS_STALE_MS = 2 * 60 * 1000
 
 const logs = shallowRef([])
@@ -503,7 +504,7 @@ const terminalLines = computed(() => filteredLogs.value.map((log) => ({
   progress: log.progress ?? null,
   taskProgress: log.taskProgress || null,
   message: log.displayMessage || log.message,
-  fullMessage: log.message,
+  fullMessage: log.fullMessage || log.message,
   rawLine: log.rawLine,
   isTruncated: Boolean(log.isTruncated),
 })))
@@ -846,13 +847,16 @@ function parseLogLine(line) {
   // 一直保留，普通搜索仍然命中。这里直接砍 lower 副本能省掉 logLimit 条 × 平均 2KB
   // = 几 MB 内存。
   const RAW_LOWER_LIMIT = 1024
-  const buildParsed = (time, level, message) => {
-    const mod = parseModule(message, line)
+  const buildParsed = (time, level, message, extra = {}) => {
+    const rawSource = extra.rawLine ?? line
+    const fullSource = extra.fullMessage ?? ''
+    const mod = parseModule(message, String(rawSource || line || ''))
     const levelUpper = (level || 'INFO').toUpperCase()
-    const safeRaw = typeof line === 'string' ? line : String(line || '')
+    const safeRaw = typeof rawSource === 'string' ? rawSource : String(rawSource || '')
     const rawLower = safeRaw.length && safeRaw.length <= RAW_LOWER_LIMIT ? safeRaw.toLowerCase() : ''
     const parsed = {
       rawLine: safeRaw,
+      fullMessage: fullSource || message,
       rawLineLower: rawLower,
       time: time || '',
       level: levelUpper,
@@ -864,6 +868,23 @@ function parseLogLine(line) {
     }
     parseCache.set(line, parsed)
     return parsed
+  }
+
+  if (typeof line === 'string' && line.startsWith(LOG_BLOCK_PREFIX)) {
+    try {
+      const payload = JSON.parse(line.slice(LOG_BLOCK_PREFIX.length))
+      return buildParsed(
+        payload.time || '',
+        payload.level || 'ERROR',
+        payload.message || '异常堆栈已折叠，点击查看完整',
+        {
+          rawLine: payload.raw_line || payload.full_message || line,
+          fullMessage: payload.full_message || payload.raw_line || '',
+        },
+      )
+    } catch {
+      // 块格式异常时按普通日志展示，避免日志页被单条坏数据打断。
+    }
   }
 
   let match = line.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+\[(\w+)\]\s+\S+\s+-\s+(.+)$/)
