@@ -986,6 +986,14 @@ class LinkedSubtitleImportService:
         source_subtitle_probe_reason = str(preview.get("source_subtitle_probe_reason") or "").strip()
         candidate_search_status = str(preview.get("candidate_search_status") or "")
         candidate_search_reason = str(preview.get("candidate_search_reason") or "")
+        source_path = str(preview.get("source_path") or "").strip()
+        staged_dirs = [
+            str(preview.get("source_subtitle_dir") or "").strip(),
+            str(preview.get("staged_subtitle_dir") or "").strip(),
+        ]
+        staged_dirs = [path for index, path in enumerate(staged_dirs) if path and path not in staged_dirs[:index]]
+        has_staged_subtitle_dir = any(os.path.isdir(path) for path in staged_dirs)
+        source_path_exists = bool(source_path) and os.path.exists(source_path)
 
         should_queue_pending = False
         if is_translation_work:
@@ -1022,6 +1030,9 @@ class LinkedSubtitleImportService:
         can_stage_pending = should_queue_pending and (
             not stage_reason or candidate_search_status == "pending_remote"
         )
+        if can_stage_pending and source_path and not source_path_exists and not has_staged_subtitle_dir:
+            stage_reason = "来源压缩包和预检字幕工作区都已不存在，无法继续执行"
+            can_stage_pending = False
         can_execute = can_stage_pending and subtitle_count > 0 and len(ready_candidates) > 0
 
         execute_reason = ""
@@ -3238,31 +3249,84 @@ class LinkedSubtitleImportService:
             if str(record_id or "").strip()
         ]
         if not clear_all and not normalized_ids:
-            raise ValueError("没有可清除的字幕补配预检单")
+            raise ValueError("没有可清除的字幕补配记录")
+
+        def _safe_cleanup_workbench_root(path_value: Optional[str]) -> bool:
+            target = str(path_value or "").strip()
+            if not target or not os.path.isdir(target):
+                return False
+            target_path = Path(target).resolve()
+            expected_parts = [part.lower() for part in self.WORKBENCH_RELATIVE_DIR.split("/") if part]
+            parts = [part.lower() for part in target_path.parts]
+            is_workbench_path = any(
+                parts[index:index + len(expected_parts)] == expected_parts
+                for index in range(0, max(0, len(parts) - len(expected_parts) + 1))
+            )
+            if not is_workbench_path:
+                logger.warning("[字幕补配] 跳过非工作台目录清理: %s", target)
+                return False
+            shutil.rmtree(target_path, ignore_errors=True)
+            self._cleanup_empty_workbench_shell(str(target_path))
+            return True
 
         db = next(get_db())
         try:
             query = db.query(ConflictWork).filter(
                 ConflictWork.conflict_type == self.PENDING_CONFLICT_TYPE,
-                ConflictWork.status == "PENDING",
+                ConflictWork.status.in_(["PENDING", "IMPORTED"]),
             )
             if not clear_all:
                 query = query.filter(ConflictWork.id.in_(normalized_ids))
 
             rows = query.all()
             if not rows:
-                raise ValueError("未找到可清除的字幕补配预检单")
+                raise ValueError("未找到可清除的字幕补配记录")
 
             cleared_ids: List[str] = []
             cleared_stage_dirs = 0
+            cleared_workbench_tasks = 0
+            cleared_workbench_dirs = 0
+            engine = get_task_engine()
             for row in rows:
-                preview = dict((row.analysis_info or {}).get("preview") or {})
+                analysis_info = dict(row.analysis_info or {})
+                preview = dict(analysis_info.get("preview") or {})
+                import_result_summary = dict(analysis_info.get("import_result_summary") or {})
                 stage_dir = str(
                     preview.get("source_subtitle_dir") or preview.get("staged_subtitle_dir") or ""
                 ).strip()
                 if stage_dir:
                     self._cleanup_stage_dir(stage_dir)
                     cleared_stage_dirs += 1
+
+                workbench_task_id = str(
+                    import_result_summary.get("task_id")
+                    or preview.get("linked_workbench_task_id")
+                    or ""
+                ).strip()
+                if workbench_task_id:
+                    task = engine.get_task(workbench_task_id)
+                    if task is not None:
+                        metadata = dict(task.task_metadata or {})
+                        if _safe_cleanup_workbench_root(metadata.get("linked_workbench_root_dir")):
+                            cleared_workbench_dirs += 1
+                        try:
+                            if engine.remove_task(workbench_task_id):
+                                cleared_workbench_tasks += 1
+                        except RuntimeError:
+                            logger.warning("[字幕补配] 工作台任务仍在执行，跳过任务清理: task_id=%s", workbench_task_id)
+                    else:
+                        try:
+                            from ..models.database import Task as TaskRecord
+
+                            task_record = db.query(TaskRecord).filter(TaskRecord.id == workbench_task_id).first()
+                            task_metadata = dict(task_record.task_metadata or {}) if task_record else {}
+                            if _safe_cleanup_workbench_root(task_metadata.get("linked_workbench_root_dir")):
+                                cleared_workbench_dirs += 1
+                        except Exception:
+                            logger.warning("[字幕补配] 读取工作台任务快照失败: task_id=%s", workbench_task_id, exc_info=True)
+                        engine.delete_task_snapshot(workbench_task_id)
+                        cleared_workbench_tasks += 1
+
                 cleared_ids.append(str(row.id))
                 db.delete(row)
 
@@ -3272,6 +3336,8 @@ class LinkedSubtitleImportService:
                 "cleared_count": len(cleared_ids),
                 "cleared_ids": cleared_ids,
                 "cleared_stage_dirs": cleared_stage_dirs,
+                "cleared_workbench_tasks": cleared_workbench_tasks,
+                "cleared_workbench_dirs": cleared_workbench_dirs,
                 "clear_all": bool(clear_all),
             }
         except Exception:

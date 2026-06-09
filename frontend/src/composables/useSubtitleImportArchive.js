@@ -33,6 +33,33 @@ export function useSubtitleImportArchive({
     return pendingItems.value.find(item => item.id === activePendingId.value) || null
   })
 
+  function isClearablePendingItem(item) {
+    return ['PENDING', 'IMPORTED'].includes(String(item?.status || '').trim().toUpperCase())
+  }
+
+  function isImportedPendingItem(item) {
+    return String(item?.status || '').trim().toUpperCase() === 'IMPORTED'
+  }
+
+  function getPendingItemWorkbenchTaskId(item) {
+    const preview = item?.preview || {}
+    return String(
+      preview?.import_result_summary?.task_id ||
+      preview?.linked_workbench_task_id ||
+      ''
+    ).trim()
+  }
+
+  const clearablePendingItems = computed(() => {
+    return (pendingItems.value || []).filter(item => isClearablePendingItem(item))
+  })
+
+  const clearablePendingCount = computed(() => clearablePendingItems.value.length)
+
+  const canClearActivePending = computed(() => {
+    return Boolean(activePendingItem.value && isClearablePendingItem(activePendingItem.value))
+  })
+
   const selectedArchiveCandidate = computed(() => {
     const item = activePendingItem.value
     if (!item) return null
@@ -132,18 +159,29 @@ export function useSubtitleImportArchive({
 
   async function clearPendingImports(clearAll = false) {
     const targetItem = activePendingItem.value
-    const targetIds = clearAll ? (pendingItems.value || []).map(item => String(item.id || '')).filter(Boolean) : [String(targetItem?.id || '')].filter(Boolean)
+    const targetIds = clearAll
+      ? clearablePendingItems.value.map(item => String(item.id || '')).filter(Boolean)
+      : (isClearablePendingItem(targetItem) ? [String(targetItem?.id || '')].filter(Boolean) : [])
     if (!targetIds.length) {
-      ElMessage.warning(clearAll ? '当前没有可清除的预检单' : '请先选择一条预检单')
+      ElMessage.warning(
+        clearAll
+          ? '当前没有可清除的待处理预检单'
+          : isImportedPendingItem(targetItem)
+            ? '这条来源已导入工作台，清除会废弃对应补配上下文'
+            : '请先选择一条可清理的预检单'
+      )
       return
     }
 
     try {
+      const hasImportedTargets = clearAll
+        ? clearablePendingItems.value.some(item => isImportedPendingItem(item))
+        : isImportedPendingItem(targetItem)
       await showSystemConfirm({
-        title: clearAll ? '清空预检单' : '清除当前预检单',
+        title: clearAll ? '清空补配记录' : '清除当前补配记录',
         message: clearAll
-          ? `确定清空当前 ${targetIds.length} 条字幕补配预检单吗？清除后需要重新导入或重新等待自动检测。`
-          : '确定清除当前这条字幕补配预检单吗？清除后需要重新导入或重新等待自动检测。',
+          ? `确定清空当前 ${targetIds.length} 条字幕补配记录吗？${hasImportedTargets ? '已导入工作台的记录会同时废弃对应补配上下文；' : ''}不会删除原始压缩包。`
+          : `确定清除当前这条字幕补配记录吗？${hasImportedTargets ? '它已导入工作台，会同时废弃对应补配上下文；' : ''}不会删除原始压缩包。`,
         confirmText: clearAll ? '清空' : '清除',
         cancelText: '取消',
         tone: 'warning'
@@ -162,15 +200,25 @@ export function useSubtitleImportArchive({
       await loadPendingImports()
       ElMessage.success(
         clearAll
-          ? `已清空 ${Number(result.cleared_count || 0)} 条预检单`
-          : '当前预检单已清除'
+          ? `已清空 ${Number(result.cleared_count || 0)} 条补配记录`
+          : '当前补配记录已清除'
       )
     } catch (error) {
+      await loadPendingImports({ silent: true })
       ElMessage.error('清除字幕补配预检单失败: ' + (error.response?.data?.detail || error.message))
     } finally {
       pendingClearLoading.value = false
       pendingClearMode.value = ''
     }
+  }
+
+  function openPendingItemWorkbench(item = activePendingItem.value) {
+    const taskId = getPendingItemWorkbenchTaskId(item)
+    if (!taskId) {
+      ElMessage.warning('这条记录没有可恢复的字幕补配工作台')
+      return
+    }
+    openImportedTask(taskId)
   }
 
   function getSelectedArchiveCandidateForItem(item) {
@@ -389,13 +437,18 @@ export function useSubtitleImportArchive({
     executingPendingId,
     retryingPendingId,
     pendingClearLoading,
+    clearablePendingCount,
+    canClearActivePending,
     archiveCandidateSelection,
     activePendingItem,
     selectedArchiveCandidate,
     canRetryActivePendingPreview,
-    
+
+    isImportedPendingItem,
+    getPendingItemWorkbenchTaskId,
     loadPendingImports,
     clearPendingImports,
+    openPendingItemWorkbench,
     retryActivePendingPreview,
     executePendingImport,
     candidateKey,

@@ -102,7 +102,7 @@
               <button
                 type="button"
                 class="subtitle-mini-btn"
-                :disabled="!activePendingItem || pendingClearLoading"
+                :disabled="!canClearActivePending || pendingClearLoading"
                 @click="clearPendingImports(false)"
               >
                 <Eraser class="w-3.5 h-3.5" />
@@ -111,14 +111,16 @@
               <button
                 type="button"
                 class="subtitle-mini-btn is-danger"
-                :disabled="!pendingItems.length || pendingClearLoading"
+                :disabled="!clearablePendingCount || pendingClearLoading"
                 @click="clearPendingImports(true)"
               >
                 <Trash2 class="w-3.5 h-3.5" />
                 清空
               </button>
             </div>
-            <p class="subtitle-list-hint">单击查看详情，可重试候选搜索</p>
+            <p class="subtitle-list-hint">
+              {{ clearablePendingCount ? `可清理记录 ${clearablePendingCount} 条` : '当前列表没有可清理记录' }}
+            </p>
           </div>
           <div class="subtitle-list-scroll no-scrollbar">
             <AppLoadingAnimation
@@ -156,8 +158,8 @@
                     {{ getDisplayRJCode(item.preview?.target_rjcode || item.preview?.source_rjcode) || '未识别 RJ' }}
                     <ChevronRight class="w-3.5 h-3.5 subtitle-list-card-chev" />
                   </strong>
-                  <span class="lib-chip" :class="item.can_execute ? 'lib-chip-success' : 'lib-chip-warning'">
-                    {{ item.can_execute ? '可执行' : '仅查看' }}
+                  <span class="lib-chip" :class="getArchiveItemStateClass(item)">
+                    {{ getArchiveItemStateLabel(item) }}
                   </span>
                 </div>
                 <div class="subtitle-list-card-source">
@@ -233,11 +235,20 @@
                   />
                   重试搜索
                 </button>
+                <button
+                  v-if="isImportedPendingItem(activePendingItem) && getPendingItemWorkbenchTaskId(activePendingItem)"
+                  type="button"
+                  class="subtitle-action-btn is-primary"
+                  @click="openPendingItemWorkbench(activePendingItem)"
+                >
+                  <Sparkles class="w-3.5 h-3.5" />
+                  打开工作台
+                </button>
                 <span
                   class="lib-chip"
-                  :class="activePendingItem.can_execute ? 'lib-chip-success' : 'lib-chip-warning'"
+                  :class="getArchiveItemStateClass(activePendingItem)"
                 >
-                  {{ activePendingItem.can_execute ? '可以补配' : '不可执行' }}
+                  {{ getArchiveItemStateLabel(activePendingItem) }}
                 </span>
               </div>
             </div>
@@ -255,7 +266,7 @@
               />
               <AlertTriangle v-else class="w-5 h-5 flex-shrink-0 mt-0.5 text-amber-500" />
               <p>
-                {{ activePendingItem.preview?.reason || (activePendingItem.can_execute ? '目标原作已定位，可以继续导入。' : '当前这条来源暂时无法执行。') }}
+                {{ getArchiveItemReason(activePendingItem) }}
               </p>
             </div>
 
@@ -386,6 +397,16 @@
             <!-- 提交栏 -->
             <div class="subtitle-detail-footer">
               <button
+                v-if="isImportedPendingItem(activePendingItem) && getPendingItemWorkbenchTaskId(activePendingItem)"
+                type="button"
+                class="subtitle-action-btn is-primary lg"
+                @click="openPendingItemWorkbench(activePendingItem)"
+              >
+                <Sparkles class="w-4 h-4" />
+                打开对应工作台
+              </button>
+              <button
+                v-else
                 type="button"
                 class="subtitle-action-btn is-primary lg"
                 :disabled="!activePendingItem.can_execute || !selectedArchiveCandidate || executingPendingId === activePendingItem.id"
@@ -859,6 +880,29 @@ function formatSize(size) {
   return `${result >= 100 || exponent === 0 ? result.toFixed(0) : result.toFixed(1)} ${units[exponent]}`
 }
 
+function getArchiveItemStateLabel(item) {
+  const status = String(item?.status || '').trim().toUpperCase()
+  if (status === 'IMPORTED') return '已入工作台'
+  if (item?.can_execute) return '可执行'
+  return '不可执行'
+}
+
+function getArchiveItemStateClass(item) {
+  const status = String(item?.status || '').trim().toUpperCase()
+  if (status === 'IMPORTED') return 'lib-chip-info'
+  if (item?.can_execute) return 'lib-chip-success'
+  return 'lib-chip-warning'
+}
+
+function getArchiveItemReason(item) {
+  if (!item) return ''
+  const status = String(item.status || '').trim().toUpperCase()
+  if (status === 'IMPORTED') {
+    return '这条来源已经导入字幕补配工作台；清除会废弃对应补配上下文，不会删除原始压缩包。'
+  }
+  return item.preview?.reason || (item.can_execute ? '目标原作已定位，可以继续导入。' : '当前这条来源暂时无法执行。')
+}
+
 const activeTab = ref('archive')
 
 const {
@@ -888,13 +932,18 @@ const {
   executingPendingId,
   retryingPendingId,
   pendingClearLoading,
+  clearablePendingCount,
+  canClearActivePending,
   archiveCandidateSelection,
   activePendingItem,
   selectedArchiveCandidate,
   canRetryActivePendingPreview,
   
+  isImportedPendingItem,
+  getPendingItemWorkbenchTaskId,
   loadPendingImports,
   clearPendingImports,
+  openPendingItemWorkbench,
   retryActivePendingPreview,
   executePendingImport,
   candidateKey,
