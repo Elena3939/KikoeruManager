@@ -26,6 +26,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import tempfile
+from types import SimpleNamespace
 import uuid
 import yaml
 
@@ -4861,6 +4862,24 @@ async def get_conflicts(include_stats: bool = False):
             _t_phase1_ms, len(conflicts),
         )
 
+        # db.commit() 会让 SQLAlchemy 默认 expire ORM 字段；后面 phase2 会 await
+        # 远程 stat / 本地 IO，并且会主动 close session。这里先拍成普通对象，避免
+        # close 后再访问 conflict.new_metadata / new_path 触发 DetachedInstanceError。
+        conflict_snapshots = [
+            SimpleNamespace(
+                id=str(conflict.id or ""),
+                task_id=str(conflict.task_id or ""),
+                rjcode=str(conflict.rjcode or ""),
+                conflict_type=str(conflict.conflict_type or ""),
+                existing_path=str(conflict.existing_path or ""),
+                new_path=str(conflict.new_path or ""),
+                new_metadata=_normalize_conflict_metadata(conflict.new_metadata),
+                status=str(conflict.status or ""),
+                created_at=conflict.created_at,
+            )
+            for conflict in conflicts
+        ]
+
         # ★ 性能修复：phase1 已经把需要持久化的状态恢复（PROCESSING -> PENDING）commit
         # 完毕；phase2 的 describe_conflict_async 会调用远程 stat / IO，期间不需要 db。
         # 把 conflict expunge 后立即 close，避免 connection pool 槽位被 phase2 长 IO 占用。
@@ -4916,16 +4935,16 @@ async def get_conflicts(include_stats: bool = False):
                         "context_error": str(exc),
                     }
 
-        contexts = await asyncio.gather(*(_build_context(c) for c in conflicts)) if conflicts else []
+        contexts = await asyncio.gather(*(_build_context(c) for c in conflict_snapshots)) if conflict_snapshots else []
         _t_phase2_ms = (time.monotonic() - _t_phase2_start) * 1000
         logger.debug(
             "[/api/conflicts] phase2_parallel_context=%.0fms (× %s)",
-            _t_phase2_ms, len(conflicts),
+            _t_phase2_ms, len(conflict_snapshots),
         )
 
         # ---- 第三阶段：装配响应 ----
         conflict_items = []
-        for index, conflict in enumerate(conflicts):
+        for index, conflict in enumerate(conflict_snapshots):
             available_actions = per_conflict_actions[index]
             context = contexts[index]
 
