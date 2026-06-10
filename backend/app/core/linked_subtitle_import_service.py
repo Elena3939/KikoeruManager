@@ -40,6 +40,9 @@ class LinkedSubtitleImportService:
         "kikoeru_no_token",
         "kikoeru_auth_error",
     }
+    ARCHIVE_PRECHECK_TIMEOUT_SECONDS = float(
+        os.getenv("KIKOERUMANAGER_LINKED_SUBTITLE_PRECHECK_TIMEOUT_SECONDS", "300") or 300
+    )
 
     def __init__(self):
         self.extract_service = ExtractService()
@@ -172,22 +175,59 @@ class LinkedSubtitleImportService:
         items.sort(key=lambda item: item.get("relative_path") or item.get("name") or "")
         return items
 
-    async def _collect_archive_subtitles_to_stage(self, archive_path: str, hint_password: Optional[str] = None) -> tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
+    async def _collect_archive_subtitles_to_stage(
+        self,
+        archive_path: str,
+        hint_password: Optional[str] = None,
+        task: Optional[Task] = None,
+    ) -> tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
         extracted_dir = None
         stage_dir = ""
         try:
             logger.info("[字幕补配预检] 开始临时解包扫描来源字幕: %s", archive_path)
+            if task is not None and task.is_cancelled():
+                return "", [], {"status": "cancelled", "reason": "任务已取消"}
             probe_task = Task(
                 task_type=TaskType.EXTRACT,
                 source_path=archive_path,
                 auto_classify=False,
                 metadata={"subtitle_probe_mode": True},
             )
+            cancel_watcher: Optional[asyncio.Task] = None
+            if task is not None:
+                probe_task.set_event_hook(lambda _probe_task, _reason: task.mark_changed("progress"))
+                if task.is_cancelled():
+                    probe_task.cancel()
+                    return "", [], {"status": "cancelled", "reason": "任务已取消"}
+
+                async def _cancel_probe_when_parent_cancelled() -> None:
+                    try:
+                        while not task.is_cancelled() and not probe_task.is_cancelled():
+                            await asyncio.sleep(0.2)
+                        if task.is_cancelled() and not probe_task.is_cancelled():
+                            probe_task.cancel()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.debug("[字幕补配预检] 传播父任务取消失败", exc_info=True)
+
+                cancel_watcher = asyncio.create_task(_cancel_probe_when_parent_cancelled())
             if hint_password:
                 probe_task.task_metadata = dict(probe_task.task_metadata or {})
                 probe_task.task_metadata["manual_retry_password"] = hint_password
                 probe_task.task_metadata["manual_retry_password_only"] = True
-            extracted_dir = await self.extract_service.extract(probe_task)
+            try:
+                extracted_dir = await self.extract_service.extract(probe_task)
+            finally:
+                if cancel_watcher is not None:
+                    cancel_watcher.cancel()
+                    try:
+                        await cancel_watcher
+                    except asyncio.CancelledError:
+                        pass
+            if task is not None and task.is_cancelled():
+                probe_task.cancel()
+                return "", [], {"status": "cancelled", "reason": "任务已取消"}
             if not extracted_dir or not os.path.isdir(extracted_dir):
                 probe_reason = str(getattr(probe_task, "error_message", "") or "").strip()
                 probe_status = "missing_password" if ("无正确密码" in probe_reason or "密码" in probe_reason) else "extract_failed"
@@ -2061,7 +2101,27 @@ class LinkedSubtitleImportService:
         preferred_library_id: Optional[str] = None,
         source_rjcode_hint: Optional[str] = None,
         hint_password: Optional[str] = None,
+        task: Optional[Task] = None,
+        precheck_timeout: Optional[float] = None,
     ) -> Dict[str, Any]:
+        if precheck_timeout and precheck_timeout > 0:
+            try:
+                return await asyncio.wait_for(
+                    self.preview_archive_import(
+                        archive_path,
+                        preferred_library_id=preferred_library_id,
+                        source_rjcode_hint=source_rjcode_hint,
+                        hint_password=hint_password,
+                        task=task,
+                        precheck_timeout=0,
+                    ),
+                    timeout=float(precheck_timeout),
+                )
+            except asyncio.TimeoutError as exc:
+                if task is not None:
+                    task.update_progress(5, "字幕补配预检超时，回退普通入库流程")
+                raise TimeoutError("字幕补配预检超时") from exc
+
         archive_path = await self._wait_for_archive_file(archive_path)
         archive_path = str(archive_path or "").strip()
         if not archive_path:
@@ -2071,18 +2131,24 @@ class LinkedSubtitleImportService:
         if not os.path.isfile(archive_path):
             raise ValueError("指定路径不是压缩包文件")
 
-        archive_info = await self.extract_service.get_archive_info(archive_path)
-        source_rjcode = self._extract_rjcode(source_rjcode_hint) or self._extract_rjcode_from_paths(
-            archive_path,
-            getattr(archive_info, "inferred_rjcode", "") if archive_info else "",
-        )
-
         _subtitle_size_threshold = int(self.extract_service.NESTED_SUBTITLE_SIZE_THRESHOLD)
         try:
             _archive_size = os.path.getsize(archive_path)
         except OSError:
             _archive_size = 0
         _is_small_archive = (0 < _archive_size < _subtitle_size_threshold)
+        source_rjcode = self._extract_rjcode(source_rjcode_hint) or self._extract_rjcode_from_paths(archive_path)
+        archive_info = None
+        if not source_rjcode:
+            archive_info = await self.extract_service.get_archive_info(
+                archive_path,
+                task=task,
+                list_timeout=self.extract_service.PRECHECK_LIST_TIMEOUT_SECONDS,
+            )
+            source_rjcode = self._extract_rjcode_from_paths(
+                archive_path,
+                getattr(archive_info, "inferred_rjcode", "") if archive_info else "",
+            )
 
         stage_dir: str = ""
         source_subtitles: List[Dict[str, Any]] = []
@@ -2091,7 +2157,11 @@ class LinkedSubtitleImportService:
         if 0 < _archive_size < _subtitle_size_threshold:
             # 小包（< 10MB）：先解压探查字幕，再查 DLsite 确认翻译作关系，
             # Kikoeru 字幕状态由 _build_common_preview 内部并发查询。
-            stage_dir, source_subtitles, probe_result = await self._collect_archive_subtitles_to_stage(archive_path, hint_password=hint_password)
+            stage_dir, source_subtitles, probe_result = await self._collect_archive_subtitles_to_stage(
+                archive_path,
+                hint_password=hint_password,
+                task=task,
+            )
             logger.info(
                 "[字幕补配预检] 小型压缩包先解压后判断路由: source=%s source_rj=%s"
                 " size=%.1fKB subtitle_count=%s",
@@ -2128,7 +2198,11 @@ class LinkedSubtitleImportService:
 
             # Step 3：决定是否解包——翻译作品且原作缺字幕才解包
             if is_translation_work and not prefetched_target_has_subtitle:
-                stage_dir, source_subtitles, probe_result = await self._collect_archive_subtitles_to_stage(archive_path, hint_password=hint_password)
+                stage_dir, source_subtitles, probe_result = await self._collect_archive_subtitles_to_stage(
+                    archive_path,
+                    hint_password=hint_password,
+                    task=task,
+                )
             elif not is_translation_work:
                 logger.info(
                     "[字幕补配预检] 大型非翻译作品压缩包，跳过临时解包: source=%s source_rj=%s size=%s",
@@ -2964,6 +3038,8 @@ class LinkedSubtitleImportService:
             task.source_path,
             source_rjcode_hint=hinted_rjcode,
             hint_password=hint_password,
+            task=task,
+            precheck_timeout=self.ARCHIVE_PRECHECK_TIMEOUT_SECONDS,
         )
         task.update_progress(5, "预检中（确认字幕候选...）")
         should_create_pending = self._should_create_pending_import(preview)
