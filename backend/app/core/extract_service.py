@@ -3876,7 +3876,7 @@ class ExtractService:
         策略：
         1. 扫描 .exe 内嵌档魔数（7z / RAR / ZIP）。
         2. 7z / ZIP / unknown → 生成临时标准分卷视图，不再物理改名原始文件。
-           7z 命名为 .7z.001 / .7z.002，ZIP 命名为 .zip.001 / .zip.002。
+           7z 命名为 .7z.001 / .7z.002，ZIP 命名为 .zip + .z01 / .z02。
         3. RAR 流 → 重命名为 .part1.rar / .part2.rar / ...，类型 part。
            这样能让现有 unar fallback 在 7zz 失败时自动接管。
         4. 重命名失败任何一卷都整体回滚，返回原 volume_set，上层走原失败链路。
@@ -3895,10 +3895,12 @@ class ExtractService:
             def make_name(idx: int) -> str:
                 return f"{volume_set.base_name}.part{idx}.rar"
         elif inner_format == 'zip':
-            new_type = '7z_volume_with_ext'
+            new_type = 'zip_volume_main'
 
             def make_name(idx: int) -> str:
-                return f"{volume_set.base_name}.zip.{idx:03d}"
+                if idx == 1:
+                    return f"{volume_set.base_name}.zip"
+                return f"{volume_set.base_name}.z{idx - 1:02d}"
         else:
             # 7z 或 unknown 都默认走 7z 命名（实测国产 SFX 大多是 7z 流）。
             # 注意：首卷 .exe 可能带 SFX stub，不能直接改名为 .7z.001；

@@ -470,7 +470,7 @@ class TestExtractService:
 
     @pytest.mark.asyncio
     async def test_remap_exe_e_sequence_zip_inner_uses_zip_split_view(self, extract_service, temp_dir):
-        """ZIP-SFX 内嵌档应生成 .zip.001 / .zip.002 临时视图，而不是改名成 7z 分卷。"""
+        """ZIP-SFX 内嵌档应生成 .zip + .z01 临时视图，而不是改名成 7z 分卷。"""
         base = os.path.join(temp_dir, 'zip_sfx')
         sfx_prefix = b'MZ\x00\x00' + (b'\x00' * 512)
         local_header = (
@@ -501,11 +501,14 @@ class TestExtractService:
 
         new_set = await extract_service._remap_exe_e_sequence(original_set, task)
 
+        assert new_set.type == 'zip_volume_main'
+        assert os.path.basename(new_set.entry_path) == 'zip_sfx.zip'
         assert [os.path.basename(p) for p in new_set.volumes] == [
-            'zip_sfx.zip.001',
-            'zip_sfx.zip.002',
+            'zip_sfx.zip',
+            'zip_sfx.z01',
         ]
         assert task.task_metadata['exe_e_remap']['inner_format'] == 'zip'
+        assert task.task_metadata['exe_e_remap']['naming'] == 'zip_volume_main'
         assert task.task_metadata['exe_e_remap']['sfx_payload_offset'] == len(sfx_prefix)
         assert os.path.exists(base + '.exe')
         assert os.path.exists(base + '.e01')
