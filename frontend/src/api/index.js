@@ -176,8 +176,11 @@ export const configApi = {
 }
 
 export const securityGateApi = {
-  status: async () => {
-    const response = await apiClient.get('/security-gate/status')
+  status: async (options = {}) => {
+    const response = await apiClient.get(
+      '/security-gate/status',
+      options.timeout !== undefined ? { timeout: options.timeout } : {}
+    )
     return response.data
   },
 
