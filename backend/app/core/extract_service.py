@@ -202,6 +202,7 @@ class ExtractService:
         "disk full",
     )
     _INCOMPLETE_VOLUME_MARKERS: Tuple[str, ...] = (
+        "headers error",
         "unexpected end of archive",
         "unexpected end of data",
         "missing volume",
@@ -4162,12 +4163,22 @@ class ExtractService:
             linked_files: List[Dict[str, str]] = []
             try:
                 async with get_resource_budget_service().acquire("disk_io_local", reason="extract.sfx_payload_copy"):
-                    mode = await asyncio.to_thread(
-                        self._prepare_sfx_first_volume_view,
-                        exe_path,
-                        new_volumes[0],
-                        payload_offset,
-                    )
+                    if inner_format == 'zip':
+                        # split ZIP 的中央目录记录的是"首卷内偏移"。国产 ZIP-SFX
+                        # 会把 local header offset 记成 EXE stub 后的真实位置，
+                        # 所以首卷必须保留完整 SFX stub，只把文件名映射为 .z01。
+                        mode = await asyncio.to_thread(
+                            self._link_or_copy_file,
+                            exe_path,
+                            new_volumes[0],
+                        )
+                    else:
+                        mode = await asyncio.to_thread(
+                            self._prepare_sfx_first_volume_view,
+                            exe_path,
+                            new_volumes[0],
+                            payload_offset,
+                        )
                 linked_files.append({
                     'source': exe_path,
                     'view': new_volumes[0],
