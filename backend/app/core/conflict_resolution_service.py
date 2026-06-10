@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -1673,7 +1674,112 @@ class ConflictResolutionService:
         if os.path.isdir(target_path):
             await asyncio.to_thread(shutil.rmtree, target_path, True)
         else:
-            await asyncio.to_thread(os.remove, target_path)
+            await asyncio.to_thread(self._delete_local_file_with_split_siblings, target_path)
+
+    def _delete_local_file_with_split_siblings(self, path: str) -> None:
+        """删除本地来源文件；如果它是分卷成员，同步删除整组和空父目录。"""
+        targets = self._collect_local_split_archive_siblings(path)
+        for target in targets:
+            if not os.path.exists(target):
+                continue
+            try:
+                os.remove(target)
+                logger.info("[ConflictSkip] 已删除来源文件: %s", target)
+            except FileNotFoundError:
+                continue
+        parent_dir = os.path.dirname(path)
+        if not parent_dir or not os.path.isdir(parent_dir):
+            return
+        try:
+            if not os.listdir(parent_dir):
+                os.rmdir(parent_dir)
+                logger.info("[ConflictSkip] 已删除空来源目录: %s", parent_dir)
+        except OSError as exc:
+            logger.debug("[ConflictSkip] 来源目录非空或不可删除，保留: %s error=%s", parent_dir, exc)
+
+    def _collect_local_split_archive_siblings(self, path: str) -> list[str]:
+        """收集同目录下与 path 属于同一分卷组的本地文件。"""
+        if not os.path.isfile(path):
+            return [path] if os.path.exists(path) else []
+
+        parent_dir = os.path.dirname(path)
+        filename = os.path.basename(path)
+        patterns: list[re.Pattern[str]] = []
+
+        def add_pattern(pattern: str) -> None:
+            patterns.append(re.compile(pattern, re.IGNORECASE))
+
+        # X.001 / X.002 / ...：用户这次残留的形态。
+        match = re.match(r"^(.+)\.(\d{3})$", filename, re.IGNORECASE)
+        if match:
+            base = re.escape(match.group(1))
+            add_pattern(rf"^{base}\.\d{{3}}$")
+
+        # X.zip.001 / X.7z.001 / X.tar.001 / X.rar.001 等。
+        match = re.match(r"^(.+\.[a-zA-Z][a-zA-Z0-9]{0,3})\.\d{3}$", filename, re.IGNORECASE)
+        if match:
+            base = re.escape(match.group(1))
+            add_pattern(rf"^{base}\.\d{{3}}$")
+
+        # X.zip + X.002 / X.003 ...（zip_numeric_split 回滚后形态）。
+        match = re.match(r"^(.+)\.zip$", filename, re.IGNORECASE)
+        if match:
+            base = re.escape(match.group(1))
+            add_pattern(rf"^{base}\.zip$")
+            add_pattern(rf"^{base}\.\d{{3}}$")
+
+        # X.part1.rar / X.part2.rar；也兼容无扩展 X.part1 / X.part2。
+        match = re.match(r"^(.+)\.part\d+\.(rar|zip|7z|exe)$", filename, re.IGNORECASE)
+        if match:
+            base = re.escape(match.group(1))
+            add_pattern(rf"^{base}\.part\d+\.(rar|zip|7z|exe)$")
+        match = re.match(r"^(.+)\.part\d+$", filename, re.IGNORECASE)
+        if match:
+            base = re.escape(match.group(1))
+            add_pattern(rf"^{base}\.part\d+$")
+
+        # ZIP / SFX / 旧 RAR 分卷。
+        match = re.match(r"^(.+)\.z\d{2}$", filename, re.IGNORECASE)
+        if match:
+            base = re.escape(match.group(1))
+            add_pattern(rf"^{base}\.zip$")
+            add_pattern(rf"^{base}\.z\d{{2}}$")
+        match = re.match(r"^(.+)\.exe$", filename, re.IGNORECASE)
+        if match:
+            base = re.escape(match.group(1))
+            add_pattern(rf"^{base}\.exe$")
+            add_pattern(rf"^{base}\.e\d{{2}}$")
+        match = re.match(r"^(.+)\.e\d{2}$", filename, re.IGNORECASE)
+        if match:
+            base = re.escape(match.group(1))
+            add_pattern(rf"^{base}\.exe$")
+            add_pattern(rf"^{base}\.e\d{{2}}$")
+        match = re.match(r"^(.+)\.rar$", filename, re.IGNORECASE)
+        if match:
+            base = re.escape(match.group(1))
+            add_pattern(rf"^{base}\.rar$")
+            add_pattern(rf"^{base}\.r\d{{2}}$")
+        match = re.match(r"^(.+)\.r\d{2}$", filename, re.IGNORECASE)
+        if match:
+            base = re.escape(match.group(1))
+            add_pattern(rf"^{base}\.rar$")
+            add_pattern(rf"^{base}\.r\d{{2}}$")
+
+        if not patterns:
+            return [path]
+
+        siblings: set[str] = {path}
+        try:
+            with os.scandir(parent_dir) as entries:
+                for entry in entries:
+                    if not entry.is_file():
+                        continue
+                    if any(pattern.match(entry.name) for pattern in patterns):
+                        siblings.add(entry.path)
+        except OSError:
+            return [path]
+
+        return sorted(siblings, key=lambda item: os.path.basename(item).lower())
 
     def _local_preview(self, path: str) -> dict[str, Any]:
         if not path or not os.path.exists(path):

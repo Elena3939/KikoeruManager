@@ -220,3 +220,41 @@ class TestRenameDisguisedVolumes:
         # 没有残留 .tmp
         for entry in os.listdir(directory):
             assert ".tmp" not in entry, f"残留 tmp 文件: {entry}"
+
+
+class TestDeleteSplitSiblings:
+    @pytest.fixture
+    def service(self):
+        return ConflictResolutionService()
+
+    def test_delete_pure_numeric_volumes_and_empty_parent(self, service, tmp_path):
+        """SKIP 删除 RJ01547012.001 时，要把 RJ01547012.002 和空目录一起清掉。"""
+        source_dir = tmp_path / "RJ01547012"
+        source_dir.mkdir()
+        first = source_dir / "RJ01547012.001"
+        second = source_dir / "RJ01547012.002"
+        _write_file(str(first))
+        _write_file(str(second))
+
+        service._delete_local_file_with_split_siblings(str(first))
+
+        assert not first.exists()
+        assert not second.exists()
+        assert not source_dir.exists()
+
+    def test_delete_split_siblings_keeps_unrelated_files_and_parent(self, service, tmp_path):
+        """同目录有无关文件时只删同组分卷，父目录保留。"""
+        first = tmp_path / "RJ01547012.001"
+        second = tmp_path / "RJ01547012.002"
+        unrelated = tmp_path / "RJ01547013.002"
+        marker = tmp_path / "readme.txt"
+        for item in (first, second, unrelated, marker):
+            _write_file(str(item))
+
+        service._delete_local_file_with_split_siblings(str(first))
+
+        assert not first.exists()
+        assert not second.exists()
+        assert unrelated.exists()
+        assert marker.exists()
+        assert tmp_path.exists()
