@@ -1164,7 +1164,7 @@ function clearSubtitleInspectorState() {
 }
 
 async function inspectSubtitleTask(task, options = {}) {
-  const { force = false } = options
+  const { force = false, preserveSnapshotOnMissing = false } = options
   const subtitleDir = getTaskWorkbenchSubtitleDir(task)
   if (!subtitleDir) return
   const inspectSeq = ++subtitleInspectRequestSeq
@@ -1255,7 +1255,9 @@ async function inspectSubtitleTask(task, options = {}) {
             ...subtitleInspectorInfo.value,
             subtitleLoadError: message || '字幕目录读取失败'
           }
-          ElMessage.warning('字幕目录暂时不可用，已保留当前配对快照')
+          if (!preserveSnapshotOnMissing) {
+            ElMessage.warning('字幕目录暂时不可用，已保留当前配对快照')
+          }
         } else {
           clearSubtitleInspectorState()
           ElMessage.info(task.status === 'processing'
@@ -1299,12 +1301,85 @@ async function reloadSubtitleInspector() {
   await inspectSubtitleTask(activeTask.value, { force: true })
 }
 
+async function reloadCurrentSubtitleInspectorSnapshot() {
+  const taskId = String(subtitleInspectorInfo.value.taskId || activeTask.value?.id || props.taskId || '').trim()
+  const subtitleDir = String(subtitleInspectorInfo.value.subtitleDir || getTaskWorkbenchSubtitleDir(activeTask.value) || '').trim()
+  const subtitleLibraryId = subtitleInspectorInfo.value.subtitleLibraryId || activeTask.value?.subtitle_library_id || activeTask.value?.target_library_id || activeTask.value?.library_id || ''
+  const audioLibraryId = subtitleInspectorInfo.value.audioLibraryId || activeTask.value?.target_library_id || activeTask.value?.library_id || subtitleLibraryId
+  const audioFolderPath = String(subtitleInspectorInfo.value.folderPath || activeTask.value?.target_folder_path || activeTask.value?.folder_path || '').trim()
+  if (!subtitleDir || !subtitleLibraryId) return null
+
+  const inspectSeq = ++subtitleInspectRequestSeq
+  subtitleInspectorLoading.value = true
+  try {
+    const [subtitleResult, audioResult] = await Promise.allSettled([
+      libraryApi.browserFolderContents(subtitleLibraryId, subtitleDir),
+      audioFolderPath ? libraryApi.browserFolderContents(audioLibraryId, audioFolderPath) : Promise.resolve({ items: [] })
+    ])
+    if (inspectSeq !== subtitleInspectRequestSeq) return false
+    if (subtitleResult.status !== 'fulfilled') throw subtitleResult.reason
+
+    const subtitleData = subtitleResult.value || {}
+    const audioData = audioResult.status === 'fulfilled' ? (audioResult.value || {}) : { items: [] }
+    skipTaskDraftPersistence = true
+    subtitleInspectorSearch.value = ''
+    subtitleInspectorItems.value = subtitleData.items || []
+    subtitleInspectorAudioItems.value = audioData.items || []
+    subtitleInspectorInfo.value = {
+      ...subtitleInspectorInfo.value,
+      taskId,
+      libraryId: audioLibraryId || subtitleLibraryId,
+      audioLibraryId,
+      subtitleLibraryId,
+      folderPath: audioFolderPath,
+      subtitleDir: subtitleData.folder_path || subtitleDir,
+      sourceMode: activeTask.value?.source_mode || subtitleInspectorInfo.value.sourceMode || '',
+      audioLoadError: audioResult.status === 'rejected'
+        ? decodePossibleMojibake(audioResult.reason?.response?.data?.detail || audioResult.reason?.message || '音频目录读取失败')
+        : '',
+      subtitleLoadError: '',
+      totalFiles: subtitleData.total_files || 0,
+      totalSize: (subtitleData.items || []).reduce((sum, item) => sum + (item.size || 0), 0)
+    }
+    const opened = new Set()
+    buildTree(subtitleInspectorItems.value).forEach(node => { if (node.type === 'dir') opened.add(node.id) })
+    subtitleInspectorExpandedIds.value = opened
+    subtitleInspectorSelectedIds.value = new Set()
+    subtitleInspectorLastSelectedId.value = ''
+    skipTaskDraftPersistence = false
+    persistSubtitleTaskDraft(taskId)
+    return true
+  } catch (error) {
+    const message = decodePossibleMojibake(error.response?.data?.detail || error.message)
+    subtitleInspectorInfo.value = {
+      ...subtitleInspectorInfo.value,
+      subtitleLoadError: message || '字幕目录读取失败'
+    }
+    return false
+  } finally {
+    skipTaskDraftPersistence = false
+    if (inspectSeq === subtitleInspectRequestSeq) {
+      subtitleInspectorLoading.value = false
+    }
+  }
+}
+
 async function refreshSubtitleInspectorAfterManualApply(taskId) {
   skipTaskDraftPersistence = true
   resetSubtitleManualMatchState()
   clearSubtitleTaskDraft(taskId)
   skipTaskDraftPersistence = false
-  await reloadSubtitleInspector()
+  await refreshTaskStatus(false, { inspect: false, silent: true })
+  const refreshedTask = linkedTasks.value.find(task => task.id === taskId) || activeTask.value
+  if (refreshedTask?.id) {
+    activeTask.value = refreshedTask
+    selectedTaskId.value = refreshedTask.id
+  }
+  if (getTaskWorkbenchSubtitleDir(refreshedTask)) {
+    await inspectSubtitleTask(refreshedTask, { force: true, preserveSnapshotOnMissing: true })
+  } else {
+    await reloadCurrentSubtitleInspectorSnapshot()
+  }
 }
 
 function onSubtitleInspectorSearchInput() {
@@ -1407,6 +1482,34 @@ function resolveSubtitleEntryPath(row) {
   return joinFolderPath(subtitleInspectorInfo.value.subtitleDir, row.relative_path || row.name || '')
 }
 
+function applySubtitleRenameResultToSnapshot(rowPath, newName, result = {}) {
+  const normalizedOldPath = String(rowPath || '').replace(/\\/g, '/')
+  const normalizedNewPath = String(result?.new_path || result?.path || '').trim()
+  const nextName = String(newName || '').trim()
+  if (!normalizedOldPath || !nextName) return
+  const replaceBasename = (value) => {
+    const parts = String(value || '').replace(/\\/g, '/').split('/').filter(Boolean)
+    if (!parts.length) return nextName
+    parts[parts.length - 1] = nextName
+    return parts.join('/')
+  }
+
+  const updateItem = (item) => {
+    const itemPath = String(item?.path || '').replace(/\\/g, '/')
+    if (itemPath !== normalizedOldPath) return item
+    const nextPath = normalizedNewPath || replaceBasename(item.path)
+    return {
+      ...item,
+      path: nextPath,
+      name: nextName,
+      display_name: item.display_name === item.name ? nextName : item.display_name,
+      relative_path: item.relative_path ? replaceBasename(item.relative_path) : nextName
+    }
+  }
+
+  subtitleInspectorItems.value = subtitleInspectorItems.value.map(updateItem)
+}
+
 function openSubtitleRenameDialog(row) {
   if (row?.type !== 'file') return
   subtitleRenameForm.value = { currentName: row.name, newName: row.name, path: row.path }
@@ -1421,10 +1524,12 @@ async function confirmSubtitleRename() {
 
   subtitleRenameLoading.value = true
   try {
-    await libraryApi.browserRename(subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId, subtitleRenameForm.value.path, subtitleRenameForm.value.newName)
+    const result = await libraryApi.browserRename(subtitleInspectorInfo.value.subtitleLibraryId || subtitleInspectorInfo.value.libraryId, subtitleRenameForm.value.path, subtitleRenameForm.value.newName)
+    applySubtitleRenameResultToSnapshot(subtitleRenameForm.value.path, subtitleRenameForm.value.newName, result)
     subtitleRenameDialogVisible.value = false
     ElMessage.success('字幕文件重命名成功')
-    await reloadSubtitleInspector()
+    const reloaded = await reloadCurrentSubtitleInspectorSnapshot()
+    if (reloaded === null) await reloadSubtitleInspector()
   } catch (error) {
     ElMessage.error('重命名失败: ' + (error.response?.data?.detail || error.message))
   } finally {
@@ -1456,7 +1561,8 @@ async function deleteSubtitleTreeEntry(row) {
     try {
       await libraryApi.browserDelete(inspectorLibraryId, path, true)
       ElMessage.success('删除成功')
-      await reloadSubtitleInspector()
+      const reloaded = await reloadCurrentSubtitleInspectorSnapshot()
+      if (reloaded === null) await reloadSubtitleInspector()
     } finally {
       subtitleInspectorDeleting.value = false
     }
@@ -1498,7 +1604,8 @@ async function batchDeleteSubtitleTreeEntries() {
     }
     clearSubtitleInspectorSelection()
     ElMessage.success(`已删除 ${sortedRows.length} 项`)
-    await reloadSubtitleInspector()
+    const reloaded = await reloadCurrentSubtitleInspectorSnapshot()
+    if (reloaded === null) await reloadSubtitleInspector()
   } catch (error) {
     ElMessage.error('删除失败: ' + decodePossibleMojibake(error.response?.data?.detail || error.message))
   } finally {
@@ -2146,7 +2253,6 @@ async function applySubtitleManualPairs() {
     })
 
     await refreshSubtitleInspectorAfterManualApply(currentTaskId)
-    await refreshTaskStatus(false, { inspect: true, forceInspect: true })
     ElMessage.success(`已重命名并导入 ${appliedPairCount} 组配对${unusedSubtitleRows.length ? `，并删除 ${unusedSubtitleRows.length} 个未使用字幕` : ''}`)
   } catch (error) {
     const rollbackErrors = []
@@ -2166,10 +2272,10 @@ async function applySubtitleManualPairs() {
         if (phaseTwoRenamed.includes(pair)) continue
         const operationLibraryId = pair.kind === 'audio' ? audioLibraryId : subtitleLibraryId
         try {
-        await libraryApi.browserRename(operationLibraryId, pair.temp_path || pair.source_path, pair.current_name, {
-          skipActivityLog: true,
-          renameContext: 'subtitle_manual_match_pair'
-        })
+          await libraryApi.browserRename(operationLibraryId, pair.temp_path || pair.source_path, pair.current_name, {
+            skipActivityLog: true,
+            renameContext: 'subtitle_manual_match_pair'
+          })
         } catch (rollbackError) {
           rollbackErrors.push(`${pair.temp_name} -> ${pair.current_name}: ${rollbackError.response?.data?.detail || rollbackError.message}`)
         }
@@ -2206,7 +2312,8 @@ async function openSubtitleInspectorFilterDeleteDialog() {
 }
 
 async function handleFilterDeleteDeleted() {
-  await reloadSubtitleInspector()
+  const reloaded = await reloadCurrentSubtitleInspectorSnapshot()
+  if (reloaded === null) await reloadSubtitleInspector()
 }
 
 const subtitleInspectorRoot = computed(() => buildTree(subtitleInspectorItems.value))
