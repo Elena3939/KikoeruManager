@@ -233,17 +233,20 @@ class TestExtractService:
         extract_service._list_archive_contents.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_get_archive_info_non_utf8_zip_name_falls_back_to_7z_list(
+    async def test_get_archive_info_non_utf8_zip_name_uses_zipfile_fast_path(
         self, extract_service, temp_dir,
     ):
-        """非 UTF-8 flag 的非 ASCII ZIP 文件名继续交给 7zz list 编码探测。"""
+        """非 UTF-8 flag 的非 ASCII ZIP 文件名也走 zipfile 中央目录，不回退 7zz l。"""
         zip_path = os.path.join(temp_dir, 'legacy-name.zip')
-        self.create_test_zip(zip_path)
-        fallback_list = [{"name": "音声.txt", "size": 1, "is_dir": False}]
-        extract_service._list_archive_contents = AsyncMock(return_value=fallback_list)
+        with open(zip_path, "wb") as f:
+            f.write(b"PK\x03\x04")
+        raw_name = "音声.txt".encode("cp932")
+        extract_service._list_archive_contents = AsyncMock()
+        extract_service._sniff_zip_encoding = Mock(return_value="cp932")
 
         class FakeInfo:
-            filename = "音声.txt"
+            orig_filename = raw_name.decode("cp437")
+            filename = orig_filename
             flag_bits = 0
             file_size = 1
 
@@ -267,8 +270,10 @@ class TestExtractService:
             archive_info = await extract_service._get_archive_info(zip_path)
 
         assert archive_info is not None
-        assert archive_info.file_list == fallback_list
-        extract_service._list_archive_contents.assert_awaited()
+        assert archive_info.file_list == [{"name": "音声.txt", "size": 1, "is_dir": False}]
+        assert archive_info.detected_encoding == "cp932"
+        assert ExtractService._archive_encoding_cache[str(zip_path)] == "cp932"
+        extract_service._list_archive_contents.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_list_archive_wrong_password_skips_slt_and_remembers_negative_cache(
@@ -1385,6 +1390,121 @@ class TestExtractService:
         assert result.returncode == 0
         create_proc.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_inspect_command_slot_wait_timeout_does_not_start_process(self, extract_service):
+        """清单/探测槽位被占满时，等待本身也要超时，不能卡在子进程启动前。"""
+        old_semaphore = ExtractService._seven_zip_inspect_semaphore
+        old_limit = ExtractService._seven_zip_inspect_semaphore_limit
+        old_timeout = extract_service.INSPECT_SLOT_WAIT_TIMEOUT
+
+        ExtractService._seven_zip_inspect_semaphore = asyncio.Semaphore(1)
+        ExtractService._seven_zip_inspect_semaphore_limit = 1
+        await ExtractService._seven_zip_inspect_semaphore.acquire()
+        extract_service.INSPECT_SLOT_WAIT_TIMEOUT = 0.01
+
+        try:
+            with patch("asyncio.create_subprocess_exec", AsyncMock()) as create_proc:
+                result = await extract_service._run_7z_command(
+                    ["7zz", "l", "-ba", "archive.zip"],
+                    command_timeout=10.0,
+                )
+        finally:
+            ExtractService._seven_zip_inspect_semaphore.release()
+            ExtractService._seven_zip_inspect_semaphore = old_semaphore
+            ExtractService._seven_zip_inspect_semaphore_limit = old_limit
+            extract_service.INSPECT_SLOT_WAIT_TIMEOUT = old_timeout
+
+        assert result.returncode == -8
+        assert "等待清单/探测槽位超时" in result.stderr.decode("utf-8", errors="ignore")
+        create_proc.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_password_probe_slot_wait_timeout_returns_unknown(self, extract_service, temp_dir):
+        """密码探测等不到清单/探测槽位时不能无限卡在 38%。"""
+        old_semaphore = ExtractService._seven_zip_inspect_semaphore
+        old_limit = ExtractService._seven_zip_inspect_semaphore_limit
+        old_timeout = extract_service.PROBE_SLOT_WAIT_TIMEOUT
+        archive_path = os.path.join(temp_dir, "RJ00000001.zip")
+        self.create_test_zip(archive_path)
+        task = Mock()
+        task.progress = 38
+        task.update_progress = Mock()
+
+        ExtractService._seven_zip_inspect_semaphore = asyncio.Semaphore(1)
+        ExtractService._seven_zip_inspect_semaphore_limit = 1
+        await ExtractService._seven_zip_inspect_semaphore.acquire()
+        extract_service.PROBE_SLOT_WAIT_TIMEOUT = 0.01
+
+        try:
+            with patch("asyncio.create_subprocess_exec", AsyncMock()) as create_proc:
+                result = await extract_service._probe_by_smallest_entry(
+                    archive_path,
+                    "pwd",
+                    {"name": "test.txt", "size": 12, "is_dir": False},
+                    timeout=1.0,
+                    task=task,
+                )
+        finally:
+            ExtractService._seven_zip_inspect_semaphore.release()
+            ExtractService._seven_zip_inspect_semaphore = old_semaphore
+            ExtractService._seven_zip_inspect_semaphore_limit = old_limit
+            extract_service.PROBE_SLOT_WAIT_TIMEOUT = old_timeout
+
+        assert result == "unknown"
+        create_proc.assert_not_awaited()
+        messages = [str(call.args[1]) for call in task.update_progress.call_args_list]
+        assert any("等待密码探测槽位" in message for message in messages)
+        assert any("等待密码探测槽位超时" in message for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_password_probe_budget_wait_timeout_releases_slot(self, extract_service, temp_dir):
+        """资源预算不放行时也要释放已拿到的清单/探测槽位。"""
+        old_semaphore = ExtractService._seven_zip_inspect_semaphore
+        old_limit = ExtractService._seven_zip_inspect_semaphore_limit
+        old_timeout = extract_service.PROBE_SLOT_WAIT_TIMEOUT
+        archive_path = os.path.join(temp_dir, "RJ00000002.zip")
+        self.create_test_zip(archive_path)
+
+        class StuckBudget:
+            def snapshot(self):
+                return {
+                    "resources": {
+                        "archive_inspect": {
+                            "passthrough": False,
+                            "active_limit": 1,
+                            "available": 0,
+                        },
+                    },
+                }
+
+            @asynccontextmanager
+            async def acquire(self, resource, *, weight=1, reason=""):
+                await asyncio.sleep(10)
+                yield
+
+        ExtractService._seven_zip_inspect_semaphore = asyncio.Semaphore(1)
+        ExtractService._seven_zip_inspect_semaphore_limit = 1
+        extract_service.PROBE_SLOT_WAIT_TIMEOUT = 0.01
+
+        try:
+            with patch("app.core.extract_service.get_resource_budget_service", return_value=StuckBudget()), \
+                    patch("asyncio.create_subprocess_exec", AsyncMock()) as create_proc:
+                result = await extract_service._probe_by_smallest_entry(
+                    archive_path,
+                    "pwd",
+                    {"name": "test.txt", "size": 12, "is_dir": False},
+                    timeout=1.0,
+                )
+                available = getattr(ExtractService._seven_zip_inspect_semaphore, "_value", None)
+        finally:
+            ExtractService._seven_zip_inspect_semaphore = old_semaphore
+            ExtractService._seven_zip_inspect_semaphore_limit = old_limit
+            extract_service.PROBE_SLOT_WAIT_TIMEOUT = old_timeout
+
+        assert result == "unknown"
+        assert available == 1
+        create_proc.assert_not_awaited()
+
     def test_archive_file_list_garbled_sample_detects_rar_toc_mojibake(self, extract_service):
         """RAR TOC 已经乱码时，不应继续交给 7zz fallback 产出同样乱码的文件。"""
         sample = extract_service._archive_file_list_garbled_sample([
@@ -1619,7 +1739,7 @@ class TestExtractService:
         extract_service._probe_password.assert_awaited_once()
         probe_args = extract_service._probe_password.await_args
         assert probe_args.args[1] == "sana"
-        assert probe_args.kwargs["allow_full_test"] is True
+        assert probe_args.kwargs["allow_full_test"] is False
         extract_service._cleanup_extract_attempt.assert_awaited_once_with(output_path)
         first_cmd = run_7z_command.await_args.args[0]
         assert "-psana" in first_cmd
@@ -1727,7 +1847,7 @@ class TestExtractService:
         assert first_probe.args[1] == ""
         assert first_probe.kwargs["allow_full_test"] is False
         assert second_probe.args[1] == "sxy4649777"
-        assert second_probe.kwargs["allow_full_test"] is True
+        assert second_probe.kwargs["allow_full_test"] is False
         assert run_7z_command.await_count == 1
         first_cmd = run_7z_command.await_args.args[0]
         assert "-psxy4649777" in first_cmd
@@ -1810,7 +1930,7 @@ class TestExtractService:
 
         archive_info = ArchiveInfo(
             path=archive_path,
-            file_list=[{"name": "voice.wav", "size": 12, "is_dir": False}],
+            file_list=[{"name": "RJ01378421/偵偭偪壒惡岺朳/僠儍僾僞乕1.wav", "size": 12, "is_dir": False}],
         )
 
         try:
@@ -2406,6 +2526,33 @@ class TestExtractService:
             result = asyncio.run(extract_service.collect_top_level_rjcodes(fake_archive))
 
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_infer_rjcode_skips_large_opaque_inner_entry(self, extract_service, temp_dir):
+        """无后缀 opaque 大条目不能为了 RJ 推断整条抽到 temp 再 7zz l。"""
+        archive_path = os.path.join(temp_dir, "source.zip")
+        with open(archive_path, "wb") as f:
+            f.write(b"dummy")
+        archive_info = ArchiveInfo(
+            archive_path,
+            [
+                {
+                    "name": "payload",
+                    "size": extract_service.RJ_INFER_OPAQUE_ENTRY_MAX_SIZE + 1,
+                    "is_dir": False,
+                },
+            ],
+            "",
+        )
+        extract_service._get_archive_info = AsyncMock(return_value=archive_info)
+        extract_service.extract_selected_entries = AsyncMock(
+            side_effect=AssertionError("大 opaque 条目不应被抽出探测")
+        )
+
+        result = await extract_service.infer_rjcode_from_archive(archive_path, max_nested_depth=1)
+
+        assert result is None
+        extract_service.extract_selected_entries.assert_not_awaited()
 
     # ------------------------------------------------------------------
     # 嵌套解压软失败：覆盖合集包内单个嵌套 zip 失败导致整任务被毙的回归

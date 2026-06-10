@@ -30,7 +30,7 @@ import queue
 import filetype
 import tempfile
 from collections import OrderedDict
-from typing import Optional, List, Dict, Callable, Tuple, Union, Any
+from typing import Optional, List, Dict, Callable, Tuple, Union, Any, AsyncIterator
 from pathlib import Path
 import logging
 import hashlib
@@ -70,6 +70,10 @@ class DisguisedVolumeSetError(Exception):
     def __init__(self, message: str, payload: Dict[str, Any]):
         super().__init__(message)
         self.payload = payload
+
+
+class ArchiveInspectSlotTimeout(Exception):
+    """等待 7z 清单/探测槽位超时。调用方应放弃本次预读并走后续兜底。"""
 
 
 class ArchiveInfo:
@@ -123,11 +127,25 @@ class ExtractService:
     PROBE_ENTRY_TIMEOUT: float = 30.0             # 单条目 t 命令的最大耗时
     PROBE_MAGIC_TIMEOUT: float = 20.0             # 魔数探测（只读前几十字节）超时
     PROBE_MAGIC_ENTRY_LIMIT: int = 3              # 一次密码最多抽样多少个强魔数条目
-    PROBE_FULL_TEST_TIMEOUT: float = 600.0        # 无法轻量定性时，最多花 10 分钟做不落盘 t 验证
+    PROBE_FULL_TEST_TIMEOUT: float = 60.0         # 显式整包 t 探测兜底超时；主解压流程默认不跑整包探测
     PROBE_BYTES: int = 2 * 1024 * 1024            # 流式探测读到 2MB 即认为解压流可信
     PROBE_TIMEOUT_SECONDS: float = 30.0           # 单次流式探测最多等 30s，超时回退完整解压
+    INSPECT_SLOT_WAIT_TIMEOUT: float = float(os.getenv("KIKOERUMANAGER_7Z_INSPECT_SLOT_WAIT_TIMEOUT_SECONDS", "45") or 45)
+    PROBE_SLOT_WAIT_TIMEOUT: float = float(
+        os.getenv(
+            "KIKOERUMANAGER_7Z_PROBE_SLOT_WAIT_TIMEOUT_SECONDS",
+            str(INSPECT_SLOT_WAIT_TIMEOUT),
+        ) or INSPECT_SLOT_WAIT_TIMEOUT
+    )
+    BACKGROUND_PRECHECK_SLOT_WAIT_TIMEOUT: float = float(
+        os.getenv("KIKOERUMANAGER_7Z_BACKGROUND_PRECHECK_SLOT_WAIT_TIMEOUT_SECONDS", "3") or 3
+    )
     LIST_TIMEOUT_SECONDS: float = float(os.getenv("KIKOERUMANAGER_7Z_LIST_TIMEOUT_SECONDS", "180") or 180)
     PRECHECK_LIST_TIMEOUT_SECONDS: float = float(os.getenv("KIKOERUMANAGER_7Z_PRECHECK_LIST_TIMEOUT_SECONDS", "90") or 90)
+    RJ_INFER_OPAQUE_ENTRY_MAX_SIZE: int = int(
+        os.getenv("KIKOERUMANAGER_RJ_INFER_OPAQUE_ENTRY_MAX_BYTES", str(512 * 1024 * 1024))
+        or str(512 * 1024 * 1024)
+    )
     INSPECT_CONCURRENCY_LIMIT: int = max(
         1,
         int(os.getenv("KIKOERUMANAGER_7Z_INSPECT_CONCURRENCY", "1") or 1),
@@ -1424,6 +1442,165 @@ class ExtractService:
             return False
 
     @staticmethod
+    def _task_progress_floor(task: Optional[Task], floor: int) -> int:
+        if task is None:
+            return floor
+        try:
+            current = int(getattr(task, "progress", 0) or 0)
+        except Exception:
+            current = 0
+        return max(floor, current)
+
+    @contextlib.asynccontextmanager
+    async def _acquire_7z_resource_slot(
+        self,
+        *,
+        semaphore: asyncio.Semaphore,
+        budget_resource: str,
+        reason: str,
+        archive_path: str,
+        slot_label: str,
+        slot_limit: int,
+        wait_timeout: Optional[float],
+        task: Optional[Task] = None,
+        progress_floor: int = 31,
+        update_task_progress: bool = True,
+    ) -> AsyncIterator[bool]:
+        budget_service = get_resource_budget_service()
+        budget_busy = False
+        try:
+            snapshot = budget_service.snapshot()
+            info = (snapshot.get("resources") or {}).get(budget_resource) or {}
+            budget_busy = (
+                not bool(info.get("passthrough", True))
+                and int(info.get("active_limit") or 0) > 0
+                and int(info.get("available") or 0) <= 0
+            )
+        except Exception:
+            budget_busy = False
+
+        if task is not None and update_task_progress and (self._is_semaphore_locked(semaphore) or budget_busy):
+            task.update_progress(
+                self._task_progress_floor(task, progress_floor),
+                f"等待{slot_label}（当前并发上限 {slot_limit or 1}）",
+            )
+
+        try:
+            timeout_seconds = float(wait_timeout or 0)
+        except Exception:
+            timeout_seconds = 0.0
+
+        semaphore_acquired = False
+        budget_cm = None
+        budget_entered = False
+
+        async def _enter_resources() -> None:
+            nonlocal semaphore_acquired, budget_cm, budget_entered
+            await semaphore.acquire()
+            semaphore_acquired = True
+            budget_cm = budget_service.acquire(budget_resource, reason=reason)
+            await budget_cm.__aenter__()
+            budget_entered = True
+
+        try:
+            if timeout_seconds > 0:
+                await asyncio.wait_for(_enter_resources(), timeout=timeout_seconds)
+            else:
+                await _enter_resources()
+        except asyncio.TimeoutError:
+            if budget_entered and budget_cm is not None:
+                try:
+                    await budget_cm.__aexit__(None, None, None)
+                except Exception:
+                    logger.debug("释放 7z 资源预算失败", exc_info=True)
+            if semaphore_acquired:
+                semaphore.release()
+            if task is not None and update_task_progress:
+                task.update_progress(
+                    self._task_progress_floor(task, progress_floor),
+                    f"等待{slot_label}超时，转入后续兜底流程",
+                )
+            logger.warning(
+                "等待 7z %s/资源预算超时（%.1fs）: reason=%s archive=%s",
+                slot_label,
+                timeout_seconds,
+                reason,
+                os.path.basename(str(archive_path or "")),
+            )
+            yield False
+            return
+        except asyncio.CancelledError:
+            if budget_entered and budget_cm is not None:
+                try:
+                    await budget_cm.__aexit__(None, None, None)
+                except Exception:
+                    logger.debug("释放 7z 资源预算失败", exc_info=True)
+            if semaphore_acquired:
+                semaphore.release()
+            raise
+        except Exception as e:
+            if budget_entered and budget_cm is not None:
+                try:
+                    await budget_cm.__aexit__(None, None, None)
+                except Exception:
+                    logger.debug("释放 7z 资源预算失败", exc_info=True)
+            if semaphore_acquired:
+                semaphore.release()
+            logger.warning(
+                "获取 7z %s/资源预算失败: reason=%s archive=%s error=%s",
+                slot_label,
+                reason,
+                os.path.basename(str(archive_path or "")),
+                e,
+            )
+            yield False
+            return
+
+        try:
+            yield True
+        finally:
+            if budget_entered and budget_cm is not None:
+                await budget_cm.__aexit__(None, None, None)
+            if semaphore_acquired:
+                semaphore.release()
+
+    @contextlib.asynccontextmanager
+    async def _acquire_probe_inspect_slot(
+        self,
+        reason: str,
+        archive_path: str,
+        task: Optional[Task] = None,
+        wait_timeout: Optional[float] = None,
+        update_task_progress: bool = True,
+    ) -> AsyncIterator[bool]:
+        """限时获取密码探测需要的 7z 清单槽和资源预算。
+
+        探测子进程自身有 timeout，但如果卡在 semaphore / resource budget 的
+        acquire 阶段，子进程还没启动，内部 timeout 根本不会开始计时。
+        """
+        semaphore = self._get_7z_inspect_semaphore()
+        slot_limit = self.__class__._seven_zip_inspect_semaphore_limit or 1
+        try:
+            timeout_seconds = max(0.1, float(
+                self.PROBE_SLOT_WAIT_TIMEOUT if wait_timeout is None else wait_timeout
+            ))
+        except Exception:
+            timeout_seconds = 45.0
+        async with self._acquire_7z_resource_slot(
+            semaphore=semaphore,
+            budget_resource="archive_inspect",
+            reason=reason,
+            archive_path=archive_path,
+            slot_label="密码探测槽位",
+            slot_limit=slot_limit,
+            wait_timeout=timeout_seconds,
+            task=task,
+            progress_floor=38,
+            update_task_progress=update_task_progress,
+        ) as acquired:
+            yield acquired
+
+    @staticmethod
     def _is_extract_subprocess_command(cmd: List[str]) -> bool:
         if len(cmd) < 2:
             return False
@@ -2071,9 +2248,23 @@ class ExtractService:
         finally:
             db.close()
 
-    async def get_archive_info(self, archive_path: str) -> Optional[ArchiveInfo]:
+    async def get_archive_info(
+        self,
+        archive_path: str,
+        *,
+        task: Optional[Task] = None,
+        list_timeout: Optional[float] = None,
+        slot_wait_timeout: Optional[float] = None,
+        update_task_progress: bool = True,
+    ) -> Optional[ArchiveInfo]:
         """Public wrapper for archive listing."""
-        return await self._get_archive_info(archive_path)
+        return await self._get_archive_info(
+            archive_path,
+            task=task,
+            list_timeout=list_timeout,
+            slot_wait_timeout=slot_wait_timeout,
+            update_task_progress=update_task_progress,
+        )
 
     async def extract_selected_entries(
         self,
@@ -4931,6 +5122,7 @@ class ExtractService:
 
         nested_archive_entries: List[str] = []
         opaque_archive_entries: List[str] = []
+        skipped_large_opaque_entries = 0
         logger.info(
             "[RJ 推断] 开始扫描压缩包条目: archive=%s depth=%s total_entries=%s",
             normalized_archive_path,
@@ -4960,14 +5152,18 @@ class ExtractService:
                 entry_suffix = Path(entry_name).suffix.lower()
                 entry_size = int((item or {}).get("size") or 0)
                 if not entry_suffix and entry_size > 0:
-                    opaque_archive_entries.append(entry_name)
+                    if entry_size <= self.RJ_INFER_OPAQUE_ENTRY_MAX_SIZE:
+                        opaque_archive_entries.append(entry_name)
+                    else:
+                        skipped_large_opaque_entries += 1
 
         logger.info(
-            "[RJ 推断] 条目扫描未直接命中: archive=%s depth=%s nested_candidates=%s opaque_candidates=%s",
+            "[RJ 推断] 条目扫描未直接命中: archive=%s depth=%s nested_candidates=%s opaque_candidates=%s skipped_large_opaque=%s",
             normalized_archive_path,
             current_depth,
             len(nested_archive_entries),
             len(opaque_archive_entries),
+            skipped_large_opaque_entries,
         )
 
         if current_depth >= max_nested_depth:
@@ -5197,6 +5393,7 @@ class ExtractService:
         use_cache: bool = True,
         task: Optional[Task] = None,
         list_timeout: Optional[float] = None,
+        slot_wait_timeout: Optional[float] = None,
         update_task_progress: bool = True,
     ) -> Optional[ArchiveInfo]:
         """获取压缩包信息（文件列表、大小等）
@@ -5345,23 +5542,42 @@ class ExtractService:
                         task=task,
                         filename_encoding=self._manual_filename_encoding_from_task(task),
                         command_timeout=list_timeout,
+                        slot_wait_timeout=slot_wait_timeout,
                         update_task_progress=update_task_progress,
                         cache_key=password_cache_key,
                         lock_already_held=True,
                     )
+                    if file_list is None:
+                        continue
                     if file_list is not None:
                         return build_archive_info(password, file_list)
+                except ArchiveInspectSlotTimeout as exc:
+                    logger.warning(
+                        "等待压缩包清单槽位超时，放弃本次预读取: archive=%s reason=%s",
+                        os.path.basename(str(archive_path or "")),
+                        exc,
+                    )
+                    return None
                 finally:
                     password_lock.release()
             else:
-                file_list = await self._list_archive_contents(
-                    archive_path,
-                    password,
-                    task=task,
-                    filename_encoding=self._manual_filename_encoding_from_task(task),
-                    command_timeout=list_timeout,
-                    update_task_progress=update_task_progress,
-                )
+                try:
+                    file_list = await self._list_archive_contents(
+                        archive_path,
+                        password,
+                        task=task,
+                        filename_encoding=self._manual_filename_encoding_from_task(task),
+                        command_timeout=list_timeout,
+                        slot_wait_timeout=slot_wait_timeout,
+                        update_task_progress=update_task_progress,
+                    )
+                except ArchiveInspectSlotTimeout as exc:
+                    logger.warning(
+                        "等待压缩包清单槽位超时，放弃本次预读取: archive=%s reason=%s",
+                        os.path.basename(str(archive_path or "")),
+                        exc,
+                    )
+                    return None
             if file_list is not None:
                 return build_archive_info(password, file_list)
 
@@ -5436,6 +5652,7 @@ class ExtractService:
         self,
         task: Task,
         archive_path: Optional[str] = None,
+        slot_wait_timeout: Optional[float] = None,
     ) -> Optional[ArchiveInfo]:
         """为 task 异步预读取压缩包清单（用于查重 + list 并行场景）。
 
@@ -5466,6 +5683,11 @@ class ExtractService:
             password_candidates=precheck_candidates,
             task=task,
             list_timeout=self.PRECHECK_LIST_TIMEOUT_SECONDS,
+            slot_wait_timeout=(
+                self.BACKGROUND_PRECHECK_SLOT_WAIT_TIMEOUT
+                if slot_wait_timeout is None
+                else slot_wait_timeout
+            ),
             update_task_progress=False,
         )
 
@@ -5476,6 +5698,7 @@ class ExtractService:
         task: Optional[Task] = None,
         filename_encoding: Optional[Union[str, int]] = None,
         command_timeout: Optional[float] = None,
+        slot_wait_timeout: Optional[float] = None,
         update_task_progress: bool = True,
         cache_key: Optional[Tuple[str, str]] = None,
         lock_already_held: bool = False,
@@ -5506,6 +5729,7 @@ class ExtractService:
                 task=task,
                 filename_encoding=filename_encoding,
                 command_timeout=command_timeout,
+                slot_wait_timeout=slot_wait_timeout,
                 update_task_progress=update_task_progress,
                 cache_key=cache_key,
             )
@@ -5530,6 +5754,7 @@ class ExtractService:
         task: Optional[Task] = None,
         filename_encoding: Optional[Union[str, int]] = None,
         command_timeout: Optional[float] = None,
+        slot_wait_timeout: Optional[float] = None,
         update_task_progress: bool = True,
         cache_key: Optional[Tuple[str, str]] = None,
     ) -> Optional[List[Dict]]:
@@ -5547,10 +5772,13 @@ class ExtractService:
                     cmd,
                     task=task,
                     command_timeout=command_timeout,
+                    slot_wait_timeout=slot_wait_timeout,
                     update_task_progress=update_task_progress,
                 )
                 if result.returncode != 0:
                     stderr_text = result.stderr.decode('utf-8', errors='ignore')
+                    if result.returncode == -8:
+                        raise ArchiveInspectSlotTimeout(stderr_text or "等待 7z 清单/探测槽位超时")
                     logger.warning(
                         f"[7z] 列出压缩包内容失败，返回码: {result.returncode}, 错误: {stderr_text[:500]}"
                     )
@@ -5573,6 +5801,8 @@ class ExtractService:
                 )
                 if file_list:
                     return file_list
+            except ArchiveInspectSlotTimeout:
+                raise
             except Exception as e:
                 logger.error(f"列出压缩包内容失败: {e}")
         return None
@@ -5654,17 +5884,29 @@ class ExtractService:
             return None
         import zipfile as _zipfile
         try:
+            detected_encoding = self._sniff_zip_encoding(archive_path)
+            if detected_encoding:
+                self.__class__._archive_encoding_cache[str(archive_path)] = detected_encoding
             file_list: List[Dict] = []
             with _zipfile.ZipFile(archive_path, "r") as zf:
                 for info in zf.infolist():
-                    if not (info.flag_bits & 0x800) and any(ord(c) > 127 for c in str(info.filename or "")):
-                        logger.info(
-                            "[zip快路径] 检测到非 UTF-8 flag 的非 ASCII 文件名，回退 7zz list 编码探测: %s",
-                            archive_path,
-                        )
-                        return None
+                    name = str(info.filename or "")
+                    if not (info.flag_bits & 0x800):
+                        try:
+                            raw_name = (
+                                info.orig_filename.encode("cp437")
+                                if isinstance(info.orig_filename, str)
+                                else bytes(info.orig_filename or b"")
+                            )
+                        except Exception:
+                            raw_name = b""
+                        if raw_name and detected_encoding:
+                            try:
+                                name = raw_name.decode(detected_encoding, errors="replace")
+                            except Exception:
+                                name = str(info.filename or "")
                     file_list.append({
-                        "name": str(info.filename or "").replace("\\", "/"),
+                        "name": name.replace("\\", "/"),
                         "size": int(info.file_size or 0),
                         "is_dir": bool(info.is_dir()),
                     })
@@ -5676,7 +5918,13 @@ class ExtractService:
         if not file_list:
             return None
         archive_info = ArchiveInfo(archive_path, file_list, "")
-        logger.info("[zip快路径] 标准未加密 ZIP 直接读取中央目录: %s entries=%s", archive_path, len(file_list))
+        archive_info.detected_encoding = detected_encoding
+        logger.info(
+            "[zip快路径] 标准未加密 ZIP 直接读取中央目录: %s entries=%s encoding=%s",
+            archive_path,
+            len(file_list),
+            detected_encoding or "utf-8/cp437",
+        )
         return archive_info
 
     def _detect_best_encoding(self, raw_bytes: bytes) -> str:
@@ -6023,7 +6271,7 @@ class ExtractService:
                     return False, None, "cancelled"
 
                 # 轻量预验证：错密码秒级淘汰，避免跑完整解压才发现 CRC Failed。
-                # 无密码候选也必须探测，但只做轻量检查，不跑完整 t，避免加密大包白跑。
+                # 禁止在主流程里跑整包 `7zz t`：大包/分卷会长时间停在 38%，看起来像解压卡死。
                 if self.PROBE_BEFORE_EXTRACT:
                     task.update_progress(38, f"探测密码 (来源: {password_source})")
                     probe_result = await self._probe_password(
@@ -6033,7 +6281,7 @@ class ExtractService:
                         timeout=self.PROBE_TIMEOUT_SECONDS,
                         file_list=getattr(archive_info, 'file_list', None),
                         task=task,
-                        allow_full_test=bool(password),
+                        allow_full_test=False,
                     )
                     # 探测期间被 cancel/pause kill 掉，按 stop_reason 决策
                     if task.is_cancelled():
@@ -6543,10 +6791,12 @@ class ExtractService:
         max_captured_bytes: int = 4 * 1024 * 1024,
         task: Optional[Task] = None,
         command_timeout: Optional[float] = None,
+        slot_wait_timeout: Optional[float] = None,
         update_task_progress: bool = True,
     ) -> subprocess.CompletedProcess:
         """运行7z命令。传入 task 后会把子进程登记到 task 上，cancel/pause 能立刻 kill。"""
-        logger.info("执行7z命令: %s", self._format_command_for_log(cmd))
+        formatted_cmd = self._format_command_for_log(cmd)
+        logger.info("准备执行7z命令: %s", formatted_cmd)
 
         is_extract_command = self._is_extract_subprocess_command(cmd)
         is_inspect_command = self._is_inspect_subprocess_command(cmd)
@@ -6562,14 +6812,36 @@ class ExtractService:
             timeout_seconds = self.LIST_TIMEOUT_SECONDS
 
         try:
-            if task is not None and update_task_progress and self._is_semaphore_locked(semaphore):
-                task.update_progress(
-                    max(31, int(task.progress or 0)),
-                    f"等待{slot_label}（当前并发上限 {slot_limit}）",
-                )
             budget_resource = "archive_cpu" if is_extract_command else "archive_inspect"
             budget_reason = "extract.7z" if is_extract_command else "extract.7z_inspect"
-            async with semaphore, get_resource_budget_service().acquire(budget_resource, reason=budget_reason):
+            effective_slot_wait_timeout = (
+                slot_wait_timeout
+                if slot_wait_timeout is not None
+                else (self.INSPECT_SLOT_WAIT_TIMEOUT if is_inspect_command else None)
+            )
+            async with self._acquire_7z_resource_slot(
+                semaphore=semaphore,
+                budget_resource=budget_resource,
+                reason=budget_reason,
+                archive_path=str(cmd[-1] if cmd else ""),
+                slot_label=slot_label,
+                slot_limit=slot_limit,
+                wait_timeout=effective_slot_wait_timeout,
+                task=task,
+                progress_floor=31,
+                update_task_progress=update_task_progress,
+            ) as acquired:
+                if not acquired:
+                    message = (
+                        f"等待{slot_label}超时，7z命令未启动: {formatted_cmd}"
+                    )
+                    return subprocess.CompletedProcess(
+                        args=cmd,
+                        returncode=-8,
+                        stdout=b"",
+                        stderr=message.encode("utf-8", errors="ignore"),
+                    )
+                logger.info("已取得%s，启动7z命令: %s", slot_label, formatted_cmd)
                 if task is not None and update_task_progress and is_extract_command:
                     task.update_progress(max(40, int(task.progress or 0)), "解压子进程已启动")
                 # Windows 上隐藏子进程窗口，避免闪烁
@@ -6645,7 +6917,7 @@ class ExtractService:
                             await terminate_process()
                             message = (
                                 f"7z命令超时 ({timeout_seconds:.1f}s): "
-                                f"{self._format_command_for_log(cmd)}"
+                                f"{formatted_cmd}"
                             )
                             logger.warning(message)
                             return subprocess.CompletedProcess(
@@ -6712,6 +6984,7 @@ class ExtractService:
                             max_captured_bytes=max_captured_bytes,
                             task=task,
                             command_timeout=command_timeout,
+                            slot_wait_timeout=slot_wait_timeout,
                             update_task_progress=update_task_progress,
                         )
                     return subprocess.CompletedProcess(
@@ -6721,6 +6994,7 @@ class ExtractService:
                         stderr=bytes(stderr_data)
                     )
 
+                logger.info("7z命令完成: %s", formatted_cmd)
                 return subprocess.CompletedProcess(
                     args=cmd,
                     returncode=return_code,
@@ -6920,8 +7194,10 @@ class ExtractService:
                 return False
             return None
 
-        semaphore = self._get_7z_inspect_semaphore()
-        async with semaphore, get_resource_budget_service().acquire("archive_inspect", reason="extract.probe_magic"):
+        async with self._acquire_probe_inspect_slot("extract.probe_magic", archive_path, task) as acquired:
+            if not acquired:
+                return 'unknown'
+            logger.info("执行7z探测命令: %s", self._format_command_for_log(cmd))
             try:
                 process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
             except Exception as e:
@@ -7118,8 +7394,10 @@ class ExtractService:
             from subprocess import CREATE_NO_WINDOW as _CNW
             kwargs['creationflags'] = _CNW
 
-        semaphore = self._get_7z_inspect_semaphore()
-        async with semaphore, get_resource_budget_service().acquire("archive_inspect", reason="extract.probe_entry"):
+        async with self._acquire_probe_inspect_slot("extract.probe_entry", archive_path, task) as acquired:
+            if not acquired:
+                return 'unknown'
+            logger.info("执行7z探测命令: %s", self._format_command_for_log(cmd))
             try:
                 process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
             except Exception as e:
@@ -7213,8 +7491,10 @@ class ExtractService:
             from subprocess import CREATE_NO_WINDOW as _CNW
             kwargs['creationflags'] = _CNW
 
-        semaphore = self._get_7z_inspect_semaphore()
-        async with semaphore, get_resource_budget_service().acquire("archive_inspect", reason="extract.probe_full_test"):
+        async with self._acquire_probe_inspect_slot("extract.probe_full_test", archive_path, task) as acquired:
+            if not acquired:
+                return 'unknown'
+            logger.info("执行7z探测命令: %s", self._format_command_for_log(cmd))
             try:
                 process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
             except Exception as e:
@@ -7357,13 +7637,13 @@ class ExtractService:
             if result != 'unknown':
                 return result
             logger.debug(
-                "小条目测试对 %s 无法定性，回退到流式探测",
+                "小条目测试对 %s 无法定性，交给后续解压兜底",
                 os.path.basename(archive_path),
             )
 
         if file_list and allow_full_test:
-            logger.debug(
-                "轻量探测无法定性，先执行完整 t 验证避免无效落盘解压: %s",
+            logger.info(
+                "轻量探测无法定性，执行显式整包 t 验证: %s",
                 os.path.basename(archive_path),
             )
             result = await self._probe_by_full_test(
@@ -7374,9 +7654,9 @@ class ExtractService:
             )
             if result != 'unknown':
                 return result
-        if is_rar:
+        if file_list:
             return 'unknown'
-        if not password and file_list:
+        if is_rar:
             return 'unknown'
         # ---- 以下是原有流式探测逻辑（无 file_list 时的兜底） ----
         cmd = [
@@ -7397,8 +7677,10 @@ class ExtractService:
             from subprocess import CREATE_NO_WINDOW as _CNW
             kwargs['creationflags'] = _CNW
 
-        semaphore = self._get_7z_inspect_semaphore()
-        async with semaphore, get_resource_budget_service().acquire("archive_inspect", reason="extract.probe_stream"):
+        async with self._acquire_probe_inspect_slot("extract.probe_stream", archive_path, task) as acquired:
+            if not acquired:
+                return 'unknown'
+            logger.info("执行7z探测命令: %s", self._format_command_for_log(cmd))
             try:
                 process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
             except Exception as e:
