@@ -180,9 +180,36 @@ const router = createRouter({
   routes
 })
 
+const SECURITY_GATE_STATUS_TTL_MS = 8000
+let securityGateStatusCache = {
+  value: null,
+  expiresAt: 0,
+  pending: null
+}
+
 function buildVerifyRedirect(to) {
   const next = encodeURIComponent(to.fullPath || '/')
   return `/verify?next=${next}`
+}
+
+async function getSecurityGateStatus() {
+  const now = Date.now()
+  if (securityGateStatusCache.value && securityGateStatusCache.expiresAt > now) {
+    return securityGateStatusCache.value
+  }
+  if (!securityGateStatusCache.pending) {
+    securityGateStatusCache.pending = securityGateApi.status({ timeout: 3000 })
+      .then((state) => {
+        const canEnter = !state?.blocked && (!state?.enforced || state?.authenticated)
+        securityGateStatusCache.value = canEnter ? state : null
+        securityGateStatusCache.expiresAt = canEnter ? Date.now() + SECURITY_GATE_STATUS_TTL_MS : 0
+        return state
+      })
+      .finally(() => {
+        securityGateStatusCache.pending = null
+      })
+  }
+  return securityGateStatusCache.pending
 }
 
 router.beforeEach(async (to) => {
@@ -191,7 +218,7 @@ router.beforeEach(async (to) => {
   }
 
   try {
-    const state = await securityGateApi.status()
+    const state = await getSecurityGateStatus()
     if (state?.blocked) {
       return '/blocked'
     }
