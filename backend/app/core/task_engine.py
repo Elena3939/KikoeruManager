@@ -322,7 +322,6 @@ class Task:
         with self._set_state_silent():
             self.progress = normalized_progress
             self.current_step = step
-        logger.debug(f"任务 {self.id}: {step} ({normalized_progress}%)")
 
         try:
             if not isinstance(self.task_metadata, dict):
@@ -357,6 +356,7 @@ class Task:
                 "message": text,
                 "level": "info",
             })
+            logger.info("任务 %s: %s (%d%%)", self.id, text, normalized_progress)
             # 限长 60 条：解压/入库平均 15~20 条，留足余量给重试场景。
             self.task_metadata["progress_log"] = logs[-60:]
             self._metadata_version = int(getattr(self, "_metadata_version", 0) or 0) + 1

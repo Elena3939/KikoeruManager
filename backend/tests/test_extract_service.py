@@ -196,8 +196,8 @@ class TestExtractService:
 
         assert FileProcessor().is_archive(disguised_path) is True
 
-    def test_redact_command_args_masks_passwords(self, extract_service):
-        """日志里的 7z / unar 命令不能泄露明文密码。"""
+    def test_format_command_for_log_keeps_passwords_visible(self, extract_service):
+        """日志里的 7z / unar 命令保留明文密码，方便现场排查密码命中。"""
         cmd = [
             "7zz",
             "x",
@@ -210,10 +210,10 @@ class TestExtractService:
 
         redacted = extract_service._format_command_for_log(cmd)
 
-        assert "super_secret" not in redacted
-        assert "another_secret" not in redacted
-        assert "-p******" in redacted
-        assert "-p ******" in redacted
+        assert "super_secret" in redacted
+        assert "another_secret" in redacted
+        assert "-psuper_secret" in redacted
+        assert "-p another_secret" in redacted
 
     @pytest.mark.asyncio
     async def test_get_archive_info_plain_zip_uses_zipfile_fast_path(self, extract_service, temp_dir):
@@ -467,6 +467,84 @@ class TestExtractService:
         ]
 
         await extract_service._rollback_exe_e_remap(task)
+
+    @pytest.mark.asyncio
+    async def test_remap_exe_e_sequence_zip_inner_uses_zip_split_view(self, extract_service, temp_dir):
+        """ZIP-SFX 内嵌档应生成 .zip.001 / .zip.002 临时视图，而不是改名成 7z 分卷。"""
+        base = os.path.join(temp_dir, 'zip_sfx')
+        sfx_prefix = b'MZ\x00\x00' + (b'\x00' * 512)
+        local_header = (
+            b'PK\x03\x04'
+            + b'\x14\x00'
+            + b'\x00\x00'
+            + b'\x08\x00'
+            + b'\x00\x00\x00\x00'
+            + b'\x00\x00\x00\x00'
+            + b'\x00\x00\x00\x00'
+            + b'\x00\x00\x00\x00'
+            + b'\x08\x00'
+            + b'\x00\x00'
+            + b'test.txt'
+        )
+        with open(base + '.exe', 'wb') as f:
+            f.write(sfx_prefix)
+            f.write(local_header)
+            f.write(b'payload')
+        with open(base + '.e01', 'wb') as f:
+            f.write(b'next-volume')
+
+        original_set = extract_service._detect_volume_set(base + '.exe')
+        assert original_set is not None and original_set.type == 'exe_e_sequence'
+
+        task = Mock()
+        task.task_metadata = {}
+
+        new_set = await extract_service._remap_exe_e_sequence(original_set, task)
+
+        assert [os.path.basename(p) for p in new_set.volumes] == [
+            'zip_sfx.zip.001',
+            'zip_sfx.zip.002',
+        ]
+        assert task.task_metadata['exe_e_remap']['inner_format'] == 'zip'
+        assert task.task_metadata['exe_e_remap']['sfx_payload_offset'] == len(sfx_prefix)
+        assert os.path.exists(base + '.exe')
+        assert os.path.exists(base + '.e01')
+        with open(new_set.entry_path, 'rb') as f:
+            assert f.read(4) == b'PK\x03\x04'
+
+        await extract_service._rollback_exe_e_remap(task)
+        assert not os.path.exists(os.path.dirname(new_set.entry_path))
+
+    @pytest.mark.asyncio
+    async def test_remap_exe_e_sequence_unknown_inner_uses_temporary_view(self, extract_service, temp_dir):
+        """探测不到内嵌魔数时也不能物理改名 .exe/.eNN，避免复现 1.6.13 的 Headers Error 路线。"""
+        base = os.path.join(temp_dir, 'unknown_sfx')
+        with open(base + '.exe', 'wb') as f:
+            f.write(b'MZ' + b'\x00' * 1024)
+        with open(base + '.e01', 'wb') as f:
+            f.write(b'next-volume')
+
+        original_set = extract_service._detect_volume_set(base + '.exe')
+        assert original_set is not None and original_set.type == 'exe_e_sequence'
+
+        task = Mock()
+        task.task_metadata = {}
+
+        new_set = await extract_service._remap_exe_e_sequence(original_set, task)
+
+        assert new_set.type == '7z_volume_with_ext'
+        assert [os.path.basename(p) for p in new_set.volumes] == [
+            'unknown_sfx.7z.001',
+            'unknown_sfx.7z.002',
+        ]
+        assert os.path.dirname(new_set.entry_path) != temp_dir
+        assert task.task_metadata['exe_e_remap']['inner_format'] == 'unknown'
+        assert task.task_metadata['exe_e_remap']['mode'] == 'temporary_view'
+        assert os.path.exists(base + '.exe')
+        assert os.path.exists(base + '.e01')
+
+        await extract_service._rollback_exe_e_remap(task)
+        assert not os.path.exists(os.path.dirname(new_set.entry_path))
 
     def test_7z_split_volume_is_not_rar_fast_path(self, extract_service, temp_dir):
         """7z 分卷首卷不能因为内容探测误走 RAR/unar 快路径。"""

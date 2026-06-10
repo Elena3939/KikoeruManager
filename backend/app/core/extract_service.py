@@ -194,6 +194,27 @@ class ExtractService:
         lowered = str(text or "").lower()
         return any(marker in lowered for marker in cls._LIST_WRONG_PASSWORD_MARKERS)
 
+    @staticmethod
+    def _looks_like_zip_local_header(buffer: bytes, offset: int) -> bool:
+        """粗校验 ZIP local header，避免在大 SFX stub/随机数据里误命中 PK。"""
+        if offset < 0 or offset + 30 > len(buffer):
+            return False
+        if buffer[offset:offset + 4] != b'PK\x03\x04':
+            return False
+        version_needed = int.from_bytes(buffer[offset + 4:offset + 6], "little")
+        compression = int.from_bytes(buffer[offset + 8:offset + 10], "little")
+        filename_len = int.from_bytes(buffer[offset + 26:offset + 28], "little")
+        extra_len = int.from_bytes(buffer[offset + 28:offset + 30], "little")
+        if not (10 <= version_needed <= 63):
+            return False
+        if compression not in {0, 1, 6, 8, 9, 12, 14, 98, 99}:
+            return False
+        if filename_len <= 0 or filename_len > 4096:
+            return False
+        if extra_len > 65535:
+            return False
+        return True
+
     # #3 负缓存：按 "压缩包指纹 × 密码哈希" 记忆失败组合，进程内重试任务时直接跳过。
     _password_negative_cache: Dict[Tuple[str, str], float] = {}
     _password_probe_locks: Dict[Tuple[str, str], asyncio.Lock] = {}
@@ -1428,25 +1449,8 @@ class ExtractService:
 
     @staticmethod
     def _redact_command_args(cmd: List[str]) -> List[str]:
-        """日志输出用：隐藏 7z/unar 命令里的明文密码参数。"""
-        redacted: List[str] = []
-        mask_next = False
-        for arg in cmd:
-            value = str(arg)
-            if mask_next:
-                redacted.append("******")
-                mask_next = False
-                continue
-            lower = value.lower()
-            if lower in {"-p", "--password"}:
-                redacted.append(value)
-                mask_next = True
-                continue
-            if lower.startswith("-p") and len(value) > 2:
-                redacted.append("-p******")
-                continue
-            redacted.append(value)
-        return redacted
+        """日志输出用：保留 7z/unar 命令里的明文密码，便于现场排查密码命中。"""
+        return [str(arg) for arg in cmd]
 
     @staticmethod
     def _format_command_for_log(cmd: List[str]) -> str:
@@ -3761,42 +3765,75 @@ class ExtractService:
     def _probe_sfx_inner_payload(self, exe_path: str) -> Tuple[str, Optional[int]]:
         """扫描 SFX 头部，识别内嵌档真实格式和 payload 起始偏移。
 
-        国产 .exe + .eNN 工具的 SFX 头部通常较小（几 KB），内嵌档魔数会在前几 MB
-        出现。这里扫前 8MB 找到第一个匹配即返回。
+        国产 .exe + .eNN 工具的 SFX 头部通常较小（几 KB），但也会遇到
+        ZIP-SFX 或带较大 stub / 资源段的变体。默认按块扫描前 64MB（可用
+        KIKOERUMANAGER_SFX_PROBE_BYTES 覆盖扫描字节数），找到第一个匹配即返回。
 
-        Returns: (format, offset)，format 为 '7z' / 'rar' / 'unknown'
+        Returns: (format, offset)，format 为 '7z' / 'rar' / 'zip' / 'unknown'
         """
-        SCAN_SIZE = 8 * 1024 * 1024  # 8MB
+        try:
+            file_size = os.path.getsize(exe_path)
+        except OSError:
+            file_size = 64 * 1024 * 1024
+        default_scan_size = 64 * 1024 * 1024
+        try:
+            scan_size = int(os.getenv("KIKOERUMANAGER_SFX_PROBE_BYTES", str(default_scan_size)) or default_scan_size)
+        except ValueError:
+            scan_size = default_scan_size
+        scan_size = min(file_size, max(8 * 1024 * 1024, scan_size)) if file_size > 0 else max(8 * 1024 * 1024, scan_size)
+        chunk_size = 4 * 1024 * 1024
         signatures = (
             (b'7z\xBC\xAF\x27\x1C', '7z'),
             (b'Rar!\x1A\x07\x01\x00', 'rar'),  # RAR5
             (b'Rar!\x1A\x07\x00', 'rar'),       # RAR4
+            (b'PK\x03\x04', 'zip'),              # ZIP / ZIP-SFX local file header
         )
+        overlap = max(len(sig) for sig, _ in signatures) - 1
+        best_strong: Optional[Tuple[int, str]] = None
+        best_zip: Optional[Tuple[int, str]] = None
         try:
             with open(exe_path, 'rb') as f:
-                chunk = f.read(SCAN_SIZE)
+                scanned = 0
+                carry = b''
+                while scanned < scan_size:
+                    chunk = f.read(min(chunk_size, scan_size - scanned))
+                    if not chunk:
+                        break
+                    window = carry + chunk
+                    window_base = scanned - len(carry)
+                    for sig, fmt in signatures:
+                        idx = window.find(sig)
+                        while idx >= 0:
+                            if fmt == "zip" and not self._looks_like_zip_local_header(window, idx):
+                                idx = window.find(sig, idx + 1)
+                                continue
+                            abs_idx = window_base + idx
+                            if fmt == "zip":
+                                if best_zip is None or abs_idx < best_zip[0]:
+                                    best_zip = (abs_idx, fmt)
+                            elif best_strong is None or abs_idx < best_strong[0]:
+                                best_strong = (abs_idx, fmt)
+                            break
+                    carry = window[-overlap:] if overlap > 0 else b''
+                    scanned += len(chunk)
         except Exception as exc:
             logger.warning(f"[ExeESequence] 扫描 SFX 头部失败: {exc}")
             return 'unknown', None
 
-        best_offset = None
-        best_fmt = 'unknown'
-        for sig, fmt in signatures:
-            idx = chunk.find(sig)
-            if idx >= 0 and (best_offset is None or idx < best_offset):
-                best_offset = idx
-                best_fmt = fmt
-        if best_offset is not None:
+        best = best_strong or best_zip
+        if best is not None:
+            best_offset, best_fmt = best
             logger.info(
                 f"[ExeESequence] 探测 SFX 内嵌档格式: {best_fmt} "
                 f"(offset={best_offset}, file={os.path.basename(exe_path)})"
             )
-        else:
-            logger.warning(
-                f"[ExeESequence] 前 {SCAN_SIZE//1024//1024}MB 未找到 7z/RAR 魔数: "
-                f"{os.path.basename(exe_path)}"
-            )
-        return best_fmt, best_offset
+            return best_fmt, best_offset
+
+        logger.warning(
+            f"[ExeESequence] 前 {scan_size//1024//1024}MB 未找到 7z/RAR/ZIP 魔数: "
+            f"{os.path.basename(exe_path)}"
+        )
+        return 'unknown', None
 
     def _probe_sfx_inner_format(self, exe_path: str) -> str:
         """兼容旧调用：只返回 SFX 内嵌档格式。"""
@@ -3808,6 +3845,17 @@ class ExtractService:
         with open(source_path, 'rb') as src, open(target_path, 'wb') as dst:
             src.seek(offset)
             shutil.copyfileobj(src, dst, 8 * 1024 * 1024)
+
+    def _prepare_sfx_first_volume_view(
+        self,
+        source_path: str,
+        target_path: str,
+        payload_offset: Optional[int],
+    ) -> str:
+        if payload_offset is not None and payload_offset > 0:
+            self._copy_sfx_payload_first_volume(source_path, payload_offset, target_path)
+            return "payload_copy"
+        return self._link_or_copy_file(source_path, target_path)
 
     def _link_or_copy_file(self, source_path: str, target_path: str) -> str:
         os.makedirs(os.path.dirname(target_path), exist_ok=True)
@@ -3826,24 +3874,31 @@ class ExtractService:
         """把 .exe + .eNN 国产 SFX 分卷组重命名为标准多卷格式。
 
         策略：
-        1. 扫描 .exe 内嵌档魔数（_probe_sfx_inner_format）。
-        2. 7z 流 → 重命名为 .7z.001 / .7z.002 / ...，类型 7z_volume_with_ext。
-        3. RAR 流（或探测失败默认）→ 重命名为 .part1.rar / .part2.rar / ...，
-           类型 part。这样能让现有 unar fallback 在 7zz 失败时自动接管。
+        1. 扫描 .exe 内嵌档魔数（7z / RAR / ZIP）。
+        2. 7z / ZIP / unknown → 生成临时标准分卷视图，不再物理改名原始文件。
+           7z 命名为 .7z.001 / .7z.002，ZIP 命名为 .zip.001 / .zip.002。
+        3. RAR 流 → 重命名为 .part1.rar / .part2.rar / ...，类型 part。
+           这样能让现有 unar fallback 在 7zz 失败时自动接管。
         4. 重命名失败任何一卷都整体回滚，返回原 volume_set，上层走原失败链路。
-        5. 在 task_metadata 里记录原始/重命名映射，便于解压最终失败时还原文件名。
+        5. 在 task_metadata 里记录原始/临时视图/重命名映射，便于最终清理。
         """
         if volume_set.type != 'exe_e_sequence' or not volume_set.volumes:
             return volume_set
 
         exe_path = volume_set.entry_path or volume_set.volumes[0]
-        inner_format, payload_offset = self._probe_sfx_inner_payload(exe_path)
+        inner_format, payload_offset = await asyncio.to_thread(self._probe_sfx_inner_payload, exe_path)
 
+        use_temporary_view = inner_format != 'rar'
         if inner_format == 'rar':
             new_type = 'part'
 
             def make_name(idx: int) -> str:
                 return f"{volume_set.base_name}.part{idx}.rar"
+        elif inner_format == 'zip':
+            new_type = '7z_volume_with_ext'
+
+            def make_name(idx: int) -> str:
+                return f"{volume_set.base_name}.zip.{idx:03d}"
         else:
             # 7z 或 unknown 都默认走 7z 命名（实测国产 SFX 大多是 7z 流）。
             # 注意：首卷 .exe 可能带 SFX stub，不能直接改名为 .7z.001；
@@ -3855,9 +3910,9 @@ class ExtractService:
 
         directory = os.path.dirname(volume_set.volumes[0])
 
-        if new_type == '7z_volume_with_ext' and payload_offset and payload_offset > 0:
+        if use_temporary_view:
             temp_dir = await self._create_temp_dir_with_fallback(
-                "kikoerumanager_sfx_7z_view_",
+                "kikoerumanager_sfx_volume_view_",
                 "extract.sfx_volume_view",
             )
             new_volumes: List[str] = [
@@ -3867,16 +3922,16 @@ class ExtractService:
             linked_files: List[Dict[str, str]] = []
             try:
                 async with get_resource_budget_service().acquire("disk_io_local", reason="extract.sfx_payload_copy"):
-                    await asyncio.to_thread(
-                        self._copy_sfx_payload_first_volume,
+                    mode = await asyncio.to_thread(
+                        self._prepare_sfx_first_volume_view,
                         exe_path,
-                        payload_offset,
                         new_volumes[0],
+                        payload_offset,
                     )
                 linked_files.append({
                     'source': exe_path,
                     'view': new_volumes[0],
-                    'mode': 'payload_copy',
+                    'mode': mode,
                 })
                 for source_path, view_path in zip(volume_set.volumes[1:], new_volumes[1:]):
                     async with get_resource_budget_service().acquire("disk_io_local", reason="extract.sfx_volume_view"):
@@ -3891,15 +3946,16 @@ class ExtractService:
                         'mode': mode,
                     })
                 logger.info(
-                    "[ExeESequence] 已创建 7z SFX 临时分卷视图: source=%s offset=%s dir=%s",
+                    "[ExeESequence] 已创建 SFX 临时分卷视图: source=%s format=%s offset=%s dir=%s",
                     exe_path,
+                    inner_format,
                     payload_offset,
                     temp_dir,
                 )
             except Exception as exc:
                 await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
                 logger.error(
-                    "[ExeESequence] 创建 7z SFX 临时分卷视图失败，回退原始分卷: %s",
+                    "[ExeESequence] 创建 SFX 临时分卷视图失败，回退原始分卷: %s",
                     exc,
                 )
                 return volume_set
