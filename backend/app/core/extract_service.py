@@ -201,6 +201,14 @@ class ExtractService:
         "write error",
         "disk full",
     )
+    _INCOMPLETE_VOLUME_MARKERS: Tuple[str, ...] = (
+        "unexpected end of archive",
+        "unexpected end of data",
+        "missing volume",
+        "required volume",
+        "need another volume",
+        "next volume is required",
+    )
 
     @classmethod
     def _looks_like_disk_full_error(cls, text: str) -> bool:
@@ -211,6 +219,35 @@ class ExtractService:
     def _looks_like_wrong_password_error(cls, text: str) -> bool:
         lowered = str(text or "").lower()
         return any(marker in lowered for marker in cls._LIST_WRONG_PASSWORD_MARKERS)
+
+    @classmethod
+    def _looks_like_incomplete_volume_error(cls, text: str) -> bool:
+        lowered = str(text or "").lower()
+        return any(marker in lowered for marker in cls._INCOMPLETE_VOLUME_MARKERS)
+
+    def _is_sfx_temporary_volume_view_path(self, archive_path: str, task: Optional[Task]) -> bool:
+        metadata = getattr(task, "task_metadata", None) or {}
+        meta = metadata.get("exe_e_remap") or {}
+        if not isinstance(meta, dict) or meta.get("mode") != "temporary_view":
+            return False
+
+        archive_abs = os.path.abspath(str(archive_path or ""))
+        temp_dir = str(meta.get("temp_dir") or "").strip()
+        if temp_dir:
+            try:
+                temp_abs = os.path.abspath(temp_dir)
+                if os.path.commonpath([archive_abs, temp_abs]) == temp_abs:
+                    return True
+            except Exception:
+                pass
+
+        for item in meta.get("view_map") or []:
+            if not isinstance(item, dict):
+                continue
+            view_path = str(item.get("view") or "").strip()
+            if view_path and os.path.abspath(view_path) == archive_abs:
+                return True
+        return False
 
     @staticmethod
     def _looks_like_zip_local_header(buffer: bytes, offset: int) -> bool:
@@ -2079,6 +2116,8 @@ class ExtractService:
             # 更新任务状态为失败，并设置更准确的错误信息
             if extract_failure_reason == "disk_full":
                 error_msg = "解压失败：临时目录磁盘空间不足"
+            elif extract_failure_reason == "volume_incomplete":
+                error_msg = "解压失败：分卷压缩包不完整或自解压分卷视图异常"
             elif extract_failure_reason == "archive_corrupt":
                 error_msg = "解压失败：压缩包损坏或不完整（Headers/Data Error）"
             elif extract_failure_reason == "wrong_password":
@@ -4067,7 +4106,7 @@ class ExtractService:
         策略：
         1. 扫描 .exe 内嵌档魔数（7z / RAR / ZIP）。
         2. 7z / ZIP / unknown → 生成临时标准分卷视图，不再物理改名原始文件。
-           7z 命名为 .7z.001 / .7z.002，ZIP 命名为 .zip + .z01 / .z02。
+           7z 命名为 .7z.001 / .7z.002，ZIP 命名为 .z01 / .z02 / ... / .zip。
         3. RAR 流 → 重命名为 .part1.rar / .part2.rar / ...，类型 part。
            这样能让现有 unar fallback 在 7zz 失败时自动接管。
         4. 重命名失败任何一卷都整体回滚，返回原 volume_set，上层走原失败链路。
@@ -4085,13 +4124,6 @@ class ExtractService:
 
             def make_name(idx: int) -> str:
                 return f"{volume_set.base_name}.part{idx}.rar"
-        elif inner_format == 'zip':
-            new_type = 'zip_volume_main'
-
-            def make_name(idx: int) -> str:
-                if idx == 1:
-                    return f"{volume_set.base_name}.zip"
-                return f"{volume_set.base_name}.z{idx - 1:02d}"
         else:
             # 7z 或 unknown 都默认走 7z 命名（实测国产 SFX 大多是 7z 流）。
             # 注意：首卷 .exe 可能带 SFX stub，不能直接改名为 .7z.001；
@@ -4108,10 +4140,25 @@ class ExtractService:
                 "kikoerumanager_sfx_volume_view_",
                 "extract.sfx_volume_view",
             )
-            new_volumes: List[str] = [
-                os.path.join(temp_dir, make_name(idx))
-                for idx, _ in enumerate(volume_set.volumes, start=1)
-            ]
+            if inner_format == 'zip':
+                new_type = 'zip_volume_main'
+                total_volumes = len(volume_set.volumes)
+                # ZIP split 的中央目录在最终 .zip 主卷。国产 SFX 的 .exe 是首个数据卷，
+                # 后续 .eNN 依次续写，因此临时视图必须是 .z01/.z02/.../.zip。
+                new_volumes = [
+                    os.path.join(
+                        temp_dir,
+                        f"{volume_set.base_name}.zip"
+                        if idx == total_volumes
+                        else f"{volume_set.base_name}.z{idx:02d}",
+                    )
+                    for idx, _ in enumerate(volume_set.volumes, start=1)
+                ]
+            else:
+                new_volumes = [
+                    os.path.join(temp_dir, make_name(idx))
+                    for idx, _ in enumerate(volume_set.volumes, start=1)
+                ]
             linked_files: List[Dict[str, str]] = []
             try:
                 async with get_resource_budget_service().acquire("disk_io_local", reason="extract.sfx_payload_copy"):
@@ -4172,7 +4219,7 @@ class ExtractService:
                 volume_set.base_name,
                 new_volumes,
                 new_type,
-                entry_path=new_volumes[0],
+                entry_path=new_volumes[-1] if inner_format == 'zip' else new_volumes[0],
             )
 
         rename_map: List[Tuple[str, str]] = []
@@ -6458,6 +6505,16 @@ class ExtractService:
                     )
                     return False, None, "disk_full"
 
+                if (
+                    self._is_sfx_temporary_volume_view_path(archive_info.path, task)
+                    and self._looks_like_incomplete_volume_error(stderr_text)
+                ):
+                    last_corrupt_stderr = stderr_text or stderr_lower
+                    logger.warning(
+                        "SFX 临时分卷视图返回不完整分卷特征，先记录根因并继续尝试剩余密码: %s",
+                        stderr_text[:300] if stderr_text else "(无错误文本)",
+                    )
+
                 # 扩展加密错误识别：不同版本 p7zip / 7zz 的密码错措辞差异较大，
                 # 只靠 "wrong password" 一个关键字会漏判，导致后面误走损坏分支。
                 encryption_markers = (
@@ -6479,6 +6536,7 @@ class ExtractService:
                     "headers error",
                     "unconfirmed start of archive",
                     "unexpected end of archive",
+                    "unexpected end of data",
                     "cannot open the file as archive",
                     "can not open the file as archive",
                     "e_invalidarg",
@@ -6554,6 +6612,23 @@ class ExtractService:
                 last_corrupt_stderr[:300],
             )
             return False, None, "disk_full"
+
+        if (
+            last_corrupt_stderr
+            and self._is_sfx_temporary_volume_view_path(archive_info.path, task)
+            and self._looks_like_incomplete_volume_error(last_corrupt_stderr)
+        ):
+            logger.error(
+                "SFX 临时分卷视图返回不完整分卷特征，优先判定为 volume_incomplete: archive=%s stderr=%s",
+                archive_info.path,
+                last_corrupt_stderr[:300],
+            )
+            self._set_extract_meta(
+                task,
+                extract_failure_reason="volume_incomplete",
+                sfx_volume_view_error=last_corrupt_stderr[:1000],
+            )
+            return False, None, "volume_incomplete"
 
         if listing_available or encountered_wrong_password:
             if last_corrupt_stderr:

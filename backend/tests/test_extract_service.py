@@ -475,7 +475,7 @@ class TestExtractService:
 
     @pytest.mark.asyncio
     async def test_remap_exe_e_sequence_zip_inner_uses_zip_split_view(self, extract_service, temp_dir):
-        """ZIP-SFX 内嵌档应生成 .zip + .z01 临时视图，而不是改名成 7z 分卷。"""
+        """ZIP-SFX 内嵌档应生成 .z01/.z02/.../.zip 临时视图。"""
         base = os.path.join(temp_dir, 'zip_sfx')
         sfx_prefix = b'MZ\x00\x00' + (b'\x00' * 512)
         local_header = (
@@ -495,8 +495,12 @@ class TestExtractService:
             f.write(sfx_prefix)
             f.write(local_header)
             f.write(b'payload')
-        with open(base + '.e01', 'wb') as f:
-            f.write(b'next-volume')
+        for suffix, payload in (
+            ('.e01', b'next-volume-1'),
+            ('.e02', b'central-directory-volume'),
+        ):
+            with open(base + suffix, 'wb') as f:
+                f.write(payload)
 
         original_set = extract_service._detect_volume_set(base + '.exe')
         assert original_set is not None and original_set.type == 'exe_e_sequence'
@@ -509,16 +513,20 @@ class TestExtractService:
         assert new_set.type == 'zip_volume_main'
         assert os.path.basename(new_set.entry_path) == 'zip_sfx.zip'
         assert [os.path.basename(p) for p in new_set.volumes] == [
-            'zip_sfx.zip',
             'zip_sfx.z01',
+            'zip_sfx.z02',
+            'zip_sfx.zip',
         ]
         assert task.task_metadata['exe_e_remap']['inner_format'] == 'zip'
         assert task.task_metadata['exe_e_remap']['naming'] == 'zip_volume_main'
         assert task.task_metadata['exe_e_remap']['sfx_payload_offset'] == len(sfx_prefix)
         assert os.path.exists(base + '.exe')
         assert os.path.exists(base + '.e01')
-        with open(new_set.entry_path, 'rb') as f:
+        assert os.path.exists(base + '.e02')
+        with open(new_set.volumes[0], 'rb') as f:
             assert f.read(4) == b'PK\x03\x04'
+        with open(new_set.entry_path, 'rb') as f:
+            assert f.read() == b'central-directory-volume'
 
         await extract_service._rollback_exe_e_remap(task)
         assert not os.path.exists(os.path.dirname(new_set.entry_path))
@@ -1904,6 +1912,71 @@ class TestExtractService:
         assert reason == ""
         extract_service._probe_password.assert_awaited_once()
         run_7z_command.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_try_extract_sfx_temp_view_incomplete_volume_not_wrong_password(
+        self, extract_service, temp_dir,
+    ):
+        """SFX 临时分卷视图遇到 Unexpected end 时不能被 Wrong password 覆盖。"""
+        archive_path = os.path.join(temp_dir, "sfx_view.zip")
+        with open(archive_path, "wb") as f:
+            f.write(b"PK\x05\x06" + b"\x00" * 18)
+        output_path = os.path.join(temp_dir, "sfx-output")
+        os.makedirs(output_path, exist_ok=True)
+        task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
+        task.task_metadata = {
+            "exe_e_remap": {
+                "mode": "temporary_view",
+                "temp_dir": temp_dir,
+                "view_map": [{"source": "RJ01629292.exe", "view": archive_path}],
+            },
+        }
+
+        run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
+            args=[],
+            returncode=2,
+            stdout=b"",
+            stderr=(
+                b"ERRORS:\n"
+                b"Unexpected end of archive\n"
+                b"ERROR: Wrong password : sfx_view.zip\n"
+            ),
+        ))
+        extract_service._run_7z_command = run_7z_command
+        extract_service._cleanup_extract_attempt = AsyncMock()
+        old_probe_before_extract = extract_service.PROBE_BEFORE_EXTRACT
+        old_password_list = list(extract_service.config.extract.password_list or [])
+        extract_service.PROBE_BEFORE_EXTRACT = False
+        extract_service.config.extract.password_list = []
+
+        archive_info = ArchiveInfo(
+            path=archive_path,
+            file_list=[{"name": "voice.wav", "size": 12, "is_dir": False}],
+            password="bad",
+        )
+
+        try:
+            success, password, reason = await extract_service._try_extract(
+                archive_info,
+                output_path,
+                task,
+                password_candidates=[{
+                    "password": "bad",
+                    "source": "密码库-通用",
+                    "entry_id": None,
+                    "rjcode": None,
+                }],
+            )
+        finally:
+            extract_service.PROBE_BEFORE_EXTRACT = old_probe_before_extract
+            extract_service.config.extract.password_list = old_password_list
+
+        assert success is False
+        assert password is None
+        assert reason == "volume_incomplete"
+        assert task.task_metadata["extract_failure_reason"] == "volume_incomplete"
+        assert "Unexpected end of archive" in task.task_metadata["sfx_volume_view_error"]
+        assert run_7z_command.await_count == 2
 
     @pytest.mark.asyncio
     async def test_try_extract_rar_unar_skips_no_password_when_probe_unknown(
