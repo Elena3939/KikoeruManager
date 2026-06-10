@@ -1,4 +1,6 @@
+import pytest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from app.core.classifier import SmartClassifier
 from app.core.linked_subtitle_import_service import LinkedSubtitleImportService
@@ -104,3 +106,53 @@ def test_classifier_skips_original_duplicate_when_translation_should_supply_subt
     )
 
     assert should_skip is True
+
+
+@pytest.mark.asyncio
+async def test_preview_archive_import_large_non_translation_skips_archive_listing(tmp_path):
+    """大包已有 RJ hint 且确认非翻译作品时，不读压缩包清单也不临时解包。"""
+    archive_path = tmp_path / "RJ01616588.zip"
+    with open(archive_path, "wb") as f:
+        f.seek(11 * 1024 * 1024)
+        f.write(b"\0")
+
+    service = object.__new__(LinkedSubtitleImportService)
+    service.subtitle_service = SimpleNamespace(
+        extract_rjcode=lambda value: "RJ01616588" if "RJ01616588" in str(value or "") else ""
+    )
+    service.extract_service = SimpleNamespace(
+        NESTED_SUBTITLE_SIZE_THRESHOLD=10 * 1024 * 1024,
+        PRECHECK_LIST_TIMEOUT_SECONDS=1,
+        get_archive_info=AsyncMock(side_effect=AssertionError("非翻译大包不应读取压缩包清单")),
+    )
+    service.dlsite_service = SimpleNamespace(
+        get_translation_info=AsyncMock(return_value=SimpleNamespace(is_original=True, original_workno="")),
+        get_product_info=AsyncMock(return_value={}),
+        get_linked_works=AsyncMock(return_value={}),
+    )
+    service.kikoeru_service = SimpleNamespace()
+    service._collect_archive_subtitles_to_stage = AsyncMock(
+        side_effect=AssertionError("非翻译大包不应临时解包扫描字幕")
+    )
+    service._build_common_preview = AsyncMock(return_value={
+        "source_rjcode": "RJ01616588",
+        "target_rjcode": "",
+        "is_translation_work": False,
+        "is_manual_subtitle_source": False,
+        "is_linked_subtitle_source": False,
+        "subtitle_count": 0,
+    })
+    service._refresh_preview_execution_state = lambda preview: preview
+
+    preview = await service.preview_archive_import(
+        str(archive_path),
+        source_rjcode_hint="RJ01616588",
+    )
+
+    service.extract_service.get_archive_info.assert_not_awaited()
+    service._collect_archive_subtitles_to_stage.assert_not_awaited()
+    service.dlsite_service.get_translation_info.assert_awaited_once_with("RJ01616588")
+    service._build_common_preview.assert_awaited_once()
+    assert preview["mode"] == "archive"
+    assert preview["source_rjcode"] == "RJ01616588"
+    assert preview["source_has_subtitles"] is False
