@@ -138,7 +138,7 @@
               </div>
             </div>
             <div class="px-2 pt-2"><input :value="view.subtitleInspectorAudioSearch" class="w-full h-7 px-2 rounded-lg bg-slate-50 border border-slate-200 text-[11.5px] placeholder-slate-400 outline-none focus:bg-white focus:border-slate-400 transition-all duration-150" placeholder="搜索音频名..." :disabled="view.subtitleInspectorBusy" @input="view.setSubtitleInspectorAudioSearch($event.target.value)" /></div>
-            <div class="flex-1 overflow-y-auto p-2 flex flex-col gap-0.5 min-h-[200px] max-h-[340px]">
+            <div class="subtitle-pairing-list flex-1 overflow-y-auto p-2 flex flex-col gap-1">
               <button v-for="audio in view.filteredSubtitleInspectorAudioFiles" :key="audio.path" type="button" class="subtitle-pairing-row subtitle-pairing-audio-row group/sequence-row w-full flex flex-col gap-0.5 px-2.5 py-2 rounded-[10px] border text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.01] active:scale-[0.97]" :class="[view.getSubtitleSequenceIndex('audio', audio.path) ? 'subtitle-pairing-row-sequence' : view.subtitleMatchSelection.audioPath === audio.path ? 'subtitle-pairing-row-selected' : view.isAudioPaired(audio.path) ? 'subtitle-pairing-row-paired' : 'subtitle-pairing-row-idle', view.isAudioSuspicious(audio.path) ? 'subtitle-pairing-row-suspicious' : '']" @click="view.selectSubtitleAudio(audio)">
 
                 <div class="flex items-center gap-1 flex-wrap">
@@ -164,7 +164,7 @@
             <div class="px-2 pt-2">
               <button type="button" class="subtitle-pair-add-button w-full h-7 inline-flex items-center justify-center gap-1 rounded-lg text-[11.5px] font-semibold border transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed" :class="view.canAddSubtitleManualPair && !view.subtitleInspectorBusy ? 'is-ready' : 'is-disabled'" :disabled="!view.canAddSubtitleManualPair || view.subtitleInspectorBusy" :title="!view.canAddSubtitleManualPair ? '请先在左侧选一条音频，再在右侧选一条字幕，然后点此加入配对。' : ''" @click="view.addSubtitleManualPair?.()">加入手动配对</button>
             </div>
-            <div class="flex-1 overflow-y-auto p-2 flex flex-col gap-1.5 min-h-[200px] max-h-[340px]">
+            <div class="subtitle-pairing-list flex-1 overflow-y-auto p-2 flex flex-col gap-1.5">
               <div v-if="!view.subtitleManualPairs.length" class="subtitle-pair-empty flex flex-col items-center justify-center py-6 gap-1 text-center"><div class="text-[11.5px] font-medium text-slate-500">还没有生成配对结果</div><div class="text-[10.5px] text-slate-400">可以先点"AI 配对"或"规则预配对"</div></div>
               <button v-for="(pair, index) in view.subtitleManualPairs" :key="pair.id" type="button" class="subtitle-pair-card w-full flex flex-col gap-1.5 p-2 rounded-[9px] border text-left transition-all duration-150" :class="[view.subtitleSelectedManualPairId === pair.id ? 'subtitle-pair-card-selected' : '', pair.confidenceLevel === 'low' ? 'subtitle-pair-card-low-confidence' : '']" @click="view.setSubtitleSelectedManualPairId(pair.id)">
 
@@ -194,7 +194,7 @@
               </div>
             </div>
             <div class="px-2 pt-2"><input :value="view.subtitleInspectorSubtitleSearch" class="w-full h-7 px-2 rounded-lg bg-slate-50 border border-slate-200 text-[11.5px] placeholder-slate-400 outline-none focus:bg-white focus:border-slate-400 transition-all duration-150" placeholder="搜索字幕名..." :disabled="view.subtitleInspectorBusy" @input="view.setSubtitleInspectorSubtitleSearch($event.target.value)" /></div>
-            <div class="flex-1 overflow-y-auto p-2 flex flex-col gap-0.5 min-h-[200px] max-h-[340px]">
+            <div class="subtitle-pairing-list flex-1 overflow-y-auto p-2 flex flex-col gap-1">
               <button v-for="subtitle in view.filteredSubtitleInspectorSubtitleFiles" :key="subtitle.path" type="button" class="subtitle-pairing-row subtitle-pairing-subtitle-row group/sequence-row w-full flex flex-col gap-0.5 px-2.5 py-2 rounded-[10px] border text-left transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:-translate-y-0.5 hover:scale-[1.01] active:scale-[0.97]" :class="[view.getSubtitleSequenceIndex('subtitle', subtitle.path) ? 'subtitle-pairing-row-sequence' : view.subtitleMatchSelection.subtitlePath === subtitle.path ? 'subtitle-pairing-row-selected' : view.isSubtitlePaired(subtitle.path) ? 'subtitle-pairing-row-paired' : 'subtitle-pairing-row-idle', view.isSubtitleSuspicious(subtitle.path) ? 'subtitle-pairing-row-suspicious' : '']" @click="view.selectSubtitleFile(subtitle)">
 
                 <div class="flex items-center gap-1 flex-wrap">
@@ -718,6 +718,9 @@ function getSubtitlePairRenamePreview(pair = {}) {
 
 .subtitle-pairing-row {
   position: relative;
+  flex: 0 0 auto;
+  min-height: 62px;
+  line-height: 1.25;
   overflow: hidden;
   background: rgba(248, 250, 252, 0.72);
   border-color: rgba(226, 232, 240, 0.92);
@@ -778,6 +781,8 @@ function getSubtitlePairRenamePreview(pair = {}) {
 }
 
 .subtitle-pairing-row-name {
+  display: block;
+  line-height: 1.28;
   color: #1e293b;
 }
 
@@ -794,6 +799,8 @@ function getSubtitlePairRenamePreview(pair = {}) {
 }
 
 .subtitle-pairing-row-path {
+  display: block;
+  line-height: 1.25;
   color: #64748b;
 }
 
@@ -834,6 +841,9 @@ function getSubtitlePairRenamePreview(pair = {}) {
 }
 
 .subtitle-pair-card {
+  flex: 0 0 auto;
+  min-height: 74px;
+  line-height: 1.25;
   background: rgba(248, 250, 252, 0.72);
   border-color: #e2e8f0;
 }
@@ -1535,6 +1545,7 @@ function getSubtitlePairRenamePreview(pair = {}) {
   min-width: 0;
   min-height: 360px;
   overflow-x: hidden;
+  overflow-y: hidden;
 }
 
 .subtitle-pairing-grid {
@@ -1544,15 +1555,21 @@ function getSubtitlePairRenamePreview(pair = {}) {
   width: 100%;
   min-height: 0;
   grid-template-columns:
-    minmax(210px, 1fr)
-    minmax(260px, 0.88fr)
-    minmax(210px, 1fr);
+    minmax(0, 1fr)
+    minmax(0, 0.88fr)
+    minmax(0, 1fr);
   gap: 12px;
 }
 
 .subtitle-pairing-grid > * {
   min-width: 0;
   min-height: 360px;
+}
+
+.subtitle-pairing-list {
+  min-height: 0;
+  max-height: 420px;
+  scrollbar-gutter: stable;
 }
 
 .subtitle-inspector-workbench-scroll.is-pairing-mode {

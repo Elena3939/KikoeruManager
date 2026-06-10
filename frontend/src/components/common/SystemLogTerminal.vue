@@ -449,9 +449,12 @@ onBeforeUnmount(() => {
               :title="isLineExpanded(safeLines[virtualRow.index], virtualRow.index) ? '点击收起原始日志' : '点击查看原始日志'"
             >
               <span class="terminal-message-text">
-                <template v-for="(token, tokenIndex) in shellTokens(visibleLineMessage(safeLines[virtualRow.index], virtualRow.index))" :key="`${virtualRow.key}-${tokenIndex}`">
-                  <span :class="`terminal-token is-${token.type}`">{{ token.value }}</span>
+                <template v-if="isLineExpanded(safeLines[virtualRow.index], virtualRow.index)">
+                  <template v-for="(token, tokenIndex) in shellTokens(visibleLineMessage(safeLines[virtualRow.index], virtualRow.index))" :key="`${virtualRow.key}-${tokenIndex}`">
+                    <span :class="`terminal-token is-${token.type}`">{{ token.value }}</span>
+                  </template>
                 </template>
+                <template v-else>{{ visibleLineMessage(safeLines[virtualRow.index], virtualRow.index) }}</template>
               </span>
             </span>
           </div>
