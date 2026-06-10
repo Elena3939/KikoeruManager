@@ -7,11 +7,12 @@ import os
 import shutil
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from datetime import datetime, timedelta
 
 from app.config import settings as settings_module
 from app.core.task_engine import TaskEngine, Task, TaskType, TaskStatus
 from app.models import database as database_module
-from app.models.database import ConflictWork
+from app.models.database import ConflictWork, Task as TaskRecord, TaskCenterItem
 
 class TestTaskEngine:
     """测试任务引擎"""
@@ -41,8 +42,8 @@ class TestTaskEngine:
         assert engine.tasks[task_id] == sample_task
 
     @pytest.mark.asyncio
-    async def test_submit_auto_process_file_starts_background_precheck(self, engine, sample_task, tmp_path, monkeypatch):
-        """提交文件型自动处理任务时，先启动后台清单预热。"""
+    async def test_submit_auto_process_file_does_not_start_background_precheck(self, engine, sample_task, tmp_path, monkeypatch):
+        """提交阶段不再启动低优先级清单预热，避免抢占 inspect 单槽。"""
         source = tmp_path / "RJ00000001.zip"
         source.write_bytes(b"dummy")
         sample_task.source_path = str(source)
@@ -56,7 +57,7 @@ class TestTaskEngine:
 
         await engine.submit(sample_task)
 
-        assert calls == [(sample_task.id, "RJ00000001")]
+        assert calls == []
 
     @pytest.mark.asyncio
     async def test_background_precheck_reuses_existing_task(self, engine, sample_task, tmp_path):
@@ -328,6 +329,68 @@ class TestTaskEngine:
         assert updated == 1
         assert row.new_path == new_path
         assert row.new_metadata["new_path_recovered_from"] == old_path
+
+    def test_recover_stale_processing_tasks_marks_waiting_retry(self, engine, db_session, monkeypatch):
+        """启动时把没有内存运行态的旧 processing 快照恢复为可重试。"""
+        stale_time = datetime.now() - timedelta(hours=2)
+        fresh_time = datetime.now()
+        engine.stale_processing_seconds = 60
+        stale_task_id = "stale-task"
+        fresh_task_id = "fresh-task"
+
+        db_session.add(TaskRecord(
+            id=stale_task_id,
+            type=TaskType.AUTO_PROCESS.value,
+            status=TaskStatus.PROCESSING.value,
+            source_path="/tmp/stale.zip",
+            progress=38,
+            current_step="预检中",
+            started_at=stale_time,
+            task_metadata={"existing": True},
+        ))
+        db_session.add(TaskRecord(
+            id=fresh_task_id,
+            type=TaskType.AUTO_PROCESS.value,
+            status=TaskStatus.PROCESSING.value,
+            source_path="/tmp/fresh.zip",
+            progress=38,
+            current_step="预检中",
+            started_at=fresh_time,
+            task_metadata={},
+        ))
+        db_session.add(TaskCenterItem(
+            item_id="engine:stale-task",
+            engine_task_id=stale_task_id,
+            domain="extract",
+            status=TaskStatus.PROCESSING.value,
+            kind="auto_process",
+            title="旧任务",
+            payload_json={
+                "engine_task_id": stale_task_id,
+                "status": TaskStatus.PROCESSING.value,
+                "details": {"metadata": {"foo": "bar"}},
+            },
+            updated_at=stale_time,
+        ))
+        db_session.commit()
+
+        monkeypatch.setattr(database_module, "SessionLocal", lambda: db_session)
+
+        recovered = engine.recover_stale_processing_tasks()
+        db_session.flush()
+
+        stale_row = db_session.query(TaskRecord).filter(TaskRecord.id == stale_task_id).one()
+        fresh_row = db_session.query(TaskRecord).filter(TaskRecord.id == fresh_task_id).one()
+        stale_item = db_session.query(TaskCenterItem).filter(TaskCenterItem.item_id == "engine:stale-task").one()
+
+        assert recovered == 1
+        assert stale_row.status == TaskStatus.WAITING_RETRY.value
+        assert stale_row.current_step.startswith("等待重试")
+        assert stale_row.task_metadata["stale_processing_recovered"] is True
+        assert fresh_row.status == TaskStatus.PROCESSING.value
+        assert stale_item.status == TaskStatus.WAITING_RETRY.value
+        assert stale_item.payload_json["status"] == TaskStatus.WAITING_RETRY.value
+        assert stale_item.payload_json["details"]["metadata"]["stale_processing_recovered"] is True
 
     def test_task_snapshot_version_skips_unchanged_running_task(self, engine, sample_task):
         """运行中任务同一快照版本重复持久化时可以跳过 SQLite 写入。"""

@@ -8,11 +8,12 @@ import threading
 import time
 import json
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from enum import Enum
 from pathlib import Path
 import logging
+from sqlalchemy import or_
 
 logger = logging.getLogger(__name__)
 
@@ -538,6 +539,9 @@ class TaskEngine:
         self._persisted_task_snapshot_versions: dict[str, tuple] = {}
         self._materialized_task_center_item_versions: dict[str, tuple] = {}
         Task.set_global_event_hook(self._emit_task_center_event)
+        self.stale_processing_seconds = int(
+            os.getenv("KIKOERUMANAGER_TASK_STALE_PROCESSING_SECONDS", "900") or 900
+        )
 
     def _bump_task_center_version(self) -> int:
         with self._task_center_version_lock:
@@ -789,21 +793,6 @@ class TaskEngine:
         await self.queue.put(task)
         task.mark_changed("submitted")
         rjcode = self._extract_rjcode_from_path_tail(task.source_path) or "未知"
-        if task.type == TaskType.AUTO_PROCESS and not self._should_skip_conflict_retry_precheck(task):
-            try:
-                from .extract_service import ExtractService
-
-                self._start_background_archive_precheck(
-                    ExtractService(),
-                    task,
-                    label=rjcode,
-                )
-            except Exception:
-                logger.debug(
-                    "[%s] 提交阶段启动压缩包清单预热失败，后续处理流程会自行重试",
-                    rjcode,
-                    exc_info=True,
-                )
         logger.info(f"[{rjcode}] 任务提交 - ID: {task.id}, 源文件: {os.path.basename(task.source_path)}")
         return task.id
 
@@ -1099,6 +1088,83 @@ class TaskEngine:
             return loaded_count
         except Exception:
             logger.warning("[任务持久化] 恢复字幕补配任务失败", exc_info=True)
+            return 0
+        finally:
+            db.close()
+
+    def recover_stale_processing_tasks(self) -> int:
+        """把上次进程中断留下的 processing 快照恢复为等待重试。
+
+        这些任务没有活跃内存协程，继续保留 processing 只会让任务中心永久卡住。
+        """
+        from ..models.database import SessionLocal, Task as TaskRecord, TaskCenterItem
+
+        threshold_seconds = max(60, int(getattr(self, "stale_processing_seconds", 900) or 900))
+        stale_before = datetime.now() - timedelta(seconds=threshold_seconds)
+        recovered_ids: set[str] = set()
+        db = SessionLocal()
+        try:
+            task_rows = (
+                db.query(TaskRecord)
+                .filter(
+                    TaskRecord.status == TaskStatus.PROCESSING.value,
+                    or_(TaskRecord.started_at == None, TaskRecord.started_at <= stale_before),  # noqa: E711
+                )
+                .all()
+            )
+            for row in task_rows:
+                metadata = dict(row.task_metadata or {})
+                metadata["stale_processing_recovered"] = True
+                metadata["stale_processing_recovered_at"] = datetime.now().isoformat()
+                metadata["retry_reason"] = "上次处理进程中断或预检超时，已恢复为等待重试"
+                row.status = TaskStatus.WAITING_RETRY.value
+                row.current_step = "等待重试: 上次处理进程中断或预检超时"
+                row.error_message = ""
+                row.completed_at = None
+                row.task_metadata = metadata
+                recovered_ids.add(str(row.id))
+
+            item_rows = (
+                db.query(TaskCenterItem)
+                .filter(
+                    TaskCenterItem.status == TaskStatus.PROCESSING.value,
+                    or_(TaskCenterItem.updated_at == None, TaskCenterItem.updated_at <= stale_before),  # noqa: E711
+                )
+                .all()
+            )
+            for item in item_rows:
+                payload = dict(item.payload_json or {})
+                engine_task_id = str(item.engine_task_id or payload.get("engine_task_id") or payload.get("entity_id") or "").strip()
+                payload["status"] = TaskStatus.WAITING_RETRY.value
+                payload["status_label"] = "等待重试"
+                payload["current_step"] = "等待重试: 上次处理进程中断或预检超时"
+                payload["error_message"] = ""
+                details = payload.get("details") if isinstance(payload.get("details"), dict) else {}
+                metadata = details.get("metadata") if isinstance(details.get("metadata"), dict) else {}
+                metadata = dict(metadata)
+                metadata["stale_processing_recovered"] = True
+                metadata["stale_processing_recovered_at"] = datetime.now().isoformat()
+                details["metadata"] = metadata
+                payload["details"] = details
+                item.status = TaskStatus.WAITING_RETRY.value
+                item.payload_json = payload
+                item.updated_at = datetime.now()
+                if engine_task_id:
+                    recovered_ids.add(engine_task_id)
+
+            if recovered_ids:
+                db.commit()
+                logger.warning(
+                    "[启动清理] 已将 %s 个残留 processing 任务恢复为等待重试: %s",
+                    len(recovered_ids),
+                    sorted(recovered_ids)[:8],
+                )
+            else:
+                db.rollback()
+            return len(recovered_ids)
+        except Exception:
+            db.rollback()
+            logger.warning("[启动清理] 恢复残留 processing 任务失败", exc_info=True)
             return 0
         finally:
             db.close()
@@ -2029,15 +2095,7 @@ class TaskEngine:
                                 )
                         logger.info(f"[{rjcode}] 提取到的RJ号: {rjcode}")
 
-                        # 方案 B 并行预检：文件存在就启动 list 协程，哪怕 RJ 仍未知。
-                        # 协程跑完写 _archive_info_cache 让步骤 1 / 多 RJ 预检命中缓存；
-                        # 若提前走早返回（重复 / 字幕补配命中 / 包损坏），再取消以省掉无效 7zz l。
-                        precheck_task = self._start_background_archive_precheck(
-                            extract_service,
-                            task,
-                            label=rjcode or "未知",
-                        )
-
+                        precheck_task = None
                         linked_result = {"handled": False, "reason": "not_run", "preview": {}}
                         if not rjcode:
                             logger.warning(f"[未知] 无法从文件名提取RJ号，跳过字幕补配预检和预检查重: {os.path.basename(task.source_path)}")
@@ -3068,6 +3126,7 @@ class TaskEngine:
             logger.info("重试调度器已启动")
 
         # 加载等待重试的任务
+        self.recover_stale_processing_tasks()
         self.load_waiting_retry_tasks()
         self.load_persisted_linked_subtitle_tasks()
 
