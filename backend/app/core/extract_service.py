@@ -188,9 +188,25 @@ class ExtractService:
     def _looks_like_disk_full_error(cls, text: str) -> bool:
         lowered = str(text or "").lower()
         return any(marker in lowered for marker in cls._DISK_FULL_MARKERS)
+
+    @classmethod
+    def _looks_like_wrong_password_error(cls, text: str) -> bool:
+        lowered = str(text or "").lower()
+        return any(marker in lowered for marker in cls._LIST_WRONG_PASSWORD_MARKERS)
+
     # #3 负缓存：按 "压缩包指纹 × 密码哈希" 记忆失败组合，进程内重试任务时直接跳过。
     _password_negative_cache: Dict[Tuple[str, str], float] = {}
+    _password_probe_locks: Dict[Tuple[str, str], asyncio.Lock] = {}
+    _password_probe_locks_guard = threading.Lock()
     PASSWORD_NEGATIVE_CACHE_MAX: int = 4096       # 简单兜底，避免长跑任务无限增长
+    _LIST_WRONG_PASSWORD_MARKERS: Tuple[str, ...] = (
+        "wrong password",
+        "password is incorrect",
+        "incorrect password",
+        "password?",
+        "can not open encrypted archive",
+        "cannot open encrypted archive",
+    )
     # #4 预读 list 缓存：避免同一压缩包重复跑 `7zz l`。
     # key = (abs_path, mtime_ns, size)，value = ArchiveInfo 快照。
     # 用 OrderedDict 做简易 LRU，命中 move_to_end。
@@ -5199,54 +5215,97 @@ class ExtractService:
                 seen.add(pwd)
                 unique_passwords.append(pwd)
 
-        for password in unique_passwords:
-            file_list = await self._list_archive_contents(
+        archive_fingerprint = self._archive_fingerprint(archive_path)
+
+        def build_archive_info(password: str, file_list: List[Dict]) -> ArchiveInfo:
+            # 判断密码来源
+            if manual_only_passwords:
+                source = "指定密码"
+            elif password in rj_passwords:
+                source = "RJ号"
+            elif password in password_source_map:
+                source = password_source_map.get(password) or "密码库"
+            elif password in self.config.extract.password_list:
+                source = "默认"
+            else:
+                source = "无"
+            logger.info(f"成功读取压缩包内容，使用密码来源: {source} ({password or '无密码'})")
+            # 注意：这里返回的 password 只是能读取内容的密码，不一定能解压
+            # 真正能解压的密码会在 _try_extract 中更新
+            archive_info = ArchiveInfo(
                 archive_path,
+                file_list,
                 password,
-                task=task,
-                filename_encoding=self._manual_filename_encoding_from_task(task),
-                command_timeout=list_timeout,
-                update_task_progress=update_task_progress,
+                inferred_rjcode=password_rjcode_map.get(password),
             )
-            if file_list is not None:
-                # 判断密码来源
-                if manual_only_passwords:
-                    source = "指定密码"
-                elif password in rj_passwords:
-                    source = "RJ号"
-                elif password in password_source_map:
-                    source = password_source_map.get(password) or "密码库"
-                elif password in self.config.extract.password_list:
-                    source = "默认"
+            # 读取本次 list 检测到的编码，存入 archive_info 供 _get_mcp_args 使用
+            archive_info.detected_encoding = self.__class__._archive_encoding_cache.get(archive_path)
+            # 若清单中含大量 \ufffd 替换字符，说明采集时文件未就绪或编码未知，
+            # 不缓存此劣质结果；提取时会重新 list 并使用正确的 -mcp 编码。
+            _ufffd_ratio = (
+                sum(1 for item in file_list if '\ufffd' in str(item.get('name') or ''))
+                / max(len(file_list), 1)
+            )
+            if use_cache:
+                if _ufffd_ratio >= 0.3:
+                    logger.warning(
+                        "[7z][cache] 清单含 %.0f%% 替换字符，不缓存（采集时编码未就绪）: archive=%s",
+                        _ufffd_ratio * 100,
+                        archive_path,
+                    )
                 else:
-                    source = "无"
-                logger.info(f"成功读取压缩包内容，使用密码来源: {source} ({password or '无密码'})")
-                # 注意：这里返回的 password 只是能读取内容的密码，不一定能解压
-                # 真正能解压的密码会在 _try_extract 中更新
-                archive_info = ArchiveInfo(
-                    archive_path,
-                    file_list,
-                    password,
-                    inferred_rjcode=password_rjcode_map.get(password),
-                )
-                # 读取本次 list 检测到的编码，存入 archive_info 供 _get_mcp_args 使用
-                archive_info.detected_encoding = self.__class__._archive_encoding_cache.get(archive_path)
-                # 若清单中含大量 \ufffd 替换字符，说明采集时文件未就绪或编码未知，
-                # 不缓存此劣质结果；提取时会重新 list 并使用正确的 -mcp 编码。
-                _ufffd_ratio = (
-                    sum(1 for item in file_list if '\ufffd' in str(item.get('name') or ''))
-                    / max(len(file_list), 1)
-                )
-                if use_cache:
-                    if _ufffd_ratio >= 0.3:
-                        logger.warning(
-                            "[7z][cache] 清单含 %.0f%% 替换字符，不缓存（采集时编码未就绪）: archive=%s",
-                            _ufffd_ratio * 100,
-                            archive_path,
+                    self._save_cached_archive_info(archive_path, archive_info)
+            return archive_info
+
+        for password in unique_passwords:
+            password_cache_key = (
+                self._password_cache_key(archive_fingerprint, password)
+                if archive_fingerprint
+                else None
+            )
+            password_lock = self._get_password_probe_lock(password_cache_key) if password_cache_key else None
+            if password_lock is not None:
+                await password_lock.acquire()
+                try:
+                    if use_cache:
+                        cached = self._load_cached_archive_info(archive_path)
+                        if cached is not None:
+                            logger.info(
+                                "[7z][cache] 等待密码组合锁后命中预读取缓存，跳过重复 list: %s",
+                                archive_path,
+                            )
+                            return cached
+                    if password and password_cache_key in ExtractService._password_negative_cache:
+                        logger.info(
+                            "[7z][list] 密码组合命中负缓存，跳过清单读取: archive=%s",
+                            os.path.basename(str(archive_path or "")),
                         )
-                    else:
-                        self._save_cached_archive_info(archive_path, archive_info)
-                return archive_info
+                        continue
+                    file_list = await self._list_archive_contents(
+                        archive_path,
+                        password,
+                        task=task,
+                        filename_encoding=self._manual_filename_encoding_from_task(task),
+                        command_timeout=list_timeout,
+                        update_task_progress=update_task_progress,
+                        cache_key=password_cache_key,
+                        lock_already_held=True,
+                    )
+                    if file_list is not None:
+                        return build_archive_info(password, file_list)
+                finally:
+                    password_lock.release()
+            else:
+                file_list = await self._list_archive_contents(
+                    archive_path,
+                    password,
+                    task=task,
+                    filename_encoding=self._manual_filename_encoding_from_task(task),
+                    command_timeout=list_timeout,
+                    update_task_progress=update_task_progress,
+                )
+            if file_list is not None:
+                return build_archive_info(password, file_list)
 
         logger.warning("无法预读取压缩包内容，后续将尝试直接解压: %s", archive_path)
         return None
@@ -5360,12 +5419,62 @@ class ExtractService:
         filename_encoding: Optional[Union[str, int]] = None,
         command_timeout: Optional[float] = None,
         update_task_progress: bool = True,
+        cache_key: Optional[Tuple[str, str]] = None,
+        lock_already_held: bool = False,
     ) -> Optional[List[Dict]]:
         """列出压缩包内容，自动检测最佳编码
 
         task 不为 None 时把 7zz 子进程注册到 task，cancel/pause 或协程级
         asyncio.Task.cancel() 都会立刻 kill 子进程。
         """
+        if cache_key is None:
+            archive_fingerprint = self._archive_fingerprint(archive_path)
+            cache_key = (
+                self._password_cache_key(archive_fingerprint, password)
+                if archive_fingerprint
+                else None
+            )
+        if password and cache_key and cache_key in ExtractService._password_negative_cache:
+            logger.info(
+                "[7z][list] 密码组合命中负缓存，跳过清单读取: archive=%s",
+                os.path.basename(str(archive_path or "")),
+            )
+            return None
+
+        async def run_list() -> Optional[List[Dict]]:
+            return await self._list_archive_contents_uncached(
+                archive_path,
+                password=password,
+                task=task,
+                filename_encoding=filename_encoding,
+                command_timeout=command_timeout,
+                update_task_progress=update_task_progress,
+                cache_key=cache_key,
+            )
+
+        if not cache_key or lock_already_held:
+            return await run_list()
+
+        lock = self._get_password_probe_lock(cache_key)
+        async with lock:
+            if password and cache_key in ExtractService._password_negative_cache:
+                logger.info(
+                    "[7z][list] 等待期间密码组合已写入负缓存，跳过重复清单读取: archive=%s",
+                    os.path.basename(str(archive_path or "")),
+                )
+                return None
+            return await run_list()
+
+    async def _list_archive_contents_uncached(
+        self,
+        archive_path: str,
+        password: str = "",
+        task: Optional[Task] = None,
+        filename_encoding: Optional[Union[str, int]] = None,
+        command_timeout: Optional[float] = None,
+        update_task_progress: bool = True,
+        cache_key: Optional[Tuple[str, str]] = None,
+    ) -> Optional[List[Dict]]:
         password_args = [f'-p{password}'] if password else []
         mcp_args = self._get_mcp_args(archive_path, filename_encoding=filename_encoding)
         commands = [
@@ -5383,9 +5492,17 @@ class ExtractService:
                     update_task_progress=update_task_progress,
                 )
                 if result.returncode != 0:
+                    stderr_text = result.stderr.decode('utf-8', errors='ignore')
                     logger.warning(
-                        f"[7z] 列出压缩包内容失败，返回码: {result.returncode}, 错误: {result.stderr.decode('utf-8', errors='ignore')[:500]}"
+                        f"[7z] 列出压缩包内容失败，返回码: {result.returncode}, 错误: {stderr_text[:500]}"
                     )
+                    if password and cache_key and self._looks_like_wrong_password_error(stderr_text):
+                        self._remember_negative_password(cache_key)
+                        logger.info(
+                            "[7z][list] 密码错误已写入负缓存，并停止同密码 fallback list: archive=%s",
+                            os.path.basename(str(archive_path or "")),
+                        )
+                        return None
                     continue
 
                 raw_bytes = result.stdout
@@ -5699,9 +5816,15 @@ class ExtractService:
                     seen.add(pwd)
                     unique_passwords.append(pwd)
 
+        listed_password = str(getattr(archive_info, "password", "") or "")
+        if listed_password and listed_password in unique_passwords:
+            unique_passwords = [
+                listed_password,
+                *[pwd for pwd in unique_passwords if pwd != listed_password],
+            ]
         # 非加密压缩包会忽略 -p 参数，7zz l 可能用任意密码成功读取目录。
-        # 真正解压前先把"无密码"排到第一位做轻量探测，确认可解才完整解压。
-        if "" in unique_passwords:
+        # 只有清单阶段没有确认到具体密码时，才把"无密码"排到第一位做轻量探测。
+        if not listed_password and "" in unique_passwords:
             unique_passwords = ["", *[pwd for pwd in unique_passwords if pwd != ""]]
 
         # 预读目录可用说明压缩包结构至少可读；后续若遇疑似"损坏"特征，
@@ -6566,6 +6689,20 @@ class ExtractService:
         pwd_bytes = (password or '').encode('utf-8', errors='ignore')
         pwd_hash = hashlib.sha1(pwd_bytes if password else b'<empty>').hexdigest()[:16]
         return (fingerprint, pwd_hash)
+
+    @classmethod
+    def _get_password_probe_lock(cls, cache_key: Tuple[str, str]) -> asyncio.Lock:
+        with cls._password_probe_locks_guard:
+            lock = cls._password_probe_locks.get(cache_key)
+            if lock is None:
+                lock = asyncio.Lock()
+                cls._password_probe_locks[cache_key] = lock
+            if len(cls._password_probe_locks) > cls.PASSWORD_NEGATIVE_CACHE_MAX:
+                for old_key in list(cls._password_probe_locks.keys())[: cls.PASSWORD_NEGATIVE_CACHE_MAX // 8]:
+                    old_lock = cls._password_probe_locks.get(old_key)
+                    if old_lock is not None and not old_lock.locked():
+                        cls._password_probe_locks.pop(old_key, None)
+            return lock
 
     def _remember_negative_password(self, cache_key: Tuple[str, str]) -> None:
         cache = ExtractService._password_negative_cache

@@ -271,6 +271,41 @@ class TestExtractService:
         extract_service._list_archive_contents.assert_awaited()
 
     @pytest.mark.asyncio
+    async def test_list_archive_wrong_password_skips_slt_and_remembers_negative_cache(
+        self, extract_service, temp_dir,
+    ):
+        """list 阶段明确密码错误时，不再用同一密码继续跑 -slt。"""
+        archive_path = os.path.join(temp_dir, 'encrypted.7z')
+        with open(archive_path, 'wb') as f:
+            f.write(b'7z\xbc\xaf\x27\x1c' + b'\x00' * 2048)
+
+        run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
+            args=[],
+            returncode=2,
+            stdout=b"",
+            stderr=b"ERROR: Cannot open encrypted archive. Wrong password?",
+        ))
+        extract_service._run_7z_command = run_7z_command
+
+        fingerprint = extract_service._archive_fingerprint(archive_path)
+        cache_key = extract_service._password_cache_key(fingerprint, "bad-password")
+        ExtractService._password_negative_cache.pop(cache_key, None)
+        try:
+            result = await extract_service._list_archive_contents(
+                archive_path,
+                password="bad-password",
+            )
+            assert cache_key in ExtractService._password_negative_cache
+        finally:
+            ExtractService._password_negative_cache.pop(cache_key, None)
+
+        assert result is None
+        assert run_7z_command.await_count == 1
+        first_cmd = run_7z_command.await_args.args[0]
+        assert "-ba" in first_cmd
+        assert "-slt" not in first_cmd
+
+    @pytest.mark.asyncio
     async def test_prepare_embedded_zip_archive_reuses_cached_offset(self, extract_service, temp_dir):
         """预检阶段已记录 embedded ZIP offset 时，解压准备阶段不重复探测。"""
         disguised_path = os.path.join(temp_dir, 'movie.mp4')
@@ -1453,13 +1488,13 @@ class TestExtractService:
             extract_service.config.extract.password_list = old_password_list
 
     # ------------------------------------------------------------------
-    # _try_extract：非加密大包先不带密码轻量探测
+    # _try_extract：清单密码优先；没有清单密码时先无密码轻量探测
     # ------------------------------------------------------------------
     @pytest.mark.asyncio
-    async def test_try_extract_probes_no_password_before_full_extract(
+    async def test_try_extract_uses_listed_password_before_no_password(
         self, extract_service, temp_dir,
     ):
-        """密码库候选存在时，也必须先探测无密码；探测通过后才完整解压。"""
+        """清单阶段已确认的非空密码优先，正式解压前仍做轻量探测防止 list 假阳性。"""
         archive_path = os.path.join(temp_dir, "RJ00000001.zip")
         self.create_test_zip(archive_path)
         output_path = os.path.join(temp_dir, "extract-output")
@@ -1497,14 +1532,64 @@ class TestExtractService:
         )
 
         assert success is True
-        assert password == ""
+        assert password == "sana"
         assert reason == ""
         assert task.task_metadata["extract_verified"] is True
         extract_service._probe_password.assert_awaited_once()
         probe_args = extract_service._probe_password.await_args
+        assert probe_args.args[1] == "sana"
+        assert probe_args.kwargs["allow_full_test"] is True
+        extract_service._cleanup_extract_attempt.assert_awaited_once_with(output_path)
+        first_cmd = run_7z_command.await_args.args[0]
+        assert "-psana" in first_cmd
+
+    @pytest.mark.asyncio
+    async def test_try_extract_probes_no_password_when_no_listed_password(
+        self, extract_service, temp_dir,
+    ):
+        """没有清单确认密码时，密码库候选存在也先探测无密码，避免非加密包白试密码。"""
+        archive_path = os.path.join(temp_dir, "RJ00000001-plain.zip")
+        self.create_test_zip(archive_path)
+        output_path = os.path.join(temp_dir, "extract-output-plain")
+        os.makedirs(output_path, exist_ok=True)
+        task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
+
+        run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=b"",
+            stderr=b"",
+        ))
+        extract_service._run_7z_command = run_7z_command
+        extract_service._probe_password = AsyncMock(return_value="ok")
+        extract_service._reject_if_garbled_after_extract = AsyncMock(return_value=False)
+        extract_service._verify_extraction = AsyncMock(return_value=True)
+        extract_service._cleanup_extract_attempt = AsyncMock()
+
+        archive_info = ArchiveInfo(
+            path=archive_path,
+            file_list=[{"name": "test.txt", "size": 12, "is_dir": False}],
+        )
+
+        success, password, reason = await extract_service._try_extract(
+            archive_info,
+            output_path,
+            task,
+            password_candidates=[{
+                "password": "sana",
+                "source": "密码库-通用",
+                "entry_id": None,
+                "rjcode": None,
+            }],
+        )
+
+        assert success is True
+        assert password == ""
+        assert reason == ""
+        extract_service._probe_password.assert_awaited_once()
+        probe_args = extract_service._probe_password.await_args
         assert probe_args.args[1] == ""
         assert probe_args.kwargs["allow_full_test"] is False
-        extract_service._cleanup_extract_attempt.assert_awaited_once_with(output_path)
         first_cmd = run_7z_command.await_args.args[0]
         assert not any(str(arg).startswith("-p") for arg in first_cmd)
 
