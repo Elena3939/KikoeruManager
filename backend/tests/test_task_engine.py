@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from app.config import settings as settings_module
 from app.core.task_engine import TaskEngine, Task, TaskType, TaskStatus
 from app.models import database as database_module
-from app.models.database import ConflictWork, Task as TaskRecord, TaskCenterItem
+from app.models.database import ConflictWork, ProcessedArchive, Task as TaskRecord, TaskCenterItem
 
 class TestTaskEngine:
     """测试任务引擎"""
@@ -259,6 +259,63 @@ class TestTaskEngine:
         engine.add_progress_callback(callback)
         
         assert callback in engine._progress_callbacks
+
+    @pytest.mark.asyncio
+    async def test_archive_source_file_records_total_size_for_exe_e_volumes(
+        self,
+        engine,
+        tmp_path,
+        db_session,
+        monkeypatch,
+    ):
+        """归档 .exe + .eNN 分卷时，ProcessedArchive.file_size 记录整组总大小。"""
+        source_dir = tmp_path / "input"
+        processed_dir = tmp_path / "processed"
+        source_dir.mkdir()
+        processed_dir.mkdir()
+        exe = source_dir / "RJ01629292.exe"
+        e01 = source_dir / "RJ01629292.e01"
+        e02 = source_dir / "RJ01629292.e02"
+        exe.write_bytes(b"x" * 700)
+        e01.write_bytes(b"y" * 701)
+        e02.write_bytes(b"z" * 123)
+
+        monkeypatch.setattr(
+            settings_module,
+            "get_config",
+            lambda: SimpleNamespace(
+                storage=SimpleNamespace(
+                    input_path=str(source_dir),
+                    processed_archives_path=str(processed_dir),
+                    temp_path=str(tmp_path / "temp"),
+                    library_path=str(tmp_path / "library"),
+                    existing_folders_path=str(tmp_path / "existing"),
+                )
+            ),
+        )
+
+        def fake_get_db():
+            yield db_session
+
+        monkeypatch.setattr(database_module, "get_db", fake_get_db)
+        monkeypatch.setattr(
+            "app.core.task_center_event_service.broadcast_processed_archive_changed",
+            lambda *_args, **_kwargs: None,
+        )
+
+        task = Task(task_type=TaskType.AUTO_PROCESS, source_path=str(exe), task_id="archive-size-task")
+
+        await engine._archive_source_file(task)
+
+        archive = db_session.query(ProcessedArchive).filter_by(filename="RJ01629292.exe").one()
+        assert archive.file_size == 1524
+        assert archive.current_path == str(processed_dir / "RJ01629292.exe")
+        assert sorted(path.name for path in processed_dir.iterdir()) == [
+            "RJ01629292.e01",
+            "RJ01629292.e02",
+            "RJ01629292.exe",
+        ]
+        assert not exe.exists()
 
     def test_extract_subtask_conflict_source_moves_to_stable_conflicts_dir(self, engine, tmp_path, monkeypatch):
         temp_root = tmp_path / "temp"

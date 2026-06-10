@@ -6210,8 +6210,8 @@ async def scan_processed_archives():
 
         # 把目录扫描 + 每个文件的 isfile / getsize 一次性下放到线程池，
         # 远程挂载（NAS / SMB）大目录时 N 次同步 stat 会阻塞 event loop。
-        def _collect_processed_files() -> list[tuple[str, str, int]]:
-            """同步扫描 processed_dir，返回 [(filename, file_path, file_size), ...]"""
+        def _collect_processed_files() -> list[tuple[str, str, int, list[str]]]:
+            """同步扫描 processed_dir，返回 [(filename, file_path, file_size, names), ...]"""
             try:
                 names = os.listdir(processed_dir)
             except Exception as exc:
@@ -6226,14 +6226,39 @@ async def scan_processed_archives():
                     collected.append((name, fp, os.path.getsize(fp)))
                 except Exception as exc:
                     logger.warning(f"获取压缩包元信息失败: {fp} - {exc}")
-            return collected
+            file_names = [item[0] for item in collected]
+            return [(name, fp, size, file_names) for name, fp, size in collected]
 
         scanned_files = await asyncio.to_thread(_collect_processed_files)
 
         # 扫描目录中的文件（DB 写入留在 event loop，操作短，不会阻塞）
-        found_files = []
-        for filename, file_path, file_size in scanned_files:
-            found_files.append(filename)
+        from ..core.archive_volume_utils import detect_archive_volume_group
+
+        size_by_path = {file_path: file_size for _, file_path, file_size, _ in scanned_files}
+        found_files = set()
+        visited_members = set()
+        for filename, file_path, file_size, file_names in scanned_files:
+            if file_path in visited_members:
+                continue
+
+            group = detect_archive_volume_group(file_path, sibling_names=file_names)
+            if group:
+                main_path = group.main_path
+                main_filename = group.main_filename
+                grouped_size = sum(int(size_by_path.get(path, 0) or 0) for path in group.volumes)
+                for member_path in group.volumes:
+                    visited_members.add(member_path)
+                filename = main_filename
+                file_path = main_path
+                file_size = grouped_size
+                logger.info(
+                    f"已处理压缩包扫描聚合分卷: {main_filename}, "
+                    f"volumes={len(group.volumes)}, total_size={grouped_size}"
+                )
+            else:
+                visited_members.add(file_path)
+
+            found_files.add(filename)
 
             # 提取RJ号
             rjcode = None
