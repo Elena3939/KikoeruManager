@@ -150,6 +150,13 @@ class ExtractService:
         1,
         int(os.getenv("KIKOERUMANAGER_7Z_INSPECT_CONCURRENCY", "1") or 1),
     )
+    EMBEDDED_ZIP_IMMEDIATE_VIEW_MIN_PREFIX_BYTES: int = int(
+        os.getenv(
+            "KIKOERUMANAGER_EMBEDDED_ZIP_IMMEDIATE_VIEW_MIN_PREFIX_BYTES",
+            str(16 * 1024 * 1024),
+        )
+        or str(16 * 1024 * 1024)
+    )
 
     # 按文件后缀识别的魔数表：(偏移量, (候选签名, ...))。
     # 有后缀在这里就能用“解压前几十字节 + 对照魔数”秒级判定密码是否正确，
@@ -1786,6 +1793,13 @@ class ExtractService:
             offset = detect_embedded_zip_offset(archive_path)
         if offset is None:
             return None
+        if not materialize and offset >= self.EMBEDDED_ZIP_IMMEDIATE_VIEW_MIN_PREFIX_BYTES:
+            logger.info(
+                "[Extract] 检测到大前缀伪装 ZIP，直接剥离 payload: source=%s offset=%s",
+                archive_path,
+                offset,
+            )
+            materialize = True
         if not materialize:
             self._set_extract_meta(
                 task,
@@ -1879,10 +1893,14 @@ class ExtractService:
         # 2. 修复后缀名
         self._set_extract_meta(task, extract_stage="detect_type")
         task.update_progress(10, "检测文件类型")
+        # 视频壳 / 媒体壳里嵌 ZIP 时，7zz 直接读原文件会把每个密码都试一遍后
+        # 报 Cannot open the file as archive。大包字幕补配预检会因此耗完整个超时。
+        # subtitle_probe_mode 专门用于临时解包探字幕，命中 embedded ZIP 时直接剥离。
+        force_embedded_materialize = bool((task.task_metadata or {}).get("subtitle_probe_mode"))
         embedded_zip_direct_path = await self._prepare_embedded_zip_archive(
             archive_path,
             task,
-            materialize=False,
+            materialize=force_embedded_materialize,
         )
         if embedded_zip_direct_path:
             archive_path = embedded_zip_direct_path

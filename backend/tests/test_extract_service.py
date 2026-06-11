@@ -44,6 +44,16 @@ class TestExtractService:
         with zipfile.ZipFile(path, 'a', zipfile.ZIP_DEFLATED) as zf:
             zf.writestr('inner.txt', 'embedded zip content')
         return len(prefix)
+
+    def create_prefixed_zip_with_prefix_size(self, path, prefix_size):
+        """创建指定前缀大小的 MP4 壳 + ZIP payload。"""
+        mp4_head = b'\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00'
+        prefix = mp4_head + (b'\x00' * max(0, prefix_size - len(mp4_head)))
+        with open(path, 'wb') as f:
+            f.write(prefix)
+        with zipfile.ZipFile(path, 'a', zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr('inner.txt', 'embedded zip content')
+        return len(prefix)
     
     @pytest.mark.asyncio
     async def test_detect_real_type_zip(self, extract_service, temp_dir):
@@ -159,6 +169,37 @@ class TestExtractService:
         assert calls == []
         assert task.task_metadata["embedded_zip_source_path"] == disguised_path
         assert "embedded_zip_view_path" not in task.task_metadata
+
+    @pytest.mark.asyncio
+    async def test_prepare_embedded_zip_archive_large_prefix_materializes_immediately(self, extract_service, temp_dir):
+        """大 MP4 前缀伪装 ZIP 不先交给 7zz 直啃，避免密码/list 阶段耗尽预检超时。"""
+        disguised_path = os.path.join(temp_dir, 'movie.mp4')
+        offset = self.create_prefixed_zip_with_prefix_size(disguised_path, 1024)
+        old_temp_path = extract_service.config.storage.temp_path
+        old_threshold = extract_service.EMBEDDED_ZIP_IMMEDIATE_VIEW_MIN_PREFIX_BYTES
+        extract_service.config.storage.temp_path = temp_dir
+        extract_service.EMBEDDED_ZIP_IMMEDIATE_VIEW_MIN_PREFIX_BYTES = 512
+        task = Mock()
+        task.task_metadata = {}
+        task.update_progress = Mock()
+
+        try:
+            view_path = await extract_service._prepare_embedded_zip_archive(
+                disguised_path,
+                task,
+                materialize=False,
+            )
+
+            assert view_path is not None
+            assert view_path != disguised_path
+            assert task.task_metadata["embedded_zip_offset"] == offset
+            assert task.task_metadata["embedded_zip_view_path"] == view_path
+            with open(view_path, "rb") as f:
+                assert f.read(4) == b"PK\x03\x04"
+            extract_service._cleanup_embedded_zip_view(task)
+        finally:
+            extract_service.config.storage.temp_path = old_temp_path
+            extract_service.EMBEDDED_ZIP_IMMEDIATE_VIEW_MIN_PREFIX_BYTES = old_threshold
 
     @pytest.mark.asyncio
     async def test_temp_dir_creation_falls_back_when_configured_temp_blocks(self, extract_service, temp_dir):
@@ -1000,6 +1041,61 @@ class TestExtractService:
             second_archive_info = extract_service._try_extract.await_args_list[1].args[0]
             assert first_archive_info.path == disguised_path
             assert second_archive_info.path.endswith('.zip')
+            assert task.task_metadata.get("embedded_zip_source_path") == disguised_path
+            assert "embedded_zip_view_path" in task.task_metadata
+            assert not os.path.exists(task.task_metadata["embedded_zip_view_path"])
+        finally:
+            extract_service.config.storage.temp_path = old_temp_path
+
+    @pytest.mark.asyncio
+    async def test_extract_prefixed_zip_subtitle_probe_materializes_before_listing(
+        self, extract_service, temp_dir,
+    ):
+        """字幕补配预检不能先直读媒体壳，否则大包会在 list/密码探测阶段耗尽超时。"""
+        disguised_path = os.path.join(temp_dir, 'movie.mp4')
+        self.create_prefixed_zip(disguised_path)
+        old_temp_path = extract_service.config.storage.temp_path
+        extract_service.config.storage.temp_path = temp_dir
+        task = Task(
+            task_type=TaskType.EXTRACT,
+            source_path=disguised_path,
+            metadata={"subtitle_probe_mode": True},
+        )
+        task.update_progress = Mock(wraps=task.update_progress)
+
+        async def _instant_stable(*_args, **_kwargs):
+            return None
+
+        try:
+            extract_service._ensure_7z_available = AsyncMock(return_value=True)
+            extract_service._wait_file_stable = AsyncMock(side_effect=_instant_stable)
+            extract_service._detect_volume_set = Mock(return_value=None)
+            extract_service._maybe_raise_disguised_volume_set = Mock()
+            extract_service._get_password_candidates_for_archive_paths = AsyncMock(return_value=[])
+            def _archive_info_for_view(view_path, *args, **kwargs):
+                return ArchiveInfo(
+                    view_path,
+                    [{"name": "inner.txt", "size": 20, "is_dir": False}],
+                    "",
+                )
+
+            extract_service._get_archive_info = AsyncMock(side_effect=_archive_info_for_view)
+            extract_service._try_extract = AsyncMock(return_value=(True, "", ""))
+            extract_service._summarize_extracted_payload = AsyncMock(return_value={
+                "file_count": 1,
+                "nonempty_file_count": 1,
+                "total_bytes": 20,
+            })
+            extract_service._verify_extraction = AsyncMock(return_value=True)
+            extract_service._reject_if_garbled_after_extract = AsyncMock(return_value=False)
+
+            output_path = await extract_service.extract(task)
+
+            assert output_path is not None
+            assert extract_service._try_extract.await_count == 1
+            archive_info = extract_service._try_extract.await_args.args[0]
+            assert archive_info.path != disguised_path
+            assert archive_info.path.endswith('.zip')
             assert task.task_metadata.get("embedded_zip_source_path") == disguised_path
             assert "embedded_zip_view_path" in task.task_metadata
             assert not os.path.exists(task.task_metadata["embedded_zip_view_path"])
