@@ -418,7 +418,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { AlertTriangle, Check, CloudDownload, Download, FileIcon, Globe2, KeyRound, Loader2, PencilLine, RefreshCw, Search, X } from 'lucide-vue-next'
 import AppDropdown from '../common/AppDropdown.vue'
@@ -430,18 +430,22 @@ import {
   httpDownloadPlatformsFromUrl,
 } from '../common/httpDownloadPlatformMeta.js'
 
+const DOWNLOAD_PANEL_CONFLICT_POLICIES = ['resume', 'rename', 'skip']
+
 const props = defineProps({
   provider: { type: String, default: 'http' },
-  hasTasks: { type: Boolean, default: false }
+  hasTasks: { type: Boolean, default: false },
+  draft: { type: Object, default: () => ({}) }
 })
 
-const emit = defineEmits(['started', 'open-workbench'])
+const emit = defineEmits(['started', 'open-workbench', 'update:draft'])
 
-const urlText = ref('')
-const targetSubdir = ref('')
-const outputFolderName = ref('')
-const batchName = ref('')
-const conflictPolicy = ref('resume')
+const initialDraft = normalizeDownloadPanelDraft(props.draft)
+const urlText = ref(initialDraft.urlText)
+const targetSubdir = ref(initialDraft.targetSubdir)
+const outputFolderName = ref(initialDraft.outputFolderName)
+const batchName = ref(initialDraft.batchName)
+const conflictPolicy = ref(initialDraft.conflictPolicy)
 const previewing = ref(false)
 const starting = ref(false)
 const healthLoading = ref(false)
@@ -472,6 +476,37 @@ const inputPlaceholder = computed(() => isBaidu.value
 )
 const healthActionLabel = computed(() => isBaidu.value ? '检测百度登录态' : '检测 aria2')
 const BAIDU_SHARE_CODE_SEPARATOR = '----'
+
+function normalizeDownloadPanelDraft(value = {}) {
+  const policy = String(value?.conflictPolicy || '').trim()
+  return {
+    urlText: String(value?.urlText || ''),
+    targetSubdir: String(value?.targetSubdir || ''),
+    outputFolderName: String(value?.outputFolderName || ''),
+    batchName: String(value?.batchName || ''),
+    conflictPolicy: DOWNLOAD_PANEL_CONFLICT_POLICIES.includes(policy) ? policy : 'resume'
+  }
+}
+
+function currentDownloadPanelDraft() {
+  return normalizeDownloadPanelDraft({
+    urlText: urlText.value,
+    targetSubdir: targetSubdir.value,
+    outputFolderName: outputFolderName.value,
+    batchName: batchName.value,
+    conflictPolicy: conflictPolicy.value
+  })
+}
+
+function isSameDownloadPanelDraft(left, right) {
+  const a = normalizeDownloadPanelDraft(left)
+  const b = normalizeDownloadPanelDraft(right)
+  return a.urlText === b.urlText
+    && a.targetSubdir === b.targetSubdir
+    && a.outputFolderName === b.outputFolderName
+    && a.batchName === b.batchName
+    && a.conflictPolicy === b.conflictPolicy
+}
 
 const parsedUrls = computed(() => {
   const rows = String(urlText.value || '')
@@ -706,7 +741,7 @@ async function preview() {
         targetSubdir: targetSubdir.value,
         outputFolderName: outputFolderName.value,
         conflictPolicy: conflictPolicy.value,
-        timeout: 45000
+        timeout: 60000
       })
       previewItems.value = result.items || []
       previewNeedsMaterialize.value = true
@@ -1340,6 +1375,22 @@ function addPreviewLog(message, level = 'info') {
     }
   ].slice(-80)
 }
+
+watch(() => props.draft, (value) => {
+  if (isSameDownloadPanelDraft(currentDownloadPanelDraft(), value)) return
+  const draft = normalizeDownloadPanelDraft(value)
+  urlText.value = draft.urlText
+  targetSubdir.value = draft.targetSubdir
+  outputFolderName.value = draft.outputFolderName
+  batchName.value = draft.batchName
+  conflictPolicy.value = draft.conflictPolicy
+}, { deep: true })
+
+watch([urlText, targetSubdir, outputFolderName, batchName, conflictPolicy], () => {
+  const draft = currentDownloadPanelDraft()
+  if (isSameDownloadPanelDraft(draft, props.draft)) return
+  emit('update:draft', draft)
+})
 
 onMounted(loadHealth)
 </script>

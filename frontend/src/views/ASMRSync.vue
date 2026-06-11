@@ -112,6 +112,7 @@
 
       <HttpDownloadPanel
         v-else-if="activeWorkspaceTab === 'http'"
+        v-model:draft="httpDownloadDraft"
         :has-tasks="httpDownloadWorkbenchTaskIds.length > 0"
         @started="handleHttpDownloadStarted"
         @open-workbench="resumeHttpDownloadWorkbench"
@@ -119,6 +120,7 @@
 
       <BaiduNetdiskPanel
         v-else-if="activeWorkspaceTab === 'baidu'"
+        v-model:draft="baiduNetdiskDraft"
         :has-tasks="baiduNetdiskWorkbenchTaskIds.length > 0"
         @started="handleBaiduNetdiskStarted"
         @open-workbench="resumeBaiduNetdiskWorkbench"
@@ -641,8 +643,46 @@ const router = useRouter()
 const ASMR_SYNC_DOWNLOAD_WORKBENCH_KEY = 'kikoerumanager.asmrSync.downloadWorkbench'
 const ASMR_SYNC_HTTP_DOWNLOAD_WORKBENCH_KEY = 'kikoerumanager.asmrSync.httpDownloadWorkbench'
 const ASMR_SYNC_BAIDU_NETDISK_WORKBENCH_KEY = 'kikoerumanager.asmrSync.baiduNetdiskWorkbench'
+const ASMR_SYNC_HTTP_DOWNLOAD_DRAFT_KEY = 'kikoerumanager.asmrSync.httpDownloadDraft'
+const ASMR_SYNC_BAIDU_NETDISK_DRAFT_KEY = 'kikoerumanager.asmrSync.baiduNetdiskDraft'
 const ASMR_SYNC_STATUS_POLL_MS = 3000
 const ASMR_SYNC_STATUS_POLL_MAX_MS = 120000
+
+function normalizeDownloadDraft(value = {}) {
+  const policy = String(value?.conflictPolicy || '').trim()
+  return {
+    urlText: String(value?.urlText || ''),
+    targetSubdir: String(value?.targetSubdir || ''),
+    outputFolderName: String(value?.outputFolderName || ''),
+    batchName: String(value?.batchName || ''),
+    conflictPolicy: ['resume', 'rename', 'skip'].includes(policy) ? policy : 'resume'
+  }
+}
+
+function readDownloadDraft(key) {
+  try {
+    if (typeof window === 'undefined') return normalizeDownloadDraft()
+    return normalizeDownloadDraft(JSON.parse(window.sessionStorage.getItem(key) || '{}'))
+  } catch (_) {
+    return normalizeDownloadDraft()
+  }
+}
+
+function persistDownloadDraft(key, value) {
+  try {
+    if (typeof window === 'undefined') return
+    const draft = normalizeDownloadDraft(value)
+    const hasDraft = Boolean(
+      draft.urlText
+      || draft.targetSubdir
+      || draft.outputFolderName
+      || draft.batchName
+      || draft.conflictPolicy !== 'resume'
+    )
+    if (hasDraft) window.sessionStorage.setItem(key, JSON.stringify(draft))
+    else window.sessionStorage.removeItem(key)
+  } catch (_) {}
+}
 
 const subtitleFolder = ref('')
 const scanning = ref(false)
@@ -686,6 +726,7 @@ const httpDownloadWorkbenchVisible = ref(false)
 const httpDownloadWorkbenchBackgroundActive = ref(false)
 const httpDownloadWorkbenchRefreshing = ref(false)
 const httpDownloadRetryingTaskIds = ref(new Set())
+const httpDownloadDraft = ref(readDownloadDraft(ASMR_SYNC_HTTP_DOWNLOAD_DRAFT_KEY))
 let httpDownloadWorkbenchTimer = null
 const baiduNetdiskWorkbenchTaskIds = ref([])
 const baiduNetdiskWorkbenchTasks = ref([])
@@ -693,6 +734,7 @@ const baiduNetdiskWorkbenchVisible = ref(false)
 const baiduNetdiskWorkbenchBackgroundActive = ref(false)
 const baiduNetdiskWorkbenchRefreshing = ref(false)
 const baiduNetdiskRetryingTaskIds = ref(new Set())
+const baiduNetdiskDraft = ref(readDownloadDraft(ASMR_SYNC_BAIDU_NETDISK_DRAFT_KEY))
 let baiduNetdiskWorkbenchTimer = null
 
 // Enhanced preview dialog state
@@ -2309,6 +2351,10 @@ watch(httpDownloadWorkbenchTaskIds, () => {
   persistHttpDownloadWorkbenchState()
 }, { deep: true })
 
+watch(httpDownloadDraft, (value) => {
+  persistDownloadDraft(ASMR_SYNC_HTTP_DOWNLOAD_DRAFT_KEY, value)
+}, { deep: true })
+
 watch(baiduNetdiskWorkbenchVisible, (visible) => {
   persistBaiduNetdiskWorkbenchState()
   if (visible || baiduNetdiskWorkbenchBackgroundActive.value) startBaiduNetdiskWorkbenchPolling()
@@ -2323,6 +2369,10 @@ watch(baiduNetdiskWorkbenchBackgroundActive, () => {
 
 watch(baiduNetdiskWorkbenchTaskIds, () => {
   persistBaiduNetdiskWorkbenchState()
+}, { deep: true })
+
+watch(baiduNetdiskDraft, (value) => {
+  persistDownloadDraft(ASMR_SYNC_BAIDU_NETDISK_DRAFT_KEY, value)
 }, { deep: true })
 
 watch(() => route.query?.tab, (value) => {
