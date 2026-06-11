@@ -31,6 +31,49 @@ export function apiFetchOptions(options = {}) {
   return next
 }
 
+function currentPathForVerify() {
+  if (typeof window === 'undefined') return '/'
+  return window.location.pathname + window.location.search
+}
+
+export function redirectToSecurityGateVerify() {
+  if (typeof window === 'undefined' || window.location.pathname === '/verify') return false
+  const next = encodeURIComponent(currentPathForVerify())
+  window.location.assign(`/verify?next=${next}`)
+  return true
+}
+
+export function redirectToSecurityGateBlocked() {
+  if (typeof window === 'undefined' || window.location.pathname === '/blocked') return false
+  window.location.assign('/blocked')
+  return true
+}
+
+let securityGateRedirectCheck = null
+
+export async function redirectIfSecurityGateExpired() {
+  if (typeof window === 'undefined') return false
+  if (window.location.pathname === '/verify' || window.location.pathname === '/blocked') return true
+  if (!securityGateRedirectCheck) {
+    securityGateRedirectCheck = fetch(apiUrl('/security-gate/status'), {
+      credentials: 'include',
+      cache: 'no-store',
+    })
+      .then(async (response) => {
+        if (!response.ok) return false
+        const state = await response.json()
+        if (state?.blocked) return redirectToSecurityGateBlocked()
+        if (state?.enforced && !state?.authenticated) return redirectToSecurityGateVerify()
+        return false
+      })
+      .catch(() => false)
+      .finally(() => {
+        securityGateRedirectCheck = null
+      })
+  }
+  return securityGateRedirectCheck
+}
+
 const FILTER_DELETE_PREVIEW_TIMEOUT = 30 * 60 * 1000
 const CONFLICT_MERGE_TIMEOUT = 30 * 60 * 1000
 const RJ_SUBTITLE_SCAN_TIMEOUT = 0
@@ -55,11 +98,10 @@ apiClient.interceptors.response.use(
     if (typeof detail === 'string' && detail.includes('OTP')) {
       synologyOtpRequired.value = true
     }
-    if (error.response?.data?.gate_required && window.location.pathname !== '/verify') {
-      const next = encodeURIComponent(window.location.pathname + window.location.search)
-      window.location.assign(`/verify?next=${next}`)
-    } else if (error.response?.data?.blocked && window.location.pathname !== '/blocked') {
-      window.location.assign('/blocked')
+    if (error.response?.data?.gate_required) {
+      redirectToSecurityGateVerify()
+    } else if (error.response?.data?.blocked) {
+      redirectToSecurityGateBlocked()
     }
     return Promise.reject(error)
   }
@@ -1619,7 +1661,7 @@ export const baiduNetdiskApi = {
       selected_keys: payload.selectedKeys || payload.selected_keys || [],
       selected_items: payload.selectedItems || payload.selected_items || []
     }, {
-      timeout: payload.timeout ?? 45000,
+      timeout: payload.timeout ?? 60000,
       signal: payload.signal
     })
     return response.data

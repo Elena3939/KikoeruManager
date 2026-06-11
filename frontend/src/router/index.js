@@ -180,6 +180,7 @@ const router = createRouter({
   routes
 })
 
+const CHUNK_RELOAD_KEY_PREFIX = 'kikoerumanager.routeChunkReloaded:'
 const SECURITY_GATE_STATUS_TTL_MS = 8000
 let securityGateStatusCache = {
   value: null,
@@ -236,6 +237,23 @@ router.beforeEach(async (to) => {
     }
     return true
   }
+})
+
+function isRouteChunkLoadError(error) {
+  const text = `${error?.name || ''} ${error?.message || ''} ${error?.stack || ''}`
+  return /Failed to fetch dynamically imported module|Importing a module script failed|Loading chunk|CSS_CHUNK_LOAD_FAILED|error loading dynamically imported module/i.test(text)
+}
+
+router.onError((error, to) => {
+  if (typeof window === 'undefined' || !isRouteChunkLoadError(error)) return
+  const target = to?.fullPath || window.location.pathname || '/'
+  const key = `${CHUNK_RELOAD_KEY_PREFIX}${target}`
+  if (window.sessionStorage.getItem(key) === '1') {
+    console.error('[Router] 懒加载资源刷新后仍加载失败:', error)
+    return
+  }
+  window.sessionStorage.setItem(key, '1')
+  window.location.assign(target)
 })
 
 export default router

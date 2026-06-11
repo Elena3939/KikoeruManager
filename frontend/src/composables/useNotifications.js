@@ -1,5 +1,5 @@
 import { ref, computed } from 'vue'
-import { apiUrl, notificationApi } from '../api'
+import { apiUrl, notificationApi, redirectIfSecurityGateExpired } from '../api'
 
 const _unreadCount = ref(0)
 const _items = ref([])
@@ -174,9 +174,10 @@ function _connectSSE() {
     } catch { /* ignore */ }
   }
 
-  _sse.onerror = () => {
+  _sse.onerror = async () => {
     _sse?.close()
     _sse = null
+    if (await redirectIfSecurityGateExpired()) return
     if (_sseRetryTimer) clearTimeout(_sseRetryTimer)
     _sseRetryTimer = setTimeout(() => {
       _connectSSE()

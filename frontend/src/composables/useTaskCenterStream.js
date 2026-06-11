@@ -1,5 +1,5 @@
 import { readonly, ref } from 'vue'
-import { apiUrl } from '../api'
+import { apiUrl, redirectIfSecurityGateExpired } from '../api'
 
 const STREAM_URL = apiUrl('/task-center/stream')
 const MAX_RETRY_DELAY = 30000
@@ -47,11 +47,12 @@ function connect() {
     }
   }
 
-  source.onerror = () => {
+  source.onerror = async () => {
     connected.value = false
     lastErrorAt.value = Date.now()
     source?.close()
     source = null
+    if (await redirectIfSecurityGateExpired()) return
     if (manuallyClosed || consumers <= 0) return
     clearRetryTimer()
     retryTimer = setTimeout(() => {
