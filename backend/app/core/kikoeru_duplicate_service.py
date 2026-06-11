@@ -89,8 +89,15 @@ class KikoeruDuplicateService:
         # 时复用 raw data 重新 _parse_search_result（CPU 操作，不打 HTTP），就能给
         # 广义匹配一次机会而不需要触网。TTL 跟 _cache 一致。
         self._search_response_cache: TTLCache = TTLCache(max_size=2048, ttl_seconds=cache_ttl, name="kikoeru.search_raw")
+        self._tracks_failure_cache: TTLCache = TTLCache(
+            max_size=4096,
+            ttl_seconds=min(max(cache_ttl, 60), 300),
+            name="kikoeru.tracks_fail",
+        )
         self._duplicate_inflight: Dict[Tuple[str, bool, Tuple[str, ...]], asyncio.Future] = {}
         self._session: Optional[aiohttp.ClientSession] = None
+        self._lookup_semaphore = asyncio.Semaphore(8)
+        self._tracks_semaphore = asyncio.Semaphore(3)
 
     def _get_circle_id_cache(self, keyword: str) -> int:
         cache_key = self._normalize_search_text(keyword)
@@ -270,6 +277,21 @@ class KikoeruDuplicateService:
         """设置缓存"""
         self._cache[rjcode] = (result, datetime.now())
 
+    def _track_cache_key(self, work_id: int | str) -> str:
+        return str(work_id or "").strip()
+
+    def _is_track_failure_cached(self, work_id: int | str) -> bool:
+        key = self._track_cache_key(work_id)
+        return bool(key and self._tracks_failure_cache.get(key))
+
+    def _cache_track_failure(self, work_id: int | str, reason: str) -> None:
+        key = self._track_cache_key(work_id)
+        if key:
+            self._tracks_failure_cache[key] = {
+                "reason": str(reason or "unknown"),
+                "failed_at": datetime.now().isoformat(),
+            }
+
     def _maybe_cache_result(
         self,
         rjcode: str,
@@ -345,6 +367,13 @@ class KikoeruDuplicateService:
     def _build_tracks_url(self, work_id: int) -> str:
         return f"{self.config.server_url}/api/tracks/{int(work_id)}"
 
+    def _build_tracks_url_value(self, work_id: int | str) -> str:
+        return f"{self.config.server_url}/api/tracks/{str(work_id).strip()}"
+
+    def _rjcode_to_work_id(self, rjcode: str) -> int:
+        """把 RJ 数字部分转成数值 work id，用作前导 0 路径之外的备用候选。"""
+        return self._rjcode_to_id(rjcode)
+
     def _rjcode_to_work_id_str(self, rjcode: str) -> str:
         """RJ 数字部分原样（保留前导 0），用于按 work_id 直接打 ``/api/tracks/{id}``。
 
@@ -360,6 +389,27 @@ class KikoeruDuplicateService:
     def _build_tracks_url_str(self, work_id_str: str) -> str:
         """字符串版 tracks URL，保留前导 0。配合 ``_rjcode_to_work_id_str`` 使用。"""
         return f"{self.config.server_url}/api/tracks/{work_id_str}"
+
+    def _track_id_candidates(self, *, rjcode: str = "", work_id: int | str = "", include_numeric_fallback: bool = True) -> List[str]:
+        """生成 tracks 查询候选。
+
+        Kikoeru 的 tracks 路由接受不带 RJ 前缀的 work id。本地配置实测：
+        ``01325413`` / ``1325413``、``01631817`` / ``1631817`` 都可用。
+        因此前导 0 形态保留为首选，search 返回的数值 ``work.id`` 作为备用。
+        """
+        candidates: List[str] = []
+        rj_work_id = self._rjcode_to_work_id_str(rjcode)
+        if rj_work_id:
+            candidates.append(rj_work_id)
+        normalized_work_id = str(work_id or "").strip()
+        if include_numeric_fallback and normalized_work_id:
+            try:
+                normalized_work_id = str(int(normalized_work_id))
+            except ValueError:
+                pass
+            if normalized_work_id and normalized_work_id not in candidates:
+                candidates.append(normalized_work_id)
+        return candidates
     
     def _get_headers(self) -> Dict[str, str]:
         """获取请求头，包含 API Token"""
@@ -826,22 +876,36 @@ class KikoeruDuplicateService:
         self,
         session: aiohttp.ClientSession,
         headers: Dict[str, str],
-        work_id: int,
-    ) -> tuple[Optional[int], str]:
+        work_id: int | str,
+        *,
+        expected_missing: bool = False,
+    ) -> Tuple[Optional[int], Optional[int], str]:
         if not work_id:
             return None, None, "work_id_empty"
 
-        url = self._build_tracks_url(work_id)
+        cache_key = self._track_cache_key(work_id)
+        if self._is_track_failure_cached(cache_key):
+            logger.debug("[Kikoeru] tracks 失败负缓存命中，跳过: work_id=%s", work_id)
+            return None, None, "tracks_cached_failure"
+
+        url = self._build_tracks_url_value(work_id)
         try:
-            async with session.get(
-                url,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=self.config.timeout)
-            ) as response:
-                if response.status != 200:
-                    logger.warning("[Kikoeru] 获取作品文件树失败: work_id=%s status=%s", work_id, response.status)
-                    return None, None, f"tracks_http_{response.status}"
-                data = await response.json()
+            async with self._tracks_semaphore:
+                async with session.get(
+                    url,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=self.config.timeout)
+                ) as response:
+                    if response.status != 200:
+                        reason = f"tracks_http_{response.status}"
+                        if expected_missing and response.status in {404, 500}:
+                            logger.debug("[Kikoeru] tracks 兜底未命中: work_id=%s status=%s", work_id, response.status)
+                        else:
+                            logger.warning("[Kikoeru] 获取作品文件树失败: work_id=%s status=%s", work_id, response.status)
+                        if response.status in {404, 500}:
+                            self._cache_track_failure(cache_key, reason)
+                        return None, None, reason
+                    data = await response.json()
                 subtitle_count = self._count_subtitle_files_from_tracks(data)
                 total_count = self._count_all_files_from_tracks(data)
                 logger.info("[Kikoeru] 作品文件树字幕统计: work_id=%s subtitle_count=%s total_count=%s", work_id, subtitle_count, total_count)
@@ -849,6 +913,14 @@ class KikoeruDuplicateService:
         except Exception as exc:
             logger.warning("[Kikoeru] 获取作品文件树异常: work_id=%s error=%s", work_id, exc)
             return None, None, "tracks_error"
+
+    def _mark_tracks_unreliable(self, result: KikoeruCheckResult, source: str) -> KikoeruCheckResult:
+        result.subtitle_check_source = source or "tracks_error"
+        result.source = "kikoeru_tracks_unreliable"
+        result.total_track_count = -1
+        result.subtitle_file_count = 0
+        result.has_lyric_hint = False
+        return result
 
     async def _hydrate_track_subtitle_state(
         self,
@@ -859,48 +931,23 @@ class KikoeruDuplicateService:
         if not result.is_found or not result.work_id:
             return result
 
-        # ★ v1.2.3：优先用 RJ 号转出来的字符串 work_id（保留前导 0）打 tracks 接口，
-        # 避免 int(work_id) 把 ``RJ01337508`` 抹成 ``1337508`` 导致 ``/api/tracks/1337508`` 404。
-        # matched_rjcode 是 _normalize_rjcode 后的结果（含 RJ 前缀 + 原始位数）。
         rj_for_tracks = result.matched_rjcode or result.rjcode
-        work_id_str = self._rjcode_to_work_id_str(rj_for_tracks)
+        candidates = self._track_id_candidates(rjcode=rj_for_tracks, work_id=result.work_id)
+        if not candidates:
+            candidates = self._track_id_candidates(work_id=result.work_id)
 
-        if work_id_str:
-            url = self._build_tracks_url_str(work_id_str)
-            try:
-                async with session.get(
-                    url,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=self.config.timeout)
-                ) as response:
-                    if response.status != 200:
-                        logger.warning(
-                            "[Kikoeru] hydrate tracks 失败: rjcode=%s url=%s status=%s",
-                            rj_for_tracks, url, response.status,
-                        )
-                        result.subtitle_check_source = f"tracks_http_{response.status}"
-                        return result
-                    data = await response.json()
-                    subtitle_count = self._count_subtitle_files_from_tracks(data)
-                    total_count = self._count_all_files_from_tracks(data)
-                    result.subtitle_file_count = int(subtitle_count or 0)
-                    result.total_track_count = int(total_count if total_count is not None else -1)
-                    result.subtitle_check_source = "tracks"
-                    result.has_lyric_hint = bool(subtitle_count and subtitle_count > 0)
-                    return result
-            except Exception as exc:
-                logger.warning(
-                    "[Kikoeru] hydrate tracks 异常: rjcode=%s url=%s error=%s",
-                    rj_for_tracks, url, exc,
-                )
-                result.subtitle_check_source = "tracks_error"
-                return result
+        last_source = "work_id_empty"
+        subtitle_count = None
+        total_count = None
+        source = ""
+        for candidate in candidates:
+            subtitle_count, total_count, source = await self._fetch_track_subtitle_state(session, headers, candidate)
+            last_source = source
+            if subtitle_count is not None:
+                break
 
-        # 兜底：RJ 号没法解析出 work_id_str（理论上不会走到），退回老 int 路径
-        subtitle_count, total_count, source = await self._fetch_track_subtitle_state(session, headers, result.work_id)
         if subtitle_count is None:
-            result.subtitle_check_source = source
-            return result
+            return self._mark_tracks_unreliable(result, last_source)
 
         result.subtitle_file_count = int(subtitle_count)
         result.total_track_count = int(total_count if total_count is not None else -1)
@@ -923,47 +970,49 @@ class KikoeruDuplicateService:
         ``/api/tracks/{work_id}`` 这条按主键拿 work 文件树的路由是稳定的，
         ``200`` 即代表 work 存在。
 
-        ★ v1.2.3 关键修复：work_id 用 ``_rjcode_to_work_id_str`` 取**字符串原样**
-        （保留前导 0），不能再走 ``_rjcode_to_id`` 的 int 转换，否则 ``RJ01337508``
-        会被抹成 ``1337508``，拼出来的 ``/api/tracks/1337508`` 永远 404，整个
-        兜底就废了（参考 VoiceLinks 油猴脚本 ``getAsmrOneWorkId`` 的实现）。
-
-        本方法把 RJ 号截掉前缀作为字符串 work_id 直接 GET tracks，命中即视为
+        当前实测 ``/api/tracks/01325413`` 和 ``/api/tracks/1325413`` 都可用，
+        所以先试保留前导 0 的 RJ 数字，再试数值 id。命中即视为
         作品存在并构造一个 ``is_found=True`` 的结果（同时填好字幕统计字段）。
         """
-        work_id_str = self._rjcode_to_work_id_str(rjcode)
-        if not work_id_str:
+        candidates = self._track_id_candidates(rjcode=rjcode, work_id=self._rjcode_to_work_id(rjcode))
+        if not candidates:
             return None
 
-        url = self._build_tracks_url_str(work_id_str)
-        try:
-            async with session.get(
-                url,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=self.config.timeout)
-            ) as response:
-                logger.info(
-                    "[Kikoeru] tracks 兜底探测: rjcode=%s work_id_str=%s url=%s status=%s",
-                    rjcode, work_id_str, url, response.status,
-                )
-                if response.status != 200:
-                    return None
-                data = await response.json()
-                subtitle_count = self._count_subtitle_files_from_tracks(data)
-                total_count = self._count_all_files_from_tracks(data)
-        except Exception as exc:
-            logger.warning(
-                "[Kikoeru] tracks 兜底请求异常: rjcode=%s work_id_str=%s error=%s",
-                rjcode, work_id_str, exc,
+        last_source = ""
+        matched_work_id = ""
+        subtitle_count = None
+        total_count = None
+        source = ""
+        for candidate in candidates:
+            subtitle_count, total_count, source = await self._fetch_track_subtitle_state(
+                session,
+                headers,
+                candidate,
+                expected_missing=True,
             )
+            last_source = source
+            if subtitle_count is not None:
+                matched_work_id = candidate
+                logger.info(
+                    "[Kikoeru] tracks 兜底命中: rjcode=%s work_id=%s subtitle_count=%s total_count=%s",
+                    rjcode,
+                    candidate,
+                    subtitle_count,
+                    total_count,
+                )
+                break
+            logger.debug(
+                "[Kikoeru] tracks 兜底未命中: rjcode=%s work_id=%s status=%s",
+                rjcode,
+                candidate,
+                source,
+            )
+        if subtitle_count is None:
             return None
-
-        # work_id 字段保留 int 形式以兼容下游（KikoeruCheckResult.work_id 类型为 int）。
-        # 这里用 int 转换不影响后续判断，因为兜底命中后不会再用 work_id 拼 URL。
         try:
-            work_id_int = int(work_id_str)
-        except ValueError:
-            work_id_int = 0
+            work_id_int = int(matched_work_id)
+        except Exception:
+            work_id_int = self._rjcode_to_work_id(rjcode)
 
         result = KikoeruCheckResult(
             rjcode=rjcode,
@@ -974,7 +1023,7 @@ class KikoeruDuplicateService:
             source="kikoeru_tracks_probe",
             subtitle_file_count=int(subtitle_count or 0),
             total_track_count=int(total_count if total_count is not None else -1),
-            subtitle_check_source="tracks_probe",
+            subtitle_check_source=source or last_source,
             has_lyric_hint=bool(subtitle_count and subtitle_count > 0),
         )
         return result
@@ -1001,11 +1050,12 @@ class KikoeruDuplicateService:
         future = loop.create_future()
         self._duplicate_inflight[inflight_key] = future
         try:
-            result = await self._check_duplicate_impl(
-                normalized_rjcode,
-                use_cache=use_cache,
-                extra_match_rjcodes=set(extra_key) if extra_key else extra_match_rjcodes,
-            )
+            async with self._lookup_semaphore:
+                result = await self._check_duplicate_impl(
+                    normalized_rjcode,
+                    use_cache=use_cache,
+                    extra_match_rjcodes=set(extra_key) if extra_key else extra_match_rjcodes,
+                )
             if not future.done():
                 future.set_result(result)
             return result
