@@ -27,6 +27,8 @@ import asyncio
 import sys
 import threading
 import queue
+import zipfile
+import zlib
 import filetype
 import tempfile
 from collections import OrderedDict
@@ -257,6 +259,22 @@ class ExtractService:
                 return True
         return False
 
+    def _is_zip_like_archive(self, archive_path: Optional[str]) -> bool:
+        if not archive_path:
+            return False
+        low = str(archive_path).lower()
+        if low.endswith('.zip') or bool(re.search(r'\.zip\.\d+$', low)):
+            return True
+        with contextlib.suppress(Exception):
+            with open(str(archive_path), 'rb') as fp:
+                header = fp.read(8)
+            return (
+                header.startswith(b'PK\x03\x04')
+                or header.startswith(b'PK\x05\x06')
+                or header.startswith(b'PK\x07\x08')
+            )
+        return False
+
     @staticmethod
     def _looks_like_zip_local_header(buffer: bytes, offset: int) -> bool:
         """粗校验 ZIP local header，避免在大 SFX stub/随机数据里误命中 PK。"""
@@ -406,18 +424,7 @@ class ExtractService:
                 archive_path = getattr(archive_info, 'path', None)
             if not archive_path:
                 return []
-        low = str(archive_path).lower()
-        is_zip_like = low.endswith('.zip') or bool(re.search(r'\.zip\.\d+$', low))
-        if not is_zip_like:
-            with contextlib.suppress(Exception):
-                with open(str(archive_path), 'rb') as fp:
-                    header = fp.read(8)
-                is_zip_like = (
-                    header.startswith(b'PK\x03\x04')
-                    or header.startswith(b'PK\x05\x06')
-                    or header.startswith(b'PK\x07\x08')
-                )
-        if not is_zip_like:
+        if not self._is_zip_like_archive(str(archive_path)):
             return []
 
         cp = self._filename_encoding_to_codepage(filename_encoding)
@@ -5388,6 +5395,31 @@ class ExtractService:
         finally:
             db.close()
 
+    async def _finalize_successful_extract_password(
+        self,
+        archive_info: ArchiveInfo,
+        task: Task,
+        password: str,
+        vault_passwords: List[str],
+        password_entry_id_map: Dict[str, Optional[str]],
+        password_rjcode_map: Dict[str, Optional[str]],
+    ) -> None:
+        if password and password in vault_passwords:
+            await self._record_password_usage(
+                password,
+                archive_info.path,
+                entry_id=password_entry_id_map.get(password),
+            )
+        archive_info.password = password
+        inferred_rjcode = password_rjcode_map.get(password)
+        if inferred_rjcode:
+            archive_info.inferred_rjcode = inferred_rjcode
+            task.task_metadata['inferred_rjcode'] = inferred_rjcode
+            task.task_metadata['rjcode'] = inferred_rjcode
+            task.task_metadata['inferred_rjcode_source'] = 'password_entry'
+            if not getattr(task, 'rjcode', None) or str(task.rjcode).strip() in {'', '未知'}:
+                task.rjcode = inferred_rjcode
+
     def _get_rj_passwords(self, archive_path: str) -> List[str]:
         """从压缩包路径提取RJ号并生成密码列表
 
@@ -5917,10 +5949,27 @@ class ExtractService:
             if not sample_bytes_list:
                 return None
             combined = b'\n'.join(sample_bytes_list)
-            result = self._detect_best_encoding(combined)
-            # utf-8 得分最高说明本身就是 UTF-8 文件名，无需 -mcp
-            if result in ('utf-8', 'utf_8', 'ascii'):
+            try:
+                combined.decode("utf-8")
                 return None
+            except UnicodeDecodeError:
+                pass
+
+            candidates = ["shift_jis", "gbk", "cp936", "big5", "euc_kr"]
+            scored: List[Tuple[float, str]] = []
+            for encoding in candidates:
+                decoded = combined.decode(encoding, errors="replace")
+                replacement_ratio = decoded.count("\ufffd") / max(len(decoded), 1)
+                if replacement_ratio >= 0.05:
+                    continue
+                score = float(self._score_decoded_text(decoded))
+                score -= self._garbled_text_score(decoded) * 20.0
+                scored.append((score, encoding))
+            if not scored:
+                return None
+            scored.sort(reverse=True)
+            result = scored[0][1]
+            logger.debug("[编码嗅探] ZIP 文件名编码候选: archive=%s scores=%s", file_path, scored)
             return result
         except Exception as e:
             logger.debug(f"[编码嗅探] {file_path} 失败: {e}")
@@ -6003,6 +6052,186 @@ class ExtractService:
         )
         return archive_info
 
+    @staticmethod
+    def _password_has_non_ascii(password: Optional[str]) -> bool:
+        return any(ord(ch) > 0x7F for ch in str(password or ""))
+
+    @staticmethod
+    def _zip_password_byte_candidates(password: str) -> List[Tuple[str, bytes]]:
+        candidates: List[Tuple[str, bytes]] = []
+        seen: set[bytes] = set()
+        for encoding in ("utf-8", "cp932", "shift_jis", "gbk", "cp936", "big5"):
+            try:
+                value = password.encode(encoding)
+            except UnicodeEncodeError:
+                continue
+            if value in seen:
+                continue
+            seen.add(value)
+            candidates.append((encoding, value))
+        return candidates
+
+    @staticmethod
+    def _safe_zip_member_target(output_path: str, member_name: str) -> Optional[str]:
+        normalized = str(member_name or "").replace("\\", "/")
+        if not normalized:
+            return None
+        if normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
+            return None
+        parts = [part for part in normalized.split("/") if part not in {"", "."}]
+        if not parts or any(part == ".." for part in parts):
+            return None
+        output_abs = os.path.abspath(output_path)
+        target_abs = os.path.abspath(os.path.join(output_abs, *parts))
+        try:
+            if os.path.commonpath([output_abs, target_abs]) != output_abs:
+                return None
+        except ValueError:
+            return None
+        return target_abs
+
+    @staticmethod
+    def _zip_member_name(info: zipfile.ZipInfo, filename_encoding: Optional[str]) -> str:
+        name = str(info.filename or "")
+        if info.flag_bits & 0x800:
+            return name.replace("\\", "/")
+        if not filename_encoding:
+            return name.replace("\\", "/")
+        try:
+            raw_name = (
+                info.orig_filename.encode("cp437")
+                if isinstance(info.orig_filename, str)
+                else bytes(info.orig_filename or b"")
+            )
+            if raw_name:
+                return raw_name.decode(filename_encoding, errors="replace").replace("\\", "/")
+        except Exception:
+            pass
+        return name.replace("\\", "/")
+
+    def _probe_zip_password_bytes(self, archive_path: str, password: str) -> Optional[Tuple[str, bytes]]:
+        if not password:
+            return None
+        try:
+            with zipfile.ZipFile(archive_path, "r") as zf:
+                entries = [info for info in zf.infolist() if not info.is_dir()]
+                if not entries:
+                    return None
+                probe_entry = min(entries, key=lambda info: int(info.file_size or 0))
+                for encoding, password_bytes in self._zip_password_byte_candidates(password):
+                    try:
+                        with zf.open(probe_entry, "r", pwd=password_bytes) as fp:
+                            fp.read(1)
+                        return encoding, password_bytes
+                    except RuntimeError as e:
+                        if "password" in str(e).lower():
+                            continue
+                        return None
+                    except (NotImplementedError, zipfile.BadZipFile, zlib.error):
+                        return None
+                    except Exception:
+                        logger.debug(
+                            "ZIP 密码字节探测失败: archive=%s encoding=%s",
+                            archive_path,
+                            encoding,
+                            exc_info=True,
+                        )
+                        continue
+        except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile):
+            return None
+        return None
+
+    async def _try_extract_zip_with_python(
+        self,
+        archive_info: ArchiveInfo,
+        output_path: str,
+        password: str,
+        task: Optional[Task] = None,
+    ) -> Tuple[bool, str]:
+        """用 Python zipfile 兜底解 ZIP 中文密码字节不兼容场景。"""
+        password_probe = self._probe_zip_password_bytes(archive_info.path, password)
+        if password_probe is None:
+            return False, "wrong_password"
+        password_encoding, password_bytes = password_probe
+        filename_encoding = (
+            getattr(archive_info, "detected_encoding", None)
+            or self.__class__._archive_encoding_cache.get(str(archive_info.path))
+            or self._sniff_zip_encoding(archive_info.path)
+        )
+        if filename_encoding:
+            self.__class__._archive_encoding_cache[str(archive_info.path)] = filename_encoding
+        logger.info(
+            "ZIP 密码字节探测通过，使用 Python zipfile 兼容后端解压: archive=%s password_encoding=%s filename_encoding=%s",
+            archive_info.path,
+            password_encoding,
+            filename_encoding or "utf-8/cp437",
+        )
+
+        def _extract_sync() -> Tuple[bool, str, Optional[str]]:
+            total_size = 0
+            with zipfile.ZipFile(archive_info.path, "r") as zf:
+                entries = [info for info in zf.infolist() if not info.is_dir()]
+                total_size = sum(int(info.file_size or 0) for info in entries)
+                written = 0
+                last_update = 0.0
+                for info in zf.infolist():
+                    if task is not None and task.is_cancelled():
+                        return False, "cancelled", None
+                    member_name = self._zip_member_name(info, filename_encoding)
+                    target = self._safe_zip_member_target(output_path, member_name)
+                    if target is None:
+                        return False, "unsafe_path", member_name
+                    if info.is_dir():
+                        os.makedirs(target, exist_ok=True)
+                        continue
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    with zf.open(info, "r", pwd=password_bytes) as src, open(target, "wb") as dst:
+                        while True:
+                            if task is not None and task.is_cancelled():
+                                return False, "cancelled", None
+                            chunk = src.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            dst.write(chunk)
+                            written += len(chunk)
+                            if task is not None and total_size > 0:
+                                now = time.monotonic()
+                                if now - last_update >= 1.5:
+                                    percent = min(94, 40 + int((written / total_size) * 54))
+                                    task.update_progress(percent, f"ZIP 兼容解压中 {min(100, int((written / total_size) * 100))}%")
+                                    last_update = now
+            return True, password_encoding, None
+
+        try:
+            result, reason, detail = await asyncio.to_thread(_extract_sync)
+        except RuntimeError as e:
+            if "password" in str(e).lower():
+                return False, "wrong_password"
+            logger.warning("Python zipfile 兼容解压失败: %s", e)
+            return False, "unsupported"
+        except NotImplementedError as e:
+            logger.info("Python zipfile 不支持该 ZIP 压缩/加密方式，准备交给其他后端: %s", e)
+            return False, "unsupported"
+        except (zipfile.BadZipFile, zipfile.LargeZipFile, zlib.error) as e:
+            logger.warning("Python zipfile 兼容解压返回 ZIP 错误: %s", e)
+            return False, "archive_error"
+        except Exception as e:
+            logger.warning("Python zipfile 兼容解压异常: %s", e)
+            return False, "unsupported"
+
+        if result:
+            self.__class__._archive_encoding_cache[str(archive_info.path)] = (
+                filename_encoding or getattr(archive_info, "detected_encoding", None) or "zipfile"
+            )
+            return True, reason
+        if reason == "unsafe_path":
+            logger.error(
+                "ZIP 兼容解压拒绝危险路径: archive=%s member=%s",
+                archive_info.path,
+                detail,
+            )
+        return False, reason
+
     def _detect_best_encoding(self, raw_bytes: bytes) -> str:
         """
         自动检测压缩包文件名的最佳编码
@@ -6068,15 +6297,6 @@ class ExtractService:
             # 空格
             elif c == ' ':
                 score += 0.5
-
-        # 4. 检测常见乱码模式（GBK解码Shift_JIS时出现的特征）
-        # 例如：日文假名被错误解码成生僻汉字
-        garbled_patterns = [
-            r'[\u9e\u9f][\u00-\x7f]',  # 部分乱码特征
-        ]
-        for pattern in garbled_patterns:
-            if re.search(pattern, text):
-                score -= 20
 
         return int(score)
 
@@ -6214,6 +6434,77 @@ class ExtractService:
         listing_available = bool(getattr(archive_info, "file_list", None))
         encountered_wrong_password = False
         last_corrupt_stderr: Optional[str] = None
+        is_zip_archive = self._is_zip_like_archive(archive_info.path)
+
+        async def accept_compat_backend_result(backend_name: str) -> Tuple[bool, str]:
+            if await self._reject_if_garbled_after_extract(
+                archive_info.path,
+                output_path,
+                cleanup=lambda: self._cleanup_extract_attempt(output_path),
+                context=backend_name,
+                task=task,
+                ignore_garbled=manual_ignore_garbled,
+            ):
+                return False, "garbled_filename"
+            if not await self._verify_extraction(archive_info, output_path):
+                await self._cleanup_extract_attempt(output_path)
+                return False, "extract_incomplete"
+            self._set_extract_meta(task, extract_verified=True, zip_compat_backend=backend_name)
+            logger.info(
+                "ZIP 中文密码兼容后端解压成功: archive=%s backend=%s",
+                archive_info.path,
+                backend_name,
+            )
+            return True, backend_name
+
+        async def try_zip_compat_backend(current_password: str) -> Tuple[bool, str]:
+            if not (
+                is_zip_archive
+                and current_password
+                and self._password_has_non_ascii(current_password)
+            ):
+                return False, "not_applicable"
+            await self._cleanup_extract_attempt(output_path)
+            task.update_progress(39, "尝试 ZIP 中文密码兼容解压")
+            zip_success, zip_reason = await self._try_extract_zip_with_python(
+                archive_info,
+                output_path,
+                current_password,
+                task=task,
+            )
+            if task.is_cancelled():
+                return False, "cancelled"
+            if zip_success:
+                return await accept_compat_backend_result("zipfile")
+            await self._cleanup_extract_attempt(output_path)
+            if zip_reason == "cancelled":
+                return False, "cancelled"
+            if self._find_unar_executable():
+                task.update_progress(39, "尝试 unar ZIP 中文密码兼容解压")
+                unar_result = await self._try_unar_extract(
+                    archive_info.path,
+                    output_path,
+                    current_password,
+                    task=task,
+                )
+                if task.is_cancelled():
+                    return False, "cancelled"
+                if unar_result.returncode == 0:
+                    return await accept_compat_backend_result("unar")
+                await self._cleanup_extract_attempt(output_path)
+                unar_stderr = (unar_result.stderr or b"").decode("utf-8", errors="ignore")
+                logger.info(
+                    "unar ZIP 中文密码兼容后端未成功: archive=%s rc=%s stderr=%s",
+                    archive_info.path,
+                    unar_result.returncode,
+                    unar_stderr[:300] if unar_stderr else "(无错误文本)",
+                )
+            logger.info(
+                "ZIP 中文密码兼容后端未成功: archive=%s reason=%s",
+                archive_info.path,
+                zip_reason,
+            )
+            return False, zip_reason
 
         # ========== RAR fast-path: 优先用 unar 解压日文 / 中文 RAR ==========
         # 7zz 24.08 的 RAR 解析器不接受 -mcp 参数，遇到 Shift-JIS / GBK 命名的 RAR
@@ -6330,14 +6621,51 @@ class ExtractService:
                     self._password_cache_key(archive_fingerprint, password)
                     if archive_fingerprint and password else None
                 )
+                zip_password_compat_candidate = bool(
+                    is_zip_archive
+                    and password
+                    and self._password_has_non_ascii(password)
+                )
                 if cache_key and cache_key in ExtractService._password_negative_cache:
+                    if manual_retry_password_only or zip_password_compat_candidate:
+                        logger.info(
+                            "密码 %s (%s) 命中负缓存，但本次需要实际重试（manual=%s zip_non_ascii=%s）",
+                            password_source,
+                            password or '无密码',
+                            manual_retry_password_only,
+                            zip_password_compat_candidate,
+                        )
+                    else:
+                        logger.info(
+                            "密码 %s (%s) 命中负缓存，跳过本次尝试",
+                            password_source,
+                            password or '无密码',
+                        )
+                        encountered_wrong_password = True
+                        continue
+
+                async def handle_zip_compat_failure_path() -> Optional[str]:
+                    zip_success, zip_reason = await try_zip_compat_backend(password)
+                    if zip_success:
+                        await self._finalize_successful_extract_password(
+                            archive_info,
+                            task,
+                            password,
+                            vault_passwords,
+                            password_entry_id_map,
+                            password_rjcode_map,
+                        )
+                        logger.info(f"解压成功，使用{password_source}密码: {password or '无密码'}")
+                        return "success"
+                    if zip_reason in {"cancelled", "garbled_filename", "extract_incomplete"}:
+                        return zip_reason
                     logger.info(
-                        "密码 %s (%s) 命中负缓存，跳过本次尝试",
+                        "ZIP 中文密码兼容后端未确认密码可用，继续按密码失败处理: source=%s password=%s reason=%s",
                         password_source,
                         password or '无密码',
+                        zip_reason,
                     )
-                    encountered_wrong_password = True
-                    continue
+                    return None
 
                 # 每轮入口先响应取消 / 暂停，避免用户点了按钮但还会换下一个密码继续跑
                 if task.is_cancelled():
@@ -6370,7 +6698,17 @@ class ExtractService:
                         probe_result = 'ok'
                     if probe_result == 'wrong_password':
                         encountered_wrong_password = True
-                        if cache_key:
+                        if zip_password_compat_candidate:
+                            compat_result = await handle_zip_compat_failure_path()
+                            if compat_result == "success":
+                                return True, password, ""
+                            if compat_result == "cancelled":
+                                return False, None, "cancelled"
+                            if compat_result == "garbled_filename":
+                                return False, None, "garbled_filename"
+                            if compat_result == "extract_incomplete":
+                                return False, None, "extract_incomplete"
+                        if cache_key and not (manual_retry_password_only and password in manual_retry_password_set):
                             self._remember_negative_password(cache_key)
                         logger.info(
                             "密码 %s (%s) 探测阶段判定为密码错误，跳过完整解压",
@@ -6380,7 +6718,17 @@ class ExtractService:
                         continue
                     if probe_result == 'corrupt':
                         last_corrupt_stderr = last_corrupt_stderr or 'probe: corrupt'
-                        if cache_key:
+                        if zip_password_compat_candidate:
+                            compat_result = await handle_zip_compat_failure_path()
+                            if compat_result == "success":
+                                return True, password, ""
+                            if compat_result == "cancelled":
+                                return False, None, "cancelled"
+                            if compat_result == "garbled_filename":
+                                return False, None, "garbled_filename"
+                            if compat_result == "extract_incomplete":
+                                return False, None, "extract_incomplete"
+                        if cache_key and not (manual_retry_password_only and password in manual_retry_password_set):
                             self._remember_negative_password(cache_key)
                         logger.warning(
                             "密码 %s (%s) 探测阶段命中疑似损坏特征，跳过完整解压",
@@ -6504,23 +6852,14 @@ class ExtractService:
                         await self._cleanup_extract_attempt(output_path)
                         return False, None, "extract_incomplete"
                     self._set_extract_meta(task, extract_verified=True)
-                    # 记录成功使用的密码
-                    if password and password in vault_passwords:
-                        await self._record_password_usage(
-                            password,
-                            archive_info.path,
-                            entry_id=password_entry_id_map.get(password),
-                        )
-                    # 更新 archive_info 中的密码，用于传递给嵌套压缩包
-                    archive_info.password = password
-                    inferred_rjcode = password_rjcode_map.get(password)
-                    if inferred_rjcode:
-                        archive_info.inferred_rjcode = inferred_rjcode
-                        task.task_metadata['inferred_rjcode'] = inferred_rjcode
-                        task.task_metadata['rjcode'] = inferred_rjcode
-                        task.task_metadata['inferred_rjcode_source'] = 'password_entry'
-                        if not getattr(task, 'rjcode', None) or str(task.rjcode).strip() in {'', '未知'}:
-                            task.rjcode = inferred_rjcode
+                    await self._finalize_successful_extract_password(
+                        archive_info,
+                        task,
+                        password,
+                        vault_passwords,
+                        password_entry_id_map,
+                        password_rjcode_map,
+                    )
                     logger.info(f"解压成功，使用{password_source}密码: {password or '无密码'}")
                     return True, password, ""
 
@@ -6556,7 +6895,17 @@ class ExtractService:
                 )
                 if any(marker in stderr_lower for marker in encryption_markers):
                     encountered_wrong_password = True
-                    if cache_key:
+                    if zip_password_compat_candidate:
+                        compat_result = await handle_zip_compat_failure_path()
+                        if compat_result == "success":
+                            return True, password, ""
+                        if compat_result == "cancelled":
+                            return False, None, "cancelled"
+                        if compat_result == "garbled_filename":
+                            return False, None, "garbled_filename"
+                        if compat_result == "extract_incomplete":
+                            return False, None, "extract_incomplete"
+                    if cache_key and not (manual_retry_password_only and password in manual_retry_password_set):
                         self._remember_negative_password(cache_key)
                     logger.warning(f"密码 {password_source} ({password or '无密码'}) 解压失败: 密码错误")
                     continue
@@ -6610,6 +6959,16 @@ class ExtractService:
                     # 立刻 return 会导致密码库里剩下的真密码永远没机会被试到。
                     # 改为记录最后一次疑似损坏的 stderr，把剩余密码跑完再统一定性。
                     last_corrupt_stderr = stderr_text or stderr_lower
+                    if zip_password_compat_candidate:
+                        compat_result = await handle_zip_compat_failure_path()
+                        if compat_result == "success":
+                            return True, password, ""
+                        if compat_result == "cancelled":
+                            return False, None, "cancelled"
+                        if compat_result == "garbled_filename":
+                            return False, None, "garbled_filename"
+                        if compat_result == "extract_incomplete":
+                            return False, None, "extract_incomplete"
                     logger.warning(
                         "密码 %s (%s) 返回疑似损坏/头加密特征，继续尝试下一个密码: %s",
                         password_source,
@@ -6620,6 +6979,16 @@ class ExtractService:
 
                 if "data error" in stderr_lower:
                     last_corrupt_stderr = stderr_text or stderr_lower
+                    if zip_password_compat_candidate:
+                        compat_result = await handle_zip_compat_failure_path()
+                        if compat_result == "success":
+                            return True, password, ""
+                        if compat_result == "cancelled":
+                            return False, None, "cancelled"
+                        if compat_result == "garbled_filename":
+                            return False, None, "garbled_filename"
+                        if compat_result == "extract_incomplete":
+                            return False, None, "extract_incomplete"
                     logger.warning(
                         "7z 返回 Data Error，按密码失败继续尝试，避免把加密包误判为损坏: source=%s stderr=%s",
                         password_source,
@@ -6849,6 +7218,22 @@ class ExtractService:
             missing_ratio = len(missing_files) / total_count
             # 绝对阈值：缺失文件 >= 5 个 或 比例 >= 10%，要拒绝。
             if missing_ratio >= 0.1 or len(missing_files) >= 5:
+                if verify_mode == "full" and self._is_zip_like_archive(archive_info.path):
+                    expected_sizes = sorted(int(item.get("size") or 0) for item in file_entries)
+                    actual_sizes = sorted(int(size or 0) for size in actual_files.values())
+                    if (
+                        len(actual_sizes) == len(expected_sizes)
+                        and actual_sizes == expected_sizes
+                    ):
+                        logger.warning(
+                            "有 %s/%s (%.0f%%) 个文件名无法逐项验证，但文件数和大小集合完全一致，"
+                            "按 ZIP 文件名编码差异接受解压结果: archive=%s",
+                            len(missing_files),
+                            len(file_entries),
+                            missing_ratio * 100.0,
+                            archive_info.path,
+                        )
+                        return True
                 logger.error(
                     "有 %s/%s (%.0f%%) 个文件无法验证，拒绝接受解压结果: archive=%s",
                     len(missing_files),
