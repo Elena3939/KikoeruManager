@@ -8,6 +8,8 @@ import subprocess
 import tempfile
 import time
 import zipfile
+import struct
+import binascii
 from contextlib import asynccontextmanager
 from unittest.mock import Mock, AsyncMock, patch
 
@@ -35,6 +37,169 @@ class TestExtractService:
         with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as zf:
             zf.writestr('test.txt', 'test content')
             zf.writestr('test_dir/nested.txt', 'nested content')
+
+    def create_cp932_stored_zip(self, path):
+        """创建无 UTF-8 flag、文件名按 CP932 写入的最小 ZIP。"""
+        entries = [
+            ("mp3/2.あまあま＆意地悪姉友.mp3", b"audio-2"),
+            ("mp3/3.命令引き出し色仕掛け.mp3", b"audio-3"),
+            ("readme_ろまあぽ.txt", b"readme"),
+        ]
+        central = []
+        offset = 0
+        with open(path, "wb") as f:
+            for name, payload in entries:
+                name_bytes = name.encode("cp932")
+                crc = binascii.crc32(payload) & 0xFFFFFFFF
+                local = struct.pack(
+                    "<IHHHHHIIIHH",
+                    0x04034B50,
+                    20,
+                    0,
+                    0,
+                    0,
+                    0,
+                    crc,
+                    len(payload),
+                    len(payload),
+                    len(name_bytes),
+                    0,
+                )
+                f.write(local)
+                f.write(name_bytes)
+                f.write(payload)
+                central.append((name_bytes, crc, len(payload), offset))
+                offset += len(local) + len(name_bytes) + len(payload)
+            central_start = offset
+            for name_bytes, crc, size, local_offset in central:
+                header = struct.pack(
+                    "<IHHHHHHIIIHHHHHII",
+                    0x02014B50,
+                    20,
+                    20,
+                    0,
+                    0,
+                    0,
+                    0,
+                    crc,
+                    size,
+                    size,
+                    len(name_bytes),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    local_offset,
+                )
+                f.write(header)
+                f.write(name_bytes)
+                offset += len(header) + len(name_bytes)
+            central_size = offset - central_start
+            eocd = struct.pack(
+                "<IHHHHIIH",
+                0x06054B50,
+                0,
+                0,
+                len(central),
+                len(central),
+                central_size,
+                central_start,
+                0,
+            )
+            f.write(eocd)
+
+    def _zipcrypto_update_keys(self, keys, value):
+        keys[0] = self._zipcrypto_crc32_update(keys[0], value)
+        keys[1] = (keys[1] + (keys[0] & 0xFF)) & 0xFFFFFFFF
+        keys[1] = (keys[1] * 134775813 + 1) & 0xFFFFFFFF
+        keys[2] = self._zipcrypto_crc32_update(keys[2], (keys[1] >> 24) & 0xFF)
+
+    @staticmethod
+    def _zipcrypto_crc32_update(crc, value):
+        c = (crc ^ value) & 0xFF
+        for _ in range(8):
+            if c & 1:
+                c = (c >> 1) ^ 0xEDB88320
+            else:
+                c >>= 1
+        return ((crc >> 8) ^ c) & 0xFFFFFFFF
+
+    def _zipcrypto_encrypt(self, payload, password_bytes):
+        keys = [0x12345678, 0x23456789, 0x34567890]
+        for value in password_bytes:
+            self._zipcrypto_update_keys(keys, value)
+        out = bytearray()
+        for plain in payload:
+            temp = keys[2] | 2
+            cipher = plain ^ (((temp * (temp ^ 1)) >> 8) & 0xFF)
+            out.append(cipher)
+            self._zipcrypto_update_keys(keys, plain)
+        return bytes(out)
+
+    def create_gbk_password_zipcrypto_zip(self, path, password):
+        """创建密码字节为 GBK 的传统 ZIP 加密小包，用来复现 7zz 密码字节不兼容。"""
+        name = "20260604161913.txt"
+        payload = b"inner archive payload"
+        password_bytes = password.encode("gbk")
+        crc = binascii.crc32(payload) & 0xFFFFFFFF
+        encrypt_header = bytes(range(11)) + bytes([(crc >> 24) & 0xFF])
+        encrypted_payload = self._zipcrypto_encrypt(encrypt_header + payload, password_bytes)
+        name_bytes = name.encode("ascii")
+        local = struct.pack(
+            "<IHHHHHIIIHH",
+            0x04034B50,
+            20,
+            0x1,
+            0,
+            0,
+            0,
+            crc,
+            len(encrypted_payload),
+            len(payload),
+            len(name_bytes),
+            0,
+        )
+        central = struct.pack(
+            "<IHHHHHHIIIHHHHHII",
+            0x02014B50,
+            20,
+            20,
+            0x1,
+            0,
+            0,
+            0,
+            crc,
+            len(encrypted_payload),
+            len(payload),
+            len(name_bytes),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+        central_start = len(local) + len(name_bytes) + len(encrypted_payload)
+        central_size = len(central) + len(name_bytes)
+        eocd = struct.pack(
+            "<IHHHHIIH",
+            0x06054B50,
+            0,
+            0,
+            1,
+            1,
+            central_size,
+            central_start,
+            0,
+        )
+        with open(path, "wb") as f:
+            f.write(local)
+            f.write(name_bytes)
+            f.write(encrypted_payload)
+            f.write(central)
+            f.write(name_bytes)
+            f.write(eocd)
 
     def create_prefixed_zip(self, path):
         """创建前面带 MP4 壳、后面才是 ZIP 的伪装包。"""
@@ -314,6 +479,22 @@ class TestExtractService:
         assert archive_info.file_list == [{"name": "音声.txt", "size": 1, "is_dir": False}]
         assert archive_info.detected_encoding == "cp932"
         assert ExtractService._archive_encoding_cache[str(zip_path)] == "cp932"
+        extract_service._list_archive_contents.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_archive_info_cp932_zip_sniffs_encoding(self, extract_service, temp_dir):
+        """混合来源常见的 CP932 ZIP 应嗅探出文件名编码，避免后续校验错位。"""
+        zip_path = os.path.join(temp_dir, "cp932-name.zip")
+        self.create_cp932_stored_zip(zip_path)
+        extract_service._list_archive_contents = AsyncMock()
+
+        archive_info = await extract_service._get_archive_info(zip_path)
+
+        assert archive_info is not None
+        assert archive_info.detected_encoding in {"shift_jis", "cp932"}
+        names = [item["name"] for item in archive_info.file_list if not item["is_dir"]]
+        assert "mp3/2.あまあま＆意地悪姉友.mp3" in names
+        assert "readme_ろまあぽ.txt" in names
         extract_service._list_archive_contents.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -870,6 +1051,36 @@ class TestExtractService:
         )
 
         assert await extract_service._verify_extraction(archive_info, root) is False
+
+    @pytest.mark.asyncio
+    async def test_verify_extraction_accepts_zip_encoding_name_mismatch_when_sizes_match(
+        self, extract_service, temp_dir,
+    ):
+        """ZIP 文件名编码错位时，文件数和大小集合完全一致即可接受解压结果。"""
+        root = os.path.join(temp_dir, "output")
+        os.makedirs(root, exist_ok=True)
+        actual_files = {
+            "mp3/2.あまあま＆意地悪姉友.mp3": b"audio-2",
+            "mp3/3.命令引き出し色仕掛け.mp3": b"audio-3",
+            "readme_ろまあぽ.txt": b"readme",
+        }
+        for name, payload in actual_files.items():
+            path = os.path.join(root, *name.split("/"))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as fp:
+                fp.write(payload)
+
+        archive_info = ArchiveInfo(
+            path=os.path.join(temp_dir, "dummy.zip"),
+            file_list=[
+                {"name": "mp3/bad_name_01.mp3", "size": len(b"audio-2"), "is_dir": False},
+                {"name": "mp3/bad_name_02.mp3", "size": len(b"audio-3"), "is_dir": False},
+                {"name": "readme_bad.txt", "size": len(b"readme"), "is_dir": False},
+            ],
+            password="",
+        )
+
+        assert await extract_service._verify_extraction(archive_info, root) is True
 
     def test_final_filename_guard_scans_full_tree(self, extract_service, temp_dir):
         """最终兜底不只采样前 240 项，深层坏文件名也要能短路命中。
@@ -2008,6 +2219,135 @@ class TestExtractService:
         assert reason == ""
         extract_service._probe_password.assert_awaited_once()
         run_7z_command.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_try_extract_manual_password_ignores_negative_cache(
+        self, extract_service, temp_dir,
+    ):
+        """问题作品里手动指定密码时，旧负缓存不能直接跳过本次尝试。"""
+        archive_path = os.path.join(temp_dir, "manual-cache.zip")
+        self.create_test_zip(archive_path)
+        output_path = os.path.join(temp_dir, "manual-cache-output")
+        os.makedirs(output_path, exist_ok=True)
+        task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
+        task.task_metadata = {
+            "manual_retry_passwords": ["sana"],
+            "manual_retry_password_only": True,
+        }
+        fingerprint = extract_service._archive_fingerprint(archive_path)
+        cache_key = extract_service._password_cache_key(fingerprint, "sana")
+        ExtractService._password_negative_cache[cache_key] = 1.0
+
+        extract_service._probe_password = AsyncMock(side_effect=["unknown", "ok"])
+        extract_service._run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=b"",
+            stderr=b"",
+        ))
+        extract_service._reject_if_garbled_after_extract = AsyncMock(return_value=False)
+        extract_service._verify_extraction = AsyncMock(return_value=True)
+        extract_service._cleanup_extract_attempt = AsyncMock()
+
+        try:
+            success, password, reason = await extract_service._try_extract(
+                ArchiveInfo(
+                    archive_path,
+                    [{"name": "test.txt", "size": 12, "is_dir": False}],
+                ),
+                output_path,
+                task,
+                password_candidates=[{
+                    "password": "sana",
+                    "source": "指定密码",
+                    "entry_id": None,
+                    "rjcode": None,
+                }],
+            )
+        finally:
+            ExtractService._password_negative_cache.pop(cache_key, None)
+
+        assert success is True
+        assert password == "sana"
+        assert reason == ""
+        extract_service._run_7z_command.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_try_extract_zip_non_ascii_password_uses_python_fallback(
+        self, extract_service, temp_dir,
+    ):
+        """ZIP 中文密码被 7zz 判错时，要进入兼容后端而不是直接写死 wrong_password。"""
+        archive_path = os.path.join(temp_dir, "cn-password.zip")
+        self.create_test_zip(archive_path)
+        output_path = os.path.join(temp_dir, "cn-password-output")
+        os.makedirs(output_path, exist_ok=True)
+        task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
+        password_value = "我chovy，高数你给我出好的啊"
+        fingerprint = extract_service._archive_fingerprint(archive_path)
+        cache_key = extract_service._password_cache_key(fingerprint, password_value)
+
+        extract_service._probe_password = AsyncMock(return_value="wrong_password")
+        extract_service._try_extract_zip_with_python = AsyncMock(return_value=(True, "cp932"))
+        extract_service._reject_if_garbled_after_extract = AsyncMock(return_value=False)
+        extract_service._verify_extraction = AsyncMock(return_value=True)
+        extract_service._cleanup_extract_attempt = AsyncMock()
+        extract_service._run_7z_command = AsyncMock(side_effect=AssertionError("不应进入完整 7zz 解压"))
+
+        success, password, reason = await extract_service._try_extract(
+            ArchiveInfo(
+                archive_path,
+                [{"name": "20260604161913.zip", "size": 10, "is_dir": False}],
+            ),
+            output_path,
+            task,
+            password_candidates=[{
+                "password": password_value,
+                "source": "密码库-通用",
+                "entry_id": None,
+                "rjcode": None,
+            }],
+        )
+
+        assert success is True
+        assert password == password_value
+        assert reason == ""
+        extract_service._try_extract_zip_with_python.assert_awaited_once()
+        assert cache_key not in ExtractService._password_negative_cache
+
+    @pytest.mark.asyncio
+    async def test_try_extract_zip_gbk_password_uses_real_python_fallback(
+        self, extract_service, temp_dir,
+    ):
+        """模拟群晖可解、7zz 按 Unicode 密码失败的 GBK 字节 ZIP 密码。"""
+        archive_path = os.path.join(temp_dir, "gbk-password.zip")
+        output_path = os.path.join(temp_dir, "gbk-password-output")
+        password_value = "我chovy，高数你给我出好的啊"
+        self.create_gbk_password_zipcrypto_zip(archive_path, password_value)
+        task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
+        task.task_metadata = {}
+        extract_service._probe_password = AsyncMock(return_value="wrong_password")
+        extract_service._run_7z_command = AsyncMock(side_effect=AssertionError("不应进入完整 7zz 解压"))
+
+        success, password, reason = await extract_service._try_extract(
+            ArchiveInfo(
+                archive_path,
+                [{"name": "20260604161913.txt", "size": len(b"inner archive payload"), "is_dir": False}],
+            ),
+            output_path,
+            task,
+            password_candidates=[{
+                "password": password_value,
+                "source": "指定密码",
+                "entry_id": None,
+                "rjcode": None,
+            }],
+        )
+
+        assert success is True
+        assert password == password_value
+        assert reason == ""
+        with open(os.path.join(output_path, "20260604161913.txt"), "rb") as fp:
+            assert fp.read() == b"inner archive payload"
 
     @pytest.mark.asyncio
     async def test_try_extract_sfx_temp_view_incomplete_volume_not_wrong_password(
