@@ -345,7 +345,7 @@ import {
 } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
-import { logApi } from '../api'
+import { logApi, redirectIfSecurityGateExpired } from '../api'
 import AppLottieIcon from '../components/common/AppLottieIcon.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
@@ -1100,8 +1100,9 @@ function connectLogStream({ reset = false } = {}) {
       terminalErrorMessage.value = '日志流异常'
     }
   })
-  logEventSource.onerror = () => {
+  logEventSource.onerror = async () => {
     if (isPaused.value || isFullSearch.value) return
+    if (await redirectIfSecurityGateExpired()) return
     terminalStatus.value = 'error'
     terminalErrorMessage.value = '日志流连接中断，正在重连'
     closeLogStream({ keepStatus: true })

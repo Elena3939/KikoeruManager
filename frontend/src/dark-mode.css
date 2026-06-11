@@ -138,10 +138,19 @@ html.kikoerumanager-dark .el-message--error .el-message__icon {
   color: #ef4444 !important;
 }
 
+html.dark.kikoerumanager-dark,
+html.kikoerumanager-dark {
+  padding: 0 !important;
+  background: var(--km-dark-bg) !important;
+  background-image: none !important;
+  color: var(--km-dark-text) !important;
+}
+
 html.kikoerumanager-dark,
 html.kikoerumanager-dark body,
 body.kikoerumanager-dark {
   background: var(--km-dark-bg) !important;
+  background-image: none !important;
 }
 
 html.kikoerumanager-dark #app,
@@ -150,6 +159,7 @@ html.kikoerumanager-dark .main-frame,
 html.kikoerumanager-dark .main-content,
 html.kikoerumanager-dark .content-shell {
   background: var(--km-dark-bg) !important;
+  background-image: none !important;
   color: var(--km-dark-text) !important;
 }
 
@@ -2273,6 +2283,7 @@ html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-wind
 html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-window) :is(
   .fp-dlg-title,
   .rpd-title,
+  .rpd-panel-head h2,
   .brp-title,
   .vrd-title
 ) {
@@ -2282,6 +2293,9 @@ html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-wind
 html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-window) :is(
   .fp-dlg-subtitle,
   .rpd-subtitle,
+  .rpd-panel-kicker,
+  .rpd-input-label,
+  .rpd-summary,
   .brp-subtitle,
   .vrd-subtitle
 ) {
@@ -2289,6 +2303,7 @@ html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-wind
 }
 
 html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-window) :is(
+  .rpd-row-index,
   .fp-dlg-pill,
   .rpd-count-chip,
   .brp-pill,
@@ -2356,6 +2371,12 @@ html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-wind
   color: var(--km-dark-text) !important;
 }
 
+html.kikoerumanager-dark .rpd-window .rpd-input::placeholder,
+html.kikoerumanager-dark .brp-window .brp-input::placeholder,
+html.kikoerumanager-dark .vrd-window .vrd-row-input::placeholder {
+  color: var(--km-dark-text-subtle) !important;
+}
+
 html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-window) :is(
   .fp-dlg-close,
   .rpd-close,
@@ -2365,6 +2386,7 @@ html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-wind
   .rpd-btn-secondary,
   .brp-btn-secondary,
   .vrd-btn-secondary,
+  .rpd-add,
   .rpd-row-del
 ) {
   background: var(--km-dark-button-bg) !important;
@@ -2383,6 +2405,7 @@ html.kikoerumanager-dark :is(.fp-dlg-window, .rpd-window, .brp-window, .vrd-wind
   .rpd-btn-secondary:hover,
   .brp-btn-secondary:hover,
   .vrd-btn-secondary:hover,
+  .rpd-add:hover,
   .rpd-row-del:hover:not(:disabled)
 ) {
   background: var(--km-dark-button-bg-hover) !important;
