@@ -39,6 +39,7 @@ class LinkedSubtitleImportService:
         "kikoeru_exception",
         "kikoeru_no_token",
         "kikoeru_auth_error",
+        "kikoeru_tracks_unreliable",
     }
     ARCHIVE_PRECHECK_TIMEOUT_SECONDS = float(
         os.getenv("KIKOERUMANAGER_LINKED_SUBTITLE_PRECHECK_TIMEOUT_SECONDS", "300") or 300
@@ -1185,9 +1186,15 @@ class LinkedSubtitleImportService:
         self,
         target_rjcode: str,
         preferred_library_id: Optional[str] = None,
+        library_ids: Optional[set[str]] = None,
     ) -> List[Tuple[str, str]]:
         if not target_rjcode:
             return []
+        allowed_library_ids = {
+            str(library_id or "").strip()
+            for library_id in (library_ids or set())
+            if str(library_id or "").strip()
+        }
 
         db = next(get_db())
         try:
@@ -1204,7 +1211,7 @@ class LinkedSubtitleImportService:
                 libraries,
                 key=lambda item: (0 if item.get("id") == preferred_library_id else 1, item.get("name") or ""),
             )
-            if library.get("id")
+            if library.get("id") and (not allowed_library_ids or library.get("id") in allowed_library_ids)
         ]
 
         candidates: List[Tuple[str, str]] = []
@@ -1376,12 +1383,17 @@ class LinkedSubtitleImportService:
                 )
                 await asyncio.sleep(delay_seconds)
 
-            result = await self.library_manager.global_search_files(
+            result = await self.library_manager.list_files(
                 library_id,
-                target_rjcode,
+                page=1,
+                page_size=200,
+                search=target_rjcode,
+                current_path=None,
                 sort_by="name",
                 sort_order="asc",
                 force_refresh=force_refresh,
+                search_exact=False,
+                search_result_kind="folder",
                 remote_warmup_retries=1,
             )
             items = list(result.get("files") or [])
@@ -1544,7 +1556,7 @@ class LinkedSubtitleImportService:
         ordered_libraries = sorted(
             libraries,
             key=lambda item: (
-                0 if item.get("type") == "synology_filestation" else 1,
+                0 if item.get("type") != "synology_filestation" else 1,
                 0 if item.get("id") == preferred_library_id else 1,
                 item.get("name") or "",
             ),
@@ -1579,19 +1591,58 @@ class LinkedSubtitleImportService:
             summary_cache[cache_key] = dict(summary) if isinstance(summary, dict) else None
             return summary
 
-        for library_id, folder_path in self._collect_snapshot_candidates(
-            target_rjcode,
-            preferred_library_id=preferred_library_id,
-        ):
-            try:
-                summary = await summarize_cached(library_id, folder_path)
-            except Exception as exc:
-                logger.warning("[字幕补配] 读取快照目标目录摘要失败: library=%s path=%s error=%s", library_id, folder_path, exc)
-                continue
-            if summary:
-                dedupe_key = (library_id, folder_path)
-                seen_paths.add(dedupe_key)
-                candidates.append(summary)
+        def append_candidate(summary: Dict[str, Any]) -> bool:
+            library_id = str(summary.get("library_id") or "").strip()
+            folder_path = str(summary.get("folder_path") or "").strip()
+            dedupe_key = (library_id, folder_path)
+            if not library_id or not folder_path or dedupe_key in seen_paths:
+                return False
+            seen_paths.add(dedupe_key)
+            candidates.append(summary)
+            return True
+
+        async def collect_snapshot_candidates_for(
+            scoped_libraries: List[Dict[str, Any]],
+            phase_label: str,
+        ) -> int:
+            scoped_ids = {
+                str(library.get("id") or "").strip()
+                for library in scoped_libraries
+                if str(library.get("id") or "").strip()
+            }
+            if not scoped_ids:
+                return 0
+            added = 0
+            for library_id, folder_path in self._collect_snapshot_candidates(
+                target_rjcode,
+                preferred_library_id=preferred_library_id,
+                library_ids=scoped_ids,
+            ):
+                try:
+                    summary = await summarize_cached(library_id, folder_path)
+                except Exception as exc:
+                    logger.warning(
+                        "[字幕补配] 读取%s快照目标目录摘要失败: library=%s path=%s error=%s",
+                        phase_label,
+                        library_id,
+                        folder_path,
+                        exc,
+                    )
+                    continue
+                if summary and append_candidate(summary):
+                    added += 1
+            return added
+
+        def finalize_candidates() -> None:
+            nonlocal candidates
+            candidates = self._prefer_deepest_target_rj_candidates(candidates, target_rjcode)
+            candidates.sort(
+                key=lambda item: (
+                    1 if item.get("has_existing_subtitles") else 0,
+                    item.get("library_name") or "",
+                    item.get("folder_path") or "",
+                )
+            )
 
         async def collect_library_candidates(library: Dict[str, Any]) -> Dict[str, Any]:
             library_id = str(library.get("id") or "").strip()
@@ -1631,10 +1682,11 @@ class LinkedSubtitleImportService:
                 if not folder_path:
                     continue
 
+                item_library_id = str(item.get("library_id") or library_id).strip()
                 try:
-                    summary = await summarize_cached(library_id, folder_path)
+                    summary = await summarize_cached(item_library_id, folder_path)
                 except Exception as exc:
-                    logger.warning("[字幕补配] 读取目标目录摘要失败: library=%s path=%s error=%s", library_id, folder_path, exc)
+                    logger.warning("[字幕补配] 读取目标目录摘要失败: library=%s path=%s error=%s", item_library_id, folder_path, exc)
                     continue
 
                 if summary:
@@ -1644,6 +1696,7 @@ class LinkedSubtitleImportService:
         local_libraries = [item for item in ordered_libraries if item.get("type") != "synology_filestation"]
         remote_libraries = [item for item in ordered_libraries if item.get("type") == "synology_filestation"]
 
+        await collect_snapshot_candidates_for(local_libraries, "本地")
         local_results = await asyncio.gather(
             *(collect_library_candidates(library) for library in local_libraries),
             return_exceptions=True,
@@ -1653,23 +1706,10 @@ class LinkedSubtitleImportService:
                 logger.warning("[字幕补配] 本地目标目录搜索失败: %s", result)
                 continue
             for summary in list((result or {}).get("summaries") or []):
-                library_id = str(summary.get("library_id") or "").strip()
-                folder_path = str(summary.get("folder_path") or "").strip()
-                dedupe_key = (library_id, folder_path)
-                if not library_id or not folder_path or dedupe_key in seen_paths:
-                    continue
-                seen_paths.add(dedupe_key)
-                candidates.append(summary)
+                append_candidate(summary)
 
         if candidates:
-            candidates = self._prefer_deepest_target_rj_candidates(candidates, target_rjcode)
-            candidates.sort(
-                key=lambda item: (
-                    1 if item.get("has_existing_subtitles") else 0,
-                    item.get("library_name") or "",
-                    item.get("folder_path") or "",
-                )
-            )
+            finalize_candidates()
             logger.info(
                 "[字幕补配] 目标目录搜索摘要: rj=%s status=matched candidate_count=%s local_libraries=%s remote_libraries=%s preferred_library=%s remote_skipped=%s",
                 target_rjcode,
@@ -1713,6 +1753,26 @@ class LinkedSubtitleImportService:
                 logger.info("[字幕补配] 远程库存处于熔断状态，目标目录暂挂起: rj=%s", target_rjcode)
             remote_libraries = searchable_remote_libraries
         if remote_libraries:
+            await collect_snapshot_candidates_for(remote_libraries, "远程")
+        if candidates:
+            finalize_candidates()
+            search_status = "matched"
+            logger.info(
+                "[字幕补配] 目标目录搜索摘要: rj=%s status=%s candidate_count=%s local_libraries=%s remote_libraries=%s preferred_library=%s remote_pending=%s",
+                target_rjcode,
+                search_status,
+                len(candidates),
+                len(local_libraries),
+                len(remote_libraries),
+                preferred_library_id or "",
+                remote_search_pending,
+            )
+            return {
+                "candidates": candidates,
+                "search_status": search_status,
+                "search_reason": "",
+            }
+        if remote_libraries:
             remote_tasks: dict[asyncio.Task, Dict[str, Any]] = {
                 asyncio.create_task(collect_library_candidates(library)): library
                 for library in remote_libraries
@@ -1743,14 +1803,8 @@ class LinkedSubtitleImportService:
                         remote_search_uncertain = remote_search_uncertain or bool((result or {}).get("uncertain"))
                         appended_count = 0
                         for summary in result_summaries:
-                            library_id = str(summary.get("library_id") or "").strip()
-                            folder_path = str(summary.get("folder_path") or "").strip()
-                            dedupe_key = (library_id, folder_path)
-                            if not library_id or not folder_path or dedupe_key in seen_paths:
-                                continue
-                            seen_paths.add(dedupe_key)
-                            candidates.append(summary)
-                            appended_count += 1
+                            if append_candidate(summary):
+                                appended_count += 1
 
                         if appended_count > 0:
                             remote_match_found = True
@@ -1780,14 +1834,7 @@ class LinkedSubtitleImportService:
                 if cancelled_tasks:
                     await asyncio.gather(*cancelled_tasks, return_exceptions=True)
 
-        candidates = self._prefer_deepest_target_rj_candidates(candidates, target_rjcode)
-        candidates.sort(
-            key=lambda item: (
-                1 if item.get("has_existing_subtitles") else 0,
-                item.get("library_name") or "",
-                item.get("folder_path") or "",
-            )
-        )
+        finalize_candidates()
         search_status = "matched" if candidates else ("pending_remote" if remote_search_pending else "not_found")
         search_reason = "" if candidates else (self.REMOTE_PENDING_REASON if remote_search_pending else "库存中未找到原作目录")
         logger.info(
