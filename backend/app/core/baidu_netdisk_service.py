@@ -56,6 +56,10 @@ _BAIDU_COOKIE_PRIORITY = [
 ]
 _BAIDU_COOKIE_NAME_BY_UPPER = {name.upper(): name for name in _BAIDU_COOKIE_PRIORITY}
 _BAIDU_RAW_PREVIEW_CACHE_TTL_SECONDS = 10 * 60
+_BAIDU_PREVIEW_TOTAL_TIMEOUT_SECONDS = 38.0
+_BAIDU_PREVIEW_ITEM_TIMEOUT_SECONDS = 24.0
+_BAIDU_PREVIEW_HTTP_TIMEOUT_SECONDS = 8.0
+_BAIDU_PREVIEW_MAX_CONCURRENCY = 4
 
 
 class BaiduNetdiskError(ValueError):
@@ -955,16 +959,68 @@ class BaiduNetdiskService:
         shares = self.parse_share_inputs(urls)
         if not shares:
             raise BaiduNetdiskError("至少需要一个百度网盘分享链接")
-        items = []
-        for share in shares:
+
+        async def build_preview_item(share: Dict[str, str]) -> Dict[str, Any]:
             detail: Dict[str, Any] = {}
             try:
-                detail = await self._fetch_share_detail(share)
+                detail = await asyncio.wait_for(
+                    self._fetch_share_detail(share, request_timeout=_BAIDU_PREVIEW_HTTP_TIMEOUT_SECONDS),
+                    timeout=_BAIDU_PREVIEW_ITEM_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.info(
+                    "百度网盘分享预览详情读取超时: share=%s timeout=%.0fs",
+                    share.get("share_id") or share.get("shorturl") or "",
+                    _BAIDU_PREVIEW_ITEM_TIMEOUT_SECONDS,
+                )
+                detail = {
+                    "warning": f"百度分享接口超过 {_BAIDU_PREVIEW_ITEM_TIMEOUT_SECONDS:.0f} 秒未响应，已跳过该链接；稍后重试或重新绑定百度登录态",
+                }
             except Exception as exc:
                 logger.info("百度网盘分享预览详情读取失败: %s", exc)
                 detail = {"warning": f"未能读取分享文件列表: {self._share_preview_warning(exc)}"}
-            items.append(self._preview_item_from_share(share, target_subdir, output_folder_name, detail))
-        ok_count = sum(1 for item in items if item.get("ok"))
+            return self._preview_item_from_share(share, target_subdir, output_folder_name, detail)
+
+        semaphore = asyncio.Semaphore(_BAIDU_PREVIEW_MAX_CONCURRENCY)
+
+        async def resolve_share(index: int, share: Dict[str, str]) -> tuple[int, Dict[str, Any]]:
+            async with semaphore:
+                return index, await build_preview_item(share)
+
+        tasks = [
+            asyncio.create_task(resolve_share(index, share))
+            for index, share in enumerate(shares)
+        ]
+        items: List[Optional[Dict[str, Any]]] = [None] * len(shares)
+        done, pending = await asyncio.wait(
+            tasks,
+            timeout=_BAIDU_PREVIEW_TOTAL_TIMEOUT_SECONDS,
+            return_when=asyncio.ALL_COMPLETED,
+        )
+        for task in done:
+            try:
+                index, item = task.result()
+                items[index] = item
+            except Exception as exc:
+                logger.info("百度网盘分享预览任务失败: %s", exc)
+        if pending:
+            logger.info(
+                "百度网盘分享预览达到总超时，跳过剩余链接: pending=%s total_timeout=%.0fs",
+                len(pending),
+                _BAIDU_PREVIEW_TOTAL_TIMEOUT_SECONDS,
+            )
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+        for index, item in enumerate(items):
+            if item is None:
+                share = shares[index]
+                timeout_detail = {
+                    "warning": f"百度网盘预览超过 {_BAIDU_PREVIEW_TOTAL_TIMEOUT_SECONDS:.0f} 秒总预算，已跳过该链接；稍后重试或重新绑定百度登录态",
+                }
+                items[index] = self._preview_item_from_share(share, target_subdir, output_folder_name, timeout_detail)
+        resolved_items = [item for item in items if isinstance(item, dict)]
+        ok_count = sum(1 for item in resolved_items if item.get("ok"))
         cache_key = self.raw_preview_cache_key(
             urls,
             target_subdir=target_subdir,
@@ -976,12 +1032,12 @@ class BaiduNetdiskService:
             "source": BAIDU_NETDISK_PLATFORM,
             "source_label": BAIDU_NETDISK_LABEL,
             "download_mode": BAIDU_NETDISK_PLATFORM,
-            "items": items,
-            "source_items": list(items),
-            "selected_keys": [item["selection_key"] for item in items if item.get("ok")],
+            "items": resolved_items,
+            "source_items": list(resolved_items),
+            "selected_keys": [item["selection_key"] for item in resolved_items if item.get("ok")],
             "ok_count": ok_count,
-            "failed_count": len(items) - ok_count,
-            "needs_pass_code_count": len([item for item in items if item.get("requires_pass_code")]),
+            "failed_count": len(resolved_items) - ok_count,
+            "needs_pass_code_count": len([item for item in resolved_items if item.get("requires_pass_code")]),
             "svip_speed": self._is_svip(),
             "download_root": self._download_root(),
             "target_subdir": target_subdir,
@@ -992,7 +1048,7 @@ class BaiduNetdiskService:
         self._cache_raw_preview(cache_key, preview)
         return preview
 
-    async def _fetch_share_detail(self, share: Dict[str, str]) -> Dict[str, Any]:
+    async def _fetch_share_detail(self, share: Dict[str, str], *, request_timeout: float = 20) -> Dict[str, Any]:
         cookie = str(getattr(self._config(), "cookie", "") or "").strip()
         if not cookie or cookie == "********":
             raise BaiduNetdiskError("百度账号未登录，无法读取分享文件列表")
@@ -1006,9 +1062,21 @@ class BaiduNetdiskService:
         pass_code = str(share.get("pass_code") or "").strip()
         share_url = f"https://pan.baidu.com/s/{feature}"
         init_url = self._share_init_url(feature)
-        tokens = await self._fetch_share_page_tokens(feature, cookie, referer="https://pan.baidu.com/disk/home")
+        tokens = await self._fetch_share_page_tokens(
+            feature,
+            cookie,
+            referer="https://pan.baidu.com/disk/home",
+            timeout=request_timeout,
+        )
         if pass_code:
-            verify_data = await self._verify_share_pass_code(feature, pass_code, tokens, cookie, share_url)
+            verify_data = await self._verify_share_pass_code(
+                feature,
+                pass_code,
+                tokens,
+                cookie,
+                share_url,
+                timeout=request_timeout,
+            )
             verify_errno = _safe_int(verify_data.get("errno", verify_data.get("err_no", 0)), 0)
             if verify_errno:
                 raw_verify_message = (
@@ -1040,11 +1108,22 @@ class BaiduNetdiskService:
                 cookie = self._merge_cookie_header(cookie, {"BDCLND": randsk})
                 tokens["randsk"] = randsk
                 self._persist_cookie_patch({"BDCLND": randsk})
-            refreshed_tokens = await self._fetch_share_page_tokens(feature, cookie, referer=init_url)
+            refreshed_tokens = await self._fetch_share_page_tokens(
+                feature,
+                cookie,
+                referer=init_url,
+                timeout=request_timeout,
+            )
             refreshed_tokens["randsk"] = randsk or str(tokens.get("randsk") or "").strip()
             tokens = refreshed_tokens
         share_list_referer = init_url if pass_code else share_url
-        data = await self._fetch_share_list_payload(tokens, cookie, share_list_referer, feature)
+        data = await self._fetch_share_list_payload(
+            tokens,
+            cookie,
+            share_list_referer,
+            feature,
+            timeout=request_timeout,
+        )
         errno = _safe_int(data.get("errno", data.get("err_no", 0)), 0)
         if errno:
             warning = self._share_preview_warning(data.get("errmsg") or data.get("error_msg") or data.get("show_msg") or f"分享列表读取失败 {errno}")
@@ -1074,7 +1153,14 @@ class BaiduNetdiskService:
         if len(files) == 1 and files[0].get("is_dir") and files[0].get("path"):
             preview_root_is_folder = True
             try:
-                child_detail = await self._fetch_share_folder_preview(tokens, cookie, share_list_referer, feature, files[0])
+                child_detail = await self._fetch_share_folder_preview(
+                    tokens,
+                    cookie,
+                    share_list_referer,
+                    feature,
+                    files[0],
+                    timeout=request_timeout,
+                )
                 if child_detail.get("files"):
                     preview_files = child_detail["files"]
             except Exception as exc:
@@ -1153,6 +1239,8 @@ class BaiduNetdiskService:
         tokens: Dict[str, Any],
         cookie: str,
         referer: str,
+        *,
+        timeout: float = 20,
     ) -> Dict[str, Any]:
         shareid = str(tokens.get("shareid") or tokens.get("share_id") or "").strip()
         share_uk = str(tokens.get("share_uk") or "").strip()
@@ -1199,6 +1287,7 @@ class BaiduNetdiskService:
                 cookie,
                 data=form_data,
                 referer=request_referer,
+                timeout=timeout,
                 use_requests=True,
             )
             last_data = data
@@ -1221,12 +1310,22 @@ class BaiduNetdiskService:
         share_url: str,
         feature: str,
         folder: Dict[str, Any],
+        *,
+        timeout: float = 20,
     ) -> Dict[str, Any]:
         folder_path = str(folder.get("path") or "").strip()
         folder_name = str(folder.get("name") or "").strip()
         if not folder_path:
             return {"files": []}
-        data = await self._fetch_share_list_payload(tokens, cookie, share_url, feature, dir_path=folder_path, root=False)
+        data = await self._fetch_share_list_payload(
+            tokens,
+            cookie,
+            share_url,
+            feature,
+            dir_path=folder_path,
+            root=False,
+            timeout=timeout,
+        )
         errno = _safe_int(data.get("errno", data.get("err_no", 0)), 0)
         if errno:
             logger.info("百度网盘分享文件夹预览读取失败: %s", data.get("errmsg") or data.get("error_msg") or errno)
@@ -1268,6 +1367,7 @@ class BaiduNetdiskService:
         *,
         dir_path: str = "/",
         root: bool = True,
+        timeout: float = 20,
     ) -> Dict[str, Any]:
         share_uk = str(tokens.get("share_uk") or tokens.get("uk") or "").strip()
         shareid = str(tokens.get("shareid") or tokens.get("share_id") or "").strip()
@@ -1327,7 +1427,7 @@ class BaiduNetdiskService:
         last_error = ""
         for referer in referers:
             try:
-                return await self._fetch_json(list_url, cookie, timeout=20, referer=referer, use_requests=True)
+                return await self._fetch_json(list_url, cookie, timeout=timeout, referer=referer, use_requests=True)
             except Exception as exc:
                 last_error = str(exc)
                 logger.debug("百度分享文件列表接口失败 referer=%s error=%s", referer, exc)
@@ -2221,7 +2321,7 @@ class BaiduNetdiskService:
         self,
         url: str,
         cookie: str,
-        timeout: int = 20,
+        timeout: float = 20,
         referer: str = "",
         *,
         use_requests: bool = False,
@@ -2249,7 +2349,7 @@ class BaiduNetdiskService:
         *,
         data: Optional[Dict[str, str]] = None,
         referer: str = "",
-        timeout: int = 20,
+        timeout: float = 20,
         use_requests: bool = False,
     ) -> Dict[str, Any]:
         def run() -> Dict[str, Any]:
@@ -2276,7 +2376,14 @@ class BaiduNetdiskService:
 
         return await asyncio.to_thread(run)
 
-    async def _fetch_share_page_tokens(self, featurestr: str, cookie: str, *, referer: str = "") -> Dict[str, Any]:
+    async def _fetch_share_page_tokens(
+        self,
+        featurestr: str,
+        cookie: str,
+        *,
+        referer: str = "",
+        timeout: float = 20,
+    ) -> Dict[str, Any]:
         def run() -> Dict[str, Any]:
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
@@ -2302,7 +2409,7 @@ class BaiduNetdiskService:
                     response = session.get(
                         share_link,
                         headers=headers,
-                        timeout=20,
+                        timeout=timeout,
                         allow_redirects=True,
                     )
                     response.raise_for_status()
