@@ -1600,6 +1600,53 @@ def _ensure_db_writable(db_path: str) -> None:
 # 获取数据库路径
 _db_path = get_db_path()
 
+
+def _load_database_config() -> Dict[str, Any]:
+    """读取 SQLite 运行配置，配置文件损坏时使用保守默认值。"""
+    defaults = {
+        "journal_mode": "WAL",
+        "synchronous": "FULL",
+        "busy_timeout_ms": 60000,
+        "wal_autocheckpoint": 500,
+        "cache_size_kb": 20000,
+        "pool_size": 2,
+        "max_overflow": 2,
+        "pool_recycle_seconds": 1800,
+        "startup_quick_check": True,
+        "startup_integrity_check": False,
+    }
+    try:
+        from ..config.settings import get_config
+
+        cfg = getattr(get_config(), "database", None)
+        if not cfg:
+            return defaults
+        payload = cfg.model_dump() if hasattr(cfg, "model_dump") else dict(cfg)
+        merged = {**defaults, **(payload or {})}
+    except Exception:
+        return defaults
+
+    journal_mode = str(merged.get("journal_mode") or "WAL").strip().upper()
+    if journal_mode not in {"WAL", "DELETE", "TRUNCATE", "PERSIST", "MEMORY", "OFF"}:
+        journal_mode = "WAL"
+    synchronous = str(merged.get("synchronous") or "FULL").strip().upper()
+    if synchronous not in {"OFF", "NORMAL", "FULL", "EXTRA"}:
+        synchronous = "FULL"
+    merged["journal_mode"] = journal_mode
+    merged["synchronous"] = synchronous
+    merged["busy_timeout_ms"] = max(1000, int(merged.get("busy_timeout_ms") or 60000))
+    merged["wal_autocheckpoint"] = max(100, int(merged.get("wal_autocheckpoint") or 500))
+    merged["cache_size_kb"] = max(1024, int(merged.get("cache_size_kb") or 20000))
+    merged["pool_size"] = max(1, int(merged.get("pool_size") or 2))
+    merged["max_overflow"] = max(0, int(merged.get("max_overflow") or 2))
+    merged["pool_recycle_seconds"] = max(300, int(merged.get("pool_recycle_seconds") or 1800))
+    merged["startup_quick_check"] = bool(merged.get("startup_quick_check", True))
+    merged["startup_integrity_check"] = bool(merged.get("startup_integrity_check", False))
+    return merged
+
+
+_DB_RUNTIME_CONFIG = _load_database_config()
+
 # 数据库连接，确保支持UTF-8
 # 关键调优（特别是部署在 Synology / NAS Docker 这种慢 IO 环境时）：
 #   - QueuePool + pool_size=5/max_overflow=10：避免默认 SingletonThreadPool 把所有
@@ -1611,12 +1658,12 @@ engine = create_engine(
     f'sqlite:///{_db_path}',
     connect_args={
         'check_same_thread': False,
-        'timeout': 30,  # 秒；sqlite3 driver 内部 busy_timeout 的初值
+        'timeout': max(1, int(_DB_RUNTIME_CONFIG["busy_timeout_ms"] / 1000)),
     },
     poolclass=QueuePool,
-    pool_size=5,
-    max_overflow=10,
-    pool_recycle=3600,
+    pool_size=_DB_RUNTIME_CONFIG["pool_size"],
+    max_overflow=_DB_RUNTIME_CONFIG["max_overflow"],
+    pool_recycle=_DB_RUNTIME_CONFIG["pool_recycle_seconds"],
     pool_pre_ping=True,
     json_serializer=_orjson_dumps,
     json_deserializer=_orjson_loads,
@@ -1627,9 +1674,8 @@ engine = create_engine(
 # SQLite PRAGMA 调优：每个新建的物理连接都执行一次。
 # - journal_mode=WAL：读写不再互斥，读者只读快照，写者另开 -wal，大幅缓解
 #   `database is locked`，是这次群晖卡顿的根因修复。
-# - synchronous=NORMAL：WAL 下安全，且把 fsync 次数从每次提交降为 checkpoint，
-#   群晖机械盘 / btrfs 上写吞吐能翻几倍。
-# - busy_timeout=30000：WAL 仍可能在 checkpoint 时短暂互斥；30s 容忍窗口够用。
+# - synchronous=FULL：NAS / Docker 卷上优先保证已提交事务落盘，少赌底层 I/O。
+# - busy_timeout：WAL 仍可能在 checkpoint 时短暂互斥；由 database.busy_timeout_ms 控制。
 # - temp_store=MEMORY / cache_size=-20000：临时表与 ~20MB 页缓存放内存，加速
 #   activity_logs 这类大表的扫描 / 排序。
 # - foreign_keys=ON / wal_autocheckpoint=1000：保持外键检查，控制 -wal 文件尺寸。
@@ -1637,13 +1683,13 @@ engine = create_engine(
 def _sqlite_pragma_on_connect(dbapi_connection, connection_record):
     try:
         cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA synchronous=NORMAL")
-        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute(f"PRAGMA journal_mode={_DB_RUNTIME_CONFIG['journal_mode']}")
+        cursor.execute(f"PRAGMA synchronous={_DB_RUNTIME_CONFIG['synchronous']}")
+        cursor.execute(f"PRAGMA busy_timeout={_DB_RUNTIME_CONFIG['busy_timeout_ms']}")
         cursor.execute("PRAGMA temp_store=MEMORY")
-        cursor.execute("PRAGMA cache_size=-20000")
+        cursor.execute(f"PRAGMA cache_size=-{_DB_RUNTIME_CONFIG['cache_size_kb']}")
         cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.execute("PRAGMA wal_autocheckpoint=1000")
+        cursor.execute(f"PRAGMA wal_autocheckpoint={_DB_RUNTIME_CONFIG['wal_autocheckpoint']}")
         cursor.close()
     except Exception:
         # PRAGMA 设置失败不应阻断连接建立；下游真有冲突会通过 busy_timeout 兜底。
@@ -1651,6 +1697,37 @@ def _sqlite_pragma_on_connect(dbapi_connection, connection_record):
             cursor.close()
         except Exception:
             pass
+
+
+_SQLITE_FATAL_ERROR_MARKERS = (
+    "database disk image is malformed",
+    "disk i/o error",
+    "file is not a database",
+    "malformed database schema",
+)
+
+
+@event.listens_for(engine, "handle_error")
+def _sqlite_handle_error(exception_context):
+    """SQLite 底层 I/O / 损坏错误出现后立即丢弃连接池。"""
+    original = getattr(exception_context, "original_exception", None)
+    message = str(original or exception_context.sqlalchemy_exception or "").lower()
+    if not any(marker in message for marker in _SQLITE_FATAL_ERROR_MARKERS):
+        return
+
+    try:
+        exception_context.is_disconnect = True
+    except Exception:
+        pass
+    _db_logger.critical(
+        "[数据库] 检测到 SQLite 致命错误，已标记连接失效并释放连接池: path=%s error=%s",
+        _db_path,
+        original or exception_context.sqlalchemy_exception,
+    )
+    try:
+        engine.dispose()
+    except Exception:
+        _db_logger.debug("[数据库] dispose 连接池失败", exc_info=True)
 
 
 event.listen(engine, "before_cursor_execute", _slow_sql_before_cursor_execute)
@@ -1708,6 +1785,47 @@ def _repair_orphan_sqlite_indexes() -> None:
         _db_logger.warning(f"[数据库] 孤儿索引修复跳过：{exc}")
 
 
+def check_database_health(*, full: bool = False) -> Dict[str, Any]:
+    """执行 SQLite 自检。full=True 时跑完整 integrity_check。"""
+    started = time.monotonic()
+    db_path = _db_path
+    wal_path = f"{db_path}-wal"
+    shm_path = f"{db_path}-shm"
+    result: Dict[str, Any] = {
+        "ok": False,
+        "check": "integrity_check" if full else "quick_check",
+        "db_path": db_path,
+        "journal_mode": _DB_RUNTIME_CONFIG["journal_mode"],
+        "synchronous": _DB_RUNTIME_CONFIG["synchronous"],
+        "busy_timeout_ms": _DB_RUNTIME_CONFIG["busy_timeout_ms"],
+        "wal_autocheckpoint": _DB_RUNTIME_CONFIG["wal_autocheckpoint"],
+        "pool_size": _DB_RUNTIME_CONFIG["pool_size"],
+        "max_overflow": _DB_RUNTIME_CONFIG["max_overflow"],
+        "main_size_bytes": os.path.getsize(db_path) if os.path.exists(db_path) else 0,
+        "wal_size_bytes": os.path.getsize(wal_path) if os.path.exists(wal_path) else 0,
+        "shm_size_bytes": os.path.getsize(shm_path) if os.path.exists(shm_path) else 0,
+        "messages": [],
+        "duration_ms": 0,
+    }
+    try:
+        conn = sqlite3.connect(db_path, timeout=max(30, int(_DB_RUNTIME_CONFIG["busy_timeout_ms"] / 1000)))
+        try:
+            cur = conn.cursor()
+            cur.execute("PRAGMA query_only=ON")
+            cur.execute("PRAGMA integrity_check" if full else "PRAGMA quick_check")
+            messages = [str(row[0]) for row in cur.fetchall()]
+            result["messages"] = messages
+            result["ok"] = messages == ["ok"]
+        finally:
+            conn.close()
+    except Exception as exc:
+        result["ok"] = False
+        result["error"] = str(exc)
+    finally:
+        result["duration_ms"] = int((time.monotonic() - started) * 1000)
+    return result
+
+
 def init_db():
     """初始化数据库"""
     global _init_db_done
@@ -1716,7 +1834,28 @@ def init_db():
             _db_logger.info("[数据库] 初始化已完成，跳过重复执行")
             return
         _init_db_done = True
-    _db_logger.info(f"[数据库] 初始化数据库，路径: {_db_path}")
+    _db_logger.info(
+        "[数据库] 初始化数据库，路径: %s journal_mode=%s synchronous=%s busy_timeout=%sms pool=%s+%s wal_autocheckpoint=%s",
+        _db_path,
+        _DB_RUNTIME_CONFIG["journal_mode"],
+        _DB_RUNTIME_CONFIG["synchronous"],
+        _DB_RUNTIME_CONFIG["busy_timeout_ms"],
+        _DB_RUNTIME_CONFIG["pool_size"],
+        _DB_RUNTIME_CONFIG["max_overflow"],
+        _DB_RUNTIME_CONFIG["wal_autocheckpoint"],
+    )
+    if _DB_RUNTIME_CONFIG["startup_quick_check"]:
+        health = check_database_health(full=bool(_DB_RUNTIME_CONFIG["startup_integrity_check"]))
+        if not health.get("ok"):
+            _db_logger.critical("[数据库] 启动自检失败: %s", health)
+            raise RuntimeError(f"数据库自检失败: {health}")
+        _db_logger.info(
+            "[数据库] 启动自检通过: check=%s duration=%sms size=%s wal=%s",
+            health.get("check"),
+            health.get("duration_ms"),
+            health.get("main_size_bytes"),
+            health.get("wal_size_bytes"),
+        )
     _repair_orphan_sqlite_indexes()
     Base.metadata.create_all(bind=engine)
     with engine.connect() as conn:

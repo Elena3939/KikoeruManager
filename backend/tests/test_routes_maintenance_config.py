@@ -4,7 +4,7 @@ import pytest
 from starlette.responses import PlainTextResponse
 
 from app.api import routes
-from app.config.settings import AppConfig, ResourceBudgetConfig
+from app.config.settings import AppConfig, DatabaseConfig, ResourceBudgetConfig
 
 
 def test_notification_cleanup_config_reads_notification_center(monkeypatch):
@@ -33,6 +33,23 @@ def test_resource_budget_config_defaults_are_conservative():
     )
 
 
+def test_database_config_defaults_are_nas_safe():
+    config = AppConfig()
+
+    assert config.database == DatabaseConfig(
+        journal_mode="WAL",
+        synchronous="FULL",
+        busy_timeout_ms=60000,
+        wal_autocheckpoint=500,
+        cache_size_kb=20000,
+        pool_size=2,
+        max_overflow=2,
+        pool_recycle_seconds=1800,
+        startup_quick_check=True,
+        startup_integrity_check=False,
+    )
+
+
 def test_get_config_includes_resource_budget(client, monkeypatch):
     monkeypatch.setattr(routes, "get_config", lambda: AppConfig())
 
@@ -48,6 +65,8 @@ def test_get_config_includes_resource_budget(client, monkeypatch):
         "network_download": 5,
         "sqlite_write": 1,
     }
+    assert response.json()["database"]["synchronous"] == "FULL"
+    assert response.json()["database"]["busy_timeout_ms"] == 60000
 
 
 def test_update_config_validates_resource_budget(client, monkeypatch):
@@ -85,6 +104,23 @@ def test_update_config_validates_resource_budget(client, monkeypatch):
         "network_download": 4,
         "sqlite_write": 1,
     }
+
+
+def test_database_maintenance_health_returns_503_on_failed_check(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.models.database.check_database_health",
+        lambda *, full=False: {
+            "ok": False,
+            "check": "quick_check",
+            "messages": ["database disk image is malformed"],
+        },
+    )
+
+    response = client.get("/api/database/maintenance/health")
+
+    assert response.status_code == 503
+    assert response.json()["ok"] is False
+    assert response.json()["messages"] == ["database disk image is malformed"]
 
 
 def test_notification_cleanup_config_clamps_invalid_values(monkeypatch):
