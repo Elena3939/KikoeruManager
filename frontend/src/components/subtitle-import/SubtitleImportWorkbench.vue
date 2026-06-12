@@ -2524,7 +2524,7 @@ watch(() => activeTask.value?.id, async (taskId) => {
     return
   }
   await inspectSubtitleTask(task)
-})
+}, { immediate: true })
 
 // 切到 "筛选与配对" / "字幕文件树" stage 时兜底再 inspect 一次，
 // 避免 overview 阶段打开工作台后、没自动 inspect 过就切 tab 导致列表空。

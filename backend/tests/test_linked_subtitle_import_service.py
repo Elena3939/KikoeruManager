@@ -3,7 +3,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from app.core.classifier import SmartClassifier
-from app.core.linked_subtitle_import_service import LinkedSubtitleImportService
+from app.core.linked_subtitle_import_service import (
+    LinkedSubtitleArchivePrecheckTimeout,
+    LinkedSubtitleImportService,
+)
+import app.core.linked_subtitle_import_service as linked_subtitle_module
+from app.models.database import ConflictWork
 
 
 def test_prefer_deepest_target_rj_candidate_keeps_inner_same_rj_folder():
@@ -156,3 +161,112 @@ async def test_preview_archive_import_large_non_translation_skips_archive_listin
     assert preview["mode"] == "archive"
     assert preview["source_rjcode"] == "RJ01616588"
     assert preview["source_has_subtitles"] is False
+
+
+def test_refresh_preview_execution_state_keeps_timeout_archive_executable(tmp_path):
+    archive_path = tmp_path / "RJ01620917.7z.001"
+    archive_path.write_bytes(b"placeholder")
+    service = object.__new__(LinkedSubtitleImportService)
+    service.REMOTE_PENDING_REASON = LinkedSubtitleImportService.REMOTE_PENDING_REASON
+    service.EXISTING_SUBTITLE_REASON = LinkedSubtitleImportService.EXISTING_SUBTITLE_REASON
+    service._prefer_deepest_target_rj_candidates = lambda candidates, _target: candidates
+    service._should_direct_import_to_empty_candidate = lambda _preview, _candidate: False
+
+    preview = service._refresh_preview_execution_state({
+        "source_rjcode": "RJ01620917",
+        "target_rjcode": "RJ01608823",
+        "source_path": str(archive_path),
+        "is_translation_work": True,
+        "is_manual_subtitle_source": False,
+        "subtitle_count": 0,
+        "kikoeru_has_work": True,
+        "kikoeru_needs_subtitle": True,
+        "kikoeru_route_confident": True,
+        "source_subtitle_probe_status": "timeout",
+        "source_subtitle_probe_reason": "字幕补配预检超时，执行时将重新解包扫描字幕",
+        "candidates": [{
+            "library_id": "asmr",
+            "library_type": "local",
+            "folder_path": "D:/library/RJ01608823",
+            "ready_for_import": True,
+        }],
+    })
+
+    assert preview["can_stage_pending"] is True
+    assert preview["can_execute"] is True
+    assert "重新解包" in preview["execute_reason"]
+
+
+@pytest.mark.asyncio
+async def test_queue_pending_archive_import_preserves_timeout_as_pending(db_session, monkeypatch):
+    def fake_get_db():
+        yield db_session
+
+    monkeypatch.setattr(linked_subtitle_module, "get_db", fake_get_db)
+
+    service = object.__new__(LinkedSubtitleImportService)
+    service.PENDING_CONFLICT_TYPE = LinkedSubtitleImportService.PENDING_CONFLICT_TYPE
+    service.PENDING_SOURCE_MODE = LinkedSubtitleImportService.PENDING_SOURCE_MODE
+    service.ARCHIVE_PRECHECK_TIMEOUT_SECONDS = 1
+    service.subtitle_service = SimpleNamespace(
+        extract_rjcode=lambda value: "RJ01620917" if "RJ01620917" in str(value or "") else ""
+    )
+    service._should_create_pending_import = LinkedSubtitleImportService._should_create_pending_import.__get__(service)
+    service._can_execute_pending_import = LinkedSubtitleImportService._can_execute_pending_import.__get__(service)
+    service._serialize_pending_record = LinkedSubtitleImportService._serialize_pending_record.__get__(service)
+    service._cleanup_stage_dir = lambda _stage_dir: None
+    service.preview_archive_import = AsyncMock(side_effect=LinkedSubtitleArchivePrecheckTimeout({
+        "mode": "archive",
+        "source_path": "D:/input/RJ01620917.7z.001",
+        "source_label": "RJ01620917.7z.001",
+        "source_rjcode": "RJ01620917",
+        "target_rjcode": "RJ01608823",
+        "is_translation_work": True,
+        "is_manual_subtitle_source": False,
+        "is_linked_subtitle_source": True,
+        "subtitle_count": 0,
+        "kikoeru_has_work": True,
+        "kikoeru_needs_subtitle": True,
+        "kikoeru_route_confident": True,
+        "source_subtitle_probe_status": "timeout",
+        "source_subtitle_probe_reason": "字幕补配预检超时，执行时将重新解包扫描字幕",
+        "candidate_count": 1,
+        "ready_candidate_count": 1,
+        "can_stage_pending": True,
+        "can_execute": True,
+        "selected_candidate": {
+            "library_id": "asmr",
+            "library_type": "local",
+            "folder_path": "D:/library/RJ01608823",
+            "ready_for_import": True,
+        },
+        "candidates": [{
+            "library_id": "asmr",
+            "library_type": "local",
+            "folder_path": "D:/library/RJ01608823",
+            "ready_for_import": True,
+        }],
+    }))
+    service._stage_archive_subtitles_for_preview = AsyncMock(
+        side_effect=AssertionError("超时待处理单不应立刻重新解包")
+    )
+
+    task = SimpleNamespace(
+        id="task-timeout",
+        source_path="D:/input/RJ01620917.7z.001",
+        task_metadata={},
+        update_progress=lambda *_args, **_kwargs: None,
+    )
+
+    result = await service.queue_pending_archive_import(task, "RJ01620917")
+
+    assert result["handled"] is True
+    assert result["preview"]["source_subtitle_probe_status"] == "timeout"
+    service._stage_archive_subtitles_for_preview.assert_not_awaited()
+
+    row = db_session.query(ConflictWork).filter(
+        ConflictWork.conflict_type == LinkedSubtitleImportService.PENDING_CONFLICT_TYPE,
+        ConflictWork.task_id == "task-timeout",
+    ).one()
+    assert row.rjcode == "RJ01608823"
+    assert row.new_metadata["source_subtitle_probe_status"] == "timeout"

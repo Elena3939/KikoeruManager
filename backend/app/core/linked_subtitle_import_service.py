@@ -22,6 +22,14 @@ from .task_engine import Task, TaskStatus, TaskType, get_task_engine
 logger = logging.getLogger(__name__)
 
 
+class LinkedSubtitleArchivePrecheckTimeout(TimeoutError):
+    """字幕补配预检超时，但保留已经确认的轻量路由信息。"""
+
+    def __init__(self, preview: Dict[str, Any]):
+        super().__init__("字幕补配预检超时")
+        self.preview = preview
+
+
 class LinkedSubtitleImportService:
     """Handle automatic linked-subtitle staging and manual subtitle-folder import."""
 
@@ -1032,6 +1040,7 @@ class LinkedSubtitleImportService:
         staged_dirs = [path for index, path in enumerate(staged_dirs) if path and path not in staged_dirs[:index]]
         has_staged_subtitle_dir = any(os.path.isdir(path) for path in staged_dirs)
         source_path_exists = bool(source_path) and os.path.exists(source_path)
+        can_probe_later = source_subtitle_probe_status == "timeout" and source_path_exists
 
         should_queue_pending = False
         if is_translation_work:
@@ -1041,12 +1050,12 @@ class LinkedSubtitleImportService:
                     target_needs_subtitle_in_kikoeru
                     or not kikoeru_route_confident
                 )
-                and subtitle_count > 0
+                and (subtitle_count > 0 or can_probe_later)
             )
         elif is_manual_subtitle_source:
             should_queue_pending = (
                 bool(source_rjcode)
-                and subtitle_count > 0
+                and (subtitle_count > 0 or can_probe_later)
                 and (
                     target_needs_subtitle_in_kikoeru
                     or not kikoeru_route_confident
@@ -1071,7 +1080,9 @@ class LinkedSubtitleImportService:
         if can_stage_pending and source_path and not source_path_exists and not has_staged_subtitle_dir:
             stage_reason = "来源压缩包和预检字幕工作区都已不存在，无法继续执行"
             can_stage_pending = False
-        can_execute = can_stage_pending and subtitle_count > 0 and len(ready_candidates) > 0
+        can_execute = can_stage_pending and len(ready_candidates) > 0 and (
+            subtitle_count > 0 or can_probe_later
+        )
 
         execute_reason = ""
         if stage_reason:
@@ -1080,6 +1091,8 @@ class LinkedSubtitleImportService:
             execute_reason = source_subtitle_probe_reason
         elif candidate_search_status == "pending_remote":
             execute_reason = candidate_search_reason or self.REMOTE_PENDING_REASON
+        elif source_subtitle_probe_status == "timeout":
+            execute_reason = source_subtitle_probe_reason or "字幕补配预检超时，执行时将重新解包扫描字幕"
         elif not subtitle_count:
             execute_reason = "压缩包预检临时解包后未发现可导入的字幕文件"
         elif candidates and not ready_candidates:
@@ -2166,8 +2179,13 @@ class LinkedSubtitleImportService:
                 )
             except asyncio.TimeoutError as exc:
                 if task is not None:
-                    task.update_progress(5, "字幕补配预检超时，回退普通入库流程")
-                raise TimeoutError("字幕补配预检超时") from exc
+                    task.update_progress(5, "字幕补配预检超时，已加入字幕补配待处理")
+                fallback_preview = await self._build_timeout_archive_preview(
+                    archive_path,
+                    preferred_library_id=preferred_library_id,
+                    source_rjcode_hint=source_rjcode_hint,
+                )
+                raise LinkedSubtitleArchivePrecheckTimeout(fallback_preview) from exc
 
         archive_path = await self._wait_for_archive_file(archive_path)
         archive_path = str(archive_path or "").strip()
@@ -2295,6 +2313,33 @@ class LinkedSubtitleImportService:
             "source_subtitle_probe_reason": str((probe_result or {}).get("reason") or ""),
             "fatal_extract_error": str((probe_result or {}).get("reason") or "") if str((probe_result or {}).get("status") or "") == "missing_password" else "",
             "subtitle_entries": subtitle_entries,
+        })
+        return self._refresh_preview_execution_state(preview)
+
+    async def _build_timeout_archive_preview(
+        self,
+        archive_path: str,
+        *,
+        preferred_library_id: Optional[str] = None,
+        source_rjcode_hint: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        source_rjcode = self._extract_rjcode(source_rjcode_hint) or self._extract_rjcode_from_paths(archive_path)
+        preview = await self._build_common_preview(
+            source_rjcode=source_rjcode,
+            source_label=os.path.basename(str(archive_path or "")) or "字幕补配预检",
+            subtitle_count=0,
+            preferred_library_id=preferred_library_id,
+        )
+        preview.update({
+            "mode": "archive",
+            "source_path": archive_path,
+            "source_has_subtitles": False,
+            "source_subtitle_dir": "",
+            "staged_subtitle_dir": "",
+            "source_subtitle_probe_status": "timeout",
+            "source_subtitle_probe_reason": "字幕补配预检超时，执行时将重新解包扫描字幕",
+            "fatal_extract_error": "",
+            "subtitle_entries": [],
         })
         return self._refresh_preview_execution_state(preview)
 
@@ -2562,6 +2607,14 @@ class LinkedSubtitleImportService:
             preview = await self.preview_archive_import(archive_path, preferred_library_id=preferred_library_id)
         if not (preview.get("source_subtitle_dir") or preview.get("staged_subtitle_dir")):
             preview = await self._stage_archive_subtitles_for_preview(archive_path, preview)
+        if int(preview.get("subtitle_count") or 0) <= 0:
+            raise ValueError(
+                str(
+                    preview.get("source_subtitle_probe_reason")
+                    or preview.get("reason")
+                    or "压缩包内未发现可导入的字幕文件"
+                )
+            )
         target_candidate = self._resolve_target_candidate(
             preview,
             target_library_id=target_library_id,
@@ -3081,16 +3134,26 @@ class LinkedSubtitleImportService:
             or ""
         )
         task.update_progress(5, "预检中（查询翻译信息...）")
-        preview = await self.preview_archive_import(
-            task.source_path,
-            source_rjcode_hint=hinted_rjcode,
-            hint_password=hint_password,
-            task=task,
-            precheck_timeout=self.ARCHIVE_PRECHECK_TIMEOUT_SECONDS,
-        )
+        try:
+            preview = await self.preview_archive_import(
+                task.source_path,
+                source_rjcode_hint=hinted_rjcode,
+                hint_password=hint_password,
+                task=task,
+                precheck_timeout=self.ARCHIVE_PRECHECK_TIMEOUT_SECONDS,
+            )
+        except LinkedSubtitleArchivePrecheckTimeout as exc:
+            preview = dict(exc.preview or {})
+            logger.warning(
+                "[字幕补配预检] 压缩包预检超时，保留补配待处理单: source=%s source_rj=%s target_rj=%s reason=%s",
+                task.source_path,
+                preview.get("source_rjcode", ""),
+                preview.get("target_rjcode", ""),
+                preview.get("reason", "") or "字幕补配预检超时",
+            )
         task.update_progress(5, "预检中（确认字幕候选...）")
         should_create_pending = self._should_create_pending_import(preview)
-        if should_create_pending:
+        if should_create_pending and str(preview.get("source_subtitle_probe_status") or "").strip().lower() != "timeout":
             preview = await self._stage_archive_subtitles_for_preview(task.source_path, preview, hint_password=hint_password)
             should_create_pending = self._should_create_pending_import(preview)
         logger.info(
@@ -3135,6 +3198,7 @@ class LinkedSubtitleImportService:
                 "target_rjcode": preview.get("target_rjcode", ""),
                 "source_label": preview.get("source_label", ""),
                 "subtitle_count": int(preview.get("subtitle_count") or 0),
+                "source_subtitle_probe_status": str(preview.get("source_subtitle_probe_status") or ""),
                 "queue_origin": "auto_process",
             }
             analysis_info = {
