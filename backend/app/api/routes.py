@@ -1475,6 +1475,20 @@ def database_maintenance_estimate(
         raise HTTPException(status_code=500, detail=f"数据库瘦身估算失败: {str(e)}")
 
 
+@app.get("/api/database/maintenance/health")
+def database_maintenance_health(full: bool = False):
+    """执行 SQLite 自检；full=true 时跑完整 integrity_check。"""
+    from ..models.database import check_database_health
+
+    try:
+        result = check_database_health(full=full)
+        status = 200 if result.get("ok") else 503
+        return JSONResponse(status_code=status, content=result)
+    except Exception as e:
+        logger.error(f"数据库健康检查失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"数据库健康检查失败: {str(e)}")
+
+
 @app.post("/api/database/maintenance/shrink")
 async def database_maintenance_shrink(
     older_than_days: int = 30,
@@ -2195,6 +2209,7 @@ class ConfigResponse(BaseModel):
     notification_email: Optional[dict] = None
     notification_center: Optional[dict] = None
     resource_budget: Optional[dict] = None
+    database: Optional[dict] = None
     security_gate: Optional[dict] = None
 
 
@@ -2943,6 +2958,7 @@ def get_configuration():
         notification_email=_mask_notification_email_config(config),
         notification_center=config.notification_center.model_dump() if hasattr(config, 'notification_center') else None,
         resource_budget=config.resource_budget.model_dump() if hasattr(config, 'resource_budget') else None,
+        database=config.database.model_dump() if hasattr(config, 'database') else None,
         security_gate=get_security_gate_service().sanitize_config() if hasattr(config, 'security_gate') else None,
     )
 
@@ -3459,6 +3475,15 @@ async def update_configuration(request: Request):
             except Exception as e:
                 logger.error(f"[资源预算] resource_budget 配置验证失败: {e}")
                 raise HTTPException(status_code=400, detail=f"资源预算配置无效: {e}")
+
+        if 'database' in config_data and config_data['database']:
+            try:
+                from ..config.settings import DatabaseConfig
+                db_cfg = DatabaseConfig(**config_data['database'])
+                config_data['database'] = db_cfg.model_dump()
+            except Exception as e:
+                logger.error(f"[数据库] database 配置验证失败: {e}")
+                raise HTTPException(status_code=400, detail=f"数据库配置无效: {e}")
 
         if 'security_gate' in config_data and config_data['security_gate']:
             try:

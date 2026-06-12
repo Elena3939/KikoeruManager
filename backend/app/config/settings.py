@@ -516,6 +516,20 @@ class ResourceBudgetConfig(BaseModel):
     sqlite_write: int = 1
 
 
+class DatabaseConfig(BaseModel):
+    """SQLite 运行安全配置。默认偏向 NAS / Docker 卷上的耐久性。"""
+    journal_mode: str = "WAL"
+    synchronous: str = "FULL"
+    busy_timeout_ms: int = 60000
+    wal_autocheckpoint: int = 500
+    cache_size_kb: int = 20000
+    pool_size: int = 2
+    max_overflow: int = 2
+    pool_recycle_seconds: int = 1800
+    startup_quick_check: bool = True
+    startup_integrity_check: bool = False
+
+
 class SecurityGateConfig(BaseModel):
     """Google Authenticator 系统门禁配置"""
     enabled: bool = False
@@ -572,6 +586,7 @@ class AppConfig(BaseModel):
     notification_email: NotificationEmailConfig = NotificationEmailConfig()
     notification_center: NotificationCenterConfig = NotificationCenterConfig()
     resource_budget: ResourceBudgetConfig = ResourceBudgetConfig()
+    database: DatabaseConfig = DatabaseConfig()
     security_gate: SecurityGateConfig = SecurityGateConfig()
 
 # 全局配置实例

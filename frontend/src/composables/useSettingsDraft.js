@@ -381,6 +381,18 @@ export const defaultConfig = {
     poll_interval_seconds: 20,
     unread_highlight_enabled: true
   },
+  database: {
+    journal_mode: 'WAL',
+    synchronous: 'FULL',
+    busy_timeout_ms: 60000,
+    wal_autocheckpoint: 500,
+    cache_size_kb: 20000,
+    pool_size: 2,
+    max_overflow: 2,
+    pool_recycle_seconds: 1800,
+    startup_quick_check: true,
+    startup_integrity_check: false
+  },
   resource_budget: {
     enabled: true,
     disk_io_local: 2,
@@ -524,6 +536,7 @@ function hydrateConfig(data = {}) {
     email_watcher: { ...defaultConfig.email_watcher, ...(data?.email_watcher || {}) },
     notification_email: { ...defaultConfig.notification_email, ...(data?.notification_email || {}) },
     notification_center: { ...defaultConfig.notification_center, ...(data?.notification_center || {}) },
+    database: { ...defaultConfig.database, ...(data?.database || {}) },
     resource_budget: { ...defaultConfig.resource_budget, ...(data?.resource_budget || {}) },
     security_gate: { ...defaultConfig.security_gate, ...(data?.security_gate || {}) },
     classification: data?.classification || defaultConfig.classification
@@ -576,6 +589,7 @@ function serializeConfig(config) {
     email_watcher: payload.email_watcher,
     notification_email: payload.notification_email,
     notification_center: payload.notification_center,
+    database: payload.database,
     resource_budget: payload.resource_budget,
     security_gate: payload.security_gate
   }

@@ -128,6 +128,12 @@ def _resolve_db_path() -> str:
     return get_db_path()
 
 
+def _database_runtime_config() -> Dict[str, Any]:
+    from ..models.database import _DB_RUNTIME_CONFIG  # 复用引擎启动时的 SQLite 安全参数
+
+    return dict(_DB_RUNTIME_CONFIG)
+
+
 # ---------------------------------------------------------------------------
 # 状态读写
 # ---------------------------------------------------------------------------
@@ -320,10 +326,17 @@ def _do_wal_checkpoint_truncate(db_path: str) -> Dict[str, Any]:
     这一步会把 -wal 合并回主库并把 -wal 文件 truncate 到 0 字节。
     用直连而不是 SQLAlchemy 的连接池，避免和正在跑的会话相互等待事务。
     """
-    conn = sqlite3.connect(db_path, isolation_level=None, timeout=120)
+    cfg = _database_runtime_config()
+    conn = sqlite3.connect(
+        db_path,
+        isolation_level=None,
+        timeout=max(120, int(cfg.get("busy_timeout_ms", 60000) / 1000)),
+    )
     try:
         cur = conn.cursor()
         try:
+            cur.execute(f"PRAGMA synchronous={cfg.get('synchronous', 'FULL')}")
+            cur.execute(f"PRAGMA busy_timeout={cfg.get('busy_timeout_ms', 60000)}")
             cur.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             row = cur.fetchone() or (None, None, None)
             return {
@@ -346,10 +359,13 @@ def _do_vacuum(db_path: str) -> int:
       session 状态影响；直连最干净。
     - timeout=600s：VACUUM 期间排他锁 + 大库可能跑几分钟，给充足窗口。
     """
+    cfg = _database_runtime_config()
     conn = sqlite3.connect(db_path, isolation_level=None, timeout=600)
     try:
         cur = conn.cursor()
         try:
+            cur.execute(f"PRAGMA synchronous={cfg.get('synchronous', 'FULL')}")
+            cur.execute(f"PRAGMA busy_timeout={cfg.get('busy_timeout_ms', 60000)}")
             t0 = time.monotonic()
             cur.execute("VACUUM")
             elapsed = (time.monotonic() - t0) * 1000.0
@@ -390,6 +406,12 @@ def _shrink_worker(*, older_than_days: int, min_detail_bytes: int) -> None:
     )
 
     try:
+        from ..models.database import check_database_health
+
+        precheck = check_database_health(full=False)
+        if not precheck.get("ok"):
+            raise RuntimeError(f"数据库瘦身前自检失败，已中止: {precheck}")
+
         # 1) compact ----------------------------------------------------------
         compact_result = _do_compact_loop(
             older_than_days=older_than_days,
@@ -436,6 +458,9 @@ def _shrink_worker(*, older_than_days: int, min_detail_bytes: int) -> None:
 
         # 4) finalize ---------------------------------------------------------
         _set_state(stage="finalize", stage_label=_STAGE_LABELS["finalize"])
+        postcheck = check_database_health(full=False)
+        if not postcheck.get("ok"):
+            raise RuntimeError(f"数据库瘦身后自检失败: {postcheck}")
         after = _file_sizes(db_path)
         freed = max(0, int(before["total_size_bytes"] or 0) - int(after["total_size_bytes"] or 0))
         duration_ms = int((time.monotonic() - started_monotonic) * 1000.0)

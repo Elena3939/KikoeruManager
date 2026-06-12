@@ -118,6 +118,15 @@
       </SettingsSectionPanel>
 
       <SettingsSectionPanel
+        v-else-if="activeSection === 'system'"
+        kicker="Runtime System"
+        title="系统运行"
+        description="集中配置 SQLite WAL / synchronous、连接池、资源预算和数据库现场健康检查。"
+      >
+        <SystemSettingsPanel :config="config" />
+      </SettingsSectionPanel>
+
+      <SettingsSectionPanel
         v-else-if="activeSection === 'maintenance'"
         kicker="Maintenance"
         title="维护与清理"
@@ -158,7 +167,7 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { Bell, Bot, Boxes, DownloadCloud, HardDrive, LifeBuoy, ScanSearch, ShieldCheck, TextSearch, Workflow, Settings2 as IconSettings, AlertCircle as IconAlertCircle, CheckCircle2 as IconCheckCircle2, Clock as IconClock } from 'lucide-vue-next'
+import { Bell, Bot, Boxes, DownloadCloud, HardDrive, LifeBuoy, ScanSearch, ServerCog, ShieldCheck, TextSearch, Workflow, Settings2 as IconSettings, AlertCircle as IconAlertCircle, CheckCircle2 as IconCheckCircle2, Clock as IconClock } from 'lucide-vue-next'
 import SettingsSectionPanel from '../components/settings/SettingsSectionPanel.vue'
 import SettingsWorkbench from '../components/settings/SettingsWorkbench.vue'
 import BaiduNetdiskNavIcon from '../components/settings/BaiduNetdiskNavIcon.vue'
@@ -169,6 +178,7 @@ import ServicesSettingsPanel from '../components/settings/ServicesSettingsPanel.
 import AISubtitleSettingsPanel from '../components/settings/AISubtitleSettingsPanel.vue'
 import HttpDownloadSettingsPanel from '../components/settings/HttpDownloadSettingsPanel.vue'
 import BaiduNetdiskSettingsPanel from '../components/settings/BaiduNetdiskSettingsPanel.vue'
+import SystemSettingsPanel from '../components/settings/SystemSettingsPanel.vue'
 import MaintenanceSettingsPanel from '../components/settings/MaintenanceSettingsPanel.vue'
 import FtsSettingsPanel from '../components/settings/FtsSettingsPanel.vue'
 import NotificationSettingsPanel from '../components/settings/NotificationSettingsPanel.vue'
@@ -186,6 +196,7 @@ const sectionKeyMap = {
   aiSubtitle: ['ai_subtitle_matching'],
   httpDownload: ['http_downloader'],
   baiduNetdisk: ['baidu_netdisk'],
+  system: ['database', 'resource_budget'],
   maintenance: ['password_cleanup', 'archive_cleanup', 'backup_zip'],
   fts: [],
   security: ['security_gate'],
@@ -257,6 +268,7 @@ const sections = [
   { id: 'aiSubtitle', title: 'AI 配对', short: '模型、Key、提示词、阈值', icon: Bot, keywords: ['ai', 'subtitle', 'match', 'model', 'prompt', '字幕配对', '模型', '提示词'] },
   { id: 'httpDownload', title: 'HTTP 下载', short: 'HTTP、Gofile、PikPak', icon: DownloadCloud, keywords: ['http', 'download', 'aria2', 'gofile', 'pikpak', '外链下载'] },
   { id: 'baiduNetdisk', title: '百度网盘', short: '官方登录、分享直下、SVIP', icon: BaiduNetdiskNavIcon, keywords: ['baidu', '百度网盘', '分享直下', 'SVIP', '百度'] },
+  { id: 'system', title: '系统运行', short: 'SQLite、连接池、资源预算', icon: ServerCog, keywords: ['system', 'runtime', 'sqlite', 'wal', 'synchronous', 'pool', 'resource_budget', '系统', '连接池', '资源预算'] },
   { id: 'maintenance', title: '维护与清理', short: '清理、备份、压缩包', icon: LifeBuoy, keywords: ['cleanup', 'backup', 'archive', '维护'] },
   { id: 'fts', title: '全文搜索索引', short: 'FTS5 trigram 加速', icon: TextSearch, keywords: ['fts', 'search', 'trigram', '索引', '全文搜索', 'sqlite'] },
   { id: 'security', title: '安全门禁', short: '验证器、黑名单', icon: ShieldCheck, keywords: ['security', 'google authenticator', '门禁', '黑名单'] },
@@ -362,6 +374,7 @@ onMounted(() => {
   --set-nav-ai-subtitle-icon: #0d9488;
   --set-nav-http-download-icon: #0284c7;
   --set-nav-baidu-netdisk-icon: #2563eb;
+  --set-nav-system-icon: #0f766e;
   --set-nav-maintenance-icon: #c2410c;
   --set-nav-fts-icon: #4f46e5;
   --set-nav-security-icon: #15803d;
@@ -428,6 +441,7 @@ onMounted(() => {
   --set-nav-ai-subtitle-icon: #5eead4;
   --set-nav-http-download-icon: #8aaebe;
   --set-nav-baidu-netdisk-icon: #93c5fd;
+  --set-nav-system-icon: #5eead4;
   --set-nav-maintenance-icon: #fdba74;
   --set-nav-fts-icon: #a5b4fc;
   --set-nav-security-icon: #86efac;
