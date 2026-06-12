@@ -356,6 +356,19 @@ export const activityLogApi = {
 }
 
 export const databaseMaintenanceApi = {
+  // 执行 SQLite 自检。full=true 会跑完整 integrity_check；损坏时后端返回 503，这里仍把诊断体交给 UI。
+  health: async (full = false) => {
+    try {
+      const response = await apiClient.get('/database/maintenance/health', { params: { full } })
+      return response.data
+    } catch (error) {
+      if (error.response?.status === 503 && error.response?.data) {
+        return error.response.data
+      }
+      throw error
+    }
+  },
+
   // 估算一键瘦身能释放多少空间 + 返回当前 db/-wal/-shm 文件大小快照
   estimate: async (params = {}) => {
     const response = await apiClient.get('/database/maintenance/estimate', { params })
