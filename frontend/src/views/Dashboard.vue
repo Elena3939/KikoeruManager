@@ -213,14 +213,30 @@ function parseVolumeArchiveFilename(filename) {
   return null
 }
 
+function normalizeArchiveVolumeCount(archive) {
+  const directCount = Number(archive?.volume_count ?? archive?.volumeCount ?? archive?.volumes_count)
+  if (Number.isFinite(directCount) && directCount > 1) return Math.floor(directCount)
+
+  const volumes = Array.isArray(archive?.volumes) ? archive.volumes : []
+  if (volumes.length > 1) return volumes.length
+
+  return 1
+}
+
 const groupedArchives = computed(() => {
   const groups = new Map()
   const singles = []
   for (const archive of archives.value) {
     const filename = String(archive.filename || '')
+    const archiveVolumeCount = normalizeArchiveVolumeCount(archive)
     const volumeInfo = parseVolumeArchiveFilename(filename)
     if (!volumeInfo) {
-      singles.push({ ...archive, source: 'processed_archive', isVolumeGroup: false })
+      singles.push({
+        ...archive,
+        source: 'processed_archive',
+        isVolumeGroup: archiveVolumeCount > 1,
+        volume_count: archiveVolumeCount,
+      })
       continue
     }
     const groupKey = volumeInfo.groupKey
@@ -235,11 +251,13 @@ const groupedArchives = computed(() => {
         status: archive.status,
         isVolumeGroup: true,
         volumes: [],
+        volume_count: 0,
         volumeIndex: volumeInfo.volumeIndex || 0,
       })
     }
     const group = groups.get(groupKey)
     group.volumes.push(archive)
+    group.volume_count += archiveVolumeCount
     group.file_size += Number(archive.file_size || 0)
     if (archive.rjcode && !group.rjcode) group.rjcode = archive.rjcode
     if (archive.status && group.status !== 'failed') group.status = archive.status
@@ -267,6 +285,7 @@ const groupedArchives = computed(() => {
         rjcode: item.rjcode || latestArchive?.rjcode,
         processed_at: latestArchive?.processed_at || item.processed_at,
         process_count: Math.max(...item.volumes.map((volume) => Number(volume?.process_count || 1))),
+        volume_count: Math.max(Number(item.volume_count || 0), item.volumes.length),
         source: 'processed_archive',
       }
     })

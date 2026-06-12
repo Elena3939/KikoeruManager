@@ -67,3 +67,4 @@ async def test_scan_processed_archives_aggregates_exe_e_volume_size_and_removes_
     assert records[0].filename == "RJ01629292.exe"
     assert records[0].current_path == str(exe)
     assert records[0].file_size == 1524
+    assert records[0].volume_count == 3

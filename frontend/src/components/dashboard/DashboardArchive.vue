@@ -139,7 +139,7 @@
                 <component :is="statusIcon(getStatusMeta(archive).key)" :size="11" :stroke-width="2" :class="statusIconColor(getStatusMeta(archive).key)" />
                 {{ getStatusMeta(archive).label }}
               </span>
-              <span v-if="archive.isVolumeGroup" class="dash-archive-volume-chip">{{ archive.volumes.length }} 分卷</span>
+              <span v-if="archiveVolumeCount(archive) > 1" class="dash-archive-volume-chip">{{ archiveVolumeCount(archive) }} 分卷</span>
             </div>
             <span v-if="archive.file_size" class="dash-archive-meta-size">{{ formatFileSize(archive.file_size) }}</span>
           </div>
@@ -254,6 +254,16 @@ const domainDropdownOptions = computed(() =>
     suffix: tab.count > 0 ? String(tab.count) : '',
   })),
 )
+
+function archiveVolumeCount(archive) {
+  const directCount = Number(archive?.volume_count ?? archive?.volumeCount ?? archive?.volumes_count)
+  if (Number.isFinite(directCount) && directCount > 1) return Math.floor(directCount)
+
+  const volumes = Array.isArray(archive?.volumes) ? archive.volumes : []
+  if (volumes.length > 1) return volumes.length
+
+  return 1
+}
 
 const panelRef = ref(null)
 const listRef = ref(null)

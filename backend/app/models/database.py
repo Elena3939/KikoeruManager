@@ -474,6 +474,7 @@ class ProcessedArchive(Base):
     filename = Column(Text)       # 文件名
     rjcode = Column(String(20), index=True)  # RJ号
     file_size = Column(BigInteger)  # 文件大小
+    volume_count = Column(Integer, default=1)  # 分卷数量，单文件为 1
     processed_at = Column(DateTime, default=get_local_now)  # 最后处理时间（本地时间）
     process_count = Column(Integer, default=1)  # 处理次数
     task_id = Column(String(36))  # 关联的任务ID
@@ -510,6 +511,7 @@ class ProcessedArchive(Base):
             'filename': self.filename,
             'rjcode': self.rjcode,
             'file_size': self.file_size,
+            'volume_count': self.volume_count or 1,
             'processed_at': processed_at_str,
             'process_count': self.process_count,
             'task_id': self.task_id,
@@ -1880,6 +1882,7 @@ def init_db():
             _db_logger.info(f"[数据库] notification_templates 新增列: {column_name}")
 
         # === 性能物化表：兼容已存在老表的增量列/索引 ===
+        _migrate_processed_archives_schema(conn)
         _migrate_task_center_items_schema(conn)
         _migrate_activity_log_rollups_schema(conn)
         _migrate_task_phase_metrics_schema(conn)
@@ -1922,6 +1925,28 @@ def _create_indexes_if_not_exists(conn, index_sqls: tuple[str, ...], table_name:
             conn.execute(text(index_sql))
         except Exception:
             _db_logger.warning(f"[数据库] {table_name} 建索引失败: {index_sql}", exc_info=True)
+
+
+def _migrate_processed_archives_schema(conn) -> None:
+    """已处理压缩包表兼容迁移。"""
+    try:
+        existing_columns = _read_table_columns(conn, "processed_archives")
+        if not existing_columns:
+            return
+        _add_missing_columns(
+            conn,
+            "processed_archives",
+            existing_columns,
+            [
+                ("volume_count", "INTEGER DEFAULT 1"),
+            ],
+        )
+        try:
+            conn.commit()
+        except Exception:
+            pass
+    except Exception:
+        _db_logger.warning("[数据库] processed_archives 迁移失败（非致命）", exc_info=True)
 
 
 def _migrate_library_index_status_schema(conn) -> None:

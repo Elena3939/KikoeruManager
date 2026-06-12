@@ -6242,10 +6242,12 @@ async def scan_processed_archives():
                 continue
 
             group = detect_archive_volume_group(file_path, sibling_names=file_names)
+            volume_count = 1
             if group:
                 main_path = group.main_path
                 main_filename = group.main_filename
                 grouped_size = sum(int(size_by_path.get(path, 0) or 0) for path in group.volumes)
+                volume_count = max(1, len(group.volumes))
                 for member_path in group.volumes:
                     visited_members.add(member_path)
                 filename = main_filename
@@ -6271,6 +6273,7 @@ async def scan_processed_archives():
                 archive = db_archives[filename]
                 archive.current_path = file_path
                 archive.file_size = file_size
+                archive.volume_count = volume_count
                 # 注意：不要在这里更新 processed_at，扫描只是同步文件状态，不是重新处理
                 logger.info(f"更新已处理压缩包记录路径: {filename}")
             else:
@@ -6282,6 +6285,7 @@ async def scan_processed_archives():
                     filename=filename,
                     rjcode=rjcode or '',
                     file_size=file_size,
+                    volume_count=volume_count,
                     processed_at=datetime.now(),
                     process_count=1,
                     task_id='',

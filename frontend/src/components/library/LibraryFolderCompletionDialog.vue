@@ -1435,7 +1435,7 @@ function formatSize (bytes) {
 :global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-file-icon.is-video),
 :global(html.dark .folder-completion-modal .folder-completion-file-icon.is-video) {
   background: rgba(244, 63, 94, 0.16) !important;
-  color: #fda4af !important;
+  color: #000000 !important;
 }
 
 :global(html.kikoerumanager-dark .folder-completion-modal .folder-completion-row-work),

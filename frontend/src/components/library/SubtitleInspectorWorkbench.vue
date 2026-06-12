@@ -38,6 +38,11 @@
       class="relative min-h-[320px]"
       v-app-loading="{ loading: true, text: pendingLoadingText, size: 124 }"
     ></div>
+    <div
+      v-else-if="!view.subtitleInspectorInfo.subtitleDir && activeTaskSubtitleDir"
+      class="relative min-h-[320px]"
+      v-app-loading="{ loading: true, text: '正在读取字幕工作台目录...', size: 124 }"
+    ></div>
     <div v-else-if="!view.subtitleInspectorInfo.subtitleDir" class="py-10 px-4">
       <AppEmptyState description="从左侧任务里选择一个已生成字幕目录的任务进行检查" size="default">
         <div class="text-center text-[11.5px] text-slate-400 mt-1">任务完成后会进入上方任务队列，点击对应卡片再进入这里做筛选和配对。</div>
@@ -615,9 +620,26 @@ function isRuntimePendingTask(task) {
   return !task?.manual_match_completed && !isAwaitingManualTask(task)
 }
 
+function getTaskSubtitleDir(task) {
+  const subtitleDir = String(task?.subtitle_dir || '').trim()
+  if (subtitleDir) return subtitleDir
+  const workbenchRoot = String(task?.linked_workbench_root_dir || '').trim()
+  return workbenchRoot ? `${workbenchRoot.replace(/[\\/]+$/, '')}/subtitles` : ''
+}
+
 const activeTaskMissingSubtitleDir = computed(() => {
   const task = view.value.activeSubtitleInspectTask || view.value.activeSubtitleTask
-  return Boolean(task && isAwaitingManualTask(task) && !view.value.subtitleInspectorInfo?.subtitleDir)
+  return Boolean(
+    task &&
+    isAwaitingManualTask(task) &&
+    !view.value.subtitleInspectorInfo?.subtitleDir &&
+    !getTaskSubtitleDir(task)
+  )
+})
+
+const activeTaskSubtitleDir = computed(() => {
+  const task = view.value.activeSubtitleInspectTask || view.value.activeSubtitleTask
+  return getTaskSubtitleDir(task)
 })
 
 const pendingInProgressTask = computed(() => {

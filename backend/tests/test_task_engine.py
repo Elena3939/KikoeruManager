@@ -309,6 +309,7 @@ class TestTaskEngine:
 
         archive = db_session.query(ProcessedArchive).filter_by(filename="RJ01629292.exe").one()
         assert archive.file_size == 1524
+        assert archive.volume_count == 3
         assert archive.current_path == str(processed_dir / "RJ01629292.exe")
         assert sorted(path.name for path in processed_dir.iterdir()) == [
             "RJ01629292.e01",

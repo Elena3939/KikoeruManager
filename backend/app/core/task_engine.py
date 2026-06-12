@@ -4246,6 +4246,7 @@ class TaskEngine:
                     existing_record.process_count = old_count + 1
                     existing_record.processed_at = datetime.now()
                     existing_record.status = 'completed'
+                    existing_record.volume_count = len(get_archive_volume_paths(source_path))
                     db.commit()
                     try:
                         from .task_center_event_service import broadcast_processed_archive_changed
@@ -4369,6 +4370,7 @@ class TaskEngine:
                 main_filename, main_dest_path, main_source_path = archived_files[0]
                 rjcode = self._extract_rjcode_from_path_tail(main_source_path) or str((task.task_metadata or {}).get('inferred_rjcode') or '').strip().upper()
                 archived_paths = [item[1] for item in archived_files]
+                volume_count = max(1, len(archived_paths))
                 file_size = 0
                 for archived_path in archived_paths:
                     try:
@@ -4389,6 +4391,7 @@ class TaskEngine:
                         # 更新已有记录
                         existing_record.current_path = main_dest_path
                         existing_record.file_size = file_size
+                        existing_record.volume_count = volume_count
                         existing_record.processed_at = datetime.now()
                         existing_record.process_count = (existing_record.process_count or 1) + 1
                         existing_record.task_id = task.id
@@ -4405,6 +4408,7 @@ class TaskEngine:
                             filename=main_filename,
                             rjcode=rjcode or '',
                             file_size=file_size,
+                            volume_count=volume_count,
                             processed_at=now,  # 显式设置处理时间
                             process_count=1,
                             task_id=task.id,
