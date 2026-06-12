@@ -763,6 +763,7 @@ import AppPageHeader from '../components/common/AppPageHeader.vue'
 import StatefulButton from '../components/ui/stateful-button.vue'
 import { libraryEntryIconFor, libraryEntryMetaFor } from '../components/library/_libraryFileKind'
 import { conflictApi } from '../api'
+import { normalizeTaskCenterRealtimePayloads } from '../composables/taskCenterEventUtils'
 import { showSystemAlert, showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 
 const ACTIVE_CONFLICT_STORAGE_KEY = 'kikoerumanager-conflicts-active-id'
@@ -1736,11 +1737,6 @@ function ensureProcessingPoller() {}
 
 function startProcessingPoller() {}
 
-function normalizeTaskCenterRealtimeEvent(detail = {}) {
-  if (detail.type === 'task.center.changed') return detail.payload || {}
-  return detail
-}
-
 function getConflictTaskId(conflict) {
   return String(
     conflict?.linked_task?.id ||
@@ -1751,7 +1747,14 @@ function getConflictTaskId(conflict) {
 }
 
 function handleConflictRealtimeEvent(event) {
-  const payload = normalizeTaskCenterRealtimeEvent(event?.detail || {})
+  const payloads = normalizeTaskCenterRealtimePayloads(event?.detail || {})
+    .filter(payload => payload?.type === 'task_center_changed')
+  for (const payload of payloads) {
+    handleConflictTaskPayload(payload)
+  }
+}
+
+function handleConflictTaskPayload(payload) {
   if (payload?.type !== 'task_center_changed') return
   const taskId = String(payload.engine_task_id || payload.entity_id || '').trim()
   if (!taskId) return

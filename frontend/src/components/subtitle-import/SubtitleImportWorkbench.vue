@@ -166,6 +166,7 @@ import { Captions, Folder, FolderOpen, Loader2, Minimize2, RefreshCw, Trash2, X 
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
 import { aiSubtitleMatchApi, libraryApi, rjSubtitleApi, subtitleImportApi } from '../../api'
 import { runWithConcurrency } from '../../composables/useAsyncBatch'
+import { normalizeTaskCenterRealtimePayloads } from '../../composables/taskCenterEventUtils'
 import { useRealtimeEvents } from '../../composables/useRealtimeEvents'
 import { libraryEntryIconFor, libraryEntryMetaFor } from '../library/_libraryFileKind'
 import FilterDeleteDialog from '../library/FilterDeleteDialog.vue'
@@ -2409,11 +2410,6 @@ function startTaskStatusPolling() {
   }, TASK_STATUS_REFRESH_MS)
 }
 
-function normalizeTaskRealtimeEvent(detail = {}) {
-  if (detail.type === 'task.center.changed') return detail.payload || {}
-  return detail
-}
-
 function patchLinkedTaskFromRealtimeEvent(payload = {}) {
   const taskId = String(payload.engine_task_id || payload.entity_id || '').trim()
   if (!taskId) return false
@@ -2437,11 +2433,17 @@ function patchLinkedTaskFromRealtimeEvent(payload = {}) {
 }
 
 function handleTaskRealtimeEvent(event) {
-  const payload = normalizeTaskRealtimeEvent(event?.detail || {})
-  if (payload?.type !== 'task_center_changed') return
-  if (!patchLinkedTaskFromRealtimeEvent(payload)) return
-  const status = String(payload.status || '').trim()
-  if (['completed', 'failed', 'cancelled', 'waiting_manual'].includes(status)) {
+  const payloads = normalizeTaskCenterRealtimePayloads(event?.detail || {})
+    .filter(payload => payload?.type === 'task_center_changed')
+  let shouldRefresh = false
+  for (const payload of payloads) {
+    if (!patchLinkedTaskFromRealtimeEvent(payload)) continue
+    const status = String(payload.status || '').trim()
+    if (['completed', 'failed', 'cancelled', 'waiting_manual'].includes(status)) {
+      shouldRefresh = true
+    }
+  }
+  if (shouldRefresh) {
     refreshTaskStatus(false, { inspect: props.visible, forceInspect: props.visible, silent: true })
   }
 }

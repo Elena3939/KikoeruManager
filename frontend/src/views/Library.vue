@@ -1858,6 +1858,7 @@ import { aiSubtitleMatchApi, baiduNetdiskApi, configApi, libraryApi, localUpload
 import { showSystemAlert, showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 
 import { useSubtitleTask } from '../composables/useSubtitleTask'
+import { normalizeTaskCenterRealtimePayloads } from '../composables/taskCenterEventUtils'
 import { useRealtimeEvents } from '../composables/useRealtimeEvents'
 
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
@@ -18049,7 +18050,9 @@ function patchFolderCompletionPreviewFromTaskEvent (payload = {}) {
 
 function handleFolderCompletionRealtimeEvent (event) {
 
-  const payload = normalizeFolderCompletionRealtimePayload(event?.detail || {})
+  const detail = event?.detail || {}
+
+  const payload = normalizeFolderCompletionRealtimePayload(detail)
 
   if (payload?.type === 'library_index_status_changed') {
 
@@ -18058,6 +18061,16 @@ function handleFolderCompletionRealtimeEvent (event) {
     return
 
   }
+
+  for (const item of normalizeTaskCenterRealtimePayloads(detail)) {
+
+    handleFolderCompletionTaskPayload(item)
+
+  }
+
+}
+
+function handleFolderCompletionTaskPayload (payload) {
 
   if (payload?.type !== 'task_center_changed') return
 

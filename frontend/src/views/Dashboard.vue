@@ -76,7 +76,7 @@ import DashboardHero from '../components/dashboard/DashboardHero.vue'
 import DashboardCommandStrip from '../components/dashboard/DashboardCommandStrip.vue'
 import DashboardActiveTasks from '../components/dashboard/DashboardActiveTasks.vue'
 import DashboardArchive from '../components/dashboard/DashboardArchive.vue'
-import { patchTaskCenterItemList } from '../composables/taskCenterEventUtils'
+import { normalizeTaskCenterRealtimePayloads, patchTaskCenterItemListBatch } from '../composables/taskCenterEventUtils'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
 import { useRealtimeEvents } from '../composables/useRealtimeEvents'
 
@@ -559,7 +559,6 @@ function unbindTaskCenterStreamEvents() {
 }
 
 function normalizeRealtimeDashboardEvent(detail = {}) {
-  if (detail.type === 'task.center.changed') return detail.payload || {}
   if (detail.type === 'processed_archive.changed') {
     return { type: 'processed_archive_changed', ...(detail.payload || {}) }
   }
@@ -587,17 +586,19 @@ function scheduleArchiveStreamRefresh() {
   }, ARCHIVE_STREAM_REFRESH_DEBOUNCE_MS)
 }
 
-function patchDashboardTaskOverview(payload) {
+function patchDashboardTaskOverview(payloads) {
+  const events = Array.isArray(payloads) ? payloads : [payloads]
   const current = taskCenterOverview.value || {}
   taskCenterOverview.value = {
     ...current,
-    active_items: patchTaskCenterItemList(current.active_items || [], payload),
-    recent_items: patchTaskCenterItemList(current.recent_items || [], payload),
+    active_items: patchTaskCenterItemListBatch(current.active_items || [], events),
+    recent_items: patchTaskCenterItemListBatch(current.recent_items || [], events),
   }
 }
 
 function handleTaskCenterStreamEvent(event) {
-  const payload = normalizeRealtimeDashboardEvent(event?.detail || {})
+  const detail = event?.detail || {}
+  const payload = normalizeRealtimeDashboardEvent(detail)
   if (!payload?.type) return
   lastTaskCenterStreamEventAt = Date.now()
   if (payload.type === 'processed_archive_changed') {
@@ -609,8 +610,10 @@ function handleTaskCenterStreamEvent(event) {
     fetchProcessedArchives({ silent: true })
     return
   }
-  if (payload.type !== 'task_center_changed') return
-  patchDashboardTaskOverview(payload)
+  const payloads = normalizeTaskCenterRealtimePayloads(detail)
+    .filter((item) => item?.type === 'task_center_changed')
+  if (!payloads.length) return
+  patchDashboardTaskOverview(payloads)
   scheduleDashboardStreamRefresh()
 }
 

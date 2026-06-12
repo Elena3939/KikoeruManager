@@ -2,6 +2,7 @@ import { ref, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { rjSubtitleApi } from '../api'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
+import { normalizeTaskCenterRealtimePayloads } from './taskCenterEventUtils'
 import { useRealtimeEvents } from './useRealtimeEvents'
 
 export function useSubtitleTask ({
@@ -1347,11 +1348,6 @@ export function useSubtitleTask ({
     }
   }
 
-  function normalizeSubtitleRealtimeEvent (detail = {}) {
-    if (detail.type === 'task.center.changed') return detail.payload || {}
-    return detail
-  }
-
   function patchSubtitleTaskFromRealtimeEvent (payload = {}) {
     const taskId = String(payload.engine_task_id || payload.entity_id || '').trim()
     if (!taskId) return false
@@ -1389,11 +1385,17 @@ export function useSubtitleTask ({
   }
 
   function handleSubtitleRealtimeEvent (event) {
-    const payload = normalizeSubtitleRealtimeEvent(event?.detail || {})
-    if (payload?.type !== 'task_center_changed') return
-    if (!patchSubtitleTaskFromRealtimeEvent(payload)) return
-    const status = String(payload.status || '').trim()
-    if (['completed', 'failed', 'cancelled', 'waiting_manual'].includes(status)) {
+    const payloads = normalizeTaskCenterRealtimePayloads(event?.detail || {})
+      .filter(payload => payload?.type === 'task_center_changed')
+    let shouldRefresh = false
+    for (const payload of payloads) {
+      if (!patchSubtitleTaskFromRealtimeEvent(payload)) continue
+      const status = String(payload.status || '').trim()
+      if (['completed', 'failed', 'cancelled', 'waiting_manual'].includes(status)) {
+        shouldRefresh = true
+      }
+    }
+    if (shouldRefresh) {
       refreshRJSubtitleStatus(false, { silent: true })
     }
   }
