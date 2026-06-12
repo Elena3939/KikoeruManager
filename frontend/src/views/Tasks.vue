@@ -91,7 +91,11 @@ import TasksFilters from '../components/tasks/TasksFilters.vue'
 import TaskListPane from '../components/tasks/TaskListPane.vue'
 import TaskDetailPane from '../components/tasks/TaskDetailPane.vue'
 import { useViewport } from '../composables/useViewport'
-import { patchTaskCenterItemList, applyTaskCenterEventPatch } from '../composables/taskCenterEventUtils'
+import {
+  applyTaskCenterEventPatch,
+  normalizeTaskCenterRealtimePayloads,
+  patchTaskCenterItemListBatch,
+} from '../composables/taskCenterEventUtils'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
 import { useRealtimeEvents } from '../composables/useRealtimeEvents'
 
@@ -495,42 +499,46 @@ function scheduleSelectedTaskDetailRefresh(itemId) {
   }, STREAM_REFRESH_DEBOUNCE_MS)
 }
 
-function normalizeRealtimeTaskCenterEvent(detail = {}) {
-  if (detail.type === 'task.center.changed') return detail.payload || {}
-  if (detail.type === 'connected') return { type: 'connected' }
-  return detail
-}
-
 function handleTaskCenterStreamEvent(event) {
-  const payload = normalizeRealtimeTaskCenterEvent(event?.detail || {})
-  if (!payload?.type) return
-  lastTaskCenterStreamEventAt = Date.now()
-  if (payload.type === 'connected') {
+  const detail = event?.detail || {}
+  if (detail.type === 'connected') {
+    lastTaskCenterStreamEventAt = Date.now()
     refreshTaskCenter(false, { silent: true }).catch((error) => {
       console.error('任务中心 SSE 初始同步失败:', error)
     })
     return
   }
-  if (payload.type !== 'task_center_changed') return
+  const payloads = normalizeTaskCenterRealtimePayloads(detail)
+    .filter((payload) => payload?.type === 'task_center_changed')
+  if (!payloads.length) return
+  lastTaskCenterStreamEventAt = Date.now()
 
-  items.value = patchTaskCenterItemList(items.value, payload)
+  items.value = patchTaskCenterItemListBatch(items.value, payloads)
   if (selectedItemDetail.value) {
-    selectedItemDetail.value = applyTaskCenterEventPatch(selectedItemDetail.value, payload)
-  }
-  if (isStructureChangingTaskCenterEvent(payload)) {
-    scheduleTaskCenterStreamRefresh()
+    let nextDetail = selectedItemDetail.value
+    for (const payload of payloads) {
+      nextDetail = applyTaskCenterEventPatch(nextDetail, payload)
+    }
+    selectedItemDetail.value = nextDetail
   }
 
   const selectedSummary = items.value.find((item) => item.id === selectedItemId.value)
-  if (selectedSummary && (
-    selectedSummary.id === payload.item_id ||
-    selectedSummary.engine_task_id === payload.engine_task_id ||
-    selectedSummary.entity_id === payload.engine_task_id
-  )) {
+  let shouldRefreshStructure = false
+  let shouldRefreshSelectedDetail = false
+  for (const payload of payloads) {
     if (isStructureChangingTaskCenterEvent(payload)) {
-      scheduleSelectedTaskDetailRefresh(selectedSummary.id)
+      shouldRefreshStructure = true
+      if (selectedSummary && (
+        selectedSummary.id === payload.item_id ||
+        selectedSummary.engine_task_id === payload.engine_task_id ||
+        selectedSummary.entity_id === payload.engine_task_id
+      )) {
+        shouldRefreshSelectedDetail = true
+      }
     }
   }
+  if (shouldRefreshStructure) scheduleTaskCenterStreamRefresh()
+  if (shouldRefreshSelectedDetail) scheduleSelectedTaskDetailRefresh(selectedSummary.id)
 }
 
 async function refreshTaskCenter(showMessage = false, options = {}) {

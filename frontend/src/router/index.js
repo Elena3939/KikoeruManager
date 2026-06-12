@@ -182,6 +182,7 @@ const router = createRouter({
 
 const CHUNK_RELOAD_KEY_PREFIX = 'kikoerumanager.routeChunkReloaded:'
 const SECURITY_GATE_STATUS_TTL_MS = 8000
+const SECURITY_GATE_STATUS_TIMEOUT_MS = 800
 let securityGateStatusCache = {
   value: null,
   expiresAt: 0,
@@ -199,7 +200,7 @@ async function getSecurityGateStatus() {
     return securityGateStatusCache.value
   }
   if (!securityGateStatusCache.pending) {
-    securityGateStatusCache.pending = securityGateApi.status({ timeout: 3000 })
+    securityGateStatusCache.pending = securityGateApi.status({ timeout: SECURITY_GATE_STATUS_TIMEOUT_MS })
       .then((state) => {
         const canEnter = !state?.blocked && (!state?.enforced || state?.authenticated)
         securityGateStatusCache.value = canEnter ? state : null
@@ -214,6 +215,11 @@ async function getSecurityGateStatus() {
 }
 
 router.beforeEach(async (to) => {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('kikoerumanager:route:navigation-start', {
+      detail: { to: to.fullPath || to.path || '/', startedAt: Date.now() }
+    }))
+  }
   if (to.meta?.gatePage) {
     return true
   }
@@ -239,12 +245,24 @@ router.beforeEach(async (to) => {
   }
 })
 
+router.afterEach((to) => {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent('kikoerumanager:route:navigation-end', {
+    detail: { to: to.fullPath || to.path || '/', endedAt: Date.now() }
+  }))
+})
+
 function isRouteChunkLoadError(error) {
   const text = `${error?.name || ''} ${error?.message || ''} ${error?.stack || ''}`
   return /Failed to fetch dynamically imported module|Importing a module script failed|Loading chunk|CSS_CHUNK_LOAD_FAILED|error loading dynamically imported module/i.test(text)
 }
 
 router.onError((error, to) => {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('kikoerumanager:route:navigation-end', {
+      detail: { to: to?.fullPath || to?.path || '/', endedAt: Date.now(), error: true }
+    }))
+  }
   if (typeof window === 'undefined' || !isRouteChunkLoadError(error)) return
   const target = to?.fullPath || window.location.pathname || '/'
   const key = `${CHUNK_RELOAD_KEY_PREFIX}${target}`

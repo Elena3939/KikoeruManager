@@ -540,6 +540,10 @@ class TaskEngine:
         self._task_center_version_lock = threading.Lock()
         self._persisted_task_snapshot_versions: dict[str, tuple] = {}
         self._materialized_task_center_item_versions: dict[str, tuple] = {}
+        self._materialized_task_center_item_last_write_at: dict[str, float] = {}
+        self._materialized_progress_min_interval_seconds = float(
+            os.getenv("KIKOERUMANAGER_TASK_CENTER_PROGRESS_SNAPSHOT_INTERVAL_SECONDS", "1.5") or 1.5
+        )
         Task.set_global_event_hook(self._emit_task_center_event)
         self.stale_processing_seconds = int(
             os.getenv("KIKOERUMANAGER_TASK_STALE_PROCESSING_SECONDS", "900") or 900
@@ -930,16 +934,20 @@ class TaskEngine:
             return False
         item_fp = self._task_metadata_fingerprint(item)
         previous = self._materialized_task_center_item_versions.get(item_id)
-        if previous != item_fp:
-            return True
         status_value = task.status.value if isinstance(task.status, TaskStatus) else str(task.status or "")
-        return status_value in {
+        terminal_or_waiting = status_value in {
             TaskStatus.COMPLETED.value,
             TaskStatus.FAILED.value,
             TaskStatus.CANCELLED.value,
             TaskStatus.WAITING_MANUAL.value,
             TaskStatus.WAITING_RETRY.value,
         }
+        if terminal_or_waiting:
+            return True
+        if previous == item_fp:
+            return False
+        last_write_at = float(self._materialized_task_center_item_last_write_at.get(item_id, 0.0) or 0.0)
+        return time.monotonic() - last_write_at >= max(0.2, self._materialized_progress_min_interval_seconds)
 
     def persist_task_snapshot(self, task: Task) -> None:
         """把需要跨重启保留的任务快照写入 tasks 表。"""
@@ -1000,6 +1008,7 @@ class TaskEngine:
                 metadata=dict(task.task_metadata or {}),
             )
             self._materialized_task_center_item_versions[item_id] = self._task_metadata_fingerprint(item)
+            self._materialized_task_center_item_last_write_at[item_id] = time.monotonic()
         except Exception:
             logger.warning("[任务中心物化] 生成任务快照失败: task_id=%s", getattr(task, "id", ""), exc_info=True)
 
@@ -1016,6 +1025,7 @@ class TaskEngine:
             db.commit()
             self._persisted_task_snapshot_versions.pop(normalized_task_id, None)
             self._materialized_task_center_item_versions.pop(f"engine:{normalized_task_id}", None)
+            self._materialized_task_center_item_last_write_at.pop(f"engine:{normalized_task_id}", None)
         except Exception:
             logger.warning("[任务持久化] 删除任务快照失败: task_id=%s", normalized_task_id, exc_info=True)
             db.rollback()

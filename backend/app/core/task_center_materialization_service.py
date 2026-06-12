@@ -6,6 +6,7 @@ from sqlalchemy import func, or_
 
 from .task_engine import TaskStatus
 from .json_safety import safe_text
+from .resource_budget_service import get_resource_budget_service
 from ..models.database import SessionLocal, TaskCenterItem
 
 logger = logging.getLogger(__name__)
@@ -61,24 +62,25 @@ class TaskCenterMaterializationService:
         now = datetime.now()
         db = SessionLocal()
         try:
-            record = db.query(TaskCenterItem).filter(TaskCenterItem.item_id == item_id).first()
-            if not record:
-                record = TaskCenterItem(item_id=item_id, created_at=now)
-                db.add(record)
+            with get_resource_budget_service().acquire_sync("sqlite_write", reason="task_center.materialize_upsert"):
+                record = db.query(TaskCenterItem).filter(TaskCenterItem.item_id == item_id).first()
+                if not record:
+                    record = TaskCenterItem(item_id=item_id, created_at=now)
+                    db.add(record)
 
-            record.engine_task_id = engine_task_id
-            record.domain = safe_text(item.get("domain"), strip=True)
-            record.status = safe_text(item.get("status"), strip=True)
-            record.kind = safe_text(item.get("kind"), strip=True)
-            record.title = safe_text(item.get("title"), strip=True)
-            record.source_page = safe_text(item.get("source_page"), strip=True)
-            record.source_action = safe_text(item.get("source_action"), strip=True)
-            record.business_key = business_key
-            record.searchable_text = self._item_searchable_text(item, metadata)
-            record.payload_json = item
-            record.version = int(version or 0)
-            record.updated_at = now
-            db.commit()
+                record.engine_task_id = engine_task_id
+                record.domain = safe_text(item.get("domain"), strip=True)
+                record.status = safe_text(item.get("status"), strip=True)
+                record.kind = safe_text(item.get("kind"), strip=True)
+                record.title = safe_text(item.get("title"), strip=True)
+                record.source_page = safe_text(item.get("source_page"), strip=True)
+                record.source_action = safe_text(item.get("source_action"), strip=True)
+                record.business_key = business_key
+                record.searchable_text = self._item_searchable_text(item, metadata)
+                record.payload_json = item
+                record.version = int(version or 0)
+                record.updated_at = now
+                db.commit()
         except Exception:
             db.rollback()
             logger.warning("[任务中心物化] 写入快照失败: item_id=%s", item_id, exc_info=True)
@@ -147,11 +149,12 @@ class TaskCenterMaterializationService:
         }
         db = SessionLocal()
         try:
-            query = db.query(TaskCenterItem)
-            if valid_ids:
-                query = query.filter(~TaskCenterItem.item_id.in_(valid_ids))
-            deleted = query.delete(synchronize_session=False)
-            db.commit()
+            with get_resource_budget_service().acquire_sync("sqlite_write", reason="task_center.materialize_prune"):
+                query = db.query(TaskCenterItem)
+                if valid_ids:
+                    query = query.filter(~TaskCenterItem.item_id.in_(valid_ids))
+                deleted = query.delete(synchronize_session=False)
+                db.commit()
             return int(deleted or 0)
         except Exception:
             db.rollback()
@@ -166,8 +169,9 @@ class TaskCenterMaterializationService:
             return
         db = SessionLocal()
         try:
-            db.query(TaskCenterItem).filter(TaskCenterItem.engine_task_id == normalized_task_id).delete()
-            db.commit()
+            with get_resource_budget_service().acquire_sync("sqlite_write", reason="task_center.materialize_delete"):
+                db.query(TaskCenterItem).filter(TaskCenterItem.engine_task_id == normalized_task_id).delete()
+                db.commit()
         except Exception:
             db.rollback()
             logger.warning("[任务中心物化] 删除快照失败: task_id=%s", normalized_task_id, exc_info=True)
@@ -182,11 +186,12 @@ class TaskCenterMaterializationService:
         }
         db = SessionLocal()
         try:
-            query = db.query(TaskCenterItem)
-            if valid_ids:
-                query = query.filter(~TaskCenterItem.engine_task_id.in_(valid_ids))
-            deleted = query.delete(synchronize_session=False)
-            db.commit()
+            with get_resource_budget_service().acquire_sync("sqlite_write", reason="task_center.materialize_prune_engine"):
+                query = db.query(TaskCenterItem)
+                if valid_ids:
+                    query = query.filter(~TaskCenterItem.engine_task_id.in_(valid_ids))
+                deleted = query.delete(synchronize_session=False)
+                db.commit()
             return int(deleted or 0)
         except Exception:
             db.rollback()

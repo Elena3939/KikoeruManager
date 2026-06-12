@@ -63,3 +63,41 @@ export function patchTaskCenterItemList(items = [], event = {}) {
     ? items.map((item) => applyTaskCenterEventPatch(item, event))
     : items
 }
+
+export function patchTaskCenterItemListBatch(items = [], events = []) {
+  if (!Array.isArray(items) || !Array.isArray(events) || !events.length) return items
+
+  const patchByKey = new Map()
+  for (const event of events) {
+    for (const key of getTaskCenterEventKeys(event)) {
+      patchByKey.set(key, event)
+    }
+  }
+  if (!patchByKey.size) return items
+
+  let changed = false
+  const nextItems = items.map((item) => {
+    const keys = getTaskCenterItemKeys(item)
+    const event = keys.map((key) => patchByKey.get(key)).find(Boolean)
+    if (!event) return item
+    const next = applyTaskCenterEventPatch(item, event)
+    if (next !== item) changed = true
+    return next
+  })
+  return changed ? nextItems : items
+}
+
+export function normalizeTaskCenterRealtimePayloads(detail = {}) {
+  if (detail.type === 'task.center.changed') {
+    return detail.payload?.type ? [detail.payload] : []
+  }
+  if (detail.type === 'task.center.changed.batch') {
+    const events = detail.payload?.events
+    return Array.isArray(events) ? events.filter(item => item?.type) : []
+  }
+  if (detail.type === 'task_center_changed_batch') {
+    const events = detail.events
+    return Array.isArray(events) ? events.filter(item => item?.type) : []
+  }
+  return detail?.type ? [detail] : []
+}

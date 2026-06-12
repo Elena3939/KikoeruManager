@@ -929,6 +929,7 @@ import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
 import BackgroundFloatingCard from '../components/common/BackgroundFloatingCard.vue'
 import CircleWorksViewport from '../components/circle/CircleWorksViewport.vue'
+import { normalizeTaskCenterRealtimePayloads } from '../composables/taskCenterEventUtils'
 import { showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 import { useRealtimeEvents } from '../composables/useRealtimeEvents'
 
@@ -3211,17 +3212,19 @@ function patchRefreshJobFromTaskEvent(payload = {}) {
   persistRefreshJobState()
 }
 
-function normalizeCircleTaskEvent(detail = {}) {
-  if (detail.type === 'task.center.changed') return detail.payload || {}
-  return detail
-}
-
 function isTerminalTaskStatus(status) {
   return ['completed', 'failed', 'cancelled', 'canceled'].includes(String(status || '').trim().toLowerCase())
 }
 
 function handleCircleTaskRealtimeEvent(event) {
-  const payload = normalizeCircleTaskEvent(event?.detail || {})
+  const payloads = normalizeTaskCenterRealtimePayloads(event?.detail || {})
+    .filter(payload => payload?.type === 'task_center_changed')
+  for (const payload of payloads) {
+    handleCircleTaskPayload(payload)
+  }
+}
+
+function handleCircleTaskPayload(payload) {
   if (payload?.type !== 'task_center_changed') return
   const taskId = String(payload.engine_task_id || payload.entity_id || '').trim()
   if (!taskId) return
