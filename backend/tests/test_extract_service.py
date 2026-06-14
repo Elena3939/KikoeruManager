@@ -38,6 +38,99 @@ class TestExtractService:
             zf.writestr('test.txt', 'test content')
             zf.writestr('test_dir/nested.txt', 'nested content')
 
+    def test_path_too_long_error_marker(self, extract_service):
+        assert extract_service._looks_like_path_too_long_error(
+            "ERROR: Cannot open output file : errno=36 : File name too long : /temp/RJ/foo.mp3"
+        )
+        assert not extract_service._looks_like_path_too_long_error(
+            "ERROR: Wrong password"
+        )
+
+    def test_single_root_path_remap_shortens_long_utf8_root(self, extract_service):
+        long_root = "RJ01595857 " + ("あ" * 90)
+        archive_info = ArchiveInfo(
+            "RJ01595857.rar",
+            [{"name": f"{long_root}/mp3/a.txt", "size": 3, "is_dir": False}],
+        )
+
+        remap = extract_service._build_single_root_path_remap(archive_info)
+
+        assert remap == {"root_from": long_root, "root_to": "RJ01595857"}
+        assert extract_service._remap_archive_relative_path(
+            f"{long_root}/mp3/a.txt",
+            remap,
+        ) == "RJ01595857/mp3/a.txt"
+
+    @pytest.mark.asyncio
+    async def test_verify_extraction_accepts_path_remapped_root(self, extract_service, temp_dir):
+        long_root = "RJ01595857 " + ("あ" * 90)
+        archive_info = ArchiveInfo(
+            "RJ01595857.rar",
+            [{"name": f"{long_root}/mp3/a.txt", "size": 3, "is_dir": False}],
+        )
+        archive_info.path_remap = extract_service._build_single_root_path_remap(archive_info)
+        old_verify = extract_service.config.extract.verify_after_extract
+        extract_service.config.extract.verify_after_extract = True
+        try:
+            target_dir = os.path.join(temp_dir, "RJ01595857", "mp3")
+            os.makedirs(target_dir, exist_ok=True)
+            with open(os.path.join(target_dir, "a.txt"), "wb") as f:
+                f.write(b"abc")
+
+            assert await extract_service._verify_extraction(archive_info, temp_dir)
+        finally:
+            extract_service.config.extract.verify_after_extract = old_verify
+
+    @pytest.mark.asyncio
+    async def test_path_remap_extract_streams_to_short_root(self, extract_service, temp_dir):
+        long_root = "RJ01595857 " + ("あ" * 90)
+        payloads = {
+            f"{long_root}/mp3/a.txt": b"abc",
+            f"{long_root}/wav/b.txt": b"de",
+        }
+        archive_info = ArchiveInfo(
+            "RJ01595857.rar",
+            [
+                {"name": name, "size": len(data), "is_dir": False}
+                for name, data in payloads.items()
+            ],
+        )
+        task = Mock()
+        task.task_metadata = {}
+        task.progress = 0
+        task.is_cancelled.return_value = False
+        task.wait_if_paused = AsyncMock()
+        task.update_progress = Mock()
+
+        async def fake_extract_entry(info, entry_name, target_path, password, task_arg, progress_callback=None):
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            data = payloads[entry_name]
+            with open(target_path, "wb") as f:
+                f.write(data)
+            if progress_callback:
+                progress_callback(len(data))
+            return True, ""
+
+        old_verify = extract_service.config.extract.verify_after_extract
+        extract_service.config.extract.verify_after_extract = True
+        try:
+            with patch.object(extract_service, "_extract_archive_entry_to_file", side_effect=fake_extract_entry):
+                success, reason = await extract_service._try_extract_with_path_remap(
+                    archive_info,
+                    temp_dir,
+                    "諷詠",
+                    task,
+                )
+
+            assert success
+            assert reason == ""
+            assert archive_info.path_remap == {"root_from": long_root, "root_to": "RJ01595857"}
+            assert os.path.exists(os.path.join(temp_dir, "RJ01595857", "mp3", "a.txt"))
+            assert os.path.exists(os.path.join(temp_dir, "RJ01595857", "wav", "b.txt"))
+            assert task.task_metadata["extract_path_remap_mode"] == "single_root_stream"
+        finally:
+            extract_service.config.extract.verify_after_extract = old_verify
+
     def create_cp932_stored_zip(self, path):
         """创建无 UTF-8 flag、文件名按 CP932 写入的最小 ZIP。"""
         entries = [
