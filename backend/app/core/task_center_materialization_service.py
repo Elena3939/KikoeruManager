@@ -62,7 +62,7 @@ class TaskCenterMaterializationService:
         now = datetime.now()
         db = SessionLocal()
         try:
-            with get_resource_budget_service().acquire_sync("sqlite_write", reason="task_center.materialize_upsert"):
+            with get_resource_budget_service().acquire_sync("database_write", reason="task_center.materialize_upsert"):
                 record = db.query(TaskCenterItem).filter(TaskCenterItem.item_id == item_id).first()
                 if not record:
                     record = TaskCenterItem(item_id=item_id, created_at=now)
@@ -149,7 +149,7 @@ class TaskCenterMaterializationService:
         }
         db = SessionLocal()
         try:
-            with get_resource_budget_service().acquire_sync("sqlite_write", reason="task_center.materialize_prune"):
+            with get_resource_budget_service().acquire_sync("database_write", reason="task_center.materialize_prune"):
                 query = db.query(TaskCenterItem)
                 if valid_ids:
                     query = query.filter(~TaskCenterItem.item_id.in_(valid_ids))
@@ -169,7 +169,7 @@ class TaskCenterMaterializationService:
             return
         db = SessionLocal()
         try:
-            with get_resource_budget_service().acquire_sync("sqlite_write", reason="task_center.materialize_delete"):
+            with get_resource_budget_service().acquire_sync("database_write", reason="task_center.materialize_delete"):
                 db.query(TaskCenterItem).filter(TaskCenterItem.engine_task_id == normalized_task_id).delete()
                 db.commit()
         except Exception:
@@ -186,7 +186,7 @@ class TaskCenterMaterializationService:
         }
         db = SessionLocal()
         try:
-            with get_resource_budget_service().acquire_sync("sqlite_write", reason="task_center.materialize_prune_engine"):
+            with get_resource_budget_service().acquire_sync("database_write", reason="task_center.materialize_prune_engine"):
                 query = db.query(TaskCenterItem)
                 if valid_ids:
                     query = query.filter(~TaskCenterItem.engine_task_id.in_(valid_ids))

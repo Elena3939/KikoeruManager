@@ -11,7 +11,6 @@ import re
 import secrets
 import shutil
 import socket
-import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -1048,6 +1047,30 @@ class BaiduNetdiskService:
         self._cache_raw_preview(cache_key, preview)
         return preview
 
+    async def _fetch_share_page_tokens_compat(
+        self,
+        feature: str,
+        cookie: str,
+        *,
+        referer: str = "",
+        timeout: float = 20,
+    ) -> Dict[str, Any]:
+        try:
+            return await self._fetch_share_page_tokens(
+                feature,
+                cookie,
+                referer=referer,
+                timeout=timeout,
+            )
+        except TypeError as exc:
+            if "timeout" not in str(exc):
+                raise
+            return await self._fetch_share_page_tokens(
+                feature,
+                cookie,
+                referer=referer,
+            )
+
     async def _fetch_share_detail(self, share: Dict[str, str], *, request_timeout: float = 20) -> Dict[str, Any]:
         cookie = str(getattr(self._config(), "cookie", "") or "").strip()
         if not cookie or cookie == "********":
@@ -1062,7 +1085,7 @@ class BaiduNetdiskService:
         pass_code = str(share.get("pass_code") or "").strip()
         share_url = f"https://pan.baidu.com/s/{feature}"
         init_url = self._share_init_url(feature)
-        tokens = await self._fetch_share_page_tokens(
+        tokens = await self._fetch_share_page_tokens_compat(
             feature,
             cookie,
             referer="https://pan.baidu.com/disk/home",
@@ -1108,7 +1131,7 @@ class BaiduNetdiskService:
                 cookie = self._merge_cookie_header(cookie, {"BDCLND": randsk})
                 tokens["randsk"] = randsk
                 self._persist_cookie_patch({"BDCLND": randsk})
-            refreshed_tokens = await self._fetch_share_page_tokens(
+            refreshed_tokens = await self._fetch_share_page_tokens_compat(
                 feature,
                 cookie,
                 referer=init_url,
@@ -3027,6 +3050,7 @@ class BaiduNetdiskService:
         stem, ext = self._split_archive_filename(current_base)
         if not custom_name:
             custom_name = self._sanitize_path_part(stem or current_base or "百度网盘文件", "百度网盘文件")
+        ext = self._normalize_custom_archive_volume_ext(custom_name, ext)
         target_name = self._filename_with_extract_password(custom_name, custom_password, ext)
         if folder:
             return self._safe_relative_path(os.path.join(folder, target_name), target_name)
@@ -3054,6 +3078,14 @@ class BaiduNetdiskService:
                 return rendered
         return f"{name}({password})"
 
+    def _normalize_custom_archive_volume_ext(self, custom_name: str, ext: str) -> str:
+        custom_lower = str(custom_name or "").strip().lower()
+        ext_text = str(ext or "")
+        volume_match = re.match(r"^\.(?P<kind>7z|zip)\.(?P<index>\d{3})$", ext_text, re.IGNORECASE)
+        if volume_match and custom_lower.endswith(f".{volume_match.group('kind').lower()}"):
+            return f".{volume_match.group('index')}"
+        return ext_text
+
     def _split_archive_filename(self, filename: str) -> tuple[str, str]:
         value = str(filename or "").strip()
         lower = value.lower()
@@ -3063,6 +3095,15 @@ class BaiduNetdiskService:
         volume_match = re.match(r"^(?P<stem>.+?)[._\-\s]+z(?P<index>\d{2})$", value, re.IGNORECASE)
         if volume_match:
             return volume_match.group("stem").strip() or value, f".z{volume_match.group('index')}"
+        volume_match = re.match(r"^(?P<stem>.+?)\.(?P<kind>7z|zip)\.(?P<index>\d{3})$", value, re.IGNORECASE)
+        if volume_match:
+            return volume_match.group("stem").strip() or value, f".{volume_match.group('kind')}.{volume_match.group('index')}"
+        volume_match = re.match(r"^(?P<stem>.+?)\.part(?P<index>\d+)(?P<ext>\.(?:rar|zip|7z|exe))?$", value, re.IGNORECASE)
+        if volume_match:
+            return volume_match.group("stem").strip() or value, f".part{volume_match.group('index')}{volume_match.group('ext') or ''}"
+        volume_match = re.match(r"^(?P<stem>.+?)\.(?P<ext>r\d{2}|e\d{2}|\d{3})$", value, re.IGNORECASE)
+        if volume_match:
+            return volume_match.group("stem").strip() or value, f".{volume_match.group('ext')}"
         stem, ext = os.path.splitext(value)
         return stem or value, ext
 

@@ -246,7 +246,7 @@ class CircleCompletionService:
         }
         # ⚠ 性能优化：wave1 批量写 WorkCanonicalLink 的 buffer。
         # ``resolve_canonical_rj`` 默认每次 RJ 解析完都立即 ``commit()``，wave1 阶段
-        # 587 个 RJ 串行触发 SQLite writer lock，加上 SessionLocal/SELECT 同步阻塞
+        # 587 个 RJ 串行触发数据库写入，加上 SessionLocal/SELECT 同步阻塞
         # event loop，让 ``wave1_sem=20`` 实际退化为接近串行（实测 16-19 分）。
         # ``_canonical_buffered_writes()`` with 块期间设为 list，``resolve_canonical_rj``
         # 把待写 ``(canonical_rjcode, link_rows)`` append 到这里，with 退出时一次性
@@ -1821,7 +1821,7 @@ class CircleCompletionService:
 
         ⚠ 性能优化（wave1 16-19 分 → 预期 < 5 分）：
         默认路径每个 RJ 都开一个 ``SessionLocal()`` 跑 ``DELETE + INSERT + COMMIT``，
-        在 ``wave1_sem=20`` 协程下触发 SQLite writer lock 串行化、同步代码独占 event loop，
+        在 ``wave1_sem=20`` 协程下触发数据库写入串行化、同步代码独占 event loop，
         实际并发退化为接近串行。with 块期间所有 ``resolve_canonical_rj`` 内的 DB write
         全部 append 到 ``self._canonical_write_buffer``，with 退出时一次性 ``_flush_canonical_write_buffer``。
         Block 1（SELECT cached_rows，refresh=True 时反正不用）和 Block 2（SELECT overlap_codes，
@@ -1857,7 +1857,7 @@ class CircleCompletionService:
 
         语义跟 ``resolve_canonical_rj`` 内联的 Block 3 完全一致：先 DELETE 所有相关
         canonical / linked RJ 的旧行，再 INSERT 新的。整批进同一个 SessionLocal，
-        一次 commit。SQLite writer lock 只串行 1 次而不是 587 次。
+        一次 commit。数据库写入只串行 1 次而不是 587 次。
         """
         if not buffer:
             return
@@ -2208,7 +2208,7 @@ class CircleCompletionService:
 
         # ⚠ 性能优化：buffered 模式下把 Block 3 的 DELETE + INSERT + COMMIT
         # append 到 ``_canonical_write_buffer``，由 ``_flush_canonical_write_buffer``
-        # 在 wave1 结束后一次批量落库。SQLite writer lock 只串行 1 次而不是 587 次，
+        # 在 wave1 结束后一次批量落库。数据库写入只串行 1 次而不是 587 次，
         # 同时同步代码不再独占 event loop，wave1_sem=20 才能真正发挥 20 并发。
         if self._canonical_write_buffer is not None:
             self._canonical_write_buffer.append((canonical_rjcode, list(link_rows)))
@@ -2664,7 +2664,7 @@ class CircleCompletionService:
         # ⚠ 性能优化 P2：把整段 wave1 包进 ``_canonical_buffered_writes`` 上下文。
         # ``resolve_canonical_rj`` 内部检测到 buffered 模式时，所有 ``WorkCanonicalLink``
         # 的 DELETE/INSERT/COMMIT 不再每 RJ 立即提交，而是 append 到 buffer，
-        # with 退出时一次批量落库。587 次 SQLite writer lock 串行 → 1 次，
+        # with 退出时一次批量落库。587 次数据库写入串行 → 1 次，
         # 同步 DB IO 不再独占 event loop，wave1_sem=20 才能真正发挥 20 并发。
         wave1_ctx = perf.timed("stage_snapshot_wave1_dlsite_chains") if perf else contextlib.nullcontext()
         with self._canonical_buffered_writes():
@@ -3892,7 +3892,7 @@ class CircleCompletionService:
         1. **反向匹配 linked_rjcodes**：CircleWork 索引时算出来的 canonical 与
            入库时 `resolve_canonical_rj` 算出来的 canonical 可能因为 DLsite
            数据更新或解析逻辑差异而不一致，单写一条 `LibraryOwnedWork(canonical=A)`
-           会让 LEFT JOIN 在另一个 canonical 上漏匹配。这里用 SQLite JSON LIKE
+           会让 LEFT JOIN 在另一个 canonical 上漏匹配。这里用 JSON 文本匹配
            兜底：只要 `CircleWork.linked_rjcodes` 含当前 RJ，就把这条 row 的
            `canonical_rjcode` 也写进 LibraryOwnedWork。
 
@@ -3916,7 +3916,7 @@ class CircleCompletionService:
         ) or normalized_rj
 
         # 函数内部局部 import，与本文件其他位置（search_circles）一致，避免污染顶层 import。
-        from sqlalchemy import or_ as sa_or
+        from sqlalchemy import Text as sa_Text, cast as sa_cast, or_ as sa_or
 
         affected_circle_ids: set[str] = set()
         target_canonicals: set[str] = {canonical}
@@ -3937,7 +3937,7 @@ class CircleCompletionService:
                         CircleWork.canonical_rjcode == canonical,
                         CircleWork.canonical_rjcode == normalized_rj,
                         CircleWork.display_rjcode == normalized_rj,
-                        CircleWork.linked_rjcodes.like(json_pattern),
+                        sa_cast(CircleWork.linked_rjcodes, sa_Text).like(json_pattern),
                     )
                 )
                 .all()
@@ -5331,7 +5331,7 @@ class CircleCompletionService:
             if collected_ids:
                 # === 完整 owned 计算（与右侧详情对齐）===
                 # LEFT JOIN LibraryOwnedWork：CircleWork × LibraryOwnedWork 是 1 对 1，
-                # 不会膨胀；在 Python 端做聚合，避免 SQLite case-when 跨方言复杂度。
+                # 不会膨胀；在 Python 端做聚合，避免数据库 case-when 跨方言复杂度。
                 work_join_rows = (
                     db.query(
                         CircleWork.circle_id.label("circle_id"),
@@ -6059,8 +6059,8 @@ class CircleCompletionService:
         # === 阶段 A：短读事务 ===
         # 之前这里是"一个 db session 跨越整个循环"，循环里有十几个 await HTTP IO
         # （resolve_canonical / fetch_metadata / probe kikoeru / download_many 等），
-        # SQLAlchemy session 自始至终都占着一个连接，又随 row.x = y 让 sqlite3 driver
-        # BEGIN IMMEDIATE 持有写锁——其他任何写库的接口（任务中心写状态、操作日志、
+        # SQLAlchemy session 自始至终都占着一个连接，又随 row.x = y 长时间持有事务，
+        # 其他任何写库的接口（任务中心写状态、操作日志、
         # 邮件监听、库存索引等）就只能排到 30s busy_timeout 兜底队列里慢慢等。
         # 现在拆成"读 → 无 session 跑 IO → 写"三段：循环期间 connection / 写锁
         # 全部释放，其他页面 API 不会再被这条长任务卡住。

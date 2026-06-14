@@ -2,8 +2,8 @@
 操作记录异步写入器（Phase 1）。
 
 设计目标：
-- 让 write_activity_log 从同步 commit 变成入队 + 批量 flush，避免任务 finally 被 SQLite
-  writer lock 拖慢。
+- 让 write_activity_log 从同步 commit 变成入队 + 批量 flush，避免任务 finally 被
+  数据库写入拖慢。
 - 另提供一个 lifecycle 执行器，把 log_task_lifecycle_event 里昂贵的磁盘扫描
   （os.walk / ProcessedArchive 回查）挪出任务关键路径。
 - 单例 + 守护线程；进程退出时调 shutdown() 做 flush。
@@ -147,7 +147,7 @@ class ActivityLogWriter:
 
         db = SessionLocal()
         try:
-            with get_resource_budget_service().acquire_sync("sqlite_write", reason="activity_log.flush"):
+            with get_resource_budget_service().acquire_sync("database_write", reason="activity_log.flush"):
                 db.bulk_save_objects([ActivityLog(**payload) for payload in batch])
                 self._upsert_daily_stats(db, batch)
                 get_activity_log_rollup_service().upsert_from_payloads(db, batch)
@@ -165,7 +165,7 @@ class ActivityLogWriter:
             try:
                 db2 = SessionLocal()
                 try:
-                    with get_resource_budget_service().acquire_sync("sqlite_write", reason="activity_log.flush_one"):
+                    with get_resource_budget_service().acquire_sync("database_write", reason="activity_log.flush_one"):
                         db2.add(ActivityLog(**payload))
                         self._upsert_daily_stats(db2, [payload])
                         get_activity_log_rollup_service().upsert_from_payloads(db2, [payload])
@@ -184,7 +184,7 @@ class ActivityLogWriter:
         """Phase 4A：批量聚合后 UPSERT 到 activity_log_daily_stats。
 
         - 在 batch 里先按 (date, category, status) 本地累加，避免给同一格子发多条 UPSERT；
-        - 用 SQLite 原生 `INSERT ... ON CONFLICT(...) DO UPDATE` 做原子累加；
+        - 用 PostgreSQL `INSERT ... ON CONFLICT(...) DO UPDATE` 做原子累加；
         - 任何失败都只告警，不影响主表写入（主表已经 bulk_save_objects 成功）。
         """
         from datetime import datetime as _dt
@@ -217,16 +217,17 @@ class ActivityLogWriter:
             """
         )
         try:
-            for (date_str, category, status), delta in counters.items():
-                db.execute(stmt, {
-                    "date": date_str,
-                    "category": category,
-                    "status": status,
-                    "count": delta,
-                })
+            with db.begin_nested():
+                for (date_str, category, status), delta in counters.items():
+                    db.execute(stmt, {
+                        "date": date_str,
+                        "category": category,
+                        "status": status,
+                        "count": delta,
+                    })
         except Exception:
-            # 老版本 SQLite（<3.24）不支持 ON CONFLICT；这里吞掉即可，
-            # 下次启动的初次回填或 stats 接口的 TTL 缓存会兜底。
+            # 聚合写入失败不影响主业务记录；PostgreSQL 里失败语句会污染事务，
+            # 所以上面必须用 savepoint，让这里的失败只回滚聚合写入。
             logger.debug("[操作记录] 日聚合 UPSERT 失败（非致命）", exc_info=True)
 
 

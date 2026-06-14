@@ -60,6 +60,7 @@ from ..core.google_drive_oauth import (
     resolve_google_drive_oauth_proxy_url,
 )
 from ..core.log_sanitizer import sanitize_for_log, sanitize_text_for_log
+from ..core.activity_log_service import CATEGORY_LABELS
 from ..config.settings import get_config, save_config
 from ..core.security_gate_service import COOKIE_NAME, get_security_gate_service
 from ..version import get_app_version
@@ -189,120 +190,52 @@ _LITE_HIDDEN_ACTIONS = (
 # 这里和前端 ActivityHistory.vue 的 RECOVERY_CATEGORIES 保持一致。
 _LITE_RECOVERY_CATEGORIES = ("extract", "auto_import", "process_existing", "asmr_sync")
 
-# 单次搜索 FTS5 命中上限：之前是 5000，对内存压力大且 IN 子句容易撑爆。
-# 限制为 2000 → 命中数较多时仅前 2000 条排序结果（按 created_at desc），用户基本感知不到。
-_FTS_MATCH_CAP = 2000
+_ACTIVITY_LOG_VISIBLE_CATEGORIES = tuple(CATEGORY_LABELS.keys())
+
+# 单次搜索命中上限：避免关键词过宽时把大量 id 塞回 ORM 查询。
+_SEARCH_MATCH_CAP = 2000
 
 # 搜索关键词长度上限（字符）。短到 1 字符也允许（trigram 友好），但太长无意义。
 _SEARCH_TEXT_MAX_LEN = 200
 
-# FTS5 语法保留 / 易触发解析错误的字符。phrase match 引号会单独处理。
-# 这里列出的字符都直接替换成空格，避免触发 `MATCH` 语法异常。
-_FTS_DANGER_CHARS = (
-    '"',  # phrase match 起止符
-    "(", ")",  # 优先级括号
-    "*",  # prefix 通配（手动拼接）
-    ":",  # 列限定语法
-    "^",  # 列限定起始
-    "+", "-",  # 加减权
-    "&", "|",  # 逻辑符
-    "\x00",  # NUL
-)
+_SEARCH_DANGER_CHARS = ("\x00",)
 
 
 def _sanitize_search_text(raw: str) -> str:
-    """清洗 FTS5 搜索文本：去除控制字符 / 保留字符，截断长度。"""
+    """清洗搜索文本：去除控制字符并截断长度。"""
     if not raw:
         return ""
     text_value = "".join(ch for ch in str(raw) if ch.isprintable() or ch in (" ", "\t"))
-    for danger in _FTS_DANGER_CHARS:
+    for danger in _SEARCH_DANGER_CHARS:
         text_value = text_value.replace(danger, " ")
     text_value = " ".join(text_value.split())
     return text_value[:_SEARCH_TEXT_MAX_LEN]
 
 
-def _build_fts_match_expression(search_text: str, tokenizer: str) -> str:
-    """根据 tokenizer 构造 FTS5 MATCH 表达式（仅返回字符串，不执行查询）。
-
-    返回空 = 「不应该走 MATCH，调用方应转 LIKE 或返回空结果」。
-
-    - **trigram + 输入 ≥ 3 字符**：phrase 匹配 ``"用户输入"``，0.x ms 命中
-    - **trigram + 输入 < 3 字符**：trigram 索引不存 < 3 字符 token，MATCH 永远 0 命中。
-      返回空，调用方走 LIKE（trigram tokenizer 自动加速 LIKE，30w 行 ~80ms）
-    - **unicode61 / 其他**：拆空格 + prefix ``token*``，对中文按字符分词的索引也能命中
-    """
-    cleaned = (search_text or "").strip()
-    if not cleaned:
-        return ""
-    tk = (tokenizer or "").strip().lower()
-    if tk.startswith("trigram"):
-        # 基于 char count，CJK 一个字符也算一字
-        if len(cleaned) < 3:
-            return ""
-        return f'"{cleaned}"'
-    # unicode61 / simple / 未知：拆词 + prefix
-    tokens = [t for t in cleaned.split() if t]
-    if not tokens:
-        return ""
-    parts = []
-    for tok in tokens:
-        # 安全起见，每个 token 也再清一次 FTS 危险符
-        safe = tok
-        for danger in _FTS_DANGER_CHARS:
-            safe = safe.replace(danger, "")
-        safe = safe.strip()
-        if not safe:
-            continue
-        parts.append(f'{safe}*')
-    if not parts:
-        return ""
-    return " AND ".join(parts)
+def _escape_ilike_pattern(value: str) -> str:
+    return str(value or "").replace("!", "!!").replace("%", "!%").replace("_", "!_")
 
 
-def _run_fts_id_search(db: Session, search_text: str, tokenizer: str, cap: int) -> tuple[List[Any], str]:
-    """根据 tokenizer 智能选 MATCH / LIKE，返回 (matched_ids, backend_tag)。
-
-    - matched_ids: 命中的 activity_logs.id 列表（已截到 cap）
-    - backend_tag: 'fts5_trigram' / 'fts5_trigram_like' / 'fts5_unicode61' / ...
-                  方便前端显示「当前用了哪条搜索路径」
-
-    异常：捕获 sqlite3 / SQLAlchemy 错误，调用方负责把异常转成 degraded 响应。
-    """
-    tk = (tokenizer or "").strip().lower()
-    backend_root = f"fts5_{(tk.split() or ['unknown'])[0]}"
-
-    # trigram + 短输入 → 走 LIKE（trigram 索引会自动加速）
-    if tk.startswith("trigram") and len(search_text) < 3:
-        like_pattern = f"%{search_text}%"
-        # 在 FTS 表上 LIKE 任意列：trigram 索引会优化连表
-        rows = db.execute(
-            text(
-                """
-                SELECT id FROM activity_logs_fts
-                 WHERE summary LIKE :p
-                    OR source_path LIKE :p
-                    OR rjcode LIKE :p
-                    OR task_id LIKE :p
-                    OR batch_id LIKE :p
-                 LIMIT :cap
-                """
-            ),
-            {"p": like_pattern, "cap": cap},
-        ).fetchall()
-        ids = [row[0] for row in rows if row and row[0]]
-        return ids, f"{backend_root}_like"
-
-    # 默认走 MATCH
-    match_expr = _build_fts_match_expression(search_text, tokenizer)
-    if not match_expr:
-        return [], backend_root
-
+def _run_activity_log_id_search(db: Session, search_text: str, cap: int) -> tuple[List[Any], str]:
+    pattern = f"%{_escape_ilike_pattern(search_text)}%"
     rows = db.execute(
-        text("SELECT id FROM activity_logs_fts WHERE activity_logs_fts MATCH :term LIMIT :cap"),
-        {"term": match_expr, "cap": cap},
+        text(
+            """
+            SELECT id
+              FROM activity_logs
+             WHERE COALESCE(summary, '') ILIKE :p ESCAPE '!'
+                OR COALESCE(source_path, '') ILIKE :p ESCAPE '!'
+                OR COALESCE(rjcode, '') ILIKE :p ESCAPE '!'
+                OR COALESCE(task_id, '') ILIKE :p ESCAPE '!'
+                OR COALESCE(batch_id, '') ILIKE :p ESCAPE '!'
+             ORDER BY created_at DESC
+             LIMIT :cap
+            """
+        ),
+        {"p": pattern, "cap": cap},
     ).fetchall()
     ids = [row[0] for row in rows if row and row[0]]
-    return ids, backend_root
+    return ids, "postgresql_pg_trgm"
 
 
 def _enrich_lite_items_with_recovery(items: List[Dict[str, Any]], db: Session) -> None:
@@ -596,8 +529,7 @@ def list_activity_logs(
     - 原始查询强制加载上限（MAX_MERGE_WINDOW），避免随审计表无界增长拖慢接口。
     - 支持 since_days 指定仅合并最近 N 天；0/None=仅按 MAX 窗口截取。
     - 结果按 (筛选条件, 页码, writer.last_write_ts) TTL 缓存；有新审计写入时自动失效。
-    - Phase 2：q 参数在存在 FTS5 虚表时优先走全文索引，命中后再按主键回查；
-      不存在 FTS5 时回退为原来的 LIKE 多列匹配。
+    - q 参数走 PostgreSQL pg_trgm 加速的 ILIKE 搜索，命中后再按主键回查。
     - Phase 2：新增 batch_id / session_key 查询参数，用于 workbench 里
       "拉取某批次全部子任务"这种精准场景，直接走新索引。
     - Phase 5：``lite=true`` 进入快速路径：跳过 1700+ 行合并算法和整段 detail
@@ -611,7 +543,6 @@ def list_activity_logs(
         get_activity_log_row_dict_cache,
         get_activity_log_writer,
     )
-    from ..models.database import activity_logs_fts_tokenizer
 
     MAX_MERGE_WINDOW = 5000
     writer = get_activity_log_writer()
@@ -641,6 +572,7 @@ def list_activity_logs(
     page = max(1, page)
     limit = max(1, min(200, limit))
     query = db.query(ActivityLog)
+    query = query.filter(ActivityLog.category.in_(list(_ACTIVITY_LOG_VISIBLE_CATEGORIES)))
     if category:
         query = query.filter(ActivityLog.category == category)
     if status:
@@ -654,16 +586,11 @@ def list_activity_logs(
     if session_key_value:
         query = query.filter(ActivityLog.session_key == session_key_value[:120])
 
-    # Phase 2 / Phase 6：搜索路径
-    # - 强制走 FTS5；不可用 / 命中失败时返回空 + degraded 标记，**永远不再** fallback
-    #   到 LIKE %term% 5 列全表扫描——那是历史上 30 万行 activity_logs 上的内存炸弹。
-    # - tokenizer = trigram：phrase 匹配，任意中文子串都能命中。
-    # - tokenizer = unicode61 / 其他：拆空格 + prefix 匹配，对中文整词友好但中间字命中率低，
-    #   提示用户走「设置 → 升级搜索引擎」迁移到 trigram。
+    # 搜索路径：PostgreSQL pg_trgm GIN 索引加速 ILIKE，多列搜索仍先截断 id 集合。
     search_backend = "none"
     search_text_raw = (q or "").strip()
     search_text = _sanitize_search_text(search_text_raw)
-    fts_match_count: Optional[int] = None
+    search_match_count: Optional[int] = None
 
     def _empty_search_payload(reason: str) -> Dict[str, Any]:
         payload_empty = {
@@ -685,24 +612,22 @@ def list_activity_logs(
         return _empty_search_payload("sanitized_empty")
 
     if search_text:
-        tokenizer = activity_logs_fts_tokenizer()
-        if not tokenizer:
-            # 没有 FTS5 → 不再 fallback LIKE 全表扫描，直接 degraded 返回空
-            return _empty_search_payload("unavailable")
-
-        backend_root = f"fts5_{tokenizer.split()[0] if tokenizer else 'unknown'}"
         try:
-            matched_ids, backend_tag = _run_fts_id_search(db, search_text, tokenizer, _FTS_MATCH_CAP)
+            matched_ids, backend_tag = _run_activity_log_id_search(db, search_text, _SEARCH_MATCH_CAP)
         except Exception:
-            logger.warning("[操作记录] FTS5 搜索失败 text=%r tokenizer=%s", search_text, tokenizer, exc_info=True)
-            return _empty_search_payload(f"{backend_root}_error")
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.warning("[操作记录] PostgreSQL trigram 搜索失败 text=%r", search_text, exc_info=True)
+            return _empty_search_payload("postgresql_pg_trgm_error")
 
         if not matched_ids:
-            return _empty_search_payload(backend_tag or backend_root)
+            return _empty_search_payload(backend_tag or "postgresql_pg_trgm")
 
         query = query.filter(ActivityLog.id.in_(matched_ids))
         search_backend = backend_tag
-        fts_match_count = len(matched_ids)
+        search_match_count = len(matched_ids)
 
     # since_days=None: 默认仅合并 MAX_MERGE_WINDOW 条（按 created_at 倒序）；
     # since_days>0:   仅加载最近 N 天，配合上限兜底；
@@ -742,11 +667,11 @@ def list_activity_logs(
                 & ActivityLog.action.in_(("task_finished", "task_finished_incomplete"))
             )
         )
-        # 搜索分支：fts_match_count 已是 FTS 命中上限内的总数（≤ _FTS_MATCH_CAP），
+        # 搜索分支：search_match_count 已是索引命中上限内的总数（≤ _SEARCH_MATCH_CAP），
         # 直接用作 total，跳过 COUNT(*) 全表扫描；hidden actions 过滤的少量误差在 UI 上不显眼。
         # 非搜索分支：维持原 COUNT(*) 逻辑（有 created_at + category 索引保护，开销可接受）。
-        if fts_match_count is not None:
-            total = int(fts_match_count)
+        if search_match_count is not None:
+            total = int(search_match_count)
         else:
             total = query.with_entities(func.count(ActivityLog.id)).scalar() or 0
         offset = max(0, (page - 1) * limit)
@@ -893,7 +818,7 @@ def activity_logs_stats(
     """按天、分类、状态聚合（用于图表）。
 
     Phase 1 优化：
-    - 指标聚合不再整表读 detail JSON，改用 SQLite json_extract 只取用到的字段，
+    - 指标聚合不再整表读 detail JSON，改用 PostgreSQL JSONB ->> 只取用到的字段，
       省去全列 deserialize 带来的 IO + 反序列化成本。
     - 聚合结果按 (days, writer.last_write_ts) TTL 缓存（30s），读多写少场景命中率高。
     """
@@ -953,7 +878,7 @@ def activity_logs_stats(
     # 只选指标计算用得上的字段（category/action/status + detail.* 单项），
     # 避免把整个 detail JSON 拉回 Python 做反序列化。
     def _jx(path: str):
-        return func.json_extract(ActivityLog.detail, f"$.{path}")
+        return ActivityLog.detail.op("->>")(path)
 
     metric_query = db.query(
         ActivityLog.category,
@@ -1246,7 +1171,7 @@ def get_activity_log_detail(
         )
 
     # session_id 是 detail JSON 里常见的强关联字段（asmr_sync / circle_completion / pipeline_filter）
-    # SQL 层用 json_extract 反查出来，避免漏拉子行
+    # SQL 层用 JSONB 反查出来，避免漏拉子行
     parent_detail = parent.detail if isinstance(parent.detail, dict) else {}
     related_session_id = str(
         parent_detail.get("session_id")
@@ -1260,7 +1185,7 @@ def get_activity_log_detail(
                 .filter(
                     or_(
                         ActivityLog.session_key == related_session_id,
-                        func.json_extract(ActivityLog.detail, "$.session_id") == related_session_id,
+                        ActivityLog.detail.op("->>")("session_id") == related_session_id,
                     )
                 )
                 .order_by(desc(ActivityLog.created_at))
@@ -1403,11 +1328,11 @@ def activity_logs_search_status():
     """查询当前操作记录搜索引擎状态 + 后台重建进度。
 
     返回：
-    - fts_enabled: 是否启用 FTS5 虚表
-    - tokenizer: 当前 tokenizer（trigram / unicode61 ... / 空 = 不可用）
-    - trigram_supported: 当前 SQLite 是否支持 trigram tokenizer（≥ 3.34.0）
-    - row_count / fts_row_count: 主表 / FTS 表行数（用于显示「已索引 N / 共 N」）
-    - needs_upgrade: 当前用的不是 trigram 但 SQLite 支持，应该提示用户一键升级
+    - search_enabled: 是否启用 PostgreSQL pg_trgm 索引
+    - tokenizer: 固定为 pg_trgm
+    - trigram_supported: 当前库是否已启用 pg_trgm 扩展
+    - row_count / fts_row_count: 主表行数 / 已被索引覆盖的行数
+    - needs_upgrade: PostgreSQL 下固定 false
     - rebuild: 后台重建任务的最新状态（running / copied / total / ok / reason）
 
     前端：
@@ -1426,11 +1351,7 @@ def activity_logs_search_status():
 def trigger_activity_logs_rebuild_fts(
     target_tokenizer: Optional[str] = None,
 ):
-    """手动触发后台重建操作记录 FTS5 索引。
-
-    场景：用户首次升级到带 trigram 的版本时，老库的 FTS 表还是 unicode61，
-    搜索中文「字幕」「失败」基本命中 0。点这个按钮 → 后台线程跑分批 INSERT
-    重建索引；任务期间搜索接口返回 degraded，但绝不再 fallback LIKE 全表炸弹。
+    """手动触发后台重建操作记录 PostgreSQL trigram 索引。
 
     返回：
     - started: True 表示新启动了任务；False = 已经在跑（带 reason: already_running）
@@ -1443,9 +1364,9 @@ def trigger_activity_logs_rebuild_fts(
     desired = (target_tokenizer or "trigram").strip().lower()
     info = activity_logs_fts_status()
     if not info.get("fts_enabled"):
-        raise HTTPException(status_code=400, detail="当前 SQLite 不支持 FTS5，无法重建索引")
-    if desired == "trigram" and not info.get("trigram_supported"):
-        raise HTTPException(status_code=400, detail="当前 SQLite 不支持 trigram tokenizer（需要 ≥ 3.34.0）")
+        raise HTTPException(status_code=400, detail="当前 PostgreSQL 未启用 pg_trgm，无法重建搜索索引")
+    if desired in {"trigram", "pg_trgm"} and not info.get("trigram_supported"):
+        raise HTTPException(status_code=400, detail="当前 PostgreSQL 未启用 pg_trgm 扩展")
     return trigger_activity_logs_fts_rebuild(target_tokenizer=desired)
 
 
@@ -1455,12 +1376,12 @@ def database_maintenance_estimate(
     min_detail_bytes: int = 8192,
     sample_limit: int = 200,
 ):
-    """估算"一键数据库瘦身"能释放多少空间，并返回当前 db / -wal / -shm 文件大小。
+    """估算 PostgreSQL 维护能释放多少空间，并返回库、表、索引大小。
 
     上层 Settings 维护卡片就用这一个接口渲染：
-    - main / wal / shm / total 当前字节
+    - database / activity_logs / library_index_entries 当前字节
     - compact 估算（采样外推）
-    - 估算总释放量 = compact 节省 + 当前 -wal 字节
+    - pg_trgm 索引大小
     """
     from ..core.database_maintenance_service import estimate as _estimate
 
@@ -1477,7 +1398,7 @@ def database_maintenance_estimate(
 
 @app.get("/api/database/maintenance/health")
 def database_maintenance_health(full: bool = False):
-    """执行 SQLite 自检；full=true 时跑完整 integrity_check。"""
+    """执行 PostgreSQL SELECT 1 健康检查；full=true 时额外 ANALYZE 热点表。"""
     from ..models.database import check_database_health
 
     try:
@@ -1489,17 +1410,40 @@ def database_maintenance_health(full: bool = False):
         raise HTTPException(status_code=500, detail=f"数据库健康检查失败: {str(e)}")
 
 
+@app.get("/api/database/maintenance/performance")
+def database_maintenance_performance(limit: int = 10):
+    """读取 PostgreSQL 性能快照：关键运行参数、慢 SQL Top N、热点表扫描/死元组统计。"""
+    from ..core.database_maintenance_service import performance_snapshot
+
+    try:
+        return performance_snapshot(limit=limit)
+    except Exception as e:
+        logger.error(f"读取 PostgreSQL 性能快照失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"读取 PostgreSQL 性能快照失败: {str(e)}")
+
+
+@app.post("/api/database/maintenance/pg-stat-statements/reset")
+def database_maintenance_reset_pg_stat_statements():
+    """重置 pg_stat_statements 统计，用于优化前后对比。"""
+    from ..core.database_maintenance_service import reset_pg_stat_statements
+
+    result = reset_pg_stat_statements()
+    if not result.get("ok"):
+        return JSONResponse(status_code=409, content=result)
+    return result
+
+
 @app.post("/api/database/maintenance/shrink")
 async def database_maintenance_shrink(
     older_than_days: int = 30,
     min_detail_bytes: int = 8192,
 ):
-    """启动一次数据库瘦身（异步线程，立即返回）。
+    """启动一次 PostgreSQL 数据库维护（异步线程，立即返回）。
 
     串联：
     1. ``compact_old_activity_logs`` 直到 done
-    2. ``PRAGMA wal_checkpoint(TRUNCATE)``
-    3. ``VACUUM``
+    2. ``VACUUM (ANALYZE)``
+    3. ``REINDEX`` pg_trgm 搜索索引
 
     幂等：同一时刻只允许一个瘦身在跑。已经在跑时返回 ``already_running=True``。
     前端拿到响应后用 ``GET /api/database/maintenance/shrink/status`` 轮询进度。
@@ -1544,7 +1488,7 @@ def database_maintenance_shrink_reset():
 
 @app.get("/api/database/maintenance/library-index-fts/status")
 def library_index_fts_maintenance_status():
-    """读取库存索引 FTS5 状态和后台重建进度。"""
+    """读取库存 PostgreSQL 搜索索引状态和后台重建进度。"""
     from ..core.library_index.fts import (
         get_library_index_fts_rebuild_state,
         library_index_fts_status,
@@ -1564,15 +1508,15 @@ def library_index_fts_maintenance_status():
             "rebuild": rebuild,
         }
     except Exception as e:
-        logger.error(f"读取库存 FTS 状态失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"读取库存 FTS 状态失败: {str(e)}")
+        logger.error(f"读取库存搜索索引状态失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"读取库存搜索索引状态失败: {str(e)}")
 
 
 @app.post("/api/database/maintenance/library-index-fts/rebuild")
 def trigger_library_index_fts_maintenance_rebuild(
     target_tokenizer: Optional[str] = None,
 ):
-    """后台重建库存索引 FTS5 表，用于首次回填或升级 trigram tokenizer。"""
+    """后台重建库存 PostgreSQL trigram 搜索索引。"""
     from ..core.library_index.fts import (
         FTS_PREFERRED_TOKENIZE,
         library_index_fts_status,
@@ -1583,15 +1527,15 @@ def trigger_library_index_fts_maintenance_rebuild(
         desired = (target_tokenizer or FTS_PREFERRED_TOKENIZE).strip().lower()
         info = library_index_fts_status()
         if not info.get("fts_enabled"):
-            raise HTTPException(status_code=400, detail="当前 SQLite 不支持 FTS5，无法重建库存搜索索引")
+            raise HTTPException(status_code=400, detail="当前 PostgreSQL 未启用 pg_trgm，无法重建库存搜索索引")
         if desired == FTS_PREFERRED_TOKENIZE and not info.get("trigram_supported"):
-            raise HTTPException(status_code=400, detail="当前 SQLite 不支持 trigram tokenizer（需要 ≥ 3.34.0）")
+            raise HTTPException(status_code=400, detail="当前 PostgreSQL 未启用 pg_trgm 扩展")
         return trigger_library_index_fts_rebuild(target_tokenizer=desired)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"启动库存 FTS 重建失败: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"启动库存 FTS 重建失败: {str(e)}")
+        logger.error(f"启动库存搜索索引重建失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"启动库存搜索索引重建失败: {str(e)}")
 
 
 @app.post("/api/activity-logs/backfill-auto-import-extract")
@@ -1744,7 +1688,8 @@ def _slow_api_query_snapshot(request: Request) -> Dict[str, str]:
 
 
 def _slow_api_context_snapshot(request: Request) -> Dict[str, Any]:
-    context = getattr(request.state, "slow_api_context", None)
+    state = getattr(request, "state", None)
+    context = getattr(state, "slow_api_context", None)
     if not isinstance(context, dict):
         return {}
     safe: Dict[str, Any] = {}
@@ -1784,8 +1729,16 @@ def _slow_api_resource_budget_snapshot() -> Dict[str, Dict[str, int]]:
 
 
 async def _call_next_with_perf_log(request: Request, call_next):
-    request_id = str(request.headers.get("X-Request-ID") or "").strip()[:80] or uuid.uuid4().hex[:12]
-    request.state.request_id = request_id
+    headers = getattr(request, "headers", {}) or {}
+    request_id = str(headers.get("X-Request-ID") or "").strip()[:80] or uuid.uuid4().hex[:12]
+    state = getattr(request, "state", None)
+    if state is None:
+        state = SimpleNamespace()
+        try:
+            request.state = state
+        except Exception:
+            pass
+    state.request_id = request_id
     started = time.perf_counter()
     try:
         response = await call_next(request)
@@ -1812,8 +1765,10 @@ async def _call_next_with_perf_log(request: Request, call_next):
         is_important_4xx = status_code in _IMPORTANT_API_4XX_STATUSES
         if is_slow or is_error or is_important_4xx:
             log_method = logger.error if is_error else logger.warning
+            reason = "慢请求" if is_slow else ("异常请求" if is_error else "重要4xx")
             log_method(
-                "[API请求] request_id=%s method=%s path=%s status=%s elapsed_ms=%.0f query=%s context=%s resource_budget=%s slow=%s",
+                "[API请求] %s request_id=%s method=%s path=%s status=%s elapsed_ms=%.0f query=%s context=%s resource_budget=%s slow=%s",
+                reason,
                 request_id,
                 request.method,
                 path,
@@ -2005,7 +1960,7 @@ async def startup_event():
     # asyncio.to_thread 和 loop.run_in_executor(None, ...) 走这个池——
     # 和 anyio 那个池是两个独立的池！
     # 默认大小 = min(32, cpu_count + 4)，Docker 容器里 cpu_count 常常只有 2-4，
-    # 真实槽位只有 6-8 个。一旦多个并发 IO（shutil.move / rmtree、SQLite 写、
+    # 真实槽位只有 6-8 个。一旦多个并发 IO（shutil.move / rmtree、数据库写、
     # task_engine 的清理动作）撞上来，槽就吃光了，新调用得排队。
     # 这里固定 32 槽，兜底防止再出现"邮件卡死把整个后台 IO 拖跨"那种连锁。
     try:
@@ -2227,6 +2182,10 @@ class NotificationEmailSecretRevealRequest(BaseModel):
 
 
 class AISubtitleSecretRevealRequest(BaseModel):
+    key: str
+
+
+class DatabaseSecretRevealRequest(BaseModel):
     key: str
 
 
@@ -2733,6 +2692,15 @@ def _mask_notification_email_config(config) -> Optional[dict]:
     return data
 
 
+def _mask_database_config(config) -> Optional[dict]:
+    """返回 PostgreSQL 配置，密码脱敏。"""
+    if not hasattr(config, 'database'):
+        return None
+    data = config.database.model_dump()
+    data['password'] = '********'
+    return data
+
+
 def _mask_ai_subtitle_matching_config(config) -> Optional[dict]:
     """返回 AI 字幕配对配置，API Key 脱敏。"""
     if not hasattr(config, 'ai_subtitle_matching'):
@@ -2805,6 +2773,21 @@ def _read_notification_email_password_from_disk() -> str:
         return password if password != "********" else ""
     except Exception:
         logger.warning("[NOTIFICATION] 读取磁盘 notification_email 密码失败", exc_info=True)
+        return ""
+
+
+def _read_database_secret_from_disk(key: str) -> str:
+    """读取磁盘原始 PostgreSQL 敏感配置，避免把脱敏占位符写回。"""
+    try:
+        config_path = _runtime_config_path_from_settings()
+        if not os.path.exists(config_path):
+            return ""
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        value = data.get("database", {}).get(key, "")
+        return value if value != "********" else ""
+    except Exception:
+        logger.warning("[数据库] 读取磁盘敏感配置失败: %s", key, exc_info=True)
         return ""
 
 
@@ -2958,7 +2941,7 @@ def get_configuration():
         notification_email=_mask_notification_email_config(config),
         notification_center=config.notification_center.model_dump() if hasattr(config, 'notification_center') else None,
         resource_budget=config.resource_budget.model_dump() if hasattr(config, 'resource_budget') else None,
-        database=config.database.model_dump() if hasattr(config, 'database') else None,
+        database=_mask_database_config(config),
         security_gate=get_security_gate_service().sanitize_config() if hasattr(config, 'security_gate') else None,
     )
 
@@ -3011,6 +2994,15 @@ def reveal_ai_subtitle_match_secret(payload: AISubtitleSecretRevealRequest):
     if key != "api_key":
         raise HTTPException(status_code=400, detail="不支持读取该敏感字段")
     return {"value": _read_ai_subtitle_api_key_from_disk()}
+
+
+@app.post("/api/config/database/reveal-secret")
+def reveal_database_secret(payload: DatabaseSecretRevealRequest):
+    """从本地配置文件读取 PostgreSQL 密码，只供设置页显隐使用。"""
+    key = str(payload.key or "").strip()
+    if key != "password":
+        raise HTTPException(status_code=400, detail="不支持读取该敏感字段")
+    return {"value": _read_database_secret_from_disk(key)}
 
 
 class SecurityGateVerifyRequest(BaseModel):
@@ -3479,7 +3471,15 @@ async def update_configuration(request: Request):
         if 'database' in config_data and config_data['database']:
             try:
                 from ..config.settings import DatabaseConfig
-                db_cfg = DatabaseConfig(**config_data['database'])
+                db_data = dict(config_data['database'])
+                if db_data.get('password') == '********' or 'password' not in db_data:
+                    current_cfg = get_config()
+                    current_password = getattr(current_cfg.database, 'password', '')
+                    db_data['password'] = (
+                        _read_database_secret_from_disk('password')
+                        or (current_password if current_password != '********' else '')
+                    )
+                db_cfg = DatabaseConfig(**db_data)
                 config_data['database'] = db_cfg.model_dump()
             except Exception as e:
                 logger.error(f"[数据库] database 配置验证失败: {e}")
@@ -4822,7 +4822,7 @@ async def get_conflicts(include_stats: bool = False):
         conflicts = db.query(ConflictWork).filter(
             ConflictWork.status.in_(["PENDING", "PROCESSING"]),
             ConflictWork.conflict_type != "LINKED_SUBTITLE_IMPORT",
-        ).all()
+        ).order_by(desc(ConflictWork.created_at)).all()
         _t_query_ms = (time.monotonic() - _t_query_start) * 1000
         logger.debug(
             "[/api/conflicts] include_stats=%s db_query=%.0fms count=%s",
@@ -6561,7 +6561,7 @@ async def get_library_storage_info(library_id: str, refresh: bool = False):
 
 
 # ========== 库存搜索索引 API ==========
-# 由 library_index 模块提供：在 SQLite 里常驻一份"库存 → 条目"快照，
+# 由 library_index 模块提供：在 PostgreSQL 里常驻一份"库存 → 条目"快照，
 # 用 SQL 查询替代群晖几十万级目录上的实时 walk / SYNO.FileStation.Search。
 # 当前批次仅支持 local 库存的重建与查询，synology_filestation 库存
 # 由后续批次新增 RemoteScanner 后再扩展。
@@ -7002,7 +7002,7 @@ async def global_search_library_index(
       （CSV）收窄到指定库
     - 关键字会自动尝试 RJ 号识别（"RJ01234567" / "01234567" 都会命中）+
       名字模糊匹配，结果合并去重
-    - 全程只读 SQLite 索引，IO 压力恒定，不触发任何 fs / FileStation 调用
+    - 全程只读库存索引，IO 压力恒定，不触发任何 fs / FileStation 调用
     - mode=suggest 时只返回前 limit 条用于自动补全；mode=full 时按 cap
       返回更多条目用于全屏搜索结果列表
 
@@ -7586,6 +7586,7 @@ async def browse_library_files(
     search_exact: bool = False,
     search_result_kind: str = "all",
     scope: str = "global",
+    page_cursor: Optional[str] = None,
 ):
     """``scope`` 控制远程搜索范围：
 
@@ -7613,6 +7614,7 @@ async def browse_library_files(
                 force_refresh=force_refresh,
                 search_exact=search_exact,
                 search_result_kind=search_result_kind,
+                page_cursor=page_cursor,
             )
             browse_root_path = current_library.browse_root_path or current_library.root_path
             display_current_path = current_path or browse_root_path

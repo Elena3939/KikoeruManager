@@ -48,8 +48,10 @@ _PIKPAK_STATUS_CACHE_TTL_SECONDS = 6 * 60 * 60
 _SHARE_PREVIEW_ONLY_SOURCES = {"pikpak", "transferit"}
 _GOFILE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 _GOFILE_LANGUAGE = "en-US"
-_GOFILE_WEBSITE_TOKEN_SALT = "g4f8fd9f12h14g"
+_GOFILE_WEBSITE_TOKEN_SALT = "9844d94d963d30"
+_GOFILE_API_TIMEOUT_SECONDS = 45
 _GOFILE_CDN_ERROR_CONTENT_TYPES = ("text/html", "application/json", "text/plain")
+_GOFILE_NOT_PREMIUM_STATUS = {"error-notpremium", "error-not-premium", "notpremium"}
 GOOGLE_DRIVE_PROBE_BYTES = 1024
 GOOGLE_DRIVE_STREAM_CHUNK_BYTES = 1024 * 1024
 HTTP_DOWNLOAD_PLATFORM_LABELS = {
@@ -725,7 +727,12 @@ class HttpDownloadService:
         return self._host_matches(raw_url, _PIKPAK_HOST_HINTS)
 
     def _is_gofile_url(self, raw_url: str) -> bool:
-        return self._host_matches(raw_url, _GOFILE_HOST_HINTS)
+        try:
+            parsed = urlparse(str(raw_url or "").strip())
+        except Exception:
+            return False
+        # 只把 gofile.io 分享页交给 Gofile 解析器；store*.gofile.io 是 CDN 直链，按普通 HTTP 处理。
+        return (parsed.hostname or "").lower() in _GOFILE_HOST_HINTS
 
     def _is_transferit_url(self, raw_url: str) -> bool:
         return self._host_matches(raw_url, _TRANSFERIT_HOST_HINTS)
@@ -1626,6 +1633,15 @@ class HttpDownloadService:
                     await asyncio.sleep(0.6 * (attempt + 1))
         raise HttpDownloadError(f"源站 API 请求失败: {self._sanitize_error(last_error)}") from last_error
 
+    async def _fetch_gofile_json(self, url: str, *, method: str = "GET", headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        try:
+            return await asyncio.wait_for(
+                self._fetch_json(url, method=method, headers=headers, platform="gofile"),
+                timeout=_GOFILE_API_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as exc:
+            raise HttpDownloadError(f"Gofile API 请求超过 {_GOFILE_API_TIMEOUT_SECONDS} 秒未响应，请检查代理或稍后重试") from exc
+
     def _gofile_content_id_from_url(self, raw_url: str) -> str:
         parsed = urlparse(raw_url)
         match = re.search(r"/(?:d|contents?)/([^/?#]+)", parsed.path, re.IGNORECASE)
@@ -1652,11 +1668,10 @@ class HttpDownloadService:
             cached_token, expires_at = self._gofile_guest_token_cache
             if cached_token and expires_at > time.time():
                 return cached_token
-            data = await self._fetch_json(
+            data = await self._fetch_gofile_json(
                 "https://api.gofile.io/accounts",
                 method="POST",
                 headers={"User-Agent": _GOFILE_USER_AGENT, "X-BL": _GOFILE_LANGUAGE},
-                platform="gofile",
             )
             if str(data.get("status") or "").lower() != "ok":
                 raise HttpDownloadError(f"Gofile 创建访客账号失败: {data.get('status') or 'unknown'}")
@@ -1686,20 +1701,66 @@ class HttpDownloadService:
                 return str(values[0]).strip()
         return ""
 
+    def _gofile_not_premium_message(self) -> str:
+        return "Gofile 拒绝当前账号或临时账号解析；可在 HTTP 下载设置里填写账号 token，或稍后重试"
+
+    def _gofile_api_status_error(self, status: Any) -> HttpDownloadError:
+        status_text = str(status or "unknown").strip()
+        if status_text.lower() in _GOFILE_NOT_PREMIUM_STATUS:
+            return HttpDownloadError(self._gofile_not_premium_message())
+        return HttpDownloadError(f"Gofile 解析失败: {status_text or 'unknown'}")
+
+    def _preview_gofile_download_item(self, source_item: Dict[str, Any], *, target_subdir: str = "", conflict_policy: str = "") -> Dict[str, Any]:
+        download_url = str(source_item.get("url") or "").strip()
+        if not download_url:
+            raise HttpDownloadError("Gofile 未返回文件下载链接")
+        filename = self._sanitize_filename(source_item.get("filename") or source_item.get("name") or "gofile-file")
+        subdir = "/".join([part for part in (target_subdir, source_item.get("relative_dir")) if str(part or "").strip()])
+        target = self._resolve_target(filename, subdir, conflict_policy)
+        item = {
+            "ok": True,
+            "url": download_url,
+            "masked_url": source_item.get("masked_url") or self._mask_url(download_url),
+            "host": urlparse(download_url).hostname or "gofile.io",
+            "source": "gofile",
+            "share_url": source_item.get("share_url"),
+            "filename": target["filename"],
+            "relative_path": target["relative_path"],
+            "final_path": target["final_path"],
+            "target_dir": target["target_dir"],
+            "size_bytes": int(source_item.get("size_bytes") or 0),
+            "content_type": str(source_item.get("content_type") or "application/octet-stream"),
+            "resumable": True,
+            "warning": source_item.get("warning") or "Gofile 已使用页面 API 返回的直链、文件名和大小创建下载项。",
+            "content_id": source_item.get("content_id"),
+        }
+        if source_item.get("aria2_header"):
+            item["aria2_header"] = list(source_item.get("aria2_header") or [])
+        if source_item.get("headers"):
+            item["headers"] = dict(source_item.get("headers") or {})
+        return item
+
     async def _collect_gofile_files(self, raw_url: str) -> Dict[str, Any]:
         content_id = self._gofile_content_id_from_url(raw_url)
-        token = self._gofile_token() or await self._gofile_guest_token()
-        params: Dict[str, str] = {}
+        configured_token = self._gofile_token()
+        token = configured_token or await self._gofile_guest_token()
+        params: Dict[str, str] = {
+            "contentFilter": "",
+            "page": "1",
+            "pageSize": "1000",
+            "sortField": "createTime",
+            "sortDirection": "-1",
+        }
         public_token = self._gofile_public_token(raw_url)
         if public_token:
             params["publicToken"] = public_token
         password = self._gofile_password(raw_url)
         if password:
-            params["password"] = password
+            params["password"] = hashlib.sha256(password.encode("utf-8")).hexdigest()
         api_url = f"https://api.gofile.io/contents/{content_id}"
         if params:
             api_url = f"{api_url}?{urlencode(params)}"
-        data = await self._fetch_json(
+        data = await self._fetch_gofile_json(
             api_url,
             headers={
                 "Authorization": f"Bearer {token}",
@@ -1707,10 +1768,9 @@ class HttpDownloadService:
                 "X-BL": _GOFILE_LANGUAGE,
                 "User-Agent": _GOFILE_USER_AGENT,
             },
-            platform="gofile",
         )
         if str(data.get("status") or "").lower() != "ok":
-            raise HttpDownloadError(f"Gofile 解析失败: {data.get('status') or 'unknown'}")
+            raise self._gofile_api_status_error(data.get("status"))
         root = data.get("data") or {}
         if not isinstance(root, dict):
             raise HttpDownloadError("Gofile 返回数据结构异常")
@@ -3946,6 +4006,15 @@ class HttpDownloadService:
         volume_match = re.match(r"^(?P<stem>.+?)[._\-\s]+z(?P<index>\d{2})$", value, re.IGNORECASE)
         if volume_match:
             return volume_match.group("stem").strip() or value, f".z{volume_match.group('index')}"
+        volume_match = re.match(r"^(?P<stem>.+?)\.(?P<kind>7z|zip)\.(?P<index>\d{3})$", value, re.IGNORECASE)
+        if volume_match:
+            return volume_match.group("stem").strip() or value, f".{volume_match.group('kind')}.{volume_match.group('index')}"
+        volume_match = re.match(r"^(?P<stem>.+?)\.part(?P<index>\d+)(?P<ext>\.(?:rar|zip|7z|exe))?$", value, re.IGNORECASE)
+        if volume_match:
+            return volume_match.group("stem").strip() or value, f".part{volume_match.group('index')}{volume_match.group('ext') or ''}"
+        volume_match = re.match(r"^(?P<stem>.+?)\.(?P<ext>r\d{2}|e\d{2}|\d{3})$", value, re.IGNORECASE)
+        if volume_match:
+            return volume_match.group("stem").strip() or value, f".{volume_match.group('ext')}"
         stem, ext = os.path.splitext(value)
         return stem or value, ext
 
@@ -4158,6 +4227,25 @@ class HttpDownloadService:
                             conflict_policy=conflict_policy,
                             headers=dict(source_item.get("headers") or {}) if isinstance(source_item, dict) else None,
                         )
+            elif isinstance(source_item, dict) and source_item.get("source") == "gofile":
+                try:
+                    item = self._preview_gofile_download_item(
+                        source_item,
+                        target_subdir=target_subdir,
+                        conflict_policy=conflict_policy,
+                    )
+                except Exception as exc:
+                    item = {
+                        "ok": False,
+                        "url": str(source_item.get("url") or raw_url),
+                        "masked_url": source_item.get("masked_url") or self._mask_url(str(source_item.get("url") or raw_url)),
+                        "reason": self._sanitize_error(exc) or exc.__class__.__name__,
+                        "source": "gofile",
+                        "share_url": source_item.get("share_url"),
+                        "filename": source_item.get("filename") or source_item.get("name"),
+                        "size_bytes": int(source_item.get("size_bytes") or 0),
+                        "content_id": source_item.get("content_id"),
+                    }
             else:
                 item = await self.preview_url(
                     preview_url,
@@ -5786,11 +5874,14 @@ class HttpDownloadService:
             accounts = self._pikpak_accounts()
             pikpak_ready = bool(accounts)
             pikpak_message = f"PikPak 已配置 {len(accounts)} 个账号" if pikpak_ready else "PikPak 已启用但缺少账号或 token"
+        gofile_token_configured = bool(self._gofile_token())
         result.update({
             "pikpak_enabled": self._pikpak_enabled(),
             "pikpak_ready": pikpak_ready,
             "pikpak_message": pikpak_message,
-            "gofile_ready": bool(self._gofile_token()),
+            "gofile_ready": True,
+            "gofile_token_configured": gofile_token_configured,
+            "gofile_message": "Gofile 已配置账号 token" if gofile_token_configured else "Gofile 将使用临时网页账号解析",
         })
         return result
 

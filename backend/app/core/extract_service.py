@@ -47,7 +47,7 @@ from ..core.password_utils import (
     normalize_password_value,
     normalize_rjcode_value,
 )
-from ..core.json_safety import safe_json_value, sqlite_safe_text
+from ..core.json_safety import database_safe_text, safe_json_value
 from ..core.resource_budget_service import get_resource_budget_service
 
 logger = logging.getLogger(__name__)
@@ -8962,7 +8962,7 @@ class ExtractService:
         repaired = self._repair_surrogateescaped_filename(name)
         if repaired:
             return repaired, "repaired"
-        return (sqlite_safe_text(name) or name), "escaped"
+        return (database_safe_text(name) or name), "escaped"
 
     def _filename_garbled_diagnostics(
         self,
