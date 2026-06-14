@@ -46,6 +46,7 @@ _GOOGLE_DRIVE_HOST_HINTS = {"drive.google.com", "docs.google.com", "drive.userco
 _PIKPAK_MAX_SHARE_FILES = 100
 _PIKPAK_STATUS_CACHE_TTL_SECONDS = 6 * 60 * 60
 _SHARE_PREVIEW_ONLY_SOURCES = {"pikpak", "transferit"}
+_FILE_LEVEL_SELECTION_SOURCES = _SHARE_PREVIEW_ONLY_SOURCES | {"gofile", "google_drive"}
 _GOFILE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 _GOFILE_LANGUAGE = "en-US"
 _GOFILE_WEBSITE_TOKEN_SALT = "9844d94d963d30"
@@ -800,9 +801,10 @@ class HttpDownloadService:
         if source in _SHARE_PREVIEW_ONLY_SOURCES and (stable_source_id or share_url):
             if stable_source_id:
                 share_url_identity = ""
-            filename_identity = ""
-            relative_path_identity = str(item.get("relative_dir") or "").strip()
-            size_identity = ""
+            if source != "gofile":
+                filename_identity = ""
+                relative_path_identity = str(item.get("relative_dir") or "").strip()
+                size_identity = ""
         parts = [
             source,
             share_url_identity,
@@ -3518,7 +3520,7 @@ class HttpDownloadService:
             if not isinstance(item, dict):
                 continue
             source = str(item.get("source") or "").strip().lower()
-            if source not in _SHARE_PREVIEW_ONLY_SOURCES:
+            if source not in _FILE_LEVEL_SELECTION_SOURCES:
                 continue
             for field in ("file_id", "content_id", "download_file_id", "transferit_node_handle"):
                 value = str(item.get(field) or "").strip()
@@ -3743,6 +3745,13 @@ class HttpDownloadService:
                 if not files:
                     failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": "Gofile 分享中没有可下载文件", "source": "gofile"})
                     continue
+                if selection_filter:
+                    files = [
+                        item for item in files
+                        if self._share_item_matches_selection("gofile", item, selection_filter)
+                    ]
+                    if not files:
+                        continue
                 for item in files:
                     download_url = str(item.get("url") or "")
                     if not download_url:
@@ -3775,6 +3784,13 @@ class HttpDownloadService:
                     if not files:
                         failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": "Google Drive 文件夹中没有可下载文件", "source": "google_drive"})
                         continue
+                    if selection_filter:
+                        files = [
+                            item for item in files
+                            if self._share_item_matches_selection("google_drive", item, selection_filter)
+                        ]
+                        if not files:
+                            continue
                     for item in files:
                         download_url = str(item.get("url") or "")
                         if not download_url:
@@ -3813,6 +3829,13 @@ class HttpDownloadService:
                 if not files:
                     failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": "Transfer.it 分享中没有可下载文件", "source": "transferit"})
                     continue
+                if selection_filter:
+                    files = [
+                        item for item in files
+                        if self._share_item_matches_selection("transferit", item, selection_filter)
+                    ]
+                    if not files:
+                        continue
                 source_items.extend(files)
             except Exception as exc:
                 failed.append({"ok": False, "url": raw_url, "masked_url": self._mask_url(raw_url), "reason": self._sanitize_error(exc), "source": "transferit"})
