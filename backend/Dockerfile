@@ -14,6 +14,8 @@ RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmwa
         xz-utils \
         aria2 \
         unar \
+        libpq5 \
+        postgresql-client \
     && apt-get purge -y --auto-remove p7zip-full p7zip p7zip-rar 2>/dev/null || true \
     && case "${TARGETARCH:-amd64}" in \
         amd64|x86_64) SEVENZIP_PKG=7z2408-linux-x64.tar.xz ;; \
@@ -57,21 +59,17 @@ COPY requirements.txt .
 # 安装Python依赖
 RUN pip install --no-cache-dir -r requirements.txt
 RUN python - <<'PY'
-import sqlite3
+import psycopg
 
-conn = sqlite3.connect(":memory:")
-opts = {row[0] for row in conn.execute("PRAGMA compile_options")}
-print("SQLite version:", sqlite3.sqlite_version)
-print("SQLite FTS options:", sorted(opt for opt in opts if "FTS" in opt or "TOKEN" in opt))
-if "ENABLE_FTS5" not in opts:
-    raise SystemExit("当前 Python SQLite 未启用 ENABLE_FTS5")
-conn.execute("CREATE VIRTUAL TABLE fts5_probe USING fts5(x)")
-conn.execute("CREATE VIRTUAL TABLE trigram_probe USING fts5(x, tokenize='trigram')")
-print("SQLite FTS5 + trigram 检查通过")
+print("psycopg version:", psycopg.__version__)
+print("PostgreSQL Python driver check OK")
 PY
+RUN psql --version
 
-# 复制应用代码
+# 复制应用代码与 PostgreSQL schema baseline
 COPY app/ ./app/
+COPY alembic/ ./backend/alembic/
+COPY alembic.ini ./alembic.ini
 
 # 创建数据目录
 RUN mkdir -p /app/data /app/config

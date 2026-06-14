@@ -139,7 +139,19 @@ cd ..
 echo [OK] Backend installed
 
 echo.
-echo [3/4] Installing frontend dependencies...
+echo.
+echo [3/6] Checking PostgreSQL...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%scripts\install-postgresql.ps1"
+if errorlevel 1 (
+    echo [ERROR] PostgreSQL initialization failed
+    echo Please check scripts\install-postgresql.ps1 output and retry setup.bat
+    pause
+    exit /b 1
+)
+echo [OK] PostgreSQL checked
+
+echo.
+echo [4/6] Installing frontend dependencies...
 cd frontend
 if not exist "node_modules" (
     echo Installing npm packages...
@@ -154,7 +166,7 @@ cd ..
 echo [OK] Frontend installed
 
 echo.
-echo [4/5] Installing BaiduPCS-Go...
+echo [5/6] Installing BaiduPCS-Go...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%scripts\install-baidupcs-go.ps1"
 if errorlevel 1 (
     echo [WARNING] BaiduPCS-Go install failed. You can retry later:
@@ -164,7 +176,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [5/5] Checking configuration...
+echo [6/6] Checking configuration...
 echo [OK] Configuration checked
 
 echo.

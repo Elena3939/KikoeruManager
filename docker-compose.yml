@@ -1,6 +1,53 @@
-version: '3.8'
-
 services:
+  postgres:
+    image: postgres:18.4
+    container_name: kikoerumanager-postgres
+    environment:
+      POSTGRES_DB: kikoerumanager
+      POSTGRES_USER: kikoerumanager
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kikoerumanager}
+      PGDATA: /var/lib/postgresql/data
+      TZ: Asia/Shanghai
+    ports:
+      - "5432:5432"
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - pg_stat_statements.max=10000
+      - -c
+      - track_io_timing=on
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=1GB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - work_mem=16MB
+      - -c
+      - max_wal_size=1GB
+      - -c
+      - checkpoint_timeout=15min
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - default_statistics_target=200
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kikoerumanager -d kikoerumanager"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
   kikoerumanager:
     build:
       context: .
@@ -31,8 +78,12 @@ services:
     environment:
       - CONFIG_PATH=/app/config/config.yaml
       - DATA_PATH=/app/data
+      - DATABASE_URL=postgresql+psycopg://kikoerumanager:${POSTGRES_PASSWORD:-kikoerumanager}@postgres:5432/kikoerumanager?sslmode=disable
       - TZ=Asia/Shanghai
       - PORT=5555
+    depends_on:
+      postgres:
+        condition: service_healthy
     # 使用 root 权限运行（文件操作需要）
     user: "0:0"
     privileged: true
@@ -49,3 +100,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+volumes:
+  postgres_data:
