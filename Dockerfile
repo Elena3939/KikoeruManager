@@ -26,14 +26,22 @@ ARG TARGETARCH
 ARG KIKOERUMANAGER_VERSION=dev
 ARG BAIDUPCS_GO_VERSION=4.0.1
 RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources && \
+    install -d /usr/share/postgresql-common/pgdg && \
+    wget --retry-connrefused --waitretry=5 --tries=3 -O /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+        https://www.postgresql.org/media/keys/ACCC4CF8.asc && \
+    . /etc/os-release && \
+    echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list && \
     apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         wget \
+        bash \
         xz-utils \
         aria2 \
         unar \
         libpq5 \
-        postgresql-client \
+        postgresql-18 \
+        postgresql-client-18 \
         libopencc-dev \
     && apt-get purge -y --auto-remove p7zip-full p7zip p7zip-rar 2>/dev/null || true \
     && case "${TARGETARCH:-amd64}" in \
@@ -91,6 +99,8 @@ RUN psql --version
 COPY backend/app/ ./app/
 COPY backend/alembic/ ./backend/alembic/
 COPY alembic.ini ./alembic.ini
+COPY docker/entrypoint.sh /usr/local/bin/kikoerumanager-entrypoint
+RUN chmod +x /usr/local/bin/kikoerumanager-entrypoint
 
 # 从前端构建阶段复制静态文件
 COPY --from=frontend-builder /app/frontend/dist /app/static
@@ -113,6 +123,7 @@ ENV DATA_PATH=/app/data
 ENV PYTHONPATH=/app
 ENV STATIC_FILES_PATH=/app/static
 ENV KIKOERUMANAGER_VERSION=${KIKOERUMANAGER_VERSION}
+ENV PGDATA=/app/postgres/data
 # 应用端口，可通过 docker run -e PORT=xxxx 覆盖
 ENV PORT=5555
 
@@ -124,4 +135,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD python -c "import os,urllib.request; urllib.request.urlopen('http://localhost:' + os.environ.get('PORT','5555') + '/api/health')" || exit 1
 
 # 启动命令
+ENTRYPOINT ["kikoerumanager-entrypoint"]
 CMD ["python", "-m", "app.main"]
