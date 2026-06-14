@@ -1190,7 +1190,7 @@ export function useSubtitleTask ({
           manual_match_applied_pairs: Number(task.manual_match_applied_pairs || 0),
           manual_match_deleted_subtitles: Number(task.manual_match_deleted_subtitles || 0),
           source_label: String(task.source_label || item.source_label || '').trim(),
-          source_mode: String(task.source_mode || item.source_mode || '').trim(),
+          source_mode: String(item.source_mode || task.source_mode || '').trim(),
           restored_at: String(task.restored_at || item.restored_at || '').trim(),
           activity_context: task.activity_context || item.activity_context || null,
           status: nextExistingCount > 0 ? 'existing' : (item.status || '')

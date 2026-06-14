@@ -162,14 +162,16 @@
               </div>
             </TransitionGroup>
           </div>
-          <div v-else class="px-3 py-2">
-            <AppEmptyState :description="getTaskLogEmptyTitle(ctx.activeSubtitleTask)" size="sm">
-              <template #default>
-                <div class="mt-1 text-center text-[11px] leading-relaxed text-slate-500">
-                  {{ getTaskLogEmptyDescription(ctx.activeSubtitleTask) }}
-                </div>
-              </template>
-            </AppEmptyState>
+          <div v-else class="task-log-empty-state">
+            <div class="task-log-empty-content">
+              <div class="task-log-empty-icon">
+                <component :is="getTaskLogEmptyIcon(ctx.activeSubtitleTask)" class="h-4 w-4" :stroke-width="2.2" />
+              </div>
+              <div class="min-w-0">
+                <div class="task-log-empty-title">{{ getTaskLogEmptyTitle(ctx.activeSubtitleTask) }}</div>
+                <p class="task-log-empty-desc">{{ getTaskLogEmptyDescription(ctx.activeSubtitleTask) }}</p>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -664,6 +666,12 @@ function getTaskLogEmptyTitle(task) {
   return '当前任务还没有日志'
 }
 
+function getTaskLogEmptyIcon(task) {
+  if (props.ctx?.isHistoryRestoredSubtitleTask?.(task)) return History
+  if (props.ctx?.isSelectionBackfillSubtitleTask?.(task)) return Layers
+  return ScrollText
+}
+
 function getTaskLogEmptyDescription(task) {
   if (props.ctx?.isHistoryRestoredSubtitleTask?.(task)) {
     return '当前展示的是从操作记录恢复出来的历史上下文，没有实时进度日志并不代表这条任务从未执行过。'
@@ -985,6 +993,58 @@ function getTaskMetaItems(task) {
   min-height: 280px;
 }
 
+.task-log-empty-state {
+  display: flex;
+  min-height: 108px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 14px 16px;
+}
+
+.subtitle-task-stage-scroll.is-immersive-overview .task-log-empty-state {
+  flex: 1 1 108px;
+  min-height: 108px;
+}
+
+.task-log-empty-content {
+  display: flex;
+  width: min(100%, 520px);
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: left;
+}
+
+.task-log-empty-icon {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #475569;
+}
+
+.task-log-empty-title {
+  color: #0f172a;
+  font-size: 12.5px;
+  font-weight: 800;
+  line-height: 1.4;
+}
+
+.task-log-empty-desc {
+  margin: 3px 0 0;
+  max-width: none;
+  color: #64748b;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
 .subtitle-task-stage-scroll::-webkit-scrollbar {
   width: 6px;
 }
@@ -1297,6 +1357,28 @@ function getTaskMetaItems(task) {
   color: rgba(244, 244, 245, 0.9) !important;
 }
 
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) :is(.subtitle-task-stage-root, .subtitle-task-card) .task-log-empty-state),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) :is(.subtitle-task-stage-root, .subtitle-task-card) .task-log-empty-state) {
+  background: transparent !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) :is(.subtitle-task-stage-root, .subtitle-task-card) .task-log-empty-icon),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) :is(.subtitle-task-stage-root, .subtitle-task-card) .task-log-empty-icon) {
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  background: rgba(255, 255, 255, 0.04) !important;
+  color: rgba(226, 232, 240, 0.85) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) :is(.subtitle-task-stage-root, .subtitle-task-card) .task-log-empty-title),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) :is(.subtitle-task-stage-root, .subtitle-task-card) .task-log-empty-title) {
+  color: rgba(248, 250, 252, 0.94) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) :is(.subtitle-task-stage-root, .subtitle-task-card) .task-log-empty-desc),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) :is(.subtitle-task-stage-root, .subtitle-task-card) .task-log-empty-desc) {
+  color: rgba(203, 213, 225, 0.72) !important;
+}
+
 .sub-log-item-enter-active {
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
@@ -1327,5 +1409,24 @@ function getTaskMetaItems(task) {
 
 .subtitle-task-rail > button {
   cursor: pointer;
+}
+
+@media (max-width: 640px) {
+  .task-log-empty-state {
+    min-height: 112px;
+    padding: 14px;
+  }
+
+  .subtitle-task-stage-scroll.is-immersive-overview .task-log-empty-state {
+    min-height: 112px;
+  }
+
+  .task-log-empty-content {
+    gap: 10px;
+  }
+
+  .task-log-empty-desc {
+    line-height: 1.45;
+  }
 }
 </style>

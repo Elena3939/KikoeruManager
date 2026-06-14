@@ -1,7 +1,7 @@
 <template>
   <div class="fts-stack">
     <div class="settings-grid two">
-      <!-- ─── 操作记录 FTS ─── -->
+      <!-- ─── 操作记录搜索索引 ─── -->
       <div class="fts-card">
         <div class="fts-card-header">
           <div class="card-title">
@@ -9,7 +9,7 @@
             <span>操作记录全文搜索</span>
           </div>
           <p class="fts-desc">
-            为操作历史搜索框提供 SQLite FTS5 加速。trigram tokenizer 支持中文任意片段搜索（"字幕"、"失败"等），unicode61 仅支持英文前缀匹配。
+            为操作历史搜索框提供 PostgreSQL pg_trgm GIN 索引加速，支持中文任意片段搜索。
           </p>
         </div>
 
@@ -42,10 +42,10 @@
           </div>
 
           <div v-if="activityInfo?.tokenizer" class="fts-stat-cell">
-            <span class="fts-stat-label">Tokenizer</span>
+            <span class="fts-stat-label">索引类型</span>
             <div class="fts-stat-value">
-              <span class="fts-token-chip" :class="{ 'is-trigram': activityInfo.tokenizer === 'trigram' }">
-                {{ activityInfo.tokenizer === 'trigram' ? '⚡ trigram' : activityInfo.tokenizer }}
+              <span class="fts-token-chip" :class="{ 'is-trigram': isPgTrgm(activityInfo.tokenizer) }">
+                {{ formatSearchBackend(activityInfo.tokenizer) }}
               </span>
             </div>
           </div>
@@ -56,7 +56,7 @@
           <!-- 升级提示 -->
           <div v-if="activityInfo?.needs_upgrade" class="fts-upgrade-hint">
             <IconZap :size="13" />
-            <span>检测到 trigram 支持，建议重建升级以获得中文全文搜索能力</span>
+            <span>检测到 pg_trgm 扩展，建议重建索引以获得中文片段搜索能力</span>
           </div>
 
           <!-- 重建进度 -->
@@ -74,7 +74,7 @@
           <!-- 结果行 -->
           <div v-else-if="activityInfo?.rebuild?.ok === true" class="fts-result is-done">
             <IconCheckCircle2 :size="13" />
-            <span>重建完成 · tokenizer: {{ activityInfo.rebuild.target_tokenizer || activityInfo.tokenizer }} · 共 {{ (activityInfo.rebuild.total ?? 0).toLocaleString() }} 条</span>
+            <span>重建完成 · 索引: {{ formatSearchBackend(activityInfo.rebuild.target_tokenizer || activityInfo.tokenizer) }} · 共 {{ (activityInfo.rebuild.total ?? 0).toLocaleString() }} 条</span>
           </div>
           <div v-else-if="activityInfo?.rebuild?.ok === false" class="fts-result is-error">
             <IconAlertCircle :size="13" />
@@ -87,7 +87,7 @@
           <button type="button" class="fts-btn-primary" :disabled="activityBusy || !activityInfo?.fts_enabled" @click="rebuildActivity">
             <IconLoader2 v-if="activityBusy" :size="13" class="fts-spin" />
             <IconRefreshCw v-else :size="13" />
-            <span>{{ activityBusy ? '重建中…' : activityInfo?.needs_upgrade ? '升级 trigram 并重建' : '重建索引' }}</span>
+            <span>{{ activityBusy ? '重建中…' : '重建索引' }}</span>
           </button>
           <button type="button" class="fts-btn-ghost" :disabled="activityLoading" @click="fetchActivity">
             <span class="fts-icon-swap">
@@ -103,11 +103,11 @@
         </div>
 
         <p v-if="activityInfo && !activityInfo.fts_enabled" class="fts-warn-tip">
-          当前 SQLite 不支持 FTS5（版本 &lt; 3.34），操作历史搜索降级为 LIKE 全表扫描（较慢）。
+          当前 PostgreSQL 未启用 pg_trgm，操作历史搜索会退化为普通 ILIKE 扫描。
         </p>
       </div>
 
-      <!-- ─── 库存索引 FTS ─── -->
+      <!-- ─── 库存搜索索引 ─── -->
       <div class="fts-card">
         <div class="fts-card-header">
           <div class="card-title">
@@ -115,7 +115,7 @@
             <span>库存索引全文搜索</span>
           </div>
           <p class="fts-desc">
-            为库存搜索框、RJ 跨库查找提供 SQLite FTS5 加速。重建完成后搜索速度从秒级降至 ms 级；重建期间搜索自动 fallback，功能不中断。
+            为库存搜索框、RJ 跨库查找提供 PostgreSQL pg_trgm GIN 索引加速。重建完成后搜索速度从秒级降至 ms 级。
           </p>
         </div>
 
@@ -148,10 +148,10 @@
           </div>
 
           <div v-if="libraryInfo?.tokenizer" class="fts-stat-cell">
-            <span class="fts-stat-label">Tokenizer</span>
+            <span class="fts-stat-label">索引类型</span>
             <div class="fts-stat-value">
-              <span class="fts-token-chip" :class="{ 'is-trigram': libraryInfo.tokenizer === 'trigram' }">
-                {{ libraryInfo.tokenizer === 'trigram' ? '⚡ trigram' : libraryInfo.tokenizer }}
+              <span class="fts-token-chip" :class="{ 'is-trigram': isPgTrgm(libraryInfo.tokenizer) }">
+                {{ formatSearchBackend(libraryInfo.tokenizer) }}
               </span>
             </div>
           </div>
@@ -162,7 +162,7 @@
           <!-- 升级提示 -->
           <div v-if="libraryInfo?.needs_upgrade" class="fts-upgrade-hint">
             <IconZap :size="13" />
-            <span>检测到 trigram 支持，建议重建升级以获得更精准的中文搜索能力</span>
+            <span>检测到 pg_trgm 扩展，建议重建索引以获得更精准的中文搜索能力</span>
           </div>
 
           <!-- 重建进度 -->
@@ -180,7 +180,7 @@
           <!-- 结果行 -->
           <div v-else-if="libraryInfo?.rebuild?.state === 'done'" class="fts-result is-done">
             <IconCheckCircle2 :size="13" />
-            <span>重建完成 · tokenizer: {{ libraryInfo.rebuild.tokenizer }} · 共 {{ (libraryInfo.rebuild.total_entries ?? 0).toLocaleString() }} 条</span>
+            <span>重建完成 · 索引: {{ formatSearchBackend(libraryInfo.rebuild.tokenizer) }} · 共 {{ (libraryInfo.rebuild.total_entries ?? 0).toLocaleString() }} 条</span>
           </div>
           <div v-else-if="libraryInfo?.rebuild?.state === 'error'" class="fts-result is-error">
             <IconAlertCircle :size="13" />
@@ -193,7 +193,7 @@
           <button type="button" class="fts-btn-primary" :disabled="libraryBusy || !libraryInfo?.fts_enabled" @click="rebuildLibrary">
             <IconLoader2 v-if="libraryBusy" :size="13" class="fts-spin" />
             <IconRefreshCw v-else :size="13" />
-            <span>{{ libraryBusy ? '重建中…' : libraryInfo?.needs_upgrade ? '升级 trigram 并重建' : '重建索引' }}</span>
+            <span>{{ libraryBusy ? '重建中…' : '重建索引' }}</span>
           </button>
           <button type="button" class="fts-btn-ghost" :disabled="libraryLoading" @click="fetchLibrary">
             <span class="fts-icon-swap">
@@ -209,7 +209,7 @@
         </div>
 
         <p v-if="libraryInfo && !libraryInfo.fts_enabled" class="fts-warn-tip">
-          当前 SQLite 不支持 FTS5（版本 &lt; 3.34），库存搜索降级为 LIKE 扫描（较慢）。
+          当前 PostgreSQL 未启用 pg_trgm，库存搜索会退化为普通 ILIKE 扫描。
         </p>
       </div>
     </div>
@@ -233,7 +233,7 @@ import { activityLogApi, databaseMaintenanceApi } from '../../api'
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
 import { useRealtimeEvents } from '../../composables/useRealtimeEvents'
 
-// ─── Activity Logs FTS ───────────────────────────────────────
+// ─── Activity Logs Search ───────────────────────────────────────
 const realtimeEvents = useRealtimeEvents()
 const activityInfo = ref(null)
 const activityLoading = ref(false)
@@ -244,6 +244,15 @@ const FTS_FALLBACK_POLL_MS = 30000
 /** 保证 loading 态最少持续 ms 毫秒，让动画有时间播完 */
 function withMinDuration(promise, ms = 600) {
   return Promise.all([promise, new Promise(r => setTimeout(r, ms))]).then(([result]) => result)
+}
+
+function isPgTrgm(value) {
+  return ['trigram', 'pg_trgm', 'postgresql_pg_trgm'].includes(String(value || '').toLowerCase())
+}
+
+function formatSearchBackend(value) {
+  const text = String(value || '').trim()
+  return isPgTrgm(text) ? 'pg_trgm' : (text || '—')
 }
 
 const activityStatusKey = computed(() => {
@@ -296,7 +305,7 @@ async function fetchActivity() {
       stopActivityPolling()
     }
   } catch (e) {
-    console.warn('[FTS] 操作记录 FTS 状态获取失败', e)
+    console.warn('[搜索索引] 操作记录搜索索引状态获取失败', e)
   } finally {
     activityLoading.value = false
   }
@@ -330,19 +339,16 @@ function stopActivityPolling() {
 async function rebuildActivity() {
   if (activityBusy.value) return
   const info = activityInfo.value
-  const isUpgrade = info?.needs_upgrade
-  const targetTokenizer = info?.trigram_supported ? 'trigram' : (info?.tokenizer || 'trigram')
+  const targetTokenizer = 'pg_trgm'
   try {
     await showSystemConfirm({
-      title: isUpgrade ? '升级 FTS tokenizer 并重建索引' : '重建操作记录全文搜索索引',
-      message: isUpgrade
-        ? '将把操作记录搜索索引从 unicode61 升级为 trigram tokenizer，之后可以搜索任意中文片段。'
-        : '将后台重建操作记录 FTS5 索引，期间搜索自动 fallback，功能不中断。',
+      title: '重建操作记录全文搜索索引',
+      message: '将后台 REINDEX 操作记录 pg_trgm 索引，期间搜索可继续使用普通 ILIKE。',
       details: [
-        { label: '目标 tokenizer', value: targetTokenizer },
+        { label: '目标索引', value: targetTokenizer },
         { label: '当前行数', value: `${(info?.row_count ?? 0).toLocaleString()} 条` },
       ],
-      confirmText: isUpgrade ? '升级并重建' : '立即重建',
+      confirmText: '立即重建',
       cancelText: '取消',
     })
   } catch {
@@ -357,11 +363,11 @@ async function rebuildActivity() {
     startActivityPolling()
   } catch (e) {
     const detail = e?.response?.data?.detail || e?.message || '启动失败'
-    ElMessage.error(`触发操作记录 FTS 重建失败：${detail}`)
+    ElMessage.error(`触发操作记录搜索索引重建失败：${detail}`)
   }
 }
 
-// ─── Library Index FTS ───────────────────────────────────────
+// ─── Library Index Search ───────────────────────────────────────
 const libraryInfo = ref(null)
 const libraryLoading = ref(false)
 let libraryPollTimer = null
@@ -418,7 +424,7 @@ async function fetchLibrary() {
       stopLibraryPolling()
     }
   } catch (e) {
-    console.warn('[FTS] 库存索引 FTS 状态获取失败', e)
+    console.warn('[搜索索引] 库存索引状态获取失败', e)
   } finally {
     libraryLoading.value = false
   }
@@ -452,19 +458,16 @@ function stopLibraryPolling() {
 async function rebuildLibrary() {
   if (libraryBusy.value) return
   const info = libraryInfo.value
-  const isUpgrade = info?.needs_upgrade
-  const targetTokenizer = info?.trigram_supported ? 'trigram' : (info?.tokenizer || 'trigram')
+  const targetTokenizer = 'pg_trgm'
   try {
     await showSystemConfirm({
-      title: isUpgrade ? '升级库存索引 FTS tokenizer 并重建' : '重建库存索引全文搜索',
-      message: isUpgrade
-        ? '将把库存搜索索引升级为 trigram tokenizer，搜索精度大幅提升。'
-        : '将后台重建库存索引 FTS5 表，期间搜索自动 fallback LIKE，功能不中断。',
+      title: '重建库存索引全文搜索',
+      message: '将后台 REINDEX 库存 pg_trgm 索引，期间搜索可继续使用普通 ILIKE。',
       details: [
-        { label: '目标 tokenizer', value: targetTokenizer },
+        { label: '目标索引', value: targetTokenizer },
         { label: '当前行数', value: `${((info?.row_count ?? info?.total_entries) ?? 0).toLocaleString()} 条` },
       ],
-      confirmText: isUpgrade ? '升级并重建' : '立即重建',
+      confirmText: '立即重建',
       cancelText: '取消',
     })
   } catch {
@@ -479,7 +482,7 @@ async function rebuildLibrary() {
     startLibraryPolling()
   } catch (e) {
     const detail = e?.response?.data?.detail || e?.message || '启动失败'
-    ElMessage.error(`触发库存索引 FTS 重建失败：${detail}`)
+    ElMessage.error(`触发库存搜索索引重建失败：${detail}`)
   }
 }
 
@@ -533,7 +536,7 @@ function mergeLibraryFtsRealtimeState(rebuild = {}) {
 
 function handleFtsRealtimeEvent(event) {
   const detail = event?.detail || {}
-  if (detail.type !== 'maintenance.fts.changed') return
+  if (detail.type !== 'maintenance.search.changed') return
   const payload = detail.payload || {}
   const kind = String(payload.kind || detail.reason || '')
   const rebuild = payload.rebuild || {}

@@ -1,9 +1,9 @@
 <template>
   <section class="db-shrink">
     <header class="db-shrink-head">
-      <div class="card-title">数据库瘦身</div>
+      <div class="card-title">PostgreSQL 维护</div>
       <p class="db-shrink-subtitle">
-        压缩 {{ olderThanDays }} 天前操作历史的逐项明细、合并 WAL 草稿、VACUUM 回收主库碎片页。
+        压缩 {{ olderThanDays }} 天前操作历史的逐项明细，执行 VACUUM ANALYZE 并重建 pg_trgm 搜索索引。
         操作历史本身一条都不会少。
       </p>
     </header>
@@ -15,11 +15,84 @@
       </div>
     </div>
 
+    <div class="db-performance">
+      <div class="db-performance-head">
+        <div class="db-performance-title">
+          <Gauge :size="14" />
+          <span>性能诊断</span>
+        </div>
+        <div class="db-performance-actions">
+          <button
+            type="button"
+            class="db-btn-ghost"
+            :disabled="isPerformanceLoading"
+            @click="refreshPerformance"
+          >
+            <RefreshCw :size="13" :class="{ 'db-spin': isPerformanceLoading }" />
+            <span>刷新诊断</span>
+          </button>
+          <button
+            type="button"
+            class="db-btn-ghost"
+            :disabled="isPerformanceLoading || !pgStatQueryable"
+            @click="resetPerformanceStats"
+          >
+            <RotateCcw :size="13" />
+            <span>重置统计</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="db-perf-status" :class="{ 'is-warn': !pgStatQueryable }">
+        <CheckCircle2 v-if="pgStatQueryable" :size="13" />
+        <AlertCircle v-else :size="13" />
+        <span>{{ pgStatLabel }}</span>
+      </div>
+
+      <div v-if="performanceError" class="db-status is-error">
+        <AlertCircle :size="13" />
+        <span>{{ performanceError }}</span>
+      </div>
+
+      <div class="db-perf-settings">
+        <div v-for="item in performanceSettingChips" :key="item.label" class="db-perf-chip">
+          <span>{{ item.label }}</span>
+          <strong>{{ item.value }}</strong>
+        </div>
+      </div>
+
+      <div v-if="slowQueries.length" class="db-perf-list">
+        <div class="db-perf-list-title">Top SQL</div>
+        <div v-for="item in slowQueries" :key="item.queryid || item.query" class="db-sql-row">
+          <div class="db-sql-meta">
+            <span>{{ formatDuration(item.total_exec_time_ms) }}</span>
+            <span>均值 {{ formatDuration(item.mean_exec_time_ms) }}</span>
+            <span>{{ formatNumber(item.calls) }} 次</span>
+            <span>命中 {{ Number(item.shared_hit_percent || 0).toFixed(1) }}%</span>
+          </div>
+          <code>{{ item.query }}</code>
+        </div>
+      </div>
+
+      <div v-else-if="performance && pgStatQueryable" class="db-perf-empty">
+        暂无慢查询统计，重置后跑一轮业务会更准确。
+      </div>
+
+      <div v-if="hotTables.length" class="db-perf-tables">
+        <div v-for="item in hotTables" :key="item.table" class="db-table-stat">
+          <span class="db-table-name">{{ item.table }}</span>
+          <span>顺扫 {{ Number(item.seq_scan_percent || 0).toFixed(1) }}%</span>
+          <span>死元组 {{ Number(item.dead_tuple_percent || 0).toFixed(1) }}%</span>
+          <span>{{ item.total_size_human }}</span>
+        </div>
+      </div>
+    </div>
+
     <div v-if="estimate" class="db-estimate-line">
       <Sparkles :size="13" class="db-estimate-icon" />
       <span class="db-estimate-text">
         预估可释放 <strong>{{ estimate.estimated_freed_human || '—' }}</strong>
-        · 瘦身后约 {{ estimate.estimated_after_total_human || '—' }}
+        · 维护后约 {{ estimate.estimated_after_total_human || '—' }}
       </span>
       <span v-if="estimate.compact" class="db-estimate-meta">
         其中 30 天前操作记录可压缩约 {{ estimate.compact.estimated_compactable_total ?? 0 }} 行 / 候选 {{ estimate.compact.candidate_total ?? 0 }} 行
@@ -70,7 +143,7 @@
     <div v-else-if="status?.state === 'done'" class="db-status is-done">
       <CheckCircle2 :size="13" />
       <span>
-        瘦身完成，释放
+        维护完成，释放
         <strong>{{ status.freed_human }}</strong>
         · {{ status.before?.total_human || '—' }} → {{ status.after?.total_human || '—' }}
         · 耗时 {{ formatDuration(status.duration_ms) }}
@@ -82,19 +155,18 @@
 
     <div v-else-if="status?.state === 'error'" class="db-status is-error">
       <AlertCircle :size="13" />
-      <span>瘦身失败：{{ status.error || '未知错误' }}</span>
+      <span>维护失败：{{ status.error || '未知错误' }}</span>
     </div>
 
     <p class="db-shrink-tip">
-      VACUUM 阶段会独占数据库写锁。SSD 通常 30 秒 ~ 1 分钟，HDD / 群晖 Docker 预计 3 ~ 10 分钟。
-      建议在没有任务运行时点击。
+      VACUUM ANALYZE 会刷新 PostgreSQL 统计信息；REINDEX 会短暂占用搜索索引。建议在没有重任务运行时点击。
     </p>
   </section>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Sparkles, RefreshCw, Loader2, CheckCircle2, AlertCircle } from 'lucide-vue-next'
+import { Sparkles, RefreshCw, Loader2, CheckCircle2, AlertCircle, Gauge, RotateCcw } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { databaseMaintenanceApi } from '../../api'
 import { showSystemConfirm } from '../../composables/useSystemPrompt'
@@ -108,7 +180,10 @@ const realtimeEvents = useRealtimeEvents()
 const estimate = ref(null)
 const estimateError = ref('')
 const status = ref(null)
+const performance = ref(null)
+const performanceError = ref('')
 const isLoading = ref(false)
+const isPerformanceLoading = ref(false)
 let pollTimer = null
 let visibilityBound = false
 
@@ -124,22 +199,58 @@ const sizes = computed(() => {
 const isRunning = computed(() => status.value?.state === 'running')
 
 const primaryLabel = computed(() => {
-  if (isRunning.value) return '正在瘦身…'
-  return '立即瘦身'
+  if (isRunning.value) return '维护中...'
+  return '立即维护'
 })
 
 const sizeChips = computed(() => [
-  { label: '主库 cache.db', value: formatHuman(sizes.value?.main_size_bytes) },
-  { label: 'WAL 草稿', value: formatHuman(sizes.value?.wal_size_bytes) },
-  { label: '共享内存', value: formatHuman(sizes.value?.shm_size_bytes) },
-  { label: '总计', value: formatHuman(sizes.value?.total_size_bytes) }
+  { label: '数据库', value: formatHuman(sizes.value?.database_size_bytes ?? sizes.value?.total_size_bytes) },
+  { label: '操作历史', value: formatHuman(sizes.value?.activity_logs?.total_size_bytes) },
+  { label: '库存索引', value: formatHuman(sizes.value?.library_index_entries?.total_size_bytes) },
+  { label: 'trigram 索引', value: formatHuman(sizes.value?.index_size_bytes) }
 ])
+
+const pgStatStatus = computed(() => performance.value?.pg_stat_statements || {})
+const pgStatQueryable = computed(() => Boolean(pgStatStatus.value?.queryable))
+const pgStatLabel = computed(() => {
+  const status = pgStatStatus.value
+  if (status?.queryable) return 'pg_stat_statements 已启用，正在记录 Top SQL'
+  if (status?.installed && !status?.preloaded) return 'pg_stat_statements 已安装但未预加载，重启 PostgreSQL 后生效'
+  if (status?.installed) return `pg_stat_statements 暂不可查询：${status.error || '需要检查权限或重启'}`
+  return 'pg_stat_statements 未启用，无法展示真实 Top SQL'
+})
+
+const performanceSettingChips = computed(() => {
+  const settings = performance.value?.settings_by_name || {}
+  const getSetting = (name) => {
+    const item = settings[name]
+    if (!item) return '—'
+    if (item.pretty_value) return item.pretty_value
+    return item.unit ? `${item.setting}${item.unit}` : item.setting
+  }
+  return [
+    { label: 'shared_buffers', value: getSetting('shared_buffers') },
+    { label: 'effective_cache_size', value: getSetting('effective_cache_size') },
+    { label: 'work_mem', value: getSetting('work_mem') },
+    { label: 'max_wal_size', value: getSetting('max_wal_size') },
+    { label: 'checkpoint', value: getSetting('checkpoint_timeout') },
+    { label: 'statement_timeout', value: getSetting('statement_timeout') }
+  ]
+})
+
+const slowQueries = computed(() => (performance.value?.slow_queries || []).slice(0, 5))
+const hotTables = computed(() => {
+  const rows = performance.value?.table_stats || []
+  return rows
+    .filter((item) => Number(item.total_size_bytes || 0) > 0 || Number(item.seq_scan || 0) > 0 || Number(item.n_dead_tup || 0) > 0)
+    .slice(0, 6)
+})
 
 const stageDisplayName = computed(() => {
   const stage = status.value?.stage
   if (stage === 'compact') return '阶段 1/3 · 压缩操作记录'
-  if (stage === 'checkpoint') return '阶段 2/3 · 合并 WAL'
-  if (stage === 'vacuum') return '阶段 3/3 · VACUUM 重写主库'
+  if (stage === 'vacuum_analyze') return '阶段 2/3 · VACUUM ANALYZE'
+  if (stage === 'reindex') return '阶段 3/3 · REINDEX pg_trgm'
   if (stage === 'finalize') return '收尾 · 采集结果'
   return '准备中…'
 })
@@ -168,6 +279,12 @@ function formatDuration(ms) {
   return `${m}m ${rest}s`
 }
 
+function formatNumber(value) {
+  const n = Number(value ?? 0)
+  if (!Number.isFinite(n)) return '0'
+  return new Intl.NumberFormat('zh-CN').format(Math.round(n))
+}
+
 async function refresh() {
   if (isLoading.value) return
   isLoading.value = true
@@ -186,6 +303,36 @@ async function refresh() {
   }
 }
 
+async function refreshPerformance() {
+  if (isPerformanceLoading.value) return
+  isPerformanceLoading.value = true
+  performanceError.value = ''
+  try {
+    performance.value = await databaseMaintenanceApi.performance({ limit: 10 })
+  } catch (e) {
+    const detail = e?.response?.data?.detail || e?.message || '性能诊断读取失败'
+    performanceError.value = String(detail)
+  } finally {
+    isPerformanceLoading.value = false
+  }
+}
+
+async function resetPerformanceStats() {
+  if (isPerformanceLoading.value) return
+  try {
+    const result = await databaseMaintenanceApi.resetPgStatStatements()
+    if (result?.ok) {
+      ElMessage.success('pg_stat_statements 统计已重置')
+      await refreshPerformance()
+      return
+    }
+    ElMessage.warning(result?.error || 'pg_stat_statements 当前不可重置')
+  } catch (e) {
+    const detail = e?.response?.data?.detail || e?.message || '重置失败'
+    ElMessage.error(`重置 pg_stat_statements 失败：${detail}`)
+  }
+}
+
 async function pullStatus() {
   try {
     const data = await databaseMaintenanceApi.shrinkStatus()
@@ -199,7 +346,7 @@ async function pullStatus() {
     }
   } catch (e) {
     // 轮询失败不打扰，下一轮再试
-    console.warn('[数据库瘦身] 状态轮询失败', e)
+    console.warn('[数据库维护] 状态轮询失败', e)
   }
 }
 
@@ -234,16 +381,16 @@ async function onClickShrink() {
   const totalHuman = estimate.value?.total_human || '当前体积'
   try {
     await showSystemConfirm({
-      title: '确认要立即瘦身数据库吗？',
+      title: '确认要立即执行 PostgreSQL 维护吗？',
       tone: 'warning',
-      message: '瘦身过程不会删除任何操作记录，只压缩 30 天前的逐项明细 + 合并 WAL + VACUUM。',
+      message: '维护过程不会删除任何操作记录，只压缩旧明细、执行 VACUUM ANALYZE 并重建 pg_trgm 索引。',
       details: [
         { label: '当前体积', value: totalHuman },
         { label: '预估释放', value: freedHuman },
         { label: '裁剪窗口', value: `${olderThanDays} 天前` }
       ],
-      description: 'VACUUM 阶段会独占数据库写锁，其它写请求会被排队最长 30 秒。建议在没有任务运行时点击。',
-      confirmText: '立即瘦身',
+      description: '建议在没有任务运行时点击；大库 REINDEX 期间搜索索引会有短暂维护窗口。',
+      confirmText: '立即维护',
       cancelText: '再等等'
     })
   } catch {
@@ -256,13 +403,13 @@ async function onClickShrink() {
       min_detail_bytes: minDetailBytes
     })
     if (result?.already_running) {
-      ElMessage.info('瘦身任务已经在运行')
+      ElMessage.info('数据库维护任务已经在运行')
     }
     status.value = result?.status || null
     startPolling()
   } catch (e) {
     const detail = e?.response?.data?.detail || e?.message || '启动失败'
-    ElMessage.error(`启动数据库瘦身失败：${detail}`)
+    ElMessage.error(`启动数据库维护失败：${detail}`)
   }
 }
 
@@ -271,7 +418,7 @@ async function dismissResult() {
     const data = await databaseMaintenanceApi.shrinkReset()
     status.value = data
   } catch (e) {
-    console.warn('[数据库瘦身] 关闭结果失败', e)
+    console.warn('[数据库维护] 关闭结果失败', e)
     status.value = null
   }
 }
@@ -306,6 +453,7 @@ function handleDatabaseShrinkRealtimeEvent(event) {
   stopPolling()
   if (payload.state === 'done' || payload.state === 'error') {
     refresh()
+    refreshPerformance()
   }
 }
 
@@ -320,9 +468,10 @@ onMounted(async () => {
       startPolling()
     }
   } catch (e) {
-    console.warn('[数据库瘦身] 初始状态读取失败', e)
+    console.warn('[数据库维护] 初始状态读取失败', e)
   }
   await refresh()
+  await refreshPerformance()
 })
 
 onBeforeUnmount(() => {
@@ -398,6 +547,161 @@ onBeforeUnmount(() => {
   color: var(--set-text-strong);
   letter-spacing: -0.1px;
   font-variant-numeric: tabular-nums;
+}
+
+.db-performance {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--set-border);
+  border-radius: 10px;
+  background: var(--set-surface);
+}
+
+.db-performance-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.db-performance-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--set-text-strong);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.db-performance-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.db-perf-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--set-success-text);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.db-perf-status.is-warn {
+  color: var(--set-warning-text, #a16207);
+}
+
+.db-perf-settings {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 1100px) {
+  .db-perf-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.db-perf-chip {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--set-surface-soft);
+  border: 1px solid var(--set-border);
+  color: var(--set-text-muted);
+  font-size: 11.5px;
+}
+
+.db-perf-chip strong {
+  min-width: 0;
+  color: var(--set-text-strong);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.db-perf-list,
+.db-perf-tables {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.db-perf-list-title {
+  color: var(--set-text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.db-sql-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--set-surface-soft);
+  border: 1px solid var(--set-border);
+}
+
+.db-sql-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--set-text-muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.db-sql-row code {
+  color: var(--set-text);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.db-perf-empty {
+  color: var(--set-text-muted);
+  font-size: 12px;
+}
+
+.db-table-stat {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) repeat(3, auto);
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-top: 1px dashed var(--set-border);
+  color: var(--set-text-muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.db-table-name {
+  min-width: 0;
+  color: var(--set-text-strong);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .db-perf-settings { grid-template-columns: 1fr; }
+  .db-table-stat { grid-template-columns: 1fr 1fr; }
 }
 
 /* 预估行：单行小字 + Sparkles，不再用大块渐变背景 */

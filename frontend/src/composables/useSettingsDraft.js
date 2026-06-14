@@ -382,16 +382,19 @@ export const defaultConfig = {
     unread_highlight_enabled: true
   },
   database: {
-    journal_mode: 'WAL',
-    synchronous: 'FULL',
-    busy_timeout_ms: 60000,
-    wal_autocheckpoint: 500,
-    cache_size_kb: 20000,
-    pool_size: 2,
-    max_overflow: 2,
+    host: '127.0.0.1',
+    port: 5432,
+    database: 'kikoerumanager',
+    username: 'kikoerumanager',
+    password: '',
+    sslmode: 'prefer',
+    connect_timeout_seconds: 10,
+    pool_size: 10,
+    max_overflow: 20,
     pool_recycle_seconds: 1800,
-    startup_quick_check: true,
-    startup_integrity_check: false
+    pool_timeout_seconds: 30,
+    statement_timeout_ms: 120000,
+    startup_health_check: true
   },
   resource_budget: {
     enabled: true,
@@ -400,7 +403,7 @@ export const defaultConfig = {
     archive_inspect: 0,
     remote_fs: 4,
     network_download: 5,
-    sqlite_write: 1
+    database_write: 1
   },
   security_gate: {
     enabled: false,

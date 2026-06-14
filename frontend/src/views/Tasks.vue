@@ -37,7 +37,6 @@
         :get-recovered-notice="getRecoveredNotice"
         @select="(id) => (selectedItemId = id)"
         @quick-filter="applyQuickFilter"
-        @page-size-change="handlePageSizeChange"
         @go-page="handleGoPage"
         @prev-page="handlePrevPage"
         @next-page="handleNextPage"
@@ -107,7 +106,7 @@ const loading = ref(false)
 const refreshing = ref(false)
 const items = ref([])
 const totalItems = ref(0)
-const pageSize = ref(80)
+const pageSize = ref(10)
 const currentOffset = ref(0)
 const pageDirection = ref('next')
 const selectedItemId = ref('')
@@ -440,18 +439,6 @@ function handleGoPage(page) {
   pageDirection.value = nextOffset < currentOffset.value ? 'prev' : 'next'
   currentOffset.value = nextOffset
   refreshTaskCenter(false, { silent: true })
-}
-
-function handlePageSizeChange(nextSize) {
-  const normalized = Math.max(1, Number(nextSize) || pageSize.value)
-  if (normalized === pageSize.value) return
-  const anchorOffset = currentOffset.value
-  pageSize.value = normalized
-  currentOffset.value = Math.max(0, Math.floor(anchorOffset / normalized) * normalized)
-  pageDirection.value = currentOffset.value < anchorOffset ? 'prev' : 'next'
-  refreshTaskCenter(false, { silent: true }).catch((error) => {
-    console.error('任务中心页容量刷新失败:', error)
-  })
 }
 
 function scheduleTaskCenterStreamRefresh() {

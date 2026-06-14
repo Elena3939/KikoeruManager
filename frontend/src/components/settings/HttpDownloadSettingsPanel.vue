@@ -102,8 +102,8 @@
           </div>
 
           <SettingsToggleRow v-model="config.http_downloader.allow_private_network" title="允许内网 URL" subtitle="默认阻止 localhost、内网、link-local 和 metadata 地址，避免误把系统内部服务当下载源。" />
-          <SettingsFieldCard label="Gofile API Token" hint="用于解析 gofile.io 分享目录；官方 API 需要 Bearer Token。">
-            <AnimatedPasswordInput v-model="config.http_downloader.gofile_token" placeholder="可选，粘贴 Gofile account token" autocomplete="off" />
+          <SettingsFieldCard label="Gofile API Token" hint="可选；未填写时会使用临时网页账号解析分享目录，遇到权限或限流问题再填写账号 token。">
+            <AnimatedPasswordInput v-model="config.http_downloader.gofile_token" placeholder="可选账号 token，用于提升 Gofile 解析稳定性" autocomplete="off" />
           </SettingsFieldCard>
         </div>
       </div>

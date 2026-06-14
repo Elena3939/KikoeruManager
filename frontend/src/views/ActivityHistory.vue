@@ -441,7 +441,7 @@ import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
 import ActivityDetailBody from '../components/activity/ActivityDetailBody.vue'
-import { getHttpDownloadDisplayMeta, getHttpDownloadPlatformMeta } from '../components/common/httpDownloadPlatformMeta.js'
+import { getHttpDownloadDisplayMeta } from '../components/common/httpDownloadPlatformMeta.js'
 
 const router = useRouter()
 
@@ -627,7 +627,7 @@ const categoryConfigs = {
   subtitle_pair: { icon: LinkIcon, label: '字幕配对', tone: 'violet' },
   subtitle_import: { icon: FileDown, label: '字幕补配', tone: 'fuchsia' },
   http_download: { icon: FileDown, label: 'HTTP 下载', tone: 'cyan' },
-  baidu_netdisk: { icon: getHttpDownloadPlatformMeta('baidu_netdisk').icon || CloudDownload, label: '百度网盘', tone: 'sky' },
+  baidu_netdisk: { icon: CloudDownload, label: '百度网盘', tone: 'sky' },
   extract: { icon: Package, label: '解压', tone: 'teal' },
   auto_import: { icon: Database, label: '解压入库', tone: 'emerald' },
   process_existing: { icon: Folder, label: '已有目录处理', tone: 'lime' },
@@ -1018,32 +1018,103 @@ function closeDetail() {
   detailDrawerVisible.value = false
 }
 
+function detailValue(row, key) {
+  const detail = row?.detail && typeof row.detail === 'object' ? row.detail : {}
+  return detail[key]
+}
+
+function firstText(...values) {
+  for (const value of values) {
+    const text = String(value || '').trim()
+    if (text) return text
+  }
+  return ''
+}
+
+function normalizeNavigateRjcode(value) {
+  const text = String(value || '').trim().toUpperCase()
+  const matched = text.match(/RJ\d{4,}/i)
+  return matched ? matched[0].toUpperCase() : text
+}
+
 // 处理 RichBlock 透传上来的导航事件，跳转到对应工作台
 function handleDetailNavigate(payload) {
   if (!payload || typeof payload !== 'object') return
   const { action, row, taskId, folderPath, libraryId, items: batchItems } = payload
   switch (action) {
     case 'subtitle-pair': {
-      // 跳到库存页打开字幕配对工作台
+      const resolvedTaskId = firstText(taskId, row?.task_id, detailValue(row, 'task_id'))
+      const resolvedFolderPath = firstText(
+        folderPath,
+        detailValue(row, 'target_folder_path'),
+        detailValue(row, 'folder_path'),
+      )
+      const resolvedLibraryId = firstText(
+        libraryId,
+        detailValue(row, 'library_id'),
+        detailValue(row, 'subtitle_library_id'),
+        detailValue(row, 'target_library_id'),
+      )
+      const rjcode = normalizeNavigateRjcode(firstText(
+        row?.rjcode,
+        detailValue(row, 'target_rjcode'),
+        detailValue(row, 'source_rjcode'),
+      ))
       router.push({
         name: 'Library',
         query: {
-          subtitleTask: taskId || '',
-          subtitlePath: folderPath || '',
-          libraryId: libraryId || ''
+          subtitleDialog: '1',
+          subtitleTaskId: resolvedTaskId,
+          subtitleFolderPath: resolvedFolderPath,
+          subtitleLibraryId: resolvedLibraryId,
+          subtitleRjcode: rjcode,
+          subtitleSourceLabel: row?.category_label || '操作历史',
+          subtitleSummary: row?.summary || '',
+          subtitleRestoredAt: row?.created_at || '',
+          subtitleStage: 'pairing',
         }
       })
       detailDrawerVisible.value = false
       break
     }
     case 'subtitle-batch': {
-      // 跳到库存页打开字幕批量工作台，携带选中项 key 列表
-      const keys = Array.isArray(batchItems) ? batchItems.map((it) => it.key).filter(Boolean) : []
+      const items = Array.isArray(batchItems) ? batchItems : []
+      try {
+        window.localStorage.setItem('activity-history-subtitle-batch-selection', JSON.stringify({
+          items: items.map((item) => ({
+            library_id: item.libraryId || item.library_id || '',
+            folder_path: item.folderPath || item.folder_path || '',
+            folder_name: item.folderName || item.folder_name || '',
+            rjcode: item.rjcode || '',
+            task_id: item.taskId || item.task_id || '',
+            queue_state: item.queueState || item.queue_state || '',
+            queue_message: item.summary || item.queue_message || '',
+            downloaded_count: Number(item.downloadedCount || item.downloaded_count || 0),
+            existing_subtitle_count: Number(item.existingSubtitleCount || item.existing_subtitle_count || 0),
+            awaiting_manual_match: Boolean(item.awaiting),
+            manual_match_completed: Boolean(item.paired),
+            manual_match_applied_pairs: Number(item.manualMatchAppliedPairs || item.manual_match_applied_pairs || 0),
+            manual_match_deleted_subtitles: Number(item.manualMatchDeletedSubtitles || item.manual_match_deleted_subtitles || 0),
+            source_label: item.sourceLabel || '操作历史',
+            source_mode: 'activity_history_restore',
+            restored_at: item.createdAt || '',
+            activity_context: {
+              activity_id: item.activityId || '',
+              source_label: item.sourceLabel || '操作历史',
+              summary: item.summary || '',
+              created_at: item.createdAt || '',
+            },
+          })),
+          preferred_key: items[0]?.key || '',
+          activity_id: String(row?.id || ''),
+        }))
+      } catch (err) {
+        console.warn('[活动记录] 写入字幕批量跳转上下文失败', err)
+      }
       router.push({
         name: 'Library',
         query: {
-          subtitleBatch: keys.join(',') || '1',
-          batchActivityId: String(row?.id || '')
+          subtitleBatchSelection: '1',
         }
       })
       detailDrawerVisible.value = false
@@ -1253,9 +1324,8 @@ const timelineGroups = computed(() => {
         ? `${httpMeta.label} 下载`
         : 'HTTP 下载'
     } else if (row.category === 'baidu_netdisk') {
-      const baiduMeta = getHttpDownloadPlatformMeta('baidu_netdisk')
-      viewRow._categoryIcon = baiduMeta.icon || catConfig.icon
-      viewRow._categoryIconClass = baiduMeta.icon ? 'activity-platform-icon' : ''
+      viewRow._categoryIcon = catConfig.icon
+      viewRow._categoryIconClass = ''
       viewRow.category_label = '百度网盘'
     }
     const dt = row.created_at ? dayjs(row.created_at) : null

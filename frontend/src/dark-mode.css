@@ -1067,10 +1067,10 @@ html.kikoerumanager-dark body #app .password-vault .vault-pagination.el-paginati
 }
 
 html.kikoerumanager-dark body #app .password-vault .vault-pagination.el-pagination.is-background .el-pager li.is-active {
-  background: #e7e7eb !important;
+  background: #3a3b40 !important;
   background-image: none !important;
-  border-color: rgba(255, 255, 255, 0.32) !important;
-  color: #111116 !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  color: #f4f4f5 !important;
 }
 
 html.kikoerumanager-dark body #app .password-vault .vault-pagination.el-pagination :is(
@@ -1099,31 +1099,29 @@ html.kikoerumanager-dark body #app .password-vault .vault-mobile-action {
   background: transparent !important;
   border-color: transparent !important;
   box-shadow: none !important;
+  color: rgba(228, 228, 231, 0.68) !important;
 }
 
 html.kikoerumanager-dark body #app .password-vault :is(.vault-row-action.is-edit:hover, .vault-mobile-action.is-edit:hover) {
-  background: transparent !important;
-  border-color: transparent !important;
+  background: rgba(96, 165, 250, 0.12) !important;
+  border-color: rgba(96, 165, 250, 0.26) !important;
+  color: #bfdbfe !important;
   box-shadow: none !important;
 }
 
 html.kikoerumanager-dark body #app .password-vault :is(.vault-row-action.is-delete:hover, .vault-mobile-action.is-delete:hover) {
-  background: transparent !important;
-  border-color: transparent !important;
+  background: rgba(244, 63, 94, 0.14) !important;
+  border-color: rgba(251, 113, 133, 0.26) !important;
+  color: #fecdd3 !important;
   box-shadow: none !important;
 }
 
 html.kikoerumanager-dark body #app .password-vault :is(
   .vault-row-action,
-  .vault-mobile-action,
-  .vault-row-action .app-lottie-icon,
-  .vault-mobile-action .app-lottie-icon,
-  .vault-row-action .app-lottie-icon__player,
-  .vault-mobile-action .app-lottie-icon__player
+  .vault-mobile-action
 ) {
   background: transparent !important;
   background-image: none !important;
-  border-color: transparent !important;
   box-shadow: none !important;
   filter: none !important;
 }
@@ -1175,12 +1173,16 @@ html.kikoerumanager-dark body .password-sort-dd-menu .app-dd-item.is-active :is(
 }
 
 html.kikoerumanager-dark body .vault-pagination-size-popper.el-popper {
-  background: #111216 !important;
-  background-image: none !important;
-  border-color: rgba(255, 255, 255, 0.12) !important;
-  box-shadow: none !important;
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
+  overflow: hidden !important;
+  background:
+    linear-gradient(180deg, rgba(43, 44, 49, 0.92), rgba(12, 13, 17, 0.96)),
+    #111216 !important;
+  background-image:
+    linear-gradient(180deg, rgba(43, 44, 49, 0.92), rgba(12, 13, 17, 0.96)) !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.42) !important;
+  backdrop-filter: blur(16px) saturate(110%) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(110%) !important;
 }
 
 html.kikoerumanager-dark body .vault-pagination-size-popper .el-select-dropdown {
@@ -1197,25 +1199,25 @@ html.kikoerumanager-dark body .vault-pagination-size-popper .el-select-dropdown_
 html.kikoerumanager-dark body .vault-pagination-size-popper .el-select-dropdown__item {
   background: transparent !important;
   background-image: none !important;
-  color: rgba(228, 228, 231, 0.76) !important;
+  color: rgba(228, 228, 231, 0.78) !important;
 }
 
 html.kikoerumanager-dark body .vault-pagination-size-popper .el-select-dropdown__item:hover,
 html.kikoerumanager-dark body .vault-pagination-size-popper .el-select-dropdown__item.is-hovering {
-  background: #24252a !important;
+  background: #2e2f35 !important;
   background-image: none !important;
   color: #f4f4f5 !important;
 }
 
 html.kikoerumanager-dark body .vault-pagination-size-popper .el-select-dropdown__item.is-selected {
-  background: #e7e7eb !important;
+  background: #3a3b40 !important;
   background-image: none !important;
-  color: #111116 !important;
+  color: #f4f4f5 !important;
 }
 
 html.kikoerumanager-dark body .vault-pagination-size-popper .el-popper__arrow::before {
-  background: #111216 !important;
-  border-color: rgba(255, 255, 255, 0.12) !important;
+  background: #24252a !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
 }
 
 html.kikoerumanager-dark body .vault-modal-layer {

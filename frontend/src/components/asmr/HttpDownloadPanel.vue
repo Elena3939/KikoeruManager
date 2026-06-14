@@ -122,27 +122,16 @@
             <span>{{ chip.label }}</span>
             <span class="tab-count">{{ chip.selected }}/{{ chip.total }}</span>
           </button>
-          <button type="button" class="tab-chip tab-chip-idle ml-auto px-3 py-1 rounded-full text-[12px] font-medium tracking-[0.005em] border" :disabled="!selectedOkCount" @click="clearPreviewSelection">清空</button>
-        </div>
-        <div v-if="!isBaidu && hasHttpSelectedSplitVolumeItems" class="http-volume-batch-strip mx-7 mb-2">
-          <span class="http-volume-batch-label">选中分卷批量命名</span>
-          <input
-            v-model.trim="httpBatchVolumeName"
-            class="baidu-rename-input"
-            type="text"
-            maxlength="160"
-            :placeholder="inferHttpSplitVolumeBase()"
+          <button
+            type="button"
+            class="preview-selection-toggle ml-auto"
+            :class="{ 'is-clear': allPreviewSelectionState === 'all' }"
+            :disabled="!okPreviewCount"
+            @click="toggleAllPreviewSelection"
           >
-          <input
-            v-model.trim="httpBatchExtractPassword"
-            class="baidu-rename-input"
-            type="text"
-            maxlength="128"
-            placeholder="这组解压密码，可选"
-          >
-          <button type="button" class="baidu-inline-action volume" @click.stop="applyHttpSelectedSplitVolumeNaming">
-            <PencilLine :size="11" :stroke-width="2.4" />
-            <span>套用到选中分卷</span>
+            <X v-if="allPreviewSelectionState === 'all'" :size="12" :stroke-width="2.6" />
+            <Check v-else :size="12" :stroke-width="2.6" />
+            <span>{{ allPreviewSelectionState === 'all' ? '清空' : '全选' }}</span>
           </button>
         </div>
 
@@ -203,7 +192,7 @@
               </div>
               <span>{{ previewDownloadFileCount }} 文件 / {{ previewItems.length }} 分享</span>
             </div>
-            <div class="download-list-scroll flex-1 overflow-auto no-scrollbar">
+            <div class="download-list-scroll flex-1 overflow-auto no-scrollbar" @click="closePreviewContextMenu">
               <div v-if="previewing && !previewItems.length" class="http-preview-empty">
                 <AppLoadingAnimation label="正在生成预览" variant="block" :size="118" :min-height="180" />
               </div>
@@ -211,194 +200,148 @@
                 <FileIcon :size="22" :stroke-width="2.2" />
                 <span>还没有预览结果</span>
               </div>
-              <div v-else class="download-list space-y-1">
-                <label
-                  v-for="item in previewItems"
-                  :key="previewItemKey(item)"
-                  class="download-list-row"
-                  :class="{ bad: !item.ok, selected: isPreviewItemSelected(item) }"
-                  @click="togglePreviewItem(item)"
+              <div v-else class="download-tree">
+                <div
+                  v-for="row in previewTreeRows"
+                  :key="row.key"
+                  class="download-tree-row"
+                  :class="{
+                    bad: !row.ok,
+                    selected: isPreviewTreeRowSelected(row),
+                    'is-dir': row.isDir,
+                    'is-file': !row.isDir,
+                    'is-root-leaf': !row.isDir && row.depth <= 0,
+                    'is-context': previewContextMenu.rowKey === row.key,
+                    'is-volume-group': Boolean(row.volumeGroup),
+                  }"
+                  :style="{ '--tree-depth': row.depth }"
+                  @click.stop="handlePreviewTreeRowClick(row)"
+                  @contextmenu.prevent.stop="openPreviewContextMenu($event, row)"
                 >
-                  <div class="download-list-main flex items-center gap-2 flex-1 min-w-0">
-                    <button
-                      v-if="item.ok"
-                      type="button"
-                      class="download-list-check relative flex size-4 shrink-0 items-center justify-center rounded-[4px] border"
-                      :class="isPreviewItemSelected(item) ? 'is-on' : 'is-off'"
-                      @click.stop="togglePreviewItem(item)"
-                    >
-                      <Check v-if="isPreviewItemSelected(item)" :size="14" />
-                    </button>
-                    <span v-else class="http-preview-error-icon">
-                      <AlertTriangle :size="15" :stroke-width="2.3" />
-                    </span>
-                    <span
-                      class="http-source-icon"
-                      :class="`is-${sourceKey(item.source)}`"
-                      :title="sourceLabel(item.source)"
-                      :aria-label="sourceLabel(item.source)"
-                    >
-                      <img
-                        v-if="sourceIcon(item.source) && !isSourceIconFailed(item.source)"
-                        :src="sourceIcon(item.source)"
-                        alt=""
-                        loading="lazy"
-                        decoding="async"
-                        @error="markSourceIconFailed(item.source)"
+                  <span class="download-tree-indent" aria-hidden="true"></span>
+                  <button
+                    v-if="row.isDir"
+                    type="button"
+                    class="download-tree-toggle"
+                    :class="{ expanded: isPreviewTreeNodeExpanded(row.key) }"
+                    @click.stop="togglePreviewTreeNode(row)"
+                  >
+                    <ChevronRight :size="13" :stroke-width="2.6" />
+                  </button>
+                  <span v-else class="download-tree-toggle placeholder" aria-hidden="true"></span>
+
+                  <button
+                    v-if="row.selectable || !row.ok"
+                    type="button"
+                    class="download-list-check relative flex size-4 shrink-0 items-center justify-center rounded-[4px] border"
+                    :class="previewTreeSelectionClass(row)"
+                    :disabled="!row.ok"
+                    @click.stop="togglePreviewTreeRowSelection(row)"
+                  >
+                    <Check v-if="previewTreeSelectionClass(row) !== 'is-off'" :size="14" />
+                  </button>
+                  <span v-else class="download-tree-check-placeholder" aria-hidden="true"></span>
+
+                  <span v-if="!row.ok" class="http-preview-error-icon">
+                    <AlertTriangle :size="16" :stroke-width="2.4" />
+                  </span>
+                  <span v-else class="http-preview-error-placeholder" aria-hidden="true"></span>
+
+                  <Folder v-if="row.isDir" class="download-tree-kind-icon" :size="18" :stroke-width="2.35" />
+                  <FileIcon v-else class="download-tree-kind-icon" :size="18" :stroke-width="2.35" />
+
+                  <div class="download-tree-main">
+                    <div class="download-tree-name-line">
+                      <span
+                        class="http-source-icon"
+                        :class="`is-${sourceKey(row.source)}`"
+                        :title="sourceLabel(row.source)"
+                        :aria-label="sourceLabel(row.source)"
                       >
-                      <svg
-                        v-else-if="sourceKey(item.source) === 'gofile'"
-                        class="http-source-fallback-gofile"
-                        viewBox="0 0 32 32"
-                        aria-hidden="true"
+                        <img
+                          v-if="sourceIcon(row.source) && !isSourceIconFailed(row.source)"
+                          :src="sourceIcon(row.source)"
+                          alt=""
+                          loading="lazy"
+                          decoding="async"
+                          @error="markSourceIconFailed(row.source)"
+                        >
+                        <svg
+                          v-else-if="sourceKey(row.source) === 'gofile'"
+                          class="http-source-fallback-gofile"
+                          viewBox="0 0 32 32"
+                          aria-hidden="true"
+                        >
+                          <path d="M2 19.2h10.7l-.5 2.2H2z" fill="#f2b705" opacity=".88" />
+                          <path d="M5.2 14.6h11.5l-.5 2.2H5.2z" fill="#f2b705" opacity=".92" />
+                          <path d="M9.8 10h12l-.5 2.2H9.8z" fill="#f2b705" />
+                          <path d="M14.1 5.8h8.9l3 3v13.5H14.1z" fill="#f8fafc" />
+                          <path d="M22.9 5.8v3.1H26z" fill="#cbd5e1" />
+                          <path d="M8.5 12.7h12.7l2-2.4h6.2l-3.6 15.9H10.4z" fill="#f3b51b" />
+                        </svg>
+                        <Globe2 v-else :size="15" :stroke-width="2.2" />
+                      </span>
+                      <span class="download-list-name http-preview-name">{{ row.name }}</span>
+                      <span v-if="row.customPreview" class="baidu-custom-preview">{{ row.customPreview }}</span>
+                    </div>
+                    <div class="http-preview-meta">
+                      <span v-if="row.isDir" class="http-preview-pass-chip">{{ row.fileCount }} 文件</span>
+                      <span v-if="row.volumeGroup" class="http-preview-pass-chip">连续分卷 {{ row.volumeGroup.files.length }}</span>
+                      <span v-if="!row.ok" class="http-preview-reason">{{ row.reason }}</span>
+                      <span v-else-if="row.warning" class="warn">{{ row.warning }}</span>
+                      <span v-if="row.passCodeText" class="http-preview-pass-chip" :class="{ warn: row.passCodeWarn }">{{ row.passCodeText }}</span>
+                    </div>
+                    <div v-if="row.passCodeEditable" class="baidu-pass-code-row" :class="{ invalid: row.item?.pass_code_invalid }" @click.stop>
+                      <input
+                        v-model.trim="row.item.pass_code"
+                        class="baidu-pass-code-input"
+                        type="text"
+                        maxlength="12"
+                        placeholder="重新输入提取码"
+                        @keyup.enter.stop="applyPassCodeAndPreview(row.item)"
                       >
-                        <path d="M2 19.2h10.7l-.5 2.2H2z" fill="#f2b705" opacity=".88" />
-                        <path d="M5.2 14.6h11.5l-.5 2.2H5.2z" fill="#f2b705" opacity=".92" />
-                        <path d="M9.8 10h12l-.5 2.2H9.8z" fill="#f2b705" />
-                        <path d="M14.1 5.8h8.9l3 3v13.5H14.1z" fill="#f8fafc" />
-                        <path d="M22.9 5.8v3.1H26z" fill="#cbd5e1" />
-                        <path d="M8.5 12.7h12.7l2-2.4h6.2l-3.6 15.9H10.4z" fill="#f3b51b" />
-                      </svg>
-                      <Globe2 v-else :size="15" :stroke-width="2.2" />
-                    </span>
-                    <div class="http-preview-main">
-                      <div class="download-list-name http-preview-name">{{ previewItemTitle(item) }}</div>
-                      <div v-if="!isBaidu || !item.ok || item.requires_pass_code || item.warning" class="http-preview-meta">
-                        <span class="http-preview-source-chip">{{ sourceLabel(item.source) }}</span>
-                        <span v-if="!item.ok" class="http-preview-reason">{{ previewItemReason(item) }}</span>
-                        <span v-else-if="item.warning" class="warn">{{ item.warning }}</span>
-                        <span v-if="isBaidu && (item.requires_pass_code || item.pass_code)" class="http-preview-pass-chip" :class="{ warn: !item.pass_code || item.pass_code_invalid }">{{ item.pass_code ? `提取码 ${item.pass_code}` : '缺提取码' }}</span>
-                      </div>
-                      <div v-if="item.ok" class="baidu-item-actions" @click.stop>
-                        <button type="button" class="baidu-inline-action" :class="{ active: item._rename_open }" @click.stop="toggleBaiduRenameEditor(item)">
-                          <PencilLine :size="11" :stroke-width="2.4" />
-                          <span>{{ item._rename_open ? '收起命名' : '重命名/密码' }}</span>
-                        </button>
-                        <span v-if="baiduCustomNamePreview(item)" class="baidu-custom-preview">{{ baiduCustomNamePreview(item) }}</span>
-                      </div>
-                      <div v-if="item.ok && item._rename_open" class="baidu-rename-panel" @click.stop>
-                        <label class="baidu-rename-field">
-                          <span>保存名称</span>
-                          <input
-                            v-model.trim="item.custom_name"
-                            class="baidu-rename-input"
-                            type="text"
-                            maxlength="160"
-                            :placeholder="defaultBaiduCustomName(item)"
-                          >
-                        </label>
-                        <label class="baidu-rename-field">
-                          <span><KeyRound :size="10" :stroke-width="2.5" /> 解压密码</span>
-                          <input
-                            v-model.trim="item.custom_extract_password"
-                            class="baidu-rename-input"
-                            type="text"
-                            maxlength="128"
-                            placeholder="可选，按密码嗅探模板写入文件名"
-                          >
-                        </label>
-                        <button type="button" class="baidu-inline-action clear" :disabled="!hasBaiduCustomNaming(item)" @click.stop="clearBaiduCustomNaming(item)">
-                          <X :size="11" :stroke-width="2.4" />
-                          <span>清除</span>
-                        </button>
-                      </div>
-                      <div v-if="isBaidu && item.ok && item._rename_open && hasBaiduSplitVolumeFiles(item)" class="baidu-volume-batch-panel" @click.stop>
-                        <div class="baidu-volume-batch-title">
-                          <span>分卷批量命名</span>
-                          <button type="button" class="baidu-inline-action ghost" @click.stop="selectBaiduSplitVolumeFiles(item, true)">全选分卷</button>
-                          <button type="button" class="baidu-inline-action ghost" @click.stop="selectBaiduSplitVolumeFiles(item, false)">清空选择</button>
-                        </div>
-                        <label class="baidu-rename-field">
-                          <span>统一保存名</span>
-                          <input
-                            v-model.trim="item._batch_volume_name"
-                            class="baidu-rename-input"
-                            type="text"
-                            maxlength="160"
-                            :placeholder="inferBaiduSplitVolumeBase(item)"
-                          >
-                        </label>
-                        <label class="baidu-rename-field">
-                          <span><KeyRound :size="10" :stroke-width="2.5" /> 这组解压密码</span>
-                          <input
-                            v-model.trim="item._batch_extract_password"
-                            class="baidu-rename-input"
-                            type="text"
-                            maxlength="128"
-                            placeholder="可选，写入这组文件夹名"
-                          >
-                        </label>
-                        <button type="button" class="baidu-inline-action volume" :disabled="!hasBaiduSelectedSplitVolumeFiles(item)" @click.stop="applyBaiduSelectedSplitVolumeNaming(item)">
-                          <PencilLine :size="11" :stroke-width="2.4" />
-                          <span>套用到选中分卷</span>
-                        </button>
-                      </div>
-                      <div v-if="!isBaidu && item.preview_summary" class="baidu-preview-summary">{{ item.preview_summary }}</div>
-                      <div v-if="shouldShowBaiduPreviewFiles(item)" class="baidu-preview-files">
-                        <div
-                          v-for="node in baiduPreviewTreeRows(item)"
-                          :key="`${previewItemKey(item)}-${node.key}`"
-                          class="baidu-preview-tree-row"
-                          :class="{ 'is-dir': node.isDir, 'is-file': !node.isDir, 'is-root-child': node.depth <= 0 }"
-                          :style="{ '--tree-depth': node.depth }"
-                        >
-                          <span class="baidu-preview-tree-guide" aria-hidden="true"></span>
-                          <span class="baidu-preview-file-check-slot">
-                            <input
-                              v-if="isBaidu && item._rename_open && !node.isDir && baiduSplitVolumeInfo(node.file)"
-                              v-model="node.file._batch_selected"
-                              class="baidu-preview-file-check"
-                              type="checkbox"
-                              @click.stop
-                            >
-                          </span>
-                          <span class="baidu-preview-file-type">{{ node.isDir ? '目录' : '文件' }}</span>
-                          <div class="baidu-preview-file-main">
-                            <span class="baidu-preview-file-name">{{ node.name }}</span>
-                            <div v-if="isBaidu && item._rename_open && !node.isDir" class="baidu-file-rename-grid" @click.stop>
-                              <label class="baidu-file-rename-field">
-                                <span>保存名称</span>
-                                <input
-                                  v-model.trim="node.file.custom_name"
-                                  class="baidu-rename-input"
-                                  type="text"
-                                  maxlength="160"
-                                  :placeholder="defaultBaiduPreviewFileName(node.file)"
-                                >
-                              </label>
-                              <label class="baidu-file-rename-field">
-                                <span>解压密码</span>
-                                <input
-                                  v-model.trim="node.file.custom_extract_password"
-                                  class="baidu-rename-input"
-                                  type="text"
-                                  maxlength="128"
-                                  placeholder="可选"
-                                >
-                              </label>
-                            </div>
-                          </div>
-                          <span v-if="!node.isDir" class="baidu-preview-file-size">{{ formatSize(node.file?.size_bytes || node.file?.size) }}</span>
-                        </div>
-                      </div>
-                      <div v-if="isBaidu && item.requires_pass_code" class="baidu-pass-code-row" :class="{ invalid: item.pass_code_invalid }" @click.stop>
-                        <input
-                          v-model.trim="item.pass_code"
-                          class="baidu-pass-code-input"
-                          type="text"
-                          maxlength="12"
-                          placeholder="重新输入提取码"
-                          @keyup.enter.stop="applyPassCodeAndPreview(item)"
-                        >
-                        <button type="button" class="baidu-pass-code-btn" :disabled="previewing || !item.pass_code" @click.stop="applyPassCodeAndPreview(item)">验证并重新预览</button>
-                      </div>
+                      <button type="button" class="baidu-pass-code-btn" :disabled="previewing || !row.item?.pass_code" @click.stop="applyPassCodeAndPreview(row.item)">验证并重新预览</button>
                     </div>
                   </div>
-                  <span v-if="shouldShowPreviewItemSize(item)" class="download-list-size text-xs text-slate-400 ml-4 tabular-nums">{{ formatSize(item.size_bytes) }}</span>
-                </label>
+
+                  <span v-if="!row.isDir && row.size" class="download-list-size text-xs text-slate-400 ml-4 tabular-nums">{{ formatSize(row.size) }}</span>
+                </div>
               </div>
             </div>
           </section>
+        </div>
+
+        <div
+          v-if="previewContextMenu.visible"
+          class="preview-context-menu"
+          :style="{ left: `${previewContextMenu.x}px`, top: `${previewContextMenu.y}px` }"
+          @click.stop
+          @contextmenu.prevent.stop
+        >
+          <button
+            type="button"
+            :disabled="!canRefreshPreviewContextRow"
+            @click="refreshPreviewContextRow"
+          >
+            <RefreshCw :size="13" :stroke-width="2.4" />
+            <span>重新解析</span>
+          </button>
+          <button
+            type="button"
+            :disabled="!canRenamePreviewContextRow"
+            @click="renamePreviewContextRow"
+          >
+            <PencilLine :size="13" :stroke-width="2.4" />
+            <span>重命名</span>
+          </button>
+          <button
+            type="button"
+            :disabled="!canSetPasswordPreviewContextRow"
+            @click="setPasswordPreviewContextRow"
+          >
+            <KeyRound :size="13" :stroke-width="2.4" />
+            <span>设置密码</span>
+          </button>
         </div>
 
         <div class="footer-row px-7 py-3 flex items-center justify-between">
@@ -418,19 +361,30 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { AlertTriangle, Check, CloudDownload, Download, FileIcon, Globe2, KeyRound, Loader2, PencilLine, RefreshCw, Search, X } from 'lucide-vue-next'
+import { AlertTriangle, Check, ChevronRight, CloudDownload, Download, FileIcon, Folder, Globe2, KeyRound, Loader2, PencilLine, RefreshCw, Search, X } from 'lucide-vue-next'
 import AppDropdown from '../common/AppDropdown.vue'
 import AppLoadingAnimation from '../common/AppLoadingAnimation.vue'
 import StatefulButton from '../ui/stateful-button.vue'
 import { baiduNetdiskApi, httpDownloadApi } from '../../api'
+import { showSystemPrompt } from '../../composables/useSystemPrompt'
 import {
   getHttpDownloadPlatformMeta,
   httpDownloadPlatformsFromUrl,
 } from '../common/httpDownloadPlatformMeta.js'
 
 const DOWNLOAD_PANEL_CONFLICT_POLICIES = ['resume', 'rename', 'skip']
+const DOWNLOAD_PREVIEW_CACHE_VERSION = 2
+const DOWNLOAD_PREVIEW_CACHE_TTL_MS = 30 * 60 * 1000
+const DOWNLOAD_PREVIEW_CACHE_SESSION_ID = getDownloadPreviewCacheSessionId()
+
+function getDownloadPreviewCacheSessionId() {
+  const key = '__KIKOERUMANAGER_DOWNLOAD_PREVIEW_CACHE_SESSION_ID__'
+  if (typeof window === 'undefined') return 'server'
+  if (!window[key]) window[key] = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  return window[key]
+}
 
 const props = defineProps({
   provider: { type: String, default: 'http' },
@@ -457,8 +411,15 @@ const previewLogs = ref([])
 const previewProgress = ref(0)
 const selectedPreviewKeys = ref(new Set())
 const failedSourceIcons = ref(new Set())
-const httpBatchVolumeName = ref('')
-const httpBatchExtractPassword = ref('')
+const expandedPreviewTreeKeys = ref(new Set())
+const previewCacheInputSignature = ref('')
+const previewContextMenu = reactive({
+  visible: false,
+  x: 0,
+  y: 0,
+  rowKey: '',
+  row: null,
+})
 
 const conflictOptions = [
   { value: 'resume', label: '断点续传' },
@@ -476,6 +437,9 @@ const inputPlaceholder = computed(() => isBaidu.value
 )
 const healthActionLabel = computed(() => isBaidu.value ? '检测百度登录态' : '检测 aria2')
 const BAIDU_SHARE_CODE_SEPARATOR = '----'
+const START_TIMEOUT_RECOVERY_WINDOW_MS = 10 * 1000
+const HTTP_DIRECT_PREVIEW_TIMEOUT_MS = 45 * 1000
+const HTTP_SHARE_PREVIEW_TIMEOUT_MS = 120 * 1000
 
 function normalizeDownloadPanelDraft(value = {}) {
   const policy = String(value?.conflictPolicy || '').trim()
@@ -484,17 +448,135 @@ function normalizeDownloadPanelDraft(value = {}) {
     targetSubdir: String(value?.targetSubdir || ''),
     outputFolderName: String(value?.outputFolderName || ''),
     batchName: String(value?.batchName || ''),
-    conflictPolicy: DOWNLOAD_PANEL_CONFLICT_POLICIES.includes(policy) ? policy : 'resume'
+    conflictPolicy: DOWNLOAD_PANEL_CONFLICT_POLICIES.includes(policy) ? policy : 'resume',
+    previewCache: normalizePreviewCache(value?.previewCache)
   }
 }
 
+function normalizePreviewCache(value = {}) {
+  if (!value || typeof value !== 'object') return null
+  const version = Number(value.version || 0)
+  if (version !== DOWNLOAD_PREVIEW_CACHE_VERSION) return null
+  if (String(value.sessionId || '') !== DOWNLOAD_PREVIEW_CACHE_SESSION_ID) return null
+  const cachedAt = Number(value.cachedAt || 0)
+  if (!Number.isFinite(cachedAt) || cachedAt <= 0) return null
+  const age = Date.now() - cachedAt
+  if (age < -60 * 1000 || age > DOWNLOAD_PREVIEW_CACHE_TTL_MS) return null
+  const items = Array.isArray(value.items) ? value.items.filter(item => item && typeof item === 'object') : []
+  if (!items.length) return null
+  return {
+    version: DOWNLOAD_PREVIEW_CACHE_VERSION,
+    sessionId: DOWNLOAD_PREVIEW_CACHE_SESSION_ID,
+    provider: String(value.provider || ''),
+    inputSignature: String(value.inputSignature || ''),
+    items,
+    selectedKeys: Array.isArray(value.selectedKeys) ? value.selectedKeys.map(key => String(key || '')).filter(Boolean) : [],
+    needsMaterialize: Boolean(value.needsMaterialize),
+    logs: Array.isArray(value.logs) ? value.logs.slice(-80) : [],
+    progress: Number(value.progress || 100),
+    expandedKeys: Array.isArray(value.expandedKeys) ? value.expandedKeys.map(key => String(key || '')).filter(Boolean) : [],
+    cachedAt,
+  }
+}
+
+function previewCacheSignature(cache) {
+  const normalized = normalizePreviewCache(cache)
+  if (!normalized) return ''
+  return JSON.stringify({
+    version: normalized.version,
+    sessionId: normalized.sessionId,
+    provider: normalized.provider,
+    inputSignature: normalized.inputSignature,
+    items: normalized.items,
+    selectedKeys: normalized.selectedKeys,
+    needsMaterialize: normalized.needsMaterialize,
+    logs: normalized.logs,
+    progress: normalized.progress,
+    expandedKeys: normalized.expandedKeys,
+  })
+}
+
+function previewInputSignature() {
+  return JSON.stringify({
+    provider: isBaidu.value ? 'baidu' : 'http',
+    urls: parsedUrls.value,
+    targetSubdir: String(targetSubdir.value || ''),
+    outputFolderName: String(outputFolderName.value || ''),
+    conflictPolicy: String(conflictPolicy.value || ''),
+  })
+}
+
+function currentPreviewCache() {
+  if (!previewItems.value.length) return null
+  const signature = previewInputSignature()
+  if (previewCacheInputSignature.value && previewCacheInputSignature.value !== signature) return null
+  return {
+    version: DOWNLOAD_PREVIEW_CACHE_VERSION,
+    sessionId: DOWNLOAD_PREVIEW_CACHE_SESSION_ID,
+    provider: isBaidu.value ? 'baidu' : 'http',
+    inputSignature: signature,
+    items: sanitizePreviewItemsForCache(previewItems.value),
+    selectedKeys: [...selectedPreviewKeys.value],
+    needsMaterialize: Boolean(previewNeedsMaterialize.value),
+    logs: previewLogs.value.slice(-80),
+    progress: Number(previewProgress.value || 100),
+    expandedKeys: [...expandedPreviewTreeKeys.value],
+    cachedAt: Date.now(),
+  }
+}
+
+function sanitizePreviewItemsForCache(items) {
+  return JSON.parse(JSON.stringify(items || []))
+}
+
+function restorePreviewCache(cache) {
+  const normalized = normalizePreviewCache(cache)
+  if (!normalized) return false
+  if (normalized.provider !== (isBaidu.value ? 'baidu' : 'http')) return false
+  if (normalized.inputSignature !== previewInputSignature()) return false
+  previewItems.value = sanitizePreviewItemsForCache(normalized.items)
+  selectedPreviewKeys.value = new Set(normalized.selectedKeys)
+  previewNeedsMaterialize.value = Boolean(normalized.needsMaterialize)
+  previewLogs.value = normalized.logs || []
+  previewProgress.value = Number(normalized.progress || 100)
+  expandedPreviewTreeKeys.value = new Set(normalized.expandedKeys || [])
+  previewCacheInputSignature.value = normalized.inputSignature
+  if (!expandedPreviewTreeKeys.value.size) expandDefaultPreviewTreeRows(previewItems.value)
+  return true
+}
+
+function restoreOrClearPreviewCache(cache) {
+  if (restorePreviewCache(cache)) return true
+  if (previewItems.value.length) clearPreviewCacheState()
+  return false
+}
+
+function persistPreviewCacheFromState() {
+  const draft = currentDownloadPanelDraft()
+  if (isSameDownloadPanelDraft(draft, props.draft)) return
+  emit('update:draft', draft)
+}
+
+function clearPreviewCacheState() {
+  previewItems.value = []
+  previewNeedsMaterialize.value = false
+  previewLogs.value = []
+  previewProgress.value = 0
+  selectedPreviewKeys.value = new Set()
+  expandedPreviewTreeKeys.value = new Set()
+  previewCacheInputSignature.value = ''
+  closePreviewContextMenu()
+}
+
 function currentDownloadPanelDraft() {
+  const cache = currentPreviewCache()
   return normalizeDownloadPanelDraft({
     urlText: urlText.value,
     targetSubdir: targetSubdir.value,
     outputFolderName: outputFolderName.value,
     batchName: batchName.value,
-    conflictPolicy: conflictPolicy.value
+    conflictPolicy: conflictPolicy.value,
+    previewCache: cache
   })
 }
 
@@ -506,6 +588,7 @@ function isSameDownloadPanelDraft(left, right) {
     && a.outputFolderName === b.outputFolderName
     && a.batchName === b.batchName
     && a.conflictPolicy === b.conflictPolicy
+    && previewCacheSignature(a.previewCache) === previewCacheSignature(b.previewCache)
 }
 
 const parsedUrls = computed(() => {
@@ -629,16 +712,6 @@ const selectedOkItems = computed(() => okPreviewItems.value.filter(item => selec
 const selectedOkCount = computed(() => selectedOkItems.value.length)
 const selectedDownloadFileCount = computed(() => selectedOkItems.value.reduce((sum, item) => sum + previewItemFileCount(item), 0))
 const selectedTotalBytes = computed(() => selectedOkItems.value.reduce((sum, item) => sum + Number(item.size_bytes || item.size || 0), 0))
-const httpSelectedSplitVolumeItems = computed(() => {
-  if (isBaidu.value) return []
-  const rows = selectedOkItems.value
-    .map(item => ({ item, info: baiduSplitVolumeInfo(item) }))
-    .filter(entry => entry.info && entry.info.base)
-  const hasMain = rows.some(entry => entry.info.suffix === '.zip')
-  const hasPart = rows.some(entry => /^\.z\d{2}$/i.test(entry.info.suffix))
-  return hasMain && hasPart ? rows : []
-})
-const hasHttpSelectedSplitVolumeItems = computed(() => httpSelectedSplitVolumeItems.value.length > 1)
 const allPreviewSelectionState = computed(() => {
   if (!okPreviewCount.value || !selectedOkCount.value) return 'none'
   return selectedOkCount.value === okPreviewCount.value ? 'all' : 'partial'
@@ -668,6 +741,11 @@ const previewSourceChips = computed(() => {
   }))
 })
 const conflictPolicyLabel = computed(() => conflictOptions.find(item => item.value === conflictPolicy.value)?.label || conflictPolicy.value)
+const previewTreeRoots = computed(() => buildPreviewTreeRoots(previewItems.value))
+const previewTreeRows = computed(() => flattenPreviewTreeRows(previewTreeRoots.value))
+const canRefreshPreviewContextRow = computed(() => Boolean(previewContextMenu.row) && !previewing.value)
+const canRenamePreviewContextRow = computed(() => canRenamePreviewTreeRow(previewContextMenu.row))
+const canSetPasswordPreviewContextRow = computed(() => canSetPasswordPreviewTreeRow(previewContextMenu.row))
 
 const previewStatusTitle = computed(() => {
   if (previewing.value) return '生成预览中'
@@ -694,7 +772,7 @@ const healthText = computed(() => {
       return `百度登录态可用${accountText}${svip}`
     }
     const pikpak = health.value.pikpak_enabled ? (health.value.pikpak_ready ? ' · PikPak 已配置' : ' · PikPak 缺配置') : ''
-    const gofile = health.value.gofile_ready ? ' · Gofile 已配置' : ''
+    const gofile = health.value.gofile_ready ? ` · ${health.value.gofile_token_configured ? 'Gofile Token 已配置' : 'Gofile 临时账号'}` : ''
     return `aria2 可用${health.value.version?.version ? ` · ${health.value.version.version}` : ''}${gofile}${pikpak}`
   }
   return health.value.message || (isBaidu.value ? '百度登录态不可用' : 'aria2 不可用')
@@ -718,18 +796,21 @@ async function loadHealth() {
   }
 }
 
-async function preview() {
+async function preview(options = {}) {
+  const forceRefresh = Boolean(options?.forceRefresh)
   if (!parsedUrls.value.length) return ElMessage.warning('先粘贴至少一个下载链接')
+  if (!forceRefresh && restorePreviewCache(props.draft?.previewCache)) {
+    previewDialogVisible.value = true
+    addPreviewLog('已使用缓存预览结果', 'success')
+    persistPreviewCacheFromState()
+    return
+  }
   previewDialogVisible.value = true
   previewing.value = true
-  previewItems.value = []
-  previewNeedsMaterialize.value = false
-  selectedPreviewKeys.value = new Set()
-  httpBatchVolumeName.value = ''
-  httpBatchExtractPassword.value = ''
+  clearPreviewCacheState()
   previewProgress.value = 8
   previewLogs.value = []
-  addPreviewLog(`开始生成 ${parsedUrls.value.length} 个来源的预览`)
+  addPreviewLog(forceRefresh ? `跳过缓存，重新解析 ${parsedUrls.value.length} 个来源` : `开始生成 ${parsedUrls.value.length} 个来源的预览`, forceRefresh ? 'warning' : 'info')
   parsedUrls.value.forEach((url, index) => {
     addPreviewLog(`[${index + 1}/${parsedUrls.value.length}] 处理 ${sourceLabel(sourceFromUrl(url))}`)
   })
@@ -744,8 +825,10 @@ async function preview() {
         timeout: 60000
       })
       previewItems.value = result.items || []
+      previewCacheInputSignature.value = previewInputSignature()
       previewNeedsMaterialize.value = true
       selectedPreviewKeys.value = new Set((result.selected_keys || []).filter(Boolean))
+      expandDefaultPreviewTreeRows(previewItems.value)
       previewProgress.value = 100
       const failedCount = Number(result.failed_count ?? Math.max(0, previewItems.value.length - okPreviewCount.value))
       const needsPassCodeCount = Number(result.needs_pass_code_count || 0)
@@ -763,6 +846,7 @@ async function preview() {
       if (okPreviewCount.value) ElMessage.success(`可下载 ${okPreviewCount.value} 个分享`)
       if (needsPassCodeCount) ElMessage.warning(`${needsPassCodeCount} 个分享需要补提取码`)
       else if (!okPreviewCount.value && failedCount) ElMessage.error(previewItemReason(previewItems.value.find(item => !item.ok)) || '百度网盘预览失败')
+      persistPreviewCacheFromState()
       return
     }
     for (let index = 0; index < urls.length; index += 1) {
@@ -773,7 +857,7 @@ async function preview() {
           urls: [url],
           targetSubdir: targetSubdir.value,
           conflictPolicy: conflictPolicy.value,
-          timeout: 45000
+          timeout: previewTimeoutForUrl(url)
         })
         const nextItems = result.items || []
         previewItems.value = [...previewItems.value, ...nextItems]
@@ -798,11 +882,14 @@ async function preview() {
       }
     }
     previewProgress.value = 100
+    previewCacheInputSignature.value = previewInputSignature()
+    expandDefaultPreviewTreeRows(previewItems.value)
     addPreviewLog(`解析完成，可下载 ${okPreviewCount.value} 项，失败 ${previewItems.value.length - okPreviewCount.value} 项`, okPreviewCount.value ? 'success' : 'warning')
     if (previewNeedsMaterialize.value) addPreviewLog('部分分享链接会在开始下载时通过官方接口解析直链', 'warning')
     if (okPreviewCount.value) ElMessage.success(`可下载 ${okPreviewCount.value} 个链接`)
     if (previewNeedsMaterialize.value) ElMessage.info('部分分享链接会在开始下载时通过官方接口解析直链')
     if (previewItems.value.length - okPreviewCount.value) ElMessage.warning(`${previewItems.value.length - okPreviewCount.value} 个链接不可直接下载`)
+    persistPreviewCacheFromState()
   } finally {
     previewing.value = false
   }
@@ -811,6 +898,7 @@ async function preview() {
 async function start() {
   if (!selectedOkCount.value) return ElMessage.warning('先勾选至少一个下载项')
   starting.value = true
+  const startedAtMs = Date.now()
   try {
     addPreviewLog(`提交 ${selectedOkCount.value} 个选中下载项`)
     const result = await activeApi.value.start({
@@ -829,6 +917,21 @@ async function start() {
     ElMessage.success(result.message || `${panelTitle.value}任务已创建`)
     previewDialogVisible.value = false
   } catch (error) {
+    if (isRequestTimeout(error)) {
+      try {
+        const recoveredIds = await recoverStartedTasksAfterTimeout(startedAtMs)
+        if (recoveredIds.length) {
+          emit('started', recoveredIds)
+          previewNeedsMaterialize.value = false
+          addPreviewLog(`请求超时，但已接回 ${recoveredIds.length} 个已创建任务`, 'warning')
+          ElMessage.warning('请求超时，但任务已创建，已打开下载工作台')
+          previewDialogVisible.value = false
+          return
+        }
+      } catch (recoverError) {
+        console.warn('接回超时创建任务失败:', recoverError)
+      }
+    }
     addPreviewLog(error.response?.data?.detail || '创建下载任务失败', 'error')
     ElMessage.error(error.response?.data?.detail || '创建下载任务失败')
   } finally {
@@ -878,6 +981,58 @@ function sourceFromUrl(url) {
   return httpDownloadPlatformsFromUrl(url)
 }
 
+function isGofileShareUrl(url) {
+  try {
+    const parsed = new URL(String(url || '').trim())
+    return ['gofile.io', 'www.gofile.io'].includes(parsed.hostname.toLowerCase())
+  } catch {
+    return false
+  }
+}
+
+function previewTimeoutForUrl(url) {
+  const source = sourceFromUrl(url)
+  if (source === 'gofile') return isGofileShareUrl(url) ? HTTP_SHARE_PREVIEW_TIMEOUT_MS : HTTP_DIRECT_PREVIEW_TIMEOUT_MS
+  return ['transferit', 'onedrive', 'google_drive', 'pikpak'].includes(source) ? HTTP_SHARE_PREVIEW_TIMEOUT_MS : HTTP_DIRECT_PREVIEW_TIMEOUT_MS
+}
+
+function isRequestTimeout(error) {
+  const code = String(error?.code || '').toUpperCase()
+  const message = String(error?.message || '').toLowerCase()
+  return code === 'ECONNABORTED' || message.includes('timeout')
+}
+
+function taskTimestamp(task) {
+  const value = task?.created_at || task?.started_at || ''
+  const timestamp = value ? new Date(value).getTime() : 0
+  return Number.isFinite(timestamp) ? timestamp : 0
+}
+
+function taskPlatform(task) {
+  if (isBaidu.value) return 'baidu_netdisk'
+  return sourceKey(task?.task_metadata?.download_mode || task?.download_mode || task?.platform || task?.platform_label || '')
+}
+
+function expectedStartPlatforms() {
+  if (isBaidu.value) return new Set(['baidu_netdisk'])
+  const values = selectedOkItems.value.map(item => sourceKey(item?.source || item?.download_mode || sourceFromUrl(item?.url || item?.masked_url || '')))
+  return new Set(values.filter(Boolean))
+}
+
+async function recoverStartedTasksAfterTimeout(startedAtMs) {
+  const result = await activeApi.value.status()
+  const platforms = expectedStartPlatforms()
+  const threshold = Number(startedAtMs || 0) - START_TIMEOUT_RECOVERY_WINDOW_MS
+  return (Array.isArray(result?.tasks) ? result.tasks : [])
+    .filter(task => taskTimestamp(task) >= threshold)
+    .filter(task => {
+      const platform = taskPlatform(task)
+      return !platforms.size || platforms.has(platform)
+    })
+    .map(task => task.id)
+    .filter(Boolean)
+}
+
 function previewItemTitle(item) {
   if (item?.ok) return item.filename || item.name || '未命名文件'
   return `${sourceLabel(item?.source)} 预览失败`
@@ -891,67 +1046,654 @@ function previewItemReason(item) {
   return reason || warning || '未读取到可下载文件'
 }
 
-function toggleBaiduRenameEditor(item) {
-  if (!item) return
-  item._rename_open = !item._rename_open
-  if (item._rename_open && !item.custom_name) {
-    item.custom_name = defaultBaiduCustomName(item)
-  }
-  if (item._rename_open) {
-    prepareBaiduSplitVolumeBatch(item)
-    baiduPreviewFiles(item).forEach(file => {
-      if (!file || file.is_dir) return
-      if (!String(file.custom_name || '').trim()) {
-        file.custom_name = defaultBaiduPreviewFileName(file)
-      }
-    })
+function createPreviewTreeNode({
+  key,
+  name,
+  depth = 0,
+  isDir = false,
+  item = null,
+  file = null,
+  source = '',
+  path = '',
+  parent = null,
+  ok = true,
+  reason = '',
+  warning = '',
+  size = 0,
+  fileCount = 0,
+  customPreview = '',
+  passCodeText = '',
+  passCodeWarn = false,
+  passCodeEditable = false,
+  volumeGroup = null,
+}) {
+  return {
+    key,
+    name: String(name || '').trim() || (isDir ? '未命名目录' : '未命名文件'),
+    depth,
+    isDir,
+    item,
+    file,
+    source: source || item?.source || 'http',
+    path: String(path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''),
+    parent,
+    children: [],
+    selectable: false,
+    ok,
+    reason,
+    warning,
+    size,
+    fileCount,
+    customPreview,
+    passCodeText,
+    passCodeWarn,
+    passCodeEditable,
+    volumeGroup,
   }
 }
 
-function clearBaiduCustomNaming(item) {
-  if (!item) return
-  item.custom_name = ''
-  item.custom_extract_password = ''
-  item.custom_group_folder = false
-  baiduPreviewFiles(item).forEach(file => {
-    file.custom_name = ''
-    file.custom_extract_password = ''
-    file._batch_selected = false
+function buildPreviewTreeRoots(items) {
+  if (!isBaidu.value) return buildHttpPreviewForest(items)
+  const roots = []
+  ;(items || []).forEach((item, index) => {
+    if (!item || !item.ok) {
+      roots.push(buildFailedPreviewTreeRoot(item, index))
+      return
+    }
+    roots.push(...buildOkPreviewTreeRoots(item, index))
+  })
+  return roots
+}
+
+function buildHttpPreviewForest(items) {
+  const roots = []
+  const dirRoots = []
+  ;(items || []).forEach((item, index) => {
+    if (!item || !item.ok) {
+      roots.push(buildFailedPreviewTreeRoot(item, index))
+      return
+    }
+    const pathParts = previewPathParts(item?.relative_path || item?.filename || item?.name || previewItemTitle(item))
+    const source = item?.source || sourceFromUrl(item?.url || item?.masked_url || '')
+    if (pathParts.length <= 1) {
+      const node = createPreviewTreeNode({
+        key: `http:${previewItemKey(item) || index}`,
+        name: pathParts[0] || previewItemTitle(item),
+        item,
+        source,
+        path: pathParts[0] || '',
+        warning: item?.warning || '',
+      })
+      decoratePreviewFileNode(node)
+      roots.push(node)
+      return
+    }
+
+    const rootName = pathParts[0]
+    const sourceKeyPart = sourceKey(source)
+    const rootKey = `http-dir:${sourceKeyPart}:${rootName}`
+    let root = dirRoots.find(node => node.key === rootKey)
+    if (!root) {
+      root = createPreviewTreeNode({
+        key: rootKey,
+        name: rootName,
+        isDir: true,
+        item,
+        source,
+        path: rootName,
+      })
+      dirRoots.push(root)
+      roots.push(root)
+    }
+    addFilePathToPreviewTree(root, pathParts.slice(1), item, null, `http:${previewItemKey(item) || index}`, source)
+  })
+  dirRoots.forEach(root => decoratePreviewDirNode(root))
+  return roots
+}
+
+function buildFailedPreviewTreeRoot(item, index) {
+  return createPreviewTreeNode({
+    key: `failed:${index}:${previewItemKey(item) || item?.masked_url || item?.url || index}`,
+    name: previewItemTitle(item),
+    item,
+    source: item?.source || sourceFromUrl(item?.url || item?.masked_url || ''),
+    ok: false,
+    reason: previewItemReason(item),
+    warning: item?.warning || '',
+    passCodeText: isBaidu.value && item?.requires_pass_code
+      ? (item.pass_code ? `提取码 ${item.pass_code}` : '缺提取码')
+      : '',
+    passCodeWarn: Boolean(item?.requires_pass_code || item?.pass_code_invalid),
+    passCodeEditable: Boolean(isBaidu.value && item?.requires_pass_code),
   })
 }
 
-function hasBaiduCustomNaming(item) {
-  if (!item) return false
-  if (String(item.custom_name || '').trim()) return true
-  if (String(item.custom_extract_password || '').trim()) return true
-  return baiduPreviewFiles(item).some(file => (
-    file
-    && !file.is_dir
-    && (String(file.custom_name || '').trim() || String(file.custom_extract_password || '').trim())
-  ))
+function buildOkPreviewTreeRoots(item, index) {
+  return buildBaiduPreviewTreeRoots(item, index)
 }
 
-function defaultBaiduCustomName(item) {
-  const title = String(item?.filename || item?.name || '').trim()
-  const files = Array.isArray(item?.preview_files) ? item.preview_files.filter(Boolean) : []
-  const file = files.length === 1 ? files[0] : null
-  const sourceName = String(file?.relative_path || file?.name || title || '').split(/[\\/]/).filter(Boolean).pop() || title
-  return splitFilename(sourceName).name || sourceName || '百度网盘文件'
+function buildBaiduPreviewTreeRoots(item, index) {
+  const files = baiduPreviewFiles(item)
+  const rootKey = `baidu:${previewItemKey(item) || index}`
+  if (!files.length) {
+    const node = createPreviewTreeNode({
+      key: rootKey,
+      name: previewItemTitle(item),
+      item,
+      source: item?.source || 'baidu_netdisk',
+      warning: item?.warning || '',
+      passCodeText: item?.pass_code ? `提取码 ${item.pass_code}` : '',
+      passCodeWarn: Boolean(item?.requires_pass_code || item?.pass_code_invalid),
+      passCodeEditable: Boolean(item?.requires_pass_code),
+    })
+    decoratePreviewFileNode(node)
+    return [node]
+  }
+
+  const entries = normalizeBaiduPreviewTreeEntries(item, files)
+    .filter(entry => entry.parts.length)
+    .sort(sortPreviewTreeEntries)
+  const shouldWrap = item.preview_root_is_folder || entries.some(entry => entry.parts.length > 1 || entry.isDir)
+  if (!shouldWrap && entries.length === 1 && !entries[0].isDir) {
+    const entry = entries[0]
+    const node = createPreviewTreeNode({
+      key: `${rootKey}:file:${baiduPreviewFileKey(entry.file) || entry.parts.join('/')}`,
+      name: entry.parts[entry.parts.length - 1] || previewItemTitle(item),
+      item,
+      file: entry.file,
+      source: item?.source || 'baidu_netdisk',
+      path: entry.parts.join('/'),
+      warning: item?.warning || '',
+    })
+    decoratePreviewFileNode(node)
+    return [node]
+  }
+
+  const root = createPreviewTreeNode({
+    key: `${rootKey}:share`,
+    name: previewItemTitle(item),
+    isDir: true,
+    item,
+    source: item?.source || 'baidu_netdisk',
+    path: previewItemTitle(item),
+    warning: item?.warning || '',
+    passCodeText: item?.pass_code ? `提取码 ${item.pass_code}` : '',
+    passCodeWarn: Boolean(item?.requires_pass_code || item?.pass_code_invalid),
+    passCodeEditable: Boolean(item?.requires_pass_code),
+  })
+  entries.forEach((entry, entryIndex) => {
+    addFilePathToPreviewTree(root, entry.parts, item, entry.file, `${rootKey}:${entryIndex}`, item?.source)
+  })
+  decoratePreviewDirNode(root)
+  return [root]
 }
 
-function baiduCustomNamePreview(item) {
-  const customName = String(item?.custom_name || '').trim()
-  const customPassword = String(item?.custom_extract_password || '').trim()
+function addFilePathToPreviewTree(root, parts, item, file, keyBase, source) {
+  let current = root
+  const cleanParts = (parts || []).map(part => String(part || '').trim()).filter(Boolean)
+  cleanParts.forEach((part, index) => {
+    const isLeaf = index === cleanParts.length - 1
+    const childPath = [...previewPathParts(current.path), part].join('/')
+    if (!isLeaf || file?.is_dir) {
+      let dir = current.children.find(child => child.isDir && child.name === part)
+      if (!dir) {
+        dir = createPreviewTreeNode({
+          key: `${keyBase}:dir:${childPath}`,
+          name: part,
+          depth: current.depth + 1,
+          isDir: true,
+          item,
+          source,
+          path: childPath,
+          parent: current,
+        })
+        current.children.push(dir)
+      }
+      current = dir
+      return
+    }
+    const node = createPreviewTreeNode({
+      key: `${keyBase}:file:${baiduPreviewFileKey(file) || previewItemKey(item) || childPath}`,
+      name: part,
+      depth: current.depth + 1,
+      item,
+      file: file || item,
+      source,
+      path: childPath,
+      parent: current,
+      warning: item?.warning || '',
+    })
+    decoratePreviewFileNode(node)
+    current.children.push(node)
+  })
+}
+
+function decoratePreviewFileNode(node) {
+  const item = node.item || {}
+  const file = node.file || item
+  node.isDir = false
+  node.selectable = Boolean(item.ok)
+  node.ok = Boolean(item.ok)
+  node.reason = node.ok ? '' : previewItemReason(item)
+  node.warning = String(node.warning || item.warning || '').trim()
+  node.size = Number(file?.size_bytes || file?.size || item?.size_bytes || item?.size || 0)
+  node.fileCount = node.ok ? 1 : 0
+  node.customPreview = customPreviewForTreeRow(node)
+  node.passCodeText = isBaidu.value && (item.requires_pass_code || item.pass_code)
+    ? (item.pass_code ? `提取码 ${item.pass_code}` : '缺提取码')
+    : ''
+  node.passCodeWarn = Boolean(isBaidu.value && (item.requires_pass_code || item.pass_code_invalid))
+  node.passCodeEditable = Boolean(isBaidu.value && item.requires_pass_code)
+  node.volumeGroup = null
+  return node
+}
+
+function decoratePreviewDirNode(node) {
+  node.children.sort(sortPreviewTreeNodes)
+  node.children.forEach(child => {
+    child.depth = node.depth + 1
+    child.parent = node
+    if (child.isDir) decoratePreviewDirNode(child)
+    else decoratePreviewFileNode(child)
+  })
+  node.selectable = node.children.some(child => child.selectable)
+  node.ok = node.children.every(child => child.ok)
+  node.size = node.children.reduce((sum, child) => sum + Number(child.size || 0), 0)
+  node.fileCount = node.children.reduce((sum, child) => sum + Number(child.fileCount || 0), 0)
+  node.volumeGroup = detectContinuousVolumeGroup(collectDirectPreviewFileRows(node))
+  node.customPreview = customPreviewForTreeRow(node)
+  node.warning = node.warning || ''
+  return node
+}
+
+function sortPreviewTreeEntries(a, b) {
+  const aPath = (a.parts || []).join('/').toLowerCase()
+  const bPath = (b.parts || []).join('/').toLowerCase()
+  const aDir = Boolean(a.isDir || a.file?.is_dir)
+  const bDir = Boolean(b.isDir || b.file?.is_dir)
+  if (aDir !== bDir) return aDir ? -1 : 1
+  return aPath.localeCompare(bPath, 'zh-CN')
+}
+
+function sortPreviewTreeNodes(a, b) {
+  if (Boolean(a.isDir) !== Boolean(b.isDir)) return a.isDir ? -1 : 1
+  return String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN')
+}
+
+function previewPathParts(value) {
+  return String(value || '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .map(part => part.trim())
+    .filter(Boolean)
+}
+
+function flattenPreviewTreeRows(nodes) {
+  const rows = []
+  const visit = node => {
+    rows.push(node)
+    if (!node.isDir || !isPreviewTreeNodeExpanded(node.key)) return
+    node.children.forEach(visit)
+  }
+  ;(nodes || []).forEach(visit)
+  return rows
+}
+
+function isPreviewTreeNodeExpanded(key) {
+  return expandedPreviewTreeKeys.value.has(String(key || ''))
+}
+
+function togglePreviewTreeNode(row) {
+  if (!row?.isDir) return
+  const next = new Set(expandedPreviewTreeKeys.value)
+  if (next.has(row.key)) next.delete(row.key)
+  else next.add(row.key)
+  expandedPreviewTreeKeys.value = next
+  persistPreviewCacheFromState()
+}
+
+function expandDefaultPreviewTreeRows(items) {
+  const next = new Set()
+  buildPreviewTreeRoots(items).forEach(root => {
+    if (root.isDir) next.add(root.key)
+    root.children?.forEach(child => {
+      if (child.isDir && root.children.length <= 4) next.add(child.key)
+    })
+  })
+  expandedPreviewTreeKeys.value = next
+}
+
+function collectPreviewFileRows(row) {
+  if (!row) return []
+  if (!row.isDir) return row.ok ? [row] : []
+  return (row.children || []).flatMap(child => collectPreviewFileRows(child))
+}
+
+function collectDirectPreviewFileRows(row) {
+  if (!row?.isDir) return []
+  return (row.children || []).filter(child => child && !child.isDir && child.ok)
+}
+
+function previewRowSelectionItems(row) {
+  if (!row?.ok) return []
+  if (!row.isDir) return row.item ? [row.item] : []
+  const items = []
+  const seen = new Set()
+  collectPreviewFileRows(row).forEach(fileRow => {
+    const item = fileRow.item
+    const key = previewItemKey(item)
+    if (!item || !key || seen.has(key)) return
+    seen.add(key)
+    items.push(item)
+  })
+  return items
+}
+
+function previewTreeSelectionClass(row) {
+  if (row && !row.ok) return 'is-disabled'
+  const items = previewRowSelectionItems(row)
+  if (!items.length) return 'is-off'
+  const selected = items.filter(item => selectedPreviewKeys.value.has(previewItemKey(item))).length
+  if (!selected) return 'is-off'
+  return selected === items.length ? 'is-on' : 'is-partial'
+}
+
+function isPreviewTreeRowSelected(row) {
+  return previewTreeSelectionClass(row) !== 'is-off'
+}
+
+function togglePreviewTreeRowSelection(row) {
+  if (!row?.ok) return
+  const items = previewRowSelectionItems(row)
+  if (!items.length) return
+  const next = new Set(selectedPreviewKeys.value)
+  const shouldSelect = previewTreeSelectionClass(row) !== 'is-on'
+  items.forEach(item => {
+    const key = previewItemKey(item)
+    if (!key) return
+    if (shouldSelect) next.add(key)
+    else next.delete(key)
+  })
+  selectedPreviewKeys.value = next
+  persistPreviewCacheFromState()
+}
+
+function handlePreviewTreeRowClick(row) {
+  closePreviewContextMenu()
+  if (!row?.ok) return
+  if (row.isDir) {
+    togglePreviewTreeNode(row)
+    return
+  }
+  togglePreviewTreeRowSelection(row)
+}
+
+function detectContinuousVolumeGroup(rows) {
+  const entries = (rows || [])
+    .filter(row => row && !row.isDir && row.ok)
+    .map(row => ({ row, info: previewArchiveVolumeInfo(row.file || row.item || row) }))
+    .filter(entry => entry.info && entry.info.base)
+  if (entries.length < 2) return null
+
+  const groups = new Map()
+  entries.forEach(entry => {
+    const base = String(entry.info.base || '').trim().toLowerCase()
+    if (!base) return
+    const parentKey = String(entry.row?.parent?.path || '').trim().toLowerCase()
+    const key = `${parentKey}::${entry.info.type}::${base}`
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(entry)
+  })
+
+  const validGroups = []
+  groups.forEach(groupEntries => {
+    const sorted = sortContinuousVolumeEntries(groupEntries)
+    if (!isContinuousVolumeEntries(sorted)) return
+    validGroups.push({
+      base: sorted[0].info.base,
+      type: sorted[0].info.type,
+      displayPattern: sorted[0].info.displayPattern,
+      files: sorted,
+    })
+  })
+  return validGroups.length === 1 ? validGroups[0] : null
+}
+
+function sortContinuousVolumeEntries(entries) {
+  return (entries || []).slice().sort((a, b) => {
+    if (a.info.order !== b.info.order) return a.info.order - b.info.order
+    if (a.info.index !== b.info.index) return a.info.index - b.info.index
+    return String(a.row?.name || '').localeCompare(String(b.row?.name || ''), 'zh-CN')
+  })
+}
+
+function isContinuousVolumeEntries(entries) {
+  if (!Array.isArray(entries) || entries.length < 2) return false
+  const type = entries[0]?.info?.type
+  if (!type || !entries.every(entry => entry.info?.type === type)) return false
+  const indexed = entries.filter(entry => entry.info?.isNumbered && Number.isFinite(entry.info.index))
+  if (indexed.length < 2 && !['zip_z', 'rar_old', 'exe_e'].includes(type)) return false
+  if (['zip_z', 'rar_old', 'exe_e'].includes(type)) {
+    const mainSuffix = type === 'zip_z' ? '.zip' : (type === 'rar_old' ? '.rar' : '.exe')
+    if (!entries.some(entry => entry.info.suffix === mainSuffix)) return false
+  }
+  if (indexed.length) {
+    const indexes = indexed.map(entry => entry.info.index).sort((a, b) => a - b)
+    const expectedStart = type === 'rar_old' ? 0 : 1
+    if (indexes[0] !== expectedStart) return false
+    for (let index = 0; index < indexes.length; index += 1) {
+      if (indexes[index] !== expectedStart + index) return false
+    }
+  }
+  return true
+}
+
+function customPreviewForTreeRow(row) {
+  if (!row?.ok) return ''
+  if (row.isDir) {
+    if (!row.volumeGroup) return ''
+    const first = row.volumeGroup.files.find(entry => entry.row)
+    const item = first?.row?.item || row.item
+    const customName = String(item?.custom_name || '').trim()
+    const customPassword = String(item?.custom_extract_password || '').trim()
+    if (!customName && !customPassword) return ''
+    const base = customName || row.volumeGroup.base || row.name
+    return `${base}${customPassword ? `(${customPassword})` : ''}${volumeGroupDisplayPattern(row.volumeGroup)}`
+  }
+  const item = row.item || {}
+  const file = row.file || item
+  const customName = String(file.custom_name || item.custom_name || '').trim()
+  const customPassword = String(file.custom_extract_password || item.custom_extract_password || '').trim()
   if (!customName && !customPassword) return ''
-  const baseName = customName || defaultBaiduCustomName(item)
-  const ext = baiduSingleFileExtension(item)
-  return `${baseName}${customPassword ? `(${customPassword})` : ''}${ext}`
+  const base = customName || defaultPreviewRowCustomName(row)
+  const ext = splitFilename(String(file.name || file.filename || item.filename || row.name || '')).ext
+  return `${base}${customPassword ? `(${customPassword})` : ''}${ext}`
 }
 
-function baiduSingleFileExtension(item) {
-  const files = baiduPreviewFiles(item).filter(file => file && !file.is_dir)
-  if (files.length !== 1) return ''
-  return splitFilename(String(files[0]?.name || files[0]?.relative_path || '')).ext
+function defaultPreviewRowCustomName(row) {
+  if (!row) return '下载文件'
+  if (row.isDir && row.volumeGroup?.base) return row.volumeGroup.base
+  if (isBaidu.value && row.file) return defaultBaiduPreviewFileName(row.file)
+  return splitFilename(String(row.item?.filename || row.item?.name || row.name || '下载文件')).name || row.name || '下载文件'
+}
+
+function canRenamePreviewTreeRow(row) {
+  if (!row?.ok) return false
+  if (!row.isDir) return true
+  return Boolean(row.volumeGroup)
+}
+
+function canSetPasswordPreviewTreeRow(row) {
+  if (!row?.ok) return false
+  if (!row.isDir) return true
+  return Boolean(row.volumeGroup)
+}
+
+function openPreviewContextMenu(event, row) {
+  if (!row) return
+  previewContextMenu.visible = true
+  previewContextMenu.rowKey = row.key
+  previewContextMenu.row = row
+  const bounds = event?.currentTarget?.closest?.('.http-preview-window')?.getBoundingClientRect?.()
+  const viewportWidth = bounds?.width || window.innerWidth || 1200
+  const viewportHeight = bounds?.height || window.innerHeight || 800
+  const leftBase = bounds ? event.clientX - bounds.left : event.clientX
+  const topBase = bounds ? event.clientY - bounds.top : event.clientY
+  previewContextMenu.x = Math.min(Math.max(8, leftBase), Math.max(8, viewportWidth - 184))
+  previewContextMenu.y = Math.min(Math.max(8, topBase), Math.max(8, viewportHeight - 132))
+}
+
+function closePreviewContextMenu() {
+  previewContextMenu.visible = false
+  previewContextMenu.rowKey = ''
+  previewContextMenu.row = null
+}
+
+async function refreshPreviewContextRow() {
+  const row = previewContextMenu.row
+  closePreviewContextMenu()
+  if (!row || previewing.value) return
+  addPreviewLog(`准备重新解析 ${row.name || '当前预览'}`, 'warning')
+  await preview({ forceRefresh: true })
+}
+
+async function renamePreviewContextRow() {
+  const row = previewContextMenu.row
+  closePreviewContextMenu()
+  if (!canRenamePreviewTreeRow(row)) {
+    ElMessage.warning('这个目录下没有可连续识别的分卷组')
+    return
+  }
+  const current = defaultPreviewRowCustomName(row)
+  try {
+    const value = await showSystemPrompt({
+      title: row.isDir ? '重命名连续分卷' : '重命名文件',
+      message: row.isDir ? '只会作用到这个目录下识别出的同一组连续分卷。' : '只会修改这个文件的保存名称。',
+      placeholder: current,
+      modelValue: current,
+      confirmText: '保存',
+      cancelText: '取消',
+      width: 520,
+      validator: input => String(input || '').trim() ? true : '名称不能为空',
+    })
+    const nextName = String(value || '').trim()
+    if (!nextName) return
+    applyTreeRowRename(row, nextName)
+    persistPreviewCacheFromState()
+  } catch (_) {}
+}
+
+async function setPasswordPreviewContextRow() {
+  const row = previewContextMenu.row
+  closePreviewContextMenu()
+  if (!canSetPasswordPreviewTreeRow(row)) {
+    ElMessage.warning('这个目录下没有可连续识别的分卷组')
+    return
+  }
+  const current = currentTreeRowPassword(row)
+  try {
+    const value = await showSystemPrompt({
+      title: row.isDir ? '设置连续分卷密码' : '设置解压密码',
+      message: row.isDir ? '只会作用到这个目录下识别出的同一组连续分卷。' : '密码会按密码嗅探模板写入保存文件名。',
+      placeholder: '留空可清除密码',
+      modelValue: current,
+      confirmText: '保存',
+      cancelText: '取消',
+      width: 520,
+    })
+    applyTreeRowPassword(row, String(value || '').trim())
+    persistPreviewCacheFromState()
+  } catch (_) {}
+}
+
+function currentTreeRowPassword(row) {
+  if (!row) return ''
+  if (row.isDir && row.volumeGroup) {
+    const first = row.volumeGroup.files.find(entry => entry.row)
+    return String(first?.row?.item?.custom_extract_password || '').trim()
+  }
+  const file = row.file || {}
+  const item = row.item || {}
+  return String(file.custom_extract_password || item.custom_extract_password || '').trim()
+}
+
+function applyTreeRowRename(row, name) {
+  const cleanName = String(name || '').trim()
+  if (!row || !cleanName) return
+  if (row.isDir && row.volumeGroup) {
+    applyVolumeGroupNaming(row, { name: cleanName, keepPassword: true })
+    addPreviewLog(`已重命名连续分卷为 ${cleanName}${volumeGroupDisplayPattern(row.volumeGroup)}`, 'success')
+    return
+  }
+  if (isBaidu.value && row.file && row.file !== row.item) {
+    row.file.custom_name = cleanName
+  } else if (row.item) {
+    row.item.custom_name = cleanName
+  }
+  addPreviewLog(`已重命名 ${row.name}`, 'success')
+}
+
+function applyTreeRowPassword(row, password) {
+  const cleanPassword = String(password || '').trim()
+  if (!row) return
+  if (row.isDir && row.volumeGroup) {
+    applyVolumeGroupNaming(row, { password: cleanPassword, keepName: true })
+    addPreviewLog(cleanPassword ? `已为连续分卷设置密码` : '已清除连续分卷密码', cleanPassword ? 'success' : 'warning')
+    return
+  }
+  if (isBaidu.value && row.file && row.file !== row.item) {
+    row.file.custom_extract_password = cleanPassword
+  } else if (row.item) {
+    row.item.custom_extract_password = cleanPassword
+  }
+  addPreviewLog(cleanPassword ? `已为 ${row.name} 设置密码` : `已清除 ${row.name} 的密码`, cleanPassword ? 'success' : 'warning')
+}
+
+function applyVolumeGroupNaming(row, { name = '', password = '', keepName = false, keepPassword = false } = {}) {
+  if (!row?.volumeGroup) return
+  const currentName = String(row.volumeGroup.files[0]?.row?.item?.custom_name || row.volumeGroup.base || row.name || '').trim()
+  const currentPassword = String(row.volumeGroup.files[0]?.row?.item?.custom_extract_password || '').trim()
+  const base = keepName ? currentName : (String(name || '').trim() || currentName)
+  const nextPassword = keepPassword ? currentPassword : String(password || '').trim()
+  row.volumeGroup.files.forEach(({ row: fileRow, info }) => {
+    const item = fileRow?.item
+    const file = fileRow?.file
+    if (!item) return
+    item.custom_name = isBaidu.value ? base : volumeFileCustomName(base, info)
+    item.custom_extract_password = nextPassword
+    item.custom_group_folder = isBaidu.value
+      ? true
+      : Boolean(nextPassword && shouldUseGroupFolderForVolumeRow(row))
+    if (isBaidu.value && file && file !== item) {
+      file.custom_name = baiduVolumeFileCustomName(base, info)
+      file.custom_extract_password = ''
+      file._batch_selected = true
+    }
+  })
+}
+
+function baiduVolumeFileCustomName(base, info) {
+  if (info?.type === 'zip_z' && !info?.needsFullName) return String(base || '').trim()
+  return volumeFileCustomName(base, info)
+}
+
+function volumeFileCustomName(base, info) {
+  const cleanBase = String(base || '').trim()
+  const suffix = String(info?.suffix || '').trim()
+  if (!cleanBase || !suffix) return cleanBase
+  return `${cleanBase}${suffix}`
+}
+
+function shouldUseGroupFolderForVolumeRow(row) {
+  if (!row?.isDir) return false
+  if (isBaidu.value) return true
+  const groupKeys = new Set((row.volumeGroup?.files || []).map(entry => entry.row?.key).filter(Boolean))
+  const groupParents = new Set((row.volumeGroup?.files || []).map(entry => entry.row?.parent?.key).filter(Boolean))
+  return collectPreviewFileRows(row).some(fileRow => (
+    fileRow
+    && !groupKeys.has(fileRow.key)
+    && groupParents.has(fileRow.parent?.key)
+  ))
 }
 
 function splitFilename(value) {
@@ -967,7 +1709,11 @@ function splitFilename(value) {
   return { name: filename, ext: '' }
 }
 
-function baiduSplitVolumeInfo(file) {
+function volumeGroupDisplayPattern(group) {
+  return group?.displayPattern || '.z01 / .zip'
+}
+
+function previewArchiveVolumeInfo(file) {
   const sourceName = String(file?.name || file?.filename || file?.relative_path || '').split(/[\\/]/).filter(Boolean).pop() || ''
   const trimmed = sourceName.trim()
   if (!trimmed) return null
@@ -975,176 +1721,159 @@ function baiduSplitVolumeInfo(file) {
   if (match) {
     return {
       base: match[1].trim(),
+      type: 'zip_z',
       index: Number(match[2]),
+      order: 1,
       suffix: `.z${match[2].padStart(2, '0')}`,
+      isNumbered: true,
       needsFullName: false,
+      displayPattern: '.z01 / .zip',
     }
   }
   match = trimmed.match(/^(.*?)([._\-\s]+z)(\d{2})$/i)
   if (match) {
     return {
       base: match[1].trim(),
+      type: 'zip_z',
       index: Number(match[3]),
+      order: 1,
       suffix: `.z${match[3].padStart(2, '0')}`,
+      isNumbered: true,
       needsFullName: true,
+      displayPattern: '.z01 / .zip',
     }
   }
   match = trimmed.match(/^(.*?)\.zip$/i)
   if (match) {
     return {
       base: match[1].trim(),
+      type: 'zip_z',
       index: 10000,
+      order: 2,
       suffix: '.zip',
+      isNumbered: false,
       needsFullName: false,
+      displayPattern: '.z01 / .zip',
+    }
+  }
+  match = trimmed.match(/^(.*?)\.7z\.(\d{3})$/i)
+  if (match) {
+    return {
+      base: match[1].trim(),
+      type: '7z',
+      index: Number(match[2]),
+      order: 1,
+      suffix: `.7z.${match[2].padStart(3, '0')}`,
+      isNumbered: true,
+      needsFullName: false,
+      displayPattern: '.7z.001',
+    }
+  }
+  match = trimmed.match(/^(.*?)\.zip\.(\d{3})$/i)
+  if (match) {
+    return {
+      base: match[1].trim(),
+      type: 'zip_numeric',
+      index: Number(match[2]),
+      order: 1,
+      suffix: `.zip.${match[2].padStart(3, '0')}`,
+      isNumbered: true,
+      needsFullName: false,
+      displayPattern: '.zip.001',
+    }
+  }
+  match = trimmed.match(/^(.*?)\.part(\d+)\.(rar|zip|7z|exe)$/i)
+  if (match) {
+    return {
+      base: match[1].trim(),
+      type: 'part',
+      index: Number(match[2]),
+      order: 1,
+      suffix: `.part${match[2]}.${match[3]}`,
+      isNumbered: true,
+      needsFullName: false,
+      displayPattern: `.part1.${match[3].toLowerCase()}`,
+    }
+  }
+  match = trimmed.match(/^(.*?)\.part(\d+)$/i)
+  if (match) {
+    return {
+      base: match[1].trim(),
+      type: 'part_no_ext',
+      index: Number(match[2]),
+      order: 1,
+      suffix: `.part${match[2]}`,
+      isNumbered: true,
+      needsFullName: false,
+      displayPattern: '.part1',
+    }
+  }
+  match = trimmed.match(/^(.*?)\.r(\d{2})$/i)
+  if (match) {
+    return {
+      base: match[1].trim(),
+      type: 'rar_old',
+      index: Number(match[2]),
+      order: 1,
+      suffix: `.r${match[2].padStart(2, '0')}`,
+      isNumbered: true,
+      needsFullName: false,
+      displayPattern: '.rar / .r00',
+    }
+  }
+  match = trimmed.match(/^(.*?)\.rar$/i)
+  if (match) {
+    return {
+      base: match[1].trim(),
+      type: 'rar_old',
+      index: 10000,
+      order: 2,
+      suffix: '.rar',
+      isNumbered: false,
+      needsFullName: false,
+      displayPattern: '.rar / .r00',
+    }
+  }
+  match = trimmed.match(/^(.*?)\.e(\d{2})$/i)
+  if (match) {
+    return {
+      base: match[1].trim(),
+      type: 'exe_e',
+      index: Number(match[2]),
+      order: 1,
+      suffix: `.e${match[2].padStart(2, '0')}`,
+      isNumbered: true,
+      needsFullName: false,
+      displayPattern: '.exe / .e01',
+    }
+  }
+  match = trimmed.match(/^(.*?)\.exe$/i)
+  if (match) {
+    return {
+      base: match[1].trim(),
+      type: 'exe_e',
+      index: 10000,
+      order: 2,
+      suffix: '.exe',
+      isNumbered: false,
+      needsFullName: false,
+      displayPattern: '.exe / .e01',
+    }
+  }
+  match = trimmed.match(/^(.*?)\.(\d{3})$/i)
+  if (match) {
+    return {
+      base: match[1].trim(),
+      type: 'numeric',
+      index: Number(match[2]),
+      order: 1,
+      suffix: `.${match[2].padStart(3, '0')}`,
+      isNumbered: true,
+      needsFullName: false,
+      displayPattern: '.001',
     }
   }
   return null
-}
-
-function httpPreviewParentDir(item) {
-  const relative = String(item?.relative_path || item?.filename || item?.name || '').replace(/\\/g, '/').trim()
-  const parts = relative.split('/').filter(Boolean)
-  parts.pop()
-  return parts.join('/')
-}
-
-function inferHttpSplitVolumeBase() {
-  const counts = new Map()
-  httpSelectedSplitVolumeItems.value.forEach(({ info }) => {
-    const base = String(info.base || '').trim()
-    if (!base) return
-    counts.set(base, (counts.get(base) || 0) + 1)
-  })
-  let best = ''
-  let bestCount = 0
-  counts.forEach((count, base) => {
-    if (count > bestCount || (count === bestCount && base.length > best.length)) {
-      best = base
-      bestCount = count
-    }
-  })
-  return best || '统一文件名'
-}
-
-function httpSelectedHasUnrelatedSameLevel() {
-  const selectedKeys = new Set(httpSelectedSplitVolumeItems.value.map(({ item }) => previewItemKey(item)))
-  const selectedParents = new Set(httpSelectedSplitVolumeItems.value.map(({ item }) => httpPreviewParentDir(item)))
-  return okPreviewItems.value.some(item => (
-    !selectedKeys.has(previewItemKey(item))
-    && selectedParents.has(httpPreviewParentDir(item))
-  ))
-}
-
-function applyHttpSelectedSplitVolumeNaming() {
-  const entries = httpSelectedSplitVolumeItems.value
-  if (!entries.length) return
-  const base = String(httpBatchVolumeName.value || '').trim() || inferHttpSplitVolumeBase()
-  const password = String(httpBatchExtractPassword.value || '').trim()
-  const useGroupFolder = Boolean(password && httpSelectedHasUnrelatedSameLevel())
-  entries
-    .sort((a, b) => a.info.index - b.info.index)
-    .forEach(({ item, info }) => {
-      item.custom_name = base
-      item.custom_extract_password = password
-      item.custom_group_folder = useGroupFolder
-    })
-  addPreviewLog(`已把 ${entries.length} 个选中分卷统一为 ${base}.z01 / ${base}.zip`, 'success')
-}
-
-function baiduSplitVolumeFiles(item) {
-  const files = baiduPreviewFiles(item)
-    .filter(file => file && !file.is_dir)
-    .map(file => ({ file, info: baiduSplitVolumeInfo(file) }))
-    .filter(entry => entry.info && entry.info.base)
-  if (files.length < 2) return []
-  const hasMain = files.some(entry => entry.info.suffix === '.zip')
-  const hasPart = files.some(entry => /^\.z\d{2}$/i.test(entry.info.suffix))
-  return hasMain && hasPart ? files : []
-}
-
-function hasBaiduSplitVolumeFiles(item) {
-  return baiduSplitVolumeFiles(item).length > 1
-}
-
-function prepareBaiduSplitVolumeBatch(item) {
-  if (!item || !hasBaiduSplitVolumeFiles(item)) return
-  if (!String(item._batch_volume_name || '').trim()) {
-    item._batch_volume_name = inferBaiduSplitVolumeBase(item)
-  }
-  baiduSplitVolumeFiles(item).forEach(({ file }) => {
-    if (typeof file._batch_selected !== 'boolean') {
-      file._batch_selected = true
-    }
-  })
-}
-
-function selectBaiduSplitVolumeFiles(item, selected) {
-  baiduSplitVolumeFiles(item).forEach(({ file }) => {
-    file._batch_selected = Boolean(selected)
-  })
-}
-
-function selectedBaiduSplitVolumeFiles(item) {
-  return baiduSplitVolumeFiles(item).filter(({ file }) => Boolean(file._batch_selected))
-}
-
-function hasBaiduSelectedSplitVolumeFiles(item) {
-  return selectedBaiduSplitVolumeFiles(item).length > 0
-}
-
-function inferBaiduSplitVolumeBase(item) {
-  const entries = baiduSplitVolumeFiles(item)
-  const counts = new Map()
-  entries.forEach(({ info }) => {
-    const base = String(info.base || '').trim()
-    if (!base) return
-    counts.set(base, (counts.get(base) || 0) + 1)
-  })
-  let best = ''
-  let bestCount = 0
-  counts.forEach((count, base) => {
-    if (count > bestCount || (count === bestCount && base.length > best.length)) {
-      best = base
-      bestCount = count
-    }
-  })
-  const explicit = String(item?.custom_name || '').trim()
-  return best || (explicit ? (splitFilename(explicit).name || explicit) : defaultBaiduCustomName(item))
-}
-
-function applyBaiduSelectedSplitVolumeNaming(item) {
-  if (!item) return
-  const entries = selectedBaiduSplitVolumeFiles(item)
-  if (!entries.length) return
-  const base = String(item._batch_volume_name || '').trim() || inferBaiduSplitVolumeBase(item)
-  const password = String(item._batch_extract_password || '').trim()
-  item.custom_name = base
-  item.custom_extract_password = password
-  item.custom_group_folder = true
-  entries
-    .sort((a, b) => a.info.index - b.info.index)
-    .forEach(({ file, info }) => {
-      file.custom_name = info.needsFullName ? `${base}${info.suffix}` : base
-      file.custom_extract_password = ''
-    })
-  addPreviewLog(`已把 ${entries.length} 个选中分卷统一为 ${base}.z01 / ${base}.zip`, 'success')
-}
-
-function shouldShowBaiduPreviewFiles(item) {
-  if (!isBaidu.value) return false
-  const files = baiduPreviewFiles(item)
-  if (!files.length) return false
-  if (files.length > 1) return true
-  const title = String(item?.filename || item?.name || '').trim()
-  const file = files[0] || {}
-  const fileLabel = String(file.relative_path || file.name || '').trim()
-  return Boolean(fileLabel && fileLabel !== title)
-}
-
-function shouldShowPreviewItemSize(item) {
-  if (!item?.ok) return false
-  if (!isBaidu.value) return true
-  return !shouldShowBaiduPreviewFiles(item)
 }
 
 function baiduPreviewFiles(item) {
@@ -1153,53 +1882,6 @@ function baiduPreviewFiles(item) {
 
 function baiduPreviewFileKey(file) {
   return String(file?.fs_id || file?.path || file?.relative_path || file?.name || '').trim()
-}
-
-function baiduPreviewTreeRows(item) {
-  const files = baiduPreviewFiles(item)
-  const rows = []
-  const dirs = new Map()
-  const entries = normalizeBaiduPreviewTreeEntries(item, files)
-
-  entries
-    .filter(entry => entry.parts.length)
-    .sort((a, b) => {
-      const aPath = a.parts.join('/').toLowerCase()
-      const bPath = b.parts.join('/').toLowerCase()
-      const aDir = Boolean(a.file?.is_dir)
-      const bDir = Boolean(b.file?.is_dir)
-      if (aDir !== bDir) return aDir ? -1 : 1
-      return aPath.localeCompare(bPath, 'zh-CN')
-    })
-    .forEach(({ file, parts }) => {
-      const isDir = Boolean(file?.is_dir)
-      const fileDepth = Math.max(0, parts.length - 1)
-      const dirParts = isDir ? parts : parts.slice(0, -1)
-      dirParts.forEach((_, index) => {
-        const pathParts = dirParts.slice(0, index + 1)
-        const dirKey = `dir:${pathParts.join('/')}`
-        if (dirs.has(dirKey)) return
-        dirs.set(dirKey, true)
-        rows.push({
-          key: dirKey,
-          name: pathParts[pathParts.length - 1],
-          depth: index,
-          isDir: true,
-          file: null,
-        })
-      })
-      if (!isDir) {
-        rows.push({
-          key: `file:${baiduPreviewFileKey(file) || parts.join('/')}`,
-          name: parts[parts.length - 1],
-          depth: fileDepth,
-          isDir: false,
-          file,
-        })
-      }
-    })
-
-  return rows
 }
 
 function normalizeBaiduPreviewTreeEntries(item, files) {
@@ -1275,7 +1957,7 @@ function applyPassCodeAndPreview(item) {
   }
   urlText.value = nextLines.join('\n')
   addPreviewLog('已更新提取码，重新预览该分享', 'warning')
-  preview()
+  preview({ forceRefresh: true })
 }
 
 function syncBaiduCustomNamingPayload(items) {
@@ -1326,21 +2008,14 @@ function isPreviewItemSelected(item) {
   return selectedPreviewKeys.value.has(previewItemKey(item))
 }
 
-function togglePreviewItem(item) {
-  if (!item?.ok) return
-  const next = new Set(selectedPreviewKeys.value)
-  const key = previewItemKey(item)
-  if (next.has(key)) next.delete(key)
-  else next.add(key)
-  selectedPreviewKeys.value = next
-}
-
 function selectAllPreviewItems() {
   selectedPreviewKeys.value = new Set(okPreviewItems.value.map(item => previewItemKey(item)))
+  persistPreviewCacheFromState()
 }
 
 function clearPreviewSelection() {
   selectedPreviewKeys.value = new Set()
+  persistPreviewCacheFromState()
 }
 
 function toggleAllPreviewSelection() {
@@ -1361,6 +2036,7 @@ function togglePreviewSource(chip) {
     else next.delete(key)
   })
   selectedPreviewKeys.value = next
+  persistPreviewCacheFromState()
 }
 
 function addPreviewLog(message, level = 'info') {
@@ -1384,15 +2060,31 @@ watch(() => props.draft, (value) => {
   outputFolderName.value = draft.outputFolderName
   batchName.value = draft.batchName
   conflictPolicy.value = draft.conflictPolicy
+  restoreOrClearPreviewCache(draft.previewCache)
 }, { deep: true })
 
 watch([urlText, targetSubdir, outputFolderName, batchName, conflictPolicy], () => {
+  if (previewCacheInputSignature.value && previewCacheInputSignature.value !== previewInputSignature()) {
+    clearPreviewCacheState()
+  }
   const draft = currentDownloadPanelDraft()
   if (isSameDownloadPanelDraft(draft, props.draft)) return
   emit('update:draft', draft)
 })
 
-onMounted(loadHealth)
+watch([previewItems, previewLogs, previewProgress], () => {
+  if (!previewItems.value.length) return
+  persistPreviewCacheFromState()
+}, { deep: true })
+
+onMounted(() => {
+  restoreOrClearPreviewCache(props.draft?.previewCache)
+  loadHealth()
+})
+
+onBeforeUnmount(() => {
+  closePreviewContextMenu()
+})
 </script>
 
 <style scoped>
@@ -1532,54 +2224,8 @@ onMounted(loadHealth)
   gap: 8px;
   margin-top: 2px;
 }
-.download-list-row.bad .baidu-pass-code-row {
+.download-tree-row.bad .baidu-pass-code-row {
   padding-top: 1px;
-}
-.baidu-item-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-top: 6px;
-}
-.baidu-inline-action {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 24px;
-  padding: 0 8px;
-  border: 1px solid rgba(203, 213, 225, 0.82);
-  border-radius: 7px;
-  background: rgba(248, 250, 252, 0.86);
-  color: rgb(71, 85, 105);
-  font-size: 11px;
-  font-weight: 700;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-.baidu-inline-action:hover:not(:disabled) {
-  transform: translateY(-1px) scale(1.02);
-  border-color: rgba(148, 163, 184, 0.9);
-  background: #ffffff;
-}
-.baidu-inline-action:active:not(:disabled) { transform: scale(0.96); }
-.baidu-inline-action:disabled { opacity: 0.48; cursor: not-allowed; }
-.baidu-inline-action.active {
-  border-color: rgba(59, 130, 246, 0.42);
-  background: rgba(239, 246, 255, 0.92);
-  color: rgb(29, 78, 216);
-}
-.baidu-inline-action.clear {
-  align-self: end;
-  color: rgb(100, 116, 139);
-}
-.baidu-inline-action.ghost {
-  height: 22px;
-  padding: 0 7px;
-  color: rgb(71, 85, 105);
-}
-.baidu-inline-action.volume {
-  align-self: end;
-  color: rgb(30, 64, 175);
 }
 .baidu-custom-preview {
   min-width: 0;
@@ -1590,78 +2236,6 @@ onMounted(loadHealth)
   color: rgb(37, 99, 235);
   font-size: 11px;
   font-weight: 700;
-}
-.baidu-rename-panel {
-  display: grid;
-  grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) auto;
-  gap: 8px;
-  align-items: end;
-  margin-top: 8px;
-  padding: 8px;
-  border: 1px solid rgba(203, 213, 225, 0.72);
-  border-radius: 8px;
-  background: rgba(248, 250, 252, 0.78);
-}
-.baidu-rename-field {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-  color: rgb(100, 116, 139);
-  font-size: 10px;
-  font-weight: 800;
-}
-.baidu-rename-field span {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.baidu-rename-input {
-  width: 100%;
-  height: 26px;
-  min-width: 0;
-  padding: 0 8px;
-  border: 1px solid rgba(203, 213, 225, 0.92);
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.94);
-  color: rgb(30, 41, 59);
-  font-size: 11px;
-  outline: none;
-}
-.baidu-rename-input:focus {
-  border-color: rgba(59, 130, 246, 0.72);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
-}
-.baidu-volume-batch-panel {
-  grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) auto;
-  gap: 8px;
-  align-items: end;
-  padding: 8px;
-  border: 1px solid rgba(147, 197, 253, 0.42);
-  border-radius: 8px;
-  background: rgba(239, 246, 255, 0.58);
-}
-.baidu-volume-batch-title {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  color: rgb(30, 64, 175);
-  font-size: 11px;
-  font-weight: 800;
-}
-@media (max-width: 720px) {
-  .baidu-rename-panel {
-    grid-template-columns: 1fr;
-  }
-  .baidu-volume-batch-panel {
-    grid-template-columns: 1fr;
-  }
-  .baidu-inline-action.clear {
-    justify-self: start;
-  }
 }
 .baidu-pass-code-input {
   width: 124px;
@@ -1889,38 +2463,130 @@ onMounted(loadHealth)
   background: rgba(119, 129, 141, 0.48);
   border-radius: 999px;
 }
-.download-list {
+.download-tree {
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
-.download-list-row {
+.download-tree-row {
+  --tree-depth: 0;
   min-height: 34px;
-  display: flex;
+  display: grid;
+  grid-template-columns: calc(var(--tree-depth) * 18px) 18px 16px 22px minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  column-gap: 8px;
+  row-gap: 4px;
   padding: 5px 8px;
   border-radius: 6px;
   cursor: pointer;
   position: relative;
   transition: background-color 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
 }
-.download-list-row:hover {
+.download-tree-row.is-root-leaf {
+  grid-template-columns: 16px 22px minmax(0, 1fr) auto;
+  column-gap: 8px;
+}
+.download-tree-row.bad {
+  grid-template-columns: calc(var(--tree-depth) * 18px) 18px 16px 20px 22px minmax(0, 1fr) auto;
+}
+.download-tree-row.is-root-leaf.bad {
+  grid-template-columns: 16px 20px 22px minmax(0, 1fr) auto;
+}
+.download-tree-row.is-root-leaf .download-tree-indent,
+.download-tree-row.is-root-leaf .download-tree-toggle.placeholder {
+  display: none;
+}
+.download-tree-row.is-root-leaf .download-list-check {
+  grid-column: 1;
+}
+.download-tree-row.is-root-leaf .http-preview-error-icon {
+  grid-column: 2;
+}
+.download-tree-row.is-root-leaf .download-tree-kind-icon {
+  grid-column: 2;
+}
+.download-tree-row.is-root-leaf.bad .download-tree-kind-icon {
+  grid-column: 3;
+}
+.download-tree-row.is-root-leaf .download-tree-main {
+  grid-column: 3;
+}
+.download-tree-row.is-root-leaf.bad .download-tree-main {
+  grid-column: 4;
+}
+.download-tree-row.is-root-leaf .download-list-size {
+  grid-column: 4;
+}
+.download-tree-row.is-root-leaf.bad .download-list-size {
+  grid-column: 5;
+}
+.download-tree-row:not(.bad) .http-preview-error-placeholder {
+  display: none;
+}
+.download-tree-row:hover {
   background: rgba(248, 250, 252, 0.72);
   box-shadow: inset 0 0 0 1px rgba(226, 232, 240, 0.84);
 }
-.download-list-row.selected {
+.download-tree-row.selected {
   background: rgba(239, 246, 255, 0.7);
   box-shadow: inset 0 0 0 1px rgba(219, 234, 254, 0.8);
 }
-.download-list-main {
-  display: flex;
+.download-tree-row.is-context {
+  background: rgba(239, 246, 255, 0.86);
+  box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.58);
+}
+.download-tree-row.is-volume-group .download-tree-kind-icon {
+  color: rgb(37, 99, 235);
+}
+.download-tree-indent {
+  width: 100%;
+  height: 100%;
+  min-height: 22px;
+}
+.download-tree-toggle {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
   align-items: center;
-  min-width: 0;
-  gap: 8px;
-  position: relative;
-  z-index: 1;
+  justify-content: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: rgb(100, 116, 139);
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.download-tree-toggle:hover {
+  background: rgba(226, 232, 240, 0.68);
+  transform: translateY(-1px) scale(1.04);
+}
+.download-tree-toggle :deep(svg) {
+  transition: transform 0.22s ease;
+}
+.download-tree-toggle.expanded :deep(svg) {
+  transform: rotate(90deg);
+}
+.download-tree-toggle.placeholder {
+  pointer-events: none;
+}
+.download-tree-check-placeholder {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+.download-tree-kind-icon {
+  width: 18px;
+  height: 18px;
+  color: rgb(14, 165, 233);
+  flex-shrink: 0;
+}
+.download-tree-row.is-dir .download-tree-kind-icon {
+  color: rgb(245, 158, 11);
+}
+.download-tree-row.is-file .download-tree-kind-icon {
+  color: rgb(14, 165, 233);
+}
+.download-tree-row.bad .download-tree-kind-icon {
+  color: rgb(248, 113, 113);
 }
 .download-list-check {
   width: 16px;
@@ -1940,11 +2606,22 @@ onMounted(loadHealth)
   background: rgb(59, 130, 246);
   color: #ffffff;
 }
+.download-list-check.is-partial {
+  border-color: rgb(59, 130, 246);
+  background: rgba(59, 130, 246, 0.18);
+  color: rgb(37, 99, 235);
+}
 .download-list-check.is-off {
   border-color: rgb(203, 213, 225);
   background: rgba(255, 255, 255, 0.95);
 }
-.download-list-row:hover .download-list-check.is-off {
+.download-list-check.is-disabled {
+  border-color: rgba(248, 113, 113, 0.36);
+  background: rgba(254, 242, 242, 0.42);
+  color: transparent;
+  cursor: not-allowed;
+}
+.download-tree-row:hover .download-list-check.is-off {
   border-color: rgba(148, 163, 184, 0.48);
   background: rgba(255, 255, 255, 0.98);
 }
@@ -1969,24 +2646,25 @@ onMounted(loadHealth)
   margin-left: 8px;
   font-variant-numeric: tabular-nums;
 }
-.download-list-row.bad {
+.download-tree-row.bad {
   color: rgb(185, 28, 28);
   background: rgba(254, 242, 242, 0.72);
   box-shadow: inset 0 0 0 1px rgba(254, 202, 202, 0.8);
   cursor: default;
 }
-.download-list-row.bad .download-list-main {
-  align-items: flex-start;
-}
 .http-preview-error-icon {
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 16px;
-  margin-top: 2px;
+  flex: 0 0 20px;
   color: rgb(239, 68, 68);
+}
+.http-preview-error-placeholder {
+  width: 20px;
+  height: 20px;
+  display: block;
 }
 .http-preview-empty {
   height: 100%;
@@ -2032,6 +2710,17 @@ onMounted(loadHealth)
   display: grid;
   gap: 4px;
 }
+.download-tree-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+.download-tree-name-line {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .http-preview-name {
   color: rgb(30, 41, 59);
   font-size: 13px;
@@ -2040,7 +2729,7 @@ onMounted(loadHealth)
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.download-list-row.bad .http-preview-name {
+.download-tree-row.bad .http-preview-name {
   white-space: normal;
   overflow: visible;
   line-height: 1.3;
@@ -2053,8 +2742,6 @@ onMounted(loadHealth)
   font-size: 10.5px;
   line-height: 1.25;
 }
-.http-preview-source-chip,
-.http-preview-reason,
 .http-preview-pass-chip {
   display: inline-flex;
   align-items: center;
@@ -2063,135 +2750,112 @@ onMounted(loadHealth)
   border-radius: 999px;
   border: 1px solid transparent;
 }
-.http-preview-source-chip {
-  background: rgba(219, 234, 254, 0.7);
-  border-color: rgba(147, 197, 253, 0.34);
-  color: rgb(51, 65, 85);
-  font-weight: 650;
-}
 .http-preview-reason {
-  background: rgba(254, 226, 226, 0.72);
-  border-color: rgba(252, 165, 165, 0.38);
+  flex: 1 1 100%;
+  min-width: 0;
   color: rgb(185, 28, 28);
+  font-size: 11px;
+  font-weight: 620;
+  line-height: 1.35;
+  white-space: normal;
+  word-break: break-word;
 }
 .http-preview-pass-chip {
   background: rgba(254, 243, 199, 0.7);
   border-color: rgba(251, 191, 36, 0.3);
   color: rgb(180, 83, 9);
 }
-.baidu-preview-summary {
-  color: rgb(71, 85, 105);
-  font-size: 11px;
-  line-height: 1.35;
-  font-weight: 650;
-}
-.baidu-preview-files {
-  display: grid;
-  gap: 5px;
-  max-width: min(680px, 100%);
-}
-.baidu-preview-tree-row {
-  --tree-depth: 0;
-  display: grid;
-  grid-template-columns: calc(var(--tree-depth) * 18px) auto auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-  min-height: 24px;
-  padding: 3px 8px;
-  border-radius: 6px;
-  border: 1px solid rgba(203, 213, 225, 0.54);
-  background: rgba(248, 250, 252, 0.62);
-  color: rgb(51, 65, 85);
-  font-size: 11px;
-  line-height: 1.25;
-}
-.baidu-preview-tree-row.is-dir {
-  background: rgba(239, 246, 255, 0.72);
-  border-color: rgba(147, 197, 253, 0.42);
-}
-.baidu-preview-tree-row.is-file {
-  background: rgba(248, 250, 252, 0.62);
-}
-.baidu-preview-tree-guide {
-  width: 100%;
-  height: 100%;
-  min-height: 20px;
-  border-right: 1px solid rgba(148, 163, 184, 0.28);
-  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
-  border-bottom-right-radius: 6px;
-}
-.baidu-preview-tree-row.is-root-child .baidu-preview-tree-guide {
-  border-color: transparent;
-}
-.baidu-preview-file-check-slot {
-  width: 14px;
-  height: 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.baidu-preview-file-check {
-  width: 14px;
-  height: 14px;
-  margin: 0;
-  accent-color: rgb(37, 99, 235);
-}
-.baidu-preview-file-type {
-  color: rgb(37, 99, 235);
-  font-weight: 750;
-}
-.baidu-preview-tree-row.is-dir .baidu-preview-file-type {
-  color: rgb(14, 116, 144);
-}
-.baidu-preview-tree-row.is-file .baidu-preview-file-type {
-  color: rgb(37, 99, 235);
-}
-.baidu-preview-file-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.baidu-preview-file-main {
-  min-width: 0;
-  display: grid;
-  gap: 5px;
-}
-.baidu-file-rename-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-}
-.baidu-file-rename-field {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-  color: rgb(100, 116, 139);
-  font-size: 10px;
-  font-weight: 700;
-}
-.baidu-preview-file-size {
-  color: rgb(100, 116, 139);
-  font-variant-numeric: tabular-nums;
-}
 .http-preview-meta .warn { color: rgb(180, 83, 9); }
-.download-list-row.bad .http-preview-meta {
+.download-tree-row.bad .http-preview-meta {
   color: rgb(153, 27, 27);
 }
-.download-list-row.bad .http-preview-meta .warn {
+.download-tree-row.bad .http-preview-meta .warn {
   color: rgb(185, 28, 28);
 }
-.download-list-row.bad .http-preview-source-chip,
-.download-list-row.bad .http-preview-reason,
-.download-list-row.bad .http-preview-pass-chip {
+.download-tree-row.bad .http-preview-pass-chip {
   background: rgba(254, 226, 226, 0.72);
   border-color: rgba(252, 165, 165, 0.32);
 }
-.download-list-row.bad .http-preview-source-chip {
-  color: rgb(127, 29, 29);
-}
-.download-list-row.bad .http-preview-pass-chip {
+.download-tree-row.bad .http-preview-pass-chip {
   color: rgb(185, 83, 0);
+}
+.preview-context-menu {
+  position: absolute;
+  z-index: 25;
+  width: 176px;
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid rgba(203, 213, 225, 0.86);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(10px);
+}
+.preview-context-menu button {
+  width: 100%;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgb(51, 65, 85);
+  font-size: 12px;
+  font-weight: 750;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.preview-context-menu button:hover:not(:disabled) {
+  background: rgba(239, 246, 255, 0.92);
+  color: rgb(29, 78, 216);
+  transform: translateY(-1px) scale(1.01);
+}
+.preview-context-menu button:hover:not(:disabled) svg {
+  transform: rotate(-8deg) scale(1.08);
+}
+.preview-context-menu button:active:not(:disabled) {
+  transform: scale(0.96);
+}
+.preview-context-menu button:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+.preview-selection-toggle {
+  height: 30px;
+  min-width: 68px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 12px;
+  border: 1px solid rgba(203, 213, 225, 0.82);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  color: rgb(71, 85, 105);
+  font-size: 12px;
+  font-weight: 750;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.preview-selection-toggle.is-clear {
+  background: rgba(248, 250, 252, 0.88);
+  color: rgb(100, 116, 139);
+}
+.preview-selection-toggle:hover:not(:disabled) {
+  border-color: rgba(147, 197, 253, 0.72);
+  background: rgba(239, 246, 255, 0.92);
+  color: rgb(29, 78, 216);
+  transform: translateY(-1px) scale(1.02);
+}
+.preview-selection-toggle:hover:not(:disabled) svg {
+  transform: rotate(-8deg) scale(1.08);
+}
+.preview-selection-toggle:active:not(:disabled) {
+  transform: scale(0.96);
+}
+.preview-selection-toggle:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
 }
 .tab-count {
   padding: 2px 5px;
@@ -2291,33 +2955,6 @@ onMounted(loadHealth)
   color: #f4f4f5 !important;
 }
 
-:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-rename-panel) {
-  background: #121212 !important;
-  border-color: rgba(255, 255, 255, 0.1) !important;
-}
-
-:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-rename-field) {
-  color: #a3a3a3 !important;
-}
-
-:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-rename-input) {
-  background: #111111 !important;
-  border-color: rgba(255, 255, 255, 0.14) !important;
-  color: #f4f4f5 !important;
-}
-
-:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-inline-action) {
-  background: #1c1c1c !important;
-  border-color: rgba(255, 255, 255, 0.12) !important;
-  color: #d4d4d4 !important;
-}
-
-:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-inline-action.active) {
-  background: rgba(37, 99, 235, 0.16) !important;
-  border-color: rgba(96, 165, 250, 0.32) !important;
-  color: #bfdbfe !important;
-}
-
 :global(html.kikoerumanager-dark .http-download-preview-modal .baidu-custom-preview) {
   color: #93c5fd !important;
 }
@@ -2359,7 +2996,6 @@ onMounted(loadHealth)
   color: #fbbf24 !important;
 }
 
-:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-source-chip),
 :global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-pass-chip) {
   background: #22242a !important;
   color: #e5e7eb !important;
@@ -2367,59 +3003,12 @@ onMounted(loadHealth)
 }
 
 :global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-reason) {
-  background: rgba(127, 29, 29, 0.24) !important;
   color: #fecaca !important;
-  border: 1px solid rgba(248, 113, 113, 0.18) !important;
-}
-
-:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-summary) {
-  color: #d4d4d8 !important;
-}
-
-:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-tree-row) {
-  background: #202124 !important;
-  border-color: rgba(255, 255, 255, 0.1) !important;
-  color: #e5e7eb !important;
-}
-
-:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-tree-row.is-dir) {
-  background: #1d2428 !important;
-  border-color: rgba(125, 211, 252, 0.16) !important;
-}
-
-:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-tree-row.is-file) {
-  background: #242527 !important;
-  border-color: rgba(255, 255, 255, 0.12) !important;
-}
-
-:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-tree-guide) {
-  border-right-color: rgba(148, 163, 184, 0.18) !important;
-  border-bottom-color: rgba(148, 163, 184, 0.12) !important;
-}
-
-:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-tree-row.is-root-child .baidu-preview-tree-guide) {
-  border-color: transparent !important;
-}
-
-:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-file-name) {
-  color: #f4f4f5 !important;
-}
-
-:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-file-type) {
-  color: #93c5fd !important;
-}
-
-:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-tree-row.is-dir .baidu-preview-file-type) {
-  color: #67e8f9 !important;
-}
-
-:global(html.kikoerumanager-dark .http-download-preview-modal .baidu-preview-file-size) {
-  color: #a1a1aa !important;
 }
 
 :global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-log-row.is-error),
-:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-row.bad),
-:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-row.bad .http-preview-meta) {
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-tree-row.bad),
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-tree-row.bad .http-preview-meta) {
   color: #fca5a5 !important;
 }
 
@@ -2438,23 +3027,48 @@ onMounted(loadHealth)
   background: #181818 !important;
 }
 
-:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-row) {
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-tree-row) {
   color: #eeeeee !important;
 }
 
-:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-row:hover) {
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-tree-row:hover) {
   background: rgba(255, 255, 255, 0.045) !important;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
 }
 
-:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-row.selected) {
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-tree-row.selected) {
   background: #242424 !important;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18) !important;
 }
 
-:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-row.bad) {
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-tree-row.is-context) {
+  background: rgba(59, 130, 246, 0.16) !important;
+  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.28) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-tree-row.bad) {
   background: rgba(127, 29, 29, 0.18) !important;
   box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.2) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-tree-toggle) {
+  color: #a1a1aa !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-tree-row.is-dir .download-tree-kind-icon) {
+  color: #fbbf24 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-tree-row.is-file .download-tree-kind-icon) {
+  color: #7dd3fc !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-tree-row.bad .download-tree-kind-icon) {
+  color: #fca5a5 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-tree-toggle:hover) {
+  background: rgba(255, 255, 255, 0.08) !important;
 }
 
 :global(html.kikoerumanager-dark .http-download-preview-modal .download-list-check.is-off) {
@@ -2468,6 +3082,33 @@ onMounted(loadHealth)
   color: #111111 !important;
 }
 
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-check.is-partial) {
+  background: rgba(212, 212, 216, 0.18) !important;
+  border-color: #d4d4d8 !important;
+  color: #f4f4f5 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .download-list-check.is-disabled) {
+  background: rgba(127, 29, 29, 0.18) !important;
+  border-color: rgba(248, 113, 113, 0.28) !important;
+  color: transparent !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .preview-context-menu) {
+  background: #1c1c1c !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.42) !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .preview-context-menu button) {
+  color: #d4d4d4 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .preview-context-menu button:hover:not(:disabled)) {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #f4f4f5 !important;
+}
+
 :global(html.kikoerumanager-dark .http-download-preview-modal .tab-chip) {
   background: #1b1b1b !important;
   border-color: rgba(255, 255, 255, 0.1) !important;
@@ -2478,6 +3119,24 @@ onMounted(loadHealth)
 :global(html.kikoerumanager-dark .http-download-preview-modal .tab-chip-partial) {
   background: #2a2a2a !important;
   border-color: rgba(255, 255, 255, 0.22) !important;
+  color: #f4f4f5 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .preview-selection-toggle) {
+  background: #1b1b1b !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #d4d4d4 !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .preview-selection-toggle.is-clear) {
+  background: #202020 !important;
+  color: #f4f4f5 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .preview-selection-toggle:hover:not(:disabled)) {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
   color: #f4f4f5 !important;
 }
 

@@ -2133,7 +2133,7 @@ async function applySubtitleManualPairs() {
     //
     //  之前：30 对配对 = phase1 30 次串行 rename + phase2 30 次串行 rename
     //        + phase3 N 次串行 delete = 60+ 次 HTTP 往返 + 60+ 次后端
-    //        SQLite commit + 60+ 次清搜索缓存 + 60+ 次 stats_log 写文件。
+    //        数据库 commit + 60+ 次清搜索缓存 + 60+ 次 stats_log 写文件。
     //        群晖 Docker 上单条耗时 50-300ms，整体 5-30 秒。
     //
     //  现在：phase1 / phase2 各 1 次 batchRename API 调用（按 library 分桶最多

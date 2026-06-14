@@ -4,44 +4,55 @@
       <div class="system-hero-copy">
         <div class="card-title">
           <IconServerCog :size="15" class="system-title-icon" />
-          <span>SQLite 运行配置</span>
+          <span>PostgreSQL 运行配置</span>
         </div>
         <p class="system-desc">
-          这里控制数据库 journal、同步策略、busy timeout 和 SQLAlchemy 连接池。保存后需要重启后端进程才会应用到当前 engine。
+          这里控制 PostgreSQL 连接地址、连接池、语句超时和启动健康检查。保存后需要重启后端进程才会应用到当前 engine；DATABASE_URL 会覆盖这些字段。
         </p>
       </div>
       <div class="system-runtime-strip">
-        <span class="runtime-pill">当前草稿：{{ db.journal_mode }} / {{ db.synchronous }}</span>
+        <span class="runtime-pill">{{ db.host }}:{{ db.port }} / {{ db.database }}</span>
         <span class="runtime-pill">连接池 {{ db.pool_size }} + {{ db.max_overflow }}</span>
-        <span class="runtime-pill">busy {{ formatMs(db.busy_timeout_ms) }}</span>
+        <span class="runtime-pill">SQL {{ formatMs(db.statement_timeout_ms) }}</span>
       </div>
     </section>
 
     <div class="settings-grid two">
       <section class="system-card">
-        <div class="card-title">SQLite 安全与吞吐</div>
+        <div class="card-title">连接信息</div>
         <div class="field-stack">
           <div class="mini-grid two">
-            <SettingsFieldCard label="Journal Mode" hint="WAL 适合读写并发；DELETE 更保守但写入时读写互斥。">
-              <AppDropdown v-model="db.journal_mode" :options="journalModeOptions" class="settings-field-dd" />
+            <SettingsFieldCard label="Host" hint="本地默认 127.0.0.1；Docker compose 使用服务名 postgres。">
+              <input v-model="db.host" class="settings-inline-input" autocomplete="off" />
             </SettingsFieldCard>
-            <SettingsFieldCard label="Synchronous" hint="FULL 更耐断电/掉盘；NORMAL 吞吐更高但 WAL checkpoint 风险更大。">
-              <AppDropdown v-model="db.synchronous" :options="synchronousOptions" class="settings-field-dd" />
+            <SettingsFieldCard label="Port" hint="PostgreSQL 默认端口。">
+              <SettingsNumberStepper v-model="db.port" :min="1" :max="65535" />
             </SettingsFieldCard>
           </div>
 
           <div class="mini-grid two">
-            <SettingsFieldCard label="Busy Timeout" hint="写锁等待上限。群晖 / HDD / Docker 卷建议 60000ms 起。">
-              <SettingsNumberStepper v-model="db.busy_timeout_ms" :min="1000" :max="300000" :step="1000" />
+            <SettingsFieldCard label="Database" hint="应用业务库名，默认 kikoerumanager。">
+              <input v-model="db.database" class="settings-inline-input" autocomplete="off" />
             </SettingsFieldCard>
-            <SettingsFieldCard label="WAL Auto Checkpoint" hint="WAL 累积到指定页数后自动 checkpoint；过大可能让 -wal 文件膨胀。">
-              <SettingsNumberStepper v-model="db.wal_autocheckpoint" :min="100" :max="10000" :step="100" />
+            <SettingsFieldCard label="Username" hint="应用角色名，默认 kikoerumanager。">
+              <input v-model="db.username" class="settings-inline-input" autocomplete="off" />
             </SettingsFieldCard>
           </div>
 
-          <SettingsFieldCard label="SQLite Cache Size" hint="单位 KB。负数 PRAGMA cache_size 的绝对值，当前后端按 KB 写入。">
-            <SettingsNumberStepper v-model="db.cache_size_kb" :min="1024" :max="262144" :step="1024" />
-          </SettingsFieldCard>
+          <div class="mini-grid two">
+            <SettingsFieldCard label="Password" hint="API 返回时会脱敏；保存 ******** 会保留磁盘真实密码。">
+              <div class="secret-field-row">
+                <input v-model="db.password" class="settings-inline-input" type="password" autocomplete="new-password" />
+                <button type="button" class="secret-reveal-btn" :disabled="databasePasswordRevealing" @click="revealDatabasePassword">
+                  <IconLoader2 v-if="databasePasswordRevealing" :size="13" class="health-spin" />
+                  <span v-else>显示</span>
+                </button>
+              </div>
+            </SettingsFieldCard>
+            <SettingsFieldCard label="SSL Mode" hint="本地通常 prefer；Docker 内网可由 DATABASE_URL 使用 disable。">
+              <input v-model="db.sslmode" class="settings-inline-input" autocomplete="off" />
+            </SettingsFieldCard>
+          </div>
         </div>
       </section>
 
@@ -49,7 +60,7 @@
         <div class="card-title">连接池与启动自检</div>
         <div class="field-stack">
           <div class="mini-grid three">
-            <SettingsFieldCard label="Pool Size" hint="常驻连接数。SQLite 写入单写者，别盲目拉满。">
+            <SettingsFieldCard label="Pool Size" hint="常驻连接数。数据库写入单写者，别盲目拉满。">
               <SettingsNumberStepper v-model="db.pool_size" :min="1" :max="20" />
             </SettingsFieldCard>
             <SettingsFieldCard label="Max Overflow" hint="突发额外连接数。之前硬编码 10，现在可控。">
@@ -60,16 +71,22 @@
             </SettingsFieldCard>
           </div>
 
+          <div class="mini-grid three">
+            <SettingsFieldCard label="Connect Timeout" hint="建立连接的超时秒数。">
+              <SettingsNumberStepper v-model="db.connect_timeout_seconds" :min="1" :max="120" />
+            </SettingsFieldCard>
+            <SettingsFieldCard label="Pool Timeout" hint="等待连接池可用连接的超时秒数。">
+              <SettingsNumberStepper v-model="db.pool_timeout_seconds" :min="1" :max="300" />
+            </SettingsFieldCard>
+            <SettingsFieldCard label="Statement Timeout" hint="单条 SQL 最大执行时间，单位 ms。">
+              <SettingsNumberStepper v-model="db.statement_timeout_ms" :min="1000" :max="600000" :step="1000" />
+            </SettingsFieldCard>
+          </div>
+
           <SettingsToggleRow
-            v-model="db.startup_quick_check"
-            title="启动时 quick_check"
-            subtitle="后端启动时先做 SQLite 快速一致性检查；失败会阻止继续启动，避免继续写坏库。"
-          />
-          <SettingsToggleRow
-            v-model="db.startup_integrity_check"
-            title="启动时完整 integrity_check"
-            subtitle="比 quick_check 慢很多，大库不建议常开；适合修复后短期开启确认。"
-            :disabled="!db.startup_quick_check"
+            v-model="db.startup_health_check"
+            title="启动时 PostgreSQL 健康检查"
+            subtitle="后端启动时先执行 SELECT 1 并读取服务版本；失败会阻止继续启动。"
           />
         </div>
       </section>
@@ -81,15 +98,15 @@
         <span>全局资源预算</span>
       </div>
       <p class="system-desc">
-        这些令牌会被真实业务链路消耗：SQLite 写入、远程库存、HTTP / 百度下载、本地磁盘复制、解压和压缩包探测。
-        值为 0 表示该资源不限制；SQLite 写入在启用预算时最低会收敛为 1。
+        这些令牌会被真实业务链路消耗：数据库写入、远程库存、HTTP / 百度下载、本地磁盘复制、解压和压缩包探测。
+        值为 0 表示该资源不限制；数据库写入在启用预算时最低会收敛为 1。
       </p>
 
       <div class="resource-head">
         <SettingsToggleRow
           v-model="budget.enabled"
           title="启用资源预算"
-          subtitle="用轻量背压避免下载、解压、远程库扫描和 SQLite 写入互相打满。"
+          subtitle="用轻量背压避免下载、解压、远程库扫描和 数据库写入互相打满。"
         />
       </div>
 
@@ -119,37 +136,41 @@
             <span>数据库健康检查</span>
           </div>
           <p class="system-desc">
-            quick_check 日常够用；integrity_check 会完整扫描数据库，大库或 NAS 上会明显更慢。
+            基础检查执行 SELECT 1；完整检查会额外 ANALYZE 热点表，用于更新 planner 统计信息。
           </p>
         </div>
-        <div class="health-actions">
+        <div class="health-actions" aria-label="数据库健康检查操作">
           <StatefulButton
-            class="health-stateful-btn"
+            class="health-stateful-btn health-stateful-btn--quick"
             tone="neutral"
             size="sm"
+            aria-label="运行 SELECT 1 基础检查"
             :success-hold="1200"
             @click="runHealth(false)"
           >
             <template #prefix="{ state }">
-              <IconLoader2 v-if="state === 'loading'" :size="14" class="health-spin" />
-              <IconCheckCircle2 v-else-if="state === 'success'" :size="14" />
-              <IconRefreshCw v-else :size="14" />
+              <IconLoader2 v-if="state === 'loading'" :size="15" class="health-spin" />
+              <IconCheckCircle2 v-else-if="state === 'success'" :size="15" class="health-action-icon" />
+              <IconRefreshCw v-else :size="15" class="health-action-icon" />
             </template>
-            quick_check
+            <span class="health-btn-label">快速检查</span>
+            <span class="health-btn-code">SELECT 1</span>
           </StatefulButton>
           <StatefulButton
-            class="health-stateful-btn"
-            tone="warning"
+            class="health-stateful-btn health-stateful-btn--full"
+            tone="neutral"
             size="sm"
+            aria-label="运行 ANALYZE 完整检查"
             :success-hold="1200"
             @click="runHealth(true)"
           >
             <template #prefix="{ state }">
-              <IconLoader2 v-if="state === 'loading'" :size="14" class="health-spin" />
-              <IconCheckCircle2 v-else-if="state === 'success'" :size="14" />
-              <IconShieldCheck v-else :size="14" />
+              <IconLoader2 v-if="state === 'loading'" :size="15" class="health-spin" />
+              <IconCheckCircle2 v-else-if="state === 'success'" :size="15" class="health-action-icon" />
+              <IconShieldCheck v-else :size="15" class="health-action-icon" />
             </template>
-            integrity_check
+            <span class="health-btn-label">完整检查</span>
+            <span class="health-btn-code">ANALYZE</span>
           </StatefulButton>
         </div>
       </div>
@@ -182,7 +203,7 @@
 
       <div v-else class="health-empty">
         <IconDatabaseZap :size="16" />
-        <span>还没有现场检查结果。保存运行参数后，建议先重启服务，再回来跑一次 quick_check。</span>
+        <span>还没有现场检查结果。保存运行参数后，建议先重启服务，再回来跑一次 SELECT 1。</span>
       </div>
     </section>
   </div>
@@ -204,25 +225,27 @@ import { ElMessage } from 'element-plus'
 import SettingsFieldCard from './SettingsFieldCard.vue'
 import SettingsNumberStepper from './SettingsNumberStepper.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
-import AppDropdown from '../common/AppDropdown.vue'
 import StatefulButton from '../ui/stateful-button.vue'
-import { databaseMaintenanceApi } from '../../api'
+import { configApi, databaseMaintenanceApi } from '../../api'
 
 const props = defineProps({
   config: { type: Object, required: true }
 })
 
 const defaultDatabaseConfig = {
-  journal_mode: 'WAL',
-  synchronous: 'FULL',
-  busy_timeout_ms: 60000,
-  wal_autocheckpoint: 500,
-  cache_size_kb: 20000,
-  pool_size: 2,
-  max_overflow: 2,
+  host: '127.0.0.1',
+  port: 5432,
+  database: 'kikoerumanager',
+  username: 'kikoerumanager',
+  password: '',
+  sslmode: 'prefer',
+  connect_timeout_seconds: 10,
+  pool_size: 10,
+  max_overflow: 20,
   pool_recycle_seconds: 1800,
-  startup_quick_check: true,
-  startup_integrity_check: false,
+  pool_timeout_seconds: 30,
+  statement_timeout_ms: 120000,
+  startup_health_check: true,
 }
 
 const defaultResourceBudget = {
@@ -232,27 +255,11 @@ const defaultResourceBudget = {
   archive_inspect: 0,
   remote_fs: 4,
   network_download: 5,
-  sqlite_write: 1,
+  database_write: 1,
 }
 
-const journalModeOptions = [
-  { value: 'WAL', label: 'WAL', description: '推荐：读写并发更好，配合 checkpoint 管理 -wal' },
-  { value: 'DELETE', label: 'DELETE', description: '传统 rollback journal，写入期间读写互斥更明显' },
-  { value: 'TRUNCATE', label: 'TRUNCATE', description: '提交后截断 rollback journal，适合少数兼容场景' },
-  { value: 'PERSIST', label: 'PERSIST', description: '保留 journal 文件并清头，减少文件创建开销' },
-  { value: 'MEMORY', label: 'MEMORY', description: 'journal 放内存，断电/崩溃风险更高' },
-  { value: 'OFF', label: 'OFF', description: '关闭 journal，只建议临时压测或一次性导入前明确承担风险' },
-]
-
-const synchronousOptions = [
-  { value: 'FULL', label: 'FULL', description: '推荐 NAS / Docker 卷：更强掉电保护' },
-  { value: 'NORMAL', label: 'NORMAL', description: '吞吐更高；断电或底层 I/O 异常时风险更大' },
-  { value: 'EXTRA', label: 'EXTRA', description: '最保守，通常只用于极端安全场景' },
-  { value: 'OFF', label: 'OFF', description: '不等待同步刷盘，只建议临时压测，不建议长期运行' },
-]
-
 const budgetItems = [
-  { key: 'sqlite_write', label: 'SQLite 写入', hint: '操作历史、库存索引等同步写入队列；启用时最低实际为 1。', min: 0, max: 8 },
+  { key: 'database_write', label: '数据库写入', hint: '操作历史、库存索引等同步写入队列；启用时最低实际为 1。', min: 0, max: 8 },
   { key: 'disk_io_local', label: '本地磁盘 IO', hint: '本地复制、上传入库、打包扫描、临时视图复制等慢盘操作。', min: 0, max: 16 },
   { key: 'remote_fs', label: '远程库存 / 群晖', hint: 'FileStation 列表、下载、上传、远程库存索引重建。', min: 0, max: 20 },
   { key: 'network_download', label: '网络下载', hint: 'HTTP、Google Drive、Transfer.it、百度 PCSGo、ASMR 下载等。', min: 0, max: 50 },
@@ -261,6 +268,7 @@ const budgetItems = [
 ]
 
 const healthResult = ref(null)
+const databasePasswordRevealing = ref(false)
 
 const db = computed(() => props.config.database)
 const budget = computed(() => props.config.resource_budget)
@@ -272,13 +280,14 @@ const healthMessages = computed(() => {
 
 const healthStats = computed(() => {
   const result = healthResult.value || {}
+  const sizeText = (value) => value === undefined || value === null ? '完整检查采集' : formatBytes(value)
   return [
-    { label: '主库', value: formatBytes(result.main_size_bytes) },
-    { label: 'WAL', value: formatBytes(result.wal_size_bytes) },
-    { label: 'SHM', value: formatBytes(result.shm_size_bytes) },
-    { label: '运行参数', value: `${result.journal_mode || '—'} / ${result.synchronous || '—'}` },
+    { label: '数据库大小', value: sizeText(result.database_size_bytes) },
+    { label: '操作历史表', value: sizeText(result.activity_logs_size_bytes) },
+    { label: '库存索引表', value: sizeText(result.library_index_size_bytes) },
+    { label: 'pg_trgm', value: result.pg_trgm_enabled ? '已启用' : '未启用' },
     { label: '连接池', value: `${result.pool_size ?? '—'} + ${result.max_overflow ?? '—'}` },
-    { label: 'Checkpoint', value: result.wal_autocheckpoint ?? '—' },
+    { label: 'SQL 超时', value: formatMs(result.statement_timeout_ms) },
   ]
 })
 
@@ -292,12 +301,6 @@ function ensureSystemConfig() {
     props.config.resource_budget = { ...defaultResourceBudget }
   } else {
     Object.assign(props.config.resource_budget, { ...defaultResourceBudget, ...props.config.resource_budget })
-  }
-}
-
-function normalizeToggleDependencies() {
-  if (!db.value.startup_quick_check) {
-    db.value.startup_integrity_check = false
   }
 }
 
@@ -316,13 +319,27 @@ async function runHealth(full) {
     const detail = error.response?.data?.detail || error.message || '数据库健康检查失败'
     healthResult.value = {
       ok: false,
-      check: full ? 'integrity_check' : 'quick_check',
+      check: full ? 'vacuum_analyze_probe' : 'select_1',
       error: String(detail),
       messages: [],
       duration_ms: 0,
     }
     ElMessage.error(String(detail))
     return false
+  }
+}
+
+async function revealDatabasePassword() {
+  if (databasePasswordRevealing.value) return
+  databasePasswordRevealing.value = true
+  try {
+    const result = await configApi.revealDatabaseSecret({ key: 'password' })
+    db.value.password = result?.value || ''
+  } catch (error) {
+    const detail = error.response?.data?.detail || error.message || '读取数据库密码失败'
+    ElMessage.error(String(detail))
+  } finally {
+    databasePasswordRevealing.value = false
   }
 }
 
@@ -359,11 +376,9 @@ function formatMs(ms) {
 
 onMounted(() => {
   ensureSystemConfig()
-  normalizeToggleDependencies()
 })
 
 watch(() => props.config, ensureSystemConfig, { immediate: true })
-watch(() => db.value?.startup_quick_check, normalizeToggleDependencies)
 </script>
 
 <style scoped>
@@ -478,18 +493,8 @@ watch(() => db.value?.startup_quick_check, normalizeToggleDependencies)
   gap: 14px 18px;
 }
 
-.settings-field-dd {
+.settings-inline-input {
   display: block;
-  width: 100%;
-}
-
-.settings-field-dd :deep(.app-dd-root),
-.settings-field-dd :deep(.app-dd-trigger-anchor) {
-  display: block;
-  width: 100%;
-}
-
-.settings-field-dd :deep(.app-dd-trigger) {
   width: 100%;
   min-height: 38px;
   height: 38px;
@@ -497,17 +502,58 @@ watch(() => db.value?.startup_quick_check, normalizeToggleDependencies)
   border-radius: 10px;
   background: var(--set-field-bg);
   border: 1px solid var(--set-border);
+  color: var(--set-text-strong);
   font-size: 13.5px;
-  justify-content: space-between;
+  outline: none;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.settings-field-dd :deep(.app-dd-trigger:hover) {
+.settings-inline-input:hover {
   border-color: var(--set-border-strong);
 }
 
-.settings-field-dd :deep(.app-dd-trigger.is-open) {
+.settings-inline-input:focus,
+.settings-inline-input:focus-visible {
   border-color: var(--set-border-strong);
-  box-shadow: 0 0 0 3px var(--set-focus-ring);
+  box-shadow: none;
+}
+
+.secret-field-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.secret-reveal-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 54px;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--set-border);
+  background: var(--set-chip-bg);
+  color: var(--set-chip-text-strong);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.secret-reveal-btn:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.02);
+  border-color: var(--set-border-strong);
+}
+
+.secret-reveal-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.secret-reveal-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
 }
 
 .health-head {
@@ -525,7 +571,34 @@ watch(() => db.value?.startup_quick_check, normalizeToggleDependencies)
 }
 
 .health-stateful-btn {
-  --stateful-button-icon-size: 14px;
+  --stateful-button-icon-size: 15px;
+  min-width: 132px;
+  min-height: 38px;
+  height: 38px;
+  padding: 0 13px;
+  border: 1px solid var(--set-border);
+  border-radius: 999px;
+  background: var(--set-surface);
+  color: var(--set-text-strong);
+  box-shadow: none;
+  white-space: nowrap;
+}
+
+.health-stateful-btn--full {
+  border-color: var(--set-warning-border);
+  background: color-mix(in srgb, var(--set-warning-bg) 58%, var(--set-surface));
+  color: var(--set-warning-text);
+}
+
+.health-stateful-btn:not(:disabled):hover {
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
+  box-shadow: none;
+}
+
+.health-stateful-btn--full:not(:disabled):hover {
+  border-color: var(--set-warning-border);
+  background: var(--set-warning-bg);
 }
 
 .health-stateful-btn :deep(.stateful-button__content) {
@@ -533,8 +606,44 @@ watch(() => db.value?.startup_quick_check, normalizeToggleDependencies)
 }
 
 .health-stateful-btn :deep(.stateful-button__state) {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
+}
+
+.health-stateful-btn :deep(.stateful-button__label) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.health-btn-label {
+  color: currentColor;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.health-btn-code {
+  color: var(--set-text-muted);
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.health-stateful-btn--full .health-btn-code {
+  color: color-mix(in srgb, var(--set-warning-text) 72%, var(--set-text-muted));
+}
+
+.health-action-icon {
+  flex: 0 0 auto;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.health-stateful-btn--quick:not(:disabled):hover .health-action-icon {
+  transform: rotate(-28deg) scale(1.08);
+}
+
+.health-stateful-btn--full:not(:disabled):hover .health-action-icon {
+  transform: rotate(10deg) scale(1.08);
 }
 
 .health-spin {
@@ -666,6 +775,32 @@ watch(() => db.value?.startup_quick_check, normalizeToggleDependencies)
   background: rgba(255, 255, 255, 0.06);
 }
 
+:global(html.kikoerumanager-dark .settings-page .health-stateful-btn),
+:global(body.kikoerumanager-dark .settings-page .health-stateful-btn) {
+  background: rgba(255, 255, 255, 0.055);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: rgba(245, 245, 245, 0.92);
+}
+
+:global(html.kikoerumanager-dark .settings-page .health-stateful-btn:not(:disabled):hover),
+:global(body.kikoerumanager-dark .settings-page .health-stateful-btn:not(:disabled):hover) {
+  background: rgba(255, 255, 255, 0.085);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+:global(html.kikoerumanager-dark .settings-page .health-stateful-btn--full),
+:global(body.kikoerumanager-dark .settings-page .health-stateful-btn--full) {
+  background: rgba(251, 191, 36, 0.11);
+  border-color: rgba(251, 191, 36, 0.28);
+  color: #fcd34d;
+}
+
+:global(html.kikoerumanager-dark .settings-page .health-stateful-btn--full:not(:disabled):hover),
+:global(body.kikoerumanager-dark .settings-page .health-stateful-btn--full:not(:disabled):hover) {
+  background: rgba(251, 191, 36, 0.16);
+  border-color: rgba(251, 191, 36, 0.38);
+}
+
 @keyframes system-spin {
   to {
     transform: rotate(360deg);
@@ -689,6 +824,16 @@ watch(() => db.value?.startup_quick_check, normalizeToggleDependencies)
   .health-actions {
     justify-content: flex-start;
     width: 100%;
+  }
+
+  .health-actions {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 520px) {
+  .health-stateful-btn {
+    min-width: min(100%, 160px);
   }
 }
 </style>
