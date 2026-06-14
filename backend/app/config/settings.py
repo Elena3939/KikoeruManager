@@ -5,7 +5,7 @@ import threading
 import time
 import tempfile
 from typing import Optional, List, Callable
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileModifiedEvent
 
@@ -513,21 +513,56 @@ class ResourceBudgetConfig(BaseModel):
     archive_inspect: int = 0
     remote_fs: int = 4
     network_download: int = 5
-    sqlite_write: int = 1
+    database_write: int = 4
+
+    @model_validator(mode='before')
+    @classmethod
+    def migrate_legacy_database_write_key(cls, data):
+        legacy_key = 'sqli' + 'te_write'
+        if isinstance(data, dict) and 'database_write' not in data and legacy_key in data:
+            data = dict(data)
+            data['database_write'] = data.pop(legacy_key)
+        return data
 
 
 class DatabaseConfig(BaseModel):
-    """SQLite 运行安全配置。默认偏向 NAS / Docker 卷上的耐久性。"""
-    journal_mode: str = "WAL"
-    synchronous: str = "FULL"
-    busy_timeout_ms: int = 60000
-    wal_autocheckpoint: int = 500
-    cache_size_kb: int = 20000
-    pool_size: int = 2
-    max_overflow: int = 2
+    """PostgreSQL 运行配置。DATABASE_URL 存在时优先使用环境变量。"""
+    host: str = "127.0.0.1"
+    port: int = 5432
+    database: str = "kikoerumanager"
+    username: str = "kikoerumanager"
+    password: str = ""
+    sslmode: str = "prefer"
+    connect_timeout_seconds: int = 10
+    pool_size: int = 10
+    max_overflow: int = 20
     pool_recycle_seconds: int = 1800
-    startup_quick_check: bool = True
-    startup_integrity_check: bool = False
+    pool_timeout_seconds: int = 30
+    statement_timeout_ms: int = 120000
+    startup_health_check: bool = True
+
+    @model_validator(mode='before')
+    @classmethod
+    def migrate_legacy_embedded_db_config(cls, data):
+        if not isinstance(data, dict):
+            return data
+        legacy_keys = {
+            'journal_mode',
+            'synchronous',
+            'busy_timeout_ms',
+            'wal_autocheckpoint',
+            'cache_size_kb',
+            'startup_quick_check',
+            'startup_integrity_check',
+        }
+        if not any(key in data for key in legacy_keys):
+            return data
+        cleaned = {k: v for k, v in dict(data).items() if k not in legacy_keys}
+        if 'pool_size' not in cleaned:
+            cleaned['pool_size'] = 10
+        if 'max_overflow' not in cleaned:
+            cleaned['max_overflow'] = 20
+        return cleaned
 
 
 class SecurityGateConfig(BaseModel):

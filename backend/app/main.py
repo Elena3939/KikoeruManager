@@ -27,19 +27,13 @@ def setup_logging():
 
 
 def init_database():
-    """Initialize database tables and enforce UTF-8 encoding."""
-    from sqlalchemy import text
-
-    from .models.database import init_db, engine
+    """Initialize PostgreSQL database tables and indexes."""
+    from .models.database import init_db
 
     init_db()
 
-    with engine.connect() as conn:
-        conn.execute(text("PRAGMA encoding='UTF-8'"))
-        conn.commit()
-
     logger = logging.getLogger(__name__)
-    logger.info("数据库初始化完成，使用 UTF-8 编码")
+    logger.info("PostgreSQL 数据库初始化完成")
 
 
 def main():
