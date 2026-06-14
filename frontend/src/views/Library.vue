@@ -1677,7 +1677,7 @@
               <IconFolderInput :size="20" :stroke-width="2.4" />
             </span>
             <div class="drag-move-conflict-title-block">
-              <h3 id="drag-move-conflict-title">目标目录存在同名项</h3>
+              <h3 id="drag-move-conflict-title">发现移动冲突</h3>
               <p>{{ dragMoveConflictSummary }}</p>
             </div>
             <button
@@ -1697,11 +1697,11 @@
             </div>
             <ul class="drag-move-conflict-list">
               <li v-for="item in dragMoveConflictPreview" :key="item.path || item.name">
-                <span>{{ item.name }}</span>
+                <span>{{ item.relative_path || item.name }}</span>
                 <em>{{ item.is_directory ? '文件夹' : '文件' }}</em>
               </li>
               <li v-if="dragMoveConflictOverflowCount > 0" class="drag-move-conflict-more">
-                还有 {{ dragMoveConflictOverflowCount }} 项同名
+                还有 {{ dragMoveConflictOverflowCount }} 项冲突
               </li>
             </ul>
           </div>
@@ -1721,7 +1721,7 @@
               :disabled="dragMoveConflictState.submitting"
               @click="confirmDragMoveConflict('overwrite')"
             >
-              覆盖目标
+              覆盖冲突
             </button>
             <button
               type="button"
@@ -1729,7 +1729,7 @@
               :disabled="dragMoveConflictState.submitting"
               @click="confirmDragMoveConflict('skip')"
             >
-              跳过同名
+              跳过冲突
             </button>
             <button
               type="button"
@@ -3838,7 +3838,7 @@ const dragMoveConflictTargetName = computed(() => {
 const dragMoveConflictSummary = computed(() => {
   const conflictCount = dragMoveConflictState.value.conflicts.length
   const itemCount = dragMoveConflictState.value.items.length
-  return `${itemCount} 项中有 ${conflictCount} 项会与目标目录同名`
+  return `${itemCount} 项中有 ${conflictCount} 个文件或类型冲突；同名文件夹会自动合并`
 })
 
 const libraryRowContextMenuProps = computed(() => {
@@ -9539,42 +9539,15 @@ function getMoveTargetName (targetPath) {
 
 
 
-async function getDirectMoveConflicts (targetLibraryId, targetPath, items) {
+async function getDirectMoveConflicts (sourceLibraryId, targetLibraryId, targetPath, items) {
 
-  const sourceNameMap = new Map()
+  const paths = (items || []).map(item => item?.path).filter(Boolean)
 
-  for (const item of items || []) {
+  if (!paths.length) return []
 
-    const key = String(item?.name || getFileName(item?.path) || '').trim().toLowerCase()
+  const preview = await libraryApi.browserMovePreview(sourceLibraryId, paths, targetLibraryId, targetPath)
 
-    if (key && !sourceNameMap.has(key)) sourceNameMap.set(key, item)
-
-  }
-
-  if (!sourceNameMap.size) return []
-
-  const data = await libraryApi.browserListFolders(targetLibraryId, targetPath, { includeFiles: true })
-
-  const conflicts = []
-
-  for (const entry of data?.folders || []) {
-
-    const key = String(entry?.name || '').trim().toLowerCase()
-
-    if (!key || !sourceNameMap.has(key)) continue
-
-    const sourceItem = sourceNameMap.get(key)
-
-    if (normalizeConflictPathKey(sourceItem?.path) === normalizeConflictPathKey(entry?.path)) continue
-
-    conflicts.push({
-      ...sourceItem,
-      existingPath: entry?.path || ''
-    })
-
-  }
-
-  return conflicts
+  return Array.isArray(preview?.conflicts) ? preview.conflicts : []
 
 }
 
@@ -9626,7 +9599,7 @@ async function directMoveRowsToPath (rows, targetPath) {
 
   try {
 
-    const conflicts = await getDirectMoveConflicts(targetLibraryId, normalizedTargetPath, items)
+    const conflicts = await getDirectMoveConflicts(sourceLibraryId, targetLibraryId, normalizedTargetPath, items)
 
     if (conflicts.length) {
 

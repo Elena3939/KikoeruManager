@@ -1176,6 +1176,16 @@ export const libraryApi = {
     return response.data
   },
 
+  browserMovePreview: async (sourceLibraryId, paths, targetLibraryId, targetPath = '') => {
+    const response = await apiClient.post('/library/browser/move-preview', {
+      source_library_id: sourceLibraryId,
+      target_library_id: targetLibraryId,
+      paths,
+      target_path: targetPath || ''
+    })
+    return response.data
+  },
+
   autoCircleGroup: async (libraryId, rowPath, { preview = false } = {}) => {
     const response = await apiClient.post('/library/auto-circle-group', {
       library_id: libraryId,
