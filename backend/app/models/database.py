@@ -1,15 +1,16 @@
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, Text, BigInteger, JSON, Index, text, Float, event
+from contextlib import contextmanager
+
+from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, Text, BigInteger, Index, text, Float, event
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import QueuePool
 from datetime import datetime, timezone
 import os
-import shutil
-import sqlite3
-import stat
+import re
 import threading
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Iterable, Optional, Sequence
 
 import orjson
 
@@ -57,7 +58,9 @@ def _orjson_dumps(obj) -> str:
 
 
 def _orjson_loads(value):
-    # sqlite3 JSON 列读出来是 str；orjson.loads 同时接收 str 与 bytes
+    # PostgreSQL JSONB 读出来通常已经是 dict/list；迁移脚本和部分测试也可能给 str/bytes。
+    if value is None or isinstance(value, (dict, list, int, float, bool)):
+        return value
     return orjson.loads(value)
 
 def get_local_now():
@@ -65,6 +68,32 @@ def get_local_now():
     return datetime.now()
 
 Base = declarative_base()
+JSON = JSONB
+
+_NATURAL_SORT_NUMBER_RE = re.compile(r"(\d+)")
+_NATURAL_SORT_DELIMITER = "\u0001"
+
+
+def library_index_name_sort_key(value: Any) -> str:
+    """生成可被 PostgreSQL btree 直接排序的文件名自然排序键。"""
+    raw = str(value or "").casefold()
+    parts: list[str] = []
+    for part in _NATURAL_SORT_NUMBER_RE.split(raw):
+        if not part:
+            continue
+        if part.isdigit():
+            normalized = part.lstrip("0") or "0"
+            parts.append(
+                f"1{len(normalized):010d}{normalized}{len(part):010d}{_NATURAL_SORT_DELIMITER}"
+            )
+        else:
+            escaped = (
+                part
+                .replace("\\", "\\\\")
+                .replace(_NATURAL_SORT_DELIMITER, "\\u0001")
+            )
+            parts.append(f"0{escaped}{_NATURAL_SORT_DELIMITER}")
+    return "".join(parts)
 
 class Task(Base):
     """任务表"""
@@ -92,24 +121,19 @@ class TaskCenterItem(Base):
     __tablename__ = 'task_center_items'
 
     item_id = Column(String(80), primary_key=True)
-    engine_task_id = Column(String(36), index=True)
-    domain = Column(String(40), index=True)
-    status = Column(String(24), index=True)
+    engine_task_id = Column(String(36))
+    domain = Column(String(40))
+    status = Column(String(24))
     kind = Column(String(60))
     title = Column(Text)
     source_page = Column(String(80))
     source_action = Column(String(120))
-    business_key = Column(Text, index=True)
+    business_key = Column(Text)
     searchable_text = Column(Text)
     payload_json = Column(JSON)
     version = Column(Integer, default=0)
-    created_at = Column(DateTime, default=get_local_now, index=True)
-    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now, index=True)
-
-    __table_args__ = (
-        Index('idx_task_center_items_domain_status', 'domain', 'status'),
-        Index('idx_task_center_items_updated_at', 'updated_at'),
-    )
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
 
 
 class TaskPhaseMetric(Base):
@@ -784,19 +808,19 @@ class ActivityLog(Base):
     __tablename__ = 'activity_logs'
 
     id = Column(String(36), primary_key=True)
-    category = Column(String(40), index=True)
+    category = Column(String(40))
     action = Column(String(80))
-    status = Column(String(20), index=True)
+    status = Column(String(20))
     summary = Column(Text)
     detail = Column(JSON)
-    rjcode = Column(String(32), index=True)
-    task_id = Column(String(36), index=True)
+    rjcode = Column(String(32))
+    task_id = Column(String(36))
     source_path = Column(Text)
-    created_at = Column(DateTime, default=get_local_now, index=True)
+    created_at = Column(DateTime, default=get_local_now)
     # Phase 2：从 detail JSON 提升上来的高频查询字段，建索引后替换掉合并时 O(B·N) 扫描
-    batch_id = Column(String(80), index=True)
-    session_key = Column(String(120), index=True)
-    parent_id = Column(String(36), index=True)
+    batch_id = Column(String(80))
+    session_key = Column(String(120))
+    parent_id = Column(String(36))
 
     __table_args__ = (
         Index('idx_activity_created_category', 'created_at', 'category'),
@@ -830,8 +854,7 @@ class ActivityLogDailyStats(Base):
     每条 activity_logs 写入时，Writer 会按 (date, category, status) 在这张表上做 UPSERT，
     把 count + 1 累加上去。图表接口不再需要在全表跑 GROUP BY。
 
-    复合主键 (date, category, status)：date 为 'YYYY-MM-DD' 字符串，
-    和 `strftime('%Y-%m-%d', created_at)` 一致。
+    复合主键 (date, category, status)：date 为 'YYYY-MM-DD' 字符串。
     """
     __tablename__ = 'activity_log_daily_stats'
 
@@ -911,7 +934,7 @@ class ASMRResourceRecord(Base):
     __tablename__ = 'asmr_resource_records'
 
     id = Column(String(36), primary_key=True)
-    rjcode = Column(String(20), index=True)
+    rjcode = Column(String(20))
     work_rjcode = Column(String(20), index=True)
     source_workno = Column(String(20), index=True)
     work_title = Column(Text)
@@ -928,12 +951,12 @@ class ASMRResourceRecord(Base):
     remote_url = Column(Text)
     local_path = Column(Text)
     upload_path = Column(Text)
-    download_status = Column(String(20), default='cataloged', index=True)
+    download_status = Column(String(20), default='cataloged')
     match_status = Column(String(20), default='unmatched', index=True)
     verify_status = Column(String(20), default='pending', index=True)
     upload_status = Column(String(20), default='pending', index=True)
     missing_reason = Column(String(120))
-    session_id = Column(String(36), index=True)
+    session_id = Column(String(36))
     retry_count = Column(Integer, default=0)
     last_seen_at = Column(DateTime, default=get_local_now, index=True)
     last_error = Column(Text)
@@ -943,7 +966,6 @@ class ASMRResourceRecord(Base):
 
     __table_args__ = (
         Index('idx_asmr_resource_unique', 'rjcode', 'source_provider', 'relative_path'),
-        Index('idx_asmr_resource_status', 'download_status', 'updated_at'),
     )
 
     def to_dict(self):
@@ -986,14 +1008,14 @@ class ASMRDownloadSession(Base):
     __tablename__ = 'asmr_download_sessions'
 
     id = Column(String(36), primary_key=True)
-    rjcode = Column(String(20), index=True)
+    rjcode = Column(String(20))
     task_id = Column(String(36), index=True)
     source_provider = Column(String(40), default='asmr.one', index=True)
     source_page = Column(String(40), default='asmr-sync')
     source_action = Column(String(80), default='enhanced_download')
     source_label = Column(Text)
-    status = Column(String(20), default='planning', index=True)
-    queue_priority = Column(Integer, default=100, index=True)
+    status = Column(String(20), default='planning')
+    queue_priority = Column(Integer, default=100)
     folder_path = Column(Text)
     target_path = Column(Text)
     upload_mode = Column(String(20), default='disabled')
@@ -1045,6 +1067,7 @@ _db_logger = logging.getLogger(__name__)
 
 _SLOW_SQL_DEBUG_THRESHOLD_SECONDS = float(os.getenv("KIKOERUMANAGER_SLOW_SQL_SECONDS", "0.2") or 0.2)
 _SLOW_SQL_WARNING_THRESHOLD_SECONDS = float(os.getenv("KIKOERUMANAGER_SLOW_SQL_WARNING_SECONDS", "1.0") or 1.0)
+_SLOW_SQL_LOG_THRESHOLD_SECONDS = _SLOW_SQL_WARNING_THRESHOLD_SECONDS
 _SLOW_SQL_MAX_TEXT_LEN = 320
 _SLOW_SQL_MAX_PARAM_ITEMS = 8
 
@@ -1097,14 +1120,28 @@ def _summarize_sql_params(parameters: Any) -> Any:
         return type(parameters).__name__
 
 
+def _effective_slow_sql_warning_threshold() -> float:
+    values = [
+        float(value)
+        for value in (
+            _SLOW_SQL_WARNING_THRESHOLD_SECONDS,
+            globals().get("_SLOW_SQL_LOG_THRESHOLD_SECONDS", _SLOW_SQL_WARNING_THRESHOLD_SECONDS),
+        )
+        if float(value) > 0
+    ]
+    return min(values) if values else 0.0
+
+
 def _slow_sql_before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
-    if _SLOW_SQL_DEBUG_THRESHOLD_SECONDS <= 0 and _SLOW_SQL_WARNING_THRESHOLD_SECONDS <= 0:
+    warning_threshold = _effective_slow_sql_warning_threshold()
+    if _SLOW_SQL_DEBUG_THRESHOLD_SECONDS <= 0 and warning_threshold <= 0:
         return
     context._kikoerumanager_sql_started_at = time.perf_counter()
 
 
 def _slow_sql_after_cursor_execute(conn, cursor, statement, parameters, context, executemany):
-    if _SLOW_SQL_DEBUG_THRESHOLD_SECONDS <= 0 and _SLOW_SQL_WARNING_THRESHOLD_SECONDS <= 0:
+    warning_threshold = _effective_slow_sql_warning_threshold()
+    if _SLOW_SQL_DEBUG_THRESHOLD_SECONDS <= 0 and warning_threshold <= 0:
         return
     started_at = getattr(context, "_kikoerumanager_sql_started_at", None)
     if not started_at:
@@ -1112,14 +1149,14 @@ def _slow_sql_after_cursor_execute(conn, cursor, statement, parameters, context,
     elapsed = time.perf_counter() - started_at
     active_thresholds = [
         threshold
-        for threshold in (_SLOW_SQL_DEBUG_THRESHOLD_SECONDS, _SLOW_SQL_WARNING_THRESHOLD_SECONDS)
+        for threshold in (_SLOW_SQL_DEBUG_THRESHOLD_SECONDS, warning_threshold)
         if threshold > 0
     ]
     if not active_thresholds or elapsed < min(active_thresholds):
         return
     log_method = (
         _db_logger.warning
-        if _SLOW_SQL_WARNING_THRESHOLD_SECONDS > 0 and elapsed >= _SLOW_SQL_WARNING_THRESHOLD_SECONDS
+        if warning_threshold > 0 and elapsed >= warning_threshold
         else _db_logger.debug
     )
     log_method(
@@ -1288,7 +1325,7 @@ class LibraryIndexEntry(Base):
 
     设计要点：
     - (library_id, relative_path) 作为自然主键保证幂等
-    - rjcode / name / parent_path 都建索引，覆盖 RJ 搜索、按名搜索、子目录列举
+    - 运行期只随表创建唯一索引；RJ / 名称 / 子树路径索引由 PostgreSQL 后台 CONCURRENTLY 维护
     - 目录行 size 存递归大小，避免运行时反复 os.walk
     - 与 LibrarySnapshot 不冲突：LibrarySnapshot 是业务缓存（按 RJ 号单射），
       这张表是搜索索引（按多库存 + 完整路径组织）。
@@ -1296,11 +1333,12 @@ class LibraryIndexEntry(Base):
     __tablename__ = 'library_index_entries'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    library_id = Column(String(60), nullable=False, index=True)
+    library_id = Column(String(60), nullable=False)
     entry_type = Column(String(10), nullable=False)  # 'dir' / 'file'
     relative_path = Column(Text, nullable=False)
     absolute_path = Column(Text, nullable=False)
     name = Column(String(255), nullable=False)
+    name_sort_key = Column(Text, nullable=False, default='')
     rjcode = Column(String(20))
     parent_path = Column(Text)
     size = Column(BigInteger, default=0)
@@ -1311,9 +1349,6 @@ class LibraryIndexEntry(Base):
 
     __table_args__ = (
         Index('idx_lie_library_rel', 'library_id', 'relative_path', unique=True),
-        Index('idx_lie_library_rj', 'library_id', 'rjcode'),
-        Index('idx_lie_library_name', 'library_id', 'name'),
-        Index('idx_lie_library_parent', 'library_id', 'parent_path'),
     )
 
 
@@ -1462,266 +1497,151 @@ class AISubtitleMatchUsage(Base):
 
 
 # 数据库连接
-def _count_password_entries(db_path):
-    if not os.path.exists(db_path):
-        return 0
+
+def _mask_database_url(value: str) -> str:
+    if not value:
+        return ""
     try:
-        conn = sqlite3.connect(db_path)
-        try:
-            cursor = conn.cursor()
-            cursor.execute("SELECT count(*) FROM password_entries")
-            row = cursor.fetchone()
-            return int(row[0] or 0) if row else 0
-        finally:
-            conn.close()
-    except Exception:
-        return 0
+        from urllib.parse import urlsplit, urlunsplit
 
-def _count_table_rows(db_path, table_name):
-    if not os.path.exists(db_path):
-        return 0
+        parts = urlsplit(value)
+        if not parts.password:
+            return value
+        username = parts.username or ""
+        hostname = parts.hostname or ""
+        port = f":{parts.port}" if parts.port else ""
+        auth = f"{username}:********@" if username else "********@"
+        netloc = f"{auth}{hostname}{port}"
+        return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    except Exception:
+        return "postgresql+psycopg://********"
+
+
+def _build_database_url_from_config() -> str:
+    env_url = os.environ.get("DATABASE_URL", "").strip()
+    if env_url:
+        if not env_url.startswith("postgresql+psycopg://"):
+            raise RuntimeError("DATABASE_URL 必须使用 postgresql+psycopg:// 前缀")
+        return env_url
+
+    from urllib.parse import quote_plus
+
     try:
-        conn = sqlite3.connect(db_path)
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?",
-                (table_name,)
-            )
-            exists_row = cursor.fetchone()
-            if not exists_row or int(exists_row[0] or 0) <= 0:
-                return 0
-            cursor.execute(f"SELECT count(*) FROM {table_name}")
-            row = cursor.fetchone()
-            return int(row[0] or 0) if row else 0
-        finally:
-            conn.close()
-    except Exception:
-        return 0
+        from ..config.settings import get_config
 
-def _migrate_legacy_db_if_needed(target_db_path):
-    project_root = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), '..', '..', '..')
-    )
-    legacy_db_path = os.path.abspath(
-        os.path.join(project_root, 'backend', 'data', 'cache.db')
-    )
-    target_db_path = os.path.abspath(target_db_path)
+        cfg = getattr(get_config(), "database", None)
+    except Exception as exc:
+        raise RuntimeError(f"读取 PostgreSQL 配置失败: {exc}") from exc
 
-    if legacy_db_path == target_db_path or not os.path.exists(legacy_db_path):
-        return
-
-    legacy_password_count = _count_password_entries(legacy_db_path)
-    target_password_count = _count_password_entries(target_db_path)
-    legacy_activity_count = _count_table_rows(legacy_db_path, 'activity_logs')
-    target_activity_count = _count_table_rows(target_db_path, 'activity_logs')
-    legacy_task_count = _count_table_rows(legacy_db_path, 'tasks')
-    target_task_count = _count_table_rows(target_db_path, 'tasks')
-
-    legacy_score = (
-        legacy_password_count * 1000000
-        + legacy_activity_count * 1000
-        + legacy_task_count
-    )
-    target_score = (
-        target_password_count * 1000000
-        + target_activity_count * 1000
-        + target_task_count
-    )
-
-    if legacy_score <= 0 or legacy_score <= target_score:
-        return
-
-    os.makedirs(os.path.dirname(target_db_path), exist_ok=True)
-
-    if os.path.exists(target_db_path):
-        backup_path = f"{target_db_path}.pre-legacy-migration"
-        if not os.path.exists(backup_path):
-            shutil.copy2(target_db_path, backup_path)
-            _db_logger.info(f"[数据库] 已备份空目标库到: {backup_path}")
-
-    shutil.copy2(legacy_db_path, target_db_path)
-    _db_logger.warning(
-        "[数据库] 检测到旧数据库并完成迁移: %s -> %s (password_entries: %s, activity_logs: %s, tasks: %s)",
-        legacy_db_path,
-        target_db_path,
-        legacy_password_count,
-        legacy_activity_count,
-        legacy_task_count,
-    )
-
-def get_db_path():
-    default_data_dir = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), '..', '..', '..', 'data')
-    )
-    data_dir = os.environ.get('DATA_PATH', default_data_dir)
-    os.makedirs(data_dir, exist_ok=True)
-    db_path = os.path.join(data_dir, 'cache.db')
-    # 转换为绝对路径
-    db_path = os.path.abspath(db_path)
-    _migrate_legacy_db_if_needed(db_path)
-    _ensure_db_writable(db_path)
-    return db_path
-
-
-def _ensure_db_writable(db_path: str) -> None:
-    """确保 SQLite 主库 + 同目录 -journal/-wal/-shm 副本可写。
-
-    Windows 上常见 ReadOnly 属性被备份 / 同步软件 / shutil.copy2 复制保留下来，
-    一旦置位 SQLite 整个连接会被 sqlite3 模块判定为 readonly database，
-    所有 INSERT/UPDATE 都会报 `attempt to write a readonly database`。
-    在引擎初始化前把只读位强制清掉，免得每次重启都要手动 attrib -R。
-    """
-    candidates = [db_path, f"{db_path}-journal", f"{db_path}-wal", f"{db_path}-shm"]
-    for path in candidates:
-        try:
-            if not os.path.exists(path):
-                continue
-            current_mode = os.stat(path).st_mode
-            if not (current_mode & stat.S_IWUSR):
-                os.chmod(path, current_mode | stat.S_IWUSR | stat.S_IWGRP)
-                _db_logger.warning("[数据库] 已自动清除只读位: %s", path)
-            if os.name == "nt":
-                try:
-                    import ctypes
-
-                    FILE_ATTRIBUTE_READONLY = 0x1
-                    GetFileAttributesW = ctypes.windll.kernel32.GetFileAttributesW
-                    SetFileAttributesW = ctypes.windll.kernel32.SetFileAttributesW
-                    attrs = GetFileAttributesW(path)
-                    if attrs != -1 and (attrs & FILE_ATTRIBUTE_READONLY):
-                        SetFileAttributesW(path, attrs & ~FILE_ATTRIBUTE_READONLY)
-                        _db_logger.warning("[数据库] 已自动清除 Windows ReadOnly 属性: %s", path)
-                except Exception:
-                    _db_logger.debug("[数据库] 清除 Windows ReadOnly 属性失败，忽略", exc_info=True)
-        except Exception:
-            _db_logger.warning("[数据库] 检查只读属性失败 path=%s", path, exc_info=True)
-
-# 获取数据库路径
-_db_path = get_db_path()
+    host = str(getattr(cfg, "host", "127.0.0.1") or "127.0.0.1").strip()
+    port = int(getattr(cfg, "port", 5432) or 5432)
+    database = str(getattr(cfg, "database", "kikoerumanager") or "kikoerumanager").strip()
+    username = str(getattr(cfg, "username", "kikoerumanager") or "kikoerumanager").strip()
+    password = str(getattr(cfg, "password", "") or "")
+    sslmode = str(getattr(cfg, "sslmode", "prefer") or "prefer").strip()
+    if not host or not database or not username:
+        raise RuntimeError("PostgreSQL 配置缺少 host/database/username")
+    auth = quote_plus(username)
+    if password:
+        auth = f"{auth}:{quote_plus(password)}"
+    query = f"?sslmode={quote_plus(sslmode)}" if sslmode else ""
+    return f"postgresql+psycopg://{auth}@{host}:{port}/{quote_plus(database)}{query}"
 
 
 def _load_database_config() -> Dict[str, Any]:
-    """读取 SQLite 运行配置，配置文件损坏时使用保守默认值。"""
     defaults = {
-        "journal_mode": "WAL",
-        "synchronous": "FULL",
-        "busy_timeout_ms": 60000,
-        "wal_autocheckpoint": 500,
-        "cache_size_kb": 20000,
-        "pool_size": 2,
-        "max_overflow": 2,
+        "host": "127.0.0.1",
+        "port": 5432,
+        "database": "kikoerumanager",
+        "username": "kikoerumanager",
+        "password": "",
+        "sslmode": "prefer",
+        "connect_timeout_seconds": 10,
+        "pool_size": 10,
+        "max_overflow": 20,
         "pool_recycle_seconds": 1800,
-        "startup_quick_check": True,
-        "startup_integrity_check": False,
+        "pool_timeout_seconds": 30,
+        "statement_timeout_ms": 120000,
+        "startup_health_check": True,
     }
     try:
         from ..config.settings import get_config
 
         cfg = getattr(get_config(), "database", None)
-        if not cfg:
-            return defaults
-        payload = cfg.model_dump() if hasattr(cfg, "model_dump") else dict(cfg)
+        payload = cfg.model_dump() if hasattr(cfg, "model_dump") else dict(cfg or {})
         merged = {**defaults, **(payload or {})}
     except Exception:
-        return defaults
+        merged = dict(defaults)
 
-    journal_mode = str(merged.get("journal_mode") or "WAL").strip().upper()
-    if journal_mode not in {"WAL", "DELETE", "TRUNCATE", "PERSIST", "MEMORY", "OFF"}:
-        journal_mode = "WAL"
-    synchronous = str(merged.get("synchronous") or "FULL").strip().upper()
-    if synchronous not in {"OFF", "NORMAL", "FULL", "EXTRA"}:
-        synchronous = "FULL"
-    merged["journal_mode"] = journal_mode
-    merged["synchronous"] = synchronous
-    merged["busy_timeout_ms"] = max(1000, int(merged.get("busy_timeout_ms") or 60000))
-    merged["wal_autocheckpoint"] = max(100, int(merged.get("wal_autocheckpoint") or 500))
-    merged["cache_size_kb"] = max(1024, int(merged.get("cache_size_kb") or 20000))
-    merged["pool_size"] = max(1, int(merged.get("pool_size") or 2))
-    merged["max_overflow"] = max(0, int(merged.get("max_overflow") or 2))
-    merged["pool_recycle_seconds"] = max(300, int(merged.get("pool_recycle_seconds") or 1800))
-    merged["startup_quick_check"] = bool(merged.get("startup_quick_check", True))
-    merged["startup_integrity_check"] = bool(merged.get("startup_integrity_check", False))
+    merged["port"] = max(1, min(65535, int(merged.get("port") or 5432)))
+    merged["connect_timeout_seconds"] = max(1, int(merged.get("connect_timeout_seconds") or 10))
+    merged["pool_size"] = max(1, int(merged.get("pool_size") or 10))
+    merged["max_overflow"] = max(0, int(merged.get("max_overflow") or 20))
+    merged["pool_recycle_seconds"] = max(60, int(merged.get("pool_recycle_seconds") or 1800))
+    merged["pool_timeout_seconds"] = max(1, int(merged.get("pool_timeout_seconds") or 30))
+    merged["statement_timeout_ms"] = max(1000, int(merged.get("statement_timeout_ms") or 120000))
+    merged["startup_health_check"] = bool(merged.get("startup_health_check", True))
     return merged
 
 
+_DATABASE_URL = _build_database_url_from_config()
 _DB_RUNTIME_CONFIG = _load_database_config()
 
-# 数据库连接，确保支持UTF-8
-# 关键调优（特别是部署在 Synology / NAS Docker 这种慢 IO 环境时）：
-#   - QueuePool + pool_size=5/max_overflow=10：避免默认 SingletonThreadPool 把所有
-#     线程的查询串到一根连接上，FastAPI 多任务并发时这是主要的接口超时来源。
-#   - check_same_thread=False + 30s timeout：sqlite3 driver 层先等 30s 再抛
-#     `database is locked`，给 WAL 写者完成事务的时间，避免一接到锁就立刻 500。
-#   - pool_pre_ping=True：连接被 NAS / 网络抖动断开后能自动重连。
+
+def _connect_args() -> Dict[str, Any]:
+    args: Dict[str, Any] = {
+        "connect_timeout": _DB_RUNTIME_CONFIG["connect_timeout_seconds"],
+    }
+    timeout_ms = int(_DB_RUNTIME_CONFIG.get("statement_timeout_ms") or 120000)
+    if timeout_ms > 0:
+        args["options"] = f"-c statement_timeout={timeout_ms}"
+    return args
+
+
 engine = create_engine(
-    f'sqlite:///{_db_path}',
-    connect_args={
-        'check_same_thread': False,
-        'timeout': max(1, int(_DB_RUNTIME_CONFIG["busy_timeout_ms"] / 1000)),
-    },
+    _DATABASE_URL,
+    connect_args=_connect_args(),
     poolclass=QueuePool,
     pool_size=_DB_RUNTIME_CONFIG["pool_size"],
     max_overflow=_DB_RUNTIME_CONFIG["max_overflow"],
     pool_recycle=_DB_RUNTIME_CONFIG["pool_recycle_seconds"],
+    pool_timeout=_DB_RUNTIME_CONFIG["pool_timeout_seconds"],
     pool_pre_ping=True,
     json_serializer=_orjson_dumps,
     json_deserializer=_orjson_loads,
-    echo=False
+    echo=False,
 )
 
 
-# SQLite PRAGMA 调优：每个新建的物理连接都执行一次。
-# - journal_mode=WAL：读写不再互斥，读者只读快照，写者另开 -wal，大幅缓解
-#   `database is locked`，是这次群晖卡顿的根因修复。
-# - synchronous=FULL：NAS / Docker 卷上优先保证已提交事务落盘，少赌底层 I/O。
-# - busy_timeout：WAL 仍可能在 checkpoint 时短暂互斥；由 database.busy_timeout_ms 控制。
-# - temp_store=MEMORY / cache_size=-20000：临时表与 ~20MB 页缓存放内存，加速
-#   activity_logs 这类大表的扫描 / 排序。
-# - foreign_keys=ON / wal_autocheckpoint=1000：保持外键检查，控制 -wal 文件尺寸。
 @event.listens_for(engine, "connect")
-def _sqlite_pragma_on_connect(dbapi_connection, connection_record):
-    try:
-        cursor = dbapi_connection.cursor()
-        cursor.execute(f"PRAGMA journal_mode={_DB_RUNTIME_CONFIG['journal_mode']}")
-        cursor.execute(f"PRAGMA synchronous={_DB_RUNTIME_CONFIG['synchronous']}")
-        cursor.execute(f"PRAGMA busy_timeout={_DB_RUNTIME_CONFIG['busy_timeout_ms']}")
-        cursor.execute("PRAGMA temp_store=MEMORY")
-        cursor.execute(f"PRAGMA cache_size=-{_DB_RUNTIME_CONFIG['cache_size_kb']}")
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.execute(f"PRAGMA wal_autocheckpoint={_DB_RUNTIME_CONFIG['wal_autocheckpoint']}")
-        cursor.close()
-    except Exception:
-        # PRAGMA 设置失败不应阻断连接建立；下游真有冲突会通过 busy_timeout 兜底。
-        try:
-            cursor.close()
-        except Exception:
-            pass
+def _postgres_on_connect(dbapi_connection, connection_record):
+    # statement_timeout 已通过 libpq options 注入。这里不要再执行 SET：
+    # psycopg3 下 SET 不能用参数占位，失败后会把新连接留在 aborted transaction，
+    # 后续第一个真实查询会随机报 InFailedSqlTransaction。
+    return
 
 
-_SQLITE_FATAL_ERROR_MARKERS = (
-    "database disk image is malformed",
-    "disk i/o error",
-    "file is not a database",
-    "malformed database schema",
+_POSTGRES_FATAL_ERROR_MARKERS = (
+    "terminating connection",
+    "server closed the connection",
+    "connection not open",
+    "connection refused",
 )
 
 
 @event.listens_for(engine, "handle_error")
-def _sqlite_handle_error(exception_context):
-    """SQLite 底层 I/O / 损坏错误出现后立即丢弃连接池。"""
+def _postgres_handle_error(exception_context):
     original = getattr(exception_context, "original_exception", None)
     message = str(original or exception_context.sqlalchemy_exception or "").lower()
-    if not any(marker in message for marker in _SQLITE_FATAL_ERROR_MARKERS):
+    if not any(marker in message for marker in _POSTGRES_FATAL_ERROR_MARKERS):
         return
-
     try:
         exception_context.is_disconnect = True
     except Exception:
         pass
     _db_logger.critical(
-        "[数据库] 检测到 SQLite 致命错误，已标记连接失效并释放连接池: path=%s error=%s",
-        _db_path,
+        "[数据库] 检测到 PostgreSQL 连接致命错误，已标记连接失效并释放连接池: url=%s error=%s",
+        _mask_database_url(_DATABASE_URL),
         original or exception_context.sqlalchemy_exception,
     )
     try:
@@ -1737,97 +1657,1255 @@ event.listen(engine, "after_cursor_execute", _slow_sql_after_cursor_execute)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 _init_db_lock = threading.RLock()
 _init_db_done = False
+_library_index_maintenance_lock = threading.Lock()
+_library_index_maintenance_thread: Optional[threading.Thread] = None
 
 
-def _repair_orphan_sqlite_indexes() -> None:
-    """清理 sqlite_master 里指向不存在表的孤儿索引。
+def _human_bytes(n: int) -> str:
+    n = int(n or 0)
+    units = ("B", "KB", "MB", "GB", "TB")
+    value = float(abs(n))
+    idx = 0
+    while value >= 1024 and idx < len(units) - 1:
+        value /= 1024.0
+        idx += 1
+    sign = "-" if n < 0 else ""
+    return f"{sign}{int(value)} {units[idx]}" if idx == 0 else f"{sign}{value:.2f} {units[idx]}"
 
-    历史上如果 DB 文件被外部工具改过、或者上一次升级在 DROP TABLE 之间崩掉，
-    会留下 "有索引、没表" 的孤儿条目。SQLite 在 schema 解析阶段就会抛
-    `malformed database schema (<index>) - no such table: main.<table>`，
-    连无关的 `PRAGMA table_info(...)` 都会过不去，直接把 init_db 卡死。
-    这里在 create_all 之前用 writable_schema 把这些孤儿索引删掉。
-    """
+
+def _pg_table_size(conn, table_name: str) -> int:
     try:
-        import sqlite3
-        # 直接用 sqlite3 驱动，避开 SQLAlchemy 的 schema 反射路径。
-        conn = sqlite3.connect(_db_path, timeout=30)
+        return int(conn.execute(text("SELECT pg_total_relation_size(to_regclass(:name))"), {"name": table_name}).scalar() or 0)
+    except Exception:
+        return 0
+
+
+_POSTGRES_BUSINESS_INDEX_SPECS = (
+    # 操作历史：列表常按 category + created_at 倒序取窗口；detail.session_id 用于详情关联子项。
+    {
+        "name": "idx_activity_category_created_desc",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_category_created_desc ON activity_logs(category, created_at DESC)",
+        "fragments": ("activity_logs", "category", "created_at DESC"),
+    },
+    {
+        "name": "idx_activity_detail_session_id",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_detail_session_id ON activity_logs((detail ->> 'session_id'))",
+        "fragments": ("activity_logs", "detail ->> 'session_id'",),
+    },
+    {
+        "name": "idx_activity_batch_created",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_batch_created ON activity_logs(batch_id, created_at DESC)",
+        "fragments": ("activity_logs", "batch_id", "created_at DESC"),
+    },
+    {
+        "name": "idx_activity_session_created",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_session_created ON activity_logs(session_key, created_at DESC)",
+        "fragments": ("activity_logs", "session_key", "created_at DESC"),
+    },
+    {
+        "name": "idx_activity_parent_created",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_parent_created ON activity_logs(parent_id, created_at DESC)",
+        "fragments": ("activity_logs", "parent_id", "created_at DESC"),
+    },
+    {
+        "name": "idx_activity_task_created",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_task_created ON activity_logs(task_id, created_at DESC)",
+        "fragments": ("activity_logs", "task_id", "created_at DESC"),
+    },
+    {
+        "name": "idx_activity_rj_category_status_created",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_rj_category_status_created ON activity_logs(rjcode, category, status, created_at DESC)",
+        "fragments": ("activity_logs", "rjcode", "category", "status", "created_at DESC"),
+    },
+    {
+        "name": "idx_activity_compact_scan",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_compact_scan ON activity_logs(created_at ASC, id ASC)",
+        "fragments": ("activity_logs", "created_at", "id"),
+    },
+    # 问题作品列表、数量和处理链路：PENDING / PROCESSING 是最高频过滤，created_at 用于稳定新旧排序。
+    {
+        "name": "idx_conflict_active_created",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_conflict_active_created ON conflict_works(created_at DESC) WHERE status IN ('PENDING', 'PROCESSING') AND conflict_type <> 'LINKED_SUBTITLE_IMPORT'",
+        "fragments": ("conflict_works", "created_at DESC", "PENDING", "PROCESSING", "LINKED_SUBTITLE_IMPORT"),
+    },
+    {
+        "name": "idx_conflict_task_status",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_conflict_task_status ON conflict_works(task_id, status)",
+        "fragments": ("conflict_works", "task_id", "status"),
+    },
+    {
+        "name": "idx_conflict_rj_type_status",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_conflict_rj_type_status ON conflict_works(rjcode, conflict_type, status)",
+        "fragments": ("conflict_works", "rjcode", "conflict_type", "status"),
+    },
+    # 任务中心：高频列表页按 domain/status 过滤后按更新时间倒序翻页；单任务详情按 engine_task_id 取最新物化快照。
+    {
+        "name": "idx_task_center_domain_status_updated_created",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_task_center_domain_status_updated_created ON task_center_items(domain, status, updated_at DESC, created_at DESC)",
+        "fragments": ("task_center_items", "domain", "status", "updated_at DESC", "created_at DESC"),
+    },
+    {
+        "name": "idx_task_center_domain_updated_created",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_task_center_domain_updated_created ON task_center_items(domain, updated_at DESC, created_at DESC)",
+        "fragments": ("task_center_items", "domain", "updated_at DESC", "created_at DESC"),
+    },
+    {
+        "name": "idx_task_center_status_updated_created",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_task_center_status_updated_created ON task_center_items(status, updated_at DESC, created_at DESC)",
+        "fragments": ("task_center_items", "status", "updated_at DESC", "created_at DESC"),
+    },
+    {
+        "name": "idx_task_center_updated_created",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_task_center_updated_created ON task_center_items(updated_at DESC, created_at DESC)",
+        "fragments": ("task_center_items", "updated_at DESC", "created_at DESC"),
+    },
+    {
+        "name": "idx_task_center_engine_updated",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_task_center_engine_updated ON task_center_items(engine_task_id, updated_at DESC)",
+        "fragments": ("task_center_items", "engine_task_id", "updated_at DESC"),
+    },
+    # ASMR 同步/资源面板：状态统计与最新资源/会话。
+    {
+        "name": "idx_asmr_resource_updated",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_asmr_resource_updated ON asmr_resource_records(updated_at DESC)",
+        "fragments": ("asmr_resource_records", "updated_at DESC"),
+    },
+    {
+        "name": "idx_asmr_resource_download_updated",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_asmr_resource_download_updated ON asmr_resource_records(download_status, updated_at DESC)",
+        "fragments": ("asmr_resource_records", "download_status", "updated_at DESC"),
+    },
+    {
+        "name": "idx_asmr_resource_session_updated",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_asmr_resource_session_updated ON asmr_resource_records(session_id, updated_at DESC)",
+        "fragments": ("asmr_resource_records", "session_id", "updated_at DESC"),
+    },
+    {
+        "name": "idx_asmr_resource_rj_updated",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_asmr_resource_rj_updated ON asmr_resource_records(rjcode, updated_at DESC)",
+        "fragments": ("asmr_resource_records", "rjcode", "updated_at DESC"),
+    },
+    {
+        "name": "idx_asmr_session_status_priority_updated",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_asmr_session_status_priority_updated ON asmr_download_sessions(status, queue_priority, updated_at DESC)",
+        "fragments": ("asmr_download_sessions", "status", "queue_priority", "updated_at DESC"),
+    },
+    {
+        "name": "idx_asmr_session_priority_updated",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_asmr_session_priority_updated ON asmr_download_sessions(queue_priority, updated_at DESC)",
+        "fragments": ("asmr_download_sessions", "queue_priority", "updated_at DESC"),
+    },
+    {
+        "name": "idx_asmr_session_updated",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_asmr_session_updated ON asmr_download_sessions(updated_at DESC)",
+        "fragments": ("asmr_download_sessions", "updated_at DESC"),
+    },
+    # 已处理压缩包：历史列表、重处理回查、智能清理都围绕 processed_at / task_id / status。
+    {
+        "name": "idx_processed_archives_processed_at_desc",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_processed_archives_processed_at_desc ON processed_archives(processed_at DESC)",
+        "fragments": ("processed_archives", "processed_at DESC"),
+    },
+    {
+        "name": "idx_processed_archives_task_processed",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_processed_archives_task_processed ON processed_archives(task_id, processed_at DESC)",
+        "fragments": ("processed_archives", "task_id", "processed_at DESC"),
+    },
+    {
+        "name": "idx_processed_archives_status_processed",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_processed_archives_status_processed ON processed_archives(status, processed_at ASC)",
+        "fragments": ("processed_archives", "status", "processed_at"),
+    },
+    # 密码工作台：rjcode 保存有大小写差异时，upper(rjcode) 合并命中仍能走索引。
+    {
+        "name": "idx_password_upper_rjcode",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_password_upper_rjcode ON password_entries(upper(rjcode))",
+        "fragments": ("password_entries", "upper", "rjcode"),
+    },
+)
+
+
+_POSTGRES_LIBRARY_INDEX_SPECS = (
+    # 库存索引：几十万行级别的大表索引，启动时不在事务里阻塞创建，改由后台 CONCURRENTLY 维护。
+    {
+        "name": "idx_lie_rj_lookup",
+        "sql": (
+            "CREATE INDEX IF NOT EXISTS idx_lie_rj_lookup "
+            "ON library_index_entries(rjcode, depth, relative_path, library_id, entry_type) "
+            "WHERE rjcode IS NOT NULL"
+        ),
+        "fragments": ("library_index_entries", "rjcode", "depth", "relative_path", "library_id", "entry_type", "WHERE", "rjcode IS NOT NULL"),
+    },
+    {
+        "name": "idx_lie_rj_prefix",
+        "sql": (
+            "CREATE INDEX IF NOT EXISTS idx_lie_rj_prefix "
+            "ON library_index_entries(rjcode varchar_pattern_ops, depth, relative_path, library_id, entry_type) "
+            "WHERE rjcode IS NOT NULL"
+        ),
+        "fragments": ("library_index_entries", "rjcode", "varchar_pattern_ops", "depth", "relative_path", "library_id", "entry_type", "WHERE", "rjcode IS NOT NULL"),
+    },
+    {
+        "name": "idx_lie_indexed_at_id",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_indexed_at_id ON library_index_entries(library_id, indexed_at, id)",
+        "fragments": ("library_index_entries", "library_id", "indexed_at", "id"),
+    },
+    {
+        "name": "idx_lie_children_name",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_children_name ON library_index_entries(library_id, parent_path, name_sort_key, relative_path)",
+        "fragments": ("library_index_entries", "library_id", "parent_path", "name_sort_key", "relative_path"),
+    },
+    {
+        "name": "idx_lie_children_size",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_children_size ON library_index_entries(library_id, parent_path, size, name_sort_key, relative_path)",
+        "fragments": ("library_index_entries", "library_id", "parent_path", "size", "name_sort_key", "relative_path"),
+    },
+    {
+        "name": "idx_lie_children_size_desc",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_children_size_desc ON library_index_entries(library_id, parent_path, size DESC, name_sort_key, relative_path)",
+        "fragments": ("library_index_entries", "library_id", "parent_path", "size DESC", "name_sort_key", "relative_path"),
+    },
+    {
+        "name": "idx_lie_children_time",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_children_time ON library_index_entries(library_id, parent_path, mtime, name_sort_key, relative_path)",
+        "fragments": ("library_index_entries", "library_id", "parent_path", "mtime", "name_sort_key", "relative_path"),
+    },
+    {
+        "name": "idx_lie_children_time_desc",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_children_time_desc ON library_index_entries(library_id, parent_path, mtime DESC NULLS LAST, name_sort_key, relative_path)",
+        "fragments": ("library_index_entries", "library_id", "parent_path", "mtime DESC", "NULLS LAST", "name_sort_key", "relative_path"),
+    },
+    {
+        "name": "idx_lie_subtree_path_pattern",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_lie_subtree_path_pattern ON library_index_entries(library_id, relative_path text_pattern_ops)",
+        "fragments": ("library_index_entries", "library_id", "relative_path", "text_pattern_ops"),
+    },
+)
+
+
+_POSTGRES_OBSOLETE_INDEX_NAMES = (
+    # 任务中心迁移期遗留索引；已由下方 domain/status/updated_at 复合索引和 trigram 搜索索引覆盖。
+    "idx_task_center_items_domain_status",
+    "idx_task_center_items_updated_at",
+    "ix_task_center_items_business_key",
+    "ix_task_center_items_created_at",
+    "ix_task_center_items_domain",
+    "ix_task_center_items_engine_task_id",
+    "ix_task_center_items_status",
+    "ix_task_center_items_updated_at",
+    # 操作历史：单列索引已被业务复合索引覆盖，保留它们只会放大 append-only 写入成本。
+    "ix_activity_logs_batch_id",
+    "ix_activity_logs_category",
+    "ix_activity_logs_created_at",
+    "ix_activity_logs_parent_id",
+    "ix_activity_logs_rjcode",
+    "ix_activity_logs_session_key",
+    "ix_activity_logs_status",
+    "ix_activity_logs_task_id",
+    # ASMR 资源/会话：旧单列索引会拖慢批量资源 upsert，复合索引覆盖高频列表、统计和详情路径。
+    "idx_asmr_resource_status",
+    "ix_asmr_resource_records_download_status",
+    "ix_asmr_resource_records_rjcode",
+    "ix_asmr_resource_records_session_id",
+    "ix_asmr_download_sessions_queue_priority",
+    "ix_asmr_download_sessions_rjcode",
+    "ix_asmr_download_sessions_status",
+)
+
+
+_POSTGRES_LIBRARY_OBSOLETE_INDEX_NAMES = (
+    # 库存索引：旧 btree / 多 GIN 写放大明显，已由复合业务索引和合并 trigram 表达式索引覆盖。
+    "idx_lie_library_parent",
+    "ix_library_index_entries_library_id",
+    "idx_lie_library_rj",
+    "idx_lie_library_name",
+    "idx_lie_rj_depth",
+    "idx_lie_rj_scope_type_depth",
+    "idx_library_index_name_trgm",
+    "idx_library_index_relative_path_trgm",
+    "idx_library_index_rjcode_trgm",
+    "idx_library_index_parent_path_trgm",
+)
+
+
+_POSTGRES_TRIGRAM_INDEX_SPECS = (
+    {
+        "name": "idx_activity_logs_summary_trgm",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_logs_summary_trgm ON activity_logs USING gin (COALESCE(summary, '') gin_trgm_ops)",
+    },
+    {
+        "name": "idx_activity_logs_source_path_trgm",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_logs_source_path_trgm ON activity_logs USING gin (COALESCE(source_path, '') gin_trgm_ops)",
+    },
+    {
+        "name": "idx_activity_logs_rjcode_trgm",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_logs_rjcode_trgm ON activity_logs USING gin (COALESCE(rjcode, '') gin_trgm_ops)",
+    },
+    {
+        "name": "idx_activity_logs_task_id_trgm",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_logs_task_id_trgm ON activity_logs USING gin (COALESCE(task_id, '') gin_trgm_ops)",
+    },
+    {
+        "name": "idx_activity_logs_batch_id_trgm",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_logs_batch_id_trgm ON activity_logs USING gin (COALESCE(batch_id, '') gin_trgm_ops)",
+    },
+    {
+        "name": "idx_task_center_searchable_text_trgm",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_task_center_searchable_text_trgm ON task_center_items USING gin (searchable_text gin_trgm_ops)",
+    },
+    {
+        "name": "idx_task_center_title_trgm",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_task_center_title_trgm ON task_center_items USING gin (title gin_trgm_ops)",
+    },
+    {
+        "name": "idx_task_center_business_key_trgm",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_task_center_business_key_trgm ON task_center_items USING gin (business_key gin_trgm_ops)",
+    },
+    {
+        "name": "idx_task_center_engine_task_id_trgm",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_task_center_engine_task_id_trgm ON task_center_items USING gin (engine_task_id gin_trgm_ops)",
+    },
+    {
+        "name": "idx_processed_archives_filename_trgm",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_processed_archives_filename_trgm ON processed_archives USING gin (filename gin_trgm_ops)",
+    },
+    {
+        "name": "idx_processed_archives_rjcode_trgm",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_processed_archives_rjcode_trgm ON processed_archives USING gin (rjcode gin_trgm_ops)",
+    },
+)
+
+
+_POSTGRES_LIBRARY_SEARCH_TEXT_SQL = (
+    "COALESCE(name, '') || ' ' || "
+    "COALESCE(relative_path, '') || ' ' || "
+    "COALESCE(rjcode, '') || ' ' || "
+    "COALESCE(parent_path, '')"
+)
+
+
+_POSTGRES_LIBRARY_TRIGRAM_INDEX_SPECS = (
+    {
+        "name": "idx_library_index_search_text_trgm",
+        "sql": (
+            "CREATE INDEX IF NOT EXISTS idx_library_index_search_text_trgm "
+            f"ON library_index_entries USING gin (({_POSTGRES_LIBRARY_SEARCH_TEXT_SQL}) gin_trgm_ops) "
+            "WITH (fastupdate = on, gin_pending_list_limit = 65536)"
+        ),
+        "fragments": (
+            "library_index_entries",
+            "gin_trgm_ops",
+            "coalesce(name",
+            "relative_path",
+            "rjcode",
+            "parent_path",
+            "fastupdate='on'",
+            "gin_pending_list_limit='65536'",
+        ),
+    },
+)
+
+
+_POSTGRES_LIBRARY_TRIGRAM_INDEX_NAMES = tuple(
+    str(spec["name"]) for spec in _POSTGRES_LIBRARY_TRIGRAM_INDEX_SPECS
+)
+
+
+_POSTGRES_LIBRARY_INDEX_TABLE_REL_OPTIONS = {
+    # 首建是几十万行批量写入；日常通常只有千级 mutation。这里让统计信息在小增量后也足够新，
+    # 同时把 vacuum 触发点控制在数千死元组，避免维护线程频繁打扰正常业务。
+    "autovacuum_analyze_scale_factor": "0.001",
+    "autovacuum_analyze_threshold": "500",
+    "autovacuum_vacuum_scale_factor": "0.005",
+    "autovacuum_vacuum_threshold": "1000",
+}
+
+
+_POSTGRES_COMPAT_INDEX_SPECS = (
+    {
+        "table": "activity_logs",
+        "name": "idx_activity_batch_created",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_batch_created ON activity_logs(batch_id, created_at DESC)",
+    },
+    {
+        "table": "activity_logs",
+        "name": "idx_activity_session_created",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_session_created ON activity_logs(session_key, created_at DESC)",
+    },
+    {
+        "table": "activity_logs",
+        "name": "idx_activity_parent_created",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_parent_created ON activity_logs(parent_id, created_at DESC)",
+    },
+    {
+        "table": "activity_logs",
+        "name": "idx_activity_task_created",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_task_created ON activity_logs(task_id, created_at DESC)",
+    },
+    {
+        "table": "activity_logs",
+        "name": "idx_activity_rj_category_status_created",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_rj_category_status_created ON activity_logs(rjcode, category, status, created_at DESC)",
+    },
+    {
+        "table": "activity_logs",
+        "name": "idx_activity_category_batch",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_category_batch ON activity_logs(category, batch_id)",
+    },
+    {
+        "table": "activity_logs",
+        "name": "idx_activity_category_session",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_category_session ON activity_logs(category, session_key)",
+    },
+    {
+        "table": "activity_logs",
+        "name": "idx_activity_status_created",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_status_created ON activity_logs(status, created_at)",
+    },
+    {
+        "table": "activity_logs",
+        "name": "idx_activity_category_status_created",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_category_status_created ON activity_logs(category, status, created_at)",
+    },
+    {
+        "table": "activity_log_rollups",
+        "name": "idx_activity_rollup_type_value",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_rollup_type_value ON activity_log_rollups(rollup_type, group_value)",
+    },
+    {
+        "table": "activity_log_rollups",
+        "name": "idx_activity_rollup_category_status",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_rollup_category_status ON activity_log_rollups(category, latest_status)",
+    },
+    {
+        "table": "task_phase_metrics",
+        "name": "idx_task_phase_metrics_task_phase",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_task_phase_metrics_task_phase ON task_phase_metrics(task_id, phase)",
+    },
+    {
+        "table": "task_phase_metrics",
+        "name": "idx_task_phase_metrics_type_phase",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_task_phase_metrics_type_phase ON task_phase_metrics(task_type, phase)",
+    },
+    {
+        "table": "task_phase_metrics",
+        "name": "idx_task_phase_metrics_created_at",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_task_phase_metrics_created_at ON task_phase_metrics(created_at)",
+    },
+)
+
+
+def _compact_index_definition(value: Any) -> str:
+    text_value = " ".join(str(value or "").lower().split())
+    for marker in ("::text", "::character varying", "::bigint", "::integer"):
+        text_value = text_value.replace(marker, "")
+    return text_value
+
+
+def _index_definition_matches(indexdef: str, fragments: tuple[str, ...]) -> bool:
+    compact = _compact_index_definition(indexdef)
+    return all(_compact_index_definition(fragment) in compact for fragment in fragments)
+
+
+def _index_names_from_specs(specs: Iterable[Dict[str, Any]]) -> list[str]:
+    return [str(spec["name"]) for spec in specs if spec.get("name")]
+
+
+def _load_index_definitions(conn, names: Iterable[str]) -> Dict[str, str]:
+    unique_names = sorted({str(name) for name in names if name})
+    if not unique_names:
+        return {}
+    rows = conn.execute(
+        text(
+            """
+            SELECT indexname, indexdef
+              FROM pg_indexes
+             WHERE schemaname = current_schema()
+               AND indexname = ANY(:names)
+            """
+        ),
+        {"names": unique_names},
+    ).mappings().all()
+    return {str(row["indexname"]): str(row["indexdef"] or "") for row in rows}
+
+
+def _load_index_states(conn, names: Iterable[str]) -> Dict[str, Dict[str, Any]]:
+    unique_names = sorted({str(name) for name in names if name})
+    if not unique_names:
+        return {}
+    rows = conn.execute(
+        text(
+            """
+            SELECT c.relname AS indexname,
+                   pg_get_indexdef(c.oid) AS indexdef,
+                   i.indisvalid AS valid,
+                   i.indisready AS ready
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              JOIN pg_index i ON i.indexrelid = c.oid
+             WHERE n.nspname = current_schema()
+               AND c.relkind = 'i'
+               AND c.relname = ANY(:names)
+            """
+        ),
+        {"names": unique_names},
+    ).mappings().all()
+    return {
+        str(row["indexname"]): {
+            "indexdef": str(row["indexdef"] or ""),
+            "valid": bool(row["valid"]),
+            "ready": bool(row["ready"]),
+        }
+        for row in rows
+    }
+
+
+def _load_managed_index_definitions(conn) -> Dict[str, str]:
+    return _load_index_definitions(conn, _index_names_from_specs(_POSTGRES_BUSINESS_INDEX_SPECS))
+
+
+def _ensure_index_exists(conn, spec: Dict[str, Any], existing_definitions: Optional[Dict[str, str]] = None) -> None:
+    name = str(spec["name"])
+    if existing_definitions is not None and name in existing_definitions:
+        return
+    conn.execute(text(str(spec["sql"])))
+    if existing_definitions is not None:
+        existing_definitions[name] = str(spec["sql"])
+
+
+def _ensure_indexes_exist(
+    conn,
+    specs: Iterable[Dict[str, Any]],
+    existing_definitions: Optional[Dict[str, str]] = None,
+) -> None:
+    spec_list = [spec for spec in specs if spec.get("name")]
+    if existing_definitions is None:
+        existing_definitions = _load_index_definitions(conn, _index_names_from_specs(spec_list))
+    for spec in spec_list:
+        _ensure_index_exists(conn, spec, existing_definitions)
+
+
+def _index_specs_for_table(specs: Iterable[Dict[str, Any]], table_name: str) -> list[Dict[str, Any]]:
+    return [spec for spec in specs if spec.get("table") == table_name]
+
+
+def _ensure_managed_index(conn, spec: Dict[str, Any], existing_definitions: Optional[Dict[str, str]] = None) -> None:
+    name = str(spec["name"])
+    existing = (existing_definitions or {}).get(name)
+    if existing and not _index_definition_matches(str(existing), tuple(spec.get("fragments") or ())):
+        conn.execute(text(f'DROP INDEX IF EXISTS "{name}"'))
+        _db_logger.info("[数据库] 已重建 PostgreSQL 业务索引定义: %s", name)
+        if existing_definitions is not None:
+            existing_definitions.pop(name, None)
+        existing = None
+    if existing:
+        return
+    conn.execute(text(str(spec["sql"])))
+    if existing_definitions is not None:
+        existing_definitions[name] = str(spec["sql"])
+
+
+def _drop_obsolete_postgres_indexes(conn, existing_definitions: Optional[Dict[str, str]] = None) -> None:
+    if not _POSTGRES_OBSOLETE_INDEX_NAMES:
+        return
+    if existing_definitions is None:
+        existing_definitions = _load_index_definitions(conn, _POSTGRES_OBSOLETE_INDEX_NAMES)
+    for name in _POSTGRES_OBSOLETE_INDEX_NAMES:
+        if name not in existing_definitions:
+            continue
+        conn.execute(text(f'DROP INDEX IF EXISTS "{name}"'))
+        existing_definitions.pop(name, None)
+
+
+def _ensure_library_index_table_reloptions(conn) -> None:
+    row = conn.execute(
+        text(
+            """
+            SELECT COALESCE(c.reloptions, ARRAY[]::text[]) AS reloptions
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = current_schema()
+               AND c.relname = 'library_index_entries'
+            """
+        )
+    ).mappings().first()
+    if not row:
+        return
+    expected = {
+        f"{name}={value}"
+        for name, value in _POSTGRES_LIBRARY_INDEX_TABLE_REL_OPTIONS.items()
+    }
+    current = {str(item) for item in (row.get("reloptions") or [])}
+    if expected <= current:
+        return
+    assignments = ", ".join(
+        f"{name} = {value}"
+        for name, value in _POSTGRES_LIBRARY_INDEX_TABLE_REL_OPTIONS.items()
+    )
+    conn.execute(text(f"ALTER TABLE library_index_entries SET ({assignments})"))
+
+
+def _concurrent_create_index_sql(sql: str) -> str:
+    prefix = "CREATE INDEX IF NOT EXISTS "
+    if sql.startswith(prefix):
+        return "CREATE INDEX CONCURRENTLY IF NOT EXISTS " + sql[len(prefix):]
+    return sql.replace("CREATE INDEX ", "CREATE INDEX CONCURRENTLY ", 1)
+
+
+_LIBRARY_INDEX_MAINTENANCE_ADVISORY_LOCK = (53901, 18004)
+
+
+def configure_postgres_online_maintenance_connection(conn, *, lock_timeout_ms: int = 3000) -> bool:
+    """给在线索引维护连接设置独立保护。
+
+    业务连接统一带 statement_timeout；但几十万文件的 GIN trigram 索引首次构建可能超过
+    120s。维护连接必须允许长语句，同时用短 lock_timeout 和 advisory lock 避免卡住业务。
+    """
+    acquired = bool(
+        conn.execute(
+            text("SELECT pg_try_advisory_lock(:key1, :key2)"),
+            {
+                "key1": _LIBRARY_INDEX_MAINTENANCE_ADVISORY_LOCK[0],
+                "key2": _LIBRARY_INDEX_MAINTENANCE_ADVISORY_LOCK[1],
+            },
+        ).scalar()
+    )
+    if not acquired:
+        return False
+    try:
+        conn.execute(text("SET statement_timeout = 0"))
+        conn.execute(text(f"SET lock_timeout = '{max(100, int(lock_timeout_ms))}ms'"))
+        conn.execute(text("SET application_name = 'kikoerumanager-index-maintenance'"))
+        return True
+    except Exception:
+        release_postgres_online_maintenance_lock(conn)
+        raise
+
+
+def release_postgres_online_maintenance_lock(conn) -> None:
+    try:
+        conn.execute(
+            text("SELECT pg_advisory_unlock(:key1, :key2)"),
+            {
+                "key1": _LIBRARY_INDEX_MAINTENANCE_ADVISORY_LOCK[0],
+                "key2": _LIBRARY_INDEX_MAINTENANCE_ADVISORY_LOCK[1],
+            },
+        )
+    finally:
+        # 维护连接会把 statement_timeout 拉到 0。SQLAlchemy 连接池归还连接时只 rollback，
+        # 不会还原 session 级 SET；显式恢复到应用配置值，避免普通业务借到无超时连接。
         try:
-            cur = conn.cursor()
-            tables = {
-                row[0]
-                for row in cur.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
+            timeout_ms = int(_DB_RUNTIME_CONFIG.get("statement_timeout_ms") or 120000)
+            conn.execute(text(f"SET statement_timeout = {max(1000, timeout_ms)}"))
+            conn.execute(text("RESET lock_timeout"))
+            conn.execute(text("RESET application_name"))
+        except Exception:
+            _db_logger.debug("[数据库] 重置 PostgreSQL 维护连接参数失败", exc_info=True)
+
+
+def clean_library_index_trigram_pending_list(target_engine=None, *, lock_timeout_ms: int = 500) -> Dict[str, Any]:
+    """清理库存 trigram GIN pending list。
+
+    `fastupdate=on` 对日常千级 self-mutation 友好，但全量重建/大批导入后 pending list
+    会让首次模糊搜索把一大段待合并列表也扫一遍。这里只给大批路径显式调用。
+    """
+    cleaned: dict[str, int] = {}
+    started = time.monotonic()
+    db_engine = target_engine or engine
+    conn = db_engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+    lock_acquired = False
+    try:
+        lock_acquired = configure_postgres_online_maintenance_connection(
+            conn,
+            lock_timeout_ms=lock_timeout_ms,
+        )
+        if not lock_acquired:
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "already_running",
+                "cleaned": cleaned,
+                "duration_ms": int((time.monotonic() - started) * 1000),
             }
-            indexes = cur.execute(
-                "SELECT name, tbl_name FROM sqlite_master "
-                "WHERE type='index' AND sql IS NOT NULL"
-            ).fetchall()
-            orphans = [name for (name, tbl) in indexes if tbl not in tables]
-            if not orphans:
-                return
-            _db_logger.warning(
-                f"[数据库] 检测到孤儿索引，将清理：{orphans}"
+        for name in _POSTGRES_LIBRARY_TRIGRAM_INDEX_NAMES:
+            exists = bool(
+                conn.execute(
+                    text("SELECT to_regclass(:name) IS NOT NULL"),
+                    {"name": name},
+                ).scalar()
             )
-            cur.execute("PRAGMA writable_schema=ON")
-            for name in orphans:
-                cur.execute(
-                    "DELETE FROM sqlite_master WHERE type='index' AND name=?",
-                    (name,),
-                )
-            cur.execute("PRAGMA writable_schema=OFF")
-            conn.commit()
-        finally:
-            conn.close()
+            if not exists:
+                continue
+            cleaned[name] = int(
+                conn.execute(
+                    text("SELECT gin_clean_pending_list(:name)"),
+                    {"name": name},
+                ).scalar() or 0
+            )
     except Exception as exc:
-        # 修复失败不应阻断启动，让后续 create_all 自己抛真正错误。
-        _db_logger.warning(f"[数据库] 孤儿索引修复跳过：{exc}")
+        _db_logger.debug("[数据库] 清理库存 trigram pending list 失败: %s", exc, exc_info=True)
+        return {
+            "ok": False,
+            "error": str(exc),
+            "cleaned": cleaned,
+            "duration_ms": int((time.monotonic() - started) * 1000),
+        }
+    finally:
+        if lock_acquired:
+            try:
+                release_postgres_online_maintenance_lock(conn)
+            except Exception:
+                _db_logger.debug("[数据库] 释放库存 GIN pending 清理锁失败", exc_info=True)
+        conn.close()
+    return {
+        "ok": True,
+        "cleaned": cleaned,
+        "duration_ms": int((time.monotonic() - started) * 1000),
+    }
+
+
+def ensure_library_index_postgres_indexes_concurrently(target_engine=None) -> Dict[str, Any]:
+    """在线维护库存大表索引。
+
+    `library_index_entries` 可能有几十万到百万级文件行。这里必须使用
+    CONCURRENTLY + AUTOCOMMIT，避免启动或维护时用普通 CREATE/REINDEX 阻塞业务写入。
+    """
+    specs = list(_POSTGRES_LIBRARY_INDEX_SPECS) + list(_POSTGRES_LIBRARY_TRIGRAM_INDEX_SPECS)
+    desired_names = _index_names_from_specs(specs)
+    obsolete_names = list(_POSTGRES_LIBRARY_OBSOLETE_INDEX_NAMES)
+    created: list[str] = []
+    recreated: list[str] = []
+    dropped: list[str] = []
+    started = time.monotonic()
+    db_engine = target_engine or engine
+    conn = db_engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+    lock_acquired = False
+    try:
+        lock_acquired = configure_postgres_online_maintenance_connection(conn)
+        if not lock_acquired:
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "already_running",
+                "created": created,
+                "recreated": recreated,
+                "dropped": dropped,
+                "duration_ms": int((time.monotonic() - started) * 1000),
+            }
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+        states = _load_index_states(conn, desired_names + obsolete_names)
+        for spec in specs:
+            name = str(spec["name"])
+            state = states.get(name)
+            fragments = tuple(spec.get("fragments") or ())
+            drifted = bool(state) and fragments and not _index_definition_matches(str(state.get("indexdef") or ""), fragments)
+            invalid = bool(state) and (not bool(state.get("valid")) or not bool(state.get("ready")))
+            if drifted or invalid:
+                conn.execute(text(f'DROP INDEX CONCURRENTLY IF EXISTS "{name}"'))
+                states.pop(name, None)
+                recreated.append(name)
+                state = None
+            if not state:
+                conn.execute(text(_concurrent_create_index_sql(str(spec["sql"]))))
+                created.append(name)
+                states[name] = {"indexdef": str(spec["sql"]), "valid": True, "ready": True}
+
+        states = _load_index_states(conn, obsolete_names)
+        for name in obsolete_names:
+            if name not in states:
+                continue
+            conn.execute(text(f'DROP INDEX CONCURRENTLY IF EXISTS "{name}"'))
+            dropped.append(name)
+        if created or recreated or dropped:
+            conn.execute(text("ANALYZE library_index_entries"))
+    finally:
+        if lock_acquired:
+            try:
+                release_postgres_online_maintenance_lock(conn)
+            except Exception:
+                _db_logger.debug("[数据库] 释放库存索引维护锁失败", exc_info=True)
+        conn.close()
+    return {
+        "ok": True,
+        "created": created,
+        "recreated": recreated,
+        "dropped": dropped,
+        "duration_ms": int((time.monotonic() - started) * 1000),
+    }
+
+
+@contextmanager
+def suspend_library_index_secondary_indexes_for_initial_bulk_load(target_engine=None):
+    """全表首建库存索引时，暂停维护可重建的二级索引。
+
+    调用方必须只在 `library_index_entries` 业务行为空时进入。函数持有同一把
+    advisory lock 到恢复完成，避免后台维护线程在二级索引暂停期间交叉重建。
+    `idx_lie_library_rel` 唯一索引负责幂等约束，首建期间也必须保留。
+    """
+    specs = list(_POSTGRES_LIBRARY_INDEX_SPECS) + list(_POSTGRES_LIBRARY_TRIGRAM_INDEX_SPECS)
+    names = _index_names_from_specs(specs)
+    dropped: list[str] = []
+    restored: list[str] = []
+    started = time.monotonic()
+    db_engine = target_engine or engine
+    conn = db_engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+    lock_acquired = False
+    state: Dict[str, Any] = {
+        "ok": True,
+        "active": False,
+        "skipped": False,
+        "dropped": dropped,
+        "restored": restored,
+        "duration_ms": 0,
+    }
+    try:
+        lock_acquired = configure_postgres_online_maintenance_connection(conn)
+        if not lock_acquired:
+            state.update({"skipped": True, "reason": "already_running"})
+            yield state
+            return
+        state["active"] = True
+        try:
+            states = _load_index_states(conn, names)
+            for name in names:
+                if name not in states:
+                    continue
+                conn.execute(text(f'DROP INDEX CONCURRENTLY IF EXISTS "{name}"'))
+                dropped.append(name)
+        except Exception as exc:
+            if dropped:
+                try:
+                    conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+                    for spec in specs:
+                        conn.execute(text(_concurrent_create_index_sql(str(spec["sql"]))))
+                        restored.append(str(spec["name"]))
+                    conn.execute(text("ANALYZE library_index_entries"))
+                except Exception:
+                    _db_logger.warning("[数据库] 暂停库存二级索引失败后恢复索引也失败", exc_info=True)
+            state.update({
+                "active": False,
+                "skipped": True,
+                "reason": "drop_failed",
+                "error": str(exc),
+            })
+            _db_logger.info("[数据库] 首建库存索引时暂停二级索引失败，改用普通写入", exc_info=True)
+            yield state
+            return
+        try:
+            yield state
+        finally:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+            for spec in specs:
+                conn.execute(text(_concurrent_create_index_sql(str(spec["sql"]))))
+                restored.append(str(spec["name"]))
+            conn.execute(text("ANALYZE library_index_entries"))
+    finally:
+        state["duration_ms"] = int((time.monotonic() - started) * 1000)
+        if lock_acquired:
+            try:
+                release_postgres_online_maintenance_lock(conn)
+            except Exception:
+                _db_logger.debug("[数据库] 释放库存二级索引首建锁失败", exc_info=True)
+        conn.close()
+
+
+def _library_index_maintenance_worker() -> None:
+    try:
+        result = ensure_library_index_postgres_indexes_concurrently()
+        if result.get("created") or result.get("recreated") or result.get("dropped"):
+            _db_logger.info("[数据库] 库存索引在线维护完成: %s", result)
+    except Exception:
+        _db_logger.warning("[数据库] 库存索引在线维护失败", exc_info=True)
+    finally:
+        try:
+            _library_index_maintenance_lock.release()
+        except RuntimeError:
+            pass
+
+
+def schedule_library_index_postgres_index_maintenance() -> bool:
+    global _library_index_maintenance_thread
+    if not _library_index_maintenance_lock.acquire(blocking=False):
+        return False
+    thread = threading.Thread(
+        target=_library_index_maintenance_worker,
+        name="library-index-postgres-index-maintenance",
+        daemon=True,
+    )
+    _library_index_maintenance_thread = thread
+    thread.start()
+    return True
 
 
 def check_database_health(*, full: bool = False) -> Dict[str, Any]:
-    """执行 SQLite 自检。full=True 时跑完整 integrity_check。"""
     started = time.monotonic()
-    db_path = _db_path
-    wal_path = f"{db_path}-wal"
-    shm_path = f"{db_path}-shm"
     result: Dict[str, Any] = {
         "ok": False,
-        "check": "integrity_check" if full else "quick_check",
-        "db_path": db_path,
-        "journal_mode": _DB_RUNTIME_CONFIG["journal_mode"],
-        "synchronous": _DB_RUNTIME_CONFIG["synchronous"],
-        "busy_timeout_ms": _DB_RUNTIME_CONFIG["busy_timeout_ms"],
-        "wal_autocheckpoint": _DB_RUNTIME_CONFIG["wal_autocheckpoint"],
+        "check": "vacuum_analyze_probe" if full else "select_1",
+        "backend": "postgresql",
+        "database_url": _mask_database_url(_DATABASE_URL),
+        "host": _DB_RUNTIME_CONFIG.get("host"),
+        "port": _DB_RUNTIME_CONFIG.get("port"),
+        "database": _DB_RUNTIME_CONFIG.get("database"),
         "pool_size": _DB_RUNTIME_CONFIG["pool_size"],
         "max_overflow": _DB_RUNTIME_CONFIG["max_overflow"],
-        "main_size_bytes": os.path.getsize(db_path) if os.path.exists(db_path) else 0,
-        "wal_size_bytes": os.path.getsize(wal_path) if os.path.exists(wal_path) else 0,
-        "shm_size_bytes": os.path.getsize(shm_path) if os.path.exists(shm_path) else 0,
+        "statement_timeout_ms": _DB_RUNTIME_CONFIG["statement_timeout_ms"],
         "messages": [],
         "duration_ms": 0,
     }
     try:
-        conn = sqlite3.connect(db_path, timeout=max(30, int(_DB_RUNTIME_CONFIG["busy_timeout_ms"] / 1000)))
-        try:
-            cur = conn.cursor()
-            cur.execute("PRAGMA query_only=ON")
-            cur.execute("PRAGMA integrity_check" if full else "PRAGMA quick_check")
-            messages = [str(row[0]) for row in cur.fetchall()]
-            result["messages"] = messages
-            result["ok"] = messages == ["ok"]
-        finally:
-            conn.close()
+        with engine.connect() as conn:
+            row = conn.execute(text("SELECT 1")).scalar()
+            result["ok"] = row == 1
+            result["messages"] = ["ok"] if result["ok"] else ["SELECT 1 未返回 1"]
+            result["server_version"] = str(conn.execute(text("SHOW server_version")).scalar() or "")
+            result["pg_trgm_enabled"] = bool(conn.execute(text("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')")).scalar())
+            if full:
+                result["database_size_bytes"] = int(conn.execute(text("SELECT pg_database_size(current_database())")).scalar() or 0)
+                result["database_size_human"] = _human_bytes(result["database_size_bytes"])
+                result["activity_logs_size_bytes"] = _pg_table_size(conn, "activity_logs")
+                result["library_index_size_bytes"] = _pg_table_size(conn, "library_index_entries")
+                conn.execute(text("ANALYZE activity_logs"))
+                conn.execute(text("ANALYZE library_index_entries"))
+                result["messages"].append("ANALYZE activity_logs/library_index_entries ok")
     except Exception as exc:
         result["ok"] = False
         result["error"] = str(exc)
+        result["messages"] = [str(exc)]
     finally:
         result["duration_ms"] = int((time.monotonic() - started) * 1000)
     return result
 
 
+def _create_postgres_extensions_and_indexes(conn) -> None:
+    conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+    nested = conn.begin_nested()
+    try:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_stat_statements"))
+        nested.commit()
+    except Exception as exc:
+        nested.rollback()
+        _db_logger.debug("[数据库] pg_stat_statements 扩展创建失败，慢查询 Top SQL 将不可用: %s", exc)
+    tracked_index_names = (
+        _index_names_from_specs(_POSTGRES_TRIGRAM_INDEX_SPECS)
+        + _index_names_from_specs(_POSTGRES_BUSINESS_INDEX_SPECS)
+        + list(_POSTGRES_OBSOLETE_INDEX_NAMES)
+    )
+    existing_definitions = _load_index_definitions(conn, tracked_index_names)
+    for spec in _POSTGRES_TRIGRAM_INDEX_SPECS:
+        _ensure_index_exists(conn, spec, existing_definitions)
+    for spec in _POSTGRES_BUSINESS_INDEX_SPECS:
+        _ensure_managed_index(conn, spec, existing_definitions)
+    _drop_obsolete_postgres_indexes(conn, existing_definitions)
+    _ensure_library_index_table_reloptions(conn)
+
+
+def _reindex_if_exists(conn, index_name: str) -> None:
+    exists = bool(conn.execute(text("SELECT to_regclass(:name) IS NOT NULL"), {"name": index_name}).scalar())
+    if exists:
+        conn.execute(text(f"REINDEX INDEX {index_name}"))
+
+
+def _column_exists(conn, table_name: str, column_name: str) -> bool:
+    return bool(conn.execute(
+        text(
+            """
+            SELECT EXISTS (
+              SELECT 1 FROM information_schema.columns
+               WHERE table_schema = current_schema()
+                 AND table_name = :table_name
+                 AND column_name = :column_name
+            )
+            """
+        ),
+        {"table_name": table_name, "column_name": column_name},
+    ).scalar())
+
+
+def _existing_columns(conn, table_name: str, column_names: Iterable[str]) -> set[str]:
+    names = sorted({str(name) for name in column_names if name})
+    if not names:
+        return set()
+    rows = conn.execute(
+        text(
+            """
+            SELECT attname
+              FROM pg_attribute
+             WHERE attrelid = to_regclass(:table_name)
+               AND attname = ANY(:names)
+               AND attnum > 0
+               AND NOT attisdropped
+            """
+        ),
+        {"table_name": table_name, "names": names},
+    ).fetchall()
+    return {str(row[0]) for row in rows}
+
+
+def _add_column_if_missing(
+    conn,
+    table_name: str,
+    column_name: str,
+    column_type: str,
+    default_sql: Optional[str] = None,
+    existing_columns: Optional[set[str]] = None,
+) -> bool:
+    if existing_columns is not None:
+        if column_name in existing_columns:
+            return False
+    elif _column_exists(conn, table_name, column_name):
+        return False
+    default_clause = f" DEFAULT {default_sql}" if default_sql is not None else ""
+    conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}{default_clause}"))
+    if existing_columns is not None:
+        existing_columns.add(column_name)
+    _db_logger.info("[数据库] %s 新增列: %s", table_name, column_name)
+    return True
+
+
+def _existing_tables(conn, table_names: Iterable[str]) -> set[str]:
+    names = sorted({str(name) for name in table_names if name})
+    if not names:
+        return set()
+    rows = conn.execute(
+        text(
+            """
+            SELECT c.relname
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = current_schema()
+               AND c.relkind IN ('r', 'p')
+               AND c.relname = ANY(:names)
+            """
+        ),
+        {"names": names},
+    ).fetchall()
+    return {str(row[0]) for row in rows}
+
+
+def _table_exists(conn, table_name: str) -> bool:
+    return bool(conn.execute(
+        text("SELECT to_regclass(:name) IS NOT NULL"),
+        {"name": table_name},
+    ).scalar())
+
+
+def _migrate_activity_logs_projection(
+    conn,
+    existing_tables: Optional[set[str]] = None,
+    existing_index_definitions: Optional[Dict[str, str]] = None,
+) -> None:
+    if existing_tables is not None:
+        if "activity_logs" not in existing_tables:
+            return
+    elif not _table_exists(conn, "activity_logs"):
+        return
+    added_columns = set()
+    projection_columns = (
+        ("batch_id", "VARCHAR(80)"),
+        ("session_key", "VARCHAR(120)"),
+        ("parent_id", "VARCHAR(36)"),
+    )
+    existing_columns = _existing_columns(conn, "activity_logs", [name for name, _ in projection_columns])
+    for column_name, column_type in projection_columns:
+        if _add_column_if_missing(conn, "activity_logs", column_name, column_type, existing_columns=existing_columns):
+            added_columns.add(column_name)
+    _ensure_indexes_exist(
+        conn,
+        _index_specs_for_table(_POSTGRES_COMPAT_INDEX_SPECS, "activity_logs"),
+        existing_index_definitions,
+    )
+    if "batch_id" in added_columns:
+        conn.execute(text("""
+            UPDATE activity_logs
+               SET batch_id = left(COALESCE(detail ->> 'batch_id', ''), 80)
+             WHERE batch_id IS NULL
+               AND detail ? 'batch_id'
+        """))
+    if "session_key" in added_columns:
+        conn.execute(text("""
+            UPDATE activity_logs
+               SET session_key = left(COALESCE(detail ->> 'session_key', detail ->> 'session_id', ''), 120)
+             WHERE session_key IS NULL
+               AND (detail ? 'session_key' OR detail ? 'session_id')
+        """))
+
+
+def _migrate_activity_log_daily_stats(conn, existing_tables: Optional[set[str]] = None) -> None:
+    if existing_tables is not None:
+        if not {"activity_log_daily_stats", "activity_logs"} <= existing_tables:
+            return
+    elif not _table_exists(conn, "activity_log_daily_stats") or not _table_exists(conn, "activity_logs"):
+        return
+    row_count = int(conn.execute(text("SELECT count(*) FROM activity_log_daily_stats")).scalar() or 0)
+    if row_count > 0:
+        return
+    activity_total = int(conn.execute(text("SELECT count(*) FROM activity_logs")).scalar() or 0)
+    if activity_total > 0:
+        conn.execute(text("""
+            INSERT INTO activity_log_daily_stats(date, category, status, count, updated_at)
+            SELECT to_char(created_at, 'YYYY-MM-DD') AS date,
+                   COALESCE(category, '') AS category,
+                   COALESCE(status, '') AS status,
+                   count(*) AS cnt,
+                   CURRENT_TIMESTAMP
+              FROM activity_logs
+             WHERE created_at IS NOT NULL
+             GROUP BY to_char(created_at, 'YYYY-MM-DD'), category, status
+            ON CONFLICT(date, category, status) DO UPDATE SET
+                count = EXCLUDED.count,
+                updated_at = CURRENT_TIMESTAMP
+        """))
+        _db_logger.info("[数据库] activity_log_daily_stats 初次回填完成")
+
+
+def _migrate_library_index_status_schema(conn, existing_tables: Optional[set[str]] = None) -> None:
+    if existing_tables is not None:
+        if "library_index_status" not in existing_tables:
+            return
+    elif not _table_exists(conn, "library_index_status"):
+        return
+    existing_columns = _existing_columns(conn, "library_index_status", ("total_size_bytes", "folder_count"))
+    missing_total = "total_size_bytes" not in existing_columns
+    missing_folders = "folder_count" not in existing_columns
+    _add_column_if_missing(conn, "library_index_status", "total_size_bytes", "BIGINT", "0", existing_columns=existing_columns)
+    _add_column_if_missing(conn, "library_index_status", "folder_count", "INTEGER", "0", existing_columns=existing_columns)
+    if missing_total or missing_folders:
+        conn.execute(text("""
+            UPDATE library_index_status
+               SET total_size_bytes = COALESCE((
+                     SELECT SUM(e.size)
+                       FROM library_index_entries e
+                      WHERE e.library_id = library_index_status.library_id
+                        AND e.entry_type = 'file'
+                   ), 0),
+                   folder_count = COALESCE((
+                     SELECT COUNT(1)
+                       FROM library_index_entries e
+                      WHERE e.library_id = library_index_status.library_id
+                        AND e.entry_type = 'dir'
+                        AND e.relative_path != ''
+                        AND COALESCE(e.parent_path, '') = ''
+                   ), 0)
+             WHERE status IN ('ready', 'syncing', 'error')
+        """))
+
+
+def _migrate_library_index_entries_schema(conn, existing_tables: Optional[set[str]] = None) -> None:
+    if existing_tables is not None:
+        if "library_index_entries" not in existing_tables:
+            return
+    elif not _table_exists(conn, "library_index_entries"):
+        return
+    existing_columns = _existing_columns(conn, "library_index_entries", ("name_sort_key",))
+    added = _add_column_if_missing(
+        conn,
+        "library_index_entries",
+        "name_sort_key",
+        "TEXT",
+        "''",
+        existing_columns=existing_columns,
+    )
+    if not added:
+        stale_exists = bool(conn.execute(text("""
+            SELECT 1
+              FROM library_index_entries
+             WHERE COALESCE(name_sort_key, '') = ''
+               AND COALESCE(name, '') <> ''
+             LIMIT 1
+        """)).first())
+        if not stale_exists:
+            return
+
+    chunk_size = 5000
+    updated_total = 0
+    while True:
+        rows = conn.execute(
+            text("""
+                SELECT id, name
+                  FROM library_index_entries
+                 WHERE COALESCE(name_sort_key, '') = ''
+                   AND COALESCE(name, '') <> ''
+                 ORDER BY id
+                 LIMIT :limit
+            """),
+            {"limit": chunk_size},
+        ).mappings().all()
+        if not rows:
+            break
+        payload = [
+            {
+                "id": int(row["id"]),
+                "name_sort_key": library_index_name_sort_key(row["name"]),
+            }
+            for row in rows
+        ]
+        conn.execute(
+            text("""
+                UPDATE library_index_entries AS target
+                   SET name_sort_key = payload.name_sort_key
+                  FROM (
+                      SELECT *
+                        FROM unnest(
+                            CAST(:ids AS integer[]),
+                            CAST(:name_sort_keys AS text[])
+                        ) AS payload(id, name_sort_key)
+                  ) AS payload
+                 WHERE target.id = payload.id
+            """),
+            {
+                "ids": [item["id"] for item in payload],
+                "name_sort_keys": [item["name_sort_key"] for item in payload],
+            },
+        )
+        updated_total += len(payload)
+    if updated_total:
+        _db_logger.info("[数据库] library_index_entries.name_sort_key 回填完成 rows=%s", updated_total)
+
+
+def _migrate_compat_schema(conn) -> None:
+    existing_tables = _existing_tables(conn, (
+        "processed_archives",
+        "notification_templates",
+        "activity_log_rollups",
+        "task_phase_metrics",
+        "library_index_status",
+        "library_index_entries",
+        "activity_logs",
+        "activity_log_daily_stats",
+    ))
+    compat_index_specs = [
+        spec
+        for spec in _POSTGRES_COMPAT_INDEX_SPECS
+        if str(spec.get("table") or "") in existing_tables
+    ]
+    compat_index_definitions = _load_index_definitions(conn, _index_names_from_specs(compat_index_specs))
+    if "processed_archives" in existing_tables:
+        existing_columns = _existing_columns(conn, "processed_archives", ("volume_count",))
+        _add_column_if_missing(conn, "processed_archives", "volume_count", "INTEGER", "1", existing_columns=existing_columns)
+    if "notification_templates" in existing_tables:
+        existing_columns = _existing_columns(conn, "notification_templates", ("editor_mode", "blocks"))
+        _add_column_if_missing(conn, "notification_templates", "editor_mode", "VARCHAR(20)", "'html'", existing_columns=existing_columns)
+        _add_column_if_missing(conn, "notification_templates", "blocks", "JSONB", "'[]'::jsonb", existing_columns=existing_columns)
+    if "activity_log_rollups" in existing_tables:
+        _ensure_indexes_exist(
+            conn,
+            _index_specs_for_table(_POSTGRES_COMPAT_INDEX_SPECS, "activity_log_rollups"),
+            compat_index_definitions,
+        )
+    if "task_phase_metrics" in existing_tables:
+        _ensure_indexes_exist(
+            conn,
+            _index_specs_for_table(_POSTGRES_COMPAT_INDEX_SPECS, "task_phase_metrics"),
+            compat_index_definitions,
+        )
+    _migrate_library_index_entries_schema(conn, existing_tables)
+    _migrate_library_index_status_schema(conn, existing_tables)
+    _migrate_activity_logs_projection(conn, existing_tables, compat_index_definitions)
+    _migrate_activity_log_daily_stats(conn, existing_tables)
+
+
 def init_db():
-    """初始化数据库"""
     global _init_db_done
     with _init_db_lock:
         if _init_db_done:
@@ -1835,995 +2913,93 @@ def init_db():
             return
         _init_db_done = True
     _db_logger.info(
-        "[数据库] 初始化数据库，路径: %s journal_mode=%s synchronous=%s busy_timeout=%sms pool=%s+%s wal_autocheckpoint=%s",
-        _db_path,
-        _DB_RUNTIME_CONFIG["journal_mode"],
-        _DB_RUNTIME_CONFIG["synchronous"],
-        _DB_RUNTIME_CONFIG["busy_timeout_ms"],
+        "[数据库] 初始化 PostgreSQL: %s pool=%s+%s statement_timeout=%sms",
+        _mask_database_url(_DATABASE_URL),
         _DB_RUNTIME_CONFIG["pool_size"],
         _DB_RUNTIME_CONFIG["max_overflow"],
-        _DB_RUNTIME_CONFIG["wal_autocheckpoint"],
+        _DB_RUNTIME_CONFIG["statement_timeout_ms"],
     )
-    if _DB_RUNTIME_CONFIG["startup_quick_check"]:
-        health = check_database_health(full=bool(_DB_RUNTIME_CONFIG["startup_integrity_check"]))
+    if _DB_RUNTIME_CONFIG.get("startup_health_check", True):
+        health = check_database_health(full=False)
         if not health.get("ok"):
             _db_logger.critical("[数据库] 启动自检失败: %s", health)
             raise RuntimeError(f"数据库自检失败: {health}")
-        _db_logger.info(
-            "[数据库] 启动自检通过: check=%s duration=%sms size=%s wal=%s",
-            health.get("check"),
-            health.get("duration_ms"),
-            health.get("main_size_bytes"),
-            health.get("wal_size_bytes"),
-        )
-    _repair_orphan_sqlite_indexes()
     Base.metadata.create_all(bind=engine)
-    with engine.connect() as conn:
-        result = conn.execute(text("PRAGMA table_info(work_metadata)"))
-        work_metadata_columns = {row[1] for row in result.fetchall()}
-        work_metadata_missing_columns = []
-        if result.returns_rows:
-            if 'price_text' not in work_metadata_columns:
-                work_metadata_missing_columns.append(("price_text", "VARCHAR(80)", "NULL"))
-            if 'is_bonus_work' not in work_metadata_columns:
-                work_metadata_missing_columns.append(("is_bonus_work", "BOOLEAN", "0"))
-            if 'has_bonus' not in work_metadata_columns:
-                work_metadata_missing_columns.append(("has_bonus", "BOOLEAN", "0"))
-            # bonus_info_checked_at：nullable，不能给默认值。NULL 表示存量条目从未走过 bonus 判定，
-            # build_circle_completion_view 会按它做一次性懒迁移。给非 NULL 默认值会让"老条目"
-            # 直接被当成已检查过，bonus_work=False 永远卡死。
-            if 'bonus_info_checked_at' not in work_metadata_columns:
-                work_metadata_missing_columns.append(("bonus_info_checked_at", "DATETIME", None))
-        for column_name, column_type, default_value in work_metadata_missing_columns:
-            if default_value is None:
-                conn.execute(
-                    text(
-                        f"ALTER TABLE work_metadata ADD COLUMN {column_name} {column_type}"
-                    )
-                )
-            else:
-                conn.execute(
-                    text(
-                        f"ALTER TABLE work_metadata ADD COLUMN {column_name} {column_type} DEFAULT {default_value}"
-                    )
-                )
-        result = conn.execute(text("PRAGMA table_info(conflict_works)"))
-        existing_columns = {row[1] for row in result.fetchall()}
-        missing_columns = []
-        if 'linked_works_info' not in existing_columns:
-            missing_columns.append(("linked_works_info", "JSON", "'[]'"))
-        if 'analysis_info' not in existing_columns:
-            missing_columns.append(("analysis_info", "JSON", "'{}'"))
-        if 'related_rjcodes' not in existing_columns:
-            missing_columns.append(("related_rjcodes", "JSON", "'[]'"))
-        for column_name, column_type, default_value in missing_columns:
-            conn.execute(
-                text(
-                    f"ALTER TABLE conflict_works ADD COLUMN {column_name} {column_type} DEFAULT {default_value}"
-                )
-            )
-        result = conn.execute(text("PRAGMA table_info(asmr_resource_records)"))
-        asmr_columns = {row[1] for row in result.fetchall()}
-        asmr_missing_columns = []
-        if result.returns_rows:
-            if 'work_rjcode' not in asmr_columns:
-                asmr_missing_columns.append(("work_rjcode", "VARCHAR(20)", "''"))
-            if 'match_status' not in asmr_columns:
-                asmr_missing_columns.append(("match_status", "VARCHAR(20)", "'unmatched'"))
-            if 'verify_status' not in asmr_columns:
-                asmr_missing_columns.append(("verify_status", "VARCHAR(20)", "'pending'"))
-            if 'upload_status' not in asmr_columns:
-                asmr_missing_columns.append(("upload_status", "VARCHAR(20)", "'pending'"))
-            if 'missing_reason' not in asmr_columns:
-                asmr_missing_columns.append(("missing_reason", "TEXT", "NULL"))
-            if 'session_id' not in asmr_columns:
-                asmr_missing_columns.append(("session_id", "VARCHAR(36)", "NULL"))
-            if 'retry_count' not in asmr_columns:
-                asmr_missing_columns.append(("retry_count", "INTEGER", "0"))
-            if 'last_seen_at' not in asmr_columns:
-                asmr_missing_columns.append(("last_seen_at", "DATETIME", "NULL"))
-        for column_name, column_type, default_value in asmr_missing_columns:
-            conn.execute(
-                text(
-                    f"ALTER TABLE asmr_resource_records ADD COLUMN {column_name} {column_type} DEFAULT {default_value}"
-                )
-            )
-        result = conn.execute(text("PRAGMA table_info(circle_works)"))
-        circle_work_columns = {row[1] for row in result.fetchall()}
-        circle_work_missing_columns = []
-        if result.returns_rows:
-            if 'asmr_available_rjcode' not in circle_work_columns:
-                circle_work_missing_columns.append(("asmr_available_rjcode", "VARCHAR(20)", "NULL"))
-            if 'kikoeru_found_rjcodes' not in circle_work_columns:
-                circle_work_missing_columns.append(("kikoeru_found_rjcodes", "JSON", "'[]'"))
-            if 'kikoeru_subtitle_rjcodes' not in circle_work_columns:
-                circle_work_missing_columns.append(("kikoeru_subtitle_rjcodes", "JSON", "'[]'"))
-            if 'image_url' not in circle_work_columns:
-                circle_work_missing_columns.append(("image_url", "VARCHAR(500)", "NULL"))
-            if 'price_text' not in circle_work_columns:
-                circle_work_missing_columns.append(("price_text", "VARCHAR(80)", "NULL"))
-            if 'is_bonus_work' not in circle_work_columns:
-                circle_work_missing_columns.append(("is_bonus_work", "BOOLEAN", "0"))
-            if 'has_bonus' not in circle_work_columns:
-                circle_work_missing_columns.append(("has_bonus", "BOOLEAN", "0"))
-            if 'source_tags' not in circle_work_columns:
-                circle_work_missing_columns.append(("source_tags", "JSON", "'[]'"))
-            if 'email_watcher_first_seen_at' not in circle_work_columns:
-                circle_work_missing_columns.append(("email_watcher_first_seen_at", "DATETIME", "NULL"))
-        for column_name, column_type, default_value in circle_work_missing_columns:
-            conn.execute(
-                text(
-                    f"ALTER TABLE circle_works ADD COLUMN {column_name} {column_type} DEFAULT {default_value}"
-                )
-            )
-        # 为新增的 email_watcher_first_seen_at 创建索引（IF NOT EXISTS 兼容多次启动）
-        try:
-            conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS ix_circle_works_email_watcher_first_seen_at "
-                    "ON circle_works(email_watcher_first_seen_at)"
-                )
-            )
-            conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS idx_circle_works_circle_updated "
-                    "ON circle_works(circle_id, updated_at)"
-                )
-            )
-            conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS idx_circle_works_circle_asmr "
-                    "ON circle_works(circle_id, has_asmr_one)"
-                )
-            )
-        except Exception:
-            _db_logger.warning("[数据库] circle_works 社团补全索引创建失败", exc_info=True)
-        result = conn.execute(text("PRAGMA table_info(asmr_download_sessions)"))
-        session_columns = {row[1] for row in result.fetchall()}
-        session_missing_columns = []
-        if result.returns_rows:
-            if 'local_download_ready' not in session_columns:
-                session_missing_columns.append(("local_download_ready", "BOOLEAN", "0"))
-            if 'local_download_root' not in session_columns:
-                session_missing_columns.append(("local_download_root", "TEXT", "NULL"))
-            if 'local_downloaded_count' not in session_columns:
-                session_missing_columns.append(("local_downloaded_count", "INTEGER", "0"))
-        for column_name, column_type, default_value in session_missing_columns:
-            conn.execute(
-                text(
-                    f"ALTER TABLE asmr_download_sessions ADD COLUMN {column_name} {column_type} DEFAULT {default_value}"
-                )
-            )
-        try:
-            conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS idx_asmr_download_sessions_rj_updated "
-                    "ON asmr_download_sessions(rjcode, updated_at)"
-                )
-            )
-        except Exception:
-            _db_logger.warning("[数据库] asmr_download_sessions.rjcode/updated_at 索引创建失败", exc_info=True)
-
-        result = conn.execute(text("PRAGMA table_info(notification_templates)"))
-        template_columns = {row[1] for row in result.fetchall()}
-        template_missing_columns = []
-        if result.returns_rows:
-            if 'editor_mode' not in template_columns:
-                template_missing_columns.append(("editor_mode", "VARCHAR(20)", "'html'"))
-            if 'blocks' not in template_columns:
-                template_missing_columns.append(("blocks", "JSON", "'[]'"))
-        for column_name, column_type, default_value in template_missing_columns:
-            conn.execute(
-                text(
-                    f"ALTER TABLE notification_templates ADD COLUMN {column_name} {column_type} DEFAULT {default_value}"
-                )
-            )
-            _db_logger.info(f"[数据库] notification_templates 新增列: {column_name}")
-
-        # === 性能物化表：兼容已存在老表的增量列/索引 ===
-        _migrate_processed_archives_schema(conn)
-        _migrate_task_center_items_schema(conn)
-        _migrate_activity_log_rollups_schema(conn)
-        _migrate_task_phase_metrics_schema(conn)
-        _migrate_library_index_status_schema(conn)
-
-        # === Phase 2: activity_logs 迁移 ===
-        _migrate_activity_logs_phase2(conn)
-
-        # === 库存索引 FTS5：只确保结构存在，老数据回填走后台线程 ===
-        try:
-            from ..core.library_index.fts import ensure_library_index_fts
-
-            ensure_library_index_fts(conn)
-        except Exception:
-            _db_logger.warning("[数据库] library_index_entries_fts 初始化失败（非致命）", exc_info=True)
-
-        # === Phase 4A: activity_log_daily_stats 初次回填 ===
-        _migrate_activity_log_daily_stats(conn)
-
-    _db_logger.info(f"[数据库] 表创建完成")
-
-
-def _read_table_columns(conn, table_name: str) -> set[str]:
-    result = conn.execute(text(f"PRAGMA table_info({table_name})"))
-    return {row[1] for row in result.fetchall()}
-
-
-def _add_missing_columns(conn, table_name: str, existing_columns: set[str], columns: list[tuple[str, str]]) -> None:
-    for column_name, column_type in columns:
-        if column_name in existing_columns:
-            continue
-        conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
-        existing_columns.add(column_name)
-        _db_logger.info(f"[数据库] {table_name} 新增列: {column_name}")
-
-
-def _create_indexes_if_not_exists(conn, index_sqls: tuple[str, ...], table_name: str) -> None:
-    for index_sql in index_sqls:
-        try:
-            conn.execute(text(index_sql))
-        except Exception:
-            _db_logger.warning(f"[数据库] {table_name} 建索引失败: {index_sql}", exc_info=True)
-
-
-def _migrate_processed_archives_schema(conn) -> None:
-    """已处理压缩包表兼容迁移。"""
-    try:
-        existing_columns = _read_table_columns(conn, "processed_archives")
-        if not existing_columns:
-            return
-        _add_missing_columns(
-            conn,
-            "processed_archives",
-            existing_columns,
-            [
-                ("volume_count", "INTEGER DEFAULT 1"),
-            ],
-        )
-        try:
-            conn.commit()
-        except Exception:
-            pass
-    except Exception:
-        _db_logger.warning("[数据库] processed_archives 迁移失败（非致命）", exc_info=True)
-
-
-def _migrate_library_index_status_schema(conn) -> None:
-    """库存索引状态表补聚合快照列。
-
-    total_size_bytes / folder_count 只在首次补列时从索引 entries 回填一次；
-    后续由 library_index self_mutation 差量维护，统计接口不再每次 SUM。
-    """
-    try:
-        existing_columns = _read_table_columns(conn, "library_index_status")
-        if not existing_columns:
-            return
-        missing_total_size = "total_size_bytes" not in existing_columns
-        missing_folder_count = "folder_count" not in existing_columns
-        _add_missing_columns(
-            conn,
-            "library_index_status",
-            existing_columns,
-            [
-                ("total_size_bytes", "BIGINT DEFAULT 0"),
-                ("folder_count", "INTEGER DEFAULT 0"),
-            ],
-        )
-        if not (missing_total_size or missing_folder_count):
-            return
-        conn.execute(
-            text(
-                """
-                UPDATE library_index_status
-                SET
-                  total_size_bytes = COALESCE((
-                    SELECT SUM(e.size)
-                    FROM library_index_entries e
-                    WHERE e.library_id = library_index_status.library_id
-                      AND e.entry_type = 'file'
-                  ), 0),
-                  folder_count = COALESCE((
-                    SELECT COUNT(1)
-                    FROM library_index_entries e
-                    WHERE e.library_id = library_index_status.library_id
-                      AND e.entry_type = 'dir'
-                      AND e.relative_path != ''
-                      AND COALESCE(e.parent_path, '') = ''
-                  ), 0)
-                WHERE status IN ('ready', 'syncing', 'error')
-                """
-            )
-        )
-        _db_logger.info("[数据库] library_index_status 聚合快照列已回填")
-    except Exception:
-        _db_logger.warning("[数据库] library_index_status 聚合快照迁移失败（非致命）", exc_info=True)
-
-
-def _migrate_task_center_items_schema(conn) -> None:
-    """任务中心物化表兼容迁移。
-
-    Base.metadata.create_all 只会建缺失表，不会给已存在表补新增列。
-    """
-    try:
-        existing_columns = _read_table_columns(conn, "task_center_items")
-        if not existing_columns:
-            return
-        _add_missing_columns(
-            conn,
-            "task_center_items",
-            existing_columns,
-            [
-                ("engine_task_id", "VARCHAR(36)"),
-                ("domain", "VARCHAR(40)"),
-                ("status", "VARCHAR(24)"),
-                ("kind", "VARCHAR(60)"),
-                ("title", "TEXT"),
-                ("source_page", "VARCHAR(80)"),
-                ("source_action", "VARCHAR(120)"),
-                ("business_key", "TEXT"),
-                ("searchable_text", "TEXT"),
-                ("payload_json", "JSON"),
-                ("version", "INTEGER DEFAULT 0"),
-                ("created_at", "DATETIME"),
-                ("updated_at", "DATETIME"),
-            ],
-        )
-        _create_indexes_if_not_exists(
-            conn,
-            (
-                "CREATE INDEX IF NOT EXISTS ix_task_center_items_engine_task_id ON task_center_items(engine_task_id)",
-                "CREATE INDEX IF NOT EXISTS ix_task_center_items_domain ON task_center_items(domain)",
-                "CREATE INDEX IF NOT EXISTS ix_task_center_items_status ON task_center_items(status)",
-                "CREATE INDEX IF NOT EXISTS ix_task_center_items_business_key ON task_center_items(business_key)",
-                "CREATE INDEX IF NOT EXISTS ix_task_center_items_created_at ON task_center_items(created_at)",
-                "CREATE INDEX IF NOT EXISTS ix_task_center_items_updated_at ON task_center_items(updated_at)",
-                "CREATE INDEX IF NOT EXISTS idx_task_center_items_domain_status ON task_center_items(domain, status)",
-                "CREATE INDEX IF NOT EXISTS idx_task_center_items_updated_at ON task_center_items(updated_at)",
-            ),
-            "task_center_items",
-        )
-        try:
-            conn.commit()
-        except Exception:
-            pass
-    except Exception:
-        _db_logger.warning("[数据库] task_center_items 迁移失败（非致命）", exc_info=True)
-
-
-def _migrate_activity_log_rollups_schema(conn) -> None:
-    """操作历史 rollup 表兼容迁移。"""
-    try:
-        existing_columns = _read_table_columns(conn, "activity_log_rollups")
-        if not existing_columns:
-            return
-        _add_missing_columns(
-            conn,
-            "activity_log_rollups",
-            existing_columns,
-            [
-                ("rollup_type", "VARCHAR(24)"),
-                ("group_value", "VARCHAR(140)"),
-                ("category", "VARCHAR(40)"),
-                ("parent_log_id", "VARCHAR(36)"),
-                ("latest_log_id", "VARCHAR(36)"),
-                ("child_count", "INTEGER DEFAULT 0"),
-                ("success_count", "INTEGER DEFAULT 0"),
-                ("failed_count", "INTEGER DEFAULT 0"),
-                ("partial_count", "INTEGER DEFAULT 0"),
-                ("waiting_count", "INTEGER DEFAULT 0"),
-                ("latest_status", "VARCHAR(24) DEFAULT ''"),
-                ("latest_activity_at", "DATETIME"),
-                ("updated_at", "DATETIME"),
-            ],
-        )
-        _create_indexes_if_not_exists(
-            conn,
-            (
-                "CREATE INDEX IF NOT EXISTS ix_activity_log_rollups_rollup_type ON activity_log_rollups(rollup_type)",
-                "CREATE INDEX IF NOT EXISTS ix_activity_log_rollups_group_value ON activity_log_rollups(group_value)",
-                "CREATE INDEX IF NOT EXISTS ix_activity_log_rollups_category ON activity_log_rollups(category)",
-                "CREATE INDEX IF NOT EXISTS ix_activity_log_rollups_parent_log_id ON activity_log_rollups(parent_log_id)",
-                "CREATE INDEX IF NOT EXISTS ix_activity_log_rollups_latest_activity_at ON activity_log_rollups(latest_activity_at)",
-                "CREATE INDEX IF NOT EXISTS idx_activity_rollup_type_value ON activity_log_rollups(rollup_type, group_value)",
-                "CREATE INDEX IF NOT EXISTS idx_activity_rollup_category_status ON activity_log_rollups(category, latest_status)",
-            ),
-            "activity_log_rollups",
-        )
-        try:
-            conn.commit()
-        except Exception:
-            pass
-    except Exception:
-        _db_logger.warning("[数据库] activity_log_rollups 迁移失败（非致命）", exc_info=True)
-
-
-def _migrate_task_phase_metrics_schema(conn) -> None:
-    """任务阶段耗时指标表兼容迁移。"""
-    try:
-        existing_columns = _read_table_columns(conn, "task_phase_metrics")
-        if not existing_columns:
-            return
-        _add_missing_columns(
-            conn,
-            "task_phase_metrics",
-            existing_columns,
-            [
-                ("task_id", "VARCHAR(36)"),
-                ("task_type", "VARCHAR(60)"),
-                ("phase", "VARCHAR(80)"),
-                ("resource", "VARCHAR(40)"),
-                ("status", "VARCHAR(24)"),
-                ("duration_ms", "INTEGER DEFAULT 0"),
-                ("bytes_total", "BIGINT DEFAULT 0"),
-                ("items_total", "INTEGER DEFAULT 0"),
-                ("detail_json", "JSON"),
-                ("started_at", "DATETIME"),
-                ("ended_at", "DATETIME"),
-                ("created_at", "DATETIME"),
-            ],
-        )
-        _create_indexes_if_not_exists(
-            conn,
-            (
-                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_task_id ON task_phase_metrics(task_id)",
-                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_task_type ON task_phase_metrics(task_type)",
-                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_phase ON task_phase_metrics(phase)",
-                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_resource ON task_phase_metrics(resource)",
-                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_status ON task_phase_metrics(status)",
-                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_started_at ON task_phase_metrics(started_at)",
-                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_ended_at ON task_phase_metrics(ended_at)",
-                "CREATE INDEX IF NOT EXISTS ix_task_phase_metrics_created_at ON task_phase_metrics(created_at)",
-                "CREATE INDEX IF NOT EXISTS idx_task_phase_metrics_task_phase ON task_phase_metrics(task_id, phase)",
-                "CREATE INDEX IF NOT EXISTS idx_task_phase_metrics_type_phase ON task_phase_metrics(task_type, phase)",
-                "CREATE INDEX IF NOT EXISTS idx_task_phase_metrics_created_at ON task_phase_metrics(created_at)",
-            ),
-            "task_phase_metrics",
-        )
-        try:
-            conn.commit()
-        except Exception:
-            pass
-    except Exception:
-        _db_logger.warning("[数据库] task_phase_metrics 迁移失败（非致命）", exc_info=True)
-
-
-def _migrate_activity_log_daily_stats(conn) -> None:
-    """Phase 4A 日聚合表迁移：
-    - Base.metadata.create_all 已负责建表
-    - 若聚合表为空，一次性从 activity_logs GROUP BY 回填历史数据
-    - 之后由 ActivityLogWriter 在批量 flush 后增量维护
-    """
-    try:
-        row_count = conn.execute(text("SELECT count(*) FROM activity_log_daily_stats")).scalar() or 0
-        activity_total = conn.execute(text("SELECT count(*) FROM activity_logs")).scalar() or 0
-        if row_count == 0 and activity_total > 0:
-            conn.execute(text(
-                """
-                INSERT INTO activity_log_daily_stats(date, category, status, count, updated_at)
-                SELECT
-                    strftime('%Y-%m-%d', created_at) AS date,
-                    COALESCE(category, '') AS category,
-                    COALESCE(status, '') AS status,
-                    count(*) AS cnt,
-                    CURRENT_TIMESTAMP
-                  FROM activity_logs
-                 WHERE created_at IS NOT NULL
-                 GROUP BY strftime('%Y-%m-%d', created_at), category, status
-                """
-            ))
-            _db_logger.info("[数据库] activity_log_daily_stats 初次回填完成")
-        try:
-            conn.commit()
-        except Exception:
-            pass
-    except Exception:
-        _db_logger.warning("[数据库] activity_log_daily_stats 迁移/回填失败（非致命）", exc_info=True)
-
-
-def _migrate_activity_logs_phase2(conn) -> None:
-    """Phase 2 审计表迁移：
-    - 新增 batch_id / session_key / parent_id 三列（带索引）
-    - 用 json_extract 一次性 SQL 回填老数据（无 Python 循环）
-    - 创建 FTS5 虚表 + 触发器；不支持 FTS5 的极少数构建上降级为无 FTS
-    """
-    activity_info = conn.execute(text("PRAGMA table_info(activity_logs)"))
-    existing_cols = {row[1] for row in activity_info.fetchall()}
-    missing_cols = []
-    if 'batch_id' not in existing_cols:
-        missing_cols.append(("batch_id", "VARCHAR(80)"))
-    if 'session_key' not in existing_cols:
-        missing_cols.append(("session_key", "VARCHAR(120)"))
-    if 'parent_id' not in existing_cols:
-        missing_cols.append(("parent_id", "VARCHAR(36)"))
-    for column_name, column_type in missing_cols:
-        try:
-            conn.execute(text(f"ALTER TABLE activity_logs ADD COLUMN {column_name} {column_type}"))
-            _db_logger.info(f"[数据库] activity_logs 新增列: {column_name}")
-        except Exception:
-            _db_logger.warning(f"[数据库] activity_logs 新增列失败: {column_name}", exc_info=True)
-
-    # 索引（CREATE INDEX IF NOT EXISTS 是 SQLite 原生支持的）
-    for index_sql in (
-        "CREATE INDEX IF NOT EXISTS ix_activity_logs_batch_id ON activity_logs(batch_id)",
-        "CREATE INDEX IF NOT EXISTS ix_activity_logs_session_key ON activity_logs(session_key)",
-        "CREATE INDEX IF NOT EXISTS ix_activity_logs_parent_id ON activity_logs(parent_id)",
-        "CREATE INDEX IF NOT EXISTS idx_activity_category_batch ON activity_logs(category, batch_id)",
-        "CREATE INDEX IF NOT EXISTS idx_activity_category_session ON activity_logs(category, session_key)",
-        "CREATE INDEX IF NOT EXISTS idx_activity_status_created ON activity_logs(status, created_at)",
-        "CREATE INDEX IF NOT EXISTS idx_activity_category_status_created ON activity_logs(category, status, created_at)",
-    ):
-        try:
-            conn.execute(text(index_sql))
-        except Exception:
-            _db_logger.debug(f"[数据库] 建索引失败: {index_sql}", exc_info=True)
-
-    # 一次性回填：从 detail JSON 提升到新列；纯 SQL，大表也快。
-    try:
-        conn.execute(text(
-            """
-            UPDATE activity_logs
-               SET batch_id = substr(COALESCE(json_extract(detail, '$.batch_id'), ''), 1, 80)
-             WHERE batch_id IS NULL
-               AND json_extract(detail, '$.batch_id') IS NOT NULL
-            """
-        ))
-    except Exception:
-        _db_logger.warning("[数据库] activity_logs.batch_id 回填失败（非致命）", exc_info=True)
-    try:
-        conn.execute(text(
-            """
-            UPDATE activity_logs
-               SET session_key = substr(COALESCE(
-                       json_extract(detail, '$.session_key'),
-                       json_extract(detail, '$.session_id')
-                   ), 1, 120)
-             WHERE session_key IS NULL
-               AND (
-                   json_extract(detail, '$.session_key') IS NOT NULL
-                OR json_extract(detail, '$.session_id') IS NOT NULL
-               )
-            """
-        ))
-    except Exception:
-        _db_logger.warning("[数据库] activity_logs.session_key 回填失败（非致命）", exc_info=True)
-
-    # === FTS5 虚表 + 触发器 ===
-    # 启动只「确保表存在」，不强制重建：如果当前表用的是 unicode61 而 SQLite 支持
-    # trigram，留给用户在设置页手动点「升级搜索引擎」走后台异步重建，避免大表启动卡顿。
-    fts_available, _ = _ensure_activity_logs_fts(conn)
-
-    # SQLAlchemy 2.0 下 engine.connect() 不会自动提交 DML/DQL 事务，
-    # 这里的 UPDATE / INSERT SELECT 需要显式 commit 才会持久化。
-    # DDL (ALTER / CREATE INDEX / CREATE VIRTUAL TABLE / CREATE TRIGGER) 在 SQLite 上
-    # 会触发隐式提交，可以不加。为保险把两类都一起 flush。
-    try:
-        conn.commit()
-    except Exception:
-        # 某些连接实现可能没有 commit()（例如已经自动提交的场景），忽略即可
-        _db_logger.debug("[数据库] activity_logs 迁移 commit 非必要", exc_info=True)
-
-
-def activity_logs_fts_enabled() -> bool:
-    """运行时查询当前 SQLite 是否加载了 FTS5 虚表（供查询层决定是否走 FTS）。"""
-    try:
-        with engine.connect() as conn:
-            row = conn.execute(text(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='activity_logs_fts'"
-            )).fetchone()
-            return row is not None
-    except Exception:
-        return False
-
-
-# ==================== FTS5 tokenizer 检测 / 重建（运行时） ====================
-#
-# 设计要点：
-#   1. 启动同步路径只调 `_ensure_activity_logs_fts`，存在则尽量不动它，避免对几十万行
-#      表的反复 INSERT；只有「连表都不存在」才会现场创建。
-#   2. trigram tokenizer（SQLite 3.34+）对中文子串搜索质量是革命性提升；老库用的
-#      unicode61 把连续 CJK 字符合成一个超长 token，对中文搜索 phrase match 几乎永远
-#      命中 0 行。我们把 trigram 升级做成「设置页一键迁移」+ 后台线程跑，不阻塞启动。
-#   3. 触发器写入路径无论 tokenizer 是哪个都一样工作（只需要表名一致），重建索引时
-#      表名保持 `activity_logs_fts`，触发器无需改写。
-
-_FTS_TABLE_NAME = "activity_logs_fts"
-_FTS_PREFERRED_TOKENIZE = "trigram"
-_FTS_FALLBACK_TOKENIZE = "unicode61 remove_diacritics 2"
-
-
-def _detect_trigram_supported(conn) -> bool:
-    """探测当前 SQLite 是否支持 fts5 + trigram tokenizer（3.34+）。
-
-    用临时表试创建一次，能成功就支持。失败时回滚不留垃圾。
-    """
-    try:
-        conn.execute(text(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS _fts_trigram_probe USING fts5(x, tokenize='trigram')"
-        ))
-        try:
-            conn.execute(text("DROP TABLE IF EXISTS _fts_trigram_probe"))
-        except Exception:
-            pass
-        return True
-    except Exception:
-        return False
-
-
-def _detect_fts5_supported(conn) -> bool:
-    """探测当前 SQLite 是否支持 fts5。"""
-    try:
-        conn.execute(text(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS _fts5_probe USING fts5(x)"
-        ))
-        try:
-            conn.execute(text("DROP TABLE IF EXISTS _fts5_probe"))
-        except Exception:
-            pass
-        return True
-    except Exception:
-        return False
-
-
-def _read_fts_tokenizer(conn) -> str:
-    """从 sqlite_master 里读出 activity_logs_fts 的 tokenizer 字符串。
-
-    返回值示例：'unicode61 remove_diacritics 2' / 'trigram' / ''（不存在或解析失败）
-    """
-    try:
-        row = conn.execute(text(
-            f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{_FTS_TABLE_NAME}'"
-        )).fetchone()
-        if not row or not row[0]:
-            return ""
-        sql_text = str(row[0])
-        # CREATE VIRTUAL TABLE ... USING fts5(... tokenize='xxx')
-        lower = sql_text.lower()
-        idx = lower.find("tokenize")
-        if idx < 0:
-            # 没显式指定 tokenize，老的可能默认 simple
-            return "simple"
-        # 提取 tokenize=' ... ' 中间内容
-        rest = sql_text[idx:]
-        for quote in ("'", "\""):
-            q1 = rest.find(quote)
-            if q1 < 0:
-                continue
-            q2 = rest.find(quote, q1 + 1)
-            if q2 < 0:
-                continue
-            return rest[q1 + 1:q2].strip().lower()
-        return ""
-    except Exception:
-        return ""
-
-
-def _create_fts_triggers(conn, table_name: str = _FTS_TABLE_NAME) -> None:
-    """创建 / 替换 INSERT/UPDATE/DELETE 触发器。"""
-    for trigger_sql in (
-        f"""
-        CREATE TRIGGER IF NOT EXISTS activity_logs_fts_ai
-        AFTER INSERT ON activity_logs BEGIN
-          INSERT INTO {table_name}(id, summary, source_path, rjcode, task_id, batch_id)
-          VALUES (
-            NEW.id,
-            COALESCE(NEW.summary, ''),
-            COALESCE(NEW.source_path, ''),
-            COALESCE(NEW.rjcode, ''),
-            COALESCE(NEW.task_id, ''),
-            COALESCE(NEW.batch_id, '')
-          );
-        END
-        """,
-        f"""
-        CREATE TRIGGER IF NOT EXISTS activity_logs_fts_ad
-        AFTER DELETE ON activity_logs BEGIN
-          DELETE FROM {table_name} WHERE id = OLD.id;
-        END
-        """,
-        f"""
-        CREATE TRIGGER IF NOT EXISTS activity_logs_fts_au
-        AFTER UPDATE ON activity_logs BEGIN
-          DELETE FROM {table_name} WHERE id = OLD.id;
-          INSERT INTO {table_name}(id, summary, source_path, rjcode, task_id, batch_id)
-          VALUES (
-            NEW.id,
-            COALESCE(NEW.summary, ''),
-            COALESCE(NEW.source_path, ''),
-            COALESCE(NEW.rjcode, ''),
-            COALESCE(NEW.task_id, ''),
-            COALESCE(NEW.batch_id, '')
-          );
-        END
-        """,
-    ):
-        try:
-            conn.execute(text(trigger_sql))
-        except Exception:
-            _db_logger.warning("[数据库] 创建 activity_logs_fts 触发器失败", exc_info=True)
-
-
-def _drop_fts_triggers(conn) -> None:
-    for name in ("activity_logs_fts_ai", "activity_logs_fts_ad", "activity_logs_fts_au"):
-        try:
-            conn.execute(text(f"DROP TRIGGER IF EXISTS {name}"))
-        except Exception:
-            _db_logger.debug(f"[数据库] 删除触发器失败 {name}", exc_info=True)
-
-
-def _ensure_activity_logs_fts(conn) -> tuple[bool, str]:
-    """启动时确保 FTS 表存在；存在就别动它。
-
-    Returns
-    -------
-    (fts_available, tokenizer)
-        fts_available: 当前 SQLite 是否能用 FTS5
-        tokenizer: 当前表使用的 tokenizer 字符串（空 = 没有表）
-    """
-    if not _detect_fts5_supported(conn):
-        _db_logger.warning("[数据库] 当前 SQLite 不支持 FTS5，将回退为 LIKE 搜索")
-        return False, ""
-
-    existing = _read_fts_tokenizer(conn)
-    if existing:
-        # 表已存在：保持触发器最新（可能是早期版本没建全）
-        _create_fts_triggers(conn)
-        # 容错：如果 FTS 表为空但主表非空（迁移异常 / 手动 truncate），现场补一次
-        try:
-            fts_count = conn.execute(text(f"SELECT count(*) FROM {_FTS_TABLE_NAME}")).scalar() or 0
-            log_count = conn.execute(text("SELECT count(*) FROM activity_logs")).scalar() or 0
-            if fts_count == 0 and log_count > 0:
-                _db_logger.info("[数据库] FTS 表为空但主表有 %d 行，启动时补回填", log_count)
-                conn.execute(text(
-                    f"""
-                    INSERT INTO {_FTS_TABLE_NAME}(id, summary, source_path, rjcode, task_id, batch_id)
-                    SELECT id,
-                           COALESCE(summary, ''),
-                           COALESCE(source_path, ''),
-                           COALESCE(rjcode, ''),
-                           COALESCE(task_id, ''),
-                           COALESCE(batch_id, '')
-                      FROM activity_logs
-                    """
-                ))
-        except Exception:
-            _db_logger.warning("[数据库] FTS 启动回填检查失败（非致命）", exc_info=True)
-        return True, existing
-
-    # 表不存在 → 现场创建：优先 trigram，不支持就 unicode61
-    use_trigram = _detect_trigram_supported(conn)
-    tokenize = _FTS_PREFERRED_TOKENIZE if use_trigram else _FTS_FALLBACK_TOKENIZE
-    try:
-        conn.execute(text(
-            f"""
-            CREATE VIRTUAL TABLE IF NOT EXISTS {_FTS_TABLE_NAME} USING fts5(
-                id UNINDEXED,
-                summary,
-                source_path,
-                rjcode,
-                task_id,
-                batch_id,
-                tokenize='{tokenize}'
-            )
-            """
-        ))
-    except Exception:
-        _db_logger.warning("[数据库] 创建 activity_logs_fts 失败", exc_info=True)
-        return True, ""
-
-    # 首次回填
-    try:
-        conn.execute(text(
-            f"""
-            INSERT INTO {_FTS_TABLE_NAME}(id, summary, source_path, rjcode, task_id, batch_id)
-            SELECT id,
-                   COALESCE(summary, ''),
-                   COALESCE(source_path, ''),
-                   COALESCE(rjcode, ''),
-                   COALESCE(task_id, ''),
-                   COALESCE(batch_id, '')
-              FROM activity_logs
-            """
-        ))
-        _db_logger.info(f"[数据库] activity_logs_fts 初次创建完成，tokenizer={tokenize}")
-    except Exception:
-        _db_logger.warning("[数据库] activity_logs_fts 初次回填失败（非致命）", exc_info=True)
-
-    _create_fts_triggers(conn)
-    return True, tokenize
-
-
-def activity_logs_fts_tokenizer() -> str:
-    """运行时查询当前 FTS 表使用的 tokenizer，例如 'trigram' / 'unicode61 remove_diacritics 2'。
-
-    没建表 / 不支持 FTS5 时返回空字符串。
-    """
-    try:
-        with engine.connect() as conn:
-            return _read_fts_tokenizer(conn)
-    except Exception:
-        return ""
-
-
-def activity_logs_fts_status() -> Dict[str, Any]:
-    """汇总当前搜索引擎状态，给前端「搜索引擎升级」面板用。"""
-    info: Dict[str, Any] = {
-        "fts_enabled": False,
-        "tokenizer": "",
-        "trigram_supported": False,
-        "row_count": 0,
-        "fts_row_count": 0,
-        "needs_upgrade": False,
-    }
-    try:
-        with engine.connect() as conn:
-            info["fts_enabled"] = bool(
-                conn.execute(text(
-                    f"SELECT name FROM sqlite_master WHERE type='table' AND name='{_FTS_TABLE_NAME}'"
-                )).fetchone()
-            )
-            info["tokenizer"] = _read_fts_tokenizer(conn)
-            info["trigram_supported"] = _detect_trigram_supported(conn)
-            try:
-                info["row_count"] = int(conn.execute(text("SELECT count(*) FROM activity_logs")).scalar() or 0)
-            except Exception:
-                info["row_count"] = 0
-            if info["fts_enabled"]:
-                try:
-                    info["fts_row_count"] = int(
-                        conn.execute(text(f"SELECT count(*) FROM {_FTS_TABLE_NAME}")).scalar() or 0
-                    )
-                except Exception:
-                    info["fts_row_count"] = 0
-    except Exception:
-        _db_logger.debug("[数据库] activity_logs_fts_status 检查失败", exc_info=True)
-    info["needs_upgrade"] = bool(
-        info["fts_enabled"]
-        and info["trigram_supported"]
-        and info["tokenizer"] != _FTS_PREFERRED_TOKENIZE
-    )
-    return info
-
-
-def rebuild_activity_logs_fts(*, target_tokenizer: str = _FTS_PREFERRED_TOKENIZE,
-                               progress_cb: Optional[Callable[[int, int], None]] = None,
-                               batch_size: int = 5000) -> Dict[str, Any]:
-    """重建 FTS5 索引切换 tokenizer。同步执行，调用方负责放后台线程。
-
-    流程：
-      1. 校验目标 tokenizer 是否被当前 SQLite 支持
-      2. 创建临时表 activity_logs_fts_new（带新 tokenizer）
-      3. 分批 INSERT FROM activity_logs（避免单事务过大）
-      4. DROP 旧表 / RENAME 新表 / 重建触发器
-    """
-    target = (target_tokenizer or "").strip().lower() or _FTS_PREFERRED_TOKENIZE
-    new_table = f"{_FTS_TABLE_NAME}_new"
-
     with engine.begin() as conn:
-        if not _detect_fts5_supported(conn):
-            return {"ok": False, "reason": "fts5_not_supported"}
-        if target == _FTS_PREFERRED_TOKENIZE and not _detect_trigram_supported(conn):
-            return {"ok": False, "reason": "trigram_not_supported"}
-        try:
-            conn.execute(text(f"DROP TABLE IF EXISTS {new_table}"))
-        except Exception:
-            pass
-        try:
-            conn.execute(text(
-                f"""
-                CREATE VIRTUAL TABLE {new_table} USING fts5(
-                    id UNINDEXED,
-                    summary,
-                    source_path,
-                    rjcode,
-                    task_id,
-                    batch_id,
-                    tokenize='{target}'
-                )
-                """
-            ))
-        except Exception as exc:
-            _db_logger.warning("[数据库] 创建新 FTS 表失败", exc_info=True)
-            return {"ok": False, "reason": f"create_new_table_failed: {exc}"}
-
-        total = int(conn.execute(text("SELECT count(*) FROM activity_logs")).scalar() or 0)
-        copied = 0
-        last_id: Optional[str] = None
-        while True:
-            if last_id is None:
-                rows = conn.execute(text(
-                    """
-                    SELECT id, summary, source_path, rjcode, task_id, batch_id
-                      FROM activity_logs
-                     ORDER BY id
-                     LIMIT :n
-                    """
-                ), {"n": batch_size}).fetchall()
-            else:
-                rows = conn.execute(text(
-                    """
-                    SELECT id, summary, source_path, rjcode, task_id, batch_id
-                      FROM activity_logs
-                     WHERE id > :last
-                     ORDER BY id
-                     LIMIT :n
-                    """
-                ), {"last": last_id, "n": batch_size}).fetchall()
-            if not rows:
-                break
-            payload = [
-                {
-                    "id": r[0],
-                    "summary": (r[1] or ""),
-                    "source_path": (r[2] or ""),
-                    "rjcode": (r[3] or ""),
-                    "task_id": (r[4] or ""),
-                    "batch_id": (r[5] or ""),
-                }
-                for r in rows
-            ]
-            conn.execute(
-                text(
-                    f"""
-                    INSERT INTO {new_table}(id, summary, source_path, rjcode, task_id, batch_id)
-                    VALUES (:id, :summary, :source_path, :rjcode, :task_id, :batch_id)
-                    """
-                ),
-                payload,
-            )
-            copied += len(payload)
-            last_id = rows[-1][0]
-            if progress_cb is not None:
-                try:
-                    progress_cb(copied, total)
-                except Exception:
-                    pass
-            if len(rows) < batch_size:
-                break
-
-        # 切换：先 DROP 触发器和旧表，再 rename 新表，再重建触发器
-        _drop_fts_triggers(conn)
-        try:
-            conn.execute(text(f"DROP TABLE IF EXISTS {_FTS_TABLE_NAME}"))
-        except Exception:
-            _db_logger.warning("[数据库] 删除旧 FTS 表失败", exc_info=True)
-        try:
-            conn.execute(text(f"ALTER TABLE {new_table} RENAME TO {_FTS_TABLE_NAME}"))
-        except Exception as exc:
-            _db_logger.warning("[数据库] 重命名 FTS 新表失败", exc_info=True)
-            return {"ok": False, "reason": f"rename_failed: {exc}"}
-        _create_fts_triggers(conn)
-
-    return {"ok": True, "tokenizer": target, "copied": copied, "total": total}
+        _create_postgres_extensions_and_indexes(conn)
+        _migrate_compat_schema(conn)
+    schedule_library_index_postgres_index_maintenance()
+    _db_logger.info("[数据库] PostgreSQL 表和索引初始化完成")
 
 
-# ==================== FTS5 重建后台调度 ====================
-#
-# 设置页 / 自动升级提示触发的「重建搜索引擎索引」走这里。
-# 单例后台线程，互斥执行，对外暴露状态字典供前端轮询进度。
+def activity_logs_search_status() -> Dict[str, Any]:
+    state = get_activity_logs_search_rebuild_state()
+    try:
+        with engine.connect() as conn:
+            row_count = int(conn.execute(text("SELECT count(*) FROM activity_logs")).scalar() or 0)
+            index_rows = conn.execute(text("""
+                SELECT indexname
+                  FROM pg_indexes
+                 WHERE schemaname = current_schema()
+                   AND tablename = 'activity_logs'
+                   AND indexname LIKE 'idx_activity_logs_%_trgm'
+                 ORDER BY indexname
+            """)).fetchall()
+            pg_trgm_enabled = bool(conn.execute(text("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')")).scalar())
+        return {
+            "backend": "postgresql_pg_trgm",
+            "search_enabled": pg_trgm_enabled and bool(index_rows),
+            "fts_enabled": pg_trgm_enabled and bool(index_rows),
+            "tokenizer": "pg_trgm",
+            "trigram_supported": pg_trgm_enabled,
+            "row_count": row_count,
+            "fts_row_count": row_count if index_rows else 0,
+            "needs_upgrade": False,
+            "index_count": len(index_rows),
+            "rebuild": state,
+        }
+    except Exception:
+        _db_logger.debug("[数据库] 操作记录搜索状态检查失败", exc_info=True)
+        return {
+            "backend": "postgresql_pg_trgm",
+            "search_enabled": False,
+            "fts_enabled": False,
+            "tokenizer": "pg_trgm",
+            "trigram_supported": False,
+            "row_count": 0,
+            "fts_row_count": 0,
+            "needs_upgrade": False,
+            "index_count": 0,
+            "rebuild": state,
+        }
 
-import threading as _fts_threading
 
-_FTS_REBUILD_STATE: Dict[str, Any] = {
+_SEARCH_REBUILD_LOCK = threading.Lock()
+_SEARCH_REBUILD_THREAD: Optional[threading.Thread] = None
+_SEARCH_REBUILD_STATE: Dict[str, Any] = {
     "running": False,
     "started_at": 0.0,
     "finished_at": 0.0,
-    "target_tokenizer": "",
     "copied": 0,
     "total": 0,
     "ok": None,
     "reason": "",
+    "target_tokenizer": "pg_trgm",
 }
-_FTS_REBUILD_LOCK = _fts_threading.Lock()
-_FTS_REBUILD_THREAD: Optional[_fts_threading.Thread] = None
 
 
-def _broadcast_activity_fts_state(snapshot: Dict[str, Any]) -> None:
+def get_activity_logs_search_rebuild_state() -> Dict[str, Any]:
+    with _SEARCH_REBUILD_LOCK:
+        return dict(_SEARCH_REBUILD_STATE)
+
+
+def _broadcast_activity_search_state(snapshot: Dict[str, Any]) -> None:
     try:
         from ..core.realtime_event_service import broadcast_event
 
         running = bool(snapshot.get("running"))
-        copied = int(snapshot.get("copied") or 0)
         total = int(snapshot.get("total") or 0)
+        copied = int(snapshot.get("copied") or 0)
         ok = snapshot.get("ok")
         if running:
             status = "running"
@@ -2833,104 +3009,100 @@ def _broadcast_activity_fts_state(snapshot: Dict[str, Any]) -> None:
             status = "error"
         else:
             status = "idle"
-        progress = 100 if status in {"done", "error"} else (min(99, int(copied * 100 / total)) if total > 0 else 0)
+        progress = 100 if status in {"done", "error"} else (min(99, int(copied * 100 / total)) if total else 0)
         broadcast_event({
-            "type": "maintenance.fts.changed",
+            "type": "maintenance.search.changed",
             "reason": "activity_logs",
-            "id": "activity_logs_fts",
+            "id": "activity_logs_pg_trgm",
             "domain": "maintenance",
             "status": status,
             "progress": progress,
-            "current_step": "操作记录全文搜索索引重建中" if running else "",
-            "payload": {
-                "kind": "activity_logs",
-                "rebuild": dict(snapshot),
-            },
+            "current_step": "操作记录 PostgreSQL trigram 索引重建中" if running else "",
+            "payload": {"kind": "activity_logs", "rebuild": dict(snapshot)},
         })
     except Exception:
-        _db_logger.debug("[数据库] 广播 activity_logs FTS 实时状态失败", exc_info=True)
+        _db_logger.debug("[数据库] 广播操作记录搜索索引状态失败", exc_info=True)
 
 
-def get_activity_logs_fts_rebuild_state() -> Dict[str, Any]:
-    """快照当前重建状态（线程安全）。"""
-    with _FTS_REBUILD_LOCK:
-        return dict(_FTS_REBUILD_STATE)
-
-
-def _do_rebuild_activity_logs_fts(target: str) -> None:
-    def _progress(copied: int, total: int) -> None:
-        with _FTS_REBUILD_LOCK:
-            _FTS_REBUILD_STATE["copied"] = int(copied)
-            _FTS_REBUILD_STATE["total"] = int(total)
-            snapshot = dict(_FTS_REBUILD_STATE)
-        _broadcast_activity_fts_state(snapshot)
-
+def _do_reindex_activity_logs_search() -> None:
     try:
-        result = rebuild_activity_logs_fts(target_tokenizer=target, progress_cb=_progress)
-        with _FTS_REBUILD_LOCK:
-            _FTS_REBUILD_STATE["ok"] = bool(result.get("ok"))
-            _FTS_REBUILD_STATE["reason"] = str(result.get("reason") or "")
-            if result.get("total") is not None:
-                _FTS_REBUILD_STATE["total"] = int(result.get("total") or 0)
-            if result.get("copied") is not None:
-                _FTS_REBUILD_STATE["copied"] = int(result.get("copied") or 0)
-            snapshot = dict(_FTS_REBUILD_STATE)
-        _broadcast_activity_fts_state(snapshot)
+        with engine.begin() as conn:
+            total = int(conn.execute(text("SELECT count(*) FROM activity_logs")).scalar() or 0)
+        with _SEARCH_REBUILD_LOCK:
+            _SEARCH_REBUILD_STATE["total"] = total
+            _SEARCH_REBUILD_STATE["copied"] = 0
+            snapshot = dict(_SEARCH_REBUILD_STATE)
+        _broadcast_activity_search_state(snapshot)
+        with engine.begin() as conn:
+            _create_postgres_extensions_and_indexes(conn)
+            for name in (
+                "idx_activity_logs_summary_trgm",
+                "idx_activity_logs_source_path_trgm",
+                "idx_activity_logs_rjcode_trgm",
+                "idx_activity_logs_task_id_trgm",
+                "idx_activity_logs_batch_id_trgm",
+            ):
+                _reindex_if_exists(conn, name)
+        with _SEARCH_REBUILD_LOCK:
+            _SEARCH_REBUILD_STATE.update({"copied": total, "ok": True, "reason": "", "running": False, "finished_at": time.time()})
+            snapshot = dict(_SEARCH_REBUILD_STATE)
+        _broadcast_activity_search_state(snapshot)
     except Exception as exc:
-        _db_logger.warning("[数据库] FTS 重建失败", exc_info=True)
-        with _FTS_REBUILD_LOCK:
-            _FTS_REBUILD_STATE["ok"] = False
-            _FTS_REBUILD_STATE["reason"] = f"exception: {exc}"
-            snapshot = dict(_FTS_REBUILD_STATE)
-        _broadcast_activity_fts_state(snapshot)
-    finally:
-        import time as _time
-        with _FTS_REBUILD_LOCK:
-            _FTS_REBUILD_STATE["running"] = False
-            _FTS_REBUILD_STATE["finished_at"] = _time.time()
-            snapshot = dict(_FTS_REBUILD_STATE)
-        _broadcast_activity_fts_state(snapshot)
+        _db_logger.warning("[数据库] 操作记录搜索索引重建失败", exc_info=True)
+        with _SEARCH_REBUILD_LOCK:
+            _SEARCH_REBUILD_STATE.update({"ok": False, "reason": str(exc), "running": False, "finished_at": time.time()})
+            snapshot = dict(_SEARCH_REBUILD_STATE)
+        _broadcast_activity_search_state(snapshot)
 
 
-def trigger_activity_logs_fts_rebuild(target_tokenizer: str = _FTS_PREFERRED_TOKENIZE) -> Dict[str, Any]:
-    """触发后台重建。已在跑就直接返回当前状态。"""
-    import time as _time
-    global _FTS_REBUILD_THREAD
-    target = (target_tokenizer or "").strip().lower() or _FTS_PREFERRED_TOKENIZE
-    with _FTS_REBUILD_LOCK:
-        if _FTS_REBUILD_STATE["running"]:
-            return {"started": False, "reason": "already_running", "state": dict(_FTS_REBUILD_STATE)}
-        _FTS_REBUILD_STATE.update({
+def trigger_activity_logs_search_rebuild(target_tokenizer: str = "pg_trgm") -> Dict[str, Any]:
+    global _SEARCH_REBUILD_THREAD
+    with _SEARCH_REBUILD_LOCK:
+        if _SEARCH_REBUILD_STATE["running"]:
+            return {"started": False, "reason": "already_running", "state": dict(_SEARCH_REBUILD_STATE)}
+        _SEARCH_REBUILD_STATE.update({
             "running": True,
-            "started_at": _time.time(),
+            "started_at": time.time(),
             "finished_at": 0.0,
-            "target_tokenizer": target,
             "copied": 0,
             "total": 0,
             "ok": None,
             "reason": "",
+            "target_tokenizer": "pg_trgm",
         })
-        snapshot = dict(_FTS_REBUILD_STATE)
-    _broadcast_activity_fts_state(snapshot)
-    thread = _fts_threading.Thread(
-        target=_do_rebuild_activity_logs_fts,
-        args=(target,),
-        name="activity-logs-fts-rebuild",
-        daemon=True,
-    )
-    _FTS_REBUILD_THREAD = thread
+        snapshot = dict(_SEARCH_REBUILD_STATE)
+    _broadcast_activity_search_state(snapshot)
+    thread = threading.Thread(target=_do_reindex_activity_logs_search, name="activity-logs-pg-trgm-reindex", daemon=True)
+    _SEARCH_REBUILD_THREAD = thread
     thread.start()
-    return {"started": True, "state": get_activity_logs_fts_rebuild_state()}
+    return {"started": True, "state": get_activity_logs_search_rebuild_state()}
+
+
+# 旧导出名保留给调用层，语义已切换为 PostgreSQL trigram。
+activity_logs_fts_status = activity_logs_search_status
+get_activity_logs_fts_rebuild_state = get_activity_logs_search_rebuild_state
+trigger_activity_logs_fts_rebuild = trigger_activity_logs_search_rebuild
+
+
+def activity_logs_fts_tokenizer() -> str:
+    return "pg_trgm"
+
+
+def activity_logs_fts_enabled() -> bool:
+    return bool(activity_logs_search_status().get("search_enabled"))
 
 
 def get_db():
-    """获取数据库会话"""
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
 
+
 def get_db_path_info():
-    """获取数据库路径信息"""
-    return _db_path
+    return _mask_database_url(_DATABASE_URL)
+
+
+def get_database_url_info():
+    return _mask_database_url(_DATABASE_URL)
