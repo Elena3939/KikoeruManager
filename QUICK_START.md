@@ -12,7 +12,7 @@
 
 **示例:**
 ```bash
-curl "http://localhost:8000/api/linked-works/RJ01234567?include_full_linkage=true&cue_languages=CHI_HANS,CHI_HANT,ENG"
+curl "http://localhost:5555/api/linked-works/RJ01234567?include_full_linkage=true&cue_languages=CHI_HANS,CHI_HANT,ENG"
 ```
 
 **返回示例:**
@@ -49,7 +49,7 @@ curl "http://localhost:8000/api/linked-works/RJ01234567?include_full_linkage=tru
 
 **示例:**
 ```bash
-curl "http://localhost:8000/api/linked-works/RJ01234567/check-library"
+curl "http://localhost:5555/api/linked-works/RJ01234567/check-library"
 ```
 
 **返回示例:**
@@ -79,7 +79,7 @@ curl "http://localhost:8000/api/linked-works/RJ01234567/check-library"
 
 **示例:**
 ```bash
-curl -X POST "http://localhost:8000/api/conflicts/enhanced-check" \
+curl -X POST "http://localhost:5555/api/conflicts/enhanced-check" \
   -H "Content-Type: application/json" \
   -d '{
     "rjcode": "RJ01234567",
@@ -139,7 +139,7 @@ curl -X POST "http://localhost:8000/api/conflicts/enhanced-check" \
 
 **示例:**
 ```bash
-curl -X POST "http://localhost:8000/api/kikoeru-configs" \
+curl -X POST "http://localhost:5555/api/kikoeru-configs" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "家庭Kikoeru",
@@ -298,10 +298,10 @@ async function batchCheckLinkedWorks(rjcodes) {
 ### 问题: 库中作品检测不准确
 
 **可能原因:**
-- LibrarySnapshot 表未同步
+- PostgreSQL 库存索引未同步
 
 **解决:**
-- 执行库扫描以更新快照表
+- 在库存页执行索引重建 / 同步，更新 `library_index_entries`
 
 ## 配置文件示例
 
@@ -379,5 +379,5 @@ kikoeru_search:
 
 如有问题，请查看:
 1. 后端日志: `data/app.log`
-2. API 文档: `http://localhost:8000/docs`
-3. 数据库: `data/cache.db`
+2. API 文档: `http://localhost:5555/docs`
+3. 数据库: PostgreSQL `127.0.0.1:5432/kikoerumanager`；配置见 `data/config/config.yaml`

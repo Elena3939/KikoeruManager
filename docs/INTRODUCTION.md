@@ -26,7 +26,7 @@ KikoeruManager 是一个面向 DLsite 同人音声库存的桌面化管理工作
 - 同一页面管理本地库存和 Synology FileStation 远程库存。
 - 支持目录浏览、搜索、重命名、删除、批量删除、移动、拖拽移动。
 - 文件列表支持 Windows 式多选、框选、右键菜单、拖动幽灵和面包屑投放。
-- SQLite 库存索引提供跨库 RJ 搜索、库存大小统计和问题作品路径拾回。
+- PostgreSQL 库存索引提供跨库 RJ 搜索、库存大小统计和问题作品路径拾回，基于复合索引和 `pg_trgm` 支撑几十万文件目录浏览。
 - 写操作会同步更新索引，避免每次操作后重新全量扫描。
 
 ### 4. 下载、上传和外链资源
@@ -71,7 +71,7 @@ KikoeruManager 是一个面向 DLsite 同人音声库存的桌面化管理工作
 - 解压时自动尝试历史密码，减少重复手动输入。
 - 安全网关提供访问闸页、阻断页和相关配置。
 - Windows 桌面版支持托盘后台运行、开机自启、一键打开 Web 和 `KikoeruManager.exe` 打包。
-- Docker 镜像支持前后端一体部署，适合 NAS 或服务器长期运行。
+- Docker 镜像支持前后端一体部署，单镜像内置 PostgreSQL 18，适合 NAS 或服务器长期运行。
 
 ## 界面模块
 
@@ -90,7 +90,8 @@ KikoeruManager 是一个面向 DLsite 同人音声库存的桌面化管理工作
 
 ### 后端
 
-- `FastAPI` + `SQLAlchemy` + `SQLite`
+- `FastAPI` + `SQLAlchemy` + `PostgreSQL 18`
+- `JSONB`、连接池、`pg_trgm` 和库存目录复合索引
 - 任务调度和状态持久化
 - Synology DSM / FileStation REST API
 - aria2 RPC 下载
@@ -112,6 +113,6 @@ KikoeruManager 是一个面向 DLsite 同人音声库存的桌面化管理工作
 
 - Windows 桌面版：下载 Release 后运行 `KikoeruManager.exe`。
 - 源码开发：后端 FastAPI，前端 Vite。
-- Docker：使用 `ghcr.io/elena3939/kikoerumanager:latest` 或 `elena39/kikoerumanager:latest`。
+- Docker：使用 `ghcr.io/elena3939/kikoerumanager:1.6.25` 或 `elena39/kikoerumanager:1.6.25`，并持久化挂载 `/app/postgres`。
 
 详细部署命令见项目根目录的 `README.md`、`START_GUIDE.md` 和 `DOCKER_DEPLOY.md`。
