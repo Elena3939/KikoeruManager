@@ -94,6 +94,7 @@ class ArchiveInfo:
         self.is_volume = False
         self.volume_set: Optional[List[str]] = None
         self.detected_encoding: Optional[str] = None  # _list_archive_contents 自动检测到的编码
+        self.path_remap: Optional[Dict[str, str]] = None
 
 class ExtractService:
     """解压服务"""
@@ -219,6 +220,15 @@ class ExtractService:
         "need another volume",
         "next volume is required",
     )
+    _PATH_TOO_LONG_MARKERS: Tuple[str, ...] = (
+        "file name too long",
+        "filename too long",
+        "name too long",
+        "path too long",
+        "errno=36",
+        "enametoolong",
+    )
+    PATH_COMPONENT_SAFE_BYTES: int = 220
 
     @classmethod
     def _looks_like_disk_full_error(cls, text: str) -> bool:
@@ -234,6 +244,107 @@ class ExtractService:
     def _looks_like_incomplete_volume_error(cls, text: str) -> bool:
         lowered = str(text or "").lower()
         return any(marker in lowered for marker in cls._INCOMPLETE_VOLUME_MARKERS)
+
+    @classmethod
+    def _looks_like_path_too_long_error(cls, text: str) -> bool:
+        lowered = str(text or "").lower()
+        return any(marker in lowered for marker in cls._PATH_TOO_LONG_MARKERS)
+
+    @classmethod
+    def _utf8_len(cls, value: str) -> int:
+        return len(str(value or "").encode("utf-8", errors="ignore"))
+
+    @classmethod
+    def _sanitize_archive_path_component(cls, value: str, fallback: str = "entry") -> str:
+        cleaned = re.sub(r'[<>:"|?*\x00-\x1f/\\]+', "_", str(value or "")).strip(" .")
+        if cleaned in {"", ".", ".."}:
+            cleaned = fallback
+        return cleaned
+
+    @classmethod
+    def _shorten_archive_path_component(
+        cls,
+        value: str,
+        *,
+        fallback: str = "entry",
+        max_bytes: Optional[int] = None,
+    ) -> str:
+        limit = int(max_bytes or cls.PATH_COMPONENT_SAFE_BYTES)
+        cleaned = cls._sanitize_archive_path_component(value, fallback=fallback)
+        if cls._utf8_len(cleaned) <= limit:
+            return cleaned
+        suffix = "_" + hashlib.sha1(cleaned.encode("utf-8", errors="ignore")).hexdigest()[:8]
+        budget = max(16, limit - cls._utf8_len(suffix))
+        chars: List[str] = []
+        used = 0
+        for ch in cleaned:
+            width = cls._utf8_len(ch)
+            if used + width > budget:
+                break
+            chars.append(ch)
+            used += width
+        shortened = "".join(chars).rstrip(" ._") or fallback
+        return f"{shortened}{suffix}"
+
+    def _build_single_root_path_remap(self, archive_info: ArchiveInfo) -> Optional[Dict[str, str]]:
+        file_entries = [
+            item for item in (getattr(archive_info, "file_list", None) or [])
+            if not item.get("is_dir") and str(item.get("name") or "").strip()
+        ]
+        if not file_entries:
+            return None
+
+        roots: set[str] = set()
+        for item in file_entries:
+            parts = [
+                part for part in str(item.get("name") or "").replace("\\", "/").split("/")
+                if part not in {"", "."}
+            ]
+            if len(parts) < 2:
+                return None
+            roots.add(parts[0])
+            if len(roots) > 1:
+                return None
+
+        root_from = next(iter(roots))
+        if self._utf8_len(root_from) <= self.PATH_COMPONENT_SAFE_BYTES:
+            return None
+
+        normalized = self._normalize_filename(root_from)
+        archive_stem = Path(str(getattr(archive_info, "path", "") or "archive")).stem
+        root_to_source = normalized if normalized and normalized != root_from else archive_stem
+        root_to = self._shorten_archive_path_component(root_to_source, fallback="archive")
+        if root_to == root_from:
+            root_to = self._shorten_archive_path_component(archive_stem, fallback="archive")
+        return {
+            "root_from": root_from,
+            "root_to": root_to,
+        }
+
+    def _remap_archive_relative_path(self, relative_path: str, remap: Optional[Dict[str, str]]) -> Optional[str]:
+        if not remap:
+            return None
+        normalized = str(relative_path or "").replace("\\", "/").strip("/")
+        if not normalized:
+            return None
+        raw_parts = [part for part in normalized.split("/") if part not in {"", "."}]
+        if not raw_parts:
+            return None
+        mapped_parts: List[str] = []
+        root_from = str((remap or {}).get("root_from") or "")
+        root_to = str((remap or {}).get("root_to") or "")
+        for index, part in enumerate(raw_parts):
+            if index == 0 and root_from and part == root_from:
+                mapped = root_to or part
+            else:
+                mapped = part
+            mapped_parts.append(
+                self._shorten_archive_path_component(
+                    mapped,
+                    fallback=f"entry_{index}",
+                )
+            )
+        return "/".join(mapped_parts)
 
     def _is_sfx_temporary_volume_view_path(self, archive_path: str, task: Optional[Task]) -> bool:
         metadata = getattr(task, "task_metadata", None) or {}
@@ -2148,6 +2259,8 @@ class ExtractService:
                 error_msg = "解压失败：压缩包损坏或不完整（Headers/Data Error）"
             elif extract_failure_reason == "wrong_password":
                 error_msg = "解压失败：无正确密码"
+            elif extract_failure_reason == "path_too_long":
+                error_msg = "解压失败：路径或文件名过长（Linux 单个文件名最多 255 字节）"
             elif extract_failure_reason == "garbled_filename":
                 error_msg = "解压失败：文件名乱码"
             elif extract_failure_reason == "extract_incomplete":
@@ -6357,6 +6470,236 @@ class ExtractService:
         flush_current()
         return files
 
+    async def _extract_archive_entry_to_file(
+        self,
+        archive_info: ArchiveInfo,
+        entry_name: str,
+        target_path: str,
+        password: str,
+        task: Optional[Task],
+        progress_callback: Optional[Callable[[int], None]] = None,
+    ) -> Tuple[bool, str]:
+        """把单个压缩包条目通过 7zz -so 流式写到指定路径。"""
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        temp_target = f"{target_path}.part"
+        password_args = [f"-p{password}"] if password else []
+        cmd = [
+            self.seven_zip,
+            "x",
+            "-so",
+            "-y",
+            "-bso0",
+            "-bsp0",
+            *self._get_mcp_args(archive_info.path, archive_info),
+            *password_args,
+            archive_info.path,
+            entry_name,
+        ]
+        formatted_cmd = self._format_command_for_log(cmd)
+        logger.debug("路径重映射解压条目: %s", formatted_cmd)
+
+        semaphore = self._get_7z_semaphore()
+        try:
+            if task is not None and self._is_semaphore_locked(semaphore):
+                task.update_progress(
+                    max(40, int(task.progress or 0)),
+                    f"等待解压槽位（当前并发上限 {self.__class__._seven_zip_semaphore_limit or 1}）",
+                )
+            async with semaphore, get_resource_budget_service().acquire("archive_cpu", reason="extract.path_remap_entry"):
+                kwargs = {
+                    "stdout": subprocess.PIPE,
+                    "stderr": subprocess.PIPE,
+                    "stdin": subprocess.DEVNULL,
+                }
+                if sys.platform == "win32":
+                    kwargs["creationflags"] = CREATE_NO_WINDOW
+
+                process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
+                if task is not None:
+                    task.register_process(process)
+
+                stderr_data = bytearray()
+
+                async def consume_stderr():
+                    while True:
+                        chunk = await process.stderr.read(4096)
+                        if not chunk:
+                            break
+                        if len(stderr_data) < 128 * 1024:
+                            remain = 128 * 1024 - len(stderr_data)
+                            stderr_data.extend(chunk[:remain])
+
+                stderr_task = asyncio.create_task(consume_stderr())
+                try:
+                    with open(temp_target, "wb") as f:
+                        while True:
+                            if task is not None and task.is_cancelled():
+                                try:
+                                    process.kill()
+                                except ProcessLookupError:
+                                    pass
+                                return False, "cancelled"
+                            chunk = await process.stdout.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            if progress_callback:
+                                progress_callback(len(chunk))
+                    return_code = await process.wait()
+                    await stderr_task
+                except asyncio.CancelledError:
+                    if process.returncode is None:
+                        try:
+                            process.kill()
+                        except ProcessLookupError:
+                            pass
+                    raise
+                finally:
+                    if not stderr_task.done():
+                        stderr_task.cancel()
+                        with contextlib.suppress(BaseException):
+                            await stderr_task
+                    if task is not None:
+                        task.unregister_process(process)
+
+                if return_code != 0:
+                    with contextlib.suppress(OSError):
+                        os.remove(temp_target)
+                    stderr_text = bytes(stderr_data).decode("utf-8", errors="ignore")
+                    logger.error(
+                        "路径重映射解压条目失败 rc=%s entry=%s stderr=%s",
+                        return_code,
+                        entry_name,
+                        stderr_text[:300] if stderr_text else "(无错误文本)",
+                    )
+                    if self._looks_like_disk_full_error(stderr_text):
+                        return False, "disk_full"
+                    if self._looks_like_path_too_long_error(stderr_text):
+                        return False, "path_too_long"
+                    if self._looks_like_wrong_password_error(stderr_text) or "wrong password" in stderr_text.lower():
+                        return False, "wrong_password"
+                    return False, "extract_incomplete"
+
+                os.replace(temp_target, target_path)
+                return True, ""
+        except OSError as exc:
+            with contextlib.suppress(OSError):
+                os.remove(temp_target)
+            logger.error("路径重映射写入失败: %s target=%s", exc, target_path)
+            if getattr(exc, "errno", None) == 36:
+                return False, "path_too_long"
+            return False, "extract_incomplete"
+
+    async def _try_extract_with_path_remap(
+        self,
+        archive_info: ArchiveInfo,
+        output_path: str,
+        password: str,
+        task: Task,
+        *,
+        ignore_garbled: bool = False,
+    ) -> Tuple[bool, str]:
+        """单一顶层目录过长时，把顶层目录映射成短名后逐文件流式解压。"""
+        remap = self._build_single_root_path_remap(archive_info)
+        if not remap:
+            return False, "path_too_long"
+
+        file_entries = [
+            item for item in (archive_info.file_list or [])
+            if not item.get("is_dir") and str(item.get("name") or "").strip()
+        ]
+        if not file_entries:
+            return False, "extract_incomplete"
+
+        await self._cleanup_extract_attempt(output_path)
+        os.makedirs(output_path, exist_ok=True)
+        archive_info.path_remap = remap
+        self._set_extract_meta(
+            task,
+            extract_path_remap_root_from=remap.get("root_from"),
+            extract_path_remap_root_to=remap.get("root_to"),
+            extract_path_remap_mode="single_root_stream",
+        )
+        logger.warning(
+            "检测到压缩包顶层目录过长，启用路径重映射解压: %s -> %s archive=%s",
+            remap.get("root_from"),
+            remap.get("root_to"),
+            archive_info.path,
+        )
+
+        output_abs = os.path.abspath(output_path)
+        total_bytes = sum(max(0, int(item.get("size") or 0)) for item in file_entries)
+        written_bytes = 0
+        last_progress_update = 0.0
+
+        def update_stream_progress(delta: int) -> None:
+            nonlocal written_bytes, last_progress_update
+            written_bytes += max(0, int(delta or 0))
+            now = time.time()
+            if total_bytes <= 0 or now - last_progress_update < 1.5:
+                return
+            last_progress_update = now
+            percent = min(99, int(written_bytes * 100 / max(total_bytes, 1)))
+            mapped_progress = min(90, 40 + int(percent * 0.5))
+            task.update_progress(mapped_progress, f"路径重映射解压中 {percent}%")
+
+        seen_targets: set[str] = set()
+        for index, item in enumerate(file_entries, start=1):
+            if task.is_cancelled():
+                return False, "cancelled"
+            await task.wait_if_paused()
+            entry_name = str(item.get("name") or "")
+            mapped_rel = self._remap_archive_relative_path(entry_name, remap)
+            if not mapped_rel:
+                return False, "extract_incomplete"
+            target_path = os.path.abspath(os.path.join(output_path, *mapped_rel.split("/")))
+            if target_path != output_abs and not target_path.startswith(output_abs + os.sep):
+                logger.error("路径重映射目标越界，拒绝解压: entry=%s target=%s", entry_name, target_path)
+                return False, "extract_incomplete"
+            target_key = os.path.normcase(target_path)
+            if target_key in seen_targets:
+                logger.error("路径重映射后出现目标文件冲突: %s", mapped_rel)
+                return False, "extract_incomplete"
+            seen_targets.add(target_key)
+            if index == 1 or index % 10 == 0:
+                task.update_progress(
+                    max(40, int(task.progress or 0)),
+                    f"路径重映射解压 {index}/{len(file_entries)}",
+                )
+            success, reason = await self._extract_archive_entry_to_file(
+                archive_info,
+                entry_name,
+                target_path,
+                password,
+                task,
+                progress_callback=update_stream_progress,
+            )
+            if not success:
+                await self._cleanup_extract_attempt(output_path)
+                return False, reason or "extract_incomplete"
+
+        if await self._reject_if_garbled_after_extract(
+            archive_info.path,
+            output_path,
+            cleanup=lambda: self._cleanup_extract_attempt(output_path),
+            context="path_remap",
+            task=task,
+            ignore_garbled=ignore_garbled,
+        ):
+            return False, "garbled_filename"
+        if not await self._verify_extraction(archive_info, output_path):
+            await self._cleanup_extract_attempt(output_path)
+            return False, "extract_incomplete"
+        self._set_extract_meta(task, extract_verified=True)
+        logger.info(
+            "路径重映射解压成功: files=%s archive=%s root=%s -> %s",
+            len(file_entries),
+            archive_info.path,
+            remap.get("root_from"),
+            remap.get("root_to"),
+        )
+        return True, ""
+
     async def _try_extract(
         self,
         archive_info: ArchiveInfo,
@@ -6873,6 +7216,40 @@ class ExtractService:
                     )
                     return False, None, "disk_full"
 
+                if self._looks_like_path_too_long_error(stderr_text):
+                    logger.error(
+                        "检测到解压目标路径或文件名过长，停止密码重试: %s",
+                        stderr_text[:500] if stderr_text else "(无错误文本)",
+                    )
+                    remap_success, remap_reason = await self._try_extract_with_path_remap(
+                        archive_info,
+                        output_path,
+                        password,
+                        task,
+                        ignore_garbled=manual_ignore_garbled,
+                    )
+                    if remap_success:
+                        await self._finalize_successful_extract_password(
+                            archive_info,
+                            task,
+                            password,
+                            vault_passwords,
+                            password_entry_id_map,
+                            password_rjcode_map,
+                        )
+                        logger.info(
+                            "解压成功，使用%s密码并重映射超长根目录: %s",
+                            password_source,
+                            password or '无密码',
+                        )
+                        return True, password, ""
+                    self._set_extract_meta(
+                        task,
+                        extract_failure_reason=remap_reason or "path_too_long",
+                        extract_path_too_long_error=stderr_text[:1000],
+                    )
+                    return False, None, remap_reason or "path_too_long"
+
                 if (
                     self._is_sfx_temporary_volume_view_path(archive_info.path, task)
                     and self._looks_like_incomplete_volume_error(stderr_text)
@@ -7154,9 +7531,16 @@ class ExtractService:
                 expected_name.encode('utf-8', errors='ignore').decode('utf-8', errors='ignore').replace('\\', '/'),
                 expected_name.encode('cp932', errors='ignore').decode('cp932', errors='ignore').replace('\\', '/'),
             }
+            path_remap = getattr(archive_info, "path_remap", None)
+            mapped_expected_name = self._remap_archive_relative_path(expected_name, path_remap)
+            if mapped_expected_name:
+                candidates.add(mapped_expected_name)
             repaired_expected_name = self._repair_mojibake_relative_path(expected_name)
             if repaired_expected_name:
                 candidates.add(repaired_expected_name)
+                mapped_repaired_name = self._remap_archive_relative_path(repaired_expected_name, path_remap)
+                if mapped_repaired_name:
+                    candidates.add(mapped_repaired_name)
             # 反向 lookup：expected 样子匹配修复后的 actual key（标签上 expected 已然是正确的）。
             for variant in tuple(candidates):
                 if variant in inverse_actual_lookup:
