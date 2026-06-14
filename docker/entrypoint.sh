@@ -101,4 +101,10 @@ else
   log "检测到 DATABASE_URL，使用外部 PostgreSQL"
 fi
 
+if [[ "$#" -eq 0 ]]; then
+  set -- python -m app.main
+elif [[ "$#" -eq 1 && "$1" == *" "* ]]; then
+  exec bash -lc "$1"
+fi
+
 exec "$@"
