@@ -25,6 +25,12 @@ WORKDIR /app
 ARG TARGETARCH
 ARG KIKOERUMANAGER_VERSION=dev
 ARG BAIDUPCS_GO_VERSION=4.0.1
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        wget \
+        bash \
+        xz-utils \
+    && rm -rf /var/lib/apt/lists/*
 RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/g' /etc/apt/sources.list.d/debian.sources && \
     install -d /usr/share/postgresql-common/pgdg && \
     wget --retry-connrefused --waitretry=5 --tries=3 -O /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
@@ -33,10 +39,6 @@ RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmwa
     echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
         > /etc/apt/sources.list.d/pgdg.list && \
     apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        wget \
-        bash \
-        xz-utils \
         aria2 \
         unar \
         libpq5 \
