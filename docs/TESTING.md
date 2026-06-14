@@ -6,32 +6,32 @@
 
 ```bash
 cd backend
-pip install -r requirements-test.txt
+venv\Scripts\python.exe -m pip install -r requirements-test.txt
 ```
 
 ### 1.2 运行单元测试
 
 ```bash
 # 运行所有测试
-pytest
+venv\Scripts\python.exe -m pytest
 
 # 运行特定测试
-pytest tests/test_extract_service.py -v
+venv\Scripts\python.exe -m pytest tests/test_extract_service.py -v
 
 # 运行测试并生成覆盖率报告
-pytest --cov=app --cov-report=html
+venv\Scripts\python.exe -m pytest --cov=app --cov-report=html
 ```
 
 ### 1.3 手动测试 API
 
 启动后端服务：
 ```bash
-python -m app.main
+venv\Scripts\python.exe -m app.main
 ```
 
 访问 API 文档：
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
+- Swagger UI: http://localhost:5555/docs
+- ReDoc: http://localhost:5555/redoc
 
 ## 2. 前端测试
 
@@ -48,7 +48,7 @@ npm install
 npm run dev
 ```
 
-访问: http://localhost:5173
+访问: http://localhost:5556
 
 ### 2.3 构建测试
 
@@ -197,11 +197,11 @@ sleep 5
 
 # 测试API
 echo "测试API..."
-curl http://localhost:8000/health
+curl http://localhost:5555/health
 
 # 创建测试任务
 echo "创建测试任务..."
-curl -X POST http://localhost:8000/api/tasks \
+curl -X POST http://localhost:5555/api/tasks \
   -H "Content-Type: application/json" \
   -d '{"source_path": "/input/test.zip", "task_type": "auto_process"}'
 
@@ -227,7 +227,7 @@ journalctl -u kikoerumanager -f
 
 ```bash
 # 进入数据库
-sqlite3 data/cache.db
+psql -h 127.0.0.1 -p 5432 -U kikoerumanager -d kikoerumanager
 
 # 查看任务表
 SELECT * FROM tasks;
@@ -235,8 +235,9 @@ SELECT * FROM tasks;
 # 查看元数据缓存
 SELECT rjcode, work_name FROM work_metadata;
 
-# 查看库存快照
-SELECT * FROM library_snapshot;
+# 查看库存索引状态和样例行
+SELECT * FROM library_index_status;
+SELECT library_id, relative_path, entry_type, size FROM library_index_entries LIMIT 20;
 ```
 
 ### 8.3 API调试
@@ -245,18 +246,18 @@ SELECT * FROM library_snapshot;
 
 ```bash
 # 获取任务列表
-curl http://localhost:8000/api/tasks | python -m json.tool
+curl http://localhost:5555/api/tasks | python -m json.tool
 
 # 创建任务
-curl -X POST http://localhost:8000/api/tasks \
+curl -X POST http://localhost:5555/api/tasks \
   -H "Content-Type: application/json" \
   -d '{"source_path": "/path/to/file.zip"}'
 
 # 暂停任务
-curl -X POST http://localhost:8000/api/tasks/{task_id}/pause
+curl -X POST http://localhost:5555/api/tasks/{task_id}/pause
 
 # 获取配置
-curl http://localhost:8000/api/config | python -m json.tool
+curl http://localhost:5555/api/config | python -m json.tool
 ```
 
 ## 9. 测试数据生成
@@ -319,12 +320,12 @@ jobs:
       - name: Install dependencies
         run: |
           cd backend
-          pip install -r requirements.txt
-          pip install -r requirements-test.txt
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-test.txt
       - name: Run tests
         run: |
           cd backend
-          pytest --cov=app
+          python -m pytest --cov=app
   
   test-frontend:
     runs-on: ubuntu-latest

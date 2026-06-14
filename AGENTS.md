@@ -27,11 +27,13 @@
 
 ### 后端
 
-- 后端：`FastAPI` + SQLAlchemy + SQLite。
+- 后端：`FastAPI` + SQLAlchemy + PostgreSQL 18（`psycopg` 驱动，Alembic baseline）。
 - 依赖清单：`backend/requirements.txt`。
 - 解压依赖：运行环境必须有官方 `7zz 24.08+`，并保留 `unar` / `lsar`。
 - 不要回退到旧 `p7zip-full`。Dockerfile 会显式 purge p7zip，并把官方 `7zz` 链接到 `/usr/local/bin/7zz` 和 `/usr/local/bin/7z`。
 - 新增的伪装 ZIP 探测只用 Python 标准库 `zipfile` / `os`，不用加 requirements。
+- 运行态数据库不再保留 SQLite 兼容；`DATABASE_URL` 必须使用 `postgresql+psycopg://...`，存在时覆盖配置文件中的 `database.*` 字段。
+- 本地 Windows 通过 `setup.bat` / `scripts/install-postgresql.ps1` 检查、安装、初始化 PostgreSQL，并把随机密码明文写入 `data/config/config.yaml` 方便后续查看和修改。
 
 ### 前端
 
@@ -50,8 +52,11 @@
 
 ### Docker / 环境
 
-- 根 `Dockerfile` 是完整前后端镜像；`backend/Dockerfile` 是后端镜像。
-- 两个 Dockerfile 都必须保留官方 `7zz 24.08`、`unar`、`lsar`、SQLite FTS5 检查。
+- 根 `Dockerfile` 是完整前后端单镜像，并内置 PostgreSQL 18 server；`docker/entrypoint.sh` 会在没有 `DATABASE_URL` 时初始化并启动容器内 PostgreSQL。
+- `backend/Dockerfile` 是后端基础镜像，只安装 PostgreSQL 客户端和 Python 驱动，默认连接外部 PostgreSQL。
+- 两个 Dockerfile 都必须保留官方 `7zz 24.08`、`unar`、`lsar`；不要恢复 SQLite FTS5 构建检查。
+- Docker 单镜像部署必须持久化挂载 `/app/postgres`，否则更新 / 重建容器后数据库会落在容器层里丢失。
+- Docker 里如显式设置 `DATABASE_URL`，则跳过内置 PostgreSQL 并连接外部 PostgreSQL；默认 compose 不设置 `DATABASE_URL`。
 - 伪装 ZIP 解压会在 `storage.temp_path` 下创建 `kikoerumanager_embedded_zip_*.zip` 临时视图。Docker 部署时这个 temp 路径要挂到有足够空间的卷，不要放很小的容器层。
 - temp 视图成功、失败、取消都必须清理；原始文件路径不能被临时视图覆盖。
 
@@ -121,6 +126,8 @@
 - 用户说“改配置文件”且没有明确说运行态时，默认改仓库模板 `backend/config/config.yaml`。
 - 桌面 / 开发默认运行配置是 `data/config/config.yaml`；Docker 是 `/app/config/config.yaml`。
 - 只有设置 `CONFIG_PATH` 时才读环境变量指定文件。
+- 数据库配置字段在 `database.host/port/database/username/password/sslmode/...`；`/api/config` 返回密码必须脱敏，保存时传回 `********` 或省略都要保留磁盘真实密码。
+- `resource_budget.database_write` 是当前数据库写入资源维度；旧 `sqlite_write` 只能作为读取旧配置的兼容 key，保存后不能再写回旧 key。
 - 不要提交真实密码、Token、代理、私服地址、群晖账号、本地数据库、缓存、`.env`。
 - 默认运行态 / 敏感产物：`.env`、`data/`、`backend/data/`、本地数据库、缓存目录、`.codex-backups/`。
 - `/api/config` 返回 SMTP 密码必须脱敏为 `********`；保存时前端传回 `********` 或省略 `password`，后端必须保留真实密码。

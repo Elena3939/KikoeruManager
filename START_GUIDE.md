@@ -3,12 +3,14 @@
 ## 安装（首次使用）
 
 双击运行 `setup.bat`，自动安装所有依赖。
+脚本会检查本机 PostgreSQL；如果没有可用环境，会通过 `scripts\install-postgresql.ps1` 安装 / 初始化 PostgreSQL，并把随机生成的数据库密码写入 `data\config\config.yaml`。
 
 ## 日常启动
 
 ### 方式1：一键启动（推荐）
 双击 `start-all.bat`
 - 自动启动前后端服务
+- 自动检查并启动本机 PostgreSQL
 - 打开两个命令行窗口
 - 关闭窗口即可停止服务
 
@@ -18,9 +20,9 @@
 
 ## 访问地址
 
-- **前端界面**: http://localhost:5173
-- **后端API**: http://localhost:8000
-- **API文档**: http://localhost:8000/docs
+- **前端界面**: http://localhost:5556
+- **后端API**: http://localhost:5555
+- **API文档**: http://localhost:5555/docs
 
 ## 目录说明
 
@@ -33,7 +35,8 @@ kikoerumanager/
 ├── frontend/
 │   └── start.bat      # 前端启动
 ├── test_data/         # 测试数据目录
-└── config/            # 配置文件
+└── data/
+    └── config/        # 运行态配置文件
 ```
 
 ## 常见问题
@@ -44,13 +47,16 @@ kikoerumanager/
 ### 2. 提示缺少Node.js
 安装 Node.js 18+：https://nodejs.org/
 
-### 3. 端口被占用
-- 后端端口 8000
-- 前端端口 5173
+### 3. PostgreSQL 未就绪
+先运行 `setup.bat`。日常启动时 `start-all.bat` 会尝试启动本机 PostgreSQL；如果服务损坏或端口被占用，再看 `scripts\install-postgresql.ps1` 的输出。
 
-在 config/config.yaml 中修改端口配置。
+### 4. 端口被占用
+- 后端端口 5555
+- 前端端口 5556
 
-### 4. 如何停止服务？
+后端端口可通过 `PORT` 环境变量修改；前端开发端口在 `frontend\vite.config.js`。
+
+### 5. 如何停止服务？
 直接关闭命令行窗口，或按 `Ctrl+C`
 
 ## 测试数据

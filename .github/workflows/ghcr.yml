@@ -77,6 +77,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ env.DOCKERHUB_IMAGE }}
-          short-description: "DLsite 同人音声压缩包智能管理工具"
+          short-description: "DLsite 同人音声库存工作台，单镜像内置 PostgreSQL 18"
           readme-filepath: ./README.md
           enable-url-completion: true

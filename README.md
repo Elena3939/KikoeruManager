@@ -21,7 +21,7 @@
 
 - **本地 + 群晖统一浏览**：库存页可浏览本地目录与 Synology FileStation 远程目录，支持搜索、重命名、删除、批量删除、移动、拖拽移动和面包屑投放。
 - **Windows 式文件操作**：库存表格支持多选、右键菜单、框选、键盘辅助选择、拖动幽灵和批量操作。
-- **SQLite 库存索引**：跨库 RJ 搜索、库存大小统计、问题作品路径拾回走常驻索引，支持本地与远程扫描器，写操作同步 self mutation。
+- **PostgreSQL 库存索引**：跨库 RJ 搜索、库存大小统计、问题作品路径拾回走常驻索引，基于复合索引和 `pg_trgm` 支撑几十万文件目录浏览，写操作同步 self mutation。
 - **库存备份**：支持库存备份 ZIP 任务化执行，进度进入任务中心和历史记录。
 
 #### 下载、上传与外链资源
@@ -63,18 +63,25 @@
 
 本项目分为后端（`FastAPI`）和前端（`Vue 3 + Vite`）两部分。
 
+Windows 本地首次使用建议直接运行：
+
+```bat
+.\setup.bat                      # 安装依赖 + 检查 / 初始化 PostgreSQL
+.\start-all.bat                  # 启动 PostgreSQL 检查、后端和前端
+```
+
+`setup.bat` 会把本机 PostgreSQL 连接信息写入 `data/config/config.yaml`；也可以通过 `DATABASE_URL=postgresql+psycopg://...` 指向外部 PostgreSQL。
+
 ```bash
 # 1. 克隆仓库
 git clone https://github.com/Elena3939/KikoeruManager.git
 cd KikoeruManager
 
-# 2. 后端
+# 2. 后端（非 Windows 或手动模式需先准备 PostgreSQL）
 cd backend
 python -m venv venv
-venv\Scripts\activate           # Windows
-# source venv/bin/activate      # Linux / macOS
-pip install -r requirements.txt
-python -m app.main
+venv\Scripts\python.exe -m pip install -r requirements.txt
+venv\Scripts\python.exe -m app.main
 
 # 3. 前端（新终端）
 cd frontend
@@ -88,7 +95,7 @@ npm run dev
 .\start-dev.bat                 # 一键拉起前端 + 后端
 ```
 
-启动后访问 <http://localhost:8000>，前端 dev server 默认在 <http://localhost:5173>。
+启动后访问后端 <http://localhost:5555>，前端 dev server 默认在 <http://localhost:5556>。
 
 ### Windows 桌面版
 
@@ -103,12 +110,12 @@ npm run dev
 ### Docker 部署
 
 ```bash
-# 拉取镜像（Dockerhub）
-docker pull elena39/kikoerumanager:latest
+# 拉取镜像（Docker Hub）
+docker pull elena39/kikoerumanager:1.6.25
 ```
 ```bash
 # 拉取镜像（GHCR）
-docker pull ghcr.io/elena3939/kikoerumanager:latest
+docker pull ghcr.io/elena3939/kikoerumanager:1.6.25
 ```
 
 或用 `docker-compose.yml`：
@@ -116,17 +123,17 @@ docker pull ghcr.io/elena3939/kikoerumanager:latest
 ```yaml
 services:
   kikoerumanager:
-    image: ghcr.io/elena3939/kikoerumanager:latest
+    image: ghcr.io/elena3939/kikoerumanager:1.6.25
     container_name: kikoerumanager
     ports:
       - "5555:5555"
     environment:
-      - PUID=1000
-      - PGID=1000
+      - POSTGRES_PASSWORD=请改成强密码
       - TZ=Asia/Shanghai
     volumes:
       - ./config:/app/config              # 配置目录（config.yaml）
-      - ./data:/app/data                  # 数据库 / 日志 / 缓存
+      - ./data:/app/data                  # 日志 / 缓存 / 运行数据
+      - ./postgres:/app/postgres          # 内置 PostgreSQL 数据目录，必须持久化
       - /your/path/input:/input           # 待处理压缩包
       - /your/path/library:/library       # 音声库存
       - /your/path/temp:/temp             # 临时解压目录
@@ -142,7 +149,7 @@ services:
 后端：
 
 - `FastAPI`（Web 框架）
-- `SQLAlchemy` + `SQLite`（持久化，单文件部署友好）
+- `SQLAlchemy` + `PostgreSQL 18`（JSONB、连接池、`pg_trgm`、复合索引）
 - `Pydantic`（配置 / Schema 校验）
 - `httpx` + `cheerio`-like 解析（DLsite 爬虫）
 - `Synology DSM REST API`（远程群晖通信）
@@ -170,7 +177,7 @@ services:
 │   ├── app/
 │   │   ├── api/                     # REST 路由总入口（routes.py）
 │   │   ├── core/                    # 业务核心服务
-│   │   │   ├── library_index/       # 库存搜索索引基础设施（SQLite + 双扫描器）
+│   │   │   ├── library_index/       # 库存搜索索引基础设施（PostgreSQL + 双扫描器）
 │   │   │   ├── activity_log_*       # 操作历史树形聚合 + lite 路径
 │   │   │   ├── activity_log_aggregator/  # 历史聚合算法
 │   │   │   ├── block_renderers/     # 邮件 Block Editor 服务端渲染
@@ -217,6 +224,7 @@ services:
 │   ├── BUILD.md
 │   └── notification-template-builder.md
 ├── desktop_app.py                   # 桌面托盘入口（pystray）
+├── docker/entrypoint.sh             # 单镜像内置 PostgreSQL 启动入口
 ├── docker-compose.yml               # Docker Compose 模板
 ├── unraid-template.xml              # Unraid 模板
 ├── start-all.bat / start-dev.bat    # Windows 一键启动
@@ -229,7 +237,7 @@ services:
 ### TODO
 
 - [x] 多本地库存 + 多远程群晖库存
-- [x] 库存搜索索引（SQLite + 双扫描器 + self_mutation）
+- [x] 库存搜索索引（PostgreSQL + 双扫描器 + self_mutation）
 - [x] 问题作品 GUI 拍板（保留新版 / 跳过 / 合并）
 - [x] RJ 字幕工作台（扫描 / 抓取 / 配对 / 落盘 全流程）
 - [x] ASMR 同步下载
@@ -253,7 +261,7 @@ services:
 - [Docker 部署](DOCKER_DEPLOY.md)
 - [快速上手](START_GUIDE.md)
 - [给后续 AI / 自动化代理的接手说明](AGENTS.md)
-- API 文档：服务启动后访问 <http://localhost:8000/docs>
+- API 文档：服务启动后访问 <http://localhost:5555/docs>
 
 ### 感谢
 

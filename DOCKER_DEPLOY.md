@@ -22,6 +22,7 @@
 **必须配置的映射路径：**
 - **配置目录**: `/mnt/user/appdata/kikoerumanager/config`
 - **数据目录**: `/mnt/user/appdata/kikoerumanager/data`
+- **PostgreSQL 数据目录**: `/mnt/user/appdata/kikoerumanager/postgres`
 - **输入目录**: 你的下载目录，如 `/mnt/user/downloads/dl/done`
 - **临时目录**: 建议映射到 SSD，`/mnt/cache/appdata/kikoerumanager/temp`
 - **作品库目录**: 你的媒体库目录，如 `/mnt/user/media/dlsite`
@@ -54,19 +55,19 @@ cd /mnt/user/appdata/kikoerumanager
 ### 2. 创建 docker-compose.yml
 
 ```yaml
-version: '3.8'
-
 services:
   kikoerumanager:
-    image: ghcr.io/elena3939/kikoerumanager:latest
+    image: ghcr.io/elena3939/kikoerumanager:1.6.25
     container_name: kikoerumanager
     ports:
-      - "8000:8000"
+      - "5555:5555"
     volumes:
       # 配置目录
       - ./config:/app/config
-      # 数据目录
+      # 应用日志 / 缓存 / 运行数据
       - ./data:/app/data
+      # 内置 PostgreSQL 数据目录，必须持久化
+      - ./postgres:/app/postgres
       # 输入目录（修改为你的下载目录）
       - /mnt/user/downloads/dl/done:/input
       # 临时目录（建议 SSD）
@@ -79,7 +80,12 @@ services:
       - ./processed:/processed
     environment:
       - TZ=Asia/Shanghai
+      - POSTGRES_PASSWORD=请改成强密码
     privileged: true
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     restart: unless-stopped
 ```
 
@@ -103,18 +109,20 @@ docker-compose logs -f
 docker run -d \
   --name kikoerumanager \
   --privileged \
-  -p 8000:8000 \
+  -p 5555:5555 \
   -v /mnt/user/appdata/kikoerumanager/config:/app/config \
   -v /mnt/user/appdata/kikoerumanager/data:/app/data \
+  -v /mnt/user/appdata/kikoerumanager/postgres:/app/postgres \
   -v /mnt/user/downloads/dl/done:/input \
   -v /mnt/cache/appdata/kikoerumanager/temp:/temp \
   -v /mnt/user/media/dlsite:/library \
   -v /mnt/user/media/dlsite:/existing \
   -v /mnt/user/appdata/kikoerumanager/processed:/processed \
   -e TZ=Asia/Shanghai \
+  -e POSTGRES_PASSWORD=请改成强密码 \
   --ulimit nofile=65536:65536 \
   --restart unless-stopped \
-  ghcr.io/elena3939/kikoerumanager:latest
+  ghcr.io/elena3939/kikoerumanager:1.6.25
 ```
 
 ---
@@ -156,7 +164,8 @@ services:
 | 容器路径 | 说明 | 建议映射 |
 |---------|------|---------|
 | `/app/config` | 配置文件 | `./config` 或 `appdata/kikoerumanager/config` |
-| `/app/data` | 数据库和日志 | `./data` 或 `appdata/kikoerumanager/data` |
+| `/app/data` | 日志、缓存和运行数据 | `./data` 或 `appdata/kikoerumanager/data` |
+| `/app/postgres` | 内置 PostgreSQL 数据目录 | `./postgres` 或 `appdata/kikoerumanager/postgres` |
 | `/input` | 待处理的压缩包 | 下载目录 |
 | `/temp` | 解压临时文件 | SSD 缓存目录 |
 | `/library` | 整理好的作品库 | 媒体库目录 |
@@ -187,7 +196,7 @@ services:
 
 ### 1. 访问 Web 界面
 
-打开浏览器访问：`http://your-unraid-ip:8000`
+打开浏览器访问：`http://your-unraid-ip:5555`
 
 ### 2. 初始配置
 
@@ -234,9 +243,9 @@ chmod -R 777 /mnt/user/media/dlsite
 
 如果之前使用 Windows 版本：
 
-1. **数据库迁移**：将 Windows 的 `data/app.db` 复制到 `/mnt/user/appdata/kikoerumanager/data/`
-2. **配置文件**：将 Windows 的 `config/config.yaml` 复制到 `/mnt/user/appdata/kikoerumanager/config/`
-3. **作品库**：将 Windows 的作品库直接复制到映射的 `/library` 目录
+1. **配置文件**：将 Windows 的 `data/config/config.yaml` 按需迁移到 `/mnt/user/appdata/kikoerumanager/config/config.yaml`，并确认 Docker 内路径有效。
+2. **数据库迁移**：旧 SQLite 不能直接复制给新版使用；先用 `scripts/migrate_sqlite_to_postgres.py` 或已导出的 PostgreSQL dump 导入到容器内 PostgreSQL。
+3. **作品库**：将 Windows 的作品库直接复制到映射的 `/library` 目录。
 
 ### Q: 临时目录使用 SSD 的好处
 
@@ -259,7 +268,7 @@ docker-compose up -d
 ### Q: 备份策略建议
 
 **必须备份：**
-- `/app/data/app.db` - 数据库（包含所有作品信息、任务历史）
+- `/app/postgres` - PostgreSQL 数据目录（包含所有业务数据）
 - `/app/config/config.yaml` - 配置文件
 
 **可选备份：**
@@ -272,10 +281,10 @@ docker-compose up -d
 # 添加到 Unraid User Scripts 插件
 DATE=$(date +%Y%m%d)
 mkdir -p /mnt/user/backups/kikoerumanager
-cp /mnt/user/appdata/kikoerumanager/data/app.db /mnt/user/backups/kikoerumanager/app.db.$DATE
+tar -C /mnt/user/appdata/kikoerumanager -czf /mnt/user/backups/kikoerumanager/postgres.$DATE.tar.gz postgres
 cp /mnt/user/appdata/kikoerumanager/config/config.yaml /mnt/user/backups/kikoerumanager/config.yaml.$DATE
 # 保留最近 30 天备份
-find /mnt/user/backups/kikoerumanager -name "*.db.*" -mtime +30 -delete
+find /mnt/user/backups/kikoerumanager -name "postgres.*.tar.gz" -mtime +30 -delete
 ```
 
 ---
