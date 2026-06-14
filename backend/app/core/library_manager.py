@@ -5378,6 +5378,232 @@ class LibraryManager:
             strategy,
         )
 
+    async def preview_move_local_items(
+        self,
+        *,
+        source_library_id: str,
+        target_library_id: str,
+        paths: list[str],
+        target_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        if not paths:
+            raise ValueError("缺少待移动项")
+        source_library = self.get_library_definition(source_library_id)
+        target_library = self.get_library_definition(target_library_id)
+        if source_library.type != "local":
+            raise RuntimeError("仅支持本地库内/之间移动")
+        if target_library.type != "local":
+            raise RuntimeError("仅支持移动到本地库")
+        return await asyncio.to_thread(
+            self._preview_move_local_items_sync,
+            source_library,
+            target_library,
+            list(paths),
+            target_path,
+        )
+
+    def _preview_move_local_items_sync(
+        self,
+        source_library: LibraryDefinition,
+        target_library: LibraryDefinition,
+        paths: list[str],
+        target_path: Optional[str],
+    ) -> dict[str, Any]:
+        target_root = os.path.abspath(target_library.root_path)
+        target_dir = os.path.abspath(target_path) if target_path else target_root
+        if not self._local_path_is_within_root(target_dir, target_root):
+            raise PermissionError("目标目录必须在所选库存内")
+        if not os.path.isdir(target_dir):
+            raise FileNotFoundError(f"目标目录不存在: {target_dir}")
+
+        conflicts: list[dict[str, Any]] = []
+        merge_folders: list[dict[str, Any]] = []
+        for raw in paths:
+            source_path = os.path.abspath(raw)
+            self._assert_local_path_in_library(source_library, source_path)
+            if not os.path.exists(source_path):
+                raise FileNotFoundError(f"源路径不存在: {source_path}")
+
+            if os.path.normcase(os.path.dirname(source_path)) == os.path.normcase(target_dir):
+                continue
+            if os.path.isdir(source_path):
+                source_norm = os.path.normcase(source_path)
+                target_norm = os.path.normcase(target_dir)
+                if target_norm == source_norm or target_norm.startswith(source_norm + os.sep):
+                    conflicts.append({
+                        "path": source_path,
+                        "source_path": source_path,
+                        "existing_path": target_dir,
+                        "name": os.path.basename(source_path),
+                        "is_directory": True,
+                        "existing_is_directory": True,
+                        "relative_path": os.path.basename(source_path),
+                        "conflict_type": "invalid_target",
+                        "reason": "无法将目录移入自身或其子目录",
+                    })
+                    continue
+
+            dest_path = os.path.join(target_dir, os.path.basename(source_path))
+            self._collect_local_move_conflicts(
+                source_path,
+                dest_path,
+                os.path.basename(source_path),
+                conflicts,
+                merge_folders,
+            )
+
+        return {
+            "target_path": target_dir,
+            "target_library_id": target_library.id,
+            "conflict_count": len(conflicts),
+            "merge_folder_count": len(merge_folders),
+            "has_conflicts": bool(conflicts),
+            "conflicts": conflicts,
+            "merge_folders": merge_folders[:200],
+            "merge_folders_truncated": len(merge_folders) > 200,
+        }
+
+    def _collect_local_move_conflicts(
+        self,
+        source_path: str,
+        dest_path: str,
+        relative_path: str,
+        conflicts: list[dict[str, Any]],
+        merge_folders: list[dict[str, Any]],
+    ) -> None:
+        if not os.path.exists(dest_path):
+            return
+
+        source_is_dir = os.path.isdir(source_path)
+        dest_is_dir = os.path.isdir(dest_path)
+        name = os.path.basename(source_path)
+
+        if source_is_dir and dest_is_dir:
+            merge_folders.append({
+                "path": source_path,
+                "source_path": source_path,
+                "existing_path": dest_path,
+                "name": name,
+                "relative_path": relative_path,
+                "is_directory": True,
+                "existing_is_directory": True,
+            })
+            try:
+                with os.scandir(source_path) as iterator:
+                    for entry in iterator:
+                        child_rel = os.path.join(relative_path, entry.name)
+                        self._collect_local_move_conflicts(
+                            entry.path,
+                            os.path.join(dest_path, entry.name),
+                            child_rel,
+                            conflicts,
+                            merge_folders,
+                        )
+            except OSError as exc:
+                conflicts.append({
+                    "path": source_path,
+                    "source_path": source_path,
+                    "existing_path": dest_path,
+                    "name": name,
+                    "relative_path": relative_path,
+                    "is_directory": True,
+                    "existing_is_directory": True,
+                    "conflict_type": "scan_failed",
+                    "reason": str(exc),
+                })
+            return
+
+        conflict_type = "type_mismatch" if source_is_dir != dest_is_dir else "name_conflict"
+        conflicts.append({
+            "path": source_path,
+            "source_path": source_path,
+            "existing_path": dest_path,
+            "name": name,
+            "relative_path": relative_path,
+            "is_directory": source_is_dir,
+            "existing_is_directory": dest_is_dir,
+            "conflict_type": conflict_type,
+            "reason": "目标位置已存在同名项",
+        })
+
+    def _unique_local_destination_path(self, target_dir: str, base_name: str, is_dir: bool) -> str:
+        if is_dir:
+            stem, ext = base_name, ""
+        else:
+            stem, ext = os.path.splitext(base_name)
+        counter = 1
+        candidate = os.path.join(target_dir, f"{stem}_{counter}{ext}")
+        while os.path.exists(candidate):
+            counter += 1
+            candidate = os.path.join(target_dir, f"{stem}_{counter}{ext}")
+        return candidate
+
+    def _merge_local_directory_into(
+        self,
+        source_dir: str,
+        dest_dir: str,
+        conflict_strategy: str,
+    ) -> dict[str, Any]:
+        skipped: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = []
+
+        try:
+            names = os.listdir(source_dir)
+        except OSError as exc:
+            return {
+                "removed_source": False,
+                "skipped": skipped,
+                "failed": [{"path": source_dir, "name": os.path.basename(source_dir), "error": str(exc)}],
+            }
+
+        for name in names:
+            source_child = os.path.join(source_dir, name)
+            dest_child = os.path.join(dest_dir, name)
+            try:
+                source_is_dir = os.path.isdir(source_child)
+                if os.path.exists(dest_child):
+                    if source_is_dir and os.path.isdir(dest_child):
+                        child_result = self._merge_local_directory_into(
+                            source_child,
+                            dest_child,
+                            conflict_strategy,
+                        )
+                        skipped.extend(child_result.get("skipped") or [])
+                        failed.extend(child_result.get("failed") or [])
+                        continue
+                    if conflict_strategy == "skip":
+                        skipped.append({
+                            "path": source_child,
+                            "name": name,
+                            "reason": "目标已存在同名项，按策略跳过",
+                        })
+                        continue
+                    if conflict_strategy == "overwrite":
+                        if os.path.isdir(dest_child):
+                            _robust_rmtree(dest_child)
+                        else:
+                            os.remove(dest_child)
+                    else:
+                        dest_child = self._unique_local_destination_path(dest_dir, name, source_is_dir)
+
+                shutil.move(source_child, dest_child)
+            except Exception as exc:
+                failed.append({"path": source_child, "name": name, "error": str(exc)})
+
+        removed_source = False
+        try:
+            if not os.listdir(source_dir):
+                os.rmdir(source_dir)
+                removed_source = True
+        except OSError:
+            removed_source = False
+
+        return {
+            "removed_source": removed_source,
+            "skipped": skipped,
+            "failed": failed,
+        }
+
     def _move_local_items_sync(
         self,
         source_library: LibraryDefinition,
@@ -5405,6 +5631,16 @@ class LibraryManager:
         success: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         failed: list[dict[str, Any]] = []
+        moved_index_items: list[dict[str, str]] = []
+        deleted_index_paths: list[str] = []
+        replace_index_paths: dict[str, tuple[LibraryDefinition, set[str]]] = {}
+
+        def queue_replace_index(library: LibraryDefinition, path: str) -> None:
+            if not path:
+                return
+            bucket = replace_index_paths.setdefault(library.id, (library, set()))
+            bucket[1].add(path)
+
         for path in normalized_paths:
             try:
                 base_name = os.path.basename(path)
@@ -5423,6 +5659,23 @@ class LibraryManager:
 
                 dest_path = os.path.join(target_dir, base_name)
                 if os.path.exists(dest_path):
+                    if is_dir and os.path.isdir(dest_path):
+                        merge_result = self._merge_local_directory_into(path, dest_path, conflict_strategy)
+                        skipped.extend(merge_result.get("skipped") or [])
+                        failed.extend(merge_result.get("failed") or [])
+                        queue_replace_index(target_library, dest_path)
+                        if merge_result.get("removed_source"):
+                            self._local_top_level_delta(source_library, path, -1)
+                            deleted_index_paths.append(path)
+                            success.append({
+                                "source": path,
+                                "destination": dest_path,
+                                "name": base_name,
+                                "merged": True,
+                            })
+                        else:
+                            queue_replace_index(source_library, path)
+                        continue
                     if conflict_strategy == "skip":
                         skipped.append({"path": path, "name": base_name, "reason": "目标已存在同名项，按策略跳过"})
                         continue
@@ -5432,16 +5685,7 @@ class LibraryManager:
                         else:
                             os.remove(dest_path)
                     else:  # suffix（默认）
-                        if is_dir:
-                            stem, ext = base_name, ""
-                        else:
-                            stem, ext = os.path.splitext(base_name)
-                        counter = 1
-                        candidate = os.path.join(target_dir, f"{stem}_{counter}{ext}")
-                        while os.path.exists(candidate):
-                            counter += 1
-                            candidate = os.path.join(target_dir, f"{stem}_{counter}{ext}")
-                        dest_path = candidate
+                        dest_path = self._unique_local_destination_path(target_dir, base_name, is_dir)
 
                 shutil.move(path, dest_path)
 
@@ -5449,6 +5693,7 @@ class LibraryManager:
                 if is_dir:
                     self._local_top_level_delta(source_library, path, -1)
                     self._local_top_level_delta(target_library, dest_path, 1)
+                moved_index_items.append({"source": path, "destination": dest_path})
                 success.append({
                     "source": path,
                     "destination": dest_path,
@@ -5462,13 +5707,25 @@ class LibraryManager:
         if target_library.id != source_library.id:
             self._invalidate_local_search_cache(target_library.id)
 
-        # 索引同步：源库 delete 旧子树（可批量），目标库逐个 upsert 新子树
-        if success:
+        # 索引同步：普通移动走 fast-path；目录合并会影响已有目标目录，改为 delete 源 + replace 目标。
+        if moved_index_items:
             self._notify_index_self_mutation_move_batch(
                 source_library,
                 target_library,
-                list(success),
+                moved_index_items,
             )
+        if deleted_index_paths:
+            self._notify_index_self_mutation_delete_batch(source_library, deleted_index_paths)
+        for library, paths_to_replace in replace_index_paths.values():
+            try:
+                self._enqueue_index_replace_subtree_many(library, list(paths_to_replace))
+            except Exception:
+                logger.debug(
+                    "[索引] 目录合并后 replace 子树调度失败 library=%s count=%s",
+                    library.id,
+                    len(paths_to_replace),
+                    exc_info=True,
+                )
 
         self._append_stats_log(
             source_library,

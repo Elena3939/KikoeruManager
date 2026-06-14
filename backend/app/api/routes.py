@@ -8521,6 +8521,37 @@ class LibraryBrowserMoveRequest(BaseModel):
     overwrite: bool = False  # 兼容旧字段
 
 
+@app.post("/api/library/browser/move-preview")
+async def preview_library_browser_move(request: LibraryBrowserMoveRequest):
+    if not request.paths:
+        raise HTTPException(status_code=400, detail="待移动项不能为空")
+    if not str(request.source_library_id or "").strip():
+        raise HTTPException(status_code=400, detail="缺少源库存")
+    if not str(request.target_library_id or "").strip():
+        raise HTTPException(status_code=400, detail="缺少目标库存")
+    try:
+        manager = get_library_manager()
+        return await manager.preview_move_local_items(
+            source_library_id=request.source_library_id,
+            target_library_id=request.target_library_id,
+            paths=list(request.paths or []),
+            target_path=request.target_path or None,
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log_synology_err(f"库存移动预检失败: {e}", e)
+        raise HTTPException(status_code=_synology_http_status(e), detail=f"库存移动预检失败: {str(e)}")
+
+
 @app.post("/api/library/browser/move")
 async def move_library_browser_items(request: LibraryBrowserMoveRequest):
     if not request.paths:

@@ -162,6 +162,109 @@ def test_local_batch_rename_can_skip_index_mutation(monkeypatch, tmp_path):
     assert moved_items == []
 
 
+def test_local_move_preview_allows_same_name_folder_merge(monkeypatch, tmp_path):
+    library_root = tmp_path / "library"
+    source_parent = library_root / "source"
+    target_parent = library_root / "target"
+    source_dir = source_parent / "Circle"
+    target_dir = target_parent / "Circle"
+    source_dir.mkdir(parents=True)
+    target_dir.mkdir(parents=True)
+    (source_dir / "new.wav").write_bytes(b"new")
+    (target_dir / "old.wav").write_bytes(b"old")
+
+    manager = object.__new__(library_manager_module.LibraryManager)
+    monkeypatch.setattr(manager, "_local_top_level_delta", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(manager, "_invalidate_local_search_cache", lambda _library_id: None)
+    monkeypatch.setattr(manager, "_notify_index_self_mutation_move_batch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(manager, "_notify_index_self_mutation_delete_batch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(manager, "_enqueue_index_replace_subtree_many", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(manager, "_append_stats_log", lambda *_args, **_kwargs: None)
+
+    library = library_manager_module.LibraryDefinition(
+        id="local-a",
+        name="本地 A",
+        type="local",
+        path=str(library_root),
+        enabled=True,
+    )
+
+    preview = manager._preview_move_local_items_sync(
+        library,
+        library,
+        [str(source_dir)],
+        str(target_parent),
+    )
+    assert preview["conflict_count"] == 0
+    assert preview["merge_folder_count"] == 1
+
+    result = manager._move_local_items_sync(
+        library,
+        library,
+        [str(source_dir)],
+        str(target_parent),
+        "suffix",
+    )
+
+    assert result["success_count"] == 1
+    assert result["skipped_count"] == 0
+    assert result["failed_count"] == 0
+    assert not source_dir.exists()
+    assert (target_dir / "old.wav").read_bytes() == b"old"
+    assert (target_dir / "new.wav").read_bytes() == b"new"
+
+
+def test_local_move_preview_reports_child_file_conflict_before_folder_merge(monkeypatch, tmp_path):
+    library_root = tmp_path / "library"
+    source_parent = library_root / "source"
+    target_parent = library_root / "target"
+    source_dir = source_parent / "Circle"
+    target_dir = target_parent / "Circle"
+    source_dir.mkdir(parents=True)
+    target_dir.mkdir(parents=True)
+    (source_dir / "track.wav").write_bytes(b"new")
+    (target_dir / "track.wav").write_bytes(b"old")
+
+    manager = object.__new__(library_manager_module.LibraryManager)
+    monkeypatch.setattr(manager, "_local_top_level_delta", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(manager, "_invalidate_local_search_cache", lambda _library_id: None)
+    monkeypatch.setattr(manager, "_notify_index_self_mutation_move_batch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(manager, "_notify_index_self_mutation_delete_batch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(manager, "_enqueue_index_replace_subtree_many", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(manager, "_append_stats_log", lambda *_args, **_kwargs: None)
+
+    library = library_manager_module.LibraryDefinition(
+        id="local-a",
+        name="本地 A",
+        type="local",
+        path=str(library_root),
+        enabled=True,
+    )
+
+    preview = manager._preview_move_local_items_sync(
+        library,
+        library,
+        [str(source_dir)],
+        str(target_parent),
+    )
+    assert preview["conflict_count"] == 1
+    assert preview["conflicts"][0]["relative_path"].replace("\\", "/") == "Circle/track.wav"
+
+    result = manager._move_local_items_sync(
+        library,
+        library,
+        [str(source_dir)],
+        str(target_parent),
+        "suffix",
+    )
+
+    assert result["success_count"] == 1
+    assert result["failed_count"] == 0
+    assert not source_dir.exists()
+    assert (target_dir / "track.wav").read_bytes() == b"old"
+    assert (target_dir / "track_1.wav").read_bytes() == b"new"
+
+
 def test_subtitle_manual_match_batch_rename_skips_index_mutation(client, monkeypatch):
     captured = {}
 

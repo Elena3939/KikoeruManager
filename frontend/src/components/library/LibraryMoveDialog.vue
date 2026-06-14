@@ -276,7 +276,8 @@
               :class="{
                 'fm-row-selected': selectedFolderPath === folder.path,
                 'fm-row-self': isSourceFolder(folder.path),
-                'fm-row-conflict': isFolderEntry(folder) && conflictNameSet.has(folder.name),
+                'fm-row-conflict': !isSourceFolder(folder.path) && moveConflictNameSet.has(normalizeNameKey(folder.name)),
+                'fm-row-merge': !isSourceFolder(folder.path) && moveMergeNameSet.has(normalizeNameKey(folder.name)),
                 'fm-row-file': !isFolderEntry(folder)
               }"
               :title="folderRowTitle(folder)"
@@ -294,7 +295,8 @@
                 </span>
                 <span class="fm-name">{{ folder.name }}</span>
                 <!-- 源不再用文字 chip 标识，依靠左侧 2px 琥珀色细条 + opacity 表达 -->
-                <span v-if="isFolderEntry(folder) && !isSourceFolder(folder.path) && conflictNameSet.has(folder.name)" class="fm-tag fm-tag-conflict">同名</span>
+                <span v-if="!isSourceFolder(folder.path) && moveConflictNameSet.has(normalizeNameKey(folder.name))" class="fm-tag fm-tag-conflict">冲突</span>
+                <span v-else-if="isFolderEntry(folder) && !isSourceFolder(folder.path) && moveMergeNameSet.has(normalizeNameKey(folder.name))" class="fm-tag fm-tag-merge">合并</span>
               </div>
               <div class="fm-cell fm-cell-size">{{ formatFolderSize(folder) }}</div>
               <div class="fm-cell fm-cell-time">{{ formatFolderTime(folder.modified_time) }}</div>
@@ -330,9 +332,9 @@
             <ArrowRight :size="13" :stroke-width="2.4" class="text-slate-400 shrink-0" />
             <span class="text-[11.5px] text-slate-500 shrink-0">移动到</span>
             <span class="target-chip-path truncate">{{ effectiveTargetPath || '-' }}</span>
-            <span v-if="conflictCount > 0" class="conflict-pill" :title="conflictNamesText">
+            <span v-if="currentLevelConflictCount > 0" class="conflict-pill" :title="currentLevelConflictNamesText">
               <AlertCircle :size="11" :stroke-width="2.4" />
-              <span>{{ conflictCount }} 同名</span>
+              <span>{{ currentLevelConflictCount }} 冲突</span>
             </span>
           </div>
         </div>
@@ -350,6 +352,7 @@
             @click="handleSubmit"
           >
             <span v-if="submitting" class="inline-flex items-center gap-1.5"><Loader2 :size="14" class="animate-spin" />移动中</span>
+            <span v-else-if="conflictChecking" class="inline-flex items-center gap-1.5"><Loader2 :size="14" class="animate-spin" />检查中</span>
             <span v-else>移动到此处</span>
           </button>
         </div>
@@ -364,31 +367,33 @@
                 <AlertCircle :size="16" :stroke-width="2.2" />
               </span>
               <div class="min-w-0">
-                <h4 class="conflict-panel-title">目标目录已存在 {{ conflictCount }} 个同名项</h4>
-                <p class="conflict-panel-sub">请选择处理方式</p>
+                <h4 class="conflict-panel-title">发现 {{ moveConflictCount }} 个文件冲突</h4>
+                <p class="conflict-panel-sub">同名文件夹会自动合并；这里只处理里面真正撞名的文件</p>
               </div>
             </header>
             <ul class="conflict-list">
-              <li v-for="name in conflictNamesPreview" :key="name">
-                <Folder :size="12" :stroke-width="2.2" class="src-chip-folder" />
-                <span class="truncate">{{ name }}</span>
+              <li v-for="item in moveConflictsPreview" :key="item.path || item.relative_path || item.name">
+                <Folder v-if="item.is_directory" :size="12" :stroke-width="2.2" class="src-chip-folder" />
+                <FileIcon v-else :size="12" :stroke-width="2.2" class="src-chip-file" />
+                <span class="truncate">{{ item.relative_path || item.name }}</span>
+                <em>{{ item.is_directory ? '文件夹' : '文件' }}</em>
               </li>
-              <li v-if="conflictCount > conflictNamesPreview.length" class="conflict-list-more">
-                +{{ conflictCount - conflictNamesPreview.length }} 项
+              <li v-if="moveConflictCount > moveConflictsPreview.length" class="conflict-list-more">
+                +{{ moveConflictCount - moveConflictsPreview.length }} 项
               </li>
             </ul>
             <div class="conflict-actions">
               <button type="button" class="conflict-btn conflict-btn-primary" @click="confirmConflict('suffix')">
                 <Plus :size="13" :stroke-width="2.4" />
-                <span>追加序号</span>
+                <span>保留两者</span>
               </button>
               <button type="button" class="conflict-btn conflict-btn-danger" @click="confirmConflict('overwrite')">
                 <RefreshCw :size="13" :stroke-width="2.4" />
-                <span>覆盖现有</span>
+                <span>覆盖冲突</span>
               </button>
               <button type="button" class="conflict-btn conflict-btn-ghost" @click="confirmConflict('skip')">
                 <SkipForward :size="13" :stroke-width="2.4" />
-                <span>跳过同名</span>
+                <span>跳过冲突</span>
               </button>
               <button type="button" class="conflict-btn conflict-btn-cancel" @click="cancelConflict">取消</button>
             </div>
@@ -459,6 +464,8 @@ let folderSizeHydrateToken = 0
 
 const conflictDialogOpen = ref(false)
 const pendingTargetSnapshot = ref(null)
+const conflictChecking = ref(false)
+const moveConflicts = ref([])
 
 // 左侧导航宽度 + 拖拽状态
 const navWidth = ref(NAV_DEFAULT_WIDTH)
@@ -470,31 +477,57 @@ const navTreeState = reactive({})
 
 const CONFLICT_PREVIEW_MAX = 8
 
-const sourceNameSet = computed(() => {
-  const set = new Set()
+function normalizeNameKey (value) {
+  return String(value || '').trim().toLowerCase()
+}
+
+function basenameOfPath (path) {
+  return String(path || '').split(/[\\/]+/).filter(Boolean).pop() || ''
+}
+
+const sourceItemByName = computed(() => {
+  const map = new Map()
   for (const item of props.items || []) {
-    const name = String(item?.name || '').trim().toLowerCase()
-    if (name) set.add(name)
+    const name = normalizeNameKey(item?.name || basenameOfPath(item?.path))
+    if (name && !map.has(name)) map.set(name, item)
   }
-  return set
+  return map
 })
 
-// 当前层目录中与源同名的（小写名集合，仅做提示用）
-const conflictNameSet = computed(() => {
+// 当前层只做视觉提示：目录+目录是可合并，不算冲突；文件同名或类型不一致才提示冲突。
+const moveConflictNameSet = computed(() => {
   const set = new Set()
-  if (!sourceNameSet.value.size) return set
-  for (const folder of folders.value) {
-    const lower = String(folder?.name || '').toLowerCase()
-    if (sourceNameSet.value.has(lower)) set.add(folder.name)
+  if (!sourceItemByName.value.size) return set
+  for (const entry of folders.value) {
+    if (sourcePathSet.value.has(normalizePath(entry?.path))) continue
+    const lower = normalizeNameKey(entry?.name)
+    const sourceItem = sourceItemByName.value.get(lower)
+    if (!sourceItem) continue
+    if (sourceItem?.is_directory && isFolderEntry(entry)) continue
+    set.add(lower)
   }
   return set
 })
 
-const conflictCount = computed(() => conflictNameSet.value.size)
+const moveMergeNameSet = computed(() => {
+  const set = new Set()
+  if (!sourceItemByName.value.size) return set
+  for (const entry of folders.value) {
+    if (sourcePathSet.value.has(normalizePath(entry?.path))) continue
+    const lower = normalizeNameKey(entry?.name)
+    const sourceItem = sourceItemByName.value.get(lower)
+    if (sourceItem?.is_directory && isFolderEntry(entry)) set.add(lower)
+  }
+  return set
+})
 
-const conflictNamesPreview = computed(() => Array.from(conflictNameSet.value).slice(0, CONFLICT_PREVIEW_MAX))
+const currentLevelConflictCount = computed(() => moveConflictNameSet.value.size)
 
-const conflictNamesText = computed(() => Array.from(conflictNameSet.value).join('、'))
+const currentLevelConflictNamesText = computed(() => Array.from(moveConflictNameSet.value).join('、'))
+
+const moveConflictCount = computed(() => moveConflicts.value.length)
+
+const moveConflictsPreview = computed(() => moveConflicts.value.slice(0, CONFLICT_PREVIEW_MAX))
 
 const localLibraries = computed(() =>
   (Array.isArray(props.libraries) ? props.libraries : []).filter(lib => lib?.type === 'local' && lib?.id && lib?.writable !== false)
@@ -741,7 +774,7 @@ const targetIsSourceOrChild = computed(() => {
 })
 
 const canSubmit = computed(() => {
-  if (props.submitting || loading.value) return false
+  if (props.submitting || loading.value || conflictChecking.value) return false
   if (!currentLibraryId.value || !effectiveTargetPath.value) return false
   if (targetEqualsSourceParent.value) return false
   if (targetIsSourceOrChild.value) return false
@@ -798,6 +831,10 @@ function resetState () {
   indexLoading.value = false
   indexError.value = ''
   indexReady.value = false
+  conflictDialogOpen.value = false
+  pendingTargetSnapshot.value = null
+  conflictChecking.value = false
+  moveConflicts.value = []
   indexSearchToken += 1
   if (indexSearchTimer) { clearTimeout(indexSearchTimer); indexSearchTimer = null }
 }
@@ -1139,14 +1176,17 @@ function folderRowTitle (folder) {
   if (!folder) return ''
   const path = folder.path || ''
   if (isSourceFolder(path)) return `当前的待移动项 · ${path}`
-  if (conflictNameSet.value.has(folder.name)) return `与源同名 · ${path}`
+  const key = normalizeNameKey(folder.name)
+  if (moveConflictNameSet.value.has(key)) return `与源存在文件冲突 · ${path}`
+  if (moveMergeNameSet.value.has(key)) return `同名文件夹将自动合并 · ${path}`
   return path
 }
 
 function handleCancel () {
-  if (props.submitting) return
+  if (props.submitting || conflictChecking.value) return
   conflictDialogOpen.value = false
   pendingTargetSnapshot.value = null
+  moveConflicts.value = []
   emit('update:visible', false)
   emit('close')
 }
@@ -1159,7 +1199,7 @@ function handleVisibleUpdate (next) {
   }
 }
 
-function handleSubmit () {
+async function handleSubmit () {
   if (!canSubmit.value) {
     if (targetEqualsSourceParent.value) {
       ElMessage.warning('目标目录就是源所在目录，无需移动')
@@ -1172,19 +1212,35 @@ function handleSubmit () {
     targetLibraryId: currentLibraryId.value,
     targetPath: effectiveTargetPath.value
   }
-  // 同名检测：仅基于已加载的当前层 folders（精确度有限，但能覆盖主要场景）
-  if (conflictCount.value > 0 && normalizePath(effectiveTargetPath.value) === normalizePath(currentPath.value)) {
-    pendingTargetSnapshot.value = snapshot
-    conflictDialogOpen.value = true
-    return
+  conflictChecking.value = true
+  try {
+    const preview = await libraryApi.browserMovePreview(
+      props.sourceLibraryId,
+      (props.items || []).map(item => item.path).filter(Boolean),
+      currentLibraryId.value,
+      effectiveTargetPath.value
+    )
+    const conflicts = Array.isArray(preview?.conflicts) ? preview.conflicts : []
+    if (conflicts.length) {
+      moveConflicts.value = conflicts
+      pendingTargetSnapshot.value = snapshot
+      conflictDialogOpen.value = true
+      return
+    }
+    moveConflicts.value = []
+    emit('submit', { ...snapshot, conflictStrategy: 'suffix' })
+  } catch (err) {
+    ElMessage.error('移动预检失败：' + (err?.response?.data?.detail || err?.message || '未知错误'))
+  } finally {
+    conflictChecking.value = false
   }
-  emit('submit', { ...snapshot, conflictStrategy: 'suffix' })
 }
 
 function confirmConflict (strategy) {
   const snapshot = pendingTargetSnapshot.value
   conflictDialogOpen.value = false
   pendingTargetSnapshot.value = null
+  moveConflicts.value = []
   if (!snapshot) return
   emit('submit', { ...snapshot, conflictStrategy: strategy })
 }
@@ -1192,6 +1248,7 @@ function confirmConflict (strategy) {
 function cancelConflict () {
   conflictDialogOpen.value = false
   pendingTargetSnapshot.value = null
+  moveConflicts.value = []
 }
 
 function formatFolderSize (folder) {
@@ -1865,6 +1922,12 @@ onBeforeUnmount(() => {
   border-color: rgba(239, 68, 68, 0.30);
 }
 
+.fm-tag-merge {
+  background: rgba(34, 197, 94, 0.10);
+  color: #15803d;
+  border-color: rgba(34, 197, 94, 0.28);
+}
+
 .fm-row-selected {
   background: rgba(148, 163, 184, 0.18);
   box-shadow: none;
@@ -1893,6 +1956,10 @@ onBeforeUnmount(() => {
 .fm-row-conflict { background: rgba(254, 215, 170, 0.18); }
 
 .fm-row-conflict:hover { background: rgba(254, 215, 170, 0.32); }
+
+.fm-row-merge { background: rgba(34, 197, 94, 0.08); }
+
+.fm-row-merge:hover { background: rgba(34, 197, 94, 0.14); }
 
 /* 文件行：不能作为移动目标，光标改成默认；hover 反馈做轻一点表示"看得见但不可选" */
 .fm-row-file {
@@ -2060,6 +2127,14 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
+.conflict-list li em {
+  margin-left: auto;
+  color: #64748b;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+}
+
 .conflict-list-more {
   font-size: 11px;
   color: #64748b;
@@ -2068,7 +2143,7 @@ onBeforeUnmount(() => {
 
 .conflict-actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -2123,7 +2198,6 @@ onBeforeUnmount(() => {
 }
 
 .conflict-btn-cancel {
-  grid-column: span 3;
   color: #64748b;
 }
 
@@ -2340,6 +2414,96 @@ html.kikoerumanager-dark .lib-move-modal .conflict-pill {
   border-color: rgba(245, 158, 11, 0.28) !important;
   background: rgba(245, 158, 11, 0.14) !important;
   color: var(--km-dark-amber) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .fm-row-conflict {
+  background: rgba(245, 158, 11, 0.12) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .fm-row-conflict:hover {
+  background: rgba(245, 158, 11, 0.18) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .fm-row-merge {
+  background: rgba(34, 197, 94, 0.08) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .fm-row-merge:hover {
+  background: rgba(34, 197, 94, 0.13) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .fm-tag-merge {
+  border-color: rgba(34, 197, 94, 0.32) !important;
+  background: rgba(34, 197, 94, 0.14) !important;
+  color: #86efac !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .conflict-overlay {
+  background: rgba(0, 0, 0, 0.42) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .conflict-panel {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  background: #15161a !important;
+  color: var(--km-dark-text) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .conflict-panel-icon {
+  background: rgba(245, 158, 11, 0.16) !important;
+  color: #fbbf24 !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .conflict-panel-title {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .conflict-panel-sub,
+html.kikoerumanager-dark .lib-move-modal .conflict-list li em,
+html.kikoerumanager-dark .lib-move-modal .conflict-list-more {
+  color: var(--km-dark-text-muted) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .conflict-list {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  background: #1d1e23 !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .conflict-list li {
+  color: var(--km-dark-text-strong) !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .conflict-btn {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  background: #222328 !important;
+  color: var(--km-dark-text-strong) !important;
+  box-shadow: none !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .conflict-btn:hover {
+  background: #2b2c31 !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .conflict-btn-primary {
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  background: #3a3b40 !important;
+  color: #ffffff !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .conflict-btn-primary:hover {
+  background: #44454b !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .conflict-btn-danger {
+  border-color: rgba(248, 113, 113, 0.34) !important;
+  background: rgba(127, 29, 29, 0.34) !important;
+  color: #fecaca !important;
+}
+
+html.kikoerumanager-dark .lib-move-modal .conflict-btn-danger:hover {
+  background: rgba(127, 29, 29, 0.46) !important;
 }
 
 html.kikoerumanager-dark .lib-move-modal .secondary-cta,
