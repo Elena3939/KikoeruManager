@@ -1,68 +1,20 @@
 services:
-  postgres:
-    image: postgres:18.4
-    container_name: kikoerumanager-postgres
-    environment:
-      POSTGRES_DB: kikoerumanager
-      POSTGRES_USER: kikoerumanager
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kikoerumanager}
-      PGDATA: /var/lib/postgresql/data
-      TZ: Asia/Shanghai
-    ports:
-      - "5432:5432"
-    command:
-      - postgres
-      - -c
-      - shared_preload_libraries=pg_stat_statements
-      - -c
-      - pg_stat_statements.track=all
-      - -c
-      - pg_stat_statements.max=10000
-      - -c
-      - track_io_timing=on
-      - -c
-      - shared_buffers=256MB
-      - -c
-      - effective_cache_size=1GB
-      - -c
-      - maintenance_work_mem=128MB
-      - -c
-      - work_mem=16MB
-      - -c
-      - max_wal_size=1GB
-      - -c
-      - checkpoint_timeout=15min
-      - -c
-      - random_page_cost=1.1
-      - -c
-      - effective_io_concurrency=200
-      - -c
-      - default_statistics_target=200
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U kikoerumanager -d kikoerumanager"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-    restart: unless-stopped
-
   kikoerumanager:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: kikoerumanager:latest
+    image: ghcr.io/elena3939/kikoerumanager:v1.6.24
     container_name: kikoerumanager
     ports:
       # host_port:container_port — 容器内 uvicorn 默认监听 5555，可通过 PORT 环境变量修改
       - "5555:5555"
+      # 可选：需要从容器外直接维护数据库时再打开 5432 映射。默认内置 PostgreSQL 只监听容器内 127.0.0.1。
+      # - "5432:5432"
     volumes:
       # --- 应用数据（建议放在一个独立的 Docker 数据共享文件夹下）---
       # 配置文件目录，保存 config.yaml
       - /volume1/docker/kikoerumanager/config:/app/config
       # 数据库、日志等运行时数据
       - /volume1/docker/kikoerumanager/data:/app/data
+      # 内置 PostgreSQL 数据目录
+      - /volume1/docker/kikoerumanager/postgres:/app/postgres
 
       # --- 业务目录（路径改成你群晖上实际的共享文件夹）---
       # 待处理压缩包的输入目录（把下载好的 zip/7z 丢进这个文件夹）
@@ -78,12 +30,9 @@ services:
     environment:
       - CONFIG_PATH=/app/config/config.yaml
       - DATA_PATH=/app/data
-      - DATABASE_URL=postgresql+psycopg://kikoerumanager:${POSTGRES_PASSWORD:-kikoerumanager}@postgres:5432/kikoerumanager?sslmode=disable
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-kikoerumanager}
       - TZ=Asia/Shanghai
       - PORT=5555
-    depends_on:
-      postgres:
-        condition: service_healthy
     # 使用 root 权限运行（文件操作需要）
     user: "0:0"
     privileged: true
@@ -100,6 +49,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-
-volumes:
-  postgres_data:
