@@ -1,6 +1,6 @@
 services:
   kikoerumanager:
-    image: ghcr.io/elena3939/kikoerumanager:v1.6.24
+    image: ghcr.io/elena3939/kikoerumanager:1.6.25
     container_name: kikoerumanager
     ports:
       # host_port:container_port — 容器内 uvicorn 默认监听 5555，可通过 PORT 环境变量修改
