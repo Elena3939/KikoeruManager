@@ -118,7 +118,7 @@ class ProcessedArchiveCleanupService:
 
         # === 阶段 A：短读事务 ===
         # 之前这里是一个跨循环长事务：循环里每删一个文件都 await asyncio.to_thread
-        # 跑 os.remove，期间 SQLAlchemy session + sqlite3 driver 把写锁连续持几分钟，
+        # 跑 os.remove，期间 SQLAlchemy session 把数据库事务连续持几分钟，
         # 阻塞所有其他写库接口。现在拆成"读 → 无 session 删文件 → 写"三段。
         archives_snapshot: List[dict] = []
         db = next(get_db())

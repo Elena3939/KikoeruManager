@@ -349,9 +349,11 @@ class AIProviderIconService:
     @property
     def cache_dir(self) -> Path:
         if self._cache_dir is None:
-            from ..models.database import get_db_path
+            from ..config.settings import get_config_file_path
 
-            base_dir = Path(get_db_path()).parent / "cache" / "ai_provider_icons"
+            config_path = Path(get_config_file_path()).resolve()
+            data_dir = config_path.parent.parent if config_path.parent.name == "config" else config_path.parent
+            base_dir = data_dir / "cache" / "ai_provider_icons"
             base_dir.mkdir(parents=True, exist_ok=True)
             self._cache_dir = base_dir
         return self._cache_dir

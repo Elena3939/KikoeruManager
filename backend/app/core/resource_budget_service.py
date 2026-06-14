@@ -26,7 +26,7 @@ RESOURCE_BUDGET_NAMES = (
     "archive_inspect",
     "remote_fs",
     "network_download",
-    "sqlite_write",
+    "database_write",
 )
 
 _WAIT_LOG_THRESHOLD_SECONDS = float(os.getenv("KIKOERUMANAGER_RESOURCE_BUDGET_WAIT_LOG_SECONDS", "1.0") or 1.0)
@@ -61,9 +61,8 @@ class ResourceBudgetService:
             limit = max(0, int(getattr(cfg, resource, 0) or 0))
         except Exception:
             return 0
-        # SQLite 只有单写者。resource_budget 启用时即使旧配置里 sqlite_write=0，
-        # 也把操作历史 / 库存索引这两条高频写链路收敛成单写队列，避免 database is locked。
-        if resource == "sqlite_write":
+        # 数据库写入仍保留轻量背压，避免操作历史 / 库存索引批量写把连接池打满。
+        if resource == "database_write":
             return max(1, limit)
         return limit
 

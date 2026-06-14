@@ -54,10 +54,11 @@ class CircleImageCacheService:
     def cache_dir(self) -> Path:
         """返回封面缓存目录（``data/img/``），首次访问时按需创建。"""
         if self._cache_dir is None:
-            from ..models.database import get_db_path
+            from ..config.settings import get_config_file_path
 
-            db_path = get_db_path()
-            cache_dir = Path(db_path).parent / "img"
+            config_path = Path(get_config_file_path()).resolve()
+            data_dir = config_path.parent.parent if config_path.parent.name == "config" else config_path.parent
+            cache_dir = data_dir / "img"
             try:
                 cache_dir.mkdir(parents=True, exist_ok=True)
             except OSError:

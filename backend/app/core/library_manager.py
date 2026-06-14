@@ -1632,7 +1632,7 @@ class LibraryManager:
         # 删除过滤预审任务：完成后不会被显式清理 ⇒ 用 LRU 上限兜底（不设 TTL，避免进行中任务被清）
         self._filter_preview_jobs: TTLCache = TTLCache(max_size=32, ttl_seconds=0, name="library.filter_preview_jobs")
         self._filter_preview_tasks: dict[str, asyncio.Task] = {}
-        # 本地库存索引 upsert 可能要 stat 上万文件并分批写 SQLite。
+        # 本地库存索引 upsert 可能要 stat 上万文件并分批写 PostgreSQL。
         # 移动/重命名接口只负责文件系统变更，索引追赶放到单 worker 后台串行执行。
         self._local_index_upsert_executor = ThreadPoolExecutor(
             max_workers=1,
@@ -2169,6 +2169,7 @@ class LibraryManager:
         search_exact: bool = False,
         search_result_kind: str = "all",
         remote_warmup_retries: int = 3,
+        page_cursor: Optional[str] = None,
     ) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if str(search or "").strip():
@@ -2199,8 +2200,18 @@ class LibraryManager:
                 remote_warmup_retries=remote_warmup_retries,
             )
         if library.type == "local":
-            return await asyncio.to_thread(self._list_local_files, library, page, page_size, search, current_path, sort_by, sort_order)
-        return await self._list_remote_files(library, page, page_size, search, current_path, sort_by, sort_order)
+            return await asyncio.to_thread(
+                self._list_local_files,
+                library,
+                page,
+                page_size,
+                search,
+                current_path,
+                sort_by,
+                sort_order,
+                page_cursor,
+            )
+        return await self._list_remote_files(library, page, page_size, search, current_path, sort_by, sort_order, page_cursor)
 
     async def find_rj_in_libraries(
         self,
@@ -2217,7 +2228,7 @@ class LibraryManager:
         远程库凭据缺失时也会跳过该库以免触发无效请求。
 
         批次 5 索引加速：每个库独立判断 LibraryIndexService.is_ready，
-        ready 的库直接走 SQLite 查询（毫秒级），其余仍走原 SYNO.Search /
+        ready 的库直接走 PostgreSQL 查询（毫秒级），其余仍走原 SYNO.Search /
         os.walk 路径并合并去重。索引层任意异常都自动 fallback，保证零回归。
         """
 
@@ -2511,7 +2522,10 @@ class LibraryManager:
             entry["library"] = library
             if loop is not None:
                 entry["loop"] = loop
-            entry["paths"].extend(paths)
+            entry["paths"] = self._compress_index_absolute_paths(
+                library,
+                [*(entry.get("paths") or []), *paths],
+            )
             force_flush = self._index_mutation_pending_count_locked() >= 200
             if not force_flush:
                 self._schedule_index_mutation_flush_locked()
@@ -2834,7 +2848,7 @@ class LibraryManager:
         移动接口本身已在 asyncio.to_thread 内执行；如果这里继续同步扫盘，
         HTTP 响应会等索引追赶完成才返回。统一扔到单 worker executor：
         - 用户操作先返回；
-        - SQLite 索引写入串行，避免和操作历史 writer 互相打锁。
+        - 库存索引写入串行，避免和操作历史 writer 互相抢写入预算。
         """
         from .library_index import get_library_index_service
         service = get_library_index_service()
@@ -3067,6 +3081,37 @@ class LibraryManager:
     # 索引查询，绕过 os.walk / SYNO.FileStation.Search 。
     # 不 ready 或 file 类型搜索都 fallback 到原逻辑。
 
+    def _build_browse_result_from_index(
+        self,
+        library: LibraryDefinition,
+        *,
+        files: list[dict[str, Any]],
+        total: int,
+        page: int,
+        page_size: int,
+        current_path: str,
+        browse_root: str,
+        next_page_cursor: Optional[str] = None,
+        used_page_cursor: bool = False,
+    ) -> dict[str, Any]:
+        result = {
+            "files": files,
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "current_path": current_path,
+            "browse_root_path": browse_root,
+            "browse_via_index": True,
+            "next_page_cursor": next_page_cursor,
+            "used_page_cursor": bool(used_page_cursor),
+        }
+        if library.type == "synology_filestation":
+            result["parent_path"] = None if current_path == browse_root else self._remote_parent_path(current_path)
+            result["library_id"] = library.id
+        else:
+            result["parent_path"] = None if current_path == browse_root else os.path.dirname(current_path)
+        return result
+
     def _build_search_entry_from_index(
         self,
         library: LibraryDefinition,
@@ -3138,6 +3183,75 @@ class LibraryManager:
             "search_hit": True,
             "search_via_index": True,
         }
+
+    def _list_files_via_index(
+        self,
+        library: LibraryDefinition,
+        *,
+        page: int,
+        page_size: int,
+        current_path: str,
+        browse_root: str,
+        parent_path: str,
+        sort_by: str,
+        sort_order: str,
+        page_cursor: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        try:
+            from .library_index import get_library_index_service
+
+            normalized_sort_by = self._normalize_library_sort_by(sort_by)
+            service = get_library_index_service()
+            if not service.is_ready(library.id):
+                return None
+            offset = max(0, (int(page or 1) - 1) * int(page_size or 200))
+            payload = service.list_children_page(
+                library.id,
+                parent_path,
+                sort_by=normalized_sort_by,
+                sort_order=self._normalize_library_sort_order(sort_order),
+                offset=offset,
+                limit=page_size,
+                page_cursor=page_cursor,
+            )
+            entries = list(payload.get("entries") or [])
+            files = []
+            for index, entry in enumerate(entries):
+                if self._should_skip_entry(getattr(entry, "name", "")):
+                    continue
+                item = self._build_search_entry_from_index(
+                    library,
+                    item_id=offset + index,
+                    search_root=current_path,
+                    entry=entry,
+                )
+                item["id"] = f"{library.id}:{offset + index}"
+                files.append(item)
+            for item in files:
+                item["browse_via_index"] = True
+                item.pop("search_hit", None)
+                item.pop("search_via_index", None)
+                item.pop("_sort_time", None)
+                item.pop("_mtime", None)
+            return self._build_browse_result_from_index(
+                library,
+                files=files,
+                total=int(payload.get("total") or len(files)),
+                page=page,
+                page_size=page_size,
+                current_path=current_path,
+                browse_root=browse_root,
+                next_page_cursor=payload.get("next_page_cursor"),
+                used_page_cursor=bool(payload.get("used_page_cursor")),
+            )
+        except Exception:
+            logger.warning(
+                "库存浏览索引路径异常转 fallback: lib=%s path=%s",
+                library.id,
+                current_path,
+                exc_info=True,
+            )
+            return None
 
     def _build_index_search_result(
         self,
@@ -3339,21 +3453,27 @@ class LibraryManager:
         """把 browse_root 映射成索引 parent_path；库根对应空字符串。"""
         root = library.root_path or "/"
         browse_root = library.browse_root_path or root
+        parent = self._index_parent_path_for_target(library, browse_root)
+        return parent or ''
+
+    def _index_parent_path_for_target(self, library: LibraryDefinition, target_path: str) -> Optional[str]:
+        """把任意浏览路径映射成索引 parent_path；路径越界时返回 None。"""
+        root = library.root_path or "/"
         if library.type == "synology_filestation":
             normalized_root = self._normalize_remote_path(root)
-            normalized_browse = self._normalize_remote_path(browse_root)
-            if normalized_browse == normalized_root:
+            normalized_target = self._normalize_remote_path(target_path or root)
+            if normalized_target == normalized_root:
                 return ''
-            if self._remote_path_is_within_root(normalized_browse, normalized_root):
-                return str(PurePosixPath(normalized_browse).relative_to(PurePosixPath(normalized_root))).strip('/')
-            return ''
+            if self._remote_path_is_within_root(normalized_target, normalized_root):
+                return str(PurePosixPath(normalized_target).relative_to(PurePosixPath(normalized_root))).strip('/')
+            return None
         normalized_root = os.path.normcase(os.path.abspath(root))
-        normalized_browse = os.path.normcase(os.path.abspath(browse_root))
-        if normalized_browse == normalized_root:
+        normalized_target = os.path.normcase(os.path.abspath(target_path or root))
+        if normalized_target == normalized_root:
             return ''
-        if self._local_path_is_within_root(browse_root, root):
-            return os.path.relpath(os.path.abspath(browse_root), os.path.abspath(root)).replace("\\", "/").strip('/')
-        return ''
+        if self._local_path_is_within_root(target_path, root):
+            return os.path.relpath(os.path.abspath(target_path), os.path.abspath(root)).replace("\\", "/").strip('/')
+        return None
 
     def _stats_index_ready(self, library: LibraryDefinition) -> bool:
         """统计刷新只认 ready 索引，避免无索引时触发磁盘或远程 IO。"""
@@ -3824,6 +3944,7 @@ class LibraryManager:
         current_path: Optional[str],
         sort_by: str,
         sort_order: str,
+        page_cursor: Optional[str] = None,
     ) -> dict[str, Any]:
         browse_root = os.path.abspath(library.browse_root_path or library.root_path)
         target_path = os.path.abspath(current_path or browse_root)
@@ -3835,6 +3956,22 @@ class LibraryManager:
             return {"files": [], "page": page, "page_size": page_size, "total": 0, "current_path": target_path, "browse_root_path": browse_root}
 
         search_lower = search.lower().strip()
+        if not search_lower:
+            index_parent = self._index_parent_path_for_target(library, target_path)
+            if index_parent is not None:
+                indexed_result = self._list_files_via_index(
+                    library,
+                    page=page,
+                    page_size=page_size,
+                    current_path=target_path,
+                    browse_root=browse_root,
+                    parent_path=index_parent,
+                    sort_by=sort_by,
+                    sort_order=sort_order,
+                    page_cursor=page_cursor,
+                )
+                if indexed_result is not None:
+                    return indexed_result
         items = []
         try:
             entries = list(os.scandir(target_path))
@@ -3900,6 +4037,7 @@ class LibraryManager:
         current_path: Optional[str],
         sort_by: str,
         sort_order: str,
+        page_cursor: Optional[str] = None,
     ) -> dict[str, Any]:
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
@@ -6683,15 +6821,33 @@ class LibraryManager:
         current_path: Optional[str],
         sort_by: str,
         sort_order: str,
+        page_cursor: Optional[str] = None,
     ) -> dict[str, Any]:
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
 
-        client = self.get_cached_synology_client(library.synology)
         browse_root, target_path = self._resolve_remote_target_path(library, current_path)
         search_lower = search.lower().strip()
         normalized_sort_by = self._normalize_library_sort_by(sort_by)
         normalized_sort_order = self._normalize_library_sort_order(sort_order)
+        if not search_lower:
+            index_parent = self._index_parent_path_for_target(library, target_path)
+            if index_parent is not None:
+                indexed_result = self._list_files_via_index(
+                    library,
+                    page=page,
+                    page_size=page_size,
+                    current_path=target_path,
+                    browse_root=browse_root,
+                    parent_path=index_parent,
+                    sort_by=normalized_sort_by,
+                    sort_order=normalized_sort_order,
+                    page_cursor=page_cursor,
+                )
+                if indexed_result is not None:
+                    return indexed_result
+
+        client = self.get_cached_synology_client(library.synology)
         remote_sort_by = "name" if normalized_sort_by == "name" else "mtime"
         remote_sort_direction = "asc" if normalized_sort_order == "asc" else "desc"
         if search_lower:
