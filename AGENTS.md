@@ -37,7 +37,7 @@
 
 ### 前端
 
-- 前端：`Vue 3 + Tailwind CSS + Radix Vue / Reka UI + Headless UI + VueUse + TanStack Table / AG Grid + lucide-vue-next`。
+- 前端：`Vue 3 + Vite + Pinia + Element Plus + Tailwind CSS + Reka UI + VueUse + TanStack Table / Virtual + AG Grid + lucide-vue-next`。
 - 包清单以 `frontend/package.json` + `frontend/package-lock.json` 为 Docker 构建基准；根 `Dockerfile` 使用 `npm ci`。
 - `frontend/pnpm-lock.yaml` 也要同步维护，避免本地 pnpm 用户装包失败。
 - 当前直接依赖必须保留：
@@ -187,6 +187,11 @@
   - 成功、失败、取消、异常都调用 `_cleanup_embedded_zip_view()`。
 - 不要把整文件读进内存；复制必须流式分块。
 - 不要把 embedded ZIP 逻辑扩到所有正常压缩包；offset `0` 的普通 ZIP 不走临时视图。
+- Linux / Docker 下 7zz 报 `File name too long` / `errno=36` / `ENAMETOOLONG` 时，`ExtractService` 会尝试单一超长顶层目录重映射：
+  - 只对“所有文件都在同一个超长顶层目录下”的压缩包启用。
+  - 顶层目录优先按规范化 RJ 名缩短，仍过长时追加 hash；其它路径组件也要做安全字节裁剪。
+  - 单文件通过 `7zz x -so` 流式写入目标 `.part`，完成后原子替换，不能把文件一次性读进内存。
+  - 解压校验必须接受 `archive_info.path_remap` 后的路径；失败时仍要清理目标尝试目录。
 
 ### 6.2 分卷伪装后缀
 
@@ -204,6 +209,9 @@
   - 表格行拖拽移动：拖动幽灵、可投放 / 阻止状态。
   - 面包屑路径栏：支持折叠、popover、拖拽投放。
   - 批量选择、批量删除、批量移动、API 重命名、当前页 / 当前目录动作作用域。
+- 本地移动必须先走 `/api/library/browser/move-preview` 做真实后端预检；不要只靠前端当前层同名判断。
+- 同名文件夹是合并语义，不是冲突；只有文件撞名、文件夹/文件类型不一致、目标在源目录内部等情况才进入冲突选择。
+- 目录合并后库存索引不能只做 move fast-path：源目录删除、目标目录 replace subtree、未删除源目录 replace subtree 都要按结果补 self_mutation。
 - 不要退回 Element Plus 默认表格。
 - 改行选择逻辑时要同步键盘、右键菜单、移动弹窗、移动后刷新、搜索定位行状态。
 - `LibraryMoveDialog.vue` 负责库存内移动导航；初始路径必须能展开到目标路径。
@@ -235,6 +243,8 @@
 ### 6.6 HTTP 外链下载
 
 - `http_download_service.py` 是底层 aria2 RPC 下载，按平台拆解析：`http` / `gofile` / `transferit` / `onedrive` / `google_drive` / `pikpak`，平台标签走 `HTTP_DOWNLOAD_PLATFORM_LABELS`，不要散落硬编码。
+- 下载预览树支持文件级选择；`gofile` / `google_drive` / `transferit` / `pikpak` 要把选择过滤传回后端，百度网盘要保留选中的 `preview_files` / `share_files`。
+- 预览树的选择 key 以文件行而不是分享项为粒度；修改结构时要同步缓存版本，避免旧缓存把选择态串错。
 - `validate_url` 默认拒绝内网 / 本机 / link-local / metadata 地址，含 DNS rebinding 校验；只有 `allow_private_network` 显式开启才放行。
 - 配置在 `HttpDownloaderConfig`（`settings.py`），密码 / token / refresh_token 等敏感字段 `/api/config` 必须脱敏为 `********`，保存时回填磁盘真实值，不能把 `********` 写进配置。
 - PikPak 多账号在 `pikpak_accounts` 维护，状态有缓存表 `PikPakStatusCache`；token 失效要能用账号密码自动重登并回写。
