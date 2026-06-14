@@ -130,7 +130,7 @@ class TaskPhaseMetricService:
     def summarize_recent(self, *, task_id: str = "", limit: int = 1000) -> dict[str, Any]:
         """按 task_type/phase/resource 聚合最近指标。
 
-        SQLite 没有内置 percentile，p95 在 Python 里对最近 N 条轻量计算。
+        为避免跨数据库 percentile 兼容问题，p95 在 Python 里对最近 N 条轻量计算。
         """
         db = SessionLocal()
         try:

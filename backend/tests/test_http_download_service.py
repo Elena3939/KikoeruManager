@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from app.core.http_download_service import (
     GOOGLE_DRIVE_PROBE_BYTES,
@@ -382,6 +383,7 @@ def test_share_provider_url_detection(monkeypatch, tmp_path):
     service = HttpDownloadService()
 
     assert service._provider_source("https://gofile.io/d/abc123") == "gofile"
+    assert service._provider_source("https://store1.gofile.io/download/direct/voice.zip") == "http"
     assert service._provider_source("https://transfer.it/t/iVqeTDhlyRbA") == "transferit"
     assert service._provider_source("https://1drv.ms/u/s!abc") == "onedrive"
     assert service._provider_source("https://drive.google.com/file/d/file-id/view?usp=sharing") == "google_drive"
@@ -1113,24 +1115,58 @@ async def test_preview_urls_shows_pikpak_share_without_materializing(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_resolve_gofile_requires_configured_token(monkeypatch, tmp_path):
+async def test_resolve_gofile_uses_guest_token_when_unconfigured(monkeypatch, tmp_path):
     bind_config(monkeypatch, tmp_path)
     service = HttpDownloadService()
+    guest_token_calls = 0
 
     async def fake_guest_token():
+        nonlocal guest_token_calls
+        guest_token_calls += 1
         return "guest-token"
 
     async def fake_fetch_json(url, headers=None, method="GET", platform="http"):
-        assert url == "https://api.gofile.io/contents/content-id"
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        assert parsed.scheme == "https"
+        assert parsed.netloc == "api.gofile.io"
+        assert parsed.path == "/contents/content-id"
+        assert query == {
+            "contentFilter": [""],
+            "page": ["1"],
+            "pageSize": ["1000"],
+            "sortField": ["createTime"],
+            "sortDirection": ["-1"],
+        }
         assert headers["Authorization"] == "Bearer guest-token"
-        return {"status": "ok", "data": {"id": "content-id", "type": "folder", "children": {}}}
+        assert headers["X-Website-Token"] == service._gofile_website_token("guest-token")
+        return {
+            "status": "ok",
+            "data": {
+                "id": "content-id",
+                "name": "root",
+                "type": "folder",
+                "children": {
+                    "file-1": {
+                        "id": "file-1",
+                        "name": "voice.zip",
+                        "type": "file",
+                        "size": 12,
+                        "link": "https://store1.gofile.io/download/direct/voice.zip",
+                    }
+                },
+            },
+        }
 
     monkeypatch.setattr(service, "_gofile_guest_token", fake_guest_token)
     monkeypatch.setattr(service, "_fetch_json", fake_fetch_json)
 
     result = await service._collect_gofile_files("https://gofile.io/d/content-id")
 
-    assert result["files"] == []
+    assert guest_token_calls == 1
+    assert result["token_configured"] is False
+    assert result["files"][0]["filename"] == "voice.zip"
+    assert result["files"][0]["aria2_header"] == ["Cookie: accountToken=guest-token"]
 
 
 @pytest.mark.asyncio
@@ -1182,7 +1218,18 @@ async def test_resolve_gofile_folder_files(monkeypatch, tmp_path):
     service = HttpDownloadService()
 
     async def fake_fetch_json(url, headers=None, method="GET", platform="http"):
-        assert url == "https://api.gofile.io/contents/content-id"
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        assert parsed.scheme == "https"
+        assert parsed.netloc == "api.gofile.io"
+        assert parsed.path == "/contents/content-id"
+        assert query == {
+            "contentFilter": [""],
+            "page": ["1"],
+            "pageSize": ["1000"],
+            "sortField": ["createTime"],
+            "sortDirection": ["-1"],
+        }
         assert headers["Authorization"] == "Bearer secret-token"
         assert headers["X-Website-Token"] == service._gofile_website_token("secret-token")
         return {
@@ -1532,20 +1579,7 @@ async def test_preview_urls_uses_source_relative_dir_and_header(monkeypatch, tmp
         }
 
     async def fake_preview_url(raw_url, target_subdir="", conflict_policy="", headers=None):
-        assert headers == {"Cookie": "accountToken=secret-token"}
-        return {
-            "ok": True,
-            "url": raw_url,
-            "masked_url": service._mask_url(raw_url),
-            "host": "store1.gofile.io",
-            "source": "http",
-            "filename": "download.bin",
-            "relative_path": "download.bin",
-            "final_path": str(tmp_path / "downloads" / "download.bin"),
-            "target_dir": str(tmp_path / "downloads"),
-            "size_bytes": 0,
-            "resumable": True,
-        }
+        raise AssertionError("Gofile 分享预览不应该探测 CDN 直链")
 
     monkeypatch.setattr(service, "resolve_source_urls", fake_resolve_source_urls)
     monkeypatch.setattr(service, "preview_url", fake_preview_url)
@@ -1554,13 +1588,14 @@ async def test_preview_urls_uses_source_relative_dir_and_header(monkeypatch, tmp
 
     assert preview["items"][0]["source"] == "gofile"
     assert preview["items"][0]["relative_path"] == "batch/folder/voice.zip"
+    assert preview["items"][0]["size_bytes"] == 12
     assert preview["items"][0]["aria2_header"] == ["Cookie: accountToken=secret-token"]
     assert "aria2_header" not in sanitize_http_download_item(preview["items"][0])
     assert "headers" not in sanitize_http_download_item(preview["items"][0])
 
 
 @pytest.mark.asyncio
-async def test_preview_urls_rejects_gofile_when_cdn_probe_fails(monkeypatch, tmp_path):
+async def test_preview_urls_uses_gofile_metadata_without_cdn_probe(monkeypatch, tmp_path):
     bind_config(monkeypatch, tmp_path)
     service = HttpDownloadService()
 
@@ -1583,22 +1618,24 @@ async def test_preview_urls_rejects_gofile_when_cdn_probe_fails(monkeypatch, tmp
         }
 
     async def fake_preview_url(raw_url, target_subdir="", conflict_policy="", headers=None):
-        return {"ok": False, "url": raw_url, "reason": "TimeoutError"}
+        raise AssertionError("Gofile 分享预览不应该探测 CDN 直链")
 
     monkeypatch.setattr(service, "resolve_source_urls", fake_resolve_source_urls)
     monkeypatch.setattr(service, "preview_url", fake_preview_url)
 
     preview = await service.preview_urls(["https://gofile.io/d/jrygB9"])
 
-    assert preview["success"] is False
-    assert preview["items"][0]["ok"] is False
+    assert preview["success"] is True
+    assert preview["items"][0]["ok"] is True
     assert preview["items"][0]["source"] == "gofile"
     assert preview["items"][0]["filename"] == "RJ01581253@SP.zip"
-    assert "Gofile CDN 预览校验失败" in preview["items"][0]["reason"]
+    assert preview["items"][0]["relative_path"] == "jrygB9/RJ01581253@SP.zip"
+    assert preview["items"][0]["size_bytes"] == 4804731653
+    assert preview["items"][0]["aria2_header"] == ["Cookie: accountToken=secret-token"]
 
 
 @pytest.mark.asyncio
-async def test_preview_urls_rejects_gofile_small_cdn_error_response(monkeypatch, tmp_path):
+async def test_preview_urls_keeps_gofile_api_size_for_download_validation(monkeypatch, tmp_path):
     bind_config(monkeypatch, tmp_path)
     service = HttpDownloadService()
 
@@ -1620,29 +1657,18 @@ async def test_preview_urls_rejects_gofile_small_cdn_error_response(monkeypatch,
         }
 
     async def fake_preview_url(raw_url, target_subdir="", conflict_policy="", headers=None):
-        return {
-            "ok": True,
-            "url": raw_url,
-            "masked_url": raw_url,
-            "host": "store-na-phx-3.gofile.io",
-            "source": "http",
-            "filename": "RJ01621622.zip",
-            "relative_path": "RJ01621622.zip",
-            "final_path": str(tmp_path / "downloads" / "RJ01621622.zip"),
-            "target_dir": str(tmp_path / "downloads"),
-            "size_bytes": 10240,
-            "content_type": "text/html; charset=utf-8",
-        }
+        raise AssertionError("Gofile 分享预览不应该探测 CDN 直链")
 
     monkeypatch.setattr(service, "resolve_source_urls", fake_resolve_source_urls)
     monkeypatch.setattr(service, "preview_url", fake_preview_url)
 
     preview = await service.preview_urls(["https://gofile.io/d/jrygB9"])
 
-    assert preview["success"] is False
-    assert preview["items"][0]["ok"] is False
+    assert preview["success"] is True
+    assert preview["items"][0]["ok"] is True
     assert preview["items"][0]["source"] == "gofile"
-    assert "错误页" in preview["items"][0]["reason"]
+    assert preview["items"][0]["size_bytes"] == 3983571968
+    assert preview["items"][0]["content_type"] == "application/octet-stream"
 
 
 @pytest.mark.asyncio

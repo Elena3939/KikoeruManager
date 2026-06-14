@@ -1,5 +1,5 @@
 """
-用户操作审计持久化（SQLite activity_logs）。
+用户操作审计持久化（PostgreSQL activity_logs）。
 业务分类：字幕爬取、字幕配对、字幕补配、解压、自动入库等。
 """
 from __future__ import annotations
@@ -479,7 +479,7 @@ def _scrub_surrogates(text: str) -> str:
 
 
 def _sanitize_for_db_json(value: Any, depth: int = 0) -> Any:
-    """将 detail 转为可安全写入 SQLite JSON 列的结构（避免 datetime 等导致 commit 失败）。"""
+    """将 detail 转为可安全写入 PostgreSQL JSONB 列的结构（避免 datetime 等导致 commit 失败）。"""
     if depth > 8:
         return None
     if value is None or isinstance(value, (bool, int, float)):
@@ -529,7 +529,7 @@ def write_activity_log(
     """入队一条操作记录（Phase 1：异步批量写）。
 
     之前每次调用都 open/commit/close 一个独立 SQLAlchemy 会话，在任务结束 finally、
-    批量删除等高频场景会和 SQLite writer lock 串行竞争。现在统一交给
+    批量删除等高频场景会和数据库写入串行竞争。现在统一交给
     ActivityLogWriter 后台线程批量 flush，调用方仅做字段裁剪和 sanitize，无 IO。
     """
     from .activity_log_writer import get_activity_log_writer
@@ -541,7 +541,7 @@ def write_activity_log(
         detail_clean = {"_raw": detail_clean}
 
     # Phase 2：在写入点就把 detail 里的常用索引字段提升到独立列，
-    # 避免查询时再通过 json_extract 扫描 detail。
+    # 避免查询时再扫描 JSON detail。
     batch_id_value = str(detail_clean.get("batch_id") or "").strip()[:80] or None
     session_key_value = str(
         detail_clean.get("session_key")
@@ -1500,11 +1500,25 @@ def log_from_subtitle_import_result(
     preview_target_rjcode = str(preview.get("target_rjcode") or "").strip().upper()
     detail = {
         k: result.get(k)
-        for k in ("task_id", "final_file_count", "record_id")
+        for k in ("task_id", "final_file_count", "record_id", "target_folder_path", "library_id", "subtitle_library_id", "subtitle_dir")
         if result.get(k) is not None
     }
+    target_candidate = result.get("target_candidate") if isinstance(result.get("target_candidate"), dict) else {}
+    if target_candidate:
+        if not detail.get("target_folder_path") and target_candidate.get("folder_path"):
+            detail["target_folder_path"] = target_candidate.get("folder_path")
+        if not detail.get("library_id") and target_candidate.get("library_id"):
+            detail["library_id"] = target_candidate.get("library_id")
     if final_file_count and "final_file_count" not in detail:
         detail["final_file_count"] = final_file_count
+    if staged_count and "downloaded_count" not in detail:
+        detail["downloaded_count"] = staged_count
+    if written_files and "written_files_count" not in detail:
+        detail["written_files_count"] = len(written_files)
+    if import_result.get("subtitle_dir") and not detail.get("subtitle_dir"):
+        detail["subtitle_dir"] = import_result.get("subtitle_dir")
+    if import_result.get("subtitle_library_id") and not detail.get("subtitle_library_id"):
+        detail["subtitle_library_id"] = import_result.get("subtitle_library_id")
     if awaiting_manual_match:
         detail["awaiting_manual_match"] = True
         detail["manual_match_completed"] = False
@@ -1516,6 +1530,10 @@ def log_from_subtitle_import_result(
             detail["task_id"] = task_id_from_task
     if preview_source_path:
         detail["preview_source_path"] = preview_source_path
+    for preview_key in ("source_subtitle_dir", "staged_subtitle_dir"):
+        preview_value = str(preview.get(preview_key) or "").strip()
+        if preview_value:
+            detail[preview_key] = preview_value
     if preview_source_rjcode:
         detail["source_rjcode"] = preview_source_rjcode
     if preview_target_rjcode:

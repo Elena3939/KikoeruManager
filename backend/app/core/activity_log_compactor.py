@@ -35,6 +35,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
+from sqlalchemy import or_
 from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
@@ -153,7 +154,7 @@ def compact_old_activity_logs(
     skipped = 0
     failed = 0
     saved_bytes = 0
-    last_id: Optional[str] = None
+    last_cursor: Optional[tuple[datetime, str]] = None
 
     while True:
         if remaining is not None and remaining <= 0:
@@ -172,9 +173,16 @@ def compact_old_activity_logs(
                 .filter(ActivityLog.created_at < cutoff)
                 .order_by(ActivityLog.created_at.asc(), ActivityLog.id.asc())
             )
-            if last_id is not None:
-                # 简单 keyset 分页，避免 OFFSET 大表全扫
-                query = query.filter(ActivityLog.id > last_id)
+            if last_cursor is not None:
+                # keyset 必须和 ORDER BY (created_at, id) 完全一致。
+                # id 是 UUID，不能单独拿它做时间序分页游标，否则会跳过 created_at 更晚但 UUID 更小的旧记录。
+                last_created_at, last_id = last_cursor
+                query = query.filter(
+                    or_(
+                        ActivityLog.created_at > last_created_at,
+                        (ActivityLog.created_at == last_created_at) & (ActivityLog.id > last_id),
+                    )
+                )
             rows = query.limit(this_chunk).all()
             if not rows:
                 db.close()
@@ -191,7 +199,7 @@ def compact_old_activity_logs(
                 scanned += 1
                 if remaining is not None:
                     remaining -= 1
-                last_id = row.id
+                last_cursor = (row.created_at, row.id)
                 try:
                     detail = row.detail if isinstance(row.detail, dict) else None
                     if not detail:

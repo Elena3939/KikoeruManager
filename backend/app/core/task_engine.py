@@ -3086,16 +3086,41 @@ class TaskEngine:
             except Exception:
                 logger.warning("[通知] 通知入队失败", exc_info=True)
             # 清理任务产生的临时文件（无论成功还是失败）
-            self._resolve_retry_extract_conflict(task)
-            self._resolve_completed_failure_followups(task)
-            self._finalize_conflict_resolution_task(task)
-            await self._cleanup_task_temp_extract_path(task)
-            await self._cleanup_failed_task(task)
-            self.processing.discard(task.id)
-            # 清除RJ号处理标记
-            if task.rjcode:
-                self.unmark_rjcode_processing(task.rjcode)
-            await self._notify_progress(task)
+            try:
+                self._resolve_retry_extract_conflict(task)
+            except Exception:
+                logger.warning("[任务清理] 刷新重试问题作品失败: task_id=%s", task.id, exc_info=True)
+            try:
+                self._resolve_completed_failure_followups(task)
+            except Exception:
+                logger.warning("[任务清理] 处理失败跟随项失败: task_id=%s", task.id, exc_info=True)
+            try:
+                self._finalize_conflict_resolution_task(task)
+            except Exception:
+                logger.warning("[任务清理] 完成问题作品处理链路失败: task_id=%s", task.id, exc_info=True)
+            try:
+                await self._cleanup_task_temp_extract_path(task)
+            except Exception:
+                logger.warning("[任务清理] 清理临时解压目录失败: task_id=%s", task.id, exc_info=True)
+            try:
+                await self._cleanup_failed_task(task)
+            except Exception:
+                logger.warning("[任务清理] 清理失败任务产物失败: task_id=%s", task.id, exc_info=True)
+            try:
+                self.processing.discard(task.id)
+                # 清除RJ号处理标记
+                if task.rjcode:
+                    self.unmark_rjcode_processing(task.rjcode)
+            except Exception:
+                logger.warning("[任务清理] 清理运行中标记失败: task_id=%s", task.id, exc_info=True)
+            try:
+                await self._notify_progress(task)
+            except Exception:
+                logger.warning("[任务清理] 发送最终进度失败: task_id=%s", task.id, exc_info=True)
+            try:
+                self.persist_task_center_item_snapshot(task)
+            except Exception:
+                logger.warning("[任务中心物化] 写入最终任务快照失败: task_id=%s", task.id, exc_info=True)
     
     async def _worker(self):
         """工作线程"""
@@ -3853,7 +3878,7 @@ class TaskEngine:
         # 没有这个，task_notification_service 的 _resolve_group_key 会给每个子任务回落到
         # group_type='task' 并立刻为每个 waiting_manual 写一封邮件，
         # 一个合集包能瞬间炸出 N 封通知 + N 套 inbox / outbox 写库，
-        # 把 SQLite 写锁、ThreadPoolExecutor、QQ SMTP 同时打爆，
+        # 把数据库写入、ThreadPoolExecutor、QQ SMTP 同时打爆，
         # 表现为问题作品列表接口超时、铃铛刷一长串。
         # 共享 group key 后，所有兄弟任务全部到终态时 _is_group_terminal=True，
         # 由 aggregate_import_batch_extras 合并出一封多 RJ 卡片的批量邮件。
@@ -4949,6 +4974,7 @@ class TaskEngine:
             task.task_metadata["failure_reason"] = message
             task.task_metadata["http_download_final_status"] = "partial_failed"
             task.task_metadata["auto_retry_exhausted"] = bool(task.task_metadata.get("auto_retry_attempts"))
+            task.touch_metadata("http_download_partial_failed")
             task.fail(message)
             task.progress = 100
             task.current_step = message
@@ -5008,6 +5034,7 @@ class TaskEngine:
                 if task.is_cancelled():
                     raise asyncio.CancelledError()
                 task.task_metadata["http_download_final_status"] = "completed"
+                task.touch_metadata("http_download_completed")
                 task.complete()
                 return
         finally:
