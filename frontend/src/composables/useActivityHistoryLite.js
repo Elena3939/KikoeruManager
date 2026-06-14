@@ -13,7 +13,7 @@
  *
  * Phase 6 卡死修复：
  * - 维护 listAbortController，每次发起新搜索前先 abort 上一次未完成请求，
- *   配合后端取消 LIKE 全表炸弹 fallback，搜索绝不再卡死前端。
+ *   配合后端 PostgreSQL pg_trgm 索引，搜索绝不再卡死前端。
  * - listReqSeq 串号：只让最后一次发起的请求结果落到 state，避免老响应
  *   覆盖新响应造成 UI 闪烁。
  * - 暴露 searchBackend / searchStatus，给搜索框旁的状态指示灯 / 设置面板用。
@@ -32,11 +32,11 @@ export function useActivityHistoryLite() {
   const lastLoadedAt = shallowRef(0)
   const detailLoading = shallowRef(false)
   // 后端返回的搜索后端标记，用于前端区分「真 0 行」/「索引未就绪」/「输入清洗后为空」
-  // 取值示例：'fts5_trigram' / 'fts5_unicode61' / 'unavailable' / 'fts5_trigram_error'
+  // 取值示例：'postgresql_pg_trgm' / 'unavailable' / 'postgresql_pg_trgm_error'
   // / 'sanitized_empty' / 'none'（未搜索）
   const searchBackend = shallowRef('none')
 
-  // 搜索引擎状态（FTS5 启用 / tokenizer / 重建进度）
+  // 搜索引擎状态（pg_trgm 启用 / 索引类型 / 重建进度）
   const searchStatus = shallowRef({
     fts_enabled: false,
     tokenizer: '',
@@ -140,7 +140,7 @@ export function useActivityHistoryLite() {
   }
 
   /**
-   * 拉取后端搜索引擎状态（FTS5 是否启用 / tokenizer / 重建进度）。
+   * 拉取后端搜索引擎状态（pg_trgm 是否启用 / 索引类型 / 重建进度）。
    * 设置页 + 搜索框旁状态徽章共用。失败时不抛，仅打 warning。
    */
   async function loadSearchStatus() {
@@ -170,7 +170,7 @@ export function useActivityHistoryLite() {
   }
 
   /**
-   * 触发后台重建 FTS5 索引。本函数只发起请求，进度靠 loadSearchStatus 轮询。
+   * 触发后台重建 PostgreSQL pg_trgm 索引。本函数只发起请求，进度靠 loadSearchStatus 轮询。
    */
   async function rebuildFts(targetTokenizer = 'trigram') {
     return api.activityLog.rebuildFts(targetTokenizer)

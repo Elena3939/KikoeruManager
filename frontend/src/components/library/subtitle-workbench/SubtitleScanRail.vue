@@ -1,5 +1,5 @@
 <template>
-  <div :class="embedded ? 'grid min-w-0 gap-3' : 'grid min-w-0 gap-3 rounded-[20px] border border-slate-100 bg-white p-4 shadow-[0_4px_16px_rgba(15,23,42,0.04)]'">
+  <div :class="embedded ? 'subtitle-scan-rail-root grid min-w-0 content-start gap-3' : 'subtitle-scan-rail-root grid min-w-0 content-start gap-3 rounded-[20px] border border-slate-100 bg-white p-4 shadow-[0_4px_16px_rgba(15,23,42,0.04)]'">
     <template v-if="!embedded">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div class="grid gap-1">
@@ -22,7 +22,7 @@
       </div>
     </template>
 
-    <div class="grid gap-3">
+    <div class="grid content-start gap-3">
       <div v-if="ctx.subtitleScanSessionSummary.length" class="scan-session-summary">
         <div
           v-for="(item, idx) in ctx.subtitleScanSessionSummary"
@@ -44,9 +44,9 @@
       <AppEmptyState v-else-if="!ctx.subtitleDialogSelection.length" description="没有识别到 RJ 文件夹" size="sm" />
 
       <template v-else>
-        <section class="grid gap-3">
-          <div class="flex flex-wrap items-center justify-between gap-2.5">
-            <div class="flex flex-wrap items-center gap-2">
+        <section class="grid content-start gap-3">
+          <div class="scan-rail-section-head">
+            <div class="scan-rail-section-title">
               <div class="text-[13px] font-semibold text-slate-900">可执行与已入任务</div>
               <span class="scan-rail-count-badge scan-rail-count-badge-sky">
                 <ListTodo class="h-3 w-3" :stroke-width="2.2" />
@@ -58,8 +58,8 @@
               </button>
             </div>
 
-            <div class="flex flex-wrap items-center justify-end gap-2">
-              <div v-if="ctx.subtitleSelectionFilterOptions.length" class="grid grid-cols-2 gap-1.5 max-[1280px]:grid-cols-1">
+            <div class="scan-rail-filter-wrap">
+              <div v-if="ctx.subtitleSelectionFilterOptions.length" class="scan-rail-segment-grid">
                 <button
                   v-for="item in ctx.subtitleSelectionFilterOptions"
                   :key="item.key"
@@ -83,7 +83,7 @@
 
           <AppEmptyState v-if="!ctx.subtitleExecutableCollapsed && !ctx.subtitleExecutableDisplayItems.length" description="当前没有可执行或已入任务的 RJ 目录" size="sm" />
 
-          <transition-group v-else-if="!ctx.subtitleExecutableCollapsed" name="subtitle-card-fade" tag="div" class="grid gap-2.5">
+          <transition-group v-else-if="!ctx.subtitleExecutableCollapsed" name="subtitle-card-fade" tag="div" class="scan-rail-card-list">
             <button
               v-for="item in ctx.pagedSubtitleSelectionItems"
               :key="ctx.buildSubtitleSelectionKey(item)"
@@ -95,14 +95,12 @@
               :title="item.folder_path"
               @click="ctx.focusSubtitleSelectionItem(item)"
             >
-              <div class="absolute inset-y-3 left-0 w-[3px] rounded-r-full bg-transparent transition-all duration-300 group-hover:bg-slate-300" :class="{ '!bg-slate-950 !w-[6px]': ctx.isSubtitleSelectionActive(item) }"></div>
-
-              <div class="ml-1.5 grid gap-1.5">
-                <div class="line-clamp-2 text-[12px] font-semibold leading-[1.3] tracking-[-0.01em] text-slate-900">
+              <div class="scan-rail-card-content">
+                <div class="scan-rail-card-title">
                   {{ getDisplayFolderName(item) }}
                 </div>
 
-                <div class="text-[10px] leading-4 text-slate-500">
+                <div class="scan-rail-card-source">
                   <span v-if="ctx.getLibraryLabelById(item.library_id)">来源库：{{ ctx.getLibraryLabelById(item.library_id) }}</span>
                 </div>
 
@@ -126,13 +124,13 @@
                   </span>
                 </div>
 
-                <div v-if="item.queue_message" class="text-[9.5px] leading-[1.35] text-slate-500">{{ item.queue_message }}</div>
+                <div v-if="item.queue_message" class="scan-rail-card-message">{{ item.queue_message }}</div>
 
                 <div v-if="item.queue_state === 'existing_task' || ctx.canInspectSubtitleSelectionFolder(item) || ctx.canRetryCreateSubtitleTaskForSelection(item) || ctx.canForceCreateSubtitleTaskForSelection(item)" class="flex flex-wrap items-center gap-1.5 pt-0.5">
                   <button
                     v-if="item.queue_state === 'existing_task' || ctx.canInspectSubtitleSelectionFolder(item)"
                     type="button"
-                    class="group/btn inline-flex min-h-[30px] items-center gap-1 rounded-[9px] border border-slate-200 bg-white px-2.5 text-[10.5px] font-medium text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:scale-[1.02] hover:border-slate-300 hover:bg-white hover:text-slate-900 active:scale-[0.96]"
+                    class="scan-rail-card-action group/btn inline-flex min-h-[30px] items-center gap-1 rounded-[9px] border border-slate-200 bg-white px-2.5 text-[10.5px] font-medium text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:scale-[1.02] hover:border-slate-300 hover:bg-white hover:text-slate-900 active:scale-[0.96]"
                     @click.stop="ctx.focusSubtitleSelectionItem(item)"
                   >
                     <Eye class="h-3.5 w-3.5 text-sky-600 transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] group-hover/btn:scale-110 group-hover/btn:rotate-[8deg]" :stroke-width="2.2" />
@@ -141,7 +139,7 @@
                   <button
                     v-if="ctx.canRetryCreateSubtitleTaskForSelection(item)"
                     type="button"
-                    class="group/btn inline-flex min-h-[30px] items-center gap-1 rounded-[9px] border border-slate-200 bg-white px-2.5 text-[10.5px] font-medium text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:scale-[1.02] hover:border-slate-300 hover:bg-white active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45"
+                    class="scan-rail-card-action group/btn inline-flex min-h-[30px] items-center gap-1 rounded-[9px] border border-slate-200 bg-white px-2.5 text-[10.5px] font-medium text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:scale-[1.02] hover:border-slate-300 hover:bg-white active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45"
                     :disabled="Boolean(ctx.subtitleForceQueueKey)"
                     @click.stop="ctx.forceCreateSubtitleTaskForSelection(item)"
                   >
@@ -151,7 +149,7 @@
                   <button
                     v-if="ctx.canForceCreateSubtitleTaskForSelection(item)"
                     type="button"
-                    class="group/btn inline-flex min-h-[30px] items-center gap-1 rounded-[9px] border border-slate-200 bg-white px-2.5 text-[10.5px] font-medium text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:scale-[1.02] hover:border-slate-300 hover:bg-white hover:text-slate-900 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45"
+                    class="scan-rail-card-action group/btn inline-flex min-h-[30px] items-center gap-1 rounded-[9px] border border-slate-200 bg-white px-2.5 text-[10.5px] font-medium text-slate-700 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:scale-[1.02] hover:border-slate-300 hover:bg-white hover:text-slate-900 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45"
                     :disabled="Boolean(ctx.subtitleForceQueueKey)"
                     @click.stop="ctx.forceCreateSubtitleTaskForSelection(item)"
                   >
@@ -570,6 +568,84 @@ function getScanResultIcon(status) {
 </script>
 
 <style scoped>
+.subtitle-scan-rail-root {
+  align-content: start;
+  grid-auto-rows: max-content;
+  height: auto;
+}
+
+.subtitle-scan-rail-root > * {
+  min-height: 0;
+}
+
+.scan-rail-section-head {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.scan-rail-section-title {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.scan-rail-filter-wrap {
+  min-width: 0;
+}
+
+.scan-rail-segment-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.scan-rail-card-list {
+  display: grid;
+  align-content: start;
+  grid-auto-rows: max-content;
+  gap: 10px;
+  min-height: 0;
+}
+
+.scan-rail-card-content {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 7px;
+}
+
+.scan-rail-card-title {
+  min-width: 0;
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scan-rail-card-source {
+  min-width: 0;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.scan-rail-card-message {
+  min-width: 0;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .scan-rail-card,
 .scan-rail-card:hover,
 .scan-rail-card:focus,
@@ -904,17 +980,8 @@ function getScanResultIcon(status) {
 }
 
 .scan-rail-filter-pill::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 7px;
-  bottom: 7px;
-  width: 3px;
-  border-radius: 0 999px 999px 0;
-  background: transparent;
-  transform: scaleY(0.45);
-  opacity: 0;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  display: none;
+  content: none;
 }
 
 .scan-rail-filter-pill-success {
@@ -987,6 +1054,13 @@ function getScanResultIcon(status) {
   cursor: pointer;
   box-shadow: none;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.scan-rail-segment > span:not(.scan-rail-segment-count) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .scan-rail-segment:hover {
@@ -1104,8 +1178,7 @@ function getScanResultIcon(status) {
 }
 
 .scan-rail-filter-pill.active::before {
-  opacity: 1;
-  transform: scaleY(1);
+  display: none;
 }
 
 .scan-rail-filter-pill-success.active::before {
@@ -1385,5 +1458,282 @@ function getScanResultIcon(status) {
 
 .scan-rail-card {
   cursor: pointer;
+  align-self: start;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+}
+
+.subtitle-scan-rail-root :deep(.app-empty-state) {
+  min-height: 96px;
+}
+
+.scan-rail-card .grid {
+  align-content: start;
+}
+
+.scan-rail-card .flex {
+  min-height: 0;
+}
+
+.scan-rail-card > div {
+  min-height: 0;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root,
+:global(html.dark) .subtitle-scan-rail-root {
+  color: rgba(245, 245, 247, 0.9);
+}
+
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root .scan-rail-card,
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root .scan-rail-card:hover,
+:global(html.dark) .subtitle-scan-rail-root .scan-rail-card,
+:global(html.dark) .subtitle-scan-rail-root .scan-rail-card:hover {
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  background: #333438 !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root .scan-rail-card:hover,
+:global(html.dark) .subtitle-scan-rail-root .scan-rail-card:hover {
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  background: #3a3b40 !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root .scan-rail-card-title,
+:global(html.dark) .subtitle-scan-rail-root .scan-rail-card-title {
+  color: rgba(248, 250, 252, 0.96) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root .scan-rail-card-source,
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root .scan-rail-card-message,
+:global(html.dark) .subtitle-scan-rail-root .scan-rail-card-source,
+:global(html.dark) .subtitle-scan-rail-root .scan-rail-card-message {
+  color: rgba(203, 213, 225, 0.68) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-tag),
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-chip),
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-count-badge),
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-segment),
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-segment-count),
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-filter-pill),
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-filter-count),
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-toggle),
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-btn),
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-card-action),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-tag),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-chip),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-count-badge),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-segment),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-segment-count),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-filter-pill),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-filter-count),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-toggle),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-btn),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-card-action) {
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+  background-image: none !important;
+  color: rgba(245, 245, 247, 0.88) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-tag-success),
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-chip-success),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-tag-success),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-chip-success) {
+  border-color: rgba(74, 222, 128, 0.22) !important;
+  background: rgba(34, 197, 94, 0.13) !important;
+  color: #bbf7d0 !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-tag-sky),
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-filter-pill-sky),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-tag-sky),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-filter-pill-sky) {
+  border-color: rgba(56, 189, 248, 0.22) !important;
+  background: rgba(14, 165, 233, 0.12) !important;
+  color: #bae6fd !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-tag-amber),
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-chip-pending),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-tag-amber),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-chip-pending) {
+  border-color: rgba(251, 191, 36, 0.22) !important;
+  background: rgba(245, 158, 11, 0.13) !important;
+  color: #fde68a !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-tag-rose),
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-chip-failed),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-tag-rose),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-chip-failed) {
+  border-color: rgba(251, 113, 133, 0.24) !important;
+  background: rgba(244, 63, 94, 0.13) !important;
+  color: #fecdd3 !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-segment:hover),
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-toggle:hover),
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-btn:hover),
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-card-action:hover),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-segment:hover),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-toggle:hover),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-btn:hover),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-card-action:hover) {
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-segment.active),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-segment.active) {
+  border-color: rgba(255, 255, 255, 0.26) !important;
+  background: #3f4046 !important;
+  color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-segment.active .scan-rail-segment-count),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-segment.active .scan-rail-segment-count) {
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: rgba(245, 245, 247, 0.92) !important;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-tag svg),
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-chip svg),
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-count-badge svg),
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-segment svg),
+:global(html.kikoerumanager-dark) .subtitle-scan-rail-root :deep(.scan-rail-card-action svg),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-tag svg),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-chip svg),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-count-badge svg),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-segment svg),
+:global(html.dark) .subtitle-scan-rail-root :deep(.scan-rail-card-action svg) {
+  color: currentColor !important;
+  stroke: currentColor !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root),
+:global(html.dark .subtitle-scan-rail-root) {
+  color: rgba(245, 245, 247, 0.9) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-rail-card),
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-rail-card:hover),
+:global(html.dark .subtitle-scan-rail-root .scan-rail-card),
+:global(html.dark .subtitle-scan-rail-root .scan-rail-card:hover) {
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  background: #333438 !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-rail-card-title),
+:global(html.dark .subtitle-scan-rail-root .scan-rail-card-title) {
+  color: rgba(248, 250, 252, 0.96) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-rail-card-source),
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-rail-card-message),
+:global(html.dark .subtitle-scan-rail-root .scan-rail-card-source),
+:global(html.dark .subtitle-scan-rail-root .scan-rail-card-message) {
+  color: rgba(203, 213, 225, 0.68) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root :is(.scan-rail-tag, .scan-rail-tag-soft, .scan-rail-chip, .scan-rail-count-badge, .scan-rail-segment, .scan-rail-segment-count, .scan-rail-filter-pill, .scan-rail-filter-count, .scan-rail-toggle, .scan-rail-btn, .scan-rail-card-action)),
+:global(html.dark .subtitle-scan-rail-root :is(.scan-rail-tag, .scan-rail-tag-soft, .scan-rail-chip, .scan-rail-count-badge, .scan-rail-segment, .scan-rail-segment-count, .scan-rail-filter-pill, .scan-rail-filter-count, .scan-rail-toggle, .scan-rail-btn, .scan-rail-card-action)) {
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+  background-image: none !important;
+  color: rgba(245, 245, 247, 0.88) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root :is(.scan-rail-tag-success, .scan-rail-chip-success)),
+:global(html.dark .subtitle-scan-rail-root :is(.scan-rail-tag-success, .scan-rail-chip-success)) {
+  border-color: rgba(74, 222, 128, 0.22) !important;
+  background: rgba(34, 197, 94, 0.13) !important;
+  color: #bbf7d0 !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root :is(.scan-rail-tag-sky, .scan-rail-filter-pill-sky)),
+:global(html.dark .subtitle-scan-rail-root :is(.scan-rail-tag-sky, .scan-rail-filter-pill-sky)) {
+  border-color: rgba(56, 189, 248, 0.22) !important;
+  background: rgba(14, 165, 233, 0.12) !important;
+  color: #bae6fd !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root :is(.scan-rail-tag-amber, .scan-rail-chip-pending)),
+:global(html.dark .subtitle-scan-rail-root :is(.scan-rail-tag-amber, .scan-rail-chip-pending)) {
+  border-color: rgba(251, 191, 36, 0.22) !important;
+  background: rgba(245, 158, 11, 0.13) !important;
+  color: #fde68a !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root :is(.scan-rail-tag-rose, .scan-rail-chip-failed)),
+:global(html.dark .subtitle-scan-rail-root :is(.scan-rail-tag-rose, .scan-rail-chip-failed)) {
+  border-color: rgba(251, 113, 133, 0.24) !important;
+  background: rgba(244, 63, 94, 0.13) !important;
+  color: #fecdd3 !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root :is(.scan-rail-segment:hover, .scan-rail-toggle:hover, .scan-rail-btn:hover, .scan-rail-card-action:hover)),
+:global(html.dark .subtitle-scan-rail-root :is(.scan-rail-segment:hover, .scan-rail-toggle:hover, .scan-rail-btn:hover, .scan-rail-card-action:hover)) {
+  border-color: rgba(255, 255, 255, 0.24) !important;
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-rail-segment.active),
+:global(html.dark .subtitle-scan-rail-root .scan-rail-segment.active) {
+  border-color: rgba(255, 255, 255, 0.26) !important;
+  background: #3f4046 !important;
+  color: #ffffff !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root .scan-rail-segment.active .scan-rail-segment-count),
+:global(html.dark .subtitle-scan-rail-root .scan-rail-segment.active .scan-rail-segment-count) {
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: rgba(245, 245, 247, 0.92) !important;
+}
+
+:global(html.kikoerumanager-dark .subtitle-scan-rail-root :is(.scan-rail-tag svg, .scan-rail-chip svg, .scan-rail-count-badge svg, .scan-rail-segment svg, .scan-rail-card-action svg)),
+:global(html.dark .subtitle-scan-rail-root :is(.scan-rail-tag svg, .scan-rail-chip svg, .scan-rail-count-badge svg, .scan-rail-segment svg, .scan-rail-card-action svg)) {
+  color: currentColor !important;
+  stroke: currentColor !important;
+}
+
+@media (max-width: 420px) {
+  .scan-rail-toggle-subtle {
+    width: 30px;
+    min-width: 30px;
+    padding: 0;
+  }
+
+  .scan-rail-toggle-subtle .scan-rail-toggle-text {
+    display: none;
+  }
+
+  .scan-rail-segment {
+    min-height: 34px;
+    padding: 0 8px;
+    gap: 5px;
+  }
+
+  .scan-rail-segment-count {
+    min-width: 20px;
+    padding: 0 5px;
+  }
+}
+
+@media (max-width: 360px) {
+  .scan-rail-segment-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

@@ -168,10 +168,10 @@
             <template #default="{ row }">
               <div class="vault-row-actions">
                 <button type="button" class="vault-row-action is-edit" @click="handleEdit(row)" title="编辑">
-                  <AppLottieIcon :src="editIconAnimation" :size="52" tone="primary" />
+                  <IconEdit :size="18" :stroke-width="2.3" />
                 </button>
                 <button type="button" class="vault-row-action is-delete" @click="handleDelete(row)" title="删除">
-                  <AppLottieIcon :src="deleteIconAnimation" :size="38" tone="danger" />
+                  <IconTrash :size="18" :stroke-width="2.3" />
                 </button>
               </div>
             </template>
@@ -200,10 +200,10 @@
               </div>
               <div class="vault-mobile-actions">
                 <button type="button" class="vault-mobile-action is-edit" title="编辑" @click="handleEdit(row)">
-                  <AppLottieIcon :src="editIconAnimation" :size="38" tone="primary" />
+                  <IconEdit :size="16" :stroke-width="2.3" />
                 </button>
                 <button type="button" class="vault-mobile-action is-delete" title="删除" @click="handleDelete(row)">
-                  <AppLottieIcon :src="deleteIconAnimation" :size="30" tone="danger" />
+                  <IconTrash :size="16" :stroke-width="2.3" />
                 </button>
               </div>
             </header>
@@ -427,6 +427,7 @@ import {
   Clock as IconClock,
   RefreshCw as IconRefresh,
   Settings as IconSettings,
+  PencilLine as IconEdit,
   ArrowUp as IconArrowUp,
   ArrowDown as IconArrowDown,
   X as IconClose,
@@ -438,13 +439,10 @@ import { ElMessage } from 'element-plus'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
 import { passwordApi, cleanupApi } from '../api'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
-import AppLottieIcon from '../components/common/AppLottieIcon.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
 import AnimatedPasswordInput from '../components/common/AnimatedPasswordInput.vue'
-import editIconAnimation from '../assets/anime/Clipboard.lottie'
-import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 
 const PAGE_SIZES = [10, 20, 50, 100]
 const PAGE_SIZE_STORAGE_KEY = 'kikoeru.ui.passwordVault.pageSize'
@@ -491,7 +489,7 @@ const usedPasswordCount = computed(() => passwords.value.filter(item => Number(i
 const scopedPasswordCount = computed(() => passwords.value.filter(item => item?.rjcode || item?.filename).length)
 const importLineCount = computed(() => importText.value.trim() ? importText.value.trim().split('\n').filter(line => line.trim()).length : 0)
 
-onMounted(() => { loadPasswords(); loadCleanupStatus() })
+onMounted(() => { loadPasswords() })
 watch(pageSize, size => { persistPageSize(size) })
 watch(showCleanupDialog, value => { if (value) { loadCleanupStatus(); loadCleanupHistory() } })
 
@@ -1037,23 +1035,15 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
 }
 
 .vault-row-action.is-edit:hover {
-  border-color: transparent;
-  background: transparent;
+  border-color: rgba(59, 130, 246, 0.22);
+  background: rgba(59, 130, 246, 0.08);
+  color: #2563eb;
 }
 
 .vault-row-action.is-delete:hover {
-  border-color: transparent;
-  background: transparent;
-}
-
-.vault-row-action :deep(.app-lottie-icon),
-.vault-mobile-action :deep(.app-lottie-icon),
-.vault-row-action :deep(.app-lottie-icon__player),
-.vault-mobile-action :deep(.app-lottie-icon__player) {
-  background: transparent !important;
-  border: 0 !important;
-  box-shadow: none !important;
-  filter: none !important;
+  border-color: rgba(244, 63, 94, 0.22);
+  background: rgba(244, 63, 94, 0.08);
+  color: #e11d48;
 }
 
 .password-pill-wrap {

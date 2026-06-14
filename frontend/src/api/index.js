@@ -77,6 +77,7 @@ export async function redirectIfSecurityGateExpired() {
 const FILTER_DELETE_PREVIEW_TIMEOUT = 30 * 60 * 1000
 const CONFLICT_MERGE_TIMEOUT = 30 * 60 * 1000
 const RJ_SUBTITLE_SCAN_TIMEOUT = 0
+const HTTP_DOWNLOAD_START_TIMEOUT = 10 * 60 * 1000
 
 /** 群晖 OTP 二步验证过期标志。任意库存接口返回含 OTP 的错误时置 true，提示用户刷新 Device Token。 */
 export const synologyOtpRequired = ref(false)
@@ -211,6 +212,11 @@ export const configApi = {
     return response.data
   },
 
+  revealDatabaseSecret: async (payload) => {
+    const response = await apiClient.post('/config/database/reveal-secret', payload)
+    return response.data
+  },
+
   revealAISubtitleSecret: async (payload) => {
     const response = await apiClient.post('/config/ai-subtitle-match/reveal-secret', payload)
     return response.data
@@ -340,13 +346,13 @@ export const activityLogApi = {
     return response.data
   },
 
-  // 搜索引擎状态：FTS5 是否启用、tokenizer、是否需要升级、后台重建进度
+  // 搜索引擎状态：pg_trgm 是否启用、索引覆盖行数、后台重建进度
   searchStatus: async () => {
     const response = await apiClient.get('/activity-logs/search-status')
     return response.data
   },
 
-  // 触发后台重建 FTS5 索引（默认目标 trigram）
+  // 触发后台重建 PostgreSQL pg_trgm 索引
   rebuildFts: async (targetTokenizer = 'trigram') => {
     const response = await apiClient.post('/activity-logs/rebuild-fts', null, {
       params: { target_tokenizer: targetTokenizer }
@@ -356,7 +362,7 @@ export const activityLogApi = {
 }
 
 export const databaseMaintenanceApi = {
-  // 执行 SQLite 自检。full=true 会跑完整 integrity_check；损坏时后端返回 503，这里仍把诊断体交给 UI。
+  // 执行 PostgreSQL 健康检查。full=true 会额外 ANALYZE 热点表；异常时后端返回 503，这里仍把诊断体交给 UI。
   health: async (full = false) => {
     try {
       const response = await apiClient.get('/database/maintenance/health', { params: { full } })
@@ -373,6 +379,25 @@ export const databaseMaintenanceApi = {
   estimate: async (params = {}) => {
     const response = await apiClient.get('/database/maintenance/estimate', { params })
     return response.data
+  },
+
+  // PostgreSQL 性能快照：运行参数、pg_stat_statements 状态、Top SQL、热点表统计
+  performance: async (params = {}) => {
+    const response = await apiClient.get('/database/maintenance/performance', { params })
+    return response.data
+  },
+
+  // 重置 pg_stat_statements，用于优化前后对比；未启用时后端会返回 409 + 诊断体
+  resetPgStatStatements: async () => {
+    try {
+      const response = await apiClient.post('/database/maintenance/pg-stat-statements/reset')
+      return response.data
+    } catch (error) {
+      if (error.response?.status === 409 && error.response?.data) {
+        return error.response.data
+      }
+      throw error
+    }
   },
 
   // 启动一次瘦身。幂等：已在跑时返回 already_running=true
@@ -395,13 +420,13 @@ export const databaseMaintenanceApi = {
     return response.data
   },
 
-  // 读取库存索引 FTS5 状态和后台重建进度
+  // 读取库存 PostgreSQL 搜索索引状态和后台重建进度
   libraryIndexFtsStatus: async () => {
     const response = await apiClient.get('/database/maintenance/library-index-fts/status')
     return response.data
   },
 
-  // 后台重建库存索引 FTS5 表（默认目标 trigram）
+  // 后台重建库存 PostgreSQL pg_trgm 搜索索引
   rebuildLibraryIndexFts: async (targetTokenizer = 'trigram') => {
     const response = await apiClient.post('/database/maintenance/library-index-fts/rebuild', null, {
       params: { target_tokenizer: targetTokenizer }
@@ -666,7 +691,7 @@ export const libraryApi = {
   },
 
   // ===== 库存搜索索引（批次 5）=====
-  // 在 SQLite 里常驻"库存→条目"快照，让 RJ 定位 / 名字搜索从分钟级降到毫秒级。
+  // 在 PostgreSQL 里常驻"库存→条目"快照，让 RJ 定位 / 名字搜索从分钟级降到毫秒级。
   // rebuild 是异步的，立即返回 syncing 状态；用 getIndexStatus 轮询 ready / error。
   rebuildIndex: async (libraryId) => {
     const response = await apiClient.post('/library/index/rebuild', {
@@ -816,7 +841,8 @@ export const libraryApi = {
     forceRefresh = false,
     searchExact = false,
     searchResultKind = 'all',
-    scope = 'global'
+    scope = 'global',
+    pageCursor = ''
   } = {}) => {
     const response = await apiClient.get('/library/browser/files', {
       params: {
@@ -830,7 +856,8 @@ export const libraryApi = {
         force_refresh: forceRefresh || undefined,
         search_exact: searchExact || undefined,
         search_result_kind: searchResultKind || undefined,
-        scope: scope && scope !== 'global' ? scope : undefined
+        scope: scope && scope !== 'global' ? scope : undefined,
+        page_cursor: pageCursor || undefined
       }
     })
     return response.data
@@ -1543,6 +1570,8 @@ export const httpDownloadApi = {
       batch_name: payload.batchName || payload.batch_name || '',
       selected_keys: payload.selectedKeys || payload.selected_keys || [],
       selected_items: payload.selectedItems || payload.selected_items || []
+    }, {
+      timeout: payload.timeout ?? HTTP_DOWNLOAD_START_TIMEOUT
     })
     return response.data
   },
@@ -1689,6 +1718,8 @@ export const baiduNetdiskApi = {
       conflict_policy: payload.conflictPolicy || payload.conflict_policy || '',
       selected_keys: payload.selectedKeys || payload.selected_keys || [],
       selected_items: payload.selectedItems || payload.selected_items || []
+    }, {
+      timeout: payload.timeout ?? HTTP_DOWNLOAD_START_TIMEOUT
     })
     return response.data
   },

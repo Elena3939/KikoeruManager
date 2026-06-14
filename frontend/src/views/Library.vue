@@ -1853,7 +1853,7 @@ import { classifyLibraryEntryKind, libraryEntryIconFor, libraryEntryMetaFor } fr
 
 import { ElMessage } from 'element-plus'
 
-import { aiSubtitleMatchApi, baiduNetdiskApi, configApi, libraryApi, localUploadApi, rjSubtitleApi, taskApi, synologyOtpRequired } from '../api'
+import { aiSubtitleMatchApi, asmrSyncApi, baiduNetdiskApi, configApi, libraryApi, localUploadApi, rjSubtitleApi, taskApi, taskCenterApi, synologyOtpRequired } from '../api'
 
 import { showSystemAlert, showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 
@@ -1966,6 +1966,8 @@ const toolbarActionScope = ref(loadString(LIBRARY_ACTION_SCOPE_KEY, 'page') === 
 const sortBy = ref(DEFAULT_SORT_BY)
 
 const sortOrder = ref(DEFAULT_SORT_ORDER)
+
+const libraryPageCursorCache = ref({})
 
 const pathBreadcrumbRef = ref(null)
 
@@ -2867,6 +2869,72 @@ function getRememberedDirectoryPage (path, fallback = 1, rootPath = browseRootPa
   const remembered = Number(pageByPath[getLibraryPageStateKey(path, rootPath)] || 0)
 
   return remembered > 0 ? remembered : fallback
+
+}
+
+function getLibraryPageCursorSignature () {
+
+  return [
+
+    selectedLibraryId.value || '',
+
+    normalizeLibraryPathKey(currentPath.value || browseRootPath.value),
+
+    pageSize.value,
+
+    sortBy.value || DEFAULT_SORT_BY,
+
+    sortOrder.value || DEFAULT_SORT_ORDER
+
+  ].join('\u0001')
+
+}
+
+
+
+function resetLibraryPageCursorCache () {
+
+  libraryPageCursorCache.value = {}
+
+}
+
+
+
+function getLibraryPageCursorForRequest (forceRefresh = false) {
+
+  if (forceRefresh || Number(currentPage.value || 1) <= 1) return ''
+
+  const signature = getLibraryPageCursorSignature()
+
+  const cache = libraryPageCursorCache.value[signature]
+
+  return cache?.[String(Number(currentPage.value) - 1)] || ''
+
+}
+
+
+
+function rememberLibraryPageCursor (data = {}) {
+
+  const cursor = String(data?.next_page_cursor || '')
+
+  if (!cursor || !data?.browse_via_index) return
+
+  const signature = getLibraryPageCursorSignature()
+
+  libraryPageCursorCache.value = {
+
+    ...libraryPageCursorCache.value,
+
+    [signature]: {
+
+      ...(libraryPageCursorCache.value[signature] || {}),
+
+      [String(currentPage.value)]: cursor
+
+    }
+
+  }
 
 }
 
@@ -4912,7 +4980,13 @@ function getSubtitleSelectionExistingChips (item) {
 
   const localExistingCount = Math.max(0, Number(item?.existing_subtitle_count || 0))
 
-  const chips = [{ key: 'local-existing', label: `本地字幕 ${localExistingCount}` }]
+  const chips = []
+
+  if (localExistingCount > 0 || !isActivityHistorySubtitleRestoreItem(item)) {
+
+    chips.push({ key: 'local-existing', label: `本地字幕 ${localExistingCount}` })
+
+  }
 
   if (item?.kikoeru_has_existing_subtitles) {
 
@@ -6435,6 +6509,8 @@ watch(pageSize, async value => {
 
   storeNumber(PAGE_SIZE_KEY, value)
 
+  resetLibraryPageCursorCache()
+
   currentPage.value = 1
 
   if (selectedLibraryId.value) await refreshLibrary()
@@ -6470,6 +6546,14 @@ watch([currentPath, selectedLibraryId], () => {
   pathBreadcrumbPopoverVisible.value = false
 
   nextTick(() => updatePathBreadcrumbWidth())
+
+})
+
+
+
+watch([sortBy, sortOrder], () => {
+
+  resetLibraryPageCursorCache()
 
 })
 
@@ -6981,6 +7065,8 @@ function saveLibraryState (libraryId) {
 
 function restoreLibraryState (libraryId) {
 
+  resetLibraryPageCursorCache()
+
   const state = libraryState.value[libraryId] || {}
 
   searchQuery.value = state.searchQuery || ''
@@ -7191,6 +7277,10 @@ async function refreshLibrary (options = {}) {
 
   if (!selectedLibraryId.value) return
 
+  if (forceRefresh) resetLibraryPageCursorCache()
+
+  const pageCursor = getLibraryPageCursorForRequest(forceRefresh)
+
   const prevSelectedPaths = new Set(selectedRowPaths.value)
 
   if (prevSelectedPaths.size) {
@@ -7229,7 +7319,9 @@ async function refreshLibrary (options = {}) {
 
       sortOrder: sortOrder.value,
 
-      forceRefresh
+      forceRefresh,
+
+      pageCursor
 
     })
 
@@ -7266,6 +7358,8 @@ async function refreshLibrary (options = {}) {
     browseRootPath.value = data.browse_root_path || browseRootPath.value || currentPath.value
 
     parentPath.value = data.parent_path || ''
+
+    rememberLibraryPageCursor(data)
 
     // 不再让 browseFiles 驱动“真实搜索”状态：baby step 重置到空。
     librarySearchState.value = createLibrarySearchState()
@@ -11367,6 +11461,14 @@ function getSubtitleSelectionQueueLabel (item) {
 
   switch (item?.queue_state) {
 
+    case 'history_restore':
+
+      return '操作记录恢复'
+
+    case 'restore_failed':
+
+      return '恢复失败'
+
     case 'awaiting_manual_match':
 
       return '待手动配对'
@@ -11421,6 +11523,10 @@ function getSubtitleSelectionQueueClass (item) {
 
   switch (item?.queue_state) {
 
+    case 'history_restore':
+
+      return 'subtitle-mini-chip-primary'
+
     case 'manual_match_completed':
 
       return 'subtitle-mini-chip-success'
@@ -11440,6 +11546,8 @@ function getSubtitleSelectionQueueClass (item) {
       return 'subtitle-mini-chip-primary'
 
     case 'create_failed':
+
+    case 'restore_failed':
 
       return 'subtitle-mini-chip-danger'
 
@@ -11489,6 +11597,8 @@ function canInspectSubtitleSelectionFolder(item) {
 
   if (!item?.folder_path) return false
 
+  if (isActivityHistorySubtitleRestoreItem(item)) return true
+
   const matchedTask = findSubtitleTaskBySelection(item)
 
   if (item?.task_id && matchedTask?.subtitle_dir) return false
@@ -11508,6 +11618,8 @@ function canInspectSubtitleSelectionFolder(item) {
 
 
 function canForceCreateSubtitleTaskForSelection(item) {
+
+  if (isActivityHistorySubtitleRestoreItem(item)) return false
 
   return canInspectSubtitleSelectionFolder(item)
 
@@ -12239,6 +12351,8 @@ function getSubtitleRouteFocusPayload () {
 
   const subtitleRestoredAt = route.query.subtitleRestoredAt
 
+  const subtitleStage = route.query.subtitleStage
+
   const shouldOpen = subtitleDialog === '1'
 
   const taskId = typeof subtitleTaskId === 'string' ? subtitleTaskId.trim() : ''
@@ -12254,6 +12368,10 @@ function getSubtitleRouteFocusPayload () {
   const summary = typeof subtitleSummary === 'string' ? subtitleSummary.trim() : ''
 
   const restoredAt = typeof subtitleRestoredAt === 'string' ? subtitleRestoredAt.trim() : ''
+
+  const stage = ['overview', 'pairing', 'tree'].includes(String(subtitleStage || '').trim())
+    ? String(subtitleStage || '').trim()
+    : ''
 
   return {
 
@@ -12273,7 +12391,9 @@ function getSubtitleRouteFocusPayload () {
 
     restoredAt,
 
-    focusKey: shouldOpen ? `${subtitleDialog}:${taskId}:${libraryId}:${folderPath}` : ''
+    stage,
+
+    focusKey: shouldOpen ? `${subtitleDialog}:${taskId}:${libraryId}:${folderPath}:${stage}` : ''
 
   }
 
@@ -12361,6 +12481,8 @@ async function clearSubtitleRouteFocusQuery () {
 
   delete nextQuery.subtitleRestoredAt
 
+  delete nextQuery.subtitleStage
+
   delete nextQuery.subtitleBatchSelection
 
   delete nextQuery.subtitleImport
@@ -12372,6 +12494,671 @@ async function clearSubtitleRouteFocusQuery () {
     query: nextQuery
 
   })
+
+}
+
+
+function pickSubtitleRestoreText (...values) {
+
+  for (const value of values) {
+
+    const text = String(value ?? '').trim()
+
+    if (text) return text
+
+  }
+
+  return ''
+
+}
+
+
+function pickSubtitleRestoreArray (...values) {
+
+  return values.find(value => Array.isArray(value)) || []
+
+}
+
+
+function pickSubtitleRestoreObject (...values) {
+
+  return values.find(value => value && typeof value === 'object' && !Array.isArray(value)) || {}
+
+}
+
+
+function pickSubtitleRestoreNumber (...values) {
+
+  for (const value of values) {
+
+    if (value === null || value === undefined || value === '') continue
+
+    const number = Number(value)
+
+    if (Number.isFinite(number)) return number
+
+  }
+
+  return 0
+
+}
+
+
+function resolveTaskCenterItemMetadata (item = {}) {
+
+  const details = item?.details && typeof item.details === 'object' ? item.details : {}
+
+  return pickSubtitleRestoreObject(
+
+    details.metadata,
+
+    details.task_metadata,
+
+    item.task_metadata,
+
+    item.metadata
+
+  )
+
+}
+
+
+function findSubtitleWorkbenchTaskById (taskId = '') {
+
+  const normalizedTaskId = String(taskId || '').trim()
+
+  if (!normalizedTaskId) return null
+
+  return [...(orderedSubtitleTasks.value || []), ...(subtitleTasks.value || [])].find(task => String(task?.id || '').trim() === normalizedTaskId) || null
+
+}
+
+
+function looksLikeSubtitleTargetFolderPath (path = '') {
+
+  const value = String(path || '').trim()
+
+  if (!value) return false
+
+  if (/[\\/](?:subtitles?)$/i.test(value)) return false
+
+  if (/\.(?:7z|zip|rar|tar|gz|bz2|xz|001|002|003|z\d{2}|part\d+|mp4|mkv|avi|wav|flac|mp3|m4a|aac|ogg|opus|lrc|srt|ass|vtt)$/i.test(value)) {
+
+    return false
+
+  }
+
+  return true
+
+}
+
+
+function normalizeSubtitleLocateMatches (data, rjcode = '') {
+
+  const normalizedRJ = String(rjcode || '').trim().toUpperCase()
+
+  const results = Array.isArray(data?.results) ? data.results : []
+
+  const row = results.find(item => String(item?.rjcode || '').trim().toUpperCase() === normalizedRJ) || results[0] || {}
+
+  return Array.isArray(row?.matches) ? row.matches : []
+
+}
+
+
+function pickSubtitleLocatedMatch (matches = [], preferredLibraryId = '') {
+
+  const candidates = (Array.isArray(matches) ? matches : [])
+
+    .filter(match => String(match?.path || '').trim())
+
+    .filter(match => looksLikeSubtitleTargetFolderPath(match.path))
+
+  if (!candidates.length) return null
+
+  const normalizedLibraryId = String(preferredLibraryId || '').trim()
+
+  if (normalizedLibraryId) {
+
+    const preferred = candidates.find(match => String(match?.library_id || '').trim() === normalizedLibraryId)
+
+    if (preferred) return preferred
+
+  }
+
+  return candidates.find(match => Boolean(match?.library_writable)) || candidates[0]
+
+}
+
+
+async function locateSubtitleHistoryTargetByRJ (rjcode = '', preferredLibraryId = '') {
+
+  const normalizedRJ = String(rjcode || '').trim().toUpperCase()
+
+  if (!normalizedRJ) return null
+
+  try {
+
+    const libraryIds = preferredLibraryId ? [preferredLibraryId] : null
+
+    let data = await asmrSyncApi.locateRJ([normalizedRJ], libraryIds)
+
+    let match = pickSubtitleLocatedMatch(normalizeSubtitleLocateMatches(data, normalizedRJ), preferredLibraryId)
+
+    if (!match && preferredLibraryId) {
+
+      data = await asmrSyncApi.locateRJ([normalizedRJ])
+
+      match = pickSubtitleLocatedMatch(normalizeSubtitleLocateMatches(data, normalizedRJ), '')
+
+    }
+
+    if (!match) return null
+
+    return {
+
+      library_id: String(match.library_id || '').trim(),
+
+      folder_path: String(match.path || '').trim(),
+
+      folder_name: String(match.name || '').trim() || getFileName(match.path),
+
+      rjcode: normalizedRJ,
+
+      library_name: String(match.library_name || '').trim(),
+
+      library_type: String(match.library_type || '').trim(),
+
+      source_label: '操作记录 / RJ 定位'
+
+    }
+
+  } catch (error) {
+
+    console.warn('[subtitle-workbench] 按 RJ 定位历史作品目录失败:', error)
+
+    return null
+
+  }
+
+}
+
+
+function normalizeSubtitleTaskFromTaskCenterItem (item, routePayload = {}) {
+
+  const metadata = resolveTaskCenterItemMetadata(item)
+
+  const taskId = pickSubtitleRestoreText(item?.engine_task_id, item?.entity_id, routePayload.taskId)
+
+  if (!taskId) return null
+
+  const folderPath = pickSubtitleRestoreText(
+
+    looksLikeSubtitleTargetFolderPath(routePayload.folderPath) ? routePayload.folderPath : '',
+
+    metadata.target_folder_path,
+
+    metadata.folder_path,
+
+    looksLikeSubtitleTargetFolderPath(item?.target_path) ? item.target_path : '',
+
+    looksLikeSubtitleTargetFolderPath(metadata.source_path) ? metadata.source_path : ''
+
+  )
+
+  const subtitleDir = folderPath
+    ? joinFolderPath(folderPath, 'subtitles')
+    : pickSubtitleRestoreText(metadata.subtitle_dir)
+
+  if (!folderPath && !subtitleDir) return null
+
+  const libraryId = pickSubtitleRestoreText(
+
+    metadata.library_id,
+
+    metadata.target_library_id,
+
+    routePayload.libraryId,
+
+    selectedLibraryId.value
+
+  )
+
+  const subtitleLibraryId = pickSubtitleRestoreText(
+
+    metadata.subtitle_library_id,
+
+    metadata.target_library_id,
+
+    metadata.library_id,
+
+    libraryId
+
+  )
+
+  const rjcode = pickSubtitleRestoreText(
+
+    metadata.rjcode,
+
+    metadata.target_rjcode,
+
+    routePayload.rjcode,
+
+    item?.rjcode,
+
+    extractRJCode(folderPath)
+
+  ).toUpperCase()
+
+  const actualRJCode = pickSubtitleRestoreText(
+
+    metadata.actual_rjcode,
+
+    metadata.source_rjcode,
+
+    rjcode
+
+  ).toUpperCase()
+
+  const writtenFiles = pickSubtitleRestoreArray(metadata.written_files)
+
+  const skippedFiles = pickSubtitleRestoreArray(metadata.skipped_files)
+
+  const matchResult = pickSubtitleRestoreObject(metadata.match_result)
+
+  const inferredSubtitleCount = Math.max(
+
+    pickSubtitleRestoreNumber(metadata.downloaded_count),
+
+    pickSubtitleRestoreNumber(metadata.existing_subtitle_count),
+
+    writtenFiles.length + skippedFiles.length,
+
+    pickSubtitleRestoreNumber(matchResult.matched_subtitle_count)
+
+  )
+
+  const appliedPairs = Math.max(
+
+    pickSubtitleRestoreNumber(metadata.manual_match_applied_pairs),
+
+    pickSubtitleRestoreNumber(matchResult.matched_group_count),
+
+    pickSubtitleRestoreNumber(matchResult.matched_subtitle_count)
+
+  )
+
+  const manualMatchCompleted = Boolean(metadata.manual_match_completed || metadata.linked_workbench_applied)
+
+  const awaitingManualMatch = Boolean(metadata.awaiting_manual_match) && !manualMatchCompleted
+
+  const existingSubtitleCount = Math.max(inferredSubtitleCount, pickSubtitleRestoreNumber(metadata.existing_subtitle_count))
+
+  const sourceLabel = pickSubtitleRestoreText(routePayload.sourceLabel, item?.source_label, metadata.source_label, '操作记录')
+
+  const restoredAt = pickSubtitleRestoreText(routePayload.restoredAt, item?.completed_at, item?.created_at)
+
+  const currentStep = pickSubtitleRestoreText(
+
+    item?.current_step,
+
+    metadata.current_step,
+
+    routePayload.summary,
+
+    manualMatchCompleted ? `已应用 ${appliedPairs} 组配对` : '',
+
+    awaitingManualMatch ? '待继续配对' : '',
+
+    '来自操作记录恢复'
+
+  )
+
+  const activityContext = {
+
+    ...pickSubtitleRestoreObject(metadata.activity_context),
+
+    source_label: sourceLabel,
+
+    summary: routePayload.summary || currentStep,
+
+    created_at: restoredAt,
+
+    task_center_item_id: pickSubtitleRestoreText(item?.id)
+
+  }
+
+  return {
+
+    id: taskId,
+
+    task_view_mode: 'history_restored',
+
+    live_task: null,
+
+    snapshot: {
+
+      task_id: taskId,
+
+      subtitle_dir: subtitleDir,
+
+      current_step: currentStep,
+
+      source_label: sourceLabel,
+
+      downloaded_count: inferredSubtitleCount,
+
+      existing_subtitle_count: existingSubtitleCount,
+
+      awaiting_manual_match: awaitingManualMatch,
+
+      manual_match_completed: manualMatchCompleted,
+
+      manual_match_applied_pairs: appliedPairs,
+
+      manual_match_deleted_subtitles: pickSubtitleRestoreNumber(metadata.manual_match_deleted_subtitles)
+
+    },
+
+    is_optimistic: false,
+
+    rjcode,
+
+    actual_rjcode: actualRJCode,
+
+    folder_name: pickSubtitleRestoreText(metadata.folder_name, getFileName(folderPath)),
+
+    folder_path: folderPath,
+
+    library_id: libraryId,
+
+    subtitle_library_id: subtitleLibraryId,
+
+    status: pickSubtitleRestoreText(item?.status, 'completed'),
+
+    is_cancelled: Boolean(item?.is_cancelled),
+
+    progress: pickSubtitleRestoreNumber(item?.progress, 100),
+
+    current_step: currentStep,
+
+    error_message: pickSubtitleRestoreText(item?.error_message, metadata.error_message),
+
+    created_at: pickSubtitleRestoreText(item?.created_at, metadata.created_at, restoredAt),
+
+    started_at: pickSubtitleRestoreText(item?.started_at, metadata.started_at),
+
+    completed_at: pickSubtitleRestoreText(item?.completed_at, metadata.completed_at, restoredAt),
+
+    source_lang: pickSubtitleRestoreText(metadata.source_lang),
+
+    source_work_type: pickSubtitleRestoreText(metadata.source_work_type),
+
+    source_title: pickSubtitleRestoreText(metadata.source_title, item?.title),
+
+    source_mode: pickSubtitleRestoreText(metadata.source_mode),
+
+    source_label: sourceLabel,
+
+    restored_at: restoredAt,
+
+    activity_context: activityContext,
+
+    target_rjcode: pickSubtitleRestoreText(metadata.target_rjcode),
+
+    target_folder_path: pickSubtitleRestoreText(metadata.target_folder_path),
+
+    target_library_id: pickSubtitleRestoreText(metadata.target_library_id),
+
+    source_archive_path: pickSubtitleRestoreText(metadata.source_archive_path),
+
+    source_subtitle_folder_path: pickSubtitleRestoreText(metadata.source_subtitle_folder_path),
+
+    import_reason: pickSubtitleRestoreText(metadata.import_reason),
+
+    kikoeru_checked_rjcode: pickSubtitleRestoreText(metadata.kikoeru_checked_rjcode),
+
+    kikoeru_has_work: Boolean(metadata.kikoeru_has_work),
+
+    kikoeru_has_existing_subtitles: Boolean(metadata.kikoeru_has_existing_subtitles),
+
+    kikoeru_matched_rjcode: pickSubtitleRestoreText(metadata.kikoeru_matched_rjcode),
+
+    kikoeru_subtitle_file_count: pickSubtitleRestoreNumber(metadata.kikoeru_subtitle_file_count),
+
+    kikoeru_subtitle_check_source: pickSubtitleRestoreText(metadata.kikoeru_subtitle_check_source),
+
+    downloaded_count: inferredSubtitleCount,
+
+    existing_subtitle_count: existingSubtitleCount,
+
+    subtitle_dir: subtitleDir,
+
+    linked_workbench_root_dir: pickSubtitleRestoreText(metadata.linked_workbench_root_dir),
+
+    written_files: writtenFiles,
+
+    skipped_files: skippedFiles,
+
+    write_errors: pickSubtitleRestoreArray(metadata.write_errors),
+
+    failed_files: pickSubtitleRestoreArray(metadata.failed_files),
+
+    match_result: matchResult,
+
+    search_attempts: pickSubtitleRestoreArray(metadata.search_attempts),
+
+    download_files: pickSubtitleRestoreArray(metadata.download_files),
+
+    filtered_out_count: pickSubtitleRestoreNumber(metadata.filtered_out_count),
+
+    content_deduped_count: pickSubtitleRestoreNumber(metadata.content_deduped_count),
+
+    content_deduped_files: pickSubtitleRestoreArray(metadata.content_deduped_files),
+
+    renamed_collision_files: pickSubtitleRestoreArray(metadata.renamed_collision_files),
+
+    progress_log: pickSubtitleRestoreArray(metadata.progress_log),
+
+    awaiting_manual_match: awaitingManualMatch,
+
+    manual_match_completed: manualMatchCompleted,
+
+    manual_match_applied_pairs: appliedPairs,
+
+    manual_match_deleted_subtitles: pickSubtitleRestoreNumber(metadata.manual_match_deleted_subtitles),
+
+    naming_strategy: pickSubtitleRestoreText(metadata.naming_strategy, 'audio')
+
+  }
+
+}
+
+
+function isActivityHistorySubtitleRestoreItem (item = {}) {
+
+  const sourceMode = String(item?.source_mode || '').trim().toLowerCase()
+
+  const queueState = String(item?.queue_state || '').trim().toLowerCase()
+
+  return sourceMode === 'activity_history_restore' || ['history_restore', 'restore_failed'].includes(queueState)
+
+}
+
+
+
+function buildSubtitleHistoryRestoreSelectionItem ({
+  taskId = '',
+  folderPath = '',
+  libraryId = '',
+  rjcode = '',
+  sourceLabel = '',
+  summary = '',
+  restoredAt = '',
+  matchedTask = null
+} = {}) {
+
+  const normalizedFolderPath = String(folderPath || matchedTask?.folder_path || '').trim()
+
+  if (!normalizedFolderPath) return null
+
+  const normalizedTaskId = String(taskId || matchedTask?.id || '').trim()
+
+  const existingSubtitleCount = Math.max(
+
+    Number(matchedTask?.existing_subtitle_count || 0),
+
+    Number(matchedTask?.downloaded_count || 0),
+
+    Number(matchedTask?.snapshot?.existing_subtitle_count || 0),
+
+    Number(matchedTask?.snapshot?.downloaded_count || 0)
+
+  )
+
+  const manualMatchCompleted = Boolean(matchedTask?.manual_match_completed)
+
+  return {
+
+    library_id: String(libraryId || matchedTask?.library_id || selectedLibraryId.value || '').trim(),
+
+    folder_path: normalizedFolderPath,
+
+    folder_name: getFileName(normalizedFolderPath),
+
+    rjcode: String(rjcode || matchedTask?.rjcode || matchedTask?.actual_rjcode || extractRJCode(normalizedFolderPath) || '').trim().toUpperCase(),
+
+    task_id: normalizedTaskId,
+
+    queue_state: manualMatchCompleted ? 'manual_match_completed' : 'history_restore',
+
+    queue_message: summary || matchedTask?.current_step || '来自操作记录，按作品目录恢复字幕工作台',
+
+    downloaded_count: Number(matchedTask?.downloaded_count || matchedTask?.snapshot?.downloaded_count || 0),
+
+    existing_subtitle_count: existingSubtitleCount,
+
+    status: 'existing',
+
+    awaiting_manual_match: Boolean(matchedTask?.awaiting_manual_match) || !manualMatchCompleted,
+
+    manual_match_completed: manualMatchCompleted,
+
+    manual_match_applied_pairs: Number(matchedTask?.manual_match_applied_pairs || matchedTask?.snapshot?.manual_match_applied_pairs || 0),
+
+    manual_match_deleted_subtitles: Number(matchedTask?.manual_match_deleted_subtitles || matchedTask?.snapshot?.manual_match_deleted_subtitles || 0),
+
+    source_label: sourceLabel || matchedTask?.source_label || '操作记录',
+
+    source_mode: 'activity_history_restore',
+
+    restored_at: restoredAt || matchedTask?.restored_at || '',
+
+    activity_context: {
+
+      ...(matchedTask?.activity_context || {}),
+
+      source_label: sourceLabel || matchedTask?.source_label || '操作记录',
+
+      summary: summary || matchedTask?.current_step || '',
+
+      created_at: restoredAt || matchedTask?.restored_at || ''
+
+    }
+
+  }
+
+}
+
+
+
+function seedSubtitleHistoryRestoreSelection (item) {
+
+  if (!item?.folder_path) return null
+
+  subtitleSelectionLoading.value = false
+
+  subtitleSelectionPage.value = 1
+
+  subtitleSelectionFilter.value = 'all'
+
+  subtitleScanSkipFilter.value = 'all'
+
+  subtitleSkippedSelectionFilter.value = []
+
+  subtitleSelectionSourceItems.value = uniqueSubtitleItems([
+
+    ...(subtitleSelectionSourceItems.value || []),
+
+    item
+
+  ])
+
+  subtitleScannedSelectionItems.value = uniqueSubtitleItems([
+
+    ...(subtitleScannedSelectionItems.value || []),
+
+    item
+
+  ])
+
+  const restoredItem = upsertSubtitleSelectionEntry(item, {
+
+    status: 'existing',
+
+    queue_state: item.queue_state || 'history_restore',
+
+    queue_message: item.queue_message || '来自操作记录，按作品目录恢复字幕工作台',
+
+    source_mode: 'activity_history_restore'
+
+  })
+
+  subtitlePreferredSelectionKey.value = buildSubtitleSelectionKey(restoredItem || item) || subtitlePreferredSelectionKey.value
+
+  syncSubtitleSelectionState()
+
+  return restoredItem || item
+
+}
+
+
+
+async function restoreSubtitleTaskFromTaskCenter (taskId, routePayload = {}) {
+
+  const normalizedTaskId = String(taskId || '').trim()
+
+  if (!normalizedTaskId) return null
+
+  try {
+
+    const item = await taskCenterApi.getItem({ engine_task_id: normalizedTaskId, _t: Date.now() })
+
+    if (!item) return null
+
+    const restoredTask = normalizeSubtitleTaskFromTaskCenterItem(item, {
+
+      ...routePayload,
+
+      taskId: normalizedTaskId
+
+    })
+
+    if (!restoredTask) return null
+
+    upsertSubtitleTaskLocal(restoredTask)
+
+    hydrateSubtitleSelectionFromTasks([restoredTask], { sync: true })
+
+    return findSubtitleWorkbenchTaskById(normalizedTaskId) || restoredTask
+
+  } catch (error) {
+
+    console.warn('[subtitle-workbench] 从任务中心恢复历史字幕任务失败:', error)
+
+    return null
+
+  }
 
 }
 
@@ -12589,9 +13376,9 @@ async function consumeSubtitleBatchSelectionRoute () {
 
 async function consumeSubtitleRouteFocus () {
 
-  const { shouldOpen, taskId, folderPath, libraryId, rjcode, sourceLabel, summary, restoredAt, focusKey } = getSubtitleRouteFocusPayload()
+  const { shouldOpen, taskId, folderPath, libraryId, rjcode, sourceLabel, summary, restoredAt, stage, focusKey } = getSubtitleRouteFocusPayload()
 
-  if (!shouldOpen || (!taskId && !folderPath)) return
+  if (!shouldOpen || (!taskId && !folderPath && !rjcode)) return
 
   if (subtitleRouteFocusKey.value === focusKey && subtitleDialogVisible.value) return
 
@@ -12599,7 +13386,28 @@ async function consumeSubtitleRouteFocus () {
 
   subtitleRouteFocusKey.value = focusKey
 
-  const resolvedLibraryId = resolveLibraryIdByPath(folderPath, libraryId)
+  let effectiveFolderPath = looksLikeSubtitleTargetFolderPath(folderPath) ? folderPath : ''
+
+  let effectiveRjcode = rjcode || extractRJCode(effectiveFolderPath) || ''
+
+  let resolvedLibraryId = resolveLibraryIdByPath(effectiveFolderPath, libraryId)
+  let historyRestoreItem = null
+
+  if (!effectiveFolderPath && effectiveRjcode) {
+
+    const located = await locateSubtitleHistoryTargetByRJ(effectiveRjcode, libraryId)
+
+    if (located?.folder_path) {
+
+      effectiveFolderPath = located.folder_path
+
+      effectiveRjcode = located.rjcode || effectiveRjcode
+
+      resolvedLibraryId = located.library_id || resolveLibraryIdByPath(effectiveFolderPath, libraryId)
+
+    }
+
+  }
 
   if (resolvedLibraryId && selectedLibraryId.value !== resolvedLibraryId) {
 
@@ -12607,11 +13415,56 @@ async function consumeSubtitleRouteFocus () {
 
   }
 
+  if (effectiveFolderPath) {
+
+    historyRestoreItem = seedSubtitleHistoryRestoreSelection(buildSubtitleHistoryRestoreSelectionItem({
+
+      taskId,
+
+      folderPath: effectiveFolderPath,
+
+      libraryId: resolvedLibraryId || libraryId,
+
+      rjcode: effectiveRjcode,
+
+      sourceLabel,
+
+      summary,
+
+      restoredAt
+
+    }) || {
+
+      library_id: resolvedLibraryId || libraryId || selectedLibraryId.value || '',
+
+      folder_path: effectiveFolderPath,
+
+      folder_name: getFileName(effectiveFolderPath),
+
+      rjcode: effectiveRjcode,
+
+      task_id: taskId,
+
+      queue_state: 'history_restore',
+
+      queue_message: summary || '来自操作记录，按作品目录恢复字幕工作台',
+      source_label: sourceLabel || '操作记录',
+      source_mode: 'activity_history_restore',
+      restored_at: restoredAt || ''
+
+    })
+
+    setSubtitleWorkbenchRailMode('scan')
+
+    setActiveSubtitleWorkbenchStage(stage || 'pairing')
+
+  }
+
   subtitleDialogBackgroundActive.value = false
 
   subtitleDialogVisible.value = true
 
-  setSubtitleWorkbenchRailMode(taskId ? 'tasks' : 'scan')
+  setSubtitleWorkbenchRailMode(historyRestoreItem ? 'scan' : (taskId ? 'tasks' : 'scan'))
 
   await nextTick()
 
@@ -12619,9 +13472,113 @@ async function consumeSubtitleRouteFocus () {
 
 
 
-  const matchedTask = subtitleTasks.value.find(item => item.id === taskId)
+  setSubtitleTaskFilter('all')
+
+  setSubtitleTaskManualFilter('all')
+
+  let matchedTask = findSubtitleWorkbenchTaskById(taskId)
+
+  if (!matchedTask && taskId) {
+
+    matchedTask = await restoreSubtitleTaskFromTaskCenter(taskId, {
+
+      folderPath: effectiveFolderPath,
+
+      libraryId: resolvedLibraryId || libraryId,
+
+      rjcode: effectiveRjcode,
+
+      sourceLabel,
+
+      summary,
+
+      restoredAt
+
+    })
+
+  }
 
   if (matchedTask) {
+
+    if (effectiveFolderPath) {
+
+      const targetBoundTask = {
+
+        ...matchedTask,
+
+        folder_path: effectiveFolderPath,
+
+        folder_name: getFileName(effectiveFolderPath),
+
+        library_id: resolvedLibraryId || matchedTask.library_id || selectedLibraryId.value,
+
+        subtitle_library_id: resolvedLibraryId || matchedTask.subtitle_library_id || matchedTask.library_id || selectedLibraryId.value,
+
+        subtitle_dir: joinFolderPath(effectiveFolderPath, 'subtitles'),
+
+        rjcode: effectiveRjcode || matchedTask.rjcode || extractRJCode(effectiveFolderPath) || '',
+
+        actual_rjcode: matchedTask.actual_rjcode || effectiveRjcode || matchedTask.rjcode || '',
+
+        source_mode: 'activity_history_restore',
+
+        source_label: sourceLabel || matchedTask.source_label || '操作记录',
+
+        restored_at: restoredAt || matchedTask.restored_at || '',
+
+        activity_context: {
+
+          ...(matchedTask.activity_context || {}),
+
+          source_label: sourceLabel || matchedTask.source_label || '操作记录',
+
+          summary: summary || matchedTask.current_step || '',
+
+          created_at: restoredAt || matchedTask.restored_at || ''
+
+        }
+
+      }
+
+      upsertSubtitleTaskLocal(targetBoundTask)
+
+      const restoredSelection = seedSubtitleHistoryRestoreSelection(buildSubtitleHistoryRestoreSelectionItem({
+
+        taskId: targetBoundTask.id,
+
+        folderPath: effectiveFolderPath,
+
+        libraryId: targetBoundTask.library_id,
+
+        rjcode: targetBoundTask.rjcode || targetBoundTask.actual_rjcode || effectiveRjcode,
+
+        sourceLabel,
+
+        summary,
+
+        restoredAt,
+
+        matchedTask: targetBoundTask
+
+      }) || historyRestoreItem)
+
+      await handleSubtitleWorkbenchInspectSelectionFolder(restoredSelection || historyRestoreItem, {
+
+        force: true,
+
+        preferredTaskId: targetBoundTask.id || taskId,
+
+        stage: stage || 'pairing',
+
+        allowMissingExistingState: true
+
+      })
+
+      await clearSubtitleRouteFocusQuery()
+
+      return
+
+    }
 
     if (matchedTask.subtitle_dir) {
 
@@ -12651,15 +13608,47 @@ async function consumeSubtitleRouteFocus () {
 
       }
 
-      await handleSubtitleWorkbenchInspectTask(matchedTask)
+      await handleSubtitleWorkbenchInspectTask(matchedTask, { stage: stage || undefined })
 
     } else {
+
+      if (effectiveFolderPath) {
+
+        upsertSubtitleTaskLocal({
+
+          ...matchedTask,
+
+          folder_path: effectiveFolderPath,
+
+          folder_name: getFileName(effectiveFolderPath),
+
+          library_id: resolvedLibraryId || matchedTask.library_id || selectedLibraryId.value,
+
+          subtitle_library_id: resolvedLibraryId || matchedTask.subtitle_library_id || matchedTask.library_id || selectedLibraryId.value,
+
+          subtitle_dir: joinFolderPath(effectiveFolderPath, 'subtitles'),
+
+          rjcode: effectiveRjcode || matchedTask.rjcode || extractRJCode(effectiveFolderPath) || '',
+
+          actual_rjcode: matchedTask.actual_rjcode || effectiveRjcode || matchedTask.rjcode || '',
+
+        })
+
+        const restoredWithFolder = findSubtitleWorkbenchTaskById(matchedTask.id) || matchedTask
+
+        await handleSubtitleWorkbenchInspectTask(restoredWithFolder, { stage: stage || undefined })
+
+        await clearSubtitleRouteFocusQuery()
+
+      return
+
+      }
 
       focusSubtitleTask(matchedTask.id)
 
       setSubtitleWorkbenchRailMode('tasks')
 
-      setActiveSubtitleWorkbenchStage(resolvePreferredSubtitleWorkbenchStageForTask(matchedTask))
+      setActiveSubtitleWorkbenchStage(stage || resolvePreferredSubtitleWorkbenchStageForTask(matchedTask))
 
     }
 
@@ -12671,17 +13660,17 @@ async function consumeSubtitleRouteFocus () {
 
 
 
-  if (folderPath) {
+  if (effectiveFolderPath) {
 
     await handleSubtitleWorkbenchInspectSelectionFolder({
 
       library_id: resolvedLibraryId || selectedLibraryId.value,
 
-      folder_path: folderPath,
+      folder_path: effectiveFolderPath,
 
-      folder_name: getFileName(folderPath),
+      folder_name: getFileName(effectiveFolderPath),
 
-      rjcode: rjcode || extractRJCode(folderPath) || '',
+      rjcode: effectiveRjcode || extractRJCode(effectiveFolderPath) || '',
 
       queue_message: summary || '来自操作记录',
 
@@ -12701,7 +13690,11 @@ async function consumeSubtitleRouteFocus () {
 
       }
 
-    }, { force: true, preferredTaskId: taskId })
+    }, { force: true, preferredTaskId: taskId, stage: stage || 'pairing', allowMissingExistingState: true })
+
+  } else if (effectiveRjcode) {
+
+    ElMessage.warning(`没有在库存里找到 ${effectiveRjcode} 的作品目录`)
 
   }
 
@@ -16284,9 +17277,11 @@ async function ensureSubtitleInspectorFocus () {
 
 async function inspectSubtitleSelectionFolder (item, options = {}) {
 
-  const { force = false, preferredTaskId = '' } = options
+  const { force = false, preferredTaskId = '', allowMissingExistingState = false } = options
 
   if (!item?.folder_path) return
+
+  const isHistoryRestore = Boolean(allowMissingExistingState || isActivityHistorySubtitleRestoreItem(item))
 
   const loadSeq = ++subtitleInspectorLoadSeq.value
 
@@ -16326,7 +17321,31 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
 
   try {
 
-    const existingState = await ensureRJSubtitleExistingStateForItem(item)
+    let existingState = null
+
+    try {
+
+      existingState = await ensureRJSubtitleExistingStateForItem(item)
+
+    } catch (error) {
+
+      if (!isHistoryRestore) throw error
+
+      existingState = {
+
+        hasExistingSubtitles: true,
+
+        existingSubtitleCount: Number(item.existing_subtitle_count || 0),
+
+        subtitleDir,
+
+        message: ''
+
+      }
+
+      console.warn('[subtitle-workbench] 历史恢复目录摘要失败，继续直接读取字幕目录:', error)
+
+    }
 
     if (loadSeq !== subtitleInspectorLoadSeq.value) return
 
@@ -16336,7 +17355,7 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
 
     }
 
-    if (!existingState?.hasExistingSubtitles && !Number(item.existing_subtitle_count || 0) && item.status !== 'existing') {
+    if (!isHistoryRestore && !existingState?.hasExistingSubtitles && !Number(item.existing_subtitle_count || 0) && item.status !== 'existing') {
 
       ElMessage.info('当前目录还没有本地字幕，暂时无法打开字幕树工作台')
 
@@ -16346,7 +17365,9 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
 
     upsertSubtitleSelectionEntry(item, {
 
-      status: existingState?.hasExistingSubtitles ? 'existing' : (item.status || ''),
+      status: existingState?.hasExistingSubtitles || isHistoryRestore ? 'existing' : (item.status || ''),
+
+      queue_state: item.queue_state || (isHistoryRestore ? 'history_restore' : ''),
 
       existing_subtitle_count: Math.max(
 
@@ -16390,13 +17411,13 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
 
       subtitleDir: subtitleData.folder_path || subtitleDir,
 
-      sourceMode: matchedTask?.source_mode || '',
+      sourceMode: item.source_mode || matchedTask?.source_mode || '',
 
-      sourceLabel: matchedTask?.source_label || item.source_label || '',
+      sourceLabel: item.source_label || matchedTask?.source_label || '',
 
-      restoredAt: matchedTask?.restored_at || item.restored_at || '',
+      restoredAt: item.restored_at || matchedTask?.restored_at || '',
 
-      activityContext: matchedTask?.activity_context || item.activity_context || null,
+      activityContext: item.activity_context || matchedTask?.activity_context || null,
 
       manualMatchCompleted: Boolean(matchedTask?.manual_match_completed ?? item.manual_match_completed),
 
@@ -16437,6 +17458,20 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
       console.warn('[subtitle-inspector] 忽略 Vue 过渡残留错误:', error.message)
 
     } else if (isSubtitleDirectoryMissingError(error)) {
+
+      if (isHistoryRestore) {
+
+        upsertSubtitleSelectionEntry(item, {
+
+          status: 'existing',
+
+          queue_state: 'restore_failed',
+
+          queue_message: '历史记录里的作品目录或 subtitles 目录已失效'
+
+        })
+
+      }
 
       clearSubtitleInspectorState()
 
@@ -26972,6 +28007,131 @@ function statsStatusTextDisplay (stats) {
     white-space: normal;
     overflow-wrap: anywhere;
   }
+}
+
+/* 暗黑模式库存页最终兜底：压住本组件后注入的蓝色 hover / focus / 选区 / 拖拽态。 */
+:global(html.kikoerumanager-dark body #app .library.library) {
+  --library-dark-surface: #242529;
+  --library-dark-surface-hover: #333438;
+  --library-dark-surface-active: #3a3b40;
+  --library-dark-border: rgba(255, 255, 255, 0.16);
+  --library-dark-border-strong: rgba(255, 255, 255, 0.24);
+  --library-dark-text: rgba(245, 245, 247, 0.9);
+  --library-dark-muted: rgba(205, 205, 211, 0.62);
+}
+
+:global(html.kikoerumanager-dark body #app .library.library :is(
+  .lib-info-icon.text-blue-500,
+  .lib-info-icon.text-violet-500,
+  .lib-btn-icon-tinted.lib-icon-refresh svg,
+  .lib-btn-icon-tinted.lib-icon-stats svg,
+  .lib-btn-icon-tinted.lib-icon-upload svg,
+  .lib-btn-icon-tinted.lib-icon-compute-size svg,
+  .lib-btn-icon-tinted.lib-icon-batch-move svg,
+  .file-icon.icon-audio-lossless,
+  .lib-row-dropdown-item-pin .lib-dropdown-icon,
+  .text-blue-500,
+  .text-blue-600,
+  .text-blue-700,
+  .text-sky-500,
+  .text-sky-600,
+  .text-sky-700,
+  .text-indigo-500,
+  .text-indigo-600,
+  .text-indigo-700
+)) {
+  color: var(--library-dark-muted) !important;
+  stroke: currentColor !important;
+  filter: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library.library .lib-info-icon.text-amber-500) {
+  color: #fbbf24 !important;
+  stroke: currentColor !important;
+  filter: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library.library :is(
+  .km-badge-info,
+  .lib-index-chip-syncing,
+  .lib-index-rebuild-btn,
+  .lib-chip-info
+)) {
+  color: var(--library-dark-text) !important;
+  background: rgba(255, 255, 255, 0.075) !important;
+  background-image: none !important;
+  border-color: var(--library-dark-border) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library.library :is(
+  .km-badge-info,
+  .lib-index-chip-syncing,
+  .lib-index-rebuild-btn,
+  .lib-chip-info
+) svg) {
+  color: currentColor !important;
+  stroke: currentColor !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library.library :is(
+  .lib-search:focus-within .lib-search-icon,
+  .lib-file-sort-btn:hover,
+  .file-link-btn:hover
+)) {
+  color: var(--library-dark-text) !important;
+  stroke: currentColor !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library.library :is(
+  .lib-search-input:focus,
+  .lib-search-input:hover,
+  .lib-btn-primary,
+  .lib-btn-primary:hover,
+  .lib-search-expand:hover,
+  .lib-table-drag-ghost.is-droppable,
+  .lib-file-table-row.library-row-located,
+  .lib-file-table-row.library-row-context-active,
+  .lib-file-table-row.library-row-drag-source,
+  .lib-file-table-row.library-row-drop-target,
+  .lib-file-table-row.library-row-marquee-selected,
+  .lib-file-table-row.library-row-marquee-selected:hover
+)) {
+  background: var(--library-dark-surface-active) !important;
+  background-image: none !important;
+  border-color: var(--library-dark-border-strong) !important;
+  color: var(--library-dark-text) !important;
+  box-shadow: none !important;
+  outline-color: transparent !important;
+  --tw-ring-color: transparent !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
+  --tw-shadow: 0 0 #0000 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library.library :is(
+  .lib-file-table-row.library-row-located:hover,
+  .lib-file-table-row.library-row-context-active:hover,
+  .lib-file-table-row.library-row-drag-source:hover,
+  .lib-file-table-row.library-row-drop-target:hover,
+  .lib-file-table-row.library-row-selected-start:hover,
+  .lib-file-table-row.library-row-selected-middle:hover,
+  .lib-file-table-row.library-row-selected-end:hover
+)) {
+  background: var(--library-dark-surface-hover) !important;
+  background-image: none !important;
+  border-color: var(--library-dark-border-strong) !important;
+  color: var(--library-dark-text) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library.library .lib-table-marquee-box) {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library.library .lib-table-drag-ghost.is-droppable .lib-table-drag-target) {
+  color: var(--library-dark-text) !important;
 }
 
 </style>

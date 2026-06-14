@@ -1,10 +1,11 @@
 <template>
-  <div ref="paneRef" class="task-list-pane">
-    <Transition :name="pageTransitionName" mode="out-in" @after-enter="schedulePageSizeMeasure">
+  <div class="task-list-pane">
+    <Transition :name="pageTransitionName" mode="out-in">
       <div
         v-if="filteredItems.length"
         :key="pageKey"
         class="task-list-scroll flex flex-1 min-h-0 flex-col gap-2 p-2.5"
+        :class="{ 'is-full-page': filteredItems.length >= pageSize }"
       >
         <button
           v-for="item in filteredItems"
@@ -24,8 +25,8 @@
 
           <div class="flex min-w-0 flex-col gap-1">
             <!-- 第一行：标题 | 域 chip（无 icon） + 状态 -->
-            <div class="flex items-center justify-between gap-2">
-              <span class="truncate text-[12.5px] font-bold text-slate-900 leading-tight">{{ item.title }}</span>
+            <div class="flex min-w-0 items-center justify-between gap-2">
+              <span class="min-w-0 truncate whitespace-nowrap text-[12.5px] font-bold text-slate-900 leading-tight">{{ item.title }}</span>
               <div class="flex flex-shrink-0 items-center gap-1">
                 <span
                   class="task-domain-chip inline-flex h-[18px] items-center rounded-full px-2 text-[10px] font-semibold"
@@ -38,19 +39,19 @@
             </div>
 
             <!-- 第二行：RJ + 副标题/来源/步骤 一行内联 -->
-            <div v-if="formatRJCode(item.rjcode) || item.subtitle || shouldShowStep(item) || (item.source_label && item.source_label !== item.title && item.source_label !== item.subtitle)" class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10.5px] text-slate-500 leading-tight">
+            <div v-if="formatRJCode(item.rjcode) || item.subtitle || shouldShowStep(item) || (item.source_label && item.source_label !== item.title && item.source_label !== item.subtitle)" class="flex min-w-0 items-center gap-x-1.5 overflow-hidden whitespace-nowrap text-[10.5px] text-slate-500 leading-tight">
               <span v-if="formatRJCode(item.rjcode)" class="flex-shrink-0 font-bold tabular-nums text-amber-700">{{ formatRJCode(item.rjcode) }}</span>
-              <span v-if="item.subtitle" class="min-w-0 break-words">{{ item.subtitle }}</span>
+              <span v-if="item.subtitle" class="min-w-0 truncate">{{ item.subtitle }}</span>
               <span
                 v-if="item.source_label && item.source_label !== item.title && item.source_label !== item.subtitle"
-                class="min-w-0 break-words text-slate-400"
+                class="min-w-0 truncate text-slate-400"
               >· {{ item.source_label }}</span>
               <span
                 v-if="shouldShowStep(item)"
-                class="inline-flex min-w-0 items-start gap-0.5 text-slate-400"
+                class="inline-flex min-w-0 items-center gap-0.5 overflow-hidden text-slate-400"
               >
-                <Activity :size="9" :stroke-width="2.3" class="mt-[2px] flex-shrink-0" />
-                <span class="break-words">{{ displayStep(item) }}</span>
+                <Activity :size="9" :stroke-width="2.3" class="flex-shrink-0" />
+                <span class="min-w-0 truncate">{{ displayStep(item) }}</span>
               </span>
             </div>
 
@@ -63,17 +64,17 @@
             </div>
 
             <!-- 已恢复 -->
-            <div v-if="getRecoveredNotice(item)" class="flex items-start gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">
-              <CheckCircle :size="10" :stroke-width="2.3" class="mt-px flex-shrink-0 text-emerald-600" />
-              <span>{{ getRecoveredNotice(item) }}</span>
+            <div v-if="getRecoveredNotice(item)" class="flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">
+              <CheckCircle :size="10" :stroke-width="2.3" class="flex-shrink-0 text-emerald-600" />
+              <span class="min-w-0 truncate">{{ getRecoveredNotice(item) }}</span>
             </div>
 
             <!-- 摘要：图标 + 数字 紧凑 stat strip（hover 显示标签） -->
-            <div v-if="item.summaryPieces?.length" class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+            <div v-if="item.summaryPieces?.length" class="flex min-w-0 items-center gap-x-2 overflow-hidden whitespace-nowrap">
               <span
                 v-for="(piece, sIndex) in item.summaryPieces"
                 :key="`${item.id}-summary-${sIndex}`"
-                class="inline-flex items-center gap-0.5 text-[11px] font-bold tabular-nums leading-tight"
+                class="inline-flex flex-shrink-0 items-center gap-0.5 text-[11px] font-bold tabular-nums leading-tight"
                 :class="summaryColor(piece, item.domain)"
                 :title="extractSummaryLabel(piece) || piece"
               >
@@ -93,7 +94,7 @@
       </div>
     </Transition>
 
-    <div v-if="totalItems > pageSize" ref="pagerRef" class="task-list-pager">
+    <div v-if="totalItems > pageSize" class="task-list-pager">
       <div class="task-list-pager-summary">
         <span class="task-list-pager-range">{{ pageStart }}-{{ pageEnd }}</span>
         <span>共 {{ totalItems }} 条</span>
@@ -154,7 +155,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed } from 'vue'
 import {
   Activity,
   AlertCircle,
@@ -183,7 +184,7 @@ const props = defineProps({
   filteredItems: { type: Array, default: () => [] },
   totalItems: { type: Number, default: 0 },
   currentOffset: { type: Number, default: 0 },
-  pageSize: { type: Number, default: 80 },
+  pageSize: { type: Number, default: 10 },
   pageDirection: { type: String, default: 'next' },
   selectedId: { type: String, default: '' },
   digest: { type: Object, default: () => ({ active: 0, completed: 0, failed: 0 }) },
@@ -193,16 +194,9 @@ const props = defineProps({
   getRecoveredNotice: { type: Function, required: true },
 })
 
-const emit = defineEmits(['select', 'quick-filter', 'page-size-change', 'prev-page', 'next-page', 'go-page'])
+const emit = defineEmits(['select', 'quick-filter', 'prev-page', 'next-page', 'go-page'])
 
-const paneRef = ref(null)
-const pagerRef = ref(null)
-
-let resizeObserver = null
-let measureRaf = 0
-let measureTimer = 0
-
-const pageKey = computed(() => `${props.currentOffset}-${props.pageSize}-${props.filteredItems.map(item => item?.id || '').join('|')}`)
+const pageKey = computed(() => `${props.currentOffset}-${props.pageSize}`)
 const pageTransitionName = computed(() => props.pageDirection === 'prev' ? 'task-page-prev' : 'task-page-next')
 const totalPages = computed(() => Math.max(1, Math.ceil(props.totalItems / Math.max(props.pageSize, 1))))
 const currentPage = computed(() => Math.min(totalPages.value, Math.floor(props.currentOffset / Math.max(props.pageSize, 1)) + 1))
@@ -223,98 +217,6 @@ function goToPage(page) {
   if (normalized === currentPage.value) return
   emit('go-page', normalized)
 }
-
-function numericCssValue(style, property, fallback = 0) {
-  if (!style) return fallback
-  const value = Number.parseFloat(style.getPropertyValue(property))
-  return Number.isFinite(value) ? value : fallback
-}
-
-function estimatePageSize() {
-  const pane = paneRef.value
-  if (!pane) return
-  const paneHeight = pane.clientHeight || 0
-  if (paneHeight <= 0) return
-
-  const list = pane.querySelector('.task-list-scroll')
-  const listStyle = typeof window !== 'undefined' && list ? window.getComputedStyle(list) : null
-  const paddingTop = numericCssValue(listStyle, 'padding-top', 10)
-  const paddingBottom = numericCssValue(listStyle, 'padding-bottom', 10)
-  const cardGap = numericCssValue(listStyle, 'row-gap', 8) || numericCssValue(listStyle, 'gap', 8)
-  const safetySpace = 8
-  const listHeight = list?.clientHeight || Math.max(0, paneHeight - (pagerRef.value?.offsetHeight || 48))
-  const availableHeight = Math.max(0, listHeight - paddingTop - paddingBottom - safetySpace)
-  const cards = Array.from(pane.querySelectorAll('.task-card'))
-  if (props.filteredItems.length && cards.length === 0) {
-    scheduleDelayedPageSizeMeasure()
-    return
-  }
-
-  const measuredHeights = cards
-    .map((card) => card.getBoundingClientRect?.().height || card.offsetHeight || 0)
-    .filter((height) => Number.isFinite(height) && height > 0)
-  const averageCardHeight = measuredHeights.length
-    ? measuredHeights.reduce((total, height) => total + height, 0) / measuredHeights.length
-    : 82
-
-  let usedHeight = 0
-  let exactFitCount = 0
-  for (const height of measuredHeights) {
-    const nextUsedHeight = usedHeight + height + (exactFitCount > 0 ? cardGap : 0)
-    if (nextUsedHeight > availableHeight) break
-    usedHeight = nextUsedHeight
-    exactFitCount += 1
-  }
-
-  let nextSize = Math.max(1, exactFitCount || Math.floor((availableHeight + cardGap) / (averageCardHeight + cardGap)))
-  if (exactFitCount >= cards.length && props.currentOffset + props.filteredItems.length < props.totalItems) {
-    const sortedHeights = [...measuredHeights].sort((a, b) => a - b)
-    const typicalHeight = sortedHeights[Math.floor(sortedHeights.length / 2)] || averageCardHeight
-    const remainingHeight = Math.max(0, availableHeight - usedHeight)
-    const extraCount = Math.floor((remainingHeight + cardGap) / (typicalHeight + cardGap))
-    nextSize += Math.max(0, extraCount)
-  }
-
-  if (Number.isFinite(nextSize) && nextSize !== props.pageSize) {
-    emit('page-size-change', nextSize)
-  }
-}
-
-function schedulePageSizeMeasure() {
-  if (typeof window === 'undefined') return
-  if (measureRaf) window.cancelAnimationFrame(measureRaf)
-  measureRaf = window.requestAnimationFrame(() => {
-    measureRaf = 0
-    estimatePageSize()
-  })
-}
-
-function scheduleDelayedPageSizeMeasure() {
-  if (typeof window === 'undefined') return
-  if (measureTimer) window.clearTimeout(measureTimer)
-  measureTimer = window.setTimeout(() => {
-    measureTimer = 0
-    schedulePageSizeMeasure()
-  }, 360)
-}
-
-watch(() => [pageKey.value, props.totalItems], () => {
-  nextTick(schedulePageSizeMeasure)
-})
-
-onMounted(() => {
-  nextTick(schedulePageSizeMeasure)
-  if (typeof ResizeObserver !== 'undefined' && paneRef.value) {
-    resizeObserver = new ResizeObserver(schedulePageSizeMeasure)
-    resizeObserver.observe(paneRef.value)
-  }
-})
-
-onUnmounted(() => {
-  if (resizeObserver) resizeObserver.disconnect()
-  if (measureRaf && typeof window !== 'undefined') window.cancelAnimationFrame(measureRaf)
-  if (measureTimer && typeof window !== 'undefined') window.clearTimeout(measureTimer)
-})
 
 function domainMeta(domain) {
   return getTaskDomainMeta(domain)
@@ -424,6 +326,16 @@ function summaryColor(piece, domain) {
   overflow: hidden;
 }
 
+.task-list-scroll.is-full-page {
+  --task-list-gap: 8px;
+  gap: var(--task-list-gap);
+}
+
+.task-list-scroll.is-full-page .task-card {
+  min-height: 0;
+  flex: 1 1 0;
+}
+
 .task-list-pager {
   display: flex;
   align-items: center;
@@ -509,6 +421,7 @@ function summaryColor(piece, domain) {
   grid-template-columns: 22px minmax(0, 1fr);
   gap: 10px;
   width: 100%;
+  min-height: 72px;
   padding: 12px 14px;
   border: 0;
   border-left: 2px solid transparent;

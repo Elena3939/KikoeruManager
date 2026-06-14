@@ -645,8 +645,18 @@ const ASMR_SYNC_HTTP_DOWNLOAD_WORKBENCH_KEY = 'kikoerumanager.asmrSync.httpDownl
 const ASMR_SYNC_BAIDU_NETDISK_WORKBENCH_KEY = 'kikoerumanager.asmrSync.baiduNetdiskWorkbench'
 const ASMR_SYNC_HTTP_DOWNLOAD_DRAFT_KEY = 'kikoerumanager.asmrSync.httpDownloadDraft'
 const ASMR_SYNC_BAIDU_NETDISK_DRAFT_KEY = 'kikoerumanager.asmrSync.baiduNetdiskDraft'
+const ASMR_SYNC_DOWNLOAD_PREVIEW_CACHE_VERSION = 2
+const ASMR_SYNC_DOWNLOAD_PREVIEW_CACHE_TTL_MS = 30 * 60 * 1000
+const ASMR_SYNC_DOWNLOAD_PREVIEW_CACHE_SESSION_ID = getDownloadPreviewCacheSessionId()
 const ASMR_SYNC_STATUS_POLL_MS = 3000
 const ASMR_SYNC_STATUS_POLL_MAX_MS = 120000
+
+function getDownloadPreviewCacheSessionId() {
+  const key = '__KIKOERUMANAGER_DOWNLOAD_PREVIEW_CACHE_SESSION_ID__'
+  if (typeof window === 'undefined') return 'server'
+  if (!window[key]) window[key] = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  return window[key]
+}
 
 function normalizeDownloadDraft(value = {}) {
   const policy = String(value?.conflictPolicy || '').trim()
@@ -655,7 +665,33 @@ function normalizeDownloadDraft(value = {}) {
     targetSubdir: String(value?.targetSubdir || ''),
     outputFolderName: String(value?.outputFolderName || ''),
     batchName: String(value?.batchName || ''),
-    conflictPolicy: ['resume', 'rename', 'skip'].includes(policy) ? policy : 'resume'
+    conflictPolicy: ['resume', 'rename', 'skip'].includes(policy) ? policy : 'resume',
+    previewCache: normalizeDownloadPreviewCache(value?.previewCache)
+  }
+}
+
+function normalizeDownloadPreviewCache(value = {}) {
+  if (!value || typeof value !== 'object') return null
+  if (Number(value.version || 0) !== ASMR_SYNC_DOWNLOAD_PREVIEW_CACHE_VERSION) return null
+  if (String(value.sessionId || '') !== ASMR_SYNC_DOWNLOAD_PREVIEW_CACHE_SESSION_ID) return null
+  const cachedAt = Number(value.cachedAt || 0)
+  if (!Number.isFinite(cachedAt) || cachedAt <= 0) return null
+  const age = Date.now() - cachedAt
+  if (age < -60 * 1000 || age > ASMR_SYNC_DOWNLOAD_PREVIEW_CACHE_TTL_MS) return null
+  const items = Array.isArray(value.items) ? value.items.filter(item => item && typeof item === 'object') : []
+  if (!items.length) return null
+  return {
+    version: ASMR_SYNC_DOWNLOAD_PREVIEW_CACHE_VERSION,
+    sessionId: ASMR_SYNC_DOWNLOAD_PREVIEW_CACHE_SESSION_ID,
+    provider: String(value.provider || ''),
+    inputSignature: String(value.inputSignature || ''),
+    items,
+    selectedKeys: Array.isArray(value.selectedKeys) ? value.selectedKeys.map(key => String(key || '')).filter(Boolean) : [],
+    needsMaterialize: Boolean(value.needsMaterialize),
+    logs: Array.isArray(value.logs) ? value.logs.slice(-80) : [],
+    progress: Number(value.progress || 100),
+    expandedKeys: Array.isArray(value.expandedKeys) ? value.expandedKeys.map(key => String(key || '')).filter(Boolean) : [],
+    cachedAt,
   }
 }
 
@@ -678,6 +714,7 @@ function persistDownloadDraft(key, value) {
       || draft.outputFolderName
       || draft.batchName
       || draft.conflictPolicy !== 'resume'
+      || draft.previewCache
     )
     if (hasDraft) window.sessionStorage.setItem(key, JSON.stringify(draft))
     else window.sessionStorage.removeItem(key)

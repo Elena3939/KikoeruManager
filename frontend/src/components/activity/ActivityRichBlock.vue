@@ -12,10 +12,10 @@
         v-for="hl in highlights"
         :key="`hl-${hl.k}`"
         class="highlight-row"
-        :class="{ 'is-numeric': metricSplit(hl.v).unit }"
+        :class="{ 'is-numeric': metricSplit(hl.v).unit, 'is-wide': isWideHighlight(hl.v) }"
       >
         <dt class="highlight-label">{{ hl.k }}</dt>
-        <dd class="highlight-value">
+        <dd class="highlight-value" :class="{ 'is-short-value': !isWideHighlight(hl.v) }">
           <template v-if="metricSplit(hl.v).unit">
             <span class="highlight-num">{{ metricSplit(hl.v).num }}</span>
             <span class="highlight-unit">{{ metricSplit(hl.v).unit }}</span>
@@ -56,27 +56,27 @@
 
   <!-- 字幕配对工作台跳转卡片 -->
   <section
-    v-if="pairWorkbench"
-    class="panel relative overflow-hidden"
-    :class="pairWorkbench.awaiting ? 'ring-1 ring-inset ring-slate-200/60 bg-slate-50/60' : 'ring-1 ring-inset ring-slate-200/50 bg-slate-50/50'"
+    v-if="showPairWorkbenchPanel"
+    class="panel pair-workbench-card"
+    :class="{ 'is-awaiting': pairWorkbench.awaiting }"
   >
-    <div class="flex items-start gap-3 flex-wrap">
-      <div class="flex-1 min-w-0">
-        <div class="inline-flex items-center gap-1 px-2 py-[3px] rounded-md text-[10px] font-semibold tracking-wide ring-1 ring-inset bg-slate-50/80 text-slate-700 ring-slate-200/60">{{ pairWorkbench.awaiting ? '待继续处理' : '可查看工作台' }}</div>
-        <div class="text-[15px] font-bold tracking-tight text-slate-900 mt-2">{{ pairWorkbench.title }}</div>
-        <p class="text-[12.5px] leading-relaxed text-slate-600 mt-1">{{ pairWorkbench.description }}</p>
-        <div v-if="pairWorkbench.chips.length" class="flex flex-wrap gap-1.5 mt-2.5">
+    <div class="pair-workbench-layout">
+      <div class="pair-workbench-copy">
+        <div class="pair-workbench-badge">{{ pairWorkbench.awaiting ? '待继续处理' : '可查看工作台' }}</div>
+        <div class="pair-workbench-title">{{ pairWorkbench.title }}</div>
+        <p class="pair-workbench-desc">{{ pairWorkbench.description }}</p>
+        <div v-if="pairWorkbench.chips.length" class="pair-workbench-chips">
           <span
             v-for="chip in pairWorkbench.chips"
             :key="`pwc-${chip}`"
-            class="inline-flex items-center px-2 py-[3px] rounded-md text-[11px] font-semibold tracking-tight bg-white/80 text-slate-700 ring-1 ring-inset ring-slate-200/60"
+            class="pair-workbench-chip"
           >{{ chip }}</span>
         </div>
       </div>
       <el-button
         type="primary"
         size="default"
-        class="shrink-0 transition-all hover:-translate-y-0.5 hover:shadow-md"
+        class="pair-workbench-button"
         @click="openSubtitlePairWorkbench"
       >
         <ArrowUpRight :size="14" :stroke-width="2.4" class="mr-1" />
@@ -94,16 +94,25 @@
         class="ml-1 inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset"
         :class="pairStatusClasses(pairResult.status)"
       >{{ pairResult.statusLabel }}</span>
+      <button
+        v-if="pairWorkbench"
+        type="button"
+        class="pair-result-open-btn"
+        @click="openSubtitlePairWorkbench"
+      >
+        <ArrowUpRight :size="12" :stroke-width="2.4" />
+        <span>{{ pairWorkbench.buttonText || '打开配对面板' }}</span>
+      </button>
     </div>
     <p v-if="pairResult.summary" class="text-[12.5px] leading-relaxed text-slate-700 mb-2.5">{{ pairResult.summary }}</p>
-    <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-2.5">
+    <div class="pair-metric-grid">
       <div
         v-for="metric in pairResult.metrics"
         :key="`pr-${metric.label}`"
-        class="px-3 py-2 rounded-lg bg-slate-50/60 ring-1 ring-inset ring-slate-200/40"
+        class="pair-metric-card"
       >
-        <div class="text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-500/80">{{ metric.label }}</div>
-        <div class="text-[14px] font-bold tabular-nums tracking-tight text-slate-800 mt-0.5">{{ metric.value }}</div>
+        <div class="pair-metric-label">{{ metric.label }}</div>
+        <div class="pair-metric-value">{{ metric.value }}</div>
       </div>
     </div>
     <div v-if="pairResult.changes.length" class="flex flex-col gap-1.5">
@@ -797,6 +806,7 @@ const pathCompareReason = m.pathCompareReason
 const pathCompareCls = m.pathCompareCls
 const pairWorkbench = m.pairWorkbench
 const pairResult = m.pairResult
+const showPairWorkbenchPanel = computed(() => Boolean(pairWorkbench.value && (!pairResult.value || pairWorkbench.value.awaiting)))
 const subtitleBatchModel = m.subtitleBatchModel
 const emailWatcherModel = m.emailWatcherModel
 const filterDeleteMetrics = m.filterDeleteMetrics
@@ -828,6 +838,11 @@ function isPathLike(value) {
   // 14 字符以上：也走 footer，免得 stat tile 被字撑爆
   if (s.length > 14) return true
   return false
+}
+
+function isWideHighlight(value) {
+  const s = String(value ?? '').trim()
+  return s.length > 34 || s.includes('/') || s.includes('\\')
 }
 
 const filterDeleteNumeric = computed(() => filterDeleteMetrics.value.filter((it) => !isPathLike(it.v)))
@@ -1092,6 +1107,45 @@ function formatBytes(size) {
   margin-left: 2px;
 }
 
+.pair-result-open-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 0 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(16, 185, 129, 0.24);
+  background: rgba(236, 253, 245, 0.78);
+  color: #047857;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.pair-result-open-btn svg {
+  flex: 0 0 auto;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.pair-result-open-btn:hover {
+  transform: translateY(-2px) scale(1.02);
+  border-color: rgba(16, 185, 129, 0.36);
+  background: rgba(209, 250, 229, 0.92);
+  box-shadow: 0 8px 18px rgba(16, 185, 129, 0.14);
+}
+
+.pair-result-open-btn:hover svg {
+  transform: rotate(8deg);
+}
+
+.pair-result-open-btn:active {
+  transform: scale(0.96);
+}
+
 .panel-toggle {
   margin-left: auto;
   display: inline-flex;
@@ -1116,6 +1170,128 @@ function formatBytes(size) {
   background: rgba(248, 250, 252, 0.96);
   color: #334155;
   border-color: rgba(148, 163, 184, 0.32);
+}
+
+.pair-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(152px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.pair-metric-card {
+  min-width: 0;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(248, 250, 252, 0.74);
+  padding: 9px 10px;
+}
+
+.pair-metric-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: rgba(71, 85, 105, 0.74);
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.pair-metric-value {
+  margin-top: 4px;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pair-workbench-card {
+  border-color: rgba(148, 163, 184, 0.22);
+  background: rgba(248, 250, 252, 0.82);
+}
+
+.pair-workbench-card.is-awaiting {
+  border-color: rgba(16, 185, 129, 0.22);
+  background: rgba(240, 253, 250, 0.72);
+}
+
+.pair-workbench-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pair-workbench-copy {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.pair-workbench-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(255, 255, 255, 0.72);
+  color: #475569;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.pair-workbench-title {
+  margin-top: 8px;
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1.25;
+}
+
+.pair-workbench-desc {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.pair-workbench-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.pair-workbench-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(255, 255, 255, 0.76);
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.pair-workbench-button {
+  flex: 0 0 auto;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.pair-workbench-button:hover {
+  transform: translateY(-2px) scale(1.02);
+}
+
+.pair-workbench-button:active {
+  transform: scale(0.96);
 }
 
 /* ===== 邮件监听新作卡片 =====
@@ -1496,16 +1672,10 @@ function formatBytes(size) {
 /* ===== 关键字段：定义列表 + 细分隔线，告别一个个灰框 ===== */
 .highlight-grid {
   display: grid;
-  grid-template-columns: 1fr;
-  gap: 0;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  column-gap: 28px;
+  row-gap: 0;
   margin: 0;
-}
-
-@media (min-width: 560px) {
-  .highlight-grid {
-    grid-template-columns: 1fr 1fr;
-    column-gap: 28px;
-  }
 }
 
 .highlight-row {
@@ -1516,6 +1686,10 @@ function formatBytes(size) {
   padding: 9px 4px;
   border-bottom: 1px solid rgba(15, 23, 42, 0.05);
   transition: background-color 0.18s ease;
+}
+
+.highlight-row.is-wide {
+  grid-column: 1 / -1;
 }
 
 .highlight-row:hover {
@@ -1555,6 +1729,10 @@ function formatBytes(size) {
   font-variant-numeric: tabular-nums;
   word-break: break-all;
   line-height: 1.5;
+}
+
+.highlight-value:not(.is-short-value) {
+  white-space: normal;
 }
 
 /* 关键字段里数字 + 单位拆分（与 metric-strip 同语言但更小） */
@@ -1680,6 +1858,89 @@ function formatBytes(size) {
 :global(html.kikoerumanager-dark) .highlight-row:hover,
 :global(html.kikoerumanager-dark) .tree-row:hover {
   background: #17181d;
+}
+
+:global(html.kikoerumanager-dark .activity-detail-panel .pair-metric-card),
+:global(html.dark .activity-detail-panel .pair-metric-card),
+:global(html.kikoerumanager-dark) .pair-metric-card,
+:global(html.dark) .pair-metric-card {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  background: #17181d !important;
+}
+
+:global(html.kikoerumanager-dark .activity-detail-panel .pair-metric-label),
+:global(html.dark .activity-detail-panel .pair-metric-label),
+:global(html.kikoerumanager-dark) .pair-metric-label,
+:global(html.dark) .pair-metric-label {
+  color: rgba(212, 212, 216, 0.66) !important;
+}
+
+:global(html.kikoerumanager-dark .activity-detail-panel .pair-metric-value),
+:global(html.dark .activity-detail-panel .pair-metric-value),
+:global(html.kikoerumanager-dark) .pair-metric-value,
+:global(html.dark) .pair-metric-value {
+  color: #f4f4f5 !important;
+}
+
+:global(html.kikoerumanager-dark .activity-detail-panel .pair-workbench-card),
+:global(html.dark .activity-detail-panel .pair-workbench-card),
+:global(html.kikoerumanager-dark) .pair-workbench-card,
+:global(html.dark) .pair-workbench-card {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  background: #111216 !important;
+}
+
+:global(html.kikoerumanager-dark .activity-detail-panel .pair-workbench-card.is-awaiting),
+:global(html.dark .activity-detail-panel .pair-workbench-card.is-awaiting),
+:global(html.kikoerumanager-dark) .pair-workbench-card.is-awaiting,
+:global(html.dark) .pair-workbench-card.is-awaiting {
+  border-color: rgba(16, 185, 129, 0.28) !important;
+  background: #101714 !important;
+}
+
+:global(html.kikoerumanager-dark .activity-detail-panel .pair-workbench-title),
+:global(html.dark .activity-detail-panel .pair-workbench-title),
+:global(html.kikoerumanager-dark) .pair-workbench-title,
+:global(html.dark) .pair-workbench-title {
+  color: #f4f4f5 !important;
+}
+
+:global(html.kikoerumanager-dark .activity-detail-panel .pair-workbench-desc),
+:global(html.dark .activity-detail-panel .pair-workbench-desc),
+:global(html.kikoerumanager-dark) .pair-workbench-desc,
+:global(html.dark) .pair-workbench-desc {
+  color: rgba(212, 212, 216, 0.72) !important;
+}
+
+:global(html.kikoerumanager-dark .activity-detail-panel .pair-workbench-badge),
+:global(html.dark .activity-detail-panel .pair-workbench-badge),
+:global(html.kikoerumanager-dark .activity-detail-panel .pair-workbench-chip),
+:global(html.dark .activity-detail-panel .pair-workbench-chip),
+:global(html.kikoerumanager-dark) .pair-workbench-badge,
+:global(html.dark) .pair-workbench-badge,
+:global(html.kikoerumanager-dark) .pair-workbench-chip,
+:global(html.dark) .pair-workbench-chip {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  background: #202126 !important;
+  color: #d7dde7 !important;
+}
+
+:global(html.kikoerumanager-dark .activity-detail-panel .pair-result-open-btn),
+:global(html.dark .activity-detail-panel .pair-result-open-btn),
+:global(html.kikoerumanager-dark) .pair-result-open-btn,
+:global(html.dark) .pair-result-open-btn {
+  border-color: rgba(16, 185, 129, 0.3) !important;
+  background: rgba(16, 185, 129, 0.12) !important;
+  color: #86efac !important;
+  box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark .activity-detail-panel .pair-result-open-btn:hover),
+:global(html.dark .activity-detail-panel .pair-result-open-btn:hover),
+:global(html.kikoerumanager-dark) .pair-result-open-btn:hover,
+:global(html.dark) .pair-result-open-btn:hover {
+  border-color: rgba(16, 185, 129, 0.42) !important;
+  background: rgba(16, 185, 129, 0.18) !important;
 }
 
 :global(html.kikoerumanager-dark) .panel-toggle,

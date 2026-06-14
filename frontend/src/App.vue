@@ -2486,7 +2486,7 @@ html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .glass-shell,
 html.kikoerumanager-dark .mojibake-preview-dialog.el-dialog,
 html.kikoerumanager-dark .mojibake-preview-dialog .window,
 html.kikoerumanager-dark .mojibake-preview-dialog .glass-shell {
-  background: #111216 !important;
+  background: #121212 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.12) !important;
   color: var(--km-dark-text) !important;
@@ -2501,7 +2501,7 @@ html.kikoerumanager-dark .mojibake-preview-dialog .window-header,
 html.kikoerumanager-dark .mojibake-preview-dialog .fm-body,
 html.kikoerumanager-dark .mojibake-preview-dialog .toolbar-row,
 html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-footer {
-  background: #17181d !important;
+  background: #181818 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.1) !important;
   color: var(--km-dark-text) !important;
@@ -2521,7 +2521,7 @@ html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-card,
 html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-empty,
 html.kikoerumanager-dark .mojibake-preview-dialog .fm-badge,
 html.kikoerumanager-dark .mojibake-preview-dialog .fm-count-pill {
-  background: #1d1e23 !important;
+  background: #202020 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.12) !important;
   color: var(--km-dark-text) !important;
@@ -2531,7 +2531,7 @@ html.kikoerumanager-dark .mojibake-preview-dialog .fm-count-pill {
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-row:hover,
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-row-selected,
 html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-card:hover {
-  background: #333438 !important;
+  background: #343434 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.14) !important;
   color: var(--km-dark-text-strong) !important;
@@ -2543,7 +2543,7 @@ html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .close-button
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .row-action,
 html.kikoerumanager-dark .mojibake-preview-dialog .action-card,
 html.kikoerumanager-dark .mojibake-preview-dialog .close-button {
-  background: #2b2c30 !important;
+  background: #2c2c2c !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.15) !important;
   color: var(--km-dark-text) !important;
@@ -2555,7 +2555,7 @@ html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .close-button
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .row-action:hover:not(:disabled),
 html.kikoerumanager-dark .mojibake-preview-dialog .action-card:hover:not(:disabled),
 html.kikoerumanager-dark .mojibake-preview-dialog .close-button:hover {
-  background: #333438 !important;
+  background: #343434 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.22) !important;
   color: var(--km-dark-text-strong) !important;
@@ -3121,10 +3121,10 @@ html.kikoerumanager-dark .server-upload-preview-modal .window {
 
 html.kikoerumanager-dark .lib-move-modal .window {
   background:
-    linear-gradient(180deg, rgba(29, 30, 35, 0.96), rgba(14, 15, 18, 0.98)),
-    #111216 !important;
+    linear-gradient(180deg, rgba(28, 28, 28, 0.96), rgba(14, 14, 14, 0.98)),
+    #121212 !important;
   background-image:
-    linear-gradient(180deg, rgba(29, 30, 35, 0.96), rgba(14, 15, 18, 0.98)) !important;
+    linear-gradient(180deg, rgba(28, 28, 28, 0.96), rgba(14, 14, 14, 0.98)) !important;
   border: 1px solid rgba(255, 255, 255, 0.14) !important;
   outline: 1px solid rgba(255, 255, 255, 0.045) !important;
   outline-offset: -2px !important;
@@ -6455,10 +6455,10 @@ html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .glass-shell,
 html.kikoerumanager-dark .mojibake-preview-dialog .window,
 html.kikoerumanager-dark .mojibake-preview-dialog .glass-shell {
   background:
-    linear-gradient(180deg, rgba(29, 30, 35, 0.96), rgba(14, 15, 18, 0.98)),
-    #111216 !important;
+    linear-gradient(180deg, rgba(28, 28, 28, 0.96), rgba(14, 14, 14, 0.98)),
+    #121212 !important;
   background-image:
-    linear-gradient(180deg, rgba(29, 30, 35, 0.96), rgba(14, 15, 18, 0.98)) !important;
+    linear-gradient(180deg, rgba(28, 28, 28, 0.96), rgba(14, 14, 14, 0.98)) !important;
   border: 1px solid rgba(255, 255, 255, 0.12) !important;
   outline: 1px solid rgba(255, 255, 255, 0.04) !important;
   outline-offset: -2px !important;
@@ -6485,7 +6485,8 @@ html.kikoerumanager-dark .mojibake-preview-dialog .window-header,
 html.kikoerumanager-dark .mojibake-preview-dialog .fm-body,
 html.kikoerumanager-dark .mojibake-preview-dialog .toolbar-row,
 html.kikoerumanager-dark .mojibake-preview-dialog .repair-preview-footer {
-  background: #17181d !important;
+  background: #181818 !important;
+  background-color: #181818 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.1) !important;
   color: rgba(244, 244, 245, 0.9) !important;
@@ -6511,7 +6512,8 @@ html.kikoerumanager-dark .mojibake-preview-dialog :is(
   .fm-badge,
   .fm-count-pill
 ) {
-  background: #1d1e23 !important;
+  background: #202020 !important;
+  background-color: #202020 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.12) !important;
   outline: 1px solid rgba(255, 255, 255, 0.035) !important;
@@ -6540,7 +6542,8 @@ html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-row {
 }
 
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-row:hover {
-  background: #2b2c30 !important;
+  background: #2c2c2c !important;
+  background-color: #2c2c2c !important;
   background-image: none !important;
   border-color: transparent !important;
   color: rgba(250, 250, 252, 0.94) !important;
@@ -6548,7 +6551,8 @@ html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-row:hov
 }
 
 html.kikoerumanager-dark .folder-dialog:not(.filter-delete-dialog) .tree-row-selected {
-  background: #333438 !important;
+  background: #343434 !important;
+  background-color: #343434 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.14) !important;
   color: rgba(250, 250, 252, 0.96) !important;
@@ -6563,7 +6567,8 @@ html.kikoerumanager-dark .mojibake-preview-dialog :is(
   .action-card,
   .close-button
 ) {
-  background: #2b2c30 !important;
+  background: #2c2c2c !important;
+  background-color: #2c2c2c !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.15) !important;
   color: rgba(244, 244, 245, 0.88) !important;
@@ -6579,7 +6584,8 @@ html.kikoerumanager-dark .mojibake-preview-dialog :is(
   .action-card:hover:not(:disabled),
   .close-button:hover
 ) {
-  background: #333438 !important;
+  background: #343434 !important;
+  background-color: #343434 !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.22) !important;
   color: rgba(250, 250, 252, 0.96) !important;
@@ -7328,6 +7334,119 @@ html.kikoerumanager-dark .server-upload-preview-modal .tree-row-selected:hover {
   background: rgba(255, 255, 255, 0.062) !important;
   border-color: rgba(255, 255, 255, 0.13) !important;
   box-shadow: none !important;
+}
+
+/* 文件管理弹窗最终去蓝：统一 toolbar、表头和内容面板为中性黑灰。 */
+:is(html.kikoerumanager-dark, html.dark, body.kikoerumanager-dark, body.dark) :is(
+  .el-dialog.custom-preview-modal.folder-dialog:not(.filter-delete-dialog),
+  .custom-preview-modal.folder-dialog:not(.filter-delete-dialog),
+  .mojibake-preview-dialog
+) :is(.window, .glass-shell) {
+  background: #121212 !important;
+  background-color: #121212 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+:is(html.kikoerumanager-dark, html.dark, body.kikoerumanager-dark, body.dark) :is(
+  .el-dialog.custom-preview-modal.folder-dialog:not(.filter-delete-dialog),
+  .custom-preview-modal.folder-dialog:not(.filter-delete-dialog),
+  .mojibake-preview-dialog
+) :is(
+  .window-header,
+  .fm-body,
+  .toolbar-row,
+  .tree-head,
+  .repair-preview-footer
+) {
+  background: #181818 !important;
+  background-color: #181818 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.095) !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  filter: none !important;
+}
+
+:is(html.kikoerumanager-dark, html.dark, body.kikoerumanager-dark, body.dark) :is(
+  .el-dialog.custom-preview-modal.folder-dialog:not(.filter-delete-dialog),
+  .custom-preview-modal.folder-dialog:not(.filter-delete-dialog),
+  .mojibake-preview-dialog
+) :is(
+  .glass-panel,
+  .glass-card,
+  .tree-panel,
+  .selection-card,
+  .search-shell,
+  .fm-badge,
+  .fm-count-pill,
+  .repair-preview-card,
+  .repair-preview-empty
+) {
+  background: #202020 !important;
+  background-color: #202020 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  filter: none !important;
+}
+
+:is(html.kikoerumanager-dark, html.dark, body.kikoerumanager-dark, body.dark) :is(
+  .el-dialog.custom-preview-modal.folder-dialog:not(.filter-delete-dialog),
+  .custom-preview-modal.folder-dialog:not(.filter-delete-dialog),
+  .mojibake-preview-dialog
+) .tree-scroll {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+:is(html.kikoerumanager-dark, html.dark, body.kikoerumanager-dark, body.dark) :is(
+  .el-dialog.custom-preview-modal.folder-dialog:not(.filter-delete-dialog),
+  .custom-preview-modal.folder-dialog:not(.filter-delete-dialog),
+  .mojibake-preview-dialog
+) :is(.tree-row:hover, .tree-row-selected) {
+  background: #2c2c2c !important;
+  background-color: #2c2c2c !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  box-shadow: none !important;
+}
+
+/* 文件管理弹窗最终去蓝：压过 #app [class*="border-slate-200"] 这类全局暗色规则。 */
+html.kikoerumanager-dark body #app .folder-dialog:not(.filter-delete-dialog) :is(
+  .toolbar-row,
+  .tree-head
+),
+html.dark body #app .folder-dialog:not(.filter-delete-dialog) :is(
+  .toolbar-row,
+  .tree-head
+),
+html.kikoerumanager-dark body #app .mojibake-preview-dialog .toolbar-row,
+html.dark body #app .mojibake-preview-dialog .toolbar-row {
+  background: #181818 !important;
+  background-color: #181818 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  box-shadow: none !important;
+  filter: none !important;
+}
+
+html.kikoerumanager-dark body #app .folder-dialog:not(.filter-delete-dialog) .search-input,
+html.dark body #app .folder-dialog:not(.filter-delete-dialog) .search-input,
+html.kikoerumanager-dark body #app .mojibake-preview-dialog .repair-preview-input,
+html.dark body #app .mojibake-preview-dialog .repair-preview-input {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  outline: 0 !important;
 }
 
 </style>

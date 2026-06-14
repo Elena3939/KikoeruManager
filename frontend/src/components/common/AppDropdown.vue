@@ -446,8 +446,11 @@ defineExpose({ close: () => (open.value = false) })
 }
 
 .app-dd-trigger-icon {
+  width: 14px;
+  height: 14px;
   flex-shrink: 0;
   color: var(--app-dd-muted-text);
+  object-fit: contain;
 }
 
 .app-dd-trigger-label {
@@ -620,8 +623,11 @@ defineExpose({ close: () => (open.value = false) })
 }
 
 .app-dd-item-icon {
+  width: 14px;
+  height: 14px;
   flex-shrink: 0;
   color: var(--app-dd-muted-text);
+  object-fit: contain;
 }
 .app-dd-item.is-active .app-dd-item-icon {
   color: var(--app-dd-item-active-text);

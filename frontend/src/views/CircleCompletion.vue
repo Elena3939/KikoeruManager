@@ -112,10 +112,12 @@
               :class="{ active: activeCircleId === circle.circle_id, 'has-new-work': (circle.new_works_48h_count || 0) > 0 }"
               @click="selectCircle(circle.circle_id)"
             >
-              <span v-if="(circle.new_works_48h_count || 0) > 0" class="circle-corner-new-badge">NEW</span>
               <div class="circle-list-header">
                 <div class="circle-list-name">
-                  <span class="circle-list-name-text">{{ circle.circle_name || circle.circle_id }}</span>
+                  <span class="circle-list-name-shell" :class="{ 'has-title-new-badge': (circle.new_works_48h_count || 0) > 0 }">
+                    <span class="circle-list-name-text">{{ circle.circle_name || circle.circle_id }}</span>
+                    <span v-if="(circle.new_works_48h_count || 0) > 0" class="circle-title-new-badge">NEW</span>
+                  </span>
                 </div>
                 <div class="circle-list-id">{{ circle.circle_id }}</div>
               </div>
@@ -139,7 +141,10 @@
               </div>
               <div v-if="(circle.unreleased_count > 0) || (circle.new_works_48h_count > 0)" class="circle-list-tag-row">
                 <span v-if="circle.unreleased_count > 0" class="circle-list-tag unreleased"><Calendar :size="9" /> {{ circle.unreleased_count }} 未发售</span>
-                <span v-if="(circle.new_works_48h_count || 0) > 0" class="circle-list-tag new-work"><Mail :size="9" /> {{ circle.new_works_48h_count }} 新作</span>
+                <span v-if="(circle.new_works_48h_count || 0) > 0" class="circle-list-tag new-work">
+                  <Mail :size="9" />
+                  {{ circle.new_works_48h_count }} 新作
+                </span>
               </div>
               <div v-if="circle.last_indexed_at" class="circle-list-refresh-row">
                 <Clock :size="9" /> {{ formatDateTime(circle.last_indexed_at) }}
@@ -5415,9 +5420,9 @@ function getUploadBackgroundTargetLabel(task) {
   box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
 .circle-list-item.has-new-work {
-  border-color: color-mix(in srgb, var(--circle-tag-success, #059669) 18%, transparent);
+  border-color: color-mix(in srgb, var(--circle-tag-success, #059669) 18%, var(--circle-border-soft, #e2e8f0));
   background:
-    radial-gradient(circle at 18px 14px, color-mix(in srgb, var(--circle-tag-success, #059669) 10%, transparent), transparent 34px),
+    linear-gradient(90deg, color-mix(in srgb, var(--circle-tag-success, #059669) 3%, transparent), transparent 48%),
     var(--circle-surface-elevated, #fff);
 }
 .circle-list-item:hover {
@@ -5428,9 +5433,9 @@ function getUploadBackgroundTargetLabel(task) {
 }
 .circle-list-item.has-new-work:hover {
   background:
-    radial-gradient(circle at 18px 14px, color-mix(in srgb, var(--circle-tag-success, #059669) 14%, transparent), transparent 36px),
+    linear-gradient(90deg, color-mix(in srgb, var(--circle-tag-success, #059669) 5%, transparent), transparent 52%),
     var(--circle-hover-bg, #ffffff);
-  border-color: color-mix(in srgb, var(--circle-tag-success, #059669) 30%, var(--circle-border-strong, #cbd5e1));
+  border-color: color-mix(in srgb, var(--circle-tag-success, #059669) 28%, var(--circle-border-strong, #cbd5e1));
 }
 .circle-list-item.active {
   background: var(--circle-selected-bg, #eff6ff);
@@ -5464,9 +5469,20 @@ function getUploadBackgroundTargetLabel(task) {
   color: var(--circle-text-strong, #111827);
   line-height: 1.4;
   white-space: nowrap;
-  overflow: hidden;
+  overflow: visible;
   text-overflow: ellipsis;
   flex: 1;
+}
+.circle-list-name-shell {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  min-width: 0;
+  padding-top: 9px;
+  vertical-align: top;
+}
+.circle-list-name-shell.has-title-new-badge {
+  padding-right: 30px;
 }
 .circle-list-name-text {
   display: block;
@@ -5475,53 +5491,24 @@ function getUploadBackgroundTargetLabel(task) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.circle-corner-new-badge {
-  position: absolute;
-  top: -9px;
-  left: 9px;
-  z-index: 3;
+.circle-title-new-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 18px;
-  padding: 0 9px;
+  position: absolute;
+  top: -1px;
+  right: 0;
+  height: 12px;
+  padding: 0 4px;
   border-radius: 999px;
-  font-size: 9px;
-  font-weight: 800;
+  border: 1px solid color-mix(in srgb, var(--circle-tag-success, #059669) 26%, transparent);
+  background: color-mix(in srgb, var(--circle-tag-success, #059669) 10%, var(--circle-surface-elevated, #fff));
+  color: color-mix(in srgb, var(--circle-tag-success, #059669) 88%, var(--circle-text-strong, #111827));
+  font-size: 7px;
+  font-weight: 850;
   line-height: 1;
-  letter-spacing: .08em;
-  color: #fff;
-  background:
-    linear-gradient(135deg, #34d399 0%, var(--circle-tag-success, #059669) 72%, #047857 100%);
-  border: 1px solid color-mix(in srgb, var(--circle-tag-success, #059669) 42%, #ffffff);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.38),
-    0 8px 16px color-mix(in srgb, var(--circle-tag-success, #059669) 20%, transparent);
+  letter-spacing: .04em;
   pointer-events: none;
-}
-.circle-corner-new-badge::before {
-  content: '';
-  position: absolute;
-  left: -7px;
-  top: 7px;
-  width: 10px;
-  height: 19px;
-  border-radius: 8px 0 0 8px;
-  background: linear-gradient(180deg, #10b981 0%, #047857 100%);
-  transform: skewY(-17deg);
-  z-index: -1;
-  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.2);
-}
-.circle-corner-new-badge::after {
-  content: '';
-  position: absolute;
-  left: 1px;
-  bottom: -5px;
-  width: 0;
-  height: 0;
-  border-top: 5px solid #047857;
-  border-left: 7px solid transparent;
-  filter: drop-shadow(0 2px 2px rgba(5, 150, 105, 0.14));
 }
 .circle-list-id {
   font-size: 11px;

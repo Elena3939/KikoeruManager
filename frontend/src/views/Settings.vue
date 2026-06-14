@@ -121,7 +121,7 @@
         v-else-if="activeSection === 'system'"
         kicker="Runtime System"
         title="系统运行"
-        description="集中配置 SQLite WAL / synchronous、连接池、资源预算和数据库现场健康检查。"
+        description="集中配置 PostgreSQL 连接池、语句超时、资源预算和数据库现场健康检查。"
       >
         <SystemSettingsPanel :config="config" />
       </SettingsSectionPanel>
@@ -139,7 +139,7 @@
         v-else-if="activeSection === 'fts'"
         kicker="Full-Text Search"
         title="全文搜索索引"
-        description="管理 SQLite FTS5 全文搜索索引。trigram tokenizer 支持中文任意片段搜索，unicode61 仅支持英文前缀。重建期间搜索自动降级，功能不中断。"
+        description="管理 PostgreSQL pg_trgm 搜索索引。支持中文任意片段搜索，重建期间功能不中断。"
       >
         <FtsSettingsPanel />
       </SettingsSectionPanel>
@@ -268,9 +268,9 @@ const sections = [
   { id: 'aiSubtitle', title: 'AI 配对', short: '模型、Key、提示词、阈值', icon: Bot, keywords: ['ai', 'subtitle', 'match', 'model', 'prompt', '字幕配对', '模型', '提示词'] },
   { id: 'httpDownload', title: 'HTTP 下载', short: 'HTTP、Gofile、PikPak', icon: DownloadCloud, keywords: ['http', 'download', 'aria2', 'gofile', 'pikpak', '外链下载'] },
   { id: 'baiduNetdisk', title: '百度网盘', short: '官方登录、分享直下、SVIP', icon: BaiduNetdiskNavIcon, keywords: ['baidu', '百度网盘', '分享直下', 'SVIP', '百度'] },
-  { id: 'system', title: '系统运行', short: 'SQLite、连接池、资源预算', icon: ServerCog, keywords: ['system', 'runtime', 'sqlite', 'wal', 'synchronous', 'pool', 'resource_budget', '系统', '连接池', '资源预算'] },
+  { id: 'system', title: '系统运行', short: 'PostgreSQL、连接池、资源预算', icon: ServerCog, keywords: ['system', 'runtime', 'postgresql', 'pool', 'resource_budget', '系统', '连接池', '资源预算'] },
   { id: 'maintenance', title: '维护与清理', short: '清理、备份、压缩包', icon: LifeBuoy, keywords: ['cleanup', 'backup', 'archive', '维护'] },
-  { id: 'fts', title: '全文搜索索引', short: 'FTS5 trigram 加速', icon: TextSearch, keywords: ['fts', 'search', 'trigram', '索引', '全文搜索', 'sqlite'] },
+  { id: 'fts', title: '全文搜索索引', short: 'pg_trgm 加速', icon: TextSearch, keywords: ['search', 'trigram', 'pg_trgm', '索引', '全文搜索', 'postgresql'] },
   { id: 'security', title: '安全门禁', short: '验证器、黑名单', icon: ShieldCheck, keywords: ['security', 'google authenticator', '门禁', '黑名单'] },
   { id: 'notification', title: '通知中心', short: 'SMTP 邮件、站内铃铛', icon: Bell, keywords: ['notification', 'smtp', 'email', '通知', '邮件', '铃铛'] }
 ]

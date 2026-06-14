@@ -291,7 +291,14 @@ function resolveSubtitleTaskId(row) {
 
 function resolveSubtitleFolderPath(row) {
   const p = pairDetailRow(row)
-  return pickFirstNonEmpty(safeDetail(row).folder_path, safeDetail(p).folder_path, row?.source_path, p?.source_path)
+  return pickFirstNonEmpty(
+    safeDetail(row).target_folder_path,
+    safeDetail(row).folder_path,
+    safeDetail(p).target_folder_path,
+    safeDetail(p).folder_path,
+    row?.source_path,
+    p?.source_path,
+  )
 }
 
 function resolveSubtitleLibraryId(row) {
@@ -529,7 +536,15 @@ const HIGHLIGHT_LABELS = {
   rjcode: 'RJ', source_rjcode: '来源 RJ', target_rjcode: '目标 RJ',
   linked_source_rjcode: '关联来源 RJ', linked_target_rjcode: '关联目标 RJ',
   downloaded_count: '抓取字幕数', written_files_count: '写入字幕数',
-  awaiting_manual_match: '待手动配对', output_path: '输出目录',
+  staged_subtitle_count: '暂存字幕数', applied_pairs: '已配对组数',
+  manual_match_applied_pairs: '已配对组数', deleted_subtitles: '删除字幕数',
+  manual_match_deleted_subtitles: '删除字幕数', naming_strategy: '命名策略',
+  awaiting_manual_match: '待手动配对', manual_match_completed: '配对已完成',
+  task_id: '任务 ID', output_path: '输出目录',
+  preview_source_path: '预检来源', source_subtitle_dir: '来源字幕目录',
+  staged_subtitle_dir: '暂存字幕目录', target_folder_path: '目标作品目录',
+  subtitle_dir: '字幕工作目录', library_id: '库存 ID',
+  subtitle_library_id: '字幕库存 ID',
   source_basename: '压缩包文件', archive_size_bytes: '压缩包大小',
   extract_output_bytes: '解压产物大小', filtered_count: '过滤文件数',
   filtered_size: '过滤体积', final_file_count: '最终文件数', record_id: '记录 ID',
@@ -566,20 +581,68 @@ const HIGHLIGHT_BYTE_KEYS = new Set([
   'aggregate_extract_output_bytes', 'aggregate_filtered_size', 'uploaded_bytes', 'downloaded_bytes', 'size_bytes',
 ])
 
+const SUBTITLE_IMPORT_HIGHLIGHT_KEYS = [
+  'source_rjcode',
+  'target_rjcode',
+  'rjcode',
+  'final_file_count',
+  'staged_subtitle_count',
+  'downloaded_count',
+  'written_files_count',
+  'applied_pairs',
+  'manual_match_applied_pairs',
+  'deleted_subtitles',
+  'manual_match_deleted_subtitles',
+  'naming_strategy',
+  'awaiting_manual_match',
+  'manual_match_completed',
+  'target_folder_path',
+  'subtitle_dir',
+  'preview_source_path',
+  'source_subtitle_dir',
+  'staged_subtitle_dir',
+  'record_id',
+  'task_id',
+]
+
+function normalizeHighlightValue(key, value) {
+  if (key === 'duration_ms' || key === 'batch_duration_ms') return formatDurationMs(value)
+  if (key === 'awaiting_manual_match') return value ? '是' : '否'
+  if (key === 'manual_match_completed') return value ? '是' : '否'
+  if (key === 'naming_strategy') {
+    const strategy = String(value || '').trim()
+    if (strategy === 'audio') return '按音频名'
+    if (strategy === 'subtitle') return '按字幕名'
+    return strategy
+  }
+  if (HIGHLIGHT_BYTE_KEYS.has(key)) return formatBytes(value)
+  if (key === 'average_upload_speed_bytes') return `${formatBytes(value)}/s`
+  if (key.includes('rjcode')) return normalizeRjcode(value)
+  return value
+}
+
 function detailHighlights(row) {
   const d = row?.detail
   if (!d || typeof d !== 'object') return []
   const out = []
-  for (const k of Object.keys(HIGHLIGHT_LABELS)) {
-    if (d[k] === undefined || d[k] === null) continue
+  const keys = String(row?.category || '').trim() === 'subtitle_import'
+    ? [...SUBTITLE_IMPORT_HIGHLIGHT_KEYS, ...Object.keys(HIGHLIGHT_LABELS)]
+    : Object.keys(HIGHLIGHT_LABELS)
+  const pushed = new Set()
+  const pushedLabels = new Set()
+  for (const k of keys) {
+    if (pushed.has(k)) continue
+    const label = HIGHLIGHT_LABELS[k] || k
+    if (pushedLabels.has(label)) continue
     let value = d[k]
-    if (k === 'duration_ms' || k === 'batch_duration_ms') value = formatDurationMs(value)
-    else if (k === 'awaiting_manual_match') value = value ? '是' : '否'
-    else if (HIGHLIGHT_BYTE_KEYS.has(k)) value = formatBytes(value)
-    else if (k === 'average_upload_speed_bytes') value = `${formatBytes(value)}/s`
-    else if (k.includes('rjcode')) value = normalizeRjcode(value)
+    if ((value === undefined || value === null || value === '') && k === 'rjcode') value = row?.rjcode
+    if ((value === undefined || value === null || value === '') && k === 'task_id') value = row?.task_id
+    if (value === undefined || value === null) continue
+    value = normalizeHighlightValue(k, value)
     if (!String(value || '').trim()) continue
-    out.push({ k: HIGHLIGHT_LABELS[k], v: String(value) })
+    pushed.add(k)
+    pushedLabels.add(label)
+    out.push({ k: label, v: String(value) })
     if (out.length >= 12) break
   }
   return out
