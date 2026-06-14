@@ -206,8 +206,9 @@
                   :key="row.key"
                   class="download-tree-row"
                   :class="{
-                    bad: !row.ok,
+                    bad: isPreviewTreeRowBad(row),
                     selected: isPreviewTreeRowSelected(row),
+                    'is-platform': row.isPlatform,
                     'is-dir': row.isDir,
                     'is-file': !row.isDir,
                     'is-root-leaf': !row.isDir && row.depth <= 0,
@@ -231,7 +232,7 @@
                   <span v-else class="download-tree-toggle placeholder" aria-hidden="true"></span>
 
                   <button
-                    v-if="row.selectable || !row.ok"
+                    v-if="!row.isDir && (row.selectable || !row.ok)"
                     type="button"
                     class="download-list-check relative flex size-4 shrink-0 items-center justify-center rounded-[4px] border"
                     :class="previewTreeSelectionClass(row)"
@@ -242,50 +243,51 @@
                   </button>
                   <span v-else class="download-tree-check-placeholder" aria-hidden="true"></span>
 
-                  <span v-if="!row.ok" class="http-preview-error-icon">
+                  <span v-if="isPreviewTreeRowBad(row)" class="http-preview-error-icon">
                     <AlertTriangle :size="16" :stroke-width="2.4" />
                   </span>
                   <span v-else class="http-preview-error-placeholder" aria-hidden="true"></span>
 
-                  <Folder v-if="row.isDir" class="download-tree-kind-icon" :size="18" :stroke-width="2.35" />
+                  <span
+                    v-if="row.isPlatform"
+                    class="http-source-icon download-tree-platform-icon"
+                    :class="`is-${sourceKey(row.source)}`"
+                    :title="sourceLabel(row.source)"
+                    :aria-label="sourceLabel(row.source)"
+                  >
+                    <img
+                      v-if="sourceIcon(row.source) && !isSourceIconFailed(row.source)"
+                      :src="sourceIcon(row.source)"
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                      @error="markSourceIconFailed(row.source)"
+                    >
+                    <svg
+                      v-else-if="sourceKey(row.source) === 'gofile'"
+                      class="http-source-fallback-gofile"
+                      viewBox="0 0 32 32"
+                      aria-hidden="true"
+                    >
+                      <path d="M2 19.2h10.7l-.5 2.2H2z" fill="#f2b705" opacity=".88" />
+                      <path d="M5.2 14.6h11.5l-.5 2.2H5.2z" fill="#f2b705" opacity=".92" />
+                      <path d="M9.8 10h12l-.5 2.2H9.8z" fill="#f2b705" />
+                      <path d="M14.1 5.8h8.9l3 3v13.5H14.1z" fill="#f8fafc" />
+                      <path d="M22.9 5.8v3.1H26z" fill="#cbd5e1" />
+                      <path d="M8.5 12.7h12.7l2-2.4h6.2l-3.6 15.9H10.4z" fill="#f3b51b" />
+                    </svg>
+                    <Globe2 v-else :size="15" :stroke-width="2.2" />
+                  </span>
+                  <Folder v-else-if="row.isDir" class="download-tree-kind-icon" :size="18" :stroke-width="2.35" />
                   <FileIcon v-else class="download-tree-kind-icon" :size="18" :stroke-width="2.35" />
 
                   <div class="download-tree-main">
                     <div class="download-tree-name-line">
-                      <span
-                        class="http-source-icon"
-                        :class="`is-${sourceKey(row.source)}`"
-                        :title="sourceLabel(row.source)"
-                        :aria-label="sourceLabel(row.source)"
-                      >
-                        <img
-                          v-if="sourceIcon(row.source) && !isSourceIconFailed(row.source)"
-                          :src="sourceIcon(row.source)"
-                          alt=""
-                          loading="lazy"
-                          decoding="async"
-                          @error="markSourceIconFailed(row.source)"
-                        >
-                        <svg
-                          v-else-if="sourceKey(row.source) === 'gofile'"
-                          class="http-source-fallback-gofile"
-                          viewBox="0 0 32 32"
-                          aria-hidden="true"
-                        >
-                          <path d="M2 19.2h10.7l-.5 2.2H2z" fill="#f2b705" opacity=".88" />
-                          <path d="M5.2 14.6h11.5l-.5 2.2H5.2z" fill="#f2b705" opacity=".92" />
-                          <path d="M9.8 10h12l-.5 2.2H9.8z" fill="#f2b705" />
-                          <path d="M14.1 5.8h8.9l3 3v13.5H14.1z" fill="#f8fafc" />
-                          <path d="M22.9 5.8v3.1H26z" fill="#cbd5e1" />
-                          <path d="M8.5 12.7h12.7l2-2.4h6.2l-3.6 15.9H10.4z" fill="#f3b51b" />
-                        </svg>
-                        <Globe2 v-else :size="15" :stroke-width="2.2" />
-                      </span>
                       <span class="download-list-name http-preview-name">{{ row.name }}</span>
+                      <span v-if="row.isDir && row.fileCount" class="http-preview-pass-chip">{{ row.fileCount }} 文件</span>
                       <span v-if="row.customPreview" class="baidu-custom-preview">{{ row.customPreview }}</span>
                     </div>
-                    <div class="http-preview-meta">
-                      <span v-if="row.isDir" class="http-preview-pass-chip">{{ row.fileCount }} 文件</span>
+                    <div v-if="row.volumeGroup || (!row.ok && row.reason) || row.warning || row.passCodeText" class="http-preview-meta">
                       <span v-if="row.volumeGroup" class="http-preview-pass-chip">连续分卷 {{ row.volumeGroup.files.length }}</span>
                       <span v-if="!row.ok" class="http-preview-reason">{{ row.reason }}</span>
                       <span v-else-if="row.warning" class="warn">{{ row.warning }}</span>
@@ -304,7 +306,7 @@
                     </div>
                   </div>
 
-                  <span v-if="!row.isDir && row.size" class="download-list-size text-xs text-slate-400 ml-4 tabular-nums">{{ formatSize(row.size) }}</span>
+                  <span v-if="row.size" class="download-list-size text-xs text-slate-400 ml-4 tabular-nums">{{ formatSize(row.size) }}</span>
                 </div>
               </div>
             </div>
@@ -375,7 +377,7 @@ import {
 } from '../common/httpDownloadPlatformMeta.js'
 
 const DOWNLOAD_PANEL_CONFLICT_POLICIES = ['resume', 'rename', 'skip']
-const DOWNLOAD_PREVIEW_CACHE_VERSION = 2
+const DOWNLOAD_PREVIEW_CACHE_VERSION = 3
 const DOWNLOAD_PREVIEW_CACHE_TTL_MS = 30 * 60 * 1000
 const DOWNLOAD_PREVIEW_CACHE_SESSION_ID = getDownloadPreviewCacheSessionId()
 
@@ -706,19 +708,23 @@ function isBaiduPassCodeLine(value) {
 }
 
 const okPreviewItems = computed(() => previewItems.value.filter(item => item.ok))
-const okPreviewCount = computed(() => okPreviewItems.value.length)
-const previewDownloadFileCount = computed(() => okPreviewItems.value.reduce((sum, item) => sum + previewItemFileCount(item), 0))
-const selectedOkItems = computed(() => okPreviewItems.value.filter(item => selectedPreviewKeys.value.has(previewItemKey(item))))
-const selectedOkCount = computed(() => selectedOkItems.value.length)
-const selectedDownloadFileCount = computed(() => selectedOkItems.value.reduce((sum, item) => sum + previewItemFileCount(item), 0))
-const selectedTotalBytes = computed(() => selectedOkItems.value.reduce((sum, item) => sum + Number(item.size_bytes || item.size || 0), 0))
+const failedPreviewItemCount = computed(() => previewItems.value.filter(item => !item.ok).length)
+const selectablePreviewFileRows = computed(() => previewTreeRows.value.filter(row => row && !row.isDir && row.ok))
+const okPreviewCount = computed(() => selectablePreviewFileRows.value.length || okPreviewItems.value.length)
+const previewDownloadFileCount = computed(() => selectablePreviewFileRows.value.length || okPreviewItems.value.reduce((sum, item) => sum + previewItemFileCount(item), 0))
+const selectedPreviewFileRows = computed(() => selectablePreviewFileRows.value.filter(row => selectedPreviewKeys.value.has(previewRowSelectionKey(row))))
+const selectedOkItems = computed(() => selectedPreviewItemsForStart())
+const selectedOkCount = computed(() => selectedPreviewFileRows.value.length)
+const selectedDownloadFileCount = computed(() => selectedPreviewFileRows.value.length)
+const selectedTotalBytes = computed(() => selectedPreviewFileRows.value.reduce((sum, row) => sum + Number(row.size || 0), 0))
 const allPreviewSelectionState = computed(() => {
   if (!okPreviewCount.value || !selectedOkCount.value) return 'none'
   return selectedOkCount.value === okPreviewCount.value ? 'all' : 'partial'
 })
 const previewSourceChips = computed(() => {
   const map = new Map()
-  okPreviewItems.value.forEach(item => {
+  selectablePreviewFileRows.value.forEach(row => {
+    const item = row.item || {}
     const key = sourceKey(item.source)
     if (!map.has(key)) {
       map.set(key, {
@@ -731,9 +737,9 @@ const previewSourceChips = computed(() => {
       })
     }
     const chip = map.get(key)
-    chip.items.push(item)
+    chip.items.push(row)
     chip.total += 1
-    if (isPreviewItemSelected(item)) chip.selected += 1
+    if (selectedPreviewKeys.value.has(previewRowSelectionKey(row))) chip.selected += 1
   })
   return [...map.values()].map(chip => ({
     ...chip,
@@ -757,8 +763,7 @@ const previewStatusTitle = computed(() => {
 const previewStatusText = computed(() => {
   if (previewing.value) return `正在整理 ${parsedUrls.value.length} 个来源`
   if (!previewItems.value.length) return isBaidu.value ? '分享链接和提取码可分行粘贴，先预览再勾选下载。' : '粘贴多个链接后一行一个，先预览再勾选下载。'
-  const failed = previewItems.value.length - okPreviewCount.value
-  return failed ? `${failed} 项解析失败或不可直接下载` : '解析完成，可以勾选需要下载的项目。'
+  return failedPreviewItemCount.value ? `${failedPreviewItemCount.value} 项解析失败或不可直接下载` : '解析完成，可以勾选需要下载的项目。'
 })
 
 const healthText = computed(() => {
@@ -827,10 +832,10 @@ async function preview(options = {}) {
       previewItems.value = result.items || []
       previewCacheInputSignature.value = previewInputSignature()
       previewNeedsMaterialize.value = true
-      selectedPreviewKeys.value = new Set((result.selected_keys || []).filter(Boolean))
       expandDefaultPreviewTreeRows(previewItems.value)
+      selectAllPreviewTreeFiles()
       previewProgress.value = 100
-      const failedCount = Number(result.failed_count ?? Math.max(0, previewItems.value.length - okPreviewCount.value))
+      const failedCount = Number(result.failed_count ?? failedPreviewItemCount.value)
       const needsPassCodeCount = Number(result.needs_pass_code_count || 0)
       addPreviewLog(
         `解析完成，可下载 ${okPreviewCount.value} 项，失败 ${failedCount} 项，需补提取码 ${needsPassCodeCount} 项`,
@@ -843,7 +848,7 @@ async function preview(options = {}) {
           addPreviewLog(`[失败 ${index + 1}] ${previewItemReason(item)}`, item.requires_pass_code ? 'warning' : 'error')
         })
       if (result.svip_speed) addPreviewLog('当前百度账号为 SVIP，将使用官方登录态直接下载', 'success')
-      if (okPreviewCount.value) ElMessage.success(`可下载 ${okPreviewCount.value} 个分享`)
+      if (okPreviewCount.value) ElMessage.success(`可下载 ${okPreviewCount.value} 个文件`)
       if (needsPassCodeCount) ElMessage.warning(`${needsPassCodeCount} 个分享需要补提取码`)
       else if (!okPreviewCount.value && failedCount) ElMessage.error(previewItemReason(previewItems.value.find(item => !item.ok)) || '百度网盘预览失败')
       persistPreviewCacheFromState()
@@ -862,9 +867,7 @@ async function preview(options = {}) {
         const nextItems = result.items || []
         previewItems.value = [...previewItems.value, ...nextItems]
         if (result.needs_materialize) previewNeedsMaterialize.value = true
-        const nextKeys = new Set(selectedPreviewKeys.value)
-        nextItems.filter(item => item.ok).forEach(item => nextKeys.add(previewItemKey(item)))
-        selectedPreviewKeys.value = nextKeys
+        selectAllPreviewTreeFiles()
         const okCount = nextItems.filter(item => item.ok).length
         addPreviewLog(`[${index + 1}/${urls.length}] ${okCount ? `解析出 ${okCount} 项` : '没有可下载项'}`, okCount ? 'success' : 'warning')
       } catch (error) {
@@ -884,11 +887,11 @@ async function preview(options = {}) {
     previewProgress.value = 100
     previewCacheInputSignature.value = previewInputSignature()
     expandDefaultPreviewTreeRows(previewItems.value)
-    addPreviewLog(`解析完成，可下载 ${okPreviewCount.value} 项，失败 ${previewItems.value.length - okPreviewCount.value} 项`, okPreviewCount.value ? 'success' : 'warning')
+    addPreviewLog(`解析完成，可下载 ${okPreviewCount.value} 项，失败 ${failedPreviewItemCount.value} 项`, okPreviewCount.value ? 'success' : 'warning')
     if (previewNeedsMaterialize.value) addPreviewLog('部分分享链接会在开始下载时通过官方接口解析直链', 'warning')
     if (okPreviewCount.value) ElMessage.success(`可下载 ${okPreviewCount.value} 个链接`)
     if (previewNeedsMaterialize.value) ElMessage.info('部分分享链接会在开始下载时通过官方接口解析直链')
-    if (previewItems.value.length - okPreviewCount.value) ElMessage.warning(`${previewItems.value.length - okPreviewCount.value} 个链接不可直接下载`)
+    if (failedPreviewItemCount.value) ElMessage.warning(`${failedPreviewItemCount.value} 个链接不可直接下载`)
     persistPreviewCacheFromState()
   } finally {
     previewing.value = false
@@ -1046,6 +1049,23 @@ function previewItemReason(item) {
   return reason || warning || '未读取到可下载文件'
 }
 
+function compactBaiduVerificationReason(item) {
+  const reason = String(item?.reason || '').trim()
+  const warning = String(item?.warning || '').trim()
+  if (warning && /验证失败|错误|验证码|安全验证/.test(warning)) return warning
+  return reason || warning || '需要输入提取码'
+}
+
+function isBaiduVerificationFailure(item) {
+  if (!isBaidu.value || !item || item.ok) return false
+  const source = sourceKey(item.source || item.download_mode || sourceFromUrl(item.url || item.masked_url || ''))
+  const reasonText = `${item.reason || ''} ${item.warning || ''}`
+  return source === 'baidu_netdisk' && (
+    Boolean(item.requires_pass_code || item.pass_code_invalid)
+    || /提取码|验证码|安全验证/.test(reasonText)
+  )
+}
+
 function createPreviewTreeNode({
   key,
   name,
@@ -1066,6 +1086,7 @@ function createPreviewTreeNode({
   passCodeWarn = false,
   passCodeEditable = false,
   volumeGroup = null,
+  isPlatform = false,
 }) {
   return {
     key,
@@ -1089,6 +1110,7 @@ function createPreviewTreeNode({
     passCodeWarn,
     passCodeEditable,
     volumeGroup,
+    isPlatform,
   }
 }
 
@@ -1102,65 +1124,77 @@ function buildPreviewTreeRoots(items) {
     }
     roots.push(...buildOkPreviewTreeRoots(item, index))
   })
-  return roots
+  return wrapPreviewRootsByPlatform(roots)
 }
 
 function buildHttpPreviewForest(items) {
   const roots = []
-  const dirRoots = []
+  const platformRoots = new Map()
   ;(items || []).forEach((item, index) => {
-    if (!item || !item.ok) {
-      roots.push(buildFailedPreviewTreeRoot(item, index))
-      return
-    }
-    const pathParts = previewPathParts(item?.relative_path || item?.filename || item?.name || previewItemTitle(item))
     const source = item?.source || sourceFromUrl(item?.url || item?.masked_url || '')
-    if (pathParts.length <= 1) {
-      const node = createPreviewTreeNode({
-        key: `http:${previewItemKey(item) || index}`,
-        name: pathParts[0] || previewItemTitle(item),
-        item,
-        source,
-        path: pathParts[0] || '',
-        warning: item?.warning || '',
-      })
-      decoratePreviewFileNode(node)
-      roots.push(node)
+    const platformRoot = ensurePreviewPlatformRoot(platformRoots, roots, source)
+    if (!item || !item.ok) {
+      const failed = buildFailedPreviewTreeRoot(item, index)
+      failed.parent = platformRoot
+      failed.depth = platformRoot.depth + 1
+      platformRoot.children.push(failed)
       return
     }
-
-    const rootName = pathParts[0]
-    const sourceKeyPart = sourceKey(source)
-    const rootKey = `http-dir:${sourceKeyPart}:${rootName}`
-    let root = dirRoots.find(node => node.key === rootKey)
-    if (!root) {
-      root = createPreviewTreeNode({
-        key: rootKey,
-        name: rootName,
-        isDir: true,
-        item,
-        source,
-        path: rootName,
-      })
-      dirRoots.push(root)
-      roots.push(root)
-    }
-    addFilePathToPreviewTree(root, pathParts.slice(1), item, null, `http:${previewItemKey(item) || index}`, source)
+    const pathParts = collapseDuplicateLeadingPathParts(previewPathParts(item?.relative_path || item?.filename || item?.name || previewItemTitle(item)))
+    addFilePathToPreviewTree(platformRoot, pathParts, item, null, `http:${previewItemKey(item) || index}`, source)
   })
-  dirRoots.forEach(root => decoratePreviewDirNode(root))
+  roots.forEach(root => decoratePreviewDirNode(root))
   return roots
 }
 
+function ensurePreviewPlatformRoot(map, roots, source) {
+  const key = sourceKey(source)
+  if (map.has(key)) return map.get(key)
+  const root = createPreviewTreeNode({
+    key: `platform:${key}`,
+    name: sourceLabel(source),
+    isDir: true,
+    isPlatform: true,
+    source,
+    path: '',
+  })
+  map.set(key, root)
+  roots.push(root)
+  return root
+}
+
+function wrapPreviewRootsByPlatform(nodes) {
+  const roots = []
+  const map = new Map()
+  ;(nodes || []).forEach(node => {
+    const platformRoot = ensurePreviewPlatformRoot(map, roots, node?.source || 'http')
+    node.parent = platformRoot
+    node.depth = platformRoot.depth + 1
+    platformRoot.children.push(node)
+  })
+  roots.forEach(root => decoratePreviewDirNode(root))
+  return roots
+}
+
+function collapseDuplicateLeadingPathParts(parts) {
+  const next = (parts || []).slice()
+  while (next.length > 1 && String(next[0] || '').trim().toLowerCase() === String(next[1] || '').trim().toLowerCase()) {
+    next.splice(1, 1)
+  }
+  return next
+}
+
 function buildFailedPreviewTreeRoot(item, index) {
+  const compactBaiduFailure = isBaiduVerificationFailure(item)
   return createPreviewTreeNode({
     key: `failed:${index}:${previewItemKey(item) || item?.masked_url || item?.url || index}`,
-    name: previewItemTitle(item),
+    name: compactBaiduFailure ? compactBaiduVerificationReason(item) : previewItemTitle(item),
     item,
     source: item?.source || sourceFromUrl(item?.url || item?.masked_url || ''),
     ok: false,
-    reason: previewItemReason(item),
-    warning: item?.warning || '',
-    passCodeText: isBaidu.value && item?.requires_pass_code
+    reason: compactBaiduFailure ? '' : previewItemReason(item),
+    warning: compactBaiduFailure ? '' : (item?.warning || ''),
+    passCodeText: !compactBaiduFailure && isBaidu.value && item?.requires_pass_code
       ? (item.pass_code ? `提取码 ${item.pass_code}` : '缺提取码')
       : '',
     passCodeWarn: Boolean(item?.requires_pass_code || item?.pass_code_invalid),
@@ -1271,15 +1305,22 @@ function addFilePathToPreviewTree(root, parts, item, file, keyBase, source) {
 function decoratePreviewFileNode(node) {
   const item = node.item || {}
   const file = node.file || item
+  const compactBaiduFailure = isBaiduVerificationFailure(item)
   node.isDir = false
   node.selectable = Boolean(item.ok)
   node.ok = Boolean(item.ok)
-  node.reason = node.ok ? '' : previewItemReason(item)
-  node.warning = String(node.warning || item.warning || '').trim()
+  if (compactBaiduFailure) {
+    node.name = compactBaiduVerificationReason(item)
+    node.reason = ''
+    node.warning = ''
+  } else {
+    node.reason = node.ok ? '' : previewItemReason(item)
+    node.warning = String(node.warning || item.warning || '').trim()
+  }
   node.size = Number(file?.size_bytes || file?.size || item?.size_bytes || item?.size || 0)
   node.fileCount = node.ok ? 1 : 0
   node.customPreview = customPreviewForTreeRow(node)
-  node.passCodeText = isBaidu.value && (item.requires_pass_code || item.pass_code)
+  node.passCodeText = !compactBaiduFailure && isBaidu.value && (item.requires_pass_code || item.pass_code)
     ? (item.pass_code ? `提取码 ${item.pass_code}` : '缺提取码')
     : ''
   node.passCodeWarn = Boolean(isBaidu.value && (item.requires_pass_code || item.pass_code_invalid))
@@ -1297,11 +1338,11 @@ function decoratePreviewDirNode(node) {
     else decoratePreviewFileNode(child)
   })
   node.selectable = node.children.some(child => child.selectable)
-  node.ok = node.children.every(child => child.ok)
+  node.ok = node.children.some(child => child.ok)
   node.size = node.children.reduce((sum, child) => sum + Number(child.size || 0), 0)
   node.fileCount = node.children.reduce((sum, child) => sum + Number(child.fileCount || 0), 0)
-  node.volumeGroup = detectContinuousVolumeGroup(collectDirectPreviewFileRows(node))
-  node.customPreview = customPreviewForTreeRow(node)
+  node.volumeGroup = node.isPlatform ? null : detectContinuousVolumeGroup(collectDirectPreviewFileRows(node))
+  node.customPreview = node.isPlatform ? '' : customPreviewForTreeRow(node)
   node.warning = node.warning || ''
   return node
 }
@@ -1374,42 +1415,85 @@ function collectDirectPreviewFileRows(row) {
   return (row.children || []).filter(child => child && !child.isDir && child.ok)
 }
 
-function previewRowSelectionItems(row) {
+function previewRowSelectionRows(row) {
   if (!row?.ok) return []
-  if (!row.isDir) return row.item ? [row.item] : []
-  const items = []
+  if (!row.isDir) return [row]
+  return collectPreviewFileRows(row)
+}
+
+function previewRowSelectionKey(row) {
+  if (!row || row.isDir) return ''
+  const item = row.item || {}
+  const file = row.file || item
+  return [
+    previewItemKey(item),
+    row.path || '',
+    file.fs_id || file.fsid || '',
+    file.path || '',
+    file.relative_path || '',
+    file.name || file.filename || '',
+    row.name || '',
+    row.size || '',
+  ].map(part => String(part || '').trim()).join('|')
+}
+
+function selectedPreviewItemsForStart() {
+  const grouped = new Map()
   const seen = new Set()
-  collectPreviewFileRows(row).forEach(fileRow => {
+  selectedPreviewFileRows.value.forEach(fileRow => {
     const item = fileRow.item
-    const key = previewItemKey(item)
-    if (!item || !key || seen.has(key)) return
-    seen.add(key)
-    items.push(item)
+    if (!item) return
+    const itemKey = previewItemKey(item)
+    if (!itemKey) return
+    if (!grouped.has(itemKey)) grouped.set(itemKey, { item, files: [] })
+    const file = fileRow.file || item
+    const fileKey = previewRowSelectionKey(fileRow)
+    if (file && !fileRow.isDir && !seen.has(fileKey)) {
+      seen.add(fileKey)
+      grouped.get(itemKey).files.push(file)
+    }
   })
-  return items
+  return [...grouped.values()].map(({ item, files }) => {
+    if (!isBaidu.value) {
+      const file = files[0] || item
+      return { ...item, ...file, selection_key: previewItemKey(item) }
+    }
+    return {
+      ...item,
+      preview_files: files,
+      share_files: files,
+      preview_file_count: files.length,
+      preview_folder_count: 0,
+    }
+  })
 }
 
 function previewTreeSelectionClass(row) {
   if (row && !row.ok) return 'is-disabled'
-  const items = previewRowSelectionItems(row)
-  if (!items.length) return 'is-off'
-  const selected = items.filter(item => selectedPreviewKeys.value.has(previewItemKey(item))).length
+  const rows = previewRowSelectionRows(row)
+  if (!rows.length) return 'is-off'
+  const selected = rows.filter(fileRow => selectedPreviewKeys.value.has(previewRowSelectionKey(fileRow))).length
   if (!selected) return 'is-off'
-  return selected === items.length ? 'is-on' : 'is-partial'
+  return selected === rows.length ? 'is-on' : 'is-partial'
+}
+
+function isPreviewTreeRowBad(row) {
+  return Boolean(row && !row.ok && !row.isPlatform)
 }
 
 function isPreviewTreeRowSelected(row) {
+  if (row?.isDir) return false
   return previewTreeSelectionClass(row) !== 'is-off'
 }
 
 function togglePreviewTreeRowSelection(row) {
-  if (!row?.ok) return
-  const items = previewRowSelectionItems(row)
-  if (!items.length) return
+  if (!row?.ok || row.isDir) return
+  const rows = previewRowSelectionRows(row)
+  if (!rows.length) return
   const next = new Set(selectedPreviewKeys.value)
   const shouldSelect = previewTreeSelectionClass(row) !== 'is-on'
-  items.forEach(item => {
-    const key = previewItemKey(item)
+  rows.forEach(fileRow => {
+    const key = previewRowSelectionKey(fileRow)
     if (!key) return
     if (shouldSelect) next.add(key)
     else next.delete(key)
@@ -1887,10 +1971,12 @@ function baiduPreviewFileKey(file) {
 function normalizeBaiduPreviewTreeEntries(item, files) {
   const entries = files.map(file => ({
     file,
-    parts: baiduPreviewPathParts(file),
+    parts: collapseDuplicateLeadingPathParts(baiduPreviewPathParts(file)),
     isDir: Boolean(file?.is_dir),
   }))
-  if (item?.preview_root_is_folder) return entries
+  if (item?.preview_root_is_folder) {
+    return stripBaiduPreviewRootFromEntries(entries, previewItemTitle(item))
+  }
 
   const fileEntries = entries.filter(entry => !entry.isDir && entry.parts.length > 1)
   if (fileEntries.length <= 1) return entries
@@ -1903,6 +1989,19 @@ function normalizeBaiduPreviewTreeEntries(item, files) {
 
   return entries.map(entry => {
     if (entry.parts.length <= 1 || entry.parts[0] !== commonRoot) return entry
+    return { ...entry, parts: entry.parts.slice(1) }
+  })
+}
+
+function stripBaiduPreviewRootFromEntries(entries, rootName) {
+  const root = String(rootName || '').trim()
+  if (!root) return entries
+  const withParts = entries.filter(entry => entry.parts.length)
+  if (!withParts.length) return entries
+  if (!withParts.every(entry => entry.parts[0] === root)) return entries
+  if (!withParts.some(entry => entry.parts.length > 1)) return entries
+  return entries.map(entry => {
+    if (!entry.parts.length || entry.parts[0] !== root) return entry
     return { ...entry, parts: entry.parts.slice(1) }
   })
 }
@@ -2004,13 +2103,16 @@ function previewItemKey(item) {
   ].join('|')
 }
 
-function isPreviewItemSelected(item) {
-  return selectedPreviewKeys.value.has(previewItemKey(item))
+function selectAllPreviewItems() {
+  selectedPreviewKeys.value = new Set(selectablePreviewFileRows.value.map(row => previewRowSelectionKey(row)).filter(Boolean))
+  persistPreviewCacheFromState()
 }
 
-function selectAllPreviewItems() {
-  selectedPreviewKeys.value = new Set(okPreviewItems.value.map(item => previewItemKey(item)))
-  persistPreviewCacheFromState()
+function selectAllPreviewTreeFiles() {
+  selectedPreviewKeys.value = new Set(flattenPreviewTreeRows(buildPreviewTreeRoots(previewItems.value))
+    .filter(row => row && !row.isDir && row.ok)
+    .map(row => previewRowSelectionKey(row))
+    .filter(Boolean))
 }
 
 function clearPreviewSelection() {
@@ -2027,11 +2129,11 @@ function toggleAllPreviewSelection() {
 }
 
 function togglePreviewSource(chip) {
-  const items = Array.isArray(chip?.items) ? chip.items : []
+  const rows = Array.isArray(chip?.items) ? chip.items : []
   const next = new Set(selectedPreviewKeys.value)
   const shouldSelect = chip?.state !== 'all'
-  items.forEach(item => {
-    const key = previewItemKey(item)
+  rows.forEach(row => {
+    const key = previewRowSelectionKey(row)
     if (shouldSelect) next.add(key)
     else next.delete(key)
   })
@@ -2472,25 +2574,25 @@ onBeforeUnmount(() => {
   --tree-depth: 0;
   min-height: 34px;
   display: grid;
-  grid-template-columns: calc(var(--tree-depth) * 18px) 18px 16px 22px minmax(0, 1fr) auto;
+  grid-template-columns: calc(var(--tree-depth) * 18px) 18px 16px 20px minmax(0, 1fr) auto;
   align-items: center;
-  column-gap: 8px;
+  column-gap: 6px;
   row-gap: 4px;
-  padding: 5px 8px;
+  padding: 5px 10px 5px 8px;
   border-radius: 6px;
   cursor: pointer;
   position: relative;
   transition: background-color 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
 }
 .download-tree-row.is-root-leaf {
-  grid-template-columns: 16px 22px minmax(0, 1fr) auto;
-  column-gap: 8px;
+  grid-template-columns: 16px 20px minmax(0, 1fr) auto;
+  column-gap: 6px;
 }
 .download-tree-row.bad {
-  grid-template-columns: calc(var(--tree-depth) * 18px) 18px 16px 20px 22px minmax(0, 1fr) auto;
+  grid-template-columns: calc(var(--tree-depth) * 18px) 18px 16px 20px 20px minmax(0, 1fr) auto;
 }
 .download-tree-row.is-root-leaf.bad {
-  grid-template-columns: 16px 20px 22px minmax(0, 1fr) auto;
+  grid-template-columns: 16px 20px 20px minmax(0, 1fr) auto;
 }
 .download-tree-row.is-root-leaf .download-tree-indent,
 .download-tree-row.is-root-leaf .download-tree-toggle.placeholder {
@@ -2518,6 +2620,69 @@ onBeforeUnmount(() => {
   grid-column: 4;
 }
 .download-tree-row.is-root-leaf.bad .download-list-size {
+  grid-column: 5;
+}
+.download-tree-row.is-dir:not(.is-platform) {
+  grid-template-columns: calc(var(--tree-depth) * 18px) 18px 20px minmax(0, 1fr) auto;
+}
+.download-tree-row.is-dir:not(.is-platform) .download-tree-check-placeholder {
+  display: none;
+}
+.download-tree-row.is-dir:not(.is-platform) .download-tree-kind-icon {
+  grid-column: 3;
+}
+.download-tree-row.is-dir:not(.is-platform) .download-tree-main {
+  grid-column: 4;
+}
+.download-tree-row.is-dir:not(.is-platform) .download-list-size {
+  grid-column: 5;
+}
+.download-tree-row.is-dir:not(.is-platform).bad {
+  grid-template-columns: calc(var(--tree-depth) * 18px) 18px 20px 20px minmax(0, 1fr) auto;
+}
+.download-tree-row.is-dir:not(.is-platform).bad .http-preview-error-icon {
+  grid-column: 3;
+}
+.download-tree-row.is-dir:not(.is-platform).bad .download-tree-kind-icon {
+  grid-column: 4;
+}
+.download-tree-row.is-dir:not(.is-platform).bad .download-tree-main {
+  grid-column: 5;
+}
+.download-tree-row.is-dir:not(.is-platform).bad .download-list-size {
+  grid-column: 6;
+}
+.download-tree-row.is-platform {
+  grid-template-columns: 20px 20px minmax(0, 1fr) auto;
+  column-gap: 6px;
+}
+.download-tree-row.is-platform .download-tree-indent,
+.download-tree-row.is-platform .download-tree-toggle.placeholder,
+.download-tree-row.is-platform .download-tree-check-placeholder {
+  display: none;
+}
+.download-tree-row.is-platform .download-tree-platform-icon {
+  grid-column: 2;
+}
+.download-tree-row.is-platform .download-tree-main {
+  grid-column: 3;
+}
+.download-tree-row.is-platform .download-list-size {
+  grid-column: 4;
+}
+.download-tree-row.is-platform.bad {
+  grid-template-columns: 20px 20px 20px minmax(0, 1fr) auto;
+}
+.download-tree-row.is-platform.bad .http-preview-error-icon {
+  grid-column: 2;
+}
+.download-tree-row.is-platform.bad .download-tree-platform-icon {
+  grid-column: 3;
+}
+.download-tree-row.is-platform.bad .download-tree-main {
+  grid-column: 4;
+}
+.download-tree-row.is-platform.bad .download-list-size {
   grid-column: 5;
 }
 .download-tree-row:not(.bad) .http-preview-error-placeholder {
@@ -2574,8 +2739,8 @@ onBeforeUnmount(() => {
   display: block;
 }
 .download-tree-kind-icon {
-  width: 18px;
-  height: 18px;
+  width: 19px;
+  height: 19px;
   color: rgb(14, 165, 233);
   flex-shrink: 0;
 }
@@ -2587,6 +2752,10 @@ onBeforeUnmount(() => {
 }
 .download-tree-row.bad .download-tree-kind-icon {
   color: rgb(248, 113, 113);
+}
+.download-tree-platform-icon {
+  width: 20px;
+  height: 20px;
 }
 .download-list-check {
   width: 16px;
@@ -2713,13 +2882,13 @@ onBeforeUnmount(() => {
 .download-tree-main {
   min-width: 0;
   display: grid;
-  gap: 4px;
+  gap: 3px;
 }
 .download-tree-name-line {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 .http-preview-name {
   color: rgb(30, 41, 59);
@@ -2737,7 +2906,7 @@ onBeforeUnmount(() => {
 .http-preview-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 8px;
+  gap: 4px 7px;
   color: rgb(100, 116, 139);
   font-size: 10.5px;
   line-height: 1.25;
@@ -2746,7 +2915,7 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   min-height: 16px;
-  padding: 1px 6px;
+  padding: 1px 5px;
   border-radius: 999px;
   border: 1px solid transparent;
 }

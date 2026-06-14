@@ -539,6 +539,7 @@ class BaiduNetdiskService:
         custom_name = str(item.get("custom_name") or item.get("custom_filename") or "").strip()
         custom_extract_password = str(item.get("custom_extract_password") or item.get("extract_password") or "").strip()
         custom_file_names = self._baidu_selected_file_overrides(item)
+        selected_files = self._baidu_selected_preview_files(item)
         overrides: Dict[str, Any] = {}
         if custom_name:
             overrides["custom_name"] = custom_name
@@ -548,7 +549,32 @@ class BaiduNetdiskService:
             overrides["custom_group_folder"] = True
         if custom_file_names:
             overrides["custom_file_names"] = custom_file_names
+        if selected_files:
+            selected_size = sum(_safe_int(row.get("size_bytes") or row.get("size")) for row in selected_files)
+            selected_folder_count = sum(1 for row in selected_files if row.get("is_dir"))
+            overrides["preview_files"] = copy.deepcopy(selected_files)
+            overrides["share_files"] = copy.deepcopy(selected_files)
+            overrides["preview_file_count"] = len(selected_files)
+            overrides["preview_folder_count"] = selected_folder_count
+            overrides["size_bytes"] = selected_size
+            overrides["size"] = selected_size
         return overrides
+
+    def _baidu_selected_preview_files(self, item: Dict[str, Any]) -> List[Dict[str, Any]]:
+        raw_files = item.get("preview_files")
+        if not isinstance(raw_files, list):
+            raw_files = item.get("share_files")
+        if not isinstance(raw_files, list):
+            return []
+        files: List[Dict[str, Any]] = []
+        for file_item in raw_files:
+            if not isinstance(file_item, dict):
+                continue
+            next_file = dict(file_item)
+            next_file.pop("custom_extract_password", None)
+            next_file.pop("extract_password", None)
+            files.append(next_file)
+        return files
 
     def _baidu_selected_file_overrides(self, item: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
         overrides: Dict[str, Dict[str, str]] = {}
