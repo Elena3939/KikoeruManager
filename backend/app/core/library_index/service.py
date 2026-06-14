@@ -23,15 +23,25 @@ import asyncio
 import logging
 import threading
 import time
+from contextlib import nullcontext
 from typing import Any, Optional, Sequence, Union
 
 from .local_scanner import LocalScanner
 from .remote_scanner import RemoteScanner
 from ..resource_budget_service import get_resource_budget_service
-from .snapshot_store import SnapshotStore, get_snapshot_store
+from .snapshot_store import (
+    DEFAULT_BULK_UPSERT_CHUNK_SIZE,
+    SnapshotStore,
+    get_snapshot_store,
+)
 from .types import IndexEntry, IndexStatus
+from ...models.database import suspend_library_index_secondary_indexes_for_initial_bulk_load
 
 logger = logging.getLogger(__name__)
+
+# 首次全量重建通常是几十万文件；日常 self-mutation 仍走 SnapshotStore 的 500 小批。
+FULL_REBUILD_BULK_CHUNK_SIZE = 5000
+FULL_REBUILD_ANALYZE_THRESHOLD = 5000
 
 
 class LibraryIndexService:
@@ -68,7 +78,7 @@ class LibraryIndexService:
         library_id: str,
         root_path: str,
         *,
-        chunk_size: int = 500,
+        chunk_size: int = FULL_REBUILD_BULK_CHUNK_SIZE,
     ) -> IndexStatus:
         """同步全量重建本地库存索引。线程安全：同库存并发只允许一个。"""
         lock = self._get_lock(library_id)
@@ -113,42 +123,98 @@ class LibraryIndexService:
             written = 0
             total_size = 0
             folder_count = 0
+            insert_only = not self._store_has_library_entries(library_id)
+            initial_bulk_load = insert_only and not self._store_has_any_entries()
             last_progress_report = time.time()
-            for entry in scanner.scan(library_id, root_path):
-                buffer.append(entry)
-                size_delta, folder_delta = self._entry_stats(entry)
-                total_size += size_delta
-                folder_count += folder_delta
-                if len(buffer) >= chunk_size:
-                    written += self._store.bulk_upsert(
-                        buffer,
-                        chunk_size=chunk_size,
-                        maintain_status_stats=False,
-                    )
-                    buffer.clear()
-                    now = time.time()
-                    if now - last_progress_report >= 0.5:
-                        self._store.upsert_status(
-                            library_id,
-                            status='syncing',
-                            watcher_mode='disabled',
-                            total_entries=written,
-                            total_size_bytes=total_size,
-                            folder_count=folder_count,
-                        )
-                        last_progress_report = now
-            if buffer:
-                written += self._store.bulk_upsert(
-                    buffer,
+            rebuild_writer = None
+            if not insert_only:
+                rebuild_writer = self._store.create_rebuild_writer(
+                    library_id,
                     chunk_size=chunk_size,
-                    maintain_status_stats=False,
+                    relaxed_commit=True,
                 )
+            with self._initial_bulk_load_search_index_context(initial_bulk_load) as maintenance:
+                if maintenance.get("active"):
+                    logger.info(
+                        "[索引] 首次全量构建暂停库存二级索引 library=%s dropped=%s",
+                        library_id,
+                        maintenance.get("dropped") or [],
+                    )
+                elif initial_bulk_load and maintenance.get("skipped"):
+                    logger.info(
+                        "[索引] 首次全量构建未暂停库存二级索引 library=%s reason=%s",
+                        library_id,
+                        maintenance.get("reason"),
+                    )
+                with rebuild_writer or nullcontext(None) as writer:
+                    for entry in scanner.scan(library_id, root_path):
+                        buffer.append(entry)
+                        size_delta, folder_delta = self._entry_stats(entry)
+                        total_size += size_delta
+                        folder_count += folder_delta
+                        if len(buffer) >= chunk_size:
+                            if writer is not None:
+                                written += writer.stage(buffer)
+                            else:
+                                written += self._store.bulk_upsert(
+                                    buffer,
+                                    chunk_size=chunk_size,
+                                    maintain_status_stats=False,
+                                    insert_only=insert_only,
+                                    relaxed_commit=True,
+                                )
+                            buffer.clear()
+                            now = time.time()
+                            if now - last_progress_report >= 0.5:
+                                self._store.upsert_status(
+                                    library_id,
+                                    status='syncing',
+                                    watcher_mode='disabled',
+                                    total_entries=written,
+                                    total_size_bytes=total_size,
+                                    folder_count=folder_count,
+                                )
+                                last_progress_report = now
+                    if buffer:
+                        if writer is not None:
+                            written += writer.stage(buffer)
+                        else:
+                            written += self._store.bulk_upsert(
+                                buffer,
+                                chunk_size=chunk_size,
+                                maintain_status_stats=False,
+                                insert_only=insert_only,
+                                relaxed_commit=True,
+                            )
 
-            stale_removed = self._store.delete_stale_library_entries(
-                library_id,
-                indexed_before_ms=rebuild_started_ms,
-                chunk_size=chunk_size,
-            )
+                    stale_removed = 0
+                    if writer is not None:
+                        merge_result = writer.finish(delete_chunk_size=chunk_size)
+                        written = int(merge_result.get("total_entries") or written)
+                        total_size = int(merge_result.get("total_size_bytes") or total_size)
+                        folder_count = int(merge_result.get("folder_count") or folder_count)
+                        stale_removed = int(merge_result.get("deleted") or 0)
+                        logger.info(
+                            "[索引] staging 合并完成 library=%s staged=%s inserted=%s updated=%s deleted=%s",
+                            library_id,
+                            merge_result.get("staged"),
+                            merge_result.get("inserted"),
+                            merge_result.get("updated"),
+                            stale_removed,
+                        )
+                    elif not insert_only:
+                        stale_removed = self._store.delete_stale_library_entries(
+                            library_id,
+                            indexed_before_ms=rebuild_started_ms,
+                            chunk_size=chunk_size,
+                            relaxed_commit=True,
+                        )
+            if (
+                writer is None
+                and written >= FULL_REBUILD_ANALYZE_THRESHOLD
+                and not bool((maintenance or {}).get("active"))
+            ):
+                self._store.analyze_entries_for_query_planner(clean_trigram_pending=True)
             now_ms = int(time.time() * 1000)
             status = self._store.upsert_status(
                 library_id,
@@ -207,7 +273,7 @@ class LibraryIndexService:
         client: Any,
         root_path: str,
         *,
-        chunk_size: int = 500,
+        chunk_size: int = FULL_REBUILD_BULK_CHUNK_SIZE,
     ) -> IndexStatus:
         """async 全量重建远程（群晖 FileStation）库存索引。
 
@@ -269,43 +335,99 @@ class LibraryIndexService:
             written = 0
             total_size = 0
             folder_count = 0
+            insert_only = not self._store_has_library_entries(library_id)
+            initial_bulk_load = insert_only and not self._store_has_any_entries()
             last_progress_report = time.time()
-            async with get_resource_budget_service().acquire("remote_fs", weight=2, reason="library_index.remote_rebuild"):
-                async for entry in scanner.scan(library_id, client, root_path):
-                    buffer.append(entry)
-                    size_delta, folder_delta = self._entry_stats(entry)
-                    total_size += size_delta
-                    folder_count += folder_delta
-                    if len(buffer) >= chunk_size:
-                        written += self._store.bulk_upsert(
-                            buffer,
-                            chunk_size=chunk_size,
-                            maintain_status_stats=False,
-                        )
-                        buffer.clear()
-                        now = time.time()
-                        if now - last_progress_report >= 0.5:
-                            self._store.upsert_status(
-                                library_id,
-                                status='syncing',
-                                watcher_mode='disabled',
-                                total_entries=written,
-                                total_size_bytes=total_size,
-                                folder_count=folder_count,
-                            )
-                            last_progress_report = now
-            if buffer:
-                written += self._store.bulk_upsert(
-                    buffer,
+            rebuild_writer = None
+            if not insert_only:
+                rebuild_writer = self._store.create_rebuild_writer(
+                    library_id,
                     chunk_size=chunk_size,
-                    maintain_status_stats=False,
+                    relaxed_commit=True,
                 )
+            with self._initial_bulk_load_search_index_context(initial_bulk_load) as maintenance:
+                if maintenance.get("active"):
+                    logger.info(
+                        "[索引] 首次远程全量构建暂停库存二级索引 library=%s dropped=%s",
+                        library_id,
+                        maintenance.get("dropped") or [],
+                    )
+                elif initial_bulk_load and maintenance.get("skipped"):
+                    logger.info(
+                        "[索引] 首次远程全量构建未暂停库存二级索引 library=%s reason=%s",
+                        library_id,
+                        maintenance.get("reason"),
+                    )
+                with rebuild_writer or nullcontext(None) as writer:
+                    async with get_resource_budget_service().acquire("remote_fs", weight=2, reason="library_index.remote_rebuild"):
+                        async for entry in scanner.scan(library_id, client, root_path):
+                            buffer.append(entry)
+                            size_delta, folder_delta = self._entry_stats(entry)
+                            total_size += size_delta
+                            folder_count += folder_delta
+                            if len(buffer) >= chunk_size:
+                                if writer is not None:
+                                    written += writer.stage(buffer)
+                                else:
+                                    written += self._store.bulk_upsert(
+                                        buffer,
+                                        chunk_size=chunk_size,
+                                        maintain_status_stats=False,
+                                        insert_only=insert_only,
+                                        relaxed_commit=True,
+                                    )
+                                buffer.clear()
+                                now = time.time()
+                                if now - last_progress_report >= 0.5:
+                                    self._store.upsert_status(
+                                        library_id,
+                                        status='syncing',
+                                        watcher_mode='disabled',
+                                        total_entries=written,
+                                        total_size_bytes=total_size,
+                                        folder_count=folder_count,
+                                    )
+                                    last_progress_report = now
+                    if buffer:
+                        if writer is not None:
+                            written += writer.stage(buffer)
+                        else:
+                            written += self._store.bulk_upsert(
+                                buffer,
+                                chunk_size=chunk_size,
+                                maintain_status_stats=False,
+                                insert_only=insert_only,
+                                relaxed_commit=True,
+                            )
 
-            stale_removed = self._store.delete_stale_library_entries(
-                library_id,
-                indexed_before_ms=rebuild_started_ms,
-                chunk_size=chunk_size,
-            )
+                    stale_removed = 0
+                    if writer is not None:
+                        merge_result = writer.finish(delete_chunk_size=chunk_size)
+                        written = int(merge_result.get("total_entries") or written)
+                        total_size = int(merge_result.get("total_size_bytes") or total_size)
+                        folder_count = int(merge_result.get("folder_count") or folder_count)
+                        stale_removed = int(merge_result.get("deleted") or 0)
+                        logger.info(
+                            "[索引] 远程 staging 合并完成 library=%s staged=%s inserted=%s updated=%s deleted=%s",
+                            library_id,
+                            merge_result.get("staged"),
+                            merge_result.get("inserted"),
+                            merge_result.get("updated"),
+                            stale_removed,
+                        )
+                    elif not insert_only:
+                        stale_removed = self._store.delete_stale_library_entries(
+                            library_id,
+                            indexed_before_ms=rebuild_started_ms,
+                            chunk_size=chunk_size,
+                            relaxed_commit=True,
+                        )
+            if (
+                writer is None
+                and written >= FULL_REBUILD_ANALYZE_THRESHOLD
+                and not bool((maintenance or {}).get("active"))
+            ):
+                self._store.analyze_entries_for_query_planner(clean_trigram_pending=True)
             now_ms = int(time.time() * 1000)
             status = self._store.upsert_status(
                 library_id,
@@ -385,6 +507,28 @@ class LibraryIndexService:
         ):
             return 0, 1
         return 0, 0
+
+    def _initial_bulk_load_search_index_context(self, enabled: bool):
+        if not enabled:
+            return nullcontext({"active": False, "skipped": False, "dropped": [], "restored": []})
+        return suspend_library_index_secondary_indexes_for_initial_bulk_load(
+            getattr(self._store, "bind_engine", None),
+        )
+
+    def _store_has_any_entries(self) -> bool:
+        checker = getattr(self._store, "has_any_entries", None)
+        if not callable(checker):
+            return True
+        return bool(checker())
+
+    def _store_has_library_entries(self, library_id: str) -> bool:
+        checker = getattr(self._store, "has_library_entries", None)
+        if callable(checker):
+            return bool(checker(library_id))
+        counter = getattr(self._store, "count_library_entries", None)
+        if callable(counter):
+            return int(counter(library_id) or 0) > 0
+        return True
 
     # ========== self_mutation ==========
     # 业务自身写操作（rename / delete / move / 解压落地 / 字幕落盘）完成后
@@ -526,7 +670,7 @@ class LibraryIndexService:
         library_root: str,
         subtree_path: str,
         *,
-        chunk_size: int = 500,
+        chunk_size: int = DEFAULT_BULK_UPSERT_CHUNK_SIZE,
     ) -> int:
         """同步全量扫指定本地子树并 bulk_upsert。
 
@@ -557,7 +701,7 @@ class LibraryIndexService:
         library_root: str,
         subtree_path: str,
         *,
-        chunk_size: int = 500,
+        chunk_size: int = DEFAULT_BULK_UPSERT_CHUNK_SIZE,
     ) -> int:
         """异步全量扫指定远程子树并 bulk_upsert。
 
@@ -739,6 +883,30 @@ class LibraryIndexService:
     ) -> list[IndexEntry]:
         return self._store.list_children(
             library_id, parent_path, entry_type=entry_type,
+        )
+
+    def list_children_page(
+        self,
+        library_id: str,
+        parent_path: str = '',
+        *,
+        entry_type: Optional[str] = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        offset: int = 0,
+        limit: Optional[int] = 200,
+        page_cursor: Optional[str] = None,
+    ) -> dict[str, object]:
+        return self._store.list_children_page(
+            library_id,
+            parent_path,
+            entry_type=entry_type,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            offset=offset,
+            limit=limit,
+            page_cursor=page_cursor,
+            include_total=True,
         )
 
     def get_entry(self, library_id: str, relative_path: str) -> Optional[IndexEntry]:

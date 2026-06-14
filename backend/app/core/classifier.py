@@ -12,7 +12,7 @@ from ..models.database import LibrarySnapshot, ConflictWork, get_db
 from ..core.task_engine import Task
 from ..core.library_manager import get_library_manager
 from ..core.folder_compare_service import get_folder_compare_service
-from ..core.json_safety import safe_json_value, sqlite_safe_text
+from ..core.json_safety import database_safe_text, safe_json_value
 
 logger = logging.getLogger(__name__)
 
@@ -804,9 +804,9 @@ class SmartClassifier:
             safe_linked_works_info = safe_json_value(linked_works_info if linked_works_info is not None else [])
             safe_analysis_info = safe_json_value(analysis_info if analysis_info is not None else {})
             safe_related_rjcodes = safe_json_value(related_rjcodes if related_rjcodes is not None else [])
-            safe_rjcode = sqlite_safe_text(rjcode) if rjcode is not None else None
-            safe_existing_path = sqlite_safe_text(existing_path or "") or ""
-            safe_new_path = sqlite_safe_text(new_path or "") or ""
+            safe_rjcode = database_safe_text(rjcode) if rjcode is not None else None
+            safe_existing_path = database_safe_text(existing_path or "") or ""
+            safe_new_path = database_safe_text(new_path or "") or ""
 
             conflict = ConflictWork(
                 id=str(uuid.uuid4()),

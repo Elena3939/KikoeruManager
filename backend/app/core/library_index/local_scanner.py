@@ -203,6 +203,8 @@ class LocalScanner:
         total_size = 0
         file_count = 0
         children_dirs: list[str] = []
+        current_relative = _to_relative_posix(current_path, root_path)
+        current_parent = None if is_root else _to_relative_posix(os.path.dirname(current_path), root_path)
 
         # 1) 列当前目录直接子项；区分文件 / 子目录
         try:
@@ -245,8 +247,7 @@ class LocalScanner:
 
                             size = int(stat_result.st_size or 0)
                             mtime_ms = int(stat_result.st_mtime * 1000)
-                            relative = _to_relative_posix(child_absolute, root_path)
-                            parent_rel = _to_relative_posix(current_path, root_path)
+                            relative = f"{current_relative}/{name}" if current_relative else name
 
                             yield IndexEntry(
                                 library_id=library_id,
@@ -255,7 +256,7 @@ class LocalScanner:
                                 absolute_path=child_absolute,
                                 name=name,
                                 rjcode=_extract_rjcode(name),
-                                parent_path=parent_rel,
+                                parent_path=current_relative,
                                 size=size,
                                 file_count=0,
                                 mtime=mtime_ms,
@@ -314,14 +315,14 @@ class LocalScanner:
         except OSError:
             mtime_ms = None
 
-        relative_self = _to_relative_posix(current_path, root_path)
+        relative_self = current_relative
         if is_root:
             current_name = os.path.basename(current_path) or current_path
             parent_for_self: Optional[str] = None
             current_depth = 0
         else:
             current_name = os.path.basename(current_path)
-            parent_for_self = _to_relative_posix(os.path.dirname(current_path), root_path)
+            parent_for_self = current_parent
             current_depth = depth
 
         yield IndexEntry(

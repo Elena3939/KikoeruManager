@@ -5,13 +5,13 @@
     - rj_subtitle_service / task_engine 的 RJ 号定位
     - library_manager 的大小统计、远程搜索、删除预审
     在群晖这种几十万级目录的环境下，os.walk 与 SYNO.FileStation.Search
-    都会造成显著卡顿。本模块抽出独立的 LibraryIndexService，在 SQLite
+    都会造成显著卡顿。本模块抽出独立的 LibraryIndexService，在 PostgreSQL
     里常驻一份"库存 → 条目"快照，所有搜索 / 统计走 SQL 查询（ms 级）。
 
 分层：
     types.py           —— IndexEntry / IndexStatus / WatcherEvent 值对象
     _helpers.py        —— RJ 正则 + 跳过规则共享（local + remote 都用）
-    snapshot_store.py  —— SQLite CRUD（library_index_entries + library_index_status）
+    snapshot_store.py  —— PostgreSQL CRUD（library_index_entries + library_index_status）
     local_scanner.py   —— 本地 os.scandir 全量扫
     remote_scanner.py  —— 远程 SYNO.FileStation.Search 全量抓
     watcher_driver.py  —— [批次 4] WatcherDriver 抽象 + watchdog/polling/remote
