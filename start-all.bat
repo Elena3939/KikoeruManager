@@ -119,6 +119,15 @@ if not exist "%CONFIG_PATH%" (
     if exist "%~dp0backend\config\config.yaml" copy /Y "%~dp0backend\config\config.yaml" "%CONFIG_PATH%" >nul
 )
 
+echo [INFO] Checking PostgreSQL...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install-postgresql.ps1" -StartOnly
+if errorlevel 1 (
+    echo [ERROR] PostgreSQL is not ready.
+    echo [INFO] Run setup.bat to install and initialize PostgreSQL.
+    pause
+    exit /b 1
+)
+
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":5555" ^| findstr "LISTENING"') do (
     echo [INFO] Stop process on 5555: %%P
     taskkill /PID %%P /T /F >nul 2>&1
