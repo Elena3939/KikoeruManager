@@ -181,7 +181,7 @@
 
           <div
             ref="filterDeleteScrollRef"
-            v-memo="[filterDeleteFlatTree, filterDeleteSelectedIds, filterDeleteExpandedIds, filterDeleteBasicTreeOnly, filterDeleteBusy]"
+            v-memo="[filterDeleteFlatTree, filterDeleteSelectedIds, filterDeleteExpandedIds, filterDeleteBasicTreeOnly, filterDeleteBusy, filterDeleteVirtualRange.start, filterDeleteVirtualRange.end]"
             class="tree-scroll flex-1 overflow-auto px-4 py-2 no-scrollbar"
             @scroll="onFilterDeleteScroll"
           >
@@ -195,7 +195,7 @@
               <div
                 v-for="row in filterDeleteVisibleRows"
                 :key="row.id"
-                v-memo="[row.id, filterDeleteSelectedIds.has(row.id), filterDeleteExpandedIds.has(row.id), row.selectable]"
+                v-memo="[row.id, row.path, row.relative_path, row.depth, getFilterDeleteRowSelectionStamp(row), filterDeleteExpandedIds.has(row.id), row.selectable, filterDeleteDisplayBasePath]"
                 class="tree-node"
               >
                 <div
@@ -235,7 +235,7 @@
 
                     <div class="min-w-0 flex-1">
                       <div class="tree-name truncate text-[13px] font-medium text-slate-800">{{ row.name }}</div>
-                      <div class="tree-sub truncate text-[11px] text-slate-400">{{ row.relative_path }}</div>
+                      <div class="tree-sub truncate text-[11px] text-slate-400" :title="getFilterDeleteRowSubText(row)">{{ getFilterDeleteRowSubText(row) }}</div>
                     </div>
                   </div>
 
@@ -426,12 +426,18 @@ const filterDeletePreviewTargetTotal = ref(0)
 const filterDeletePreviewLoggedSessionKey = ref('')
 const filterDeleteApplyLoggedExecutionKey = ref('')
 
-const FILTER_DELETE_ROW_HEIGHT = 44
+const FILTER_DELETE_ROW_HEIGHT = 58
 const FILTER_DELETE_OVERSCAN = 12
 const FILTER_DELETE_VIRTUAL_THRESHOLD = 180
 const FILTER_DELETE_DEFAULT_SORT_BY = 'name'
 const FILTER_DELETE_DEFAULT_SORT_ORDER = 'asc'
 const FILTER_DELETE_NO_EXTENSION_KEY = '__NO_EXTENSION__'
+const EMPTY_FILTER_DELETE_SELECTION_STATE = Object.freeze({
+  total: 0,
+  selected: 0,
+  full: false,
+  partial: false
+})
 
 const filterDeleteSortBy = ref(FILTER_DELETE_DEFAULT_SORT_BY)
 const filterDeleteSortOrder = ref(FILTER_DELETE_DEFAULT_SORT_ORDER)
@@ -445,6 +451,50 @@ const filterDeleteNodeById = computed(() => {
     }
   }
   walk(filterDeleteTreeRoot.value)
+  return map
+})
+const filterDeleteSubtreeIdsById = computed(() => {
+  const map = new Map()
+  const walk = node => {
+    if (!node?.id) return []
+    const ids = canFilterDeleteSelectRow(node) ? [node.id] : []
+    for (const child of node.children || []) {
+      for (const id of walk(child)) {
+        ids.push(id)
+      }
+    }
+    map.set(node.id, ids)
+    return ids
+  }
+  for (const node of filterDeleteTreeRoot.value || []) {
+    walk(node)
+  }
+  return map
+})
+const filterDeleteSelectionStateById = computed(() => {
+  const map = new Map()
+  const selectedIds = filterDeleteSelectedIds.value
+  const walk = node => {
+    if (!node?.id) return EMPTY_FILTER_DELETE_SELECTION_STATE
+    let total = canFilterDeleteSelectRow(node) ? 1 : 0
+    let selected = total && selectedIds.has(node.id) ? 1 : 0
+    for (const child of node.children || []) {
+      const childState = walk(child)
+      total += childState.total
+      selected += childState.selected
+    }
+    const state = {
+      total,
+      selected,
+      full: total > 0 && selected === total,
+      partial: selected > 0 && selected < total
+    }
+    map.set(node.id, state)
+    return state
+  }
+  for (const node of filterDeleteTreeRoot.value || []) {
+    walk(node)
+  }
   return map
 })
 const filterDeleteTypeOptions = computed(() => {
@@ -507,8 +557,25 @@ const filterDeleteTreeHasDirectories = computed(() => {
 })
 const filterDeleteSelectableRows = computed(() => filterDeleteFlatTree.value.filter(row => canFilterDeleteSelectRow(row)))
 const filterDeleteBulkSelectableRows = computed(() => buildFilterDeleteBulkRows(filterDeleteSelectableRows.value))
-const filterDeleteAllSelected = computed(() => filterDeleteBulkSelectableRows.value.length > 0 && filterDeleteBulkSelectableRows.value.every(row => isFilterDeleteRowFullySelected(row)))
-const filterDeleteSomeSelected = computed(() => !filterDeleteAllSelected.value && filterDeleteBulkSelectableRows.value.some(row => isFilterDeleteRowFullySelected(row) || isFilterDeleteRowPartiallySelected(row)))
+const filterDeleteBulkSelectableIds = computed(() => {
+  const ids = new Set()
+  for (const row of filterDeleteBulkSelectableRows.value) {
+    for (const id of getFilterDeleteSubtreeIds(row)) {
+      ids.add(id)
+    }
+  }
+  return [...ids]
+})
+const filterDeleteAllSelected = computed(() => {
+  const ids = filterDeleteBulkSelectableIds.value
+  const selectedIds = filterDeleteSelectedIds.value
+  return ids.length > 0 && ids.every(id => selectedIds.has(id))
+})
+const filterDeleteSomeSelected = computed(() => {
+  if (filterDeleteAllSelected.value) return false
+  const selectedIds = filterDeleteSelectedIds.value
+  return filterDeleteBulkSelectableIds.value.some(id => selectedIds.has(id))
+})
 const filterDeleteSelectableCount = computed(() => filterDeleteBulkSelectableRows.value.length)
 const filterDeleteSelectedRows = computed(() => [...filterDeleteSelectedIds.value].map(id => filterDeleteNodeById.value.get(id)).filter(Boolean))
 const filterDeleteSelectedRoots = computed(() => collectFilterDeleteSelectedRoots(filterDeleteTreeRoot.value))
@@ -572,6 +639,7 @@ const filterDeleteScanText = computed(() => {
   return `${text.scannedLabel} ${scanned} ${text.itemSuffix}`
 })
 const filterDeleteLoadingText = computed(() => filterDeleteDeleting.value ? (filterDeletePreviewInfo.value.progressMessage || '\u6b63\u5728\u5220\u9664\u8fc7\u6ee4\u547d\u4e2d\u9879\u2026') : (filterDeletePreviewInfo.value.progressMessage || text.loadingPreview))
+const filterDeleteDisplayBasePath = computed(() => normalizeDisplayPath(props.currentPath || filterDeletePreviewInfo.value.folderPath || ''))
 const effectivePreviewTargetPaths = computed(() => {
   const normalized = [...new Set((props.targetPaths || []).map(item => String(item || '').trim()).filter(Boolean))]
   if (normalized.length) return normalized
@@ -648,7 +716,7 @@ function handleDialogKeydown (event) {
   const key = String(event.key || '').toLowerCase()
   if ((event.ctrlKey || event.metaKey) && key === 'a') {
     event.preventDefault()
-    filterDeleteSelectedIds.value = new Set(filterDeleteBulkSelectableRows.value.map(row => row.id))
+    filterDeleteSelectedIds.value = new Set(filterDeleteBulkSelectableIds.value)
     filterDeleteLastSelectedId.value = filterDeleteBulkSelectableRows.value.at(-1)?.id || ''
   }
 }
@@ -1357,11 +1425,7 @@ function toggleAllFilterDeleteRows () {
   if (filterDeleteAllSelected.value) {
     filterDeleteSelectedIds.value = new Set()
   } else {
-    const next = new Set()
-    filterDeleteBulkSelectableRows.value.forEach(row => {
-      getFilterDeleteSubtreeIds(row).forEach(id => next.add(id))
-    })
-    filterDeleteSelectedIds.value = next
+    filterDeleteSelectedIds.value = new Set(filterDeleteBulkSelectableIds.value)
   }
   filterDeleteLastSelectedId.value = filterDeleteBulkSelectableRows.value.at(-1)?.id || ''
 }
@@ -1701,6 +1765,24 @@ function getFileName (path) {
   return String(path).split(/[\\/]/).pop()
 }
 
+function normalizeDisplayPath (path) {
+  return String(path || '').trim().replace(/\\/g, '/').replace(/\/+$/, '')
+}
+
+function getFilterDeleteRowSubText (row) {
+  if (!row) return ''
+  const rowPath = normalizeDisplayPath(row.path || row.delete_path || '')
+  const currentPath = filterDeleteDisplayBasePath.value
+  if (rowPath && currentPath && (rowPath === currentPath || rowPath.startsWith(`${currentPath}/`))) {
+    return rowPath === currentPath ? rowPath : rowPath.slice(currentPath.length + 1)
+  }
+
+  const relativePath = normalizeDisplayPath(row.relative_path || '')
+  const name = String(row.name || '').trim()
+  if (relativePath && relativePath !== name) return relativePath
+  return rowPath || relativePath || name
+}
+
 function canFilterDeleteSelectRow (row) {
   return Boolean(row?.id && (row?.path || row?.delete_path))
 }
@@ -1757,12 +1839,24 @@ function mergeFilterDeleteSelectionRows(rows, row) {
   return reduceFilterDeleteRows(nextRows)
 }
 
+function hasFilterDeleteKnownRootAncestor(rowPath, rootPathSet) {
+  if (!rowPath || !rootPathSet?.size) return false
+  if (rootPathSet.has(rowPath)) return true
+  let slashIndex = rowPath.length
+  while ((slashIndex = rowPath.lastIndexOf('/', slashIndex - 1)) > 0) {
+    if (rootPathSet.has(rowPath.slice(0, slashIndex))) return true
+  }
+  return rowPath.startsWith('/') && rootPathSet.has('/')
+}
+
 function buildFilterDeleteBulkRows(rows) {
   const result = []
+  const rootPathSet = new Set()
   for (const row of rows) {
-    if (!result.some(existing => isFilterDeleteAncestorPath(getFilterDeleteRowPath(row), getFilterDeleteRowPath(existing)))) {
-      result.push(row)
-    }
+    const rowPath = getFilterDeleteRowPath(row)
+    if (!rowPath || hasFilterDeleteKnownRootAncestor(rowPath, rootPathSet)) continue
+    rootPathSet.add(rowPath)
+    result.push(row)
   }
   return result
 }
@@ -1826,10 +1920,13 @@ function getFilterDeleteSortMark(sortBy) {
 }
 
 function getFilterDeleteSubtreeIds (row) {
+  if (row?.id && filterDeleteSubtreeIdsById.value.has(row.id)) {
+    return filterDeleteSubtreeIdsById.value.get(row.id)
+  }
   const ids = []
   const walk = node => {
     if (!node) return
-    if (node.id) ids.push(node.id)
+    if (canFilterDeleteSelectRow(node)) ids.push(node.id)
     for (const child of node.children || []) {
       walk(child)
     }
@@ -1838,16 +1935,22 @@ function getFilterDeleteSubtreeIds (row) {
   return ids
 }
 
+function getFilterDeleteRowSelectionState (row) {
+  if (!row?.id) return EMPTY_FILTER_DELETE_SELECTION_STATE
+  return filterDeleteSelectionStateById.value.get(row.id) || EMPTY_FILTER_DELETE_SELECTION_STATE
+}
+
+function getFilterDeleteRowSelectionStamp (row) {
+  const state = getFilterDeleteRowSelectionState(row)
+  return `${state.selected}/${state.total}`
+}
+
 function isFilterDeleteRowFullySelected (row) {
-  const ids = getFilterDeleteSubtreeIds(row)
-  return ids.length > 0 && ids.every(id => filterDeleteSelectedIds.value.has(id))
+  return getFilterDeleteRowSelectionState(row).full
 }
 
 function isFilterDeleteRowPartiallySelected (row) {
-  const ids = getFilterDeleteSubtreeIds(row)
-  if (!ids.length) return false
-  const selectedCount = ids.filter(id => filterDeleteSelectedIds.value.has(id)).length
-  return selectedCount > 0 && selectedCount < ids.length
+  return getFilterDeleteRowSelectionState(row).partial
 }
 
 function collectFilterDeleteSelectedRoots (nodes = []) {
@@ -2044,9 +2147,18 @@ function filterExplicitTree (nodes, options = {}) {
 
 function flattenTree (nodes, depth, openIds) {
   const result = []
-  for (const node of nodes) {
-    result.push({ ...node, depth })
-    if (node.type === 'dir' && openIds.has(node.id) && node.children?.length) result.push(...flattenTree(node.children, depth + 1, openIds))
+  const stack = []
+  for (let index = (nodes || []).length - 1; index >= 0; index -= 1) {
+    stack.push({ node: nodes[index], depth })
+  }
+  while (stack.length) {
+    const { node, depth: nodeDepth } = stack.pop()
+    if (!node) continue
+    result.push({ ...node, depth: nodeDepth })
+    if (node.type !== 'dir' || !openIds.has(node.id) || !node.children?.length) continue
+    for (let index = node.children.length - 1; index >= 0; index -= 1) {
+      stack.push({ node: node.children[index], depth: nodeDepth + 1 })
+    }
   }
   return result
 }
