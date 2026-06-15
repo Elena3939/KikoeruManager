@@ -840,6 +840,12 @@ export function useSettingsDraft(options = {}) {
       ) {
         delete payload.ai_subtitle_matching.api_key
       }
+      if (
+        payload.database?.password === MASKED_PASSWORD &&
+        snapshot.value?.database?.password === MASKED_PASSWORD
+      ) {
+        delete payload.database.password
+      }
       if (payload.baidu_netdisk?.cookie === MASKED_PASSWORD) {
         delete payload.baidu_netdisk.cookie
       }

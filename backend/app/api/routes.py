@@ -20,7 +20,7 @@ import os
 import secrets
 import sys
 import time
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, unquote, urlencode, urlsplit
 import html
 from pathlib import Path, PurePosixPath
 import re
@@ -2698,7 +2698,8 @@ def _mask_database_config(config) -> Optional[dict]:
     if not hasattr(config, 'database'):
         return None
     data = config.database.model_dump()
-    data['password'] = '********'
+    if data.get('password') or _read_database_secret_from_runtime('password'):
+        data['password'] = '********'
     return data
 
 
@@ -2789,6 +2790,23 @@ def _read_database_secret_from_disk(key: str) -> str:
         return value if value != "********" else ""
     except Exception:
         logger.warning("[数据库] 读取磁盘敏感配置失败: %s", key, exc_info=True)
+        return ""
+
+
+def _read_database_secret_from_runtime(key: str) -> str:
+    """读取 DATABASE_URL 里的运行态 PostgreSQL 密码。Docker 内置库会通过它覆盖配置文件。"""
+    if key != "password":
+        return ""
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+    if not database_url:
+        return ""
+    try:
+        parts = urlsplit(database_url)
+        if parts.scheme != "postgresql+psycopg":
+            return ""
+        return unquote(parts.password or "")
+    except Exception:
+        logger.warning("[数据库] 解析 DATABASE_URL 敏感配置失败", exc_info=True)
         return ""
 
 
@@ -3003,7 +3021,7 @@ def reveal_database_secret(payload: DatabaseSecretRevealRequest):
     key = str(payload.key or "").strip()
     if key != "password":
         raise HTTPException(status_code=400, detail="不支持读取该敏感字段")
-    return {"value": _read_database_secret_from_disk(key)}
+    return {"value": _read_database_secret_from_disk(key) or _read_database_secret_from_runtime(key)}
 
 
 class SecurityGateVerifyRequest(BaseModel):
