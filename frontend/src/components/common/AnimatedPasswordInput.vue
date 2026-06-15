@@ -4,7 +4,7 @@
     :class="[
       isVisible ? 'is-visible' : 'is-hidden',
       disabled ? 'is-disabled' : '',
-      isMaskedSecret ? 'is-masked-secret' : '',
+      isObscuredMaskedSecret ? 'is-masked-secret' : '',
       compact ? 'is-compact' : '',
     ]"
   >
@@ -102,6 +102,7 @@ const activeVisibilityAnimation = computed(() =>
 )
 const visibilityAnimationKey = computed(() => (isDarkTheme.value ? 'visibility-dark' : 'visibility-light'))
 const isMaskedSecret = computed(() => props.modelValue === '********')
+const isObscuredMaskedSecret = computed(() => isMaskedSecret.value && !(isVisible.value && props.revealValue))
 const displayValue = computed(() => {
   if (isMaskedSecret.value) {
     return isVisible.value && props.revealValue ? props.revealValue : '********'

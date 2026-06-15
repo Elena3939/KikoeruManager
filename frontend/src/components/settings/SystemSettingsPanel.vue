@@ -41,13 +41,12 @@
 
           <div class="mini-grid two">
             <SettingsFieldCard label="Password" hint="API 返回时会脱敏；保存 ******** 会保留磁盘真实密码。">
-              <div class="secret-field-row">
-                <input v-model="db.password" class="settings-inline-input" type="password" autocomplete="new-password" />
-                <button type="button" class="secret-reveal-btn" :disabled="databasePasswordRevealing" @click="revealDatabasePassword">
-                  <IconLoader2 v-if="databasePasswordRevealing" :size="13" class="health-spin" />
-                  <span v-else>显示</span>
-                </button>
-              </div>
+              <AnimatedPasswordInput
+                v-model="db.password"
+                :reveal-value="databaseRevealedPassword"
+                autocomplete="new-password"
+                @visibility-change="handleDatabasePasswordVisibility"
+              />
             </SettingsFieldCard>
             <SettingsFieldCard label="SSL Mode" hint="本地通常 prefer；Docker 内网可由 DATABASE_URL 使用 disable。">
               <input v-model="db.sslmode" class="settings-inline-input" autocomplete="off" />
@@ -225,6 +224,7 @@ import { ElMessage } from 'element-plus'
 import SettingsFieldCard from './SettingsFieldCard.vue'
 import SettingsNumberStepper from './SettingsNumberStepper.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
+import AnimatedPasswordInput from '../common/AnimatedPasswordInput.vue'
 import StatefulButton from '../ui/stateful-button.vue'
 import { configApi, databaseMaintenanceApi } from '../../api'
 
@@ -269,6 +269,7 @@ const budgetItems = [
 
 const healthResult = ref(null)
 const databasePasswordRevealing = ref(false)
+const databaseRevealedPassword = ref('')
 
 const db = computed(() => props.config.database)
 const budget = computed(() => props.config.resource_budget)
@@ -329,12 +330,17 @@ async function runHealth(full) {
   }
 }
 
-async function revealDatabasePassword() {
+async function handleDatabasePasswordVisibility(visible) {
+  if (!visible) return
+  if (db.value?.password !== '********' || databaseRevealedPassword.value || databasePasswordRevealing.value) return
   if (databasePasswordRevealing.value) return
   databasePasswordRevealing.value = true
   try {
     const result = await configApi.revealDatabaseSecret({ key: 'password' })
-    db.value.password = result?.value || ''
+    databaseRevealedPassword.value = result?.value || ''
+    if (!result?.value) {
+      ElMessage.warning('配置文件里没有可显示的原始数据库密码')
+    }
   } catch (error) {
     const detail = error.response?.data?.detail || error.message || '读取数据库密码失败'
     ElMessage.error(String(detail))
@@ -516,44 +522,6 @@ watch(() => props.config, ensureSystemConfig, { immediate: true })
 .settings-inline-input:focus-visible {
   border-color: var(--set-border-strong);
   box-shadow: none;
-}
-
-.secret-field-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: center;
-}
-
-.secret-reveal-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 54px;
-  height: 38px;
-  padding: 0 12px;
-  border-radius: 10px;
-  border: 1px solid var(--set-border);
-  background: var(--set-chip-bg);
-  color: var(--set-chip-text-strong);
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.secret-reveal-btn:hover:not(:disabled) {
-  transform: translateY(-2px) scale(1.02);
-  border-color: var(--set-border-strong);
-}
-
-.secret-reveal-btn:active:not(:disabled) {
-  transform: scale(0.96);
-}
-
-.secret-reveal-btn:disabled {
-  cursor: not-allowed;
-  opacity: 0.62;
 }
 
 .health-head {
