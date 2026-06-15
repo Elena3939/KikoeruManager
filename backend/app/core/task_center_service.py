@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import time
@@ -860,7 +861,7 @@ class TaskCenterService:
             return explicit
         return self.TASK_TYPE_TO_DOMAIN.get(task.type, "system")
 
-    def _build_engine_actions(self, task: Task, domain: str) -> List[str]:
+    def _build_engine_actions(self, task: Task, domain: str, *, check_retry_source: bool = True) -> List[str]:
         actions: List[str] = []
         if task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING}:
             actions.extend(["pause", "cancel"])
@@ -868,7 +869,7 @@ class TaskCenterService:
             actions.extend(["resume", "cancel"])
         elif domain in {"http_download", "baidu_netdisk"} and task.status == TaskStatus.COMPLETED and list((task.task_metadata or {}).get("failed_files") or []):
             actions.extend(["retry", "delete"])
-        elif task.status == TaskStatus.FAILED and self._can_retry_engine_task(task, domain):
+        elif task.status == TaskStatus.FAILED and self._can_retry_engine_task(task, domain, check_source_exists=check_retry_source):
             actions.extend(["retry", "delete"])
         elif task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
             actions.append("delete")
@@ -876,13 +877,15 @@ class TaskCenterService:
             actions.extend(["retry_waiting", "delete_waiting_retry"])
         return actions
 
-    def _can_retry_engine_task(self, task: Task, domain: str) -> bool:
+    def _can_retry_engine_task(self, task: Task, domain: str, *, check_source_exists: bool = True) -> bool:
         if domain in {"http_download", "baidu_netdisk"}:
             return task.status in {TaskStatus.FAILED, TaskStatus.COMPLETED}
         if domain not in {"import", "system"}:
             return False
         source_path = self._safe_text(getattr(task, "source_path", ""))
-        if not source_path or not os.path.exists(source_path):
+        if not source_path:
+            return False
+        if check_source_exists and not os.path.exists(source_path):
             return False
         return True
 
@@ -1376,7 +1379,7 @@ class TaskCenterService:
             "started_at": self._safe_iso(task.started_at),
             "completed_at": self._safe_iso(task.completed_at),
             "metrics": metrics,
-            "actions": self._build_engine_actions(task, domain),
+            "actions": self._build_engine_actions(task, domain, check_retry_source=(mode == "detail")),
             "details": {
                 "type": task.type.value,
                 "metadata": details_metadata,
@@ -1658,7 +1661,7 @@ class TaskCenterService:
             logger.exception("[任务中心] 读取字幕补配预检列表失败，当前轮次已跳过 pending items")
             return list(self._pending_cache or [])
 
-    def _get_active_conflicts_cached(self) -> List[ConflictWork]:
+    async def _get_active_conflicts_cached(self) -> List[ConflictWork]:
         """active conflicts 单独 TTL 缓存，避免每次重建都查一次 ConflictWork 表。"""
         now = time.monotonic()
         if (
@@ -1667,7 +1670,7 @@ class TaskCenterService:
         ):
             return list(self._conflict_cache)
         try:
-            fetched = self._load_active_conflicts()
+            fetched = await asyncio.to_thread(self._load_active_conflicts)
             self._conflict_cache = list(fetched or [])
             self._conflict_cache_at = now
             return list(self._conflict_cache)
@@ -1675,7 +1678,7 @@ class TaskCenterService:
             logger.exception("[任务中心] 读取问题作品列表失败，当前轮次已跳过 conflict items")
             return list(self._conflict_cache or [])
 
-    def _get_waiting_retry_items_cached(self) -> List[Dict[str, Any]]:
+    async def _get_waiting_retry_items_cached(self) -> List[Dict[str, Any]]:
         """waiting retry 单独 TTL 缓存，避免任务中心刷新频繁时反复查库。"""
         now = time.monotonic()
         if (
@@ -1684,7 +1687,7 @@ class TaskCenterService:
         ):
             return list(self._waiting_retry_cache)
         try:
-            fetched = get_task_engine().get_waiting_retry_tasks_from_db()
+            fetched = await asyncio.to_thread(get_task_engine().get_waiting_retry_tasks_from_db)
             self._waiting_retry_cache = list(fetched or [])
             self._waiting_retry_cache_at = now
             return list(self._waiting_retry_cache)
@@ -1792,7 +1795,7 @@ class TaskCenterService:
             if serialized
         )
 
-        waiting_retry_items = self._get_waiting_retry_items_cached()
+        waiting_retry_items = await self._get_waiting_retry_items_cached()
         items.extend(
             serialized
             for serialized in (
@@ -1802,7 +1805,7 @@ class TaskCenterService:
             if serialized
         )
 
-        active_conflicts = self._get_active_conflicts_cached()
+        active_conflicts = await self._get_active_conflicts_cached()
         conflict_items = [
             serialized
             for serialized in (self._safe_serialize_conflict_item(conflict) for conflict in active_conflicts)
@@ -2125,7 +2128,7 @@ class TaskCenterService:
                 engine.cancel_task(engine_task_id)
                 return {"success": True, "message": "任务已取消"}
             if normalized_action == "delete":
-                if engine.remove_task(engine_task_id):
+                if await asyncio.to_thread(engine.remove_task, engine_task_id):
                     return {"success": True, "message": "任务记录已删除"}
                 raise ValueError("任务不存在")
             if normalized_action == "retry":

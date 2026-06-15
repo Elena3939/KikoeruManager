@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import re
 import uuid
 import os
@@ -541,6 +542,14 @@ class TaskEngine:
         self._persisted_task_snapshot_versions: dict[str, tuple] = {}
         self._materialized_task_center_item_versions: dict[str, tuple] = {}
         self._materialized_task_center_item_last_write_at: dict[str, float] = {}
+        self._materialized_task_center_item_written_versions: dict[str, int] = {}
+        self._materialized_snapshot_lock = threading.Lock()
+        self._materialized_snapshot_pending: dict[str, tuple[Dict[str, Any], int, Dict[str, Any], tuple]] = {}
+        self._materialized_snapshot_worker_scheduled = False
+        self._materialized_snapshot_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="task-center-materialize",
+        )
         self._materialized_progress_min_interval_seconds = float(
             os.getenv("KIKOERUMANAGER_TASK_CENTER_PROGRESS_SNAPSHOT_INTERVAL_SECONDS", "1.5") or 1.5
         )
@@ -563,7 +572,7 @@ class TaskEngine:
             from .task_center_event_service import broadcast_task_center_changed
             self._ensure_task_context(task)
             self._bump_task_center_version()
-            self.persist_task_center_item_snapshot(task)
+            self.enqueue_task_center_item_snapshot(task)
             broadcast_task_center_changed(task, reason=reason)
         except Exception:
             logger.debug("任务中心事件广播失败: task_id=%s", getattr(task, "id", ""), exc_info=True)
@@ -933,7 +942,6 @@ class TaskEngine:
         if not item_id:
             return False
         item_fp = self._task_metadata_fingerprint(item)
-        previous = self._materialized_task_center_item_versions.get(item_id)
         status_value = task.status.value if isinstance(task.status, TaskStatus) else str(task.status or "")
         terminal_or_waiting = status_value in {
             TaskStatus.COMPLETED.value,
@@ -944,9 +952,11 @@ class TaskEngine:
         }
         if terminal_or_waiting:
             return True
-        if previous == item_fp:
-            return False
-        last_write_at = float(self._materialized_task_center_item_last_write_at.get(item_id, 0.0) or 0.0)
+        with self._materialized_snapshot_lock:
+            previous = self._materialized_task_center_item_versions.get(item_id)
+            if previous == item_fp:
+                return False
+            last_write_at = float(self._materialized_task_center_item_last_write_at.get(item_id, 0.0) or 0.0)
         return time.monotonic() - last_write_at >= max(0.2, self._materialized_progress_min_interval_seconds)
 
     def persist_task_snapshot(self, task: Task) -> None:
@@ -1002,15 +1012,79 @@ class TaskEngine:
             if not self._should_upsert_task_center_item_snapshot(task, item):
                 return
             service = get_task_center_materialization_service()
+            version = self.get_task_center_version()
             service.upsert_engine_item(
                 item,
-                version=self.get_task_center_version(),
+                version=version,
                 metadata=dict(task.task_metadata or {}),
             )
-            self._materialized_task_center_item_versions[item_id] = self._task_metadata_fingerprint(item)
-            self._materialized_task_center_item_last_write_at[item_id] = time.monotonic()
+            with self._materialized_snapshot_lock:
+                self._materialized_task_center_item_versions[item_id] = self._task_metadata_fingerprint(item)
+                self._materialized_task_center_item_last_write_at[item_id] = time.monotonic()
+                self._materialized_task_center_item_written_versions[item_id] = version
         except Exception:
             logger.warning("[任务中心物化] 生成任务快照失败: task_id=%s", getattr(task, "id", ""), exc_info=True)
+
+    def enqueue_task_center_item_snapshot(self, task: Task) -> None:
+        """把任务中心物化快照放进后台合并队列，避免进度事件同步等数据库写锁。"""
+        self._ensure_task_context(task)
+        try:
+            from .task_center_service import get_task_center_service
+
+            item = get_task_center_service()._safe_serialize_engine_task(task, mode="summary")
+            if not item:
+                return
+            item_id = str(item.get("id") or "").strip()
+            if not item_id:
+                return
+            item_fp = self._task_metadata_fingerprint(item)
+            if not self._should_upsert_task_center_item_snapshot(task, item):
+                return
+            version = self.get_task_center_version()
+            metadata = dict(task.task_metadata or {})
+            with self._materialized_snapshot_lock:
+                self._materialized_snapshot_pending[item_id] = (item, version, metadata, item_fp)
+                if self._materialized_snapshot_worker_scheduled:
+                    return
+                self._materialized_snapshot_worker_scheduled = True
+            self._materialized_snapshot_executor.submit(self._drain_task_center_item_snapshots)
+        except Exception:
+            logger.debug("[任务中心物化] 快照入队失败: task_id=%s", getattr(task, "id", ""), exc_info=True)
+
+    def _drain_task_center_item_snapshots(self) -> None:
+        """专用后台线程串行写任务中心快照；同一个 item 只保留最新 payload。"""
+        try:
+            from .task_center_materialization_service import get_task_center_materialization_service
+
+            service = get_task_center_materialization_service()
+            while True:
+                with self._materialized_snapshot_lock:
+                    pending = self._materialized_snapshot_pending
+                    self._materialized_snapshot_pending = {}
+                    if not pending:
+                        self._materialized_snapshot_worker_scheduled = False
+                        return
+
+                for item_id, (item, version, metadata, item_fp) in pending.items():
+                    with self._materialized_snapshot_lock:
+                        written_version = int(self._materialized_task_center_item_written_versions.get(item_id, -1))
+                    if version < written_version:
+                        continue
+                    try:
+                        service.upsert_engine_item(item, version=version, metadata=metadata)
+                    except Exception:
+                        logger.warning("[任务中心物化] 后台写入快照失败: item_id=%s", item_id, exc_info=True)
+                        continue
+                    with self._materialized_snapshot_lock:
+                        current_written = int(self._materialized_task_center_item_written_versions.get(item_id, -1))
+                        if version >= current_written:
+                            self._materialized_task_center_item_versions[item_id] = item_fp
+                            self._materialized_task_center_item_last_write_at[item_id] = time.monotonic()
+                            self._materialized_task_center_item_written_versions[item_id] = version
+        except Exception:
+            logger.warning("[任务中心物化] 后台写入线程异常", exc_info=True)
+            with self._materialized_snapshot_lock:
+                self._materialized_snapshot_worker_scheduled = False
 
     def delete_task_snapshot(self, task_id: str) -> None:
         """删除任务快照，避免用户清理后重启又恢复。"""
@@ -1024,8 +1098,12 @@ class TaskEngine:
             db.query(TaskRecord).filter(TaskRecord.id == normalized_task_id).delete()
             db.commit()
             self._persisted_task_snapshot_versions.pop(normalized_task_id, None)
-            self._materialized_task_center_item_versions.pop(f"engine:{normalized_task_id}", None)
-            self._materialized_task_center_item_last_write_at.pop(f"engine:{normalized_task_id}", None)
+            materialized_item_id = f"engine:{normalized_task_id}"
+            with self._materialized_snapshot_lock:
+                self._materialized_task_center_item_versions.pop(materialized_item_id, None)
+                self._materialized_task_center_item_last_write_at.pop(materialized_item_id, None)
+                self._materialized_task_center_item_written_versions.pop(materialized_item_id, None)
+                self._materialized_snapshot_pending.pop(materialized_item_id, None)
         except Exception:
             logger.warning("[任务持久化] 删除任务快照失败: task_id=%s", normalized_task_id, exc_info=True)
             db.rollback()
@@ -3118,7 +3196,7 @@ class TaskEngine:
             except Exception:
                 logger.warning("[任务清理] 发送最终进度失败: task_id=%s", task.id, exc_info=True)
             try:
-                self.persist_task_center_item_snapshot(task)
+                await asyncio.to_thread(self.persist_task_center_item_snapshot, task)
             except Exception:
                 logger.warning("[任务中心物化] 写入最终任务快照失败: task_id=%s", task.id, exc_info=True)
     
@@ -3233,6 +3311,7 @@ class TaskEngine:
             self._worker_task.cancel()
         if self._retry_scheduler_task:
             self._retry_scheduler_task.cancel()
+        self._materialized_snapshot_executor.shutdown(wait=False, cancel_futures=True)
 
     def retry_task(self, task_id: str):
         """手动重试等待中的任务"""
