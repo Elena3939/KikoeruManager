@@ -13,6 +13,14 @@ from .ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
+_TEMPLATE_FIELD_SPACE_RE = re.compile(r"[\s\u00a0\u2000-\u200b\u202f\u205f\u3000\u2423]+")
+
+
+def normalize_template_maker_name(raw_value: str) -> str:
+    """只规整空白；社团名里的标点和方括号必须原样保留。"""
+    return _TEMPLATE_FIELD_SPACE_RE.sub(" ", str(raw_value or "")).strip()
+
+
 class RenameService:
     """重命名服务"""
 
@@ -275,11 +283,11 @@ class RenameService:
         # maker_id 和 maker_name：日语元数据优先
         if use_japanese:
             maker_id = japanese_metadata.get('maker_id', metadata.get('maker_id', ''))
-            maker_name = japanese_metadata.get('maker_name', metadata.get('maker_name', ''))
+            maker_name = normalize_template_maker_name(japanese_metadata.get('maker_name', metadata.get('maker_name', '')))
             logger.info(f"[RENAME] 使用日语元数据 - maker_name='{maker_name}'")
         else:
             maker_id = metadata.get('maker_id', '')
-            maker_name = metadata.get('maker_name', '')
+            maker_name = normalize_template_maker_name(metadata.get('maker_name', ''))
 
         name = name.replace('{maker_id}', maker_id)
         name = name.replace('{maker_name}', maker_name)
