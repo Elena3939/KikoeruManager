@@ -16,14 +16,14 @@
             <h1 class="title truncate text-lg font-bold tracking-tight text-slate-900">
               {{ getDialogFolderName() }}
             </h1>
-            <span class="fm-badge">{{ folderContentsInfo.recursive === false ? `当前层 ${formatFileSize(folderContentsInfo.totalSize)}` : formatFileSize(folderContentsInfo.totalSize) }}</span>
+            <span class="fm-badge">{{ folderContentsInfo.recursive === false && !folderContentsInfo.viaIndex ? `当前层 ${formatFileSize(folderContentsInfo.totalSize)}` : formatFileSize(folderContentsInfo.totalSize) }}</span>
           </div>
           <p class="mt-1 truncate text-sm text-slate-500">
             {{ getDialogFolderPath() }}
           </p>
         </div>
         <div class="fm-count-pill">
-          {{ visibleFileCount }} / {{ loadedFileCount }} 个文件
+          {{ visibleFileCount }} / {{ totalFileCount }} 个文件
         </div>
         <button
           type="button"
@@ -366,7 +366,10 @@ const folderContentsInfo = ref({
   folderName: '',
   folderPath: '',
   totalFiles: 0,
-  totalSize: 0
+  totalSize: 0,
+  totalFolderCount: 0,
+  recursive: false,
+  viaIndex: false,
 })
 const folderItems = ref([])
 const selectedFileIds = ref(new Set())
@@ -390,6 +393,7 @@ const filteredRoot = computed(() => {
 const flatTree = computed(() => flattenTree(filteredRoot.value, 0, expandedIds.value))
 const visibleFileCount = computed(() => visibleFileIds.value.length)
 const loadedFileCount = computed(() => countLoadedFiles(treeRoot.value))
+const totalFileCount = computed(() => Math.max(Number(folderContentsInfo.value.totalFiles || 0), loadedFileCount.value))
 const allSelectableIds = computed(() => collectNodeIds(filteredRoot.value))
 const visibleFileIds = computed(() => {
   const ids = []
@@ -523,9 +527,11 @@ async function reload () {
     folderContentsInfo.value = {
       folderName: data.folder_name || props.folderName || '',
       folderPath: data.folder_path || props.folderPath || '',
-      totalFiles: Number(data.total_files || items.length || 0),
-      totalSize: items.reduce((sum, item) => sum + Number(item?.size || 0), 0),
+      totalFiles: pickNonNegativeNumber(data.total_files, items.filter(item => !(item?.is_directory || item?.type === 'dir')).length),
+      totalSize: pickNonNegativeNumber(data.total_size, data.total_size_bytes, items.reduce((sum, item) => sum + Number(item?.size || 0), 0)),
+      totalFolderCount: pickNonNegativeNumber(data.total_folder_count, 0),
       recursive: data.recursive !== false,
+      viaIndex: Boolean(data.browse_via_index),
     }
 
     const directories = []
@@ -743,6 +749,14 @@ function normalizeShallowItem (item, basePath) {
   const itemType = item?.type || (item?.is_directory ? 'dir' : 'file')
   const relativePath = item?.relative_path || item?.name || ''
   const resolvedPath = item?.path || joinFolderPath(basePath, relativePath)
+  const fileCount = pickOptionalNonNegativeNumber(item?.file_count)
+  const folderCount = pickOptionalNonNegativeNumber(item?.folder_count)
+  const hasIndexedCounts = fileCount !== null || folderCount !== null
+  const hasChildren = itemType === 'dir'
+    ? (item?.has_children !== undefined
+        ? Boolean(item.has_children)
+        : (hasIndexedCounts ? Number(fileCount || 0) > 0 || Number(folderCount || 0) > 0 : true))
+    : false
   return {
     ...item,
     id: buildNodeId(itemType, resolvedPath || relativePath),
@@ -751,7 +765,9 @@ function normalizeShallowItem (item, basePath) {
     resolved_path: resolvedPath,
     children: itemType === 'dir' ? (Array.isArray(item?.children) ? item.children : []) : undefined,
     childrenLoaded: itemType !== 'dir' || Boolean(item?.children_loaded),
-    hasChildren: itemType === 'dir' ? item?.has_children !== false : false,
+    hasChildren,
+    file_count: fileCount ?? item?.file_count,
+    folder_count: folderCount ?? item?.folder_count,
   }
 }
 
@@ -767,14 +783,24 @@ function buildTreeIndex (nodes = []) {
     if (!node?.id) return { folderCount: 0, fileCount: 0 }
     nodeById.set(node.id, node)
 
-    let folderCount = node.type === 'dir' ? 1 : 0
-    let fileCount = node.type === 'file' ? 1 : 0
+    if (node.type === 'file') {
+      deleteCountsById.set(node.id, { folderCount: 0, fileCount: 1 })
+      return { folderCount: 0, fileCount: 1 }
+    }
+
+    let childFolderCount = 0
+    let childFileCount = 0
 
     for (const child of node.children || []) {
       const childMeta = walk(child)
-      folderCount += childMeta.folderCount
-      fileCount += childMeta.fileCount
+      childFolderCount += childMeta.folderCount
+      childFileCount += childMeta.fileCount
     }
+
+    const indexedFolderCount = pickOptionalNonNegativeNumber(node.folder_count)
+    const indexedFileCount = pickOptionalNonNegativeNumber(node.file_count)
+    const folderCount = 1 + (indexedFolderCount ?? childFolderCount)
+    const fileCount = indexedFileCount ?? childFileCount
 
     deleteCountsById.set(node.id, { folderCount, fileCount })
     return { folderCount, fileCount }
@@ -837,7 +863,7 @@ async function loadDirectoryChildren (node) {
   try {
     const data = await libraryApi.browserFolderContents(props.libraryId, path, { recursive: false })
     const items = Array.isArray(data.items) ? data.items : []
-    replaceTreeNodeChildren(node.id, items.map(item => normalizeShallowItem(item, path)))
+    replaceTreeNodeChildren(node.id, items.map(item => normalizeShallowItem(item, path)), data)
     await nextTick()
     treeRowVirtualizer.value.measure()
     return true
@@ -851,18 +877,31 @@ async function loadDirectoryChildren (node) {
   }
 }
 
-function replaceTreeNodeChildren (targetId, children) {
+function replaceTreeNodeChildren (targetId, children, summary = {}) {
   const visit = nodes => {
     for (const node of nodes || []) {
       if (node.id === targetId) {
         node.children = children
         node.childrenLoaded = true
         node.hasChildren = children.length > 0
-        node.size = children.reduce((sum, child) => sum + Number(child?.size || 0), 0)
+        const childSize = children.reduce((sum, child) => sum + Number(child?.size || 0), 0)
+        const hasReadySize = Boolean(summary?.browse_via_index || node.size_status === 'ready')
+        node.size = hasReadySize ? pickNonNegativeNumber(summary?.total_size, summary?.total_size_bytes, node.size, childSize) : node.size
+        node.file_count = pickNonNegativeNumber(
+          summary?.total_files,
+          node.file_count,
+          children.reduce((sum, child) => sum + (child?.type === 'dir' ? Number(child?.file_count || 0) : 1), 0)
+        )
+        node.folder_count = pickNonNegativeNumber(
+          summary?.total_folder_count,
+          node.folder_count,
+          children.reduce((sum, child) => sum + (child?.type === 'dir' ? 1 + Number(child?.folder_count || 0) : 0), 0)
+        )
         node.modified_time = children.reduce((latest, child) => {
           if (!child?.modified_time) return latest
           return !latest || child.modified_time > latest ? child.modified_time : latest
         }, null)
+        node.size_status = hasReadySize ? 'ready' : node.size_status
         return true
       }
       if (node.children?.length && visit(node.children)) {
@@ -1198,6 +1237,21 @@ function joinFolderPath (basePath, relativePath) {
   const base = String(basePath || '').replace(/[\\/]+$/, '')
   const relative = String(relativePath || '').replace(/^[/\\]+/, '')
   return `${base}/${relative}`
+}
+
+function pickOptionalNonNegativeNumber (value) {
+  if (value === null || value === undefined || value === '') return null
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric < 0) return null
+  return numeric
+}
+
+function pickNonNegativeNumber (...values) {
+  for (const value of values) {
+    const numeric = pickOptionalNonNegativeNumber(value)
+    if (numeric !== null) return numeric
+  }
+  return 0
 }
 
 function formatFileSize (bytes) {

@@ -70,6 +70,63 @@ class LibraryFolderCompletionService:
     def _target_key(rjcode: str, folder_path: str) -> str:
         return f"{str(rjcode or '').upper()}:{LibraryFolderCompletionService._path_key(folder_path)}"
 
+    def _resolve_selected_path_targets_via_index(
+        self,
+        library,
+        target_path: str,
+        folder_name: str,
+    ) -> Optional[tuple[list[FolderCompletionTarget], list[dict[str, Any]]]]:
+        try:
+            from .library_index import get_library_index_service
+
+            service = get_library_index_service()
+            if not service.is_ready(library.id):
+                return None
+            parent_path = self.manager._index_parent_path_for_target(library, target_path)
+            if parent_path is None:
+                return None
+            target_entry = service.get_entry(library.id, parent_path) if parent_path else None
+            if parent_path and (not target_entry or target_entry.entry_type != "dir"):
+                return None
+            payload = service.list_children_page(
+                library.id,
+                parent_path,
+                entry_type="dir",
+                sort_by="name",
+                sort_order="asc",
+                offset=0,
+                limit=None,
+            )
+            targets: list[FolderCompletionTarget] = []
+            for entry in payload.get("entries") or []:
+                child_name = str(getattr(entry, "name", "") or "")
+                if child_name.startswith(".") or child_name.lower() in IGNORED_CONTAINER_CHILDREN:
+                    continue
+                child_rjcode = extract_rjcode(child_name)
+                if not child_rjcode:
+                    continue
+                targets.append(
+                    FolderCompletionTarget(
+                        library_id=library.id,
+                        rjcode=child_rjcode,
+                        folder_path=str(getattr(entry, "absolute_path", "") or ""),
+                        folder_name=child_name,
+                        source_path=target_path,
+                        source_name=folder_name,
+                        source_kind="circle_child",
+                    )
+                )
+                if len(targets) > MAX_FOLDER_COMPLETION_TARGETS:
+                    raise ValueError(f"一次最多检查 {MAX_FOLDER_COMPLETION_TARGETS} 个 RJ 文件夹，请缩小选择范围")
+            if not targets:
+                return None
+            return targets, []
+        except ValueError:
+            raise
+        except Exception:
+            logger.warning("补全文件夹解析目标读取库存索引失败，回退目录扫描: library=%s path=%s", library.id, target_path, exc_info=True)
+            return None
+
     def _resolve_selected_path_targets(self, library, selected_path: str) -> tuple[list[FolderCompletionTarget], list[dict[str, Any]]]:
         target_path = self._normalize_local_path(library, selected_path)
         folder_name = os.path.basename(target_path.rstrip("\\/")) or target_path
@@ -86,6 +143,10 @@ class LibraryFolderCompletionService:
                     source_kind="rj_folder",
                 )
             ], []
+
+        indexed = self._resolve_selected_path_targets_via_index(library, target_path, folder_name)
+        if indexed is not None:
+            return indexed
 
         targets: list[FolderCompletionTarget] = []
         skipped: list[dict[str, Any]] = []
