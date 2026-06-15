@@ -19222,7 +19222,7 @@ function notifyMoveResult (result) {
 
 async function refreshAfterMove (sourceLibraryId, targetLibraryId) {
 
-  const refreshJobs = [refreshLibrary({ silent: true })]
+  const refreshJobs = [refreshLibrary({ silent: true, forceRefresh: true })]
 
   refreshJobs.push(refreshStats(false, { silent: true, refreshLibraryId: sourceLibraryId }))
 
@@ -19300,10 +19300,12 @@ function refreshAfterMoveInBackground (sourceLibraryId, targetLibraryId) {
 
 
 
-function refreshCurrentLibraryAndStatsInBackground (messagePrefix = '操作已完成') {
+function refreshCurrentLibraryAndStatsInBackground (messagePrefix = '操作已完成', options = {}) {
+
+  const forceRefresh = options.forceRefresh ?? true
 
   Promise.all([
-    refreshLibrary({ silent: true }),
+    refreshLibrary({ silent: true, forceRefresh }),
     isRemoteCurrentLibrary.value ? Promise.resolve() : refreshStats(false, { silent: true, refreshLibraryId: selectedLibraryId.value })
   ]).catch((error) => {
     ElMessage.warning(`${messagePrefix}，但刷新列表失败：` + (error?.response?.data?.detail || error?.message || '未知错误'))
@@ -19316,7 +19318,7 @@ function refreshCurrentLibraryAndStatsInBackground (messagePrefix = '操作已�
 function refreshAfterMutationInBackground ({ deletedBytes = 0, deletedFolderCount = 0, libraryId = selectedLibraryId.value, messagePrefix = '操作已完成' } = {}) {
 
   Promise.all([
-    refreshLibrary({ silent: true }),
+    refreshLibrary({ silent: true, forceRefresh: true }),
     refreshStatsAfterMutation({ deletedBytes, deletedFolderCount, libraryId })
   ]).catch((error) => {
     ElMessage.warning(`${messagePrefix}，但刷新列表失败：` + (error?.response?.data?.detail || error?.message || '未知错误'))

@@ -8608,19 +8608,53 @@ def _parse_circle_name_from_folder(folder_name: str) -> str:
     """
     if not folder_name:
         return ""
-    # 默认模板：开头 [maker_name] 紧跟 [RJxxxxxx]
-    main_match = re.match(r'^\s*\[([^\[\]]+)\]\s*\[[RVB]J\d{6,8}', folder_name, re.IGNORECASE)
-    if main_match:
-        candidate = (main_match.group(1) or "").strip()
-        # 排除把 RJxxx 当成社团名误报的情况
+    from ..core.rename_service import normalize_template_maker_name
+
+    def _leading_bracket_payload(raw: str) -> str:
+        text = str(raw or "").strip()
+        if not text.startswith("["):
+            return ""
+        depth = 0
+        for index, char in enumerate(text):
+            if char == "[":
+                depth += 1
+            elif char == "]":
+                depth -= 1
+                if depth == 0:
+                    return text[1:index].strip()
+        return text.strip("[] \t\r\n")
+
+    def _clean_candidate(raw: str) -> str:
+        candidate = normalize_template_maker_name(raw)
         if candidate and not re.match(r'^[RVB]J\d{6,8}$', candidate, re.IGNORECASE):
             return candidate
-    # 兼容：[RJxxx][maker_name]
-    fallback_match = re.search(r'\[[RVB]J\d{6,8}[^\[\]]*\]\s*\[([^\[\]]+)\]', folder_name, re.IGNORECASE)
-    if fallback_match:
-        candidate = (fallback_match.group(1) or "").strip()
-        if candidate:
-            return candidate
+        return ""
+
+    # 默认模板：[maker_name][RJxxxxxx]xxx。这里不能只用简单方括号正则：
+    # 社团名本身可能包含方括号，例如 ". [Dot-Space]"，模板外层再包一层后会
+    # 变成 "[. [Dot-Space]][RJ...]"。
+    rj_match = re.search(r'[RVB]J\d{6,8}', folder_name, re.IGNORECASE)
+    if rj_match:
+        before_rj = folder_name[:rj_match.start()]
+        if "[" in before_rj:
+            prefix = before_rj.strip()
+            if prefix.endswith("["):
+                prefix = prefix[:-1].rstrip()
+            if prefix.count("[") == prefix.count("]"):
+                candidate = _clean_candidate(_leading_bracket_payload(prefix) or prefix)
+                if candidate:
+                    return candidate
+
+        # 兼容：[RJxxx][maker_name]，也兼容 maker_name 自身带括号的脏数据。
+        after_rj = folder_name[rj_match.end():]
+        if "[" in after_rj:
+            suffix = after_rj.strip()
+            if suffix.startswith("]"):
+                suffix = suffix[1:].lstrip()
+            if suffix.count("[") == suffix.count("]"):
+                candidate = _clean_candidate(_leading_bracket_payload(suffix) or suffix)
+                if candidate:
+                    return candidate
     return ""
 
 
