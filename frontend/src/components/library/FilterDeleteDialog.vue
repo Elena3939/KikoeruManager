@@ -426,7 +426,7 @@ const filterDeletePreviewTargetTotal = ref(0)
 const filterDeletePreviewLoggedSessionKey = ref('')
 const filterDeleteApplyLoggedExecutionKey = ref('')
 
-const FILTER_DELETE_ROW_HEIGHT = 58
+const FILTER_DELETE_ROW_HEIGHT = 46
 const FILTER_DELETE_OVERSCAN = 12
 const FILTER_DELETE_VIRTUAL_THRESHOLD = 180
 const FILTER_DELETE_DEFAULT_SORT_BY = 'name'
@@ -2540,16 +2540,14 @@ onBeforeUnmount(() => {
   cursor: pointer;
   min-height: 44px;
   transition:
-    transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1),
     box-shadow 0.24s cubic-bezier(0.34, 1.56, 0.64, 1),
+    background-color 0.18s ease,
     color 0.18s ease;
-  will-change: transform;
 }
 
 .tree-row:hover {
   z-index: 1;
   background: transparent;
-  transform: translate3d(0, -2px, 0);
   box-shadow:
     0 8px 18px rgba(15, 23, 42, 0.1),
     inset 0 0 0 1px rgba(15, 23, 42, 0.08);
