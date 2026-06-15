@@ -2572,7 +2572,8 @@ async def list_task_center_materialized_items(
 
     service = get_task_center_service()
     try:
-        return service.list_materialized_items(
+        return await asyncio.to_thread(
+            service.list_materialized_items,
             domain=domain,
             status=status,
             search=search,
@@ -4385,7 +4386,7 @@ async def stream_logs(request: Request, lines: int = 300, since_offset: int = -1
                 payload = await asyncio.to_thread(_read_log_payload, log_file, line_limit, current_offset)
                 current_offset = int(payload.get("next_offset") or 0)
                 try:
-                    active_log_signature = _log_file_signature(log_file)
+                    active_log_signature = await asyncio.to_thread(_log_file_signature, log_file)
                 except OSError:
                     active_log_signature = None
                 yield _sse_payload("connected", {
@@ -4427,7 +4428,7 @@ async def stream_logs(request: Request, lines: int = 300, since_offset: int = -1
                     active_log_signature = None
 
                 try:
-                    current_signature = _log_file_signature(log_file)
+                    current_signature = await asyncio.to_thread(_log_file_signature, log_file)
                 except OSError:
                     await asyncio.sleep(1)
                     continue
@@ -7768,7 +7769,7 @@ async def compute_folder_sizes(request: Request):
 async def get_library_browser_stats_logs(library_id: Optional[str] = None, lines: int = 200):
     try:
         manager = get_library_manager()
-        return manager.read_stats_logs(library_id=library_id, lines=lines)
+        return await asyncio.to_thread(manager.read_stats_logs, library_id=library_id, lines=lines)
     except Exception as e:
         logger.error("获取库存统计日志失败: %s", sanitize_text_for_log(e))
         raise HTTPException(status_code=500, detail=f"获取库存统计日志失败: {str(e)}")
@@ -8996,6 +8997,47 @@ async def _collect_library_preview_stream_bytes(stream) -> bytes:
     return b"".join(chunks)
 
 
+def _prepare_local_library_preview(
+    *,
+    manager,
+    library,
+    path: str,
+    encoding: Optional[str],
+) -> dict[str, Any]:
+    browse_root = os.path.abspath(library.browse_root_path or library.root_path)
+    target_path = os.path.abspath(path)
+    if not manager._local_path_is_within_root(target_path, browse_root):
+        raise HTTPException(status_code=403, detail="文件不在当前库存范围内")
+    if not os.path.exists(target_path):
+        raise HTTPException(status_code=404, detail="文件不存在")
+    if not os.path.isfile(target_path):
+        raise HTTPException(status_code=400, detail="只能观看文件")
+
+    media_type = _guess_library_preview_media_type(target_path)
+    if not _is_library_preview_media_type(media_type):
+        raise HTTPException(status_code=415, detail="该文件类型暂不支持浏览器观看")
+
+    filename = os.path.basename(target_path)
+    headers = {
+        "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
+        "Cache-Control": "no-store, max-age=0",
+        "X-Content-Type-Options": "nosniff",
+    }
+    payload: dict[str, Any] = {
+        "target_path": target_path,
+        "media_type": media_type,
+        "headers": headers,
+        "text_bytes": None,
+        "encoding": encoding,
+    }
+    if _is_library_text_preview_type(media_type):
+        if os.path.getsize(target_path) > LIBRARY_TEXT_PREVIEW_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="文本文件过大，暂不支持浏览器预览")
+        with open(target_path, "rb") as handle:
+            payload["text_bytes"] = handle.read()
+    return payload
+
+
 @app.get("/api/library/browser/preview")
 async def preview_library_browser_file(library_id: str, path: str, encoding: Optional[str] = None):
     """在浏览器内预览库存里的安全媒体 / 文本文件。"""
@@ -9035,31 +9077,19 @@ async def preview_library_browser_file(library_id: str, path: str, encoding: Opt
                 headers=headers,
             )
 
-        browse_root = os.path.abspath(library.browse_root_path or library.root_path)
-        target_path = os.path.abspath(path)
-        if not manager._local_path_is_within_root(target_path, browse_root):
-            raise HTTPException(status_code=403, detail="文件不在当前库存范围内")
-        if not os.path.exists(target_path):
-            raise HTTPException(status_code=404, detail="文件不存在")
-        if not os.path.isfile(target_path):
-            raise HTTPException(status_code=400, detail="只能观看文件")
-
-        media_type = _guess_library_preview_media_type(target_path)
-        if not _is_library_preview_media_type(media_type):
-            raise HTTPException(status_code=415, detail="该文件类型暂不支持浏览器观看")
-
-        filename = os.path.basename(target_path)
-        headers = {
-            "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
-            "Cache-Control": "no-store, max-age=0",
-            "X-Content-Type-Options": "nosniff",
-        }
-        if _is_library_text_preview_type(media_type):
-            if os.path.getsize(target_path) > LIBRARY_TEXT_PREVIEW_MAX_BYTES:
-                raise HTTPException(status_code=413, detail="文本文件过大，暂不支持浏览器预览")
-            with open(target_path, "rb") as handle:
-                return _build_library_text_preview_response(handle.read(), media_type, headers, encoding=encoding)
-        return FileResponse(target_path, media_type=media_type, headers=headers)
+        local_preview = await asyncio.to_thread(
+            _prepare_local_library_preview,
+            manager=manager,
+            library=library,
+            path=path,
+            encoding=encoding,
+        )
+        media_type = str(local_preview["media_type"])
+        headers = dict(local_preview["headers"])
+        text_bytes = local_preview.get("text_bytes")
+        if text_bytes is not None:
+            return _build_library_text_preview_response(text_bytes, media_type, headers, encoding=encoding)
+        return FileResponse(str(local_preview["target_path"]), media_type=media_type, headers=headers)
     except HTTPException:
         raise
     except Exception as e:
@@ -12834,12 +12864,12 @@ async def rj_subtitle_manual_complete(
                 db.rollback()
                 logger.warning("[字幕补配] 标记预检单配对完成失败: task_id=%s", task_id, exc_info=True)
             try:
-                engine.persist_task_snapshot(task)
+                await asyncio.to_thread(engine.persist_task_snapshot, task)
             except Exception:
                 logger.warning("[任务中心] 字幕补配完成后保留任务快照失败: task_id=%s", task_id, exc_info=True)
         else:
             try:
-                engine.remove_task(task_id)
+                await asyncio.to_thread(engine.remove_task, task_id)
             except Exception:
                 logger.warning("[任务中心] 字幕配对完成后清理任务记录失败: task_id=%s", task_id, exc_info=True)
 
@@ -12921,7 +12951,7 @@ async def rj_subtitle_clear_task(task_id: str):
                 except Exception:
                     logger.warning("[字幕补配] 清理未完成工作台目录失败: task_id=%s path=%s", task_id, workbench_root, exc_info=True)
 
-        engine.remove_task(task_id)
+        await asyncio.to_thread(engine.remove_task, task_id)
         return {"success": True, "task_id": task_id, "message": "任务已清理"}
     except HTTPException:
         raise
@@ -16650,7 +16680,8 @@ async def notifications_sse(request: Request):
 async def notifications_unread_count():
     """获取未读通知数"""
     from ..core.task_notification_service import get_unread_count
-    return {"count": get_unread_count()}
+    count = await asyncio.to_thread(get_unread_count)
+    return {"count": count}
 
 
 @app.get("/api/notifications")
@@ -16661,7 +16692,7 @@ async def list_notifications(
 ):
     """获取通知列表"""
     from ..core.task_notification_service import list_notifications as _list
-    return _list(page=page, limit=limit, unread_only=unread_only)
+    return await asyncio.to_thread(_list, page=page, limit=limit, unread_only=unread_only)
 
 
 class NotificationReadRequest(BaseModel):
@@ -16672,7 +16703,7 @@ class NotificationReadRequest(BaseModel):
 async def mark_notifications_read(body: NotificationReadRequest):
     """标记指定通知为已读"""
     from ..core.task_notification_service import mark_read
-    count = mark_read(body.ids)
+    count = await asyncio.to_thread(mark_read, body.ids)
     return {"updated": count}
 
 
@@ -16680,7 +16711,7 @@ async def mark_notifications_read(body: NotificationReadRequest):
 async def mark_all_notifications_read():
     """标记全部通知为已读"""
     from ..core.task_notification_service import mark_all_read
-    count = mark_all_read()
+    count = await asyncio.to_thread(mark_all_read)
     return {"updated": count}
 
 
@@ -16688,7 +16719,7 @@ async def mark_all_notifications_read():
 async def delete_notification(item_id: str):
     """删除单条通知"""
     from ..core.task_notification_service import delete_notification as _delete
-    ok = _delete(item_id)
+    ok = await asyncio.to_thread(_delete, item_id)
     if not ok:
         raise HTTPException(status_code=404, detail="通知不存在")
     return {"ok": True}

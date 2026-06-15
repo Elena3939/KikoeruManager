@@ -2418,7 +2418,7 @@ class LinkedSubtitleImportService:
             })
         return logs[-30:]
 
-    def _register_import_task(
+    async def _register_import_task(
         self,
         *,
         source_mode: str,
@@ -2502,7 +2502,7 @@ class LinkedSubtitleImportService:
         task.current_step = summary
         task.completed_at = datetime.now()
         engine.tasks[task.id] = task
-        engine.persist_task_snapshot(task)
+        await asyncio.to_thread(engine.persist_task_snapshot, task)
         return task
 
     async def cleanup_workbench_subtitles(self, task_id: str) -> Dict[str, Any]:
@@ -2586,7 +2586,7 @@ class LinkedSubtitleImportService:
             ],
         )
         engine.tasks[task.id] = task
-        engine.persist_task_snapshot(task)
+        await asyncio.to_thread(engine.persist_task_snapshot, task)
         return result
 
     async def execute_archive_import(
@@ -2690,7 +2690,7 @@ class LinkedSubtitleImportService:
 
         task = None
         if import_result.get("success") and import_result.get("awaiting_manual_match"):
-            task = self._register_import_task(
+            task = await self._register_import_task(
                 source_mode=source_mode,
                 source_path=archive_path,
                 source_rjcode=preview.get("source_rjcode", ""),
@@ -2793,7 +2793,7 @@ class LinkedSubtitleImportService:
 
         task = None
         if import_result.get("success") and import_result.get("awaiting_manual_match"):
-            task = self._register_import_task(
+            task = await self._register_import_task(
                 source_mode=source_mode,
                 source_path=folder_path,
                 source_rjcode=preview.get("source_rjcode", ""),
@@ -3494,7 +3494,7 @@ class LinkedSubtitleImportService:
                         if _safe_cleanup_workbench_root(metadata.get("linked_workbench_root_dir")):
                             cleared_workbench_dirs += 1
                         try:
-                            if engine.remove_task(workbench_task_id):
+                            if await asyncio.to_thread(engine.remove_task, workbench_task_id):
                                 cleared_workbench_tasks += 1
                         except RuntimeError:
                             logger.warning("[字幕补配] 工作台任务仍在执行，跳过任务清理: task_id=%s", workbench_task_id)
@@ -3508,7 +3508,7 @@ class LinkedSubtitleImportService:
                                 cleared_workbench_dirs += 1
                         except Exception:
                             logger.warning("[字幕补配] 读取工作台任务快照失败: task_id=%s", workbench_task_id, exc_info=True)
-                        engine.delete_task_snapshot(workbench_task_id)
+                        await asyncio.to_thread(engine.delete_task_snapshot, workbench_task_id)
                         cleared_workbench_tasks += 1
 
                 cleared_ids.append(str(row.id))
