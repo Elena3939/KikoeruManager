@@ -7175,7 +7175,7 @@ class LibraryManager:
             "parent_path": None if target_path == browse_root else self._remote_parent_path(target_path),
         }
 
-    async def _remote_folder_contents(self, library: LibraryDefinition, path: str, *, client: Optional[SynologyFileStationClient] = None) -> dict[str, Any]:
+    async def _remote_folder_contents(self, library: LibraryDefinition, path: str, *, client: Optional[SynologyFileStationClient] = None, recursive: bool = True) -> dict[str, Any]:
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
         browse_root, target_path = self._resolve_remote_operation_path(
@@ -7226,6 +7226,43 @@ class LibraryManager:
         items: list[dict[str, Any]] = []
         counter = 0
 
+        if not recursive:
+            children = await self._list_remote_directory(client, target_path)
+            for child in children:
+                name = child.get("name") or ""
+                if self._should_skip_entry(name):
+                    continue
+                child_path = self._normalize_remote_path(child.get("path") or child.get("real_path") or "")
+                additional = child.get("additional", {}) or {}
+                timestamp = additional.get("time", {}).get("mtime", int(time.time()))
+                is_directory = bool(child.get("isdir", False))
+                items.append(
+                    {
+                        "id": f"{library.id}:content:{counter}",
+                        "name": name,
+                        "path": child_path,
+                        "relative_path": name,
+                        "size": 0 if is_directory else int(additional.get("size") or 0),
+                        "modified_time": datetime.fromtimestamp(timestamp).isoformat(),
+                        "type": "dir" if is_directory else "file",
+                        "is_directory": is_directory,
+                        "has_children": is_directory,
+                        "children_loaded": False if is_directory else True,
+                    }
+                )
+                counter += 1
+            items.sort(key=lambda item: (0 if item.get("is_directory") else 1, self._natural_name_key(item.get("name", ""))))
+            result = {
+                "folder_name": PurePosixPath(target_path).name or target_path,
+                "folder_path": target_path,
+                "total_files": sum(1 for item in items if not item.get("is_directory")),
+                "total_items": len(items),
+                "recursive": False,
+                "items": items,
+            }
+            self._append_stats_log(library, "INFO", f"文件树浅层读取 path={target_path} total={len(items)}")
+            return result
+
         async def walk(folder_path: str):
             nonlocal counter
             children = await self._list_remote_directory(client, folder_path)
@@ -7267,11 +7304,58 @@ class LibraryManager:
         self._append_stats_log(library, "INFO", f"文件树读取 path={target_path} total={len(items)}")
         return result
 
-    async def folder_contents(self, library_id: str, path: str, *, client: Optional[SynologyFileStationClient] = None) -> dict[str, Any]:
+    def _local_folder_contents_shallow(self, library: LibraryDefinition, path: str) -> dict[str, Any]:
+        library_root = os.path.abspath(library.root_path)
+        target_path = os.path.abspath(path)
+        if not self._local_path_is_within_root(target_path, library_root):
+            raise PermissionError("只能查看当前库存根目录内的文件夹")
+        if not os.path.isdir(target_path):
+            raise FileNotFoundError("目标文件夹不存在")
+
+        items: list[dict[str, Any]] = []
+        with os.scandir(target_path) as entries:
+            for index, entry in enumerate(entries):
+                name = entry.name
+                if self._should_skip_entry(name):
+                    continue
+                try:
+                    stat_result = entry.stat(follow_symlinks=False)
+                    is_directory = entry.is_dir(follow_symlinks=False)
+                except OSError:
+                    continue
+                item_path = os.path.join(target_path, name)
+                items.append({
+                    "id": f"{library.id}:content:{index}",
+                    "name": name,
+                    "path": item_path,
+                    "relative_path": name,
+                    "size": 0 if is_directory else int(stat_result.st_size),
+                    "modified_time": datetime.fromtimestamp(stat_result.st_mtime).isoformat(),
+                    "type": "dir" if is_directory else "file",
+                    "is_directory": is_directory,
+                    "has_children": is_directory,
+                    "children_loaded": False if is_directory else True,
+                })
+
+        items.sort(key=lambda item: (0 if item.get("is_directory") else 1, self._natural_name_key(item.get("name", ""))))
+        result = {
+            "folder_name": os.path.basename(target_path),
+            "folder_path": target_path,
+            "total_files": sum(1 for item in items if not item.get("is_directory")),
+            "total_items": len(items),
+            "recursive": False,
+            "items": items,
+        }
+        self._append_stats_log(library, "INFO", f"文件树浅层读取 path={target_path} total={len(items)}")
+        return result
+
+    async def folder_contents(self, library_id: str, path: str, *, client: Optional[SynologyFileStationClient] = None, recursive: bool = True) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if library.type == "local":
-            return await asyncio.to_thread(self._local_folder_contents, library, path)
-        return await self._remote_folder_contents(library, path, client=client)
+            if recursive:
+                return await asyncio.to_thread(self._local_folder_contents, library, path)
+            return await asyncio.to_thread(self._local_folder_contents_shallow, library, path)
+        return await self._remote_folder_contents(library, path, client=client, recursive=recursive)
 
     async def preview_mojibake_repairs(self, library_id: str, path: str, selected_paths: Optional[list[str]] = None) -> dict[str, Any]:
         library = self.get_library_definition(library_id)

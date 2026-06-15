@@ -7799,10 +7799,11 @@ async def get_library_browser_folder_contents(request: Request):
         data = await request.json()
         library_id = data.get("library_id")
         folder_path = data.get("path")
+        recursive = data.get("recursive", True)
         if not folder_path:
             raise HTTPException(status_code=400, detail="缺少文件夹路径")
         manager = get_library_manager()
-        return await manager.folder_contents(library_id, folder_path)
+        return await manager.folder_contents(library_id, folder_path, recursive=bool(recursive))
     except HTTPException:
         raise
     except ValueError as e:

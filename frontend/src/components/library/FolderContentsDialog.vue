@@ -16,14 +16,14 @@
             <h1 class="title truncate text-lg font-bold tracking-tight text-slate-900">
               {{ getDialogFolderName() }}
             </h1>
-            <span class="fm-badge">{{ formatFileSize(folderContentsInfo.totalSize) }}</span>
+            <span class="fm-badge">{{ folderContentsInfo.recursive === false ? `当前层 ${formatFileSize(folderContentsInfo.totalSize)}` : formatFileSize(folderContentsInfo.totalSize) }}</span>
           </div>
           <p class="mt-1 truncate text-sm text-slate-500">
             {{ getDialogFolderPath() }}
           </p>
         </div>
         <div class="fm-count-pill">
-          {{ visibleFileCount }} / {{ folderContentsInfo.totalFiles }} 个文件
+          {{ visibleFileCount }} / {{ loadedFileCount }} 个文件
         </div>
         <button
           type="button"
@@ -130,8 +130,16 @@
               {{ folderSearch ? '没有匹配项' : '当前目录为空' }}
             </div>
 
-            <div v-else class="tree-list space-y-0.5">
-              <div v-for="row in flatTree" :key="row.id" class="tree-node">
+            <div v-else class="tree-list tree-virtual-canvas" :style="treeVirtualCanvasStyle">
+              <div
+                v-for="{ virtualRow, row } in virtualTreeRows"
+                :key="row.id"
+                class="tree-node tree-virtual-row"
+                :style="{
+                  height: `${virtualRow.size}px`,
+                  transform: `translateY(${virtualRow.start}px)`,
+                }"
+              >
                 <div
                   class="tree-row tree-grid items-center gap-3 rounded-md px-3 py-1"
                   :class="isRowChecked(row) || isRowIndeterminate(row) ? 'tree-row-selected' : ''"
@@ -142,9 +150,11 @@
                       v-if="row.type === 'dir'"
                       type="button"
                       class="tree-expander rounded p-0.5"
+                      :disabled="isDirectoryLoading(row)"
                       @click.stop="toggleExpand(row)"
                     >
-                      <ChevronDown v-if="expandedIds.has(row.id)" :size="17" class="text-slate-400" />
+                      <RefreshCw v-if="isDirectoryLoading(row)" :size="15" class="text-slate-400 action-icon-refresh is-spinning" />
+                      <ChevronDown v-else-if="expandedIds.has(row.id)" :size="17" class="text-slate-400" />
                       <ChevronRight v-else :size="17" class="text-slate-400" />
                     </button>
                     <span v-else class="expander-spacer" />
@@ -312,6 +322,7 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useVirtualizer } from '@tanstack/vue-virtual'
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import translateAnimation from '../../assets/anime/Translate.lottie'
 import { ElMessage } from 'element-plus'
@@ -360,30 +371,33 @@ const folderContentsInfo = ref({
 const folderItems = ref([])
 const selectedFileIds = ref(new Set())
 const expandedIds = ref(new Set())
+const loadingDirectoryIds = ref(new Set())
 const folderLastSelectedId = ref('')
 const treePanelRef = ref(null)
 const treeScrollRef = ref(null)
 const treeScrollbarWidth = ref(0)
 
-const treeRoot = computed(() => buildTree(folderItems.value, folderContentsInfo.value.folderPath))
-const folderNodeById = computed(() => {
-  const map = new Map()
-  const walk = nodes => {
-    for (const node of nodes) {
-      map.set(node.id, node)
-      if (node.children?.length) walk(node.children)
-    }
-  }
-  walk(treeRoot.value)
-  return map
-})
+const TREE_ROW_HEIGHT = 46
+const TREE_ROW_OVERSCAN = 16
+
+const treeRoot = computed(() => buildTree(folderItems.value, folderContentsInfo.value.folderPath, folderContentsInfo.value.recursive))
+const treeIndex = computed(() => buildTreeIndex(treeRoot.value))
+const folderNodeById = computed(() => treeIndex.value.nodeById)
 const filteredRoot = computed(() => {
   const keyword = folderSearch.value.trim().toLowerCase()
   return keyword ? filterTree(treeRoot.value, keyword) : treeRoot.value
 })
 const flatTree = computed(() => flattenTree(filteredRoot.value, 0, expandedIds.value))
-const visibleFileCount = computed(() => flatTree.value.filter(item => item.type === 'file').length)
+const visibleFileCount = computed(() => visibleFileIds.value.length)
+const loadedFileCount = computed(() => countLoadedFiles(treeRoot.value))
 const allSelectableIds = computed(() => collectNodeIds(filteredRoot.value))
+const visibleFileIds = computed(() => {
+  const ids = []
+  for (const row of flatTree.value) {
+    if (row?.type === 'file' && row.id) ids.push(row.id)
+  }
+  return ids
+})
 const allFilesSelected = computed(() => allSelectableIds.value.length > 0 && allSelectableIds.value.every(id => selectedFileIds.value.has(id)))
 const someFilesSelected = computed(() => !allFilesSelected.value && allSelectableIds.value.some(id => selectedFileIds.value.has(id)))
 const selectionState = computed(() => {
@@ -413,6 +427,57 @@ const folderSelectedDeleteSize = computed(() => folderSelectedDeleteRoots.value.
 const selectedRepairRows = computed(() => repairPreviewRows.value.filter(row => row.selected))
 const isAllRepairRowsSelected = computed(() => repairPreviewRows.value.length > 0 && repairPreviewRows.value.every(row => row.selected))
 
+const treeRowSelectionState = computed(() => {
+  const selected = selectedFileIds.value
+  const state = new Map()
+
+  const walk = node => {
+    if (!node?.id) return { checkedCount: 0, total: 0 }
+    if (node.type === 'file') {
+      const checked = selected.has(node.id)
+      state.set(node.id, { checked, indeterminate: false })
+      return { checkedCount: checked ? 1 : 0, total: 1 }
+    }
+
+    let checkedCount = 0
+    let total = 1
+    if (selected.has(node.id)) checkedCount += 1
+    for (const child of node.children || []) {
+      const childState = walk(child)
+      checkedCount += childState.checkedCount
+      total += childState.total
+    }
+    state.set(node.id, {
+      checked: checkedCount === total,
+      indeterminate: checkedCount > 0 && checkedCount < total,
+    })
+    return { checkedCount, total }
+  }
+
+  for (const row of treeRoot.value) {
+    walk(row)
+  }
+  return state
+})
+
+const treeRowVirtualizer = useVirtualizer(computed(() => ({
+  count: flatTree.value.length,
+  getScrollElement: () => treeScrollRef.value,
+  estimateSize: () => TREE_ROW_HEIGHT,
+  overscan: TREE_ROW_OVERSCAN,
+})))
+
+const virtualTreeRows = computed(() => treeRowVirtualizer.value.getVirtualItems()
+  .map(virtualRow => ({
+    virtualRow,
+    row: flatTree.value[virtualRow.index],
+  }))
+  .filter(item => item.row))
+
+const treeVirtualCanvasStyle = computed(() => ({
+  height: `${treeRowVirtualizer.value.getTotalSize()}px`,
+}))
+
 watch(visible, async value => {
   if (value) {
     window.addEventListener('keydown', handleDialogKeydown)
@@ -428,6 +493,13 @@ watch(() => props.folderPath, async (nextPath, prevPath) => {
   if (!visible.value || !nextPath || nextPath === prevPath) return
   await reload()
 })
+
+watch(
+  () => [flatTree.value.length, folderSearch.value, expandedIds.value.size].join(':'),
+  () => {
+    nextTick(() => treeRowVirtualizer.value.measure())
+  },
+)
 
 function handleDialogKeydown (event) {
   if (!visible.value || folderLoading.value || folderDeleting.value || isTextInputElement(event.target)) return
@@ -445,14 +517,15 @@ async function reload () {
   try {
     const previousExpanded = new Set([...expandedIds.value].map(id => String(id).replace(/^dir:/, '')))
     const previousSelected = new Set(selectedFileIds.value)
-    const data = await libraryApi.browserFolderContents(props.libraryId, props.folderPath)
+    const data = await libraryApi.browserFolderContents(props.libraryId, props.folderPath, { recursive: false })
     const items = Array.isArray(data.items) ? data.items : []
-    folderItems.value = items
+    folderItems.value = items.map(item => normalizeShallowItem(item, data.folder_path || props.folderPath || ''))
     folderContentsInfo.value = {
       folderName: data.folder_name || props.folderName || '',
       folderPath: data.folder_path || props.folderPath || '',
       totalFiles: Number(data.total_files || items.length || 0),
-      totalSize: items.reduce((sum, item) => sum + Number(item?.size || 0), 0)
+      totalSize: items.reduce((sum, item) => sum + Number(item?.size || 0), 0),
+      recursive: data.recursive !== false,
     }
 
     const directories = []
@@ -467,7 +540,7 @@ async function reload () {
     if (previousExpanded.size) {
       expandedIds.value = new Set(directories.filter(node => previousExpanded.has(node.relative_path)).map(node => node.id))
     } else {
-      expandedIds.value = new Set(directories.map(node => node.id))
+      expandedIds.value = new Set()
     }
 
     const validIds = new Set(folderNodeById.value.keys())
@@ -476,6 +549,8 @@ async function reload () {
       folderLastSelectedId.value = ''
     }
     await nextTick()
+    treeRowVirtualizer.value.scrollToOffset(0)
+    treeRowVirtualizer.value.measure()
     syncTreeScrollbarWidth()
   } catch (error) {
     visible.value = false
@@ -585,12 +660,30 @@ async function deletePaths (paths, options = {}) {
   }
 }
 
-function buildTree (items, basePath) {
+function buildTree (items, basePath, recursive = true) {
+  if (!recursive && Array.isArray(items) && items.some(item => item?.id && item?.type)) {
+    return items
+  }
   const root = []
   const dirMap = new Map()
   const sorted = [...items].sort((a, b) => String(a.relative_path || '').localeCompare(String(b.relative_path || '')))
 
   for (const item of sorted) {
+    const itemType = item.type || (item.is_directory ? 'dir' : 'file')
+    if (!recursive) {
+      const node = {
+        ...item,
+        id: buildNodeId(itemType, item.path || item.relative_path || item.name),
+        type: itemType,
+        relative_path: item.relative_path || item.name || '',
+        resolved_path: item.path || joinFolderPath(basePath, item.relative_path || item.name || ''),
+        children: itemType === 'dir' ? (Array.isArray(item.children) ? item.children : []) : undefined,
+        childrenLoaded: itemType !== 'dir' || Boolean(item.children_loaded),
+        hasChildren: itemType === 'dir' ? item.has_children !== false : false,
+      }
+      root.push(node)
+      continue
+    }
     const parts = String(item.relative_path || item.name || '').split('/').filter(Boolean)
     if (!parts.length) continue
     let children = root
@@ -608,7 +701,9 @@ function buildTree (items, basePath) {
           resolved_path: joinFolderPath(basePath, path),
           size: 0,
           modified_time: null,
-          children: []
+          children: [],
+          childrenLoaded: true,
+          hasChildren: true,
         }
         dirMap.set(key, node)
         children.push(node)
@@ -620,7 +715,9 @@ function buildTree (items, basePath) {
       ...item,
       id: `file:${item.path}`,
       type: 'file',
-      resolved_path: item.path
+      resolved_path: item.path,
+      childrenLoaded: true,
+      hasChildren: false,
     })
   }
 
@@ -640,6 +737,57 @@ function buildTree (items, basePath) {
     if (node.type === 'dir') walk(node)
   })
   return root
+}
+
+function normalizeShallowItem (item, basePath) {
+  const itemType = item?.type || (item?.is_directory ? 'dir' : 'file')
+  const relativePath = item?.relative_path || item?.name || ''
+  const resolvedPath = item?.path || joinFolderPath(basePath, relativePath)
+  return {
+    ...item,
+    id: buildNodeId(itemType, resolvedPath || relativePath),
+    type: itemType,
+    relative_path: relativePath,
+    resolved_path: resolvedPath,
+    children: itemType === 'dir' ? (Array.isArray(item?.children) ? item.children : []) : undefined,
+    childrenLoaded: itemType !== 'dir' || Boolean(item?.children_loaded),
+    hasChildren: itemType === 'dir' ? item?.has_children !== false : false,
+  }
+}
+
+function buildNodeId (type, path) {
+  return `${type === 'dir' ? 'dir' : 'file'}:${normalizeAnyPath(path)}`
+}
+
+function buildTreeIndex (nodes = []) {
+  const nodeById = new Map()
+  const deleteCountsById = new Map()
+
+  const walk = node => {
+    if (!node?.id) return { folderCount: 0, fileCount: 0 }
+    nodeById.set(node.id, node)
+
+    let folderCount = node.type === 'dir' ? 1 : 0
+    let fileCount = node.type === 'file' ? 1 : 0
+
+    for (const child of node.children || []) {
+      const childMeta = walk(child)
+      folderCount += childMeta.folderCount
+      fileCount += childMeta.fileCount
+    }
+
+    deleteCountsById.set(node.id, { folderCount, fileCount })
+    return { folderCount, fileCount }
+  }
+
+  for (const node of nodes || []) {
+    walk(node)
+  }
+
+  return {
+    nodeById,
+    deleteCountsById,
+  }
 }
 
 function filterTree (nodes, keyword) {
@@ -670,20 +818,73 @@ function flattenTree (nodes, depth, openIds) {
   return result
 }
 
-function toggleExpand (node) {
+async function toggleExpand (node) {
   if (node?.type !== 'dir') return
+  if (!expandedIds.value.has(node.id) && node.hasChildren && !node.childrenLoaded) {
+    const loaded = await loadDirectoryChildren(node)
+    if (!loaded) return
+  }
   const next = new Set(expandedIds.value)
   if (next.has(node.id)) next.delete(node.id)
   else next.add(node.id)
   expandedIds.value = next
 }
 
+async function loadDirectoryChildren (node) {
+  const path = resolveNodePath(node)
+  if (!path || loadingDirectoryIds.value.has(node.id)) return false
+  loadingDirectoryIds.value = new Set([...loadingDirectoryIds.value, node.id])
+  try {
+    const data = await libraryApi.browserFolderContents(props.libraryId, path, { recursive: false })
+    const items = Array.isArray(data.items) ? data.items : []
+    replaceTreeNodeChildren(node.id, items.map(item => normalizeShallowItem(item, path)))
+    await nextTick()
+    treeRowVirtualizer.value.measure()
+    return true
+  } catch (error) {
+    ElMessage.error('加载子目录失败: ' + (error.response?.data?.detail || error.message))
+    return false
+  } finally {
+    const next = new Set(loadingDirectoryIds.value)
+    next.delete(node.id)
+    loadingDirectoryIds.value = next
+  }
+}
+
+function replaceTreeNodeChildren (targetId, children) {
+  const visit = nodes => {
+    for (const node of nodes || []) {
+      if (node.id === targetId) {
+        node.children = children
+        node.childrenLoaded = true
+        node.hasChildren = children.length > 0
+        node.size = children.reduce((sum, child) => sum + Number(child?.size || 0), 0)
+        node.modified_time = children.reduce((latest, child) => {
+          if (!child?.modified_time) return latest
+          return !latest || child.modified_time > latest ? child.modified_time : latest
+        }, null)
+        return true
+      }
+      if (node.children?.length && visit(node.children)) {
+        return true
+      }
+    }
+    return false
+  }
+
+  if (visit(folderItems.value)) {
+    folderItems.value = folderItems.value.slice()
+  }
+}
+
 function expandAll () {
   const next = new Set()
   const walk = nodes => nodes.forEach(node => {
     if (node.type === 'dir') {
-      next.add(node.id)
-      walk(node.children || [])
+      if (node.childrenLoaded || node.children?.length) {
+        next.add(node.id)
+        walk(node.children || [])
+      }
     }
   })
   walk(filteredRoot.value)
@@ -707,7 +908,7 @@ function onSearchInput () {
 }
 
 function getFolderSelectableIds () {
-  return flatTree.value.map(row => row.id)
+  return allSelectableIds.value
 }
 
 function collectNodeIds (nodes = []) {
@@ -739,6 +940,21 @@ function getSelectableSubtreeIds (row) {
   if (!row?.id) return []
   const sourceNode = folderNodeById.value.get(row.id) || row
   return collectNodeIds([sourceNode])
+}
+
+function countLoadedFiles (nodes = []) {
+  let count = 0
+  const walk = list => {
+    for (const node of list || []) {
+      if (node?.type === 'file') {
+        count += 1
+        continue
+      }
+      if (node?.children?.length) walk(node.children)
+    }
+  }
+  walk(nodes)
+  return count
 }
 
 function selectFolderRange (targetId, preserveExisting = true) {
@@ -791,18 +1007,20 @@ function resolveNodePath (row) {
   return row?.resolved_path || row?.path || ''
 }
 
+function isDirectoryLoading (row) {
+  return Boolean(row?.id && loadingDirectoryIds.value.has(row.id))
+}
+
 function isRowChecked (row) {
   if (!row?.id) return false
-  const subtreeIds = getSelectableSubtreeIds(row)
-  return subtreeIds.length > 0 && subtreeIds.every(id => selectedFileIds.value.has(id))
+  const state = treeRowSelectionState.value.get(row.id)
+  return Boolean(state?.checked)
 }
 
 function isRowIndeterminate (row) {
   if (!row?.id || row.type !== 'dir') return false
-  const subtreeIds = getSelectableSubtreeIds(row)
-  if (!subtreeIds.length) return false
-  const checkedCount = subtreeIds.filter(id => selectedFileIds.value.has(id)).length
-  return checkedCount > 0 && checkedCount < subtreeIds.length
+  const state = treeRowSelectionState.value.get(row.id)
+  return Boolean(state?.indeterminate)
 }
 
 function normalizeAnyPath (value) {
@@ -999,22 +1217,7 @@ function formatDate (value) {
 
 function getRowDeleteCounts (row) {
   if (!row) return { folderCount: 0, fileCount: 0 }
-  if (row.type === 'file') return { folderCount: 0, fileCount: 1 }
-
-  let folderCount = row.type === 'dir' ? 1 : 0
-  let fileCount = 0
-  const walk = nodes => {
-    for (const child of nodes || []) {
-      if (child?.type === 'dir') {
-        folderCount += 1
-        walk(child.children || [])
-      } else if (child?.type === 'file') {
-        fileCount += 1
-      }
-    }
-  }
-  walk(row.children || [])
-  return { folderCount, fileCount }
+  return treeIndex.value.deleteCountsById.get(row.id) || { folderCount: 0, fileCount: 0 }
 }
 
 function getRowsDeleteCounts (rows = []) {
@@ -1540,6 +1743,7 @@ onMounted(() => {
 .tree-row {
   cursor: pointer;
   min-height: 44px;
+  height: 44px;
   transition: background-color 0.15s ease, transform 0.15s ease;
 }
 
@@ -1629,6 +1833,18 @@ onMounted(() => {
 
 .tree-scroll {
   scrollbar-gutter: stable;
+}
+
+.tree-virtual-canvas {
+  position: relative;
+  width: 100%;
+}
+
+.tree-virtual-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
 }
 
 /* 颜色现在由 _libraryFileKind helper 通过 inline :style 接管，这里只保留兜底色 */

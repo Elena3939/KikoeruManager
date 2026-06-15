@@ -905,11 +905,15 @@ export const libraryApi = {
     return response.data
   },
 
-  browserFolderContents: async (libraryId, path) => {
-    const response = await apiClient.post('/library/browser/folder-contents', {
+  browserFolderContents: async (libraryId, path, options = {}) => {
+    const payload = {
       library_id: libraryId,
       path
-    })
+    }
+    if (Object.prototype.hasOwnProperty.call(options, 'recursive')) {
+      payload.recursive = Boolean(options.recursive)
+    }
+    const response = await apiClient.post('/library/browser/folder-contents', payload)
     return response.data
   },
 
