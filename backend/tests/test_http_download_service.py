@@ -1,4 +1,6 @@
 import asyncio
+import sys
+import types
 
 import pytest
 from pathlib import Path
@@ -3113,6 +3115,160 @@ async def test_download_transferit_item_retries_busy_response(monkeypatch, tmp_p
     assert row["status"] == "completed"
     assert row["name"] == "real.zip"
     assert row["relative_path"] == "real.zip"
+
+
+@pytest.mark.asyncio
+async def test_download_transferit_item_resumes_part_file_after_disconnect(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path, retry_count=2, retry_wait_seconds=0)
+    service = HttpDownloadService()
+    target_dir = tmp_path / "downloads"
+    target_dir.mkdir()
+    captured_headers = []
+
+    class FakeApi:
+        def fetch_transfer(self, _xh, password=None):
+            return ([{
+                "h": "node-a",
+                "p": "",
+                "t": 0,
+                "a": {"n": "pack.zip"},
+                "s": 6,
+                "k": [0, 0, 0, 0, 0, 0, 0, 0],
+            }], "pw-token")
+
+        def get_download_url(self, _xh, _handle, pw_token=None):
+            return {"g": "https://mega.example/download", "s": 24}
+
+    class FakeTransferit:
+        def __init__(self, api=None):
+            self.api = api or FakeApi()
+
+    class FakeMegaAPI:
+        def __init__(self, *args, **kwargs):
+            self._http = None
+
+        @staticmethod
+        def parse_xh(_url):
+            return "xh"
+
+    class FakeTransferNode:
+        def __init__(self, handle, parent, name, size, key):
+            self.handle = handle
+            self.parent = parent
+            self.name = name
+            self.size = size
+            self.key = key
+            self.is_file = True
+            self.is_folder = False
+
+        @classmethod
+        def from_dict(cls, data):
+            return cls(
+                data["h"],
+                data.get("p") or "",
+                data.get("a", {}).get("n") or data["h"],
+                data.get("s") or 0,
+                data.get("k") or [0, 0, 0, 0, 0, 0],
+            )
+
+    class IdentityCipher:
+        def decrypt(self, chunk):
+            return chunk
+
+    class FakeAES:
+        MODE_CTR = object()
+
+        @staticmethod
+        def new(*args, **kwargs):
+            return IdentityCipher()
+
+    class FakeResponse:
+        def __init__(self, status_code, headers, chunks, fail_after=False):
+            self.status_code = status_code
+            self.headers = headers
+            self._chunks = list(chunks)
+            self._fail_after = fail_after
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+        def iter_bytes(self, _size):
+            for chunk in self._chunks:
+                yield chunk
+            if self._fail_after:
+                raise RuntimeError("peer closed connection without sending complete message body")
+
+        def close(self):
+            return None
+
+    def fake_stream(method, url, **kwargs):
+        assert method == "GET"
+        assert url == "https://mega.example/download"
+        headers = kwargs.get("headers") or {}
+        captured_headers.append(headers)
+        if len(captured_headers) == 1:
+            return FakeResponse(200, {"content-length": "24"}, [b"abcdefghijklmnop"], fail_after=True)
+        return FakeResponse(206, {"content-range": "bytes 16-23/24", "content-length": "8"}, [b"qrstuvwx"])
+
+    async def fake_sleep(*_args, **_kwargs):
+        return None
+
+    transferit_module = types.ModuleType("transferit")
+    transferit_module.Transferit = FakeTransferit
+    transferit_module.MegaAPI = FakeMegaAPI
+    monkeypatch.setitem(sys.modules, "transferit", transferit_module)
+
+    transferit_crypto_module = types.ModuleType("transferit._crypto")
+    transferit_crypto_module.a32_to_bytes = lambda _value: b"\x00" * 8
+    transferit_crypto_module.attr_key = lambda _value: b"\x00" * 16
+    monkeypatch.setitem(sys.modules, "transferit._crypto", transferit_crypto_module)
+
+    transferit_download_module = types.ModuleType("transferit._download")
+    transferit_download_module.compute_folder_paths = lambda *_args: {}
+    monkeypatch.setitem(sys.modules, "transferit._download", transferit_download_module)
+
+    transferit_models_module = types.ModuleType("transferit._models")
+    transferit_models_module.TransferNode = FakeTransferNode
+    monkeypatch.setitem(sys.modules, "transferit._models", transferit_models_module)
+
+    cryptodome_cipher_module = types.ModuleType("Cryptodome.Cipher")
+    cryptodome_cipher_module.AES = FakeAES
+    monkeypatch.setitem(sys.modules, "Cryptodome.Cipher", cryptodome_cipher_module)
+
+    cryptodome_util_counter_module = types.ModuleType("Cryptodome.Util.Counter")
+    cryptodome_util_counter_module.new = lambda *args, **kwargs: {}
+    monkeypatch.setitem(sys.modules, "Cryptodome.Util.Counter", cryptodome_util_counter_module)
+
+    cryptodome_util_module = types.ModuleType("Cryptodome.Util")
+    cryptodome_util_module.Counter = cryptodome_util_counter_module
+    monkeypatch.setitem(sys.modules, "Cryptodome.Util", cryptodome_util_module)
+
+    monkeypatch.setattr(service, "_transferit_api_client", lambda: FakeTransferit())
+    monkeypatch.setattr("app.core.http_download_service.httpx.stream", fake_stream)
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    row = await service._download_transferit_item({
+        "original_url": "https://transfer.it/t/iVqeTDhlyRbA",
+        "filename": "pack.zip",
+        "target_dir": str(target_dir),
+        "final_path": str(target_dir / "pack.zip"),
+        "relative_path": "pack.zip",
+        "size_bytes": 24,
+    })
+
+    assert captured_headers[0] == {}
+    assert captured_headers[1]["Range"] == "bytes=16-"
+    assert (target_dir / "pack.zip").read_bytes() == b"abcdefghijklmnopqrstuvwx"
+    assert not (target_dir / "pack.zip.part").exists()
+    assert row["status"] == "completed"
+    assert row["downloaded"] == 24
 
 
 @pytest.mark.asyncio

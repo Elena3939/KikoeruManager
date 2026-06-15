@@ -2518,12 +2518,37 @@ class HttpDownloadService:
             "temporarily",
             "timeout",
             "timed out",
+            "peer closed",
+            "incomplete",
+            "complete message body",
+            "connection closed",
+            "connection reset",
+            "remote protocol",
+            "network",
             "too many requests",
             "429",
+            "509",
+            "bandwidth limit",
             "502",
             "503",
             "504",
         ))
+
+    def _transferit_resume_offset(self, tmp_path: Path, total_size: int = 0) -> int:
+        try:
+            existing = int(tmp_path.stat().st_size)
+        except OSError:
+            return 0
+        if existing <= 0:
+            return 0
+        if total_size and existing >= total_size:
+            return total_size
+        aligned = (existing // 16) * 16
+        if aligned != existing:
+            with contextlib.suppress(OSError):
+                with tmp_path.open("ab") as target:
+                    target.truncate(aligned)
+        return max(0, aligned)
 
     def _transferit_node_row(self, item: Any, index: int, relative_dir: str = "") -> Optional[Dict[str, Any]]:
         if isinstance(item, dict):
@@ -4997,40 +5022,69 @@ class HttpDownloadService:
                 out_path = Path(final_path)
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 tmp_path = out_path.with_name(out_path.name + ".part")
-                if tmp_path.exists():
-                    with contextlib.suppress(OSError):
-                        tmp_path.unlink()
-
                 aes_key = attr_key(selected.key)
                 nonce = a32_to_bytes(selected.key[4:6])
-                ctr = Counter.new(64, prefix=nonce, initial_value=0)
-                cipher = AES.new(aes_key, AES.MODE_CTR, counter=ctr)
-                written = 0
                 started_at = time.monotonic()
                 last_emit_at = 0.0
                 last_progress_at = started_at
+                resume_offset = self._transferit_resume_offset(tmp_path, total_size)
+                written = resume_offset
+                if total_size and resume_offset >= total_size and tmp_path.exists():
+                    if out_path.exists():
+                        with contextlib.suppress(OSError):
+                            out_path.unlink()
+                    tmp_path.replace(out_path)
+                    return str(out_path)
+                if tmp_path.exists() and resume_offset == 0:
+                    with contextlib.suppress(OSError):
+                        tmp_path.unlink()
+                if tmp_path.exists() and resume_offset > 0:
+                    with contextlib.suppress(OSError):
+                        with tmp_path.open("rb+") as target:
+                            target.truncate(resume_offset)
+                ctr = Counter.new(64, prefix=nonce, initial_value=resume_offset // 16)
+                cipher = AES.new(aes_key, AES.MODE_CTR, counter=ctr)
+                request_headers = {
+                    "Range": f"bytes={resume_offset}-"
+                } if resume_offset > 0 else {}
 
                 publish_progress({
                     **row,
                     "name": self._sanitize_filename(selected.name or filename),
                     "status": "downloading",
-                    "downloaded": 0,
+                    "downloaded": written,
                     "total": total_size,
                     "size": total_size,
-                    "progress": 0,
+                    "progress": min(99, int(written / total_size * 100)) if total_size else 0,
                     "speed_bytes_per_sec": 0,
                     "transferit_node_handle": selected.handle,
                 })
                 with httpx.stream(
                     "GET",
                     download_url,
+                    headers=request_headers,
                     timeout=httpx.Timeout(None, connect=connect_timeout, read=read_timeout),
                     proxy=proxy,
                     follow_redirects=True,
                 ) as response:
                     stream_state["response"] = response
                     response.raise_for_status()
-                    with tmp_path.open("wb") as target:
+                    if resume_offset > 0 and response.status_code == 200:
+                        with contextlib.suppress(OSError):
+                            tmp_path.unlink()
+                        resume_offset = 0
+                        written = 0
+                        ctr = Counter.new(64, prefix=nonce, initial_value=0)
+                        cipher = AES.new(aes_key, AES.MODE_CTR, counter=ctr)
+                    elif resume_offset > 0 and response.status_code == 206:
+                        content_range = str(response.headers.get("content-range") or "")
+                        match = re.match(r"bytes\s+(\d+)-", content_range, re.IGNORECASE)
+                        range_start = int(match.group(1)) if match else -1
+                        if range_start != resume_offset:
+                            raise HttpDownloadError(f"Transfer.it 续传偏移不匹配: local={resume_offset}, remote={content_range or 'unknown'}")
+                    elif response.status_code != 200:
+                        raise HttpDownloadError(f"Transfer.it 续传响应异常: HTTP {response.status_code}")
+                    with tmp_path.open("ab" if resume_offset > 0 else "wb") as target:
                         for chunk in response.iter_bytes(1024 * 1024):
                             if abort_event.is_set():
                                 raise _TransferitDownloadAbort("Transfer.it 下载已取消")
