@@ -66,7 +66,7 @@ export function useSubtitleImportFolder({
   async function executeFolderImport() {
     const path = folderPath.value.trim()
     const candidate = selectedFolderCandidate.value
-    if (!path || !candidate) return
+    if (!path || !candidate) return false
 
     folderImporting.value = true
     // 兜底：极端情况下 axios 不抛 timeout 时强制清空 loading，
@@ -89,8 +89,10 @@ export function useSubtitleImportFolder({
       if (data.task?.id) {
         openImportedTask(data.task.id)
       }
+      return true
     } catch (error) {
       ElMessage.error('执行字幕文件夹补配失败: ' + (error.response?.data?.detail || error.message))
+      return false
     } finally {
       window.clearTimeout(fallbackClearTimer)
       folderImporting.value = false

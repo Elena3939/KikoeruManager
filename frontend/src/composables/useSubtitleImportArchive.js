@@ -378,10 +378,11 @@ export function useSubtitleImportArchive({
   async function executePendingImport() {
     const item = activePendingItem.value
     const candidate = selectedArchiveCandidate.value
-    if (!item || !candidate) return
+    if (!item || !candidate) return false
 
     try {
       await executePendingImportRecord(item, candidate, { autoTriggered: false })
+      return true
     } catch (error) {
       // ★ 容错兜底：用户痛点"实际后端已经导入成功，但前端 axios 60s timeout 抛错"。
       //   axios timeout 触发后 backend 仍可能在跑；轮询等几秒再查 pending 列表，
@@ -408,7 +409,7 @@ export function useSubtitleImportArchive({
               if (importedTaskId) {
                 openImportedTask(importedTaskId)
               }
-              return
+              return true
             }
           }
         } catch (probeError) {
@@ -417,6 +418,7 @@ export function useSubtitleImportArchive({
       }
 
       ElMessage.error('执行字幕补配失败: ' + (error.response?.data?.detail || error.message))
+      return false
     }
   }
 

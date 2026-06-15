@@ -405,21 +405,27 @@
                 <Sparkles class="w-4 h-4" />
                 打开对应工作台
               </button>
-              <button
+              <StatefulButton
                 v-else
                 type="button"
-                class="subtitle-action-btn is-primary lg"
+                class="subtitle-action-btn subtitle-stateful-action is-primary lg"
+                unstyled
+                :success-hold="900"
                 :disabled="!activePendingItem.can_execute || !selectedArchiveCandidate || executingPendingId === activePendingItem.id"
                 @click="executePendingImport()"
               >
-                <AppLoadingAnimation
-                  v-if="executingPendingId === activePendingItem.id"
-                  variant="inline"
-                  :size="20"
-                />
-                <Sparkles v-else class="w-4 h-4" />
+                <template #prefix="{ loading, success, error }">
+                  <Loader2
+                    v-if="loading || executingPendingId === activePendingItem.id"
+                    class="subtitle-stateful-spinner w-4 h-4"
+                    :stroke-width="2.3"
+                  />
+                  <CheckCircle2 v-else-if="success" class="w-4 h-4" :stroke-width="2.3" />
+                  <AlertTriangle v-else-if="error" class="w-4 h-4" :stroke-width="2.3" />
+                  <Sparkles v-else class="w-4 h-4" />
+                </template>
                 {{ executingPendingId === activePendingItem.id ? '导入中…' : '导入并加入工作台' }}
-              </button>
+              </StatefulButton>
             </div>
           </div>
         </section>
@@ -484,16 +490,26 @@
                 <Eye class="w-3.5 h-3.5" :class="{ 'animate-pulse': folderPreviewLoading }" />
                 {{ folderPreviewLoading ? '预检中…' : '预检' }}
               </button>
-              <button
+              <StatefulButton
                 type="button"
-                class="subtitle-action-btn is-primary"
+                class="subtitle-action-btn subtitle-stateful-action is-primary"
+                unstyled
+                :success-hold="900"
                 :disabled="!canExecuteFolderImport || folderImporting"
                 @click="executeFolderImport"
               >
-                <AppLoadingAnimation v-if="folderImporting" variant="inline" :size="20" />
-                <Sparkles v-else class="w-3.5 h-3.5" />
+                <template #prefix="{ loading, success, error }">
+                  <Loader2
+                    v-if="loading || folderImporting"
+                    class="subtitle-stateful-spinner w-3.5 h-3.5"
+                    :stroke-width="2.3"
+                  />
+                  <CheckCircle2 v-else-if="success" class="w-3.5 h-3.5" :stroke-width="2.3" />
+                  <AlertTriangle v-else-if="error" class="w-3.5 h-3.5" :stroke-width="2.3" />
+                  <Sparkles v-else class="w-3.5 h-3.5" />
+                </template>
                 {{ folderImporting ? '导入中…' : '导入' }}
-              </button>
+              </StatefulButton>
             </div>
             <div class="subtitle-form-hint-card">
               <Info class="w-4 h-4 flex-shrink-0 mt-0.5 text-slate-400" />
@@ -719,6 +735,7 @@ import { useSubtitleImportWorkbench } from '../composables/useSubtitleImportWork
 import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
+import StatefulButton from '../components/ui/stateful-button.vue'
 import {
   Captions,
   RefreshCw,
@@ -1222,6 +1239,28 @@ button:disabled { cursor: not-allowed; }
   flex-shrink: 0;
   transition: var(--subtitle-control-motion);
 }
+.subtitle-stateful-action :deep(.stateful-button__content) {
+  gap: 7px;
+}
+.subtitle-stateful-action :deep(.stateful-button__state) {
+  display: inline-flex;
+  width: 16px;
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+}
+.subtitle-stateful-action.lg :deep(.stateful-button__state) {
+  width: 18px;
+  flex-basis: 18px;
+}
+.subtitle-stateful-action.lg :deep(svg) {
+  width: 16px;
+  height: 16px;
+}
+.subtitle-stateful-spinner {
+  transform-origin: center;
+  animation: subtitle-stateful-spin 0.72s linear infinite;
+}
 .subtitle-refresh-btn:hover,
 .subtitle-action-btn:hover {
   transform: translateY(-2px) scale(1.02);
@@ -1232,6 +1271,9 @@ button:disabled { cursor: not-allowed; }
 .subtitle-refresh-btn:hover :deep(svg),
 .subtitle-action-btn:hover :deep(svg) {
   transform: rotate(-8deg) scale(1.08);
+}
+.subtitle-stateful-action:hover :deep(.subtitle-stateful-spinner) {
+  transform: none;
 }
 .subtitle-refresh-btn:active:not(:disabled),
 .subtitle-action-btn:active:not(:disabled) {
@@ -1259,6 +1301,12 @@ button:disabled { cursor: not-allowed; }
 .subtitle-action-btn.is-slate {
   background: var(--subtitle-panel);
   color: var(--subtitle-text);
+}
+
+@keyframes subtitle-stateful-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* ==============================================================
