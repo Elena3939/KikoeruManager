@@ -115,10 +115,11 @@
                       <template v-else-if="canRetryDownloadTask(task)">
                         <button
                           type="button"
-                          class="v1-inline-action danger"
+                          class="v1-inline-action danger retry"
                           :disabled="retryingSet.has(task.id)"
                           @click.stop="emit('retry-task', task)"
                         >
+                          <RefreshCw :size="13" :class="{ spinning: retryingSet.has(task.id) }" />
                           {{ retryingSet.has(task.id) ? '重试中' : '重试失败项' }}
                         </button>
                       </template>
@@ -223,10 +224,11 @@
                                   v-if="file.retryable"
                                   type="button"
                                   class="v1-file-retry"
-                                  :disabled="retryingSet.has(`${task.id}:${file.relative_path || file.name}`)"
+                                  :disabled="retryingSet.has(getFileRetryKey(task, file))"
                                   @click.stop="emit('retry-file', { task, file })"
                                 >
-                                  {{ retryingSet.has(`${task.id}:${file.relative_path || file.name}`) ? '重试中' : '重试' }}
+                                  <RefreshCw :size="11" :class="{ spinning: retryingSet.has(getFileRetryKey(task, file)) }" />
+                                  {{ retryingSet.has(getFileRetryKey(task, file)) ? '重试中' : '重试' }}
                                 </button>
                               </div>
                             </div>
@@ -388,6 +390,12 @@ const filteredTasks = computed(() => {
     return haystack.includes(keyword)
   })
 })
+
+function getFileRetryKey(task, file) {
+  const taskId = String(task?.id || task?.active_task_id || '').trim()
+  const fileKey = String(file?.relative_path || file?.name || file?.selection_key || 'file').trim()
+  return `${taskId}:${fileKey || 'file'}`
+}
 
 const pausedTasks = computed(() => mergedTasks.value.filter(task => isTaskPaused(task)))
 const shouldShowUploadMetrics = computed(() => {
@@ -1512,13 +1520,17 @@ function getUnifiedFileRows(task) {
 .v1-inline-action svg { flex-shrink: 0; transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
 .v1-inline-action.primary { color: #18181b; background: rgba(250, 250, 250, 0.8); }
 .v1-inline-action.danger { color: #b91c1c; background: rgba(254, 242, 242, 0.72); border-color: rgba(248, 113, 113, 0.24); }
+.v1-inline-action.retry { color: #991b1b; background: #fee2e2; border-color: rgba(220, 38, 38, 0.36); box-shadow: inset 0 1px 0 rgba(255,255,255,.78), 0 6px 14px rgba(220, 38, 38, 0.12); }
 .v1-inline-action:hover { transform: translateY(-2px) scale(1.02); opacity: .98; background: rgba(255, 255, 255, 0.94); border-color: rgba(24, 24, 27, 0.18); box-shadow: inset 0 1px 0 rgba(255,255,255,.88), 0 10px 18px rgba(24, 24, 27, 0.1); }
 .v1-inline-action:hover svg { transform: rotate(-8deg) scale(1.08); }
 .v1-inline-action.primary:hover svg { transform: translateX(1px) scale(1.1); }
 .v1-inline-action.danger:hover { background: rgba(254, 226, 226, 0.92); border-color: rgba(220, 38, 38, 0.28); color: #991b1b; }
+.v1-inline-action.retry:hover { background: #fecaca; border-color: rgba(185, 28, 28, 0.48); color: #7f1d1d; box-shadow: inset 0 1px 0 rgba(255,255,255,.84), 0 10px 18px rgba(220, 38, 38, 0.18); }
 .v1-inline-action.danger:hover svg { transform: rotate(10deg) scale(1.08); }
 .v1-inline-action:active { transform: translateY(0) scale(0.96); box-shadow: inset 0 1px 3px rgba(24,24,27,.12); }
 .v1-inline-action:disabled { opacity: .55; cursor: not-allowed; transform: none; box-shadow: none; }
+.v1-inline-action.retry:disabled { opacity: .68; }
+.v1-inline-action.retry svg.spinning { animation: v1-refresh-spin .75s linear infinite; }
 .v1-task-meta { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-top: 6px; color: #71717a; font-size: 11px; line-height: 1.1; }
 .v1-summary-progress { display: flex; align-items: center; gap: 10px; margin-top: 9px; }
 .v1-summary-progress :deep(.app-lottie-progress) { flex: 1; }
@@ -1572,9 +1584,13 @@ function getUnifiedFileRows(task) {
 .v1-file-chip { display: inline-flex; align-items: center; min-height: 19px; padding: 0 7px; border-radius: 999px; font-size: 9px; font-weight: 800; }
 .v1-file-chip.success { background: #f4f4f5; color: #52525b; }
 .v1-file-chip.danger { background: #fee2e2; color: #b91c1c; }
-.v1-file-retry { border: 1px solid rgba(220, 38, 38, 0.22); border-radius: 999px; background: rgba(254, 242, 242, 0.72); color: #dc2626; font-size: 11px; font-weight: 800; line-height: 22px; padding: 0 8px; cursor: pointer; transition: transform .18s ease, background-color .18s ease, border-color .18s ease; }
-.v1-file-retry:hover:not(:disabled) { transform: translateY(-1px); background: rgba(254, 226, 226, 0.9); border-color: rgba(220, 38, 38, 0.32); }
-.v1-file-retry:disabled { opacity: .55; cursor: not-allowed; }
+.v1-file-retry { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 23px; border: 1px solid rgba(220, 38, 38, 0.34); border-radius: 999px; background: #fee2e2; color: #b91c1c; font-size: 11px; font-weight: 800; line-height: 1; padding: 0 8px; cursor: pointer; box-shadow: inset 0 1px 0 rgba(255,255,255,.78), 0 4px 10px rgba(220, 38, 38, 0.1); transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.v1-file-retry svg { flex-shrink: 0; transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.v1-file-retry:hover:not(:disabled) { transform: translateY(-1px) scale(1.02); background: #fecaca; border-color: rgba(185, 28, 28, 0.46); color: #991b1b; box-shadow: inset 0 1px 0 rgba(255,255,255,.84), 0 8px 16px rgba(220, 38, 38, 0.16); }
+.v1-file-retry:hover:not(:disabled) svg:not(.spinning) { transform: rotate(-18deg) scale(1.08); }
+.v1-file-retry:active:not(:disabled) { transform: scale(0.96); }
+.v1-file-retry:disabled { opacity: .62; cursor: not-allowed; box-shadow: none; }
+.v1-file-retry svg.spinning { animation: v1-refresh-spin .75s linear infinite; }
 .v1-file-reason { margin-top: 6px; color: #b91c1c; font-size: 11px; line-height: 1.45; }
 .v1-log-row { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 9px; color: #52525b; font-size: 11px; line-height: 1.45; }
 .v1-log-row + .v1-log-row { margin-top: 4px; }
@@ -1810,6 +1826,44 @@ function getUnifiedFileRows(task) {
   border-color: rgba(248, 113, 113, 0.34);
   background: rgba(127, 29, 29, 0.28);
   color: #fca5a5;
+}
+
+:global(html.kikoerumanager-dark .v1-inline-action.retry) {
+  border-color: rgba(248, 113, 113, 0.58);
+  background: linear-gradient(180deg, rgba(153, 27, 27, 0.92), rgba(127, 29, 29, 0.78));
+  color: #fee2e2;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 8px 18px rgba(127, 29, 29, 0.28);
+}
+
+:global(html.kikoerumanager-dark .v1-inline-action.retry:hover:not(:disabled)) {
+  border-color: rgba(252, 165, 165, 0.72);
+  background: linear-gradient(180deg, rgba(185, 28, 28, 0.96), rgba(153, 27, 27, 0.88));
+  color: #ffffff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 12px 24px rgba(127, 29, 29, 0.34);
+}
+
+:global(html.kikoerumanager-dark .v1-inline-action.retry:disabled) {
+  opacity: 0.72;
+  color: #fecaca;
+}
+
+:global(html.kikoerumanager-dark .v1-file-retry) {
+  border-color: rgba(248, 113, 113, 0.58);
+  background: linear-gradient(180deg, rgba(153, 27, 27, 0.9), rgba(127, 29, 29, 0.76));
+  color: #fee2e2;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 6px 14px rgba(127, 29, 29, 0.24);
+}
+
+:global(html.kikoerumanager-dark .v1-file-retry:hover:not(:disabled)) {
+  border-color: rgba(252, 165, 165, 0.72);
+  background: linear-gradient(180deg, rgba(185, 28, 28, 0.96), rgba(153, 27, 27, 0.86));
+  color: #ffffff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 10px 20px rgba(127, 29, 29, 0.32);
+}
+
+:global(html.kikoerumanager-dark .v1-file-retry:disabled) {
+  opacity: 0.66;
+  color: #fecaca;
 }
 
 :global(html.kikoerumanager-dark .v1-task-detail) {
