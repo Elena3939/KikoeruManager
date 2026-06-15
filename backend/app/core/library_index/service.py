@@ -909,6 +909,23 @@ class LibraryIndexService:
             include_total=True,
         )
 
+    def list_subtree_entries(
+        self,
+        library_id: str,
+        relative_path: str = '',
+        *,
+        include_self: bool = True,
+        entry_type: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> list[IndexEntry]:
+        return self._store.list_subtree_entries(
+            library_id,
+            relative_path,
+            include_self=include_self,
+            entry_type=entry_type,
+            limit=limit,
+        )
+
     def get_entry(self, library_id: str, relative_path: str) -> Optional[IndexEntry]:
         return self._store.get_entry(library_id, relative_path)
 
@@ -926,6 +943,13 @@ class LibraryIndexService:
             library_id,
             parent_path=parent_path,
         )
+
+    def count_descendant_dirs_many(
+        self,
+        library_id: str,
+        relative_paths: Sequence[str],
+    ) -> dict[str, int]:
+        return self._store.count_descendant_dirs_many(library_id, relative_paths)
 
 
 _default_service: Optional[LibraryIndexService] = None

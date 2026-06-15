@@ -2027,6 +2027,40 @@ class SnapshotStore:
                 "used_page_cursor": bool(cursor_key),
             }
 
+    def list_subtree_entries(
+        self,
+        library_id: str,
+        relative_path: Optional[str],
+        *,
+        include_self: bool = True,
+        entry_type: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> list[IndexEntry]:
+        normalized_path = str(relative_path or "").strip().strip("/")
+        with self._read_session() as db:
+            q = db.query(LibraryIndexEntry).filter(
+                LibraryIndexEntry.library_id == library_id,
+            )
+            if normalized_path:
+                if include_self:
+                    q = q.filter(self._subtree_column_condition(LibraryIndexEntry.relative_path, normalized_path))
+                else:
+                    q = q.filter(
+                        LibraryIndexEntry.relative_path.like(
+                            self._subtree_like_pattern(normalized_path),
+                            escape="!",
+                        )
+                    )
+            if entry_type:
+                q = q.filter(LibraryIndexEntry.entry_type == entry_type)
+            q = q.order_by(
+                LibraryIndexEntry.depth.asc(),
+                LibraryIndexEntry.relative_path.asc(),
+            )
+            if limit is not None:
+                q = q.limit(max(1, int(limit or 1)))
+            return [self._row_to_entry(row) for row in q.all()]
+
     def get_entry(self, library_id: str, relative_path: str) -> Optional[IndexEntry]:
         with self._read_session() as db:
             row = (
@@ -2075,6 +2109,41 @@ class SnapshotStore:
                 "folder_count": int(row.folder_count or 0),
                 "total_size_bytes": int(row.total_size_bytes or 0),
             }
+
+    def count_descendant_dirs_many(
+        self,
+        library_id: str,
+        relative_paths: Sequence[str],
+    ) -> dict[str, int]:
+        """批量统计目录下递归子目录数，不包含目录自身。"""
+        normalized_paths: list[str] = []
+        seen: set[str] = set()
+        for value in relative_paths or []:
+            path = str(value or "").strip().strip("/")
+            if not path or path in seen:
+                continue
+            normalized_paths.append(path)
+            seen.add(path)
+        if not normalized_paths:
+            return {}
+
+        result = {path: 0 for path in normalized_paths}
+        with self._read_session() as db:
+            for path in normalized_paths:
+                result[path] = int(
+                    db.query(func.count())
+                    .filter(
+                        LibraryIndexEntry.library_id == library_id,
+                        LibraryIndexEntry.entry_type == 'dir',
+                        LibraryIndexEntry.relative_path.like(
+                            self._subtree_like_pattern(path),
+                            escape="!",
+                        ),
+                    )
+                    .scalar()
+                    or 0
+                )
+        return result
 
     def count_library_entries(
         self,

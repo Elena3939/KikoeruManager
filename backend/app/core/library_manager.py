@@ -5015,6 +5015,14 @@ class LibraryManager:
     def _local_delete(self, library: LibraryDefinition, path: str, confirmed: bool) -> dict[str, Any]:
         self._assert_local_path_in_library(library, path)
         if not confirmed:
+            indexed_preview = self._delete_preview_via_index(library, path)
+            if indexed_preview is not None:
+                self._append_stats_log(
+                    library,
+                    "INFO",
+                    f"删除预检读取索引 path={path} type={indexed_preview.get('type')} size={indexed_preview.get('size')}",
+                )
+                return indexed_preview
             size = self._path_size(path)
             self._append_stats_log(
                 library,
@@ -5051,6 +5059,10 @@ class LibraryManager:
         for path in paths:
             self._assert_local_path_in_library(library, path)
         if not confirmed:
+            indexed_preview = self._batch_delete_preview_via_index(library, paths)
+            if indexed_preview is not None:
+                self._append_stats_log(library, "INFO", f"批删预检读取索引 total={len(paths)} size={indexed_preview.get('total_size')}")
+                return indexed_preview
             total_size = sum(self._path_size(path) for path in paths)
             self._append_stats_log(library, "INFO", f"批删预检 total={len(paths)} size={total_size}")
             return {"need_confirm": True, "total_count": len(paths), "total_size": total_size}
@@ -5105,6 +5117,14 @@ class LibraryManager:
         ``include_files`` 同样生效（文件项 size 取自 additional.size）。
         """
         library = self.get_library_definition(library_id)
+        indexed = self._list_folders_only_via_index(library, path, include_files=include_files)
+        if indexed is not None:
+            self._append_stats_log(
+                library,
+                "INFO",
+                f"目录浏览读取索引 path={indexed.get('current_path')} total={len(indexed.get('folders') or [])}",
+            )
+            return indexed
         if library.type == "local":
             return await asyncio.to_thread(
                 self._list_local_folders_only,
@@ -7008,8 +7028,17 @@ class LibraryManager:
         except Exception:
             pass
 
-    async def _remote_delete_preview(self, client: SynologyFileStationClient, path: str) -> dict[str, Any]:
+    async def _remote_delete_preview(
+        self,
+        client: SynologyFileStationClient,
+        path: str,
+        library: Optional[LibraryDefinition] = None,
+    ) -> dict[str, Any]:
         normalized_path = self._normalize_remote_path(path)
+        if library is not None:
+            indexed_preview = self._delete_preview_via_index(library, normalized_path)
+            if indexed_preview is not None:
+                return indexed_preview
         info = await client.stat(normalized_path)
         item = self._first_remote_info_item(info)
         if not item:
@@ -7175,6 +7204,494 @@ class LibraryManager:
             "parent_path": None if target_path == browse_root else self._remote_parent_path(target_path),
         }
 
+    def _folder_content_item_from_index(
+        self,
+        library: LibraryDefinition,
+        entry,
+        *,
+        item_id: int,
+        parent_relative_path: str,
+        descendant_folder_count: int,
+    ) -> dict[str, Any]:
+        is_directory = entry.entry_type == "dir"
+        relative_path = self._index_relative_path_under_target(entry.relative_path, parent_relative_path)
+        try:
+            modified_time = datetime.fromtimestamp((entry.mtime or 0) / 1000.0).isoformat() if entry.mtime else None
+        except (OSError, ValueError, OverflowError):
+            modified_time = None
+        file_count = int(entry.file_count or 0)
+        folder_count = int(descendant_folder_count or 0)
+        return {
+            "id": f"{library.id}:content:index:{item_id}",
+            "name": entry.name,
+            "path": entry.absolute_path,
+            "relative_path": relative_path,
+            "size": int(entry.size or 0),
+            "size_status": "ready",
+            "modified_time": modified_time,
+            "type": "dir" if is_directory else "file",
+            "is_directory": is_directory,
+            "has_children": bool(is_directory and (file_count > 0 or folder_count > 0)),
+            "children_loaded": False if is_directory else True,
+            "file_count": file_count,
+            "folder_count": folder_count,
+            "browse_via_index": True,
+        }
+
+    def _index_relative_path_under_target(self, entry_relative_path: str, target_relative_path: str) -> str:
+        entry_relative = str(entry_relative_path or "").strip("/")
+        target_relative = str(target_relative_path or "").strip("/")
+        if target_relative and entry_relative.startswith(f"{target_relative}/"):
+            return entry_relative[len(target_relative) + 1:]
+        if entry_relative == target_relative:
+            return ""
+        return entry_relative
+
+    def _index_relative_path_has_skipped_part(self, relative_path: str) -> bool:
+        parts = [part for part in str(relative_path or "").replace("\\", "/").split("/") if part]
+        return any(self._should_skip_entry(part) for part in parts)
+
+    def _folder_contents_via_index(
+        self,
+        library: LibraryDefinition,
+        path: str,
+        *,
+        recursive: bool,
+    ) -> Optional[dict[str, Any]]:
+        try:
+            from .library_index import get_library_index_service
+
+            service = get_library_index_service()
+            if not service.is_ready(library.id):
+                return None
+
+            if library.type == "synology_filestation":
+                _browse_root, target_path = self._resolve_remote_operation_path(
+                    library,
+                    path,
+                    action="获取库存文件夹内容",
+                )
+                folder_name = PurePosixPath(target_path).name or target_path
+            else:
+                library_root = os.path.abspath(library.root_path)
+                target_path = os.path.abspath(path)
+                if not self._local_path_is_within_root(target_path, library_root):
+                    raise PermissionError("只能查看当前库存根目录内的文件夹")
+                if not os.path.isdir(target_path):
+                    raise FileNotFoundError("目标文件夹不存在")
+                folder_name = os.path.basename(target_path)
+
+            parent_relative_path = self._index_parent_path_for_target(library, target_path)
+            if parent_relative_path is None:
+                raise PermissionError("只能查看当前库存根目录内的文件夹")
+
+            target_entry = service.get_entry(library.id, parent_relative_path) if parent_relative_path else None
+            if parent_relative_path and (not target_entry or target_entry.entry_type != "dir"):
+                return None
+
+            if recursive:
+                entries = [
+                    entry for entry in service.list_subtree_entries(
+                        library.id,
+                        parent_relative_path,
+                        include_self=False,
+                        entry_type="file",
+                    )
+                    if not self._index_relative_path_has_skipped_part(
+                        self._index_relative_path_under_target(entry.relative_path, parent_relative_path)
+                    )
+                ]
+                entries.sort(key=lambda entry: self._index_relative_path_under_target(
+                    getattr(entry, "relative_path", "") or "",
+                    parent_relative_path,
+                ))
+                items = []
+                for index, entry in enumerate(entries):
+                    relative_path = self._index_relative_path_under_target(entry.relative_path, parent_relative_path)
+                    items.append({
+                        "id": f"{library.id}:content:index:{index}",
+                        "name": entry.name,
+                        "path": entry.absolute_path,
+                        "relative_path": relative_path,
+                        "size": int(entry.size or 0),
+                        "modified_time": self._index_entry_modified_time(entry),
+                        "type": "file",
+                        "is_directory": False,
+                        "browse_via_index": True,
+                    })
+                total_size = sum(int(entry.size or 0) for entry in entries)
+                result = {
+                    "folder_name": folder_name,
+                    "folder_path": target_path,
+                    "total_files": len(items),
+                    "total_items": len(items),
+                    "total_size": total_size,
+                    "total_size_bytes": total_size,
+                    "recursive": True,
+                    "browse_via_index": True,
+                    "items": items,
+                }
+                self._append_stats_log(library, "INFO", f"文件树索引递归读取 path={target_path} total={len(items)}")
+                return result
+
+            payload = service.list_children_page(
+                library.id,
+                parent_relative_path,
+                sort_by="name",
+                sort_order="asc",
+                offset=0,
+                limit=None,
+            )
+            entries = [
+                entry for entry in list(payload.get("entries") or [])
+                if not self._should_skip_entry(getattr(entry, "name", ""))
+            ]
+            entries.sort(key=lambda entry: (
+                0 if entry.entry_type == "dir" else 1,
+                self._natural_name_key(getattr(entry, "name", "") or ""),
+                getattr(entry, "relative_path", "") or "",
+            ))
+
+            directory_relative_paths = [entry.relative_path for entry in entries if entry.entry_type == "dir"]
+            folder_count_paths = directory_relative_paths + ([parent_relative_path] if parent_relative_path else [])
+            descendant_folder_counts = service.count_descendant_dirs_many(library.id, folder_count_paths)
+            items = [
+                self._folder_content_item_from_index(
+                    library,
+                    entry,
+                    item_id=index,
+                    parent_relative_path=parent_relative_path,
+                    descendant_folder_count=descendant_folder_counts.get(entry.relative_path, 0),
+                )
+                for index, entry in enumerate(entries)
+            ]
+
+            if target_entry:
+                total_size = int(target_entry.size or 0)
+                total_files = int(target_entry.file_count or 0)
+                total_folders = int(descendant_folder_counts.get(parent_relative_path, 0))
+            else:
+                status = service.get_status(library.id)
+                total_size = sum(int(entry.size or 0) for entry in entries)
+                total_files = sum(
+                    int(entry.file_count or 0) if entry.entry_type == "dir" else 1
+                    for entry in entries
+                )
+                total_folders = int(getattr(status, "folder_count", 0) or 0) if status else sum(
+                    1 + int(descendant_folder_counts.get(entry.relative_path, 0))
+                    for entry in entries
+                    if entry.entry_type == "dir"
+                )
+
+            result = {
+                "folder_name": folder_name,
+                "folder_path": target_path,
+                "total_files": total_files,
+                "total_items": len(items),
+                "total_size": total_size,
+                "total_size_bytes": total_size,
+                "total_folder_count": total_folders,
+                "recursive": False,
+                "browse_via_index": True,
+                "items": items,
+            }
+            self._append_stats_log(library, "INFO", f"文件树索引浅层读取 path={target_path} total={len(items)}")
+            return result
+        except (FileNotFoundError, PermissionError, ValueError):
+            raise
+        except Exception:
+            logger.warning(
+                "文件树索引浅层读取异常转 fallback: lib=%s path=%s",
+                library.id,
+                path,
+                exc_info=True,
+            )
+            return None
+
+    def _index_entry_modified_time(self, entry) -> Optional[str]:
+        try:
+            return datetime.fromtimestamp((entry.mtime or 0) / 1000.0).isoformat() if entry.mtime else None
+        except (OSError, ValueError, OverflowError):
+            return None
+
+    def _index_service_if_ready(self, library: LibraryDefinition):
+        try:
+            from .library_index import get_library_index_service
+
+            service = get_library_index_service()
+            return service if service.is_ready(library.id) else None
+        except Exception:
+            logger.warning("库存索引状态检查失败: lib=%s", library.id, exc_info=True)
+            return None
+
+    def _index_target_for_operation(
+        self,
+        library: LibraryDefinition,
+        path: str,
+        *,
+        action: str,
+        require_local_dir: bool = False,
+    ) -> tuple[str, str, str]:
+        if library.type == "synology_filestation":
+            _browse_root, target_path = self._resolve_remote_operation_path(library, path, action=action)
+            relative_path = self._index_parent_path_for_target(library, target_path)
+            folder_name = PurePosixPath(target_path).name or target_path
+        else:
+            self._assert_local_path_in_library(library, path)
+            target_path = os.path.abspath(path)
+            if require_local_dir and not os.path.isdir(target_path):
+                raise FileNotFoundError("目标文件夹不存在")
+            relative_path = self._index_parent_path_for_target(library, target_path)
+            folder_name = os.path.basename(target_path)
+        if relative_path is None:
+            raise PermissionError("目标路径超出当前库存根目录")
+        return target_path, relative_path, folder_name
+
+    def _delete_preview_via_index(self, library: LibraryDefinition, path: str) -> Optional[dict[str, Any]]:
+        service = self._index_service_if_ready(library)
+        if service is None:
+            return None
+        try:
+            target_path, relative_path, name = self._index_target_for_operation(
+                library,
+                path,
+                action="删除预检",
+            )
+            if not relative_path:
+                return None
+            entry = service.get_entry(library.id, relative_path)
+            if not entry:
+                return None
+            is_directory = entry.entry_type == "dir"
+            descendant_folder_count = 0
+            if is_directory:
+                descendant_folder_count = int(
+                    service.count_descendant_dirs_many(library.id, [relative_path]).get(relative_path, 0)
+                    or 0
+                )
+            return {
+                "need_confirm": True,
+                "type": "folder" if is_directory else "file",
+                "name": entry.name or name,
+                "path": target_path,
+                "size": int(entry.size or 0),
+                "file_count": int(entry.file_count or (0 if is_directory else 1)),
+                "folder_count": (1 + descendant_folder_count) if is_directory else 0,
+                "size_status": "ready",
+                "size_disabled": False,
+                "browse_via_index": True,
+            }
+        except (FileNotFoundError, PermissionError, ValueError):
+            raise
+        except Exception:
+            logger.warning("删除预检索引路径异常转 fallback: lib=%s path=%s", library.id, path, exc_info=True)
+            return None
+
+    def _batch_delete_preview_via_index(self, library: LibraryDefinition, paths: list[str]) -> Optional[dict[str, Any]]:
+        service = self._index_service_if_ready(library)
+        if service is None:
+            return None
+        try:
+            previews: list[dict[str, Any]] = []
+            for path in paths:
+                preview = self._delete_preview_via_index(library, path)
+                if preview is None:
+                    return None
+                previews.append(preview)
+
+            roots: list[dict[str, Any]] = []
+            root_paths: list[str] = []
+            for preview in sorted(previews, key=lambda item: len(str(item.get("path") or ""))):
+                normalized_path = str(preview.get("path") or "").replace("\\", "/").rstrip("/")
+                if any(normalized_path == root or normalized_path.startswith(f"{root}/") for root in root_paths):
+                    continue
+                root_paths.append(normalized_path)
+                roots.append(preview)
+
+            return {
+                "need_confirm": True,
+                "total_count": len(paths),
+                "total_size": sum(int(item.get("size") or 0) for item in roots),
+                "total_file_count": sum(int(item.get("file_count") or 0) for item in roots),
+                "total_folder_count": sum(int(item.get("folder_count") or 0) for item in roots),
+                "size_disabled": False,
+                "browse_via_index": True,
+            }
+        except (FileNotFoundError, PermissionError, ValueError):
+            raise
+        except Exception:
+            logger.warning("批删预检索引路径异常转 fallback: lib=%s", library.id, exc_info=True)
+            return None
+
+    def _filter_delete_preview_via_index(
+        self,
+        library: LibraryDefinition,
+        path: str,
+        active_rules: list[dict[str, str]],
+    ) -> Optional[dict[str, Any]]:
+        service = self._index_service_if_ready(library)
+        if service is None:
+            return None
+        try:
+            target_path, target_relative_path, folder_name = self._index_target_for_operation(
+                library,
+                path,
+                action="删除过滤预审",
+                require_local_dir=library.type == "local",
+            )
+            if target_relative_path:
+                target_entry = service.get_entry(library.id, target_relative_path)
+                if not target_entry or target_entry.entry_type != "dir":
+                    return None
+            entries = service.list_subtree_entries(
+                library.id,
+                target_relative_path,
+                include_self=False,
+            )
+            entries.sort(key=lambda entry: (
+                int(entry.depth or 0),
+                str(entry.relative_path or "").lower(),
+                0 if entry.entry_type == "dir" else 1,
+            ))
+
+            preview_items: list[dict[str, Any]] = []
+            selected_count = 0
+            selected_size = 0
+            covered_roots: list[tuple[str, str]] = []
+
+            def relative_to_target(entry_relative_path: str) -> str:
+                current = str(entry_relative_path or "").strip("/")
+                if target_relative_path and current.startswith(f"{target_relative_path}/"):
+                    return current[len(target_relative_path) + 1:]
+                return current
+
+            for entry in entries:
+                name = str(entry.name or "")
+                if self._should_skip_filter_preview_name(name):
+                    continue
+                entry_relative = str(entry.relative_path or "").strip("/")
+                item_relative = relative_to_target(entry_relative)
+                covered_by = ""
+                for covered_relative, covered_path in covered_roots:
+                    if entry_relative == covered_relative or entry_relative.startswith(f"{covered_relative}/"):
+                        covered_by = covered_path
+                        break
+                item_type = "dir" if entry.entry_type == "dir" else "file"
+                if covered_by:
+                    preview_items.append(
+                        self._build_preview_item(
+                            path=entry.absolute_path,
+                            relative_path=item_relative,
+                            item_type=item_type,
+                            size=int(entry.size or 0),
+                            modified_time=self._index_entry_modified_time(entry),
+                            selectable=False,
+                            covered_by=covered_by,
+                            delete_path=covered_by,
+                            size_status="ready",
+                        )
+                    )
+                    continue
+
+                matched_rules = self._match_filter_rule_names(
+                    name,
+                    "folder" if item_type == "dir" else "file",
+                    active_rules,
+                    relative_path=item_relative,
+                    full_path=entry.absolute_path,
+                )
+                if not matched_rules:
+                    continue
+                preview_items.append(
+                    self._build_preview_item(
+                        path=entry.absolute_path,
+                        relative_path=item_relative,
+                        item_type=item_type,
+                        size=int(entry.size or 0),
+                        modified_time=self._index_entry_modified_time(entry),
+                        matched_rules=matched_rules,
+                        size_status="ready",
+                    )
+                )
+                selected_count += 1
+                selected_size += int(entry.size or 0)
+                if item_type == "dir":
+                    covered_roots.append((entry_relative, entry.absolute_path))
+
+            preview_items.sort(key=lambda item: (item["relative_path"].count("/"), item["relative_path"].lower(), item["type"] != "dir"))
+            return {
+                "folder_name": folder_name,
+                "folder_path": target_path,
+                "rules": active_rules,
+                "items": preview_items,
+                "selected_count": selected_count,
+                "selected_size": selected_size,
+                "selected_size_exact": True,
+                "size_disabled": False,
+                "truncated": False,
+                "truncated_reason": "",
+                "scanned_entries": len(entries),
+                "discovered_entries": len(entries),
+                "pending_directories": 0,
+                "browse_via_index": True,
+            }
+        except (FileNotFoundError, PermissionError, ValueError):
+            raise
+        except Exception:
+            logger.warning("删除过滤预审索引路径异常转 fallback: lib=%s path=%s", library.id, path, exc_info=True)
+            return None
+
+    def _list_folders_only_via_index(
+        self,
+        library: LibraryDefinition,
+        path: Optional[str],
+        *,
+        include_files: bool = False,
+    ) -> Optional[dict[str, Any]]:
+        target_path = path
+        if not target_path:
+            target_path = library.browse_root_path or library.root_path or ("/" if library.type == "synology_filestation" else "")
+        indexed = self._folder_contents_via_index(library, target_path, recursive=False)
+        if indexed is None:
+            return None
+
+        if library.type == "synology_filestation":
+            browse_root = self._normalize_remote_path(library.browse_root_path or library.root_path or "/")
+            current_path = self._normalize_remote_path(indexed.get("folder_path") or target_path or browse_root)
+            parent_path = None if current_path == browse_root else self._remote_parent_path(current_path)
+        else:
+            browse_root = os.path.abspath(library.browse_root_path or library.root_path)
+            current_path = os.path.abspath(indexed.get("folder_path") or target_path or browse_root)
+            parent_path = None if os.path.normcase(current_path) == os.path.normcase(browse_root) else os.path.dirname(current_path)
+
+        folders = []
+        for item in list(indexed.get("items") or []):
+            is_directory = bool(item.get("is_directory"))
+            if not is_directory and not include_files:
+                continue
+            folders.append({
+                "name": item.get("name") or "",
+                "path": item.get("path") or "",
+                "is_directory": is_directory,
+                "modified_time": item.get("modified_time"),
+                "size": item.get("size"),
+                "size_status": item.get("size_status") or ("ready" if not is_directory else "pending"),
+                "file_count": item.get("file_count"),
+                "folder_count": item.get("folder_count"),
+                "browse_via_index": True,
+            })
+        return {
+            "library_id": library.id,
+            "library_name": library.name,
+            "library_type": library.type,
+            "library_root_path": library.root_path,
+            "current_path": current_path,
+            "browse_root_path": browse_root,
+            "parent_path": parent_path,
+            "folders": folders,
+            "browse_via_index": True,
+        }
+
     async def _remote_folder_contents(self, library: LibraryDefinition, path: str, *, client: Optional[SynologyFileStationClient] = None, recursive: bool = True) -> dict[str, Any]:
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
@@ -7242,12 +7759,15 @@ class LibraryManager:
                         "name": name,
                         "path": child_path,
                         "relative_path": name,
-                        "size": 0 if is_directory else int(additional.get("size") or 0),
+                        "size": None if is_directory else int(additional.get("size") or 0),
+                        "size_status": "disabled" if is_directory else "ready",
                         "modified_time": datetime.fromtimestamp(timestamp).isoformat(),
                         "type": "dir" if is_directory else "file",
                         "is_directory": is_directory,
                         "has_children": is_directory,
                         "children_loaded": False if is_directory else True,
+                        "file_count": 0,
+                        "folder_count": 0,
                     }
                 )
                 counter += 1
@@ -7329,12 +7849,15 @@ class LibraryManager:
                     "name": name,
                     "path": item_path,
                     "relative_path": name,
-                    "size": 0 if is_directory else int(stat_result.st_size),
+                    "size": None if is_directory else int(stat_result.st_size),
+                    "size_status": "disabled" if is_directory else "ready",
                     "modified_time": datetime.fromtimestamp(stat_result.st_mtime).isoformat(),
                     "type": "dir" if is_directory else "file",
                     "is_directory": is_directory,
                     "has_children": is_directory,
                     "children_loaded": False if is_directory else True,
+                    "file_count": 0,
+                    "folder_count": 0,
                 })
 
         items.sort(key=lambda item: (0 if item.get("is_directory") else 1, self._natural_name_key(item.get("name", ""))))
@@ -7351,6 +7874,9 @@ class LibraryManager:
 
     async def folder_contents(self, library_id: str, path: str, *, client: Optional[SynologyFileStationClient] = None, recursive: bool = True) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
+        indexed = self._folder_contents_via_index(library, path, recursive=recursive)
+        if indexed is not None:
+            return indexed
         if library.type == "local":
             if recursive:
                 return await asyncio.to_thread(self._local_folder_contents, library, path)
@@ -7961,6 +8487,14 @@ class LibraryManager:
             raise FileNotFoundError("目标文件夹不存在")
 
         active_rules = self._normalize_filter_rules(rules)
+        indexed_preview = self._filter_delete_preview_via_index(library, target_path, active_rules)
+        if indexed_preview is not None:
+            self._append_stats_log(
+                library,
+                "INFO",
+                f"本地删除过滤预审读取索引 path={target_path} matched={indexed_preview.get('selected_count')}",
+            )
+            return indexed_preview
         preview_items: list[dict[str, Any]] = []
         selected_count = 0
         selected_size = 0
@@ -8131,6 +8665,14 @@ class LibraryManager:
         )
 
         active_rules = self._normalize_filter_rules(rules)
+        indexed_preview = self._filter_delete_preview_via_index(library, target_path, active_rules)
+        if indexed_preview is not None:
+            self._append_stats_log(
+                library,
+                "INFO",
+                f"远程删除过滤预审读取索引 path={target_path} matched={indexed_preview.get('selected_count')}",
+            )
+            return indexed_preview
         normalized_request_id = str(request_id or "").strip()
         self._begin_filter_preview_request(normalized_request_id)
         client = self._create_filter_preview_client(library)
@@ -8290,6 +8832,18 @@ class LibraryManager:
         )
 
         active_rules = self._normalize_filter_rules(rules)
+        indexed_preview = self._filter_delete_preview_via_index(library, target_path, active_rules)
+        if indexed_preview is not None:
+            indexed_preview["status"] = "completed"
+            indexed_preview["progress_message"] = "索引预审完成"
+            indexed_preview["current_path"] = target_path
+            indexed_preview["pending_directories"] = 0
+            self._append_stats_log(
+                library,
+                "INFO",
+                f"远程删除过滤预审任务读取索引 path={target_path} matched={indexed_preview.get('selected_count')}",
+            )
+            return indexed_preview
         job_id = uuid.uuid4().hex
         self._append_stats_log(
             library,
@@ -8750,11 +9304,11 @@ class LibraryManager:
         )
         client = self.get_cached_synology_client(library.synology)
         if not confirmed:
-            preview = await self._remote_delete_preview(client, target_path)
+            preview = await self._remote_delete_preview(client, target_path, library)
             preview["need_confirm"] = True
             self._append_stats_log(library, "INFO", f"删除预检 path={target_path} type={preview.get('type') or 'unknown'}")
             return preview
-        preview = await self._remote_delete_preview(client, target_path)
+        preview = await self._remote_delete_preview(client, target_path, library)
         self._append_stats_log(
             library,
             "INFO",
@@ -8778,8 +9332,12 @@ class LibraryManager:
     async def _remote_batch_delete(self, library: LibraryDefinition, paths: list[str], confirmed: bool) -> dict[str, Any]:
         client = self.get_cached_synology_client(library.synology)
         if not confirmed:
+            indexed_preview = self._batch_delete_preview_via_index(library, paths)
+            if indexed_preview is not None:
+                self._append_stats_log(library, "INFO", f"批删预检读取索引 total={len(paths)} size={indexed_preview.get('total_size')}")
+                return indexed_preview
             previews = await asyncio.gather(
-                *(self._remote_delete_preview(client, path) for path in paths),
+                *(self._remote_delete_preview(client, path, library) for path in paths),
                 return_exceptions=True,
             )
             for preview in previews:
@@ -8800,7 +9358,7 @@ class LibraryManager:
             f"批删开始 total={len(paths)}",
         )
         previews = await asyncio.gather(
-            *(self._remote_delete_preview(client, path) for path in paths),
+            *(self._remote_delete_preview(client, path, library) for path in paths),
             return_exceptions=True,
         )
         success_count = 0
