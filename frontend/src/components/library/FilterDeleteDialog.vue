@@ -480,7 +480,11 @@ const filterDeleteFilteredRoot = computed(() => {
   return filterExplicitTree(filterDeleteTreeRoot.value, { keyword })
 })
 const filterDeleteSortedRoot = computed(() => sortFilterDeleteTree(filterDeleteFilteredRoot.value, filterDeleteSortBy.value, filterDeleteSortOrder.value))
-const filterDeleteFlatTree = computed(() => flattenTree(filterDeleteSortedRoot.value, 0, filterDeleteExpandedIds.value))
+const filterDeleteFlatTree = computed(() => {
+  const rows = flattenTree(filterDeleteSortedRoot.value, 0, filterDeleteExpandedIds.value)
+  if (rows.length || filterDeleteSearch.value.trim() || !filterDeleteItems.value.length) return rows
+  return filterDeleteItems.value.map(item => ({ ...item, depth: 0, children: [] }))
+})
 const filterDeleteUseVirtual = computed(() => filterDeleteFlatTree.value.length > FILTER_DELETE_VIRTUAL_THRESHOLD)
 const filterDeleteVirtualRange = computed(() => {
   const total = filterDeleteFlatTree.value.length
@@ -497,7 +501,10 @@ const filterDeleteVisibleRows = computed(() => {
 })
 const filterDeleteVirtualTopPadding = computed(() => filterDeleteUseVirtual.value ? filterDeleteVirtualRange.value.start * FILTER_DELETE_ROW_HEIGHT : 0)
 const filterDeleteVirtualBottomPadding = computed(() => filterDeleteUseVirtual.value ? Math.max(0, (filterDeleteFlatTree.value.length - filterDeleteVirtualRange.value.end) * FILTER_DELETE_ROW_HEIGHT) : 0)
-const filterDeleteTreeHasDirectories = computed(() => filterDeleteItems.value.some(item => item?.type === 'dir'))
+const filterDeleteTreeHasDirectories = computed(() => {
+  const walk = nodes => (nodes || []).some(node => node?.type === 'dir' || walk(node.children || []))
+  return walk(filterDeleteTreeRoot.value)
+})
 const filterDeleteSelectableRows = computed(() => filterDeleteFlatTree.value.filter(row => canFilterDeleteSelectRow(row)))
 const filterDeleteBulkSelectableRows = computed(() => buildFilterDeleteBulkRows(filterDeleteSelectableRows.value))
 const filterDeleteAllSelected = computed(() => filterDeleteBulkSelectableRows.value.length > 0 && filterDeleteBulkSelectableRows.value.every(row => isFilterDeleteRowFullySelected(row)))
@@ -825,11 +832,25 @@ function restoreFilterDeleteSelectionState (items, options = {}) {
   const nextItems = Array.isArray(items) ? items : []
   const selectableIds = new Set(nextItems.filter(item => item?.selectable).map(item => item.id))
   const allItemIds = new Set(nextItems.map(item => item.id))
-  filterDeleteExpandedIds.value = preserveSelection ? new Set([...filterDeleteExpandedIds.value].filter(id => allItemIds.has(id))) : new Set()
   if (preserveSelection) {
+    const allTreeIds = new Set()
+    const collectIds = nodes => {
+      for (const node of nodes || []) {
+        if (node?.id) allTreeIds.add(node.id)
+        if (node?.children?.length) collectIds(node.children)
+      }
+    }
+    collectIds(filterDeleteTreeRoot.value)
+    const keptExpanded = new Set([...filterDeleteExpandedIds.value].filter(id => allTreeIds.has(id)))
+    if (keptExpanded.size) {
+      filterDeleteExpandedIds.value = keptExpanded
+    } else {
+      expandFilterDeleteTree({ resetScroll: false })
+    }
     const nextSelected = new Set([...filterDeleteSelectedIds.value].filter(id => allItemIds.has(id)))
     filterDeleteSelectedIds.value = nextSelected.size ? nextSelected : new Set(selectableIds)
   } else {
+    expandFilterDeleteTree({ resetScroll: false })
     filterDeleteSelectedIds.value = new Set(selectableIds)
   }
   filterDeleteLastSelectedId.value = [...filterDeleteSelectedIds.value][0] || ''
@@ -837,7 +858,7 @@ function restoreFilterDeleteSelectionState (items, options = {}) {
 
 function applyFilterDeletePreviewData (data, options = {}) {
   const { preserveSelection = false } = options
-  const nextItems = Array.isArray(data?.items) ? data.items : []
+  const nextItems = normalizeFilterDeletePreviewItems(data?.items)
   const prevLastId = filterDeleteItems.value.at(-1)?.id || ''
   const nextLastId = nextItems.at(-1)?.id || ''
   const shouldRefreshItems = !preserveSelection || nextItems.length !== filterDeleteItems.value.length || nextLastId !== prevLastId
@@ -1267,7 +1288,8 @@ function toggleFilterDeleteExpand (row) {
   filterDeleteExpandedIds.value = next
 }
 
-function expandFilterDeleteTree () {
+function expandFilterDeleteTree (options = {}) {
+  const { resetScroll = true } = options
   const next = new Set()
   const walk = nodes => nodes.forEach(node => {
     if (node.type === 'dir') {
@@ -1277,6 +1299,7 @@ function expandFilterDeleteTree () {
   })
   walk(filterDeleteFilteredRoot.value)
   filterDeleteExpandedIds.value = next
+  if (resetScroll) resetFilterDeleteScroll()
   nextTick(syncFilterDeleteViewport)
 }
 
@@ -1363,6 +1386,41 @@ function getFilterDeleteFileType(row) {
   const sourceName = String(row?.name || row?.relative_path || row?.path || '')
   const extension = sourceName.match(/\.([^.\\/]+)$/)?.[1] || ''
   return extension ? `.${extension.toLowerCase()}` : FILTER_DELETE_NO_EXTENSION_KEY
+}
+
+function normalizeFilterDeletePreviewItems (items) {
+  const usedIds = new Set()
+  return (Array.isArray(items) ? items : [])
+    .map((item, index) => {
+      if (!item) return null
+      const type = item.type === 'dir' ? 'dir' : 'file'
+      const path = String(item.path || item.delete_path || '').trim()
+      const relativePath = String(item.relative_path || item.name || getFileName(path) || `item-${index + 1}`)
+        .replace(/\\/g, '/')
+        .replace(/^\/+/, '')
+      const deletePath = String(item.delete_path || path || '').trim()
+      const baseIdSource = normalizeFilterDeleteComparePath(deletePath || path || relativePath) || `${type}:${index}`
+      const baseId = `${type}:${baseIdSource}`
+      let id = baseId
+      let duplicateIndex = 2
+      while (usedIds.has(id)) {
+        id = `${baseId}#${duplicateIndex}`
+        duplicateIndex += 1
+      }
+      usedIds.add(id)
+      return {
+        ...item,
+        id,
+        type,
+        name: item.name || getFileName(relativePath) || getFileName(path) || relativePath,
+        path,
+        relative_path: relativePath,
+        delete_path: deletePath || path,
+        selectable: item.selectable !== false,
+        children: []
+      }
+    })
+    .filter(Boolean)
 }
 
 async function toggleFilterDeleteType(typeKey) {
@@ -1795,7 +1853,13 @@ function isFilterDeleteRowPartiallySelected (row) {
 function collectFilterDeleteSelectedRoots (nodes = []) {
   const roots = []
   const walk = node => {
-    if (!node || !canFilterDeleteSelectRow(node)) return
+    if (!node) return
+    if (!canFilterDeleteSelectRow(node)) {
+      for (const child of node.children || []) {
+        walk(child)
+      }
+      return
+    }
     if (isFilterDeleteRowFullySelected(node)) {
       roots.push(node)
       return
@@ -1898,26 +1962,65 @@ function getFilterDeleteNameCellStyle (row) {
 
 function buildExplicitTree (items) {
   const root = []
-  const nodeMap = new Map()
+  const dirNodeByRelativePath = new Map()
+  const rootSet = new Set()
   const sorted = [...items].sort((left, right) => {
     const leftDepth = String(left.relative_path || '').split('/').filter(Boolean).length
     const rightDepth = String(right.relative_path || '').split('/').filter(Boolean).length
     if (leftDepth !== rightDepth) return leftDepth - rightDepth
     return String(left.relative_path || '').localeCompare(String(right.relative_path || ''), 'zh-Hans-CN-u-kn-true')
   })
+
+  const pushRoot = node => {
+    if (!node?.id || rootSet.has(node.id)) return
+    rootSet.add(node.id)
+    root.push(node)
+  }
+
+  const attachChild = (parent, child) => {
+    if (!parent || !child?.id) return
+    if (!parent.children.some(item => item.id === child.id)) parent.children.push(child)
+  }
+
+  const ensureVirtualDir = relativePath => {
+    const normalized = String(relativePath || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+    if (!normalized) return null
+    if (dirNodeByRelativePath.has(normalized)) return dirNodeByRelativePath.get(normalized)
+    const parts = normalized.split('/').filter(Boolean)
+    const parentRelativePath = parts.slice(0, -1).join('/')
+    const node = {
+      id: `virtual-dir:${normalized}`,
+      name: parts.at(-1) || normalized,
+      path: '',
+      relative_path: normalized,
+      type: 'dir',
+      size: 0,
+      modified_time: '',
+      matched_rules: [],
+      selectable: false,
+      covered_by: '',
+      delete_path: '',
+      children: []
+    }
+    dirNodeByRelativePath.set(normalized, node)
+    const parentNode = parentRelativePath ? ensureVirtualDir(parentRelativePath) : null
+    if (parentNode) attachChild(parentNode, node)
+    else pushRoot(node)
+    return node
+  }
+
   for (const item of sorted) {
     const node = { ...item, children: [] }
-    nodeMap.set(item.id, node)
-    const relativePath = String(item.relative_path || '')
+    const relativePath = String(item.relative_path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+    if (node.type === 'dir') dirNodeByRelativePath.set(relativePath, node)
     const parentRelativePath = relativePath.includes('/') ? relativePath.slice(0, relativePath.lastIndexOf('/')) : ''
     if (!parentRelativePath) {
-      root.push(node)
+      pushRoot(node)
       continue
     }
-    const parentEntry = sorted.find(entry => entry.type === 'dir' && entry.relative_path === parentRelativePath)
-    const parentNode = parentEntry ? nodeMap.get(parentEntry.id) : null
-    if (parentNode) parentNode.children.push(node)
-    else root.push(node)
+    const parentNode = ensureVirtualDir(parentRelativePath)
+    if (parentNode) attachChild(parentNode, node)
+    else pushRoot(node)
   }
   return root
 }
