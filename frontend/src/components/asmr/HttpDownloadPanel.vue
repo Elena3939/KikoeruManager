@@ -190,7 +190,7 @@
               <div>
                 <h2>下载列表</h2>
               </div>
-              <span>{{ previewDownloadFileCount }} 文件 / {{ previewItems.length }} 分享</span>
+              <span>{{ previewDownloadFileCount }} 文件 / {{ previewShareCount }} 分享</span>
             </div>
             <div class="download-list-scroll flex-1 overflow-auto no-scrollbar" @click="closePreviewContextMenu">
               <div v-if="previewing && !previewItems.length" class="http-preview-empty">
@@ -232,7 +232,7 @@
                   <span v-else class="download-tree-toggle placeholder" aria-hidden="true"></span>
 
                   <button
-                    v-if="!row.isDir && (row.selectable || !row.ok)"
+                    v-if="rowCanShowSelectionCheck(row)"
                     type="button"
                     class="download-list-check relative flex size-4 shrink-0 items-center justify-center rounded-[4px] border"
                     :class="previewTreeSelectionClass(row)"
@@ -284,7 +284,7 @@
                   <div class="download-tree-main">
                     <div class="download-tree-name-line">
                       <span class="download-list-name http-preview-name">{{ row.name }}</span>
-                      <span v-if="row.isDir && row.fileCount" class="http-preview-pass-chip">{{ row.fileCount }} 文件</span>
+                      <span v-if="row.isDir && row.fileCount" class="http-preview-count-tag">{{ previewTreeCountLabel(row) }}</span>
                       <span v-if="row.customPreview" class="baidu-custom-preview">{{ row.customPreview }}</span>
                     </div>
                     <div v-if="row.volumeGroup || (!row.ok && row.reason) || row.warning || row.passCodeText" class="http-preview-meta">
@@ -712,6 +712,7 @@ const failedPreviewItemCount = computed(() => previewItems.value.filter(item => 
 const selectablePreviewFileRows = computed(() => previewTreeRows.value.filter(row => row && !row.isDir && row.ok))
 const okPreviewCount = computed(() => selectablePreviewFileRows.value.length || okPreviewItems.value.length)
 const previewDownloadFileCount = computed(() => selectablePreviewFileRows.value.length || okPreviewItems.value.reduce((sum, item) => sum + previewItemFileCount(item), 0))
+const previewShareCount = computed(() => countPreviewShares(previewItems.value))
 const selectedPreviewFileRows = computed(() => selectablePreviewFileRows.value.filter(row => selectedPreviewKeys.value.has(previewRowSelectionKey(row))))
 const selectedOkItems = computed(() => selectedPreviewItemsForStart())
 const selectedOkCount = computed(() => selectedPreviewFileRows.value.length)
@@ -1047,6 +1048,25 @@ function previewItemReason(item) {
   if (reason && warning && (warning.includes(reason) || reason.includes(warning))) return warning
   if (reason && warning && reason !== warning) return `${reason}：${warning}`
   return reason || warning || '未读取到可下载文件'
+}
+
+function countPreviewShares(items) {
+  const keys = new Set()
+  ;(items || []).forEach((item, index) => {
+    if (!item) return
+    const key = previewShareIdentity(item, index)
+    if (key) keys.add(key)
+  })
+  return keys.size
+}
+
+function previewShareIdentity(item, index = 0) {
+  const source = sourceKey(item?.source || item?.download_mode || sourceFromUrl(item?.url || item?.masked_url || ''))
+  const rawShare = String(item?.share_url || item?.share_id || '').trim()
+  if (rawShare) return `${source}:share:${rawShare}`
+  const rawUrl = String(item?.masked_url || item?.url || item?.original_url || '').trim()
+  if (rawUrl) return `${source}:url:${rawUrl}`
+  return `${source}:item:${previewItemKey(item) || index}`
 }
 
 function compactBaiduVerificationReason(item) {
@@ -1468,6 +1488,18 @@ function selectedPreviewItemsForStart() {
   })
 }
 
+function rowCanShowSelectionCheck(row) {
+  if (!row) return false
+  if (!row.ok) return true
+  if (!row.isDir) return Boolean(row.selectable)
+  return !row.isPlatform && previewRowSelectionRows(row).length > 0
+}
+
+function previewTreeCountLabel(row) {
+  if (!row?.isDir) return ''
+  return `${Number(row.fileCount || 0)} 文件`
+}
+
 function previewTreeSelectionClass(row) {
   if (row && !row.ok) return 'is-disabled'
   const rows = previewRowSelectionRows(row)
@@ -1487,7 +1519,7 @@ function isPreviewTreeRowSelected(row) {
 }
 
 function togglePreviewTreeRowSelection(row) {
-  if (!row?.ok || row.isDir) return
+  if (!row?.ok) return
   const rows = previewRowSelectionRows(row)
   if (!rows.length) return
   const next = new Set(selectedPreviewKeys.value)
@@ -2623,34 +2655,39 @@ onBeforeUnmount(() => {
   grid-column: 5;
 }
 .download-tree-row.is-dir:not(.is-platform) {
-  grid-template-columns: calc(var(--tree-depth) * 18px) 18px 20px minmax(0, 1fr) auto;
+  grid-template-columns: calc(var(--tree-depth) * 18px) 18px 16px 20px minmax(0, 1fr) auto;
 }
+.download-tree-row.is-dir:not(.is-platform) .download-list-check,
 .download-tree-row.is-dir:not(.is-platform) .download-tree-check-placeholder {
-  display: none;
+  grid-column: 3;
 }
 .download-tree-row.is-dir:not(.is-platform) .download-tree-kind-icon {
-  grid-column: 3;
+  grid-column: 4;
 }
 .download-tree-row.is-dir:not(.is-platform) .download-tree-main {
-  grid-column: 4;
+  grid-column: 5;
 }
 .download-tree-row.is-dir:not(.is-platform) .download-list-size {
-  grid-column: 5;
+  grid-column: 6;
 }
 .download-tree-row.is-dir:not(.is-platform).bad {
-  grid-template-columns: calc(var(--tree-depth) * 18px) 18px 20px 20px minmax(0, 1fr) auto;
+  grid-template-columns: calc(var(--tree-depth) * 18px) 18px 16px 20px 20px minmax(0, 1fr) auto;
 }
-.download-tree-row.is-dir:not(.is-platform).bad .http-preview-error-icon {
+.download-tree-row.is-dir:not(.is-platform).bad .download-list-check,
+.download-tree-row.is-dir:not(.is-platform).bad .download-tree-check-placeholder {
   grid-column: 3;
 }
-.download-tree-row.is-dir:not(.is-platform).bad .download-tree-kind-icon {
+.download-tree-row.is-dir:not(.is-platform).bad .http-preview-error-icon {
   grid-column: 4;
 }
-.download-tree-row.is-dir:not(.is-platform).bad .download-tree-main {
+.download-tree-row.is-dir:not(.is-platform).bad .download-tree-kind-icon {
   grid-column: 5;
 }
-.download-tree-row.is-dir:not(.is-platform).bad .download-list-size {
+.download-tree-row.is-dir:not(.is-platform).bad .download-tree-main {
   grid-column: 6;
+}
+.download-tree-row.is-dir:not(.is-platform).bad .download-list-size {
+  grid-column: 7;
 }
 .download-tree-row.is-platform {
   grid-template-columns: 20px 20px minmax(0, 1fr) auto;
@@ -2914,10 +2951,12 @@ onBeforeUnmount(() => {
 .http-preview-pass-chip {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
   min-height: 16px;
   padding: 1px 5px;
   border-radius: 999px;
   border: 1px solid transparent;
+  white-space: nowrap;
 }
 .http-preview-reason {
   flex: 1 1 100%;
@@ -2940,6 +2979,18 @@ onBeforeUnmount(() => {
 }
 .download-tree-row.bad .http-preview-meta .warn {
   color: rgb(185, 28, 28);
+}
+.http-preview-count-tag {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 1.2;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(203, 213, 225, 0.78);
+  background: rgba(248, 250, 252, 0.86);
+  color: rgb(71, 85, 105);
 }
 .download-tree-row.bad .http-preview-pass-chip {
   background: rgba(254, 226, 226, 0.72);
@@ -3110,6 +3161,12 @@ onBeforeUnmount(() => {
 :global(html.kikoerumanager-dark .http-download-preview-modal .download-list-size),
 :global(html.kikoerumanager-dark .http-download-preview-modal .summary-stack) {
   color: #a3a3a3 !important;
+}
+
+:global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-count-tag) {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  color: #d4d4d4 !important;
 }
 
 :global(html.kikoerumanager-dark .http-download-preview-modal .http-preview-status-card) {
