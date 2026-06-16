@@ -32,29 +32,27 @@
           <SettingsFieldCard label="测试查重 RJ" hint="实际链路：先从 DL 侧取关联作品，再把主 RJ 和关联 RJ 逐个送到 Kikoeru 查重。">
             <div class="service-inline-row">
               <input v-model="kikoeruTestRJCode" class="field-input" type="text" placeholder="输入作品号，例如 123456" @keyup.enter="runKikoeruDuplicateTest">
-              <button
+              <StatefulButton
                 type="button"
-                class="service-lottie-trigger"
-                :class="[`is-${kikoeruButtonState}`, { 'is-busy': kikoeruBusy }]"
-                :disabled="kikoeruBusy || !kikoeruTestRJCode.trim()"
+                class="ghost-inline-btn service-duplicate-test-btn"
+                unstyled
+                :show-default-icons="false"
+                :success-hold="900"
+                :disabled="(kikoeruBusy && !kikoeruDuplicateTesting) || !kikoeruTestRJCode.trim()"
                 @click="runKikoeruDuplicateTest"
               >
-                <span class="service-lottie-trigger__animation">
-                  <DotLottieVue
-                    :key="kikoeruButtonState"
-                    ref="kikoeruButtonLottieRef"
-                    class="service-lottie-trigger__player"
-                    :src="kikoeruButtonLottieSrc"
-                    :autoplay="kikoeruButtonState !== 'idle'"
-                    :loop="kikoeruButtonState === 'loading'"
-                    :speed="kikoeruButtonState === 'loading' ? 0.9 : 1"
-                    mode="forward"
-                    :use-frame-interpolation="true"
-                    :render-config="{ autoResize: true }"
-                  />
+                <template #prefix="{ state }">
+                  <span class="service-duplicate-test-icon" :class="`is-${state}`" aria-hidden="true">
+                    <Loader2 v-if="state === 'loading' || kikoeruDuplicateTesting" :size="14" :stroke-width="2.5" class="animate-spin" />
+                    <CheckCircle2 v-else-if="state === 'success'" :size="14" :stroke-width="2.5" />
+                    <AlertCircle v-else-if="state === 'error'" :size="14" :stroke-width="2.5" />
+                    <SearchCheck v-else :size="14" :stroke-width="2.5" />
+                  </span>
+                </template>
+                <span>
+                  {{ kikoeruDuplicateTesting ? '查询中' : '测试查重' }}
                 </span>
-                <span class="service-lottie-trigger__label">{{ kikoeruButtonLabel }}</span>
-              </button>
+              </StatefulButton>
             </div>
           </SettingsFieldCard>
           <div v-if="kikoeruStatusMessage || kikoeruCheckResult" class="service-result-card">
@@ -289,19 +287,17 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
-import { BookOpen, FolderOpen, Mail, Plus, RefreshCw, Trash2, Wifi, Zap } from 'lucide-vue-next'
+import { AlertCircle, BookOpen, CheckCircle2, FolderOpen, Loader2, Mail, Plus, RefreshCw, SearchCheck, Trash2, Wifi, Zap } from 'lucide-vue-next'
 import SettingsFieldCard from './SettingsFieldCard.vue'
 import SettingsNumberStepper from './SettingsNumberStepper.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
 import SettingsToggleChip from './SettingsToggleChip.vue'
 import AppDropdown from '../common/AppDropdown.vue'
 import AnimatedPasswordInput from '../common/AnimatedPasswordInput.vue'
+import StatefulButton from '../ui/stateful-button.vue'
 import { kikoeruApi, emailWatcherApi } from '../../api'
-import insiderLoadingAnimation from '../../assets/anime/Insider-loading.lottie'
-import successConfettiAnimation from '../../assets/anime/success confetti.lottie'
 
 const props = defineProps({
   config: { type: Object, required: true }
@@ -340,58 +336,13 @@ const kikoeruBusy = ref(false)
 const kikoeruStatusMessage = ref('')
 const kikoeruTestRJCode = ref('')
 const kikoeruCheckResult = ref(null)
-const kikoeruButtonState = ref('idle')
-const kikoeruButtonLottieRef = ref(null)
-const kikoeruButtonLottieReady = ref(false)
-let kikoeruButtonResetTimer = null
-
-const kikoeruButtonLottieSrc = computed(() => {
-  if (kikoeruButtonState.value === 'loading') return insiderLoadingAnimation
-  if (kikoeruButtonState.value === 'success') return successConfettiAnimation
-  return insiderLoadingAnimation
-})
-
-const kikoeruButtonLabel = computed(() => {
-  if (kikoeruButtonState.value === 'loading') return '查询中'
-  if (kikoeruButtonState.value === 'success') return '已命中'
-  return '测试查重'
-})
+const kikoeruDuplicateTesting = ref(false)
 
 function normalizeRJCode(value = '') {
   const raw = String(value || '').trim().toUpperCase()
   if (!raw) return ''
   const match = raw.match(/RJ\s*(\d{4,})/i) || raw.match(/(\d{4,})/)
   return match ? `RJ${match[1]}` : raw
-}
-
-function getKikoeruButtonLottieInstance() {
-  return kikoeruButtonLottieRef.value?.getDotLottieInstance?.() || null
-}
-
-async function setKikoeruButtonLottieStaticFrame(frame = 0) {
-  const instance = getKikoeruButtonLottieInstance()
-  if (!instance) return
-  await instance.pause()
-  await instance.setFrame(frame)
-  await instance.freeze()
-}
-
-function handleKikoeruButtonLottieReady() {
-  kikoeruButtonLottieReady.value = true
-  if (kikoeruButtonState.value === 'idle') {
-    setKikoeruButtonLottieStaticFrame(0)
-  }
-}
-
-async function handleKikoeruButtonLottieComplete() {
-  await nextTick()
-  if (kikoeruButtonState.value === 'success') {
-    if (kikoeruButtonResetTimer) clearTimeout(kikoeruButtonResetTimer)
-    kikoeruButtonResetTimer = window.setTimeout(() => {
-      kikoeruButtonState.value = 'idle'
-      kikoeruButtonResetTimer = null
-    }, 900)
-  }
 }
 
 function normalizeKikoeruCheckResult(result = {}, requestedRJCode = '') {
@@ -436,7 +387,6 @@ function extractLinkedRJCodes(linkedWorksPayload = {}, requestedRJCode = '') {
 
 async function withKikoeruAction(action, successMessage = '') {
   kikoeruBusy.value = true
-  kikoeruButtonState.value = 'loading'
   try {
     const result = await action()
     if (successMessage) {
@@ -451,9 +401,6 @@ async function withKikoeruAction(action, successMessage = '') {
     throw error
   } finally {
     kikoeruBusy.value = false
-    if (kikoeruButtonState.value === 'loading') {
-      kikoeruButtonState.value = 'idle'
-    }
   }
 }
 
@@ -482,26 +429,33 @@ async function runKikoeruCacheClear() {
 }
 
 async function runKikoeruDuplicateTest() {
+  if (kikoeruBusy.value && !kikoeruDuplicateTesting.value) return false
   const rjcode = normalizeRJCode(kikoeruTestRJCode.value)
   if (!rjcode) {
     ElMessage.warning('先填一个 RJ 号')
-    return
+    return false
   }
+  if (kikoeruDuplicateTesting.value) return false
   kikoeruTestRJCode.value = rjcode
-  const [linkedWorksResult, checkResult] = await withKikoeruAction(() => Promise.all([
-    kikoeruApi.linkedWorks(rjcode, { includeFullLinkage: true, cueLanguages: 'CHI_HANS,CHI_HANT,ENG,JPN' }),
-    kikoeruApi.check(rjcode, true)
-  ]))
-  const normalizedResult = normalizeKikoeruCheckResult(checkResult, rjcode)
-  normalizedResult.linked_rjcodes = extractLinkedRJCodes(linkedWorksResult, rjcode)
-  normalizedResult.linked_works_total = normalizedResult.linked_rjcodes.length || normalizedResult.linked_works_total
-  kikoeruCheckResult.value = normalizedResult
-  if (normalizedResult.found) {
-    kikoeruButtonState.value = 'success'
+  kikoeruDuplicateTesting.value = true
+  try {
+    const [linkedWorksResult, checkResult] = await withKikoeruAction(() => Promise.all([
+      kikoeruApi.linkedWorks(rjcode, { includeFullLinkage: true, cueLanguages: 'CHI_HANS,CHI_HANT,ENG,JPN' }),
+      kikoeruApi.check(rjcode, true)
+    ]))
+    const normalizedResult = normalizeKikoeruCheckResult(checkResult, rjcode)
+    normalizedResult.linked_rjcodes = extractLinkedRJCodes(linkedWorksResult, rjcode)
+    normalizedResult.linked_works_total = normalizedResult.linked_rjcodes.length || normalizedResult.linked_works_total
+    kikoeruCheckResult.value = normalizedResult
+    kikoeruStatusMessage.value = kikoeruCheckResult.value.found
+      ? `查重完成：${kikoeruCheckResult.value.matched_rjcode || rjcode} 已命中`
+      : `查重完成：${rjcode} 未命中`
+    return true
+  } catch {
+    return false
+  } finally {
+    kikoeruDuplicateTesting.value = false
   }
-  kikoeruStatusMessage.value = kikoeruCheckResult.value.found
-    ? `查重完成：${kikoeruCheckResult.value.matched_rjcode || rjcode} 已命中`
-    : `查重完成：${rjcode} 未命中`
 }
 
 // ---- 邮件监听 ----
@@ -564,32 +518,6 @@ async function pollEmailWatcherNow() {
   }
 }
 
-onMounted(() => {
-  const bind = () => {
-    const instance = getKikoeruButtonLottieInstance()
-    if (!instance) return false
-    instance.addEventListener('ready', handleKikoeruButtonLottieReady)
-    instance.addEventListener('load', handleKikoeruButtonLottieReady)
-    instance.addEventListener('complete', handleKikoeruButtonLottieComplete)
-    return true
-  }
-
-  if (!bind()) {
-    window.setTimeout(bind, 60)
-  }
-})
-
-onBeforeUnmount(() => {
-  if (kikoeruButtonResetTimer) {
-    clearTimeout(kikoeruButtonResetTimer)
-    kikoeruButtonResetTimer = null
-  }
-  const instance = getKikoeruButtonLottieInstance()
-  if (!instance) return
-  instance.removeEventListener('ready', handleKikoeruButtonLottieReady)
-  instance.removeEventListener('load', handleKikoeruButtonLottieReady)
-  instance.removeEventListener('complete', handleKikoeruButtonLottieComplete)
-})
 </script>
 
 <style scoped>
@@ -775,58 +703,45 @@ onBeforeUnmount(() => {
 
 .service-inline-row .field-input { flex: 1 1 220px; }
 
-/* Lottie 触发按钮 */
-.service-lottie-trigger {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 6px;
-  padding: 0 14px 0 8px;
-  height: 38px;
-  border-radius: 10px;
-  border: 1px solid var(--set-border);
-  background: var(--set-surface);
-  color: var(--set-text-strong);
-  cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+.service-duplicate-test-btn {
+  min-width: 108px;
+  flex: 0 0 auto;
 }
 
-.service-lottie-trigger__animation {
+.service-duplicate-test-btn[data-state="loading"] {
+  opacity: 1;
+  color: var(--set-text-strong);
+}
+
+.service-duplicate-test-btn :deep(.stateful-button__content),
+.service-duplicate-test-btn :deep(.stateful-button__label) {
+  gap: 6px;
+}
+
+.service-duplicate-test-icon {
   display: inline-flex;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
-  flex-shrink: 0;
 }
 
-.service-lottie-trigger__player {
-  width: 24px;
-  height: 24px;
-  pointer-events: none;
+.service-duplicate-test-icon.is-success svg,
+.service-duplicate-test-icon.is-error svg {
+  animation: service-duplicate-test-pop 0.24s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.service-lottie-trigger__label {
-  color: var(--set-text-strong);
-  font-size: 12.5px;
-  font-weight: 500;
-  letter-spacing: -0.05px;
-  white-space: nowrap;
-}
-
-.service-lottie-trigger:not(:disabled):hover {
-  transform: translateY(-2px);
-  border-color: rgba(148, 163, 184, 0.85);
-  box-shadow: 0 10px 22px -8px rgba(15, 23, 42, 0.18), 0 2px 4px rgba(15, 23, 42, 0.04);
-}
-
-.service-lottie-trigger:not(:disabled):active { transform: translateY(0) scale(0.97); }
-
-.service-lottie-trigger.is-busy,
-.service-lottie-trigger:disabled { cursor: not-allowed; opacity: 0.55; }
-
-.service-lottie-trigger.is-loading .service-lottie-trigger__player {
-  filter: grayscale(1) brightness(0.72);
+@keyframes service-duplicate-test-pop {
+  0% {
+    transform: scale(0.55) rotate(-10deg);
+  }
+  70% {
+    transform: scale(1.12) rotate(4deg);
+  }
+  100% {
+    transform: scale(1) rotate(0deg);
+  }
 }
 
 /* 结果卡 */
