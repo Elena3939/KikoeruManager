@@ -19,7 +19,7 @@
             <span class="fm-badge">{{ scopeLabel || getFileName(currentPath) || filterDeletePreviewInfo.folderName || text.currentFolder }}</span>
           </div>
           <p class="mt-1 truncate text-sm text-slate-500">
-            {{ filterDeleteSelectedRoots.length }} / {{ filterDeleteSelectableCount }} {{ text.pendingDeleteSuffix }}
+            {{ filterDeleteDeletePlan.items.length }} / {{ filterDeleteSelectableCount }} {{ text.pendingDeleteSuffix }}
           </p>
         </div>
         <div class="flex items-center gap-3">
@@ -39,7 +39,7 @@
       <!-- 加载遮罩仅覆盖 body 区，避免遮住「隐藏到后台」和「关闭」按钮 -->
       <div
         class="fm-body flex min-h-0 flex-1 flex-col px-6 pt-3 pb-5"
-        v-app-loading="{ loading: filterDeleteBusy, text: '正在生成删除预审...', size: 120 }"
+        v-app-loading="{ loading: filterDeleteBusy, text: filterDeleteLoadingText, size: 120 }"
       >
         <div class="filter-delete-alert-stack space-y-2 mb-3">
           <el-alert type="warning" :closable="false" show-icon class="filter-delete-alert filter-delete-alert-warning !rounded-xl !border" :title="text.tipReview" />
@@ -105,7 +105,7 @@
               <ChevronsUp :size="15" class="action-icon" />
               <span>{{ text.collapseAll }}</span>
             </button>
-            <button class="action-card group" :disabled="filterDeleteBusy || !filterDeleteSelectedRoots.length" @click="clearFilterDeleteSelection">
+            <button class="action-card group" :disabled="filterDeleteBusy || !filterDeleteDeletePlan.items.length" @click="clearFilterDeleteSelection">
               <XSquare :size="15" class="action-icon" />
               <span>{{ text.clearSelection }}</span>
             </button>
@@ -144,8 +144,8 @@
           </div>
         </div>
 
-        <div v-if="filterDeleteSelectedRoots.length" class="selection-card selection-inline mt-3 flex items-center gap-5 text-sm text-slate-600">
-          <span>{{ text.selectedLabel }} <span class="text-slate-900 font-semibold">{{ filterDeleteSelectedRoots.length }}</span> {{ text.pendingDeleteSuffix }}</span>
+        <div v-if="filterDeleteDeletePlan.items.length" class="selection-card selection-inline mt-3 flex items-center gap-5 text-sm text-slate-600">
+          <span>{{ text.selectedLabel }} <span class="text-slate-900 font-semibold">{{ filterDeleteDeletePlan.items.length }}</span> {{ text.pendingDeleteSuffix }}</span>
           <span class="text-xs text-slate-400">{{ text.selectionTip }}</span>
         </div>
 
@@ -181,7 +181,6 @@
 
           <div
             ref="filterDeleteScrollRef"
-            v-memo="[filterDeleteFlatTree, filterDeleteSelectedIds, filterDeleteExpandedIds, filterDeleteBasicTreeOnly, filterDeleteBusy, filterDeleteVirtualRange.start, filterDeleteVirtualRange.end]"
             class="tree-scroll flex-1 overflow-auto px-4 py-2 no-scrollbar"
             @scroll="onFilterDeleteScroll"
           >
@@ -195,14 +194,13 @@
               <div
                 v-for="row in filterDeleteVisibleRows"
                 :key="row.id"
-                v-memo="[row.id, row.path, row.relative_path, row.depth, getFilterDeleteRowSelectionStamp(row), filterDeleteExpandedIds.has(row.id), row.selectable, filterDeleteDisplayBasePath]"
                 class="tree-node"
               >
                 <div
                   class="tree-row fd-tree-grid items-center gap-3 rounded-md px-4 py-1"
                   :class="{
-                    'tree-row-selected': filterDeleteSelectedIds.has(row.id),
-                    'opacity-50': !canFilterDeleteSelectRow(row)
+                    'tree-row-selected': isFilterDeleteRowFullySelected(row),
+                    'opacity-50': !canFilterDeleteToggleRow(row)
                   }"
                   @click="handleFilterDeleteRowClick(row, $event)"
                 >
@@ -219,7 +217,7 @@
                     <span v-else class="expander-spacer" />
 
                     <button
-                      v-if="canFilterDeleteSelectRow(row)"
+                      v-if="canFilterDeleteToggleRow(row)"
                       type="button"
                       class="tree-checkbox relative flex size-4 shrink-0 items-center justify-center rounded-[4px] border transition-all cursor-pointer"
                       :class="isFilterDeleteRowFullySelected(row) ? 'tree-checkbox-on' : (isFilterDeleteRowPartiallySelected(row) ? 'tree-checkbox-partial' : 'tree-checkbox-off')"
@@ -241,9 +239,9 @@
 
                   <span v-if="!filterDeleteBasicTreeOnly" class="tree-size text-[12px] tabular-nums text-slate-400 text-right">{{ formatFileSize(row.size) }}</span>
                   
-                  <div v-if="!filterDeleteBasicTreeOnly" class="tree-time min-w-0" :title="row.selectable ? `${formatDate(row.modified_time)} / ${(row.matched_rules || []).join(' / ') || text.individualSelectable}` : `${formatDate(row.modified_time)} / ${text.coveredByPrefix}${getFileName(row.covered_by)}`">
+                  <div v-if="!filterDeleteBasicTreeOnly" class="tree-time min-w-0" :title="getFilterDeleteRowRuleTitle(row)">
                     <span class="tree-time-date">{{ formatDate(row.modified_time) }}</span>
-                    <span class="tree-time-rule">{{ row.selectable ? ((row.matched_rules || []).join(' / ') || text.individualSelectable) : `${text.coveredByPrefix}${getFileName(row.covered_by)}` }}</span>
+                    <span class="tree-time-rule">{{ getFilterDeleteRowRuleText(row) }}</span>
                   </div>
                 </div>
               </div>
@@ -329,7 +327,7 @@ const text = {
   loadingPreview: '\u6b63\u5728\u5904\u7406\u5220\u9664\u9884\u5ba1\u2026',
   deleteProgress: '\u5220\u9664\u8fdb\u5ea6',
   failedLabel: '\u5931\u8d25',
-  tipReview: '\u5148\u5ba1\u9605\u547d\u4e2d\u8fc7\u6ee4\u89c4\u5219\u7684\u6587\u4ef6\u548c\u76ee\u5f55\uff0c\u53d6\u6d88\u52fe\u9009\u53ef\u4fdd\u7559\u8bef\u5224\u9879\u3002\u6587\u4ef6\u5939\u9879\u4f1a\u8fde\u540c\u5176\u5185\u90e8\u5185\u5bb9\u4e00\u8d77\u5220\u9664\u3002',
+  tipReview: '\u5148\u5ba1\u9605\u547d\u4e2d\u8fc7\u6ee4\u89c4\u5219\u7684\u6587\u4ef6\u548c\u76ee\u5f55\uff0c\u53d6\u6d88\u52fe\u9009\u53ef\u4fdd\u7559\u8bef\u5224\u9879\u3002\u52fe\u9009\u76ee\u5f55\u53ea\u4f1a\u6279\u91cf\u9009\u4e2d\u5df2\u5c55\u793a\u7684\u5b50\u6587\u4ef6\uff1b\u786e\u8ba4\u5220\u9664\u65f6\u4e0d\u4f1a\u5220\u9664\u672a\u5c55\u793a\u5185\u5bb9\u6216\u76ee\u5f55\u672c\u8eab\u3002',
   tipTruncated: '\u8fdc\u7a0b\u76ee\u5f55\u8fc7\u5927\uff0c\u5f53\u524d\u4ec5\u5c55\u793a\u90e8\u5206\u9884\u5ba1\u7ed3\u679c\u3002',
   backgroundHint: '\u53ef\u4ee5\u5148\u5173\u95ed\u8fd9\u4e2a\u7a97\u53e3\uff0c\u9884\u5ba1\u6216\u5220\u9664\u4f1a\u5728\u5f53\u524d\u9875\u9762\u540e\u53f0\u7ee7\u7eed\u6267\u884c\u3002',
   confirmDelete: '\u786e\u8ba4\u5220\u9664\u9009\u4e2d',
@@ -457,7 +455,10 @@ const filterDeleteSubtreeIdsById = computed(() => {
   const map = new Map()
   const walk = node => {
     if (!node?.id) return []
-    const ids = canFilterDeleteSelectRow(node) ? [node.id] : []
+    const ids = []
+    if (canFilterDeleteDeleteRow(node)) {
+      ids.push(node.id)
+    }
     for (const child of node.children || []) {
       for (const id of walk(child)) {
         ids.push(id)
@@ -476,8 +477,12 @@ const filterDeleteSelectionStateById = computed(() => {
   const selectedIds = filterDeleteSelectedIds.value
   const walk = node => {
     if (!node?.id) return EMPTY_FILTER_DELETE_SELECTION_STATE
-    let total = canFilterDeleteSelectRow(node) ? 1 : 0
-    let selected = total && selectedIds.has(node.id) ? 1 : 0
+    let total = 0
+    let selected = 0
+    if (canFilterDeleteDeleteRow(node)) {
+      total += 1
+      selected += selectedIds.has(node.id) ? 1 : 0
+    }
     for (const child of node.children || []) {
       const childState = walk(child)
       total += childState.total
@@ -518,7 +523,7 @@ const filterDeleteTypeOptions = computed(() => {
 const filterDeleteTypeRowIds = computed(() => {
   const map = new Map()
   for (const item of filterDeleteItems.value || []) {
-    if (!canFilterDeleteSelectRow(item) || item.type === 'dir') continue
+    if (!canFilterDeleteDeleteRow(item) || item.type === 'dir') continue
     const typeKey = getFilterDeleteFileType(item)
     if (!map.has(typeKey)) map.set(typeKey, [])
     map.get(typeKey).push(item.id)
@@ -555,7 +560,7 @@ const filterDeleteTreeHasDirectories = computed(() => {
   const walk = nodes => (nodes || []).some(node => node?.type === 'dir' || walk(node.children || []))
   return walk(filterDeleteTreeRoot.value)
 })
-const filterDeleteSelectableRows = computed(() => filterDeleteFlatTree.value.filter(row => canFilterDeleteSelectRow(row)))
+const filterDeleteSelectableRows = computed(() => filterDeleteFlatTree.value.filter(row => canFilterDeleteToggleRow(row)))
 const filterDeleteBulkSelectableRows = computed(() => buildFilterDeleteBulkRows(filterDeleteSelectableRows.value))
 const filterDeleteBulkSelectableIds = computed(() => {
   const ids = new Set()
@@ -576,13 +581,12 @@ const filterDeleteSomeSelected = computed(() => {
   const selectedIds = filterDeleteSelectedIds.value
   return filterDeleteBulkSelectableIds.value.some(id => selectedIds.has(id))
 })
-const filterDeleteSelectableCount = computed(() => filterDeleteBulkSelectableRows.value.length)
-const filterDeleteSelectedRows = computed(() => [...filterDeleteSelectedIds.value].map(id => filterDeleteNodeById.value.get(id)).filter(Boolean))
-const filterDeleteSelectedRoots = computed(() => collectFilterDeleteSelectedRoots(filterDeleteTreeRoot.value))
-const filterDeleteSelectedSize = computed(() => filterDeleteSelectedRoots.value.reduce((sum, item) => sum + Number(item?.size || 0), 0))
+const filterDeleteSelectableCount = computed(() => filterDeleteBulkSelectableIds.value.length)
 const filterDeleteBasicTreeOnly = computed(() => props.isRemote && filterDeletePreviewInfo.value.sizeDisabled)
 const filterDeleteBusy = computed(() => filterDeleteLoading.value || filterDeleteDeleting.value)
-const canConfirmFilterDelete = computed(() => filterDeletePreviewInfo.value.status === 'completed' && filterDeleteSelectedRoots.value.length > 0 && !filterDeleteBusy.value)
+const filterDeleteDeletePlan = computed(() => buildFilterDeleteDeletePlan(filterDeleteTreeRoot.value))
+const filterDeleteSelectedSize = computed(() => filterDeleteDeletePlan.value.size)
+const canConfirmFilterDelete = computed(() => filterDeletePreviewInfo.value.status === 'completed' && filterDeleteDeletePlan.value.items.length > 0 && !filterDeleteBusy.value)
 const filterDeleteSessionKey = computed(() => JSON.stringify({
   libraryId: props.libraryId || '',
   currentPath: props.currentPath || '',
@@ -898,7 +902,7 @@ function onFilterDeleteScroll (event) {
 function restoreFilterDeleteSelectionState (items, options = {}) {
   const { preserveSelection = false } = options
   const nextItems = Array.isArray(items) ? items : []
-  const selectableIds = new Set(nextItems.filter(item => item?.selectable).map(item => item.id))
+  const selectableIds = new Set(nextItems.filter(item => canFilterDeleteDeleteRow(item)).map(item => item.id))
   const allItemIds = new Set(nextItems.map(item => item.id))
   if (preserveSelection) {
     const allTreeIds = new Set()
@@ -1404,14 +1408,14 @@ function selectFilterDeleteRange (targetId, preserveExisting = true) {
 }
 
 function toggleFilterDeleteSelect (row, event = null) {
-  if (filterDeleteBusy.value || !canFilterDeleteSelectRow(row)) return
+  if (filterDeleteBusy.value || !canFilterDeleteToggleRow(row)) return
   if (event?.shiftKey) {
     selectFilterDeleteRange(row.id, true)
     return
   }
   const next = new Set(filterDeleteSelectedIds.value)
   const subtreeIds = getFilterDeleteSubtreeIds(row)
-  if (next.has(row.id)) {
+  if (subtreeIds.length && subtreeIds.every(id => next.has(id))) {
     subtreeIds.forEach(id => next.delete(id))
   } else {
     subtreeIds.forEach(id => next.add(id))
@@ -1436,7 +1440,7 @@ function handleFilterDeleteRowClick (row, event) {
     toggleFilterDeleteExpand(row)
     return
   }
-  if (canFilterDeleteSelectRow(row)) {
+  if (canFilterDeleteToggleRow(row)) {
     toggleFilterDeleteSelect(row, event)
   }
 }
@@ -1540,6 +1544,19 @@ function isFilterDeletePathRemoved (candidatePath, removedPaths) {
   ))
 }
 
+function pruneFilterDeleteEmptyPreviewDirectories (items = []) {
+  const remainingDeletePaths = (items || [])
+    .filter(item => canFilterDeleteDeleteRow(item))
+    .map(item => normalizeFilterDeleteComparePath(resolveFilterDeleteDeleteTarget(item)))
+    .filter(Boolean)
+  return (items || []).filter(item => {
+    if (item?.type !== 'dir') return true
+    const dirPath = normalizeFilterDeleteComparePath(item.path || item.delete_path || '')
+    if (!dirPath) return false
+    return remainingDeletePaths.some(path => path !== dirPath && path.startsWith(`${dirPath}/`))
+  })
+}
+
 function applyFilterDeletePostDelete (deletedPaths, options = {}) {
   const {
     deletedBytes = 0,
@@ -1551,7 +1568,9 @@ function applyFilterDeletePostDelete (deletedPaths, options = {}) {
   const normalizedDeletedPaths = [...new Set((deletedPaths || []).map(normalizeFilterDeleteComparePath).filter(Boolean))]
   if (!normalizedDeletedPaths.length) return
 
-  const nextItems = filterDeleteItems.value.filter(item => !isFilterDeletePathRemoved(resolveFilterDeleteDeleteTarget(item), normalizedDeletedPaths))
+  const nextItems = pruneFilterDeleteEmptyPreviewDirectories(
+    filterDeleteItems.value.filter(item => !isFilterDeletePathRemoved(resolveFilterDeleteDeleteTarget(item), normalizedDeletedPaths))
+  )
   const nextItemIds = new Set(nextItems.map(item => item.id))
   filterDeleteItems.value = nextItems
   filterDeleteSelectedIds.value = new Set()
@@ -1585,7 +1604,8 @@ async function confirmFilterDeleteSelection () {
     ElMessage.warning('\u5220\u9664\u8fc7\u6ee4\u9884\u5ba1\u5c1a\u672a\u5b8c\u6574\u5b8c\u6210\uff0c\u8bf7\u7b49\u5f85\u626b\u63cf\u7ed3\u675f\u540e\u518d\u5220\u9664')
     return
   }
-  if (!filterDeleteSelectedRoots.value.length) {
+  const deletePlan = filterDeleteDeletePlan.value
+  if (!deletePlan.items.length) {
     ElMessage.warning('\u8bf7\u5148\u52fe\u9009\u8981\u5220\u9664\u7684\u8fc7\u6ee4\u5019\u9009\u9879')
     return
   }
@@ -1593,8 +1613,8 @@ async function confirmFilterDeleteSelection () {
     await showSystemConfirm({
       title: '\u786e\u8ba4\u5220\u9664\u8fc7\u6ee4\u6587\u4ef6',
       message: filterDeleteBasicTreeOnly.value
-        ? `\u786e\u5b9a\u5220\u9664\u5df2\u9009 ${filterDeleteSelectedRoots.value.length} \u9879\u5417\uff1f\n\n\u6b64\u64cd\u4f5c\u4e0d\u53ef\u6062\u590d\uff0c\u8bf7\u786e\u8ba4\u5df2\u7ecf\u5ba1\u9605\u65e0\u8bef\u3002`
-        : `\u786e\u5b9a\u5220\u9664\u5df2\u9009 ${filterDeleteSelectedRoots.value.length} \u9879\u5417\uff1f\u9884\u8ba1\u5220\u9664 ${formatFileSize(filterDeleteSelectedSize.value)}\u3002\n\n\u6b64\u64cd\u4f5c\u4e0d\u53ef\u6062\u590d\uff0c\u8bf7\u786e\u8ba4\u5df2\u7ecf\u5ba1\u9605\u65e0\u8bef\u3002`,
+        ? `\u786e\u5b9a\u5220\u9664\u5df2\u9009 ${deletePlan.items.length} \u9879\u5417\uff1f\n\n${getFilterDeletePlanConfirmHint(deletePlan)}\n\n\u6b64\u64cd\u4f5c\u4e0d\u53ef\u6062\u590d\uff0c\u8bf7\u786e\u8ba4\u5df2\u7ecf\u5ba1\u9605\u65e0\u8bef\u3002`
+        : `\u786e\u5b9a\u5220\u9664\u5df2\u9009 ${deletePlan.items.length} \u9879\u5417\uff1f\u9884\u8ba1\u5220\u9664 ${formatFileSize(deletePlan.size)}\u3002\n\n${getFilterDeletePlanConfirmHint(deletePlan)}\n\n\u6b64\u64cd\u4f5c\u4e0d\u53ef\u6062\u590d\uff0c\u8bf7\u786e\u8ba4\u5df2\u7ecf\u5ba1\u9605\u65e0\u8bef\u3002`,
       confirmText: '\u786e\u5b9a\u5220\u9664',
       cancelText: '\u53d6\u6d88',
       tone: 'danger'
@@ -1609,19 +1629,21 @@ async function confirmFilterDeleteSelection () {
   filterDeleteApplyLoggedExecutionKey.value = ''
   try {
     const deleteStartedAt = Date.now()
-    const paths = filterDeleteSelectedRoots.value.map(item => resolveFilterDeleteDeleteTarget(item))
+    const activeDeletePlan = filterDeleteDeletePlan.value
+    const paths = activeDeletePlan.items.map(item => item.deleteTarget)
     const executionKey = `${filterDeleteSessionKey.value}::${deleteStartedAt}::${paths.length}`
-    const sizeByPath = new Map(filterDeleteSelectedRoots.value.map(item => [resolveFilterDeleteDeleteTarget(item), Number(item.size || 0)]))
+    const sizeByPath = new Map(activeDeletePlan.items.map(item => [item.deleteTarget, Number(item.size || 0)]))
+    const planItemByPath = new Map(activeDeletePlan.items.map(item => [normalizeFilterDeleteComparePath(item.deleteTarget), item]))
     const normalizedItemMeta = filterDeleteItems.value.map(item => ({
       path: normalizeFilterDeleteComparePath(item.path || item.delete_path),
       type: item.type
     }))
     const attemptedItems = buildFilterDeleteLogItemsByTargets(filterDeleteItems.value, paths)
-    const selectedRootItems = filterDeleteSelectedRoots.value.map(buildFilterDeleteLogItem).filter(Boolean)
-    const folderCountByPath = new Map(filterDeleteSelectedRoots.value.map(item => {
-      const rawPath = resolveFilterDeleteDeleteTarget(item)
+    const selectedRootItems = activeDeletePlan.items.map(buildFilterDeletePlanLogItem).filter(Boolean)
+    const folderCountByPath = new Map(activeDeletePlan.items.map(item => {
+      const rawPath = item.deleteTarget
       const normalizedPath = normalizeFilterDeleteComparePath(rawPath)
-      if (item.type !== 'dir') return [rawPath, 0]
+      if (item.row?.type !== 'dir') return [rawPath, 0]
       const folderCount = normalizedItemMeta.filter(candidate => (
         candidate.type === 'dir'
         && (candidate.path === normalizedPath || candidate.path.startsWith(`${normalizedPath}/`))
@@ -1653,11 +1675,12 @@ async function confirmFilterDeleteSelection () {
         paths.forEach(path => {
           const failed = failedPathMap.get(path)
           if (failed) {
+            const planItem = planItemByPath.get(normalizeFilterDeleteComparePath(path))
             failedCount += 1
             failedItems.push({
               path,
               name: getFileName(path),
-              type: 'dir',
+              type: planItem?.row?.type || 'file',
               size: Number(sizeByPath.get(path) || 0),
               status: 'failed',
               error: failed.error || '删除失败'
@@ -1672,11 +1695,12 @@ async function confirmFilterDeleteSelection () {
       } catch (error) {
         const errorMessage = error?.response?.data?.detail || error?.message || '删除失败'
         paths.forEach(path => {
+          const planItem = planItemByPath.get(normalizeFilterDeleteComparePath(path))
           failedCount += 1
           failedItems.push({
             path,
             name: getFileName(path),
-            type: 'dir',
+            type: planItem?.row?.type || 'file',
             size: Number(sizeByPath.get(path) || 0),
             status: 'failed',
             error: errorMessage
@@ -1737,12 +1761,12 @@ async function confirmFilterDeleteSelection () {
       folder_name: filterDeletePreviewInfo.value.folderName || '',
       folder_path: props.currentPath || filterDeletePreviewInfo.value.folderPath || '',
       duration_ms: 0,
-      selected_count: filterDeleteSelectedRoots.value.length,
+      selected_count: filterDeleteDeletePlan.value.items.length,
       success_count: 0,
-      failed_count: filterDeleteSelectedRoots.value.length,
+      failed_count: filterDeleteDeletePlan.value.items.length,
       deleted_bytes: 0,
       deleted_folder_count: 0,
-      attempted_items: buildFilterDeleteLogItemsByTargets(filterDeleteItems.value, filterDeleteSelectedRoots.value.map(item => resolveFilterDeleteDeleteTarget(item))),
+      attempted_items: buildFilterDeleteLogItemsByTargets(filterDeleteItems.value, filterDeleteDeletePlan.value.items.map(item => item.deleteTarget)),
       failed_items: [{
         path: props.currentPath || '',
         name: getFileName(props.currentPath || ''),
@@ -1783,14 +1807,75 @@ function getFilterDeleteRowSubText (row) {
   return rowPath || relativePath || name
 }
 
-function canFilterDeleteSelectRow (row) {
-  return Boolean(row?.id && (row?.path || row?.delete_path))
+function getFilterDeleteRowRuleText (row) {
+  if (!row) return ''
+  const matchedRules = (row.matched_rules || []).join(' / ')
+  if (matchedRules) return matchedRules
+  if (canFilterDeleteDeleteRow(row)) return text.individualSelectable
+  if (row.covered_by || row.type === 'dir') return text.coveredItem
+  return text.individualSelectable
+}
+
+function getFilterDeleteRowRuleTitle (row) {
+  return `${formatDate(row?.modified_time)} / ${getFilterDeleteRowRuleText(row)}`
+}
+
+function isFilterDeleteSelfDeleteRow (row) {
+  return row?.type !== 'dir' && (row?.delete_scope === 'self' || row?.selectable === true)
+}
+
+function canFilterDeleteDeleteRow (row) {
+  return Boolean(row?.id && (row?.path || row?.delete_path) && isFilterDeleteSelfDeleteRow(row))
+}
+
+function canFilterDeleteToggleRow (row) {
+  if (!row?.id) return false
+  if (canFilterDeleteDeleteRow(row)) return true
+  return row?.type === 'dir' && hasFilterDeleteDeletableDescendant(row)
+}
+
+function hasFilterDeleteDeletableDescendant (row) {
+  for (const child of row?.children || []) {
+    if (canFilterDeleteDeleteRow(child) || hasFilterDeleteDeletableDescendant(child)) return true
+  }
+  return false
 }
 
 function resolveFilterDeleteDeleteTarget (row) {
   if (!row) return ''
-  if (row.selectable === false && row.path) return row.path
   return row.delete_path || row.path || ''
+}
+
+function buildFilterDeleteDeletePlan (nodes = []) {
+  const selectedIds = filterDeleteSelectedIds.value
+  const planned = []
+
+  const walk = node => {
+    if (!node) return []
+
+    if (canFilterDeleteDeleteRow(node) && selectedIds.has(node.id)) {
+      return [{
+        row: node,
+        deleteTarget: resolveFilterDeleteDeleteTarget(node),
+        size: Number(node.size || 0)
+      }]
+    }
+
+    return (node.children || []).flatMap(walk)
+  }
+
+  for (const node of nodes || []) {
+    planned.push(...walk(node))
+  }
+
+  return {
+    items: planned.filter(item => item.deleteTarget),
+    size: planned.reduce((sum, item) => sum + Number(item.size || 0), 0)
+  }
+}
+
+function getFilterDeletePlanConfirmHint () {
+  return '\u5c06\u53ea\u5220\u9664\u5df2\u660e\u786e\u9884\u5ba1\u5e76\u52fe\u9009\u7684\u6587\u4ef6\u9879\uff1b\u52fe\u9009\u4e0a\u5c42\u76ee\u5f55\u53ea\u4f1a\u6279\u91cf\u9009\u4e2d\u5df2\u663e\u793a\u5b50\u9879\uff0c\u4e0d\u4f1a\u5220\u9664\u672a\u5c55\u793a\u5185\u5bb9\u6216\u76ee\u5f55\u672c\u8eab\u3002'
 }
 
 function getFilterDeleteRowPath (row) {
@@ -1861,15 +1946,6 @@ function buildFilterDeleteBulkRows(rows) {
   return result
 }
 
-function hasFilterDeleteSelectedAncestor(row) {
-  const rowPath = getFilterDeleteRowPath(row)
-  if (!rowPath) return false
-  return filterDeleteSelectedRoots.value.some(selectedRow => {
-    if (selectedRow.id === row.id) return false
-    return isFilterDeleteAncestorPath(rowPath, getFilterDeleteRowPath(selectedRow))
-  })
-}
-
 function getFilterDeleteTimeValue(value) {
   if (!value) return 0
   const date = new Date(value)
@@ -1926,7 +2002,7 @@ function getFilterDeleteSubtreeIds (row) {
   const ids = []
   const walk = node => {
     if (!node) return
-    if (canFilterDeleteSelectRow(node)) ids.push(node.id)
+    if (canFilterDeleteDeleteRow(node)) ids.push(node.id)
     for (const child of node.children || []) {
       walk(child)
     }
@@ -1953,39 +2029,6 @@ function isFilterDeleteRowPartiallySelected (row) {
   return getFilterDeleteRowSelectionState(row).partial
 }
 
-function collectFilterDeleteSelectedRoots (nodes = []) {
-  const roots = []
-  const walk = node => {
-    if (!node) return
-    if (!canFilterDeleteSelectRow(node)) {
-      for (const child of node.children || []) {
-        walk(child)
-      }
-      return
-    }
-    if (isFilterDeleteRowFullySelected(node)) {
-      roots.push(node)
-      return
-    }
-    if (!isFilterDeleteRowPartiallySelected(node)) return
-    for (const child of node.children || []) {
-      walk(child)
-    }
-  }
-  for (const node of nodes || []) {
-    walk(node)
-  }
-  return roots
-}
-
-function getFilterDeleteCheckCellStyle (row) {
-  const depth = Math.max(0, Number(row?.depth || 0))
-  const indent = Math.min(depth * 6, 18)
-  return {
-    paddingLeft: `${indent}px`
-  }
-}
-
 function buildFilterDeleteLogItem (item) {
   if (!item) return null
   return {
@@ -1997,6 +2040,17 @@ function buildFilterDeleteLogItem (item) {
     matched_rules: Array.isArray(item.matched_rules) ? item.matched_rules : [],
     covered_by: item.covered_by || '',
     delete_path: item.delete_path || item.path || ''
+  }
+}
+
+function buildFilterDeletePlanLogItem (item) {
+  const base = buildFilterDeleteLogItem(item?.row)
+  if (!base) return null
+  return {
+    ...base,
+    path: item.deleteTarget || base.path,
+    delete_path: item.deleteTarget || base.delete_path,
+    size: Number(item.size ?? base.size ?? 0)
   }
 }
 
@@ -2125,7 +2179,28 @@ function buildExplicitTree (items) {
     if (parentNode) attachChild(parentNode, node)
     else pushRoot(node)
   }
-  return root
+  return hydrateFilterDeleteTreeDirectorySizes(root)
+}
+
+function hydrateFilterDeleteTreeDirectorySizes (nodes = []) {
+  const walk = node => {
+    if (!node) return 0
+    const children = (node.children || []).map(child => {
+      walk(child)
+      return child
+    })
+    const childSize = children.reduce((sum, child) => sum + Number(child?.size || 0), 0)
+    if (node.type !== 'dir') return Number(node.size || 0)
+
+    const ownSize = Number(node.size || 0)
+    const shouldUseChildSize = node.selectable === false || ownSize <= 0
+    node.size = shouldUseChildSize ? childSize : ownSize
+    return Number(node.size || 0)
+  }
+  for (const node of nodes || []) {
+    walk(node)
+  }
+  return nodes
 }
 
 function filterExplicitTree (nodes, options = {}) {
