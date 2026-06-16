@@ -37,6 +37,16 @@ _SYSTEM_STORAGE_INFO_CACHE: Dict[str, Any] = {"key": None, "expires_at": 0.0, "p
 _LIBRARY_STORAGE_INFO_CACHE: Dict[str, Dict[str, Any]] = {}
 _STORAGE_INFO_TTL_SECONDS = 60.0
 _LIBRARY_STORAGE_INFO_STALE_TIMEOUT_SECONDS = 0.35
+_BATCH_API_RENAME_INFLIGHT: Dict[str, asyncio.Task] = {}
+
+
+def _batch_api_rename_request_key(library_id: Any, paths: List[Any]) -> str:
+    payload = {
+        "library_id": str(library_id or "").strip(),
+        "paths": [str(path or "").strip() for path in paths],
+    }
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 from ..models.database import init_db, get_db, get_db_path_info, ActivityLog, ASMRDownloadSession, SessionLocal
 from ..core.task_engine import TaskEngine, Task, TaskType, get_task_engine
@@ -9877,6 +9887,15 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
         
         # 创建任务 ID
         import uuid
+        request_key = _batch_api_rename_request_key(library_id, paths)
+        existing_task = _BATCH_API_RENAME_INFLIGHT.get(request_key)
+        if existing_task is not None:
+            if not existing_task.done():
+                logger.info("批量 API重命名复用运行中请求：items=%s", len(paths))
+                return await asyncio.shield(existing_task)
+            if _BATCH_API_RENAME_INFLIGHT.get(request_key) is existing_task:
+                _BATCH_API_RENAME_INFLIGHT.pop(request_key, None)
+
         batch_id = str(uuid.uuid4())
         
         # 在后台处理
@@ -9889,6 +9908,8 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
             results = []
             manager = get_library_manager()
             request_library = manager.get_library_definition(library_id) if library_id else None
+            rename_service = RenameService()
+            plan_semaphore = asyncio.Semaphore(max(1, min(4, len(paths))))
             rename_plans_by_library: dict[str, dict[str, Any]] = {}
 
             def _plan_library(path_value: str):
@@ -9896,158 +9917,196 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                     return request_library
                 return manager.find_local_library_for_path(path_value)
 
-            for path in paths:
-                path = str(path or "").strip()
-                item_library = _plan_library(path)
-                item_is_remote = bool(item_library and item_library.type == "synology_filestation")
-                child_rjcode = ""
-                old_name = str(PurePosixPath(path).name) if item_is_remote else (os.path.basename(path) if path else "")
-                new_name = ""
-                try:
-                    # 提取 RJ 号
-                    rj_match = re.search(r'[RVB]J\d{6,8}', old_name, re.IGNORECASE)
-                    if not rj_match:
-                        log_api_rename_action(
-                            action="batch_api_rename_item",
-                            success=False,
-                            source_path=path,
-                            old_name=old_name,
-                            batch_id=batch_id,
-                            library_id=str(library_id or "") or None,
-                            error="无法提取 RJ 号",
-                        )
-                        results.append({
-                            "path": path,
-                            "success": False,
-                            "error": "无法提取 RJ 号"
-                        })
-                        continue
-                    if item_library is None:
-                        log_api_rename_action(
-                            action="batch_api_rename_item",
-                            success=False,
-                            source_path=path,
-                            old_name=old_name,
-                            batch_id=batch_id,
-                            library_id=str(library_id or "") or None,
-                            error="无法匹配库存库",
-                        )
-                        results.append({
-                            "path": path,
-                            "success": False,
-                            "error": "无法匹配库存库"
-                        })
-                        continue
-                    
-                    rjcode = rj_match.group(0).upper()
-                    child_rjcode = rjcode
-                    
-                    # 创建临时任务
-                    temp_task = Task(task_type=TaskType.METADATA, source_path=path)
-                    
-                    # 获取元数据
-                    metadata_service = MetadataService()
-                    metadata = await metadata_service.fetch(path, temp_task)
-                    
-                    # 生成新名称
-                    rename_service = RenameService()
-                    config = get_config()
-                    
-                    if config.rename.api_rename_follow_template:
-                        japanese_metadata = None
-                        if config.rename.use_japanese_metadata:
-                            japanese_metadata = await rename_service._get_japanese_metadata(rjcode)
-                        new_name = rename_service._compile_name(metadata, japanese_metadata)
-                        new_name = rename_service._sanitize_filename(new_name)
-                    else:
-                        work_name = metadata.get('work_name', '')
-                        def sanitize_filename(name):
-                            name = re.sub(r'[<>:"/\\|?*]', '_', name)
-                            name = re.sub(r'[\x00-\x1f\x7f]', '', name)
-                            name = name.rstrip(' .')
-                            return name
-                        new_name = f"{rjcode} {sanitize_filename(work_name)}"
-                    
-                    # 只生成计划；真实重命名按 library 聚合后一次 manager.batch_rename()。
-                    if item_is_remote:
-                        parent_dir = str(PurePosixPath(path).parent)
-                        new_path = str(PurePosixPath(parent_dir) / new_name)
-                    else:
-                        parent_dir = os.path.dirname(path)
-                        new_path = os.path.join(parent_dir, new_name)
-                    
-                    if not item_is_remote and os.path.exists(new_path) and new_path != path:
-                        log_api_rename_action(
-                            action="batch_api_rename_item",
-                            success=False,
-                            source_path=path,
-                            old_name=old_name,
-                            new_name=new_name,
-                            rjcode=child_rjcode or None,
-                            batch_id=batch_id,
-                            library_id=str(library_id or "") or None,
-                            error="新名称已存在",
-                        )
-                        results.append({
-                            "path": path,
-                            "success": False,
-                            "error": "新名称已存在"
-                        })
-                    elif new_path == path:
-                        log_api_rename_action(
-                            action="batch_api_rename_item",
-                            success=True,
-                            source_path=path,
-                            new_path=new_path,
-                            old_name=old_name,
-                            new_name=new_name,
-                            rjcode=child_rjcode or None,
-                            batch_id=batch_id,
-                            library_id=str(library_id or "") or None,
-                            extra_detail={"no_change": True},
-                        )
-                        results.append({
-                            "path": path,
-                            "success": True,
-                            "message": "名称已是最新",
-                            "new_name": new_name
-                        })
-                    else:
-                        bucket = rename_plans_by_library.setdefault(
-                            item_library.id,
-                            {"library": item_library, "items": [], "meta": {}},
-                        )
-                        index = len(bucket["items"])
-                        bucket["items"].append({"index": index, "path": path, "new_name": new_name})
-                        bucket["meta"][index] = {
-                            "path": path,
-                            "new_path": new_path,
-                            "old_name": old_name,
-                            "new_name": new_name,
-                            "rjcode": child_rjcode,
-                        }
-                    
-                except Exception as e:
-                    logger.error(f"批量 API 重命名失败：{path}, {e}")
+            async def _build_item_plan(item_index: int, raw_path: Any) -> dict[str, Any]:
+                async with plan_semaphore:
+                    path = str(raw_path or "").strip()
+                    item_library = _plan_library(path)
+                    item_is_remote = bool(item_library and item_library.type == "synology_filestation")
+                    child_rjcode = ""
+                    old_name = str(PurePosixPath(path).name) if item_is_remote else (os.path.basename(path) if path else "")
+                    new_name = ""
                     try:
-                        log_api_rename_action(
-                            action="batch_api_rename_item",
-                            success=False,
-                            source_path=path,
-                            old_name=old_name,
-                            new_name=new_name,
-                            rjcode=child_rjcode or None,
-                            batch_id=batch_id,
-                            library_id=str(library_id or "") or None,
-                            error=str(e),
-                        )
-                    except Exception:
-                        logger.debug("[操作记录] 批量 API 重命名子项失败记录失败", exc_info=True)
-                    results.append({
-                        "path": path,
-                        "success": False,
-                        "error": str(e)
-                    })
+                        # 提取 RJ 号
+                        rj_match = re.search(r'[RVB]J\d{6,8}', old_name, re.IGNORECASE)
+                        if not rj_match:
+                            log_api_rename_action(
+                                action="batch_api_rename_item",
+                                success=False,
+                                source_path=path,
+                                old_name=old_name,
+                                batch_id=batch_id,
+                                library_id=str(library_id or "") or None,
+                                error="无法提取 RJ 号",
+                            )
+                            return {
+                                "item_index": item_index,
+                                "result": {
+                                    "path": path,
+                                    "success": False,
+                                    "error": "无法提取 RJ 号",
+                                },
+                            }
+                        if item_library is None:
+                            log_api_rename_action(
+                                action="batch_api_rename_item",
+                                success=False,
+                                source_path=path,
+                                old_name=old_name,
+                                batch_id=batch_id,
+                                library_id=str(library_id or "") or None,
+                                error="无法匹配库存库",
+                            )
+                            return {
+                                "item_index": item_index,
+                                "result": {
+                                    "path": path,
+                                    "success": False,
+                                    "error": "无法匹配库存库",
+                                },
+                            }
+
+                        rjcode = rj_match.group(0).upper()
+                        child_rjcode = rjcode
+
+                        # 创建临时任务
+                        temp_task = Task(task_type=TaskType.METADATA, source_path=path)
+
+                        # 获取元数据
+                        metadata_service = MetadataService()
+                        metadata = await metadata_service.fetch(path, temp_task)
+
+                        # 生成新名称
+                        config = get_config()
+                        if config.rename.api_rename_follow_template:
+                            japanese_metadata = None
+                            if config.rename.use_japanese_metadata:
+                                japanese_metadata = await rename_service._get_japanese_metadata(rjcode)
+                            new_name = rename_service._compile_name(metadata, japanese_metadata)
+                            new_name = rename_service._sanitize_filename(new_name)
+                        else:
+                            work_name = metadata.get('work_name', '')
+
+                            def sanitize_filename(name):
+                                name = re.sub(r'[<>:"/\\|?*]', '_', name)
+                                name = re.sub(r'[\x00-\x1f\x7f]', '', name)
+                                name = name.rstrip(' .')
+                                return name
+
+                            new_name = f"{rjcode} {sanitize_filename(work_name)}"
+
+                        # 只生成计划；真实重命名按 library 聚合后一次 manager.batch_rename()。
+                        if item_is_remote:
+                            parent_dir = str(PurePosixPath(path).parent)
+                            new_path = str(PurePosixPath(parent_dir) / new_name)
+                        else:
+                            parent_dir = os.path.dirname(path)
+                            new_path = os.path.join(parent_dir, new_name)
+
+                        if not item_is_remote and os.path.exists(new_path) and new_path != path:
+                            log_api_rename_action(
+                                action="batch_api_rename_item",
+                                success=False,
+                                source_path=path,
+                                old_name=old_name,
+                                new_name=new_name,
+                                rjcode=child_rjcode or None,
+                                batch_id=batch_id,
+                                library_id=str(library_id or "") or None,
+                                error="新名称已存在",
+                            )
+                            return {
+                                "item_index": item_index,
+                                "result": {
+                                    "path": path,
+                                    "success": False,
+                                    "error": "新名称已存在",
+                                },
+                            }
+                        if new_path == path:
+                            log_api_rename_action(
+                                action="batch_api_rename_item",
+                                success=True,
+                                source_path=path,
+                                new_path=new_path,
+                                old_name=old_name,
+                                new_name=new_name,
+                                rjcode=child_rjcode or None,
+                                batch_id=batch_id,
+                                library_id=str(library_id or "") or None,
+                                extra_detail={"no_change": True},
+                            )
+                            return {
+                                "item_index": item_index,
+                                "result": {
+                                    "path": path,
+                                    "success": True,
+                                    "message": "名称已是最新",
+                                    "new_name": new_name,
+                                },
+                            }
+
+                        return {
+                            "item_index": item_index,
+                            "plan": {
+                                "library": item_library,
+                                "path": path,
+                                "new_path": new_path,
+                                "old_name": old_name,
+                                "new_name": new_name,
+                                "rjcode": child_rjcode,
+                            },
+                        }
+
+                    except Exception as e:
+                        logger.error(f"批量 API 重命名失败：{path}, {e}")
+                        try:
+                            log_api_rename_action(
+                                action="batch_api_rename_item",
+                                success=False,
+                                source_path=path,
+                                old_name=old_name,
+                                new_name=new_name,
+                                rjcode=child_rjcode or None,
+                                batch_id=batch_id,
+                                library_id=str(library_id or "") or None,
+                                error=str(e),
+                            )
+                        except Exception:
+                            logger.debug("[操作记录] 批量 API 重命名子项失败记录失败", exc_info=True)
+                        return {
+                            "item_index": item_index,
+                            "result": {
+                                "path": path,
+                                "success": False,
+                                "error": str(e),
+                            },
+                        }
+
+            item_outputs = await asyncio.gather(
+                *(_build_item_plan(index, path) for index, path in enumerate(paths))
+            )
+
+            for output in item_outputs:
+                immediate_result = output.get("result")
+                if immediate_result is not None:
+                    results.append(immediate_result)
+                    continue
+                plan = output.get("plan")
+                if not plan:
+                    continue
+                bucket = rename_plans_by_library.setdefault(
+                    plan["library"].id,
+                    {"library": plan["library"], "items": [], "meta": {}},
+                )
+                index = len(bucket["items"])
+                bucket["items"].append({"index": index, "path": plan["path"], "new_name": plan["new_name"]})
+                bucket["meta"][index] = {
+                    "path": plan["path"],
+                    "new_path": plan["new_path"],
+                    "old_name": plan["old_name"],
+                    "new_name": plan["new_name"],
+                    "rjcode": plan["rjcode"],
+                }
 
             for bucket in rename_plans_by_library.values():
                 item_library = bucket["library"]
@@ -10128,19 +10187,30 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                 logger.debug("[操作记录] 批量 API 重命名汇总记录失败", exc_info=True)
             return results
         
-        results = await process_batch()
-        success_count = sum(1 for item in results if item.get("success"))
-        failed_count = sum(1 for item in results if not item.get("success"))
-        
-        return {
-            "batch_id": batch_id,
-            "message": f"批量重命名完成，共 {len(paths)} 项",
-            "total_count": len(paths),
-            "success_count": success_count,
-            "failed_count": failed_count,
-            "results": results,
-            "failed": [item for item in results if not item.get("success")],
-        }
+        async def process_batch_response():
+            results = await process_batch()
+            success_count = sum(1 for item in results if item.get("success"))
+            failed_count = sum(1 for item in results if not item.get("success"))
+
+            return {
+                "batch_id": batch_id,
+                "message": f"批量重命名完成，共 {len(paths)} 项",
+                "total_count": len(paths),
+                "success_count": success_count,
+                "failed_count": failed_count,
+                "results": results,
+                "failed": [item for item in results if not item.get("success")],
+            }
+
+        batch_task = asyncio.create_task(process_batch_response())
+        _BATCH_API_RENAME_INFLIGHT[request_key] = batch_task
+
+        def _cleanup_batch_api_rename(done_task):
+            if _BATCH_API_RENAME_INFLIGHT.get(request_key) is done_task:
+                _BATCH_API_RENAME_INFLIGHT.pop(request_key, None)
+
+        batch_task.add_done_callback(_cleanup_batch_api_rename)
+        return await asyncio.shield(batch_task)
         
     except HTTPException:
         raise
