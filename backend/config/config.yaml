@@ -11,6 +11,20 @@ processing:
   file_stable_checks: 3
   file_stable_interval: 2
   max_wait_time: 3600
+database:
+  host: 127.0.0.1
+  port: 5432
+  database: kikoerumanager
+  username: kikoerumanager
+  password: ''
+  sslmode: prefer
+  connect_timeout_seconds: 10
+  pool_size: 10
+  max_overflow: 20
+  pool_recycle_seconds: 1800
+  pool_timeout_seconds: 30
+  statement_timeout_ms: 120000
+  startup_health_check: true
 watcher:
   enabled: false
   scan_interval: 30
