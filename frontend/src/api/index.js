@@ -1121,7 +1121,8 @@ export const libraryApi = {
     const payload = { paths }
     if (libraryId) payload.library_id = libraryId
     const response = await apiClient.post('/library/batch-api-rename', payload, {
-      timeout: 5 * 60 * 1000
+      // 批量 API 重命名会串行刷新 DLsite 元数据，大批量时不能让 axios 本地超时误判失败。
+      timeout: 0
     })
     return response.data
   },
