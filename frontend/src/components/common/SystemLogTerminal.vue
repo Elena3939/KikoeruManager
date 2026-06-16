@@ -297,9 +297,23 @@ function toggleAutoScroll() {
 function handleScroll() {
   const el = scrollRef.value
   if (!el) return
+  if (el.scrollHeight <= el.clientHeight + 2) {
+    userPinnedHistory.value = false
+    autoScroll.value = true
+    return
+  }
   const distance = el.scrollHeight - el.scrollTop - el.clientHeight
   userPinnedHistory.value = distance > 72
   if (userPinnedHistory.value) autoScroll.value = false
+}
+
+function syncScrollPinState() {
+  const el = scrollRef.value
+  if (!el) return
+  if (el.scrollHeight <= el.clientHeight + 2) {
+    userPinnedHistory.value = false
+    autoScroll.value = true
+  }
 }
 
 function scrollToBottom() {
@@ -316,7 +330,10 @@ watch(lineCount, () => {
   if (expandedLineKey.value && !safeLines.value.some((line, index) => lineKey(line, index) === expandedLineKey.value)) {
     expandedLineKey.value = null
   }
-  nextTick(() => rowVirtualizer.value.measure())
+  nextTick(() => {
+    rowVirtualizer.value.measure()
+    syncScrollPinState()
+  })
   if (autoScroll.value && !userPinnedHistory.value) scrollToBottom()
 })
 
@@ -325,13 +342,19 @@ watch(() => props.status, () => {
 })
 
 watch(expandedLineKey, () => {
-  nextTick(() => rowVirtualizer.value.measure())
+  nextTick(() => {
+    rowVirtualizer.value.measure()
+    syncScrollPinState()
+  })
 })
 
 onMounted(() => {
   if (typeof ResizeObserver === 'undefined' || !scrollRef.value) return
   resizeObserver = new ResizeObserver(() => {
-    nextTick(() => rowVirtualizer.value.measure())
+    nextTick(() => {
+      rowVirtualizer.value.measure()
+      syncScrollPinState()
+    })
   })
   resizeObserver.observe(scrollRef.value)
 })
@@ -432,7 +455,7 @@ onBeforeUnmount(() => {
             >
               <span class="terminal-inline-progress-head">
                 <span class="terminal-inline-progress-title">
-                  任务 {{ safeLines[virtualRow.index]?.taskProgress?.shortId || '--------' }}
+                  {{ safeLines[virtualRow.index]?.taskProgress?.title || '处理中' }}
                 </span>
                 <span class="terminal-inline-progress-state">
                   {{ progressToneLabel(safeLines[virtualRow.index]?.taskProgress?.tone) }} · 持续 {{ safeLines[virtualRow.index]?.taskProgress?.durationLabel || '00:00:00' }} · {{ clampProgress(safeLines[virtualRow.index]?.progress) }}%
