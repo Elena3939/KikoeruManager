@@ -253,7 +253,9 @@
             <div class="flex flex-wrap gap-1.5">
               <span v-if="section.totalCount" class="inline-flex h-6 items-center rounded-md border border-slate-200 bg-white px-2 text-[10.5px] font-bold tabular-nums text-slate-700">文件 {{ section.totalCount }}</span>
               <span v-if="section.removedCount" class="inline-flex h-6 items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 text-[10.5px] font-bold tabular-nums text-rose-700">
-                <span class="h-1.5 w-1.5 rounded-full bg-rose-500" /> 被过滤 {{ section.removedCount }}
+                <span class="h-1.5 w-1.5 rounded-full bg-rose-500" />
+                已删除 {{ section.directRemovedCount || section.removedCount }}
+                <span v-if="section.removedCount > (section.directRemovedCount || section.removedCount)" class="text-rose-500/75">影响 {{ section.removedCount }}</span>
               </span>
             </div>
             <button type="button" class="task-tree-toggle" @click="$emit('expand-section', section, !section.allExpanded)">
@@ -293,6 +295,9 @@
 
                   <span class="tree-name">
                     <span class="tree-label-text">{{ entry.label }}</span>
+                    <span v-if="entry.status === 'removed'" class="tree-removed-badge">
+                      {{ entry.removedByDirectory ? '随目录删除' : '已删除' }}
+                    </span>
                   </span>
                 </span>
               </div>
@@ -493,7 +498,7 @@ function buildGarbledSummary(info) {
 
 const treeFilterOptions = [
   { value: 'all', label: '显示全部', icon: ListFilter },
-  { value: 'removed', label: '只看被过滤', icon: XCircle },
+  { value: 'removed', label: '只看已删除', icon: XCircle },
 ]
 
 const ACTION_ICON_MAP = {
@@ -721,9 +726,19 @@ function actionToneClass(action) {
 }
 
 .tree-row-filtered {
-  border-color: transparent;
-  background: transparent;
-  color: #94a3b8;
+  border-color: rgba(148, 163, 184, 0.22);
+  background: rgba(241, 245, 249, 0.62);
+  color: #64748b;
+  opacity: 0.74;
+  box-shadow: inset 3px 0 0 rgba(148, 163, 184, 0.45);
+}
+
+.tree-row-filtered:hover {
+  border-color: rgba(148, 163, 184, 0.36);
+  background: rgba(226, 232, 240, 0.78);
+  box-shadow:
+    inset 3px 0 0 rgba(148, 163, 184, 0.62),
+    inset 0 0 0 1px rgba(203, 213, 225, 0.74);
 }
 
 .tree-main {
@@ -871,10 +886,14 @@ function actionToneClass(action) {
   color: #94a3b8;
   fill: rgba(148, 163, 184, 0.14);
   stroke: #94a3b8;
-  opacity: 0.88;
+  opacity: 0.72;
+  filter: grayscale(1);
 }
 
 .tree-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
   overflow: hidden;
   color: currentColor;
@@ -885,14 +904,37 @@ function actionToneClass(action) {
   white-space: nowrap;
 }
 
+.tree-label-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .tree-row-filtered .tree-name {
-  color: #94a3b8;
+  color: #64748b;
 }
 
 .tree-row-filtered .tree-label-text {
   text-decoration: line-through;
   text-decoration-color: rgba(148, 163, 184, 0.86);
   text-decoration-thickness: 1.5px;
+}
+
+.tree-removed-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 18px;
+  align-items: center;
+  padding: 0 6px;
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  border-radius: 5px;
+  background: rgba(226, 232, 240, 0.66);
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  vertical-align: 1px;
 }
 
 .tree-size {
@@ -905,6 +947,14 @@ function actionToneClass(action) {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   text-align: right;
+}
+
+.tree-row-filtered .tree-size {
+  color: #94a3b8;
+  opacity: 0.78;
+  text-decoration: line-through;
+  text-decoration-color: rgba(148, 163, 184, 0.72);
+  text-decoration-thickness: 1.2px;
 }
 
 @keyframes detail-fade-up {
@@ -1010,5 +1060,37 @@ function actionToneClass(action) {
 
 :global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-icon.icon-file) {
   color: #cbd5e1 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-row-filtered) {
+  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: rgba(30, 41, 59, 0.42) !important;
+  color: #94a3b8 !important;
+  box-shadow: inset 3px 0 0 rgba(148, 163, 184, 0.38) !important;
+}
+
+:global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-row-filtered:hover) {
+  border-color: rgba(148, 163, 184, 0.28) !important;
+  background: rgba(51, 65, 85, 0.5) !important;
+  box-shadow:
+    inset 3px 0 0 rgba(148, 163, 184, 0.56),
+    inset 0 0 0 1px rgba(148, 163, 184, 0.16) !important;
+}
+
+:global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-row-filtered .tree-icon) {
+  color: #94a3b8 !important;
+  fill: rgba(148, 163, 184, 0.12) !important;
+  stroke: #94a3b8 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-row-filtered .tree-name),
+:global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-row-filtered .tree-size) {
+  color: #94a3b8 !important;
+}
+
+:global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-row-filtered .tree-removed-badge) {
+  border-color: rgba(148, 163, 184, 0.24);
+  background: rgba(15, 23, 42, 0.72);
+  color: #cbd5e1;
 }
 </style>

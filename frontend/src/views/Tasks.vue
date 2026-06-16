@@ -675,7 +675,7 @@ function buildTreeRows(treeItems = []) {
   const nodeMap = new Map()
   const ensureNode = (key, label, type, parentKey = '') => {
     if (nodeMap.has(key)) return nodeMap.get(key)
-    const node = { key, label, type, status: 'default', sizeText: '', children: [] }
+    const node = { key, label, type, status: 'default', removedByDirectory: '', sizeText: '', children: [] }
     nodeMap.set(key, node)
     if (parentKey && nodeMap.has(parentKey)) nodeMap.get(parentKey).children.push(node)
     else roots.push(node)
@@ -694,6 +694,7 @@ function buildTreeRows(treeItems = []) {
       if (isLeaf) {
         node.type = item?.type || 'file'
         node.status = item?.status || node.status
+        node.removedByDirectory = item?.removedByDirectory || node.removedByDirectory || ''
         node.sizeText = item?.sizeText || formatBytes(item?.size)
       }
       parentKey = joined
@@ -741,6 +742,7 @@ function buildTreeRows(treeItems = []) {
         label: node.label,
         type: node.type,
         status: node.status,
+        removedByDirectory: node.removedByDirectory,
         sizeText: node.sizeText,
         depth,
         hasChildren,
@@ -797,6 +799,15 @@ function withTaskFileTreeRoot(path, rootLabel) {
   if (normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`)) return normalizedPath
   if (containsRJ(normalizedPath.split('/')[0])) return normalizedPath
   return `${normalizedRoot}/${normalizedPath}`
+}
+
+function isSameOrInsideTaskTreePath(path, parentPath) {
+  const normalizedPath = String(path || '').replace(/^[/\\]+|[/\\]+$/g, '').replace(/\\/g, '/')
+  const normalizedParent = String(parentPath || '').replace(/^[/\\]+|[/\\]+$/g, '').replace(/\\/g, '/')
+  return Boolean(normalizedPath && normalizedParent && (
+    normalizedPath === normalizedParent ||
+    normalizedPath.startsWith(`${normalizedParent}/`)
+  ))
 }
 
 function toggleTreeNode(key, defaultExpanded = false) {
@@ -982,26 +993,39 @@ function withTaskSummaryPieces(item) {
 function mapFilteredItems(item) {
   const details = item?.details || {}
   const metadata = details.metadata || {}
-  const rawItems = [
-    ...(Array.isArray(metadata.filtered_items) ? metadata.filtered_items : []),
-    ...(Array.isArray(metadata.filtered_files) ? metadata.filtered_files : []),
-    ...(Array.isArray(metadata.filtered_dirs) ? metadata.filtered_dirs : []),
-  ]
   const mapped = []
   const seen = new Set()
-  for (const current of rawItems) {
-    if (!current) continue
+
+  const pushFilteredItem = (current, fallbackType = 'file') => {
+    if (!current) return
     const asObject = typeof current === 'object' ? current : { path: String(current) }
     const relativePath = String(asObject.relative_path || asObject.path || asObject.name || '').replace(/^[/\\]+|[/\\]+$/g, '')
-    if (!relativePath || seen.has(relativePath)) continue
+    if (!relativePath || seen.has(relativePath)) return
     seen.add(relativePath)
+    const explicitType = String(asObject.type || asObject.entry_type || '').toLowerCase()
+    const type = explicitType === 'dir' || explicitType === 'directory' || asObject.is_dir || asObject.is_directory
+      ? 'dir'
+      : fallbackType
     mapped.push({
       key: relativePath,
       relative_path: relativePath,
-      type: asObject.type === 'dir' || asObject.is_dir ? 'dir' : 'file',
+      type,
       status: 'removed',
-      sizeText: asObject.size !== undefined && asObject.size !== null ? formatBytes(asObject.size) : '',
+      removedDirect: true,
+      sizeText: asObject.size !== undefined && asObject.size !== null
+        ? formatBytes(asObject.size)
+        : formatBytes(asObject.size_bytes),
     })
+  }
+
+  for (const current of Array.isArray(metadata.filtered_items) ? metadata.filtered_items : []) {
+    pushFilteredItem(current)
+  }
+  for (const current of Array.isArray(metadata.filtered_files) ? metadata.filtered_files : []) {
+    pushFilteredItem(current, 'file')
+  }
+  for (const current of Array.isArray(metadata.filtered_dirs) ? metadata.filtered_dirs : []) {
+    pushFilteredItem(current, 'dir')
   }
   return mapped
 }
@@ -1134,6 +1158,7 @@ function buildTaskFileTreeSections(item) {
   }
 
   const mergedMap = new Map()
+  const removedDirectoryPaths = []
   for (const current of sourceItems) {
     const path = withTaskFileTreeRoot(current?.relative_path || current?.name || '', rootLabel)
     if (!path) continue
@@ -1144,10 +1169,22 @@ function buildTaskFileTreeSections(item) {
     if (!path) continue
     const previous = mergedMap.get(path)
     mergedMap.set(path, { ...(previous || {}), ...removed, relative_path: path, status: 'removed' })
+    if (removed?.type === 'dir') removedDirectoryPaths.push(path)
+  }
+  for (const removedDirPath of removedDirectoryPaths) {
+    for (const [path, entry] of mergedMap.entries()) {
+      if (!isSameOrInsideTaskTreePath(path, removedDirPath)) continue
+      mergedMap.set(path, {
+        ...entry,
+        status: 'removed',
+        removedByDirectory: path === removedDirPath ? '' : removedDirPath,
+      })
+    }
   }
 
   const mergedItems = Array.from(mergedMap.values())
   const removedCount = mergedItems.filter((entry) => entry.status === 'removed').length
+  const directRemovedCount = removedItems.length
   const effectiveFilterMode = treeFilterMode.value === 'removed' && removedCount > 0 ? 'removed' : 'all'
   const filtered = effectiveFilterMode === 'removed'
     ? mergedItems.filter((entry) => entry.status === 'removed')
@@ -1174,6 +1211,7 @@ function buildTaskFileTreeSections(item) {
     rows: buildTreeRows(filtered),
     totalCount: mergedItems.length,
     removedCount,
+    directRemovedCount,
     directoryKeys: directoryKeyList,
     allExpanded,
   }
