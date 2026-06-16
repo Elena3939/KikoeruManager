@@ -5029,6 +5029,8 @@ class HttpDownloadService:
                 last_progress_at = started_at
                 resume_offset = self._transferit_resume_offset(tmp_path, total_size)
                 written = resume_offset
+                speed_sample_at = started_at
+                speed_sample_bytes = written
                 if total_size and resume_offset >= total_size and tmp_path.exists():
                     if out_path.exists():
                         with contextlib.suppress(OSError):
@@ -5074,6 +5076,8 @@ class HttpDownloadService:
                             tmp_path.unlink()
                         resume_offset = 0
                         written = 0
+                        speed_sample_bytes = 0
+                        speed_sample_at = time.monotonic()
                         ctr = Counter.new(64, prefix=nonce, initial_value=0)
                         cipher = AES.new(aes_key, AES.MODE_CTR, counter=ctr)
                     elif resume_offset > 0 and response.status_code == 206:
@@ -5098,7 +5102,11 @@ class HttpDownloadService:
                             now = last_progress_at
                             if now - last_emit_at >= 0.8:
                                 last_emit_at = now
-                                elapsed = max(now - started_at, 0.001)
+                                speed_window = max(now - speed_sample_at, 0.001)
+                                speed_bytes = max(0, written - speed_sample_bytes)
+                                speed_bytes_per_sec = int(speed_bytes / speed_window)
+                                speed_sample_at = now
+                                speed_sample_bytes = written
                                 publish_progress({
                                     **row,
                                     "name": self._sanitize_filename(selected.name or filename),
@@ -5107,7 +5115,7 @@ class HttpDownloadService:
                                     "total": total_size,
                                     "size": total_size,
                                     "progress": min(99, int(written / total_size * 100)) if total_size else 0,
-                                    "speed_bytes_per_sec": int(written / elapsed),
+                                    "speed_bytes_per_sec": speed_bytes_per_sec,
                                     "transferit_node_handle": selected.handle,
                                 })
                         target.flush()
