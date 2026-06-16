@@ -7578,19 +7578,25 @@ class LibraryManager:
                         break
                 item_type = "dir" if entry.entry_type == "dir" else "file"
                 if covered_by:
+                    covered_selectable = item_type != "dir"
+                    item_size = int(entry.size or 0)
                     preview_items.append(
                         self._build_preview_item(
                             path=entry.absolute_path,
                             relative_path=item_relative,
                             item_type=item_type,
-                            size=int(entry.size or 0),
+                            size=item_size,
                             modified_time=self._index_entry_modified_time(entry),
-                            selectable=False,
+                            selectable=covered_selectable,
                             covered_by=covered_by,
-                            delete_path=covered_by,
+                            delete_path=entry.absolute_path,
                             size_status="ready",
+                            delete_scope="self" if covered_selectable else "preview_child",
                         )
                     )
+                    if covered_selectable:
+                        selected_count += 1
+                        selected_size += item_size
                     continue
 
                 matched_rules = self._match_filter_rule_names(
@@ -7611,12 +7617,14 @@ class LibraryManager:
                         modified_time=self._index_entry_modified_time(entry),
                         matched_rules=matched_rules,
                         size_status="ready",
+                        delete_scope="preview_parent" if item_type == "dir" else "self",
                     )
                 )
-                selected_count += 1
-                selected_size += int(entry.size or 0)
                 if item_type == "dir":
                     covered_roots.append((entry_relative, entry.absolute_path))
+                else:
+                    selected_count += 1
+                    selected_size += int(entry.size or 0)
 
             preview_items.sort(key=lambda item: (item["relative_path"].count("/"), item["relative_path"].lower(), item["type"] != "dir"))
             return {
@@ -8120,22 +8128,31 @@ class LibraryManager:
         covered_by: str = "",
         delete_path: Optional[str] = None,
         size_status: str = "ready",
+        delete_scope: str = "",
     ) -> dict[str, Any]:
         normalized_relative = str(relative_path or "").replace("\\", "/").strip("/")
+        normalized_item_type = "dir" if item_type == "dir" else "file"
+        normalized_delete_scope = str(delete_scope or ("self" if selectable else "preview_child")).strip().lower()
+        if normalized_item_type == "dir":
+            normalized_delete_scope = "preview_parent" if matched_rules else "preview_child"
+            selectable = False
+        elif normalized_delete_scope not in {"self", "preview_child", "preview_parent"}:
+            normalized_delete_scope = "self" if selectable else "preview_child"
         normalized_path = str(path or "").replace("\\", "/")
         return {
-            "id": f"{item_type}:{normalized_path}",
+            "id": f"{normalized_item_type}:{normalized_path}",
             "name": PurePosixPath(normalized_relative or normalized_path).name if "/" in normalized_relative else (normalized_relative or os.path.basename(path)),
             "path": path,
             "relative_path": normalized_relative,
-            "type": item_type,
+            "type": normalized_item_type,
             "size": None if size is None else int(size or 0),
             "modified_time": modified_time,
             "matched_rules": matched_rules or [],
-            "selectable": selectable,
+            "selectable": bool(selectable) and normalized_item_type == "file" and normalized_delete_scope == "self",
             "covered_by": covered_by or "",
             "delete_path": delete_path or path,
             "size_status": size_status,
+            "delete_scope": normalized_delete_scope,
         }
 
     def _begin_filter_preview_request(self, request_id: Optional[str]) -> None:
@@ -8455,7 +8472,7 @@ class LibraryManager:
                         modified_time=datetime.fromtimestamp(stat.st_mtime).isoformat(),
                         selectable=False,
                         covered_by=delete_path,
-                        delete_path=delete_path,
+                        delete_path=root,
                     )
                 )
             for filename in files:
@@ -8468,9 +8485,9 @@ class LibraryManager:
                         item_type="file",
                         size=stat.st_size,
                         modified_time=datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                        selectable=False,
+                        selectable=True,
                         covered_by=delete_path,
-                        delete_path=delete_path,
+                        delete_path=file_path,
                     )
                 )
         return descendants
@@ -8525,11 +8542,13 @@ class LibraryManager:
                             size=folder_size,
                             modified_time=datetime.fromtimestamp(stat.st_mtime).isoformat(),
                             matched_rules=matched_rules,
+                            delete_scope="preview_parent",
                         )
                     )
-                    preview_items.extend(self._collect_local_filter_preview_descendants(target_path, folder_path, folder_path))
-                    selected_count += 1
-                    selected_size += folder_size
+                    descendants = self._collect_local_filter_preview_descendants(target_path, folder_path, folder_path)
+                    preview_items.extend(descendants)
+                    selected_count += sum(1 for item in descendants if item.get("type") == "file" and item.get("delete_scope") == "self")
+                    selected_size += sum(int(item.get("size") or 0) for item in descendants if item.get("type") == "file" and item.get("delete_scope") == "self")
                     continue
                 remaining_dirs.append(directory)
             dirs[:] = remaining_dirs
@@ -8622,7 +8641,7 @@ class LibraryManager:
                             modified_time=modified_time,
                             selectable=False,
                             covered_by=delete_path,
-                            delete_path=delete_path,
+                            delete_path=child_path,
                             size_status="partial" if preview_state.get("truncated") else "estimated",
                         )
                     )
@@ -8636,9 +8655,9 @@ class LibraryManager:
                         item_type="file",
                         size=file_size,
                         modified_time=modified_time,
-                        selectable=False,
+                        selectable=True,
                         covered_by=delete_path,
-                        delete_path=delete_path,
+                        delete_path=child_path,
                         size_status="ready",
                     )
                 )
@@ -8771,11 +8790,12 @@ class LibraryManager:
                             modified_time=modified_time,
                             matched_rules=matched_rules,
                             size_status="partial" if preview_state.get("truncated") else "estimated",
+                            delete_scope="preview_parent",
                         )
                     )
                     preview_items.extend(descendants)
-                    selected_count += 1
-                    selected_size += folder_size
+                    selected_count += sum(1 for item in descendants if item.get("type") == "file" and item.get("delete_scope") == "self")
+                    selected_size += sum(int(item.get("size") or 0) for item in descendants if item.get("type") == "file" and item.get("delete_scope") == "self")
                     continue
                 await walk(child_path)
 
@@ -9200,11 +9220,12 @@ class LibraryManager:
                             modified_time=modified_time,
                             matched_rules=matched_rules,
                             size_status=folder_size_status,
+                            delete_scope="preview_parent",
                         )
                     )
                     preview_items.extend(descendants)
-                    selected_count += 1
-                    selected_size += folder_size
+                    selected_count += sum(1 for item in descendants if item.get("type") == "file" and item.get("delete_scope") == "self")
+                    selected_size += sum(int(item.get("size") or 0) for item in descendants if item.get("type") == "file" and item.get("delete_scope") == "self")
                     publish(
                         scanned_entries=scanned_entries,
                         discovered_entries=discovered_entries,
