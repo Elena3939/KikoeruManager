@@ -183,14 +183,14 @@
         </button>
 
         <button
-          v-if="batchMode"
+          v-if="batchMode || row?.is_directory"
           type="button"
           class="menu-item"
           :disabled="disableFilterDelete"
           @click="emit('action', 'filter_delete')"
         >
           <Trash2 :size="14" :stroke-width="2.2" class="menu-item-icon text-fuchsia-600" />
-          <span>批量删除过滤文件</span>
+          <span>{{ batchMode ? '批量删除过滤文件' : '删除过滤文件' }}</span>
         </button>
 
         <div class="my-1 border-t border-slate-200"></div>

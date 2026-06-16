@@ -3886,7 +3886,9 @@ const libraryRowContextMenuProps = computed(() => {
       ? Boolean(localLibrary && rootComputeScope)
       : Boolean(row?.is_directory && localLibrary && rootComputeScope),
     disableComputeSize: batchMode ? (batchComputingSize.value || !selectedDirectoryRows.value.length) : false,
-    disableFilterDelete: !selectedFilterDeleteRows.value.length || !isWritableCurrentLibrary.value,
+    disableFilterDelete: batchMode
+      ? (!selectedFilterDeleteRows.value.length || !isWritableCurrentLibrary.value)
+      : (!row?.is_directory || !isWritableCurrentLibrary.value),
     computingSizeId: computingSizeId.value
   }
 })
@@ -18707,6 +18709,8 @@ async function handleLibraryRowContextMenuAction (action) {
 
   if (action === 'compute_size') return computeFolderSize(row)
 
+  if (action === 'filter_delete') return openRowFilterDeleteDialog(row)
+
   if (action === 'delete') return deleteItem(row)
 
 }
@@ -20237,6 +20241,38 @@ async function openSelectedFilterDeleteDialog () {
   filterDeleteDialogRules.value = await loadConfiguredFilterRules()
 
   filterDeleteDialogScopeLabel.value = `已选目录（${filterDeleteDialogTargetPaths.value.length} 项）`
+
+  filterDeleteDialogIsRemote.value = isRemoteCurrentLibrary.value
+
+  filterDeleteDialogVisible.value = true
+
+}
+
+async function openRowFilterDeleteDialog (row) {
+
+  if (filterDeleteBackgroundState.value.active) {
+
+    filterDeleteDialogVisible.value = true
+
+    return
+
+  }
+
+  if (!row?.is_directory || !selectedLibraryId.value || !isWritableCurrentLibrary.value) return
+
+  const targetPath = resolveDirectoryActionPath(row)
+
+  if (!targetPath) return
+
+  filterDeleteDialogLibraryId.value = selectedLibraryId.value
+
+  filterDeleteDialogPath.value = currentPath.value
+
+  filterDeleteDialogTargetPaths.value = [targetPath]
+
+  filterDeleteDialogRules.value = await loadConfiguredFilterRules()
+
+  filterDeleteDialogScopeLabel.value = `${row.name || getFileName(targetPath) || '当前目录'}`
 
   filterDeleteDialogIsRemote.value = isRemoteCurrentLibrary.value
 
