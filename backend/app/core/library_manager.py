@@ -1644,6 +1644,16 @@ class LibraryManager:
         self._index_mutation_pending_upserts: dict[str, dict[str, Any]] = {}
         self._index_mutation_pending_replaces: dict[str, dict[str, Any]] = {}
         self._index_mutation_pending_moves: dict[tuple[str, str], dict[str, Any]] = {}
+        # 远程子树 upsert 的跨 flush 合并/去抖缓冲。
+        # 背景：_flush_index_mutations 的 timer 只有 0.1s，零散写操作（解压入库 /
+        # rename / 字幕落盘）会触发多轮 flush，每轮都给远程库起一次 serial dispatch
+        # ⇒ 群晖端反复起 SYNO.Search task。即便已串行（见 service 全局锁），仍是 N 次
+        # 独立重活 task。这里再加一层更长的去抖窗口，把短时间内多轮 flush 的远程路径
+        # 攒成一次 serial dispatch，从源头减少远程 search task 数量。
+        # 仅远程库走这层；本地库 os.scandir 廉价，仍即时执行不去抖。
+        self._remote_upsert_debounce_lock = threading.Lock()
+        self._remote_upsert_debounce: dict[str, dict[str, Any]] = {}
+        self._remote_upsert_debounce_timers: dict[str, threading.Timer] = {}
         # 全局 Synology client 缓存：避免每次操作重复登录（key = base_url::username::auth_sig）
         self._synology_client_cache: dict[str, SynologyFileStationClient] = {}
         self._load_persisted_stats()
@@ -1689,6 +1699,18 @@ class LibraryManager:
             except Exception:
                 logger.debug("取消库存索引变更 flush timer 失败", exc_info=True)
             self._index_mutation_timer = None
+        # 取消所有远程子树 upsert 去抖 timer（缓冲里未刷新的路径会丢失，但数据已落盘，
+        # 下次手动重建会补齐索引，关闭时不强行起远程 search task）。
+        debounce_lock = getattr(self, "_remote_upsert_debounce_lock", None)
+        if debounce_lock is not None:
+            with debounce_lock:
+                for debounce_timer in self._remote_upsert_debounce_timers.values():
+                    try:
+                        debounce_timer.cancel()
+                    except Exception:
+                        logger.debug("取消远程子树 upsert 去抖 timer 失败", exc_info=True)
+                self._remote_upsert_debounce_timers.clear()
+                self._remote_upsert_debounce.clear()
         executor = getattr(self, "_local_index_upsert_executor", None)
         if executor is None:
             return
@@ -2373,7 +2395,12 @@ class LibraryManager:
 
         for library in libraries:
             try:
-                if not service.is_ready(library.id):
+                has_snapshot = (
+                    service.has_usable_snapshot(library.id)
+                    if hasattr(service, "has_usable_snapshot")
+                    else service.is_ready(library.id)
+                )
+                if not has_snapshot:
                     fallback.append(library)
                     continue
                 entries = service.find_by_rjcode(
@@ -2745,7 +2772,9 @@ class LibraryManager:
         if not paths:
             return
         if library.type == "synology_filestation":
-            self._dispatch_remote_upsert_subtrees_serial(library, paths, loop=loop)
+            # 不再直接 dispatch：先进跨 flush 去抖缓冲，攒一会儿合并成一次 serial
+            # dispatch，减少群晖端 SYNO.Search task 数量（见 __init__ 注释）。
+            self._enqueue_remote_upsert_debounced(library, paths, loop=loop)
             return
         root = library.root_path or ""
         for path in paths:
@@ -2764,6 +2793,123 @@ class LibraryManager:
                     path,
                     exc_info=True,
                 )
+
+    @staticmethod
+    def _remote_upsert_debounce_seconds() -> float:
+        """远程子树 upsert 去抖窗口：最后一次入队后静默多久才真正 dispatch。
+
+        可用 KIKOERUMANAGER_REMOTE_UPSERT_DEBOUNCE_SECONDS 覆盖，默认 3s。
+        """
+        raw = os.getenv("KIKOERUMANAGER_REMOTE_UPSERT_DEBOUNCE_SECONDS", "")
+        try:
+            value = float(raw)
+            if value >= 0:
+                return value
+        except (TypeError, ValueError):
+            pass
+        return 3.0
+
+    @staticmethod
+    def _remote_upsert_debounce_max_seconds() -> float:
+        """去抖封顶：距首次入队超过此秒数即强制 dispatch，避免持续写入导致永不刷新。
+
+        可用 KIKOERUMANAGER_REMOTE_UPSERT_DEBOUNCE_MAX_SECONDS 覆盖，默认 30s。
+        """
+        raw = os.getenv("KIKOERUMANAGER_REMOTE_UPSERT_DEBOUNCE_MAX_SECONDS", "")
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+        except (TypeError, ValueError):
+            pass
+        return 30.0
+
+    def _enqueue_remote_upsert_debounced(
+        self,
+        library: LibraryDefinition,
+        absolute_paths: list[str],
+        *,
+        loop=None,
+    ) -> None:
+        """把远程子树 upsert 路径攒进去抖缓冲，跨 flush 周期合并成一次 dispatch。
+
+        - 同 library 的路径累积到一个 bucket，最后一次入队后静默
+          _remote_upsert_debounce_seconds 才触发 dispatch
+        - 距首次入队超过 _remote_upsert_debounce_max_seconds 立即触发（封顶），
+          避免持续写入把 flush 无限推后
+        - loop：远程 dispatch 需要的 event loop（由上游 _queue_index_paths 捕获）。
+          timer 在独立线程触发，必须用保存的 loop 而不是当时的 running loop。
+        """
+        paths = [str(p) for p in absolute_paths or [] if p]
+        if not paths:
+            return
+        debounce = self._remote_upsert_debounce_seconds()
+        # 去抖关闭（<=0）：退化为原即时 dispatch，保持旧行为可回退
+        if debounce <= 0:
+            self._dispatch_remote_upsert_subtrees_serial(library, paths, loop=loop)
+            return
+
+        fire_now = False
+        with self._remote_upsert_debounce_lock:
+            bucket = self._remote_upsert_debounce.get(library.id)
+            if bucket is None:
+                bucket = {
+                    "library": library,
+                    "paths": [],
+                    "loop": loop,
+                    "first_enqueued_at": time.monotonic(),
+                }
+                self._remote_upsert_debounce[library.id] = bucket
+            bucket["library"] = library
+            if loop is not None:
+                bucket["loop"] = loop
+            bucket["paths"] = self._compress_index_absolute_paths(
+                library, [*(bucket.get("paths") or []), *paths],
+            )
+            # 封顶判定：距首次入队已超过 max，立刻 fire，不再续 timer
+            first_at = float(bucket.get("first_enqueued_at") or time.monotonic())
+            if time.monotonic() - first_at >= self._remote_upsert_debounce_max_seconds():
+                fire_now = True
+            else:
+                old_timer = self._remote_upsert_debounce_timers.pop(library.id, None)
+                if old_timer is not None:
+                    try:
+                        old_timer.cancel()
+                    except Exception:
+                        logger.debug("取消远程 upsert 去抖 timer 失败", exc_info=True)
+                timer = threading.Timer(
+                    debounce, self._fire_remote_upsert_debounced, args=(library.id,),
+                )
+                timer.daemon = True
+                self._remote_upsert_debounce_timers[library.id] = timer
+                timer.start()
+        if fire_now:
+            self._fire_remote_upsert_debounced(library.id)
+
+    def _fire_remote_upsert_debounced(self, library_id: str) -> None:
+        """去抖窗口到期：取出该 library 攒下的远程路径，合并成一次 serial dispatch。"""
+        with self._remote_upsert_debounce_lock:
+            timer = self._remote_upsert_debounce_timers.pop(library_id, None)
+            if timer is not None:
+                try:
+                    timer.cancel()
+                except Exception:
+                    logger.debug("取消远程 upsert 去抖 timer 失败", exc_info=True)
+            bucket = self._remote_upsert_debounce.pop(library_id, None)
+        if not bucket:
+            return
+        library = bucket.get("library")
+        paths = bucket.get("paths") or []
+        loop = bucket.get("loop")
+        if library is None or not paths:
+            return
+        try:
+            self._dispatch_remote_upsert_subtrees_serial(library, paths, loop=loop)
+        except Exception:
+            logger.warning(
+                "[索引] 远程 upsert 去抖 dispatch 失败 library=%s count=%s",
+                library_id, len(paths), exc_info=True,
+            )
 
     def _notify_index_self_mutation_delete(
         self,
@@ -3202,7 +3348,12 @@ class LibraryManager:
 
             normalized_sort_by = self._normalize_library_sort_by(sort_by)
             service = get_library_index_service()
-            if not service.is_ready(library.id):
+            has_snapshot = (
+                service.has_usable_snapshot(library.id)
+                if hasattr(service, "has_usable_snapshot")
+                else service.is_ready(library.id)
+            )
+            if not has_snapshot:
                 return None
             offset = max(0, (int(page or 1) - 1) * int(page_size or 200))
             payload = service.list_children_page(
@@ -3327,7 +3478,12 @@ class LibraryManager:
                 return None  # 文件类型搜索让原逻辑处理
             from .library_index import get_library_index_service
             service = get_library_index_service()
-            if not service.is_ready(library.id):
+            has_snapshot = (
+                service.has_usable_snapshot(library.id)
+                if hasattr(service, "has_usable_snapshot")
+                else service.is_ready(library.id)
+            )
+            if not has_snapshot:
                 return None
             normalized_rj = keyword.strip().upper()
             entries = service.find_by_rjcode(
@@ -7262,7 +7418,12 @@ class LibraryManager:
             from .library_index import get_library_index_service
 
             service = get_library_index_service()
-            if not service.is_ready(library.id):
+            has_snapshot = (
+                service.has_usable_snapshot(library.id)
+                if hasattr(service, "has_usable_snapshot")
+                else service.is_ready(library.id)
+            )
+            if not has_snapshot:
                 return None
 
             if library.type == "synology_filestation":
@@ -7419,7 +7580,12 @@ class LibraryManager:
             from .library_index import get_library_index_service
 
             service = get_library_index_service()
-            return service if service.is_ready(library.id) else None
+            has_snapshot = (
+                service.has_usable_snapshot(library.id)
+                if hasattr(service, "has_usable_snapshot")
+                else service.is_ready(library.id)
+            )
+            return service if has_snapshot else None
         except Exception:
             logger.warning("库存索引状态检查失败: lib=%s", library.id, exc_info=True)
             return None
@@ -7791,9 +7957,12 @@ class LibraryManager:
             self._append_stats_log(library, "INFO", f"文件树浅层读取 path={target_path} total={len(items)}")
             return result
 
+        walk_semaphore = asyncio.Semaphore(4)
+
         async def walk(folder_path: str):
             nonlocal counter
-            children = await self._list_remote_directory(client, folder_path)
+            async with walk_semaphore:
+                children = await self._list_remote_directory(client, folder_path)
             subdirs: list[str] = []
             for child in children:
                 name = child.get("name") or ""

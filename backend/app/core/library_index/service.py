@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 import time
 from contextlib import nullcontext
@@ -42,6 +43,51 @@ logger = logging.getLogger(__name__)
 # 首次全量重建通常是几十万文件；日常 self-mutation 仍走 SnapshotStore 的 500 小批。
 FULL_REBUILD_BULK_CHUNK_SIZE = 5000
 FULL_REBUILD_ANALYZE_THRESHOLD = 5000
+
+# 远程全量重建最小间隔：距上次成功全量扫描不足此秒数且当前 ready 时，
+# schedule_rebuild_remote 直接返回现状不重扫，防止误触发 / 重复点击 / 重试风暴
+# 在群晖端反复起递归 search task。手动场景可传 force=True 绕过。
+# 可用环境变量 KIKOERUMANAGER_REMOTE_REBUILD_MIN_INTERVAL_SECONDS 覆盖。
+def _remote_rebuild_min_interval_seconds() -> float:
+    raw = os.getenv("KIKOERUMANAGER_REMOTE_REBUILD_MIN_INTERVAL_SECONDS", "")
+    try:
+        value = float(raw)
+        if value >= 0:
+            return value
+    except (TypeError, ValueError):
+        pass
+    return 600.0  # 默认 10 分钟
+
+
+# ========== 远程 Search 全局串行锁 ==========
+# 群晖 SYNO.FileStation.Search 是递归重活：起一次 task 群晖端 CPU/磁盘满负荷跑。
+# 多个库并发全量重建 / 高频子树扫描会同时在群晖端起多个 search task，直接打爆 NAS。
+# 这里用一把进程级（per-event-loop）锁，保证任意时刻群晖上只跑一个 search task。
+#
+# 为什么 per-loop：asyncio.Lock 绑定创建它的 event loop，而远程扫描可能跑在主 loop、
+# watcher loop 或 _remote_upsert_loop 上。按 running loop 取锁，同一 loop 内严格串行；
+# 不同 loop 间极少同时跑远程扫描（部署上远程操作集中在少数 loop），可接受。
+#
+# 关键顺序：必须在获取 remote_fs 资源预算【之前】拿这把锁。否则全量重建持有的
+# remote_fs 预算（weight=2）会和它内部 list_search（weight=1）互相等待——两个库并发
+# 重建时 2+2 占满 4 个令牌，谁都拿不到第三个，造成死锁。先拿串行锁能从根上避免。
+_remote_search_locks: dict[int, asyncio.Lock] = {}
+_remote_search_locks_guard = threading.Lock()
+
+
+def _get_remote_search_lock() -> asyncio.Lock:
+    """取当前 running event loop 对应的远程 search 串行锁。"""
+    loop = asyncio.get_event_loop()
+    key = id(loop)
+    lock = _remote_search_locks.get(key)
+    if lock is not None:
+        return lock
+    with _remote_search_locks_guard:
+        lock = _remote_search_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _remote_search_locks[key] = lock
+        return lock
 
 
 class LibraryIndexService:
@@ -359,35 +405,38 @@ class LibraryIndexService:
                         maintenance.get("reason"),
                     )
                 with rebuild_writer or nullcontext(None) as writer:
-                    async with get_resource_budget_service().acquire("remote_fs", weight=2, reason="library_index.remote_rebuild"):
-                        async for entry in scanner.scan(library_id, client, root_path):
-                            buffer.append(entry)
-                            size_delta, folder_delta = self._entry_stats(entry)
-                            total_size += size_delta
-                            folder_count += folder_delta
-                            if len(buffer) >= chunk_size:
-                                if writer is not None:
-                                    written += writer.stage(buffer)
-                                else:
-                                    written += self._store.bulk_upsert(
-                                        buffer,
-                                        chunk_size=chunk_size,
-                                        maintain_status_stats=False,
-                                        insert_only=insert_only,
-                                        relaxed_commit=True,
-                                    )
-                                buffer.clear()
-                                now = time.time()
-                                if now - last_progress_report >= 0.5:
-                                    self._store.upsert_status(
-                                        library_id,
-                                        status='syncing',
-                                        watcher_mode='disabled',
-                                        total_entries=written,
-                                        total_size_bytes=total_size,
-                                        folder_count=folder_count,
-                                    )
-                                    last_progress_report = now
+                    # 先拿全局远程 search 串行锁，再拿 remote_fs 预算，保证群晖端任一时刻
+                    # 只跑一个递归 search task，且避免预算令牌互锁（详见文件顶部说明）。
+                    async with _get_remote_search_lock():
+                        async with get_resource_budget_service().acquire("remote_fs", weight=2, reason="library_index.remote_rebuild"):
+                            async for entry in scanner.scan(library_id, client, root_path):
+                                buffer.append(entry)
+                                size_delta, folder_delta = self._entry_stats(entry)
+                                total_size += size_delta
+                                folder_count += folder_delta
+                                if len(buffer) >= chunk_size:
+                                    if writer is not None:
+                                        written += writer.stage(buffer)
+                                    else:
+                                        written += self._store.bulk_upsert(
+                                            buffer,
+                                            chunk_size=chunk_size,
+                                            maintain_status_stats=False,
+                                            insert_only=insert_only,
+                                            relaxed_commit=True,
+                                        )
+                                    buffer.clear()
+                                    now = time.time()
+                                    if now - last_progress_report >= 0.5:
+                                        self._store.upsert_status(
+                                            library_id,
+                                            status='syncing',
+                                            watcher_mode='disabled',
+                                            total_entries=written,
+                                            total_size_bytes=total_size,
+                                            folder_count=folder_count,
+                                        )
+                                        last_progress_report = now
                     if buffer:
                         if writer is not None:
                             written += writer.stage(buffer)
@@ -458,13 +507,37 @@ class LibraryIndexService:
         library_id: str,
         client_factory: Any,
         root_path: str,
+        *,
+        force: bool = False,
     ) -> IndexStatus:
         """异步后台触发远程重建。
 
         client_factory：可调用对象（同步 / 异步均可）或者已经实例化的 client。
         因为远程客户端有连接 / 认证状态，让后台 task 启动时再获取最稳妥；
         如果传入的是 client 实例则直接使用。
+
+        force：跳过最小重建间隔节流，强制触发（手动重建场景）。
+
+        最小间隔节流：距上次成功全量扫描不足 _remote_rebuild_min_interval_seconds
+        且当前状态为 ready 时，直接返回现状，不再起新的远程 search task。
+        这是防群晖被打爆的入口闸门——误触发 / 重复点击 / 自动重试都拦在这里，
+        不会一路走到 rebuild_remote 才发现没必要扫。
         """
+        if not force:
+            existing = self._store.get_status(library_id)
+            if existing is not None and existing.status == 'ready':
+                min_interval = _remote_rebuild_min_interval_seconds()
+                last_scan_ms = int(getattr(existing, 'last_full_scan_at', 0) or 0)
+                if min_interval > 0 and last_scan_ms > 0:
+                    elapsed = time.time() - last_scan_ms / 1000.0
+                    if 0 <= elapsed < min_interval:
+                        logger.info(
+                            "[索引] remote rebuild 节流跳过 library=%s "
+                            "距上次全量扫描 %.0fs < 最小间隔 %.0fs（传 force=True 可强制）",
+                            library_id, elapsed, min_interval,
+                        )
+                        return existing
+
         status = self._store.upsert_status(
             library_id,
             status='syncing',
@@ -725,15 +798,19 @@ class LibraryIndexService:
         if root_entry is not None:
             buffer.append(root_entry)
         written = 0
-        async for entry in scanner.scan_subtree(
-            library_id, client, library_root, subtree_path,
-        ):
-            buffer.append(entry)
-            if len(buffer) >= chunk_size:
+        # 与全量重建共用同一把全局远程 search 串行锁：子树扫描同样是 SYNO.Search
+        # task，必须和全量重建互斥，避免高频写操作触发的子树扫描和全量重建在群晖端
+        # 同时起多个 search task。锁只包住扫描循环，stat 补根行（普通请求）不持锁。
+        async with _get_remote_search_lock():
+            async for entry in scanner.scan_subtree(
+                library_id, client, library_root, subtree_path,
+            ):
+                buffer.append(entry)
+                if len(buffer) >= chunk_size:
+                    written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
+                    buffer.clear()
+            if buffer:
                 written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
-                buffer.clear()
-        if buffer:
-            written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
         logger.info(
             "[索引] upsert 远程子树完成 library=%s subtree=%s entries=%s",
             library_id, subtree_path, written,
@@ -833,6 +910,33 @@ class LibraryIndexService:
     def is_ready(self, library_id: str) -> bool:
         status = self.get_status(library_id)
         return bool(status and status.status == 'ready')
+
+    def has_usable_snapshot(self, library_id: str) -> bool:
+        """读路径可用性：ready 或 syncing 且库里已有快照。
+
+        远程全量重建会先把状态置为 syncing，再在 staging 表里构建新快照；
+        旧快照此时仍然可以安全服务浏览 / 搜索。读路径如果只认 ready，
+        重建期间会退回 FileStation walk，反而打爆群晖。
+        """
+        status = self.get_status(library_id)
+        if not status or status.status not in {'ready', 'syncing'}:
+            return False
+        if status.status == 'ready':
+            return True
+        return self._store_has_library_entries(library_id)
+
+    def needs_initial_remote_rebuild(self, library_id: str) -> bool:
+        """远程库启动修复判定。
+
+        ready：不扫；syncing 且有旧快照：继续等当前任务；其它状态只要没有可用
+        snapshot，就需要排队一次远程全量重建，避免浏览长期退回 FileStation walk。
+        """
+        status = self.get_status(library_id)
+        if status and status.status == 'ready':
+            return False
+        if status and status.status == 'syncing' and self._store_has_library_entries(library_id):
+            return False
+        return not self._store_has_library_entries(library_id)
 
     # ========== 查询包装 ==========
 
