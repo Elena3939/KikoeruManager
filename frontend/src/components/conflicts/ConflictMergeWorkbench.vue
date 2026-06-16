@@ -240,16 +240,25 @@
                 :disabled="loading || submitting"
                 @click="close"
               >关闭</button>
-              <button
+              <StatefulButton
                 type="button"
-                class="cmw-action-btn is-emerald"
-                :disabled="!preview || submitting || loading"
-                @click="$emit('submit')"
+                class="cmw-action-btn is-emerald cmw-submit-btn"
+                unstyled
+                :show-default-icons="false"
+                :success-hold="900"
+                :disabled="!preview || loading"
+                @click="handleSubmitClick"
               >
-                <Loader2 v-if="submitting" class="h-4 w-4 animate-spin" :stroke-width="2.4" />
-                <GitMerge v-else class="h-4 w-4" :stroke-width="2.4" />
+                <template #prefix="{ state }">
+                  <span class="cmw-submit-state-icon" :class="`is-${state}`" aria-hidden="true">
+                    <Loader2 v-if="state === 'loading' || submitting" class="h-4 w-4 animate-spin" :stroke-width="2.4" />
+                    <CheckCircle2 v-else-if="state === 'success'" class="h-4 w-4" :stroke-width="2.6" />
+                    <AlertCircle v-else-if="state === 'error'" class="h-4 w-4" :stroke-width="2.5" />
+                    <GitMerge v-else class="h-4 w-4" :stroke-width="2.4" />
+                  </span>
+                </template>
                 <span>{{ submitLabel }}</span>
-              </button>
+              </StatefulButton>
             </div>
           </footer>
         </div>
@@ -263,10 +272,11 @@ import { computed, ref } from 'vue'
 import {
   GitMerge, Search, RotateCcw, RefreshCw, X, Upload,
   CheckCircle2,
-  ArrowDownToLine, Archive
+  ArrowDownToLine, Archive, Loader2, AlertCircle
 } from 'lucide-vue-next'
 import AppDropdown from '../common/AppDropdown.vue'
 import AppLoadingAnimation from '../common/AppLoadingAnimation.vue'
+import StatefulButton from '../ui/stateful-button.vue'
 import { classifyLibraryEntryKind, libraryEntryIconFor } from '../library/_libraryFileKind'
 
 const props = defineProps({
@@ -300,6 +310,10 @@ const props = defineProps({
   submitting: {
     type: Boolean,
     default: false
+  },
+  submitAction: {
+    type: Function,
+    default: null
   }
 })
 
@@ -790,6 +804,15 @@ function close() {
   if (props.submitting) return
   visible.value = false
   emit('close')
+}
+
+async function handleSubmitClick() {
+  if (props.submitting) return false
+  if (typeof props.submitAction === 'function') {
+    return props.submitAction()
+  }
+  emit('submit')
+  return true
 }
 
 function statusBadgeClass(row) {
@@ -1812,6 +1835,47 @@ function formatDate(value) {
   opacity: 0.55;
   box-shadow: none;
   transform: none;
+}
+
+.cmw-submit-btn {
+  min-width: 146px;
+  min-height: 44px;
+}
+
+.cmw-submit-btn[data-state="loading"] {
+  opacity: 1;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.22);
+}
+
+.cmw-submit-btn :deep(.stateful-button__content),
+.cmw-submit-btn :deep(.stateful-button__label) {
+  gap: 7px;
+}
+
+.cmw-submit-state-icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+}
+
+.cmw-submit-state-icon.is-success svg,
+.cmw-submit-state-icon.is-error svg {
+  animation: cmw-submit-icon-pop 0.24s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes cmw-submit-icon-pop {
+  0% {
+    transform: scale(0.55) rotate(-10deg);
+  }
+  70% {
+    transform: scale(1.12) rotate(4deg);
+  }
+  100% {
+    transform: scale(1) rotate(0deg);
+  }
 }
 
 .cmw-action-btn:hover:not(:disabled) svg {

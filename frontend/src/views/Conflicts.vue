@@ -596,9 +596,9 @@
       :loading="mergeLoading"
       :loading-progress="mergePreviewProgress"
       :submitting="mergeSubmitting"
+      :submit-action="submitMerge"
       @update:decisions="handleDecisionUpdate"
       @refresh="refreshMergePreview"
-      @submit="submitMerge"
       @close="cancelMergePreviewPolling"
     />
 
@@ -2650,7 +2650,7 @@ function refreshMergePreview() {
 
 async function submitMerge() {
   if (!mergeConflict.value || !mergePreview.value) {
-    return
+    return false
   }
 
   mergeSubmitting.value = true
@@ -2661,9 +2661,11 @@ async function submitMerge() {
     mergePreview.value = null
     mergeConflictId.value = ''
     mergeDecisions.value = {}
+    return true
   } catch (error) {
     console.error('提交合并失败:', error)
     ElMessage.error(resolveErrorMessage(error, '提交合并失败'))
+    return false
   } finally {
     mergeSubmitting.value = false
   }
