@@ -707,17 +707,90 @@ function isBaiduPassCodeLine(value) {
   return Boolean(text && !isBaiduShareUrl(text) && baiduPassCodeFromText(text))
 }
 
+function attachInputUrlToPreviewItems(items, inputUrl) {
+  const sourceInputUrl = String(inputUrl || '').trim()
+  return (items || []).map(item => (
+    item && typeof item === 'object'
+      ? { ...item, _input_url: sourceInputUrl }
+      : item
+  ))
+}
+
+function normalizeComparableInputUrl(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  try {
+    const parsed = new URL(text)
+    parsed.hash = ''
+    return parsed.toString().replace(/\/+$/g, '')
+  } catch {
+    return text.replace(/\/+$/g, '')
+  }
+}
+
+function inputLineMatchesStartedItem(line, item) {
+  const trimmed = String(line || '').trim()
+  if (!trimmed || !item) return false
+  if (isBaidu.value) {
+    if (!isBaiduShareUrl(normalizeBaiduShareLine(trimmed))) return false
+    const lineIdentity = baiduShareIdentity(normalizeBaiduShareLine(trimmed))
+    const itemIdentity = baiduShareIdentity(item.share_url || item.url || item.masked_url || '')
+    return Boolean(lineIdentity && itemIdentity && lineIdentity === itemIdentity)
+  }
+  const inputUrl = normalizeComparableInputUrl(item._input_url)
+  if (inputUrl) return normalizeComparableInputUrl(trimmed) === inputUrl
+  const source = sourceKey(item.source || item.download_mode || sourceFromUrl(item.url || item.masked_url || ''))
+  const lineSource = sourceKey(sourceFromUrl(trimmed))
+  const shareIdentity = String(item.share_url || item.share_id || '').trim()
+  if (shareIdentity) {
+    const lineIdentity = previewShareIdentity({
+      source: lineSource,
+      url: trimmed,
+      masked_url: trimmed,
+      share_url: trimmed,
+    })
+    return lineSource === source && lineIdentity === `${source}:share:${shareIdentity}`
+  }
+  const maskedIdentity = String(item.masked_url || item.url || '').trim()
+  return Boolean(maskedIdentity && lineSource === source && maskedIdentity === normalizeComparableInputUrl(trimmed))
+}
+
+function clearStartedInputUrls(startedItems) {
+  const items = (startedItems || []).filter(Boolean)
+  if (!items.length) return
+  const lines = String(urlText.value || '').split(/\r?\n/)
+  const nextLines = []
+  let removedCount = 0
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    const shouldRemove = items.some(item => inputLineMatchesStartedItem(line, item))
+    if (!shouldRemove) {
+      nextLines.push(line)
+      continue
+    }
+    removedCount += 1
+    if (isBaidu.value && isBaiduPassCodeLine(lines[index + 1])) {
+      index += 1
+    }
+  }
+  if (!removedCount) return
+  urlText.value = nextLines.join('\n').replace(/^\s*\n+|\n+\s*$/g, '')
+  clearPreviewCacheState()
+  persistPreviewCacheFromState()
+}
+
 const okPreviewItems = computed(() => previewItems.value.filter(item => item.ok))
 const failedPreviewItemCount = computed(() => previewItems.value.filter(item => !item.ok).length)
-const selectablePreviewFileRows = computed(() => previewTreeRows.value.filter(row => row && !row.isDir && row.ok))
+const selectablePreviewFileRows = computed(() => collectPreviewSelectableRows(previewTreeRoots.value))
 const okPreviewCount = computed(() => selectablePreviewFileRows.value.length || okPreviewItems.value.length)
 const previewDownloadFileCount = computed(() => selectablePreviewFileRows.value.length || okPreviewItems.value.reduce((sum, item) => sum + previewItemFileCount(item), 0))
 const previewShareCount = computed(() => countPreviewShares(previewItems.value))
 const selectedPreviewFileRows = computed(() => selectablePreviewFileRows.value.filter(row => selectedPreviewKeys.value.has(previewRowSelectionKey(row))))
+const selectedPreviewSelectionRows = computed(() => normalizePreviewSelectionRows(selectedPreviewFileRows.value))
 const selectedOkItems = computed(() => selectedPreviewItemsForStart())
-const selectedOkCount = computed(() => selectedPreviewFileRows.value.length)
-const selectedDownloadFileCount = computed(() => selectedPreviewFileRows.value.length)
-const selectedTotalBytes = computed(() => selectedPreviewFileRows.value.reduce((sum, row) => sum + Number(row.size || 0), 0))
+const selectedOkCount = computed(() => selectedPreviewSelectionRows.value.length)
+const selectedDownloadFileCount = computed(() => selectedPreviewSelectionRows.value.length)
+const selectedTotalBytes = computed(() => selectedPreviewSelectionRows.value.reduce((sum, row) => sum + Number(row.size || 0), 0))
 const allPreviewSelectionState = computed(() => {
   if (!okPreviewCount.value || !selectedOkCount.value) return 'none'
   return selectedOkCount.value === okPreviewCount.value ? 'all' : 'partial'
@@ -865,7 +938,7 @@ async function preview(options = {}) {
           conflictPolicy: conflictPolicy.value,
           timeout: previewTimeoutForUrl(url)
         })
-        const nextItems = result.items || []
+        const nextItems = attachInputUrlToPreviewItems(result.items || [], url)
         previewItems.value = [...previewItems.value, ...nextItems]
         if (result.needs_materialize) previewNeedsMaterialize.value = true
         selectAllPreviewTreeFiles()
@@ -919,6 +992,7 @@ async function start() {
     previewNeedsMaterialize.value = false
     addPreviewLog(result.message || `${panelTitle.value}任务已创建`, 'success')
     ElMessage.success(result.message || `${panelTitle.value}任务已创建`)
+    clearStartedInputUrls(selectedOkItems.value)
     previewDialogVisible.value = false
   } catch (error) {
     if (isRequestTimeout(error)) {
@@ -929,6 +1003,7 @@ async function start() {
           previewNeedsMaterialize.value = false
           addPreviewLog(`请求超时，但已接回 ${recoveredIds.length} 个已创建任务`, 'warning')
           ElMessage.warning('请求超时，但任务已创建，已打开下载工作台')
+          clearStartedInputUrls(selectedOkItems.value)
           previewDialogVisible.value = false
           return
         }
@@ -1134,6 +1209,26 @@ function createPreviewTreeNode({
   }
 }
 
+function isBaiduSelectablePreviewDirRow(row) {
+  return Boolean(isBaidu.value && row?.isDir && row?.file?.is_dir && row.ok)
+}
+
+function collectPreviewSelectableRows(nodes, rows = []) {
+  ;(nodes || []).forEach(node => {
+    if (!node?.ok) return
+    if (node.isDir) {
+      if (isBaiduSelectablePreviewDirRow(node)) {
+        rows.push(node)
+        return
+      }
+      if (node.children?.length) collectPreviewSelectableRows(node.children, rows)
+      return
+    }
+    rows.push(node)
+  })
+  return rows
+}
+
 function buildPreviewTreeRoots(items) {
   if (!isBaidu.value) return buildHttpPreviewForest(items)
   const roots = []
@@ -1300,8 +1395,11 @@ function addFilePathToPreviewTree(root, parts, item, file, keyBase, source) {
           source,
           path: childPath,
           parent: current,
+          file: isLeaf && file?.is_dir ? file : null,
         })
         current.children.push(dir)
+      } else if (isLeaf && file?.is_dir && !dir.file) {
+        dir.file = file
       }
       current = dir
       return
@@ -1357,8 +1455,10 @@ function decoratePreviewDirNode(node) {
     if (child.isDir) decoratePreviewDirNode(child)
     else decoratePreviewFileNode(child)
   })
-  node.selectable = node.children.some(child => child.selectable)
-  node.ok = node.children.some(child => child.ok)
+  const ownDirSelectable = isBaiduSelectablePreviewDirRow(node)
+  const ownDirOk = Boolean(ownDirSelectable)
+  node.selectable = ownDirSelectable || node.children.some(child => child.selectable)
+  node.ok = ownDirOk || node.children.some(child => child.ok)
   node.size = node.children.reduce((sum, child) => sum + Number(child.size || 0), 0)
   node.fileCount = node.children.reduce((sum, child) => sum + Number(child.fileCount || 0), 0)
   node.volumeGroup = node.isPlatform ? null : detectContinuousVolumeGroup(collectDirectPreviewFileRows(node))
@@ -1425,9 +1525,10 @@ function expandDefaultPreviewTreeRows(items) {
 }
 
 function collectPreviewFileRows(row) {
-  if (!row) return []
-  if (!row.isDir) return row.ok ? [row] : []
-  return (row.children || []).flatMap(child => collectPreviewFileRows(child))
+  if (!row?.ok) return []
+  if (!row.isDir) return [row]
+  if (isBaiduSelectablePreviewDirRow(row)) return [row]
+  return collectPreviewSelectableRows(row.children || [])
 }
 
 function collectDirectPreviewFileRows(row) {
@@ -1438,11 +1539,12 @@ function collectDirectPreviewFileRows(row) {
 function previewRowSelectionRows(row) {
   if (!row?.ok) return []
   if (!row.isDir) return [row]
-  return collectPreviewFileRows(row)
+  if (isBaiduSelectablePreviewDirRow(row)) return [row]
+  return collectPreviewSelectableRows(row.children || [])
 }
 
 function previewRowSelectionKey(row) {
-  if (!row || row.isDir) return ''
+  if (!row || (row.isDir && !isBaiduSelectablePreviewDirRow(row))) return ''
   const item = row.item || {}
   const file = row.file || item
   return [
@@ -1457,10 +1559,23 @@ function previewRowSelectionKey(row) {
   ].map(part => String(part || '').trim()).join('|')
 }
 
+function normalizePreviewSelectionRows(rows) {
+  const selectedRows = (rows || []).filter(row => row && previewRowSelectionKey(row))
+  const selectedSet = new Set(selectedRows)
+  return selectedRows.filter(row => {
+    let parent = row.parent
+    while (parent) {
+      if (selectedSet.has(parent) && isBaiduSelectablePreviewDirRow(parent)) return false
+      parent = parent.parent
+    }
+    return true
+  })
+}
+
 function selectedPreviewItemsForStart() {
   const grouped = new Map()
   const seen = new Set()
-  selectedPreviewFileRows.value.forEach(fileRow => {
+  normalizePreviewSelectionRows(selectedPreviewFileRows.value).forEach(fileRow => {
     const item = fileRow.item
     if (!item) return
     const itemKey = previewItemKey(item)
@@ -1468,7 +1583,7 @@ function selectedPreviewItemsForStart() {
     if (!grouped.has(itemKey)) grouped.set(itemKey, { item, files: [] })
     const file = fileRow.file || item
     const fileKey = previewRowSelectionKey(fileRow)
-    if (file && !fileRow.isDir && !seen.has(fileKey)) {
+    if (file && !seen.has(fileKey)) {
       seen.add(fileKey)
       grouped.get(itemKey).files.push(file)
     }
@@ -1478,12 +1593,13 @@ function selectedPreviewItemsForStart() {
       const file = files[0] || item
       return { ...item, ...file, selection_key: previewItemKey(item) }
     }
+    const folderCount = files.filter(file => file?.is_dir).length
     return {
       ...item,
       preview_files: files,
       share_files: files,
       preview_file_count: files.length,
-      preview_folder_count: 0,
+      preview_folder_count: folderCount,
     }
   })
 }
@@ -1514,7 +1630,6 @@ function isPreviewTreeRowBad(row) {
 }
 
 function isPreviewTreeRowSelected(row) {
-  if (row?.isDir) return false
   return previewTreeSelectionClass(row) !== 'is-off'
 }
 
@@ -2141,10 +2256,7 @@ function selectAllPreviewItems() {
 }
 
 function selectAllPreviewTreeFiles() {
-  selectedPreviewKeys.value = new Set(flattenPreviewTreeRows(buildPreviewTreeRoots(previewItems.value))
-    .filter(row => row && !row.isDir && row.ok)
-    .map(row => previewRowSelectionKey(row))
-    .filter(Boolean))
+  selectAllPreviewItems()
 }
 
 function clearPreviewSelection() {
