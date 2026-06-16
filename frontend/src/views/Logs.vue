@@ -352,8 +352,9 @@ import AppDropdown from '../components/common/AppDropdown.vue'
 import SystemLogTerminal from '../components/common/SystemLogTerminal.vue'
 import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 
-const LOG_FLUSH_INTERVAL = 48
+const LOG_FLUSH_INTERVAL = 160
 const LOG_STREAM_RECONNECT_MS = 2500
+const MIN_LIVE_HISTORY_BACKFILL_LINES = 50
 const COMPACT_PROCESS_LOGS_KEY = 'kikoerumanager.logs.compact_process_noise'
 const LOG_BLOCK_PREFIX = '__KIKOERUMANAGER_LOG_BLOCK__'
 const TASK_PROGRESS_STALE_MS = 2 * 60 * 1000
@@ -385,6 +386,8 @@ let logEventSource = null
 let reconnectTimer = null
 let streamFlushTimer = null
 let pendingStreamLines = []
+let liveBackfillInFlight = false
+let lastSparseBackfillAt = 0
 
 const incrementalCount = ref(0)
 const lastFetchMs = ref(0)
@@ -428,6 +431,7 @@ const filteredLogs = computed(() => {
   // 仅保留级别 / 模块过滤，避免二次过滤造成搜索失效。
   const skipKeywordFilter = isFullSearch.value
   const taskEndById = collectTaskEndState(logs.value)
+  const taskRjcodeById = collectTaskRjcodeById(logs.value)
   const newestLogMs = getNewestLogTimeMs(logs.value)
   const candidates = []
   const latestProgressByTask = new Map()
@@ -436,7 +440,7 @@ const filteredLogs = computed(() => {
   logs.value.forEach((log, index) => {
     if (!lvlSet.has(log.level)) return false
     if (moduleSet && !moduleSet.has(log.module)) return false
-    const taskProgress = parseTaskProgressLog(log, index)
+    const taskProgress = parseTaskProgressLog(log, index, taskRjcodeById)
     if (taskProgress) {
       if (taskProgress.timestampMs && !firstProgressMsByTask.has(taskProgress.taskId)) {
         firstProgressMsByTask.set(taskProgress.taskId, taskProgress.timestampMs)
@@ -484,11 +488,12 @@ const hiddenProcessNoiseCount = computed(() => {
   const moduleSet = selectedModules.value.length
     ? new Set(selectedModules.value)
     : null
+  const taskRjcodeById = collectTaskRjcodeById(logs.value)
   let count = 0
   for (const log of logs.value) {
     if (!lvlSet.has(log.level)) continue
     if (moduleSet && !moduleSet.has(log.module)) continue
-    if (parseTaskProgressLog(log)) continue
+    if (parseTaskProgressLog(log, 0, taskRjcodeById)) continue
     if (isProcessNoiseLog(log)) count += 1
   }
   return count
@@ -638,12 +643,73 @@ function classifyProgressPhase(text, moduleName) {
   return moduleName || '任务'
 }
 
+function normalizeProgressRjcode(value) {
+  const text = String(value || '').replace(/\s+/g, '').toUpperCase()
+  return /^RJ\d{5,9}$/.test(text) ? text : ''
+}
+
+function extractProgressRjcode(text) {
+  const match = String(text || '').match(/\bRJ\s*\d{5,9}\b/i)
+  return match ? normalizeProgressRjcode(match[0]) : ''
+}
+
+function collectTaskRjcodeById(list) {
+  const result = new Map()
+  for (const log of Array.isArray(list) ? list : []) {
+    const message = String(log?.message || '')
+    const identityMatches = [
+      message.match(/\[(RJ\s*\d{5,9})\][^\n]*任务ID[:：]\s*([0-9a-fA-F-]{8,36})/i),
+      message.match(/任务ID[:：]\s*([0-9a-fA-F-]{8,36})[^\n]*\b(RJ\s*\d{5,9})\b/i),
+    ]
+
+    for (const match of identityMatches) {
+      if (!match) continue
+      const first = normalizeProgressRjcode(match[1])
+      const second = normalizeProgressRjcode(match[2])
+      const taskId = first ? match[2] : match[1]
+      const rjcode = first || second
+      if (taskId && rjcode) result.set(taskId, rjcode)
+    }
+
+    const progressMatch = message.match(/任务\s+([0-9a-fA-F-]{8,36})\s*[:：]\s*(.+?)\s*[（(]\s*(\d{1,3})\s*%\s*[)）]\s*$/)
+    if (progressMatch) {
+      const rjcode = extractProgressRjcode(progressMatch[2])
+      if (rjcode) result.set(progressMatch[1], rjcode)
+    }
+  }
+  return result
+}
+
+function buildProgressAction(step, phase) {
+  const text = String(step || '')
+  if (/获取.*元数据|元数据/.test(text)) return '获取元数据'
+  if (/重命名|改名/.test(text)) return '重命名'
+  if (/解压|7z|unar|压缩包|伪装 ZIP|路径重映射/.test(text)) return '解压'
+  if (/过滤/.test(text)) return '过滤'
+  if (/扁平化/.test(text)) return '扁平化'
+  if (/字幕繁|字幕.*转换/.test(text)) return '字幕转换'
+  if (/智能分类|分类|整理/.test(text)) return '分类'
+  if (/归档/.test(text)) return '归档'
+  if (/移动|搬移|入库/.test(text)) return '移动'
+  if (/上传|写入远端|群晖/.test(text)) return '上传'
+  if (/下载|拉取|同步/.test(text)) return '下载'
+  if (/清理|删除/.test(text)) return '清理'
+  if (/扫描|检查|验证|预检|检测/.test(text)) return '检查'
+  if (/完成|成功/.test(text)) return '处理完成'
+  return phase && phase !== '任务' ? phase : buildProgressDetail(text)
+}
+
+function buildProgressTitle(step, phase, rjcode) {
+  const action = buildProgressAction(step, phase)
+  return rjcode ? `${action} ${rjcode}` : action
+}
+
 function buildProgressDetail(step) {
   const text = String(step || '').replace(/\s+/g, ' ').trim()
   return text
 }
 
-function parseTaskProgressLog(log, order = 0) {
+function parseTaskProgressLog(log, order = 0, taskRjcodeById = null) {
   const message = String(log?.message || '')
   const match = message.match(/任务\s+([0-9a-fA-F-]{8,36})\s*[:：]\s*(.+?)\s*[（(]\s*(\d{1,3})\s*%\s*[)）]\s*$/)
   if (!match) return null
@@ -654,12 +720,14 @@ function parseTaskProgressLog(log, order = 0) {
   const context = `${log?.module || ''} ${step}`
   const tone = classifyProgressTone(context, progress, log?.level)
   const phase = classifyProgressPhase(context, log?.module || '')
+  const rjcode = extractProgressRjcode(step) || taskRjcodeById?.get?.(taskId) || ''
 
   return {
     id: taskId,
     taskId,
     shortId: taskId.slice(0, 8),
-    title: `任务 ${taskId.slice(0, 8)}`,
+    rjcode,
+    title: buildProgressTitle(step, phase, rjcode),
     phase,
     detail: buildProgressDetail(step),
     progress,
@@ -987,6 +1055,24 @@ function appendParsedLogs(lines, keyPrefix = 'stream-', { reset = false } = {}) 
     logs.value = combined.length > logLimit.value ? combined.slice(combined.length - logLimit.value) : combined
   }
   trimMapByOldest(parseCache, parseCacheMax.value, Math.max(200, Math.floor(parseCacheMax.value / 2)))
+  if (!reset) {
+    void backfillLiveHistoryIfSparse()
+  }
+}
+
+async function backfillLiveHistoryIfSparse() {
+  if (isPaused.value || isFullSearch.value || liveBackfillInFlight || logs.value.length >= MIN_LIVE_HISTORY_BACKFILL_LINES) return
+  const now = Date.now()
+  if (now - lastSparseBackfillAt < 10_000) return
+  liveBackfillInFlight = true
+  lastSparseBackfillAt = now
+  try {
+    await refreshLogs(true)
+  } catch {
+    // refreshLogs 自己会落错误态，这里不额外打断 SSE。
+  } finally {
+    liveBackfillInFlight = false
+  }
 }
 
 function flushPendingStreamLines() {
@@ -1057,6 +1143,7 @@ function handleStreamPayload(event, { reset = false } = {}) {
     appendParsedLogs(lines, 'sse-full-', { reset: true })
     return
   }
+  void backfillLiveHistoryIfSparse()
   if (lines.length) {
     lastLogSignature = signature
     queueStreamLines(lines)
