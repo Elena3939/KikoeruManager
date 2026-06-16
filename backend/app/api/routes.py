@@ -1943,6 +1943,46 @@ async def _periodic_task_phase_metric_cleanup():
         await asyncio.sleep(24 * 3600)
 
 
+async def _bootstrap_remote_library_indexes():
+    """启动后补齐没有可用快照的远程库存索引。"""
+    await asyncio.sleep(8)
+    try:
+        manager = get_library_manager()
+        service = get_library_index_service()
+        scheduled = 0
+        for raw in manager.list_libraries():
+            if not isinstance(raw, dict):
+                continue
+            if raw.get("type") != "synology_filestation":
+                continue
+            library_id = str(raw.get("id") or "").strip()
+            if not library_id or not service.needs_initial_remote_rebuild(library_id):
+                continue
+            try:
+                library = manager.get_library_definition(library_id)
+            except Exception:
+                logger.warning("[索引] 启动修复跳过未知远程库 library=%s", library_id, exc_info=True)
+                continue
+            if not library.synology:
+                continue
+            captured_synology = library.synology
+
+            def _client_factory(captured=captured_synology):
+                return manager.get_cached_synology_client(captured)
+
+            await service.schedule_rebuild_remote(
+                library.id,
+                _client_factory,
+                library.root_path or "/",
+                force=False,
+            )
+            scheduled += 1
+        if scheduled:
+            logger.info("[索引] 启动修复已排队远程库存索引重建 count=%s", scheduled)
+    except Exception:
+        logger.warning("[索引] 启动修复远程库存索引失败", exc_info=True)
+
+
 # 启动事件
 @app.on_event("startup")
 async def startup_event():
@@ -2018,6 +2058,9 @@ async def startup_event():
 
     # 启动任务阶段指标清理任务（性能观测表只保留近期样本）
     asyncio.create_task(_periodic_task_phase_metric_cleanup())
+
+    # 补齐从未建好快照的远程库索引，避免远程浏览长期退回 FileStation walk。
+    asyncio.create_task(_bootstrap_remote_library_indexes())
 
 # 关闭事件
 @app.on_event("shutdown")
@@ -6675,6 +6718,7 @@ async def post_library_index_rebuild(request: LibraryIndexRebuildRequest):
             library.id,
             _client_factory,
             library.root_path or "/",
+            force=True,
         )
     else:
         raise HTTPException(

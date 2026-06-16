@@ -202,6 +202,36 @@ def test_upsert_subtree_skips_when_index_not_ready(isolated_index):
     assert service.find_by_rjcode("RJ00000003", library_id) == []
 
 
+def test_syncing_with_existing_snapshot_is_still_readable(isolated_index):
+    """远程库重建期间旧快照仍可读，浏览 / 搜索不能退回群晖 walk。"""
+    service: LibraryIndexService = isolated_index["service"]
+    store: SnapshotStore = isolated_index["store"]
+    library_root: Path = isolated_index["library_root"]
+    library_id = "lib_remote_snapshot"
+
+    _mark_index_ready(store, library_id)
+    rj_dir = _create_rj_dir(library_root, "RJ00000004")
+    service.upsert_subtree_local(library_id, str(library_root), str(rj_dir))
+    store.upsert_status(library_id, status="syncing", watcher_mode="disabled")
+
+    assert service.is_ready(library_id) is False
+    assert service.has_usable_snapshot(library_id) is True
+    assert service.needs_initial_remote_rebuild(library_id) is False
+    assert len(service.find_by_rjcode("RJ00000004", library_id)) == 1
+
+
+def test_syncing_without_snapshot_needs_initial_remote_rebuild(isolated_index):
+    """没有任何旧快照时，启动修复应把远程库送进初次重建。"""
+    service: LibraryIndexService = isolated_index["service"]
+    store: SnapshotStore = isolated_index["store"]
+    library_id = "lib_remote_empty"
+
+    store.upsert_status(library_id, status="syncing", watcher_mode="disabled")
+
+    assert service.has_usable_snapshot(library_id) is False
+    assert service.needs_initial_remote_rebuild(library_id) is True
+
+
 # ---------- Case 5：跨库存移动场景 ----------
 
 def test_cross_library_move_synchronizes_both_indexes(isolated_index, tmp_path):
