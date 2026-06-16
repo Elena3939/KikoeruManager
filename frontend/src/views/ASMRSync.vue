@@ -927,6 +927,7 @@ const enhancedBackgroundFailed = computed(() => (
   && enhancedProcessingTasks.value.length === 0
   && enhancedPendingTasks.value.length === 0
 ))
+const enhancedBackgroundMetaText = computed(() => backgroundDownloadMetaText(enhancedBackgroundPercent.value, enhancedProcessingTasks.value, enhancedActiveBackgroundTask.value, enhancedBackgroundFailed.value))
 const enhancedDownloadBackgroundCardProps = computed(() => ({
   kind: 'asmr',
   tone: enhancedBackgroundFailed.value ? 'amber' : 'violet',
@@ -939,7 +940,7 @@ const enhancedDownloadBackgroundCardProps = computed(() => ({
   subtitle: enhancedActiveBackgroundTask.value
     ? `${enhancedActiveBackgroundTask.value.rjcode || 'RJ'} · ${enhancedActiveBackgroundTask.value.work_title || '-'}`
     : '保留下载队列与进度',
-  metaText: `总进度: ${enhancedBackgroundPercent.value}%`,
+  metaText: enhancedBackgroundMetaText.value,
   percentage: enhancedBackgroundPercent.value,
   completed: enhancedBackgroundCompleted.value,
   metrics: [
@@ -976,6 +977,7 @@ const httpDownloadBackgroundFailed = computed(() => (
   && httpDownloadProcessingTasks.value.length === 0
   && httpDownloadPendingTasks.value.length === 0
 ))
+const httpDownloadBackgroundMetaText = computed(() => backgroundDownloadMetaText(httpDownloadBackgroundPercent.value, httpDownloadProcessingTasks.value, httpDownloadActiveBackgroundTask.value, httpDownloadBackgroundFailed.value))
 const httpDownloadBackgroundCardProps = computed(() => ({
   kind: 'download',
   tone: httpDownloadBackgroundFailed.value ? 'amber' : 'blue',
@@ -988,9 +990,7 @@ const httpDownloadBackgroundCardProps = computed(() => ({
   subtitle: httpDownloadActiveBackgroundTask.value
     ? `${httpDownloadActiveBackgroundTask.value.work_title || httpDownloadActiveBackgroundTask.value.source_label || 'HTTP 下载'}`
     : '保留 aria2 下载队列与进度',
-  metaText: httpDownloadBackgroundFailed.value
-    ? `总进度: ${httpDownloadBackgroundPercent.value}% · 需要处理`
-    : `总进度: ${httpDownloadBackgroundPercent.value}%`,
+  metaText: httpDownloadBackgroundMetaText.value,
   percentage: httpDownloadBackgroundPercent.value,
   completed: httpDownloadBackgroundCompleted.value,
   metrics: [
@@ -1029,6 +1029,7 @@ const baiduNetdiskBackgroundFailed = computed(() => (
   && baiduNetdiskProcessingTasks.value.length === 0
   && baiduNetdiskPendingTasks.value.length === 0
 ))
+const baiduNetdiskBackgroundMetaText = computed(() => backgroundDownloadMetaText(baiduNetdiskBackgroundPercent.value, baiduNetdiskProcessingTasks.value, baiduNetdiskActiveBackgroundTask.value, baiduNetdiskBackgroundFailed.value))
 const baiduNetdiskBackgroundCardProps = computed(() => ({
   kind: 'download',
   tone: baiduNetdiskBackgroundFailed.value ? 'amber' : 'blue',
@@ -1041,9 +1042,7 @@ const baiduNetdiskBackgroundCardProps = computed(() => ({
   subtitle: baiduNetdiskActiveBackgroundTask.value
     ? `${baiduNetdiskActiveBackgroundTask.value.work_title || baiduNetdiskActiveBackgroundTask.value.source_label || '百度网盘下载'}`
     : '保留百度网盘直下队列与进度',
-  metaText: baiduNetdiskBackgroundFailed.value
-    ? `总进度: ${baiduNetdiskBackgroundPercent.value}% · 需要处理`
-    : `总进度: ${baiduNetdiskBackgroundPercent.value}%`,
+  metaText: baiduNetdiskBackgroundMetaText.value,
   percentage: baiduNetdiskBackgroundPercent.value,
   completed: baiduNetdiskBackgroundCompleted.value,
   metrics: [
@@ -2254,6 +2253,34 @@ const formatSize = (bytes) => {
   let i = 0, size = bytes
   while (size >= 1024 && i < units.length - 1) { size /= 1024; i++ }
   return `${size.toFixed(2)} ${units[i]}`
+}
+
+const formatSpeed = (bytesPerSec) => {
+  const value = Number(bytesPerSec || 0)
+  return value > 0 ? `${formatSize(value)}/s` : ''
+}
+
+function getDownloadRuntime(task) {
+  const runtime = task?.download_runtime || task?.performance_metrics?.download_runtime || task?.task_metadata?.performance_metrics?.download_runtime || {}
+  return runtime && typeof runtime === 'object' ? runtime : {}
+}
+
+function getTaskDownloadSpeed(task) {
+  return Math.max(0, Number(getDownloadRuntime(task)?.speed_bytes_per_sec || 0))
+}
+
+function getBackgroundDownloadSpeed(tasks, activeTask) {
+  const activeSpeed = getTaskDownloadSpeed(activeTask)
+  if (activeSpeed > 0) return activeSpeed
+  return (tasks || []).reduce((sum, task) => sum + getTaskDownloadSpeed(task), 0)
+}
+
+function backgroundDownloadMetaText(percent, processingTasks, activeTask, failed) {
+  const parts = [`总进度: ${Math.max(0, Math.min(100, Number(percent || 0)))}%`]
+  const speedText = formatSpeed(getBackgroundDownloadSpeed(processingTasks, activeTask))
+  if (speedText) parts.push(`当前速度: ${speedText}`)
+  if (failed) parts.push('需要处理')
+  return parts.join(' · ')
 }
 
 function stopStatusPolling () {
