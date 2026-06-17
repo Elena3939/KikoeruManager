@@ -2219,6 +2219,11 @@ class ConfigResponse(BaseModel):
     resource_budget: Optional[dict] = None
     database: Optional[dict] = None
     security_gate: Optional[dict] = None
+    ui: Optional[dict] = None
+
+
+class LibraryViewPreferencesRequest(BaseModel):
+    view_mode: str
 
 
 class HttpDownloaderSecretRevealRequest(BaseModel):
@@ -3015,6 +3020,7 @@ def get_configuration():
         resource_budget=config.resource_budget.model_dump() if hasattr(config, 'resource_budget') else None,
         database=_mask_database_config(config),
         security_gate=get_security_gate_service().sanitize_config() if hasattr(config, 'security_gate') else None,
+        ui=config.ui.model_dump() if hasattr(config, 'ui') else None,
     )
 
 @app.get("/api/config/state")
@@ -6556,6 +6562,26 @@ async def get_library_definitions():
     }
 
 
+@app.get("/api/library/view-preferences")
+async def get_library_view_preferences():
+    config = get_config()
+    view_mode = getattr(getattr(getattr(config, "ui", None), "library", None), "view_mode", "directory")
+    normalized = str(view_mode or "directory").strip().lower()
+    if normalized not in {"directory", "circle"}:
+        normalized = "directory"
+    return {"view_mode": normalized}
+
+
+@app.post("/api/library/view-preferences")
+async def update_library_view_preferences(payload: LibraryViewPreferencesRequest):
+    view_mode = str(payload.view_mode or "").strip().lower()
+    if view_mode not in {"directory", "circle"}:
+        raise HTTPException(status_code=400, detail="view_mode 只能是 directory 或 circle")
+    config = save_config({"ui": {"library": {"view_mode": view_mode}}})
+    next_mode = getattr(getattr(getattr(config, "ui", None), "library", None), "view_mode", view_mode)
+    return {"view_mode": str(next_mode or view_mode)}
+
+
 @app.post("/api/library/test-connection")
 async def test_library_connection(request: Request):
     try:
@@ -6630,6 +6656,54 @@ async def get_library_storage_info(library_id: str, refresh: bool = False):
     except Exception as e:
         _log_synology_err(f"获取库存空间失败: {e}", e)
         raise HTTPException(status_code=_synology_http_status(e), detail=f"获取库存空间失败: {str(e)}")
+
+
+@app.get("/api/library/circle-groups")
+async def list_library_circle_groups(
+    page: int = 1,
+    page_size: int = 50,
+    keyword: str = "",
+    sort_by: str = "name",
+    sort_order: str = "asc",
+):
+    try:
+        from ..core.library_circle_aggregation_service import get_library_circle_aggregation_service
+
+        payload = get_library_circle_aggregation_service().list_circle_groups(
+            page=page,
+            page_size=page_size,
+            keyword=keyword,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+        payload["libraries"] = get_library_manager().list_libraries()
+        return payload
+    except Exception as e:
+        logger.error("读取库存社团聚合失败: %s", sanitize_text_for_log(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"读取库存社团聚合失败: {str(e)}")
+
+
+@app.get("/api/library/circle-groups/{circle_key}/works")
+async def list_library_circle_group_works(
+    circle_key: str,
+    page: int = 1,
+    page_size: int = 50,
+    keyword: str = "",
+):
+    try:
+        from ..core.library_circle_aggregation_service import get_library_circle_aggregation_service
+
+        payload = get_library_circle_aggregation_service().list_circle_works(
+            circle_key,
+            page=page,
+            page_size=page_size,
+            keyword=keyword,
+        )
+        payload["libraries"] = get_library_manager().list_libraries()
+        return payload
+    except Exception as e:
+        logger.error("读取库存社团作品失败: %s", sanitize_text_for_log(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"读取库存社团作品失败: {str(e)}")
 
 
 # ========== 库存搜索索引 API ==========
@@ -7752,24 +7826,104 @@ async def cancel_library_browser_stats(request: Request):
         raise HTTPException(status_code=500, detail=f"取消库存统计失败: {str(e)}")
 
 
+def _normalize_library_size_target(data: dict[str, Any]) -> dict[str, str]:
+    return {
+        "library_id": str(data.get("library_id") or data.get("libraryId") or "").strip(),
+        "path": str(data.get("path") or "").strip(),
+    }
+
+
+async def _compute_library_folder_size_target(manager, target: dict[str, str]) -> dict[str, Any]:
+    library_id = str(target.get("library_id") or "").strip()
+    folder_path = str(target.get("path") or "").strip()
+    if not folder_path:
+        return {
+            "library_id": library_id,
+            "path": folder_path,
+            "success": False,
+            "error": "缺少文件夹路径",
+        }
+
+    try:
+        library = manager.get_library_definition(library_id or None)
+        resolved_library_id = library.id
+        if library_id and resolved_library_id != library_id:
+            return {
+                "library_id": library_id,
+                "path": folder_path,
+                "success": False,
+                "error": "库存不存在",
+            }
+        if library.type == "synology_filestation":
+            if not library.synology:
+                return {
+                    "library_id": resolved_library_id,
+                    "path": folder_path,
+                    "success": False,
+                    "error": "远程库存缺少群晖连接配置",
+                }
+            normalized_path = manager._normalize_remote_path(folder_path)
+            browse_root = manager._normalize_remote_path(library.browse_root_path or library.root_path or "/")
+            if not manager._remote_path_is_within_root(normalized_path, browse_root):
+                return {
+                    "library_id": resolved_library_id,
+                    "path": normalized_path,
+                    "success": False,
+                    "error": "文件夹不在当前库存范围内",
+                }
+            client = manager.get_cached_synology_client(library.synology)
+            size = await manager._remote_path_size(client, normalized_path, True, max_wait_seconds=300)
+            return {
+                "library_id": resolved_library_id,
+                "path": normalized_path,
+                "success": True,
+                "size": size,
+            }
+
+        browse_root = os.path.abspath(library.browse_root_path or library.root_path)
+        normalized_path = os.path.abspath(os.path.normpath(folder_path))
+        if not manager._local_path_is_within_root(normalized_path, browse_root):
+            return {
+                "library_id": resolved_library_id,
+                "path": normalized_path,
+                "success": False,
+                "error": "文件夹不在当前库存范围内",
+            }
+        if not os.path.isdir(normalized_path):
+            return {
+                "library_id": resolved_library_id,
+                "path": normalized_path,
+                "success": False,
+                "error": "文件夹不存在",
+            }
+        size = await asyncio.to_thread(manager._cached_path_size, normalized_path)
+        return {
+            "library_id": resolved_library_id,
+            "path": normalized_path,
+            "success": True,
+            "size": size,
+        }
+    except Exception as exc:
+        return {
+            "library_id": library_id,
+            "path": folder_path,
+            "success": False,
+            "error": str(exc),
+        }
+
+
 @app.post("/api/library/browser/compute-folder-size")
 async def compute_folder_size(request: Request):
     """手动计算并缓存指定文件夹的大小（供社团目录右键菜单触发）。"""
     try:
         data = await request.json()
-        folder_path = str(data.get("path") or "").strip()
-        if not folder_path:
-            raise HTTPException(status_code=400, detail="缺少文件夹路径")
-        if not os.path.isdir(folder_path):
-            raise HTTPException(status_code=404, detail="文件夹不存在")
-
         manager = get_library_manager()
-
-        def _compute():
-            return manager._cached_path_size(folder_path)
-
-        size = await asyncio.to_thread(_compute)
-        return {"path": folder_path, "size": size}
+        target = _normalize_library_size_target(data)
+        result = await _compute_library_folder_size_target(manager, target)
+        if not result.get("success"):
+            status_code = 404 if result.get("error") == "文件夹不存在" else 400
+            raise HTTPException(status_code=status_code, detail=result.get("error") or "计算文件夹大小失败")
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -7782,46 +7936,32 @@ async def compute_folder_sizes(request: Request):
     """批量计算并缓存文件夹大小，减少库存页右键批量操作的 HTTP 往返。"""
     try:
         data = await request.json()
-        paths = data.get("paths") or []
-        if not isinstance(paths, list) or not paths:
-            raise HTTPException(status_code=400, detail="缺少文件夹路径列表")
+        raw_items = data.get("items")
+        targets = []
+        if isinstance(raw_items, list) and raw_items:
+            for raw_item in raw_items:
+                if isinstance(raw_item, dict):
+                    target = _normalize_library_size_target(raw_item)
+                    if target.get("path"):
+                        targets.append(target)
+        else:
+            paths = data.get("paths") or []
+            if not isinstance(paths, list) or not paths:
+                raise HTTPException(status_code=400, detail="缺少文件夹路径列表")
+            library_id = str(data.get("library_id") or "").strip()
+            for raw_path in paths:
+                folder_path = str(raw_path or "").strip()
+                if not folder_path:
+                    continue
+                targets.append({"library_id": library_id, "path": folder_path})
 
-        normalized_paths = []
-        for raw_path in paths:
-            folder_path = str(raw_path or "").strip()
-            if not folder_path:
-                continue
-            normalized_paths.append(folder_path)
-
-        if not normalized_paths:
+        if not targets:
             raise HTTPException(status_code=400, detail="缺少有效文件夹路径")
 
         manager = get_library_manager()
-
-        def _compute_one(folder_path: str) -> dict:
-            if not os.path.isdir(folder_path):
-                return {
-                    "path": folder_path,
-                    "success": False,
-                    "error": "文件夹不存在",
-                }
-            try:
-                return {
-                    "path": folder_path,
-                    "success": True,
-                    "size": manager._cached_path_size(folder_path),
-                }
-            except Exception as exc:
-                return {
-                    "path": folder_path,
-                    "success": False,
-                    "error": str(exc),
-                }
-
-        def _compute_batch() -> list[dict]:
-            return [_compute_one(path) for path in normalized_paths]
-
-        results = await asyncio.to_thread(_compute_batch)
+        results = []
+        for target in targets:
+            results.append(await _compute_library_folder_size_target(manager, target))
         success_count = sum(1 for item in results if item.get("success"))
         failed_count = len(results) - success_count
         return {

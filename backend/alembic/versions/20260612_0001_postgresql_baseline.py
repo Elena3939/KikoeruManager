@@ -45,6 +45,7 @@ _BUSINESS_INDEX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_conflict_rj_type_status ON conflict_works(rjcode, conflict_type, status)",
     "CREATE INDEX IF NOT EXISTS idx_lie_rj_lookup ON library_index_entries(rjcode, depth, relative_path, library_id, entry_type) WHERE rjcode IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS idx_lie_rj_prefix ON library_index_entries(rjcode varchar_pattern_ops, depth, relative_path, library_id, entry_type) WHERE rjcode IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_lie_circle_dir_lookup ON library_index_entries(library_id, rjcode, relative_path, depth) WHERE entry_type = 'dir' AND rjcode IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS idx_lie_indexed_at_id ON library_index_entries(library_id, indexed_at, id)",
     "CREATE INDEX IF NOT EXISTS idx_lie_children_name ON library_index_entries(library_id, parent_path, name_sort_key, relative_path)",
     "CREATE INDEX IF NOT EXISTS idx_lie_children_size ON library_index_entries(library_id, parent_path, size, name_sort_key, relative_path)",

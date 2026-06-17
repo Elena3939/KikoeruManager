@@ -1858,6 +1858,15 @@ _POSTGRES_LIBRARY_INDEX_SPECS = (
         "fragments": ("library_index_entries", "rjcode", "varchar_pattern_ops", "depth", "relative_path", "library_id", "entry_type", "WHERE", "rjcode IS NOT NULL"),
     },
     {
+        "name": "idx_lie_circle_dir_lookup",
+        "sql": (
+            "CREATE INDEX IF NOT EXISTS idx_lie_circle_dir_lookup "
+            "ON library_index_entries(library_id, rjcode, relative_path, depth) "
+            "WHERE entry_type = 'dir' AND rjcode IS NOT NULL"
+        ),
+        "fragments": ("library_index_entries", "library_id", "rjcode", "relative_path", "depth", "WHERE", "entry_type", "dir", "rjcode IS NOT NULL"),
+    },
+    {
         "name": "idx_lie_indexed_at_id",
         "sql": "CREATE INDEX IF NOT EXISTS idx_lie_indexed_at_id ON library_index_entries(library_id, indexed_at, id)",
         "fragments": ("library_index_entries", "library_id", "indexed_at", "id"),
