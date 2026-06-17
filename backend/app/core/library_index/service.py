@@ -13,8 +13,8 @@
   LibraryDefinition 解析成 (library_id, root_path) 再调本类，
   便于在测试里换装 fake scanner / store。
 
-批次 2 范围：仅支持 local 库存。synology_filestation 由批次 3
-新增 RemoteScanner 后再扩展。
+当前范围：仅支持 local 库存。synology_filestation 不创建库存索引，
+统一回到群晖 FileStation 原生浏览 / 搜索。
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ import os
 import threading
 import time
 from contextlib import nullcontext
+from dataclasses import dataclass
 from typing import Any, Optional, Sequence, Union
 
 from .local_scanner import LocalScanner
@@ -43,11 +44,27 @@ logger = logging.getLogger(__name__)
 # 首次全量重建通常是几十万文件；日常 self-mutation 仍走 SnapshotStore 的 500 小批。
 FULL_REBUILD_BULK_CHUNK_SIZE = 5000
 FULL_REBUILD_ANALYZE_THRESHOLD = 5000
+STALE_SYNCING_GRACE_SECONDS = 30.0
+INTERRUPTED_SYNCING_MESSAGE = "上次索引同步中断，未发现正在运行的重建任务；请手动重建索引"
 
-# 远程全量重建最小间隔：距上次成功全量扫描不足此秒数且当前 ready 时，
-# schedule_rebuild_remote 直接返回现状不重扫，防止误触发 / 重复点击 / 重试风暴
-# 在群晖端反复起递归 search task。手动场景可传 force=True 绕过。
-# 可用环境变量 KIKOERUMANAGER_REMOTE_REBUILD_MIN_INTERVAL_SECONDS 覆盖。
+
+@dataclass(slots=True)
+class _SubtreeParentStatsDelta:
+    relative_path: str
+    old_size: int
+    old_file_count: int
+    new_size: int = 0
+    new_file_count: int = 0
+
+    @property
+    def size_delta(self) -> int:
+        return self.new_size - self.old_size
+
+    @property
+    def file_count_delta(self) -> int:
+        return self.new_file_count - self.old_file_count
+
+# 远程全量重建入口已禁用；保留环境变量解析只为旧代码兼容。
 def _remote_rebuild_min_interval_seconds() -> float:
     raw = os.getenv("KIKOERUMANAGER_REMOTE_REBUILD_MIN_INTERVAL_SECONDS", "")
     try:
@@ -106,6 +123,7 @@ class LibraryIndexService:
         self._global_lock = threading.Lock()
         # 持有 fire-and-forget 的后台 task，避免被 GC 警告
         self._pending_tasks: set[asyncio.Task] = set()
+        self._pending_tasks_by_library: dict[str, set[asyncio.Task]] = {}
 
     # ========== 锁 ==========
 
@@ -116,6 +134,19 @@ class LibraryIndexService:
                 lock = threading.Lock()
                 self._rebuild_locks[library_id] = lock
             return lock
+
+    def _track_rebuild_task(self, library_id: str, task: asyncio.Task) -> None:
+        self._pending_tasks.add(task)
+        bucket = self._pending_tasks_by_library.setdefault(library_id, set())
+        bucket.add(task)
+
+        def _discard(done_task: asyncio.Task) -> None:
+            self._pending_tasks.discard(done_task)
+            bucket.discard(done_task)
+            if not bucket:
+                self._pending_tasks_by_library.pop(library_id, None)
+
+        task.add_done_callback(_discard)
 
     # ========== 重建 ==========
 
@@ -309,8 +340,7 @@ class LibraryIndexService:
                 logger.exception("[索引] 异步重建任务异常 library=%s", library_id)
 
         task = asyncio.create_task(_run())
-        self._pending_tasks.add(task)
-        task.add_done_callback(self._pending_tasks.discard)
+        self._track_rebuild_task(library_id, task)
         return status
 
     async def rebuild_remote(
@@ -321,32 +351,17 @@ class LibraryIndexService:
         *,
         chunk_size: int = FULL_REBUILD_BULK_CHUNK_SIZE,
     ) -> IndexStatus:
-        """async 全量重建远程（群晖 FileStation）库存索引。
-
-        线程安全：同库存并发只允许一个；后续 rebuild 会立即返回当前 syncing
-        状态而不会阻塞，避免远程扫描互相挤占。
-        """
-        lock = self._get_lock(library_id)
-        if not lock.acquire(blocking=False):
-            existing = self._store.get_status(library_id)
-            if existing and existing.status == 'syncing':
-                logger.info("[索引] remote rebuild 跳过：%s 正在同步", library_id)
-                return existing
-            # 远程扫描耗时较长，没拿到锁不阻塞，直接返回当前状态
-            return existing or self._store.upsert_status(
-                library_id,
-                status='syncing',
-                watcher_mode='disabled',
-                total_entries=0,
-                total_size_bytes=0,
-                folder_count=0,
-            )
-        try:
-            return await self._do_rebuild_remote(
-                library_id, client, root_path, chunk_size,
-            )
-        finally:
-            lock.release()
+        """远程群晖库不再创建库存索引，保留方法只做兼容 no-op。"""
+        logger.info("[索引] remote rebuild 已禁用，跳过远程库存索引创建 library=%s", library_id)
+        return self._store.upsert_status(
+            library_id,
+            status='disabled',
+            watcher_mode='disabled',
+            total_entries=0,
+            total_size_bytes=0,
+            folder_count=0,
+            error="远程群晖库存不创建库存索引，请使用 FileStation 原生浏览/搜索",
+        )
 
     async def _do_rebuild_remote(
         self,
@@ -536,70 +551,17 @@ class LibraryIndexService:
         *,
         force: bool = False,
     ) -> IndexStatus:
-        """异步后台触发远程重建。
-
-        client_factory：可调用对象（同步 / 异步均可）或者已经实例化的 client。
-        因为远程客户端有连接 / 认证状态，让后台 task 启动时再获取最稳妥；
-        如果传入的是 client 实例则直接使用。
-
-        force：跳过最小重建间隔节流，强制触发（手动重建场景）。
-
-        最小间隔节流：距上次成功全量扫描不足 _remote_rebuild_min_interval_seconds
-        且当前状态为 ready 时，直接返回现状，不再起新的远程 search task。
-        这是防群晖被打爆的入口闸门——误触发 / 重复点击 / 自动重试都拦在这里，
-        不会一路走到 rebuild_remote 才发现没必要扫。
-        """
-        if not force:
-            existing = self._store.get_status(library_id)
-            if existing is not None and existing.status == 'ready':
-                if not self._store_has_library_entries(library_id):
-                    logger.warning(
-                        "[索引] remote rebuild 发现 ready 空快照，跳过节流并重新校验 library=%s",
-                        library_id,
-                    )
-                else:
-                    min_interval = _remote_rebuild_min_interval_seconds()
-                    last_scan_ms = int(getattr(existing, 'last_full_scan_at', 0) or 0)
-                    if min_interval > 0 and last_scan_ms > 0:
-                        elapsed = time.time() - last_scan_ms / 1000.0
-                        if 0 <= elapsed < min_interval:
-                            logger.info(
-                                "[索引] remote rebuild 节流跳过 library=%s "
-                                "距上次全量扫描 %.0fs < 最小间隔 %.0fs（传 force=True 可强制）",
-                                library_id, elapsed, min_interval,
-                            )
-                            return existing
-
-        status = self._store.upsert_status(
+        """远程群晖库不再创建库存索引，保留方法只做兼容 no-op。"""
+        logger.info("[索引] schedule remote rebuild 已禁用，跳过远程库存索引创建 library=%s", library_id)
+        return self._store.upsert_status(
             library_id,
-            status='syncing',
+            status='disabled',
             watcher_mode='disabled',
             total_entries=0,
             total_size_bytes=0,
             folder_count=0,
-            error=None,
+            error="远程群晖库存不创建库存索引，请使用 FileStation 原生浏览/搜索",
         )
-
-        async def _run() -> None:
-            try:
-                client = (
-                    client_factory()
-                    if callable(client_factory)
-                    else client_factory
-                )
-                if asyncio.iscoroutine(client):
-                    client = await client
-                await self.rebuild_remote(library_id, client, root_path)
-            except Exception:
-                logger.exception(
-                    "[索引] 异步远程重建任务异常 library=%s",
-                    library_id,
-                )
-
-        task = asyncio.create_task(_run())
-        self._pending_tasks.add(task)
-        task.add_done_callback(self._pending_tasks.discard)
-        return status
 
     @staticmethod
     def _entry_stats(entry: IndexEntry) -> tuple[int, int]:
@@ -634,6 +596,88 @@ class LibraryIndexService:
         if callable(counter):
             return int(counter(library_id) or 0) > 0
         return True
+
+    def _has_running_rebuild_task(self, library_id: str) -> bool:
+        tasks = self._pending_tasks_by_library.get(library_id) or set()
+        return any(not task.done() for task in list(tasks))
+
+    def _syncing_status_is_stale(self, status: IndexStatus) -> bool:
+        updated_at = int(getattr(status, "updated_at", 0) or 0)
+        if updated_at <= 0:
+            return True
+        age_seconds = time.time() - updated_at / 1000.0
+        return age_seconds >= STALE_SYNCING_GRACE_SECONDS
+
+    def _entry_stats_snapshot(self, library_id: str) -> dict[str, int]:
+        calculator = getattr(self._store, "calculate_library_stats", None)
+        if callable(calculator):
+            stats = calculator(library_id) or {}
+            return {
+                "total_entries": int(stats.get("total_entries") or 0),
+                "total_size_bytes": int(stats.get("total_size_bytes") or 0),
+                "folder_count": int(stats.get("folder_count") or 0),
+            }
+        return {
+            "total_entries": int(getattr(self._store, "count_library_entries")(library_id) or 0)
+            if callable(getattr(self._store, "count_library_entries", None))
+            else 0,
+            "total_size_bytes": 0,
+            "folder_count": 0,
+        }
+
+    def normalize_interrupted_syncing_status(
+        self,
+        library_id: str,
+    ) -> Optional[IndexStatus]:
+        """进程重启后把遗留 syncing 收敛掉，不自动重建库存索引。"""
+        status = self._store.get_status(library_id)
+        if not status or status.status != 'syncing':
+            return status
+        if self._has_running_rebuild_task(library_id) or not self._syncing_status_is_stale(status):
+            return status
+
+        has_completed_snapshot = int(getattr(status, "last_full_scan_at", 0) or 0) > 0
+        stats = self._entry_stats_snapshot(library_id)
+        if has_completed_snapshot:
+            logger.warning(
+                "[索引] 检测到中断的同步状态，恢复为 ready library=%s entries=%s",
+                library_id,
+                stats["total_entries"],
+            )
+            return self._store.upsert_status(
+                library_id,
+                status='ready',
+                watcher_mode='disabled',
+                total_entries=stats["total_entries"],
+                total_size_bytes=stats["total_size_bytes"],
+                folder_count=stats["folder_count"],
+                error=INTERRUPTED_SYNCING_MESSAGE,
+            )
+
+        logger.warning(
+            "[索引] 检测到未完成的同步状态，恢复为 error library=%s",
+            library_id,
+        )
+        return self._store.upsert_status(
+            library_id,
+            status='error',
+            watcher_mode='disabled',
+            total_entries=0,
+            total_size_bytes=0,
+            folder_count=0,
+            error=INTERRUPTED_SYNCING_MESSAGE,
+        )
+
+    def normalize_all_interrupted_syncing_statuses(self) -> list[IndexStatus]:
+        normalized: list[IndexStatus] = []
+        for status in self._store.list_all_status():
+            if status.status == 'syncing':
+                next_status = self.normalize_interrupted_syncing_status(status.library_id)
+                if next_status is not None:
+                    normalized.append(next_status)
+            else:
+                normalized.append(status)
+        return normalized
 
     # ========== self_mutation ==========
     # 业务自身写操作（rename / delete / move / 解压落地 / 字幕落盘）完成后
@@ -675,7 +719,9 @@ class LibraryIndexService:
         result = {"upserts": 0, "deletes": 0}
         if upserts:
             result["upserts"] = self._store.bulk_upsert(
-                upserts, chunk_size=500,
+                upserts,
+                chunk_size=500,
+                maintain_parent_dir_stats=True,
             )
         if deletes:
             result["deletes"] = self._store.delete_subtrees(
@@ -769,6 +815,47 @@ class LibraryIndexService:
     #   状态字段只在全量 rebuild 时刷新
     # - 任何异常都向上抛，由调用方（library_manager 包装层）catch 后静默
 
+    def _subtree_parent_stats_delta(self, library_id: str, relative_path: str) -> Optional[_SubtreeParentStatsDelta]:
+        normalized = str(relative_path or "").strip("/")
+        if not normalized:
+            return None
+        old_entry = self._store.get_entry(library_id, normalized)
+        return _SubtreeParentStatsDelta(
+            relative_path=normalized,
+            old_size=int(getattr(old_entry, "size", 0) or 0) if old_entry else 0,
+            old_file_count=(
+                int(getattr(old_entry, "file_count", 0) or 0)
+                if old_entry and old_entry.entry_type == 'dir'
+                else (1 if old_entry and old_entry.entry_type == 'file' else 0)
+            ),
+        )
+
+    def _capture_subtree_parent_stats_delta(
+        self,
+        delta: Optional[_SubtreeParentStatsDelta],
+        entry: IndexEntry,
+    ) -> None:
+        if delta is None or entry.relative_path != delta.relative_path:
+            return
+        delta.new_size = max(0, int(entry.size or 0))
+        delta.new_file_count = max(0, int(entry.file_count or 0)) if entry.entry_type == 'dir' else 1
+
+    def _flush_subtree_parent_stats_delta(
+        self,
+        library_id: str,
+        delta: Optional[_SubtreeParentStatsDelta],
+    ) -> None:
+        if delta is None:
+            return
+        if not (delta.size_delta or delta.file_count_delta):
+            return
+        self._store.apply_parent_dir_delta(
+            library_id,
+            delta.relative_path,
+            size_delta=delta.size_delta,
+            file_count_delta=delta.file_count_delta,
+        )
+
     def upsert_subtree_local(
         self,
         library_id: str,
@@ -786,13 +873,31 @@ class LibraryIndexService:
         scanner = self._local_scanner_factory()
         buffer: list[IndexEntry] = []
         written = 0
+        relative_path = os.path.relpath(os.path.abspath(subtree_path), os.path.abspath(library_root)).replace("\\", "/")
+        if relative_path == ".":
+            relative_path = ""
+        relative_path = relative_path.strip("/")
+        stats_delta = self._subtree_parent_stats_delta(library_id, relative_path)
+        if stats_delta is not None and relative_path:
+            stats_delta.new_size = stats_delta.old_size
+            stats_delta.new_file_count = stats_delta.old_file_count
         for entry in scanner.scan_subtree(library_id, library_root, subtree_path):
+            self._capture_subtree_parent_stats_delta(stats_delta, entry)
             buffer.append(entry)
             if len(buffer) >= chunk_size:
-                written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
+                written += self._store.bulk_upsert(
+                    buffer,
+                    chunk_size=chunk_size,
+                    maintain_parent_dir_stats=False,
+                )
                 buffer.clear()
         if buffer:
-            written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
+            written += self._store.bulk_upsert(
+                buffer,
+                chunk_size=chunk_size,
+                maintain_parent_dir_stats=False,
+            )
+        self._flush_subtree_parent_stats_delta(library_id, stats_delta)
         logger.info(
             "[索引] upsert 本地子树完成 library=%s subtree=%s entries=%s",
             library_id, subtree_path, written,
@@ -829,6 +934,10 @@ class LibraryIndexService:
         buffer: list[IndexEntry] = []
         if root_entry is not None:
             buffer.append(root_entry)
+        relative_path = self._remote_relative_path(library_root, subtree_path)
+        stats_delta = self._subtree_parent_stats_delta(library_id, relative_path)
+        if root_entry is not None:
+            self._capture_subtree_parent_stats_delta(stats_delta, root_entry)
         written = 0
         # 与全量重建共用同一把全局远程 search 串行锁：子树扫描同样是 SYNO.Search
         # task，必须和全量重建互斥，避免高频写操作触发的子树扫描和全量重建在群晖端
@@ -837,17 +946,36 @@ class LibraryIndexService:
             async for entry in scanner.scan_subtree(
                 library_id, client, library_root, subtree_path,
             ):
+                self._capture_subtree_parent_stats_delta(stats_delta, entry)
                 buffer.append(entry)
                 if len(buffer) >= chunk_size:
-                    written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
+                    written += self._store.bulk_upsert(
+                        buffer,
+                        chunk_size=chunk_size,
+                        maintain_parent_dir_stats=False,
+                    )
                     buffer.clear()
             if buffer:
-                written += self._store.bulk_upsert(buffer, chunk_size=chunk_size)
+                written += self._store.bulk_upsert(
+                    buffer,
+                    chunk_size=chunk_size,
+                    maintain_parent_dir_stats=False,
+                )
+        self._flush_subtree_parent_stats_delta(library_id, stats_delta)
         logger.info(
             "[索引] upsert 远程子树完成 library=%s subtree=%s entries=%s",
             library_id, subtree_path, written,
         )
         return written
+
+    @staticmethod
+    def _remote_relative_path(library_root: str, subtree_path: str) -> str:
+        root = (library_root or "").replace("\\", "/").rstrip("/") or "/"
+        target = (subtree_path or "").replace("\\", "/").rstrip("/") or "/"
+        if target == root:
+            return ""
+        prefix = root + "/" if root != "/" else "/"
+        return target[len(prefix):].strip("/") if target.startswith(prefix) else target.lstrip("/")
 
     async def _build_remote_subtree_root_entry(
         self,
@@ -934,10 +1062,10 @@ class LibraryIndexService:
     # ========== 状态 ==========
 
     def get_status(self, library_id: str) -> Optional[IndexStatus]:
-        return self._store.get_status(library_id)
+        return self.normalize_interrupted_syncing_status(library_id)
 
     def list_all_status(self) -> list[IndexStatus]:
-        return self._store.list_all_status()
+        return self.normalize_all_interrupted_syncing_statuses()
 
     def is_ready(self, library_id: str) -> bool:
         status = self.get_status(library_id)
@@ -960,20 +1088,6 @@ class LibraryIndexService:
     def has_library_entries(self, library_id: str) -> bool:
         """调用方需要区分 ready 空快照和真实有条目的快照。"""
         return self._store_has_library_entries(library_id)
-
-    def needs_initial_remote_rebuild(self, library_id: str) -> bool:
-        """远程库启动修复判定。
-
-        ready 且有索引行：不扫；ready 空快照要重新校验，避免群晖 Search 异常
-        把可见目录写成 ready+0 后长期短路真实列表。syncing 且有旧快照：继续等
-        当前任务；其它状态只要没有可用 snapshot，就需要排队一次远程全量重建。
-        """
-        status = self.get_status(library_id)
-        if status and status.status == 'ready':
-            return not self._store_has_library_entries(library_id)
-        if status and status.status == 'syncing' and self._store_has_library_entries(library_id):
-            return False
-        return not self._store_has_library_entries(library_id)
 
     # ========== 查询包装 ==========
 
@@ -1091,6 +1205,13 @@ class LibraryIndexService:
         relative_paths: Sequence[str],
     ) -> dict[str, int]:
         return self._store.count_descendant_dirs_many(library_id, relative_paths)
+
+    def summarize_descendant_files_many(
+        self,
+        library_id: str,
+        relative_paths: Sequence[str],
+    ) -> dict[str, dict[str, int]]:
+        return self._store.summarize_descendant_files_many(library_id, relative_paths)
 
 
 _default_service: Optional[LibraryIndexService] = None

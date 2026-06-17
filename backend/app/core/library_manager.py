@@ -2000,6 +2000,32 @@ class LibraryManager:
         except Exception:
             return
 
+    @staticmethod
+    def _remote_stats_uses_inventory_index(cached: dict[str, Any]) -> bool:
+        scan_mode = str(cached.get("scan_mode") or "")
+        status = str(cached.get("status") or "")
+        return bool(
+            scan_mode in {"library_index", "index_required"}
+            or cached.get("index_status")
+            or status == "syncing"
+        )
+
+    @staticmethod
+    def _remote_filestation_stats_placeholder(library: LibraryDefinition) -> dict[str, Any]:
+        return {
+            "library_id": library.id,
+            "library_name": library.name,
+            "library_type": library.type,
+            "status": "unsupported",
+            "folder_count": 0,
+            "total_size_bytes": 0,
+            "total_size_gb": 0,
+            "last_completed_at": None,
+            "updated_at": time.time(),
+            "scan_mode": "filestation",
+            "warning": "远程库使用群晖 FileStation 原生接口，不创建库存索引",
+        }
+
     def _append_stats_log(self, library: LibraryDefinition, level: str, message: str):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         line = f"[{timestamp}] [{level}] [{library.id}] [{library.name}] {message}\n"
@@ -2397,6 +2423,9 @@ class LibraryManager:
         seen: set[str] = set()
 
         for library in libraries:
+            if not self._library_uses_inventory_index(library):
+                fallback.append(library)
+                continue
             try:
                 has_snapshot = (
                     service.has_usable_snapshot(library.id)
@@ -2439,6 +2468,11 @@ class LibraryManager:
 
         return indexed, fallback
 
+    @staticmethod
+    def _library_uses_inventory_index(library: LibraryDefinition) -> bool:
+        """库存索引只用于本地库；群晖远程库始终走 FileStation 原接口。"""
+        return getattr(library, "type", None) == "local"
+
     def find_rj_in_ready_index(
         self,
         rjcodes: list[str] | tuple[str, ...] | set[str] | str,
@@ -2477,6 +2511,7 @@ class LibraryManager:
         if library_ids:
             wanted = {str(lid).strip() for lid in library_ids if str(lid).strip()}
             libraries = [lib for lib in libraries if lib.id in wanted]
+        libraries = [lib for lib in libraries if self._library_uses_inventory_index(lib)]
         if not libraries:
             return {}
 
@@ -2611,6 +2646,7 @@ class LibraryManager:
         if library_ids:
             wanted = {str(lid).strip() for lid in library_ids if str(lid).strip()}
             libraries = [lib for lib in libraries if lib.id in wanted]
+        libraries = [lib for lib in libraries if self._library_uses_inventory_index(lib)]
         if not libraries:
             return False
         try:
@@ -3150,11 +3186,13 @@ class LibraryManager:
         library: LibraryDefinition,
         absolute_path: str,
     ) -> None:
-        """本地 / 远程写操作完成后，后台批量通知索引删除。
+        """本地写操作完成后，后台批量通知索引删除。
 
         - 索引未就绪 / 模块异常时静默跳过，不影响业务返回值
         - 路径不在库存根下时静默跳过（不应发生但兜底）
         """
+        if not self._library_uses_inventory_index(library):
+            return
         try:
             self._enqueue_index_delete_many(library, [absolute_path])
         except Exception:
@@ -3169,6 +3207,8 @@ class LibraryManager:
         absolute_paths: list[str],
     ) -> None:
         """批量通知索引删除：后台队列合并执行，避免阻塞业务请求。"""
+        if not self._library_uses_inventory_index(library):
+            return
         try:
             self._enqueue_index_delete_many(library, absolute_paths)
         except Exception:
@@ -3183,6 +3223,8 @@ class LibraryManager:
         target_library: LibraryDefinition,
         moved_items: list[dict[str, Any]],
     ) -> None:
+        if not self._library_uses_inventory_index(source_library) and not self._library_uses_inventory_index(target_library):
+            return
         try:
             self._enqueue_index_move_many(source_library, target_library, moved_items)
         except Exception:
@@ -3204,6 +3246,16 @@ class LibraryManager:
         一次性提交索引最终状态；不把 Phase1/Phase2 临时名逐条写进索引。
         """
         library = self.get_library_definition(library_id)
+        if not self._library_uses_inventory_index(library):
+            return {
+                "submitted": False,
+                "submitted_count": 0,
+                "submit_error": "remote_library_index_disabled",
+                "queued": False,
+                "queued_count": 0,
+                "filtered_count": len(moved_items or []),
+                "total_count": len(moved_items or []),
+            }
         normalized_items: list[dict[str, str]] = []
         for raw in moved_items or []:
             source = str((raw or {}).get("source") or "").strip()
@@ -3267,6 +3319,8 @@ class LibraryManager:
         - 路径不在库存根下 / 越界：静默跳过
         """
         if not absolute_path:
+            return
+        if not self._library_uses_inventory_index(library):
             return
         try:
             self._enqueue_index_upsert_subtree_many(library, [absolute_path])
@@ -3520,9 +3574,9 @@ class LibraryManager:
             )
 
     # ========== 第一梯队接入 1：库存浏览搜索走索引 ==========
-    # _search_local_files / _search_remote_files 在 RJ 关键字进来时优先走
-    # 索引查询，绕过 os.walk / SYNO.FileStation.Search 。
-    # 不 ready 或 file 类型搜索都 fallback 到原逻辑。
+    # 本地库存搜索优先使用索引。命中时绕过 os.walk；
+    # 远程群晖库存不使用库存索引，始终走 FileStation.Search。
+    # 索引不可用或索引无命中时 fallback 到原逻辑，避免旧快照漏结果。
 
     def _build_browse_result_from_index(
         self,
@@ -3640,6 +3694,8 @@ class LibraryManager:
         sort_order: str,
         page_cursor: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
+        if not self._library_uses_inventory_index(library):
+            return None
         try:
             from .library_index import get_library_index_service
 
@@ -3651,17 +3707,6 @@ class LibraryManager:
                 else service.is_ready(library.id)
             )
             if not has_snapshot:
-                return None
-            if (
-                library.type == "synology_filestation"
-                and hasattr(service, "has_library_entries")
-                and not service.has_library_entries(library.id)
-            ):
-                logger.warning(
-                    "远程库存索引为空，跳过索引浏览并改走 FileStation.List: lib=%s path=%s",
-                    library.id,
-                    current_path,
-                )
                 return None
             offset = max(0, (int(page or 1) - 1) * int(page_size or 200))
             payload = service.list_children_page(
@@ -3777,13 +3822,19 @@ class LibraryManager:
         search_exact: bool,
         search_result_kind: str,
     ) -> Optional[dict[str, Any]]:
-        """RJ 搜索走索引的快速路径。返回 None 表示 fallback。"""
+        """库存搜索走索引的快速路径。返回 None 表示 fallback。"""
+        if not self._library_uses_inventory_index(library):
+            return None
         try:
-            if not self._is_rj_search_keyword(keyword):
-                return None
             kind = self._normalize_search_result_kind(search_result_kind)
-            if kind == "file":
-                return None  # 文件类型搜索让原逻辑处理
+            normalized_keyword = str(keyword or "").strip()
+            if not normalized_keyword:
+                return None
+            is_rj_keyword = self._is_rj_search_keyword(normalized_keyword)
+            if is_rj_keyword and kind != "file":
+                entry_type = "dir"
+            else:
+                entry_type = "dir" if kind == "folder" else ("file" if kind == "file" else None)
             from .library_index import get_library_index_service
             service = get_library_index_service()
             has_snapshot = (
@@ -3793,19 +3844,54 @@ class LibraryManager:
             )
             if not has_snapshot:
                 return None
-            normalized_rj = keyword.strip().upper()
-            entries = service.find_by_rjcode(
-                normalized_rj,
-                library.id,
-                entry_type='dir',
-                limit=LIBRARY_SEARCH_RESULT_LIMIT,
-            )
+            if (
+                library.type == "synology_filestation"
+                and hasattr(service, "has_library_entries")
+                and not service.has_library_entries(library.id)
+            ):
+                return None
+            if is_rj_keyword:
+                entries = service.find_by_rjcode(
+                    normalized_keyword.upper(),
+                    library.id,
+                    entry_type=entry_type,
+                    limit=LIBRARY_SEARCH_RESULT_LIMIT,
+                )
+            else:
+                entries = service.find_by_name(
+                    library.id,
+                    normalized_keyword,
+                    entry_type=entry_type,
+                    limit=LIBRARY_SEARCH_RESULT_LIMIT,
+                )
+            scoped_entries = []
+            for entry in entries:
+                entry_path = str(getattr(entry, "absolute_path", "") or "")
+                if library.type == "synology_filestation":
+                    if not self._remote_path_is_within_root(entry_path, search_root):
+                        continue
+                elif not self._local_path_is_within_root(entry_path, search_root):
+                    continue
+                scoped_entries.append(entry)
             items = [
                 self._build_search_entry_from_index(
                     library, item_id=i, search_root=search_root, entry=entry,
                 )
-                for i, entry in enumerate(entries)
+                for i, entry in enumerate(scoped_entries)
             ]
+            items = [
+                item for item in items
+                if self._search_match_text(
+                    normalized_keyword,
+                    item.get("name"),
+                    item.get("relative_path"),
+                    item.get("rjcode"),
+                    exact=search_exact,
+                )
+                and self._matches_search_result_kind(bool(item.get("is_directory")), kind)
+            ]
+            if not items:
+                return None
             if library.type == "synology_filestation":
                 items = self._sort_remote_page_items(items, sort_by, sort_order)
             else:
@@ -3818,8 +3904,8 @@ class LibraryManager:
                 it.pop("_sort_time", None)
                 it.pop("_mtime", None)
             logger.info(
-                "库存搜索走索引: lib=%s rj=%s hits=%s page=%s",
-                library.id, normalized_rj, total, page,
+                "库存搜索走索引: lib=%s keyword=%s hits=%s page=%s",
+                library.id, normalized_keyword, total, page,
             )
             return self._build_index_search_result(
                 library,
@@ -3829,7 +3915,7 @@ class LibraryManager:
                 page_size=page_size,
                 current_path=search_root,
                 browse_root=browse_root,
-                keyword=normalized_rj,
+                keyword=normalized_keyword,
                 search_exact=search_exact,
                 search_result_kind=kind,
             )
@@ -3877,49 +3963,8 @@ class LibraryManager:
     async def _collect_remote_stats_via_index(
         self, library: LibraryDefinition,
     ) -> Optional[dict[str, Any]]:
-        """远程 stats 索引快照路径：只读 library_index_status 聚合字段。"""
-        try:
-            from .library_index import get_library_index_service
-            service = get_library_index_service()
-            status = service.get_status(library.id)
-            if not status or status.status == 'idle':
-                return None
-            if (
-                library.type == "synology_filestation"
-                and status.status == "ready"
-                and hasattr(service, "has_library_entries")
-                and not service.has_library_entries(library.id)
-            ):
-                self._append_stats_log(library, "WARN", "远程索引为空，跳过统计快照以避免显示假 0")
-                return None
-            total_size = int(status.total_size_bytes or 0)
-            self._append_stats_log(
-                library,
-                "INFO",
-                f"远程统计读取索引快照 folders={int(status.folder_count or 0)} size={_gb(total_size)}GB",
-            )
-            return {
-                "library_id": library.id,
-                "library_name": library.name,
-                "library_type": library.type,
-                "status": 'ready' if status.status == 'ready' else status.status,
-                "folder_count": int(status.folder_count or 0),
-                "total_size_bytes": total_size,
-                "total_size_gb": _gb(total_size),
-                "scan_mode": "library_index",
-                "index_status": status.status,
-                "progress_done": int(status.total_entries or 0),
-                "progress_total": 0,
-                "progress_percent": 0.0,
-                "warning_count": 0,
-                "last_error": status.error,
-                "last_completed_at": (status.last_full_scan_at / 1000) if status.last_full_scan_at else None,
-                "updated_at": (status.updated_at / 1000) if status.updated_at else time.time(),
-            }
-        except Exception:
-            logger.warning("远程 stats 走索引异常，fallback lib=%s",
-                           library.id, exc_info=True)
-            return None
+        """兼容旧调用：远程群晖库不再读取库存索引统计。"""
+        return None
 
     def _index_parent_path_for_browse_root(self, library: LibraryDefinition) -> str:
         """把 browse_root 映射成索引 parent_path；库根对应空字符串。"""
@@ -4879,7 +4924,7 @@ class LibraryManager:
 
                     if attempt < max_warmup_retries:
                         logger.debug(
-                            "远程搜索秒回空结果(索引预热中)，%.1fs后重试: scope=%s keyword=%s attempt=%d/%d",
+                            "远程 FileStation 搜索秒回空结果，%.1fs后重试: scope=%s keyword=%s attempt=%d/%d",
                             retry_delay,
                             scope_path,
                             keyword,
@@ -4972,12 +5017,31 @@ class LibraryManager:
         keyword = str(search or "").strip()
         rj_only_search = self._is_rj_search_keyword(keyword)
         api_search_root = browse_root if keyword else search_root
-
-        # 设计：远程库（synology_filestation）搜索无条件走群晖 SYNO.Search，不再走索引快速路径。
-        # 历史原因：远程库索引常年未就绪 / 条目不全，索引返回 0 条会短路掉 SYNO.Search，导致用户搜不到。
-        # 索引层只保留本地库 _search_local_files 中使用。
         normalized_sort_by = self._normalize_library_sort_by(sort_by)
         normalized_sort_order = self._normalize_library_sort_order(sort_order)
+        indexed_result = self._search_files_via_index(
+            library,
+            keyword=keyword,
+            search_root=search_root,
+            browse_root=browse_root,
+            sort_by=normalized_sort_by,
+            sort_order=normalized_sort_order,
+            page=page,
+            page_size=page_size,
+            search_exact=search_exact,
+            search_result_kind=search_result_kind,
+        )
+        if indexed_result is not None:
+            logger.info(
+                "库存搜索命中索引: library=%s keyword=%s total=%s returned=%s elapsed=%.0fms",
+                library.id,
+                keyword,
+                int(indexed_result.get("total", 0) or 0),
+                len(indexed_result.get("files") or []),
+                (time.monotonic() - search_started) * 1000,
+            )
+            return self._set_cached_remote_search_result(cache_key, indexed_result)
+
         remote_sort_by = "name" if normalized_sort_by == "name" else "mtime"
         remote_sort_direction = "asc" if normalized_sort_order == "asc" else "desc"
         search_scopes = await self._resolve_remote_search_scopes(client, api_search_root)
@@ -5413,7 +5477,7 @@ class LibraryManager:
         *,
         skip_index_mutation: bool = False,
     ) -> dict[str, Any]:
-        """远程库批量重命名：单条 rename 走原 API，但索引同步聚合一次。"""
+        """远程库批量重命名：单条 rename 走原 FileStation API。"""
         results: list[dict[str, Any]] = []
         failed: list[dict[str, Any]] = []
         success_count = 0
@@ -5474,27 +5538,13 @@ class LibraryManager:
     def _local_delete(self, library: LibraryDefinition, path: str, confirmed: bool) -> dict[str, Any]:
         self._assert_local_path_in_library(library, path)
         if not confirmed:
-            indexed_preview = self._delete_preview_via_index(library, path)
-            if indexed_preview is not None:
-                self._append_stats_log(
-                    library,
-                    "INFO",
-                    f"删除预检读取索引 path={path} type={indexed_preview.get('type')} size={indexed_preview.get('size')}",
-                )
-                return indexed_preview
-            size = self._path_size(path)
+            preview = self._local_delete_preview_from_filesystem(path)
             self._append_stats_log(
                 library,
                 "INFO",
-                f"删除预检 path={path} type={'folder' if os.path.isdir(path) else 'file'} size={size}",
+                f"删除预检读取本地文件系统 path={path} type={preview.get('type')} size={preview.get('size')}",
             )
-            return {
-                "need_confirm": True,
-                "type": "folder" if os.path.isdir(path) else "file",
-                "name": os.path.basename(path),
-                "path": path,
-                "size": size,
-            }
+            return preview
 
         was_top_level_dir = os.path.isdir(path)
         if os.path.isdir(path):
@@ -5518,13 +5568,30 @@ class LibraryManager:
         for path in paths:
             self._assert_local_path_in_library(library, path)
         if not confirmed:
-            indexed_preview = self._batch_delete_preview_via_index(library, paths)
-            if indexed_preview is not None:
-                self._append_stats_log(library, "INFO", f"批删预检读取索引 total={len(paths)} size={indexed_preview.get('total_size')}")
-                return indexed_preview
-            total_size = sum(self._path_size(path) for path in paths)
-            self._append_stats_log(library, "INFO", f"批删预检 total={len(paths)} size={total_size}")
-            return {"need_confirm": True, "total_count": len(paths), "total_size": total_size}
+            previews = [self._local_delete_preview_from_filesystem(path) for path in paths]
+            roots: list[dict[str, Any]] = []
+            root_paths: list[str] = []
+            for preview in sorted(previews, key=lambda item: len(str(item.get("path") or ""))):
+                normalized_path = os.path.normcase(os.path.abspath(str(preview.get("path") or ""))).rstrip("\\/")
+                if any(
+                    normalized_path == root
+                    or normalized_path.startswith(root.rstrip("\\/") + os.sep)
+                    for root in root_paths
+                ):
+                    continue
+                root_paths.append(normalized_path)
+                roots.append(preview)
+            total_size = sum(int(item.get("size") or 0) for item in roots)
+            self._append_stats_log(library, "INFO", f"批删预检读取本地文件系统 total={len(paths)} size={total_size}")
+            return {
+                "need_confirm": True,
+                "total_count": len(paths),
+                "total_size": total_size,
+                "total_file_count": sum(int(item.get("file_count") or 0) for item in roots),
+                "total_folder_count": sum(int(item.get("folder_count") or 0) for item in roots),
+                "size_disabled": False,
+                "browse_via_index": False,
+            }
         success_count = 0
         failed_paths: list[dict[str, str]] = []
         successful_paths: list[str] = []
@@ -5576,6 +5643,14 @@ class LibraryManager:
         ``include_files`` 同样生效（文件项 size 取自 additional.size）。
         """
         library = self.get_library_definition(library_id)
+        indexed = self._list_folders_only_via_index(library, path, include_files=include_files)
+        if indexed is not None:
+            self._append_stats_log(
+                library,
+                "INFO",
+                f"目录浏览读取索引 path={indexed.get('current_path')} total={len(indexed.get('folders') or [])}",
+            )
+            return indexed
         if library.type == "local":
             return await asyncio.to_thread(
                 self._list_local_folders_only,
@@ -5585,14 +5660,6 @@ class LibraryManager:
                 compute_size_cap,
                 include_files,
             )
-        indexed = self._list_folders_only_via_index(library, path, include_files=include_files)
-        if indexed is not None:
-            self._append_stats_log(
-                library,
-                "INFO",
-                f"目录浏览读取索引 path={indexed.get('current_path')} total={len(indexed.get('folders') or [])}",
-            )
-            return indexed
         if library.type == "synology_filestation":
             return await self._list_remote_folders_only(
                 library,
@@ -6270,7 +6337,9 @@ class LibraryManager:
             if library.type == "local":
                 cached = self._collect_local_stats_via_index(library)
             else:
-                cached = await self._collect_remote_stats_via_index(library)
+                cached = dict(self._stats_cache.get(library.id) or {})
+                if not cached or self._remote_stats_uses_inventory_index(cached):
+                    cached = self._remote_filestation_stats_placeholder(library)
             if cached is None:
                 cached = {
                     "library_id": library.id,
@@ -6880,6 +6949,127 @@ class LibraryManager:
                     continue
         return total
 
+    def _local_folder_summary_from_filesystem(
+        self,
+        path: str,
+        *,
+        max_entries: Optional[int] = None,
+        max_seconds: Optional[float] = None,
+    ) -> dict[str, Any]:
+        if not os.path.isdir(path):
+            stat_result = os.stat(path)
+            return {
+                "size": int(stat_result.st_size),
+                "file_count": 1,
+                "folder_count": 0,
+                "size_status": "ready",
+                "count_status": "ready",
+                "partial": False,
+                "scanned_entries": 1,
+            }
+
+        total_size = 0
+        file_count = 0
+        folder_count = 0
+        scanned_entries = 0
+        partial = False
+        deadline = time.monotonic() + float(max_seconds) if max_seconds and max_seconds > 0 else None
+        stack = [path]
+
+        while stack:
+            if deadline and time.monotonic() >= deadline:
+                partial = True
+                break
+            current_path = stack.pop()
+            try:
+                with os.scandir(current_path) as entries:
+                    for entry in entries:
+                        if self._should_skip_entry(entry.name):
+                            continue
+                        if max_entries and scanned_entries >= max_entries:
+                            partial = True
+                            break
+                        if deadline and time.monotonic() >= deadline:
+                            partial = True
+                            break
+                        try:
+                            stat_result = entry.stat(follow_symlinks=False)
+                            is_directory = entry.is_dir(follow_symlinks=False)
+                        except OSError:
+                            continue
+                        scanned_entries += 1
+                        if is_directory:
+                            folder_count += 1
+                            stack.append(entry.path)
+                        else:
+                            file_count += 1
+                            total_size += int(stat_result.st_size)
+            except OSError:
+                continue
+            if partial:
+                break
+
+        status = "partial" if partial else "ready"
+        if not partial:
+            try:
+                root_stat = os.stat(path)
+                self._size_cache[os.path.abspath(path)] = {
+                    "signature": root_stat.st_mtime_ns,
+                    "size": total_size,
+                    "updated_at": time.time(),
+                }
+            except OSError:
+                pass
+        return {
+            "size": total_size,
+            "file_count": file_count,
+            "folder_count": folder_count,
+            "size_status": status,
+            "count_status": status,
+            "partial": partial,
+            "scanned_entries": scanned_entries,
+        }
+
+    def _local_delete_preview_from_filesystem(self, path: str) -> dict[str, Any]:
+        is_directory = os.path.isdir(path)
+        if not is_directory:
+            return {
+                "need_confirm": True,
+                "type": "file",
+                "name": os.path.basename(path),
+                "path": path,
+                "size": os.path.getsize(path),
+                "file_count": 1,
+                "folder_count": 0,
+                "size_status": "ready",
+                "size_disabled": False,
+                "browse_via_index": False,
+            }
+
+        total_size = 0
+        file_count = 0
+        folder_count = 1
+        for root, dirs, files in os.walk(path):
+            folder_count += len(dirs)
+            for filename in files:
+                try:
+                    total_size += os.path.getsize(os.path.join(root, filename))
+                    file_count += 1
+                except OSError:
+                    continue
+        return {
+            "need_confirm": True,
+            "type": "folder",
+            "name": os.path.basename(path),
+            "path": path,
+            "size": total_size,
+            "file_count": file_count,
+            "folder_count": folder_count,
+            "size_status": "ready",
+            "size_disabled": False,
+            "browse_via_index": False,
+        }
+
     def _get_cached_size_only(self, path: str) -> int:
         """仅返回已缓存的目录大小，不触发实时计算（避免列表接口阻塞在慢速网络盘上）。
         缓存未命中时返回 0；后台 ensure_stats 任务会填充缓存。
@@ -7351,6 +7541,78 @@ class LibraryManager:
                 total += await self._remote_collect_folder_count(client, child_path)
         return total
 
+    async def _remote_folder_summary(
+        self,
+        client: SynologyFileStationClient,
+        folder_path: str,
+        *,
+        max_entries: Optional[int] = None,
+        max_seconds: Optional[float] = None,
+    ) -> dict[str, Any]:
+        normalized_path = self._normalize_remote_path(folder_path)
+        total_size = 0
+        file_count = 0
+        folder_count = 0
+        scanned_entries = 0
+        partial = False
+        deadline = time.monotonic() + float(max_seconds) if max_seconds and max_seconds > 0 else None
+        queue: list[str] = [normalized_path]
+        visited: set[str] = set()
+
+        while queue:
+            if deadline and time.monotonic() >= deadline:
+                partial = True
+                break
+            current_path = self._normalize_remote_path(queue.pop(0))
+            if current_path in visited:
+                continue
+            visited.add(current_path)
+            try:
+                children = await self._list_remote_directory(client, current_path)
+            except Exception as exc:
+                logger.warning("远程目录摘要读取失败: path=%s err=%s", current_path, sanitize_text_for_log(exc))
+                continue
+
+            for child in children:
+                name = child.get("name") or ""
+                if self._should_skip_entry(name):
+                    continue
+                if max_entries and scanned_entries >= max_entries:
+                    partial = True
+                    break
+                if deadline and time.monotonic() >= deadline:
+                    partial = True
+                    break
+                additional = child.get("additional", {}) or {}
+                child_path = self._normalize_remote_path(child.get("path") or child.get("real_path") or "")
+                scanned_entries += 1
+                if child.get("isdir", False):
+                    folder_count += 1
+                    if child_path and child_path not in visited:
+                        queue.append(child_path)
+                else:
+                    file_count += 1
+                    total_size += int(additional.get("size") or child.get("size") or 0)
+            if partial:
+                break
+
+        status = "partial" if partial else "ready"
+        if not partial:
+            self._size_cache[f"remote::{normalized_path}"] = {
+                "signature": None,
+                "size": total_size,
+                "updated_at": time.time(),
+            }
+        return {
+            "size": total_size,
+            "file_count": file_count,
+            "folder_count": folder_count,
+            "size_status": status,
+            "count_status": status,
+            "partial": partial,
+            "scanned_entries": scanned_entries,
+        }
+
     def _update_remote_stats_progress(
         self,
         library: LibraryDefinition,
@@ -7678,14 +7940,15 @@ class LibraryManager:
             modified_time = datetime.fromtimestamp((entry.mtime or 0) / 1000.0).isoformat() if entry.mtime else None
         except (OSError, ValueError, OverflowError):
             modified_time = None
-        file_count = int(entry.file_count or 0)
+        file_count = int(entry.file_count or 0) if is_directory else 1
         folder_count = int(descendant_folder_count or 0)
+        size_value = int(entry.size or 0)
         return {
             "id": f"{library.id}:content:index:{item_id}",
             "name": entry.name,
             "path": entry.absolute_path,
             "relative_path": relative_path,
-            "size": int(entry.size or 0),
+            "size": size_value,
             "size_status": "ready",
             "modified_time": modified_time,
             "type": "dir" if is_directory else "file",
@@ -7717,6 +7980,8 @@ class LibraryManager:
         *,
         recursive: bool,
     ) -> Optional[dict[str, Any]]:
+        if not self._library_uses_inventory_index(library):
+            return None
         try:
             from .library_index import get_library_index_service
 
@@ -7728,33 +7993,13 @@ class LibraryManager:
             )
             if not has_snapshot:
                 return None
-            if (
-                library.type == "synology_filestation"
-                and hasattr(service, "has_library_entries")
-                and not service.has_library_entries(library.id)
-            ):
-                logger.warning(
-                    "远程库存索引为空，跳过文件树索引读取并改走 FileStation.List: lib=%s path=%s",
-                    library.id,
-                    path,
-                )
-                return None
-
-            if library.type == "synology_filestation":
-                _browse_root, target_path = self._resolve_remote_operation_path(
-                    library,
-                    path,
-                    action="获取库存文件夹内容",
-                )
-                folder_name = PurePosixPath(target_path).name or target_path
-            else:
-                library_root = os.path.abspath(library.root_path)
-                target_path = os.path.abspath(path)
-                if not self._local_path_is_within_root(target_path, library_root):
-                    raise PermissionError("只能查看当前库存根目录内的文件夹")
-                if not os.path.isdir(target_path):
-                    raise FileNotFoundError("目标文件夹不存在")
-                folder_name = os.path.basename(target_path)
+            library_root = os.path.abspath(library.root_path)
+            target_path = os.path.abspath(path)
+            if not self._local_path_is_within_root(target_path, library_root):
+                raise PermissionError("只能查看当前库存根目录内的文件夹")
+            if not os.path.isdir(target_path):
+                raise FileNotFoundError("目标文件夹不存在")
+            folder_name = os.path.basename(target_path)
 
             parent_relative_path = self._index_parent_path_for_target(library, target_path)
             if parent_relative_path is None:
@@ -7890,6 +8135,8 @@ class LibraryManager:
             return None
 
     def _index_service_if_ready(self, library: LibraryDefinition):
+        if not self._library_uses_inventory_index(library):
+            return None
         try:
             from .library_index import get_library_index_service
 
@@ -8254,8 +8501,8 @@ class LibraryManager:
                         "is_directory": is_directory,
                         "has_children": is_directory,
                         "children_loaded": False if is_directory else True,
-                        "file_count": 0,
-                        "folder_count": 0,
+                        "file_count": None if is_directory else 1,
+                        "folder_count": None if is_directory else 0,
                     }
                 )
                 counter += 1
@@ -8347,8 +8594,8 @@ class LibraryManager:
                     "is_directory": is_directory,
                     "has_children": is_directory,
                     "children_loaded": False if is_directory else True,
-                    "file_count": 0,
-                    "folder_count": 0,
+                    "file_count": None if is_directory else 1,
+                    "folder_count": None if is_directory else 0,
                 })
 
         items.sort(key=lambda item: (0 if item.get("is_directory") else 1, self._natural_name_key(item.get("name", ""))))
@@ -8363,15 +8610,28 @@ class LibraryManager:
         self._append_stats_log(library, "INFO", f"文件树浅层读取 path={target_path} total={len(items)}")
         return result
 
-    async def folder_contents(self, library_id: str, path: str, *, client: Optional[SynologyFileStationClient] = None, recursive: bool = True) -> dict[str, Any]:
+    async def folder_contents(
+        self,
+        library_id: str,
+        path: str,
+        *,
+        client: Optional[SynologyFileStationClient] = None,
+        recursive: bool = True,
+        prefer_index: bool = True,
+    ) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if library.type == "local":
+            if prefer_index and not recursive:
+                indexed = self._folder_contents_via_index(library, path, recursive=False)
+                if indexed is not None:
+                    return indexed
             if recursive:
                 return await asyncio.to_thread(self._local_folder_contents, library, path)
             return await asyncio.to_thread(self._local_folder_contents_shallow, library, path)
-        indexed = self._folder_contents_via_index(library, path, recursive=recursive)
-        if indexed is not None:
-            return indexed
+        if prefer_index:
+            indexed = self._folder_contents_via_index(library, path, recursive=recursive)
+            if indexed is not None:
+                return indexed
         return await self._remote_folder_contents(library, path, client=client, recursive=recursive)
 
     async def preview_mojibake_repairs(self, library_id: str, path: str, selected_paths: Optional[list[str]] = None) -> dict[str, Any]:
@@ -9824,7 +10084,7 @@ class LibraryManager:
             deleted_bytes=int(preview.get("size") or 0),
             deleted_folder_count=int(preview.get("folder_count") or 0),
         )
-        # 索引同步：远程删除完成后立即通知索引
+        # 远程库不维护库存索引；通知方法会直接跳过，仅保留兼容调用。
         self._notify_index_self_mutation_delete(library, target_path)
         self._append_stats_log(
             library,
@@ -9895,7 +10155,7 @@ class LibraryManager:
                 deleted_bytes=deleted_bytes,
                 deleted_folder_count=deleted_folder_count,
             )
-        # 索引同步：批量通知远程删除后的路径
+        # 远程库不维护库存索引；通知方法会直接跳过，仅保留兼容调用。
         self._notify_index_self_mutation_delete_batch(library, successful_paths)
         self._append_stats_log(
             library,
@@ -9941,27 +10201,6 @@ class LibraryManager:
     async def _collect_remote_stats(self, library: LibraryDefinition) -> dict[str, Any]:
         if not library.synology:
             raise RuntimeError("远程库缺少群晖连接配置")
-        # 统计只允许走索引。索引未就绪时不调 FileStation list / DirSize，避免远程盘 IO。
-        indexed = await self._collect_remote_stats_via_index(library)
-        if indexed is not None:
-            return indexed
-        self._append_stats_log(library, "WARN", "索引未就绪，跳过远程库存统计以避免群晖 IO")
-        return {
-            "library_id": library.id,
-            "library_name": library.name,
-            "library_type": library.type,
-            "status": "idle",
-            "folder_count": 0,
-            "total_size_bytes": 0,
-            "total_size_gb": 0,
-            "scan_mode": "index_required",
-            "progress_done": 0,
-            "progress_total": 0,
-            "progress_percent": 0.0,
-            "warning_count": 0,
-            "last_error": None,
-            "warning": "索引未就绪，请先重建索引",
-        }
         client = self.get_cached_synology_client(library.synology)
         start_path = self._normalize_remote_path(library.browse_root_path or library.root_path)
         top_level_items = [

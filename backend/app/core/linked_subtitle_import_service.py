@@ -906,14 +906,14 @@ class LinkedSubtitleImportService:
 
         if minimum_count == 0:
             try:
-                contents = await self.library_manager.folder_contents(library_id, normalized_dir)
+                contents = await self.library_manager.folder_contents(library_id, normalized_dir, prefer_index=False)
                 return [item for item in (contents.get("items") or []) if not item.get("is_directory")]
             except Exception:
                 return []
 
         while datetime.now().timestamp() <= deadline:
             try:
-                contents = await self.library_manager.folder_contents(library_id, normalized_dir)
+                contents = await self.library_manager.folder_contents(library_id, normalized_dir, prefer_index=False)
                 items = [item for item in (contents.get("items") or []) if not item.get("is_directory")]
                 last_items = items
                 if len(items) >= minimum_count:
@@ -1399,7 +1399,7 @@ class LinkedSubtitleImportService:
         if library.type == "synology_filestation":
             return await self._summarize_remote_candidate(library, folder_path)
 
-        folder_info = await self.library_manager.folder_contents(library_id, folder_path)
+        folder_info = await self.library_manager.folder_contents(library_id, folder_path, prefer_index=False)
         items = folder_info.get("items") or []
 
         if library.type == "synology_filestation":
@@ -1486,7 +1486,7 @@ class LinkedSubtitleImportService:
         normalized_folder_path = self.library_manager._normalize_remote_path(folder_path)
         folder_name = PurePosixPath(normalized_folder_path).name or normalized_folder_path
         subtitle_dir = f"{normalized_folder_path.rstrip('/')}/subtitles"
-        folder_info = await self.library_manager.folder_contents(library.id, normalized_folder_path)
+        folder_info = await self.library_manager.folder_contents(library.id, normalized_folder_path, prefer_index=False)
         items = list(folder_info.get("items") or [])
         audio_count = len(self.subtitle_service._collect_remote_audio_entries(items))
         existing_subtitle_count = self.subtitle_service._count_remote_existing_subtitles(items)
