@@ -36,6 +36,10 @@ extract:
   auto_repair_extension: true
   verify_after_extract: true
   password_list: []
+  filename_password_sniff_enabled: true
+  filename_password_sniff_templates:
+  - '{name}({password})'
+  - '{name}（{password}）'
   extract_nested_archives: true
   max_nested_depth: 5
 filter:
@@ -112,11 +116,11 @@ path_mapping:
   open_mode: auto
 kikoeru_server:
   enabled: false
-  server_url: http://asmr.elena39.xyz:16080
-  username: admin
-  password: sxy46497777
-  api_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwOi8va2lrb2VydSIsInN1YiI6ImFkbWluIiwiYXVkIjoiaHR0cDovL2tpa29lcnUvYXBpIiwibmFtZSI6ImFkbWluIiwiZ3JvdXAiOiJhZG1pbmlzdHJhdG9yIiwiaWF0IjoxNzczNjYxMDE3LCJleHAiOjE3NzYyNTMwMTd9.kaCjgM6EFiKShqvc6TbMcEIiauiYB3gNaUZFQVoNKBs
-  token_expires: 1773747392
+  server_url: ''
+  username: ''
+  password: ''
+  api_token: ''
+  token_expires: 0
   timeout: 10
   cache_ttl: 50
   http_proxy: ''
@@ -199,10 +203,10 @@ asmr_process_move_subtitle: true
 backup_zip:
   enabled: true
   source_path: ''
-  output_dir: D:\VJC\ziliao\新建文件夹\压缩后
-  path_copy_target: D:\VJC\ziliao\新建文件夹\复制目录
+  output_dir: ''
+  path_copy_target: ''
   copy_structure_before_zip: true
-  password: sxy4649777
+  password: ''
   compression_threads: 8
   archive_format: zip
   compression_level: 9

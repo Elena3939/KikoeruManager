@@ -403,7 +403,8 @@ export const defaultConfig = {
     archive_inspect: 0,
     remote_fs: 4,
     network_download: 5,
-    database_write: 1
+    database_write: 1,
+    library_index_write: 1
   },
   security_gate: {
     enabled: false,

@@ -256,10 +256,12 @@ const defaultResourceBudget = {
   remote_fs: 4,
   network_download: 5,
   database_write: 1,
+  library_index_write: 1,
 }
 
 const budgetItems = [
-  { key: 'database_write', label: '数据库写入', hint: '操作历史、库存索引等同步写入队列；启用时最低实际为 1。', min: 0, max: 8 },
+  { key: 'database_write', label: '业务数据库写入', hint: '任务中心、操作历史、配置保存等业务写入队列；启用时最低实际为 1。', min: 0, max: 8 },
+  { key: 'library_index_write', label: '库存索引写入', hint: '库存索引后台追赶写入队列，和业务数据库写入分离。', min: 0, max: 4 },
   { key: 'disk_io_local', label: '本地磁盘 IO', hint: '本地复制、上传入库、打包扫描、临时视图复制等慢盘操作。', min: 0, max: 16 },
   { key: 'remote_fs', label: '远程库存 / 群晖', hint: 'FileStation 列表、下载、上传、远程库存索引重建。', min: 0, max: 20 },
   { key: 'network_download', label: '网络下载', hint: 'HTTP、Google Drive、Transfer.it、百度 PCSGo、ASMR 下载等。', min: 0, max: 50 },

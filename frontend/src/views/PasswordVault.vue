@@ -168,10 +168,10 @@
             <template #default="{ row }">
               <div class="vault-row-actions">
                 <button type="button" class="vault-row-action is-edit" @click="handleEdit(row)" title="编辑">
-                  <IconEdit :size="18" :stroke-width="2.3" />
+                  <AppLottieIcon :src="editIconAnimation" :size="52" tone="primary" />
                 </button>
                 <button type="button" class="vault-row-action is-delete" @click="handleDelete(row)" title="删除">
-                  <IconTrash :size="18" :stroke-width="2.3" />
+                  <AppLottieIcon :src="deleteIconAnimation" :size="38" tone="danger" />
                 </button>
               </div>
             </template>
@@ -200,10 +200,10 @@
               </div>
               <div class="vault-mobile-actions">
                 <button type="button" class="vault-mobile-action is-edit" title="编辑" @click="handleEdit(row)">
-                  <IconEdit :size="16" :stroke-width="2.3" />
+                  <AppLottieIcon :src="editIconAnimation" :size="38" tone="primary" />
                 </button>
                 <button type="button" class="vault-mobile-action is-delete" title="删除" @click="handleDelete(row)">
-                  <IconTrash :size="16" :stroke-width="2.3" />
+                  <AppLottieIcon :src="deleteIconAnimation" :size="30" tone="danger" />
                 </button>
               </div>
             </header>
@@ -427,7 +427,6 @@ import {
   Clock as IconClock,
   RefreshCw as IconRefresh,
   Settings as IconSettings,
-  PencilLine as IconEdit,
   ArrowUp as IconArrowUp,
   ArrowDown as IconArrowDown,
   X as IconClose,
@@ -439,10 +438,13 @@ import { ElMessage } from 'element-plus'
 import { showSystemConfirm } from '../composables/useSystemPrompt'
 import { passwordApi, cleanupApi } from '../api'
 import AppLoadingAnimation from '../components/common/AppLoadingAnimation.vue'
+import AppLottieIcon from '../components/common/AppLottieIcon.vue'
 import AppEmptyState from '../components/common/AppEmptyState.vue'
 import AppPageHeader from '../components/common/AppPageHeader.vue'
 import AppDropdown from '../components/common/AppDropdown.vue'
 import AnimatedPasswordInput from '../components/common/AnimatedPasswordInput.vue'
+import editIconAnimation from '../assets/anime/Clipboard.lottie'
+import deleteIconAnimation from '../assets/anime/Delete icon animation.lottie'
 
 const PAGE_SIZES = [10, 20, 50, 100]
 const PAGE_SIZE_STORAGE_KEY = 'kikoeru.ui.passwordVault.pageSize'
@@ -1028,22 +1030,47 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
 
 .vault-row-action:hover {
   transform: translateY(-2px) scale(1.02);
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
 
 .vault-row-action:active {
   transform: scale(0.96);
 }
 
+.vault-row-action:focus,
+.vault-row-action:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
 .vault-row-action.is-edit:hover {
-  border-color: rgba(59, 130, 246, 0.22);
-  background: rgba(59, 130, 246, 0.08);
-  color: #2563eb;
+  border-color: transparent;
+  background: transparent;
 }
 
 .vault-row-action.is-delete:hover {
-  border-color: rgba(244, 63, 94, 0.22);
-  background: rgba(244, 63, 94, 0.08);
-  color: #e11d48;
+  border-color: transparent;
+  background: transparent;
+}
+
+:global(html.kikoerumanager-dark body #app .password-vault)
+  :is(.vault-row-action, .vault-mobile-action, .vault-row-action:hover, .vault-mobile-action:hover, .vault-row-action:focus, .vault-mobile-action:focus, .vault-row-action:focus-visible, .vault-mobile-action:focus-visible, .vault-row-action:active, .vault-mobile-action:active) {
+  border-color: transparent !important;
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+.vault-row-action :deep(.app-lottie-icon),
+.vault-mobile-action :deep(.app-lottie-icon),
+.vault-row-action :deep(.app-lottie-icon__player),
+.vault-mobile-action :deep(.app-lottie-icon__player) {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  filter: none !important;
 }
 
 .password-pill-wrap {
@@ -1805,9 +1832,16 @@ function handlePageSizeChange(size) { pageSize.value = size; currentPage.value =
   }
   .vault-mobile-action:hover {
     transform: translateY(-2px) scale(1.02);
+    background: transparent;
+    box-shadow: none;
   }
   .vault-mobile-action:active {
     transform: scale(0.96);
+  }
+  .vault-mobile-action:focus,
+  .vault-mobile-action:focus-visible {
+    outline: none;
+    box-shadow: none;
   }
   .vault-mobile-field {
     display: grid;

@@ -1103,16 +1103,16 @@ html.kikoerumanager-dark body #app .password-vault .vault-mobile-action {
 }
 
 html.kikoerumanager-dark body #app .password-vault :is(.vault-row-action.is-edit:hover, .vault-mobile-action.is-edit:hover) {
-  background: rgba(96, 165, 250, 0.12) !important;
-  border-color: rgba(96, 165, 250, 0.26) !important;
-  color: #bfdbfe !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  color: rgba(228, 228, 231, 0.68) !important;
   box-shadow: none !important;
 }
 
 html.kikoerumanager-dark body #app .password-vault :is(.vault-row-action.is-delete:hover, .vault-mobile-action.is-delete:hover) {
-  background: rgba(244, 63, 94, 0.14) !important;
-  border-color: rgba(251, 113, 133, 0.26) !important;
-  color: #fecdd3 !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  color: rgba(228, 228, 231, 0.68) !important;
   box-shadow: none !important;
 }
 
