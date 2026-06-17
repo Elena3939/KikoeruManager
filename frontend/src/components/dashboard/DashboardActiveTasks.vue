@@ -46,7 +46,7 @@
     </div>
 
     <!-- 任务列表 -->
-    <div v-if="tasks.length" class="mt-3 flex flex-1 flex-col gap-2 overflow-auto">
+    <div v-if="tasks.length" class="dash-task-list mt-3 flex flex-1 flex-col gap-2 overflow-hidden">
       <article
         v-for="(task, index) in pagedTasks"
         :key="task.id"
@@ -63,15 +63,19 @@
         <!-- 主内容 -->
         <div class="min-w-0">
           <h3 class="m-0 truncate text-[13.5px] font-bold leading-tight text-slate-900">{{ task.title }}</h3>
-          <p v-if="task.subtitle" class="m-0 mt-0.5 truncate text-[12px] text-slate-500">{{ task.subtitle }}</p>
+          <p v-if="displaySubtitle(task)" class="m-0 mt-0.5 truncate text-[12px] text-slate-500">{{ displaySubtitle(task) }}</p>
 
           <div class="mt-2 flex flex-wrap items-center gap-1.5">
             <span class="inline-flex h-[22px] items-center gap-1 rounded-[6px] border border-slate-200 bg-white px-2 text-[11px] font-medium text-slate-600">
               <component :is="taskIcon(task)" :size="11" :stroke-width="1.8" :class="taskChipIconClass(task)" />
               {{ taskDomainLabel(task) }}
             </span>
-            <span v-if="formatRJ(task.rjcode)" class="inline-flex h-[22px] items-center gap-1 rounded-[6px] bg-slate-50 px-2 text-[11px] tabular-nums text-slate-500">
-              {{ formatRJ(task.rjcode) }}
+            <span
+              v-if="taskBadgeLabel(task)"
+              class="inline-flex min-h-[22px] max-w-[220px] items-center rounded-[6px] bg-slate-50 px-2 py-0.5 text-[11px] tabular-nums text-slate-500"
+              :title="taskBadgeLabel(task)"
+            >
+              <span class="truncate">{{ taskBadgeLabel(task) }}</span>
             </span>
             <span
               v-if="task.current_step && !isTerminalStatus(task)"
@@ -433,6 +437,39 @@ function taskDomainLabel(task) {
   return task.domain_label
 }
 
+function displaySubtitle(task) {
+  if (String(task?.domain || '').trim() === 'import') return ''
+  return String(task?.subtitle || '').trim()
+}
+
+function taskBadgeLabel(task) {
+  if (String(task?.domain || '').trim() === 'import') return getImportRenamedLabel(task)
+  return formatRJ(task?.rjcode)
+}
+
+function getImportRenamedLabel(task) {
+  const metadata = task?.details?.metadata || {}
+  const candidates = [
+    task?.target_path,
+    metadata.final_output_path,
+    metadata.renamed_output_path,
+    metadata.target_path,
+    metadata.folder_path,
+  ]
+  for (const candidate of candidates) {
+    const label = getPathLeaf(candidate)
+    if (label) return label
+  }
+  return ''
+}
+
+function getPathLeaf(value) {
+  const text = String(value || '').trim().replace(/[\\/]+$/g, '')
+  if (!text) return ''
+  const parts = text.split(/[\\/]/).filter(Boolean)
+  return parts.length ? parts[parts.length - 1] : ''
+}
+
 function actionIcon(action) {
   return ACTION_ICON_MAP[action] || ArrowRight
 }
@@ -532,6 +569,22 @@ function formatRJ(value) {
 </script>
 
 <style scoped>
+.dash-task-list {
+  scrollbar-width: none;
+}
+
+.dash-task-list::-webkit-scrollbar {
+  display: none;
+}
+
+@media (max-width: 1024px) {
+  .dash-task-list {
+    flex: 0 0 auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+}
+
 :global(html.kikoerumanager-dark [data-section="dashboard-tasks"]) {
   background: #101012 !important;
   background-image: none !important;
