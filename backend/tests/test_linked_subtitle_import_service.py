@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 from app.core.classifier import SmartClassifier
 from app.core.linked_subtitle_import_service import (
     LinkedSubtitleArchivePrecheckTimeout,
+    LinkedSubtitleImportAlreadyRunning,
     LinkedSubtitleImportService,
 )
 import app.core.linked_subtitle_import_service as linked_subtitle_module
@@ -93,7 +94,7 @@ async def test_finalize_manual_match_task_blocks_empty_workbench_publish():
     service.library_manager = SimpleNamespace(
         get_library_definition=lambda _library_id: SimpleNamespace(type="local"),
     )
-    service._count_local_subtitle_files = lambda _subtitle_dir: 1
+    service._count_local_subtitle_files = lambda _subtitle_dir: 0
     service._publish_workbench_to_target = AsyncMock(side_effect=AssertionError("不应发布空工作台"))
     service._wait_for_published_subtitles = AsyncMock(side_effect=AssertionError("不应等待发布结果"))
 
@@ -115,6 +116,44 @@ async def test_finalize_manual_match_task_blocks_empty_workbench_publish():
 
     service._publish_workbench_to_target.assert_not_awaited()
     service._wait_for_published_subtitles.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_finalize_manual_match_task_allows_fewer_subtitles_than_pairs():
+    service = object.__new__(LinkedSubtitleImportService)
+    service.library_manager = SimpleNamespace(
+        get_library_definition=lambda _library_id: SimpleNamespace(type="local"),
+    )
+    service._count_local_subtitle_files = lambda _subtitle_dir: 1
+    service._publish_workbench_to_target = AsyncMock(return_value="D:/library/RJ01586582/subtitles")
+    service._wait_for_published_subtitles = AsyncMock(return_value=[
+        {"name": "track01.vtt", "relative_path": "track01.vtt"},
+    ])
+
+    task = SimpleNamespace(
+        task_metadata={
+            "source_mode": "subtitle_folder_import",
+            "library_id": "local-library",
+            "folder_path": "D:/library/RJ01586582",
+            "subtitle_dir": "D:/library/_kikoerumanager_subtitle_workbench/linked/abc/subtitles",
+            "linked_workbench_root_dir": "D:/library/_kikoerumanager_subtitle_workbench/linked/abc",
+        },
+        current_step="",
+        progress=0,
+        completed_at=None,
+    )
+
+    result = await service.finalize_manual_match_task(task, expected_min_files=2)
+
+    assert result["applied"] is True
+    assert result["final_file_count"] == 1
+    assert task.task_metadata["downloaded_count"] == 1
+    service._publish_workbench_to_target.assert_awaited_once()
+    service._wait_for_published_subtitles.assert_awaited_once_with(
+        library_id="local-library",
+        subtitle_dir="D:/library/RJ01586582/subtitles",
+        expected_count=1,
+    )
 
 
 def test_classifier_skips_original_duplicate_when_translation_should_supply_subtitles():
@@ -300,3 +339,73 @@ async def test_queue_pending_archive_import_preserves_timeout_as_pending(db_sess
     ).one()
     assert row.rjcode == "RJ01608823"
     assert row.new_metadata["source_subtitle_probe_status"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_execute_pending_import_rejects_running_record(db_session, monkeypatch):
+    def fake_get_db():
+        yield db_session
+
+    monkeypatch.setattr(linked_subtitle_module, "get_db", fake_get_db)
+
+    service = object.__new__(LinkedSubtitleImportService)
+    service.PENDING_CONFLICT_TYPE = LinkedSubtitleImportService.PENDING_CONFLICT_TYPE
+    service.PENDING_EXECUTING_STATUS = LinkedSubtitleImportService.PENDING_EXECUTING_STATUS
+
+    row = ConflictWork(
+        id="pending-running",
+        rjcode="RJ01608823",
+        conflict_type=LinkedSubtitleImportService.PENDING_CONFLICT_TYPE,
+        new_path="D:/input/RJ01620917.7z",
+        status=LinkedSubtitleImportService.PENDING_EXECUTING_STATUS,
+        analysis_info={"preview": {"source_rjcode": "RJ01620917", "target_rjcode": "RJ01608823"}},
+        new_metadata={},
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    with pytest.raises(LinkedSubtitleImportAlreadyRunning):
+        await service.execute_pending_import("pending-running")
+
+
+@pytest.mark.asyncio
+async def test_execute_pending_import_resets_status_when_long_io_fails(db_session, monkeypatch):
+    def fake_get_db():
+        yield db_session
+
+    monkeypatch.setattr(linked_subtitle_module, "get_db", fake_get_db)
+
+    service = object.__new__(LinkedSubtitleImportService)
+    service.PENDING_CONFLICT_TYPE = LinkedSubtitleImportService.PENDING_CONFLICT_TYPE
+    service.PENDING_EXECUTING_STATUS = LinkedSubtitleImportService.PENDING_EXECUTING_STATUS
+    service.PENDING_SOURCE_MODE = LinkedSubtitleImportService.PENDING_SOURCE_MODE
+    service._repair_cached_preview_rj_fields = AsyncMock(return_value={
+        "source_rjcode": "RJ01620917",
+        "target_rjcode": "RJ01608823",
+    })
+    service._refresh_pending_preview_candidates = AsyncMock(return_value={
+        "source_rjcode": "RJ01620917",
+        "target_rjcode": "RJ01608823",
+        "can_execute": True,
+    })
+    service.execute_archive_import = AsyncMock(side_effect=ValueError("模拟解压失败"))
+
+    row = ConflictWork(
+        id="pending-fails",
+        rjcode="RJ01608823",
+        conflict_type=LinkedSubtitleImportService.PENDING_CONFLICT_TYPE,
+        new_path="D:/input/RJ01620917.7z",
+        status="PENDING",
+        analysis_info={"preview": {"source_rjcode": "RJ01620917", "target_rjcode": "RJ01608823"}},
+        new_metadata={},
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="模拟解压失败"):
+        await service.execute_pending_import("pending-fails")
+
+    refreshed = db_session.query(ConflictWork).filter(ConflictWork.id == "pending-fails").one()
+    assert refreshed.status == "PENDING"
+    assert refreshed.analysis_info["execution_status"] == "failed"
+    assert "模拟解压失败" in refreshed.analysis_info["execution_error"]

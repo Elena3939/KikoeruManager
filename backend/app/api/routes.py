@@ -8150,10 +8150,10 @@ async def rename_library_browser_item(request: Request):
         skip_activity_log = bool(data.get("skip_activity_log"))
         batch_id = str(data.get("batch_id") or "").strip()
         rename_context = str(data.get("rename_context") or "").strip()
+        skip_index_mutation = bool(data.get("skip_index_mutation"))
         if not path or not new_name:
             raise HTTPException(status_code=400, detail="缺少必要参数")
         manager = get_library_manager()
-        skip_index_mutation = rename_context == "subtitle_manual_match_pair"
         result = await manager.rename(
             library_id,
             path,
@@ -8233,6 +8233,7 @@ async def batch_rename_library_browser_items(request: Request):
         skip_activity_log = bool(data.get("skip_activity_log"))
         requested_batch_id = str(data.get("batch_id") or "").strip()
         rename_context = str(data.get("rename_context") or "").strip()
+        skip_index_mutation = bool(data.get("skip_index_mutation"))
         if not isinstance(items, list) or not items:
             raise HTTPException(status_code=400, detail="缺少批量重命名项")
 
@@ -8273,7 +8274,6 @@ async def batch_rename_library_browser_items(request: Request):
                 "current_name": current_name,
             })
 
-        skip_index_mutation = rename_context == "subtitle_manual_match_pair"
         batch_result = await manager.batch_rename(
             library_id,
             normalized_items,
@@ -8353,6 +8353,27 @@ async def batch_rename_library_browser_items(request: Request):
     except Exception as e:
         _log_synology_err(f"库存批量重命名失败: {e}", e)
         raise HTTPException(status_code=_synology_http_status(e), detail=f"库存批量重命名失败: {str(e)}")
+
+
+@app.post("/api/library/browser/index-move-batch")
+async def notify_library_browser_index_move_batch(request: Request):
+    try:
+        data = await request.json()
+        library_id = data.get("library_id")
+        moves = data.get("moves") or []
+        if not library_id:
+            raise HTTPException(status_code=400, detail="缺少库存 ID")
+        if not isinstance(moves, list) or not moves:
+            raise HTTPException(status_code=400, detail="缺少索引移动项")
+        manager = get_library_manager()
+        return manager.notify_index_move_batch(library_id, moves)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("调度库存索引移动失败: %s", sanitize_text_for_log(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"调度库存索引移动失败: {str(e)}")
 
 
 @app.post("/api/library/browser/delete")
@@ -13004,7 +13025,7 @@ async def rj_subtitle_manual_complete(
         naming_strategy = str(request.naming_strategy or task.task_metadata.get("naming_strategy") or "audio").lower()
         linked_finalize_result = await get_linked_subtitle_import_service().finalize_manual_match_task(
             task,
-            expected_min_files=max(1, applied_pairs),
+            expected_min_files=1,
         )
 
         task.task_metadata = task.task_metadata or {}
@@ -13417,7 +13438,10 @@ async def list_pending_linked_subtitle_imports():
 
 @app.post("/api/subtitle-import/pending/{record_id}/execute")
 async def execute_pending_linked_subtitle_import(record_id: str, request: LinkedSubtitlePendingImportExecuteRequest):
-    from ..core.linked_subtitle_import_service import get_linked_subtitle_import_service
+    from ..core.linked_subtitle_import_service import (
+        LinkedSubtitleImportAlreadyRunning,
+        get_linked_subtitle_import_service,
+    )
 
     try:
         service = get_linked_subtitle_import_service()
@@ -13446,6 +13470,8 @@ async def execute_pending_linked_subtitle_import(record_id: str, request: Linked
         except Exception:
             logger.debug("[操作记录] 字幕补配预检执行记录失败", exc_info=True)
         return result
+    except LinkedSubtitleImportAlreadyRunning as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except FileNotFoundError as e:

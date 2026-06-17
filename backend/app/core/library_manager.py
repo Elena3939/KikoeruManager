@@ -2233,6 +2233,7 @@ class LibraryManager:
                 current_path,
                 sort_by,
                 sort_order,
+                force_refresh,
                 page_cursor,
             )
         return await self._list_remote_files(library, page, page_size, search, current_path, sort_by, sort_order, page_cursor)
@@ -2671,6 +2672,48 @@ class LibraryManager:
             return os.path.normcase(os.path.normpath(os.path.abspath(value))).rstrip("\\/")
         except Exception:
             return value.replace("\\", "/").rstrip("/")
+
+    def _is_linked_subtitle_workbench_path(self, library: LibraryDefinition, path: str) -> bool:
+        """字幕补配临时工作台路径不进入库存索引。
+
+        工作台位于库存根下的 `_kikoerumanager_subtitle_workbench/linked/...`。
+        这些文件最终会发布到真实 RJ/subtitles，再由发布阶段刷新目标子树。
+        """
+        value = str(path or "").strip()
+        if not value:
+            return False
+        marker = "_kikoerumanager_subtitle_workbench/linked"
+        if library.type == "synology_filestation":
+            normalized = self._normalize_remote_path(value).strip("/").lower()
+            return normalized == marker or normalized.startswith(f"{marker}/") or f"/{marker}/" in f"/{normalized}/"
+        try:
+            root = os.path.abspath(library.root_path or "")
+            target = os.path.abspath(value)
+            if not self._local_path_is_within_root(target, root):
+                return False
+            relative = os.path.relpath(target, root).replace("\\", "/").strip("/").lower()
+        except Exception:
+            normalized = value.replace("\\", "/").strip("/").lower()
+            return normalized == marker or normalized.startswith(f"{marker}/") or f"/{marker}/" in f"/{normalized}/"
+        return relative == marker or relative.startswith(f"{marker}/")
+
+    def _filter_index_move_items(
+        self,
+        library: LibraryDefinition,
+        moved_items: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        """过滤不应进入索引的内部临时路径。"""
+        kept: list[dict[str, str]] = []
+        for item in moved_items or []:
+            source = str((item or {}).get("source") or "")
+            destination = str((item or {}).get("destination") or "")
+            if (
+                self._is_linked_subtitle_workbench_path(library, source)
+                or self._is_linked_subtitle_workbench_path(library, destination)
+            ):
+                continue
+            kept.append(item)
+        return kept
 
     def _compress_index_absolute_paths(
         self,
@@ -3149,6 +3192,69 @@ class LibraryManager:
                 target_library.id,
                 exc_info=True,
             )
+
+    def notify_index_move_batch(
+        self,
+        library_id: str,
+        moved_items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """提交最终索引 move 批次。
+
+        字幕补配会先做两阶段安全重命名，全部成功后再用原始路径 -> 最终路径
+        一次性提交索引最终状态；不把 Phase1/Phase2 临时名逐条写进索引。
+        """
+        library = self.get_library_definition(library_id)
+        normalized_items: list[dict[str, str]] = []
+        for raw in moved_items or []:
+            source = str((raw or {}).get("source") or "").strip()
+            destination = str((raw or {}).get("destination") or "").strip()
+            if not source or not destination or source == destination:
+                continue
+            normalized_items.append({"source": source, "destination": destination})
+        indexable_items = self._filter_index_move_items(library, normalized_items)
+        submitted = False
+        submit_error = ""
+        if indexable_items:
+            try:
+                from .library_index import get_library_index_service
+
+                service = get_library_index_service()
+                if service.is_ready(library.id):
+                    loop = None
+                    if library.type == "synology_filestation":
+                        try:
+                            loop = asyncio.get_running_loop()
+                        except RuntimeError:
+                            loop = None
+                    self._run_index_move_flush(
+                        service,
+                        {
+                            "source_library": library,
+                            "target_library": library,
+                            "items": indexable_items,
+                            "loop": loop,
+                        },
+                    )
+                    submitted = True
+                else:
+                    submit_error = "index_not_ready"
+            except Exception as exc:
+                submit_error = str(exc)
+                logger.warning(
+                    "[索引] 字幕补配最终索引批量提交失败 library=%s count=%s",
+                    library.id,
+                    len(indexable_items),
+                    exc_info=True,
+                )
+        return {
+            "submitted": submitted,
+            "submitted_count": len(indexable_items) if submitted else 0,
+            "submit_error": submit_error,
+            "queued": False,
+            "queued_count": 0,
+            "filtered_count": max(0, len(normalized_items) - len(indexable_items)),
+            "total_count": len(normalized_items),
+        }
 
     def _notify_index_self_mutation_upsert_subtree(
         self,
@@ -4310,6 +4416,7 @@ class LibraryManager:
         current_path: Optional[str],
         sort_by: str,
         sort_order: str,
+        force_refresh: bool = False,
         page_cursor: Optional[str] = None,
     ) -> dict[str, Any]:
         browse_root = os.path.abspath(library.browse_root_path or library.root_path)
@@ -4322,22 +4429,6 @@ class LibraryManager:
             return {"files": [], "page": page, "page_size": page_size, "total": 0, "current_path": target_path, "browse_root_path": browse_root}
 
         search_lower = search.lower().strip()
-        if not search_lower:
-            index_parent = self._index_parent_path_for_target(library, target_path)
-            if index_parent is not None:
-                indexed_result = self._list_files_via_index(
-                    library,
-                    page=page,
-                    page_size=page_size,
-                    current_path=target_path,
-                    browse_root=browse_root,
-                    parent_path=index_parent,
-                    sort_by=sort_by,
-                    sort_order=sort_order,
-                    page_cursor=page_cursor,
-                )
-                if indexed_result is not None:
-                    return indexed_result
         items = []
         try:
             entries = list(os.scandir(target_path))
@@ -5150,11 +5241,12 @@ class LibraryManager:
             raise
         new_path = str(PurePosixPath(target_path).parent / new_name)
         if not skip_index_mutation:
-            self._notify_index_self_mutation_move_batch(
-                library,
+            indexable_moved_items = self._filter_index_move_items(
                 library,
                 [{"source": target_path, "destination": new_path}],
             )
+            if indexable_moved_items:
+                self._notify_index_self_mutation_move_batch(library, library, indexable_moved_items)
         self._append_stats_log(library, "INFO", f"重命名 path={target_path} -> {new_name}")
         return {"message": "重命名成功", "new_path": new_path}
 
@@ -5173,11 +5265,12 @@ class LibraryManager:
         # 文件夹改名后 keyword→matches 里旧 path 不再有效
         self._invalidate_local_search_cache(library.id)
         if not skip_index_mutation:
-            self._notify_index_self_mutation_move_batch(
-                library,
+            indexable_moved_items = self._filter_index_move_items(
                 library,
                 [{"source": path, "destination": new_path}],
             )
+            if indexable_moved_items:
+                self._notify_index_self_mutation_move_batch(library, library, indexable_moved_items)
         self._append_stats_log(library, "INFO", f"重命名 path={path} -> {new_name}")
         return {"message": "重命名成功", "new_path": new_path}
 
@@ -5283,13 +5376,11 @@ class LibraryManager:
             self._invalidate_local_search_cache(library.id)
 
         # 一次性索引移动通知：后台 micro-batch，命中索引 fast-path 时不扫磁盘。
-        #
-        # 字幕补配工作台的两阶段临时改名不应进入库存索引：这些路径位于
-        # _kikoerumanager_subtitle_workbench 下，最终 manual-complete 会发布到真实
-        # RJ/subtitles 并单独刷新目标目录。这里追临时文件只会制造滞后 upsert 和
-        # FileNotFoundError。
+        # 字幕补配工作台的临时字幕路径会被过滤；真实 RJ 音频改名必须继续同步索引。
         if moved_index_items and not skip_index_mutation:
-            self._notify_index_self_mutation_move_batch(library, library, moved_index_items)
+            indexable_moved_items = self._filter_index_move_items(library, moved_index_items)
+            if indexable_moved_items:
+                self._notify_index_self_mutation_move_batch(library, library, indexable_moved_items)
 
         # 聚合 stats_log（合并成 1 次 open / write，原本 N 次）
         if log_lines:
@@ -5371,7 +5462,9 @@ class LibraryManager:
                 failed.append({"index": request_index, "path": path, "source_path": source_path, "new_name": new_name, "error": str(exc)})
 
         if moved_index_items and not skip_index_mutation:
-            self._notify_index_self_mutation_move_batch(library, library, moved_index_items)
+            indexable_moved_items = self._filter_index_move_items(library, moved_index_items)
+            if indexable_moved_items:
+                self._notify_index_self_mutation_move_batch(library, library, indexable_moved_items)
         self._append_stats_log(
             library, "INFO",
             f"远程批量重命名完成 success={success_count} failed={len(failed)} total={len(items)}",
@@ -5483,14 +5576,6 @@ class LibraryManager:
         ``include_files`` 同样生效（文件项 size 取自 additional.size）。
         """
         library = self.get_library_definition(library_id)
-        indexed = self._list_folders_only_via_index(library, path, include_files=include_files)
-        if indexed is not None:
-            self._append_stats_log(
-                library,
-                "INFO",
-                f"目录浏览读取索引 path={indexed.get('current_path')} total={len(indexed.get('folders') or [])}",
-            )
-            return indexed
         if library.type == "local":
             return await asyncio.to_thread(
                 self._list_local_folders_only,
@@ -5500,6 +5585,14 @@ class LibraryManager:
                 compute_size_cap,
                 include_files,
             )
+        indexed = self._list_folders_only_via_index(library, path, include_files=include_files)
+        if indexed is not None:
+            self._append_stats_log(
+                library,
+                "INFO",
+                f"目录浏览读取索引 path={indexed.get('current_path')} total={len(indexed.get('folders') or [])}",
+            )
+            return indexed
         if library.type == "synology_filestation":
             return await self._list_remote_folders_only(
                 library,
@@ -8272,13 +8365,13 @@ class LibraryManager:
 
     async def folder_contents(self, library_id: str, path: str, *, client: Optional[SynologyFileStationClient] = None, recursive: bool = True) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
-        indexed = self._folder_contents_via_index(library, path, recursive=recursive)
-        if indexed is not None:
-            return indexed
         if library.type == "local":
             if recursive:
                 return await asyncio.to_thread(self._local_folder_contents, library, path)
             return await asyncio.to_thread(self._local_folder_contents_shallow, library, path)
+        indexed = self._folder_contents_via_index(library, path, recursive=recursive)
+        if indexed is not None:
+            return indexed
         return await self._remote_folder_contents(library, path, client=client, recursive=recursive)
 
     async def preview_mojibake_repairs(self, library_id: str, path: str, selected_paths: Optional[list[str]] = None) -> dict[str, Any]:

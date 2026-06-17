@@ -5498,7 +5498,7 @@ const canBuildSequenceSubtitlePairs = computed(() => {
 
   const subtitleCount = subtitleSequenceSelection.value.subtitlePaths.length
 
-  return audioCount > 0 && audioCount === subtitleCount
+  return audioCount > 0 && subtitleCount > 0
 
 })
 
@@ -15021,9 +15021,11 @@ function buildSequenceSubtitlePairs () {
 
 
 
-  if (!audioList.length || audioList.length !== subtitleList.length) {
+  const pairCount = Math.min(audioList.length, subtitleList.length)
 
-    ElMessage.warning('请先按顺序点选数量一致的音频和字幕')
+  if (!pairCount) {
+
+    ElMessage.warning('请先按顺序点选至少 1 个音频和 1 个字幕')
 
     return
 
@@ -15031,11 +15033,15 @@ function buildSequenceSubtitlePairs () {
 
 
 
+  const pairedAudioList = audioList.slice(0, pairCount)
+
+  const pairedSubtitleList = subtitleList.slice(0, pairCount)
+
   const nextPairs = []
 
-  for (let index = 0; index < audioList.length; index++) {
+  for (let index = 0; index < pairCount; index++) {
 
-    nextPairs.push(createSubtitlePair(audioList[index], subtitleList[index], {
+    nextPairs.push(createSubtitlePair(pairedAudioList[index], pairedSubtitleList[index], {
 
       confidenceLevel: 'medium',
 
@@ -15047,9 +15053,9 @@ function buildSequenceSubtitlePairs () {
 
   subtitleManualPairs.value = subtitleManualPairs.value.filter(pair => (
 
-    !audioList.some(item => item.path === pair.audio_path) &&
+    !pairedAudioList.some(item => item.path === pair.audio_path) &&
 
-    !subtitleList.some(item => item.path === pair.subtitle_path)
+    !pairedSubtitleList.some(item => item.path === pair.subtitle_path)
 
   ))
 
@@ -15445,7 +15451,9 @@ async function rollbackSubtitleManualRenamePairs (pairs, audioLibraryId, subtitl
 
         skipActivityLog: true,
 
-        renameContext: 'subtitle_manual_match_pair'
+        renameContext: 'subtitle_manual_match_pair',
+
+        skipIndexMutation: true
 
       })
 
@@ -15745,12 +15753,29 @@ async function applySubtitleManualPairs () {
       }
     }
 
+    const scheduleFinalIndexMoves = (renamedPairs) => {
+      const buckets = groupByLibrary(renamedPairs || [])
+      const jobs = []
+      for (const [libraryId, bucketPairs] of buckets) {
+        const moves = bucketPairs
+          .map(pair => ({ source: pair.source_path, destination: pair.final_path }))
+          .filter(item => item.source && item.destination && item.source !== item.destination)
+        if (moves.length) jobs.push(libraryApi.browserNotifyIndexMoves(libraryId, moves))
+      }
+      if (!jobs.length) return
+      Promise.allSettled(jobs).then(results => {
+        const failed = results.find(item => item.status === 'rejected')
+        if (failed) console.warn('字幕配对最终索引移动调度失败', failed.reason)
+      })
+    }
+
     const phaseOneBuckets = groupByLibrary(phaseOne)
     for (const [operationLibraryId, bucketPairs] of phaseOneBuckets) {
       const items = bucketPairs.map(pair => ({ path: pair.source_path, new_name: pair.temp_name }))
       const result = await libraryApi.browserBatchRename(operationLibraryId, items, {
         skipActivityLog: true,
-        renameContext: 'subtitle_manual_match_pair'
+        renameContext: 'subtitle_manual_match_pair',
+        skipIndexMutation: true
       })
       const resultMap = buildResultMap(result)
       bucketPairs.forEach((pair, index) => {
@@ -15772,7 +15797,8 @@ async function applySubtitleManualPairs () {
       const items = bucketPairs.map(pair => ({ path: pair.temp_path, new_name: pair.target_name }))
       const result = await libraryApi.browserBatchRename(operationLibraryId, items, {
         skipActivityLog: true,
-        renameContext: 'subtitle_manual_match_pair'
+        renameContext: 'subtitle_manual_match_pair',
+        skipIndexMutation: true
       })
       const resultMap = buildResultMap(result)
       bucketPairs.forEach((pair, index) => {
@@ -15882,7 +15908,7 @@ async function applySubtitleManualPairs () {
 
       await Promise.all([
 
-        refreshLibrary({ silent: true }),
+        refreshLibrary({ silent: true, forceRefresh: true }),
 
         refreshRJSubtitleStatus(false, { silent: true })
 
@@ -15938,7 +15964,7 @@ async function applySubtitleManualPairs () {
 
       await Promise.all([
 
-        refreshLibrary({ silent: true }),
+        refreshLibrary({ silent: true, forceRefresh: true }),
 
         refreshRJSubtitleStatus(false, { silent: true })
 
@@ -15947,6 +15973,8 @@ async function applySubtitleManualPairs () {
     }
 
 
+
+    scheduleFinalIndexMoves(phaseTwoCompleted)
 
     ElMessage.success(`${isLinkedImport ? '已重命名并导入' : '已应用'} ${appliedPairCount} 组配对${unusedSubtitleRows.length ? `，并删除 ${unusedSubtitleRows.length} 个未使用字幕` : ''}。当前目录已标记为已执行过配对，可继续调整后再次应用。`)
 
@@ -15978,7 +16006,7 @@ async function applySubtitleManualPairs () {
 
         await Promise.all([
 
-          refreshLibrary({ silent: true }),
+          refreshLibrary({ silent: true, forceRefresh: true }),
 
           refreshRJSubtitleStatus(false, { silent: true }),
 

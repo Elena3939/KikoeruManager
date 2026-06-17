@@ -900,6 +900,7 @@ function formatSize(size) {
 function getArchiveItemStateLabel(item) {
   const status = String(item?.status || '').trim().toUpperCase()
   if (status === 'IMPORTED') return '已入工作台'
+  if (status === 'PROCESSING') return '导入中'
   if (item?.can_execute) return '可执行'
   return '不可执行'
 }
@@ -907,6 +908,7 @@ function getArchiveItemStateLabel(item) {
 function getArchiveItemStateClass(item) {
   const status = String(item?.status || '').trim().toUpperCase()
   if (status === 'IMPORTED') return 'lib-chip-info'
+  if (status === 'PROCESSING') return 'lib-chip-warning'
   if (item?.can_execute) return 'lib-chip-success'
   return 'lib-chip-warning'
 }
@@ -916,6 +918,9 @@ function getArchiveItemReason(item) {
   const status = String(item.status || '').trim().toUpperCase()
   if (status === 'IMPORTED') {
     return '这条来源已经导入字幕补配工作台；清除会废弃对应补配上下文，不会删除原始压缩包。'
+  }
+  if (status === 'PROCESSING') {
+    return item.preview?.reason || '这条来源正在导入字幕补配工作台，请等待当前任务完成。'
   }
   return item.preview?.reason || (item.can_execute ? '目标原作已定位，可以继续导入。' : '当前这条来源暂时无法执行。')
 }
