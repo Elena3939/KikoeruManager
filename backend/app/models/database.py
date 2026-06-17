@@ -449,6 +449,12 @@ class LibraryOwnedWork(Base):
     primary_folder_path = Column(Text)
     library_id = Column(String(80), index=True)
     folder_count = Column(Integer, default=0)
+    folder_size = Column(BigInteger, default=0)
+    file_count = Column(Integer, default=0)
+    owned_paths = Column(JSON, default=list)
+    has_local_subtitles = Column(Boolean, default=False, index=True)
+    subtitle_file_count = Column(Integer, default=0)
+    subtitle_dir = Column(Text)
     updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
     created_at = Column(DateTime, default=get_local_now)
 
@@ -459,6 +465,12 @@ class LibraryOwnedWork(Base):
             'primary_folder_path': self.primary_folder_path,
             'library_id': self.library_id,
             'folder_count': self.folder_count,
+            'folder_size': int(self.folder_size or 0),
+            'file_count': int(self.file_count or 0),
+            'owned_paths': self.owned_paths or [],
+            'has_local_subtitles': bool(self.has_local_subtitles),
+            'subtitle_file_count': int(self.subtitle_file_count or 0),
+            'subtitle_dir': self.subtitle_dir or '',
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
@@ -2791,6 +2803,32 @@ def _migrate_library_index_status_schema(conn, existing_tables: Optional[set[str
         """))
 
 
+def _migrate_library_owned_works_schema(conn, existing_tables: Optional[set[str]] = None) -> None:
+    if existing_tables is not None:
+        if "library_owned_works" not in existing_tables:
+            return
+    elif not _table_exists(conn, "library_owned_works"):
+        return
+    owned_columns = (
+        ("folder_size", "BIGINT", "0"),
+        ("file_count", "INTEGER", "0"),
+        ("owned_paths", "JSONB", "'[]'::jsonb"),
+        ("has_local_subtitles", "BOOLEAN", "false"),
+        ("subtitle_file_count", "INTEGER", "0"),
+        ("subtitle_dir", "TEXT", None),
+    )
+    existing_columns = _existing_columns(conn, "library_owned_works", [name for name, _type, _default in owned_columns])
+    for column_name, column_type, default_sql in owned_columns:
+        _add_column_if_missing(
+            conn,
+            "library_owned_works",
+            column_name,
+            column_type,
+            default_sql,
+            existing_columns=existing_columns,
+        )
+
+
 def _migrate_library_index_entries_schema(conn, existing_tables: Optional[set[str]] = None) -> None:
     if existing_tables is not None:
         if "library_index_entries" not in existing_tables:
@@ -2901,6 +2939,7 @@ def _migrate_compat_schema(conn) -> None:
         )
     _migrate_library_index_entries_schema(conn, existing_tables)
     _migrate_library_index_status_schema(conn, existing_tables)
+    _migrate_library_owned_works_schema(conn, existing_tables)
     _migrate_activity_logs_projection(conn, existing_tables, compat_index_definitions)
     _migrate_activity_log_daily_stats(conn, existing_tables)
 

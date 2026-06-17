@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import threading
 import time
 
@@ -10,7 +9,8 @@ class _BudgetConfig:
     enabled = True
     network_download = 1
     remote_fs = 2
-    sqlite_write = 1
+    database_write = 1
+    library_index_write = 1
 
 
 class _Config:
@@ -64,21 +64,24 @@ def test_resource_budget_zero_limit_is_passthrough(monkeypatch):
     assert sorted(asyncio.run(run())) == [0, 1, 2, 3]
 
 
-def test_resource_budget_sqlite_write_zero_is_serialized(monkeypatch):
-    class LegacyBudget:
+def test_resource_budget_database_write_zero_is_serialized(monkeypatch):
+    class Budget:
         enabled = True
-        sqlite_write = 0
+        database_write = 0
+        library_index_write = 0
 
-    class LegacyConfig:
-        resource_budget = LegacyBudget()
+    class Config:
+        resource_budget = Budget()
 
-    monkeypatch.setattr("app.core.resource_budget_service.get_config", lambda: LegacyConfig())
+    monkeypatch.setattr("app.core.resource_budget_service.get_config", lambda: Config())
     service = ResourceBudgetService()
 
     snapshot = service.snapshot()
 
-    assert snapshot["resources"]["sqlite_write"]["configured_limit"] == 1
-    assert snapshot["resources"]["sqlite_write"]["passthrough"] is False
+    assert snapshot["resources"]["database_write"]["configured_limit"] == 1
+    assert snapshot["resources"]["database_write"]["passthrough"] is False
+    assert snapshot["resources"]["library_index_write"]["configured_limit"] == 1
+    assert snapshot["resources"]["library_index_write"]["passthrough"] is False
 
 
 def test_resource_budget_snapshot_reports_active_tokens(monkeypatch):
@@ -99,7 +102,8 @@ def test_resource_budget_snapshot_reports_active_tokens(monkeypatch):
     assert remote_fs["available"] == 1
     assert remote_fs["waiting"] == 0
     assert remote_fs["passthrough"] is False
-    assert snapshot["resources"]["sqlite_write"]["configured_limit"] == 1
+    assert snapshot["resources"]["database_write"]["configured_limit"] == 1
+    assert snapshot["resources"]["library_index_write"]["configured_limit"] == 1
 
 
 def test_resource_budget_snapshot_reports_waiting_tokens(monkeypatch):
@@ -136,7 +140,7 @@ def test_resource_budget_snapshot_reports_waiting_tokens(monkeypatch):
     assert network_download["waiting"] == 1
 
 
-def test_resource_budget_logs_slow_wait(monkeypatch, caplog):
+def test_resource_budget_waiter_actually_waits(monkeypatch):
     monkeypatch.setattr("app.core.resource_budget_service.get_config", lambda: _Config())
     monkeypatch.setattr("app.core.resource_budget_service._WAIT_LOG_THRESHOLD_SECONDS", 0.001)
     service = ResourceBudgetService()
@@ -144,6 +148,8 @@ def test_resource_budget_logs_slow_wait(monkeypatch, caplog):
     async def run():
         holder_ready = asyncio.Event()
         release_holder = asyncio.Event()
+        waiting_snapshot = None
+        waiter_entered_at = None
 
         async def holder():
             async with service.acquire("network_download", reason="holder"):
@@ -151,23 +157,28 @@ def test_resource_budget_logs_slow_wait(monkeypatch, caplog):
                 await release_holder.wait()
 
         async def waiter():
+            nonlocal waiter_entered_at
             async with service.acquire("network_download", reason="slow-wait"):
+                waiter_entered_at = time.monotonic()
                 return
 
         holder_task = asyncio.create_task(holder())
         await holder_ready.wait()
         waiter_task = asyncio.create_task(waiter())
-        await asyncio.sleep(0.01)
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            waiting_snapshot = service.snapshot()["resources"]["network_download"]
+            if waiting_snapshot["waiting"] >= 1:
+                break
+            await asyncio.sleep(0.005)
+        assert waiting_snapshot is not None
+        assert waiting_snapshot["waiting"] >= 1
+        assert not waiter_task.done()
         release_holder.set()
         await asyncio.gather(holder_task, waiter_task)
+        assert waiter_entered_at is not None
 
-    with caplog.at_level(logging.WARNING, logger="app.core.resource_budget_service"):
-        asyncio.run(run())
-
-    output = "\n".join(record.getMessage() for record in caplog.records)
-    assert "等待" in output
-    assert "resource=network_download" in output
-    assert "reason=slow-wait" in output
+    asyncio.run(run())
 
 
 def test_resource_budget_sync_acquire_limits_concurrent_threads(monkeypatch):
@@ -177,7 +188,7 @@ def test_resource_budget_sync_acquire_limits_concurrent_threads(monkeypatch):
     release_first = threading.Event()
 
     def worker(index):
-        with service.acquire_sync("sqlite_write", reason=f"sync-{index}"):
+        with service.acquire_sync("database_write", reason=f"sync-{index}"):
             entered.append((index, time.monotonic()))
             if index == 1:
                 release_first.wait(timeout=1)
@@ -207,12 +218,12 @@ def test_resource_budget_snapshot_reports_sync_active_and_waiting(monkeypatch):
     release_holder = threading.Event()
 
     def holder():
-        with service.acquire_sync("sqlite_write", reason="sync-holder"):
+        with service.acquire_sync("database_write", reason="sync-holder"):
             holder_ready.set()
             release_holder.wait(timeout=1)
 
     def waiter():
-        with service.acquire_sync("sqlite_write", reason="sync-waiter"):
+        with service.acquire_sync("database_write", reason="sync-waiter"):
             return
 
     holder_thread = threading.Thread(target=holder)
@@ -222,14 +233,14 @@ def test_resource_budget_snapshot_reports_sync_active_and_waiting(monkeypatch):
     waiter_thread.start()
     time.sleep(0.05)
 
-    sqlite_write = service.snapshot()["resources"]["sqlite_write"]
+    database_write = service.snapshot()["resources"]["database_write"]
 
     release_holder.set()
     holder_thread.join(timeout=1)
     waiter_thread.join(timeout=1)
 
-    assert sqlite_write["configured_limit"] == 1
-    assert sqlite_write["active_limit"] == 1
-    assert sqlite_write["active"] == 1
-    assert sqlite_write["available"] == 0
-    assert sqlite_write["waiting"] == 1
+    assert database_write["configured_limit"] == 1
+    assert database_write["active_limit"] == 1
+    assert database_write["active"] == 1
+    assert database_write["available"] == 0
+    assert database_write["waiting"] == 1

@@ -514,6 +514,7 @@ class ResourceBudgetConfig(BaseModel):
     remote_fs: int = 4
     network_download: int = 5
     database_write: int = 4
+    library_index_write: int = 1
 
     @model_validator(mode='before')
     @classmethod
