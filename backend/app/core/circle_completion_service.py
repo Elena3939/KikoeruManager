@@ -36,7 +36,6 @@ from .asmr_download_service import get_asmr_download_service
 from .asmr_resource_service import get_asmr_resource_service
 from .circle_image_cache_service import get_circle_image_cache_service
 from .dlsite_service import DLsiteWorkSummary, get_dlsite_service
-from .kikoeru_duplicate_service import get_kikoeru_service
 from .metadata_service import MetadataService
 from .ttl_cache import TTLCache
 
@@ -146,20 +145,14 @@ class CircleCompletionSnapshot:
     设计要点：
     - **只显式持有"现有 TTL cache 没有"的数据**：ASMR.one 的 ``fetch_work_info`` /
       ``fetch_track_list`` 没有内部 cache，每次都打 HTTP，必须自建 snapshot。
-    - **DLsite metadata / canonical / Kikoeru state** 走现有
-      ``_metadata_cache`` / ``_canonical_cache`` / ``_kikoeru_state_cache``——
-      Phase 1 prefetch 阶段已经把它们写入 cache，Phase 2 调用时直接命中。
-      不在 snapshot 里重复持有,避免内存浪费 + 维护一致性的负担。
-    - ``candidate_rjcodes`` 是 Phase 1 的初始候选 RJ 列表（去重，含本地 / Kikoeru /
-      DLsite 三个来源）；``all_rjcodes`` 是 candidate ∪ 全部 linked_rjcodes，是
-      Phase 2 真正需要查 ASMR / Kikoeru 的 RJ 全集。
+    - **DLsite metadata / canonical** 走现有 ``_metadata_cache`` /
+      ``_canonical_cache``。本地拥有态不在这里查远程服务，而是在聚合阶段由 ready
+      库存索引投影到兼容字段。
+    - ``candidate_rjcodes`` 是 Phase 1 的初始候选 RJ 列表（去重，含本地 /
+      DLsite 等来源）；``all_rjcodes`` 是 candidate ∪ 全部 linked_rjcodes，是
+      Phase 2 真正需要查 ASMR 的 RJ 全集。
     - ``canonical_rj_by_rj`` / ``chain_rjs_by_canonical`` 描述"作品链路"：
-      同一部作品的原版 + 各语言翻译/重制版共享同一个 canonical RJ。Wave 1 算
-      出每个 candidate 的 canonical 后，Wave 2b 对 Kikoeru 只按 **独立链路** 探测
-      一次（``check_duplicate_with_linkages(canonical)`` 内部会展开整条链路、
-      查全所有翻译版的 Kikoeru 状态），结果回灌给链上每个 RJ 的 cache。这样
-      原本 N=39 次 Kikoeru 查询会降到链路数（典型 13 条），但 Phase 2 对任意
-      candidate RJ 仍然能 cache 命中、不会漏作品。
+      同一部作品的原版 + 各语言翻译/重制版共享同一个 canonical RJ。
 
     用 ``contains_asmr(rj)`` / ``get_asmr_work_info(rj)`` / ``get_asmr_tracks(rj)``
     三个查询接口屏蔽内部 dict 结构，避免下游代码写 ``snapshot.asmr_work_info_by_rj.get()``
@@ -172,8 +165,7 @@ class CircleCompletionSnapshot:
     # ★ 作品链路去重：rj -> 该 rj 所属的 canonical RJ（原版作品 RJ）。
     canonical_rj_by_rj: Dict[str, str] = field(default_factory=dict)
     # ★ 作品链路全集：canonical RJ -> 链上所有 RJ 的有序列表（含 canonical 自身、
-    #   各语言翻译版、各重制版）。Wave 2b 按 ``chain_rjs_by_canonical.keys()``
-    #   去重 probe，可把 Kikoeru 查询次数从"全 RJ 数"降到"独立链路数"。
+    #   各语言翻译版、各重制版）。用于 ASMR 探测和库存索引命中归并。
     chain_rjs_by_canonical: Dict[str, List[str]] = field(default_factory=dict)
     # ★ canonical RJ -> canonical_info dict（含 ``linked_rjcodes`` / ``link_map``）。
     # Wave 2a 用 ``link_map`` 按"简中 > 繁中 > 原作 > 其他"语言优先级选 preferred，
@@ -210,7 +202,6 @@ class CircleCompletionService:
 
     def __init__(self):
         self.metadata_service = MetadataService()
-        self.kikoeru_service = get_kikoeru_service()
         self.dlsite_service = get_dlsite_service()
         self.asmr_service = get_asmr_download_service()
         self.asmr_resource_service = get_asmr_resource_service()
@@ -228,8 +219,6 @@ class CircleCompletionService:
         # wave1 批量预热写进 1600 条但留下最后 1024 条，前 ~600 条全被踢出，
         # 导致 resolve_canonical_rj 仍然走 DB+HTTP 慢路径。
         self._canonical_cache: TTLCache = TTLCache(max_size=16384, ttl_seconds=3600, name="circle.canonical")
-        # Kikoeru state 同样按"链路 RJ × 多语言版本"展开，给充足上限避免 wave2b 命中失败。
-        self._kikoeru_state_cache: TTLCache = TTLCache(max_size=8192, ttl_seconds=600, name="circle.kikoeru_state")
         self._download_preview_jobs: TTLCache = TTLCache(max_size=32, ttl_seconds=3600, name="circle.download_preview_jobs")
         # 下面两个原本就有 expires_at 字段，结构不变以兼容现有读写。
         self._kikoeru_circle_id_cache: Dict[str, tuple[str, float]] = {}
@@ -1270,7 +1259,7 @@ class CircleCompletionService:
     ) -> Dict[str, Any]:
         works = list(summary.get("works") or [])
         source_breakdown = [
-            {"key": "kikoeru", "label": "Kikoeru", "count": sum(1 for item in works if item.get("server_owned"))},
+            {"key": "kikoeru", "label": "库存已收录", "count": sum(1 for item in works if item.get("server_owned"))},
             {"key": "dlsite", "label": "DLsite", "count": sum(1 for item in works if item.get("has_dlsite"))},
             {"key": "asmr_one", "label": "asmr.one", "count": sum(1 for item in works if item.get("has_asmr_one"))},
             {"key": "local_downloaded", "label": "本地已下载", "count": sum(1 for item in works if item.get("local_download_ready"))},
@@ -1298,7 +1287,7 @@ class CircleCompletionService:
                 "has_bonus": bool(item.get("has_bonus")),
                 "original_subtitle_present": bool(item.get("subtitle_present")),
                 "preferred_variant_label": preferred_variant.get("label") or "优先版本 未标记",
-                "status_label": "本地已下载" if item.get("local_download_ready") else ("服务器已有" if item.get("server_owned") else ("可下载" if item.get("has_asmr_one") else "暂无来源")),
+                "status_label": "本地已下载" if item.get("local_download_ready") else ("库存已收录" if item.get("server_owned") else ("可下载" if item.get("has_asmr_one") else "暂无来源")),
                 "status_key": "local" if item.get("local_download_ready") else ("owned" if item.get("server_owned") else ("downloadable" if item.get("has_asmr_one") else "dl_only")),
                 "source_compare": source_compare,
             })
@@ -2335,155 +2324,6 @@ class CircleCompletionService:
             if future is not None and self._metadata_inflight.get(normalized_rj) is future:
                 self._metadata_inflight.pop(normalized_rj, None)
 
-    async def _probe_kikoeru_owned_state(self, probe_rjcode: str, *, use_cache: bool = True) -> bool:
-        # ★ 性能优化：复用 ``_probe_kikoeru_state`` 的 ``_kikoeru_state_cache``。
-        # 之前这里独立调 ``check_duplicate_with_linkages``、没 cache，同一个 RJ 在
-        # 多个候选流程里被多次 probe owned_state 时，每次都重新跑一整套 DLsite
-        # 关联链 + Kikoeru search 链路。``_probe_kikoeru_state`` 已经把同样的
-        # check_duplicate_with_linkages 结果按 RJ cache 在 ``_kikoeru_state_cache``
-        # （10 分钟 TTL）里，state 字典本身就含 ``has_kikoeru`` 这个 owned 信号，
-        # 直接读即可，避免重复触网。
-        state = await self._probe_kikoeru_state(probe_rjcode, use_cache=use_cache)
-        return bool(state.get("has_kikoeru"))
-
-    async def _probe_kikoeru_state(self, probe_rjcode: str, *, use_cache: bool = True) -> Dict[str, Any]:
-        normalized_rj = self.normalize_rjcode(probe_rjcode)
-        if not normalized_rj:
-            return {"has_kikoeru": False, "found_rjcodes": [], "subtitle_rjcodes": []}
-        cached_state = self._kikoeru_state_cache.get(normalized_rj)
-        if use_cache and cached_state is not None:
-            return cached_state
-        if not use_cache:
-            self._kikoeru_state_cache.pop(normalized_rj, None)
-        try:
-            results = await self.kikoeru_service.check_duplicate_with_linkages(normalized_rj, use_cache=use_cache)
-        except Exception:
-            logger.warning("[社团补全] Kikoeru 状态补查失败 %s", normalized_rj, exc_info=True)
-            return {"has_kikoeru": False, "found_rjcodes": [], "subtitle_rjcodes": []}
-
-        found_rjcodes: List[str] = []
-        subtitle_rjcodes: List[str] = []
-        found_titles: Dict[str, str] = {}
-        for workno, result in (results or {}).items():
-            if not getattr(result, "is_found", False):
-                continue
-            matched_rj = self.normalize_rjcode(
-                getattr(result, "matched_rjcode", None) or workno or getattr(result, "rjcode", None)
-            )
-            if matched_rj and matched_rj not in found_rjcodes:
-                found_rjcodes.append(matched_rj)
-            matched_title = str(getattr(result, "title", "") or "").strip()
-            if matched_rj and self._is_usable_work_title(matched_rj, matched_title):
-                found_titles[matched_rj] = matched_title
-            subtitle_check_source = str(getattr(result, "subtitle_check_source", "") or "").strip()
-            if matched_rj and getattr(result, "has_lyric_hint", False) and subtitle_check_source and subtitle_check_source != "search_only":
-                if matched_rj not in subtitle_rjcodes:
-                    subtitle_rjcodes.append(matched_rj)
-        payload = {
-            "has_kikoeru": bool(found_rjcodes),
-            "found_rjcodes": found_rjcodes,
-            "subtitle_rjcodes": subtitle_rjcodes,
-            "found_titles": found_titles,
-        }
-        self._kikoeru_state_cache[normalized_rj] = payload
-        return payload
-
-    async def _probe_kikoeru_state_for_candidates(self, candidates: List[str], *, use_cache: bool = True) -> Dict[str, Any]:
-        normalized_candidates: List[str] = []
-        for candidate in candidates or []:
-            normalized = self.normalize_rjcode(candidate)
-            if normalized and normalized not in normalized_candidates:
-                normalized_candidates.append(normalized)
-        if not normalized_candidates:
-            return {"has_kikoeru": False, "found_rjcodes": [], "subtitle_rjcodes": []}
-
-        found_rjcodes: List[str] = []
-        subtitle_rjcodes: List[str] = []
-        found_titles: Dict[str, str] = {}
-        semaphore = asyncio.Semaphore(8)
-
-        async def probe_candidate(candidate: str) -> Dict[str, Any]:
-            async with semaphore:
-                return await self._probe_kikoeru_state(candidate, use_cache=use_cache)
-
-        for future in asyncio.as_completed([probe_candidate(candidate) for candidate in normalized_candidates]):
-            state = await future
-            for code in list(state.get("found_rjcodes") or []):
-                normalized_code = self.normalize_rjcode(code)
-                if normalized_code and normalized_code not in found_rjcodes:
-                    found_rjcodes.append(normalized_code)
-            for code in list(state.get("subtitle_rjcodes") or []):
-                normalized_code = self.normalize_rjcode(code)
-                if normalized_code and normalized_code not in subtitle_rjcodes:
-                    subtitle_rjcodes.append(normalized_code)
-            for code, title in dict(state.get("found_titles") or {}).items():
-                normalized_code = self.normalize_rjcode(code)
-                if normalized_code and self._is_usable_work_title(normalized_code, title):
-                    found_titles[normalized_code] = str(title or "").strip()
-
-        return {
-            "has_kikoeru": bool(found_rjcodes),
-            "found_rjcodes": found_rjcodes,
-            "subtitle_rjcodes": subtitle_rjcodes,
-            "found_titles": found_titles,
-        }
-
-    def _build_known_kikoeru_index(
-        self,
-        kikoeru_works: List[Dict[str, Any]],
-    ) -> Dict[str, Dict[str, Any]]:
-        """把 ``list_circle_works`` 直连结果转成 ``{normalized RJ → state}`` 索引。
-
-        每个直连命中的 RJ → 一份 ``{has_kikoeru, found_rjcodes, subtitle_rjcodes,
-        found_titles, work_id, source}`` 字典，结构与 ``_probe_kikoeru_state`` 输出
-        完全兼容。命中后 ``_collect_external_snapshot`` 的 Wave 2b 跳过 probe，把同
-        一份 state 直接灌到 ``_kikoeru_state_cache``。
-
-        ``subtitle_rjcodes`` 在直连结果里暂时为空 —— 字幕信息要靠 ``/api/tracks/{id}``
-        逐个拉取，与 P3 的设计意图（**不在关键路径**逐个 hydrate tracks）冲突。
-        ``server_owned`` / ``has_kikoeru`` 等关键字段不依赖 subtitle，索引依然完整；
-        字幕统计将来需要可以在 ``bonus refresh`` 同样的后台路径补刷。
-        """
-        known: Dict[str, Dict[str, Any]] = {}
-        if not kikoeru_works:
-            return known
-        for work in kikoeru_works:
-            if not isinstance(work, dict):
-                continue
-            try:
-                rjcodes = self.kikoeru_service._work_to_rjcodes(work)
-            except Exception:
-                guessed = self._guess_kikoeru_rjcode(work)
-                rjcodes = [guessed] if guessed else []
-            title = str(work.get("title") or "").strip()
-            try:
-                work_id = int(work.get("id") or 0)
-            except Exception:
-                work_id = 0
-            normalized_rjcodes: List[str] = []
-            for rj in rjcodes:
-                normalized = self.normalize_rjcode(rj)
-                if normalized and normalized not in normalized_rjcodes:
-                    normalized_rjcodes.append(normalized)
-            if not normalized_rjcodes:
-                continue
-            found_titles: Dict[str, str] = {}
-            if title:
-                for rj in normalized_rjcodes:
-                    found_titles[rj] = title
-            state_payload = {
-                "has_kikoeru": True,
-                "found_rjcodes": list(normalized_rjcodes),
-                "subtitle_rjcodes": [],
-                "found_titles": found_titles,
-                "work_id": work_id,
-                "source": "kikoeru_circle_works",
-            }
-            # 同一份 state 灌到链上每个 RJ —— 这与 Wave 2b 内部回灌策略一致。
-            for rj in normalized_rjcodes:
-                known.setdefault(rj, state_payload)
-        return known
-
     async def _collect_external_snapshot(
         self,
         candidate_rjcodes: List[str],
@@ -2491,7 +2331,6 @@ class CircleCompletionService:
         force_refresh: bool = False,
         progress_callback: Optional[Callable[[int, str], None]] = None,
         cancel_callback: Optional[Callable[[], bool]] = None,
-        known_kikoeru_index: Optional[Dict[str, Dict[str, Any]]] = None,
         perf: Optional[CircleIndexPerfTracker] = None,
     ) -> CircleCompletionSnapshot:
         """Phase 1：一次性批量预取所有外部数据，Phase 2 纯本地聚合不再触网。
@@ -2508,20 +2347,13 @@ class CircleCompletionService:
           - **Wave 2a / ASMR.one 核对**：对 ``all_rjcodes`` 里每个 RJ 拉
             ``fetch_work_info`` + ``fetch_track_list``。ASMR.one 没有内部 cache，
             必须自建 snapshot；写入 ``snapshot.asmr_*_by_rj``。
-          - **Wave 2b / Kikoeru 核对**：按 **作品链路** 去重 probe，每条链路只
-            对 canonical RJ 调一次 ``_probe_kikoeru_state``——
-            ``check_duplicate_with_linkages`` 内部本来就会展开整条链路、查所有
-            翻译版的 Kikoeru 状态，对链上任一 RJ probe 出来的 state 完全一致。
-            探测完成后把同一份 state 回灌给链上每个 RJ 的 ``_kikoeru_state_cache``，
-            Phase 2 任意候选 RJ probe 时仍然 cache 命中、不会漏作品。
-
-            这步是把 Kikoeru 查询次数从 "候选 + 翻译版全集"（典型 30-50）压到
-            "独立作品数"（典型 10-15）的关键，对耗时影响最大。
+          - 本地拥有 / 字幕状态由 ready 库存索引在聚合阶段批量投影，不在这里打
+            Kikoeru HTTP，也不触发扫盘 fallback。
 
         关键参数：
 
-        - ``force_refresh`` 透传给 ``resolve_canonical_rj`` 和 ``_probe_kikoeru_state``,
-          强刷场景下绕过现有 cache，但仍然把新结果写回 cache 供 Phase 2 复用。
+        - ``force_refresh`` 透传给 DLsite / ASMR.one 刷新逻辑；库存索引始终是本地
+          状态权威源，不受强刷影响。
         - ``progress_callback(percent, step)`` 用业务文案细粒度回报给主流程；
           不传则静默跑。
         - ``cancel_callback`` 在每轮 gather 之前轮询，用户主动取消时立刻 raise
@@ -2743,7 +2575,7 @@ class CircleCompletionService:
         safe_progress(
             50,
             f"展开翻译 / 重制版后共 {len(snapshot.all_rjcodes)} 个 RJ、"
-            f"{len(unique_canonicals)} 条作品链路，开始核对 ASMR.one 与 Kikoeru",
+            f"{len(unique_canonicals)} 条作品链路，开始核对 ASMR.one",
         )
 
         # ============ Wave 2a：ASMR.one 作品核对（按 canonical 链路去重 + preferred 优先 + 命中即停） ============
@@ -2884,75 +2716,12 @@ class CircleCompletionService:
                     results.append((rj, None, None))
             return results
 
-        # ============ Wave 2b：Kikoeru 作品链路核对（按 canonical 去重 + known_kikoeru_index 短路）============
-        # ``check_duplicate_with_linkages(canonical_rj)`` 内部会自动展开整条作品
-        # 链路、把每个翻译版都查一遍，返回的 state 对链上任意 RJ 都是等价的。
-        # 这里把"按 RJ probe（典型 30-50 次）"压到"按链路 probe（典型 10-15 次）"，
-        # 是耗时改善最大的地方。
-        #
-        # P3 进一步：``known_kikoeru_index`` 来自 ``kikoeru_service.list_circle_works``
-        # 的直连结果。链路上任意 RJ 命中索引即视为"该 canonical 已在 Kikoeru"，跳过
-        # ``_probe_kikoeru_state`` —— 减少全量 search 调用与 link 解析。
-        wave2_kk_sem = asyncio.Semaphore(20)
-        kikoeru_completed = 0
-        kikoeru_total = max(1, len(unique_canonicals))
-        known_kikoeru = known_kikoeru_index or {}
-
-        def _merge_known_kikoeru_hits(hits: List[Dict[str, Any]]) -> Dict[str, Any]:
-            merged_rjcodes: List[str] = []
-            merged_subtitles: List[str] = []
-            merged_titles: Dict[str, str] = {}
-            for hit in hits:
-                for rj in hit.get("found_rjcodes") or []:
-                    if rj and rj not in merged_rjcodes:
-                        merged_rjcodes.append(rj)
-                for rj in hit.get("subtitle_rjcodes") or []:
-                    if rj and rj not in merged_subtitles:
-                        merged_subtitles.append(rj)
-                for k, v in (hit.get("found_titles") or {}).items():
-                    if k not in merged_titles and v:
-                        merged_titles[k] = v
-            return {
-                "has_kikoeru": True,
-                "found_rjcodes": merged_rjcodes,
-                "subtitle_rjcodes": merged_subtitles,
-                "found_titles": merged_titles,
-            }
-
-        async def prefetch_kikoeru(canonical_rj: str) -> Tuple[str, Dict[str, Any]]:
-            chain = canonical_to_chain.get(canonical_rj) or {canonical_rj}
-            # P3：known_kikoeru_index 命中即跳过 probe。这是把"Kikoeru 直连已经知道有"
-            # 的作品从全量 search/link 流程里摘出来 —— 实测 RaRo 社团 322/362 命中
-            # known index，能省 80%+ Kikoeru 调用。
-            if known_kikoeru:
-                hits = [known_kikoeru[m] for m in chain if m in known_kikoeru]
-                if hits:
-                    state = _merge_known_kikoeru_hits(hits)
-                    if perf:
-                        perf.inc("kikoeru_known_hits")
-                    return canonical_rj, state
-            async with wave2_kk_sem:
-                if perf:
-                    perf.inc("kikoeru_probe_calls")
-                try:
-                    state = await self._probe_kikoeru_state(
-                        canonical_rj, use_cache=not force_refresh
-                    )
-                except Exception:
-                    logger.debug(
-                        "[社团补全·snapshot] _probe_kikoeru_state 失败 canonical=%s",
-                        canonical_rj, exc_info=True,
-                    )
-                    state = {"has_kikoeru": False, "found_rjcodes": [], "subtitle_rjcodes": []}
-            return canonical_rj, state
-
-        # 进度回调用 as_completed 双流合并：每完成一条链路 / Kikoeru 探测就更新一次
+        # 本地拥有 / 字幕态不在 snapshot 阶段触网，稍后统一从 ready 库存索引投影。
         asmr_futures = [prefetch_asmr_chain(c) for c in unique_canonicals]
-        kikoeru_futures = [prefetch_kikoeru(c) for c in unique_canonicals]
 
         async def collect_asmr() -> None:
             nonlocal asmr_completed
-            # ⚠ 性能诊断：单独计时 ASMR.one 链路核对耗时（不含 Kikoeru，因为它们并行）。
+            # ⚠ 性能诊断：单独计时 ASMR.one 链路核对耗时。
             wave2a_ctx = perf.timed("stage_snapshot_wave2a_asmr") if perf else contextlib.nullcontext()
             with wave2a_ctx:
                 for future in asyncio.as_completed(asmr_futures):
@@ -2974,34 +2743,7 @@ class CircleCompletionService:
                             f"在 ASMR.one 上核对作品链路 {asmr_completed}/{asmr_total} 条",
                         )
 
-        async def collect_kikoeru() -> None:
-            nonlocal kikoeru_completed
-            # ⚠ 性能诊断：单独计时 Kikoeru 链路核对耗时（不含 ASMR.one，因为它们并行）。
-            wave2b_ctx = perf.timed("stage_snapshot_wave2b_kikoeru") if perf else contextlib.nullcontext()
-            with wave2b_ctx:
-                for future in asyncio.as_completed(kikoeru_futures):
-                    ensure_not_cancelled()
-                    try:
-                        canonical_rj, state = await future
-                    except Exception as exc:
-                        logger.debug("[社团补全·snapshot] Kikoeru prefetch 任务异常: %s", exc)
-                        kikoeru_completed += 1
-                        continue
-                    # 把同一份 state 回灌给链上每个 RJ 的 cache，让 Phase 2 对任意
-                    # candidate / linked RJ probe 都能直接 cache 命中。
-                    chain = canonical_to_chain.get(canonical_rj) or {canonical_rj}
-                    for member in chain:
-                        self._kikoeru_state_cache[member] = state
-                    kikoeru_completed += 1
-                    if kikoeru_completed % 3 == 0 or kikoeru_completed == kikoeru_total:
-                        # snapshot 相对刻度：Kikoeru 占 75→95 段
-                        safe_progress(
-                            75 + int((kikoeru_completed / kikoeru_total) * 20),
-                            f"在 Kikoeru 上核对作品链路 {kikoeru_completed}/{kikoeru_total} 条",
-                        )
-
-        # 两组并发同时跑，互不阻塞；耗时 = max(ASMR_total, Kikoeru_chain_total)
-        await asyncio.gather(collect_asmr(), collect_kikoeru())
+        await collect_asmr()
 
         ensure_not_cancelled()
 
@@ -3010,15 +2752,14 @@ class CircleCompletionService:
             100,
             f"外部数据收集完成（候选 {len(snapshot.candidate_rjcodes)} 件 / "
             f"含翻译共 {len(snapshot.all_rjcodes)} 个 RJ / "
-            f"ASMR 命中 {asmr_hits} 个 / Kikoeru 链路 {len(unique_canonicals)} 条）",
+            f"ASMR 命中 {asmr_hits} 个 / 本地收录态稍后由库存索引核对）",
         )
 
         logger.info(
             "[社团补全·snapshot] 收集完成: candidates=%s all_rjs=%s "
-            "kikoeru_chains=%s asmr_hits=%s",
+            "local_owned_source=library_index asmr_hits=%s",
             len(snapshot.candidate_rjcodes),
             len(snapshot.all_rjcodes),
-            len(unique_canonicals),
             asmr_hits,
         )
 
@@ -3833,33 +3574,82 @@ class CircleCompletionService:
         return task
 
     async def sync_local_owned_index(self) -> Dict[str, Any]:
+        from .library_manager import get_library_manager
+
         db = SessionLocal()
         try:
-            snapshots = db.query(LibrarySnapshot).all()
+            candidate_rjcodes = {
+                self.normalize_rjcode(code)
+                for row in db.query(
+                    CircleWork.canonical_rjcode,
+                    CircleWork.display_rjcode,
+                    CircleWork.linked_rjcodes,
+                ).all()
+                for code in [
+                    row.canonical_rjcode,
+                    row.display_rjcode,
+                    *(row.linked_rjcodes or []),
+                ]
+            }
+            candidate_rjcodes.discard("")
         finally:
             db.close()
 
+        index_hits = get_library_manager().find_rj_in_ready_index(candidate_rjcodes)
         merged: Dict[str, Dict[str, Any]] = {}
         lock = asyncio.Lock()
         sem = asyncio.Semaphore(16)
 
-        async def _resolve_and_merge(snapshot: Any) -> None:
-            rjcode = self.normalize_rjcode(snapshot.rjcode)
-            if not rjcode:
+        async def _resolve_and_merge(rjcode: str, hit: Dict[str, Any]) -> None:
+            normalized_rj = self.normalize_rjcode(rjcode)
+            if not normalized_rj:
                 return
             async with sem:
-                canonical_info = await self.resolve_canonical_rj(rjcode)
-            canonical = canonical_info["canonical_rjcode"] or rjcode
+                canonical_info = await self.resolve_canonical_rj(normalized_rj)
+            canonical = self.normalize_rjcode(canonical_info.get("canonical_rjcode") or normalized_rj) or normalized_rj
             async with lock:
                 bucket = merged.setdefault(canonical, {
                     "owned_rjcodes": set(),
-                    "primary_folder_path": snapshot.folder_path,
+                    "owned_paths": [],
+                    "primary_folder_path": "",
+                    "primary_library_id": "",
                     "folder_count": 0,
+                    "folder_size": 0,
+                    "file_count": 0,
+                    "has_local_subtitles": False,
+                    "subtitle_file_count": 0,
+                    "subtitle_dir": "",
                 })
-                bucket["owned_rjcodes"].add(rjcode)
+                bucket["owned_rjcodes"].add(normalized_rj)
+                if canonical != normalized_rj:
+                    bucket["owned_rjcodes"].add(canonical)
+                path = str(hit.get("path") or "").strip()
+                if path and path not in bucket["owned_paths"]:
+                    bucket["owned_paths"].append(path)
+                if path and not bucket["primary_folder_path"]:
+                    bucket["primary_folder_path"] = path
+                library_id = str(hit.get("library_id") or "").strip()
+                if library_id and not bucket["primary_library_id"]:
+                    bucket["primary_library_id"] = library_id
                 bucket["folder_count"] += 1
+                bucket["folder_size"] += int(hit.get("size") or 0)
+                bucket["file_count"] += int(hit.get("file_count") or 0)
+                subtitle_count = int(hit.get("subtitle_file_count") or 0)
+                if bool(hit.get("local_subtitle_present")) or subtitle_count > 0:
+                    bucket["has_local_subtitles"] = True
+                    bucket["subtitle_file_count"] += subtitle_count
+                    if hit.get("subtitle_dir") and not bucket["subtitle_dir"]:
+                        bucket["subtitle_dir"] = str(hit.get("subtitle_dir") or "")
 
-        await asyncio.gather(*[_resolve_and_merge(s) for s in snapshots])
+        merge_tasks = [
+            _resolve_and_merge(rjcode, hit)
+            for rjcode, hits in index_hits.items()
+            for hit in hits
+        ]
+        if merge_tasks:
+            await asyncio.gather(*merge_tasks)
+        if not merged:
+            logger.info("[社团补全] ready 库存索引无命中，清空本地拥有态快照")
 
         db = SessionLocal()
         try:
@@ -3869,7 +3659,14 @@ class CircleCompletionService:
                     canonical_rjcode=canonical,
                     owned_rjcodes=sorted(info["owned_rjcodes"]),
                     primary_folder_path=info["primary_folder_path"],
+                    library_id=info["primary_library_id"],
                     folder_count=info["folder_count"],
+                    folder_size=info["folder_size"],
+                    file_count=info["file_count"],
+                    owned_paths=info["owned_paths"],
+                    has_local_subtitles=bool(info["has_local_subtitles"]),
+                    subtitle_file_count=int(info["subtitle_file_count"] or 0),
+                    subtitle_dir=info["subtitle_dir"],
                     updated_at=datetime.now(),
                 ))
             db.commit()
@@ -3921,6 +3718,23 @@ class CircleCompletionService:
         affected_circle_ids: set[str] = set()
         target_canonicals: set[str] = {canonical}
         reverse_match_count = 0
+        from .library_manager import get_library_manager
+
+        index_hits = get_library_manager().find_rj_in_ready_index(
+            [normalized_rj, canonical],
+            library_ids=[library_id] if library_id else None,
+        )
+        flat_hits = [hit for hits in index_hits.values() for hit in hits]
+        primary_hit = next((hit for hit in flat_hits if str(hit.get("path") or "").strip() == folder_path), None)
+        if primary_hit is None and flat_hits:
+            primary_hit = flat_hits[0]
+        hit_path = str((primary_hit or {}).get("path") or folder_path or "").strip()
+        hit_library_id = str((primary_hit or {}).get("library_id") or library_id or "").strip()
+        hit_size = int((primary_hit or {}).get("size") or 0)
+        hit_file_count = int((primary_hit or {}).get("file_count") or 0)
+        hit_subtitle_count = int((primary_hit or {}).get("subtitle_file_count") or 0)
+        hit_subtitle_dir = str((primary_hit or {}).get("subtitle_dir") or "").strip()
+        hit_has_subtitle = bool((primary_hit or {}).get("local_subtitle_present")) or hit_subtitle_count > 0
 
         db = SessionLocal()
         try:
@@ -3965,9 +3779,21 @@ class CircleCompletionService:
                     row = LibraryOwnedWork(canonical_rjcode=c)
                     db.add(row)
                 row.owned_rjcodes = sorted(owned_rjcodes)
-                row.primary_folder_path = folder_path or row.primary_folder_path
-                row.library_id = library_id or row.library_id
+                row.primary_folder_path = hit_path or row.primary_folder_path
+                row.library_id = hit_library_id or row.library_id
                 row.folder_count = max(int(row.folder_count or 0), 1)
+                if hit_size:
+                    row.folder_size = max(int(row.folder_size or 0), hit_size)
+                if hit_file_count:
+                    row.file_count = max(int(row.file_count or 0), hit_file_count)
+                owned_paths = list(row.owned_paths or [])
+                if hit_path and hit_path not in owned_paths:
+                    owned_paths.append(hit_path)
+                row.owned_paths = owned_paths
+                if hit_has_subtitle:
+                    row.has_local_subtitles = True
+                    row.subtitle_file_count = max(int(row.subtitle_file_count or 0), hit_subtitle_count)
+                    row.subtitle_dir = hit_subtitle_dir or row.subtitle_dir
                 row.updated_at = now_ts
             db.commit()
         except Exception:
@@ -4005,6 +3831,188 @@ class CircleCompletionService:
             })
         except Exception:
             logger.debug("[社团补全] SSE 广播失败 rj=%s", normalized_rj, exc_info=True)
+
+    async def sync_subtitle_for_rj(
+        self,
+        rjcode: str,
+        *,
+        folder_path: str = "",
+        library_id: str = "",
+        subtitle_dir: str = "",
+        subtitle_file_count: int = 0,
+    ) -> None:
+        normalized_rj = self.normalize_rjcode(rjcode)
+        if not normalized_rj:
+            return
+        try:
+            canonical_info = await self.resolve_canonical_rj(normalized_rj)
+        except Exception:
+            logger.warning("[社团补全] sync_subtitle_for_rj canonical 解析失败 rj=%s", normalized_rj, exc_info=True)
+            canonical_info = {}
+        canonical = self.normalize_rjcode((canonical_info or {}).get("canonical_rjcode") or normalized_rj) or normalized_rj
+
+        from sqlalchemy import Text as sa_Text, cast as sa_cast, or_ as sa_or
+
+        affected_circle_ids: set[str] = set()
+        target_canonicals: set[str] = {canonical}
+        db = SessionLocal()
+        try:
+            json_pattern = f'%"{normalized_rj}"%'
+            related_rows = (
+                db.query(
+                    CircleWork.canonical_rjcode.label("canonical_rjcode"),
+                    CircleWork.circle_id.label("circle_id"),
+                )
+                .filter(
+                    sa_or(
+                        CircleWork.canonical_rjcode == canonical,
+                        CircleWork.canonical_rjcode == normalized_rj,
+                        CircleWork.display_rjcode == normalized_rj,
+                        sa_cast(CircleWork.linked_rjcodes, sa_Text).like(json_pattern),
+                    )
+                )
+                .all()
+            )
+            for related in related_rows:
+                related_canonical = self.normalize_rjcode(related.canonical_rjcode)
+                if related_canonical:
+                    target_canonicals.add(related_canonical)
+                related_circle_id = str(related.circle_id or "").strip()
+                if related_circle_id:
+                    affected_circle_ids.add(related_circle_id)
+
+            now_ts = datetime.now()
+            for c in target_canonicals:
+                row = db.query(LibraryOwnedWork).filter(LibraryOwnedWork.canonical_rjcode == c).first()
+                if row is None:
+                    if not folder_path:
+                        continue
+                    row = LibraryOwnedWork(canonical_rjcode=c)
+                    db.add(row)
+                owned_rjcodes = set(row.owned_rjcodes or [])
+                owned_rjcodes.add(normalized_rj)
+                owned_rjcodes.add(c)
+                row.owned_rjcodes = sorted(code for code in owned_rjcodes if code)
+                row.primary_folder_path = folder_path or row.primary_folder_path
+                row.library_id = library_id or row.library_id
+                row.folder_count = max(int(row.folder_count or 0), 1)
+                owned_paths = list(row.owned_paths or [])
+                if folder_path and folder_path not in owned_paths:
+                    owned_paths.append(folder_path)
+                row.owned_paths = owned_paths
+                row.has_local_subtitles = True
+                row.subtitle_file_count = max(int(row.subtitle_file_count or 0), int(subtitle_file_count or 0), 1)
+                row.subtitle_dir = subtitle_dir or row.subtitle_dir
+                row.updated_at = now_ts
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.warning("[社团补全] 增量更新字幕态失败 rj=%s", normalized_rj, exc_info=True)
+            return
+        finally:
+            db.close()
+
+        if affected_circle_ids:
+            for affected_circle_id in affected_circle_ids:
+                self.invalidate_completion_view_cache(affected_circle_id)
+        else:
+            self.invalidate_completion_view_cache()
+        try:
+            from .task_notification_service import _sse_broadcast
+
+            _sse_broadcast({
+                "type": "circle_subtitle_synced",
+                "rjcode": normalized_rj,
+                "canonicals": sorted(target_canonicals),
+                "circle_ids": sorted(affected_circle_ids),
+                "subtitle_file_count": int(subtitle_file_count or 0),
+                "subtitle_dir": subtitle_dir,
+            })
+        except Exception:
+            logger.debug("[社团补全] 字幕 SSE 广播失败 rj=%s", normalized_rj, exc_info=True)
+
+    def _apply_library_index_owned_state_to_items(self, items_by_canonical: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        if not items_by_canonical:
+            return {"owned_count": 0, "subtitle_count": 0, "hit_count": 0}
+        from .library_manager import get_library_manager
+
+        lookup_codes: set[str] = set()
+        canonical_members: Dict[str, set[str]] = {}
+        for canonical, item in items_by_canonical.items():
+            members = {
+                self.normalize_rjcode(canonical),
+                self.normalize_rjcode(item.get("display_rjcode")),
+                self.normalize_rjcode(item.get("asmr_available_rjcode")),
+                *[self.normalize_rjcode(code) for code in list(item.get("linked_rjcodes") or [])],
+                *[self.normalize_rjcode(code) for code in list(item.get("kikoeru_found_rjcodes") or [])],
+            }
+            members.discard("")
+            canonical_members[canonical] = members
+            lookup_codes.update(members)
+        index_hits = get_library_manager().find_rj_in_ready_index(lookup_codes)
+        owned_count = 0
+        subtitle_count = 0
+        hit_count = 0
+        for canonical, item in items_by_canonical.items():
+            members = canonical_members.get(canonical) or set()
+            hits = [
+                hit
+                for code in members
+                for hit in list(index_hits.get(code) or [])
+            ]
+            if not hits:
+                item["has_kikoeru"] = False
+                item["kikoeru_found_rjcodes"] = []
+                item["kikoeru_subtitle_rjcodes"] = []
+                item["local_owned"] = False
+                item["local_subtitle_present"] = False
+                item["local_folder_size"] = 0
+                item["local_file_count"] = 0
+                item["subtitle_file_count"] = 0
+                item["subtitle_dir"] = ""
+                item["owned_paths"] = []
+                item["source_flags"].discard("kikoeru") if isinstance(item.get("source_flags"), set) else None
+                continue
+            hit_count += len(hits)
+            found_rjcodes: list[str] = []
+            owned_paths: list[str] = []
+            folder_size = 0
+            file_count = 0
+            local_subtitle_present = False
+            subtitle_file_count = 0
+            subtitle_dir = ""
+            for hit in hits:
+                for code in [hit.get("matched_rjcode"), hit.get("rjcode")]:
+                    normalized = self.normalize_rjcode(code)
+                    if normalized and normalized not in found_rjcodes:
+                        found_rjcodes.append(normalized)
+                path = str(hit.get("path") or "").strip()
+                if path and path not in owned_paths:
+                    owned_paths.append(path)
+                folder_size += int(hit.get("size") or 0)
+                file_count += int(hit.get("file_count") or 0)
+                current_subtitle_count = int(hit.get("subtitle_file_count") or 0)
+                if bool(hit.get("local_subtitle_present")) or current_subtitle_count > 0:
+                    local_subtitle_present = True
+                    subtitle_file_count += current_subtitle_count
+                    if hit.get("subtitle_dir") and not subtitle_dir:
+                        subtitle_dir = str(hit.get("subtitle_dir") or "")
+            item["has_kikoeru"] = True
+            item["kikoeru_found_rjcodes"] = found_rjcodes
+            item["kikoeru_subtitle_rjcodes"] = found_rjcodes if local_subtitle_present else []
+            item["local_owned"] = True
+            item["local_subtitle_present"] = local_subtitle_present
+            item["local_folder_size"] = folder_size
+            item["local_file_count"] = file_count
+            item["subtitle_file_count"] = subtitle_file_count
+            item["subtitle_dir"] = subtitle_dir
+            item["owned_paths"] = owned_paths
+            if isinstance(item.get("source_flags"), set):
+                item["source_flags"].add("kikoeru")
+            owned_count += 1
+            if local_subtitle_present:
+                subtitle_count += 1
+        return {"owned_count": owned_count, "subtitle_count": subtitle_count, "hit_count": hit_count}
 
     def _schedule_circle_cover_cache(
         self,
@@ -4230,139 +4238,9 @@ class CircleCompletionService:
         report(12, "收集本地社团候选")
         local_candidates = await self._collect_local_circle_candidates(circle_query)
         kikoeru_candidates: List[Dict[str, Any]] = []
-        # P3 跨阶段：``kikoeru_works`` 在 include_kikoeru 块内被填充，提到外层供
-        # ``_collect_external_snapshot`` 构造 known_kikoeru_index 复用。
-        kikoeru_works: List[Dict[str, Any]] = []
         resolved_kikoeru_circle_id = ""
         if include_kikoeru:
-            report(24, "查询 Kikoeru 社团作品", local_candidates_count=len(local_candidates))
-            kikoeru_circle_id = ""
-            normalized_circle_query = self.normalize_circle_name(circle_query)
-            maker_cache_key = ""
-            maker_id_hint = ""
-            db = SessionLocal()
-            try:
-                existing_catalog = self._find_catalog_by_normalized_name(db, normalized_circle_query)
-                if existing_catalog:
-                    kikoeru_circle_id = self._normalize_kikoeru_circle_id(existing_catalog.circle_id)
-                    existing_circle_id_text = str(existing_catalog.circle_id or "").strip().upper()
-                    if existing_circle_id_text and not existing_circle_id_text.isdigit() and not existing_circle_id_text.startswith("NAME:"):
-                        maker_id_hint = existing_circle_id_text
-                        maker_cache_key = f"maker:{existing_circle_id_text}"
-            finally:
-                db.close()
-            if not maker_cache_key:
-                maker_from_local = next((str(item.get("maker_id") or "").strip().upper() for item in local_candidates if item.get("maker_id")), "")
-                if maker_from_local:
-                    maker_id_hint = maker_from_local
-                    maker_cache_key = f"maker:{maker_from_local}"
-            if kikoeru_circle_id:
-                self._set_cached_kikoeru_circle_id(kikoeru_circle_id, f"name:{normalized_circle_query}")
-                self._save_persisted_kikoeru_circle_id(normalized_circle_query, kikoeru_circle_id, maker_id_hint)
-            if not kikoeru_circle_id:
-                kikoeru_circle_id = self._get_cached_kikoeru_circle_id(f"name:{normalized_circle_query}")
-            if not kikoeru_circle_id and maker_cache_key:
-                kikoeru_circle_id = self._get_cached_kikoeru_circle_id(maker_cache_key)
-            if not kikoeru_circle_id:
-                db = SessionLocal()
-                try:
-                    kikoeru_circle_id = self._load_persisted_kikoeru_circle_id(db, normalized_circle_query, maker_id_hint)
-                finally:
-                    db.close()
-            if kikoeru_circle_id:
-                self._set_cached_kikoeru_circle_id(kikoeru_circle_id, f"name:{normalized_circle_query}", maker_cache_key)
-            if not kikoeru_circle_id:
-                # ★ 长 query 兜底：Kikoeru 是先按 works keyword 搜作品再抽 circle.id，
-                # 整串 "悪女名鑑(常世常闇所々)" 在作品标题里几乎不会重复，会直接 0 命中。
-                # 拆出括号内/外子 keyword 重试一遍，匹配到 1 个 work 就能反查 circle.id。
-                detected_circle_id = 0
-                for variant in self._build_search_keyword_variants(circle_query):
-                    try:
-                        detected_circle_id = await self.kikoeru_service.find_circle_id_by_keyword(variant)
-                    except Exception:
-                        detected_circle_id = 0
-                    if detected_circle_id:
-                        if variant != circle_query:
-                            logger.info(
-                                "[社团补全] Kikoeru circle_id 通过拆分子 keyword 命中 raw=%s variant=%s id=%s",
-                                circle_query, variant, detected_circle_id,
-                            )
-                        break
-                kikoeru_circle_id = self._set_cached_kikoeru_circle_id(
-                    detected_circle_id,
-                    f"name:{normalized_circle_query}",
-                    maker_cache_key,
-                )
-                if kikoeru_circle_id:
-                    self._save_persisted_kikoeru_circle_id(normalized_circle_query, kikoeru_circle_id, maker_id_hint)
-            resolved_kikoeru_circle_id = kikoeru_circle_id
-            if kikoeru_circle_id:
-                report(26, "已识别 Kikoeru 社团，切换直连作品接口", kikoeru_circle_id=kikoeru_circle_id)
-                try:
-                    kikoeru_works = await self.kikoeru_service.list_circle_works(int(kikoeru_circle_id))
-                except Exception:
-                    logger.warning("[社团补全] Kikoeru 社团直连拉取失败，回退关键词搜索 circle_query=%s circle_id=%s", circle_query, kikoeru_circle_id, exc_info=True)
-                    kikoeru_works = []
-            if not kikoeru_works:
-                # 直连失败 / 没找到 circle_id 时，依次用 keyword 变种再搜一遍 works，
-                # 至少能把"作品标题里出现拆分子串"的作品拉回来给后续 identity 探测用。
-                for variant in self._build_search_keyword_variants(circle_query):
-                    try:
-                        variant_works = await self.kikoeru_service.search_circle_works(variant)
-                    except Exception:
-                        variant_works = []
-                    if variant_works:
-                        if variant != circle_query:
-                            logger.info(
-                                "[社团补全] Kikoeru works 通过拆分子 keyword 命中 raw=%s variant=%s count=%s",
-                                circle_query, variant, len(variant_works),
-                            )
-                        kikoeru_works = variant_works
-                        break
-            for work in kikoeru_works:
-                ensure_not_cancelled()
-                circle = work.get("circle", {}) if isinstance(work, dict) else {}
-                circle_name = circle.get("name", "") if isinstance(circle, dict) else ""
-                rjcode = self._guess_kikoeru_rjcode(work)
-                if not rjcode:
-                    continue
-                kikoeru_tags = self._extract_text_values(work.get("tags"))
-                kikoeru_category_values = []
-                for key in ("work_category", "category", "category_name", "work_type", "type", "file_type", "file_format"):
-                    kikoeru_category_values.extend(self._extract_text_values(work.get(key)))
-                kikoeru_haystack = " ".join([
-                    str(work.get("title") or ""),
-                    *kikoeru_tags,
-                    *kikoeru_category_values,
-                ])
-                if self._is_non_audio_package_text(kikoeru_haystack):
-                    continue
-                circle_id = ""
-                if isinstance(circle, dict):
-                    circle_id = self._normalize_kikoeru_circle_id(circle.get("id"))
-                    if circle_id:
-                        self._set_cached_kikoeru_circle_id(circle_id, f"name:{normalized_circle_query}")
-                kikoeru_candidates.append({
-                    "rjcode": rjcode,
-                    "title": work.get("title", ""),
-                    "maker_name": circle_name,
-                    "maker_id": "",
-                    "circle_id": circle_id,
-                    "source": "kikoeru",
-                    "kikoeru_work_id": work.get("id"),
-                })
-
-            if not resolved_kikoeru_circle_id:
-                detected_from_works = next(
-                    (self._normalize_kikoeru_circle_id(item.get("circle_id")) for item in kikoeru_candidates if item.get("circle_id")),
-                    "",
-                )
-                if detected_from_works:
-                    resolved_kikoeru_circle_id = self._set_cached_kikoeru_circle_id(
-                        detected_from_works,
-                        f"name:{normalized_circle_query}",
-                    )
-                    self._save_persisted_kikoeru_circle_id(normalized_circle_query, resolved_kikoeru_circle_id, maker_id_hint)
+            report(24, "跳过 Kikoeru 社团作品查询，收录态改由 ready 库存索引核对", local_candidates_count=len(local_candidates))
 
         combined_seed_candidates = local_candidates + kikoeru_candidates
 
@@ -4511,16 +4389,13 @@ class CircleCompletionService:
         # 旧流程是 "DLsite metadata 预取 → prepare_candidate → ASMR 检查 → Kikoeru 补查"
         # 4 段串行（每段内有并发，但 bucket 间是 semaphore=10/12 的"中等并发"）。
         #
-        # 新流程把所有外部 HTTP 集中到 ``_collect_external_snapshot()`` 一次跑完：
+        # 新流程把 DLsite / ASMR.one 外部 HTTP 集中到 ``_collect_external_snapshot()`` 一次跑完：
         #   Wave 1：拉 DLsite 作品资料 + 解析作品链路（candidate × 20 并发）。
         #   Wave 2a：在 ASMR.one 上核对每个 RJ 是否存在（30 并发，含翻译版全集）。
-        #   Wave 2b：在 Kikoeru 上 **按作品链路 canonical 去重** 核对（20 并发）。
-        #            一次 probe 会展开整条链路、查所有翻译版的查重状态，结果回灌
-        #            给链上每个 RJ 的 cache。把 Kikoeru 查询次数从"全 RJ"压到
-        #            "独立作品数"是这次优化的关键改动。
+        #   本地拥有 / 字幕态：后续通过 ready 库存索引批量投影，不在这里触发 Kikoeru HTTP。
         #
-        # Phase 2 阶段所有外部调用均 cache 命中（asmr 走 snapshot、Kikoeru 走
-        # ``_kikoeru_state_cache``、DLsite 走 ``_metadata_cache`` / ``_canonical_cache``），
+        # Phase 2 阶段所有外部调用均 cache 命中（asmr 走 snapshot、DLsite 走
+        # ``_metadata_cache`` / ``_canonical_cache``），
         # 不再产生网络往返。
         snapshot_candidates = [self.normalize_rjcode(c.get("rjcode")) for c in combined_candidates]
         snapshot_candidates = [r for r in snapshot_candidates if r]
@@ -4531,17 +4406,10 @@ class CircleCompletionService:
                 mapped = 54 + int(rel_pct * 0.18)  # 54 + 0..18 → 54..72
                 report(mapped, step, **meta)
 
-            # P3：用 kikoeru_works 构造 known index，让 snapshot Wave 2b 在链路上任一 RJ
-            # 命中时直接跳过 ``_probe_kikoeru_state``。这是 RaRo 这种 322/362 命中率社团
-            # 上耗时减少最多的优化点。
-            known_kikoeru_index = self._build_known_kikoeru_index(kikoeru_works)
-            if known_kikoeru_index:
-                perf.inc("kikoeru_known_index_size", len(known_kikoeru_index))
             report(
                 54,
-                f"准备核对 {len(snapshot_candidates)} 件候选作品的 DLsite / ASMR.one / Kikoeru 状态",
+                f"准备核对 {len(snapshot_candidates)} 件候选作品的 DLsite / ASMR.one 状态",
                 prefetch_count=len(snapshot_candidates),
-                known_kikoeru_index_size=len(known_kikoeru_index),
             )
             with perf.timed("stage_external_snapshot"):
                 external_snapshot = await self._collect_external_snapshot(
@@ -4549,7 +4417,6 @@ class CircleCompletionService:
                     force_refresh=force_refresh,
                     progress_callback=_snapshot_progress,
                     cancel_callback=cancel_callback,
-                    known_kikoeru_index=known_kikoeru_index,
                     perf=perf,
                 )
         else:
@@ -4980,103 +4847,22 @@ class CircleCompletionService:
             )
 
         perf.add_stage("stage_asmr_check", (time.monotonic() - _asmr_check_started_at) * 1000)
-        report(90, "补查 Kikoeru 服务器拥有态", aggregated_count=len(aggregated))
-        _kikoeru_check_started_at = time.monotonic()
-        checked_kikoeru = 0
-        kikoeru_owned = 0
-        kikoeru_semaphore = asyncio.Semaphore(10)
+        report(90, "从库存索引核对本地收录态", aggregated_count=len(aggregated))
+        _local_owned_check_started_at = time.monotonic()
+        local_owned_stats = self._apply_library_index_owned_state_to_items(aggregated)
+        if perf:
+            perf.inc("local_index_owned_count", int(local_owned_stats.get("owned_count") or 0))
+            perf.inc("local_index_subtitle_count", int(local_owned_stats.get("subtitle_count") or 0))
+            perf.inc("local_index_hit_count", int(local_owned_stats.get("hit_count") or 0))
+        report(
+            92,
+            "库存索引收录态核对完成",
+            local_owned_count=int(local_owned_stats.get("owned_count") or 0),
+            local_subtitle_count=int(local_owned_stats.get("subtitle_count") or 0),
+            local_index_hit_count=int(local_owned_stats.get("hit_count") or 0),
+        )
 
-        async def run_kikoeru_probe(canonical: str, item: Dict[str, Any]) -> tuple[str, Optional[Dict[str, Any]]]:
-            ensure_not_cancelled()
-            # ⚠ 性能修复 #1：旧短路条件要求 ``subtitle_rjcodes`` 也必须非空，但
-            # ASMR 社团大部分作品没字幕版（``subtitle_rjcodes`` 永远为 []），
-            # 导致 304 个 bucket 全部走完整 probe，Phase 2 多耗 ~11 分钟。
-            # 现在只要 ``has_kikoeru`` 已确认就跳过，subtitle 走后台 bonus refresh。
-            if item["has_kikoeru"] and item["kikoeru_found_rjcodes"]:
-                if perf:
-                    perf.inc("kikoeru_phase2_short_circuit_prefilled")
-                return canonical, None
-
-            probe_candidates = [
-                item.get("display_rjcode"),
-                canonical,
-                item.get("asmr_available_rjcode"),
-                *(item.get("linked_rjcodes") or []),
-                *(item.get("kikoeru_found_rjcodes") or []),
-            ]
-
-            # ⚠ 性能修复 #2：先扫 ``self._kikoeru_state_cache``。Snapshot Phase 1 已经
-            # 把所有 known_kikoeru / 主动 probe 的 state 灌进 cache，Phase 2 在这里
-            # 任意一个 candidate 命中且 has_kikoeru=True 即可拼装 state、彻底跳过
-            # ``_probe_kikoeru_state_for_candidates``（避免 5-8 个 candidate × 304 bucket
-            # 的 N 倍放大调用）。这是最大的省时点。
-            seen: Set[str] = set()
-            merged_found: List[str] = []
-            merged_subtitles: List[str] = []
-            merged_titles: Dict[str, str] = {}
-            cache_hit = False
-            for cand in probe_candidates:
-                normalized_cand = self.normalize_rjcode(cand)
-                if not normalized_cand or normalized_cand in seen:
-                    continue
-                seen.add(normalized_cand)
-                cached_state = self._kikoeru_state_cache.get(normalized_cand)
-                if not cached_state or not cached_state.get("has_kikoeru"):
-                    continue
-                cache_hit = True
-                for code in cached_state.get("found_rjcodes") or []:
-                    normalized = self.normalize_rjcode(code)
-                    if normalized and normalized not in merged_found:
-                        merged_found.append(normalized)
-                for code in cached_state.get("subtitle_rjcodes") or []:
-                    normalized = self.normalize_rjcode(code)
-                    if normalized and normalized not in merged_subtitles:
-                        merged_subtitles.append(normalized)
-                for code, title in (cached_state.get("found_titles") or {}).items():
-                    normalized = self.normalize_rjcode(code)
-                    if normalized and normalized not in merged_titles and title:
-                        merged_titles[normalized] = str(title or "").strip()
-            if cache_hit:
-                if perf:
-                    perf.inc("kikoeru_phase2_cache_hit")
-                return canonical, {
-                    "has_kikoeru": True,
-                    "found_rjcodes": merged_found,
-                    "subtitle_rjcodes": merged_subtitles,
-                    "found_titles": merged_titles,
-                }
-
-            if perf:
-                perf.inc("kikoeru_phase2_full_probe")
-            async with kikoeru_semaphore:
-                state = await self._probe_kikoeru_state_for_candidates(probe_candidates)
-            return canonical, state
-
-        for future in asyncio.as_completed([run_kikoeru_probe(canonical, item) for canonical, item in aggregated.items()]):
-            ensure_not_cancelled()
-            canonical, kikoeru_state = await future
-            item = aggregated.get(canonical) or {}
-            if kikoeru_state is not None:
-                found_rjcodes = [self.normalize_rjcode(code) for code in list(kikoeru_state.get("found_rjcodes") or [])]
-                found_rjcodes = [code for code in found_rjcodes if code]
-                subtitle_rjcodes = [self.normalize_rjcode(code) for code in list(kikoeru_state.get("subtitle_rjcodes") or [])]
-                subtitle_rjcodes = [code for code in subtitle_rjcodes if code]
-                item["has_kikoeru"] = bool(found_rjcodes)
-                item["kikoeru_found_rjcodes"] = found_rjcodes
-                item["kikoeru_subtitle_rjcodes"] = subtitle_rjcodes
-                if item["has_kikoeru"] or found_rjcodes:
-                    item["source_flags"].add("kikoeru")
-            if item.get("has_kikoeru"):
-                kikoeru_owned += 1
-            checked_kikoeru += 1
-            report(
-                90 + int((checked_kikoeru / total_aggregated) * 2),
-                f"补查服务器拥有态 {checked_kikoeru}/{total_aggregated}",
-                kikoeru_checked_count=checked_kikoeru,
-                kikoeru_owned_count=kikoeru_owned,
-            )
-
-        perf.add_stage("stage_kikoeru_check", (time.monotonic() - _kikoeru_check_started_at) * 1000)
+        perf.add_stage("stage_local_owned_check", (time.monotonic() - _local_owned_check_started_at) * 1000)
         # 把封面图同步缓存到本地 data/img/，避免前端每次都从 dlsite 加载，
         # dlsite 图片 CDN 在国内偶发抖动 / 代理掉链时整个社团页都会"白板"。
         # 卡片图和列表小图分开缓存：卡片图保留 RJxxxx.jpg，列表图写 RJxxxx_sam.jpg。
@@ -5213,7 +4999,7 @@ class CircleCompletionService:
             "index_completed",
             summary=(
                 f"本地有 {indexed_counts['local_owned_count']} 个 / "
-                f"Kikoeru 有 {indexed_counts['owned_count']} 个 / "
+                f"库存已收录 {indexed_counts['owned_count']} 个 / "
                 f"DL 有 {indexed_counts['dl_count']} 个 / "
                 f"asmr.one 有 {sum(1 for item in summary.get('works') or [] if item.get('has_asmr_one'))} 个 / "
                 f"可下载 {indexed_counts['downloadable_count']} 个 / "
@@ -5335,7 +5121,6 @@ class CircleCompletionService:
                 work_join_rows = (
                     db.query(
                         CircleWork.circle_id.label("circle_id"),
-                        CircleWork.has_kikoeru.label("has_kikoeru"),
                         CircleWork.has_asmr_one.label("has_asmr_one"),
                         CircleWork.has_dlsite.label("has_dlsite"),
                         LibraryOwnedWork.canonical_rjcode.label("local_canonical"),
@@ -5358,17 +5143,14 @@ class CircleCompletionService:
                         "local_owned": 0,
                     })
                     s["total_works"] += 1
-                    if r.has_kikoeru:
-                        s["kikoeru_owned"] += 1
                     if r.has_asmr_one:
                         s["asmr_available"] += 1
                     if r.has_dlsite:
                         s["dl_works"] += 1
-                    is_server_owned = bool(r.has_kikoeru)
                     is_local_owned = r.local_canonical is not None
                     if is_local_owned:
                         s["local_owned"] += 1
-                    if is_server_owned or is_local_owned:
+                        s["kikoeru_owned"] += 1
                         s["owned"] += 1
                 mark_stage("stats_query")
 
@@ -5423,7 +5205,6 @@ class CircleCompletionService:
                     db.query(
                         CircleWork.circle_id,
                         WorkMetadata.release_date,
-                        CircleWork.has_kikoeru,
                         LibraryOwnedWork.canonical_rjcode.label("local_canonical"),
                     )
                     .join(WorkMetadata, WorkMetadata.rjcode == CircleWork.canonical_rjcode)
@@ -5436,7 +5217,7 @@ class CircleCompletionService:
                 )
                 unreleased_map: Dict[str, int] = {}
                 for ur in unreleased_rows:
-                    if bool(ur.has_kikoeru) or ur.local_canonical is not None:
+                    if ur.local_canonical is not None:
                         continue
                     if self._is_future_release_date(ur.release_date):
                         unreleased_map[ur.circle_id] = unreleased_map.get(ur.circle_id, 0) + 1
@@ -5615,6 +5396,12 @@ class CircleCompletionService:
                 item = row.to_dict()
                 item["circle_name"] = catalog.circle_name
                 item["local_owned"] = local_owned
+                item["local_folder_size"] = int(getattr(owned_row, "folder_size", 0) or 0) if owned_row else 0
+                item["local_file_count"] = int(getattr(owned_row, "file_count", 0) or 0) if owned_row else 0
+                item["local_subtitle_present"] = bool(getattr(owned_row, "has_local_subtitles", False)) if owned_row else False
+                item["subtitle_file_count"] = int(getattr(owned_row, "subtitle_file_count", 0) or 0) if owned_row else 0
+                item["subtitle_dir"] = str(getattr(owned_row, "subtitle_dir", "") or "") if owned_row else ""
+                item["owned_paths"] = list((getattr(owned_row, "owned_paths", None) or []) if owned_row else [])
                 # is_new_work 计算：必须同时满足 email_watcher 来源 + 锚在 48h 内
                 row_tags = row.source_tags
                 row_has_email_watcher = isinstance(row_tags, list) and "email_watcher" in row_tags
@@ -5719,6 +5506,15 @@ class CircleCompletionService:
                     "group_label": preferred_group["label"],
                     "group_short_label": preferred_group["short_label"],
                 }
+                local_owned_rjcodes = list((owned_row.owned_rjcodes or []) if owned_row else [])
+                normalized_local_owned_rjcodes: List[str] = []
+                for candidate in [*local_owned_rjcodes, row.display_rjcode, row.canonical_rjcode]:
+                    normalized_candidate = self.normalize_rjcode(candidate)
+                    if normalized_candidate and normalized_candidate not in normalized_local_owned_rjcodes:
+                        normalized_local_owned_rjcodes.append(normalized_candidate)
+                item["has_kikoeru"] = bool(local_owned)
+                item["kikoeru_found_rjcodes"] = normalized_local_owned_rjcodes if local_owned else []
+                item["kikoeru_subtitle_rjcodes"] = normalized_local_owned_rjcodes if item["local_subtitle_present"] else []
                 item["source_compare"] = self._build_source_compare(item, view_canonical_info, metadata_map)
                 kikoeru_compare = item["source_compare"].get("kikoeru") if isinstance(item["source_compare"], dict) else {}
                 server_match_rjcodes = list((kikoeru_compare or {}).get("matched_rjcodes") or (kikoeru_compare or {}).get("all_rjcodes") or [])
@@ -5727,9 +5523,8 @@ class CircleCompletionService:
                     or (kikoeru_compare or {}).get("primary_rjcode")
                     or (server_match_rjcodes[0] if server_match_rjcodes else "")
                 ).strip()
-                server_owned = bool(server_match_rjcodes)
-                completion_owned = bool(local_owned or server_owned)
-                local_owned_rjcodes = list((owned_row.owned_rjcodes or []) if owned_row else [])
+                server_owned = bool(local_owned)
+                completion_owned = bool(local_owned)
                 owned_primary_rjcode = server_match_primary_rjcode or (local_owned_rjcodes[0] if local_owned_rjcodes else "")
                 item["owned"] = completion_owned
                 item["completion_owned"] = completion_owned
@@ -5748,7 +5543,7 @@ class CircleCompletionService:
                     "group_label": "原作优先",
                     "group_short_label": "原作",
                 }
-                item["subtitle_present"] = bool((kikoeru_compare or {}).get("subtitle_present"))
+                item["subtitle_present"] = bool(item["local_subtitle_present"])
                 asmr_compare = item["source_compare"].get("asmr_one") if isinstance(item["source_compare"], dict) else {}
                 item["subtitle_repairable"] = bool(
                     completion_owned
@@ -5759,7 +5554,7 @@ class CircleCompletionService:
                 item["status_tags"] = [
                     *(["库存已收录"] if local_owned else []),
                     *(["本地已下载"] if item["local_download_ready"] else []),
-                    *(["服务器已有"] if server_owned else ["服务器缺失"]),
+                    *(["已收录"] if server_owned else ["未收录"]),
                     *(["可下载"] if row.has_asmr_one else ["暂不可下载"]),
                 ]
                 item["download_plan"] = {"rjcode": row.asmr_available_rjcode or row.display_rjcode} if row.has_asmr_one else None
@@ -6132,9 +5927,9 @@ class CircleCompletionService:
                 if bool(before_snapshot.get("has_kikoeru")) != bool(after_has_kikoeru):
                     changes.append({
                         "key": "server_state",
-                        "label": "服务器状态",
-                        "before": "服务器已有" if bool(before_snapshot.get("has_kikoeru")) else "服务器缺失",
-                        "after": "服务器已有" if bool(after_has_kikoeru) else "服务器缺失",
+                        "label": "库存收录",
+                        "before": "库存已收录" if bool(before_snapshot.get("has_kikoeru")) else "库存未收录",
+                        "after": "库存已收录" if bool(after_has_kikoeru) else "库存未收录",
                         "change_type": "gain" if after_has_kikoeru else "loss",
                     })
 
@@ -6168,7 +5963,7 @@ class CircleCompletionService:
                 if before_server_primary != after_server_primary:
                     changes.append({
                         "key": "server_rjcode",
-                        "label": "服务器RJ",
+                        "label": "库存命中 RJ",
                         "before": before_server_primary or "—",
                         "after": after_server_primary or "—",
                         "change_type": "switch" if before_server_primary and after_server_primary else ("gain" if after_server_primary else "loss"),
@@ -6281,17 +6076,17 @@ class CircleCompletionService:
                 )
                 actual_norm = self.normalize_rjcode(actual_rjcode)
 
-                kikoeru_state = await self._probe_kikoeru_state_for_candidates(
-                    probe_candidates or [canonical],
-                    use_cache=not force_refresh,
-                )
-                found_rjcodes = _normalize_code_list(kikoeru_state.get("found_rjcodes") or [])
-                subtitle_rjcodes = _normalize_code_list(kikoeru_state.get("subtitle_rjcodes") or [])
-                found_titles = {
-                    self.normalize_rjcode(code): str(title or "").strip()
-                    for code, title in dict(kikoeru_state.get("found_titles") or {}).items()
-                    if self.normalize_rjcode(code) and self._is_usable_work_title(code, title)
+                local_state_item = {
+                    "display_rjcode": self.normalize_rjcode(preferred_variant.get("rjcode")) or canonical or row.display_rjcode,
+                    "asmr_available_rjcode": actual_norm or row.asmr_available_rjcode,
+                    "linked_rjcodes": linked_rjcodes or [row.display_rjcode or canonical],
+                    "kikoeru_found_rjcodes": [],
+                    "source_flags": set(),
                 }
+                self._apply_library_index_owned_state_to_items({canonical: local_state_item})
+                found_rjcodes = _normalize_code_list(local_state_item.get("kikoeru_found_rjcodes") or [])
+                subtitle_rjcodes = _normalize_code_list(local_state_item.get("kikoeru_subtitle_rjcodes") or [])
+                found_titles: Dict[str, str] = {}
                 source_flags = {flag for flag in str(row.source_mask or "").split(",") if flag}
                 if row.has_dlsite:
                     source_flags.add("dlsite")
@@ -6393,6 +6188,12 @@ class CircleCompletionService:
                     "server_match_rjcodes": normalized_found_rjcodes,
                     "server_match_primary_rjcode": server_match_primary_rjcode,
                     "subtitle_present": subtitle_present,
+                    "local_owned": bool(local_state_item.get("local_owned")),
+                    "local_folder_size": int(local_state_item.get("local_folder_size") or 0),
+                    "local_file_count": int(local_state_item.get("local_file_count") or 0),
+                    "local_subtitle_present": bool(local_state_item.get("local_subtitle_present")),
+                    "subtitle_file_count": int(local_state_item.get("subtitle_file_count") or 0),
+                    "subtitle_dir": str(local_state_item.get("subtitle_dir") or ""),
                     "changed": changed,
                     "change_count": len(change_details),
                     "change_flags": {

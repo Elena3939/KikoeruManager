@@ -4,7 +4,7 @@
       :icon="Tags"
       icon-color="var(--km-nav-circle-icon)"
       title="社团补全"
-      subtitle="按社团建立索引，结合 Kikoeru 收录态、DLsite 关联与 asmr.one 下载能力补全缺失作品"
+      subtitle="按社团建立索引，结合库存收录态、DLsite 关联与 asmr.one 下载能力补全缺失作品"
       class="circle-page-header"
     >
       <div class="hero-search-wrap">
@@ -62,7 +62,7 @@
         <span v-if="indexJob.meta?.is_batch" class="progress-meta-pill batch"><CheckCircle2 :size="10" /> {{ indexJob.meta.completed_queries || 0 }}/{{ indexJob.meta.batch_total || 0 }} 已完成</span>
         <span v-if="indexJob.meta?.is_batch && indexJob.meta.failed_queries" class="progress-meta-pill warn" title="失败数"><AlertCircle :size="10" /> {{ indexJob.meta.failed_queries }}</span>
         <span class="progress-meta-pill local" title="本地元数据缓存命中的候选作品"><HardDrive :size="10" /> 元数据 {{ indexJob.meta.local_candidates_count || 0 }}</span>
-        <span class="progress-meta-pill kikoeru" title="Kikoeru候选"><Headphones :size="10" /> {{ indexJob.meta.kikoeru_candidates_count || 0 }}</span>
+        <span class="progress-meta-pill kikoeru" title="库存候选"><Headphones :size="10" /> {{ indexJob.meta.kikoeru_candidates_count || 0 }}</span>
         <span class="progress-meta-pill dlsite" title="DLsite候选"><Globe :size="10" /> {{ indexJob.meta.dlsite_candidates_count || 0 }}</span>
         <span class="progress-meta-pill merged" title="合并候选"><List :size="10" /> {{ indexJob.meta.combined_candidates_count || indexJob.meta.aggregated_count || 0 }}</span>
         <span class="progress-meta-pill ok" title="可下载"><Download :size="10" /> {{ indexJob.meta.asmr_available_count || 0 }}</span>
@@ -124,7 +124,7 @@
               <div class="circle-list-stats-row">
                 <div class="circle-list-counts">
                   <span class="circle-stat-item total" title="DLsite作品数"><LibraryBig :size="10" /> {{ circle.dl_works || circle.total_works || 0 }}</span>
-                  <span class="circle-stat-item owned" title="服务器已拥有"><Server :size="10" /> {{ circle.server_owned || 0 }}</span>
+                  <span class="circle-stat-item owned" title="库存已收录"><Server :size="10" /> {{ circle.server_owned || 0 }}</span>
                   <span v-if="(circle.missing || 0) > 0" class="circle-stat-item missing" title="缺失"><XCircle :size="10" /> {{ circle.missing }}</span>
                 </div>
                 <span class="circle-list-status-pill" :class="getCircleCompletionState(circle)">
@@ -229,7 +229,7 @@
               <span class="progress-meta-pill batch" title="已处理"><CheckCircle2 :size="10" /> {{ refreshJob.meta.processed_count || 0 }}</span>
               <span class="progress-meta-pill changed" title="有变化"><Shuffle :size="10" /> {{ refreshJob.meta.changed_count || 0 }}</span>
               <span v-if="refreshJob.meta.force_refresh" class="progress-meta-pill warn"><AlertCircle :size="10" /> 强制刷新</span>
-              <span class="progress-meta-pill kikoeru" title="Kikoeru已拥有"><Headphones :size="10" /> {{ refreshJob.meta.kikoeru_owned_count || 0 }}</span>
+              <span class="progress-meta-pill kikoeru" title="库存已收录"><Headphones :size="10" /> {{ refreshJob.meta.kikoeru_owned_count || 0 }}</span>
               <span class="progress-meta-pill ok" title="asmr.one可下载"><Download :size="10" /> {{ refreshJob.meta.asmr_available_count || 0 }}</span>
               <span v-if="refreshJob.meta.current_rjcode" class="progress-meta-pill current"><Hash :size="10" /> 当前 {{ refreshJob.meta.current_rjcode }}</span>
             </div>
@@ -387,7 +387,7 @@
               <div v-else-if="circleDetailLoading" class="circle-works-loading-state">
                 <AppLoadingAnimation
                   label="正在刷新社团作品状态"
-                  description="正在同步缺失作品、服务器拥有态和可下载信息"
+                  description="正在同步缺失作品、库存收录态和可下载信息"
                   :size="176"
                   :min-height="280"
                 />
@@ -626,7 +626,7 @@
                       <CheckCircle2 :size="14" stroke-width="2.5" />
                     </div>
                     <div class="flex flex-col">
-                      <span class="compare-stat-label">Kikoeru</span>
+                      <span class="compare-stat-label">库存</span>
                       <span class="compare-stat-value">{{ compareWorksStats.kikoeru }}</span>
                     </div>
                   </div>
@@ -664,7 +664,7 @@
               <div class="compare-filter-row flex items-center justify-between mb-4">
                 <div class="compare-filter-tabs">
                   <button type="button" class="compare-filter-chip" :class="{ 'is-active': compareSourceFilter === 'all' }" @click="compareSourceFilter = 'all'; comparePage = 1">全部</button>
-                  <button type="button" class="compare-filter-chip is-kikoeru" :class="{ 'is-active': compareSourceFilter === 'kikoeru' }" @click="compareSourceFilter = 'kikoeru'; comparePage = 1">已拥有(Kikoeru)</button>
+                  <button type="button" class="compare-filter-chip is-kikoeru" :class="{ 'is-active': compareSourceFilter === 'kikoeru' }" @click="compareSourceFilter = 'kikoeru'; comparePage = 1">库存已收录</button>
                   <button type="button" class="compare-filter-chip is-asmr" :class="{ 'is-active': compareSourceFilter === 'asmr_one' }" @click="compareSourceFilter = 'asmr_one'; comparePage = 1">可下载(ASMR.ONE)</button>
                 </div>
 
@@ -711,7 +711,7 @@
               <div class="compare-head">
                 <div class="compare-head-main">资源信息</div>
                 <div class="compare-head-sources">
-                  <div class="compare-source-col">Kikoeru</div>
+                  <div class="compare-source-col">库存</div>
                   <div class="compare-source-divider is-transparent"></div>
                   <div class="compare-source-col">DLsite</div>
                   <div class="compare-source-divider is-transparent"></div>
@@ -728,7 +728,7 @@
                       <h4 class="compare-work-title" :title="item.title || item.workRjcode || '未命名作品'">{{ item.title || item.workRjcode || '未命名作品' }}</h4>
                       <div class="compare-work-tags flex items-center gap-2">
                         <!-- Status Badge -->
-                        <span v-if="item.statusKey === 'owned'" class="compare-status-inline is-owned" title="服务器已拥有">
+                        <span v-if="item.statusKey === 'owned'" class="compare-status-inline is-owned" title="库存已收录">
                           <CheckCircle2 :size="14" stroke-width="2.5" />
                           已拥有
                         </span>
@@ -752,7 +752,7 @@
                           {{ item.preferredVariantLabel }}
                         </span>
 
-                        <!-- Subtitle Icon (if kikoeru tags contain 字幕) -->
+                        <!-- Subtitle Icon (compat source tags contain 字幕) -->
                         <span v-if="normalizeKikoeruTags(item.sourceCompare.kikoeru.tags).includes('字幕')" class="compare-variant-badge is-subtitle">
                           <MessageSquareText :size="12" stroke-width="2.5" />
                           字幕
@@ -762,7 +762,7 @@
 
                     <!-- Source Info -->
                     <div class="compare-source-cols flex items-center gap-4 text-xs shrink-0 mt-0.5">
-                      <!-- Kikoeru -->
+                      <!-- 库存收录 -->
                       <div class="flex flex-col items-center gap-1 w-20">
                         <span v-if="item.sourceCompare.kikoeru.primary_rjcode" class="compare-source-code">{{ item.sourceCompare.kikoeru.primary_rjcode }}</span>
                         <span v-else class="compare-source-empty">—</span>
@@ -962,7 +962,7 @@ const circleSortKeyOptions = [
   { value: 'refreshed_at', label: '刷新时间' },
   { value: 'works', label: '作品数量' },
   { value: 'missing', label: '缺失数量' },
-  { value: 'owned', label: '服务器拥有数量' },
+  { value: 'owned', label: '库存收录数量' },
 ]
 const indexing = ref(false)
 const emailCheckLoading = ref(false)
@@ -1760,14 +1760,14 @@ const compareWorks = computed(() => (detail.works || []).map(item => ({
 })))
 
 function formatServerOwnedLabel(item) {
-  if (!item?.server_owned) return '服务器缺失'
+  if (!item?.server_owned) return '库存未收录'
   const matched = String(
     item?.server_match_primary_rjcode ||
     item?.source_compare?.kikoeru?.matched_rjcode ||
     item?.source_compare?.kikoeru?.primary_rjcode ||
     ''
   ).trim()
-  return matched ? `服务器已有 · ${matched}` : '服务器已有'
+  return matched ? `库存已收录 · ${matched}` : '库存已收录'
 }
 
 function normalizeRjcode(value) {
@@ -1834,7 +1834,7 @@ function applyOptimisticOwnedStateForUploadTask(task) {
       server_match_primary_rjcode: String(item.server_match_primary_rjcode || display || canonical || '').trim(),
       status_tags: [
         ...(item.local_owned ? ['库存已收录'] : []),
-        '服务器已有',
+        '库存已收录',
         ...(item.has_asmr_one ? ['可下载'] : ['暂不可下载']),
       ]
     }
@@ -2138,6 +2138,7 @@ const canCancelRefreshJob = computed(() => isRefreshJobActive.value)
 onMounted(async () => {
   window.addEventListener('kikoerumanager:notification:new', handleNewReleaseNotification)
   window.addEventListener('kikoerumanager:circle:owned-synced', handleCircleOwnedSynced)
+  window.addEventListener('kikoerumanager:circle:subtitle-synced', handleCircleOwnedSynced)
   window.addEventListener('kikoerumanager:events:message', handleCircleTaskRealtimeEvent)
   hydrateIndexJobState()
   hydrateRefreshJobState()
@@ -2189,6 +2190,7 @@ onActivated(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('kikoerumanager:notification:new', handleNewReleaseNotification)
   window.removeEventListener('kikoerumanager:circle:owned-synced', handleCircleOwnedSynced)
+  window.removeEventListener('kikoerumanager:circle:subtitle-synced', handleCircleOwnedSynced)
   window.removeEventListener('kikoerumanager:events:message', handleCircleTaskRealtimeEvent)
   if (_circleOwnedSyncedTimer) {
     clearTimeout(_circleOwnedSyncedTimer)

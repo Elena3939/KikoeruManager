@@ -119,11 +119,11 @@ export function buildSamplePayload(eventType = 'completed') {
       title: '【简体中文版】【免费公开中--要去了要去了视频♡】超喜欢你的幼妻〇莉/哦哟♡公主〜〜新婚甜蜜调教&恩爱授孕做爱的故事♪〜',
       circle_name: 'リリムワークス',
       cover_url: 'https://img.dlsite.jp/modpub/images2/work/doujin/RJ01574000/RJ01574313_img_main.jpg',
-      size_text: '有更新 / 服务器已有',
+      size_text: '有更新 / 库存已收录',
       file_count: 4,
       count_label: '4 处变化',
       changes: [
-        '服务器状态: 服务器缺失 -> 服务器已有',
+        '库存收录: 库存未收录 -> 库存已收录',
         '服务器RJ: 无 -> RJ01574313',
         '字幕状态: 无 -> 有',
         '来源集合: asmr_one / dlsite / local -> asmr_one / dlsite / kikoeru / local',

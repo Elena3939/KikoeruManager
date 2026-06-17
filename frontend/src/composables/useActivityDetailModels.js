@@ -561,7 +561,7 @@ const HIGHLIGHT_LABELS = {
   uploaded_count: '上传文件数', selected_dir_count: '上传目录数', circle_name: '社团名',
   resource_name: '文件名', resource_path: '相对路径', local_path: '本地路径',
   upload_path: '上传路径', size_bytes: '文件大小', local_owned_count: '本地已有',
-  owned_count: '服务器已有', missing_count: '缺失数量', downloadable_count: '可下载数量',
+  owned_count: '库存已收录', missing_count: '缺失数量', downloadable_count: '可下载数量',
   dl_count: 'DL 数量', works_count: '作品总数', scan_directory_count: '扫描目录数',
   recognized_rj_count: '识别 RJ 数', created_count: '创建任务数', skipped_total: '跳过数量',
   skipped_existing: '已存在跳过', skipped_duplicate: '重复跳过',
@@ -1987,7 +1987,7 @@ function buildCircleCompletionRefreshModel(row, refreshFilter) {
           subtitlePresent: Boolean(it?.subtitle_present),
           changed: Boolean(it?.changed),
           resultStatus: it?.has_kikoeru ? 'owned' : (it?.has_asmr_one ? 'downloadable' : 'missing'),
-          resultLabel: it?.has_kikoeru ? '服务器已有' : (it?.has_asmr_one ? 'asmr.one 可下载' : '无来源'),
+          resultLabel: it?.has_kikoeru ? '库存已收录' : (it?.has_asmr_one ? 'asmr.one 可下载' : '无来源'),
           changeDetails: Array.isArray(it?.change_details)
             ? it.change_details
                 .map((c) => ({

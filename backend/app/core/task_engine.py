@@ -2339,19 +2339,19 @@ class TaskEngine:
                                         and not _kikoeru_needs_subtitle
                                         and not _kikoeru_empty_shell
                                     ):
-                                        # Kikoeru 已有字幕 → 小包视为重复，转问题作品
-                                        _reason = "小型压缩包对应作品在服务器已有字幕，按重复处理"
+                                        # 本地库存已有字幕 → 小包视为重复，转问题作品
+                                        _reason = "小型压缩包对应作品在本地库存已有字幕，按重复处理"
                                         task.fail(_reason)
                                         self._record_problem_work_for_extract_failure(task, rjcode, _reason)
                                         logger.warning(
-                                            f"[{rjcode}] 小型压缩包对应 Kikoeru 作品已有字幕，转入问题作品: "
+                                            f"[{rjcode}] 小型压缩包对应本地库存作品已有字幕，转入问题作品: "
                                             f"source={os.path.basename(task.source_path)}"
                                         )
                                         await self._abort_precheck(precheck_task)
                                         return
                                     elif not _kikoeru_has_work and _kikoeru_confident:
                                         if _preview_subtitle_count > 0:
-                                            _reason = "小型压缩包对应 RJ 作品在服务器不存在，但包内含字幕，需人工核查"
+                                            _reason = "小型压缩包对应 RJ 作品未在 ready 库存索引命中，但包内含字幕，需人工核查"
                                             task.fail(_reason)
                                             self._record_problem_work_for_extract_failure(task, rjcode, _reason)
                                             logger.warning(
@@ -2361,7 +2361,7 @@ class TaskEngine:
                                             await self._abort_precheck(precheck_task)
                                             return
                                         logger.info(
-                                            f"[{rjcode}] 小型压缩包对应 Kikoeru 作品不存在且包内无字幕，按新作继续解压入库: "
+                                            f"[{rjcode}] 小型压缩包未命中 ready 库存索引且包内无字幕，按新作继续解压入库: "
                                             f"source={os.path.basename(task.source_path)}"
                                         )
                                     elif _preview_subtitle_count == 0:
@@ -2795,6 +2795,18 @@ class TaskEngine:
                         task, rjcode, task.output_path, nested_subtitle_filenames
                     )
 
+                if task.output_path and rjcode and rjcode != "未知":
+                    try:
+                        from .circle_completion_service import get_circle_completion_service
+
+                        await get_circle_completion_service().sync_owned_for_rj(
+                            rjcode,
+                            folder_path=task.output_path,
+                            library_id=str((task.task_metadata or {}).get("target_library_id") or ""),
+                        )
+                    except Exception:
+                        logger.warning("[%s] 标准解压入库完成后同步社团拥有态失败 path=%s", rjcode, task.output_path, exc_info=True)
+
                 task.update_progress(100, "完成")
                 task.complete()
                 try:
@@ -3068,6 +3080,18 @@ class TaskEngine:
                     if not config.process_existing.classify:
                         logger.info(f"[{rjcode}] 步骤[智能分类]已禁用，跳过")
                     task.output_path = renamed_path
+
+                if task.output_path and rjcode and rjcode != "未知":
+                    try:
+                        from .circle_completion_service import get_circle_completion_service
+
+                        await get_circle_completion_service().sync_owned_for_rj(
+                            rjcode,
+                            folder_path=task.output_path,
+                            library_id=str((task.task_metadata or {}).get("target_library_id") or ""),
+                        )
+                    except Exception:
+                        logger.warning("[%s] 已有文件夹入库完成后同步社团拥有态失败 path=%s", rjcode, task.output_path, exc_info=True)
 
                 task.update_progress(100, "完成")
                 task.complete()
@@ -5358,19 +5382,29 @@ class TaskEngine:
                     append_progress_log("未发现旧字幕，按强制模式重新抓取", 6, 'warning')
 
             if bool(task.task_metadata.get('skip_if_existing_subtitles')) and rjcode != "未知":
-                kikoeru_state = await rj_service.check_kikoeru_existing_subtitles(rjcode)
+                try:
+                    local_hits = get_library_manager().find_rj_in_ready_index([rjcode], library_ids=[library_id] if library_id else None)
+                except Exception:
+                    logger.warning("[%s] ready 库存索引字幕态检查失败，按无字幕继续抓取", rjcode, exc_info=True)
+                    local_hits = {}
+                flat_hits = list(local_hits.get(rjcode) or [])
+                primary_hit = flat_hits[0] if flat_hits else {}
+                local_has_subtitles = any(
+                    bool(hit.get('local_subtitle_present')) or int(hit.get('subtitle_file_count') or 0) > 0
+                    for hit in flat_hits
+                )
+                subtitle_file_count = sum(int(hit.get('subtitle_file_count') or 0) for hit in flat_hits)
+                matched_rjcode = str(primary_hit.get('matched_rjcode') or primary_hit.get('rjcode') or rjcode).upper()
                 task.task_metadata.update({
-                    'kikoeru_checked_rjcode': kikoeru_state.get('checked_rjcode', rjcode),
-                    'kikoeru_has_work': bool(kikoeru_state.get('has_work')),
-                    'kikoeru_has_existing_subtitles': bool(kikoeru_state.get('has_existing_subtitles')),
-                    'kikoeru_matched_rjcode': kikoeru_state.get('matched_rjcode', ''),
-                    'kikoeru_subtitle_file_count': int(kikoeru_state.get('subtitle_file_count') or 0),
-                    'kikoeru_subtitle_check_source': kikoeru_state.get('subtitle_check_source', ''),
+                    'kikoeru_checked_rjcode': rjcode,
+                    'kikoeru_has_work': bool(flat_hits),
+                    'kikoeru_has_existing_subtitles': local_has_subtitles,
+                    'kikoeru_matched_rjcode': matched_rjcode,
+                    'kikoeru_subtitle_file_count': subtitle_file_count,
+                    'kikoeru_subtitle_check_source': 'library_index',
                 })
-                if bool(kikoeru_state.get('has_existing_subtitles')):
-                    matched_rjcode = str(kikoeru_state.get('matched_rjcode') or rjcode).upper()
-                    subtitle_file_count = int(kikoeru_state.get('subtitle_file_count') or 0)
-                    skip_message = f"Kikoeru 已有字幕（{matched_rjcode}"
+                if local_has_subtitles:
+                    skip_message = f"本地库存已有字幕（{matched_rjcode}"
                     if subtitle_file_count > 0:
                         skip_message += f" / {subtitle_file_count} 个"
                     skip_message += "），跳过抓取"
@@ -5506,6 +5540,18 @@ class TaskEngine:
             subtitle_dir = str(result.get('subtitle_dir') or '')
             if subtitle_dir:
                 enqueue_subtitle_index_replace(subtitle_dir)
+                try:
+                    from .circle_completion_service import get_circle_completion_service
+
+                    await get_circle_completion_service().sync_subtitle_for_rj(
+                        str(result.get('actual_rjcode') or result.get('rjcode') or rjcode),
+                        folder_path=folder_path,
+                        library_id=library_id,
+                        subtitle_dir=subtitle_dir,
+                        subtitle_file_count=written_count,
+                    )
+                except Exception:
+                    logger.warning("[%s] RJ 字幕抓取完成后同步社团字幕态失败", rjcode, exc_info=True)
             else:
                 enqueue_cleaned_subtitle_index_delete()
             task.update_progress(100, f"完成，写入 {written_count} 个字幕")

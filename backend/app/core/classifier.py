@@ -50,25 +50,18 @@ class SmartClassifier:
             )
             return True
         
-        # 2. 先走本地库存索引 / 库存 fallback。
-        # Kikoeru 只是外部兜底：如果先写入 "[Kikoeru 服务器] ..." 这种显示路径，
-        # 问题作品详情页后续很难稳定还原真实目录，也就拿不到大小 / 创建时间。
+        # 2. 只走 ready 库存索引。Kikoeru 只是播放这份库存的服务，不再作为拥有态
+        # 查重源；索引未 ready / 未命中时直接继续，不主动扫盘、不请求群晖。
         local_result = await self._check_library_index_before_extract(rjcode, task)
         if local_result:
             return True
-
-        # 3. 检查 Kikoeru 在线索引服务器（不是用户配置的远程库存）
-        logger.info(f"[预检] 检查 Kikoeru 服务器: {rjcode}")
-        kikoeru_result = await self._check_kikoeru_server(rjcode, task)
-        if kikoeru_result:
-            return True
         
-        # 4. 标记RJ号正在处理（防止其他任务同时处理）
+        # 3. 标记RJ号正在处理（防止其他任务同时处理）
         if engine:
             engine.mark_rjcode_processing(rjcode)
             task.rjcode = rjcode  # 保存RJ号到任务，用于后续清理
         
-        logger.info(f"[预检] 完成: RJ号 {rjcode} 未在本地库存 / Kikoeru 发现重复，继续解压")
+        logger.info(f"[预检] 完成: RJ号 {rjcode} 未在 ready 库存索引发现重复，继续解压")
         return False
 
     async def _check_library_index_before_extract(self, rjcode: str, task: Task) -> bool:
@@ -79,19 +72,12 @@ class SmartClassifier:
 
         manager = get_library_manager()
 
-        async def _find_first(target_rj: str) -> Optional[dict]:
-            try:
-                matches = await manager.find_rj_in_libraries(
-                    target_rj,
-                    per_library_timeout=8.0,
-                    include_remote=True,
-                )
-            except Exception:
-                logger.warning("[预检] 库存索引查重失败 rj=%s", target_rj, exc_info=True)
-                return None
-            return matches[0] if matches else None
-
-        direct_match = await _find_first(normalized_rj)
+        try:
+            direct_hits = manager.find_rj_in_ready_index([normalized_rj])
+        except Exception:
+            logger.warning("[预检] ready 库存索引查重失败 rj=%s", normalized_rj, exc_info=True)
+            direct_hits = {}
+        direct_match = next(iter(direct_hits.get(normalized_rj) or []), None)
         if direct_match:
             existing_path = str(direct_match.get("path") or "").strip()
             logger.info("[预检] 库存索引命中当前 RJ: %s -> %s", normalized_rj, existing_path)
@@ -132,8 +118,14 @@ class SmartClassifier:
             if str(candidate or "").strip().upper() and str(candidate or "").strip().upper() != normalized_rj
         ]
 
+        try:
+            linked_hits = manager.find_rj_in_ready_index(related_rjcodes)
+        except Exception:
+            logger.warning("[预检] ready 库存索引关联查重失败 rj=%s related=%s", normalized_rj, related_rjcodes, exc_info=True)
+            linked_hits = {}
+
         for linked_rj in related_rjcodes:
-            linked_match = await _find_first(linked_rj)
+            linked_match = next(iter(linked_hits.get(linked_rj) or []), None)
             if not linked_match:
                 continue
             existing_path = str(linked_match.get("path") or "").strip()
@@ -234,260 +226,13 @@ class SmartClassifier:
     
     async def _check_kikoeru_server(self, rjcode: str, task: Task) -> bool:
         """
-        检查 Kikoeru 在线索引服务器是否存在该作品
-        （注意：这里指的是 Kikoeru 在线 API 服务，不是用户配置的远程库存）
+        兼容旧入口：Kikoeru 不再作为拥有态查重源。
         
         Returns:
-            bool: True 表示在 Kikoeru 服务器找到重复，应停止处理
+            bool: 固定 False，不阻止处理。
         """
-        try:
-            config = get_config()
-            
-            # 检查是否启用远程查重
-            if not hasattr(config, 'kikoeru_server'):
-                return False
-            
-            kikoeru_config = config.kikoeru_server
-            if not kikoeru_config.enabled:
-                logger.debug(f"[Kikoeru预检] Kikoeru 查重未启用，跳过")
-                return False
-            
-            # 检查是否在预检中启用
-            if not getattr(kikoeru_config, 'check_in_preextract', True):
-                logger.debug(f"[Kikoeru预检] 预检查重未启用，跳过")
-                return False
-            
-            logger.info(f"[Kikoeru预检] 开始检查 Kikoeru 服务器: {rjcode}")
-            
-            from .kikoeru_duplicate_service import get_kikoeru_service
-            service = get_kikoeru_service()
-            
-            # 重新加载配置以获取最新设置
-            service.config = service._load_config()
-            
-            # 执行查重（包含关联作品检查）
-            result = await service.check_duplicate_with_linkages(
-                rjcode,
-                cue_languages=['CHI_HANS', 'CHI_HANT', 'ENG'],
-                use_cache=True
-            )
-
-            # 读取 DLsite 关联信息，用于识别"当前是否翻译作品"。
-            # 重复判定按以下三规则（与字幕补配预检保持一致）：
-            #   - 规则 A：服务器拥有原作（无字幕）→ 翻译作走字幕补配；原作进重复。
-            #   - 规则 B：服务器拥有原作（有字幕）→ 翻译作和原作都进重复。
-            #   - 规则 C：服务器拥有任意翻译作 → 所有关联作品都进重复。
-            linked_works = {}
-            is_translation_work = False
-            requested_lang = ""
-            try:
-                from .dlsite_service import get_dlsite_service
-                linked_works = await get_dlsite_service().get_linked_works(rjcode)
-                requested_work = linked_works.get(rjcode)
-                requested_type = str(getattr(requested_work, 'work_type', '') or '').strip().lower()
-                requested_lang = str(getattr(requested_work, 'lang', '') or '').strip().upper()
-                is_translation_work = (
-                    requested_type in {'translation', 'child_translation'}
-                    and requested_lang in {'CHI_HANS', 'CHI_HANT', 'ENG'}
-                )
-            except Exception as e:
-                logger.warning(f"[Kikoeru预检] 获取关联语言信息失败，回退通用判重: {rjcode}, error={e}")
-
-            def _has_remote_subtitles(check_result) -> bool:
-                subtitle_count = int(getattr(check_result, 'subtitle_file_count', 0) or 0)
-                return subtitle_count > 0
-
-            def _candidate_type(candidate_rj: str) -> str:
-                linked = linked_works.get(candidate_rj)
-                return str(getattr(linked, 'work_type', '') or '').strip().lower() if linked else ''
-
-            # 检查是否找到
-            primary_result = result.get(rjcode)
-
-            if is_translation_work:
-                # 收集服务器命中：任意翻译作（规则 C）+ 原作（规则 A/B）。
-                # 注意：当前 RJ 自身命中也归入翻译命中，确保规则 C 兜底自身。
-                translation_hits: list = []  # 含同语种 / 跨语种 / 当前 RJ 自身
-                original_hit = None          # 原作命中（携带字幕状态）
-                unknown_hits: list = []      # DLsite 未识别 work_type，但服务器命中
-
-                for candidate_rj, candidate_result in result.items():
-                    if not getattr(candidate_result, 'is_found', False):
-                        continue
-                    candidate_type = _candidate_type(candidate_rj)
-                    if candidate_rj == rjcode or candidate_type in {'translation', 'child_translation'}:
-                        translation_hits.append((candidate_rj, candidate_result))
-                    elif candidate_type == 'original':
-                        original_hit = (candidate_rj, candidate_result)
-                    else:
-                        # 由 related_translation 补查或 DLsite 未给 work_type 的命中：
-                        # 服务端已按同语种过滤，这里也按"翻译命中"处理（规则 C）。
-                        unknown_hits.append((candidate_rj, candidate_result))
-
-                # 规则 C：服务器拥有翻译作（含当前 RJ 自身或任意关联翻译作） → 重复
-                if translation_hits or unknown_hits:
-                    all_translation_hits = translation_hits + unknown_hits
-                    primary_match = next((item for item in all_translation_hits if item[0] == rjcode), None)
-                    if primary_match:
-                        _, hit = primary_match
-                        current_subtitle_count = int(getattr(hit, 'subtitle_file_count', 0) or 0)
-                        logger.info(
-                            f"[Kikoeru预检] 当前翻译作品已在服务器: {rjcode} "
-                            f"subtitle_count={current_subtitle_count}"
-                        )
-                        self._add_to_conflict_works(
-                            task.id,
-                            rjcode,
-                            'DUPLICATE',
-                            f"[Kikoeru 服务器] 当前翻译作品已存在: {hit.title}",
-                            task.source_path,
-                            {
-                                'work_name': hit.title,
-                                'circle_name': hit.circle_name,
-                                'source': 'kikoeru_server',
-                                'subtitle_file_count': current_subtitle_count,
-                                'subtitle_check_source': str(getattr(hit, 'subtitle_check_source', '') or ''),
-                            },
-                            linked_works_info=[{
-                                'rjcode': rjcode,
-                                'title': hit.title,
-                                'circle_name': hit.circle_name,
-                                'subtitle_file_count': current_subtitle_count,
-                            }]
-                        )
-                        return True
-
-                    linked_hits = [
-                        {
-                            'rjcode': hit_rj,
-                            'title': hit_res.title,
-                            'circle_name': hit_res.circle_name,
-                            'subtitle_file_count': int(getattr(hit_res, 'subtitle_file_count', 0) or 0),
-                        }
-                        for hit_rj, hit_res in all_translation_hits
-                    ]
-                    logger.info(
-                        f"[Kikoeru预检] 服务器存在关联翻译作: {rjcode}, hits={linked_hits}"
-                    )
-                    self._add_to_conflict_works(
-                        task.id,
-                        rjcode,
-                        'DUPLICATE',
-                        f"[Kikoeru 服务器] 已存在翻译作品: {', '.join([h['rjcode'] for h in linked_hits])}",
-                        task.source_path,
-                        {
-                            'work_name': rjcode,
-                            'source': 'kikoeru_server_linked',
-                            'requested_lang': requested_lang,
-                        },
-                        linked_works_info=linked_hits
-                    )
-                    return True
-
-                # 规则 B：服务器拥有原作（有字幕） → 翻译作进重复
-                if original_hit and _has_remote_subtitles(original_hit[1]):
-                    original_rj, original_res = original_hit
-                    original_subtitle_count = int(getattr(original_res, 'subtitle_file_count', 0) or 0)
-                    logger.info(
-                        f"[Kikoeru预检] 服务器原作已有字幕，翻译作按重复处理: "
-                        f"current={rjcode} original={original_rj} subtitle_count={original_subtitle_count}"
-                    )
-                    self._add_to_conflict_works(
-                        task.id,
-                        rjcode,
-                        'DUPLICATE',
-                        f"[Kikoeru 服务器] 原作已有字幕，无需补配: {original_rj}",
-                        task.source_path,
-                        {
-                            'work_name': original_res.title,
-                            'circle_name': original_res.circle_name,
-                            'source': 'kikoeru_server_linked',
-                            'subtitle_file_count': original_subtitle_count,
-                            'subtitle_check_source': str(getattr(original_res, 'subtitle_check_source', '') or ''),
-                        },
-                        linked_works_info=[{
-                            'rjcode': original_rj,
-                            'title': original_res.title,
-                            'circle_name': original_res.circle_name,
-                            'subtitle_file_count': original_subtitle_count,
-                        }]
-                    )
-                    return True
-
-                # 规则 A：服务器原作存在但无字幕 → 翻译作继续走字幕补配（不算重复）
-                if original_hit:
-                    logger.info(
-                        f"[Kikoeru预检] 服务器原作存在但无字幕，翻译作继续后续字幕补配流程: "
-                        f"current={rjcode} original={original_hit[0]}"
-                    )
-                    return False
-
-                # 服务器既无原作也无翻译命中 → 不重复
-                logger.info(
-                    f"[Kikoeru预检] 翻译作品远程无任何关联命中，不判重复: {rjcode} "
-                    f"(requested_lang={requested_lang or 'UNKNOWN'})"
-                )
-                return False
-
-            # ── 当前是原作 / 非翻译作品的判定 ──
-            # 规则 C / B / A 的原作分支：服务器拥有当前 RJ 或任意关联（含翻译作） → 重复
-            if primary_result and primary_result.is_found:
-                logger.info(f"[Kikoeru预检] 在 Kikoeru 服务器找到作品: {rjcode} - {primary_result.title}")
-
-                self._add_to_conflict_works(
-                    task.id,
-                    rjcode,
-                    'DUPLICATE',
-                    f"[Kikoeru 服务器] {primary_result.title}",
-                    task.source_path,
-                    {
-                        'work_name': primary_result.title,
-                        'circle_name': primary_result.circle_name,
-                        'source': 'kikoeru_server'
-                    },
-                    linked_works_info=[{
-                        'rjcode': rjcode,
-                        'title': primary_result.title,
-                        'circle_name': primary_result.circle_name
-                    }]
-                )
-                logger.info(f"[Kikoeru预检] 已添加到问题作品列表: {rjcode}")
-                return True
-
-            # 关联作品（任意原作 / 翻译作）命中 → 当前是原作时一律按重复处理
-            found_linked = [r for r, res in result.items() if res.is_found and r != rjcode]
-            if found_linked:
-                logger.info(f"[Kikoeru预检] 在 Kikoeru 服务器找到关联作品: {found_linked}")
-
-                linked_info = [{
-                    'rjcode': rj,
-                    'title': result[rj].title,
-                    'circle_name': result[rj].circle_name,
-                    'subtitle_file_count': int(getattr(result[rj], 'subtitle_file_count', 0) or 0),
-                } for rj in found_linked]
-
-                self._add_to_conflict_works(
-                    task.id,
-                    rjcode,
-                    'DUPLICATE',
-                    f"[Kikoeru 服务器] 关联作品已存在: {', '.join(found_linked)}",
-                    task.source_path,
-                    {
-                        'work_name': primary_result.title if primary_result else rjcode,
-                        'source': 'kikoeru_server_linked'
-                    },
-                    linked_works_info=linked_info
-                )
-                logger.info(f"[Kikoeru预检] 因关联作品存在，已添加到问题作品列表: {rjcode}")
-                return True
-
-            logger.info(f"[Kikoeru预检] Kikoeru 服务器未找到: {rjcode}")
-            return False
-            
-        except Exception as e:
-            logger.error(f"[Kikoeru预检] Kikoeru 查重失败: {e}")
-            # 查重失败不阻止处理，继续解压
-            return False
+        logger.info("[预检] Kikoeru 仅负责播放库存，跳过远程拥有态查重: %s", rjcode)
+        return False
     
     def _notify_library_index_after_classify(
         self,
@@ -651,86 +396,27 @@ class SmartClassifier:
         return final_path
     
     def _check_existing(self, rjcode: str) -> Optional[Dict]:
-        """检查作品是否已存在于库存"""
-        logger.info(f"检查RJ号 {rjcode} 是否已存在于库存")
-
-        def _is_valid_library_path(path: str) -> bool:
-            normalized = os.path.abspath(str(path or "").strip())
-            if not normalized or not os.path.exists(normalized):
-                return False
-            library_root = os.path.abspath(str(self.config.storage.library_path or "").strip())
-            if library_root and not (normalized == library_root or normalized.startswith(library_root + os.sep)):
-                return False
-            invalid_markers = [
-                f"{os.sep}_conflicts{os.sep}",
-                f"{os.sep}待处理{os.sep}",
-                f"{os.sep}temp{os.sep}",
-                f"{os.sep}tmp{os.sep}",
-            ]
-            lowered = normalized.lower()
-            if lowered.endswith(f"{os.sep}_conflicts") or lowered.endswith(f"{os.sep}待处理"):
-                return False
-            for marker in invalid_markers:
-                if marker.lower() in lowered:
-                    return False
-            return True
-        
-        db = next(get_db())
+        """检查作品是否已存在于库存：只读 ready 库存索引，不扫盘。"""
+        normalized_rj = str(rjcode or "").strip().upper()
+        if not normalized_rj:
+            return None
         try:
-            # 从数据库查询
-            snapshot = db.query(LibrarySnapshot).filter(
-                LibrarySnapshot.rjcode == rjcode
-            ).first()
-
-            # 验证数据库中的路径是否真实存在
-            if snapshot:
-                folder_path = str(snapshot.folder_path)
-                logger.info(f"数据库中找到记录: {rjcode} -> {folder_path}")
-                if _is_valid_library_path(folder_path):
-                    logger.info(f"确认路径存在: {folder_path}")
-                    return {
-                        'path': folder_path,
-                        'size': snapshot.folder_size
-                    }
-                else:
-                    logger.warning(f"数据库记录无效，清理过期/临时记录: {rjcode} -> {folder_path}")
-                    db.delete(snapshot)
-                    db.commit()
-
-            # 如果没有数据库记录，两层扫描：社团层 → 作品层（避免全盘 rglob）
-            library_path = Path(self.config.storage.library_path)
-            logger.info(f"两层扫描库存目录: {library_path}")
-            try:
-                for maker_dir in library_path.iterdir():
-                    if not maker_dir.is_dir():
-                        continue
-                    # 社团层本身就含 RJ 号（非标准归档，少见）
-                    if rjcode in maker_dir.name and _is_valid_library_path(str(maker_dir)):
-                        logger.info(f"目录扫描找到已存在的作品(社团层): {rjcode} -> {maker_dir}")
-                        return {
-                            'path': str(maker_dir),
-                            'size': self._get_folder_size(str(maker_dir))
-                        }
-                    # 扫描社团目录下一层（作品层）
-                    try:
-                        for work_dir in maker_dir.iterdir():
-                            if work_dir.is_dir() and rjcode in work_dir.name and _is_valid_library_path(str(work_dir)):
-                                logger.info(f"目录扫描找到已存在的作品: {rjcode} -> {work_dir}")
-                                return {
-                                    'path': str(work_dir),
-                                    'size': self._get_folder_size(str(work_dir))
-                                }
-                    except (PermissionError, OSError):
-                        continue
-            except (PermissionError, OSError) as e:
-                logger.warning(f"扫描库存目录失败: {e}")
-            logger.info(f"两层扫描完成，未找到 {rjcode}")
-            return None
+            hits = get_library_manager().find_rj_in_ready_index([normalized_rj])
         except Exception as e:
-            logger.error(f"检查作品存在性时出错: {e}")
+            logger.warning("[分类] ready 库存索引检查失败 rj=%s error=%s", normalized_rj, e, exc_info=True)
             return None
-        finally:
-            db.close()
+        hit = next(iter(hits.get(normalized_rj) or []), None)
+        if not hit:
+            logger.info("[分类] ready 库存索引未命中: %s", normalized_rj)
+            return None
+        logger.info("[分类] ready 库存索引命中: %s -> %s", normalized_rj, hit.get("path"))
+        return {
+            "path": str(hit.get("path") or ""),
+            "size": int(hit.get("size") or 0),
+            "file_count": int(hit.get("file_count") or 0),
+            "library_id": str(hit.get("library_id") or ""),
+            "library_name": str(hit.get("library_name") or ""),
+        }
     
     def _determine_conflict_type(self, existing: Dict, new_metadata: Dict) -> str:
         """确定冲突类型"""

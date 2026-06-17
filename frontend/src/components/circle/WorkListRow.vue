@@ -591,7 +591,7 @@ function onImgError(e) {
   .wlr-meta {
     display: none;
   }
-  /* 状态 pills 只保留第一个（服务器收录状态），隐藏 has_asmr_one */
+  /* 状态 pills 只保留第一个（库存收录状态），隐藏 has_asmr_one */
   .wlr-status .wlr-pill:not(:first-child) {
     display: none;
   }

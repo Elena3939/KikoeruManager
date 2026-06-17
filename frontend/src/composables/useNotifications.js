@@ -171,6 +171,10 @@ function _connectSSE() {
         window.dispatchEvent(new CustomEvent('kikoerumanager:circle:owned-synced', { detail: data }))
         return
       }
+      if (data.type === 'circle_subtitle_synced') {
+        window.dispatchEvent(new CustomEvent('kikoerumanager:circle:subtitle-synced', { detail: data }))
+        return
+      }
     } catch { /* ignore */ }
   }
 
