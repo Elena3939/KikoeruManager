@@ -678,6 +678,16 @@ export const libraryApi = {
     return response.data
   },
 
+  getViewPreferences: async () => {
+    const response = await apiClient.get('/library/view-preferences')
+    return response.data
+  },
+
+  saveViewPreferences: async (payload) => {
+    const response = await apiClient.post('/library/view-preferences', payload)
+    return response.data
+  },
+
   testConnection: async (library) => {
     const response = await apiClient.post('/library/test-connection', { library })
     return response.data
@@ -863,6 +873,40 @@ export const libraryApi = {
     return response.data
   },
 
+  listCircleGroups: async ({
+    page = 1,
+    pageSize = 50,
+    keyword = '',
+    sortBy = 'name',
+    sortOrder = 'asc',
+  } = {}) => {
+    const response = await apiClient.get('/library/circle-groups', {
+      params: {
+        page,
+        page_size: pageSize,
+        keyword,
+        sort_by: sortBy,
+        sort_order: sortOrder,
+      },
+    })
+    return response.data
+  },
+
+  listCircleGroupWorks: async (circleKey, {
+    page = 1,
+    pageSize = 50,
+    keyword = '',
+  } = {}) => {
+    const response = await apiClient.get(`/library/circle-groups/${encodeURIComponent(circleKey)}/works`, {
+      params: {
+        page,
+        page_size: pageSize,
+        keyword,
+      },
+    })
+    return response.data
+  },
+
   getStats: async (forceRefresh = false, libraryId = null) => {
     const response = await apiClient.get('/library/browser/stats', {
       params: {
@@ -880,13 +924,22 @@ export const libraryApi = {
     return response.data
   },
 
-  computeFolderSize: async (path) => {
-    const response = await apiClient.post('/library/browser/compute-folder-size', { path })
+  computeFolderSize: async (path, options = {}) => {
+    const payload = { path }
+    if (options.libraryId || options.library_id) payload.library_id = options.libraryId || options.library_id
+    const response = await apiClient.post('/library/browser/compute-folder-size', payload)
     return response.data
   },
 
-  computeFolderSizes: async (paths) => {
-    const response = await apiClient.post('/library/browser/compute-folder-sizes', { paths })
+  computeFolderSizes: async (paths, options = {}) => {
+    const payload = {}
+    if (Array.isArray(options.items) && options.items.length) {
+      payload.items = options.items
+    } else {
+      payload.paths = paths
+      if (options.libraryId || options.library_id) payload.library_id = options.libraryId || options.library_id
+    }
+    const response = await apiClient.post('/library/browser/compute-folder-sizes', payload)
     return response.data
   },
 
