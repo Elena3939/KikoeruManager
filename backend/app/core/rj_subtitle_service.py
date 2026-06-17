@@ -384,7 +384,7 @@ class RJSubtitleService:
         results = []
         for candidate in candidates:
             try:
-                folder_info = await manager.folder_contents(library_id, candidate, client=client)
+                folder_info = await manager.folder_contents(library_id, candidate, client=client, prefer_index=False)
             except Exception as exc:
                 logger.warning('[RJ字幕] 跳过不可访问的远程候选目录: %s (%s)', candidate, exc)
                 continue
@@ -486,7 +486,7 @@ class RJSubtitleService:
 
     async def _build_remote_scan_result(self, manager, library_id: str, candidate: str, *, client=None) -> Optional[Dict]:
         try:
-            folder_info = await manager.folder_contents(library_id, candidate, client=client)
+            folder_info = await manager.folder_contents(library_id, candidate, client=client, prefer_index=False)
         except Exception as exc:
             logger.warning('[RJ字幕] 跳过不可访问的远程候选目录: %s (%s)', candidate, exc)
             return None
@@ -1764,7 +1764,7 @@ class RJSubtitleService:
             if library.type == 'synology_filestation':
                 if not library.synology:
                     raise RuntimeError('远程库存未配置群晖连接参数')
-                folder_info = await manager.folder_contents(library_id, folder_path)
+                folder_info = await manager.folder_contents(library_id, folder_path, prefer_index=False)
                 remote_items = folder_info.get('items') or []
                 deleted_subtitles = self._count_remote_existing_subtitles(remote_items)
                 subtitle_dir = manager._normalize_remote_path(str(PurePosixPath(folder_path) / 'subtitles'))
@@ -2232,7 +2232,7 @@ class RJSubtitleService:
                 library = manager.get_library_definition(library_id)
                 if library.type != 'synology_filestation':
                     raise ValueError('指定库存不是远程库存')
-                folder_info = await manager.folder_contents(library_id, folder_path)
+                folder_info = await manager.folder_contents(library_id, folder_path, prefer_index=False)
                 remote_items = folder_info.get('items') or []
                 audio_items = self._collect_remote_audio_entries(remote_items)
                 existing_subtitle_count = self._count_remote_existing_subtitles(remote_items)
@@ -2519,7 +2519,7 @@ class RJSubtitleService:
 
         # 使用全局缓存 client，避免重复登录
         cached_client = manager.get_cached_synology_client(library.synology)
-        folder_info = await manager.folder_contents(library_id, folder_path, client=cached_client)
+        folder_info = await manager.folder_contents(library_id, folder_path, client=cached_client, prefer_index=False)
         remote_items = folder_info.get('items') or []
         audio_entries = self._collect_remote_audio_entries(remote_items)
         if not audio_entries:

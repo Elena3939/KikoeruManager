@@ -1,4 +1,7 @@
-"""RemoteScanner：通过 SYNO.FileStation.Search 全量扫描群晖远程库存。
+"""RemoteScanner：旧远程库存快照扫描器，当前业务入口已禁用。
+
+该实现保留给历史测试和兼容引用；synology_filestation 库存现在不创建
+library_index 快照，浏览 / 搜索统一回到群晖 FileStation 原生接口。
 
 群晖端原生建索引器，单次 search task 拉回扁平的目录 + 文件列表。
 对比 SMB 走 LocalScanner 的 os.scandir，性能差一个数量级以上：

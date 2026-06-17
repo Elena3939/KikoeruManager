@@ -2046,12 +2046,12 @@ class ASMRResourceService:
                 self._finalize_upload_runtime(task, "completed")
                 final_path = remote_root
                 await asyncio.to_thread(shutil.rmtree, renamed_root, True)
-                # 索引同步：远程并发上传完成后通知索引把新子树扫进去
+                # 远程库不维护库存索引；本调用只兼容本地库路径。
                 try:
                     manager._notify_index_self_mutation_upsert_subtree(target_library, final_path)
                 except Exception:
                     logger.debug(
-                        "[索引] 社团补全远程入库后通知 upsert 失败 path=%s",
+                        "[索引] 社团补全入库后通知 upsert 失败 path=%s",
                         final_path, exc_info=True,
                     )
                 return final_path

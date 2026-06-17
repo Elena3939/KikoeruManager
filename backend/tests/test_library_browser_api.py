@@ -32,6 +32,41 @@ class _FakeJsonRequest:
         return self._payload
 
 
+def test_legacy_folder_contents_keeps_non_library_realtime_io(monkeypatch, tmp_path):
+    source_dir = tmp_path / "incoming"
+    nested_dir = source_dir / "nested"
+    nested_dir.mkdir(parents=True)
+    (source_dir / "track.wav").write_bytes(b"audio")
+    (nested_dir / "subtitle.vtt").write_text("WEBVTT", encoding="utf-8")
+
+    manager = object.__new__(library_manager_module.LibraryManager)
+    monkeypatch.setattr(manager, "find_local_library_for_path", lambda _path: None)
+    monkeypatch.setattr(routes_module, "get_library_manager", lambda: manager)
+
+    result = asyncio.run(
+        routes_module.get_library_folder_contents(
+            _FakeJsonRequest({"path": str(source_dir), "prefer_index": True})
+        )
+    )
+
+    assert result["browse_via_index"] is False
+    assert result["total_files"] == 2
+    assert [item["relative_path"] for item in result["items"]] == [
+        "nested/subtitle.vtt",
+        "track.wav",
+    ]
+
+    shallow_result = asyncio.run(
+        routes_module.get_library_folder_contents(
+            _FakeJsonRequest({"path": str(source_dir), "recursive": False, "prefer_index": True})
+        )
+    )
+
+    assert shallow_result["browse_via_index"] is False
+    assert shallow_result["total_files"] == 1
+    assert [item["name"] for item in shallow_result["items"]] == ["nested", "track.wav"]
+
+
 def test_library_browser_endpoints_support_multi_library(client, monkeypatch, tmp_path):
     local_root = tmp_path / "library-a"
     # ``/api/library/browser/files`` 默认列 library root 的直接子项；要让作品在第一层
@@ -77,6 +112,17 @@ def test_library_browser_endpoints_support_multi_library(client, monkeypatch, tm
     )
     assert folder_response.status_code == 200
     assert folder_response.json()["total_files"] == 1
+
+    summary_response = client.post(
+        "/api/library/browser/compute-folder-sizes",
+        json={"library_id": "local-a", "paths": [str(target_dir)], "include_counts": True},
+    )
+    assert summary_response.status_code == 200
+    summary = summary_response.json()["results"][0]
+    assert summary["success"] is True
+    assert summary["file_count"] == 1
+    assert summary["folder_count"] == 0
+    assert summary["size_status"] == "ready"
 
     stats_response = client.get("/api/library/browser/stats", params={"force_refresh": "true"})
     assert stats_response.status_code == 200
@@ -201,11 +247,14 @@ def test_local_realtime_reads_ignore_stale_index_for_browse_and_folder_contents(
 
     result = asyncio.run(manager.folder_contents(library.id, str(circle_dir), recursive=False))
 
-    assert result.get("browse_via_index") is not True
-    assert result["total_files"] == 1
+    assert result.get("browse_via_index") is True
+    assert result["total_files"] == 3
+    assert result["total_size"] == 12
     rj_item = next(item for item in result["items"] if item["name"] == "RJ01000001")
-    assert rj_item["size"] is None
-    assert rj_item["size_status"] == "disabled"
+    assert rj_item["size"] == 9
+    assert rj_item["size_status"] == "ready"
+    assert rj_item["file_count"] == 2
+    assert rj_item["folder_count"] == 1
 
     recursive_result = asyncio.run(manager.folder_contents(library.id, str(circle_dir), recursive=True))
     assert recursive_result.get("browse_via_index") is not True
@@ -217,10 +266,22 @@ def test_local_realtime_reads_ignore_stale_index_for_browse_and_folder_contents(
     ]
     assert "RJ01000001/old-track.mp3" not in [item["relative_path"] for item in recursive_result["items"]]
 
+    shallow_realtime_result = asyncio.run(
+        manager.folder_contents(library.id, str(circle_dir), recursive=False, prefer_index=False)
+    )
+    assert shallow_realtime_result.get("browse_via_index") is not True
+    assert shallow_realtime_result["total_files"] == 1
+    assert [item["name"] for item in shallow_realtime_result["items"]] == ["RJ01000001", "cover.jpg"]
+    shallow_rj_item = next(item for item in shallow_realtime_result["items"] if item["name"] == "RJ01000001")
+    assert shallow_rj_item["size_status"] == "disabled"
+    assert shallow_rj_item["file_count"] is None
+    assert shallow_rj_item["folder_count"] is None
+
     folders_payload = asyncio.run(manager.list_local_folders_only(library.id, str(circle_dir), include_files=True))
-    assert folders_payload.get("browse_via_index") is not True
+    assert folders_payload.get("browse_via_index") is True
     folder_row = next(item for item in folders_payload["folders"] if item["name"] == "RJ01000001")
-    assert folder_row["size_status"] in {"pending", "ready"}
+    assert folder_row["size"] == 9
+    assert folder_row["size_status"] == "ready"
 
     completion_service = object.__new__(folder_completion_module.LibraryFolderCompletionService)
     completion_service.manager = manager
@@ -229,13 +290,20 @@ def test_local_realtime_reads_ignore_stale_index_for_browse_and_folder_contents(
     assert [target.folder_path for target in completion_targets] == [str(rj_dir)]
 
     delete_preview = manager._local_delete(library, str(rj_dir), confirmed=False)
-    assert delete_preview["browse_via_index"] is True
+    assert delete_preview["browse_via_index"] is False
     assert delete_preview["size"] == 9
     assert delete_preview["file_count"] == 2
     assert delete_preview["folder_count"] == 2
 
+    entries["Circle/RJ01000001"].size = 1024 * 1024
+    entries["Circle/RJ01000001"].file_count = 99
+    delete_preview = manager._local_delete(library, str(rj_dir), confirmed=False)
+    assert delete_preview["browse_via_index"] is False
+    assert delete_preview["size"] == 9
+    assert delete_preview["file_count"] == 2
+
     batch_preview = manager._local_batch_delete(library, [str(rj_dir), str(circle_dir / "cover.jpg")], confirmed=False)
-    assert batch_preview["browse_via_index"] is True
+    assert batch_preview["browse_via_index"] is False
     assert batch_preview["total_size"] == 12
     assert batch_preview["total_file_count"] == 3
     assert batch_preview["total_folder_count"] == 2
@@ -254,6 +322,79 @@ def test_local_realtime_reads_ignore_stale_index_for_browse_and_folder_contents(
         "RJ01000001/subtitles",
         "RJ01000001/subtitles/track.vtt",
     ]
+
+
+def test_search_files_via_index_supports_name_search_and_current_scope(monkeypatch, tmp_path):
+    local_root = tmp_path / "library"
+    circle_a = local_root / "CircleA"
+    circle_b = local_root / "CircleB"
+    work_a = circle_a / "RJ01000001 星の音声"
+    work_b = circle_b / "RJ01000002 星の音声"
+    work_a.mkdir(parents=True)
+    work_b.mkdir(parents=True)
+    (work_a / "track.wav").write_bytes(b"a")
+    (work_b / "track.wav").write_bytes(b"b")
+
+    library = library_manager_module.LibraryDefinition(
+        id="local-a",
+        name="本地 A",
+        type="local",
+        path=str(local_root),
+        enabled=True,
+    )
+
+    def entry(relative_path, entry_type="dir", rjcode=None):
+        return IndexEntry(
+            library_id=library.id,
+            entry_type=entry_type,
+            relative_path=relative_path,
+            absolute_path=str(local_root / Path(relative_path)),
+            name=relative_path.rsplit("/", 1)[-1],
+            rjcode=rjcode,
+            parent_path=relative_path.rsplit("/", 1)[0] if "/" in relative_path else "",
+            size=10,
+            file_count=1 if entry_type == "dir" else 0,
+            mtime=1000,
+            depth=relative_path.count("/") + 1,
+            indexed_at=1000,
+        )
+
+    indexed_entries = [
+        entry("CircleA/RJ01000001 星の音声", rjcode="RJ01000001"),
+        entry("CircleB/RJ01000002 星の音声", rjcode="RJ01000002"),
+    ]
+
+    class FakeIndexService:
+        def is_ready(self, library_id):
+            return library_id == library.id
+
+        def find_by_name(self, library_id, name_like, entry_type=None, limit=200):
+            assert name_like == "星の音声"
+            return [item for item in indexed_entries if entry_type in (None, item.entry_type)]
+
+        def find_by_rjcode(self, rjcode, library_id=None, entry_type="dir", limit=100):
+            return [item for item in indexed_entries if item.rjcode == rjcode and entry_type in (None, item.entry_type)]
+
+    manager = object.__new__(library_manager_module.LibraryManager)
+    manager._local_search_result_cache = {}
+    monkeypatch.setattr(manager, "load_config", lambda: {"local_search_cache_ttl_seconds": 0})
+    monkeypatch.setattr(library_index_module, "get_library_index_service", lambda: FakeIndexService())
+
+    result = manager._search_local_files(
+        library,
+        page=1,
+        page_size=20,
+        search="星の音声",
+        current_path=str(circle_a),
+        sort_by="name",
+        sort_order="asc",
+        search_result_kind="folder",
+    )
+
+    assert result["search_via_index"] is True
+    assert result["total"] == 1
+    assert result["files"][0]["path"] == str(work_a)
+    assert result["files"][0]["relative_path"] == "RJ01000001 星の音声"
 
 
 def test_local_batch_rename_keeps_request_index_and_remaps_child_paths(monkeypatch, tmp_path):

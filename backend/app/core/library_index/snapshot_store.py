@@ -652,7 +652,9 @@ class SnapshotStore:
             old = self._get_existing_stats_map(db, entry.library_id, [entry.relative_path])
             old_size, old_folders = old.get(entry.relative_path, (0, 0))
             new_size, new_folders = self._entry_stats(entry)
+            ancestor_deltas = self._build_bulk_upsert_ancestor_deltas(db, [entry])
             self._upsert_one(db, entry)
+            self._flush_ancestor_deltas(db, ancestor_deltas)
             self._apply_status_delta(
                 db,
                 entry.library_id,
@@ -667,6 +669,7 @@ class SnapshotStore:
         *,
         chunk_size: int = DEFAULT_BULK_UPSERT_CHUNK_SIZE,
         maintain_status_stats: bool = True,
+        maintain_parent_dir_stats: bool = False,
         insert_only: bool = False,
         relaxed_commit: bool = False,
     ) -> int:
@@ -692,6 +695,10 @@ class SnapshotStore:
                     self._build_bulk_upsert_status_deltas(db, payload, insert_only=insert_only)
                     if maintain_status_stats else {}
                 )
+                ancestor_deltas = (
+                    self._build_bulk_upsert_ancestor_deltas(db, payload, insert_only=insert_only)
+                    if maintain_parent_dir_stats else {}
+                )
                 for i in range(0, len(payload), chunk_size):
                     chunk = payload[i:i + chunk_size]
                     sql = _BULK_INSERT_IGNORE_UNNEST_SQL if insert_only else _BULK_UPSERT_UNNEST_SQL
@@ -701,6 +708,7 @@ class SnapshotStore:
                     )
                     affected = int(result.rowcount or 0)
                     affected_total += affected if affected >= 0 else len(chunk)
+                self._flush_ancestor_deltas(db, ancestor_deltas)
                 for library_id, delta in deltas.items():
                     self._apply_status_delta(
                         db,
@@ -719,6 +727,10 @@ class SnapshotStore:
                 self._build_bulk_upsert_status_deltas(db, payload, insert_only=insert_only)
                 if maintain_status_stats else {}
             )
+            ancestor_deltas = (
+                self._build_bulk_upsert_ancestor_deltas(db, payload, insert_only=insert_only)
+                if maintain_parent_dir_stats else {}
+            )
             for item in payload:
                 if insert_only:
                     exists = (
@@ -733,6 +745,7 @@ class SnapshotStore:
                         continue
                 if self._upsert_one(db, item):
                     written += 1
+            self._flush_ancestor_deltas(db, ancestor_deltas)
             for library_id, delta in deltas.items():
                 self._apply_status_delta(
                     db,
@@ -925,6 +938,37 @@ class SnapshotStore:
                 )
         return result
 
+    def _get_existing_file_stats_map(
+        self,
+        db: Session,
+        library_id: str,
+        relative_paths: Iterable[str],
+    ) -> dict[str, tuple[int, int]]:
+        paths = list(dict.fromkeys(relative_paths))
+        if not paths:
+            return {}
+        result: dict[str, tuple[int, int]] = {}
+        chunk_size = 500
+        for i in range(0, len(paths), chunk_size):
+            rows = (
+                db.query(
+                    LibraryIndexEntry.relative_path,
+                    LibraryIndexEntry.entry_type,
+                    LibraryIndexEntry.size,
+                )
+                .filter(
+                    LibraryIndexEntry.library_id == library_id,
+                    LibraryIndexEntry.relative_path.in_(paths[i:i + chunk_size]),
+                )
+                .all()
+            )
+            for row in rows:
+                if row.entry_type == 'file':
+                    result[row.relative_path] = (max(0, int(row.size or 0)), 1)
+                else:
+                    result[row.relative_path] = (0, 0)
+        return result
+
     def _build_bulk_upsert_status_deltas(
         self,
         db: Session,
@@ -962,6 +1006,84 @@ class SnapshotStore:
                     "entries": entry_delta,
                 }
         return deltas
+
+    def _build_bulk_upsert_ancestor_deltas(
+        self,
+        db: Session,
+        payload: list[IndexEntry],
+        *,
+        insert_only: bool = False,
+    ) -> dict[str, dict[str, dict[str, int]]]:
+        by_library: dict[str, list[IndexEntry]] = {}
+        for item in payload:
+            by_library.setdefault(item.library_id, []).append(item)
+
+        deltas: dict[str, dict[str, dict[str, int]]] = {}
+        for library_id, items in by_library.items():
+            file_items = [item for item in items if item.entry_type == 'file']
+            if not file_items:
+                continue
+            old = self._get_existing_file_stats_map(
+                db,
+                library_id,
+                [item.relative_path for item in file_items],
+            )
+            for item in file_items:
+                if insert_only and item.relative_path in old:
+                    continue
+                old_size, old_files = old.get(item.relative_path, (0, 0))
+                new_size, new_files = max(0, int(item.size or 0)), 1
+                size_delta = new_size - old_size
+                file_delta = new_files - old_files
+                if not (size_delta or file_delta):
+                    continue
+                bucket = deltas.setdefault(library_id, {})
+                for ancestor in self._ancestor_relative_paths(item.relative_path):
+                    row = bucket.setdefault(ancestor, {"size": 0, "files": 0})
+                    row["size"] += size_delta
+                    row["files"] += file_delta
+        return deltas
+
+    def _flush_ancestor_deltas(
+        self,
+        db: Session,
+        deltas: dict[str, dict[str, dict[str, int]]],
+    ) -> None:
+        for library_id, by_path in deltas.items():
+            rows = [
+                {
+                    "relative_path": relative_path,
+                    "size_delta": int(delta.get("size", 0) or 0),
+                    "file_delta": int(delta.get("files", 0) or 0),
+                }
+                for relative_path, delta in by_path.items()
+                if int(delta.get("size", 0) or 0) or int(delta.get("files", 0) or 0)
+            ]
+            if not rows:
+                continue
+            db.execute(
+                text(
+                    """
+                    UPDATE library_index_entries AS target
+                       SET size = GREATEST(0, target.size + delta.size_delta),
+                           file_count = GREATEST(0, target.file_count + delta.file_delta),
+                           indexed_at = :indexed_at
+                      FROM (
+                          SELECT *
+                            FROM jsonb_to_recordset(CAST(:deltas AS jsonb))
+                              AS x(relative_path text, size_delta bigint, file_delta integer)
+                      ) AS delta
+                     WHERE target.library_id = :library_id
+                       AND target.entry_type = 'dir'
+                       AND target.relative_path = delta.relative_path
+                    """
+                ),
+                {
+                    "library_id": library_id,
+                    "indexed_at": _now_ms(),
+                    "deltas": json.dumps(rows, ensure_ascii=False),
+                },
+            )
 
     def _apply_status_delta(
         self,
@@ -1012,7 +1134,7 @@ class SnapshotStore:
                 entry_delta=delta.get("entries", 0),
             )
 
-    def _query_stats_delta(self, q) -> tuple[int, int, int]:
+    def _query_stats_delta(self, q) -> tuple[int, int, int, int]:
         row = q.with_entities(
             func.coalesce(
                 func.sum(
@@ -1040,11 +1162,74 @@ class SnapshotStore:
                 0,
             ),
             func.count(LibraryIndexEntry.id),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (LibraryIndexEntry.entry_type == 'file', 1),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
         ).first()
         total_size = int(row[0] if row else 0)
         folder_count = int(row[1] if row else 0)
         entry_count = int(row[2] if row else 0)
-        return max(0, total_size), max(0, folder_count), max(0, entry_count)
+        file_count = int(row[3] if row else 0)
+        return max(0, total_size), max(0, folder_count), max(0, entry_count), max(0, file_count)
+
+    def _query_subtree_stats_many(
+        self,
+        db: Session,
+        library_id: str,
+        relative_paths: Sequence[str],
+    ) -> dict[str, tuple[int, int, int, int]]:
+        paths = [self._normalize_relative_path(path) for path in relative_paths if path is not None]
+        paths = [path for path in dict.fromkeys(paths) if path]
+        if not paths:
+            return {}
+        rows = db.execute(
+            text(
+                f"""
+                WITH roots AS (
+                    SELECT *
+                      FROM jsonb_to_recordset(CAST(:paths AS jsonb))
+                        AS x(relative_path text)
+                )
+                SELECT roots.relative_path AS relative_path,
+                       COALESCE(SUM(CASE WHEN e.entry_type = 'file' THEN e.size ELSE 0 END), 0) AS total_size,
+                       COALESCE(SUM(CASE
+                           WHEN e.entry_type = 'dir'
+                            AND e.relative_path != ''
+                            AND COALESCE(e.parent_path, '') = ''
+                           THEN 1 ELSE 0
+                       END), 0) AS folder_count,
+                       COUNT(e.id) AS entry_count,
+                       COALESCE(SUM(CASE WHEN e.entry_type = 'file' THEN 1 ELSE 0 END), 0) AS file_count
+                  FROM roots
+                  LEFT JOIN library_index_entries AS e
+                    ON e.library_id = :library_id
+                   AND (
+                       e.relative_path = roots.relative_path
+                       OR e.relative_path LIKE replace(replace(replace(roots.relative_path, '!', '!!'), '%', '!%'), '_', '!_') || '/%' ESCAPE '!'
+                   )
+                 GROUP BY roots.relative_path
+                """
+            ),
+            {
+                "library_id": library_id,
+                "paths": json.dumps([{"relative_path": path} for path in paths], ensure_ascii=False),
+            },
+        ).mappings()
+        return {
+            str(row["relative_path"]): (
+                max(0, int(row["total_size"] or 0)),
+                max(0, int(row["folder_count"] or 0)),
+                max(0, int(row["entry_count"] or 0)),
+                max(0, int(row["file_count"] or 0)),
+            )
+            for row in rows
+        }
 
     @staticmethod
     def _normalize_relative_path(value: Optional[str]) -> str:
@@ -1098,6 +1283,67 @@ class SnapshotStore:
             return ""
         return value.rsplit("/", 1)[0]
 
+    def _ancestor_relative_paths(self, relative_path: Optional[str]) -> list[str]:
+        current = self._relative_parent(str(relative_path or ""))
+        ancestors: list[str] = []
+        while current:
+            ancestors.append(current)
+            current = self._relative_parent(current)
+        return ancestors
+
+    def _apply_ancestor_dir_delta(
+        self,
+        db: Session,
+        library_id: str,
+        relative_path: Optional[str],
+        *,
+        size_delta: int = 0,
+        file_count_delta: int = 0,
+    ) -> None:
+        if not (size_delta or file_count_delta):
+            return
+        ancestors = self._ancestor_relative_paths(relative_path)
+        if not ancestors:
+            return
+        db.query(LibraryIndexEntry).filter(
+            LibraryIndexEntry.library_id == library_id,
+            LibraryIndexEntry.entry_type == 'dir',
+            LibraryIndexEntry.relative_path.in_(ancestors),
+        ).update(
+            {
+                LibraryIndexEntry.size: func.greatest(
+                    0,
+                    LibraryIndexEntry.size + int(size_delta or 0),
+                ),
+                LibraryIndexEntry.file_count: func.greatest(
+                    0,
+                    LibraryIndexEntry.file_count + int(file_count_delta or 0),
+                ),
+                LibraryIndexEntry.indexed_at: _now_ms(),
+            },
+            synchronize_session=False,
+        )
+
+    def apply_parent_dir_delta(
+        self,
+        library_id: str,
+        relative_path: str,
+        *,
+        size_delta: int = 0,
+        file_count_delta: int = 0,
+    ) -> None:
+        normalized = self._normalize_relative_path(relative_path)
+        if not normalized:
+            return
+        with self._write_session(invalidate_children_total_cache=False) as db:
+            self._apply_ancestor_dir_delta(
+                db,
+                library_id,
+                normalized,
+                size_delta=int(size_delta or 0),
+                file_count_delta=int(file_count_delta or 0),
+            )
+
     @staticmethod
     def _relative_name(relative_path: str) -> str:
         value = str(relative_path or "").strip("/")
@@ -1135,8 +1381,15 @@ class SnapshotStore:
         status_delta_accumulator: Optional[dict[str, dict[str, int]]] = None,
     ) -> tuple[int, int, int, int]:
         q = self._subtree_query(db, library_id, relative_path)
-        total_size, folder_count, entry_count = self._query_stats_delta(q)
+        total_size, folder_count, entry_count, file_count = self._query_stats_delta(q)
         deleted = q.delete(synchronize_session=False)
+        self._apply_ancestor_dir_delta(
+            db,
+            library_id,
+            relative_path,
+            size_delta=-total_size,
+            file_count_delta=-file_count,
+        )
         self._apply_status_delta(
             db,
             library_id,
@@ -1215,6 +1468,8 @@ class SnapshotStore:
         if root_row is None:
             return 0
         old_size, old_folders = self._row_stats(root_row)
+        subtree_file_size = int(root_row.size or 0) if root_row.entry_type == 'dir' else old_size
+        subtree_file_count = int(root_row.file_count or 0) if root_row.entry_type == 'dir' else (1 if root_row.entry_type == 'file' else 0)
         moved_root = self._transform_subtree_entry(
             self._row_to_entry(root_row),
             target_library_id=library_id,
@@ -1293,6 +1548,20 @@ class SnapshotStore:
         )
         moved = int(result.rowcount or 0)
         if moved:
+            self._apply_ancestor_dir_delta(
+                db,
+                library_id,
+                old_rel,
+                size_delta=-subtree_file_size,
+                file_count_delta=-subtree_file_count,
+            )
+            self._apply_ancestor_dir_delta(
+                db,
+                library_id,
+                new_rel,
+                size_delta=subtree_file_size,
+                file_count_delta=subtree_file_count,
+            )
             self._apply_status_delta(
                 db,
                 library_id,
@@ -1392,7 +1661,7 @@ class SnapshotStore:
         new_name = self._relative_name(new_rel)
         new_name_sort_key = library_index_name_sort_key(new_name)
         source_q = self._subtree_query(db, source_library_id, old_rel)
-        source_size, _source_folders, source_entries = self._query_stats_delta(source_q)
+        source_size, _source_folders, source_entries, _source_file_count = self._query_stats_delta(source_q)
         if not source_entries:
             return 0
 
@@ -1404,6 +1673,18 @@ class SnapshotStore:
             )
             .first()
         )
+        source_root_row = (
+            db.query(LibraryIndexEntry)
+            .filter(
+                LibraryIndexEntry.library_id == source_library_id,
+                LibraryIndexEntry.relative_path == old_rel,
+            )
+            .first()
+        )
+        if source_root_row is None:
+            return 0
+        subtree_file_size = int(source_root_row.size or 0) if source_root_row.entry_type == 'dir' else source_size
+        subtree_file_count = int(source_root_row.file_count or 0) if source_root_row.entry_type == 'dir' else (1 if source_root_row.entry_type == 'file' else 0)
         inserted_top_folders = (
             1
             if source_root is not None
@@ -1508,6 +1789,14 @@ class SnapshotStore:
             status_delta_accumulator=status_delta_accumulator,
         )
 
+        self._apply_ancestor_dir_delta(
+            db,
+            target_library_id,
+            new_rel,
+            size_delta=subtree_file_size,
+            file_count_delta=subtree_file_count,
+        )
+
         self._apply_status_delta(
             db,
             target_library_id,
@@ -1590,8 +1879,15 @@ class SnapshotStore:
                     LibraryIndexEntry.relative_path == relative_path,
                 )
             )
-            total_size, folder_count, entry_count = self._query_stats_delta(q)
+            total_size, folder_count, entry_count, file_count = self._query_stats_delta(q)
             deleted = q.delete(synchronize_session=False)
+            self._apply_ancestor_dir_delta(
+                db,
+                library_id,
+                relative_path,
+                size_delta=-total_size,
+                file_count_delta=-file_count,
+            )
             self._apply_status_delta(
                 db,
                 library_id,
@@ -1615,8 +1911,15 @@ class SnapshotStore:
             )
             if normalized:
                 q = q.filter(self._subtree_column_condition(LibraryIndexEntry.relative_path, normalized))
-            total_size, folder_count, entry_count = self._query_stats_delta(q)
+            total_size, folder_count, entry_count, file_count = self._query_stats_delta(q)
             deleted = q.delete(synchronize_session=False)
+            self._apply_ancestor_dir_delta(
+                db,
+                library_id,
+                normalized,
+                size_delta=-total_size,
+                file_count_delta=-file_count,
+            )
             self._apply_status_delta(
                 db,
                 library_id,
@@ -2110,40 +2413,98 @@ class SnapshotStore:
                 "total_size_bytes": int(row.total_size_bytes or 0),
             }
 
+    def calculate_library_stats(self, library_id: str) -> dict[str, int]:
+        """从 entries 表实时重算库存聚合，用于恢复中断的全量同步状态。"""
+        with self._read_session() as db:
+            q = db.query(LibraryIndexEntry).filter(
+                LibraryIndexEntry.library_id == library_id,
+            )
+            total_size, folder_count, entry_count, _file_count = self._query_stats_delta(q)
+            return {
+                "total_entries": entry_count,
+                "total_size_bytes": total_size,
+                "folder_count": folder_count,
+            }
+
     def count_descendant_dirs_many(
         self,
         library_id: str,
         relative_paths: Sequence[str],
     ) -> dict[str, int]:
         """批量统计目录下递归子目录数，不包含目录自身。"""
-        normalized_paths: list[str] = []
-        seen: set[str] = set()
-        for value in relative_paths or []:
-            path = str(value or "").strip().strip("/")
-            if not path or path in seen:
-                continue
-            normalized_paths.append(path)
-            seen.add(path)
+        normalized_paths = [str(value or "").strip().strip("/") for value in (relative_paths or [])]
+        normalized_paths = [path for path in dict.fromkeys(normalized_paths) if path]
         if not normalized_paths:
             return {}
-
-        result = {path: 0 for path in normalized_paths}
         with self._read_session() as db:
-            for path in normalized_paths:
-                result[path] = int(
-                    db.query(func.count())
-                    .filter(
-                        LibraryIndexEntry.library_id == library_id,
-                        LibraryIndexEntry.entry_type == 'dir',
-                        LibraryIndexEntry.relative_path.like(
-                            self._subtree_like_pattern(path),
-                            escape="!",
-                        ),
+            rows = db.execute(
+                text(
+                    f"""
+                    WITH roots AS (
+                        SELECT *
+                          FROM jsonb_to_recordset(CAST(:paths AS jsonb))
+                            AS x(relative_path text)
                     )
-                    .scalar()
-                    or 0
+                    SELECT roots.relative_path AS relative_path,
+                           COALESCE(COUNT(e.id), 0) AS folder_count
+                      FROM roots
+                 LEFT JOIN library_index_entries AS e
+                        ON e.library_id = :library_id
+                       AND e.entry_type = 'dir'
+                       AND e.relative_path LIKE replace(replace(replace(roots.relative_path, '!', '!!'), '%', '!%'), '_', '!_') || '/%' ESCAPE '!'
+                     GROUP BY roots.relative_path
+                    """
                 )
-        return result
+                ,
+                {
+                    "library_id": library_id,
+                    "paths": json.dumps([{"relative_path": path} for path in normalized_paths], ensure_ascii=False),
+                },
+            ).mappings()
+            return {str(row["relative_path"]): int(row["folder_count"] or 0) for row in rows}
+
+    def summarize_descendant_files_many(
+        self,
+        library_id: str,
+        relative_paths: Sequence[str],
+    ) -> dict[str, dict[str, int]]:
+        """批量汇总目录子树内文件数量和大小，不包含目录自身。"""
+        normalized_paths = [str(value or "").strip().strip("/") for value in (relative_paths or [])]
+        normalized_paths = [path for path in dict.fromkeys(normalized_paths) if path]
+        if not normalized_paths:
+            return {}
+        with self._read_session() as db:
+            rows = db.execute(
+                text(
+                    """
+                    WITH roots AS (
+                        SELECT *
+                          FROM jsonb_to_recordset(CAST(:paths AS jsonb))
+                            AS x(relative_path text)
+                    )
+                    SELECT roots.relative_path AS relative_path,
+                           COALESCE(SUM(CASE WHEN e.entry_type = 'file' THEN e.size ELSE 0 END), 0) AS total_size,
+                           COALESCE(SUM(CASE WHEN e.entry_type = 'file' THEN 1 ELSE 0 END), 0) AS file_count
+                      FROM roots
+                 LEFT JOIN library_index_entries AS e
+                        ON e.library_id = :library_id
+                       AND e.entry_type = 'file'
+                       AND e.relative_path LIKE replace(replace(replace(roots.relative_path, '!', '!!'), '%', '!%'), '_', '!_') || '/%' ESCAPE '!'
+                     GROUP BY roots.relative_path
+                    """
+                ),
+                {
+                    "library_id": library_id,
+                    "paths": json.dumps([{"relative_path": path} for path in normalized_paths], ensure_ascii=False),
+                },
+            ).mappings()
+            return {
+                str(row["relative_path"]): {
+                    "total_size": max(0, int(row["total_size"] or 0)),
+                    "file_count": max(0, int(row["file_count"] or 0)),
+                }
+                for row in rows
+            }
 
     def count_library_entries(
         self,
@@ -2294,13 +2655,22 @@ class SnapshotStore:
             if not conditions:
                 continue
             with self._write_session() as db:
+                per_path_stats = self._query_subtree_stats_many(db, library_id, chunk)
                 q = (
                     db.query(LibraryIndexEntry)
                     .filter(LibraryIndexEntry.library_id == library_id)
                     .filter(or_(*conditions))
                 )
-                total_size, folder_count, entry_count = self._query_stats_delta(q)
+                total_size, folder_count, entry_count, _file_count = self._query_stats_delta(q)
                 deleted += q.delete(synchronize_session=False)
+                for p, (file_size, _path_folder_count, _path_entry_count, file_count) in per_path_stats.items():
+                    self._apply_ancestor_dir_delta(
+                        db,
+                        library_id,
+                        p,
+                        size_delta=-file_size,
+                        file_count_delta=-file_count,
+                    )
                 self._apply_status_delta(
                     db,
                     library_id,

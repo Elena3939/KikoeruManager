@@ -18,30 +18,25 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 # 让 pytest 直接运行 backend/tests 时也能 import app
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.models.database import Base  # noqa: E402
+from app.models.database import Base, LibraryIndexStatus  # noqa: E402
 from app.core.library_index.service import LibraryIndexService  # noqa: E402
 from app.core.library_index.snapshot_store import SnapshotStore  # noqa: E402
 from app.core.library_index.types import IndexEntry  # noqa: E402
+from postgres_test_utils import create_postgres_test_engine, reset_postgres_schema  # noqa: E402
 
 
 @pytest.fixture
 def isolated_index(tmp_path):
-    """每个测试一份内存 SQLite + 临时目录，互不污染。"""
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(bind=engine)
+    """每个测试一份 PostgreSQL 测试库 schema + 临时目录，互不污染。"""
+    engine = create_postgres_test_engine()
+    reset_postgres_schema(engine)
     SessionTesting = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     store = SnapshotStore(session_factory=SessionTesting)
     service = LibraryIndexService(store=store)
@@ -69,12 +64,22 @@ def _mark_index_ready(store: SnapshotStore, library_id: str) -> None:
     store.upsert_status(library_id, status="ready", watcher_mode="disabled")
 
 
+def _backdate_index_status(store: SnapshotStore, library_id: str, updated_at_ms: int) -> None:
+    with store._write_session(invalidate_children_total_cache=False) as db:  # noqa: SLF001
+        row = db.query(LibraryIndexStatus).filter(LibraryIndexStatus.library_id == library_id).first()
+        assert row is not None
+        row.updated_at = updated_at_ms
+        db.flush()
+
+
 def _manual_entry(
     relative_path: str,
     *,
     library_id: str,
     rjcode: str,
     entry_type: str = "dir",
+    size: int = 123,
+    file_count: int | None = None,
 ) -> IndexEntry:
     return IndexEntry(
         library_id=library_id,
@@ -84,8 +89,8 @@ def _manual_entry(
         name=relative_path.rsplit("/", 1)[-1],
         rjcode=rjcode,
         parent_path=relative_path.rsplit("/", 1)[0] if "/" in relative_path else "",
-        size=123 if entry_type == "file" else 0,
-        file_count=0,
+        size=size if entry_type == "file" else max(0, int(size or 0)),
+        file_count=0 if entry_type == "file" else max(0, int(file_count if file_count is not None else 0)),
         mtime=1000,
         depth=relative_path.count("/") + 1 if relative_path else 0,
         indexed_at=1000,
@@ -216,12 +221,11 @@ def test_syncing_with_existing_snapshot_is_still_readable(isolated_index):
 
     assert service.is_ready(library_id) is False
     assert service.has_usable_snapshot(library_id) is True
-    assert service.needs_initial_remote_rebuild(library_id) is False
     assert len(service.find_by_rjcode("RJ00000004", library_id)) == 1
 
 
-def test_syncing_without_snapshot_needs_initial_remote_rebuild(isolated_index):
-    """没有任何旧快照时，启动修复应把远程库送进初次重建。"""
+def test_syncing_without_snapshot_is_not_readable_until_manual_rebuild(isolated_index):
+    """没有任何旧快照时，读路径不可用，但不会自动触发重建。"""
     service: LibraryIndexService = isolated_index["service"]
     store: SnapshotStore = isolated_index["store"]
     library_id = "lib_remote_empty"
@@ -229,7 +233,6 @@ def test_syncing_without_snapshot_needs_initial_remote_rebuild(isolated_index):
     store.upsert_status(library_id, status="syncing", watcher_mode="disabled")
 
     assert service.has_usable_snapshot(library_id) is False
-    assert service.needs_initial_remote_rebuild(library_id) is True
 
 
 # ---------- Case 5：跨库存移动场景 ----------
@@ -277,11 +280,23 @@ def test_same_library_move_rewrites_index_without_rescan(isolated_index):
 
     _mark_index_ready(store, library_id)
     old_dir = _create_rj_dir(library_root, "RJ00000020")
+    source_parent_rel = os.path.relpath(str(old_dir.parent), str(library_root)).replace("\\", "/")
+    store.bulk_upsert([
+        _manual_entry(source_parent_rel, library_id=library_id, rjcode="", size=0, file_count=0),
+    ])
     service.upsert_subtree_local(library_id, str(library_root), str(old_dir))
+    source_parent_before = store.get_entry(library_id, source_parent_rel)
+    assert source_parent_before is not None
+    assert source_parent_before.size == len("audio")
+    assert source_parent_before.file_count == 1
     old_status = service.get_status(library_id)
 
     new_parent = library_root / "移動先"
     new_parent.mkdir()
+    store.bulk_upsert([
+        _manual_entry("移動先", library_id=library_id, rjcode="", size=0, file_count=0),
+    ])
+    old_status = service.get_status(library_id)
     new_dir = new_parent / old_dir.name
     old_dir.rename(new_dir)
     old_rel = os.path.relpath(str(old_dir), str(library_root)).replace("\\", "/")
@@ -299,6 +314,14 @@ def test_same_library_move_rewrites_index_without_rescan(isolated_index):
     assert moved >= 2
     assert service.find_by_rjcode("RJ00000020", library_id)[0].relative_path == new_rel
     assert store.get_entry(library_id, old_rel) is None
+    source_parent_after = store.get_entry(library_id, source_parent_rel)
+    target_parent_after = store.get_entry(library_id, "移動先")
+    assert source_parent_after is not None
+    assert source_parent_after.size == 0
+    assert source_parent_after.file_count == 0
+    assert target_parent_after is not None
+    assert target_parent_after.size == len("audio")
+    assert target_parent_after.file_count == 1
     moved_file = store.get_entry(library_id, f"{new_rel}/RJ00000020_track1.mp3")
     assert moved_file is not None
     assert os.path.normcase(moved_file.absolute_path) == os.path.normcase(str(new_dir / "RJ00000020_track1.mp3"))
@@ -321,9 +344,20 @@ def test_cross_library_move_copies_index_snapshot_without_rescan(isolated_index,
     _mark_index_ready(store, dest_id)
 
     old_dir = _create_rj_dir(src_root, "RJ00000021")
+    source_parent_rel = os.path.relpath(str(old_dir.parent), str(src_root)).replace("\\", "/")
+    store.bulk_upsert([
+        _manual_entry(source_parent_rel, library_id=src_id, rjcode="", size=0, file_count=0),
+    ])
     service.upsert_subtree_local(src_id, str(src_root), str(old_dir))
+    source_parent_before = store.get_entry(src_id, source_parent_rel)
+    assert source_parent_before is not None
+    assert source_parent_before.size == len("audio")
+    assert source_parent_before.file_count == 1
     dest_parent = dest_root / "移動先"
     dest_parent.mkdir()
+    store.bulk_upsert([
+        _manual_entry("移動先", library_id=dest_id, rjcode="", size=0, file_count=0),
+    ])
     new_dir = dest_parent / old_dir.name
     old_dir.rename(new_dir)
     old_rel = os.path.relpath(str(old_dir), str(src_root)).replace("\\", "/")
@@ -343,6 +377,14 @@ def test_cross_library_move_copies_index_snapshot_without_rescan(isolated_index,
     dest_hits = service.find_by_rjcode("RJ00000021", dest_id)
     assert len(dest_hits) == 1
     assert dest_hits[0].relative_path == new_rel
+    source_parent_after = store.get_entry(src_id, source_parent_rel)
+    target_parent_after = store.get_entry(dest_id, "移動先")
+    assert source_parent_after is not None
+    assert source_parent_after.size == 0
+    assert source_parent_after.file_count == 0
+    assert target_parent_after is not None
+    assert target_parent_after.size == len("audio")
+    assert target_parent_after.file_count == 1
     moved_file = store.get_entry(dest_id, f"{new_rel}/RJ00000021_track1.mp3")
     assert moved_file is not None
     assert os.path.normcase(moved_file.absolute_path) == os.path.normcase(str(new_dir / "RJ00000021_track1.mp3"))
@@ -507,6 +549,91 @@ def test_upsert_subtree_local_accepts_single_file_path(isolated_index):
     assert hit.size == 4
 
 
+def test_file_upsert_updates_ancestor_directory_size_and_count(isolated_index):
+    """文件级 self_mutation upsert 后，父目录聚合必须立刻变化。"""
+    service: LibraryIndexService = isolated_index["service"]
+    store: SnapshotStore = isolated_index["store"]
+    library_id = "lib_file_parent_delta"
+
+    store.bulk_upsert([
+        _manual_entry("社团", library_id=library_id, rjcode="", size=0, file_count=0),
+        _manual_entry("社团/RJ00000030", library_id=library_id, rjcode="RJ00000030", size=0, file_count=0),
+    ])
+
+    service.handle_self_mutation_upsert(_manual_entry(
+        "社团/RJ00000030/track.wav",
+        library_id=library_id,
+        rjcode="RJ00000030",
+        entry_type="file",
+    ))
+
+    parent = store.get_entry(library_id, "社团/RJ00000030")
+    top = store.get_entry(library_id, "社团")
+    assert parent is not None
+    assert parent.size == 123
+    assert parent.file_count == 1
+    assert top is not None
+    assert top.size == 123
+    assert top.file_count == 1
+
+
+def test_delete_file_updates_ancestor_directory_size_and_count(isolated_index):
+    """删除子文件后，祖先目录 size/file_count 不能停在旧值。"""
+    service: LibraryIndexService = isolated_index["service"]
+    store: SnapshotStore = isolated_index["store"]
+    library_id = "lib_delete_parent_delta"
+
+    store.bulk_upsert([
+        _manual_entry("社团", library_id=library_id, rjcode="", size=123, file_count=1),
+        _manual_entry("社团/RJ00000031", library_id=library_id, rjcode="RJ00000031", size=123, file_count=1),
+        _manual_entry("社团/RJ00000031/track.wav", library_id=library_id, rjcode="RJ00000031", entry_type="file", size=123),
+    ])
+
+    deleted = service.handle_self_mutation_delete(library_id, "社团/RJ00000031/track.wav")
+
+    assert deleted == 1
+    parent = store.get_entry(library_id, "社团/RJ00000031")
+    top = store.get_entry(library_id, "社团")
+    assert parent is not None
+    assert parent.size == 0
+    assert parent.file_count == 0
+    assert top is not None
+    assert top.size == 0
+    assert top.file_count == 0
+
+
+def test_subtree_upsert_updates_outer_parent_directory_delta(isolated_index):
+    """子树 replace/upsert 后，只按子树根目录新旧差值更新外层父目录。"""
+    service: LibraryIndexService = isolated_index["service"]
+    store: SnapshotStore = isolated_index["store"]
+    library_root: Path = isolated_index["library_root"]
+    library_id = "lib_subtree_parent_delta"
+
+    _mark_index_ready(store, library_id)
+    circle = library_root / "Circle"
+    work_dir = circle / "RJ00000032"
+    work_dir.mkdir(parents=True)
+    track = work_dir / "track.wav"
+    track.write_bytes(b"abcd")
+
+    store.bulk_upsert([
+        _manual_entry("Circle", library_id=library_id, rjcode="", size=0, file_count=0),
+    ])
+
+    service.upsert_subtree_local(library_id, str(library_root), str(work_dir))
+    circle_entry = store.get_entry(library_id, "Circle")
+    assert circle_entry is not None
+    assert circle_entry.size == 4
+    assert circle_entry.file_count == 1
+
+    track.write_bytes(b"abcdefghij")
+    service.upsert_subtree_local(library_id, str(library_root), str(work_dir))
+    circle_entry = store.get_entry(library_id, "Circle")
+    assert circle_entry is not None
+    assert circle_entry.size == 10
+    assert circle_entry.file_count == 1
+
+
 def test_index_status_keeps_persisted_size_snapshot_with_deltas(isolated_index):
     """统计卡片读 status 聚合快照；业务变更只做差量加减。"""
     service: LibraryIndexService = isolated_index["service"]
@@ -564,7 +691,7 @@ def test_delete_subtree_treats_percent_and_underscore_as_literal_path_chars(isol
     assert store.get_entry(library_id, "社团/aXyb/track.mp3") is not None
 
 
-def test_snapshot_store_reads_do_not_wait_for_sqlite_write_budget(monkeypatch, isolated_index):
+def test_snapshot_store_reads_do_not_wait_for_index_write_budget(monkeypatch, isolated_index):
     """库存 stats/search/list 读路径不能排在 library_index.write 队列后面。"""
     import app.core.library_index.snapshot_store as snapshot_store_module
 
@@ -600,3 +727,78 @@ def test_snapshot_store_reads_do_not_wait_for_sqlite_write_budget(monkeypatch, i
     assert store.count_library_entries(library_id) == 1
 
     assert calls == []
+
+
+def test_interrupted_initial_syncing_status_becomes_error(isolated_index):
+    """首建中断不能在下次启动后继续显示同步中。"""
+    service: LibraryIndexService = isolated_index["service"]
+    store: SnapshotStore = isolated_index["store"]
+    library_id = "lib_interrupted_initial_sync"
+
+    store.bulk_upsert([
+        _manual_entry("社团/RJ00000017", library_id=library_id, rjcode="RJ00000017"),
+        _manual_entry(
+            "社团/RJ00000017/track.wav",
+            library_id=library_id,
+            rjcode="RJ00000017",
+            entry_type="file",
+            size=10,
+        ),
+    ])
+    store.upsert_status(
+        library_id,
+        status="syncing",
+        watcher_mode="disabled",
+        total_entries=5000,
+        total_size_bytes=999,
+        folder_count=9,
+    )
+    _backdate_index_status(store, library_id, 1)
+    service._pending_tasks.clear()
+    service._pending_tasks_by_library.clear()
+
+    status = service.get_status(library_id)
+
+    assert status is not None
+    assert status.status == "error"
+    assert status.total_entries == 0
+    assert "同步中断" in (status.error or "")
+
+
+def test_interrupted_resyncing_status_restores_completed_snapshot_stats(isolated_index):
+    """已有完整快照的重建中断后，恢复为可读 ready，并重算真实统计。"""
+    service: LibraryIndexService = isolated_index["service"]
+    store: SnapshotStore = isolated_index["store"]
+    library_id = "lib_interrupted_resync"
+
+    store.bulk_upsert([
+        _manual_entry("社团/RJ00000018", library_id=library_id, rjcode="RJ00000018", size=0, file_count=1),
+        _manual_entry(
+            "社团/RJ00000018/track.wav",
+            library_id=library_id,
+            rjcode="RJ00000018",
+            entry_type="file",
+            size=10,
+        ),
+    ])
+    store.upsert_status(
+        library_id,
+        status="syncing",
+        watcher_mode="disabled",
+        last_full_scan_at=123456,
+        total_entries=5000,
+        total_size_bytes=999,
+        folder_count=9,
+    )
+    _backdate_index_status(store, library_id, 1)
+    service._pending_tasks.clear()
+    service._pending_tasks_by_library.clear()
+
+    status = service.get_status(library_id)
+
+    assert status is not None
+    assert status.status == "ready"
+    assert status.total_entries == 2
+    assert status.total_size_bytes == 10
+    assert status.folder_count == 0
+    assert "同步中断" in (status.error or "")

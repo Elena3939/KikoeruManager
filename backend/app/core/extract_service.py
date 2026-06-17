@@ -1796,6 +1796,62 @@ class ExtractService:
     def _format_command_for_log(cmd: List[str]) -> str:
         return " ".join(ExtractService._redact_command_args(cmd))
 
+    @staticmethod
+    def _shorten_progress_text(value: str, max_chars: int = 60) -> str:
+        text = re.sub(r"\s+", " ", str(value or "").replace("\\", "/")).strip()
+        if not text or len(text) <= max_chars:
+            return text
+        if "/" in text:
+            name = text.rsplit("/", 1)[-1].strip()
+            if name and len(name) <= max_chars - 2:
+                return f".../{name}"
+            text = name or text
+        if len(text) <= max_chars:
+            return text
+        keep_head = max(12, max_chars // 3)
+        keep_tail = max(12, max_chars - keep_head - 3)
+        return f"{text[:keep_head]}...{text[-keep_tail:]}"
+
+    @staticmethod
+    def _limit_progress_step(value: str, max_chars: int = 96) -> str:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        if len(text) <= max_chars:
+            return text
+        keep_head = max(24, max_chars // 2)
+        keep_tail = max(20, max_chars - keep_head - 3)
+        return f"{text[:keep_head]}...{text[-keep_tail:]}"
+
+    @staticmethod
+    def _extract_7z_progress_entry_name(line: str) -> str:
+        text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", str(line or "")).strip()
+        if "%" not in text:
+            return ""
+        after_percent = text.split("%", 1)[1].strip()
+        if not after_percent:
+            return ""
+        # 7zz 进度常见形态：`75% 12 - dir/file.ext` 或
+        # `75% 12/30 1048576/2048576 - dir/file.ext`。
+        after_percent = re.sub(r"^(?:\d+(?:/\d+)?\s+)*", "", after_percent).strip()
+        after_percent = re.sub(r"^[+\-]\s*", "", after_percent).strip()
+        if not after_percent:
+            return ""
+        if re.fullmatch(r"[\d\s/.,:]+", after_percent):
+            return ""
+        lowered = after_percent.lower()
+        if lowered.startswith(("everything is ok", "files:", "folders:", "size:", "compressed:")):
+            return ""
+        return after_percent
+
+    @staticmethod
+    def _decode_7z_progress_chunk(chunk: bytes) -> str:
+        if not chunk:
+            return ""
+        try:
+            return chunk.decode("utf-8")
+        except UnicodeDecodeError:
+            fallback = "gbk" if sys.platform == "win32" else "utf-8"
+            return chunk.decode(fallback, errors="replace")
+
     def _get_cached_embedded_zip_offset(self, archive_path: str, task: Optional[Task]) -> Optional[int]:
         metadata = getattr(task, "task_metadata", None) or {}
         cached_path = str(metadata.get("embedded_zip_source_path") or "").strip()
@@ -7111,9 +7167,11 @@ class ExtractService:
                 start_time = datetime.now()
                 last_update = 0
                 last_percent = -1
+                last_entry_name = ""
+                archive_display_name = self._shorten_progress_text(os.path.basename(archive_info.path), 42)
 
                 def progress_callback(line: str):
-                    nonlocal last_update, last_percent
+                    nonlocal last_update, last_percent, last_entry_name
                     # 解析 7z 进度行，例如:  12% 123/1000 5678/100000000
                     percent_match = re.search(r"(\d{1,3})%", line)
                     if percent_match:
@@ -7148,14 +7206,32 @@ class ExtractService:
                                     h, m = divmod(m, 60)
                                     eta_str = f"{h:d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
 
+                        entry_name = self._extract_7z_progress_entry_name(line)
+                        if entry_name:
+                            last_entry_name = entry_name
+
                         # 控制更新频率
                         current_ts = now.timestamp()
-                        if raw_percent == last_percent and raw_percent != 100:
+                        if raw_percent == last_percent and not entry_name and raw_percent != 100:
                             return
                         if current_ts - last_update >= 1.5 or raw_percent == 100:
                             last_update = current_ts
                             last_percent = raw_percent
-                            task.update_progress(min(99, mapped), f"解压中 {raw_percent}%" + (f" ({speed_str}, 剩余 {eta_str})" if speed_str else ""))
+                            display_entry = self._shorten_progress_text(last_entry_name, 62)
+                            message_parts = [f"解压中 {raw_percent}%"]
+                            if display_entry:
+                                message_parts.append(display_entry)
+                            elif archive_display_name:
+                                message_parts.append(archive_display_name)
+                            status_parts = []
+                            if speed_str:
+                                status_parts.append(speed_str)
+                            if eta_str:
+                                status_parts.append(f"剩余 {eta_str}")
+                            detail = " - ".join(message_parts)
+                            if status_parts:
+                                detail += f" ({', '.join(status_parts)})"
+                            task.update_progress(min(99, mapped), self._limit_progress_step(detail))
 
                 # 对同一个密码重试完整解压：被暂停 kill 掉后，恢复时希望从同一个密码
                 # 重新跑 x，而不是跳到下一个密码（那会导致恢复后丢掉85%进度并跳密码）。
@@ -7738,6 +7814,7 @@ class ExtractService:
                 stderr_data = bytearray()
 
                 async def read_stream(stream, buffer, is_stdout=False):
+                    progress_tail = ""
                     while True:
                         chunk = await stream.read(4096)
                         if not chunk:
@@ -7749,12 +7826,22 @@ class ExtractService:
                                 buffer.extend(chunk[:remain])
                         if is_stdout and progress_callback:
                             try:
-                                text = chunk.decode('utf-8', errors='ignore')
-                                for line in text.replace('\r', '\n').split('\n'):
+                                text = progress_tail + self._decode_7z_progress_chunk(chunk)
+                                parts = re.split(r"[\r\n]+", text)
+                                if text and not text.endswith(("\r", "\n")):
+                                    progress_tail = parts.pop()
+                                else:
+                                    progress_tail = ""
+                                for line in parts:
                                     if line.strip():
                                         progress_callback(line.strip())
                             except Exception:
-                                pass
+                                progress_tail = ""
+                    if is_stdout and progress_callback and progress_tail.strip():
+                        try:
+                            progress_callback(progress_tail.strip())
+                        except Exception:
+                            pass
 
                 async def wait_for_process_output():
                     await asyncio.gather(

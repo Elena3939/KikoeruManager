@@ -1953,46 +1953,6 @@ async def _periodic_task_phase_metric_cleanup():
         await asyncio.sleep(24 * 3600)
 
 
-async def _bootstrap_remote_library_indexes():
-    """启动后补齐没有可用快照的远程库存索引。"""
-    await asyncio.sleep(8)
-    try:
-        manager = get_library_manager()
-        service = get_library_index_service()
-        scheduled = 0
-        for raw in manager.list_libraries():
-            if not isinstance(raw, dict):
-                continue
-            if raw.get("type") != "synology_filestation":
-                continue
-            library_id = str(raw.get("id") or "").strip()
-            if not library_id or not service.needs_initial_remote_rebuild(library_id):
-                continue
-            try:
-                library = manager.get_library_definition(library_id)
-            except Exception:
-                logger.warning("[索引] 启动修复跳过未知远程库 library=%s", library_id, exc_info=True)
-                continue
-            if not library.synology:
-                continue
-            captured_synology = library.synology
-
-            def _client_factory(captured=captured_synology):
-                return manager.get_cached_synology_client(captured)
-
-            await service.schedule_rebuild_remote(
-                library.id,
-                _client_factory,
-                library.root_path or "/",
-                force=False,
-            )
-            scheduled += 1
-        if scheduled:
-            logger.info("[索引] 启动修复已排队远程库存索引重建 count=%s", scheduled)
-    except Exception:
-        logger.warning("[索引] 启动修复远程库存索引失败", exc_info=True)
-
-
 # 启动事件
 @app.on_event("startup")
 async def startup_event():
@@ -2023,6 +1983,12 @@ async def startup_event():
 
     # 初始化数据库
     init_db()
+
+    # 只纠正上次进程中断遗留的 syncing 状态；不自动重建库存索引。
+    try:
+        get_library_index_service().normalize_all_interrupted_syncing_statuses()
+    except Exception:
+        logger.warning("[启动] 纠正库存索引同步状态失败", exc_info=True)
 
     # 启动任务引擎
     engine = get_task_engine()
@@ -2068,9 +2034,6 @@ async def startup_event():
 
     # 启动任务阶段指标清理任务（性能观测表只保留近期样本）
     asyncio.create_task(_periodic_task_phase_metric_cleanup())
-
-    # 补齐从未建好快照的远程库索引，避免远程浏览长期退回 FileStation walk。
-    asyncio.create_task(_bootstrap_remote_library_indexes())
 
 # 关闭事件
 @app.on_event("shutdown")
@@ -6706,6 +6669,56 @@ async def list_library_circle_group_works(
         raise HTTPException(status_code=500, detail=f"读取库存社团作品失败: {str(e)}")
 
 
+@app.get("/api/library/circle-browser/files")
+async def browse_library_circle_files(
+    current_path: str = "circle:/",
+    page: int = 1,
+    page_size: int = 50,
+    keyword: str = "",
+    sort_by: str = "name",
+    sort_order: str = "asc",
+    force_refresh: bool = False,
+):
+    try:
+        from ..core.library_circle_aggregation_service import get_library_circle_aggregation_service
+
+        payload = await get_library_circle_aggregation_service().browse_circle_path(
+            current_path=current_path,
+            page=page,
+            page_size=page_size,
+            keyword=keyword,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            force_refresh=force_refresh,
+        )
+        payload["libraries"] = get_library_manager().list_libraries()
+        return payload
+    except Exception as e:
+        logger.error("读取库存社团浏览失败: %s", sanitize_text_for_log(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"读取库存社团浏览失败: {str(e)}")
+
+
+class LibraryCircleActionTargetsRequest(BaseModel):
+    current_path: str = "circle:/"
+    paths: List[str] = Field(default_factory=list)
+    max_targets: int = 5000
+
+
+@app.post("/api/library/circle-browser/action-targets")
+async def resolve_library_circle_action_targets(request: LibraryCircleActionTargetsRequest):
+    try:
+        from ..core.library_circle_aggregation_service import get_library_circle_aggregation_service
+
+        return get_library_circle_aggregation_service().resolve_action_targets(
+            current_path=request.current_path,
+            paths=request.paths,
+            max_targets=request.max_targets,
+        )
+    except Exception as e:
+        logger.error("解析库存社团操作目标失败: %s", sanitize_text_for_log(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"解析库存社团操作目标失败: {str(e)}")
+
+
 # ========== 库存搜索索引 API ==========
 # 由 library_index 模块提供：在 PostgreSQL 里常驻一份"库存 → 条目"快照，
 # 用 SQL 查询替代群晖几十万级目录上的实时 walk / SYNO.FileStation.Search。
@@ -6745,6 +6758,24 @@ def _index_status_to_dict(status, fallback_library_id: Optional[str] = None) -> 
     }
 
 
+def _disabled_remote_index_status(library) -> Dict[str, Any]:
+    return {
+        "library_id": library.id,
+        "library_name": library.name,
+        "library_type": library.type,
+        "status": "disabled",
+        "watcher_mode": "disabled",
+        "total_entries": 0,
+        "total_size_bytes": 0,
+        "folder_count": 0,
+        "last_full_scan_at": None,
+        "last_event_at": None,
+        "error": None,
+        "updated_at": int(time.time() * 1000),
+        "disabled_reason": "remote_filestation",
+    }
+
+
 def _index_entry_to_dict(entry) -> Dict[str, Any]:
     return {
         "library_id": entry.library_id,
@@ -6765,9 +6796,9 @@ def _index_entry_to_dict(entry) -> Dict[str, Any]:
 async def post_library_index_rebuild(request: LibraryIndexRebuildRequest):
     """异步触发库存搜索索引的全量重建。
 
-    支持 local 与 synology_filestation 两种库存类型：
+    仅支持 local 库存：
     - local：本地 os.scandir 扫描，后台 thread 跑
-    - synology_filestation：SYNO.FileStation.Search 扫描，后台 asyncio task 跑
+    - synology_filestation：远程库走群晖 FileStation 原生接口，不创建库存索引
 
     立即把状态置为 syncing 并返回，前端通过 /api/library/index/status 轮询
     status 字段判断 ready / error。
@@ -6789,20 +6820,9 @@ async def post_library_index_rebuild(request: LibraryIndexRebuildRequest):
             raise HTTPException(status_code=400, detail="本地库存未配置 path")
         status = await service.schedule_rebuild_local(library.id, library.path)
     elif library.type == "synology_filestation":
-        if not library.synology:
-            raise HTTPException(status_code=400, detail="群晖库存未配置 synology 连接信息")
-        # 后台 task 启动时再取 client，避免 token 提前过期
-        # 闭包捕获当前的 manager / library，后台 task 跑时仍然有效
-        captured_synology = library.synology
-
-        def _client_factory():
-            return manager.get_cached_synology_client(captured_synology)
-
-        status = await service.schedule_rebuild_remote(
-            library.id,
-            _client_factory,
-            library.root_path or "/",
-            force=True,
+        raise HTTPException(
+            status_code=400,
+            detail="远程群晖库存不再创建库存索引，请使用群晖 FileStation 原生浏览/搜索",
         )
     else:
         raise HTTPException(
@@ -6828,9 +6848,25 @@ async def get_library_index_status(library_id: Optional[str] = None):
         normalized = library_id.strip()
         if not normalized:
             raise HTTPException(status_code=400, detail="library_id 不能为空字符串")
+        manager = get_library_manager()
+        try:
+            library = manager.get_library_definition(normalized)
+        except Exception:
+            library = None
+        if library is not None and library.type == "synology_filestation":
+            return _disabled_remote_index_status(library)
         return _index_status_to_dict(service.get_status(normalized), fallback_library_id=normalized)
 
-    statuses = service.list_all_status()
+    manager = get_library_manager()
+    remote_library_ids = {
+        str(item.get("id") or "")
+        for item in manager.list_libraries()
+        if item.get("id") and item.get("type") == "synology_filestation"
+    }
+    statuses = [
+        item for item in service.list_all_status()
+        if item.library_id not in remote_library_ids
+    ]
     return {
         "items": [_index_status_to_dict(item) for item in statuses],
         "count": len(statuses),
@@ -6857,6 +6893,24 @@ async def search_library_index(
         raise HTTPException(status_code=400, detail="请至少传 rjcode 或 name 之一")
     capped_limit = max(1, min(int(limit or 100), 1000))
     library_scope = (library_id or "").strip() or None
+    manager = get_library_manager()
+    local_library_ids = [
+        str(item.get("id") or "")
+        for item in manager.list_libraries()
+        if item.get("id") and item.get("type") != "synology_filestation"
+    ]
+    if library_scope:
+        library_def = manager.get_library_definition(library_scope)
+        if library_def.type == "synology_filestation":
+            return {
+                "items": [],
+                "count": 0,
+                "index_status": _disabled_remote_index_status(library_def),
+            }
+    else:
+        if not local_library_ids:
+            return {"items": [], "count": 0}
+        library_scope = local_library_ids
 
     if rjcode_normalized:
         entries = service.find_by_rjcode(
@@ -7149,7 +7203,7 @@ async def global_search_library_index(
       （CSV）收窄到指定库
     - 关键字会自动尝试 RJ 号识别（"RJ01234567" / "01234567" 都会命中）+
       名字模糊匹配，结果合并去重
-    - 全程只读库存索引，IO 压力恒定，不触发任何 fs / FileStation 调用
+    - 本地库只读库存索引；远程群晖库不建索引，必要时走 FileStation 搜索兜底
     - mode=suggest 时只返回前 limit 条用于自动补全；mode=full 时按 cap
       返回更多条目用于全屏搜索结果列表
 
@@ -7211,6 +7265,19 @@ async def global_search_library_index(
     unready_library_infos: list[Dict[str, Any]] = []
     for library_id in library_ids_list:
         info = library_lookup.get(library_id, {})
+        library_type = str(info.get("type") or "local")
+        if library_type == "synology_filestation":
+            library_status_map[library_id] = {
+                "library_id": library_id,
+                "library_name": info.get("name") or library_id,
+                "library_type": library_type,
+                "index_status": "disabled",
+                "total_entries": 0,
+                "search_mode": "fallback",
+                "fallback_error": None,
+            }
+            unready_library_infos.append(info or {"id": library_id, "type": library_type})
+            continue
         try:
             status_obj = service.get_status(library_id)
         except Exception:  # noqa: BLE001 - 状态查询独立兜底
@@ -7224,7 +7291,7 @@ async def global_search_library_index(
         library_status_map[library_id] = {
             "library_id": library_id,
             "library_name": info.get("name") or library_id,
-            "library_type": info.get("type") or "local",
+            "library_type": library_type,
             "index_status": index_status_name,
             "total_entries": int(getattr(status_obj, "total_entries", 0) or 0) if status_obj else 0,
             "search_mode": "index",  # 默认假设走索引；下面会根据 ready / fallback 调整
@@ -7448,8 +7515,9 @@ async def global_search_library_index_stream(
        "error": null|"timeout"|"<exc>", "library_status": {...}, "elapsed_ms": N}
     - {"type": "done", "elapsed_ms": N, "fallback_used": bool, "fallback_failed": [...]}
 
-    设计与同步版 /api/library/index/global-search 一致：索引为快路径、fallback 为慢
-    兜底；区别是 fallback 阶段改为流式推送，不再阻塞到全部完成才响应。
+    设计与同步版 /api/library/index/global-search 一致：本地索引为快路径，
+    远程群晖库走 FileStation fallback；区别是 fallback 阶段改为流式推送，
+    不再阻塞到全部完成才响应。
     """
     started_at = time.perf_counter()
     keyword_raw = (keyword or "").strip()
@@ -7509,6 +7577,19 @@ async def global_search_library_index_stream(
         unready_library_infos: list[Dict[str, Any]] = []
         for lib_id in library_ids_list:
             info = library_lookup.get(lib_id, {})
+            library_type = str(info.get("type") or "local")
+            if library_type == "synology_filestation":
+                library_status_map[lib_id] = {
+                    "library_id": lib_id,
+                    "library_name": info.get("name") or lib_id,
+                    "library_type": library_type,
+                    "index_status": "disabled",
+                    "total_entries": 0,
+                    "search_mode": "fallback_pending",
+                    "fallback_error": None,
+                }
+                unready_library_infos.append(info or {"id": lib_id, "type": library_type})
+                continue
             try:
                 status_obj = service.get_status(lib_id)
             except Exception:  # noqa: BLE001
@@ -7517,7 +7598,7 @@ async def global_search_library_index_stream(
             library_status_map[lib_id] = {
                 "library_id": lib_id,
                 "library_name": info.get("name") or lib_id,
-                "library_type": info.get("type") or "local",
+                "library_type": library_type,
                 "index_status": index_status_name,
                 "total_entries": int(getattr(status_obj, "total_entries", 0) or 0) if status_obj else 0,
                 "search_mode": "index",
@@ -7833,7 +7914,30 @@ def _normalize_library_size_target(data: dict[str, Any]) -> dict[str, str]:
     }
 
 
-async def _compute_library_folder_size_target(manager, target: dict[str, str]) -> dict[str, Any]:
+def _optional_positive_int(value: Any) -> Optional[int]:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _optional_positive_float(value: Any) -> Optional[float]:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+async def _compute_library_folder_size_target(
+    manager,
+    target: dict[str, str],
+    *,
+    include_counts: bool = False,
+    max_entries: Optional[int] = None,
+    max_seconds: Optional[float] = None,
+) -> dict[str, Any]:
     library_id = str(target.get("library_id") or "").strip()
     folder_path = str(target.get("path") or "").strip()
     if not folder_path:
@@ -7872,6 +7976,19 @@ async def _compute_library_folder_size_target(manager, target: dict[str, str]) -
                     "error": "文件夹不在当前库存范围内",
                 }
             client = manager.get_cached_synology_client(library.synology)
+            if include_counts:
+                summary = await manager._remote_folder_summary(
+                    client,
+                    normalized_path,
+                    max_entries=max_entries,
+                    max_seconds=max_seconds,
+                )
+                return {
+                    "library_id": resolved_library_id,
+                    "path": normalized_path,
+                    "success": True,
+                    **summary,
+                }
             size = await manager._remote_path_size(client, normalized_path, True, max_wait_seconds=300)
             return {
                 "library_id": resolved_library_id,
@@ -7896,6 +8013,19 @@ async def _compute_library_folder_size_target(manager, target: dict[str, str]) -
                 "success": False,
                 "error": "文件夹不存在",
             }
+        if include_counts:
+            summary = await asyncio.to_thread(
+                manager._local_folder_summary_from_filesystem,
+                normalized_path,
+                max_entries=max_entries,
+                max_seconds=max_seconds,
+            )
+            return {
+                "library_id": resolved_library_id,
+                "path": normalized_path,
+                "success": True,
+                **summary,
+            }
         size = await asyncio.to_thread(manager._cached_path_size, normalized_path)
         return {
             "library_id": resolved_library_id,
@@ -7919,7 +8049,13 @@ async def compute_folder_size(request: Request):
         data = await request.json()
         manager = get_library_manager()
         target = _normalize_library_size_target(data)
-        result = await _compute_library_folder_size_target(manager, target)
+        result = await _compute_library_folder_size_target(
+            manager,
+            target,
+            include_counts=bool(data.get("include_counts") or data.get("includeCounts")),
+            max_entries=_optional_positive_int(data.get("max_entries") or data.get("maxEntries")),
+            max_seconds=_optional_positive_float(data.get("max_seconds") or data.get("maxSeconds")),
+        )
         if not result.get("success"):
             status_code = 404 if result.get("error") == "文件夹不存在" else 400
             raise HTTPException(status_code=status_code, detail=result.get("error") or "计算文件夹大小失败")
@@ -7938,6 +8074,9 @@ async def compute_folder_sizes(request: Request):
         data = await request.json()
         raw_items = data.get("items")
         targets = []
+        include_counts = bool(data.get("include_counts") or data.get("includeCounts"))
+        max_entries = _optional_positive_int(data.get("max_entries") or data.get("maxEntries"))
+        max_seconds = _optional_positive_float(data.get("max_seconds") or data.get("maxSeconds"))
         if isinstance(raw_items, list) and raw_items:
             for raw_item in raw_items:
                 if isinstance(raw_item, dict):
@@ -7961,7 +8100,13 @@ async def compute_folder_sizes(request: Request):
         manager = get_library_manager()
         results = []
         for target in targets:
-            results.append(await _compute_library_folder_size_target(manager, target))
+            results.append(await _compute_library_folder_size_target(
+                manager,
+                target,
+                include_counts=include_counts,
+                max_entries=max_entries,
+                max_seconds=max_seconds,
+            ))
         success_count = sum(1 for item in results if item.get("success"))
         failed_count = len(results) - success_count
         return {
@@ -7994,10 +8139,16 @@ async def get_library_browser_folder_contents(request: Request):
         library_id = data.get("library_id")
         folder_path = data.get("path")
         recursive = data.get("recursive", True)
+        prefer_index = data.get("prefer_index", True)
         if not folder_path:
             raise HTTPException(status_code=400, detail="缺少文件夹路径")
         manager = get_library_manager()
-        return await manager.folder_contents(library_id, folder_path, recursive=bool(recursive))
+        return await manager.folder_contents(
+            library_id,
+            folder_path,
+            recursive=bool(recursive),
+            prefer_index=bool(prefer_index),
+        )
     except HTTPException:
         raise
     except ValueError as e:
@@ -9488,57 +9639,101 @@ async def get_library_folder_contents(request: Request):
     """获取指定本地文件夹的所有子文件（递归）"""
     try:
         data = await request.json()
-        folder_path = data.get("path")
+        folder_path = str(data.get("path") or "").strip()
+        library_id = str(data.get("library_id") or "").strip()
+        recursive = bool(data.get("recursive", True))
+        prefer_index = bool(data.get("prefer_index", False))
         if not folder_path:
             raise HTTPException(status_code=400, detail="缺少文件夹路径")
 
-        target_path = os.path.abspath(folder_path)
+        manager = get_library_manager()
+        library = manager.get_library_definition(library_id) if library_id else manager.find_local_library_for_path(folder_path)
+        if library is None:
+            target_path = os.path.abspath(folder_path)
 
-        # 远程挂载（NAS / SMB）目录上 os.walk + 每个文件 os.stat 单次几十到几百 ms，
-        # 大目录直接阻塞 event loop 几分钟。整段同步 IO 全部下放到线程池，
-        # 否则光这一个接口就能拖垮 outbox / SSE / 其他路由。
-        def _walk_and_stat() -> tuple[bool, bool, list[dict]]:
-            """同步遍历目录并采集文件元信息。返回 (exists, is_dir, items)。"""
-            if not os.path.exists(target_path):
-                return False, False, []
-            if not os.path.isdir(target_path):
-                return True, False, []
-            collected: list[dict] = []
-            local_id = 0
-            for root, _, files in os.walk(target_path):
-                for filename in files:
-                    if filename.startswith('.'):
-                        continue
-                    file_path = os.path.join(root, filename)
-                    try:
-                        st = os.stat(file_path)
-                        relative_path = os.path.relpath(file_path, target_path).replace("\\", "/")
-                        collected.append({
-                            "id": str(local_id),
-                            "name": filename,
-                            "path": file_path,
-                            "relative_path": relative_path,
-                            "size": st.st_size,
-                            "modified_time": datetime.fromtimestamp(st.st_mtime).isoformat()
-                        })
-                        local_id += 1
-                    except Exception as e:
-                        logger.warning(f"读取子文件失败: {file_path}, {e}")
-            return True, True, collected
+            def _walk_and_stat() -> tuple[bool, bool, list[dict]]:
+                if not os.path.exists(target_path):
+                    return False, False, []
+                if not os.path.isdir(target_path):
+                    return True, False, []
+                collected: list[dict] = []
+                local_id = 0
+                if recursive:
+                    walker = os.walk(target_path)
+                    for root, _, files in walker:
+                        for filename in files:
+                            if filename.startswith('.'):
+                                continue
+                            file_path = os.path.join(root, filename)
+                            try:
+                                st = os.stat(file_path)
+                                relative_path = os.path.relpath(file_path, target_path).replace("\\", "/")
+                                collected.append({
+                                    "id": str(local_id),
+                                    "name": filename,
+                                    "path": file_path,
+                                    "relative_path": relative_path,
+                                    "size": st.st_size,
+                                    "modified_time": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                                })
+                                local_id += 1
+                            except Exception as exc:
+                                logger.warning("读取子文件失败: %s, %s", file_path, exc)
+                    return True, True, collected
+                try:
+                    with os.scandir(target_path) as entries:
+                        for entry in entries:
+                            if entry.name.startswith('.'):
+                                continue
+                            try:
+                                st = entry.stat(follow_symlinks=False)
+                                is_directory = entry.is_dir(follow_symlinks=False)
+                            except Exception as exc:
+                                logger.warning("读取子项失败: %s, %s", entry.path, exc)
+                                continue
+                            collected.append({
+                                "id": str(local_id),
+                                "name": entry.name,
+                                "path": entry.path,
+                                "relative_path": entry.name,
+                                "size": None if is_directory else st.st_size,
+                                "size_status": "disabled" if is_directory else "ready",
+                                "modified_time": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                                "type": "dir" if is_directory else "file",
+                                "is_directory": is_directory,
+                                "has_children": is_directory,
+                                "children_loaded": False if is_directory else True,
+                            })
+                            local_id += 1
+                except Exception:
+                    raise
+                return True, True, collected
 
-        path_exists, path_is_dir, items = await asyncio.to_thread(_walk_and_stat)
-        if not path_exists:
-            raise HTTPException(status_code=404, detail="文件夹不存在")
-        if not path_is_dir:
-            raise HTTPException(status_code=400, detail="目标不是文件夹")
-
-        items.sort(key=lambda x: x["relative_path"])
-        return {
-            "folder_name": os.path.basename(target_path),
-            "folder_path": target_path,
-            "total_files": len(items),
-            "items": items
-        }
+            path_exists, path_is_dir, items = await asyncio.to_thread(_walk_and_stat)
+            if not path_exists:
+                raise HTTPException(status_code=404, detail="文件夹不存在")
+            if not path_is_dir:
+                raise HTTPException(status_code=400, detail="目标不是文件夹")
+            if recursive:
+                items.sort(key=lambda x: x["relative_path"])
+            else:
+                items.sort(key=lambda x: (0 if x.get("is_directory") else 1, str(x.get("name") or "").lower()))
+            total_files = len(items) if recursive else sum(1 for item in items if not item.get("is_directory"))
+            return {
+                "folder_name": os.path.basename(target_path),
+                "folder_path": target_path,
+                "total_files": total_files,
+                "total_items": len(items),
+                "recursive": recursive,
+                "browse_via_index": False,
+                "items": items,
+            }
+        return await manager.folder_contents(
+            library.id,
+            folder_path,
+            recursive=recursive,
+            prefer_index=prefer_index,
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -9550,28 +9745,21 @@ async def rename_library_file(request: Request):
     """重命名库内文件或文件夹"""
     try:
         data = await request.json()
-        old_path = data.get("path")
-        new_name = data.get("new_name")
+        old_path = str(data.get("path") or "").strip()
+        new_name = str(data.get("new_name") or "").strip()
+        library_id = str(data.get("library_id") or "").strip()
         
         if not old_path or not new_name:
             raise HTTPException(status_code=400, detail="缺少必要参数")
-        
-        if not os.path.exists(old_path):
-            raise HTTPException(status_code=404, detail="文件不存在")
-        
-        # 构建新路径
-        parent_dir = os.path.dirname(old_path)
-        new_path = os.path.join(parent_dir, new_name)
-        
-        # 检查新名称是否已存在
-        if os.path.exists(new_path):
-            raise HTTPException(status_code=400, detail="新名称已存在")
-        
-        # 执行重命名
-        os.rename(old_path, new_path)
-        logger.info(f"重命名成功: {old_path} -> {new_path}")
-        
-        return {"message": "重命名成功", "new_path": new_path}
+
+        manager = get_library_manager()
+        library = manager.get_library_definition(library_id) if library_id else manager.find_local_library_for_path(old_path)
+        if library is None:
+            raise HTTPException(status_code=403, detail="只能重命名库存内的文件")
+
+        result = await manager.rename(library.id, old_path, new_name)
+        logger.info("重命名成功: library=%s %s -> %s", library.id, old_path, result.get("new_path"))
+        return result
         
     except HTTPException:
         raise
@@ -9888,62 +10076,21 @@ async def delete_library_file(request: Request):
     """删除库内文件或文件夹（需要确认）"""
     try:
         data = await request.json()
-        file_path = data.get("path")
+        file_path = str(data.get("path") or "").strip()
         confirmed = data.get("confirmed", False)
+        library_id = str(data.get("library_id") or "").strip()
         
         if not file_path:
             raise HTTPException(status_code=400, detail="缺少文件路径")
-        
-        if not os.path.exists(file_path):
-            raise HTTPException(status_code=404, detail="文件不存在")
-        
-        # 安全检查：确保在库目录内
-        config = get_config()
-        library_path = config.storage.library_path
-        if not file_path.startswith(library_path):
-            raise HTTPException(status_code=403, detail="只能删除库内的文件")
-        
-        if not confirmed:
-            # 返回需要确认的信息
-            import shutil
-            if os.path.isdir(file_path):
-                # 计算文件夹大小
-                _fp_for_size = file_path
-                def _calc_dir_size():
-                    _sz = 0
-                    for _dp, _dn, _fn in os.walk(_fp_for_size):
-                        for _f in _fn:
-                            try:
-                                _sz += os.path.getsize(os.path.join(_dp, _f))
-                            except Exception:
-                                pass
-                    return _sz
-                total_size = await asyncio.to_thread(_calc_dir_size)
-                return {
-                    "need_confirm": True,
-                    "type": "folder",
-                    "name": os.path.basename(file_path),
-                    "path": file_path,
-                    "size": total_size
-                }
-            else:
-                return {
-                    "need_confirm": True,
-                    "type": "file",
-                    "name": os.path.basename(file_path),
-                    "path": file_path,
-                    "size": os.path.getsize(file_path)
-                }
-        
-        # 执行删除
-        if os.path.isdir(file_path):
-            _robust_rmtree(file_path)
-            logger.info(f"删除文件夹: {file_path}")
-        else:
-            os.remove(file_path)
-            logger.info(f"删除文件: {file_path}")
-        
-        return {"message": "删除成功", "path": file_path}
+
+        manager = get_library_manager()
+        library = manager.get_library_definition(library_id) if library_id else manager.find_local_library_for_path(file_path)
+        if library is None:
+            raise HTTPException(status_code=403, detail="只能删除库存内的文件")
+
+        result = await manager.delete(library.id, file_path, confirmed=bool(confirmed))
+        logger.info("删除接口完成: library=%s path=%s confirmed=%s", library.id, file_path, bool(confirmed))
+        return result
         
     except HTTPException:
         raise
