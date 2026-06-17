@@ -1000,7 +1000,7 @@ function hydrateFolderSizesInBackground ({ token, libraryId, path }) {
 
   if (!directoryPaths.length) return
 
-  libraryApi.computeFolderSizes(directoryPaths)
+  libraryApi.computeFolderSizes(directoryPaths, { libraryId })
     .then(result => {
       if (token !== folderSizeHydrateToken) return
       if (libraryId !== currentLibraryId.value) return

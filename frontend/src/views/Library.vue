@@ -130,11 +130,34 @@
 
         <div class="lib-card-header">
 
-          <span class="lib-card-title">库内文件列表</span>
+          <div class="lib-card-title-wrap">
+            <span class="lib-card-title">{{ libraryViewMode === 'circle' ? '社团聚合视图' : '库内文件列表' }}</span>
+            <div class="lib-scope-switch lib-view-mode-switch" role="tablist" aria-label="库存显示模式">
+              <button
+                type="button"
+                class="lib-scope-option"
+                :class="{ 'is-active': libraryViewMode === 'directory' }"
+                :aria-pressed="libraryViewMode === 'directory'"
+                @click="libraryViewMode = 'directory'"
+              >
+                目录视图
+              </button>
+              <button
+                type="button"
+                class="lib-scope-option"
+                :class="{ 'is-active': libraryViewMode === 'circle' }"
+                :aria-pressed="libraryViewMode === 'circle'"
+                @click="libraryViewMode = 'circle'"
+              >
+                社团视图
+              </button>
+            </div>
+          </div>
 
           <div class="lib-toolbar">
 
             <AppDropdown
+              v-if="libraryViewMode === 'directory'"
               v-model="selectedLibraryId"
               :options="libraryDropdownOptions"
               class="library-select-dd"
@@ -148,6 +171,7 @@
 
 
             <LibrarySearchBox
+              v-if="libraryViewMode === 'directory'"
 
               ref="librarySearchBoxRef"
 
@@ -173,6 +197,7 @@
 
 
             <button
+              v-if="libraryViewMode === 'directory'"
 
               type="button"
 
@@ -195,6 +220,7 @@
 
 
             <button
+              v-if="libraryViewMode === 'directory'"
 
               type="button"
 
@@ -214,7 +240,7 @@
 
 
 
-            <button type="button" class="lib-btn lib-btn-icon-tinted lib-icon-select" @click="toggleAllSelection">
+            <button v-if="libraryViewMode === 'directory'" type="button" class="lib-btn lib-btn-icon-tinted lib-icon-select" @click="toggleAllSelection">
 
               <IconCheckSquare :size="14" :stroke-width="2.2" />
 
@@ -231,7 +257,7 @@
 
 
       <el-alert
-        v-if="synologyOtpRequired"
+        v-if="libraryViewMode === 'directory' && synologyOtpRequired"
         type="error"
         title="群晖二步验证（OTP）已过期，无法连接群晖库存"
         :closable="true"
@@ -248,7 +274,7 @@
 
       <el-alert
 
-        v-if="currentLibrary?.health?.warnings?.length || currentLibrary?.health?.errors?.length"
+        v-if="libraryViewMode === 'directory' && (currentLibrary?.health?.warnings?.length || currentLibrary?.health?.errors?.length)"
 
         :title="healthDetailText(currentLibrary?.health)"
 
@@ -553,6 +579,9 @@
                   <div v-if="isSearchResultRow(tableRow.original) && getSearchResultLibraryLabel(tableRow.original)" class="search-result-library">
                     来源库：{{ getSearchResultLibraryLabel(tableRow.original) }}
                   </div>
+                  <div v-else-if="getCircleRowMetaText(tableRow.original)" class="search-result-library" :class="getCircleRowMetaClass(tableRow.original)">
+                    {{ getCircleRowMetaText(tableRow.original) }}
+                  </div>
                 </div>
               </div>
 
@@ -696,14 +725,11 @@
       />
 
 
-
-
-
       <div class="pagination-wrap km-pagination-wrap">
 
         <el-pagination
-          v-model:current-page="currentPage"
-          v-model:page-size="pageSize"
+          v-model:current-page="activeLibraryPage"
+          v-model:page-size="activeLibraryPageSize"
           :page-sizes="PAGE_SIZES"
           :total="totalFiles"
           layout="total, sizes, prev, pager, next, jumper"
@@ -1967,6 +1993,486 @@ const sortBy = ref(DEFAULT_SORT_BY)
 
 const sortOrder = ref(DEFAULT_SORT_ORDER)
 
+const circleGroups = ref([])
+
+const circleWorks = ref([])
+
+const circleLibraries = ref([])
+
+const circleSelectedGroupKey = ref('')
+
+const circleSelectedWorkKey = ref('')
+
+const circleGroupPage = ref(1)
+
+const circleWorkPage = ref(1)
+
+const circleGroupPageSize = ref(50)
+
+const circleWorkPageSize = ref(50)
+
+const circleGroupTotal = ref(0)
+
+const circleWorkTotal = ref(0)
+
+const circleLoading = ref(false)
+
+const circleKeyword = ref('')
+
+const circleWorkKeyword = ref('')
+
+const circleErrorMessage = ref('')
+
+const circlePathStack = ref([])
+
+const circleVirtualCurrentPath = ref('circle:/')
+
+const circleVirtualBrowseRootPath = ref('circle:/')
+
+const circleCurrentGroup = computed(() => circleGroups.value.find(item => item.circle_key === circleSelectedGroupKey.value) || null)
+
+const circleCurrentWorks = computed(() => circleWorks.value || [])
+
+const circleCurrentWorkContext = computed(() => {
+  const decoded = circleDecodeVirtualPath(circleVirtualCurrentPath.value)
+  if (decoded.type !== 'work') return null
+
+  const work = circleCurrentWorks.value.find(item => String(item?.rjcode || '') === decoded.workKey) || null
+  if (!work) return null
+
+  const locations = Array.isArray(work.locations) ? work.locations : []
+
+  return {
+    decoded,
+    work,
+    locations,
+    primaryLocation: locations[0] || null,
+  }
+})
+
+let circleRefreshSequence = 0
+
+const activeLibraryPage = computed({
+  get () {
+    if (libraryViewMode.value !== 'circle') return currentPage.value
+    const decoded = circleDecodeVirtualPath(circleVirtualCurrentPath.value)
+    return decoded.type === 'root' ? circleGroupPage.value : circleWorkPage.value
+  },
+  set (value) {
+    const nextPage = Math.max(1, Number(value) || 1)
+    if (libraryViewMode.value !== 'circle') {
+      currentPage.value = nextPage
+      return
+    }
+    const decoded = circleDecodeVirtualPath(circleVirtualCurrentPath.value)
+    if (decoded.type === 'root') circleGroupPage.value = nextPage
+    else circleWorkPage.value = nextPage
+  }
+})
+
+const activeLibraryPageSize = computed({
+  get () {
+    if (libraryViewMode.value !== 'circle') return pageSize.value
+    const decoded = circleDecodeVirtualPath(circleVirtualCurrentPath.value)
+    return decoded.type === 'root' ? circleGroupPageSize.value : circleWorkPageSize.value
+  },
+  set (value) {
+    const nextSize = Math.max(1, Number(value) || 20)
+    if (libraryViewMode.value !== 'circle') {
+      pageSize.value = nextSize
+      return
+    }
+    const decoded = circleDecodeVirtualPath(circleVirtualCurrentPath.value)
+    if (decoded.type === 'root') {
+      circleGroupPageSize.value = nextSize
+      circleGroupPage.value = 1
+    } else {
+      circleWorkPageSize.value = nextSize
+      circleWorkPage.value = 1
+    }
+  }
+})
+
+function circleNormalizePath (value = '') {
+
+  return String(value || '').replace(/\\/g, '/').replace(/\/+$/g, '').replace(/^circle:\/?/, 'circle:/')
+
+}
+
+function circleBuildRootPath () {
+
+  return 'circle:/'
+
+}
+
+function circleBuildGroupPath (groupKey = '', groupName = '') {
+
+  return `circle:/group/${encodeURIComponent(String(groupKey || '').trim() || String(groupName || '').trim() || 'unknown')}`
+
+}
+
+function circleBuildWorkPath (groupKey = '', workKey = '') {
+
+  return `${circleBuildGroupPath(groupKey)}/work/${encodeURIComponent(String(workKey || '').trim() || 'unknown')}`
+
+}
+
+function circleBuildConflictPath (groupKey = '', workKey = '', location = {}, index = 0) {
+
+  const libraryId = encodeURIComponent(String(location?.library_id || '').trim() || 'unknown')
+
+  const relativePath = encodeURIComponent(String(location?.relative_path || location?.path || '').trim() || 'unknown')
+
+  return `${circleBuildWorkPath(groupKey, workKey)}/path/${index}-${libraryId}-${relativePath}`
+
+}
+
+function circleDecodeVirtualPath (path = '') {
+
+  const normalized = String(path || '').trim()
+
+  if (!normalized || normalized === 'circle:/' || normalized === 'circle:') {
+
+    return { type: 'root' }
+
+  }
+
+  const parts = normalized.replace(/^circle:\//, '').split('/').filter(Boolean)
+
+  if (!parts.length || parts[0] !== 'group') return { type: 'unknown', path: normalized }
+
+  const groupKey = decodeURIComponent(parts[1] || '')
+
+  if (parts.length < 3) return { type: 'group', groupKey }
+
+  if (parts[2] !== 'work') return { type: 'group', groupKey }
+
+  const workKey = decodeURIComponent(parts[3] || '')
+
+  if (parts.length < 5) return { type: 'work', groupKey, workKey }
+
+  const locationIndex = Number(String(parts[4] || '').split('-')[0] || 0)
+
+  return { type: 'location', groupKey, workKey, locationIndex: Number.isFinite(locationIndex) ? locationIndex : 0 }
+
+}
+
+function circleLocationDisplayName (location = {}) {
+
+  const libraryName = String(location?.library_name || '').trim()
+
+  const relativePath = String(location?.relative_path || '').trim()
+
+  if (libraryName && relativePath) return `${libraryName} / ${relativePath}`
+
+  return relativePath || String(location?.path || location?.name || '').trim() || '未知路径'
+
+}
+
+function circleBuildGroupRow (group) {
+
+  const name = String(group?.circle_name || '未识别社团').trim()
+
+  return {
+    id: `circle-group:${group?.circle_key || name}`,
+    path: circleBuildGroupPath(group?.circle_key, name),
+    name,
+    type: 'directory',
+    is_directory: true,
+    rjcode: '',
+    size: Number(group?.total_size || 0),
+    size_status: 'ready',
+    file_count: Number(group?.work_count || 0),
+    folder_count: Number(group?.folder_count || 0),
+    modified_time: null,
+    circle_virtual: true,
+    circle_row_type: 'group',
+    circle_key: group?.circle_key || '',
+    circle_name: name,
+    circle_conflict_count: Number(group?.conflict_count || 0),
+    circle_categories: Array.isArray(group?.categories) ? group.categories : [],
+    circle_work_count: Number(group?.work_count || 0),
+  }
+
+}
+
+function circleBuildWorkRow (work) {
+
+  const locations = Array.isArray(work?.locations) ? work.locations : []
+
+  const primaryLocation = locations[0] || {}
+
+  const rjcode = String(work?.rjcode || '').trim()
+
+  const displayName = work?.conflict
+    ? `${rjcode || '未知 RJ'} · ${locations.length} 个路径冲突`
+    : `${rjcode || '未知 RJ'}${work?.title ? ` ${work.title}` : ''}`
+
+  return {
+    id: `circle-work:${circleSelectedGroupKey.value}:${rjcode}`,
+    path: work?.conflict ? circleBuildWorkPath(circleSelectedGroupKey.value, rjcode) : String(primaryLocation?.path || ''),
+    name: displayName,
+    type: 'directory',
+    is_directory: true,
+    rjcode,
+    size: Number(work?.total_size || 0),
+    size_status: 'ready',
+    file_count: Number(work?.file_count || 0),
+    folder_count: Number(work?.folder_count || locations.length || 0),
+    modified_time: primaryLocation?.modified_time || null,
+    library_id: work?.conflict ? '' : String(primaryLocation?.library_id || ''),
+    library_name: work?.conflict ? '' : String(primaryLocation?.library_name || ''),
+    parent_path: work?.conflict
+      ? String(primaryLocation?.relative_path || '').split('/').slice(0, -1).join('/')
+      : String(primaryLocation?.path || '').replace(/[\\/]+$/, '').split(/[\\/]/).slice(0, -1).join('/'),
+    circle_virtual: Boolean(work?.conflict),
+    circle_row_type: work?.conflict ? 'work-conflict' : 'work-single',
+    circle_key: circleSelectedGroupKey.value,
+    circle_name: circleCurrentGroup.value?.circle_name || '',
+    circle_work_key: rjcode,
+    circle_title: work?.title || '',
+    circle_conflict: Boolean(work?.conflict),
+    circle_location_count: locations.length,
+    circle_locations: locations,
+    circle_categories: Array.isArray(work?.categories) ? work.categories : [],
+    circle_relative_path: String(primaryLocation?.relative_path || ''),
+    circle_top_category: String(primaryLocation?.top_category || ''),
+    circle_real_path: String(primaryLocation?.path || ''),
+    circle_real_library_id: String(primaryLocation?.library_id || ''),
+  }
+
+}
+
+function circleBuildLocationRow (work, location, index) {
+
+  const rjcode = String(work?.rjcode || '').trim()
+
+  return {
+    id: `circle-location:${circleSelectedGroupKey.value}:${rjcode}:${index}:${location?.library_id || ''}:${location?.relative_path || location?.path || ''}`,
+    path: String(location?.path || ''),
+    name: circleLocationDisplayName(location),
+    type: 'directory',
+    is_directory: true,
+    rjcode,
+    size: Number(location?.size || 0),
+    size_status: 'ready',
+    file_count: Number(location?.file_count || 0),
+    folder_count: 0,
+    modified_time: location?.modified_time || null,
+    library_id: String(location?.library_id || ''),
+    library_name: String(location?.library_name || ''),
+    parent_path: String(location?.relative_path || '').split('/').slice(0, -1).join('/'),
+    circle_virtual: false,
+    circle_row_type: 'conflict-location',
+    circle_key: circleSelectedGroupKey.value,
+    circle_name: circleCurrentGroup.value?.circle_name || '',
+    circle_work_key: rjcode,
+    circle_title: work?.title || '',
+    circle_conflict: true,
+    circle_location_index: index,
+    circle_conflict_tone: index % 4,
+    circle_relative_path: String(location?.relative_path || ''),
+    circle_top_category: String(location?.top_category || ''),
+    circle_real_path: String(location?.path || ''),
+    circle_real_library_id: String(location?.library_id || ''),
+  }
+
+}
+
+function circleApplyRowsFromState () {
+
+  const decoded = circleDecodeVirtualPath(circleVirtualCurrentPath.value)
+
+  if (decoded.type === 'root') {
+
+    files.value = circleGroups.value.map(circleBuildGroupRow)
+
+    totalFiles.value = circleGroupTotal.value
+
+    parentPath.value = ''
+
+    return
+
+  }
+
+  if (decoded.type === 'group') {
+
+    const rows = []
+
+    for (const work of circleCurrentWorks.value) {
+
+      rows.push(circleBuildWorkRow(work))
+
+    }
+
+    files.value = rows
+
+    totalFiles.value = circleWorkTotal.value
+
+    parentPath.value = circleBuildRootPath()
+
+    return
+
+  }
+
+  if (decoded.type === 'work') {
+
+    const work = circleCurrentWorks.value.find(item => String(item?.rjcode || '') === decoded.workKey)
+
+    const rows = []
+
+    if (work) rows.push(circleBuildWorkRow(work))
+
+    for (const [index, location] of (work?.locations || []).entries()) {
+
+      rows.push(circleBuildLocationRow(work, location, index))
+
+    }
+
+    files.value = rows
+
+    totalFiles.value = rows.length
+
+    parentPath.value = circleBuildGroupPath(circleSelectedGroupKey.value, circleCurrentGroup.value?.circle_name || '')
+
+    return
+
+  }
+
+  files.value = []
+
+  totalFiles.value = 0
+
+  parentPath.value = circleBuildRootPath()
+
+}
+
+async function refreshCircleLibraryView (options = {}) {
+
+  const { forceRefresh = false } = options
+  const requestSeq = ++circleRefreshSequence
+
+  if (forceRefresh) {
+
+    circleGroups.value = []
+
+    circleWorks.value = []
+
+  }
+
+  circleLoading.value = true
+
+  circleErrorMessage.value = ''
+
+  loading.value = true
+
+  try {
+
+    const decoded = circleDecodeVirtualPath(circleVirtualCurrentPath.value)
+
+    browseRootPath.value = circleVirtualBrowseRootPath.value
+
+    currentPath.value = circleVirtualCurrentPath.value
+
+    if (decoded.type === 'root') {
+
+      const data = await libraryApi.listCircleGroups({
+        page: circleGroupPage.value,
+        pageSize: circleGroupPageSize.value,
+        keyword: circleKeyword.value,
+        sortBy: 'name',
+        sortOrder: 'asc',
+      })
+
+      circleGroups.value = data.items || []
+
+      circleGroupTotal.value = Number(data.total || 0)
+
+      if (Array.isArray(data.libraries)) {
+
+        circleLibraries.value = data.libraries
+
+        libraries.value = data.libraries
+
+      }
+
+      if (requestSeq !== circleRefreshSequence) return
+
+    } else {
+
+      if (decoded.groupKey && decoded.groupKey !== circleSelectedGroupKey.value) {
+
+        circleSelectedGroupKey.value = decoded.groupKey
+
+        circleWorks.value = []
+
+      }
+
+      if (!circleGroups.value.length) {
+
+        const data = await libraryApi.listCircleGroups({ page: 1, pageSize: 200, sortBy: 'name', sortOrder: 'asc' })
+
+        circleGroups.value = data.items || []
+
+        circleGroupTotal.value = Number(data.total || 0)
+
+        if (Array.isArray(data.libraries)) {
+
+          circleLibraries.value = data.libraries
+
+          libraries.value = data.libraries
+
+        }
+
+      }
+
+      const data = await libraryApi.listCircleGroupWorks(circleSelectedGroupKey.value, {
+        page: circleWorkPage.value,
+        pageSize: circleWorkPageSize.value,
+        keyword: circleWorkKeyword.value,
+      })
+
+      circleWorks.value = data.items || []
+
+      circleWorkTotal.value = Number(data.total || 0)
+
+      if (Array.isArray(data.libraries)) {
+
+        circleLibraries.value = data.libraries
+
+        libraries.value = data.libraries
+
+      }
+
+    }
+
+    if (requestSeq !== circleRefreshSequence) return
+
+    circleApplyRowsFromState()
+
+    librarySearchState.value = createLibrarySearchState()
+
+    await applyTableSortIndicator()
+
+  } catch (error) {
+
+    const message = error.response?.data?.detail || error.message || '读取社团聚合失败'
+
+    circleErrorMessage.value = message
+
+    ElMessage.error(message)
+
+  } finally {
+
+    if (requestSeq === circleRefreshSequence) {
+      circleLoading.value = false
+      loading.value = false
+    }
+
+  }
+
+}
+
 const libraryPageCursorCache = ref({})
 
 const pathBreadcrumbRef = ref(null)
@@ -3159,6 +3665,9 @@ const subtitleScanRetryingPath = ref('')
 const subtitleScanSession = ref(createSubtitleScanSessionState())
 
 const isRefreshingCurrentView = ref(false)
+const libraryViewMode = ref('directory')
+const libraryViewPreferenceLoaded = ref(false)
+const libraryViewPreferenceSaving = ref(false)
 
 const batchApiRenameTargetIds = ref(new Set())
 
@@ -3771,6 +4280,32 @@ const hasRemoteUploadLibraries = computed(() => remoteUploadLibraries.value.leng
 
 const isAllSelected = computed(() => files.value.length > 0 && selectedRows.value.length === files.value.length)
 
+function getLibraryById (libraryId) {
+
+  const normalized = String(libraryId || '').trim()
+
+  return normalized ? libraries.value.find(item => item.id === normalized) || null : null
+
+}
+
+function getRowLibrary (row) {
+
+  return getLibraryById(row?.library_id || selectedLibraryId.value)
+
+}
+
+function isRowRemoteLibrary (row) {
+
+  return getRowLibrary(row)?.type === 'synology_filestation'
+
+}
+
+function isRowWritableLibrary (row) {
+
+  return getRowLibrary(row)?.writable !== false && Boolean(getRowLibrary(row))
+
+}
+
 // 是否处于根目录层（社团层），只有这一层需要"计算大小"入口
 const isAtComputeSizeRoot = computed(() => !currentPath.value || currentPath.value === browseRootPath.value)
 
@@ -3846,8 +4381,17 @@ const libraryRowContextMenuProps = computed(() => {
   const row = menu.row
   const batchMode = Boolean(menu.batchMode)
   const hasRow = Boolean(row)
-  const localLibrary = !isRemoteCurrentLibrary.value
+  const actionRow = normalizeLibraryActionRow(row)
+  const rowLibrary = actionRow?.library_id ? libraries.value.find(item => item.id === actionRow.library_id) : null
+  const localLibrary = batchMode
+    ? selectedRealUploadRows.value.every(item => !isRowRemoteLibrary(item))
+    : (libraryViewMode.value === 'circle'
+        ? Boolean(rowLibrary && rowLibrary.type !== 'synology_filestation')
+        : !isRemoteCurrentLibrary.value)
+  const circleRealRow = isCircleRealActionRow(row)
+  const circleVirtualRow = libraryViewMode.value === 'circle' && !circleRealRow
   const rootComputeScope = !currentPath.value || currentPath.value === browseRootPath.value
+  const rowWritable = actionRow ? isRowWritableLibrary(actionRow) : isWritableCurrentLibrary.value
 
   return {
     visible: Boolean(menu.visible),
@@ -3858,37 +4402,37 @@ const libraryRowContextMenuProps = computed(() => {
     selectedCount: selectedRows.value.length,
     showLocate: Boolean(hasRow && isSearchResultRow(row) && !row?.is_directory),
     showView: Boolean(hasRow && canViewLibraryRow(row)),
-    showOpen: Boolean(hasRow && localLibrary),
-    showOpenDirect: Boolean(hasRow && localLibrary),
-    disableRename: !isWritableCurrentLibrary.value || apiRenameBusy.value,
+    showOpen: Boolean(hasRow && (localLibrary || libraryViewMode.value === 'circle')),
+    showOpenDirect: Boolean(hasRow && localLibrary && circleRealRow),
+    disableRename: !rowWritable || apiRenameBusy.value || !circleRealRow,
     disableApiRename: batchMode ? (!selectedApiRenameRows.value.length || apiRenameBusy.value) : (!canApiRenameRow(row) || apiRenameBusy.value),
     apiRenameRunning: batchMode ? apiRenameBusy.value : Boolean(hasRow && (apiRenamingId.value === row?.id || isBatchApiRenameRunning(row))),
     apiBatchTarget: batchMode || Boolean(hasRow && isBatchApiRenameTarget(row)),
     disableSubtitle: batchMode ? (!selectedSubtitleCandidates.value.length || subtitleSubmitting.value) : !canFetchRJSubtitle(row),
-    disableManage: !row?.is_directory,
-    disableDelete: !isWritableCurrentLibrary.value || (batchMode && batchDeleting.value),
-    showMove: Boolean(hasRow && localLibrary),
-    disableMove: !isWritableCurrentLibrary.value || moveDialogState.value.submitting || directMoveSubmitting.value || (batchMode && !selectedRows.value.length),
-    showUpload: Boolean(row?.path && localLibrary),
+    disableManage: !actionRow?.is_directory || !circleRealRow,
+    disableDelete: !rowWritable || (batchMode && batchDeleting.value) || !circleRealRow,
+    showMove: Boolean(hasRow && localLibrary && circleRealRow),
+    disableMove: !rowWritable || moveDialogState.value.submitting || directMoveSubmitting.value || (batchMode && !selectedRows.value.length),
+    showUpload: Boolean(actionRow?.path && localLibrary && circleRealRow),
     disableUpload: !hasRemoteUploadLibraries.value || localUploadSubmitting.value || (batchMode && selectedUploadCount.value === 0),
-    showBaiduUpload: Boolean(row?.path && localLibrary),
+    showBaiduUpload: Boolean(actionRow?.path && localLibrary && circleRealRow),
     disableBaiduUpload: baiduUploadSubmitting.value || (batchMode && selectedUploadCount.value === 0),
     showAutoCircleGroup: batchMode ? Boolean(selectedAutoCircleGroupRows.value.length) : canAutoCircleGroupRow(row),
     disableAutoCircleGroup: batchMode
       ? (!selectedAutoCircleGroupRows.value.length || batchAutoCircleGrouping.value || Boolean(autoCircleGroupRunningId.value))
-      : (!isWritableCurrentLibrary.value || batchAutoCircleGrouping.value || Boolean(autoCircleGroupRunningId.value)),
+      : (!rowWritable || batchAutoCircleGrouping.value || Boolean(autoCircleGroupRunningId.value)),
     autoCircleGroupRunning: batchMode
       ? batchAutoCircleGrouping.value
       : Boolean(hasRow && (autoCircleGroupRunningId.value === row?.id || batchAutoCircleRunningIds.value.has(row?.id))),
     showFolderCompletion: batchMode ? Boolean(selectedFolderCompletionRows.value.length) : canCompleteFolderRow(row),
     disableFolderCompletion: batchMode ? !selectedFolderCompletionRows.value.length : !canCompleteFolderRow(row),
-    showComputeSize: batchMode
-      ? Boolean(localLibrary && rootComputeScope)
-      : Boolean(row?.is_directory && localLibrary && rootComputeScope),
-    disableComputeSize: batchMode ? (batchComputingSize.value || !selectedDirectoryRows.value.length) : false,
+    showComputeSize: !circleVirtualRow && (batchMode
+      ? Boolean(libraryViewMode.value === 'circle' ? selectedRealDirectoryRows.value.length : (localLibrary && rootComputeScope))
+      : Boolean(actionRow?.is_directory && circleRealRow && (libraryViewMode.value === 'circle' || (localLibrary && rootComputeScope)))),
+    disableComputeSize: batchMode ? (batchComputingSize.value || !selectedRealDirectoryRows.value.length) : false,
     disableFilterDelete: batchMode
-      ? (!selectedFilterDeleteRows.value.length || !isWritableCurrentLibrary.value)
-      : (!row?.is_directory || !isWritableCurrentLibrary.value),
+      ? (!selectedRealFilterDeleteRows.value.length || selectedRealFilterDeleteRows.value.some(item => !isRowWritableLibrary(item)))
+      : (!actionRow?.is_directory || !rowWritable || !circleRealRow),
     computingSizeId: computingSizeId.value
   }
 })
@@ -3913,6 +4457,8 @@ function isPathBreadcrumbDropBlocked (segment) {
 
 // 当前选中行中的目录行（供批量计算使用）
 const selectedDirectoryRows = computed(() => selectedRows.value.filter(r => r?.is_directory))
+
+const selectedRealDirectoryRows = computed(() => normalizeLibraryActionRows(selectedRows.value).filter(row => row?.is_directory))
 
 const aggregatePending = computed(() => Object.values(statsMap.value).some(item => ['pending', 'syncing'].includes(item?.status)))
 
@@ -4004,6 +4550,8 @@ const aggregateDetail = computed(() => {
 
 const canGoParent = computed(() => {
 
+  if (libraryViewMode.value === 'circle') return circleDecodeVirtualPath(circleVirtualCurrentPath.value).type !== 'root'
+
   if (searchResultReturnState.value.active) return true
 
   return !!parentPath.value && currentPath.value && currentPath.value !== browseRootPath.value
@@ -4031,6 +4579,38 @@ const currentPathDisplay = computed(() => {
 })
 
 const currentPathBreadcrumbSegments = computed(() => {
+
+  if (libraryViewMode.value === 'circle') {
+
+    const decoded = circleDecodeVirtualPath(circleVirtualCurrentPath.value)
+
+    const rootSegment = { label: '社团', path: circleBuildRootPath(), current: decoded.type === 'root' }
+
+    if (decoded.type === 'root') return [rootSegment]
+
+    const group = circleCurrentGroup.value || circleGroups.value.find(item => item.circle_key === decoded.groupKey)
+
+    const groupName = group?.circle_name || '社团'
+
+    const groupSegment = {
+      label: groupName,
+      path: circleBuildGroupPath(decoded.groupKey, groupName),
+      current: decoded.type === 'group',
+    }
+
+    if (decoded.type === 'group') return [rootSegment, groupSegment]
+
+    const work = circleCurrentWorks.value.find(item => String(item?.rjcode || '') === decoded.workKey)
+
+    const workSegment = {
+      label: work?.rjcode || decoded.workKey || '作品',
+      path: circleBuildWorkPath(decoded.groupKey, decoded.workKey),
+      current: true,
+    }
+
+    return [rootSegment, groupSegment, workSegment]
+
+  }
 
   const current = String(currentPath.value || '').trim()
 
@@ -4343,6 +4923,8 @@ const currentFolderRJCode = computed(() => extractRJCode(currentPath.value || ''
 
 const currentPageDirectoryRows = computed(() => files.value.filter(row => row?.is_directory))
 
+const currentPageRealDirectoryRows = computed(() => normalizeLibraryActionRows(currentPageDirectoryRows.value).filter(row => row?.is_directory))
+
 const toolbarActionScopeLabel = computed(() => toolbarActionScope.value === 'page' ? '当前页目录' : '当前目录')
 
 function normalizeRemoteActionPath (path = '') {
@@ -4417,7 +4999,9 @@ const toolbarSubtitleScopeRows = computed(() => {
 
   if (toolbarActionScope.value === 'page') {
 
-    if (currentPageDirectoryRows.value.length) return currentPageDirectoryRows.value
+    if (currentPageRealDirectoryRows.value.length) return currentPageRealDirectoryRows.value
+
+    if (libraryViewMode.value === 'circle') return []
 
     return currentPath.value ? [{ path: currentPath.value, name: getFileName(currentPath.value), is_directory: true }] : []
 
@@ -4431,13 +5015,17 @@ const toolbarFilterDeletePaths = computed(() => {
 
   if (toolbarActionScope.value === 'page') {
 
-    const pagePaths = currentPageDirectoryRows.value.map(resolveDirectoryActionPath).filter(Boolean)
+    const pagePaths = currentPageRealDirectoryRows.value.map(resolveDirectoryActionPath).filter(Boolean)
 
     if (pagePaths.length) return [...new Set(pagePaths)]
+
+    if (libraryViewMode.value === 'circle') return []
 
     return currentPath.value ? [currentPath.value] : []
 
   }
+
+  if (libraryViewMode.value === 'circle') return []
 
   return currentPath.value ? [currentPath.value] : []
 
@@ -4449,23 +5037,29 @@ const canProcessCurrentFolder = computed(() => {
 
   if (toolbarActionScope.value === 'page') return toolbarSubtitleScopeRows.value.length > 0
 
+  if (libraryViewMode.value === 'circle') return false
+
   return !!currentPath.value
 
 })
 
 const selectedFilterDeleteRows = computed(() => selectedRows.value.filter(row => row?.is_directory))
 
+const selectedRealFilterDeleteRows = computed(() => normalizeLibraryActionRows(selectedFilterDeleteRows.value).filter(row => row?.is_directory))
+
 const selectedUploadRows = computed(() => (Array.isArray(selectedRows.value) ? selectedRows.value : []).filter(row => row?.path))
 
-const selectedUploadCount = computed(() => selectedUploadRows.value.length)
+const selectedRealUploadRows = computed(() => normalizeLibraryActionRows(selectedUploadRows.value))
+
+const selectedUploadCount = computed(() => selectedRealUploadRows.value.length)
 
 // 右键菜单走单行上传时使用的临时源，避免与批量勾选状态互相干扰
 const pendingUploadOverrideRows = ref(null)
 
 const effectiveUploadSourceRows = computed(() => {
   const override = pendingUploadOverrideRows.value
-  if (Array.isArray(override) && override.length) return override.filter(row => row?.path)
-  return selectedUploadRows.value
+  if (Array.isArray(override) && override.length) return normalizeLibraryActionRows(override)
+  return selectedRealUploadRows.value
 })
 
 const selectedUploadSourceItems = computed(() => effectiveUploadSourceRows.value.map(row => ({
@@ -4482,8 +5076,8 @@ const selectedUploadSourceItems = computed(() => effectiveUploadSourceRows.value
 
 const effectiveBaiduUploadSourceRows = computed(() => {
   const override = pendingBaiduUploadOverrideRows.value
-  if (Array.isArray(override) && override.length) return override.filter(row => row?.path)
-  return selectedUploadRows.value
+  if (Array.isArray(override) && override.length) return normalizeLibraryActionRows(override)
+  return selectedRealUploadRows.value
 })
 
 const baiduUploadSourceItems = computed(() => effectiveBaiduUploadSourceRows.value.map(row => ({
@@ -6154,11 +6748,19 @@ async function initializeLibraryPage () {
 
   restoreUploadWorkbenchState()
 
+  await loadLibraryViewPreferences()
+
   await loadLibraries()
 
   await loadRJSubtitlePreferences()
 
   restoreSubtitleScanWorkspace()
+
+  if (libraryViewMode.value === 'circle') {
+
+    await refreshCircleLibraryView({ silent: true, forceRefresh: true })
+
+  }
 
   if (selectedLibraryId.value) {
 
@@ -6176,6 +6778,56 @@ async function initializeLibraryPage () {
 
 }
 
+async function loadLibraryViewPreferences () {
+
+  try {
+
+    const data = await libraryApi.getViewPreferences()
+
+    const mode = String(data?.view_mode || 'directory').trim()
+
+    libraryViewMode.value = mode === 'circle' ? 'circle' : 'directory'
+
+  } catch (error) {
+
+    console.warn('读取库存视图偏好失败', error)
+
+    libraryViewMode.value = 'directory'
+
+  } finally {
+
+    libraryViewPreferenceLoaded.value = true
+
+  }
+
+}
+
+
+
+async function saveLibraryViewPreferences (mode) {
+
+  const normalized = mode === 'circle' ? 'circle' : 'directory'
+
+  if (!libraryViewPreferenceLoaded.value || libraryViewPreferenceSaving.value) return
+
+  libraryViewPreferenceSaving.value = true
+
+  try {
+
+    await libraryApi.saveViewPreferences({ view_mode: normalized })
+
+  } catch (error) {
+
+    ElMessage.error('保存库存视图偏好失败: ' + (error.response?.data?.detail || error.message))
+
+  } finally {
+
+    libraryViewPreferenceSaving.value = false
+
+  }
+
+}
+
 
 
 async function resumeLibraryPage () {
@@ -6184,7 +6836,11 @@ async function resumeLibraryPage () {
 
   bindLibraryMarqueeDismiss()
 
-  await refreshLibrary({ silent: true })
+  if (libraryViewMode.value === 'circle') {
+    await refreshCircleLibraryView({ silent: true })
+  } else {
+    await refreshLibrary({ silent: true })
+  }
 
   await refreshStats(false, { silent: true })
 
@@ -6509,6 +7165,8 @@ watch(trackedUploadTaskIds, () => {
 
 watch(pageSize, async value => {
 
+  if (libraryViewMode.value === 'circle') return
+
   storeNumber(PAGE_SIZE_KEY, value)
 
   resetLibraryPageCursorCache()
@@ -6522,6 +7180,8 @@ watch(pageSize, async value => {
 
 
 watch(currentPage, async (value, oldValue) => {
+
+  if (libraryViewMode.value === 'circle') return
 
   if (value === oldValue || !selectedLibraryId.value) return
 
@@ -6540,6 +7200,49 @@ watch(currentPage, async (value, oldValue) => {
 watch(toolbarActionScope, value => {
 
   storeString(LIBRARY_ACTION_SCOPE_KEY, value)
+
+})
+
+watch(libraryViewMode, async (value, oldValue) => {
+
+  if (value === oldValue) return
+
+  closeLibraryRowContextMenu()
+
+  clearSelection()
+
+  await saveLibraryViewPreferences(value)
+
+  if (value === 'circle') {
+
+    clearListPoll()
+
+    await nextTick()
+
+    circleVirtualCurrentPath.value = circleBuildRootPath()
+    circleVirtualBrowseRootPath.value = circleBuildRootPath()
+    circleSelectedGroupKey.value = ''
+    circleSelectedWorkKey.value = ''
+    circleGroupPage.value = 1
+    circleWorkPage.value = 1
+
+    await refreshCircleLibraryView({ forceRefresh: true })
+
+    return
+
+  }
+
+  if (selectedLibraryId.value) await refreshLibrary({ silent: true })
+
+})
+
+watch([circleGroupPage, circleGroupPageSize, circleWorkPage, circleWorkPageSize], async (value, oldValue) => {
+
+  if (libraryViewMode.value !== 'circle') return
+
+  if (JSON.stringify(value) === JSON.stringify(oldValue)) return
+
+  await refreshCircleLibraryView({ forceRefresh: true })
 
 })
 
@@ -6660,6 +7363,14 @@ watch(selectedLibraryId, async (newId, oldId) => {
   subtitlePreferredSelectionKey.value = ''
 
   clearSubtitleInspectorState()
+
+  if (libraryViewMode.value === 'circle') {
+
+    refreshStats(false, { silent: true })
+
+    return
+
+  }
 
   await refreshLibrary()
 
@@ -7277,6 +7988,14 @@ async function refreshLibrary (options = {}) {
 
   const { silent = false, forceRefresh = false } = options
 
+  if (libraryViewMode.value === 'circle') {
+
+    await refreshCircleLibraryView({ silent, forceRefresh })
+
+    return
+
+  }
+
   if (!selectedLibraryId.value) return
 
   if (forceRefresh) resetLibraryPageCursorCache()
@@ -7834,7 +8553,9 @@ function formatEtaSeconds (seconds) {
 
 function canFetchRJSubtitle (row) {
 
-  return !!row?.is_directory && isWritableCurrentLibrary.value
+  const target = normalizeLibraryActionRow(row)
+
+  return !!target?.is_directory && isRowWritableLibrary(target)
 
 }
 
@@ -7842,9 +8563,11 @@ function canFetchRJSubtitle (row) {
 
 function canApiRenameRow (row) {
 
-  if (!row?.is_directory || !isWritableCurrentLibrary.value) return false
+  const target = normalizeLibraryActionRow(row)
 
-  const detectedRJ = String(row?.rjcode || extractRJCode(row?.path || row?.name) || '').trim()
+  if (!target?.is_directory || !isRowWritableLibrary(target)) return false
+
+  const detectedRJ = String(target?.rjcode || extractRJCode(target?.path || target?.name) || '').trim()
 
   return Boolean(detectedRJ)
 
@@ -7854,11 +8577,13 @@ function canApiRenameRow (row) {
 
 function canAutoCircleGroupRow (row) {
 
-  if (!row?.is_directory || !row?.path) return false
+  const target = normalizeLibraryActionRow(row)
 
-  if (isRemoteCurrentLibrary.value || !isWritableCurrentLibrary.value) return false
+  if (!target?.is_directory || !target?.path) return false
 
-  const detectedRJ = String(row?.rjcode || extractRJCode(row?.path || row?.name) || '').trim()
+  if (isRowRemoteLibrary(target) || !isRowWritableLibrary(target)) return false
+
+  const detectedRJ = String(target?.rjcode || extractRJCode(target?.path || target?.name) || '').trim()
 
   return Boolean(detectedRJ)
 
@@ -7866,9 +8591,11 @@ function canAutoCircleGroupRow (row) {
 
 function canCompleteFolderRow (row) {
 
-  if (!row?.is_directory || !row?.path) return false
+  const target = normalizeLibraryActionRow(row)
 
-  if (isRemoteCurrentLibrary.value || !isWritableCurrentLibrary.value) return false
+  if (!target?.is_directory || !target?.path) return false
+
+  if (isRowRemoteLibrary(target) || !isRowWritableLibrary(target)) return false
 
   return true
 
@@ -7876,14 +8603,20 @@ function canCompleteFolderRow (row) {
 
 async function runAutoCircleGroupForRow (row) {
 
-  let currentPath = row.path
+  const target = normalizeLibraryActionRow(row)
 
-  let data = await libraryApi.autoCircleGroup(selectedLibraryId.value, currentPath)
+  if (!target?.path) throw new Error('缺少真实库存路径')
+
+  const targetLibraryId = target.library_id || selectedLibraryId.value
+
+  let currentPath = target.path
+
+  let data = await libraryApi.autoCircleGroup(targetLibraryId, currentPath)
 
   // 文件夹名里没识别到社团前缀 → 先做 API 重命名再重试
   if (data?.need_api_rename) {
 
-    const renameData = await libraryApi.apiRename(currentPath, selectedLibraryId.value)
+    const renameData = await libraryApi.apiRename(currentPath, targetLibraryId)
 
     const newPath = String(renameData?.path || '').trim()
 
@@ -7891,7 +8624,7 @@ async function runAutoCircleGroupForRow (row) {
 
     currentPath = newPath
 
-    data = await libraryApi.autoCircleGroup(selectedLibraryId.value, currentPath)
+    data = await libraryApi.autoCircleGroup(targetLibraryId, currentPath)
 
     if (data?.need_api_rename) {
 
@@ -7957,19 +8690,21 @@ async function autoCircleGroup (row) {
 
 function toRJSubtitleItem (row) {
 
-  if (!row) return null
+  const target = normalizeLibraryActionRow(row)
+
+  if (!target) return null
 
   return {
 
-    rjcode: row.rjcode || extractRJCode(row.path || row.name),
+    rjcode: target.rjcode || extractRJCode(target.path || target.name),
 
-    folder_name: row.name || getFileName(row.path),
+    folder_name: target.name || getFileName(target.path),
 
-    folder_path: row.path,
+    folder_path: target.path,
 
-    library_id: row.library_id || selectedLibraryId.value,
+    library_id: target.library_id || selectedLibraryId.value,
 
-    search_hit: Boolean(row.search_hit)
+    search_hit: Boolean(target.search_hit)
 
   }
 
@@ -8941,7 +9676,7 @@ function updateTableMarqueeSelection () {
 
 function previewTableSelectionByPaths (paths) {
 
-  const selected = files.value.filter(row => row?.path && paths.has(row.path))
+  const selected = files.value.filter(row => row?.path && paths.has(row.path) && isLibraryRowSelectable(row))
 
   selectedRows.value = selected
 
@@ -9557,7 +10292,13 @@ async function getDirectMoveConflicts (sourceLibraryId, targetLibraryId, targetP
 
 async function directMoveRowsToPath (rows, targetPath) {
 
-  if (isRemoteCurrentLibrary.value) {
+  const actionRows = normalizeLibraryActionRows(rows)
+
+  const sourceLibraryId = String(actionRows[0]?.library_id || selectedLibraryId.value || '').trim()
+
+  const sourceLibrary = getLibraryById(sourceLibraryId)
+
+  if (sourceLibrary?.type === 'synology_filestation') {
 
     ElMessage.warning('远程库存暂不支持拖拽移动')
 
@@ -9565,7 +10306,7 @@ async function directMoveRowsToPath (rows, targetPath) {
 
   }
 
-  if (!isWritableCurrentLibrary.value) {
+  if (!sourceLibrary || sourceLibrary.writable === false) {
 
     ElMessage.warning('当前库存只读，无法移动')
 
@@ -9575,7 +10316,7 @@ async function directMoveRowsToPath (rows, targetPath) {
 
   if (directMoveSubmitting.value || dragMoveConflictState.value.submitting) return
 
-  const items = normalizeMoveItems(rows)
+  const items = normalizeMoveItems(actionRows)
 
   if (!items.length) {
 
@@ -9585,8 +10326,7 @@ async function directMoveRowsToPath (rows, targetPath) {
 
   }
 
-  const sourceLibraryId = selectedLibraryId.value
-  const targetLibraryId = selectedLibraryId.value
+  const targetLibraryId = sourceLibraryId
   const normalizedTargetPath = String(targetPath || '').trim()
 
   if (!canDropRowsToPath(items, normalizedTargetPath)) {
@@ -9699,7 +10439,11 @@ function cancelDragMoveConflict () {
 
 function openLocalUploadDialog (rowOverride = null) {
 
-  if (isRemoteCurrentLibrary.value) {
+  const previewRows = rowOverride
+    ? normalizeLibraryActionRows(Array.isArray(rowOverride) ? rowOverride : [rowOverride]).filter(row => row?.path)
+    : effectiveUploadSourceRows.value
+
+  if (previewRows.some(row => isRowRemoteLibrary(row))) {
 
     ElMessage.warning('请先切换到本地库存后再上传到服务器')
 
@@ -9711,7 +10455,7 @@ function openLocalUploadDialog (rowOverride = null) {
 
   if (rowOverride) {
 
-    const overrideRows = (Array.isArray(rowOverride) ? rowOverride : [rowOverride]).filter(row => row?.path)
+    const overrideRows = previewRows
 
     if (!overrideRows.length) {
 
@@ -9758,12 +10502,16 @@ function openLocalUploadDialog (rowOverride = null) {
 }
 
 async function openBaiduUploadDialog (rowOverride = null) {
-  if (isRemoteCurrentLibrary.value) {
+  const previewRows = rowOverride
+    ? normalizeLibraryActionRows(Array.isArray(rowOverride) ? rowOverride : [rowOverride]).filter(row => row?.path)
+    : effectiveBaiduUploadSourceRows.value
+
+  if (previewRows.some(row => isRowRemoteLibrary(row))) {
     ElMessage.warning('请先切换到本地库存后再上传到百度网盘')
     return
   }
   if (rowOverride) {
-    const overrideRows = (Array.isArray(rowOverride) ? rowOverride : [rowOverride]).filter(row => row?.path)
+    const overrideRows = previewRows
     if (!overrideRows.length) {
       ElMessage.warning('行数据无效无法上传')
       return
@@ -9879,6 +10627,8 @@ async function submitLocalUpload () {
     : effectiveUploadSourceRows.value.map(row => row.path)
 
   const targetLibraryId = String(payload?.target_library_id || localUploadForm.value.targetLibraryId || '').trim()
+  const sourceRows = normalizeLibraryActionRows(effectiveUploadSourceRows.value)
+  const sourceLibraryId = String(sourceRows[0]?.library_id || selectedLibraryId.value || '').trim()
 
   const targetSubdir = String(payload?.target_subdir || localUploadForm.value.targetSubdir || '').trim()
 
@@ -9900,6 +10650,16 @@ async function submitLocalUpload () {
 
   }
 
+  if (!sourceLibraryId) {
+    ElMessage.warning('未找到可上传的真实库存')
+    return
+  }
+
+  if (sourceRows.some(row => String(row.library_id || sourceLibraryId) !== sourceLibraryId)) {
+    ElMessage.warning('跨库存路径请分开上传')
+    return
+  }
+
   localUploadForm.value = {
 
     targetLibraryId,
@@ -9918,13 +10678,13 @@ async function submitLocalUpload () {
 
   try {
 
-    const sourceBasePath = currentPath.value || browseRootPath.value || currentLibrary.value?.path || ''
+    const sourceBasePath = getParentPath(sourceRows[0]?.path || '') || sourceRows[0]?.path || ''
 
     const createdTaskIds = []
 
     const requestPayload = {
 
-      source_library_id: selectedLibraryId.value,
+      source_library_id: sourceLibraryId,
 
       source_base_path: sourceBasePath,
 
@@ -15828,8 +16588,6 @@ async function applySubtitleManualPairs () {
       }
     }
 
-
-
     const currentTaskId = subtitleInspectorInfo.value.taskId
 
     const matchedSelectionItem = subtitleDialogSelection.value.find(item => buildSubtitleSelectionKey(item) === subtitlePreferredSelectionKey.value) || {
@@ -16772,6 +17530,58 @@ async function checkRJSubtitleAvailability () {
 
 async function navigateToPath (path) {
 
+  if (libraryViewMode.value === 'circle') {
+
+    const targetPath = String(path || circleBuildRootPath()).trim()
+
+    const decoded = circleDecodeVirtualPath(targetPath)
+
+    if (decoded.type === 'unknown') return
+
+    circleVirtualCurrentPath.value = decoded.type === 'root'
+      ? circleBuildRootPath()
+      : decoded.type === 'group'
+        ? circleBuildGroupPath(decoded.groupKey, circleCurrentGroup.value?.circle_name || '')
+        : decoded.type === 'work'
+          ? circleBuildWorkPath(decoded.groupKey, decoded.workKey)
+          : targetPath
+
+    circleVirtualBrowseRootPath.value = circleBuildRootPath()
+
+    if (decoded.type === 'group') {
+
+      circleSelectedGroupKey.value = decoded.groupKey
+
+      circleSelectedWorkKey.value = ''
+
+      circleWorkPage.value = 1
+
+    } else if (decoded.type === 'work') {
+
+      circleSelectedGroupKey.value = decoded.groupKey
+
+      circleSelectedWorkKey.value = decoded.workKey
+
+    } else {
+
+      circleSelectedGroupKey.value = ''
+
+      circleSelectedWorkKey.value = ''
+
+      circleGroupPage.value = 1
+
+      circleWorkPage.value = 1
+
+    }
+
+    clearSelection()
+
+    await refreshCircleLibraryView({ forceRefresh: true })
+
+    return
+
+  }
+
   const targetPath = path || browseRootPath.value || currentPath.value
 
   const targetPage = getRememberedDirectoryPage(targetPath, 1)
@@ -16798,6 +17608,14 @@ async function navigateToBreadcrumbPath (path) {
 
   pathBreadcrumbPopoverVisible.value = false
 
+  if (libraryViewMode.value === 'circle') {
+
+    await navigateToPath(path)
+
+    return
+
+  }
+
   const targetPath = String(path || browseRootPath.value || '').trim()
 
   if (!targetPath || targetPath === currentPath.value) return
@@ -16811,6 +17629,38 @@ async function navigateToBreadcrumbPath (path) {
 async function goToParent () {
 
   if (!canGoParent.value) return
+
+  if (libraryViewMode.value === 'circle') {
+
+    const decoded = circleDecodeVirtualPath(circleVirtualCurrentPath.value)
+
+    if (decoded.type === 'work') {
+
+      circleVirtualCurrentPath.value = circleBuildGroupPath(decoded.groupKey, circleCurrentGroup.value?.circle_name || '')
+
+      circleSelectedWorkKey.value = ''
+
+      await refreshCircleLibraryView({ forceRefresh: true })
+
+      return
+
+    }
+
+    if (decoded.type === 'group') {
+
+      circleVirtualCurrentPath.value = circleBuildRootPath()
+
+      circleSelectedGroupKey.value = ''
+
+      circleSelectedWorkKey.value = ''
+
+      await refreshCircleLibraryView({ forceRefresh: true })
+
+      return
+
+    }
+
+  }
 
   if (searchResultReturnState.value.active) {
 
@@ -16890,6 +17740,88 @@ function isSearchResultRow (row) {
 
 }
 
+function isCircleVirtualRow (row) {
+
+  return Boolean(row?.circle_virtual || row?.circle_row_type)
+
+}
+
+function isCircleGroupRow (row) {
+
+  return row?.circle_row_type === 'group'
+
+}
+
+function isCircleWorkRow (row) {
+
+  return row?.circle_row_type === 'work-single' || row?.circle_row_type === 'work-conflict'
+
+}
+
+function isCircleConflictLocationRow (row) {
+
+  return row?.circle_row_type === 'conflict-location'
+
+}
+
+function isCircleRealActionRow (row) {
+
+  if (libraryViewMode.value !== 'circle') return true
+
+  return Boolean(
+    (isCircleConflictLocationRow(row) || row?.circle_row_type === 'work-single') &&
+    getCircleRealPath(row) &&
+    getCircleRealLibraryId(row)
+  )
+
+}
+
+function getCircleRealPath (row) {
+
+  return String(row?.circle_real_path || row?.path || '').trim()
+
+}
+
+function getCircleRealLibraryId (row) {
+
+  return String(row?.circle_real_library_id || row?.library_id || '').trim()
+
+}
+
+function normalizeLibraryActionRow (row) {
+
+  if (!row || libraryViewMode.value !== 'circle') return row
+
+  if (!isCircleRealActionRow(row)) return null
+
+  const realPath = getCircleRealPath(row)
+  const realLibraryId = getCircleRealLibraryId(row)
+
+  if (!realPath || !realLibraryId) return null
+
+  return {
+    ...row,
+    path: realPath,
+    library_id: realLibraryId,
+    name: row.circle_title || row.name || getFileName(realPath),
+  }
+
+}
+
+function normalizeLibraryActionRows (rows) {
+
+  return (Array.isArray(rows) ? rows : [])
+    .map(row => normalizeLibraryActionRow(row))
+    .filter(Boolean)
+
+}
+
+function buildLibraryPathKey (libraryId, path) {
+
+  return `${String(libraryId || '')}::${String(path || '').replace(/\\/g, '/').replace(/\/+$/, '')}`
+
+}
+
 
 
 function getSearchResultLibraryLabel (row) {
@@ -16915,6 +17847,53 @@ function getLibraryLabelById (libraryId) {
   if (!normalized) return ''
 
   return libraries.value.find(item => item.id === normalized)?.name || normalized
+
+}
+
+function getCircleRowMetaText (row) {
+
+  if (libraryViewMode.value !== 'circle' || !row?.circle_row_type) return ''
+
+  if (isCircleGroupRow(row)) {
+    const workCount = Number(row.circle_work_count || row.file_count || 0)
+    const folderCount = Number(row.folder_count || 0)
+    const conflictCount = Number(row.circle_conflict_count || 0)
+    return `${workCount} 个作品 · ${folderCount} 个路径${conflictCount ? ` · ${conflictCount} 个重复 RJ` : ''}`
+  }
+
+  if (isCircleWorkRow(row)) {
+    if (row?.circle_row_type === 'work-single') {
+      const libraryName = getLibraryLabelById(row.library_id)
+      const category = String(row.circle_top_category || '').trim()
+      const relativePath = String(row.circle_relative_path || row.path || '').trim()
+      return [libraryName, category, relativePath].filter(Boolean).join(' / ')
+    }
+
+    const locationCount = Number(row.circle_location_count || row.circle_locations?.length || 0)
+    const title = String(row.circle_title || '').trim()
+    return `${locationCount || 0} 个路径${row.circle_conflict ? ' · 路径重复，展开后对具体路径操作' : ' · 打开查看真实路径'}${title ? ` · ${title}` : ''}`
+  }
+
+  if (isCircleConflictLocationRow(row)) {
+    const libraryName = getLibraryLabelById(row.library_id)
+    const category = String(row.circle_top_category || '').trim()
+    const relativePath = String(row.circle_relative_path || row.path || '').trim()
+    return [libraryName, category, relativePath].filter(Boolean).join(' / ')
+  }
+
+  return ''
+
+}
+
+function getCircleRowMetaClass (row) {
+
+  if (row?.circle_row_type === 'work-single') return 'circle-row-location-meta is-single'
+
+  if (isCircleConflictLocationRow(row)) return `circle-row-location-meta is-tone-${Number(row.circle_conflict_tone || 0)}`
+
+  if (row?.circle_conflict) return 'circle-row-conflict-meta'
+
+  return ''
 
 }
 
@@ -17000,7 +17979,150 @@ async function locateLibrarySearchResult (row) {
 
 
 
+async function locateCircleLocation (location) {
+
+  if (!location?.path) {
+
+    ElMessage.warning('该作品没有可定位路径')
+
+    return
+
+  }
+
+  const targetLibraryId = String(location.library_id || '').trim()
+
+  const targetPath = String(location.path || '').trim()
+
+  if (!targetLibraryId || !targetPath) {
+
+    ElMessage.warning('缺少库存或路径，无法定位')
+
+    return
+
+  }
+
+  libraryViewMode.value = 'directory'
+
+  await nextTick()
+
+  searchQuery.value = ''
+
+  librarySearchState.value = createLibrarySearchState()
+
+  clearSelection()
+
+  locatedLibraryPath.value = targetPath
+
+  if (targetLibraryId !== selectedLibraryId.value) {
+
+    pendingLibraryLocate.value = { libraryId: targetLibraryId, path: targetPath, highlightPath: targetPath }
+
+    selectedLibraryId.value = targetLibraryId
+
+    return
+
+  }
+
+  currentPath.value = targetPath
+
+  currentPage.value = 1
+
+  await refreshLibrary({ forceRefresh: true })
+
+}
+
+
+
 async function openFolder (row) {
+
+  if (libraryViewMode.value === 'circle') {
+
+    if (isCircleGroupRow(row)) {
+
+      circleSelectedGroupKey.value = row.circle_key || ''
+
+      circleVirtualCurrentPath.value = circleBuildGroupPath(row.circle_key, row.circle_name || row.name)
+
+      circleWorkPage.value = 1
+
+      await refreshCircleLibraryView({ forceRefresh: true })
+
+      return
+
+    }
+
+    if (isCircleWorkRow(row)) {
+
+      circleSelectedGroupKey.value = row.circle_key || circleSelectedGroupKey.value
+
+      circleSelectedWorkKey.value = row.circle_work_key || row.rjcode || ''
+
+      circleVirtualCurrentPath.value = circleBuildWorkPath(circleSelectedGroupKey.value, circleSelectedWorkKey.value)
+
+      await refreshCircleLibraryView({ forceRefresh: true })
+
+      return
+
+    }
+
+    if (isCircleConflictLocationRow(row)) {
+
+      const targetLibraryId = getCircleRealLibraryId(row)
+
+      const targetPath = getCircleRealPath(row)
+
+      if (!targetLibraryId || !targetPath) {
+
+        ElMessage.warning('缺少真实库存路径，无法打开')
+
+        return
+
+      }
+
+      if (targetLibraryId !== selectedLibraryId.value) {
+
+        pendingLibraryLocate.value = { libraryId: targetLibraryId, path: targetPath, highlightPath: targetPath }
+
+        selectedLibraryId.value = targetLibraryId
+
+      }
+
+      const library = libraries.value.find(item => item.id === targetLibraryId)
+
+      if (library?.type === 'synology_filestation') {
+
+        const data = await libraryApi.browserOpenFolder(targetLibraryId, targetPath)
+
+        await showSystemAlert({
+          title: '远程库存',
+          message: `请在群晖 FileStation 中打开以下路径：<br><br>${escapeHtml(data.path || targetPath)}<br><br>${escapeHtml(data.remote_url || '')}`,
+          html: true,
+          confirmText: '知道了'
+        })
+
+        return
+
+      }
+
+      const data = await libraryApi.openFolder(targetPath)
+
+      if (data.mode === 'mapped') {
+
+        mappedPathInfo.value = { originalPath: data.original_path, mappedPath: data.mapped_path, isMapped: data.is_mapped }
+
+        mappedPathDialogVisible.value = true
+
+        return
+
+      }
+
+      ElMessage.success('已打开文件夹')
+
+      return
+
+    }
+
+  }
 
   if (isSearchResultRow(row)) {
 
@@ -17059,6 +18181,54 @@ async function openFolder (row) {
 
 
 async function openFolderDirect (row) {
+
+  if (libraryViewMode.value === 'circle') {
+
+    const targetLibraryId = getCircleRealLibraryId(row)
+
+    const targetPath = getCircleRealPath(row)
+
+    if (!targetLibraryId || !targetPath) return openFolder(row)
+
+    const library = libraries.value.find(item => item.id === targetLibraryId)
+
+    if (library?.type === 'synology_filestation') {
+
+      const data = await libraryApi.browserOpenFolder(targetLibraryId, targetPath)
+
+      if (data.web_url) {
+
+        window.open(data.web_url, '_blank', 'noopener')
+
+        ElMessage.success('已打开群晖目录')
+
+        return
+
+      }
+
+    }
+
+    const data = await libraryApi.openFolder(targetPath)
+
+    if (data.mode !== 'mapped') {
+
+      ElMessage.success('已打开文件夹')
+
+      return
+
+    }
+
+    const path = data.mapped_path
+
+    const hasHelper = window.kikoeruHelperLoaded || tampermonkeyLoaded.value
+
+    window.dispatchEvent(new CustomEvent('kikoeru-open-folder', { detail: { path } }))
+
+    hasHelper ? ElMessage.success('正在打开文件夹...') : ElMessage.info('正在尝试打开文件夹...')
+
+    return
+
+  }
 
   if (isRemoteCurrentLibrary.value) {
 
@@ -18256,7 +19426,9 @@ function canViewLibraryRow (row) {
 
 async function viewLibraryRow (row) {
 
-  if (!canViewLibraryRow(row)) {
+  const target = normalizeLibraryActionRow(row) || row
+
+  if (!canViewLibraryRow(target)) {
 
     ElMessage.warning('该文件类型暂不支持浏览器观看')
 
@@ -18272,9 +19444,13 @@ async function viewLibraryRow (row) {
 
   }
 
-  if (isRemoteCurrentLibrary.value) {
+  const targetLibraryId = target.library_id || selectedLibraryId.value
 
-    const kind = classifyLibraryEntryKind(row)
+  const targetLibrary = getLibraryById(targetLibraryId)
+
+  if (targetLibrary?.type === 'synology_filestation') {
+
+    const kind = classifyLibraryEntryKind(target)
 
     if (kind === 'image') setMediaPreviewImageMotion(1)
 
@@ -18282,38 +19458,38 @@ async function viewLibraryRow (row) {
 
     mediaPreviewDialog.value = {
       visible: true,
-      title: row.name || '远程文件',
-      path: row.path || '',
+      title: target.name || '远程文件',
+      path: target.path || '',
       url: kind === 'text'
-        ? buildTextMediaPreviewUrl(selectedLibraryId.value, row.path)
-        : buildMediaPreviewUrl(selectedLibraryId.value, row.path),
+        ? buildTextMediaPreviewUrl(targetLibraryId, target.path)
+        : buildMediaPreviewUrl(targetLibraryId, target.path),
       kind,
       remote: false,
-      previewKey: buildMediaPreviewKey(selectedLibraryId.value, row.path),
+      previewKey: buildMediaPreviewKey(targetLibraryId, target.path),
     }
 
     return
 
   }
 
-  const kind = classifyLibraryEntryKind(row)
+  const kind = classifyLibraryEntryKind(target)
 
   if (kind === 'text') mediaPreviewTextEncoding.value = 'auto'
 
   const url = kind === 'text'
-    ? buildTextMediaPreviewUrl(selectedLibraryId.value, row.path)
-    : buildMediaPreviewUrl(selectedLibraryId.value, row.path)
+    ? buildTextMediaPreviewUrl(targetLibraryId, target.path)
+    : buildMediaPreviewUrl(targetLibraryId, target.path)
 
   if (kind === 'image') setMediaPreviewImageMotion(1)
 
   mediaPreviewDialog.value = {
     visible: true,
-    title: row.name || '文件观看',
-    path: row.path || '',
+    title: target.name || '文件观看',
+    path: target.path || '',
     url,
     kind,
     remote: false,
-    previewKey: buildMediaPreviewKey(selectedLibraryId.value, row.path),
+    previewKey: buildMediaPreviewKey(targetLibraryId, target.path),
   }
 
 }
@@ -18430,7 +19606,9 @@ function openLibraryRowContextMenuAtPosition (row, x, y) {
 
   tableRef.value?.setCurrentRow?.(row)
 
-  const batchMode = Boolean(row?.path && selectedRowPaths.value.has(row.path) && selectedRows.value.length > 1)
+  const batchMode = libraryViewMode.value === 'circle'
+    ? false
+    : Boolean(row?.path && selectedRowPaths.value.has(row.path) && selectedRows.value.length > 1)
 
   const menuWidth = 200
 
@@ -18501,6 +19679,8 @@ function handleLibraryRowClick (row, _column, event) {
     return
 
   }
+
+  if (!isLibraryRowSelectable(row)) return
 
   if (handleTableRowModifierSelection(row, event)) return
 
@@ -18817,7 +19997,21 @@ async function copyRowName (row) {
 
 function openMoveDialog (rows, initialPathOverride = '') {
 
-  if (isRemoteCurrentLibrary.value) {
+  const sourceRows = normalizeLibraryActionRows(Array.isArray(rows) ? rows : []).filter(row => row?.path)
+
+  const sourceLibraryId = String(sourceRows[0]?.library_id || selectedLibraryId.value || '').trim()
+
+  const sourceLibrary = libraries.value.find(item => item.id === sourceLibraryId)
+
+  if (sourceRows.some(row => String(row?.library_id || sourceLibraryId) !== sourceLibraryId)) {
+
+    ElMessage.warning('跨库存路径请分开移动')
+
+    return
+
+  }
+
+  if ((sourceLibrary?.type || currentLibrary.value?.type) === 'synology_filestation') {
 
     ElMessage.warning('远程库存暂不支持此操作')
 
@@ -18825,15 +20019,13 @@ function openMoveDialog (rows, initialPathOverride = '') {
 
   }
 
-  if (!isWritableCurrentLibrary.value) {
+  if (sourceLibrary && sourceLibrary.writable === false) {
 
     ElMessage.warning('当前库存只读，无法移动')
 
     return
 
   }
-
-  const sourceRows = (Array.isArray(rows) ? rows : []).filter(row => row?.path)
 
   if (!sourceRows.length) {
 
@@ -18849,7 +20041,7 @@ function openMoveDialog (rows, initialPathOverride = '') {
 
     visible: true,
 
-    sourceLibraryId: selectedLibraryId.value,
+    sourceLibraryId,
 
     initialPath,
 
@@ -18884,7 +20076,7 @@ function openFolderCompletionDialog (rows = []) {
 
   }
 
-  const candidates = (Array.isArray(rows) ? rows : [])
+  const candidates = normalizeLibraryActionRows(Array.isArray(rows) ? rows : [])
     .filter(row => canCompleteFolderRow(row))
 
   if (!candidates.length) {
@@ -19222,7 +20414,7 @@ function closeMoveDialog () {
 
 function normalizeMoveItems (rows) {
 
-  return (Array.isArray(rows) ? rows : [])
+  return normalizeLibraryActionRows(Array.isArray(rows) ? rows : [])
     .filter(row => row?.path)
     .map(row => ({
       path: row.path,
@@ -19448,15 +20640,22 @@ async function handleMoveSubmit (payload) {
 
 async function renameItem (row) {
 
+  const target = normalizeLibraryActionRow(row)
+
+  if (!target) {
+    ElMessage.warning('请在展开的具体路径上操作')
+    return
+  }
+
   const form = {
 
-    currentName: row.name,
+    currentName: target.name,
 
-    newName: row.name,
+    newName: target.name,
 
-    path: row.path,
+    path: target.path,
 
-    libraryId: row.library_id || selectedLibraryId.value
+    libraryId: target.library_id || selectedLibraryId.value
 
   }
 
@@ -19536,16 +20735,23 @@ async function apiRenameItem (row) {
 
   if (apiRenameBusy.value) return
 
+  const target = normalizeLibraryActionRow(row)
+
+  if (!target) {
+    ElMessage.warning('请在展开的具体路径上操作')
+    return
+  }
+
   apiRenamingId.value = row.id
 
   try {
 
-    const data = await libraryApi.apiRename(row.path, selectedLibraryId.value)
+    const data = await libraryApi.apiRename(target.path, target.library_id || selectedLibraryId.value)
 
     ElMessage.success(data.message || 'API 重命名成功')
 
     if (data?.path) {
-      replaceRowPathInCurrentView(row.path, data.path, data.new_name || '')
+      replaceRowPathInCurrentView(target.path, data.path, data.new_name || '')
     }
 
     refreshCurrentLibraryAndStatsInBackground('API 重命名已完成')
@@ -19566,13 +20772,15 @@ async function apiRenameItem (row) {
 
 async function computeFolderSize (row) {
 
-  if (!row?.path || !row?.is_directory) return
+  const targetRow = normalizeLibraryActionRow(row)
+
+  if (!targetRow?.path || !targetRow?.is_directory) return
 
   computingSizeId.value = row.id
 
   try {
 
-    const result = await libraryApi.computeFolderSize(row.path)
+    const result = await libraryApi.computeFolderSize(targetRow.path, { libraryId: targetRow.library_id || selectedLibraryId.value })
 
       const sizeBytes = result?.size ?? 0
 
@@ -19607,7 +20815,16 @@ async function deleteItem (row) {
 
   try {
 
-    const preview = await libraryApi.browserDelete(selectedLibraryId.value, row.path, false)
+    const target = normalizeLibraryActionRow(row)
+
+    if (!target) {
+      ElMessage.warning('请在展开的具体路径上操作')
+      return
+    }
+
+    const libraryId = target.library_id || selectedLibraryId.value
+
+    const preview = await libraryApi.browserDelete(libraryId, target.path, false)
 
     await showSystemConfirm({
 
@@ -19623,16 +20840,16 @@ async function deleteItem (row) {
 
     })
 
-    await libraryApi.browserDelete(selectedLibraryId.value, row.path, true)
+    await libraryApi.browserDelete(libraryId, target.path, true)
 
     ElMessage.success('删除成功')
 
-    pruneRowsFromCurrentViewByPaths([row.path])
+    pruneRowsFromCurrentViewByPaths([target.path])
 
     refreshAfterMutationInBackground({
       deletedBytes: preview.size || 0,
       deletedFolderCount: preview.folder_count || 0,
-      libraryId: selectedLibraryId.value,
+      libraryId,
       messagePrefix: '删除已完成'
     })
 
@@ -19650,7 +20867,7 @@ async function deleteItem (row) {
 
 async function handleBatchComputeSize () {
 
-  const targets = selectedDirectoryRows.value
+  const targets = selectedRealDirectoryRows.value
 
   if (!targets.length) return
 
@@ -19658,24 +20875,27 @@ async function handleBatchComputeSize () {
 
   try {
 
-    const result = await libraryApi.computeFolderSizes(targets.map(row => row.path))
+    const result = await libraryApi.computeFolderSizes(targets.map(row => row.path), {
+      items: targets.map(row => ({ library_id: row.library_id || selectedLibraryId.value, path: row.path }))
+    })
 
     const results = Array.isArray(result?.results) ? result.results : []
 
-    const sizeByPath = new Map(results
+    const sizeByKey = new Map(results
       .filter(item => item?.success)
-      .map(item => [String(item.path || ''), Number(item.size || 0)]))
+      .map(item => [buildLibraryPathKey(item.library_id, item.path), Number(item.size || 0)]))
 
     for (const row of targets) {
-      if (!sizeByPath.has(row.path)) continue
+      const key = buildLibraryPathKey(row.library_id, row.path)
+      if (!sizeByKey.has(key)) continue
       const target = files.value.find(f => f.id === row.id)
       if (target) {
-        target.size = sizeByPath.get(row.path) || 0
+        target.size = sizeByKey.get(key) || 0
         target.size_status = 'ready'
       }
     }
 
-    const successCount = Number(result?.success_count || sizeByPath.size)
+    const successCount = Number(result?.success_count || sizeByKey.size)
     const failCount = Number(result?.failed_count || Math.max(0, targets.length - successCount))
 
     if (failCount === 0) {
@@ -19706,15 +20926,26 @@ async function handleBatchComputeSize () {
 
 async function handleBatchDelete () {
 
-  if (!selectedRows.value.length) return
+  const targets = normalizeLibraryActionRows(selectedRows.value)
+
+  if (!targets.length) return
+
+  const libraryIds = [...new Set(targets.map(row => row.library_id || selectedLibraryId.value).filter(Boolean))]
+
+  if (libraryIds.length > 1) {
+    ElMessage.warning('跨库存路径请分开删除')
+    return
+  }
 
   batchDeleting.value = true
 
   try {
 
-    const paths = selectedRows.value.map(row => row.path)
+    const libraryId = libraryIds[0] || selectedLibraryId.value
 
-    const preview = await libraryApi.browserBatchDelete(selectedLibraryId.value, paths, false)
+    const paths = targets.map(row => row.path)
+
+    const preview = await libraryApi.browserBatchDelete(libraryId, paths, false)
 
     await showSystemConfirm({
 
@@ -19730,7 +20961,7 @@ async function handleBatchDelete () {
 
     })
 
-    const result = await libraryApi.browserBatchDelete(selectedLibraryId.value, paths, true)
+    const result = await libraryApi.browserBatchDelete(libraryId, paths, true)
 
     ElMessage.success(`批量删除完成：成功 ${result.success_count || 0} 项`)
 
@@ -19741,7 +20972,7 @@ async function handleBatchDelete () {
     refreshAfterMutationInBackground({
       deletedBytes: preview.total_size || 0,
       deletedFolderCount: preview.total_folder_count || 0,
-      libraryId: selectedLibraryId.value,
+      libraryId,
       messagePrefix: '批量删除已完成'
     })
 
@@ -19765,7 +20996,14 @@ async function handleBatchAutoCircleGroup () {
 
   if (!selectedAutoCircleGroupRows.value.length || autoCircleGroupRunningId.value || batchAutoCircleGrouping.value) return
 
-  const targetRows = selectedAutoCircleGroupRows.value.slice()
+  const targetRows = normalizeLibraryActionRows(selectedAutoCircleGroupRows.value).slice()
+
+  const targetLibraryId = String(targetRows[0]?.library_id || selectedLibraryId.value || '').trim()
+
+  if (targetRows.some(row => String(row.library_id || targetLibraryId) !== targetLibraryId)) {
+    ElMessage.warning('跨库存路径请分开按社团分类')
+    return
+  }
 
   const skippedCount = selectedRows.value.length - targetRows.length
 
@@ -19810,7 +21048,7 @@ async function handleBatchAutoCircleGroup () {
     const rowByPath = new Map(targetRows.map(row => [row.path, row]))
 
     const batchData = await libraryApi.batchAutoCircleGroup(
-      selectedLibraryId.value,
+      targetLibraryId,
       targetRows.map(row => row.path).filter(Boolean)
     )
 
@@ -19969,7 +21207,14 @@ async function handleBatchApiRename () {
 
   if (!selectedApiRenameRows.value.length || apiRenameBusy.value) return
 
-  const targetRows = selectedApiRenameRows.value
+  const targetRows = normalizeLibraryActionRows(selectedApiRenameRows.value)
+
+  const targetLibraryId = String(targetRows[0]?.library_id || selectedLibraryId.value || '').trim()
+
+  if (targetRows.some(row => String(row.library_id || targetLibraryId) !== targetLibraryId)) {
+    ElMessage.warning('跨库存路径请分开 API 重命名')
+    return
+  }
 
   const skippedCount = selectedRows.value.length - targetRows.length
 
@@ -20009,7 +21254,7 @@ async function handleBatchApiRename () {
 
   try {
 
-    const response = await libraryApi.batchApiRename(targetRows.map(row => row.path), selectedLibraryId.value)
+    const response = await libraryApi.batchApiRename(targetRows.map(row => row.path), targetLibraryId)
     const results = (response?.results || []).map(item => ({
       path: item.path,
       success: Boolean(item.success),
@@ -20063,9 +21308,13 @@ async function handleBatchApiRename () {
 
 
 
-function isLibraryRowSelectable () {
+function isLibraryRowSelectable (row) {
 
-  return !apiRenameBusy.value
+  if (apiRenameBusy.value) return false
+
+  if (libraryViewMode.value === 'circle') return isCircleRealActionRow(row)
+
+  return true
 
 }
 
@@ -20073,13 +21322,15 @@ function isLibraryRowSelectable () {
 
 async function openFolderContentsDialog (row) {
 
-  if (!row?.is_directory) return
+  const target = normalizeLibraryActionRow(row)
 
-  folderDialogLibraryId.value = row.library_id || selectedLibraryId.value
+  if (!target?.is_directory) return
 
-  folderDialogPath.value = row.path
+  folderDialogLibraryId.value = target.library_id || selectedLibraryId.value
 
-  folderDialogName.value = row.name
+  folderDialogPath.value = target.path
+
+  folderDialogName.value = target.name
 
   folderDialogVisible.value = true
 
@@ -20266,9 +21517,25 @@ async function openSelectedFilterDeleteDialog () {
 
   }
 
-  const targetRows = selectedFilterDeleteRows.value
+  const targetRows = selectedRealFilterDeleteRows.value
 
-  if (!targetRows.length || !selectedLibraryId.value) return
+  if (!targetRows.length) return
+
+  const targetLibraryId = String(targetRows[0]?.library_id || selectedLibraryId.value || '').trim()
+
+  if (!targetLibraryId) return
+
+  if (targetRows.some(row => String(row.library_id || targetLibraryId) !== targetLibraryId)) {
+
+    ElMessage.warning('跨库存路径请分开进行删除过滤')
+
+    return
+
+  }
+
+  const targetLibrary = getLibraryById(targetLibraryId)
+
+  if (!targetLibrary || targetLibrary.writable === false) return
 
   const skippedCount = selectedRows.value.length - targetRows.length
 
@@ -20278,9 +21545,9 @@ async function openSelectedFilterDeleteDialog () {
 
   }
 
-  filterDeleteDialogLibraryId.value = selectedLibraryId.value
+  filterDeleteDialogLibraryId.value = targetLibraryId
 
-  filterDeleteDialogPath.value = currentPath.value
+  filterDeleteDialogPath.value = targetRows[0]?.path || currentPath.value
 
   filterDeleteDialogTargetPaths.value = [...new Set(targetRows.map(resolveDirectoryActionPath).filter(Boolean))]
 
@@ -20288,7 +21555,7 @@ async function openSelectedFilterDeleteDialog () {
 
   filterDeleteDialogScopeLabel.value = `已选目录（${filterDeleteDialogTargetPaths.value.length} 项）`
 
-  filterDeleteDialogIsRemote.value = isRemoteCurrentLibrary.value
+  filterDeleteDialogIsRemote.value = targetLibrary.type === 'synology_filestation'
 
   filterDeleteDialogVisible.value = true
 
@@ -20304,23 +21571,29 @@ async function openRowFilterDeleteDialog (row) {
 
   }
 
-  if (!row?.is_directory || !selectedLibraryId.value || !isWritableCurrentLibrary.value) return
+  const target = normalizeLibraryActionRow(row)
 
-  const targetPath = resolveDirectoryActionPath(row)
+  const targetLibraryId = String(target?.library_id || selectedLibraryId.value || '').trim()
+
+  const targetLibrary = getLibraryById(targetLibraryId)
+
+  if (!target?.is_directory || !targetLibraryId || !targetLibrary || targetLibrary.writable === false) return
+
+  const targetPath = resolveDirectoryActionPath(target)
 
   if (!targetPath) return
 
-  filterDeleteDialogLibraryId.value = selectedLibraryId.value
+  filterDeleteDialogLibraryId.value = targetLibraryId
 
-  filterDeleteDialogPath.value = currentPath.value
+  filterDeleteDialogPath.value = target.path || currentPath.value
 
   filterDeleteDialogTargetPaths.value = [targetPath]
 
   filterDeleteDialogRules.value = await loadConfiguredFilterRules()
 
-  filterDeleteDialogScopeLabel.value = `${row.name || getFileName(targetPath) || '当前目录'}`
+  filterDeleteDialogScopeLabel.value = `${target.name || getFileName(targetPath) || '当前目录'}`
 
-  filterDeleteDialogIsRemote.value = isRemoteCurrentLibrary.value
+  filterDeleteDialogIsRemote.value = targetLibrary.type === 'synology_filestation'
 
   filterDeleteDialogVisible.value = true
 
@@ -22187,6 +23460,20 @@ function statsStatusTextDisplay (stats) {
   letter-spacing: -0.2px;
 
   color: #1e293b;
+
+}
+
+.lib-card-title-wrap {
+
+  display: flex;
+
+  align-items: center;
+
+  flex-wrap: wrap;
+
+  gap: 10px;
+
+  min-width: 0;
 
 }
 
@@ -24574,6 +25861,21 @@ function statsStatusTextDisplay (stats) {
 }
 
 .search-result-library { padding-left: 22px; font-size: 11px; line-height: 1.4; color: #7a8ba5; }
+
+.search-result-library.circle-row-conflict-meta {
+  color: #c2410c;
+  font-weight: 600;
+}
+
+.search-result-library.circle-row-location-meta {
+  font-weight: 600;
+}
+
+.search-result-library.circle-row-location-meta.is-single { color: #475569; }
+.search-result-library.circle-row-location-meta.is-tone-0 { color: #2563eb; }
+.search-result-library.circle-row-location-meta.is-tone-1 { color: #0f766e; }
+.search-result-library.circle-row-location-meta.is-tone-2 { color: #9333ea; }
+.search-result-library.circle-row-location-meta.is-tone-3 { color: #be123c; }
 
 :deep(.library-search-mark) { background: #fff1a8; color: #7a4b00; padding: 0 2px; border-radius: 4px; }
 
@@ -27945,9 +29247,12 @@ function statsStatusTextDisplay (stats) {
    *
    * 用 :nth-child 把 AppDropdown(库下拉) 和 LibrarySearchBox(搜索) 各自 grid-column 占整行；
    * 其他兄弟元素按 grid 流自动 2 列分布。
-   */
+  */
   .lib-card-header { flex-direction: column; align-items: stretch; gap: 8px; }
   .lib-card-title { display: none; }
+  .lib-card-title-wrap {
+    justify-content: flex-start;
+  }
 
   .lib-toolbar {
     display: grid;
