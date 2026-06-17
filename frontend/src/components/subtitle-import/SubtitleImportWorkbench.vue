@@ -1188,8 +1188,8 @@ async function inspectSubtitleTask(task, options = {}) {
     const subtitleLibraryId = task.subtitle_library_id || audioLibraryId
     const audioFolderPath = String(task.target_folder_path || task.folder_path || '').trim()
     const [subtitleResult, audioResult] = await Promise.allSettled([
-      libraryApi.browserFolderContents(subtitleLibraryId, subtitleDir),
-      audioFolderPath ? libraryApi.browserFolderContents(audioLibraryId, audioFolderPath) : Promise.resolve({ items: [] })
+      libraryApi.browserFolderContents(subtitleLibraryId, subtitleDir, { preferIndex: false }),
+      audioFolderPath ? libraryApi.browserFolderContents(audioLibraryId, audioFolderPath, { preferIndex: false }) : Promise.resolve({ items: [] })
     ])
     const subtitleData = subtitleResult.status === 'fulfilled' ? subtitleResult.value : null
     const audioData = audioResult.status === 'fulfilled' ? audioResult.value : { items: [] }
@@ -1314,8 +1314,8 @@ async function reloadCurrentSubtitleInspectorSnapshot() {
   subtitleInspectorLoading.value = true
   try {
     const [subtitleResult, audioResult] = await Promise.allSettled([
-      libraryApi.browserFolderContents(subtitleLibraryId, subtitleDir),
-      audioFolderPath ? libraryApi.browserFolderContents(audioLibraryId, audioFolderPath) : Promise.resolve({ items: [] })
+      libraryApi.browserFolderContents(subtitleLibraryId, subtitleDir, { preferIndex: false }),
+      audioFolderPath ? libraryApi.browserFolderContents(audioLibraryId, audioFolderPath, { preferIndex: false }) : Promise.resolve({ items: [] })
     ])
     if (inspectSeq !== subtitleInspectRequestSeq) return false
     if (subtitleResult.status !== 'fulfilled') throw subtitleResult.reason

@@ -263,7 +263,7 @@ const budgetItems = [
   { key: 'database_write', label: '业务数据库写入', hint: '任务中心、操作历史、配置保存等业务写入队列；启用时最低实际为 1。', min: 0, max: 8 },
   { key: 'library_index_write', label: '库存索引写入', hint: '库存索引后台追赶写入队列，和业务数据库写入分离。', min: 0, max: 4 },
   { key: 'disk_io_local', label: '本地磁盘 IO', hint: '本地复制、上传入库、打包扫描、临时视图复制等慢盘操作。', min: 0, max: 16 },
-  { key: 'remote_fs', label: '远程库存 / 群晖', hint: 'FileStation 列表、下载、上传、远程库存索引重建。', min: 0, max: 20 },
+  { key: 'remote_fs', label: '远程库存 / 群晖', hint: 'FileStation 列表、搜索、下载、上传等群晖接口操作。', min: 0, max: 20 },
   { key: 'network_download', label: '网络下载', hint: 'HTTP、Google Drive、Transfer.it、百度 PCSGo、ASMR 下载等。', min: 0, max: 50 },
   { key: 'archive_cpu', label: '解压 CPU', hint: '7zz / unar 实际解压子进程，建议按 CPU 和磁盘吞吐一起调。', min: 0, max: 16 },
   { key: 'archive_inspect', label: '压缩包探测', hint: '7zz l / 密码探测 / 伪装压缩包识别等轻量但高频操作。', min: 0, max: 32 },

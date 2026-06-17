@@ -62,11 +62,12 @@
             <button
               type="button"
               class="action-card"
-              :disabled="folderLoading"
+              :disabled="folderLoading || folderExpandingAll"
               @click="toggleExpandAll"
             >
-              <ChevronDown :size="15" class="toolbar-toggle-icon" :class="{ 'is-collapsed': !isAllExpanded }" />
-              <span>{{ isAllExpanded ? '全部收起' : '展开全部' }}</span>
+              <RefreshCw v-if="folderExpandingAll" :size="15" class="action-icon-refresh is-spinning" />
+              <ChevronDown v-else :size="15" class="toolbar-toggle-icon" :class="{ 'is-collapsed': !isAllExpanded }" />
+              <span>{{ folderExpandingAll ? '展开中' : (isAllExpanded ? '全部收起' : '展开全部') }}</span>
             </button>
           </div>
 
@@ -358,6 +359,7 @@ const visible = computed({
 
 const folderLoading = ref(false)
 const folderDeleting = ref(false)
+const folderExpandingAll = ref(false)
 const folderSearch = ref('')
 const repairPreviewVisible = ref(false)
 const repairApplying = ref(false)
@@ -375,6 +377,10 @@ const folderItems = ref([])
 const selectedFileIds = ref(new Set())
 const expandedIds = ref(new Set())
 const loadingDirectoryIds = ref(new Set())
+const loadingDirectorySummaryKeys = ref(new Set())
+const queuedDirectorySummaryKeys = ref(new Set())
+const completedDirectorySummaryKeys = ref(new Set())
+const failedDirectorySummaryKeys = ref(new Set())
 const folderLastSelectedId = ref('')
 const treePanelRef = ref(null)
 const treeScrollRef = ref(null)
@@ -382,6 +388,17 @@ const treeScrollbarWidth = ref(0)
 
 const TREE_ROW_HEIGHT = 46
 const TREE_ROW_OVERSCAN = 16
+const DIRECTORY_SUMMARY_BATCH_SIZE = 4
+const DIRECTORY_SUMMARY_VISIBLE_DELAY = 60
+const DIRECTORY_SUMMARY_BACKGROUND_DELAY = 900
+const DIRECTORY_SUMMARY_BACKGROUND_CAP = 80
+const DIRECTORY_SUMMARY_MAX_ENTRIES = 50000
+const DIRECTORY_SUMMARY_MAX_SECONDS = 5
+
+let directorySummaryQueue = []
+let directorySummaryTimer = null
+let directorySummaryProcessing = false
+let directorySummaryRunToken = 0
 
 const treeRoot = computed(() => buildTree(folderItems.value, folderContentsInfo.value.folderPath, folderContentsInfo.value.recursive))
 const treeIndex = computed(() => buildTreeIndex(treeRoot.value))
@@ -491,6 +508,7 @@ watch(visible, async value => {
   }
   window.removeEventListener('keydown', handleDialogKeydown)
   window.removeEventListener('resize', syncTreeScrollbarWidth)
+  resetDirectorySummaryHydration()
 })
 
 watch(() => props.folderPath, async (nextPath, prevPath) => {
@@ -502,6 +520,14 @@ watch(
   () => [flatTree.value.length, folderSearch.value, expandedIds.value.size].join(':'),
   () => {
     nextTick(() => treeRowVirtualizer.value.measure())
+  },
+)
+
+watch(
+  () => virtualTreeRows.value.map(item => item.row?.id).filter(Boolean).join('|'),
+  () => {
+    if (!visible.value || folderLoading.value) return
+    queueVisibleDirectorySummaries()
   },
 )
 
@@ -517,6 +543,7 @@ function handleDialogKeydown (event) {
 
 async function reload () {
   if (!props.folderPath || !props.libraryId) return
+  resetDirectorySummaryHydration()
   folderLoading.value = true
   try {
     const previousExpanded = new Set([...expandedIds.value].map(id => String(id).replace(/^dir:/, '')))
@@ -558,6 +585,8 @@ async function reload () {
     treeRowVirtualizer.value.scrollToOffset(0)
     treeRowVirtualizer.value.measure()
     syncTreeScrollbarWidth()
+    queueVisibleDirectorySummaries()
+    queueBackgroundDirectorySummaries()
   } catch (error) {
     visible.value = false
     ElMessage.error('加载文件夹内容失败: ' + (error.response?.data?.detail || error.message))
@@ -749,8 +778,17 @@ function normalizeShallowItem (item, basePath) {
   const itemType = item?.type || (item?.is_directory ? 'dir' : 'file')
   const relativePath = item?.relative_path || item?.name || ''
   const resolvedPath = item?.path || joinFolderPath(basePath, relativePath)
-  const fileCount = pickOptionalNonNegativeNumber(item?.file_count)
-  const folderCount = pickOptionalNonNegativeNumber(item?.folder_count)
+  const rawFileCount = pickOptionalNonNegativeNumber(item?.file_count)
+  const rawFolderCount = pickOptionalNonNegativeNumber(item?.folder_count)
+  const childrenLoaded = itemType !== 'dir' || Boolean(item?.children_loaded)
+  const countsArePlaceholder = itemType === 'dir' &&
+    !childrenLoaded &&
+    !Boolean(item?.browse_via_index) &&
+    item?.has_children !== false &&
+    rawFileCount === 0 &&
+    (rawFolderCount === 0 || rawFolderCount === null)
+  const fileCount = countsArePlaceholder ? null : rawFileCount
+  const folderCount = countsArePlaceholder ? null : rawFolderCount
   const hasIndexedCounts = fileCount !== null || folderCount !== null
   const hasChildren = itemType === 'dir'
     ? (item?.has_children !== undefined
@@ -764,10 +802,10 @@ function normalizeShallowItem (item, basePath) {
     relative_path: relativePath,
     resolved_path: resolvedPath,
     children: itemType === 'dir' ? (Array.isArray(item?.children) ? item.children : []) : undefined,
-    childrenLoaded: itemType !== 'dir' || Boolean(item?.children_loaded),
+    childrenLoaded,
     hasChildren,
-    file_count: fileCount ?? item?.file_count,
-    folder_count: folderCount ?? item?.folder_count,
+    file_count: fileCount ?? (countsArePlaceholder ? null : item?.file_count),
+    folder_count: folderCount ?? (countsArePlaceholder ? null : item?.folder_count),
   }
 }
 
@@ -913,37 +951,225 @@ function replaceTreeNodeChildren (targetId, children, summary = {}) {
 
   if (visit(folderItems.value)) {
     folderItems.value = folderItems.value.slice()
+    queueDirectorySummaries(children.filter(child => child?.type === 'dir'), { priority: true })
   }
 }
 
-function expandAll () {
-  const next = new Set()
-  const walk = nodes => nodes.forEach(node => {
-    if (node.type === 'dir') {
-      if (node.childrenLoaded || node.children?.length) {
-        next.add(node.id)
-        walk(node.children || [])
+function resetDirectorySummaryHydration () {
+  directorySummaryRunToken += 1
+  directorySummaryQueue = []
+  directorySummaryProcessing = false
+  if (directorySummaryTimer) {
+    clearTimeout(directorySummaryTimer)
+    directorySummaryTimer = null
+  }
+  loadingDirectorySummaryKeys.value = new Set()
+  queuedDirectorySummaryKeys.value = new Set()
+  completedDirectorySummaryKeys.value = new Set()
+  failedDirectorySummaryKeys.value = new Set()
+}
+
+function queueVisibleDirectorySummaries () {
+  const rows = virtualTreeRows.value.map(item => item.row).filter(Boolean)
+  queueDirectorySummaries(rows.length ? rows : flatTree.value.slice(0, TREE_ROW_OVERSCAN), { priority: true })
+}
+
+function queueBackgroundDirectorySummaries () {
+  const rows = flatTree.value
+    .filter(row => row?.type === 'dir')
+    .slice(0, DIRECTORY_SUMMARY_BACKGROUND_CAP)
+  queueDirectorySummaries(rows, { delay: DIRECTORY_SUMMARY_BACKGROUND_DELAY })
+}
+
+function queueDirectorySummaries (rows = [], options = {}) {
+  if (!visible.value || !props.libraryId) return
+  const additions = []
+  let promotedQueuedItem = false
+  const queued = new Set(queuedDirectorySummaryKeys.value)
+  const loading = loadingDirectorySummaryKeys.value
+  const completed = completedDirectorySummaryKeys.value
+  const failed = failedDirectorySummaryKeys.value
+
+  for (const row of rows || []) {
+    if (!needsDirectorySummary(row)) continue
+    const key = directorySummaryKey(row)
+    const path = resolveNodePath(row)
+    if (!key || !path) continue
+    if (loading.has(key) || completed.has(key) || failed.has(key)) continue
+    if (queued.has(key)) {
+      if (options.priority) {
+        directorySummaryQueue = [
+          { key, id: row.id, path, libraryId: props.libraryId },
+          ...directorySummaryQueue.filter(item => item.key !== key),
+        ]
+        promotedQueuedItem = true
+      }
+      continue
+    }
+    queued.add(key)
+    additions.push({ key, id: row.id, path, libraryId: props.libraryId })
+  }
+
+  if (!additions.length && !promotedQueuedItem) return
+  queuedDirectorySummaryKeys.value = queued
+  if (options.priority) {
+    directorySummaryQueue = [...additions, ...directorySummaryQueue]
+  } else {
+    directorySummaryQueue.push(...additions)
+  }
+  scheduleDirectorySummaryProcessing(options.delay ?? (options.priority ? DIRECTORY_SUMMARY_VISIBLE_DELAY : DIRECTORY_SUMMARY_BACKGROUND_DELAY))
+}
+
+function needsDirectorySummary (row) {
+  if (!row || row.type !== 'dir') return false
+  if (row.browse_via_index) return false
+  if (row.childrenLoaded) return false
+  if (pickOptionalNonNegativeNumber(row.file_count) !== null || pickOptionalNonNegativeNumber(row.folder_count) !== null) return false
+  return row.hasChildren !== false && row.has_children !== false
+}
+
+function directorySummaryKey (row) {
+  const path = row?.path || row?.resolved_path || resolveNodePath(row)
+  return normalizeAnyPath(path)
+}
+
+function scheduleDirectorySummaryProcessing (delay = DIRECTORY_SUMMARY_BACKGROUND_DELAY) {
+  if (directorySummaryProcessing || !directorySummaryQueue.length) return
+  if (directorySummaryTimer) {
+    if (delay > DIRECTORY_SUMMARY_VISIBLE_DELAY) return
+    clearTimeout(directorySummaryTimer)
+    directorySummaryTimer = null
+  }
+  directorySummaryTimer = setTimeout(() => {
+    directorySummaryTimer = null
+    void processDirectorySummaryQueue()
+  }, delay)
+}
+
+async function processDirectorySummaryQueue () {
+  if (directorySummaryProcessing || !visible.value || !directorySummaryQueue.length) return
+  const token = directorySummaryRunToken
+  const batch = directorySummaryQueue.splice(0, DIRECTORY_SUMMARY_BATCH_SIZE)
+  const queued = new Set(queuedDirectorySummaryKeys.value)
+  const loading = new Set(loadingDirectorySummaryKeys.value)
+  batch.forEach(item => {
+    queued.delete(item.key)
+    loading.add(item.key)
+  })
+  queuedDirectorySummaryKeys.value = queued
+  loadingDirectorySummaryKeys.value = loading
+  directorySummaryProcessing = true
+
+  try {
+    const result = await libraryApi.computeFolderSizes([], {
+      items: batch.map(item => ({ library_id: item.libraryId, path: item.path })),
+      includeCounts: true,
+      maxEntries: DIRECTORY_SUMMARY_MAX_ENTRIES,
+      maxSeconds: DIRECTORY_SUMMARY_MAX_SECONDS,
+    })
+    if (token !== directorySummaryRunToken || !visible.value) return
+    const completed = new Set(completedDirectorySummaryKeys.value)
+    const failed = new Set(failedDirectorySummaryKeys.value)
+    for (const item of Array.isArray(result?.results) ? result.results : []) {
+      const key = normalizeAnyPath(item?.path)
+      if (!key) continue
+      if (item?.success) {
+        applyDirectorySummary(item)
+        completed.add(key)
+      } else {
+        failed.add(key)
       }
     }
-  })
-  walk(filteredRoot.value)
-  expandedIds.value = next
+    completedDirectorySummaryKeys.value = completed
+    failedDirectorySummaryKeys.value = failed
+  } catch (error) {
+    if (token === directorySummaryRunToken) {
+      const failed = new Set(failedDirectorySummaryKeys.value)
+      batch.forEach(item => failed.add(item.key))
+      failedDirectorySummaryKeys.value = failed
+      console.warn('后台统计目录摘要失败:', error)
+    }
+  } finally {
+    if (token === directorySummaryRunToken) {
+      const nextLoading = new Set(loadingDirectorySummaryKeys.value)
+      batch.forEach(item => nextLoading.delete(item.key))
+      loadingDirectorySummaryKeys.value = nextLoading
+      directorySummaryProcessing = false
+      if (directorySummaryQueue.length && visible.value) {
+        scheduleDirectorySummaryProcessing(DIRECTORY_SUMMARY_BACKGROUND_DELAY)
+      }
+    }
+  }
+}
+
+function applyDirectorySummary (summary) {
+  const node = findDirectoryNodeByPath(summary?.path)
+  if (!node) return
+  const fileCount = pickOptionalNonNegativeNumber(summary?.file_count)
+  const folderCount = pickOptionalNonNegativeNumber(summary?.folder_count)
+  const size = pickOptionalNonNegativeNumber(summary?.size)
+  if (fileCount !== null) node.file_count = fileCount
+  if (folderCount !== null) node.folder_count = folderCount
+  if (size !== null) node.size = size
+  node.size_status = summary?.size_status || (summary?.partial ? 'partial' : 'ready')
+  node.count_status = summary?.count_status || (summary?.partial ? 'partial' : 'ready')
+  node.count_partial = Boolean(summary?.partial)
+  folderItems.value = folderItems.value.slice()
+}
+
+function findDirectoryNodeByPath (path) {
+  const target = normalizeAnyPath(path)
+  if (!target) return null
+  for (const node of folderNodeById.value.values()) {
+    if (node?.type !== 'dir') continue
+    if (normalizeAnyPath(resolveNodePath(node)) === target) return node
+  }
+  return null
+}
+
+async function expandDirectoryNode (node, nextExpandedIds) {
+  if (!node?.id || node.type !== 'dir') return
+  if (node.hasChildren && !node.childrenLoaded) {
+    const loaded = await loadDirectoryChildren(node)
+    if (!loaded) return
+    await nextTick()
+  }
+  nextExpandedIds.add(node.id)
+  const currentNode = folderNodeById.value.get(node.id) || node
+  for (const child of currentNode.children || []) {
+    await expandDirectoryNode(child, nextExpandedIds)
+  }
+}
+
+async function expandAll () {
+  if (folderExpandingAll.value) return
+  folderExpandingAll.value = true
+  const next = new Set()
+  try {
+    for (const node of filteredRoot.value) {
+      await expandDirectoryNode(node, next)
+    }
+    expandedIds.value = next
+  } finally {
+    folderExpandingAll.value = false
+  }
 }
 
 function collapseAll () {
   expandedIds.value = new Set()
 }
 
-function toggleExpandAll () {
+async function toggleExpandAll () {
+  if (folderExpandingAll.value) return
   if (isAllExpanded.value) {
     collapseAll()
     return
   }
-  expandAll()
+  await expandAll()
 }
 
 function onSearchInput () {
-  if (folderSearch.value.trim()) expandAll()
+  if (folderSearch.value.trim()) void expandAll()
 }
 
 function getFolderSelectableIds () {
@@ -1087,14 +1313,40 @@ function resolveTreeIconStyle (row) {
 function getRowSubtitle (row) {
   if (!row) return '-'
   if (row.type === 'dir') {
+    if (isDirectorySummaryLoading(row)) return '统计中...'
+    if (hasPendingDirectoryCounts(row)) return '未统计'
+    const fileCount = pickOptionalNonNegativeNumber(row.file_count)
+    const folderCount = pickOptionalNonNegativeNumber(row.folder_count)
+    if (fileCount !== null || folderCount !== null) {
+      const parts = []
+      if ((folderCount || 0) > 0) parts.push(`${folderCount} 个子目录`)
+      if ((fileCount || 0) > 0) parts.push(`${fileCount} 个文件`)
+      if (!parts.length && row.count_partial) return '统计中...'
+      const label = parts.length ? parts.join(' · ') : '空目录'
+      return row.count_partial ? `${label}+` : label
+    }
     const counts = getRowDeleteCounts(row)
-    if (!counts.folderCount && !counts.fileCount) return '空目录'
+    const subtreeFolderCount = Math.max(0, counts.folderCount - 1)
+    if (!subtreeFolderCount && !counts.fileCount) return '空目录'
     const parts = []
-    if (counts.folderCount > 1) parts.push(`${counts.folderCount - 1} 个子目录`)
-    parts.push(`${counts.fileCount} 个文件`)
+    if (subtreeFolderCount > 0) parts.push(`${subtreeFolderCount} 个子目录`)
+    if (counts.fileCount > 0) parts.push(`${counts.fileCount} 个文件`)
     return parts.join(' · ')
   }
   return row.relative_path || row.name || '-'
+}
+
+function isDirectorySummaryLoading (row) {
+  const key = directorySummaryKey(row)
+  return Boolean(key && (loadingDirectorySummaryKeys.value.has(key) || queuedDirectorySummaryKeys.value.has(key)))
+}
+
+function hasPendingDirectoryCounts (row) {
+  if (!row || row.type !== 'dir' || row.childrenLoaded) return false
+  if (row.hasChildren === false || row.has_children === false) return false
+  if (row.browse_via_index || row.size_status === 'ready') return false
+  return pickOptionalNonNegativeNumber(row.file_count) === null &&
+    pickOptionalNonNegativeNumber(row.folder_count) === null
 }
 
 function getRowDisplayName (row) {
@@ -1337,6 +1589,7 @@ defineExpose({ reload })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleDialogKeydown)
   window.removeEventListener('resize', syncTreeScrollbarWidth)
+  resetDirectorySummaryHydration()
 })
 
 onMounted(() => {

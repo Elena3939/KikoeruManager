@@ -28,7 +28,11 @@
 
         </Badge>
 
-        <LibraryIndexBadge :library="currentLibrary" @status-change="handleLibraryIndexStatusChange" />
+        <LibraryIndexBadge
+          v-if="!isRemoteCurrentLibrary"
+          :library="currentLibrary"
+          @status-change="handleLibraryIndexStatusChange"
+        />
 
       </template>
 
@@ -44,17 +48,25 @@
 
         <div class="lib-info-body">
 
-          <div class="lib-info-label">{{ labels.currentLibrary }}</div>
+          <div class="lib-info-label">{{ currentLibraryStatsLabel }}</div>
 
-          <div class="lib-info-value">
+          <div class="lib-info-value" v-if="!isCircleViewActive">
 
             <b>{{ currentLibrary?.name || '-' }}</b>
 
             <span class="lib-info-meta">· {{ currentLibraryTypeLabel }}</span>
 
           </div>
+          <div v-else class="lib-info-value">
 
-          <div class="lib-info-sub" :title="currentLibrary?.path || ''">{{ currentLibrary?.path || '-' }}</div>
+            <b>社团聚合</b>
+
+            <span class="lib-info-meta">· 后端包装视图</span>
+
+          </div>
+
+          <div v-if="!isCircleViewActive" class="lib-info-sub" :title="currentLibrary?.path || ''">{{ currentLibrary?.path || '-' }}</div>
+          <div v-else class="lib-info-sub">{{ circleSummaryText }}</div>
 
         </div>
 
@@ -72,17 +84,17 @@
 
         <div class="lib-info-body">
 
-          <div class="lib-info-label">{{ labels.currentLibraryStats }}</div>
+          <div class="lib-info-label">{{ libraryStatsCardLabel }}</div>
 
-          <div class="lib-info-value"><b>{{ statsSizeCardText(currentStats) }}</b></div>
+          <div class="lib-info-value"><b>{{ libraryStatsCardValue }}</b></div>
 
-          <div v-if="showCurrentStatsProgress" class="lib-info-progress">
+          <div v-if="showCurrentStatsProgress && !isCircleViewActive" class="lib-info-progress">
 
             <el-progress :percentage="currentStatsProgress" :stroke-width="4" :show-text="false" />
 
           </div>
 
-          <div class="lib-info-sub">{{ statsStatusCardText(currentStats) }}</div>
+          <div class="lib-info-sub">{{ libraryStatsCardSub }}</div>
 
         </div>
 
@@ -100,17 +112,17 @@
 
         <div class="lib-info-body">
 
-          <div class="lib-info-label">{{ labels.allLibraries }}</div>
+          <div class="lib-info-label">{{ aggregateStatsCardLabel }}</div>
 
-          <div class="lib-info-value"><b>{{ aggregateSizeText }}</b></div>
+          <div class="lib-info-value"><b>{{ aggregateStatsCardValue }}</b></div>
 
-          <div v-if="showAggregateProgress" class="lib-info-progress">
+          <div v-if="showAggregateProgress && !isCircleViewActive" class="lib-info-progress">
 
             <el-progress :percentage="aggregateProgress" :stroke-width="4" :show-text="false" />
 
           </div>
 
-          <div class="lib-info-sub">{{ aggregateSummary }}{{ aggregateDetail ? ' · ' + aggregateDetail : '' }}</div>
+          <div class="lib-info-sub">{{ aggregateStatsCardSub }}</div>
 
         </div>
 
@@ -123,7 +135,7 @@
     <el-card
       shadow="never"
       class="main-card"
-      v-app-loading="{ loading, text: '正在刷新库存内容...', description: '同步目录、搜索结果和当前作用域', size: 176, minHeight: 360, delay: 0, minVisible: 360, maskClass: 'library-page-loading-mask' }"
+      v-app-loading="{ loading: libraryContentLoading, text: '正在刷新库存内容...', description: '同步目录、搜索结果和当前作用域', size: 176, minHeight: 360, delay: 0, minVisible: 360, maskClass: 'library-page-loading-mask' }"
     >
 
       <template #header>
@@ -132,26 +144,22 @@
 
           <div class="lib-card-title-wrap">
             <span class="lib-card-title">{{ libraryViewMode === 'circle' ? '社团聚合视图' : '库内文件列表' }}</span>
-            <div class="lib-scope-switch lib-view-mode-switch" role="tablist" aria-label="库存显示模式">
-              <button
-                type="button"
-                class="lib-scope-option"
-                :class="{ 'is-active': libraryViewMode === 'directory' }"
-                :aria-pressed="libraryViewMode === 'directory'"
-                @click="libraryViewMode = 'directory'"
-              >
-                目录视图
-              </button>
-              <button
-                type="button"
-                class="lib-scope-option"
-                :class="{ 'is-active': libraryViewMode === 'circle' }"
-                :aria-pressed="libraryViewMode === 'circle'"
-                @click="libraryViewMode = 'circle'"
-              >
-                社团视图
-              </button>
-            </div>
+            <button
+              type="button"
+              class="lib-view-mode-toggle"
+              :class="{ 'is-circle': libraryViewMode === 'circle' }"
+              :disabled="libraryViewModeSwitching"
+              role="switch"
+              :aria-checked="libraryViewMode === 'circle'"
+              :aria-label="libraryViewMode === 'circle' ? '切换到目录视图' : '切换到社团聚合视图'"
+              @click="toggleLibraryViewMode"
+            >
+              <span class="lib-view-mode-label" :class="{ 'is-active': libraryViewMode === 'directory' }">目录</span>
+              <span class="lib-view-mode-track" aria-hidden="true">
+                <span class="lib-view-mode-thumb"></span>
+              </span>
+              <span class="lib-view-mode-label" :class="{ 'is-active': libraryViewMode === 'circle' }">社团</span>
+            </button>
           </div>
 
           <div class="lib-toolbar">
@@ -197,7 +205,7 @@
 
 
             <button
-              v-if="libraryViewMode === 'directory'"
+              v-if="libraryViewMode === 'directory' && !isRemoteCurrentLibrary"
 
               type="button"
 
@@ -522,6 +530,7 @@
         @pointerdown.capture="onTableMarqueePointerDown"
         @keydown="handleLibraryTableKeydown"
       >
+        <Transition name="lib-file-table-swap" mode="out-in">
         <div :key="libraryTableKey" ref="tableRef" class="lib-file-table" role="table" aria-label="库内文件列表">
           <div class="lib-file-table-head" role="rowgroup">
             <div class="lib-file-table-header-row" role="row">
@@ -531,7 +540,13 @@
                   <span class="lib-file-sort-caret" :class="getLibraryTableSortClass('name')"></span>
                 </button>
               </div>
-              <div class="lib-file-th" role="columnheader">RJ 号</div>
+              <div class="lib-file-th" role="columnheader">
+                <button v-if="isCircleRootView" type="button" class="lib-file-sort-btn" @click="toggleLibraryTableSort('work_count')">
+                  <span>作品数</span>
+                  <span class="lib-file-sort-caret" :class="getLibraryTableSortClass('work_count')"></span>
+                </button>
+                <span v-else>RJ 号</span>
+              </div>
               <div class="lib-file-th" role="columnheader">
                 <button type="button" class="lib-file-sort-btn" @click="toggleLibraryTableSort('size')">
                   <span>大小</span>
@@ -586,7 +601,8 @@
               </div>
 
               <div class="lib-file-cell lib-file-rj-cell" role="cell">
-                <span v-if="tableRow.original.rjcode" class="lib-file-rj-chip">{{ tableRow.original.rjcode }}</span>
+                <span v-if="isCircleGroupRow(tableRow.original)" class="lib-file-count-text">{{ formatCircleWorkCount(tableRow.original) }}</span>
+                <span v-else-if="tableRow.original.rjcode" class="lib-file-rj-chip">{{ tableRow.original.rjcode }}</span>
                 <span v-else class="empty-text">-</span>
               </div>
 
@@ -595,9 +611,10 @@
               <div class="lib-file-cell lib-file-time-cell" role="cell">{{ formatDate(tableRow.original.unzip_time || tableRow.original.modified_time) }}</div>
             </div>
 
-            <div v-if="!libraryTableRows.length" class="lib-file-empty-row">暂无文件</div>
-          </div>
+          <div v-if="!libraryTableRows.length" class="lib-file-empty-row">暂无文件</div>
         </div>
+        </div>
+        </Transition>
         <div
           v-if="tableMarqueeState.visible"
           class="lib-table-marquee-box"
@@ -1959,6 +1976,8 @@ const DEFAULT_SORT_BY = 'size'
 
 const DEFAULT_SORT_ORDER = 'desc'
 
+const CIRCLE_ACTION_TARGET_LIMIT = 5000
+
 const route = useRoute()
 
 const router = useRouter()
@@ -1968,6 +1987,8 @@ const loading = ref(false)
 const statsLoading = ref(false)
 
 const listPolling = ref(false)
+
+const libraryViewModeSwitching = ref(false)
 
 const files = ref([])
 
@@ -2016,6 +2037,8 @@ const circleGroupTotal = ref(0)
 const circleWorkTotal = ref(0)
 
 const circleLoading = ref(false)
+
+const libraryContentLoading = computed(() => loading.value || circleLoading.value || libraryViewModeSwitching.value)
 
 const circleKeyword = ref('')
 
@@ -2151,21 +2174,86 @@ function circleDecodeVirtualPath (path = '') {
 
   if (parts.length < 5) return { type: 'work', groupKey, workKey }
 
-  const locationIndex = Number(String(parts[4] || '').split('-')[0] || 0)
+  if (parts[4] === 'item') {
 
-  return { type: 'location', groupKey, workKey, locationIndex: Number.isFinite(locationIndex) ? locationIndex : 0 }
+    return {
+      type: 'item',
+      groupKey,
+      workKey,
+      itemRelativePath: decodeURIComponent(parts[5] || ''),
+    }
+
+  }
+
+  if (parts[4] === 'path') {
+
+    const locationIndex = Number(String(parts[5] || '').split('-')[0] || 0)
+
+    if (parts[6] === 'item') {
+
+      return {
+        type: 'location-item',
+        groupKey,
+        workKey,
+        locationIndex: Number.isFinite(locationIndex) ? locationIndex : 0,
+        itemRelativePath: decodeURIComponent(parts[7] || ''),
+      }
+
+    }
+
+    return { type: 'location', groupKey, workKey, locationIndex: Number.isFinite(locationIndex) ? locationIndex : 0 }
+
+  }
+
+  return { type: 'work', groupKey, workKey }
 
 }
 
 function circleLocationDisplayName (location = {}) {
 
-  const libraryName = String(location?.library_name || '').trim()
+  return circleLocationFolderName(location) || '未知路径'
 
-  const relativePath = String(location?.relative_path || '').trim()
+}
 
-  if (libraryName && relativePath) return `${libraryName} / ${relativePath}`
+function circleBuildWorkChildPath (groupKey = '', workKey = '', relativePath = '') {
 
-  return relativePath || String(location?.path || location?.name || '').trim() || '未知路径'
+  const base = circleBuildWorkPath(groupKey, workKey)
+
+  const normalizedRelative = String(relativePath || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+
+  return normalizedRelative
+    ? `${base}/item/${encodeURIComponent(normalizedRelative)}`
+    : base
+
+}
+
+function circleBuildLocationChildPath (groupKey = '', workKey = '', location = {}, index = 0, relativePath = '') {
+
+  const base = circleBuildConflictPath(groupKey, workKey, location, index)
+
+  const normalizedRelative = String(relativePath || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+
+  return normalizedRelative
+    ? `${base}/item/${encodeURIComponent(normalizedRelative)}`
+    : base
+
+}
+
+function circleLocationFolderName (location = {}) {
+
+  const directName = String(location?.name || '').trim()
+
+  if (directName) return directName
+
+  const relativePath = String(location?.relative_path || '').replace(/\\/g, '/').replace(/\/+$/, '').trim()
+
+  if (relativePath) return relativePath.split('/').filter(Boolean).pop() || relativePath
+
+  const realPath = String(location?.path || '').replace(/\\/g, '/').replace(/\/+$/, '').trim()
+
+  if (realPath) return realPath.split('/').filter(Boolean).pop() || realPath
+
+  return ''
 
 }
 
@@ -2204,13 +2292,15 @@ function circleBuildWorkRow (work) {
 
   const rjcode = String(work?.rjcode || '').trim()
 
+  const folderName = circleLocationFolderName(primaryLocation)
+
   const displayName = work?.conflict
     ? `${rjcode || '未知 RJ'} · ${locations.length} 个路径冲突`
-    : `${rjcode || '未知 RJ'}${work?.title ? ` ${work.title}` : ''}`
+    : (folderName || rjcode || '未知作品')
 
   return {
     id: `circle-work:${circleSelectedGroupKey.value}:${rjcode}`,
-    path: work?.conflict ? circleBuildWorkPath(circleSelectedGroupKey.value, rjcode) : String(primaryLocation?.path || ''),
+    path: circleBuildWorkPath(circleSelectedGroupKey.value, rjcode),
     name: displayName,
     type: 'directory',
     is_directory: true,
@@ -2231,6 +2321,7 @@ function circleBuildWorkRow (work) {
     circle_name: circleCurrentGroup.value?.circle_name || '',
     circle_work_key: rjcode,
     circle_title: work?.title || '',
+    circle_folder_name: folderName,
     circle_conflict: Boolean(work?.conflict),
     circle_location_count: locations.length,
     circle_locations: locations,
@@ -2249,7 +2340,7 @@ function circleBuildLocationRow (work, location, index) {
 
   return {
     id: `circle-location:${circleSelectedGroupKey.value}:${rjcode}:${index}:${location?.library_id || ''}:${location?.relative_path || location?.path || ''}`,
-    path: String(location?.path || ''),
+    path: circleBuildConflictPath(circleSelectedGroupKey.value, rjcode, location, index),
     name: circleLocationDisplayName(location),
     type: 'directory',
     is_directory: true,
@@ -2321,13 +2412,13 @@ function circleApplyRowsFromState () {
 
     const rows = []
 
-    if (work) rows.push(circleBuildWorkRow(work))
-
     for (const [index, location] of (work?.locations || []).entries()) {
 
       rows.push(circleBuildLocationRow(work, location, index))
 
     }
+
+    if (!rows.length && work) rows.push(circleBuildWorkRow(work))
 
     files.value = rows
 
@@ -2347,126 +2438,134 @@ function circleApplyRowsFromState () {
 
 }
 
-async function refreshCircleLibraryView (options = {}) {
+async function requestCircleLibraryViewData (options = {}) {
 
   const { forceRefresh = false } = options
-  const requestSeq = ++circleRefreshSequence
+  const decoded = circleDecodeVirtualPath(circleVirtualCurrentPath.value)
+  const requestSortBy = decoded.type === 'root'
+    ? sortBy.value
+    : (sortBy.value === 'work_count' ? 'name' : sortBy.value)
 
-  if (forceRefresh) {
+  const page = decoded.type === 'root' ? circleGroupPage.value : circleWorkPage.value
+  const requestPageSize = decoded.type === 'root' ? circleGroupPageSize.value : circleWorkPageSize.value
+  const keyword = decoded.type === 'root'
+    ? circleKeyword.value
+    : decoded.type === 'group'
+      ? circleWorkKeyword.value
+      : ''
 
-    circleGroups.value = []
+  const data = await libraryApi.browseCircleFiles({
+    currentPath: circleVirtualCurrentPath.value,
+    page,
+    pageSize: requestPageSize,
+    keyword,
+    sortBy: requestSortBy,
+    sortOrder: sortOrder.value,
+    forceRefresh,
+  })
 
-    circleWorks.value = []
+  return { data, requestPageSize }
 
+}
+
+function applyCircleLibraryViewData ({ data, requestPageSize }) {
+
+  const responsePath = data.current_path || circleVirtualCurrentPath.value || circleBuildRootPath()
+  const responseDecoded = circleDecodeVirtualPath(responsePath)
+
+  circleVirtualCurrentPath.value = responsePath
+  circleVirtualBrowseRootPath.value = data.browse_root_path || circleBuildRootPath()
+  browseRootPath.value = circleVirtualBrowseRootPath.value
+  currentPath.value = responsePath
+  parentPath.value = data.parent_path || ''
+
+  files.value = data.files || []
+  totalFiles.value = Number(data.total || files.value.length || 0)
+  if (data.circle_summary && typeof data.circle_summary === 'object') {
+    circleSummary.value = {
+      ...circleSummary.value,
+      ...data.circle_summary,
+    }
   }
+
+  if (responseDecoded.type === 'root') {
+    circleGroupPage.value = Number(data.page || circleGroupPage.value || 1)
+    circleGroupPageSize.value = Number(data.page_size || circleGroupPageSize.value || requestPageSize)
+    circleGroups.value = Array.isArray(data.circle_groups) ? data.circle_groups : files.value
+    circleGroupTotal.value = totalFiles.value
+    circleSelectedGroupKey.value = ''
+    circleSelectedWorkKey.value = ''
+  } else {
+    circleWorkPage.value = Number(data.page || circleWorkPage.value || 1)
+    circleWorkPageSize.value = Number(data.page_size || circleWorkPageSize.value || requestPageSize)
+    circleSelectedGroupKey.value = responseDecoded.groupKey || data.circle_group?.circle_key || circleSelectedGroupKey.value
+    if (data.circle_group?.circle_key) {
+      const groupIndex = circleGroups.value.findIndex(item => item.circle_key === data.circle_group.circle_key)
+      if (groupIndex >= 0) circleGroups.value.splice(groupIndex, 1, data.circle_group)
+      else circleGroups.value = [data.circle_group, ...circleGroups.value]
+    }
+  }
+
+  if (responseDecoded.type === 'group') {
+    circleWorks.value = Array.isArray(data.circle_works) ? data.circle_works : []
+    circleWorkTotal.value = totalFiles.value
+    circleSelectedWorkKey.value = ''
+  } else if (['work', 'item', 'location', 'location-item'].includes(responseDecoded.type)) {
+    circleSelectedWorkKey.value = responseDecoded.workKey || data.circle_work?.rjcode || circleSelectedWorkKey.value
+    if (Array.isArray(data.circle_works)) {
+      circleWorks.value = data.circle_works
+    } else if (data.circle_work?.rjcode) {
+      const workIndex = circleWorks.value.findIndex(item => String(item?.rjcode || '') === String(data.circle_work.rjcode || ''))
+      if (workIndex >= 0) circleWorks.value.splice(workIndex, 1, data.circle_work)
+      else circleWorks.value = [data.circle_work, ...circleWorks.value]
+    }
+  }
+
+  if (Array.isArray(data.libraries)) {
+    circleLibraries.value = data.libraries
+    libraries.value = data.libraries
+  }
+
+  librarySearchState.value = createLibrarySearchState()
+
+}
+
+function handleCircleLibraryViewError (error) {
+
+  const message = error.response?.data?.detail || error.message || '读取社团聚合失败'
+
+  circleErrorMessage.value = message
+
+  ElMessage.error(message)
+
+}
+
+async function refreshCircleLibraryView (options = {}) {
+
+  const requestSeq = ++circleRefreshSequence
 
   circleLoading.value = true
 
   circleErrorMessage.value = ''
 
-  loading.value = true
-
   try {
 
-    const decoded = circleDecodeVirtualPath(circleVirtualCurrentPath.value)
+    const result = await requestCircleLibraryViewData(options)
 
-    browseRootPath.value = circleVirtualBrowseRootPath.value
+    if (requestSeq !== circleRefreshSequence || libraryViewMode.value !== 'circle') return
 
-    currentPath.value = circleVirtualCurrentPath.value
-
-    if (decoded.type === 'root') {
-
-      const data = await libraryApi.listCircleGroups({
-        page: circleGroupPage.value,
-        pageSize: circleGroupPageSize.value,
-        keyword: circleKeyword.value,
-        sortBy: 'name',
-        sortOrder: 'asc',
-      })
-
-      circleGroups.value = data.items || []
-
-      circleGroupTotal.value = Number(data.total || 0)
-
-      if (Array.isArray(data.libraries)) {
-
-        circleLibraries.value = data.libraries
-
-        libraries.value = data.libraries
-
-      }
-
-      if (requestSeq !== circleRefreshSequence) return
-
-    } else {
-
-      if (decoded.groupKey && decoded.groupKey !== circleSelectedGroupKey.value) {
-
-        circleSelectedGroupKey.value = decoded.groupKey
-
-        circleWorks.value = []
-
-      }
-
-      if (!circleGroups.value.length) {
-
-        const data = await libraryApi.listCircleGroups({ page: 1, pageSize: 200, sortBy: 'name', sortOrder: 'asc' })
-
-        circleGroups.value = data.items || []
-
-        circleGroupTotal.value = Number(data.total || 0)
-
-        if (Array.isArray(data.libraries)) {
-
-          circleLibraries.value = data.libraries
-
-          libraries.value = data.libraries
-
-        }
-
-      }
-
-      const data = await libraryApi.listCircleGroupWorks(circleSelectedGroupKey.value, {
-        page: circleWorkPage.value,
-        pageSize: circleWorkPageSize.value,
-        keyword: circleWorkKeyword.value,
-      })
-
-      circleWorks.value = data.items || []
-
-      circleWorkTotal.value = Number(data.total || 0)
-
-      if (Array.isArray(data.libraries)) {
-
-        circleLibraries.value = data.libraries
-
-        libraries.value = data.libraries
-
-      }
-
-    }
-
-    if (requestSeq !== circleRefreshSequence) return
-
-    circleApplyRowsFromState()
-
-    librarySearchState.value = createLibrarySearchState()
+    applyCircleLibraryViewData(result)
 
     await applyTableSortIndicator()
 
   } catch (error) {
 
-    const message = error.response?.data?.detail || error.message || '读取社团聚合失败'
-
-    circleErrorMessage.value = message
-
-    ElMessage.error(message)
+    handleCircleLibraryViewError(error)
 
   } finally {
 
-    if (requestSeq === circleRefreshSequence) {
+    if (requestSeq === circleRefreshSequence || libraryViewMode.value !== 'circle') {
       circleLoading.value = false
-      loading.value = false
     }
 
   }
@@ -3314,7 +3413,20 @@ const statsMap = ref({})
 
 const aggregateStats = ref({ folder_count: 0, total_size_gb: 0, total_size_bytes: 0 })
 
+const circleSummary = ref({
+  group_count: 0,
+  work_count: 0,
+  folder_count: 0,
+  conflict_count: 0,
+  total_size: 0,
+  total_size_bytes: 0,
+  total_size_gb: 0,
+  library_count: 0,
+})
+
 const libraryState = ref({})
+
+let directoryReturnState = null
 
 
 
@@ -4272,6 +4384,51 @@ const currentLibraryTypeLabel = computed(() => isRemoteCurrentLibrary.value ? '\
 
 const currentLibraryScopeLabel = computed(() => isRemoteCurrentLibrary.value ? '\u8fdc\u7a0b' : '\u672c\u5730')
 
+const isCircleViewActive = computed(() => libraryViewMode.value === 'circle')
+
+const circleViewPathType = computed(() => isCircleViewActive.value ? circleDecodeVirtualPath(circleVirtualCurrentPath.value).type : '')
+
+const isCircleRootView = computed(() => circleViewPathType.value === 'root')
+
+const currentLibraryStatsLabel = computed(() => isCircleViewActive.value ? '当前视图' : labels.currentLibrary)
+
+const circleSummaryText = computed(() => {
+  const summary = circleSummary.value || {}
+  const workCount = Number(summary.work_count || 0)
+  const groupCount = Number(summary.group_count || 0)
+  const totalSize = Number(summary.total_size_gb || 0)
+  if (!isCircleViewActive.value) return ''
+  return `${workCount} 个作品 · ${groupCount} 个社团 · ${formatGB(totalSize)}`
+})
+
+const libraryStatsCardLabel = computed(() => isCircleViewActive.value ? '社团聚合总量' : labels.currentLibraryStats)
+
+const libraryStatsCardValue = computed(() => {
+  if (!isCircleViewActive.value) return statsSizeCardText(currentStats.value)
+  return formatGB(Number(circleSummary.value?.total_size_gb || 0))
+})
+
+const libraryStatsCardSub = computed(() => {
+  if (!isCircleViewActive.value) return statsStatusCardText(currentStats.value)
+  const summary = circleSummary.value || {}
+  return `${Number(summary.work_count || 0)} 个作品 · ${Number(summary.group_count || 0)} 个社团`
+})
+
+const aggregateStatsCardLabel = computed(() => isCircleViewActive.value ? '真实路径' : labels.allLibraries)
+
+const aggregateStatsCardValue = computed(() => {
+  if (!isCircleViewActive.value) return aggregateSizeText.value
+  return `${Number(circleSummary.value?.folder_count || 0)} 个路径`
+})
+
+const aggregateStatsCardSub = computed(() => {
+  if (!isCircleViewActive.value) return `${aggregateSummary.value}${aggregateDetail.value ? ' · ' + aggregateDetail.value : ''}`
+  const summary = circleSummary.value || {}
+  const conflictCount = Number(summary.conflict_count || 0)
+  const libraryCount = Number(summary.library_count || 0)
+  return `${conflictCount} 个重复 RJ · 覆盖 ${libraryCount} 个库`
+})
+
 const isWritableCurrentLibrary = computed(() => !!currentLibrary.value?.writable)
 
 const remoteUploadLibraries = computed(() => (Array.isArray(libraries.value) ? libraries.value : []).filter(item => item?.type === 'synology_filestation' && item?.enabled !== false))
@@ -4462,7 +4619,7 @@ const selectedRealDirectoryRows = computed(() => normalizeLibraryActionRows(sele
 
 const aggregatePending = computed(() => Object.values(statsMap.value).some(item => ['pending', 'syncing'].includes(item?.status)))
 
-const unindexedLibraries = computed(() => libraries.value.filter(item => ['idle', undefined].includes(statsMap.value[item.id]?.status)).length)
+const unindexedLibraries = computed(() => libraries.value.filter(item => item?.type !== 'synology_filestation' && ['idle', undefined].includes(statsMap.value[item.id]?.status)).length)
 
 const countedLibraries = computed(() => libraries.value.filter(item => {
 
@@ -4510,17 +4667,17 @@ const aggregateSizeText = computed(() => {
 
   const base = formatGB(aggregateStats.value.total_size_gb)
 
-  return unindexedLibraries.value > 0 ? `${base}\uff08\u4ec5\u5df2\u5efa\u7d22\u5f15\u5e93\uff09` : base
+  return unindexedLibraries.value > 0 ? `${base}\uff08\u4ec5\u5df2\u7edf\u8ba1\u5e93\uff09` : base
 
 })
 
 const aggregateSummary = computed(() => {
 
   if (aggregatePending.value) return aggregateProgress.value > 0
-    ? `\u7d22\u5f15\u540c\u6b65\u4e2d\uff0c\u5df2\u5b8c\u6210 ${aggregateProgress.value.toFixed(0)}%`
-    : '\u7d22\u5f15\u540c\u6b65\u4e2d\uff0c\u7edf\u8ba1\u5feb\u7167\u5b9e\u65f6\u66f4\u65b0'
+    ? `\u7edf\u8ba1\u66f4\u65b0\u4e2d\uff0c\u5df2\u5b8c\u6210 ${aggregateProgress.value.toFixed(0)}%`
+    : '\u7edf\u8ba1\u66f4\u65b0\u4e2d\uff0c\u5feb\u7167\u4f1a\u81ea\u52a8\u5237\u65b0'
 
-  if (unindexedLibraries.value > 0) return `\u5f53\u524d\u4ec5\u5305\u542b ${countedLibraries.value}/${libraries.value.length} \u4e2a\u5df2\u5efa\u7d22\u5f15\u5e93`
+  if (unindexedLibraries.value > 0) return `\u5f53\u524d\u4ec5\u5305\u542b ${countedLibraries.value}/${libraries.value.length} \u4e2a\u5df2\u7edf\u8ba1\u5e93`
 
   return `\u5171 ${libraries.value.length} \u4e2a\u5e93`
 
@@ -4534,13 +4691,13 @@ const aggregateDetail = computed(() => {
 
     return ts
 
-      ? `\u540e\u53f0\u7ee7\u7eed\u540c\u6b65\u7d22\u5f15\uff0c\u5f53\u524d\u663e\u793a\u5df2\u7d22\u5f15\u5feb\u7167\uff0c\u6700\u8fd1\u5b8c\u6574\u91cd\u5efa\u4e8e ${formatDate(ts * 1000)}`
+      ? `\u540e\u53f0\u7ee7\u7eed\u66f4\u65b0\u7edf\u8ba1\uff0c\u5f53\u524d\u663e\u793a\u5df2\u5b8c\u6210\u5feb\u7167\uff0c\u6700\u8fd1\u5b8c\u6210\u4e8e ${formatDate(ts * 1000)}`
 
-      : '\u540e\u53f0\u6b63\u5728\u540c\u6b65\u7d22\u5f15\uff0c\u7edf\u8ba1\u5feb\u7167\u4f1a\u81ea\u52a8\u5237\u65b0'
+      : '\u540e\u53f0\u6b63\u5728\u66f4\u65b0\u7edf\u8ba1\uff0c\u5feb\u7167\u4f1a\u81ea\u52a8\u5237\u65b0'
 
   }
 
-  if (unindexedLibraries.value > 0) return '\u672a\u5efa\u7d22\u5f15\u7684\u5e93\u4e0d\u4f1a\u8ba1\u5165\u603b\u6587\u4ef6\u5939\u6570\u548c\u603b\u5927\u5c0f'
+  if (unindexedLibraries.value > 0) return '\u672a\u5b8c\u6210\u7edf\u8ba1\u7684\u5e93\u4e0d\u4f1a\u8ba1\u5165\u603b\u6587\u4ef6\u5939\u6570\u548c\u603b\u5927\u5c0f'
 
   const ts = aggregateLastCompletedAt.value
 
@@ -4602,13 +4759,42 @@ const currentPathBreadcrumbSegments = computed(() => {
 
     const work = circleCurrentWorks.value.find(item => String(item?.rjcode || '') === decoded.workKey)
 
+    const workLocation = Array.isArray(work?.locations) ? work.locations[0] : null
+    const workLabel = circleLocationFolderName(workLocation) || work?.rjcode || decoded.workKey || '作品'
+
     const workSegment = {
-      label: work?.rjcode || decoded.workKey || '作品',
+      label: workLabel,
       path: circleBuildWorkPath(decoded.groupKey, decoded.workKey),
-      current: true,
+      current: decoded.type === 'work',
     }
 
-    return [rootSegment, groupSegment, workSegment]
+    if (decoded.type === 'work') return [rootSegment, groupSegment, workSegment]
+
+    const location = decoded.type === 'location' || decoded.type === 'location-item'
+      ? (work?.locations || [])[decoded.locationIndex || 0]
+      : null
+    const locationSegment = location
+      ? {
+          label: circleLocationFolderName(location) || `路径 ${Number(decoded.locationIndex || 0) + 1}`,
+          path: circleBuildConflictPath(decoded.groupKey, decoded.workKey, location, decoded.locationIndex || 0),
+          current: decoded.type === 'location',
+        }
+      : null
+
+    const currentRelativePath = circleNormalizeRelativePath(decoded.itemRelativePath || '')
+    const itemParts = currentRelativePath.split('/').filter(Boolean)
+    const itemSegments = itemParts.map((part, index) => {
+      const relativePath = itemParts.slice(0, index + 1).join('/')
+      return {
+        label: part,
+        path: decoded.type === 'location' || decoded.type === 'location-item'
+          ? circleBuildLocationChildPath(decoded.groupKey, decoded.workKey, (work?.locations || [])[decoded.locationIndex || 0], decoded.locationIndex || 0, relativePath)
+          : circleBuildWorkChildPath(decoded.groupKey, decoded.workKey, relativePath),
+        current: index === itemParts.length - 1,
+      }
+    })
+
+    return [rootSegment, groupSegment, workSegment, locationSegment, ...itemSegments].filter(Boolean)
 
   }
 
@@ -4999,9 +5185,9 @@ const toolbarSubtitleScopeRows = computed(() => {
 
   if (toolbarActionScope.value === 'page') {
 
-    if (currentPageRealDirectoryRows.value.length) return currentPageRealDirectoryRows.value
+    if (libraryViewMode.value === 'circle') return currentPageDirectoryRows.value
 
-    if (libraryViewMode.value === 'circle') return []
+    if (currentPageRealDirectoryRows.value.length) return currentPageRealDirectoryRows.value
 
     return currentPath.value ? [{ path: currentPath.value, name: getFileName(currentPath.value), is_directory: true }] : []
 
@@ -5015,17 +5201,17 @@ const toolbarFilterDeletePaths = computed(() => {
 
   if (toolbarActionScope.value === 'page') {
 
+    if (libraryViewMode.value === 'circle') return currentPageDirectoryRows.value.map(row => row.path).filter(Boolean)
+
     const pagePaths = currentPageRealDirectoryRows.value.map(resolveDirectoryActionPath).filter(Boolean)
 
     if (pagePaths.length) return [...new Set(pagePaths)]
-
-    if (libraryViewMode.value === 'circle') return []
 
     return currentPath.value ? [currentPath.value] : []
 
   }
 
-  if (libraryViewMode.value === 'circle') return []
+  if (libraryViewMode.value === 'circle') return currentPath.value ? [currentPath.value] : []
 
   return currentPath.value ? [currentPath.value] : []
 
@@ -5033,11 +5219,11 @@ const toolbarFilterDeletePaths = computed(() => {
 
 const canProcessCurrentFolder = computed(() => {
 
-  if (!isWritableCurrentLibrary.value) return false
+  if (libraryViewMode.value !== 'circle' && !isWritableCurrentLibrary.value) return false
 
   if (toolbarActionScope.value === 'page') return toolbarSubtitleScopeRows.value.length > 0
 
-  if (libraryViewMode.value === 'circle') return false
+  if (libraryViewMode.value === 'circle') return !!currentPath.value
 
   return !!currentPath.value
 
@@ -5073,6 +5259,44 @@ const selectedUploadSourceItems = computed(() => effectiveUploadSourceRows.value
   is_directory: row?.is_directory !== false,
 
 })).filter(item => item.path))
+
+async function resolveCircleActionRows (sourceRows = [], options = {}) {
+  const { currentPathFallback = '' } = options
+  const sourceList = Array.isArray(sourceRows) ? sourceRows : []
+  const realRows = normalizeLibraryActionRows(sourceList).filter(row => row?.path)
+  const virtualPaths = sourceList
+    .filter(row => row?.path && !normalizeLibraryActionRow(row))
+    .map(row => row.path)
+
+  const requestPaths = virtualPaths.length
+    ? virtualPaths
+    : (!sourceList.length && currentPathFallback ? [currentPathFallback] : [])
+
+  if (libraryViewMode.value !== 'circle' || !requestPaths.length) return realRows
+
+  const data = await libraryApi.resolveCircleActionTargets({
+    currentPath: currentPathFallback || circleVirtualCurrentPath.value,
+    paths: requestPaths,
+    maxTargets: CIRCLE_ACTION_TARGET_LIMIT,
+  })
+
+  if (data?.truncated) {
+    ElMessage.warning(`社团聚合目标超过 ${Number(data.max_targets || CIRCLE_ACTION_TARGET_LIMIT)} 项，已截断，请缩小范围后再操作`)
+  }
+
+  const resolvedRows = (Array.isArray(data?.items) ? data.items : [])
+    .map(item => ({
+      ...item,
+      path: item.path || item.folder_path || '',
+      name: item.name || item.folder_name || getFileName(item.path || item.folder_path || ''),
+      is_directory: item.is_directory !== false,
+      library_id: item.library_id || '',
+      rjcode: item.rjcode || extractRJCode(item.path || item.folder_path || ''),
+    }))
+    .filter(row => row.path && row.library_id)
+
+  return normalizeLibraryActionRows([...realRows, ...resolvedRows])
+}
 
 const effectiveBaiduUploadSourceRows = computed(() => {
   const override = pendingBaiduUploadOverrideRows.value
@@ -5376,8 +5600,8 @@ async function hydrateBaiduUploadPreviewRows () {
       if (!item.is_directory) return [createBaiduUploadSourceTreeRow(item, index)]
       try {
         const data = selectedLibraryId.value
-          ? await libraryApi.browserFolderContents(selectedLibraryId.value, item.path)
-          : await libraryApi.folderContents(item.path)
+          ? await libraryApi.browserFolderContents(selectedLibraryId.value, item.path, { preferIndex: false })
+          : await libraryApi.folderContents(item.path, { preferIndex: false })
         return buildBaiduUploadTreeRowsForFolder(item, index, data?.items || [])
       } catch (error) {
         console.warn('读取百度上传文件树失败:', error)
@@ -5478,7 +5702,7 @@ watch(
 
 const canFilterDeleteCurrentFolder = computed(() => {
 
-  if (!isWritableCurrentLibrary.value) return false
+  if (libraryViewMode.value !== 'circle' && !isWritableCurrentLibrary.value) return false
 
   if (toolbarActionScope.value === 'page') return toolbarFilterDeletePaths.value.length > 0
 
@@ -5488,13 +5712,17 @@ const canFilterDeleteCurrentFolder = computed(() => {
 
 const libraryTableKey = computed(() => [
 
+  libraryViewMode.value,
+
   selectedLibraryId.value || 'default',
 
-  currentPath.value || browseRootPath.value || '/',
+  libraryViewMode.value === 'circle'
+    ? circleVirtualCurrentPath.value
+    : (currentPath.value || browseRootPath.value || '/'),
 
-  currentPage.value,
+  activeLibraryPage.value,
 
-  pageSize.value,
+  activeLibraryPageSize.value,
 
   sortBy.value,
 
@@ -6758,7 +6986,7 @@ async function initializeLibraryPage () {
 
   if (libraryViewMode.value === 'circle') {
 
-    await refreshCircleLibraryView({ silent: true, forceRefresh: true })
+    await refreshCircleLibraryView({ silent: true })
 
   }
 
@@ -7207,32 +7435,7 @@ watch(libraryViewMode, async (value, oldValue) => {
 
   if (value === oldValue) return
 
-  closeLibraryRowContextMenu()
-
-  clearSelection()
-
-  await saveLibraryViewPreferences(value)
-
-  if (value === 'circle') {
-
-    clearListPoll()
-
-    await nextTick()
-
-    circleVirtualCurrentPath.value = circleBuildRootPath()
-    circleVirtualBrowseRootPath.value = circleBuildRootPath()
-    circleSelectedGroupKey.value = ''
-    circleSelectedWorkKey.value = ''
-    circleGroupPage.value = 1
-    circleWorkPage.value = 1
-
-    await refreshCircleLibraryView({ forceRefresh: true })
-
-    return
-
-  }
-
-  if (selectedLibraryId.value) await refreshLibrary({ silent: true })
+  saveLibraryViewPreferences(value)
 
 })
 
@@ -7242,7 +7445,7 @@ watch([circleGroupPage, circleGroupPageSize, circleWorkPage, circleWorkPageSize]
 
   if (JSON.stringify(value) === JSON.stringify(oldValue)) return
 
-  await refreshCircleLibraryView({ forceRefresh: true })
+  await refreshCircleLibraryView()
 
 })
 
@@ -7742,6 +7945,10 @@ async function loadLibraries () {
 
 function saveLibraryState (libraryId) {
 
+  if (!libraryId || libraryViewMode.value === 'circle') return
+
+  if (isCircleVirtualPathValue(currentPath.value) || isCircleVirtualPathValue(browseRootPath.value)) return
+
   const existingState = libraryState.value[libraryId] || {}
 
   const pageByPath = { ...(existingState.pageByPath || {}) }
@@ -7886,6 +8093,7 @@ function handleLibraryIndexStatusChange (status) {
   if (!libraryId) return
 
   const library = libraries.value.find(item => item.id === libraryId) || currentLibrary.value || {}
+  if (library?.type === 'synology_filestation' || status?.status === 'disabled') return
 
   const rawStatus = String(status?.status || 'idle')
 
@@ -7987,8 +8195,9 @@ async function handleStatsAction () {
 async function refreshLibrary (options = {}) {
 
   const { silent = false, forceRefresh = false } = options
+  const requestMode = libraryViewMode.value
 
-  if (libraryViewMode.value === 'circle') {
+  if (requestMode === 'circle') {
 
     await refreshCircleLibraryView({ silent, forceRefresh })
 
@@ -8045,6 +8254,8 @@ async function refreshLibrary (options = {}) {
       pageCursor
 
     })
+
+    if (libraryViewMode.value !== requestMode) return
 
     files.value = data.files || []
 
@@ -8277,11 +8488,11 @@ async function handleSortChange ({ prop, order }) {
 
   sortOrder.value = nextSortOrder
 
-  storeString('kikoeru.ui.library.sortBy', sortBy.value)
-
-  storeString('kikoeru.ui.library.sortOrder', sortOrder.value)
-
-  saveLibraryState(selectedLibraryId.value)
+  if (libraryViewMode.value === 'directory') {
+    storeString('kikoeru.ui.library.sortBy', sortBy.value)
+    storeString('kikoeru.ui.library.sortOrder', sortOrder.value)
+    saveLibraryState(selectedLibraryId.value)
+  }
 
   const shouldRefreshNow = currentPage.value === 1
 
@@ -9004,6 +9215,8 @@ function onTableMarqueePointerDown (event) {
   const row = getLibraryRowFromPointerTarget(target)
 
   if (target.closest('input, textarea, select, label, .el-checkbox')) return
+
+  if (isCircleVirtualDirectoryRow(row) && !isTableSelectionModifierEvent(event)) return
 
   const isItemDragHandle = Boolean(target.closest('.file-icon-shell, .file-link-btn, .file-name'))
 
@@ -14693,13 +14906,32 @@ async function startCurrentFolderRJSubtitle () {
 
   if (toolbarActionScope.value === 'page') {
 
-    await openRJSubtitleDialog(toolbarSubtitleScopeRows.value)
+    const rows = libraryViewMode.value === 'circle'
+      ? await resolveCircleActionRows(toolbarSubtitleScopeRows.value, { currentPathFallback: circleVirtualCurrentPath.value })
+      : toolbarSubtitleScopeRows.value
+
+    if (!rows.length) {
+      ElMessage.warning('当前页没有可操作的真实目录')
+      return
+    }
+
+    await openRJSubtitleDialog(rows)
 
     return
 
   }
 
   if (!currentPath.value) return
+
+  if (libraryViewMode.value === 'circle') {
+    const rows = await resolveCircleActionRows([], { currentPathFallback: circleVirtualCurrentPath.value })
+    if (!rows.length) {
+      ElMessage.warning('当前社团目录没有可操作的真实目录')
+      return
+    }
+    await openRJSubtitleDialog(rows)
+    return
+  }
 
   await openRJSubtitleDialog([], { scanCurrentFolder: true })
 
@@ -17556,7 +17788,7 @@ async function navigateToPath (path) {
 
       circleWorkPage.value = 1
 
-    } else if (decoded.type === 'work') {
+    } else if (['work', 'item', 'location', 'location-item'].includes(decoded.type)) {
 
       circleSelectedGroupKey.value = decoded.groupKey
 
@@ -17576,7 +17808,7 @@ async function navigateToPath (path) {
 
     clearSelection()
 
-    await refreshCircleLibraryView({ forceRefresh: true })
+    await refreshCircleLibraryView()
 
     return
 
@@ -17634,13 +17866,23 @@ async function goToParent () {
 
     const decoded = circleDecodeVirtualPath(circleVirtualCurrentPath.value)
 
+    if ((decoded.type === 'item' || decoded.type === 'location' || decoded.type === 'location-item') && parentPath.value) {
+
+      circleVirtualCurrentPath.value = parentPath.value
+
+      await refreshCircleLibraryView()
+
+      return
+
+    }
+
     if (decoded.type === 'work') {
 
       circleVirtualCurrentPath.value = circleBuildGroupPath(decoded.groupKey, circleCurrentGroup.value?.circle_name || '')
 
       circleSelectedWorkKey.value = ''
 
-      await refreshCircleLibraryView({ forceRefresh: true })
+      await refreshCircleLibraryView()
 
       return
 
@@ -17654,7 +17896,7 @@ async function goToParent () {
 
       circleSelectedWorkKey.value = ''
 
-      await refreshCircleLibraryView({ forceRefresh: true })
+      await refreshCircleLibraryView()
 
       return
 
@@ -17746,6 +17988,352 @@ function isCircleVirtualRow (row) {
 
 }
 
+async function switchToCircleLibraryView () {
+
+  if (libraryViewModeSwitching.value || libraryViewMode.value === 'circle') return
+
+  libraryViewModeSwitching.value = true
+  circleLoading.value = true
+  circleErrorMessage.value = ''
+  const requestSeq = ++circleRefreshSequence
+
+  try {
+    captureDirectoryReturnState()
+    closeLibraryRowContextMenu()
+    clearSelection()
+    clearListPoll()
+
+    circleVirtualCurrentPath.value = circleBuildRootPath()
+    circleVirtualBrowseRootPath.value = circleBuildRootPath()
+    circleSelectedGroupKey.value = ''
+    circleSelectedWorkKey.value = ''
+    circleGroupPage.value = 1
+    circleWorkPage.value = 1
+    sortBy.value = 'work_count'
+    sortOrder.value = 'desc'
+
+    const result = await requestCircleLibraryViewData()
+    if (requestSeq !== circleRefreshSequence) return
+
+    libraryViewMode.value = 'circle'
+    applyCircleLibraryViewData(result)
+    await applyTableSortIndicator()
+  } catch (error) {
+    handleCircleLibraryViewError(error)
+  } finally {
+    if (requestSeq === circleRefreshSequence) circleLoading.value = false
+    libraryViewModeSwitching.value = false
+  }
+
+}
+
+async function switchToDirectoryLibraryView () {
+
+  if (libraryViewModeSwitching.value || libraryViewMode.value === 'directory') return
+
+  libraryViewModeSwitching.value = true
+  ++circleRefreshSequence
+
+  try {
+    closeLibraryRowContextMenu()
+    clearSelection()
+    circleLoading.value = false
+    circleSummary.value = {
+      group_count: 0,
+      work_count: 0,
+      folder_count: 0,
+      conflict_count: 0,
+      total_size: 0,
+      total_size_bytes: 0,
+      total_size_gb: 0,
+      library_count: 0,
+    }
+    restoreDirectoryReturnState()
+    libraryViewMode.value = 'directory'
+    await nextTick()
+    if (selectedLibraryId.value) await refreshLibrary({ silent: true })
+  } finally {
+    libraryViewModeSwitching.value = false
+  }
+
+}
+
+async function toggleLibraryViewMode () {
+
+  if (libraryViewMode.value === 'circle') await switchToDirectoryLibraryView()
+  else await switchToCircleLibraryView()
+
+}
+
+function isCircleVirtualPathValue (path) {
+
+  return String(path || '').trim().startsWith('circle:')
+
+}
+
+function cloneLibraryRows (rows) {
+
+  return Array.isArray(rows) ? rows.map(row => ({ ...row })) : []
+
+}
+
+function captureDirectoryReturnState () {
+
+  if (libraryViewMode.value !== 'directory') return
+
+  if (isCircleVirtualPathValue(currentPath.value) || isCircleVirtualPathValue(browseRootPath.value)) return
+
+  directoryReturnState = {
+    libraryId: selectedLibraryId.value,
+    searchQuery: searchQuery.value,
+    searchExact: searchExact.value,
+    searchResultKind: searchResultKind.value,
+    currentPage: currentPage.value,
+    currentPath: currentPath.value,
+    browseRootPath: browseRootPath.value,
+    parentPath: parentPath.value,
+    sortBy: sortBy.value,
+    sortOrder: sortOrder.value,
+    files: cloneLibraryRows(files.value),
+    totalFiles: totalFiles.value,
+    librarySearchState: { ...librarySearchState.value },
+  }
+
+  saveLibraryState(selectedLibraryId.value)
+
+}
+
+function restoreDirectoryReturnState () {
+
+  const state = directoryReturnState
+
+  if (state && (!state.libraryId || state.libraryId === selectedLibraryId.value)) {
+    searchQuery.value = state.searchQuery || ''
+    searchExact.value = Boolean(state.searchExact)
+    searchResultKind.value = state.searchResultKind || 'all'
+    currentPath.value = state.currentPath || ''
+    browseRootPath.value = state.browseRootPath || ''
+    parentPath.value = state.parentPath || ''
+    currentPage.value = Number(state.currentPage || 1)
+    sortBy.value = state.sortBy || DEFAULT_SORT_BY
+    sortOrder.value = state.sortOrder || DEFAULT_SORT_ORDER
+    files.value = cloneLibraryRows(state.files)
+    totalFiles.value = Number(state.totalFiles || files.value.length || 0)
+    librarySearchState.value = createLibrarySearchState(state.librarySearchState || {})
+    return
+  }
+
+  if (selectedLibraryId.value) restoreLibraryState(selectedLibraryId.value)
+
+  if (sortBy.value === 'work_count') {
+    sortBy.value = loadString('kikoeru.ui.library.sortBy', DEFAULT_SORT_BY)
+  }
+
+  if (isCircleVirtualPathValue(currentPath.value) || isCircleVirtualPathValue(browseRootPath.value)) {
+    currentPath.value = ''
+    browseRootPath.value = ''
+    parentPath.value = ''
+    files.value = []
+    totalFiles.value = 0
+  }
+
+}
+
+async function circleLoadWorkChildRows (decoded) {
+
+  const work = circleCurrentWorks.value.find(item => String(item?.rjcode || '') === decoded.workKey)
+
+  if (!work) return false
+
+  const locations = Array.isArray(work.locations) ? work.locations : []
+
+  if (!locations.length || work.conflict) return false
+
+  const location = locations[0]
+  const relativePath = circleNormalizeRelativePath(decoded.itemRelativePath || '')
+  const realPath = circleJoinRealPath(location?.path, relativePath)
+
+  const data = await libraryApi.browseFiles({
+    libraryId: String(location?.library_id || ''),
+    page: circleWorkPage.value,
+    pageSize: circleWorkPageSize.value,
+    currentPath: realPath,
+    sortBy: sortBy.value,
+    sortOrder: sortOrder.value,
+    forceRefresh: false,
+  })
+
+  const rows = (data.files || []).map(item => circleBuildWorkChildRow(work, location, item))
+
+  files.value = rows
+  totalFiles.value = Number(data.total || rows.length)
+  parentPath.value = relativePath
+    ? circleBuildWorkParentPath(work, relativePath)
+    : circleBuildGroupPath(circleSelectedGroupKey.value, circleCurrentGroup.value?.circle_name || '')
+
+  return true
+
+}
+
+async function circleLoadLocationChildRows (decoded) {
+
+  const work = circleCurrentWorks.value.find(item => String(item?.rjcode || '') === decoded.workKey)
+
+  if (!work) return false
+
+  const locations = Array.isArray(work.locations) ? work.locations : []
+  const locationIndex = Math.max(0, Number(decoded.locationIndex || 0))
+  const location = locations[locationIndex]
+
+  if (!location) return false
+
+  const relativePath = circleNormalizeRelativePath(decoded.itemRelativePath || '')
+  const realPath = circleJoinRealPath(location?.path, relativePath)
+
+  const data = await libraryApi.browseFiles({
+    libraryId: String(location?.library_id || ''),
+    page: circleWorkPage.value,
+    pageSize: circleWorkPageSize.value,
+    currentPath: realPath,
+    sortBy: sortBy.value,
+    sortOrder: sortOrder.value,
+    forceRefresh: false,
+  })
+
+  const rows = (data.files || []).map(item => circleBuildLocationChildRow(work, location, locationIndex, item))
+
+  files.value = rows
+  totalFiles.value = Number(data.total || rows.length)
+  parentPath.value = relativePath
+    ? circleBuildLocationParentPath(work, location, locationIndex, relativePath)
+    : circleBuildWorkPath(circleSelectedGroupKey.value, decoded.workKey)
+
+  return true
+
+}
+
+function circleBuildWorkChildRow (work, location, item) {
+
+  const rjcode = String(work?.rjcode || '').trim()
+  const relativePath = circleRelativePathFromBase(location?.path, item?.path, item?.relative_path || item?.name || '')
+  const realPath = String(item?.path || '').trim()
+
+  return {
+    ...item,
+    id: `circle-item:${circleSelectedGroupKey.value}:${rjcode}:${relativePath || realPath}`,
+    path: circleBuildWorkChildPath(circleSelectedGroupKey.value, rjcode, relativePath || item?.name || ''),
+    parent_path: circleBuildWorkParentPath(work, relativePath),
+    library_id: '',
+    library_name: '',
+    circle_virtual: false,
+    circle_row_type: 'work-child',
+    circle_key: circleSelectedGroupKey.value,
+    circle_name: circleCurrentGroup.value?.circle_name || '',
+    circle_work_key: rjcode,
+    circle_title: work?.title || '',
+    circle_relative_path: relativePath,
+    circle_real_path: realPath,
+    circle_real_library_id: String(location?.library_id || ''),
+  }
+
+}
+
+function circleBuildLocationChildRow (work, location, index, item) {
+
+  const rjcode = String(work?.rjcode || '').trim()
+  const relativePath = circleRelativePathFromBase(location?.path, item?.path, item?.relative_path || item?.name || '')
+  const realPath = String(item?.path || '').trim()
+
+  return {
+    ...item,
+    id: `circle-location-item:${circleSelectedGroupKey.value}:${rjcode}:${index}:${relativePath || realPath}`,
+    path: circleBuildLocationChildPath(circleSelectedGroupKey.value, rjcode, location, index, relativePath || item?.name || ''),
+    parent_path: circleBuildLocationParentPath(work, location, index, relativePath),
+    library_id: '',
+    library_name: '',
+    circle_virtual: false,
+    circle_row_type: 'work-child',
+    circle_key: circleSelectedGroupKey.value,
+    circle_name: circleCurrentGroup.value?.circle_name || '',
+    circle_work_key: rjcode,
+    circle_title: work?.title || '',
+    circle_relative_path: relativePath,
+    circle_real_path: realPath,
+    circle_real_library_id: String(location?.library_id || ''),
+  }
+
+}
+
+function circleNormalizeRelativePath (value = '') {
+
+  return String(value || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+
+}
+
+function circleRelativePathFromBase (basePath = '', realPath = '', fallback = '') {
+
+  const normalizedBase = String(basePath || '').replace(/\\/g, '/').replace(/\/+$/g, '')
+  const normalizedReal = String(realPath || '').replace(/\\/g, '/').replace(/\/+$/g, '')
+
+  if (normalizedBase && normalizedReal && normalizedReal.startsWith(`${normalizedBase}/`)) {
+    return normalizedReal.slice(normalizedBase.length + 1)
+  }
+
+  return circleNormalizeRelativePath(fallback)
+
+}
+
+function circleJoinRealPath (basePath = '', relativePath = '') {
+
+  const normalizedRelative = circleNormalizeRelativePath(relativePath)
+
+  if (!normalizedRelative) return String(basePath || '').trim()
+
+  const cleanBase = String(basePath || '').replace(/[\\/]+$/g, '')
+  const separator = cleanBase.includes('\\') ? '\\' : '/'
+
+  return `${cleanBase}${separator}${normalizedRelative.split('/').filter(Boolean).join(separator)}`
+
+}
+
+function circleParentRelativePath (relativePath = '') {
+
+  const parts = circleNormalizeRelativePath(relativePath).split('/').filter(Boolean)
+
+  parts.pop()
+
+  return parts.join('/')
+
+}
+
+function circleBuildWorkParentPath (work, relativePath = '') {
+
+  const rjcode = String(work?.rjcode || '').trim()
+  const parentRelativePath = circleParentRelativePath(relativePath)
+
+  return parentRelativePath
+    ? circleBuildWorkChildPath(circleSelectedGroupKey.value, rjcode, parentRelativePath)
+    : circleBuildWorkPath(circleSelectedGroupKey.value, rjcode)
+
+}
+
+function circleBuildLocationParentPath (work, location, index, relativePath = '') {
+
+  const rjcode = String(work?.rjcode || '').trim()
+  const parentRelativePath = circleParentRelativePath(relativePath)
+
+  return parentRelativePath
+    ? circleBuildLocationChildPath(circleSelectedGroupKey.value, rjcode, location, index, parentRelativePath)
+    : circleBuildConflictPath(circleSelectedGroupKey.value, rjcode, location, index)
+
+}
+
+function isCircleVirtualDirectoryRow (row) {
+
+  return Boolean(libraryViewMode.value === 'circle' && row?.is_directory && !isCircleRealActionRow(row))
+
+}
+
 function isCircleGroupRow (row) {
 
   return row?.circle_row_type === 'group'
@@ -17764,12 +18352,18 @@ function isCircleConflictLocationRow (row) {
 
 }
 
+function isCircleWorkChildRow (row) {
+
+  return row?.circle_row_type === 'work-child'
+
+}
+
 function isCircleRealActionRow (row) {
 
   if (libraryViewMode.value !== 'circle') return true
 
   return Boolean(
-    (isCircleConflictLocationRow(row) || row?.circle_row_type === 'work-single') &&
+    (isCircleConflictLocationRow(row) || row?.circle_row_type === 'work-single' || isCircleWorkChildRow(row)) &&
     getCircleRealPath(row) &&
     getCircleRealLibraryId(row)
   )
@@ -17803,7 +18397,7 @@ function normalizeLibraryActionRow (row) {
     ...row,
     path: realPath,
     library_id: realLibraryId,
-    name: row.circle_title || row.name || getFileName(realPath),
+    name: row.name || row.circle_folder_name || getFileName(realPath),
   }
 
 }
@@ -17856,22 +18450,16 @@ function getCircleRowMetaText (row) {
 
   if (isCircleGroupRow(row)) {
     const workCount = Number(row.circle_work_count || row.file_count || 0)
-    const folderCount = Number(row.folder_count || 0)
-    const conflictCount = Number(row.circle_conflict_count || 0)
-    return `${workCount} 个作品 · ${folderCount} 个路径${conflictCount ? ` · ${conflictCount} 个重复 RJ` : ''}`
+    return `${workCount} 个作品`
   }
 
   if (isCircleWorkRow(row)) {
     if (row?.circle_row_type === 'work-single') {
-      const libraryName = getLibraryLabelById(row.library_id)
-      const category = String(row.circle_top_category || '').trim()
-      const relativePath = String(row.circle_relative_path || row.path || '').trim()
-      return [libraryName, category, relativePath].filter(Boolean).join(' / ')
+      return ''
     }
 
     const locationCount = Number(row.circle_location_count || row.circle_locations?.length || 0)
-    const title = String(row.circle_title || '').trim()
-    return `${locationCount || 0} 个路径${row.circle_conflict ? ' · 路径重复，展开后对具体路径操作' : ' · 打开查看真实路径'}${title ? ` · ${title}` : ''}`
+    return `${locationCount || 0} 个路径${row.circle_conflict ? ' · 路径重复，展开后对具体路径操作' : ' · 打开查看真实路径'}`
   }
 
   if (isCircleConflictLocationRow(row)) {
@@ -17894,6 +18482,12 @@ function getCircleRowMetaClass (row) {
   if (row?.circle_conflict) return 'circle-row-conflict-meta'
 
   return ''
+
+}
+
+function formatCircleWorkCount (row) {
+
+  return `${Number(row?.circle_work_count || row?.file_count || 0)}`
 
 }
 
@@ -18001,10 +18595,6 @@ async function locateCircleLocation (location) {
 
   }
 
-  libraryViewMode.value = 'directory'
-
-  await nextTick()
-
   searchQuery.value = ''
 
   librarySearchState.value = createLibrarySearchState()
@@ -18017,6 +18607,8 @@ async function locateCircleLocation (location) {
 
     pendingLibraryLocate.value = { libraryId: targetLibraryId, path: targetPath, highlightPath: targetPath }
 
+    libraryViewMode.value = 'directory'
+
     selectedLibraryId.value = targetLibraryId
 
     return
@@ -18026,6 +18618,10 @@ async function locateCircleLocation (location) {
   currentPath.value = targetPath
 
   currentPage.value = 1
+
+  libraryViewMode.value = 'directory'
+
+  await nextTick()
 
   await refreshLibrary({ forceRefresh: true })
 
@@ -18045,7 +18641,7 @@ async function openFolder (row) {
 
       circleWorkPage.value = 1
 
-      await refreshCircleLibraryView({ forceRefresh: true })
+      await refreshCircleLibraryView()
 
       return
 
@@ -18059,7 +18655,7 @@ async function openFolder (row) {
 
       circleVirtualCurrentPath.value = circleBuildWorkPath(circleSelectedGroupKey.value, circleSelectedWorkKey.value)
 
-      await refreshCircleLibraryView({ forceRefresh: true })
+      await refreshCircleLibraryView()
 
       return
 
@@ -18067,56 +18663,23 @@ async function openFolder (row) {
 
     if (isCircleConflictLocationRow(row)) {
 
-      const targetLibraryId = getCircleRealLibraryId(row)
+      circleSelectedGroupKey.value = row.circle_key || circleSelectedGroupKey.value
 
-      const targetPath = getCircleRealPath(row)
+      circleSelectedWorkKey.value = row.circle_work_key || row.rjcode || ''
 
-      if (!targetLibraryId || !targetPath) {
+      circleVirtualCurrentPath.value = row.path
 
-        ElMessage.warning('缺少真实库存路径，无法打开')
+      await refreshCircleLibraryView()
 
-        return
+      return
 
-      }
+    }
 
-      if (targetLibraryId !== selectedLibraryId.value) {
+    if (isCircleWorkChildRow(row) && row?.is_directory) {
 
-        pendingLibraryLocate.value = { libraryId: targetLibraryId, path: targetPath, highlightPath: targetPath }
+      circleVirtualCurrentPath.value = row.path
 
-        selectedLibraryId.value = targetLibraryId
-
-      }
-
-      const library = libraries.value.find(item => item.id === targetLibraryId)
-
-      if (library?.type === 'synology_filestation') {
-
-        const data = await libraryApi.browserOpenFolder(targetLibraryId, targetPath)
-
-        await showSystemAlert({
-          title: '远程库存',
-          message: `请在群晖 FileStation 中打开以下路径：<br><br>${escapeHtml(data.path || targetPath)}<br><br>${escapeHtml(data.remote_url || '')}`,
-          html: true,
-          confirmText: '知道了'
-        })
-
-        return
-
-      }
-
-      const data = await libraryApi.openFolder(targetPath)
-
-      if (data.mode === 'mapped') {
-
-        mappedPathInfo.value = { originalPath: data.original_path, mappedPath: data.mapped_path, isMapped: data.is_mapped }
-
-        mappedPathDialogVisible.value = true
-
-        return
-
-      }
-
-      ElMessage.success('已打开文件夹')
+      await refreshCircleLibraryView()
 
       return
 
@@ -18572,9 +19135,9 @@ async function inspectSubtitleSelectionFolder (item, options = {}) {
 
     const [subtitleData, audioData] = await Promise.all([
 
-      libraryApi.browserFolderContents(inspectorLibraryId, subtitleDir),
+      libraryApi.browserFolderContents(inspectorLibraryId, subtitleDir, { preferIndex: false }),
 
-      libraryApi.browserFolderContents(inspectorLibraryId, item.folder_path)
+      libraryApi.browserFolderContents(inspectorLibraryId, item.folder_path, { preferIndex: false })
 
     ])
 
@@ -18734,9 +19297,9 @@ async function inspectSubtitleTask (task, options = {}) {
 
     const [subtitleData, audioData] = await Promise.all([
 
-      libraryApi.browserFolderContents(subtitleLibraryId, task.subtitle_dir),
+      libraryApi.browserFolderContents(subtitleLibraryId, task.subtitle_dir, { preferIndex: false }),
 
-      libraryApi.browserFolderContents(audioLibraryId, task.folder_path)
+      libraryApi.browserFolderContents(audioLibraryId, task.folder_path, { preferIndex: false })
 
     ])
 
@@ -19606,9 +20169,7 @@ function openLibraryRowContextMenuAtPosition (row, x, y) {
 
   tableRef.value?.setCurrentRow?.(row)
 
-  const batchMode = libraryViewMode.value === 'circle'
-    ? false
-    : Boolean(row?.path && selectedRowPaths.value.has(row.path) && selectedRows.value.length > 1)
+  const batchMode = Boolean(row?.path && selectedRowPaths.value.has(row.path) && selectedRows.value.length > 1)
 
   const menuWidth = 200
 
@@ -19671,6 +20232,16 @@ function handleLibraryRowClick (row, _column, event) {
   const target = event?.target
 
   if (target instanceof Element && target.closest('input,textarea,select,a,.el-checkbox,.el-tag')) return
+
+  if (isCircleVirtualDirectoryRow(row)) {
+
+    event?.preventDefault?.()
+
+    openFolder(row)
+
+    return
+
+  }
 
   if (isLibraryRowBlankDoubleClick(event)) {
 
@@ -19798,7 +20369,11 @@ function handleLibraryRowDoubleClick (row, _column, event) {
 
   const target = event?.target
 
-  if (target instanceof Element && target.closest('input,textarea,select,a,button,.file-icon-shell,.file-name,.el-checkbox,.el-tag')) return
+  if (target instanceof Element && target.closest('input,textarea,select,a,button,.file-icon-shell,.file-name,.el-checkbox,.el-tag')) {
+
+    if (!isCircleVirtualDirectoryRow(row)) return
+
+  }
 
   openLibraryRowPrimaryAction(row)
 
@@ -21487,7 +22062,40 @@ async function openFilterDeleteDialog () {
 
   }
 
-  if (!currentPath.value || !isWritableCurrentLibrary.value) return
+  if (!currentPath.value || (libraryViewMode.value !== 'circle' && !isWritableCurrentLibrary.value)) return
+
+  if (libraryViewMode.value === 'circle') {
+    const sourceRows = toolbarActionScope.value === 'page'
+      ? currentPageDirectoryRows.value.filter(row => toolbarFilterDeletePaths.value.includes(row.path))
+      : []
+    const rows = await resolveCircleActionRows(
+      sourceRows,
+      { currentPathFallback: circleVirtualCurrentPath.value }
+    )
+    const libraryIds = [...new Set(rows.map(row => row.library_id).filter(Boolean))]
+    if (!rows.length) {
+      ElMessage.warning('当前范围没有可执行删除过滤的真实目录')
+      return
+    }
+    if (libraryIds.length > 1) {
+      ElMessage.warning('当前社团范围包含多个库存，请进入具体作品或具体路径后再执行删除过滤')
+      return
+    }
+    const targetLibraryId = libraryIds[0]
+    const targetLibrary = getLibraryById(targetLibraryId)
+    if (!targetLibrary || targetLibrary.writable === false) {
+      ElMessage.warning('目标库存只读，无法执行删除过滤')
+      return
+    }
+    filterDeleteDialogLibraryId.value = targetLibraryId
+    filterDeleteDialogPath.value = rows[0]?.path || ''
+    filterDeleteDialogTargetPaths.value = [...new Set(rows.map(row => row.path).filter(Boolean))]
+    filterDeleteDialogRules.value = await loadConfiguredFilterRules()
+    filterDeleteDialogScopeLabel.value = `${toolbarActionScope.value === 'page' ? '当前页' : '当前社团目录'}（${filterDeleteDialogTargetPaths.value.length} 项）`
+    filterDeleteDialogIsRemote.value = targetLibrary.type === 'synology_filestation'
+    filterDeleteDialogVisible.value = true
+    return
+  }
 
   filterDeleteDialogLibraryId.value = selectedLibraryId.value
 
@@ -22085,6 +22693,8 @@ function libraryRowClassName ({ row, rowIndex = -1 }) {
     classes.push(tableItemDragState.value.canDrop ? 'library-row-drop-target' : 'library-row-drop-blocked')
   }
 
+  if (isCircleVirtualDirectoryRow(row)) classes.push('library-row-openable')
+
   return classes.join(' ')
 
 }
@@ -22153,13 +22763,15 @@ function formatGB (value) {
 
 function statsSizeText (stats) {
 
-  if (!stats) return '等待索引'
+  if (!stats) return isRemoteCurrentLibrary.value ? '按群晖接口浏览' : '等待统计'
 
   if (stats.status === 'pending') return '统计更新中'
 
   if (stats.status === 'syncing') return formatGB(stats.total_size_gb)
 
-  if (stats.status === 'unsupported') return '暂不支持远程容量统计'
+  if (stats.status === 'idle') return isRemoteCurrentLibrary.value ? '按群晖接口浏览' : '尚未统计'
+
+  if (stats.status === 'unsupported') return isRemoteCurrentLibrary.value ? '按群晖接口浏览' : '暂不支持当前统计'
 
   return formatGB(stats.total_size_gb)
 
@@ -22173,9 +22785,9 @@ function statsStatusText (status) {
 
   if (status === 'pending') return '后台正在更新'
 
-  if (status === 'syncing') return '索引同步中'
+  if (status === 'syncing') return '统计更新中'
 
-  if (status === 'unsupported') return '当前仅显示健康状态'
+  if (status === 'unsupported') return '群晖接口实时浏览'
 
   return '等待统计'
 
@@ -22185,19 +22797,19 @@ function statsStatusText (status) {
 
 function statsSizeCardText (stats) {
 
-  if (!stats) return '\u7b49\u5f85\u7d22\u5f15'
+  if (!stats) return isRemoteCurrentLibrary.value ? '\u6309\u7fa4\u6656\u63a5\u53e3\u6d4f\u89c8' : '\u7b49\u5f85\u7edf\u8ba1'
 
   if (stats.status === 'pending') return '\u7edf\u8ba1\u66f4\u65b0\u4e2d'
 
   if (stats.status === 'syncing') return formatGB(stats.total_size_gb)
 
-  if (stats.status === 'idle') return '\u7d22\u5f15\u672a\u5efa'
+  if (stats.status === 'idle') return isRemoteCurrentLibrary.value ? '\u6309\u7fa4\u6656\u63a5\u53e3\u6d4f\u89c8' : '\u5c1a\u672a\u7edf\u8ba1'
 
   if (stats.status === 'canceled') return '\u5df2\u53d6\u6d88\uff0c\u4fdd\u7559\u5feb\u7167'
 
   if (stats.status === 'error') return formatGB(stats.total_size_gb)
 
-  if (stats.status === 'unsupported') return '\u6682\u4e0d\u652f\u6301\u5f53\u524d\u7edf\u8ba1'
+  if (stats.status === 'unsupported') return isRemoteCurrentLibrary.value ? '\u6309\u7fa4\u6656\u63a5\u53e3\u6d4f\u89c8' : '\u6682\u4e0d\u652f\u6301\u5f53\u524d\u7edf\u8ba1'
 
   return formatGB(stats.total_size_gb)
 
@@ -22229,17 +22841,17 @@ function statsStatusCardText (stats) {
 
     const done = Number(stats?.progress_done || 0)
 
-    return done > 0 ? `\u7d22\u5f15\u540c\u6b65\u4e2d\uff0c\u5df2\u7d22\u5f15 ${done.toLocaleString()} \u9879` : '\u7d22\u5f15\u540c\u6b65\u4e2d\uff0c\u5feb\u7167\u4f1a\u81ea\u52a8\u66f4\u65b0'
+    return done > 0 ? `\u7edf\u8ba1\u66f4\u65b0\u4e2d\uff0c\u5df2\u5904\u7406 ${done.toLocaleString()} \u9879` : '\u7edf\u8ba1\u66f4\u65b0\u4e2d\uff0c\u5feb\u7167\u4f1a\u81ea\u52a8\u66f4\u65b0'
 
   }
 
   if (status === 'canceled') return '\u5df2\u624b\u52a8\u53d6\u6d88\uff0c\u4ecd\u4fdd\u7559\u5feb\u7167'
 
-  if (status === 'error') return stats?.last_error || '\u7d22\u5f15\u540c\u6b65\u4e2d\u65ad\uff0c\u4fdd\u7559\u5df2\u7d22\u5f15\u5feb\u7167'
+  if (status === 'error') return stats?.last_error || '\u7edf\u8ba1\u66f4\u65b0\u4e2d\u65ad\uff0c\u4fdd\u7559\u5df2\u6709\u5feb\u7167'
 
-  if (status === 'idle') return '\u7d22\u5f15\u672a\u5efa\uff0c\u8bf7\u70b9\u91cd\u5efa\u7d22\u5f15'
+  if (status === 'idle') return isRemoteCurrentLibrary.value ? '\u7fa4\u6656\u5e93\u6309 FileStation \u63a5\u53e3\u5b9e\u65f6\u6d4f\u89c8' : '\u5c1a\u672a\u7edf\u8ba1'
 
-  if (status === 'unsupported') return '\u5f53\u524d\u4ec5\u663e\u793a\u5065\u5eb7\u72b6\u6001'
+  if (status === 'unsupported') return isRemoteCurrentLibrary.value ? '\u7fa4\u6656\u5e93\u6309 FileStation \u63a5\u53e3\u5b9e\u65f6\u6d4f\u89c8' : '\u5f53\u524d\u4ec5\u663e\u793a\u5065\u5eb7\u72b6\u6001'
 
   return '\u7b49\u5f85\u7edf\u8ba1'
 
@@ -22313,17 +22925,21 @@ function healthDetail (health) {
 
 }
 
+function isRemoteStats (stats) {
+  return stats?.library_type === 'synology_filestation' || isRemoteCurrentLibrary.value
+}
+
 function statsSizeLabel (stats) {
 
-  if (!stats) return '等待索引'
+  if (!stats) return isRemoteCurrentLibrary.value ? '按群晖接口浏览' : '等待统计'
 
   if (stats.status === 'pending') return '统计更新中'
 
   if (stats.status === 'syncing') return formatGB(stats.total_size_gb)
 
-  if (stats.status === 'idle') return '索引未建'
+  if (stats.status === 'idle') return isRemoteStats(stats) ? '按群晖接口浏览' : '尚未统计'
 
-  if (stats.status === 'unsupported') return '暂不支持远程容量统计'
+  if (stats.status === 'unsupported') return isRemoteStats(stats) ? '按群晖接口浏览' : '暂不支持当前统计'
 
   return formatGB(stats.total_size_gb)
 
@@ -22339,7 +22955,7 @@ function statsStatusLabel (stats) {
 
     const ts = stats?.last_completed_at || stats?.updated_at
 
-    return ts ? `快照更新于 ${formatDate(ts * 1000)}` : '索引快照已就绪'
+    return ts ? `快照更新于 ${formatDate(ts * 1000)}` : (isRemoteStats(stats) ? 'FileStation 快照已就绪' : '索引快照已就绪')
 
   }
 
@@ -22351,11 +22967,11 @@ function statsStatusLabel (stats) {
 
   }
 
-  if (status === 'syncing') return '索引同步中，快照实时更新'
+  if (status === 'syncing') return '统计更新中，快照实时更新'
 
-  if (status === 'idle') return '索引未建，请先重建索引'
+  if (status === 'idle') return isRemoteStats(stats) ? '群晖库按 FileStation 接口实时浏览' : '尚未统计'
 
-  if (status === 'unsupported') return '当前仅显示健康状态'
+  if (status === 'unsupported') return isRemoteStats(stats) ? '群晖库按 FileStation 接口实时浏览' : '当前仅显示健康状态'
 
   return '等待统计'
 
@@ -22365,15 +22981,15 @@ function statsStatusLabel (stats) {
 
 function statsSizeTextDisplay (stats) {
 
-  if (!stats) return '等待索引'
+  if (!stats) return isRemoteCurrentLibrary.value ? '按群晖接口浏览' : '等待统计'
 
   if (stats.status === 'pending') return '统计更新中'
 
   if (stats.status === 'syncing') return formatGB(stats.total_size_gb)
 
-  if (stats.status === 'idle') return '索引未建'
+  if (stats.status === 'idle') return isRemoteStats(stats) ? '按群晖接口浏览' : '尚未统计'
 
-  if (stats.status === 'unsupported') return '暂不支持远程容量统计'
+  if (stats.status === 'unsupported') return isRemoteStats(stats) ? '按群晖接口浏览' : '暂不支持当前统计'
 
   return formatGB(stats.total_size_gb)
 
@@ -22389,7 +23005,7 @@ function statsStatusTextDisplay (stats) {
 
     const ts = stats?.last_completed_at || stats?.updated_at
 
-    return ts ? `快照更新于 ${formatDate(ts * 1000)}` : '索引快照已就绪'
+    return ts ? `快照更新于 ${formatDate(ts * 1000)}` : (isRemoteStats(stats) ? 'FileStation 快照已就绪' : '索引快照已就绪')
 
   }
 
@@ -22401,11 +23017,11 @@ function statsStatusTextDisplay (stats) {
 
   }
 
-  if (status === 'syncing') return '索引同步中，快照实时更新'
+  if (status === 'syncing') return '统计更新中，快照实时更新'
 
-  if (status === 'idle') return '索引未建，请先重建索引'
+  if (status === 'idle') return isRemoteStats(stats) ? '群晖库按 FileStation 接口实时浏览' : '尚未统计'
 
-  if (status === 'unsupported') return '当前仅显示健康状态'
+  if (status === 'unsupported') return isRemoteStats(stats) ? '群晖库按 FileStation 接口实时浏览' : '当前仅显示健康状态'
 
   return '等待统计'
 
@@ -23110,6 +23726,31 @@ function statsStatusTextDisplay (stats) {
 
 }
 
+.lib-file-table-swap-enter-active,
+.lib-file-table-swap-leave-active {
+
+  transition:
+    opacity 0.22s ease,
+    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+
+}
+
+.lib-file-table-swap-enter-from {
+
+  opacity: 0;
+
+  transform: translateY(10px) scale(0.992);
+
+}
+
+.lib-file-table-swap-leave-to {
+
+  opacity: 0;
+
+  transform: translateY(-8px) scale(0.996);
+
+}
+
 .lib-file-table-head {
 
   position: relative;
@@ -23200,6 +23841,12 @@ function statsStatusTextDisplay (stats) {
   box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
 
   transform: translate3d(0, -4px, 0) scale(1.012);
+
+}
+
+.lib-file-table-row.library-row-openable {
+
+  cursor: pointer;
 
 }
 
@@ -24792,6 +25439,127 @@ function statsStatusTextDisplay (stats) {
   box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06), 0 0 0 1px rgba(59, 130, 246, 0.2);
 
   font-weight: 600;
+
+}
+
+.lib-view-mode-toggle {
+
+  display: inline-flex;
+
+  align-items: center;
+
+  gap: 7px;
+
+  min-height: 28px;
+
+  padding: 0;
+
+  border: 0;
+
+  background: transparent;
+
+  color: #64748b;
+
+  cursor: pointer;
+
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+
+}
+
+.lib-view-mode-toggle:hover {
+
+  color: #334155;
+
+  transform: translateY(-2px) scale(1.02);
+
+}
+
+.lib-view-mode-toggle:active {
+
+  transform: scale(0.96);
+
+}
+
+.lib-view-mode-toggle:focus,
+.lib-view-mode-toggle:focus-visible {
+
+  outline: 0;
+
+  box-shadow: none;
+
+}
+
+.lib-view-mode-label {
+
+  min-width: 24px;
+
+  font-size: 12.5px;
+
+  font-weight: 600;
+
+  line-height: 1;
+
+  text-align: center;
+
+  color: #94a3b8;
+
+  transition: color 0.22s ease, opacity 0.22s ease, transform 0.22s ease;
+
+}
+
+.lib-view-mode-label.is-active {
+
+  color: #1f2937;
+
+  opacity: 1;
+
+}
+
+.lib-view-mode-track {
+
+  position: relative;
+
+  display: inline-flex;
+
+  align-items: center;
+
+  width: 34px;
+
+  height: 18px;
+
+  padding: 2px;
+
+  border-radius: 999px;
+
+  background: rgba(148, 163, 184, 0.22);
+
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.28);
+
+  transition: background 0.22s ease, box-shadow 0.22s ease;
+
+}
+
+.lib-view-mode-thumb {
+
+  width: 14px;
+
+  height: 14px;
+
+  border-radius: 999px;
+
+  background: #ffffff;
+
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.2);
+
+  transform: translateX(0);
+
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.22s ease, box-shadow 0.22s ease;
+
+}
+
+.lib-view-mode-toggle.is-circle .lib-view-mode-thumb {
+
+  transform: translateX(16px);
 
 }
 
@@ -29253,6 +30021,11 @@ function statsStatusTextDisplay (stats) {
   .lib-card-title-wrap {
     justify-content: flex-start;
   }
+  .lib-view-mode-toggle {
+    justify-content: space-between;
+    width: 100%;
+    max-width: 148px;
+  }
 
   .lib-toolbar {
     display: grid;
@@ -29544,6 +30317,32 @@ function statsStatusTextDisplay (stats) {
 
 :global(html.kikoerumanager-dark body #app .library.library .lib-table-drag-ghost.is-droppable .lib-table-drag-target) {
   color: var(--library-dark-text) !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library.library .lib-view-mode-toggle) {
+  color: var(--library-dark-muted) !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library.library .lib-view-mode-toggle:hover) {
+  color: var(--library-dark-text) !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library.library .lib-view-mode-label) {
+  color: rgba(205, 205, 211, 0.58) !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library.library .lib-view-mode-label.is-active) {
+  color: rgba(250, 250, 252, 0.92) !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library.library .lib-view-mode-track) {
+  background: rgba(255, 255, 255, 0.1) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16) !important;
+}
+
+:global(html.kikoerumanager-dark body #app .library.library .lib-view-mode-thumb) {
+  background: rgba(238, 238, 242, 0.92) !important;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.34) !important;
 }
 
 </style>
