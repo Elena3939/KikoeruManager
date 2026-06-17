@@ -373,6 +373,17 @@ class LibraryIndexService:
         )
 
         try:
+            async def _count_root_children() -> int:
+                try:
+                    if root_path == "/":
+                        data = await client.list_share(offset=0, limit=1, sort_by="name", sort_direction="asc")
+                        return int(data.get("total") or len(data.get("shares") or data.get("files") or []))
+                    data = await client.list(root_path, offset=0, limit=1, sort_by="name", sort_direction="asc")
+                    return int(data.get("total") or len(data.get("files") or []))
+                except Exception:
+                    logger.debug("[索引] 远程根目录直列校验失败 library=%s root=%s", library_id, root_path, exc_info=True)
+                    return -1
+
             scanner = self._remote_scanner_factory()
 
             # 流式：每攒满 chunk_size 就 bulk_upsert 一次，避免内存堆积。
@@ -447,6 +458,21 @@ class LibraryIndexService:
                                 maintain_status_stats=False,
                                 insert_only=insert_only,
                                 relaxed_commit=True,
+                            )
+
+                    if written <= 0:
+                        root_children = await _count_root_children()
+                        if root_children > 0:
+                            message = (
+                                f"远程搜索重建返回 0 条，但根目录直列可见 {root_children} 条，"
+                                "本次结果疑似异常，已保留旧索引并标记错误"
+                            )
+                            logger.warning("[索引] %s library=%s root=%s", message, library_id, root_path)
+                            return self._store.upsert_status(
+                                library_id,
+                                status='error',
+                                watcher_mode='disabled',
+                                error=message,
                             )
 
                     stale_removed = 0
@@ -526,17 +552,23 @@ class LibraryIndexService:
         if not force:
             existing = self._store.get_status(library_id)
             if existing is not None and existing.status == 'ready':
-                min_interval = _remote_rebuild_min_interval_seconds()
-                last_scan_ms = int(getattr(existing, 'last_full_scan_at', 0) or 0)
-                if min_interval > 0 and last_scan_ms > 0:
-                    elapsed = time.time() - last_scan_ms / 1000.0
-                    if 0 <= elapsed < min_interval:
-                        logger.info(
-                            "[索引] remote rebuild 节流跳过 library=%s "
-                            "距上次全量扫描 %.0fs < 最小间隔 %.0fs（传 force=True 可强制）",
-                            library_id, elapsed, min_interval,
-                        )
-                        return existing
+                if not self._store_has_library_entries(library_id):
+                    logger.warning(
+                        "[索引] remote rebuild 发现 ready 空快照，跳过节流并重新校验 library=%s",
+                        library_id,
+                    )
+                else:
+                    min_interval = _remote_rebuild_min_interval_seconds()
+                    last_scan_ms = int(getattr(existing, 'last_full_scan_at', 0) or 0)
+                    if min_interval > 0 and last_scan_ms > 0:
+                        elapsed = time.time() - last_scan_ms / 1000.0
+                        if 0 <= elapsed < min_interval:
+                            logger.info(
+                                "[索引] remote rebuild 节流跳过 library=%s "
+                                "距上次全量扫描 %.0fs < 最小间隔 %.0fs（传 force=True 可强制）",
+                                library_id, elapsed, min_interval,
+                            )
+                            return existing
 
         status = self._store.upsert_status(
             library_id,
@@ -925,15 +957,20 @@ class LibraryIndexService:
             return True
         return self._store_has_library_entries(library_id)
 
+    def has_library_entries(self, library_id: str) -> bool:
+        """调用方需要区分 ready 空快照和真实有条目的快照。"""
+        return self._store_has_library_entries(library_id)
+
     def needs_initial_remote_rebuild(self, library_id: str) -> bool:
         """远程库启动修复判定。
 
-        ready：不扫；syncing 且有旧快照：继续等当前任务；其它状态只要没有可用
-        snapshot，就需要排队一次远程全量重建，避免浏览长期退回 FileStation walk。
+        ready 且有索引行：不扫；ready 空快照要重新校验，避免群晖 Search 异常
+        把可见目录写成 ready+0 后长期短路真实列表。syncing 且有旧快照：继续等
+        当前任务；其它状态只要没有可用 snapshot，就需要排队一次远程全量重建。
         """
         status = self.get_status(library_id)
         if status and status.status == 'ready':
-            return False
+            return not self._store_has_library_entries(library_id)
         if status and status.status == 'syncing' and self._store_has_library_entries(library_id):
             return False
         return not self._store_has_library_entries(library_id)

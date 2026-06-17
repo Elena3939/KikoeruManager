@@ -4,6 +4,8 @@
 对比 SMB 走 LocalScanner 的 os.scandir，性能差一个数量级以上：
 - SMB scandir：每个 stat 都是网络 round trip，几十万项要数十分钟
 - SYNO.Search：群晖端 CPU 跑，结果分页拉回，几分钟搞定
+- Search 异常返回 0 时，自动退回 FileStation.List 递归扫描，避免把
+  可见远程目录误写成 ready 空索引。
 
 设计要点：
 - 流式 yield：分页一边拉一边产出 IndexEntry，写库走 bulk_upsert chunk
@@ -19,6 +21,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import logging
 import time
 from typing import Any, AsyncIterator, Optional
@@ -176,6 +179,98 @@ class RemoteScanner:
                 "[RemoteScanner] 扫描结束 library=%s search=%s entries=%s elapsed=%.2fs",
                 library_id, normalized_search, scanned_count, elapsed,
             )
+        if scanned_count <= 0:
+            logger.warning(
+                "[RemoteScanner] 远程搜索返回 0，改用 FileStation.List 递归扫描 "
+                "library=%s search=%s base=%s",
+                library_id, normalized_search, normalized_base,
+            )
+            fallback_count = 0
+            fallback_started_at = time.time()
+            async for entry in self._list_walk_and_yield(
+                library_id=library_id,
+                client=client,
+                start_path=normalized_search,
+                relative_base=normalized_base,
+            ):
+                fallback_count += 1
+                yield entry
+            logger.info(
+                "[RemoteScanner] List 递归扫描结束 library=%s search=%s entries=%s elapsed=%.2fs",
+                library_id,
+                normalized_search,
+                fallback_count,
+                time.time() - fallback_started_at,
+            )
+
+    async def _list_walk_and_yield(
+        self,
+        *,
+        library_id: str,
+        client: Any,
+        start_path: str,
+        relative_base: str,
+    ) -> AsyncIterator[IndexEntry]:
+        """用 SYNO.FileStation.List 分页递归扫描。"""
+        pending = deque([start_path.rstrip("/") or "/"])
+        while pending:
+            current_path = pending.popleft()
+            offset = 0
+            while True:
+                if current_path == "/":
+                    data = await client.list_share(
+                        offset=offset,
+                        limit=self.page_size,
+                        sort_by="name",
+                        sort_direction="asc",
+                    )
+                    files = data.get("shares") or data.get("files") or []
+                    assume_dirs = True
+                else:
+                    data = await client.list(
+                        current_path,
+                        offset=offset,
+                        limit=self.page_size,
+                        sort_by="name",
+                        sort_direction="asc",
+                    )
+                    files = data.get("files") or []
+                    assume_dirs = False
+
+                if not files:
+                    break
+
+                for raw in files:
+                    if not isinstance(raw, dict):
+                        continue
+                    name = raw.get("name") or self._basename(raw.get("path") or "")
+                    if should_skip_name(name):
+                        continue
+                    path = raw.get("path") or raw.get("real_path") or ""
+                    if not path:
+                        continue
+                    is_dir = bool(raw.get("isdir") if "isdir" in raw else assume_dirs)
+                    normalized_raw = raw
+                    if (
+                        normalized_raw.get("path") != path
+                        or normalized_raw.get("name") != name
+                        or ("isdir" not in normalized_raw and assume_dirs)
+                    ):
+                        normalized_raw = {
+                            **raw,
+                            "path": path,
+                            "name": name,
+                            "isdir": is_dir,
+                        }
+                    entry = self._raw_to_entry(library_id, normalized_raw, relative_base)
+                    if entry is not None:
+                        yield entry
+                    if is_dir:
+                        pending.append(path.rstrip("/") or "/")
+
+                if len(files) < self.page_size:
+                    break
+                offset += len(files)
 
     async def _wait_finish(self, client: Any, task_id: str) -> None:
         """轮询 list_search 直到 finished=True，超时抛 TimeoutError。

@@ -1615,6 +1615,8 @@ def build_synology_web_url(base_url: str, root_path: str) -> str:
 
 
 class LibraryManager:
+    SUBTITLE_EXTENSIONS = {".lrc", ".vtt", ".srt", ".ass", ".ssa"}
+
     def __init__(self):
         self._stats_cache: dict[str, dict[str, Any]] = {}
         self._stats_tasks: dict[str, asyncio.Task] = {}
@@ -2436,6 +2438,194 @@ class LibraryManager:
 
         return indexed, fallback
 
+    def find_rj_in_ready_index(
+        self,
+        rjcodes: list[str] | tuple[str, ...] | set[str] | str,
+        *,
+        library_ids: Optional[list[str]] = None,
+        include_subtitle_state: bool = True,
+        per_rj_limit: int = 50,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """只从可用库存索引批量查 RJ 目录，绝不触发扫盘/远程 fallback。
+
+        社团补全把库存索引当作“作品是否存在”的权威源；索引不可用时这里直接
+        返回空命中，让调用方保持外部刷新流程但不额外打群晖/FileStation。
+        """
+        if isinstance(rjcodes, str):
+            raw_codes = [rjcodes]
+        else:
+            raw_codes = list(rjcodes or [])
+        normalized_codes: list[str] = []
+        seen_codes: set[str] = set()
+        for raw in raw_codes:
+            code = str(raw or "").strip().upper()
+            if not code:
+                continue
+            if code.isdigit():
+                code = f"RJ{code}"
+            if not re.fullmatch(r"RJ\d{4,}", code):
+                matched = re.search(r"RJ\d{4,}", code, re.IGNORECASE)
+                code = matched.group(0).upper() if matched else ""
+            if code and code not in seen_codes:
+                seen_codes.add(code)
+                normalized_codes.append(code)
+        if not normalized_codes:
+            return {}
+
+        libraries = self._active_libraries()
+        if library_ids:
+            wanted = {str(lid).strip() for lid in library_ids if str(lid).strip()}
+            libraries = [lib for lib in libraries if lib.id in wanted]
+        if not libraries:
+            return {}
+
+        try:
+            from .library_index import get_library_index_service
+
+            service = get_library_index_service()
+        except Exception:
+            logger.debug("[索引] 批量 RJ 查询不可用，跳过本地拥有态", exc_info=True)
+            return {}
+
+        usable_libraries: list[LibraryDefinition] = []
+        for library in libraries:
+            try:
+                has_snapshot = service.is_ready(library.id)
+            except Exception:
+                logger.debug("[索引] 判断库存快照可用性失败 library=%s", library.id, exc_info=True)
+                has_snapshot = False
+            if has_snapshot:
+                usable_libraries.append(library)
+        if not usable_libraries:
+            return {code: [] for code in normalized_codes}
+
+        library_by_id = {library.id: library for library in usable_libraries}
+        result: dict[str, list[dict[str, Any]]] = {code: [] for code in normalized_codes}
+        seen_paths: set[tuple[str, str, str]] = set()
+
+        def _subtitle_state_for_entry(entry) -> dict[str, Any]:
+            state = {
+                "local_subtitle_present": False,
+                "subtitle_file_count": 0,
+                "subtitle_dir": "",
+            }
+            if not include_subtitle_state:
+                return state
+            try:
+                subtree_entries = service.list_subtree_entries(
+                    entry.library_id,
+                    entry.relative_path,
+                    include_self=False,
+                    entry_type=None,
+                    limit=10000,
+                )
+            except Exception:
+                logger.debug(
+                    "[索引] 查询字幕子树失败 library=%s path=%s",
+                    entry.library_id,
+                    entry.relative_path,
+                    exc_info=True,
+                )
+                return state
+
+            subtitle_count = 0
+            subtitle_dir = ""
+            has_subtitle_dir = False
+            entry_relative = str(entry.relative_path or "").strip("/")
+            for child in subtree_entries:
+                rel = str(child.relative_path or "").replace("\\", "/").strip("/")
+                under = self._index_relative_path_under_target(rel, entry_relative)
+                parts = [part for part in under.split("/") if part]
+                if not parts:
+                    continue
+                child_type = str(getattr(child, "entry_type", "") or "").lower()
+                if child_type == "dir" and parts[-1].lower() == "subtitles":
+                    has_subtitle_dir = True
+                    if not subtitle_dir:
+                        subtitle_dir = str(getattr(child, "absolute_path", "") or "")
+                    continue
+                if child_type and child_type != "file":
+                    continue
+                ext = os.path.splitext(str(child.name or rel))[1].lower()
+                in_subtitles_dir = any(part.lower() == "subtitles" for part in parts[:-1])
+                if in_subtitles_dir or ext in self.SUBTITLE_EXTENSIONS:
+                    subtitle_count += 1
+                    if not subtitle_dir and in_subtitles_dir:
+                        prefix_parts: list[str] = []
+                        for part in parts[:-1]:
+                            prefix_parts.append(part)
+                            if part.lower() == "subtitles":
+                                break
+                        subtitle_rel = "/".join([p for p in [entry_relative, *prefix_parts] if p])
+                        subtitle_entry = service.get_entry(entry.library_id, subtitle_rel)
+                        subtitle_dir = (
+                            str(getattr(subtitle_entry, "absolute_path", "") or "")
+                            if subtitle_entry
+                            else ""
+                        )
+            state["local_subtitle_present"] = has_subtitle_dir or subtitle_count > 0
+            state["subtitle_file_count"] = subtitle_count
+            state["subtitle_dir"] = subtitle_dir
+            return state
+
+        for code in normalized_codes:
+            for library in usable_libraries:
+                try:
+                    entries = service.find_by_rjcode(
+                        code,
+                        library.id,
+                        entry_type="dir",
+                        limit=per_rj_limit,
+                    )
+                except Exception:
+                    logger.debug("[索引] 批量 RJ 查询失败 rj=%s library=%s", code, library.id, exc_info=True)
+                    continue
+                for entry in entries:
+                    key = (code, str(entry.library_id or ""), str(entry.relative_path or ""))
+                    if key in seen_paths:
+                        continue
+                    seen_paths.add(key)
+                    library_info = library_by_id.get(entry.library_id)
+                    subtitle_state = _subtitle_state_for_entry(entry)
+                    result.setdefault(code, []).append({
+                        "rjcode": code,
+                        "matched_rjcode": str(entry.rjcode or code).upper(),
+                        "library_id": entry.library_id,
+                        "library_name": library_info.name if library_info else entry.library_id,
+                        "library_type": library_info.type if library_info else "",
+                        "library_root_path": library_info.root_path if library_info else "",
+                        "path": entry.absolute_path,
+                        "relative_path": entry.relative_path,
+                        "name": entry.name,
+                        "size": int(entry.size or 0),
+                        "file_count": int(entry.file_count or 0),
+                        "modified_time": entry.mtime,
+                        **subtitle_state,
+                    })
+        return result
+
+    def has_ready_index(self, *, library_ids: Optional[list[str]] = None) -> bool:
+        """是否至少有一个活动库存的索引处于 ready；不触发扫描。"""
+        libraries = self._active_libraries()
+        if library_ids:
+            wanted = {str(lid).strip() for lid in library_ids if str(lid).strip()}
+            libraries = [lib for lib in libraries if lib.id in wanted]
+        if not libraries:
+            return False
+        try:
+            from .library_index import get_library_index_service
+
+            service = get_library_index_service()
+        except Exception:
+            return False
+        for library in libraries:
+            try:
+                if service.is_ready(library.id):
+                    return True
+            except Exception:
+                logger.debug("[索引] 判断 ready 状态失败 library=%s", library.id, exc_info=True)
+        return False
+
     def _index_relative_path(
         self,
         library: LibraryDefinition,
@@ -2519,11 +2709,18 @@ class LibraryManager:
             + sum(len(item.get("items") or []) for item in self._index_mutation_pending_moves.values())
         )
 
-    def _schedule_index_mutation_flush_locked(self) -> None:
+    def _schedule_index_mutation_flush_locked(self, *, delay_seconds: float = 0.1) -> None:
         timer = self._index_mutation_timer
         if timer is not None and timer.is_alive():
-            return
-        timer = threading.Timer(0.1, self._flush_index_mutations)
+            if delay_seconds > 0:
+                return
+            try:
+                timer.cancel()
+            except Exception:
+                logger.debug("取消库存索引变更 flush timer 失败", exc_info=True)
+            self._index_mutation_timer = None
+        delay = max(0.0, float(delay_seconds or 0))
+        timer = threading.Timer(delay, self._flush_index_mutations)
         timer.daemon = True
         self._index_mutation_timer = timer
         timer.start()
@@ -2554,10 +2751,7 @@ class LibraryManager:
                 [*(entry.get("paths") or []), *paths],
             )
             force_flush = self._index_mutation_pending_count_locked() >= 200
-            if not force_flush:
-                self._schedule_index_mutation_flush_locked()
-        if force_flush:
-            self._flush_index_mutations()
+            self._schedule_index_mutation_flush_locked(delay_seconds=0 if force_flush else 0.1)
         return True
 
     def _queue_index_moves(
@@ -2588,10 +2782,7 @@ class LibraryManager:
                 entry["loop"] = loop
             entry["items"].extend(items)
             force_flush = self._index_mutation_pending_count_locked() >= 200
-            if not force_flush:
-                self._schedule_index_mutation_flush_locked()
-        if force_flush:
-            self._flush_index_mutations()
+            self._schedule_index_mutation_flush_locked(delay_seconds=0 if force_flush else 0.1)
         return True
 
     def _enqueue_index_delete_many(self, library: LibraryDefinition, absolute_paths: list[str]) -> bool:
@@ -3355,6 +3546,17 @@ class LibraryManager:
             )
             if not has_snapshot:
                 return None
+            if (
+                library.type == "synology_filestation"
+                and hasattr(service, "has_library_entries")
+                and not service.has_library_entries(library.id)
+            ):
+                logger.warning(
+                    "远程库存索引为空，跳过索引浏览并改走 FileStation.List: lib=%s path=%s",
+                    library.id,
+                    current_path,
+                )
+                return None
             offset = max(0, (int(page or 1) - 1) * int(page_size or 200))
             payload = service.list_children_page(
                 library.id,
@@ -3575,6 +3777,14 @@ class LibraryManager:
             service = get_library_index_service()
             status = service.get_status(library.id)
             if not status or status.status == 'idle':
+                return None
+            if (
+                library.type == "synology_filestation"
+                and status.status == "ready"
+                and hasattr(service, "has_library_entries")
+                and not service.has_library_entries(library.id)
+            ):
+                self._append_stats_log(library, "WARN", "远程索引为空，跳过统计快照以避免显示假 0")
                 return None
             total_size = int(status.total_size_bytes or 0)
             self._append_stats_log(
@@ -7424,6 +7634,17 @@ class LibraryManager:
                 else service.is_ready(library.id)
             )
             if not has_snapshot:
+                return None
+            if (
+                library.type == "synology_filestation"
+                and hasattr(service, "has_library_entries")
+                and not service.has_library_entries(library.id)
+            ):
+                logger.warning(
+                    "远程库存索引为空，跳过文件树索引读取并改走 FileStation.List: lib=%s path=%s",
+                    library.id,
+                    path,
+                )
                 return None
 
             if library.type == "synology_filestation":

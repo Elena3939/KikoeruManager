@@ -459,7 +459,7 @@ class SnapshotStore:
         relaxed_commit: bool = False,
         invalidate_children_total_cache: bool = True,
     ) -> Iterator[Session]:
-        with get_resource_budget_service().acquire_sync("database_write", reason="library_index.write"):
+        with get_resource_budget_service().acquire_sync("library_index_write", reason="library_index.write"):
             db = self._session_factory()
             try:
                 if relaxed_commit:
@@ -2425,7 +2425,7 @@ class SnapshotRebuildWriter:
     def _execute_write(self, fn):
         if self._conn is None:
             raise RuntimeError("SnapshotRebuildWriter 尚未初始化")
-        with get_resource_budget_service().acquire_sync("database_write", reason="library_index.rebuild_stage"):
+        with get_resource_budget_service().acquire_sync("library_index_write", reason="library_index.rebuild_stage"):
             with self._conn.begin():
                 if self.relaxed_commit:
                     self._conn.execute(text("SET LOCAL synchronous_commit = off"))

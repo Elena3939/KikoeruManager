@@ -1,5 +1,6 @@
 import asyncio
 import os
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -473,3 +474,33 @@ def test_subtitle_manual_match_batch_rename_skips_index_mutation(client, monkeyp
     assert response.status_code == 200
     assert captured["library_id"] == "local-a"
     assert captured["skip_index_mutation"] is True
+
+
+def test_index_mutation_threshold_schedules_background_flush(monkeypatch):
+    manager = object.__new__(library_manager_module.LibraryManager)
+    manager._index_mutation_lock = threading.Lock()
+    manager._index_mutation_timer = None
+    manager._index_mutation_pending_deletes = {}
+    manager._index_mutation_pending_upserts = {}
+    manager._index_mutation_pending_replaces = {}
+    manager._index_mutation_pending_moves = {}
+
+    library = SimpleNamespace(id="local-library", type="local")
+    scheduled = []
+
+    def fake_schedule(*, delay_seconds=0.1):
+        scheduled.append(delay_seconds)
+
+    def fail_sync_flush():
+        raise AssertionError("索引队列达到阈值也不应在业务线程同步 flush")
+
+    monkeypatch.setattr(manager, "_normalize_index_abs_key", lambda _library, path: path)
+    monkeypatch.setattr(manager, "_schedule_index_mutation_flush_locked", fake_schedule)
+    monkeypatch.setattr(manager, "_flush_index_mutations", fail_sync_flush)
+
+    assert manager._enqueue_index_replace_subtree_many(
+        library,
+        [f"/library/work-{index}" for index in range(200)],
+    ) is True
+
+    assert scheduled == [0]
