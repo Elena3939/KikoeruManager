@@ -907,6 +907,42 @@ export const libraryApi = {
     return response.data
   },
 
+  browseCircleFiles: async ({
+    currentPath = 'circle:/',
+    page = 1,
+    pageSize = 50,
+    keyword = '',
+    sortBy = 'name',
+    sortOrder = 'asc',
+    forceRefresh = false,
+  } = {}) => {
+    const response = await apiClient.get('/library/circle-browser/files', {
+      params: {
+        current_path: currentPath || 'circle:/',
+        page,
+        page_size: pageSize,
+        keyword,
+        sort_by: sortBy,
+        sort_order: sortOrder,
+        force_refresh: forceRefresh || undefined,
+      },
+    })
+    return response.data
+  },
+
+  resolveCircleActionTargets: async ({
+    currentPath = 'circle:/',
+    paths = [],
+    maxTargets = 5000,
+  } = {}) => {
+    const response = await apiClient.post('/library/circle-browser/action-targets', {
+      current_path: currentPath || 'circle:/',
+      paths,
+      max_targets: maxTargets,
+    })
+    return response.data
+  },
+
   getStats: async (forceRefresh = false, libraryId = null) => {
     const response = await apiClient.get('/library/browser/stats', {
       params: {
@@ -927,6 +963,9 @@ export const libraryApi = {
   computeFolderSize: async (path, options = {}) => {
     const payload = { path }
     if (options.libraryId || options.library_id) payload.library_id = options.libraryId || options.library_id
+    if (Object.prototype.hasOwnProperty.call(options, 'includeCounts')) payload.include_counts = Boolean(options.includeCounts)
+    if (options.maxEntries) payload.max_entries = options.maxEntries
+    if (options.maxSeconds) payload.max_seconds = options.maxSeconds
     const response = await apiClient.post('/library/browser/compute-folder-size', payload)
     return response.data
   },
@@ -939,6 +978,9 @@ export const libraryApi = {
       payload.paths = paths
       if (options.libraryId || options.library_id) payload.library_id = options.libraryId || options.library_id
     }
+    if (Object.prototype.hasOwnProperty.call(options, 'includeCounts')) payload.include_counts = Boolean(options.includeCounts)
+    if (options.maxEntries) payload.max_entries = options.maxEntries
+    if (options.maxSeconds) payload.max_seconds = options.maxSeconds
     const response = await apiClient.post('/library/browser/compute-folder-sizes', payload)
     return response.data
   },
@@ -965,6 +1007,9 @@ export const libraryApi = {
     }
     if (Object.prototype.hasOwnProperty.call(options, 'recursive')) {
       payload.recursive = Boolean(options.recursive)
+    }
+    if (Object.prototype.hasOwnProperty.call(options, 'preferIndex')) {
+      payload.prefer_index = Boolean(options.preferIndex)
     }
     const response = await apiClient.post('/library/browser/folder-contents', payload)
     return response.data
@@ -1051,7 +1096,7 @@ export const libraryApi = {
     return response.data
   },
 
-  folderContents: async (path) => {
+  folderContents: async (path, options = {}) => {
     const shouldTreatAsMissingEndpoint = (error) => {
       if (error?.response?.status !== 404) return false
       const detail = String(error?.response?.data?.detail || error?.response?.data?.message || '').trim().toLowerCase()
@@ -1063,9 +1108,15 @@ export const libraryApi = {
       '/library/folder-contents',
       '/library/folder-content'
     ]
+    const payload = {
+      path,
+      prefer_index: Boolean(options.preferIndex ?? false)
+    }
+    if (options.libraryId || options.library_id) payload.library_id = options.libraryId || options.library_id
+    if (Object.prototype.hasOwnProperty.call(options, 'recursive')) payload.recursive = Boolean(options.recursive)
     for (const endpoint of localCandidates) {
       try {
-        const response = await apiClient.post(endpoint, { path })
+        const response = await apiClient.post(endpoint, payload)
         return response.data
       } catch (error) {
         if (!shouldTreatAsMissingEndpoint(error)) {
@@ -1080,7 +1131,7 @@ export const libraryApi = {
     ]
     for (const endpoint of absoluteCandidates) {
       try {
-        const response = await axios.post(endpoint, { path }, {
+        const response = await axios.post(endpoint, payload, {
           timeout: 60000,
           headers: {
             'Content-Type': 'application/json; charset=utf-8'

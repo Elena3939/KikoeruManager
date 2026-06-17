@@ -229,7 +229,7 @@ async function loadLibraries() {
 async function loadSourceTree() {
   loading.value = true
   try {
-    const data = await api.library.folderContents(props.sourceBasePath)
+    const data = await api.library.folderContents(props.sourceBasePath, { preferIndex: false })
     const items = Array.isArray(data?.items) ? data.items : (Array.isArray(data?.files) ? data.files : [])
     const root = { id: props.sourceBasePath || 'root', name: props.circleName || '本地库存', path: props.sourceBasePath, type: 'dir', depth: 0, size_bytes: 0, children: [] }
     const rows = []

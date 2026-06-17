@@ -615,6 +615,7 @@ let indexSearchAbort = null
 
 // 是否处于索引搜索模式：搜索框非空 且 索引已 ready
 const inIndexSearchMode = computed(() => indexReady.value && String(searchKeyword.value || '').trim().length > 0)
+const isRemoteCurrentLibrary = computed(() => currentLibrary.value?.type === 'synology_filestation')
 
 const filteredFolders = computed(() => {
   if (inIndexSearchMode.value) {
@@ -697,12 +698,14 @@ watch(searchKeyword, (keyword) => {
 // 切换库时自动检查索引状态
 watch(currentLibraryId, (id) => {
   indexReady.value = false
+  if (isRemoteCurrentLibrary.value) return
   if (id) checkIndexReady(id)
 })
 
 // 检查当前库索引状态（ready/syncing/error/idle → 只有 ready 才走索引搜索）
 async function checkIndexReady (libraryId) {
   if (!libraryId) { indexReady.value = false; return }
+  if (isRemoteCurrentLibrary.value) { indexReady.value = false; return }
   try {
     const data = await libraryApi.getIndexStatus(libraryId)
     indexReady.value = String(data?.status || '') === 'ready'

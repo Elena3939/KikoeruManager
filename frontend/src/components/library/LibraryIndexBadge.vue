@@ -1,5 +1,5 @@
 <template>
-  <div class="lib-index-badge inline-flex items-center gap-1.5">
+  <div v-if="!isRemoteLibrary" class="lib-index-badge inline-flex items-center gap-1.5">
     <Badge
       variant="outline"
       class="lib-index-chip"
@@ -62,6 +62,7 @@ let lastFetchedFor = null
 
 const libraryId = computed(() => (props.library?.id ? String(props.library.id) : ''))
 const libraryName = computed(() => props.library?.name || libraryId.value || '当前库存')
+const isRemoteLibrary = computed(() => props.library?.type === 'synology_filestation')
 
 const STATUS_LABELS = {
   idle: '索引未建',
@@ -124,7 +125,12 @@ const rebuildTooltip = computed(() => {
   return `重建 ${libraryName.value} 的搜索索引（远程库可能耗时数分钟）`
 })
 
-watch(libraryId, (id) => {
+watch([libraryId, isRemoteLibrary], ([id, remote]) => {
+  if (remote) {
+    status.value = null
+    lastFetchedFor = null
+    return
+  }
   if (!id) {
     status.value = null
     return
@@ -155,6 +161,7 @@ onBeforeUnmount(() => {
 async function fetchStatus() {
   const id = libraryId.value
   if (!id) return
+  if (isRemoteLibrary.value) return
   if (typeof document !== 'undefined' && document.hidden) {
     return
   }
@@ -175,6 +182,7 @@ async function fetchStatus() {
 function handleVisibilityChange() {
   if (typeof document === 'undefined') return
   if (document.hidden) return
+  if (isRemoteLibrary.value) return
   if (libraryId.value) {
     fetchStatus()
   }
@@ -195,17 +203,13 @@ function handleStreamEvent(event) {
 async function onRebuild() {
   const id = libraryId.value
   if (!id) return
+  if (isRemoteLibrary.value) return
   if (busy.value) return
-
-  const libraryType = props.library?.type || 'local'
-  const isRemote = libraryType === 'synology_filestation'
 
   try {
     await showSystemConfirm({
       title: '重建搜索索引',
-      message: isRemote
-        ? `即将对群晖远程库存「${libraryName.value}」做一次全量扫描，可能耗时数分钟到数十分钟（取决于库存大小）。\n后台 task 跑，可以关闭对话框继续操作；通过状态徽章观察进度。`
-        : `即将对本地库存「${libraryName.value}」做一次全量扫描，几秒到几分钟。\n本地 thread 跑，扫描期间页面可正常使用。`,
+      message: `即将对本地库存「${libraryName.value}」做一次全量扫描，几秒到几分钟。\n本地 thread 跑，扫描期间页面可正常使用。`,
       confirmText: '开始重建',
       cancelText: '取消',
     })

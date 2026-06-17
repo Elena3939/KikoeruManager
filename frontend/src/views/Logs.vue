@@ -653,6 +653,36 @@ function extractProgressRjcode(text) {
   return match ? normalizeProgressRjcode(match[0]) : ''
 }
 
+function basenameFromProgressPath(value) {
+  const text = String(value || '').replace(/\\/g, '/').trim()
+  if (!text) return ''
+  return text.split('/').filter(Boolean).pop() || text
+}
+
+function extractProgressArchiveName(step) {
+  const text = String(step || '')
+  const match = text.match(/\b((?:RJ\s*)?\d{5,9}[^()\s]*(?:\.zip|\.7z|\.rar|\.tar|\.gz|\.bz2|\.xz))/i)
+    || text.match(/\b([^\s()]+(?:\.zip|\.7z|\.rar|\.tar|\.gz|\.bz2|\.xz))\b/i)
+  return match ? basenameFromProgressPath(match[1]) : ''
+}
+
+function parseExtractProgressDetail(step) {
+  const text = String(step || '').replace(/\s+/g, ' ').trim()
+  const match = text.match(/^解压中\s+\d{1,3}%\s*-\s*(.+)$/)
+  if (!match) return { currentFile: '', status: '' }
+  const statusMatch = text.match(/[（(]([^()（）]*)[)）]\s*$/)
+  const status = statusMatch && /(剩余|B\/s|KB\/s|MB\/s|GB\/s)/i.test(statusMatch[1])
+    ? statusMatch[1].trim()
+    : ''
+  const currentFile = status
+    ? match[1].slice(0, -statusMatch[0].length).trim()
+    : match[1].trim()
+  return {
+    currentFile,
+    status,
+  }
+}
+
 function collectTaskRjcodeById(list) {
   const result = new Map()
   for (const log of Array.isArray(list) ? list : []) {
@@ -701,11 +731,22 @@ function buildProgressAction(step, phase) {
 
 function buildProgressTitle(step, phase, rjcode) {
   const action = buildProgressAction(step, phase)
+  if (action === '解压') {
+    const archiveName = extractProgressArchiveName(step)
+    const target = rjcode || archiveName
+    return target ? `${action} ${target}` : `${action}任务`
+  }
   return rjcode ? `${action} ${rjcode}` : action
 }
 
 function buildProgressDetail(step) {
   const text = String(step || '').replace(/\s+/g, ' ').trim()
+  const extractDetail = parseExtractProgressDetail(text)
+  if (extractDetail.currentFile) {
+    return extractDetail.status
+      ? `当前文件: ${extractDetail.currentFile} · ${extractDetail.status}`
+      : `当前文件: ${extractDetail.currentFile}`
+  }
   return text
 }
 

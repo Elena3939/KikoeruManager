@@ -541,7 +541,8 @@ function summarizeIndexStatus (statusList) {
   if (!failed.length) return ''
   const sample = failed.slice(0, 2).map(item => item.library_name || item.library_id).filter(Boolean).join('、')
   const allFailed = failed.length === statusList.length
-  const hint = allFailed ? '请检查网络 / 群晖凭据，或先重建索引' : '其它库结果已正常返回'
+  const onlyRemote = failed.every(item => item?.library_type === 'synology_filestation')
+  const hint = allFailed ? (onlyRemote ? '请检查网络 / 群晖凭据' : '请检查本地库索引状态') : '其它库结果已正常返回'
   return `部分库未能搜索：${sample}${failed.length > 2 ? ' 等' : ''} · ${hint}`
 }
 

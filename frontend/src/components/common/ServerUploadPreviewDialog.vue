@@ -784,8 +784,8 @@ async function loadPreviewGroups() {
       }
 
       const data = props.sourceLibraryId
-        ? await libraryApi.browserFolderContents(props.sourceLibraryId, path)
-        : await libraryApi.folderContents(path)
+        ? await libraryApi.browserFolderContents(props.sourceLibraryId, path, { preferIndex: false })
+        : await libraryApi.folderContents(path, { preferIndex: false })
       const items = Array.isArray(data?.items) ? data.items : []
       const resources = items.map(item => ({
         ...item,
