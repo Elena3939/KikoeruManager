@@ -12042,7 +12042,7 @@ async function autoQueueScannedSubtitleItem (item, options = {}) {
 
         queue_state: 'skipped_kikoeru_existing',
 
-        queue_message: skippedItem.queue_message || 'Kikoeru 已有字幕，未加入抓取任务'
+        queue_message: skippedItem.queue_message || '本地库存已有字幕，未加入抓取任务'
 
       })
 
@@ -15501,11 +15501,19 @@ async function applySubtitleManualPairs () {
 
   const unusedSubtitleRows = subtitleInspectorSubtitleFiles.value.filter(
 
-    item => !subtitleManualPairs.value.some(pair => pair.subtitle_path === item.path)
+    item => !subtitleManualPairs.value.some(pair => isSameSubtitlePairItem(item, pair))
 
   )
 
-  const unusedSubtitlePathSet = new Set(unusedSubtitleRows.map(item => item.path).filter(Boolean))
+  const unusedSubtitlePathSet = new Set(unusedSubtitleRows.flatMap(item => [...buildSubtitlePairPathKeys(item)]))
+
+  if (unusedSubtitleRows.length >= subtitleInspectorSubtitleFiles.value.length) {
+
+    ElMessage.error('配对结果没有命中当前工作台字幕，已阻止删除全部字幕')
+
+    return
+
+  }
 
   const audioPairConflictMap = new Map()
 
@@ -15567,9 +15575,19 @@ async function applySubtitleManualPairs () {
 
     ))
 
-    if (existing?.path && unusedSubtitlePathSet.has(existing.path)) return false
+    if (existing && isSameSubtitlePairItem(existing, pair)) return false
 
-    return existing && existing.path !== pair.subtitle_path
+    if (existing) {
+
+      for (const key of buildSubtitlePairPathKeys(existing)) {
+
+        if (unusedSubtitlePathSet.has(key)) return false
+
+      }
+
+    }
+
+    return existing && !isSameSubtitlePairItem(existing, pair)
 
   })
 
@@ -15625,7 +15643,7 @@ async function applySubtitleManualPairs () {
 
     const resolveCurrentSubtitleSourcePath = (pair) => {
 
-      const exactMatch = currentSubtitleFiles.find(item => item.path === pair.subtitle_path)
+      const exactMatch = currentSubtitleFiles.find(item => isSameSubtitlePairItem(item, pair))
 
       if (exactMatch?.path) return exactMatch.path
 
@@ -16302,11 +16320,11 @@ async function forceCreateSubtitleTaskForSelection (item) {
 
         queue_state: 'skipped_kikoeru_existing',
 
-        queue_message: skippedItem.queue_message || 'Kikoeru 已有字幕，未加入抓取任务'
+        queue_message: skippedItem.queue_message || '本地库存已有字幕，未加入抓取任务'
 
       })
 
-      ElMessage.info(skippedItem.queue_message || 'Kikoeru 已有字幕，已跳过')
+      ElMessage.info(skippedItem.queue_message || '本地库存已有字幕，已跳过')
 
       return
 
@@ -20277,6 +20295,56 @@ async function openRowFilterDeleteDialog (row) {
   filterDeleteDialogIsRemote.value = isRemoteCurrentLibrary.value
 
   filterDeleteDialogVisible.value = true
+
+}
+
+function normalizeSubtitlePairPath (value = '') {
+
+  return String(value || '').trim().replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '').toLowerCase()
+
+}
+
+function buildSubtitlePairPathKeys (item = {}) {
+
+  const keys = new Set()
+
+  const path = normalizeSubtitlePairPath(item.path || item.subtitle_path || '')
+
+  const relativePath = normalizeSubtitlePairPath(item.relative_path || item.subtitle_relative_path || '')
+
+  const name = normalizeSubtitlePairPath(item.name || item.subtitle_name || '')
+
+  if (path) keys.add(`path:${path}`)
+
+  if (relativePath) keys.add(`rel:${relativePath}`)
+
+  if (name) keys.add(`name:${name}`)
+
+  return keys
+
+}
+
+function isSameSubtitlePairItem (item, pair) {
+
+  const itemKeys = buildSubtitlePairPathKeys(item)
+
+  const pairKeys = buildSubtitlePairPathKeys({
+
+    path: pair?.subtitle_path,
+
+    relative_path: pair?.subtitle_relative_path,
+
+    name: pair?.subtitle_name
+
+  })
+
+  for (const key of pairKeys) {
+
+    if (itemKeys.has(key)) return true
+
+  }
+
+  return false
 
 }
 

@@ -12145,6 +12145,87 @@ class RJSubtitleKikoeruSubtitleStateRequest(BaseModel):
     rjcode: str
 
 
+def _normalize_rj_for_library_index(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    if text.isdigit():
+        text = f"RJ{text}"
+    if re.fullmatch(r"RJ\d{4,}", text):
+        return text
+    matched = re.search(r"RJ\d{4,}", text, re.IGNORECASE)
+    return matched.group(0).upper() if matched else ""
+
+
+def _library_index_subtitle_state(rjcode: str, library_id: Optional[str] = None) -> Dict[str, Any]:
+    normalized_rjcode = _normalize_rj_for_library_index(rjcode)
+    empty_state = {
+        "checked": False,
+        "checked_rjcode": normalized_rjcode,
+        "has_work": False,
+        "has_existing_subtitles": False,
+        "matched_rjcode": "",
+        "subtitle_file_count": 0,
+        "subtitle_check_source": "library_index",
+        "title": "",
+        "matches": [],
+        "error": "",
+        "local_owned": False,
+        "local_subtitle_present": False,
+        "subtitle_dir": "",
+    }
+    if not normalized_rjcode:
+        return empty_state
+
+    manager = get_library_manager()
+    library_ids = [library_id] if library_id else None
+    if not manager.has_ready_index(library_ids=library_ids):
+        return {
+            **empty_state,
+            "checked": True,
+            "error": "library_index_not_ready",
+        }
+
+    index_hits = manager.find_rj_in_ready_index([normalized_rjcode], library_ids=library_ids)
+    hits = list(index_hits.get(normalized_rjcode) or [])
+    subtitle_hits = [
+        hit for hit in hits
+        if bool(hit.get("local_subtitle_present")) or int(hit.get("subtitle_file_count") or 0) > 0
+    ]
+    primary_hit = subtitle_hits[0] if subtitle_hits else (hits[0] if hits else {})
+    matched_rjcode = str(
+        primary_hit.get("matched_rjcode")
+        or primary_hit.get("rjcode")
+        or normalized_rjcode
+    ).upper() if primary_hit else ""
+    subtitle_count = sum(int(hit.get("subtitle_file_count") or 0) for hit in subtitle_hits)
+    subtitle_dir = next((str(hit.get("subtitle_dir") or "").strip() for hit in subtitle_hits if hit.get("subtitle_dir")), "")
+    matches = [
+        {
+            "rjcode": str(hit.get("matched_rjcode") or hit.get("rjcode") or normalized_rjcode).upper(),
+            "subtitle_file_count": int(hit.get("subtitle_file_count") or 0),
+            "subtitle_check_source": "library_index",
+            "title": "",
+            "match_type": "library_index",
+            "path": str(hit.get("path") or ""),
+            "subtitle_dir": str(hit.get("subtitle_dir") or ""),
+        }
+        for hit in subtitle_hits
+    ]
+    return {
+        **empty_state,
+        "checked": True,
+        "has_work": bool(hits),
+        "has_existing_subtitles": bool(subtitle_hits),
+        "matched_rjcode": matched_rjcode,
+        "subtitle_file_count": subtitle_count,
+        "matches": matches,
+        "local_owned": bool(hits),
+        "local_subtitle_present": bool(subtitle_hits),
+        "subtitle_dir": subtitle_dir,
+    }
+
+
 @app.post("/api/ai-subtitle-match/test")
 async def ai_subtitle_match_test(request: AISubtitleMatchTestRequest):
     """测试 AI 字幕配对模型连接和 JSON 输出能力。"""
@@ -12570,12 +12651,10 @@ async def rj_subtitle_scan_stream(request: RJSubtitleScanRequest):
 async def rj_subtitle_start(request: RJSubtitleStartRequest):
     """开始 RJ 字幕抓取任务"""
     from ..core.task_engine import Task, TaskType, get_task_engine
-    from ..core.rj_subtitle_service import get_rj_subtitle_service
     from ..core.activity_log_service import log_subtitle_batch_start_result
 
     try:
         engine = get_task_engine()
-        rj_service = get_rj_subtitle_service()
         created_tasks = []
         skipped_existing = 0
         skipped_duplicate = 0
@@ -12638,10 +12717,10 @@ async def rj_subtitle_start(request: RJSubtitleStartRequest):
 
             if request.skip_if_existing_subtitles and rjcode:
                 try:
-                    kikoeru_state = await rj_service.check_kikoeru_existing_subtitles(rjcode)
+                    kikoeru_state = _library_index_subtitle_state(rjcode, library_id)
                 except Exception as exc:
                     logger.warning(
-                        "[RJ字幕] 查询 Kikoeru 字幕状态失败，继续后续流程: rj=%s error=%s",
+                        "[RJ字幕] 查询 ready 库存索引字幕状态失败，继续后续流程: rj=%s error=%s",
                         rjcode,
                         exc,
                     )
@@ -12651,7 +12730,7 @@ async def rj_subtitle_start(request: RJSubtitleStartRequest):
                     skipped_existing += 1
                     matched_rjcode = str(kikoeru_state.get("matched_rjcode") or rjcode).upper()
                     subtitle_file_count = int(kikoeru_state.get("subtitle_file_count") or 0)
-                    queue_message = f"Kikoeru 已有字幕（{matched_rjcode}"
+                    queue_message = f"本地库存已有字幕（{matched_rjcode}"
                     if subtitle_file_count > 0:
                         queue_message += f" / {subtitle_file_count} 个"
                     queue_message += "），未加入抓取任务"
@@ -12810,14 +12889,12 @@ async def rj_subtitle_folder_subtitle_state(request: RJSubtitleFolderSubtitleSta
 
 @app.post("/api/rj-subtitle/kikoeru-subtitle-state")
 async def rj_subtitle_kikoeru_subtitle_state(request: RJSubtitleKikoeruSubtitleStateRequest):
-    from ..core.rj_subtitle_service import get_rj_subtitle_service
-
     try:
         rjcode = str(request.rjcode or "").strip().upper()
         if not rjcode:
             raise HTTPException(status_code=400, detail="RJ号不能为空")
 
-        state = await get_rj_subtitle_service().check_kikoeru_existing_subtitles(rjcode)
+        state = _library_index_subtitle_state(rjcode)
         return {
             "success": True,
             **state,
@@ -12825,7 +12902,7 @@ async def rj_subtitle_kikoeru_subtitle_state(request: RJSubtitleKikoeruSubtitleS
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"获取 Kikoeru 字幕状态失败: {e}", exc_info=True)
+        logger.error(f"获取本地库存字幕状态失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取失败: {str(e)}")
 
 
@@ -12897,6 +12974,26 @@ async def rj_subtitle_manual_complete(
                 },
                 source_path=source_path or None,
             )
+            _fallback_library_id = str(request.library_id or crawl_detail.get("library_id") or "").strip()
+            _fallback_subtitle_count = max(1, applied_pairs)
+
+            async def _sync_circle_subtitle_state_after_fallback_complete() -> None:
+                try:
+                    from ..core.circle_completion_service import get_circle_completion_service
+
+                    await get_circle_completion_service().sync_subtitle_for_rj(
+                        rj_log,
+                        folder_path=source_path or "",
+                        library_id=_fallback_library_id,
+                        subtitle_file_count=_fallback_subtitle_count,
+                    )
+                except Exception:
+                    logger.warning("[社团补全] 字幕配对 fallback 完成后同步字幕态失败 task=%s", task_id, exc_info=True)
+
+            try:
+                asyncio.create_task(_sync_circle_subtitle_state_after_fallback_complete())
+            except Exception:
+                logger.warning("[社团补全] 字幕配对 fallback 完成后调度字幕态同步失败 task=%s", task_id, exc_info=True)
             return {
                 "success": True,
                 "message": summary,
@@ -12905,7 +13002,10 @@ async def rj_subtitle_manual_complete(
             }
 
         naming_strategy = str(request.naming_strategy or task.task_metadata.get("naming_strategy") or "audio").lower()
-        linked_finalize_result = await get_linked_subtitle_import_service().finalize_manual_match_task(task)
+        linked_finalize_result = await get_linked_subtitle_import_service().finalize_manual_match_task(
+            task,
+            expected_min_files=max(1, applied_pairs),
+        )
 
         task.task_metadata = task.task_metadata or {}
         task.task_metadata["awaiting_manual_match"] = False
@@ -12928,6 +13028,53 @@ async def rj_subtitle_manual_complete(
         task.status = TaskStatus.COMPLETED
         task.completed_at = datetime.now()
         task.current_step = summary
+
+        if linked_finalize_result.get("applied"):
+            _target_rj = str(
+                task.task_metadata.get("target_rjcode")
+                or task.task_metadata.get("actual_rjcode")
+                or task.task_metadata.get("rjcode")
+                or request.rjcode
+                or ""
+            ).strip().upper()
+            _target_folder = str(
+                task.task_metadata.get("target_folder_path")
+                or task.task_metadata.get("folder_path")
+                or request.folder_path
+                or task.source_path
+                or ""
+            ).strip()
+            _target_library_id = str(
+                task.task_metadata.get("target_library_id")
+                or task.task_metadata.get("library_id")
+                or request.library_id
+                or ""
+            ).strip()
+            _target_subtitle_dir = str(
+                linked_finalize_result.get("final_subtitle_dir")
+                or task.task_metadata.get("subtitle_dir")
+                or ""
+            )
+            _target_subtitle_count = int(linked_finalize_result.get("final_file_count") or 0)
+
+            async def _sync_circle_subtitle_state_after_manual_complete() -> None:
+                try:
+                    from ..core.circle_completion_service import get_circle_completion_service
+
+                    await get_circle_completion_service().sync_subtitle_for_rj(
+                        _target_rj,
+                        folder_path=_target_folder,
+                        library_id=_target_library_id,
+                        subtitle_dir=_target_subtitle_dir,
+                        subtitle_file_count=_target_subtitle_count,
+                    )
+                except Exception:
+                    logger.warning("[社团补全] 手动字幕配对完成后同步字幕态失败 task=%s", task_id, exc_info=True)
+
+            try:
+                asyncio.create_task(_sync_circle_subtitle_state_after_manual_complete())
+            except Exception:
+                logger.warning("[社团补全] 手动字幕配对完成后调度字幕态同步失败 task=%s", task_id, exc_info=True)
 
         logs = task.task_metadata.get("progress_log", [])
         logs.append({

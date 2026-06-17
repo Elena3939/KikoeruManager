@@ -87,6 +87,36 @@ def test_prefer_deepest_target_rj_candidate_keeps_separate_libraries():
     assert result == candidates
 
 
+@pytest.mark.asyncio
+async def test_finalize_manual_match_task_blocks_empty_workbench_publish():
+    service = object.__new__(LinkedSubtitleImportService)
+    service.library_manager = SimpleNamespace(
+        get_library_definition=lambda _library_id: SimpleNamespace(type="local"),
+    )
+    service._count_local_subtitle_files = lambda _subtitle_dir: 1
+    service._publish_workbench_to_target = AsyncMock(side_effect=AssertionError("不应发布空工作台"))
+    service._wait_for_published_subtitles = AsyncMock(side_effect=AssertionError("不应等待发布结果"))
+
+    task = SimpleNamespace(
+        task_metadata={
+            "source_mode": "subtitle_folder_import",
+            "library_id": "local-library",
+            "folder_path": "D:/library/RJ01586582",
+            "subtitle_dir": "D:/library/_kikoerumanager_subtitle_workbench/linked/abc/subtitles",
+            "linked_workbench_root_dir": "D:/library/_kikoerumanager_subtitle_workbench/linked/abc",
+        },
+        current_step="",
+        progress=0,
+        completed_at=None,
+    )
+
+    with pytest.raises(ValueError, match="可发布字幕数量异常"):
+        await service.finalize_manual_match_task(task, expected_min_files=2)
+
+    service._publish_workbench_to_target.assert_not_awaited()
+    service._wait_for_published_subtitles.assert_not_awaited()
+
+
 def test_classifier_skips_original_duplicate_when_translation_should_supply_subtitles():
     classifier = SmartClassifier()
     task = SimpleNamespace(task_metadata={
