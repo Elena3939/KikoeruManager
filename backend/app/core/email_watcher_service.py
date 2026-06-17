@@ -397,7 +397,7 @@ def _build_new_release_email_card_html(circle_name: str, items: List[Dict[str, o
         if item.get("has_asmr_one"):
             badges.append('<span style="display:inline-block;margin:0 6px 6px 0;padding:4px 10px;border-radius:999px;background:#dcfce7;color:#15803d;font-size:12px;font-weight:700;border:1px solid #bbf7d0;">可下载</span>')
         if item.get("has_kikoeru"):
-            badges.append('<span style="display:inline-block;margin:0 6px 6px 0;padding:4px 10px;border-radius:999px;background:#dbeafe;color:#1d4ed8;font-size:12px;font-weight:700;border:1px solid #bfdbfe;">服务器已有</span>')
+            badges.append('<span style="display:inline-block;margin:0 6px 6px 0;padding:4px 10px;border-radius:999px;background:#dbeafe;color:#1d4ed8;font-size:12px;font-weight:700;border:1px solid #bfdbfe;">库存已收录</span>')
 
         image_cell = (
             f'<img src="{image_url}" alt="{title}" style="display:block;width:100%;max-width:560px;height:auto;border-radius:12px;border:1px solid #e8ebf0;background:#f7f8fa;object-fit:contain;">'
@@ -838,20 +838,22 @@ class EmailWatcherService:
             extra_candidates=probe_candidates,
         )
         actual_norm = circle_service.normalize_rjcode(actual_rjcode)
-        kikoeru_state = await circle_service._probe_kikoeru_state_for_candidates(
-            probe_candidates,
-            use_cache=True,
-        )
-        found_rjcodes = [
-            circle_service.normalize_rjcode(code)
-            for code in list(kikoeru_state.get("found_rjcodes") or [])
-            if circle_service.normalize_rjcode(code)
-        ]
-        subtitle_rjcodes = [
-            circle_service.normalize_rjcode(code)
-            for code in list(kikoeru_state.get("subtitle_rjcodes") or [])
-            if circle_service.normalize_rjcode(code)
-        ]
+        from .library_manager import get_library_manager
+
+        local_index_hits = get_library_manager().find_rj_in_ready_index(probe_candidates)
+        flat_local_hits = [hit for hits in local_index_hits.values() for hit in hits]
+        found_rjcodes = []
+        subtitle_rjcodes = []
+        for hit in flat_local_hits:
+            for candidate in [hit.get("matched_rjcode"), hit.get("rjcode")]:
+                normalized = circle_service.normalize_rjcode(candidate)
+                if normalized and normalized not in found_rjcodes:
+                    found_rjcodes.append(normalized)
+            if bool(hit.get("local_subtitle_present")) or int(hit.get("subtitle_file_count") or 0) > 0:
+                for candidate in [hit.get("matched_rjcode"), hit.get("rjcode")]:
+                    normalized = circle_service.normalize_rjcode(candidate)
+                    if normalized and normalized not in subtitle_rjcodes:
+                        subtitle_rjcodes.append(normalized)
 
         db = SessionLocal()
         try:

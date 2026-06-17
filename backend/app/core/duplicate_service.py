@@ -2,22 +2,14 @@
 改进的查重服务 - 支持关联作品检测和 Kikoeru 服务器查重
 参考 VoiceLinks 的 SearchResult 和 LinkedWorks 实现
 """
-import asyncio
 import logging
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
-from datetime import datetime
-from pathlib import Path
 import os
 
-from ..models.database import LibrarySnapshot, ConflictWork, get_db
 from ..core.dlsite_service import get_dlsite_service, LinkedWork
-from ..core.kikoeru_duplicate_service import (
-    get_kikoeru_service, 
-    KikoeruCheckResult,
-    KikoeruDuplicateService
-)
 from ..config.settings import get_config
+from ..core.library_manager import get_library_manager
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +23,7 @@ class DuplicateCheckResult:
     conflict_type: str = "NONE"  # DUPLICATE, LINKED_WORK, LANGUAGE_VARIANT, MULTIPLE_VERSIONS
     related_rjcodes: List[str] = field(default_factory=list)  # 所有关联的 RJ 号
     analysis_info: Dict = field(default_factory=dict)  # 详细的分析信息
-    kikoeru_result: Optional[KikoeruCheckResult] = None  # Kikoeru 服务器查重结果
+    kikoeru_result: Optional[Dict[str, Any]] = None  # 兼容旧字段，不再主动查询 Kikoeru
 
 
 @dataclass
@@ -53,7 +45,6 @@ class EnhancedDuplicateService:
     def __init__(self):
         # 不缓存配置，每次都获取最新配置
         self.dlsite_service = get_dlsite_service()
-        self.kikoeru_service = get_kikoeru_service()
 
     @property
     def config(self):
@@ -142,72 +133,22 @@ class EnhancedDuplicateService:
             except Exception as e:
                 logger.error(f"检查关联作品失败 {rjcode}: {e}")
         
-        # 3. 检查 Kikoeru 服务器（如果启用）
-        try:
-            # 直接访问 Pydantic 模型的属性
-            kikoeru_enabled = False
-            if hasattr(self.config, 'kikoeru_server'):
-                kikoeru_enabled = self.config.kikoeru_server.enabled
-            
-            if kikoeru_enabled:
-                logger.debug(f"正在查询 Kikoeru 服务器: {rjcode}")
-                kikoeru_result = await self.kikoeru_service.check_duplicate(rjcode)
-                result.kikoeru_result = kikoeru_result
-                
-                if kikoeru_result.is_found:
-                    logger.info(f"✓ Kikoeru 服务器找到作品: {rjcode} - {kikoeru_result.title}")
-                    # 如果本地未发现重复但 Kikoeru 中有，可以标记为外部库存在
-                    if not result.is_duplicate:
-                        result.analysis_info['in_kikoeru_server'] = {
-                            'title': kikoeru_result.title,
-                            'circle': kikoeru_result.circle_name,
-                            'tags': kikoeru_result.tags
-                        }
-                else:
-                    logger.debug(f"✗ Kikoeru 服务器未找到: {rjcode}")
-        except Exception as e:
-            logger.error(f"Kikoeru 服务器查重失败 {rjcode}: {e}")
-        
         return result
     
     async def _check_direct_duplicate(self, rjcode: str) -> Optional[Dict]:
         """检查是否存在直接重复（相同 RJ 号）"""
-        db = next(get_db())
-        try:
-            # 从数据库查询
-            snapshot = db.query(LibrarySnapshot).filter(
-                LibrarySnapshot.rjcode == rjcode
-            ).first()
-            
-            if snapshot:
-                folder_path = str(snapshot.folder_path)
-                if os.path.exists(folder_path):
-                    return {
-                        'rjcode': rjcode,
-                        'path': folder_path,
-                        'size': snapshot.folder_size,
-                        'file_count': snapshot.file_count
-                    }
-                else:
-                    # 路径不存在，清理过期记录
-                    logger.warning(f"清理过期记录: {rjcode}")
-                    db.delete(snapshot)
-                    db.commit()
-            
-            # 如果没有数据库记录，扫描库存目录
-            library_path = Path(self.config.storage.library_path)
-            for folder in library_path.rglob('*'):
-                if folder.is_dir() and rjcode in folder.name:
-                    return {
-                        'rjcode': rjcode,
-                        'path': str(folder),
-                        'size': self._get_folder_size(str(folder)),
-                        'file_count': self._get_file_count(str(folder))
-                    }
-            
+        hits = get_library_manager().find_rj_in_ready_index([rjcode])
+        hit = next(iter(hits.get(str(rjcode or "").strip().upper()) or []), None)
+        if not hit:
             return None
-        finally:
-            db.close()
+        return {
+            'rjcode': rjcode,
+            'path': str(hit.get('path') or ''),
+            'size': int(hit.get('size') or 0),
+            'file_count': int(hit.get('file_count') or 0),
+            'library_id': str(hit.get('library_id') or ''),
+            'library_name': str(hit.get('library_name') or ''),
+        }
     
     async def _check_linked_works_in_library(
         self, 
@@ -220,62 +161,25 @@ class EnhancedDuplicateService:
         返回:
             List[LinkedWorkInLibrary]: 在库中找到的关联作品列表（不包括当前检查的 RJ）
         """
-        # Phase A: 短读事务 —— 一次性把所有 workno 的 snapshot 读出来，立即 close。
-        # 重构原因：原实现把 db 拿在循环外，每轮 await dlsite_service.get_work_info()
-        # 都把连接占着，长查询会卡光 connection pool。
         target_worknos = [w for w in linked_works.keys() if w != exclude_rjcode]
-        snapshots: Dict[str, Tuple[str, int, int]] = {}
-        if target_worknos:
-            db = next(get_db())
-            try:
-                rows = (
-                    db.query(LibrarySnapshot)
-                    .filter(LibrarySnapshot.rjcode.in_(target_worknos))
-                    .all()
-                )
-                for snap in rows:
-                    snapshots[str(snap.rjcode)] = (
-                        str(snap.folder_path),
-                        int(getattr(snap, "folder_size", 0) or 0),
-                        int(getattr(snap, "file_count", 0) or 0),
-                    )
-            finally:
-                db.close()
-
-        # Phase B: 无 session 的 IO（目录扫描 + HTTP）。
+        index_hits = get_library_manager().find_rj_in_ready_index(target_worknos)
         found = []
-        library_path = Path(self.config.storage.library_path)
         for workno in target_worknos:
             linked_work = linked_works[workno]
-            snap = snapshots.get(workno)
-            if snap and os.path.exists(snap[0]):
-                folder_path, folder_size, file_count = snap
-                work_info = await self.dlsite_service.get_work_info(workno)
-                found.append(LinkedWorkInLibrary(
-                    rjcode=workno,
-                    work_type=linked_work.work_type,
-                    lang=linked_work.lang,
-                    folder_path=folder_path,
-                    folder_size=folder_size,
-                    file_count=file_count,
-                    work_name=work_info.get('title', '') if work_info else ""
-                ))
-                logger.debug(f"发现库中关联作品: {workno} ({linked_work.work_type})")
-            elif not snap:
-                # 没有 snapshot 时扫库存目录兜底
-                for folder in library_path.rglob('*'):
-                    if folder.is_dir() and workno in folder.name:
-                        work_info = await self.dlsite_service.get_work_info(workno)
-                        found.append(LinkedWorkInLibrary(
-                            rjcode=workno,
-                            work_type=linked_work.work_type,
-                            lang=linked_work.lang,
-                            folder_path=str(folder),
-                            folder_size=self._get_folder_size(str(folder)),
-                            file_count=self._get_file_count(str(folder)),
-                            work_name=work_info.get('title', '') if work_info else ""
-                        ))
-                        break
+            hit = next(iter(index_hits.get(str(workno or "").strip().upper()) or []), None)
+            if not hit:
+                continue
+            work_info = await self.dlsite_service.get_work_info(workno)
+            found.append(LinkedWorkInLibrary(
+                rjcode=workno,
+                work_type=linked_work.work_type,
+                lang=linked_work.lang,
+                folder_path=str(hit.get('path') or ''),
+                folder_size=int(hit.get('size') or 0),
+                file_count=int(hit.get('file_count') or 0),
+                work_name=work_info.get('title', '') if work_info else ""
+            ))
+            logger.debug(f"ready 库存索引发现关联作品: {workno} ({linked_work.work_type})")
 
         return found
     

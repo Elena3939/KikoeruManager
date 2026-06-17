@@ -694,7 +694,7 @@
       <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-[4px] text-[11px] font-semibold tracking-tight bg-slate-50/80 text-slate-700 ring-1 ring-inset ring-slate-200/60">选中<span class="tabular-nums opacity-70">{{ circleRefreshModel.selectedCount }}</span></span>
       <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-[4px] text-[11px] font-semibold tracking-tight bg-slate-50/80 text-slate-700 ring-1 ring-inset ring-slate-200/60">已刷新<span class="tabular-nums opacity-70">{{ circleRefreshModel.refreshedCount }}</span></span>
       <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-[4px] text-[11px] font-semibold tracking-tight bg-slate-50/80 text-slate-700 ring-1 ring-inset ring-slate-200/60">有变化<span class="tabular-nums opacity-70">{{ circleRefreshModel.changedCount }}</span></span>
-      <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-[4px] text-[11px] font-semibold tracking-tight bg-slate-50/80 text-slate-700 ring-1 ring-inset ring-slate-200/60">服务器已有<span class="tabular-nums opacity-70">{{ circleRefreshModel.serverMatchedCount }}</span></span>
+      <span class="inline-flex items-center gap-1 px-2 py-[3px] rounded-[4px] text-[11px] font-semibold tracking-tight bg-slate-50/80 text-slate-700 ring-1 ring-inset ring-slate-200/60">库存已收录<span class="tabular-nums opacity-70">{{ circleRefreshModel.serverMatchedCount }}</span></span>
     </div>
     <div class="flex flex-wrap gap-1 mb-2.5">
       <button

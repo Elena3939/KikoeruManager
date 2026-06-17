@@ -61,6 +61,19 @@ def _broadcast_realtime_notification(event: dict) -> None:
                 'updated_at': datetime.now().isoformat(),
                 'payload': dict(event),
             })
+            return
+
+        if event_type == 'circle_subtitle_synced':
+            canonicals = event.get('canonicals') if isinstance(event.get('canonicals'), list) else []
+            broadcast_realtime_event({
+                'type': 'circle.subtitle.synced',
+                'reason': 'subtitle_synced',
+                'id': str(event.get('rjcode') or (canonicals[0] if canonicals else '') or ''),
+                'domain': 'circle_completion',
+                'status': 'completed',
+                'updated_at': datetime.now().isoformat(),
+                'payload': dict(event),
+            })
     except Exception:
         logger.debug("桥接通知统一实时事件失败", exc_info=True)
 
