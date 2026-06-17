@@ -5,6 +5,8 @@ import { subtitleImportApi } from '../api'
 
 const PENDING_REFRESH_INTERVAL_MS = 4000
 const AUTO_IMPORT_POLL_INTERVAL_MS = 2500
+const PENDING_EXECUTE_RECOVERY_POLL_MS = 3000
+const PENDING_EXECUTE_RECOVERY_MAX_MS = 15 * 60 * 1000
 
 export function useSubtitleImportArchive({ 
   workbenchDialogVisible, 
@@ -41,6 +43,10 @@ export function useSubtitleImportArchive({
     return String(item?.status || '').trim().toUpperCase() === 'IMPORTED'
   }
 
+  function isProcessingPendingItem(item) {
+    return String(item?.status || '').trim().toUpperCase() === 'PROCESSING'
+  }
+
   function getPendingItemWorkbenchTaskId(item) {
     const preview = item?.preview || {}
     return String(
@@ -70,6 +76,7 @@ export function useSubtitleImportArchive({
   const canRetryActivePendingPreview = computed(() => {
     const item = activePendingItem.value
     if (!item || retryingPendingId.value) return false
+    if (isProcessingPendingItem(item)) return false
     return !item.can_execute || Number(item.preview?.candidate_count || 0) <= 0
   })
 
@@ -219,6 +226,51 @@ export function useSubtitleImportArchive({
       return
     }
     openImportedTask(taskId)
+  }
+
+  function sleep(ms) {
+    return new Promise(resolve => window.setTimeout(resolve, ms))
+  }
+
+  function isLongRunningExecuteError(error) {
+    const status = Number(error?.response?.status || 0)
+    const message = String(error?.message || '')
+    return status === 504 ||
+      status === 409 ||
+      error?.code === 'ECONNABORTED' ||
+      /timeout of \d+ms exceeded/i.test(message)
+  }
+
+  async function waitForPendingExecuteRecovery(recordId) {
+    const normalizedId = String(recordId || '').trim()
+    if (!normalizedId) return { recovered: false }
+
+    const startedAt = Date.now()
+    executingPendingId.value = normalizedId
+    try {
+      while (Date.now() - startedAt <= PENDING_EXECUTE_RECOVERY_MAX_MS) {
+        await sleep(PENDING_EXECUTE_RECOVERY_POLL_MS)
+        await loadPendingImports({ silent: true })
+        const refreshed = pendingItems.value.find(item => String(item.id || '') === normalizedId)
+        if (!refreshed) {
+          return { recovered: true, taskId: '' }
+        }
+
+        const status = String(refreshed.status || '').trim().toUpperCase()
+        const taskId = getPendingItemWorkbenchTaskId(refreshed)
+        if (status === 'IMPORTED') {
+          return { recovered: true, taskId, item: refreshed }
+        }
+        if (status === 'PENDING' && !refreshed.preview?.is_executing) {
+          return { recovered: false, item: refreshed }
+        }
+      }
+      return { recovered: false, timedOut: true }
+    } finally {
+      if (executingPendingId.value === normalizedId) {
+        executingPendingId.value = ''
+      }
+    }
   }
 
   function getSelectedArchiveCandidateForItem(item) {
@@ -384,36 +436,25 @@ export function useSubtitleImportArchive({
       await executePendingImportRecord(item, candidate, { autoTriggered: false })
       return true
     } catch (error) {
-      // ★ 容错兜底：用户痛点"实际后端已经导入成功，但前端 axios 60s timeout 抛错"。
-      //   axios timeout 触发后 backend 仍可能在跑；轮询等几秒再查 pending 列表，
-      //   如果该记录已经 status=IMPORTED，证明导入已成功，自动打开工作台并提示
-      //   用户"已成功 + 后台归档中"，避免用户以为"卡死"重复点导入。
-      const isTimeout = (error?.code === 'ECONNABORTED') ||
-        /timeout of \d+ms exceeded/i.test(String(error?.message || ''))
-
-      if (isTimeout && item?.id) {
+      // 504/409/axios timeout 都说明长任务可能已经交给后端执行。
+      // 不释放成可重复点击，继续轮询预检单状态，等 IMPORTED 后打开工作台。
+      if (isLongRunningExecuteError(error) && item?.id) {
         try {
-          // 后端归档可能还在跑，但 IMPORTED 状态在 db.commit() 之后立刻可见。
-          // 给后端一点缓冲时间，重试 3 次（间隔 2/4/6 秒）。
-          for (let attempt = 1; attempt <= 3; attempt++) {
-            await new Promise(resolve => setTimeout(resolve, attempt * 2000))
-            await loadPendingImports({ silent: true })
-            const refreshed = pendingItems.value.find(it => it.id === item.id)
-            // 该记录消失了（被搬到已完成）或者状态非 PENDING 都说明导入成功
-            const importedSuccess = !refreshed || (refreshed.status && refreshed.status !== 'PENDING')
-            const importedTaskId = refreshed?.preview?.import_result_summary?.task_id ||
-              refreshed?.preview?.linked_workbench_task_id ||
-              ''
-            if (importedSuccess) {
-              ElMessage.success('字幕补配实际已导入成功（后端归档仍在后台进行）')
-              if (importedTaskId) {
-                openImportedTask(importedTaskId)
-              }
-              return true
+          ElMessage.warning('字幕补配已在后端继续执行，正在等待工作台生成')
+          const recovered = await waitForPendingExecuteRecovery(item.id)
+          if (recovered.recovered) {
+            ElMessage.success('字幕补配已导入成功，已生成工作台')
+            if (recovered.taskId) {
+              openImportedTask(recovered.taskId)
             }
+            return true
           }
-        } catch (probeError) {
-          console.warn('[subtitle-import] timeout 后兜底查询失败', probeError)
+          if (recovered.timedOut) {
+            ElMessage.warning('字幕补配仍在后端执行，请稍后刷新工作台状态')
+            return false
+          }
+        } catch (recoveryError) {
+          console.warn('[subtitle-import] 长执行恢复轮询失败', recoveryError)
         }
       }
 

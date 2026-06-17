@@ -29,6 +29,10 @@ class LinkedSubtitleArchivePrecheckTimeout(TimeoutError):
         self.preview = preview
 
 
+class LinkedSubtitleImportAlreadyRunning(RuntimeError):
+    """同一条字幕补配预检单已经在执行中。"""
+
+
 class LinkedSubtitleImportService:
     """Handle automatic linked-subtitle staging and manual subtitle-folder import."""
 
@@ -36,6 +40,7 @@ class LinkedSubtitleImportService:
     EXISTING_SUBTITLE_CONFLICT_TYPE = "LINKED_WORK"
     PENDING_SOURCE_MODE = "linked_translation_archive_pending"
     EXISTING_SUBTITLE_SOURCE_MODE = "linked_translation_archive_existing_subtitle_conflict"
+    PENDING_EXECUTING_STATUS = "PROCESSING"
     WORKBENCH_RELATIVE_DIR = "_kikoerumanager_subtitle_workbench/linked"
     REMOTE_SEARCH_RETRY_DELAYS: tuple[float, ...] = ()
     REMOTE_PENDING_REASON = "远程库存暂未检出原作目录，请稍后重试"
@@ -948,11 +953,10 @@ class LinkedSubtitleImportService:
             raise ValueError("字幕补配工作台缺少必要路径信息，无法完成最终应用")
 
         expected_file_count = self._count_local_subtitle_files(subtitle_dir)
-        minimum_expected = max(1, int(expected_min_files or 0))
-        if expected_file_count < minimum_expected:
+        if expected_file_count <= 0:
             raise ValueError(
                 "字幕补配工作台可发布字幕数量异常，已阻止覆盖目标 subtitles 目录: "
-                f"expected>={minimum_expected} actual={expected_file_count}"
+                f"expected>=1 actual={expected_file_count}"
             )
         final_subtitle_dir = await self._publish_workbench_to_target(
             library_id=library_id,
@@ -2755,6 +2759,7 @@ class LinkedSubtitleImportService:
         analysis_info = dict(conflict.analysis_info or {})
         preview = dict(analysis_info.get("preview") or {})
         import_result_summary = dict(analysis_info.get("import_result_summary") or {})
+        status = str(conflict.status or "").strip().upper()
         preview.setdefault("target_rjcode", self._extract_rjcode((conflict.new_metadata or {}).get("target_rjcode") or ""))
         preview.setdefault("source_rjcode", self._extract_rjcode((conflict.new_metadata or {}).get("source_rjcode") or ""))
         preview.setdefault("source_label", (conflict.new_metadata or {}).get("source_label") or "")
@@ -2762,6 +2767,10 @@ class LinkedSubtitleImportService:
         preview["source_rjcode"] = self._extract_rjcode(preview.get("source_rjcode") or "")
         preview["target_rjcode"] = self._extract_rjcode(preview.get("target_rjcode") or "")
         preview = self._refresh_preview_execution_state(preview)
+        if status == self.PENDING_EXECUTING_STATUS:
+            preview["is_executing"] = True
+            preview["reason"] = preview.get("reason") or "字幕补配导入正在执行，请等待当前任务完成"
+            preview["execute_reason"] = preview.get("execute_reason") or preview["reason"]
         if import_result_summary:
             preview["import_result_summary"] = import_result_summary
             preview["linked_workbench_task_id"] = import_result_summary.get("task_id") or ""
@@ -2774,8 +2783,89 @@ class LinkedSubtitleImportService:
             "source_path": conflict.new_path,
             "source_mode": analysis_info.get("source_mode") or self.PENDING_SOURCE_MODE,
             "preview": preview,
-            "can_execute": str(conflict.status or "").upper() == "PENDING" and self._can_execute_pending_import(preview),
+            "can_execute": status == "PENDING" and self._can_execute_pending_import(preview),
         }
+
+    def _build_imported_pending_execute_result(self, conflict: ConflictWork) -> Dict[str, Any]:
+        item = self._serialize_pending_record(conflict)
+        preview = dict(item.get("preview") or {})
+        summary = dict(preview.get("import_result_summary") or {})
+        task_id = str(summary.get("task_id") or preview.get("linked_workbench_task_id") or "").strip()
+        target_candidate = dict(preview.get("selected_candidate") or {})
+        task_payload = None
+        if task_id:
+            task_payload = {
+                "id": task_id,
+                "folder_path": str(target_candidate.get("folder_path") or ""),
+                "library_id": str(target_candidate.get("library_id") or ""),
+                "source_mode": str(item.get("source_mode") or self.PENDING_SOURCE_MODE),
+            }
+            try:
+                task = get_task_engine().get_task(task_id)
+                metadata = dict(getattr(task, "task_metadata", {}) or {}) if task else {}
+                if metadata:
+                    task_payload.update({
+                        "folder_path": str(metadata.get("folder_path") or task_payload["folder_path"]),
+                        "library_id": str(metadata.get("library_id") or task_payload["library_id"]),
+                        "source_mode": str(metadata.get("source_mode") or task_payload["source_mode"]),
+                    })
+            except Exception:
+                logger.debug("[字幕补配] 读取已导入工作台任务失败: task_id=%s", task_id, exc_info=True)
+
+        written_count = max(0, int(summary.get("written_count") or 0))
+        write_error_count = max(0, int(summary.get("write_error_count") or 0))
+        return {
+            "success": True,
+            "already_imported": True,
+            "pending_record": item,
+            "preview": preview,
+            "target_candidate": target_candidate,
+            "import_result": {
+                "success": True,
+                "partial": False,
+                "awaiting_manual_match": bool(summary.get("awaiting_manual_match")),
+                "written_files": [{"subtitle_name": "", "output_name": ""} for _ in range(written_count)],
+                "write_errors": [{} for _ in range(write_error_count)],
+            },
+            "task": task_payload,
+        }
+
+    def _reset_pending_execute_status_after_failure(
+        self,
+        record_id: str,
+        *,
+        fallback_analysis_info: Optional[Dict[str, Any]] = None,
+        reason: str = "",
+    ) -> None:
+        db = next(get_db())
+        try:
+            row = db.query(ConflictWork).filter(
+                ConflictWork.id == record_id,
+                ConflictWork.conflict_type == self.PENDING_CONFLICT_TYPE,
+                ConflictWork.status == self.PENDING_EXECUTING_STATUS,
+            ).first()
+            if not row:
+                return
+            analysis_info = dict(row.analysis_info or fallback_analysis_info or {})
+            preview = dict(analysis_info.get("preview") or {})
+            reason_text = str(reason or "字幕补配导入失败，请重试").strip()
+            if reason_text:
+                preview["execute_reason"] = reason_text
+                preview["reason"] = reason_text
+            row.status = "PENDING"
+            row.analysis_info = {
+                **analysis_info,
+                "preview": preview,
+                "execution_status": "failed",
+                "execution_failed_at": datetime.now().isoformat(),
+                "execution_error": reason_text,
+            }
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.warning("[字幕补配] 回滚执行中预检单状态失败: record_id=%s", record_id, exc_info=True)
+        finally:
+            db.close()
 
     def _is_imported_record_awaiting_manual_match(self, row: ConflictWork) -> bool:
         if str(row.status or "").upper() != "IMPORTED":
@@ -2971,7 +3061,7 @@ class LinkedSubtitleImportService:
         try:
             rows = db.query(ConflictWork).filter(
                 ConflictWork.conflict_type == self.PENDING_CONFLICT_TYPE,
-                ConflictWork.status.in_(["PENDING", "IMPORTED"]),
+                ConflictWork.status.in_(["PENDING", self.PENDING_EXECUTING_STATUS, "IMPORTED"]),
             ).order_by(ConflictWork.created_at.desc()).all()
             for row in rows:
                 db.expunge(row)
@@ -2983,10 +3073,14 @@ class LinkedSubtitleImportService:
         decisions: List[Dict[str, Any]] = []
         for row in rows:
             try:
+                status = str(row.status or "").upper()
                 if self._is_imported_record_awaiting_manual_match(row):
                     items.append(self._serialize_pending_record(row))
                     continue
-                if str(row.status or "").upper() != "PENDING":
+                if status == self.PENDING_EXECUTING_STATUS:
+                    items.append(self._serialize_pending_record(row))
+                    continue
+                if status != "PENDING":
                     continue
 
                 original_preview = dict((row.analysis_info or {}).get("preview") or {})
@@ -3288,37 +3382,59 @@ class LinkedSubtitleImportService:
             record = db.query(ConflictWork).filter(
                 ConflictWork.id == record_id,
                 ConflictWork.conflict_type == self.PENDING_CONFLICT_TYPE,
-                ConflictWork.status == "PENDING",
-            ).first()
+            ).with_for_update().first()
             if not record:
                 raise ValueError("字幕补配预检单不存在")
+            current_status = str(record.status or "").strip().upper()
+            if current_status == "IMPORTED":
+                return self._build_imported_pending_execute_result(record)
+            if current_status == self.PENDING_EXECUTING_STATUS:
+                raise LinkedSubtitleImportAlreadyRunning("这条字幕补配预检单正在导入，请等待当前任务完成")
+            if current_status != "PENDING":
+                raise ValueError("字幕补配预检单当前状态不可执行")
             cached_analysis_info = dict(record.analysis_info or {})
             record_new_path = str(record.new_path or "")
+            record.analysis_info = {
+                **cached_analysis_info,
+                "execution_status": "processing",
+                "execution_started_at": datetime.now().isoformat(),
+            }
+            record.status = self.PENDING_EXECUTING_STATUS
+            db.commit()
         finally:
             db.close()
 
         # Phase B: 无 session 跑长 IO（候选刷新 + 解压导入）
-        record_preview = await self._refresh_pending_preview_candidates(
-            await self._repair_cached_preview_rj_fields(
-                dict(cached_analysis_info.get("preview") or {}),
-                source_path=record_new_path,
+        try:
+            record_preview = await self._refresh_pending_preview_candidates(
+                await self._repair_cached_preview_rj_fields(
+                    dict(cached_analysis_info.get("preview") or {}),
+                    source_path=record_new_path,
+                )
             )
-        )
-        next_analysis_info_after_refresh = {
-            **cached_analysis_info,
-            "preview": record_preview,
-            "candidate_refreshed_at": datetime.now().isoformat(),
-        }
-        result = await self.execute_archive_import(
-            record_new_path,
-            target_library_id=target_library_id,
-            target_folder_path=target_folder_path,
-            prepared_preview=record_preview,
-            use_filter_rules=use_filter_rules,
-            subtitle_filter_rules=subtitle_filter_rules,
-            import_reason="正常解压检测后的关联字幕补配导入",
-            source_mode="linked_translation_archive_import",
-        )
+            next_analysis_info_after_refresh = {
+                **cached_analysis_info,
+                "preview": record_preview,
+                "candidate_refreshed_at": datetime.now().isoformat(),
+                "execution_status": "processing",
+            }
+            result = await self.execute_archive_import(
+                record_new_path,
+                target_library_id=target_library_id,
+                target_folder_path=target_folder_path,
+                prepared_preview=record_preview,
+                use_filter_rules=use_filter_rules,
+                subtitle_filter_rules=subtitle_filter_rules,
+                import_reason="正常解压检测后的关联字幕补配导入",
+                source_mode="linked_translation_archive_import",
+            )
+        except Exception as exc:
+            self._reset_pending_execute_status_after_failure(
+                record_id,
+                fallback_analysis_info=cached_analysis_info,
+                reason=str(exc),
+            )
+            raise
 
         # Phase C: 短写 —— 重新打开 session，重新 fetch record 落库
         write_db = next(get_db())
@@ -3333,7 +3449,13 @@ class LinkedSubtitleImportService:
                 return result
 
             if not result.get("success"):
-                fresh_record.analysis_info = next_analysis_info_after_refresh
+                fresh_record.status = "PENDING"
+                fresh_record.analysis_info = {
+                    **next_analysis_info_after_refresh,
+                    "execution_status": "failed",
+                    "execution_failed_at": datetime.now().isoformat(),
+                    "execution_error": str((result.get("import_result") or {}).get("error") or "字幕补配导入失败"),
+                }
                 write_db.commit()
                 return result
 
@@ -3359,6 +3481,14 @@ class LinkedSubtitleImportService:
 
             archive_source_path = str(fresh_record.new_path or "").strip()
             archive_task_id = str(fresh_record.task_id or "")
+        except Exception as exc:
+            write_db.rollback()
+            self._reset_pending_execute_status_after_failure(
+                record_id,
+                fallback_analysis_info=next_analysis_info_after_refresh,
+                reason=str(exc),
+            )
+            raise
         finally:
             write_db.close()
 

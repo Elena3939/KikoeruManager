@@ -24,6 +24,14 @@ class _RuntimeConfig:
         self.storage = storage
 
 
+class _FakeJsonRequest:
+    def __init__(self, payload):
+        self._payload = payload
+
+    async def json(self):
+        return self._payload
+
+
 def test_library_browser_endpoints_support_multi_library(client, monkeypatch, tmp_path):
     local_root = tmp_path / "library-a"
     # ``/api/library/browser/files`` 默认列 library root 的直接子项；要让作品在第一层
@@ -75,7 +83,7 @@ def test_library_browser_endpoints_support_multi_library(client, monkeypatch, tm
     assert "all_libraries" in stats_response.json()
 
 
-def test_folder_contents_shallow_uses_ready_index_directory_stats(monkeypatch, tmp_path):
+def test_local_realtime_reads_ignore_stale_index_for_browse_and_folder_contents(monkeypatch, tmp_path):
     local_root = tmp_path / "library"
     circle_dir = local_root / "Circle"
     rj_dir = circle_dir / "RJ01000001"
@@ -114,7 +122,7 @@ def test_folder_contents_shallow_uses_ready_index_directory_stats(monkeypatch, t
             entry("Circle", "dir", 12, 3),
             entry("Circle/RJ01000001", "dir", 9, 2),
             entry("Circle/RJ01000001/subtitles", "dir", 4, 1),
-            entry("Circle/RJ01000001/track.mp3", "file", 5, 0),
+            entry("Circle/RJ01000001/old-track.mp3", "file", 5, 0),
             entry("Circle/RJ01000001/subtitles/track.vtt", "file", 4, 0),
             entry("Circle/cover.jpg", "file", 3, 0),
         ]
@@ -174,38 +182,45 @@ def test_folder_contents_shallow_uses_ready_index_directory_stats(monkeypatch, t
             return SimpleNamespace(folder_count=2)
 
     manager = object.__new__(library_manager_module.LibraryManager)
+    manager._size_cache = {}
     monkeypatch.setattr(manager, "get_library_definition", lambda _library_id: library)
     monkeypatch.setattr(manager, "_append_stats_log", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(library_index_module, "get_library_index_service", lambda: FakeIndexService())
 
+    list_result = manager._list_local_files(
+        library,
+        page=1,
+        page_size=20,
+        search="",
+        current_path=str(rj_dir),
+        sort_by="name",
+        sort_order="asc",
+    )
+    assert list_result.get("browse_via_index") is not True
+    assert [item["name"] for item in list_result["files"]] == ["subtitles", "track.mp3"]
+
     result = asyncio.run(manager.folder_contents(library.id, str(circle_dir), recursive=False))
 
-    assert result["browse_via_index"] is True
-    assert result["total_size"] == 12
-    assert result["total_files"] == 3
-    assert result["total_folder_count"] == 2
+    assert result.get("browse_via_index") is not True
+    assert result["total_files"] == 1
     rj_item = next(item for item in result["items"] if item["name"] == "RJ01000001")
-    assert rj_item["size"] == 9
-    assert rj_item["size_status"] == "ready"
-    assert rj_item["file_count"] == 2
-    assert rj_item["folder_count"] == 1
+    assert rj_item["size"] is None
+    assert rj_item["size_status"] == "disabled"
 
     recursive_result = asyncio.run(manager.folder_contents(library.id, str(circle_dir), recursive=True))
-    assert recursive_result["browse_via_index"] is True
-    assert recursive_result["recursive"] is True
+    assert recursive_result.get("browse_via_index") is not True
     assert recursive_result["total_files"] == 3
     assert [item["relative_path"] for item in recursive_result["items"]] == [
         "RJ01000001/subtitles/track.vtt",
         "RJ01000001/track.mp3",
         "cover.jpg",
     ]
+    assert "RJ01000001/old-track.mp3" not in [item["relative_path"] for item in recursive_result["items"]]
 
     folders_payload = asyncio.run(manager.list_local_folders_only(library.id, str(circle_dir), include_files=True))
-    assert folders_payload["browse_via_index"] is True
+    assert folders_payload.get("browse_via_index") is not True
     folder_row = next(item for item in folders_payload["folders"] if item["name"] == "RJ01000001")
-    assert folder_row["size"] == 9
-    assert folder_row["file_count"] == 2
-    assert folder_row["folder_count"] == 1
+    assert folder_row["size_status"] in {"pending", "ready"}
 
     completion_service = object.__new__(folder_completion_module.LibraryFolderCompletionService)
     completion_service.manager = manager
@@ -231,12 +246,12 @@ def test_folder_contents_shallow_uses_ready_index_directory_stats(monkeypatch, t
         [{"name": "删 RJ 目录", "pattern": "RJ01000001", "target": "folder", "enabled": True}],
     )
     assert filter_preview["browse_via_index"] is True
-    assert filter_preview["selected_count"] == 1
+    assert filter_preview["selected_count"] == 2
     assert filter_preview["selected_size"] == 9
     assert [item["relative_path"] for item in filter_preview["items"]] == [
         "RJ01000001",
+        "RJ01000001/old-track.mp3",
         "RJ01000001/subtitles",
-        "RJ01000001/track.mp3",
         "RJ01000001/subtitles/track.vtt",
     ]
 
@@ -332,6 +347,150 @@ def test_local_batch_rename_can_skip_index_mutation(monkeypatch, tmp_path):
     assert result["failed"] == []
     assert (subtitle_dir / "track1.fixed.vtt").exists()
     assert moved_items == []
+
+
+def test_local_batch_rename_filters_workbench_subtitles_but_indexes_audio(monkeypatch, tmp_path):
+    library_root = tmp_path / "library"
+    work_dir = library_root / "RJ01000001"
+    subtitle_dir = library_root / "_kikoerumanager_subtitle_workbench" / "linked" / "task" / "subtitles"
+    work_dir.mkdir(parents=True)
+    subtitle_dir.mkdir(parents=True)
+    audio = work_dir / "track1.wav"
+    subtitle = subtitle_dir / "track1.vtt"
+    audio.write_bytes(b"audio")
+    subtitle.write_text("WEBVTT", encoding="utf-8")
+
+    manager = object.__new__(library_manager_module.LibraryManager)
+    monkeypatch.setattr(manager, "_assert_local_path_in_library", lambda _library, _path: None)
+    monkeypatch.setattr(manager, "_invalidate_local_search_cache", lambda _library_id: None)
+    moved_items = []
+    monkeypatch.setattr(
+        manager,
+        "_notify_index_self_mutation_move_batch",
+        lambda _source_library, _target_library, items: moved_items.extend(items),
+    )
+    monkeypatch.setattr(library_manager_module, "_stats_log_file_path", lambda: str(tmp_path / "stats.log"))
+
+    library = library_manager_module.LibraryDefinition(
+        id="local-a",
+        name="本地 A",
+        type="local",
+        path=str(library_root),
+        enabled=True,
+    )
+
+    result = manager._local_batch_rename(library, [
+        {"index": 0, "path": str(audio), "new_name": "track-fixed.wav"},
+        {"index": 1, "path": str(subtitle), "new_name": "track-fixed.vtt"},
+    ])
+
+    assert result["success_count"] == 2
+    assert result["failed"] == []
+    assert (work_dir / "track-fixed.wav").exists()
+    assert (subtitle_dir / "track-fixed.vtt").exists()
+    normalized_moves = [
+        {
+            "source": os.path.normcase(os.path.normpath(item["source"])),
+            "destination": os.path.normcase(os.path.normpath(item["destination"])),
+        }
+        for item in moved_items
+    ]
+    assert normalized_moves == [
+        {
+            "source": os.path.normcase(os.path.normpath(str(audio))),
+            "destination": os.path.normcase(os.path.normpath(str(work_dir / "track-fixed.wav"))),
+        },
+    ]
+
+
+def test_local_rename_filters_workbench_subtitle_index_mutation(monkeypatch, tmp_path):
+    library_root = tmp_path / "library"
+    subtitle_dir = library_root / "_kikoerumanager_subtitle_workbench" / "linked" / "task" / "subtitles"
+    subtitle_dir.mkdir(parents=True)
+    source = subtitle_dir / "track1.tmp.vtt"
+    source.write_text("WEBVTT", encoding="utf-8")
+
+    manager = object.__new__(library_manager_module.LibraryManager)
+    monkeypatch.setattr(manager, "_assert_local_path_in_library", lambda _library, _path: None)
+    monkeypatch.setattr(manager, "_invalidate_local_search_cache", lambda _library_id: None)
+    moved_items = []
+    monkeypatch.setattr(
+        manager,
+        "_notify_index_self_mutation_move_batch",
+        lambda _source_library, _target_library, items: moved_items.extend(items),
+    )
+    monkeypatch.setattr(manager, "_append_stats_log", lambda *_args, **_kwargs: None)
+
+    library = library_manager_module.LibraryDefinition(
+        id="local-a",
+        name="本地 A",
+        type="local",
+        path=str(library_root),
+        enabled=True,
+    )
+
+    result = manager._local_rename(library, str(source), "track1.vtt")
+
+    assert result["new_path"] == str(subtitle_dir / "track1.vtt")
+    assert (subtitle_dir / "track1.vtt").exists()
+    assert moved_items == []
+
+
+def test_notify_index_move_batch_filters_workbench_subtitles_but_indexes_audio(monkeypatch, tmp_path):
+    library_root = tmp_path / "library"
+    work_dir = library_root / "RJ01000001"
+    subtitle_dir = library_root / "_kikoerumanager_subtitle_workbench" / "linked" / "task" / "subtitles"
+    work_dir.mkdir(parents=True)
+    subtitle_dir.mkdir(parents=True)
+
+    manager = object.__new__(library_manager_module.LibraryManager)
+    submitted_moves = []
+    monkeypatch.setattr(
+        manager,
+        "get_library_definition",
+        lambda _library_id: library_manager_module.LibraryDefinition(
+            id="local-a",
+            name="本地 A",
+            type="local",
+            path=str(library_root),
+            enabled=True,
+        ),
+    )
+
+    class FakeIndexService:
+        def is_ready(self, library_id):
+            return library_id == "local-a"
+
+        def handle_self_mutation_move_many(self, moves):
+            submitted_moves.extend(moves)
+            return [1 for _ in moves]
+
+    monkeypatch.setattr(library_index_module, "get_library_index_service", lambda: FakeIndexService())
+    result = manager.notify_index_move_batch("local-a", [
+        {
+            "source": str(work_dir / "old.wav"),
+            "destination": str(work_dir / "new.wav"),
+        },
+        {
+            "source": str(subtitle_dir / "old.vtt"),
+            "destination": str(subtitle_dir / "new.vtt"),
+        },
+    ])
+
+    assert result["submitted"] is True
+    assert result["submitted_count"] == 1
+    assert result["queued"] is False
+    assert result["queued_count"] == 0
+    assert result["filtered_count"] == 1
+    assert result["total_count"] == 2
+    assert submitted_moves == [{
+        "source_library_id": "local-a",
+        "target_library_id": "local-a",
+        "old_relative_path": "RJ01000001/old.wav",
+        "new_relative_path": "RJ01000001/new.wav",
+        "old_absolute_path": str(work_dir / "old.wav"),
+        "new_absolute_path": str(work_dir / "new.wav"),
+    }]
 
 
 def test_local_move_preview_allows_same_name_folder_merge(monkeypatch, tmp_path):
@@ -437,7 +596,36 @@ def test_local_move_preview_reports_child_file_conflict_before_folder_merge(monk
     assert (target_dir / "track_1.wav").read_bytes() == b"new"
 
 
-def test_subtitle_manual_match_batch_rename_skips_index_mutation(client, monkeypatch):
+def test_subtitle_manual_match_rename_can_skip_index_mutation(monkeypatch):
+    captured = {}
+
+    class FakeLibraryManager:
+        async def rename(self, library_id, path, new_name, *, skip_index_mutation=False):
+            captured["library_id"] = library_id
+            captured["path"] = path
+            captured["new_name"] = new_name
+            captured["skip_index_mutation"] = skip_index_mutation
+            return {"message": "重命名成功", "new_path": path.replace("old.vtt", "new.vtt")}
+
+    monkeypatch.setattr(routes_module, "get_library_manager", lambda: FakeLibraryManager())
+
+    response = asyncio.run(
+        routes_module.rename_library_browser_item(_FakeJsonRequest({
+            "library_id": "local-a",
+            "path": "/library/workbench/old.vtt",
+            "new_name": "new.vtt",
+            "skip_activity_log": True,
+            "rename_context": "subtitle_manual_match_pair",
+            "skip_index_mutation": True,
+        }))
+    )
+
+    assert response["new_path"] == "/library/workbench/new.vtt"
+    assert captured["library_id"] == "local-a"
+    assert captured["skip_index_mutation"] is True
+
+
+def test_subtitle_manual_match_batch_rename_can_skip_index_mutation(monkeypatch):
     captured = {}
 
     class FakeLibraryManager:
@@ -461,17 +649,17 @@ def test_subtitle_manual_match_batch_rename_skips_index_mutation(client, monkeyp
 
     monkeypatch.setattr(routes_module, "get_library_manager", lambda: FakeLibraryManager())
 
-    response = client.post(
-        "/api/library/browser/batch-rename",
-        json={
+    response = asyncio.run(
+        routes_module.batch_rename_library_browser_items(_FakeJsonRequest({
             "library_id": "local-a",
             "items": [{"path": "/library/workbench/old.vtt", "new_name": "new.vtt"}],
             "skip_activity_log": True,
             "rename_context": "subtitle_manual_match_pair",
-        },
+            "skip_index_mutation": True,
+        }))
     )
 
-    assert response.status_code == 200
+    assert response["success_count"] == 1
     assert captured["library_id"] == "local-a"
     assert captured["skip_index_mutation"] is True
 

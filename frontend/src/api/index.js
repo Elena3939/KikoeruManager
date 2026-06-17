@@ -1057,7 +1057,8 @@ export const libraryApi = {
       new_name: newName,
       skip_activity_log: options.skipActivityLog ?? false,
       batch_id: options.batchId || '',
-      rename_context: options.renameContext || ''
+      rename_context: options.renameContext || '',
+      skip_index_mutation: options.skipIndexMutation ?? false
     })
     return response.data
   },
@@ -1068,10 +1069,22 @@ export const libraryApi = {
       items,
       skip_activity_log: options.skipActivityLog ?? false,
       batch_id: options.batchId || '',
-      rename_context: options.renameContext || ''
+      rename_context: options.renameContext || '',
+      skip_index_mutation: options.skipIndexMutation ?? false
     }, {
       // 批量重命名场景下默认 axios 60s 不一定够，给到 5 分钟
       timeout: options.timeout || 5 * 60 * 1000,
+      signal: options.signal
+    })
+    return response.data
+  },
+
+  browserNotifyIndexMoves: async (libraryId, moves, options = {}) => {
+    const response = await apiClient.post('/library/browser/index-move-batch', {
+      library_id: libraryId,
+      moves
+    }, {
+      timeout: options.timeout || 60 * 1000,
       signal: options.signal
     })
     return response.data

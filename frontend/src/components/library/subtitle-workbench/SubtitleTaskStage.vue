@@ -80,7 +80,7 @@
             </div>
           </div>
           <span
-            class="inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-medium"
+            class="subtitle-active-status-pill"
             :class="statusPillClass(ctx.getRJSubtitleTaskStatusClass(ctx.activeSubtitleTask))"
           >
             {{ ctx.getRJSubtitleTaskStatusLabel(ctx.activeSubtitleTask) }}
@@ -440,12 +440,12 @@ watch(
 
 function statusPillClass(key) {
   const k = String(key || '').toLowerCase()
-  if (['completed', 'manual_match_completed'].includes(k)) return 'border border-emerald-200 bg-emerald-50 text-emerald-700'
-  if (k === 'failed') return 'border border-rose-200 bg-rose-50 text-rose-700'
-  if (['processing', 'awaiting', 'awaiting_manual_match', 'waiting_manual'].includes(k)) return 'border border-sky-200 bg-sky-50 text-sky-700'
-  if (k === 'view_restored') return 'border border-violet-200 bg-violet-50 text-violet-700'
-  if (k === 'view_backfilled') return 'border border-slate-200 bg-slate-50 text-slate-700'
-  return 'border border-slate-200 bg-slate-50 text-slate-600'
+  if (['completed', 'manual_match_completed'].includes(k)) return 'is-success'
+  if (k === 'failed') return 'is-danger'
+  if (['processing', 'awaiting', 'awaiting_manual_match', 'waiting_manual'].includes(k)) return 'is-info'
+  if (k === 'view_restored') return 'is-violet'
+  if (k === 'view_backfilled') return 'is-neutral'
+  return 'is-neutral'
 }
 
 function statusIcon(key) {
@@ -964,6 +964,88 @@ function getTaskMetaItems(task) {
 .subtitle-active-log-panel {
   align-self: start;
   min-width: 0;
+}
+
+.subtitle-active-status-pill {
+  --status-bg: rgba(241, 245, 249, 0.92);
+  --status-border: rgba(203, 213, 225, 0.92);
+  --status-text: #334155;
+  display: inline-flex;
+  min-height: 28px;
+  min-width: 76px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--status-border);
+  border-radius: 999px;
+  background: var(--status-bg);
+  color: var(--status-text);
+  padding: 0 12px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0;
+  white-space: nowrap;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42);
+}
+
+.subtitle-active-status-pill.is-success {
+  --status-bg: rgba(209, 250, 229, 0.96);
+  --status-border: rgba(52, 211, 153, 0.58);
+  --status-text: #047857;
+}
+
+.subtitle-active-status-pill.is-info {
+  --status-bg: rgba(224, 242, 254, 0.96);
+  --status-border: rgba(56, 189, 248, 0.56);
+  --status-text: #0369a1;
+}
+
+.subtitle-active-status-pill.is-violet {
+  --status-bg: rgba(237, 233, 254, 0.96);
+  --status-border: rgba(167, 139, 250, 0.58);
+  --status-text: #6d28d9;
+}
+
+.subtitle-active-status-pill.is-danger {
+  --status-bg: rgba(255, 228, 230, 0.96);
+  --status-border: rgba(251, 113, 133, 0.58);
+  --status-text: #be123c;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-active-status-pill,
+:global(html.dark) .subtitle-active-status-pill {
+  --status-bg: rgba(39, 40, 45, 0.96);
+  --status-border: rgba(255, 255, 255, 0.18);
+  --status-text: rgba(244, 244, 245, 0.9);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+:global(html.kikoerumanager-dark) .subtitle-active-status-pill.is-success,
+:global(html.dark) .subtitle-active-status-pill.is-success {
+  --status-bg: rgba(16, 185, 129, 0.18);
+  --status-border: rgba(52, 211, 153, 0.48);
+  --status-text: #a7f3d0;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-active-status-pill.is-info,
+:global(html.dark) .subtitle-active-status-pill.is-info {
+  --status-bg: rgba(14, 165, 233, 0.18);
+  --status-border: rgba(56, 189, 248, 0.46);
+  --status-text: #bae6fd;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-active-status-pill.is-violet,
+:global(html.dark) .subtitle-active-status-pill.is-violet {
+  --status-bg: rgba(139, 92, 246, 0.2);
+  --status-border: rgba(167, 139, 250, 0.46);
+  --status-text: #ddd6fe;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-active-status-pill.is-danger,
+:global(html.dark) .subtitle-active-status-pill.is-danger {
+  --status-bg: rgba(244, 63, 94, 0.18);
+  --status-border: rgba(251, 113, 133, 0.46);
+  --status-text: #fecdd3;
 }
 
 .subtitle-task-stage-scroll.is-immersive-overview .subtitle-active-log-panel {
