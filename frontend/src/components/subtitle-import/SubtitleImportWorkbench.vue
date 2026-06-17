@@ -1630,6 +1630,34 @@ function normalizeSubtitleMatchName(value = '') {
     .replace(/[^\w\u4e00-\u9fff\u3040-\u30ff]+/g, '')
 }
 
+function normalizeSubtitlePairPath(value = '') {
+  return String(value || '').trim().replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '').toLowerCase()
+}
+
+function buildSubtitlePairPathKeys(item = {}) {
+  const keys = new Set()
+  const path = normalizeSubtitlePairPath(item.path || item.subtitle_path || '')
+  const relativePath = normalizeSubtitlePairPath(item.relative_path || item.subtitle_relative_path || '')
+  const name = normalizeSubtitlePairPath(item.name || item.subtitle_name || '')
+  if (path) keys.add(`path:${path}`)
+  if (relativePath) keys.add(`rel:${relativePath}`)
+  if (name) keys.add(`name:${name}`)
+  return keys
+}
+
+function isSameSubtitlePairItem(item, pair) {
+  const itemKeys = buildSubtitlePairPathKeys(item)
+  const pairKeys = buildSubtitlePairPathKeys({
+    path: pair?.subtitle_path,
+    relative_path: pair?.subtitle_relative_path,
+    name: pair?.subtitle_name
+  })
+  for (const key of pairKeys) {
+    if (itemKeys.has(key)) return true
+  }
+  return false
+}
+
 function extractSubtitleTrackNumber(value = '') {
   const match = String(value || '').match(/(?:^|[^0-9])(?:tr|track)?[_\-\s]*0*([0-9]{1,3})(?![0-9])/i)
   return match ? Number(match[1]) : null
@@ -2059,9 +2087,13 @@ async function applySubtitleManualPairs() {
   const subtitleLibraryId = subtitleInspectorInfo.value.subtitleLibraryId || audioLibraryId
   const appliedPairCount = subtitleManualPairs.value.length
   const unusedSubtitleRows = subtitleInspectorSubtitleFiles.value.filter(
-    item => !subtitleManualPairs.value.some(pair => pair.subtitle_path === item.path)
+    item => !subtitleManualPairs.value.some(pair => isSameSubtitlePairItem(item, pair))
   )
-  const unusedSubtitlePathSet = new Set(unusedSubtitleRows.map(item => item.path).filter(Boolean))
+  const unusedSubtitlePathSet = new Set(unusedSubtitleRows.flatMap(item => [...buildSubtitlePairPathKeys(item)]))
+  if (unusedSubtitleRows.length >= subtitleInspectorSubtitleFiles.value.length) {
+    ElMessage.error('配对结果没有命中当前工作台字幕，已阻止删除全部字幕')
+    return
+  }
 
   const audioConflicts = subtitleManualPairs.value.filter(pair => {
     const existing = subtitleInspectorAudioFiles.value.find(item => item.name === pair.target_audio_name)
@@ -2074,8 +2106,13 @@ async function applySubtitleManualPairs() {
 
   const subtitleConflicts = subtitleManualPairs.value.filter(pair => {
     const existing = subtitleInspectorSubtitleFiles.value.find(item => item.name === pair.target_subtitle_name)
-    if (existing?.path && unusedSubtitlePathSet.has(existing.path)) return false
-    return existing && existing.path !== pair.subtitle_path
+    if (existing && isSameSubtitlePairItem(existing, pair)) return false
+    if (existing) {
+      for (const key of buildSubtitlePairPathKeys(existing)) {
+        if (unusedSubtitlePathSet.has(key)) return false
+      }
+    }
+    return existing && !isSameSubtitlePairItem(existing, pair)
   })
   if (subtitleConflicts.length) {
     ElMessage.error(`存在目标字幕名冲突，无法直接应用：${subtitleConflicts[0].target_subtitle_name}`)
@@ -2101,7 +2138,7 @@ async function applySubtitleManualPairs() {
   try {
     const currentSubtitleFiles = [...subtitleInspectorSubtitleFiles.value]
     const resolveCurrentSubtitleSourcePath = (pair) => {
-      const exactMatch = currentSubtitleFiles.find(item => item.path === pair.subtitle_path)
+      const exactMatch = currentSubtitleFiles.find(item => isSameSubtitlePairItem(item, pair))
       if (exactMatch?.path) return exactMatch.path
       const sameNameMatches = currentSubtitleFiles.filter(item => item.name === pair.subtitle_name)
       if (sameNameMatches.length === 1) return sameNameMatches[0].path
