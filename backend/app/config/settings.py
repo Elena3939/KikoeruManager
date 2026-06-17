@@ -586,6 +586,25 @@ class SecurityGateConfig(BaseModel):
     email_alert_min_interval_seconds: int = 300
 
 
+class LibraryUiConfig(BaseModel):
+    """库存页 UI 偏好"""
+    view_mode: str = "directory"
+
+    @model_validator(mode='before')
+    @classmethod
+    def normalize_view_mode(cls, data):
+        if isinstance(data, dict):
+            mode = str(data.get('view_mode') or 'directory').strip().lower()
+            data = dict(data)
+            data['view_mode'] = mode if mode in {'directory', 'circle'} else 'directory'
+        return data
+
+
+class UiConfig(BaseModel):
+    """页面级 UI 偏好配置"""
+    library: LibraryUiConfig = LibraryUiConfig()
+
+
 class AppConfig(BaseModel):
     """应用配置"""
     storage: StorageConfig = StorageConfig()
@@ -624,6 +643,7 @@ class AppConfig(BaseModel):
     resource_budget: ResourceBudgetConfig = ResourceBudgetConfig()
     database: DatabaseConfig = DatabaseConfig()
     security_gate: SecurityGateConfig = SecurityGateConfig()
+    ui: UiConfig = UiConfig()
 
 # 全局配置实例
 _config: Optional[AppConfig] = None
