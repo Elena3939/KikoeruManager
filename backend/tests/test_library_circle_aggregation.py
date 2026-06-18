@@ -50,6 +50,7 @@ def _entry(
     rjcode: str,
     absolute_path: str = "",
     size: int = 10,
+    mtime: int = 1000,
 ) -> LibraryIndexEntry:
     return LibraryIndexEntry(
         library_id=library_id,
@@ -62,7 +63,7 @@ def _entry(
         parent_path=relative_path.rsplit("/", 1)[0] if "/" in relative_path else "",
         size=size,
         file_count=3,
-        mtime=1000,
+        mtime=mtime,
         depth=relative_path.count("/") + 1,
         indexed_at=1000,
     )
@@ -115,11 +116,14 @@ def _add_work_metadata(session, *, rjcode: str, work_name: str = "", maker_name:
 def fake_library_manager(tmp_path):
     root_a = tmp_path / "lib-a"
     root_b = tmp_path / "lib-b"
+    root_remote = tmp_path / "remote-lib"
     root_a.mkdir()
     root_b.mkdir()
+    root_remote.mkdir()
     return _FakeLibraryManager([
         SimpleNamespace(id="local-a", name="本地 A", type="local", path=str(root_a)),
         SimpleNamespace(id="local-b", name="本地 B", type="local", path=str(root_b)),
+        SimpleNamespace(id="remote-a", name="远程 A", type="synology_filestation", path=str(root_remote)),
     ])
 
 
@@ -169,6 +173,7 @@ def test_circle_aggregation_conflict_disappears_after_index_row_removed(circle_s
 
     db_session.delete(rows[1])
     db_session.commit()
+    circle_service._snapshot_cache.clear()
 
     group = circle_service.list_circle_groups()["items"][0]
     assert group["conflict_count"] == 0
@@ -183,6 +188,66 @@ def test_circle_aggregation_unknown_circle_fallback(circle_service, db_session):
 
     group = circle_service.list_circle_groups()["items"][0]
     assert group["circle_name"] == "未识别社团"
+
+
+def test_circle_summary_reports_all_active_libraries(circle_service, db_session):
+    db_session.add(_entry(library_id="local-a", relative_path="Other/RJ01000030", rjcode="RJ01000030"))
+    db_session.commit()
+
+    summary = circle_service._get_snapshot()["summary"]
+
+    assert summary["library_count"] == 3
+    assert summary["matched_library_count"] == 1
+    assert [item["library_name"] for item in summary["libraries"]] == ["本地 A", "本地 B", "远程 A"]
+    assert [item["library_name"] for item in summary["matched_libraries"]] == ["本地 A"]
+
+
+def test_circle_aggregation_infers_remote_circle_from_folder_name_before_parent_dir(circle_service, db_session):
+    db_session.add_all([
+        _entry(
+            library_id="remote-a",
+            relative_path="+Dream/[+Dream][RJ01273614] (CV MOMOKA。)",
+            rjcode="RJ01273614",
+        ),
+        _entry(
+            library_id="remote-a",
+            relative_path="ASMR/Deep;Dahlia/[Deep;Dahlia][RJ01589915](CV 涼花みなせ 浅木式)",
+            rjcode="RJ01589915",
+        ),
+        _entry(
+            library_id="remote-a",
+            relative_path="25HY/[25HY][RJ01528043](CV こやまはる)/RJ01521586",
+            rjcode="RJ01521586",
+        ),
+        _entry(
+            library_id="remote-a",
+            relative_path="20+1(ネオハタチ)/[水上][RJ01325078] (CV こやまはる 浅木式)",
+            rjcode="RJ01325078",
+        ),
+    ])
+    db_session.commit()
+
+    groups = circle_service.list_circle_groups(sort_by="name")
+    assert groups["total"] == 4
+    assert [item["circle_name"] for item in groups["items"]] == ["+Dream", "25HY", "Deep;Dahlia", "水上"]
+
+
+def test_circle_group_time_uses_latest_work_modified_time(circle_service, db_session):
+    _add_work_metadata(db_session, rjcode="RJ01000040", work_name="旧作品", maker_name="时间社团")
+    _add_work_metadata(db_session, rjcode="RJ01000041", work_name="新作品", maker_name="时间社团")
+    _add_work_metadata(db_session, rjcode="RJ01000042", work_name="别社作品", maker_name="另一个社团")
+    db_session.add_all([
+        _entry(library_id="local-a", relative_path="Old/RJ01000040", rjcode="RJ01000040", mtime=1000),
+        _entry(library_id="local-a", relative_path="New/RJ01000041", rjcode="RJ01000041", mtime=3000),
+        _entry(library_id="local-a", relative_path="Other/RJ01000042", rjcode="RJ01000042", mtime=2000),
+    ])
+    db_session.commit()
+
+    groups = circle_service.list_circle_groups(sort_by="time", sort_order="desc")
+
+    assert [item["circle_name"] for item in groups["items"]] == ["时间社团", "另一个社团"]
+    assert groups["items"][0]["modified_time"] == 3000
+    assert groups["items"][1]["modified_time"] == 2000
 
 
 def test_circle_aggregation_uses_metadata_maker_name(circle_service, db_session):

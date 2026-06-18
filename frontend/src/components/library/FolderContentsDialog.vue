@@ -16,7 +16,7 @@
             <h1 class="title truncate text-lg font-bold tracking-tight text-slate-900">
               {{ getDialogFolderName() }}
             </h1>
-            <span class="fm-badge">{{ folderContentsInfo.recursive === false && !folderContentsInfo.viaIndex ? `当前层 ${formatFileSize(folderContentsInfo.totalSize)}` : formatFileSize(folderContentsInfo.totalSize) }}</span>
+            <span class="fm-badge">{{ folderContentsInfo.recursive === false && !folderContentsInfo.viaIndex ? `当前层 ${formatFileSize(folderDisplaySize)}` : formatFileSize(folderDisplaySize) }}</span>
           </div>
           <p class="mt-1 truncate text-sm text-slate-500">
             {{ getDialogFolderPath() }}
@@ -85,7 +85,7 @@
             <button
               type="button"
               class="action-card action-card-ghost shrink-0"
-              :disabled="folderLoading || folderDeleting || !folderItems.length"
+              :disabled="folderLoading || folderDeleting || !folderItems.length || !canRunSingleRootTools"
               @click="openMojibakeRepairPreview"
             >
               <DotLottieVue
@@ -347,7 +347,8 @@ const props = defineProps({
   modelValue: { type: Boolean, default: false },
   libraryId: { type: String, default: '' },
   folderPath: { type: String, default: '' },
-  folderName: { type: String, default: '' }
+  folderName: { type: String, default: '' },
+  folderRoots: { type: Array, default: () => [] }
 })
 
 const emit = defineEmits(['update:modelValue', 'mutated'])
@@ -386,6 +387,10 @@ const treePanelRef = ref(null)
 const treeScrollRef = ref(null)
 const treeScrollbarWidth = ref(0)
 
+const folderRootEntries = computed(() => Array.isArray(props.folderRoots) ? props.folderRoots.filter(root => root?.path && root?.library_id) : [])
+const isMultiRootMode = computed(() => folderRootEntries.value.length > 0)
+const canRunSingleRootTools = computed(() => !isMultiRootMode.value && Boolean(props.libraryId && props.folderPath))
+
 const TREE_ROW_HEIGHT = 46
 const TREE_ROW_OVERSCAN = 16
 const DIRECTORY_SUMMARY_BATCH_SIZE = 4
@@ -402,6 +407,10 @@ let directorySummaryRunToken = 0
 
 const treeRoot = computed(() => buildTree(folderItems.value, folderContentsInfo.value.folderPath, folderContentsInfo.value.recursive))
 const treeIndex = computed(() => buildTreeIndex(treeRoot.value))
+const folderDisplaySize = computed(() => Math.max(
+  pickOptionalNonNegativeNumber(folderContentsInfo.value.totalSize) || 0,
+  treeRoot.value.reduce((sum, node) => sum + Number(node?.size || 0), 0),
+))
 const folderNodeById = computed(() => treeIndex.value.nodeById)
 const filteredRoot = computed(() => {
   const keyword = folderSearch.value.trim().toLowerCase()
@@ -517,6 +526,14 @@ watch(() => props.folderPath, async (nextPath, prevPath) => {
 })
 
 watch(
+  () => folderRootEntries.value.map(root => `${root.library_id}:${root.path}`).join('|'),
+  async (nextKey, prevKey) => {
+    if (!visible.value || nextKey === prevKey) return
+    await reload()
+  },
+)
+
+watch(
   () => [flatTree.value.length, folderSearch.value, expandedIds.value.size].join(':'),
   () => {
     nextTick(() => treeRowVirtualizer.value.measure())
@@ -542,12 +559,36 @@ function handleDialogKeydown (event) {
 }
 
 async function reload () {
-  if (!props.folderPath || !props.libraryId) return
+  if (!isMultiRootMode.value && (!props.folderPath || !props.libraryId)) return
   resetDirectorySummaryHydration()
   folderLoading.value = true
   try {
     const previousExpanded = new Set([...expandedIds.value].map(id => String(id).replace(/^dir:/, '')))
     const previousSelected = new Set(selectedFileIds.value)
+    if (isMultiRootMode.value) {
+      const roots = folderRootEntries.value.map(root => normalizeRootItem(root))
+      folderItems.value = roots
+      folderContentsInfo.value = {
+        folderName: props.folderName || `聚合文件管理（${roots.length} 个路径）`,
+        folderPath: '社团聚合真实路径',
+        totalFiles: roots.length,
+        totalSize: roots.reduce((sum, item) => sum + Number(item.size || 0), 0),
+        totalFolderCount: roots.length,
+        recursive: false,
+        viaIndex: true,
+      }
+
+      const validIds = new Set(roots.map(item => item.id).filter(Boolean))
+      selectedFileIds.value = new Set([...previousSelected].filter(id => validIds.has(id)))
+      expandedIds.value = new Set([...previousExpanded].map(path => `dir:${path}`).filter(id => validIds.has(id)))
+      await nextTick()
+      syncTreeScrollbarWidth()
+      treeRowVirtualizer.value.measure()
+      queueVisibleDirectorySummaries()
+      queueBackgroundDirectorySummaries()
+      return
+    }
+
     const data = await libraryApi.browserFolderContents(props.libraryId, props.folderPath, { recursive: false })
     const items = Array.isArray(data.items) ? data.items : []
     folderItems.value = items.map(item => normalizeShallowItem(item, data.folder_path || props.folderPath || ''))
@@ -555,7 +596,11 @@ async function reload () {
       folderName: data.folder_name || props.folderName || '',
       folderPath: data.folder_path || props.folderPath || '',
       totalFiles: pickNonNegativeNumber(data.total_files, items.filter(item => !(item?.is_directory || item?.type === 'dir')).length),
-      totalSize: pickNonNegativeNumber(data.total_size, data.total_size_bytes, items.reduce((sum, item) => sum + Number(item?.size || 0), 0)),
+      totalSize: pickNonNegativeNumber(
+        data.total_size,
+        data.total_size_bytes,
+        items.reduce((sum, item) => sum + Number(item?.size || 0), 0),
+      ),
       totalFolderCount: pickNonNegativeNumber(data.total_folder_count, 0),
       recursive: data.recursive !== false,
       viaIndex: Boolean(data.browse_via_index),
@@ -646,6 +691,42 @@ async function deletePaths (paths, options = {}) {
   const effectivePreviewRow = previewRow || (paths.length === 1 && previewRows.length === 1 ? previewRows[0] : null)
   folderDeleting.value = true
   try {
+    if (isMultiRootMode.value) {
+      const sourceRows = previewRows.length ? previewRows : (previewRow ? [previewRow] : [])
+      const groups = groupDeleteRowsByLibrary(sourceRows)
+      if (!groups.size) return
+
+      const previews = []
+      for (const [libraryId, rows] of groups.entries()) {
+        previews.push(await libraryApi.browserBatchDelete(libraryId, rows.map(row => resolveNodePath(row)).filter(Boolean), false))
+      }
+      const preview = mergeBatchDeletePreviews(previews, paths.length)
+      await showSystemConfirm({
+        title: paths.length > 1 ? '批量删除确认' : '删除确认',
+        message: buildBatchDeletePreviewMessage(preview, sourceRows),
+        confirmText: '确定删除',
+        cancelText: '取消',
+        tone: 'danger'
+      })
+      const results = []
+      for (const [libraryId, rows] of groups.entries()) {
+        results.push(await libraryApi.browserBatchDelete(libraryId, rows.map(row => resolveNodePath(row)).filter(Boolean), true))
+      }
+      const successCount = results.reduce((sum, item) => sum + Number(item?.success_count || 0), 0)
+      const failedCount = results.reduce((sum, item) => sum + Number(item?.failed_paths?.length || 0), 0)
+      if (failedCount) ElMessage.warning(`批量删除完成：成功 ${successCount} 项，失败 ${failedCount} 项`)
+      else ElMessage.success(`批量删除完成：成功 ${successCount} 项`)
+      const previewCounts = getRowsDeleteCounts(sourceRows)
+      emit('mutated', {
+        deletedBytes: resolveDeletePreviewSize(preview?.total_size, sourceRows.reduce((sum, row) => sum + Number(row?.size || 0), 0)),
+        deletedFolderCount: Number(preview?.total_folder_count ?? previewCounts.folderCount)
+      })
+      selectedFileIds.value = new Set()
+      folderLastSelectedId.value = ''
+      await reload()
+      return
+    }
+
     if (paths.length === 1) {
       const preview = await libraryApi.browserDelete(props.libraryId, paths[0], false)
       await showSystemConfirm({
@@ -778,6 +859,7 @@ function normalizeShallowItem (item, basePath) {
   const itemType = item?.type || (item?.is_directory ? 'dir' : 'file')
   const relativePath = item?.relative_path || item?.name || ''
   const resolvedPath = item?.path || joinFolderPath(basePath, relativePath)
+  const libraryId = item?.library_id || ''
   const rawFileCount = pickOptionalNonNegativeNumber(item?.file_count)
   const rawFolderCount = pickOptionalNonNegativeNumber(item?.folder_count)
   const childrenLoaded = itemType !== 'dir' || Boolean(item?.children_loaded)
@@ -797,7 +879,7 @@ function normalizeShallowItem (item, basePath) {
     : false
   return {
     ...item,
-    id: buildNodeId(itemType, resolvedPath || relativePath),
+    id: buildNodeId(itemType, `${libraryId}:${resolvedPath || relativePath}`),
     type: itemType,
     relative_path: relativePath,
     resolved_path: resolvedPath,
@@ -806,6 +888,29 @@ function normalizeShallowItem (item, basePath) {
     hasChildren,
     file_count: fileCount ?? (countsArePlaceholder ? null : item?.file_count),
     folder_count: folderCount ?? (countsArePlaceholder ? null : item?.folder_count),
+  }
+}
+
+function normalizeRootItem (root) {
+  const resolvedPath = root?.path || ''
+  const name = root?.name || resolvedPath.split(/[\\/]/).filter(Boolean).pop() || resolvedPath
+  const libraryName = root?.library_name || root?.library_id || ''
+  return {
+    ...root,
+    id: buildNodeId('dir', `${root?.library_id || ''}:${resolvedPath}`),
+    type: 'dir',
+    name,
+    relative_path: libraryName ? `${libraryName} / ${name}` : name,
+    resolved_path: resolvedPath,
+    library_id: root?.library_id || '',
+    library_name: libraryName,
+    size: Number(root?.size || 0),
+    modified_time: root?.modified_time || null,
+    children: [],
+    childrenLoaded: false,
+    hasChildren: true,
+    file_count: null,
+    folder_count: null,
   }
 }
 
@@ -896,12 +1001,13 @@ async function toggleExpand (node) {
 
 async function loadDirectoryChildren (node) {
   const path = resolveNodePath(node)
-  if (!path || loadingDirectoryIds.value.has(node.id)) return false
+  const libraryId = resolveNodeLibraryId(node)
+  if (!path || !libraryId || loadingDirectoryIds.value.has(node.id)) return false
   loadingDirectoryIds.value = new Set([...loadingDirectoryIds.value, node.id])
   try {
-    const data = await libraryApi.browserFolderContents(props.libraryId, path, { recursive: false })
+    const data = await libraryApi.browserFolderContents(libraryId, path, { recursive: false })
     const items = Array.isArray(data.items) ? data.items : []
-    replaceTreeNodeChildren(node.id, items.map(item => normalizeShallowItem(item, path)), data)
+    replaceTreeNodeChildren(node.id, items.map(item => ({ ...normalizeShallowItem(item, path), library_id: libraryId })), data)
     await nextTick()
     treeRowVirtualizer.value.measure()
     return true
@@ -924,7 +1030,12 @@ function replaceTreeNodeChildren (targetId, children, summary = {}) {
         node.hasChildren = children.length > 0
         const childSize = children.reduce((sum, child) => sum + Number(child?.size || 0), 0)
         const hasReadySize = Boolean(summary?.browse_via_index || node.size_status === 'ready')
-        node.size = hasReadySize ? pickNonNegativeNumber(summary?.total_size, summary?.total_size_bytes, node.size, childSize) : node.size
+        node.size = hasReadySize ? Math.max(
+          pickOptionalNonNegativeNumber(summary?.total_size) || 0,
+          pickOptionalNonNegativeNumber(summary?.total_size_bytes) || 0,
+          Number(node.size || 0),
+          childSize,
+        ) : node.size
         node.file_count = pickNonNegativeNumber(
           summary?.total_files,
           node.file_count,
@@ -982,7 +1093,7 @@ function queueBackgroundDirectorySummaries () {
 }
 
 function queueDirectorySummaries (rows = [], options = {}) {
-  if (!visible.value || !props.libraryId) return
+  if (!visible.value) return
   const additions = []
   let promotedQueuedItem = false
   const queued = new Set(queuedDirectorySummaryKeys.value)
@@ -994,12 +1105,13 @@ function queueDirectorySummaries (rows = [], options = {}) {
     if (!needsDirectorySummary(row)) continue
     const key = directorySummaryKey(row)
     const path = resolveNodePath(row)
-    if (!key || !path) continue
+    const libraryId = resolveNodeLibraryId(row)
+    if (!key || !path || !libraryId) continue
     if (loading.has(key) || completed.has(key) || failed.has(key)) continue
     if (queued.has(key)) {
       if (options.priority) {
         directorySummaryQueue = [
-          { key, id: row.id, path, libraryId: props.libraryId },
+          { key, id: row.id, path, libraryId },
           ...directorySummaryQueue.filter(item => item.key !== key),
         ]
         promotedQueuedItem = true
@@ -1007,7 +1119,7 @@ function queueDirectorySummaries (rows = [], options = {}) {
       continue
     }
     queued.add(key)
-    additions.push({ key, id: row.id, path, libraryId: props.libraryId })
+    additions.push({ key, id: row.id, path, libraryId })
   }
 
   if (!additions.length && !promotedQueuedItem) return
@@ -1272,6 +1384,10 @@ function resolveNodePath (row) {
   return row?.resolved_path || row?.path || ''
 }
 
+function resolveNodeLibraryId (row) {
+  return row?.library_id || props.libraryId || ''
+}
+
 function isDirectoryLoading (row) {
   return Boolean(row?.id && loadingDirectoryIds.value.has(row.id))
 }
@@ -1533,6 +1649,31 @@ function getRowsDeleteCounts (rows = []) {
     result.fileCount += counts.fileCount
     return result
   }, { folderCount: 0, fileCount: 0 })
+}
+
+function groupDeleteRowsByLibrary (rows = []) {
+  const groups = new Map()
+  for (const row of rows || []) {
+    const libraryId = resolveNodeLibraryId(row)
+    const path = resolveNodePath(row)
+    if (!libraryId || !path) continue
+    if (!groups.has(libraryId)) groups.set(libraryId, [])
+    groups.get(libraryId).push(row)
+  }
+  return groups
+}
+
+function mergeBatchDeletePreviews (previews = [], totalCount = 0) {
+  const validPreviews = previews.filter(item => item && typeof item === 'object')
+  const sizeDisabled = validPreviews.some(item => Boolean(item.size_disabled))
+  return {
+    total_count: totalCount,
+    total_size: sizeDisabled
+      ? null
+      : validPreviews.reduce((sum, item) => sum + Number(item.total_size || 0), 0),
+    total_folder_count: validPreviews.reduce((sum, item) => sum + Number(item.total_folder_count || 0), 0),
+    size_disabled: sizeDisabled,
+  }
 }
 
 function resolveDeletePreviewSize (previewSize, fallbackSize = 0) {

@@ -145,6 +145,7 @@ def test_circle_browser_root_does_not_build_every_group_work(monkeypatch):
             "folder_count": 1,
             "conflict_count": 0,
             "total_size": 12,
+            "modified_time": 3000,
             "categories": [],
             "rjcodes": ["RJ01045951"],
         }],
@@ -160,3 +161,4 @@ def test_circle_browser_root_does_not_build_every_group_work(monkeypatch):
 
     assert payload["files"][0]["circle_row_type"] == "group"
     assert payload["files"][0]["name"] == "Clover Voice"
+    assert payload["files"][0]["modified_time"] == 3000

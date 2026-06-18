@@ -72,6 +72,52 @@ def _top_category(relative_path: Any) -> str:
     return normalized.split("/", 1)[0]
 
 
+def _infer_circle_name_from_bracketed_folder(value: Any, rjcode: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    normalized_rjcode = _normalize_rjcode(rjcode)
+    matches = re.findall(r"\[([^\[\]]+)\]", text)
+    if len(matches) < 2:
+        return ""
+    for index in range(len(matches) - 1):
+        if _normalize_rjcode(matches[index + 1]) == normalized_rjcode:
+            return str(matches[index] or "").strip()
+    return ""
+
+
+def _infer_circle_name_from_remote_path(relative_path: Any, rjcode: Any, folder_name: Any = "") -> str:
+    name_circle = _infer_circle_name_from_bracketed_folder(folder_name, rjcode)
+    if name_circle:
+        return name_circle
+
+    parts = [part.strip() for part in _normalize_path(relative_path).split("/") if part.strip()]
+    if len(parts) < 2:
+        return ""
+
+    normalized_rjcode = _normalize_rjcode(rjcode)
+    for index, part in enumerate(parts):
+        matched_rjcode = _normalize_rjcode(part)
+        if not matched_rjcode:
+            continue
+        if normalized_rjcode and matched_rjcode != normalized_rjcode:
+            continue
+        path_circle = _infer_circle_name_from_bracketed_folder(part, normalized_rjcode)
+        if path_circle:
+            return path_circle
+        if index <= 0:
+            return ""
+        parent_index = index - 1
+        while parent_index > 0 and _normalize_rjcode(parts[parent_index]):
+            parent_index -= 1
+        return parts[parent_index].strip()
+
+    parent_index = len(parts) - 2
+    while parent_index > 0 and _normalize_rjcode(parts[parent_index]):
+        parent_index -= 1
+    return parts[parent_index].strip()
+
+
 def _safe_int(value: Any) -> int:
     try:
         return int(value or 0)
@@ -393,11 +439,20 @@ class LibraryCircleAggregationService:
             return self._snapshot_cache["payload"]
 
         rows = self._load_index_work_rows()
-        identities = self._load_circle_identities({row["rjcode"] for row in rows})
+        library_summary_items = self._load_active_library_summary_items()
+        path_identities: dict[int, _CircleIdentity] = {}
+        metadata_rjcodes: set[str] = set()
+        for index, row in enumerate(rows):
+            path_identity = self._identity_from_remote_path(row)
+            if path_identity:
+                path_identities[index] = path_identity
+            else:
+                metadata_rjcodes.add(row["rjcode"])
+        identities = self._load_circle_identities(metadata_rjcodes)
         builders: dict[str, dict[str, Any]] = {}
         rows_by_group: dict[str, list[dict[str, Any]]] = {}
-        for row in rows:
-            identity = identities.get(row["rjcode"]) or self._unknown_identity()
+        for index, row in enumerate(rows):
+            identity = path_identities.get(index) or identities.get(row["rjcode"]) or self._unknown_identity()
             builder = builders.setdefault(
                 identity.key,
                 {
@@ -410,6 +465,7 @@ class LibraryCircleAggregationService:
                     "_categories": set(),
                     "folder_count": 0,
                     "total_size": 0,
+                    "modified_time": None,
                 },
             )
             rjcode = row["rjcode"]
@@ -419,6 +475,9 @@ class LibraryCircleAggregationService:
                 builder["_categories"].add(row["top_category"])
             builder["folder_count"] += 1
             builder["total_size"] += row["size"]
+            row_modified_time = _safe_int(row.get("modified_time"))
+            if row_modified_time and row_modified_time > _safe_int(builder.get("modified_time")):
+                builder["modified_time"] = row_modified_time
             rows_by_group.setdefault(identity.key, []).append(row)
 
         groups: list[dict[str, Any]] = []
@@ -433,6 +492,7 @@ class LibraryCircleAggregationService:
                 "folder_count": int(builder["folder_count"] or 0),
                 "conflict_count": conflict_count,
                 "total_size": int(builder["total_size"] or 0),
+                "modified_time": _safe_int(builder.get("modified_time")) or None,
                 "categories": sorted(builder["_categories"], key=str.casefold),
                 "rjcodes": sorted(builder["_rjcodes"]),
             }
@@ -440,6 +500,19 @@ class LibraryCircleAggregationService:
             groups_by_key[key] = group
 
         total_size = sum(int(group.get("total_size") or 0) for group in groups)
+        matched_libraries_by_id = {
+            str(row.get("library_id") or ""): {
+                "library_id": str(row.get("library_id") or ""),
+                "library_name": str(row.get("library_name") or row.get("library_id") or ""),
+                "library_type": str(row.get("library_type") or ""),
+            }
+            for row in rows
+            if str(row.get("library_id") or "")
+        }
+        matched_libraries = sorted(
+            matched_libraries_by_id.values(),
+            key=lambda item: (str(item.get("library_type") or ""), str(item.get("library_name") or "").casefold()),
+        )
         summary = {
             "group_count": len(groups),
             "work_count": sum(int(group.get("work_count") or 0) for group in groups),
@@ -448,7 +521,10 @@ class LibraryCircleAggregationService:
             "total_size": total_size,
             "total_size_bytes": total_size,
             "total_size_gb": round(total_size / (1024**3), 2),
-            "library_count": len({row["library_id"] for row in rows}),
+            "library_count": len(library_summary_items),
+            "matched_library_count": len(matched_libraries),
+            "libraries": library_summary_items,
+            "matched_libraries": matched_libraries,
         }
         payload = {
             "groups": groups,
@@ -483,6 +559,8 @@ class LibraryCircleAggregationService:
     def _sort_groups(groups: list[dict[str, Any]], *, sort_by: str, sort_order: str) -> list[dict[str, Any]]:
         reverse = str(sort_order or "asc").lower() == "desc"
         sort_key_name = str(sort_by or "name").lower()
+        if sort_key_name == "modified_time":
+            sort_key_name = "time"
         items = list(groups)
         if sort_key_name == "work_count":
             items.sort(key=lambda item: (item["work_count"], item["circle_name"].casefold()), reverse=reverse)
@@ -490,6 +568,8 @@ class LibraryCircleAggregationService:
             items.sort(key=lambda item: (item["conflict_count"], item["circle_name"].casefold()), reverse=reverse)
         elif sort_key_name in {"size", "total_size"}:
             items.sort(key=lambda item: (item["total_size"], item["circle_name"].casefold()), reverse=reverse)
+        elif sort_key_name == "time":
+            items.sort(key=lambda item: (_safe_int(item.get("modified_time")), item["circle_name"].casefold()), reverse=reverse)
         else:
             items.sort(key=lambda item: item["circle_name"].casefold(), reverse=reverse)
         return items
@@ -689,7 +769,7 @@ class LibraryCircleAggregationService:
             "size_status": "ready",
             "file_count": int(group.get("work_count") or 0),
             "folder_count": int(group.get("folder_count") or 0),
-            "modified_time": None,
+            "modified_time": _safe_int(group.get("modified_time")) or None,
             "circle_virtual": True,
             "circle_row_type": "group",
             "circle_key": group.get("circle_key") or "",
@@ -719,7 +799,7 @@ class LibraryCircleAggregationService:
             "size_status": "ready",
             "file_count": int(work.get("file_count") or 0),
             "folder_count": int(work.get("folder_count") or len(locations) or 0),
-            "modified_time": primary_location.get("modified_time") if primary_location else None,
+            "modified_time": _safe_int(work.get("modified_time")) or (primary_location.get("modified_time") if primary_location else None),
             "library_id": "" if conflict else str(primary_location.get("library_id") or ""),
             "library_name": "" if conflict else str(primary_location.get("library_name") or ""),
             "parent_path": _circle_group_path(group_key),
@@ -1001,6 +1081,24 @@ class LibraryCircleAggregationService:
         })
         return payload
 
+    def _load_active_library_summary_items(self) -> list[dict[str, str]]:
+        manager = get_library_manager()
+        libraries = manager._active_libraries()
+        items = [
+            {
+                "library_id": str(library.id or ""),
+                "library_name": str(library.name or library.id or ""),
+                "library_type": str(library.type or ""),
+            }
+            for library in libraries
+            if str(library.id or "")
+        ]
+        return sorted(items, key=lambda item: (
+            0 if item["library_type"] == "local" else 1,
+            item["library_name"].casefold(),
+            item["library_id"].casefold(),
+        ))
+
     def _load_index_work_rows(self) -> list[dict[str, Any]]:
         manager = get_library_manager()
         active_libraries = manager._active_libraries()
@@ -1013,7 +1111,16 @@ class LibraryCircleAggregationService:
         db = SessionLocal()
         try:
             query = (
-                db.query(LibraryIndexEntry)
+                db.query(
+                    LibraryIndexEntry.library_id,
+                    LibraryIndexEntry.rjcode,
+                    LibraryIndexEntry.absolute_path,
+                    LibraryIndexEntry.relative_path,
+                    LibraryIndexEntry.name,
+                    LibraryIndexEntry.size,
+                    LibraryIndexEntry.file_count,
+                    LibraryIndexEntry.mtime,
+                )
                 .filter(
                     LibraryIndexEntry.library_id.in_(active_ids),
                     LibraryIndexEntry.entry_type == "dir",
@@ -1028,7 +1135,7 @@ class LibraryCircleAggregationService:
                 )
             )
             seen: set[tuple[str, str, str]] = set()
-            for entry in query.all():
+            for entry in query.yield_per(1000):
                 rjcode = _normalize_rjcode(entry.rjcode)
                 if not rjcode:
                     continue
@@ -1152,6 +1259,7 @@ class LibraryCircleAggregationService:
                     "file_count": 0,
                     "categories": set(),
                     "locations": [],
+                    "modified_time": None,
                 },
             )
             if row["top_category"]:
@@ -1159,6 +1267,9 @@ class LibraryCircleAggregationService:
             item["folder_count"] += 1
             item["total_size"] += row["size"]
             item["file_count"] += row["file_count"]
+            row_modified_time = _safe_int(row.get("modified_time"))
+            if row_modified_time and row_modified_time > _safe_int(item.get("modified_time")):
+                item["modified_time"] = row_modified_time
             item["locations"].append({
                 "library_id": row["library_id"],
                 "library_name": row["library_name"],
@@ -1184,6 +1295,7 @@ class LibraryCircleAggregationService:
             item["primary_category"] = categories[0] if categories else ""
             item["primary_path"] = item["locations"][0]["path"] if item["locations"] else ""
             item["primary_library_id"] = item["locations"][0]["library_id"] if item["locations"] else ""
+            item["modified_time"] = _safe_int(item.get("modified_time")) or None
             item["conflict"] = len(item["locations"]) > 1
             items.append(item)
         return items
@@ -1238,6 +1350,15 @@ class LibraryCircleAggregationService:
             circle_name=name,
             sort_key=name.casefold(),
         )
+
+    def _identity_from_remote_path(self, row: dict[str, Any]) -> Optional[_CircleIdentity]:
+        library_type = str(row.get("library_type") or "").strip()
+        if library_type != "synology_filestation":
+            return None
+        circle_name = _infer_circle_name_from_remote_path(row.get("relative_path"), row.get("rjcode"), row.get("name"))
+        if not circle_name:
+            return None
+        return self._identity_from_values("", circle_name)
 
     def _unknown_identity(self) -> _CircleIdentity:
         return _CircleIdentity(
