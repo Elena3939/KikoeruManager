@@ -1060,6 +1060,7 @@ export const libraryApi = {
     const response = await apiClient.post('/library/browser/filter-delete-preview', {
       library_id: libraryId,
       path,
+      target_items: options.targetItems || undefined,
       request_id: options.requestId || undefined,
       rules: options.rules || undefined
     }, {
@@ -1073,6 +1074,7 @@ export const libraryApi = {
     const response = await apiClient.post('/library/browser/filter-delete-preview/start', {
       library_id: libraryId,
       path,
+      target_items: options.targetItems || undefined,
       rules: options.rules || undefined
     }, {
       timeout: FILTER_DELETE_PREVIEW_TIMEOUT
@@ -1226,6 +1228,17 @@ export const libraryApi = {
     const response = await apiClient.post('/library/browser/batch-delete', {
       library_id: libraryId,
       paths,
+      confirmed,
+      skip_activity_log: options.skipActivityLog ?? false,
+      batch_id: options.batchId || '',
+      known_items: options.knownItems || []
+    })
+    return response.data
+  },
+
+  browserBatchDeleteTargets: async (targets, confirmed = false, options = {}) => {
+    const response = await apiClient.post('/library/browser/batch-delete-targets', {
+      targets,
       confirmed,
       skip_activity_log: options.skipActivityLog ?? false,
       batch_id: options.batchId || '',

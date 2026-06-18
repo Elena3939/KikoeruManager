@@ -173,9 +173,9 @@
               <span class="tree-sort-mark">{{ getFilterDeleteSortMark('size') }}</span>
             </button>
             
-            <button v-if="!filterDeleteBasicTreeOnly" type="button" class="tree-col-time tree-col-time-button hover:text-slate-700 transition-colors cursor-pointer" @click="toggleFilterDeleteSort('modified_time')">
-              <span class="tree-col-time-label">{{ text.timeAndRule }}</span>
-              <span class="tree-col-time-sort">{{ getFilterDeleteSortMark('modified_time') }}</span>
+            <button v-if="!filterDeleteBasicTreeOnly" type="button" class="tree-head-time tree-sort-button hover:text-slate-700 transition-colors cursor-pointer" @click="toggleFilterDeleteSort('modified_time')">
+              <span class="tree-head-sort-label">{{ text.timeAndRule }}</span>
+              <span class="tree-sort-mark">{{ getFilterDeleteSortMark('modified_time') }}</span>
             </button>
           </div>
 
@@ -363,6 +363,7 @@ const props = defineProps({
   libraryId: { type: String, default: '' },
   currentPath: { type: String, default: '' },
   targetPaths: { type: Array, default: () => [] },
+  targetItems: { type: Array, default: () => [] },
   rules: { type: Array, default: () => [] },
   scopeLabel: { type: String, default: '' },
   isRemote: { type: Boolean, default: false },
@@ -590,7 +591,7 @@ const canConfirmFilterDelete = computed(() => filterDeletePreviewInfo.value.stat
 const filterDeleteSessionKey = computed(() => JSON.stringify({
   libraryId: props.libraryId || '',
   currentPath: props.currentPath || '',
-  targetPaths: effectivePreviewTargetPaths.value,
+  targetItems: effectivePreviewTargetItems.value.map(item => ({ library_id: item.library_id, path: item.path })),
   rules: props.rules || [],
   isRemote: !!props.isRemote
 }))
@@ -644,8 +645,31 @@ const filterDeleteScanText = computed(() => {
 })
 const filterDeleteLoadingText = computed(() => filterDeleteDeleting.value ? (filterDeletePreviewInfo.value.progressMessage || '\u6b63\u5728\u5220\u9664\u8fc7\u6ee4\u547d\u4e2d\u9879\u2026') : (filterDeletePreviewInfo.value.progressMessage || text.loadingPreview))
 const filterDeleteDisplayBasePath = computed(() => normalizeDisplayPath(props.currentPath || filterDeletePreviewInfo.value.folderPath || ''))
+const effectivePreviewTargetItems = computed(() => {
+  const seen = new Set()
+  const items = []
+  const rawItems = Array.isArray(props.targetItems) && props.targetItems.length
+    ? props.targetItems
+    : (props.targetPaths || []).map(path => ({ library_id: props.libraryId, path }))
+  for (const item of rawItems || []) {
+    const libraryId = String(item?.library_id || props.libraryId || '').trim()
+    const path = String(item?.path || '').trim()
+    if (!libraryId || !path) continue
+    const key = `${libraryId}::${path}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    items.push({
+      ...item,
+      library_id: libraryId,
+      path,
+      name: item?.name || getFileName(path),
+      is_remote: Boolean(item?.is_remote),
+    })
+  }
+  return items
+})
 const effectivePreviewTargetPaths = computed(() => {
-  const normalized = [...new Set((props.targetPaths || []).map(item => String(item || '').trim()).filter(Boolean))]
+  const normalized = [...new Set(effectivePreviewTargetItems.value.map(item => item.path).filter(Boolean))]
   if (normalized.length) return normalized
   return props.currentPath ? [props.currentPath] : []
 })
@@ -938,6 +962,9 @@ function applyFilterDeletePreviewData (data, options = {}) {
     filterDeleteItems.value = nextItems
     restoreFilterDeleteSelectionState(nextItems, { preserveSelection })
   }
+  if (Array.isArray(data?.failed_targets)) {
+    filterDeleteFailedTargets.value = data.failed_targets
+  }
   filterDeletePreviewInfo.value = {
     ...filterDeletePreviewInfo.value,
     folderName: props.scopeLabel || getFileName(props.currentPath) || data?.folder_name || filterDeletePreviewInfo.value.folderName || text.currentFolder,
@@ -1015,13 +1042,14 @@ async function cancelFilterDeletePreview (options = {}) {
 }
 
 async function loadFilterDeletePreview () {
-  if (!effectivePreviewTargetPaths.value.length || !props.libraryId) return
+  const targetItems = effectivePreviewTargetItems.value
+  if (!targetItems.length) return
   clearFilterDeletePoll()
   filterDeleteLoadedSessionKey.value = filterDeleteSessionKey.value
   filterDeleteStartedAt.value = Date.now()
   filterDeletePreviewLoggedSessionKey.value = ''
-  filterDeletePreviewTargetIndex.value = effectivePreviewTargetPaths.value.length ? 1 : 0
-  filterDeletePreviewTargetTotal.value = effectivePreviewTargetPaths.value.length
+  filterDeletePreviewTargetIndex.value = targetItems.length ? 1 : 0
+  filterDeletePreviewTargetTotal.value = targetItems.length
   resetFilterDeleteScroll()
   filterDeleteJobId.value = ''
   filterDeleteDeleteCancelRequested.value = false
@@ -1043,10 +1071,10 @@ async function loadFilterDeletePreview () {
     status: 'pending',
     scannedEntries: 0,
     discoveredEntries: 0,
-    pendingDirectories: effectivePreviewTargetPaths.value.length,
-    currentPath: props.currentPath || effectivePreviewTargetPaths.value[0] || '',
-    progressMessage: effectivePreviewTargetPaths.value.length > 1
-      ? `正在创建当前页删除过滤预审任务（1 / ${effectivePreviewTargetPaths.value.length}）…`
+    pendingDirectories: targetItems.length,
+    currentPath: props.currentPath || targetItems[0]?.path || '',
+    progressMessage: targetItems.length > 1
+      ? `正在创建当前页删除过滤预审任务（1 / ${targetItems.length}）…`
       : '\u6b63\u5728\u521b\u5efa\u5220\u9664\u8fc7\u6ee4\u9884\u5ba1\u4efb\u52a1\u2026',
     warning: '',
     error: '',
@@ -1055,102 +1083,18 @@ async function loadFilterDeletePreview () {
     deleteFailed: 0
   }
   try {
-    if (effectivePreviewTargetPaths.value.length === 1) {
-      const data = await libraryApi.startFilterDeletePreviewJob(props.libraryId, effectivePreviewTargetPaths.value[0], {
-        rules: props.rules
-      })
-      filterDeleteJobId.value = data?.job_id || ''
-      applyFilterDeletePreviewData(data)
-      if (String(data?.status || '') === 'error') {
-        filterDeleteFailedTargets.value = [{
-          path: effectivePreviewTargetPaths.value[0],
-          error: data?.error || '预审失败'
-        }]
-      }
-      if (['pending', 'running'].includes(data?.status || 'pending')) await pollFilterDeletePreviewStatus(filterDeleteJobId.value)
-      else filterDeleteLoading.value = false
-      await writeFilterDeletePreviewActivityLog()
-      return
-    }
-
-    const mergedItems = []
-    let mergedSelectedCount = 0
-    let mergedSelectedSize = 0
-    let mergedScannedEntries = 0
-    let mergedDiscoveredEntries = 0
-    let mergedRuleCount = 0
-    let hasPartialSize = false
-    let hasBasicTreeOnly = false
-    let hasTruncated = false
-    let hasError = false
-    let hasCancelled = false
-    const failedTargets = []
-    const warnings = []
-    const errors = []
-
-    for (let index = 0; index < effectivePreviewTargetPaths.value.length; index += 1) {
-      const targetPath = effectivePreviewTargetPaths.value[index]
-      filterDeletePreviewTargetIndex.value = index + 1
-      filterDeletePreviewTargetTotal.value = effectivePreviewTargetPaths.value.length
-      filterDeletePreviewInfo.value = {
-        ...filterDeletePreviewInfo.value,
-        currentPath: displayFilterDeletePath(targetPath),
-        pendingDirectories: Math.max(0, effectivePreviewTargetPaths.value.length - index),
-        progressMessage: `正在预审 ${index + 1} / ${effectivePreviewTargetPaths.value.length}: ${getFileName(targetPath) || targetPath}`
-      }
-      const data = await libraryApi.startFilterDeletePreviewJob(props.libraryId, targetPath, {
-        rules: props.rules
-      })
-      let finalData = data
-      if (['pending', 'running'].includes(data?.status || 'pending') && data?.job_id) {
-        finalData = await waitForFilterDeletePreviewJob(data.job_id, targetPath, index, effectivePreviewTargetPaths.value.length)
-      }
-      mergedItems.push(...(Array.isArray(finalData?.items) ? finalData.items : []))
-      mergedSelectedCount += Number(finalData?.selected_count || 0)
-      mergedSelectedSize += Number(finalData?.selected_size || 0)
-      mergedScannedEntries += Number(finalData?.scanned_entries || 0)
-      mergedDiscoveredEntries += Number(finalData?.discovered_entries || 0)
-      mergedRuleCount = Math.max(mergedRuleCount, Array.isArray(finalData?.rules) ? finalData.rules.length : Number(finalData?.rule_count || 0))
-      hasPartialSize = hasPartialSize || finalData?.selected_size_exact === false
-      hasBasicTreeOnly = hasBasicTreeOnly || finalData?.size_disabled === true
-      hasTruncated = hasTruncated || !!finalData?.truncated
-      hasError = hasError || finalData?.status === 'error'
-      hasCancelled = hasCancelled || finalData?.status === 'canceled'
-      if (finalData?.warning) warnings.push(finalData.warning)
-      if (finalData?.error) errors.push(finalData.error)
-      if (finalData?.status === 'error') {
-        failedTargets.push({
-          path: targetPath,
-          error: finalData?.error || '预审失败'
-        })
-      }
-    }
-
-    filterDeleteFailedTargets.value = failedTargets
-
-    applyFilterDeletePreviewData({
-      folder_name: props.scopeLabel || text.currentFolder,
-      folder_path: props.currentPath,
-      items: mergedItems,
-      selected_count: mergedSelectedCount,
-      selected_size: mergedSelectedSize,
-      selected_size_exact: !hasPartialSize,
-      size_disabled: hasBasicTreeOnly,
-      truncated: hasTruncated,
-      rule_count: mergedRuleCount,
-      scanned_entries: mergedScannedEntries,
-      discovered_entries: mergedDiscoveredEntries,
-      pending_directories: 0,
-      current_path: '',
-      progress_message: hasError
-        ? `预审结束，但有 ${errors.length || 1} 个目录预审失败`
-        : hasCancelled
-          ? `预审已取消，已处理 ${effectivePreviewTargetPaths.value.length} 个目录中的一部分`
-          : `预审完成，共处理 ${effectivePreviewTargetPaths.value.length} 个目录`,
-      warning: warnings.filter(Boolean).join('；'),
-      error: errors.filter(Boolean).join('；'),
-      status: hasError ? 'error' : (hasCancelled ? 'canceled' : 'completed')
+    const data = await libraryApi.startFilterDeletePreviewJob(targetItems[0]?.library_id || props.libraryId, targetItems[0]?.path || props.currentPath, {
+      rules: props.rules,
+      targetItems
     })
+    filterDeleteJobId.value = data?.job_id || ''
+    applyFilterDeletePreviewData(data)
+    filterDeleteFailedTargets.value = Array.isArray(data?.failed_targets) ? data.failed_targets : []
+    if (['pending', 'running'].includes(data?.status || 'pending') && filterDeleteJobId.value) {
+      await pollFilterDeletePreviewStatus(filterDeleteJobId.value)
+    } else {
+      filterDeleteLoading.value = false
+    }
     filterDeleteLoading.value = false
     await writeFilterDeletePreviewActivityLog()
   } catch (error) {
@@ -1170,94 +1114,56 @@ async function loadFilterDeletePreview () {
 }
 
 async function retryFailedFilterDeleteTargets () {
-  if (filterDeleteBusy.value || !filterDeleteFailedTargets.value.length || !props.libraryId) return
+  if (filterDeleteBusy.value || !filterDeleteFailedTargets.value.length) return
   const failedTargets = [...filterDeleteFailedTargets.value]
   const retryStartedAt = Date.now()
   filterDeleteLoading.value = true
-  const recoveredItems = []
-  let recoveredSelectedCount = 0
-  let recoveredSelectedSize = 0
-  let recoveredScannedEntries = 0
-  let recoveredDiscoveredEntries = 0
-  let recoveredRuleCount = Number(filterDeletePreviewInfo.value.ruleCount || 0)
-  let recoveredHasPartialSize = filterDeletePreviewInfo.value.selectedSizeExact === false
-  let recoveredHasBasicTreeOnly = filterDeletePreviewInfo.value.sizeDisabled === true
-  let recoveredHasTruncated = !!filterDeletePreviewInfo.value.truncated
-  const nextFailedTargets = []
-  const retryWarnings = []
-  const retryErrors = []
 
   try {
-    for (let index = 0; index < failedTargets.length; index += 1) {
-      const target = failedTargets[index]
-      filterDeletePreviewInfo.value = {
-        ...filterDeletePreviewInfo.value,
-        status: 'running',
-        currentPath: displayFilterDeletePath(target.path),
-        progressMessage: `正在重试失败预审 ${index + 1} / ${failedTargets.length}: ${getFileName(target.path) || target.path}`
-      }
-      try {
-        const data = await libraryApi.startFilterDeletePreviewJob(props.libraryId, target.path, {
-          rules: props.rules
-        })
-        let finalData = data
-        if (['pending', 'running'].includes(data?.status || 'pending') && data?.job_id) {
-          finalData = await waitForFilterDeletePreviewJob(data.job_id, target.path, index, failedTargets.length)
-        }
-        if (finalData?.status === 'error') {
-          nextFailedTargets.push({
-            path: target.path,
-            error: finalData?.error || '预审失败'
-          })
-          if (finalData?.error) retryErrors.push(finalData.error)
-          continue
-        }
-        recoveredItems.push(...(Array.isArray(finalData?.items) ? finalData.items : []))
-        recoveredSelectedCount += Number(finalData?.selected_count || 0)
-        recoveredSelectedSize += Number(finalData?.selected_size || 0)
-        recoveredScannedEntries += Number(finalData?.scanned_entries || 0)
-        recoveredDiscoveredEntries += Number(finalData?.discovered_entries || 0)
-        recoveredRuleCount = Math.max(
-          recoveredRuleCount,
-          Array.isArray(finalData?.rules) ? finalData.rules.length : Number(finalData?.rule_count || 0)
-        )
-        recoveredHasPartialSize = recoveredHasPartialSize || finalData?.selected_size_exact === false
-        recoveredHasBasicTreeOnly = recoveredHasBasicTreeOnly || finalData?.size_disabled === true
-        recoveredHasTruncated = recoveredHasTruncated || !!finalData?.truncated
-        if (finalData?.warning) retryWarnings.push(finalData.warning)
-      } catch (error) {
-        nextFailedTargets.push({
-          path: target.path,
-          error: error?.response?.data?.detail || error?.message || '预审失败'
-        })
-        retryErrors.push(error?.response?.data?.detail || error?.message || '预审失败')
-      }
+    const retryTargetItems = failedTargets
+      .map(item => ({
+        library_id: item.library_id || props.libraryId,
+        library_name: item.library_name || '',
+        path: item.path,
+        name: item.name || getFileName(item.path),
+      }))
+      .filter(item => item.library_id && item.path)
+    const data = await libraryApi.startFilterDeletePreviewJob(retryTargetItems[0]?.library_id || props.libraryId, retryTargetItems[0]?.path || props.currentPath, {
+      rules: props.rules,
+      targetItems: retryTargetItems,
+    })
+    filterDeleteJobId.value = data?.job_id || ''
+    let finalData = data
+    if (['pending', 'running'].includes(data?.status || 'pending') && data?.job_id) {
+      finalData = await waitForFilterDeletePreviewJob(data.job_id, retryTargetItems[0]?.path || '', 0, retryTargetItems.length || 1)
     }
-
-    const mergedItemMap = new Map(filterDeleteItems.value.map(item => [item.id, item]))
+    const recoveredItems = Array.isArray(finalData?.items) ? normalizeFilterDeletePreviewItems(finalData.items) : []
+    const nextFailedTargets = Array.isArray(finalData?.failed_targets) ? finalData.failed_targets : []
+    const mergedItemMap = new Map(filterDeleteItems.value.map(item => [filterDeleteItemKey(item), item]))
     recoveredItems.forEach(item => {
-      if (item?.id) mergedItemMap.set(item.id, item)
+      const key = filterDeleteItemKey(item)
+      if (key) mergedItemMap.set(key, item)
     })
     filterDeleteFailedTargets.value = nextFailedTargets
     applyFilterDeletePreviewData({
       folder_name: filterDeletePreviewInfo.value.folderName,
       folder_path: filterDeletePreviewInfo.value.folderPath,
       items: [...mergedItemMap.values()],
-      selected_count: Number(filterDeletePreviewInfo.value.selectedCount || 0) + recoveredSelectedCount,
-      selected_size: Number(filterDeletePreviewInfo.value.selectedSize || 0) + recoveredSelectedSize,
-      selected_size_exact: !recoveredHasPartialSize,
-      size_disabled: recoveredHasBasicTreeOnly,
-      truncated: recoveredHasTruncated,
-      rule_count: recoveredRuleCount,
-      scanned_entries: Number(filterDeletePreviewInfo.value.scannedEntries || 0) + recoveredScannedEntries,
-      discovered_entries: Number(filterDeletePreviewInfo.value.discoveredEntries || 0) + recoveredDiscoveredEntries,
+      selected_count: Number(filterDeletePreviewInfo.value.selectedCount || 0) + Number(finalData?.selected_count || 0),
+      selected_size: Number(filterDeletePreviewInfo.value.selectedSize || 0) + Number(finalData?.selected_size || 0),
+      selected_size_exact: filterDeletePreviewInfo.value.selectedSizeExact !== false && finalData?.selected_size_exact !== false,
+      size_disabled: filterDeletePreviewInfo.value.sizeDisabled === true || finalData?.size_disabled === true,
+      truncated: !!filterDeletePreviewInfo.value.truncated || !!finalData?.truncated,
+      rule_count: Math.max(Number(filterDeletePreviewInfo.value.ruleCount || 0), Array.isArray(finalData?.rules) ? finalData.rules.length : Number(finalData?.rule_count || 0)),
+      scanned_entries: Number(filterDeletePreviewInfo.value.scannedEntries || 0) + Number(finalData?.scanned_entries || 0),
+      discovered_entries: Number(filterDeletePreviewInfo.value.discoveredEntries || 0) + Number(finalData?.discovered_entries || 0),
       pending_directories: nextFailedTargets.length,
       current_path: '',
       progress_message: nextFailedTargets.length
         ? `重试完成，仍有 ${nextFailedTargets.length} 个目录预审失败`
         : `失败项重试完成，已补回 ${recoveredItems.length} 个命中项`,
-      warning: retryWarnings.filter(Boolean).join('；'),
-      error: retryErrors.filter(Boolean).join('；'),
+      warning: finalData?.warning || '',
+      error: finalData?.error || '',
       status: nextFailedTargets.length ? 'error' : 'completed'
     }, { preserveSelection: true })
     await activityLogApi.logFilterDelete({
@@ -1272,24 +1178,26 @@ async function retryFailedFilterDeleteTargets () {
       retry_success_count: failedTargets.length - nextFailedTargets.length,
       retry_failed_count: nextFailedTargets.length,
       recovered_item_count: recoveredItems.length,
-      recovered_selected_size: recoveredSelectedSize,
+      recovered_selected_size: Number(finalData?.selected_size || 0),
       retry_targets: failedTargets.map(item => ({
         path: item.path,
+        library_id: item.library_id || props.libraryId,
         name: getFileName(item.path),
         type: 'dir',
-        status: nextFailedTargets.some(target => target.path === item.path) ? 'failed' : 'success',
+        status: nextFailedTargets.some(target => filterDeleteTargetKey(target) === filterDeleteTargetKey(item)) ? 'failed' : 'success',
         error: item.error || ''
       })),
       recovered_items: recoveredItems,
       failed_targets: nextFailedTargets.map(item => ({
         path: item.path,
+        library_id: item.library_id || props.libraryId,
         name: getFileName(item.path),
         type: 'dir',
         status: 'failed',
         error: item.error || '预审失败'
       })),
-      warning: retryWarnings.filter(Boolean).join('；'),
-      error: retryErrors.filter(Boolean).join('；')
+      warning: finalData?.warning || '',
+      error: finalData?.error || ''
     })
     if (nextFailedTargets.length) {
       ElMessage.warning(`失败项重试完成，仍有 ${nextFailedTargets.length} 个目录失败`)
@@ -1463,12 +1371,14 @@ function normalizeFilterDeletePreviewItems (items) {
       if (!item) return null
       const type = item.type === 'dir' ? 'dir' : 'file'
       const path = String(item.path || item.delete_path || '').trim()
+      const libraryId = String(item.library_id || props.libraryId || '').trim()
+      const targetKey = String(item.target_key || `${libraryId}::${normalizeFilterDeleteComparePath(item.target_root_path || '')}`).trim()
       const relativePath = String(item.relative_path || item.name || getFileName(path) || `item-${index + 1}`)
         .replace(/\\/g, '/')
         .replace(/^\/+/, '')
       const deletePath = String(item.delete_path || path || '').trim()
       const baseIdSource = normalizeFilterDeleteComparePath(deletePath || path || relativePath) || `${type}:${index}`
-      const baseId = `${type}:${baseIdSource}`
+      const baseId = `${libraryId}:${type}:${baseIdSource}`
       let id = baseId
       let duplicateIndex = 2
       while (usedIds.has(id)) {
@@ -1479,6 +1389,9 @@ function normalizeFilterDeletePreviewItems (items) {
       return {
         ...item,
         id,
+        library_id: libraryId,
+        library_name: item.library_name || '',
+        target_key: targetKey,
         type,
         name: item.name || getFileName(relativePath) || getFileName(path) || relativePath,
         path,
@@ -1536,24 +1449,53 @@ function normalizeFilterDeleteComparePath (path) {
   return normalized || '/'
 }
 
-function isFilterDeletePathRemoved (candidatePath, removedPaths) {
-  const normalizedCandidate = normalizeFilterDeleteComparePath(candidatePath)
-  return removedPaths.some(basePath => (
+function filterDeleteTargetKey (item = {}) {
+  const libraryId = String(item?.library_id || props.libraryId || '').trim()
+  const path = normalizeFilterDeleteComparePath(item?.path || item?.delete_path || '')
+  return `${libraryId}::${path}`
+}
+
+function filterDeleteItemKey (item = {}) {
+  return filterDeleteTargetKey({
+    library_id: item?.library_id || props.libraryId,
+    path: item?.delete_path || item?.path || '',
+  })
+}
+
+function isFilterDeletePathRemoved (candidate, removedTargets) {
+  const candidateLibraryId = String(candidate?.library_id || props.libraryId || '').trim()
+  const normalizedCandidate = normalizeFilterDeleteComparePath(candidate?.path || candidate?.delete_path || candidate || '')
+  return (removedTargets || []).some(target => {
+    const baseLibraryId = String(target?.library_id || props.libraryId || '').trim()
+    if (candidateLibraryId && baseLibraryId && candidateLibraryId !== baseLibraryId) return false
+    const basePath = normalizeFilterDeleteComparePath(target?.path || target?.delete_path || target || '')
+    return (
     normalizedCandidate === basePath
     || normalizedCandidate.startsWith(`${basePath}/`)
-  ))
+    )
+  })
 }
 
 function pruneFilterDeleteEmptyPreviewDirectories (items = []) {
-  const remainingDeletePaths = (items || [])
+  const remainingDeleteTargets = (items || [])
     .filter(item => canFilterDeleteDeleteRow(item))
-    .map(item => normalizeFilterDeleteComparePath(resolveFilterDeleteDeleteTarget(item)))
-    .filter(Boolean)
+    .map(item => ({
+      library_id: item.library_id || props.libraryId,
+      path: resolveFilterDeleteDeleteTarget(item),
+    }))
   return (items || []).filter(item => {
     if (item?.type !== 'dir') return true
-    const dirPath = normalizeFilterDeleteComparePath(item.path || item.delete_path || '')
+    const dirTarget = {
+      library_id: item.library_id || props.libraryId,
+      path: item.path || item.delete_path || '',
+    }
+    const dirPath = normalizeFilterDeleteComparePath(dirTarget.path)
     if (!dirPath) return false
-    return remainingDeletePaths.some(path => path !== dirPath && path.startsWith(`${dirPath}/`))
+    return remainingDeleteTargets.some(target => {
+      if (String(target.library_id || '').trim() !== String(dirTarget.library_id || '').trim()) return false
+      const path = normalizeFilterDeleteComparePath(target.path)
+      return path !== dirPath && path.startsWith(`${dirPath}/`)
+    })
   })
 }
 
@@ -1565,11 +1507,16 @@ function applyFilterDeletePostDelete (deletedPaths, options = {}) {
     failedCount = 0,
     progressMessage = ''
   } = options
-  const normalizedDeletedPaths = [...new Set((deletedPaths || []).map(normalizeFilterDeleteComparePath).filter(Boolean))]
-  if (!normalizedDeletedPaths.length) return
+  const deletedTargets = (deletedPaths || [])
+    .map(item => typeof item === 'string' ? { library_id: props.libraryId, path: item } : item)
+    .filter(item => item && (item.path || item.delete_path))
+  if (!deletedTargets.length) return
 
   const nextItems = pruneFilterDeleteEmptyPreviewDirectories(
-    filterDeleteItems.value.filter(item => !isFilterDeletePathRemoved(resolveFilterDeleteDeleteTarget(item), normalizedDeletedPaths))
+    filterDeleteItems.value.filter(item => !isFilterDeletePathRemoved({
+      library_id: item.library_id || props.libraryId,
+      path: resolveFilterDeleteDeleteTarget(item),
+    }, deletedTargets))
   )
   const nextItemIds = new Set(nextItems.map(item => item.id))
   filterDeleteItems.value = nextItems
@@ -1596,7 +1543,11 @@ function applyFilterDeletePostDelete (deletedPaths, options = {}) {
     error: ''
   }
 
-  emit('deleted', { deletedBytes, deletedFolderCount })
+  emit('deleted', {
+    deletedBytes,
+    deletedFolderCount,
+    libraryIds: [...new Set(deletedTargets.map(item => String(item.library_id || props.libraryId || '').trim()).filter(Boolean))]
+  })
 }
 
 async function confirmFilterDeleteSelection () {
@@ -1630,25 +1581,32 @@ async function confirmFilterDeleteSelection () {
   try {
     const deleteStartedAt = Date.now()
     const activeDeletePlan = filterDeleteDeletePlan.value
-    const paths = activeDeletePlan.items.map(item => item.deleteTarget)
-    const executionKey = `${filterDeleteSessionKey.value}::${deleteStartedAt}::${paths.length}`
-    const sizeByPath = new Map(activeDeletePlan.items.map(item => [item.deleteTarget, Number(item.size || 0)]))
-    const planItemByPath = new Map(activeDeletePlan.items.map(item => [normalizeFilterDeleteComparePath(item.deleteTarget), item]))
+    const deleteTargets = activeDeletePlan.items.map(item => ({
+      library_id: item.libraryId || props.libraryId,
+      path: item.deleteTarget,
+    }))
+    const executionKey = `${filterDeleteSessionKey.value}::${deleteStartedAt}::${deleteTargets.length}`
+    const sizeByKey = new Map(activeDeletePlan.items.map(item => [filterDeleteTargetKey({ library_id: item.libraryId, path: item.deleteTarget }), Number(item.size || 0)]))
+    const planItemByKey = new Map(activeDeletePlan.items.map(item => [filterDeleteTargetKey({ library_id: item.libraryId, path: item.deleteTarget }), item]))
     const normalizedItemMeta = filterDeleteItems.value.map(item => ({
+      library_id: item.library_id || props.libraryId,
       path: normalizeFilterDeleteComparePath(item.path || item.delete_path),
       type: item.type
     }))
-    const attemptedItems = buildFilterDeleteLogItemsByTargets(filterDeleteItems.value, paths)
+    const attemptedItems = buildFilterDeleteLogItemsByTargets(filterDeleteItems.value, deleteTargets)
     const selectedRootItems = activeDeletePlan.items.map(buildFilterDeletePlanLogItem).filter(Boolean)
-    const folderCountByPath = new Map(activeDeletePlan.items.map(item => {
+    const folderCountByKey = new Map(activeDeletePlan.items.map(item => {
       const rawPath = item.deleteTarget
       const normalizedPath = normalizeFilterDeleteComparePath(rawPath)
-      if (item.row?.type !== 'dir') return [rawPath, 0]
+      const itemLibraryId = String(item.libraryId || props.libraryId || '').trim()
+      const key = filterDeleteTargetKey({ library_id: itemLibraryId, path: rawPath })
+      if (item.row?.type !== 'dir') return [key, 0]
       const folderCount = normalizedItemMeta.filter(candidate => (
-        candidate.type === 'dir'
+        String(candidate.library_id || '').trim() === itemLibraryId
+        && candidate.type === 'dir'
         && (candidate.path === normalizedPath || candidate.path.startsWith(`${normalizedPath}/`))
       )).length
-      return [rawPath, folderCount]
+      return [key, folderCount]
     }))
     let successCount = 0
     let failedCount = 0
@@ -1661,47 +1619,53 @@ async function confirmFilterDeleteSelection () {
       filterDeletePreviewInfo.value = {
         ...filterDeletePreviewInfo.value,
         deleteDone: 0,
-        deleteTotal: paths.length,
+        deleteTotal: deleteTargets.length,
         deleteFailed: 0,
-        progressMessage: `正在批量删除 ${paths.length} 项`
+        progressMessage: `正在批量删除 ${deleteTargets.length} 项`
       }
       try {
-        const result = await libraryApi.browserBatchDelete(props.libraryId, paths, true, {
+        const result = await libraryApi.browserBatchDeleteTargets(deleteTargets, true, {
           skipActivityLog: true,
           batchId,
           knownItems: selectedRootItems
         })
-        const failedPathMap = new Map((result?.failed_paths || []).map(item => [String(item?.path || ''), item]))
-        paths.forEach(path => {
-          const failed = failedPathMap.get(path)
+        const failedPathMap = new Map((result?.failed_paths || []).map(item => [filterDeleteTargetKey(item), item]))
+        deleteTargets.forEach(target => {
+          const path = target.path
+          const key = filterDeleteTargetKey(target)
+          const failed = failedPathMap.get(key)
           if (failed) {
-            const planItem = planItemByPath.get(normalizeFilterDeleteComparePath(path))
+            const planItem = planItemByKey.get(key)
             failedCount += 1
             failedItems.push({
+              library_id: target.library_id,
               path,
               name: getFileName(path),
               type: planItem?.row?.type || 'file',
-              size: Number(sizeByPath.get(path) || 0),
+              size: Number(sizeByKey.get(key) || 0),
               status: 'failed',
               error: failed.error || '删除失败'
             })
             return
           }
           successCount += 1
-          succeededPaths.push(path)
-          deletedBytes += Number(sizeByPath.get(path) || 0)
-          deletedFolderCount += Number(folderCountByPath.get(path) || 0)
+          succeededPaths.push(target)
+          deletedBytes += Number(sizeByKey.get(key) || 0)
+          deletedFolderCount += Number(folderCountByKey.get(key) || 0)
         })
       } catch (error) {
         const errorMessage = error?.response?.data?.detail || error?.message || '删除失败'
-        paths.forEach(path => {
-          const planItem = planItemByPath.get(normalizeFilterDeleteComparePath(path))
+        deleteTargets.forEach(target => {
+          const path = target.path
+          const key = filterDeleteTargetKey(target)
+          const planItem = planItemByKey.get(key)
           failedCount += 1
           failedItems.push({
+            library_id: target.library_id,
             path,
             name: getFileName(path),
             type: planItem?.row?.type || 'file',
-            size: Number(sizeByPath.get(path) || 0),
+            size: Number(sizeByKey.get(key) || 0),
             status: 'failed',
             error: errorMessage
           })
@@ -1711,11 +1675,11 @@ async function confirmFilterDeleteSelection () {
     filterDeletePreviewInfo.value = {
       ...filterDeletePreviewInfo.value,
       deleteDone: successCount,
-      deleteTotal: paths.length,
+      deleteTotal: deleteTargets.length,
       deleteFailed: failedCount,
       progressMessage: filterDeleteDeleteCancelRequested.value
-        ? `\u5220\u9664\u5df2\u505c\u6b62\uff0c\u5df2\u5b8c\u6210 ${successCount} / ${paths.length}`
-        : `\u5220\u9664\u5b8c\u6210\uff0c\u6210\u529f ${successCount} / ${paths.length}`
+        ? `\u5220\u9664\u5df2\u505c\u6b62\uff0c\u5df2\u5b8c\u6210 ${successCount} / ${deleteTargets.length}`
+        : `\u5220\u9664\u5b8c\u6210\uff0c\u6210\u529f ${successCount} / ${deleteTargets.length}`
     }
     if (successCount > 0) {
       applyFilterDeletePostDelete(succeededPaths, {
@@ -1724,8 +1688,8 @@ async function confirmFilterDeleteSelection () {
         successCount,
         failedCount,
         progressMessage: filterDeleteDeleteCancelRequested.value
-          ? `\u5220\u9664\u5df2\u505c\u6b62\uff0c\u5df2\u5b8c\u6210 ${successCount} / ${paths.length}`
-          : `\u5220\u9664\u5b8c\u6210\uff0c\u6210\u529f ${successCount} / ${paths.length}`
+          ? `\u5220\u9664\u5df2\u505c\u6b62\uff0c\u5df2\u5b8c\u6210 ${successCount} / ${deleteTargets.length}`
+          : `\u5220\u9664\u5b8c\u6210\uff0c\u6210\u529f ${successCount} / ${deleteTargets.length}`
       })
     }
     const succeededItems = buildFilterDeleteLogItemsByTargets(attemptedItems, succeededPaths)
@@ -1766,7 +1730,10 @@ async function confirmFilterDeleteSelection () {
       failed_count: filterDeleteDeletePlan.value.items.length,
       deleted_bytes: 0,
       deleted_folder_count: 0,
-      attempted_items: buildFilterDeleteLogItemsByTargets(filterDeleteItems.value, filterDeleteDeletePlan.value.items.map(item => item.deleteTarget)),
+      attempted_items: buildFilterDeleteLogItemsByTargets(
+        filterDeleteItems.value,
+        filterDeleteDeletePlan.value.items.map(item => ({ library_id: item.libraryId || props.libraryId, path: item.deleteTarget }))
+      ),
       failed_items: [{
         path: props.currentPath || '',
         name: getFileName(props.currentPath || ''),
@@ -1856,6 +1823,7 @@ function buildFilterDeleteDeletePlan (nodes = []) {
     if (canFilterDeleteDeleteRow(node) && selectedIds.has(node.id)) {
       return [{
         row: node,
+        libraryId: node.library_id || props.libraryId,
         deleteTarget: resolveFilterDeleteDeleteTarget(node),
         size: Number(node.size || 0)
       }]
@@ -1882,12 +1850,17 @@ function getFilterDeleteRowPath (row) {
   return normalizeFilterDeleteComparePath(row?.path || row?.delete_path || '')
 }
 
+function getFilterDeleteRowLibraryId (row) {
+  return String(row?.library_id || props.libraryId || '').trim()
+}
+
 function isFilterDeleteAncestorPath(candidatePath, parentPath) {
   if (!candidatePath || !parentPath) return false
   return candidatePath === parentPath || candidatePath.startsWith(`${parentPath}/`)
 }
 
 function isFilterDeleteRowConflict(left, right) {
+  if (getFilterDeleteRowLibraryId(left) !== getFilterDeleteRowLibraryId(right)) return false
   const leftPath = getFilterDeleteRowPath(left)
   const rightPath = getFilterDeleteRowPath(right)
   if (!leftPath || !rightPath) return false
@@ -1911,8 +1884,12 @@ function reduceFilterDeleteRows(rows) {
   const result = []
   for (const row of sorted) {
     const rowPath = getFilterDeleteRowPath(row)
+    const rowLibraryId = getFilterDeleteRowLibraryId(row)
     if (!rowPath) continue
-    if (result.some(existing => isFilterDeleteAncestorPath(rowPath, getFilterDeleteRowPath(existing)))) continue
+    if (result.some(existing => (
+      getFilterDeleteRowLibraryId(existing) === rowLibraryId
+      && isFilterDeleteAncestorPath(rowPath, getFilterDeleteRowPath(existing))
+    ))) continue
     result.push(row)
   }
   return result
@@ -1939,8 +1916,15 @@ function buildFilterDeleteBulkRows(rows) {
   const rootPathSet = new Set()
   for (const row of rows) {
     const rowPath = getFilterDeleteRowPath(row)
-    if (!rowPath || hasFilterDeleteKnownRootAncestor(rowPath, rootPathSet)) continue
-    rootPathSet.add(rowPath)
+    const rowLibraryId = getFilterDeleteRowLibraryId(row)
+    const scopedPath = `${rowLibraryId}::${rowPath}`
+    const scopedRootPathSet = new Set(
+      [...rootPathSet]
+        .filter(item => String(item).startsWith(`${rowLibraryId}::`))
+        .map(item => String(item).slice(`${rowLibraryId}::`.length))
+    )
+    if (!rowPath || hasFilterDeleteKnownRootAncestor(rowPath, scopedRootPathSet)) continue
+    rootPathSet.add(scopedPath)
     result.push(row)
   }
   return result
@@ -2032,6 +2016,8 @@ function isFilterDeleteRowPartiallySelected (row) {
 function buildFilterDeleteLogItem (item) {
   if (!item) return null
   return {
+    library_id: item.library_id || props.libraryId || '',
+    library_name: item.library_name || '',
     path: item.path || item.delete_path || '',
     relative_path: item.relative_path || '',
     name: item.name || getFileName(item.path || item.delete_path || ''),
@@ -2055,11 +2041,16 @@ function buildFilterDeletePlanLogItem (item) {
 }
 
 function buildFilterDeleteLogItemsByTargets (items, targetPaths = []) {
-  const normalizedTargets = [...new Set((targetPaths || []).map(normalizeFilterDeleteComparePath).filter(Boolean))]
+  const normalizedTargets = (targetPaths || [])
+    .map(item => typeof item === 'string' ? { library_id: props.libraryId, path: item } : item)
+    .filter(item => item && (item.path || item.delete_path))
   return (items || [])
     .filter(item => {
       if (!normalizedTargets.length) return true
-      return isFilterDeletePathRemoved(resolveFilterDeleteDeleteTarget(item), normalizedTargets)
+      return isFilterDeletePathRemoved({
+        library_id: item.library_id || props.libraryId,
+        path: resolveFilterDeleteDeleteTarget(item),
+      }, normalizedTargets)
     })
     .map(buildFilterDeleteLogItem)
     .filter(Boolean)
@@ -2139,14 +2130,20 @@ function buildExplicitTree (items) {
     if (!parent.children.some(item => item.id === child.id)) parent.children.push(child)
   }
 
-  const ensureVirtualDir = relativePath => {
+  const ensureVirtualDir = (relativePath, sample = {}) => {
     const normalized = String(relativePath || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
     if (!normalized) return null
-    if (dirNodeByRelativePath.has(normalized)) return dirNodeByRelativePath.get(normalized)
+    const libraryId = String(sample.library_id || props.libraryId || '').trim()
+    const targetKey = String(sample.target_key || '').trim()
+    const mapKey = `${libraryId}::${targetKey}::${normalized}`
+    if (dirNodeByRelativePath.has(mapKey)) return dirNodeByRelativePath.get(mapKey)
     const parts = normalized.split('/').filter(Boolean)
     const parentRelativePath = parts.slice(0, -1).join('/')
     const node = {
-      id: `virtual-dir:${normalized}`,
+      id: `virtual-dir:${mapKey}`,
+      library_id: libraryId,
+      library_name: sample.library_name || '',
+      target_key: targetKey,
       name: parts.at(-1) || normalized,
       path: '',
       relative_path: normalized,
@@ -2159,8 +2156,8 @@ function buildExplicitTree (items) {
       delete_path: '',
       children: []
     }
-    dirNodeByRelativePath.set(normalized, node)
-    const parentNode = parentRelativePath ? ensureVirtualDir(parentRelativePath) : null
+    dirNodeByRelativePath.set(mapKey, node)
+    const parentNode = parentRelativePath ? ensureVirtualDir(parentRelativePath, sample) : null
     if (parentNode) attachChild(parentNode, node)
     else pushRoot(node)
     return node
@@ -2169,13 +2166,14 @@ function buildExplicitTree (items) {
   for (const item of sorted) {
     const node = { ...item, children: [] }
     const relativePath = String(item.relative_path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
-    if (node.type === 'dir') dirNodeByRelativePath.set(relativePath, node)
+    const nodeMapKey = `${String(node.library_id || props.libraryId || '').trim()}::${String(node.target_key || '').trim()}::${relativePath}`
+    if (node.type === 'dir') dirNodeByRelativePath.set(nodeMapKey, node)
     const parentRelativePath = relativePath.includes('/') ? relativePath.slice(0, relativePath.lastIndexOf('/')) : ''
     if (!parentRelativePath) {
       pushRoot(node)
       continue
     }
-    const parentNode = ensureVirtualDir(parentRelativePath)
+    const parentNode = ensureVirtualDir(parentRelativePath, node)
     if (parentNode) attachChild(parentNode, node)
     else pushRoot(node)
   }
@@ -2579,8 +2577,8 @@ onBeforeUnmount(() => {
 
 .fd-tree-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 96px minmax(220px, 280px);
-  column-gap: 6px;
+  grid-template-columns: minmax(0, 1fr) 104px minmax(240px, 300px);
+  column-gap: 10px;
 }
 
 .tree-col-size,
@@ -2588,7 +2586,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-width: 96px;
+  min-width: 104px;
   height: 100%;
   justify-self: center;
   text-align: center;
@@ -2602,7 +2600,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   align-items: flex-start;
   justify-content: flex-start;
-  min-width: 220px;
+  min-width: 240px;
   height: 100%;
   justify-self: start;
   width: 100%;
@@ -2701,6 +2699,7 @@ onBeforeUnmount(() => {
   gap: 4px;
   min-width: 0;
   white-space: nowrap;
+  flex-wrap: nowrap;
 }
 
 .tree-sort-mark {
@@ -2709,32 +2708,29 @@ onBeforeUnmount(() => {
   justify-content: center;
   width: 12px;
   flex: 0 0 12px;
-  font-size: 10px;
-}
-
-.tree-col-time-button {
-  gap: 1px;
-  align-items: flex-start;
-  justify-content: flex-start;
-  white-space: normal;
-  text-transform: none;
-}
-
-.tree-col-time-label {
-  display: block;
-  width: 100%;
-  line-height: 1.2;
-  text-align: left;
-}
-
-.tree-col-time-sort {
-  display: block;
-  width: 100%;
-  min-height: 12px;
-  color: #94a3b8;
+  min-width: 12px;
   font-size: 10px;
   line-height: 1;
+}
+
+.tree-head-time {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  justify-content: flex-start;
+  min-width: 0;
+  width: max-content;
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.tree-head-sort-label {
+  display: inline-flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  line-height: 1.2;
   text-align: left;
+  white-space: nowrap;
 }
 
 .tree-time-date {
