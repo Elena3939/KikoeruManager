@@ -9880,16 +9880,20 @@ async def api_rename_library_file(request: Request):
     rjcode = ""
     old_name = ""
     new_name = ""
+    batch_id = ""
     try:
         data = await request.json()
         file_path = str(data.get("path") or "").strip()
         library_id = data.get("library_id")
+        batch_id = str(data.get("batch_id") or "").strip()
         manager = get_library_manager()
         library = manager.get_library_definition(library_id) if library_id else None
         if library is None and file_path:
             library = manager.find_local_library_for_path(file_path)
             if library:
                 library_id = library.id
+        if library is None:
+            raise HTTPException(status_code=403, detail="只能 API 重命名库存内的文件")
         is_remote_library = bool(library and library.type == "synology_filestation")
         
         if not file_path:
@@ -10024,6 +10028,7 @@ async def api_rename_library_file(request: Request):
                     old_name=old_name,
                     new_name=new_name,
                     rjcode=rjcode or None,
+                    batch_id=batch_id or None,
                     library_id=str(library_id or "") or None,
                     extra_detail={"no_change": True},
                 )
@@ -10032,10 +10037,8 @@ async def api_rename_library_file(request: Request):
             return {"message": "名称已是最新，无需重命名", "name": new_name}
 
         # 执行重命名
-        if library:
-            await manager.rename(library.id, file_path, new_name)
-        else:
-            os.rename(file_path, new_path)
+        rename_result = await manager.rename(library.id, file_path, new_name)
+        new_path = str(rename_result.get("new_path") or new_path)
         logger.info(f"API重命名成功: {file_path} -> {new_path}")
         try:
             from ..core.activity_log_service import log_api_rename_action
@@ -10048,6 +10051,7 @@ async def api_rename_library_file(request: Request):
                 old_name=old_name,
                 new_name=new_name,
                 rjcode=rjcode or None,
+                batch_id=batch_id or None,
                 library_id=str(library_id or "") or None,
             )
         except Exception:
@@ -10072,6 +10076,7 @@ async def api_rename_library_file(request: Request):
                 old_name=old_name,
                 new_name=new_name,
                 rjcode=rjcode or None,
+                batch_id=batch_id or None,
                 library_id=str(library_id or "") or None,
                 error=str(exc.detail or exc),
                 status="failed",
@@ -10091,6 +10096,7 @@ async def api_rename_library_file(request: Request):
                 old_name=old_name,
                 new_name=new_name,
                 rjcode=rjcode or None,
+                batch_id=batch_id or None,
                 library_id=str(library_id or "") or None,
                 error=str(e),
             )
