@@ -105,17 +105,9 @@ def _infer_circle_name_from_index_path(relative_path: Any, rjcode: Any, folder_n
         path_circle = _infer_circle_name_from_bracketed_folder(part, normalized_rjcode)
         if path_circle:
             return path_circle
-        if index <= 0:
-            return ""
-        parent_index = index - 1
-        while parent_index > 0 and _normalize_rjcode(parts[parent_index]):
-            parent_index -= 1
-        return parts[parent_index].strip()
+        return ""
 
-    parent_index = len(parts) - 2
-    while parent_index > 0 and _normalize_rjcode(parts[parent_index]):
-        parent_index -= 1
-    return parts[parent_index].strip()
+    return ""
 
 
 def _safe_int(value: Any) -> int:
