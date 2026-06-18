@@ -26,6 +26,12 @@ class _FakeDeleteQuery:
         self._session.deleted = True
         return 0
 
+    def filter(self, *_args, **_kwargs):
+        return self
+
+    def first(self):
+        return None
+
 
 class _FakeSession:
     def __init__(self, rows=None):
@@ -106,3 +112,39 @@ async def test_sync_local_owned_index_writes_related_circle_work_canonical(monke
     assert added_by_canonical["RJ99999999"].owned_paths == ["/library/RaRo/[RaRo][RJ11111111]"]
     assert write_session.deleted is True
     assert write_session.committed is True
+
+
+def test_upsert_library_owned_rows_from_current_index_items():
+    service = CircleCompletionService()
+    session = _FakeSession()
+
+    written = service._upsert_library_owned_rows_from_items(
+        session,
+        {
+            "RJ99999999": {
+                "local_owned": True,
+                "display_rjcode": "RJ22222222",
+                "linked_rjcodes": ["RJ11111111", "RJ22222222"],
+                "kikoeru_found_rjcodes": ["RJ11111111"],
+                "owned_paths": ["/library/シルトクレーテ/[RJ11111111]"],
+                "local_folder_size": 1024,
+                "local_file_count": 12,
+                "local_subtitle_present": True,
+                "subtitle_file_count": 3,
+                "subtitle_dir": "/library/シルトクレーテ/[RJ11111111]/subtitles",
+            }
+        },
+    )
+
+    assert written == 1
+    assert len(session.added) == 1
+    row = session.added[0]
+    assert row.canonical_rjcode == "RJ99999999"
+    assert set(row.owned_rjcodes) == {"RJ11111111", "RJ22222222", "RJ99999999"}
+    assert row.primary_folder_path == "/library/シルトクレーテ/[RJ11111111]"
+    assert row.folder_count == 1
+    assert row.folder_size == 1024
+    assert row.file_count == 12
+    assert row.owned_paths == ["/library/シルトクレーテ/[RJ11111111]"]
+    assert row.has_local_subtitles is True
+    assert row.subtitle_file_count == 3
