@@ -211,6 +211,28 @@ def test_circle_aggregation_infers_local_circle_from_folder_name_without_metadat
     assert [item["circle_name"] for item in groups["items"]] == ["あぶそりゅ～と", "幸福少女"]
 
 
+def test_circle_aggregation_does_not_treat_plain_parent_folder_as_circle(circle_service, db_session):
+    db_session.add_all([
+        _entry(
+            library_id="local-a",
+            relative_path="无私奉献的圣女~无欲圣女的灵敏度增加到1000%的话/RJ01315267",
+            rjcode="RJ01315267",
+        ),
+        _entry(
+            library_id="local-a",
+            relative_path="大家一起來翻譯_台本/RJ01111111",
+            rjcode="RJ01111111",
+        ),
+    ])
+    db_session.commit()
+
+    groups = circle_service.list_circle_groups()
+
+    assert groups["total"] == 1
+    assert groups["items"][0]["circle_name"] == "未识别社团"
+    assert groups["items"][0]["work_count"] == 2
+
+
 def test_circle_summary_reports_all_active_libraries(circle_service, db_session):
     db_session.add(_entry(library_id="local-a", relative_path="Other/RJ01000030", rjcode="RJ01000030"))
     db_session.commit()
