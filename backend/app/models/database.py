@@ -2918,6 +2918,7 @@ def _migrate_compat_schema(conn) -> None:
         "task_phase_metrics",
         "library_index_status",
         "library_index_entries",
+        "library_owned_works",
         "activity_logs",
         "activity_log_daily_stats",
     ))
