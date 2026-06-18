@@ -2664,6 +2664,8 @@ const folderCompletionPreviewDismissed = ref(false)
 let folderCompletionPreviewTimer = null
 const FOLDER_COMPLETION_FALLBACK_POLL_MS = 30000
 
+const BATCH_API_RENAME_CONCURRENCY = 4
+
 const tableRef = ref(null)
 
 const tableMarqueeRef = ref(null)
@@ -21558,14 +21560,25 @@ function replaceRowPathInCurrentView (oldPath, newPath, nextName = '') {
 
   if (!sourcePath || !targetPath || sourcePath === targetPath) return
 
-  const row = files.value.find(item => item?.path === sourcePath)
+  let nextRow = null
 
-  if (!row) return
+  files.value = files.value.map(item => {
 
-  row.path = targetPath
-  row.name = nextName || getFileName(targetPath) || row.name
+    if (item?.path !== sourcePath && getCircleRealPath(item) !== sourcePath) return item
 
-  selectedRows.value = selectedRows.value.map(item => item?.path === sourcePath ? row : item)
+    nextRow = buildReplacedLibraryRowPath(item, targetPath, nextName)
+
+    return nextRow
+
+  })
+
+  if (!nextRow) return
+
+  selectedRows.value = selectedRows.value.map(item => (
+    item?.path === sourcePath || getCircleRealPath(item) === sourcePath
+      ? buildReplacedLibraryRowPath(item, targetPath, nextName)
+      : item
+  ))
 
   const nextSelectedPaths = new Set(selectedRowPaths.value)
 
@@ -22306,19 +22319,9 @@ async function handleBatchApiRename () {
 
   try {
 
-    const results = []
+    const batchId = `api-rename-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
-    for (const [libraryId, rows] of targetGroups.entries()) {
-      const response = await libraryApi.batchApiRename(rows.map(row => row.path), libraryId)
-      results.push(...(response?.results || []).map(item => ({
-        path: item.path,
-        success: Boolean(item.success),
-        nextPath: item.new_path || item.nextPath || '',
-        nextName: item.new_name || item.nextName || '',
-        message: item.message || 'API 重命名成功',
-        error: item.error || ''
-      })))
-    }
+    const results = await runBatchApiRenameRows(targetGroups, batchId)
 
     const successCount = results.filter(item => item.success).length
 
@@ -22337,10 +22340,6 @@ async function handleBatchApiRename () {
       ElMessage.success(`批量 API重命名完成：成功 ${successCount} 项`)
 
     }
-
-    results
-      .filter(item => item.success && item.nextPath)
-      .forEach(item => replaceRowPathInCurrentView(item.path, item.nextPath, item.nextName))
 
     refreshCurrentLibraryAndStatsInBackground('批量 API 重命名已完成')
 
@@ -22416,6 +22415,26 @@ async function openFolderContentsDialog (row) {
   }))
 
   folderDialogVisible.value = true
+
+}
+
+function buildReplacedLibraryRowPath (row, targetPath, nextName = '') {
+
+  const resolvedName = nextName || getFileName(targetPath) || row.name
+
+  const nextRow = {
+    ...row,
+    path: libraryViewMode.value === 'circle' && row?.circle_real_path ? row.path : targetPath,
+    name: resolvedName
+  }
+
+  if (nextRow.circle_real_path) nextRow.circle_real_path = targetPath
+
+  if (nextRow.circle_folder_name) nextRow.circle_folder_name = resolvedName
+
+  if (nextRow.circle_resolved_action) nextRow.circle_resolved_action = true
+
+  return nextRow
 
 }
 
@@ -23236,6 +23255,85 @@ function resolveLibraryRowDropTargetState (row) {
     matched: normalizeConflictPathKey(target.path) === normalizeConflictPathKey(tableItemDragState.value.targetPath) &&
       (!dragLibraryId || target.libraryId === dragLibraryId)
   }
+
+}
+
+async function runBatchApiRenameRows (targetGroups, batchId) {
+
+  const results = []
+
+  const tasks = []
+
+  for (const [libraryId, rows] of targetGroups.entries()) {
+
+    for (const row of rows) {
+
+      tasks.push({
+        libraryId,
+        row
+      })
+
+    }
+
+  }
+
+  let cursor = 0
+
+  const workers = Array.from({ length: Math.min(BATCH_API_RENAME_CONCURRENCY, tasks.length) }, async () => {
+
+    while (cursor < tasks.length) {
+
+      const index = cursor
+      cursor += 1
+      const task = tasks[index]
+
+      if (!task?.row?.path) continue
+
+      try {
+
+        const response = await libraryApi.apiRename(task.row.path, task.libraryId, { batchId })
+        const nextPath = response?.path || response?.new_path || ''
+        const nextName = response?.new_name || response?.name || ''
+
+        if (nextPath) {
+          replaceRowPathInCurrentView(task.row.path, nextPath, nextName)
+        }
+
+        results.push({
+          path: task.row.path,
+          success: true,
+          nextPath,
+          nextName,
+          message: response?.message || 'API 重命名成功',
+          error: ''
+        })
+
+      } catch (error) {
+
+        results.push({
+          path: task.row.path,
+          success: false,
+          nextPath: '',
+          nextName: '',
+          message: '',
+          error: error?.response?.data?.detail || error?.message || '未知错误'
+        })
+
+      } finally {
+
+        const nextRunning = new Set(batchApiRenameRunningIds.value)
+        nextRunning.delete(task.row.id)
+        batchApiRenameRunningIds.value = nextRunning
+
+      }
+
+    }
+
+  })
+
+  await Promise.all(workers)
+
+  return results
 
 }
 

@@ -1196,9 +1196,10 @@ export const libraryApi = {
     return response.data
   },
 
-  apiRename: async (path, libraryId = null) => {
+  apiRename: async (path, libraryId = null, options = {}) => {
     const payload = { path }
     if (libraryId) payload.library_id = libraryId
+    if (options.batchId) payload.batch_id = options.batchId
     const response = await apiClient.post('/library/api-rename', payload)
     return response.data
   },
