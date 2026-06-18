@@ -356,6 +356,69 @@ def test_local_inventory_reads_prefer_usable_index_snapshot(monkeypatch, tmp_pat
     ]
 
 
+def test_local_listing_counts_descendants_only_for_current_page(monkeypatch, tmp_path):
+    local_root = tmp_path / "library"
+    local_root.mkdir()
+    for index in range(200):
+        child = local_root / f"maker-{index:03d}"
+        child.mkdir()
+        (child / "track.mp3").write_bytes(b"audio")
+
+    library = library_manager_module.LibraryDefinition(
+        id="local-page",
+        name="本地分页",
+        type="local",
+        path=str(local_root),
+        enabled=True,
+    )
+
+    class FakeIndexService:
+        def __init__(self):
+            self.counted_paths = []
+
+        def is_ready(self, library_id):
+            return library_id == library.id
+
+        def get_entry(self, library_id, relative_path):
+            return IndexEntry(
+                library_id=library_id,
+                entry_type="dir",
+                relative_path=relative_path,
+                absolute_path=str(local_root / relative_path),
+                name=relative_path,
+                parent_path="",
+                size=5,
+                file_count=1,
+                mtime=1000,
+                depth=1,
+                indexed_at=1000,
+            )
+
+        def count_descendant_dirs_many(self, library_id, relative_paths):
+            self.counted_paths.extend(relative_paths)
+            return {relative_path: 0 for relative_path in relative_paths}
+
+    service = FakeIndexService()
+    manager = object.__new__(library_manager_module.LibraryManager)
+    manager._index_read_repair_lock = threading.Lock()
+    manager._index_read_repair_last_seen = {}
+    monkeypatch.setattr(library_index_module, "get_library_index_service", lambda: service)
+
+    result = manager._list_local_files(
+        library,
+        page=1,
+        page_size=10,
+        search="",
+        current_path=str(local_root),
+        sort_by="name",
+        sort_order="asc",
+    )
+
+    assert result["total"] == 200
+    assert len(result["files"]) == 10
+    assert service.counted_paths == [f"maker-{index:03d}" for index in range(10)]
+
+
 def test_search_files_via_index_supports_name_search_and_current_scope(monkeypatch, tmp_path):
     local_root = tmp_path / "library"
     circle_a = local_root / "CircleA"
