@@ -700,6 +700,24 @@ function handleConfirm() {
   background: none;
 }
 
+:global(html.kikoerumanager-dark .sp-message-line.is-lead) {
+  color: var(--km-dark-text-strong);
+}
+
+:global(html.kikoerumanager-dark .sp-message-line.is-meta),
+:global(html.kikoerumanager-dark .sp-info-label) {
+  color: var(--km-dark-text-muted);
+}
+
+:global(html.kikoerumanager-dark .sp-message-line.is-danger),
+:global(html.kikoerumanager-dark .sp-validation) {
+  color: #fb7185;
+}
+
+:global(html.kikoerumanager-dark .sp-btn-secondary) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 :global(html.kikoerumanager-dark .sp-header),
 :global(html.kikoerumanager-dark .sp-body),
 :global(html.kikoerumanager-dark .sp-footer) {
