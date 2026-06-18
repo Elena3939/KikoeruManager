@@ -1011,6 +1011,9 @@ export const libraryApi = {
     if (Object.prototype.hasOwnProperty.call(options, 'preferIndex')) {
       payload.prefer_index = Boolean(options.preferIndex)
     }
+    if (Object.prototype.hasOwnProperty.call(options, 'includeDirs')) {
+      payload.include_dirs = Boolean(options.includeDirs)
+    }
     const response = await apiClient.post('/library/browser/folder-contents', payload)
     return response.data
   },

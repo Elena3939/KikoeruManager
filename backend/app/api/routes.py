@@ -8151,6 +8151,7 @@ async def get_library_browser_folder_contents(request: Request):
         folder_path = data.get("path")
         recursive = data.get("recursive", True)
         prefer_index = data.get("prefer_index", True)
+        include_dirs = data.get("include_dirs", False)
         if not folder_path:
             raise HTTPException(status_code=400, detail="缺少文件夹路径")
         manager = get_library_manager()
@@ -8159,6 +8160,7 @@ async def get_library_browser_folder_contents(request: Request):
             folder_path,
             recursive=bool(recursive),
             prefer_index=bool(prefer_index),
+            include_dirs=bool(include_dirs),
         )
     except HTTPException:
         raise
