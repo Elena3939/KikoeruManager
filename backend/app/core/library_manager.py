@@ -4655,6 +4655,7 @@ class LibraryManager:
         # 索引缺失或旧了只排后台修补，绝不在列表请求里递归 os.walk。
         index_service = self._index_service_for_local_size_overlay(library)
         repair_paths: list[str] = []
+        entries_with_index: list[tuple[dict[str, Any], Optional[Any]]] = []
 
         for item_id, entry in enumerate(entries):
             if self._should_skip_entry(entry.name):
@@ -4712,20 +4713,8 @@ class LibraryManager:
                 "index_refresh_pending": bool(index_missing or index_stale),
                 "_sort_time": stat.st_mtime,
             }
-            if is_directory and index_entry:
-                try:
-                    descendant_dirs = index_service.count_descendant_dirs_many(
-                        library.id,
-                        [str(getattr(index_entry, "relative_path", "") or "")],
-                    )
-                    item["folder_count"] = 1 + int(
-                        descendant_dirs.get(str(getattr(index_entry, "relative_path", "") or ""), 0) or 0
-                    )
-                except Exception:
-                    item["folder_count"] = None
-            items.append(
-                item
-            )
+            entries_with_index.append((item, index_entry))
+            items.append(item)
         if repair_paths:
             self._enqueue_index_read_repair_upserts(library, repair_paths)
 
@@ -4734,6 +4723,28 @@ class LibraryManager:
         start = max(0, (page - 1) * page_size)
         end = start + page_size
         page_items = items[start:end]
+        page_item_ids = {id(item) for item in page_items}
+        if index_service is not None:
+            page_index_paths: list[str] = []
+            page_index_items: list[dict[str, Any]] = []
+            for item, index_entry in entries_with_index:
+                if id(item) not in page_item_ids:
+                    continue
+                if not item.get("is_directory") or not index_entry:
+                    continue
+                relative_path = str(getattr(index_entry, "relative_path", "") or "")
+                if not relative_path:
+                    continue
+                page_index_paths.append(relative_path)
+                page_index_items.append(item)
+            if page_index_paths:
+                try:
+                    descendant_dirs = index_service.count_descendant_dirs_many(library.id, page_index_paths)
+                    for item, relative_path in zip(page_index_items, page_index_paths):
+                        item["folder_count"] = 1 + int(descendant_dirs.get(relative_path, 0) or 0)
+                except Exception:
+                    for item in page_index_items:
+                        item["folder_count"] = None
         for item in page_items:
             item.pop("_sort_time", None)
         return {
