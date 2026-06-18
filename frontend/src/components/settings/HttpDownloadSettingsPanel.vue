@@ -105,6 +105,14 @@
           <SettingsFieldCard label="Gofile API Token" hint="可选；未填写时会使用临时网页账号解析分享目录，遇到权限或限流问题再填写账号 token。">
             <AnimatedPasswordInput v-model="config.http_downloader.gofile_token" placeholder="可选账号 token，用于提升 Gofile 解析稳定性" autocomplete="off" />
           </SettingsFieldCard>
+          <div class="mini-grid two">
+            <SettingsFieldCard label="Gofile 并发文件">
+              <SettingsNumberStepper v-model="config.http_downloader.gofile_max_concurrent_downloads" :min="1" :max="16" />
+            </SettingsFieldCard>
+            <SettingsFieldCard label="Gofile 分片数">
+              <SettingsNumberStepper v-model="config.http_downloader.gofile_split" :min="1" :max="32" />
+            </SettingsFieldCard>
+          </div>
         </div>
       </div>
 

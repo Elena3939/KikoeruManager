@@ -304,6 +304,8 @@ class HttpDownloaderConfig(BaseModel):
     split: int = 8
     max_connection_per_server: int = 8
     min_split_size: str = "1M"
+    gofile_max_concurrent_downloads: int = 2
+    gofile_split: int = 5
     retry_count: int = 5
     retry_wait_seconds: int = 5
     connect_timeout_seconds: int = 15

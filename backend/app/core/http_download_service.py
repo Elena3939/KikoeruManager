@@ -53,6 +53,8 @@ _GOFILE_WEBSITE_TOKEN_SALT = "9844d94d963d30"
 _GOFILE_API_TIMEOUT_SECONDS = 45
 _GOFILE_CDN_ERROR_CONTENT_TYPES = ("text/html", "application/json", "text/plain")
 _GOFILE_NOT_PREMIUM_STATUS = {"error-notpremium", "error-not-premium", "notpremium"}
+_GOFILE_DEFAULT_ARIA2_SPLIT = 5
+_GOFILE_DEFAULT_ARIA2_MAX_ACTIVE_FILES = 2
 GOOGLE_DRIVE_PROBE_BYTES = 1024
 GOOGLE_DRIVE_STREAM_CHUNK_BYTES = 1024 * 1024
 HTTP_DOWNLOAD_PLATFORM_LABELS = {
@@ -4638,6 +4640,10 @@ class HttpDownloadService:
         }
         if source == "pikpak":
             options["user-agent"] = _GOFILE_USER_AGENT
+        elif source == "gofile":
+            gofile_split = self._gofile_split_limit()
+            options["split"] = str(gofile_split)
+            options["max-connection-per-server"] = str(gofile_split)
         proxy = self._proxy_url(source or "http")
         if proxy:
             options["all-proxy"] = proxy
@@ -4649,6 +4655,16 @@ class HttpDownloadService:
         if headers:
             options["header"] = headers
         return options
+
+    def _gofile_split_limit(self) -> int:
+        cfg = self._config()
+        value = getattr(cfg, "gofile_split", _GOFILE_DEFAULT_ARIA2_SPLIT)
+        return min(32, max(1, int(value or _GOFILE_DEFAULT_ARIA2_SPLIT)))
+
+    def _gofile_max_active_files(self) -> int:
+        cfg = self._config()
+        value = getattr(cfg, "gofile_max_concurrent_downloads", _GOFILE_DEFAULT_ARIA2_MAX_ACTIVE_FILES)
+        return min(16, max(1, int(value or _GOFILE_DEFAULT_ARIA2_MAX_ACTIVE_FILES)))
 
     async def _download_google_drive_item(self, item: Dict[str, Any], task=None, progress_callback=None) -> Dict[str, Any]:
         async with get_resource_budget_service().acquire("network_download", reason="http.google_drive"):
@@ -5324,6 +5340,9 @@ class HttpDownloadService:
 
         os.makedirs(self._download_root(), exist_ok=True)
         gids: List[str] = []
+        gofile_paused_gids: List[str] = []
+        gofile_max_active_files = self._gofile_max_active_files()
+        gofile_submitted_count = 0
         download_files = []
         total_bytes = 0
         for item in google_drive_items:
@@ -5350,8 +5369,14 @@ class HttpDownloadService:
         for item in aria2_items:
             os.makedirs(item["target_dir"], exist_ok=True)
             options = self._aria2_options(item, item["target_dir"])
+            if str(item.get("source") or "").strip().lower() == "gofile":
+                if gofile_submitted_count >= gofile_max_active_files:
+                    options["pause"] = "true"
+                gofile_submitted_count += 1
             gid = await self._rpc_call("aria2.addUri", [[item["url"]], options])
             gids.append(str(gid))
+            if str(item.get("source") or "").strip().lower() == "gofile" and options.get("pause") == "true":
+                gofile_paused_gids.append(str(gid))
             total_bytes += int(item.get("size_bytes") or 0)
             download_files.append({
                 "gid": str(gid),
@@ -5607,6 +5632,7 @@ class HttpDownloadService:
                         if existing.get("gid") == row.get("gid"):
                             existing.update(row)
                             break
+                await self._maybe_unpause_gofile_downloads(download_files, gofile_paused_gids)
                 google_done = len(google_success_files)
                 google_failed = len(google_failed_rows)
                 transfer_done = len(transfer_success_files)
@@ -5831,6 +5857,39 @@ class HttpDownloadService:
                 if str(item.get("gid") or "") == str(gid):
                     return item
             raise exc
+
+    async def _maybe_unpause_gofile_downloads(self, rows: List[Dict[str, Any]], paused_gids: List[str]) -> None:
+        if not paused_gids:
+            return
+        paused_set = set(paused_gids)
+        row_by_gid = {str(row.get("gid") or ""): row for row in rows if isinstance(row, dict)}
+        max_active_files = self._gofile_max_active_files()
+        running = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("source") or "").strip().lower() != "gofile":
+                continue
+            gid = str(row.get("gid") or "")
+            status = str(row.get("status") or "").strip().lower()
+            if gid and gid not in paused_set and status not in {"completed", "failed", "paused"}:
+                running += 1
+
+        while running < max_active_files and paused_gids:
+            gid = paused_gids.pop(0)
+            row = row_by_gid.get(str(gid))
+            if not row:
+                continue
+            status = str(row.get("status") or "").strip().lower()
+            if status in {"completed", "failed"}:
+                continue
+            try:
+                await self._rpc_call("aria2.unpause", [gid])
+                row["status"] = "pending"
+                running += 1
+            except Exception as exc:
+                row["status"] = "failed"
+                row["failure_reason"] = self._sanitize_error(exc) or exc.__class__.__name__
 
     async def _poll_task(self, gids: List[str], rows: List[Dict[str, Any]]):
         row_by_gid = {str(row.get("gid")): row for row in rows}
