@@ -120,16 +120,17 @@ def test_library_browser_endpoints_support_multi_library(client, monkeypatch, tm
     assert summary_response.status_code == 200
     summary = summary_response.json()["results"][0]
     assert summary["success"] is True
-    assert summary["file_count"] == 1
+    assert summary["file_count"] == 0
     assert summary["folder_count"] == 0
-    assert summary["size_status"] == "ready"
+    assert summary["size_status"] == "pending"
+    assert summary["index_refresh_pending"] is True
 
     stats_response = client.get("/api/library/browser/stats", params={"force_refresh": "true"})
     assert stats_response.status_code == 200
     assert "all_libraries" in stats_response.json()
 
 
-def test_local_realtime_reads_ignore_stale_index_for_browse_and_folder_contents(monkeypatch, tmp_path):
+def test_local_inventory_reads_prefer_usable_index_snapshot(monkeypatch, tmp_path):
     local_root = tmp_path / "library"
     circle_dir = local_root / "Circle"
     rj_dir = circle_dir / "RJ01000001"
@@ -178,17 +179,27 @@ def test_local_realtime_reads_ignore_stale_index_for_browse_and_folder_contents(
         def is_ready(self, library_id):
             return library_id == library.id
 
+        def has_usable_snapshot(self, library_id):
+            return library_id == library.id
+
         def get_entry(self, library_id, relative_path):
             return entries.get(relative_path)
 
-        def list_children_page(self, library_id, parent_path="", **_kwargs):
+        def list_children_page(self, library_id, parent_path="", **kwargs):
+            sort_by = str(kwargs.get("sort_by") or "name")
+            reverse = str(kwargs.get("sort_order") or "asc").lower() == "desc"
+            children = [
+                item
+                for item in entries.values()
+                if (item.parent_path or "") == (parent_path or "")
+            ]
+            if sort_by == "size":
+                children.sort(key=lambda item: (int(item.size or 0), item.name), reverse=reverse)
+            else:
+                children.sort(key=lambda item: item.name.lower(), reverse=reverse)
             return {
-                "entries": [
-                    item
-                    for item in entries.values()
-                    if (item.parent_path or "") == (parent_path or "")
-                ],
-                "total": 0,
+                "entries": children,
+                "total": len(children),
             }
 
         def list_subtree_entries(self, library_id, relative_path="", include_self=True, entry_type=None, **_kwargs):
@@ -227,6 +238,16 @@ def test_local_realtime_reads_ignore_stale_index_for_browse_and_folder_contents(
         def get_status(self, library_id):
             return SimpleNamespace(folder_count=2)
 
+        def get_library_stats(self, library_id):
+            return {
+                "folder_count": 2,
+                "total_size_bytes": sum(
+                    int(item.size or 0)
+                    for item in entries.values()
+                    if item.entry_type == "file"
+                ),
+            }
+
     manager = object.__new__(library_manager_module.LibraryManager)
     manager._size_cache = {}
     monkeypatch.setattr(manager, "get_library_definition", lambda _library_id: library)
@@ -244,27 +265,36 @@ def test_local_realtime_reads_ignore_stale_index_for_browse_and_folder_contents(
     )
     assert list_result.get("browse_via_index") is not True
     assert [item["name"] for item in list_result["files"]] == ["subtitles", "track.mp3"]
+    subtitles_item = next(item for item in list_result["files"] if item["name"] == "subtitles")
+    assert subtitles_item["size"] == 4
+    assert subtitles_item["size_status"] == "stale"
+    assert subtitles_item["size_via_index"] is True
 
     result = asyncio.run(manager.folder_contents(library.id, str(circle_dir), recursive=False))
 
-    assert result.get("browse_via_index") is True
-    assert result["total_files"] == 3
-    assert result["total_size"] == 12
+    assert result.get("browse_via_index") is not True
+    assert result["total_files"] == 1
     rj_item = next(item for item in result["items"] if item["name"] == "RJ01000001")
     assert rj_item["size"] == 9
-    assert rj_item["size_status"] == "ready"
+    assert rj_item["size_status"] == "stale"
+    assert rj_item["index_refresh_pending"] is True
     assert rj_item["file_count"] == 2
-    assert rj_item["folder_count"] == 1
+    assert rj_item["folder_count"] == 2
 
     recursive_result = asyncio.run(manager.folder_contents(library.id, str(circle_dir), recursive=True))
-    assert recursive_result.get("browse_via_index") is not True
-    assert recursive_result["total_files"] == 3
+    assert recursive_result.get("browse_via_index") is True
+    assert recursive_result["total_files"] == 2
     assert [item["relative_path"] for item in recursive_result["items"]] == [
         "RJ01000001/subtitles/track.vtt",
-        "RJ01000001/track.mp3",
         "cover.jpg",
     ]
-    assert "RJ01000001/old-track.mp3" not in [item["relative_path"] for item in recursive_result["items"]]
+
+    indexed_summary = manager.folder_size_summary_via_index(library, str(rj_dir), include_counts=True)
+    assert indexed_summary["browse_via_index"] is True
+    assert indexed_summary["size"] == 9
+    assert indexed_summary["size_status"] == "stale"
+    assert indexed_summary["file_count"] == 2
+    assert indexed_summary["folder_count"] == 2
 
     shallow_realtime_result = asyncio.run(
         manager.folder_contents(library.id, str(circle_dir), recursive=False, prefer_index=False)
@@ -273,15 +303,16 @@ def test_local_realtime_reads_ignore_stale_index_for_browse_and_folder_contents(
     assert shallow_realtime_result["total_files"] == 1
     assert [item["name"] for item in shallow_realtime_result["items"]] == ["RJ01000001", "cover.jpg"]
     shallow_rj_item = next(item for item in shallow_realtime_result["items"] if item["name"] == "RJ01000001")
-    assert shallow_rj_item["size_status"] == "disabled"
-    assert shallow_rj_item["file_count"] is None
-    assert shallow_rj_item["folder_count"] is None
+    assert shallow_rj_item["size_status"] == "stale"
+    assert shallow_rj_item["file_count"] == 2
+    assert shallow_rj_item["folder_count"] == 2
 
     folders_payload = asyncio.run(manager.list_local_folders_only(library.id, str(circle_dir), include_files=True))
-    assert folders_payload.get("browse_via_index") is True
+    assert folders_payload.get("browse_via_index") is not True
     folder_row = next(item for item in folders_payload["folders"] if item["name"] == "RJ01000001")
     assert folder_row["size"] == 9
-    assert folder_row["size_status"] == "ready"
+    assert folder_row["size_status"] == "stale"
+    assert folder_row["size_via_index"] is True
 
     completion_service = object.__new__(folder_completion_module.LibraryFolderCompletionService)
     completion_service.manager = manager
@@ -290,22 +321,24 @@ def test_local_realtime_reads_ignore_stale_index_for_browse_and_folder_contents(
     assert [target.folder_path for target in completion_targets] == [str(rj_dir)]
 
     delete_preview = manager._local_delete(library, str(rj_dir), confirmed=False)
-    assert delete_preview["browse_via_index"] is False
+    assert delete_preview["browse_via_index"] is True
     assert delete_preview["size"] == 9
+    assert delete_preview["size_status"] == "stale"
+    assert delete_preview["index_refresh_pending"] is True
     assert delete_preview["file_count"] == 2
     assert delete_preview["folder_count"] == 2
 
     entries["Circle/RJ01000001"].size = 1024 * 1024
     entries["Circle/RJ01000001"].file_count = 99
     delete_preview = manager._local_delete(library, str(rj_dir), confirmed=False)
-    assert delete_preview["browse_via_index"] is False
-    assert delete_preview["size"] == 9
-    assert delete_preview["file_count"] == 2
+    assert delete_preview["browse_via_index"] is True
+    assert delete_preview["size"] == 1024 * 1024
+    assert delete_preview["file_count"] == 99
 
     batch_preview = manager._local_batch_delete(library, [str(rj_dir), str(circle_dir / "cover.jpg")], confirmed=False)
-    assert batch_preview["browse_via_index"] is False
-    assert batch_preview["total_size"] == 12
-    assert batch_preview["total_file_count"] == 3
+    assert batch_preview["browse_via_index"] is True
+    assert batch_preview["total_size"] == 1024 * 1024 + 3
+    assert batch_preview["total_file_count"] == 100
     assert batch_preview["total_folder_count"] == 2
 
     filter_preview = manager._local_filter_delete_preview(
@@ -314,11 +347,10 @@ def test_local_realtime_reads_ignore_stale_index_for_browse_and_folder_contents(
         [{"name": "删 RJ 目录", "pattern": "RJ01000001", "target": "folder", "enabled": True}],
     )
     assert filter_preview["browse_via_index"] is True
-    assert filter_preview["selected_count"] == 2
-    assert filter_preview["selected_size"] == 9
+    assert filter_preview["selected_count"] == 1
+    assert filter_preview["selected_size"] == 4
     assert [item["relative_path"] for item in filter_preview["items"]] == [
         "RJ01000001",
-        "RJ01000001/old-track.mp3",
         "RJ01000001/subtitles",
         "RJ01000001/subtitles/track.vtt",
     ]
@@ -741,7 +773,7 @@ def test_subtitle_manual_match_rename_can_skip_index_mutation(monkeypatch):
     captured = {}
 
     class FakeLibraryManager:
-        async def rename(self, library_id, path, new_name, *, skip_index_mutation=False):
+        async def rename(self, library_id, path, new_name, *, skip_index_mutation=False, sync_index_mutation=False):
             captured["library_id"] = library_id
             captured["path"] = path
             captured["new_name"] = new_name
@@ -803,6 +835,106 @@ def test_subtitle_manual_match_batch_rename_can_skip_index_mutation(monkeypatch)
     assert response["success_count"] == 1
     assert captured["library_id"] == "local-a"
     assert captured["skip_index_mutation"] is True
+
+
+def test_api_rename_locks_metadata_to_target_folder_rjcode(monkeypatch):
+    captured = {}
+
+    class FakeLibrary:
+        id = "remote-a"
+        type = "synology_filestation"
+
+    class FakeLibraryManager:
+        def get_library_definition(self, library_id):
+            captured["requested_library_id"] = library_id
+            return FakeLibrary()
+
+        async def rename(self, library_id, path, new_name, *, sync_index_mutation=False):
+            captured["rename"] = {
+                "library_id": library_id,
+                "path": path,
+                "new_name": new_name,
+                "sync_index_mutation": sync_index_mutation,
+            }
+            return {
+                "message": "重命名成功",
+                "new_path": "/library_amsr/青春/[青春][RJ01570159]/[青春][RJ01572763]",
+            }
+
+    class FakeMetadataService:
+        async def fetch(self, path, task, force_refresh=False):
+            captured["metadata_path"] = path
+            captured["metadata_task_rjcode"] = task.rjcode
+            captured["metadata_task_metadata"] = dict(task.task_metadata)
+            return {
+                "rjcode": "RJ01572763",
+                "work_name": "目标作品",
+                "maker_name": "青春",
+                "cvs": [],
+            }
+
+    class FakeRenameService:
+        async def _get_japanese_metadata(self, rjcode):
+            captured["japanese_rjcode"] = rjcode
+            return {"maker_name": "青春", "cvs": []}
+
+        def _compile_name(self, metadata, japanese_metadata):
+            return f"[{japanese_metadata['maker_name']}][{metadata['rjcode']}]"
+
+        def _sanitize_filename(self, value):
+            return value
+
+    class FakeDb:
+        def query(self, *_args, **_kwargs):
+            return self
+
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def delete(self):
+            return 0
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+        def close(self):
+            return None
+
+    fake_config = SimpleNamespace(
+        rename=SimpleNamespace(
+            template="[{maker_name}][{rjcode}]",
+            api_rename_follow_template=True,
+            use_japanese_metadata=True,
+        )
+    )
+
+    monkeypatch.setattr(routes_module, "get_library_manager", lambda: FakeLibraryManager())
+    monkeypatch.setattr(routes_module, "get_config", lambda: fake_config)
+    monkeypatch.setattr(routes_module, "get_db", lambda: iter([FakeDb()]))
+    monkeypatch.setattr("app.core.metadata_service.MetadataService", lambda: FakeMetadataService())
+    monkeypatch.setattr("app.core.rename_service.RenameService", lambda: FakeRenameService())
+    monkeypatch.setattr("app.models.database.get_db", lambda: iter([FakeDb()]))
+    monkeypatch.setattr("app.core.activity_log_service.log_api_rename_action", lambda **_kwargs: None)
+
+    response = asyncio.run(
+        routes_module.api_rename_library_file(_FakeJsonRequest({
+            "library_id": "remote-a",
+            "path": "/library_amsr/青春/[青春][RJ01570159]/RJ01572763",
+        }))
+    )
+
+    assert response["new_name"] == "[青春][RJ01572763]"
+    assert captured["metadata_task_rjcode"] == "RJ01572763"
+    assert captured["metadata_task_metadata"] == {
+        "rjcode": "RJ01572763",
+        "rjcode_lock": True,
+    }
+    assert captured["japanese_rjcode"] == "RJ01572763"
+    assert captured["rename"]["new_name"] == "[青春][RJ01572763]"
+    assert captured["rename"]["sync_index_mutation"] is True
 
 
 def test_index_mutation_threshold_schedules_background_flush(monkeypatch):

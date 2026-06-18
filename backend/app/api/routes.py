@@ -8013,26 +8013,37 @@ async def _compute_library_folder_size_target(
                 "success": False,
                 "error": "文件夹不存在",
             }
-        if include_counts:
-            summary = await asyncio.to_thread(
-                manager._local_folder_summary_from_filesystem,
-                normalized_path,
-                max_entries=max_entries,
-                max_seconds=max_seconds,
-            )
+        indexed_summary = manager.folder_size_summary_via_index(
+            library,
+            normalized_path,
+            include_counts=include_counts,
+        )
+        if indexed_summary is not None:
             return {
                 "library_id": resolved_library_id,
                 "path": normalized_path,
                 "success": True,
-                **summary,
+                **indexed_summary,
             }
-        size = await asyncio.to_thread(manager._cached_path_size, normalized_path)
-        return {
+        manager._enqueue_index_read_repair_upserts(library, [normalized_path])
+        pending_result = {
             "library_id": resolved_library_id,
             "path": normalized_path,
             "success": True,
-            "size": size,
+            "size": None,
+            "size_status": "pending",
+            "index_refresh_pending": True,
+            "browse_via_index": False,
+            "partial": False,
+            "scanned_entries": 0,
         }
+        if include_counts:
+            pending_result.update({
+                "file_count": 0,
+                "folder_count": 0,
+                "count_status": "pending",
+            })
+        return pending_result
     except Exception as exc:
         return {
             "library_id": library_id,
@@ -9940,8 +9951,13 @@ async def api_rename_library_file(request: Request):
             from ..core.task_engine import Task, TaskType
             temp_task = Task(
                 task_type=TaskType.METADATA,
-                source_path=file_path
+                source_path=file_path,
+                rjcode=rjcode,
             )
+            temp_task.task_metadata = {
+                "rjcode": rjcode,
+                "rjcode_lock": True,
+            }
             
             metadata = await metadata_service.fetch(file_path, temp_task)
             logger.info(f"获取到元数据: {metadata}")
@@ -10037,7 +10053,7 @@ async def api_rename_library_file(request: Request):
             return {"message": "名称已是最新，无需重命名", "name": new_name}
 
         # 执行重命名
-        rename_result = await manager.rename(library.id, file_path, new_name)
+        rename_result = await manager.rename(library.id, file_path, new_name, sync_index_mutation=True)
         new_path = str(rename_result.get("new_path") or new_path)
         logger.info(f"API重命名成功: {file_path} -> {new_path}")
         try:
