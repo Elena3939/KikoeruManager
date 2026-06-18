@@ -12,6 +12,7 @@
 - 提交必须按业务模块拆批；commit 信息写清业务影响，不要写前缀，不要带 tag 号。
 - 不要回退用户已有改动；遇到不属于本任务但已经存在的 diff，只能理解并绕开。
 - 发布 tag 只能用标准 semver：`v1.2.3`，不要用 `1.2.3` 或 `v1.02`。
+- 重启项目只用仓库根目录的 `start-all.bat`；不要手写分散的 uvicorn / Vite 重启命令替代整项目重启。
 
 ## 1. 项目基线
 
@@ -31,9 +32,12 @@
 - 依赖清单：`backend/requirements.txt`。
 - 解压依赖：运行环境必须有官方 `7zz 24.08+`，并保留 `unar` / `lsar`。
 - 不要回退到旧 `p7zip-full`。Dockerfile 会显式 purge p7zip，并把官方 `7zz` 链接到 `/usr/local/bin/7zz` 和 `/usr/local/bin/7z`。
+- 百度网盘依赖 `BaiduPCS-Go`，Dockerfile 会按架构安装并链接 `/usr/local/bin/BaiduPCS-Go` / `baidupcs-go`；不要把它当成可选工具删掉。
 - 新增的伪装 ZIP 探测只用 Python 标准库 `zipfile` / `os`，不用加 requirements。
 - 运行态数据库不再保留 SQLite 兼容；`DATABASE_URL` 必须使用 `postgresql+psycopg://...`，存在时覆盖配置文件中的 `database.*` 字段。
 - 本地 Windows 通过 `setup.bat` / `scripts/install-postgresql.ps1` 检查、安装、初始化 PostgreSQL，并把随机密码明文写入 `data/config/config.yaml` 方便后续查看和修改。
+- `orjson` 是 ActivityLog / JSON 列性能依赖，`nh3` 是邮件 HTML 清洗安全边界，`brotlicffi` 是 DLsite / httpx br 响应解码依赖，`transferit-py` 是 Transfer.it 平台解析依赖；不要因为 import 不集中就移除。
+- PostgreSQL 搜索依赖 `pg_trgm` GIN 索引，库存、操作历史、任务中心、已处理归档都有 trigram 索引维护逻辑；不要恢复 SQLite FTS 或另起一套 tokenizer。
 
 ### 前端
 
@@ -43,9 +47,10 @@
 - 当前直接依赖必须保留：
   - `@tanstack/vue-table`：库存页文件表格模型。
   - `@tanstack/vue-virtual`：社团作品虚拟滚动视口。
-  - `@tiptap/core`：邮件 Block Editor 自定义扩展直接 import。
+  - `@tiptap/core` / `@tiptap/vue-3` / `@tiptap/starter-kit` / table/link 扩展：邮件 Block Editor 和富文本变量 pill 直接使用。
   - `lucide-vue-next`：全站图标唯一来源。
   - `@lottiefiles/dotlottie-vue` / `lottie-web`：动效。
+  - `ag-grid-community` / `ag-grid-vue3`：当前构建和分包配置仍保留，不确认调用链前不要删依赖。
 - 主题系统统一走 `frontend/src/composables/useTheme.ts`（light / dark / system 三态，挂 `dark` + `kikoerumanager-dark` 两个 class），暗色样式集中在 `frontend/src/dark-mode.css`；不要再造第二套主题状态机。
 - 加载态按钮统一复用 `frontend/src/components/ui/stateful-button.vue`，主题切换按钮统一复用 `frontend/src/components/magicui/AnimatedThemeToggler.vue`；不要每个按钮手写 spinner 或另起主题切换逻辑。
 - Vite 项目体积较大，`frontend/package.json` 的 `dev/build/preview` 和根 `Dockerfile` 都使用 `--max-old-space-size=4096`，不要降回 2048。
@@ -54,7 +59,7 @@
 
 - 根 `Dockerfile` 是完整前后端单镜像，并内置 PostgreSQL 18 server；`docker/entrypoint.sh` 会在没有 `DATABASE_URL` 时初始化并启动容器内 PostgreSQL。
 - `backend/Dockerfile` 是后端基础镜像，只安装 PostgreSQL 客户端和 Python 驱动，默认连接外部 PostgreSQL。
-- 两个 Dockerfile 都必须保留官方 `7zz 24.08`、`unar`、`lsar`；不要恢复 SQLite FTS5 构建检查。
+- 两个 Dockerfile 都必须保留官方 `7zz 24.08`、`unar`、`lsar`；根 Dockerfile 还要保留 `BaiduPCS-Go`；不要恢复 SQLite FTS5 构建检查。
 - Docker 单镜像部署必须持久化挂载 `/app/postgres`，否则更新 / 重建容器后数据库会落在容器层里丢失。
 - Docker 里如显式设置 `DATABASE_URL`，则跳过内置 PostgreSQL 并连接外部 PostgreSQL；默认 compose 不设置 `DATABASE_URL`。
 - 伪装 ZIP 解压会在 `storage.temp_path` 下创建 `kikoerumanager_embedded_zip_*.zip` 临时视图。Docker 部署时这个 temp 路径要挂到有足够空间的卷，不要放很小的容器层。
@@ -69,9 +74,15 @@
 - 数据库模型：`backend/app/models/database.py`
 - 任务引擎：`backend/app/core/task_engine.py`
 - 任务中心：`backend/app/core/task_center_service.py`
+- 任务中心物化：`backend/app/core/task_center_materialization_service.py`
+- 实时事件：`backend/app/core/realtime_event_service.py`、`backend/app/core/task_center_event_service.py`
 - 操作审计：`backend/app/core/activity_log_service.py`、`backend/app/core/activity_log_writer.py`、`backend/app/core/activity_log_aggregator/`
+- 操作审计压缩 / rollup：`backend/app/core/activity_log_compactor.py`、`backend/app/core/activity_log_rollup_service.py`、`backend/app/core/activity_log_lite.py`
+- 数据库维护：`backend/app/core/database_maintenance_service.py`
 - 库存管理：`backend/app/core/library_manager.py`
 - 库存索引：`backend/app/core/library_index/`
+- 库存社团聚合：`backend/app/core/library_circle_aggregation_service.py`
+- 库存文件夹补全：`backend/app/core/library_folder_completion_service.py`
 - 解压：`backend/app/core/extract_service.py`
 - 压缩包识别：`backend/app/core/file_processor.py`、`backend/app/core/archive_detection.py`
 - RJ 字幕：`backend/app/core/rj_subtitle_service.py`、`backend/app/core/linked_subtitle_import_service.py`
@@ -98,12 +109,13 @@
 - 已有文件夹处理：`frontend/src/views/ExistingFolders.vue`
 - 社团补全：`frontend/src/views/CircleCompletion.vue`
 - ASMR 同步：`frontend/src/views/ASMRSync.vue`
-- 百度网盘：`frontend/src/views/BaiduNetdisk.vue`
+- 百度网盘入口：`frontend/src/views/ASMRSync.vue` 的百度 tab + `frontend/src/components/asmr/BaiduNetdiskPanel.vue`；`/baidu-netdisk` 只做重定向。
 - 密码工作台：`frontend/src/views/PasswordVault.vue`
 - 字幕导入：`frontend/src/views/SubtitleImport.vue`
 - 日志：`frontend/src/views/Logs.vue`
 - 安全网关闸页：`frontend/src/views/VerifyGate.vue`、`frontend/src/views/BlockedGate.vue`
 - 设置页：`frontend/src/views/Settings.vue`（按面板拆分为 `frontend/src/components/settings/*SettingsPanel.vue`，含 HTTP / AI 字幕 / 百度网盘 / 安全网关 / 通知等）
+- 实时事件入口：`frontend/src/composables/useRealtimeEvents.js`；旧 `useTaskCenterStream.js` 只给任务中心兼容，新增实时刷新默认接 `/api/events/stream`。
 
 ### 前端基座组件
 
@@ -114,9 +126,11 @@
 - 社团作品卡片 / 行：`frontend/src/components/circle/WorkCard.vue`、`frontend/src/components/circle/WorkListRow.vue`
 - 库存移动弹窗：`frontend/src/components/library/LibraryMoveDialog.vue`
 - 库存索引徽章：`frontend/src/components/library/LibraryIndexBadge.vue`
+- 库存社团聚合 / 内容弹窗：`frontend/src/components/library/FolderContentsDialog.vue`
 - 统一筛选下拉：`frontend/src/components/common/AppDropdown.vue`
 - 系统弹窗：`frontend/src/components/system/SystemPromptDialog.vue`、`SystemPromptHost.vue`、`frontend/src/composables/useSystemPrompt.js`
 - 通知中心：`frontend/src/components/system/NotificationBell.vue`、`frontend/src/composables/useNotifications.js`
+- 后台工作台小窗：`frontend/src/components/workbench/BackgroundWorkbenchHost.vue`、`frontend/src/composables/useBackgroundWorkbenchManager.js`
 - 主题：`frontend/src/composables/useTheme.ts`、`frontend/src/components/magicui/AnimatedThemeToggler.vue`
 - 加载态按钮：`frontend/src/components/ui/stateful-button.vue`（loading / success / error 三态可复用动画）
 - Lottie 通用组件：`AppLoadingAnimation.vue`、`AppLottieIcon.vue`、`AppLottieSwitch.vue`、`AppLottieProgressBar.vue`
@@ -128,9 +142,11 @@
 - 只有设置 `CONFIG_PATH` 时才读环境变量指定文件。
 - 数据库配置字段在 `database.host/port/database/username/password/sslmode/...`；`/api/config` 返回密码必须脱敏，保存时传回 `********` 或省略都要保留磁盘真实密码。
 - `resource_budget.database_write` 是当前数据库写入资源维度；旧 `sqlite_write` 只能作为读取旧配置的兼容 key，保存后不能再写回旧 key。
+- `resource_budget.library_index_write` 是库存索引追赶 / 重建写入资源维度，和普通 `database_write` 分开；索引后台追赶不能把业务写入全部挤死。
 - 不要提交真实密码、Token、代理、私服地址、群晖账号、本地数据库、缓存、`.env`。
 - 默认运行态 / 敏感产物：`.env`、`data/`、`backend/data/`、本地数据库、缓存目录、`.codex-backups/`。
 - `/api/config` 返回 SMTP 密码必须脱敏为 `********`；保存时前端传回 `********` 或省略 `password`，后端必须保留真实密码。
+- 百度网盘 `cookie`、HTTP 下载 `pikpak_* / gofile_token / google_drive_*`、PikPak 多账号 `password / encoded_token` 都要在 `/api/config` 和日志中脱敏；保存脱敏表单时必须从磁盘或当前配置回填真实值，不能把 `********` 写回文件。
 
 ## 5. 前端设计规则
 
@@ -204,19 +220,29 @@
 
 - `Library.vue` 是主工作台，不是普通列表页。
 - 当前文件列表已切到 `@tanstack/vue-table` 管理 row model，配合自定义 DOM 表格样式。
+- 库存页存在普通目录、搜索结果、社团聚合虚拟目录三种浏览语义；`circle:/...` 是展示层路径，操作落地时必须解析回真实 `library_id + path`。
 - 库存页新增 / 保留能力：
   - Windows 式框选：原生 Pointer Events + RAF。
   - 表格行拖拽移动：拖动幽灵、可投放 / 阻止状态。
   - 面包屑路径栏：支持折叠、popover、拖拽投放。
   - 批量选择、批量删除、批量移动、API 重命名、当前页 / 当前目录动作作用域。
 - 本地移动必须先走 `/api/library/browser/move-preview` 做真实后端预检；不要只靠前端当前层同名判断。
+- API 重命名支持批量计划 / 批量行状态，前端要避免重复提交同一批次；后端要保持计划生成和执行分离。
 - 同名文件夹是合并语义，不是冲突；只有文件撞名、文件夹/文件类型不一致、目标在源目录内部等情况才进入冲突选择。
 - 目录合并后库存索引不能只做 move fast-path：源目录删除、目标目录 replace subtree、未删除源目录 replace subtree 都要按结果补 self_mutation。
 - 不要退回 Element Plus 默认表格。
 - 改行选择逻辑时要同步键盘、右键菜单、移动弹窗、移动后刷新、搜索定位行状态。
 - `LibraryMoveDialog.vue` 负责库存内移动导航；初始路径必须能展开到目标路径。
 
-### 6.4 社团补全
+### 6.4 库存社团聚合视图
+
+- 核心文件：`backend/app/core/library_circle_aggregation_service.py`、`frontend/src/components/library/FolderContentsDialog.vue`、`frontend/src/views/Library.vue`。
+- 社团聚合只读 `library_index_entries` 和本地元数据表，不能触发 `os.walk`、远程 FileStation 递归或慢 fallback。
+- 聚合结果必须保留真实 `library_id`、`relative_path`、`path`；虚拟路径只用于浏览展示，删除 / 移动 / 重命名 / 内容弹窗要回到真实路径。
+- 同一个 RJ 多库 / 多路径收录时是聚合位置列表，不要简单去重到单路径。
+- 社团识别范围要收紧在库存索引的真实作品路径上；不要拿顶层分类目录或不含 RJ 的父目录误判社团。
+
+### 6.5 社团补全
 
 - `CircleCompletion.vue` 使用 `CircleWorksViewport.vue` 渲染作品列表。
 - `CircleWorksViewport.vue` 依赖 `@tanstack/vue-virtual`，卡片 / 列表模式共用分页和虚拟行。
@@ -224,8 +250,9 @@
 - 作品卡片 / 行继续复用 `WorkCard.vue`、`WorkListRow.vue`，保留 CV、关联链、封面错误降级和状态 flash。
 - 批量下载入口优先使用 `asmr_available_rjcode`，不要默认拿 `display_rjcode`。
 - DLsite 关联链统一复用 `dlsite_service.get_linked_works()`。
+- 本地收录态优先走库存索引 / 社团聚合数据，不要靠慢速全库路径扫描。
 
-### 6.5 上传 / 下载工作台
+### 6.6 上传 / 下载工作台
 
 - 本地上传任务、服务端上传预览、下载任务面板是一条链，不要只改其中一端。
 - `ServerUploadPreviewDialog.vue` 已做预览树虚拟化、类型 chip、横向拖动 chip rail、分组选中统计。
@@ -239,8 +266,9 @@
 - 上传任务行按 `source_dir` 匹配，避免多源上传时进度串行写错文件。
 - `DownloadTaskWorkbenchDialog.vue` 和 `UploadTaskWorkbenchDialog.vue` 的字段语义不要乱改：`download_files`、`upload_files`、`uploaded_files`、`progress_log`、`failure_reason`、`final_output_path`、`download_root`。
 - 本地复制入库、群晖上传都不能退回整文件 `read()`；必须流式分块并保留进度。
+- 后台工作台小窗统一走 `BackgroundWorkbenchHost.vue` / `useBackgroundWorkbenchManager.js`，不要给每个页面另写浮窗状态机。
 
-### 6.6 HTTP 外链下载
+### 6.7 HTTP 外链下载
 
 - `http_download_service.py` 是底层 aria2 RPC 下载，按平台拆解析：`http` / `gofile` / `transferit` / `onedrive` / `google_drive` / `pikpak`，平台标签走 `HTTP_DOWNLOAD_PLATFORM_LABELS`，不要散落硬编码。
 - 下载预览树支持文件级选择；`gofile` / `google_drive` / `transferit` / `pikpak` 要把选择过滤传回后端，百度网盘要保留选中的 `preview_files` / `share_files`。
@@ -250,6 +278,16 @@
 - PikPak 多账号在 `pikpak_accounts` 维护，状态有缓存表 `PikPakStatusCache`；token 失效要能用账号密码自动重登并回写。
 - 任务态语义要和任务中心 / 仪表盘对齐：`completed` / `partial_failed`（部分成功）/ 取消态，失败项支持自动重试和手动重试。
 - 前端入口：`HttpDownloadSettingsPanel.vue`（设置）、下载工作台与 ASMR 同步页；Google Drive OAuth 走 `google_drive_oauth.py`。
+- Transfer.it 支持断流后断点续传，速度统计不能把历史已下载字节当当前瞬时速度。
+
+### 6.8 百度网盘
+
+- 核心文件：`backend/app/core/baidu_netdisk_service.py`、`frontend/src/components/settings/BaiduNetdiskSettingsPanel.vue`、`frontend/src/components/asmr/BaiduNetdiskPanel.vue`。
+- 入口挂在 ASMR 同步页的百度 tab，`/baidu-netdisk` 只是重定向到 `/asmr-sync?tab=baidu`。
+- Docker / Linux 依赖 `BaiduPCS-Go`；本地 Windows 可走配置里的 `baidupcs_go_path`。不要改成直接浏览器下载。
+- 账号绑定支持官方登录窗口、扫码登录、账号密码同步、手动 cookie；这些会互相关闭会话，改状态时要同步关闭旧二维码 / 官方登录 session。
+- 百度分享解析要保留分享级和文件级选择、提取码、每文件自定义文件名 / 解压密码；`sanitize_baidu_netdisk_item()` 负责对外剥离 cookie、bdstoken、randsk、share token、提取码等敏感字段。
+- 预览缓存的 raw key 不能暴露给前端；任务提交时只传必要的 sanitized 选择数据。
 
 ## 7. 业务链路红线
 
@@ -259,6 +297,11 @@
 - 任务上下文字段优先补全：`task_domain`、`task_kind`、`session_id`、`source_page`、`source_action`、`source_label`、`business_key`。
 - 状态除了 `pending / processing / completed / failed`，还有 `paused / waiting_manual / waiting_retry`。
 - RJ 字幕任务有自己的进度日志、下载明细、人工匹配等待态，不要硬塞回通用粗粒度进度条。
+- 新 API 默认走 `/api/task-center/*`；`/api/tasks*` 是兼容层，只给少数历史入口用，新功能不要接回旧任务列表。
+- 任务中心实时刷新有两条线：旧 `/api/task-center/stream` 和统一 `/api/events/stream`；新增前端刷新优先用 `useRealtimeEvents.js`，并保留 `kikoerumanager:task-center:changed` 兼容事件。
+- `TaskEngine` 会双写 `task_center_items` 物化快照，并用指纹和最小写入间隔限流进度更新；不要在每个 progress tick 同步写库。
+- `KIKOERUMANAGER_TASK_CENTER_MATERIALIZED_SUMMARY=1` 会让 summary 读路径优先读物化表；上线前可用 `/api/task-center/materialized/backfill`、`/api/task-center/materialized/list`、`/api/task-center/diagnose` 做双写和 diff。
+- 物化表搜索字段 `searchable_text` 依赖 trigram 索引；新增可搜索字段时同步更新物化构造和数据库索引/维护逻辑。
 
 ### 7.2 操作历史
 
@@ -269,6 +312,10 @@
 - `waiting + task_finished` 文案统一展示为 `等待处理`。
 - 手动字幕配对只有真正落盘才写完成日志。
 - `/api/activity-logs` 的 row cache 设计前提是 append-only；聚合函数禁止原地修改缓存 dict 的深层内容。
+- `activity_log_rollups` 只维护 batch / session / task 三类轻量计数和最新状态，不替代 `activity_log_aggregator` 的深度树形输出。
+- 写入操作历史时要让 `ActivityLogWriter` 同步更新 rollup；历史数据用 `/api/activity-logs/rollups/backfill` 回填，用 `/api/activity-logs/rollups/diff` 校验。
+- `/api/activity-logs/compact` 会压缩旧 detail 并标 `__compacted=True`，不是删除历史；前端应展示归档态而不是让记录消失。
+- ActivityHistory 当前有 lite / detail / children / rollup 多条读路径；改列表性能时先看 `activity_log_lite.py`、`activity_log_aggregator/`、`activity_log_rollup_service.py`，不要直接加全表 JSON 扫描。
 
 ### 7.3 问题作品 / 冲突处理
 
@@ -294,6 +341,8 @@
 - 删除过滤是预审制：发起预审 -> 后台扫描 / 预览 -> 用户审阅 -> 确认后删除。
 - 删除成功后直接更新当前树和数量，不要删完强行重跑整轮预审。
 - 相关记录必须进入操作审计。
+- 目录右键删除过滤、跨库预审、执行删除都要走后端真实库存语义；社团聚合路径必须先解析真实位置。
+- 大候选列表前端要保持虚拟化 / 稳定高度，避免预审滚动空白和抖动。
 
 ### 7.6 ASMR 同步
 
@@ -323,6 +372,14 @@
 - 预览接口要 debounce + abort 上一次请求 + requestId 校验。
 - `task_metadata` 不能整段塞进邮件 payload，必须走白名单。
 
+### 7.9 安全网关
+
+- 后端入口：`backend/app/core/security_gate_service.py`、`routes.py` 的 `security_gate_middleware` 和 `/api/security-gate/*`。
+- 前端入口：`frontend/src/views/VerifyGate.vue`、`BlockedGate.vue`、`SecurityGateSettingsPanel.vue`，路由守卫在 `frontend/src/router/index.js`。
+- 门禁页面自身、静态资源、健康检查、SSE 连接要按 middleware 允许/验证规则处理；不要让未认证用户绕过 API，也不要把 `/verify` / `/blocked` 卡死在重定向循环。
+- 黑名单访问、失败次数、解除黑名单和邮件提醒都有日志/节流表；改验证逻辑要同步 `SecurityGateAuthLog`、`SecurityGateBlacklist`、`SecurityGateEmailThrottle`。
+- TOTP 绑定二维码只在确认新验证码后替换旧绑定；不要生成二维码就立即让旧验证器失效。
+
 ## 8. 群晖 / 库存索引
 
 - 群晖通信相关错误统一抛 `SynologyError`，不要裸抛 `RuntimeError`。
@@ -336,11 +393,21 @@
 
 - 入口：`backend/app/core/library_index/`。
 - DB 表：`library_index_entries`、`library_index_status`。
-- `LibraryManager.find_rj_in_libraries`、`list_files` 搜索、`get_library_size` 已自动接索引；业务层直接调 `LibraryManager`。
+- `LibraryManager.find_rj_in_libraries`、`list_files` 搜索、`get_library_size`、社团聚合视图已自动接索引；业务层直接调 `LibraryManager` 或聚合服务，不要自己扫库。
 - 写操作必须补 self_mutation：删除、重命名、批量删除、移动、解压落地、字幕落盘。
-- 新部署 / 新加库存必须用户手动触发重建，不要启动时自动扫远程库。
+- 新部署 / 新加库存通常由用户手动触发重建；启动时只能为“远程库无可用快照且明确需要初始化”的场景触发补建，不要每次启动无脑扫远程库。
+- `has_usable_snapshot` 为真时，`syncing` 期间读路径应继续用旧快照；无快照时才走受控初始化 / 降级链路。
 - syncing 时 `total_entries` 是已扫描数；ready 后才是总数。
+- 远程 Synology 扫描用 `SYNO.FileStation.Search`，降级遍历必须限流，不能把 `walk()` 当主路径。
 - 前端 `LibraryIndexBadge.vue` 轮询 1.2s；后端每 0.5s 状态上报，别单边改频率。
+
+### 数据库维护 / 全文搜索
+
+- 设置页维护入口：`MaintenanceSettingsPanel.vue` + `DatabaseShrinkCard.vue`；全文搜索入口：`FtsSettingsPanel.vue`。
+- `/api/database/maintenance/shrink` 的实际流程是压缩旧操作记录 detail -> `VACUUM ANALYZE` -> 重建 pg_trgm 索引；它不会删除操作历史。
+- 维护状态会广播 `maintenance.database_shrink.changed` 到 `/api/events/stream`；前端有 30s fallback poll，不要另起短轮询打爆后端。
+- pg_trgm 重建覆盖操作历史、库存索引、任务中心物化表、已处理归档；新增 trigram 索引要同步 `database_maintenance_service.py` 的 `_TRIGRAM_INDEXES` 和 `models/database.py` 的 index specs。
+- 性能诊断读取 `pg_stat_statements` 时要容忍扩展不可查；前端只能显示降级提示，不要把诊断失败当维护失败。
 
 ## 9. 桌面与发布
 
@@ -358,7 +425,13 @@
 - 改后端核心：至少跑 `py_compile` 覆盖相关文件。
 - 改解压 / 文件识别：跑 `backend/tests/test_extract_service.py` 中对应用例；涉及真实用户样本时，用样本实际验证。
 - 改库存索引 / `library_manager.py` 写操作 / `find_rj_in_libraries`：跑 `tests/test_library_index_*.py tests/test_library_manager_index_integration.py -q`。
+- 改库存社团聚合：跑 `backend/tests/test_library_circle_aggregation*.py`，涉及前端浏览再跑 `npm run build`。
+- 改任务中心 / 实时事件：跑 `backend/tests/test_task_center_service.py backend/tests/test_routes_maintenance_config.py -q`，前端改动再跑 `npm run build`。
+- 改操作历史 / rollup / compact：跑 `backend/tests/test_activity_log_*.py backend/tests/test_routes_maintenance_config.py -q`。
+- 改 HTTP / 百度网盘下载：跑 `backend/tests/test_http_download_service.py backend/tests/test_baidu_netdisk*.py backend/tests/test_task_notification_service.py -q`，前端面板改动再跑 `npm run build`。
 - 改通知模板：后端 `py_compile` + 前端 `npm run build`。
+- 改安全网关：跑相关 `routes.py` / `security_gate_service.py` `py_compile`，并手动验证 `/verify`、`/blocked`、正常业务页跳转。
+- 改数据库维护 / FTS：跑 `backend/tests/test_routes_maintenance_config.py backend/tests/test_activity_log_rollup_service.py -q`，前端设置页改动再跑 `npm run build`。
 - 改发布流程：检查 `.github/workflows/ghcr.yml` 和 semver tag。
 
 ## 11. 常用排查路径
@@ -367,11 +440,16 @@
 - “Docker 里解压识别不了”：先看 `Dockerfile` / `backend/Dockerfile` 是否有官方 `7zz`、`unar`、`lsar`，再看 `archive_detection.py`、`file_processor.py`、`extract_service.py`。
 - “伪装 ZIP / mp4 改 zip 仍识别不了”：确认 `detect_embedded_zip_offset()` 是否能返回 offset，确认 temp 路径可写且空间足够。
 - “库存页交互不对”：先看 `Library.vue`、`LibraryMoveDialog.vue`、`frontend/src/api/index.js`。
+- “库存社团聚合 / circle:/ 路径不对”：先看 `library_circle_aggregation_service.py`、`FolderContentsDialog.vue`、`Library.vue`，确认虚拟路径是否解析回真实库路径。
 - “社团列表卡顿 / 空白”：先看 `CircleWorksViewport.vue` 和 `@tanstack/vue-virtual` 是否安装。
 - “上传预览 / 上传进度不对”：先看 `ServerUploadPreviewDialog.vue`、`UploadTaskWorkbenchDialog.vue`、`library_manager.py`、`task_engine.py`。
-- “任务中心 / 历史记录不对”：先看 `task_center_service.py`、`activity_log_service.py`、`Tasks.vue`、`ActivityHistory.vue`。
+- “任务中心不刷新 / 状态串了”：先看 `task_engine.py` 的 event hook / 物化快照、`task_center_service.py`、`task_center_materialization_service.py`、`useRealtimeEvents.js`。
+- “操作历史 / 历史记录不对”：先看 `activity_log_service.py`、`activity_log_writer.py`、`activity_log_aggregator/`、`activity_log_rollup_service.py`、`ActivityHistory.vue`。
+- “数据库变大 / 搜索慢”：先看 `database_maintenance_service.py`、`DatabaseShrinkCard.vue`、`FtsSettingsPanel.vue`、`models/database.py` 的 pg_trgm index specs。
 - “通知邮件 / 模板 / 变量不对”：先看 `notification_template_service.py`、`block_renderers/__init__.py`、`variable_registry.py`、`notification_helper.py`。
 - “HTTP 外链 / PikPak / Google Drive / Gofile 下载不对”：先看 `http_download_service.py`、`google_drive_oauth.py`、`HttpDownloadSettingsPanel.vue`，确认 aria2 可用、代理和 token 有效。
+- “百度网盘下载 / 登录态不对”：先看 `baidu_netdisk_service.py`、`BaiduNetdiskSettingsPanel.vue`、`BaiduNetdiskPanel.vue`，确认 `BaiduPCS-Go` 路径、cookie 脱敏回填和二维码 / 官方登录 session。
+- “安全网关误跳转 / 黑名单不对”：先看 `security_gate_service.py`、`routes.py` middleware、`router/index.js`、`VerifyGate.vue`、`BlockedGate.vue`。
 - “暗黑模式样式没生效 / 闪白”：先看 `useTheme.ts` 是否挂上 `html.dark` + `html.kikoerumanager-dark`，再看 `dark-mode.css` 是否补了对应选择器。
 - “弹窗有蓝色聚焦框 / 移动端弹窗没全屏”：先看 `App.vue` 的弹窗去聚焦兜底和 `index.css` 的响应式 helper / `.mobile-full-dialog`。
 - “按钮加载态闪烁 / 不复用”：统一换 `frontend/src/components/ui/stateful-button.vue`。
