@@ -86,7 +86,7 @@ def _infer_circle_name_from_bracketed_folder(value: Any, rjcode: Any) -> str:
     return ""
 
 
-def _infer_circle_name_from_remote_path(relative_path: Any, rjcode: Any, folder_name: Any = "") -> str:
+def _infer_circle_name_from_index_path(relative_path: Any, rjcode: Any, folder_name: Any = "") -> str:
     name_circle = _infer_circle_name_from_bracketed_folder(folder_name, rjcode)
     if name_circle:
         return name_circle
@@ -443,7 +443,7 @@ class LibraryCircleAggregationService:
         path_identities: dict[int, _CircleIdentity] = {}
         metadata_rjcodes: set[str] = set()
         for index, row in enumerate(rows):
-            path_identity = self._identity_from_remote_path(row)
+            path_identity = self._identity_from_index_path(row)
             if path_identity:
                 path_identities[index] = path_identity
             else:
@@ -1351,11 +1351,8 @@ class LibraryCircleAggregationService:
             sort_key=name.casefold(),
         )
 
-    def _identity_from_remote_path(self, row: dict[str, Any]) -> Optional[_CircleIdentity]:
-        library_type = str(row.get("library_type") or "").strip()
-        if library_type != "synology_filestation":
-            return None
-        circle_name = _infer_circle_name_from_remote_path(row.get("relative_path"), row.get("rjcode"), row.get("name"))
+    def _identity_from_index_path(self, row: dict[str, Any]) -> Optional[_CircleIdentity]:
+        circle_name = _infer_circle_name_from_index_path(row.get("relative_path"), row.get("rjcode"), row.get("name"))
         if not circle_name:
             return None
         return self._identity_from_values("", circle_name)
