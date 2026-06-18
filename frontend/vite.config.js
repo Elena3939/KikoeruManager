@@ -3,6 +3,25 @@ import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
 import { fileURLToPath, URL } from 'node:url'
 
+function resolveBuildAssetPrefix() {
+  const rawVersion = String(
+    process.env.KIKOERUMANAGER_VERSION
+      || process.env.APP_VERSION
+      || ''
+  ).trim()
+  if (!rawVersion || rawVersion.toLowerCase() === 'dev') return ''
+
+  const version = rawVersion
+    .replace(/^refs\/tags\//i, '')
+    .replace(/[^a-z0-9_.-]/gi, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+
+  return version ? `${version}-` : ''
+}
+
+const buildAssetPrefix = resolveBuildAssetPrefix()
+
 export default defineConfig({
   assetsInclude: ['**/*.lottie'],
   plugins: [vue(), tailwindcss()],
@@ -58,6 +77,9 @@ export default defineConfig({
     assetsDir: 'assets',
     rollupOptions: {
       output: {
+        entryFileNames: `assets/${buildAssetPrefix}[name]-[hash].js`,
+        chunkFileNames: `assets/${buildAssetPrefix}[name]-[hash].js`,
+        assetFileNames: `assets/${buildAssetPrefix}[name]-[hash][extname]`,
         manualChunks(id) {
           if (!id.includes('node_modules')) return undefined
           if (
