@@ -888,6 +888,8 @@ function normalizeShallowItem (item, basePath) {
     hasChildren,
     file_count: fileCount ?? (countsArePlaceholder ? null : item?.file_count),
     folder_count: folderCount ?? (countsArePlaceholder ? null : item?.folder_count),
+    size_via_index: Boolean(item?.size_via_index || item?.browse_via_index),
+    index_refresh_pending: Boolean(item?.index_refresh_pending),
   }
 }
 
@@ -1029,7 +1031,17 @@ function replaceTreeNodeChildren (targetId, children, summary = {}) {
         node.childrenLoaded = true
         node.hasChildren = children.length > 0
         const childSize = children.reduce((sum, child) => sum + Number(child?.size || 0), 0)
-        const hasReadySize = Boolean(summary?.browse_via_index || node.size_status === 'ready')
+        const summaryStatus = String(summary?.size_status || '')
+        const hasReadySize = Boolean(
+          summary?.browse_via_index ||
+          summary?.size_via_index ||
+          node.size_via_index ||
+          node.size_status === 'ready' ||
+          (summaryStatus === 'stale' && (
+            pickOptionalNonNegativeNumber(summary?.total_size) !== null ||
+            pickOptionalNonNegativeNumber(summary?.total_size_bytes) !== null
+          ))
+        )
         node.size = hasReadySize ? Math.max(
           pickOptionalNonNegativeNumber(summary?.total_size) || 0,
           pickOptionalNonNegativeNumber(summary?.total_size_bytes) || 0,
@@ -1050,7 +1062,9 @@ function replaceTreeNodeChildren (targetId, children, summary = {}) {
           if (!child?.modified_time) return latest
           return !latest || child.modified_time > latest ? child.modified_time : latest
         }, null)
-        node.size_status = hasReadySize ? 'ready' : node.size_status
+        node.size_status = summary?.size_status || (hasReadySize ? 'ready' : node.size_status)
+        node.size_via_index = Boolean(node.size_via_index || summary?.browse_via_index || summary?.size_via_index)
+        node.index_refresh_pending = Boolean(summary?.index_refresh_pending)
         return true
       }
       if (node.children?.length && visit(node.children)) {
@@ -1134,7 +1148,7 @@ function queueDirectorySummaries (rows = [], options = {}) {
 
 function needsDirectorySummary (row) {
   if (!row || row.type !== 'dir') return false
-  if (row.browse_via_index) return false
+  if (row.browse_via_index || row.size_via_index) return false
   if (row.childrenLoaded) return false
   if (pickOptionalNonNegativeNumber(row.file_count) !== null || pickOptionalNonNegativeNumber(row.folder_count) !== null) return false
   return row.hasChildren !== false && row.has_children !== false
@@ -1460,7 +1474,7 @@ function isDirectorySummaryLoading (row) {
 function hasPendingDirectoryCounts (row) {
   if (!row || row.type !== 'dir' || row.childrenLoaded) return false
   if (row.hasChildren === false || row.has_children === false) return false
-  if (row.browse_via_index || row.size_status === 'ready') return false
+  if (row.browse_via_index || row.size_via_index || row.size_status === 'ready') return false
   return pickOptionalNonNegativeNumber(row.file_count) === null &&
     pickOptionalNonNegativeNumber(row.folder_count) === null
 }

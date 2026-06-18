@@ -396,7 +396,7 @@
                     :data-library-path-drop-target="segment.path || ''"
                     :data-library-path-label="segment.label"
                     :data-library-id="segment.library_id || selectedLibraryId"
-                    :title="segment.path || segment.label"
+                    :title="getPathBreadcrumbSegmentTitle(segment)"
                     @click="navigateToBreadcrumbPath(segment.path)"
                   >
                     <component :is="getPathBreadcrumbSegmentIconComponent(segment)" class="lib-path-segment-icon file-icon" :class="getPathBreadcrumbSegmentIconClass(segment)" :size="15" :stroke-width="2.2" />
@@ -416,7 +416,7 @@
                 :data-library-path-drop-target="item.segment.path || ''"
                 :data-library-path-label="item.segment.label"
                 :data-library-id="item.segment.library_id || selectedLibraryId"
-                :title="item.segment.path || item.segment.label"
+                :title="getPathBreadcrumbSegmentTitle(item.segment)"
                 @click="navigateToBreadcrumbPath(item.segment.path)"
               >
                 <component :is="getPathBreadcrumbSegmentIconComponent(item.segment)" class="lib-path-segment-icon file-icon" :class="getPathBreadcrumbSegmentIconClass(item.segment)" :size="15" :stroke-width="2.2" />
@@ -4766,13 +4766,15 @@ function resolvePathBreadcrumbSegmentDropState (segment) {
 
   if (!tableItemDragState.value.visible || !segment?.path || !tableItemDragState.value.targetPath) return { matched: false }
 
-  const resolved = resolveDragMoveVirtualTarget(segment.path)
+  const resolved = resolveDragMoveVirtualTarget(segment.path, tableItemDragState.value.items)
+
+  if (libraryViewMode.value === 'circle' && (!resolved.path || !resolved.libraryId)) return { matched: false }
 
   const segmentPath = resolved.path || segment.path
 
-  const segmentLibraryId = String(resolved.libraryId || segment.library_id || selectedLibraryId.value || '').trim()
+  const segmentLibraryId = String(resolved.libraryId || segment.library_id || (libraryViewMode.value === 'circle' ? '' : selectedLibraryId.value) || '').trim()
 
-  const targetLibraryId = String(tableItemDragState.value.targetLibraryId || selectedLibraryId.value || '').trim()
+  const targetLibraryId = String(tableItemDragState.value.targetLibraryId || (libraryViewMode.value === 'circle' ? '' : selectedLibraryId.value) || '').trim()
 
   return {
     matched: normalizeConflictPathKey(segmentPath) === normalizeConflictPathKey(tableItemDragState.value.targetPath) &&
@@ -5181,6 +5183,16 @@ const currentPathBreadcrumbDisplayItems = computed(() => {
   return currentPathBreadcrumbLayout.value.displayItems
 
 })
+
+function getPathBreadcrumbSegmentTitle (segment) {
+
+  if (!segment) return ''
+
+  if (libraryViewMode.value === 'circle') return segment.label || ''
+
+  return segment.path || segment.label || ''
+
+}
 
 function updatePathBreadcrumbWidth () {
 
@@ -8264,7 +8276,7 @@ function scheduleListPoll (items) {
 
   if (isRemoteCurrentLibrary.value) return
 
-  if ((items || []).some(item => item?.size_status && item.size_status !== 'ready')) {
+  if ((items || []).some(item => item?.index_refresh_pending && item?.size_status === 'pending')) {
 
     listPollTimer = setTimeout(() => refreshLibrary({ silent: true }), 2000)
 
@@ -10647,9 +10659,9 @@ function resolvePathBreadcrumbDropTarget (elements = []) {
     const rawLabel = String(target.getAttribute('data-library-path-label') || '').trim()
     const rawLibraryId = String(target.getAttribute('data-library-id') || '').trim()
 
-    const resolved = resolveDragMoveVirtualTarget(path)
+    const resolved = resolveDragMoveVirtualTarget(path, tableItemDragState.value.items)
 
-    if (libraryViewMode.value === 'circle' && !resolved.path) continue
+    if (libraryViewMode.value === 'circle' && (!resolved.path || !resolved.libraryId)) continue
 
     return {
       libraryId: resolved.libraryId || rawLibraryId || selectedLibraryId.value,
@@ -10705,11 +10717,25 @@ function canDropRowsToFolder (rows, folder) {
 
 function canDropRowsToPath (rows, targetPath, targetLibraryId = '') {
 
-  const target = normalizeConflictPathKey(targetPath)
+  let effectiveTargetPath = String(targetPath || '').trim()
+
+  let effectiveTargetLibraryId = String(targetLibraryId || '').trim()
+
+  if (libraryViewMode.value === 'circle' && isCircleVirtualPathValue(effectiveTargetPath)) {
+
+    const resolvedTarget = resolveDragMoveVirtualTarget(effectiveTargetPath, rows)
+
+    effectiveTargetPath = String(resolvedTarget.path || '').trim()
+
+    effectiveTargetLibraryId = String(resolvedTarget.libraryId || '').trim()
+
+  }
+
+  const target = normalizeConflictPathKey(effectiveTargetPath)
 
   if (!target) return false
 
-  const normalizedTargetLibraryId = String(targetLibraryId || '').trim()
+  const normalizedTargetLibraryId = String(effectiveTargetLibraryId || '').trim()
 
   for (const row of rows || []) {
 
@@ -10824,7 +10850,27 @@ async function directMoveRowsToPath (rows, targetPath, targetLibraryId = '') {
 
   }
 
-  const resolvedTargetLibraryId = String(targetLibraryId || sourceLibraryId || '').trim()
+  let normalizedTargetPath = String(targetPath || '').trim()
+
+  let resolvedTargetLibraryId = String(targetLibraryId || sourceLibraryId || '').trim()
+
+  if (libraryViewMode.value === 'circle' && isCircleVirtualPathValue(normalizedTargetPath)) {
+
+    const resolvedTarget = resolveDragMoveVirtualTarget(normalizedTargetPath, rows)
+
+    normalizedTargetPath = String(resolvedTarget.path || '').trim()
+
+    resolvedTargetLibraryId = String(resolvedTarget.libraryId || '').trim()
+
+  }
+
+  if (libraryViewMode.value === 'circle' && (!normalizedTargetPath || !resolvedTargetLibraryId || isCircleVirtualPathValue(normalizedTargetPath))) {
+
+    ElMessage.warning('社团聚合目标未解析到真实库存路径')
+
+    return
+
+  }
 
   const targetLibrary = getLibraryById(resolvedTargetLibraryId)
 
@@ -10843,8 +10889,6 @@ async function directMoveRowsToPath (rows, targetPath, targetLibraryId = '') {
     return
 
   }
-
-  const normalizedTargetPath = String(targetPath || '').trim()
 
   if (!canDropRowsToPath(items, normalizedTargetPath, resolvedTargetLibraryId)) {
 
@@ -18688,6 +18732,78 @@ function getCircleRealLibraryId (row) {
 
 }
 
+function circleBasePathFromRelative (realPath = '', relativePath = '') {
+
+  const cleanRealPath = String(realPath || '').trim().replace(/[\\/]+$/g, '')
+
+  const cleanRelativePath = circleNormalizeRelativePath(relativePath)
+
+  if (!cleanRealPath) return ''
+
+  if (!cleanRelativePath) return cleanRealPath
+
+  const normalizedRealPath = cleanRealPath.replace(/\\/g, '/')
+
+  const suffix = `/${cleanRelativePath}`
+
+  if (!normalizedRealPath.toLowerCase().endsWith(suffix.toLowerCase())) return ''
+
+  return cleanRealPath.slice(0, cleanRealPath.length - suffix.length)
+
+}
+
+function inferCircleVirtualTargetFromRows (path = '', rows = []) {
+
+  if (libraryViewMode.value !== 'circle' || !isCircleVirtualPathValue(path)) return { libraryId: '', path: '' }
+
+  const decoded = circleDecodeVirtualPath(path)
+
+  if (!['work', 'item', 'location', 'location-item'].includes(decoded.type)) return { libraryId: '', path: '' }
+
+  const targetRelativePath = circleNormalizeRelativePath(decoded.itemRelativePath || '')
+
+  const candidates = []
+
+  for (const row of Array.isArray(rows) ? rows : []) {
+
+    if (!isCircleWorkChildRow(row)) continue
+
+    const rowGroupKey = String(row?.circle_key || '').trim()
+
+    if (decoded.groupKey && rowGroupKey && rowGroupKey !== decoded.groupKey) continue
+
+    const rowWorkKey = String(row?.circle_work_key || row?.rjcode || '').trim()
+
+    if (decoded.workKey && rowWorkKey && rowWorkKey !== decoded.workKey) continue
+
+    const libraryId = getCircleRealLibraryId(row)
+
+    const realPath = getCircleRealPath(row)
+
+    const basePath = circleBasePathFromRelative(realPath, row?.circle_relative_path || '')
+
+    if (!libraryId || !basePath) continue
+
+    candidates.push({
+      libraryId,
+      path: targetRelativePath ? joinLocalActionPath(basePath, targetRelativePath) : basePath
+    })
+
+  }
+
+  if (!candidates.length) return { libraryId: '', path: '' }
+
+  const first = candidates[0]
+
+  const sameTarget = candidates.every(item => (
+    item.libraryId === first.libraryId &&
+    normalizeConflictPathKey(item.path) === normalizeConflictPathKey(first.path)
+  ))
+
+  return sameTarget ? first : { libraryId: '', path: '' }
+
+}
+
 function normalizeLibraryActionRow (row) {
 
   if (!row || libraryViewMode.value !== 'circle') return row
@@ -20320,7 +20436,7 @@ function resolveDragMoveRowTarget (row) {
 
 }
 
-function resolveDragMoveVirtualTarget (path = '') {
+function resolveDragMoveVirtualTarget (path = '', rows = []) {
 
   if (libraryViewMode.value !== 'circle') {
     return {
@@ -20335,11 +20451,13 @@ function resolveDragMoveVirtualTarget (path = '') {
     return { libraryId: '', path: '' }
   }
 
+  const fallbackTarget = () => inferCircleVirtualTargetFromRows(path, rows)
+
   const work = circleCurrentWorkMap.value.get(String(decoded.workKey || '').trim())
 
-  if (!work) return { libraryId: '', path: '' }
+  if (!work) return fallbackTarget()
 
-  if ((decoded.type === 'work' || decoded.type === 'item') && work?.conflict) return { libraryId: '', path: '' }
+  if ((decoded.type === 'work' || decoded.type === 'item') && work?.conflict) return fallbackTarget()
 
   const locations = Array.isArray(work?.locations) ? work.locations : []
 
@@ -20347,7 +20465,7 @@ function resolveDragMoveVirtualTarget (path = '') {
     ? locations[decoded.locationIndex || 0]
     : locations[0]
 
-  if (!location?.path || !location?.library_id) return { libraryId: '', path: '' }
+  if (!location?.path || !location?.library_id) return fallbackTarget()
 
   const relativePath = circleNormalizeRelativePath(decoded.itemRelativePath || '')
 
@@ -21843,20 +21961,26 @@ async function computeFolderSize (row) {
 
     const result = await libraryApi.computeFolderSize(targetRow.path, { libraryId: targetRow.library_id || selectedLibraryId.value })
 
-      const sizeBytes = result?.size ?? 0
+      const sizeBytes = Number.isFinite(Number(result?.size)) ? Number(result.size) : null
 
       // 更新当前列表中对应行的 size 字段，避免重新加载整页
 
       const target = files.value.find(f => f.id === row.id)
 
       if (target) {
-        target.size = sizeBytes
-        target.size_status = 'ready'
+        if (sizeBytes !== null) target.size = sizeBytes
+        target.size_status = result?.size_status || (result?.index_refresh_pending ? 'pending' : 'ready')
+        target.index_refresh_pending = Boolean(result?.index_refresh_pending)
+        target.size_via_index = Boolean(result?.browse_via_index || result?.size_via_index)
       }
 
     const gb = (sizeBytes / 1073741824).toFixed(2)
 
-    ElMessage.success(`"${row.name}" 大小：${formatFileSize(sizeBytes)}`)
+    if (result?.index_refresh_pending && result?.size_status === 'pending') {
+      ElMessage.info(`"${row.name}" 大小索引刷新中`)
+    } else {
+      ElMessage.success(`"${row.name}" 大小：${formatFileSize(sizeBytes || 0)}`)
+    }
 
   } catch (err) {
 
@@ -21942,26 +22066,35 @@ async function handleBatchComputeSize () {
 
     const results = Array.isArray(result?.results) ? result.results : []
 
-    const sizeByKey = new Map(results
+    const summaryByKey = new Map(results
       .filter(item => item?.success)
-      .map(item => [buildLibraryPathKey(item.library_id, item.path), Number(item.size || 0)]))
+      .map(item => [buildLibraryPathKey(item.library_id, item.path), item]))
 
     for (const row of targets) {
       const key = buildLibraryPathKey(row.library_id, row.path)
-      if (!sizeByKey.has(key)) continue
+      if (!summaryByKey.has(key)) continue
       const target = files.value.find(f => f.id === row.id)
+      const summary = summaryByKey.get(key)
       if (target) {
-        target.size = sizeByKey.get(key) || 0
-        target.size_status = 'ready'
+        const nextSize = Number(summary?.size)
+        if (Number.isFinite(nextSize)) target.size = nextSize
+        target.size_status = summary?.size_status || (summary?.index_refresh_pending ? 'pending' : 'ready')
+        target.index_refresh_pending = Boolean(summary?.index_refresh_pending)
+        target.size_via_index = Boolean(summary?.browse_via_index || summary?.size_via_index)
       }
     }
 
-    const successCount = Number(result?.success_count || sizeByKey.size)
+    const successCount = Number(result?.success_count || summaryByKey.size)
     const failCount = Number(result?.failed_count || Math.max(0, targets.length - successCount))
+    const pendingCount = results.filter(item => item?.success && item?.index_refresh_pending && item?.size_status === 'pending').length
 
     if (failCount === 0) {
 
-      ElMessage.success(`批量计算完成：${successCount} 个文件夹大小已更新`)
+      if (pendingCount) {
+        ElMessage.info(`批量计算：${pendingCount} 个文件夹等待索引刷新`)
+      } else {
+        ElMessage.success(`批量计算完成：${successCount} 个文件夹大小已更新`)
+      }
 
     } else {
 
@@ -23361,11 +23494,11 @@ function isLibraryRowApiRenaming (row) {
 
 function formatRowSize (row) {
 
-  if (row?.is_directory && isAtComputeSizeRoot.value && row?.size_status !== 'ready') return '-'
-
   if (row?.size_status === 'pending' && (row.size === null || row.size === undefined)) return '统计中'
 
   if (row?.size_status === 'stale' && row.size !== null && row.size !== undefined) return `${formatFileSize(row.size)} *`
+
+  if (row?.is_directory && isAtComputeSizeRoot.value && row?.size_status !== 'ready') return '-'
 
   return formatFileSize(row?.size)
 
