@@ -8454,7 +8454,7 @@ class LibraryManager:
         *,
         item_id: int,
         parent_relative_path: str,
-        descendant_folder_count: int,
+        descendant_folder_count: Optional[int],
     ) -> dict[str, Any]:
         is_directory = entry.entry_type == "dir"
         relative_path = self._index_relative_path_under_target(entry.relative_path, parent_relative_path)
@@ -8463,8 +8463,9 @@ class LibraryManager:
         except (OSError, ValueError, OverflowError):
             modified_time = None
         file_count = int(entry.file_count or 0) if is_directory else 1
-        folder_count = int(descendant_folder_count or 0)
+        folder_count = int(descendant_folder_count or 0) if descendant_folder_count is not None else None
         size_value = int(entry.size or 0)
+        has_children = bool(is_directory and (file_count > 0 or int(folder_count or 0) > 0))
         return {
             "id": f"{library.id}:content:index:{item_id}",
             "name": entry.name,
@@ -8475,10 +8476,11 @@ class LibraryManager:
             "modified_time": modified_time,
             "type": "dir" if is_directory else "file",
             "is_directory": is_directory,
-            "has_children": bool(is_directory),
-            "children_loaded": False if is_directory else True,
+            "has_children": has_children,
+            "children_loaded": False if has_children else True,
             "file_count": file_count,
-            "folder_count": folder_count,
+            "folder_count": folder_count if is_directory else 0,
+            "folder_count_status": "ready" if (not is_directory or descendant_folder_count is not None) else "lazy",
             "browse_via_index": True,
         }
 
@@ -8501,6 +8503,7 @@ class LibraryManager:
         path: str,
         *,
         recursive: bool,
+        include_dirs: bool = False,
     ) -> Optional[dict[str, Any]]:
         if not self._library_uses_inventory_index(library):
             return None
@@ -8532,51 +8535,65 @@ class LibraryManager:
                 return None
 
             if recursive:
-                entries, stale_relative_paths = self._validate_local_index_entries_for_read(
-                    library,
-                    [
-                        entry for entry in service.list_subtree_entries(
+                requested_entry_type = None if include_dirs else "file"
+                raw_entries = []
+                for entry in service.list_subtree_entries(
                         library.id,
                         parent_relative_path,
                         include_self=False,
-                        entry_type="file",
-                        )
-                        if not self._index_relative_path_has_skipped_part(
-                            self._index_relative_path_under_target(entry.relative_path, parent_relative_path)
-                        )
-                    ],
-                    return_stale_paths=True,
-                )
+                        entry_type=requested_entry_type,
+                ):
+                    relative_under_target = self._index_relative_path_under_target(
+                        entry.relative_path,
+                        parent_relative_path,
+                    )
+                    if not relative_under_target:
+                        continue
+                    if self._index_relative_path_has_skipped_part(relative_under_target):
+                        continue
+                    raw_entries.append(entry)
+                if include_dirs:
+                    entries = raw_entries
+                    stale_relative_paths = set()
+                else:
+                    entries, stale_relative_paths = self._validate_local_index_entries_for_read(
+                        library,
+                        raw_entries,
+                        return_stale_paths=True,
+                    )
                 entries.sort(key=lambda entry: self._index_relative_path_under_target(
                     getattr(entry, "relative_path", "") or "",
                     parent_relative_path,
                 ))
                 items = []
                 for index, entry in enumerate(entries):
-                    relative_path = self._index_relative_path_under_target(entry.relative_path, parent_relative_path)
-                    items.append({
-                        "id": f"{library.id}:content:index:{index}",
-                        "name": entry.name,
-                        "path": entry.absolute_path,
-                        "relative_path": relative_path,
-                        "size": int(entry.size or 0),
-                        "size_status": "stale" if entry.relative_path in stale_relative_paths else "ready",
-                        "modified_time": self._index_entry_modified_time(entry),
-                        "type": "file",
-                        "is_directory": False,
-                        "index_refresh_pending": entry.relative_path in stale_relative_paths,
-                        "browse_via_index": True,
-                    })
-                total_size = sum(int(entry.size or 0) for entry in entries)
+                    item = self._folder_content_item_from_index(
+                        library,
+                        entry,
+                        item_id=index,
+                        parent_relative_path=parent_relative_path,
+                        descendant_folder_count=None if getattr(entry, "entry_type", "") == "dir" else 0,
+                    )
+                    item["children_loaded"] = True
+                    if entry.relative_path in stale_relative_paths:
+                        item["size_status"] = "stale"
+                        item["index_refresh_pending"] = True
+                    items.append(item)
+                file_entries = [entry for entry in entries if getattr(entry, "entry_type", "") == "file"]
+                dir_entries = [entry for entry in entries if getattr(entry, "entry_type", "") == "dir"]
+                total_size = int(target_entry.size or 0) if target_entry else sum(int(entry.size or 0) for entry in file_entries)
+                total_files = int(target_entry.file_count or 0) if target_entry else len(file_entries)
                 result = {
                     "folder_name": folder_name,
                     "folder_path": target_path,
-                    "total_files": len(items),
+                    "total_files": total_files,
                     "total_items": len(items),
                     "total_size": total_size,
                     "total_size_bytes": total_size,
+                    "total_folder_count": len(dir_entries),
                     "recursive": True,
                     "browse_via_index": True,
+                    "include_dirs": bool(include_dirs),
                     "items": items,
                 }
                 self._append_stats_log(library, "INFO", f"文件树索引递归读取 path={target_path} total={len(items)}")
@@ -8604,28 +8621,30 @@ class LibraryManager:
                 getattr(entry, "relative_path", "") or "",
             ))
 
-            items = [
-                {
-                    **self._folder_content_item_from_index(
-                        library,
-                        entry,
-                        item_id=index,
-                        parent_relative_path=parent_relative_path,
-                        descendant_folder_count=0,
-                    ),
-                    **(
-                        {"folder_count": None, "folder_count_status": "lazy"}
-                        if entry.entry_type == "dir"
-                        else {}
-                    ),
-                    **(
-                        {"size_status": "stale", "index_refresh_pending": True}
-                        if entry.relative_path in stale_relative_paths
-                        else {}
-                    ),
-                }
-                for index, entry in enumerate(entries)
+            dir_counts = {}
+            dir_relative_paths = [
+                str(getattr(entry, "relative_path", "") or "")
+                for entry in entries
+                if getattr(entry, "entry_type", "") == "dir"
             ]
+            if dir_relative_paths:
+                dir_counts = service.count_descendant_dirs_many(library.id, dir_relative_paths)
+
+            items = []
+            for index, entry in enumerate(entries):
+                item = self._folder_content_item_from_index(
+                    library,
+                    entry,
+                    item_id=index,
+                    parent_relative_path=parent_relative_path,
+                    descendant_folder_count=dir_counts.get(str(getattr(entry, "relative_path", "") or ""), 0),
+                )
+                if entry.entry_type == "dir":
+                    item["folder_count_status"] = "ready"
+                if entry.relative_path in stale_relative_paths:
+                    item["size_status"] = "stale"
+                    item["index_refresh_pending"] = True
+                items.append(item)
 
             if target_entry:
                 total_size = int(target_entry.size or 0)
@@ -9501,6 +9520,7 @@ class LibraryManager:
         client: Optional[SynologyFileStationClient] = None,
         recursive: bool = True,
         prefer_index: bool = True,
+        include_dirs: bool = False,
     ) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         inflight_key = self._folder_contents_inflight_key(
@@ -9508,6 +9528,7 @@ class LibraryManager:
             path=path,
             recursive=recursive,
             prefer_index=prefer_index,
+            include_dirs=include_dirs,
         )
         return await self._run_folder_contents_inflight(
             inflight_key,
@@ -9517,6 +9538,7 @@ class LibraryManager:
                 client=client,
                 recursive=recursive,
                 prefer_index=prefer_index,
+                include_dirs=include_dirs,
             ),
         )
 
@@ -9527,6 +9549,7 @@ class LibraryManager:
         path: str,
         recursive: bool,
         prefer_index: bool,
+        include_dirs: bool,
     ) -> tuple[Any, ...]:
         if library.type == "local":
             try:
@@ -9535,7 +9558,7 @@ class LibraryManager:
                 normalized_path = str(path or "")
         else:
             normalized_path = self._normalize_remote_path(path or "/")
-        return (library.id, library.type, normalized_path, bool(recursive), bool(prefer_index))
+        return (library.id, library.type, normalized_path, bool(recursive), bool(prefer_index), bool(include_dirs))
 
     async def _run_folder_contents_inflight(self, key: tuple[Any, ...], factory: Callable[[], Any]) -> dict[str, Any]:
         if not hasattr(self, "_folder_contents_inflight"):
@@ -9572,17 +9595,18 @@ class LibraryManager:
         client: Optional[SynologyFileStationClient] = None,
         recursive: bool = True,
         prefer_index: bool = True,
+        include_dirs: bool = False,
     ) -> dict[str, Any]:
         if library.type == "local":
             if prefer_index:
-                indexed = self._folder_contents_via_index(library, path, recursive=recursive)
+                indexed = self._folder_contents_via_index(library, path, recursive=recursive, include_dirs=include_dirs)
                 if indexed is not None:
                     return indexed
             if recursive:
                 return await asyncio.to_thread(self._local_folder_contents, library, path)
             return await asyncio.to_thread(self._local_folder_contents_shallow, library, path)
         if prefer_index:
-            indexed = self._folder_contents_via_index(library, path, recursive=recursive)
+            indexed = self._folder_contents_via_index(library, path, recursive=recursive, include_dirs=include_dirs)
             if indexed is not None:
                 return indexed
         return await self._remote_folder_contents(library, path, client=client, recursive=recursive)

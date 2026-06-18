@@ -784,6 +784,65 @@ function buildTree (items, basePath, recursive = true) {
   const dirMap = new Map()
   const sorted = [...items].sort((a, b) => String(a.relative_path || '').localeCompare(String(b.relative_path || '')))
 
+  const ensureDirectoryNode = (relativePath, source = {}) => {
+    const normalizedRelative = normalizeAnyPath(relativePath)
+    if (!normalizedRelative) return null
+    const parts = normalizedRelative.split('/').filter(Boolean)
+    let children = root
+    let path = ''
+    let node = null
+    for (let index = 0; index < parts.length; index++) {
+      path = path ? `${path}/${parts[index]}` : parts[index]
+      const key = `dir:${path}`
+      if (!dirMap.has(key)) {
+        const resolvedPath = joinFolderPath(basePath, path)
+        const libraryId = source?.library_id || ''
+        node = {
+          id: buildNodeId('dir', libraryId ? `${libraryId}:${resolvedPath}` : resolvedPath),
+          name: parts[index],
+          type: 'dir',
+          relative_path: path,
+          resolved_path: resolvedPath,
+          path: resolvedPath,
+          library_id: libraryId,
+          size: 0,
+          modified_time: null,
+          children: [],
+          childrenLoaded: true,
+          hasChildren: true,
+          browse_via_index: Boolean(source?.browse_via_index),
+          size_via_index: Boolean(source?.size_via_index || source?.browse_via_index),
+        }
+        dirMap.set(key, node)
+        children.push(node)
+      } else {
+        node = dirMap.get(key)
+      }
+      children = node.children
+    }
+
+    if (source && node && normalizeAnyPath(source.relative_path || '') === normalizedRelative) {
+      Object.assign(node, {
+        ...source,
+        id: node.id,
+        type: 'dir',
+        relative_path: normalizedRelative,
+        resolved_path: source.path || source.resolved_path || joinFolderPath(basePath, normalizedRelative),
+        path: source.path || source.resolved_path || joinFolderPath(basePath, normalizedRelative),
+        children: node.children,
+        childrenLoaded: true,
+        hasChildren: (
+          pickOptionalNonNegativeNumber(source.file_count) ||
+          pickOptionalNonNegativeNumber(source.folder_count) ||
+          (Array.isArray(node.children) && node.children.length)
+        ) > 0,
+        library_id: source.library_id || node.library_id || '',
+        size_via_index: Boolean(source.size_via_index || source.browse_via_index || node.size_via_index),
+      })
+    }
+    return node
+  }
+
   for (const item of sorted) {
     const itemType = item.type || (item.is_directory ? 'dir' : 'file')
     if (!recursive) {
@@ -802,34 +861,18 @@ function buildTree (items, basePath, recursive = true) {
     }
     const parts = String(item.relative_path || item.name || '').split('/').filter(Boolean)
     if (!parts.length) continue
-    let children = root
-    let path = ''
 
-    for (let index = 0; index < parts.length - 1; index++) {
-      path = path ? `${path}/${parts[index]}` : parts[index]
-      const key = `dir:${path}`
-      if (!dirMap.has(key)) {
-        const node = {
-          id: key,
-          name: parts[index],
-          type: 'dir',
-          relative_path: path,
-          resolved_path: joinFolderPath(basePath, path),
-          size: 0,
-          modified_time: null,
-          children: [],
-          childrenLoaded: true,
-          hasChildren: true,
-        }
-        dirMap.set(key, node)
-        children.push(node)
-      }
-      children = dirMap.get(key).children
+    if (itemType === 'dir') {
+      ensureDirectoryNode(parts.join('/'), item)
+      continue
     }
 
+    const parentPath = parts.slice(0, -1).join('/')
+    const parentNode = parentPath ? ensureDirectoryNode(parentPath, { library_id: item?.library_id }) : null
+    const children = parentNode?.children || root
     children.push({
       ...item,
-      id: `file:${item.path}`,
+      id: buildNodeId('file', `${item?.library_id || ''}:${item.path || item.relative_path || item.name}`),
       type: 'file',
       resolved_path: item.path,
       childrenLoaded: true,
@@ -840,13 +883,29 @@ function buildTree (items, basePath, recursive = true) {
   const walk = node => {
     let total = 0
     let latest = null
+    let childFolderCount = 0
+    let childFileCount = 0
     for (const child of node.children || []) {
-      if (child.type === 'dir') walk(child)
+      if (child.type === 'dir') {
+        walk(child)
+        childFolderCount += 1 + Number(child.folder_count || 0)
+        childFileCount += Number(child.file_count || 0)
+      } else {
+        childFileCount += 1
+      }
       total += Number(child.size || 0)
       if (child.modified_time && (!latest || child.modified_time > latest)) latest = child.modified_time
     }
-    node.size = total
-    node.modified_time = latest
+    if (pickOptionalNonNegativeNumber(node.folder_count) === null) {
+      node.folder_count = childFolderCount
+      node.folder_count_status = 'ready'
+    }
+    if (pickOptionalNonNegativeNumber(node.file_count) === null) {
+      node.file_count = childFileCount
+    }
+    if (!node.size_via_index && !node.browse_via_index) node.size = total
+    if (!node.modified_time) node.modified_time = latest
+    node.hasChildren = (Number(node.file_count || 0) + Number(node.folder_count || 0)) > 0
   }
 
   root.forEach(node => {
@@ -1267,11 +1326,70 @@ async function expandDirectoryNode (node, nextExpandedIds) {
   }
 }
 
+async function loadRecursiveIndexTreeForExpand () {
+  if (isMultiRootMode.value) return false
+  if (!props.libraryId || !props.folderPath) return false
+  if (folderContentsInfo.value.recursive === true && folderContentsInfo.value.viaIndex) return true
+
+  const previousSelectedPaths = new Set(
+    [...selectedFileIds.value]
+      .map(id => folderNodeById.value.get(id))
+      .filter(Boolean)
+      .map(node => normalizeAnyPath(resolveNodePath(node)))
+      .filter(Boolean)
+  )
+
+  const data = await libraryApi.browserFolderContents(props.libraryId, props.folderPath, {
+    recursive: true,
+    preferIndex: true,
+    includeDirs: true,
+  })
+
+  const items = Array.isArray(data.items) ? data.items : []
+  folderItems.value = items.map(item => ({
+    ...item,
+    library_id: item?.library_id || props.libraryId,
+    type: item?.type || (item?.is_directory ? 'dir' : 'file'),
+  }))
+  folderContentsInfo.value = {
+    folderName: data.folder_name || props.folderName || folderContentsInfo.value.folderName || '',
+    folderPath: data.folder_path || props.folderPath || folderContentsInfo.value.folderPath || '',
+    totalFiles: pickNonNegativeNumber(data.total_files, items.length),
+    totalSize: pickNonNegativeNumber(
+      data.total_size,
+      data.total_size_bytes,
+      items.reduce((sum, item) => sum + Number(item?.size || 0), 0),
+    ),
+    totalFolderCount: pickNonNegativeNumber(data.total_folder_count, folderContentsInfo.value.totalFolderCount, 0),
+    recursive: true,
+    viaIndex: Boolean(data.browse_via_index),
+  }
+
+  await nextTick()
+  const validIds = new Set(folderNodeById.value.keys())
+  selectedFileIds.value = new Set(
+    [...folderNodeById.value.values()]
+      .filter(node => previousSelectedPaths.has(normalizeAnyPath(resolveNodePath(node))))
+      .map(node => node.id)
+      .filter(id => validIds.has(id))
+  )
+  return true
+}
+
 async function expandAll () {
   if (folderExpandingAll.value) return
   folderExpandingAll.value = true
   const next = new Set()
   try {
+    if (!isMultiRootMode.value) {
+      const loadedRecursive = await loadRecursiveIndexTreeForExpand()
+      if (loadedRecursive) {
+        await nextTick()
+        expandedIds.value = new Set(collectDirectoryIds(filteredRoot.value))
+        treeRowVirtualizer.value.measure()
+        return
+      }
+    }
     for (const node of filteredRoot.value) {
       await expandDirectoryNode(node, next)
     }
