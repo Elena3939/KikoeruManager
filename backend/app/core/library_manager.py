@@ -1646,6 +1646,8 @@ class LibraryManager:
         self._index_mutation_pending_upserts: dict[str, dict[str, Any]] = {}
         self._index_mutation_pending_replaces: dict[str, dict[str, Any]] = {}
         self._index_mutation_pending_moves: dict[tuple[str, str], dict[str, Any]] = {}
+        self._index_read_repair_lock = threading.Lock()
+        self._index_read_repair_last_seen: dict[str, float] = {}
         # 远程子树 upsert 的跨 flush 合并/去抖缓冲。
         # 背景：_flush_index_mutations 的 timer 只有 0.1s，零散写操作（解压入库 /
         # rename / 字幕落盘）会触发多轮 flush，每轮都给远程库起一次 serial dispatch
@@ -2264,6 +2266,12 @@ class LibraryManager:
             )
         return await self._list_remote_files(library, page, page_size, search, current_path, sort_by, sort_order, page_cursor)
 
+    def _index_has_usable_snapshot(self, service: Any, library_id: str) -> bool:
+        checker = getattr(service, "has_usable_snapshot", None)
+        if callable(checker):
+            return bool(checker(library_id))
+        return bool(service.is_ready(library_id))
+
     async def find_rj_in_libraries(
         self,
         rjcode: str,
@@ -2881,6 +2889,36 @@ class LibraryManager:
     ) -> bool:
         return self._queue_index_moves(source_library, target_library, moved_items)
 
+    def _flush_index_move_many_now(
+        self,
+        source_library: LibraryDefinition,
+        target_library: LibraryDefinition,
+        moved_items: list[dict[str, Any]],
+    ) -> None:
+        items = [dict(item or {}) for item in moved_items or [] if item]
+        if not items:
+            return
+        try:
+            from .library_index import get_library_index_service
+
+            service = get_library_index_service()
+            self._run_index_move_flush(
+                service,
+                {
+                    "source_library": source_library,
+                    "target_library": target_library,
+                    "items": items,
+                },
+            )
+        except Exception:
+            logger.warning(
+                "[索引] 同步追赶 move 失败 source=%s target=%s count=%s",
+                source_library.id,
+                target_library.id,
+                len(items),
+                exc_info=True,
+            )
+
     def _flush_index_mutations(self) -> None:
         with self._index_mutation_lock:
             timer = self._index_mutation_timer
@@ -3222,11 +3260,16 @@ class LibraryManager:
         source_library: LibraryDefinition,
         target_library: LibraryDefinition,
         moved_items: list[dict[str, Any]],
+        *,
+        sync: bool = False,
     ) -> None:
         if not self._library_uses_inventory_index(source_library) and not self._library_uses_inventory_index(target_library):
             return
         try:
-            self._enqueue_index_move_many(source_library, target_library, moved_items)
+            if sync:
+                self._flush_index_move_many_now(source_library, target_library, moved_items)
+            else:
+                self._enqueue_index_move_many(source_library, target_library, moved_items)
         except Exception:
             logger.debug(
                 "[索引] 本地移动索引追赶调度失败 source=%s target=%s",
@@ -3681,6 +3724,134 @@ class LibraryManager:
             "search_via_index": True,
         }
 
+    def _index_entry_stat_is_stale(self, entry: Any, stat_result: os.stat_result) -> bool:
+        indexed_mtime = getattr(entry, "mtime", None)
+        try:
+            current_mtime = int(stat_result.st_mtime * 1000)
+        except (TypeError, ValueError, OSError, OverflowError):
+            current_mtime = None
+        if indexed_mtime and current_mtime and abs(int(indexed_mtime) - current_mtime) > 1000:
+            return True
+        if getattr(entry, "entry_type", "") == "file":
+            try:
+                return int(getattr(entry, "size", 0) or 0) != int(stat_result.st_size or 0)
+            except (TypeError, ValueError):
+                return True
+        return False
+
+    def _validate_local_index_entries_for_read(
+        self,
+        library: LibraryDefinition,
+        entries: list[Any],
+        *,
+        return_stale_paths: bool = False,
+    ):
+        if library.type != "local" or not entries:
+            return (entries, set()) if return_stale_paths else entries
+        valid_entries: list[Any] = []
+        missing_paths: list[str] = []
+        stale_paths: list[str] = []
+        stale_relative_paths: set[str] = set()
+        for entry in entries:
+            path = str(getattr(entry, "absolute_path", "") or "")
+            if not path:
+                continue
+            try:
+                stat_result = os.stat(path)
+                is_dir = os.path.isdir(path)
+            except OSError:
+                missing_paths.append(path)
+                continue
+            if (getattr(entry, "entry_type", "") == "dir") != bool(is_dir):
+                missing_paths.append(path)
+                continue
+            if self._index_entry_stat_is_stale(entry, stat_result):
+                stale_paths.append(path)
+                stale_relative_paths.add(str(getattr(entry, "relative_path", "") or ""))
+            valid_entries.append(entry)
+
+        if missing_paths:
+            self._notify_index_self_mutation_delete_batch(library, missing_paths)
+        if stale_paths:
+            self._enqueue_index_read_repair_upserts(library, stale_paths)
+        return (valid_entries, stale_relative_paths) if return_stale_paths else valid_entries
+
+    def _enqueue_index_read_repair_upserts(
+        self,
+        library: LibraryDefinition,
+        absolute_paths: list[str],
+    ) -> None:
+        paths = [str(path or "").strip() for path in absolute_paths or [] if str(path or "").strip()]
+        if not paths:
+            return
+        if not hasattr(self, "_index_read_repair_lock"):
+            self._index_read_repair_lock = threading.Lock()
+        if not hasattr(self, "_index_read_repair_last_seen"):
+            self._index_read_repair_last_seen = {}
+        now = time.monotonic()
+        selected: list[str] = []
+        with self._index_read_repair_lock:
+            for path in paths:
+                key = f"{library.id}\0{self._normalize_index_abs_key(library, path)}"
+                if not key.strip("\0"):
+                    continue
+                last_seen = float(self._index_read_repair_last_seen.get(key) or 0)
+                if now - last_seen < 5.0:
+                    continue
+                self._index_read_repair_last_seen[key] = now
+                selected.append(path)
+            if len(self._index_read_repair_last_seen) > 4096:
+                cutoff = now - 60.0
+                self._index_read_repair_last_seen = {
+                    key: value
+                    for key, value in self._index_read_repair_last_seen.items()
+                    if value >= cutoff
+                }
+        if selected:
+            try:
+                self._enqueue_index_upsert_subtree_many(library, selected)
+            except Exception:
+                logger.debug(
+                    "[索引] 读路径修补 upsert 入队失败 library=%s count=%s",
+                    library.id,
+                    len(selected),
+                    exc_info=True,
+                )
+
+    def _local_index_entry_for_current_child(
+        self,
+        library: LibraryDefinition,
+        service: Any,
+        *,
+        absolute_path: str,
+        is_directory: bool,
+        stat_result: os.stat_result,
+    ) -> tuple[Optional[Any], bool, bool]:
+        relative_path = self._index_parent_path_for_target(library, absolute_path)
+        if relative_path is None:
+            return None, False, False
+        try:
+            entry = service.get_entry(library.id, relative_path)
+        except Exception:
+            logger.debug(
+                "[索引] 当前层条目索引读取失败 library=%s path=%s",
+                library.id,
+                absolute_path,
+                exc_info=True,
+            )
+            return None, True, False
+        if not entry:
+            return None, True, False
+        if (getattr(entry, "entry_type", "") == "dir") != bool(is_directory):
+            self._notify_index_self_mutation_delete_batch(library, [absolute_path])
+            return None, True, False
+        return entry, False, self._index_entry_stat_is_stale(entry, stat_result)
+
+    def _index_service_for_local_size_overlay(self, library: LibraryDefinition):
+        if library.type != "local":
+            return None
+        return self._index_service_if_ready(library)
+
     def _list_files_via_index(
         self,
         library: LibraryDefinition,
@@ -3696,17 +3867,14 @@ class LibraryManager:
     ) -> Optional[dict[str, Any]]:
         if not self._library_uses_inventory_index(library):
             return None
+        if library.type == "local":
+            return None
         try:
             from .library_index import get_library_index_service
 
             normalized_sort_by = self._normalize_library_sort_by(sort_by)
             service = get_library_index_service()
-            has_snapshot = (
-                service.has_usable_snapshot(library.id)
-                if hasattr(service, "has_usable_snapshot")
-                else service.is_ready(library.id)
-            )
-            if not has_snapshot:
+            if not self._index_has_usable_snapshot(service, library.id):
                 return None
             offset = max(0, (int(page or 1) - 1) * int(page_size or 200))
             payload = service.list_children_page(
@@ -3718,7 +3886,11 @@ class LibraryManager:
                 limit=page_size,
                 page_cursor=page_cursor,
             )
-            entries = list(payload.get("entries") or [])
+            entries, stale_relative_paths = self._validate_local_index_entries_for_read(
+                library,
+                list(payload.get("entries") or []),
+                return_stale_paths=True,
+            )
             files = []
             for index, entry in enumerate(entries):
                 if self._should_skip_entry(getattr(entry, "name", "")):
@@ -3730,6 +3902,9 @@ class LibraryManager:
                     entry=entry,
                 )
                 item["id"] = f"{library.id}:{offset + index}"
+                if str(getattr(entry, "relative_path", "") or "") in stale_relative_paths:
+                    item["size_status"] = "stale"
+                    item["index_refresh_pending"] = True
                 files.append(item)
             for item in files:
                 item["browse_via_index"] = True
@@ -3837,12 +4012,7 @@ class LibraryManager:
                 entry_type = "dir" if kind == "folder" else ("file" if kind == "file" else None)
             from .library_index import get_library_index_service
             service = get_library_index_service()
-            has_snapshot = (
-                service.has_usable_snapshot(library.id)
-                if hasattr(service, "has_usable_snapshot")
-                else service.is_ready(library.id)
-            )
-            if not has_snapshot:
+            if not self._index_has_usable_snapshot(service, library.id):
                 return None
             if (
                 library.type == "synology_filestation"
@@ -4474,15 +4644,17 @@ class LibraryManager:
             return {"files": [], "page": page, "page_size": page_size, "total": 0, "current_path": target_path, "browse_root_path": browse_root}
 
         search_lower = search.lower().strip()
+
         items = []
         try:
             entries = list(os.scandir(target_path))
         except OSError:
             return {"files": [], "page": page, "page_size": page_size, "total": 0, "current_path": target_path, "browse_root_path": browse_root}
 
-        # 顶层（社团目录层）不计算大小，避免对慢速网络盘做递归 os.walk。
-        # 进入社团目录后（RJ 作品层）才计算各文件夹大小。
-        at_root = target_path == browse_root
+        # 列表行以磁盘当前层为事实源；索引只叠加目录大小/数量等摘要。
+        # 索引缺失或旧了只排后台修补，绝不在列表请求里递归 os.walk。
+        index_service = self._index_service_for_local_size_overlay(library)
+        repair_paths: list[str] = []
 
         for item_id, entry in enumerate(entries):
             if self._should_skip_entry(entry.name):
@@ -4495,23 +4667,67 @@ class LibraryManager:
             except OSError:
                 continue
             is_directory = entry.is_dir(follow_symlinks=False)
-            cached_size, cached_size_status = self._get_cached_size_info(entry.path) if (is_directory and at_root) else (None, "")
+            child_path = os.path.abspath(entry.path)
+            index_entry = None
+            index_missing = False
+            index_stale = False
+            if index_service is not None:
+                index_entry, index_missing, index_stale = self._local_index_entry_for_current_child(
+                    library,
+                    index_service,
+                    absolute_path=child_path,
+                    is_directory=is_directory,
+                    stat_result=stat,
+                )
+                if index_missing or index_stale:
+                    repair_paths.append(child_path)
+            if is_directory:
+                size = int(getattr(index_entry, "size", 0) or 0) if index_entry else None
+                size_status = "stale" if index_stale else ("ready" if index_entry else "pending")
+                file_count = int(getattr(index_entry, "file_count", 0) or 0) if index_entry else None
+                folder_count = None
+            else:
+                size = int(stat.st_size)
+                size_status = "stale" if index_stale else "ready"
+                file_count = 1
+                folder_count = 0
+            relative_path = self._index_parent_path_for_target(library, child_path) or entry.name
+            item = {
+                "id": f"{library.id}:{item_id}",
+                "name": entry.name,
+                "path": child_path,
+                "relative_path": relative_path,
+                "parent_path": target_path,
+                "rjcode": rjcode or (getattr(index_entry, "rjcode", None) if index_entry else None),
+                "size": size,
+                "size_status": size_status,
+                "modified_time": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                "unzip_time": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                "is_directory": is_directory,
+                "library_id": library.id,
+                "library_name": library.name,
+                "file_count": file_count,
+                "folder_count": folder_count,
+                "size_via_index": bool(is_directory and index_entry),
+                "index_refresh_pending": bool(index_missing or index_stale),
+                "_sort_time": stat.st_mtime,
+            }
+            if is_directory and index_entry:
+                try:
+                    descendant_dirs = index_service.count_descendant_dirs_many(
+                        library.id,
+                        [str(getattr(index_entry, "relative_path", "") or "")],
+                    )
+                    item["folder_count"] = 1 + int(
+                        descendant_dirs.get(str(getattr(index_entry, "relative_path", "") or ""), 0) or 0
+                    )
+                except Exception:
+                    item["folder_count"] = None
             items.append(
-                {
-                    "id": f"{library.id}:{item_id}",
-                    "name": entry.name,
-                    "path": entry.path,
-                    "rjcode": rjcode,
-                    "size": cached_size if (is_directory and at_root) else (self._cached_path_size(entry.path) if is_directory else stat.st_size),
-                    "size_status": cached_size_status if (is_directory and at_root) else "ready",
-                    "modified_time": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                    "unzip_time": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                    "is_directory": is_directory,
-                    "library_id": library.id,
-                    "library_name": library.name,
-                    "_sort_time": stat.st_mtime,
-                }
+                item
             )
+        if repair_paths:
+            self._enqueue_index_read_repair_upserts(library, repair_paths)
 
         items = self._sort_local_items(items, sort_by, sort_order)
         total = len(items)
@@ -5254,6 +5470,7 @@ class LibraryManager:
         new_name: str,
         *,
         skip_index_mutation: bool = False,
+        sync_index_mutation: bool = False,
     ) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if library.type == "local":
@@ -5263,6 +5480,7 @@ class LibraryManager:
                 path,
                 new_name,
                 skip_index_mutation=skip_index_mutation,
+                sync_index_mutation=sync_index_mutation,
             )
         new_name = self._validate_remote_new_name(new_name)
         _, target_path = self._resolve_remote_operation_path(
@@ -5310,7 +5528,12 @@ class LibraryManager:
                 [{"source": target_path, "destination": new_path}],
             )
             if indexable_moved_items:
-                self._notify_index_self_mutation_move_batch(library, library, indexable_moved_items)
+                self._notify_index_self_mutation_move_batch(
+                    library,
+                    library,
+                    indexable_moved_items,
+                    sync=sync_index_mutation,
+                )
         self._append_stats_log(library, "INFO", f"重命名 path={target_path} -> {new_name}")
         return {"message": "重命名成功", "new_path": new_path}
 
@@ -5321,6 +5544,7 @@ class LibraryManager:
         new_name: str,
         *,
         skip_index_mutation: bool = False,
+        sync_index_mutation: bool = False,
     ) -> dict[str, Any]:
         self._assert_local_path_in_library(library, path)
         parent_dir = os.path.dirname(path)
@@ -5334,7 +5558,12 @@ class LibraryManager:
                 [{"source": path, "destination": new_path}],
             )
             if indexable_moved_items:
-                self._notify_index_self_mutation_move_batch(library, library, indexable_moved_items)
+                self._notify_index_self_mutation_move_batch(
+                    library,
+                    library,
+                    indexable_moved_items,
+                    sync=sync_index_mutation,
+                )
         self._append_stats_log(library, "INFO", f"重命名 path={path} -> {new_name}")
         return {"message": "重命名成功", "new_path": new_path}
 
@@ -5538,6 +5767,14 @@ class LibraryManager:
     def _local_delete(self, library: LibraryDefinition, path: str, confirmed: bool) -> dict[str, Any]:
         self._assert_local_path_in_library(library, path)
         if not confirmed:
+            indexed_preview = self._delete_preview_via_index(library, path)
+            if indexed_preview is not None:
+                self._append_stats_log(
+                    library,
+                    "INFO",
+                    f"删除预检读取索引 path={path} type={indexed_preview.get('type')} size={indexed_preview.get('size')}",
+                )
+                return indexed_preview
             preview = self._local_delete_preview_from_filesystem(path)
             self._append_stats_log(
                 library,
@@ -5568,6 +5805,14 @@ class LibraryManager:
         for path in paths:
             self._assert_local_path_in_library(library, path)
         if not confirmed:
+            indexed_preview = self._batch_delete_preview_via_index(library, paths)
+            if indexed_preview is not None:
+                self._append_stats_log(
+                    library,
+                    "INFO",
+                    f"批删预检读取索引 total={len(paths)} size={indexed_preview.get('total_size')}",
+                )
+                return indexed_preview
             previews = [self._local_delete_preview_from_filesystem(path) for path in paths]
             roots: list[dict[str, Any]] = []
             root_paths: list[str] = []
@@ -5643,7 +5888,7 @@ class LibraryManager:
         ``include_files`` 同样生效（文件项 size 取自 additional.size）。
         """
         library = self.get_library_definition(library_id)
-        indexed = self._list_folders_only_via_index(library, path, include_files=include_files)
+        indexed = self._list_folders_only_via_index(library, path, include_files=include_files) if library.type != "local" else None
         if indexed is not None:
             self._append_stats_log(
                 library,
@@ -5698,18 +5943,8 @@ class LibraryManager:
             empty_payload["current_path"] = target_path
             return empty_payload
 
-        # 只有进入子目录（即非浏览根）后才允许按需算 size，跟库存页主流程对齐：
-        # root 下通常是社团/合集目录，子目录里才是 RJ 作品级；这层算 size 的代价相对可控。
-        at_root = os.path.normcase(target_path) == os.path.normcase(browse_root)
-        allow_compute = bool(compute_size) and not at_root
-        try:
-            cap_value = int(compute_size_cap)
-        except (TypeError, ValueError):
-            cap_value = 256
-        if cap_value <= 0:
-            cap_value = 256
-        cap_remaining = cap_value if allow_compute else 0
-
+        index_service = self._index_service_for_local_size_overlay(library)
+        repair_paths: list[str] = []
         folders: list[dict[str, Any]] = []
         try:
             with os.scandir(target_path) as iterator:
@@ -5729,37 +5964,57 @@ class LibraryManager:
                         stat = None
                         mtime_iso = ""
                     if is_dir:
-                        cached_size, size_status = self._get_cached_size_info(entry.path)
-                        if allow_compute and size_status != "ready" and cap_remaining > 0:
-                            # _cached_path_size 内部带 mtime 签名缓存，命中即返；未命中才走 walk。
+                        child_path = os.path.abspath(entry.path)
+                        index_entry = None
+                        index_missing = False
+                        index_stale = False
+                        if index_service is not None and stat is not None:
+                            index_entry, index_missing, index_stale = self._local_index_entry_for_current_child(
+                                library,
+                                index_service,
+                                absolute_path=child_path,
+                                is_directory=True,
+                                stat_result=stat,
+                            )
+                            if index_missing or index_stale:
+                                repair_paths.append(child_path)
+                        folder_count = None
+                        if index_entry is not None:
+                            relative_path = str(getattr(index_entry, "relative_path", "") or "")
                             try:
-                                size_value = self._cached_path_size(entry.path)
+                                descendant_dirs = index_service.count_descendant_dirs_many(library.id, [relative_path])
+                                folder_count = 1 + int(descendant_dirs.get(relative_path, 0) or 0)
                             except Exception:
-                                size_value = cached_size or 0
-                            cached_size = int(size_value or 0)
-                            size_status = "ready"
-                            cap_remaining -= 1
+                                folder_count = None
                         folders.append({
                             "name": entry.name,
-                            "path": entry.path,
+                            "path": child_path,
                             "is_directory": True,
                             "modified_time": mtime_iso,
-                            "size": cached_size,
-                            "size_status": size_status,
+                            "size": int(getattr(index_entry, "size", 0) or 0) if index_entry is not None else None,
+                            "size_status": "stale" if index_stale else ("ready" if index_entry is not None else "pending"),
+                            "file_count": int(getattr(index_entry, "file_count", 0) or 0) if index_entry is not None else None,
+                            "folder_count": folder_count,
+                            "size_via_index": index_entry is not None,
+                            "index_refresh_pending": bool(index_missing or index_stale),
                         })
                     else:
                         # 文件大小直接来自 stat，开销可忽略
                         file_size = int(stat.st_size) if stat is not None else 0
                         folders.append({
                             "name": entry.name,
-                            "path": entry.path,
+                            "path": os.path.abspath(entry.path),
                             "is_directory": False,
                             "modified_time": mtime_iso,
                             "size": file_size,
                             "size_status": "ready",
+                            "file_count": 1,
+                            "folder_count": 0,
                         })
         except OSError as exc:
             raise RuntimeError(f"读取目录失败: {exc}") from exc
+        if repair_paths:
+            self._enqueue_index_read_repair_upserts(library, repair_paths)
 
         # 排序：目录优先（is_directory=True 排在前），同类按名字字母序
         folders.sort(key=lambda item: (
@@ -8010,17 +8265,21 @@ class LibraryManager:
                 return None
 
             if recursive:
-                entries = [
-                    entry for entry in service.list_subtree_entries(
+                entries, stale_relative_paths = self._validate_local_index_entries_for_read(
+                    library,
+                    [
+                        entry for entry in service.list_subtree_entries(
                         library.id,
                         parent_relative_path,
                         include_self=False,
                         entry_type="file",
-                    )
-                    if not self._index_relative_path_has_skipped_part(
-                        self._index_relative_path_under_target(entry.relative_path, parent_relative_path)
-                    )
-                ]
+                        )
+                        if not self._index_relative_path_has_skipped_part(
+                            self._index_relative_path_under_target(entry.relative_path, parent_relative_path)
+                        )
+                    ],
+                    return_stale_paths=True,
+                )
                 entries.sort(key=lambda entry: self._index_relative_path_under_target(
                     getattr(entry, "relative_path", "") or "",
                     parent_relative_path,
@@ -8034,9 +8293,11 @@ class LibraryManager:
                         "path": entry.absolute_path,
                         "relative_path": relative_path,
                         "size": int(entry.size or 0),
+                        "size_status": "stale" if entry.relative_path in stale_relative_paths else "ready",
                         "modified_time": self._index_entry_modified_time(entry),
                         "type": "file",
                         "is_directory": False,
+                        "index_refresh_pending": entry.relative_path in stale_relative_paths,
                         "browse_via_index": True,
                     })
                 total_size = sum(int(entry.size or 0) for entry in entries)
@@ -8062,10 +8323,14 @@ class LibraryManager:
                 offset=0,
                 limit=None,
             )
-            entries = [
-                entry for entry in list(payload.get("entries") or [])
-                if not self._should_skip_entry(getattr(entry, "name", ""))
-            ]
+            entries, stale_relative_paths = self._validate_local_index_entries_for_read(
+                library,
+                [
+                    entry for entry in list(payload.get("entries") or [])
+                    if not self._should_skip_entry(getattr(entry, "name", ""))
+                ],
+                return_stale_paths=True,
+            )
             entries.sort(key=lambda entry: (
                 0 if entry.entry_type == "dir" else 1,
                 self._natural_name_key(getattr(entry, "name", "") or ""),
@@ -8076,13 +8341,20 @@ class LibraryManager:
             folder_count_paths = directory_relative_paths + ([parent_relative_path] if parent_relative_path else [])
             descendant_folder_counts = service.count_descendant_dirs_many(library.id, folder_count_paths)
             items = [
-                self._folder_content_item_from_index(
-                    library,
-                    entry,
-                    item_id=index,
-                    parent_relative_path=parent_relative_path,
-                    descendant_folder_count=descendant_folder_counts.get(entry.relative_path, 0),
-                )
+                {
+                    **self._folder_content_item_from_index(
+                        library,
+                        entry,
+                        item_id=index,
+                        parent_relative_path=parent_relative_path,
+                        descendant_folder_count=descendant_folder_counts.get(entry.relative_path, 0),
+                    ),
+                    **(
+                        {"size_status": "stale", "index_refresh_pending": True}
+                        if entry.relative_path in stale_relative_paths
+                        else {}
+                    ),
+                }
                 for index, entry in enumerate(entries)
             ]
 
@@ -8141,14 +8413,109 @@ class LibraryManager:
             from .library_index import get_library_index_service
 
             service = get_library_index_service()
-            has_snapshot = (
-                service.has_usable_snapshot(library.id)
-                if hasattr(service, "has_usable_snapshot")
-                else service.is_ready(library.id)
-            )
-            return service if has_snapshot else None
+            return service if self._index_has_usable_snapshot(service, library.id) else None
         except Exception:
             logger.warning("库存索引状态检查失败: lib=%s", library.id, exc_info=True)
+            return None
+
+    def folder_size_summary_via_index(
+        self,
+        library: LibraryDefinition,
+        path: str,
+        *,
+        include_counts: bool = False,
+    ) -> Optional[dict[str, Any]]:
+        service = self._index_service_if_ready(library)
+        if service is None:
+            return None
+        try:
+            target_path, relative_path, _name = self._index_target_for_operation(
+                library,
+                path,
+                action="计算文件夹大小",
+            )
+            entry = service.get_entry(library.id, relative_path) if relative_path else None
+            if relative_path and not entry:
+                return None
+            stale = False
+            directory_snapshot_refresh_pending = False
+            if entry and library.type == "local":
+                checked_entries, stale_paths = self._validate_local_index_entries_for_read(
+                    library,
+                    [entry],
+                    return_stale_paths=True,
+                )
+                if not checked_entries:
+                    raise FileNotFoundError("目标路径不存在")
+                entry = checked_entries[0]
+                stale = entry.relative_path in stale_paths
+                if entry.entry_type == "dir":
+                    # 目录自身 mtime 不能代表整棵子树：子文件内容修改时父目录 mtime
+                    # 可能不变。读路径仍用索引秒回，但明确告诉前端这是快照值，
+                    # 并把子树刷新排到索引后台队列，避免同步 os.walk 卡住业务接口。
+                    directory_snapshot_refresh_pending = True
+                    self._enqueue_index_read_repair_upserts(library, [target_path])
+            elif library.type == "local" and os.path.isdir(target_path):
+                directory_snapshot_refresh_pending = True
+                self._enqueue_index_read_repair_upserts(library, [target_path])
+            if entry and entry.entry_type == "file":
+                result: dict[str, Any] = {
+                    "size": int(entry.size or 0),
+                    "size_status": "stale" if stale else "ready",
+                    "browse_via_index": True,
+                }
+                if stale:
+                    result["index_refresh_pending"] = True
+                if include_counts:
+                    result.update({
+                        "file_count": 1,
+                        "folder_count": 0,
+                        "count_status": "ready",
+                        "partial": False,
+                        "scanned_entries": 1,
+                    })
+                return result
+            if entry:
+                size = int(entry.size or 0)
+                file_count = int(entry.file_count or 0)
+                descendant_dirs = int(
+                    service.count_descendant_dirs_many(library.id, [relative_path]).get(relative_path, 0)
+                    or 0
+                )
+                folder_count = 1 + descendant_dirs
+            else:
+                stats = service.get_library_stats(library.id)
+                size = int(stats.get("total_size_bytes") or 0)
+                file_count = sum(
+                    int(child.file_count or 0) if child.entry_type == "dir" else 1
+                    for child in service.list_children(library.id, "", entry_type=None)
+                )
+                folder_count = int(stats.get("folder_count") or 0)
+            result = {
+                "size": size,
+                "size_status": "stale" if stale or directory_snapshot_refresh_pending else "ready",
+                "browse_via_index": True,
+            }
+            if stale or directory_snapshot_refresh_pending:
+                result["index_refresh_pending"] = True
+            if include_counts:
+                result.update({
+                    "file_count": file_count,
+                    "folder_count": folder_count,
+                    "count_status": "stale" if stale or directory_snapshot_refresh_pending else "ready",
+                    "partial": False,
+                    "scanned_entries": file_count + folder_count,
+                })
+            self._append_stats_log(
+                library,
+                "INFO",
+                f"目录大小读取索引 path={target_path} size={size} counts={bool(include_counts)}",
+            )
+            return result
+        except (FileNotFoundError, PermissionError, ValueError):
+            raise
+        except Exception:
+            logger.warning("目录大小索引读取异常转 fallback: lib=%s path=%s", library.id, path, exc_info=True)
             return None
 
     def _index_target_for_operation(
@@ -8184,11 +8551,22 @@ class LibraryManager:
                 path,
                 action="删除预检",
             )
+            if library.type == "local" and not os.path.exists(target_path):
+                raise FileNotFoundError("目标路径不存在")
             if not relative_path:
                 return None
             entry = service.get_entry(library.id, relative_path)
             if not entry:
                 return None
+            if library.type == "local":
+                checked_entries, stale_paths = self._validate_local_index_entries_for_read(
+                    library,
+                    [entry],
+                    return_stale_paths=True,
+                )
+                if not checked_entries:
+                    raise FileNotFoundError("目标路径不存在")
+                entry = checked_entries[0]
             is_directory = entry.entry_type == "dir"
             descendant_folder_count = 0
             if is_directory:
@@ -8196,6 +8574,16 @@ class LibraryManager:
                     service.count_descendant_dirs_many(library.id, [relative_path]).get(relative_path, 0)
                     or 0
                 )
+            is_stale = False
+            if library.type == "local":
+                try:
+                    stat_result = os.stat(target_path)
+                    is_stale = self._index_entry_stat_is_stale(entry, stat_result)
+                except OSError:
+                    is_stale = False
+            if library.type == "local" and is_directory:
+                is_stale = True
+                self._enqueue_index_read_repair_upserts(library, [target_path])
             return {
                 "need_confirm": True,
                 "type": "folder" if is_directory else "file",
@@ -8204,8 +8592,9 @@ class LibraryManager:
                 "size": int(entry.size or 0),
                 "file_count": int(entry.file_count or (0 if is_directory else 1)),
                 "folder_count": (1 + descendant_folder_count) if is_directory else 0,
-                "size_status": "ready",
+                "size_status": "stale" if is_stale else "ready",
                 "size_disabled": False,
+                "index_refresh_pending": bool(is_stale),
                 "browse_via_index": True,
             }
         except (FileNotFoundError, PermissionError, ValueError):
@@ -8234,6 +8623,7 @@ class LibraryManager:
                     continue
                 root_paths.append(normalized_path)
                 roots.append(preview)
+            has_stale_root = any(str(item.get("size_status") or "") == "stale" for item in roots)
 
             return {
                 "need_confirm": True,
@@ -8242,6 +8632,8 @@ class LibraryManager:
                 "total_file_count": sum(int(item.get("file_count") or 0) for item in roots),
                 "total_folder_count": sum(int(item.get("folder_count") or 0) for item in roots),
                 "size_disabled": False,
+                "size_status": "stale" if has_stale_root else "ready",
+                "index_refresh_pending": has_stale_root,
                 "browse_via_index": True,
             }
         except (FileNotFoundError, PermissionError, ValueError):
@@ -8275,6 +8667,11 @@ class LibraryManager:
                 target_relative_path,
                 include_self=False,
             )
+            entries, stale_relative_paths = self._validate_local_index_entries_for_read(
+                library,
+                entries,
+                return_stale_paths=True,
+            )
             entries.sort(key=lambda entry: (
                 int(entry.depth or 0),
                 str(entry.relative_path or "").lower(),
@@ -8307,6 +8704,7 @@ class LibraryManager:
                 if covered_by:
                     covered_selectable = item_type != "dir"
                     item_size = int(entry.size or 0)
+                    is_stale = entry_relative in stale_relative_paths
                     preview_items.append(
                         self._build_preview_item(
                             path=entry.absolute_path,
@@ -8317,10 +8715,12 @@ class LibraryManager:
                             selectable=covered_selectable,
                             covered_by=covered_by,
                             delete_path=entry.absolute_path,
-                            size_status="ready",
+                            size_status="stale" if is_stale else "ready",
                             delete_scope="self" if covered_selectable else "preview_child",
                         )
                     )
+                    if is_stale and preview_items:
+                        preview_items[-1]["index_refresh_pending"] = True
                     if covered_selectable:
                         selected_count += 1
                         selected_size += item_size
@@ -8335,6 +8735,7 @@ class LibraryManager:
                 )
                 if not matched_rules:
                     continue
+                is_stale = entry_relative in stale_relative_paths
                 preview_items.append(
                     self._build_preview_item(
                         path=entry.absolute_path,
@@ -8343,10 +8744,12 @@ class LibraryManager:
                         size=int(entry.size or 0),
                         modified_time=self._index_entry_modified_time(entry),
                         matched_rules=matched_rules,
-                        size_status="ready",
+                        size_status="stale" if is_stale else "ready",
                         delete_scope="preview_parent" if item_type == "dir" else "self",
                     )
                 )
+                if is_stale and preview_items:
+                    preview_items[-1]["index_refresh_pending"] = True
                 if item_type == "dir":
                     covered_roots.append((entry_relative, entry.absolute_path))
                 else:
@@ -8756,6 +9159,8 @@ class LibraryManager:
             raise FileNotFoundError("目标文件夹不存在")
 
         items: list[dict[str, Any]] = []
+        index_service = self._index_service_for_local_size_overlay(library)
+        repair_paths: list[str] = []
         with os.scandir(target_path) as entries:
             for index, entry in enumerate(entries):
                 name = entry.name
@@ -8766,22 +9171,56 @@ class LibraryManager:
                     is_directory = entry.is_dir(follow_symlinks=False)
                 except OSError:
                     continue
-                item_path = os.path.join(target_path, name)
+                item_path = os.path.abspath(os.path.join(target_path, name))
+                index_entry = None
+                index_missing = False
+                index_stale = False
+                if index_service is not None:
+                    index_entry, index_missing, index_stale = self._local_index_entry_for_current_child(
+                        library,
+                        index_service,
+                        absolute_path=item_path,
+                        is_directory=is_directory,
+                        stat_result=stat_result,
+                    )
+                    if index_missing or index_stale:
+                        repair_paths.append(item_path)
+                if is_directory:
+                    size = int(getattr(index_entry, "size", 0) or 0) if index_entry is not None else None
+                    size_status = "stale" if index_stale else ("ready" if index_entry is not None else "pending")
+                    file_count = int(getattr(index_entry, "file_count", 0) or 0) if index_entry is not None else None
+                    folder_count = None
+                    if index_entry is not None:
+                        relative_path = str(getattr(index_entry, "relative_path", "") or "")
+                        try:
+                            descendant_dirs = index_service.count_descendant_dirs_many(library.id, [relative_path])
+                            folder_count = 1 + int(descendant_dirs.get(relative_path, 0) or 0)
+                        except Exception:
+                            folder_count = None
+                else:
+                    size = int(stat_result.st_size)
+                    size_status = "ready"
+                    file_count = 1
+                    folder_count = 0
                 items.append({
                     "id": f"{library.id}:content:{index}",
                     "name": name,
                     "path": item_path,
                     "relative_path": name,
-                    "size": None if is_directory else int(stat_result.st_size),
-                    "size_status": "disabled" if is_directory else "ready",
+                    "size": size,
+                    "size_status": size_status,
                     "modified_time": datetime.fromtimestamp(stat_result.st_mtime).isoformat(),
                     "type": "dir" if is_directory else "file",
                     "is_directory": is_directory,
                     "has_children": is_directory,
                     "children_loaded": False if is_directory else True,
-                    "file_count": None if is_directory else 1,
-                    "folder_count": None if is_directory else 0,
+                    "file_count": file_count,
+                    "folder_count": folder_count,
+                    "size_via_index": bool(is_directory and index_entry),
+                    "index_refresh_pending": bool(index_missing or index_stale),
                 })
+        if repair_paths:
+            self._enqueue_index_read_repair_upserts(library, repair_paths)
 
         items.sort(key=lambda item: (0 if item.get("is_directory") else 1, self._natural_name_key(item.get("name", ""))))
         result = {
@@ -8806,8 +9245,8 @@ class LibraryManager:
     ) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if library.type == "local":
-            if prefer_index and not recursive:
-                indexed = self._folder_contents_via_index(library, path, recursive=False)
+            if recursive and prefer_index:
+                indexed = self._folder_contents_via_index(library, path, recursive=recursive)
                 if indexed is not None:
                     return indexed
             if recursive:
