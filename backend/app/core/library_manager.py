@@ -2422,6 +2422,14 @@ class LibraryManager:
             return bool(checker(library_id))
         return bool(service.is_ready(library_id))
 
+    def _index_status_name(self, service: Any, library_id: str) -> str:
+        try:
+            status = service.get_status(library_id)
+            return str(getattr(status, "status", "") or "not_ready")
+        except Exception:
+            logger.debug("读取库存索引状态失败: lib=%s", library_id, exc_info=True)
+            return "unknown"
+
     async def find_rj_in_libraries(
         self,
         rjcode: str,
@@ -3802,6 +3810,37 @@ class LibraryManager:
             result["parent_path"] = None if current_path == browse_root else os.path.dirname(current_path)
         return result
 
+    def _build_index_pending_browse_result(
+        self,
+        library: LibraryDefinition,
+        *,
+        page: int,
+        page_size: int,
+        current_path: str,
+        browse_root: str,
+        index_status: str,
+    ) -> dict[str, Any]:
+        result = {
+            "files": [],
+            "page": page,
+            "page_size": page_size,
+            "total": 0,
+            "current_path": current_path,
+            "browse_root_path": browse_root,
+            "browse_via_index": False,
+            "index_refresh_pending": True,
+            "index_status": index_status or "not_ready",
+            "error": "library_index_not_ready",
+            "next_page_cursor": None,
+            "used_page_cursor": False,
+        }
+        if library.type == "synology_filestation":
+            result["parent_path"] = None if current_path == browse_root else self._remote_parent_path(current_path)
+            result["library_id"] = library.id
+        else:
+            result["parent_path"] = None if current_path == browse_root else os.path.dirname(current_path)
+        return result
+
     def _build_search_entry_from_index(
         self,
         library: LibraryDefinition,
@@ -4112,7 +4151,23 @@ class LibraryManager:
             normalized_sort_by = self._normalize_library_sort_by(sort_by)
             service = get_library_index_service()
             if not self._index_has_usable_snapshot(service, library.id):
-                return None
+                index_status = self._index_status_name(service, library.id)
+                logger.info(
+                    "库存浏览索引未就绪，返回 pending: lib=%s path=%s page=%s page_size=%s status=%s",
+                    library.id,
+                    current_path,
+                    page,
+                    page_size,
+                    index_status,
+                )
+                return self._build_index_pending_browse_result(
+                    library,
+                    page=page,
+                    page_size=page_size,
+                    current_path=current_path,
+                    browse_root=browse_root,
+                    index_status=index_status,
+                )
             offset = max(0, (int(page or 1) - 1) * int(page_size or 200))
             payload = service.list_children_page(
                 library.id,
@@ -4159,6 +4214,16 @@ class LibraryManager:
                 item.pop("search_via_index", None)
                 item.pop("_sort_time", None)
                 item.pop("_mtime", None)
+            logger.info(
+                "库存浏览走索引: lib=%s path=%s page=%s page_size=%s total=%s returned=%s cursor=%s",
+                library.id,
+                current_path,
+                page,
+                page_size,
+                int(payload.get("total") or len(files)),
+                len(files),
+                bool(payload.get("next_page_cursor")),
+            )
             return self._build_browse_result_from_index(
                 library,
                 files=files,
@@ -4260,7 +4325,34 @@ class LibraryManager:
             from .library_index import get_library_index_service
             service = get_library_index_service()
             if not self._index_has_usable_snapshot(service, library.id):
-                return None
+                index_status = self._index_status_name(service, library.id)
+                logger.info(
+                    "库存搜索索引未就绪，返回 pending: lib=%s keyword=%s page=%s page_size=%s status=%s",
+                    library.id,
+                    normalized_keyword,
+                    page,
+                    page_size,
+                    index_status,
+                )
+                result = self._build_index_search_result(
+                    library,
+                    files=[],
+                    total=0,
+                    page=page,
+                    page_size=page_size,
+                    current_path=search_root,
+                    browse_root=browse_root,
+                    keyword=normalized_keyword,
+                    search_exact=search_exact,
+                    search_result_kind=kind,
+                )
+                result.update({
+                    "search_via_index": False,
+                    "index_refresh_pending": True,
+                    "index_status": index_status,
+                    "error": "library_index_not_ready",
+                })
+                return result
             if (
                 library.type == "synology_filestation"
                 and hasattr(service, "has_library_entries")
@@ -4308,7 +4400,25 @@ class LibraryManager:
                 and self._matches_search_result_kind(bool(item.get("is_directory")), kind)
             ]
             if not items:
-                return None
+                logger.info(
+                    "库存搜索走索引无命中: lib=%s keyword=%s page=%s page_size=%s",
+                    library.id,
+                    normalized_keyword,
+                    page,
+                    page_size,
+                )
+                return self._build_index_search_result(
+                    library,
+                    files=[],
+                    total=0,
+                    page=page,
+                    page_size=page_size,
+                    current_path=search_root,
+                    browse_root=browse_root,
+                    keyword=normalized_keyword,
+                    search_exact=search_exact,
+                    search_result_kind=kind,
+                )
             if library.type == "synology_filestation":
                 items = self._sort_remote_page_items(items, sort_by, sort_order)
             else:
@@ -4321,10 +4431,10 @@ class LibraryManager:
                 it.pop("_sort_time", None)
                 it.pop("_mtime", None)
             logger.info(
-                "库存搜索走索引: lib=%s keyword=%s hits=%s page=%s",
-                library.id, normalized_keyword, total, page,
+                "库存搜索走索引: lib=%s keyword=%s hits=%s page=%s page_size=%s truncated=%s",
+                library.id, normalized_keyword, total, page, page_size, total >= LIBRARY_SEARCH_RESULT_LIMIT,
             )
-            return self._build_index_search_result(
+            result = self._build_index_search_result(
                 library,
                 files=page_items,
                 total=total,
@@ -4336,6 +4446,8 @@ class LibraryManager:
                 search_exact=search_exact,
                 search_result_kind=kind,
             )
+            result["search_truncated"] = total >= LIBRARY_SEARCH_RESULT_LIMIT
+            return result
         except Exception:
             logger.warning(
                 "索引快速搜索异常转 fallback: lib=%s keyword=%s",
@@ -4747,6 +4859,8 @@ class LibraryManager:
             search_result_kind=search_result_kind,
         )
         if indexed_result is not None:
+            if indexed_result.get("index_refresh_pending"):
+                return indexed_result
             return self._set_cached_local_search_result(cache_key, indexed_result)
         normalized_result_kind = self._normalize_search_result_kind(search_result_kind)
         treat_rj_dir_as_terminal = rj_only_search and normalized_result_kind != "file"
