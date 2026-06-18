@@ -47,6 +47,8 @@ class DummyHttpDownloader:
     allow_private_network = False
     conflict_policy = "resume"
     gofile_token = ""
+    gofile_max_concurrent_downloads = 2
+    gofile_split = 5
     pikpak_enabled = False
     pikpak_username = ""
     pikpak_password = ""
@@ -366,6 +368,8 @@ def test_http_downloader_config_has_pikpak_defaults():
     cfg = HttpDownloaderConfig()
 
     assert cfg.gofile_token == ""
+    assert cfg.gofile_max_concurrent_downloads == 2
+    assert cfg.gofile_split == 5
     assert cfg.pikpak_enabled is False
     assert cfg.pikpak_transfer_dir == "/KikoeruManager"
     assert cfg.pikpak_auto_save_share is True
@@ -2855,6 +2859,93 @@ async def test_start_download_task_marks_partial_success_when_some_gids_fail(mon
 
 
 @pytest.mark.asyncio
+async def test_start_download_task_uses_configured_gofile_active_file_limit(monkeypatch, tmp_path):
+    bind_config(
+        monkeypatch,
+        tmp_path,
+        split=8,
+        max_connection_per_server=8,
+        gofile_max_concurrent_downloads=1,
+        gofile_split=4,
+    )
+    service = HttpDownloadService()
+    added_options = []
+    unpaused = []
+    gids = ["gid-1", "gid-2", "gid-3"]
+
+    async def fake_preview_urls(*_args, **_kwargs):
+        items = []
+        for index in range(3):
+            name = f"voice-{index + 1}.zip"
+            items.append({
+                "ok": True,
+                "source": "gofile",
+                "url": f"https://store.gofile.io/{name}",
+                "masked_url": f"https://store.gofile.io/{name}",
+                "filename": name,
+                "relative_path": name,
+                "final_path": str(tmp_path / "downloads" / name),
+                "target_dir": str(tmp_path / "downloads"),
+                "size_bytes": 10,
+            })
+        return {
+            "items": items,
+            "resolved_urls": [item["url"] for item in items],
+            "source_items": [],
+            "source_modes": ["gofile"],
+        }
+
+    async def fake_rpc(method, params):
+        if method == "aria2.addUri":
+            added_options.append(dict(params[1]))
+            return gids[len(added_options) - 1]
+        if method == "aria2.unpause":
+            unpaused.append(params[0])
+            return "OK"
+        if method == "aria2.tellStatus":
+            gid = params[0]
+            if gid == "gid-1":
+                status = "complete"
+            elif gid in unpaused:
+                status = "complete"
+            else:
+                status = "paused"
+            completed = "10" if status == "complete" else "0"
+            return {
+                "gid": gid,
+                "status": status,
+                "totalLength": "10",
+                "completedLength": completed,
+                "downloadSpeed": "0",
+                "files": [],
+            }
+        raise AssertionError(method)
+
+    async def fake_cleanup(rows):
+        return {"success": True, "requested_count": 0, "deleted_count": 0}
+
+    monkeypatch.setattr(service, "preview_urls", fake_preview_urls)
+    monkeypatch.setattr(service, "_rpc_call", fake_rpc)
+    monkeypatch.setattr(service, "cleanup_completed_pikpak_transfer_items", fake_cleanup)
+
+    task = Task(
+        task_type=TaskType.HTTP_DOWNLOAD,
+        source_path="gofile.io",
+        metadata={"urls": ["https://gofile.io/d/content-id"]},
+    )
+
+    result = await service.start_download_task(task)
+
+    assert result["status"] == "completed"
+    assert [options["split"] for options in added_options] == ["4", "4", "4"]
+    assert [options["max-connection-per-server"] for options in added_options] == ["4", "4", "4"]
+    assert "pause" not in added_options[0]
+    assert added_options[1]["pause"] == "true"
+    assert added_options[2]["pause"] == "true"
+    assert unpaused == ["gid-2", "gid-3"]
+
+
+@pytest.mark.asyncio
 async def test_start_download_task_marks_failed_when_all_gids_fail(monkeypatch, tmp_path):
     bind_config(monkeypatch, tmp_path)
     service = HttpDownloadService()
@@ -3037,6 +3128,16 @@ def test_aria2_options_passes_provider_headers(monkeypatch, tmp_path):
     options = service._aria2_options({"filename": "voice.zip", "aria2_header": ["Cookie: accountToken=secret-token"]}, str(tmp_path))
 
     assert options["header"] == ["Cookie: accountToken=secret-token"]
+
+
+def test_gofile_aria2_options_use_configured_splits(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path, split=8, max_connection_per_server=8, gofile_split=4)
+    service = HttpDownloadService()
+
+    options = service._aria2_options({"source": "gofile", "filename": "voice.zip"}, str(tmp_path))
+
+    assert options["split"] == "4"
+    assert options["max-connection-per-server"] == "4"
 
 
 @pytest.mark.asyncio

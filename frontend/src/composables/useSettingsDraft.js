@@ -239,6 +239,8 @@ export const defaultConfig = {
     allow_private_network: false,
     conflict_policy: 'resume',
     gofile_token: '',
+    gofile_max_concurrent_downloads: 2,
+    gofile_split: 5,
     google_drive_oauth_enabled: false,
     google_drive_oauth_client_mode: 'builtin',
     google_drive_client_id: '',
