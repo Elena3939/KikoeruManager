@@ -395,6 +395,7 @@
                     }"
                     :data-library-path-drop-target="segment.path || ''"
                     :data-library-path-label="segment.label"
+                    :data-library-id="segment.library_id || selectedLibraryId"
                     :title="segment.path || segment.label"
                     @click="navigateToBreadcrumbPath(segment.path)"
                   >
@@ -414,6 +415,7 @@
                 }"
                 :data-library-path-drop-target="item.segment.path || ''"
                 :data-library-path-label="item.segment.label"
+                :data-library-id="item.segment.library_id || selectedLibraryId"
                 :title="item.segment.path || item.segment.label"
                 @click="navigateToBreadcrumbPath(item.segment.path)"
               >
@@ -2084,11 +2086,27 @@ const circleCurrentGroup = computed(() => circleGroups.value.find(item => item.c
 
 const circleCurrentWorks = computed(() => circleWorks.value || [])
 
+const circleCurrentWorkMap = computed(() => {
+
+  const map = new Map()
+
+  for (const work of circleCurrentWorks.value) {
+
+    const rjcode = String(work?.rjcode || '').trim()
+
+    if (rjcode && !map.has(rjcode)) map.set(rjcode, work)
+
+  }
+
+  return map
+
+})
+
 const circleCurrentWorkContext = computed(() => {
   const decoded = circleDecodeVirtualPath(circleVirtualCurrentPath.value)
   if (decoded.type !== 'work') return null
 
-  const work = circleCurrentWorks.value.find(item => String(item?.rjcode || '') === decoded.workKey) || null
+  const work = circleCurrentWorkMap.value.get(String(decoded.workKey || '').trim()) || null
   if (!work) return null
 
   const locations = Array.isArray(work.locations) ? work.locations : []
@@ -2436,7 +2454,7 @@ function circleApplyRowsFromState () {
 
   if (decoded.type === 'work') {
 
-    const work = circleCurrentWorks.value.find(item => String(item?.rjcode || '') === decoded.workKey)
+    const work = circleCurrentWorkMap.value.get(String(decoded.workKey || '').trim())
 
     const rows = []
 
@@ -2698,6 +2716,7 @@ const tableItemDragState = ref({
   currentY: 0,
   pointerId: null,
   items: [],
+  targetLibraryId: '',
   targetPath: '',
   targetName: '',
   canDrop: false
@@ -4724,21 +4743,40 @@ const libraryRowContextMenuProps = computed(() => {
 })
 
 function isPathBreadcrumbDropTarget (segment) {
+  const target = resolvePathBreadcrumbSegmentDropState(segment)
+
   return Boolean(
-    tableItemDragState.value.visible &&
-    tableItemDragState.value.canDrop &&
-    segment?.path &&
-    tableItemDragState.value.targetPath === segment.path
+    target.matched &&
+    tableItemDragState.value.canDrop
   )
 }
 
 function isPathBreadcrumbDropBlocked (segment) {
+  const target = resolvePathBreadcrumbSegmentDropState(segment)
+
   return Boolean(
-    tableItemDragState.value.visible &&
-    !tableItemDragState.value.canDrop &&
-    segment?.path &&
-    tableItemDragState.value.targetPath === segment.path
+    target.matched &&
+    !tableItemDragState.value.canDrop
   )
+}
+
+function resolvePathBreadcrumbSegmentDropState (segment) {
+
+  if (!tableItemDragState.value.visible || !segment?.path || !tableItemDragState.value.targetPath) return { matched: false }
+
+  const resolved = resolveDragMoveVirtualTarget(segment.path)
+
+  const segmentPath = resolved.path || segment.path
+
+  const segmentLibraryId = String(resolved.libraryId || segment.library_id || selectedLibraryId.value || '').trim()
+
+  const targetLibraryId = String(tableItemDragState.value.targetLibraryId || selectedLibraryId.value || '').trim()
+
+  return {
+    matched: normalizeConflictPathKey(segmentPath) === normalizeConflictPathKey(tableItemDragState.value.targetPath) &&
+      (!segmentLibraryId || !targetLibraryId || segmentLibraryId === targetLibraryId)
+  }
+
 }
 
 // 当前选中行中的目录行（供批量计算使用）
@@ -4886,7 +4924,7 @@ const currentPathBreadcrumbSegments = computed(() => {
 
     if (decoded.type === 'group') return [rootSegment, groupSegment]
 
-    const work = circleCurrentWorks.value.find(item => String(item?.rjcode || '') === decoded.workKey)
+    const work = circleCurrentWorkMap.value.get(String(decoded.workKey || '').trim())
 
     const workLocation = Array.isArray(work?.locations) ? work.locations[0] : null
     const workLabel = circleLocationFolderName(workLocation) || work?.rjcode || decoded.workKey || '作品'
@@ -5263,6 +5301,20 @@ function joinRemoteActionPath (basePath = '', name = '') {
   if (normalizedBase === '/') return `/${normalizedName}`
 
   return `${normalizedBase}/${normalizedName}`
+
+}
+
+function joinLocalActionPath (basePath = '', relativePath = '') {
+
+  const base = String(basePath || '').trim().replace(/[\\/]+$/, '')
+
+  const relative = String(relativePath || '').trim().replace(/^[/\\]+|[/\\]+$/g, '')
+
+  if (!relative) return base
+
+  const separator = base.includes('\\') ? '\\' : '/'
+
+  return `${base}${separator}${relative.replace(/[\\/]+/g, separator)}`
 
 }
 
@@ -10171,6 +10223,7 @@ function startTableItemDrag (row, event) {
     currentY: event.clientY,
     pointerId: event.pointerId,
     items,
+    targetLibraryId: '',
     targetPath: '',
     targetName: '',
     canDrop: false
@@ -10275,6 +10328,7 @@ function onTableItemDragPointerUp (event) {
   const items = state.items.slice()
 
   const targetPath = state.targetPath
+  const targetLibraryId = state.targetLibraryId
 
   if (state.visible && event) event.preventDefault()
 
@@ -10292,7 +10346,7 @@ function onTableItemDragPointerUp (event) {
 
   }
 
-  if (shouldDrop) directMoveRowsToPath(items, targetPath)
+  if (shouldDrop) directMoveRowsToPath(items, targetPath, targetLibraryId)
 
 }
 
@@ -10347,6 +10401,7 @@ function stopTableItemDragTracking () {
     currentY: 0,
     pointerId: null,
     items: [],
+    targetLibraryId: '',
     targetPath: '',
     targetName: '',
     canDrop: false
@@ -10498,8 +10553,9 @@ function updateTableItemDragTarget (clientX, clientY) {
 
   if (pathTarget) {
 
-    const canDrop = canDropRowsToPath(tableItemDragState.value.items, pathTarget.path)
+    const canDrop = canDropRowsToPath(tableItemDragState.value.items, pathTarget.path, pathTarget.libraryId)
 
+    tableItemDragState.value.targetLibraryId = pathTarget.libraryId || selectedLibraryId.value
     tableItemDragState.value.targetPath = pathTarget.path
 
     tableItemDragState.value.targetName = pathTarget.label || getFileName(pathTarget.path) || pathTarget.path
@@ -10530,6 +10586,8 @@ function updateTableItemDragTarget (clientX, clientY) {
 
   if (!targetRow?.is_directory || !targetRow.path) {
 
+    tableItemDragState.value.targetLibraryId = ''
+
     tableItemDragState.value.targetPath = ''
 
     tableItemDragState.value.targetName = ''
@@ -10540,11 +10598,29 @@ function updateTableItemDragTarget (clientX, clientY) {
 
   }
 
-  const canDrop = canDropRowsToFolder(tableItemDragState.value.items, targetRow)
+  const dropTarget = resolveDragMoveRowTarget(targetRow)
 
-  tableItemDragState.value.targetPath = targetRow.path
+  if (!dropTarget.path || !dropTarget.libraryId) {
 
-  tableItemDragState.value.targetName = targetRow.name || getFileName(targetRow.path)
+    tableItemDragState.value.targetLibraryId = ''
+
+    tableItemDragState.value.targetPath = ''
+
+    tableItemDragState.value.targetName = ''
+
+    tableItemDragState.value.canDrop = false
+
+    return
+
+  }
+
+  const canDrop = canDropRowsToPath(tableItemDragState.value.items, dropTarget.path, dropTarget.libraryId)
+
+  tableItemDragState.value.targetLibraryId = dropTarget.libraryId
+
+  tableItemDragState.value.targetPath = dropTarget.path
+
+  tableItemDragState.value.targetName = dropTarget.label || targetRow.name || getFileName(dropTarget.path)
 
   tableItemDragState.value.canDrop = canDrop
 
@@ -10567,9 +10643,15 @@ function resolvePathBreadcrumbDropTarget (elements = []) {
     if (!path) continue
 
     const rawLabel = String(target.getAttribute('data-library-path-label') || '').trim()
+    const rawLibraryId = String(target.getAttribute('data-library-id') || '').trim()
+
+    const resolved = resolveDragMoveVirtualTarget(path)
+
+    if (libraryViewMode.value === 'circle' && !resolved.path) continue
 
     return {
-      path,
+      libraryId: resolved.libraryId || rawLibraryId || selectedLibraryId.value,
+      path: resolved.path || path,
       label: rawLabel && rawLabel !== '/' ? rawLabel : '库存根目录'
     }
 
@@ -10611,29 +10693,43 @@ function canDropRowsToFolder (rows, folder) {
 
   if (!folder?.is_directory || !folder?.path) return false
 
-  return canDropRowsToPath(rows, folder.path)
+  const target = resolveDragMoveRowTarget(folder)
+
+  return canDropRowsToPath(rows, target.path, target.libraryId)
 
 }
 
 
 
-function canDropRowsToPath (rows, targetPath) {
+function canDropRowsToPath (rows, targetPath, targetLibraryId = '') {
 
   const target = normalizeConflictPathKey(targetPath)
 
   if (!target) return false
 
+  const normalizedTargetLibraryId = String(targetLibraryId || '').trim()
+
   for (const row of rows || []) {
 
-    const source = normalizeConflictPathKey(row?.path || '')
+    const sourceRow = resolveDragMoveSourceRow(row)
+
+    if (!sourceRow) return false
+
+    const source = normalizeConflictPathKey(sourceRow.path || '')
 
     if (!source) return false
+
+    const sourceLibraryId = String(sourceRow.library_id || selectedLibraryId.value || '').trim()
+
+    const sameLibrary = !normalizedTargetLibraryId || !sourceLibraryId || normalizedTargetLibraryId === sourceLibraryId
+
+    if (!sameLibrary) continue
 
     if (source === target) return false
 
     if (target.startsWith(`${source}/`)) return false
 
-    if (normalizeConflictPathKey(getParentPath(row?.path || '')) === target) return false
+    if (normalizeConflictPathKey(getParentPath(sourceRow.path || '')) === target) return false
 
   }
 
@@ -10682,7 +10778,7 @@ async function getDirectMoveConflicts (sourceLibraryId, targetLibraryId, targetP
 
 
 
-async function directMoveRowsToPath (rows, targetPath) {
+async function directMoveRowsToPath (rows, targetPath, targetLibraryId = '') {
 
   const actionRows = normalizeLibraryActionRows(rows)
 
@@ -10718,10 +10814,37 @@ async function directMoveRowsToPath (rows, targetPath) {
 
   }
 
-  const targetLibraryId = sourceLibraryId
+  if (items.some(item => String(item.library_id || sourceLibraryId) !== sourceLibraryId)) {
+
+    ElMessage.warning('跨库存来源请分开拖拽移动')
+
+    return
+
+  }
+
+  const resolvedTargetLibraryId = String(targetLibraryId || sourceLibraryId || '').trim()
+
+  const targetLibrary = getLibraryById(resolvedTargetLibraryId)
+
+  if (!targetLibrary || targetLibrary.type === 'synology_filestation') {
+
+    ElMessage.warning('只能拖拽移动到本地库存')
+
+    return
+
+  }
+
+  if (targetLibrary.writable === false) {
+
+    ElMessage.warning('目标库存只读，无法移动')
+
+    return
+
+  }
+
   const normalizedTargetPath = String(targetPath || '').trim()
 
-  if (!canDropRowsToPath(items, normalizedTargetPath)) {
+  if (!canDropRowsToPath(items, normalizedTargetPath, resolvedTargetLibraryId)) {
 
     ElMessage.warning('不能移动到该目录')
 
@@ -10733,14 +10856,14 @@ async function directMoveRowsToPath (rows, targetPath) {
 
   try {
 
-    const conflicts = await getDirectMoveConflicts(sourceLibraryId, targetLibraryId, normalizedTargetPath, items)
+    const conflicts = await getDirectMoveConflicts(sourceLibraryId, resolvedTargetLibraryId, normalizedTargetPath, items)
 
     if (conflicts.length) {
 
       dragMoveConflictState.value = {
         visible: true,
         sourceLibraryId,
-        targetLibraryId,
+        targetLibraryId: resolvedTargetLibraryId,
         targetPath: normalizedTargetPath,
         targetName: getMoveTargetName(normalizedTargetPath),
         items,
@@ -10754,7 +10877,7 @@ async function directMoveRowsToPath (rows, targetPath) {
 
     await executeLibraryMove({
       sourceLibraryId,
-      targetLibraryId,
+      targetLibraryId: resolvedTargetLibraryId,
       targetPath: normalizedTargetPath,
       items,
       conflictStrategy: 'suffix'
@@ -18320,7 +18443,7 @@ function restoreDirectoryReturnState () {
 
 async function circleLoadWorkChildRows (decoded) {
 
-  const work = circleCurrentWorks.value.find(item => String(item?.rjcode || '') === decoded.workKey)
+  const work = circleCurrentWorkMap.value.get(String(decoded.workKey || '').trim())
 
   if (!work) return false
 
@@ -18356,7 +18479,7 @@ async function circleLoadWorkChildRows (decoded) {
 
 async function circleLoadLocationChildRows (decoded) {
 
-  const work = circleCurrentWorks.value.find(item => String(item?.rjcode || '') === decoded.workKey)
+  const work = circleCurrentWorkMap.value.get(String(decoded.workKey || '').trim())
 
   if (!work) return false
 
@@ -20155,6 +20278,84 @@ function buildBatchDeletePreviewMessage (preview, count) {
 
 }
 
+function resolveDragMoveSourceRow (row) {
+
+  if (!row?.path) return null
+
+  if (libraryViewMode.value !== 'circle') return row
+
+  const actionRow = normalizeLibraryActionRow(row)
+
+  if (actionRow) return actionRow
+
+  const libraryId = String(row?.library_id || '').trim()
+
+  const hasCircleMetadata = Boolean(row?.circle_row_type || row?.circle_virtual !== undefined || row?.circle_real_path || row?.circle_real_library_id)
+
+  if (hasCircleMetadata || !libraryId) return null
+
+  return row
+
+}
+
+function resolveDragMoveRowTarget (row) {
+
+  if (!row?.is_directory) return { libraryId: '', path: '', label: '' }
+
+  if (libraryViewMode.value === 'circle' && !isCircleRealActionRow(row)) return { libraryId: '', path: '', label: '' }
+
+  const realPath = libraryViewMode.value === 'circle' ? getCircleRealPath(row) : String(row?.path || '').trim()
+
+  const realLibraryId = libraryViewMode.value === 'circle'
+    ? getCircleRealLibraryId(row)
+    : String(row?.library_id || selectedLibraryId.value || '').trim()
+
+  return {
+    libraryId: realLibraryId,
+    path: realPath,
+    label: row?.name || getFileName(realPath) || realPath
+  }
+
+}
+
+function resolveDragMoveVirtualTarget (path = '') {
+
+  if (libraryViewMode.value !== 'circle') {
+    return {
+      libraryId: String(selectedLibraryId.value || '').trim(),
+      path: String(path || '').trim(),
+    }
+  }
+
+  const decoded = circleDecodeVirtualPath(path)
+
+  if (!['work', 'item', 'location', 'location-item'].includes(decoded.type)) {
+    return { libraryId: '', path: '' }
+  }
+
+  const work = circleCurrentWorkMap.value.get(String(decoded.workKey || '').trim())
+
+  if (!work) return { libraryId: '', path: '' }
+
+  if ((decoded.type === 'work' || decoded.type === 'item') && work?.conflict) return { libraryId: '', path: '' }
+
+  const locations = Array.isArray(work?.locations) ? work.locations : []
+
+  const location = decoded.type === 'location' || decoded.type === 'location-item'
+    ? locations[decoded.locationIndex || 0]
+    : locations[0]
+
+  if (!location?.path || !location?.library_id) return { libraryId: '', path: '' }
+
+  const relativePath = circleNormalizeRelativePath(decoded.itemRelativePath || '')
+
+  return {
+    libraryId: String(location.library_id || '').trim(),
+    path: relativePath ? joinLocalActionPath(location.path, relativePath) : String(location.path || '').trim(),
+  }
+
+}
+
 function groupRowsByLibraryId (rows = []) {
 
   const groups = new Map()
@@ -21262,7 +21463,8 @@ function normalizeMoveItems (rows) {
     .map(row => ({
       path: row.path,
       name: row.name || getFileName(row.path),
-      is_directory: !!row.is_directory
+      is_directory: !!row.is_directory,
+      library_id: row.library_id || ''
     }))
 
 }
@@ -23008,13 +23210,32 @@ function libraryRowClassName ({ row, rowIndex = -1 }) {
 
   if (tableItemDragState.value.visible && row?.path && tableItemDragState.value.items.some(item => item?.path === row.path)) classes.push('library-row-drag-source')
 
-  if (tableItemDragState.value.visible && tableItemDragState.value.targetPath && row?.path === tableItemDragState.value.targetPath) {
+  const rowDropTarget = resolveLibraryRowDropTargetState(row)
+
+  if (rowDropTarget.matched) {
     classes.push(tableItemDragState.value.canDrop ? 'library-row-drop-target' : 'library-row-drop-blocked')
   }
 
   if (isCircleVirtualDirectoryRow(row)) classes.push('library-row-openable')
 
   return classes.join(' ')
+
+}
+
+function resolveLibraryRowDropTargetState (row) {
+
+  if (!tableItemDragState.value.visible || !tableItemDragState.value.targetPath || !row?.path) return { matched: false }
+
+  const target = resolveDragMoveRowTarget(row)
+
+  if (!target.path || !target.libraryId) return { matched: false }
+
+  const dragLibraryId = String(tableItemDragState.value.targetLibraryId || selectedLibraryId.value || '').trim()
+
+  return {
+    matched: normalizeConflictPathKey(target.path) === normalizeConflictPathKey(tableItemDragState.value.targetPath) &&
+      (!dragLibraryId || target.libraryId === dragLibraryId)
+  }
 
 }
 
