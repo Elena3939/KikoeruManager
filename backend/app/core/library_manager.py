@@ -8376,6 +8376,191 @@ class LibraryManager:
             logger.warning("删除过滤预审索引路径异常转 fallback: lib=%s path=%s", library.id, path, exc_info=True)
             return None
 
+    def _empty_filter_delete_preview(
+        self,
+        path: str,
+        active_rules: list[dict[str, str]],
+        *,
+        folder_name: Optional[str] = None,
+    ) -> dict[str, Any]:
+        normalized_path = str(path or "")
+        return {
+            "folder_name": folder_name or PurePosixPath(normalized_path).name or os.path.basename(normalized_path) or normalized_path,
+            "folder_path": normalized_path,
+            "rules": active_rules,
+            "items": [],
+            "selected_count": 0,
+            "selected_size": 0,
+            "selected_size_exact": True,
+            "size_disabled": False,
+            "truncated": False,
+            "truncated_reason": "",
+            "scanned_entries": 0,
+            "discovered_entries": 0,
+            "pending_directories": 0,
+        }
+
+    def _normalize_filter_delete_targets(
+        self,
+        library_id: Optional[str],
+        path: Optional[str],
+        target_items: Optional[list[Any]],
+    ) -> list[dict[str, Any]]:
+        raw_items = target_items if isinstance(target_items, list) and target_items else []
+        if not raw_items and path:
+            raw_items = [{"library_id": library_id, "path": path}]
+        targets: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            item_library_id = str(item.get("library_id") or library_id or "").strip()
+            item_path = str(item.get("path") or "").strip()
+            if not item_library_id or not item_path:
+                continue
+            library = self.get_library_definition(item_library_id)
+            if library.type == "synology_filestation":
+                _, target_path = self._resolve_remote_operation_path(
+                    library,
+                    item_path,
+                    action="删除过滤预审",
+                )
+            else:
+                self._assert_local_path_in_library(library, item_path)
+                target_path = os.path.abspath(item_path)
+                if not os.path.isdir(target_path):
+                    raise FileNotFoundError("目标文件夹不存在")
+            key = (library.id, target_path.replace("\\", "/").rstrip("/") or "/")
+            if key in seen:
+                continue
+            seen.add(key)
+            targets.append({
+                "library_id": library.id,
+                "library_name": library.name,
+                "library_type": library.type,
+                "path": target_path,
+                "name": str(item.get("name") or (PurePosixPath(target_path).name if library.type == "synology_filestation" else os.path.basename(target_path)) or target_path),
+                "library": library,
+            })
+        return targets
+
+    def _decorate_filter_delete_preview_items(
+        self,
+        items: list[dict[str, Any]],
+        target: dict[str, Any],
+        *,
+        multi_target: bool,
+    ) -> list[dict[str, Any]]:
+        library_id = str(target.get("library_id") or "")
+        library_name = str(target.get("library_name") or library_id)
+        root_path = str(target.get("path") or "")
+        root_name = str(target.get("name") or PurePosixPath(root_path).name or root_path)
+        normalized_root_path = root_path.replace("\\", "/").rstrip("/") or "/"
+        target_key = f"{library_id}::{normalized_root_path}"
+        display_prefix = f"{library_name} / {root_name}" if multi_target else ""
+        decorated: list[dict[str, Any]] = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            next_item = dict(item)
+            original_relative = str(next_item.get("relative_path") or next_item.get("name") or "").replace("\\", "/").strip("/")
+            next_item["library_id"] = library_id
+            next_item["library_name"] = library_name
+            next_item["target_root_path"] = root_path
+            next_item["target_root_name"] = root_name
+            next_item["target_key"] = target_key
+            next_item["target_display_prefix"] = display_prefix
+            next_item["original_relative_path"] = original_relative
+            if multi_target and display_prefix:
+                next_item["relative_path"] = f"{display_prefix}/{original_relative}" if original_relative else display_prefix
+            decorated.append(next_item)
+        return decorated
+
+    def _merge_filter_delete_preview_results(
+        self,
+        targets: list[dict[str, Any]],
+        results: list[dict[str, Any]],
+        active_rules: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        multi_target = len(targets) > 1
+        merged_items: list[dict[str, Any]] = []
+        selected_count = 0
+        selected_size = 0
+        scanned_entries = 0
+        discovered_entries = 0
+        selected_size_exact = True
+        size_disabled = False
+        truncated = False
+        warnings: list[str] = []
+        errors: list[str] = []
+        failed_targets: list[dict[str, str]] = []
+
+        for target, result in zip(targets, results):
+            status = str(result.get("status") or "completed")
+            if status == "error":
+                error = str(result.get("error") or "预审失败")
+                errors.append(error)
+                failed_targets.append({
+                    "library_id": str(target.get("library_id") or ""),
+                    "library_name": str(target.get("library_name") or ""),
+                    "path": str(target.get("path") or ""),
+                    "name": str(target.get("name") or ""),
+                    "error": error,
+                })
+                continue
+            merged_items.extend(self._decorate_filter_delete_preview_items(
+                list(result.get("items") or []),
+                target,
+                multi_target=multi_target,
+            ))
+            selected_count += int(result.get("selected_count") or 0)
+            selected_size += int(result.get("selected_size") or 0)
+            scanned_entries += int(result.get("scanned_entries") or 0)
+            discovered_entries += int(result.get("discovered_entries") or 0)
+            selected_size_exact = selected_size_exact and bool(result.get("selected_size_exact", True))
+            size_disabled = size_disabled or bool(result.get("size_disabled", False))
+            truncated = truncated or bool(result.get("truncated", False))
+            warning = str(result.get("warning") or "").strip()
+            if warning:
+                warnings.append(warning)
+            error = str(result.get("error") or "").strip()
+            if error:
+                errors.append(error)
+
+        folder_name = targets[0]["name"] if len(targets) == 1 else f"已选目录（{len(targets)} 项）"
+        folder_path = targets[0]["path"] if len(targets) == 1 else ""
+        status = "error" if failed_targets and len(failed_targets) == len(targets) else "completed"
+        return {
+            "folder_name": folder_name,
+            "folder_path": folder_path,
+            "rules": active_rules,
+            "items": merged_items,
+            "selected_count": selected_count,
+            "selected_size": selected_size,
+            "selected_size_exact": selected_size_exact,
+            "size_disabled": size_disabled,
+            "truncated": truncated,
+            "truncated_reason": "；".join(warnings),
+            "scanned_entries": scanned_entries,
+            "discovered_entries": discovered_entries,
+            "pending_directories": 0,
+            "status": status,
+            "current_path": "",
+            "progress_message": "删除过滤预审完成" if status == "completed" else "删除过滤预审失败",
+            "warning": "；".join(warnings),
+            "error": "；".join(errors),
+            "failed_targets": failed_targets,
+            "target_items": [
+                {
+                    "library_id": str(target.get("library_id") or ""),
+                    "library_name": str(target.get("library_name") or ""),
+                    "path": str(target.get("path") or ""),
+                    "name": str(target.get("name") or ""),
+                }
+                for target in targets
+            ],
+        }
+
     def _list_folders_only_via_index(
         self,
         library: LibraryDefinition,
@@ -9017,6 +9202,8 @@ class LibraryManager:
             "selected_size": int(job.get("selected_size") or 0),
             "selected_size_exact": bool(job.get("selected_size_exact", True)),
             "size_disabled": bool(job.get("size_disabled", False)),
+            "truncated": bool(job.get("truncated", False)),
+            "truncated_reason": job.get("truncated_reason") or "",
             "scanned_entries": int(job.get("scanned_entries") or 0),
             "discovered_entries": int(job.get("discovered_entries") or 0),
             "pending_directories": int(job.get("pending_directories") or 0),
@@ -9025,6 +9212,8 @@ class LibraryManager:
             "progress_message": job.get("progress_message") or "",
             "warning": job.get("warning") or "",
             "error": job.get("error") or "",
+            "failed_targets": job.get("failed_targets") or [],
+            "target_items": job.get("target_items") or [],
             "started_at": job.get("started_at"),
             "updated_at": job.get("updated_at"),
         }
@@ -9247,6 +9436,8 @@ class LibraryManager:
             raise FileNotFoundError("目标文件夹不存在")
 
         active_rules = self._normalize_filter_rules(rules)
+        if not active_rules:
+            return self._empty_filter_delete_preview(target_path, active_rules, folder_name=os.path.basename(target_path))
         indexed_preview = self._filter_delete_preview_via_index(library, target_path, active_rules)
         if indexed_preview is not None:
             self._append_stats_log(
@@ -9411,6 +9602,187 @@ class LibraryManager:
         total_size = await walk(folder_path)
         return descendants, total_size
 
+    async def _remote_filter_delete_preview_via_search(
+        self,
+        client: SynologyFileStationClient,
+        library: LibraryDefinition,
+        target_path: str,
+        active_rules: list[dict[str, str]],
+    ) -> Optional[dict[str, Any]]:
+        task_id = None
+        started_at = time.time()
+        try:
+            started = await client.start_search(target_path, "*", recursive=True)
+            task_id = started.get("taskid") or started.get("task_id")
+            if not task_id:
+                return None
+            await self._wait_remote_search_ready(
+                client,
+                task_id,
+                timeout_seconds=self._remote_search_timeout_seconds(),
+            )
+
+            offset = 0
+            page_size = 1000
+            total = 0
+            max_entries = 50000
+            truncated = False
+            entries: list[dict[str, Any]] = []
+            while offset < max_entries:
+                data = await client.list_search(
+                    task_id,
+                    offset=offset,
+                    limit=page_size,
+                    sort_by="name",
+                    sort_direction="asc",
+                )
+                raw_items = data.get("files") or data.get("items") or []
+                page_total = int(data.get("total", len(raw_items)) or len(raw_items))
+                total = max(total, page_total)
+                if not raw_items:
+                    break
+                for raw in raw_items:
+                    name = str(raw.get("name") or "")
+                    if self._should_skip_filter_preview_name(name):
+                        continue
+                    raw_path = raw.get("path") or raw.get("real_path") or name
+                    item_path = self._normalize_remote_path(raw_path)
+                    if not (item_path == target_path or item_path.startswith(f"{target_path.rstrip('/')}/")):
+                        continue
+                    try:
+                        relative_path = str(PurePosixPath(item_path).relative_to(PurePosixPath(target_path))).replace("\\", "/")
+                    except Exception:
+                        relative_path = name
+                    additional = raw.get("additional", {}) or {}
+                    timestamp = additional.get("time", {}).get("mtime")
+                    modified_time = datetime.fromtimestamp(timestamp).isoformat() if timestamp else None
+                    is_directory = bool(raw.get("isdir", False))
+                    entries.append({
+                        "name": name,
+                        "path": item_path,
+                        "relative_path": relative_path,
+                        "type": "dir" if is_directory else "file",
+                        "size": 0 if is_directory else int(additional.get("size") or 0),
+                        "modified_time": modified_time,
+                    })
+                offset += len(raw_items)
+                if offset >= max_entries and offset < page_total:
+                    truncated = True
+                    break
+                if len(raw_items) < page_size or offset >= page_total:
+                    break
+
+            dir_size_by_path: dict[str, int] = {}
+            for entry in entries:
+                if entry["type"] != "file":
+                    continue
+                size = int(entry.get("size") or 0)
+                parent = str(PurePosixPath(str(entry["path"])).parent)
+                while parent and parent != "/" and (parent == target_path or parent.startswith(f"{target_path.rstrip('/')}/")):
+                    dir_size_by_path[parent] = int(dir_size_by_path.get(parent, 0)) + size
+                    parent = str(PurePosixPath(parent).parent)
+
+            entries.sort(key=lambda item: (
+                str(item["relative_path"]).count("/"),
+                str(item["relative_path"]).lower(),
+                0 if item["type"] == "dir" else 1,
+            ))
+            preview_items: list[dict[str, Any]] = []
+            selected_count = 0
+            selected_size = 0
+            covered_roots: list[str] = []
+            for entry in entries:
+                item_path = str(entry["path"])
+                item_type = str(entry["type"])
+                covered_by = next(
+                    (
+                        root
+                        for root in covered_roots
+                        if item_path == root or item_path.startswith(f"{root.rstrip('/')}/")
+                    ),
+                    "",
+                )
+                if covered_by:
+                    selectable = item_type != "dir"
+                    item_size = int(entry.get("size") or 0) if selectable else int(dir_size_by_path.get(item_path, 0))
+                    preview_items.append(
+                        self._build_preview_item(
+                            path=item_path,
+                            relative_path=str(entry.get("relative_path") or ""),
+                            item_type=item_type,
+                            size=item_size,
+                            modified_time=entry.get("modified_time"),
+                            selectable=selectable,
+                            covered_by=covered_by,
+                            delete_path=item_path,
+                            size_status="ready" if selectable else "estimated",
+                            delete_scope="self" if selectable else "preview_child",
+                        )
+                    )
+                    if selectable:
+                        selected_count += 1
+                        selected_size += item_size
+                    continue
+
+                matched_rules = self._match_filter_rule_names(
+                    str(entry.get("name") or ""),
+                    "folder" if item_type == "dir" else "file",
+                    active_rules,
+                    relative_path=str(entry.get("relative_path") or ""),
+                    full_path=item_path,
+                )
+                if not matched_rules:
+                    continue
+                item_size = int(dir_size_by_path.get(item_path, 0)) if item_type == "dir" else int(entry.get("size") or 0)
+                preview_items.append(
+                    self._build_preview_item(
+                        path=item_path,
+                        relative_path=str(entry.get("relative_path") or ""),
+                        item_type=item_type,
+                        size=item_size,
+                        modified_time=entry.get("modified_time"),
+                        matched_rules=matched_rules,
+                        size_status="estimated" if item_type == "dir" else "ready",
+                        delete_scope="preview_parent" if item_type == "dir" else "self",
+                    )
+                )
+                if item_type == "dir":
+                    covered_roots.append(item_path)
+                else:
+                    selected_count += 1
+                    selected_size += item_size
+
+            preview_items.sort(key=lambda item: (item["relative_path"].count("/"), item["relative_path"].lower(), item["type"] != "dir"))
+            self._append_stats_log(
+                library,
+                "INFO",
+                f"远程删除过滤预审读取 Search path={target_path} scanned={len(entries)} matched={selected_count} elapsed={time.time() - started_at:.2f}s truncated={truncated}",
+            )
+            return {
+                "folder_name": PurePosixPath(target_path).name or target_path,
+                "folder_path": target_path,
+                "rules": active_rules,
+                "items": preview_items,
+                "selected_count": selected_count,
+                "selected_size": selected_size,
+                "selected_size_exact": not truncated,
+                "size_disabled": False,
+                "truncated": truncated,
+                "truncated_reason": f"远程搜索结果超过 {max_entries} 项，当前仅显示前 {max_entries} 项预审结果" if truncated else "",
+                "scanned_entries": len(entries),
+                "discovered_entries": total or len(entries),
+                "browse_via_search": True,
+            }
+        except Exception:
+            logger.warning("远程删除过滤预审 Search 快速路径失败，回退目录遍历: lib=%s path=%s", library.id, target_path, exc_info=True)
+            return None
+        finally:
+            if task_id:
+                try:
+                    await client.stop_search(task_id)
+                except Exception:
+                    logger.debug("停止远程删除过滤 Search 任务失败: task_id=%s", task_id, exc_info=True)
+
     async def _remote_filter_delete_preview(
         self,
         library: LibraryDefinition,
@@ -9427,6 +9799,8 @@ class LibraryManager:
         )
 
         active_rules = self._normalize_filter_rules(rules)
+        if not active_rules:
+            return self._empty_filter_delete_preview(target_path, active_rules, folder_name=PurePosixPath(target_path).name or target_path)
         indexed_preview = self._filter_delete_preview_via_index(library, target_path, active_rules)
         if indexed_preview is not None:
             self._append_stats_log(
@@ -9442,6 +9816,10 @@ class LibraryManager:
         info_item = self._first_remote_info_item(info)
         if not info_item or not info_item.get("isdir", False):
             raise FileNotFoundError("目标文件夹不存在")
+
+        search_preview = await self._remote_filter_delete_preview_via_search(client, library, target_path, active_rules)
+        if search_preview is not None:
+            return search_preview
 
         preview_items: list[dict[str, Any]] = []
         selected_count = 0
@@ -9564,8 +9942,35 @@ class LibraryManager:
         path: str,
         rules: Optional[list[Any]] = None,
         request_id: Optional[str] = None,
+        target_items: Optional[list[Any]] = None,
     ) -> dict[str, Any]:
-        library = self.get_library_definition(library_id)
+        targets = self._normalize_filter_delete_targets(library_id, path, target_items)
+        if target_items is not None and targets:
+            active_rules = self._normalize_filter_rules(rules)
+            if not active_rules:
+                merged = self._merge_filter_delete_preview_results(
+                    targets,
+                    [self._empty_filter_delete_preview(str(target["path"]), active_rules, folder_name=str(target.get("name") or "")) for target in targets],
+                    active_rules,
+                )
+                merged["status"] = "completed"
+                merged["progress_message"] = "没有启用的过滤规则"
+                return merged
+            results: list[dict[str, Any]] = []
+            for target in targets:
+                library = target["library"]
+                target_path = str(target["path"])
+                if library.type == "local":
+                    result = await asyncio.to_thread(self._local_filter_delete_preview, library, target_path, active_rules)
+                else:
+                    result = await self._remote_filter_delete_preview(library, target_path, active_rules, request_id)
+                results.append(result)
+            return self._merge_filter_delete_preview_results(targets, results, active_rules)
+        if targets:
+            library = targets[0]["library"]
+            path = str(targets[0]["path"])
+        else:
+            library = self.get_library_definition(library_id)
         if library.type == "local":
             return await asyncio.to_thread(self._local_filter_delete_preview, library, path, rules)
         return await self._remote_filter_delete_preview(library, path, rules, request_id)
@@ -9575,8 +9980,77 @@ class LibraryManager:
         library_id: str,
         path: str,
         rules: Optional[list[Any]] = None,
+        target_items: Optional[list[Any]] = None,
     ) -> dict[str, Any]:
-        library = self.get_library_definition(library_id)
+        targets = self._normalize_filter_delete_targets(library_id, path, target_items)
+        if target_items is not None and targets:
+            active_rules = self._normalize_filter_rules(rules)
+            if not active_rules:
+                merged = self._merge_filter_delete_preview_results(
+                    targets,
+                    [self._empty_filter_delete_preview(str(target["path"]), active_rules, folder_name=str(target.get("name") or "")) for target in targets],
+                    active_rules,
+                )
+                merged["status"] = "completed"
+                merged["progress_message"] = "没有启用的过滤规则"
+                return merged
+            indexed_results: list[dict[str, Any]] = []
+            all_indexed = True
+
+            for target in targets:
+                library = target["library"]
+                target_path = str(target["path"])
+                indexed_preview = self._filter_delete_preview_via_index(library, target_path, active_rules)
+                if indexed_preview is not None:
+                    indexed_preview["status"] = "completed"
+                    indexed_preview["progress_message"] = "索引预审完成"
+                    indexed_preview["current_path"] = target_path
+                    indexed_preview["pending_directories"] = 0
+                    indexed_results.append(indexed_preview)
+                    self._append_stats_log(
+                        library,
+                        "INFO",
+                        f"批量删除过滤预审读取索引 path={target_path} matched={indexed_preview.get('selected_count')}",
+                    )
+                    continue
+                all_indexed = False
+                break
+
+            if all_indexed:
+                merged = self._merge_filter_delete_preview_results(targets, indexed_results, active_rules)
+                merged["status"] = "completed"
+                merged["progress_message"] = "索引预审完成"
+                return merged
+
+            # 只要存在非索引目标，就保持后台任务模型；批任务内部仍会逐目标优先读索引。
+            job_id = uuid.uuid4().hex
+            job = self._init_filter_preview_job(job_id, targets[0]["library"], "", active_rules)
+            job.update({
+                "library_id": "",
+                "library_name": "多个库存",
+                "folder_name": f"已选目录（{len(targets)} 项）",
+                "folder_path": "",
+                "pending_directories": len(targets),
+                "progress_message": "已创建批量删除过滤预审任务",
+                "target_items": [
+                    {
+                        "library_id": str(target.get("library_id") or ""),
+                        "library_name": str(target.get("library_name") or ""),
+                        "path": str(target.get("path") or ""),
+                        "name": str(target.get("name") or ""),
+                    }
+                    for target in targets
+                ],
+            })
+            task = asyncio.create_task(self._run_filter_delete_preview_batch_job(job_id, targets, active_rules))
+            self._filter_preview_tasks[job_id] = task
+            return self._build_filter_preview_job_response(self._filter_preview_jobs[job_id])
+
+        if targets:
+            library = targets[0]["library"]
+            path = str(targets[0]["path"])
+        else:
+            library = self.get_library_definition(library_id)
         if library.type == "local":
             preview = await asyncio.to_thread(self._local_filter_delete_preview, library, path, rules)
             preview["status"] = "completed"
@@ -9595,6 +10069,11 @@ class LibraryManager:
         )
 
         active_rules = self._normalize_filter_rules(rules)
+        if not active_rules:
+            preview = self._empty_filter_delete_preview(target_path, active_rules, folder_name=PurePosixPath(target_path).name or target_path)
+            preview["status"] = "completed"
+            preview["progress_message"] = "没有启用的过滤规则"
+            return preview
         indexed_preview = self._filter_delete_preview_via_index(library, target_path, active_rules)
         if indexed_preview is not None:
             indexed_preview["status"] = "completed"
@@ -9683,6 +10162,29 @@ class LibraryManager:
         skipped_directory_count = 0
         skipped_directory_examples: list[str] = []
         self._update_filter_preview_job(job_id, status="running", items=preview_items)
+
+        search_preview = await self._remote_filter_delete_preview_via_search(client, library, target_path, active_rules)
+        if search_preview is not None:
+            self._update_filter_preview_job(
+                job_id,
+                status="completed",
+                items=list(search_preview.get("items") or []),
+                selected_count=int(search_preview.get("selected_count") or 0),
+                selected_size=int(search_preview.get("selected_size") or 0),
+                selected_size_exact=bool(search_preview.get("selected_size_exact", True)),
+                size_disabled=bool(search_preview.get("size_disabled", False)),
+                scanned_entries=int(search_preview.get("scanned_entries") or 0),
+                discovered_entries=int(search_preview.get("discovered_entries") or 0),
+                pending_directories=0,
+                current_path=target_path,
+                progress_message="删除过滤预审完成",
+                warning=str(search_preview.get("warning") or ""),
+                error="",
+                truncated=bool(search_preview.get("truncated", False)),
+                truncated_reason=str(search_preview.get("truncated_reason") or ""),
+            )
+            self._filter_preview_tasks.pop(job_id, None)
+            return
 
         def build_scan_warning() -> str:
             if skipped_directory_count <= 0:
@@ -10055,6 +10557,114 @@ class LibraryManager:
         finally:
             self._filter_preview_tasks.pop(job_id, None)
 
+    async def _run_filter_delete_preview_batch_job(
+        self,
+        job_id: str,
+        targets: list[dict[str, Any]],
+        active_rules: list[dict[str, str]],
+    ) -> None:
+        results: list[dict[str, Any]] = []
+        scanned_entries = 0
+        discovered_entries = 0
+        pending_directories = len(targets)
+        failed_targets: list[dict[str, str]] = []
+        try:
+            self._update_filter_preview_job(
+                job_id,
+                status="running",
+                pending_directories=pending_directories,
+                progress_message=f"正在预审 1 / {len(targets)}",
+            )
+            for index, target in enumerate(targets):
+                library = target["library"]
+                target_path = str(target["path"])
+                self._update_filter_preview_job(
+                    job_id,
+                    status="running",
+                    current_path=target_path,
+                    pending_directories=max(0, pending_directories),
+                    progress_message=f"正在预审 {index + 1} / {len(targets)}: {target.get('name') or target_path}",
+                )
+                try:
+                    indexed_preview = self._filter_delete_preview_via_index(library, target_path, active_rules)
+                    if indexed_preview is not None:
+                        result = indexed_preview
+                        result["status"] = "completed"
+                        result["progress_message"] = "索引预审完成"
+                    elif library.type == "local":
+                        result = await asyncio.to_thread(self._local_filter_delete_preview, library, target_path, active_rules)
+                    else:
+                        result = await self._remote_filter_delete_preview(library, target_path, active_rules)
+                    result["status"] = result.get("status") or "completed"
+                    results.append(result)
+                    scanned_entries += int(result.get("scanned_entries") or 0)
+                    discovered_entries += int(result.get("discovered_entries") or 0)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    error = str(exc)
+                    logger.warning("批量删除过滤预审单项目标失败 library=%s path=%s error=%s", library.id, target_path, error, exc_info=True)
+                    result = {
+                        "status": "error",
+                        "error": error,
+                        "items": [],
+                        "selected_count": 0,
+                        "selected_size": 0,
+                        "scanned_entries": 0,
+                        "discovered_entries": 0,
+                    }
+                    results.append(result)
+                    failed_targets.append({
+                        "library_id": library.id,
+                        "library_name": library.name,
+                        "path": target_path,
+                        "name": str(target.get("name") or ""),
+                        "error": error,
+                    })
+                pending_directories = max(0, pending_directories - 1)
+                self._update_filter_preview_job(
+                    job_id,
+                    scanned_entries=scanned_entries,
+                    discovered_entries=discovered_entries,
+                    pending_directories=pending_directories,
+                )
+
+            merged = self._merge_filter_delete_preview_results(targets, results, active_rules)
+            merged_status = "error" if failed_targets and len(failed_targets) == len(targets) else "completed"
+            self._update_filter_preview_job(
+                job_id,
+                **{
+                    **merged,
+                    "status": merged_status,
+                    "progress_message": "删除过滤预审完成" if merged_status == "completed" else "删除过滤预审失败",
+                    "pending_directories": 0,
+                    "failed_targets": merged.get("failed_targets") or failed_targets,
+                },
+            )
+        except asyncio.CancelledError:
+            self._update_filter_preview_job(
+                job_id,
+                status="canceled",
+                pending_directories=0,
+                selected_size_exact=False,
+                progress_message="删除过滤预审已取消",
+                warning="预审已取消，请重新扫描后再删除",
+            )
+            raise
+        except Exception as exc:
+            logger.error("批量删除过滤预审失败 job=%s: %s", job_id, exc, exc_info=True)
+            self._update_filter_preview_job(
+                job_id,
+                status="error",
+                pending_directories=0,
+                selected_size_exact=False,
+                progress_message="删除过滤预审失败",
+                warning="预审未完整完成，当前结果不可直接用于删除",
+                error=str(exc),
+            )
+        finally:
+            self._filter_preview_tasks.pop(job_id, None)
+
     async def delete(self, library_id: str, path: str, confirmed: bool = False) -> dict[str, Any]:
         library = self.get_library_definition(library_id)
         if library.type == "local":
@@ -10179,6 +10789,85 @@ class LibraryManager:
             for path in paths
         ]
         return await self._remote_batch_delete(library, normalized_paths, confirmed)
+
+    async def batch_delete_targets(self, targets: list[dict[str, Any]], confirmed: bool = False) -> dict[str, Any]:
+        grouped: dict[str, list[str]] = {}
+        ordered_targets: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in targets or []:
+            if not isinstance(item, dict):
+                continue
+            library_id = str(item.get("library_id") or "").strip()
+            path = str(item.get("path") or item.get("delete_path") or "").strip()
+            if not library_id or not path:
+                continue
+            library = self.get_library_definition(library_id)
+            if library.type == "synology_filestation":
+                _, normalized_path = self._resolve_remote_operation_path(library, path, action="批量删除")
+            else:
+                self._assert_local_path_in_library(library, path)
+                normalized_path = os.path.abspath(path)
+            key = (library.id, normalized_path.replace("\\", "/").rstrip("/") or "/")
+            if key in seen:
+                continue
+            seen.add(key)
+            grouped.setdefault(library.id, []).append(normalized_path)
+            ordered_targets.append({"library_id": library.id, "path": normalized_path})
+
+        if not ordered_targets:
+            raise ValueError("路径列表不能为空")
+
+        success_count = 0
+        failed_paths: list[dict[str, str]] = []
+        success_paths: list[dict[str, str]] = []
+        total_size = 0
+        total_file_count = 0
+        total_folder_count = 0
+        size_disabled = False
+
+        for item_library_id, paths in grouped.items():
+            result = await self.batch_delete(item_library_id, paths, confirmed=confirmed)
+            failed_set = {
+                str((failed or {}).get("path") or "").strip()
+                for failed in (result.get("failed_paths") or [])
+                if isinstance(failed, dict)
+            }
+            if confirmed:
+                group_success = int(result.get("success_count") or 0)
+                success_count += group_success
+                for path in paths:
+                    if path in failed_set:
+                        continue
+                    success_paths.append({"library_id": item_library_id, "path": path})
+            else:
+                total_size += int(result.get("total_size") or 0)
+                total_file_count += int(result.get("total_file_count") or 0)
+                total_folder_count += int(result.get("total_folder_count") or 0)
+                size_disabled = size_disabled or bool(result.get("size_disabled", False))
+            for failed in result.get("failed_paths") or []:
+                if not isinstance(failed, dict):
+                    continue
+                failed_paths.append({
+                    "library_id": item_library_id,
+                    "path": str(failed.get("path") or ""),
+                    "error": str(failed.get("error") or ""),
+                })
+
+        if confirmed:
+            return {
+                "message": "批量删除完成",
+                "success_count": success_count,
+                "failed_paths": failed_paths,
+                "success_paths": success_paths,
+            }
+        return {
+            "need_confirm": True,
+            "total_count": len(ordered_targets),
+            "total_size": None if size_disabled else total_size,
+            "total_file_count": total_file_count,
+            "total_folder_count": total_folder_count,
+            "size_disabled": size_disabled,
+        }
 
     def _collect_local_stats(self, library: LibraryDefinition) -> dict[str, Any]:
         # 统计只允许走索引。索引未就绪时不做 os.scandir / os.walk，避免慢盘或网络盘 IO。

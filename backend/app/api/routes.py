@@ -8348,13 +8348,14 @@ async def get_library_browser_filter_delete_preview(request: Request):
         data = await request.json()
         library_id = data.get("library_id")
         folder_path = data.get("path")
+        target_items = data.get("target_items") if isinstance(data.get("target_items"), list) else None
         request_id = data.get("request_id")
         rules = data.get("rules")
-        if not folder_path:
+        if not folder_path and not target_items:
             raise HTTPException(status_code=400, detail="缺少目标目录路径")
         manager = get_library_manager()
         try:
-            return await manager.filter_delete_preview(library_id, folder_path, rules=rules, request_id=request_id)
+            return await manager.filter_delete_preview(library_id, folder_path, rules=rules, request_id=request_id, target_items=target_items)
         finally:
             manager._finish_filter_preview_request(request_id)
     except HTTPException:
@@ -8374,11 +8375,12 @@ async def start_library_browser_filter_delete_preview(request: Request):
         data = await request.json()
         library_id = data.get("library_id")
         folder_path = data.get("path")
+        target_items = data.get("target_items") if isinstance(data.get("target_items"), list) else None
         rules = data.get("rules")
-        if not folder_path:
+        if not folder_path and not target_items:
             raise HTTPException(status_code=400, detail="缺少目标目录路径")
         manager = get_library_manager()
-        return await manager.start_filter_delete_preview_job(library_id, folder_path, rules=rules)
+        return await manager.start_filter_delete_preview_job(library_id, folder_path, rules=rules, target_items=target_items)
     except HTTPException:
         raise
     except PermissionError as e:
@@ -8845,6 +8847,109 @@ async def batch_delete_library_browser_items(request: Request):
         except Exception:
             logger.debug("[操作记录] 库存批量删除异常记录失败", exc_info=True)
         raise HTTPException(status_code=_synology_http_status(e), detail=f"库存批量删除失败: {str(e)}")
+
+
+@app.post("/api/library/browser/batch-delete-targets")
+async def batch_delete_library_browser_targets(request: Request):
+    targets: list[dict[str, Any]] = []
+    skip_activity_log = False
+    batch_id = ""
+    try:
+        data = await request.json()
+        raw_targets = data.get("targets") if isinstance(data.get("targets"), list) else []
+        for item in raw_targets:
+            if not isinstance(item, dict):
+                continue
+            library_id = str(item.get("library_id") or "").strip()
+            path = str(item.get("path") or item.get("delete_path") or "").strip()
+            if library_id and path:
+                targets.append({"library_id": library_id, "path": path})
+        confirmed = data.get("confirmed", False)
+        skip_activity_log = bool(data.get("skip_activity_log"))
+        batch_id = str(data.get("batch_id") or "").strip()
+        known_items = data.get("known_items") if isinstance(data.get("known_items"), list) else []
+        if not targets:
+            raise HTTPException(status_code=400, detail="路径列表不能为空")
+        manager = get_library_manager()
+        result = await manager.batch_delete_targets(targets, confirmed=confirmed)
+        if confirmed and isinstance(result, dict):
+            success_targets = result.get("success_paths") or []
+            result["index_mutation_queued"] = int(result.get("success_count") or 0) > 0
+            if batch_id:
+                result["batch_id"] = batch_id
+            try:
+                from ..core.activity_log_service import log_api_delete_action, log_batch_api_delete_result
+                if not skip_activity_log:
+                    batch_id = batch_id or str(uuid.uuid4())
+                    failed_paths = result.get("failed_paths") or []
+                    failed_count = len(failed_paths) if isinstance(failed_paths, list) else 0
+                    failed_map = {}
+                    for item in (failed_paths if isinstance(failed_paths, list) else []):
+                        if not isinstance(item, dict):
+                            continue
+                        key = f"{item.get('library_id') or ''}::{item.get('path') or ''}"
+                        failed_map[key] = str(item.get("error") or "").strip()
+                    known_lookup = {}
+                    for item in known_items:
+                        if not isinstance(item, dict):
+                            continue
+                        key = f"{item.get('library_id') or ''}::{item.get('path') or item.get('delete_path') or ''}"
+                        if key.strip(":"):
+                            known_lookup[key] = item
+                    per_item_results = []
+                    for target in targets:
+                        key = f"{target['library_id']}::{target['path']}"
+                        err = failed_map.get(key, "")
+                        known = known_lookup.get(key, {})
+                        ok = not bool(err)
+                        log_api_delete_action(
+                            action="batch_delete_item",
+                            success=ok,
+                            source_path=target["path"],
+                            item_name=str(known.get("name") or os.path.basename(target["path"]) or "").strip(),
+                            item_type=str(known.get("type") or known.get("item_type") or "unknown").strip() or "unknown",
+                            library_id=target["library_id"],
+                            error=err,
+                            batch_id=batch_id,
+                        )
+                        per_item_results.append({
+                            "library_id": target["library_id"],
+                            "path": target["path"],
+                            "success": ok,
+                            "error": err,
+                        })
+                    log_batch_api_delete_result(
+                        batch_id=batch_id,
+                        total_count=len(targets),
+                        success_count=int(result.get("success_count") or 0),
+                        failed_count=failed_count,
+                        results=per_item_results,
+                        source_path=targets[0]["path"] if targets else "",
+                    )
+                    result["success_paths"] = success_targets
+            except Exception:
+                logger.debug("[操作记录] 跨库存批量删除记录失败", exc_info=True)
+        return result
+    except HTTPException:
+        raise
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        _log_synology_err(f"跨库存批量删除失败: {e}", e)
+        try:
+            from ..core.activity_log_service import log_batch_api_delete_result
+            if targets and not skip_activity_log:
+                log_batch_api_delete_result(
+                    batch_id=batch_id,
+                    total_count=len(targets),
+                    success_count=0,
+                    failed_count=len(targets),
+                    results=[{"library_id": item["library_id"], "path": item["path"], "success": False, "error": str(e)} for item in targets],
+                    source_path=targets[0]["path"],
+                )
+        except Exception:
+            logger.debug("[操作记录] 跨库存批量删除异常记录失败", exc_info=True)
+        raise HTTPException(status_code=_synology_http_status(e), detail=f"跨库存批量删除失败: {str(e)}")
 
 
 class LibraryBrowserListFoldersRequest(BaseModel):
