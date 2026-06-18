@@ -4028,6 +4028,45 @@ class CircleCompletionService:
                 subtitle_count += 1
         return {"owned_count": owned_count, "subtitle_count": subtitle_count, "hit_count": hit_count}
 
+    def _upsert_library_owned_rows_from_items(self, db, items_by_canonical: Dict[str, Dict[str, Any]]) -> int:
+        """把当前索引批次已通过库存索引确认的本地拥有态写入快照表。"""
+        written = 0
+        now_ts = datetime.now()
+        for canonical, item in items_by_canonical.items():
+            normalized_canonical = self.normalize_rjcode(canonical)
+            if not normalized_canonical or not item.get("local_owned"):
+                continue
+            owned_paths = [
+                str(path or "").strip()
+                for path in list(item.get("owned_paths") or [])
+                if str(path or "").strip()
+            ]
+            owned_rjcodes = {
+                normalized_canonical,
+                self.normalize_rjcode(item.get("display_rjcode")),
+                *[self.normalize_rjcode(code) for code in list(item.get("linked_rjcodes") or [])],
+                *[self.normalize_rjcode(code) for code in list(item.get("kikoeru_found_rjcodes") or [])],
+            }
+            owned_rjcodes.discard("")
+            row = db.query(LibraryOwnedWork).filter(
+                LibraryOwnedWork.canonical_rjcode == normalized_canonical
+            ).first()
+            if row is None:
+                row = LibraryOwnedWork(canonical_rjcode=normalized_canonical)
+                db.add(row)
+            row.owned_rjcodes = sorted(owned_rjcodes)
+            row.primary_folder_path = owned_paths[0] if owned_paths else row.primary_folder_path
+            row.folder_count = max(len(owned_paths), int(row.folder_count or 0), 1)
+            row.folder_size = int(item.get("local_folder_size") or 0)
+            row.file_count = int(item.get("local_file_count") or 0)
+            row.owned_paths = owned_paths
+            row.has_local_subtitles = bool(item.get("local_subtitle_present"))
+            row.subtitle_file_count = int(item.get("subtitle_file_count") or 0)
+            row.subtitle_dir = str(item.get("subtitle_dir") or "").strip()
+            row.updated_at = now_ts
+            written += 1
+        return written
+
     def _schedule_circle_cover_cache(
         self,
         circle_id: str,
@@ -4948,6 +4987,9 @@ class CircleCompletionService:
                 row.kikoeru_work_id = item["kikoeru_work_id"]
                 row.dlsite_cached_at = datetime.now() if row.has_dlsite else row.dlsite_cached_at
                 row.asmr_one_cached_at = datetime.now() if row.has_asmr_one else row.asmr_one_cached_at
+            owned_rows_written = self._upsert_library_owned_rows_from_items(db, aggregated)
+            if perf:
+                perf.inc("local_owned_rows_written", owned_rows_written)
             if not only_new_works and aggregated:
                 for obsolete in existing_rows.values():
                     db.delete(obsolete)
