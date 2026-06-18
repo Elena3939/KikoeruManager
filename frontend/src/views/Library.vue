@@ -14,7 +14,29 @@
 
     >
 
-      <template v-if="currentLibrary">
+      <template v-if="isCircleViewActive">
+
+        <Badge variant="outline" class="km-badge km-badge-info">
+
+          <IconLayers :size="12" :stroke-width="2.4" />跨库存聚合
+
+        </Badge>
+
+        <Badge variant="outline" class="km-badge km-badge-success">
+
+          {{ Number(circleSummary.library_count || 0) }} 个库
+
+        </Badge>
+
+        <Badge variant="outline" class="km-badge" :class="Number(circleSummary.conflict_count || 0) > 0 ? 'km-badge-warning' : 'km-badge-success'">
+
+          {{ Number(circleSummary.conflict_count || 0) }} 个重复 RJ
+
+        </Badge>
+
+      </template>
+
+      <template v-else-if="currentLibrary">
 
         <Badge variant="outline" class="km-badge" :class="isRemoteCurrentLibrary ? 'km-badge-warning' : 'km-badge-success'">
 
@@ -61,7 +83,7 @@
 
             <b>社团聚合</b>
 
-            <span class="lib-info-meta">· 后端包装视图</span>
+            <span class="lib-info-meta">· 跨库存</span>
 
           </div>
 
@@ -122,7 +144,7 @@
 
           </div>
 
-          <div class="lib-info-sub">{{ aggregateStatsCardSub }}</div>
+          <div class="lib-info-sub" :title="aggregateStatsCardSubTitle">{{ aggregateStatsCardSub }}</div>
 
         </div>
 
@@ -1612,6 +1634,10 @@
 
       :folder-name="folderDialogName"
 
+      :folder-roots="folderDialogRoots"
+
+      @update:modelValue="value => { if (!value) folderDialogRoots = [] }"
+
       @mutated="handleFolderDialogMutated"
 
     />
@@ -1647,6 +1673,8 @@
       :current-path="filterDeleteDialogPath"
 
       :target-paths="filterDeleteDialogTargetPaths"
+
+      :target-items="filterDeleteDialogTargetItems"
 
       :rules="filterDeleteDialogRules"
 
@@ -2441,6 +2469,19 @@ function circleApplyRowsFromState () {
 async function requestCircleLibraryViewData (options = {}) {
 
   const { forceRefresh = false } = options
+  if (forceRefresh) clearCircleViewRequestCache()
+
+  const cacheKey = circleViewCacheKey(options)
+  if (!forceRefresh) {
+    const cached = getCachedCircleViewPayload(cacheKey)
+    if (cached) {
+      return {
+        data: cached,
+        requestPageSize: Number(cached.page_size || (circleDecodeVirtualPath(circleVirtualCurrentPath.value).type === 'root' ? circleGroupPageSize.value : circleWorkPageSize.value)),
+      }
+    }
+  }
+
   const decoded = circleDecodeVirtualPath(circleVirtualCurrentPath.value)
   const requestSortBy = decoded.type === 'root'
     ? sortBy.value
@@ -2463,6 +2504,8 @@ async function requestCircleLibraryViewData (options = {}) {
     sortOrder: sortOrder.value,
     forceRefresh,
   })
+
+  setCachedCircleViewPayload(cacheKey, data)
 
   return { data, requestPageSize }
 
@@ -2543,8 +2586,9 @@ function handleCircleLibraryViewError (error) {
 async function refreshCircleLibraryView (options = {}) {
 
   const requestSeq = ++circleRefreshSequence
+  const shouldShowLoading = !options.silent
 
-  circleLoading.value = true
+  if (shouldShowLoading) circleLoading.value = true
 
   circleErrorMessage.value = ''
 
@@ -2564,7 +2608,7 @@ async function refreshCircleLibraryView (options = {}) {
 
   } finally {
 
-    if (requestSeq === circleRefreshSequence || libraryViewMode.value !== 'circle') {
+    if (shouldShowLoading && (requestSeq === circleRefreshSequence || libraryViewMode.value !== 'circle')) {
       circleLoading.value = false
     }
 
@@ -3422,6 +3466,9 @@ const circleSummary = ref({
   total_size_bytes: 0,
   total_size_gb: 0,
   library_count: 0,
+  matched_library_count: 0,
+  libraries: [],
+  matched_libraries: [],
 })
 
 const libraryState = ref({})
@@ -3614,6 +3661,8 @@ const folderDialogPath = ref('')
 
 const folderDialogName = ref('')
 
+const folderDialogRoots = ref([])
+
 const FILTER_DELETE_BG_STORAGE_KEY = 'kikoerumanager.library.filterDeleteBackground'
 
 const filterDeleteDialogVisible = ref(false)
@@ -3623,6 +3672,8 @@ const filterDeleteDialogLibraryId = ref('')
 const filterDeleteDialogPath = ref('')
 
 const filterDeleteDialogTargetPaths = ref([])
+
+const filterDeleteDialogTargetItems = ref([])
 
 const filterDeleteDialogRules = ref([])
 
@@ -4390,44 +4441,106 @@ const circleViewPathType = computed(() => isCircleViewActive.value ? circleDecod
 
 const isCircleRootView = computed(() => circleViewPathType.value === 'root')
 
-const currentLibraryStatsLabel = computed(() => isCircleViewActive.value ? '当前视图' : labels.currentLibrary)
+const currentLibraryStatsLabel = computed(() => isCircleViewActive.value ? '社团聚合' : labels.currentLibrary)
 
 const circleSummaryText = computed(() => {
   const summary = circleSummary.value || {}
   const workCount = Number(summary.work_count || 0)
   const groupCount = Number(summary.group_count || 0)
-  const totalSize = Number(summary.total_size_gb || 0)
   if (!isCircleViewActive.value) return ''
-  return `${workCount} 个作品 · ${groupCount} 个社团 · ${formatGB(totalSize)}`
+  return `${workCount} 个作品 · ${groupCount} 个社团`
 })
 
-const libraryStatsCardLabel = computed(() => isCircleViewActive.value ? '社团聚合总量' : labels.currentLibraryStats)
+const libraryStatsCardLabel = computed(() => isCircleViewActive.value ? '重复 RJ' : labels.currentLibraryStats)
 
 const libraryStatsCardValue = computed(() => {
   if (!isCircleViewActive.value) return statsSizeCardText(currentStats.value)
-  return formatGB(Number(circleSummary.value?.total_size_gb || 0))
+  return `${Number(circleSummary.value?.conflict_count || 0)} 个`
 })
 
 const libraryStatsCardSub = computed(() => {
   if (!isCircleViewActive.value) return statsStatusCardText(currentStats.value)
   const summary = circleSummary.value || {}
-  return `${Number(summary.work_count || 0)} 个作品 · ${Number(summary.group_count || 0)} 个社团`
+  return Number(summary.conflict_count || 0) > 0 ? '展开社团后处理重复路径' : '没有重复 RJ'
 })
 
-const aggregateStatsCardLabel = computed(() => isCircleViewActive.value ? '真实路径' : labels.allLibraries)
+function formatCircleLibraryNameList (items = [], { max = 4 } = {}) {
+  const names = (Array.isArray(items) ? items : [])
+    .map(item => String(item?.library_name || item?.library_id || '').trim())
+    .filter(Boolean)
+  if (!names.length) return '暂无库存'
+  const visible = names.slice(0, max)
+  const suffix = names.length > visible.length ? ` 等 ${names.length} 个库` : ''
+  return `${visible.join('、')}${suffix}`
+}
+
+const circleLibraryListText = computed(() => formatCircleLibraryNameList(circleSummary.value?.libraries, { max: 999 }))
+
+const circleLibraryListTitle = computed(() => formatCircleLibraryNameList(circleSummary.value?.libraries, { max: 999 }))
+
+const aggregateStatsCardLabel = computed(() => isCircleViewActive.value ? '覆盖库存' : labels.allLibraries)
 
 const aggregateStatsCardValue = computed(() => {
   if (!isCircleViewActive.value) return aggregateSizeText.value
-  return `${Number(circleSummary.value?.folder_count || 0)} 个路径`
+  return `${Number(circleSummary.value?.library_count || 0)} 个库`
 })
 
 const aggregateStatsCardSub = computed(() => {
   if (!isCircleViewActive.value) return `${aggregateSummary.value}${aggregateDetail.value ? ' · ' + aggregateDetail.value : ''}`
-  const summary = circleSummary.value || {}
-  const conflictCount = Number(summary.conflict_count || 0)
-  const libraryCount = Number(summary.library_count || 0)
-  return `${conflictCount} 个重复 RJ · 覆盖 ${libraryCount} 个库`
+  return circleLibraryListText.value
 })
+
+const aggregateStatsCardSubTitle = computed(() => {
+  if (!isCircleViewActive.value) return aggregateStatsCardSub.value
+  return circleLibraryListTitle.value
+})
+
+const CIRCLE_VIEW_CACHE_TTL_MS = 30 * 1000
+const circleViewRequestCache = new Map()
+
+function circleViewCacheKey (options = {}) {
+  const decoded = circleDecodeVirtualPath(circleVirtualCurrentPath.value)
+  return [
+    decoded.type,
+    circleVirtualCurrentPath.value,
+    Number(decoded.locationIndex || 0),
+    String(options.page ?? (decoded.type === 'root' ? circleGroupPage.value : circleWorkPage.value)),
+    String(options.pageSize ?? (decoded.type === 'root' ? circleGroupPageSize.value : circleWorkPageSize.value)),
+    String(options.forceRefresh ? 1 : 0),
+    String(decoded.type === 'root'
+      ? circleKeyword.value
+      : decoded.type === 'group'
+        ? circleWorkKeyword.value
+        : ''),
+    String(decoded.type === 'root' ? sortBy.value : (sortBy.value === 'work_count' ? 'name' : sortBy.value)),
+    sortOrder.value,
+  ].join('|')
+}
+
+function cloneCircleViewPayload (payload) {
+  return payload ? JSON.parse(JSON.stringify(payload)) : null
+}
+
+function getCachedCircleViewPayload (cacheKey) {
+  const cached = circleViewRequestCache.get(cacheKey)
+  if (!cached) return null
+  if (Date.now() - cached.cachedAt > CIRCLE_VIEW_CACHE_TTL_MS) {
+    circleViewRequestCache.delete(cacheKey)
+    return null
+  }
+  return cloneCircleViewPayload(cached.payload)
+}
+
+function setCachedCircleViewPayload (cacheKey, payload) {
+  circleViewRequestCache.set(cacheKey, {
+    cachedAt: Date.now(),
+    payload: cloneCircleViewPayload(payload),
+  })
+}
+
+function clearCircleViewRequestCache () {
+  circleViewRequestCache.clear()
+}
 
 const isWritableCurrentLibrary = computed(() => !!currentLibrary.value?.writable)
 
@@ -4460,6 +4573,20 @@ function isRowRemoteLibrary (row) {
 function isRowWritableLibrary (row) {
 
   return getRowLibrary(row)?.writable !== false && Boolean(getRowLibrary(row))
+
+}
+
+function getCircleVirtualActionCount (row) {
+
+  if (libraryViewMode.value !== 'circle' || !row || isCircleRealActionRow(row)) return 0
+
+  if (isCircleGroupRow(row)) return Number(row.folder_count || row.circle_folder_count || row.circle_work_count || row.file_count || 0)
+
+  if (isCircleWorkRow(row)) return Number(row.circle_location_count || row.folder_count || 1)
+
+  if (row?.is_directory && row?.path) return 1
+
+  return 0
 
 }
 
@@ -4539,6 +4666,8 @@ const libraryRowContextMenuProps = computed(() => {
   const batchMode = Boolean(menu.batchMode)
   const hasRow = Boolean(row)
   const actionRow = normalizeLibraryActionRow(row)
+  const circleActionCount = getCircleVirtualActionCount(row)
+  const hasCircleVirtualTargets = libraryViewMode.value === 'circle' && !actionRow && circleActionCount > 0
   const rowLibrary = actionRow?.library_id ? libraries.value.find(item => item.id === actionRow.library_id) : null
   const localLibrary = batchMode
     ? selectedRealUploadRows.value.every(item => !isRowRemoteLibrary(item))
@@ -4561,13 +4690,13 @@ const libraryRowContextMenuProps = computed(() => {
     showView: Boolean(hasRow && canViewLibraryRow(row)),
     showOpen: Boolean(hasRow && (localLibrary || libraryViewMode.value === 'circle')),
     showOpenDirect: Boolean(hasRow && localLibrary && circleRealRow),
-    disableRename: !rowWritable || apiRenameBusy.value || !circleRealRow,
-    disableApiRename: batchMode ? (!selectedApiRenameRows.value.length || apiRenameBusy.value) : (!canApiRenameRow(row) || apiRenameBusy.value),
+    disableRename: apiRenameBusy.value || (!rowWritable && !hasCircleVirtualTargets) || (!circleRealRow && !hasCircleVirtualTargets),
+    disableApiRename: batchMode ? (!selectedApiRenameRows.value.length || apiRenameBusy.value) : (apiRenameBusy.value || (!canApiRenameRow(row) && !hasCircleVirtualTargets)),
     apiRenameRunning: batchMode ? apiRenameBusy.value : Boolean(hasRow && (apiRenamingId.value === row?.id || isBatchApiRenameRunning(row))),
     apiBatchTarget: batchMode || Boolean(hasRow && isBatchApiRenameTarget(row)),
-    disableSubtitle: batchMode ? (!selectedSubtitleCandidates.value.length || subtitleSubmitting.value) : !canFetchRJSubtitle(row),
-    disableManage: !actionRow?.is_directory || !circleRealRow,
-    disableDelete: !rowWritable || (batchMode && batchDeleting.value) || !circleRealRow,
+    disableSubtitle: batchMode ? (!selectedSubtitleCandidates.value.length || subtitleSubmitting.value) : (subtitleSubmitting.value || (!canFetchRJSubtitle(row) && !hasCircleVirtualTargets)),
+    disableManage: (!actionRow?.is_directory || !circleRealRow) && !hasCircleVirtualTargets,
+    disableDelete: batchMode ? batchDeleting.value : (batchDeleting.value || (!rowWritable && !hasCircleVirtualTargets) || (!circleRealRow && !hasCircleVirtualTargets)),
     showMove: Boolean(hasRow && localLibrary && circleRealRow),
     disableMove: !rowWritable || moveDialogState.value.submitting || directMoveSubmitting.value || (batchMode && !selectedRows.value.length),
     showUpload: Boolean(actionRow?.path && localLibrary && circleRealRow),
@@ -4589,7 +4718,7 @@ const libraryRowContextMenuProps = computed(() => {
     disableComputeSize: batchMode ? (batchComputingSize.value || !selectedRealDirectoryRows.value.length) : false,
     disableFilterDelete: batchMode
       ? (!selectedRealFilterDeleteRows.value.length || selectedRealFilterDeleteRows.value.some(item => !isRowWritableLibrary(item)))
-      : (!actionRow?.is_directory || !rowWritable || !circleRealRow),
+      : ((!actionRow?.is_directory || !rowWritable || !circleRealRow) && !hasCircleVirtualTargets),
     computingSizeId: computingSizeId.value
   }
 })
@@ -5292,10 +5421,14 @@ async function resolveCircleActionRows (sourceRows = [], options = {}) {
       is_directory: item.is_directory !== false,
       library_id: item.library_id || '',
       rjcode: item.rjcode || extractRJCode(item.path || item.folder_path || ''),
+      circle_resolved_action: true,
+      circle_row_type: 'work-single',
+      circle_real_path: item.path || item.folder_path || '',
+      circle_real_library_id: item.library_id || '',
     }))
     .filter(row => row.path && row.library_id)
 
-  return normalizeLibraryActionRows([...realRows, ...resolvedRows])
+  return [...realRows, ...resolvedRows]
 }
 
 const effectiveBaiduUploadSourceRows = computed(() => {
@@ -5303,6 +5436,50 @@ const effectiveBaiduUploadSourceRows = computed(() => {
   if (Array.isArray(override) && override.length) return normalizeLibraryActionRows(override)
   return selectedRealUploadRows.value
 })
+
+function withTemporarySelectedRows (rows, action) {
+
+  const previousRows = selectedRows.value
+
+  const previousPaths = selectedRowPaths.value
+
+  selectedRows.value = rows
+
+  selectedRowPaths.value = new Set(rows.map(row => row?.path).filter(Boolean))
+
+  const restore = () => {
+    selectedRows.value = previousRows
+    selectedRowPaths.value = previousPaths
+  }
+
+  try {
+    const result = action()
+    if (result && typeof result.then === 'function') {
+      return result.finally(restore)
+    }
+    restore()
+    return result
+  } catch (error) {
+    restore()
+    throw error
+  }
+
+}
+
+async function resolveCircleContextActionRows (row, actionLabel = '操作') {
+
+  const rows = await resolveCircleActionRows(row ? [row] : [], {
+    currentPathFallback: row?.path || circleVirtualCurrentPath.value,
+  })
+
+  if (!rows.length) {
+    ElMessage.warning(`当前社团没有可${actionLabel}的真实路径`)
+    return []
+  }
+
+  return rows
+
+}
 
 const baiduUploadSourceItems = computed(() => effectiveBaiduUploadSourceRows.value.map(row => ({
   name: row?.name || getFileName(row?.path || ''),
@@ -7127,6 +7304,8 @@ onMounted(async () => {
         filterDeleteDialogPath.value = cfg.path || ''
 
         filterDeleteDialogTargetPaths.value = cfg.targetPaths || []
+
+        filterDeleteDialogTargetItems.value = cfg.targetItems || []
 
         filterDeleteDialogRules.value = cfg.rules || []
 
@@ -18362,6 +18541,8 @@ function isCircleRealActionRow (row) {
 
   if (libraryViewMode.value !== 'circle') return true
 
+  if (row?.circle_resolved_action && getCircleRealPath(row) && getCircleRealLibraryId(row)) return true
+
   return Boolean(
     (isCircleConflictLocationRow(row) || row?.circle_row_type === 'work-single' || isCircleWorkChildRow(row)) &&
     getCircleRealPath(row) &&
@@ -19974,6 +20155,49 @@ function buildBatchDeletePreviewMessage (preview, count) {
 
 }
 
+function groupRowsByLibraryId (rows = []) {
+
+  const groups = new Map()
+
+  for (const row of rows) {
+    const libraryId = String(row?.library_id || selectedLibraryId.value || '').trim()
+    if (!libraryId || !row?.path) continue
+    if (!groups.has(libraryId)) groups.set(libraryId, [])
+    groups.get(libraryId).push(row)
+  }
+
+  return groups
+
+}
+
+function mergeBatchDeletePreviews (previews = [], totalCount = 0) {
+
+  const validPreviews = previews.filter(item => item && typeof item === 'object')
+  const sizeDisabled = validPreviews.some(item => Boolean(item.size_disabled))
+  const totalSize = sizeDisabled
+    ? null
+    : validPreviews.reduce((sum, item) => sum + Number(item.total_size || 0), 0)
+  const totalFolderCount = validPreviews.reduce((sum, item) => sum + Number(item.total_folder_count || 0), 0)
+
+  return {
+    need_confirm: true,
+    total_count: totalCount,
+    total_size: totalSize,
+    total_folder_count: totalFolderCount,
+    size_disabled: sizeDisabled,
+  }
+
+}
+
+function summarizeGroupedResults (results = []) {
+
+  const successCount = results.reduce((sum, item) => sum + Number(item.success_count || 0), 0)
+  const failedPaths = results.flatMap(item => Array.isArray(item.failed_paths) ? item.failed_paths : [])
+
+  return { successCount, failedPaths }
+
+}
+
 
 const VIEWABLE_LIBRARY_KINDS = new Set(['image', 'video', 'pdf', 'text'])
 
@@ -20455,6 +20679,50 @@ async function handleLibraryRowContextMenuAction (action) {
   closeLibraryRowContextMenu()
 
   if (!row) return
+
+  const circleVirtualAction = libraryViewMode.value === 'circle' && !isCircleRealActionRow(row)
+
+  if (!batchMode && circleVirtualAction) {
+    if (action === 'api_rename') {
+      const rows = (await resolveCircleContextActionRows(row, 'API 重命名')).filter(item => canApiRenameRow(item))
+      return rows.length
+        ? withTemporarySelectedRows(rows, handleBatchApiRename)
+        : ElMessage.warning('当前社团没有可 API 重命名的真实路径')
+    }
+
+    if (action === 'subtitle') {
+      const rows = (await resolveCircleContextActionRows(row, '识别字幕')).filter(item => canFetchRJSubtitle(item))
+      return rows.length ? openRJSubtitleDialog(rows) : ElMessage.warning('当前社团没有可识别字幕的真实路径')
+    }
+
+    if (action === 'manage') {
+      const rows = await resolveCircleContextActionRows(row, '文件管理')
+      return openFolderContentsDialog(rows)
+    }
+
+    if (action === 'filter_delete') {
+      const rows = (await resolveCircleContextActionRows(row, '删除过滤')).filter(item => item?.is_directory)
+      return rows.length
+        ? withTemporarySelectedRows(rows, openSelectedFilterDeleteDialog)
+        : ElMessage.warning('当前社团没有可删除过滤的真实路径')
+    }
+
+    if (action === 'delete') {
+      const rows = await resolveCircleContextActionRows(row, '删除')
+      return rows.length
+        ? withTemporarySelectedRows(rows, handleBatchDelete)
+        : ElMessage.warning('当前社团没有可删除的真实路径')
+    }
+
+    if (action === 'rename') {
+      const rows = await resolveCircleContextActionRows(row, '重命名')
+      if (rows.length !== 1) {
+        ElMessage.warning(`当前社团包含 ${rows.length} 个真实路径，请进入具体作品或具体路径后重命名`)
+        return
+      }
+      return renameItem(rows[0])
+    }
+  }
 
   if (batchMode) {
     if (action === 'move') return openMoveDialog(selectedRows.value)
@@ -21120,6 +21388,7 @@ function refreshAfterMoveInBackground (sourceLibraryId, targetLibraryId) {
 function refreshCurrentLibraryAndStatsInBackground (messagePrefix = '操作已完成', options = {}) {
 
   const forceRefresh = options.forceRefresh ?? true
+  if (libraryViewMode.value === 'circle') clearCircleViewRequestCache()
 
   Promise.all([
     refreshLibrary({ silent: true, forceRefresh }),
@@ -21133,6 +21402,8 @@ function refreshCurrentLibraryAndStatsInBackground (messagePrefix = '操作已�
 
 
 function refreshAfterMutationInBackground ({ deletedBytes = 0, deletedFolderCount = 0, libraryId = selectedLibraryId.value, messagePrefix = '操作已完成' } = {}) {
+
+  if (libraryViewMode.value === 'circle') clearCircleViewRequestCache()
 
   Promise.all([
     refreshLibrary({ silent: true, forceRefresh: true }),
@@ -21505,28 +21776,27 @@ async function handleBatchDelete () {
 
   if (!targets.length) return
 
-  const libraryIds = [...new Set(targets.map(row => row.library_id || selectedLibraryId.value).filter(Boolean))]
+  const groups = groupRowsByLibraryId(targets)
 
-  if (libraryIds.length > 1) {
-    ElMessage.warning('跨库存路径请分开删除')
-    return
-  }
+  if (!groups.size) return
 
   batchDeleting.value = true
 
   try {
 
-    const libraryId = libraryIds[0] || selectedLibraryId.value
+    const previews = []
 
-    const paths = targets.map(row => row.path)
+    for (const [libraryId, rows] of groups.entries()) {
+      previews.push(await libraryApi.browserBatchDelete(libraryId, rows.map(row => row.path), false))
+    }
 
-    const preview = await libraryApi.browserBatchDelete(libraryId, paths, false)
+    const preview = mergeBatchDeletePreviews(previews, targets.length)
 
     await showSystemConfirm({
 
       title: '批量删除确认',
 
-      message: buildBatchDeletePreviewMessage(preview, paths.length),
+      message: buildBatchDeletePreviewMessage(preview, targets.length),
 
       tone: 'danger',
 
@@ -21536,18 +21806,28 @@ async function handleBatchDelete () {
 
     })
 
-    const result = await libraryApi.browserBatchDelete(libraryId, paths, true)
+    const results = []
 
-    ElMessage.success(`批量删除完成：成功 ${result.success_count || 0} 项`)
+    for (const [libraryId, rows] of groups.entries()) {
+      results.push(await libraryApi.browserBatchDelete(libraryId, rows.map(row => row.path), true))
+    }
 
-    pruneRowsFromCurrentViewByPaths(paths)
+    const summary = summarizeGroupedResults(results)
+
+    if (summary.failedPaths.length) {
+      ElMessage.warning(`批量删除完成：成功 ${summary.successCount} 项，失败 ${summary.failedPaths.length} 项`)
+    } else {
+      ElMessage.success(`批量删除完成：成功 ${summary.successCount} 项`)
+    }
+
+    pruneRowsFromCurrentViewByPaths(targets.map(row => row.path))
 
     clearSelection()
 
     refreshAfterMutationInBackground({
       deletedBytes: preview.total_size || 0,
       deletedFolderCount: preview.total_folder_count || 0,
-      libraryId,
+      libraryId: groups.keys().next().value || selectedLibraryId.value,
       messagePrefix: '批量删除已完成'
     })
 
@@ -21784,12 +22064,7 @@ async function handleBatchApiRename () {
 
   const targetRows = normalizeLibraryActionRows(selectedApiRenameRows.value)
 
-  const targetLibraryId = String(targetRows[0]?.library_id || selectedLibraryId.value || '').trim()
-
-  if (targetRows.some(row => String(row.library_id || targetLibraryId) !== targetLibraryId)) {
-    ElMessage.warning('跨库存路径请分开 API 重命名')
-    return
-  }
+  const targetGroups = groupRowsByLibraryId(targetRows)
 
   const skippedCount = selectedRows.value.length - targetRows.length
 
@@ -21829,15 +22104,19 @@ async function handleBatchApiRename () {
 
   try {
 
-    const response = await libraryApi.batchApiRename(targetRows.map(row => row.path), targetLibraryId)
-    const results = (response?.results || []).map(item => ({
-      path: item.path,
-      success: Boolean(item.success),
-      nextPath: item.new_path || item.nextPath || '',
-      nextName: item.new_name || item.nextName || '',
-      message: item.message || 'API 重命名成功',
-      error: item.error || ''
-    }))
+    const results = []
+
+    for (const [libraryId, rows] of targetGroups.entries()) {
+      const response = await libraryApi.batchApiRename(rows.map(row => row.path), libraryId)
+      results.push(...(response?.results || []).map(item => ({
+        path: item.path,
+        success: Boolean(item.success),
+        nextPath: item.new_path || item.nextPath || '',
+        nextName: item.new_name || item.nextName || '',
+        message: item.message || 'API 重命名成功',
+        error: item.error || ''
+      })))
+    }
 
     const successCount = results.filter(item => item.success).length
 
@@ -21897,15 +22176,42 @@ function isLibraryRowSelectable (row) {
 
 async function openFolderContentsDialog (row) {
 
-  const target = normalizeLibraryActionRow(row)
+  const sourceRows = Array.isArray(row) ? row : [row]
 
-  if (!target?.is_directory) return
+  const targets = normalizeLibraryActionRows(sourceRows).filter(item => item?.is_directory && item?.path)
 
-  folderDialogLibraryId.value = target.library_id || selectedLibraryId.value
+  if (!targets.length) return
 
-  folderDialogPath.value = target.path
+  if (targets.length === 1) {
+    const target = targets[0]
 
-  folderDialogName.value = target.name
+    folderDialogRoots.value = []
+
+    folderDialogLibraryId.value = target.library_id || selectedLibraryId.value
+
+    folderDialogPath.value = target.path
+
+    folderDialogName.value = target.name
+
+    folderDialogVisible.value = true
+
+    return
+  }
+
+  folderDialogLibraryId.value = ''
+
+  folderDialogPath.value = ''
+
+  folderDialogName.value = `聚合文件管理（${targets.length} 个路径）`
+
+  folderDialogRoots.value = targets.map(target => ({
+    library_id: target.library_id || selectedLibraryId.value,
+    library_name: getLibraryById(target.library_id || selectedLibraryId.value)?.name || target.library_name || target.library_id || '',
+    path: target.path,
+    name: target.name || getFileName(target.path),
+    size: Number(target.size || 0),
+    modified_time: target.modified_time || null,
+  }))
 
   folderDialogVisible.value = true
 
@@ -22050,6 +22356,66 @@ function flattenTree (nodes, depth, openIds) {
 
 }
 
+function normalizeFilterDeleteDialogTargets (rows = []) {
+
+  const seen = new Set()
+
+  const items = []
+
+  for (const row of rows || []) {
+    const libraryId = String(row?.library_id || selectedLibraryId.value || '').trim()
+    const path = resolveDirectoryActionPath(row)
+    if (!libraryId || !path) continue
+    const key = `${libraryId}::${path}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    items.push({
+      library_id: libraryId,
+      library_name: getLibraryById(libraryId)?.name || row?.library_name || libraryId,
+      path,
+      name: row?.name || getFileName(path),
+      is_remote: getLibraryById(libraryId)?.type === 'synology_filestation',
+      writable: getLibraryById(libraryId)?.writable !== false,
+    })
+  }
+
+  return items
+
+}
+
+async function openFilterDeleteDialogForTargets (rows = [], options = {}) {
+
+  const targets = normalizeFilterDeleteDialogTargets(rows)
+
+  if (!targets.length) {
+    ElMessage.warning('当前范围没有可执行删除过滤的真实目录')
+    return
+  }
+
+  const readonlyTarget = targets.find(item => !item.writable)
+  if (readonlyTarget) {
+    ElMessage.warning(`${readonlyTarget.library_name || readonlyTarget.library_id} 是只读库存，无法执行删除过滤`)
+    return
+  }
+
+  filterDeleteDialogLibraryId.value = targets[0]?.library_id || selectedLibraryId.value
+
+  filterDeleteDialogPath.value = targets[0]?.path || currentPath.value
+
+  filterDeleteDialogTargetPaths.value = targets.map(item => item.path)
+
+  filterDeleteDialogTargetItems.value = targets
+
+  filterDeleteDialogRules.value = options.rules || await loadConfiguredFilterRules()
+
+  filterDeleteDialogScopeLabel.value = options.scopeLabel || `已选目录（${targets.length} 项）`
+
+  filterDeleteDialogIsRemote.value = targets.some(item => item.is_remote)
+
+  filterDeleteDialogVisible.value = true
+
+}
+
 
 
 async function openFilterDeleteDialog () {
@@ -22072,44 +22438,19 @@ async function openFilterDeleteDialog () {
       sourceRows,
       { currentPathFallback: circleVirtualCurrentPath.value }
     )
-    const libraryIds = [...new Set(rows.map(row => row.library_id).filter(Boolean))]
-    if (!rows.length) {
-      ElMessage.warning('当前范围没有可执行删除过滤的真实目录')
-      return
-    }
-    if (libraryIds.length > 1) {
-      ElMessage.warning('当前社团范围包含多个库存，请进入具体作品或具体路径后再执行删除过滤')
-      return
-    }
-    const targetLibraryId = libraryIds[0]
-    const targetLibrary = getLibraryById(targetLibraryId)
-    if (!targetLibrary || targetLibrary.writable === false) {
-      ElMessage.warning('目标库存只读，无法执行删除过滤')
-      return
-    }
-    filterDeleteDialogLibraryId.value = targetLibraryId
-    filterDeleteDialogPath.value = rows[0]?.path || ''
-    filterDeleteDialogTargetPaths.value = [...new Set(rows.map(row => row.path).filter(Boolean))]
-    filterDeleteDialogRules.value = await loadConfiguredFilterRules()
-    filterDeleteDialogScopeLabel.value = `${toolbarActionScope.value === 'page' ? '当前页' : '当前社团目录'}（${filterDeleteDialogTargetPaths.value.length} 项）`
-    filterDeleteDialogIsRemote.value = targetLibrary.type === 'synology_filestation'
-    filterDeleteDialogVisible.value = true
-    return
+    return openFilterDeleteDialogForTargets(rows, {
+      scopeLabel: `${toolbarActionScope.value === 'page' ? '当前页' : '当前社团目录'}（${rows.length} 项）`,
+    })
   }
 
-  filterDeleteDialogLibraryId.value = selectedLibraryId.value
-
-  filterDeleteDialogPath.value = currentPath.value
-
-  filterDeleteDialogTargetPaths.value = [...toolbarFilterDeletePaths.value]
-
-  filterDeleteDialogRules.value = await loadConfiguredFilterRules()
-
-  filterDeleteDialogScopeLabel.value = toolbarActionScopeLabel.value
-
-  filterDeleteDialogIsRemote.value = isRemoteCurrentLibrary.value
-
-  filterDeleteDialogVisible.value = true
+  return openFilterDeleteDialogForTargets(
+    toolbarFilterDeletePaths.value.map(path => ({
+      library_id: selectedLibraryId.value,
+      path,
+      name: getFileName(path),
+    })),
+    { scopeLabel: toolbarActionScopeLabel.value }
+  )
 
 }
 
@@ -22129,22 +22470,6 @@ async function openSelectedFilterDeleteDialog () {
 
   if (!targetRows.length) return
 
-  const targetLibraryId = String(targetRows[0]?.library_id || selectedLibraryId.value || '').trim()
-
-  if (!targetLibraryId) return
-
-  if (targetRows.some(row => String(row.library_id || targetLibraryId) !== targetLibraryId)) {
-
-    ElMessage.warning('跨库存路径请分开进行删除过滤')
-
-    return
-
-  }
-
-  const targetLibrary = getLibraryById(targetLibraryId)
-
-  if (!targetLibrary || targetLibrary.writable === false) return
-
   const skippedCount = selectedRows.value.length - targetRows.length
 
   if (skippedCount > 0) {
@@ -22153,19 +22478,9 @@ async function openSelectedFilterDeleteDialog () {
 
   }
 
-  filterDeleteDialogLibraryId.value = targetLibraryId
-
-  filterDeleteDialogPath.value = targetRows[0]?.path || currentPath.value
-
-  filterDeleteDialogTargetPaths.value = [...new Set(targetRows.map(resolveDirectoryActionPath).filter(Boolean))]
-
-  filterDeleteDialogRules.value = await loadConfiguredFilterRules()
-
-  filterDeleteDialogScopeLabel.value = `已选目录（${filterDeleteDialogTargetPaths.value.length} 项）`
-
-  filterDeleteDialogIsRemote.value = targetLibrary.type === 'synology_filestation'
-
-  filterDeleteDialogVisible.value = true
+  return openFilterDeleteDialogForTargets(targetRows, {
+    scopeLabel: `已选目录（${targetRows.length} 项）`,
+  })
 
 }
 
@@ -22191,19 +22506,9 @@ async function openRowFilterDeleteDialog (row) {
 
   if (!targetPath) return
 
-  filterDeleteDialogLibraryId.value = targetLibraryId
-
-  filterDeleteDialogPath.value = target.path || currentPath.value
-
-  filterDeleteDialogTargetPaths.value = [targetPath]
-
-  filterDeleteDialogRules.value = await loadConfiguredFilterRules()
-
-  filterDeleteDialogScopeLabel.value = `${target.name || getFileName(targetPath) || '当前目录'}`
-
-  filterDeleteDialogIsRemote.value = targetLibrary.type === 'synology_filestation'
-
-  filterDeleteDialogVisible.value = true
+  return openFilterDeleteDialogForTargets([{ ...target, path: targetPath, library_id: targetLibraryId }], {
+    scopeLabel: `${target.name || getFileName(targetPath) || '当前目录'}`,
+  })
 
 }
 
@@ -22287,6 +22592,15 @@ async function openSubtitleInspectorFilterDeleteDialog () {
 
   filterDeleteDialogTargetPaths.value = [targetPath]
 
+  filterDeleteDialogTargetItems.value = [{
+    library_id: libraryId,
+    library_name: library?.name || libraryId,
+    path: targetPath,
+    name: getFileName(targetPath),
+    is_remote: library?.type === 'synology_filestation',
+    writable: library?.writable !== false,
+  }]
+
   filterDeleteDialogRules.value = subtitleOptions.value.useFilterRules ? sanitizeSubtitleFilterRules(subtitleOptions.value.subtitleFilterRules || []) : []
 
   filterDeleteDialogScopeLabel.value = `${getTaskDisplayRJCode(activeSubtitleInspectTask.value) || getFileName(targetPath) || '当前任务'} RJ 目录`
@@ -22299,18 +22613,21 @@ async function openSubtitleInspectorFilterDeleteDialog () {
 
 
 
-async function handleFilterDeleteDeleted ({ deletedBytes = 0, deletedFolderCount = 0 } = {}) {
+async function handleFilterDeleteDeleted ({ deletedBytes = 0, deletedFolderCount = 0, libraryIds = [] } = {}) {
 
   refreshLibrary({ silent: true }).catch((error) => {
     ElMessage.warning('删除过滤已完成，但刷新列表失败：' + (error?.response?.data?.detail || error?.message || '未知错误'))
   })
 
-  refreshStatsAfterMutation({
-    deletedBytes,
-    deletedFolderCount,
-    libraryId: filterDeleteDialogLibraryId.value || selectedLibraryId.value
-  }).catch((error) => {
-    ElMessage.warning('删除过滤已完成，但刷新快照失败：' + (error?.response?.data?.detail || error?.message || '未知错误'))
+  const affectedLibraryIds = [...new Set((libraryIds.length ? libraryIds : [filterDeleteDialogLibraryId.value || selectedLibraryId.value]).filter(Boolean))]
+  affectedLibraryIds.forEach(libraryId => {
+    refreshStatsAfterMutation({
+      deletedBytes,
+      deletedFolderCount,
+      libraryId
+    }).catch((error) => {
+      ElMessage.warning('删除过滤已完成，但刷新快照失败：' + (error?.response?.data?.detail || error?.message || '未知错误'))
+    })
   })
 
   if (folderDialogVisible.value && folderDialogRef.value?.reload) {
@@ -22417,6 +22734,8 @@ function handleFilterDeleteDialogStateChange (state = {}) {
           path: filterDeleteDialogPath.value || '',
 
           targetPaths: filterDeleteDialogTargetPaths.value || [],
+
+          targetItems: filterDeleteDialogTargetItems.value || [],
 
           rules: filterDeleteDialogRules.value || [],
 
@@ -23757,9 +24076,17 @@ function statsStatusTextDisplay (stats) {
 
   z-index: 1;
 
+  padding: 8px 6px 0;
+
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.08));
 
   border-bottom: 0;
+
+}
+
+.lib-file-table {
+
+  --lib-file-table-columns: minmax(280px, 1fr) 140px 130px 190px;
 
 }
 
@@ -23769,7 +24096,7 @@ function statsStatusTextDisplay (stats) {
 
   display: grid;
 
-  grid-template-columns: minmax(280px, 1fr) 140px 130px 190px;
+  grid-template-columns: var(--lib-file-table-columns);
 
   align-items: center;
 
@@ -24022,11 +24349,9 @@ function statsStatusTextDisplay (stats) {
 
 @media (max-width: 980px) {
 
-  .lib-file-table-header-row,
+  .lib-file-table {
 
-  .lib-file-table-row {
-
-    grid-template-columns: minmax(220px, 1fr) 120px 110px 170px;
+    --lib-file-table-columns: minmax(220px, 1fr) 120px 110px 170px;
 
   }
 
@@ -24800,7 +25125,7 @@ function statsStatusTextDisplay (stats) {
 
   flex: 1 1 0;
 
-  overflow: hidden;
+  overflow: visible;
 
 }
 
@@ -24839,6 +25164,14 @@ function statsStatusTextDisplay (stats) {
   flex: 0 0 auto;
 
   min-width: 104px;
+
+  padding: 4px;
+
+  margin: -4px;
+
+  position: relative;
+
+  z-index: 2;
 
 }
 
