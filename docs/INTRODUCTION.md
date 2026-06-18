@@ -117,6 +117,6 @@ KikoeruManager 是一个面向 DLsite 同人音声库存的桌面化管理工作
 
 - Windows 桌面版：下载 Release 后运行 `KikoeruManager.exe`。
 - 源码开发：后端 FastAPI，前端 Vite。
-- Docker：使用 `ghcr.io/elena3939/kikoerumanager:1.6.25` 或 `elena39/kikoerumanager:1.6.25`，并持久化挂载 `/app/postgres`。
+- Docker：使用 `ghcr.io/elena3939/kikoerumanager:<版本号>` 或 `elena39/kikoerumanager:<版本号>`，并持久化挂载 `/app/postgres`；正式 tag 构建会把版本号写入前端静态文件名，避免反向代理缓存旧 chunk 后继续命中同一个 `/assets/*.js` URL。
 
 详细部署命令见项目根目录的 `README.md`、`START_GUIDE.md` 和 `DOCKER_DEPLOY.md`。

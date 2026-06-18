@@ -1,8 +1,12 @@
+ARG KIKOERUMANAGER_VERSION=dev
+
 # 多阶段构建 Dockerfile
 # 阶段1：构建前端
 FROM node:20-alpine AS frontend-builder
 
 WORKDIR /app/frontend
+ARG KIKOERUMANAGER_VERSION=dev
+ENV KIKOERUMANAGER_VERSION=${KIKOERUMANAGER_VERSION}
 
 # 复制前端依赖清单；TanStack Table 等前端交互依赖由 lock 文件锁定并通过 npm ci 安装
 COPY frontend/package*.json ./

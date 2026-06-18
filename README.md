@@ -112,11 +112,11 @@ npm run dev
 
 ```bash
 # 拉取镜像（Docker Hub）
-docker pull elena39/kikoerumanager:1.6.25
+docker pull elena39/kikoerumanager:<版本号>
 ```
 ```bash
 # 拉取镜像（GHCR）
-docker pull ghcr.io/elena3939/kikoerumanager:1.6.25
+docker pull ghcr.io/elena3939/kikoerumanager:<版本号>
 ```
 
 或用 `docker-compose.yml`：
@@ -124,7 +124,7 @@ docker pull ghcr.io/elena3939/kikoerumanager:1.6.25
 ```yaml
 services:
   kikoerumanager:
-    image: ghcr.io/elena3939/kikoerumanager:1.6.25
+    image: ghcr.io/elena3939/kikoerumanager:<版本号>
     container_name: kikoerumanager
     ports:
       - "5555:5555"
@@ -142,6 +142,8 @@ services:
       - /your/path/subtitles:/Subtitles   # ASMR 同步字幕目录
     restart: unless-stopped
 ```
+
+正式 tag 构建会把版本号写入前端静态文件名，避免反向代理缓存旧 chunk 后继续命中同一个 `/assets/*.js` URL。
 
 启动后访问 <http://localhost:5555>。
 
