@@ -270,16 +270,34 @@ def test_local_inventory_reads_prefer_usable_index_snapshot(monkeypatch, tmp_pat
     assert subtitles_item["size_status"] == "stale"
     assert subtitles_item["size_via_index"] is True
 
+    def fail_disk_listing(*_args, **_kwargs):
+        raise AssertionError("本地普通浏览应优先走索引，不能先扫磁盘")
+
+    monkeypatch.setattr(manager, "_list_local_files", fail_disk_listing)
+    indexed_list_result = asyncio.run(
+        manager.list_files(
+            library.id,
+            page=1,
+            page_size=20,
+            current_path=str(rj_dir),
+            sort_by="name",
+            sort_order="asc",
+        )
+    )
+    assert indexed_list_result["browse_via_index"] is True
+    assert [item["name"] for item in indexed_list_result["files"]] == ["old-track.mp3", "subtitles"]
+
     result = asyncio.run(manager.folder_contents(library.id, str(circle_dir), recursive=False))
 
-    assert result.get("browse_via_index") is not True
-    assert result["total_files"] == 1
+    assert result.get("browse_via_index") is True
+    assert result["total_files"] == 3
     rj_item = next(item for item in result["items"] if item["name"] == "RJ01000001")
     assert rj_item["size"] == 9
     assert rj_item["size_status"] == "stale"
     assert rj_item["index_refresh_pending"] is True
     assert rj_item["file_count"] == 2
-    assert rj_item["folder_count"] == 2
+    assert rj_item["folder_count"] is None
+    assert rj_item["folder_count_status"] == "lazy"
 
     recursive_result = asyncio.run(manager.folder_contents(library.id, str(circle_dir), recursive=True))
     assert recursive_result.get("browse_via_index") is True
@@ -294,7 +312,8 @@ def test_local_inventory_reads_prefer_usable_index_snapshot(monkeypatch, tmp_pat
     assert indexed_summary["size"] == 9
     assert indexed_summary["size_status"] == "stale"
     assert indexed_summary["file_count"] == 2
-    assert indexed_summary["folder_count"] == 2
+    assert indexed_summary["folder_count"] is None
+    assert indexed_summary["count_status"] == "lazy"
 
     shallow_realtime_result = asyncio.run(
         manager.folder_contents(library.id, str(circle_dir), recursive=False, prefer_index=False)
@@ -305,7 +324,8 @@ def test_local_inventory_reads_prefer_usable_index_snapshot(monkeypatch, tmp_pat
     shallow_rj_item = next(item for item in shallow_realtime_result["items"] if item["name"] == "RJ01000001")
     assert shallow_rj_item["size_status"] == "stale"
     assert shallow_rj_item["file_count"] == 2
-    assert shallow_rj_item["folder_count"] == 2
+    assert shallow_rj_item["folder_count"] is None
+    assert shallow_rj_item["folder_count_status"] == "lazy"
 
     folders_payload = asyncio.run(manager.list_local_folders_only(library.id, str(circle_dir), include_files=True))
     assert folders_payload.get("browse_via_index") is not True
@@ -416,7 +436,47 @@ def test_local_listing_counts_descendants_only_for_current_page(monkeypatch, tmp
 
     assert result["total"] == 200
     assert len(result["files"]) == 10
-    assert service.counted_paths == [f"maker-{index:03d}" for index in range(10)]
+    assert service.counted_paths == []
+    assert all(item["folder_count"] is None for item in result["files"])
+    assert all(item["folder_count_status"] == "lazy" for item in result["files"])
+
+
+def test_list_files_coalesces_identical_inflight_requests(monkeypatch, tmp_path):
+    local_root = tmp_path / "library"
+    local_root.mkdir()
+    library = library_manager_module.LibraryDefinition(
+        id="local-coalesce",
+        name="本地合并",
+        type="local",
+        path=str(local_root),
+        enabled=True,
+    )
+
+    manager = object.__new__(library_manager_module.LibraryManager)
+    manager._list_files_inflight_lock = None
+    manager._list_files_inflight = {}
+    call_count = 0
+
+    def fake_list_local_files(*_args, **_kwargs):
+        nonlocal call_count
+        call_count += 1
+        threading.Event().wait(0.05)
+        return {"files": [], "page": 1, "page_size": 100, "total": 0}
+
+    monkeypatch.setattr(manager, "get_library_definition", lambda _library_id: library)
+    monkeypatch.setattr(manager, "_list_local_files", fake_list_local_files)
+
+    async def run_requests():
+        return await asyncio.gather(
+            manager.list_files(library.id, page=1, page_size=100, sort_by="name", sort_order="asc"),
+            manager.list_files(library.id, page=1, page_size=100, sort_by="name", sort_order="asc"),
+        )
+
+    first, second = asyncio.run(run_requests())
+
+    assert call_count == 1
+    assert first == second
+    assert first is not second
 
 
 def test_search_files_via_index_supports_name_search_and_current_scope(monkeypatch, tmp_path):
