@@ -190,6 +190,27 @@ def test_circle_aggregation_unknown_circle_fallback(circle_service, db_session):
     assert group["circle_name"] == "未识别社团"
 
 
+def test_circle_aggregation_infers_local_circle_from_folder_name_without_metadata(circle_service, db_session):
+    db_session.add_all([
+        _entry(
+            library_id="local-a",
+            relative_path="AMSR/あぶそりゅ～と/[あぶそりゅ～と][RJ01638004](CV 天知遥)",
+            rjcode="RJ01638004",
+        ),
+        _entry(
+            library_id="local-b",
+            relative_path="ANIME/幸福少女/[幸福少女][RJ01586582](CV 御崎ひより)",
+            rjcode="RJ01586582",
+        ),
+    ])
+    db_session.commit()
+
+    groups = circle_service.list_circle_groups(sort_by="name")
+
+    assert groups["total"] == 2
+    assert [item["circle_name"] for item in groups["items"]] == ["あぶそりゅ～と", "幸福少女"]
+
+
 def test_circle_summary_reports_all_active_libraries(circle_service, db_session):
     db_session.add(_entry(library_id="local-a", relative_path="Other/RJ01000030", rjcode="RJ01000030"))
     db_session.commit()
