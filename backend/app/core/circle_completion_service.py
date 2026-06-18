@@ -3578,20 +3578,24 @@ class CircleCompletionService:
 
         db = SessionLocal()
         try:
-            candidate_rjcodes = {
-                self.normalize_rjcode(code)
-                for row in db.query(
-                    CircleWork.canonical_rjcode,
-                    CircleWork.display_rjcode,
-                    CircleWork.linked_rjcodes,
-                ).all()
-                for code in [
-                    row.canonical_rjcode,
-                    row.display_rjcode,
-                    *(row.linked_rjcodes or []),
-                ]
-            }
-            candidate_rjcodes.discard("")
+            candidate_rjcodes: set[str] = set()
+            related_canonicals_by_rj: Dict[str, Set[str]] = defaultdict(set)
+            for row in db.query(
+                CircleWork.canonical_rjcode,
+                CircleWork.display_rjcode,
+                CircleWork.linked_rjcodes,
+            ).all():
+                row_canonical = self.normalize_rjcode(row.canonical_rjcode)
+                row_codes = {
+                    row_canonical,
+                    self.normalize_rjcode(row.display_rjcode),
+                    *[self.normalize_rjcode(code) for code in list(row.linked_rjcodes or [])],
+                }
+                row_codes.discard("")
+                candidate_rjcodes.update(row_codes)
+                if row_canonical:
+                    for code in row_codes:
+                        related_canonicals_by_rj[code].add(row_canonical)
         finally:
             db.close()
 
@@ -3607,39 +3611,49 @@ class CircleCompletionService:
             async with sem:
                 canonical_info = await self.resolve_canonical_rj(normalized_rj)
             canonical = self.normalize_rjcode(canonical_info.get("canonical_rjcode") or normalized_rj) or normalized_rj
+            target_canonicals = {canonical}
+            target_canonicals.update(related_canonicals_by_rj.get(normalized_rj, set()))
+            target_canonicals.update(related_canonicals_by_rj.get(canonical, set()))
+            for linked_rjcode in list(canonical_info.get("linked_rjcodes") or []):
+                linked = self.normalize_rjcode(linked_rjcode)
+                if linked:
+                    target_canonicals.update(related_canonicals_by_rj.get(linked, set()))
             async with lock:
-                bucket = merged.setdefault(canonical, {
-                    "owned_rjcodes": set(),
-                    "owned_paths": [],
-                    "primary_folder_path": "",
-                    "primary_library_id": "",
-                    "folder_count": 0,
-                    "folder_size": 0,
-                    "file_count": 0,
-                    "has_local_subtitles": False,
-                    "subtitle_file_count": 0,
-                    "subtitle_dir": "",
-                })
-                bucket["owned_rjcodes"].add(normalized_rj)
-                if canonical != normalized_rj:
-                    bucket["owned_rjcodes"].add(canonical)
-                path = str(hit.get("path") or "").strip()
-                if path and path not in bucket["owned_paths"]:
-                    bucket["owned_paths"].append(path)
-                if path and not bucket["primary_folder_path"]:
-                    bucket["primary_folder_path"] = path
-                library_id = str(hit.get("library_id") or "").strip()
-                if library_id and not bucket["primary_library_id"]:
-                    bucket["primary_library_id"] = library_id
-                bucket["folder_count"] += 1
-                bucket["folder_size"] += int(hit.get("size") or 0)
-                bucket["file_count"] += int(hit.get("file_count") or 0)
-                subtitle_count = int(hit.get("subtitle_file_count") or 0)
-                if bool(hit.get("local_subtitle_present")) or subtitle_count > 0:
-                    bucket["has_local_subtitles"] = True
-                    bucket["subtitle_file_count"] += subtitle_count
-                    if hit.get("subtitle_dir") and not bucket["subtitle_dir"]:
-                        bucket["subtitle_dir"] = str(hit.get("subtitle_dir") or "")
+                for target_canonical in sorted(code for code in target_canonicals if code):
+                    bucket = merged.setdefault(target_canonical, {
+                        "owned_rjcodes": set(),
+                        "owned_paths": [],
+                        "primary_folder_path": "",
+                        "primary_library_id": "",
+                        "folder_count": 0,
+                        "folder_size": 0,
+                        "file_count": 0,
+                        "has_local_subtitles": False,
+                        "subtitle_file_count": 0,
+                        "subtitle_dir": "",
+                    })
+                    bucket["owned_rjcodes"].add(normalized_rj)
+                    if canonical != normalized_rj:
+                        bucket["owned_rjcodes"].add(canonical)
+                    if target_canonical != normalized_rj:
+                        bucket["owned_rjcodes"].add(target_canonical)
+                    path = str(hit.get("path") or "").strip()
+                    if path and path not in bucket["owned_paths"]:
+                        bucket["owned_paths"].append(path)
+                    if path and not bucket["primary_folder_path"]:
+                        bucket["primary_folder_path"] = path
+                    library_id = str(hit.get("library_id") or "").strip()
+                    if library_id and not bucket["primary_library_id"]:
+                        bucket["primary_library_id"] = library_id
+                    bucket["folder_count"] += 1
+                    bucket["folder_size"] += int(hit.get("size") or 0)
+                    bucket["file_count"] += int(hit.get("file_count") or 0)
+                    subtitle_count = int(hit.get("subtitle_file_count") or 0)
+                    if bool(hit.get("local_subtitle_present")) or subtitle_count > 0:
+                        bucket["has_local_subtitles"] = True
+                        bucket["subtitle_file_count"] += subtitle_count
+                        if hit.get("subtitle_dir") and not bucket["subtitle_dir"]:
+                            bucket["subtitle_dir"] = str(hit.get("subtitle_dir") or "")
 
         merge_tasks = [
             _resolve_and_merge(rjcode, hit)
