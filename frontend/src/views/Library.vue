@@ -8268,13 +8268,21 @@ function clearListPoll () {
 
 
 
-function scheduleListPoll (items) {
+function scheduleListPoll (items, response = null) {
 
   clearListPoll()
 
   if (uploadWorkbenchVisible.value) return
 
   if (isRemoteCurrentLibrary.value) return
+
+  if (response?.index_refresh_pending || response?.error === 'library_index_not_ready') {
+
+    listPollTimer = setTimeout(() => refreshLibrary({ silent: true }), 2000)
+
+    return
+
+  }
 
   if ((items || []).some(item => item?.index_refresh_pending && item?.size_status === 'pending')) {
 
@@ -8541,7 +8549,7 @@ async function refreshLibrary (options = {}) {
     // 不再让 browseFiles 驱动“真实搜索”状态：baby step 重置到空。
     librarySearchState.value = createLibrarySearchState()
 
-    scheduleListPoll(files.value)
+    scheduleListPoll(files.value, data)
 
     const maxPage = Math.max(1, Math.ceil(Math.max(totalFiles.value, 1) / pageSize.value))
 
