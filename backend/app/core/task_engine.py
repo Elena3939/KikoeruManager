@@ -1534,6 +1534,80 @@ class TaskEngine:
         finally:
             db.close()
 
+    def _should_block_linked_translation_without_subtitles(self, preview: Dict[str, Any]) -> bool:
+        if not preview:
+            return False
+        if not bool(preview.get("is_translation_work")):
+            return False
+        if not bool(preview.get("kikoeru_has_work") or preview.get("kikoeru_target_found")):
+            return False
+        if bool(preview.get("kikoeru_target_is_empty_shell")):
+            return False
+        if bool(
+            preview.get("can_stage_pending")
+            or preview.get("should_queue_pending")
+            or preview.get("can_execute")
+        ):
+            return False
+        if int(preview.get("subtitle_count") or 0) > 0 or bool(preview.get("source_has_subtitles")):
+            return False
+        probe_status = str(preview.get("source_subtitle_probe_status") or "").strip().lower()
+        if probe_status == "timeout":
+            return False
+        return True
+
+    def _record_linked_translation_without_subtitles_problem(
+        self,
+        task: Task,
+        preview: Dict[str, Any],
+        reason: str,
+    ) -> None:
+        from .classifier import SmartClassifier
+
+        source_rjcode = self._extract_rjcode(str(preview.get("source_rjcode") or "")) or self._extract_rjcode_from_path_tail(task.source_path)
+        target_rjcode = self._extract_rjcode(str(preview.get("target_rjcode") or ""))
+        source_label = str(preview.get("source_label") or os.path.basename(task.source_path or "") or source_rjcode or "").strip()
+        target_title = str(preview.get("kikoeru_title") or target_rjcode or "").strip()
+        metadata = {
+            "work_name": source_label,
+            "source_label": source_label,
+            "source_rjcode": source_rjcode,
+            "target_rjcode": target_rjcode,
+            "reason": reason,
+            "failure_stage": "linked_subtitle_precheck",
+            "error_message": reason,
+            "subtitle_count": int(preview.get("subtitle_count") or 0),
+            "kikoeru_has_work": bool(preview.get("kikoeru_has_work") or preview.get("kikoeru_target_found")),
+            "kikoeru_needs_subtitle": bool(preview.get("kikoeru_needs_subtitle")),
+            "available_actions": ["SKIP"],
+        }
+        linked_works_info = []
+        if target_rjcode:
+            linked_works_info.append({
+                "rjcode": target_rjcode,
+                "work_type": "original",
+                "lang": "JPN",
+                "path": target_title,
+                "work_name": target_title,
+                "source": "kikoeru",
+            })
+
+        SmartClassifier()._add_to_conflict_works(
+            task.id,
+            source_rjcode or target_rjcode or None,
+            "LINKED_WORK",
+            target_title,
+            task.source_path,
+            metadata,
+            status="PENDING",
+            linked_works_info=linked_works_info,
+            analysis_info={
+                "preview": preview,
+                "problem_kind": "linked_translation_without_subtitles",
+            },
+            related_rjcodes=[code for code in [source_rjcode, target_rjcode] if code],
+        )
+
     def _build_retry_conflict_activity_extra(self, task: Task) -> dict[str, Any]:
         metadata = dict(task.task_metadata or {})
         keys = (
@@ -2308,6 +2382,26 @@ class TaskEngine:
                                     **(task.task_metadata or {}),
                                     "linked_subtitle_preview": preview,
                                 }
+                                if self._should_block_linked_translation_without_subtitles(preview):
+                                    _reason = (
+                                        str(preview.get("reason") or "").strip()
+                                        or "翻译作命中已收录原作，但来源压缩包未发现可补配字幕"
+                                    )
+                                    self._record_linked_translation_without_subtitles_problem(
+                                        task,
+                                        preview,
+                                        _reason,
+                                    )
+                                    task.output_path = ""
+                                    task.status = TaskStatus.WAITING_MANUAL
+                                    task.update_progress(100, "翻译作命中已收录原作，但未发现可补配字幕，已加入问题作品列表")
+                                    task.completed_at = datetime.now()
+                                    logger.warning(
+                                        f"[{rjcode}] 翻译作命中已收录原作但包内无字幕，已转入问题作品: "
+                                        f"target={preview.get('target_rjcode', '')} reason={_reason}"
+                                    )
+                                    await self._abort_precheck(precheck_task)
+                                    return
 
                             if not config.auto_process.check_duplicate:
                                 logger.info(f"[{rjcode}] 预检查重已禁用，跳过")

@@ -203,6 +203,12 @@ class SmartClassifier:
             return False
         if bool(preview.get("kikoeru_target_is_empty_shell")):
             return False
+        if not bool(
+            preview.get("can_stage_pending")
+            or preview.get("should_queue_pending")
+            or preview.get("can_execute")
+        ):
+            return False
 
         normalized_current = str(current_rjcode or "").strip().upper()
         normalized_linked = str(linked_rjcode or "").strip().upper()

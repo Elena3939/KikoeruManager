@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from app.core.classifier import SmartClassifier
+from app.core.task_engine import TaskEngine
 from app.core.linked_subtitle_import_service import (
     LinkedSubtitleArchivePrecheckTimeout,
     LinkedSubtitleImportAlreadyRunning,
@@ -165,6 +166,7 @@ def test_classifier_skips_original_duplicate_when_translation_should_supply_subt
             "is_translation_work": True,
             "kikoeru_needs_subtitle": True,
             "kikoeru_target_is_empty_shell": False,
+            "can_stage_pending": True,
         },
     })
     linked_works = {
@@ -180,6 +182,183 @@ def test_classifier_skips_original_duplicate_when_translation_should_supply_subt
     )
 
     assert should_skip is True
+
+
+def test_classifier_keeps_linked_duplicate_when_translation_preview_has_no_subtitles():
+    classifier = SmartClassifier()
+    task = SimpleNamespace(task_metadata={
+        "linked_subtitle_preview": {
+            "source_rjcode": "RJ01625472",
+            "target_rjcode": "RJ01609723",
+            "is_translation_work": True,
+            "kikoeru_needs_subtitle": True,
+            "kikoeru_target_is_empty_shell": False,
+            "subtitle_count": 0,
+            "can_stage_pending": False,
+            "should_queue_pending": False,
+            "can_execute": False,
+        },
+    })
+    linked_works = {
+        "RJ01625472": SimpleNamespace(work_type="translation", lang="CHI_HANS"),
+        "RJ01609723": SimpleNamespace(work_type="original", lang="JPN"),
+    }
+
+    should_skip = classifier._should_skip_linked_duplicate_for_subtitle_import(
+        "RJ01625472",
+        "RJ01609723",
+        linked_works,
+        task,
+    )
+
+    assert should_skip is False
+
+
+def test_task_engine_blocks_linked_translation_archive_without_subtitles():
+    engine = object.__new__(TaskEngine)
+    preview = {
+        "source_rjcode": "RJ01625472",
+        "target_rjcode": "RJ01609723",
+        "is_translation_work": True,
+        "kikoeru_has_work": True,
+        "kikoeru_needs_subtitle": True,
+        "kikoeru_target_is_empty_shell": False,
+        "subtitle_count": 0,
+        "source_has_subtitles": False,
+        "can_stage_pending": False,
+        "should_queue_pending": False,
+        "can_execute": False,
+        "source_subtitle_probe_status": "no_subtitles",
+    }
+
+    assert engine._should_block_linked_translation_without_subtitles(preview) is True
+
+    preview["can_stage_pending"] = True
+    assert engine._should_block_linked_translation_without_subtitles(preview) is False
+
+
+@pytest.mark.asyncio
+async def test_common_preview_uses_kikoeru_hit_to_block_translation_as_new_work():
+    service = object.__new__(LinkedSubtitleImportService)
+    service.EXISTING_SUBTITLE_REASON = LinkedSubtitleImportService.EXISTING_SUBTITLE_REASON
+    service.REMOTE_PENDING_REASON = LinkedSubtitleImportService.REMOTE_PENDING_REASON
+    service.subtitle_service = SimpleNamespace(
+        extract_rjcode=lambda value: str(value or "").strip().upper()
+    )
+    service.dlsite_service = SimpleNamespace(
+        get_translation_info=AsyncMock(),
+        get_product_info=AsyncMock(return_value={}),
+        get_linked_works=AsyncMock(return_value={}),
+    )
+    service.kikoeru_service = SimpleNamespace(
+        check_duplicate=AsyncMock(side_effect=[
+            SimpleNamespace(
+                is_found=False,
+                source="kikoeru",
+                title="简中翻译作",
+                has_lyric_hint=False,
+                subtitle_file_count=0,
+                subtitle_check_source="tracks",
+                total_track_count=8,
+                lyric_status="",
+            ),
+            SimpleNamespace(
+                is_found=True,
+                source="kikoeru",
+                title="原作",
+                has_lyric_hint=False,
+                subtitle_file_count=0,
+                subtitle_check_source="tracks",
+                total_track_count=9,
+                lyric_status="",
+            ),
+        ])
+    )
+    service.search_target_candidates = AsyncMock(return_value={
+        "candidates": [],
+        "search_status": "not_found",
+        "search_reason": "ready 库存索引未命中原作目录",
+    })
+
+    preview = await service._build_common_preview(
+        source_rjcode="RJ01625472",
+        source_label="RJ01625472.7z",
+        subtitle_count=1,
+        preferred_library_id=None,
+        _prefetched_translation=(
+            SimpleNamespace(is_original=False, original_workno="RJ01609723", lang="CHI_HANS"),
+            "RJ01609723",
+        ),
+    )
+
+    assert preview["is_translation_work"] is True
+    assert preview["kikoeru_has_work"] is True
+    assert preview["kikoeru_needs_subtitle"] is True
+    assert preview["treat_as_new_work"] is False
+    assert preview["can_stage_pending"] is True
+    assert preview["can_execute"] is False
+    assert "未命中任何关联作品" not in preview["reason"]
+    assert preview["candidate_search_reason"] == "ready 库存索引未命中原作目录"
+
+
+@pytest.mark.asyncio
+async def test_common_preview_keeps_kikoeru_empty_shell_blocking_state():
+    service = object.__new__(LinkedSubtitleImportService)
+    service.EXISTING_SUBTITLE_REASON = LinkedSubtitleImportService.EXISTING_SUBTITLE_REASON
+    service.REMOTE_PENDING_REASON = LinkedSubtitleImportService.REMOTE_PENDING_REASON
+    service.subtitle_service = SimpleNamespace(
+        extract_rjcode=lambda value: str(value or "").strip().upper()
+    )
+    service.dlsite_service = SimpleNamespace(
+        get_translation_info=AsyncMock(),
+        get_product_info=AsyncMock(return_value={}),
+        get_linked_works=AsyncMock(return_value={}),
+    )
+    service.kikoeru_service = SimpleNamespace(
+        check_duplicate=AsyncMock(side_effect=[
+            SimpleNamespace(
+                is_found=False,
+                source="kikoeru",
+                title="简中翻译作",
+                has_lyric_hint=False,
+                subtitle_file_count=0,
+                subtitle_check_source="tracks",
+                total_track_count=8,
+                lyric_status="",
+            ),
+            SimpleNamespace(
+                is_found=True,
+                source="kikoeru",
+                title="原作空壳",
+                has_lyric_hint=False,
+                subtitle_file_count=0,
+                subtitle_check_source="tracks",
+                total_track_count=0,
+                lyric_status="",
+            ),
+        ])
+    )
+    service.search_target_candidates = AsyncMock(return_value={
+        "candidates": [],
+        "search_status": "not_found",
+        "search_reason": "",
+    })
+
+    preview = await service._build_common_preview(
+        source_rjcode="RJ01625472",
+        source_label="RJ01625472.7z",
+        subtitle_count=1,
+        preferred_library_id=None,
+        _prefetched_translation=(
+            SimpleNamespace(is_original=False, original_workno="RJ01609723", lang="CHI_HANS"),
+            "RJ01609723",
+        ),
+    )
+
+    assert preview["kikoeru_has_work"] is True
+    assert preview["kikoeru_target_is_empty_shell"] is True
+    assert preview["can_stage_pending"] is False
+    assert preview["stage_reason"] == "字幕补配时发现服务器作品为空壳"
 
 
 @pytest.mark.asyncio

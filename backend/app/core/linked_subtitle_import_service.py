@@ -14,6 +14,7 @@ from ..config.settings import get_config
 from ..models.database import ConflictWork, get_db
 from .dlsite_service import get_dlsite_service
 from .extract_service import ExtractService
+from .kikoeru_duplicate_service import get_kikoeru_service
 from .library_manager import SynologyFileStationClient, get_library_manager
 from .rj_subtitle_service import get_rj_subtitle_service
 from .task_engine import Task, TaskStatus, TaskType, get_task_engine
@@ -46,6 +47,13 @@ class LinkedSubtitleImportService:
     REMOTE_PENDING_REASON = "远程库存暂未检出原作目录，请稍后重试"
     EXISTING_SUBTITLE_REASON = "原作目录已有字幕，按重复作品处理"
     PENDING_REFRESH_MIN_INTERVAL_SECONDS = 12
+    KIKOERU_UNCERTAIN_SOURCES = {
+        "kikoeru_timeout",
+        "kikoeru_exception",
+        "kikoeru_no_token",
+        "kikoeru_auth_error",
+        "kikoeru_tracks_unreliable",
+    }
     ARCHIVE_PRECHECK_TIMEOUT_SECONDS = float(
         os.getenv("KIKOERUMANAGER_LINKED_SUBTITLE_PRECHECK_TIMEOUT_SECONDS", "300") or 300
     )
@@ -55,6 +63,7 @@ class LinkedSubtitleImportService:
         self.subtitle_service = get_rj_subtitle_service()
         self.library_manager = get_library_manager()
         self.dlsite_service = get_dlsite_service()
+        self.kikoeru_service = get_kikoeru_service()
 
     def _extract_rjcode(self, value: str) -> str:
         return self.subtitle_service.extract_rjcode(str(value or "")) or ""
@@ -78,6 +87,18 @@ class LinkedSubtitleImportService:
             if rjcode:
                 return rjcode
         return ""
+
+    def _is_kikoeru_result_reliable(self, result: Any) -> bool:
+        if result is None:
+            return False
+        source = str(getattr(result, "source", "") or "").strip().lower()
+        if not source:
+            return True
+        if source in self.KIKOERU_UNCERTAIN_SOURCES:
+            return False
+        if source.startswith("kikoeru_error_"):
+            return False
+        return True
 
     async def _repair_cached_preview_rj_fields(
         self,
@@ -1673,8 +1694,8 @@ class LinkedSubtitleImportService:
         # When the source is not a translation work but clearly contains subtitle files,
         # we still treat it as a linked subtitle source and supplement the same RJ work.
         is_manual_subtitle_source = bool(source_rjcode and subtitle_count > 0 and not is_translation_work)
-        # 小型压缩包：即使包内未扫到字幕文件，也先用 ready 库存索引判断目标是否
-        # 已收录且缺字幕。Kikoeru 只是播放库存，不再参与拥有态/字幕态判断。
+        # 小型压缩包：即使包内未扫到字幕文件，也先用 Kikoeru 判断目标是否需要补配。
+        # 只有确认目标作品存在、无字幕、非空壳后才强制进入补配路由。
         if is_small_archive and source_rjcode and not is_translation_work and not is_manual_subtitle_source:
             # 用 source_rjcode 作为临时 target，下方查 Kikoeru 后再修正
             target_rjcode = source_rjcode
@@ -1682,28 +1703,60 @@ class LinkedSubtitleImportService:
             target_rjcode = resolved_target_rjcode or (source_rjcode if is_manual_subtitle_source else "")
         is_linked_subtitle_source = bool(is_translation_work or is_manual_subtitle_source)
 
-        lookup_codes = [code for code in [source_rjcode, target_rjcode] if code]
-        try:
-            local_index_hits = self.library_manager.find_rj_in_ready_index(lookup_codes)
-        except Exception:
-            logger.warning("[字幕补配] ready 库存索引状态查询失败 source=%s target=%s", source_rjcode, target_rjcode, exc_info=True)
-            local_index_hits = {}
+        async def _safe_kikoeru(rjcode: str) -> Tuple[Any, bool]:
+            try:
+                result = await self.kikoeru_service.check_duplicate(rjcode, use_cache=True)
+                return result, self._is_kikoeru_result_reliable(result)
+            except Exception as exc:
+                logger.warning("[字幕补配] Kikoeru 查询失败: rj=%s error=%s", rjcode, exc)
+                return None, False
 
-        source_hits = list(local_index_hits.get(source_rjcode) or []) if source_rjcode else []
-        target_hits = list(local_index_hits.get(target_rjcode) or []) if target_rjcode else []
-        source_exists_in_kikoeru = bool(source_hits)
-        target_exists_in_kikoeru = bool(target_hits)
-        target_has_subtitle_in_kikoeru = any(
-            bool(hit.get("local_subtitle_present")) or int(hit.get("subtitle_file_count") or 0) > 0
-            for hit in target_hits
+        async def _noop_kikoeru() -> Tuple[None, bool]:
+            return None, True
+
+        source_coro = _safe_kikoeru(source_rjcode) if source_rjcode else _noop_kikoeru()
+        if _prefetched_target_kikoeru is not None:
+            source_kikoeru_result, source_kikoeru_query_ok = await source_coro
+            target_kikoeru_result = _prefetched_target_kikoeru
+            target_kikoeru_query_ok = (
+                self._is_kikoeru_result_reliable(_prefetched_target_kikoeru)
+                if target_rjcode
+                else True
+            )
+        elif source_rjcode and target_rjcode and source_rjcode == target_rjcode:
+            source_kikoeru_result, source_kikoeru_query_ok = await source_coro
+            target_kikoeru_result = source_kikoeru_result
+            target_kikoeru_query_ok = source_kikoeru_query_ok
+        else:
+            target_coro = _safe_kikoeru(target_rjcode) if target_rjcode else _noop_kikoeru()
+            (source_kikoeru_result, source_kikoeru_query_ok), (
+                target_kikoeru_result,
+                target_kikoeru_query_ok,
+            ) = await asyncio.gather(source_coro, target_coro)
+
+        source_exists_in_kikoeru = bool(
+            source_kikoeru_result and getattr(source_kikoeru_result, "is_found", False)
+        )
+        target_exists_in_kikoeru = bool(
+            target_kikoeru_result and getattr(target_kikoeru_result, "is_found", False)
+        )
+        target_has_subtitle_in_kikoeru = bool(
+            target_kikoeru_result and getattr(target_kikoeru_result, "has_lyric_hint", False)
         )
         target_needs_subtitle_in_kikoeru = bool(target_exists_in_kikoeru and not target_has_subtitle_in_kikoeru)
-        kikoeru_route_confident = True
-        kikoeru_target_is_empty_shell = False
-        target_primary_hit = target_hits[0] if target_hits else {}
-        target_hit_title = str(target_primary_hit.get("name") or target_rjcode or "").strip()
-        target_subtitle_count = sum(int(hit.get("subtitle_file_count") or 0) for hit in target_hits)
-        # 小型压缩包补配强制路由：本地库存确认目标作品存在、无字幕 → 强制视为 manual_subtitle_source。
+        kikoeru_route_confident = bool(source_kikoeru_query_ok and target_kikoeru_query_ok)
+        target_total_track = -1
+        if target_kikoeru_result:
+            raw_total_track = getattr(target_kikoeru_result, "total_track_count", -1)
+            target_total_track = -1 if raw_total_track is None else int(raw_total_track)
+        target_check_source = str(getattr(target_kikoeru_result, "subtitle_check_source", "") or "") if target_kikoeru_result else ""
+        target_subtitle_count = int(getattr(target_kikoeru_result, "subtitle_file_count", 0) or 0) if target_kikoeru_result else 0
+        kikoeru_target_is_empty_shell = bool(
+            target_exists_in_kikoeru
+            and target_check_source == "tracks"
+            and target_total_track == 0
+        )
+        # 小型压缩包补配强制路由：Kikoeru 确认目标作品存在、无字幕、非空壳 → 强制视为 manual_subtitle_source。
         # 此时无论压缩包内是否已扫到字幕文件，都进入字幕补配队列，由后续人工筛选 / 自动配对处理。
         if (
             is_small_archive
@@ -1718,7 +1771,7 @@ class LinkedSubtitleImportService:
             is_manual_subtitle_source = True
             is_linked_subtitle_source = True
             logger.info(
-                "[字幕补配预检] 小型压缩包按本地库存状态强制进入补配路由: source_rj=%s target_rj=%s",
+                "[字幕补配预检] 小型压缩包按 Kikoeru 状态强制进入补配路由: source_rj=%s target_rj=%s",
                 source_rjcode,
                 target_rjcode,
             )
@@ -1778,10 +1831,14 @@ class LinkedSubtitleImportService:
             stage_reason = "无法识别来源作品 RJ 号"
         elif treat_as_new_work:
             stage_reason = "未命中任何关联作品，按新作直接解压入库"
+        elif not kikoeru_route_confident:
+            stage_reason = ""
+        elif kikoeru_target_is_empty_shell:
+            stage_reason = "字幕补配时发现服务器作品为空壳"
         elif not is_linked_subtitle_source:
             stage_reason = "当前作品不是可补配到原作的翻译作品"
         elif target_has_subtitle_in_kikoeru:
-            # 本地原作已有字幕：当前翻译作没有字幕补配价值，统一走"原作已有字幕"
+            # Kikoeru 原作已有字幕：当前翻译作没有字幕补配价值，统一走"原作已有字幕"
             # 重复路径，由 _is_existing_subtitle_duplicate_preview 识别后转入 LINKED_WORK 问题作品。
             stage_reason = self.EXISTING_SUBTITLE_REASON
         elif candidates and not ready_candidates:
@@ -1789,6 +1846,8 @@ class LinkedSubtitleImportService:
         execute_reason = ""
         if stage_reason:
             execute_reason = stage_reason
+        elif not kikoeru_route_confident:
+            execute_reason = "Kikoeru 查询结果不稳定，暂不自动降级为普通解压，稍后重试"
         elif candidate_search_status == "pending_remote":
             execute_reason = candidate_search_reason or self.REMOTE_PENDING_REASON
         elif not subtitle_count:
@@ -1819,16 +1878,16 @@ class LinkedSubtitleImportService:
             "kikoeru_has_work": target_exists_in_kikoeru,
             "kikoeru_needs_subtitle": target_needs_subtitle_in_kikoeru,
             "kikoeru_target_is_empty_shell": kikoeru_target_is_empty_shell,
-            "kikoeru_source_query_ok": True,
-            "kikoeru_target_query_ok": True,
+            "kikoeru_source_query_ok": source_kikoeru_query_ok,
+            "kikoeru_target_query_ok": target_kikoeru_query_ok,
             "kikoeru_route_confident": kikoeru_route_confident,
-            "kikoeru_source_result_source": "library_index",
-            "kikoeru_target_result_source": "library_index",
-            "kikoeru_title": target_hit_title,
-            "kikoeru_lyric_status": "has_subtitle" if target_has_subtitle_in_kikoeru else "missing",
+            "kikoeru_source_result_source": getattr(source_kikoeru_result, "source", "") if source_kikoeru_result else "",
+            "kikoeru_target_result_source": getattr(target_kikoeru_result, "source", "") if target_kikoeru_result else "",
+            "kikoeru_title": getattr(target_kikoeru_result, "title", "") if target_kikoeru_result else "",
+            "kikoeru_lyric_status": getattr(target_kikoeru_result, "lyric_status", "") if target_kikoeru_result else "",
             "kikoeru_source_checked_rjcode": source_rjcode,
             "kikoeru_source_found": source_exists_in_kikoeru,
-            "kikoeru_source_title": str((source_hits[0] if source_hits else {}).get("name") or source_rjcode or ""),
+            "kikoeru_source_title": getattr(source_kikoeru_result, "title", "") if source_kikoeru_result else "",
             "kikoeru_target_found": target_exists_in_kikoeru,
             "kikoeru_subtitle_file_count": target_subtitle_count,
             "candidates": candidates,
@@ -1937,19 +1996,24 @@ class LinkedSubtitleImportService:
             resolved_target_rjcode = await self._resolve_translation_target_rjcode(source_rjcode, translation_info)
             is_translation_work = bool(source_rjcode and resolved_target_rjcode and resolved_target_rjcode != source_rjcode)
 
-            # Step 2：如果是翻译作品，先查 ready 库存索引确认原作是否已有字幕，有字幕就不需要解包
+            # Step 2：如果是翻译作品，先查 Kikoeru 确认原作是否已有字幕，有字幕就不需要解包
             prefetched_target_kikoeru = None
             prefetched_target_has_subtitle = False
             if is_translation_work and resolved_target_rjcode:
                 try:
-                    target_index_hits = self.library_manager.find_rj_in_ready_index([resolved_target_rjcode])
-                    prefetched_target_has_subtitle = any(
-                        bool(hit.get("local_subtitle_present")) or int(hit.get("subtitle_file_count") or 0) > 0
-                        for hit in list(target_index_hits.get(resolved_target_rjcode) or [])
+                    prefetched_target_kikoeru = await self.kikoeru_service.check_duplicate(
+                        resolved_target_rjcode,
+                        use_cache=True,
+                    )
+                    prefetched_target_has_subtitle = bool(
+                        prefetched_target_kikoeru
+                        and getattr(prefetched_target_kikoeru, "has_lyric_hint", False)
                     )
                 except Exception as exc:
                     logger.warning(
-                        "[字幕补配预检] 预查 ready 库存索引字幕态失败: rj=%s error=%s", resolved_target_rjcode, exc
+                        "[字幕补配预检] 预查 Kikoeru target 失败: rj=%s error=%s",
+                        resolved_target_rjcode,
+                        exc,
                     )
 
             # Step 3：决定是否解包——翻译作品且原作缺字幕才解包
