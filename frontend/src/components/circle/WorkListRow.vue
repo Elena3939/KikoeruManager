@@ -12,6 +12,8 @@ const props = defineProps({
   selected: { type: Boolean, default: false },
   /** 是否处于状态闪烁中 */
   statusFlash: { type: Boolean, default: false },
+  /** 是否处于搜索定位高亮中 */
+  locateFlash: { type: Boolean, default: false },
   /** 是否禁用 */
   disabled: { type: Boolean, default: false },
   /** 封面图字段名 */
@@ -176,6 +178,7 @@ function onImgLoad() {
       'is-new-work': isNewWork,
       'is-unreleased': isUnreleased,
       'status-flash': statusFlash,
+      'locate-flash': locateFlash,
       'is-disabled': disabled,
       'is-mobile': isMobile,
     }"
@@ -324,9 +327,41 @@ function onImgLoad() {
   animation: rowFlash .5s ease;
 }
 
+.work-list-row.locate-flash {
+  animation: rowLocateFlash 2.8s cubic-bezier(0.22, 1, 0.36, 1);
+  background:
+    radial-gradient(circle at 0 50%, color-mix(in srgb, var(--circle-tag-warning, #f59e0b) 24%, transparent), transparent 38%),
+    radial-gradient(circle at 100% 50%, color-mix(in srgb, var(--circle-primary, #2563eb) 14%, transparent), transparent 46%),
+    var(--circle-selected-bg, rgba(248, 251, 255, 0.96));
+  border-color: color-mix(in srgb, var(--circle-tag-warning, #f59e0b) 62%, transparent);
+  box-shadow:
+    inset 3px 0 0 color-mix(in srgb, var(--circle-tag-warning, #f59e0b) 82%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--circle-primary, #2563eb) 12%, transparent),
+    0 10px 22px rgba(37, 99, 235, 0.16);
+}
+
 @keyframes rowFlash {
   0%, 100% { background: transparent; }
   40% { background: var(--circle-tag-warning-soft, #fef9c3); border-color: color-mix(in srgb, var(--circle-tag-warning, #fde047) 42%, transparent); }
+}
+
+@keyframes rowLocateFlash {
+  0% {
+    transform: translateX(-3px);
+    box-shadow:
+      inset 3px 0 0 color-mix(in srgb, var(--circle-tag-warning, #f59e0b) 80%, transparent),
+      0 0 0 0 color-mix(in srgb, var(--circle-tag-warning, #f59e0b) 38%, transparent);
+  }
+  25% {
+    transform: translateX(0);
+    box-shadow:
+      inset 3px 0 0 color-mix(in srgb, var(--circle-tag-warning, #f59e0b) 90%, transparent),
+      0 0 0 6px color-mix(in srgb, var(--circle-primary, #2563eb) 12%, transparent),
+      0 12px 24px rgba(37, 99, 235, 0.18);
+  }
+  100% {
+    transform: translateX(0);
+  }
 }
 
 .work-list-row.is-disabled {

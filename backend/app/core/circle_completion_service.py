@@ -1348,6 +1348,23 @@ class CircleCompletionService:
         ]).lower()
         return query in haystack
 
+    def _completion_item_matches_rjcode(self, item: Dict[str, Any], rjcode: str) -> bool:
+        target = self.normalize_rjcode(rjcode)
+        if not target:
+            return False
+        candidates = [
+            item.get("canonical_rjcode"),
+            item.get("display_rjcode"),
+            item.get("server_match_primary_rjcode"),
+            item.get("asmr_available_rjcode"),
+        ]
+        for payload_key in ["download_plan", "owned_variant", "preferred_variant"]:
+            payload = item.get(payload_key)
+            if isinstance(payload, dict):
+                candidates.append(payload.get("rjcode"))
+        candidates.extend(item.get("linked_rjcodes") or [])
+        return any(self.normalize_rjcode(candidate) == target for candidate in candidates)
+
     def _build_completion_item(
         self,
         *,
@@ -1432,7 +1449,15 @@ class CircleCompletionService:
             or (kikoeru_compare or {}).get("primary_rjcode")
             or (server_match_rjcodes[0] if server_match_rjcodes else "")
         ).strip()
-        owned_primary_rjcode = server_match_primary_rjcode or (local_owned_rjcodes[0] if local_owned_rjcodes else "")
+        local_subtitle_present = bool(getattr(owned_row, "has_local_subtitles", False)) if owned_row else False
+        owned_primary_rjcode = self._pick_owned_primary_rjcode(
+            view_canonical_info,
+            server_match_primary_rjcode=server_match_primary_rjcode,
+            local_owned_rjcodes=local_owned_rjcodes,
+            local_subtitle_present=local_subtitle_present,
+            subtitle_dir=str(getattr(owned_row, "subtitle_dir", "") or "") if owned_row else "",
+            primary_folder_path=str(getattr(owned_row, "primary_folder_path", "") or "") if owned_row else "",
+        )
         owned_variant = self._build_variant_payload_for_rjcode(
             view_canonical_info,
             owned_primary_rjcode,
@@ -1445,7 +1470,6 @@ class CircleCompletionService:
             "group_label": "原作优先",
             "group_short_label": "原作",
         }
-        local_subtitle_present = bool(getattr(owned_row, "has_local_subtitles", False)) if owned_row else False
         is_unreleased = self._is_future_release_date(release_date)
         now_local = now_local_for_view or get_local_now()
         row_tags = row.source_tags
@@ -1936,6 +1960,179 @@ class CircleCompletionService:
             "downloadable_count": len(downloadable_rjcodes),
         }
 
+    async def locate_circle_completion_work(
+        self,
+        circle_id_or_query: str,
+        *,
+        rjcode: str,
+        tab: str = "missing",
+        page_size: int = 10,
+        include_dl_only: bool = True,
+        status_filters: Any = None,
+        owned_filter: str = "all",
+        compare_filter: str = "all",
+        search: str = "",
+        sort: str = "updated_desc",
+    ) -> Dict[str, Any]:
+        state = self._build_completion_view_state(circle_id_or_query)
+        catalog = state["catalog"]
+        items = state["items"]
+        tab_key = str(tab or "missing").strip().lower()
+        normalized_filters = self._completion_status_filters(status_filters)
+        filtered = self._filter_completion_items_for_tab(
+            items,
+            tab=tab_key,
+            include_dl_only=include_dl_only,
+            status_filters=normalized_filters,
+            owned_filter=owned_filter,
+            compare_filter=compare_filter,
+            search=search,
+        )
+        filtered = self._sort_completion_items(filtered, sort)
+        safe_page_size = max(1, min(200, int(page_size or 10)))
+        matched_index = -1
+        matched_item: Optional[Dict[str, Any]] = None
+        for index, item in enumerate(filtered):
+            if self._completion_item_matches_rjcode(item, rjcode):
+                matched_index = index
+                matched_item = item
+                break
+        matched = matched_index >= 0 and matched_item is not None
+        page = (matched_index // safe_page_size) + 1 if matched else 1
+        page_count = max(1, (len(filtered) + safe_page_size - 1) // safe_page_size)
+        return {
+            "circle_id": catalog.get("circle_id") if isinstance(catalog, dict) else catalog.circle_id,
+            "circle_name": catalog.get("circle_name") if isinstance(catalog, dict) else catalog.circle_name,
+            "tab": tab_key,
+            "rjcode": self.normalize_rjcode(rjcode),
+            "matched": matched,
+            "canonical_rjcode": self.normalize_rjcode(matched_item.get("canonical_rjcode")) if matched_item else "",
+            "display_rjcode": self.normalize_rjcode(matched_item.get("display_rjcode")) if matched_item else "",
+            "page": max(1, min(page_count, page)),
+            "page_size": safe_page_size,
+            "page_count": page_count,
+            "total": len(filtered),
+            "index": matched_index,
+        }
+
+    async def search_circle_completion_works(self, keyword: str = "", limit: int = 20) -> List[Dict[str, Any]]:
+        """按 RJ / 标题在已建立的社团索引里反查作品归属。
+
+        这是社团补全页的定位搜索，只读本地索引表，不触发 DLsite / Kikoeru
+        网络请求；用户输入 RJ 后用它找到所属社团，再跳转到该社团详情页。
+        """
+        from sqlalchemy import Text as sa_Text, cast as sa_cast, func as sa_func, or_ as sa_or
+
+        raw_keyword = str(keyword or "").strip()
+        if not raw_keyword:
+            return []
+        safe_limit = max(1, min(50, int(limit or 20)))
+        normalized_rj = self.normalize_rjcode(raw_keyword)
+        lowered_keyword = raw_keyword.lower()
+        like_pattern = f"%{lowered_keyword}%"
+        json_pattern = f"%{normalized_rj}%"
+
+        db = SessionLocal()
+        try:
+            query = (
+                db.query(CircleWork, CircleCatalog, LibraryOwnedWork)
+                .join(CircleCatalog, CircleCatalog.circle_id == CircleWork.circle_id)
+                .outerjoin(LibraryOwnedWork, LibraryOwnedWork.canonical_rjcode == CircleWork.canonical_rjcode)
+            )
+
+            filters = [
+                sa_func.lower(CircleWork.canonical_rjcode).like(like_pattern),
+                sa_func.lower(CircleWork.display_rjcode).like(like_pattern),
+                sa_func.lower(CircleWork.title).like(like_pattern),
+                sa_func.lower(CircleCatalog.circle_name).like(like_pattern),
+                sa_func.lower(CircleCatalog.circle_id).like(like_pattern),
+            ]
+            if normalized_rj:
+                filters.extend([
+                    CircleWork.canonical_rjcode == normalized_rj,
+                    CircleWork.display_rjcode == normalized_rj,
+                    sa_cast(CircleWork.linked_rjcodes, sa_Text).like(json_pattern),
+                ])
+            rows = (
+                query
+                .filter(sa_or(*filters))
+                .order_by(
+                    (CircleWork.canonical_rjcode == normalized_rj).desc(),
+                    (CircleWork.display_rjcode == normalized_rj).desc(),
+                    CircleCatalog.last_indexed_at.desc(),
+                    CircleWork.updated_at.desc(),
+                )
+                .limit(safe_limit * 2)
+                .all()
+            )
+
+            metadata_codes: List[str] = []
+            for work, _, _ in rows:
+                for candidate in [
+                    work.canonical_rjcode,
+                    work.display_rjcode,
+                    *(work.linked_rjcodes or []),
+                ]:
+                    normalized = self.normalize_rjcode(candidate)
+                    if normalized and normalized not in metadata_codes:
+                        metadata_codes.append(normalized)
+            metadata_map = self._load_cached_metadata_map(db, metadata_codes)
+            image_cache_service = get_circle_image_cache_service()
+
+            results: List[Dict[str, Any]] = []
+            seen: Set[Tuple[str, str]] = set()
+            for work, catalog, owned_row in rows:
+                circle_id = str(work.circle_id or "").strip()
+                canonical = self.normalize_rjcode(work.canonical_rjcode)
+                if not circle_id or not canonical:
+                    continue
+                dedupe_key = (circle_id, canonical)
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+
+                display_rjcode = self.normalize_rjcode(work.display_rjcode) or canonical
+                title = str(work.title or "").strip()
+                if not title:
+                    title = str((metadata_map.get(display_rjcode) or metadata_map.get(canonical) or {}).get("work_name") or "").strip()
+                release_date = str((metadata_map.get(display_rjcode) or metadata_map.get(canonical) or {}).get("release_date") or "").strip()
+                cvs = list((metadata_map.get(display_rjcode) or metadata_map.get(canonical) or {}).get("cvs") or [])
+                normalized_cover = self._normalize_dlsite_cover_url(
+                    work.image_url,
+                    display_rjcode or canonical,
+                    is_unreleased=self._is_future_release_date(release_date),
+                )
+                local_cover_url = image_cache_service.get_local_url(display_rjcode or canonical)
+                local_thumb_url = image_cache_service.get_local_url(display_rjcode or canonical, variant="list")
+
+                results.append({
+                    "circle_id": circle_id,
+                    "circle_name": catalog.circle_name or circle_id,
+                    "canonical_rjcode": canonical,
+                    "display_rjcode": display_rjcode,
+                    "title": title or display_rjcode or canonical,
+                    "linked_rjcodes": list(work.linked_rjcodes or []),
+                    "image_url": local_cover_url or normalized_cover,
+                    "thumb_image_url": local_thumb_url or self._normalize_dlsite_thumb_url(
+                        normalized_cover,
+                        display_rjcode or canonical,
+                        is_unreleased=self._is_future_release_date(release_date),
+                    ),
+                    "cvs": cvs,
+                    "release_date": release_date,
+                    "owned": owned_row is not None,
+                    "server_owned": owned_row is not None,
+                    "has_asmr_one": bool(work.has_asmr_one),
+                    "asmr_available_rjcode": self.normalize_rjcode(work.asmr_available_rjcode),
+                    "last_indexed_at": catalog.last_indexed_at.isoformat() if catalog.last_indexed_at else None,
+                    "updated_at": work.updated_at.isoformat() if work.updated_at else None,
+                })
+                if len(results) >= safe_limit:
+                    break
+            return results
+        finally:
+            db.close()
+
     def _build_circle_index_log_detail(
         self,
         summary: Dict[str, Any],
@@ -2123,6 +2320,36 @@ class CircleCompletionService:
             "group_label": group["label"],
             "group_short_label": group["short_label"],
         }
+
+    def _pick_owned_primary_rjcode(
+        self,
+        canonical_info: Dict[str, Any],
+        *,
+        server_match_primary_rjcode: str = "",
+        local_owned_rjcodes: Optional[List[str]] = None,
+        local_subtitle_present: bool = False,
+        subtitle_dir: str = "",
+        primary_folder_path: str = "",
+    ) -> str:
+        canonical = self.normalize_rjcode(canonical_info.get("canonical_rjcode"))
+        owned_rjcodes: List[str] = []
+        for candidate in list(local_owned_rjcodes or []):
+            normalized = self.normalize_rjcode(candidate)
+            if normalized and normalized not in owned_rjcodes:
+                owned_rjcodes.append(normalized)
+
+        # 已收录态单独按真实落盘目录判定；未收录下载 / 展示仍保持 preferred_variant 的翻译优先。
+        if local_subtitle_present and canonical:
+            path_text = " ".join([str(subtitle_dir or ""), str(primary_folder_path or "")]).upper()
+            if canonical in path_text:
+                return canonical
+
+        server_primary = self.normalize_rjcode(server_match_primary_rjcode)
+        if server_primary:
+            return server_primary
+        if owned_rjcodes:
+            return owned_rjcodes[0]
+        return canonical or ""
 
     def _build_local_download_session_map(self, db, works: List[CircleWork], link_map_by_canonical: Dict[str, Dict[str, Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
         lookup_rjcodes: List[str] = []
@@ -6302,7 +6529,14 @@ class CircleCompletionService:
                 ).strip()
                 server_owned = bool(local_owned)
                 completion_owned = bool(local_owned)
-                owned_primary_rjcode = server_match_primary_rjcode or (local_owned_rjcodes[0] if local_owned_rjcodes else "")
+                owned_primary_rjcode = self._pick_owned_primary_rjcode(
+                    view_canonical_info,
+                    server_match_primary_rjcode=server_match_primary_rjcode,
+                    local_owned_rjcodes=local_owned_rjcodes,
+                    local_subtitle_present=bool(item["local_subtitle_present"]),
+                    subtitle_dir=str(item.get("subtitle_dir") or ""),
+                    primary_folder_path=str(item.get("primary_folder_path") or ""),
+                )
                 item["owned"] = completion_owned
                 item["completion_owned"] = completion_owned
                 item["server_owned"] = server_owned

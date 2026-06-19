@@ -11,6 +11,8 @@ const props = defineProps({
   selected: { type: Boolean, default: false },
   /** 是否处于状态闪烁中 */
   statusFlash: { type: Boolean, default: false },
+  /** 是否处于搜索定位高亮中 */
+  locateFlash: { type: Boolean, default: false },
   /** 是否禁用 */
   disabled: { type: Boolean, default: false },
   /** 封面图字段名 */
@@ -205,6 +207,7 @@ function onCoverLoad() {
       'is-unreleased': isUnreleased,
       'is-new-work': isNewWork,
       'status-flash': props.statusFlash,
+      'locate-flash': props.locateFlash,
       disabled: props.disabled,
       'work-card--lg': props.size === 'lg',
     }"
@@ -450,6 +453,18 @@ function onCoverLoad() {
 .work-card.status-flash.selected {
   border-color: rgba(82, 170, 103, 0.6);
 }
+.work-card.locate-flash {
+  animation: workLocateFlash 2.8s cubic-bezier(0.22, 1, 0.36, 1);
+  border-color: color-mix(in srgb, var(--circle-tag-warning, #f59e0b) 70%, transparent);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--circle-tag-warning, #f59e0b) 28%, transparent),
+    0 0 0 8px color-mix(in srgb, var(--circle-primary, #2563eb) 12%, transparent),
+    0 18px 32px rgba(37, 99, 235, 0.18);
+  background:
+    radial-gradient(circle at 16% 18%, color-mix(in srgb, var(--circle-tag-warning, #f59e0b) 24%, transparent), transparent 34%),
+    radial-gradient(circle at top right, color-mix(in srgb, var(--circle-primary, #2563eb) 18%, transparent), transparent 42%),
+    var(--circle-work-card-bg, linear-gradient(180deg, #fffdf5 0%, #f4f8ff 100%));
+}
 .work-card.disabled {
   opacity: .94;
   filter: saturate(0.5) grayscale(0.14);
@@ -500,6 +515,33 @@ function onCoverLoad() {
     box-shadow:
       0 0 0 0 rgba(82, 170, 103, 0),
       0 8px 18px rgba(73, 137, 91, 0.08);
+  }
+}
+@keyframes workLocateFlash {
+  0% {
+    transform: translateY(-2px) scale(0.98);
+    filter: saturate(1.15);
+    box-shadow:
+      0 0 0 0 color-mix(in srgb, var(--circle-tag-warning, #f59e0b) 46%, transparent),
+      0 8px 18px rgba(37, 99, 235, 0.1);
+  }
+  22% {
+    transform: translateY(-5px) scale(1.025);
+    filter: saturate(1.3);
+    box-shadow:
+      0 0 0 5px color-mix(in srgb, var(--circle-tag-warning, #f59e0b) 28%, transparent),
+      0 0 0 12px color-mix(in srgb, var(--circle-primary, #2563eb) 12%, transparent),
+      0 20px 34px rgba(37, 99, 235, 0.2);
+  }
+  58% {
+    transform: translateY(-2px) scale(1.01);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    filter: saturate(1);
+    box-shadow:
+      0 0 0 0 color-mix(in srgb, var(--circle-tag-warning, #f59e0b) 0%, transparent),
+      0 8px 20px rgba(15, 23, 42, 0.045);
   }
 }
 
