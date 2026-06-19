@@ -1,6 +1,7 @@
 import os
 import re
 import asyncio
+import time
 from datetime import datetime, timedelta
 from typing import Any, Iterable, Optional, Dict, List
 import requests
@@ -13,6 +14,51 @@ from ..core.task_engine import Task
 from ..core.dlsite_service import get_dlsite_service
 
 logger = logging.getLogger(__name__)
+
+_DLSITE_METADATA_CIRCUIT_FAILURE_THRESHOLD = 3
+_DLSITE_METADATA_CIRCUIT_OPEN_SECONDS = 45.0
+_DLSITE_METADATA_CIRCUIT: Dict[str, Any] = {
+    "failures": 0,
+    "open_until": 0.0,
+    "last_error": "",
+}
+
+
+def _dlsite_metadata_circuit_state() -> Dict[str, Any]:
+    now = time.monotonic()
+    open_until = float(_DLSITE_METADATA_CIRCUIT.get("open_until") or 0.0)
+    return {
+        "open": open_until > now,
+        "remaining_seconds": max(0.0, open_until - now),
+        "failures": int(_DLSITE_METADATA_CIRCUIT.get("failures") or 0),
+        "last_error": str(_DLSITE_METADATA_CIRCUIT.get("last_error") or ""),
+    }
+
+
+def get_dlsite_metadata_circuit_state() -> Dict[str, Any]:
+    """返回 DLsite 元数据短熔断状态，供 API 慢日志补充上下文。"""
+    return _dlsite_metadata_circuit_state()
+
+
+def _record_dlsite_metadata_success() -> None:
+    _DLSITE_METADATA_CIRCUIT["failures"] = 0
+    _DLSITE_METADATA_CIRCUIT["open_until"] = 0.0
+    _DLSITE_METADATA_CIRCUIT["last_error"] = ""
+
+
+def _record_dlsite_metadata_failure(error: Any) -> None:
+    failures = int(_DLSITE_METADATA_CIRCUIT.get("failures") or 0) + 1
+    _DLSITE_METADATA_CIRCUIT["failures"] = failures
+    _DLSITE_METADATA_CIRCUIT["last_error"] = str(error or "")[:240]
+    if failures >= _DLSITE_METADATA_CIRCUIT_FAILURE_THRESHOLD:
+        _DLSITE_METADATA_CIRCUIT["open_until"] = time.monotonic() + _DLSITE_METADATA_CIRCUIT_OPEN_SECONDS
+        logger.warning(
+            "[DLsite] 元数据短熔断开启 %.0fs failures=%s last_error=%s",
+            _DLSITE_METADATA_CIRCUIT_OPEN_SECONDS,
+            failures,
+            _DLSITE_METADATA_CIRCUIT["last_error"],
+        )
+
 
 class WorkMetadata:
     """作品元数据。"""
@@ -31,6 +77,9 @@ class WorkMetadata:
         self.price_text: str = ""
         self.is_bonus_work: bool = False
         self.has_bonus: bool = False
+        self.metadata_source: str = "unknown"
+        self.dlsite_circuit_open: bool = False
+        self.rename_skipped_reason: str = ""
         # _apply_dlsite_bonus_info 成功时写入当前时间。
         # None 表示这次 metadata 没向 DLsite 实际确认过 bonus（落库后仍是 NULL，
         # build_circle_completion_view 会按 NULL 做一次性懒迁移）。
@@ -53,6 +102,8 @@ class WorkMetadata:
             'is_bonus_work': self.is_bonus_work,
             'has_bonus': self.has_bonus,
             'bonus_info_checked_at': self.bonus_info_checked_at.isoformat() if self.bonus_info_checked_at else None,
+            'metadata_source': self.metadata_source,
+            'dlsite_circuit_open': self.dlsite_circuit_open,
         }
 
 class MetadataService:
@@ -148,27 +199,49 @@ class MetadataService:
             cached = self._get_cached_metadata(rjcode)
             if cached and not self._should_refresh_cached_metadata(cached):
                 logger.info("使用缓存元数据: %s", rjcode)
-                return cached.to_dict()
+                payload = cached.to_dict()
+                payload["metadata_source"] = "cache"
+                payload["dlsite_circuit_open"] = _dlsite_metadata_circuit_state()["open"]
+                return payload
             if cached:
                 logger.info("缓存元数据命中但已判定需要刷新: %s maker_name=%s", rjcode, cached.maker_name)
 
+        circuit_state = _dlsite_metadata_circuit_state()
+        if circuit_state["open"]:
+            logger.warning(
+                "[%s] DLsite 元数据短熔断中，跳过外部请求 remaining=%.1fs last_error=%s",
+                rjcode,
+                circuit_state["remaining_seconds"],
+                circuit_state["last_error"],
+            )
+            metadata = self._build_minimal_metadata(rjcode, path)
+            metadata.dlsite_circuit_open = True
+            metadata.rename_skipped_reason = "DLsite 元数据短熔断中"
+            return metadata.to_dict()
+
         metadata = None
+        last_error = ""
         try:
             metadata = await self._fetch_from_dlsite_product_info(rjcode)
         except Exception as exc:
+            last_error = str(exc)
             logger.warning("[%s] DLsite product_info 链路失败: %s", rjcode, exc)
 
         if metadata is None:
             try:
                 metadata = await self._fetch_from_dlsite(rjcode)
             except Exception as exc:
+                last_error = str(exc)
                 logger.warning("[%s] DLsite API 直连链路失败: %s", rjcode, exc)
 
         if metadata is None:
             logger.warning("[%s] 所有元数据链路都失败，降级为最小元数据", rjcode)
+            _record_dlsite_metadata_failure(last_error or "metadata_not_found")
             metadata = self._build_minimal_metadata(rjcode, path)
+        else:
+            _record_dlsite_metadata_success()
 
-        if self.config.metadata.cache_enabled:
+        if self.config.metadata.cache_enabled and metadata.metadata_source != "minimal":
             self._cache_metadata(metadata)
 
         return metadata.to_dict()
@@ -347,6 +420,7 @@ class MetadataService:
     def _build_minimal_metadata(self, rjcode: str, path: str) -> WorkMetadata:
         """构建最小可用元数据，避免整条处理链中断。"""
         metadata = WorkMetadata()
+        metadata.metadata_source = "minimal"
         metadata.rjcode = rjcode
 
         path_name = os.path.basename(os.path.normpath(path or ''))
@@ -503,6 +577,7 @@ class MetadataService:
 
     async def _build_metadata_from_dlsite_product(self, rjcode: str, product: Dict) -> WorkMetadata:
         metadata = WorkMetadata()
+        metadata.metadata_source = "dlsite"
         metadata.rjcode = product.get('workno', rjcode)
         metadata.work_name = product.get('work_name', '')
         maker_fields = await self._resolve_original_maker_fields(product, rjcode)
@@ -615,10 +690,13 @@ class MetadataService:
                     self.config.metadata.locale,
                 )
 
-            return await self._build_metadata_from_dlsite_product(
+            metadata = await self._build_metadata_from_dlsite_product(
                 rjcode,
                 product_info.get('product') or {},
             )
+            if product_info.get('fallback_used'):
+                metadata.metadata_source = "fallback"
+            return metadata
         except Exception as e:
             logger.warning(f"[{rjcode}] DLsite product_info 链路失败，回退到直连 API: {e}")
             return None
@@ -664,6 +742,7 @@ class MetadataService:
             
             product = data[0]
             metadata = WorkMetadata()
+            metadata.metadata_source = "dlsite"
             metadata.rjcode = product.get('workno', rjcode)
             metadata.work_name = product.get('work_name', '')
 

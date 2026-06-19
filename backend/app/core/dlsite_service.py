@@ -12,6 +12,7 @@ import logging
 import os
 import random
 import re
+import time
 from typing import Any, Dict, List, Optional, Set
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -21,6 +22,42 @@ from urllib.parse import parse_qs, urlparse
 from .ttl_cache import TTLCache
 
 logger = logging.getLogger(__name__)
+
+_DLSITE_HTTP_CIRCUIT_FAILURE_THRESHOLD = 6
+_DLSITE_HTTP_CIRCUIT_OPEN_SECONDS = 45.0
+_DLSITE_HTTP_CIRCUIT: Dict[str, Any] = {
+    "failures": 0,
+    "open_until": 0.0,
+    "last_error": "",
+}
+
+
+def _dlsite_http_circuit_is_open() -> bool:
+    return float(_DLSITE_HTTP_CIRCUIT.get("open_until") or 0.0) > time.monotonic()
+
+
+def _dlsite_http_circuit_remaining_seconds() -> float:
+    return max(0.0, float(_DLSITE_HTTP_CIRCUIT.get("open_until") or 0.0) - time.monotonic())
+
+
+def _record_dlsite_http_success() -> None:
+    _DLSITE_HTTP_CIRCUIT["failures"] = 0
+    _DLSITE_HTTP_CIRCUIT["open_until"] = 0.0
+    _DLSITE_HTTP_CIRCUIT["last_error"] = ""
+
+
+def _record_dlsite_http_failure(error: Any) -> None:
+    failures = int(_DLSITE_HTTP_CIRCUIT.get("failures") or 0) + 1
+    _DLSITE_HTTP_CIRCUIT["failures"] = failures
+    _DLSITE_HTTP_CIRCUIT["last_error"] = str(error or "")[:240]
+    if failures >= _DLSITE_HTTP_CIRCUIT_FAILURE_THRESHOLD:
+        _DLSITE_HTTP_CIRCUIT["open_until"] = time.monotonic() + _DLSITE_HTTP_CIRCUIT_OPEN_SECONDS
+        logger.warning(
+            "[DLsite] HTTP 短熔断开启 %.0fs failures=%s last_error=%s",
+            _DLSITE_HTTP_CIRCUIT_OPEN_SECONDS,
+            failures,
+            _DLSITE_HTTP_CIRCUIT["last_error"],
+        )
 
 
 def _detect_brotli_support() -> bool:
@@ -1301,11 +1338,15 @@ class DLsiteApiService:
         ``aiohttp.ClientResponseError 429`` 再回滚）。
         每次进入 semaphore 后加随机抖动延迟，分散请求时序，降低被限流概率。
         """
+        if _dlsite_http_circuit_is_open():
+            remaining = _dlsite_http_circuit_remaining_seconds()
+            raise httpx.ConnectError(f"DLsite HTTP 短熔断中，剩余 {remaining:.1f}s")
+
         if self._http_semaphore is None:
-            # 6 个并发 DLsite 请求 + 0.1-0.3s 抖动：用 ``DLSITE_HTTP_CONCURRENCY``
+            # 默认 3 个并发 DLsite 请求 + 0.1-0.3s 抖动：用 ``DLSITE_HTTP_CONCURRENCY``
             # / ``DLSITE_HTTP_SLEEP_MIN`` / ``DLSITE_HTTP_SLEEP_MAX`` 环境变量可在
-            # 限流复现时临时压回 3 / 0.2 / 0.8。
-            sem_size = max(1, int(os.environ.get("DLSITE_HTTP_CONCURRENCY", "6") or "6"))
+            # 网络波动时临时压回 1 / 0.2 / 0.8。
+            sem_size = max(1, int(os.environ.get("DLSITE_HTTP_CONCURRENCY", "3") or "3"))
             self._http_semaphore = asyncio.Semaphore(sem_size)
         sleep_min = float(os.environ.get("DLSITE_HTTP_SLEEP_MIN", "0.1") or "0.1")
         sleep_max = float(os.environ.get("DLSITE_HTTP_SLEEP_MAX", "0.3") or "0.3")
@@ -1314,10 +1355,12 @@ class DLsiteApiService:
                 async with self._http_semaphore:
                     await asyncio.sleep(random.uniform(sleep_min, sleep_max))
                     client = await self._get_client()
-                    return await client.get(url, **kwargs)
+                    response = await client.get(url, **kwargs)
+                    _record_dlsite_http_success()
+                    return response
             except (httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError) as exc:
                 wait = 2.0 * (2 ** attempt)  # 2s → 4s → 8s
-                await self._close_client()
+                _record_dlsite_http_failure(exc)
                 if attempt < 2:
                     logger.warning(
                         "[DLsite] 请求失败，等待 %.0fs 后重试（第 %d 次）: %s error=%s",
@@ -1326,7 +1369,13 @@ class DLsiteApiService:
                     await asyncio.sleep(wait)
                     continue
                 logger.warning("[DLsite] 复用客户端重试失败，改用一次性客户端: %s error=%s", url, self._format_exc(exc))
-                return await self._one_shot_get(url, **kwargs)
+                try:
+                    response = await self._one_shot_get(url, **kwargs)
+                    _record_dlsite_http_success()
+                    return response
+                except (httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError) as one_shot_exc:
+                    _record_dlsite_http_failure(one_shot_exc)
+                    raise
         raise RuntimeError("unreachable")
 
     async def _fetch_api(self, url: str) -> Optional[Dict]:

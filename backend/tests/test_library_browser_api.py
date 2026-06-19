@@ -4,6 +4,8 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from app.api import routes as routes_module
 from app.config.settings import LibraryConfigItem, StorageConfig
 from app.core import library_index as library_index_module
@@ -1058,6 +1060,118 @@ def test_api_rename_locks_metadata_to_target_folder_rjcode(monkeypatch):
     assert captured["japanese_rjcode"] == "RJ01572763"
     assert captured["rename"]["new_name"] == "[青春][RJ01572763]"
     assert captured["rename"]["sync_index_mutation"] is True
+
+
+def test_api_rename_rejects_minimal_metadata_without_renaming(monkeypatch):
+    captured = {}
+
+    class FakeLibrary:
+        id = "remote-a"
+        type = "synology_filestation"
+
+    class FakeLibraryManager:
+        def get_library_definition(self, library_id):
+            return FakeLibrary()
+
+        async def rename(self, *_args, **_kwargs):
+            captured["rename_called"] = True
+            raise AssertionError("元数据不可用时不应执行重命名")
+
+    class FakeMetadataService:
+        async def fetch(self, path, task, force_refresh=False):
+            captured["metadata_task_rjcode"] = task.rjcode
+            captured["force_refresh"] = force_refresh
+            return {
+                "rjcode": "RJ01572763",
+                "work_name": "RJ01572763",
+                "maker_name": "",
+                "tags": [],
+                "cvs": [],
+                "cover_url": "",
+                "release_date": "",
+                "metadata_source": "minimal",
+                "dlsite_circuit_open": False,
+            }
+
+    monkeypatch.setattr(routes_module, "get_library_manager", lambda: FakeLibraryManager())
+    monkeypatch.setattr("app.core.metadata_service.MetadataService", lambda: FakeMetadataService())
+    monkeypatch.setattr("app.core.activity_log_service.log_api_rename_action", lambda **_kwargs: None)
+
+    with pytest.raises(routes_module.HTTPException) as exc_info:
+        asyncio.run(
+            routes_module.api_rename_library_file(_FakeJsonRequest({
+                "library_id": "remote-a",
+                "path": "/library_amsr/青春/RJ01572763",
+            }))
+        )
+
+    assert exc_info.value.status_code == 422
+    assert "DLsite 元数据不可用" in str(exc_info.value.detail)
+    assert captured["metadata_task_rjcode"] == "RJ01572763"
+    assert captured["force_refresh"] is False
+    assert "rename_called" not in captured
+
+
+def test_batch_api_rename_skips_minimal_metadata_without_batch_renaming(monkeypatch):
+    routes_module._BATCH_API_RENAME_INFLIGHT.clear()
+    captured = {}
+
+    class FakeLibrary:
+        id = "remote-a"
+        type = "synology_filestation"
+
+    class FakeLibraryManager:
+        def get_library_definition(self, library_id):
+            captured["library_id"] = library_id
+            return FakeLibrary()
+
+        async def batch_rename(self, *_args, **_kwargs):
+            captured["batch_rename_called"] = True
+            raise AssertionError("元数据不可用时不应执行批量重命名")
+
+    class FakeMetadataService:
+        async def fetch(self, path, task, force_refresh=False):
+            captured["metadata_task_rjcode"] = task.rjcode
+            captured["metadata_task_metadata"] = dict(task.task_metadata)
+            return {
+                "rjcode": "RJ01572763",
+                "work_name": "RJ01572763",
+                "maker_name": "",
+                "tags": [],
+                "cvs": [],
+                "cover_url": "",
+                "release_date": "",
+                "metadata_source": "minimal",
+                "dlsite_circuit_open": True,
+            }
+
+    monkeypatch.setattr(routes_module, "get_library_manager", lambda: FakeLibraryManager())
+    monkeypatch.setattr("app.core.metadata_service.MetadataService", lambda: FakeMetadataService())
+    monkeypatch.setattr("app.core.activity_log_service.log_api_rename_action", lambda **_kwargs: None)
+    monkeypatch.setattr("app.core.activity_log_service.log_batch_api_rename_result", lambda **_kwargs: None)
+
+    response = asyncio.run(
+        routes_module.batch_api_rename_library_items(
+            _FakeJsonRequest({
+                "library_id": "remote-a",
+                "paths": ["/library_amsr/青春/RJ01572763"],
+            }),
+            None,
+        )
+    )
+
+    assert response["success_count"] == 0
+    assert response["failed_count"] == 1
+    assert response["results"][0]["success"] is False
+    assert response["results"][0]["skipped"] is True
+    assert "DLsite 元数据短熔断中" in response["results"][0]["error"]
+    assert response["results"][0]["metadata_source"] == "minimal"
+    assert captured["metadata_task_rjcode"] == "RJ01572763"
+    assert captured["metadata_task_metadata"] == {
+        "rjcode": "RJ01572763",
+        "rjcode_lock": True,
+    }
+    assert "batch_rename_called" not in captured
 
 
 def test_index_mutation_threshold_schedules_background_flush(monkeypatch):
