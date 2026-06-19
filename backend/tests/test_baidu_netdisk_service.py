@@ -578,6 +578,67 @@ def test_baidu_custom_file_names_apply_to_multi_file_share(monkeypatch):
     assert rows[1]["custom_file_rename_applied"] is True
 
 
+def test_baidu_custom_file_names_dedupe_split_volume_suffix(monkeypatch):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.extract = type("ExtractConfig", (), {
+        "filename_password_sniff_templates": ["{name}（{password}）"],
+    })()
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+
+    rows = service._apply_custom_download_name_to_rows(
+        {
+            "custom_file_names": {
+                "fs-001": {"custom_name": "RJ01618696.7z.001"},
+                "fs-002": {"custom_name": "RJ01618696.7z.002"},
+                "fs-003": {"custom_name": "RJ01618696.7z.003"},
+                "fs-004": {"custom_name": "RJ01618696.7z.004"},
+            },
+        },
+        [
+            {"fs_id": "fs-001", "name": "RJ01618696.7z.001", "relative_path": "RJ01618696.7z.001"},
+            {"fs_id": "fs-002", "name": "RJ01618696.7z.002", "relative_path": "RJ01618696.7z.002"},
+            {"fs_id": "fs-003", "name": "RJ01618696.7z.003", "relative_path": "RJ01618696.7z.003"},
+            {"fs_id": "fs-004", "name": "RJ01618696.7z.004", "relative_path": "RJ01618696.7z.004"},
+        ],
+    )
+
+    assert [row["name"] for row in rows] == [
+        "RJ01618696.7z.001",
+        "RJ01618696.7z.002",
+        "RJ01618696.7z.003",
+        "RJ01618696.7z.004",
+    ]
+    assert all(".7z.002.7z.002" not in row["relative_path"] for row in rows)
+
+
+def test_baidu_custom_file_names_dedupe_first_volume_name_for_all_parts(monkeypatch):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.extract = type("ExtractConfig", (), {
+        "filename_password_sniff_templates": ["{name}（{password}）"],
+    })()
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+
+    rows = service._apply_custom_download_name_to_rows(
+        {
+            "custom_file_names": {
+                "fs-001": {"custom_name": "RJ01618696.7z.001"},
+                "fs-002": {"custom_name": "RJ01618696.7z.001"},
+            },
+        },
+        [
+            {"fs_id": "fs-001", "name": "RJ01618696.7z.001", "relative_path": "RJ01618696.7z.001"},
+            {"fs_id": "fs-002", "name": "RJ01618696.7z.002", "relative_path": "RJ01618696.7z.002"},
+        ],
+    )
+
+    assert [row["name"] for row in rows] == [
+        "RJ01618696.7z.001",
+        "RJ01618696.7z.002",
+    ]
+
+
 def test_baidu_filter_preview_selection_merges_custom_file_names():
     service = BaiduNetdiskService()
 
