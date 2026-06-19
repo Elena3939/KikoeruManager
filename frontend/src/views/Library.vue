@@ -2664,8 +2664,6 @@ const folderCompletionPreviewDismissed = ref(false)
 let folderCompletionPreviewTimer = null
 const FOLDER_COMPLETION_FALLBACK_POLL_MS = 30000
 
-const BATCH_API_RENAME_CONCURRENCY = 4
-
 const tableRef = ref(null)
 
 const tableMarqueeRef = ref(null)
@@ -23403,76 +23401,60 @@ async function runBatchApiRenameRows (targetGroups, batchId) {
 
   const results = []
 
-  const tasks = []
-
   for (const [libraryId, rows] of targetGroups.entries()) {
 
-    for (const row of rows) {
+    const runnableRows = rows.filter(row => row?.path)
+    if (!runnableRows.length) continue
 
-      tasks.push({
-        libraryId,
-        row
-      })
+    try {
 
-    }
+      const response = await libraryApi.batchApiRename(runnableRows.map(row => row.path), libraryId)
+      const responseResults = Array.isArray(response?.results) ? response.results : []
+      const resultByPath = new Map(responseResults.map(item => [String(item?.path || ''), item]))
 
-  }
+      runnableRows.forEach((row, index) => {
+        const item = resultByPath.get(String(row.path || '')) || responseResults[index] || {}
+        const success = Boolean(item?.success)
+        const nextPath = item?.new_path || item?.path_after || ''
+        const nextName = item?.new_name || item?.name || ''
 
-  let cursor = 0
-
-  const workers = Array.from({ length: Math.min(BATCH_API_RENAME_CONCURRENCY, tasks.length) }, async () => {
-
-    while (cursor < tasks.length) {
-
-      const index = cursor
-      cursor += 1
-      const task = tasks[index]
-
-      if (!task?.row?.path) continue
-
-      try {
-
-        const response = await libraryApi.apiRename(task.row.path, task.libraryId, { batchId })
-        const nextPath = response?.path || response?.new_path || ''
-        const nextName = response?.new_name || response?.name || ''
-
-        if (nextPath) {
-          replaceRowPathInCurrentView(task.row.path, nextPath, nextName)
+        if (success && nextPath) {
+          replaceRowPathInCurrentView(row.path, nextPath, nextName)
         }
 
         results.push({
-          path: task.row.path,
-          success: true,
+          path: row.path,
+          success,
           nextPath,
           nextName,
-          message: response?.message || 'API 重命名成功',
-          error: ''
+          message: item?.message || (success ? 'API 重命名成功' : ''),
+          error: success ? '' : (item?.error || item?.detail || 'API 重命名失败')
         })
+      })
 
-      } catch (error) {
+    } catch (error) {
 
+      const message = error?.response?.data?.detail || error?.message || '未知错误'
+      runnableRows.forEach(row => {
         results.push({
-          path: task.row.path,
+          path: row.path,
           success: false,
           nextPath: '',
           nextName: '',
           message: '',
-          error: error?.response?.data?.detail || error?.message || '未知错误'
+          error: message
         })
+      })
 
-      } finally {
+    } finally {
 
-        const nextRunning = new Set(batchApiRenameRunningIds.value)
-        nextRunning.delete(task.row.id)
-        batchApiRenameRunningIds.value = nextRunning
-
-      }
+      const nextRunning = new Set(batchApiRenameRunningIds.value)
+      runnableRows.forEach(row => nextRunning.delete(row.id))
+      batchApiRenameRunningIds.value = nextRunning
 
     }
 
-  })
-
-  await Promise.all(workers)
+  }
 
   return results
 

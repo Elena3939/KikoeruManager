@@ -48,6 +48,29 @@ def _batch_api_rename_request_key(library_id: Any, paths: List[Any]) -> str:
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
+
+def _api_rename_metadata_skip_reason(metadata: Dict[str, Any], rjcode: str) -> str:
+    source = str(metadata.get("metadata_source") or "").strip().lower()
+    normalized_rj = str(rjcode or metadata.get("rjcode") or "").strip().upper()
+    work_name = str(metadata.get("work_name") or "").strip()
+    maker_name = str(metadata.get("maker_name") or "").strip()
+    has_any_detail = any(
+        [
+            str(metadata.get("cover_url") or "").strip(),
+            str(metadata.get("release_date") or "").strip(),
+            metadata.get("tags") or [],
+            metadata.get("cvs") or [],
+        ]
+    )
+
+    if source == "minimal":
+        if metadata.get("dlsite_circuit_open"):
+            return "DLsite 元数据短熔断中，已跳过重命名"
+        return "DLsite 元数据不可用，已跳过重命名"
+    if not maker_name and work_name.upper() == normalized_rj and not has_any_detail:
+        return "元数据不完整，已跳过重命名"
+    return ""
+
 from ..models.database import init_db, get_db, get_db_path_info, ActivityLog, ASMRDownloadSession, SessionLocal
 from ..core.task_engine import TaskEngine, Task, TaskType, get_task_engine
 from ..core.watcher import get_watcher
@@ -9894,11 +9917,15 @@ async def api_rename_library_file(request: Request):
     old_name = ""
     new_name = ""
     batch_id = ""
+    metadata_source = ""
+    dlsite_circuit_open = False
+    rename_skipped_reason = ""
     try:
         data = await request.json()
         file_path = str(data.get("path") or "").strip()
         library_id = data.get("library_id")
         batch_id = str(data.get("batch_id") or "").strip()
+        force_refresh = bool(data.get("force_refresh") or data.get("forceRefresh"))
         manager = get_library_manager()
         library = manager.get_library_definition(library_id) if library_id else None
         if library is None and file_path:
@@ -9926,28 +9953,27 @@ async def api_rename_library_file(request: Request):
         old_name = target_name
         logger.info(f"API重新命名: {file_path}, RJ号: {rjcode}")
         
-        # 获取元数据（强制刷新，不使用缓存）
+        # 获取元数据；默认复用有效缓存，只有 force_refresh 才清缓存。
         from ..core.metadata_service import MetadataService
         from ..models.database import WorkMetadata as WorkMetadataModel, get_db
         metadata_service = MetadataService()
         
         try:
-            # 清除该RJ号的缓存（强制重新获取）
-            db = next(get_db())
-            try:
-                deleted_count = db.query(WorkMetadataModel).filter(
-                    WorkMetadataModel.rjcode == rjcode
-                ).delete()
-                db.commit()
-                if deleted_count > 0:
-                    logger.info(f"[{rjcode}] 已清除缓存，准备重新获取元数据")
-                else:
-                    logger.info(f"[{rjcode}] 无缓存，将直接获取元数据")
-            except Exception as e:
-                logger.warning(f"[{rjcode}] 清除缓存失败: {e}")
-                db.rollback()
-            finally:
-                db.close()
+            if force_refresh:
+                db = next(get_db())
+                try:
+                    deleted_count = db.query(WorkMetadataModel).filter(
+                        WorkMetadataModel.rjcode == rjcode
+                    ).delete()
+                    db.commit()
+                    logger.info("[%s] force_refresh 已清除缓存 count=%s", rjcode, deleted_count)
+                except Exception as e:
+                    logger.warning(f"[{rjcode}] 清除缓存失败: {e}")
+                    db.rollback()
+                finally:
+                    db.close()
+            else:
+                logger.info("[%s] API 重命名优先复用有效元数据缓存", rjcode)
             
             # 创建临时任务对象（用于进度更新，虽然这里不需要）
             from ..core.task_engine import Task, TaskType
@@ -9961,8 +9987,20 @@ async def api_rename_library_file(request: Request):
                 "rjcode_lock": True,
             }
             
-            metadata = await metadata_service.fetch(file_path, temp_task)
-            logger.info(f"获取到元数据: {metadata}")
+            metadata = await metadata_service.fetch(file_path, temp_task, force_refresh=force_refresh)
+            skip_reason = _api_rename_metadata_skip_reason(metadata, rjcode)
+            metadata_source = str(metadata.get("metadata_source") or "")
+            dlsite_circuit_open = bool(metadata.get("dlsite_circuit_open"))
+            rename_skipped_reason = skip_reason
+            logger.info(
+                "获取到元数据: %s metadata_source=%s dlsite_circuit_open=%s rename_skipped_reason=%s",
+                metadata,
+                metadata_source,
+                dlsite_circuit_open,
+                skip_reason,
+            )
+            if skip_reason:
+                raise HTTPException(status_code=422, detail=skip_reason)
         except HTTPException:
             raise
         except Exception as e:
@@ -10097,7 +10135,12 @@ async def api_rename_library_file(request: Request):
                 batch_id=batch_id or None,
                 library_id=str(library_id or "") or None,
                 error=str(exc.detail or exc),
-                status="failed",
+                status="skipped" if exc.status_code == 422 and rename_skipped_reason else "failed",
+                extra_detail={
+                    "metadata_source": metadata_source,
+                    "dlsite_circuit_open": dlsite_circuit_open,
+                    "rename_skipped_reason": rename_skipped_reason,
+                } if rename_skipped_reason else None,
             )
         except Exception:
             logger.debug("[操作记录] API 重命名 HTTP 异常记录失败", exc_info=True)
@@ -10346,7 +10389,7 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
             manager = get_library_manager()
             request_library = manager.get_library_definition(library_id) if library_id else None
             rename_service = RenameService()
-            plan_semaphore = asyncio.Semaphore(max(1, min(4, len(paths))))
+            plan_semaphore = asyncio.Semaphore(max(1, min(2, len(paths))))
             rename_plans_by_library: dict[str, dict[str, Any]] = {}
 
             def _plan_library(path_value: str):
@@ -10406,11 +10449,51 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                         child_rjcode = rjcode
 
                         # 创建临时任务
-                        temp_task = Task(task_type=TaskType.METADATA, source_path=path)
+                        temp_task = Task(task_type=TaskType.METADATA, source_path=path, rjcode=rjcode)
+                        temp_task.task_metadata = {
+                            "rjcode": rjcode,
+                            "rjcode_lock": True,
+                        }
 
                         # 获取元数据
                         metadata_service = MetadataService()
                         metadata = await metadata_service.fetch(path, temp_task)
+                        skip_reason = _api_rename_metadata_skip_reason(metadata, rjcode)
+                        logger.info(
+                            "[批量 API重命名] 元数据结果 path=%s rj=%s metadata_source=%s dlsite_circuit_open=%s skip=%s",
+                            path,
+                            rjcode,
+                            metadata.get("metadata_source") or "",
+                            bool(metadata.get("dlsite_circuit_open")),
+                            skip_reason,
+                        )
+                        if skip_reason:
+                            log_api_rename_action(
+                                action="batch_api_rename_item",
+                                success=False,
+                                source_path=path,
+                                old_name=old_name,
+                                rjcode=child_rjcode or None,
+                                batch_id=batch_id,
+                                library_id=str(library_id or "") or None,
+                                error=skip_reason,
+                                status="skipped",
+                                extra_detail={
+                                    "metadata_source": metadata.get("metadata_source") or "",
+                                    "dlsite_circuit_open": bool(metadata.get("dlsite_circuit_open")),
+                                    "rename_skipped_reason": skip_reason,
+                                },
+                            )
+                            return {
+                                "item_index": item_index,
+                                "result": {
+                                    "path": path,
+                                    "success": False,
+                                    "skipped": True,
+                                    "error": skip_reason,
+                                    "metadata_source": metadata.get("metadata_source") or "",
+                                },
+                            }
 
                         # 生成新名称
                         config = get_config()
