@@ -1606,9 +1606,10 @@ function selectedPreviewItemsForStart() {
 
 function rowCanShowSelectionCheck(row) {
   if (!row) return false
+  if (row.isPlatform) return false
   if (!row.ok) return true
   if (!row.isDir) return Boolean(row.selectable)
-  return !row.isPlatform && previewRowSelectionRows(row).length > 0
+  return previewRowSelectionRows(row).length > 0
 }
 
 function previewTreeCountLabel(row) {
@@ -1617,6 +1618,7 @@ function previewTreeCountLabel(row) {
 }
 
 function previewTreeSelectionClass(row) {
+  if (!row || row.isPlatform) return 'is-off'
   if (row && !row.ok) return 'is-disabled'
   const rows = previewRowSelectionRows(row)
   if (!rows.length) return 'is-off'
