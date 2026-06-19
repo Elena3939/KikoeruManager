@@ -20,7 +20,7 @@
             <SettingsFieldCard label="下载线程数" hint="SVIP 建议 20，BaiduPCS-Go 支持范围 1~20。">
               <SettingsNumberStepper v-model="config.baidu_netdisk.max_parallel" :min="1" :max="20" />
             </SettingsFieldCard>
-            <SettingsFieldCard label="同时下载文件数" hint="SVIP 建议 5，BaiduPCS-Go 支持范围 1~5。">
+            <SettingsFieldCard label="全局同时下载文件数" hint="所有百度下载任务共享这个上限，SVIP 建议 5，范围 1~5。">
               <SettingsNumberStepper v-model="config.baidu_netdisk.max_download_load" :min="1" :max="5" />
             </SettingsFieldCard>
           </div>
