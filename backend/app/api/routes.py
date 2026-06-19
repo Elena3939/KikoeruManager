@@ -8503,6 +8503,7 @@ async def rename_library_browser_item(request: Request):
             path,
             new_name,
             skip_index_mutation=skip_index_mutation,
+            sync_index_mutation=not skip_index_mutation,
         )
         try:
             from ..core.activity_log_service import log_api_rename_action
@@ -8622,6 +8623,7 @@ async def batch_rename_library_browser_items(request: Request):
             library_id,
             normalized_items,
             skip_index_mutation=skip_index_mutation,
+            sync_index_mutation=not skip_index_mutation,
         )
         raw_success_results = list(batch_result.get("results") or [])
         raw_failed_results = list(batch_result.get("failed") or [])
@@ -10105,7 +10107,13 @@ async def api_rename_library_file(request: Request):
                 )
             except Exception:
                 logger.debug("[操作记录] API 重命名无变化记录失败", exc_info=True)
-            return {"message": "名称已是最新，无需重命名", "name": new_name}
+            return {
+                "message": "名称已是最新，无需重命名",
+                "name": new_name,
+                "new_name": new_name,
+                "path": file_path,
+                "new_path": file_path,
+            }
 
         # 执行重命名
         rename_result = await manager.rename(library.id, file_path, new_name, sync_index_mutation=True)
@@ -10577,6 +10585,7 @@ async def batch_api_rename_library_items(request: Request, background_tasks: Bac
                                     "success": True,
                                     "message": "名称已是最新",
                                     "new_name": new_name,
+                                    "new_path": path,
                                 },
                             }
 
