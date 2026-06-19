@@ -75,6 +75,52 @@
 
 前端“全选”使用这个接口，所以选中的是当前筛选结果全部作品，不是只选当前页。
 
+### `GET /api/circle-completion/circles/{circle_id}/work-location`
+
+参数与 `works` 使用同一套筛选 / 排序口径，额外包含：
+
+- `rjcode`: 要定位的 RJ 号，可为 canonical、display、关联 RJ、下载计划 RJ。
+- `page_size`: 当前列表页大小。
+
+返回轻量定位结果，不返回作品列表，也不返回全量 RJ codes：
+
+- `matched`: 当前 tab / 筛选 / 排序下是否命中。
+- `canonical_rjcode`
+- `display_rjcode`
+- `page`
+- `page_size`
+- `page_count`
+- `total`
+
+页头 RJ 搜索跳转用这个接口计算目标页，避免为了翻页定位把当前筛选结果的全部 RJ 拉到前端。
+
+### `GET /api/circle-completion/work-search`
+
+参数：
+
+- `keyword`: 作品标题、RJ 号或关联 RJ 号。
+- `limit`: 返回数量，默认 `20`，服务端最大 `50`。
+
+返回已建立社团索引内命中的作品，不触发 DLsite / Kikoeru 外部请求：
+
+- `circle_id`
+- `circle_name`
+- `canonical_rjcode`
+- `display_rjcode`
+- `linked_rjcodes`
+- `title`
+- `image_url`
+- `thumb_image_url`
+- `cvs`
+- `release_date`
+- `owned`
+- `server_owned`
+- `has_asmr_one`
+- `asmr_available_rjcode`
+- `last_indexed_at`
+
+前端页头搜索框使用这个接口。点击结果后根据 `owned` 状态切到目标社团的 `已满足` 或 `缺失作品` tab，再通过 `work-location` 翻到目标页并高亮命中卡片；页头搜索框保留命中 RJ。无命中时展示 `No Data`。
+
 ## 前端数据流
 
 `CircleCompletion.vue` 不再把 `detail.works` 当全社团全量数组使用。现在它只代表当前 tab 当前页：
@@ -82,6 +128,8 @@
 - 选中社团时并发请求 `summary` 和当前 tab 第 1 页。
 - 切 tab、分页、筛选、搜索、排序时只请求 `works`。
 - 搜索有 debounce，避免每个字符都打接口。
+- 页头 RJ / 作品定位搜索只查已建立索引，使用 debounce + AbortController 取消上一次请求，不会触发社团索引或外部 HTTP；无命中时展示 No Data 状态。
+- 搜索结果点击后只请求轻量定位结果和目标页，不请求旧 full detail，也不拉全量 `work-codes`，避免大社团定位跳转造成额外卡顿。
 - 邻近社团预取只缓存 summary + missing 首屏，并保存分页元信息，避免把 summary 总数误当当前页总数。
 - 下载预览、刷新选中、开始下载仍使用 `canonical_rjcodes`，接口语义不变。
 

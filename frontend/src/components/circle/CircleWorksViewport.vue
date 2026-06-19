@@ -14,6 +14,7 @@ const props = defineProps({
   serverPaging: { type: Boolean, default: false },
   selectedCodes: { type: Object, default: () => new Set() },
   flashedCodes: { type: Object, default: () => new Set() },
+  locatedCodes: { type: Object, default: () => new Set() },
   imageField: { type: String, default: 'image_url' },
   cornerLabel: { type: String, default: '' },
   pagerLabel: { type: String, default: '作品' },
@@ -90,6 +91,7 @@ const itemViewModels = computed(() => pagedItems.value.map((item, index) => {
     code,
     selected: Boolean(code && props.selectedCodes?.has?.(code)),
     flashed: Boolean(code && props.flashedCodes?.has?.(code)),
+    located: Boolean(code && props.locatedCodes?.has?.(code)),
   }
 }))
 const rowViewModels = computed(() => {
@@ -313,6 +315,7 @@ onBeforeUnmount(() => {
             :card-index="0"
             :selected="viewModel.selected"
             :status-flash="viewModel.flashed"
+            :locate-flash="viewModel.located"
             :corner-label="cornerLabel"
             :image-active="isImageActive(viewModel.key)"
             @select="emit('select', $event)"
@@ -326,6 +329,7 @@ onBeforeUnmount(() => {
             :row-index="0"
             :selected="viewModel.selected"
             :status-flash="viewModel.flashed"
+            :locate-flash="viewModel.located"
             :image-field="imageField"
             :corner-label="cornerLabel"
             :image-active="isImageActive(viewModel.key)"
@@ -364,6 +368,7 @@ onBeforeUnmount(() => {
                 :card-index="0"
                 :selected="cell.selected"
                 :status-flash="cell.flashed"
+                :locate-flash="cell.located"
                 :corner-label="cornerLabel"
                 :image-active="isImageActive(cell.key)"
                 @select="emit('select', $event)"
@@ -377,6 +382,7 @@ onBeforeUnmount(() => {
                 :row-index="0"
                 :selected="cell.selected"
                 :status-flash="cell.flashed"
+                :locate-flash="cell.located"
                 :image-field="imageField"
                 :corner-label="cornerLabel"
                 :image-active="isImageActive(cell.key)"

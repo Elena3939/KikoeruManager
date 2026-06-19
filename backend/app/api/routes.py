@@ -16489,6 +16489,27 @@ async def circle_completion_recent(limit: int = 20):
         raise HTTPException(status_code=500, detail=f"查询最近社团索引失败: {str(exc)}")
 
 
+@app.get("/api/circle-completion/work-search")
+async def circle_completion_work_search(
+    http_request: Request,
+    keyword: str = "",
+    limit: int = 20,
+):
+    from ..core.circle_completion_service import get_circle_completion_service
+
+    try:
+        http_request.state.slow_api_context = {
+            "keyword": bool(str(keyword or "").strip()),
+            "limit": limit,
+            "view": "work_search",
+        }
+        works = await get_circle_completion_service().search_circle_completion_works(keyword, limit=limit)
+        return {"success": True, "items": works, "total": len(works)}
+    except Exception as exc:
+        logger.error("搜索社团补全作品失败: %s", sanitize_text_for_log(exc))
+        raise HTTPException(status_code=500, detail=f"搜索社团补全作品失败: {str(exc)}")
+
+
 @app.get("/api/circle-completion/circles/names")
 async def circle_completion_all_circle_names():
     from ..core.circle_completion_service import get_circle_completion_service
@@ -16620,6 +16641,55 @@ async def circle_completion_work_codes(
     except Exception as exc:
         logger.error("查询社团补全作品编号失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"查询社团补全作品编号失败: {str(exc)}")
+
+
+@app.get("/api/circle-completion/circles/{circle_id}/work-location")
+async def circle_completion_work_location(
+    http_request: Request,
+    circle_id: str,
+    rjcode: str,
+    tab: str = "missing",
+    page_size: int = 10,
+    include_dl_only: bool = True,
+    status_filters: str = "",
+    owned_filter: str = "all",
+    compare_filter: str = "all",
+    search: str = "",
+    sort: str = "updated_desc",
+):
+    from ..core.circle_completion_service import get_circle_completion_service
+
+    try:
+        http_request.state.slow_api_context = {
+            "circle_id": circle_id,
+            "tab": tab,
+            "page_size": page_size,
+            "include_dl_only": bool(include_dl_only),
+            "status_filters": status_filters,
+            "owned_filter": owned_filter,
+            "compare_filter": compare_filter,
+            "search": bool(str(search or "").strip()),
+            "sort": sort,
+            "view": "work_location",
+        }
+        result = await get_circle_completion_service().locate_circle_completion_work(
+            circle_id,
+            rjcode=rjcode,
+            tab=tab,
+            page_size=page_size,
+            include_dl_only=bool(include_dl_only),
+            status_filters=status_filters,
+            owned_filter=owned_filter,
+            compare_filter=compare_filter,
+            search=search,
+            sort=sort,
+        )
+        return {"success": True, **result}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("定位社团补全作品失败: %s", sanitize_text_for_log(exc))
+        raise HTTPException(status_code=500, detail=f"定位社团补全作品失败: {str(exc)}")
 
 
 @app.get("/api/circle-completion/circles/{circle_id}")

@@ -10,15 +10,44 @@
       <div class="hero-search-wrap">
         <Search :size="13" class="hero-search-icon" />
         <el-input
-          v-model="circleQuery"
+          v-model="heroWorkSearchQuery"
           class="hero-search-input"
-          placeholder="输入社团名，例如 こぐま座 / C_Realization"
+          placeholder="搜索 RJ / 作品标题"
           clearable
-          @keyup.enter="handleIndexCircle"
+          @keyup.enter="jumpToFirstHeroWorkSearchResult"
+          @clear="clearHeroWorkSearch"
         />
+        <div v-if="showHeroWorkSearchPanel" class="hero-work-search-panel">
+          <div v-if="heroWorkSearchLoading" class="hero-work-search-state">搜索中...</div>
+          <div v-else-if="heroWorkSearchQuery.trim() && heroWorkSearchSearched && !heroWorkSearchResults.length" class="hero-work-search-state no-data">
+            <Hash :size="14" />
+            <span>No Data</span>
+          </div>
+          <template v-else>
+            <button
+              v-for="item in heroWorkSearchResults"
+              :key="`${item.circle_id}-${item.canonical_rjcode}`"
+              type="button"
+              class="hero-work-search-item"
+              @click="jumpToHeroWorkSearchResult(item)"
+            >
+              <div class="hero-work-search-cover">
+                <img v-if="item.thumb_image_url || item.image_url" :src="item.thumb_image_url || item.image_url" alt="" loading="lazy" decoding="async" />
+                <Hash v-else :size="14" />
+              </div>
+              <div class="hero-work-search-main">
+                <div class="hero-work-search-title" :title="item.title || item.display_rjcode">{{ item.title || item.display_rjcode }}</div>
+                <div class="hero-work-search-meta">
+                  <span>{{ item.display_rjcode || item.canonical_rjcode }}</span>
+                  <span>{{ item.circle_name || item.circle_id }}</span>
+                </div>
+              </div>
+              <span class="hero-work-search-status" :class="{ owned: item.owned }">{{ item.owned ? '已收录' : (item.has_asmr_one ? '可下载' : '未收录') }}</span>
+            </button>
+          </template>
+        </div>
       </div>
-      <el-button class="hero-btn hero-btn-primary" :loading="indexing" @click="handleIndexCircle">建立 / 刷新索引</el-button>
-      <el-button class="hero-btn hero-btn-secondary" :disabled="indexing" @click="openBatchIndexPrompt">批量创建</el-button>
+      <el-button class="hero-btn hero-btn-primary" :loading="indexing" @click="openIndexPrompt">批量建立 / 刷新</el-button>
       <el-tooltip content="立即检查 DLsite 邮件，提取新作 RJ 号并触发社团补全索引" placement="bottom">
         <el-button
           class="hero-btn hero-btn-email"
@@ -36,7 +65,7 @@
         <div>
           <div class="index-progress-title">索引进度</div>
           <div class="index-progress-subtitle">
-            {{ indexJob.circle_query || circleQuery || '当前社团' }} · {{ indexJob.current_step || '处理中' }}
+            {{ indexJob.circle_query || '当前社团' }} · {{ indexJob.current_step || '处理中' }}
           </div>
         </div>
         <div class="index-progress-head-actions">
@@ -409,6 +438,7 @@
                 :page-sizes="worksPageSizes"
                 :selected-codes="selectedCanonicals"
                 :flashed-codes="flashedWorkCodes"
+                :located-codes="locatedWorkCodes"
                 image-field="thumb_image_url"
                 pager-label="缺失作品"
                 @select="toggleSelection"
@@ -599,6 +629,7 @@
                   :page-sizes="worksPageSizes"
                   :selected-codes="selectedCanonicals"
                   :flashed-codes="flashedWorkCodes"
+                  :located-codes="locatedWorkCodes"
                   image-field="thumb_image_url"
                   corner-label="已收录"
                   pager-label="已满足作品"
@@ -954,9 +985,13 @@ function getJobProgressPercent(job) {
   return Math.max(0, Math.min(100, Math.round(value)))
 }
 
-const circleQuery = ref('')
 const circleSearch = ref('')
 const circleSearchRequestSeq = ref(0)
+const heroWorkSearchQuery = ref('')
+const heroWorkSearchResults = ref([])
+const heroWorkSearchLoading = ref(false)
+const heroWorkSearchSearched = ref(false)
+const heroWorkSearchRequestSeq = ref(0)
 const circleCompletionFilter = ref('all')
 const circleSortKey = ref('refreshed_at')
 
@@ -1010,6 +1045,9 @@ let circleDetailPrefetchIdleIsTimeout = false
 let circleDetailPrefetchRunning = false
 let circleWorksFetchTimer = null
 let circleSearchFetchTimer = null
+let heroWorkSearchFetchTimer = null
+let heroWorkSearchAbortController = null
+let suppressCircleWorksRefresh = false
 const filters = reactive({
   onlyMissing: false,
   onlyDownloadable: false,
@@ -1106,6 +1144,7 @@ function resetCircleDetail() {
   selectedCanonicals.value = new Set()
   selectedDownloadableCanonicals.value = new Set()
   selectedRequestedRjcodes.value = {}
+  locatedWorkCodes.value = new Set()
   Object.assign(circleWorksPage, { tab: 'missing', total: 0, page: 1, page_size: 10, page_count: 1, loading: false })
 }
 
@@ -1265,6 +1304,7 @@ const selectedCanonicals = ref(new Set())
 const selectedDownloadableCanonicals = ref(new Set())
 const selectedRequestedRjcodes = ref({})
 const flashedWorkCodes = ref(new Set())
+const locatedWorkCodes = ref(new Set())
 const circleWorksPage = reactive({
   tab: 'missing',
   total: 0,
@@ -1490,6 +1530,7 @@ const downloadSettings = reactive({
 })
 const cachedTargetSubdirs = ref([])
 let flashedWorkTimer = null
+let locatedWorkTimer = null
 let completeConfettiTimer = null
 const showCompleteConfetti = ref(false)
 const revealCompletePoster = ref(false)
@@ -1779,6 +1820,14 @@ watch(compareSourceFilter, () => {
   comparePage.value = 1
   if (activeTab.value === 'compare') scheduleCircleWorksRefresh()
 })
+const showHeroWorkSearchPanel = computed(() =>
+  Boolean(heroWorkSearchQuery.value.trim())
+  && (heroWorkSearchLoading.value || heroWorkSearchSearched.value || heroWorkSearchResults.value.length > 0)
+)
+
+watch(heroWorkSearchQuery, () => {
+  scheduleHeroWorkSearch()
+})
 
 function getOwnedVariantGroupLabel(item) {
   return item?.owned_variant?.group_short_label || '原作'
@@ -1947,6 +1996,20 @@ function flashChangedWorks(codes = []) {
     flashedWorkCodes.value = new Set()
     flashedWorkTimer = null
   }, 3000)
+}
+
+function flashLocatedWork(code) {
+  const normalized = String(code || '').trim()
+  if (!normalized) return
+  locatedWorkCodes.value = new Set([normalized])
+  if (locatedWorkTimer) {
+    window.clearTimeout(locatedWorkTimer)
+    locatedWorkTimer = null
+  }
+  locatedWorkTimer = window.setTimeout(() => {
+    locatedWorkCodes.value = new Set()
+    locatedWorkTimer = null
+  }, 3600)
 }
 
 function prioritizeChangedWorks(codes = []) {
@@ -2257,6 +2320,18 @@ onBeforeUnmount(() => {
     clearTimeout(circleSearchFetchTimer)
     circleSearchFetchTimer = null
   }
+  if (heroWorkSearchFetchTimer) {
+    clearTimeout(heroWorkSearchFetchTimer)
+    heroWorkSearchFetchTimer = null
+  }
+  if (heroWorkSearchAbortController) {
+    heroWorkSearchAbortController.abort()
+    heroWorkSearchAbortController = null
+  }
+  if (locatedWorkTimer) {
+    clearTimeout(locatedWorkTimer)
+    locatedWorkTimer = null
+  }
   stopIndexJobPolling()
   stopRefreshJobPolling()
   stopRefreshJobAutoHide()
@@ -2266,6 +2341,7 @@ onBeforeUnmount(() => {
 
 function scheduleCircleWorksRefresh(delay = 0) {
   if (!activeCircleId.value) return
+  if (suppressCircleWorksRefresh) return
   if (circleWorksFetchTimer) {
     clearTimeout(circleWorksFetchTimer)
     circleWorksFetchTimer = null
@@ -2291,6 +2367,7 @@ watch([missingPage, ownedPage, comparePage, worksPageSize, comparePageSize], () 
 })
 
 watch([statusFilterModel, () => filters.includeDlOnly], () => {
+  if (suppressCircleWorksRefresh) return
   missingPage.value = 1
   ownedPage.value = 1
   comparePage.value = 1
@@ -3563,6 +3640,198 @@ async function searchCachedCircles() {
   await syncActiveCircleWithList({ preserveActiveWhenEmpty: Boolean(keyword) })
 }
 
+function scheduleHeroWorkSearch() {
+  if (heroWorkSearchFetchTimer) {
+    clearTimeout(heroWorkSearchFetchTimer)
+    heroWorkSearchFetchTimer = null
+  }
+  const keyword = String(heroWorkSearchQuery.value || '').trim()
+  if (!keyword) {
+    if (heroWorkSearchAbortController) {
+      heroWorkSearchAbortController.abort()
+      heroWorkSearchAbortController = null
+    }
+    heroWorkSearchResults.value = []
+    heroWorkSearchLoading.value = false
+    heroWorkSearchSearched.value = false
+    return
+  }
+  heroWorkSearchFetchTimer = setTimeout(() => {
+    heroWorkSearchFetchTimer = null
+    searchHeroWork(keyword)
+  }, 240)
+}
+
+async function searchHeroWork(keyword) {
+  const query = String(keyword || heroWorkSearchQuery.value || '').trim()
+  if (!query) return
+  const requestSeq = ++heroWorkSearchRequestSeq.value
+  if (heroWorkSearchAbortController) {
+    heroWorkSearchAbortController.abort()
+  }
+  heroWorkSearchAbortController = new AbortController()
+  heroWorkSearchLoading.value = true
+  try {
+    const result = await circleCompletionApi.searchWorks(query, 12, {
+      signal: heroWorkSearchAbortController.signal
+    })
+    if (requestSeq !== heroWorkSearchRequestSeq.value) return
+    heroWorkSearchResults.value = Array.isArray(result.items) ? result.items : []
+    heroWorkSearchSearched.value = true
+  } catch (error) {
+    if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') return
+    heroWorkSearchResults.value = []
+    heroWorkSearchSearched.value = true
+    ElMessage.error(error.response?.data?.detail || '搜索 RJ 失败')
+  } finally {
+    if (requestSeq === heroWorkSearchRequestSeq.value) {
+      heroWorkSearchLoading.value = false
+      heroWorkSearchAbortController = null
+    }
+  }
+}
+
+function clearHeroWorkSearch() {
+  heroWorkSearchQuery.value = ''
+}
+
+async function jumpToFirstHeroWorkSearchResult() {
+  const keyword = String(heroWorkSearchQuery.value || '').trim()
+  if (!keyword) return
+  if (!heroWorkSearchResults.value.length) {
+    await searchHeroWork(keyword)
+  }
+  const first = heroWorkSearchResults.value[0]
+  if (first) await jumpToHeroWorkSearchResult(first)
+}
+
+function rjcodeMatchesWork(item, rjcode) {
+  const target = normalizeRjcode(rjcode)
+  if (!target) return false
+  const candidates = [
+    item?.canonical_rjcode,
+    item?.display_rjcode,
+    item?.server_match_primary_rjcode,
+    item?.asmr_available_rjcode,
+    item?.download_plan?.rjcode,
+    item?.owned_variant?.rjcode,
+    item?.preferred_variant?.rjcode,
+    ...(Array.isArray(item?.linked_rjcodes) ? item.linked_rjcodes : []),
+  ]
+  return candidates.some(candidate => normalizeRjcode(candidate) === target)
+}
+
+async function locateWorkPageInCircle(circleId, item, targetTab, rjcode) {
+  const pageSize = Number(worksPageSize.value || 10)
+  const result = await circleCompletionApi.getCircleWorkLocation(circleId, {
+    ...buildCircleWorksQuery({ includePage: false, tab: targetTab }),
+    rjcode,
+    tab: targetTab,
+    pageSize,
+    includeDlOnly: filters.includeDlOnly,
+    statusFilters: [],
+    ownedFilter: 'all',
+    compareFilter: 'all',
+    search: '',
+    sort: getCircleWorksSort()
+  })
+  return {
+    page: Math.max(1, Number(result?.page || 1)),
+    canonical: normalizeRjcode(result?.canonical_rjcode || item?.canonical_rjcode || rjcode),
+    matched: Boolean(result?.matched),
+  }
+}
+
+async function ensureHeroSearchCircleVisible(item, options = {}) {
+  const circleId = String(item?.circle_id || '').trim()
+  if (!circleId) return
+  const syncActive = options.syncActive !== false
+  const exists = circleList.value.some(circle => String(circle?.circle_id || '').trim() === circleId)
+  if (exists) return
+  try {
+    const result = await circleCompletionApi.searchCircles(item.circle_name || circleId, 24)
+    const circles = Array.isArray(result.circles) ? result.circles : []
+    if (circles.length) {
+      const hasTarget = circles.some(circle => String(circle?.circle_id || '').trim() === circleId)
+      circleList.value = hasTarget ? circles : [buildHeroSearchCircleListItem(item), ...circles]
+      if (syncActive) await syncActiveCircleWithList({ preserveActiveWhenEmpty: true })
+      return
+    }
+  } catch (_) {}
+  circleList.value = [buildHeroSearchCircleListItem(item), ...circleList.value]
+}
+
+function buildHeroSearchCircleListItem(item) {
+  const circleId = String(item?.circle_id || '').trim()
+  return {
+    circle_id: circleId,
+    circle_name: item?.circle_name || circleId,
+    total_works: 0,
+    dl_works: 0,
+    server_owned: 0,
+    missing: 0,
+    last_indexed_at: item?.last_indexed_at || '',
+  }
+}
+
+async function jumpToHeroWorkSearchResult(item) {
+  const circleId = String(item?.circle_id || '').trim()
+  const rjcode = normalizeRjcode(item?.display_rjcode || item?.canonical_rjcode || heroWorkSearchQuery.value)
+  if (!circleId || !rjcode) return
+  heroWorkSearchQuery.value = rjcode
+  heroWorkSearchResults.value = []
+  heroWorkSearchSearched.value = false
+  let targetTab = item?.owned ? 'owned' : 'missing'
+  suppressCircleWorksRefresh = true
+  try {
+    clearSelection()
+    flashedWorkCodes.value = new Set()
+    locatedWorkCodes.value = new Set()
+    ownedWorksSearchQuery.value = ''
+    compareSearchQuery.value = ''
+    statusFilters.value = []
+    ownedWorksFilterType.value = 'all'
+    filters.includeDlOnly = true
+    compareSourceFilter.value = 'all'
+    activeTab.value = targetTab
+    await ensureHeroSearchCircleVisible(item, { syncActive: false })
+    await selectCircle(circleId, { deferLoad: true })
+    let location = await locateWorkPageInCircle(circleId, item, targetTab, rjcode)
+    if (!location.matched) {
+      const fallbackTab = targetTab === 'owned' ? 'missing' : 'owned'
+      const fallbackLocation = await locateWorkPageInCircle(circleId, item, fallbackTab, rjcode)
+      if (fallbackLocation.matched) {
+        targetTab = fallbackTab
+        activeTab.value = targetTab
+        location = fallbackLocation
+      }
+    }
+    if (targetTab === 'owned') {
+      ownedPage.value = location.page
+    } else {
+      missingPage.value = location.page
+    }
+    if (circleWorksFetchTimer) {
+      clearTimeout(circleWorksFetchTimer)
+      circleWorksFetchTimer = null
+    }
+    await refreshActiveCircle({ preferCache: false })
+    const canonical = location.canonical || normalizeRjcode(item?.canonical_rjcode || rjcode)
+    const visibleMatch = (detail.works || []).some(work => (
+      String(work?.canonical_rjcode || '').trim() === canonical || rjcodeMatchesWork(work, rjcode)
+    ))
+    const targetLabel = targetTab === 'owned' ? '已满足作品' : '缺失作品'
+    if (visibleMatch) {
+      flashLocatedWork(canonical)
+      ElMessage.success('已找到')
+    } else {
+      ElMessage.warning('未找到')
+    }
+  } finally {
+    suppressCircleWorksRefresh = false
+  }
+}
+
 function scheduleCircleDetailPrefetch() {
   if (circleDetailLoading.value || circleDetailAbortController) return
   if (circleDetailPrefetchTimer) {
@@ -3630,13 +3899,6 @@ async function prefetchNeighborCircleDetails() {
   }
 }
 
-async function handleIndexCircle() {
-  await startIndexCircleJob({
-    circleQuery: circleQuery.value.trim(),
-    onlyNewWorks: false
-  })
-}
-
 async function handleEmailCheck() {
   if (emailCheckLoading.value) return
   emailCheckLoading.value = true
@@ -3666,18 +3928,18 @@ function normalizeBatchCircleQueries(text = '') {
     })
 }
 
-async function openBatchIndexPrompt() {
+async function openIndexPrompt() {
   try {
     const value = await showSystemPrompt({
-      title: '批量创建社团补全',
-      description: '手动输入社团名，一行一个，提交后会按顺序批量执行社团补全。',
+      title: '建立 / 刷新社团索引',
+      description: '输入社团名，一行一个。单个社团和批量社团都在这里提交。',
       badge: '社团补全',
       mode: 'prompt',
       inputType: 'textarea',
       width: 680,
       closeOnClickModal: false,
       placeholder: '例如：\nリリムワークス/兎月りりむ。\n耳かき屋\nしろくまだんご',
-      confirmText: '开始批量补全',
+      confirmText: '开始建立 / 刷新',
       cancelText: '取消',
       validator: value => {
         const queries = normalizeBatchCircleQueries(value)
@@ -3695,7 +3957,7 @@ async function openBatchIndexPrompt() {
 }
 
 async function handleIndexOnlyNewWorks() {
-  const targetQuery = String(detail.circle_name || circleQuery.value || '').trim()
+  const targetQuery = String(detail.circle_name || '').trim()
   await startIndexCircleJob({
     circleQuery: targetQuery,
     onlyNewWorks: true
@@ -3773,9 +4035,10 @@ async function refreshSelectedCircleIndex(targetCodes = null) {
   }
 }
 
-async function selectCircle(circleId) {
+async function selectCircle(circleId, options = {}) {
   const targetCircleId = String(circleId || '').trim()
   if (!targetCircleId) return
+  const deferLoad = Boolean(options.deferLoad)
   if (activeCircleId.value === targetCircleId && circleDetailLoaded.value && !circleDetailLoading.value) {
     return
   }
@@ -3785,9 +4048,15 @@ async function selectCircle(circleId) {
   selectedDownloadableCanonicals.value = new Set()
   selectedRequestedRjcodes.value = {}
   flashedWorkCodes.value = new Set()
+  locatedWorkCodes.value = new Set()
   missingPage.value = 1
   ownedPage.value = 1
   comparePage.value = 1
+
+  if (deferLoad) {
+    applyCircleSummaryPlaceholder(targetCircleId)
+    return
+  }
 
   const cached = activeTab.value === 'missing' && !statusFilters.value.length ? getCachedCircleDetail(targetCircleId) : null
   if (cached) {
@@ -4627,6 +4896,8 @@ function getUploadBackgroundTargetLabel(task) {
 }
 .hero-search-wrap {
   position: relative;
+  width: min(360px, 38vw);
+  min-width: 260px;
 }
 .hero-search-icon {
   position: absolute;
@@ -4639,7 +4910,8 @@ function getUploadBackgroundTargetLabel(task) {
 }
 .hero-search-input :deep(.el-input__wrapper) {
   min-height: 28px;
-  min-width: 240px;
+  width: 100%;
+  min-width: 0;
   border-radius: 8px;
   --el-input-bg-color: var(--circle-field-bg, #fff);
   --el-input-text-color: var(--circle-text-strong, rgb(30 41 59));
@@ -4665,6 +4937,125 @@ function getUploadBackgroundTargetLabel(task) {
   font-size: 12px !important;
   font-weight: 600 !important;
   color: var(--circle-placeholder, rgb(148 163 184));
+}
+.hero-work-search-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  display: grid;
+  gap: 6px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--circle-border-soft, rgba(226, 232, 240, 0.85));
+  border-radius: 10px;
+  background: var(--circle-surface-elevated, rgba(255, 255, 255, 0.98));
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.16);
+  backdrop-filter: blur(10px);
+}
+.hero-work-search-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 52px;
+  color: var(--circle-text-subtle, #94a3b8);
+  font-size: 12px;
+  font-weight: 750;
+}
+.hero-work-search-state.no-data {
+  color: var(--circle-text-muted, #64748b);
+}
+.hero-work-search-item {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.hero-work-search-item:hover {
+  border-color: var(--circle-border-strong, #cbd5e1);
+  background: var(--circle-hover-bg, #f8fafc);
+  transform: translateY(-1px) scale(1.01);
+}
+.hero-work-search-item:active {
+  transform: scale(0.96);
+}
+.hero-work-search-cover {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  overflow: hidden;
+  border-radius: 7px;
+  background: var(--circle-work-cover-bg, #f1f5f9);
+  color: var(--circle-text-subtle, #94a3b8);
+}
+.hero-work-search-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.hero-work-search-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.hero-work-search-title {
+  overflow: hidden;
+  color: var(--circle-text-strong, #111827);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hero-work-search-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--circle-text-muted, #64748b);
+  font-size: 10px;
+  font-weight: 700;
+}
+.hero-work-search-meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hero-work-search-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--circle-tag-warning, #d97706) 22%, transparent);
+  background: color-mix(in srgb, var(--circle-tag-warning, #d97706) 8%, transparent);
+  color: var(--circle-tag-warning, #d97706);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+.hero-work-search-status.owned {
+  border-color: color-mix(in srgb, var(--circle-tag-success, #059669) 22%, transparent);
+  background: color-mix(in srgb, var(--circle-tag-success, #059669) 8%, transparent);
+  color: var(--circle-tag-success, #059669);
 }
 .hero-btn {
   height: 28px;
@@ -4693,22 +5084,6 @@ function getUploadBackgroundTargetLabel(task) {
   transform: translateY(-1px);
 }
 .hero-btn-primary:active:not(.is-disabled):not(:disabled) {
-  transform: translateY(0) scale(0.96);
-}
-.hero-btn-secondary {
-  background: var(--circle-surface, #fff);
-  color: var(--circle-text, rgb(51 65 85));
-  border: 1px solid var(--circle-border-soft, rgb(226 232 240));
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-}
-.hero-btn-secondary:hover:not(.is-disabled):not(:disabled) {
-  background: var(--circle-hover-bg, rgb(248 250 252));
-  border-color: var(--circle-border-strong, rgb(203 213 225));
-  color: var(--circle-text-strong, rgb(15 23 42));
-  transform: translateY(-1px);
-  box-shadow: 0 4px 10px -4px rgba(15, 23, 42, 0.18);
-}
-.hero-btn-secondary:active:not(.is-disabled):not(:disabled) {
   transform: translateY(0) scale(0.96);
 }
 .hero-btn-email {

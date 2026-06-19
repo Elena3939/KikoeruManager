@@ -2287,6 +2287,14 @@ export const circleCompletionApi = {
     return response.data
   },
 
+  searchWorks: async (keyword = '', limit = 20, options = {}) => {
+    const response = await apiClient.get('/circle-completion/work-search', {
+      params: { keyword, limit },
+      signal: options.signal
+    })
+    return response.data
+  },
+
   indexCircle: async (payload) => {
     const response = await apiClient.post('/circle-completion/index', payload)
     return response.data
@@ -2346,6 +2354,24 @@ export const circleCompletionApi = {
     const response = await apiClient.get(`/circle-completion/circles/${circleId}/work-codes`, {
       params: {
         tab: query.tab || 'missing',
+        include_dl_only: query.includeDlOnly ?? query.include_dl_only ?? true,
+        status_filters: Array.isArray(query.statusFilters) ? query.statusFilters.join(',') : (query.statusFilters || query.status_filters || ''),
+        owned_filter: query.ownedFilter || query.owned_filter || 'all',
+        compare_filter: query.compareFilter || query.compare_filter || 'all',
+        search: query.search || '',
+        sort: query.sort || 'updated_desc'
+      },
+      signal: options.signal
+    })
+    return response.data
+  },
+
+  getCircleWorkLocation: async (circleId, query = {}, options = {}) => {
+    const response = await apiClient.get(`/circle-completion/circles/${circleId}/work-location`, {
+      params: {
+        rjcode: query.rjcode || query.rjCode || '',
+        tab: query.tab || 'missing',
+        page_size: query.pageSize || query.page_size || 10,
         include_dl_only: query.includeDlOnly ?? query.include_dl_only ?? true,
         status_filters: Array.isArray(query.statusFilters) ? query.statusFilters.join(',') : (query.statusFilters || query.status_filters || ''),
         owned_filter: query.ownedFilter || query.owned_filter || 'all',
