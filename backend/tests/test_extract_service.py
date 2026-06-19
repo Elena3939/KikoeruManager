@@ -2049,6 +2049,28 @@ class TestExtractService:
             extract_service.config.extract.filename_password_sniff_templates = old_templates
             extract_service.config.extract.filename_password_sniff_enabled = old_enabled
 
+    def test_filename_password_sniff_reads_split_archive_name(self, extract_service, temp_dir):
+        """分卷文件名 RJxxxx(password).7z.001 应嗅探括号内密码。"""
+        archive_path = os.path.join(temp_dir, "RJ01618696(southplus@adark).7z.001")
+
+        old_templates = extract_service.config.extract.filename_password_sniff_templates
+        old_enabled = extract_service.config.extract.filename_password_sniff_enabled
+        try:
+            extract_service.config.extract.filename_password_sniff_enabled = True
+            extract_service.config.extract.filename_password_sniff_templates = ["{name}({password})"]
+
+            assert extract_service._get_filename_sniff_passwords(archive_path) == [
+                "southplus@adark",
+            ]
+        finally:
+            extract_service.config.extract.filename_password_sniff_templates = old_templates
+            extract_service.config.extract.filename_password_sniff_enabled = old_enabled
+
+    def test_extract_7z_progress_ignores_terminal_control_open(self, extract_service):
+        """7z 的 Open + 退格控制序列不能当成当前文件名展示。"""
+        assert extract_service._extract_7z_progress_entry_name("0% - Open\b\b\b\b\b\b --") == ""
+        assert extract_service._limit_progress_step("解压中 0% - Open\b\b\b\b --") == "解压中 0% - Open --"
+
     @pytest.mark.asyncio
     async def test_nested_extract_tries_parent_folder_sniffed_password(
         self, extract_service, temp_dir,
@@ -2259,6 +2281,111 @@ class TestExtractService:
         assert run_7z_command.await_count == 1
         first_cmd = run_7z_command.await_args.args[0]
         assert "-psxy4649777" in first_cmd
+
+    @pytest.mark.asyncio
+    async def test_try_extract_large_archive_caps_unknown_probe_full_extracts(
+        self, extract_service, temp_dir, monkeypatch,
+    ):
+        """大分卷缺正确密码时，不应把每个 unknown 候选都升级成完整解压。"""
+        archive_path = os.path.join(temp_dir, "RJ01618696.7z.001")
+        self.create_test_zip(archive_path)
+        output_path = os.path.join(temp_dir, "auto-output")
+        os.makedirs(output_path, exist_ok=True)
+        task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
+        monkeypatch.setattr(ExtractService, "UNKNOWN_PROBE_LARGE_ARCHIVE_BYTES", 1)
+        monkeypatch.setattr(ExtractService, "UNKNOWN_PROBE_FULL_EXTRACT_LIMIT", 1)
+
+        run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
+            args=[],
+            returncode=2,
+            stdout=b"",
+            stderr=b"ERROR: CRC Failed in encrypted file. Wrong password? : RJ01618696",
+        ))
+        extract_service._run_7z_command = run_7z_command
+        extract_service._probe_password = AsyncMock(return_value="unknown")
+        extract_service._cleanup_extract_attempt = AsyncMock()
+
+        archive_info = ArchiveInfo(
+            path=archive_path,
+            file_list=[{"name": "RJ01618696", "size": 1024, "is_dir": False}],
+        )
+
+        success, password, reason = await extract_service._try_extract(
+            archive_info,
+            output_path,
+            task,
+            password_candidates=[{
+                "password": "RJ01618696",
+                "source": "RJ号",
+                "entry_id": None,
+                "rjcode": "RJ01618696",
+            }, {
+                "password": "vault-a",
+                "source": "密码库-通用",
+                "entry_id": None,
+                "rjcode": None,
+            }, {
+                "password": "vault-b",
+                "source": "密码库-通用",
+                "entry_id": None,
+                "rjcode": None,
+            }],
+        )
+
+        assert success is False
+        assert password is None
+        assert reason == "wrong_password"
+        assert run_7z_command.await_count == 1
+        first_cmd = run_7z_command.await_args.args[0]
+        assert "-pRJ01618696" in first_cmd
+
+    @pytest.mark.asyncio
+    async def test_try_extract_large_archive_tries_sniffed_password_before_rj_guess(
+        self, extract_service, temp_dir, monkeypatch,
+    ):
+        """大分卷带文件名密码时，应先试文件名嗅探候选，再试 RJ 号猜测。"""
+        archive_path = os.path.join(temp_dir, "RJ01618696(southplus@adark).7z.001")
+        self.create_test_zip(archive_path)
+        output_path = os.path.join(temp_dir, "sniff-output")
+        os.makedirs(output_path, exist_ok=True)
+        task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
+        monkeypatch.setattr(ExtractService, "UNKNOWN_PROBE_LARGE_ARCHIVE_BYTES", 1)
+        monkeypatch.setattr(ExtractService, "UNKNOWN_PROBE_FULL_EXTRACT_LIMIT", 1)
+
+        run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=b"",
+            stderr=b"",
+        ))
+        extract_service._run_7z_command = run_7z_command
+        extract_service._probe_password = AsyncMock(return_value="unknown")
+        extract_service._reject_if_garbled_after_extract = AsyncMock(return_value=False)
+        extract_service._verify_extraction = AsyncMock(return_value=True)
+        extract_service._cleanup_extract_attempt = AsyncMock()
+
+        archive_info = ArchiveInfo(
+            path=archive_path,
+            file_list=[{"name": "RJ01618696", "size": 1024, "is_dir": False}],
+        )
+
+        success, password, reason = await extract_service._try_extract(
+            archive_info,
+            output_path,
+            task,
+            password_candidates=[{
+                "password": "southplus@adark",
+                "source": "文件名嗅探",
+                "entry_id": None,
+                "rjcode": None,
+            }],
+        )
+
+        assert success is True
+        assert password == "southplus@adark"
+        assert reason == ""
+        first_cmd = run_7z_command.await_args.args[0]
+        assert "-psouthplus@adark" in first_cmd
 
     @pytest.mark.asyncio
     async def test_try_extract_no_password_ignores_stale_negative_cache(

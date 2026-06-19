@@ -2549,11 +2549,19 @@ class TaskEngine:
                     extracted_path = await extract_service.extract(task)
                     logger.info(f"[{rjcode}] 解压结果路径: {extracted_path}")
                     if not extracted_path:
+                        if task.is_cancelled():
+                            logger.info(f"[{rjcode}] 解压已取消，任务终止")
+                            return
+                        failure_reason = task.error_message or "解压失败"
                         self._record_problem_work_for_extract_failure(
                             task,
                             rjcode,
-                            task.error_message or "解压失败"
+                            failure_reason
                         )
+                        task.error_message = failure_reason
+                        task.status = TaskStatus.WAITING_MANUAL
+                        task.update_progress(100, "解压失败，已加入问题作品列表")
+                        task.completed_at = datetime.now()
                         logger.error(f"[{rjcode}] 解压失败，任务终止")
                         return
                 else:
