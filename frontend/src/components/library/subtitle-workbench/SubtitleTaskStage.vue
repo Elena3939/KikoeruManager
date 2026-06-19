@@ -442,7 +442,8 @@ function statusPillClass(key) {
   const k = String(key || '').toLowerCase()
   if (['completed', 'manual_match_completed'].includes(k)) return 'is-success'
   if (k === 'failed') return 'is-danger'
-  if (['processing', 'awaiting', 'awaiting_manual_match', 'waiting_manual'].includes(k)) return 'is-info'
+  if (['awaiting', 'awaiting_manual_match', 'waiting_manual'].includes(k)) return 'is-warning'
+  if (k === 'processing') return 'is-info'
   if (k === 'view_restored') return 'is-violet'
   if (k === 'view_backfilled') return 'is-neutral'
   return 'is-neutral'
@@ -1000,6 +1001,12 @@ function getTaskMetaItems(task) {
   --status-text: #0369a1;
 }
 
+.subtitle-active-status-pill.is-warning {
+  --status-bg: rgba(254, 243, 199, 0.98);
+  --status-border: rgba(245, 158, 11, 0.62);
+  --status-text: #92400e;
+}
+
 .subtitle-active-status-pill.is-violet {
   --status-bg: rgba(237, 233, 254, 0.96);
   --status-border: rgba(167, 139, 250, 0.58);
@@ -1032,6 +1039,13 @@ function getTaskMetaItems(task) {
   --status-bg: rgba(14, 165, 233, 0.18);
   --status-border: rgba(56, 189, 248, 0.46);
   --status-text: #bae6fd;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-active-status-pill.is-warning,
+:global(html.dark) .subtitle-active-status-pill.is-warning {
+  --status-bg: rgba(245, 158, 11, 0.28);
+  --status-border: rgba(251, 191, 36, 0.68);
+  --status-text: #fde68a;
 }
 
 :global(html.kikoerumanager-dark) .subtitle-active-status-pill.is-violet,
