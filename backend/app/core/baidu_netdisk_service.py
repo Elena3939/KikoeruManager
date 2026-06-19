@@ -3078,6 +3078,7 @@ class BaiduNetdiskService:
         stem, ext = self._split_archive_filename(current_base)
         if not custom_name:
             custom_name = self._sanitize_path_part(stem or current_base or "百度网盘文件", "百度网盘文件")
+        custom_name = self._dedupe_custom_archive_volume_name(custom_name, ext)
         ext = self._normalize_custom_archive_volume_ext(custom_name, ext)
         target_name = self._filename_with_extract_password(custom_name, custom_password, ext)
         if folder:
@@ -3113,6 +3114,38 @@ class BaiduNetdiskService:
         if volume_match and custom_lower.endswith(f".{volume_match.group('kind').lower()}"):
             return f".{volume_match.group('index')}"
         return ext_text
+
+    def _dedupe_custom_archive_volume_name(self, custom_name: str, ext: str) -> str:
+        name = str(custom_name or "").strip()
+        ext_text = str(ext or "").strip()
+        if not name or not ext_text:
+            return name
+
+        lower_name = name.lower()
+        lower_ext = ext_text.lower()
+
+        volume_match = re.match(r"^\.(?P<kind>7z|zip)\.(?P<index>\d{3})$", ext_text, re.IGNORECASE)
+        if volume_match:
+            same_kind_match = re.match(
+                rf"^(?P<base>.+\.{re.escape(volume_match.group('kind'))})\.\d{{3}}$",
+                name,
+                re.IGNORECASE,
+            )
+            if same_kind_match:
+                return same_kind_match.group("base").strip() or name
+            generic_index_match = re.match(r"^(?P<base>.+)\.\d{3}$", name, re.IGNORECASE)
+            if generic_index_match:
+                return generic_index_match.group("base").strip() or name
+            index_suffix = f".{volume_match.group('index')}"
+            if lower_name.endswith(index_suffix):
+                stripped = name[:-len(index_suffix)].rstrip()
+                return stripped or name
+
+        if not lower_name.endswith(lower_ext):
+            return name
+
+        stripped = name[:-len(ext_text)].rstrip()
+        return stripped or name
 
     def _split_archive_filename(self, filename: str) -> tuple[str, str]:
         value = str(filename or "").strip()

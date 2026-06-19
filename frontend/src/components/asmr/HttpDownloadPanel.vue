@@ -1906,8 +1906,7 @@ function applyVolumeGroupNaming(row, { name = '', password = '', keepName = fals
 }
 
 function baiduVolumeFileCustomName(base, info) {
-  if (info?.type === 'zip_z' && !info?.needsFullName) return String(base || '').trim()
-  return volumeFileCustomName(base, info)
+  return String(base || '').trim()
 }
 
 function volumeFileCustomName(base, info) {
