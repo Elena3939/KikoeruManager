@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
@@ -31,7 +32,7 @@ UNKNOWN_CIRCLE_ID = "__unknown__"
 UNKNOWN_CIRCLE_NAME = "未识别社团"
 _RJ_RE = re.compile(r"RJ\d{4,12}", re.IGNORECASE)
 _CIRCLE_ROOT_PATH = "circle:/"
-_SNAPSHOT_TTL_SECONDS = 30.0
+_SNAPSHOT_TTL_SECONDS = 300.0
 
 
 @dataclass(slots=True)
@@ -86,6 +87,19 @@ def _infer_circle_name_from_bracketed_folder(value: Any, rjcode: Any) -> str:
     return ""
 
 
+def _infer_circle_name_from_any_bracketed_work_folder(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    matches = re.findall(r"\[([^\[\]]+)\]", text)
+    if len(matches) < 2:
+        return ""
+    for index in range(len(matches) - 1):
+        if _normalize_rjcode(matches[index + 1]):
+            return str(matches[index] or "").strip()
+    return ""
+
+
 def _infer_circle_name_from_index_path(relative_path: Any, rjcode: Any, folder_name: Any = "") -> str:
     name_circle = _infer_circle_name_from_bracketed_folder(folder_name, rjcode)
     if name_circle:
@@ -105,6 +119,10 @@ def _infer_circle_name_from_index_path(relative_path: Any, rjcode: Any, folder_n
         path_circle = _infer_circle_name_from_bracketed_folder(part, normalized_rjcode)
         if path_circle:
             return path_circle
+        for parent_part in reversed(parts[:index]):
+            parent_circle = _infer_circle_name_from_any_bracketed_work_folder(parent_part)
+            if parent_circle:
+                return parent_circle
         return ""
 
     return ""
@@ -265,6 +283,7 @@ class LibraryCircleAggregationService:
 
     def __init__(self) -> None:
         self._snapshot_cache: dict[str, Any] = {}
+        self._snapshot_lock = threading.Lock()
 
     async def browse_circle_path(
         self,
@@ -421,15 +440,90 @@ class LibraryCircleAggregationService:
             circle_summary=snapshot.get("summary") or {},
         )
 
+    def should_thread_browse(self, current_path: str = _CIRCLE_ROOT_PATH) -> bool:
+        return _decode_circle_virtual_path(current_path).type in {"unknown", "root", "group"}
+
+    def browse_circle_listing(
+        self,
+        *,
+        current_path: str = _CIRCLE_ROOT_PATH,
+        page: int = 1,
+        page_size: int = 50,
+        keyword: str = "",
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        force_refresh: bool = False,
+    ) -> dict[str, Any]:
+        decoded = _decode_circle_virtual_path(current_path)
+        if decoded.type == "unknown":
+            return self._empty_browser_payload(current_path=_CIRCLE_ROOT_PATH, page=page, page_size=page_size)
+
+        snapshot = self._get_snapshot(force_refresh=force_refresh)
+        if decoded.type == "root":
+            groups = self._filter_groups(snapshot["groups"], keyword)
+            groups = self._sort_groups(groups, sort_by=sort_by, sort_order=sort_order)
+            group_data = self._paginate(groups, page=page, page_size=page_size)
+            rows = [self._build_group_row(group) for group in group_data.get("items") or []]
+            return self._browser_payload(
+                files=rows,
+                total=group_data.get("total", len(rows)),
+                page=group_data.get("page", page),
+                page_size=group_data.get("page_size", page_size),
+                current_path=_CIRCLE_ROOT_PATH,
+                parent_path="",
+                circle_context={"type": "root"},
+                circle_groups=group_data.get("items") or [],
+                circle_summary=snapshot.get("summary") or {},
+            )
+
+        group = snapshot["groups_by_key"].get(decoded.group_key)
+        if not group:
+            return self._empty_browser_payload(
+                current_path=_CIRCLE_ROOT_PATH,
+                page=page,
+                page_size=page_size,
+                circle_summary=snapshot.get("summary") or {},
+            )
+
+        works = self._filter_works(self._get_group_works(snapshot, decoded.group_key), keyword)
+        works = self._sort_works(works, sort_by=sort_by, sort_order=sort_order)
+        work_data = self._paginate(works, page=page, page_size=page_size)
+        work_items = work_data.get("items") or []
+        rows = [self._build_work_row(group, work) for work in work_items]
+        return self._browser_payload(
+            files=rows,
+            total=work_data.get("total", len(rows)),
+            page=work_data.get("page", page),
+            page_size=work_data.get("page_size", page_size),
+            current_path=_circle_group_path(decoded.group_key),
+            parent_path=_CIRCLE_ROOT_PATH,
+            circle_context={"type": "group", "group": group},
+            circle_group=group,
+            circle_works=work_items,
+            circle_summary=snapshot.get("summary") or {},
+        )
+
     def _get_snapshot(self, *, force_refresh: bool = False) -> dict[str, Any]:
         now = time.monotonic()
-        if (
-            not force_refresh
-            and self._snapshot_cache
-            and float(self._snapshot_cache.get("expires_at") or 0.0) > now
-        ):
-            return self._snapshot_cache["payload"]
+        cached_payload = self._get_cached_snapshot(now=now, force_refresh=force_refresh)
+        if cached_payload is not None:
+            return cached_payload
 
+        with self._snapshot_lock:
+            now = time.monotonic()
+            cached_payload = self._get_cached_snapshot(now=now, force_refresh=force_refresh)
+            if cached_payload is not None:
+                return cached_payload
+            return self._build_snapshot(now=now)
+
+    def _get_cached_snapshot(self, *, now: float, force_refresh: bool = False) -> Optional[dict[str, Any]]:
+        if force_refresh or not self._snapshot_cache:
+            return None
+        if float(self._snapshot_cache.get("expires_at") or 0.0) <= now:
+            return None
+        return self._snapshot_cache["payload"]
+
+    def _build_snapshot(self, *, now: float) -> dict[str, Any]:
         rows = self._load_index_work_rows()
         library_summary_items = self._load_active_library_summary_items()
         path_identities: dict[int, _CircleIdentity] = {}
