@@ -298,9 +298,49 @@ if __name__ == "__main__":
     print("测试数据生成完成！")
 ```
 
-## 10. 持续集成测试
+## 10. API 重命名回归验证
 
-### 10.1 GitHub Actions 配置
+API 重命名依赖 DLsite 元数据，验证时要覆盖 DLsite 不可用和缓存命中两类情况：
+
+- DLsite 返回最小降级元数据时，单条 `/api/library/api-rename` 必须返回 `422`，目录保持原名，不能生成 `[][RJxxxx]` 或 RJ-only 名称。
+- 批量 API 重命名必须走 `/api/library/batch-api-rename`，失败项标记 `skipped` 或失败原因，成功项继续执行，不能由前端并发打多个单条接口。
+- 有有效缓存时，单条 API 重命名默认复用缓存；只有显式 `force_refresh` 才删除缓存并重新请求 DLsite。
+- `use_japanese_metadata=true` 时，只有主元数据有效后才允许继续请求日语元数据。
+
+推荐命令：
+
+```powershell
+cd backend
+.\venv\Scripts\python.exe -m pytest tests/test_library_browser_api.py -q -k "api_rename"
+```
+
+前端批量入口改动后同时执行：
+
+```powershell
+cd frontend
+npm run build
+```
+
+## 11. 字幕补配 Kikoeru 回归验证
+
+字幕补配预检依赖 Kikoeru 判断原作是否已经收录、是否已有字幕，库存索引只负责定位实际候选目录。验证时要覆盖 Kikoeru 命中但 ready 库存索引暂未命中的情况：
+
+- 简中翻译作能从 DLsite 关联链解析到原作时，Kikoeru 命中原作且缺字幕，预检不能按新作直接解压入库。
+- 简中翻译作压缩包里没有字幕文件时，即使原作缺字幕，也必须转入问题作品，不能跳过关联重复后继续入库。
+- Kikoeru 查询不稳定时，预检必须保持待重试，不能自动降级为普通解压。
+- Kikoeru 已确认原作有字幕时，翻译作应按重复作品处理。
+- Kikoeru tracks 查询返回 `total_track_count=0` 时，应识别为空壳作品并阻止字幕补配入队。
+
+推荐命令：
+
+```powershell
+cd backend
+.\venv\Scripts\python.exe -m pytest tests/test_linked_subtitle_import_service.py -q
+```
+
+## 12. 持续集成测试
+
+### 12.1 GitHub Actions 配置
 
 ```yaml
 # .github/workflows/test.yml

@@ -505,3 +505,125 @@
 - `docs/INTRODUCTION.md`：同步 Docker 镜像版本写法和反代缓存说明。
 - `progress.md`：追加本轮 Docker 静态 chunk 缓存修复记录。
 - 回滚方式：还原上述文件中本轮关于 `KIKOERUMANAGER_VERSION` 前端构建传递、Vite 文件名前缀和文档说明的改动；删除本段进度记录。线上临时恢复仍可通过重启 NPM 或清理 `/data/nginx/cache` 完成。
+
+## 2026-06-19 - Task: 修复 HTTP 下载预览平台行勾选框错位
+### What was done
+- 修复 HTTP 外链下载预览树中平台分组行在全部解析失败时错误参与勾选态的问题。
+- 平台分组行现在始终不渲染勾选框，也不进入选中高亮计算，避免勾选框与平台图标抢占同一列导致视觉错乱。
+- 文件行、失败文件禁用勾选框和目录批量勾选逻辑保持原行为。
+### Testing
+- `cd frontend && npm run build`：通过。Vite 仅输出已有 VueUse pure 注释、lottie-web eval 和 chunk 体积 warning。
+### Notes
+- `frontend/src/components/asmr/HttpDownloadPanel.vue`：调整 HTTP 下载预览树的勾选态判断，平台分组行直接排除在选择控件和选中态之外。
+- `progress.md`：追加本轮 HTTP 下载预览勾选框错位修复记录。
+- 回滚方式：还原 `frontend/src/components/asmr/HttpDownloadPanel.vue` 中本轮对 `rowCanShowSelectionCheck()` 和 `previewTreeSelectionClass()` 的改动；删除本段进度记录。
+
+## 2026-06-19 - Task: 修复 API 重命名元数据失败回归与批量性能
+### What was done
+- API 重命名在 DLsite 失败或只拿到最小降级元数据时直接跳过，单条返回 `422`，批量项标记失败 / skipped，不再生成 `[][RJxxxx]` 或 RJ-only 坏目录名。
+- 单条 API 重命名默认复用有效缓存，只有显式 `force_refresh` 才删除缓存；主元数据无效时不会继续请求日语元数据。
+- DLsite 元数据和 HTTP 请求增加 45 秒短熔断，HTTP 请求默认并发降到 3，并避免单个失败请求主动关闭共享 `httpx.AsyncClient`。
+- 库存页批量 API 重命名改为调用后端 `/api/library/batch-api-rename`，由后端统一限流、计划和汇总结果。
+### Testing
+- `cd backend && .\venv\Scripts\python.exe -m py_compile app/api/routes.py app/core/metadata_service.py app/core/dlsite_service.py`：通过。
+- `cd backend && .\venv\Scripts\python.exe -m pytest tests/test_library_browser_api.py -q -k "api_rename"`：通过，3 passed。
+- `cd backend && .\venv\Scripts\python.exe -m pytest tests/test_library_browser_api.py -q`：未全绿；3 个既有库存浏览 / 索引用例失败（`test_library_browser_endpoints_support_multi_library`、`test_local_inventory_reads_prefer_usable_index_snapshot`、`test_list_files_coalesces_identical_inflight_requests`），失败点不在本轮 API 重命名路径。
+- `cd frontend && npm run build`：通过。Vite 仅输出已有 VueUse pure 注释、lottie-web eval 和 chunk 体积 warning。
+### Notes
+- `backend/app/api/routes.py`：API 重命名增加元数据可用性保护、跳过原因日志、缓存强刷开关、批量计划限流和批量跳过结果。
+- `backend/app/core/metadata_service.py`：元数据结果增加 `metadata_source` / `dlsite_circuit_open`，最小元数据不再写缓存，并加入 DLsite 元数据短熔断。
+- `backend/app/core/dlsite_service.py`：DLsite HTTP 默认并发降到 3，新增短熔断，并避免失败请求关闭共享客户端。
+- `backend/tests/test_library_browser_api.py`：新增单条和批量 API 重命名遇到最小元数据时不执行 rename 的回归测试。
+- `frontend/src/views/Library.vue`：批量 API 重命名改为按库调用后端批量接口，成功项才刷新路径，失败项保留原路径和原因。
+- `docs/TESTING.md`：补充 API 重命名元数据失败、批量接口和缓存复用的回归验证说明。
+- `progress.md`：追加本轮 API 重命名性能与结果保护修复记录。
+- 回滚方式：还原上述文件中本轮关于 API 重命名元数据保护、DLsite 短熔断、批量接口调用、测试和文档说明的改动；由于工作区已有其他未提交改动，回滚时按相关 hunk 精准还原，不要覆盖社团补全、HTTP 下载预览等非本轮内容。
+
+## 2026-06-19 - Task: 优化社团补全分页加载与封面调度
+### What was done
+- 新增社团补全摘要、作品分页和当前筛选结果编号接口，把详情页从一次性全量作品响应拆成 summary + 当前 tab 当前页。
+- 后端分页读路径复用库存索引、社团作品、关联 RJ、本地拥有态和缓存元数据，普通 missing / owned 列表不再返回 `owned_paths`、完整 `source_compare` 等重字段，compare tab 改为扁平来源对比 DTO。
+- 前端 `CircleCompletion.vue` 改为按 tab / 筛选 / 搜索 / 排序 / 分页请求当前页；邻近社团预取只缓存 summary + missing 首屏，并保留分页元信息；全选改走 `work-codes`，继续选中当前筛选结果全部作品。
+- `CircleWorksViewport` 增加服务端分页模式和图片加载队列，`WorkCard` / `WorkListRow` 只有可见 / overscan 内作品才挂真实图片 `src`，同屏并发限制为 6。
+- 补充新分页接口说明文档和后端分页回归测试。
+### Testing
+- `cd backend && .\venv\Scripts\python.exe -m py_compile app\core\circle_completion_service.py app\api\routes.py tests\test_circle_completion_paged_view.py`：通过。
+- `cd backend && $env:PYTHONPATH=(Get-Location).Path; .\venv\Scripts\python.exe -m pytest tests\test_circle_completion_paged_view.py -q --maxfail=1`：通过，3 passed；仅有既有 SQLAlchemy / FastAPI / pytest-asyncio deprecation warning 和 `.pytest_cache` 写入 warning。
+- `cd frontend && npm run build`：通过。Vite 仅输出已有 VueUse pure 注释、lottie-web eval 和 chunk 体积 warning。
+### Notes
+- `backend/app/api/routes.py`：新增 `/summary`、`/works`、`/work-codes` 三个社团补全读接口，并放在 legacy 动态详情路由之前。
+- `backend/app/core/circle_completion_service.py`：新增分页视图构造、筛选、排序、summary、work-codes 和轻量 DTO 逻辑，保留旧全量详情接口。
+- `backend/tests/test_circle_completion_paged_view.py`：新增 summary 与 legacy 统计一致、missing 分页 / include_dl_only、work-codes、compare 扁平 payload 回归测试。
+- `frontend/src/api/index.js`：新增 `getCircleSummary()`、`getCircleWorks()`、`getCircleWorkCodes()`。
+- `frontend/src/views/CircleCompletion.vue`：社团补全页面改为 summary + 当前页状态模型，筛选 / 搜索 / 排序 / 分页走服务端请求，全选走编号接口。
+- `frontend/src/components/circle/CircleWorksViewport.vue`：增加服务端分页、可见图片激活和 6 并发图片加载队列。
+- `frontend/src/components/circle/WorkCard.vue`：增加 `imageActive` 和图片加载完成事件，未激活时只渲染占位。
+- `frontend/src/components/circle/WorkListRow.vue`：增加 `imageActive` 和图片加载完成事件，未激活时只渲染占位。
+- `docs/circle-completion-paged-loading.md`：记录新接口契约、前端数据流和图片加载策略。
+- `progress.md`：追加本轮社团补全加载优化记录。
+- 回滚方式：按上述文件中本轮关于社团补全分页接口、前端分页状态、图片队列、新测试和文档的 hunk 精准还原；旧 `GET /api/circle-completion/circles/{circle_id}` 未删除，回滚前端后仍可走旧全量详情接口。
+
+## 2026-06-19 - Task: 修复字幕补配工作台待配对状态按钮褪色
+### What was done
+- 将字幕补配工作台的等待人工筛选 / 配对状态从处理中蓝色信息态拆出，改为独立 warning 状态。
+- 为浅色和暗色模式分别补充更高对比度的琥珀色状态胶囊，避免“待筛选与配对”在暗色工作台里发灰发淡。
+- 保留处理中任务的蓝色状态，不改变后端任务状态和任务流。
+### Testing
+- `cd frontend && npm run build`：通过。Vite 仅输出既有 VueUse pure 注释、lottie-web eval 和 chunk 体积 warning。
+### Notes
+- `frontend/src/components/library/subtitle-workbench/SubtitleTaskStage.vue`：拆分待人工配对状态的状态 class，并新增 `is-warning` 状态胶囊明暗色样式。
+- `progress.md`：追加本轮字幕补配工作台状态按钮样式修复记录。
+- 回滚方式：还原 `frontend/src/components/library/subtitle-workbench/SubtitleTaskStage.vue` 中本轮对 `statusPillClass()` 和 `.subtitle-active-status-pill.is-warning` 的改动；删除本段进度记录。
+
+## 2026-06-19 - Task: 修复翻译作入库绕过字幕补配
+### What was done
+- 字幕补配预检恢复使用 Kikoeru 判定原作是否已收录、是否已有字幕、查询是否可靠，避免 ready 库存索引库 ID / 快照漂移时把翻译作误判为新作。
+- 库存索引仍用于定位实际候选目录；Kikoeru 命中原作但索引暂未定位到目录时，任务进入字幕补配待处理，不再直接解压入库。
+- Kikoeru 查询不稳定时不自动降级普通解压，保留稍后重试提示，避免把可补配字幕源误入库。
+- 修正 Kikoeru `total_track_count=0` 被当作未查的问题，空壳原作会被识别并阻止补配入队。
+### Testing
+- `cd backend && .\venv\Scripts\python.exe -m py_compile app\core\linked_subtitle_import_service.py tests\test_linked_subtitle_import_service.py`：通过。
+- `cd backend && .\venv\Scripts\python.exe -m pytest tests\test_linked_subtitle_import_service.py -q`：通过，13 passed；仅有既有 SQLAlchemy / FastAPI / pytest-asyncio deprecation warning 和 `.pytest_cache` 写入 warning。
+### Notes
+- `backend/app/core/linked_subtitle_import_service.py`：字幕补配预检恢复 Kikoeru 拥有态 / 字幕态判定，ready 库存索引只保留为候选目录定位，并修正空壳 tracks 计数判断。
+- `backend/tests/test_linked_subtitle_import_service.py`：新增 Kikoeru 命中原作但索引未命中时不得按新作入库、以及 Kikoeru 空壳作品拦截的回归测试。
+- `docs/TESTING.md`：新增字幕补配 Kikoeru 回归验证说明和推荐测试命令。
+- `progress.md`：追加本轮翻译作绕过字幕补配修复记录。
+- 回滚方式：按上述文件中本轮关于 Kikoeru 字幕补配判定、空壳计数、测试与文档说明的 hunk 精准还原；不要回退工作区已有社团补全、API 重命名、HTTP 下载和字幕工作台样式等非本轮改动。
+
+## 2026-06-19 - Task: 修复无字幕翻译作绕过关联重复入库
+### What was done
+- 根据 13:41 的 `RJ01625472.zip` 实测日志确认：任务已查到 `RJ01625472 -> RJ01609723` 且 Kikoeru 命中原作缺字幕，但因为压缩包内无字幕，字幕补配未入队；随后普通关联重复又被过宽条件跳过，最终直接入库。
+- 收紧普通查重跳过条件：只有预检结果确认可进入字幕补配待处理 / 执行时，翻译作命中原作才允许跳过普通关联重复。
+- 自动处理预检新增拦截：翻译作命中 Kikoeru 原作但来源压缩包没有可补配字幕时，直接写入问题作品并把任务置为 `waiting_manual`，不再继续解压入库。
+### Testing
+- `cd backend && .\venv\Scripts\python.exe -m py_compile app\core\task_engine.py app\core\classifier.py app\core\linked_subtitle_import_service.py tests\test_linked_subtitle_import_service.py`：通过。
+- `cd backend && .\venv\Scripts\python.exe -m pytest tests\test_linked_subtitle_import_service.py -q`：通过，15 passed；仅有既有 SQLAlchemy / FastAPI / pytest-asyncio deprecation warning 和 `.pytest_cache` 写入 warning。
+### Notes
+- `backend/app/core/classifier.py`：普通关联重复跳过逻辑增加 `can_stage_pending` / `should_queue_pending` / `can_execute` 资格判断。
+- `backend/app/core/task_engine.py`：自动处理预检在普通查重前拦截无字幕翻译作，写入 `LINKED_WORK` 问题作品并停止入库。
+- `backend/tests/test_linked_subtitle_import_service.py`：新增无字幕翻译作不得跳过关联重复、任务预检应拦截无字幕翻译作的回归测试。
+- `docs/TESTING.md`：补充无字幕翻译作压缩包不能直接入库的回归验证点。
+- `progress.md`：追加本轮无字幕翻译作绕过关联重复入库修复记录。
+- 回滚方式：按上述文件中本轮关于无字幕翻译作拦截、普通查重跳过条件、测试与文档说明的 hunk 精准还原；不要回退工作区已有社团补全、API 重命名、HTTP 下载和前一轮 Kikoeru 补配判定改动。
+
+## 2026-06-19 - Task: 优化社团索引启动卡顿与进度刷新
+### What was done
+- 通过服务器 `\\Elena\docker\prekikoeru\data\app.log` 确认 13:10 左右任务 `0a65190e-4dcb-4b41-9012-ed681e5425ff` 从 `13:10:09 同步本地拥有态索引 (5%)` 卡到 `13:11:31 收集本地社团候选 (12%)`，重复任务也有约 83 秒同类卡顿；瓶颈是单社团索引入口同步等待 `sync_local_owned_index()` 全量重建。
+- 社团索引入口移除全量本地拥有态同步等待，改为直接进入当前社团索引；当前社团拥有态继续在后段通过 ready 库存索引局部核对并写回 `LibraryOwnedWork`。
+- 局部拥有态写回增加 ready 索引保护：索引可用时只清理当前社团本次涉及但未命中的 canonical 快照；索引不可用时不清旧快照，避免误删拥有态。
+- 前端社团索引进度改为 SSE 主通道：启动后不再立即轮询 job 状态，运行中耗时本地每秒递增；当前 job 超过 45 秒没有收到 SSE 事件或终态收尾时才低频兜底查询。
+- 修复社团补全完成通知里的 `_format_circle_search_efficiency` 未定义错误，避免索引完成后通知构建抛 `NameError`。
+### Testing
+- `cd backend && .\venv\Scripts\python.exe -m py_compile app\core\circle_completion_service.py app\core\notification_helper.py app\api\routes.py tests\test_circle_completion_owned_sync.py`：通过。
+- `cd backend && $env:PYTHONPATH=(Get-Location).Path; .\venv\Scripts\python.exe -m pytest tests\test_circle_completion_owned_sync.py -q --maxfail=1`：通过，4 passed；仅有既有 deprecation warning 和 `.pytest_cache` 写入 warning。
+- `cd backend && $env:PYTHONPATH=(Get-Location).Path; .\venv\Scripts\python.exe -m pytest tests\test_circle_completion_paged_view.py tests\test_circle_completion_owned_sync.py -q --maxfail=1`：通过，7 passed；仅有既有 warning。
+- `cd frontend && npm run build`：通过。Vite 仅输出既有 VueUse pure 注释、lottie-web eval 和 chunk 体积 warning。
+### Notes
+- `backend/app/core/circle_completion_service.py`：移除单社团索引入口的全量本地拥有态同步等待，局部 owned 写回支持 ready 索引保护和当前 canonical prune。
+- `backend/app/core/notification_helper.py`：补齐社团补全通知统计里的搜索效率格式化函数。
+- `backend/tests/test_circle_completion_owned_sync.py`：新增 ready 索引不可用不清快照、当前 canonical 未命中时局部 prune 的回归测试。
+- `frontend/src/views/CircleCompletion.vue`：索引任务进度改为 SSE 主通道、本地计时器和断线兜底状态查询。
+- `docs/circle-completion-paged-loading.md`：补充索引任务拥有态同步、SSE 进度通道和验证入口说明。
+- `progress.md`：追加本轮社团索引启动卡顿与进度刷新修复记录。
+- 回滚方式：按上述文件中本轮关于跳过全量 owned 同步、局部 owned prune、SSE 进度兜底、通知搜索效率函数、测试和文档说明的 hunk 精准还原；不要回退工作区已有社团补全分页、字幕补配、API 重命名等非本轮改动。
