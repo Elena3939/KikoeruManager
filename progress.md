@@ -627,3 +627,155 @@
 - `docs/circle-completion-paged-loading.md`：补充索引任务拥有态同步、SSE 进度通道和验证入口说明。
 - `progress.md`：追加本轮社团索引启动卡顿与进度刷新修复记录。
 - 回滚方式：按上述文件中本轮关于跳过全量 owned 同步、局部 owned prune、SSE 进度兜底、通知搜索效率函数、测试和文档说明的 hunk 精准还原；不要回退工作区已有社团补全分页、字幕补配、API 重命名等非本轮改动。
+
+## 2026-06-19 - Task: 修复字幕补配工作台完成态胶囊发白
+### What was done
+- 仅针对当前任务日志面板右上角的“已完成补配 / 已匹配完成”状态胶囊增加专用完成态 class。
+- 完成补配状态在浅色和暗色模式下改为高对比实心绿色，避免沿用普通 success 淡色样式导致文字像褪色发白。
+- 其它成功态、等待态、处理中状态和日志正文不变。
+### Testing
+- `cd frontend && npm run build`：通过。Vite 仅输出既有 VueUse pure 注释、lottie-web eval 和 chunk 体积 warning。
+### Notes
+- `frontend/src/components/library/subtitle-workbench/SubtitleTaskStage.vue`：当前任务顶部状态胶囊在 `manual_match_completed` 时追加 `is-manual-completed`，并补充专用明暗色样式。
+- `progress.md`：追加本轮字幕补配完成态胶囊样式修复记录。
+- 回滚方式：还原 `frontend/src/components/library/subtitle-workbench/SubtitleTaskStage.vue` 中本轮对顶部状态胶囊 class 绑定和 `.is-manual-completed` 样式的改动；删除本段进度记录。
+
+## 2026-06-19 - Task: 增加社团补全 RJ 定位搜索
+### What was done
+- 新增社团补全作品反查接口，可按 RJ、关联 RJ、作品标题或社团名在已建立索引内定位作品所属社团，不触发 DLsite / Kikoeru 外部请求。
+- 社团补全左侧目录新增“按 RJ 定位作品”搜索框，输入 RJ 后展示命中作品、所属社团、封面和收录 / 可下载状态。
+- 点击搜索结果会把目标社团带入左侧目录，切到来源对比 tab，并用命中 RJ 过滤当前社团作品列表，保证已收录和缺失作品都能直接定位。
+- 补充关联 RJ 命中 canonical 作品的后端回归测试和接口文档。
+### Testing
+- `cd backend && venv\Scripts\python.exe -m py_compile app\core\circle_completion_service.py app\api\routes.py`：通过。
+- `cd backend && venv\Scripts\python.exe -m pytest tests\test_circle_completion_paged_view.py -q --maxfail=1 --basetemp=.pytest-codex-circle-rj-search`：通过，4 passed；仅有既有 deprecation warning 和 `.pytest_cache` 写入 warning。
+- `cd frontend && npm run build`：通过。Vite 仅输出既有 VueUse pure 注释、lottie-web eval 和 chunk 体积 warning。
+- `git diff --check -- backend/app/api/routes.py backend/app/core/circle_completion_service.py backend/tests/test_circle_completion_paged_view.py frontend/src/api/index.js frontend/src/views/CircleCompletion.vue`：无空白错误；仅提示工作区 CRLF/LF 换行风格。
+### Notes
+- `backend/app/api/routes.py`：新增 `/api/circle-completion/work-search` 路由，并加入慢请求上下文。
+- `backend/app/core/circle_completion_service.py`：新增本地索引作品反查方法，匹配 canonical、display、linked RJ、标题和社团信息。
+- `backend/tests/test_circle_completion_paged_view.py`：新增 RJ / linked RJ 定位所属社团的回归测试。
+- `frontend/src/api/index.js`：新增 `circleCompletionApi.searchWorks()`。
+- `frontend/src/views/CircleCompletion.vue`：新增左侧 RJ 定位搜索 UI、debounce / AbortController、跳转到目标社团 compare tab 的交互逻辑和样式。
+- `docs/circle-completion-paged-loading.md`：补充作品反查接口契约和前端数据流说明。
+- `progress.md`：追加本轮社团补全 RJ 定位搜索记录。
+- 回滚方式：按上述文件中本轮关于 `work-search` 接口、RJ 定位搜索 UI / 状态逻辑、测试和文档说明的 hunk 精准还原；不要回退工作区已有字幕补配、社团索引性能和分页加载等非本轮改动。
+
+## 2026-06-19 - Task: 调整社团补全页头搜索与索引入口
+### What was done
+- 将社团补全 RJ / 作品定位搜索从左侧目录移动到页头搜索框，匹配截图里的顶栏位置。
+- 页头搜索命中后会保留搜索 RJ，跳到目标社团的来源对比 tab，并用该 RJ 过滤作品列表；无命中时在页头下拉里显示 `No Data`。
+- 移除左侧 RJ 定位搜索框和对应样式，避免出现两个同类搜索入口。
+- 将“建立 / 刷新索引”和“批量创建”合并为页头一个“批量建立 / 刷新”按钮，点击后统一弹出单个 / 批量社团名输入框。
+### Testing
+- `cd backend && venv\Scripts\python.exe -m py_compile app\core\circle_completion_service.py app\api\routes.py`：通过。
+- `cd backend && venv\Scripts\python.exe -m pytest tests\test_circle_completion_paged_view.py -q --maxfail=1 --basetemp=.pytest-codex-circle-rj-search-hero`：通过，4 passed；仅有既有 deprecation warning 和 `.pytest_cache` 写入 warning。
+- `cd frontend && npm run build`：通过。Vite 仅输出既有 VueUse pure 注释、lottie-web eval 和 chunk 体积 warning。
+### Notes
+- `frontend/src/views/CircleCompletion.vue`：页头搜索框接入作品定位结果下拉、No Data 状态、RJ 保留和跳转过滤逻辑，并合并索引创建入口弹框。
+- `docs/circle-completion-paged-loading.md`：将作品反查接口说明从左侧定位改为页头定位，并补充 No Data 行为。
+- `progress.md`：追加本轮页头搜索与索引入口调整记录。
+- 回滚方式：还原 `frontend/src/views/CircleCompletion.vue` 中本轮关于页头搜索框、下拉结果、No Data、索引按钮合并和删除左侧定位入口的 hunk；文档和本段进度记录按对应 hunk 精准还原。
+
+## 2026-06-19 - Task: 修复社团补全原作补配后不计入含字幕
+### What was done
+- 查服务器日志确认 `RJ01609723` 字幕补配已完成：操作历史对应任务导入 8 个字幕文件，库存索引随后扫描到 `/subtitles` 子树 `files=8`，问题不在补配落盘。
+- 定位到社团补全把“未收录时优先展示 / 下载翻译作”的 `preferred_variant` 口径泄漏到了已收录态 `owned_variant`，导致原作目录已补配字幕时没有命中“原作含字幕”条件。
+- 新增已收录主版本选择逻辑：仅当本地字幕目录或主目录真实路径明确落在 canonical 原作 RJ 下时，社团补全展示、统计和筛选才按原作版本计算；未收录作品仍保持简中 / 繁中优先展示与下载。
+- 分页接口和旧详情接口同时接入同一选择逻辑，避免社团补全不同读路径出现“一个显示有字幕、一个不显示”的口径漂移。
+- 新增 `RJ01609723 -> RJ01625472/RJ01625473` 关联链回归测试，覆盖“含字幕”统计、已收录字幕筛选、旧详情 payload，以及未收录作品仍优先翻译作展示 / 下载。
+### Testing
+- `cd backend && .\venv\Scripts\python.exe -m py_compile app\core\circle_completion_service.py tests\test_circle_completion_paged_view.py`：通过。
+- `cd backend && $env:PYTHONPATH=(Get-Location).Path; .\venv\Scripts\python.exe -m pytest tests\test_circle_completion_paged_view.py -q --maxfail=1 --basetemp=$env:TEMP\km-circle-subtitle-paged`：通过，6 passed；仅有既有 SQLAlchemy / FastAPI / pytest-asyncio deprecation warning 和 `.pytest_cache` 写入 warning。
+### Notes
+- `backend/app/core/circle_completion_service.py`：新增 `_pick_owned_primary_rjcode()`，并在分页视图与旧详情视图构造 `owned_variant` 时使用真实字幕目录 / 主目录路径优先确认原作字幕状态。
+- `backend/tests/test_circle_completion_paged_view.py`：新增原作目录已有字幕但关联链含简中 / 繁中版本时仍计入 `owned_stats.subtitle` 的回归测试，并补充未收录作品仍保持翻译作优先的保护测试。
+- `progress.md`：追加本轮服务器日志调查与社团补全字幕状态修复记录。
+- 回滚方式：还原 `backend/app/core/circle_completion_service.py` 中本轮 `_pick_owned_primary_rjcode()` 及两处调用 hunk；还原 `backend/tests/test_circle_completion_paged_view.py` 中新增的原作字幕状态回归测试；删除本段进度记录。
+
+## 2026-06-19 - Task: 优化社团补全 RJ 搜索跳转定位
+### What was done
+- 页头 RJ / 作品搜索结果点击后不再跳到来源对比 tab，而是按作品收录态跳到 `已满足` 或 `缺失作品`。
+- 新增轻量作品定位接口，只返回命中页码、canonical 和分页信息，不回传全量作品或全量 RJ codes，避免大社团点击搜索结果时产生额外卡顿。
+- 跳转时会清理会隐藏目标作品的临时筛选条件，翻到命中页后给对应卡片 / 列表行播放定位高亮特效。
+- 跳转流程改为延迟加载目标社团，先算页码再请求目标页，避免先加载第一页再二次跳页导致闪烁和重复请求。
+### Testing
+- `cd backend && venv\Scripts\python.exe -m py_compile app\core\circle_completion_service.py app\api\routes.py`：通过。
+- `cd backend && venv\Scripts\python.exe -m pytest tests\test_circle_completion_paged_view.py -q --maxfail=1 --basetemp=.pytest-codex-circle-rj-location`：通过，6 passed；仅有既有 SQLAlchemy / FastAPI / pytest-asyncio deprecation warning 和 `.pytest_cache` 写入 warning。
+- `cd frontend && npm run build`：通过。Vite 仅输出既有 VueUse pure 注释、lottie-web eval 和 chunk 体积 warning。
+- `git diff --check -- backend/app/api/routes.py backend/app/core/circle_completion_service.py backend/tests/test_circle_completion_paged_view.py docs/circle-completion-paged-loading.md frontend/src/api/index.js frontend/src/components/circle/CircleWorksViewport.vue frontend/src/components/circle/WorkCard.vue frontend/src/components/circle/WorkListRow.vue frontend/src/views/CircleCompletion.vue progress.md`：无空白错误；仅提示工作区 CRLF/LF 换行风格。
+### Notes
+- `backend/app/api/routes.py`：新增 `/api/circle-completion/circles/{circle_id}/work-location` 轻量定位路由。
+- `backend/app/core/circle_completion_service.py`：新增 RJ 候选匹配与定位页码计算逻辑，复用分页 tab / 筛选 / 排序口径。
+- `backend/tests/test_circle_completion_paged_view.py`：补充缺失 / 已满足作品定位页码回归断言。
+- `frontend/src/api/index.js`：新增 `circleCompletionApi.getCircleWorkLocation()`。
+- `frontend/src/views/CircleCompletion.vue`：搜索跳转改为按 owned 状态进入已满足 / 缺失、翻到目标页并触发定位高亮；跳转期间抑制重复列表请求。
+- `frontend/src/components/circle/CircleWorksViewport.vue`：透传搜索定位高亮状态到卡片和列表行。
+- `frontend/src/components/circle/WorkCard.vue`、`frontend/src/components/circle/WorkListRow.vue`：新增搜索定位高亮动效。
+- `docs/circle-completion-paged-loading.md`：记录 `work-location` 接口契约和页头搜索跳转性能约束。
+- `progress.md`：追加本轮社团补全 RJ 搜索跳转定位记录。
+- 回滚方式：还原上述文件中本轮关于 `work-location`、`locatedCodes` / `locateFlash`、搜索跳转分页定位和文档记录的 hunk；不要回退工作区已有分页加载、页头搜索、字幕补配等非本轮改动。
+
+## 2026-06-19 - Task: 优化社团补全搜索定位提示文案
+### What was done
+- 将页头 RJ 搜索定位成功 toast 从“已跳到 已满足”改为更自然的“已定位到 RJxxxx · 已满足作品 / 缺失作品 · 第 N 页”。
+- 将定位异常提示改为“已打开某类作品，但没有在当前结果中找到 RJxxxx”，避免出现生硬的 tab 名拼接。
+### Testing
+- `cd frontend && npm run build`：通过。Vite 仅输出既有 VueUse pure 注释、lottie-web eval 和 chunk 体积 warning。
+- `git diff --check -- frontend/src/views/CircleCompletion.vue progress.md`：无空白错误；仅提示工作区 CRLF/LF 换行风格。
+### Notes
+- `frontend/src/views/CircleCompletion.vue`：优化搜索定位成功和未命中提示文案。
+- `progress.md`：追加本轮 toast 文案优化记录。
+- 回滚方式：还原 `frontend/src/views/CircleCompletion.vue` 中本轮两条 `ElMessage` 文案 hunk，并删除本段进度记录。
+
+## 2026-06-19 - Task: 精简社团补全定位提示
+### What was done
+- 将社团补全页头搜索定位 toast 进一步精简：成功只显示 `已找到`，未命中只显示 `未找到`。
+### Testing
+- `cd frontend && npm run build`：通过。Vite 仅输出既有 VueUse pure 注释、lottie-web eval 和 chunk 体积 warning。
+- `git diff --check -- frontend/src/views/CircleCompletion.vue progress.md`：无空白错误；仅提示工作区 CRLF/LF 换行风格。
+### Notes
+- `frontend/src/views/CircleCompletion.vue`：精简搜索定位成功 / 未命中提示文案。
+- `progress.md`：追加本轮提示文案精简记录。
+- 回滚方式：还原 `frontend/src/views/CircleCompletion.vue` 中本轮两条 `ElMessage` 文案 hunk，并删除本段进度记录。
+
+## 2026-06-19 - Task: 修复百度网盘同时下载文件数按批次生效
+### What was done
+- 将百度网盘“同时下载文件数”改为服务级全局下载槽，所有百度下载任务共享同一个文件并发上限。
+- 每个 BaiduPCS-Go 子进程只下载 1 个文件，实际文件并发由后端全局槽控制，避免多个下载批次各自开满配置上限。
+- 全局槽会读取当前配置和 `resource_budget.network_download`，配置调小后新文件会等待已有下载释放。
+- 设置页文案改为“全局同时下载文件数”，并同步产品说明。
+### Testing
+- `cd backend && ..\backend\venv\Scripts\python.exe -m pytest tests\test_baidu_netdisk_service.py -q`：通过，44 passed；仅有既有 SQLAlchemy / FastAPI / pytest-asyncio deprecation warning 和 `.pytest_cache` 写入 warning。
+- `cd backend && ..\backend\venv\Scripts\python.exe -m py_compile app\core\baidu_netdisk_service.py tests\test_baidu_netdisk_service.py`：通过。
+- `cd frontend && npm run build`：通过。Vite 仅输出既有 VueUse pure 注释、lottie-web eval 和 chunk 体积 warning。
+- `git diff --check -- backend/app/core/baidu_netdisk_service.py backend/tests/test_baidu_netdisk_service.py frontend/src/components/settings/BaiduNetdiskSettingsPanel.vue`：无空白错误；仅提示工作区 CRLF/LF 换行风格。
+### Notes
+- `backend/app/core/baidu_netdisk_service.py`：新增服务级百度下载槽，下载行进入 BaiduPCS-Go 前必须占用全局槽，PCS-Go 下载参数收敛为单文件。
+- `backend/tests/test_baidu_netdisk_service.py`：新增跨任务全局下载槽回归测试，并更新 PCS-Go `-l 1` 参数断言。
+- `frontend/src/components/settings/BaiduNetdiskSettingsPanel.vue`：将设置项标题和提示改为全局共享语义。
+- `docs/INTRODUCTION.md`：补充百度网盘全局同时下载文件数说明。
+- `progress.md`：追加本轮百度网盘全局并发修复记录。
+- 回滚方式：还原上述文件中本轮关于 `_acquire_global_download_slot()`、PCS-Go `-max_download_load/-l` 单文件化、全局并发测试、设置文案和文档说明的 hunk；不要回退工作区已有社团补全和字幕相关改动。
+
+## 2026-06-19 - Task: 固定库存分页大小并优化社团聚合分页卡顿
+### What was done
+- 库存页普通目录、社团根目录、社团作品列表统一使用同一个分页大小偏好；用户选 10 / 20 / 50 / 100 后会一直保持，切目录或切社团视图不再自动回到 50/page。
+- 调查 `data/app.log` 确认历史卡顿集中在 `/api/library/circle-browser/files`：2026-06-18 00:16-00:24 左右连续慢请求，单次约 1.4-3.4s，query 基本为 `page_size=50`。
+- 社团聚合 snapshot 缓存从 30 秒延长到 5 分钟，并加构建锁；连续分页 / 切组不会多个请求同时重算全量 `library_index_entries` 聚合。
+- 社团根和社团作品列表路由改为在线程池执行同步 DB 聚合，避免一次重聚合卡住 FastAPI event loop，把其他 API / SSE 一起拖慢。
+- 修复翻译作子目录社团识别：`[社团][原作RJ]/翻译RJ` 这类路径会继承最近的括号父层社团名，减少不该进入“未识别社团”的作品。
+- 分页当前页样式改为更明显的选中态：当前页会轻微上浮放大，浅色 / 暗色都有更强边框和阴影。
+### Testing
+- `cd backend && .\venv\Scripts\python.exe -m py_compile app\core\library_circle_aggregation_service.py app\api\routes.py`：通过。
+- `cd backend && $env:PYTHONPATH=(Get-Location).Path; .\venv\Scripts\python.exe -m pytest tests\test_library_circle_aggregation.py tests\test_library_circle_aggregation_service.py -q --maxfail=1 --basetemp=$env:TEMP\km-library-circle-pagination`：通过，14 passed；仅有既有 SQLAlchemy / FastAPI / pytest-asyncio deprecation warning 和 `.pytest_cache` 写入 warning。
+- `cd frontend && npm run build`：通过。Vite 仅输出既有 VueUse pure 注释、lottie-web eval 和 chunk 体积 warning。
+- `git diff --check -- frontend/src/views/Library.vue frontend/src/index.css frontend/src/dark-mode.css backend/app/core/library_circle_aggregation_service.py backend/app/api/routes.py`：无空白错误；仅提示工作区 CRLF/LF 换行风格。
+### Notes
+- `frontend/src/views/Library.vue`：统一目录 / 社团分页大小状态，切换社团和目录时不再重置到 50。
+- `frontend/src/index.css`：增强 `.km-pagination-wrap` 当前页选中态，加入轻微放大和更明显阴影。
+- `frontend/src/dark-mode.css`：补暗色库存分页当前页选中态，压住暗黑兜底规则。
+- `backend/app/core/library_circle_aggregation_service.py`：延长 snapshot TTL、加构建锁、增加同步列表入口，并修复翻译作子目录社团识别。
+- `backend/app/api/routes.py`：社团聚合列表接口和社团浏览列表路径改为 `asyncio.to_thread` 执行，避免同步聚合阻塞事件循环。
+- `progress.md`：追加本轮库存分页与社团聚合性能修复记录。
+- 回滚方式：还原上述文件中本轮关于 `initialLibraryPageSize` / `syncLibraryPageSizePreference`、`.km-pagination-wrap` active 样式、`_SNAPSHOT_TTL_SECONDS` / `_snapshot_lock` / `browse_circle_listing` / 父层括号社团识别、以及 `asyncio.to_thread` 路由调用的 hunk；删除本段进度记录。
