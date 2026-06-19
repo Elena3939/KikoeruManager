@@ -173,7 +173,8 @@ class MetadataService:
         # 密码库权威绑定：rjcode_lock 时优先使用任务上下文 RJ，避免被解压目录里的子作品 RJ 抢走。
         rjcode = None
         if task_metadata.get("rjcode_lock"):
-            locked = str(task_metadata.get("rjcode") or getattr(task, "rjcode", "") or "").strip().upper()
+            locked_raw = str(task_metadata.get("rjcode") or getattr(task, "rjcode", "") or "").strip()
+            locked = self._extract_rjcode(locked_raw, search_subfolders=False) or locked_raw.upper()
             if locked and locked != "未知":
                 rjcode = locked
                 logger.info("元数据服务命中密码库权威 RJ 绑定: %s", rjcode)
@@ -441,6 +442,9 @@ class MetadataService:
             return url
         return ''
 
+    def _normalize_release_date(self, value: Any) -> str:
+        return str(value or '')[:10]
+
     async def _apply_dlsite_bonus_info(self, metadata: WorkMetadata, rjcode: str) -> None:
         try:
             dlsite_service = get_dlsite_service()
@@ -583,7 +587,7 @@ class MetadataService:
         maker_fields = await self._resolve_original_maker_fields(product, rjcode)
         metadata.maker_id = maker_fields.get('maker_id', '')
         metadata.maker_name = maker_fields.get('maker_name', '')
-        metadata.release_date = product.get('regist_date', '')[:10]
+        metadata.release_date = self._normalize_release_date(product.get('regist_date'))
         metadata.series_name = product.get('series_name')
         metadata.series_id = product.get('series_id')
         metadata.cover_url = self._normalize_cover_url((product.get('image_main') or {}).get('url'))
@@ -749,7 +753,7 @@ class MetadataService:
             maker_fields = await self._resolve_original_maker_fields(product, rjcode)
             metadata.maker_id = maker_fields.get('maker_id', '')
             metadata.maker_name = maker_fields.get('maker_name', '')
-            metadata.release_date = product.get('regist_date', '')[:10]
+            metadata.release_date = self._normalize_release_date(product.get('regist_date'))
             metadata.series_name = product.get('series_name')
             metadata.series_id = product.get('series_id')
             metadata.cover_url = self._normalize_cover_url((product.get('image_main') or {}).get('url'))
@@ -957,7 +961,7 @@ class MetadataService:
                 'work_name': product.get('work_name', ''),
                 'maker_id': product.get('maker_id', ''),
                 'maker_name': product.get('maker_name', ''),
-                'release_date': product.get('regist_date', '')[:10],
+                'release_date': self._normalize_release_date(product.get('regist_date')),
                 'series_name': product.get('series_name'),
                 'series_id': product.get('series_id'),
                 'tags': [],

@@ -104,3 +104,25 @@ async def test_get_product_bonus_info_returns_dict_when_payload_present(
     result = await service.get_product_bonus_info("RJ01527756")
 
     assert result == {"is_bonus_work": True, "has_bonus": True}
+
+
+@pytest.mark.asyncio
+async def test_get_product_info_handles_empty_translation_page_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = DLsiteApiService()
+
+    async def _stub_product_payload(rjcode: str, locale: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        return None
+
+    async def _stub_translation_fallback(rjcode: str, locale: Optional[str] = None) -> Optional[Dict[str, str]]:
+        return None
+
+    async def _stub_page_metadata(rjcode: str, locale: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        return None
+
+    monkeypatch.setattr(service, "_fetch_product_payload", _stub_product_payload)
+    monkeypatch.setattr(service, "_resolve_translation_page_fallback", _stub_translation_fallback)
+    monkeypatch.setattr(service, "_fetch_product_page_metadata", _stub_page_metadata)
+
+    assert await service.get_product_info("RJ01649758") is None

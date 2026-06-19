@@ -5961,6 +5961,7 @@ class LibraryManager:
         items: list[dict[str, str]],
         *,
         skip_index_mutation: bool = False,
+        sync_index_mutation: bool = False,
     ) -> dict[str, Any]:
         """批量重命名。
 
@@ -5991,12 +5992,14 @@ class LibraryManager:
                 library,
                 items,
                 skip_index_mutation=skip_index_mutation,
+                sync_index_mutation=sync_index_mutation,
             )
         return await asyncio.to_thread(
             self._local_batch_rename,
             library,
             items,
             skip_index_mutation=skip_index_mutation,
+            sync_index_mutation=sync_index_mutation,
         )
 
     def _local_batch_rename(
@@ -6005,6 +6008,7 @@ class LibraryManager:
         items: list[dict[str, str]],
         *,
         skip_index_mutation: bool = False,
+        sync_index_mutation: bool = False,
     ) -> dict[str, Any]:
         results: list[dict[str, Any]] = []
         failed: list[dict[str, Any]] = []
@@ -6061,7 +6065,12 @@ class LibraryManager:
         if moved_index_items and not skip_index_mutation:
             indexable_moved_items = self._filter_index_move_items(library, moved_index_items)
             if indexable_moved_items:
-                self._notify_index_self_mutation_move_batch(library, library, indexable_moved_items)
+                self._notify_index_self_mutation_move_batch(
+                    library,
+                    library,
+                    indexable_moved_items,
+                    sync=sync_index_mutation,
+                )
 
         # 聚合 stats_log（合并成 1 次 open / write，原本 N 次）
         if log_lines:
@@ -6093,6 +6102,7 @@ class LibraryManager:
         items: list[dict[str, str]],
         *,
         skip_index_mutation: bool = False,
+        sync_index_mutation: bool = False,
     ) -> dict[str, Any]:
         """远程库批量重命名：单条 rename 走原 FileStation API。"""
         results: list[dict[str, Any]] = []
@@ -6145,7 +6155,12 @@ class LibraryManager:
         if moved_index_items and not skip_index_mutation:
             indexable_moved_items = self._filter_index_move_items(library, moved_index_items)
             if indexable_moved_items:
-                self._notify_index_self_mutation_move_batch(library, library, indexable_moved_items)
+                self._notify_index_self_mutation_move_batch(
+                    library,
+                    library,
+                    indexable_moved_items,
+                    sync=sync_index_mutation,
+                )
         self._append_stats_log(
             library, "INFO",
             f"远程批量重命名完成 success={success_count} failed={len(failed)} total={len(items)}",

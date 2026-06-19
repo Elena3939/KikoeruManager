@@ -11,6 +11,7 @@ from app.config.settings import LibraryConfigItem, StorageConfig
 from app.core import library_index as library_index_module
 from app.core import library_folder_completion_service as folder_completion_module
 from app.core import library_manager as library_manager_module
+from app.core.metadata_service import MetadataService
 from app.core.library_index.types import IndexEntry
 
 
@@ -565,10 +566,14 @@ def test_local_batch_rename_keeps_request_index_and_remaps_child_paths(monkeypat
     monkeypatch.setattr(manager, "_assert_local_path_in_library", lambda _library, _path: None)
     monkeypatch.setattr(manager, "_invalidate_local_search_cache", lambda _library_id: None)
     moved_items = []
+    captured_sync = []
     monkeypatch.setattr(
         manager,
         "_notify_index_self_mutation_move_batch",
-        lambda _source_library, _target_library, items: moved_items.extend(items),
+        lambda _source_library, _target_library, items, **kwargs: (
+            moved_items.extend(items),
+            captured_sync.append(kwargs.get("sync")),
+        ),
     )
     monkeypatch.setattr(library_manager_module, "_stats_log_file_path", lambda: str(tmp_path / "stats.log"))
 
@@ -607,6 +612,7 @@ def test_local_batch_rename_keeps_request_index_and_remaps_child_paths(monkeypat
             "destination": os.path.normcase(os.path.normpath(str(library_root / "new" / "renamed.wav"))),
         },
     ]
+    assert captured_sync == [False]
 
 
 def test_local_batch_rename_can_skip_index_mutation(monkeypatch, tmp_path):
@@ -623,7 +629,7 @@ def test_local_batch_rename_can_skip_index_mutation(monkeypatch, tmp_path):
     monkeypatch.setattr(
         manager,
         "_notify_index_self_mutation_move_batch",
-        lambda _source_library, _target_library, items: moved_items.extend(items),
+        lambda _source_library, _target_library, items, **_kwargs: moved_items.extend(items),
     )
     monkeypatch.setattr(library_manager_module, "_stats_log_file_path", lambda: str(tmp_path / "stats.log"))
 
@@ -662,10 +668,14 @@ def test_local_batch_rename_filters_workbench_subtitles_but_indexes_audio(monkey
     monkeypatch.setattr(manager, "_assert_local_path_in_library", lambda _library, _path: None)
     monkeypatch.setattr(manager, "_invalidate_local_search_cache", lambda _library_id: None)
     moved_items = []
+    captured_sync = []
     monkeypatch.setattr(
         manager,
         "_notify_index_self_mutation_move_batch",
-        lambda _source_library, _target_library, items: moved_items.extend(items),
+        lambda _source_library, _target_library, items, **kwargs: (
+            moved_items.extend(items),
+            captured_sync.append(kwargs.get("sync")),
+        ),
     )
     monkeypatch.setattr(library_manager_module, "_stats_log_file_path", lambda: str(tmp_path / "stats.log"))
 
@@ -699,6 +709,7 @@ def test_local_batch_rename_filters_workbench_subtitles_but_indexes_audio(monkey
             "destination": os.path.normcase(os.path.normpath(str(work_dir / "track-fixed.wav"))),
         },
     ]
+    assert captured_sync == [False]
 
 
 def test_local_rename_filters_workbench_subtitle_index_mutation(monkeypatch, tmp_path):
@@ -715,7 +726,7 @@ def test_local_rename_filters_workbench_subtitle_index_mutation(monkeypatch, tmp
     monkeypatch.setattr(
         manager,
         "_notify_index_self_mutation_move_batch",
-        lambda _source_library, _target_library, items: moved_items.extend(items),
+        lambda _source_library, _target_library, items, **_kwargs: moved_items.extend(items),
     )
     monkeypatch.setattr(manager, "_append_stats_log", lambda *_args, **_kwargs: None)
 
@@ -903,6 +914,7 @@ def test_subtitle_manual_match_rename_can_skip_index_mutation(monkeypatch):
             captured["path"] = path
             captured["new_name"] = new_name
             captured["skip_index_mutation"] = skip_index_mutation
+            captured["sync_index_mutation"] = sync_index_mutation
             return {"message": "重命名成功", "new_path": path.replace("old.vtt", "new.vtt")}
 
     monkeypatch.setattr(routes_module, "get_library_manager", lambda: FakeLibraryManager())
@@ -921,16 +933,47 @@ def test_subtitle_manual_match_rename_can_skip_index_mutation(monkeypatch):
     assert response["new_path"] == "/library/workbench/new.vtt"
     assert captured["library_id"] == "local-a"
     assert captured["skip_index_mutation"] is True
+    assert captured["sync_index_mutation"] is False
+
+
+def test_library_browser_rename_syncs_index_by_default(monkeypatch):
+    captured = {}
+
+    class FakeLibraryManager:
+        async def rename(self, library_id, path, new_name, *, skip_index_mutation=False, sync_index_mutation=False):
+            captured["library_id"] = library_id
+            captured["path"] = path
+            captured["new_name"] = new_name
+            captured["skip_index_mutation"] = skip_index_mutation
+            captured["sync_index_mutation"] = sync_index_mutation
+            return {"message": "重命名成功", "new_path": path.replace("old", "new")}
+
+    monkeypatch.setattr(routes_module, "get_library_manager", lambda: FakeLibraryManager())
+    monkeypatch.setattr("app.core.activity_log_service.log_api_rename_action", lambda **_kwargs: None)
+
+    response = asyncio.run(
+        routes_module.rename_library_browser_item(_FakeJsonRequest({
+            "library_id": "local-a",
+            "path": "/library/work/old",
+            "new_name": "new",
+            "skip_activity_log": True,
+        }))
+    )
+
+    assert response["new_path"] == "/library/work/new"
+    assert captured["skip_index_mutation"] is False
+    assert captured["sync_index_mutation"] is True
 
 
 def test_subtitle_manual_match_batch_rename_can_skip_index_mutation(monkeypatch):
     captured = {}
 
     class FakeLibraryManager:
-        async def batch_rename(self, library_id, items, *, skip_index_mutation=False):
+        async def batch_rename(self, library_id, items, *, skip_index_mutation=False, sync_index_mutation=False):
             captured["library_id"] = library_id
             captured["items"] = items
             captured["skip_index_mutation"] = skip_index_mutation
+            captured["sync_index_mutation"] = sync_index_mutation
             return {
                 "results": [
                     {
@@ -960,6 +1003,47 @@ def test_subtitle_manual_match_batch_rename_can_skip_index_mutation(monkeypatch)
     assert response["success_count"] == 1
     assert captured["library_id"] == "local-a"
     assert captured["skip_index_mutation"] is True
+    assert captured["sync_index_mutation"] is False
+
+
+def test_library_browser_batch_rename_syncs_index_by_default(monkeypatch):
+    captured = {}
+
+    class FakeLibraryManager:
+        async def batch_rename(self, library_id, items, *, skip_index_mutation=False, sync_index_mutation=False):
+            captured["library_id"] = library_id
+            captured["items"] = items
+            captured["skip_index_mutation"] = skip_index_mutation
+            captured["sync_index_mutation"] = sync_index_mutation
+            return {
+                "results": [
+                    {
+                        "index": item["index"],
+                        "path": item["path"],
+                        "source_path": item["path"],
+                        "new_name": item["new_name"],
+                        "new_path": item["path"].replace("old", "new"),
+                    }
+                    for item in items
+                ],
+                "failed": [],
+            }
+
+    monkeypatch.setattr(routes_module, "get_library_manager", lambda: FakeLibraryManager())
+    monkeypatch.setattr("app.core.activity_log_service.log_api_rename_action", lambda **_kwargs: None)
+    monkeypatch.setattr("app.core.activity_log_service.log_batch_manual_rename_result", lambda **_kwargs: None)
+
+    response = asyncio.run(
+        routes_module.batch_rename_library_browser_items(_FakeJsonRequest({
+            "library_id": "local-a",
+            "items": [{"path": "/library/work/old", "new_name": "new", "current_name": "old"}],
+            "skip_activity_log": True,
+        }))
+    )
+
+    assert response["success_count"] == 1
+    assert captured["skip_index_mutation"] is False
+    assert captured["sync_index_mutation"] is True
 
 
 def test_api_rename_locks_metadata_to_target_folder_rjcode(monkeypatch):
@@ -1110,6 +1194,128 @@ def test_api_rename_rejects_minimal_metadata_without_renaming(monkeypatch):
     assert captured["metadata_task_rjcode"] == "RJ01572763"
     assert captured["force_refresh"] is False
     assert "rename_called" not in captured
+
+
+def test_api_rename_normalizes_markdown_rjcode_before_metadata_fetch(monkeypatch):
+    captured = {}
+
+    class FakeLibrary:
+        id = "remote-a"
+        type = "synology_filestation"
+
+    class FakeLibraryManager:
+        def get_library_definition(self, library_id):
+            return FakeLibrary()
+
+        async def rename(self, *_args, **_kwargs):
+            captured["rename_called"] = True
+            raise AssertionError("本测试只验证元数据请求前的 RJ 归一化")
+
+    class FakeMetadataService:
+        async def fetch(self, path, task, force_refresh=False):
+            captured["metadata_task_rjcode"] = task.rjcode
+            captured["metadata_task_metadata"] = dict(task.task_metadata)
+            return {
+                "rjcode": "RJ01649758",
+                "work_name": "RJ01649758",
+                "maker_name": "",
+                "tags": [],
+                "cvs": [],
+                "cover_url": "",
+                "release_date": "",
+                "metadata_source": "minimal",
+                "dlsite_circuit_open": False,
+            }
+
+    monkeypatch.setattr(routes_module, "get_library_manager", lambda: FakeLibraryManager())
+    monkeypatch.setattr("app.core.metadata_service.MetadataService", lambda: FakeMetadataService())
+    monkeypatch.setattr("app.core.activity_log_service.log_api_rename_action", lambda **_kwargs: None)
+
+    markdown_path = "/library_amsr/[RJ01649758](https://www.dlsite.com/maniax/work/=/product_id/RJ01649758.html)"
+    with pytest.raises(routes_module.HTTPException) as exc_info:
+        asyncio.run(
+            routes_module.api_rename_library_file(_FakeJsonRequest({
+                "library_id": "remote-a",
+                "path": markdown_path,
+            }))
+        )
+
+    assert exc_info.value.status_code == 422
+    assert captured["metadata_task_rjcode"] == "RJ01649758"
+    assert captured["metadata_task_metadata"] == {
+        "rjcode": "RJ01649758",
+        "rjcode_lock": True,
+    }
+    assert "rename_called" not in captured
+
+
+def test_metadata_service_normalizes_locked_markdown_rjcode(monkeypatch):
+    captured = {}
+    service = MetadataService()
+    service.config.metadata.cache_enabled = False
+
+    async def fake_fetch_from_dlsite_product_info(rjcode):
+        captured["rjcode"] = rjcode
+        metadata = SimpleNamespace(
+            metadata_source="minimal",
+            to_dict=lambda: {
+                "rjcode": rjcode,
+                "metadata_source": "minimal",
+            },
+        )
+        return metadata
+
+    monkeypatch.setattr(service, "_fetch_from_dlsite_product_info", fake_fetch_from_dlsite_product_info)
+
+    task = SimpleNamespace(
+        rjcode="[RJ01649758](https://www.dlsite.com/maniax/work/=/product_id/RJ01649758.html)",
+        task_metadata={
+            "rjcode": "[RJ01649758](https://www.dlsite.com/maniax/work/=/product_id/RJ01649758.html)",
+            "rjcode_lock": True,
+        },
+        update_progress=lambda *_args, **_kwargs: None,
+    )
+
+    result = asyncio.run(service.fetch("/library/no-rj-here", task))
+
+    assert captured["rjcode"] == "RJ01649758"
+    assert result["rjcode"] == "RJ01649758"
+
+
+def test_metadata_service_accepts_null_dlsite_release_date(monkeypatch):
+    service = MetadataService()
+
+    async def fake_resolve_original_maker_fields(product, rjcode):
+        return {
+            "maker_id": product.get("maker_id", ""),
+            "maker_name": product.get("maker_name", ""),
+        }
+
+    async def fake_apply_dlsite_bonus_info(metadata, rjcode):
+        return None
+
+    monkeypatch.setattr(service, "_resolve_original_maker_fields", fake_resolve_original_maker_fields)
+    monkeypatch.setattr(service, "_apply_dlsite_bonus_info", fake_apply_dlsite_bonus_info)
+
+    metadata = asyncio.run(
+        service._build_metadata_from_dlsite_product(
+            "RJ01649758",
+            {
+                "workno": "RJ01649758",
+                "work_name": "限定イラスト",
+                "maker_id": "RG60152",
+                "maker_name": "おいしいおこめ",
+                "regist_date": None,
+                "image_main": {"url": "//img.dlsite.jp/modpub/images2/work/sample.jpg"},
+                "genres": [],
+                "creaters": [],
+            },
+        )
+    )
+
+    assert metadata.rjcode == "RJ01649758"
+    assert metadata.release_date == ""
+    assert metadata.maker_name == "おいしいおこめ"
 
 
 def test_batch_api_rename_skips_minimal_metadata_without_batch_renaming(monkeypatch):

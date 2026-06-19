@@ -1996,6 +1996,8 @@ const PAGE_SIZE_KEY = 'kikoeru.ui.library.pageSize'
 
 const LIBRARY_ACTION_SCOPE_KEY = 'kikoeru.ui.library.toolbarActionScope'
 
+const RECENT_RENAME_TTL_MS = 60000
+
 const SEARCH_RESULT_KIND_KEY = 'kikoeru.ui.library.searchResultKind'
 
 const SEARCH_EXACT_KEY = 'kikoeru.ui.library.searchExact'
@@ -2023,6 +2025,8 @@ const listPolling = ref(false)
 const libraryViewModeSwitching = ref(false)
 
 const files = ref([])
+
+const recentRenamePathMap = ref(new Map())
 
 const totalFiles = ref(0)
 
@@ -2557,7 +2561,7 @@ function applyCircleLibraryViewData ({ data, requestPageSize }) {
   currentPath.value = responsePath
   parentPath.value = data.parent_path || ''
 
-  files.value = data.files || []
+  files.value = applyRecentRenameRows(data.files || [])
   totalFiles.value = Number(data.total || files.value.length || 0)
   if (data.circle_summary && typeof data.circle_summary === 'object') {
     circleSummary.value = {
@@ -2569,7 +2573,7 @@ function applyCircleLibraryViewData ({ data, requestPageSize }) {
   if (responseDecoded.type === 'root') {
     circleGroupPage.value = Number(data.page || circleGroupPage.value || 1)
     circleGroupPageSize.value = Number(data.page_size || circleGroupPageSize.value || requestPageSize)
-    circleGroups.value = Array.isArray(data.circle_groups) ? data.circle_groups : files.value
+    circleGroups.value = applyRecentRenameRows(Array.isArray(data.circle_groups) ? data.circle_groups : files.value)
     circleGroupTotal.value = totalFiles.value
     circleSelectedGroupKey.value = ''
     circleSelectedWorkKey.value = ''
@@ -2585,13 +2589,13 @@ function applyCircleLibraryViewData ({ data, requestPageSize }) {
   }
 
   if (responseDecoded.type === 'group') {
-    circleWorks.value = Array.isArray(data.circle_works) ? data.circle_works : []
+    circleWorks.value = applyRecentRenameRows(Array.isArray(data.circle_works) ? data.circle_works : [])
     circleWorkTotal.value = totalFiles.value
     circleSelectedWorkKey.value = ''
   } else if (['work', 'item', 'location', 'location-item'].includes(responseDecoded.type)) {
     circleSelectedWorkKey.value = responseDecoded.workKey || data.circle_work?.rjcode || circleSelectedWorkKey.value
     if (Array.isArray(data.circle_works)) {
-      circleWorks.value = data.circle_works
+      circleWorks.value = applyRecentRenameRows(data.circle_works)
     } else if (data.circle_work?.rjcode) {
       const workIndex = circleWorks.value.findIndex(item => String(item?.rjcode || '') === String(data.circle_work.rjcode || ''))
       if (workIndex >= 0) circleWorks.value.splice(workIndex, 1, data.circle_work)
@@ -8541,7 +8545,7 @@ async function refreshLibrary (options = {}) {
 
     if (libraryViewMode.value !== requestMode) return
 
-    files.value = data.files || []
+    files.value = applyRecentRenameRows(data.files || [])
 
     totalFiles.value = data.total || 0
 
@@ -8919,6 +8923,74 @@ function normalizeConflictPathKey (path) {
     .replace(/\/$/, '')
 
     .toLowerCase()
+
+}
+
+function pruneRecentRenamePathMap () {
+
+  const now = Date.now()
+
+  const nextMap = new Map()
+
+  recentRenamePathMap.value.forEach((entry, key) => {
+    if (entry?.expiresAt && entry.expiresAt > now) nextMap.set(key, entry)
+  })
+
+  if (nextMap.size !== recentRenamePathMap.value.size) recentRenamePathMap.value = nextMap
+
+  return nextMap
+
+}
+
+function rememberRecentRenamePath (oldPath, newPath, nextName = '') {
+
+  const sourcePath = String(oldPath || '').trim()
+  const targetPath = String(newPath || '').trim()
+
+  if (!sourcePath || !targetPath || sourcePath === targetPath) return
+
+  const nextMap = pruneRecentRenamePathMap()
+
+  nextMap.set(normalizeConflictPathKey(sourcePath), {
+    oldPath: sourcePath,
+    newPath: targetPath,
+    newName: String(nextName || getFileName(targetPath) || '').trim(),
+    expiresAt: Date.now() + RECENT_RENAME_TTL_MS
+  })
+
+  recentRenamePathMap.value = nextMap
+
+}
+
+function applyRecentRenameRows (rows) {
+
+  const renameMap = pruneRecentRenamePathMap()
+
+  if (!renameMap.size || !Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : []
+
+  const existingPathKeys = new Set(rows.map(row => normalizeConflictPathKey(getCircleRealPath(row) || row?.path || '')).filter(Boolean))
+  const seenPathKeys = new Set()
+  const result = []
+
+  for (const row of rows) {
+    const rowPath = String(getCircleRealPath(row) || row?.path || '').trim()
+    const rowKey = normalizeConflictPathKey(rowPath)
+    const entry = rowKey ? renameMap.get(rowKey) : null
+    const alreadyHasNewPath = entry && existingPathKeys.has(normalizeConflictPathKey(entry.newPath))
+
+    if (entry && alreadyHasNewPath) continue
+
+    const nextRow = entry
+      ? buildReplacedLibraryRowPath(row, entry.newPath, entry.newName)
+      : row
+    const nextKey = normalizeConflictPathKey(getCircleRealPath(nextRow) || nextRow?.path || rowPath)
+
+    if (nextKey && seenPathKeys.has(nextKey)) continue
+    if (nextKey) seenPathKeys.add(nextKey)
+    result.push(nextRow)
+  }
+
+  return result
 
 }
 
@@ -21717,6 +21789,8 @@ function replaceRowPathInCurrentView (oldPath, newPath, nextName = '') {
 
   if (!sourcePath || !targetPath || sourcePath === targetPath) return
 
+  rememberRecentRenamePath(sourcePath, targetPath, nextName)
+
   let nextRow = null
 
   files.value = files.value.map(item => {
@@ -21968,8 +22042,10 @@ async function apiRenameItem (row) {
 
     ElMessage.success(data.message || 'API 重命名成功')
 
-    if (data?.path) {
-      replaceRowPathInCurrentView(target.path, data.path, data.new_name || '')
+    const nextPath = data?.new_path || data?.path || ''
+
+    if (nextPath) {
+      replaceRowPathInCurrentView(target.path, nextPath, data.new_name || data.name || '')
     }
 
     refreshCurrentLibraryAndStatsInBackground('API 重命名已完成')

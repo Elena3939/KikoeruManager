@@ -1194,7 +1194,7 @@ class DLsiteApiService:
             self.cache[cache_key] = {'data': payload, 'timestamp': datetime.now()}
             return payload
 
-        fallback = await self._resolve_translation_page_fallback(requested_workno, locale=locale)
+        fallback = await self._resolve_translation_page_fallback(requested_workno, locale=locale) or {}
         parent_workno = self._normalize_workno(fallback.get('product_workno') or '')
         translation_workno = self._normalize_workno(fallback.get('translation_workno') or '')
         if parent_workno and translation_workno == requested_workno:
