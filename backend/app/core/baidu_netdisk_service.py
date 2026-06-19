@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime
 from http.cookies import SimpleCookie
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
@@ -262,6 +262,8 @@ class BaiduNetdiskService:
         self._official_login_session: Optional[Dict[str, Any]] = None
         self._qr_login_sessions: Dict[str, Dict[str, Any]] = {}
         self._raw_preview_cache: Dict[str, Dict[str, Any]] = {}
+        self._download_slot_lock = threading.Lock()
+        self._download_slot_active = 0
 
     def _config(self):
         return get_config().baidu_netdisk
@@ -3222,13 +3224,13 @@ class BaiduNetdiskService:
             max_concurrent = self._baidu_download_file_concurrency(len(download_files))
             task.task_metadata["download_runtime"]["active_file_limit"] = max_concurrent
             if max_concurrent > 1:
-                self._append_log(task, f"百度网盘文件下载并发：{max_concurrent} 个", "info")
+                self._append_log(task, f"百度网盘全局文件下载并发：{max_concurrent} 个", "info")
             budget_limit = self._network_download_budget_limit()
             _max_parallel, max_download_load = self._baidu_pcs_go_download_limits()
             if budget_limit > 0 and budget_limit < max_download_load:
                 self._append_log(
                     task,
-                    f"全局下载资源预算限制为 {budget_limit}，百度网盘同时文件配置 {max_download_load} 已按预算收敛",
+                    f"全局下载资源预算限制为 {budget_limit}，百度网盘全局同时文件配置 {max_download_load} 已按预算收敛",
                     "info",
                 )
             if len(download_files) > 1 and max_concurrent > 1:
@@ -3902,6 +3904,45 @@ class BaiduNetdiskService:
             return max(1, min(count, max_download_load, budget_limit))
         return max(1, min(count, max_download_load))
 
+    def _baidu_global_download_limit(self) -> int:
+        return self._baidu_download_file_concurrency(10_000)
+
+    @contextlib.asynccontextmanager
+    async def _acquire_global_download_slot(self, task, row: Dict[str, Any], cancel_event: asyncio.Event) -> AsyncIterator[None]:
+        limit = max(1, self._baidu_global_download_limit())
+        row["waiting_global_slot"] = True
+        wait_started_at = time.monotonic()
+        acquired = False
+        try:
+            while True:
+                await self._check_task_active(task, cancel_event)
+                limit = max(1, self._baidu_global_download_limit())
+                with self._download_slot_lock:
+                    if self._download_slot_active < limit:
+                        self._download_slot_active += 1
+                        acquired = True
+                        break
+                await asyncio.sleep(0.25)
+        except BaseException:
+            row["waiting_global_slot"] = False
+            raise
+        waited = time.monotonic() - wait_started_at
+        row["waiting_global_slot"] = False
+        row["global_slot_limit"] = limit
+        if waited >= 1:
+            self._append_log(
+                task,
+                f"已获取百度网盘全局下载槽：{row.get('name') or '未命名文件'}，等待 {waited:.1f}s",
+                "info",
+            )
+        try:
+            yield
+        finally:
+            row["global_slot_limit"] = limit
+            if acquired:
+                with self._download_slot_lock:
+                    self._download_slot_active = max(0, self._download_slot_active - 1)
+
     def _network_download_budget_limit(self) -> int:
         cfg = getattr(get_config(), "resource_budget", None)
         if cfg is None or not bool(getattr(cfg, "enabled", True)):
@@ -3923,28 +3964,29 @@ class BaiduNetdiskService:
         semaphore: asyncio.Semaphore,
     ) -> None:
         async with semaphore:
-            await self._check_task_active(task, cancel_event)
-            row["status"] = "downloading"
-            self._refresh_runtime(task, download_files, started=started, current=row)
-            task.update_progress(max(2, task.progress), f"下载百度网盘文件 {index + 1}/{len(download_files)}")
-            try:
-                await self._download_share_item(task, staging_dir, row, download_files, started, cancel_event)
-                row["status"] = "completed"
-                row["progress"] = 100
-                row["speed_bytes_per_sec"] = 0
-            except asyncio.CancelledError:
-                if str(getattr(task.status, "value", task.status) or "") == "paused" and not task.is_cancelled():
-                    row["status"] = "paused"
-                    row["failure_reason"] = "任务已暂停"
-                else:
-                    row["status"] = "cancelled"
-                raise
-            except Exception as exc:
-                row["status"] = "failed"
-                row["speed_bytes_per_sec"] = 0
-                row["failure_reason"] = self._sanitize_error(exc)
-            finally:
-                self._refresh_runtime(task, download_files, started=started, current={})
+            async with self._acquire_global_download_slot(task, row, cancel_event):
+                await self._check_task_active(task, cancel_event)
+                row["status"] = "downloading"
+                self._refresh_runtime(task, download_files, started=started, current=row)
+                task.update_progress(max(2, task.progress), f"下载百度网盘文件 {index + 1}/{len(download_files)}")
+                try:
+                    await self._download_share_item(task, staging_dir, row, download_files, started, cancel_event)
+                    row["status"] = "completed"
+                    row["progress"] = 100
+                    row["speed_bytes_per_sec"] = 0
+                except asyncio.CancelledError:
+                    if str(getattr(task.status, "value", task.status) or "") == "paused" and not task.is_cancelled():
+                        row["status"] = "paused"
+                        row["failure_reason"] = "任务已暂停"
+                    else:
+                        row["status"] = "cancelled"
+                    raise
+                except Exception as exc:
+                    row["status"] = "failed"
+                    row["speed_bytes_per_sec"] = 0
+                    row["failure_reason"] = self._sanitize_error(exc)
+                finally:
+                    self._refresh_runtime(task, download_files, started=started, current={})
 
     def _baidu_pcs_go_upload_limits(self) -> tuple[int, int]:
         cfg = self._config()
@@ -3963,11 +4005,11 @@ class BaiduNetdiskService:
         return max_parallel, max_upload_load
 
     def _baidu_pcs_go_download_config_commands(self, pcsgo_path: str, savedir: str) -> List[List[str]]:
-        max_parallel, max_download_load = self._baidu_pcs_go_download_limits()
+        max_parallel, _max_download_load = self._baidu_pcs_go_download_limits()
         return [
             [pcsgo_path, "config", "set", "-savedir", savedir],
             [pcsgo_path, "config", "set", "-max_parallel", str(max_parallel)],
-            [pcsgo_path, "config", "set", "-max_download_load", str(max_download_load)],
+            [pcsgo_path, "config", "set", "-max_download_load", "1"],
             [pcsgo_path, "config", "set", "-max_download_rate", "0"],
             [pcsgo_path, "config", "set", "-cache_size", "256KB"],
         ]
@@ -3983,7 +4025,7 @@ class BaiduNetdiskService:
         ]
 
     def _baidu_pcs_go_download_args(self, pcsgo_path: str, remote_path: str, savedir: str) -> List[str]:
-        max_parallel, max_download_load = self._baidu_pcs_go_download_limits()
+        max_parallel, _max_download_load = self._baidu_pcs_go_download_limits()
         return [
             pcsgo_path,
             "download",
@@ -3995,7 +4037,7 @@ class BaiduNetdiskService:
             "-p",
             str(max_parallel),
             "-l",
-            str(max_download_load),
+            "1",
             "--retry",
             "5",
         ]
@@ -4120,10 +4162,11 @@ class BaiduNetdiskService:
                 pass_code=pass_code,
             )
             self._append_log(task, f"百度网盘分享文件已转存到临时目录 {remote_tmp_dir}", "info")
-            max_parallel, max_download_load = self._baidu_pcs_go_download_limits()
+            max_parallel, _max_download_load = self._baidu_pcs_go_download_limits()
+            max_download_load = self._baidu_global_download_limit()
             self._append_log(
                 task,
-                f"BaiduPCS-Go 高速下载参数：线程 {max_parallel}，同时文件 {max_download_load}，模式 locate，不限速",
+                f"BaiduPCS-Go 高速下载参数：线程 {max_parallel}，全局同时文件 {max_download_load}，模式 locate，不限速",
                 "info",
             )
             task.update_progress(max(2, task.progress), "百度网盘转存完成，开始高速下载")

@@ -1341,13 +1341,13 @@ async def test_baidu_start_download_uses_pcsgo_temporary_transfer_and_cleans_rem
     assert [item["args"] for item in command_log] == [
         ("config", "set", "-savedir", savedir),
         ("config", "set", "-max_parallel", "20"),
-        ("config", "set", "-max_download_load", "5"),
+        ("config", "set", "-max_download_load", "1"),
         ("config", "set", "-max_download_rate", "0"),
         ("config", "set", "-cache_size", "256KB"),
         ("cd", "/"),
         ("mkdir", remote_tmp_dir),
         ("cd", remote_tmp_dir),
-        ("download", remote_tmp_dir, "--saveto", savedir, "--mode", "locate", "-p", "20", "-l", "5", "--retry", "5"),
+        ("download", remote_tmp_dir, "--saveto", savedir, "--mode", "locate", "-p", "20", "-l", "1", "--retry", "5"),
         ("cd", "/"),
         ("rm", remote_tmp_dir),
     ]
@@ -1484,6 +1484,83 @@ def test_baidu_download_file_concurrency_respects_network_budget(monkeypatch):
 
     config.resource_budget.network_download = 0
     assert service._baidu_download_file_concurrency(8) == 5
+
+
+@pytest.mark.asyncio
+async def test_baidu_download_file_concurrency_is_global(monkeypatch, tmp_path):
+    service = BaiduNetdiskService()
+    config = DummyConfig()
+    config.baidu_netdisk.max_download_load = 1
+    config.storage.temp_path = str(tmp_path / "temp")
+    monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
+
+    entered = []
+    release_first = asyncio.Event()
+
+    async def fake_download_item(_task, _staging_dir, row, _download_files, _started, _cancel_event):
+        entered.append(row["name"])
+        if row["name"] == "one.zip":
+            await release_first.wait()
+        row["downloaded"] = row["size"]
+
+    monkeypatch.setattr(service, "_download_share_item", fake_download_item)
+
+    first_task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={"progress_log": []},
+        status=TaskStatus.PROCESSING,
+        task_id="baidu-global-limit-first",
+    )
+    second_task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={"progress_log": []},
+        status=TaskStatus.PROCESSING,
+        task_id="baidu-global-limit-second",
+    )
+    first_row = {"name": "one.zip", "relative_path": "one.zip", "status": "pending", "size": 10, "downloaded": 0}
+    second_row = {"name": "two.zip", "relative_path": "two.zip", "status": "pending", "size": 10, "downloaded": 0}
+    first_files = [first_row]
+    second_files = [second_row]
+
+    first = asyncio.create_task(service._download_share_item_guarded(
+        first_task,
+        str(tmp_path / "first"),
+        first_row,
+        0,
+        first_files,
+        time.monotonic(),
+        asyncio.Event(),
+        asyncio.Semaphore(1),
+    ))
+    while entered != ["one.zip"]:
+        await asyncio.sleep(0)
+
+    second = asyncio.create_task(service._download_share_item_guarded(
+        second_task,
+        str(tmp_path / "second"),
+        second_row,
+        0,
+        second_files,
+        time.monotonic(),
+        asyncio.Event(),
+        asyncio.Semaphore(1),
+    ))
+    await asyncio.sleep(0.05)
+
+    assert entered == ["one.zip"]
+    assert second_row["status"] == "pending"
+    assert second_row["waiting_global_slot"] is True
+
+    release_first.set()
+    await asyncio.gather(first, second)
+
+    assert entered == ["one.zip", "two.zip"]
+    assert first_row["status"] == "completed"
+    assert second_row["status"] == "completed"
+    assert first_row["global_slot_limit"] == 1
+    assert second_row["global_slot_limit"] == 1
 
 
 def test_baidu_remote_temporary_transfer_dir_is_unique_per_row(monkeypatch):
@@ -1749,7 +1826,7 @@ async def test_baidu_start_download_prefers_raw_selected_items_without_preview(m
     assert config_user["bdclnd"] == "rand-sk"
     assert config_user["cookies"] == "BDUSS=test; STOKEN=test; BDCLND=rand-sk"
     assert any(
-        item["args"] == ("download", "/km_20260605_153012_a1b2c3", "--saveto", state["savedir"], "--mode", "locate", "-p", "20", "-l", "5", "--retry", "5")
+        item["args"] == ("download", "/km_20260605_153012_a1b2c3", "--saveto", state["savedir"], "--mode", "locate", "-p", "20", "-l", "1", "--retry", "5")
         for item in command_log
     )
     assert transfer_calls == [{
