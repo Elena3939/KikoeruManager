@@ -1109,6 +1109,9 @@ function buildFileTreeCacheSignature(item) {
   const metadata = item?.details?.metadata || {}
   return [
     item.id || '',
+    item.domain || '',
+    item.kind || '',
+    item.status || '',
     treeFilterMode.value || 'all',
     buildFileTreeExpandedSignature(),
     metadata.file_tree_root_label || '',

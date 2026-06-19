@@ -340,8 +340,13 @@ class TaskCenterService:
                 out[key] = self._json_safe(preview.get(key))
         return out
 
-    def _ensure_file_tree_metadata(self, metadata: Dict[str, Any], resolved_target_path: str, source_path: str) -> Dict[str, Any]:
+    def _should_skip_directory_file_tree_snapshot(self, metadata: Dict[str, Any], domain: str) -> bool:
+        return domain == "http_download"
+
+    def _ensure_file_tree_metadata(self, metadata: Dict[str, Any], resolved_target_path: str, source_path: str, domain: str = "") -> Dict[str, Any]:
         if metadata.get("file_tree_items"):
+            return metadata
+        if self._should_skip_directory_file_tree_snapshot(metadata, domain):
             return metadata
 
         candidate_paths: List[str] = []
@@ -949,7 +954,7 @@ class TaskCenterService:
         )
         # 关键优化：summary 模式跳过 os.walk，它只给详情面板的文件树用
         if mode == "detail":
-            metadata = self._ensure_file_tree_metadata(metadata, resolved_target_path, source_path)
+            metadata = self._ensure_file_tree_metadata(metadata, resolved_target_path, source_path, domain)
         route_hint = self.DOMAIN_ROUTE_HINT.get(domain, "/tasks")
         rjcode = self._normalize_rjcode(
             self._safe_text(getattr(task, "rjcode", ""))
