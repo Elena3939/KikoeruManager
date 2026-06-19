@@ -214,6 +214,7 @@ class CircleCompletionService:
         # metadata / canonical 单条体积大，限严些；1h TTL 足以覆盖一次社团补全流程。
         self._metadata_cache: TTLCache = TTLCache(max_size=512, ttl_seconds=3600, name="circle.metadata")
         self._completion_view_cache: TTLCache = TTLCache(max_size=128, ttl_seconds=600, name="circle.completion_view")
+        self._completion_state_cache: TTLCache = TTLCache(max_size=128, ttl_seconds=180, name="circle.completion_state")
         # ⚠ canonical cache 必须够大装下"大社团一次索引涉及的所有链路 RJ"：
         # 实测 RaRo（304 件）展开后涉及 ~1600 个 RJ，旧 max_size=1024 会触发 LRU 淘汰，
         # wave1 批量预热写进 1600 条但留下最后 1024 条，前 ~600 条全被踢出，
@@ -227,8 +228,8 @@ class CircleCompletionService:
         # 触发并发任务竞争 DLsite / 图片 CDN，并让上层任务真正能"用户点击 → 索引完成"快速返回。
         self._cover_cache_tasks: Dict[str, asyncio.Task] = {}
         self._bonus_refresh_tasks: Dict[str, asyncio.Task] = {}
-        # P8：sync_local_owned_index TTL 节流。每次索引开头都全量 await 一次会拖慢中等库 5-15s；
-        # 改成首次 / 过期 / force 才同步，其他情况后台异步刷。
+        # 本地拥有态全量快照只允许后台维护；单社团索引点击路径必须走当前社团局部核对。
+        # 线上日志显示首次全量 await 会在 "同步本地拥有态索引" 卡 80s+，期间前端轮询和 SSE 都会被拖慢。
         self._local_owned_sync_state: Dict[str, Any] = {
             "last_completed_at": 0.0,
             "background_task": None,  # type: Optional[asyncio.Task]
@@ -272,10 +273,15 @@ class CircleCompletionService:
         if not normalized:
             size = len(self._completion_view_cache)
             self._completion_view_cache.clear()
+            self._completion_state_cache.clear()
             return size
-        return self._completion_view_cache.invalidate_predicate(
+        view_removed = self._completion_view_cache.invalidate_predicate(
             lambda key: isinstance(key, str) and key.startswith(f"{normalized}|")
         )
+        state_removed = self._completion_state_cache.invalidate_predicate(
+            lambda key: isinstance(key, str) and key == normalized
+        )
+        return view_removed + state_removed
 
     def normalize_circle_name(self, value: Any) -> str:
         text = unicodedata.normalize("NFKC", str(value or "")).strip().lower()
@@ -1248,6 +1254,687 @@ class CircleCompletionService:
         self._metadata_cache.update(db_map)
         cached_map.update(db_map)
         return cached_map
+
+    def _find_circle_catalog_for_view(self, db, circle_id_or_query: str) -> CircleCatalog:
+        query = str(circle_id_or_query or "").strip()
+        if not query:
+            raise ValueError("缺少社团标识")
+        catalog = db.query(CircleCatalog).filter(CircleCatalog.circle_id == query).first()
+        if catalog is None:
+            normalized = self.normalize_circle_name(query)
+            catalog = db.query(CircleCatalog).filter(CircleCatalog.circle_name_normalized == normalized).first()
+        if catalog is None:
+            raise ValueError("社团索引不存在")
+        return catalog
+
+    def _completion_status_filters(self, value: Any) -> List[str]:
+        allowed = {"repairable", "downloadable", "missing", "no_source"}
+        raw_values = value
+        if isinstance(raw_values, str):
+            raw_values = re.split(r"[,，\s]+", raw_values)
+        if not isinstance(raw_values, list):
+            raw_values = []
+        out: List[str] = []
+        for item in raw_values:
+            key = str(item or "").strip()
+            if key in allowed and key not in out:
+                out.append(key)
+        return out
+
+    def _completion_release_timestamp(self, item: Dict[str, Any]) -> int:
+        raw = str(item.get("release_date") or item.get("date") or item.get("release_at") or "").strip()
+        placeholder = int(datetime(2099, 1, 1).timestamp())
+        if not raw:
+            return placeholder if item.get("is_unreleased") else 0
+
+        full = re.search(r"(\d{4})\D+(\d{1,2})\D+(\d{1,2})", raw)
+        if full:
+            try:
+                return int(datetime(int(full.group(1)), int(full.group(2)), int(full.group(3))).timestamp())
+            except Exception:
+                pass
+
+        phase = re.search(r"(\d{4})\D+(\d{1,2})\D*(上旬|中旬|下旬)", raw)
+        if phase:
+            try:
+                day = 9 if phase.group(3) == "上旬" else (19 if phase.group(3) == "中旬" else 28)
+                return int(datetime(int(phase.group(1)), int(phase.group(2)), day).timestamp())
+            except Exception:
+                pass
+
+        month = re.search(r"(\d{4})\D+(\d{1,2})", raw)
+        if month:
+            try:
+                return int(datetime(int(month.group(1)), int(month.group(2)), 1).timestamp())
+            except Exception:
+                pass
+
+        return placeholder if item.get("is_unreleased") else 0
+
+    def _completion_item_matches_status_filter(self, item: Dict[str, Any], key: str) -> bool:
+        if key == "repairable":
+            return bool(item.get("subtitle_repairable"))
+        if key == "downloadable":
+            return bool(item.get("has_asmr_one")) and not bool(item.get("is_unreleased"))
+        if key == "missing":
+            return not bool(item.get("owned"))
+        if key == "no_source":
+            return not bool(item.get("owned")) and not bool(item.get("has_asmr_one"))
+        return True
+
+    def _completion_apply_status_filters(self, rows: List[Dict[str, Any]], status_filters: List[str]) -> List[Dict[str, Any]]:
+        if not status_filters:
+            return rows
+        return [
+            item for item in rows
+            if any(self._completion_item_matches_status_filter(item, key) for key in status_filters)
+        ]
+
+    def _completion_variant_group_key(self, item: Dict[str, Any], owned: bool = False) -> str:
+        payload = item.get("owned_variant" if owned else "preferred_variant")
+        if not isinstance(payload, dict):
+            payload = {}
+        return str(payload.get("group_key") or "original").strip() or "original"
+
+    def _completion_search_match(self, item: Dict[str, Any], keyword: str) -> bool:
+        query = str(keyword or "").strip().lower()
+        if not query:
+            return True
+        haystack = " ".join([
+            str(item.get("canonical_rjcode") or ""),
+            str(item.get("display_rjcode") or ""),
+            str(item.get("title") or ""),
+            *[str(code or "") for code in list(item.get("linked_rjcodes") or [])],
+        ]).lower()
+        return query in haystack
+
+    def _build_completion_item(
+        self,
+        *,
+        catalog: CircleCatalog,
+        row: CircleWork,
+        owned_row: Optional[LibraryOwnedWork],
+        link_map_by_canonical: Dict[str, Dict[str, Dict[str, Any]]],
+        metadata_map_all: Dict[str, Dict[str, Any]],
+        local_download_session_map: Optional[Dict[str, Dict[str, Any]]] = None,
+        image_cache_service: Optional[Any] = None,
+        include_source_compare: bool = False,
+        include_heavy_fields: bool = False,
+        now_local_for_view: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        local_owned = owned_row is not None
+        stored_display_rjcode = self.normalize_rjcode(row.display_rjcode) or self.normalize_rjcode(row.canonical_rjcode)
+        linked_rjcodes = list(row.linked_rjcodes or [stored_display_rjcode or row.canonical_rjcode])
+        canonical_info = {
+            "canonical_rjcode": row.canonical_rjcode,
+            "linked_rjcodes": linked_rjcodes,
+            "link_map": link_map_by_canonical.get(row.canonical_rjcode) or {},
+        }
+        metadata_map = {
+            code: metadata_map_all[code]
+            for code in canonical_info["linked_rjcodes"]
+            if code in metadata_map_all
+        }
+        title = str(row.title or "").strip()
+        if not title:
+            title = str((metadata_map.get(stored_display_rjcode) or {}).get("work_name") or "").strip()
+        release_date = str((metadata_map.get(stored_display_rjcode) or {}).get("release_date") or "").strip()
+        if not release_date:
+            for metadata in metadata_map.values():
+                release_date = str((metadata or {}).get("release_date") or "").strip()
+                if release_date:
+                    break
+
+        view_canonical_info = {
+            **canonical_info,
+            "linked_rjcodes": linked_rjcodes,
+        }
+        preferred_variant = next((
+            variant
+            for variant in self._sort_linked_variants(view_canonical_info, stored_display_rjcode or row.canonical_rjcode)
+            if self.normalize_rjcode(variant.get("rjcode")) == stored_display_rjcode
+        ), None)
+        if preferred_variant is None:
+            preferred_variant = self._pick_display_variant(
+                view_canonical_info,
+                stored_display_rjcode or row.canonical_rjcode,
+                metadata_map,
+            )
+        preferred_group = self._variant_group(preferred_variant.get("link_type"), preferred_variant.get("lang"))
+        local_owned_rjcodes = list((owned_row.owned_rjcodes or []) if owned_row else [])
+        normalized_local_owned_rjcodes: List[str] = []
+        for candidate in [*local_owned_rjcodes, row.display_rjcode, row.canonical_rjcode]:
+            normalized_candidate = self.normalize_rjcode(candidate)
+            if normalized_candidate and normalized_candidate not in normalized_local_owned_rjcodes:
+                normalized_local_owned_rjcodes.append(normalized_candidate)
+        source_compare_seed = {
+            "canonical_rjcode": row.canonical_rjcode,
+            "display_rjcode": stored_display_rjcode,
+            "asmr_available_rjcode": row.asmr_available_rjcode,
+            "kikoeru_found_rjcodes": normalized_local_owned_rjcodes if local_owned else [],
+            "kikoeru_subtitle_rjcodes": normalized_local_owned_rjcodes if bool(getattr(owned_row, "has_local_subtitles", False)) else [],
+            "preferred_variant": {
+                "rjcode": preferred_variant.get("rjcode"),
+                "lang": preferred_variant.get("lang"),
+                "link_type": preferred_variant.get("link_type"),
+                "label": self._variant_label(preferred_variant.get("link_type"), preferred_variant.get("lang")),
+                "group_key": preferred_group["key"],
+                "group_label": preferred_group["label"],
+                "group_short_label": preferred_group["short_label"],
+            },
+        }
+        source_compare = self._build_source_compare(source_compare_seed, view_canonical_info, metadata_map)
+        kikoeru_compare = source_compare.get("kikoeru") if isinstance(source_compare, dict) else {}
+        asmr_compare = source_compare.get("asmr_one") if isinstance(source_compare, dict) else {}
+        server_match_rjcodes = list((kikoeru_compare or {}).get("matched_rjcodes") or (kikoeru_compare or {}).get("all_rjcodes") or [])
+        server_match_primary_rjcode = str(
+            (kikoeru_compare or {}).get("matched_rjcode")
+            or (kikoeru_compare or {}).get("primary_rjcode")
+            or (server_match_rjcodes[0] if server_match_rjcodes else "")
+        ).strip()
+        owned_primary_rjcode = server_match_primary_rjcode or (local_owned_rjcodes[0] if local_owned_rjcodes else "")
+        owned_variant = self._build_variant_payload_for_rjcode(
+            view_canonical_info,
+            owned_primary_rjcode,
+            metadata_map,
+        ) if owned_primary_rjcode else {
+            "rjcode": "",
+            "lang": "",
+            "link_type": "",
+            "group_key": "original",
+            "group_label": "原作优先",
+            "group_short_label": "原作",
+        }
+        local_subtitle_present = bool(getattr(owned_row, "has_local_subtitles", False)) if owned_row else False
+        is_unreleased = self._is_future_release_date(release_date)
+        now_local = now_local_for_view or get_local_now()
+        row_tags = row.source_tags
+        row_has_email_watcher = isinstance(row_tags, list) and "email_watcher" in row_tags
+        row_anchor = row.email_watcher_first_seen_at or row.created_at
+        is_new = False
+        if row_has_email_watcher and row_anchor and hasattr(row_anchor, "timestamp"):
+            age = now_local.timestamp() - row_anchor.timestamp()
+            is_new = 0 <= age <= 48 * 60 * 60
+        local_download = (local_download_session_map or {}).get(self.normalize_rjcode(row.canonical_rjcode)) or {}
+        normalized_remote_cover = self._normalize_dlsite_cover_url(
+            row.image_url,
+            row.display_rjcode or row.canonical_rjcode,
+            is_unreleased=is_unreleased,
+        )
+        local_cover_url = ""
+        local_thumb_url = ""
+        if image_cache_service is not None:
+            local_cover_url = image_cache_service.get_local_url(stored_display_rjcode or row.canonical_rjcode)
+            local_thumb_url = image_cache_service.get_local_url(
+                stored_display_rjcode or row.canonical_rjcode,
+                variant="list",
+            )
+        cvs = list((metadata_map.get(stored_display_rjcode) or {}).get("cvs") or [])
+        if not cvs:
+            for metadata in metadata_map.values():
+                cvs = list((metadata or {}).get("cvs") or [])
+                if cvs:
+                    break
+        is_bonus_work = bool(getattr(row, "is_bonus_work", False))
+        if is_bonus_work:
+            cvs = []
+        item = {
+            "id": row.id,
+            "circle_id": row.circle_id,
+            "circle_name": catalog.circle_name,
+            "canonical_rjcode": row.canonical_rjcode,
+            "display_rjcode": stored_display_rjcode,
+            "title": title or str(row.title or ""),
+            "maker_id": row.maker_id,
+            "maker_name": row.maker_name,
+            "source_mask": row.source_mask or "",
+            "linked_rjcodes": linked_rjcodes,
+            "has_dlsite": True,
+            "has_asmr_one": bool(row.has_asmr_one),
+            "asmr_available_rjcode": row.asmr_available_rjcode,
+            "image_url": local_cover_url or normalized_remote_cover,
+            "thumb_image_url": local_thumb_url or self._normalize_dlsite_thumb_url(
+                normalized_remote_cover,
+                stored_display_rjcode or row.canonical_rjcode,
+                is_unreleased=is_unreleased,
+            ),
+            "price_text": str(getattr(row, "price_text", "") or "").strip(),
+            "release_date": release_date,
+            "is_unreleased": is_unreleased,
+            "is_new_work": is_new,
+            "is_bonus_work": is_bonus_work,
+            "has_bonus": bool(getattr(row, "has_bonus", False)),
+            "cvs": cvs,
+            "local_owned": local_owned,
+            "local_folder_size": int(getattr(owned_row, "folder_size", 0) or 0) if owned_row else 0,
+            "local_file_count": int(getattr(owned_row, "file_count", 0) or 0) if owned_row else 0,
+            "local_subtitle_present": local_subtitle_present,
+            "subtitle_file_count": int(getattr(owned_row, "subtitle_file_count", 0) or 0) if owned_row else 0,
+            "subtitle_dir": str(getattr(owned_row, "subtitle_dir", "") or "") if owned_row else "",
+            "owned_rjcodes": local_owned_rjcodes,
+            "primary_folder_path": owned_row.primary_folder_path if owned_row else "",
+            "local_download_ready": bool(local_download),
+            "local_download_session_id": str(local_download.get("session_id") or "").strip(),
+            "local_download_root": str(local_download.get("download_root") or "").strip(),
+            "local_downloaded_count": int(local_download.get("downloaded_count") or 0),
+            "preferred_variant": source_compare_seed["preferred_variant"],
+            "has_kikoeru": bool(local_owned),
+            "kikoeru_found_rjcodes": normalized_local_owned_rjcodes if local_owned else [],
+            "kikoeru_subtitle_rjcodes": normalized_local_owned_rjcodes if local_subtitle_present else [],
+            "owned": bool(local_owned),
+            "completion_owned": bool(local_owned),
+            "server_owned": bool(local_owned),
+            "server_match_rjcodes": server_match_rjcodes,
+            "server_match_primary_rjcode": server_match_primary_rjcode,
+            "owned_variant": owned_variant,
+            "subtitle_present": local_subtitle_present,
+            "subtitle_repairable": bool(
+                local_owned
+                and owned_variant.get("group_key") == "original"
+                and not local_subtitle_present
+                and str((asmr_compare or {}).get("primary_badge") or "").strip() in {"简中", "繁中"}
+            ),
+            "status_tags": [
+                *(["库存已收录"] if local_owned else []),
+                *(["本地已下载"] if local_download else []),
+                *(["已收录"] if local_owned else ["未收录"]),
+                *(["可下载"] if row.has_asmr_one else ["暂不可下载"]),
+            ],
+            "download_plan": {"rjcode": row.asmr_available_rjcode or row.display_rjcode} if row.has_asmr_one else None,
+            "__release_timestamp": 0,
+        }
+        item["__release_timestamp"] = self._completion_release_timestamp(item)
+        if include_source_compare:
+            item["source_compare"] = source_compare
+        if include_heavy_fields:
+            item["owned_paths"] = list((getattr(owned_row, "owned_paths", None) or []) if owned_row else [])
+            item["remote_image_url"] = normalized_remote_cover
+        return item
+
+    def _build_completion_compare_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        source_compare = item.get("source_compare") if isinstance(item.get("source_compare"), dict) else {}
+        kikoeru = source_compare.get("kikoeru") if isinstance(source_compare.get("kikoeru"), dict) else {}
+        dlsite = source_compare.get("dlsite") if isinstance(source_compare.get("dlsite"), dict) else {}
+        asmr_one = source_compare.get("asmr_one") if isinstance(source_compare.get("asmr_one"), dict) else {}
+        status_key = "owned" if item.get("server_owned") else ("downloadable" if item.get("has_asmr_one") else "dl_only")
+        return {
+            "canonical_rjcode": item.get("canonical_rjcode"),
+            "workRjcode": str(source_compare.get("work_rjcode") or item.get("canonical_rjcode") or "").strip(),
+            "title": str(item.get("title") or "").strip(),
+            "preferredVariantLabel": str((item.get("preferred_variant") or {}).get("group_short_label") or (item.get("preferred_variant") or {}).get("label") or "").strip(),
+            "statusLabel": "库存已收录" if item.get("server_owned") else ("可下载" if item.get("has_asmr_one") else "暂无来源"),
+            "statusKey": status_key,
+            "__releaseTimestamp": int(item.get("__release_timestamp") or 0),
+            "__releaseDate": str(item.get("release_date") or "").strip(),
+            "sourceCompare": {
+                "kikoeru": {
+                    "primary_rjcode": str(kikoeru.get("primary_rjcode") or "").strip(),
+                    "primaryBadge": str(kikoeru.get("primary_badge") or "").strip(),
+                    "variantBadges": list(kikoeru.get("variant_badges") or []),
+                    "all_rjcodes": list(kikoeru.get("all_rjcodes") or []),
+                    "tags": list(kikoeru.get("tags") or []),
+                },
+                "dlsite": {
+                    "all_rjcodes": list(dlsite.get("all_rjcodes") or []),
+                },
+                "asmr_one": {
+                    "primary_rjcode": str(asmr_one.get("primary_rjcode") or "").strip(),
+                    "primaryBadge": str(asmr_one.get("primary_badge") or "").strip(),
+                    "all_rjcodes": list(asmr_one.get("all_rjcodes") or []),
+                },
+            },
+        }
+
+    def _strip_completion_internal_fields(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(item)
+        payload.pop("__release_timestamp", None)
+        payload.pop("source_compare", None)
+        return payload
+
+    def _build_completion_view_state(self, circle_id_or_query: str) -> Dict[str, Any]:
+        state_key = str(circle_id_or_query or "").strip()
+        cached_state = self._completion_state_cache.get(state_key)
+        if cached_state is not None:
+            return deepcopy(cached_state)
+        db = SessionLocal()
+        try:
+            catalog = self._find_circle_catalog_for_view(db, circle_id_or_query)
+            works = (
+                db.query(CircleWork)
+                .filter(CircleWork.circle_id == catalog.circle_id)
+                .order_by(CircleWork.updated_at.desc())
+                .all()
+            )
+            work_canonical_rjcodes = [row.canonical_rjcode for row in works if str(row.canonical_rjcode or "").strip()]
+            owned_rows = (
+                {
+                    row.canonical_rjcode: row
+                    for row in db.query(LibraryOwnedWork)
+                    .filter(LibraryOwnedWork.canonical_rjcode.in_(work_canonical_rjcodes))
+                    .all()
+                }
+                if work_canonical_rjcodes else {}
+            )
+            link_rows = (
+                db.query(WorkCanonicalLink)
+                .filter(WorkCanonicalLink.canonical_rjcode.in_(work_canonical_rjcodes))
+                .all()
+                if works else []
+            )
+            link_map_by_canonical: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
+            for link_row in link_rows:
+                link_map_by_canonical[str(link_row.canonical_rjcode or "")][str(link_row.linked_rjcode or "")] = {
+                    "link_type": str(link_row.link_type or ""),
+                    "lang": str(link_row.lang or ""),
+                }
+            metadata_lookup_rjcodes: List[str] = []
+            for row in works:
+                for candidate in [
+                    row.canonical_rjcode,
+                    row.display_rjcode,
+                    *(row.linked_rjcodes or []),
+                    *(link_map_by_canonical.get(str(row.canonical_rjcode or ""), {}).keys()),
+                ]:
+                    normalized_candidate = self.normalize_rjcode(candidate)
+                    if normalized_candidate and normalized_candidate not in metadata_lookup_rjcodes:
+                        metadata_lookup_rjcodes.append(normalized_candidate)
+            metadata_map_all = self._load_cached_metadata_map(db, metadata_lookup_rjcodes)
+            local_download_session_map = self._build_local_download_session_map(db, works, link_map_by_canonical)
+        finally:
+            db.close()
+
+        image_cache_service = get_circle_image_cache_service()
+        now_local_for_view = get_local_now()
+        items = [
+            self._build_completion_item(
+                catalog=catalog,
+                row=row,
+                owned_row=owned_rows.get(row.canonical_rjcode),
+                link_map_by_canonical=link_map_by_canonical,
+                metadata_map_all=metadata_map_all,
+                local_download_session_map=local_download_session_map,
+                image_cache_service=image_cache_service,
+                include_source_compare=True,
+                include_heavy_fields=False,
+                now_local_for_view=now_local_for_view,
+            )
+            for row in works
+        ]
+        catalog_payload = {
+            "circle_id": catalog.circle_id,
+            "circle_name": catalog.circle_name,
+            "source_mask": catalog.source_mask or "",
+            "last_indexed_at": catalog.last_indexed_at.isoformat() if catalog.last_indexed_at else None,
+        }
+        state = {"catalog": catalog_payload, "items": items}
+        self._completion_state_cache[state_key] = deepcopy(state)
+        if catalog.circle_id and catalog.circle_id != state_key:
+            self._completion_state_cache[catalog.circle_id] = deepcopy(state)
+        return state
+
+    def _completion_summary_from_items(self, catalog: Any, items: List[Dict[str, Any]], *, visible_items: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        visible = items if visible_items is None else visible_items
+        owned_items = [item for item in items if item.get("owned")]
+        compare_missing = [
+            item for item in items
+            if not item.get("server_owned") and not item.get("has_dlsite") and not item.get("has_asmr_one")
+        ]
+        circle_id = catalog.get("circle_id") if isinstance(catalog, dict) else catalog.circle_id
+        circle_name = catalog.get("circle_name") if isinstance(catalog, dict) else catalog.circle_name
+        source_mask = catalog.get("source_mask") if isinstance(catalog, dict) else (catalog.source_mask or "")
+        last_indexed_at = (
+            catalog.get("last_indexed_at")
+            if isinstance(catalog, dict)
+            else (catalog.last_indexed_at.isoformat() if catalog.last_indexed_at else None)
+        )
+        return {
+            "circle_id": circle_id,
+            "circle_name": circle_name,
+            "source_mask": source_mask,
+            "last_indexed_at": last_indexed_at,
+            "local_owned_count": sum(1 for item in items if item.get("local_owned")),
+            "server_owned_count": sum(1 for item in items if item.get("server_owned")),
+            "owned_count": sum(1 for item in items if item.get("owned")),
+            "missing_count": sum(1 for item in items if not item.get("owned")),
+            "downloadable_count": sum(1 for item in items if not item.get("owned") and item.get("has_asmr_one")),
+            "dl_only_count": sum(1 for item in items if not item.get("owned") and not item.get("has_asmr_one")),
+            "dl_count": sum(1 for item in items if item.get("has_dlsite")),
+            "filtered_count": len(visible),
+            "total_works": len(items),
+            "unreleased_count": sum(1 for item in items if not item.get("owned") and item.get("is_unreleased")),
+            "new_works_count": sum(1 for item in items if item.get("is_new_work")),
+            "bonus_works_count": sum(1 for item in items if item.get("is_bonus_work")),
+            "owned_stats": {
+                "total": len(owned_items),
+                "original": sum(1 for item in owned_items if self._completion_variant_group_key(item, owned=True) == "original" and not item.get("subtitle_present")),
+                "simplified": sum(1 for item in owned_items if self._completion_variant_group_key(item, owned=True) == "simplified"),
+                "traditional": sum(1 for item in owned_items if self._completion_variant_group_key(item, owned=True) == "traditional"),
+                "subtitle": sum(1 for item in owned_items if self._completion_variant_group_key(item, owned=True) == "original" and item.get("subtitle_present")),
+                "bonus": sum(1 for item in owned_items if item.get("is_bonus_work")),
+            },
+            "compare_stats": {
+                "total": len(items),
+                "kikoeru": sum(1 for item in items if item.get("server_owned")),
+                "dlsite": sum(1 for item in items if item.get("has_dlsite")),
+                "asmr_one": sum(1 for item in items if item.get("has_asmr_one")),
+                "missing": len(compare_missing),
+            },
+            "status_filter_counts": {
+                "missing": {
+                    key: sum(1 for item in items if self._is_preferred_missing_completion_item(item) and self._completion_item_matches_status_filter(item, key))
+                    for key in ["repairable", "downloadable", "missing", "no_source"]
+                },
+                "owned": {
+                    key: sum(1 for item in items if item.get("owned") and self._completion_item_matches_status_filter(item, key))
+                    for key in ["repairable", "downloadable", "missing", "no_source"]
+                },
+            },
+        }
+
+    def _is_preferred_missing_completion_item(self, item: Dict[str, Any]) -> bool:
+        if item.get("owned"):
+            return False
+        group_key = str((item.get("preferred_variant") or {}).get("group_key") or "original").strip()
+        return group_key in {"original", "simplified", "traditional", ""}
+
+    def _filter_completion_items_for_tab(
+        self,
+        items: List[Dict[str, Any]],
+        *,
+        tab: str,
+        include_dl_only: bool,
+        status_filters: Optional[List[str]] = None,
+        owned_filter: str = "all",
+        compare_filter: str = "all",
+        search: str = "",
+    ) -> List[Dict[str, Any]]:
+        tab_key = str(tab or "missing").strip().lower()
+        source_visible_items = [
+            item for item in items
+            if include_dl_only or item.get("owned") or item.get("has_asmr_one")
+        ]
+        if tab_key == "owned":
+            rows = [item for item in source_visible_items if item.get("owned")]
+            owned_filter = str(owned_filter or "all").strip().lower()
+            if owned_filter != "all":
+                def _owned_filter_match(item: Dict[str, Any]) -> bool:
+                    group_key = self._completion_variant_group_key(item, owned=True)
+                    has_subtitle = group_key == "original" and bool(item.get("subtitle_present"))
+                    if owned_filter == "original":
+                        return group_key == "original" and not has_subtitle
+                    if owned_filter == "simplified":
+                        return group_key == "simplified"
+                    if owned_filter == "traditional":
+                        return group_key == "traditional"
+                    if owned_filter == "subtitle":
+                        return has_subtitle
+                    if owned_filter == "bonus":
+                        return bool(item.get("is_bonus_work"))
+                    return True
+                rows = [item for item in rows if _owned_filter_match(item)]
+        elif tab_key == "compare":
+            rows = list(source_visible_items)
+            compare_filter = str(compare_filter or "all").strip().lower()
+            if compare_filter != "all":
+                def _compare_match(item: Dict[str, Any]) -> bool:
+                    source_compare = item.get("source_compare") if isinstance(item.get("source_compare"), dict) else {}
+                    dlsite = source_compare.get("dlsite") if isinstance(source_compare.get("dlsite"), dict) else {}
+                    asmr_one = source_compare.get("asmr_one") if isinstance(source_compare.get("asmr_one"), dict) else {}
+                    if compare_filter == "kikoeru":
+                        return bool(item.get("server_owned"))
+                    if compare_filter == "dlsite":
+                        return bool(dlsite.get("all_rjcodes"))
+                    if compare_filter == "asmr_one":
+                        return bool(asmr_one.get("primary_rjcode"))
+                    if compare_filter == "missing":
+                        return not item.get("server_owned") and not dlsite.get("all_rjcodes") and not asmr_one.get("primary_rjcode")
+                    return True
+                rows = [item for item in rows if _compare_match(item)]
+        else:
+            rows = [item for item in source_visible_items if self._is_preferred_missing_completion_item(item)]
+
+        rows = self._completion_apply_status_filters(rows, status_filters or [])
+        if search:
+            rows = [item for item in rows if self._completion_search_match(item, search)]
+        return rows
+
+    def _sort_completion_items(self, rows: List[Dict[str, Any]], sort: str) -> List[Dict[str, Any]]:
+        sort_key = str(sort or "updated_desc").strip().lower()
+        if sort_key in {"release_asc", "release_desc"}:
+            direction = 1 if sort_key == "release_asc" else -1
+            return sorted(
+                rows,
+                key=lambda item: (
+                    self._completion_release_timestamp(item) * direction,
+                    str(item.get("title") or ""),
+                ),
+            )
+        return rows
+
+    async def build_circle_completion_summary(self, circle_id_or_query: str, *, include_dl_only: bool = True) -> Dict[str, Any]:
+        state = self._build_completion_view_state(circle_id_or_query)
+        catalog = state["catalog"]
+        items = state["items"]
+        visible_items = [
+            item for item in items
+            if include_dl_only or item.get("owned") or item.get("has_asmr_one")
+        ]
+        return self._completion_summary_from_items(catalog, items, visible_items=visible_items)
+
+    async def list_circle_completion_works(
+        self,
+        circle_id_or_query: str,
+        *,
+        tab: str = "missing",
+        page: int = 1,
+        page_size: int = 10,
+        include_dl_only: bool = True,
+        status_filters: Any = None,
+        owned_filter: str = "all",
+        compare_filter: str = "all",
+        search: str = "",
+        sort: str = "updated_desc",
+    ) -> Dict[str, Any]:
+        state = self._build_completion_view_state(circle_id_or_query)
+        catalog = state["catalog"]
+        items = state["items"]
+        normalized_filters = self._completion_status_filters(status_filters)
+        filtered = self._filter_completion_items_for_tab(
+            items,
+            tab=tab,
+            include_dl_only=include_dl_only,
+            status_filters=normalized_filters,
+            owned_filter=owned_filter,
+            compare_filter=compare_filter,
+            search=search,
+        )
+        filtered = self._sort_completion_items(filtered, sort)
+        safe_page_size = max(1, min(200, int(page_size or 10)))
+        total = len(filtered)
+        page_count = max(1, (total + safe_page_size - 1) // safe_page_size)
+        safe_page = max(1, min(page_count, int(page or 1)))
+        start = (safe_page - 1) * safe_page_size
+        page_items = filtered[start:start + safe_page_size]
+        tab_key = str(tab or "missing").strip().lower()
+        if tab_key == "compare":
+            payload_items = [self._build_completion_compare_item(item) for item in page_items]
+        else:
+            payload_items = [self._strip_completion_internal_fields(item) for item in page_items]
+        summary = self._completion_summary_from_items(catalog, items, visible_items=filtered)
+        return {
+            **summary,
+            "tab": tab_key,
+            "items": payload_items,
+            "total": total,
+            "page": safe_page,
+            "page_size": safe_page_size,
+            "page_count": page_count,
+            "status_filters": normalized_filters,
+        }
+
+    async def list_circle_completion_work_codes(
+        self,
+        circle_id_or_query: str,
+        *,
+        tab: str = "missing",
+        include_dl_only: bool = True,
+        status_filters: Any = None,
+        owned_filter: str = "all",
+        compare_filter: str = "all",
+        search: str = "",
+        sort: str = "updated_desc",
+    ) -> Dict[str, Any]:
+        state = self._build_completion_view_state(circle_id_or_query)
+        catalog = state["catalog"]
+        items = state["items"]
+        normalized_filters = self._completion_status_filters(status_filters)
+        filtered = self._filter_completion_items_for_tab(
+            items,
+            tab=tab,
+            include_dl_only=include_dl_only,
+            status_filters=normalized_filters,
+            owned_filter=owned_filter,
+            compare_filter=compare_filter,
+            search=search,
+        )
+        filtered = self._sort_completion_items(filtered, sort)
+        canonical_rjcodes = [
+            str(item.get("canonical_rjcode") or "").strip()
+            for item in filtered
+            if str(item.get("canonical_rjcode") or "").strip()
+        ]
+        downloadable_rjcodes = [
+            str(item.get("canonical_rjcode") or "").strip()
+            for item in filtered
+            if str(item.get("canonical_rjcode") or "").strip() and item.get("has_asmr_one")
+        ]
+        requested_rjcodes = {}
+        for item in filtered:
+            code = str(item.get("canonical_rjcode") or "").strip()
+            if not code:
+                continue
+            candidates = []
+            for candidate in [
+                (item.get("download_plan") or {}).get("rjcode") if isinstance(item.get("download_plan"), dict) else "",
+                item.get("asmr_available_rjcode"),
+                item.get("display_rjcode"),
+                item.get("canonical_rjcode"),
+                *(item.get("linked_rjcodes") or []),
+            ]:
+                normalized = self.normalize_rjcode(candidate)
+                if normalized and normalized not in candidates:
+                    candidates.append(normalized)
+            if candidates:
+                requested_rjcodes[code] = candidates
+        return {
+            "circle_id": catalog.get("circle_id") if isinstance(catalog, dict) else catalog.circle_id,
+            "circle_name": catalog.get("circle_name") if isinstance(catalog, dict) else catalog.circle_name,
+            "canonical_rjcodes": canonical_rjcodes,
+            "downloadable_rjcodes": downloadable_rjcodes,
+            "requested_rjcodes": requested_rjcodes,
+            "total": len(canonical_rjcodes),
+            "downloadable_count": len(downloadable_rjcodes),
+        }
 
     def _build_circle_index_log_detail(
         self,
@@ -3537,8 +4224,8 @@ class CircleCompletionService:
         finally:
             db.close()
 
-    # P8：本地拥有态全量重建的 TTL（秒）。30 分钟内重复点击索引时跳过同步重建，
-    # 直接复用 LibraryOwnedWork。后台仍会派一个刷新任务保持新鲜。
+    # 本地拥有态全量重建的后台 TTL（秒）。它不能再阻塞单社团索引入口；
+    # 入口只负责派发后台刷新，当前社团拥有态在写入前用 ready 库存索引局部核对。
     _LOCAL_OWNED_SYNC_TTL_SECONDS: float = 30 * 60
 
     def _is_local_owned_index_fresh(self) -> bool:
@@ -3549,6 +4236,8 @@ class CircleCompletionService:
 
     def _schedule_local_owned_index_refresh(self) -> Optional[asyncio.Task]:
         """派一个后台 sync_local_owned_index 任务，已有未完成任务则复用。"""
+        if self._is_local_owned_index_fresh():
+            return None
         existing = self._local_owned_sync_state.get("background_task")
         if existing and isinstance(existing, asyncio.Task) and not existing.done():
             return existing
@@ -3947,8 +4636,17 @@ class CircleCompletionService:
 
     def _apply_library_index_owned_state_to_items(self, items_by_canonical: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         if not items_by_canonical:
-            return {"owned_count": 0, "subtitle_count": 0, "hit_count": 0}
+            return {"owned_count": 0, "subtitle_count": 0, "hit_count": 0, "ready_index_available": False}
         from .library_manager import get_library_manager
+
+        library_manager = get_library_manager()
+        try:
+            ready_index_available = bool(library_manager.has_ready_index())
+        except Exception:
+            logger.debug("[社团补全] 判断 ready 库存索引失败，本次不改写本地拥有态", exc_info=True)
+            ready_index_available = False
+        if not ready_index_available:
+            return {"owned_count": 0, "subtitle_count": 0, "hit_count": 0, "ready_index_available": False}
 
         lookup_codes: set[str] = set()
         canonical_members: Dict[str, set[str]] = {}
@@ -3963,7 +4661,7 @@ class CircleCompletionService:
             members.discard("")
             canonical_members[canonical] = members
             lookup_codes.update(members)
-        index_hits = get_library_manager().find_rj_in_ready_index(lookup_codes)
+        index_hits = library_manager.find_rj_in_ready_index(lookup_codes)
         owned_count = 0
         subtitle_count = 0
         hit_count = 0
@@ -3985,11 +4683,13 @@ class CircleCompletionService:
                 item["subtitle_file_count"] = 0
                 item["subtitle_dir"] = ""
                 item["owned_paths"] = []
+                item["primary_library_id"] = ""
                 item["source_flags"].discard("kikoeru") if isinstance(item.get("source_flags"), set) else None
                 continue
             hit_count += len(hits)
             found_rjcodes: list[str] = []
             owned_paths: list[str] = []
+            primary_library_id = ""
             folder_size = 0
             file_count = 0
             local_subtitle_present = False
@@ -4003,6 +4703,8 @@ class CircleCompletionService:
                 path = str(hit.get("path") or "").strip()
                 if path and path not in owned_paths:
                     owned_paths.append(path)
+                if not primary_library_id:
+                    primary_library_id = str(hit.get("library_id") or "").strip()
                 folder_size += int(hit.get("size") or 0)
                 file_count += int(hit.get("file_count") or 0)
                 current_subtitle_count = int(hit.get("subtitle_file_count") or 0)
@@ -4021,20 +4723,40 @@ class CircleCompletionService:
             item["subtitle_file_count"] = subtitle_file_count
             item["subtitle_dir"] = subtitle_dir
             item["owned_paths"] = owned_paths
+            item["primary_library_id"] = primary_library_id
             if isinstance(item.get("source_flags"), set):
                 item["source_flags"].add("kikoeru")
             owned_count += 1
             if local_subtitle_present:
                 subtitle_count += 1
-        return {"owned_count": owned_count, "subtitle_count": subtitle_count, "hit_count": hit_count}
+        return {
+            "owned_count": owned_count,
+            "subtitle_count": subtitle_count,
+            "hit_count": hit_count,
+            "ready_index_available": True,
+        }
 
-    def _upsert_library_owned_rows_from_items(self, db, items_by_canonical: Dict[str, Dict[str, Any]]) -> int:
+    def _upsert_library_owned_rows_from_items(
+        self,
+        db,
+        items_by_canonical: Dict[str, Dict[str, Any]],
+        *,
+        prune_unmatched: bool = False,
+    ) -> int:
         """把当前索引批次已通过库存索引确认的本地拥有态写入快照表。"""
         written = 0
         now_ts = datetime.now()
         for canonical, item in items_by_canonical.items():
             normalized_canonical = self.normalize_rjcode(canonical)
-            if not normalized_canonical or not item.get("local_owned"):
+            if not normalized_canonical:
+                continue
+            row = db.query(LibraryOwnedWork).filter(
+                LibraryOwnedWork.canonical_rjcode == normalized_canonical
+            ).first()
+            if not item.get("local_owned"):
+                if prune_unmatched and row is not None:
+                    db.delete(row)
+                    written += 1
                 continue
             owned_paths = [
                 str(path or "").strip()
@@ -4048,15 +4770,13 @@ class CircleCompletionService:
                 *[self.normalize_rjcode(code) for code in list(item.get("kikoeru_found_rjcodes") or [])],
             }
             owned_rjcodes.discard("")
-            row = db.query(LibraryOwnedWork).filter(
-                LibraryOwnedWork.canonical_rjcode == normalized_canonical
-            ).first()
             if row is None:
                 row = LibraryOwnedWork(canonical_rjcode=normalized_canonical)
                 db.add(row)
             row.owned_rjcodes = sorted(owned_rjcodes)
-            row.primary_folder_path = owned_paths[0] if owned_paths else row.primary_folder_path
-            row.folder_count = max(len(owned_paths), int(row.folder_count or 0), 1)
+            row.primary_folder_path = owned_paths[0] if owned_paths else ""
+            row.library_id = str(item.get("primary_library_id") or "").strip()
+            row.folder_count = max(len(owned_paths), 1)
             row.folder_size = int(item.get("local_folder_size") or 0)
             row.file_count = int(item.get("local_file_count") or 0)
             row.owned_paths = owned_paths
@@ -4275,17 +4995,10 @@ class CircleCompletionService:
                 except Exception:
                     logger.warning("[社团补全] 更新进度回调失败", exc_info=True)
 
-        # P8：sync_local_owned_index TTL 节流。强刷 / 首次 / TTL 过期才同步 await；
-        # 其他场景后台异步刷新。索引开头不再等待 5-15s 的全量 LibrarySnapshot 重建。
-        if force_refresh or not self._is_local_owned_index_fresh():
-            report(5, "同步本地拥有态索引", circle_query=circle_query)
-            with perf.timed("stage_local_owned_sync"):
-                await self.sync_local_owned_index()
-            perf.inc("local_owned_sync_mode_sync")
-        else:
-            report(5, "本地拥有态索引仍在 TTL 内，后台异步刷新", circle_query=circle_query)
-            self._schedule_local_owned_index_refresh()
-            perf.inc("local_owned_sync_mode_background")
+        # 本地拥有态全量快照不能进入单社团索引路径，哪怕后台启动也会和后续 DLsite/DB 阶段抢资源。
+        # 当前社团会在 90% 阶段用 ready 库存索引局部核对并写回 LibraryOwnedWork。
+        report(5, "跳过全量本地拥有态同步，改用当前社团库存索引核对", circle_query=circle_query)
+        perf.inc("local_owned_sync_mode_skipped")
         ensure_not_cancelled()
 
         report(12, "收集本地社团候选")
@@ -4987,9 +5700,17 @@ class CircleCompletionService:
                 row.kikoeru_work_id = item["kikoeru_work_id"]
                 row.dlsite_cached_at = datetime.now() if row.has_dlsite else row.dlsite_cached_at
                 row.asmr_one_cached_at = datetime.now() if row.has_asmr_one else row.asmr_one_cached_at
-            owned_rows_written = self._upsert_library_owned_rows_from_items(db, aggregated)
+            owned_rows_written = self._upsert_library_owned_rows_from_items(
+                db,
+                aggregated,
+                prune_unmatched=bool(local_owned_stats.get("ready_index_available")),
+            )
             if perf:
                 perf.inc("local_owned_rows_written", owned_rows_written)
+                perf.inc(
+                    "local_index_ready_available",
+                    1 if local_owned_stats.get("ready_index_available") else 0,
+                )
             if not only_new_works and aggregated:
                 for obsolete in existing_rows.values():
                     db.delete(obsolete)

@@ -1430,6 +1430,16 @@ def _safe_int(value: Any) -> int:
         return 0
 
 
+def _format_circle_search_efficiency(works: Any, missing: Any) -> str:
+    total = _safe_int(works)
+    missing_count = _safe_int(missing)
+    if total <= 0:
+        return ""
+    covered = max(0, total - missing_count)
+    ratio = max(0.0, min(100.0, covered * 100.0 / total))
+    return f"{ratio:.1f}%"
+
+
 def _safe_getsize(path: str) -> int:
     try:
         return os.path.getsize(path)

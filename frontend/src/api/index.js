@@ -2314,6 +2314,50 @@ export const circleCompletionApi = {
     return response.data
   },
 
+  getCircleSummary: async (circleId, options = {}) => {
+    const response = await apiClient.get(`/circle-completion/circles/${circleId}/summary`, {
+      params: {
+        include_dl_only: options.includeDlOnly ?? true
+      },
+      signal: options.signal
+    })
+    return response.data
+  },
+
+  getCircleWorks: async (circleId, query = {}, options = {}) => {
+    const response = await apiClient.get(`/circle-completion/circles/${circleId}/works`, {
+      params: {
+        tab: query.tab || 'missing',
+        page: query.page || 1,
+        page_size: query.pageSize || query.page_size || 10,
+        include_dl_only: query.includeDlOnly ?? query.include_dl_only ?? true,
+        status_filters: Array.isArray(query.statusFilters) ? query.statusFilters.join(',') : (query.statusFilters || query.status_filters || ''),
+        owned_filter: query.ownedFilter || query.owned_filter || 'all',
+        compare_filter: query.compareFilter || query.compare_filter || 'all',
+        search: query.search || '',
+        sort: query.sort || 'updated_desc'
+      },
+      signal: options.signal
+    })
+    return response.data
+  },
+
+  getCircleWorkCodes: async (circleId, query = {}, options = {}) => {
+    const response = await apiClient.get(`/circle-completion/circles/${circleId}/work-codes`, {
+      params: {
+        tab: query.tab || 'missing',
+        include_dl_only: query.includeDlOnly ?? query.include_dl_only ?? true,
+        status_filters: Array.isArray(query.statusFilters) ? query.statusFilters.join(',') : (query.statusFilters || query.status_filters || ''),
+        owned_filter: query.ownedFilter || query.owned_filter || 'all',
+        compare_filter: query.compareFilter || query.compare_filter || 'all',
+        search: query.search || '',
+        sort: query.sort || 'updated_desc'
+      },
+      signal: options.signal
+    })
+    return response.data
+  },
+
   previewBatchDownload: async (payload) => {
     const response = await apiClient.post('/circle-completion/download/preview', payload)
     return response.data

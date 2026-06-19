@@ -10,6 +10,8 @@ const props = defineProps({
   currentPage: { type: Number, default: 1 },
   pageSize: { type: Number, default: 10 },
   pageSizes: { type: Array, default: () => [10, 20, 50, 100] },
+  totalItems: { type: Number, default: null },
+  serverPaging: { type: Boolean, default: false },
   selectedCodes: { type: Object, default: () => new Set() },
   flashedCodes: { type: Object, default: () => new Set() },
   imageField: { type: String, default: 'image_url' },
@@ -30,12 +32,20 @@ const scrollRef = ref(null)
 const viewportRef = ref(null)
 const viewportWidth = ref(0)
 const motionActive = ref(false)
+const activeImageKeys = ref(new Set())
+const loadingImageKeys = ref(new Set())
+const queuedImageKeys = ref([])
 
 let resizeObserver = null
 let motionTimer = null
+const imageLoadTimers = new Map()
+const MAX_ACTIVE_IMAGES = 6
 
 const safeItems = computed(() => Array.isArray(props.items) ? props.items : [])
-const totalItems = computed(() => safeItems.value.length)
+const totalItems = computed(() => {
+  const value = Number(props.totalItems)
+  return props.serverPaging && Number.isFinite(value) && value >= 0 ? value : safeItems.value.length
+})
 const normalizedPageSize = computed(() => {
   const size = Number(props.pageSize || 10)
   return Number.isFinite(size) && size > 0 ? size : 10
@@ -47,6 +57,7 @@ const normalizedPage = computed(() => {
   return Math.min(Math.max(1, page), pageCount.value)
 })
 const pagedItems = computed(() => {
+  if (props.serverPaging) return safeItems.value
   const start = (normalizedPage.value - 1) * normalizedPageSize.value
   return safeItems.value.slice(start, start + normalizedPageSize.value)
 })
@@ -110,6 +121,18 @@ const rowVirtualizer = useVirtualizer(computed(() => ({
 })))
 
 const virtualRows = computed(() => rowVirtualizer.value.getVirtualItems())
+const visibleImageKeys = computed(() => {
+  if (usePlainRender.value) {
+    return itemViewModels.value.map(item => item.key)
+  }
+  const keys = []
+  for (const virtualRow of virtualRows.value) {
+    for (const cell of getRowItems(virtualRow.index)) {
+      keys.push(cell.key)
+    }
+  }
+  return keys
+})
 const virtualCanvasStyle = computed(() => ({
   height: `${rowVirtualizer.value.getTotalSize()}px`,
 }))
@@ -146,6 +169,60 @@ function itemKey(item, fallbackIndex) {
 
 function getRowItems(rowIndex) {
   return rowViewModels.value[rowIndex] || []
+}
+
+function isImageActive(key) {
+  return activeImageKeys.value.has(String(key || ''))
+}
+
+function releaseImageSlot(key) {
+  const normalized = String(key || '')
+  const timer = imageLoadTimers.get(normalized)
+  if (timer) {
+    window.clearTimeout(timer)
+    imageLoadTimers.delete(normalized)
+  }
+  if (loadingImageKeys.value.has(normalized)) {
+    const next = new Set(loadingImageKeys.value)
+    next.delete(normalized)
+    loadingImageKeys.value = next
+  }
+  pumpImageQueue()
+}
+
+function markImageSettled(key) {
+  releaseImageSlot(key)
+}
+
+function pumpImageQueue() {
+  const activeVisible = new Set(visibleImageKeys.value.map(key => String(key || '')))
+  const queued = queuedImageKeys.value.filter(key => activeVisible.has(key))
+  const loading = new Set([...loadingImageKeys.value].filter(key => activeVisible.has(key)))
+  const active = new Set([...activeImageKeys.value].filter(key => activeVisible.has(key)))
+  while (queued.length && loading.size < MAX_ACTIVE_IMAGES) {
+    const key = queued.shift()
+    if (!key || active.has(key)) continue
+    active.add(key)
+    loading.add(key)
+    const timer = window.setTimeout(() => releaseImageSlot(key), 1600)
+    imageLoadTimers.set(key, timer)
+  }
+  queuedImageKeys.value = queued
+  activeImageKeys.value = active
+  loadingImageKeys.value = loading
+}
+
+function enqueueVisibleImages(keys = []) {
+  const active = activeImageKeys.value
+  const loading = loadingImageKeys.value
+  const queued = [...queuedImageKeys.value]
+  for (const rawKey of keys) {
+    const key = String(rawKey || '')
+    if (!key || active.has(key) || loading.has(key) || queued.includes(key)) continue
+    queued.push(key)
+  }
+  queuedImageKeys.value = queued
+  pumpImageQueue()
 }
 
 function triggerViewportMotion() {
@@ -186,6 +263,10 @@ watch(virtualRowHeight, () => {
   nextTick(() => rowVirtualizer.value.measure())
 })
 
+watch(visibleImageKeys, keys => {
+  enqueueVisibleImages(keys)
+}, { immediate: true })
+
 onMounted(() => {
   updateViewportWidth()
   triggerViewportMotion()
@@ -201,6 +282,10 @@ onBeforeUnmount(() => {
     window.clearTimeout(motionTimer)
     motionTimer = null
   }
+  for (const timer of imageLoadTimers.values()) {
+    window.clearTimeout(timer)
+  }
+  imageLoadTimers.clear()
   resizeObserver?.disconnect()
   resizeObserver = null
 })
@@ -229,9 +314,11 @@ onBeforeUnmount(() => {
             :selected="viewModel.selected"
             :status-flash="viewModel.flashed"
             :corner-label="cornerLabel"
+            :image-active="isImageActive(viewModel.key)"
             @select="emit('select', $event)"
             @preview="emit('preview', $event)"
             @reimport="emit('reimport', $event)"
+            @image-settled="markImageSettled(viewModel.key)"
           />
           <WorkListRow
             v-else
@@ -241,9 +328,11 @@ onBeforeUnmount(() => {
             :status-flash="viewModel.flashed"
             :image-field="imageField"
             :corner-label="cornerLabel"
+            :image-active="isImageActive(viewModel.key)"
             @select="emit('select', $event)"
             @preview="emit('preview', $event)"
             @reimport="emit('reimport', $event)"
+            @image-settled="markImageSettled(viewModel.key)"
           />
         </div>
       </div>
@@ -276,9 +365,11 @@ onBeforeUnmount(() => {
                 :selected="cell.selected"
                 :status-flash="cell.flashed"
                 :corner-label="cornerLabel"
+                :image-active="isImageActive(cell.key)"
                 @select="emit('select', $event)"
                 @preview="emit('preview', $event)"
                 @reimport="emit('reimport', $event)"
+                @image-settled="markImageSettled(cell.key)"
               />
               <WorkListRow
                 v-else
@@ -288,9 +379,11 @@ onBeforeUnmount(() => {
                 :status-flash="cell.flashed"
                 :image-field="imageField"
                 :corner-label="cornerLabel"
+                :image-active="isImageActive(cell.key)"
                 @select="emit('select', $event)"
                 @preview="emit('preview', $event)"
                 @reimport="emit('reimport', $event)"
+                @image-settled="markImageSettled(cell.key)"
               />
             </div>
           </div>

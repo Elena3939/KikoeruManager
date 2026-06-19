@@ -16502,6 +16502,126 @@ async def circle_completion_all_circle_names():
         raise HTTPException(status_code=500, detail=f"获取所有社团名失败: {str(exc)}")
 
 
+@app.get("/api/circle-completion/circles/{circle_id}/summary")
+async def circle_completion_summary(
+    http_request: Request,
+    circle_id: str,
+    include_dl_only: bool = True,
+):
+    from ..core.circle_completion_service import get_circle_completion_service
+
+    try:
+        http_request.state.slow_api_context = {
+            "circle_id": circle_id,
+            "include_dl_only": bool(include_dl_only),
+            "view": "summary",
+        }
+        result = await get_circle_completion_service().build_circle_completion_summary(
+            circle_id,
+            include_dl_only=bool(include_dl_only),
+        )
+        return {"success": True, **result}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("查询社团补全摘要失败: %s", sanitize_text_for_log(exc))
+        raise HTTPException(status_code=500, detail=f"查询社团补全摘要失败: {str(exc)}")
+
+
+@app.get("/api/circle-completion/circles/{circle_id}/works")
+async def circle_completion_works(
+    http_request: Request,
+    circle_id: str,
+    tab: str = "missing",
+    page: int = 1,
+    page_size: int = 10,
+    include_dl_only: bool = True,
+    status_filters: str = "",
+    owned_filter: str = "all",
+    compare_filter: str = "all",
+    search: str = "",
+    sort: str = "updated_desc",
+):
+    from ..core.circle_completion_service import get_circle_completion_service
+
+    try:
+        http_request.state.slow_api_context = {
+            "circle_id": circle_id,
+            "tab": tab,
+            "page": page,
+            "page_size": page_size,
+            "include_dl_only": bool(include_dl_only),
+            "status_filters": status_filters,
+            "owned_filter": owned_filter,
+            "compare_filter": compare_filter,
+            "search": bool(str(search or "").strip()),
+            "sort": sort,
+            "view": "works",
+        }
+        result = await get_circle_completion_service().list_circle_completion_works(
+            circle_id,
+            tab=tab,
+            page=page,
+            page_size=page_size,
+            include_dl_only=bool(include_dl_only),
+            status_filters=status_filters,
+            owned_filter=owned_filter,
+            compare_filter=compare_filter,
+            search=search,
+            sort=sort,
+        )
+        return {"success": True, **result}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("查询社团补全作品分页失败: %s", sanitize_text_for_log(exc))
+        raise HTTPException(status_code=500, detail=f"查询社团补全作品分页失败: {str(exc)}")
+
+
+@app.get("/api/circle-completion/circles/{circle_id}/work-codes")
+async def circle_completion_work_codes(
+    http_request: Request,
+    circle_id: str,
+    tab: str = "missing",
+    include_dl_only: bool = True,
+    status_filters: str = "",
+    owned_filter: str = "all",
+    compare_filter: str = "all",
+    search: str = "",
+    sort: str = "updated_desc",
+):
+    from ..core.circle_completion_service import get_circle_completion_service
+
+    try:
+        http_request.state.slow_api_context = {
+            "circle_id": circle_id,
+            "tab": tab,
+            "include_dl_only": bool(include_dl_only),
+            "status_filters": status_filters,
+            "owned_filter": owned_filter,
+            "compare_filter": compare_filter,
+            "search": bool(str(search or "").strip()),
+            "sort": sort,
+            "view": "work_codes",
+        }
+        result = await get_circle_completion_service().list_circle_completion_work_codes(
+            circle_id,
+            tab=tab,
+            include_dl_only=bool(include_dl_only),
+            status_filters=status_filters,
+            owned_filter=owned_filter,
+            compare_filter=compare_filter,
+            search=search,
+            sort=sort,
+        )
+        return {"success": True, **result}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("查询社团补全作品编号失败: %s", sanitize_text_for_log(exc))
+        raise HTTPException(status_code=500, detail=f"查询社团补全作品编号失败: {str(exc)}")
+
+
 @app.get("/api/circle-completion/circles/{circle_id}")
 async def circle_completion_detail(
     http_request: Request,
