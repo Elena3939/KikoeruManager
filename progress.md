@@ -779,3 +779,128 @@
 - `backend/app/api/routes.py`：社团聚合列表接口和社团浏览列表路径改为 `asyncio.to_thread` 执行，避免同步聚合阻塞事件循环。
 - `progress.md`：追加本轮库存分页与社团聚合性能修复记录。
 - 回滚方式：还原上述文件中本轮关于 `initialLibraryPageSize` / `syncLibraryPageSizePreference`、`.km-pagination-wrap` active 样式、`_SNAPSHOT_TTL_SECONDS` / `_snapshot_lock` / `browse_circle_listing` / 父层括号社团识别、以及 `asyncio.to_thread` 路由调用的 hunk；删除本段进度记录。
+
+## 2026-06-19 - Task: 修复 Gofile 任务详情文件树显示公共下载根
+### What was done
+- 禁止 HTTP/Gofile 任务详情用 `final_output_path` / `download_root` 扫描公共下载根目录生成 `file_tree_items`，避免把 `.aria2-rpc`、百度临时目录和其它下载会话显示成当前 Gofile 任务文件。
+- 保留任务详情前端从 `download_files` 构造文件列表的路径，因此当前任务仍显示自己的下载文件行，不再混入下载根下的无关目录。
+- 任务中心文件树缓存签名增加 `domain` / `kind` / `status`，避免详情切换或状态更新时复用过旧树结果。
+### Testing
+- `cd backend && .\venv\Scripts\python.exe -m py_compile app/core/task_center_service.py`：通过。
+- `cd backend && <inline python with .\venv\Scripts\python.exe>`：通过；构造公共下载根含 `.aria2-rpc` / `other-gofile-session`，序列化 Gofile detail 后确认 metadata 不生成 `file_tree_items`，且不包含这些无关目录。
+- `cd frontend && npm run build`：通过。Vite 仅输出既有 VueUse pure 注释、lottie-web eval 和 chunk 体积 warning。
+- `cd backend && .\venv\Scripts\python.exe -m pytest tests/test_task_center_service.py -q --basetemp .pytest-codex-task-center-tree`：未完全通过，6 passed / 4 failed；失败集中在既有 mock 非 awaitable 和物化删除断言，非本轮 Gofile 文件树修复断言。
+- `git diff --check -- backend/app/core/task_center_service.py frontend/src/views/Tasks.vue progress.md`：无空白错误；仅提示工作区 CRLF/LF 换行风格。
+### Notes
+- `backend/app/core/task_center_service.py`：HTTP 下载详情模式跳过目录快照回填，避免公共下载根被当成当前任务产物树。
+- `frontend/src/views/Tasks.vue`：文件树缓存签名纳入任务域、类型和状态。
+- `progress.md`：追加本轮 Gofile 任务详情文件树修复记录。
+- 回滚方式：还原上述两个代码文件中本轮关于 `_should_skip_directory_file_tree_snapshot()` / `_ensure_file_tree_metadata(..., domain)`、以及 `buildFileTreeCacheSignature()` 新增签名字段的 hunk；删除本段进度记录。
+
+## 2026-06-20 - Task: 修复百度网盘连续分卷重命名生成重复后缀
+### What was done
+- 百度网盘预览树对连续分卷批量重命名时，只给每个文件传统一的分卷基名，不再提前把 `.7z.002` / `.zip.003` 这类分卷后缀写进 `custom_name`。
+- 后端最终生成下载保存名时增加分卷后缀去重兜底，旧缓存或旧前端 payload 里即使传入 `RJ01618696.7z.002`，也不会再拼成 `RJ01618696.7z.002.7z.002`。
+- 覆盖“每卷 custom_name 带自己的分卷号”和“所有卷误套首卷全名”两类回归场景。
+### Testing
+- `cd backend && ..\backend\venv\Scripts\python.exe -m pytest tests\test_baidu_netdisk_service.py -q --basetemp=$env:TEMP\pytest-baidu-netdisk-volume-name`：通过，46 passed；仅有既有 SQLAlchemy / FastAPI / pytest-asyncio deprecation warning 和 `.pytest_cache` 写入 warning。
+- `cd frontend && npm run build`：通过。Vite 仅输出既有 VueUse pure 注释、lottie-web eval 和 chunk 体积 warning。
+### Notes
+- `frontend/src/components/asmr/HttpDownloadPanel.vue`：百度连续分卷自定义命名统一只传基名，分卷后缀由后端按原始文件补回。
+- `backend/app/core/baidu_netdisk_service.py`：新增 `_dedupe_custom_archive_volume_name()`，在保存名落地前清理重复或误套的分卷后缀。
+- `backend/tests/test_baidu_netdisk_service.py`：新增百度分卷重复后缀和首卷名误套全部分卷的回归测试。
+- `progress.md`：追加本轮百度网盘连续分卷重命名修复记录。
+- 回滚方式：还原上述三个代码文件中本轮关于 `baiduVolumeFileCustomName()`、`_dedupe_custom_archive_volume_name()`、新增两个测试用例的 hunk，并删除本段进度记录。
+
+## 2026-06-20 - Task: 修复大分卷缺正确密码时反复完整解压
+### What was done
+- 重新核查服务器日志，确认 `RJ01618696.7z.001` 是 4 分卷有密码大包，正确密码缺失于密码库；旧逻辑在轻量探测 `unknown` 后会把多个候选逐个升级为完整 `7zz x`，每个候选都要跑到 CRC 失败才切下一个，看起来像无限循环并长期占用 `archive_cpu`。
+- 为 1GB 以上大包增加 unknown 探测完整解压兜底上限，默认最多 3 个候选进入完整解压，后续 unknown 候选直接跳过并尽快定性为 `wrong_password`，让任务进入问题作品而不是继续消耗解压槽。
+- 取消等待解压槽位期间的任务后，拿到槽位会再次检查取消状态，不再额外启动一次 7z 子进程。
+- 解压阶段返回空结果且不是用户取消时，写入问题作品后立即把任务状态收口到 `WAITING_MANUAL`，避免任务中心继续显示 processing。
+### Testing
+- `cd backend && .\venv\Scripts\python.exe -m pytest tests/test_extract_service.py tests/test_task_engine.py -k "large_archive_caps_unknown_probe_full_extracts or manual_retry_skips_no_password_full_extract_when_probe_unknown or auto_process_extract_failure_moves_to_waiting_manual" --basetemp=.pytest-tmp-rj01618696-loop -q`：通过，3 passed / 172 deselected；仅有既有 deprecation warnings 和 `.pytest_cache` 写入 warning。
+### Notes
+- `backend/app/core/extract_service.py`：新增大包 unknown 探测完整解压上限，并在 7z 槽位获取后再次拦截已取消任务。
+- `backend/app/core/task_engine.py`：解压失败写入问题作品后立即切到 `WAITING_MANUAL`。
+- `backend/tests/test_extract_service.py`：新增大分卷缺正确密码时限制完整解压候选数的回归测试。
+- `backend/tests/test_task_engine.py`：新增解压失败后任务状态收口到等待人工的回归测试。
+- `progress.md`：追加本轮 RJ01618696 大分卷缺密码卡槽修复记录。
+- 回滚方式：还原上述代码文件中本轮关于 `UNKNOWN_PROBE_*`、取消后不启动 7z、解压失败 WAITING_MANUAL 收口及新增测试的 hunk，并删除本段进度记录。
+
+## 2026-06-20 - Task: 修复解压进度控制字符乱码与文件名密码优先级
+### What was done
+- 重新核查 `RJ01618696(southplus@adark).7z.001` 运行日志，确认截图底部 `Open□□□□` 不是文件名编码乱码，而是 7z 进度流里的退格控制字符被解析成“当前文件”后展示出来。
+- 解压进度解析现在会过滤 ANSI / 退格等终端控制字符，并拒绝把 `Open` 这类 7z 状态词当作当前文件名；日志页也加了旧进度日志展示兜底。
+- 密码候选顺序调整为密码库 / 文件名嗅探优先于 RJ 号猜测，避免大包 unknown 兜底上限被 `RJ` / `RJ+1` / `RJ-1` 先耗掉，导致文件名里的真实密码还没轮到就被跳过。
+### Testing
+- `cd backend && .\venv\Scripts\python.exe -m pytest tests/test_extract_service.py tests/test_task_engine.py -k "filename_password_sniff_reads_split_archive_name or extract_7z_progress_ignores_terminal_control_open or large_archive_tries_sniffed_password_before_rj_guess or large_archive_caps_unknown_probe_full_extracts or manual_retry_skips_no_password_full_extract_when_probe_unknown or auto_process_extract_failure_moves_to_waiting_manual" --basetemp=.pytest-tmp-rj01618696-garbled-full -q`：通过，6 passed / 172 deselected；仅有既有 deprecation warnings 和 `.pytest_cache` 写入 warning。
+- `cd frontend && npm run build`：通过。Vite 仅输出既有 VueUse pure 注释、lottie-web eval 和 chunk 体积 warning。
+- `git diff --check -- backend/app/core/extract_service.py backend/app/core/task_engine.py backend/tests/test_extract_service.py frontend/src/views/Logs.vue progress.md`：无空白错误；仅提示工作区 CRLF/LF 换行风格。
+### Notes
+- `backend/app/core/extract_service.py`：清洗 7z 进度控制字符、过滤 `Open` 状态词，并把密码库 / 文件名嗅探候选排在 RJ 猜测密码前。
+- `frontend/src/views/Logs.vue`：日志页解析解压进度详情时清理控制字符，旧日志中 `Open` 状态不再显示为当前文件。
+- `backend/tests/test_extract_service.py`：新增分卷文件名嗅探密码、7z 控制字符过滤、以及大包优先尝试文件名密码的回归测试。
+- `progress.md`：追加本轮解压进度乱码与密码候选顺序修复记录。
+- 回滚方式：还原上述代码文件中本轮关于 `_strip_terminal_control_text`、`_extract_7z_progress_entry_name`、密码候选顺序、`parseExtractProgressDetail` 和新增测试的 hunk，并删除本段进度记录。
+
+## 2026-06-20 - Task: 修复 API 重命名 Markdown RJ 与 DLsite 空 fallback
+### What was done
+- 修复 API 重命名元数据任务的 RJ 锁定逻辑：当任务上下文里混入 `[RJ01649758](...)` 这类展示层 Markdown 链接时，后端会先提取干净 RJ，再请求 DLsite 和写进进度日志。
+- 修复 DLsite `get_product_info()` 的页面 fallback 空返回处理：translation fallback 返回 `None` 时按空结果收口，不再触发 `'NoneType' object is not subscriptable`。
+- 增加回归测试覆盖 Markdown RJ 锁定、API rename 传参归一化，以及 DLsite 空 fallback 返回 `None` 的路径。
+### Testing
+- `cd backend && .\venv\Scripts\python.exe -m pytest tests\test_library_browser_api.py -q -k "api_rename or metadata_service_normalizes" --basetemp=.pytest-tmp\api-rename-markdown`：通过，5 passed / 16 deselected；仅有既有 SQLAlchemy / FastAPI / pytest-asyncio deprecation warning 和 `.pytest_cache` 写入 warning。
+- `cd backend && .\venv\Scripts\python.exe -m pytest tests\test_circle_completion_bonus_detection.py -q --basetemp=.pytest-tmp\dlsite-empty-fallback`：通过，7 passed；仅有既有 deprecation warning 和 `.pytest_cache` 写入 warning。
+### Notes
+- `backend/app/core/metadata_service.py`：锁定 RJ 先走 `_extract_rjcode()`，避免把 Markdown 链接当成真实 RJ。
+- `backend/app/core/dlsite_service.py`：translation page fallback 返回空时兜底为空 dict。
+- `backend/tests/test_library_browser_api.py`：新增 API rename 与 MetadataService 的 Markdown RJ 归一化回归测试。
+- `backend/tests/test_circle_completion_bonus_detection.py`：新增 DLsite 空 translation fallback 回归测试。
+- `progress.md`：追加本轮 API 重命名元数据修复记录。
+- 回滚方式：还原上述代码文件中本轮关于 locked RJ 归一化、fallback 空 dict 兜底和新增测试的 hunk，并删除本段进度记录。
+
+## 2026-06-20 - Task: 修复库存重命名后名称短暂回跳
+### What was done
+- 核查服务器日志确认 `RJ01649758` 纯 RJ 请求已经被后端正确识别，但 DLsite 元数据链路仍因短熔断 / SSL EOF / read timeout 降级为 minimal，所以 API 重命名按保护逻辑返回 422 并跳过。
+- 修复普通库存重命名和批量重命名接口：默认在返回成功前同步提交库存索引 move，避免文件系统已改名但库存页下一轮走旧索引导致名称短暂变回旧值。
+- 保留字幕工作台等显式 `skip_index_mutation=True` 的临时重命名行为，不把临时字幕路径写入库存索引。
+### Testing
+- `cd backend && .\venv\Scripts\python.exe -m py_compile app\api\routes.py app\core\library_manager.py app\core\metadata_service.py app\core\dlsite_service.py`：通过。
+- `cd backend && .\venv\Scripts\python.exe -m pytest tests\test_library_browser_api.py -q -k "rename or api_rename or metadata_service_normalizes" --basetemp=.pytest-tmp\rename-index-sync`：通过，13 passed / 10 deselected；仅有既有 SQLAlchemy / FastAPI / pytest-asyncio deprecation warning 和 `.pytest_cache` 写入 warning。
+### Notes
+- `backend/app/api/routes.py`：普通库存重命名和批量重命名默认传 `sync_index_mutation=not skip_index_mutation`。
+- `backend/app/core/library_manager.py`：批量本地 / 远程重命名支持同步索引 move flush。
+- `backend/tests/test_library_browser_api.py`：新增默认同步索引与跳过索引场景的路由回归测试，并补批量重命名同步参数断言。
+- `progress.md`：追加本轮库存重命名索引同步记录。
+- 回滚方式：还原上述代码文件中本轮关于 `sync_index_mutation` 参数传递、批量重命名同步索引 move flush 和新增测试的 hunk，并删除本段进度记录。
+
+## 2026-06-20 - Task: 稳定库存重命名后的前端显示
+### What was done
+- 库存页在重命名成功后记录短期旧路径到新路径映射，后续后台刷新如果仍拿到旧索引结果，会在写入表格前替换成新路径，避免成功后又闪回旧名字。
+- 刷新结果里如果旧路径和新路径同时出现，前端会丢弃旧路径行，只保留新名字，减少索引追赶窗口里的重复行。
+- API 重命名无变化返回补齐 `path/new_path/new_name`，前端统一按 `new_path || path` 更新当前行。
+### Testing
+- `cd frontend && npm run build`：通过。Vite 仅输出既有 VueUse pure 注释、lottie-web eval 和 chunk 体积 warning。
+- `cd backend && .\venv\Scripts\python.exe -m py_compile app\api\routes.py app\core\library_manager.py app\core\metadata_service.py app\core\dlsite_service.py`：通过。
+- `cd backend && .\venv\Scripts\python.exe -m pytest tests\test_library_browser_api.py -q -k "api_rename or rename or metadata_service_normalizes" --basetemp=.pytest-tmp\rename-stable-ui`：通过，13 passed / 10 deselected；仅有既有 deprecation warning 和 `.pytest_cache` 写入 warning。
+### Notes
+- `frontend/src/views/Library.vue`：新增短期重命名路径映射，并在目录 / 社团视图刷新落表前应用映射与去重。
+- `backend/app/api/routes.py`：API 重命名无变化返回补齐 `new_path` / `new_name`，批量 no-change 子项补齐 `new_path`。
+- `progress.md`：追加本轮前端重命名显示稳定记录。
+- 回滚方式：还原上述代码文件中本轮关于 `RECENT_RENAME_TTL_MS`、`recentRenamePathMap`、`applyRecentRenameRows()`、API rename no-change 返回字段和前端 `new_path` 读取的 hunk，并删除本段进度记录。
+
+## 2026-06-20 - Task: 修复 API 重命名 DLsite 空发布日期降级
+### What was done
+- 核查本机 `data/app.log`，确认 `RJ01649758` 的 API 重命名不是前端失效，而是 DLsite 返回 200 后元数据构造阶段抛出 `'NoneType' object is not subscriptable`，随后降级为 minimal 并按保护逻辑返回 422。
+- 复现并定位到 DLsite `product.json` 对该限定图类商品返回 `regist_date: null`，后端直接执行 `product.get('regist_date', '')[:10]` 导致异常。
+- 统一收口发布日期字段：DLsite 发布日期为 `null` 时写入空字符串，不再阻断 `maker_name`、封面、价格等有效元数据进入 API 重命名链路。
+### Testing
+- `cd backend && .\venv\Scripts\python.exe -m py_compile app\api\routes.py app\core\metadata_service.py app\core\dlsite_service.py`：通过。
+- `cd backend && .\venv\Scripts\python.exe -m pytest tests\test_library_browser_api.py -q -k "api_rename or metadata_service_normalizes or null_dlsite_release_date" --basetemp=.pytest-tmp\api-rename-null-date`：通过，6 passed / 18 deselected；仅有既有 deprecation warning 和 `.pytest_cache` 写入 warning。
+- `cd backend` 后用项目 venv 实际调用 `MetadataService.fetch()` 拉取 `RJ01649758`：通过，返回 `metadata_source=dlsite`、`maker_name=おいしいおこめ`、`release_date=""`、封面 URL 和 `price_text=0円`。
+### Notes
+- `backend/app/core/metadata_service.py`：新增发布日期空值归一化，并替换 DLsite 主链、直连链和日文元数据链中对 `regist_date` 的直接切片。
+- `backend/tests/test_library_browser_api.py`：新增 DLsite `regist_date=None` 时仍能构建有效元数据的回归测试。
+- `progress.md`：追加本轮 API 重命名 DLsite 空发布日期修复记录。
+- 回滚方式：还原 `backend/app/core/metadata_service.py` 中 `_normalize_release_date` 与三处调用替换，删除 `backend/tests/test_library_browser_api.py` 中 `test_metadata_service_accepts_null_dlsite_release_date`，并删除本段进度记录。
