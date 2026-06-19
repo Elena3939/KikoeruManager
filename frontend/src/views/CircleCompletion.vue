@@ -162,7 +162,7 @@
               <div class="toolbar-title">{{ detail.circle_name || '未选择社团' }}</div>
               <div v-if="detail.last_indexed_at" class="toolbar-subtitle">上次刷新 {{ formatDateTime(detail.last_indexed_at) }}</div>
             </div>
-            <div v-if="detail.works?.length" class="toolbar-actions">
+            <div v-if="detail.total_works || circleWorksPage.total || detail.works?.length" class="toolbar-actions">
               <el-button
                 class="batch-action-button"
                 :disabled="!activeCircleId || indexing || isRefreshJobActive"
@@ -332,7 +332,7 @@
               </template>
 
               <div v-if="missingWorks.length > 0 && selectedActiveCanonicalRJCodes.length > 0" class="selection-bar">
-                <span class="selection-count">已选 {{ selectedActiveCanonicalRJCodes.length }} / {{ activeSelectableWorks.length }}</span>
+                <span class="selection-count">已选 {{ selectedActiveCanonicalRJCodes.length }} / {{ activeSelectableWorksTotal }}</span>
                 <div class="flex items-center gap-2">
                   <button type="button" class="batch-action-button" @click="selectAllVisibleWorks">全选</button>
                   <button type="button" class="batch-action-button ghost" @click="clearSelection">清空</button>
@@ -403,6 +403,8 @@
                 v-model:current-page="missingPage"
                 v-model:page-size="worksPageSize"
                 :items="missingWorks"
+                :total-items="circleWorksPage.tab === 'missing' ? circleWorksPage.total : missingWorks.length"
+                server-paging
                 :mode="viewMode"
                 :page-sizes="worksPageSizes"
                 :selected-codes="selectedCanonicals"
@@ -571,7 +573,7 @@
               </template>
               <template v-else>
                 <div v-if="ownedWorks.length > 0 && selectedActiveCanonicalRJCodes.length > 0" class="selection-bar">
-                  <span class="selection-count">已选 {{ selectedActiveCanonicalRJCodes.length }} / {{ activeSelectableWorks.length }}</span>
+                  <span class="selection-count">已选 {{ selectedActiveCanonicalRJCodes.length }} / {{ activeSelectableWorksTotal }}</span>
                   <div class="flex items-center gap-2">
                     <button type="button" class="batch-action-button" @click="selectAllVisibleWorks">全选</button>
                     <button type="button" class="batch-action-button ghost" @click="clearSelection">清空</button>
@@ -591,6 +593,8 @@
                   v-model:current-page="ownedPage"
                   v-model:page-size="worksPageSize"
                   :items="ownedWorks"
+                  :total-items="circleWorksPage.tab === 'owned' ? circleWorksPage.total : ownedWorks.length"
+                  server-paging
                   :mode="viewMode"
                   :page-sizes="worksPageSizes"
                   :selected-codes="selectedCanonicals"
@@ -827,7 +831,7 @@
                 </div>
                 <div class="info-card">
                   <div class="info-label">可见作品</div>
-                  <div class="info-value">{{ detail.works?.length || 0 }}</div>
+                  <div class="info-value">{{ detail.total_works || circleWorksPage.total || detail.works?.length || 0 }}</div>
                 </div>
               </div>
             </el-tab-pane>
@@ -984,6 +988,14 @@ const detail = reactive({
   missing_count: 0,
   downloadable_count: 0,
   dl_only_count: 0,
+  filtered_count: 0,
+  total_works: 0,
+  unreleased_count: 0,
+  new_works_count: 0,
+  bonus_works_count: 0,
+  owned_stats: { total: 0, original: 0, simplified: 0, traditional: 0, subtitle: 0, bonus: 0 },
+  compare_stats: { total: 0, kikoeru: 0, dlsite: 0, asmr_one: 0, missing: 0 },
+  status_filter_counts: { missing: {}, owned: {} },
   works: []
 })
 const CIRCLE_DETAIL_CACHE_TTL = 5 * 60 * 1000
@@ -996,6 +1008,8 @@ let circleDetailPrefetchTimer = null
 let circleDetailPrefetchIdleId = null
 let circleDetailPrefetchIdleIsTimeout = false
 let circleDetailPrefetchRunning = false
+let circleWorksFetchTimer = null
+let circleSearchFetchTimer = null
 const filters = reactive({
   onlyMissing: false,
   onlyDownloadable: false,
@@ -1013,10 +1027,10 @@ const statusFilterExclusiveGroups = [
   ['repairable', 'missing'],
 ]
 const statusFilterOptions = computed(() => {
-  const works = getStatusFilterScopeWorks()
+  const counts = detail.status_filter_counts?.[activeTab.value] || {}
   return statusFilterBaseOptions.map(option => ({
     ...option,
-    suffix: works.filter(item => itemMatchesStatusFilter(item, option.value)).length,
+    suffix: Number(counts[option.value] || 0),
   }))
 })
 const statusFilterModel = computed({
@@ -1077,11 +1091,22 @@ function resetCircleDetail() {
     missing_count: 0,
     downloadable_count: 0,
     dl_only_count: 0,
+    filtered_count: 0,
+    total_works: 0,
+    unreleased_count: 0,
+    new_works_count: 0,
+    bonus_works_count: 0,
+    owned_stats: { total: 0, original: 0, simplified: 0, traditional: 0, subtitle: 0, bonus: 0 },
+    compare_stats: { total: 0, kikoeru: 0, dlsite: 0, asmr_one: 0, missing: 0 },
+    status_filter_counts: { missing: {}, owned: {} },
     works: []
   })
   circleDetailLoaded.value = false
   circleDetailLoading.value = false
   selectedCanonicals.value = new Set()
+  selectedDownloadableCanonicals.value = new Set()
+  selectedRequestedRjcodes.value = {}
+  Object.assign(circleWorksPage, { tab: 'missing', total: 0, page: 1, page_size: 10, page_count: 1, loading: false })
 }
 
 function getCircleDetailCacheKey(circleId) {
@@ -1098,7 +1123,41 @@ function cloneCircleDetailPayload(payload = {}) {
     missing_count: Number(payload.missing_count || 0),
     downloadable_count: Number(payload.downloadable_count || 0),
     dl_only_count: Number(payload.dl_only_count || 0),
+    filtered_count: Number(payload.filtered_count || 0),
+    total_works: Number(payload.total_works || payload.dl_count || 0),
+    unreleased_count: Number(payload.unreleased_count || 0),
+    new_works_count: Number(payload.new_works_count || 0),
+    bonus_works_count: Number(payload.bonus_works_count || 0),
+    owned_stats: { total: 0, original: 0, simplified: 0, traditional: 0, subtitle: 0, bonus: 0, ...(payload.owned_stats || {}) },
+    compare_stats: { total: 0, kikoeru: 0, dlsite: 0, asmr_one: 0, missing: 0, ...(payload.compare_stats || {}) },
+    status_filter_counts: {
+      missing: { ...(payload.status_filter_counts?.missing || {}) },
+      owned: { ...(payload.status_filter_counts?.owned || {}) },
+    },
+    works_page: {
+      tab: String(payload.works_page?.tab || payload.tab || 'missing'),
+      total: Number(payload.works_page?.total ?? payload.total ?? payload.missing_count ?? 0),
+      page: Number(payload.works_page?.page ?? payload.page ?? 1),
+      page_size: Number(payload.works_page?.page_size ?? payload.page_size ?? worksPageSize.value ?? 10),
+      page_count: Number(payload.works_page?.page_count ?? payload.page_count ?? 1),
+    },
     works: Array.isArray(payload.works) ? payload.works.map(item => ({ ...item })) : []
+  }
+}
+
+function buildCachedCircleDetailPayload(summary = {}, works = {}) {
+  const pageTotal = Number(works?.total ?? works?.filtered_count ?? summary?.missing_count ?? 0)
+  const pageSize = Number(works?.page_size ?? worksPageSize.value ?? 10)
+  return {
+    ...summary,
+    works: Array.isArray(works?.items) ? works.items : [],
+    works_page: {
+      tab: String(works?.tab || 'missing'),
+      total: pageTotal,
+      page: Number(works?.page || 1),
+      page_size: pageSize,
+      page_count: Number(works?.page_count || Math.max(1, Math.ceil(pageTotal / Math.max(1, pageSize)))),
+    },
   }
 }
 
@@ -1150,9 +1209,6 @@ function applyCircleDetailPayload(payload, { loaded = true } = {}) {
   const normalized = cloneCircleDetailPayload(payload)
   Object.assign(detail, normalized)
   circleDetailLoaded.value = loaded
-  selectedCanonicals.value = new Set(
-    [...selectedCanonicals.value].filter(code => normalized.works.some(item => item.canonical_rjcode === code))
-  )
 }
 
 function applyCircleSummaryPlaceholder(circleId) {
@@ -1167,6 +1223,14 @@ function applyCircleSummaryPlaceholder(circleId) {
     missing_count: Number(circle?.missing ?? 0),
     downloadable_count: Number(circle?.downloadable_count ?? 0),
     dl_only_count: Number(circle?.dl_only_count ?? 0),
+    filtered_count: 0,
+    total_works: Number(circle?.dl_works || circle?.total_works || 0),
+    unreleased_count: Number(circle?.unreleased_count || 0),
+    new_works_count: Number(circle?.new_works_48h_count || circle?.new_works_count || 0),
+    bonus_works_count: 0,
+    owned_stats: { total: Number(circle?.owned_count ?? circle?.server_owned ?? 0), original: 0, simplified: 0, traditional: 0, subtitle: 0, bonus: 0 },
+    compare_stats: { total: Number(circle?.dl_works || circle?.total_works || 0), kikoeru: Number(circle?.owned_count ?? circle?.server_owned ?? 0), dlsite: Number(circle?.dl_works || 0), asmr_one: Number(circle?.asmr_available || 0), missing: 0 },
+    status_filter_counts: { missing: {}, owned: {} },
     works: []
   })
   circleDetailLoaded.value = false
@@ -1198,7 +1262,17 @@ async function syncActiveCircleWithList(options = {}) {
 }
 const activeTab = ref('missing')
 const selectedCanonicals = ref(new Set())
+const selectedDownloadableCanonicals = ref(new Set())
+const selectedRequestedRjcodes = ref({})
 const flashedWorkCodes = ref(new Set())
+const circleWorksPage = reactive({
+  tab: 'missing',
+  total: 0,
+  page: 1,
+  page_size: 10,
+  page_count: 1,
+  loading: false
+})
 const previewDialogVisible = ref(false)
 const previewPlans = ref([])
 const libraries = ref([])
@@ -1281,13 +1355,82 @@ const missingPage = ref(1)
 const missingSort = ref('default') // 'default' | 'downloadable' | 'title'
 const worksReleaseSort = ref('desc')
 const viewMode = ref('card') // 'card' | 'list'
-watch(missingSort, () => { missingPage.value = 1 })
-watch(worksReleaseSort, () => { missingPage.value = 1; ownedPage.value = 1; comparePage.value = 1 })
+watch(missingSort, () => { missingPage.value = 1; scheduleCircleWorksRefresh() })
+watch(worksReleaseSort, () => { missingPage.value = 1; ownedPage.value = 1; comparePage.value = 1; scheduleCircleWorksRefresh() })
 watch([circleCompletionFilter, circleSortKey], () => {
   syncActiveCircleWithList({ preserveActiveWhenEmpty: true })
 })
 const ownedPage = ref(1)
 const comparePage = ref(1)
+function getActiveWorksPage() {
+  if (activeTab.value === 'owned') return ownedPage.value
+  if (activeTab.value === 'compare') return comparePage.value
+  return missingPage.value
+}
+
+function getActiveWorksPageSize() {
+  return activeTab.value === 'compare'
+    ? Number(comparePageSize.value || 10)
+    : Number(worksPageSize.value || 10)
+}
+
+function getCircleWorksSort() {
+  if (worksReleaseSort.value === 'asc') return 'release_asc'
+  if (worksReleaseSort.value === 'desc') return 'release_desc'
+  return 'updated_desc'
+}
+
+function buildCircleWorksQuery(options = {}) {
+  const includePage = options.includePage !== false
+  const tab = options.tab || activeTab.value || 'missing'
+  return {
+    tab,
+    page: includePage ? getActiveWorksPage() : 1,
+    pageSize: includePage ? getActiveWorksPageSize() : 1,
+    includeDlOnly: filters.includeDlOnly,
+    statusFilters: [...statusFilters.value],
+    ownedFilter: ownedWorksFilterType.value,
+    compareFilter: compareSourceFilter.value,
+    search: tab === 'owned'
+      ? ownedWorksSearchQuery.value.trim()
+      : (tab === 'compare' ? compareSearchQuery.value.trim() : ''),
+    sort: getCircleWorksSort()
+  }
+}
+
+function applyCircleSummaryPayload(payload = {}) {
+  const normalized = cloneCircleDetailPayload({ ...payload, works: detail.works || [] })
+  Object.assign(detail, {
+    ...normalized,
+    works: detail.works || []
+  })
+  circleDetailLoaded.value = true
+}
+
+function applyCircleWorksPayload(payload = {}) {
+  detail.works = Array.isArray(payload.items) ? payload.items.map(item => ({ ...item })) : []
+  detail.filtered_count = Number(payload.total || payload.filtered_count || 0)
+  Object.assign(circleWorksPage, {
+    tab: String(payload.tab || activeTab.value || 'missing'),
+    total: Number(payload.total || 0),
+    page: Number(payload.page || getActiveWorksPage()),
+    page_size: Number(payload.page_size || getActiveWorksPageSize()),
+    page_count: Number(payload.page_count || 1),
+    loading: false
+  })
+  for (const key of ['owned_count', 'missing_count', 'downloadable_count', 'dl_only_count', 'total_works', 'unreleased_count', 'new_works_count', 'bonus_works_count']) {
+    if (payload[key] !== undefined) detail[key] = Number(payload[key] || 0)
+  }
+  if (payload.owned_stats) detail.owned_stats = { total: 0, original: 0, simplified: 0, traditional: 0, subtitle: 0, bonus: 0, ...payload.owned_stats }
+  if (payload.compare_stats) detail.compare_stats = { total: 0, kikoeru: 0, dlsite: 0, asmr_one: 0, missing: 0, ...payload.compare_stats }
+  if (payload.status_filter_counts) {
+    detail.status_filter_counts = {
+      missing: { ...(payload.status_filter_counts.missing || {}) },
+      owned: { ...(payload.status_filter_counts.owned || {}) },
+    }
+  }
+}
+
 const refreshForceRefreshHint = computed(() => {
   if (refreshJob.meta?.force_refresh) {
     return refreshJob.meta.force_refresh_reason === 'auto_threshold'
@@ -1308,6 +1451,9 @@ const indexJob = reactive({
   meta: {}
 })
 let indexJobTimer = null
+let indexJobElapsedTimer = null
+let indexJobLastRealtimeAt = 0
+let refreshJobLastRealtimeAt = 0
 const cancellingIndexJob = ref(false)
 const refreshingCurrentCircle = ref(false)
 const refreshJob = reactive({
@@ -1331,6 +1477,7 @@ let refreshJobTimer = null
 let refreshJobAutoHideTimer = null
 const cancellingRefreshJob = ref(false)
 const JOB_FALLBACK_POLL_INTERVAL_MS = 30000
+const JOB_SSE_STALE_MS = 45000
 const handledCircleTerminalTasks = new Set()
 const downloadSettings = reactive({
   downloadBasePath: '',
@@ -1393,19 +1540,7 @@ function applyStatusFilters(list) {
 }
 
 const missingWorks = computed(() => {
-  const list = applyStatusFilters((detail.works || []).filter(item => isPreferredMissingWorkVisible(item)))
-  if (worksReleaseSort.value === 'asc' || worksReleaseSort.value === 'desc') {
-    const direction = worksReleaseSort.value === 'asc' ? 1 : -1
-    return [...list].sort((a, b) => {
-      // 「发售日未定」（后端 is_unreleased=true 但 release_date 没有具体年月日）
-      // 由 getWorkReleaseTimestamp 折算成虚构的 2099-01-01 时间戳，正常参与排序：
-      // 升序时落到列表末尾、降序时落到列表最前，都符合"发售日最迟"的业务语义。
-      const diff = getWorkReleaseTimestamp(a) - getWorkReleaseTimestamp(b)
-      if (diff !== 0) return diff * direction
-      return String(a.title || '').localeCompare(String(b.title || ''), 'zh-CN')
-    })
-  }
-  return list
+  return activeTab.value === 'missing' ? (detail.works || []) : []
 })
 
 const missingWorksTotal = computed(() =>
@@ -1413,27 +1548,17 @@ const missingWorksTotal = computed(() =>
 )
 
 const unreleasedWorksCount = computed(() =>
-  (detail.works || []).filter(item => {
-    if (item?.owned) return false
-    if (item?.is_unreleased) return true
-    const value = String(item?.release_date || item?.date || item?.release_at || '').trim()
-    if (!value) return true
-    const m = value.match(/(\d{4})[-/年](\d{1,2})(?:[-/月](\d{1,2}))?/)
-    if (!m) return false
-    const rd = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3] || 1))
-    const today = new Date(); today.setHours(0, 0, 0, 0)
-    return rd > today
-  }).length
+  Number(detail.unreleased_count || 0)
 )
 
 // 工具栏"新作 N"统计：直接读后端打的 item.is_new_work（与 WorkCard / WorkListRow
 // 同一来源），保证左侧 search_circles 的 new_works_48h_count、右侧卡片特效、
 // 以及这里的工具栏数字三方永远对齐，不会再出现"卡片闪新作但左侧没标记"。
 const newWorksCount = computed(() =>
-  (detail.works || []).filter(item => isStrictTrue(item?.is_new_work)).length
+  Number(detail.new_works_count || 0)
 )
 const bonusWorksCount = computed(() =>
-  (detail.works || []).filter(item => isBonusDisplayWork(item)).length
+  Number(detail.bonus_works_count || 0)
 )
 
 function getCircleWorksCount(circle) {
@@ -1631,8 +1756,29 @@ const compareAutoAnimateOptions = {
   easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
 }
 
-watch(ownedWorksSearchQuery, () => { ownedPage.value = 1 })
-watch(compareSearchQuery, () => { comparePage.value = 1 })
+function scheduleCircleSearchRefresh() {
+  if (circleSearchFetchTimer) {
+    clearTimeout(circleSearchFetchTimer)
+    circleSearchFetchTimer = null
+  }
+  circleSearchFetchTimer = setTimeout(() => {
+    circleSearchFetchTimer = null
+    scheduleCircleWorksRefresh()
+  }, 260)
+}
+
+watch(ownedWorksSearchQuery, () => {
+  ownedPage.value = 1
+  if (activeTab.value === 'owned') scheduleCircleSearchRefresh()
+})
+watch(compareSearchQuery, () => {
+  comparePage.value = 1
+  if (activeTab.value === 'compare') scheduleCircleSearchRefresh()
+})
+watch(compareSourceFilter, () => {
+  comparePage.value = 1
+  if (activeTab.value === 'compare') scheduleCircleWorksRefresh()
+})
 
 function getOwnedVariantGroupLabel(item) {
   return item?.owned_variant?.group_short_label || '原作'
@@ -1665,99 +1811,25 @@ function setOwnedWorksFilter(type) {
   if (ownedWorksFilterType.value === type) return
   ownedWorksFilterType.value = type
   ownedPage.value = 1
+  if (activeTab.value === 'owned') scheduleCircleWorksRefresh()
 }
 
 const ownedWorks = computed(() => {
-  let list = applyStatusFilters((detail.works || []).filter(item => item.owned))
-
-  // Filter
-  if (ownedWorksFilterType.value !== 'all') {
-    list = list.filter(item => {
-      const groupKey = getOwnedVariantGroupKey(item)
-      const hasSubtitle = groupKey === 'original' && isStrictTrue(item.subtitle_present)
-
-      switch (ownedWorksFilterType.value) {
-        case 'original': return groupKey === 'original' && !hasSubtitle
-        case 'simplified': return groupKey === 'simplified'
-        case 'traditional': return groupKey === 'traditional'
-        case 'subtitle': return hasSubtitle
-        case 'bonus': return isBonusDisplayWork(item)
-        default: return true
-      }
-    })
-  }
-
-  // Search
-  const query = ownedWorksSearchQuery.value.trim().toLowerCase()
-  if (query) {
-    list = list.filter(item => {
-      const rjcode = (item.source_compare?.work_rjcode || item.canonical_rjcode || '').toLowerCase()
-      const title = (item.title || item.canonical_rjcode || '').toLowerCase()
-      return rjcode.includes(query) || title.includes(query)
-    })
-  }
-
-  // 发售日排序（与缺失作品共用同一排序状态）
-  if (worksReleaseSort.value === 'asc' || worksReleaseSort.value === 'desc') {
-    const direction = worksReleaseSort.value === 'asc' ? 1 : -1
-    return [...list].sort((a, b) => {
-      const diff = getWorkReleaseTimestamp(a) - getWorkReleaseTimestamp(b)
-      if (diff !== 0) return diff * direction
-      return String(a.title || '').localeCompare(String(b.title || ''), 'zh-CN')
-    })
-  }
-
-  return list
+  return activeTab.value === 'owned' ? (detail.works || []) : []
 })
 
 const ownedWorksStats = computed(() => {
-  const all = (detail.works || []).filter(item => item.owned)
   return {
-    total: all.length,
-    original: all.filter(item => {
-      const groupKey = getOwnedVariantGroupKey(item)
-      const hasSubtitle = groupKey === 'original' && isStrictTrue(item.subtitle_present)
-      return groupKey === 'original' && !hasSubtitle
-    }).length,
-    simplified: all.filter(item => getOwnedVariantGroupKey(item) === 'simplified').length,
-    traditional: all.filter(item => getOwnedVariantGroupKey(item) === 'traditional').length,
-    subtitle: all.filter(item => getOwnedVariantGroupKey(item) === 'original' && isStrictTrue(item.subtitle_present)).length,
-    bonus: all.filter(item => isBonusDisplayWork(item)).length,
+    total: Number(detail.owned_stats?.total || 0),
+    original: Number(detail.owned_stats?.original || 0),
+    simplified: Number(detail.owned_stats?.simplified || 0),
+    traditional: Number(detail.owned_stats?.traditional || 0),
+    subtitle: Number(detail.owned_stats?.subtitle || 0),
+    bonus: Number(detail.owned_stats?.bonus || 0),
   }
 })
 
-const compareWorks = computed(() => (detail.works || []).map(item => ({
-  workRjcode: String(item?.source_compare?.work_rjcode || item?.canonical_rjcode || '').trim(),
-  title: String(item?.title || '').trim(),
-  preferredVariantLabel: String(item?.preferred_variant?.group_short_label || item?.preferred_variant?.label || '').trim(),
-  statusLabel: item?.server_owned
-    ? formatServerOwnedLabel(item)
-    : (item?.has_asmr_one ? '可下载' : '暂无来源'),
-  statusKey: item?.server_owned
-    ? 'owned'
-    : (item?.has_asmr_one ? 'downloadable' : 'dl_only'),
-  __releaseTimestamp: getWorkReleaseTimestamp(item),
-  __releaseDate: String(item?.release_date || item?.date || item?.release_at || '').trim(),
-  sourceCompare: {
-    kikoeru: {
-      primary_rjcode: String(item?.source_compare?.kikoeru?.primary_rjcode || '').trim(),
-      primaryBadge: String(item?.source_compare?.kikoeru?.primary_badge || '').trim(),
-      variantBadges: Array.isArray(item?.source_compare?.kikoeru?.variant_badges) && item.source_compare.kikoeru.variant_badges.length
-        ? item.source_compare.kikoeru.variant_badges.filter(Boolean)
-        : (String(item?.source_compare?.kikoeru?.primary_badge || '').trim() ? [String(item.source_compare.kikoeru.primary_badge).trim()] : []),
-      all_rjcodes: Array.isArray(item?.source_compare?.kikoeru?.all_rjcodes) ? item.source_compare.kikoeru.all_rjcodes.filter(Boolean) : [],
-      tags: Array.isArray(item?.source_compare?.kikoeru?.tags) ? item.source_compare.kikoeru.tags.filter(Boolean) : [],
-    },
-    dlsite: {
-      all_rjcodes: Array.isArray(item?.source_compare?.dlsite?.all_rjcodes) ? item.source_compare.dlsite.all_rjcodes.filter(Boolean) : [],
-    },
-    asmr_one: {
-      primary_rjcode: String(item?.source_compare?.asmr_one?.primary_rjcode || '').trim(),
-      primaryBadge: String(item?.source_compare?.asmr_one?.primary_badge || '').trim(),
-      all_rjcodes: Array.isArray(item?.source_compare?.asmr_one?.all_rjcodes) ? item.source_compare.asmr_one.all_rjcodes.filter(Boolean) : [],
-    },
-  }
-})))
+const compareWorks = computed(() => activeTab.value === 'compare' ? (detail.works || []) : [])
 
 function formatServerOwnedLabel(item) {
   if (!item?.server_owned) return '库存未收录'
@@ -1840,11 +1912,7 @@ function applyOptimisticOwnedStateForUploadTask(task) {
     }
   })
   if (!changed) return
-  detail.owned_count = (detail.works || []).filter(item => item?.owned).length
-  detail.server_owned_count = (detail.works || []).filter(item => item?.server_owned).length
-  detail.missing_count = (detail.works || []).filter(item => !item?.owned).length
-  detail.downloadable_count = (detail.works || []).filter(item => !item?.owned && item?.has_asmr_one).length
-  detail.dl_only_count = (detail.works || []).filter(item => !item?.owned && !item?.has_asmr_one).length
+  refreshActiveCircle({ summaryOnly: false }).catch(() => {})
 }
 
 function normalizeKikoeruTags(tags) {
@@ -1894,73 +1962,39 @@ function prioritizeChangedWorks(codes = []) {
 }
 
 const filteredCompareWorks = computed(() => {
-  let list = compareWorks.value
-
-  if (compareSourceFilter.value !== 'all') {
-    list = list.filter(item => {
-      switch (compareSourceFilter.value) {
-        case 'kikoeru': return item.statusKey === 'owned'
-        case 'dlsite': return !!item.sourceCompare.dlsite.all_rjcodes.length
-        case 'asmr_one': return !!item.sourceCompare.asmr_one.primary_rjcode
-        case 'missing': return !item.sourceCompare.kikoeru.primary_rjcode && !item.sourceCompare.dlsite.all_rjcodes.length && !item.sourceCompare.asmr_one.primary_rjcode
-        default: return true
-      }
-    })
-  }
-
-  const query = compareSearchQuery.value.trim().toLowerCase()
-  if (query) {
-    list = list.filter(item => {
-      const rjcode = item.workRjcode.toLowerCase()
-      const title = item.title.toLowerCase()
-      return rjcode.includes(query) || title.includes(query)
-    })
-  }
-
-  if (worksReleaseSort.value === 'asc' || worksReleaseSort.value === 'desc') {
-    const direction = worksReleaseSort.value === 'asc' ? 1 : -1
-    list = [...list].sort((a, b) => {
-      const diff = (a.__releaseTimestamp || 0) - (b.__releaseTimestamp || 0)
-      if (diff !== 0) return diff * direction
-      return String(a.title || '').localeCompare(String(b.title || ''), 'zh-CN')
-    })
-  }
-
-  return list
+  return compareWorks.value
 })
 
 const pagedCompareWorks = computed(() => {
-  const size = Number(comparePageSize.value || 10)
-  const start = (comparePage.value - 1) * size
-  return filteredCompareWorks.value.slice(start, start + size)
+  return filteredCompareWorks.value
 })
 
-const compareWorksFilteredCount = computed(() => filteredCompareWorks.value.length)
+const compareWorksFilteredCount = computed(() => circleWorksPage.tab === 'compare' ? circleWorksPage.total : Number(detail.compare_stats?.total || 0))
 
 const compareWorksStats = computed(() => {
-  const all = compareWorks.value
-
   return {
-    total: all.length,
-    kikoeru: all.filter(item => item.statusKey === 'owned').length,
-    dlsite: all.filter(item => !!item.sourceCompare.dlsite.all_rjcodes.length).length,
-    asmr_one: all.filter(item => !!item.sourceCompare.asmr_one.primary_rjcode).length,
-    missing: all.filter(item => !item.sourceCompare.kikoeru.primary_rjcode && !item.sourceCompare.dlsite.all_rjcodes.length && !item.sourceCompare.asmr_one.primary_rjcode).length
+    total: Number(detail.compare_stats?.total || 0),
+    kikoeru: Number(detail.compare_stats?.kikoeru || 0),
+    dlsite: Number(detail.compare_stats?.dlsite || 0),
+    asmr_one: Number(detail.compare_stats?.asmr_one || 0),
+    missing: Number(detail.compare_stats?.missing || 0)
   }
 })
 const selectedCanonicalRJCodes = computed(() => [...selectedCanonicals.value])
 const selectedDownloadableRJCodes = computed(() => selectedCanonicalRJCodes.value.filter(code => {
-  const item = detailWorksByCanonical.value.get(code)
-  return Boolean(item?.has_asmr_one)
+  return selectedDownloadableCanonicals.value.has(code)
 }))
 const activeSelectableWorks = computed(() => {
   if (activeTab.value === 'owned') return ownedWorks.value
   if (activeTab.value === 'missing') return missingWorks.value
   return []
 })
-const selectedActiveCanonicalRJCodes = computed(() => activeSelectableWorks.value
-  .map(item => item?.canonical_rjcode)
-  .filter(code => code && selectedCanonicals.value.has(code)))
+const activeSelectableWorksTotal = computed(() => (
+  ['missing', 'owned'].includes(activeTab.value) && circleWorksPage.tab === activeTab.value
+    ? Number(circleWorksPage.total || activeSelectableWorks.value.length)
+    : activeSelectableWorks.value.length
+))
+const selectedActiveCanonicalRJCodes = computed(() => selectedCanonicalRJCodes.value)
 const activeSelectableWorksByCanonical = computed(() => {
   const map = new Map()
   for (const item of activeSelectableWorks.value) {
@@ -1970,12 +2004,15 @@ const activeSelectableWorksByCanonical = computed(() => {
   return map
 })
 const selectedActiveDownloadableRJCodes = computed(() => selectedActiveCanonicalRJCodes.value.filter(code => {
-  const item = activeSelectableWorksByCanonical.value.get(code)
-  return Boolean(item?.has_asmr_one)
+  return selectedDownloadableCanonicals.value.has(code)
 }))
 function getPreviewRequestedRjcodes(canonicalCodes = []) {
   const mapping = {}
   canonicalCodes.forEach(code => {
+    if (Array.isArray(selectedRequestedRjcodes.value?.[code]) && selectedRequestedRjcodes.value[code].length) {
+      mapping[code] = [...selectedRequestedRjcodes.value[code]]
+      return
+    }
     const item = detailWorksByCanonical.value.get(code)
     if (!item) return
     const candidates = [
@@ -2154,8 +2191,7 @@ onMounted(async () => {
   if (isRefreshJobActive.value) await pollRefreshJob(refreshJob.job_id, { silentFinish: true })
   else if (refreshJob.job_id && refreshJob.status === 'completed') {
     if (refreshJob.changed_codes?.length) {
-      await refreshActiveCircle()
-      prioritizeChangedWorks(refreshJob.changed_codes)
+      await refreshActiveCircle({ summaryOnly: false })
       flashChangedWorks(refreshJob.changed_codes)
     }
     resumeRefreshJobAutoHide()
@@ -2172,8 +2208,7 @@ onActivated(() => {
     pollRefreshJob(refreshJob.job_id, { silentFinish: true })
   } else if (refreshJob.job_id && refreshJob.status === 'completed') {
     if (refreshJob.changed_codes?.length && activeCircleId.value) {
-      refreshActiveCircle().then(() => {
-        prioritizeChangedWorks(refreshJob.changed_codes)
+      refreshActiveCircle({ summaryOnly: false }).then(() => {
         flashChangedWorks(refreshJob.changed_codes)
       }).catch(() => {})
     }
@@ -2214,6 +2249,14 @@ onBeforeUnmount(() => {
     circleDetailAbortController.abort()
     circleDetailAbortController = null
   }
+  if (circleWorksFetchTimer) {
+    clearTimeout(circleWorksFetchTimer)
+    circleWorksFetchTimer = null
+  }
+  if (circleSearchFetchTimer) {
+    clearTimeout(circleSearchFetchTimer)
+    circleSearchFetchTimer = null
+  }
   stopIndexJobPolling()
   stopRefreshJobPolling()
   stopRefreshJobAutoHide()
@@ -2221,16 +2264,38 @@ onBeforeUnmount(() => {
   stopUploadWorkbenchPolling()
 })
 
+function scheduleCircleWorksRefresh(delay = 0) {
+  if (!activeCircleId.value) return
+  if (circleWorksFetchTimer) {
+    clearTimeout(circleWorksFetchTimer)
+    circleWorksFetchTimer = null
+  }
+  circleWorksFetchTimer = setTimeout(() => {
+    circleWorksFetchTimer = null
+    refreshActiveCircleWorks({ showLoading: false })
+  }, Math.max(0, Number(delay || 0)))
+}
+
 watch(activeTab, (tab) => {
+  selectedCanonicals.value = new Set()
+  selectedDownloadableCanonicals.value = new Set()
+  selectedRequestedRjcodes.value = {}
   if (tab === 'missing') missingPage.value = 1
   if (tab === 'owned') ownedPage.value = 1
   if (tab === 'compare') comparePage.value = 1
+  scheduleCircleWorksRefresh()
 })
 
-watch(() => detail.works, () => {
+watch([missingPage, ownedPage, comparePage, worksPageSize, comparePageSize], () => {
+  scheduleCircleWorksRefresh()
+})
+
+watch([statusFilterModel, () => filters.includeDlOnly], () => {
   missingPage.value = 1
   ownedPage.value = 1
   comparePage.value = 1
+  clearSelection()
+  refreshActiveCircle()
 }, { deep: true })
 
 watch(downloadWorkbenchVisible, (visible) => {
@@ -2289,7 +2354,7 @@ watch(
     })
     if (!justFinished || !activeCircleId.value) return
     try {
-      await refreshActiveCircle()
+      await refreshActiveCircle({ summaryOnly: false })
     } catch (_) {}
   }
 )
@@ -2311,7 +2376,7 @@ watch(
     }
     if (!activeCircleId.value) return
     try {
-      await refreshActiveCircle()
+      await refreshActiveCircle({ summaryOnly: false })
     } catch (_) {}
   }
 )
@@ -2717,6 +2782,7 @@ function hydrateIndexJobState() {
     indexJob.error_message = String(raw.error_message || '').trim()
     indexJob.meta = raw.meta && typeof raw.meta === 'object' ? raw.meta : {}
     indexing.value = Boolean(indexJob.job_id && ['pending', 'processing'].includes(indexJob.status))
+    if (indexing.value) startIndexJobElapsedTick()
   } catch (_) {
     clearIndexJobState()
   }
@@ -2734,6 +2800,7 @@ function clearIndexJobState() {
   indexJob.meta = {}
   indexing.value = false
   stopIndexJobPolling()
+  stopIndexJobElapsedTick()
   try {
     localStorage.removeItem(CIRCLE_COMPLETION_INDEX_JOB_KEY)
   } catch (_) {}
@@ -3160,6 +3227,26 @@ function stopIndexJobPolling() {
   }
 }
 
+function stopIndexJobElapsedTick() {
+  if (indexJobElapsedTimer) {
+    window.clearInterval(indexJobElapsedTimer)
+    indexJobElapsedTimer = null
+  }
+}
+
+function startIndexJobElapsedTick() {
+  stopIndexJobElapsedTick()
+  if (!indexJob.job_id || !['pending', 'processing'].includes(String(indexJob.status || ''))) return
+  indexJobElapsedTimer = window.setInterval(() => {
+    if (!indexJob.job_id || !['pending', 'processing'].includes(String(indexJob.status || ''))) {
+      stopIndexJobElapsedTick()
+      return
+    }
+    indexJob.elapsed_seconds = Number(indexJob.elapsed_seconds || 0) + 1
+    persistIndexJobState()
+  }, 1000)
+}
+
 function applyIndexJob(payload = {}) {
   indexJob.visible = true
   indexJob.job_id = payload.job_id || ''
@@ -3167,10 +3254,23 @@ function applyIndexJob(payload = {}) {
   indexJob.progress = Number(payload.progress || 0)
   indexJob.current_step = payload.current_step || ''
   indexJob.circle_query = payload.circle_query || ''
-  indexJob.elapsed_seconds = Number(payload.elapsed_seconds || 0)
+  const remoteElapsed = Number(payload.elapsed_seconds || 0)
+  indexJob.elapsed_seconds = Math.max(Number(indexJob.elapsed_seconds || 0), remoteElapsed)
   indexJob.error_message = payload.error_message || ''
   indexJob.meta = payload.meta || {}
+  if (['pending', 'processing'].includes(String(indexJob.status || ''))) {
+    indexing.value = true
+    startIndexJobElapsedTick()
+  } else {
+    stopIndexJobElapsedTick()
+  }
   persistIndexJobState()
+}
+
+function isJobRealtimeFresh(lastAt) {
+  return realtimeEvents.connected.value
+    && Number(lastAt || 0) > 0
+    && Date.now() - Number(lastAt || 0) < JOB_SSE_STALE_MS
 }
 
 function applyRefreshJob(payload = {}) {
@@ -3198,15 +3298,23 @@ function applyRefreshJob(payload = {}) {
 }
 
 function patchIndexJobFromTaskEvent(payload = {}) {
+  indexJobLastRealtimeAt = Date.now()
   indexJob.visible = true
   indexJob.job_id = String(payload.engine_task_id || payload.entity_id || indexJob.job_id || '')
   indexJob.status = payload.status || indexJob.status || ''
   indexJob.progress = Number(payload.progress ?? indexJob.progress ?? 0)
   indexJob.current_step = payload.current_step || indexJob.current_step || ''
+  if (['pending', 'processing'].includes(String(indexJob.status || ''))) {
+    indexing.value = true
+    startIndexJobElapsedTick()
+  } else if (isTerminalTaskStatus(indexJob.status)) {
+    stopIndexJobElapsedTick()
+  }
   persistIndexJobState()
 }
 
 function patchRefreshJobFromTaskEvent(payload = {}) {
+  refreshJobLastRealtimeAt = Date.now()
   refreshJob.visible = true
   refreshJob.job_id = String(payload.engine_task_id || payload.entity_id || refreshJob.job_id || '')
   refreshJob.status = payload.status || refreshJob.status || ''
@@ -3269,11 +3377,11 @@ function scheduleIndexJobFallbackPoll(jobId) {
   indexJobTimer = window.setTimeout(() => {
     indexJobTimer = null
     if (!indexJob.job_id || String(indexJob.job_id) !== String(jobId)) return
-    if (!realtimeEvents.connected.value) {
-      pollIndexJob(jobId)
+    if (isJobRealtimeFresh(indexJobLastRealtimeAt)) {
+      scheduleIndexJobFallbackPoll(jobId)
       return
     }
-    scheduleIndexJobFallbackPoll(jobId)
+    pollIndexJob(jobId)
   }, JOB_FALLBACK_POLL_INTERVAL_MS)
 }
 
@@ -3282,11 +3390,11 @@ function scheduleRefreshJobFallbackPoll(jobId) {
   refreshJobTimer = window.setTimeout(() => {
     refreshJobTimer = null
     if (!refreshJob.job_id || String(refreshJob.job_id) !== String(jobId)) return
-    if (!realtimeEvents.connected.value) {
-      pollRefreshJob(jobId, { silentFinish: true })
+    if (isJobRealtimeFresh(refreshJobLastRealtimeAt)) {
+      scheduleRefreshJobFallbackPoll(jobId)
       return
     }
-    scheduleRefreshJobFallbackPoll(jobId)
+    pollRefreshJob(jobId, { silentFinish: true })
   }, JOB_FALLBACK_POLL_INTERVAL_MS)
 }
 
@@ -3310,6 +3418,7 @@ async function pollIndexJob(jobId) {
     }
     if (result.status === 'failed') {
       indexing.value = false
+      stopIndexJobElapsedTick()
       if (result.error_message === '用户取消' || result.current_step === '已取消') {
         clearIndexJobState()
         ElMessage.info('社团索引已取消')
@@ -3321,14 +3430,18 @@ async function pollIndexJob(jobId) {
     }
     scheduleIndexJobFallbackPoll(jobId)
   } catch (error) {
-    indexing.value = false
     // 404 说明任务已不存在（后端重启），直接清除进度卡
     if (error?.response?.status === 404) {
       clearIndexJobState()
       return
     }
+    indexing.value = Boolean(indexJob.job_id)
+    indexJob.visible = Boolean(indexJob.job_id)
+    if (!indexJob.status) indexJob.status = 'processing'
+    if (!indexJob.current_step) indexJob.current_step = '等待服务端进度恢复'
+    startIndexJobElapsedTick()
     persistIndexJobState()
-    ElMessage.error(error.response?.data?.detail || '查询社团索引进度失败')
+    scheduleIndexJobFallbackPoll(jobId)
   }
 }
 
@@ -3340,11 +3453,10 @@ async function pollRefreshJob(jobId, options = {}) {
     applyRefreshJob(result)
     if (result.status === 'completed') {
       refreshingCurrentCircle.value = false
-      await Promise.all([refreshActiveCircle(), loadRecentCircles()])
+      await Promise.all([refreshActiveCircle({ summaryOnly: false }), loadRecentCircles()])
       const changedCodes = (Array.isArray(result.result?.items) ? result.result.items : [])
         .filter(item => item?.changed)
         .map(item => item.canonical_rjcode)
-      prioritizeChangedWorks(changedCodes)
       flashChangedWorks(changedCodes)
       refreshJob.current_step = `批量刷新完成，${changedCodes.length} 个状态变更，10 秒后自动隐藏`
       refreshJob.status = 'completed'
@@ -3499,11 +3611,19 @@ async function prefetchNeighborCircleDetails() {
   try {
     for (const circleId of candidates.slice(0, CIRCLE_DETAIL_PREFETCH_LIMIT)) {
       if (hasFreshCircleDetailCache(circleId)) continue
-      const result = await circleCompletionApi.getCircleDetail(circleId, {
-        includeDlOnly: filters.includeDlOnly
-      })
+      const [summary, works] = await Promise.all([
+        circleCompletionApi.getCircleSummary(circleId, { includeDlOnly: filters.includeDlOnly }),
+        circleCompletionApi.getCircleWorks(circleId, {
+          tab: 'missing',
+          page: 1,
+          pageSize: worksPageSize.value,
+          includeDlOnly: filters.includeDlOnly,
+          statusFilters: [],
+          sort: getCircleWorksSort()
+        })
+      ])
       if (circleDetailLoading.value || circleDetailAbortController) break
-      setCachedCircleDetail(circleId, result)
+      setCachedCircleDetail(circleId, buildCachedCircleDetailPayload(summary, works))
     }
   } finally {
     circleDetailPrefetchRunning = false
@@ -3604,7 +3724,7 @@ async function startIndexCircleJob({ circleQuery: targetQuery, circleQueries: ra
       only_new_works: Boolean(onlyNewWorks)
     })
     applyIndexJob(result)
-    await pollIndexJob(result.job_id)
+    scheduleIndexJobFallbackPoll(result.job_id)
   } catch (error) {
     indexing.value = false
     persistIndexJobState()
@@ -3662,14 +3782,27 @@ async function selectCircle(circleId) {
 
   activeCircleId.value = targetCircleId
   selectedCanonicals.value = new Set()
+  selectedDownloadableCanonicals.value = new Set()
+  selectedRequestedRjcodes.value = {}
   flashedWorkCodes.value = new Set()
   missingPage.value = 1
   ownedPage.value = 1
   comparePage.value = 1
 
-  const cached = getCachedCircleDetail(targetCircleId)
+  const cached = activeTab.value === 'missing' && !statusFilters.value.length ? getCachedCircleDetail(targetCircleId) : null
   if (cached) {
     applyCircleDetailPayload(cached)
+    const cachedPage = cached.works_page || {}
+    const cachedTotal = Number(cachedPage.total ?? cached.missing_count ?? 0)
+    const cachedPageSize = Number(cachedPage.page_size ?? worksPageSize.value ?? 10)
+    Object.assign(circleWorksPage, {
+      tab: String(cachedPage.tab || 'missing'),
+      total: cachedTotal,
+      page: Number(cachedPage.page || 1),
+      page_size: cachedPageSize,
+      page_count: Number(cachedPage.page_count || Math.max(1, Math.ceil(cachedTotal / Math.max(1, cachedPageSize)))),
+      loading: false
+    })
     circleDetailLoading.value = false
     scheduleCircleDetailPrefetch()
     return
@@ -3681,14 +3814,25 @@ async function selectCircle(circleId) {
 
 async function refreshActiveCircle(options = {}) {
   if (!activeCircleId.value) return
-  const { preferCache = false } = options
+  const { preferCache = false, summaryOnly = false } = options
   const requestCircleId = String(activeCircleId.value || '').trim()
   if (!requestCircleId) return
 
-  if (preferCache) {
+  if (preferCache && activeTab.value === 'missing' && !statusFilters.value.length) {
     const cached = getCachedCircleDetail(requestCircleId)
     if (cached) {
       applyCircleDetailPayload(cached)
+      const cachedPage = cached.works_page || {}
+      const cachedTotal = Number(cachedPage.total ?? cached.missing_count ?? 0)
+      const cachedPageSize = Number(cachedPage.page_size ?? worksPageSize.value ?? 10)
+      Object.assign(circleWorksPage, {
+        tab: String(cachedPage.tab || 'missing'),
+        total: cachedTotal,
+        page: Number(cachedPage.page || 1),
+        page_size: cachedPageSize,
+        page_count: Number(cachedPage.page_count || Math.max(1, Math.ceil(cachedTotal / Math.max(1, cachedPageSize)))),
+        loading: false
+      })
       circleDetailLoading.value = false
       scheduleCircleDetailPrefetch()
       return
@@ -3703,20 +3847,59 @@ async function refreshActiveCircle(options = {}) {
   }
   circleDetailAbortController = new AbortController()
   circleDetailLoading.value = true
+  circleWorksPage.loading = true
   try {
-    const result = await circleCompletionApi.getCircleDetail(requestCircleId, {
+    const summaryPromise = circleCompletionApi.getCircleSummary(requestCircleId, {
       includeDlOnly: filters.includeDlOnly,
       signal: circleDetailAbortController.signal
     })
+    const worksPromise = summaryOnly
+      ? Promise.resolve(null)
+      : circleCompletionApi.getCircleWorks(requestCircleId, buildCircleWorksQuery(), {
+        signal: circleDetailAbortController.signal
+      })
+    const [summary, works] = await Promise.all([summaryPromise, worksPromise])
     if (requestSeq !== circleDetailRequestSeq || activeCircleId.value !== requestCircleId) return
-    setCachedCircleDetail(requestCircleId, result)
-    applyCircleDetailPayload(result)
+    applyCircleSummaryPayload(summary)
+    if (works) applyCircleWorksPayload(works)
+    if (activeTab.value === 'missing' && missingPage.value === 1 && !statusFilters.value.length) {
+      setCachedCircleDetail(requestCircleId, buildCachedCircleDetailPayload(summary, works || {}))
+    }
     scheduleCircleDetailPrefetch()
   } catch (error) {
     if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') return
     ElMessage.error(error.response?.data?.detail || '加载社团详情失败')
   } finally {
     if (requestSeq === circleDetailRequestSeq) {
+      circleDetailLoading.value = false
+      circleWorksPage.loading = false
+      circleDetailAbortController = null
+    }
+  }
+}
+
+async function refreshActiveCircleWorks(options = {}) {
+  const circleId = String(activeCircleId.value || '').trim()
+  if (!circleId) return
+  const requestSeq = ++circleDetailRequestSeq
+  if (circleDetailAbortController) {
+    circleDetailAbortController.abort()
+  }
+  circleDetailAbortController = new AbortController()
+  circleWorksPage.loading = true
+  if (options.showLoading !== false) circleDetailLoading.value = !circleDetailLoaded.value
+  try {
+    const result = await circleCompletionApi.getCircleWorks(circleId, buildCircleWorksQuery(), {
+      signal: circleDetailAbortController.signal
+    })
+    if (requestSeq !== circleDetailRequestSeq || activeCircleId.value !== circleId) return
+    applyCircleWorksPayload(result)
+  } catch (error) {
+    if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') return
+    ElMessage.error(error.response?.data?.detail || '加载社团作品失败')
+  } finally {
+    if (requestSeq === circleDetailRequestSeq) {
+      circleWorksPage.loading = false
       circleDetailLoading.value = false
       circleDetailAbortController = null
     }
@@ -3725,20 +3908,50 @@ async function refreshActiveCircle(options = {}) {
 
 function toggleSelection(item) {
   if (!item?.canonical_rjcode) return
+  const code = String(item.canonical_rjcode || '').trim()
   const next = new Set(selectedCanonicals.value)
-  if (next.has(item.canonical_rjcode)) next.delete(item.canonical_rjcode)
-  else next.add(item.canonical_rjcode)
+  const nextDownloadable = new Set(selectedDownloadableCanonicals.value)
+  const nextRequested = { ...selectedRequestedRjcodes.value }
+  if (next.has(code)) {
+    next.delete(code)
+    nextDownloadable.delete(code)
+    delete nextRequested[code]
+  } else {
+    next.add(code)
+    if (item?.has_asmr_one) nextDownloadable.add(code)
+    const candidates = [
+      item.download_plan?.rjcode,
+      item.asmr_available_rjcode,
+      item.display_rjcode,
+      item.canonical_rjcode,
+      ...(Array.isArray(item.linked_rjcodes) ? item.linked_rjcodes : [])
+    ]
+      .map(value => String(value || '').trim().toUpperCase())
+      .filter(Boolean)
+      .filter((value, index, array) => array.indexOf(value) === index)
+    if (candidates.length) nextRequested[code] = candidates
+  }
   selectedCanonicals.value = next
+  selectedDownloadableCanonicals.value = nextDownloadable
+  selectedRequestedRjcodes.value = nextRequested
 }
 
-function selectAllVisibleWorks() {
-  selectedCanonicals.value = new Set(
-    activeSelectableWorks.value.map(item => item.canonical_rjcode).filter(Boolean)
-  )
+async function selectAllVisibleWorks() {
+  if (!activeCircleId.value) return
+  try {
+    const result = await circleCompletionApi.getCircleWorkCodes(activeCircleId.value, buildCircleWorksQuery({ includePage: false }))
+    selectedCanonicals.value = new Set((result.canonical_rjcodes || []).filter(Boolean))
+    selectedDownloadableCanonicals.value = new Set((result.downloadable_rjcodes || []).filter(Boolean))
+    selectedRequestedRjcodes.value = result.requested_rjcodes || {}
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '全选当前筛选结果失败')
+  }
 }
 
 function clearSelection() {
   selectedCanonicals.value = new Set()
+  selectedDownloadableCanonicals.value = new Set()
+  selectedRequestedRjcodes.value = {}
 }
 
 function openReimportDialogForWork(item) {
@@ -3839,7 +4052,7 @@ async function startBatchDownload(payload = {}) {
     await refreshDownloadWorkbench()
     ElMessage.success(result.message || '下载任务已创建')
     previewDialogVisible.value = false
-    await refreshActiveCircle()
+    await refreshActiveCircle({ summaryOnly: false })
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '创建下载任务失败')
   } finally {
@@ -3884,7 +4097,7 @@ async function submitLocalUpload(payload = {}) {
     persistUploadWorkbenchState()
     await refreshUploadWorkbench({ silent: true })
     ElMessage.success(`已创建 ${createdTaskIds.length || selectedPaths.length} 个直接入库上传任务`)
-    await refreshActiveCircle()
+    await refreshActiveCircle({ summaryOnly: false })
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || error.message || '直接入库上传失败')
   } finally {
@@ -3993,7 +4206,7 @@ async function refreshUploadWorkbench(options = {}) {
     }
     const justCompleted = trackedUploadTasks.value.some(task => ['completed', 'failed'].includes(String(task?.status || '')))
     if (justCompleted && activeCircleId.value) {
-      await refreshActiveCircle()
+      await refreshActiveCircle({ summaryOnly: false })
     }
     const stillActive = trackedUploadTasks.value.some(task => ['pending', 'processing', 'paused', 'waiting_retry'].includes(String(task?.status || '')))
     if (stillActive || uploadWorkbenchVisible.value || uploadWorkbenchBackgroundActive.value) startUploadWorkbenchPolling()

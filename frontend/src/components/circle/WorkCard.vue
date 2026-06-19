@@ -19,12 +19,14 @@ const props = defineProps({
   codeField: { type: String, default: '' },
   /** 角标文字，空则不显示 */
   cornerLabel: { type: String, default: '' },
+  /** 是否允许挂载真实图片 src，由外层虚拟视口调度 */
+  imageActive: { type: Boolean, default: true },
   /** 尺寸变体 */
   size: { type: String, default: 'default', validator: v => ['default', 'lg'].includes(v) },
   showReleaseBadge: { type: Boolean, default: true },
 })
 
-const emit = defineEmits(['select', 'preview', 'reimport'])
+const emit = defineEmits(['select', 'preview', 'reimport', 'image-settled'])
 
 const rawCoverUrl = computed(() => String(props.item[props.imageField] || '').trim())
 const displayCode = computed(() => {
@@ -180,9 +182,16 @@ function onCoverError(event) {
       ]
   const tried = Number(event.currentTarget.dataset.fallbackIndex || 0)
   const fallback = fallbacks[tried]
-  if (!fallback) return
+  if (!fallback) {
+    emit('image-settled', displayCode.value)
+    return
+  }
   event.currentTarget.dataset.fallbackIndex = String(tried + 1)
   event.currentTarget.src = fallback
+}
+
+function onCoverLoad() {
+  emit('image-settled', displayCode.value)
 }
 
 </script>
@@ -207,13 +216,14 @@ function onCoverError(event) {
 
     <div class="work-cover-wrapper">
       <img
-        v-if="coverUrl"
+        v-if="imageActive && coverUrl"
         :src="coverUrl"
         class="work-cover"
         loading="lazy"
         decoding="async"
         fetchpriority="low"
         referrerpolicy="no-referrer"
+        @load="onCoverLoad"
         @error="onCoverError"
       />
       <div v-else class="work-cover-placeholder">

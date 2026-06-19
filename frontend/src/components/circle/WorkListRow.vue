@@ -20,9 +20,11 @@ const props = defineProps({
   codeField: { type: String, default: '' },
   /** 角标文字，空则不显示 */
   cornerLabel: { type: String, default: '' },
+  /** 是否允许挂载真实图片 src，由外层虚拟视口调度 */
+  imageActive: { type: Boolean, default: true },
 })
 
-const emit = defineEmits(['select', 'preview', 'reimport'])
+const emit = defineEmits(['select', 'preview', 'reimport', 'image-settled'])
 
 const { isMobile } = useViewport()
 
@@ -157,6 +159,11 @@ function onImgError(e) {
   }
 
   e.target.style.display = 'none'
+  emit('image-settled', displayCode.value)
+}
+
+function onImgLoad() {
+  emit('image-settled', displayCode.value)
 }
 </script>
 
@@ -178,13 +185,14 @@ function onImgError(e) {
     <!-- 左侧缩略图 -->
     <div class="wlr-thumb">
       <img
-        v-if="coverUrl"
+        v-if="imageActive && coverUrl"
         :src="coverUrl"
         class="wlr-thumb-img"
         loading="lazy"
         decoding="async"
         fetchpriority="low"
         referrerpolicy="no-referrer"
+        @load="onImgLoad"
         @error="onImgError"
       />
       <div v-else class="wlr-thumb-placeholder">
