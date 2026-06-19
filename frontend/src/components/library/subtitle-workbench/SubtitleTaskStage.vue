@@ -81,7 +81,10 @@
           </div>
           <span
             class="subtitle-active-status-pill"
-            :class="statusPillClass(ctx.getRJSubtitleTaskStatusClass(ctx.activeSubtitleTask))"
+            :class="[
+              statusPillClass(ctx.getRJSubtitleTaskStatusClass(ctx.activeSubtitleTask)),
+              ctx.activeSubtitleTask?.manual_match_completed ? 'is-manual-completed' : ''
+            ]"
           >
             {{ ctx.getRJSubtitleTaskStatusLabel(ctx.activeSubtitleTask) }}
           </span>
@@ -995,6 +998,13 @@ function getTaskMetaItems(task) {
   --status-text: #047857;
 }
 
+.subtitle-active-status-pill.is-manual-completed {
+  --status-bg: #16a34a;
+  --status-border: rgba(34, 197, 94, 0.82);
+  --status-text: #ffffff;
+  box-shadow: 0 8px 20px rgba(22, 163, 74, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.26);
+}
+
 .subtitle-active-status-pill.is-info {
   --status-bg: rgba(224, 242, 254, 0.96);
   --status-border: rgba(56, 189, 248, 0.56);
@@ -1032,6 +1042,14 @@ function getTaskMetaItems(task) {
   --status-bg: rgba(16, 185, 129, 0.18);
   --status-border: rgba(52, 211, 153, 0.48);
   --status-text: #a7f3d0;
+}
+
+:global(html.kikoerumanager-dark) .subtitle-active-status-pill.is-manual-completed,
+:global(html.dark) .subtitle-active-status-pill.is-manual-completed {
+  --status-bg: linear-gradient(135deg, #16a34a, #059669);
+  --status-border: rgba(74, 222, 128, 0.76);
+  --status-text: #ffffff;
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.18), 0 10px 24px rgba(16, 185, 129, 0.28);
 }
 
 :global(html.kikoerumanager-dark) .subtitle-active-status-pill.is-info,
