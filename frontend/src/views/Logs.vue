@@ -667,7 +667,11 @@ function extractProgressArchiveName(step) {
 }
 
 function parseExtractProgressDetail(step) {
-  const text = String(step || '').replace(/\s+/g, ' ').trim()
+  const text = String(step || '')
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
   const match = text.match(/^解压中\s+\d{1,3}%\s*-\s*(.+)$/)
   if (!match) return { currentFile: '', status: '' }
   const statusMatch = text.match(/[（(]([^()（）]*)[)）]\s*$/)
@@ -677,6 +681,7 @@ function parseExtractProgressDetail(step) {
   const currentFile = status
     ? match[1].slice(0, -statusMatch[0].length).trim()
     : match[1].trim()
+  if (!currentFile || /^open\b/i.test(currentFile)) return { currentFile: '', status }
   return {
     currentFile,
     status,

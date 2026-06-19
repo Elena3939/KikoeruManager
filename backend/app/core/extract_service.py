@@ -133,6 +133,12 @@ class ExtractService:
     PROBE_FULL_TEST_TIMEOUT: float = 60.0         # 显式整包 t 探测兜底超时；主解压流程默认不跑整包探测
     PROBE_BYTES: int = 2 * 1024 * 1024            # 流式探测读到 2MB 即认为解压流可信
     PROBE_TIMEOUT_SECONDS: float = 30.0           # 单次流式探测最多等 30s，超时回退完整解压
+    UNKNOWN_PROBE_LARGE_ARCHIVE_BYTES: int = int(
+        os.getenv("KIKOERUMANAGER_UNKNOWN_PROBE_LARGE_ARCHIVE_BYTES", str(1024 * 1024 * 1024)) or 1024 * 1024 * 1024
+    )
+    UNKNOWN_PROBE_FULL_EXTRACT_LIMIT: int = int(
+        os.getenv("KIKOERUMANAGER_UNKNOWN_PROBE_FULL_EXTRACT_LIMIT", "3") or 3
+    )
     INSPECT_SLOT_WAIT_TIMEOUT: float = float(os.getenv("KIKOERUMANAGER_7Z_INSPECT_SLOT_WAIT_TIMEOUT_SECONDS", "45") or 45)
     PROBE_SLOT_WAIT_TIMEOUT: float = float(
         os.getenv(
@@ -1798,7 +1804,8 @@ class ExtractService:
 
     @staticmethod
     def _shorten_progress_text(value: str, max_chars: int = 60) -> str:
-        text = re.sub(r"\s+", " ", str(value or "").replace("\\", "/")).strip()
+        text = ExtractService._strip_terminal_control_text(str(value or "")).replace("\\", "/")
+        text = re.sub(r"\s+", " ", text).strip()
         if not text or len(text) <= max_chars:
             return text
         if "/" in text:
@@ -1814,7 +1821,8 @@ class ExtractService:
 
     @staticmethod
     def _limit_progress_step(value: str, max_chars: int = 96) -> str:
-        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        text = ExtractService._strip_terminal_control_text(str(value or ""))
+        text = re.sub(r"\s+", " ", text).strip()
         if len(text) <= max_chars:
             return text
         keep_head = max(24, max_chars // 2)
@@ -1822,12 +1830,20 @@ class ExtractService:
         return f"{text[:keep_head]}...{text[-keep_tail:]}"
 
     @staticmethod
+    def _strip_terminal_control_text(value: str) -> str:
+        text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", str(value or ""))
+        return re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", " ", text)
+
+    @staticmethod
     def _extract_7z_progress_entry_name(line: str) -> str:
-        text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", str(line or "")).strip()
+        raw = str(line or "")
+        text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", raw).strip()
         if "%" not in text:
             return ""
         after_percent = text.split("%", 1)[1].strip()
         if not after_percent:
+            return ""
+        if re.search(r"[\x00-\x08\x0b-\x1f\x7f]", after_percent):
             return ""
         # 7zz 进度常见形态：`75% 12 - dir/file.ext` 或
         # `75% 12/30 1048576/2048576 - dir/file.ext`。
@@ -1838,7 +1854,7 @@ class ExtractService:
         if re.fullmatch(r"[\d\s/.,:]+", after_percent):
             return ""
         lowered = after_percent.lower()
-        if lowered.startswith(("everything is ok", "files:", "folders:", "size:", "compressed:")):
+        if lowered.startswith(("open", "everything is ok", "files:", "folders:", "size:", "compressed:")):
             return ""
         return after_percent
 
@@ -5733,10 +5749,11 @@ class ExtractService:
             rj_passwords = self._get_rj_passwords(archive_path)
 
             # 构建密码列表：普通未加密包占多数，list 阶段先试空密码，少启动无效密码子进程。
+            # 密码库 / 文件名嗅探是用户给出的真实候选，优先于 RJ±1 这类猜测。
             password_list = []
             password_list.append("")  # 无密码
-            password_list.extend(rj_passwords)  # RJ号密码（RJ号, RJ号+1, RJ号-1）
             password_list.extend(vault_passwords)  # 密码库密码
+            password_list.extend(rj_passwords)  # RJ号密码（RJ号, RJ号+1, RJ号-1）
             password_list.extend(self.config.extract.password_list)  # 默认密码
 
         # 去重（保持顺序）
@@ -6801,11 +6818,13 @@ class ExtractService:
             rj_passwords = self._get_rj_passwords(archive_info.path)
 
             # 构建密码列表：预读成功密码优先，减少同一压缩包重复失败尝试。
+            # 密码库 / 文件名嗅探是用户给出的真实候选，优先于 RJ±1 这类猜测；
+            # 大包 unknown 兜底有次数上限，不能让猜测密码挤掉真实候选。
             password_list = []
             if archive_info.password:
                 password_list.append(archive_info.password)
-            password_list.extend(rj_passwords)  # RJ号密码（RJ号, RJ号+1, RJ号-1）
             password_list.extend(vault_passwords)  # 密码库密码
+            password_list.extend(rj_passwords)  # RJ号密码（RJ号, RJ号+1, RJ号-1）
             password_list.append("")  # 无密码
             password_list.extend(self.config.extract.password_list)  # 默认密码
 
@@ -6834,6 +6853,19 @@ class ExtractService:
         encountered_wrong_password = False
         last_corrupt_stderr: Optional[str] = None
         is_zip_archive = self._is_zip_like_archive(archive_info.path)
+        try:
+            archive_size_bytes = os.path.getsize(archive_info.path)
+        except OSError:
+            archive_size_bytes = 0
+        is_large_unknown_probe_archive = (
+            archive_size_bytes >= self.UNKNOWN_PROBE_LARGE_ARCHIVE_BYTES
+            and not manual_retry_password_only
+        )
+        unknown_probe_full_extracts = 0
+        try:
+            unknown_probe_full_extract_limit = max(0, int(self.UNKNOWN_PROBE_FULL_EXTRACT_LIMIT))
+        except Exception:
+            unknown_probe_full_extract_limit = 0
 
         async def accept_compat_backend_result(backend_name: str) -> Tuple[bool, str]:
             if await self._reject_if_garbled_after_extract(
@@ -7144,7 +7176,7 @@ class ExtractService:
                     elif probe_result == 'unknown':
                         if not password:
                             has_password_candidates = any(bool(pwd) for pwd in unique_passwords)
-                            if has_password_candidates:
+                            if manual_retry_password_only or has_password_candidates:
                                 logger.info(
                                     "无密码轻量探测无法定性，跳过无密码完整解压，继续尝试密码候选: %s",
                                     os.path.basename(archive_info.path),
@@ -7154,6 +7186,24 @@ class ExtractService:
                                 "无密码轻量探测无法定性且没有其他密码候选，进入完整解压兜底: %s",
                                 os.path.basename(archive_info.path),
                             )
+                        elif (
+                            is_large_unknown_probe_archive
+                            and unknown_probe_full_extracts >= unknown_probe_full_extract_limit
+                        ):
+                            encountered_wrong_password = True
+                            if cache_key and not (manual_retry_password_only and password in manual_retry_password_set):
+                                self._remember_negative_password(cache_key)
+                            logger.warning(
+                                "大包密码探测无法定性，已达到完整解压兜底上限 %s，跳过后续候选完整解压: source=%s password=%s archive=%s size=%s",
+                                unknown_probe_full_extract_limit,
+                                password_source,
+                                password or '无密码',
+                                os.path.basename(archive_info.path),
+                                archive_size_bytes,
+                            )
+                            continue
+                        elif is_large_unknown_probe_archive:
+                            unknown_probe_full_extracts += 1
                         logger.info(
                             "密码 %s (%s) 探测无法定性，进入完整解压兜底",
                             password_source,
@@ -7787,6 +7837,15 @@ class ExtractService:
                     return subprocess.CompletedProcess(
                         args=cmd,
                         returncode=-8,
+                        stdout=b"",
+                        stderr=message.encode("utf-8", errors="ignore"),
+                    )
+                if task is not None and task.is_cancelled():
+                    message = f"任务已取消，7z命令未启动: {formatted_cmd}"
+                    logger.info(message)
+                    return subprocess.CompletedProcess(
+                        args=cmd,
+                        returncode=-10,
                         stdout=b"",
                         stderr=message.encode("utf-8", errors="ignore"),
                     )
