@@ -6655,7 +6655,8 @@ async def list_library_circle_groups(
     try:
         from ..core.library_circle_aggregation_service import get_library_circle_aggregation_service
 
-        payload = get_library_circle_aggregation_service().list_circle_groups(
+        payload = await asyncio.to_thread(
+            get_library_circle_aggregation_service().list_circle_groups,
             page=page,
             page_size=page_size,
             keyword=keyword,
@@ -6679,7 +6680,8 @@ async def list_library_circle_group_works(
     try:
         from ..core.library_circle_aggregation_service import get_library_circle_aggregation_service
 
-        payload = get_library_circle_aggregation_service().list_circle_works(
+        payload = await asyncio.to_thread(
+            get_library_circle_aggregation_service().list_circle_works,
             circle_key,
             page=page,
             page_size=page_size,
@@ -6705,15 +6707,28 @@ async def browse_library_circle_files(
     try:
         from ..core.library_circle_aggregation_service import get_library_circle_aggregation_service
 
-        payload = await get_library_circle_aggregation_service().browse_circle_path(
-            current_path=current_path,
-            page=page,
-            page_size=page_size,
-            keyword=keyword,
-            sort_by=sort_by,
-            sort_order=sort_order,
-            force_refresh=force_refresh,
-        )
+        service = get_library_circle_aggregation_service()
+        if service.should_thread_browse(current_path):
+            payload = await asyncio.to_thread(
+                service.browse_circle_listing,
+                current_path=current_path,
+                page=page,
+                page_size=page_size,
+                keyword=keyword,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                force_refresh=force_refresh,
+            )
+        else:
+            payload = await service.browse_circle_path(
+                current_path=current_path,
+                page=page,
+                page_size=page_size,
+                keyword=keyword,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                force_refresh=force_refresh,
+            )
         payload["libraries"] = get_library_manager().list_libraries()
         return payload
     except Exception as e:

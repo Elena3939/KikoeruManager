@@ -1990,6 +1990,8 @@ const realtimeEvents = useRealtimeEvents()
 
 const PAGE_SIZES = [10, 20, 50, 100]
 
+const DEFAULT_PAGE_SIZE = 20
+
 const PAGE_SIZE_KEY = 'kikoeru.ui.library.pageSize'
 
 const LIBRARY_ACTION_SCOPE_KEY = 'kikoeru.ui.library.toolbarActionScope'
@@ -2036,7 +2038,9 @@ const searchExact = ref(loadString(SEARCH_EXACT_KEY, '0') === '1')
 
 const currentPage = ref(loadNumber('kikoeru.ui.library.page', 1))
 
-const pageSize = ref(loadNumber(PAGE_SIZE_KEY, 20))
+const initialLibraryPageSize = normalizeLibraryPageSize(loadNumber(PAGE_SIZE_KEY, DEFAULT_PAGE_SIZE))
+
+const pageSize = ref(initialLibraryPageSize)
 
 const toolbarActionScope = ref(loadString(LIBRARY_ACTION_SCOPE_KEY, 'page') === 'all' ? 'all' : 'page')
 
@@ -2058,9 +2062,9 @@ const circleGroupPage = ref(1)
 
 const circleWorkPage = ref(1)
 
-const circleGroupPageSize = ref(50)
+const circleGroupPageSize = ref(initialLibraryPageSize)
 
-const circleWorkPageSize = ref(50)
+const circleWorkPageSize = ref(initialLibraryPageSize)
 
 const circleGroupTotal = ref(0)
 
@@ -2146,7 +2150,7 @@ const activeLibraryPageSize = computed({
     return decoded.type === 'root' ? circleGroupPageSize.value : circleWorkPageSize.value
   },
   set (value) {
-    const nextSize = Math.max(1, Number(value) || 20)
+    const nextSize = normalizeLibraryPageSize(value)
     if (libraryViewMode.value !== 'circle') {
       pageSize.value = nextSize
       return
@@ -2161,6 +2165,19 @@ const activeLibraryPageSize = computed({
     }
   }
 })
+
+function syncLibraryPageSizePreference (value) {
+  const nextSize = normalizeLibraryPageSize(value)
+  storeNumber(PAGE_SIZE_KEY, nextSize)
+  if (pageSize.value !== nextSize) pageSize.value = nextSize
+  if (circleGroupPageSize.value !== nextSize) circleGroupPageSize.value = nextSize
+  if (circleWorkPageSize.value !== nextSize) circleWorkPageSize.value = nextSize
+}
+
+function normalizeLibraryPageSize (value) {
+  const numeric = Number(value)
+  return PAGE_SIZES.includes(numeric) ? numeric : DEFAULT_PAGE_SIZE
+}
 
 function circleNormalizePath (value = '') {
 
@@ -7636,9 +7653,9 @@ watch(trackedUploadTaskIds, () => {
 
 watch(pageSize, async value => {
 
-  if (libraryViewMode.value === 'circle') return
+  syncLibraryPageSizePreference(value)
 
-  storeNumber(PAGE_SIZE_KEY, value)
+  if (libraryViewMode.value === 'circle') return
 
   resetLibraryPageCursorCache()
 
@@ -7682,11 +7699,27 @@ watch(libraryViewMode, async (value, oldValue) => {
 
 })
 
-watch([circleGroupPage, circleGroupPageSize, circleWorkPage, circleWorkPageSize], async (value, oldValue) => {
+watch([circleGroupPage, circleGroupPageSize, circleWorkPage, circleWorkPageSize], async ([groupPage, groupSize, workPage, workSize], [oldGroupPage, oldGroupSize, oldWorkPage, oldWorkSize]) => {
 
   if (libraryViewMode.value !== 'circle') return
 
-  if (JSON.stringify(value) === JSON.stringify(oldValue)) return
+  if (
+    groupPage === oldGroupPage &&
+    groupSize === oldGroupSize &&
+    workPage === oldWorkPage &&
+    workSize === oldWorkSize
+  ) return
+
+  const decoded = circleDecodeVirtualPath(circleVirtualCurrentPath.value)
+  const activePage = decoded.type === 'root' ? groupPage : workPage
+  const oldActivePage = decoded.type === 'root' ? oldGroupPage : oldWorkPage
+  const activeSize = decoded.type === 'root' ? groupSize : workSize
+  const oldActiveSize = decoded.type === 'root' ? oldGroupSize : oldWorkSize
+  syncLibraryPageSizePreference(activeSize)
+
+  if (activePage === oldActivePage && activeSize === oldActiveSize) return
+
+  if (activeSize !== oldActiveSize) clearCircleViewRequestCache()
 
   await refreshCircleLibraryView()
 
