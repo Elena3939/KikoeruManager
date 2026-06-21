@@ -1282,6 +1282,7 @@ async def test_baidu_start_download_uses_pcsgo_temporary_transfer_and_cleans_rem
     config = DummyConfig()
     config.baidu_netdisk.download_root = str(tmp_path / "downloads")
     config.storage.temp_path = str(tmp_path / "temp")
+    config.baidu_netdisk.max_download_load = 3
     monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
 
     command_log = []
@@ -1402,13 +1403,13 @@ async def test_baidu_start_download_uses_pcsgo_temporary_transfer_and_cleans_rem
     assert [item["args"] for item in command_log] == [
         ("config", "set", "-savedir", savedir),
         ("config", "set", "-max_parallel", "20"),
-        ("config", "set", "-max_download_load", "1"),
+        ("config", "set", "-max_download_load", "3"),
         ("config", "set", "-max_download_rate", "0"),
         ("config", "set", "-cache_size", "256KB"),
         ("cd", "/"),
         ("mkdir", remote_tmp_dir),
         ("cd", remote_tmp_dir),
-        ("download", remote_tmp_dir, "--saveto", savedir, "--mode", "locate", "-p", "20", "-l", "1", "--retry", "5"),
+        ("download", remote_tmp_dir, "--saveto", savedir, "--mode", "locate", "-p", "20", "-l", "3", "--retry", "5"),
         ("cd", "/"),
         ("rm", remote_tmp_dir),
     ]
@@ -1442,6 +1443,7 @@ async def test_baidu_start_download_records_failed_phase_metric_when_all_files_f
     config = DummyConfig()
     config.baidu_netdisk.download_root = str(tmp_path / "downloads")
     config.storage.temp_path = str(tmp_path / "temp")
+    config.baidu_netdisk.max_download_load = 4
     monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
     recorded = []
 
@@ -1776,6 +1778,8 @@ async def test_baidu_start_download_prefers_raw_selected_items_without_preview(m
     config = DummyConfig()
     config.baidu_netdisk.download_root = str(tmp_path / "downloads")
     config.storage.temp_path = str(tmp_path / "temp")
+    config.baidu_netdisk.max_download_load = 4
+    expected_download_load = str(config.baidu_netdisk.max_download_load)
     monkeypatch.setattr("app.core.baidu_netdisk_service.get_config", lambda: config)
 
     command_log = []
@@ -1886,9 +1890,20 @@ async def test_baidu_start_download_prefers_raw_selected_items_without_preview(m
     assert config_user["stoken"] == "test"
     assert config_user["bdclnd"] == "rand-sk"
     assert config_user["cookies"] == "BDUSS=test; STOKEN=test; BDCLND=rand-sk"
-    assert any(
-        item["args"] == ("download", "/km_20260605_153012_a1b2c3", "--saveto", state["savedir"], "--mode", "locate", "-p", "20", "-l", "1", "--retry", "5")
-        for item in command_log
+    download_cmd = next(item["args"] for item in command_log if item["args"] and item["args"][0] == "download")
+    assert download_cmd == (
+        "download",
+        "/km_20260605_153012_a1b2c3",
+        "--saveto",
+        state["savedir"],
+        "--mode",
+        "locate",
+        "-p",
+        "20",
+        "-l",
+        expected_download_load,
+        "--retry",
+        "5",
     )
     assert transfer_calls == [{
         "fs_id": "732325025154301",

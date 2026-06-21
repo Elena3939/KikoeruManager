@@ -4038,11 +4038,11 @@ class BaiduNetdiskService:
         return max_parallel, max_upload_load
 
     def _baidu_pcs_go_download_config_commands(self, pcsgo_path: str, savedir: str) -> List[List[str]]:
-        max_parallel, _max_download_load = self._baidu_pcs_go_download_limits()
+        max_parallel, max_download_load = self._baidu_pcs_go_download_limits()
         return [
             [pcsgo_path, "config", "set", "-savedir", savedir],
             [pcsgo_path, "config", "set", "-max_parallel", str(max_parallel)],
-            [pcsgo_path, "config", "set", "-max_download_load", "1"],
+            [pcsgo_path, "config", "set", "-max_download_load", str(max_download_load)],
             [pcsgo_path, "config", "set", "-max_download_rate", "0"],
             [pcsgo_path, "config", "set", "-cache_size", "256KB"],
         ]
@@ -4058,7 +4058,7 @@ class BaiduNetdiskService:
         ]
 
     def _baidu_pcs_go_download_args(self, pcsgo_path: str, remote_path: str, savedir: str) -> List[str]:
-        max_parallel, _max_download_load = self._baidu_pcs_go_download_limits()
+        max_parallel, max_download_load = self._baidu_pcs_go_download_limits()
         return [
             pcsgo_path,
             "download",
@@ -4070,7 +4070,7 @@ class BaiduNetdiskService:
             "-p",
             str(max_parallel),
             "-l",
-            "1",
+            str(max_download_load),
             "--retry",
             "5",
         ]
