@@ -30,7 +30,7 @@
     </header>
 
     <!-- 搜索 + 类型筛选：合成一个紧凑筛选条，减少最近归档面板的纵向占用 -->
-    <div class="dash-archive-filterbar mt-3">
+    <div class="dash-archive-filterbar mt-2">
       <div class="dash-archive-search">
         <AppDropdown
           :model-value="domainFilter"
@@ -89,7 +89,7 @@
     <div
       v-if="filteredArchives.length"
       ref="listRef"
-      class="mt-2.5 flex min-h-0 flex-1 flex-col gap-2 overflow-hidden"
+      class="mt-2 flex min-h-0 flex-1 flex-col gap-2 overflow-hidden"
     >
       <article
         v-for="(archive, index) in pagedArchives"
@@ -245,6 +245,7 @@ defineEmits(['refresh', 'reprocess', 'change-page', 'update:searchQuery', 'updat
 
 const DEFAULT_PAGE_SIZE = 6
 const MIN_PAGE_SIZE = 3
+const ROW_FIT_SAFETY_PX = 6
 
 const domainDropdownOptions = computed(() =>
   props.tabs.map((tab) => ({
@@ -283,9 +284,12 @@ function measurePanel() {
   const measuredGap = Number.parseFloat(styles.rowGap || styles.gap || '')
   archiveRowGap.value = Number.isFinite(measuredGap) ? measuredGap : 8
 
-  const rowEl = listEl.querySelector('.dash-archive-row')
-  if (rowEl) {
-    archiveRowHeight.value = rowEl.getBoundingClientRect().height || 0
+  const rowEls = Array.from(listEl.querySelectorAll('.dash-archive-row'))
+  if (rowEls.length) {
+    archiveRowHeight.value = rowEls.reduce(
+      (maxHeight, rowEl) => Math.max(maxHeight, rowEl.getBoundingClientRect().height || 0),
+      0,
+    )
   }
 }
 
@@ -334,7 +338,7 @@ const effectivePageSize = computed(() => {
   const rowGap = archiveRowGap.value
   if (!rowHeight || !viewportHeight) return Math.min(DEFAULT_PAGE_SIZE, requestedSize)
 
-  const fitCount = Math.floor((viewportHeight + rowGap) / (rowHeight + rowGap))
+  const fitCount = Math.floor((viewportHeight - ROW_FIT_SAFETY_PX + rowGap) / (rowHeight + rowGap))
   return Math.min(requestedSize, Math.max(MIN_PAGE_SIZE, fitCount))
 })
 
@@ -440,8 +444,10 @@ function statusIconColor(key) {
 
 .dash-archive-filterbar {
   display: block;
-  min-height: 38px;
-  padding: 3px;
+  box-sizing: border-box;
+  height: 34px;
+  min-height: 34px;
+  padding: 2px;
   border: 1px solid rgb(226 232 240);
   border-radius: 8px;
   background: rgb(248 250 252);
@@ -469,31 +475,31 @@ function statusIconColor(key) {
 /* 搜索区内嵌在筛选条内，避免上下两个独立输入框抢空间 */
 .dash-archive-search {
   display: grid;
-  grid-template-columns: 30px minmax(0, 1fr) 22px;
+  grid-template-columns: 28px minmax(0, 1fr) 20px;
   align-items: center;
   min-width: 0;
-  height: 32px;
-  padding: 0 5px 0 0;
+  height: 28px;
+  padding: 0 4px 0 0;
 }
 
 .dash-archive-search-filter-dd {
   display: block;
-  width: 30px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
 }
 .dash-archive-search-filter-dd :deep(.app-dd-trigger-anchor) {
   display: block;
-  width: 30px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
 }
 .dash-archive-search-filter-trigger {
   position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 30px;
-  margin: 1px 0 1px 0;
+  width: 26px;
+  height: 26px;
+  margin: 1px 0;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -517,8 +523,8 @@ function statusIconColor(key) {
 .dash-archive-search-filter-trigger.is-filtered::after {
   content: '';
   position: absolute;
-  right: 3px;
-  top: 6px;
+  right: 2px;
+  top: 5px;
   width: 4px;
   height: 4px;
   border-radius: 999px;
@@ -533,8 +539,8 @@ function statusIconColor(key) {
 }
 .dash-archive-search-filter-caret {
   position: absolute;
-  right: 2px;
-  bottom: 5px;
+  right: 1px;
+  bottom: 4px;
   color: currentColor;
   opacity: 0.74;
   transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -544,7 +550,7 @@ function statusIconColor(key) {
 }
 .dash-archive-search-input {
   min-width: 0;
-  height: 28px;
+  height: 24px;
   border: 0;
   outline: none;
   background: transparent;
@@ -564,10 +570,10 @@ function statusIconColor(key) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   border: 0;
-  border-radius: 7px;
+  border-radius: 6px;
   background: transparent;
   color: rgb(148 163 184);
   cursor: pointer;
