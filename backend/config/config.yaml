@@ -47,17 +47,12 @@ filter:
   filter_dir: true
   rules:
   - name: 过滤无 SE 的文件
-    pattern: (?:SE|音|音效)(?:[な无無]し|CUT|切除|削减)|(?:无|無|なし)(?:SE|音|音效)|02_wav\(SEなし\)|(?:No|Without)[-_\s]?SE
+    pattern: (?i)(?:^|[^A-Za-z0-9])(?:(?:se|sound|sfx|音|音效|効果音|音楽)(?:\s*[&＆]\s*(?:music|音楽))?(?:[\s._-]*(?:なし|無し|无|無|CUT|切除|削减|カット版))?|(?:无|無|なし|無し|without)\s*[\s._-]?(?:se|sound|sfx|音|音效|効果音)|(?:音声のみ|se\s*cut)\s*wav|効果音カット版|SEなし|カウントダウンなし|BGMなし|反転|左右逆|不含音效|无射精音|SEOFF)(?:[^A-Za-z0-9]|$)
     target: all
     action: exclude
     enabled: true
-  - name: 过滤无 SE 的文件夹
-    pattern: (?:SE|音 | 音效)(?:[な無] し|CUT)|(?:無 | なし)(?:SE|音 | 音效)
-    target: folder
-    action: exclude
-    enabled: true
   - name: 过滤 MP3 文件
-    pattern: .mp3$
+    pattern: (?i)\.mp3$
     target: file
     action: exclude
     enabled: true

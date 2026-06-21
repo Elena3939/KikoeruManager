@@ -904,3 +904,58 @@
 - `backend/tests/test_library_browser_api.py`：新增 DLsite `regist_date=None` 时仍能构建有效元数据的回归测试。
 - `progress.md`：追加本轮 API 重命名 DLsite 空发布日期修复记录。
 - 回滚方式：还原 `backend/app/core/metadata_service.py` 中 `_normalize_release_date` 与三处调用替换，删除 `backend/tests/test_library_browser_api.py` 中 `test_metadata_service_accepts_null_dlsite_release_date`，并删除本段进度记录。
+
+## 2026-06-20 - Task: 整理系统过滤与字幕过滤规则正则
+### What was done
+- 把系统文件过滤规则里“无 SE/无音效/无射精音/音声のみ”散乱正则，合并为可维护的一条主表达式，并明确保留 mp3 单独拦截。
+- 将字幕过滤规则也整理为一条主表达式，保留 `noSE / SEなし / 効果音カット版 / BGMなし / 無射精音 / 反転 / 左右逆 / 不含音效 / mp3` 等语义。
+
+### Testing
+- `backend\\venv\\Scripts\\python.exe -c \"import re,yaml; ...\"`：已验证 `backend/config/config.yaml` 与 `data/config/config.yaml`（本机运行配置）中相关规则均可被 `re.compile` 成功解析，无语法错误。
+
+### Notes
+- `backend/config/config.yaml`：更新 `filter.rules` 中 `过滤无 SE 的文件` 与 `过滤 MP3 文件` 两条规则；移除重复/散乱的 `过滤无SE文件夹` 规则，统一语义为 `target: all`。
+- `data/config/config.yaml`：本地运行配置中同步整理 `filter.rules` 与 `rj_subtitle.subtitle_filter_rules`。
+- 回滚方式：还原本轮 `backend/config/config.yaml` 的对应 hunk（以及本地 `data/config/config.yaml` 的同处规则块）即可。
+
+## 2026-06-20 - Task: 收窄 no 关键词匹配边界
+### What was done
+- 按你的要求去掉系统过滤和字幕过滤里对 `no` 的独立匹配，避免误伤 `n0.1` 这类正常命名。
+- 保留 `noSE`、`without` 等更明确的语义项，避免影响有意义的无 SE 过滤场景。
+
+### Testing
+- 用项目 venv 复编译 `backend/config/config.yaml` 与 `data/config/config.yaml` 中相关 `pattern`，无语法报错。
+
+### Notes
+- `backend/config/config.yaml`：`过滤无 SE 的文件` 规则中移除 `no` 关键词独立匹配项。
+- `data/config/config.yaml`：`filter.rules` 与 `rj_subtitle.subtitle_filter_rules` 同步移除独立 `no` 匹配项，保留 `noSE/without` 组合语义。
+
+## 2026-06-21 - Task: 百度网盘下载并发配置生效
+### What was done
+- 修正 BaiduPCS-Go 下载配置和下载命令，使 `max_download_load` 使用配置值，不再固定写死为 `1`。
+- 补充百度网盘下载测试断言，覆盖配置命令与实际下载参数里的 `-l` 值。
+
+### Testing
+- `backend\venv\Scripts\python.exe -m pytest backend/tests/test_baidu_netdisk_service.py -q`：在仓库根目录执行时因 `ModuleNotFoundError: No module named 'app'` 失败，属于测试入口路径问题。
+- `backend\.venv` 不存在；改用项目现有 `backend\venv`。
+- 在 `backend` 目录执行 `.\venv\Scripts\python.exe -m pytest tests\test_baidu_netdisk_service.py -q` 与定点三条百度下载用例时，进程超过 90 秒无输出，已停止；未获得通过结果。
+
+### Notes
+- `backend/app/core/baidu_netdisk_service.py`：BaiduPCS-Go 配置命令和下载命令改为读取 `max_download_load`。
+- `backend/tests/test_baidu_netdisk_service.py`：更新下载参数断言，并增加不同 `max_download_load` 的覆盖。
+- `progress.md`：追加本轮百度网盘下载并发配置记录。
+- 回滚方式：还原本轮上述两个百度网盘相关文件的 hunk，并删除本段进度记录。
+
+## 2026-06-21 - Task: 仪表盘最近归档面板布局压缩
+### What was done
+- 压缩最近归档筛选条和搜索输入高度，减少面板顶部占用。
+- 计算分页可容纳行数时改为读取当前页最大行高，并加入安全余量，降低卡片高度差导致的底部溢出风险。
+
+### Testing
+- `npm run build`：通过。
+
+### Notes
+- `frontend/src/components/dashboard/DashboardArchive.vue`：调整最近归档筛选条尺寸、行高测量和分页容纳计算。
+- `progress.md`：追加本轮仪表盘最近归档面板布局记录。
+- 回滚方式：还原本轮 `frontend/src/components/dashboard/DashboardArchive.vue` 的对应 hunk，并删除本段进度记录。
+
