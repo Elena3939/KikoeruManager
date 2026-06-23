@@ -131,7 +131,7 @@ function Start-LocalPostgresCandidates([string]$Bin, [string]$PreferredRoot) {
             Ensure-PostgresStarted $Bin $candidateDataDir
             return
         } catch {
-            Write-Step "Start candidate failed: $candidateDataDir"
+            Write-Step "Start candidate failed: $candidateDataDir ($($_.Exception.Message))"
         }
     }
 }
@@ -175,6 +175,7 @@ function Test-PostgresConnection([string]$Bin, [string]$HostValue, [int]$PortVal
     } else {
         $env:PGPASSWORD = [string]$PasswordValue
     }
+    $env:PGCONNECT_TIMEOUT = "5"
     try {
         $previousErrorActionPreference = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
@@ -188,6 +189,49 @@ function Test-PostgresConnection([string]$Bin, [string]$HostValue, [int]$PortVal
             $ErrorActionPreference = $previousErrorActionPreference
         }
         Remove-Item Env:\PGPASSWORD -ErrorAction SilentlyContinue
+        Remove-Item Env:\PGCONNECT_TIMEOUT -ErrorAction SilentlyContinue
+    }
+}
+
+function Test-PostgresReady([string]$Bin) {
+    if (-not $Bin) {
+        return $false
+    }
+    $pgIsReady = Join-Path $Bin "pg_isready.exe"
+    if (-not (Test-Path -LiteralPath $pgIsReady)) {
+        return $false
+    }
+    & $pgIsReady -h $HostName -p $Port -d $DatabaseName -t 5 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Stop-StalePostgresListeners([string]$Bin) {
+    $expectedPostgres = Join-Path $Bin "postgres.exe"
+    $rows = & netstat -ano -p tcp 2>$null
+    foreach ($row in $rows) {
+        $parts = ($row.ToString().Trim() -split "\s+")
+        if ($parts.Count -lt 5 -or $parts[0] -ne "TCP") {
+            continue
+        }
+        if ($parts[1] -ne "127.0.0.1:$Port" -or $parts[3] -ne "LISTENING") {
+            continue
+        }
+        $pidValue = 0
+        if (-not [int]::TryParse($parts[-1], [ref]$pidValue)) {
+            continue
+        }
+        $process = Get-Process -Id $pidValue -ErrorAction SilentlyContinue
+        if (-not $process -or $process.ProcessName -ne "postgres") {
+            throw "Port $Port is occupied by PID $pidValue, but it is not PostgreSQL"
+        }
+        $processPath = [string]$process.Path
+        if ($processPath -and (Test-Path -LiteralPath $expectedPostgres) -and ($processPath -ieq $expectedPostgres)) {
+            Write-Step "Stopping stale PostgreSQL listener: PID $pidValue"
+            & taskkill /PID $pidValue /T /F 2>$null | Out-Null
+            Start-Sleep -Seconds 1
+            continue
+        }
+        throw "Port $Port is occupied by PostgreSQL outside current install: PID $pidValue"
     }
 }
 
@@ -225,10 +269,27 @@ function Ensure-PostgresStarted([string]$Bin, [string]$DataDir) {
     }
     $statusOutput = & $pgCtl -D $DataDir status 2>$null
     if ($LASTEXITCODE -eq 0 -and ($statusOutput -join "`n") -match "server is running") {
+        if (Test-PostgresReady $Bin) {
+            return
+        }
+        Write-Step "PostgreSQL process is running but not responding. Restarting local PostgreSQL..."
+        & $pgCtl -D $DataDir -l $logFile -w -m fast restart
+        if (-not (Test-PostgresReady $Bin)) {
+            throw "PostgreSQL restarted but is still not ready"
+        }
         return
+    }
+    if (Test-PostgresReady $Bin) {
+        return
+    }
+    if (-not (Test-PostgresReady $Bin)) {
+        Stop-StalePostgresListeners $Bin
     }
     Write-Step "Starting local PostgreSQL..."
     & $pgCtl -D $DataDir -l $logFile -w start
+    if (-not (Test-PostgresReady $Bin)) {
+        throw "PostgreSQL started but is not ready"
+    }
 }
 
 function Initialize-EmbeddedCluster([string]$Bin, [string]$DataDir, [string]$SuperUser, [string]$SuperPassword) {
