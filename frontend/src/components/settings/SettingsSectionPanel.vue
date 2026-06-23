@@ -28,6 +28,8 @@ defineProps({
 /* Flat 风：不再是一个独立的大白卡浮窗，直接铺在 settings-page 白底上
    避免“卡里装内容必须滚动”的下拉浮窗视觉错觉 */
 .settings-section-panel {
+  min-width: 0;
+  max-width: 100%;
   border: none;
   border-radius: 0;
   background: transparent;
@@ -76,6 +78,8 @@ defineProps({
   display: flex;
   flex-direction: column;
   gap: 28px;
+  min-width: 0;
+  max-width: 100%;
   padding: 0 0 22px;
 }
 
