@@ -6187,6 +6187,99 @@ class ExtractService:
             return None
         return "plain"
 
+    async def _probe_7z_no_password_status(
+        self,
+        archive_path: str,
+        task: Optional[Task] = None,
+    ) -> Optional[str]:
+        """只读 7z 技术清单，判断 7z/SFX 是否明确不加密。"""
+        lower_path = str(archive_path or "").lower()
+        if self._is_zip_like_archive(archive_path) or self._is_rar_archive(archive_path):
+            return None
+        if not (
+            lower_path.endswith(".7z")
+            or lower_path.endswith(".exe")
+            or bool(re.search(r"\.7z\.\d{3}$", lower_path))
+        ):
+            return None
+
+        cmd = [
+            self.seven_zip,
+            "l",
+            "-slt",
+            *self._get_mcp_args(archive_path),
+            archive_path,
+        ]
+        try:
+            result = await self._run_7z_command(
+                cmd,
+                task=task,
+                command_timeout=self.PROBE_ENTRY_TIMEOUT,
+                update_task_progress=False,
+            )
+        except Exception as exc:
+            logger.debug("[7z无密码探测] 技术清单读取失败: %s archive=%s", exc, archive_path)
+            return None
+        if result.returncode != 0:
+            stderr_text = (result.stderr or b"").decode("utf-8", errors="ignore")
+            if self._looks_like_wrong_password_error(stderr_text):
+                return "encrypted"
+            return None
+
+        decoded, _stdout_encoding = self._decode_7z_stdout(result.stdout or b"")
+        return self._parse_7z_no_password_status_from_slt(decoded)
+
+    @staticmethod
+    def _parse_7z_no_password_status_from_slt(output: str) -> Optional[str]:
+        """解析 `7zz l -slt` 的 Encrypted 字段。
+
+        注意：能读取文件清单不等于一定无密码。7z/7z-SFX 可以在未加密文件名时
+        无密码列出目录，但文件内容仍可能加密；只有文件条目都明确
+        ``Encrypted = -`` 时才判定为 plain。
+        """
+        has_file_entry = False
+        encrypted_values: List[str] = []
+        current: Dict[str, str] = {}
+
+        def flush_current() -> None:
+            nonlocal has_file_entry
+            if not current:
+                return
+            path_value = str(current.get("Path") or "").strip()
+            size_present = "Size" in current
+            attr_value = str(current.get("Attributes") or "")
+            if not path_value or not size_present or "D" in attr_value:
+                return
+            has_file_entry = True
+            if "Encrypted" not in current:
+                encrypted_values.append("__missing__")
+                return
+            encrypted_values.append(str(current.get("Encrypted") or "").strip())
+
+        for raw_line in str(output or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                flush_current()
+                current = {}
+                continue
+            if " = " not in line:
+                continue
+            key, value = line.split(" = ", 1)
+            current[key.strip()] = value.strip()
+
+        flush_current()
+        if not has_file_entry or not encrypted_values:
+            return None
+        if "__missing__" in encrypted_values:
+            return None
+        normalized_values = {value.strip().lower() for value in encrypted_values}
+        if not normalized_values or "" in normalized_values:
+            return None
+        plain_markers = {"-", "no", "false", "0"}
+        if any(value not in plain_markers for value in normalized_values):
+            return "encrypted"
+        return "plain"
+
     def _get_plain_zip_archive_info(self, archive_path: str) -> Optional[ArchiveInfo]:
         """标准未加密 ZIP 快路径：用 zipfile 读中央目录，少跑一次 7zz list。"""
         if not archive_path:
@@ -8612,6 +8705,15 @@ class ExtractService:
             if zip_status == "plain":
                 return "ok"
             if zip_status == "encrypted":
+                return "wrong_password"
+            seven_z_status = await self._probe_7z_no_password_status(archive_path, task=task)
+            if seven_z_status == "plain":
+                logger.info(
+                    "7z/SFX 清单确认未加密，直接使用无密码完整解压: %s",
+                    os.path.basename(archive_path),
+                )
+                return "ok"
+            if seven_z_status == "encrypted":
                 return "wrong_password"
 
         is_rar = self._is_rar_archive(archive_path)
