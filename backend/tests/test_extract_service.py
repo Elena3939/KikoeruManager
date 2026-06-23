@@ -2225,6 +2225,96 @@ class TestExtractService:
         assert not any(str(arg).startswith("-p") for arg in first_cmd)
 
     @pytest.mark.asyncio
+    async def test_try_extract_sfx_plain_7z_uses_no_password_from_slt(
+        self, extract_service, temp_dir,
+    ):
+        """单体 7z SFX 清单明确未加密时，不因样本探测 unknown 跳过无密码解压。"""
+        archive_path = os.path.join(temp_dir, "RJ01608067(1).exe")
+        with open(archive_path, "wb") as f:
+            f.write(b"MZ" + (b"\0" * 543742) + b"7z\xbc\xaf\x27\x1c")
+        output_path = os.path.join(temp_dir, "extract-output-sfx")
+        os.makedirs(output_path, exist_ok=True)
+        task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
+
+        slt_output = """
+Path = RJ01608067
+Size = 1234
+Packed Size = 1000
+Attributes = A
+Encrypted = -
+Method = LZMA2:23
+Block = 0
+
+Path = RJ01608067/image.png
+Size = 456
+Packed Size = 300
+Attributes = A
+Encrypted = -
+Method = LZMA2:23
+Block = 0
+""".encode("utf-8")
+
+        async def fake_run_7z_command(cmd, *args, **kwargs):
+            if "-slt" in cmd:
+                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=slt_output, stderr=b"")
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=b"", stderr=b"")
+
+        run_7z_command = AsyncMock(side_effect=fake_run_7z_command)
+        extract_service._run_7z_command = run_7z_command
+        extract_service._probe_by_magic = AsyncMock(return_value="unknown")
+        extract_service._probe_by_smallest_entry = AsyncMock(return_value="unknown")
+        extract_service._reject_if_garbled_after_extract = AsyncMock(return_value=False)
+        extract_service._verify_extraction = AsyncMock(return_value=True)
+        extract_service._cleanup_extract_attempt = AsyncMock()
+
+        archive_info = ArchiveInfo(
+            path=archive_path,
+            file_list=[{"name": "RJ01608067/image.png", "size": 456, "is_dir": False}],
+        )
+
+        success, password, reason = await extract_service._try_extract(
+            archive_info,
+            output_path,
+            task,
+            password_candidates=[{
+                "password": "vault-password",
+                "source": "密码库-通用",
+                "entry_id": None,
+                "rjcode": None,
+            }],
+        )
+
+        assert success is True
+        assert password == ""
+        assert reason == ""
+        extract_cmds = [call.args[0] for call in run_7z_command.await_args_list if "x" in call.args[0]]
+        assert len(extract_cmds) == 1
+        assert not any(str(arg).startswith("-p") for arg in extract_cmds[0])
+
+    def test_parse_7z_no_password_status_from_slt(self, extract_service):
+        plain_output = """
+Path = plain.txt
+Size = 1
+Attributes = A
+Encrypted = -
+
+Path = folder
+Size = 0
+Attributes = D
+Encrypted = -
+"""
+        encrypted_output = """
+Path = secret.txt
+Size = 1
+Attributes = A
+Encrypted = +
+"""
+
+        assert extract_service._parse_7z_no_password_status_from_slt(plain_output) == "plain"
+        assert extract_service._parse_7z_no_password_status_from_slt(encrypted_output) == "encrypted"
+        assert extract_service._parse_7z_no_password_status_from_slt("Path = a.txt\nSize = 1\n") is None
+
+    @pytest.mark.asyncio
     async def test_try_extract_manual_retry_skips_no_password_full_extract_when_probe_unknown(
         self, extract_service, temp_dir,
     ):
