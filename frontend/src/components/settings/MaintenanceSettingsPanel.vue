@@ -98,12 +98,16 @@ const archiveFormatOptions = [
   display: flex;
   flex-direction: column;
   gap: 24px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .settings-grid,
 .settings-card,
 .mini-grid,
 .field-stack {
+  min-width: 0;
+  max-width: 100%;
   overflow: visible;
 }
 

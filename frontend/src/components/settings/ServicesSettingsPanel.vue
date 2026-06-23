@@ -60,15 +60,13 @@
             <template v-if="kikoeruCheckResult">
               <div class="service-result-grid">
                 <div><span class="service-result-key">请求 RJ</span><strong>{{ kikoeruCheckResult.requested_rjcode || kikoeruTestRJCode }}</strong></div>
-                <div><span class="service-result-key">命中结果</span><strong>{{ kikoeruCheckResult.found ? '关联链路命中' : '整条链路未命中' }}</strong></div>
-                <div><span class="service-result-key">主命中 RJ</span><strong>{{ kikoeruCheckResult.matched_rjcode || '-' }}</strong></div>
-                <div><span class="service-result-key">来源</span><strong>{{ kikoeruCheckResult.source || '-' }}</strong></div>
+                <div><span class="service-result-key">命中结果</span><strong>{{ kikoeruCheckResult.hit_summary }}</strong></div>
+                <div><span class="service-result-key">服务器已有</span><strong>{{ kikoeruCheckResult.matched_label || '-' }}</strong></div>
+                <div><span class="service-result-key">检查范围</span><strong>{{ kikoeruCheckResult.scope_label }}</strong></div>
               </div>
-              <div v-if="kikoeruCheckResult.linked_works_total" class="service-result-line">DL 关联作品数：{{ kikoeruCheckResult.linked_works_total }}</div>
-              <div v-if="kikoeruCheckResult.linked_rjcodes?.length" class="service-result-line">DL 关联 RJ：{{ kikoeruCheckResult.linked_rjcodes.join(', ') }}</div>
+              <div v-if="kikoeruCheckResult.linked_labels?.length" class="service-result-line">本次检查：{{ kikoeruCheckResult.linked_labels.join(', ') }}</div>
               <div v-if="kikoeruCheckResult.title" class="service-result-line">标题：{{ kikoeruCheckResult.title }}</div>
               <div v-if="kikoeruCheckResult.message" class="service-result-line">{{ kikoeruCheckResult.message }}</div>
-              <div v-if="kikoeruCheckResult.linked_hits?.length" class="service-result-line">关联命中：{{ kikoeruCheckResult.linked_hits.join(', ') }}</div>
             </template>
           </div>
         </div>
@@ -345,43 +343,149 @@ function normalizeRJCode(value = '') {
   return match ? `RJ${match[1]}` : raw
 }
 
+function normalizeLinkedWorkLang(value = '') {
+  const lang = String(value || '').trim().toUpperCase()
+  const map = {
+    CHI_HANS: '简中',
+    CHI_SIMP: '简中',
+    CHN: '简中',
+    CHI_HANT: '繁中',
+    CHI_TRAD: '繁中',
+    TWN: '繁中',
+    ENG: '英文',
+    JPN: ''
+  }
+  return map[lang] ?? ''
+}
+
+function formatLinkedWorkLabel(rjcode = '', work = {}) {
+  const code = normalizeRJCode(rjcode)
+  if (!code) return ''
+  const type = String(work?.work_type || '').trim().toLowerCase()
+  const lang = normalizeLinkedWorkLang(work?.lang)
+  if ((type === 'translation' || type === 'child_translation') && lang) return `${code}(${lang})`
+  return code
+}
+
+function linkedWorkVariantFromLabel(label = '') {
+  const text = String(label || '').trim()
+  const match = text.match(/\(([^)]+)\)$/)
+  if (!match) return { short: '原作', summary: '有原作' }
+  return { short: match[1], summary: `有翻译作(${match[1]})` }
+}
+
+function normalizeKikoeruTags(tags = []) {
+  if (!Array.isArray(tags)) return []
+  return tags.map(tag => String(tag || '').trim()).filter(Boolean)
+}
+
+function detectKikoeruLanguage(payload = {}) {
+  const haystack = [
+    payload.title,
+    payload.circle_name,
+    ...normalizeKikoeruTags(payload.tags)
+  ].join(' ').toUpperCase()
+  if (/(CHI_HANS|CHI_SIMP|ZH_CN|ZH-HANS|简体|簡体|简中|简体中文|簡体中文)/i.test(haystack)) return '简中'
+  if (/(CHI_HANT|CHI_TRAD|ZH_TW|ZH-HANT|繁体|繁體|繁中|繁体中文|繁體中文)/i.test(haystack)) return '繁中'
+  if (/(ENG|ENGLISH|英文)/i.test(haystack)) return '英文'
+  if (/(JPN|JAP|JAPANESE|日本語|日文|原作|原版)/i.test(haystack)) return '日文'
+  return ''
+}
+
+function kikoeruVariantLabel(payload = {}) {
+  const lang = detectKikoeruLanguage(payload)
+  if (!lang || lang === '日文') return '有原作'
+  return `有翻译作(${lang})`
+}
+
+function kikoeruVariantShortLabel(variantLabel = '') {
+  const label = String(variantLabel || '').trim()
+  if (label === '有原作') return '原作'
+  const match = label.match(/^有翻译作\((.+)\)$/)
+  return match ? match[1] : label
+}
+
+function formatKikoeruOwnedLabel(hitRows = []) {
+  const first = hitRows.find(item => item?.rjcode)
+  if (!first) return ''
+  return `${first.rjcode}(${kikoeruVariantShortLabel(first.variant_label)})`
+}
+
+function applyLinkedWorkDisplayLabels(result = {}, linkedWorksForDisplay = []) {
+  if (!result?.found) return result
+  const matchedRJCode = normalizeRJCode(result.matched_rjcode || '')
+  if (!matchedRJCode) return result
+  const linkedHit = linkedWorksForDisplay.find(item => item.rjcode === matchedRJCode)
+  if (!linkedHit?.label) return result
+  const variant = linkedWorkVariantFromLabel(linkedHit.label)
+  result.matched_label = `${matchedRJCode}(${variant.short})`
+  result.hit_summary = variant.summary
+  result.owned_sentence = `服务器已有拥有${result.matched_label}`
+  return result
+}
+
 function normalizeKikoeruCheckResult(result = {}, requestedRJCode = '') {
   const primary = result?.primary_result || result?.result || result || {}
   const foundLinkedWorks = Array.isArray(result?.linked_works_found)
     ? result.linked_works_found.filter(Boolean)
     : []
+  const fallbackMatchedRJCode = String(primary?.matched_rjcode || result?.matched_rjcode || primary?.rjcode || '').trim()
+  const primaryHit = (primary?.is_found || result?.is_found || result?.found || result?.exists) && fallbackMatchedRJCode
+    ? [{ ...primary, rjcode: primary?.rjcode || requestedRJCode, matched_rjcode: fallbackMatchedRJCode }]
+    : []
+  const hitRows = [...primaryHit, ...foundLinkedWorks]
+    .map(item => {
+      const rjcode = String(item?.matched_rjcode || item?.rjcode || '').trim().toUpperCase()
+      if (!rjcode) return null
+      return {
+        rjcode,
+        variant_label: kikoeruVariantLabel(item),
+        title: String(item?.title || '').trim()
+      }
+    })
+    .filter(Boolean)
+    .filter((item, index, list) => list.findIndex(other => other.rjcode === item.rjcode && other.variant_label === item.variant_label) === index)
   const mergedFound = Boolean(
     result?.is_found
     || result?.found
     || result?.exists
     || primary?.is_found
-    || foundLinkedWorks.length > 0
+    || hitRows.length > 0
   )
+  const matchedLabel = formatKikoeruOwnedLabel(hitRows)
   return {
     requested_rjcode: String(result?.rjcode || requestedRJCode || '').trim(),
     found: mergedFound,
-    matched_rjcode: String(primary?.matched_rjcode || result?.matched_rjcode || primary?.rjcode || '').trim(),
+    matched_rjcode: fallbackMatchedRJCode,
+    matched_label: matchedLabel,
+    owned_sentence: mergedFound ? (matchedLabel ? `服务器已有拥有${matchedLabel}` : '服务器已有该作品') : '服务器未拥有',
+    hit_summary: mergedFound ? (hitRows[0]?.variant_label || '服务器已有') : '未命中',
+    scope_label: '请求 RJ + DL 关联 RJ',
     title: String(primary?.title || result?.title || '').trim(),
     source: String(primary?.source || result?.source || '').trim(),
     message: String(result?.message || '').trim(),
     linked_rjcodes: [],
+    linked_labels: [],
     linked_works_total: Number(result?.total_checked || 0),
-    linked_hits: foundLinkedWorks.map(item => String(item?.rjcode || '').trim()).filter(Boolean)
+    hit_rows: hitRows
   }
 }
 
-function extractLinkedRJCodes(linkedWorksPayload = {}, requestedRJCode = '') {
+function extractLinkedWorksForDisplay(linkedWorksPayload = {}, requestedRJCode = '') {
   const linkedWorks = linkedWorksPayload?.linked_works && typeof linkedWorksPayload.linked_works === 'object'
     ? linkedWorksPayload.linked_works
     : {}
   const normalizedRequested = String(requestedRJCode || '').trim().toUpperCase()
-  return Object.keys(linkedWorks)
-    .map(code => String(code || '').trim().toUpperCase())
-    .filter(Boolean)
+  return Object.entries(linkedWorks)
+    .map(([code, work]) => ({
+      rjcode: normalizeRJCode(code),
+      label: formatLinkedWorkLabel(code, work)
+    }))
+    .filter(item => item.rjcode && item.label)
     .sort((a, b) => {
-      if (a === normalizedRequested) return -1
-      if (b === normalizedRequested) return 1
-      return a.localeCompare(b)
+      if (a.rjcode === normalizedRequested) return -1
+      if (b.rjcode === normalizedRequested) return 1
+      return a.rjcode.localeCompare(b.rjcode)
     })
 }
 
@@ -444,12 +548,15 @@ async function runKikoeruDuplicateTest() {
       kikoeruApi.check(rjcode, true)
     ]))
     const normalizedResult = normalizeKikoeruCheckResult(checkResult, rjcode)
-    normalizedResult.linked_rjcodes = extractLinkedRJCodes(linkedWorksResult, rjcode)
+    const linkedWorksForDisplay = extractLinkedWorksForDisplay(linkedWorksResult, rjcode)
+    normalizedResult.linked_rjcodes = linkedWorksForDisplay.map(item => item.rjcode)
+    normalizedResult.linked_labels = linkedWorksForDisplay.map(item => item.label)
     normalizedResult.linked_works_total = normalizedResult.linked_rjcodes.length || normalizedResult.linked_works_total
+    applyLinkedWorkDisplayLabels(normalizedResult, linkedWorksForDisplay)
     kikoeruCheckResult.value = normalizedResult
     kikoeruStatusMessage.value = kikoeruCheckResult.value.found
-      ? `查重完成：${kikoeruCheckResult.value.matched_rjcode || rjcode} 已命中`
-      : `查重完成：${rjcode} 未命中`
+      ? kikoeruCheckResult.value.owned_sentence
+      : `服务器未拥有 ${rjcode}`
     return true
   } catch {
     return false

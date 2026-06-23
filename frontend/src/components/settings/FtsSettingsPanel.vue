@@ -580,6 +580,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .fts-stack {
+  min-width: 0;
   overflow: visible;
 }
 
@@ -587,7 +588,7 @@ onBeforeUnmount(() => {
 .settings-grid {
   display: grid;
   gap: 24px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .settings-grid.two {
@@ -605,6 +606,10 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  box-sizing: border-box;
+  min-width: 0;
+  height: 100%;
+  min-height: 252px;
   padding: 22px;
   border-radius: 12px;
   background: var(--set-surface);
@@ -623,6 +628,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-height: 58px;
 }
 
 .fts-title-icon {
@@ -652,6 +658,7 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+  min-width: 0;
 }
 
 @media (max-width: 480px) {
@@ -664,6 +671,8 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
+  min-height: 66px;
   padding: 12px 14px;
   border-radius: 10px;
   background: var(--set-surface-soft);
@@ -687,6 +696,7 @@ onBeforeUnmount(() => {
 .fts-stat-value {
   display: flex;
   align-items: center;
+  min-width: 0;
   min-height: 24px;
 }
 
@@ -804,6 +814,7 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: baseline;
   gap: 3px;
+  min-width: 0;
   font-variant-numeric: tabular-nums;
 }
 
@@ -833,6 +844,7 @@ onBeforeUnmount(() => {
 .fts-token-chip {
   display: inline-flex;
   align-items: center;
+  max-width: 100%;
   height: 22px;
   padding: 0 9px;
   border-radius: 999px;
@@ -844,6 +856,9 @@ onBeforeUnmount(() => {
   border: 1px solid var(--set-border);
   box-shadow: none;
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .fts-token-chip:hover {
@@ -862,7 +877,9 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-height: 0;
+  flex: 1 1 auto;
+  min-height: 18px;
+  min-width: 0;
 }
 
 /* ─── 升级提示 ─── */
@@ -951,7 +968,7 @@ onBeforeUnmount(() => {
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
-  margin-top: 4px;
+  margin-top: auto;
 }
 
 .fts-btn-primary {

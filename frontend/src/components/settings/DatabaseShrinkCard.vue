@@ -487,6 +487,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-width: 0;
 }
 
 .db-shrink-head {
@@ -515,6 +516,7 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
+  min-width: 0;
 }
 
 @media (max-width: 1100px) {
@@ -525,6 +527,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
   padding: 11px 14px;
   border-radius: 10px;
   background: var(--set-surface);
@@ -542,17 +545,23 @@ onBeforeUnmount(() => {
 }
 
 .db-size-value {
+  min-width: 0;
   font-size: 15px;
   font-weight: 600;
   color: var(--set-text-strong);
   letter-spacing: -0.1px;
   font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .db-performance {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
+  max-width: 100%;
   padding: 12px;
   border: 1px solid var(--set-border);
   border-radius: 10px;
@@ -564,6 +573,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  min-width: 0;
   flex-wrap: wrap;
 }
 
@@ -600,6 +610,7 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
+  min-width: 0;
 }
 
 @media (max-width: 1100px) {
@@ -636,6 +647,8 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .db-perf-list-title {
@@ -648,6 +661,9 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 5px;
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   padding: 8px 10px;
   border-radius: 8px;
   background: var(--set-surface-soft);
@@ -659,18 +675,28 @@ onBeforeUnmount(() => {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+  min-width: 0;
   color: var(--set-text-muted);
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
 }
 
 .db-sql-row code {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   color: var(--set-text);
   font-size: 11.5px;
   line-height: 1.5;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   overflow: hidden;
   text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .db-perf-empty {
@@ -683,6 +709,7 @@ onBeforeUnmount(() => {
   grid-template-columns: minmax(120px, 1fr) repeat(3, auto);
   align-items: center;
   gap: 10px;
+  min-width: 0;
   padding: 7px 0;
   border-top: 1px dashed var(--set-border);
   color: var(--set-text-muted);
@@ -701,7 +728,8 @@ onBeforeUnmount(() => {
 
 @media (max-width: 640px) {
   .db-perf-settings { grid-template-columns: 1fr; }
-  .db-table-stat { grid-template-columns: 1fr 1fr; }
+  .db-size-grid { grid-template-columns: 1fr; }
+  .db-table-stat { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 }
 
 /* 预估行：单行小字 + Sparkles，不再用大块渐变背景 */
