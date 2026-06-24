@@ -1175,6 +1175,35 @@ class TestExtractService:
 
         assert await extract_service._verify_extraction(archive_info, root) is True
 
+    @pytest.mark.asyncio
+    async def test_verify_extraction_accepts_zstd_7z_name_mismatch_when_sizes_match(
+        self, extract_service, temp_dir,
+    ):
+        """7z/ZSTD SFX 清单名和落盘名编码错位时，用完整大小集合兜底确认。"""
+        root = os.path.join(temp_dir, "output")
+        os.makedirs(root, exist_ok=True)
+        actual_files = {
+            "【短時間媚び媚びWオナサポ集♡】/01_mp3/01_両耳天国♡.mp3": b"audio-1",
+            "【短時間媚び媚びWオナサポ集♡】/01_mp3/02_耳舐めキス♡.mp3": b"audio-22",
+        }
+        for name, payload in actual_files.items():
+            path = os.path.join(root, *name.split("/"))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as fp:
+                fp.write(payload)
+
+        archive_info = ArchiveInfo(
+            path=os.path.join(temp_dir, "dummy.exe"),
+            file_list=[
+                {"name": "���̕r�g�Ĥ��Ĥ�W���ʥ��ݼ�_��/01_mp3/01_�I�����_.mp3", "size": len(b"audio-1"), "is_dir": False},
+                {"name": "���̕r�g�Ĥ��Ĥ�W���ʥ��ݼ�_��/01_mp3/02_�����ᥭ��_.mp3", "size": len(b"audio-22"), "is_dir": False},
+            ],
+            password="",
+        )
+        archive_info.method = "Delta 04F71101"
+
+        assert await extract_service._verify_extraction(archive_info, root) is True
+
     def test_final_filename_guard_scans_full_tree(self, extract_service, temp_dir):
         """最终兜底不只采样前 240 项，深层坏文件名也要能短路命中。
 
@@ -2290,6 +2319,127 @@ Block = 0
         extract_cmds = [call.args[0] for call in run_7z_command.await_args_list if "x" in call.args[0]]
         assert len(extract_cmds) == 1
         assert not any(str(arg).startswith("-p") for arg in extract_cmds[0])
+
+    @pytest.mark.asyncio
+    async def test_try_extract_sfx_plain_7z_unsupported_method_stays_lightweight(
+        self, extract_service, temp_dir, monkeypatch,
+    ):
+        """未加密 SFX 轻量探测遇到 Unsupported Method 时，不全量解压也不试密码库。"""
+        archive_path = os.path.join(temp_dir, "RJ01644635.exe")
+        with open(archive_path, "wb") as f:
+            f.write(b"MZ" + (b"\0" * 4096) + b"7z\xbc\xaf\x27\x1c")
+        output_path = os.path.join(temp_dir, "extract-output-sfx-unsupported")
+        os.makedirs(output_path, exist_ok=True)
+        task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
+        monkeypatch.setattr(ExtractService, "UNKNOWN_PROBE_LARGE_ARCHIVE_BYTES", 1)
+        extract_service._ensure_7z_zstd_available = AsyncMock(return_value=False)
+
+        async def fake_run_7z_command(cmd, *args, **kwargs):
+            if "x" in cmd:
+                raise AssertionError("不应进入完整 7zz 解压")
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=b"", stderr=b"")
+
+        extract_service._run_7z_command = AsyncMock(side_effect=fake_run_7z_command)
+        extract_service._probe_7z_no_password_status = AsyncMock(return_value="plain")
+        extract_service._probe_by_magic = AsyncMock(side_effect=["ok", "unsupported_method"])
+        extract_service._probe_by_smallest_entry = AsyncMock(return_value="unsupported_method")
+        extract_service._cleanup_extract_attempt = AsyncMock()
+
+        success, password, reason = await extract_service._try_extract(
+            ArchiveInfo(
+                archive_path,
+                [{
+                    "name": "cover.jpg",
+                    "size": 512,
+                    "is_dir": False,
+                }, {
+                    "name": "voice.mp3",
+                    "size": 1024,
+                    "is_dir": False,
+                }],
+            ),
+            output_path,
+            task,
+            password_candidates=[{
+                "password": "vault-password",
+                "source": "密码库-通用",
+                "entry_id": None,
+                "rjcode": None,
+            }],
+        )
+
+        assert success is False
+        assert password is None
+        assert reason == "unsupported_method"
+        assert task.task_metadata["extract_failure_reason"] == "unsupported_method"
+        assert extract_service._probe_by_magic.await_count == 2
+        extract_service._probe_by_smallest_entry.assert_not_awaited()
+        extract_service._run_7z_command.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_try_extract_sfx_plain_7z_unsupported_method_uses_zstd_backend(
+        self, extract_service, temp_dir, monkeypatch,
+    ):
+        """官方 7zz 不支持 ZSTD 7z 方法时，先用 ZS 轻量探测，通过后再完整解压。"""
+        archive_path = os.path.join(temp_dir, "RJ01644635.exe")
+        with open(archive_path, "wb") as f:
+            f.write(b"MZ" + (b"\0" * 4096) + b"7z\xbc\xaf\x27\x1c")
+        output_path = os.path.join(temp_dir, "extract-output-zstd")
+        os.makedirs(output_path, exist_ok=True)
+        task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
+        monkeypatch.setattr(ExtractService, "UNKNOWN_PROBE_LARGE_ARCHIVE_BYTES", 1)
+
+        async def fake_run_7z_command(cmd, *args, **kwargs):
+            if "x" in cmd:
+                assert cmd[0] == "7zzs"
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=b"", stderr=b"")
+
+        old_zstd_path = extract_service.config.extract.seven_zip_zstd_path
+        extract_service.config.extract.seven_zip_zstd_path = "7zzs"
+        extract_service._find_7z_zstd_executable = Mock(return_value="7zzs")
+        extract_service._ensure_7z_zstd_available = AsyncMock(return_value=True)
+        extract_service._probe_7z_no_password_status = AsyncMock(return_value="plain")
+        extract_service._probe_by_magic = AsyncMock(side_effect=["unsupported_method", "ok"])
+        extract_service._run_7z_command = AsyncMock(side_effect=fake_run_7z_command)
+        extract_service._reject_if_garbled_after_extract = AsyncMock(return_value=False)
+        extract_service._verify_extraction = AsyncMock(return_value=True)
+        extract_service._cleanup_extract_attempt = AsyncMock()
+
+        archive_info = ArchiveInfo(
+            archive_path,
+            [{
+                "name": "cover.jpg",
+                "size": 512,
+                "is_dir": False,
+            }],
+        )
+        archive_info.method = "Delta 04F71101"
+
+        try:
+            success, password, reason = await extract_service._try_extract(
+                archive_info,
+                output_path,
+                task,
+                password_candidates=[{
+                    "password": "vault-password",
+                    "source": "密码库-通用",
+                    "entry_id": None,
+                    "rjcode": None,
+                }],
+            )
+        finally:
+            extract_service.config.extract.seven_zip_zstd_path = old_zstd_path
+
+        assert success is True
+        assert password == ""
+        assert reason == ""
+        assert task.task_metadata["extract_zstd_backend_success"] is True
+        assert extract_service._probe_by_magic.await_count == 2
+        zstd_probe_call = extract_service._probe_by_magic.await_args_list[1]
+        assert zstd_probe_call.kwargs["seven_zip_executable"] == "7zzs"
+        extract_cmds = [call.args[0] for call in extract_service._run_7z_command.await_args_list if "x" in call.args[0]]
+        assert len(extract_cmds) == 1
+        assert extract_cmds[0][0] == "7zzs"
 
     def test_parse_7z_no_password_status_from_slt(self, extract_service):
         plain_output = """

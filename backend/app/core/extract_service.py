@@ -95,12 +95,16 @@ class ArchiveInfo:
         self.volume_set: Optional[List[str]] = None
         self.detected_encoding: Optional[str] = None  # _list_archive_contents 自动检测到的编码
         self.path_remap: Optional[Dict[str, str]] = None
+        self.method: Optional[str] = None
 
 class ExtractService:
     """解压服务"""
 
     _seven_zip_available_cache: Optional[bool] = None
     _seven_zip_available_path: Optional[str] = None
+    _seven_zip_zstd_available_cache: Optional[bool] = None
+    _seven_zip_zstd_available_path: Optional[str] = None
+    _seven_zip_zstd_warned_unavailable: bool = False
     _seven_zip_check_lock: Optional[asyncio.Lock] = None
     _seven_zip_semaphore: Optional[asyncio.Semaphore] = None
     _seven_zip_semaphore_limit: Optional[int] = None
@@ -112,6 +116,9 @@ class ExtractService:
     # _list_archive_contents 最近检测到的编码（archive_path -> encoding_name），
     # 供 _get_archive_info 写入 archive_info.detected_encoding，进而给 _get_mcp_args 使用。
     _archive_encoding_cache: Dict[str, str] = {}
+    # _list_archive_contents / _probe_7z_no_password_status 最近读取到的 7z 方法。
+    # 用于识别 7-Zip ZS 扩展 codec（例如 ZSTD = 04F71101）。
+    _archive_method_cache: Dict[str, str] = {}
     # 7zz 的 -mcp 参数兼容性检测：24.08+ 某些版本/某些 ZIP 文件对 `-mcp=N` 直接抛
     # `opening : E_INVALIDARG`。第一次检测到后置为 True，后续 _get_mcp_args 直接
     # short-circuit 返回 []，禁止再传 -mcp。事后 _repair_mojibake_filenames_in_place 兜底。
@@ -234,6 +241,9 @@ class ExtractService:
         "errno=36",
         "enametoolong",
     )
+    _UNSUPPORTED_METHOD_MARKERS: Tuple[str, ...] = (
+        "unsupported method",
+    )
     PATH_COMPONENT_SAFE_BYTES: int = 220
 
     @classmethod
@@ -255,6 +265,18 @@ class ExtractService:
     def _looks_like_path_too_long_error(cls, text: str) -> bool:
         lowered = str(text or "").lower()
         return any(marker in lowered for marker in cls._PATH_TOO_LONG_MARKERS)
+
+    @classmethod
+    def _looks_like_unsupported_method_error(cls, text: str) -> bool:
+        lowered = str(text or "").lower()
+        return any(marker in lowered for marker in cls._UNSUPPORTED_METHOD_MARKERS)
+
+    @staticmethod
+    def _archive_uses_zstd_7z_method(archive_info: Optional[ArchiveInfo]) -> bool:
+        if archive_info is None:
+            return False
+        method = str(getattr(archive_info, "method", "") or "")
+        return bool(re.search(r"\b(?:04)?F71101\b|ZSTD", method, re.IGNORECASE))
 
     @classmethod
     def _utf8_len(cls, value: str) -> int:
@@ -510,6 +532,11 @@ class ExtractService:
     def seven_zip(self) -> str:
         """动态获取7z路径"""
         return self._find_7z_executable()
+
+    @property
+    def seven_zip_zstd(self) -> str:
+        """动态获取 7-Zip ZS / zstd 兼容后端路径"""
+        return self._find_7z_zstd_executable()
 
     def _get_mcp_args(
         self,
@@ -1336,6 +1363,81 @@ class ExtractService:
         # 如果都找不到，返回配置的值（后续会报错）
         logger.error("找不到 7z 可执行文件。请安装 7-Zip 并确保它在 PATH 中，或在配置中指定正确路径。")
         return "7z"
+
+    def _find_7z_zstd_executable(self) -> str:
+        """查找 7-Zip ZS / 7z-zstd 兼容后端。
+
+        这个后端只用于官方 7zz 报 Unsupported Method 的扩展 codec 包，
+        不覆盖默认 7zz，避免把普通压缩包行为切到第三方构建。
+        """
+        configured_path = str(getattr(self.config.extract, "seven_zip_zstd_path", "") or "").strip()
+        if configured_path:
+            if os.path.exists(configured_path):
+                return configured_path
+            found = shutil.which(configured_path)
+            if found:
+                return found
+
+        for name in ("7zzs", "7z-zstd", "7zz-zstd", "7z-zs"):
+            found = shutil.which(name)
+            if found:
+                return found
+
+        repo_root = Path(__file__).resolve().parents[3]
+        tools_dir = repo_root / "tools"
+        local_candidates: List[str] = []
+        if tools_dir.exists():
+            for pattern in ("7zz-zstd-*", "7z-zstd-*", "7-Zip-zstd-*"):
+                for directory in tools_dir.glob(pattern):
+                    if not directory.is_dir():
+                        continue
+                    for executable_name in ("7z.exe", "7zz.exe", "7z", "7zz"):
+                        candidate = directory / executable_name
+                        if candidate.exists():
+                            local_candidates.append(str(candidate))
+        for path in sorted(local_candidates, reverse=True):
+            return path
+
+        default_paths = [
+            r"C:\Program Files\7-Zip-Zstandard\7z.exe",
+            r"C:\Program Files (x86)\7-Zip-Zstandard\7z.exe",
+            r"C:\Program Files\7-Zip ZS\7z.exe",
+            r"C:\Program Files (x86)\7-Zip ZS\7z.exe",
+        ]
+        for path in default_paths:
+            if os.path.exists(path):
+                return path
+
+        return ""
+
+    async def _ensure_7z_zstd_available(self) -> bool:
+        """检查 7-Zip ZS / zstd 兼容后端是否可用。"""
+        executable = self.seven_zip_zstd
+        if not executable:
+            return False
+
+        if (
+            self.__class__._seven_zip_zstd_available_cache is not None
+            and self.__class__._seven_zip_zstd_available_path == executable
+        ):
+            return bool(self.__class__._seven_zip_zstd_available_cache)
+
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run,
+                [executable, "i"],
+                capture_output=True,
+                timeout=8,
+            )
+            output = b"".join([result.stdout or b"", result.stderr or b""]).decode("utf-8", errors="ignore")
+            available = result.returncode == 0 and "ZSTD" in output.upper()
+        except Exception as exc:
+            logger.warning("检查 7-Zip ZS 兼容后端失败: %s", exc)
+            available = False
+
+        self.__class__._seven_zip_zstd_available_cache = available
+        self.__class__._seven_zip_zstd_available_path = executable
+        return available
 
     def _find_unar_executable(self) -> Optional[str]:
         return self._find_bundled_or_path_executable("unar")
@@ -2333,6 +2435,10 @@ class ExtractService:
                 error_msg = "解压失败：无正确密码"
             elif extract_failure_reason == "path_too_long":
                 error_msg = "解压失败：路径或文件名过长（Linux 单个文件名最多 255 字节）"
+            elif extract_failure_reason == "unsupported_method":
+                error_msg = "解压失败：当前 7z 不支持压缩包使用的压缩方法"
+            elif extract_failure_reason == "light_probe_unknown":
+                error_msg = "解压失败：大文件轻量探测无法定性，已停止全量解压试错"
             elif extract_failure_reason == "garbled_filename":
                 error_msg = "解压失败：文件名乱码"
             elif extract_failure_reason == "extract_incomplete":
@@ -5789,6 +5895,7 @@ class ExtractService:
             )
             # 读取本次 list 检测到的编码，存入 archive_info 供 _get_mcp_args 使用
             archive_info.detected_encoding = self.__class__._archive_encoding_cache.get(archive_path)
+            archive_info.method = self.__class__._archive_method_cache.get(archive_path)
             # 若清单中含大量 \ufffd 替换字符，说明采集时文件未就绪或编码未知，
             # 不缓存此劣质结果；提取时会重新 list 并使用正确的 -mcp 编码。
             _ufffd_ratio = (
@@ -6088,6 +6195,10 @@ class ExtractService:
                 raw_bytes = result.stdout
                 decoded, stdout_encoding = self._decode_7z_stdout(raw_bytes)
                 logger.info(f"[7z] 输出解码: {stdout_encoding}")
+                if index == 1:
+                    method = self._parse_7z_archive_method_from_slt(decoded)
+                    if method:
+                        self.__class__._archive_method_cache[str(archive_path)] = method
                 file_list = (
                     self._parse_7z_list_output(decoded)
                     if index == 0
@@ -6227,6 +6338,9 @@ class ExtractService:
             return None
 
         decoded, _stdout_encoding = self._decode_7z_stdout(result.stdout or b"")
+        method = self._parse_7z_archive_method_from_slt(decoded)
+        if method:
+            self.__class__._archive_method_cache[str(archive_path)] = method
         return self._parse_7z_no_password_status_from_slt(decoded)
 
     @staticmethod
@@ -6636,6 +6750,27 @@ class ExtractService:
         flush_current()
         return files
 
+    def _parse_7z_archive_method_from_slt(self, output: str) -> Optional[str]:
+        """从 `7z l -slt` 的 archive-level 区块读取 Method 字段。"""
+        current: Dict[str, str] = {}
+        for raw_line in str(output or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                method = str(current.get("Method") or "").strip()
+                # archive-level 区块含 Type/Physical Size，文件条目一般含 Size/Attributes。
+                if method and ("Size" not in current or "Type" in current):
+                    return method
+                current = {}
+                continue
+            if " = " not in line:
+                continue
+            key, value = line.split(" = ", 1)
+            current[key.strip()] = value.strip()
+        method = str(current.get("Method") or "").strip()
+        if method and ("Size" not in current or "Type" in current):
+            return method
+        return None
+
     async def _extract_archive_entry_to_file(
         self,
         archive_info: ArchiveInfo,
@@ -6935,10 +7070,28 @@ class ExtractService:
                 listed_password,
                 *[pwd for pwd in unique_passwords if pwd != listed_password],
             ]
+        listed_no_password = False
+        if listed_password == "" and not manual_retry_password_only:
+            try:
+                no_password_status = await self._probe_7z_no_password_status(archive_info.path, task=task)
+            except Exception:
+                no_password_status = None
+            if no_password_status == "plain":
+                listed_no_password = True
+                unique_passwords = [""]
+                logger.info(
+                    "7z/SFX 清单确认未加密，本轮只尝试无密码解压，跳过密码库候选: %s",
+                    os.path.basename(archive_info.path),
+                )
+            archive_info.method = (
+                archive_info.method
+                or self.__class__._archive_method_cache.get(str(archive_info.path))
+            )
         # 非加密压缩包会忽略 -p 参数，7zz l 可能用任意密码成功读取目录。
         # 只有清单阶段没有确认到具体密码时，才把"无密码"排到第一位做轻量探测。
-        if not listed_password and "" in unique_passwords:
+        if not listed_password and not listed_no_password and "" in unique_passwords:
             unique_passwords = ["", *[pwd for pwd in unique_passwords if pwd != ""]]
+        uses_zstd_7z_method = self._archive_uses_zstd_7z_method(archive_info)
 
         # 预读目录可用说明压缩包结构至少可读；后续若遇疑似"损坏"特征，
         # 更可能是头加密 + 错密码，而不是真的坏包，用于最后定性判断。
@@ -6954,11 +7107,59 @@ class ExtractService:
             archive_size_bytes >= self.UNKNOWN_PROBE_LARGE_ARCHIVE_BYTES
             and not manual_retry_password_only
         )
+        listed_no_password_large_archive = bool(listed_no_password and is_large_unknown_probe_archive)
         unknown_probe_full_extracts = 0
         try:
             unknown_probe_full_extract_limit = max(0, int(self.UNKNOWN_PROBE_FULL_EXTRACT_LIMIT))
         except Exception:
             unknown_probe_full_extract_limit = 0
+
+        async def probe_listed_no_password_archive() -> Optional[str]:
+            """清单确认未加密后只做轻量可解性确认，不直接触发大包完整解压。"""
+            saw_ok = False
+            magic_entries = (
+                []
+                if self._is_rar_archive(archive_info.path)
+                else self._pick_magic_entries(getattr(archive_info, "file_list", None))
+            )
+            for magic_entry in magic_entries:
+                result = await self._probe_by_magic(
+                    archive_info.path,
+                    "",
+                    magic_entry,
+                    timeout=self.PROBE_MAGIC_TIMEOUT,
+                    task=task,
+                )
+                if result == "ok":
+                    saw_ok = True
+                    continue
+                if result == "unsupported_method":
+                    return "unsupported_method"
+                if result == "corrupt":
+                    return "corrupt"
+                if result == "wrong_password":
+                    return "wrong_password"
+
+            entry = self._pick_probe_entry(getattr(archive_info, "file_list", None))
+            if entry:
+                result = await self._probe_by_smallest_entry(
+                    archive_info.path,
+                    "",
+                    entry,
+                    timeout=self.PROBE_TIMEOUT_SECONDS,
+                    task=task,
+                )
+                if result in {"ok", "unsupported_method", "corrupt", "wrong_password"}:
+                    return result
+
+            if saw_ok:
+                return "ok"
+
+            logger.warning(
+                "7z/SFX 清单确认未加密，但轻量验证无法定性: %s",
+                os.path.basename(archive_info.path),
+            )
+            return "unknown"
 
         async def accept_compat_backend_result(backend_name: str) -> Tuple[bool, str]:
             if await self._reject_if_garbled_after_extract(
@@ -7029,6 +7230,151 @@ class ExtractService:
                 zip_reason,
             )
             return False, zip_reason
+
+        async def try_7z_zstd_backend(
+            current_password: str,
+            *,
+            progress_callback: Optional[Callable[[str], None]] = None,
+        ) -> Tuple[bool, str]:
+            """官方 7zz 不支持 7z/ZSTD codec 时，用 7-Zip ZS 兼容后端解压。"""
+            if not await self._ensure_7z_zstd_available():
+                if not self.__class__._seven_zip_zstd_warned_unavailable:
+                    self.__class__._seven_zip_zstd_warned_unavailable = True
+                    logger.error(
+                        "当前 7z 不支持该压缩方法，且未找到 7-Zip ZS/7z-zstd 兼容后端；"
+                        "请安装 7zzs 或配置 extract.seven_zip_zstd_path"
+                    )
+                self._set_extract_meta(
+                    task,
+                    extract_failure_reason="unsupported_method",
+                    extract_zstd_backend_missing=True,
+                )
+                return False, "unsupported_method"
+
+            await self._cleanup_extract_attempt(output_path)
+            backend = self.seven_zip_zstd
+            password_args = [f"-p{current_password}"] if current_password else []
+            cmd = [
+                backend,
+                "x",
+                "-y",
+                "-o" + output_path,
+                "-bsp1",
+                "-bso1",
+                *self._get_seven_zip_mmt_args(),
+                *self._get_mcp_args(
+                    archive_info.path,
+                    archive_info,
+                    filename_encoding=manual_filename_encoding,
+                ),
+                *password_args,
+                archive_info.path,
+            ]
+            self._set_extract_meta(
+                task,
+                extract_zstd_backend=os.path.basename(backend),
+                extract_zstd_backend_path=backend,
+                extract_zstd_method=str(getattr(archive_info, "method", "") or ""),
+            )
+            task.update_progress(40, "使用 7-Zip ZS 兼容后端解压")
+            result = await self._run_7z_command(
+                cmd,
+                progress_callback=progress_callback,
+                capture_stdout=False,
+                task=task,
+            )
+            if task.is_cancelled():
+                return False, "cancelled"
+            if result.returncode == 0:
+                if await self._reject_if_garbled_after_extract(
+                    archive_info.path,
+                    output_path,
+                    cleanup=lambda: self._cleanup_extract_attempt(output_path),
+                    context="7z-zstd",
+                    task=task,
+                    ignore_garbled=manual_ignore_garbled,
+                ):
+                    return False, "garbled_filename"
+                if not await self._verify_extraction(archive_info, output_path):
+                    await self._cleanup_extract_attempt(output_path)
+                    return False, "extract_incomplete"
+                self._set_extract_meta(
+                    task,
+                    extract_verified=True,
+                    extract_zstd_backend_success=True,
+                )
+                logger.info(
+                    "7-Zip ZS 兼容后端解压成功: archive=%s backend=%s",
+                    archive_info.path,
+                    backend,
+                )
+                return True, ""
+
+            stderr_text = (result.stderr or b"").decode("utf-8", errors="ignore")
+            if self._looks_like_disk_full_error(stderr_text):
+                return False, "disk_full"
+            if self._looks_like_path_too_long_error(stderr_text):
+                self._set_extract_meta(
+                    task,
+                    extract_failure_reason="path_too_long",
+                    extract_path_too_long_error=stderr_text[:1000],
+                )
+                return False, "path_too_long"
+            if self._looks_like_unsupported_method_error(stderr_text):
+                self._set_extract_meta(
+                    task,
+                    extract_failure_reason="unsupported_method",
+                    extract_zstd_backend_error=stderr_text[:1000],
+                )
+                return False, "unsupported_method"
+            if self._looks_like_wrong_password_error(stderr_text):
+                return False, "wrong_password"
+            if self._looks_like_incomplete_volume_error(stderr_text):
+                return False, "archive_corrupt"
+            logger.error(
+                "7-Zip ZS 兼容后端解压失败: rc=%s stderr=%s",
+                result.returncode,
+                stderr_text[:500] if stderr_text else "(无错误文本)",
+            )
+            self._set_extract_meta(
+                task,
+                extract_failure_reason="zstd_backend_failed",
+                extract_zstd_backend_error=stderr_text[:1000],
+            )
+            return False, "zstd_backend_failed"
+
+        async def probe_7z_zstd_backend(current_password: str) -> str:
+            """用 7-Zip ZS 做同等轻量探测，确认后才允许完整解压。"""
+            if not uses_zstd_7z_method:
+                logger.info(
+                    "未从清单确认 ZSTD/04F71101 方法，但当前 7z 报 Unsupported Method，尝试 7-Zip ZS 轻量探测: %s",
+                    os.path.basename(archive_info.path),
+                )
+            if not await self._ensure_7z_zstd_available():
+                self._set_extract_meta(
+                    task,
+                    extract_failure_reason="unsupported_method",
+                    extract_zstd_backend_missing=True,
+                )
+                return "unsupported_method"
+            backend = self.seven_zip_zstd
+            self._set_extract_meta(
+                task,
+                extract_zstd_backend=os.path.basename(backend),
+                extract_zstd_backend_path=backend,
+                extract_zstd_method=str(getattr(archive_info, "method", "") or ""),
+            )
+            task.update_progress(38, "使用 7-Zip ZS 轻量探测")
+            return await self._probe_password(
+                archive_info.path,
+                current_password,
+                probe_bytes=self.PROBE_BYTES,
+                timeout=self.PROBE_TIMEOUT_SECONDS,
+                file_list=getattr(archive_info, "file_list", None),
+                task=task,
+                allow_full_test=False,
+                seven_zip_executable=backend,
+            )
 
         # ========== RAR fast-path: 优先用 unar 解压日文 / 中文 RAR ==========
         # 7zz 24.08 的 RAR 解析器不接受 -mcp 参数，遇到 Shift-JIS / GBK 命名的 RAR
@@ -7202,15 +7548,18 @@ class ExtractService:
                 # 禁止在主流程里跑整包 `7zz t`：大包/分卷会长时间停在 38%，看起来像解压卡死。
                 if self.PROBE_BEFORE_EXTRACT:
                     task.update_progress(38, f"探测密码 (来源: {password_source})")
-                    probe_result = await self._probe_password(
-                        archive_info.path,
-                        password,
-                        probe_bytes=self.PROBE_BYTES,
-                        timeout=self.PROBE_TIMEOUT_SECONDS,
-                        file_list=getattr(archive_info, 'file_list', None),
-                        task=task,
-                        allow_full_test=False,
-                    )
+                    if listed_no_password and password == "":
+                        probe_result = await probe_listed_no_password_archive()
+                    else:
+                        probe_result = await self._probe_password(
+                            archive_info.path,
+                            password,
+                            probe_bytes=self.PROBE_BYTES,
+                            timeout=self.PROBE_TIMEOUT_SECONDS,
+                            file_list=getattr(archive_info, 'file_list', None),
+                            task=task,
+                            allow_full_test=False,
+                        )
                     # 探测期间被 cancel/pause kill 掉，按 stop_reason 决策
                     if task.is_cancelled():
                         return False, None, "cancelled"
@@ -7220,6 +7569,103 @@ class ExtractService:
                             return False, None, "cancelled"
                         # 用户恢复后重试本轮密码的完整解压（跳过探测，不再迫追探测结果）
                         probe_result = 'ok'
+                    if probe_result == "unsupported_method":
+                        zstd_probe_result = await probe_7z_zstd_backend(password)
+                        if task.is_cancelled():
+                            return False, None, "cancelled"
+                        if zstd_probe_result == "ok":
+                            zstd_success, zstd_reason = await try_7z_zstd_backend(password)
+                            if zstd_success:
+                                await self._finalize_successful_extract_password(
+                                    archive_info,
+                                    task,
+                                    password,
+                                    vault_passwords,
+                                    password_entry_id_map,
+                                    password_rjcode_map,
+                                )
+                                logger.info(
+                                    "解压成功，使用 7-Zip ZS 兼容后端和%s密码: %s",
+                                    password_source,
+                                    password or "无密码",
+                                )
+                                return True, password, ""
+                            if zstd_reason in {
+                                "cancelled",
+                                "disk_full",
+                                "garbled_filename",
+                                "extract_incomplete",
+                                "path_too_long",
+                                "archive_corrupt",
+                                "zstd_backend_failed",
+                                "unsupported_method",
+                            }:
+                                return False, None, zstd_reason
+                        elif zstd_probe_result in {"wrong_password", "corrupt"}:
+                            return False, None, "archive_corrupt" if zstd_probe_result == "corrupt" else "wrong_password"
+                        elif zstd_probe_result == "unsupported_method":
+                            self._set_extract_meta(
+                                task,
+                                extract_failure_reason="unsupported_method",
+                            )
+                            return False, None, "unsupported_method"
+                        elif listed_no_password_large_archive:
+                            self._set_extract_meta(
+                                task,
+                                extract_failure_reason="light_probe_unknown",
+                                extract_zstd_probe_result=zstd_probe_result,
+                            )
+                            logger.warning(
+                                "7-Zip ZS 对未加密大包轻量探测仍无法定性，停止完整解压: %s",
+                                os.path.basename(archive_info.path),
+                            )
+                            return False, None, "light_probe_unknown"
+                        self._set_extract_meta(
+                            task,
+                            extract_failure_reason="unsupported_method",
+                        )
+                        logger.error(
+                            "轻量探测命中当前 7z 不支持的压缩方法，停止完整解压: %s",
+                            os.path.basename(archive_info.path),
+                        )
+                        return False, None, "unsupported_method"
+                    if listed_no_password and password == "":
+                        if task.is_cancelled():
+                            return False, None, "cancelled"
+                        if probe_result == "ok":
+                            logger.info(
+                                "7z/SFX 未加密包轻量验证通过，进入无密码完整解压: %s",
+                                os.path.basename(archive_info.path),
+                            )
+                        elif probe_result == "corrupt":
+                            logger.error(
+                                "7z/SFX 未加密包轻量验证命中损坏特征，停止完整解压: %s",
+                                os.path.basename(archive_info.path),
+                            )
+                            return False, None, "archive_corrupt"
+                        elif probe_result == "wrong_password":
+                            logger.error(
+                                "7z/SFX 清单未加密但轻量验证返回密码错误，按压缩包异常处理: %s",
+                                os.path.basename(archive_info.path),
+                            )
+                            return False, None, "archive_corrupt"
+                        else:
+                            if listed_no_password_large_archive:
+                                self._set_extract_meta(
+                                    task,
+                                    extract_failure_reason="light_probe_unknown",
+                                )
+                                logger.warning(
+                                    "7z/SFX 未加密大包轻量验证无法定性，停止完整解压以避免大文件全量试错: %s size=%s",
+                                    os.path.basename(archive_info.path),
+                                    archive_size_bytes,
+                                )
+                                return False, None, "light_probe_unknown"
+                            logger.info(
+                                "7z/SFX 未加密小包轻量验证无法定性，保留完整解压兜底: %s size=%s",
+                                os.path.basename(archive_info.path),
+                                archive_size_bytes,
+                            )
                     if probe_result == 'wrong_password':
                         encountered_wrong_password = True
                         if zip_password_compat_candidate:
@@ -7428,6 +7874,71 @@ class ExtractService:
                 stderr_text = (result.stderr or b"").decode('utf-8', errors='ignore')
                 stderr_lower = stderr_text.lower()
 
+                if self._looks_like_unsupported_method_error(stderr_text):
+                    zstd_probe_result = await probe_7z_zstd_backend(password)
+                    if task.is_cancelled():
+                        return False, None, "cancelled"
+                    if zstd_probe_result == "ok":
+                        zstd_success, zstd_reason = await try_7z_zstd_backend(
+                            password,
+                            progress_callback=progress_callback,
+                        )
+                        if zstd_success:
+                            await self._finalize_successful_extract_password(
+                                archive_info,
+                                task,
+                                password,
+                                vault_passwords,
+                                password_entry_id_map,
+                                password_rjcode_map,
+                            )
+                            logger.info(
+                                "解压成功，使用 7-Zip ZS 兼容后端和%s密码: %s",
+                                password_source,
+                                password or "无密码",
+                            )
+                            return True, password, ""
+                        if zstd_reason in {
+                            "cancelled",
+                            "disk_full",
+                            "garbled_filename",
+                            "extract_incomplete",
+                            "path_too_long",
+                            "archive_corrupt",
+                            "zstd_backend_failed",
+                            "unsupported_method",
+                        }:
+                            return False, None, zstd_reason
+                    elif zstd_probe_result in {"wrong_password", "corrupt"}:
+                        return False, None, "archive_corrupt" if zstd_probe_result == "corrupt" else "wrong_password"
+                    elif zstd_probe_result == "unsupported_method":
+                        self._set_extract_meta(
+                            task,
+                            extract_failure_reason="unsupported_method",
+                        )
+                        return False, None, "unsupported_method"
+                    elif listed_no_password_large_archive:
+                        self._set_extract_meta(
+                            task,
+                            extract_failure_reason="light_probe_unknown",
+                            extract_zstd_probe_result=zstd_probe_result,
+                        )
+                        logger.warning(
+                            "完整解压遇到 Unsupported Method 后，7-Zip ZS 轻量探测仍无法定性，停止大包全量解压: %s",
+                            os.path.basename(archive_info.path),
+                        )
+                        return False, None, "light_probe_unknown"
+                    logger.error(
+                        "当前 7z 不支持压缩包使用的压缩方法，停止密码重试: %s",
+                        stderr_text[:500] if stderr_text else "(无错误文本)",
+                    )
+                    self._set_extract_meta(
+                        task,
+                        extract_failure_reason="unsupported_method",
+                        extract_unsupported_method_error=stderr_text[:1000],
+                    )
+                    return False, None, "unsupported_method"
+
                 if self._looks_like_disk_full_error(stderr_text):
                     logger.error(
                         "检测到解压目标磁盘空间不足，停止密码重试: %s",
@@ -7550,6 +8061,12 @@ class ExtractService:
                             encountered_wrong_password = True
                             logger.warning(f"RAR fallback 密码 {password_source} ({password or '无密码'}) 解压失败: 密码错误")
                             continue
+                    if listed_no_password:
+                        logger.warning(
+                            "7z/SFX 未加密包遇到疑似损坏特征，不继续尝试密码候选: %s",
+                            stderr_text[:300] if stderr_text else "(无错误文本)",
+                        )
+                        return False, None, "archive_corrupt"
                     # 不再立刻判定损坏：头加密 7z + 错密码同样会输出 "Headers Error" /
                     # "Cannot open the file as archive"（p7zip/7zz 多版本文案不稳定），
                     # 立刻 return 会导致密码库里剩下的真密码永远没机会被试到。
@@ -7821,7 +8338,13 @@ class ExtractService:
             missing_ratio = len(missing_files) / total_count
             # 绝对阈值：缺失文件 >= 5 个 或 比例 >= 10%，要拒绝。
             if missing_ratio >= 0.1 or len(missing_files) >= 5:
-                if verify_mode == "full" and self._is_zip_like_archive(archive_info.path):
+                if (
+                    verify_mode == "full"
+                    and (
+                        self._is_zip_like_archive(archive_info.path)
+                        or self._archive_uses_zstd_7z_method(archive_info)
+                    )
+                ):
                     expected_sizes = sorted(int(item.get("size") or 0) for item in file_entries)
                     actual_sizes = sorted(int(size or 0) for size in actual_files.values())
                     if (
@@ -7830,7 +8353,7 @@ class ExtractService:
                     ):
                         logger.warning(
                             "有 %s/%s (%.0f%%) 个文件名无法逐项验证，但文件数和大小集合完全一致，"
-                            "按 ZIP 文件名编码差异接受解压结果: archive=%s",
+                            "按压缩包文件名编码差异接受解压结果: archive=%s",
                             len(missing_files),
                             len(file_entries),
                             missing_ratio * 100.0,
@@ -8229,7 +8752,8 @@ class ExtractService:
                 magic_info = self._KNOWN_MAGIC_TABLE.get(ext)
                 if not magic_info:
                     continue
-                candidates.append((size, name, magic_info))
+                ext = os.path.splitext(name)[1].lower()
+                candidates.append((size, name, ext, magic_info))
             except Exception:
                 continue
         if not candidates:
@@ -8237,18 +8761,34 @@ class ExtractService:
         candidates.sort(key=lambda x: x[0])
         entries = []
         seen_names = set()
-        for size, name, (offset, magics) in candidates:
+        seen_exts = set()
+
+        def append_entry(size: int, name: str, ext: str, magic_info: Tuple[int, Tuple[bytes, ...]]) -> None:
             if name in seen_names:
-                continue
+                return
             seen_names.add(name)
+            seen_exts.add(ext)
+            offset, magics = magic_info
             entries.append({
                 'name': name,
                 'size': size,
                 'magic_offset': offset,
                 'magics': magics,
             })
+
+        for size, name, ext, magic_info in candidates:
+            append_entry(size, name, ext, magic_info)
             if len(entries) >= self.PROBE_MAGIC_ENTRY_LIMIT:
                 break
+        if len(entries) < self.PROBE_MAGIC_ENTRY_LIMIT:
+            # solid 7z + 扩展 codec 场景下，同一种后缀可能集中在同一压缩块；
+            # 补不同扩展的最小条目，提高轻量探测覆盖面，仍不做整包解压。
+            for size, name, ext, magic_info in candidates:
+                if ext in seen_exts:
+                    continue
+                append_entry(size, name, ext, magic_info)
+                if len(entries) >= self.PROBE_MAGIC_ENTRY_LIMIT:
+                    break
         return entries
 
     async def _probe_by_magic(
@@ -8258,6 +8798,7 @@ class ExtractService:
         entry: Dict,
         timeout: float,
         task: Optional[Task] = None,
+        seven_zip_executable: Optional[str] = None,
     ) -> str:
         """用 `7zz x -so archive -i!<entry>` 流式解压指定条目，只读前几十字节对照魔数。
 
@@ -8270,9 +8811,10 @@ class ExtractService:
         magics: Tuple[bytes, ...] = entry['magics']
         max_magic_len = max(len(m) for m in magics)
         need_bytes = magic_offset + max_magic_len + 4  # 多读几字节容错
+        executable = seven_zip_executable or self.seven_zip
 
         cmd = [
-            self.seven_zip, 'x', '-so', '-y',
+            executable, 'x', '-so', '-y',
             '-bso0', '-bsp0',
             *self._get_mcp_args(archive_path),
         ]
@@ -8457,6 +8999,8 @@ class ExtractService:
         )
         if any(m in stderr_text for m in encryption_markers):
             return 'wrong_password'
+        if self._looks_like_unsupported_method_error(stderr_text):
+            return 'unsupported_method'
 
         corrupt_markers = (
             "headers error", "unexpected end of archive", "unexpected end of data",
@@ -8475,6 +9019,7 @@ class ExtractService:
         entry: Dict,
         timeout: float,
         task: Optional[Task] = None,
+        seven_zip_executable: Optional[str] = None,
     ) -> str:
         """用 `7zz t archive <entry>` 对单个小条目跑完整 CRC 测试。
 
@@ -8484,8 +9029,9 @@ class ExtractService:
         个小条目能把这种场景的探测耗时压到秒级。
         """
         entry_name = entry['name']
+        executable = seven_zip_executable or self.seven_zip
         cmd = [
-            self.seven_zip, 't',
+            executable, 't',
             '-bso0', '-bsp0',
             *self._get_mcp_args(archive_path),
         ]
@@ -8564,6 +9110,8 @@ class ExtractService:
         )
         if any(m in stderr_lower for m in encryption_markers):
             return 'wrong_password'
+        if self._looks_like_unsupported_method_error(stderr_text):
+            return 'unsupported_method'
 
         corrupt_markers = (
             "headers error",
@@ -8584,9 +9132,11 @@ class ExtractService:
         password: str,
         timeout: float,
         task: Optional[Task] = None,
+        seven_zip_executable: Optional[str] = None,
     ) -> str:
+        executable = seven_zip_executable or self.seven_zip
         cmd = [
-            self.seven_zip, 't',
+            executable, 't',
             '-bso0', '-bsp0',
             *self._get_mcp_args(archive_path),
         ]
@@ -8660,6 +9210,8 @@ class ExtractService:
         )
         if any(m in stderr_lower for m in encryption_markers):
             return 'wrong_password'
+        if self._looks_like_unsupported_method_error(stderr_text):
+            return 'unsupported_method'
 
         corrupt_markers = (
             "headers error",
@@ -8683,6 +9235,7 @@ class ExtractService:
         file_list: Optional[List[Dict]] = None,
         task: Optional[Task] = None,
         allow_full_test: bool = True,
+        seven_zip_executable: Optional[str] = None,
     ) -> str:
         """轻量探测密码是否正确。
 
@@ -8693,6 +9246,7 @@ class ExtractService:
           - 'ok'             探测通过，建议进入完整解压
           - 'wrong_password' 命中加密相关错误关键字 / CRC 失败 / 魔数不匹配
           - 'corrupt'        命中疑似损坏关键字
+          - 'unsupported_method' 当前 7z 不支持该压缩方法
           - 'unknown'        无法定性（超时 / 输出特殊），让上层走原有完整流程兜底
 
         优先级：
@@ -8700,7 +9254,9 @@ class ExtractService:
           2. 小条目 t 探测（有 <=5MB 的条目但无已知后缀时）：运行单文件 CRC。
           3. 流式探测（没 file_list 的头加密包兜底）：注意对 store+AES 可能漏判。
         """
-        if not password:
+        executable = seven_zip_executable or self.seven_zip
+
+        if not password and executable == self.seven_zip:
             zip_status = self._probe_zip_no_password_status(archive_path)
             if zip_status == "plain":
                 return "ok"
@@ -8731,6 +9287,7 @@ class ExtractService:
                     magic_entry,
                     timeout=self.PROBE_MAGIC_TIMEOUT,
                     task=task,
+                    seven_zip_executable=executable,
                 )
                 if result != 'unknown':
                     return result
@@ -8754,6 +9311,7 @@ class ExtractService:
                 entry,
                 timeout=self.PROBE_ENTRY_TIMEOUT,
                 task=task,
+                seven_zip_executable=executable,
             )
             if result != 'unknown':
                 return result
@@ -8772,6 +9330,7 @@ class ExtractService:
                 password,
                 timeout=self.PROBE_FULL_TEST_TIMEOUT,
                 task=task,
+                seven_zip_executable=executable,
             )
             if result != 'unknown':
                 return result
@@ -8781,7 +9340,7 @@ class ExtractService:
             return 'unknown'
         # ---- 以下是原有流式探测逻辑（无 file_list 时的兜底） ----
         cmd = [
-            self.seven_zip, 'x', '-so', '-y',
+            executable, 'x', '-so', '-y',
             '-bso0', '-bsp0',  # 关掉进度/消息，stdout 只剩解压数据
             *self._get_mcp_args(archive_path),
         ]
