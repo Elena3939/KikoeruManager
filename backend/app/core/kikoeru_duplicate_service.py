@@ -1687,7 +1687,16 @@ class KikoeruDuplicateService:
             linked_works = await dlsite_service.get_linked_works(rjcode) or {}
         except Exception as e:
             logger.warning("[Kikoeru关联查询] 获取关联作品失败 %s: %s", rjcode, e)
-            linked_works = {}
+            raise RuntimeError(f"DLsite 关联链查询失败: {e}") from e
+
+        if len(linked_works) == 1:
+            only_work = next(iter(linked_works.values()), None)
+            if (
+                only_work
+                and str(getattr(only_work, "workno", "") or "").strip().upper() == rjcode
+                and str(getattr(only_work, "work_type", "") or "").strip().lower() == "unknown"
+            ):
+                raise RuntimeError("DLsite 关联链查询失败: 未能解析任何关联作品")
 
         # 把链路展开成已规范化的 RJ 集合（含主 RJ 自身），供广义匹配使用。
         linkage_rjcode_set: Set[str] = set()

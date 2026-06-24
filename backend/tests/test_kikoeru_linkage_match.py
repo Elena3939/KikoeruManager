@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -184,6 +186,37 @@ def test_maybe_cache_writes_strict_match(service: KikoeruDuplicateService) -> No
     cached = service._get_cache("RJ01407907")
     assert cached is not None, "exact 命中应该写入缓存"
     assert cached.matched_rjcode == "RJ01407907"
+
+
+@pytest.mark.asyncio
+async def test_check_duplicate_with_linkages_raises_when_dlsite_chain_is_unknown(
+    service: KikoeruDuplicateService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DLsite 返回 unknown 链时，Kikoeru 查重必须直接报错。"""
+
+    monkeypatch.setattr(
+        "app.core.kikoeru_duplicate_service.get_dlsite_service",
+        lambda: SimpleNamespace(
+            get_linked_works=AsyncMock(
+                return_value={
+                    "RJ01407907": SimpleNamespace(
+                        workno="RJ01407907",
+                        work_type="unknown",
+                        lang="UNKNOWN",
+                    )
+                }
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "check_duplicate",
+        AsyncMock(return_value=KikoeruCheckResult(rjcode="RJ01407907")),
+    )
+
+    with pytest.raises(RuntimeError, match="DLsite 关联链查询失败"):
+        await service.check_duplicate_with_linkages("RJ01407907")
 
 
 def test_safe_headers_for_log_masks_authorization(service: KikoeruDuplicateService) -> None:

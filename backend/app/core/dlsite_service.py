@@ -218,6 +218,7 @@ class DLsiteApiService:
     
     def __init__(self):
         self.client: Optional[httpx.AsyncClient] = None
+        self._client_proxy_url: str = ""
         # 原 dict cache 在长期运行下会无界增长（HTML 页面 key 尤其大，单条 20-200KB）。
         # 换成 TTL+LRU：容量上限 512，TTL 24h；payload 里仍保留 timestamp 字段，
         # 原代码里自己对比 cache_ttl 的逻辑可以继续生效，功能零侵入。
@@ -1268,13 +1269,27 @@ class DLsiteApiService:
     
     async def _get_client(self) -> httpx.AsyncClient:
         """获取或创建 HTTP 客户端"""
-        if self.client is None or self.client.is_closed:
-            from ..config.settings import get_config
+        from ..config.settings import get_config
 
-            config = get_config()
-            proxy_url = None
-            if config.metadata.http_proxy:
-                proxy_url = self._normalize_proxy_url(config.metadata.http_proxy)
+        config = get_config()
+        proxy_url = None
+        if config.metadata.http_proxy:
+            proxy_url = self._normalize_proxy_url(config.metadata.http_proxy)
+
+        normalized_proxy_url = proxy_url or ""
+        if (
+            self.client is not None
+            and not self.client.is_closed
+            and self._client_proxy_url != normalized_proxy_url
+        ):
+            logger.info(
+                "[DLsite] 元数据代理已变更，重建 HTTP 客户端: %s",
+                normalized_proxy_url or "直连",
+            )
+            await self._close_client()
+
+        if self.client is None or self.client.is_closed:
+            if proxy_url:
                 logger.debug("[DLsite] 使用代理: %s", proxy_url)
 
             client_kwargs = {
@@ -1296,12 +1311,14 @@ class DLsiteApiService:
                     }
 
             self.client = httpx.AsyncClient(**client_kwargs)
+            self._client_proxy_url = normalized_proxy_url
         return self.client
 
     async def _close_client(self):
         if self.client and not self.client.is_closed:
             await self.client.aclose()
         self.client = None
+        self._client_proxy_url = ""
 
     async def _one_shot_get(self, url: str, **kwargs) -> httpx.Response:
         from ..config.settings import get_config
