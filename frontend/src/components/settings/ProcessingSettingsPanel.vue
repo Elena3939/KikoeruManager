@@ -59,6 +59,12 @@
           <SettingsFieldCard label="7-Zip 路径">
             <input v-model="config.extract.seven_zip_path" class="field-input" type="text" placeholder="例如 C:\Program Files\7-Zip\7z.exe">
           </SettingsFieldCard>
+          <SettingsFieldCard label="7-Zip ZS 路径">
+            <input v-model="config.extract.seven_zip_zstd_path" class="field-input" type="text" placeholder="可选：例如 C:\Program Files\7-Zip-Zstandard\7z.exe">
+            <template #hint>
+              只在官方 7-Zip 报 Unsupported Method 时使用，用于 ZSTD/04F71101 等扩展 7z codec。
+            </template>
+          </SettingsFieldCard>
           <SettingsFieldCard label="ZIP 文件名编码">
             <AppDropdown
               v-model="config.extract.zip_encoding"
