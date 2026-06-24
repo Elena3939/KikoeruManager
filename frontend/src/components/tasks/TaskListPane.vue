@@ -39,16 +39,12 @@
             </div>
 
             <!-- 第二行：RJ + 副标题/来源/步骤 一行内联 -->
-            <div v-if="formatRJCode(item.rjcode) || item.subtitle || shouldShowStep(item) || (item.source_label && item.source_label !== item.title && item.source_label !== item.subtitle)" class="flex min-w-0 items-center gap-x-1.5 overflow-hidden whitespace-nowrap text-[10.5px] text-slate-500 leading-tight">
+            <div v-if="formatRJCode(item.rjcode) || secondaryMetaText(item) || shouldShowStep(item)" class="flex min-w-0 items-center gap-x-1.5 overflow-hidden whitespace-nowrap text-[10.5px] text-slate-500 leading-tight">
               <span v-if="formatRJCode(item.rjcode)" class="flex-shrink-0 font-bold tabular-nums text-amber-700">{{ formatRJCode(item.rjcode) }}</span>
-              <span v-if="item.subtitle" class="min-w-0 truncate">{{ item.subtitle }}</span>
-              <span
-                v-if="item.source_label && item.source_label !== item.title && item.source_label !== item.subtitle"
-                class="min-w-0 truncate text-slate-400"
-              >· {{ item.source_label }}</span>
+              <span v-if="secondaryMetaText(item)" class="min-w-0 flex-1 truncate text-slate-500">{{ secondaryMetaText(item) }}</span>
               <span
                 v-if="shouldShowStep(item)"
-                class="inline-flex min-w-0 items-center gap-0.5 overflow-hidden text-slate-400"
+                class="inline-flex min-w-0 flex-shrink-[999] items-center gap-0.5 overflow-hidden text-slate-400"
               >
                 <Activity :size="9" :stroke-width="2.3" class="flex-shrink-0" />
                 <span class="min-w-0 truncate">{{ displayStep(item) }}</span>
@@ -262,6 +258,15 @@ function statusLabelForPill(item) {
 
 function displayStep(item) {
   return isCancelledTask(item) ? '用户取消' : item?.current_step
+}
+
+function secondaryMetaText(item) {
+  const subtitle = String(item?.subtitle || '').trim()
+  const sourceLabel = String(item?.source_label || '').trim()
+  const parts = []
+  if (subtitle) parts.push(subtitle)
+  if (sourceLabel && sourceLabel !== item?.title && sourceLabel !== subtitle) parts.push(sourceLabel)
+  return parts.join(' · ')
 }
 
 // 摘要 piece 形如 "候选 66" / "DLsite 39"，把数字和名称拆开渲染成 stat strip

@@ -100,7 +100,7 @@
             <SettingsFieldCard label="HTTP 代理" hint="用于 asmr.one 音频下载。">
               <input v-model="config.asmr_sync.http_proxy" class="field-input" type="text" placeholder="127.0.0.1:7890">
             </SettingsFieldCard>
-            <SettingsFieldCard label="元数据代理" hint="用于 DLsite 社团作品列表、封面等信息抓取；服务器在中国大陆时务必填写，否则社团补全可能少作品。">
+            <SettingsFieldCard label="元数据代理" hint="用于 DLsite 元数据、社团作品列表、封面抓取，以及 Kikoeru 查重前的 DLsite 关联链查询。">
               <input v-model="config.metadata.http_proxy" class="field-input" type="text" placeholder="127.0.0.1:7890">
             </SettingsFieldCard>
           </div>
@@ -542,6 +542,7 @@ async function runKikoeruDuplicateTest() {
   if (kikoeruDuplicateTesting.value) return false
   kikoeruTestRJCode.value = rjcode
   kikoeruDuplicateTesting.value = true
+  kikoeruCheckResult.value = null
   try {
     const [linkedWorksResult, checkResult] = await withKikoeruAction(() => Promise.all([
       kikoeruApi.linkedWorks(rjcode, { includeFullLinkage: true, cueLanguages: 'CHI_HANS,CHI_HANT,ENG,JPN' }),

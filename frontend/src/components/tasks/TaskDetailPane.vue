@@ -661,8 +661,7 @@ function actionToneClass(action) {
 
 .task-file-tree-card {
   position: relative;
-  height: 420px;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid #e2e8f0;
   border-radius: 14px;
   background: #ffffff;
@@ -693,8 +692,7 @@ function actionToneClass(action) {
 }
 
 .task-file-tree {
-  height: 100%;
-  overflow: auto;
+  overflow: visible;
   padding: 10px 12px;
   scrollbar-width: thin;
   scrollbar-color: rgba(148, 163, 184, 0.65) transparent;
@@ -726,19 +724,17 @@ function actionToneClass(action) {
 }
 
 .tree-row-filtered {
-  border-color: rgba(148, 163, 184, 0.22);
-  background: rgba(241, 245, 249, 0.62);
+  border-color: transparent;
+  background: transparent;
   color: #64748b;
   opacity: 0.74;
-  box-shadow: inset 3px 0 0 rgba(148, 163, 184, 0.45);
+  box-shadow: none;
 }
 
 .tree-row-filtered:hover {
-  border-color: rgba(148, 163, 184, 0.36);
-  background: rgba(226, 232, 240, 0.78);
-  box-shadow:
-    inset 3px 0 0 rgba(148, 163, 184, 0.62),
-    inset 0 0 0 1px rgba(203, 213, 225, 0.74);
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
 
 .tree-main {
@@ -1063,18 +1059,16 @@ function actionToneClass(action) {
 }
 
 :global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-row-filtered) {
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  background: rgba(30, 41, 59, 0.42) !important;
+  border-color: transparent !important;
+  background: transparent !important;
   color: #94a3b8 !important;
-  box-shadow: inset 3px 0 0 rgba(148, 163, 184, 0.38) !important;
+  box-shadow: none !important;
 }
 
 :global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-row-filtered:hover) {
-  border-color: rgba(148, 163, 184, 0.28) !important;
-  background: rgba(51, 65, 85, 0.5) !important;
-  box-shadow:
-    inset 3px 0 0 rgba(148, 163, 184, 0.56),
-    inset 0 0 0 1px rgba(148, 163, 184, 0.16) !important;
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
 }
 
 :global(html.kikoerumanager-dark body #app .tasks-page .task-file-tree .tree-row-filtered .tree-icon) {
