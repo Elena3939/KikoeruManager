@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import Headers, MutableHeaders
+from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES, GZipResponder, IdentityResponder
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func, or_, text
 from pydantic import BaseModel, Field
@@ -38,6 +40,76 @@ _LIBRARY_STORAGE_INFO_CACHE: Dict[str, Dict[str, Any]] = {}
 _STORAGE_INFO_TTL_SECONDS = 60.0
 _LIBRARY_STORAGE_INFO_STALE_TIMEOUT_SECONDS = 0.35
 _BATCH_API_RENAME_INFLIGHT: Dict[str, asyncio.Task] = {}
+
+
+def _is_media_response_for_gzip(headers: Headers, status_code: int) -> bool:
+    content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    if status_code == 206 or headers.get("content-range"):
+        return True
+    return content_type.startswith(("video/", "audio/", "image/")) or content_type == "application/octet-stream"
+
+
+class MediaAwareGZipResponder(GZipResponder):
+    async def send_with_compression(self, message):
+        message_type = message["type"]
+        if message_type == "http.response.start":
+            self.initial_message = message
+            headers = Headers(raw=self.initial_message["headers"])
+            self.content_encoding_set = "content-encoding" in headers
+            self.content_type_is_excluded = (
+                headers.get("content-type", "").startswith(DEFAULT_EXCLUDED_CONTENT_TYPES)
+                or _is_media_response_for_gzip(headers, int(self.initial_message.get("status") or 200))
+            )
+        elif message_type == "http.response.body" and (self.content_encoding_set or self.content_type_is_excluded):
+            if not self.started:
+                self.started = True
+                await self.send(self.initial_message)
+            await self.send(message)
+        elif message_type == "http.response.body" and not self.started:
+            self.started = True
+            body = message.get("body", b"")
+            more_body = message.get("more_body", False)
+            if len(body) < self.minimum_size and not more_body:
+                await self.send(self.initial_message)
+                await self.send(message)
+            elif not more_body:
+                body = self.apply_compression(body, more_body=False)
+
+                headers = MutableHeaders(raw=self.initial_message["headers"])
+                headers.add_vary_header("Accept-Encoding")
+                if body != message["body"]:
+                    headers["Content-Encoding"] = self.content_encoding
+                    headers["Content-Length"] = str(len(body))
+                    message["body"] = body
+
+                await self.send(self.initial_message)
+                await self.send(message)
+            else:
+                body = self.apply_compression(body, more_body=True)
+
+                headers = MutableHeaders(raw=self.initial_message["headers"])
+                headers.add_vary_header("Accept-Encoding")
+                if body != message["body"]:
+                    headers["Content-Encoding"] = self.content_encoding
+                    del headers["Content-Length"]
+                    message["body"] = body
+
+                await self.send(self.initial_message)
+                await self.send(message)
+        elif message_type == "http.response.pathsend":  # pragma: no branch
+            await self.send(self.initial_message)
+            await self.send(message)
+
+
+class MediaAwareGZipMiddleware(GZipMiddleware):
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":  # pragma: no cover
+            await self.app(scope, receive, send)
+            return
+
+        headers = Headers(scope=scope)
+        responder = MediaAwareGZipResponder(self.app, self.minimum_size, compresslevel=self.compresslevel) if "gzip" in headers.get("Accept-Encoding", "") else IdentityResponder(self.app, self.minimum_size)
+        await responder(scope, receive, send)
 
 
 def _batch_api_rename_request_key(library_id: Any, paths: List[Any]) -> str:
@@ -104,7 +176,7 @@ app = FastAPI(
     description="DLsite作品整理工具API",
     version=get_app_version()
 )
-app.add_middleware(GZipMiddleware, minimum_size=1024)
+app.add_middleware(MediaAwareGZipMiddleware, minimum_size=1024)
 
 # ========== 工具函数 ==========
 def _mask_url_credentials(value: str) -> str:

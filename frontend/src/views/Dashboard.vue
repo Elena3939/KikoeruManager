@@ -106,6 +106,7 @@ const archiveSearchQuery = ref('')
 const archiveSortBy = ref('processed_at')
 const archiveSortOrder = ref('desc')
 let archiveSearchTimeout = null
+let archiveLoadingCount = 0
 
 let intervalId = null
 let dashboardInitialized = false
@@ -357,37 +358,34 @@ function resolveTaskArchiveSize(task) {
 
 const taskArchiveItems = computed(() => {
   const items = Array.isArray(taskCenterOverview.value?.recent_items) ? taskCenterOverview.value.recent_items : []
-  const active = Array.isArray(taskCenterOverview.value?.active_items) ? taskCenterOverview.value.active_items : []
-  return [...active, ...items]
-    .filter((task, index, list) => list.findIndex((item) => item.id === task.id) === index)
-    .map((task) => {
-      const domain = String(task.domain || 'system').trim()
-      const title = String(task.title || task.subtitle || task.id || '未命名任务').trim()
-      return {
-        id: `task-${task.id}`,
-        source: 'task_center',
-        filename: title,
-        rjcode: formatRJ(task.rjcode),
-        status: task.status,
-        task_domain: domain,
-        domain,
-        task_kind: task.kind || task.type || '',
-        processed_at: task.completed_at || task.updated_at || task.started_at || task.created_at,
-        file_size: resolveTaskArchiveSize(task),
-        summary: task.subtitle || task.current_step || '',
-        status_label: task.status_label || '',
-        error_message: task.error_message || '',
-        current_step: task.current_step || '',
-        source_label: task.source_label || '',
-        platform_label: task.platform_label || task.details?.metadata?.platform_label || '',
-        platforms: Array.isArray(task.platforms) ? task.platforms : (task.details?.metadata?.platforms || []),
-        download_mode: task.download_mode || task.details?.metadata?.download_mode || '',
-        source_modes: Array.isArray(task.source_modes) ? task.source_modes : (task.details?.metadata?.source_modes || []),
-        metrics: Array.isArray(task.metrics) ? task.metrics : [],
-        details: task.details || {},
-        route_hint: task.route_hint,
-      }
-    })
+  return items.map((task) => {
+    const domain = String(task.domain || 'system').trim()
+    const title = String(task.title || task.subtitle || task.id || '未命名任务').trim()
+    return {
+      id: `task-${task.id}`,
+      source: 'task_center',
+      filename: title,
+      rjcode: formatRJ(task.rjcode),
+      status: task.status,
+      task_domain: domain,
+      domain,
+      task_kind: task.kind || task.type || '',
+      processed_at: task.completed_at || task.started_at || task.created_at,
+      file_size: resolveTaskArchiveSize(task),
+      summary: task.subtitle || task.current_step || '',
+      status_label: task.status_label || '',
+      error_message: task.error_message || '',
+      current_step: task.current_step || '',
+      source_label: task.source_label || '',
+      platform_label: task.platform_label || task.details?.metadata?.platform_label || '',
+      platforms: Array.isArray(task.platforms) ? task.platforms : (task.details?.metadata?.platforms || []),
+      download_mode: task.download_mode || task.details?.metadata?.download_mode || '',
+      source_modes: Array.isArray(task.source_modes) ? task.source_modes : (task.details?.metadata?.source_modes || []),
+      metrics: Array.isArray(task.metrics) ? task.metrics : [],
+      details: task.details || {},
+      route_hint: task.route_hint,
+    }
+  })
 })
 
 const displayedArchives = computed(() => {
@@ -734,7 +732,11 @@ async function fetchWatcherStatus() {
 async function fetchProcessedArchives(options = {}) {
   const { silent = false, scan = false } = options
   const currentRequestId = ++archivesRequestId
-  archivesLoading.value = true
+  const trackVisibleLoading = !silent
+  if (trackVisibleLoading) {
+    archiveLoadingCount += 1
+    archivesLoading.value = true
+  }
   try {
     if (scan) {
       await processedArchiveApi.scan()
@@ -755,7 +757,12 @@ async function fetchProcessedArchives(options = {}) {
     console.error('获取已处理压缩包列表失败:', error)
     if (!silent) ElMessage.error('获取已处理压缩包列表失败')
   } finally {
-    if (currentRequestId === archivesRequestId) {
+    if (trackVisibleLoading) {
+      archiveLoadingCount = Math.max(0, archiveLoadingCount - 1)
+      if (archiveLoadingCount === 0) {
+        archivesLoading.value = false
+      }
+    } else if (currentRequestId === archivesRequestId && archiveLoadingCount === 0) {
       archivesLoading.value = false
     }
   }

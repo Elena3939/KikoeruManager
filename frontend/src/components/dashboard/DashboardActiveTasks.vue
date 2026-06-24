@@ -65,17 +65,17 @@
           <h3 class="m-0 truncate text-[13.5px] font-bold leading-tight text-slate-900">{{ task.title }}</h3>
           <p v-if="displaySubtitle(task)" class="m-0 mt-0.5 truncate text-[12px] text-slate-500">{{ displaySubtitle(task) }}</p>
 
-          <div class="mt-2 flex flex-wrap items-center gap-1.5">
+          <div class="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
             <span class="inline-flex h-[22px] items-center gap-1 rounded-[6px] border border-slate-200 bg-white px-2 text-[11px] font-medium text-slate-600">
               <component :is="taskIcon(task)" :size="11" :stroke-width="1.8" :class="taskChipIconClass(task)" />
               {{ taskDomainLabel(task) }}
             </span>
             <span
               v-if="taskBadgeLabel(task)"
-              class="inline-flex min-h-[22px] max-w-[220px] items-center rounded-[6px] bg-slate-50 px-2 py-0.5 text-[11px] tabular-nums text-slate-500"
+              class="dash-task-badge-chip inline-flex min-h-[22px] items-center rounded-[6px] bg-slate-50 px-2 py-0.5 text-[11px] tabular-nums text-slate-500"
               :title="taskBadgeLabel(task)"
             >
-              <span class="truncate">{{ taskBadgeLabel(task) }}</span>
+              <span class="min-w-0 truncate">{{ taskBadgeLabel(task) }}</span>
             </span>
             <span
               v-if="task.current_step && !isTerminalStatus(task)"
@@ -660,6 +660,12 @@ function formatRJ(value) {
   border: 0;
   box-shadow: none;
   color: inherit;
+}
+
+.dash-task-badge-chip {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 280px;
 }
 
 .dash-task-pager-btn {

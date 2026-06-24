@@ -133,6 +133,41 @@ def test_library_browser_endpoints_support_multi_library(client, monkeypatch, tm
     assert "all_libraries" in stats_response.json()
 
 
+def test_library_browser_video_preview_keeps_range_response_uncompressed(client, monkeypatch, tmp_path):
+    video_path = tmp_path / "sample.mp4"
+    video_path.write_bytes(b"\x00" * (1024 * 1024))
+
+    library = library_manager_module.LibraryDefinition(
+        id="local-preview",
+        name="本地预览",
+        type="local",
+        path=str(tmp_path),
+        enabled=True,
+    )
+
+    manager = object.__new__(library_manager_module.LibraryManager)
+    monkeypatch.setattr(manager, "get_library_definition", lambda _library_id: library)
+    monkeypatch.setattr(routes_module, "get_library_manager", lambda: manager)
+
+    response = client.get(
+        "/api/library/browser/preview",
+        params={
+            "library_id": "local-preview",
+            "path": str(video_path),
+        },
+        headers={
+            "Accept-Encoding": "gzip",
+            "Range": "bytes=0-99",
+        },
+    )
+
+    assert response.status_code == 206
+    assert response.headers.get("content-encoding") is None
+    assert response.headers.get("content-range") == f"bytes 0-99/{video_path.stat().st_size}"
+    assert response.headers.get("content-length") == "100"
+    assert response.headers.get("accept-ranges") == "bytes"
+
+
 def test_local_inventory_reads_prefer_usable_index_snapshot(monkeypatch, tmp_path):
     local_root = tmp_path / "library"
     circle_dir = local_root / "Circle"
