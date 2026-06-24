@@ -249,24 +249,45 @@
 
 
 
-            <button
-              v-if="libraryViewMode === 'directory'"
+            <StatefulButton
+              v-if="libraryViewMode === 'directory' && !isRemoteCurrentLibrary"
+
+              unstyled
 
               type="button"
 
-              class="lib-btn lib-btn-icon-tinted lib-icon-stats"
+              class="lib-btn lib-btn-icon-tinted lib-icon-index-refresh"
 
-              :disabled="statsLoading"
+              :disabled="isRefreshingCurrentPageIndex || loading || !files.length"
 
-              @click="handleStatsAction"
+              :show-default-icons="false"
+
+              :success-hold="900"
+
+              :title="isRefreshingCurrentPageIndex ? '正在刷新当前页索引状态' : (currentPageIndexRefreshPending ? '当前页索引仍在后台更新' : '刷新当前页文件内容索引状态')"
+
+              @click="refreshCurrentPageIndexStatus"
 
             >
 
-              <IconBarChart :size="14" :stroke-width="2.2" />
+              <template #prefix="{ state }">
 
-              <span>刷新快照</span>
+                <component
+                  :is="state === 'success' && !currentPageIndexRefreshPending ? IconCheck : (state === 'error' ? IconX : IconRefreshCw)"
+                  :size="14"
+                  :stroke-width="2.2"
+                  class="lib-index-refresh-icon"
+                  :class="{
+                    'is-spinning': state === 'loading' || isRefreshingCurrentPageIndex || currentPageIndexRefreshPending,
+                    'is-success-pop': state === 'success' && !currentPageIndexRefreshPending
+                  }"
+                />
 
-            </button>
+              </template>
+
+              <span>{{ isRefreshingCurrentPageIndex ? '刷新中' : (currentPageIndexRefreshPending ? '更新中' : '刷新本页索引') }}</span>
+
+            </StatefulButton>
 
 
 
@@ -2019,6 +2040,10 @@ const router = useRouter()
 const loading = ref(false)
 
 const statsLoading = ref(false)
+
+const isRefreshingCurrentPageIndex = ref(false)
+
+const currentPageIndexRefreshNotice = ref(null)
 
 const listPolling = ref(false)
 
@@ -5311,6 +5336,20 @@ const currentPageDirectoryRows = computed(() => files.value.filter(row => row?.i
 
 const currentPageRealDirectoryRows = computed(() => normalizeLibraryActionRows(currentPageDirectoryRows.value).filter(row => row?.is_directory))
 
+const currentPageIndexRefreshPending = computed(() => (
+  libraryViewMode.value === 'directory' &&
+  !isRemoteCurrentLibrary.value &&
+  files.value.some(row => row?.index_refresh_pending)
+))
+
+watch(currentPageIndexRefreshPending, (pending, wasPending) => {
+  if (pending || !wasPending) return
+  const notice = currentPageIndexRefreshNotice.value
+  if (!notice) return
+  ElMessage.success(`${notice.label}索引更新完成`)
+  currentPageIndexRefreshNotice.value = null
+})
+
 const toolbarActionScopeLabel = computed(() => toolbarActionScope.value === 'page' ? '当前页目录' : '当前目录')
 
 function normalizeRemoteActionPath (path = '') {
@@ -8319,7 +8358,7 @@ function scheduleListPoll (items, response = null) {
 
   }
 
-  if ((items || []).some(item => item?.index_refresh_pending && item?.size_status === 'pending')) {
+  if ((items || []).some(item => item?.index_refresh_pending)) {
 
     listPollTimer = setTimeout(() => refreshLibrary({ silent: true }), 2000)
 
@@ -8473,16 +8512,59 @@ async function refreshStats (forceRefresh = false, options = {}) {
 
 
 
-async function handleStatsAction () {
-  await refreshStats(true, { refreshLibraryId: selectedLibraryId.value })
+function markCurrentPageIndexRefreshing () {
+  files.value = files.value.map(row => {
+    if (!row?.path || row?.circle_virtual) return row
+    return {
+      ...row,
+      index_refresh_pending: true,
+      size_status: row?.size_status === 'pending' ? 'pending' : 'stale'
+    }
+  })
+}
 
+async function refreshCurrentPageIndexStatus () {
+  if (isRefreshingCurrentPageIndex.value || libraryViewMode.value !== 'directory') return false
+  if (isRemoteCurrentLibrary.value) {
+    ElMessage.warning('远程库存不维护本地索引状态')
+    return false
+  }
+  if (!files.value.length) {
+    ElMessage.warning('当前页没有可刷新的文件内容')
+    return false
+  }
+
+  isRefreshingCurrentPageIndex.value = true
+  try {
+    markCurrentPageIndexRefreshing()
+    await nextTick()
+    await refreshLibrary({ silent: true, forceRefresh: true, throwOnError: true })
+    await refreshStats(false, { silent: true, refreshLibraryId: selectedLibraryId.value })
+    const pendingCount = files.value.filter(row => row?.index_refresh_pending).length
+    if (pendingCount > 0) {
+      currentPageIndexRefreshNotice.value = {
+        key: `${selectedLibraryId.value}:${currentPath.value}:${currentPage.value}`,
+        label: '当前页'
+      }
+      ElMessage.info(`当前页索引刷新已提交，${pendingCount} 项仍在后台更新`)
+    } else {
+      ElMessage.success('当前页索引状态已刷新')
+      currentPageIndexRefreshNotice.value = null
+    }
+    return true
+  } catch (error) {
+    ElMessage.error('刷新当前页索引失败: ' + (error.response?.data?.detail || error.message || '未知错误'))
+    return false
+  } finally {
+    isRefreshingCurrentPageIndex.value = false
+  }
 }
 
 
 
 async function refreshLibrary (options = {}) {
 
-  const { silent = false, forceRefresh = false } = options
+  const { silent = false, forceRefresh = false, throwOnError = false } = options
   const requestMode = libraryViewMode.value
 
   if (requestMode === 'circle') {
@@ -8613,7 +8695,8 @@ async function refreshLibrary (options = {}) {
 
   } catch (error) {
 
-    ElMessage.error(error.response?.data?.detail || error.message || '获取库存文件失败')
+    if (!throwOnError) ElMessage.error(error.response?.data?.detail || error.message || '获取库存文件失败')
+    if (throwOnError) throw error
 
   } finally {
 
@@ -25437,6 +25520,7 @@ function statsStatusTextDisplay (stats) {
 
 .lib-btn-icon-tinted.lib-icon-refresh svg { color: #2563eb; }
 .lib-btn-icon-tinted.lib-icon-stats svg { color: #4f46e5; }
+.lib-btn-icon-tinted.lib-icon-index-refresh svg { color: #4f46e5; }
 .lib-btn-icon-tinted.lib-icon-select svg { color: #0f766e; }
 .lib-btn-icon-tinted.lib-icon-subtitle svg,
 .lib-btn-icon-tinted.lib-icon-subtitle-batch svg { color: #059669; }
@@ -25448,6 +25532,61 @@ function statsStatusTextDisplay (stats) {
 .lib-btn-icon-tinted.lib-icon-batch-move svg { color: #0ea5e9; }
 .lib-btn-icon-tinted.lib-icon-api-rename svg { color: #7c3aed; }
 .lib-btn-icon-tinted.lib-icon-auto-circle-group svg { color: #9333ea; }
+
+.lib-icon-index-refresh {
+  position: relative;
+  overflow: hidden;
+}
+
+.lib-icon-index-refresh[data-state="loading"] {
+  border-color: rgba(79, 70, 229, 0.38) !important;
+  background:
+    linear-gradient(90deg, rgba(238, 242, 255, 0.82), rgba(224, 231, 255, 0.94), rgba(238, 242, 255, 0.82)) !important;
+}
+
+.lib-icon-index-refresh[data-state="loading"]::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  transform: translateX(-110%);
+  background: linear-gradient(90deg, transparent, rgba(99, 102, 241, 0.22), transparent);
+  animation: library-index-refresh-sweep 1.05s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.lib-icon-index-refresh[data-state="success"] {
+  border-color: rgba(16, 185, 129, 0.36) !important;
+  background: rgba(236, 253, 245, 0.86) !important;
+  color: #047857;
+}
+
+.lib-index-refresh-icon {
+  transition: transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.22s ease;
+}
+
+.lib-index-refresh-icon.is-spinning {
+  animation: library-index-refresh-spin 0.72s linear infinite;
+}
+
+.lib-index-refresh-icon.is-success-pop {
+  color: #059669 !important;
+  animation: library-index-refresh-pop 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes library-index-refresh-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes library-index-refresh-pop {
+  0% { transform: scale(0.72); opacity: 0.56; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes library-index-refresh-sweep {
+  0% { transform: translateX(-115%); opacity: 0; }
+  18% { opacity: 1; }
+  100% { transform: translateX(115%); opacity: 0; }
+}
 
 /* 下拉菜单 */
 
@@ -30929,6 +31068,13 @@ function statsStatusTextDisplay (stats) {
   }
   /* 工具栏内 button 默认占 1 个 grid 单元（自动 2 列流）*/
   .lib-toolbar > button {
+    width: 100%;
+    min-width: 0;
+    height: 36px;
+    padding: 0 10px !important;
+    font-size: 12px;
+  }
+  .lib-toolbar > :deep(.stateful-button) {
     width: 100%;
     min-width: 0;
     height: 36px;
