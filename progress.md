@@ -959,3 +959,46 @@
 - `progress.md`：追加本轮仪表盘最近归档面板布局记录。
 - 回滚方式：还原本轮 `frontend/src/components/dashboard/DashboardArchive.vue` 的对应 hunk，并删除本段进度记录。
 
+## 2026-06-24 - Task: 修复仪表盘任务流导入说明过早截断
+### What was done
+- 移除任务流导入说明 chip 的固定 220px 宽度限制，改为占用当前行剩余可用宽度。
+- 保留超长文本单行省略，避免极端长文件名挤压状态按钮和操作菜单。
+
+### Testing
+- `cd frontend && npm run build`：通过。Vite 仅输出既有 VueUse pure 注释、lottie-web eval 和 chunk 体积 warning。
+
+### Notes
+- `frontend/src/components/dashboard/DashboardActiveTasks.vue`：任务说明 chip 改为可伸展布局，解决概览页导入处理文本右侧留白仍截断的问题。
+- `progress.md`：追加本轮仪表盘任务流布局修复记录。
+- 回滚方式：还原本轮 `frontend/src/components/dashboard/DashboardActiveTasks.vue` 中 `dash-task-badge-chip` 和 chip class 的对应 hunk，并删除本段进度记录。
+
+## 2026-06-24 - Task: 修复概览右侧最近归档任务执行中抖动
+### What was done
+- 右侧最近归档只保留终态任务快照，不再把处理中任务混进归档列表。
+- 静默刷新归档数据时不再点亮加载态，减少任务执行期间卡片反复闪烁和上下跳动。
+
+### Testing
+- `cd frontend && npm run build`：通过。仅保留既有 VueUse pure 注释、lottie-web eval 和 chunk 体积 warning。
+
+### Notes
+- `frontend/src/views/Dashboard.vue`：收紧最近归档的数据来源，并把静默刷新与可见 loading 分离，避免任务执行过程中的列表抖动。
+- `progress.md`：追加本轮概览最近归档抖动修复记录。
+- 回滚方式：还原本轮 `frontend/src/views/Dashboard.vue` 的对应 hunk，并删除本段进度记录。
+
+## 2026-06-24 - Task: 修复服务器视频预览被 gzip 干扰
+### What was done
+- 让库存媒体预览在视频、音频、图片和 `206 Range` 响应上跳过 gzip，避免浏览器已经缓存到播放点后仍然卡顿。
+- 追加了回归测试，确认视频 Range 响应保留 `206`、`Content-Range` 和 `Accept-Ranges`，且不再带 `Content-Encoding: gzip`。
+
+### Testing
+- `backend\venv\Scripts\python.exe -m py_compile app\api\routes.py tests\test_library_browser_api.py`：通过。
+- 独立 `TestClient(app)` 脚本：`/openapi.json` 仍返回 `content-encoding: gzip`，`/api/library/browser/preview` 的视频 Range 响应返回 `206`、`Content-Range: bytes 0-99/...`、`Content-Length: 100`，且无 `content-encoding`。
+- `backend\venv\Scripts\python.exe -m pytest tests\test_library_browser_api.py -q -k video_preview_keeps_range_response_uncompressed`：因测试库 `kikoerumanager_test` 无法连接而失败，属于环境问题，不是本次代码路径失败。
+
+### Notes
+- `backend/app/api/routes.py`：新增媒体感知 gzip 响应器，让视频、音频、图片和 Range 响应跳过压缩。
+- `backend/tests/test_library_browser_api.py`：新增视频预览 Range 回归测试。
+- `docs/TESTING.md`：补充媒体预览不进 gzip 的行为说明。
+- `progress.md`：追加本轮服务器视频预览 gzip 修复记录。
+- 回滚方式：还原本轮 `backend/app/api/routes.py`、`backend/tests/test_library_browser_api.py` 和 `docs/TESTING.md` 的对应 hunk，并删除本段进度记录。
+
