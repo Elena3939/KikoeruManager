@@ -103,6 +103,9 @@ class WatcherConfig(BaseModel):
 class ExtractConfig(BaseModel):
     """解压配置"""
     seven_zip_path: str = "7z"
+    # 可选：7-Zip ZS / 7z-zstd 兼容后端。用于官方 7zz 报 Unsupported Method
+    # 的 7z/ZSTD 包（如 Method = Delta 04F71101），默认自动查找 7zzs/7z-zstd。
+    seven_zip_zstd_path: str = ""
     auto_repair_extension: bool = True
     verify_after_extract: bool = True
     password_list: list = []
