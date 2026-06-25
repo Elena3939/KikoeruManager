@@ -75,6 +75,7 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     assetsDir: 'assets',
+    assetsInlineLimit: 0,
     rollupOptions: {
       output: {
         entryFileNames: `assets/${buildAssetPrefix}[name]-[hash].js`,
