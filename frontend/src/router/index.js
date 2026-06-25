@@ -17,6 +17,42 @@ const CircleCompletion = () => import('../views/CircleCompletion.vue')
 const VerifyGate = () => import('../views/VerifyGate.vue')
 const BlockedGate = () => import('../views/BlockedGate.vue')
 
+const routeComponentLoaders = {
+  '/': Dashboard,
+  '/tasks': Tasks,
+  '/conflicts': Conflicts,
+  '/library': Library,
+  '/subtitle-import': SubtitleImport,
+  '/passwords': PasswordVault,
+  '/existing-folders': ExistingFolders,
+  '/asmr-sync': ASMRSync,
+  '/baidu-netdisk': ASMRSync,
+  '/library-backup': LibraryBackup,
+  '/settings': Settings,
+  '/logs': Logs,
+  '/circle-completion': CircleCompletion,
+  '/activity-history': ActivityHistory,
+  '/verify': VerifyGate,
+  '/blocked': BlockedGate,
+}
+const routeComponentPreloadCache = new Map()
+
+export function preloadRouteComponent(path) {
+  const cleanPath = String(path || '').split('?', 1)[0].split('#', 1)[0] || '/'
+  const loader = routeComponentLoaders[cleanPath]
+  if (!loader) return Promise.resolve(null)
+  if (!routeComponentPreloadCache.has(cleanPath)) {
+    routeComponentPreloadCache.set(
+      cleanPath,
+      loader().catch((error) => {
+        routeComponentPreloadCache.delete(cleanPath)
+        throw error
+      })
+    )
+  }
+  return routeComponentPreloadCache.get(cleanPath)
+}
+
 const routes = [
   {
     path: '/',

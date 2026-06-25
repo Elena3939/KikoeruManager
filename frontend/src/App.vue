@@ -72,69 +72,71 @@
           :default-active="route.path"
           router
           class="sidebar-menu"
+          @pointerover="handleSidebarRoutePreview"
+          @focusin="handleSidebarRoutePreview"
         >
-          <el-menu-item index="/" title="概览" class="sidebar-nav-item sidebar-nav-overview">
+          <el-menu-item index="/" title="概览" class="sidebar-nav-item sidebar-nav-overview" data-route-path="/">
             <House :size="18" :stroke-width="2.2" />
             <span>概览</span>
           </el-menu-item>
 
-          <el-menu-item index="/tasks" title="任务队列" class="sidebar-nav-item sidebar-nav-tasks">
+          <el-menu-item index="/tasks" title="任务队列" class="sidebar-nav-item sidebar-nav-tasks" data-route-path="/tasks">
             <ListTodo :size="18" :stroke-width="2.2" />
             <span>任务队列</span>
           </el-menu-item>
 
-          <el-menu-item index="/conflicts" title="问题作品" class="sidebar-nav-item sidebar-nav-conflicts">
+          <el-menu-item index="/conflicts" title="问题作品" class="sidebar-nav-item sidebar-nav-conflicts" data-route-path="/conflicts">
             <TriangleAlert :size="18" :stroke-width="2.2" />
             <span>问题作品</span>
             <el-badge v-if="conflictCount > 0" :value="conflictCount" class="conflict-badge" />
           </el-menu-item>
 
-          <el-menu-item index="/library" title="库存管理" class="sidebar-nav-item sidebar-nav-library">
+          <el-menu-item index="/library" title="库存管理" class="sidebar-nav-item sidebar-nav-library" data-route-path="/library">
             <Boxes :size="18" :stroke-width="2.2" />
             <span>库存管理</span>
           </el-menu-item>
 
-          <el-menu-item index="/subtitle-import" title="字幕补配" class="sidebar-nav-item sidebar-nav-subtitle">
+          <el-menu-item index="/subtitle-import" title="字幕补配" class="sidebar-nav-item sidebar-nav-subtitle" data-route-path="/subtitle-import">
             <Captions :size="18" :stroke-width="2.2" />
             <span>字幕补配</span>
           </el-menu-item>
 
-          <el-menu-item index="/passwords" title="密码库" class="sidebar-nav-item sidebar-nav-passwords">
+          <el-menu-item index="/passwords" title="密码库" class="sidebar-nav-item sidebar-nav-passwords" data-route-path="/passwords">
             <KeyRound :size="18" :stroke-width="2.2" />
             <span>密码库</span>
           </el-menu-item>
 
-          <el-menu-item index="/existing-folders" title="已有文件夹" class="sidebar-nav-item sidebar-nav-folders">
+          <el-menu-item index="/existing-folders" title="已有文件夹" class="sidebar-nav-item sidebar-nav-folders" data-route-path="/existing-folders">
             <FolderTree :size="18" :stroke-width="2.2" />
             <span>已有文件夹</span>
           </el-menu-item>
 
-          <el-menu-item index="/asmr-sync" title="ASMR 同步下载" class="sidebar-nav-item sidebar-nav-asmr">
+          <el-menu-item index="/asmr-sync" title="ASMR 同步下载" class="sidebar-nav-item sidebar-nav-asmr" data-route-path="/asmr-sync">
             <Download :size="18" :stroke-width="2.2" />
             <span>ASMR 同步下载</span>
           </el-menu-item>
 
-          <el-menu-item index="/circle-completion" title="社团补全" class="sidebar-nav-item sidebar-nav-circle">
+          <el-menu-item index="/circle-completion" title="社团补全" class="sidebar-nav-item sidebar-nav-circle" data-route-path="/circle-completion">
             <Tags :size="18" :stroke-width="2.2" />
             <span>社团补全</span>
           </el-menu-item>
 
-          <el-menu-item index="/library-backup" title="库存打包" class="sidebar-nav-item sidebar-nav-backup">
+          <el-menu-item index="/library-backup" title="库存打包" class="sidebar-nav-item sidebar-nav-backup" data-route-path="/library-backup">
             <Archive :size="18" :stroke-width="2.2" />
             <span>库存打包</span>
           </el-menu-item>
 
-          <el-menu-item index="/settings" title="设置" class="sidebar-nav-item sidebar-nav-settings">
+          <el-menu-item index="/settings" title="设置" class="sidebar-nav-item sidebar-nav-settings" data-route-path="/settings">
             <Settings2 :size="18" :stroke-width="2.2" />
             <span>设置</span>
           </el-menu-item>
 
-          <el-menu-item index="/logs" title="日志" class="sidebar-nav-item sidebar-nav-logs">
+          <el-menu-item index="/logs" title="日志" class="sidebar-nav-item sidebar-nav-logs" data-route-path="/logs">
             <ScrollText :size="18" :stroke-width="2.2" />
             <span>日志</span>
           </el-menu-item>
 
-          <el-menu-item index="/activity-history" title="操作记录" class="sidebar-nav-item sidebar-nav-history">
+          <el-menu-item index="/activity-history" title="操作记录" class="sidebar-nav-item sidebar-nav-history" data-route-path="/activity-history">
             <History :size="18" :stroke-width="2.2" />
             <span>操作记录</span>
           </el-menu-item>
@@ -227,7 +229,7 @@ import AnimatedThemeToggler from './components/magicui/AnimatedThemeToggler.vue'
 import { useTheme } from './composables/useTheme'
 import { useRealtimeEvents } from './composables/useRealtimeEvents'
 import { healthApi, watcherApi } from './api'
-import router from './router'
+import router, { preloadRouteComponent } from './router'
 
 const appVersion = ref('dev')
 const route = useRoute()
@@ -242,6 +244,18 @@ const realtimeEvents = useRealtimeEvents()
 let realtimeEventsStarted = false
 let unsubscribeWatcherStatus = null
 let unsubscribeRealtimeConnected = null
+let routePreloadIdleHandle = null
+const routePreloadQueue = [
+  '/library',
+  '/tasks',
+  '/settings',
+  '/asmr-sync',
+  '/circle-completion',
+  '/subtitle-import',
+  '/activity-history',
+  '/conflicts',
+]
+const preloadedRoutePaths = new Set()
 
 // 路由切换时自动关闭移动端抽屉（点击菜单项后即关闭）
 watch(() => route.fullPath, () => {
@@ -293,6 +307,7 @@ onMounted(async () => {
   startRealtimeEvents()
   await refreshStatus()
   startStatusPolling()
+  scheduleRoutePreloading()
 })
 
 watch(isGateRoute, async (gateRoute) => {
@@ -310,15 +325,67 @@ watch(isGateRoute, async (gateRoute) => {
   startRealtimeEvents()
   await refreshStatus()
   startStatusPolling()
+  scheduleRoutePreloading()
 })
 
 onUnmounted(() => {
   stopRealtimeEvents()
   stopStatusPolling()
+  cancelRoutePreloading()
   if (typeof document !== 'undefined') {
     document.removeEventListener('visibilitychange', handleVisibilityChange)
   }
 })
+
+function preloadSidebarRoute(path) {
+  const cleanPath = String(path || '').trim()
+  if (!cleanPath || cleanPath === route.path || preloadedRoutePaths.has(cleanPath)) return
+  preloadedRoutePaths.add(cleanPath)
+  preloadRouteComponent(cleanPath).catch(() => {
+    preloadedRoutePaths.delete(cleanPath)
+  })
+}
+
+function handleSidebarRoutePreview(event) {
+  const target = event?.target?.closest?.('[data-route-path]')
+  preloadSidebarRoute(target?.dataset?.routePath)
+}
+
+function scheduleRoutePreloading() {
+  if (typeof window === 'undefined' || isGateRoute.value || routePreloadIdleHandle) return
+
+  const run = () => {
+    routePreloadIdleHandle = null
+    if (isGateRoute.value || (typeof document !== 'undefined' && document.hidden)) {
+      return
+    }
+
+    const nextPath = routePreloadQueue.find((path) => path !== route.path && !preloadedRoutePaths.has(path))
+    if (!nextPath) return
+
+    preloadSidebarRoute(nextPath)
+    routePreloadIdleHandle = scheduleIdleCallback(run, 900)
+  }
+
+  routePreloadIdleHandle = scheduleIdleCallback(run, 1200)
+}
+
+function cancelRoutePreloading() {
+  if (!routePreloadIdleHandle || typeof window === 'undefined') return
+  if (typeof window.cancelIdleCallback === 'function') {
+    window.cancelIdleCallback(routePreloadIdleHandle)
+  } else {
+    clearTimeout(routePreloadIdleHandle)
+  }
+  routePreloadIdleHandle = null
+}
+
+function scheduleIdleCallback(callback, timeout) {
+  if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+    return window.requestIdleCallback(callback, { timeout })
+  }
+  return setTimeout(callback, Math.min(timeout, 300))
+}
 
 function startRealtimeEvents() {
   if (realtimeEventsStarted) return

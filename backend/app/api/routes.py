@@ -5,6 +5,8 @@ from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse,
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES, GZipResponder, IdentityResponder
+from starlette.responses import FileResponse as StarletteFileResponse
+from starlette.staticfiles import NotModifiedResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func, or_, text
 from pydantic import BaseModel, Field
@@ -27,6 +29,7 @@ import html
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import stat
 import tempfile
 from types import SimpleNamespace
 import uuid
@@ -116,6 +119,75 @@ class MediaAwareGZipMiddleware(GZipMiddleware):
         headers = Headers(scope=scope)
         responder = MediaAwareGZipResponder(self.app, self.minimum_size, compresslevel=self.compresslevel) if "gzip" in headers.get("Accept-Encoding", "") else IdentityResponder(self.app, self.minimum_size)
         await responder(scope, receive, send)
+
+
+class PrecompressedStaticFiles(StaticFiles):
+    _ENCODING_CANDIDATES = (
+        ("br", ".br"),
+        ("gzip", ".gz"),
+    )
+
+    @staticmethod
+    def _accepted_encodings(value: str) -> set:
+        encodings = set()
+        wildcard_allowed = False
+        for part in str(value or "").split(","):
+            pieces = [piece.strip() for piece in part.split(";")]
+            token = pieces[0].lower() if pieces else ""
+            if not token:
+                continue
+            quality = 1.0
+            for param in pieces[1:]:
+                key, _, raw_value = param.partition("=")
+                if key.strip().lower() != "q":
+                    continue
+                try:
+                    quality = float(raw_value.strip())
+                except ValueError:
+                    quality = 0.0
+            if quality <= 0:
+                continue
+            if token == "*":
+                wildcard_allowed = True
+            else:
+                encodings.add(token)
+        if wildcard_allowed:
+            encodings.update(encoding for encoding, _suffix in PrecompressedStaticFiles._ENCODING_CANDIDATES)
+        return encodings
+
+    def file_response(self, full_path, stat_result, scope, status_code=200):
+        request_headers = Headers(scope=scope)
+        accept_encodings = self._accepted_encodings(request_headers.get("accept-encoding", ""))
+
+        for encoding, suffix in self._ENCODING_CANDIDATES:
+            if encoding not in accept_encodings:
+                continue
+            compressed_path = f"{full_path}{suffix}"
+            try:
+                compressed_stat = os.stat(compressed_path)
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(compressed_stat.st_mode):
+                continue
+
+            response = StarletteFileResponse(
+                compressed_path,
+                status_code=status_code,
+                media_type=mimetypes.guess_type(str(full_path))[0],
+                stat_result=compressed_stat,
+            )
+            response.headers["Content-Encoding"] = encoding
+            response.headers["Vary"] = "Accept-Encoding"
+            response.headers["Content-Length"] = str(compressed_stat.st_size)
+            response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+            if self.is_not_modified(response.headers, request_headers):
+                return NotModifiedResponse(response.headers)
+            return response
+
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        response.headers["Vary"] = "Accept-Encoding"
+        response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+        return response
 
 
 def _batch_api_rename_request_key(library_id: Any, paths: List[Any]) -> str:
@@ -18011,7 +18083,7 @@ for path in possible_paths:
 # 注册静态文件服务（放在子路径，避免覆盖 API）
 if frontend_build_path:
     # 提供静态资源文件（JS、CSS、图片等）
-    app.mount("/assets", StaticFiles(directory=os.path.join(frontend_build_path, "assets")), name="assets")
+    app.mount("/assets", PrecompressedStaticFiles(directory=os.path.join(frontend_build_path, "assets")), name="assets")
 
     @app.get("/favicon.ico", include_in_schema=False)
     async def serve_favicon():
