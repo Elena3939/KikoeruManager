@@ -14329,6 +14329,23 @@ async def rj_subtitle_connectivity_test():
         raise HTTPException(status_code=500, detail=f"连通性测试失败: {str(e)}")
 
 
+class DLsiteConnectivityTestRequest(BaseModel):
+    http_proxy: Optional[str] = None
+
+
+@app.post("/api/dlsite/connectivity-test")
+async def dlsite_connectivity_test(payload: DLsiteConnectivityTestRequest):
+    """测试 DLsite 元数据链路连通性。"""
+    from ..core.dlsite_service import get_dlsite_service
+
+    try:
+        service = get_dlsite_service()
+        return await service.test_connectivity(http_proxy=payload.http_proxy)
+    except Exception as e:
+        logger.error("DLsite 连通性测试失败: %s", sanitize_text_for_log(e))
+        raise HTTPException(status_code=500, detail=f"DLsite 连通性测试失败: {str(e)}")
+
+
 class ASMRSyncScanRequest(BaseModel):
     """ASMR 同步扫描请求"""
     folder_path: str

@@ -56,18 +56,45 @@
             </div>
           </SettingsFieldCard>
           <div v-if="kikoeruStatusMessage || kikoeruCheckResult" class="service-result-card">
-            <div v-if="kikoeruStatusMessage" class="service-result-line">{{ kikoeruStatusMessage }}</div>
             <template v-if="kikoeruCheckResult">
-              <div class="service-result-grid">
-                <div><span class="service-result-key">请求 RJ</span><strong>{{ kikoeruCheckResult.requested_rjcode || kikoeruTestRJCode }}</strong></div>
-                <div><span class="service-result-key">命中结果</span><strong>{{ kikoeruCheckResult.hit_summary }}</strong></div>
-                <div><span class="service-result-key">服务器已有</span><strong>{{ kikoeruCheckResult.matched_label || '-' }}</strong></div>
-                <div><span class="service-result-key">检查范围</span><strong>{{ kikoeruCheckResult.scope_label }}</strong></div>
+              <div class="kikoeru-result-layout">
+                <div class="kikoeru-result-main">
+                  <figure v-if="kikoeruCheckResult.cover_url" class="kikoeru-result-cover">
+                    <img
+                      :key="kikoeruCheckResult.cover_url"
+                      :src="kikoeruCheckResult.cover_url"
+                      :alt="kikoeruCheckResult.title || kikoeruCheckResult.requested_rjcode || 'DLsite 主图'"
+                      :data-rjcode="kikoeruCheckResult.cover_rjcode"
+                      loading="lazy"
+                      @error="handleKikoeruCoverError"
+                    >
+                  </figure>
+                  <div class="kikoeru-result-copy">
+                    <div v-if="kikoeruStatusMessage" class="service-result-line kikoeru-owned-line">{{ kikoeruStatusMessage }}</div>
+                    <div v-if="kikoeruCheckResult.linked_labels?.length" class="kikoeru-rj-chip-row">
+                      <span class="service-result-key kikoeru-chip-label">本次检查</span>
+                      <span
+                        v-for="label in kikoeruCheckResult.linked_labels"
+                        :key="label"
+                        class="kikoeru-rj-chip"
+                        :class="kikoeruLinkedLabelClass(label)"
+                      >
+                        {{ label }}
+                      </span>
+                    </div>
+                    <div v-if="kikoeruCheckResult.title" class="service-result-line">标题：{{ kikoeruCheckResult.title }}</div>
+                    <div v-if="kikoeruCheckResult.message" class="service-result-line">{{ kikoeruCheckResult.message }}</div>
+                  </div>
+                </div>
+                <div class="kikoeru-result-meta">
+                  <div><span class="service-result-key">请求 RJ</span><strong>{{ kikoeruCheckResult.requested_rjcode || kikoeruTestRJCode }}</strong></div>
+                  <div><span class="service-result-key">命中结果</span><strong>{{ kikoeruCheckResult.hit_summary }}</strong></div>
+                  <div><span class="service-result-key">服务器已有</span><strong>{{ kikoeruCheckResult.matched_label || '-' }}</strong></div>
+                  <div class="kikoeru-result-meta-wide"><span class="service-result-key">检查范围</span><strong>{{ kikoeruCheckResult.scope_label }}</strong></div>
+                </div>
               </div>
-              <div v-if="kikoeruCheckResult.linked_labels?.length" class="service-result-line">本次检查：{{ kikoeruCheckResult.linked_labels.join(', ') }}</div>
-              <div v-if="kikoeruCheckResult.title" class="service-result-line">标题：{{ kikoeruCheckResult.title }}</div>
-              <div v-if="kikoeruCheckResult.message" class="service-result-line">{{ kikoeruCheckResult.message }}</div>
             </template>
+            <div v-else-if="kikoeruStatusMessage" class="service-result-line">{{ kikoeruStatusMessage }}</div>
           </div>
         </div>
       </div>
@@ -101,9 +128,42 @@
               <input v-model="config.asmr_sync.http_proxy" class="field-input" type="text" placeholder="127.0.0.1:7890">
             </SettingsFieldCard>
             <SettingsFieldCard label="元数据代理" hint="用于 DLsite 元数据、社团作品列表、封面抓取，以及 Kikoeru 查重前的 DLsite 关联链查询。">
-              <input v-model="config.metadata.http_proxy" class="field-input" type="text" placeholder="127.0.0.1:7890">
+              <div class="service-inline-row metadata-proxy-row">
+                <input v-model="config.metadata.http_proxy" class="field-input" type="text" placeholder="127.0.0.1:7890">
+                <StatefulButton
+                  type="button"
+                  class="ghost-inline-btn dlsite-test-btn"
+                  unstyled
+                  :show-default-icons="false"
+                  :success-hold="900"
+                  :disabled="dlsiteBusy"
+                  @click="runDlsiteConnectionTest"
+                >
+                  <template #prefix="{ state }">
+                    <span class="service-duplicate-test-icon" :class="`is-${state}`" aria-hidden="true">
+                      <Loader2 v-if="state === 'loading' || dlsiteBusy" :size="12" :stroke-width="2.4" class="animate-spin" />
+                      <CheckCircle2 v-else-if="state === 'success'" :size="12" :stroke-width="2.4" />
+                      <AlertCircle v-else-if="state === 'error'" :size="12" :stroke-width="2.4" />
+                      <Wifi v-else :size="12" :stroke-width="2.4" />
+                    </span>
+                  </template>
+                  <span>{{ dlsiteBusy ? '测试中' : '测试 DL 连接' }}</span>
+                </StatefulButton>
+              </div>
             </SettingsFieldCard>
           </div>
+          <transition name="fade-up">
+            <div v-if="dlsiteMessage || dlsiteResult" class="service-result-card">
+              <div v-if="dlsiteMessage" class="service-result-line">{{ dlsiteMessage }}</div>
+              <div v-if="dlsiteResult" class="service-result-grid">
+                <div><span class="service-result-key">代理</span><strong>{{ dlsiteResult.proxy_enabled ? (dlsiteResult.proxy_url || '已启用') : '直连' }}</strong></div>
+                <div><span class="service-result-key">HTTP</span><strong>{{ dlsitePrimaryCheck?.http_status || '-' }}</strong></div>
+                <div><span class="service-result-key">延迟</span><strong>{{ dlsitePrimaryCheck?.latency_ms ?? '-' }} ms</strong></div>
+                <div><span class="service-result-key">测试 RJ</span><strong>{{ dlsitePrimaryCheck?.workno || '-' }}</strong></div>
+              </div>
+              <div v-if="dlsitePrimaryCheck?.title" class="service-result-line">标题：{{ dlsitePrimaryCheck.title }}</div>
+            </div>
+          </transition>
           <SettingsToggleRow v-model="config.asmr_sync.auto_upload_enabled" title="自动上传" subtitle="增强下载完成后按默认模式直传库存。" />
           <div class="mini-grid two" v-if="config.asmr_sync.auto_upload_enabled">
             <SettingsFieldCard label="上传模式">
@@ -295,7 +355,7 @@ import SettingsToggleChip from './SettingsToggleChip.vue'
 import AppDropdown from '../common/AppDropdown.vue'
 import AnimatedPasswordInput from '../common/AnimatedPasswordInput.vue'
 import StatefulButton from '../ui/stateful-button.vue'
-import { kikoeruApi, emailWatcherApi } from '../../api'
+import { configApi, kikoeruApi, emailWatcherApi } from '../../api'
 
 const props = defineProps({
   config: { type: Object, required: true }
@@ -335,6 +395,13 @@ const kikoeruStatusMessage = ref('')
 const kikoeruTestRJCode = ref('')
 const kikoeruCheckResult = ref(null)
 const kikoeruDuplicateTesting = ref(false)
+const dlsiteBusy = ref(false)
+const dlsiteMessage = ref('')
+const dlsiteResult = ref(null)
+const dlsitePrimaryCheck = computed(() => {
+  const checks = Array.isArray(dlsiteResult.value?.checks) ? dlsiteResult.value.checks : []
+  return checks[0] || null
+})
 
 function normalizeRJCode(value = '') {
   const raw = String(value || '').trim().toUpperCase()
@@ -374,6 +441,14 @@ function linkedWorkVariantFromLabel(label = '') {
   return { short: match[1], summary: `有翻译作(${match[1]})` }
 }
 
+function kikoeruLinkedLabelClass(label = '') {
+  const text = String(label || '')
+  if (text.includes('简中')) return 'is-zh-hans'
+  if (text.includes('繁中')) return 'is-zh-hant'
+  if (text.includes('英文')) return 'is-english'
+  return 'is-original'
+}
+
 function normalizeKikoeruTags(tags = []) {
   if (!Array.isArray(tags)) return []
   return tags.map(tag => String(tag || '').trim()).filter(Boolean)
@@ -409,6 +484,43 @@ function formatKikoeruOwnedLabel(hitRows = []) {
   const first = hitRows.find(item => item?.rjcode)
   if (!first) return ''
   return `${first.rjcode}(${kikoeruVariantShortLabel(first.variant_label)})`
+}
+
+function buildDlsiteCoverUrl(rjcode = '', variant = 'main') {
+  const normalized = normalizeRJCode(rjcode)
+  const match = normalized.match(/^RJ(\d{6}|\d{8})$/)
+  if (!match) return ''
+  const folderUpper = (Math.floor(Number(match[1]) / 1000) + 1) * 1000
+  const folder = match[1].length === 8
+    ? `RJ${String(folderUpper).padStart(8, '0')}`
+    : `RJ${String(folderUpper).padStart(6, '0')}`
+  const suffix = variant === 'sam' ? '_img_sam.jpg' : '_img_main.jpg'
+  return `https://img.dlsite.jp/modpub/images2/work/doujin/${folder}/${normalized}${suffix}`
+}
+
+function pickKikoeruCoverRJCode(result = {}, requestedRJCode = '') {
+  return normalizeRJCode(
+    result?.requested_rjcode
+    || requestedRJCode
+    || result?.matched_rjcode
+    || result?.linked_rjcodes?.[0]
+    || ''
+  )
+}
+
+function handleKikoeruCoverError(event) {
+  const img = event?.target
+  if (!img) return
+  if (!img.dataset.fallbackTried) {
+    img.dataset.fallbackTried = '1'
+    const rjcode = img.dataset.rjcode || kikoeruCheckResult.value?.cover_rjcode || ''
+    const fallback = buildDlsiteCoverUrl(rjcode, 'sam')
+    if (fallback && fallback !== img.src) {
+      img.src = fallback
+      return
+    }
+  }
+  img.closest('.kikoeru-result-cover')?.classList.add('is-hidden')
 }
 
 function applyLinkedWorkDisplayLabels(result = {}, linkedWorksForDisplay = []) {
@@ -453,6 +565,7 @@ function normalizeKikoeruCheckResult(result = {}, requestedRJCode = '') {
     || hitRows.length > 0
   )
   const matchedLabel = formatKikoeruOwnedLabel(hitRows)
+  const coverRJCode = pickKikoeruCoverRJCode(result, requestedRJCode)
   return {
     requested_rjcode: String(result?.rjcode || requestedRJCode || '').trim(),
     found: mergedFound,
@@ -466,6 +579,8 @@ function normalizeKikoeruCheckResult(result = {}, requestedRJCode = '') {
     message: String(result?.message || '').trim(),
     linked_rjcodes: [],
     linked_labels: [],
+    cover_rjcode: coverRJCode,
+    cover_url: buildDlsiteCoverUrl(coverRJCode, 'main'),
     linked_works_total: Number(result?.total_checked || 0),
     hit_rows: hitRows
   }
@@ -563,6 +678,39 @@ async function runKikoeruDuplicateTest() {
     return false
   } finally {
     kikoeruDuplicateTesting.value = false
+  }
+}
+
+async function runDlsiteConnectionTest() {
+  if (dlsiteBusy.value) return false
+  dlsiteBusy.value = true
+  dlsiteMessage.value = '正在测试 DLsite 连接...'
+  dlsiteResult.value = null
+  try {
+    const result = await configApi.testDlsiteConnection({
+      http_proxy: props.config?.metadata?.http_proxy || ''
+    })
+    dlsiteResult.value = result
+    const check = Array.isArray(result?.checks) ? result.checks[0] : null
+    const message = result?.success
+      ? (check?.message || 'DLsite 连接正常')
+      : (check?.message || result?.detail || 'DLsite 连接失败')
+    dlsiteMessage.value = result?.success ? `✓ ${message}` : `✗ ${message}`
+    if (result?.success) {
+      ElMessage.success(message)
+      return true
+    }
+    ElMessage.error(message)
+    throw new Error(message)
+  } catch (e) {
+    if (!dlsiteResult.value) {
+      const message = e.response?.data?.detail || e.message || 'DLsite 连接失败'
+      dlsiteMessage.value = `✗ ${message}`
+      ElMessage.error(message)
+    }
+    throw e
+  } finally {
+    dlsiteBusy.value = false
   }
 }
 
@@ -811,6 +959,39 @@ async function pollEmailWatcherNow() {
 
 .service-inline-row .field-input { flex: 1 1 220px; }
 
+.metadata-proxy-row {
+  flex-wrap: nowrap;
+}
+
+.metadata-proxy-row .field-input {
+  width: auto;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.dlsite-test-btn {
+  height: 28px;
+  min-width: 0;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-size: 10.5px;
+  white-space: nowrap;
+  letter-spacing: 0;
+}
+
+.dlsite-test-btn :deep(.stateful-button__content),
+.dlsite-test-btn :deep(.stateful-button__label) {
+  gap: 3px;
+  font-size: 10.5px;
+  line-height: 1;
+}
+
+.dlsite-test-btn .service-duplicate-test-icon {
+  width: 12px;
+  height: 12px;
+  flex-basis: 12px;
+}
+
 .service-duplicate-test-btn {
   min-width: 108px;
   flex: 0 0 auto;
@@ -858,9 +1039,7 @@ async function pollEmailWatcherNow() {
   border-radius: 12px;
   border: 1px solid var(--set-border);
   background: var(--set-surface-soft);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.7),
-    0 1px 2px rgba(15, 23, 42, 0.04);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 .service-result-grid {
@@ -880,6 +1059,140 @@ async function pollEmailWatcherNow() {
 }
 
 .service-result-line { color: var(--set-text-strong); font-size: 13px; line-height: 1.6; letter-spacing: -0.05px; }
+
+.kikoeru-result-layout {
+  display: grid;
+  gap: 12px;
+}
+
+.kikoeru-result-main {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  min-width: 0;
+}
+
+.kikoeru-result-copy {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 4px;
+}
+
+.kikoeru-result-cover {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  margin: 0;
+  overflow: hidden;
+  border-radius: 10px;
+  border: 1px solid var(--set-border);
+  background: rgba(15, 23, 42, 0.08);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.12);
+}
+
+.kikoeru-result-cover img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}
+
+.kikoeru-result-cover.is-hidden {
+  display: none;
+}
+
+.kikoeru-result-meta {
+  display: grid;
+  grid-template-columns: minmax(108px, 0.9fr) minmax(98px, 0.82fr) minmax(170px, 1.35fr) minmax(170px, 1.45fr);
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--set-border);
+}
+
+.kikoeru-result-meta > div {
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.12);
+}
+
+.kikoeru-result-meta strong {
+  display: block;
+  color: var(--set-text-strong);
+  font-size: 13.5px;
+  line-height: 1.3;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+.kikoeru-result-meta-wide strong {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+.kikoeru-owned-line {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.26);
+  color: var(--set-success-text);
+  font-weight: 700;
+}
+
+.kikoeru-rj-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.kikoeru-chip-label {
+  margin: 0 2px 0 0;
+}
+
+.kikoeru-rj-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 23px;
+  padding: 3px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--set-border);
+  background: var(--set-surface);
+  color: var(--set-text-strong);
+  font-size: 12.5px;
+  font-weight: 650;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.kikoeru-rj-chip.is-original {
+  border-color: rgba(96, 165, 250, 0.32);
+  background: rgba(59, 130, 246, 0.12);
+  color: #bfdbfe;
+}
+
+.kikoeru-rj-chip.is-zh-hans {
+  border-color: rgba(45, 212, 191, 0.34);
+  background: rgba(20, 184, 166, 0.12);
+  color: #99f6e4;
+}
+
+.kikoeru-rj-chip.is-zh-hant {
+  border-color: rgba(251, 191, 36, 0.36);
+  background: rgba(245, 158, 11, 0.12);
+  color: #fde68a;
+}
+
+.kikoeru-rj-chip.is-english {
+  border-color: rgba(167, 139, 250, 0.34);
+  background: rgba(139, 92, 246, 0.13);
+  color: #ddd6fe;
+}
 
 /* 邮件监听 badge */
 .email-watcher-badge {
@@ -1015,5 +1328,17 @@ async function pollEmailWatcherNow() {
   .mini-grid.two,
   .pill-switch-grid { grid-template-columns: 1fr; }
   .service-result-grid { grid-template-columns: 1fr; }
+  .kikoeru-result-main { grid-template-columns: 200px minmax(0, 1fr); }
+  .kikoeru-result-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kikoeru-result-meta-wide { grid-column: 1 / -1; }
+}
+
+@media (max-width: 640px) {
+  .kikoeru-result-main { grid-template-columns: 1fr; }
+  .kikoeru-result-cover {
+    width: min(220px, 100%);
+  }
+  .kikoeru-result-meta { grid-template-columns: 1fr; }
+  .kikoeru-result-meta-wide strong { white-space: normal; }
 }
 </style>

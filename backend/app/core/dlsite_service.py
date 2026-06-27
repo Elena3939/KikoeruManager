@@ -341,6 +341,19 @@ class DLsiteApiService:
             return value
         return f"http://{value}"
 
+    def _mask_proxy_url(self, proxy: str) -> str:
+        value = self._normalize_proxy_url(proxy)
+        if not value:
+            return ''
+        parsed = urlparse(value)
+        if not parsed.username and not parsed.password:
+            return value
+        host = parsed.hostname or ''
+        port = f":{parsed.port}" if parsed.port else ''
+        user = parsed.username or ''
+        auth = f"{user}:***@" if user else "***@"
+        return f"{parsed.scheme}://{auth}{host}{port}"
+
     def _extract_product_codes_from_url(self, url: str) -> Dict[str, str]:
         parsed = urlparse(str(url or ''))
         path_match = re.search(r'/product_id/([RVB]J(?:\d{8}|\d{6}))\.html', parsed.path, re.IGNORECASE)
@@ -1320,10 +1333,20 @@ class DLsiteApiService:
         self.client = None
         self._client_proxy_url = ""
 
-    async def _one_shot_get(self, url: str, **kwargs) -> httpx.Response:
+    async def _reset_client_after_transport_error(self, exc: BaseException) -> None:
+        if not self.client or self.client.is_closed:
+            return
+        logger.info("[DLsite] HTTP 客户端连接池异常，重建后重试: %s", self._format_exc(exc))
+        try:
+            await self._close_client()
+        except Exception as close_exc:
+            logger.debug("[DLsite] 关闭异常 HTTP 客户端失败: %s", self._format_exc(close_exc))
+            self.client = None
+            self._client_proxy_url = ""
+
+    async def _one_shot_get(self, url: str, *, proxy_url: Optional[str] = None, **kwargs) -> httpx.Response:
         from ..config.settings import get_config
 
-        config = get_config()
         client_kwargs = {
             'headers': self._get_api_headers(),
             'timeout': httpx.Timeout(connect=25.0, read=60.0, write=10.0, pool=None),
@@ -1332,7 +1355,11 @@ class DLsiteApiService:
             'limits': httpx.Limits(max_connections=1, max_keepalive_connections=0),
             'http2': False,
         }
-        proxy_url = self._normalize_proxy_url(config.metadata.http_proxy)
+        if proxy_url is None:
+            config = get_config()
+            proxy_url = self._normalize_proxy_url(config.metadata.http_proxy)
+        else:
+            proxy_url = self._normalize_proxy_url(proxy_url)
         if proxy_url:
             async_client_params = inspect.signature(httpx.AsyncClient.__init__).parameters
             if 'proxy' in async_client_params:
@@ -1344,6 +1371,110 @@ class DLsiteApiService:
                 }
         async with httpx.AsyncClient(**client_kwargs) as client:
             return await client.get(url, **kwargs)
+
+    async def test_connectivity(self, http_proxy: Optional[str] = None) -> Dict[str, Any]:
+        """测试当前 DLsite 元数据链路，绕过业务缓存直接请求 product API。"""
+        from ..config.settings import get_config
+
+        workno = "RJ01609989"
+        url = self._build_product_api_url(workno)
+        started_at = time.perf_counter()
+        config = get_config()
+        proxy_url = self._normalize_proxy_url(
+            config.metadata.http_proxy if http_proxy is None else http_proxy
+        )
+        check: Dict[str, Any] = {
+            "name": "DLsite product API",
+            "url": url,
+            "workno": workno,
+            "ok": False,
+            "status": "error",
+            "http_status": None,
+            "latency_ms": 0,
+            "message": "",
+        }
+
+        try:
+            if http_proxy is None:
+                response = await self._guarded_get(url, headers=self._get_api_headers())
+            else:
+                response = await self._one_shot_get(url, proxy_url=proxy_url, headers=self._get_api_headers())
+            latency_ms = int((time.perf_counter() - started_at) * 1000)
+            check["http_status"] = response.status_code
+            check["latency_ms"] = latency_ms
+            if response.status_code != 200:
+                check["message"] = f"HTTP {response.status_code}"
+                return {
+                    "success": False,
+                    "summary": {"total": 1, "ok": 0, "failed": 1},
+                    "checks": [check],
+                    "proxy_enabled": bool(proxy_url),
+                    "proxy_url": self._mask_proxy_url(proxy_url),
+                    "tested_at": datetime.now().isoformat(),
+                }
+
+            data = response.json()
+            product = None
+            if isinstance(data, list):
+                product = data[0] if data and isinstance(data[0], dict) else None
+            elif isinstance(data, dict):
+                product = data.get(workno)
+                if not isinstance(product, dict):
+                    product_workno = self._normalize_workno(data.get("workno") or data.get("product_id"))
+                    product = data if product_workno == workno else None
+                if not isinstance(product, dict):
+                    product = next(
+                        (
+                            value
+                            for key, value in data.items()
+                            if self._normalize_workno(key) == workno and isinstance(value, dict)
+                        ),
+                        None,
+                    )
+            if product:
+                title = str(product.get("work_name") or product.get("name") or "").strip()
+                check.update({
+                    "ok": True,
+                    "status": "ok",
+                    "title": title,
+                    "message": f"DLsite 可连接，测试作品 {workno} 返回正常",
+                })
+            else:
+                check["message"] = f"DLsite HTTP 可达，但未返回测试作品 {workno}"
+            return {
+                "success": bool(check["ok"]),
+                "summary": {"total": 1, "ok": 1 if check["ok"] else 0, "failed": 0 if check["ok"] else 1},
+                "checks": [check],
+                "proxy_enabled": bool(proxy_url),
+                "proxy_url": self._mask_proxy_url(proxy_url),
+                "tested_at": datetime.now().isoformat(),
+            }
+        except Exception as exc:
+            latency_ms = int((time.perf_counter() - started_at) * 1000)
+            detail = self._format_exc(exc)
+            if isinstance(exc, httpx.ConnectError):
+                if proxy_url:
+                    message = f"代理连接失败，请确认 {self._mask_proxy_url(proxy_url)} 在当前运行环境内可访问（{detail}）"
+                else:
+                    message = f"DLsite 连接失败，请确认当前网络可访问 DLsite（{detail}）"
+            elif isinstance(exc, httpx.TimeoutException):
+                message = f"DLsite 连接超时（{detail}）"
+            elif isinstance(exc, (httpx.NetworkError, httpx.ProtocolError)):
+                message = f"DLsite 网络请求失败（{detail}）"
+            else:
+                message = detail
+            check.update({
+                "latency_ms": latency_ms,
+                "message": message,
+            })
+            return {
+                "success": False,
+                "summary": {"total": 1, "ok": 0, "failed": 1},
+                "checks": [check],
+                "proxy_enabled": bool(proxy_url),
+                "proxy_url": self._mask_proxy_url(proxy_url),
+                "tested_at": datetime.now().isoformat(),
+            }
 
     async def _guarded_get(self, url: str, **kwargs) -> httpx.Response:
         """带并发限制的 HTTP GET，超时时指数退避重试（最多 3 次）。
@@ -1378,6 +1509,7 @@ class DLsiteApiService:
             except (httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError) as exc:
                 wait = 2.0 * (2 ** attempt)  # 2s → 4s → 8s
                 _record_dlsite_http_failure(exc)
+                await self._reset_client_after_transport_error(exc)
                 if attempt < 2:
                     logger.warning(
                         "[DLsite] 请求失败，等待 %.0fs 后重试（第 %d 次）: %s error=%s",

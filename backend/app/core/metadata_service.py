@@ -146,6 +146,39 @@ class MetadataService:
             return value
         return f"http://{value}"
 
+    def _product_info_timeout_seconds(self) -> float:
+        override = os.environ.get("DLSITE_METADATA_PRODUCT_INFO_TIMEOUT", "").strip()
+        if override:
+            try:
+                return max(1.0, float(override))
+            except ValueError:
+                logger.warning("DLSITE_METADATA_PRODUCT_INFO_TIMEOUT 无效，使用配置超时: %s", override)
+        connect_timeout = float(getattr(self.config.metadata, "connect_timeout", 10) or 10)
+        read_timeout = float(getattr(self.config.metadata, "read_timeout", 10) or 10)
+        return max(5.0, connect_timeout + read_timeout + 2.0)
+
+    async def _get_product_info_for_metadata(
+        self,
+        rjcode: str,
+        *,
+        locale: Optional[str] = None,
+        purpose: str = "metadata",
+    ) -> Optional[Dict]:
+        timeout = self._product_info_timeout_seconds()
+        try:
+            return await asyncio.wait_for(
+                get_dlsite_service().get_product_info(rjcode, locale=locale),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[%s] DLsite product_info %s 超时 %.1fs，改走直连 product.json",
+                rjcode,
+                purpose,
+                timeout,
+            )
+            return None
+
     def _get_dlsite_headers(self) -> Dict[str, str]:
         return {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -299,9 +332,10 @@ class MetadataService:
             return maker_fields
 
         try:
-            product_info = await get_dlsite_service().get_product_info(
+            product_info = await self._get_product_info_for_metadata(
                 original_workno,
                 locale='ja-JP',
+                purpose="original_maker",
             )
             original_product = dict((product_info or {}).get('product') or {})
             if original_product:
@@ -678,9 +712,10 @@ class MetadataService:
         await asyncio.sleep(self.config.metadata.sleep_interval)
 
         try:
-            product_info = await get_dlsite_service().get_product_info(
+            product_info = await self._get_product_info_for_metadata(
                 rjcode,
                 locale=self.config.metadata.locale,
+                purpose="primary",
             )
             if not product_info or not product_info.get('product'):
                 return None
@@ -708,26 +743,6 @@ class MetadataService:
     async def _fetch_from_dlsite(self, rjcode: str) -> WorkMetadata:
         """通过 DLsite API 直连获取元数据。"""
         await asyncio.sleep(self.config.metadata.sleep_interval)
-
-        product = None
-        try:
-            dlsite_service = get_dlsite_service()
-            product_info = await dlsite_service.get_product_info(
-                rjcode,
-                locale=self.config.metadata.locale,
-            )
-            if product_info and product_info.get('product'):
-                product = product_info.get('product') or {}
-                if product_info.get('fallback_used'):
-                    logger.info(
-                        "[%s] DLsite fallback 命中: requested=%s parent=%s locale=%s",
-                        rjcode,
-                        product_info.get('requested_workno') or rjcode,
-                        product_info.get('parent_workno') or '',
-                        self.config.metadata.locale,
-                    )
-        except Exception as e:
-            logger.warning(f"[{rjcode}] DLsite fallback product_info 获取失败，继续直连 API: {e}")
         
         # 获取基础元数据，使用配置指定的 locale。
         url = f"https://www.dlsite.com/maniax/api/=/product.json?workno={rjcode}&locale={self.config.metadata.locale}"
