@@ -77,13 +77,15 @@
             >
               <span class="min-w-0 truncate">{{ taskBadgeLabel(task) }}</span>
             </span>
-            <span
-              v-if="task.current_step && !isTerminalStatus(task)"
-              class="inline-flex min-h-[22px] items-center rounded-[6px] px-2 py-0.5 text-[11px] leading-snug whitespace-normal break-all"
-              :class="stepChipClass(task)"
-            >
-              {{ task.current_step }}
-            </span>
+          </div>
+
+          <div
+            v-if="task.current_step && !isTerminalStatus(task)"
+            class="dash-task-step-line mt-1.5 min-w-0 rounded-[6px] px-2 py-1 text-[11px] leading-snug"
+            :class="stepChipClass(task)"
+            :title="task.current_step"
+          >
+            {{ task.current_step }}
           </div>
 
           <div v-if="showProgress(task)" class="dash-task-progress mt-2.5 flex items-center gap-2">
@@ -439,7 +441,14 @@ function taskDomainLabel(task) {
 
 function displaySubtitle(task) {
   if (String(task?.domain || '').trim() === 'import') return ''
-  return String(task?.subtitle || '').trim()
+  const subtitle = String(task?.subtitle || '').trim()
+  const title = String(task?.title || '').trim()
+  if (subtitle && title && normalizeComparableText(subtitle) === normalizeComparableText(title)) return ''
+  return subtitle
+}
+
+function normalizeComparableText(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase()
 }
 
 function taskBadgeLabel(task) {
@@ -666,6 +675,12 @@ function formatRJ(value) {
   min-width: 0;
   max-width: 100%;
   flex: 1 1 280px;
+}
+
+.dash-task-step-line {
+  width: fit-content;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .dash-task-pager-btn {
