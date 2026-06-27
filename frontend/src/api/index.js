@@ -197,6 +197,11 @@ export const configApi = {
     return response.data
   },
 
+  testDlsiteConnection: async (payload) => {
+    const response = await apiClient.post('/dlsite/connectivity-test', payload, { timeout: 90000 })
+    return response.data
+  },
+
   revealHttpSecret: async (payload) => {
     const response = await apiClient.post('/config/http-downloader/reveal-secret', payload)
     return response.data
@@ -2143,14 +2148,14 @@ export const rjSubtitleApi = {
 export const aiSubtitleMatchApi = {
   test: async (config = {}) => {
     const response = await apiClient.post('/ai-subtitle-match/test', { config }, {
-      timeout: 120000
+      timeout: 45000
     })
     return response.data
   },
 
   models: async (config = {}) => {
     const response = await apiClient.post('/ai-subtitle-match/models', { config }, {
-      timeout: 120000
+      timeout: 35000
     })
     return response.data
   },
