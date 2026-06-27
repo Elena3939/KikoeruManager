@@ -51,12 +51,13 @@
                     :src="aiProviderIconUrl"
                     :alt="aiProviderIconLabel"
                     class="model-platform-img"
+                    :class="{ 'is-dark-monochrome': ['openai', 'xai', 'openrouter'].includes(aiProviderLocalMeta.key) }"
                     draggable="false"
                     @error="handleAIProviderIconError"
                   >
                   <Bot v-else :size="16" :stroke-width="2.25" />
                 </div>
-                <input v-model="config.ai_subtitle_matching.model" class="field-input model-combo-input" type="text" placeholder="openai/gpt-4o-mini">
+                <input v-model="config.ai_subtitle_matching.model" class="model-combo-input" type="text" placeholder="openai/gpt-4o-mini">
                 <AppDropdown
                   v-model="config.ai_subtitle_matching.model"
                   :options="aiSubtitleModelOptions"
@@ -84,6 +85,7 @@
             <SettingsFieldCard label="API Key">
               <AnimatedPasswordInput
                 v-model="config.ai_subtitle_matching.api_key"
+                class="ai-api-key-input"
                 :reveal-value="aiSubtitleRevealedApiKey"
                 placeholder="sk-..."
                 autocomplete="new-password"
@@ -132,9 +134,11 @@
             >
               <template v-if="aiSubtitleModelsResult.success">
                 {{ aiSubtitleModelsResult.message || `已获取 ${aiSubtitleModelOptions.length} 个模型` }}
+                <span v-if="aiSubtitleModelsResult.duration_ms != null"> · {{ aiSubtitleModelsResult.duration_ms }} ms</span>
               </template>
               <template v-else>
                 {{ aiSubtitleModelsResult.error?.title || '获取模型失败' }}：{{ aiSubtitleModelsResult.error?.message || '模型服务未返回可用列表' }}
+                <span v-if="aiSubtitleModelsResult.duration_ms != null"> · {{ aiSubtitleModelsResult.duration_ms }} ms</span>
               </template>
             </div>
           </transition>
@@ -156,7 +160,7 @@
         <div class="card-title">连接测试</div>
         <div class="field-stack">
           <div class="ai-test-copy">
-            测试会使用当前表单草稿，不需要先保存；返回结果会按固定错误码归一化。
+            测试会用当前表单草稿向模型发送 hi，只确认模型是否有回应，不验证字幕 JSON 输出。
           </div>
           <div class="service-action-row">
             <button type="button" class="ai-action-btn" :disabled="aiSubtitleTesting" @click="testAISubtitleMatching">
@@ -170,9 +174,12 @@
                 <div><span class="service-result-key">状态</span><strong>{{ aiSubtitleTestResult.success ? '可用' : '失败' }}</strong></div>
                 <div><span class="service-result-key">模型</span><strong>{{ aiSubtitleTestResult.model || '-' }}</strong></div>
                 <div><span class="service-result-key">耗时</span><strong>{{ aiSubtitleTestResult.duration_ms ?? 0 }} ms</strong></div>
-                <div><span class="service-result-key">JSON</span><strong>{{ aiSubtitleTestResult.capabilities?.json_output ? '可用' : '-' }}</strong></div>
+                <div><span class="service-result-key">回应</span><strong>{{ aiSubtitleTestResult.capabilities?.model_response ? '有回应' : '-' }}</strong></div>
+                <div><span class="service-result-key">探测</span><strong>{{ formatAISubtitleProbeMode(aiSubtitleTestResult) }}</strong></div>
+                <div><span class="service-result-key">回复</span><strong>{{ aiSubtitleTestResult.response_preview || '-' }}</strong></div>
               </div>
               <div v-if="aiSubtitleTestResult.message" class="service-result-line">{{ aiSubtitleTestResult.message }}</div>
+              <div v-if="aiSubtitleTestResult.probe_timeout_seconds" class="service-result-line">探测上限：{{ aiSubtitleTestResult.probe_timeout_seconds }} 秒</div>
               <template v-if="aiSubtitleTestResult.error">
                 <div class="service-result-line ai-result-error">{{ aiSubtitleTestResult.error.title }}：{{ aiSubtitleTestResult.error.message }}</div>
                 <div class="service-result-line">{{ aiSubtitleTestResult.error.suggestion }}</div>
@@ -210,7 +217,8 @@ const aiModeOptions = [
   { value: 'ai_assist', label: 'AI 辅助草稿' }
 ]
 
-const AI_SUBTITLE_MODELS_CACHE_KEY = 'kikoerumanager.ai_subtitle_models_cache.v1'
+const AI_SUBTITLE_MODELS_CACHE_VERSION = 2
+const AI_SUBTITLE_MODELS_CACHE_KEY = `kikoerumanager.ai_subtitle_models_cache.v${AI_SUBTITLE_MODELS_CACHE_VERSION}`
 const AI_SUBTITLE_MODELS_CACHE_LIMIT = 12
 
 const aiSubtitleTesting = ref(false)
@@ -223,6 +231,7 @@ const aiProviderIconInfo = ref(null)
 const aiProviderIconBroken = ref(false)
 let aiProviderIconTimer = null
 let aiProviderIconRequestId = 0
+let aiSubtitleModelsRequestId = 0
 
 const aiSubtitleConfig = computed(() => props.config.ai_subtitle_matching || {})
 const aiProviderLocalMeta = computed(() => getAIModelPlatformMeta(
@@ -239,13 +248,16 @@ const aiProviderIconUrl = computed(() => {
   return aiProviderLocalMeta.value.iconSrc || normalizeProviderIconUrl(aiProviderIconInfo.value?.icon_url || aiProviderIconInfo.value?.icon_path || '')
 })
 const aiSubtitleModelsCacheSignature = computed(() => buildAISubtitleModelsCacheSignature(aiSubtitleConfig.value))
-const aiSubtitleModelsButtonLabel = computed(() => aiSubtitleModelOptions.value.length ? '刷新模型' : '获取模型')
+const aiSubtitleFetchedModelRows = computed(() => (
+  Array.isArray(aiSubtitleModelsResult.value?.models) ? aiSubtitleModelsResult.value.models : []
+))
+const aiSubtitleModelsButtonLabel = computed(() => aiSubtitleFetchedModelRows.value.length ? '刷新模型' : '获取模型')
 
 const aiSubtitleModelOptions = computed(() => {
-  const rows = Array.isArray(aiSubtitleModelsResult.value?.models) ? aiSubtitleModelsResult.value.models : []
+  const rows = aiSubtitleFetchedModelRows.value
   const currentModel = String(aiSubtitleConfig.value.model || '').trim()
   const normalizedRows = [...rows]
-  if (currentModel && !normalizedRows.some(item => sameModelValue(item.value || item.id, currentModel))) {
+  if (!rows.length && currentModel && !normalizedRows.some(item => sameModelValue(item.value || item.id, currentModel))) {
     normalizedRows.unshift({
       id: modelLabelFromValue(currentModel),
       value: currentModel,
@@ -270,6 +282,18 @@ function normalizeCachePart(value) {
   return String(value || '').trim().replace(/\/+$/, '').toLowerCase()
 }
 
+function hashCachePart(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  if (text === '********') return 'masked-secret'
+  let hash = 2166136261
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36)
+}
+
 function buildAISubtitleModelsCacheSignature(config) {
   const cfg = config || {}
   return [
@@ -277,18 +301,19 @@ function buildAISubtitleModelsCacheSignature(config) {
     normalizeCachePart(cfg.api_version),
     normalizeCachePart(cfg.organization),
     normalizeCachePart(cfg.proxy_url),
+    `key:${hashCachePart(cfg.api_key)}`,
   ].join('|')
 }
 
 function readAISubtitleModelsCacheStore() {
-  if (typeof window === 'undefined') return { version: 1, entries: {} }
+  if (typeof window === 'undefined') return { version: AI_SUBTITLE_MODELS_CACHE_VERSION, entries: {} }
   try {
     const parsed = JSON.parse(window.localStorage.getItem(AI_SUBTITLE_MODELS_CACHE_KEY) || '{}')
     return parsed && typeof parsed === 'object' && parsed.entries
       ? parsed
-      : { version: 1, entries: {} }
+      : { version: AI_SUBTITLE_MODELS_CACHE_VERSION, entries: {} }
   } catch {
-    return { version: 1, entries: {} }
+    return { version: AI_SUBTITLE_MODELS_CACHE_VERSION, entries: {} }
   }
 }
 
@@ -327,22 +352,26 @@ function loadCachedAISubtitleModels() {
         status: 'ok',
         cached: true,
         cached_at: entry.cached_at || null,
+        cache_signature: signature,
         message: `已从本地缓存载入 ${models.length} 个模型`,
         models,
       }
     : null
+  if (models.length) {
+    clearAISubtitleModelIfMissingFromRows(models)
+  }
 }
 
-function saveAISubtitleModelsCache(result) {
+function saveAISubtitleModelsCache(result, signature = aiSubtitleModelsCacheSignature.value) {
   const models = normalizeModelsForCache(result?.models || [])
-  if (!result?.success || !models.length) return
-  const signature = aiSubtitleModelsCacheSignature.value
+  if (!result?.success || !models.length || !signature.trim()) return
   const store = readAISubtitleModelsCacheStore()
   const entries = { ...(store.entries || {}) }
   entries[signature] = {
     cached_at: new Date().toISOString(),
     model: String(aiSubtitleConfig.value.model || '').trim(),
     api_base: String(aiSubtitleConfig.value.api_base || '').trim(),
+    api_key_hash: hashCachePart(aiSubtitleConfig.value.api_key),
     models,
   }
   const trimmedEntries = Object.fromEntries(
@@ -350,11 +379,31 @@ function saveAISubtitleModelsCache(result) {
       .sort((a, b) => String(b[1]?.cached_at || '').localeCompare(String(a[1]?.cached_at || '')))
       .slice(0, AI_SUBTITLE_MODELS_CACHE_LIMIT)
   )
-  writeAISubtitleModelsCacheStore({ version: 1, entries: trimmedEntries })
+  writeAISubtitleModelsCacheStore({ version: AI_SUBTITLE_MODELS_CACHE_VERSION, entries: trimmedEntries })
 }
 
 function sameModelValue(left, right) {
   return String(left || '').trim().toLowerCase() === String(right || '').trim().toLowerCase()
+}
+
+function clearAISubtitleModelIfMissingFromRows(rows) {
+  const currentModel = String(aiSubtitleConfig.value.model || '').trim()
+  if (!currentModel || !Array.isArray(rows) || !rows.length) return
+  const existsInRows = rows.some(item => sameModelValue(item?.value || item?.id, currentModel))
+  if (!existsInRows && props.config.ai_subtitle_matching) {
+    props.config.ai_subtitle_matching.model = ''
+  }
+}
+
+function hasAISubtitleModelsConnectionScope(signature) {
+  const [apiBase, apiVersion, organization, proxyUrl, keyPart] = String(signature || '').split('|')
+  return Boolean(
+    apiBase ||
+    apiVersion ||
+    organization ||
+    proxyUrl ||
+    (keyPart && keyPart !== 'key:')
+  )
 }
 
 function modelLabelFromValue(value) {
@@ -439,7 +488,17 @@ watch(
 
 watch(
   aiSubtitleModelsCacheSignature,
-  loadCachedAISubtitleModels,
+  (signature, previousSignature) => {
+    const isScopedChange = previousSignature !== undefined &&
+      signature !== previousSignature &&
+      hasAISubtitleModelsConnectionScope(previousSignature)
+    aiSubtitleModelsRequestId += 1
+    aiSubtitleModelsLoading.value = false
+    if (isScopedChange && props.config.ai_subtitle_matching?.model) {
+      props.config.ai_subtitle_matching.model = ''
+    }
+    loadCachedAISubtitleModels()
+  },
   { immediate: true }
 )
 
@@ -453,31 +512,44 @@ onBeforeUnmount(() => {
 async function fetchAISubtitleModels() {
   if (aiSubtitleModelsLoading.value) return
   aiSubtitleModelsLoading.value = true
-  const previousResult = aiSubtitleModelsResult.value
+  const requestId = ++aiSubtitleModelsRequestId
+  const requestSignature = aiSubtitleModelsCacheSignature.value
+  const requestConfig = { ...(props.config.ai_subtitle_matching || {}) }
   try {
-    const result = await aiSubtitleMatchApi.models({ ...(props.config.ai_subtitle_matching || {}) })
-    aiSubtitleModelsResult.value = result
+    const result = await aiSubtitleMatchApi.models(requestConfig)
+    if (requestId !== aiSubtitleModelsRequestId || requestSignature !== aiSubtitleModelsCacheSignature.value) return
+    const scopedResult = {
+      ...result,
+      cache_signature: requestSignature,
+    }
+    aiSubtitleModelsResult.value = scopedResult
     if (result?.success) {
-      saveAISubtitleModelsCache(result)
+      clearAISubtitleModelIfMissingFromRows(result.models || [])
+      saveAISubtitleModelsCache(scopedResult, requestSignature)
       ElMessage.success(result.message || `已获取 ${result.models?.length || 0} 个模型`)
     } else {
       ElMessage.error(result?.error?.title || result?.error?.message || '获取模型失败')
     }
   } catch (e) {
+    if (requestId !== aiSubtitleModelsRequestId || requestSignature !== aiSubtitleModelsCacheSignature.value) return
     aiSubtitleModelsResult.value = {
       success: false,
       status: 'failed',
+      cache_signature: requestSignature,
       error: {
         code: 'unknown_error',
         title: '获取模型失败',
         message: e.response?.data?.detail || e.message || '获取模型失败',
         suggestion: '检查 Base URL、API Key、代理和模型服务是否支持 /models'
       },
-      models: Array.isArray(previousResult?.models) ? previousResult.models : []
+      models: [],
+      duration_ms: 0
     }
     ElMessage.error(aiSubtitleModelsResult.value.error.message)
   } finally {
-    aiSubtitleModelsLoading.value = false
+    if (requestId === aiSubtitleModelsRequestId) {
+      aiSubtitleModelsLoading.value = false
+    }
   }
 }
 
@@ -489,7 +561,7 @@ async function testAISubtitleMatching() {
     const result = await aiSubtitleMatchApi.test({ ...(props.config.ai_subtitle_matching || {}) })
     aiSubtitleTestResult.value = result
     if (result?.success) {
-      ElMessage.success(result.message || 'AI 字幕配对模型可用')
+      ElMessage.success(result.message || 'AI 模型有回应')
     } else {
       ElMessage.error(result?.error?.title || result?.error?.message || 'AI 字幕配对测试失败')
     }
@@ -497,6 +569,10 @@ async function testAISubtitleMatching() {
     aiSubtitleTestResult.value = {
       success: false,
       status: 'failed',
+      model: props.config.ai_subtitle_matching?.model || '',
+      duration_ms: 0,
+      probe_mode: 'request_failed',
+      capabilities: { chat_completion: false, model_response: false },
       error: {
         code: 'unknown_error',
         title: '测试失败',
@@ -508,6 +584,15 @@ async function testAISubtitleMatching() {
   } finally {
     aiSubtitleTesting.value = false
   }
+}
+
+function formatAISubtitleProbeMode(result) {
+  const mode = result?.probe_mode || ''
+  if (mode === 'hi') return 'hi 基础测试'
+  if (mode === 'stream_json') return '流式轻量探测'
+  if (mode === 'non_stream_json') return '非流式兼容'
+  if (mode === 'request_failed') return '请求未完成'
+  return mode ? '轻量探测' : '-'
 }
 </script>
 
@@ -594,40 +679,81 @@ async function testAISubtitleMatching() {
 
 .model-combo {
   position: relative;
+  display: flex;
+  align-items: center;
   width: 100%;
   min-width: 0;
+  min-height: 38px;
+  padding: 0 34px 0 36px;
+  border: 1px solid var(--set-border);
+  border-radius: 10px;
+  background: var(--set-field-bg);
+  overflow: hidden;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.model-combo:hover {
+  border-color: var(--set-border-strong);
+}
+
+.model-combo:focus-within {
+  border-color: var(--set-border-strong);
+  box-shadow: 0 0 0 3px var(--set-focus-ring);
 }
 
 .model-platform-badge {
   position: absolute;
   top: 50%;
-  left: 10px;
-  z-index: 1;
+  left: 12px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.82);
+  width: 16px;
+  height: 16px;
+  background: transparent;
   color: var(--set-text-muted);
-  box-shadow:
-    inset 0 0 0 1px rgba(148, 163, 184, 0.2),
-    0 1px 2px rgba(15, 23, 42, 0.08);
-  transform: translateY(-50%);
+  opacity: 0.8;
   pointer-events: none;
+  transform: translateY(-50%);
 }
 
 .model-platform-img {
-  width: 16px;
-  height: 16px;
+  display: block;
+  width: 15px;
+  height: 15px;
   object-fit: contain;
-  border-radius: 4px;
 }
 
 .model-combo-input {
-  padding-left: 40px;
-  padding-right: 46px;
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  min-height: 36px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  background: transparent !important;
+  background-color: transparent !important;
+  color: var(--set-text-strong);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  box-shadow: none;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.model-combo-input:hover,
+.model-combo-input:focus {
+  background: transparent !important;
+  background-color: transparent !important;
+  box-shadow: none;
+}
+
+.model-combo-input::placeholder {
+  color: var(--set-text-subtle);
 }
 
 .model-combo-dd {
@@ -635,7 +761,8 @@ async function testAISubtitleMatching() {
   top: 1px;
   right: 1px;
   display: block;
-  width: 40px;
+  width: 32px;
+  min-height: 0;
   height: calc(100% - 2px);
   background: transparent;
 }
@@ -653,8 +780,7 @@ async function testAISubtitleMatching() {
   width: 100%;
   height: 100%;
   border: 0;
-  border-left: 1px solid var(--set-border);
-  border-radius: 0 9px 9px 0;
+  border-radius: 8px;
   background: transparent;
   color: var(--set-text-muted);
   cursor: pointer;
@@ -682,32 +808,57 @@ async function testAISubtitleMatching() {
 .model-combo :deep(.ai-model-option-icon) {
   width: 16px;
   height: 16px;
+  padding: 0;
+  background: transparent;
   object-fit: contain;
   border-radius: 4px;
+  box-shadow: none;
+}
+
+.ai-api-key-input :deep(.animated-password-input__field) {
+  min-height: 38px;
+  padding-right: 50px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.ai-api-key-input :deep(.animated-password-input__toggle) {
+  right: 8px;
+  width: 34px;
+  height: 34px;
+}
+
+.ai-api-key-input :deep(.animated-password-input__player) {
+  width: 29px;
+  height: 29px;
 }
 
 :global(.ai-model-menu .ai-model-option-icon) {
   flex-shrink: 0;
-  width: 20px;
-  height: 20px;
-  padding: 3px;
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.92);
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 3px;
+  background: transparent;
   object-fit: contain;
-  box-shadow:
-    inset 0 0 0 1px rgba(148, 163, 184, 0.18),
-    0 1px 2px rgba(15, 23, 42, 0.1);
+  box-shadow: none;
   opacity: 1;
   filter: none;
 }
 
 :global(html.kikoerumanager-dark .ai-model-menu .ai-model-option-icon) {
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.16),
-    0 1px 3px rgba(0, 0, 0, 0.3);
+  background: transparent;
+  box-shadow: none;
   opacity: 1;
   filter: none;
+}
+
+:global(html.kikoerumanager-dark .ai-model-menu .ai-model-option-icon--openai),
+:global(html.kikoerumanager-dark .ai-model-menu .ai-model-option-icon--xai),
+:global(html.kikoerumanager-dark .ai-model-menu .ai-model-option-icon--openrouter) {
+  filter: brightness(0) invert(1);
 }
 
 .settings-field-dd { display: block; width: 100%; }
@@ -866,11 +1017,21 @@ async function testAISubtitleMatching() {
 @keyframes spin-once { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .spin-once { animation: spin-once 0.7s linear infinite; }
 
-:global(html.kikoerumanager-dark .model-platform-badge) {
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.16),
-    0 1px 3px rgba(0, 0, 0, 0.28);
+:global(html.kikoerumanager-dark .model-platform-img.is-dark-monochrome) {
+  filter: brightness(0) invert(1);
+  opacity: 0.92;
+}
+
+:global(html.kikoerumanager-dark body #app .settings-page .model-combo > input.model-combo-input.model-combo-input),
+:global(body.kikoerumanager-dark #app .settings-page .model-combo > input.model-combo-input.model-combo-input) {
+  background: transparent !important;
+  background-color: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  color: var(--set-text-strong) !important;
+  font-size: 13px !important;
+  line-height: 1.35 !important;
+  -webkit-text-fill-color: var(--set-text-strong) !important;
 }
 
 @media (max-width: 1200px) {

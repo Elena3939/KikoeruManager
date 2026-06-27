@@ -338,6 +338,23 @@ cd backend
 .\venv\Scripts\python.exe -m pytest tests/test_linked_subtitle_import_service.py -q
 ```
 
+### 11.1 AI 字幕设置连接测试
+
+设置页 AI 配对里的“测试连接”只验证模型是否能返回聊天内容，不验证字幕 JSON 能力，也不代表完整字幕配对一定成功：
+
+- 请求内容固定为 `hi`，走非流式调用，不带 `response_format`。
+- 探测限制为 `max_tokens=16`、不重试，并使用短超时；超时应返回连接测试失败，不应拖到前端请求超时。
+- 成功条件是模型返回非空文本；正式字幕配对仍需通过 RJ 字幕工作台或自动配对流程单独验证。
+- 运行态实测前用仓库根目录 `start-all.bat` 重启，让后端加载新逻辑。
+
+改动 AI 设置页测试逻辑后至少执行：
+
+```powershell
+.\.venv\Scripts\python.exe -m py_compile backend\app\core\ai_subtitle_match_service.py
+cd frontend
+npm run build
+```
+
 ## 12. 持续集成测试
 
 ### 12.1 GitHub Actions 配置

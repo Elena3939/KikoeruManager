@@ -94,6 +94,64 @@ def _extract_litellm_content(response: Any) -> Tuple[str, Dict[str, int]]:
     }
 
 
+def _extract_litellm_stream_delta(chunk: Any) -> Tuple[str, Dict[str, int]]:
+    usage_obj = chunk.get("usage") if isinstance(chunk, dict) else getattr(chunk, "usage", None)
+    if usage_obj is None:
+        usage = {}
+    elif isinstance(usage_obj, dict):
+        usage = usage_obj
+    else:
+        usage = {
+            "prompt_tokens": getattr(usage_obj, "prompt_tokens", 0),
+            "completion_tokens": getattr(usage_obj, "completion_tokens", 0),
+            "total_tokens": getattr(usage_obj, "total_tokens", 0),
+        }
+
+    choices = chunk.get("choices") if isinstance(chunk, dict) else getattr(chunk, "choices", None)
+    if not choices:
+        return "", {
+            "prompt_tokens": _safe_int(usage.get("prompt_tokens")),
+            "completion_tokens": _safe_int(usage.get("completion_tokens")),
+            "total_tokens": _safe_int(usage.get("total_tokens")),
+        }
+    choice = choices[0]
+    delta = choice.get("delta") if isinstance(choice, dict) else getattr(choice, "delta", None)
+    if isinstance(delta, dict):
+        content = delta.get("content") or ""
+    else:
+        content = getattr(delta, "content", "") if delta is not None else ""
+    if isinstance(content, list):
+        content = "".join(
+            str((part or {}).get("text") or (part or {}).get("content") or "")
+            if isinstance(part, dict)
+            else str(part or "")
+            for part in content
+        )
+    return str(content or ""), {
+        "prompt_tokens": _safe_int(usage.get("prompt_tokens")),
+        "completion_tokens": _safe_int(usage.get("completion_tokens")),
+        "total_tokens": _safe_int(usage.get("total_tokens")),
+    }
+
+
+def _is_stream_unsupported_error(exc: Exception) -> bool:
+    raw = str(exc or "").lower()
+    if "stream" not in raw and "streaming" not in raw:
+        return False
+    return any(
+        token in raw
+        for token in (
+            "not support",
+            "unsupported",
+            "not available",
+            "does not support",
+            "unknown parameter",
+            "unrecognized",
+            "invalid parameter",
+        )
+    )
+
+
 def _is_azure_config(config: Dict[str, Any]) -> bool:
     base_url = _safe_text(config.get("api_base")).lower()
     api_version = _safe_text(config.get("api_version"))
@@ -251,6 +309,133 @@ class AISubtitleMatchService:
         }
         return hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
+    def _completion_kwargs(
+        self,
+        config: Dict[str, Any],
+        messages: List[Dict[str, str]],
+        *,
+        timeout_seconds: Optional[int] = None,
+        max_retries: Optional[int] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        response_format: bool = True,
+    ) -> Dict[str, Any]:
+        kwargs = {
+            "model": config["model"],
+            "messages": messages,
+            "temperature": config["temperature"] if temperature is None else temperature,
+            "timeout": config["timeout_seconds"] if timeout_seconds is None else timeout_seconds,
+            "num_retries": config["max_retries"] if max_retries is None else max_retries,
+            "api_key": config["api_key"],
+        }
+        if response_format:
+            kwargs["response_format"] = {"type": "json_object"}
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        if config.get("api_base") and not _is_azure_config(config):
+            kwargs["custom_llm_provider"] = "openai"
+            kwargs["extra_headers"] = {"User-Agent": "KikoeruManager/AI-Subtitle"}
+        if config.get("api_base"):
+            kwargs["api_base"] = config["api_base"]
+        if config.get("api_version"):
+            kwargs["api_version"] = config["api_version"]
+        if config.get("organization"):
+            kwargs["organization"] = config["organization"]
+        return kwargs
+
+    async def _complete_streaming(
+        self,
+        litellm: Any,
+        kwargs: Dict[str, Any],
+        *,
+        request_label: str,
+    ) -> Tuple[str, Dict[str, int]]:
+        stream_kwargs = dict(kwargs)
+        stream_kwargs["stream"] = True
+        started = time.perf_counter()
+        first_chunk_ms: Optional[int] = None
+        content_parts: List[str] = []
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+        stream = await litellm.acompletion(**stream_kwargs)
+        async for chunk in stream:
+            delta, chunk_usage = _extract_litellm_stream_delta(chunk)
+            if delta:
+                if first_chunk_ms is None:
+                    first_chunk_ms = int((time.perf_counter() - started) * 1000)
+                    logger.info("[AI字幕] %s 流式首包: first_chunk_ms=%s", request_label, first_chunk_ms)
+                content_parts.append(delta)
+            if any(chunk_usage.values()):
+                usage = chunk_usage
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        logger.info(
+            "[AI字幕] %s 流式完成: duration_ms=%s first_chunk_ms=%s output_chars=%s tokens=%s",
+            request_label,
+            duration_ms,
+            first_chunk_ms,
+            len("".join(content_parts)),
+            usage.get("total_tokens", 0),
+        )
+        return "".join(content_parts), usage
+
+    async def _complete_non_streaming(
+        self,
+        litellm: Any,
+        kwargs: Dict[str, Any],
+        *,
+        request_label: str,
+    ) -> Tuple[str, Dict[str, int]]:
+        started = time.perf_counter()
+        response = await litellm.acompletion(**kwargs)
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        content, usage = _extract_litellm_content(response)
+        logger.info(
+            "[AI字幕] %s 非流式完成: duration_ms=%s output_chars=%s tokens=%s",
+            request_label,
+            duration_ms,
+            len(content),
+            usage.get("total_tokens", 0),
+        )
+        return content, usage
+
+    async def _complete_with_stream_preferred(
+        self,
+        litellm: Any,
+        kwargs: Dict[str, Any],
+        *,
+        proxy_url: str,
+        request_label: str,
+        stream_timeout_seconds: Optional[int] = None,
+    ) -> Tuple[str, Dict[str, int], bool]:
+        try:
+            async with _temporary_proxy(proxy_url):
+                if stream_timeout_seconds and stream_timeout_seconds > 0:
+                    content, usage = await asyncio.wait_for(
+                        self._complete_streaming(litellm, kwargs, request_label=request_label),
+                        timeout=stream_timeout_seconds,
+                    )
+                else:
+                    content, usage = await self._complete_streaming(litellm, kwargs, request_label=request_label)
+            return content, usage, True
+        except Exception as exc:
+            stream_timed_out = isinstance(exc, (asyncio.TimeoutError, TimeoutError))
+            if not stream_timed_out and not _is_stream_unsupported_error(exc):
+                raise
+            raw_error = str(exc) or (
+                f"stream_probe_timeout_after_{stream_timeout_seconds}s"
+                if stream_timed_out
+                else exc.__class__.__name__
+            )
+            logger.warning(
+                "[AI字幕] %s 流式不可用，退回非流式: reason=%s error=%s",
+                request_label,
+                "timeout" if stream_timed_out else "unsupported",
+                sanitize_text_for_log(raw_error, max_length=240),
+            )
+        async with _temporary_proxy(proxy_url):
+            content, usage = await self._complete_non_streaming(litellm, kwargs, request_label=request_label)
+        return content, usage, False
+
     async def _call_model(self, config: Dict[str, Any], payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, int]]:
         if not config.get("model"):
             raise ValueError("missing_config: model 不能为空")
@@ -262,32 +447,84 @@ class AISubtitleMatchService:
         except Exception as exc:
             raise RuntimeError(f"missing_config: 后端未安装 litellm: {exc}") from exc
 
-        kwargs = {
-            "model": config["model"],
-            "messages": self._build_messages(config, payload),
-            "temperature": config["temperature"],
-            "timeout": config["timeout_seconds"],
-            "num_retries": config["max_retries"],
-            "api_key": config["api_key"],
-            "response_format": {"type": "json_object"},
-        }
-        if config.get("api_base") and not _is_azure_config(config):
-            kwargs["custom_llm_provider"] = "openai"
-            kwargs["extra_headers"] = {"User-Agent": "KikoeruManager/AI-Subtitle"}
-        if config.get("api_base"):
-            kwargs["api_base"] = config["api_base"]
-        if config.get("api_version"):
-            kwargs["api_version"] = config["api_version"]
-        if config.get("organization"):
-            kwargs["organization"] = config["organization"]
-
-        async with _temporary_proxy(config.get("proxy_url", "")):
-            response = await litellm.acompletion(**kwargs)
-        content, usage = _extract_litellm_content(response)
+        request_label = f"模型请求[{uuid.uuid4().hex[:8]}]"
+        kwargs = self._completion_kwargs(config, self._build_messages(config, payload))
+        logger.info(
+            "[AI字幕] %s 开始: stream=preferred audio=%s subtitle_groups=%s timeout=%s retries=%s model=%s",
+            request_label,
+            len(payload.get("audio_files") or []),
+            len(payload.get("subtitle_groups") or []),
+            config["timeout_seconds"],
+            config["max_retries"],
+            config.get("model", ""),
+        )
+        content, usage, stream_used = await self._complete_with_stream_preferred(
+            litellm,
+            kwargs,
+            proxy_url=config.get("proxy_url", ""),
+            request_label=request_label,
+        )
         try:
-            return _parse_json_content(content), usage
+            parsed = _parse_json_content(content)
+            logger.info("[AI字幕] %s JSON 解析成功: stream_used=%s", request_label, stream_used)
+            return parsed, usage
         except Exception as exc:
             raise ValueError(f"json_output_failed: {exc}") from exc
+
+    async def _probe_model_connection(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            import litellm
+        except Exception as exc:
+            raise RuntimeError(f"missing_config: 后端未安装 litellm: {exc}") from exc
+
+        probe_timeout = max(3, min(_safe_int(config.get("timeout_seconds"), 30), 15))
+        messages = [
+            {"role": "user", "content": "hi"},
+        ]
+        kwargs = self._completion_kwargs(
+            config,
+            messages,
+            timeout_seconds=probe_timeout,
+            max_retries=0,
+            temperature=0,
+            max_tokens=16,
+            response_format=False,
+        )
+        request_label = f"连接测试[{uuid.uuid4().hex[:8]}]"
+        hard_timeout = probe_timeout + 2
+        logger.info(
+            "[AI字幕] %s hi 探测开始: timeout=%s hard_timeout=%s max_tokens=16 model=%s",
+            request_label,
+            probe_timeout,
+            hard_timeout,
+            config.get("model", ""),
+        )
+        try:
+            content, usage = await asyncio.wait_for(
+                self._complete_non_streaming(
+                    litellm,
+                    kwargs,
+                    request_label=request_label,
+                ),
+                timeout=hard_timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(f"连接测试超过 {hard_timeout} 秒仍未完成，模型服务或代理响应过慢") from exc
+        response_text = _safe_text(content)
+        if not response_text:
+            raise ValueError("empty_response: 模型未返回内容")
+        logger.info(
+            "[AI字幕] %s hi 探测成功: reply_chars=%s tokens=%s",
+            request_label,
+            len(response_text),
+            usage.get("total_tokens", 0),
+        )
+        return {
+            "response_preview": response_text[:160],
+            "usage": usage,
+            "timeout_seconds": probe_timeout,
+            "hard_timeout_seconds": hard_timeout,
+        }
 
     def _models_endpoint(self, config: Dict[str, Any]) -> Tuple[str, bool]:
         base_url = (config.get("api_base") or "https://api.openai.com/v1").strip().rstrip("/")
@@ -369,14 +606,27 @@ class AISubtitleMatchService:
                 headers["api-key"] = config["api_key"]
             else:
                 headers["Authorization"] = f"Bearer {config['api_key']}"
-            timeout_seconds = max(1, min(_safe_int(config.get("timeout_seconds"), 30), 300))
+            timeout_seconds = max(3, min(_safe_int(config.get("timeout_seconds"), 30), 25))
+            logger.info(
+                "[AI字幕] 获取模型列表请求: endpoint=%s provider=%s timeout=%s",
+                mask_url_for_log(url),
+                "azure" if is_azure else "openai_compatible",
+                timeout_seconds,
+            )
+            request_started = time.perf_counter()
             async with _temporary_proxy(config.get("proxy_url", "")):
                 async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(timeout_seconds, connect=min(10, timeout_seconds)),
+                    timeout=httpx.Timeout(timeout_seconds, connect=min(5, timeout_seconds)),
                     trust_env=True,
                     follow_redirects=True,
                 ) as client:
                     response = await client.get(url, headers=headers)
+            logger.info(
+                "[AI字幕] 获取模型列表响应: status_code=%s duration_ms=%s endpoint=%s",
+                response.status_code,
+                int((time.perf_counter() - request_started) * 1000),
+                mask_url_for_log(url),
+            )
             if response.status_code >= 400:
                 try:
                     summary = json.dumps(response.json(), ensure_ascii=False)[:800]
@@ -1013,33 +1263,29 @@ class AISubtitleMatchService:
                 "model": config.get("model", ""),
                 "duration_ms": 0,
             }
-        payload = {
-            "audio_files": [{"id": "a1", "filename": "01_耳かき.wav"}],
-            "subtitle_groups": [{"id": "g1", "base_name": "01_耳かき", "files": [{"id": "g1_s1", "filename": "01_耳かき.srt"}]}],
-        }
         try:
-            response, _usage = await self._call_model(config, payload)
-            matches = response.get("matches") or []
-            if not isinstance(matches, list):
-                raise ValueError("json_output_failed: matches 必须是数组")
+            probe = await self._probe_model_connection(config)
             duration_ms = int((time.perf_counter() - started) * 1000)
             logger.info(
-                "[AI字幕] 连接测试成功: model=%s duration_ms=%s matched_count=%s",
+                "[AI字幕] 连接测试成功: model=%s duration_ms=%s probe_mode=hi tokens=%s",
                 config.get("model", ""),
                 duration_ms,
-                len(matches),
+                (probe.get("usage") or {}).get("total_tokens", 0),
             )
             return {
                 "success": True,
                 "status": "ok",
-                "message": "模型连接正常，JSON 输出可用",
+                "message": "模型连接正常，hi 探测有回应",
                 "model": config.get("model", ""),
                 "duration_ms": duration_ms,
-                "capabilities": {"json_output": True},
-                "sample": {
-                    "matched_count": len(matches),
-                    "low_confidence_count": len([item for item in matches if _safe_int((item or {}).get("confidence")) < config["confidence_threshold"]]),
+                "capabilities": {
+                    "chat_completion": True,
+                    "model_response": True,
                 },
+                "probe_mode": "hi",
+                "probe_timeout_seconds": probe.get("timeout_seconds"),
+                "response_preview": probe.get("response_preview", ""),
+                "usage": probe.get("usage") or {},
             }
         except Exception as exc:
             error = _normalize_error(exc)
