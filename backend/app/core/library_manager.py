@@ -1926,14 +1926,31 @@ class LibraryManager:
 
     def _invalidate_local_search_cache(self, library_id: Optional[str] = None) -> None:
         """文件结构变更（rename/move/delete/导入完成）后调用，让缓存失效。"""
-        if not self._local_search_result_cache:
+        cache = getattr(self, "_local_search_result_cache", None)
+        if not cache:
             return
         if not library_id:
-            self._local_search_result_cache.clear()
+            cache.clear()
             return
-        keys_to_drop = [k for k in self._local_search_result_cache if k and k[0] == library_id]
+        keys_to_drop = [k for k in cache if k and k[0] == library_id]
         for k in keys_to_drop:
-            self._local_search_result_cache.pop(k, None)
+            cache.pop(k, None)
+
+    def _invalidate_local_dir_listing_cache(self, library_id: Optional[str] = None) -> None:
+        """本地目录列表变更后调用，避免浏览接口读到 8 秒 TTL 内的旧行。"""
+        cache = getattr(self, "_local_dir_listing_cache", None)
+        if not cache:
+            return
+        if not library_id:
+            cache.clear()
+            return
+        for key in list(cache.keys()):
+            if key and key[0] == library_id:
+                cache.pop(key, None)
+
+    def _invalidate_local_browse_caches(self, library_id: Optional[str] = None) -> None:
+        self._invalidate_local_search_cache(library_id)
+        self._invalidate_local_dir_listing_cache(library_id)
 
     # ---------------------- 群晖 share 列表 TTL 缓存 ----------------------
     def _share_list_cache_ttl_seconds(self) -> int:
@@ -3077,6 +3094,27 @@ class LibraryManager:
                 exc_info=True,
             )
 
+    def _flush_index_delete_many_now(
+        self,
+        library: LibraryDefinition,
+        absolute_paths: list[str],
+    ) -> None:
+        paths = self._compress_index_absolute_paths(library, absolute_paths or [])
+        if not paths:
+            return
+        try:
+            from .library_index import get_library_index_service
+
+            service = get_library_index_service()
+            self._run_index_delete_flush(service, {"library": library, "paths": paths})
+        except Exception:
+            logger.warning(
+                "[索引] 同步追赶 delete 失败 library=%s count=%s",
+                library.id,
+                len(paths),
+                exc_info=True,
+            )
+
     def _flush_index_mutations(self) -> None:
         with self._index_mutation_lock:
             timer = self._index_mutation_timer
@@ -3129,16 +3167,7 @@ class LibraryManager:
 
             service = get_library_index_service()
             for entry in deletes.values():
-                library = entry["library"]
-                if not service.is_ready(library.id):
-                    continue
-                rels = [
-                    self._index_relative_path(library, path)
-                    for path in self._compress_index_absolute_paths(library, entry.get("paths") or [])
-                ]
-                rels = [rel for rel in rels if rel]
-                if rels:
-                    service.handle_self_mutation_batch(library.id, deletes=rels)
+                self._run_index_delete_flush(service, entry)
 
             for entry in moves.values():
                 self._run_index_move_flush(service, entry)
@@ -3150,6 +3179,18 @@ class LibraryManager:
                 self._run_index_upsert_flush(service, entry)
         except Exception:
             logger.warning("[索引] 库存索引变更 flush 失败", exc_info=True)
+
+    def _run_index_delete_flush(self, service, entry: dict[str, Any]) -> None:
+        library: LibraryDefinition = entry["library"]
+        if not service.is_ready(library.id):
+            return
+        rels = [
+            self._index_relative_path(library, path)
+            for path in self._compress_index_absolute_paths(library, entry.get("paths") or [])
+        ]
+        rels = [rel for rel in rels if rel]
+        if rels:
+            service.handle_self_mutation_batch(library.id, deletes=rels)
 
     def _run_index_move_flush(self, service, entry: dict[str, Any]) -> None:
         source_library: LibraryDefinition = entry["source_library"]
@@ -3381,6 +3422,8 @@ class LibraryManager:
         self,
         library: LibraryDefinition,
         absolute_path: str,
+        *,
+        sync: bool = False,
     ) -> None:
         """本地写操作完成后，后台批量通知索引删除。
 
@@ -3390,7 +3433,10 @@ class LibraryManager:
         if not self._library_uses_inventory_index(library):
             return
         try:
-            self._enqueue_index_delete_many(library, [absolute_path])
+            if sync:
+                self._flush_index_delete_many_now(library, [absolute_path])
+            else:
+                self._enqueue_index_delete_many(library, [absolute_path])
         except Exception:
             logger.debug(
                 "通知索引删除失败 library=%s path=%s",
@@ -3401,12 +3447,17 @@ class LibraryManager:
         self,
         library: LibraryDefinition,
         absolute_paths: list[str],
+        *,
+        sync: bool = False,
     ) -> None:
         """批量通知索引删除：后台队列合并执行，避免阻塞业务请求。"""
         if not self._library_uses_inventory_index(library):
             return
         try:
-            self._enqueue_index_delete_many(library, absolute_paths)
+            if sync:
+                self._flush_index_delete_many_now(library, absolute_paths)
+            else:
+                self._enqueue_index_delete_many(library, absolute_paths)
         except Exception:
             logger.debug(
                 "批量通知索引删除失败 library=%s count=%s",
@@ -4151,6 +4202,8 @@ class LibraryManager:
             normalized_sort_by = self._normalize_library_sort_by(sort_by)
             service = get_library_index_service()
             if not self._index_has_usable_snapshot(service, library.id):
+                if library.type == "local":
+                    return None
                 index_status = self._index_status_name(service, library.id)
                 logger.info(
                     "库存浏览索引未就绪，返回 pending: lib=%s path=%s page=%s page_size=%s status=%s",
@@ -4168,6 +4221,12 @@ class LibraryManager:
                     browse_root=browse_root,
                     index_status=index_status,
                 )
+            if (
+                library.type == "local"
+                and hasattr(service, "has_library_entries")
+                and not service.has_library_entries(library.id)
+            ):
+                return None
             offset = max(0, (int(page or 1) - 1) * int(page_size or 200))
             payload = service.list_children_page(
                 library.id,
@@ -4179,7 +4238,14 @@ class LibraryManager:
                 page_cursor=page_cursor,
             )
             entries = list(payload.get("entries") or [])
+            raw_entry_count = len(entries)
             stale_relative_paths: set[str] = set()
+            if library.type == "local":
+                entries, stale_relative_paths = self._validate_local_index_entries_for_read(
+                    library,
+                    entries,
+                    return_stale_paths=True,
+                )
             if force_refresh and library.type == "local":
                 refresh_paths = [
                     str(getattr(entry, "absolute_path", "") or "")
@@ -4188,11 +4254,11 @@ class LibraryManager:
                 ]
                 if refresh_paths:
                     self._enqueue_index_read_repair_upserts(library, refresh_paths)
-                    stale_relative_paths = {
+                    stale_relative_paths.update({
                         str(getattr(entry, "relative_path", "") or "")
                         for entry in entries
                         if str(getattr(entry, "relative_path", "") or "")
-                    }
+                    })
             files = []
             for index, entry in enumerate(entries):
                 if self._should_skip_entry(getattr(entry, "name", "")):
@@ -4214,20 +4280,24 @@ class LibraryManager:
                 item.pop("search_via_index", None)
                 item.pop("_sort_time", None)
                 item.pop("_mtime", None)
+            indexed_total = max(
+                0,
+                int(payload.get("total") or len(files)) - max(0, raw_entry_count - len(entries)),
+            )
             logger.info(
                 "库存浏览走索引: lib=%s path=%s page=%s page_size=%s total=%s returned=%s cursor=%s",
                 library.id,
                 current_path,
                 page,
                 page_size,
-                int(payload.get("total") or len(files)),
+                indexed_total,
                 len(files),
                 bool(payload.get("next_page_cursor")),
             )
             return self._build_browse_result_from_index(
                 library,
                 files=files,
-                total=int(payload.get("total") or len(files)),
+                total=indexed_total,
                 page=page,
                 page_size=page_size,
                 current_path=current_path,
@@ -5939,7 +6009,7 @@ class LibraryManager:
         new_path = os.path.join(parent_dir, new_name)
         os.rename(path, new_path)
         # 文件夹改名后 keyword→matches 里旧 path 不再有效
-        self._invalidate_local_search_cache(library.id)
+        self._invalidate_local_browse_caches(library.id)
         if not skip_index_mutation:
             indexable_moved_items = self._filter_index_move_items(
                 library,
@@ -6056,9 +6126,9 @@ class LibraryManager:
             except Exception as exc:
                 failed.append({"index": request_index, "path": path, "source_path": source_path, "new_name": new_name, "error": str(exc)})
 
-        # 一次性清搜索缓存（关键：从 N 次降到 1 次）
+        # 一次性清浏览缓存（关键：从 N 次降到 1 次）
         if success_count:
-            self._invalidate_local_search_cache(library.id)
+            self._invalidate_local_browse_caches(library.id)
 
         # 一次性索引移动通知：后台 micro-batch，命中索引 fast-path 时不扫磁盘。
         # 字幕补配工作台的临时字幕路径会被过滤；真实 RJ 音频改名必须继续同步索引。
@@ -6191,10 +6261,11 @@ class LibraryManager:
             _robust_rmtree(path)
         else:
             os.remove(path)
+        self._invalidate_local_browse_caches(library.id)
         if was_top_level_dir:
             self._local_top_level_delta(library, path, -1)
         # 索引同步：删除完成后立即同步索引（不依赖 watcher）
-        self._notify_index_self_mutation_delete(library, path)
+        self._notify_index_self_mutation_delete(library, path, sync=True)
         self._append_stats_log(library, "INFO", f"删除完成 path={path}")
         return {"message": "删除成功", "path": path}
 
@@ -6256,8 +6327,10 @@ class LibraryManager:
                 successful_paths.append(path)
             except Exception as exc:
                 failed_paths.append({"path": path, "error": str(exc)})
+        if successful_paths:
+            self._invalidate_local_browse_caches(library.id)
         # 索引同步：批量通知删除（单事务一次提交）
-        self._notify_index_self_mutation_delete_batch(library, successful_paths)
+        self._notify_index_self_mutation_delete_batch(library, successful_paths, sync=True)
         self._append_stats_log(
             library,
             "INFO",
@@ -6291,7 +6364,7 @@ class LibraryManager:
         ``include_files`` 同样生效（文件项 size 取自 additional.size）。
         """
         library = self.get_library_definition(library_id)
-        indexed = self._list_folders_only_via_index(library, path, include_files=include_files) if library.type != "local" else None
+        indexed = self._list_folders_only_via_index(library, path, include_files=include_files)
         if indexed is not None:
             self._append_stats_log(
                 library,
@@ -6899,10 +6972,10 @@ class LibraryManager:
             except Exception as exc:
                 failed.append({"path": path, "name": os.path.basename(path), "error": str(exc)})
 
-        # 文件级移动不会触发 _local_top_level_delta，这里兜底再清一次本地搜索缓存
-        self._invalidate_local_search_cache(source_library.id)
+        # 文件级移动不会触发 _local_top_level_delta，这里兜底清一次本地浏览缓存
+        self._invalidate_local_browse_caches(source_library.id)
         if target_library.id != source_library.id:
-            self._invalidate_local_search_cache(target_library.id)
+            self._invalidate_local_browse_caches(target_library.id)
 
         # 索引同步：普通移动走 fast-path；目录合并会影响已有目标目录，改为 delete 源 + replace 目标。
         if moved_index_items:
@@ -8450,7 +8523,7 @@ class LibraryManager:
 
     def _local_top_level_delta(self, library: LibraryDefinition, path: str, delta: int) -> None:
         # 顶层目录数量发生变化 ⇒ 本地搜索缓存里的 keyword→matches 可能不再准确，主动失效
-        self._invalidate_local_search_cache(library.id)
+        self._invalidate_local_browse_caches(library.id)
         cached = self._stats_cache.get(library.id)
         if library.type != "local" or not cached or cached.get("status") == "pending":
             return
@@ -8647,6 +8720,12 @@ class LibraryManager:
             )
             if not has_snapshot:
                 return None
+            if (
+                library.type == "local"
+                and hasattr(service, "has_library_entries")
+                and not service.has_library_entries(library.id)
+            ):
+                return None
             library_root = os.path.abspath(library.root_path)
             target_path = os.path.abspath(path)
             if not self._local_path_is_within_root(target_path, library_root):
@@ -8662,6 +8741,17 @@ class LibraryManager:
             target_entry = service.get_entry(library.id, parent_relative_path) if parent_relative_path else None
             if parent_relative_path and (not target_entry or target_entry.entry_type != "dir"):
                 return None
+            target_entry_stale = False
+            if target_entry and library.type == "local":
+                target_entries, target_stale_paths = self._validate_local_index_entries_for_read(
+                    library,
+                    [target_entry],
+                    return_stale_paths=True,
+                )
+                if not target_entries:
+                    return None
+                target_entry = target_entries[0]
+                target_entry_stale = str(getattr(target_entry, "relative_path", "") or "") in target_stale_paths
 
             if recursive:
                 requested_entry_type = None if include_dirs else "file"
@@ -8710,8 +8800,12 @@ class LibraryManager:
                     items.append(item)
                 file_entries = [entry for entry in entries if getattr(entry, "entry_type", "") == "file"]
                 dir_entries = [entry for entry in entries if getattr(entry, "entry_type", "") == "dir"]
-                total_size = int(target_entry.size or 0) if target_entry else sum(int(entry.size or 0) for entry in file_entries)
-                total_files = int(target_entry.file_count or 0) if target_entry else len(file_entries)
+                if target_entry and not target_entry_stale:
+                    total_size = int(target_entry.size or 0)
+                    total_files = int(target_entry.file_count or 0)
+                else:
+                    total_size = sum(int(entry.size or 0) for entry in file_entries)
+                    total_files = len(file_entries)
                 result = {
                     "folder_name": folder_name,
                     "folder_path": target_path,
@@ -8776,8 +8870,15 @@ class LibraryManager:
                 items.append(item)
 
             if target_entry:
-                total_size = int(target_entry.size or 0)
-                total_files = int(target_entry.file_count or 0)
+                if target_entry_stale:
+                    total_size = sum(int(entry.size or 0) for entry in entries)
+                    total_files = sum(
+                        int(entry.file_count or 0) if entry.entry_type == "dir" else 1
+                        for entry in entries
+                    )
+                else:
+                    total_size = int(target_entry.size or 0)
+                    total_files = int(target_entry.file_count or 0)
                 total_folders = None
             else:
                 status = service.get_status(library.id)
@@ -9414,6 +9515,7 @@ class LibraryManager:
                 "size_status": item.get("size_status") or ("ready" if not is_directory else "pending"),
                 "file_count": item.get("file_count"),
                 "folder_count": item.get("folder_count"),
+                "size_via_index": bool(is_directory and library.type == "local"),
                 "browse_via_index": True,
             })
         return {
