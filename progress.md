@@ -1412,3 +1412,66 @@
 - `frontend/src/views/CircleCompletion.vue`：支持 `circle_id`、`circle_name`、`rjcode` query 定位社团和作品。
 - `progress.md`：追加本轮通知跳转修复记录。
 - 回滚方式：还原上述四个代码文件中本轮通知跳转相关 hunk，并删除本段进度记录。
+
+## 2026-06-27 - Task: 修正库存页删除刷新与移动弹窗索引浏览
+### What was done
+- 修正库存删除后的刷新一致性：删除成功后立即清本地浏览缓存，并同步通知库存索引删除，避免前端乐观删除后又被旧索引或目录 TTL 缓存刷回来。
+- 本地索引读取时增加磁盘存在性校验，过滤已不存在或类型已变化的索引条目，并按过滤结果修正分页 total。
+- “移动到...”弹窗的本地目录浏览改为优先读取库存索引；索引未就绪或库内无快照条目时回退到本地单层目录浏览，避免空索引吞掉真实文件。
+- 文件夹内容索引读取增加本地目标目录校验和 stale 汇总回退，避免已删除目录或旧目录统计继续污染弹窗结果。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile backend\app\core\library_manager.py`：通过。
+- `cd backend; ..\.venv\Scripts\python.exe -m pytest tests\test_library_browser_api.py::test_local_inventory_reads_prefer_usable_index_snapshot tests\test_library_browser_api.py::test_list_files_coalesces_identical_inflight_requests -q`：通过，`2 passed`。
+- `cd backend; ..\.venv\Scripts\python.exe -m pytest tests\test_library_browser_api.py::test_library_browser_endpoints_support_multi_library -q`：通过，`1 passed`。
+- `cd backend; ..\.venv\Scripts\python.exe -m pytest tests\test_library_browser_api.py -q`：单进程输出通过，`25 passed`。验证过程中曾误并发启动重复 pytest，重复进程出现 PostgreSQL schema 初始化冲突和临时目录竞争，不属于本轮代码失败。
+
+### Notes
+- `backend/app/core/library_manager.py`：清理本地目录浏览缓存、删除时同步追赶索引、索引读路径过滤本地 stale 条目，并让移动弹窗优先走库存索引。
+- `backend/tests/test_library_browser_api.py`：补充本地库存索引 fake 的同步删除行为，覆盖删除后移动弹窗不再显示已删文件。
+- `progress.md`：追加本轮库存删除刷新和移动弹窗索引浏览修复记录。
+- 回滚方式：还原本轮 `backend/app/core/library_manager.py` 和 `backend/tests/test_library_browser_api.py` 的对应 hunk，并删除本段进度记录。
+
+## 2026-06-28 - Task: 修正概览页任务卡进度说明布局
+### What was done
+- 将概览页任务卡的当前步骤说明从任务标签同一行移出，改为独立左对齐行，避免长进度文本被挤到状态按钮旁边。
+- 为步骤说明补充最大宽度和任意位置换行，长文件名或进度文案不会横向撑破任务卡。
+
+### Testing
+- `cd frontend; npm run build`：通过；仅有既有 VueUse PURE 注释、lottie eval 和 chunk size warning。
+
+### Notes
+- `frontend/src/components/dashboard/DashboardActiveTasks.vue`：调整任务卡 chip 与当前步骤说明的布局，并新增 `.dash-task-step-line` 宽度约束。
+- `progress.md`：追加本轮概览任务卡布局修复记录。
+- 回滚方式：还原本轮 `frontend/src/components/dashboard/DashboardActiveTasks.vue` 中 current_step 独立行和 `.dash-task-step-line` 的 hunk，并删除本段进度记录。
+
+## 2026-06-28 - Task: 去除概览页社团补全重复社团名
+### What was done
+- 修正概览页任务卡副标题显示规则：当副标题与标题完全相同，就不再渲染副标题。
+- 社团补全任务仍保留标题里的社团名和“社团补全”业务标签，只去掉标题下方重复的一行社团名。
+
+### Testing
+- `cd frontend; npm run build`：通过；两条误并发启动的构建均完成资源预压缩，仅有既有 VueUse PURE 注释、lottie eval 和 chunk size warning。
+
+### Notes
+- `frontend/src/components/dashboard/DashboardActiveTasks.vue`：为 `displaySubtitle()` 增加标题 / 副标题去重判断。
+- `progress.md`：追加本轮社团补全重复社团名修复记录。
+- 回滚方式：还原本轮 `frontend/src/components/dashboard/DashboardActiveTasks.vue` 中 `displaySubtitle()` 和 `normalizeComparableText()` 的对应 hunk，并删除本段进度记录。
+
+## 2026-06-28 - Task: 修复解压任务日志进度展示
+### What was done
+- 修正系统日志里的解压任务进度标题：优先显示具体压缩包文件名，不再只显示泛化的“解压任务”。
+- 后端任务进度日志增加压缩包来源标签，并兼容 Windows / Linux 路径分隔符，避免 Windows 路径下源文件名解析失败。
+- 前端系统日志同时兼容新旧进度日志格式，活动中的合成进度行会按秒刷新持续时间；百分比继续跟随最新流式日志更新。
+
+### Testing
+- `cd backend; ..\.venv\Scripts\python.exe -m py_compile app/core/task_engine.py`：通过。
+- `cd backend; ..\.venv\Scripts\python.exe -m pytest tests/test_task_engine.py::TestTaskEngine::test_task_update_progress -q`：通过。
+- 后端一次性断言验证：解压进度日志包含 `【RJ12345678.7z】`，且不再显示 `手动导入` 作为压缩包名，通过。
+- `cd frontend; npm run build`：通过；仅有既有 Rollup / lottie / chunk size warning。
+
+### Notes
+- `backend/app/core/task_engine.py`：进度日志携带压缩包名，提交日志解析源文件名时兼容 Windows 路径。
+- `frontend/src/views/Logs.vue`：解析新旧任务进度格式，合成解压进度行显示具体压缩包，并让活动持续时间动态刷新。
+- `progress.md`：追加本轮解压任务日志进度展示修复记录。
+- 回滚方式：执行 `git restore -- backend/app/core/task_engine.py frontend/src/views/Logs.vue`，并手动删除本段 `progress.md` 记录。
