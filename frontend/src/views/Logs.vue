@@ -388,10 +388,12 @@ let streamFlushTimer = null
 let pendingStreamLines = []
 let liveBackfillInFlight = false
 let lastSparseBackfillAt = 0
+let progressTickerTimer = null
 
 const incrementalCount = ref(0)
 const lastFetchMs = ref(0)
 const lastFetchMode = ref('idle')
+const progressTicker = ref(Date.now())
 const terminalStatus = ref('idle')
 const terminalErrorMessage = ref('')
 const isFullSearch = ref(false)
@@ -432,7 +434,9 @@ const filteredLogs = computed(() => {
   const skipKeywordFilter = isFullSearch.value
   const taskEndById = collectTaskEndState(logs.value)
   const taskRjcodeById = collectTaskRjcodeById(logs.value)
+  const taskArchiveLabelById = collectTaskArchiveLabelById(logs.value)
   const newestLogMs = getNewestLogTimeMs(logs.value)
+  const nowMs = progressTicker.value
   const candidates = []
   const latestProgressByTask = new Map()
   const firstProgressMsByTask = new Map()
@@ -440,7 +444,7 @@ const filteredLogs = computed(() => {
   logs.value.forEach((log, index) => {
     if (!lvlSet.has(log.level)) return false
     if (moduleSet && !moduleSet.has(log.module)) return false
-    const taskProgress = parseTaskProgressLog(log, index, taskRjcodeById)
+    const taskProgress = parseTaskProgressLog(log, index, taskRjcodeById, taskArchiveLabelById)
     if (taskProgress) {
       if (taskProgress.timestampMs && !firstProgressMsByTask.has(taskProgress.taskId)) {
         firstProgressMsByTask.set(taskProgress.taskId, taskProgress.timestampMs)
@@ -465,7 +469,8 @@ const filteredLogs = computed(() => {
 
   for (const progress of latestProgressByTask.values()) {
     const startedMs = firstProgressMsByTask.get(progress.taskId) || progress.timestampMs || 0
-    const endedMs = progress.timestampMs || startedMs
+    const isActive = !isTaskProgressEnded(progress, taskEndById) && !isTaskProgressStale(progress, newestLogMs)
+    const endedMs = isActive ? Math.max(nowMs, progress.timestampMs || startedMs) : (progress.timestampMs || startedMs)
     progress.startedMs = startedMs
     progress.durationMs = Math.max(0, endedMs - startedMs)
     progress.durationLabel = formatProgressDuration(progress.durationMs)
@@ -489,11 +494,12 @@ const hiddenProcessNoiseCount = computed(() => {
     ? new Set(selectedModules.value)
     : null
   const taskRjcodeById = collectTaskRjcodeById(logs.value)
+  const taskArchiveLabelById = collectTaskArchiveLabelById(logs.value)
   let count = 0
   for (const log of logs.value) {
     if (!lvlSet.has(log.level)) continue
     if (moduleSet && !moduleSet.has(log.module)) continue
-    if (parseTaskProgressLog(log, 0, taskRjcodeById)) continue
+    if (parseTaskProgressLog(log, 0, taskRjcodeById, taskArchiveLabelById)) continue
     if (isProcessNoiseLog(log)) count += 1
   }
   return count
@@ -666,6 +672,14 @@ function extractProgressArchiveName(step) {
   return match ? basenameFromProgressPath(match[1]) : ''
 }
 
+function normalizeProgressArchiveLabel(value) {
+  const label = basenameFromProgressPath(value)
+    .replace(/[，。；;,.]+$/g, '')
+    .trim()
+  if (!label) return ''
+  return label.length > 96 ? `${label.slice(0, 42)}...${label.slice(-42)}` : label
+}
+
 function parseExtractProgressDetail(step) {
   const text = String(step || '')
     .replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
@@ -706,10 +720,29 @@ function collectTaskRjcodeById(list) {
       if (taskId && rjcode) result.set(taskId, rjcode)
     }
 
-    const progressMatch = message.match(/任务\s+([0-9a-fA-F-]{8,36})\s*[:：]\s*(.+?)\s*[（(]\s*(\d{1,3})\s*%\s*[)）]\s*$/)
+    const progressMatch = message.match(/任务\s+([0-9a-fA-F-]{8,36})(?:\s*【([^】]+)】)?\s*[:：]\s*(.+?)\s*[（(]\s*(\d{1,3})\s*%\s*[)）]\s*$/)
     if (progressMatch) {
-      const rjcode = extractProgressRjcode(progressMatch[2])
+      const rjcode = extractProgressRjcode(progressMatch[3])
       if (rjcode) result.set(progressMatch[1], rjcode)
+    }
+  }
+  return result
+}
+
+function collectTaskArchiveLabelById(list) {
+  const result = new Map()
+  for (const log of Array.isArray(list) ? list : []) {
+    const message = String(log?.message || '')
+    const submitMatch = message.match(/任务提交\s*-\s*ID[:：]\s*([0-9a-fA-F-]{8,36})[，,\s]*源文件[:：]\s*(.+)$/)
+    if (submitMatch) {
+      const label = normalizeProgressArchiveLabel(submitMatch[2])
+      if (label) result.set(submitMatch[1], label)
+    }
+
+    const progressMatch = message.match(/任务\s+([0-9a-fA-F-]{8,36})(?:\s*【([^】]+)】)?\s*[:：]\s*(.+?)\s*[（(]\s*(\d{1,3})\s*%\s*[)）]\s*$/)
+    if (progressMatch && !result.has(progressMatch[1])) {
+      const label = normalizeProgressArchiveLabel(progressMatch[2] || extractProgressArchiveName(progressMatch[3]))
+      if (label) result.set(progressMatch[1], label)
     }
   }
   return result
@@ -734,11 +767,11 @@ function buildProgressAction(step, phase) {
   return phase && phase !== '任务' ? phase : buildProgressDetail(text)
 }
 
-function buildProgressTitle(step, phase, rjcode) {
+function buildProgressTitle(step, phase, rjcode, archiveLabel = '') {
   const action = buildProgressAction(step, phase)
   if (action === '解压') {
     const archiveName = extractProgressArchiveName(step)
-    const target = rjcode || archiveName
+    const target = archiveLabel || archiveName || rjcode
     return target ? `${action} ${target}` : `${action}任务`
   }
   return rjcode ? `${action} ${rjcode}` : action
@@ -755,25 +788,28 @@ function buildProgressDetail(step) {
   return text
 }
 
-function parseTaskProgressLog(log, order = 0, taskRjcodeById = null) {
+function parseTaskProgressLog(log, order = 0, taskRjcodeById = null, taskArchiveLabelById = null) {
   const message = String(log?.message || '')
-  const match = message.match(/任务\s+([0-9a-fA-F-]{8,36})\s*[:：]\s*(.+?)\s*[（(]\s*(\d{1,3})\s*%\s*[)）]\s*$/)
+  const match = message.match(/任务\s+([0-9a-fA-F-]{8,36})(?:\s*【([^】]+)】)?\s*[:：]\s*(.+?)\s*[（(]\s*(\d{1,3})\s*%\s*[)）]\s*$/)
   if (!match) return null
 
   const taskId = match[1]
-  const step = match[2].trim()
-  const progress = clampPercent(match[3])
+  const inlineArchiveLabel = normalizeProgressArchiveLabel(match[2])
+  const step = match[3].trim()
+  const progress = clampPercent(match[4])
   const context = `${log?.module || ''} ${step}`
   const tone = classifyProgressTone(context, progress, log?.level)
   const phase = classifyProgressPhase(context, log?.module || '')
   const rjcode = extractProgressRjcode(step) || taskRjcodeById?.get?.(taskId) || ''
+  const archiveLabel = inlineArchiveLabel || taskArchiveLabelById?.get?.(taskId) || normalizeProgressArchiveLabel(extractProgressArchiveName(step))
 
   return {
     id: taskId,
     taskId,
     shortId: taskId.slice(0, 8),
     rjcode,
-    title: buildProgressTitle(step, phase, rjcode),
+    archiveLabel,
+    title: buildProgressTitle(step, phase, rjcode, archiveLabel),
     phase,
     detail: buildProgressDetail(step),
     progress,
@@ -1562,11 +1598,18 @@ async function runLogCleanup(action) {
 
 onMounted(() => {
   connectLogStream({ reset: true })
+  progressTickerTimer = window.setInterval(() => {
+    progressTicker.value = Date.now()
+  }, 1000)
   window.addEventListener('keydown', onWindowKeydown)
 })
 
 onUnmounted(() => {
   closeLogStream()
+  if (progressTickerTimer) {
+    clearInterval(progressTickerTimer)
+    progressTickerTimer = null
+  }
   if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
   // 取消未完搜索请求，避免页面销毁后老响应仍试图写 reactive
   if (fullSearchAbortController) {

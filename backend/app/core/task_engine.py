@@ -313,6 +313,20 @@ class Task:
     def is_cancelled(self) -> bool:
         """检查是否被取消"""
         return self._cancelled
+
+    def _progress_source_label(self) -> str:
+        metadata = self.task_metadata if isinstance(self.task_metadata, dict) else {}
+        source_path = str(self.source_path or "").rstrip("\\/")
+        source_name = re.split(r"[\\/]+", source_path)[-1].strip() if source_path else ""
+        label = source_name if self.type in {TaskType.EXTRACT, TaskType.AUTO_PROCESS, TaskType.PROCESS_EXISTING_FOLDER} else ""
+        if not label:
+            label = str(metadata.get("source_label") or "").strip()
+        if not label:
+            label = source_name
+        label = label.replace("】", "]").strip()
+        if len(label) > 96:
+            label = f"{label[:42]}...{label[-42:]}"
+        return label
     
     def update_progress(self, progress: int, step: str):
         """更新进度，同时追加一条 progress_log 条目供邮件 / 详情面板回放。
@@ -360,7 +374,11 @@ class Task:
                 "message": text,
                 "level": "info",
             })
-            logger.info("任务 %s: %s (%d%%)", self.id, text, normalized_progress)
+            source_label = self._progress_source_label()
+            if source_label:
+                logger.info("任务 %s【%s】: %s (%d%%)", self.id, source_label, text, normalized_progress)
+            else:
+                logger.info("任务 %s: %s (%d%%)", self.id, text, normalized_progress)
             # 限长 60 条：解压/入库平均 15~20 条，留足余量给重试场景。
             self.task_metadata["progress_log"] = logs[-60:]
             self._metadata_version = int(getattr(self, "_metadata_version", 0) or 0) + 1
@@ -808,7 +826,9 @@ class TaskEngine:
         await self.queue.put(task)
         task.mark_changed("submitted")
         rjcode = self._extract_rjcode_from_path_tail(task.source_path) or "未知"
-        logger.info(f"[{rjcode}] 任务提交 - ID: {task.id}, 源文件: {os.path.basename(task.source_path)}")
+        source_path = str(task.source_path or "").rstrip("\\/")
+        source_name = re.split(r"[\\/]+", source_path)[-1].strip() if source_path else ""
+        logger.info(f"[{rjcode}] 任务提交 - ID: {task.id}, 源文件: {source_name or source_path}")
         return task.id
 
     def _task_queue_priority(self, task: Task) -> tuple[int, datetime]:
