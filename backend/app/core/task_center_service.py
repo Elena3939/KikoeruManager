@@ -4,6 +4,7 @@ import os
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlencode
 
 from .linked_subtitle_import_service import get_linked_subtitle_import_service
 from .task_engine import Task, TaskStatus, TaskType, get_task_engine
@@ -204,8 +205,9 @@ class TaskCenterService:
         "rj_subtitle": "/library",
         "subtitle_import": "/subtitle-import",
         "asmr_sync": "/asmr-sync",
-        "http_download": "/asmr-sync",
+        "http_download": "/asmr-sync?tab=http",
         "baidu_netdisk": "/asmr-sync?tab=baidu",
+        "baidu_netdisk_upload": "/library",
         "upload": "/library",
         "circle_completion": "/circle-completion",
         "system": "/tasks",
@@ -527,6 +529,40 @@ class TaskCenterService:
         if serialized:
             self._summary_engine_item_cache[task.id] = (cache_key, dict(serialized))
         return serialized
+
+    def _first_metadata_rjcode(self, metadata: Dict[str, Any]) -> str:
+        for key in ("canonical_rjcode", "target_rjcode", "actual_rjcode", "rjcode"):
+            normalized = self._normalize_rjcode(self._safe_text(metadata.get(key)))
+            if normalized:
+                return normalized
+        for key in ("canonical_rjcodes", "rjcodes"):
+            values = metadata.get(key)
+            if not isinstance(values, (list, tuple)):
+                continue
+            for value in values:
+                normalized = self._normalize_rjcode(self._safe_text(value))
+                if normalized:
+                    return normalized
+        return ""
+
+    def _circle_completion_route_hint(self, metadata: Dict[str, Any], rjcode: str = "") -> str:
+        query = {}
+        circle_id = self._safe_text(metadata.get("circle_id"))
+        circle_name = (
+            self._safe_text(metadata.get("circle_name"))
+            or self._safe_text(metadata.get("circle_query"))
+            or self._safe_text(metadata.get("current_circle_query"))
+        )
+        normalized_rjcode = self._normalize_rjcode(rjcode) or self._first_metadata_rjcode(metadata)
+        if circle_id:
+            query["circle_id"] = circle_id
+        if circle_name:
+            query["circle_name"] = circle_name
+        if normalized_rjcode:
+            query["rjcode"] = normalized_rjcode
+        if not query:
+            return self.DOMAIN_ROUTE_HINT["circle_completion"]
+        return f"{self.DOMAIN_ROUTE_HINT['circle_completion']}?{urlencode(query)}"
 
     def _prune_summary_engine_item_cache(self, task_ids: set[str]) -> None:
         for task_id in list(self._summary_engine_item_cache):
@@ -955,13 +991,14 @@ class TaskCenterService:
         # 关键优化：summary 模式跳过 os.walk，它只给详情面板的文件树用
         if mode == "detail":
             metadata = self._ensure_file_tree_metadata(metadata, resolved_target_path, source_path, domain)
-        route_hint = self.DOMAIN_ROUTE_HINT.get(domain, "/tasks")
         rjcode = self._normalize_rjcode(
             self._safe_text(getattr(task, "rjcode", ""))
+            or self._first_metadata_rjcode(metadata)
             or self._safe_text(metadata.get("target_rjcode"))
             or self._safe_text(metadata.get("actual_rjcode"))
             or self._safe_text(metadata.get("rjcode"))
         )
+        route_hint = self.DOMAIN_ROUTE_HINT.get(domain, "/tasks")
 
         title = self._basename(source_path) or self._safe_text(metadata.get("folder_name")) or task.type.value
         subtitle = ""
@@ -1196,6 +1233,7 @@ class TaskCenterService:
             source_label = source_label or "社团补全"
             source_action = source_action or ("index_start" if task.type == TaskType.CIRCLE_COMPLETION_INDEX else "batch_download")
             source_page = source_page or "circle-completion"
+            route_hint = self._circle_completion_route_hint(metadata, rjcode)
         elif domain == "http_download":
             download_files = list(metadata.get("download_files") or [])
             failed_files = list(metadata.get("failed_files") or [])
@@ -1271,7 +1309,7 @@ class TaskCenterService:
             source_label = source_label or "百度网盘上传"
             source_action = source_action or "manual_baidu_netdisk_upload"
             source_page = source_page or "library"
-            route_hint = self.DOMAIN_ROUTE_HINT["baidu_netdisk"]
+            route_hint = self.DOMAIN_ROUTE_HINT["baidu_netdisk_upload"]
             metadata["platforms"] = ["baidu_netdisk"]
             metadata["platform_label"] = "百度网盘"
             self._append_metric(metrics, "文件", len(upload_files) if upload_files else metadata.get("source_count"))
@@ -1343,8 +1381,6 @@ class TaskCenterService:
         elif is_conflict_retry and display_status == TaskStatus.COMPLETED.value:
             status_label = "已解决"
             source_label = "问题作品 / 已解决"
-            source_page = "conflicts"
-            route_hint = "/conflicts"
         if task.status == TaskStatus.COMPLETED and recovered_notice:
             current_step = recovered_notice
 
