@@ -121,7 +121,10 @@ def _task_kind(task) -> str:
 
 def _is_http_download_partial_success(task) -> bool:
     meta = dict(getattr(task, 'task_metadata', None) or {})
-    if _task_kind(task) not in {'http_download', 'baidu_netdisk_download'} and str(meta.get('task_domain') or '') not in {'http_download', 'baidu_netdisk'}:
+    task_kind = _task_kind(task)
+    if task_kind == 'baidu_netdisk_upload' or str(meta.get('source_action') or '') == 'manual_baidu_netdisk_upload':
+        return False
+    if task_kind not in {'http_download', 'baidu_netdisk_download'} and str(meta.get('task_domain') or '') not in {'http_download', 'baidu_netdisk'}:
         return False
     failed = list(meta.get('failed_files') or [])
     metrics = meta.get('performance_metrics') if isinstance(meta.get('performance_metrics'), dict) else {}
@@ -288,7 +291,8 @@ def _build_notification_info(event_type: str, group_key: str, group_type: str, c
 
     meta = dict(context_task.task_metadata or {})
     task_kind = _task_kind(context_task)
-    if task_kind in {'http_download', 'baidu_netdisk_download'} or domain in {'http_download', 'baidu_netdisk'}:
+    is_baidu_upload = task_kind == 'baidu_netdisk_upload' or str(meta.get('source_action') or '') == 'manual_baidu_netdisk_upload'
+    if not is_baidu_upload and (task_kind in {'http_download', 'baidu_netdisk_download'} or domain in {'http_download', 'baidu_netdisk'}):
         try:
             if task_kind == 'baidu_netdisk_download' or domain == 'baidu_netdisk':
                 platforms = ['baidu_netdisk']

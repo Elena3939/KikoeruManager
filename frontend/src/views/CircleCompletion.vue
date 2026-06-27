@@ -952,6 +952,7 @@
 
 <script setup>
 import { computed, onActivated, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { DotLottieVue } from '@lottiefiles/dotlottie-vue'
 import celebrateImg from '../assets/celebrate.png'
 import confettiAnimation from '../assets/anime/Confetti.lottie'
@@ -973,6 +974,7 @@ import { normalizeTaskCenterRealtimePayloads } from '../composables/taskCenterEv
 import { showSystemConfirm, showSystemPrompt } from '../composables/useSystemPrompt'
 import { useRealtimeEvents } from '../composables/useRealtimeEvents'
 
+const route = useRoute()
 const CIRCLE_COMPLETION_TARGET_SUBDIRS_KEY = 'kikoerumanager.circleCompletion.targetSubdirs'
 const CIRCLE_COMPLETION_DOWNLOAD_WORKBENCH_KEY = 'kikoerumanager.circleCompletion.downloadWorkbench'
 const CIRCLE_COMPLETION_REFRESH_JOB_KEY = 'kikoerumanager.circleCompletion.refreshJob'
@@ -1047,6 +1049,7 @@ let circleWorksFetchTimer = null
 let circleSearchFetchTimer = null
 let heroWorkSearchFetchTimer = null
 let heroWorkSearchAbortController = null
+let lastAppliedRouteCircleKey = ''
 let suppressCircleWorksRefresh = false
 const filters = reactive({
   onlyMissing: false,
@@ -1897,6 +1900,104 @@ function normalizeRjcode(value) {
   return match ? match[0].toUpperCase() : text
 }
 
+function firstRouteQueryValue(value) {
+  if (Array.isArray(value)) return String(value[0] || '').trim()
+  return String(value || '').trim()
+}
+
+function getRouteCircleTarget() {
+  const query = route.query || {}
+  return {
+    circleId: firstRouteQueryValue(query.circle_id || query.circleId),
+    circleName: firstRouteQueryValue(query.circle_name || query.circleName),
+    rjcode: normalizeRjcode(firstRouteQueryValue(query.rjcode || query.rj)),
+  }
+}
+
+function getRouteCircleTargetKey(target) {
+  return [target.circleId, target.circleName, target.rjcode].filter(Boolean).join('|')
+}
+
+function findRouteCircleCandidate(circleId, circleName, source = circleList.value) {
+  const normalizedId = String(circleId || '').trim()
+  const normalizedName = String(circleName || '').trim()
+  const lowerName = normalizedName.toLowerCase()
+  const list = Array.isArray(source) ? source : []
+  if (normalizedId) {
+    const byId = list.find(circle => String(circle?.circle_id || '').trim() === normalizedId)
+    if (byId) return byId
+  }
+  if (!normalizedName) return null
+  return list.find(circle => String(circle?.circle_name || '').trim() === normalizedName)
+    || list.find(circle => String(circle?.circle_name || '').trim().toLowerCase() === lowerName)
+    || list.find(circle => String(circle?.circle_id || '').trim() === normalizedName)
+    || null
+}
+
+async function resolveRouteCircleCandidate(circleId, circleName) {
+  const existing = findRouteCircleCandidate(circleId, circleName)
+  if (existing) return existing
+
+  const keyword = String(circleName || circleId || '').trim()
+  if (!keyword) return null
+  const result = await circleCompletionApi.searchCircles(keyword, 24)
+  const circles = Array.isArray(result.circles) ? result.circles : []
+  if (!circles.length) return null
+
+  const candidate = findRouteCircleCandidate(circleId, circleName, circles) || circles[0]
+  const hasCandidate = circleList.value.some(circle => String(circle?.circle_id || '').trim() === String(candidate?.circle_id || '').trim())
+  circleList.value = hasCandidate ? circleList.value : [candidate, ...circles.filter(circle => String(circle?.circle_id || '').trim() !== String(candidate?.circle_id || '').trim())]
+  return candidate
+}
+
+async function jumpToRouteRjcode(rjcode, circleName = '') {
+  heroWorkSearchQuery.value = rjcode
+  await searchHeroWork(rjcode)
+  const normalizedName = String(circleName || '').trim()
+  const lowerName = normalizedName.toLowerCase()
+  const matched = heroWorkSearchResults.value.find(item => (
+    normalizedName &&
+    (
+      String(item?.circle_name || '').trim() === normalizedName ||
+      String(item?.circle_name || '').trim().toLowerCase() === lowerName ||
+      String(item?.circle_id || '').trim() === normalizedName
+    )
+  ))
+  const target = matched || heroWorkSearchResults.value[0]
+  if (target) await jumpToHeroWorkSearchResult(target)
+}
+
+async function applyRouteCircleTarget(options = {}) {
+  const target = getRouteCircleTarget()
+  const routeKey = getRouteCircleTargetKey(target)
+  if (!routeKey || (!options.force && routeKey === lastAppliedRouteCircleKey)) return false
+  lastAppliedRouteCircleKey = routeKey
+
+  const candidate = await resolveRouteCircleCandidate(target.circleId, target.circleName)
+  const circleId = String(candidate?.circle_id || target.circleId || '').trim()
+  const circleName = String(candidate?.circle_name || target.circleName || circleId).trim()
+
+  if (target.rjcode) {
+    if (circleId) {
+      await jumpToHeroWorkSearchResult({
+        circle_id: circleId,
+        circle_name: circleName,
+        canonical_rjcode: target.rjcode,
+        display_rjcode: target.rjcode,
+        owned: false
+      })
+    } else {
+      await jumpToRouteRjcode(target.rjcode, circleName)
+    }
+    return true
+  }
+
+  if (!circleId) return false
+  await ensureHeroSearchCircleVisible({ circle_id: circleId, circle_name: circleName }, { syncActive: false })
+  await selectCircle(circleId)
+  return true
+}
+
 function inferCanonicalRjcodesFromUploadTask(task) {
   const metadata = task?.task_metadata || {}
   const explicit = [
@@ -2246,6 +2347,7 @@ onMounted(async () => {
   restoreUploadWorkbenchState()
   loadCachedTargetSubdirs()
   await Promise.all([loadRecentCircles(), loadLibraries()])
+  await applyRouteCircleTarget()
   if (trackedDownloadTaskIds.value.length) await refreshDownloadWorkbench()
   if (trackedUploadTaskIds.value.length) await refreshUploadWorkbench({ silent: true })
   if (indexJob.job_id && ['pending', 'processing'].includes(String(indexJob.status || ''))) {
@@ -2261,7 +2363,12 @@ onMounted(async () => {
   }
 })
 
+watch(() => route.fullPath, () => {
+  applyRouteCircleTarget().catch(() => {})
+})
+
 onActivated(() => {
+  applyRouteCircleTarget({ force: true }).catch(() => {})
   if (indexJob.job_id && ['pending', 'processing'].includes(String(indexJob.status || ''))) {
     indexing.value = true
     pollIndexJob(indexJob.job_id)

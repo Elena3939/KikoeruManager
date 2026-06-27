@@ -153,11 +153,73 @@ async function onLoadMore() {
   await loadMore()
 }
 
+function normalizeRouteQuery(query) {
+  return query && typeof query === 'object' && !Array.isArray(query) ? { ...query } : {}
+}
+
+function splitRoutePath(path, query) {
+  const text = String(path || '').trim()
+  if (!text.includes('?')) return text
+  const [base, rawQuery = ''] = text.split('?')
+  const params = new URLSearchParams(rawQuery)
+  params.forEach((value, key) => {
+    if (!(key in query)) query[key] = value
+  })
+  return base || text
+}
+
+function normalizeNotificationRjcode(value) {
+  const text = String(value || '').trim().toUpperCase()
+  const match = text.match(/[RVB]J(\d{6}|\d{8})(?!\d)/i)
+  return match ? match[0].toUpperCase() : text
+}
+
+function resolveNotificationRoute(item) {
+  const query = normalizeRouteQuery(item?.route_query)
+  let path = splitRoutePath(item?.route_path, query)
+  const domain = String(item?.task_domain || item?.domain || '').trim()
+  const kind = String(item?.task_kind || item?.kind || '').trim()
+  const sourceAction = String(item?.source_action || '').trim()
+  const severity = String(item?.severity || '').trim()
+  const status = String(item?.status || '').trim()
+  const rjcode = normalizeNotificationRjcode(item?.rjcode)
+
+  if (domain === 'http_download') {
+    path = '/asmr-sync'
+    if (!query.tab) query.tab = 'http'
+  } else if (domain === 'baidu_netdisk') {
+    if (kind === 'baidu_netdisk_upload' || sourceAction === 'manual_baidu_netdisk_upload') {
+      path = '/library'
+    } else {
+      path = '/asmr-sync'
+      if (!query.tab) query.tab = 'baidu'
+    }
+  } else if (domain === 'circle_completion') {
+    path = '/circle-completion'
+    if (rjcode && !query.rjcode) query.rjcode = rjcode
+  } else if (
+    path === '/conflicts' &&
+    severity === 'success' &&
+    !['failed', 'waiting_manual'].includes(status) &&
+    (domain === 'import' || ['auto_process', 'extract'].includes(kind))
+  ) {
+    path = '/library'
+  } else if (
+    path === '/conflicts' &&
+    severity === 'success' &&
+    !['failed', 'waiting_manual'].includes(status) &&
+    (domain === 'existing_folder' || kind === 'process_existing_folder')
+  ) {
+    path = '/existing-folders'
+  }
+
+  return path ? { path, query } : null
+}
+
 function onItemClick(item) {
   emit('close')
-  if (item.route_path) {
-    router.push({ path: item.route_path, query: item.route_query || {} })
-  }
+  const route = resolveNotificationRoute(item)
+  if (route) router.push(route)
 }
 </script>
 

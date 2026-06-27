@@ -1002,3 +1002,413 @@
 - `progress.md`：追加本轮服务器视频预览 gzip 修复记录。
 - 回滚方式：还原本轮 `backend/app/api/routes.py`、`backend/tests/test_library_browser_api.py` 和 `docs/TESTING.md` 的对应 hunk，并删除本段进度记录。
 
+## 2026-06-26 - Task: 修复 DLsite 代理连接池临时卡死后需要重启下载
+### What was done
+- DLsite HTTP 请求遇到超时、网络错误或协议错误后，会主动丢弃共享 `httpx` 客户端连接池，再按原有退避逻辑重试。
+- 保留原有短熔断、一次性客户端兜底和代理配置逻辑，避免代理隧道临时坏状态一直留到进程重启才恢复。
+
+### Testing
+- `.venv\Scripts\python.exe -c "import py_compile, tempfile, pathlib; out = pathlib.Path(tempfile.gettempdir()) / 'kikoerumanager_dlsite_service_check.pyc'; py_compile.compile('backend/app/core/dlsite_service.py', cfile=str(out), doraise=True); print('py_compile ok')"`：通过。
+- `.venv\Scripts\python.exe -` 真实调用 `get_dlsite_service().get_product_info("RJ01609989")`：通过，返回 `product True`、`requested RJ01609989`；仅输出既有 brotli/brotlicffi 缺失降级 warning，不影响取数。
+- `git diff --check -- backend/app/core/dlsite_service.py`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `backend/app/core/dlsite_service.py`：新增 DLsite 传输错误后的 HTTP 客户端连接池重建，避免代理/连接池临时坏状态持续影响后续请求。
+- `progress.md`：追加本轮 DLsite 代理连接池恢复修复记录。
+- 回滚方式：还原本轮 `backend/app/core/dlsite_service.py` 中 `_reset_client_after_transport_error` 及调用点的对应 hunk，并删除本段进度记录。
+
+## 2026-06-26 - Task: 设置页新增 DLsite 连接测试
+### What was done
+- 设置页“外部服务 / ASMR 同步下载”的元数据代理旁新增“测试 DL 连接”按钮，可直接测试当前输入框里的 DLsite 代理，不需要先保存配置。
+- 后端新增 DLsite 连通性测试接口，使用一次性 HTTP 客户端请求 DLsite product API，返回代理状态、HTTP 状态、耗时、测试 RJ 和标题，并对代理地址做脱敏。
+- 连通性测试兼容 DLsite product API 的 list 返回结构，并补充代理连接失败、超时、网络异常的可读错误文案。
+
+### Testing
+- `.venv\Scripts\python.exe -m py_compile backend/app/core/dlsite_service.py backend/app/api/routes.py`：通过。
+- `.venv\Scripts\python.exe -` 真实调用 `get_dlsite_service().test_connectivity(...)`：通过；当前配置代理 `http://127.0.0.1:7890` 与直连两组都返回 `success=true`、`HTTP 200`、`title_present=true`，测试 RJ 为 `RJ01609989`。
+- `cd frontend && npm run build`：通过；仅输出既有 VueUse / lottie / chunk size 构建警告。
+- `git diff --check -- backend/app/core/dlsite_service.py backend/app/api/routes.py frontend/src/api/index.js frontend/src/components/settings/ServicesSettingsPanel.vue progress.md`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `backend/app/core/dlsite_service.py`：新增 DLsite 连通性测试、临时代理覆盖、代理脱敏、product API list 解析和测试错误文案。
+- `backend/app/api/routes.py`：新增 `/api/dlsite/connectivity-test` POST 接口，接收当前设置页输入的 `http_proxy`。
+- `frontend/src/api/index.js`：新增 `configApi.testDlsiteConnection()` 调用后端测试接口。
+- `frontend/src/components/settings/ServicesSettingsPanel.vue`：在元数据代理配置旁新增测试按钮和结果卡片。
+- `progress.md`：追加本轮设置页 DLsite 连接测试记录。
+- 回滚方式：还原本轮上述 4 个代码文件中 DLsite 连接测试相关 hunk，并删除本段进度记录；上一段 DLsite 连接池重建属于独立修复，按上一段回滚说明单独处理。
+
+## 2026-06-27 - Task: 收紧设置页 DLsite 测试按钮布局
+### What was done
+- 将“测试 DL 连接”固定在元数据代理输入框右侧，避免按钮被挤到下一行形成突兀的大按钮。
+- 单独压缩该按钮高度、字号、内边距和内容间距，不影响其他设置页按钮。
+
+### Testing
+- `cd frontend && npm run build`：通过；仅输出既有 VueUse / lottie / chunk size 构建警告。
+- `git diff --check -- frontend/src/components/settings/ServicesSettingsPanel.vue`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `frontend/src/components/settings/ServicesSettingsPanel.vue`：为元数据代理行新增不换行布局类，并缩小 DLsite 测试按钮。
+- `progress.md`：追加本轮 DLsite 测试按钮布局调整记录。
+- 回滚方式：还原本轮 `frontend/src/components/settings/ServicesSettingsPanel.vue` 中 `metadata-proxy-row` 和 `.dlsite-test-btn` 相关 hunk，并删除本段进度记录。
+
+## 2026-06-27 - Task: 继续缩小设置页 DLsite 测试按钮文字
+### What was done
+- 进一步压缩“测试 DL 连接”内联按钮的高度、内边距、字号、文字间距和图标尺寸。
+- 覆盖 StatefulButton 内层 label 的字号，避免按钮外层字号被组件内部结构抵消。
+
+### Testing
+- `cd frontend && npm run build`：通过；仅输出既有 VueUse / lottie / chunk size 构建警告，并完成资源预压缩。
+
+### Notes
+- `frontend/src/components/settings/ServicesSettingsPanel.vue`：将 DLsite 测试按钮收紧为更小的内联胶囊样式，并单独缩小按钮内图标与 label。
+- `progress.md`：追加本轮 DLsite 测试按钮字体缩小记录。
+- 回滚方式：还原本轮 `frontend/src/components/settings/ServicesSettingsPanel.vue` 中 `.dlsite-test-btn` 内层字号、间距、图标尺寸相关 hunk，并删除本段进度记录。
+## 2026-06-27 - Task: 设置页查重结果增加 DLsite 主图预览
+### What was done
+- Kikoeru 查重测试结果卡增加右侧 DLsite 主图预览，让命中结果和作品本体更容易对应。
+- 复用项目已有 DLsite 封面目录规则按 RJ 拼接主图 URL，并在图片加载失败时尝试缩略图后隐藏坏图。
+- 查重结果卡改为左右布局，窄屏自动收成单列，避免挤压文字内容。
+
+### Testing
+- `cd frontend && npm run build`：通过；仅输出既有 VueUse / lottie / chunk size 构建警告，并完成资源预压缩。
+- `git diff --check -- frontend/src/components/settings/ServicesSettingsPanel.vue progress.md`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `frontend/src/components/settings/ServicesSettingsPanel.vue`：为 Kikoeru 查重测试结果增加 DLsite 主图、封面 URL 拼接、图片失败降级和响应式布局。
+- `progress.md`：追加本轮查重主图预览记录。
+- 回滚方式：还原本轮 `frontend/src/components/settings/ServicesSettingsPanel.vue` 中 `kikoeru-result-layout`、`buildDlsiteCoverUrl`、`handleKikoeruCoverError` 和查重结果卡图片相关 hunk，并删除本段进度记录。
+## 2026-06-27 - Task: 修正设置页查重主图比例
+### What was done
+- 将 Kikoeru 查重结果右侧 DLsite 主图从竖向裁切改为 4:3 横向预览。
+- 图片渲染从 `cover` 改为 `contain`，完整保留 DLsite 主图比例，不再裁掉标题和人物边缘。
+- 放大右侧图片位并保留窄屏自适应，确保图片仍固定在结果卡右侧展示。
+
+### Testing
+- `cd frontend && npm run build`：通过；仅输出既有 VueUse / lottie / chunk size 构建警告，并完成资源预压缩。
+- `git diff --check -- frontend/src/components/settings/ServicesSettingsPanel.vue progress.md`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `frontend/src/components/settings/ServicesSettingsPanel.vue`：调整 Kikoeru 查重主图容器宽度、比例和 `object-fit`，让主图按原比例完整显示在右侧。
+- `progress.md`：追加本轮查重主图比例修正记录。
+- 回滚方式：还原本轮 `frontend/src/components/settings/ServicesSettingsPanel.vue` 中 `.kikoeru-result-layout` 和 `.kikoeru-result-cover` 尺寸 / 比例 / `object-fit` 相关 hunk，并删除本段进度记录。
+## 2026-06-27 - Task: 调整设置页查重主图到左侧并利用下方空间
+### What was done
+- 将 Kikoeru 查重结果里的 DLsite 主图从右侧移动到左侧，右侧保留状态、本次检查和标题等长文本。
+- 把请求 RJ、命中结果、服务器已有和检查范围移动到主图下方，以两列信息块填充原本空白区域。
+- 保留 4:3 原比例主图和移动端单列自适应布局。
+
+### Testing
+- `cd frontend && npm run build`：通过；仅输出既有 VueUse / lottie / chunk size 构建警告，并完成资源预压缩。
+- `git diff --check -- frontend/src/components/settings/ServicesSettingsPanel.vue progress.md`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `frontend/src/components/settings/ServicesSettingsPanel.vue`：重排 Kikoeru 查重结果卡，把主图和关键摘要放到左列，长文本放到右列。
+- `progress.md`：追加本轮查重主图布局调整记录。
+- 回滚方式：还原本轮 `frontend/src/components/settings/ServicesSettingsPanel.vue` 中 `kikoeru-result-visual`、`kikoeru-result-meta` 和查重结果卡模板重排相关 hunk，并删除本段进度记录。
+## 2026-06-27 - Task: 优化设置页查重结果卡空间与边线
+### What was done
+- 将 Kikoeru 查重结果卡调整为上方主内容区和下方整宽摘要区，避免左右列高度差导致大片空白。
+- 主内容区保留左侧 DLsite 主图、右侧长文本；请求 RJ、命中结果、服务器已有和检查范围改为底部四列摘要。
+- 移除结果卡顶部 inset 高光线条，让卡片边缘更干净。
+
+### Testing
+- `cd frontend && npm run build`：通过；仅输出既有 VueUse / lottie / chunk size 构建警告，并完成资源预压缩。
+- `git diff --check -- frontend/src/components/settings/ServicesSettingsPanel.vue progress.md`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `frontend/src/components/settings/ServicesSettingsPanel.vue`：重排 Kikoeru 查重结果卡结构，底部铺满摘要信息，并去除结果卡顶部白色高光。
+- `progress.md`：追加本轮查重结果卡视觉优化记录。
+- 回滚方式：还原本轮 `frontend/src/components/settings/ServicesSettingsPanel.vue` 中 `kikoeru-result-main`、`kikoeru-result-meta`、`.service-result-card` 阴影和结果卡模板相关 hunk，并删除本段进度记录。
+## 2026-06-27 - Task: 强化设置页查重结果可读性
+### What was done
+- 将 Kikoeru 查重结果里的本次检查 RJ 串改为独立 chip，避免一长串文本难读。
+- 给“服务器已有”状态和底部服务器已有值增加 badge 样式，提升命中信息辨识度。
+- 调整底部摘要区列宽，让“检查范围”获得更宽空间；中窄屏下检查范围独占整行，避免文字被挤出或异常换行。
+
+### Testing
+- `cd frontend && npm run build`：通过；仅输出既有 VueUse / lottie / chunk size 构建警告，并完成资源预压缩。
+- `git diff --check -- frontend/src/components/settings/ServicesSettingsPanel.vue progress.md`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `frontend/src/components/settings/ServicesSettingsPanel.vue`：为查重 RJ 列表、服务器已有命中状态和检查范围摘要增加专用布局与视觉样式。
+- `progress.md`：追加本轮查重结果可读性优化记录。
+- 回滚方式：还原本轮 `frontend/src/components/settings/ServicesSettingsPanel.vue` 中 `kikoeru-rj-chip`、`kikoeru-owned-*`、`kikoeru-result-meta-wide` 相关 hunk，并删除本段进度记录。
+## 2026-06-27 - Task: 优化查重结果标签与底部摘要布局
+### What was done
+- 将 Kikoeru 查重结果中的圆角胶囊改为更克制的小矩形标签，降低过度圆角带来的突兀感。
+- 本次检查 RJ 标签按原作、简中、繁中、英文附加不同颜色，方便快速区分关联语言版本。
+- 底部摘要改为带背景的信息块，并重新分配列宽；服务器已有和检查范围不再被窄列强行拆得很乱。
+
+### Testing
+- `cd frontend && npm run build`：通过；仅输出既有 VueUse / lottie / chunk size 构建警告，并完成资源预压缩。
+- `git diff --check -- frontend/src/components/settings/ServicesSettingsPanel.vue progress.md`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `frontend/src/components/settings/ServicesSettingsPanel.vue`：为查重 RJ 标签增加语言 class、调整标签圆角与颜色，并重排底部摘要信息块。
+- `progress.md`：追加本轮查重标签和底部摘要布局优化记录。
+- 回滚方式：还原本轮 `frontend/src/components/settings/ServicesSettingsPanel.vue` 中 `kikoeruLinkedLabelClass`、`kikoeru-rj-chip.*`、`kikoeru-owned-*` 和 `kikoeru-result-meta` 相关 hunk，并删除本段进度记录。
+
+## 2026-06-27 - Task: 移除查重结果命中提示竖线和原作内框
+### What was done
+- 移除 Kikoeru 查重结果顶部“服务器已有”提示左侧的绿色竖线。
+- 去掉底部“服务器已有”值内部的标签框，让 `RJ...(原作)` 回到普通摘要文本显示。
+- 删除不再使用的 `kikoeru-owned-badge` 样式，避免残留无用规则。
+
+### Testing
+- `cd frontend && npm run build`：通过；仅输出既有 VueUse / lottie / chunk size 构建警告，并完成资源预压缩。
+- `git diff --check -- frontend/src/components/settings/ServicesSettingsPanel.vue progress.md`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `frontend/src/components/settings/ServicesSettingsPanel.vue`：去掉顶部命中提示左侧强调线，并移除底部服务器已有值的内层 badge 样式。
+- `progress.md`：追加本轮命中提示竖线和原作内框移除记录。
+- 回滚方式：还原本轮 `frontend/src/components/settings/ServicesSettingsPanel.vue` 中 `kikoeru-owned-line`、`kikoeru-owned-badge` 相关 hunk，并删除本段进度记录。
+
+## 2026-06-27 - Task: 修正 AI 字幕模型配置布局
+### What was done
+- 将 AI 字幕连接配置里的模型选择框从叠层改为图标、输入、下拉按钮三列布局，避免图标和文字错位。
+- 移除模型平台图标的白色底框；暗色模式下仅对 OpenAI 黑色 SVG 做反白显示。
+- 缩小 API Key 输入框字号和高度，让它与同组设置项更一致。
+
+### Testing
+- `cd frontend && npm run build`：通过；仅输出既有 VueUse / lottie / chunk size 构建警告，并完成资源预压缩。
+- `git diff --check -- frontend/src/components/settings/AISubtitleSettingsPanel.vue`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `frontend/src/components/settings/AISubtitleSettingsPanel.vue`：重排模型组合输入框、去除平台图标底色，并压小 API Key 输入字号。
+- `progress.md`：追加本轮 AI 字幕设置布局修正记录。
+- 回滚方式：还原本轮 `frontend/src/components/settings/AISubtitleSettingsPanel.vue` 中 `model-combo`、`model-platform-*` 和 `ai-api-key-input` 相关 hunk，并删除本段进度记录。
+
+## 2026-06-27 - Task: 细化 AI 字幕模型图标前缀样式
+### What was done
+- 将模型输入框前面的平台图标从独立大色块改为更小的内联前缀。
+- 移除模型输入框内部对通用 `field-input` 样式的依赖，由组合控件统一绘制背景，避免图标区和文本区出现色块断层。
+- 收紧下拉按钮宽度和圆角，让模型选择框整体更像一个完整输入控件。
+
+### Testing
+- `cd frontend && npm run build`：通过；仅输出既有 VueUse / lottie / chunk size 构建警告，并完成资源预压缩。
+- `git diff --check -- frontend/src/components/settings/AISubtitleSettingsPanel.vue`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `frontend/src/components/settings/AISubtitleSettingsPanel.vue`：缩小模型平台图标前缀，移除内部 `field-input` 类，并改为组合控件统一背景。
+- `progress.md`：追加本轮模型图标前缀样式优化记录。
+- 回滚方式：还原本轮 `frontend/src/components/settings/AISubtitleSettingsPanel.vue` 中模型输入 class、`model-combo`、`model-platform-*` 和 `model-combo-input` 相关 hunk，并删除本段进度记录。
+
+## 2026-06-27 - Task: 优化 AI 字幕模型调用和连接测试
+### What was done
+- 将 AI 字幕正式模型调用改为优先流式请求，并补充请求开始、流式首包、完成和 JSON 解析日志；流式不支持时只在明确识别到不支持流式的错误后退回非流式。
+- 将设置页“测试连接”从完整字幕配对调用改为轻量 JSON 探测，限制为短超时、低 token、无重试，避免测试按钮触发长时间真实配对请求。
+- 缩短模型列表刷新链路的后端 HTTP 超时和前端等待上限，并在前端测试结果里展示探测方式、流式状态和耗时。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile backend\app\core\ai_subtitle_match_service.py backend\app\api\routes.py`：通过。
+- `cd frontend && npm run build`：通过；仅输出既有 VueUse / lottie / chunk size 构建警告，并完成资源预压缩。
+- `git diff --check -- backend/app/core/ai_subtitle_match_service.py backend/app/api/routes.py frontend/src/api/index.js frontend/src/components/settings/AISubtitleSettingsPanel.vue progress.md`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `backend/app/core/ai_subtitle_match_service.py`：新增 LiteLLM 流式优先调用、轻量连接探测、模型列表短超时和阶段日志。
+- `frontend/src/api/index.js`：将 AI 字幕模型列表和测试连接接口的前端等待上限降为 35 秒。
+- `frontend/src/components/settings/AISubtitleSettingsPanel.vue`：展示模型列表耗时、测试探测方式和流式状态，并补齐失败兜底结果字段。
+- `progress.md`：追加本轮 AI 字幕模型调用和连接测试优化记录。
+- 回滚方式：还原本轮 `backend/app/core/ai_subtitle_match_service.py` 中 `_extract_litellm_stream_delta`、`_complete_*`、`_probe_model_connection`、`list_models` 和 `test_connection` 相关 hunk；还原 `frontend/src/api/index.js` 的 AI 字幕接口 timeout hunk；还原 `frontend/src/components/settings/AISubtitleSettingsPanel.vue` 中模型列表耗时、测试结果探测/流式展示和格式化函数相关 hunk；并删除本段进度记录。
+
+## 2026-06-27 - Task: 移除 AI 字幕模型图标黑块感
+### What was done
+- 将 AI 字幕模型框前面的平台图标移出输入框深色背景，让图标直接显示在透明区域上。
+- 将模型输入框从图标列、输入列、下拉列的分段控件改为“外侧图标 + 普通输入框”结构。
+- 去掉模型下拉按钮左侧分隔线，避免右侧也形成一块独立深色区域。
+
+### Testing
+- `cd frontend && npm run build`：通过；仅输出既有 VueUse / lottie / chunk size 构建警告，并完成资源预压缩。
+- `git diff --check -- frontend/src/components/settings/AISubtitleSettingsPanel.vue progress.md`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `frontend/src/components/settings/AISubtitleSettingsPanel.vue`：重排模型输入组合样式，平台图标不再落在输入框深色背景内，并移除下拉按钮分段线。
+- `progress.md`：追加本轮 AI 字幕模型图标黑块感修正记录。
+- 回滚方式：还原本轮 `frontend/src/components/settings/AISubtitleSettingsPanel.vue` 中 `model-combo`、`model-platform-badge`、`model-combo-input`、`model-combo-dd` 和 `model-combo-trigger` 相关 hunk，并删除本段进度记录。
+
+## 2026-06-27 - Task: 重新整合 AI 字幕模型图标到输入框
+### What was done
+- 将 AI 字幕模型平台图标重新放回模型输入框内部，不再作为外侧独立元素显示。
+- 模型输入框改为单一完整控件，由外层统一绘制背景、边框和聚焦态；内部输入框透明无边框。
+- 保留下拉按钮在右侧内部对齐，并继续去掉左侧分隔线，避免回到三段式深色块布局。
+
+### Testing
+- `cd frontend && npm run build`：通过；仅输出既有 VueUse / lottie / chunk size 构建警告，并完成资源预压缩。另一个重复并发构建进程因同时清理 `dist/assets` 报 `EPERM`，不是本轮代码错误。
+- `git diff --check -- frontend/src/components/settings/AISubtitleSettingsPanel.vue progress.md`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `frontend/src/components/settings/AISubtitleSettingsPanel.vue`：将模型图标从外置布局改回输入框内部绝对定位，并让输入框与下拉按钮共用同一控件背景。
+- `progress.md`：追加本轮模型图标重新整合记录。
+- 回滚方式：还原本轮 `frontend/src/components/settings/AISubtitleSettingsPanel.vue` 中 `model-combo`、`model-platform-badge`、`model-combo-input`、`model-combo-dd` 和 `model-combo-trigger` 相关 hunk，并删除本段进度记录。
+
+## 2026-06-27 - Task: 实测修正 AI 字幕模型输入框暗色断层
+### What was done
+- 在 `http://localhost:5556/settings` 的 AI 配对页实际检查模型输入组合控件，确认黑块感不是平台图标背景，而是内部输入框被全局暗色输入框样式覆盖成另一块深灰。
+- 将模型输入框内部 input 固定为透明、无边框、无阴影，并补高优先级暗色选择器，避免再被全局暗色规则染色。
+- 保持外层组合控件统一绘制背景、边框和聚焦态，图标和下拉按钮继续在同一个控件内对齐。
+
+### Testing
+- `http://localhost:5556/settings` AI 配对页浏览器实测：修复前 `.model-combo-input` computed `backgroundColor` 为 `rgb(43, 44, 48)`；修复后为 `rgba(0, 0, 0, 0)`，`boxShadow` 为 `none`，字号为 `13px`。
+- `cd frontend && npm run build`：通过；仅输出既有 VueUse / lottie / chunk size 构建警告，并完成资源预压缩。
+
+### Notes
+- `frontend/src/components/settings/AISubtitleSettingsPanel.vue`：让模型输入框内层 input 透明化，并增加暗色模式高优先级兜底样式，消除深色断层。
+- `progress.md`：追加本轮 5556 实测调试后的修复记录。
+- 回滚方式：还原本轮 `frontend/src/components/settings/AISubtitleSettingsPanel.vue` 中 `model-combo-input` 背景透明、暗色高优先级选择器相关 hunk，并删除本段进度记录。
+
+## 2026-06-27 - Task: AI 字幕连接测试改为 hi 探测
+### What was done
+- 将设置页 AI 配对“测试连接”从字幕 JSON 能力探测收窄为发送 `hi` 的基础模型回应测试。
+- 后端连接测试改为非流式、无 `response_format`、`max_tokens=16`、不重试和短硬超时，避免模型服务慢响应拖到前端超时。
+- 前端测试结果改为展示回应状态、探测方式和回复预览，并明确提示该测试不验证字幕 JSON 输出。
+- 在测试文档补充 AI 连接测试语义和验证命令，避免后续把它误当完整字幕配对验证。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile backend\app\core\ai_subtitle_match_service.py`：通过。
+- `cd frontend && npm run build`：通过；仅输出既有 VueUse / lottie / chunk size 构建警告，并完成资源预压缩。
+- `git diff --check -- backend/app/core/ai_subtitle_match_service.py frontend/src/api/index.js frontend/src/components/settings/AISubtitleSettingsPanel.vue docs/TESTING.md`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `backend/app/core/ai_subtitle_match_service.py`：将设置页连接测试改为 `hi` 基础探测，并返回回复预览、探测超时和 token 用量。
+- `frontend/src/api/index.js`：调整 AI 字幕测试接口的前端等待上限，配合后端短硬超时避免继续显示前端超时。
+- `frontend/src/components/settings/AISubtitleSettingsPanel.vue`：更新连接测试说明和结果展示，从 JSON 能力改为模型回应、探测方式和回复预览。
+- `docs/TESTING.md`：增加 AI 字幕设置连接测试的验证语义和命令。
+- `progress.md`：追加本轮 AI 连接测试改为 hi 探测记录。
+- 回滚方式：还原本轮 `backend/app/core/ai_subtitle_match_service.py` 中 `_probe_model_connection` 和 `test_connection` 的 hi 探测相关 hunk；还原 `frontend/src/api/index.js` 的 AI 测试接口 timeout hunk；还原 `frontend/src/components/settings/AISubtitleSettingsPanel.vue` 中连接测试说明、结果字段和探测格式化相关 hunk；删除 `docs/TESTING.md` 的 AI 字幕设置连接测试小节，并删除本段进度记录。
+
+## 2026-06-27 - Task: 修正 AI 模型列表切换中转串缓存
+### What was done
+- 将 AI 字幕模型列表缓存签名绑定到 Base URL、API 版本、组织、代理和 API Key 指纹，避免不同中转或密钥共用旧模型缓存。
+- 切换 AI 连接配置时递增模型列表请求序号，并在响应返回后校验发起时签名，废弃旧中转的迟到响应。
+- 模型列表获取失败时不再沿用上一轮模型，只保留当前连接真实获取或缓存命中的模型列表。
+
+### Testing
+- `cd frontend && npm run build`：通过；两个已启动构建进程均完成资源预压缩。
+- `git diff --check -- frontend/src/components/settings/AISubtitleSettingsPanel.vue progress.md`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `frontend/src/components/settings/AISubtitleSettingsPanel.vue`：为模型列表缓存和异步刷新增加连接签名隔离，切换中转后不会显示上一中转模型。
+- `progress.md`：追加本轮 AI 模型列表缓存隔离记录。
+- 回滚方式：还原本轮 `frontend/src/components/settings/AISubtitleSettingsPanel.vue` 中 `aiSubtitleModelsRequestId`、`hashCachePart`、`buildAISubtitleModelsCacheSignature`、`saveAISubtitleModelsCache` 和 `fetchAISubtitleModels` 相关 hunk，并删除本段进度记录。
+
+## 2026-06-27 - Task: 清理 AI 模型切换后的旧模型值
+### What was done
+- 将 AI 字幕模型列表本地缓存版本升到 v2，旧版已经串过的浏览器缓存不再参与当前下拉。
+- 有当前中转模型列表时，不再把“当前填写的模型”强行塞回下拉选项。
+- 切换 Base URL、API Key、代理、API Version 或 Organization 后自动清空旧模型字段；成功加载当前中转模型列表时，如果旧模型不在当前列表里也会清空。
+
+### Testing
+- `cd frontend && npm run build`：通过；两个最终构建进程均完成资源预压缩。
+- `git diff --check -- frontend/src/components/settings/AISubtitleSettingsPanel.vue progress.md`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `frontend/src/components/settings/AISubtitleSettingsPanel.vue`：升级模型列表缓存版本，并在连接作用域变化、模型列表刷新和缓存加载时清理不属于当前中转的旧模型值。
+- `progress.md`：追加本轮旧模型值清理记录。
+- 回滚方式：还原本轮 `frontend/src/components/settings/AISubtitleSettingsPanel.vue` 中 `AI_SUBTITLE_MODELS_CACHE_VERSION`、`aiSubtitleModelOptions` 的手填模型插入条件、`clearAISubtitleModelIfMissingFromRows` 和连接作用域清空模型相关 hunk，并删除本段进度记录。
+
+## 2026-06-27 - Task: 补齐 AI 模型下拉智谱官方图标
+### What was done
+- 从智谱 BigModel 官方站点下载本地图标资源，作为 GLM / 智谱 AI 模型的下拉图标。
+- 将智谱模型平台元数据接入本地图标，`glm-*` 模型不再显示空图标。
+- 没有保留非官方文字占位图标，图标来源记录到 AI 平台图标说明里。
+
+### Testing
+- `frontend/src/assets/ai-platforms/zhipu.png`：已确认来源为 `https://bigmodel.cn/img/icons/apple-touch-icon-152x152.png`，文件头为 PNG，并完成视觉检查。
+- `cd frontend && npm run build`：通过；构建产物包含 `dist/assets/zhipu-CWmkm5qz.png`，并完成资源预压缩。
+- `git diff --check -- frontend/src/components/common/aiModelPlatformMeta.js frontend/src/assets/ai-platforms/README.md frontend/src/assets/ai-platforms/zhipu.png progress.md`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `frontend/src/assets/ai-platforms/zhipu.png`：新增智谱 BigModel 官方图标资源。
+- `frontend/src/components/common/aiModelPlatformMeta.js`：将智谱平台 `iconSrc` 指向本地图标，供 GLM 模型下拉项渲染。
+- `frontend/src/assets/ai-platforms/README.md`：记录智谱图标来源。
+- `progress.md`：追加本轮官方图标补齐记录。
+- 回滚方式：删除 `frontend/src/assets/ai-platforms/zhipu.png`，还原 `frontend/src/components/common/aiModelPlatformMeta.js` 中 `zhipuIconUrl` 导入、`AI_PLATFORM_ICON_URLS.zhipu` 和智谱 `iconSrc` hunk，删除 `frontend/src/assets/ai-platforms/README.md` 的 zhipu 来源行，并删除本段进度记录。
+
+## 2026-06-27 - Task: 补齐 AI 模型下拉主流厂商图标和识别
+### What was done
+- AI 模型下拉补齐国内主流厂商识别和本地官方图标：通义千问、百度千帆、腾讯混元、MiniMax、零一万物、阶跃星辰、讯飞星火、商汤日日新、书生浦语、OpenBMB，以及前一轮已下载的 MiMo、智谱、Moonshot、百川、火山、SiliconFlow、Groq、Cohere。
+- 将 `gemini` 映射到 Google 官方 Gemini 图标，将 `claude` 映射到 Anthropic 官方 favicon；`grok / x-ai / x_ai` 补齐到 xAI 映射，不再出现空图标。
+- 前端下拉和后端 favicon 缓存使用一致的厂商别名 / host 识别，覆盖 `qwen3-*`、`ernie-*`、`hunyuan-*`、`abab*`、`step-*`、`spark-*`、`internlm-*`、`minicpm-*` 等常见模型 ID。
+- 本机对 xAI / Grok 官方 favicon 源 `x.ai`、`grok.com`、`x.com`、`abs.twimg.com` 拉取失败，未新增非官方 Grok 图标文件；当前 Grok 继续使用项目已有 xAI/X 本地图标。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile backend/app/core/ai_provider_icon_service.py`：通过。
+- `git diff --check -- backend/app/core/ai_provider_icon_service.py frontend/src/components/common/aiModelPlatformMeta.js frontend/src/assets/ai-platforms/README.md progress.md`：通过，仅提示工作区 LF/CRLF 转换 warning。
+- `Get-ChildItem -File frontend/src/assets/ai-platforms ...`：确认新增官方图标文件存在，包括 `anthropic-official.ico`、`gemini.svg`、`deepseek.ico`、`qwen.ico`、`baidu.ico`、`hunyuan.ico`、`minimax.ico`、`yi.ico`、`stepfun-ai.ico`、`iflytek.ico`、`sensenova.ico`、`internlm.ico`、`openbmb.ico`。
+- `cd frontend && npm run build`：通过；构建产物包含新增厂商图标资源，并完成资源预压缩。
+
+### Notes
+- `backend/app/core/ai_provider_icon_service.py`：补齐国内主流模型厂商和 Gemini / Claude / Grok 的后端厂商识别、官方 favicon 候选源和别名匹配。
+- `frontend/src/components/common/aiModelPlatformMeta.js`：补齐模型下拉使用的本地官方图标、厂商元数据、host 识别和别名匹配。
+- `frontend/src/assets/ai-platforms/README.md`：记录新增官方图标来源。
+- `frontend/src/assets/ai-platforms/anthropic-official.ico`、`gemini.svg`、`deepseek.ico`、`qwen.ico`、`baidu.ico`、`hunyuan.ico`、`minimax.ico`、`yi.ico`、`stepfun-ai.ico`、`iflytek.ico`、`sensenova.ico`、`internlm.ico`、`openbmb.ico`：新增模型厂商本地图标资源。
+- `progress.md`：追加本轮主流模型厂商图标和识别补齐记录。
+- 回滚方式：还原本轮 `backend/app/core/ai_provider_icon_service.py`、`frontend/src/components/common/aiModelPlatformMeta.js` 和 `frontend/src/assets/ai-platforms/README.md` 的对应 hunk，删除上述新增图标文件，并删除本段进度记录。
+
+## 2026-06-27 - Task: 修正 AI 模型下拉图标比例和白底
+### What was done
+- 移除 AI 模型下拉图标统一强加的白色背景、内边距和阴影，避免官方图标被套白壳、比例被压小。
+- 将下拉图标改为无 padding 的固定 18px 容器，用 `object-fit: contain` 保持官方图标原始比例。
+- 给模型图标组件补厂商 key class，只在暗色模式下对 OpenAI、xAI、OpenRouter 这类黑色单色图标做反白处理。
+
+### Testing
+- `cd frontend && npm run build`：通过；构建完成并完成资源预压缩。早先并发构建出现过 `EPERM` 清理冲突，原因是多个 Vite 同时清空同一个 `dist/assets`，后续构建均已通过。
+- `git diff --check -- frontend/src/components/common/aiModelPlatformMeta.js frontend/src/components/settings/AISubtitleSettingsPanel.vue progress.md`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `frontend/src/components/settings/AISubtitleSettingsPanel.vue`：去掉 AI 模型菜单图标的白底、padding、阴影，并按厂商精准处理暗色单色图标。
+- `frontend/src/components/common/aiModelPlatformMeta.js`：为模型图标组件增加厂商 key class，供样式层识别具体厂商。
+- `progress.md`：追加本轮 AI 模型下拉图标比例和白底修正记录。
+- 回滚方式：还原本轮 `frontend/src/components/settings/AISubtitleSettingsPanel.vue` 中 `.ai-model-option-icon`、暗色图标 filter 和当前模型图标 class 相关 hunk；还原 `frontend/src/components/common/aiModelPlatformMeta.js` 中 `createAIPlatformIconComponent` 的 key class hunk，并删除本段进度记录。
+
+## 2026-06-27 - Task: 放大 AI 模型下拉内部图标
+### What was done
+- 将 AI 模型下拉图标从图片直接参与布局改为固定图标槽包裹内部图片，避免被通用下拉的 14px 图标尺寸压缩。
+- 下拉菜单图标槽放大到 34px，内部图片默认 30px，MiMo 这类官方方形字标使用 34px 完整显示。
+- 暗色模式的 OpenAI、xAI、OpenRouter 单色图标反白改为作用到内部图片，不影响图标槽和其它彩色厂商图标。
+
+### Testing
+- `cd frontend && npm run build`：通过；两条误并发启动的构建均完成资源预压缩。
+- `git diff --check -- frontend/src/components/common/aiModelPlatformMeta.js frontend/src/components/settings/AISubtitleSettingsPanel.vue progress.md`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `frontend/src/components/common/aiModelPlatformMeta.js`：模型图标组件改为 `span` 图标槽包裹 `img`，保留厂商 key class。
+- `frontend/src/components/settings/AISubtitleSettingsPanel.vue`：放大 AI 模型菜单内部图标尺寸，并为 MiMo 官方字标做更大显示尺寸。
+- `progress.md`：追加本轮下拉内部图标比例修正记录。
+- 回滚方式：还原本轮 `frontend/src/components/common/aiModelPlatformMeta.js` 中 `createAIPlatformIconComponent` 的 wrapper hunk；还原本轮 `frontend/src/components/settings/AISubtitleSettingsPanel.vue` 中 `.ai-model-option-icon`、`.ai-model-option-icon-img` 和暗色 filter 相关 hunk，并删除本段进度记录。
+
+## 2026-06-27 - Task: 回退 AI 模型下拉图标放大方案
+### What was done
+- 撤销 AI 模型下拉内部图标 34px 放大方案，避免模型列表左侧图标过大、视觉压迫。
+- 将模型图标组件恢复为直接渲染 `img`，保留厂商 key class，继续支持按厂商处理暗色单色图标。
+- 下拉菜单图标恢复到 18px，仍保留透明背景、无 padding、无阴影，不回到白色外框状态。
+
+### Testing
+- `cd frontend && npm run build`：通过；两条误并发启动的构建均完成资源预压缩。
+- `git diff --check -- frontend/src/components/common/aiModelPlatformMeta.js frontend/src/components/settings/AISubtitleSettingsPanel.vue progress.md`：通过，仅提示工作区 LF/CRLF 转换 warning。
+
+### Notes
+- `frontend/src/components/common/aiModelPlatformMeta.js`：撤回图标 wrapper，恢复直接 `img` 渲染。
+- `frontend/src/components/settings/AISubtitleSettingsPanel.vue`：撤回 34px 图标槽和内部图片样式，恢复 18px 菜单图标。
+- `progress.md`：追加本轮图标放大方案回退记录。
+- 回滚方式：如需回到大图标方案，可恢复上一段记录中的 wrapper、`.ai-model-option-icon-img`、34px 图标槽和内部图片 filter 相关 hunk；如需彻底回到更早白底样式，则还原前一轮白底修复 hunk。
+
+## 2026-06-27 - Task: 修复系统通知跳转落点
+### What was done
+- 修正任务中心生成的通知落点：HTTP 外链下载进入 ASMR 同步的 HTTP tab，百度上传回库存页，社团补全通知携带社团和 RJ 定位参数。
+- 系统铃铛点击时增加旧通知兜底解析，避免历史通知里的错误 `/conflicts`、错误百度 tab 或缺 tab 路径继续乱跳。
+- 社团补全页面支持从 URL query 定位到指定社团或 RJ，点击通知后会切换到对应社团并尽量定位作品。
+- 保留真正的问题作品 / 等待人工处理通知跳转到问题作品，只把成功态导入 / 解压完成通知纠正回库存或对应工作台。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\task_center_service.py app\core\task_notification_service.py`：通过。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_task_center_service.py tests\test_task_notification_service.py -q -k "route_hint or route_hints or conflict_retry or baidu_netdisk_upload"`：通过，`4 passed, 13 deselected`；仅有既有 deprecation warning 和 pytest cache warning。
+- `cd frontend; npm run build`：通过；仅有既有 VueUse PURE 注释、lottie eval 和 chunk size warning。
+
+### Notes
+- `backend/app/core/task_center_service.py`：修正通知 route hint，社团补全补 query 参数，冲突重试成功态不再强制覆盖到问题作品。
+- `backend/app/core/task_notification_service.py`：排除百度上传被误识别成下载部分成功通知。
+- `frontend/src/components/system/NotificationPanel.vue`：点击铃铛通知时统一解析并修正历史错误落点。
+- `frontend/src/views/CircleCompletion.vue`：支持 `circle_id`、`circle_name`、`rjcode` query 定位社团和作品。
+- `progress.md`：追加本轮通知跳转修复记录。
+- 回滚方式：还原上述四个代码文件中本轮通知跳转相关 hunk，并删除本段进度记录。
