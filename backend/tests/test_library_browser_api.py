@@ -286,6 +286,16 @@ def test_local_inventory_reads_prefer_usable_index_snapshot(monkeypatch, tmp_pat
                 ),
             }
 
+        def handle_self_mutation_batch(self, library_id, *, upserts=None, deletes=None):
+            result = {"upserts": 0, "deletes": 0}
+            for relative_path in deletes or []:
+                normalized = str(relative_path or "").strip("/")
+                for key in list(entries.keys()):
+                    if key == normalized or key.startswith(f"{normalized}/"):
+                        entries.pop(key, None)
+                        result["deletes"] += 1
+            return result
+
     manager = object.__new__(library_manager_module.LibraryManager)
     manager._size_cache = {}
     monkeypatch.setattr(manager, "get_library_definition", lambda _library_id: library)
@@ -323,7 +333,8 @@ def test_local_inventory_reads_prefer_usable_index_snapshot(monkeypatch, tmp_pat
         )
     )
     assert indexed_list_result["browse_via_index"] is True
-    assert [item["name"] for item in indexed_list_result["files"]] == ["old-track.mp3", "subtitles"]
+    assert [item["name"] for item in indexed_list_result["files"]] == ["subtitles"]
+    assert indexed_list_result["total"] == 1
 
     result = asyncio.run(manager.folder_contents(library.id, str(circle_dir), recursive=False))
 
@@ -334,8 +345,8 @@ def test_local_inventory_reads_prefer_usable_index_snapshot(monkeypatch, tmp_pat
     assert rj_item["size_status"] == "stale"
     assert rj_item["index_refresh_pending"] is True
     assert rj_item["file_count"] == 2
-    assert rj_item["folder_count"] is None
-    assert rj_item["folder_count_status"] == "lazy"
+    assert rj_item["folder_count"] == 1
+    assert rj_item["folder_count_status"] == "ready"
 
     recursive_result = asyncio.run(manager.folder_contents(library.id, str(circle_dir), recursive=True))
     assert recursive_result.get("browse_via_index") is True
@@ -366,7 +377,7 @@ def test_local_inventory_reads_prefer_usable_index_snapshot(monkeypatch, tmp_pat
     assert shallow_rj_item["folder_count_status"] == "lazy"
 
     folders_payload = asyncio.run(manager.list_local_folders_only(library.id, str(circle_dir), include_files=True))
-    assert folders_payload.get("browse_via_index") is not True
+    assert folders_payload.get("browse_via_index") is True
     folder_row = next(item for item in folders_payload["folders"] if item["name"] == "RJ01000001")
     assert folder_row["size"] == 9
     assert folder_row["size_status"] == "stale"
@@ -412,6 +423,13 @@ def test_local_inventory_reads_prefer_usable_index_snapshot(monkeypatch, tmp_pat
         "RJ01000001/subtitles",
         "RJ01000001/subtitles/track.vtt",
     ]
+
+    delete_result = manager._local_delete(library, str(circle_dir / "cover.jpg"), confirmed=True)
+    assert delete_result["message"] == "删除成功"
+    assert "Circle/cover.jpg" not in entries
+    folders_after_delete = asyncio.run(manager.list_local_folders_only(library.id, str(circle_dir), include_files=True))
+    assert folders_after_delete.get("browse_via_index") is True
+    assert [item["name"] for item in folders_after_delete["folders"]] == ["RJ01000001"]
 
 
 def test_local_listing_counts_descendants_only_for_current_page(monkeypatch, tmp_path):
