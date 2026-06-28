@@ -645,6 +645,28 @@ class ExtractService:
                 result.append(legacy)
         return result
 
+    @staticmethod
+    def _split_vault_passwords_by_priority(
+        password_candidates: List[Dict[str, Optional[str]]],
+    ) -> Tuple[List[str], List[str]]:
+        """把密码库候选拆成强绑定候选和通用候选。
+
+        文件名/RJ 绑定、文件名嗅探比 RJ±1 更可信；通用密码更像兜底，不能在大包
+        unknown 探测上限内挤掉 RJ 候选。
+        """
+        priority: List[str] = []
+        generic: List[str] = []
+        for item in password_candidates:
+            password = item.get("password")
+            if not password:
+                continue
+            source = str(item.get("source") or "").strip()
+            if source == "密码库-通用":
+                generic.append(password)
+            else:
+                priority.append(password)
+        return priority, generic
+
     # ------------------------------------------------------------------
     # 伪装多卷压缩包识别：解决用户场景"分卷被故意改成 .z7.001 / .7z.删除001 /
     # .png 等让系统拿不准的命名"。常规 _detect_volume_set 走完没识别 + 单体
@@ -5847,6 +5869,9 @@ class ExtractService:
             for item in password_candidates
             if item.get("rjcode")
         }
+        priority_vault_passwords, generic_vault_passwords = self._split_vault_passwords_by_priority(
+            password_candidates
+        )
 
         if manual_only_passwords:
             password_list = manual_only_passwords
@@ -5855,11 +5880,12 @@ class ExtractService:
             rj_passwords = self._get_rj_passwords(archive_path)
 
             # 构建密码列表：普通未加密包占多数，list 阶段先试空密码，少启动无效密码子进程。
-            # 密码库 / 文件名嗅探是用户给出的真实候选，优先于 RJ±1 这类猜测。
+            # 文件名/RJ 绑定优先于 RJ±1；通用密码放到 RJ 后面，避免大包探测上限挤掉 RJ。
             password_list = []
             password_list.append("")  # 无密码
-            password_list.extend(vault_passwords)  # 密码库密码
+            password_list.extend(priority_vault_passwords)  # 文件名/RJ 绑定密码
             password_list.extend(rj_passwords)  # RJ号密码（RJ号, RJ号+1, RJ号-1）
+            password_list.extend(generic_vault_passwords)  # 通用密码库密码
             password_list.extend(self.config.extract.password_list)  # 默认密码
 
         # 去重（保持顺序）
@@ -7027,6 +7053,9 @@ class ExtractService:
             for item in password_candidates
             if item.get("rjcode")
         }
+        priority_vault_passwords, generic_vault_passwords = self._split_vault_passwords_by_priority(
+            password_candidates
+        )
 
         manual_retry_passwords = self._get_manual_retry_passwords(task)
         manual_retry_password_only = bool((task.task_metadata or {}).get("manual_retry_password_only"))
@@ -7046,13 +7075,13 @@ class ExtractService:
             rj_passwords = self._get_rj_passwords(archive_info.path)
 
             # 构建密码列表：预读成功密码优先，减少同一压缩包重复失败尝试。
-            # 密码库 / 文件名嗅探是用户给出的真实候选，优先于 RJ±1 这类猜测；
-            # 大包 unknown 兜底有次数上限，不能让猜测密码挤掉真实候选。
+            # 文件名/RJ 绑定优先于 RJ±1；通用密码放到 RJ 后面，避免大包探测上限挤掉 RJ。
             password_list = []
             if archive_info.password:
                 password_list.append(archive_info.password)
-            password_list.extend(vault_passwords)  # 密码库密码
+            password_list.extend(priority_vault_passwords)  # 文件名/RJ 绑定密码
             password_list.extend(rj_passwords)  # RJ号密码（RJ号, RJ号+1, RJ号-1）
+            password_list.extend(generic_vault_passwords)  # 通用密码库密码
             password_list.append("")  # 无密码
             password_list.extend(self.config.extract.password_list)  # 默认密码
 
@@ -7097,6 +7126,7 @@ class ExtractService:
         # 更可能是头加密 + 错密码，而不是真的坏包，用于最后定性判断。
         listing_available = bool(getattr(archive_info, "file_list", None))
         encountered_wrong_password = False
+        skipped_unknown_probe_candidates = False
         last_corrupt_stderr: Optional[str] = None
         is_zip_archive = self._is_zip_like_archive(archive_info.path)
         try:
@@ -7109,6 +7139,7 @@ class ExtractService:
         )
         listed_no_password_large_archive = bool(listed_no_password and is_large_unknown_probe_archive)
         unknown_probe_full_extracts = 0
+        low_confidence_unknown_probe_full_extracts = 0
         try:
             unknown_probe_full_extract_limit = max(0, int(self.UNKNOWN_PROBE_FULL_EXTRACT_LIMIT))
         except Exception:
@@ -7713,6 +7744,7 @@ class ExtractService:
                             password or '无密码',
                         )
                     elif probe_result == 'unknown':
+                        low_confidence_password = password_source in {"密码库-通用", "默认"}
                         if not password:
                             has_password_candidates = any(bool(pwd) for pwd in unique_passwords)
                             if manual_retry_password_only or has_password_candidates:
@@ -7727,13 +7759,12 @@ class ExtractService:
                             )
                         elif (
                             is_large_unknown_probe_archive
-                            and unknown_probe_full_extracts >= unknown_probe_full_extract_limit
+                            and low_confidence_password
+                            and low_confidence_unknown_probe_full_extracts >= unknown_probe_full_extract_limit
                         ):
-                            encountered_wrong_password = True
-                            if cache_key and not (manual_retry_password_only and password in manual_retry_password_set):
-                                self._remember_negative_password(cache_key)
+                            skipped_unknown_probe_candidates = True
                             logger.warning(
-                                "大包密码探测无法定性，已达到完整解压兜底上限 %s，跳过后续候选完整解压: source=%s password=%s archive=%s size=%s",
+                                "大包低可信密码探测无法定性，已达到完整解压兜底上限 %s，本轮跳过该候选但不记为密码错误: source=%s password=%s archive=%s size=%s",
                                 unknown_probe_full_extract_limit,
                                 password_source,
                                 password or '无密码',
@@ -7743,6 +7774,8 @@ class ExtractService:
                             continue
                         elif is_large_unknown_probe_archive:
                             unknown_probe_full_extracts += 1
+                            if low_confidence_password:
+                                low_confidence_unknown_probe_full_extracts += 1
                         logger.info(
                             "密码 %s (%s) 探测无法定性，进入完整解压兜底",
                             password_source,
@@ -8140,6 +8173,21 @@ class ExtractService:
                 sfx_volume_view_error=last_corrupt_stderr[:1000],
             )
             return False, None, "volume_incomplete"
+
+        if skipped_unknown_probe_candidates:
+            self._set_extract_meta(
+                task,
+                extract_failure_reason="light_probe_unknown",
+                extract_unknown_probe_limited=True,
+                extract_unknown_probe_full_extract_limit=unknown_probe_full_extract_limit,
+            )
+            logger.warning(
+                "大包密码轻量探测无法定性且候选未全部完整解压，本轮不判定为无正确密码: archive=%s tried_full_extracts=%s limit=%s",
+                os.path.basename(archive_info.path),
+                unknown_probe_full_extracts,
+                unknown_probe_full_extract_limit,
+            )
+            return False, None, "light_probe_unknown"
 
         if listing_available or encountered_wrong_password:
             if last_corrupt_stderr:
