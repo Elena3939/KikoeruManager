@@ -99,7 +99,7 @@
             </div>
           </div>
           <div class="flex items-center gap-1.5 flex-wrap justify-end">
-            <button class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-semibold border border-cyan-200 bg-cyan-50 text-cyan-700 transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] hover:border-cyan-300 hover:bg-cyan-100 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100" :disabled="view.subtitleInspectorBusy || !view.subtitleInspectorAudioFiles.length || !view.subtitleInspectorSubtitleFiles.length" title="让 AI 直接生成配对草稿；确认后再点击导入。" @click="view.buildAISubtitlePairs">
+            <button class="subtitle-ai-pair-button inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-semibold border border-cyan-200 bg-cyan-50 text-cyan-700 transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] hover:border-cyan-300 hover:bg-cyan-100 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100" :disabled="view.subtitleInspectorBusy || !view.subtitleInspectorAudioFiles.length || !view.subtitleInspectorSubtitleFiles.length" title="让 AI 直接生成配对草稿；确认后再点击导入。" @click="view.buildAISubtitlePairs">
               <Bot :size="12" :stroke-width="2.2" :class="{ 'is-spinning': view.subtitleAutoPairing }" />{{ view.subtitleAutoPairing ? 'AI 配对中' : 'AI 配对' }}
             </button>
             <button class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-medium border transition-all duration-200 hover:-translate-y-0.5 hover:scale-[1.02] hover:border-slate-300 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:scale-100" :disabled="view.subtitleInspectorBusy || !view.subtitleInspectorAudioFiles.length || !view.subtitleInspectorSubtitleFiles.length" title="不用 AI，按文件名、轨道号和规范化标题生成规则草稿。" @click="view.buildRuleSubtitlePairs">
@@ -718,6 +718,23 @@ function getSubtitlePairRenamePreview(pair = {}) {
 .subtitle-inspector-workbench-root :focus-within {
   outline: none !important;
   box-shadow: none !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-ai-pair-button),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-ai-pair-button) {
+  background: rgba(8, 145, 178, 0.18) !important;
+  background-color: rgba(8, 145, 178, 0.18) !important;
+  border-color: rgba(34, 211, 238, 0.38) !important;
+  color: #67e8f9 !important;
+  box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.12) !important;
+}
+
+:global(html.kikoerumanager-dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-ai-pair-button:hover:not(:disabled)),
+:global(html.dark :is(.subtitle-workbench-dialog, .subtitle-import-workbench-dialog) .subtitle-inspector-workbench-root .subtitle-ai-pair-button:hover:not(:disabled)) {
+  background: rgba(8, 145, 178, 0.28) !important;
+  background-color: rgba(8, 145, 178, 0.28) !important;
+  border-color: rgba(34, 211, 238, 0.62) !important;
+  color: #cffafe !important;
 }
 
 .subtitle-tree-row-selected {
