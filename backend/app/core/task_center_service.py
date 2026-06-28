@@ -912,6 +912,8 @@ class TaskCenterService:
             actions.extend(["retry", "delete"])
         elif task.status == TaskStatus.FAILED and self._can_retry_engine_task(task, domain, check_source_exists=check_retry_source):
             actions.extend(["retry", "delete"])
+        elif task.status == TaskStatus.WAITING_RETRY and domain in {"import", "system"}:
+            actions.extend(["retry_waiting", "delete"])
         elif task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
             actions.append("delete")
         elif task.status == TaskStatus.WAITING_RETRY and domain == "asmr_sync":
@@ -2172,6 +2174,10 @@ class TaskCenterService:
                 if await asyncio.to_thread(engine.remove_task, engine_task_id):
                     return {"success": True, "message": "任务记录已删除"}
                 raise ValueError("任务不存在")
+            if normalized_action == "retry_waiting":
+                if engine.retry_task(engine_task_id):
+                    return {"success": True, "message": "任务已加入重试队列"}
+                raise ValueError("任务不在等待重试状态")
             if normalized_action == "retry":
                 if self._infer_domain(task) == "http_download":
                     if task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED}:

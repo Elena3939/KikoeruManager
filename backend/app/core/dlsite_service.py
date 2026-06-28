@@ -897,7 +897,11 @@ class DLsiteApiService:
             'category_name': category_name,
             'genres': genres,
             'creaters': {'voice_by': voice_by} if voice_by else {},
-            'translation_info': {'is_original': True, 'lang': 'JPN'},
+            'translation_info': {
+                'is_original': False,
+                'lang': '',
+                'source': 'page_metadata_unverified',
+            },
         }
 
     async def _fetch_page_html_with_url(self, page_url: str) -> tuple[str, str]:

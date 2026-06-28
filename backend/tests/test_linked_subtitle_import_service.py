@@ -1,9 +1,10 @@
 import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from datetime import datetime, timedelta
 
 from app.core.classifier import SmartClassifier
-from app.core.task_engine import TaskEngine
+from app.core.task_engine import Task, TaskEngine, TaskStatus, TaskType
 from app.core.linked_subtitle_import_service import (
     LinkedSubtitleArchivePrecheckTimeout,
     LinkedSubtitleImportAlreadyRunning,
@@ -237,6 +238,50 @@ def test_task_engine_blocks_linked_translation_archive_without_subtitles():
     assert engine._should_block_linked_translation_without_subtitles(preview) is False
 
 
+def test_task_engine_blocks_uncertain_dlsite_linkage():
+    engine = object.__new__(TaskEngine)
+    preview = {
+        "source_rjcode": "RJ01621937",
+        "target_rjcode": "",
+        "is_translation_work": False,
+        "dlsite_linkage_uncertain": True,
+        "dlsite_linkage_uncertain_reason": LinkedSubtitleImportService.DLSITE_LINKAGE_UNCERTAIN_REASON,
+        "subtitle_count": 0,
+        "can_stage_pending": False,
+        "should_queue_pending": False,
+        "can_execute": False,
+    }
+
+    assert engine._should_block_uncertain_dlsite_linkage(preview) is True
+
+    preview["can_stage_pending"] = True
+    assert engine._should_block_uncertain_dlsite_linkage(preview) is False
+
+
+def test_uncertain_dlsite_linkage_sets_waiting_retry_state():
+    task = Task(
+        task_type=TaskType.AUTO_PROCESS,
+        source_path="/input/RJ01621937.rar",
+        auto_classify=True,
+        metadata={
+            "linked_subtitle_preview": {
+                "source_rjcode": "RJ01621937",
+                "dlsite_linkage_uncertain": True,
+            }
+        },
+        rjcode="RJ01621937",
+    )
+    reason = LinkedSubtitleImportService.DLSITE_LINKAGE_UNCERTAIN_REASON
+    retry_after = datetime.now() + timedelta(minutes=15)
+
+    task.set_waiting_retry(reason, retry_after)
+
+    assert task.status == TaskStatus.WAITING_RETRY
+    assert task.task_metadata["retry_reason"] == reason
+    assert task.task_metadata["retry_after"]
+    assert task.current_step == f"等待重试: {reason}"
+
+
 @pytest.mark.asyncio
 async def test_common_preview_uses_kikoeru_hit_to_block_translation_as_new_work():
     service = object.__new__(LinkedSubtitleImportService)
@@ -299,6 +344,67 @@ async def test_common_preview_uses_kikoeru_hit_to_block_translation_as_new_work(
     assert preview["can_execute"] is False
     assert "未命中任何关联作品" not in preview["reason"]
     assert preview["candidate_search_reason"] == "ready 库存索引未命中原作目录"
+
+
+@pytest.mark.asyncio
+async def test_common_preview_marks_unverified_translation_page_as_uncertain():
+    service = object.__new__(LinkedSubtitleImportService)
+    service.EXISTING_SUBTITLE_REASON = LinkedSubtitleImportService.EXISTING_SUBTITLE_REASON
+    service.REMOTE_PENDING_REASON = LinkedSubtitleImportService.REMOTE_PENDING_REASON
+    service.subtitle_service = SimpleNamespace(
+        extract_rjcode=lambda value: "RJ01621937" if "RJ01621937" in str(value or "") else ""
+    )
+    service.dlsite_service = SimpleNamespace(
+        get_translation_info=AsyncMock(),
+        get_product_info=AsyncMock(return_value={
+            "product": {
+                "work_name": "【繁体中文版】テスト音声 [みんなで翻訳] | DLsite",
+            },
+            "fallback_source": "page_metadata",
+        }),
+        get_linked_works=AsyncMock(return_value={}),
+    )
+    service.kikoeru_service = SimpleNamespace(
+        check_duplicate=AsyncMock(return_value=SimpleNamespace(
+            is_found=False,
+            source="kikoeru",
+            title="",
+            has_lyric_hint=False,
+            subtitle_file_count=0,
+            subtitle_check_source="tracks",
+            total_track_count=0,
+            lyric_status="",
+        ))
+    )
+    service.search_target_candidates = AsyncMock(
+        side_effect=AssertionError("target 为空时不应查候选")
+    )
+
+    preview = await service._build_common_preview(
+        source_rjcode="RJ01621937",
+        source_label="RJ01621937.7z",
+        subtitle_count=0,
+        preferred_library_id=None,
+        _prefetched_translation=(
+            SimpleNamespace(
+                is_original=False,
+                is_parent=False,
+                is_child=False,
+                original_workno="",
+                parent_workno="",
+                child_worknos=[],
+                lang="",
+            ),
+            "",
+        ),
+    )
+
+    assert preview["dlsite_linkage_uncertain"] is True
+    assert preview["dlsite_product_title"] == "【繁体中文版】テスト音声 [みんなで翻訳] | DLsite"
+    assert preview["dlsite_fallback_source"] == "page_metadata"
+    assert preview["treat_as_new_work"] is False
+    assert preview["can_stage_pending"] is False
+    assert preview["stage_reason"] == LinkedSubtitleImportService.DLSITE_LINKAGE_UNCERTAIN_REASON
 
 
 @pytest.mark.asyncio
@@ -445,6 +551,40 @@ def test_refresh_preview_execution_state_keeps_timeout_archive_executable(tmp_pa
     assert "重新解包" in preview["execute_reason"]
 
 
+def test_refresh_preview_execution_state_keeps_extract_failure_archive_executable(tmp_path):
+    archive_path = tmp_path / "RJ01649862.rar"
+    archive_path.write_bytes(b"placeholder")
+    service = object.__new__(LinkedSubtitleImportService)
+    service.REMOTE_PENDING_REASON = LinkedSubtitleImportService.REMOTE_PENDING_REASON
+    service.EXISTING_SUBTITLE_REASON = LinkedSubtitleImportService.EXISTING_SUBTITLE_REASON
+    service._prefer_deepest_target_rj_candidates = lambda candidates, _target: candidates
+    service._should_direct_import_to_empty_candidate = lambda _preview, _candidate: False
+
+    preview = service._refresh_preview_execution_state({
+        "source_rjcode": "RJ01649862",
+        "target_rjcode": "RJ01638438",
+        "source_path": str(archive_path),
+        "is_translation_work": True,
+        "is_manual_subtitle_source": False,
+        "subtitle_count": 0,
+        "kikoeru_has_work": True,
+        "kikoeru_needs_subtitle": True,
+        "kikoeru_route_confident": True,
+        "source_subtitle_probe_status": "missing_password",
+        "source_subtitle_probe_reason": "预检阶段未能解包，执行时重新走解压入库链路",
+        "candidates": [{
+            "library_id": "asmr",
+            "library_type": "local",
+            "folder_path": "D:/library/RJ01638438",
+            "ready_for_import": True,
+        }],
+    })
+
+    assert preview["can_stage_pending"] is True
+    assert preview["can_execute"] is True
+    assert "执行时" in preview["execute_reason"]
+
+
 @pytest.mark.asyncio
 async def test_queue_pending_archive_import_preserves_timeout_as_pending(db_session, monkeypatch):
     def fake_get_db():
@@ -518,6 +658,89 @@ async def test_queue_pending_archive_import_preserves_timeout_as_pending(db_sess
     ).one()
     assert row.rjcode == "RJ01608823"
     assert row.new_metadata["source_subtitle_probe_status"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_queue_pending_archive_import_preserves_extract_failure_as_pending(db_session, monkeypatch, tmp_path):
+    def fake_get_db():
+        yield db_session
+
+    monkeypatch.setattr(linked_subtitle_module, "get_db", fake_get_db)
+
+    archive_path = tmp_path / "RJ01649862.rar"
+    archive_path.write_bytes(b"placeholder")
+
+    service = object.__new__(LinkedSubtitleImportService)
+    service.PENDING_CONFLICT_TYPE = LinkedSubtitleImportService.PENDING_CONFLICT_TYPE
+    service.PENDING_SOURCE_MODE = LinkedSubtitleImportService.PENDING_SOURCE_MODE
+    service.ARCHIVE_PRECHECK_TIMEOUT_SECONDS = 1
+    service.subtitle_service = SimpleNamespace(
+        extract_rjcode=lambda value: "RJ01649862" if "RJ01649862" in str(value or "") else ""
+    )
+    service._should_create_pending_import = LinkedSubtitleImportService._should_create_pending_import.__get__(service)
+    service._can_execute_pending_import = LinkedSubtitleImportService._can_execute_pending_import.__get__(service)
+    service._serialize_pending_record = LinkedSubtitleImportService._serialize_pending_record.__get__(service)
+    service._refresh_preview_execution_state = LinkedSubtitleImportService._refresh_preview_execution_state.__get__(service)
+    service._can_stage_archive_subtitles_later = LinkedSubtitleImportService._can_stage_archive_subtitles_later.__get__(service)
+    service._cleanup_stage_dir = lambda _stage_dir: None
+    service._prefer_deepest_target_rj_candidates = lambda candidates, _target: candidates
+    service._should_direct_import_to_empty_candidate = lambda _preview, _candidate: False
+    service.preview_archive_import = AsyncMock(return_value={
+        "mode": "archive",
+        "source_path": str(archive_path),
+        "source_label": "RJ01649862.rar",
+        "source_rjcode": "RJ01649862",
+        "target_rjcode": "RJ01638438",
+        "is_translation_work": True,
+        "is_manual_subtitle_source": False,
+        "is_linked_subtitle_source": True,
+        "subtitle_count": 0,
+        "kikoeru_has_work": True,
+        "kikoeru_needs_subtitle": True,
+        "kikoeru_route_confident": True,
+        "source_subtitle_probe_status": "missing_password",
+        "source_subtitle_probe_reason": "解压失败：无正确密码",
+        "candidate_count": 1,
+        "ready_candidate_count": 1,
+        "can_stage_pending": True,
+        "can_execute": True,
+        "selected_candidate": {
+            "library_id": "asmr",
+            "library_type": "local",
+            "folder_path": "D:/library/RJ01638438",
+            "ready_for_import": True,
+        },
+        "candidates": [{
+            "library_id": "asmr",
+            "library_type": "local",
+            "folder_path": "D:/library/RJ01638438",
+            "ready_for_import": True,
+        }],
+    })
+    service._stage_archive_subtitles_for_preview = AsyncMock(
+        side_effect=AssertionError("预检失败的待处理单不应立刻重新解包")
+    )
+
+    task = SimpleNamespace(
+        id="task-extract-failed",
+        source_path=str(archive_path),
+        task_metadata={},
+        update_progress=lambda *_args, **_kwargs: None,
+    )
+
+    result = await service.queue_pending_archive_import(task, "RJ01649862")
+
+    assert result["handled"] is True
+    assert result["preview"]["source_subtitle_probe_status"] == "missing_password"
+    assert result["preview"]["can_execute"] is True
+    service._stage_archive_subtitles_for_preview.assert_not_awaited()
+
+    row = db_session.query(ConflictWork).filter(
+        ConflictWork.conflict_type == LinkedSubtitleImportService.PENDING_CONFLICT_TYPE,
+        ConflictWork.task_id == "task-extract-failed",
+    ).one()
+    assert row.rjcode == "RJ01638438"
+    assert row.new_metadata["source_subtitle_probe_status"] == "missing_password"
 
 
 @pytest.mark.asyncio

@@ -1576,6 +1576,19 @@ class TaskEngine:
             return False
         return True
 
+    def _should_block_uncertain_dlsite_linkage(self, preview: Dict[str, Any]) -> bool:
+        if not preview:
+            return False
+        if not bool(preview.get("dlsite_linkage_uncertain")):
+            return False
+        if bool(
+            preview.get("can_stage_pending")
+            or preview.get("should_queue_pending")
+            or preview.get("can_execute")
+        ):
+            return False
+        return True
+
     def _record_linked_translation_without_subtitles_problem(
         self,
         task: Task,
@@ -2402,6 +2415,25 @@ class TaskEngine:
                                     **(task.task_metadata or {}),
                                     "linked_subtitle_preview": preview,
                                 }
+                                if self._should_block_uncertain_dlsite_linkage(preview):
+                                    _reason = (
+                                        str(preview.get("dlsite_linkage_uncertain_reason") or preview.get("reason") or "").strip()
+                                        or "DLsite 关联链结果不完整，疑似翻译作品，等待重试后重新预检"
+                                    )
+                                    task.output_path = ""
+                                    retry_after = datetime.now() + timedelta(minutes=15)
+                                    task.task_metadata = {
+                                        **(task.task_metadata or {}),
+                                        "retry_source": "linked_subtitle_precheck",
+                                        "retry_kind": "dlsite_linkage_uncertain",
+                                    }
+                                    task.set_waiting_retry(_reason, retry_after)
+                                    logger.warning(
+                                        f"[{rjcode}] DLsite 关联链不完整，疑似翻译作品，等待重试: "
+                                        f"reason={_reason} retry_after={retry_after.isoformat()}"
+                                    )
+                                    await self._abort_precheck(precheck_task)
+                                    return
                                 if self._should_block_linked_translation_without_subtitles(preview):
                                     _reason = (
                                         str(preview.get("reason") or "").strip()
