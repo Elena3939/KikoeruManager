@@ -2574,10 +2574,101 @@ Encrypted = +
 
         assert success is False
         assert password is None
-        assert reason == "wrong_password"
-        assert run_7z_command.await_count == 1
-        first_cmd = run_7z_command.await_args.args[0]
-        assert "-pRJ01618696" in first_cmd
+        assert reason == "light_probe_unknown"
+        assert task.task_metadata["extract_failure_reason"] == "light_probe_unknown"
+        assert task.task_metadata["extract_unknown_probe_limited"] is True
+        extract_cmds = [
+            call.args[0]
+            for call in run_7z_command.await_args_list
+            if "x" in call.args[0]
+        ]
+        tried_passwords = [
+            next((arg[2:] for arg in cmd if str(arg).startswith("-p")), "")
+            for cmd in extract_cmds
+        ]
+        assert tried_passwords == ["RJ01618696", "RJ01618697", "RJ01618695", "vault-a"]
+        fingerprint = extract_service._archive_fingerprint(archive_path)
+        assert fingerprint
+        tried_key = extract_service._password_cache_key(fingerprint, "RJ01618696")
+        tried_plus_key = extract_service._password_cache_key(fingerprint, "RJ01618697")
+        tried_minus_key = extract_service._password_cache_key(fingerprint, "RJ01618695")
+        tried_generic_key = extract_service._password_cache_key(fingerprint, "vault-a")
+        skipped_generic_key = extract_service._password_cache_key(fingerprint, "vault-b")
+        assert tried_key in ExtractService._password_negative_cache
+        assert tried_plus_key in ExtractService._password_negative_cache
+        assert tried_minus_key in ExtractService._password_negative_cache
+        assert tried_generic_key in ExtractService._password_negative_cache
+        assert skipped_generic_key not in ExtractService._password_negative_cache
+
+    @pytest.mark.asyncio
+    async def test_try_extract_large_unknown_tries_rj_before_generic_passwords(
+        self, extract_service, temp_dir, monkeypatch,
+    ):
+        """大包探测 unknown 时，通用密码不能挤掉 RJ±1 的完整解压机会。"""
+        archive_path = os.path.join(temp_dir, "RJ01649862.rar")
+        self.create_test_zip(archive_path)
+        output_path = os.path.join(temp_dir, "rj-before-generic-output")
+        os.makedirs(output_path, exist_ok=True)
+        task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
+        monkeypatch.setattr(ExtractService, "UNKNOWN_PROBE_LARGE_ARCHIVE_BYTES", 1)
+        monkeypatch.setattr(ExtractService, "UNKNOWN_PROBE_FULL_EXTRACT_LIMIT", 3)
+
+        async def fake_run_7z_command(cmd, *args, **kwargs):
+            if "-pRJ01649861" in cmd:
+                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=b"", stderr=b"")
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=2,
+                stdout=b"",
+                stderr=b"ERROR: CRC Failed in encrypted file. Wrong password? : RJ01649862",
+            )
+
+        extract_service._is_rar_archive = Mock(return_value=False)
+        extract_service._probe_7z_no_password_status = AsyncMock(return_value="encrypted")
+        extract_service._run_7z_command = AsyncMock(side_effect=fake_run_7z_command)
+        extract_service._probe_password = AsyncMock(return_value="unknown")
+        extract_service._reject_if_garbled_after_extract = AsyncMock(return_value=False)
+        extract_service._verify_extraction = AsyncMock(return_value=True)
+        extract_service._cleanup_extract_attempt = AsyncMock()
+
+        success, password, reason = await extract_service._try_extract(
+            ArchiveInfo(
+                archive_path,
+                [{"name": "RJ01649862/readme.txt", "size": 1024, "is_dir": False}],
+            ),
+            output_path,
+            task,
+            password_candidates=[{
+                "password": "generic-a",
+                "source": "密码库-通用",
+                "entry_id": None,
+                "rjcode": None,
+            }, {
+                "password": "generic-b",
+                "source": "密码库-通用",
+                "entry_id": None,
+                "rjcode": None,
+            }, {
+                "password": "generic-c",
+                "source": "密码库-通用",
+                "entry_id": None,
+                "rjcode": None,
+            }],
+        )
+
+        assert success is True
+        assert password == "RJ01649861"
+        assert reason == ""
+        extract_cmds = [
+            call.args[0]
+            for call in extract_service._run_7z_command.await_args_list
+            if "x" in call.args[0]
+        ]
+        tried_passwords = [
+            next((arg[2:] for arg in cmd if str(arg).startswith("-p")), "")
+            for cmd in extract_cmds
+        ]
+        assert tried_passwords == ["RJ01649862", "RJ01649863", "RJ01649861"]
 
     @pytest.mark.asyncio
     async def test_try_extract_large_archive_tries_sniffed_password_before_rj_guess(

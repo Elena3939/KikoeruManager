@@ -1516,3 +1516,38 @@
 - `backend/tests/test_linked_subtitle_import_service.py`：覆盖 preview 与任务引擎拦截逻辑。
 - `progress.md`：追加本轮 DLsite 关联链退化修复记录。
 - 回滚方式：还原上述六个代码 / 测试文件中本轮 DLsite linkage uncertain / waiting_retry 相关 hunk，并删除本段进度记录；若只回滚拦截行为，至少要同步还原 `linked_subtitle_import_service.py` 和 `task_engine.py`，避免 preview 字段残留但任务不处理。
+
+## 2026-06-28 - Task: 修正大包 unknown 探测密码优先级
+### What was done
+- 修正解压密码候选排序：文件名 / RJ 绑定密码仍优先，通用密码库密码延后到 RJ±1 之后，避免大包 unknown 探测次数上限被通用密码耗尽。
+- 预读取压缩包清单和正式解压路径共用同一排序规则，保留指定密码重试只用指定密码的语义。
+- 补充回归用例，锁住“只有 RJ-1 正确时，三个通用密码不能挤掉 RJ±1 尝试机会”的边界。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\extract_service.py tests\test_extract_service.py`：通过。
+- 使用项目 venv 直接调用 `ExtractService._try_extract()` 验证大包 unknown 场景：实际完整解压尝试顺序为 `RJ01649862`、`RJ01649863`、`RJ01649861`，最终使用 `RJ01649861` 成功，通过。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_extract_service.py::TestExtractService::test_try_extract_large_unknown_tries_rj_before_generic_passwords tests\test_extract_service.py::TestExtractService::test_try_extract_large_archive_tries_sniffed_password_before_rj_guess tests\test_extract_service.py::TestExtractService::test_try_extract_uses_rj_password_before_empty_for_encrypted_archive -q --basetemp .pytest-codex-extract-password-order`：未进入用例，`tests/conftest.py` 初始化 PostgreSQL 测试库时失败；同配置直接连接 `postgres`、`template1`、`kikoerumanager_test` 均被 127.0.0.1:5432 服务端断开，`sslmode=disable` 也失败。
+
+### Notes
+- `backend/app/core/extract_service.py`：新增密码库候选拆分逻辑，并调整清单预读 / 正式解压的密码顺序。
+- `backend/tests/test_extract_service.py`：新增大包 unknown 探测下 RJ±1 不被通用密码挤掉的回归测试。
+- `progress.md`：追加本轮大包密码优先级修复记录。
+- 回滚方式：还原本轮 `backend/app/core/extract_service.py` 和 `backend/tests/test_extract_service.py` 的对应 hunk，并删除本段进度记录。
+
+## 2026-06-28 - Task: 修正大包密码探测上限误判无正确密码
+### What was done
+- 修正大包 unknown 探测上限语义：RJ 号、RJ±1、文件名嗅探、指定密码等高可信候选不受通用密码兜底次数限制。
+- 通用 / 默认这类低可信候选仍保留完整解压兜底上限，避免 4GB 级压缩包被几十个通用密码反复全量解压。
+- 达到上限后只跳过本轮未验证候选，不再把未真正解压验证过的密码写入负缓存，也不再把整轮结果包装成“无正确密码”。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\extract_service.py tests\test_extract_service.py`：通过。
+- 直接调用 `ExtractService._try_extract()` 验证：RJ / RJ±1 全部完整尝试，通用密码只尝试到上限；被上限跳过的通用密码未进入负缓存，最终返回 `light_probe_unknown`，通过。
+- 直接调用 `ExtractService._try_extract()` 验证 `RJ01649862.rar` 场景：通用密码不会抢在 RJ±1 前面，`RJ01649861` 可在第三次完整解压机会成功，通过。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_extract_service.py::TestExtractService::test_try_extract_large_archive_caps_unknown_probe_full_extracts tests\test_extract_service.py::TestExtractService::test_try_extract_large_unknown_tries_rj_before_generic_passwords -q --basetemp .pytest-codex-extract-password-limit`：通过，`2 passed`；仅有既有 deprecation warning 和 pytest cache warning。
+
+### Notes
+- `backend/app/core/extract_service.py`：调整大包 unknown 探测上限，只限制低可信候选；未验证候选不写负缓存，最终返回 `light_probe_unknown`。
+- `backend/tests/test_extract_service.py`：更新大包 unknown 上限回归测试，覆盖高可信候选不受限、低可信候选受限且未验证不缓存。
+- `progress.md`：追加本轮大包密码探测上限误判修复记录。
+- 回滚方式：还原本轮 `backend/app/core/extract_service.py` 和 `backend/tests/test_extract_service.py` 的对应 hunk，并删除本段进度记录。
