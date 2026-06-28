@@ -5407,7 +5407,7 @@ html.kikoerumanager-dark .subtitle-import-workbench-dialog :is(
   .subtitle-context-drawer button,
   .subtitle-config-card button,
   .subtitle-inspector-workbench-root button
-):not(.subtitle-switch):not(.subtitle-context-tab.is-active):not(.subtitle-naming-option.active):not(.subtitle-ai-mode-option.active):not(.subtitle-toggle-pill.active):not(.subtitle-retarget-option.active):not(.subtitle-pair-card):not(.subtitle-pairing-row):not(.subtitle-pair-add-button):not(.subtitle-pair-remove):not(.subtitle-pair-clear-action):not([class*="bg-blue-600"]):not([class*="bg-slate-900"]) {
+):not(.subtitle-switch):not(.subtitle-context-tab.is-active):not(.subtitle-naming-option.active):not(.subtitle-ai-mode-option.active):not(.subtitle-toggle-pill.active):not(.subtitle-retarget-option.active):not(.subtitle-pair-card):not(.subtitle-pairing-row):not(.subtitle-ai-pair-button):not(.subtitle-pair-add-button):not(.subtitle-pair-remove):not(.subtitle-pair-clear-action):not([class*="bg-blue-600"]):not([class*="bg-slate-900"]) {
   background: var(--km-dark-button-bg, #2b2c30) !important;
   background-color: var(--km-dark-button-bg, #2b2c30) !important;
   background-image: none !important;
@@ -5421,7 +5421,7 @@ html.kikoerumanager-dark .subtitle-import-workbench-dialog :is(
   .subtitle-context-drawer button,
   .subtitle-config-card button,
   .subtitle-inspector-workbench-root button
-):not(:disabled):not(.subtitle-switch):not(.subtitle-context-tab.is-active):not(.subtitle-naming-option.active):not(.subtitle-ai-mode-option.active):not(.subtitle-toggle-pill.active):not(.subtitle-retarget-option.active):not(.subtitle-pair-card):not(.subtitle-pairing-row):not(.subtitle-pair-add-button):not(.subtitle-pair-remove):not(.subtitle-pair-clear-action):not([class*="bg-blue-600"]):not([class*="bg-slate-900"]):hover {
+):not(:disabled):not(.subtitle-switch):not(.subtitle-context-tab.is-active):not(.subtitle-naming-option.active):not(.subtitle-ai-mode-option.active):not(.subtitle-toggle-pill.active):not(.subtitle-retarget-option.active):not(.subtitle-pair-card):not(.subtitle-pairing-row):not(.subtitle-ai-pair-button):not(.subtitle-pair-add-button):not(.subtitle-pair-remove):not(.subtitle-pair-clear-action):not([class*="bg-blue-600"]):not([class*="bg-slate-900"]):hover {
   background: var(--km-dark-button-bg-hover, #333438) !important;
   background-color: var(--km-dark-button-bg-hover, #333438) !important;
   background-image: none !important;
@@ -5436,7 +5436,7 @@ html.kikoerumanager-dark .subtitle-import-workbench-dialog .subtitle-inspector-w
   [class*="bg-cyan-"],
   [class*="bg-blue-"],
   [class*="bg-violet-"]
-) {
+):not(.subtitle-ai-pair-button) {
   background-color: rgba(43, 44, 48, 0.92) !important;
   background-image: none !important;
   border-color: rgba(255, 255, 255, 0.15) !important;

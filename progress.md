@@ -1551,3 +1551,19 @@
 - `backend/tests/test_extract_service.py`：更新大包 unknown 上限回归测试，覆盖高可信候选不受限、低可信候选受限且未验证不缓存。
 - `progress.md`：追加本轮大包密码探测上限误判修复记录。
 - 回滚方式：还原本轮 `backend/app/core/extract_service.py` 和 `backend/tests/test_extract_service.py` 的对应 hunk，并删除本段进度记录。
+
+## 2026-06-28 - Task: 修复 AI 字幕配对按钮暗色态误显灰色
+### What was done
+- 确认服务器运行配置中 `ai_subtitle_matching.enabled: true`，问题不是 AI 字幕配对未启用。
+- 修正字幕筛选与配对工作台暗色样式：AI 配对按钮不再被普通按钮兜底规则覆盖成灰色，保留明确的青色可操作态。
+- 同步处理库存字幕工作台和字幕导入工作台两处共享按钮，避免同一组件在不同入口继续误显不可用。
+
+### Testing
+- `cd frontend; npm run build`：通过。构建仅输出既有 Rollup pure annotation、lottie eval 和 chunk size warning。
+
+### Notes
+- `frontend/src/components/library/SubtitleInspectorWorkbench.vue`：给 AI 配对按钮增加专用 class，并补暗色态 / hover 颜色。
+- `frontend/src/App.vue`：将 AI 配对按钮排除出库存字幕工作台普通按钮暗色兜底。
+- `frontend/src/dark-mode.css`：将 AI 配对按钮排除出字幕导入工作台普通按钮与彩色背景暗色兜底。
+- `progress.md`：追加本轮 AI 字幕配对按钮暗色态修复记录。
+- 回滚方式：还原上述三个前端文件中 `subtitle-ai-pair-button` 相关 hunk，并删除本段进度记录。

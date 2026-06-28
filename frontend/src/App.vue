@@ -2222,6 +2222,7 @@ html.kikoerumanager-dark .subtitle-workbench-dialog button:not(
   .subtitle-retarget-option,
   .subtitle-pair-card,
   .subtitle-pairing-row,
+  .subtitle-ai-pair-button,
   .subtitle-pair-add-button,
   .subtitle-pair-remove,
   .subtitle-pair-clear-action
@@ -2243,6 +2244,7 @@ html.kikoerumanager-dark .subtitle-workbench-dialog button:not(
   .subtitle-retarget-option,
   .subtitle-pair-card,
   .subtitle-pairing-row,
+  .subtitle-ai-pair-button,
   .subtitle-pair-add-button,
   .subtitle-pair-remove,
   .subtitle-pair-clear-action
