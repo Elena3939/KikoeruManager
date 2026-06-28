@@ -1475,3 +1475,44 @@
 - `frontend/src/views/Logs.vue`：解析新旧任务进度格式，合成解压进度行显示具体压缩包，并让活动持续时间动态刷新。
 - `progress.md`：追加本轮解压任务日志进度展示修复记录。
 - 回滚方式：执行 `git restore -- backend/app/core/task_engine.py frontend/src/views/Logs.vue`，并手动删除本段 `progress.md` 记录。
+
+## 2026-06-28 - Task: 修正字幕补配预检解包失败阻断导入
+### What was done
+- 修正字幕补配预检状态机：来源压缩包在预检阶段因密码、嵌套包或临时解包失败未拿到字幕时，不再把自动入库任务直接判定为致命失败。
+- 对仍存在的来源压缩包保留待处理单，并允许用户在字幕补配页点击“导入并加入工作台”后再走完整解压链路扫描字幕，复用解压配置与嵌套压缩包处理。
+- 保留真实“已解开但没有字幕”的拦截语义，避免空字幕包被误放入工作台。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile backend\app\core\linked_subtitle_import_service.py backend\tests\test_linked_subtitle_import_service.py`：通过。
+- 使用项目 `.venv` 直接调用 `LinkedSubtitleImportService._refresh_preview_execution_state()` 验证 `missing_password` 预检状态：返回 `can_stage_pending=True`、`can_execute=True`。
+- `pytest backend/tests/test_linked_subtitle_import_service.py ...` 多次卡在测试环境初始化阶段未输出结果，已停止残留 pytest 进程，未拿到完整 pytest 结果。
+
+### Notes
+- `backend/app/core/linked_subtitle_import_service.py`：新增执行时可重新解包的预检状态判断，并避免 pending 创建后立即二次 staging 远程大包。
+- `backend/tests/test_linked_subtitle_import_service.py`：补充预检解包失败仍保留待处理单、且不立即重新解包的覆盖用例。
+- `progress.md`：追加本轮字幕补配预检修复记录。
+- 回滚方式：还原本轮 `backend/app/core/linked_subtitle_import_service.py` 和 `backend/tests/test_linked_subtitle_import_service.py` 的对应 hunk，并删除本段进度记录。
+
+## 2026-06-28 - Task: 修复 DLsite 关联链退化导致翻译作误按新作入库
+### What was done
+- 修正 DLsite 页面元数据 fallback 的翻译信息语义：页面标题、封面等元数据只能证明页面可读，不能证明该 RJ 是日语原作。
+- 字幕补配预检新增“不确定 DLsite 关联链”状态：当关联链只剩自身、target 为空，但页面标题或来源文本带中文 / 翻译信号时，不再降级为“非翻译新作”。
+- 任务引擎在该状态下把任务转入 `waiting_retry`，等待后续重新跑预检；这属于 DLsite 临时不完整，不进入 `LINKED_WORK` 问题作品。
+- 任务中心为普通导入的 `waiting_retry` 任务开放手动重试动作，避免只能等定时调度。
+- 补充回归覆盖，锁住页面 fallback 不可信、preview 不再 `treat_as_new_work`、任务引擎会拦截并进入等待重试三个关键边界。
+
+### Testing
+- `backend\venv\Scripts\python.exe -m py_compile backend\app\core\dlsite_service.py backend\app\core\linked_subtitle_import_service.py backend\app\core\task_engine.py backend\tests\test_linked_subtitle_import_service.py backend\tests\test_circle_completion_bonus_detection.py`：通过。
+- 使用项目 venv 直接断言验证：DLsite 页面 fallback 的 `translation_info.is_original=False` 且 `source=page_metadata_unverified`；`RJ01621937` 半残关联链 preview 返回 `dlsite_linkage_uncertain=True`、`treat_as_new_work=False`；任务引擎 `_should_block_uncertain_dlsite_linkage()` 会拦截不可执行 preview，并通过 `set_waiting_retry()` 进入 `waiting_retry`，结果 `direct waiting-retry verification passed`。
+- `.\venv\Scripts\python.exe -m pytest ...`：未拿到结果；`python -m pytest --version` 在当前环境也会启动后无输出卡住，已停止残留 pytest 进程。`import pytest` 可正常返回版本 `7.4.3`，卡点在 pytest 命令启动层，不是本轮业务断言失败。
+- 复核服务器日志 `\\Elena\docker\prekikoeru\data\app.log`：`1231ddb2-dd25-48cf-80ea-d5009fe58ee2` 首次任务确实跑了预检，`RJ01621937` 页面元数据标题含 `【繁体中文版】... [みんなで翻訳]`，但旧逻辑仍写 `target_rj=`、`is_translation_work=False`、`按新作直接解压入库`；`f8ff954c-6d56-40c4-9df6-e269e82561b4` 是问题作品重试并带 `skip_retry_precheck=True`。
+
+### Notes
+- `backend/app/core/dlsite_service.py`：页面元数据解析出的 `translation_info` 改为未验证状态，不再默认原作。
+- `backend/app/core/linked_subtitle_import_service.py`：新增翻译文本信号与不确定关联链识别，阻止半残 DLsite 结果进入新作入库分支。
+- `backend/app/core/task_engine.py`：新增不确定 DLsite 关联链的任务拦截，并转入等待重试。
+- `backend/app/core/task_center_service.py`：为普通导入 / system 域的 `waiting_retry` engine task 暴露手动重试动作。
+- `backend/tests/test_circle_completion_bonus_detection.py`：覆盖页面元数据 fallback 不再标记为原作。
+- `backend/tests/test_linked_subtitle_import_service.py`：覆盖 preview 与任务引擎拦截逻辑。
+- `progress.md`：追加本轮 DLsite 关联链退化修复记录。
+- 回滚方式：还原上述六个代码 / 测试文件中本轮 DLsite linkage uncertain / waiting_retry 相关 hunk，并删除本段进度记录；若只回滚拦截行为，至少要同步还原 `linked_subtitle_import_service.py` 和 `task_engine.py`，避免 preview 字段残留但任务不处理。

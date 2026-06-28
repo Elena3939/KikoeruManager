@@ -126,3 +126,25 @@ async def test_get_product_info_handles_empty_translation_page_fallback(
     monkeypatch.setattr(service, "_fetch_product_page_metadata", _stub_page_metadata)
 
     assert await service.get_product_info("RJ01649758") is None
+
+
+def test_page_metadata_marks_translation_info_unverified() -> None:
+    service = DLsiteApiService()
+    product = service._parse_product_from_html(
+        "RJ01621937",
+        "https://www.dlsite.com/maniax/work/=/product_id/RJ01621937.html",
+        "https://www.dlsite.com/maniax/work/=/product_id/RJ01621937.html",
+        """
+        <html>
+          <head>
+            <meta property="og:title" content="【繁体中文版】テスト音声 [みんなで翻訳] | DLsite">
+            <meta property="og:image" content="https://img.dlsite.jp/modpub/images2/work/RJ01621937_img_main.jpg">
+          </head>
+          <body></body>
+        </html>
+        """,
+    )
+
+    assert product is not None
+    assert product["translation_info"]["is_original"] is False
+    assert product["translation_info"]["source"] == "page_metadata_unverified"

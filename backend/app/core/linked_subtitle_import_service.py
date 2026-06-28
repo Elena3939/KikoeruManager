@@ -46,6 +46,26 @@ class LinkedSubtitleImportService:
     REMOTE_SEARCH_RETRY_DELAYS: tuple[float, ...] = ()
     REMOTE_PENDING_REASON = "远程库存暂未检出原作目录，请稍后重试"
     EXISTING_SUBTITLE_REASON = "原作目录已有字幕，按重复作品处理"
+    DLSITE_LINKAGE_UNCERTAIN_REASON = "DLsite 关联链结果不完整，疑似翻译作品，等待重试后重新预检"
+    TRANSLATION_TEXT_MARKERS = (
+        "中文版",
+        "中文",
+        "简体",
+        "簡体",
+        "簡體",
+        "繁体",
+        "繁體",
+        "汉化",
+        "漢化",
+        "みんなで翻訳",
+        "みんなで翻译",
+        "翻訳",
+        "翻译",
+        "chinese",
+        "zh_cn",
+        "zh-tw",
+        "zh_tw",
+    )
     PENDING_REFRESH_MIN_INTERVAL_SECONDS = 12
     KIKOERU_UNCERTAIN_SOURCES = {
         "kikoeru_timeout",
@@ -99,6 +119,58 @@ class LinkedSubtitleImportService:
         if source.startswith("kikoeru_error_"):
             return False
         return True
+
+    def _has_translation_text_signal(self, *values: str) -> bool:
+        text = " ".join(str(value or "") for value in values).casefold()
+        if not text:
+            return False
+        return any(marker.casefold() in text for marker in self.TRANSLATION_TEXT_MARKERS)
+
+    def _is_unverified_dlsite_translation_info(self, translation_info: Any) -> bool:
+        if not translation_info:
+            return False
+        if getattr(translation_info, "is_original", False):
+            return False
+        return not any(
+            [
+                getattr(translation_info, "is_parent", False),
+                getattr(translation_info, "is_child", False),
+                str(getattr(translation_info, "original_workno", "") or "").strip(),
+                str(getattr(translation_info, "parent_workno", "") or "").strip(),
+                list(getattr(translation_info, "child_worknos", []) or []),
+                str(getattr(translation_info, "lang", "") or "").strip(),
+            ]
+        )
+
+    async def _detect_uncertain_dlsite_translation(
+        self,
+        source_rjcode: str,
+        source_label: str,
+        translation_info: Any,
+        resolved_target_rjcode: str,
+    ) -> Dict[str, str]:
+        if not source_rjcode or resolved_target_rjcode:
+            return {}
+        if not self._is_unverified_dlsite_translation_info(translation_info):
+            return {}
+
+        product_title = ""
+        fallback_source = ""
+        try:
+            product_info = await self.dlsite_service.get_product_info(source_rjcode)
+            product = dict((product_info or {}).get("product") or {})
+            product_title = str(product.get("work_name") or "").strip()
+            fallback_source = str((product_info or {}).get("fallback_source") or "").strip()
+        except Exception as exc:
+            logger.warning("[字幕补配] 读取 DLsite 页面标题失败: source_rj=%s error=%s", source_rjcode, exc)
+
+        if not self._has_translation_text_signal(source_label, product_title):
+            return {}
+        return {
+            "reason": self.DLSITE_LINKAGE_UNCERTAIN_REASON,
+            "product_title": product_title,
+            "fallback_source": fallback_source,
+        }
 
     async def _repair_cached_preview_rj_fields(
         self,
@@ -1070,7 +1142,7 @@ class LinkedSubtitleImportService:
         staged_dirs = [path for index, path in enumerate(staged_dirs) if path and path not in staged_dirs[:index]]
         has_staged_subtitle_dir = any(os.path.isdir(path) for path in staged_dirs)
         source_path_exists = bool(source_path) and os.path.exists(source_path)
-        can_probe_later = source_subtitle_probe_status == "timeout" and source_path_exists
+        can_probe_later = self._can_stage_archive_subtitles_later(source_subtitle_probe_status, source_path_exists)
 
         should_queue_pending = False
         if is_translation_work:
@@ -1117,8 +1189,8 @@ class LinkedSubtitleImportService:
         execute_reason = ""
         if stage_reason:
             execute_reason = stage_reason
-        elif source_subtitle_probe_status in {"missing_password", "extract_failed"} and source_subtitle_probe_reason:
-            execute_reason = source_subtitle_probe_reason
+        elif can_probe_later and source_subtitle_probe_status in {"missing_password", "extract_failed"}:
+            execute_reason = source_subtitle_probe_reason or "执行时将重新走解压入库链路扫描字幕"
         elif candidate_search_status == "pending_remote":
             execute_reason = candidate_search_reason or self.REMOTE_PENDING_REASON
         elif source_subtitle_probe_status == "timeout":
@@ -1148,6 +1220,17 @@ class LinkedSubtitleImportService:
             "reason": stage_reason or execute_reason,
         })
         return preview
+
+    def _can_stage_archive_subtitles_later(self, probe_status: str, source_path_exists: bool) -> bool:
+        normalized_status = str(probe_status or "").strip().lower()
+        return bool(
+            source_path_exists
+            and normalized_status in {
+                "timeout",
+                "missing_password",
+                "extract_failed",
+            }
+        )
 
     def _apply_staged_subtitles_to_preview(
         self,
@@ -1702,6 +1785,13 @@ class LinkedSubtitleImportService:
         else:
             target_rjcode = resolved_target_rjcode or (source_rjcode if is_manual_subtitle_source else "")
         is_linked_subtitle_source = bool(is_translation_work or is_manual_subtitle_source)
+        uncertain_dlsite_translation = await self._detect_uncertain_dlsite_translation(
+            source_rjcode,
+            source_label,
+            translation_info,
+            resolved_target_rjcode,
+        )
+        dlsite_linkage_uncertain = bool(uncertain_dlsite_translation)
 
         async def _safe_kikoeru(rjcode: str) -> Tuple[Any, bool]:
             try:
@@ -1797,6 +1887,7 @@ class LinkedSubtitleImportService:
         treat_as_new_work = (
             bool(source_rjcode)
             and kikoeru_route_confident
+            and not dlsite_linkage_uncertain
             and (
                 not target_rjcode
                 or (
@@ -1829,6 +1920,8 @@ class LinkedSubtitleImportService:
         stage_reason = ""
         if not source_rjcode:
             stage_reason = "无法识别来源作品 RJ 号"
+        elif dlsite_linkage_uncertain:
+            stage_reason = uncertain_dlsite_translation.get("reason") or self.DLSITE_LINKAGE_UNCERTAIN_REASON
         elif treat_as_new_work:
             stage_reason = "未命中任何关联作品，按新作直接解压入库"
         elif not kikoeru_route_confident:
@@ -1890,6 +1983,10 @@ class LinkedSubtitleImportService:
             "kikoeru_source_title": getattr(source_kikoeru_result, "title", "") if source_kikoeru_result else "",
             "kikoeru_target_found": target_exists_in_kikoeru,
             "kikoeru_subtitle_file_count": target_subtitle_count,
+            "dlsite_linkage_uncertain": dlsite_linkage_uncertain,
+            "dlsite_linkage_uncertain_reason": uncertain_dlsite_translation.get("reason", ""),
+            "dlsite_fallback_source": uncertain_dlsite_translation.get("fallback_source", ""),
+            "dlsite_product_title": uncertain_dlsite_translation.get("product_title", ""),
             "candidates": candidates,
             "selected_candidate": selected_candidate,
             "candidate_count": len(candidates),
@@ -2995,7 +3092,12 @@ class LinkedSubtitleImportService:
         task.update_progress(5, "预检中（确认字幕候选...）")
         should_create_pending = self._should_create_pending_import(preview)
         if should_create_pending and str(preview.get("source_subtitle_probe_status") or "").strip().lower() != "timeout":
-            preview = await self._stage_archive_subtitles_for_preview(task.source_path, preview, hint_password=hint_password)
+            source_path_exists = bool(task.source_path) and os.path.exists(task.source_path)
+            probe_status = str(preview.get("source_subtitle_probe_status") or "").strip().lower()
+            if int(preview.get("subtitle_count") or 0) <= 0 and self._can_stage_archive_subtitles_later(probe_status, source_path_exists):
+                preview = self._refresh_preview_execution_state(dict(preview or {}))
+            else:
+                preview = await self._stage_archive_subtitles_for_preview(task.source_path, preview, hint_password=hint_password)
             should_create_pending = self._should_create_pending_import(preview)
         logger.info(
             "[字幕补配预检] source=%s source_rj=%s target_rj=%s is_translation_work=%s is_manual_subtitle_source=%s subtitle_count=%s candidate_count=%s ready_candidate_count=%s kikoeru_has_work=%s stage_reason=%s execute_reason=%s handled=%s can_execute=%s",
