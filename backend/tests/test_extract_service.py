@@ -2523,17 +2523,18 @@ Encrypted = +
         assert "-psxy4649777" in first_cmd
 
     @pytest.mark.asyncio
-    async def test_try_extract_large_archive_caps_unknown_probe_full_extracts(
+    async def test_try_extract_large_archive_tries_all_vault_passwords_when_probe_unknown(
         self, extract_service, temp_dir, monkeypatch,
     ):
-        """大分卷缺正确密码时，不应把每个 unknown 候选都升级成完整解压。"""
+        """大包探测 unknown 时，密码库候选必须全部进入完整解压验证。"""
         archive_path = os.path.join(temp_dir, "RJ01618696.7z.001")
         self.create_test_zip(archive_path)
         output_path = os.path.join(temp_dir, "auto-output")
         os.makedirs(output_path, exist_ok=True)
         task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
         monkeypatch.setattr(ExtractService, "UNKNOWN_PROBE_LARGE_ARCHIVE_BYTES", 1)
-        monkeypatch.setattr(ExtractService, "UNKNOWN_PROBE_FULL_EXTRACT_LIMIT", 1)
+        old_password_list = list(extract_service.config.extract.password_list or [])
+        extract_service.config.extract.password_list = []
 
         run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
             args=[],
@@ -2550,33 +2551,35 @@ Encrypted = +
             file_list=[{"name": "RJ01618696", "size": 1024, "is_dir": False}],
         )
 
-        success, password, reason = await extract_service._try_extract(
-            archive_info,
-            output_path,
-            task,
-            password_candidates=[{
-                "password": "RJ01618696",
-                "source": "RJ号",
-                "entry_id": None,
-                "rjcode": "RJ01618696",
-            }, {
-                "password": "vault-a",
-                "source": "密码库-通用",
-                "entry_id": None,
-                "rjcode": None,
-            }, {
-                "password": "vault-b",
-                "source": "密码库-通用",
-                "entry_id": None,
-                "rjcode": None,
-            }],
-        )
+        try:
+            success, password, reason = await extract_service._try_extract(
+                archive_info,
+                output_path,
+                task,
+                password_candidates=[{
+                    "password": "RJ01618696",
+                    "source": "RJ号",
+                    "entry_id": None,
+                    "rjcode": "RJ01618696",
+                }, {
+                    "password": "vault-a",
+                    "source": "密码库-通用",
+                    "entry_id": None,
+                    "rjcode": None,
+                }, {
+                    "password": "vault-b",
+                    "source": "密码库-通用",
+                    "entry_id": None,
+                    "rjcode": None,
+                }],
+            )
+        finally:
+            extract_service.config.extract.password_list = old_password_list
 
         assert success is False
         assert password is None
-        assert reason == "light_probe_unknown"
-        assert task.task_metadata["extract_failure_reason"] == "light_probe_unknown"
-        assert task.task_metadata["extract_unknown_probe_limited"] is True
+        assert reason == "wrong_password"
+        assert "extract_unknown_probe_limited" not in (task.task_metadata or {})
         extract_cmds = [
             call.args[0]
             for call in run_7z_command.await_args_list
@@ -2586,19 +2589,19 @@ Encrypted = +
             next((arg[2:] for arg in cmd if str(arg).startswith("-p")), "")
             for cmd in extract_cmds
         ]
-        assert tried_passwords == ["RJ01618696", "RJ01618697", "RJ01618695", "vault-a"]
+        assert tried_passwords == ["RJ01618696", "RJ01618697", "RJ01618695", "vault-a", "vault-b"]
         fingerprint = extract_service._archive_fingerprint(archive_path)
         assert fingerprint
         tried_key = extract_service._password_cache_key(fingerprint, "RJ01618696")
         tried_plus_key = extract_service._password_cache_key(fingerprint, "RJ01618697")
         tried_minus_key = extract_service._password_cache_key(fingerprint, "RJ01618695")
         tried_generic_key = extract_service._password_cache_key(fingerprint, "vault-a")
-        skipped_generic_key = extract_service._password_cache_key(fingerprint, "vault-b")
+        second_generic_key = extract_service._password_cache_key(fingerprint, "vault-b")
         assert tried_key in ExtractService._password_negative_cache
         assert tried_plus_key in ExtractService._password_negative_cache
         assert tried_minus_key in ExtractService._password_negative_cache
         assert tried_generic_key in ExtractService._password_negative_cache
-        assert skipped_generic_key not in ExtractService._password_negative_cache
+        assert second_generic_key in ExtractService._password_negative_cache
 
     @pytest.mark.asyncio
     async def test_try_extract_large_unknown_tries_rj_before_generic_passwords(
@@ -2611,7 +2614,6 @@ Encrypted = +
         os.makedirs(output_path, exist_ok=True)
         task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
         monkeypatch.setattr(ExtractService, "UNKNOWN_PROBE_LARGE_ARCHIVE_BYTES", 1)
-        monkeypatch.setattr(ExtractService, "UNKNOWN_PROBE_FULL_EXTRACT_LIMIT", 3)
 
         async def fake_run_7z_command(cmd, *args, **kwargs):
             if "-pRJ01649861" in cmd:
@@ -2681,7 +2683,6 @@ Encrypted = +
         os.makedirs(output_path, exist_ok=True)
         task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
         monkeypatch.setattr(ExtractService, "UNKNOWN_PROBE_LARGE_ARCHIVE_BYTES", 1)
-        monkeypatch.setattr(ExtractService, "UNKNOWN_PROBE_FULL_EXTRACT_LIMIT", 1)
 
         run_7z_command = AsyncMock(return_value=subprocess.CompletedProcess(
             args=[],
