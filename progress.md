@@ -1567,3 +1567,22 @@
 - `frontend/src/dark-mode.css`：将 AI 配对按钮排除出字幕导入工作台普通按钮与彩色背景暗色兜底。
 - `progress.md`：追加本轮 AI 字幕配对按钮暗色态修复记录。
 - 回滚方式：还原上述三个前端文件中 `subtitle-ai-pair-button` 相关 hunk，并删除本段进度记录。
+
+## 2026-06-29 - Task: 修正大包密码库候选被探测上限跳过
+### What was done
+- 移除大包 unknown 探测里把 `密码库-通用` 视为低可信并按 3 次完整解压上限跳过的逻辑。
+- 保留效率优化边界：空密码在存在密码候选时仍只做轻量探测并跳过完整解压，文件名 / RJ 绑定和 RJ±1 仍排在通用密码库前面，负缓存仍只记录实际完整验证失败的密码。
+- 更新回归测试，锁住“大包轻量探测无法定性时，密码库候选必须全部进入完整解压验证，轮完后才返回密码错误”的业务前提。
+- 更新产品介绍中密码工作台语义，明确密码库候选会作为兜底完整轮查。
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\extract_service.py tests\test_extract_service.py`：通过。
+- `cd backend; .\venv\Scripts\python.exe -m pytest tests\test_extract_service.py::TestExtractService::test_try_extract_large_archive_tries_all_vault_passwords_when_probe_unknown tests\test_extract_service.py::TestExtractService::test_try_extract_large_unknown_tries_rj_before_generic_passwords tests\test_extract_service.py::TestExtractService::test_try_extract_large_archive_tries_sniffed_password_before_rj_guess -q --basetemp .pytest-codex-extract-password-vault`：未进入用例，`tests/conftest.py` 初始化 PostgreSQL 测试库 `kikoerumanager_test` 超时，pytest 进程已精确结束。
+- 使用项目 venv 直接调用 `ExtractService._try_extract()` 验证大包 unknown 场景：完整解压顺序为 `RJ01623101`、`RJ01623102`、`RJ01623100`、`vault-a`、`vault-b`、`vault-c`，密码库候选全部验证后返回 `wrong_password`，通过。
+- 使用项目 venv 直接调用 `ExtractService._try_extract()` 验证后置密码库命中场景：`vault-c` 作为第三个通用密码库候选能在前序候选失败后成功命中；成功后记录密码使用时因本机 PostgreSQL 超时打出日志，但不影响解压结果。
+- `git diff --check -- backend\app\core\extract_service.py backend\tests\test_extract_service.py docs\INTRODUCTION.md`：无空白错误；仅提示工作区 CRLF/LF 换行风格。
+### Notes
+- `backend/app/core/extract_service.py`：删除 `UNKNOWN_PROBE_FULL_EXTRACT_LIMIT` 和低可信候选跳过分支，探测 unknown 的非空密码候选继续进入完整解压。
+- `backend/tests/test_extract_service.py`：把旧的“候选被上限截断”测试改为“密码库候选必须全部验证”的回归测试，并移除旧上限 monkeypatch。
+- `docs/INTRODUCTION.md`：补充密码库候选作为兜底完整轮查的业务说明。
+- `progress.md`：追加本轮大包密码库候选轮查修复记录。
+- 回滚方式：还原上述三个代码 / 文档文件中本轮关于 `UNKNOWN_PROBE_FULL_EXTRACT_LIMIT`、unknown 探测跳过分支、测试期望和密码库语义说明的 hunk，并删除本段进度记录。

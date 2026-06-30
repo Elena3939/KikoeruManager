@@ -143,9 +143,6 @@ class ExtractService:
     UNKNOWN_PROBE_LARGE_ARCHIVE_BYTES: int = int(
         os.getenv("KIKOERUMANAGER_UNKNOWN_PROBE_LARGE_ARCHIVE_BYTES", str(1024 * 1024 * 1024)) or 1024 * 1024 * 1024
     )
-    UNKNOWN_PROBE_FULL_EXTRACT_LIMIT: int = int(
-        os.getenv("KIKOERUMANAGER_UNKNOWN_PROBE_FULL_EXTRACT_LIMIT", "3") or 3
-    )
     INSPECT_SLOT_WAIT_TIMEOUT: float = float(os.getenv("KIKOERUMANAGER_7Z_INSPECT_SLOT_WAIT_TIMEOUT_SECONDS", "45") or 45)
     PROBE_SLOT_WAIT_TIMEOUT: float = float(
         os.getenv(
@@ -651,8 +648,8 @@ class ExtractService:
     ) -> Tuple[List[str], List[str]]:
         """把密码库候选拆成强绑定候选和通用候选。
 
-        文件名/RJ 绑定、文件名嗅探比 RJ±1 更可信；通用密码更像兜底，不能在大包
-        unknown 探测上限内挤掉 RJ 候选。
+        文件名/RJ 绑定、文件名嗅探比 RJ±1 更贴近当前包；通用密码放到后面兜底，
+        但仍属于必须完整轮查的密码库候选。
         """
         priority: List[str] = []
         generic: List[str] = []
@@ -5880,7 +5877,7 @@ class ExtractService:
             rj_passwords = self._get_rj_passwords(archive_path)
 
             # 构建密码列表：普通未加密包占多数，list 阶段先试空密码，少启动无效密码子进程。
-            # 文件名/RJ 绑定优先于 RJ±1；通用密码放到 RJ 后面，避免大包探测上限挤掉 RJ。
+            # 文件名/RJ 绑定优先于 RJ±1；通用密码放到 RJ 后面，但仍必须参与轮查。
             password_list = []
             password_list.append("")  # 无密码
             password_list.extend(priority_vault_passwords)  # 文件名/RJ 绑定密码
@@ -7075,7 +7072,7 @@ class ExtractService:
             rj_passwords = self._get_rj_passwords(archive_info.path)
 
             # 构建密码列表：预读成功密码优先，减少同一压缩包重复失败尝试。
-            # 文件名/RJ 绑定优先于 RJ±1；通用密码放到 RJ 后面，避免大包探测上限挤掉 RJ。
+            # 文件名/RJ 绑定优先于 RJ±1；通用密码放到 RJ 后面，但仍必须参与轮查。
             password_list = []
             if archive_info.password:
                 password_list.append(archive_info.password)
@@ -7126,7 +7123,6 @@ class ExtractService:
         # 更可能是头加密 + 错密码，而不是真的坏包，用于最后定性判断。
         listing_available = bool(getattr(archive_info, "file_list", None))
         encountered_wrong_password = False
-        skipped_unknown_probe_candidates = False
         last_corrupt_stderr: Optional[str] = None
         is_zip_archive = self._is_zip_like_archive(archive_info.path)
         try:
@@ -7138,12 +7134,6 @@ class ExtractService:
             and not manual_retry_password_only
         )
         listed_no_password_large_archive = bool(listed_no_password and is_large_unknown_probe_archive)
-        unknown_probe_full_extracts = 0
-        low_confidence_unknown_probe_full_extracts = 0
-        try:
-            unknown_probe_full_extract_limit = max(0, int(self.UNKNOWN_PROBE_FULL_EXTRACT_LIMIT))
-        except Exception:
-            unknown_probe_full_extract_limit = 0
 
         async def probe_listed_no_password_archive() -> Optional[str]:
             """清单确认未加密后只做轻量可解性确认，不直接触发大包完整解压。"""
@@ -7744,7 +7734,6 @@ class ExtractService:
                             password or '无密码',
                         )
                     elif probe_result == 'unknown':
-                        low_confidence_password = password_source in {"密码库-通用", "默认"}
                         if not password:
                             has_password_candidates = any(bool(pwd) for pwd in unique_passwords)
                             if manual_retry_password_only or has_password_candidates:
@@ -7757,25 +7746,6 @@ class ExtractService:
                                 "无密码轻量探测无法定性且没有其他密码候选，进入完整解压兜底: %s",
                                 os.path.basename(archive_info.path),
                             )
-                        elif (
-                            is_large_unknown_probe_archive
-                            and low_confidence_password
-                            and low_confidence_unknown_probe_full_extracts >= unknown_probe_full_extract_limit
-                        ):
-                            skipped_unknown_probe_candidates = True
-                            logger.warning(
-                                "大包低可信密码探测无法定性，已达到完整解压兜底上限 %s，本轮跳过该候选但不记为密码错误: source=%s password=%s archive=%s size=%s",
-                                unknown_probe_full_extract_limit,
-                                password_source,
-                                password or '无密码',
-                                os.path.basename(archive_info.path),
-                                archive_size_bytes,
-                            )
-                            continue
-                        elif is_large_unknown_probe_archive:
-                            unknown_probe_full_extracts += 1
-                            if low_confidence_password:
-                                low_confidence_unknown_probe_full_extracts += 1
                         logger.info(
                             "密码 %s (%s) 探测无法定性，进入完整解压兜底",
                             password_source,
@@ -8173,21 +8143,6 @@ class ExtractService:
                 sfx_volume_view_error=last_corrupt_stderr[:1000],
             )
             return False, None, "volume_incomplete"
-
-        if skipped_unknown_probe_candidates:
-            self._set_extract_meta(
-                task,
-                extract_failure_reason="light_probe_unknown",
-                extract_unknown_probe_limited=True,
-                extract_unknown_probe_full_extract_limit=unknown_probe_full_extract_limit,
-            )
-            logger.warning(
-                "大包密码轻量探测无法定性且候选未全部完整解压，本轮不判定为无正确密码: archive=%s tried_full_extracts=%s limit=%s",
-                os.path.basename(archive_info.path),
-                unknown_probe_full_extracts,
-                unknown_probe_full_extract_limit,
-            )
-            return False, None, "light_probe_unknown"
 
         if listing_available or encountered_wrong_password:
             if last_corrupt_stderr:
