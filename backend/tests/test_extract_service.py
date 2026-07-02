@@ -234,11 +234,48 @@ class TestExtractService:
         """创建密码字节为 GBK 的传统 ZIP 加密小包，用来复现 7zz 密码字节不兼容。"""
         name = "20260604161913.txt"
         payload = b"inner archive payload"
+        self.create_gbk_password_zipcrypto_zip_with_plain_entry(path, password, name, payload)
+
+    def create_gbk_password_zipcrypto_zip_with_plain_entry(
+        self,
+        path,
+        password,
+        encrypted_name="20260604161913.txt",
+        encrypted_payload=b"inner archive payload",
+        plain_name=None,
+        plain_payload=b"metadata",
+    ):
+        """创建可选未加密小文件 + GBK 密码字节 ZipCrypto 条目的 ZIP。"""
         password_bytes = password.encode("gbk")
-        crc = binascii.crc32(payload) & 0xFFFFFFFF
+        crc = binascii.crc32(encrypted_payload) & 0xFFFFFFFF
         encrypt_header = bytes(range(11)) + bytes([(crc >> 24) & 0xFF])
-        encrypted_payload = self._zipcrypto_encrypt(encrypt_header + payload, password_bytes)
-        name_bytes = name.encode("ascii")
+        encrypted_data = self._zipcrypto_encrypt(encrypt_header + encrypted_payload, password_bytes)
+        encrypted_name_bytes = encrypted_name.encode("ascii")
+        chunks = []
+        central_entries = []
+        offset = 0
+
+        if plain_name:
+            plain_name_bytes = plain_name.encode("ascii")
+            plain_crc = binascii.crc32(plain_payload) & 0xFFFFFFFF
+            plain_local = struct.pack(
+                "<IHHHHHIIIHH",
+                0x04034B50,
+                20,
+                0,
+                0,
+                0,
+                0,
+                plain_crc,
+                len(plain_payload),
+                len(plain_payload),
+                len(plain_name_bytes),
+                0,
+            )
+            chunks.extend([plain_local, plain_name_bytes, plain_payload])
+            central_entries.append((plain_name_bytes, 0, plain_crc, len(plain_payload), len(plain_payload), offset))
+            offset += len(plain_local) + len(plain_name_bytes) + len(plain_payload)
+
         local = struct.pack(
             "<IHHHHHIIIHH",
             0x04034B50,
@@ -248,50 +285,57 @@ class TestExtractService:
             0,
             0,
             crc,
+            len(encrypted_data),
             len(encrypted_payload),
-            len(payload),
-            len(name_bytes),
+            len(encrypted_name_bytes),
             0,
         )
-        central = struct.pack(
-            "<IHHHHHHIIIHHHHHII",
-            0x02014B50,
-            20,
-            20,
-            0x1,
-            0,
-            0,
-            0,
-            crc,
-            len(encrypted_payload),
-            len(payload),
-            len(name_bytes),
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-        )
-        central_start = len(local) + len(name_bytes) + len(encrypted_payload)
-        central_size = len(central) + len(name_bytes)
+        chunks.extend([local, encrypted_name_bytes, encrypted_data])
+        central_entries.append((encrypted_name_bytes, 0x1, crc, len(encrypted_data), len(encrypted_payload), offset))
+        offset += len(local) + len(encrypted_name_bytes) + len(encrypted_data)
+
+        central_chunks = []
+        for name_bytes, flag_bits, entry_crc, compressed_size, file_size, local_offset in central_entries:
+            central = struct.pack(
+                "<IHHHHHHIIIHHHHHII",
+                0x02014B50,
+                20,
+                20,
+                flag_bits,
+                0,
+                0,
+                0,
+                entry_crc,
+                compressed_size,
+                file_size,
+                len(name_bytes),
+                0,
+                0,
+                0,
+                0,
+                0,
+                local_offset,
+            )
+            central_chunks.extend([central, name_bytes])
+
+        central_start = sum(len(chunk) for chunk in chunks)
+        central_size = sum(len(chunk) for chunk in central_chunks)
         eocd = struct.pack(
             "<IHHHHIIH",
             0x06054B50,
             0,
             0,
-            1,
-            1,
+            len(central_entries),
+            len(central_entries),
             central_size,
             central_start,
             0,
         )
         with open(path, "wb") as f:
-            f.write(local)
-            f.write(name_bytes)
-            f.write(encrypted_payload)
-            f.write(central)
-            f.write(name_bytes)
+            for chunk in chunks:
+                f.write(chunk)
+            for chunk in central_chunks:
+                f.write(chunk)
             f.write(eocd)
 
     def create_prefixed_zip(self, path):
@@ -1894,6 +1938,46 @@ class TestExtractService:
         assert any("等待密码探测槽位超时" in message for message in messages)
 
     @pytest.mark.asyncio
+    async def test_run_subprocess_command_cancel_terminates_process(self, extract_service):
+        """unar 等非 7z 子进程在协程取消时也必须被主动终止。"""
+        started = asyncio.Event()
+
+        class DummyProcess:
+            returncode = None
+
+            def __init__(self):
+                self.terminated = False
+                self.killed = False
+
+            async def communicate(self):
+                started.set()
+                await asyncio.sleep(60)
+
+            def terminate(self):
+                self.terminated = True
+                self.returncode = -15
+
+            def kill(self):
+                self.killed = True
+                self.returncode = -9
+
+            async def wait(self):
+                return self.returncode
+
+        process = DummyProcess()
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)):
+            runner = asyncio.create_task(
+                extract_service._run_subprocess_command(["unar", "x", "archive.rar"])
+            )
+            await started.wait()
+            runner.cancel()
+
+            with pytest.raises(asyncio.CancelledError):
+                await runner
+
+        assert process.terminated is True
+
+    @pytest.mark.asyncio
     async def test_password_probe_budget_wait_timeout_releases_slot(self, extract_service, temp_dir):
         """资源预算不放行时也要释放已拿到的清单/探测槽位。"""
         old_semaphore = ExtractService._seven_zip_inspect_semaphore
@@ -2844,6 +2928,7 @@ Encrypted = +
         extract_service._verify_extraction = AsyncMock(return_value=True)
         extract_service._cleanup_extract_attempt = AsyncMock()
         extract_service._run_7z_command = AsyncMock(side_effect=AssertionError("不应进入完整 7zz 解压"))
+        extract_service._find_unar_executable = Mock(return_value=None)
 
         success, password, reason = await extract_service._try_extract(
             ArchiveInfo(
@@ -2865,6 +2950,117 @@ Encrypted = +
         assert reason == ""
         extract_service._try_extract_zip_with_python.assert_awaited_once()
         assert cache_key not in ExtractService._password_negative_cache
+
+    @pytest.mark.asyncio
+    async def test_try_extract_large_zip_non_ascii_password_prefers_unar(
+        self, extract_service, temp_dir,
+    ):
+        """大 ZIP 中文密码兼容解压优先走 unar，避免 Python zipfile 慢速全量解包。"""
+        archive_path = os.path.join(temp_dir, "large-cn-password.zip")
+        self.create_test_zip(archive_path)
+        os.utime(archive_path, None)
+        output_path = os.path.join(temp_dir, "large-cn-password-output")
+        os.makedirs(output_path, exist_ok=True)
+        task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
+        password_value = "我chovy，高数你给我出好的啊"
+
+        extract_service.ZIP_COMPAT_UNAR_FIRST_MIN_BYTES = 1
+        extract_service._find_unar_executable = Mock(return_value="/usr/bin/unar")
+        extract_service._probe_password = AsyncMock(return_value="wrong_password")
+        extract_service._try_unar_extract = AsyncMock(return_value=subprocess.CompletedProcess(
+            args=["unar"],
+            returncode=0,
+            stdout=b"",
+            stderr=b"",
+        ))
+        extract_service._try_extract_zip_with_python = AsyncMock(side_effect=AssertionError("大 ZIP 不应先走 Python zipfile"))
+        extract_service._reject_if_garbled_after_extract = AsyncMock(return_value=False)
+        extract_service._verify_extraction = AsyncMock(return_value=True)
+        extract_service._cleanup_extract_attempt = AsyncMock()
+        extract_service._run_7z_command = AsyncMock(side_effect=AssertionError("不应进入完整 7zz 解压"))
+
+        success, password, reason = await extract_service._try_extract(
+            ArchiveInfo(
+                archive_path,
+                [{"name": "20260604161913.zip", "size": 10, "is_dir": False}],
+            ),
+            output_path,
+            task,
+            password_candidates=[{
+                "password": password_value,
+                "source": "密码库-通用",
+                "entry_id": None,
+                "rjcode": None,
+            }],
+        )
+
+        assert success is True
+        assert password == password_value
+        assert reason == ""
+        extract_service._try_unar_extract.assert_awaited_once()
+        extract_service._try_extract_zip_with_python.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_try_extract_large_zip_skips_python_zipfile_after_unar_failure(
+        self, extract_service, temp_dir,
+    ):
+        """大 ZIP 的 unar 兼容后端失败后，不允许回退 Python zipfile 全量解压拖死任务。"""
+        archive_path = os.path.join(temp_dir, "large-cn-password-unar-fail.zip")
+        self.create_test_zip(archive_path)
+        output_path = os.path.join(temp_dir, "large-cn-password-unar-fail-output")
+        os.makedirs(output_path, exist_ok=True)
+        task = Task(task_type=TaskType.EXTRACT, source_path=archive_path)
+        password_value = "諷詠"
+
+        extract_service.ZIP_COMPAT_UNAR_FIRST_MIN_BYTES = 1
+        extract_service._find_unar_executable = Mock(return_value="/usr/bin/unar")
+        extract_service._probe_password = AsyncMock(return_value="wrong_password")
+        extract_service._try_unar_extract = AsyncMock(return_value=subprocess.CompletedProcess(
+            args=["unar"],
+            returncode=1,
+            stdout=b"",
+            stderr=b"",
+        ))
+        extract_service._try_extract_zip_with_python = AsyncMock(side_effect=AssertionError("大 ZIP unar 失败后不应回退 Python zipfile"))
+        extract_service._cleanup_extract_attempt = AsyncMock()
+        extract_service._run_7z_command = AsyncMock(side_effect=AssertionError("不应进入完整 7zz 解压"))
+
+        success, password, reason = await extract_service._try_extract(
+            ArchiveInfo(
+                archive_path,
+                [{"name": "20260604161913.zip", "size": 10, "is_dir": False}],
+            ),
+            output_path,
+            task,
+            password_candidates=[{
+                "password": password_value,
+                "source": "密码库-通用",
+                "entry_id": None,
+                "rjcode": None,
+            }],
+        )
+
+        assert success is False
+        assert password is None
+        assert reason in {"wrong_password", "unar_failed"}
+        extract_service._try_unar_extract.assert_awaited_once()
+        extract_service._try_extract_zip_with_python.assert_not_awaited()
+
+    def test_probe_zip_password_bytes_ignores_plain_entries(self, extract_service, temp_dir):
+        """ZIP 密码字节探测必须用加密条目，不能被未加密小文件误导。"""
+        archive_path = os.path.join(temp_dir, "mixed-zipcrypto.zip")
+        correct_password = "我chovy，高数你给我出好的啊"
+        extract_service.ZIP_PASSWORD_BYTE_PROBE_BYTES = 8
+        self.create_gbk_password_zipcrypto_zip_with_plain_entry(
+            archive_path,
+            correct_password,
+            encrypted_payload=b"encrypted payload for crc check",
+            plain_name="00-readme.txt",
+            plain_payload=b"x",
+        )
+
+        assert extract_service._probe_zip_password_bytes(archive_path, "諷詠") is None
+        assert extract_service._probe_zip_password_bytes(archive_path, correct_password)[0] in {"gbk", "cp936"}
 
     @pytest.mark.asyncio
     async def test_try_extract_zip_gbk_password_uses_real_python_fallback(

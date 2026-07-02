@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 import os
 import re
@@ -84,6 +85,15 @@ class LinkedSubtitleImportService:
         self.library_manager = get_library_manager()
         self.dlsite_service = get_dlsite_service()
         self.kikoeru_service = get_kikoeru_service()
+        self._archive_preview_inflight: Dict[str, asyncio.Task] = {}
+        self._archive_preview_inflight_lock = asyncio.Lock()
+
+    def _get_archive_preview_inflight(self) -> Tuple[Dict[str, asyncio.Task], asyncio.Lock]:
+        if not hasattr(self, "_archive_preview_inflight"):
+            self._archive_preview_inflight = {}
+        if not hasattr(self, "_archive_preview_inflight_lock"):
+            self._archive_preview_inflight_lock = asyncio.Lock()
+        return self._archive_preview_inflight, self._archive_preview_inflight_lock
 
     def _extract_rjcode(self, value: str) -> str:
         return self.subtitle_service.extract_rjcode(str(value or "")) or ""
@@ -302,8 +312,15 @@ class LinkedSubtitleImportService:
                 probe_task.task_metadata = dict(probe_task.task_metadata or {})
                 probe_task.task_metadata["manual_retry_password"] = hint_password
                 probe_task.task_metadata["manual_retry_password_only"] = True
+            extract_future = asyncio.create_task(self.extract_service.extract(probe_task))
             try:
-                extracted_dir = await self.extract_service.extract(probe_task)
+                extracted_dir = await asyncio.shield(extract_future)
+            except asyncio.CancelledError:
+                probe_task.cancel()
+                extract_future.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await extract_future
+                raise
             finally:
                 if cancel_watcher is not None:
                     cancel_watcher.cancel()
@@ -2012,29 +2029,6 @@ class LinkedSubtitleImportService:
         task: Optional[Task] = None,
         precheck_timeout: Optional[float] = None,
     ) -> Dict[str, Any]:
-        if precheck_timeout and precheck_timeout > 0:
-            try:
-                return await asyncio.wait_for(
-                    self.preview_archive_import(
-                        archive_path,
-                        preferred_library_id=preferred_library_id,
-                        source_rjcode_hint=source_rjcode_hint,
-                        hint_password=hint_password,
-                        task=task,
-                        precheck_timeout=0,
-                    ),
-                    timeout=float(precheck_timeout),
-                )
-            except asyncio.TimeoutError as exc:
-                if task is not None:
-                    task.update_progress(5, "字幕补配预检超时，已加入字幕补配待处理")
-                fallback_preview = await self._build_timeout_archive_preview(
-                    archive_path,
-                    preferred_library_id=preferred_library_id,
-                    source_rjcode_hint=source_rjcode_hint,
-                )
-                raise LinkedSubtitleArchivePrecheckTimeout(fallback_preview) from exc
-
         archive_path = await self._wait_for_archive_file(archive_path)
         archive_path = str(archive_path or "").strip()
         if not archive_path:
@@ -2044,6 +2038,81 @@ class LinkedSubtitleImportService:
         if not os.path.isfile(archive_path):
             raise ValueError("指定路径不是压缩包文件")
 
+        return await self._run_archive_preview_inflight(
+            archive_path,
+            preferred_library_id=preferred_library_id,
+            source_rjcode_hint=source_rjcode_hint,
+            hint_password=hint_password,
+            task=task,
+            precheck_timeout=precheck_timeout,
+        )
+
+    async def _run_archive_preview_inflight(
+        self,
+        archive_path: str,
+        *,
+        preferred_library_id: Optional[str] = None,
+        source_rjcode_hint: Optional[str] = None,
+        hint_password: Optional[str] = None,
+        task: Optional[Task] = None,
+        precheck_timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        inflight, inflight_lock = self._get_archive_preview_inflight()
+        inflight_key = os.path.normcase(os.path.abspath(archive_path))
+        async with inflight_lock:
+            preview_task = inflight.get(inflight_key)
+            if preview_task is None or preview_task.done():
+                preview_task = asyncio.create_task(
+                    self._preview_archive_import_uncached(
+                        archive_path,
+                        preferred_library_id=preferred_library_id,
+                        source_rjcode_hint=source_rjcode_hint,
+                        hint_password=hint_password,
+                        task=task,
+                    )
+                )
+                inflight[inflight_key] = preview_task
+
+        try:
+            if precheck_timeout and precheck_timeout > 0:
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.shield(preview_task),
+                        timeout=float(precheck_timeout),
+                    )
+                except asyncio.TimeoutError as exc:
+                    preview_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await preview_task
+                    if task is not None:
+                        task.update_progress(5, "字幕补配预检超时，已加入字幕补配待处理")
+                    fallback_preview = await self._build_timeout_archive_preview(
+                        archive_path,
+                        preferred_library_id=preferred_library_id,
+                        source_rjcode_hint=source_rjcode_hint,
+                    )
+                    raise LinkedSubtitleArchivePrecheckTimeout(fallback_preview) from exc
+            return await asyncio.shield(preview_task)
+        except asyncio.CancelledError:
+            preview_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await preview_task
+            raise
+        finally:
+            if preview_task.done():
+                async with inflight_lock:
+                    if inflight.get(inflight_key) is preview_task:
+                        inflight.pop(inflight_key, None)
+
+    async def _preview_archive_import_uncached(
+        self,
+        archive_path: str,
+        *,
+        preferred_library_id: Optional[str] = None,
+        source_rjcode_hint: Optional[str] = None,
+        hint_password: Optional[str] = None,
+        task: Optional[Task] = None,
+    ) -> Dict[str, Any]:
         _subtitle_size_threshold = int(self.extract_service.NESTED_SUBTITLE_SIZE_THRESHOLD)
         try:
             _archive_size = os.path.getsize(archive_path)

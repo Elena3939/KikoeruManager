@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -515,6 +516,96 @@ async def test_preview_archive_import_large_non_translation_skips_archive_listin
     assert preview["mode"] == "archive"
     assert preview["source_rjcode"] == "RJ01616588"
     assert preview["source_has_subtitles"] is False
+
+
+@pytest.mark.asyncio
+async def test_preview_archive_import_deduplicates_same_archive_inflight(tmp_path):
+    """同一路径并发预检只启动一次真实 archive preview，避免重复临时解包。"""
+    archive_path = tmp_path / "RJ01586796.zip"
+    archive_path.write_bytes(b"placeholder")
+    service = object.__new__(LinkedSubtitleImportService)
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    call_count = 0
+
+    async def run_preview(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        started.set()
+        await release.wait()
+        return {"mode": "archive", "source_path": str(archive_path)}
+
+    service._preview_archive_import_uncached = AsyncMock(side_effect=run_preview)
+
+    first = asyncio.create_task(service.preview_archive_import(str(archive_path)))
+    await started.wait()
+    second = asyncio.create_task(service.preview_archive_import(str(archive_path)))
+    await asyncio.sleep(0)
+    release.set()
+
+    first_result, second_result = await asyncio.gather(first, second)
+
+    assert call_count == 1
+    assert first_result == second_result == {"mode": "archive", "source_path": str(archive_path)}
+
+
+@pytest.mark.asyncio
+async def test_preview_archive_import_timeout_cancels_inflight_preview(tmp_path):
+    """预检超时时必须取消正在执行的内部 preview task，而不是只返回 timeout preview。"""
+    archive_path = tmp_path / "RJ01586796.zip"
+    archive_path.write_bytes(b"placeholder")
+    service = object.__new__(LinkedSubtitleImportService)
+    cancelled = asyncio.Event()
+
+    async def run_preview(*args, **kwargs):
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    service._preview_archive_import_uncached = AsyncMock(side_effect=run_preview)
+    service._build_timeout_archive_preview = AsyncMock(return_value={
+        "mode": "archive",
+        "source_path": str(archive_path),
+        "source_subtitle_probe_status": "timeout",
+    })
+
+    with pytest.raises(LinkedSubtitleArchivePrecheckTimeout) as exc_info:
+        await service.preview_archive_import(str(archive_path), precheck_timeout=0.01)
+
+    assert cancelled.is_set()
+    assert exc_info.value.preview["source_subtitle_probe_status"] == "timeout"
+    service._build_timeout_archive_preview.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_collect_archive_subtitles_cancel_marks_probe_task_cancelled():
+    """外层 preview task 被取消时，临时解包用的 Task 也要显式 cancel。"""
+    service = object.__new__(LinkedSubtitleImportService)
+    started = asyncio.Event()
+    probe_cancelled = asyncio.Event()
+
+    async def extract(probe_task):
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            if probe_task.is_cancelled():
+                probe_cancelled.set()
+            raise
+
+    service.extract_service = SimpleNamespace(extract=AsyncMock(side_effect=extract))
+
+    runner = asyncio.create_task(service._collect_archive_subtitles_to_stage("RJ01586796.zip"))
+    await started.wait()
+    runner.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner
+
+    assert probe_cancelled.is_set()
 
 
 def test_refresh_preview_execution_state_keeps_timeout_archive_executable(tmp_path):
