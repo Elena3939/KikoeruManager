@@ -1586,3 +1586,60 @@
 - `docs/INTRODUCTION.md`：补充密码库候选作为兜底完整轮查的业务说明。
 - `progress.md`：追加本轮大包密码库候选轮查修复记录。
 - 回滚方式：还原上述三个代码 / 文档文件中本轮关于 `UNKNOWN_PROBE_FULL_EXTRACT_LIMIT`、unknown 探测跳过分支、测试期望和密码库语义说明的 hunk，并删除本段进度记录。
+
+## 2026-07-02 - Task: 修复字幕补配预检超时后临时解包继续后台运行
+### What was done
+- 为字幕补配压缩包预检增加同路径 in-flight 去重，同一个 `archive_path` 同一时间只启动一次真实 archive preview / 临时解包。
+- 改造预检超时处理：超时时显式 cancel 内部 preview task，并把临时解包用的 probe task 标记为取消，确保 7zz / unar 路径能进入终止流程。
+- 修正非 7z 子进程取消路径：`unar` 等 `_run_subprocess_command()` 在协程取消时先 terminate，必要时 kill，不再只等待 `communicate()` 自然返回。
+- 补充回归测试覆盖 in-flight 去重、超时取消 probe task、非 7z 子进程取消终止。
+
+### Testing
+- `backend\venv\Scripts\python.exe -m py_compile backend\app\core\linked_subtitle_import_service.py backend\app\core\extract_service.py backend\tests\test_linked_subtitle_import_service.py backend\tests\test_extract_service.py`：通过。
+- 使用项目 venv 直接运行异步回归脚本验证：同一路径并发 preview 只执行一次；预检 timeout 会取消内部 task；临时解包 cancel 会标记 probe task；`_run_subprocess_command()` cancel 会 terminate 子进程，全部通过。
+- `cd backend; .\venv\Scripts\python.exe -m pytest ...`：当前 pytest 主入口在本机 venv 中卡住，`pytest --version` / `pytest.main(['--version'])` 也会挂起；已清理本轮启动的残留 pytest 进程，未把 pytest 结果当作通过。
+
+### Notes
+- `backend/app/core/linked_subtitle_import_service.py`：新增压缩包预检 in-flight 管理，并在 timeout / coroutine cancel 时显式取消内部 preview 与 probe task。
+- `backend/app/core/extract_service.py`：补齐非 7z 子进程的取消终止逻辑，避免 unar 后台继续跑。
+- `backend/tests/test_linked_subtitle_import_service.py`：新增字幕补配预检去重和取消回归测试。
+- `backend/tests/test_extract_service.py`：新增非 7z 子进程 cancel 后 terminate 的回归测试。
+- `progress.md`：追加本轮字幕补配预检超时取消修复记录。
+- 回滚方式：还原上述四个代码 / 测试文件中本轮 in-flight、cancel、terminate 相关 hunk，并删除本段进度记录。
+
+## 2026-07-02 - Task: 优化大 ZIP 中文密码兼容解压速度
+### What was done
+- 调整 ZIP 中文密码兼容后端顺序：大 ZIP 优先走 native `unar`，避免 Python `zipfile` 慢速全量解密 / 解压。
+- 保留小 ZIP 的 Python `zipfile` 优先路径，避免小文件为启动外部进程付出额外成本。
+- 新增 `KIKOERUMANAGER_ZIP_COMPAT_UNAR_FIRST_MIN_BYTES` 阈值，默认 64MB；大于等于该大小且存在 `unar` 时优先使用 `unar`。
+- 更新兼容后端进度文案，区分 `Python ZIP 中文密码兼容解压` 与 `unar ZIP 中文密码兼容解压`。
+
+### Testing
+- `backend\venv\Scripts\python.exe -m py_compile backend\app\core\extract_service.py backend\tests\test_extract_service.py backend\app\core\linked_subtitle_import_service.py backend\tests\test_linked_subtitle_import_service.py`：通过。
+- `git diff --check -- backend\app\core\extract_service.py backend\tests\test_extract_service.py backend\app\core\linked_subtitle_import_service.py backend\tests\test_linked_subtitle_import_service.py progress.md`：无空白错误，仅有既有 CRLF/LF 提示。
+- 使用项目 venv 直接运行回归脚本验证：大 ZIP 优先 `unar` 且不先跑 Python `zipfile`；小 ZIP 仍保留 Python 优先，全部通过。脚本末尾记录密码使用因本机 PostgreSQL 连接超时报日志，不影响解压路径判断。
+
+### Notes
+- `backend/app/core/extract_service.py`：新增大 ZIP 兼容解压优先 `unar` 的阈值与调度逻辑。
+- `backend/tests/test_extract_service.py`：新增大 ZIP 中文密码优先 `unar` 的回归测试，并固定小 ZIP Python 优先行为。
+- `progress.md`：追加本轮大 ZIP 中文密码兼容解压速度优化记录。
+- 回滚方式：还原本轮 `ZIP_COMPAT_UNAR_FIRST_MIN_BYTES`、`try_unar_zip_compat_backend` 调度顺序和对应测试 hunk，并删除本段进度记录。
+
+## 2026-07-02 - Task: 修复 ZIP 中文密码兼容误判错密码为可用
+### What was done
+- 修正 ZIP 密码字节探测：只用真正加密的 ZIP 条目验证密码，不再让未加密说明文件 / 小文件把任意密码误判为可用。
+- 限制密码字节探测读取量，最多读取 `ZIP_PASSWORD_BYTE_PROBE_BYTES`，避免探测阶段对大条目做长时间读取。
+- 大 ZIP 在 `unar` 中文密码兼容失败后不再回退到 Python `zipfile` 全量解压，错误通用中文密码会快速失败并继续轮询后续候选。
+- 补充“未加密小文件 + 加密 GBK 条目”的混合 ZIP 回归，锁住错密码不能通过探测的行为。
+
+### Testing
+- `backend\venv\Scripts\python.exe -m py_compile backend\app\core\extract_service.py backend\tests\test_extract_service.py backend\app\core\linked_subtitle_import_service.py backend\tests\test_linked_subtitle_import_service.py`：通过。
+- `git diff --check -- backend\app\core\extract_service.py backend\tests\test_extract_service.py backend\app\core\linked_subtitle_import_service.py backend\tests\test_linked_subtitle_import_service.py progress.md`：无空白错误，仅有既有 CRLF/LF 提示。
+- 使用项目 venv 直接运行回归脚本验证：混合 ZIP 中错误密码 `諷詠` 不再通过探测，正确密码可识别为 `gbk/cp936`；大 ZIP `unar` 失败后不会调用 Python `zipfile` 全量解压，通过。
+- 精准 pytest 用例未作为通过依据：本机 PostgreSQL 测试库 `kikoerumanager_test` 连接超时，pytest 在 `tests/conftest.py` 初始化阶段失败。
+
+### Notes
+- `backend/app/core/extract_service.py`：收紧 ZIP 密码字节探测条件，限制探测读取量，并阻止大 ZIP 在 `unar` 失败后进入 Python 全量兼容解压。
+- `backend/tests/test_extract_service.py`：新增混合 ZIP 错密码误判回归测试和大 ZIP 跳过 Python 兼容后端验证。
+- `progress.md`：追加本轮 ZIP 中文密码兼容误判错密码修复记录。
+- 回滚方式：还原本轮 `_probe_zip_password_bytes`、大 ZIP `unar` 失败后跳过 Python 后端的对应 hunk，并删除本段进度记录。

@@ -139,9 +139,17 @@ class ExtractService:
     PROBE_MAGIC_ENTRY_LIMIT: int = 3              # 一次密码最多抽样多少个强魔数条目
     PROBE_FULL_TEST_TIMEOUT: float = 60.0         # 显式整包 t 探测兜底超时；主解压流程默认不跑整包探测
     PROBE_BYTES: int = 2 * 1024 * 1024            # 流式探测读到 2MB 即认为解压流可信
+    ZIP_PASSWORD_BYTE_PROBE_BYTES: int = 4 * 1024 * 1024
     PROBE_TIMEOUT_SECONDS: float = 30.0           # 单次流式探测最多等 30s，超时回退完整解压
     UNKNOWN_PROBE_LARGE_ARCHIVE_BYTES: int = int(
         os.getenv("KIKOERUMANAGER_UNKNOWN_PROBE_LARGE_ARCHIVE_BYTES", str(1024 * 1024 * 1024)) or 1024 * 1024 * 1024
+    )
+    ZIP_COMPAT_UNAR_FIRST_MIN_BYTES: int = int(
+        os.getenv(
+            "KIKOERUMANAGER_ZIP_COMPAT_UNAR_FIRST_MIN_BYTES",
+            str(64 * 1024 * 1024),
+        )
+        or str(64 * 1024 * 1024)
     )
     INSPECT_SLOT_WAIT_TIMEOUT: float = float(os.getenv("KIKOERUMANAGER_7Z_INSPECT_SLOT_WAIT_TIMEOUT_SECONDS", "45") or 45)
     PROBE_SLOT_WAIT_TIMEOUT: float = float(
@@ -6530,14 +6538,30 @@ class ExtractService:
             return None
         try:
             with zipfile.ZipFile(archive_path, "r") as zf:
-                entries = [info for info in zf.infolist() if not info.is_dir()]
+                entries = [
+                    info
+                    for info in zf.infolist()
+                    if not info.is_dir() and (info.flag_bits & 0x1)
+                ]
                 if not entries:
+                    logger.info("ZIP 密码字节探测跳过：未找到加密文件条目 archive=%s", archive_path)
                     return None
-                probe_entry = min(entries, key=lambda info: int(info.file_size or 0))
+                probe_entry = min(
+                    entries,
+                    key=lambda info: (
+                        int(info.file_size or 0) <= 0,
+                        int(info.file_size or 0),
+                    ),
+                )
                 for encoding, password_bytes in self._zip_password_byte_candidates(password):
                     try:
                         with zf.open(probe_entry, "r", pwd=password_bytes) as fp:
-                            fp.read(1)
+                            remaining = max(1, int(self.ZIP_PASSWORD_BYTE_PROBE_BYTES or 1))
+                            while remaining > 0:
+                                chunk = fp.read(min(1024 * 1024, remaining))
+                                if not chunk:
+                                    break
+                                remaining -= len(chunk)
                         return encoding, password_bytes
                     except RuntimeError as e:
                         if "password" in str(e).lower():
@@ -7210,8 +7234,65 @@ class ExtractService:
                 and self._password_has_non_ascii(current_password)
             ):
                 return False, "not_applicable"
+
+            async def try_unar_zip_compat_backend() -> Tuple[bool, str]:
+                if not self._find_unar_executable():
+                    return False, "unar_unavailable"
+                await self._cleanup_extract_attempt(output_path)
+                task.update_progress(39, "尝试 unar ZIP 中文密码兼容解压")
+                unar_result = await self._try_unar_extract(
+                    archive_info.path,
+                    output_path,
+                    current_password,
+                    task=task,
+                )
+                if task.is_cancelled():
+                    return False, "cancelled"
+                if unar_result.returncode == 0:
+                    accepted, accept_reason = await accept_compat_backend_result("unar")
+                    if accepted:
+                        return True, "unar"
+                    await self._cleanup_extract_attempt(output_path)
+                    logger.info(
+                        "unar ZIP 中文密码兼容后端输出未通过校验: archive=%s reason=%s",
+                        archive_info.path,
+                        accept_reason,
+                    )
+                    return False, accept_reason
+                await self._cleanup_extract_attempt(output_path)
+                unar_stderr = (unar_result.stderr or b"").decode("utf-8", errors="ignore")
+                logger.info(
+                    "unar ZIP 中文密码兼容后端未成功: archive=%s rc=%s stderr=%s",
+                    archive_info.path,
+                    unar_result.returncode,
+                    unar_stderr[:300] if unar_stderr else "(无错误文本)",
+                )
+                return False, "unar_failed"
+
+            try:
+                archive_size = os.path.getsize(archive_info.path)
+            except OSError:
+                archive_size = 0
+            unar_first = (
+                archive_size >= self.ZIP_COMPAT_UNAR_FIRST_MIN_BYTES
+                and bool(self._find_unar_executable())
+            )
+            if unar_first:
+                unar_success, unar_reason = await try_unar_zip_compat_backend()
+                if unar_success:
+                    return True, unar_reason
+                if unar_reason == "cancelled":
+                    return False, "cancelled"
+                logger.info(
+                    "大 ZIP 跳过 Python zipfile 全量兼容解压，避免慢速全包解压: archive=%s size=%s reason=%s",
+                    archive_info.path,
+                    archive_size,
+                    unar_reason,
+                )
+                return False, unar_reason
+
             await self._cleanup_extract_attempt(output_path)
-            task.update_progress(39, "尝试 ZIP 中文密码兼容解压")
+            task.update_progress(39, "尝试 Python ZIP 中文密码兼容解压")
             zip_success, zip_reason = await self._try_extract_zip_with_python(
                 archive_info,
                 output_path,
@@ -7225,26 +7306,12 @@ class ExtractService:
             await self._cleanup_extract_attempt(output_path)
             if zip_reason == "cancelled":
                 return False, "cancelled"
-            if self._find_unar_executable():
-                task.update_progress(39, "尝试 unar ZIP 中文密码兼容解压")
-                unar_result = await self._try_unar_extract(
-                    archive_info.path,
-                    output_path,
-                    current_password,
-                    task=task,
-                )
-                if task.is_cancelled():
+            if not unar_first:
+                unar_success, unar_reason = await try_unar_zip_compat_backend()
+                if unar_success:
+                    return True, unar_reason
+                if unar_reason == "cancelled":
                     return False, "cancelled"
-                if unar_result.returncode == 0:
-                    return await accept_compat_backend_result("unar")
-                await self._cleanup_extract_attempt(output_path)
-                unar_stderr = (unar_result.stderr or b"").decode("utf-8", errors="ignore")
-                logger.info(
-                    "unar ZIP 中文密码兼容后端未成功: archive=%s rc=%s stderr=%s",
-                    archive_info.path,
-                    unar_result.returncode,
-                    unar_stderr[:300] if unar_stderr else "(无错误文本)",
-                )
             logger.info(
                 "ZIP 中文密码兼容后端未成功: archive=%s reason=%s",
                 archive_info.path,
@@ -9534,8 +9601,38 @@ class ExtractService:
                 process = await asyncio.create_subprocess_exec(*cmd, **kwargs)
                 if task is not None:
                     task.register_process(process)
+
+                async def terminate_process() -> None:
+                    if process.returncode is not None:
+                        return
+                    try:
+                        process.terminate()
+                    except ProcessLookupError:
+                        return
+                    except Exception:
+                        logger.debug("terminate 子进程失败，准备 kill（忽略）", exc_info=True)
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=2.0)
+                        return
+                    except Exception:
+                        pass
+                    if process.returncode is None:
+                        try:
+                            process.kill()
+                        except ProcessLookupError:
+                            pass
+                        except Exception:
+                            logger.debug("kill 子进程失败（忽略）", exc_info=True)
+                        try:
+                            await asyncio.wait_for(process.wait(), timeout=2.0)
+                        except Exception:
+                            pass
+
                 try:
                     stdout_data, stderr_data = await process.communicate()
+                except asyncio.CancelledError:
+                    await terminate_process()
+                    raise
                 finally:
                     if task is not None:
                         task.unregister_process(process)
