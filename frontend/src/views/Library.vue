@@ -12751,6 +12751,134 @@ function mergeSubtitleScanTargetSummary (current = {}, patch = {}) {
 
 
 
+function buildSubtitleBatchScanTargets () {
+
+  return (subtitleScanTargetResults.value || []).map(item => ({
+
+    path: item.path || '',
+
+    name: item.name || getFileName(item.path),
+
+    library_id: item.library_id || '',
+
+    status: item.status || 'pending',
+
+    message: item.message || '',
+
+    summary: buildSubtitleScanTargetSummary(item.summary || {})
+
+  })).filter(item => item.path)
+
+}
+
+
+
+function buildSubtitleBatchSummary (scanTargets = []) {
+
+  return scanTargets.reduce((acc, item) => {
+
+    const summary = buildSubtitleScanTargetSummary(item.summary || {})
+
+    return mergeSubtitleScanTargetSummary(acc, summary)
+
+  }, buildSubtitleScanTargetSummary({}))
+
+}
+
+
+
+function finalizeSubtitleBatchContext (batchContext, options = {}) {
+
+  if (!batchContext) return null
+
+  const scanTargets = buildSubtitleBatchScanTargets()
+
+  const summary = buildSubtitleBatchSummary(scanTargets)
+
+  const requestedCount = Number(options.requestedCount ?? subtitleDialogSelection.value.length ?? 0)
+
+  batchContext.requested_count = Math.max(Number(batchContext.requested_count || 0), requestedCount)
+
+  batchContext.recognized_rj_count = Math.max(
+
+    Number(batchContext.recognized_rj_count || 0),
+
+    Number(summary.found || 0),
+
+    Number(subtitleScanSession.value.foundDirectories || 0)
+
+  )
+
+  batchContext.scan_targets = scanTargets
+
+  batchContext.summary = summary
+
+  return batchContext
+
+}
+
+
+
+function shouldLogSubtitleBatchParent (batchContext) {
+
+  if (!batchContext) return false
+
+  const scanTargets = Array.isArray(batchContext.scan_targets) ? batchContext.scan_targets : []
+
+  if (scanTargets.length) return true
+
+  const summary = buildSubtitleScanTargetSummary(batchContext.summary || {})
+
+  return Boolean(
+
+    Number(batchContext.recognized_rj_count || 0) ||
+
+    summary.found ||
+
+    summary.queued ||
+
+    summary.skippedExisting ||
+
+    summary.skippedNoSubtitle ||
+
+    summary.existingTask ||
+
+    summary.createFailed ||
+
+    summary.noAudio
+
+  )
+
+}
+
+
+
+async function submitSubtitleBatchParentLog (batchContext, options = {}) {
+
+  const finalizedContext = finalizeSubtitleBatchContext(batchContext, options)
+
+  if (!shouldLogSubtitleBatchParent(finalizedContext)) return null
+
+  return submitRJSubtitleTasks([], {
+
+    silent: true,
+
+    refresh: false,
+
+    batchContext: {
+
+      ...finalizedContext,
+
+      log_parent: true
+
+    }
+
+  })
+
+}
+
+
+
 function buildSubtitleScanTargetMessage (status, summary = {}, fallback = '') {
 
   if (status === 'pending') return fallback || '正在扫描...'
@@ -13251,11 +13379,61 @@ async function resolveRJSubtitleItems (paths, options = {}) {
 
   let done = 0
 
+  const scanDepth = normalizeRJSubtitleScanDepth(subtitleOptions.value.scanDepth)
+
+  const pushResolvedScanItem = async (rawItem, scanTargetPath, libraryId) => {
+
+    const item = rawItem || {}
+
+    const resolvedItem = {
+
+      rjcode: item.rjcode,
+
+      folder_name: item.folder_name,
+
+      folder_path: item.folder_path,
+
+      library_id: libraryId,
+
+      scan_target_path: scanTargetPath,
+
+      audio_count: item.audio_count,
+
+      existing_subtitle_count: item.existing_subtitle_count,
+
+      status: item.status
+
+    }
+
+    if (resolvedItem.status === 'no_audio') {
+
+      incrementSubtitleScanSession('noAudioTargets')
+
+      return false
+
+    }
+
+    collected.push(resolvedItem)
+
+    await Promise.resolve(onChunk?.(resolvedItem, scanTargetPath))
+
+    await nextTick()
+
+    return true
+
+  }
+
   for (const target of scanTargets) {
 
     const path = target.path
 
     const libraryId = target.library_id || selectedLibraryId.value
+
+    const collectedBeforeTarget = collected.length
+
+    let itemEventCount = 0
+
+    let finalTargetStatus = ''
 
     onProgress?.({ done, total, currentPath: path, libraryId })
 
@@ -13265,7 +13443,7 @@ async function resolveRJSubtitleItems (paths, options = {}) {
 
         libraryId,
 
-        scanDepth: normalizeRJSubtitleScanDepth(subtitleOptions.value.scanDepth),
+        scanDepth,
 
         onEvent: async event => {
 
@@ -13321,9 +13499,7 @@ async function resolveRJSubtitleItems (paths, options = {}) {
 
             })
 
-            if (result.status === 'no_match') incrementSubtitleScanSession('noMatchTargets')
-
-            if (result.status === 'failed') incrementSubtitleScanSession('failedTargets')
+            finalTargetStatus = result.status
 
             onTargetResult?.(result)
 
@@ -13333,41 +13509,9 @@ async function resolveRJSubtitleItems (paths, options = {}) {
 
           if (event.type === 'item') {
 
-            const item = event.item || {}
+            itemEventCount += 1
 
-            const resolvedItem = {
-
-              rjcode: item.rjcode,
-
-              folder_name: item.folder_name,
-
-              folder_path: item.folder_path,
-
-              library_id: libraryId,
-
-              scan_target_path: path,
-
-              audio_count: item.audio_count,
-
-              existing_subtitle_count: item.existing_subtitle_count,
-
-              status: item.status
-
-            }
-
-            if (resolvedItem.status === 'no_audio') {
-
-              incrementSubtitleScanSession('noAudioTargets')
-
-              return
-
-            }
-
-            collected.push(resolvedItem)
-
-            await Promise.resolve(onChunk?.(resolvedItem, path))
-
-            await nextTick()
+            await pushResolvedScanItem(event.item || {}, path, libraryId)
 
             return
 
@@ -13387,6 +13531,8 @@ async function resolveRJSubtitleItems (paths, options = {}) {
 
       console.error('扫描 RJ 字幕候选失败:', path, error)
 
+      finalTargetStatus = 'failed'
+
       onTargetResult?.({
 
         path,
@@ -13401,13 +13547,103 @@ async function resolveRJSubtitleItems (paths, options = {}) {
 
       })
 
-    } finally {
+    }
 
-      done += 1
+    if (itemEventCount === 0 && collected.length === collectedBeforeTarget && extractRJCode(path)) {
 
-      onProgress?.({ done, total, currentPath: path, libraryId })
+      try {
+
+        const fallbackData = await rjSubtitleApi.scan(path, {
+
+          libraryId,
+
+          scanDepth
+
+        })
+
+        const fallbackItems = Array.isArray(fallbackData?.items) ? fallbackData.items : []
+
+        if (fallbackItems.length) {
+
+          const fallbackSummary = {
+
+            found: Number(fallbackData?.total_found || fallbackItems.length),
+
+            ready: Number(fallbackData?.ready_count || fallbackItems.filter(entry => entry?.status === 'ready').length),
+
+            existing: fallbackItems.filter(entry => entry?.status === 'existing').length,
+
+            noAudio: fallbackItems.filter(entry => entry?.status === 'no_audio').length
+
+          }
+
+          finalTargetStatus = fallbackSummary.found ? 'success' : finalTargetStatus
+
+          onTargetResult?.({
+
+            path,
+
+            library_id: libraryId,
+
+            name: target.name || getFileName(path),
+
+            status: finalTargetStatus,
+
+            summary: fallbackSummary,
+
+            message: '流式扫描未返回目录，已使用普通扫描兜底'
+
+          })
+
+          for (const fallbackItem of fallbackItems) {
+
+            itemEventCount += 1
+
+            await pushResolvedScanItem(fallbackItem, path, libraryId)
+
+          }
+
+        }
+
+      } catch (fallbackError) {
+
+        console.error('RJ 字幕候选兜底扫描失败:', path, fallbackError)
+
+        if (!finalTargetStatus || finalTargetStatus === 'no_match') {
+
+          finalTargetStatus = 'failed'
+
+          onTargetResult?.({
+
+            path,
+
+            library_id: libraryId,
+
+            name: target.name || getFileName(path),
+
+            status: 'failed',
+
+            message: fallbackError.response?.data?.detail || fallbackError.message || '兜底扫描失败'
+
+          })
+
+        }
+
+      }
 
     }
+
+    if (collected.length === collectedBeforeTarget) {
+
+      if (finalTargetStatus === 'no_match') incrementSubtitleScanSession('noMatchTargets')
+
+      if (finalTargetStatus === 'failed') incrementSubtitleScanSession('failedTargets')
+
+    }
+
+    done += 1
+
+    onProgress?.({ done, total, currentPath: path, libraryId })
 
   }
 
@@ -15380,49 +15616,7 @@ async function openRJSubtitleDialog (rows = [], options = {}) {
 
     syncSubtitleSelectionState()
 
-    batchContext.requested_count = subtitleDialogSelection.value.length
-
-    batchContext.recognized_rj_count = subtitleScanSession.value.foundDirectories
-
-    batchContext.scan_targets = (subtitleScanTargetResults.value || []).map(item => ({
-
-      path: item.path || '',
-
-      name: item.name || getFileName(item.path),
-
-      library_id: item.library_id || '',
-
-      status: item.status || 'pending',
-
-      message: item.message || '',
-
-      summary: buildSubtitleScanTargetSummary(item.summary || {})
-
-    })).filter(item => item.path)
-
-    batchContext.summary = batchContext.scan_targets.reduce((acc, item) => {
-
-      const summary = buildSubtitleScanTargetSummary(item.summary || {})
-
-      return mergeSubtitleScanTargetSummary(acc, summary)
-
-    }, buildSubtitleScanTargetSummary({}))
-
-    await submitRJSubtitleTasks([], {
-
-      silent: true,
-
-      refresh: false,
-
-      batchContext: {
-
-        ...batchContext,
-
-        log_parent: true
-
-      }
-
-    })
+    await submitSubtitleBatchParentLog(batchContext)
 
     await refreshRJSubtitleStatus(false, { silent: true })
 
@@ -15671,7 +15865,7 @@ async function submitRJSubtitleTasks (items, options = {}) {
 
   if (!Array.isArray(items) || !items.length) {
 
-    if (!batchContext) {
+    if (!batchContext || !shouldLogSubtitleBatchParent(batchContext)) {
 
       if (!silent) ElMessage.warning('没有可执行的 RJ 文件夹')
 
@@ -15981,49 +16175,7 @@ async function startSingleRJSubtitle (item) {
 
     syncSubtitleSelectionState()
 
-    batchContext.requested_count = subtitleDialogSelection.value.length
-
-    batchContext.recognized_rj_count = subtitleScanSession.value.foundDirectories
-
-    batchContext.scan_targets = (subtitleScanTargetResults.value || []).map(entry => ({
-
-      path: entry.path || '',
-
-      name: entry.name || getFileName(entry.path),
-
-      library_id: entry.library_id || '',
-
-      status: entry.status || 'pending',
-
-      message: entry.message || '',
-
-      summary: buildSubtitleScanTargetSummary(entry.summary || {})
-
-    })).filter(entry => entry.path)
-
-    batchContext.summary = batchContext.scan_targets.reduce((acc, entry) => {
-
-      const summary = buildSubtitleScanTargetSummary(entry.summary || {})
-
-      return mergeSubtitleScanTargetSummary(acc, summary)
-
-    }, buildSubtitleScanTargetSummary({}))
-
-    await submitRJSubtitleTasks([], {
-
-      silent: true,
-
-      refresh: false,
-
-      batchContext: {
-
-        ...batchContext,
-
-        log_parent: true
-
-      }
-
-    })
+    await submitSubtitleBatchParentLog(batchContext)
 
     await refreshRJSubtitleStatus(false, { silent: true })
 

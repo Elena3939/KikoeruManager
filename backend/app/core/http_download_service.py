@@ -4792,6 +4792,7 @@ class HttpDownloadService:
             row["_last_flush_downloaded"] = int(downloaded or 0)
 
         last_error: Optional[BaseException] = None
+        tried_warning_confirm_urls: set[str] = set()
         for attempt_index in range(retry_count):
             if task:
                 await task.wait_if_paused()
@@ -4837,6 +4838,17 @@ class HttpDownloadService:
                         content_type = str(response_headers.get("content-type") or "")
                         if "text/html" in content_type.lower():
                             body = await response.text(errors="ignore")
+                            if not google_drive_api:
+                                confirm_url = self._google_drive_confirm_url_from_warning_html(body, raw_url)
+                                if confirm_url and confirm_url != raw_url and confirm_url not in tried_warning_confirm_urls:
+                                    tried_warning_confirm_urls.add(confirm_url)
+                                    cookie_header = self._google_drive_cookie_header_from_session(session, confirm_url)
+                                    if cookie_header:
+                                        headers["Cookie"] = cookie_header
+                                    raw_url = confirm_url
+                                    row["url"] = item.get("masked_url") or self._mask_url(raw_url)
+                                    last_error = HttpDownloadError("Google Drive 大文件已自动附加确认下载参数，重试下载")
+                                    continue
                             raise HttpDownloadError(self._google_drive_html_error_message(body))
                         content_range = str(response_headers.get("content-range") or "")
                         content_total = self._content_length_from_headers(response_headers)
