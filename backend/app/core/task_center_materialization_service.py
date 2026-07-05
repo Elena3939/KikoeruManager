@@ -2,7 +2,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
-from sqlalchemy import func, or_
+from sqlalchemy import func
 
 from .task_engine import TaskStatus
 from .json_safety import safe_text
@@ -10,6 +10,15 @@ from .resource_budget_service import get_resource_budget_service
 from ..models.database import SessionLocal, TaskCenterItem
 
 logger = logging.getLogger(__name__)
+
+
+def _escape_ilike_pattern(value: str) -> str:
+    return str(value or "").replace("!", "!!").replace("%", "!%").replace("_", "!_")
+
+
+def _normalize_task_center_search(value: Optional[str]) -> str:
+    text = safe_text(value, strip=True).lower()
+    return text if len(text) >= 2 else ""
 
 
 class TaskCenterMaterializationService:
@@ -262,7 +271,7 @@ class TaskCenterMaterializationService:
         safe_offset = max(0, int(offset or 0))
         normalized_domain = safe_text(domain, strip=True)
         normalized_status = safe_text(status, strip=True)
-        normalized_search = safe_text(search, strip=True).lower()
+        normalized_search = _normalize_task_center_search(search)
 
         db = SessionLocal()
         try:
@@ -272,15 +281,8 @@ class TaskCenterMaterializationService:
             if normalized_status and normalized_status != "all":
                 query = query.filter(TaskCenterItem.status == normalized_status)
             if normalized_search:
-                like = f"%{normalized_search}%"
-                query = query.filter(
-                    or_(
-                        TaskCenterItem.searchable_text.ilike(like),
-                        TaskCenterItem.title.ilike(like),
-                        TaskCenterItem.business_key.ilike(like),
-                        TaskCenterItem.engine_task_id.ilike(like),
-                    )
-                )
+                like = f"%{_escape_ilike_pattern(normalized_search)}%"
+                query = query.filter(TaskCenterItem.searchable_text.ilike(like, escape="!"))
             total = query.count()
             rows = (
                 query.order_by(TaskCenterItem.updated_at.desc(), TaskCenterItem.created_at.desc())

@@ -109,6 +109,7 @@ def reset_postgres_schema(engine: Engine) -> None:
     from app.models.database import (
         Base,
         _create_postgres_extensions_and_indexes,
+        _migrate_compat_schema,
         ensure_library_index_postgres_indexes_concurrently,
     )
 
@@ -119,6 +120,7 @@ def reset_postgres_schema(engine: Engine) -> None:
     Base.metadata.create_all(bind=engine)
     with engine.begin() as conn:
         _create_postgres_extensions_and_indexes(conn)
+        _migrate_compat_schema(conn)
     ensure_library_index_postgres_indexes_concurrently(engine)
 
 
@@ -126,12 +128,14 @@ def truncate_all_tables(engine: Engine) -> None:
     from app.models.database import (
         Base,
         _create_postgres_extensions_and_indexes,
+        _migrate_compat_schema,
         ensure_library_index_postgres_indexes_concurrently,
     )
 
     Base.metadata.create_all(bind=engine)
     with engine.begin() as conn:
         _create_postgres_extensions_and_indexes(conn)
+        _migrate_compat_schema(conn)
     ensure_library_index_postgres_indexes_concurrently(engine)
     existing = set(inspect(engine).get_table_names())
     table_names = [table.name for table in Base.metadata.sorted_tables if table.name in existing]

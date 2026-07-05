@@ -17,18 +17,15 @@ branch_labels = None
 depends_on = None
 
 _TRIGRAM_INDEX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_activity_logs_summary_trgm ON activity_logs USING gin (COALESCE(summary, '') gin_trgm_ops)",
-    "CREATE INDEX IF NOT EXISTS idx_activity_logs_source_path_trgm ON activity_logs USING gin (COALESCE(source_path, '') gin_trgm_ops)",
-    "CREATE INDEX IF NOT EXISTS idx_activity_logs_rjcode_trgm ON activity_logs USING gin (COALESCE(rjcode, '') gin_trgm_ops)",
-    "CREATE INDEX IF NOT EXISTS idx_activity_logs_task_id_trgm ON activity_logs USING gin (COALESCE(task_id, '') gin_trgm_ops)",
-    "CREATE INDEX IF NOT EXISTS idx_activity_logs_batch_id_trgm ON activity_logs USING gin (COALESCE(batch_id, '') gin_trgm_ops)",
+    "CREATE INDEX IF NOT EXISTS idx_activity_logs_searchable_text_trgm ON activity_logs USING gin (searchable_text gin_trgm_ops)",
     "CREATE INDEX IF NOT EXISTS idx_library_index_search_text_trgm ON library_index_entries USING gin ((COALESCE(name, '') || ' ' || COALESCE(relative_path, '') || ' ' || COALESCE(rjcode, '') || ' ' || COALESCE(parent_path, '')) gin_trgm_ops) WITH (fastupdate = on, gin_pending_list_limit = 65536)",
     "CREATE INDEX IF NOT EXISTS idx_task_center_searchable_text_trgm ON task_center_items USING gin (searchable_text gin_trgm_ops)",
-    "CREATE INDEX IF NOT EXISTS idx_task_center_title_trgm ON task_center_items USING gin (title gin_trgm_ops)",
-    "CREATE INDEX IF NOT EXISTS idx_task_center_business_key_trgm ON task_center_items USING gin (business_key gin_trgm_ops)",
-    "CREATE INDEX IF NOT EXISTS idx_task_center_engine_task_id_trgm ON task_center_items USING gin (engine_task_id gin_trgm_ops)",
     "CREATE INDEX IF NOT EXISTS idx_processed_archives_filename_trgm ON processed_archives USING gin (filename gin_trgm_ops)",
     "CREATE INDEX IF NOT EXISTS idx_processed_archives_rjcode_trgm ON processed_archives USING gin (rjcode gin_trgm_ops)",
+    "CREATE INDEX IF NOT EXISTS idx_password_entries_search_text_trgm ON password_entries USING gin ((COALESCE(rjcode, '') || ' ' || COALESCE(filename, '') || ' ' || COALESCE(password, '') || ' ' || COALESCE(description, '')) gin_trgm_ops)",
+    "CREATE INDEX IF NOT EXISTS idx_security_gate_auth_logs_ip_trgm ON security_gate_auth_logs USING gin (ip_address gin_trgm_ops)",
+    "CREATE INDEX IF NOT EXISTS idx_circle_catalogs_search_text_trgm ON circle_catalogs USING gin ((COALESCE(circle_name_normalized, '') || ' ' || COALESCE(circle_name, '') || ' ' || COALESCE(circle_id, '')) gin_trgm_ops)",
+    "CREATE INDEX IF NOT EXISTS idx_circle_works_search_text_trgm ON circle_works USING gin ((COALESCE(canonical_rjcode, '') || ' ' || COALESCE(display_rjcode, '') || ' ' || COALESCE(title, '')) gin_trgm_ops)",
 )
 
 _BUSINESS_INDEX_SQL = (
