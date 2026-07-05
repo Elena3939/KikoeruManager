@@ -1910,6 +1910,255 @@ function formatDate(value) {
   font-weight: 600;
 }
 
+/* 暗色态：目录差异工作台 */
+:global(html.kikoerumanager-dark) .cmw-shell {
+  border-color: var(--km-dark-border);
+  background: rgba(13, 14, 18, 0.96);
+  box-shadow:
+    0 30px 80px rgba(0, 0, 0, 0.38),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+:global(html.kikoerumanager-dark) .cmw-header,
+:global(html.kikoerumanager-dark) .cmw-toolbar,
+:global(html.kikoerumanager-dark) .cmw-pill-bar,
+:global(html.kikoerumanager-dark) .cmw-split-head {
+  border-color: var(--km-dark-border-soft);
+}
+
+:global(html.kikoerumanager-dark) .cmw-icon,
+:global(html.kikoerumanager-dark) .cmw-tag,
+:global(html.kikoerumanager-dark) .cmw-close-btn,
+:global(html.kikoerumanager-dark) .cmw-pill,
+:global(html.kikoerumanager-dark) .cmw-bulk-group,
+:global(html.kikoerumanager-dark) .cmw-summary-remote {
+  border-color: var(--km-dark-border);
+  background: var(--km-dark-accent-bg);
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark) .cmw-icon {
+  color: #a5b4fc;
+}
+
+:global(html.kikoerumanager-dark) .cmw-title,
+:global(html.kikoerumanager-dark) .cmw-diff-name,
+:global(html.kikoerumanager-dark) .cmw-loading-panel :deep(.app-loading-animation__label),
+:global(html.kikoerumanager-dark) .cmw-summary-stat b,
+:global(html.kikoerumanager-dark) .cmw-footer-remote-hint strong {
+  color: var(--km-dark-text-strong);
+}
+
+:global(html.kikoerumanager-dark) .cmw-subtitle,
+:global(html.kikoerumanager-dark) .cmw-tag,
+:global(html.kikoerumanager-dark) .cmw-search-input,
+:global(html.kikoerumanager-dark) .cmw-toolbar-btn,
+:global(html.kikoerumanager-dark) .cmw-bulk-btn,
+:global(html.kikoerumanager-dark) .cmw-pill,
+:global(html.kikoerumanager-dark) .cmw-summary-stat,
+:global(html.kikoerumanager-dark) .cmw-summary-remote,
+:global(html.kikoerumanager-dark) .cmw-side-meta,
+:global(html.kikoerumanager-dark) .cmw-diff-side-primary,
+:global(html.kikoerumanager-dark) .cmw-footer-remote-hint {
+  color: var(--km-dark-text);
+}
+
+:global(html.kikoerumanager-dark) .cmw-split-title span,
+:global(html.kikoerumanager-dark) .cmw-split-title code,
+:global(html.kikoerumanager-dark) .cmw-side-path,
+:global(html.kikoerumanager-dark) .cmw-side-meta span:last-child,
+:global(html.kikoerumanager-dark) .cmw-loading-panel :deep(.app-loading-animation__description),
+:global(html.kikoerumanager-dark) .cmw-summary-label,
+:global(html.kikoerumanager-dark) .cmw-diff-pathtail,
+:global(html.kikoerumanager-dark) .cmw-diff-note,
+:global(html.kikoerumanager-dark) .cmw-diff-side-secondary,
+:global(html.kikoerumanager-dark) .cmw-diff-empty,
+:global(html.kikoerumanager-dark) .cmw-empty-state {
+  color: var(--km-dark-text-muted);
+}
+
+:global(html.kikoerumanager-dark) .cmw-search-input::placeholder {
+  color: var(--km-dark-text-subtle);
+}
+
+:global(html.kikoerumanager-dark) .cmw-search-input:focus {
+  border-color: var(--km-dark-border-strong);
+  background: var(--km-dark-field);
+}
+
+:global(html.kikoerumanager-dark) .cmw-close-btn:hover:not(:disabled),
+:global(html.kikoerumanager-dark) .cmw-toolbar-btn:hover:not(:disabled),
+:global(html.kikoerumanager-dark) .cmw-bulk-btn:hover:not(:disabled),
+:global(html.kikoerumanager-dark) .cmw-pill:hover {
+  border-color: var(--km-dark-border-strong);
+  background: var(--km-dark-button-bg-hover);
+  color: var(--km-dark-text-strong);
+}
+
+:global(html.kikoerumanager-dark) .cmw-bulk-btn + .cmw-bulk-btn {
+  border-left-color: var(--km-dark-border-soft);
+}
+
+:global(html.kikoerumanager-dark) .cmw-pill.is-active {
+  border-color: rgba(129, 140, 248, 0.46);
+  background: rgba(99, 102, 241, 0.18);
+  color: #c7d2fe;
+}
+
+:global(html.kikoerumanager-dark) .cmw-pill-count {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+:global(html.kikoerumanager-dark) .cmw-pill.is-active .cmw-pill-count {
+  background: rgba(129, 140, 248, 0.22);
+  color: #ddd6fe;
+}
+
+:global(html.kikoerumanager-dark) .cmw-split-list,
+:global(html.kikoerumanager-dark) .cmw-table-pane {
+  background: var(--km-dark-surface);
+}
+
+:global(html.kikoerumanager-dark) .cmw-split-row {
+  border-bottom-color: var(--km-dark-border-soft);
+}
+
+:global(html.kikoerumanager-dark) .cmw-split-row:hover {
+  background: var(--km-dark-surface-hover);
+}
+
+:global(html.kikoerumanager-dark) .cmw-side-line.is-pickable:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+:global(html.kikoerumanager-dark) .cmw-side-line.is-picked {
+  border-left-color: #60a5fa;
+  background: rgba(96, 165, 250, 0.18);
+}
+
+:global(html.kikoerumanager-dark) .cmw-side-line.is-added {
+  border-left-color: #34d399;
+  background: rgba(16, 185, 129, 0.13);
+}
+
+:global(html.kikoerumanager-dark) .cmw-side-line.is-removed {
+  border-left-color: #fb7185;
+  background: rgba(244, 63, 94, 0.13);
+}
+
+:global(html.kikoerumanager-dark) .cmw-side-line.is-changed {
+  border-left-color: #fbbf24;
+}
+
+:global(html.kikoerumanager-dark) .cmw-side-line.is-missing {
+  color: var(--km-dark-text-subtle);
+  opacity: 0.8;
+}
+
+:global(html.kikoerumanager-dark) .cmw-side-meta .is-size-diff {
+  color: var(--km-dark-amber);
+}
+
+:global(html.kikoerumanager-dark) .cmw-pick-mark {
+  background: #60a5fa;
+  color: #07111f;
+}
+
+:global(html.kikoerumanager-dark) .cmw-diff-table thead {
+  background: rgba(16, 17, 22, 0.92);
+}
+
+:global(html.kikoerumanager-dark) .cmw-diff-th,
+:global(html.kikoerumanager-dark) .cmw-diff-row {
+  border-color: var(--km-dark-border-soft);
+}
+
+:global(html.kikoerumanager-dark) .cmw-diff-th {
+  color: var(--km-dark-text-muted);
+}
+
+:global(html.kikoerumanager-dark) .cmw-diff-row:hover {
+  background: var(--km-dark-surface-hover);
+}
+
+:global(html.kikoerumanager-dark) .cmw-diff-toggle:hover {
+  color: var(--km-dark-text-strong);
+}
+
+:global(html.kikoerumanager-dark) .cmw-diff-glyph,
+:global(html.kikoerumanager-dark) .cmw-diff-badge {
+  background: var(--km-dark-accent-bg);
+  color: var(--km-dark-text-muted);
+  border-color: var(--km-dark-border-soft);
+}
+
+:global(html.kikoerumanager-dark) .cmw-diff-glyph.is-new,
+:global(html.kikoerumanager-dark) .cmw-diff-badge.is-new {
+  background: rgba(16, 185, 129, 0.16);
+  color: #a7f3d0;
+  border-color: rgba(52, 211, 153, 0.22);
+}
+
+:global(html.kikoerumanager-dark) .cmw-diff-glyph.is-old,
+:global(html.kikoerumanager-dark) .cmw-diff-badge.is-old {
+  background: rgba(99, 102, 241, 0.18);
+  color: #c7d2fe;
+  border-color: rgba(129, 140, 248, 0.24);
+}
+
+:global(html.kikoerumanager-dark) .cmw-diff-glyph.is-size,
+:global(html.kikoerumanager-dark) .cmw-diff-glyph.is-time,
+:global(html.kikoerumanager-dark) .cmw-diff-badge.is-size,
+:global(html.kikoerumanager-dark) .cmw-diff-badge.is-time {
+  background: rgba(245, 158, 11, 0.16);
+  color: #fde68a;
+  border-color: rgba(251, 191, 36, 0.24);
+}
+
+:global(html.kikoerumanager-dark) .cmw-diff-glyph.is-content,
+:global(html.kikoerumanager-dark) .cmw-diff-badge.is-content {
+  background: rgba(244, 63, 94, 0.16);
+  color: #fecdd3;
+  border-color: rgba(251, 113, 133, 0.24);
+}
+
+:global(html.kikoerumanager-dark) .cmw-diff-fileicon.icon-audio-lossless { color: #93c5fd; }
+:global(html.kikoerumanager-dark) .cmw-diff-fileicon.icon-audio { color: #c4b5fd; }
+:global(html.kikoerumanager-dark) .cmw-diff-fileicon.icon-image { color: #fdba74; }
+:global(html.kikoerumanager-dark) .cmw-diff-fileicon.icon-video { color: #a5b4fc; }
+:global(html.kikoerumanager-dark) .cmw-diff-fileicon.icon-pdf { color: #fca5a5; }
+:global(html.kikoerumanager-dark) .cmw-diff-fileicon.icon-archive { color: #fcd34d; }
+:global(html.kikoerumanager-dark) .cmw-diff-fileicon.icon-text,
+:global(html.kikoerumanager-dark) .cmw-diff-fileicon.icon-file { color: var(--km-dark-text-muted); }
+
+:global(html.kikoerumanager-dark) .cmw-footer {
+  border-top-color: var(--km-dark-border-soft);
+  background: rgba(36, 37, 41, 0.92);
+}
+
+:global(html.kikoerumanager-dark) .cmw-action-btn.is-slate {
+  border-color: var(--km-dark-border);
+  background: var(--km-dark-accent-bg);
+  color: var(--km-dark-text);
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark) .cmw-action-btn.is-slate:hover:not(:disabled) {
+  background: var(--km-dark-button-bg-hover);
+  color: var(--km-dark-text-strong);
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark) .cmw-action-btn.is-emerald {
+  background: #111827;
+  box-shadow: none;
+}
+
+:global(html.kikoerumanager-dark) .cmw-action-btn.is-emerald:hover:not(:disabled) {
+  background: #172033;
+  box-shadow: none;
+}
+
 button:not(:disabled) { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: 0.55; }
 

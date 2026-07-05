@@ -1548,6 +1548,57 @@ class RJSubtitleService:
     def _is_synology_error_codes(self, exc: Exception, *codes: int) -> bool:
         return any(self._is_synology_error_code(exc, code) for code in codes)
 
+    def _remote_write_retry_delay_seconds(self, exc: Exception) -> Optional[float]:
+        message = str(exc or "")
+        if "远程库存暂时退化" not in message and "已熔断" not in message:
+            return None
+        matched = re.search(r"熔断\s*(\d+(?:\.\d+)?)\s*秒", message)
+        if matched:
+            try:
+                return max(1.0, min(float(matched.group(1)), 180.0))
+            except Exception:
+                pass
+        return 30.0
+
+    def _remote_client_retry_delay_seconds(self, client) -> Optional[float]:
+        try:
+            snapshot = client.remote_health_snapshot()
+        except Exception:
+            return None
+        remaining = float((snapshot or {}).get('circuit_remaining_seconds') or 0)
+        if remaining <= 0:
+            return None
+        return max(30.0, min(remaining, 180.0))
+
+    def _build_remote_degraded_error(self, client, fallback: Exception) -> Exception:
+        delay = self._remote_client_retry_delay_seconds(client)
+        if delay is None:
+            return fallback
+        return RuntimeError(f"远程库存暂时退化，已熔断 {delay:.0f} 秒后重试")
+
+    async def _sleep_for_remote_write_retry(
+        self,
+        exc: Exception,
+        output_name: str,
+        attempt: int,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+        should_cancel: Optional[Callable[[], bool]] = None,
+    ) -> bool:
+        delay = self._remote_write_retry_delay_seconds(exc)
+        if delay is None:
+            return False
+        logger.warning('[RJ字幕] 远程字幕写入遇到临时熔断，等待 %.0fs 后重试 %s (attempt=%s): %s', delay, output_name, attempt, exc)
+        if progress_callback:
+            progress_callback(95, f"远程库存熔断，等待 {int(round(delay))} 秒后重试: {output_name}")
+        slept = 0.0
+        while slept < delay:
+            if should_cancel and should_cancel():
+                raise asyncio.CancelledError()
+            chunk = min(1.0, delay - slept)
+            await asyncio.sleep(chunk)
+            slept += chunk
+        return True
+
     def _resolve_remote_info_item_path(self, info: Dict, fallback_path: str) -> str:
         files = info.get('files') or []
         item = files[0] if files else {}
@@ -2084,9 +2135,8 @@ class RJSubtitleService:
         # --- Phase 2（串行上传）: 群晖写同一 subtitles/ 目录时存在目录锁，并发会导致 sock_read 超时，改为串行 ---
         upload_count = len(work_items)
         completed_uploads = 0
-        _upload_semaphore = asyncio.Semaphore(1)
 
-        async def do_upload(work: dict):
+        async def do_upload(work: dict) -> bool:
             nonlocal completed_uploads
             w_item = work['item']
             output_name = work['output_name']
@@ -2094,10 +2144,11 @@ class RJSubtitleService:
             temp_remote_path = work['temp_remote_path']
             final_remote_path = work['final_remote_path']
             staged_path = work['staged_path']
-            async with _upload_semaphore:
-                if progress_callback:
-                    progress = 84 + int(completed_uploads / max(upload_count, 1) * 14)
-                    progress_callback(progress, f"上传字幕: {output_name}")
+            if progress_callback:
+                progress = 84 + int(completed_uploads / max(upload_count, 1) * 14)
+                progress_callback(progress, f"上传字幕: {output_name}")
+            last_error = None
+            for attempt in range(1, 4):
                 try:
                     await asyncio.to_thread(shutil.copy2, w_item['path'], staged_path)
                     await client.upload_file(subtitle_dir, staged_path, overwrite=True, remote_name=temp_remote_name)
@@ -2117,7 +2168,15 @@ class RJSubtitleService:
                         'match_type': '原始抓取',
                         'match_score': 0,
                     })
+                    last_error = None
+                    break
                 except Exception as exc:
+                    last_error = exc
+                    if self._remote_write_retry_delay_seconds(exc) is not None:
+                        break
+                    if self._remote_client_retry_delay_seconds(client) is not None:
+                        last_error = self._build_remote_degraded_error(client, exc)
+                        break
                     if await self._remote_subtitle_exists(client, subtitle_dir, output_name):
                         existing_names.add(output_name)
                         w_item['output_name'] = output_name
@@ -2128,11 +2187,22 @@ class RJSubtitleService:
                             'match_type': '原始抓取',
                             'match_score': 0,
                         })
-                    else:
-                        write_errors.append(f"{output_name}: {exc}")
-                completed_uploads += 1
+                        last_error = None
+                        break
+                    break
+            if last_error is not None:
+                write_errors.append(f"{output_name}: {last_error}")
+                if self._remote_write_retry_delay_seconds(last_error) is not None:
+                    logger.warning('[RJ字幕] 远程库存持续熔断，停止本轮原始字幕回写: %s', last_error)
+                    return False
+            completed_uploads += 1
+            return True
 
-        await asyncio.gather(*[do_upload(work) for work in work_items])
+        for work in work_items:
+            if should_cancel and should_cancel():
+                raise asyncio.CancelledError()
+            if not await do_upload(work):
+                break
 
         if progress_callback:
             progress_callback(98, f"原始字幕写入完成，保留 {len(written_files)}，跳过 {len(skipped_files)}")
@@ -2397,9 +2467,8 @@ class RJSubtitleService:
         # --- Phase 2（串行上传）: 群晖写同一 subtitles/ 目录时存在目录锁，并发会导致 sock_read 超时，改为串行 ---
         upload_count = len(work_items)
         completed_uploads = 0
-        _upload_semaphore = asyncio.Semaphore(1)
 
-        async def do_upload(work: dict):
+        async def do_upload(work: dict) -> bool:
             nonlocal completed_uploads
             match = work['match']
             output_name = work['output_name']
@@ -2407,10 +2476,11 @@ class RJSubtitleService:
             temp_remote_name = work['temp_remote_name']
             temp_remote_path = work['temp_remote_path']
             final_remote_path = work['final_remote_path']
-            async with _upload_semaphore:
-                if progress_callback:
-                    progress = 95 + int(completed_uploads / max(upload_count, 1) * 3)
-                    progress_callback(progress, f"回写远程 subtitles: {output_name}")
+            if progress_callback:
+                progress = 95 + int(completed_uploads / max(upload_count, 1) * 3)
+                progress_callback(progress, f"回写远程 subtitles: {output_name}")
+            last_error = None
+            for attempt in range(1, 4):
                 try:
                     await asyncio.to_thread(shutil.copy2, match['subtitle_path'], staged_path)
                     logger.info('[RJ字幕] 开始回写远程字幕 %s 临时名=%s', output_name, temp_remote_name)
@@ -2430,8 +2500,16 @@ class RJSubtitleService:
                         'match_type': match['match_type'],
                         'match_score': match['match_score'],
                     })
+                    last_error = None
+                    break
                 except Exception as exc:
+                    last_error = exc
                     logger.warning('[RJ字幕] 远程字幕回写失败 %s: %s', output_name, exc)
+                    if self._remote_write_retry_delay_seconds(exc) is not None:
+                        break
+                    if self._remote_client_retry_delay_seconds(client) is not None:
+                        last_error = self._build_remote_degraded_error(client, exc)
+                        break
                     if await self._remote_subtitle_exists(client, subtitle_dir, output_name):
                         existing_names.add(output_name)
                         written_files.append({
@@ -2441,7 +2519,9 @@ class RJSubtitleService:
                             'match_type': match['match_type'],
                             'match_score': match['match_score'],
                         })
-                    elif await self._remote_subtitle_exists(client, subtitle_dir, temp_remote_name):
+                        last_error = None
+                        break
+                    if await self._remote_subtitle_exists(client, subtitle_dir, temp_remote_name):
                         try:
                             if overwrite and output_name in existing_names:
                                 try:
@@ -2458,14 +2538,24 @@ class RJSubtitleService:
                                 'match_type': match['match_type'],
                                 'match_score': match['match_score'],
                             })
+                            last_error = None
+                            break
                         except Exception as rename_exc:
                             logger.warning('[RJ字幕] 临时远程字幕重命名失败 %s -> %s: %s', temp_remote_name, output_name, rename_exc)
-                            write_errors.append(f"{output_name}: {exc}")
-                    else:
-                        write_errors.append(f"{output_name}: {exc}")
-                completed_uploads += 1
+                    break
+            if last_error is not None:
+                write_errors.append(f"{output_name}: {last_error}")
+                if self._remote_write_retry_delay_seconds(last_error) is not None:
+                    logger.warning('[RJ字幕] 远程库存持续熔断，停止本轮 subtitles 回写: %s', last_error)
+                    return False
+            completed_uploads += 1
+            return True
 
-        await asyncio.gather(*[do_upload(work) for work in work_items])
+        for work in work_items:
+            if should_cancel and should_cancel():
+                raise asyncio.CancelledError()
+            if not await do_upload(work):
+                break
 
         if progress_callback:
             progress_callback(98, f"远程 subtitles 回写完成，写入 {len(written_files)}，跳过 {len(skipped_files)}")

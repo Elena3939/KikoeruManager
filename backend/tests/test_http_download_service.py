@@ -2384,6 +2384,88 @@ async def test_download_google_drive_item_streams_with_cookie(monkeypatch, tmp_p
     assert any(item["file_size"] > 0 for item in progress_rows)
 
 
+@pytest.mark.asyncio
+async def test_download_google_drive_item_skips_virus_warning_html(monkeypatch, tmp_path):
+    bind_config(monkeypatch, tmp_path, retry_count=2, retry_wait_seconds=0)
+    service = HttpDownloadService()
+    target_dir = tmp_path / "downloads"
+    target_dir.mkdir()
+    captured = {"urls": []}
+
+    class BinaryContent:
+        async def iter_chunked(self, _size):
+            yield b"abcdef"
+
+    class WarningResponse:
+        status = 200
+        headers = {"content-type": "text/html; charset=utf-8"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def text(self, **_kwargs):
+            return """
+            <form id="download-form" action="https://drive.usercontent.google.com/download" method="get">
+              <input type="hidden" name="id" value="file-id">
+              <input type="hidden" name="export" value="download">
+              <input type="hidden" name="confirm" value="t">
+              <input type="hidden" name="uuid" value="uuid-token">
+            </form>
+            """
+
+    class FileResponse:
+        status = 200
+        headers = {
+            "content-type": "application/octet-stream",
+            "content-length": "6",
+        }
+
+        def __init__(self):
+            self.content = BinaryContent()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakeSession:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def get(self, url, **_kwargs):
+            captured["urls"].append(url)
+            return WarningResponse() if len(captured["urls"]) == 1 else FileResponse()
+
+    monkeypatch.setattr("app.core.http_download_service.aiohttp.ClientSession", FakeSession)
+
+    row = await service._download_google_drive_item({
+        "url": "https://drive.usercontent.google.com/download?id=file-id&export=download",
+        "filename": "voice.zip",
+        "target_dir": str(target_dir),
+        "final_path": str(target_dir / "voice.zip"),
+        "relative_path": "voice.zip",
+        "size_bytes": 6,
+        "file_id": "file-id",
+    })
+
+    assert captured["urls"] == [
+        "https://drive.usercontent.google.com/download?id=file-id&export=download",
+        "https://drive.usercontent.google.com/download?id=file-id&export=download&confirm=t&uuid=uuid-token",
+    ]
+    assert (target_dir / "voice.zip").read_bytes() == b"abcdef"
+    assert row["status"] == "completed"
+
+
 def test_google_drive_access_token_uses_builtin_oauth_client(monkeypatch, tmp_path):
     bind_config(
         monkeypatch,

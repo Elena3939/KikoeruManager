@@ -160,6 +160,8 @@ def configure_app_logging(
         logging.getLogger("uvicorn").setLevel(logging.WARNING)
         logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
         logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
         logging.getLogger("LiteLLM").setLevel(logging.WARNING)
         logging.getLogger("litellm").setLevel(logging.WARNING)
 

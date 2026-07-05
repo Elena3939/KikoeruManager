@@ -36,7 +36,7 @@
       v-if="!isGateRoute"
       width="248px"
       class="sidebar"
-      :class="{ 'is-mobile-open': mobileNavOpen, 'is-sidebar-pinned': sidebarPinned }"
+      :class="{ 'is-mobile-open': mobileNavOpen, 'is-sidebar-pinned': sidebarPinned, 'is-notification-panel-open': notificationPanelOpen }"
     >
       <div class="sidebar-shell">
         <div class="logo">
@@ -228,6 +228,7 @@ import NotificationBell from './components/system/NotificationBell.vue'
 import AnimatedThemeToggler from './components/magicui/AnimatedThemeToggler.vue'
 import { useTheme } from './composables/useTheme'
 import { useRealtimeEvents } from './composables/useRealtimeEvents'
+import { useNotifications } from './composables/useNotifications'
 import { healthApi, watcherApi } from './api'
 import router, { preloadRouteComponent } from './router'
 
@@ -241,6 +242,7 @@ const sidebarPinnedStorageKey = 'kikoerumanager.sidebarPinned'
 const sidebarPinned = ref(false)
 const { applyTheme } = useTheme()
 const realtimeEvents = useRealtimeEvents()
+const { panelOpen: notificationPanelOpen } = useNotifications()
 let realtimeEventsStarted = false
 let unsubscribeWatcherStatus = null
 let unsubscribeRealtimeConnected = null
@@ -5293,7 +5295,8 @@ html.kikoerumanager-dark .detail-body .path {
 }
 
 .sidebar:hover .sidebar-shell,
-.sidebar.is-sidebar-pinned .sidebar-shell {
+.sidebar.is-sidebar-pinned .sidebar-shell,
+.sidebar.is-notification-panel-open .sidebar-shell {
   width: var(--sidebar-expanded-width);
 }
 
@@ -5324,7 +5327,8 @@ html.kikoerumanager-dark .detail-body .path {
 }
 
 .sidebar:hover .logo-copy,
-.sidebar.is-sidebar-pinned .logo-copy {
+.sidebar.is-sidebar-pinned .logo-copy,
+.sidebar.is-notification-panel-open .logo-copy {
   opacity: 1;
   pointer-events: auto;
   transform: translate3d(0, 0, 0);
@@ -5404,7 +5408,8 @@ html.kikoerumanager-dark .detail-body .path {
 }
 
 .sidebar:hover .sidebar-section-label,
-.sidebar.is-sidebar-pinned .sidebar-section-label {
+.sidebar.is-sidebar-pinned .sidebar-section-label,
+.sidebar.is-notification-panel-open .sidebar-section-label {
   height: 20px;
   margin: 0 10px 8px;
   opacity: 1;
@@ -5452,7 +5457,8 @@ html.kikoerumanager-dark .detail-body .path {
 }
 
 .sidebar:hover .sidebar-pin-button,
-.sidebar.is-sidebar-pinned .sidebar-pin-button {
+.sidebar.is-sidebar-pinned .sidebar-pin-button,
+.sidebar.is-notification-panel-open .sidebar-pin-button {
   opacity: 1;
   pointer-events: auto;
   transform: translate3d(0, 0, 0) scale(1);
@@ -5498,7 +5504,8 @@ html.kikoerumanager-dark .detail-body .path {
 }
 
 .sidebar:hover .sidebar-rail-bell,
-.sidebar.is-sidebar-pinned .sidebar-rail-bell {
+.sidebar.is-sidebar-pinned .sidebar-rail-bell,
+.sidebar.is-notification-panel-open .sidebar-rail-bell {
   opacity: 0;
   pointer-events: none;
   height: 0;
@@ -5548,7 +5555,8 @@ html.kikoerumanager-dark .detail-body .path {
 }
 
 .sidebar:hover .sidebar-status-card,
-.sidebar.is-sidebar-pinned .sidebar-status-card {
+.sidebar.is-sidebar-pinned .sidebar-status-card,
+.sidebar.is-notification-panel-open .sidebar-status-card {
   height: 132px;
   padding: 14px;
   opacity: 1;
@@ -5601,7 +5609,8 @@ html.kikoerumanager-dark .detail-body .path {
 }
 
 .sidebar:hover .conflict-badge,
-.sidebar.is-sidebar-pinned .conflict-badge {
+.sidebar.is-sidebar-pinned .conflict-badge,
+.sidebar.is-notification-panel-open .conflict-badge {
   opacity: 1;
   pointer-events: auto;
 }
@@ -5618,7 +5627,7 @@ html.kikoerumanager-dark .detail-body .path {
   padding: 0;
 }
 
-.sidebar:not(:hover):not(.is-sidebar-pinned) .version-info {
+.sidebar:not(:hover):not(.is-sidebar-pinned):not(.is-notification-panel-open) .version-info {
   gap: 0;
 }
 
@@ -5642,7 +5651,8 @@ html.kikoerumanager-dark .detail-body .path {
 }
 
 .sidebar:hover .version-text,
-.sidebar.is-sidebar-pinned .version-text {
+.sidebar.is-sidebar-pinned .version-text,
+.sidebar.is-notification-panel-open .version-text {
   width: 128px;
   opacity: 1;
   padding: 4px 10px;
@@ -5734,7 +5744,8 @@ html.kikoerumanager-dark .detail-body .path {
 }
 
 .sidebar:hover :deep(.sidebar-menu .el-menu-item span),
-.sidebar.is-sidebar-pinned :deep(.sidebar-menu .el-menu-item span) {
+.sidebar.is-sidebar-pinned :deep(.sidebar-menu .el-menu-item span),
+.sidebar.is-notification-panel-open :deep(.sidebar-menu .el-menu-item span) {
   opacity: 1;
   transform: translate3d(0, 0, 0);
 }

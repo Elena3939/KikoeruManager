@@ -438,6 +438,8 @@ def build_notification_extra_for_task(task) -> dict[str, Any]:
     # 仅这两种是真正的「社团补全索引 / 状态刷新」任务，会跑 36 行作品概览
     if kind == "circle_completion_refresh_selected":
         return build_circle_refresh_selected_notification_extra(task)
+    if kind == "circle_completion_bonus_probe":
+        return build_circle_bonus_probe_notification_extra(task)
     if kind == "circle_completion_index":
         return build_circle_completion_notification_extra(task)
     # circle_completion_download_batch 是个空壳控制任务，不需要业务块，落到默认分支
@@ -700,6 +702,53 @@ def build_circle_refresh_selected_notification_extra(task) -> dict[str, Any]:
         "circle_id": circle_id,
         "circle_diff": diff_items,
         "rj_work_cards": cards[:50],
+        "recent_logs": build_recent_logs(task, max_lines=30),
+    }
+
+
+def build_circle_bonus_probe_notification_extra(task) -> dict[str, Any]:
+    """社团补全特典探测：展示本次探测范围、命中和写入数量。"""
+    meta = dict(getattr(task, "task_metadata", None) or {})
+    summary_payload = dict(meta.get("bonus_probe_summary") or {})
+    result_payload = dict(meta.get("bonus_probe_result") or {})
+    release_dates = [
+        str(value or "").strip()
+        for value in list(meta.get("release_dates") or result_payload.get("release_dates") or [])
+        if str(value or "").strip()
+    ]
+    circle_id = str(result_payload.get("circle_id") or meta.get("circle_id") or "").strip()
+    circle_name = str(result_payload.get("circle_name") or meta.get("circle_name") or "").strip()
+    hit_count = _safe_int(summary_payload.get("hit_count") or result_payload.get("hit_count"))
+    inserted_count = _safe_int(summary_payload.get("inserted_count") or result_payload.get("inserted_count"))
+    probe_count = _safe_int(summary_payload.get("probe_count") or result_payload.get("probe_count"))
+    request_count = _safe_int(summary_payload.get("request_count") or result_payload.get("request_count"))
+    date_count = _safe_int(summary_payload.get("date_count") or result_payload.get("date_count") or len(release_dates))
+
+    stats = {
+        "release_dates": date_count,
+        "probe_count": probe_count,
+        "hit_count": hit_count,
+        "inserted_count": inserted_count,
+        "request_count": request_count,
+        "duration": _format_duration(getattr(task, "started_at", None), getattr(task, "completed_at", None)),
+    }
+    diff_items = [
+        {"label": "发售日", "old": "", "new": f"{date_count} 个"},
+        {"label": "探测 RJ", "old": "", "new": f"{probe_count} 个"},
+        {"label": "命中特典", "old": "", "new": f"{hit_count} 个"},
+        {"label": "写入", "old": "", "new": f"{inserted_count} 个"},
+        {"label": "DLsite 请求", "old": "", "new": f"{request_count} 次"},
+    ]
+    target = circle_name or circle_id or "当前社团"
+    action_label = "新作特典探测" if str(meta.get("source_action") or "").strip() == "new_release_bonus_probe" else "特典补全"
+    summary = f"{target}：{action_label}，发售日 {date_count} 个，命中 {hit_count} 个特典，写入 {inserted_count} 个"
+    return {
+        "stats": stats,
+        "summary": summary,
+        "circle_name": circle_name,
+        "circle_id": circle_id,
+        "circle_diff": diff_items,
+        "release_dates": release_dates[:100],
         "recent_logs": build_recent_logs(task, max_lines=30),
     }
 
