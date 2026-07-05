@@ -24,6 +24,7 @@ from ..models.database import (
     ASMRWork,
     CircleCatalog,
     CircleWork,
+    DLsiteBonusOriginalProbeState,
     LibraryOwnedWork,
     LibrarySnapshot,
     SessionLocal,
@@ -1281,8 +1282,18 @@ class CircleCompletionService:
                 out.append(key)
         return out
 
+    def _completion_original_release_date(self, canonical_rjcode: Any, metadata_map_all: Dict[str, Dict[str, Any]]) -> str:
+        metadata = metadata_map_all.get(self.normalize_rjcode(canonical_rjcode)) or {}
+        return str((metadata or {}).get("release_date") or "").strip()
+
     def _completion_release_timestamp(self, item: Dict[str, Any]) -> int:
-        raw = str(item.get("release_date") or item.get("date") or item.get("release_at") or "").strip()
+        raw = str(
+            item.get("original_release_date")
+            or item.get("release_date")
+            or item.get("date")
+            or item.get("release_at")
+            or ""
+        ).strip()
         placeholder = int(datetime(2099, 1, 1).timestamp())
         if not raw:
             return placeholder if item.get("is_unreleased") else 0
@@ -1365,6 +1376,142 @@ class CircleCompletionService:
         candidates.extend(item.get("linked_rjcodes") or [])
         return any(self.normalize_rjcode(candidate) == target for candidate in candidates)
 
+    def _completion_item_codes(self, item: Dict[str, Any]) -> List[str]:
+        codes: List[str] = []
+        candidates = [
+            item.get("canonical_rjcode"),
+            item.get("display_rjcode"),
+            item.get("asmr_available_rjcode"),
+            item.get("server_match_primary_rjcode"),
+        ]
+        for payload_key in ["download_plan", "owned_variant", "preferred_variant"]:
+            payload = item.get(payload_key)
+            if isinstance(payload, dict):
+                candidates.append(payload.get("rjcode"))
+        candidates.extend(item.get("linked_rjcodes") or [])
+        for candidate in candidates:
+            normalized = self.normalize_rjcode(candidate)
+            if normalized and normalized not in codes:
+                codes.append(normalized)
+        return codes
+
+    def _completion_bonus_own_codes(self, item: Dict[str, Any]) -> Set[str]:
+        candidates = [
+            item.get("display_rjcode"),
+            item.get("asmr_available_rjcode"),
+            item.get("server_match_primary_rjcode"),
+        ]
+        for payload_key in ["download_plan", "owned_variant", "preferred_variant"]:
+            payload = item.get(payload_key)
+            if isinstance(payload, dict):
+                candidates.append(payload.get("rjcode"))
+        return {
+            normalized
+            for normalized in (self.normalize_rjcode(candidate) for candidate in candidates)
+            if normalized
+        }
+
+    def _completion_bonus_parent_code(self, item: Dict[str, Any], available_codes: Set[str]) -> str:
+        if not bool(item.get("is_bonus_work")):
+            return ""
+        own_codes = self._completion_bonus_own_codes(item)
+        explicit_parent = self.normalize_rjcode(item.get("bonus_parent_rjcode"))
+        if explicit_parent and explicit_parent not in own_codes and explicit_parent in available_codes:
+            return explicit_parent
+        canonical = self.normalize_rjcode(item.get("canonical_rjcode"))
+        if canonical and canonical not in own_codes and canonical in available_codes:
+            return canonical
+        for candidate in item.get("linked_rjcodes") or []:
+            normalized = self.normalize_rjcode(candidate)
+            if normalized and normalized not in own_codes and normalized in available_codes:
+                return normalized
+        return ""
+
+    def _completion_group_bonus_items(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        code_to_item: Dict[str, Dict[str, Any]] = {}
+        for item in rows:
+            for code in self._completion_item_codes(item):
+                existing = code_to_item.get(code)
+                if existing is None or (bool(existing.get("is_bonus_work")) and not bool(item.get("is_bonus_work"))):
+                    code_to_item[code] = item
+
+        available_codes = set(code_to_item.keys())
+        hidden_ids: Set[int] = set()
+        for item in rows:
+            parent_code = self._completion_bonus_parent_code(item, available_codes)
+            parent_item = code_to_item.get(parent_code) if parent_code else None
+            if not parent_item or parent_item is item or bool(parent_item.get("is_bonus_work")):
+                continue
+            bonuses = parent_item.setdefault("bonus_works", [])
+            if item not in bonuses:
+                bonuses.append(item)
+            hidden_ids.add(id(item))
+        return [item for item in rows if id(item) not in hidden_ids]
+
+    def _completion_rj_number(self, rjcode: Any) -> Optional[int]:
+        normalized = self.normalize_rjcode(rjcode)
+        if not normalized:
+            return None
+        match = re.search(r"RJ0*(\d+)", normalized)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except (TypeError, ValueError):
+            return None
+
+    def _completion_normalized_release_date(self, value: Any) -> str:
+        try:
+            return str(self.dlsite_service._normalize_date_text(value) or "").strip()
+        except Exception:
+            return str(value or "").strip()
+
+    def _completion_attach_bonus_parent_codes(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        parents_by_key: Dict[Tuple[str, str], List[Tuple[int, str, Dict[str, Any]]]] = defaultdict(list)
+        for item in items:
+            if bool(item.get("is_bonus_work")):
+                continue
+            parent_code = self.normalize_rjcode(item.get("canonical_rjcode") or item.get("display_rjcode"))
+            if not parent_code:
+                continue
+            maker_id = str(item.get("maker_id") or "").strip().upper()
+            release_date = self._completion_normalized_release_date(
+                item.get("original_release_date") or item.get("release_date")
+            )
+            if not maker_id or not release_date:
+                continue
+            parents_by_key[(maker_id, release_date)].append((
+                self._completion_rj_number(parent_code) or 10**12,
+                parent_code,
+                item,
+            ))
+
+        if not parents_by_key:
+            return items
+
+        for candidates in parents_by_key.values():
+            candidates.sort(key=lambda row: (row[0], row[1]))
+
+        for item in items:
+            if not bool(item.get("is_bonus_work")) or item.get("bonus_parent_rjcode"):
+                continue
+            maker_id = str(item.get("maker_id") or "").strip().upper()
+            release_date = self._completion_normalized_release_date(item.get("release_date"))
+            if not maker_id or not release_date:
+                continue
+            own_codes = self._completion_bonus_own_codes(item)
+            bonus_number = self._completion_rj_number(item.get("display_rjcode") or item.get("canonical_rjcode"))
+            candidates: List[Tuple[int, str, Dict[str, Any]]] = []
+            for parent_number, parent_code, parent_item in parents_by_key.get((maker_id, release_date), []):
+                if parent_code in own_codes:
+                    continue
+                distance = abs(parent_number - bonus_number) if bonus_number is not None and parent_number < 10**12 else 10**12
+                candidates.append((distance, parent_code, parent_item))
+            if candidates:
+                candidates.sort(key=lambda row: (row[0], row[1]))
+                item["bonus_parent_rjcode"] = candidates[0][1]
+        return items
+
     def _build_completion_item(
         self,
         *,
@@ -1401,6 +1548,7 @@ class CircleCompletionService:
                 release_date = str((metadata or {}).get("release_date") or "").strip()
                 if release_date:
                     break
+        original_release_date = self._completion_original_release_date(row.canonical_rjcode, metadata_map_all)
 
         view_canonical_info = {
             **canonical_info,
@@ -1524,6 +1672,7 @@ class CircleCompletionService:
             ),
             "price_text": str(getattr(row, "price_text", "") or "").strip(),
             "release_date": release_date,
+            "original_release_date": original_release_date,
             "is_unreleased": is_unreleased,
             "is_new_work": is_new,
             "is_bonus_work": is_bonus_work,
@@ -1613,6 +1762,12 @@ class CircleCompletionService:
         payload = dict(item)
         payload.pop("__release_timestamp", None)
         payload.pop("source_compare", None)
+        if isinstance(payload.get("bonus_works"), list):
+            payload["bonus_works"] = [
+                self._strip_completion_internal_fields(bonus)
+                for bonus in payload["bonus_works"]
+                if isinstance(bonus, dict)
+            ]
         return payload
 
     def _build_completion_view_state(self, circle_id_or_query: str) -> Dict[str, Any]:
@@ -1684,6 +1839,7 @@ class CircleCompletionService:
             )
             for row in works
         ]
+        items = self._completion_attach_bonus_parent_codes(items)
         catalog_payload = {
             "circle_id": catalog.circle_id,
             "circle_name": catalog.circle_name,
@@ -1873,13 +2029,18 @@ class CircleCompletionService:
             search=search,
         )
         filtered = self._sort_completion_items(filtered, sort)
+        tab_key = str(tab or "missing").strip().lower()
+        grouped_filtered = (
+            self._completion_group_bonus_items([dict(item) for item in filtered])
+            if tab_key in {"missing", "owned"}
+            else filtered
+        )
         safe_page_size = max(1, min(200, int(page_size or 10)))
-        total = len(filtered)
+        total = len(grouped_filtered)
         page_count = max(1, (total + safe_page_size - 1) // safe_page_size)
         safe_page = max(1, min(page_count, int(page or 1)))
         start = (safe_page - 1) * safe_page_size
-        page_items = filtered[start:start + safe_page_size]
-        tab_key = str(tab or "missing").strip().lower()
+        page_items = grouped_filtered[start:start + safe_page_size]
         if tab_key == "compare":
             payload_items = [self._build_completion_compare_item(item) for item in page_items]
         else:
@@ -1932,11 +2093,52 @@ class CircleCompletionService:
             for item in filtered
             if str(item.get("canonical_rjcode") or "").strip() and item.get("has_asmr_one")
         ]
+        bonus_rjcodes = [
+            str(item.get("canonical_rjcode") or "").strip()
+            for item in filtered
+            if str(item.get("canonical_rjcode") or "").strip() and item.get("is_bonus_work")
+        ]
+        has_bonus_rjcodes = [
+            str(item.get("canonical_rjcode") or "").strip()
+            for item in filtered
+            if (
+                str(item.get("canonical_rjcode") or "").strip()
+                and not item.get("is_bonus_work")
+                and item.get("has_bonus")
+            )
+        ]
+        no_bonus_rjcodes = []
+        if canonical_rjcodes:
+            db = SessionLocal()
+            try:
+                rows = (
+                    db.query(DLsiteBonusOriginalProbeState)
+                    .filter(
+                        DLsiteBonusOriginalProbeState.circle_id == (
+                            catalog.get("circle_id") if isinstance(catalog, dict) else catalog.circle_id
+                        ),
+                        DLsiteBonusOriginalProbeState.original_rjcode.in_(canonical_rjcodes),
+                        DLsiteBonusOriginalProbeState.strategy_version == "date-range-v4",
+                        DLsiteBonusOriginalProbeState.status == "no_bonus",
+                    )
+                    .all()
+                )
+                no_bonus_rjcodes = [
+                    self.normalize_rjcode(row.original_rjcode)
+                    for row in rows
+                    if self.normalize_rjcode(row.original_rjcode)
+                ]
+            finally:
+                db.close()
         requested_rjcodes = {}
+        release_dates_by_rjcode = {}
         for item in filtered:
             code = str(item.get("canonical_rjcode") or "").strip()
             if not code:
                 continue
+            release_date = str(item.get("release_date") or item.get("date") or item.get("release_at") or "").strip()
+            if release_date:
+                release_dates_by_rjcode[code] = release_date
             candidates = []
             for candidate in [
                 (item.get("download_plan") or {}).get("rjcode") if isinstance(item.get("download_plan"), dict) else "",
@@ -1950,12 +2152,35 @@ class CircleCompletionService:
                     candidates.append(normalized)
             if candidates:
                 requested_rjcodes[code] = candidates
+        completed_bonus_probe_dates = []
+        if release_dates_by_rjcode:
+            try:
+                from .dlsite_bonus_probe_service import get_dlsite_bonus_probe_service
+
+                bonus_service = get_dlsite_bonus_probe_service()
+                context = bonus_service.resolve_circle_context(
+                    str(catalog.get("circle_id") if isinstance(catalog, dict) else catalog.circle_id),
+                )
+                maker_id = str(context.get("maker_id") or "").strip().upper()
+                completed_bonus_probe_dates = bonus_service.reusable_completed_release_dates(
+                    maker_id=maker_id,
+                    release_dates=list(release_dates_by_rjcode.values()),
+                    mode="deep",
+                    gap_limit=500,
+                )
+            except Exception:
+                logger.debug("[社团补全] 查询已完成特典探测日期失败 circle=%s", circle_id_or_query, exc_info=True)
         return {
             "circle_id": catalog.get("circle_id") if isinstance(catalog, dict) else catalog.circle_id,
             "circle_name": catalog.get("circle_name") if isinstance(catalog, dict) else catalog.circle_name,
             "canonical_rjcodes": canonical_rjcodes,
             "downloadable_rjcodes": downloadable_rjcodes,
+            "bonus_rjcodes": bonus_rjcodes,
+            "has_bonus_rjcodes": has_bonus_rjcodes,
+            "no_bonus_rjcodes": no_bonus_rjcodes,
             "requested_rjcodes": requested_rjcodes,
+            "release_dates_by_rjcode": release_dates_by_rjcode,
+            "completed_bonus_probe_dates": completed_bonus_probe_dates,
             "total": len(canonical_rjcodes),
             "downloadable_count": len(downloadable_rjcodes),
         }
@@ -1989,25 +2214,38 @@ class CircleCompletionService:
             search=search,
         )
         filtered = self._sort_completion_items(filtered, sort)
+        if tab_key in {"missing", "owned"}:
+            filtered = self._completion_group_bonus_items([dict(item) for item in filtered])
         safe_page_size = max(1, min(200, int(page_size or 10)))
         matched_index = -1
         matched_item: Optional[Dict[str, Any]] = None
+        matched_bonus: Optional[Dict[str, Any]] = None
         for index, item in enumerate(filtered):
             if self._completion_item_matches_rjcode(item, rjcode):
                 matched_index = index
                 matched_item = item
                 break
+            for bonus in item.get("bonus_works") or []:
+                if isinstance(bonus, dict) and self._completion_item_matches_rjcode(bonus, rjcode):
+                    matched_index = index
+                    matched_item = item
+                    matched_bonus = bonus
+                    break
+            if matched_item is not None:
+                break
         matched = matched_index >= 0 and matched_item is not None
         page = (matched_index // safe_page_size) + 1 if matched else 1
         page_count = max(1, (len(filtered) + safe_page_size - 1) // safe_page_size)
+        highlight_item = matched_bonus or matched_item
         return {
             "circle_id": catalog.get("circle_id") if isinstance(catalog, dict) else catalog.circle_id,
             "circle_name": catalog.get("circle_name") if isinstance(catalog, dict) else catalog.circle_name,
             "tab": tab_key,
             "rjcode": self.normalize_rjcode(rjcode),
             "matched": matched,
-            "canonical_rjcode": self.normalize_rjcode(matched_item.get("canonical_rjcode")) if matched_item else "",
-            "display_rjcode": self.normalize_rjcode(matched_item.get("display_rjcode")) if matched_item else "",
+            "canonical_rjcode": self.normalize_rjcode((highlight_item or {}).get("canonical_rjcode")) if highlight_item else "",
+            "display_rjcode": self.normalize_rjcode((highlight_item or {}).get("display_rjcode")) if highlight_item else "",
+            "parent_canonical_rjcode": self.normalize_rjcode(matched_item.get("canonical_rjcode")) if matched_item else "",
             "page": max(1, min(page_count, page)),
             "page_size": safe_page_size,
             "page_count": page_count,
@@ -2021,14 +2259,14 @@ class CircleCompletionService:
         这是社团补全页的定位搜索，只读本地索引表，不触发 DLsite / Kikoeru
         网络请求；用户输入 RJ 后用它找到所属社团，再跳转到该社团详情页。
         """
-        from sqlalchemy import Text as sa_Text, cast as sa_cast, func as sa_func, or_ as sa_or
+        from sqlalchemy import Text as sa_Text, cast as sa_cast, or_ as sa_or, text as sa_text
 
         raw_keyword = str(keyword or "").strip()
         if not raw_keyword:
             return []
         safe_limit = max(1, min(50, int(limit or 20)))
         normalized_rj = self.normalize_rjcode(raw_keyword)
-        lowered_keyword = raw_keyword.lower()
+        lowered_keyword = raw_keyword.lower().replace("!", "!!").replace("%", "!%").replace("_", "!_")
         like_pattern = f"%{lowered_keyword}%"
         json_pattern = f"%{normalized_rj}%"
 
@@ -2041,11 +2279,20 @@ class CircleCompletionService:
             )
 
             filters = [
-                sa_func.lower(CircleWork.canonical_rjcode).like(like_pattern),
-                sa_func.lower(CircleWork.display_rjcode).like(like_pattern),
-                sa_func.lower(CircleWork.title).like(like_pattern),
-                sa_func.lower(CircleCatalog.circle_name).like(like_pattern),
-                sa_func.lower(CircleCatalog.circle_id).like(like_pattern),
+                sa_text(
+                    """
+                    (COALESCE(circle_works.canonical_rjcode, '') || ' ' ||
+                     COALESCE(circle_works.display_rjcode, '') || ' ' ||
+                     COALESCE(circle_works.title, '')) ILIKE :circle_work_search_pattern ESCAPE '!'
+                    """
+                ).bindparams(circle_work_search_pattern=like_pattern),
+                sa_text(
+                    """
+                    (COALESCE(circle_catalogs.circle_name_normalized, '') || ' ' ||
+                     COALESCE(circle_catalogs.circle_name, '') || ' ' ||
+                     COALESCE(circle_catalogs.circle_id, '')) ILIKE :circle_catalog_search_pattern ESCAPE '!'
+                    """
+                ).bindparams(circle_catalog_search_pattern=like_pattern),
             ]
             if normalized_rj:
                 filters.extend([
@@ -6072,7 +6319,7 @@ class CircleCompletionService:
           （只在邮件首次发现时写入，不会被 onupdate 刷新），fallback 到 created_at。
           避免老作品被全量索引刷新 updated_at 后被误判为"新作"的 BUG。
         """
-        from sqlalchemy import or_ as sa_or, func as sa_func
+        from sqlalchemy import text as sa_text
 
         started_at = time.perf_counter()
         stage_costs: Dict[str, int] = {}
@@ -6091,15 +6338,16 @@ class CircleCompletionService:
         try:
             catalog_query = db.query(CircleCatalog).order_by(CircleCatalog.last_indexed_at.desc())
             if normalized:
-                pattern = f"%{normalized}%"
-                # circle_name_normalized 列在写入时已 NFKC + lower 化；
-                # circle_name / circle_id 用 SQL lower() 兜底，避免漏匹配。
+                escaped = normalized.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+                pattern = f"%{escaped}%"
                 catalog_query = catalog_query.filter(
-                    sa_or(
-                        CircleCatalog.circle_name_normalized.like(pattern),
-                        sa_func.lower(CircleCatalog.circle_name).like(pattern),
-                        sa_func.lower(CircleCatalog.circle_id).like(pattern),
-                    )
+                    sa_text(
+                        """
+                        (COALESCE(circle_name_normalized, '') || ' ' ||
+                         COALESCE(circle_name, '') || ' ' ||
+                         COALESCE(circle_id, '')) ILIKE :circle_catalog_search_pattern ESCAPE '!'
+                        """
+                    ).bindparams(circle_catalog_search_pattern=pattern)
                 )
             # 留少量冗余给同名去重，避免去重后不足 safe_limit。
             rows = catalog_query.limit(safe_limit * 2 + 16).all()
@@ -6444,6 +6692,7 @@ class CircleCompletionService:
                         release_date = str((metadata or {}).get("release_date") or "").strip()
                         if release_date:
                             break
+                item["original_release_date"] = self._completion_original_release_date(row.canonical_rjcode, metadata_map_all)
                 item["release_date"] = release_date
                 item["is_unreleased"] = self._is_future_release_date(release_date)
                 item["price_text"] = str(getattr(row, "price_text", "") or "").strip()
@@ -6485,6 +6734,7 @@ class CircleCompletionService:
                 item["has_bonus"] = bool(getattr(row, "has_bonus", False))
                 if item["is_bonus_work"]:
                     item["cvs"] = []
+                item["__release_timestamp"] = self._completion_release_timestamp(item)
                 view_canonical_info = {
                     **canonical_info,
                     "linked_rjcodes": item["linked_rjcodes"],

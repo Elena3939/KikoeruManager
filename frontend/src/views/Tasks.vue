@@ -670,6 +670,51 @@ function formatBytes(value) {
   return `${current.toFixed(2)} ${units[unitIndex]}`
 }
 
+function normalizeTaskFileTreePath(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/\/{2,}/g, '/')
+    .replace(/^(?:\.\/)+/, '')
+    .replace(/^[/\\]+|[/\\]+$/g, '')
+}
+
+function isAbsoluteLikeTaskFileTreePath(value) {
+  const rawPath = String(value || '').trim().replace(/\\/g, '/')
+  return /^[A-Za-z]:\//.test(rawPath) || rawPath.startsWith('/') || rawPath.startsWith('//')
+}
+
+function stripTaskFileTreePathBeforeRoot(path, rootLabel) {
+  const normalizedPath = normalizeTaskFileTreePath(path)
+  const normalizedRoot = normalizeTaskFileTreePath(rootLabel)
+  if (!normalizedPath || !normalizedRoot) return normalizedPath
+
+  const pathLower = normalizedPath.toLowerCase()
+  const rootLower = normalizedRoot.toLowerCase()
+  if (pathLower === rootLower || pathLower.startsWith(`${rootLower}/`)) return normalizedPath
+
+  const pathParts = normalizedPath.split('/').filter(Boolean)
+  const rootParts = normalizedRoot.split('/').filter(Boolean)
+  if (!pathParts.length || !rootParts.length || pathParts.length <= rootParts.length) return normalizedPath
+
+  const canStripMiddleRoot = isAbsoluteLikeTaskFileTreePath(path) || /^[A-Za-z]:$/.test(pathParts[0])
+  if (!canStripMiddleRoot) return normalizedPath
+
+  const rootPartLower = rootParts.map((part) => part.toLowerCase())
+  for (let index = 1; index <= pathParts.length - rootParts.length; index += 1) {
+    const sameRoot = rootPartLower.every((part, offset) => pathParts[index + offset]?.toLowerCase() === part)
+    if (sameRoot) return pathParts.slice(index).join('/')
+  }
+
+  const rootRJ = normalizeRJ(normalizedRoot)
+  if (rootRJ) {
+    for (let index = 1; index < pathParts.length; index += 1) {
+      if (normalizeRJ(pathParts[index]) === rootRJ) return pathParts.slice(index).join('/')
+    }
+  }
+  return normalizedPath
+}
+
 function buildTreeRows(treeItems = []) {
   const roots = []
   const nodeMap = new Map()
@@ -682,7 +727,7 @@ function buildTreeRows(treeItems = []) {
     return node
   }
   for (const item of treeItems) {
-    const rawPath = String(item?.relative_path || item?.name || item?.path || '').replace(/^[/\\]+|[/\\]+$/g, '')
+    const rawPath = normalizeTaskFileTreePath(item?.relative_path || item?.name || item?.path || '')
     if (!rawPath) continue
     const parts = rawPath.split('/').filter(Boolean)
     let parentKey = ''
@@ -793,17 +838,19 @@ function inferSnapshotFileTreeRoot(item) {
 }
 
 function withTaskFileTreeRoot(path, rootLabel) {
-  const normalizedPath = String(path || '').replace(/^[/\\]+|[/\\]+$/g, '').replace(/\\/g, '/')
-  const normalizedRoot = String(rootLabel || '').replace(/^[/\\]+|[/\\]+$/g, '').replace(/\\/g, '/')
+  const normalizedPath = stripTaskFileTreePathBeforeRoot(path, rootLabel)
+  const normalizedRoot = normalizeTaskFileTreePath(rootLabel)
   if (!normalizedPath || !normalizedRoot) return normalizedPath
-  if (normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`)) return normalizedPath
+  const pathLower = normalizedPath.toLowerCase()
+  const rootLower = normalizedRoot.toLowerCase()
+  if (pathLower === rootLower || pathLower.startsWith(`${rootLower}/`)) return normalizedPath
   if (containsRJ(normalizedPath.split('/')[0])) return normalizedPath
   return `${normalizedRoot}/${normalizedPath}`
 }
 
 function isSameOrInsideTaskTreePath(path, parentPath) {
-  const normalizedPath = String(path || '').replace(/^[/\\]+|[/\\]+$/g, '').replace(/\\/g, '/')
-  const normalizedParent = String(parentPath || '').replace(/^[/\\]+|[/\\]+$/g, '').replace(/\\/g, '/')
+  const normalizedPath = normalizeTaskFileTreePath(path)
+  const normalizedParent = normalizeTaskFileTreePath(parentPath)
   return Boolean(normalizedPath && normalizedParent && (
     normalizedPath === normalizedParent ||
     normalizedPath.startsWith(`${normalizedParent}/`)
@@ -999,7 +1046,7 @@ function mapFilteredItems(item) {
   const pushFilteredItem = (current, fallbackType = 'file') => {
     if (!current) return
     const asObject = typeof current === 'object' ? current : { path: String(current) }
-    const relativePath = String(asObject.relative_path || asObject.path || asObject.name || '').replace(/^[/\\]+|[/\\]+$/g, '')
+    const relativePath = normalizeTaskFileTreePath(asObject.relative_path || asObject.path || asObject.name || '')
     if (!relativePath || seen.has(relativePath)) return
     seen.add(relativePath)
     const explicitType = String(asObject.type || asObject.entry_type || '').toLowerCase()
@@ -1037,9 +1084,9 @@ function mapUploadedFiles(item) {
     ? metadata.upload_files
     : Array.isArray(metadata.uploaded_files) ? metadata.uploaded_files : []
   return sourceFiles.map((current, index) => ({
-    key: String(current?.relative_path || current?.name || current?.upload_path || `${index}`),
-    relative_path: String(current?.relative_path || current?.name || current?.upload_path || ''),
-    name: String(current?.name || current?.relative_path || current?.upload_path || '未命名文件'),
+    key: normalizeTaskFileTreePath(current?.relative_path || current?.name || current?.upload_path || `${index}`),
+    relative_path: normalizeTaskFileTreePath(current?.relative_path || current?.name || current?.upload_path || ''),
+    name: String(current?.name || getFileName(current?.relative_path || current?.upload_path) || '未命名文件'),
     type: 'file',
     size: Number(current?.size_bytes || 0),
     status: 'added',
@@ -1050,9 +1097,9 @@ function mapDownloadFiles(item) {
   const metadata = item?.details?.metadata || {}
   const downloadFiles = Array.isArray(metadata.download_files) ? metadata.download_files : []
   return downloadFiles.map((current, index) => ({
-    key: String(current?.relative_path || current?.path || current?.name || `${index}`),
-    relative_path: String(current?.relative_path || current?.path || current?.name || ''),
-    name: String(current?.name || current?.relative_path || current?.path || '未命名文件'),
+    key: normalizeTaskFileTreePath(current?.relative_path || current?.path || current?.name || `${index}`),
+    relative_path: normalizeTaskFileTreePath(current?.relative_path || current?.path || current?.name || ''),
+    name: String(current?.name || getFileName(current?.relative_path || current?.path) || '未命名文件'),
     type: current?.type === 'dir' || current?.is_dir ? 'dir' : 'file',
     size: Number(current?.size_bytes || current?.size || 0),
     status: 'added',
@@ -1063,9 +1110,9 @@ function mapFileTreeItems(item) {
   const metadata = item?.details?.metadata || {}
   const treeItems = Array.isArray(metadata.file_tree_items) ? metadata.file_tree_items : []
   return treeItems.map((current, index) => ({
-    key: String(current?.relative_path || current?.path || current?.name || `${index}`),
-    relative_path: String(current?.relative_path || current?.path || current?.name || ''),
-    name: String(current?.name || current?.relative_path || current?.path || '未命名项'),
+    key: normalizeTaskFileTreePath(current?.relative_path || current?.path || current?.name || `${index}`),
+    relative_path: normalizeTaskFileTreePath(current?.relative_path || current?.path || current?.name || ''),
+    name: String(current?.name || getFileName(current?.relative_path || current?.path) || '未命名项'),
     type: current?.type === 'dir' || current?.is_dir ? 'dir' : 'file',
     size: current?.size,
     status: 'default',
@@ -1194,7 +1241,7 @@ function buildTaskFileTreeSections(item) {
     : mergedItems
   const directoryKeys = new Set()
   for (const entry of mergedItems) {
-    const rawPath = String(entry?.relative_path || '').replace(/^[/\\]+|[/\\]+$/g, '')
+    const rawPath = normalizeTaskFileTreePath(entry?.relative_path || '')
     if (!rawPath) continue
     const parts = rawPath.split('/').filter(Boolean)
     let joined = ''

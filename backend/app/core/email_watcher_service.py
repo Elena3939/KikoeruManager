@@ -763,6 +763,98 @@ class EmailWatcherService:
             html_body = _build_new_release_email_card_html(circle_name, items)
             await send_notification_email(title, html_body, text_body)
 
+    async def _trigger_bonus_probe_for_new_releases(self, grouped_items: Dict[str, Dict[str, object]]) -> None:
+        """新作入库后探测新作发售日的 DLsite 隐藏特典。"""
+        if not grouped_items:
+            return
+        try:
+            from .dlsite_bonus_probe_service import get_dlsite_bonus_probe_service
+            from .task_engine import Task, TaskStatus, TaskType, get_task_engine
+        except Exception:
+            logger.debug("[邮件监听] 加载特典探测任务依赖失败", exc_info=True)
+            return
+
+        service = get_dlsite_bonus_probe_service()
+        engine = get_task_engine()
+        active_statuses = {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED}
+        for circle_id, payload in grouped_items.items():
+            normalized_circle_id = str(circle_id or "").strip()
+            if not normalized_circle_id:
+                continue
+            items = [item for item in list((payload or {}).get("items") or []) if isinstance(item, dict)]
+            if not items:
+                continue
+            maker_id = str(items[0].get("maker_id") or "").strip().upper()
+            if not maker_id:
+                try:
+                    maker_id = service.resolve_circle_context(normalized_circle_id).get("maker_id", "")
+                except Exception:
+                    logger.debug("[邮件监听] 解析社团 maker_id 失败 circle_id=%s", normalized_circle_id, exc_info=True)
+                    maker_id = ""
+            if not maker_id:
+                continue
+            release_dates = []
+            for item in items:
+                release_date = service.normalize_date(item.get("release_date"))
+                if release_date and release_date not in release_dates:
+                    release_dates.append(release_date)
+            mode = "new_release"
+            gap_limit = 500
+            batch_size = 500
+            concurrency = 5
+            for release_date in release_dates:
+                business_key = f"{maker_id}:{mode}:{release_date}:{gap_limit}:bonus_probe"
+                duplicate = False
+                for current_task in engine.get_all_tasks(include_hidden=True):
+                    if current_task.type != TaskType.CIRCLE_COMPLETION_BONUS_PROBE:
+                        continue
+                    metadata = dict(current_task.task_metadata or {})
+                    if str(metadata.get("business_key") or "").strip() == business_key and current_task.status in active_statuses:
+                        duplicate = True
+                        break
+                if duplicate:
+                    continue
+                source_label = f"{str((payload or {}).get('circle_name') or normalized_circle_id).strip()} 新作特典探测"
+                task = Task(
+                    task_type=TaskType.CIRCLE_COMPLETION_BONUS_PROBE,
+                    source_path=normalized_circle_id,
+                    auto_classify=False,
+                    metadata={
+                        "circle_id": normalized_circle_id,
+                        "circle_name": str((payload or {}).get("circle_name") or "").strip(),
+                        "maker_id": maker_id,
+                        "release_dates": [release_date],
+                        "mode": mode,
+                        "gap_limit": gap_limit,
+                        "batch_size": batch_size,
+                        "concurrency": concurrency,
+                        "queue_priority": 180,
+                        "task_domain": "circle_completion",
+                        "source_page": "circle-completion",
+                        "source_action": "new_release_bonus_probe",
+                        "source_label": source_label,
+                        "business_key": business_key,
+                        "progress_log": [],
+                    },
+                )
+                task.ensure_business_context("circle_completion", {
+                    "source_page": "circle-completion",
+                    "source_action": "new_release_bonus_probe",
+                    "source_label": source_label,
+                    "business_key": business_key,
+                })
+                try:
+                    await engine.submit(task)
+                    logger.info(
+                        "[邮件监听] 已排队新作特典探测 circle_id=%s maker_id=%s release_date=%s task_id=%s",
+                        normalized_circle_id,
+                        maker_id,
+                        release_date,
+                        task.id,
+                    )
+                except Exception:
+                    logger.warning("[邮件监听] 排队新作特典探测失败 circle_id=%s date=%s", normalized_circle_id, release_date, exc_info=True)
+
     async def _trigger_index_for_rjcodes(self, items: List[Dict[str, str]], config, batch_id: str) -> List[Dict[str, object]]:
         grouped_items: Dict[str, Dict[str, object]] = {}
         results: List[Dict[str, object]] = []
@@ -780,6 +872,7 @@ class EmailWatcherService:
             })
             bucket["items"].append(result)
         await self._emit_new_release_notifications(grouped_items)
+        await self._trigger_bonus_probe_for_new_releases(grouped_items)
         return results
 
     async def _upsert_email_release_work(
@@ -829,7 +922,6 @@ class EmailWatcherService:
             product_cover_url,
             display_rjcode,
         ) or str(item.get("image_url") or "").strip()
-
         probe_candidates = [display_rjcode, canonical, *linked_rjcodes]
         actual_rjcode, _ = await circle_service._find_public_downloadable_work(
             canonical_info,

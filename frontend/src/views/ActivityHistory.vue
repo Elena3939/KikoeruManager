@@ -1490,6 +1490,15 @@ function humanAction(row) {
     return statusLabel(status)
   }
   if (cat === 'circle_completion') {
+    const detail = row.detail && typeof row.detail === 'object' ? row.detail : {}
+    const sourceAction = String(detail.source_action || '')
+    if (sourceAction === 'bonus_probe' || sourceAction === 'new_release_bonus_probe') {
+      const label = sourceAction === 'new_release_bonus_probe' ? '新作特典探测' : '特典补全'
+      if (status === 'success') return label
+      if (status === 'failed') return `${label}失败`
+      if (status === 'cancelled') return `${label}取消`
+      return statusLabel(status)
+    }
     if (action === 'index_completed') return '索引完成'
     if (action === 'refresh_selected_works') return '刷新作品'
     if (action === 'download_batch_start') return '创建下载任务'

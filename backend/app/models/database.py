@@ -410,6 +410,183 @@ class CircleWork(Base):
         }
 
 
+class DLsiteBonusProbeCache(Base):
+    """DLsite 隐藏特典 RJ 探测缓存。"""
+    __tablename__ = 'dlsite_bonus_probe_cache'
+
+    rjcode = Column(String(20), primary_key=True)
+    exists = Column(Boolean, default=False, index=True)
+    probe_status = Column(String(32), default='', index=True)
+    maker_id = Column(String(20), index=True, default='')
+    release_date = Column(String(20), index=True, default='')
+    work_type = Column(String(20), default='')
+    price = Column(Integer, default=0)
+    is_sale = Column(Boolean, default=False)
+    is_free = Column(Boolean, default=False)
+    is_oly = Column(Boolean, default=False)
+    wishlist_count = Column(Integer, default=0)
+    is_hidden_bonus_audio = Column(Boolean, default=False, index=True)
+    title = Column(Text)
+    raw_summary_json = Column(JSON)
+    error_message = Column(Text)
+    checked_at = Column(DateTime, default=get_local_now, index=True)
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    __table_args__ = (
+        Index('idx_dlsite_bonus_probe_cache_maker_date', 'maker_id', 'release_date'),
+        Index('idx_dlsite_bonus_probe_cache_status_checked', 'probe_status', 'checked_at'),
+    )
+
+    def to_dict(self):
+        return {
+            'rjcode': self.rjcode,
+            'exists': bool(self.exists),
+            'probe_status': self.probe_status or '',
+            'maker_id': self.maker_id or '',
+            'release_date': self.release_date or '',
+            'work_type': self.work_type or '',
+            'price': int(self.price or 0),
+            'is_sale': bool(self.is_sale),
+            'is_free': bool(self.is_free),
+            'is_oly': bool(self.is_oly),
+            'wishlist_count': int(self.wishlist_count or 0),
+            'is_hidden_bonus_audio': bool(self.is_hidden_bonus_audio),
+            'title': self.title or '',
+            'raw_summary_json': self.raw_summary_json or {},
+            'error_message': self.error_message or '',
+            'checked_at': self.checked_at.isoformat() if self.checked_at else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class DLsiteBonusProbeDate(Base):
+    """社团 + 发售日级别的隐藏特典探测状态。"""
+    __tablename__ = 'dlsite_bonus_probe_dates'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    maker_id = Column(String(20), index=True, default='')
+    circle_id = Column(String(120), index=True, default='')
+    release_date = Column(String(20), index=True, default='')
+    gap_limit = Column(Integer, default=500)
+    mode = Column(String(20), default='normal')
+    status = Column(String(24), default='pending', index=True)
+    job_id = Column(String(36), index=True, default='')
+    public_count = Column(Integer, default=0)
+    sou_public_count = Column(Integer, default=0)
+    gap_count = Column(Integer, default=0)
+    probe_count = Column(Integer, default=0)
+    cached_hit_count = Column(Integer, default=0)
+    request_count = Column(Integer, default=0)
+    hit_count = Column(Integer, default=0)
+    inserted_count = Column(Integer, default=0)
+    budget_reached = Column(Boolean, default=False)
+    error_message = Column(Text)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    __table_args__ = (
+        Index('idx_dlsite_bonus_probe_dates_unique', 'maker_id', 'release_date', 'gap_limit', unique=True),
+        Index('idx_dlsite_bonus_probe_dates_status_updated', 'status', 'updated_at'),
+        Index('idx_dlsite_bonus_probe_dates_circle_date', 'circle_id', 'release_date'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'maker_id': self.maker_id or '',
+            'circle_id': self.circle_id or '',
+            'release_date': self.release_date or '',
+            'gap_limit': int(self.gap_limit or 0),
+            'mode': self.mode or '',
+            'status': self.status or '',
+            'job_id': self.job_id or '',
+            'public_count': int(self.public_count or 0),
+            'sou_public_count': int(self.sou_public_count or 0),
+            'gap_count': int(self.gap_count or 0),
+            'probe_count': int(self.probe_count or 0),
+            'cached_hit_count': int(self.cached_hit_count or 0),
+            'request_count': int(self.request_count or 0),
+            'hit_count': int(self.hit_count or 0),
+            'inserted_count': int(self.inserted_count or 0),
+            'budget_reached': bool(self.budget_reached),
+            'error_message': self.error_message or '',
+            'started_at': self.started_at.isoformat() if self.started_at else None,
+            'finished_at': self.finished_at.isoformat() if self.finished_at else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class DLsiteBonusOriginalProbeState(Base):
+    """原作 RJ 的隐藏特典探测状态。"""
+    __tablename__ = 'dlsite_bonus_original_probe_states'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    circle_id = Column(String(120), index=True, default='')
+    maker_id = Column(String(20), index=True, default='')
+    original_rjcode = Column(String(20), index=True, default='')
+    release_date = Column(String(20), index=True, default='')
+    status = Column(String(24), default='unknown', index=True)
+    strategy_version = Column(String(40), default='')
+    checked_at = Column(DateTime, default=get_local_now, index=True)
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    __table_args__ = (
+        Index('idx_dlsite_bonus_original_state_unique', 'circle_id', 'original_rjcode', unique=True),
+        Index('idx_dlsite_bonus_original_state_circle_date', 'circle_id', 'release_date'),
+        Index('idx_dlsite_bonus_original_state_maker_date', 'maker_id', 'release_date'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'circle_id': self.circle_id or '',
+            'maker_id': self.maker_id or '',
+            'original_rjcode': self.original_rjcode or '',
+            'release_date': self.release_date or '',
+            'status': self.status or '',
+            'strategy_version': self.strategy_version or '',
+            'checked_at': self.checked_at.isoformat() if self.checked_at else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class DLsiteBonusProbeHitIndex(Base):
+    """隐藏特典 RJ 的轻量命中索引。"""
+    __tablename__ = 'dlsite_bonus_probe_hit_index'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    circle_id = Column(String(120), index=True, default='')
+    maker_id = Column(String(20), index=True, default='')
+    release_date = Column(String(20), index=True, default='')
+    bonus_rjcode = Column(String(20), index=True, default='')
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+
+    __table_args__ = (
+        Index('idx_dlsite_bonus_probe_hit_unique', 'maker_id', 'bonus_rjcode', unique=True),
+        Index('idx_dlsite_bonus_probe_hit_circle_date', 'circle_id', 'release_date'),
+        Index('idx_dlsite_bonus_probe_hit_maker_date', 'maker_id', 'release_date'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'circle_id': self.circle_id or '',
+            'maker_id': self.maker_id or '',
+            'release_date': self.release_date or '',
+            'bonus_rjcode': self.bonus_rjcode or '',
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 class WorkCanonicalLink(Base):
     """作品 canonical 归一关系"""
     __tablename__ = 'work_canonical_links'
@@ -828,6 +1005,7 @@ class ActivityLog(Base):
     rjcode = Column(String(32))
     task_id = Column(String(36))
     source_path = Column(Text)
+    searchable_text = Column(Text)
     created_at = Column(DateTime, default=get_local_now)
     # Phase 2：从 detail JSON 提升上来的高频查询字段，建索引后替换掉合并时 O(B·N) 扫描
     batch_id = Column(String(80))
@@ -1133,9 +1311,12 @@ def _summarize_sql_params(parameters: Any) -> Any:
 
 
 def _effective_slow_sql_warning_threshold() -> float:
+    if not _slow_sql_monitor_enabled():
+        return 0.0
     values = [
         float(value)
         for value in (
+            _configured_slow_sql_threshold_seconds(),
             _SLOW_SQL_WARNING_THRESHOLD_SECONDS,
             globals().get("_SLOW_SQL_LOG_THRESHOLD_SECONDS", _SLOW_SQL_WARNING_THRESHOLD_SECONDS),
         )
@@ -1144,7 +1325,23 @@ def _effective_slow_sql_warning_threshold() -> float:
     return min(values) if values else 0.0
 
 
+def _slow_sql_monitor_enabled() -> bool:
+    cfg = globals().get("_DB_RUNTIME_CONFIG") or {}
+    return bool(cfg.get("slow_query_monitor_enabled", True))
+
+
+def _configured_slow_sql_threshold_seconds() -> float:
+    cfg = globals().get("_DB_RUNTIME_CONFIG") or {}
+    try:
+        ms = int(cfg.get("slow_query_threshold_ms") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, ms / 1000.0)
+
+
 def _slow_sql_before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+    if not _slow_sql_monitor_enabled():
+        return
     warning_threshold = _effective_slow_sql_warning_threshold()
     if _SLOW_SQL_DEBUG_THRESHOLD_SECONDS <= 0 and warning_threshold <= 0:
         return
@@ -1152,6 +1349,8 @@ def _slow_sql_before_cursor_execute(conn, cursor, statement, parameters, context
 
 
 def _slow_sql_after_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+    if not _slow_sql_monitor_enabled():
+        return
     warning_threshold = _effective_slow_sql_warning_threshold()
     if _SLOW_SQL_DEBUG_THRESHOLD_SECONDS <= 0 and warning_threshold <= 0:
         return
@@ -1575,6 +1774,11 @@ def _load_database_config() -> Dict[str, Any]:
         "pool_timeout_seconds": 30,
         "statement_timeout_ms": 120000,
         "startup_health_check": True,
+        "slow_query_monitor_enabled": True,
+        "slow_query_threshold_ms": 500,
+        "auto_explain_enabled": False,
+        "auto_explain_threshold_ms": 1000,
+        "search_backend": "pg_trgm",
     }
     try:
         from ..config.settings import get_config
@@ -1593,6 +1797,11 @@ def _load_database_config() -> Dict[str, Any]:
     merged["pool_timeout_seconds"] = max(1, int(merged.get("pool_timeout_seconds") or 30))
     merged["statement_timeout_ms"] = max(1000, int(merged.get("statement_timeout_ms") or 120000))
     merged["startup_health_check"] = bool(merged.get("startup_health_check", True))
+    merged["slow_query_monitor_enabled"] = bool(merged.get("slow_query_monitor_enabled", True))
+    merged["slow_query_threshold_ms"] = max(1, int(merged.get("slow_query_threshold_ms") or 500))
+    merged["auto_explain_enabled"] = bool(merged.get("auto_explain_enabled", False))
+    merged["auto_explain_threshold_ms"] = max(1, int(merged.get("auto_explain_threshold_ms") or 1000))
+    merged["search_backend"] = str(merged.get("search_backend") or "pg_trgm").strip() or "pg_trgm"
     return merged
 
 
@@ -1914,6 +2123,9 @@ _POSTGRES_OBSOLETE_INDEX_NAMES = (
     "ix_task_center_items_engine_task_id",
     "ix_task_center_items_status",
     "ix_task_center_items_updated_at",
+    "idx_task_center_title_trgm",
+    "idx_task_center_business_key_trgm",
+    "idx_task_center_engine_task_id_trgm",
     # 操作历史：单列索引已被业务复合索引覆盖，保留它们只会放大 append-only 写入成本。
     "ix_activity_logs_batch_id",
     "ix_activity_logs_category",
@@ -1923,6 +2135,11 @@ _POSTGRES_OBSOLETE_INDEX_NAMES = (
     "ix_activity_logs_session_key",
     "ix_activity_logs_status",
     "ix_activity_logs_task_id",
+    "idx_activity_logs_summary_trgm",
+    "idx_activity_logs_source_path_trgm",
+    "idx_activity_logs_rjcode_trgm",
+    "idx_activity_logs_task_id_trgm",
+    "idx_activity_logs_batch_id_trgm",
     # ASMR 资源/会话：旧单列索引会拖慢批量资源 upsert，复合索引覆盖高频列表、统计和详情路径。
     "idx_asmr_resource_status",
     "ix_asmr_resource_records_download_status",
@@ -1951,40 +2168,8 @@ _POSTGRES_LIBRARY_OBSOLETE_INDEX_NAMES = (
 
 _POSTGRES_TRIGRAM_INDEX_SPECS = (
     {
-        "name": "idx_activity_logs_summary_trgm",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_logs_summary_trgm ON activity_logs USING gin (COALESCE(summary, '') gin_trgm_ops)",
-    },
-    {
-        "name": "idx_activity_logs_source_path_trgm",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_logs_source_path_trgm ON activity_logs USING gin (COALESCE(source_path, '') gin_trgm_ops)",
-    },
-    {
-        "name": "idx_activity_logs_rjcode_trgm",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_logs_rjcode_trgm ON activity_logs USING gin (COALESCE(rjcode, '') gin_trgm_ops)",
-    },
-    {
-        "name": "idx_activity_logs_task_id_trgm",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_logs_task_id_trgm ON activity_logs USING gin (COALESCE(task_id, '') gin_trgm_ops)",
-    },
-    {
-        "name": "idx_activity_logs_batch_id_trgm",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_logs_batch_id_trgm ON activity_logs USING gin (COALESCE(batch_id, '') gin_trgm_ops)",
-    },
-    {
         "name": "idx_task_center_searchable_text_trgm",
         "sql": "CREATE INDEX IF NOT EXISTS idx_task_center_searchable_text_trgm ON task_center_items USING gin (searchable_text gin_trgm_ops)",
-    },
-    {
-        "name": "idx_task_center_title_trgm",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_task_center_title_trgm ON task_center_items USING gin (title gin_trgm_ops)",
-    },
-    {
-        "name": "idx_task_center_business_key_trgm",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_task_center_business_key_trgm ON task_center_items USING gin (business_key gin_trgm_ops)",
-    },
-    {
-        "name": "idx_task_center_engine_task_id_trgm",
-        "sql": "CREATE INDEX IF NOT EXISTS idx_task_center_engine_task_id_trgm ON task_center_items USING gin (engine_task_id gin_trgm_ops)",
     },
     {
         "name": "idx_processed_archives_filename_trgm",
@@ -1993,6 +2178,22 @@ _POSTGRES_TRIGRAM_INDEX_SPECS = (
     {
         "name": "idx_processed_archives_rjcode_trgm",
         "sql": "CREATE INDEX IF NOT EXISTS idx_processed_archives_rjcode_trgm ON processed_archives USING gin (rjcode gin_trgm_ops)",
+    },
+    {
+        "name": "idx_password_entries_search_text_trgm",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_password_entries_search_text_trgm ON password_entries USING gin ((COALESCE(rjcode, '') || ' ' || COALESCE(filename, '') || ' ' || COALESCE(password, '') || ' ' || COALESCE(description, '')) gin_trgm_ops)",
+    },
+    {
+        "name": "idx_security_gate_auth_logs_ip_trgm",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_security_gate_auth_logs_ip_trgm ON security_gate_auth_logs USING gin (ip_address gin_trgm_ops)",
+    },
+    {
+        "name": "idx_circle_catalogs_search_text_trgm",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_circle_catalogs_search_text_trgm ON circle_catalogs USING gin ((COALESCE(circle_name_normalized, '') || ' ' || COALESCE(circle_name, '') || ' ' || COALESCE(circle_id, '')) gin_trgm_ops)",
+    },
+    {
+        "name": "idx_circle_works_search_text_trgm",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_circle_works_search_text_trgm ON circle_works USING gin ((COALESCE(canonical_rjcode, '') || ' ' || COALESCE(display_rjcode, '') || ' ' || COALESCE(title, '')) gin_trgm_ops)",
     },
 )
 
@@ -2043,6 +2244,11 @@ _POSTGRES_LIBRARY_INDEX_TABLE_REL_OPTIONS = {
 
 
 _POSTGRES_COMPAT_INDEX_SPECS = (
+    {
+        "table": "activity_logs",
+        "name": "idx_activity_logs_searchable_text_trgm",
+        "sql": "CREATE INDEX IF NOT EXISTS idx_activity_logs_searchable_text_trgm ON activity_logs USING gin (searchable_text gin_trgm_ops)",
+    },
     {
         "table": "activity_logs",
         "name": "idx_activity_batch_created",
@@ -2726,16 +2932,12 @@ def _migrate_activity_logs_projection(
         ("batch_id", "VARCHAR(80)"),
         ("session_key", "VARCHAR(120)"),
         ("parent_id", "VARCHAR(36)"),
+        ("searchable_text", "TEXT"),
     )
     existing_columns = _existing_columns(conn, "activity_logs", [name for name, _ in projection_columns])
     for column_name, column_type in projection_columns:
         if _add_column_if_missing(conn, "activity_logs", column_name, column_type, existing_columns=existing_columns):
             added_columns.add(column_name)
-    _ensure_indexes_exist(
-        conn,
-        _index_specs_for_table(_POSTGRES_COMPAT_INDEX_SPECS, "activity_logs"),
-        existing_index_definitions,
-    )
     if "batch_id" in added_columns:
         conn.execute(text("""
             UPDATE activity_logs
@@ -2750,6 +2952,24 @@ def _migrate_activity_logs_projection(
              WHERE session_key IS NULL
                AND (detail ? 'session_key' OR detail ? 'session_id')
         """))
+    if "searchable_text" in added_columns:
+        conn.execute(text("""
+            UPDATE activity_logs
+               SET searchable_text = left(concat_ws(' ',
+                     COALESCE(summary, ''),
+                     COALESCE(source_path, ''),
+                     COALESCE(rjcode, ''),
+                     COALESCE(task_id, ''),
+                     COALESCE(batch_id, ''),
+                     COALESCE(session_key, '')
+                   ), 12000)
+             WHERE searchable_text IS NULL
+        """))
+    _ensure_indexes_exist(
+        conn,
+        _index_specs_for_table(_POSTGRES_COMPAT_INDEX_SPECS, "activity_logs"),
+        existing_index_definitions,
+    )
 
 
 def _migrate_activity_log_daily_stats(conn, existing_tables: Optional[set[str]] = None) -> None:
@@ -2986,25 +3206,26 @@ def activity_logs_search_status() -> Dict[str, Any]:
     try:
         with engine.connect() as conn:
             row_count = int(conn.execute(text("SELECT count(*) FROM activity_logs")).scalar() or 0)
-            index_rows = conn.execute(text("""
-                SELECT indexname
-                  FROM pg_indexes
-                 WHERE schemaname = current_schema()
-                   AND tablename = 'activity_logs'
-                   AND indexname LIKE 'idx_activity_logs_%_trgm'
-                 ORDER BY indexname
-            """)).fetchall()
+            index_row = conn.execute(text("""
+                SELECT i.indisvalid, i.indisready
+                  FROM pg_class c
+                  JOIN pg_namespace n ON n.oid = c.relnamespace
+                  JOIN pg_index i ON i.indexrelid = c.oid
+                 WHERE n.nspname = current_schema()
+                   AND c.relname = 'idx_activity_logs_searchable_text_trgm'
+            """)).mappings().first()
+            index_ready = bool(index_row and index_row["indisvalid"] and index_row["indisready"])
             pg_trgm_enabled = bool(conn.execute(text("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')")).scalar())
         return {
             "backend": "postgresql_pg_trgm",
-            "search_enabled": pg_trgm_enabled and bool(index_rows),
-            "fts_enabled": pg_trgm_enabled and bool(index_rows),
+            "search_enabled": pg_trgm_enabled and index_ready,
+            "fts_enabled": pg_trgm_enabled and index_ready,
             "tokenizer": "pg_trgm",
             "trigram_supported": pg_trgm_enabled,
             "row_count": row_count,
-            "fts_row_count": row_count if index_rows else 0,
+            "fts_row_count": row_count if index_ready else 0,
             "needs_upgrade": False,
-            "index_count": len(index_rows),
+            "index_count": 1 if index_row else 0,
             "rebuild": state,
         }
     except Exception:
@@ -3084,14 +3305,19 @@ def _do_reindex_activity_logs_search() -> None:
         _broadcast_activity_search_state(snapshot)
         with engine.begin() as conn:
             _create_postgres_extensions_and_indexes(conn)
-            for name in (
-                "idx_activity_logs_summary_trgm",
-                "idx_activity_logs_source_path_trgm",
-                "idx_activity_logs_rjcode_trgm",
-                "idx_activity_logs_task_id_trgm",
-                "idx_activity_logs_batch_id_trgm",
-            ):
-                _reindex_if_exists(conn, name)
+            _migrate_activity_logs_projection(conn)
+            conn.execute(text("""
+                UPDATE activity_logs
+                   SET searchable_text = left(concat_ws(' ',
+                         COALESCE(summary, ''),
+                         COALESCE(source_path, ''),
+                         COALESCE(rjcode, ''),
+                         COALESCE(task_id, ''),
+                         COALESCE(batch_id, ''),
+                         COALESCE(session_key, '')
+                       ), 12000)
+            """))
+            _reindex_if_exists(conn, "idx_activity_logs_searchable_text_trgm")
         with _SEARCH_REBUILD_LOCK:
             _SEARCH_REBUILD_STATE.update({"copied": total, "ok": True, "reason": "", "running": False, "finished_at": time.time()})
             snapshot = dict(_SEARCH_REBUILD_STATE)

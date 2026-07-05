@@ -326,6 +326,8 @@ def _build_notification_info(event_type: str, group_key: str, group_type: str, c
         meta['platform_label'] = platform_label
     if task_kind == 'circle_completion_refresh_selected':
         title, summary, rjcode = _build_refresh_selected_notification_text(meta, domain_label, label_map.get(event_type, event_type))
+    elif task_kind == 'circle_completion_bonus_probe':
+        title, summary, rjcode = _build_bonus_probe_notification_text(meta, domain_label, label_map.get(event_type, event_type))
     return {
         'title': title,
         'summary': summary,
@@ -366,6 +368,24 @@ def _build_refresh_selected_notification_text(meta: dict, domain_label: str, eve
     circle_name = str(result.get('circle_name') or meta.get('circle_name') or '').strip()
     title = f'{circle_name} · 已刷新 {refreshed_count} 个作品' if circle_name else f'已刷新 {refreshed_count} 个作品'
     summary = f'{domain_label}{event_label}：已选 {selected_count} 个，已刷新 {refreshed_count} 个，有更新 {changed_count} 个'
+    return title, summary, ''
+
+
+def _build_bonus_probe_notification_text(meta: dict, domain_label: str, event_label: str) -> tuple[str, str, str]:
+    """DLsite 特典探测的站内通知文案。"""
+    summary_payload = dict(meta.get('bonus_probe_summary') or {})
+    result_payload = dict(meta.get('bonus_probe_result') or {})
+    release_dates = list(meta.get('release_dates') or result_payload.get('release_dates') or [])
+    date_count = _safe_int(summary_payload.get('date_count') or result_payload.get('date_count') or len(release_dates))
+    hit_count = _safe_int(summary_payload.get('hit_count') or result_payload.get('hit_count'))
+    inserted_count = _safe_int(summary_payload.get('inserted_count') or result_payload.get('inserted_count'))
+    circle_name = str(result_payload.get('circle_name') or meta.get('circle_name') or '').strip()
+    circle_id = str(result_payload.get('circle_id') or meta.get('circle_id') or '').strip()
+    is_new_release = str(meta.get('source_action') or '').strip() == 'new_release_bonus_probe'
+    title_target = circle_name or circle_id or '当前社团'
+    title = f'{title_target} · {"新作特典探测" if is_new_release else "特典补全"}'
+    action_label = '新作特典探测' if is_new_release else '特典补全'
+    summary = f'{domain_label}{event_label}：{action_label}，发售日 {date_count} 个，命中 {hit_count} 个，写入 {inserted_count} 个'
     return title, summary, ''
 
 

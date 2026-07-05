@@ -392,6 +392,12 @@ export const databaseMaintenanceApi = {
     return response.data
   },
 
+  // 各业务域 PostgreSQL trigram 搜索索引状态
+  searchStatus: async () => {
+    const response = await apiClient.get('/database/maintenance/search-status')
+    return response.data
+  },
+
   // 重置 pg_stat_statements，用于优化前后对比；未启用时后端会返回 409 + 诊断体
   resetPgStatStatements: async () => {
     try {
@@ -2416,6 +2422,23 @@ export const circleCompletionApi = {
 
   getRefreshSelectedJobStatus: async (jobId) => {
     const response = await apiClient.get(`/circle-completion/refresh-selected/jobs/${jobId}`)
+    return response.data
+  },
+
+  startBonusProbe: async (payload) => {
+    const response = await apiClient.post('/circle-completion/bonus-probe/start', payload)
+    return response.data
+  },
+
+  getBonusProbeJobStatus: async (jobId) => {
+    const response = await apiClient.get(`/circle-completion/bonus-probe/jobs/${jobId}`)
+    return response.data
+  },
+
+  getBonusProbeStatus: async (circleId, limit = 10) => {
+    const response = await apiClient.get(`/circle-completion/circles/${circleId}/bonus-probe-status`, {
+      params: { limit }
+    })
     return response.data
   },
 

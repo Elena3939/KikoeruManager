@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import logging
 import os
 import time
@@ -33,6 +34,7 @@ class TaskCenterService:
     CACHE_TTL_SECONDS = 1.2
     # summary 模式给 list / overview 用，可容忍稍长的延迟换取明显更轻的开销
     SUMMARY_CACHE_TTL_SECONDS = 2.5
+    OVERVIEW_CACHE_TTL_SECONDS = 1.0
     # pending / conflict 走数据库 + 可能有远程查询，单独缓存避免每次重建都触发
     PENDING_CACHE_TTL_SECONDS = 5.0
     CONFLICT_CACHE_TTL_SECONDS = 3.0
@@ -192,6 +194,7 @@ class TaskCenterService:
         TaskType.CIRCLE_COMPLETION_INDEX: "circle_completion",
         TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED: "circle_completion",
         TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH: "circle_completion",
+        TaskType.CIRCLE_COMPLETION_BONUS_PROBE: "circle_completion",
         TaskType.EXTRACT: "system",
         TaskType.FILTER: "system",
         TaskType.METADATA: "system",
@@ -233,6 +236,8 @@ class TaskCenterService:
         self._waiting_retry_cache_at = 0.0
         # summary 模式单任务快照缓存：任务未变化时避免重复 metadata 清洗和指标构建。
         self._summary_engine_item_cache: Dict[str, Tuple[Tuple[Any, ...], Dict[str, Any]]] = {}
+        self._overview_cache: Optional[Dict[str, Any]] = None
+        self._overview_cache_at = 0.0
 
     def _safe_iso(self, value: Optional[datetime]) -> Optional[str]:
         return value.isoformat() if value else None
@@ -1226,6 +1231,29 @@ class TaskCenterService:
                 self._append_metric(metrics, "可下载", index_meta.get("asmr_available_count") or indexed_counts.get("downloadable_count"))
                 self._append_metric(metrics, "本地", indexed_counts.get("local_owned_count"))
                 self._append_metric(metrics, "缺失", indexed_counts.get("missing_count"))
+            elif task.type == TaskType.CIRCLE_COMPLETION_BONUS_PROBE:
+                bonus_summary = dict(metadata.get("bonus_probe_summary") or {})
+                release_dates = [
+                    self._safe_text(value)
+                    for value in list(metadata.get("release_dates") or [])
+                    if self._safe_text(value)
+                ]
+                auto_source_labels = {source_path, task.type.value, TaskType.CIRCLE_COMPLETION_BONUS_PROBE.value}
+                explicit_source_label = source_label if source_label and source_label not in auto_source_labels else ""
+                source_label = explicit_source_label or "社团补全 / 特典补全"
+                title = explicit_source_label or self._safe_text(metadata.get("circle_name")) or "特典补全"
+                if task.status == TaskStatus.PROCESSING:
+                    current_date = self._safe_text((metadata.get("bonus_probe_meta") or {}).get("release_date"))
+                    subtitle = f"正在探测 {current_date}" if current_date else "正在探测隐藏特典"
+                elif task.status == TaskStatus.PENDING:
+                    subtitle = f"排队中，{len(release_dates)} 个发售日" if release_dates else "排队中"
+                else:
+                    subtitle = f"写入 {int(bonus_summary.get('inserted_count') or 0)} 个隐藏特典"
+                self._append_metric(metrics, "发售日", len(release_dates) if release_dates else None)
+                self._append_metric(metrics, "探测", bonus_summary.get("probe_count"))
+                self._append_metric(metrics, "命中", bonus_summary.get("hit_count"))
+                self._append_metric(metrics, "写入", bonus_summary.get("inserted_count"))
+                self._append_metric(metrics, "请求", bonus_summary.get("request_count"))
             else:
                 title = self._safe_text(metadata.get("circle_name")) or self._safe_text(metadata.get("work_title")) or rjcode or "社团补全任务"
                 subtitle = self._safe_text(metadata.get("canonical_rjcode")) or self._safe_text(metadata.get("circle_id"))
@@ -1233,7 +1261,15 @@ class TaskCenterService:
                 self._append_metric(metrics, "Canonical", metadata.get("canonical_rjcode"))
                 self._append_metric(metrics, "资源数", metadata.get("selected_resource_count"))
             source_label = source_label or "社团补全"
-            source_action = source_action or ("index_start" if task.type == TaskType.CIRCLE_COMPLETION_INDEX else "batch_download")
+            if task.type == TaskType.CIRCLE_COMPLETION_INDEX and not source_action:
+                source_action = "index_start"
+            elif task.type == TaskType.CIRCLE_COMPLETION_BONUS_PROBE and source_action in {
+                "",
+                TaskType.CIRCLE_COMPLETION_BONUS_PROBE.value,
+            }:
+                source_action = "bonus_probe"
+            elif not source_action:
+                source_action = "batch_download"
             source_page = source_page or "circle-completion"
             route_hint = self._circle_completion_route_hint(metadata, rjcode)
         elif domain == "http_download":
@@ -2107,6 +2143,10 @@ class TaskCenterService:
         return None
 
     async def get_overview(self) -> Dict[str, Any]:
+        now = time.monotonic()
+        if self._overview_cache is not None and now - self._overview_cache_at <= self.OVERVIEW_CACHE_TTL_SECONDS:
+            return copy.deepcopy(self._overview_cache)
+
         # overview 只用来统计 + 提取 top items，summary 模式足矣
         # 顶层防御：底层异常时返回零数据兜底，避免 dashboard 头部 500。
         try:
@@ -2133,13 +2173,16 @@ class TaskCenterService:
             if item.get("status") in {TaskStatus.COMPLETED.value, TaskStatus.FAILED.value, TaskStatus.CANCELLED.value}
         ]
 
-        return {
+        result = {
             "generated_at": datetime.now().isoformat(),
             "total": len(items),
             **counts,
             "recent_items": [self._summary_item(item) for item in recent_terminal_items[:60]],
             "active_items": [self._summary_item(item) for item in active_items[:60]],
         }
+        self._overview_cache = copy.deepcopy(result)
+        self._overview_cache_at = time.monotonic()
+        return result
 
     async def execute_action(self, item_id: str, action: str) -> Dict[str, Any]:
         normalized_item_id = self._safe_text(item_id)

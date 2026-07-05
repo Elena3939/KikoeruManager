@@ -150,6 +150,7 @@ class DLsiteWorkSummary:
     cover_url: str = ""
     is_probably_audio: Optional[bool] = None  # 列表层判定：True 音声 / False 非音声 / None 不确定
     classification_reason: str = ""  # 为什么判 True/False，纯调试用
+    release_date: str = ""  # 发售日列表页上的日期，尽量归一为 YYYY-MM-DD
 
     def to_dict(self) -> dict:
         return {
@@ -164,6 +165,46 @@ class DLsiteWorkSummary:
             'cover_url': self.cover_url,
             'is_probably_audio': self.is_probably_audio,
             'classification_reason': self.classification_reason,
+            'release_date': self.release_date,
+        }
+
+
+@dataclass
+class DLsiteProductProbeFeature:
+    """隐藏特典探测用的 product/info/ajax 归一字段。"""
+    workno: str
+    exists: bool = False
+    probe_status: str = "missing"
+    maker_id: str = ""
+    release_date: str = ""
+    work_type: str = ""
+    price: int = 0
+    is_sale: bool = False
+    is_free: bool = False
+    is_oly: bool = False
+    wishlist_count: int = 0
+    is_hidden_bonus_audio: bool = False
+    title: str = ""
+    raw_summary_json: Dict[str, Any] = field(default_factory=dict)
+    error_message: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            'workno': self.workno,
+            'exists': bool(self.exists),
+            'probe_status': self.probe_status,
+            'maker_id': self.maker_id,
+            'release_date': self.release_date,
+            'work_type': self.work_type,
+            'price': int(self.price or 0),
+            'is_sale': bool(self.is_sale),
+            'is_free': bool(self.is_free),
+            'is_oly': bool(self.is_oly),
+            'wishlist_count': int(self.wishlist_count or 0),
+            'is_hidden_bonus_audio': bool(self.is_hidden_bonus_audio),
+            'title': self.title,
+            'raw_summary_json': dict(self.raw_summary_json or {}),
+            'error_message': self.error_message,
         }
 
 
@@ -256,6 +297,35 @@ class DLsiteApiService:
             url = f"{url}&locale={locale}"
         return url
 
+    def _build_product_info_ajax_bulk_url(self, rjcodes: List[str], locale: Optional[str] = None) -> str:
+        worknos: List[str] = []
+        for value in rjcodes or []:
+            workno = self._normalize_workno(value)
+            if workno and workno not in worknos:
+                worknos.append(workno)
+        url = f"https://www.dlsite.com/maniax/product/info/ajax?product_id={','.join(worknos)}&cdn_cache_min=1"
+        if locale:
+            url = f"{url}&locale={locale}"
+        return url
+
+    def _format_api_url_for_log(self, url: str) -> str:
+        text = str(url or "")
+        marker = "/product/info/ajax?product_id="
+        if marker not in text:
+            return text
+        prefix, rest = text.split(marker, 1)
+        product_ids = rest.split("&", 1)[0]
+        worknos = [item for item in product_ids.split(",") if item]
+        if len(worknos) <= 8:
+            return text
+        suffix = ""
+        if "&" in rest:
+            suffix = "&" + rest.split("&", 1)[1]
+        return (
+            f"{prefix}{marker}<bulk:{len(worknos)} rjcodes "
+            f"{worknos[0]}..{worknos[-1]}>{suffix}"
+        )
+
     def _build_product_page_url(self, rjcode: str, locale: Optional[str] = None) -> str:
         workno = self._normalize_workno(rjcode)
         url = f"https://www.dlsite.com/maniax/work/=/product_id/{workno}.html"
@@ -289,6 +359,14 @@ class DLsiteApiService:
         normalized_maker_id = str(maker_id or "").strip().upper()
         normalized_language = str(language or "JPN").strip().upper() or "JPN"
         base = f"https://www.dlsite.com/maniax/announce/=/maker_id/{normalized_maker_id}.html/options[0]/{normalized_language}"
+        if page > 1:
+            return f"{base}/page/{page}"
+        return base
+
+    def _build_new_release_date_url(self, release_date: str, *, language: str = "JPN", page: int = 1) -> str:
+        normalized_date = self._normalize_date_text(release_date)
+        normalized_language = str(language or "JPN").strip().upper() or "JPN"
+        base = f"https://www.dlsite.com/maniax/new/=/date/{normalized_date}/options[0]/{normalized_language}"
         if page > 1:
             return f"{base}/page/{page}"
         return base
@@ -362,6 +440,34 @@ class DLsiteApiService:
             'product_workno': path_match.group(1).upper() if path_match else '',
             'translation_workno': str((query.get('translation') or [''])[0] or '').strip().upper(),
         }
+
+    def _normalize_date_text(self, value: Any) -> str:
+        text = str(value or '').strip()
+        if not text:
+            return ''
+        match = re.search(r'(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})', text)
+        if not match:
+            match = re.search(r'(20\d{2})(\d{2})(\d{2})', text)
+        if not match:
+            return text[:20]
+        year, month, day = match.groups()
+        return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+
+    def _extract_release_date_from_listing_chunk(self, chunk: str) -> str:
+        if not chunk:
+            return ''
+        for pattern in [
+            r'(?:regist_date|release_date|sales_date)["\']?\s*[:=]\s*["\']([^"\']+)["\']',
+            r'class="[^"]*(?:regist_date|release_date|work_date|date)[^"]*"[^>]*>\s*([^<\n]+?)\s*</',
+            r'(20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2})',
+            r'(20\d{6})',
+        ]:
+            match = re.search(pattern, chunk, re.IGNORECASE)
+            if match:
+                normalized = self._normalize_date_text(html.unescape(match.group(1)).strip())
+                if normalized:
+                    return normalized
+        return ''
 
     def _extract_worknos_from_listing_html(self, text: str) -> List[str]:
         if not text:
@@ -489,6 +595,8 @@ class DLsiteApiService:
             )
             if m:
                 summary.cover_url = m.group(1).strip()
+
+            summary.release_date = self._extract_release_date_from_listing_chunk(chunk)
 
             # work_category / work_type chip：class 名 + 文案分两条解析，避免任一缺失
             for m in re.finditer(
@@ -1045,6 +1153,30 @@ class DLsiteApiService:
                 return value
         return None
 
+    async def _fetch_product_info_ajax_payloads(
+        self,
+        rjcodes: List[str],
+        locale: Optional[str] = None,
+    ) -> Optional[Dict[str, Dict]]:
+        worknos: List[str] = []
+        for value in rjcodes or []:
+            workno = self._normalize_workno(value)
+            if workno and workno not in worknos:
+                worknos.append(workno)
+        if not worknos:
+            return {}
+
+        data = await self._fetch_api(self._build_product_info_ajax_bulk_url(worknos, locale=locale))
+        if not isinstance(data, dict):
+            return None
+
+        payloads: Dict[str, Dict] = {}
+        for key, value in data.items():
+            workno = self._normalize_workno(key)
+            if workno in worknos and isinstance(value, dict):
+                payloads[workno] = value
+        return payloads
+
     def _wishlist_count_is_zero(self, value: Any) -> bool:
         if isinstance(value, bool):
             return False
@@ -1558,7 +1690,8 @@ class DLsiteApiService:
 
     async def _do_fetch_api(self, url: str) -> Optional[Dict]:
         """实际 HTTP 请求逻辑，由 _fetch_api 唯一调用"""
-        logger.info("[DLsite] 正在请求 API: %s", url)
+        log_url = self._format_api_url_for_log(url)
+        logger.info("[DLsite] 正在请求 API: %s", log_url)
 
         try:
             logger.debug("[DLsite] 使用客户端配置: verify=False, timeout=45s, http2=False")
@@ -1574,22 +1707,22 @@ class DLsiteApiService:
                 }
                 return data
             if response.status_code == 404:
-                logger.warning("API 返回 404: %s", url)
+                logger.warning("API 返回 404: %s", log_url)
                 return None
 
-            logger.error("API 请求失败: %s, 状态码: %s", url, response.status_code)
+            logger.error("API 请求失败: %s, 状态码: %s", log_url, response.status_code)
             return None
         except httpx.ConnectError as e:
-            logger.error("API 连接失败: %s", url)
+            logger.error("API 连接失败: %s", log_url)
             logger.error("错误详情: %s", self._format_exc(e))
             logger.error("可能原因: 1) 网络连接异常 2) DLsite 不可达 3) 代理或防火墙拦截")
             return None
         except httpx.ReadTimeout as e:
-            logger.error("API 读取超时: %s (超过 45 秒)", url)
+            logger.error("API 读取超时: %s (超过 45 秒)", log_url)
             logger.error("错误详情: %s", self._format_exc(e))
             return None
         except Exception as e:
-            logger.error("API 请求异常: %s", url)
+            logger.error("API 请求异常: %s", log_url)
             logger.error("错误类型: %s", type(e).__name__)
             logger.error("错误详情: %s", self._format_exc(e))
             import traceback
@@ -2015,6 +2148,7 @@ class DLsiteApiService:
                             cover_url=str(item.get('cover_url') or ''),
                             is_probably_audio=item.get('is_probably_audio'),
                             classification_reason=str(item.get('classification_reason') or ''),
+                            release_date=str(item.get('release_date') or ''),
                         ))
                     except Exception:
                         continue
@@ -2152,6 +2286,221 @@ class DLsiteApiService:
                 'timestamp': datetime.now(),
             }
         return ordered_summaries, parse_status
+
+    async def list_new_work_summaries_by_date(
+        self,
+        release_date: str,
+        *,
+        language: str = "JPN",
+        max_pages: int = 20,
+    ) -> tuple[List[DLsiteWorkSummary], str]:
+        """抓取 DLsite 指定发售日的公开作品摘要，只使用官方新作日期页。"""
+        normalized_date = self._normalize_date_text(release_date)
+        normalized_language = str(language or "JPN").strip().upper() or "JPN"
+        if not normalized_date:
+            return [], "empty"
+
+        cache_key = f"new_work_summaries_by_date:{normalized_date}:{normalized_language}:{int(max_pages or 0)}"
+        if cache_key in self.cache:
+            cached_data = self.cache[cache_key]
+            if datetime.now() - cached_data['timestamp'] < self.cache_ttl:
+                hydrated: List[DLsiteWorkSummary] = []
+                for item in list(cached_data.get('data') or []):
+                    if isinstance(item, DLsiteWorkSummary):
+                        hydrated.append(item)
+                        continue
+                    if not isinstance(item, dict):
+                        continue
+                    hydrated.append(DLsiteWorkSummary(
+                        workno=str(item.get('workno') or '').strip().upper(),
+                        title=str(item.get('title') or ''),
+                        maker_id=str(item.get('maker_id') or ''),
+                        maker_name=str(item.get('maker_name') or ''),
+                        category_label=str(item.get('category_label') or ''),
+                        work_type_code=str(item.get('work_type_code') or ''),
+                        file_format_labels=list(item.get('file_format_labels') or []),
+                        icon_classes=list(item.get('icon_classes') or []),
+                        cover_url=str(item.get('cover_url') or ''),
+                        is_probably_audio=item.get('is_probably_audio'),
+                        classification_reason=str(item.get('classification_reason') or ''),
+                        release_date=str(item.get('release_date') or ''),
+                    ))
+                return hydrated, str(cached_data.get('parse_status') or ("ok" if hydrated else "empty"))
+
+        summaries_by_rj: Dict[str, DLsiteWorkSummary] = {}
+        any_http_success = False
+        any_html_looked_normal = False
+        empty_streak = 0
+        for page in range(1, max(1, int(max_pages or 1)) + 1):
+            url = self._build_new_release_date_url(normalized_date, language=normalized_language, page=page)
+            try:
+                response = await self._guarded_get(url, headers=self._get_browser_headers())
+                if response.status_code != 200:
+                    logger.warning(
+                        "[DLsite] 新作日期页抓取失败 date=%s page=%s status=%s",
+                        normalized_date,
+                        page,
+                        response.status_code,
+                    )
+                    break
+                any_http_success = True
+                if self._looks_like_dlsite_html(response.text):
+                    any_html_looked_normal = True
+                page_summaries = self._extract_summaries_from_listing_html(response.text)
+                new_count = 0
+                for summary in page_summaries:
+                    if not summary.workno or summary.workno in summaries_by_rj:
+                        continue
+                    if not summary.release_date:
+                        summary.release_date = normalized_date
+                    summaries_by_rj[summary.workno] = summary
+                    new_count += 1
+                if new_count == 0:
+                    for workno in self._extract_worknos_from_listing_html(response.text):
+                        if workno and workno not in summaries_by_rj:
+                            summaries_by_rj[workno] = DLsiteWorkSummary(workno=workno, release_date=normalized_date)
+                            new_count += 1
+            except Exception as exc:
+                logger.warning(
+                    "[DLsite] 新作日期页抓取异常 date=%s page=%s error=%s",
+                    normalized_date,
+                    page,
+                    exc,
+                )
+                break
+
+            empty_streak = empty_streak + 1 if new_count == 0 else 0
+            if page == 1 and new_count == 0:
+                break
+            if empty_streak >= 2:
+                break
+
+        summaries = list(summaries_by_rj.values())
+        if summaries:
+            parse_status = "ok"
+        elif not any_http_success:
+            parse_status = "http_error"
+        elif not any_html_looked_normal:
+            parse_status = "html_decode_failed"
+        else:
+            parse_status = "empty"
+        self.cache[cache_key] = {
+            'data': [item.to_dict() for item in summaries],
+            'parse_status': parse_status,
+            'timestamp': datetime.now(),
+        }
+        return summaries, parse_status
+
+    def normalize_product_probe_feature(self, rjcode: str, product: Optional[Dict]) -> DLsiteProductProbeFeature:
+        workno = self._normalize_workno(rjcode)
+        if not isinstance(product, dict):
+            return DLsiteProductProbeFeature(workno=workno, exists=False, probe_status="missing")
+        maker = product.get("maker") if isinstance(product.get("maker"), dict) else {}
+        maker_id = str(product.get("maker_id") or maker.get("id") or maker.get("maker_id") or "").strip().upper()
+        release_date = self._normalize_date_text(
+            product.get("regist_date")
+            or product.get("release_date")
+            or product.get("sales_date")
+            or product.get("disp_start_date")
+            or ""
+        )
+        work_type = str(product.get("work_type") or product.get("work_type_code") or product.get("category") or "").strip().upper()
+        try:
+            price = int(product.get("price") or product.get("official_price") or 0)
+        except Exception:
+            price = 0
+        wishlist_value = product.get("wishlist_count")
+        try:
+            wishlist_count = int(wishlist_value or 0) if not isinstance(wishlist_value, bool) else 0
+        except Exception:
+            wishlist_count = 0
+        feature = DLsiteProductProbeFeature(
+            workno=workno,
+            exists=True,
+            probe_status="ok",
+            maker_id=maker_id,
+            release_date=release_date,
+            work_type=work_type,
+            price=price,
+            is_sale=bool(product.get("is_sale")),
+            is_free=bool(product.get("is_free")),
+            is_oly=bool(product.get("is_oly")),
+            wishlist_count=wishlist_count,
+            title=str(product.get("work_name") or product.get("title") or ""),
+            raw_summary_json={
+                "workno": product.get("workno") or workno,
+                "maker_id": maker_id,
+                "regist_date": product.get("regist_date") or product.get("release_date") or "",
+                "work_type": work_type,
+                "price": price,
+                "is_sale": bool(product.get("is_sale")),
+                "is_free": bool(product.get("is_free")),
+                "is_oly": bool(product.get("is_oly")),
+                "wishlist_count": wishlist_count,
+            },
+        )
+        feature.is_hidden_bonus_audio = bool(
+            maker_id
+            and release_date
+            and work_type == "SOU"
+            and price == 0
+            and self._product_info_indicates_bonus_work(product)
+        )
+        return feature
+
+    async def probe_product_info_features(
+        self,
+        rjcodes: List[str],
+        *,
+        locale: Optional[str] = None,
+        concurrency: int = 5,
+    ) -> Dict[str, DLsiteProductProbeFeature]:
+        """批量拉取 product/info/ajax 并归一成隐藏特典探测字段。"""
+        normalized: List[str] = []
+        for value in rjcodes or []:
+            workno = self._normalize_workno(value)
+            if workno and workno not in normalized:
+                normalized.append(workno)
+        if not normalized:
+            return {}
+        semaphore = asyncio.Semaphore(max(1, int(concurrency or 1)))
+        bulk_size = 500
+
+        async def probe_one(workno: str) -> tuple[str, DLsiteProductProbeFeature]:
+            async with semaphore:
+                try:
+                    product = await self._fetch_product_info_ajax_payload(workno, locale=locale)
+                    return workno, self.normalize_product_probe_feature(workno, product)
+                except Exception as exc:
+                    return workno, DLsiteProductProbeFeature(
+                        workno=workno,
+                        exists=False,
+                        probe_status="error",
+                        error_message=self._format_exc(exc),
+                    )
+
+        async def probe_bulk(chunk: List[str]) -> Dict[str, DLsiteProductProbeFeature]:
+            async with semaphore:
+                try:
+                    payloads = await self._fetch_product_info_ajax_payloads(chunk, locale=locale)
+                except Exception:
+                    payloads = None
+
+            if payloads is None:
+                pairs = await asyncio.gather(*[probe_one(workno) for workno in chunk])
+                return {workno: feature for workno, feature in pairs}
+
+            return {
+                workno: self.normalize_product_probe_feature(workno, payloads.get(workno))
+                for workno in chunk
+            }
+
+        chunks = [normalized[index:index + bulk_size] for index in range(0, len(normalized), bulk_size)]
+        bulk_results = await asyncio.gather(*[probe_bulk(chunk) for chunk in chunks])
+        features: Dict[str, DLsiteProductProbeFeature] = {}
+        for item in bulk_results:
+            features.update(item)
+        return features
 
     async def list_circle_worknos_by_maker(
         self,

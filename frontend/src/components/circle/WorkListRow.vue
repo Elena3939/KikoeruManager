@@ -311,7 +311,6 @@ function onImgLoad() {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--circle-tag-primary, #3478f6) 14%, transparent), 0 0 18px color-mix(in srgb, var(--circle-tag-primary, #3478f6) 18%, transparent);
 }
 
-
 .work-list-row.is-selected {
   background:
     radial-gradient(circle at 0 50%, color-mix(in srgb, var(--circle-primary, #2563eb) 14%, transparent), transparent 42%),
@@ -779,4 +778,5 @@ function onImgLoad() {
   background: var(--circle-hover-bg, #1f2937);
   border-color: var(--circle-border-strong, #1f2937);
 }
+
 </style>

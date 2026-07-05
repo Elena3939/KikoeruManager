@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 import asyncio
 import base64
+import copy
 from collections import defaultdict, deque
 import contextlib
 import hashlib
@@ -43,6 +44,8 @@ _LIBRARY_STORAGE_INFO_CACHE: Dict[str, Dict[str, Any]] = {}
 _STORAGE_INFO_TTL_SECONDS = 60.0
 _LIBRARY_STORAGE_INFO_STALE_TIMEOUT_SECONDS = 0.35
 _BATCH_API_RENAME_INFLIGHT: Dict[str, asyncio.Task] = {}
+_DOWNLOAD_STATUS_CACHE_TTL_SECONDS = 1.0
+_DOWNLOAD_STATUS_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
 def _is_media_response_for_gzip(headers: Headers, status_code: int) -> bool:
@@ -399,6 +402,32 @@ def _escape_ilike_pattern(value: str) -> str:
     return str(value or "").replace("!", "!!").replace("%", "!%").replace("_", "!_")
 
 
+_PASSWORD_SEARCH_FILTER_SQL = """
+(COALESCE(rjcode, '') || ' ' ||
+ COALESCE(filename, '') || ' ' ||
+ COALESCE(password, '') || ' ' ||
+ COALESCE(description, '')) ILIKE :password_search_pattern ESCAPE '!'
+"""
+
+
+def _password_search_filter(search: str):
+    return text(_PASSWORD_SEARCH_FILTER_SQL).bindparams(
+        password_search_pattern=f"%{_escape_ilike_pattern(search)}%"
+    )
+
+
+_PROCESSED_ARCHIVE_SEARCH_FILTER_SQL = """
+(rjcode ILIKE :processed_archive_search_pattern ESCAPE '!' OR
+ filename ILIKE :processed_archive_search_pattern ESCAPE '!')
+"""
+
+
+def _processed_archive_search_filter(search: str):
+    return text(_PROCESSED_ARCHIVE_SEARCH_FILTER_SQL).bindparams(
+        processed_archive_search_pattern=f"%{_escape_ilike_pattern(search)}%"
+    )
+
+
 def _run_activity_log_id_search(db: Session, search_text: str, cap: int) -> tuple[List[Any], str]:
     pattern = f"%{_escape_ilike_pattern(search_text)}%"
     rows = db.execute(
@@ -406,11 +435,7 @@ def _run_activity_log_id_search(db: Session, search_text: str, cap: int) -> tupl
             """
             SELECT id
               FROM activity_logs
-             WHERE COALESCE(summary, '') ILIKE :p ESCAPE '!'
-                OR COALESCE(source_path, '') ILIKE :p ESCAPE '!'
-                OR COALESCE(rjcode, '') ILIKE :p ESCAPE '!'
-                OR COALESCE(task_id, '') ILIKE :p ESCAPE '!'
-                OR COALESCE(batch_id, '') ILIKE :p ESCAPE '!'
+             WHERE searchable_text ILIKE :p ESCAPE '!'
              ORDER BY created_at DESC
              LIMIT :cap
             """
@@ -1603,6 +1628,18 @@ def database_maintenance_performance(limit: int = 10):
     except Exception as e:
         logger.error(f"读取 PostgreSQL 性能快照失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"读取 PostgreSQL 性能快照失败: {str(e)}")
+
+
+@app.get("/api/database/maintenance/search-status")
+def database_maintenance_search_status():
+    """读取各业务搜索域的 PostgreSQL trigram 索引状态。"""
+    from ..core.database_maintenance_service import search_status_snapshot
+
+    try:
+        return search_status_snapshot()
+    except Exception as e:
+        logger.error(f"读取 PostgreSQL 搜索索引状态失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"读取 PostgreSQL 搜索索引状态失败: {str(e)}")
 
 
 @app.post("/api/database/maintenance/pg-stat-statements/reset")
@@ -3988,14 +4025,10 @@ async def get_passwords(
         if rjcode:
             query = query.filter(PasswordEntry.rjcode == rjcode)
         if filename:
-            query = query.filter(PasswordEntry.filename.contains(filename))
+            filename_pattern = f"%{_escape_ilike_pattern(filename)}%"
+            query = query.filter(PasswordEntry.filename.ilike(filename_pattern, escape="!"))
         if search:
-            query = query.filter(
-                (PasswordEntry.rjcode.contains(search)) |
-                (PasswordEntry.filename.contains(search)) |
-                (PasswordEntry.password.contains(search)) |
-                (PasswordEntry.description.contains(search))
-            )
+            query = query.filter(_password_search_filter(search))
         
         # 排序功能
         valid_sort_fields = {
@@ -6584,11 +6617,7 @@ async def get_processed_archives(
         
         # 搜索功能
         if search:
-            search_pattern = f"%{search}%"
-            query = query.filter(
-                (ProcessedArchive.rjcode.contains(search)) |
-                (ProcessedArchive.filename.contains(search))
-            )
+            query = query.filter(_processed_archive_search_filter(search))
         
         # 排序功能
         valid_sort_fields = {
@@ -13365,6 +13394,13 @@ async def rj_subtitle_start(request: RJSubtitleStartRequest):
                 summary = batch_context.get("summary") if isinstance(batch_context.get("summary"), dict) else {}
                 recognized_rj_count = int(summary.get("found") or batch_context.get("recognized_rj_count") or 0)
                 skipped_no_subtitle = int(summary.get("skippedNoSubtitle") or summary.get("skipped_no_subtitle") or batch_context.get("skipped_no_subtitle") or 0)
+                failure_reason = str(batch_context.get("failure_reason") or "").strip()
+                if not failure_reason and recognized_rj_count <= 0:
+                    failure_reason = "扫描未返回可执行 RJ 项"
+                elif not failure_reason and skipped_no_subtitle > 0:
+                    failure_reason = "远程未找到可用字幕"
+                elif not failure_reason:
+                    failure_reason = "本次批量扫描未命中可创建的 RJ 字幕任务"
                 log_subtitle_batch_start_result({
                     "batch_id": batch_id,
                     "requested_count": int(batch_context.get("requested_count") or 0),
@@ -13384,15 +13420,17 @@ async def rj_subtitle_start(request: RJSubtitleStartRequest):
                     "scan_targets": scan_targets,
                     "created_tasks": [],
                     "skipped_items": [],
+                    "failure_reason": failure_reason,
                     "source_path": str(source_directories[0].get("folder_path") or source_directories[0].get("path") or "").strip() if source_directories else "",
                 })
                 return {
                     "success": True,
-                    "message": "本次批量扫描未命中可创建的 RJ 字幕任务",
+                    "message": failure_reason,
                     "created_count": 0,
                     "skipped_existing": 0,
                     "skipped_duplicate": 0,
                     "batch_id": batch_id or None,
+                    "failure_reason": failure_reason,
                     "skipped_items": [],
                     "tasks": [],
                 }
@@ -14395,6 +14433,16 @@ class CircleCompletionIndexJobRequest(BaseModel):
     is_refresh_all: bool = False
 
 
+class CircleCompletionBonusProbeStartRequest(BaseModel):
+    circle_id: str
+    maker_id: str = ""
+    release_dates: List[str] = []
+    mode: str = "normal"
+    gap_limit: int = 500
+    batch_size: int = 500
+    concurrency: int = 5
+
+
 class CircleCompletionDownloadPreviewRequest(BaseModel):
     circle_id: str
     canonical_rjcodes: List[str]
@@ -14571,6 +14619,29 @@ def _resolve_circle_completion_force_refresh(circle_id: str, requested_force_ref
     if len(history) >= 3:
         return True, "auto_threshold"
     return False, ""
+
+
+def _download_status_cache_get(cache_key: str, version: int) -> Optional[Dict[str, Any]]:
+    cached = _DOWNLOAD_STATUS_CACHE.get(cache_key)
+    if not cached:
+        return None
+    cached_at = float(cached.get("cached_at") or 0.0)
+    cached_version = int(cached.get("version") or -1)
+    # 进度 tick 高频变化时允许 1 秒内复用，避免状态轮询重复清洗大 metadata。
+    if cached_version == version or time.monotonic() - cached_at <= _DOWNLOAD_STATUS_CACHE_TTL_SECONDS:
+        payload = cached.get("payload")
+        if isinstance(payload, dict):
+            return copy.deepcopy(payload)
+    return None
+
+
+def _download_status_cache_set(cache_key: str, version: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+    _DOWNLOAD_STATUS_CACHE[cache_key] = {
+        "version": int(version or 0),
+        "cached_at": time.monotonic(),
+        "payload": copy.deepcopy(payload),
+    }
+    return payload
 
 
 class LocalUploadStartRequest(BaseModel):
@@ -15294,9 +15365,15 @@ async def http_download_status():
     from ..core.task_engine import TaskType, get_task_engine
 
     try:
-        all_tasks = get_task_engine().get_all_tasks()
+        engine = get_task_engine()
+        version_getter = getattr(engine, "get_task_center_version", None)
+        version = int(version_getter()) if callable(version_getter) else 0
+        cached = _download_status_cache_get("http_download", version)
+        if cached is not None:
+            return cached
+        all_tasks = engine.get_all_tasks()
         tasks = [task for task in all_tasks if task.type == TaskType.HTTP_DOWNLOAD]
-        return {
+        payload = {
             "total_tasks": len(tasks),
             "processing": len([t for t in tasks if t.status.value == "processing"]),
             "pending": len([t for t in tasks if t.status.value == "pending"]),
@@ -15304,6 +15381,7 @@ async def http_download_status():
             "failed": len([t for t in tasks if t.status.value == "failed"]),
             "tasks": [_serialize_http_download_task(t) for t in tasks[:50]],
         }
+        return _download_status_cache_set("http_download", version, payload)
     except Exception as exc:
         logger.warning("获取 HTTP 下载状态失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"获取状态失败: {str(exc)}")
@@ -15326,10 +15404,16 @@ async def baidu_netdisk_status():
     from ..core.task_engine import TaskType, get_task_engine
 
     try:
-        all_tasks = get_task_engine().get_all_tasks()
+        engine = get_task_engine()
+        version_getter = getattr(engine, "get_task_center_version", None)
+        version = int(version_getter()) if callable(version_getter) else 0
+        cached = _download_status_cache_get("baidu_netdisk", version)
+        if cached is not None:
+            return cached
+        all_tasks = engine.get_all_tasks()
         tasks = [task for task in all_tasks if task.type == TaskType.BAIDU_NETDISK_DOWNLOAD]
         service = get_baidu_netdisk_service()
-        return {
+        payload = {
             "success": True,
             "account": service.account_status(),
             "official_login": service.official_login_status(),
@@ -15340,6 +15424,7 @@ async def baidu_netdisk_status():
             "failed": len([t for t in tasks if t.status.value == "failed"]),
             "tasks": [_serialize_http_download_task(t) for t in tasks[:50]],
         }
+        return _download_status_cache_set("baidu_netdisk", version, payload)
     except Exception as exc:
         logger.warning("获取百度网盘状态失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"获取状态失败: {str(exc)}")
@@ -16654,6 +16739,190 @@ async def circle_completion_index_job_status(job_id: str):
     except Exception as exc:
         logger.error("查询社团索引任务失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"查询社团索引任务失败: {str(exc)}")
+
+
+@app.post("/api/circle-completion/bonus-probe/start")
+async def circle_completion_bonus_probe_start(request: CircleCompletionBonusProbeStartRequest):
+    from ..core.dlsite_bonus_probe_service import get_dlsite_bonus_probe_service
+    from ..core.task_engine import Task, TaskStatus, TaskType, get_task_engine
+
+    try:
+        circle_id = str(request.circle_id or "").strip()
+        if not circle_id:
+            raise ValueError("缺少社团 ID")
+        service = get_dlsite_bonus_probe_service()
+        context = service.resolve_circle_context(circle_id, request.maker_id)
+        maker_id = str(context.get("maker_id") or "").strip().upper()
+        if not maker_id:
+            raise ValueError("未找到该社团的 DLsite maker_id，请先建立社团索引")
+        mode = str(request.mode or "normal").strip() or "normal"
+        release_dates = [service.normalize_date(value) for value in list(request.release_dates or [])]
+        release_dates = [value for value in release_dates if value]
+        if not release_dates:
+            release_dates = service.list_indexed_release_dates(circle_id, maker_id, mode=mode)
+        if not release_dates:
+            raise ValueError("没有可探测的已索引发售日")
+
+        gap_limit = max(1, int(request.gap_limit or 500))
+        batch_size = max(1, int(request.batch_size or 500))
+        concurrency = max(1, int(request.concurrency or 5))
+        requested_release_dates = list(release_dates)
+        release_dates, skipped_completed_release_dates = service.split_reusable_release_dates(
+            maker_id=maker_id,
+            release_dates=requested_release_dates,
+            mode=mode,
+            gap_limit=gap_limit,
+        )
+        if not release_dates:
+            return {
+                "success": True,
+                "job_id": "",
+                "status": "completed",
+                "progress": 100,
+                "current_step": "这些发售日已完成特典探测，无需重复查找",
+                "circle_id": circle_id,
+                "circle_name": context.get("circle_name") or "",
+                "maker_id": maker_id,
+                "release_dates": [],
+                "requested_release_dates": requested_release_dates,
+                "skipped_completed_release_dates": skipped_completed_release_dates,
+                "already_completed": True,
+                "duplicate": False,
+                "result": {
+                    "date_count": 0,
+                    "skipped_count": len(skipped_completed_release_dates),
+                    "skipped_completed_release_dates": skipped_completed_release_dates,
+                    "probe_count": 0,
+                    "request_count": 0,
+                    "hit_count": 0,
+                    "inserted_count": 0,
+                },
+            }
+        business_key = f"{maker_id}:{mode}:{'|'.join(release_dates)}:{gap_limit}:bonus_probe"
+        engine = get_task_engine()
+        active_statuses = {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED}
+        for current_task in engine.get_all_tasks(include_hidden=True):
+            if current_task.type != TaskType.CIRCLE_COMPLETION_BONUS_PROBE:
+                continue
+            metadata = dict(current_task.task_metadata or {})
+            if str(metadata.get("business_key") or "").strip() != business_key:
+                continue
+            if current_task.status in active_statuses:
+                return {
+                    "success": True,
+                    "job_id": current_task.id,
+                    "status": current_task.status.value if isinstance(current_task.status, TaskStatus) else str(current_task.status),
+                    "progress": int(current_task.progress or 0),
+                    "current_step": current_task.current_step,
+                    "circle_id": circle_id,
+                    "maker_id": maker_id,
+                    "release_dates": release_dates,
+                    "requested_release_dates": requested_release_dates,
+                    "skipped_completed_release_dates": skipped_completed_release_dates,
+                    "duplicate": True,
+                    "result": dict(metadata.get("bonus_probe_result") or {}),
+                }
+
+        source_label = f"{context.get('circle_name') or circle_id} 特典补全"
+        task = Task(
+            task_type=TaskType.CIRCLE_COMPLETION_BONUS_PROBE,
+            source_path=circle_id,
+            auto_classify=False,
+            metadata={
+                "circle_id": circle_id,
+                "circle_name": context.get("circle_name") or "",
+                "maker_id": maker_id,
+                "release_dates": release_dates,
+                "requested_release_dates": requested_release_dates,
+                "skipped_completed_release_dates": skipped_completed_release_dates,
+                "mode": mode,
+                "gap_limit": gap_limit,
+                "batch_size": batch_size,
+                "concurrency": concurrency,
+                "task_domain": "circle_completion",
+                "source_page": "circle-completion",
+                "source_action": "bonus_probe",
+                "source_label": source_label,
+                "business_key": business_key,
+                "progress_log": [],
+            },
+        )
+        task.ensure_business_context("circle_completion", {
+            "source_page": "circle-completion",
+            "source_action": "bonus_probe",
+            "source_label": source_label,
+            "business_key": business_key,
+        })
+        await engine.submit(task)
+        return {
+            "success": True,
+            "job_id": task.id,
+            "status": task.status.value if isinstance(task.status, TaskStatus) else str(task.status),
+            "progress": int(task.progress or 0),
+            "current_step": task.current_step,
+            "circle_id": circle_id,
+            "maker_id": maker_id,
+            "release_dates": release_dates,
+            "requested_release_dates": requested_release_dates,
+            "skipped_completed_release_dates": skipped_completed_release_dates,
+            "duplicate": False,
+            "result": {},
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error("启动 DLsite 特典探测任务失败: %s", sanitize_text_for_log(exc))
+        raise HTTPException(status_code=500, detail=f"启动 DLsite 特典探测任务失败: {str(exc)}")
+
+
+@app.get("/api/circle-completion/bonus-probe/jobs/{job_id}")
+async def circle_completion_bonus_probe_job_status(job_id: str):
+    from ..core.task_engine import get_task_engine
+
+    try:
+        task = get_task_engine().get_task(job_id)
+        if task is None:
+            raise ValueError("特典探测任务不存在")
+        metadata = dict(task.task_metadata or {})
+        started_at = task.started_at or task.created_at
+        finished_at = task.completed_at
+        elapsed_seconds = 0.0
+        if started_at:
+            elapsed_seconds = max(0.0, ((finished_at or datetime.now()) - started_at).total_seconds())
+        return {
+            "success": True,
+            "job_id": task.id,
+            "status": task.status.value,
+            "progress": int(task.progress or 0),
+            "current_step": task.current_step,
+            "circle_id": str(metadata.get("circle_id") or task.source_path or "").strip(),
+            "circle_name": str(metadata.get("circle_name") or "").strip(),
+            "maker_id": str(metadata.get("maker_id") or "").strip(),
+            "release_dates": list(metadata.get("release_dates") or []),
+            "started_at": started_at.isoformat() if started_at else None,
+            "finished_at": finished_at.isoformat() if finished_at else None,
+            "elapsed_seconds": round(elapsed_seconds, 1),
+            "error_message": task.error_message,
+            "meta": dict(metadata.get("bonus_probe_meta") or {}),
+            "summary": dict(metadata.get("bonus_probe_summary") or {}),
+            "result": dict(metadata.get("bonus_probe_result") or {}),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("查询 DLsite 特典探测任务失败: %s", sanitize_text_for_log(exc))
+        raise HTTPException(status_code=500, detail=f"查询 DLsite 特典探测任务失败: {str(exc)}")
+
+
+@app.get("/api/circle-completion/circles/{circle_id}/bonus-probe-status")
+async def circle_completion_bonus_probe_status(circle_id: str, limit: int = 20):
+    from ..core.dlsite_bonus_probe_service import get_dlsite_bonus_probe_service
+
+    try:
+        return {"success": True, **get_dlsite_bonus_probe_service().get_circle_status(circle_id, limit=limit)}
+    except Exception as exc:
+        logger.error("查询 DLsite 特典探测状态失败: %s", sanitize_text_for_log(exc))
+        raise HTTPException(status_code=500, detail=f"查询 DLsite 特典探测状态失败: {str(exc)}")
 
 
 @app.get("/api/circle-completion/circles")
