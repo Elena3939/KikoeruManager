@@ -546,6 +546,11 @@ class DatabaseConfig(BaseModel):
     pool_timeout_seconds: int = 30
     statement_timeout_ms: int = 120000
     startup_health_check: bool = True
+    slow_query_monitor_enabled: bool = True
+    slow_query_threshold_ms: int = 500
+    auto_explain_enabled: bool = False
+    auto_explain_threshold_ms: int = 1000
+    search_backend: str = "pg_trgm"
 
     @model_validator(mode='before')
     @classmethod

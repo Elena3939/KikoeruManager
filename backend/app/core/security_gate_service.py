@@ -30,6 +30,10 @@ ISSUER = "KikoeruManager"
 ACCOUNT = "System Gate"
 
 
+def _escape_ilike_pattern(value: str) -> str:
+    return str(value or "").replace("!", "!!").replace("%", "!%").replace("_", "!_")
+
+
 class SecurityGateService:
     """系统级 Google Authenticator 门禁服务。"""
 
@@ -279,7 +283,8 @@ class SecurityGateService:
         elif result == "blacklist":
             query = query.filter(SecurityGateAuthLog.triggered_blacklist == True)
         if ip:
-            query = query.filter(SecurityGateAuthLog.ip_address.contains(ip.strip()))
+            pattern = f"%{_escape_ilike_pattern(ip.strip())}%"
+            query = query.filter(SecurityGateAuthLog.ip_address.ilike(pattern, escape="!"))
         rows = query.order_by(desc(SecurityGateAuthLog.created_at)).limit(min(max(int(limit or 50), 1), 200)).all()
         return [row.to_dict() for row in rows]
 

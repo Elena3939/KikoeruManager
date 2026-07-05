@@ -61,6 +61,28 @@
         </div>
       </div>
 
+      <div v-if="searchDomains.length" class="db-search-domains">
+        <div class="db-perf-list-title">搜索索引</div>
+        <div class="db-search-domain-grid">
+          <div
+            v-for="item in searchDomains"
+            :key="item.domain"
+            class="db-search-domain"
+            :class="{ 'is-ready': item.search_enabled, 'is-warn': !item.search_enabled }"
+          >
+            <span>{{ item.label }}</span>
+            <strong>{{ item.search_enabled ? '已就绪' : '待维护' }}</strong>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="performanceAdvice.length" class="db-advice-list">
+        <div v-for="item in performanceAdvice" :key="`${item.area}-${item.message}`" class="db-advice-row" :class="`is-${item.level || 'info'}`">
+          <AlertCircle :size="13" />
+          <span>{{ item.message }}</span>
+        </div>
+      </div>
+
       <div v-if="slowQueries.length" class="db-perf-list">
         <div class="db-perf-list-title">Top SQL</div>
         <div v-for="item in slowQueries" :key="item.queryid || item.query" class="db-sql-row">
@@ -239,6 +261,8 @@ const performanceSettingChips = computed(() => {
 })
 
 const slowQueries = computed(() => (performance.value?.slow_queries || []).slice(0, 5))
+const searchDomains = computed(() => performance.value?.search_status?.domains || [])
+const performanceAdvice = computed(() => performance.value?.advice || [])
 const hotTables = computed(() => {
   const rows = performance.value?.table_stats || []
   return rows
@@ -643,7 +667,9 @@ onBeforeUnmount(() => {
 }
 
 .db-perf-list,
-.db-perf-tables {
+.db-perf-tables,
+.db-search-domains,
+.db-advice-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -655,6 +681,70 @@ onBeforeUnmount(() => {
   color: var(--set-text-muted);
   font-size: 11.5px;
   font-weight: 600;
+}
+
+.db-search-domain-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.db-search-domain {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--set-border);
+  background: var(--set-surface-soft);
+  color: var(--set-text-muted);
+  font-size: 11.5px;
+}
+
+.db-search-domain span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.db-search-domain strong {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.db-search-domain.is-ready strong {
+  color: var(--set-success-text);
+}
+
+.db-search-domain.is-warn strong {
+  color: var(--set-warning-text, #a16207);
+}
+
+.db-advice-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--set-border);
+  background: var(--set-surface-soft);
+  color: var(--set-text);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.db-advice-row.is-warning {
+  color: var(--set-warning-text, #a16207);
+}
+
+.db-advice-row svg {
+  flex-shrink: 0;
+  margin-top: 2px;
 }
 
 .db-sql-row {
@@ -728,6 +818,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 640px) {
   .db-perf-settings { grid-template-columns: 1fr; }
+  .db-search-domain-grid { grid-template-columns: 1fr; }
   .db-size-grid { grid-template-columns: 1fr; }
   .db-table-stat { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 }

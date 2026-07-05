@@ -1211,7 +1211,10 @@ class SnapshotStore:
                     ON e.library_id = :library_id
                    AND (
                        e.relative_path = roots.relative_path
-                       OR e.relative_path LIKE replace(replace(replace(roots.relative_path, '!', '!!'), '%', '!%'), '_', '!_') || '/%' ESCAPE '!'
+                       OR (
+                           e.relative_path >= roots.relative_path || '/'
+                           AND e.relative_path < roots.relative_path || '0'
+                       )
                    )
                  GROUP BY roots.relative_path
                 """
@@ -1261,19 +1264,14 @@ class SnapshotStore:
                 kept_set.add(path)
         return kept
 
-    @staticmethod
-    def _escape_like_literal(value: str) -> str:
-        return str(value or "").replace("!", "!!").replace("%", "!%").replace("_", "!_")
-
-    @classmethod
-    def _subtree_like_pattern(cls, relative_path: str) -> str:
-        return f"{cls._escape_like_literal(relative_path)}/%"
-
     @classmethod
     def _subtree_column_condition(cls, column, relative_path: str):
         return or_(
             column == relative_path,
-            column.like(cls._subtree_like_pattern(relative_path), escape="!"),
+            and_(
+                column >= f"{relative_path}/",
+                column < f"{relative_path}0",
+            ),
         )
 
     @staticmethod
@@ -1504,7 +1502,8 @@ class SnapshotStore:
                        parent_path = CASE
                            WHEN relative_path = :old_rel THEN :new_parent
                            WHEN parent_path = :old_rel THEN :new_rel
-                           WHEN parent_path LIKE :old_child_like ESCAPE '!'
+                           WHEN parent_path >= :old_child_lower
+                            AND parent_path < :old_child_upper
                                THEN :new_rel || substr(parent_path, :old_rel_suffix_start)
                            ELSE parent_path
                        END,
@@ -1525,7 +1524,8 @@ class SnapshotStore:
                    AND (
                        relative_path = :old_rel
                        OR (
-                           relative_path LIKE :old_child_like ESCAPE '!'
+                           relative_path >= :old_child_lower
+                           AND relative_path < :old_child_upper
                        )
                    )
                 """
@@ -1539,7 +1539,8 @@ class SnapshotStore:
                 "new_parent": new_parent,
                 "new_name": new_name,
                 "new_name_sort_key": new_name_sort_key,
-                "old_child_like": self._subtree_like_pattern(old_rel),
+                "old_child_lower": f"{old_rel}/",
+                "old_child_upper": f"{old_rel}0",
                 "old_rel_suffix_start": len(old_rel) + 1,
                 "old_abs_suffix_start": len(old_abs) + 1,
                 "depth_delta": depth_delta,
@@ -1741,7 +1742,8 @@ class SnapshotStore:
                     CASE
                         WHEN relative_path = :old_rel THEN :new_parent
                         WHEN parent_path = :old_rel THEN :new_rel
-                        WHEN parent_path LIKE :old_child_like ESCAPE '!'
+                        WHEN parent_path >= :old_child_lower
+                         AND parent_path < :old_child_upper
                             THEN :new_rel || substr(parent_path, :old_rel_suffix_start)
                         ELSE parent_path
                     END,
@@ -1758,7 +1760,8 @@ class SnapshotStore:
                   AND (
                       relative_path = :old_rel
                       OR (
-                          relative_path LIKE :old_child_like ESCAPE '!'
+                          relative_path >= :old_child_lower
+                          AND relative_path < :old_child_upper
                       )
                   )
                 """
@@ -1773,7 +1776,8 @@ class SnapshotStore:
                 "new_parent": new_parent,
                 "new_name": new_name,
                 "new_name_sort_key": new_name_sort_key,
-                "old_child_like": self._subtree_like_pattern(old_rel),
+                "old_child_lower": f"{old_rel}/",
+                "old_child_upper": f"{old_rel}0",
                 "old_rel_suffix_start": len(old_rel) + 1,
                 "old_abs_suffix_start": len(old_abs) + 1,
                 "depth_delta": depth_delta,
@@ -2349,9 +2353,9 @@ class SnapshotStore:
                     q = q.filter(self._subtree_column_condition(LibraryIndexEntry.relative_path, normalized_path))
                 else:
                     q = q.filter(
-                        LibraryIndexEntry.relative_path.like(
-                            self._subtree_like_pattern(normalized_path),
-                            escape="!",
+                        and_(
+                            LibraryIndexEntry.relative_path >= f"{normalized_path}/",
+                            LibraryIndexEntry.relative_path < f"{normalized_path}0",
                         )
                     )
             if entry_type:
@@ -2451,7 +2455,8 @@ class SnapshotStore:
                  LEFT JOIN library_index_entries AS e
                         ON e.library_id = :library_id
                        AND e.entry_type = 'dir'
-                       AND e.relative_path LIKE replace(replace(replace(roots.relative_path, '!', '!!'), '%', '!%'), '_', '!_') || '/%' ESCAPE '!'
+                       AND e.relative_path >= roots.relative_path || '/'
+                       AND e.relative_path < roots.relative_path || '0'
                      GROUP BY roots.relative_path
                     """
                 )
@@ -2489,7 +2494,8 @@ class SnapshotStore:
                  LEFT JOIN library_index_entries AS e
                         ON e.library_id = :library_id
                        AND e.entry_type = 'file'
-                       AND e.relative_path LIKE replace(replace(replace(roots.relative_path, '!', '!!'), '%', '!%'), '_', '!_') || '/%' ESCAPE '!'
+                       AND e.relative_path >= roots.relative_path || '/'
+                       AND e.relative_path < roots.relative_path || '0'
                      GROUP BY roots.relative_path
                     """
                 ),
@@ -2649,28 +2655,82 @@ class SnapshotStore:
         deleted = 0
         for i in range(0, len(paths), chunk_size):
             chunk = paths[i:i + chunk_size]
-            conditions = []
-            for p in chunk:
-                conditions.append(self._subtree_column_condition(LibraryIndexEntry.relative_path, p))
-            if not conditions:
-                continue
             with self._write_session() as db:
-                per_path_stats = self._query_subtree_stats_many(db, library_id, chunk)
-                q = (
-                    db.query(LibraryIndexEntry)
-                    .filter(LibraryIndexEntry.library_id == library_id)
-                    .filter(or_(*conditions))
-                )
-                total_size, folder_count, entry_count, _file_count = self._query_stats_delta(q)
-                deleted += q.delete(synchronize_session=False)
-                for p, (file_size, _path_folder_count, _path_entry_count, file_count) in per_path_stats.items():
-                    self._apply_ancestor_dir_delta(
-                        db,
-                        library_id,
-                        p,
-                        size_delta=-file_size,
-                        file_count_delta=-file_count,
+                root_rows = (
+                    db.query(
+                        LibraryIndexEntry.relative_path,
+                        LibraryIndexEntry.entry_type,
+                        LibraryIndexEntry.size,
                     )
+                    .filter(
+                        LibraryIndexEntry.library_id == library_id,
+                        LibraryIndexEntry.relative_path.in_(chunk),
+                    )
+                    .all()
+                )
+                root_by_path = {row.relative_path: row for row in root_rows}
+                file_rows = [
+                    root_by_path[p]
+                    for p in chunk
+                    if p in root_by_path and root_by_path[p].entry_type == 'file'
+                ]
+                subtree_paths = [
+                    p
+                    for p in chunk
+                    if p not in root_by_path or root_by_path[p].entry_type != 'file'
+                ]
+
+                total_size = 0
+                folder_count = 0
+                entry_count = 0
+                ancestor_deltas: dict[str, dict[str, int]] = {}
+
+                if file_rows:
+                    file_paths = [row.relative_path for row in file_rows]
+                    file_size = sum(max(0, int(row.size or 0)) for row in file_rows)
+                    file_count = len(file_rows)
+                    deleted += (
+                        db.query(LibraryIndexEntry)
+                        .filter(
+                            LibraryIndexEntry.library_id == library_id,
+                            LibraryIndexEntry.entry_type == 'file',
+                            LibraryIndexEntry.relative_path.in_(file_paths),
+                        )
+                        .delete(synchronize_session=False)
+                    )
+                    total_size += file_size
+                    entry_count += file_count
+                    for row in file_rows:
+                        row_size = max(0, int(row.size or 0))
+                        for ancestor in self._ancestor_relative_paths(row.relative_path):
+                            delta = ancestor_deltas.setdefault(ancestor, {"size": 0, "files": 0})
+                            delta["size"] -= row_size
+                            delta["files"] -= 1
+
+                if subtree_paths:
+                    conditions = [
+                        self._subtree_column_condition(LibraryIndexEntry.relative_path, p)
+                        for p in subtree_paths
+                    ]
+                    per_path_stats = self._query_subtree_stats_many(db, library_id, subtree_paths)
+                    q = (
+                        db.query(LibraryIndexEntry)
+                        .filter(LibraryIndexEntry.library_id == library_id)
+                        .filter(or_(*conditions))
+                    )
+                    subtree_size, subtree_folders, subtree_entries, _subtree_files = self._query_stats_delta(q)
+                    deleted += q.delete(synchronize_session=False)
+                    total_size += subtree_size
+                    folder_count += subtree_folders
+                    entry_count += subtree_entries
+                    for p, (file_size, _path_folder_count, _path_entry_count, file_count) in per_path_stats.items():
+                        for ancestor in self._ancestor_relative_paths(p):
+                            delta = ancestor_deltas.setdefault(ancestor, {"size": 0, "files": 0})
+                            delta["size"] -= file_size
+                            delta["files"] -= file_count
+
+                if ancestor_deltas:
+                    self._flush_ancestor_deltas(db, {library_id: ancestor_deltas})
                 self._apply_status_delta(
                     db,
                     library_id,

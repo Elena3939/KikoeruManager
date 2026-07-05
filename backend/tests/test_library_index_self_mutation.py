@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from sqlalchemy import event
 from sqlalchemy.orm import sessionmaker
 
 # 让 pytest 直接运行 backend/tests 时也能 import app
@@ -600,6 +601,64 @@ def test_delete_file_updates_ancestor_directory_size_and_count(isolated_index):
     assert top is not None
     assert top.size == 0
     assert top.file_count == 0
+
+
+def test_batch_delete_file_paths_skips_subtree_stats_sql(isolated_index):
+    """批量删字幕文件时，文件路径不能走目录子树递归统计。"""
+    engine = isolated_index["engine"]
+    store: SnapshotStore = isolated_index["store"]
+    library_id = "lib_batch_delete_file_fast_path"
+    statements: list[str] = []
+
+    def _capture_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(" ".join(str(statement).lower().split()))
+
+    files = [
+        _manual_entry(
+            f"RJ00000033/subtitles/unused-{index:02d}.srt",
+            library_id=library_id,
+            rjcode="RJ00000033",
+            entry_type="file",
+            size=index + 1,
+        )
+        for index in range(35)
+    ]
+
+    store.upsert_status(library_id, status="ready", watcher_mode="disabled")
+    store.bulk_upsert([
+        _manual_entry("RJ00000033", library_id=library_id, rjcode="RJ00000033", size=0, file_count=0),
+        _manual_entry("RJ00000033/subtitles", library_id=library_id, rjcode="RJ00000033", size=0, file_count=0),
+        *files,
+    ])
+
+    event.listen(engine, "before_cursor_execute", _capture_statement)
+    try:
+        deleted = store.delete_subtrees(library_id, [item.relative_path for item in files], chunk_size=100)
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture_statement)
+
+    parent = store.get_entry(library_id, "RJ00000033")
+    subtitles_dir = store.get_entry(library_id, "RJ00000033/subtitles")
+    status = store.get_status(library_id)
+
+    assert deleted == 35
+    assert parent is not None
+    assert parent.size == 0
+    assert parent.file_count == 0
+    assert subtitles_dir is not None
+    assert subtitles_dir.size == 0
+    assert subtitles_dir.file_count == 0
+    assert status is not None
+    assert status.total_entries == 2
+    assert status.total_size_bytes == 0
+    assert status.folder_count == 1
+    assert store.get_entry(library_id, files[0].relative_path) is None
+    assert not [
+        item for item in statements
+        if "left join library_index_entries" in item
+        and "jsonb_to_recordset" in item
+    ]
+    assert not any(" like " in item for item in statements)
 
 
 def test_subtree_upsert_updates_outer_parent_directory_delta(isolated_index):

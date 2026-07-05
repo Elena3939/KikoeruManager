@@ -49,18 +49,15 @@ _STAGE_LABELS = {
 }
 
 _TRIGRAM_INDEXES = (
-    "idx_activity_logs_summary_trgm",
-    "idx_activity_logs_source_path_trgm",
-    "idx_activity_logs_rjcode_trgm",
-    "idx_activity_logs_task_id_trgm",
-    "idx_activity_logs_batch_id_trgm",
+    "idx_activity_logs_searchable_text_trgm",
     "idx_library_index_search_text_trgm",
     "idx_task_center_searchable_text_trgm",
-    "idx_task_center_title_trgm",
-    "idx_task_center_business_key_trgm",
-    "idx_task_center_engine_task_id_trgm",
     "idx_processed_archives_filename_trgm",
     "idx_processed_archives_rjcode_trgm",
+    "idx_password_entries_search_text_trgm",
+    "idx_security_gate_auth_logs_ip_trgm",
+    "idx_circle_catalogs_search_text_trgm",
+    "idx_circle_works_search_text_trgm",
 )
 
 
@@ -149,15 +146,11 @@ def _pg_database_sizes() -> Dict[str, Any]:
                 SELECT indexname, tablename, pg_relation_size((schemaname || '.' || indexname)::regclass) AS bytes
                   FROM pg_indexes
                  WHERE schemaname = current_schema()
-                   AND (
-                        indexname LIKE 'idx_activity_logs_%_trgm'
-                     OR indexname LIKE 'idx_library_index_%_trgm'
-                     OR indexname LIKE 'idx_task_center_%_trgm'
-                     OR indexname LIKE 'idx_processed_archives_%_trgm'
-                   )
+                   AND indexname IN :names
                  ORDER BY tablename, indexname
                 """
-            )
+            ).bindparams(bindparam("names", expanding=True)),
+            {"names": list(_TRIGRAM_INDEXES)},
         ).mappings().all()
         indexes = [
             {
@@ -429,7 +422,58 @@ _PERFORMANCE_TABLES = (
     "asmr_download_sessions",
     "password_entries",
     "processed_archives",
+    "circle_catalogs",
+    "circle_works",
+    "security_gate_auth_logs",
 )
+
+_SEARCH_INDEX_DOMAINS = {
+    "activity_logs": {
+        "label": "操作历史",
+        "indexes": ("idx_activity_logs_searchable_text_trgm",),
+        "obsolete_indexes": (
+            "idx_activity_logs_summary_trgm",
+            "idx_activity_logs_source_path_trgm",
+            "idx_activity_logs_rjcode_trgm",
+            "idx_activity_logs_task_id_trgm",
+            "idx_activity_logs_batch_id_trgm",
+        ),
+    },
+    "library_index": {
+        "label": "库存索引",
+        "indexes": ("idx_library_index_search_text_trgm",),
+        "obsolete_indexes": (),
+    },
+    "task_center": {
+        "label": "任务中心",
+        "indexes": ("idx_task_center_searchable_text_trgm",),
+        "obsolete_indexes": (
+            "idx_task_center_title_trgm",
+            "idx_task_center_business_key_trgm",
+            "idx_task_center_engine_task_id_trgm",
+        ),
+    },
+    "processed_archives": {
+        "label": "已处理归档",
+        "indexes": ("idx_processed_archives_filename_trgm", "idx_processed_archives_rjcode_trgm"),
+        "obsolete_indexes": (),
+    },
+    "password_entries": {
+        "label": "密码库",
+        "indexes": ("idx_password_entries_search_text_trgm",),
+        "obsolete_indexes": (),
+    },
+    "security_gate": {
+        "label": "安全网关",
+        "indexes": ("idx_security_gate_auth_logs_ip_trgm",),
+        "obsolete_indexes": (),
+    },
+    "circle_completion": {
+        "label": "社团补全",
+        "indexes": ("idx_circle_catalogs_search_text_trgm", "idx_circle_works_search_text_trgm"),
+        "obsolete_indexes": (),
+    },
+}
 
 
 def _pg_stat_statements_status(conn) -> Dict[str, Any]:
@@ -660,6 +704,152 @@ def _table_performance_stats(conn) -> list[Dict[str, Any]]:
     return result
 
 
+def _search_index_snapshot(conn) -> Dict[str, Any]:
+    names = sorted({
+        index_name
+        for domain in _SEARCH_INDEX_DOMAINS.values()
+        for key in ("indexes", "obsolete_indexes")
+        for index_name in domain[key]
+    })
+    rows = conn.execute(
+        text(
+            """
+            SELECT
+              c.relname AS index_name,
+              t.relname AS table_name,
+              i.indisvalid,
+              i.indisready,
+              pg_relation_size(c.oid) AS size_bytes
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = current_schema()
+            JOIN pg_index i ON i.indexrelid = c.oid
+            JOIN pg_class t ON t.oid = i.indrelid
+            WHERE c.relname = ANY(:names)
+            """
+        ),
+        {"names": names},
+    ).mappings().all()
+    by_name = {
+        str(row["index_name"]): {
+            "name": str(row["index_name"]),
+            "table": str(row["table_name"]),
+            "valid": bool(row["indisvalid"]),
+            "ready": bool(row["indisready"]),
+            "size_bytes": int(row["size_bytes"] or 0),
+            "size_human": _human_bytes(row["size_bytes"] or 0),
+        }
+        for row in rows
+    }
+    domains = []
+    for domain_key, spec in _SEARCH_INDEX_DOMAINS.items():
+        required = [by_name.get(name) for name in spec["indexes"]]
+        missing = [name for name, item in zip(spec["indexes"], required) if not item]
+        obsolete_present = [name for name in spec["obsolete_indexes"] if name in by_name]
+        domains.append({
+            "domain": domain_key,
+            "label": spec["label"],
+            "search_enabled": not missing and all(bool(item and item["valid"] and item["ready"]) for item in required),
+            "indexes": [item for item in required if item],
+            "missing_indexes": missing,
+            "obsolete_indexes_present": obsolete_present,
+        })
+    pg_trgm_enabled = bool(conn.execute(text("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')")).scalar())
+    pgroonga_enabled = bool(conn.execute(text("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pgroonga')")).scalar())
+    return {
+        "backend": "postgresql",
+        "default_search_backend": _configured_search_backend(),
+        "pg_trgm_enabled": pg_trgm_enabled,
+        "pgroonga_enabled": pgroonga_enabled,
+        "domains": domains,
+        "all_ready": pg_trgm_enabled and all(item["search_enabled"] for item in domains),
+    }
+
+
+def _configured_search_backend() -> str:
+    try:
+        from ..config.settings import get_config
+
+        return str(getattr(get_config().database, "search_backend", "pg_trgm") or "pg_trgm")
+    except Exception:
+        return "pg_trgm"
+
+
+def _performance_config_snapshot() -> Dict[str, Any]:
+    try:
+        from ..config.settings import get_config
+
+        cfg = get_config().database
+        return {
+            "slow_query_monitor_enabled": bool(getattr(cfg, "slow_query_monitor_enabled", True)),
+            "slow_query_threshold_ms": int(getattr(cfg, "slow_query_threshold_ms", 500) or 500),
+            "auto_explain_enabled": bool(getattr(cfg, "auto_explain_enabled", False)),
+            "auto_explain_threshold_ms": int(getattr(cfg, "auto_explain_threshold_ms", 1000) or 1000),
+            "search_backend": str(getattr(cfg, "search_backend", "pg_trgm") or "pg_trgm"),
+        }
+    except Exception:
+        return {
+            "slow_query_monitor_enabled": True,
+            "slow_query_threshold_ms": 500,
+            "auto_explain_enabled": False,
+            "auto_explain_threshold_ms": 1000,
+            "search_backend": "pg_trgm",
+        }
+
+
+def _build_performance_advice(
+    *,
+    pg_stat_statements: Dict[str, Any],
+    slow_queries: list[Dict[str, Any]],
+    table_stats: list[Dict[str, Any]],
+    search_status: Dict[str, Any],
+) -> list[Dict[str, Any]]:
+    advice: list[Dict[str, Any]] = []
+    if not pg_stat_statements.get("queryable"):
+        advice.append({
+            "level": "warning",
+            "area": "pg_stat_statements",
+            "message": "pg_stat_statements 当前不可查询，慢 SQL TopN 为空；需要确认 shared_preload_libraries 和扩展权限。",
+        })
+    missing_domains = [
+        item["label"]
+        for item in search_status.get("domains", [])
+        if item.get("missing_indexes")
+    ]
+    if missing_domains:
+        advice.append({
+            "level": "warning",
+            "area": "search_index",
+            "message": "以下搜索域缺少 trigram 索引：" + "、".join(missing_domains),
+        })
+    obsolete_domains = [
+        item["label"]
+        for item in search_status.get("domains", [])
+        if item.get("obsolete_indexes_present")
+    ]
+    if obsolete_domains:
+        advice.append({
+            "level": "info",
+            "area": "search_index",
+            "message": "以下搜索域仍有旧单列 trigram 索引，后续维护会清理以降低写放大：" + "、".join(obsolete_domains),
+        })
+    for row in table_stats[:6]:
+        if int(row.get("n_live_tup") or 0) >= 10000 and float(row.get("seq_scan_percent") or 0) >= 60:
+            advice.append({
+                "level": "warning",
+                "area": "seq_scan",
+                "message": f"{row.get('table')} 顺序扫描占比 {row.get('seq_scan_percent')}%，需要结合慢 SQL 判断是否缺索引或查询条件未命中索引。",
+            })
+    for item in slow_queries[:5]:
+        query = str(item.get("query") or "").lower()
+        if " like " in query or " ilike " in query:
+            advice.append({
+                "level": "warning",
+                "area": "like_query",
+                "message": f"慢 SQL 命中 LIKE/ILIKE：queryid={item.get('queryid')}，优先检查是否走 searchable_text 或表达式 trigram 索引。",
+            })
+    return advice
+
+
 def performance_snapshot(*, limit: int = 10) -> Dict[str, Any]:
     """返回 PostgreSQL 性能观测快照。
 
@@ -674,20 +864,41 @@ def performance_snapshot(*, limit: int = 10) -> Dict[str, Any]:
         settings = _postgres_runtime_settings(conn)
         slow = _slow_queries(conn, limit=limit)
         tables = _table_performance_stats(conn)
+        search_status = _search_index_snapshot(conn)
         database_size = int(conn.execute(text("SELECT pg_database_size(current_database())")).scalar() or 0)
+    performance_config = _performance_config_snapshot()
+    advice = _build_performance_advice(
+        pg_stat_statements=slow["status"],
+        slow_queries=slow["items"],
+        table_stats=tables,
+        search_status=search_status,
+    )
     return {
         "backend": "postgresql",
         "database_url": _database_identity(),
         "database_size_bytes": database_size,
         "database_size_human": _human_bytes(database_size),
+        "performance_config": performance_config,
         "settings": settings["items"],
         "settings_by_name": settings["by_name"],
         "pg_stat_statements": slow["status"],
         "slow_queries": slow["items"],
         "table_stats": tables,
+        "search_status": search_status,
+        "advice": advice,
         "limit": limit,
         "duration_ms": int((time.monotonic() - started) * 1000),
     }
+
+
+def search_status_snapshot() -> Dict[str, Any]:
+    from ..models.database import engine
+
+    started = time.monotonic()
+    with engine.connect() as conn:
+        result = _search_index_snapshot(conn)
+    result["duration_ms"] = int((time.monotonic() - started) * 1000)
+    return result
 
 
 def reset_pg_stat_statements() -> Dict[str, Any]:

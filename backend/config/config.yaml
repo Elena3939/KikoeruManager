@@ -25,6 +25,11 @@ database:
   pool_timeout_seconds: 30
   statement_timeout_ms: 120000
   startup_health_check: true
+  slow_query_monitor_enabled: true
+  slow_query_threshold_ms: 500
+  auto_explain_enabled: false
+  auto_explain_threshold_ms: 1000
+  search_backend: pg_trgm
 watcher:
   enabled: false
   scan_interval: 30
