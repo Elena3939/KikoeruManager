@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
+import { Calendar, Gift, PackageCheck } from 'lucide-vue-next'
 import WorkCard from './WorkCard.vue'
 import WorkListRow from './WorkListRow.vue'
 
@@ -36,6 +37,7 @@ const motionActive = ref(false)
 const activeImageKeys = ref(new Set())
 const loadingImageKeys = ref(new Set())
 const queuedImageKeys = ref([])
+const activeBonusDetail = ref(null)
 
 let resizeObserver = null
 let motionTimer = null
@@ -45,7 +47,7 @@ const MAX_ACTIVE_IMAGES = 6
 const safeItems = computed(() => Array.isArray(props.items) ? props.items : [])
 const totalItems = computed(() => {
   const value = Number(props.totalItems)
-  return props.serverPaging && Number.isFinite(value) && value >= 0 ? value : safeItems.value.length
+  return props.serverPaging && Number.isFinite(value) && value >= 0 ? value : displayGroups.value.length
 })
 const normalizedPageSize = computed(() => {
   const size = Number(props.pageSize || 10)
@@ -57,10 +59,184 @@ const normalizedPage = computed(() => {
   if (!Number.isFinite(page)) return 1
   return Math.min(Math.max(1, page), pageCount.value)
 })
-const pagedItems = computed(() => {
-  if (props.serverPaging) return safeItems.value
+function isStrictTrue(value) {
+  if (value === true || value === 1 || value === '1') return true
+  if (typeof value === 'string') return value.trim().toLowerCase() === 'true'
+  return false
+}
+
+function normalizeRjcode(value) {
+  const text = String(value || '').trim().toUpperCase()
+  const match = text.match(/[RVB]J(\d{6}|\d{8})(?!\d)/i)
+  return match ? match[0] : text
+}
+
+function itemCodes(item) {
+  return [
+    item?.canonical_rjcode,
+    item?.display_rjcode,
+    item?.rjcode,
+    item?.download_plan?.rjcode,
+    item?.asmr_available_rjcode,
+    item?.source_compare?.work_rjcode,
+    ...(Array.isArray(item?.linked_rjcodes) ? item.linked_rjcodes : []),
+  ].map(normalizeRjcode).filter(Boolean)
+}
+
+function ownBonusCodes(item) {
+  return [
+    item?.display_rjcode,
+    item?.rjcode,
+    item?.download_plan?.rjcode,
+    item?.asmr_available_rjcode,
+    item?.source_compare?.work_rjcode,
+  ].map(normalizeRjcode).filter(Boolean)
+}
+
+function bonusParentCode(item, availableCodes = new Set()) {
+  if (!isStrictTrue(item?.is_bonus_work)) return ''
+  const selfCodes = new Set(ownBonusCodes(item))
+  const explicitParent = normalizeRjcode(item?.bonus_parent_rjcode)
+  if (explicitParent && !selfCodes.has(explicitParent) && availableCodes.has(explicitParent)) return explicitParent
+  const canonical = normalizeRjcode(item?.canonical_rjcode)
+  if (canonical && !selfCodes.has(canonical) && availableCodes.has(canonical)) return canonical
+
+  const linked = Array.isArray(item?.linked_rjcodes) ? item.linked_rjcodes : []
+  for (const code of linked) {
+    const normalized = normalizeRjcode(code)
+    if (normalized && !selfCodes.has(normalized) && availableCodes.has(normalized)) return normalized
+  }
+  return ''
+}
+
+function canDownloadBonus(bonus) {
+  return isStrictTrue(bonus?.has_asmr_one) || Boolean(bonus?.download_plan?.rjcode || bonus?.asmr_available_rjcode)
+}
+
+const activeBonusDetailCover = computed(() => activeBonusDetail.value ? bonusMainCoverUrl(activeBonusDetail.value) : '')
+
+function isActiveBonus(bonus) {
+  const active = activeBonusDetail.value
+  if (!active || !bonus) return false
+  if (active === bonus) return true
+  const activeCode = bonusCode(active)
+  const code = bonusCode(bonus)
+  return Boolean(activeCode && code && activeCode === code)
+}
+
+function hasActiveBonus(bonuses = []) {
+  return Array.isArray(bonuses) && bonuses.some(isActiveBonus)
+}
+
+function bonusOwnedLabel(bonus) {
+  return isStrictTrue(bonus?.server_owned) || isStrictTrue(bonus?.owned) || isStrictTrue(bonus?.completion_owned) || isStrictTrue(bonus?.local_owned)
+    ? '已收录'
+    : '未收录'
+}
+
+function bonusOwnedTagClass(bonus) {
+  return bonusOwnedLabel(bonus) === '已收录' ? 'is-primary' : 'is-danger'
+}
+
+function bonusDownloadLabel(bonus) {
+  return bonus?.local_download_ready || canDownloadBonus(bonus) ? '可下载' : '无源'
+}
+
+function bonusDownloadTagClass(bonus) {
+  return bonusDownloadLabel(bonus) === '可下载' ? 'is-success' : 'is-disabled'
+}
+
+function bonusCvLabel(bonus) {
+  const cvs = Array.isArray(bonus?.cvs) ? bonus.cvs.map(value => String(value || '').trim()).filter(Boolean) : []
+  if (cvs.length) return cvs.join(' / ')
+  const makerName = String(bonus?.maker_name || '').trim()
+  if (!makerName) return ''
+  return makerName.split('/').map(value => value.trim()).filter(Boolean).pop() || ''
+}
+
+function isItemSelected(item) {
+  const code = String(item?.canonical_rjcode || '').trim()
+  return Boolean(code && props.selectedCodes?.has?.(code))
+}
+
+function openBonusDetail(bonus) {
+  activeBonusDetail.value = bonus
+  if (!isItemSelected(bonus)) emit('select', bonus)
+}
+
+function closeBonusDetail() {
+  const bonus = activeBonusDetail.value
+  activeBonusDetail.value = null
+  if (isItemSelected(bonus)) emit('select', bonus)
+}
+
+function handleBonusAction(bonus) {
+  emit('reimport', bonus)
+}
+
+function previewBonus(bonus) {
+  emit('preview', bonus?.canonical_rjcode || bonusCode(bonus))
+}
+
+const groupedItems = computed(() => {
+  const items = safeItems.value
+  const directGroups = items.map((item, index) => {
+    const bonuses = Array.isArray(item?.bonus_works) ? item.bonus_works : []
+    return { item, bonuses, sourceIndex: index }
+  })
+  if (directGroups.some(group => group.bonuses.length)) {
+    return directGroups
+  }
+
+  const codeToItem = new Map()
+  for (const item of items) {
+    for (const code of itemCodes(item)) {
+      const existing = codeToItem.get(code)
+      if (!existing || (isStrictTrue(existing?.is_bonus_work) && !isStrictTrue(item?.is_bonus_work))) {
+        codeToItem.set(code, item)
+      }
+    }
+  }
+
+  const availableCodes = new Set(codeToItem.keys())
+  const bonusBuckets = new Map()
+  const hiddenBonusItems = new Set()
+  for (const item of items) {
+    const parentCode = bonusParentCode(item, availableCodes)
+    const parentItem = parentCode ? codeToItem.get(parentCode) : null
+    if (!parentItem || parentItem === item || isStrictTrue(parentItem?.is_bonus_work)) continue
+    const parentKey = itemKey(parentItem, items.indexOf(parentItem))
+    if (!bonusBuckets.has(parentKey)) bonusBuckets.set(parentKey, [])
+    bonusBuckets.get(parentKey).push(item)
+    hiddenBonusItems.add(item)
+  }
+
+  return items
+    .filter(item => !hiddenBonusItems.has(item))
+    .map((item, index) => {
+      const key = itemKey(item, index)
+      return { item, bonuses: bonusBuckets.get(key) || [], sourceIndex: index }
+    })
+})
+const displayGroups = computed(() => {
+  if (props.mode === 'card') return groupedItems.value
+
+  return groupedItems.value.flatMap(group => {
+    const groups = [{ ...group, bonuses: [] }]
+    for (const [index, bonus] of (group.bonuses || []).entries()) {
+      groups.push({
+        item: bonus,
+        bonuses: [],
+        sourceIndex: `${group.sourceIndex}:bonus:${index}`,
+      })
+    }
+    return groups
+  })
+})
+const pagedGroups = computed(() => {
+  if (props.serverPaging) return displayGroups.value
   const start = (normalizedPage.value - 1) * normalizedPageSize.value
-  return safeItems.value.slice(start, start + normalizedPageSize.value)
+  return displayGroups.value.slice(start, start + normalizedPageSize.value)
 })
 const isCardMode = computed(() => props.mode === 'card')
 const gridGap = computed(() => isCardMode.value ? 10 : 6)
@@ -78,16 +254,29 @@ const columnWidth = computed(() => {
   if (width <= 0) return 156
   return Math.max(152, (width - gridGap.value * (columns - 1)) / columns)
 })
-const rowCount = computed(() => {
-  if (!pagedItems.value.length) return 0
-  return Math.ceil(pagedItems.value.length / columnCount.value)
+const bonusShelfStyle = computed(() => {
+  if (!isCardMode.value) return {}
+  const width = Math.max(152, Number(columnWidth.value || 156))
+  const coverHeight = width * 0.75
+  const maxGiftWidth = viewportWidth.value <= 640 ? 76 : 88
+  const giftWidth = Math.min(width * 0.39, maxGiftWidth)
+  const inset = viewportWidth.value <= 640 ? 7 : 8
+  return {
+    '--bonus-shelf-top': `${Math.max(inset, Math.round(coverHeight - giftWidth * 0.75 - inset))}px`,
+  }
 })
-const itemViewModels = computed(() => pagedItems.value.map((item, index) => {
+const rowCount = computed(() => {
+  if (!pagedGroups.value.length) return 0
+  return Math.ceil(pagedGroups.value.length / columnCount.value)
+})
+const itemViewModels = computed(() => pagedGroups.value.map((group, index) => {
+  const item = group.item
   const code = String(item?.canonical_rjcode || '').trim()
   return {
     item,
+    bonuses: group.bonuses,
     index,
-    key: itemKey(item, index),
+    key: itemKey(item, group.sourceIndex ?? index),
     code,
     selected: Boolean(code && props.selectedCodes?.has?.(code)),
     flashed: Boolean(code && props.flashedCodes?.has?.(code)),
@@ -125,12 +314,18 @@ const rowVirtualizer = useVirtualizer(computed(() => ({
 const virtualRows = computed(() => rowVirtualizer.value.getVirtualItems())
 const visibleImageKeys = computed(() => {
   if (usePlainRender.value) {
-    return itemViewModels.value.map(item => item.key)
+    return itemViewModels.value.flatMap(item => [
+      item.key,
+      ...item.bonuses.map((bonus, index) => itemKey(bonus, `${item.key}:bonus:${index}`)),
+    ])
   }
   const keys = []
   for (const virtualRow of virtualRows.value) {
     for (const cell of getRowItems(virtualRow.index)) {
       keys.push(cell.key)
+      for (const [bonusIndex, bonus] of cell.bonuses.entries()) {
+        keys.push(itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`))
+      }
     }
   }
   return keys
@@ -167,6 +362,75 @@ function itemKey(item, fallbackIndex) {
     item?.rjcode ||
     fallbackIndex
   )
+}
+
+function viewModelForBonus(item, fallbackIndex) {
+  const code = String(item?.canonical_rjcode || '').trim()
+  return {
+    item,
+    key: itemKey(item, fallbackIndex),
+    code,
+    selected: Boolean(code && props.selectedCodes?.has?.(code)),
+    flashed: Boolean(code && props.flashedCodes?.has?.(code)),
+    located: Boolean(code && props.locatedCodes?.has?.(code)),
+  }
+}
+
+function bonusCode(item) {
+  return String(item?.display_rjcode || item?.canonical_rjcode || item?.rjcode || '').trim()
+}
+
+function bonusTitle(item) {
+  return String(item?.title || '未命名特典').trim()
+}
+
+function bonusReleaseLabel(item) {
+  const value = String(item?.release_date || item?.date || item?.release_at || '').trim()
+  if (!value) return ''
+  const match = value.match(/(\d{4})[-/年](\d{1,2})(?:[-/月](\d{1,2}))?/)
+  if (!match) return value
+  const month = String(match[2]).padStart(2, '0')
+  if (!match[3]) return `${match[1]}/${month}`
+  return `${match[1]}/${month}/${String(match[3]).padStart(2, '0')}`
+}
+
+function bonusCoverUrl(item) {
+  return String(item?.[props.imageField] || item?.image_url || item?.thumb_image_url || '').trim()
+}
+
+function buildDlsiteImageUrl(rjcode, variant = 'main') {
+  const normalized = normalizeRjcode(rjcode)
+  const match = normalized.match(/^RJ(\d{6}|\d{8})$/)
+  if (!match) return ''
+  const number = Number(match[1])
+  const folderUpper = (Math.floor(number / 1000) + 1) * 1000
+  const folder = match[1].length === 8
+    ? `RJ${String(folderUpper).padStart(8, '0')}`
+    : `RJ${String(folderUpper).padStart(6, '0')}`
+  const suffix = variant === 'sam' ? '_img_sam.jpg' : '_img_main.jpg'
+  return `https://img.dlsite.jp/modpub/images2/work/doujin/${folder}/${normalized}${suffix}`
+}
+
+function normalizeDlsiteMainImageUrl(value) {
+  const url = String(value || '').trim()
+  if (!url) return ''
+  if (url.includes('/resize/images2/') && url.endsWith('_img_main_240x240.jpg')) {
+    return url
+      .replace('https://img.dlsite.jp/resize/images2/', 'https://img.dlsite.jp/modpub/images2/')
+      .replace('_img_main_240x240.jpg', '_img_main.jpg')
+  }
+  if (url.includes('/modpub/images2/') && url.endsWith('_img_sam.jpg')) {
+    return url.replace('_img_sam.jpg', '_img_main.jpg')
+  }
+  return url
+}
+
+function bonusMainCoverUrl(item) {
+  const storedMain = normalizeDlsiteMainImageUrl(item?.image_url)
+  if (storedMain) return storedMain
+  const storedThumb = normalizeDlsiteMainImageUrl(item?.thumb_image_url || item?.[props.imageField])
+  if (storedThumb) return storedThumb
+  return buildDlsiteImageUrl(bonusCode(item), 'main')
 }
 
 function getRowItems(rowIndex) {
@@ -306,38 +570,241 @@ onBeforeUnmount(() => {
           v-for="viewModel in itemViewModels"
           :key="viewModel.key"
           class="circle-work-plain-cell"
-          :class="[`is-${mode}`, { 'is-motion-active': motionActive }]"
+          :class="[`is-${mode}`, {
+            'is-motion-active': motionActive,
+            'is-detail-active': hasActiveBonus(viewModel.bonuses),
+            'is-left-edge': viewModel.index % Math.max(1, columnCount) === 0,
+            'is-right-edge': viewModel.index % Math.max(1, columnCount) === Math.max(1, columnCount) - 1,
+            'is-right-half': viewModel.index % Math.max(1, columnCount) >= Math.floor(Math.max(1, columnCount) / 2),
+          }]"
           :style="{ '--cell-index': viewModel.index % Math.max(1, columnCount) }"
         >
-          <WorkCard
-            v-if="mode === 'card'"
-            :item="viewModel.item"
-            :card-index="0"
-            :selected="viewModel.selected"
-            :status-flash="viewModel.flashed"
-            :locate-flash="viewModel.located"
-            :corner-label="cornerLabel"
-            :image-active="isImageActive(viewModel.key)"
-            @select="emit('select', $event)"
-            @preview="emit('preview', $event)"
-            @reimport="emit('reimport', $event)"
-            @image-settled="markImageSettled(viewModel.key)"
-          />
-          <WorkListRow
-            v-else
-            :item="viewModel.item"
-            :row-index="0"
-            :selected="viewModel.selected"
-            :status-flash="viewModel.flashed"
-            :locate-flash="viewModel.located"
-            :image-field="imageField"
-            :corner-label="cornerLabel"
-            :image-active="isImageActive(viewModel.key)"
-            @select="emit('select', $event)"
-            @preview="emit('preview', $event)"
-            @reimport="emit('reimport', $event)"
-            @image-settled="markImageSettled(viewModel.key)"
-          />
+          <div
+            class="circle-work-bundle"
+            :class="[`is-${mode}`, { 'has-bonus': viewModel.bonuses.length, 'is-detail-active': hasActiveBonus(viewModel.bonuses) }]"
+            :style="bonusShelfStyle"
+          >
+            <WorkCard
+              v-if="mode === 'card'"
+              :item="viewModel.item"
+              :card-index="0"
+              :selected="viewModel.selected"
+              :status-flash="viewModel.flashed"
+              :locate-flash="viewModel.located"
+              :corner-label="cornerLabel"
+              :image-active="isImageActive(viewModel.key)"
+              @select="emit('select', $event)"
+              @preview="emit('preview', $event)"
+              @reimport="emit('reimport', $event)"
+              @image-settled="markImageSettled(viewModel.key)"
+            />
+            <div v-if="viewModel.bonuses.length && mode === 'card'" class="circle-bonus-shelf is-card">
+              <button
+                v-for="(bonus, bonusIndex) in viewModel.bonuses"
+                :key="itemKey(bonus, `${viewModel.key}:bonus:${bonusIndex}`)"
+                type="button"
+                class="circle-bonus-gift"
+                :class="{
+                  'is-selected': viewModelForBonus(bonus, `${viewModel.key}:bonus:${bonusIndex}`).selected,
+                  'status-flash': viewModelForBonus(bonus, `${viewModel.key}:bonus:${bonusIndex}`).flashed,
+                  'locate-flash': viewModelForBonus(bonus, `${viewModel.key}:bonus:${bonusIndex}`).located,
+                }"
+                :title="bonusTitle(bonus)"
+                @click.stop="openBonusDetail(bonus)"
+              >
+                <span class="circle-bonus-gift-cover">
+                  <img
+                    v-if="isImageActive(itemKey(bonus, `${viewModel.key}:bonus:${bonusIndex}`)) && bonusCoverUrl(bonus)"
+                    :src="bonusCoverUrl(bonus)"
+                    loading="lazy"
+                    decoding="async"
+                    fetchpriority="low"
+                    referrerpolicy="no-referrer"
+                    @load="markImageSettled(itemKey(bonus, `${viewModel.key}:bonus:${bonusIndex}`))"
+                    @error="markImageSettled(itemKey(bonus, `${viewModel.key}:bonus:${bonusIndex}`))"
+                  />
+                  <Gift v-else :size="16" />
+                </span>
+                <span class="circle-bonus-gift-badge">特典</span>
+              </button>
+            </div>
+            <article
+              v-if="mode === 'card' && activeBonusDetail && hasActiveBonus(viewModel.bonuses)"
+              class="circle-bonus-detail-card is-card-inline"
+              @click.stop
+            >
+              <button type="button" class="circle-bonus-detail-close" title="关闭" @click.stop="closeBonusDetail">×</button>
+              <div class="circle-bonus-detail-media">
+                <div class="circle-bonus-detail-cover">
+                  <img
+                    v-if="activeBonusDetailCover"
+                    :src="activeBonusDetailCover"
+                    loading="eager"
+                    decoding="async"
+                    referrerpolicy="no-referrer"
+                  />
+                  <Gift v-else :size="38" />
+                  <span class="circle-bonus-detail-badge">特典</span>
+                </div>
+                <div class="circle-bonus-detail-tags">
+                  <span class="circle-bonus-detail-tag" :class="bonusOwnedTagClass(activeBonusDetail)">{{ bonusOwnedLabel(activeBonusDetail) }}</span>
+                  <span class="circle-bonus-detail-tag" :class="bonusDownloadTagClass(activeBonusDetail)">{{ bonusDownloadLabel(activeBonusDetail) }}</span>
+                </div>
+                <div class="circle-bonus-detail-linked">
+                  <span>特典 · {{ bonusCode(activeBonusDetail) }}</span>
+                  <span v-if="bonusReleaseLabel(activeBonusDetail)" class="circle-bonus-detail-release">
+                    <Calendar :size="11" />{{ bonusReleaseLabel(activeBonusDetail) }}
+                  </span>
+                </div>
+              </div>
+              <div class="circle-bonus-detail-body">
+                <h3 class="circle-bonus-detail-title">{{ bonusTitle(activeBonusDetail) }}</h3>
+                <div class="circle-bonus-detail-cv" :class="{ 'is-empty': !bonusCvLabel(activeBonusDetail) }">{{ bonusCvLabel(activeBonusDetail) }}</div>
+                <div v-if="activeBonusDetail.local_download_ready || canDownloadBonus(activeBonusDetail)" class="circle-bonus-detail-actions">
+                  <button
+                    v-if="activeBonusDetail.local_download_ready"
+                    type="button"
+                    class="circle-bonus-detail-action import"
+                    @click.stop="handleBonusAction(activeBonusDetail)"
+                  >
+                    入库
+                  </button>
+                  <button
+                    v-if="canDownloadBonus(activeBonusDetail)"
+                    type="button"
+                    class="circle-bonus-detail-action preview"
+                    @click.stop="previewBonus(activeBonusDetail)"
+                  >
+                    预览
+                  </button>
+                </div>
+              </div>
+            </article>
+            <template v-if="mode === 'list'">
+              <WorkListRow
+                :item="viewModel.item"
+                :row-index="0"
+                :selected="viewModel.selected"
+                :status-flash="viewModel.flashed"
+                :locate-flash="viewModel.located"
+                :image-field="imageField"
+                :corner-label="cornerLabel"
+                :image-active="isImageActive(viewModel.key)"
+                @select="emit('select', $event)"
+                @preview="emit('preview', $event)"
+                @reimport="emit('reimport', $event)"
+                @image-settled="markImageSettled(viewModel.key)"
+              />
+              <div v-if="viewModel.bonuses.length" class="circle-bonus-shelf is-list">
+                <div
+                  v-for="(bonus, bonusIndex) in viewModel.bonuses"
+                  :key="itemKey(bonus, `${viewModel.key}:bonus:${bonusIndex}`)"
+                  role="button"
+                  tabindex="0"
+                  class="circle-bonus-gift is-row"
+                  :class="{
+                    'is-selected': viewModelForBonus(bonus, `${viewModel.key}:bonus:${bonusIndex}`).selected,
+                    'status-flash': viewModelForBonus(bonus, `${viewModel.key}:bonus:${bonusIndex}`).flashed,
+                    'locate-flash': viewModelForBonus(bonus, `${viewModel.key}:bonus:${bonusIndex}`).located,
+                  }"
+                  @click.stop="openBonusDetail(bonus)"
+                  @keydown.enter.stop.prevent="openBonusDetail(bonus)"
+                  @keydown.space.stop.prevent="openBonusDetail(bonus)"
+                >
+                  <span class="circle-bonus-gift-cover">
+                    <img
+                      v-if="isImageActive(itemKey(bonus, `${viewModel.key}:bonus:${bonusIndex}`)) && bonusCoverUrl(bonus)"
+                      :src="bonusCoverUrl(bonus)"
+                      loading="lazy"
+                      decoding="async"
+                      fetchpriority="low"
+                      referrerpolicy="no-referrer"
+                      @load="markImageSettled(itemKey(bonus, `${viewModel.key}:bonus:${bonusIndex}`))"
+                      @error="markImageSettled(itemKey(bonus, `${viewModel.key}:bonus:${bonusIndex}`))"
+                    />
+                    <Gift v-else :size="15" />
+                  </span>
+                  <span class="circle-bonus-gift-main">
+                    <span class="circle-bonus-gift-kicker"><Gift :size="10" />特典</span>
+                    <span class="circle-bonus-gift-title">{{ bonusTitle(bonus) }}</span>
+                    <span class="circle-bonus-gift-code">{{ bonusCode(bonus) }}</span>
+                  </span>
+                  <span class="circle-bonus-gift-actions">
+                    <button
+                      v-if="bonus.local_download_ready"
+                      type="button"
+                      class="circle-bonus-mini-action import"
+                      title="入库"
+                      @click.stop="handleBonusAction(bonus)"
+                    >
+                      <PackageCheck :size="12" />
+                    </button>
+                    <button
+                      v-else-if="canDownloadBonus(bonus)"
+                      type="button"
+                      class="circle-bonus-mini-action download"
+                      title="下载"
+                      @click.stop="handleBonusAction(bonus)"
+                    >
+                      下载
+                    </button>
+                  </span>
+                </div>
+              </div>
+              <article
+                v-if="activeBonusDetail && hasActiveBonus(viewModel.bonuses)"
+                class="circle-bonus-detail-card is-list-inline"
+                @click.stop
+              >
+                <button type="button" class="circle-bonus-detail-close" title="关闭" @click.stop="closeBonusDetail">×</button>
+                <div class="circle-bonus-detail-media">
+                  <div class="circle-bonus-detail-cover">
+                    <img
+                      v-if="activeBonusDetailCover"
+                      :src="activeBonusDetailCover"
+                      loading="eager"
+                      decoding="async"
+                      referrerpolicy="no-referrer"
+                    />
+                    <Gift v-else :size="38" />
+                    <span class="circle-bonus-detail-badge">特典</span>
+                  </div>
+                  <div class="circle-bonus-detail-tags">
+                    <span class="circle-bonus-detail-tag" :class="bonusOwnedTagClass(activeBonusDetail)">{{ bonusOwnedLabel(activeBonusDetail) }}</span>
+                    <span class="circle-bonus-detail-tag" :class="bonusDownloadTagClass(activeBonusDetail)">{{ bonusDownloadLabel(activeBonusDetail) }}</span>
+                  </div>
+                  <div class="circle-bonus-detail-linked">
+                    <span>特典 · {{ bonusCode(activeBonusDetail) }}</span>
+                    <span v-if="bonusReleaseLabel(activeBonusDetail)" class="circle-bonus-detail-release">
+                      <Calendar :size="11" />{{ bonusReleaseLabel(activeBonusDetail) }}
+                    </span>
+                  </div>
+                </div>
+                <div class="circle-bonus-detail-body">
+                  <h3 class="circle-bonus-detail-title">{{ bonusTitle(activeBonusDetail) }}</h3>
+                  <div class="circle-bonus-detail-cv" :class="{ 'is-empty': !bonusCvLabel(activeBonusDetail) }">{{ bonusCvLabel(activeBonusDetail) }}</div>
+                  <div v-if="activeBonusDetail.local_download_ready || canDownloadBonus(activeBonusDetail)" class="circle-bonus-detail-actions">
+                    <button
+                      v-if="activeBonusDetail.local_download_ready"
+                      type="button"
+                      class="circle-bonus-detail-action import"
+                      @click.stop="handleBonusAction(activeBonusDetail)"
+                    >
+                      入库
+                    </button>
+                    <button
+                      v-if="canDownloadBonus(activeBonusDetail)"
+                      type="button"
+                      class="circle-bonus-detail-action preview"
+                      @click.stop="previewBonus(activeBonusDetail)"
+                    >
+                      预览
+                    </button>
+                  </div>
+                </div>
+              </article>
+            </template>
+          </div>
         </div>
       </div>
 
@@ -347,7 +814,7 @@ onBeforeUnmount(() => {
             v-for="virtualRow in virtualRows"
             :key="virtualRow.key"
             class="circle-work-virtual-row"
-            :class="[`is-${mode}`]"
+            :class="[`is-${mode}`, { 'is-detail-active': getRowItems(virtualRow.index).some(cell => hasActiveBonus(cell.bonuses)) }]"
             :style="{
               height: `${virtualRow.size}px`,
               transform: `translateY(${virtualRow.start}px)`,
@@ -359,38 +826,241 @@ onBeforeUnmount(() => {
               v-for="cell in getRowItems(virtualRow.index)"
               :key="cell.key"
               class="circle-work-virtual-cell"
-              :class="[`is-${mode}`, { 'is-motion-active': motionActive }]"
+              :class="[`is-${mode}`, {
+                'is-motion-active': motionActive,
+                'is-detail-active': hasActiveBonus(cell.bonuses),
+                'is-left-edge': cell.columnIndex === 0,
+                'is-right-edge': cell.columnIndex === Math.max(1, columnCount) - 1,
+                'is-right-half': cell.columnIndex >= Math.floor(Math.max(1, columnCount) / 2),
+              }]"
               :style="{ '--cell-index': cell.columnIndex }"
             >
-              <WorkCard
-                v-if="mode === 'card'"
-                :item="cell.item"
-                :card-index="0"
-                :selected="cell.selected"
-                :status-flash="cell.flashed"
-                :locate-flash="cell.located"
-                :corner-label="cornerLabel"
-                :image-active="isImageActive(cell.key)"
-                @select="emit('select', $event)"
-                @preview="emit('preview', $event)"
-                @reimport="emit('reimport', $event)"
-                @image-settled="markImageSettled(cell.key)"
-              />
-              <WorkListRow
-                v-else
-                :item="cell.item"
-                :row-index="0"
-                :selected="cell.selected"
-                :status-flash="cell.flashed"
-                :locate-flash="cell.located"
-                :image-field="imageField"
-                :corner-label="cornerLabel"
-                :image-active="isImageActive(cell.key)"
-                @select="emit('select', $event)"
-                @preview="emit('preview', $event)"
-                @reimport="emit('reimport', $event)"
-                @image-settled="markImageSettled(cell.key)"
-              />
+              <div
+                class="circle-work-bundle"
+                :class="[`is-${mode}`, { 'has-bonus': cell.bonuses.length, 'is-detail-active': hasActiveBonus(cell.bonuses) }]"
+                :style="bonusShelfStyle"
+              >
+                <WorkCard
+                  v-if="mode === 'card'"
+                  :item="cell.item"
+                  :card-index="0"
+                  :selected="cell.selected"
+                  :status-flash="cell.flashed"
+                  :locate-flash="cell.located"
+                  :corner-label="cornerLabel"
+                  :image-active="isImageActive(cell.key)"
+                  @select="emit('select', $event)"
+                  @preview="emit('preview', $event)"
+                  @reimport="emit('reimport', $event)"
+                  @image-settled="markImageSettled(cell.key)"
+                />
+                <div v-if="cell.bonuses.length && mode === 'card'" class="circle-bonus-shelf is-card">
+                  <button
+                    v-for="(bonus, bonusIndex) in cell.bonuses"
+                    :key="itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`)"
+                    type="button"
+                    class="circle-bonus-gift"
+                    :class="{
+                      'is-selected': viewModelForBonus(bonus, `${cell.key}:bonus:${bonusIndex}`).selected,
+                      'status-flash': viewModelForBonus(bonus, `${cell.key}:bonus:${bonusIndex}`).flashed,
+                      'locate-flash': viewModelForBonus(bonus, `${cell.key}:bonus:${bonusIndex}`).located,
+                    }"
+                    :title="bonusTitle(bonus)"
+                    @click.stop="openBonusDetail(bonus)"
+                  >
+                    <span class="circle-bonus-gift-cover">
+                      <img
+                        v-if="isImageActive(itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`)) && bonusCoverUrl(bonus)"
+                        :src="bonusCoverUrl(bonus)"
+                        loading="lazy"
+                        decoding="async"
+                        fetchpriority="low"
+                        referrerpolicy="no-referrer"
+                        @load="markImageSettled(itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`))"
+                        @error="markImageSettled(itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`))"
+                      />
+                      <Gift v-else :size="16" />
+                    </span>
+                    <span class="circle-bonus-gift-badge">特典</span>
+                  </button>
+                </div>
+                <article
+                  v-if="mode === 'card' && activeBonusDetail && hasActiveBonus(cell.bonuses)"
+                  class="circle-bonus-detail-card is-card-inline"
+                  @click.stop
+                >
+                  <button type="button" class="circle-bonus-detail-close" title="关闭" @click.stop="closeBonusDetail">×</button>
+                  <div class="circle-bonus-detail-media">
+                    <div class="circle-bonus-detail-cover">
+                      <img
+                        v-if="activeBonusDetailCover"
+                        :src="activeBonusDetailCover"
+                        loading="eager"
+                        decoding="async"
+                        referrerpolicy="no-referrer"
+                      />
+                      <Gift v-else :size="38" />
+                      <span class="circle-bonus-detail-badge">特典</span>
+                    </div>
+                    <div class="circle-bonus-detail-tags">
+                      <span class="circle-bonus-detail-tag" :class="bonusOwnedTagClass(activeBonusDetail)">{{ bonusOwnedLabel(activeBonusDetail) }}</span>
+                      <span class="circle-bonus-detail-tag" :class="bonusDownloadTagClass(activeBonusDetail)">{{ bonusDownloadLabel(activeBonusDetail) }}</span>
+                    </div>
+                    <div class="circle-bonus-detail-linked">
+                      <span>特典 · {{ bonusCode(activeBonusDetail) }}</span>
+                      <span v-if="bonusReleaseLabel(activeBonusDetail)" class="circle-bonus-detail-release">
+                        <Calendar :size="11" />{{ bonusReleaseLabel(activeBonusDetail) }}
+                      </span>
+                    </div>
+                  </div>
+                  <div class="circle-bonus-detail-body">
+                    <h3 class="circle-bonus-detail-title">{{ bonusTitle(activeBonusDetail) }}</h3>
+                    <div class="circle-bonus-detail-cv" :class="{ 'is-empty': !bonusCvLabel(activeBonusDetail) }">{{ bonusCvLabel(activeBonusDetail) }}</div>
+                    <div v-if="activeBonusDetail.local_download_ready || canDownloadBonus(activeBonusDetail)" class="circle-bonus-detail-actions">
+                      <button
+                        v-if="activeBonusDetail.local_download_ready"
+                        type="button"
+                        class="circle-bonus-detail-action import"
+                        @click.stop="handleBonusAction(activeBonusDetail)"
+                      >
+                        入库
+                      </button>
+                      <button
+                        v-if="canDownloadBonus(activeBonusDetail)"
+                        type="button"
+                        class="circle-bonus-detail-action preview"
+                        @click.stop="previewBonus(activeBonusDetail)"
+                      >
+                        预览
+                      </button>
+                    </div>
+                  </div>
+                </article>
+                <template v-if="mode === 'list'">
+                  <WorkListRow
+                    :item="cell.item"
+                    :row-index="0"
+                    :selected="cell.selected"
+                    :status-flash="cell.flashed"
+                    :locate-flash="cell.located"
+                    :image-field="imageField"
+                    :corner-label="cornerLabel"
+                    :image-active="isImageActive(cell.key)"
+                    @select="emit('select', $event)"
+                    @preview="emit('preview', $event)"
+                    @reimport="emit('reimport', $event)"
+                    @image-settled="markImageSettled(cell.key)"
+                  />
+                  <div v-if="cell.bonuses.length" class="circle-bonus-shelf is-list">
+                    <div
+                      v-for="(bonus, bonusIndex) in cell.bonuses"
+                      :key="itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`)"
+                      role="button"
+                      tabindex="0"
+                      class="circle-bonus-gift is-row"
+                      :class="{
+                        'is-selected': viewModelForBonus(bonus, `${cell.key}:bonus:${bonusIndex}`).selected,
+                        'status-flash': viewModelForBonus(bonus, `${cell.key}:bonus:${bonusIndex}`).flashed,
+                        'locate-flash': viewModelForBonus(bonus, `${cell.key}:bonus:${bonusIndex}`).located,
+                      }"
+                      @click.stop="openBonusDetail(bonus)"
+                      @keydown.enter.stop.prevent="openBonusDetail(bonus)"
+                      @keydown.space.stop.prevent="openBonusDetail(bonus)"
+                    >
+                      <span class="circle-bonus-gift-cover">
+                        <img
+                          v-if="isImageActive(itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`)) && bonusCoverUrl(bonus)"
+                          :src="bonusCoverUrl(bonus)"
+                          loading="lazy"
+                          decoding="async"
+                          fetchpriority="low"
+                          referrerpolicy="no-referrer"
+                          @load="markImageSettled(itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`))"
+                          @error="markImageSettled(itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`))"
+                        />
+                        <Gift v-else :size="15" />
+                      </span>
+                      <span class="circle-bonus-gift-main">
+                        <span class="circle-bonus-gift-kicker"><Gift :size="10" />特典</span>
+                        <span class="circle-bonus-gift-title">{{ bonusTitle(bonus) }}</span>
+                        <span class="circle-bonus-gift-code">{{ bonusCode(bonus) }}</span>
+                      </span>
+                      <span class="circle-bonus-gift-actions">
+                        <button
+                          v-if="bonus.local_download_ready"
+                          type="button"
+                          class="circle-bonus-mini-action import"
+                          title="入库"
+                          @click.stop="handleBonusAction(bonus)"
+                        >
+                          <PackageCheck :size="12" />
+                        </button>
+                        <button
+                          v-else-if="canDownloadBonus(bonus)"
+                          type="button"
+                          class="circle-bonus-mini-action download"
+                          title="下载"
+                          @click.stop="handleBonusAction(bonus)"
+                        >
+                          下载
+                        </button>
+                      </span>
+                    </div>
+                  </div>
+                  <article
+                    v-if="activeBonusDetail && hasActiveBonus(cell.bonuses)"
+                    class="circle-bonus-detail-card is-list-inline"
+                    @click.stop
+                  >
+                    <button type="button" class="circle-bonus-detail-close" title="关闭" @click.stop="closeBonusDetail">×</button>
+                    <div class="circle-bonus-detail-media">
+                      <div class="circle-bonus-detail-cover">
+                        <img
+                          v-if="activeBonusDetailCover"
+                          :src="activeBonusDetailCover"
+                          loading="eager"
+                          decoding="async"
+                          referrerpolicy="no-referrer"
+                        />
+                        <Gift v-else :size="38" />
+                        <span class="circle-bonus-detail-badge">特典</span>
+                      </div>
+                      <div class="circle-bonus-detail-tags">
+                        <span class="circle-bonus-detail-tag" :class="bonusOwnedTagClass(activeBonusDetail)">{{ bonusOwnedLabel(activeBonusDetail) }}</span>
+                        <span class="circle-bonus-detail-tag" :class="bonusDownloadTagClass(activeBonusDetail)">{{ bonusDownloadLabel(activeBonusDetail) }}</span>
+                      </div>
+                      <div class="circle-bonus-detail-linked">
+                        <span>特典 · {{ bonusCode(activeBonusDetail) }}</span>
+                        <span v-if="bonusReleaseLabel(activeBonusDetail)" class="circle-bonus-detail-release">
+                          <Calendar :size="11" />{{ bonusReleaseLabel(activeBonusDetail) }}
+                        </span>
+                      </div>
+                    </div>
+                    <div class="circle-bonus-detail-body">
+                      <h3 class="circle-bonus-detail-title">{{ bonusTitle(activeBonusDetail) }}</h3>
+                      <div class="circle-bonus-detail-cv" :class="{ 'is-empty': !bonusCvLabel(activeBonusDetail) }">{{ bonusCvLabel(activeBonusDetail) }}</div>
+                      <div v-if="activeBonusDetail.local_download_ready || canDownloadBonus(activeBonusDetail)" class="circle-bonus-detail-actions">
+                        <button
+                          v-if="activeBonusDetail.local_download_ready"
+                          type="button"
+                          class="circle-bonus-detail-action import"
+                          @click.stop="handleBonusAction(activeBonusDetail)"
+                        >
+                          入库
+                        </button>
+                        <button
+                          v-if="canDownloadBonus(activeBonusDetail)"
+                          type="button"
+                          class="circle-bonus-detail-action preview"
+                          @click.stop="previewBonus(activeBonusDetail)"
+                        >
+                          预览
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                </template>
+              </div>
             </div>
           </div>
         </div>
@@ -451,6 +1121,11 @@ onBeforeUnmount(() => {
   width: 100%;
   display: grid;
   box-sizing: border-box;
+  z-index: 0;
+}
+
+.circle-work-virtual-row.is-detail-active {
+  z-index: 30;
 }
 
 .circle-work-virtual-row.is-card {
@@ -463,8 +1138,16 @@ onBeforeUnmount(() => {
 
 .circle-work-virtual-cell,
 .circle-work-plain-cell {
+  position: relative;
   min-width: 0;
   min-height: 0;
+  overflow: visible;
+  z-index: 0;
+}
+
+.circle-work-virtual-cell.is-detail-active,
+.circle-work-plain-cell.is-detail-active {
+  z-index: 40;
 }
 
 .circle-work-virtual-cell.is-motion-active,
@@ -500,6 +1183,856 @@ onBeforeUnmount(() => {
 
 .circle-work-plain-cell.is-card {
   min-height: 278px;
+}
+
+.circle-work-bundle {
+  position: relative;
+  min-width: 0;
+  overflow: visible;
+  z-index: 0;
+}
+
+.circle-work-bundle.is-detail-active {
+  z-index: 50;
+}
+
+.circle-work-bundle.is-card {
+  height: 100%;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 0;
+}
+
+.circle-work-bundle.is-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.circle-bonus-shelf {
+  position: relative;
+  min-width: 0;
+}
+
+.circle-bonus-shelf.is-card {
+  position: absolute;
+  top: var(--bonus-shelf-top, 72px);
+  right: 9px;
+  z-index: 8;
+  width: min(39%, 88px);
+  display: grid;
+  gap: 5px;
+  padding: 0;
+  pointer-events: none;
+}
+
+.circle-bonus-shelf.is-list {
+  margin: -3px 0 4px 50px;
+  display: grid;
+  gap: 4px;
+}
+
+.circle-bonus-gift {
+  min-width: 0;
+  position: relative;
+  display: block;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--circle-tag-primary, #3478f6) 34%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--circle-surface, #ffffff) 88%, transparent);
+  color: var(--circle-text, #334155);
+  cursor: pointer;
+  overflow: hidden;
+  aspect-ratio: 4 / 3;
+  box-shadow:
+    0 10px 24px color-mix(in srgb, var(--circle-shadow, rgba(31, 53, 84, 0.20)) 72%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.42);
+  pointer-events: auto;
+  transition:
+    transform .2s cubic-bezier(.34, 1.56, .64, 1),
+    border-color .18s ease,
+    box-shadow .18s ease,
+    background .18s ease;
+}
+
+.circle-bonus-gift:hover {
+  transform: translateY(-2px) scale(1.035);
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #3478f6) 52%, transparent);
+  box-shadow:
+    0 16px 28px color-mix(in srgb, var(--circle-tag-primary, #3478f6) 18%, transparent),
+    0 8px 18px color-mix(in srgb, var(--circle-shadow, rgba(31, 53, 84, 0.20)) 52%, transparent);
+}
+
+.circle-bonus-shelf.is-card .circle-bonus-gift {
+  overflow: visible;
+  isolation: isolate;
+  border-color: color-mix(in srgb, #f6d365 36%, transparent);
+  background: transparent;
+  box-shadow:
+    0 0 15px rgba(251, 191, 36, 0.24),
+    0 0 24px 2px rgba(251, 191, 36, 0.12),
+    0 10px 24px color-mix(in srgb, var(--circle-shadow, rgba(31, 53, 84, 0.20)) 60%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.42);
+}
+
+.circle-bonus-shelf.is-card .circle-bonus-gift::before {
+  content: '';
+  position: absolute;
+  inset: -7px;
+  z-index: -1;
+  border-radius: 18px;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 88% 12%, rgba(255, 244, 179, 0.76), rgba(251, 191, 36, 0.28) 26%, transparent 54%),
+    radial-gradient(circle at 8% 92%, rgba(251, 191, 36, 0.42), rgba(245, 158, 11, 0.18) 30%, transparent 58%),
+    radial-gradient(circle at 52% 50%, rgba(251, 191, 36, 0.16), transparent 62%);
+  opacity: 0.82;
+  filter: blur(1.6px);
+  animation: bonusGiftRareHalo 3.4s ease-in-out infinite;
+}
+
+.circle-bonus-shelf.is-card .circle-bonus-gift::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 82% 18%, rgba(255, 244, 179, 0.30), transparent 24%),
+    linear-gradient(115deg, transparent 0%, rgba(255, 236, 153, 0.00) 36%, rgba(255, 236, 153, 0.26) 48%, rgba(255, 236, 153, 0.00) 60%, transparent 100%);
+  opacity: 0.68;
+  animation: bonusGiftSoftGleam 3.8s ease-in-out infinite;
+}
+
+.circle-bonus-shelf.is-card .circle-bonus-gift:hover {
+  border-color: color-mix(in srgb, #facc15 46%, transparent);
+  box-shadow:
+    0 0 18px rgba(251, 191, 36, 0.30),
+    0 0 30px 3px rgba(251, 191, 36, 0.16),
+    0 14px 26px color-mix(in srgb, var(--circle-shadow, rgba(31, 53, 84, 0.20)) 55%, transparent);
+}
+
+.circle-bonus-gift:active {
+  transform: scale(0.985);
+}
+
+.circle-bonus-gift.is-row {
+  width: 100%;
+  height: 40px;
+  aspect-ratio: auto;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  grid-template-rows: none;
+  align-items: center;
+  padding: 4px 5px;
+  border-radius: 7px;
+  box-shadow: none;
+}
+
+.circle-bonus-gift.is-selected {
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #3478f6) 46%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--circle-tag-primary, #3478f6) 10%, transparent);
+}
+
+.circle-bonus-shelf.is-card .circle-bonus-gift.is-selected {
+  border-color: color-mix(in srgb, #facc15 46%, var(--circle-tag-primary, #3478f6) 10%);
+  box-shadow:
+    0 0 16px rgba(251, 191, 36, 0.32),
+    0 0 26px rgba(251, 191, 36, 0.16);
+}
+
+.circle-bonus-gift.status-flash {
+  animation: bonusGiftFlash .5s ease;
+}
+
+.circle-bonus-gift.locate-flash {
+  animation: bonusGiftLocateFlash 2.4s cubic-bezier(.22, 1, .36, 1);
+}
+
+.circle-bonus-gift-cover {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: inherit;
+  border: 0;
+  background: color-mix(in srgb, var(--circle-surface-soft, #f8fafc) 92%, transparent);
+  color: var(--circle-text-muted, #6d8bb5);
+}
+
+.circle-bonus-gift.is-row .circle-bonus-gift-cover {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--circle-border, #e2e8f0) 90%, transparent);
+}
+
+.circle-bonus-shelf.is-card .circle-bonus-gift-cover {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  background: transparent;
+}
+
+.circle-bonus-gift-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.circle-bonus-gift-badge {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  z-index: 3;
+  max-width: calc(100% - 10px);
+  padding: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.98);
+  font-size: 9px;
+  font-weight: 900;
+  line-height: 1.15;
+  letter-spacing: 0;
+  -webkit-text-stroke: 0.35px rgba(15, 23, 42, 0.72);
+  text-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.88),
+    0 0 6px rgba(15, 23, 42, 0.45);
+  box-shadow: none;
+}
+
+.circle-bonus-gift-main {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: start;
+  gap: 3px 5px;
+}
+
+.circle-bonus-gift.is-row .circle-bonus-gift-main {
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: none;
+  align-items: center;
+}
+
+.circle-bonus-gift-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0 4px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--circle-tag-primary, #3478f6) 8%, transparent);
+  color: var(--circle-tag-primary, #3478f6);
+  font-size: 9px;
+  font-weight: 900;
+  line-height: 15px;
+  white-space: nowrap;
+}
+
+.circle-bonus-gift-title {
+  grid-column: 1 / -1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--circle-text-strong, #1f3554);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 16px;
+}
+
+.circle-bonus-gift.is-row .circle-bonus-gift-title {
+  grid-column: auto;
+}
+
+.circle-bonus-gift-code {
+  display: none;
+  color: var(--circle-text-muted, #6d8bb5);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 12px;
+}
+
+.circle-bonus-gift-actions {
+  grid-column: 2;
+  grid-row: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.circle-bonus-gift.is-row .circle-bonus-gift-actions {
+  grid-column: auto;
+  grid-row: auto;
+}
+
+.circle-bonus-mini-action {
+  min-width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--circle-border, #e2e8f0) 82%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--circle-surface-soft, #f8fafc) 88%, transparent);
+  color: var(--circle-text-muted, #6d8bb5);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    transform .2s cubic-bezier(.34, 1.56, .64, 1),
+    border-color .18s ease,
+    background .18s ease;
+}
+
+.circle-bonus-mini-action:hover {
+  transform: translateY(-2px) scale(1.02);
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #3478f6) 30%, transparent);
+  background: color-mix(in srgb, var(--circle-tag-primary, #3478f6) 8%, transparent);
+  color: var(--circle-tag-primary, #3478f6);
+}
+
+.circle-bonus-mini-action:active {
+  transform: scale(0.96);
+}
+
+.circle-bonus-mini-action.import {
+  border-color: color-mix(in srgb, var(--circle-tag-success, #16a34a) 24%, transparent);
+  background: color-mix(in srgb, var(--circle-tag-success, #16a34a) 8%, transparent);
+  color: var(--circle-tag-success, #16a34a);
+}
+
+.circle-bonus-mini-action.download {
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #3478f6) 24%, transparent);
+  background: color-mix(in srgb, var(--circle-tag-primary, #3478f6) 8%, transparent);
+  color: var(--circle-tag-primary, #3478f6);
+}
+
+.circle-bonus-detail-card {
+  position: absolute;
+  z-index: 60;
+  top: 10px;
+  left: 10px;
+  width: min(360px, calc(100% + 210px), calc(100vw - 42px));
+  display: grid;
+  grid-template-columns: minmax(132px, 1.06fr) minmax(118px, .94fr);
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--circle-border, #e2e8f0) 72%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--circle-surface, #ffffff) 96%, transparent);
+  color: var(--circle-text, #334155);
+  box-shadow:
+    0 18px 46px rgba(15, 23, 42, 0.22),
+    0 5px 18px rgba(15, 23, 42, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.50);
+  transform-origin: top left;
+  animation: bonusDetailIn .18s cubic-bezier(.22, 1, .36, 1) both;
+}
+
+.circle-work-virtual-cell.is-right-half .circle-bonus-detail-card.is-card-inline,
+.circle-work-plain-cell.is-right-half .circle-bonus-detail-card.is-card-inline {
+  right: 10px;
+  left: auto;
+  transform-origin: top right;
+}
+
+.circle-bonus-detail-card.is-list-inline {
+  position: relative;
+  top: auto;
+  right: auto;
+  left: auto;
+  width: min(520px, calc(100% - 50px));
+  margin: 0 0 8px 50px;
+  grid-template-columns: 180px minmax(0, 1fr);
+  transform-origin: top left;
+}
+
+.circle-bonus-detail-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.62);
+  color: #fff;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all .2s cubic-bezier(.34, 1.56, .64, 1);
+}
+
+.circle-bonus-detail-close:hover {
+  transform: translateY(-1px) scale(1.04);
+}
+
+.circle-bonus-detail-media {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--circle-surface-soft, #f8fafc) 94%, transparent);
+}
+
+.circle-bonus-detail-cover {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--circle-surface-soft, #f8fafc) 94%, transparent);
+  color: var(--circle-text-muted, #6d8bb5);
+}
+
+.circle-bonus-detail-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.circle-bonus-detail-badge {
+  position: absolute;
+  left: 9px;
+  bottom: 9px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.70);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.circle-bonus-detail-tags {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px 5px;
+}
+
+.circle-bonus-detail-tag {
+  height: 19px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 0 7px;
+  border: 1px solid var(--circle-chip-border, rgba(226, 232, 240, 0.86));
+  border-radius: 5px;
+  background: var(--circle-chip-bg, rgba(248, 250, 252, 0.72));
+  color: var(--circle-text-subtle, #8a97a8);
+  font-size: 9px;
+  font-weight: 750;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.circle-bonus-detail-tag.is-primary {
+  border-color: color-mix(in srgb, var(--circle-tag-primary, #416fae) 22%, transparent);
+  background: color-mix(in srgb, var(--circle-tag-primary, #416fae) 8%, transparent);
+  color: var(--circle-tag-primary, #416fae);
+}
+
+.circle-bonus-detail-tag.is-success {
+  border-color: color-mix(in srgb, var(--circle-tag-success, #247348) 22%, transparent);
+  background: color-mix(in srgb, var(--circle-tag-success, #247348) 8%, transparent);
+  color: var(--circle-tag-success, #247348);
+}
+
+.circle-bonus-detail-tag.is-danger {
+  border-color: color-mix(in srgb, var(--circle-tag-danger, #c2412d) 22%, transparent);
+  background: color-mix(in srgb, var(--circle-tag-danger, #c2412d) 8%, transparent);
+  color: var(--circle-tag-danger, #c2412d);
+}
+
+.circle-bonus-detail-tag.is-disabled {
+  border-color: var(--circle-chip-border, rgba(226, 232, 240, 0.86));
+  background: var(--circle-chip-bg, rgba(248, 250, 252, 0.72));
+  color: var(--circle-text-subtle, #8a97a8);
+}
+
+.circle-bonus-detail-linked {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 0 10px 10px;
+  color: var(--circle-text-muted, #6d8bb5);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.circle-bonus-detail-linked > span:first-child {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.circle-bonus-detail-release {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.circle-bonus-detail-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 25px 14px 13px;
+}
+
+.circle-bonus-detail-title {
+  margin: 0;
+  color: var(--circle-text-strong, #1f3554);
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1.38;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+}
+
+.circle-bonus-detail-cv {
+  height: 14px;
+  color: #0ea5e9;
+  -webkit-text-fill-color: currentColor;
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.circle-bonus-detail-cv.is-empty {
+  visibility: hidden;
+}
+
+.circle-bonus-detail-actions {
+  display: flex;
+  align-items: center;
+  justify-content: stretch;
+  gap: 6px;
+  width: 100%;
+  margin-top: auto;
+}
+
+.circle-bonus-detail-action {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--circle-text-muted, #64748b) 26%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--circle-surface, #ffffff) 58%, transparent);
+  color: var(--circle-text, #334155);
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+  transition: all .2s cubic-bezier(.34, 1.56, .64, 1);
+}
+
+.circle-bonus-detail-action:hover {
+  transform: translateY(-2px) scale(1.02);
+  border-color: color-mix(in srgb, var(--circle-text, #334155) 32%, transparent);
+  background: color-mix(in srgb, var(--circle-text, #334155) 7%, var(--circle-surface, #ffffff));
+  color: var(--circle-text-strong, #1f2937);
+}
+
+.circle-bonus-detail-action:active {
+  transform: scale(0.96);
+}
+
+.circle-bonus-detail-action.import {
+  border-color: color-mix(in srgb, var(--circle-success, #247348) 24%, transparent);
+  background: color-mix(in srgb, var(--circle-success, #247348) 7%, var(--circle-surface, #ffffff));
+  color: var(--circle-success, #247348);
+}
+
+.circle-bonus-detail-action.import:hover {
+  border-color: color-mix(in srgb, var(--circle-success, #16653d) 34%, transparent);
+  background: color-mix(in srgb, var(--circle-success, #247348) 10%, var(--circle-surface, #ffffff));
+  color: var(--circle-success, #16653d);
+}
+
+@keyframes bonusGiftFlash {
+  0%, 100% { background: color-mix(in srgb, var(--circle-surface, #ffffff) 86%, transparent); }
+  45% {
+    background: color-mix(in srgb, var(--circle-tag-primary, #3478f6) 8%, var(--circle-surface, #ffffff));
+    border-color: color-mix(in srgb, var(--circle-tag-primary, #3478f6) 40%, transparent);
+  }
+}
+
+@keyframes bonusGiftLocateFlash {
+  0% {
+    transform: translateX(-3px);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--circle-tag-primary, #3478f6) 24%, transparent);
+  }
+  28% {
+    transform: translateX(0);
+    box-shadow:
+      0 0 0 5px color-mix(in srgb, var(--circle-tag-primary, #3478f6) 12%, transparent),
+      0 10px 20px color-mix(in srgb, var(--circle-tag-primary, #3478f6) 12%, transparent);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+
+@keyframes bonusDetailIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes bonusGiftSoftGleam {
+  0%,
+  100% {
+    opacity: 0.42;
+    transform: translateX(-10%);
+  }
+  50% {
+    opacity: 0.78;
+    transform: translateX(10%);
+  }
+}
+
+@keyframes bonusGiftRareHalo {
+  0%,
+  100% {
+    opacity: 0.72;
+    transform: scale(0.995);
+  }
+  50% {
+    opacity: 0.96;
+    transform: scale(1.015);
+  }
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-shelf.is-card),
+:global(body.kikoerumanager-dark .circle-bonus-shelf.is-card),
+:global(html.kikoerumanager-dark .circle-bonus-shelf.is-list),
+:global(body.kikoerumanager-dark .circle-bonus-shelf.is-list) {
+  border-color: rgba(148, 163, 184, 0.20);
+  background: transparent;
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-gift-kicker),
+:global(body.kikoerumanager-dark .circle-bonus-gift-kicker) {
+  background: rgba(37, 99, 235, 0.20);
+  color: #93c5fd;
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-gift),
+:global(body.kikoerumanager-dark .circle-bonus-gift) {
+  border-color: rgba(148, 163, 184, 0.20);
+  background: rgba(15, 23, 42, 0.84);
+  color: rgba(226, 232, 240, 0.88);
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-shelf.is-card .circle-bonus-gift),
+:global(body.kikoerumanager-dark .circle-bonus-shelf.is-card .circle-bonus-gift) {
+  border-color: rgba(250, 204, 21, 0.38);
+  box-shadow:
+    0 0 16px rgba(250, 204, 21, 0.28),
+    0 0 28px 3px rgba(250, 204, 21, 0.16),
+    0 10px 24px rgba(0, 0, 0, 0.34);
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-shelf.is-card .circle-bonus-gift::before),
+:global(body.kikoerumanager-dark .circle-bonus-shelf.is-card .circle-bonus-gift::before) {
+  background:
+    radial-gradient(circle at 88% 12%, rgba(254, 240, 138, 0.82), rgba(250, 204, 21, 0.34) 26%, transparent 54%),
+    radial-gradient(circle at 8% 92%, rgba(250, 204, 21, 0.48), rgba(245, 158, 11, 0.22) 30%, transparent 58%),
+    radial-gradient(circle at 52% 50%, rgba(250, 204, 21, 0.18), transparent 62%);
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-shelf.is-card .circle-bonus-gift),
+:global(body.kikoerumanager-dark .circle-bonus-shelf.is-card .circle-bonus-gift),
+:global(html.kikoerumanager-dark .circle-bonus-shelf.is-card .circle-bonus-gift-cover),
+:global(body.kikoerumanager-dark .circle-bonus-shelf.is-card .circle-bonus-gift-cover) {
+  background: transparent;
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-gift-title),
+:global(body.kikoerumanager-dark .circle-bonus-gift-title) {
+  color: rgba(248, 250, 252, 0.92);
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-gift-code),
+:global(body.kikoerumanager-dark .circle-bonus-gift-code) {
+  color: rgba(203, 213, 225, 0.74);
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-gift-cover),
+:global(body.kikoerumanager-dark .circle-bonus-gift-cover),
+:global(html.kikoerumanager-dark .circle-bonus-mini-action),
+:global(body.kikoerumanager-dark .circle-bonus-mini-action) {
+  border-color: rgba(148, 163, 184, 0.20);
+  background: rgba(30, 41, 59, 0.74);
+  color: rgba(203, 213, 225, 0.78);
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-mini-action.import),
+:global(body.kikoerumanager-dark .circle-bonus-mini-action.import) {
+  border-color: rgba(52, 211, 153, 0.42);
+  background: rgba(5, 150, 105, 0.20);
+  color: #6ee7b7;
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-detail-card),
+:global(body.kikoerumanager-dark .circle-bonus-detail-card) {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: linear-gradient(180deg, rgba(34, 36, 40, 0.98) 0%, rgba(24, 25, 29, 0.98) 100%);
+  color: rgba(226, 232, 240, 0.88);
+  box-shadow:
+    0 18px 46px rgba(0, 0, 0, 0.34),
+    0 5px 18px rgba(0, 0, 0, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-detail-cover),
+:global(body.kikoerumanager-dark .circle-bonus-detail-cover) {
+  background: #141519;
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-detail-media),
+:global(body.kikoerumanager-dark .circle-bonus-detail-media) {
+  background: #18191d;
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-detail-tag.is-primary),
+:global(body.kikoerumanager-dark .circle-bonus-detail-tag.is-primary) {
+  background: rgba(37, 99, 235, 0.22);
+  border-color: rgba(96, 165, 250, 0.46);
+  color: #93c5fd;
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-detail-tag.is-success),
+:global(body.kikoerumanager-dark .circle-bonus-detail-tag.is-success) {
+  background: rgba(5, 150, 105, 0.22);
+  border-color: rgba(52, 211, 153, 0.46);
+  color: #6ee7b7;
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-detail-tag.is-danger),
+:global(body.kikoerumanager-dark .circle-bonus-detail-tag.is-danger) {
+  background: rgba(220, 38, 38, 0.22);
+  border-color: rgba(248, 113, 113, 0.48);
+  color: #fca5a5;
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-detail-tag.is-disabled),
+:global(body.kikoerumanager-dark .circle-bonus-detail-tag.is-disabled) {
+  background: rgba(248, 250, 252, 0.12);
+  border-color: rgba(226, 232, 240, 0.22);
+  color: #cbd5e1;
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-detail-linked),
+:global(body.kikoerumanager-dark .circle-bonus-detail-linked) {
+  color: rgba(203, 213, 225, 0.76);
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-detail-title),
+:global(body.kikoerumanager-dark .circle-bonus-detail-title) {
+  color: rgba(248, 250, 252, 0.94);
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-detail-cv),
+:global(body.kikoerumanager-dark .circle-bonus-detail-cv) {
+  color: #38bdf8;
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-detail-action),
+:global(body.kikoerumanager-dark .circle-bonus-detail-action) {
+  border-color: rgba(226, 232, 240, 0.18);
+  background: rgba(255, 255, 255, 0.075);
+  color: rgba(244, 244, 245, 0.88);
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-detail-action:hover),
+:global(body.kikoerumanager-dark .circle-bonus-detail-action:hover) {
+  border-color: rgba(226, 232, 240, 0.28);
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+
+:global(html.kikoerumanager-dark .circle-bonus-detail-action.import),
+:global(body.kikoerumanager-dark .circle-bonus-detail-action.import) {
+  border-color: rgba(52, 211, 153, 0.42);
+  background: rgba(5, 150, 105, 0.18);
+  color: #6ee7b7;
+}
+
+@media (max-width: 640px) {
+  .circle-bonus-shelf.is-card {
+    right: 7px;
+    width: min(38%, 76px);
+  }
+
+  .circle-bonus-detail-card {
+    top: 8px;
+    right: 8px;
+    left: 8px;
+    grid-template-columns: 1fr;
+    width: calc(100% - 16px);
+  }
+
+  .circle-work-virtual-cell.is-right-half .circle-bonus-detail-card.is-card-inline,
+  .circle-work-plain-cell.is-right-half .circle-bonus-detail-card.is-card-inline {
+    right: 8px;
+    left: 8px;
+    transform-origin: top left;
+  }
+
+  .circle-bonus-detail-card.is-list-inline {
+    width: 100%;
+    margin: 0 0 8px 0;
+    grid-template-columns: 1fr;
+  }
+
+  .circle-bonus-detail-body {
+    padding-top: 12px;
+  }
+
+  .circle-bonus-detail-actions {
+    gap: 5px;
+  }
 }
 
 .circle-work-viewport :deep(.work-card) {
@@ -593,5 +2126,6 @@ onBeforeUnmount(() => {
     transform: translateY(0);
     pointer-events: auto;
   }
+
 }
 </style>

@@ -47,6 +47,7 @@ class TaskType(str, Enum):
     CIRCLE_COMPLETION_INDEX = "circle_completion_index"
     CIRCLE_COMPLETION_REFRESH_SELECTED = "circle_completion_refresh_selected"
     CIRCLE_COMPLETION_DOWNLOAD_BATCH = "circle_completion_download_batch"
+    CIRCLE_COMPLETION_BONUS_PROBE = "circle_completion_bonus_probe"
 
 class Task:
     """任务对象"""
@@ -881,7 +882,12 @@ class TaskEngine:
             return "upload"
         if task.type == TaskType.LIBRARY_FOLDER_COMPLETION_PREVIEW:
             return "asmr_sync"
-        if task.type in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH}:
+        if task.type in {
+            TaskType.CIRCLE_COMPLETION_INDEX,
+            TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED,
+            TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH,
+            TaskType.CIRCLE_COMPLETION_BONUS_PROBE,
+        }:
             return "circle_completion"
         return "system"
 
@@ -2192,7 +2198,51 @@ class TaskEngine:
         finally:
             db.close()
         return updated
-    
+
+    def _rj_subtitle_remote_retry_delay_seconds(self, value: Any) -> Optional[float]:
+        message = str(value or "")
+        if "远程库存暂时退化" not in message and "已熔断" not in message:
+            return None
+        matched = re.search(r"熔断\s*(\d+(?:\.\d+)?)\s*秒", message)
+        if matched:
+            try:
+                return max(30.0, min(float(matched.group(1)), 180.0))
+            except Exception:
+                pass
+        return 60.0
+
+    def _rj_subtitle_remote_retry_after(self, result_or_error: Any) -> Optional[datetime]:
+        candidates: List[Any] = [result_or_error]
+        if isinstance(result_or_error, dict):
+            candidates.append(result_or_error.get("error"))
+            candidates.extend(result_or_error.get("write_errors") or [])
+            for item in result_or_error.get("failed_files") or []:
+                if isinstance(item, dict):
+                    candidates.append(item.get("error") or item.get("reason") or item.get("message"))
+                else:
+                    candidates.append(item)
+        delays = [self._rj_subtitle_remote_retry_delay_seconds(item) for item in candidates]
+        delays = [delay for delay in delays if delay is not None]
+        if not delays:
+            return None
+        return datetime.now() + timedelta(seconds=max(delays))
+
+    def _rj_subtitle_remote_retry_reason(self, result_or_error: Any) -> str:
+        candidates: List[Any] = []
+        if isinstance(result_or_error, dict):
+            candidates.extend(result_or_error.get("write_errors") or [])
+            for item in result_or_error.get("failed_files") or []:
+                if isinstance(item, dict):
+                    candidates.append(item.get("error") or item.get("reason") or item.get("message"))
+                else:
+                    candidates.append(item)
+        candidates.append(result_or_error)
+        for item in candidates:
+            message = str(item or "").strip()
+            if self._rj_subtitle_remote_retry_delay_seconds(message) is not None:
+                return message
+        return "远程库存暂时退化，等待恢复后重试字幕回写"
+
     async def _process_task(self, task: Task):
         """处理单个任务"""
         from .extract_service import ExtractService
@@ -3290,6 +3340,8 @@ class TaskEngine:
                     await self._process_circle_completion_refresh_selected(task)
                 elif task.type == TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH:
                     task.update_progress(100, "完成")
+                elif task.type == TaskType.CIRCLE_COMPLETION_BONUS_PROBE:
+                    await self._process_circle_completion_bonus_probe(task)
 
                 # 只有当任务没有被设置为其他状态（如 waiting_retry）时才标记为完成
                 if task.status == TaskStatus.PROCESSING:
@@ -5661,6 +5713,24 @@ class TaskEngine:
             if deduped_count > 0:
                 append_progress_log(f"已按内容合并 {deduped_count} 个完全重复字幕", task.progress)
 
+            remote_retry_after = self._rj_subtitle_remote_retry_after(result)
+            if remote_retry_after and not result.get('success'):
+                reason = self._rj_subtitle_remote_retry_reason(result)
+                append_progress_log(reason, task.progress, 'warning')
+                task.task_metadata.update({
+                    'retry_source': 'rj_subtitle_fetch',
+                    'retry_kind': 'remote_library_degraded',
+                    'remote_retry_after': remote_retry_after.isoformat(),
+                })
+                task.set_waiting_retry(reason, remote_retry_after)
+                logger.warning(
+                    "[%s] RJ 字幕远程回写遇到库存退化，进入等待重试: retry_after=%s reason=%s",
+                    rjcode,
+                    remote_retry_after.isoformat(),
+                    reason,
+                )
+                return
+
             if not result.get('success'):
                 error_message = result.get('error', 'RJ 字幕抓取失败')
                 append_progress_log(error_message, task.progress, 'error')
@@ -5995,6 +6065,89 @@ class TaskEngine:
         }
         task.update_progress(100, "批量刷新完成")
         append_progress_log("批量刷新完成", 100, 'success')
+
+    async def _process_circle_completion_bonus_probe(self, task: Task):
+        """处理 DLsite 隐藏特典探测任务。"""
+        from .dlsite_bonus_probe_service import get_dlsite_bonus_probe_service
+
+        task.task_metadata = dict(task.task_metadata or {})
+        task.task_metadata.setdefault('progress_log', [])
+
+        def append_progress_log(message: str, progress: Optional[int] = None, level: str = 'info'):
+            if not message:
+                return
+            logs = list(task.task_metadata.get('progress_log') or [])
+            last = logs[-1] if logs else None
+            if last and last.get('message') == message and last.get('progress') == progress and last.get('level') == level:
+                return
+            logs.append({
+                'time': datetime.now().isoformat(),
+                'progress': task.progress if progress is None else progress,
+                'message': message,
+                'level': level,
+            })
+            task.task_metadata['progress_log'] = logs[-80:]
+            task.touch_metadata('bonus_probe_log')
+
+        metadata = dict(task.task_metadata or {})
+        circle_id = str(metadata.get('circle_id') or task.source_path or '').strip()
+        maker_id = str(metadata.get('maker_id') or '').strip().upper()
+        mode = str(metadata.get('mode') or 'normal').strip() or 'normal'
+        release_dates = list(metadata.get('release_dates') or [])
+        gap_limit = int(metadata.get('gap_limit') or 500)
+        batch_size = int(metadata.get('batch_size') or 200)
+        concurrency = int(metadata.get('concurrency') or 5)
+        if not circle_id:
+            raise ValueError('缺少社团 ID')
+
+        append_progress_log('准备探测 DLsite 隐藏特典', 1)
+
+        def progress_callback(progress: int, step: str, meta: Dict[str, Any]):
+            pct = min(99, max(1, int(progress or 0)))
+            task.update_progress(pct, step)
+            task.task_metadata = {
+                **dict(task.task_metadata or {}),
+                'bonus_probe_meta': {
+                    **dict((task.task_metadata or {}).get('bonus_probe_meta') or {}),
+                    **dict(meta or {}),
+                },
+            }
+            append_progress_log(step, pct)
+
+        result = await get_dlsite_bonus_probe_service().probe_circle_dates(
+            circle_id=circle_id,
+            maker_id=maker_id,
+            release_dates=release_dates,
+            mode=mode,
+            gap_limit=gap_limit,
+            batch_size=batch_size,
+            concurrency=concurrency,
+            job_id=task.id,
+            progress_callback=progress_callback,
+            cancel_callback=task.is_cancelled,
+        )
+        task.task_metadata.update({
+            'circle_id': result.get('circle_id') or circle_id,
+            'circle_name': result.get('circle_name') or metadata.get('circle_name') or '',
+            'maker_id': result.get('maker_id') or maker_id,
+            'bonus_probe_result': result,
+            'bonus_probe_summary': {
+                'date_count': int(result.get('date_count') or 0),
+                'probe_count': int(result.get('probe_count') or 0),
+                'checked_probe_count': int(result.get('probe_count') or 0),
+                'hit_count': int(result.get('hit_count') or 0),
+                'inserted_count': int(result.get('inserted_count') or 0),
+                'request_count': int(result.get('request_count') or 0),
+            },
+        })
+        inserted_count = int(result.get('inserted_count') or 0)
+        append_progress_log(
+            f"特典探测完成：命中 {int(result.get('hit_count') or 0)} 个，写入 {inserted_count} 个",
+            100,
+            'success',
+        )
+        task.update_progress(100, f"特典探测完成，写入 {inserted_count} 个")
+        task.complete()
 
     async def _process_local_library_upload(self, task: Task):
         from .circle_completion_service import get_circle_completion_service

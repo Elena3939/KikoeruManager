@@ -567,6 +567,66 @@
     </ul>
   </section>
 
+  <!-- 社团补全：特典探测结果 -->
+  <section v-if="bonusProbe" class="panel bonus-probe-panel" :class="bonusProbe.status === 'hit' ? 'is-hit' : 'is-miss'">
+    <div class="panel-head">
+      <Sparkles :size="13" :stroke-width="2.4" />
+      <span>特典探测结果</span>
+      <span
+        class="ml-1 inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset"
+        :class="bonusProbe.status === 'hit' ? 'bg-slate-50/80 text-slate-700 ring-slate-200/60' : 'bg-slate-50/80 text-slate-500 ring-slate-200/60'"
+      >{{ bonusProbe.statusLabel }}</span>
+    </div>
+    <div class="bonus-probe-summary">
+      <div>
+        <div class="bonus-probe-source">{{ bonusProbe.sourceLabel }}</div>
+        <div class="bonus-probe-title">
+          {{ bonusProbe.status === 'hit' ? `找到 ${bonusProbe.items.length} 个特典` : '未找到符合条件的特典' }}
+        </div>
+      </div>
+      <div class="bonus-probe-metrics">
+        <span
+          v-for="metric in bonusProbe.metrics"
+          :key="`bpm-${metric.label}`"
+          class="bonus-probe-metric"
+        >
+          {{ metric.label }}<b>{{ metric.value }}</b>
+        </span>
+      </div>
+    </div>
+    <ul v-if="bonusProbe.items.length" class="bonus-work-list">
+      <li
+        v-for="item in bonusProbe.items"
+        :key="`bonus-${item.rjcode}`"
+        class="bonus-work-item"
+      >
+        <div class="bonus-work-head">
+          <span class="bonus-work-rj">{{ item.rjcode }}</span>
+          <span class="bonus-work-name">{{ item.title || '未命名特典' }}</span>
+        </div>
+        <div class="bonus-work-meta">
+          <span v-if="item.releaseDate">发售日 {{ item.releaseDate }}</span>
+          <span v-if="item.makerId">maker {{ item.makerId }}</span>
+        </div>
+      </li>
+    </ul>
+    <div v-else class="bonus-probe-empty">
+      已完成本次特典筛选，但没有命中隐藏特典条件的 RJ。
+    </div>
+    <div v-if="bonusProbe.dateRows.length" class="bonus-date-strip">
+      <span
+        v-for="row in bonusProbe.dateRows.slice(0, 12)"
+        :key="`bpdr-${row.releaseDate}`"
+        class="bonus-date-pill"
+        :class="row.hitCount > 0 ? 'is-hit' : (row.skipped ? 'is-skipped' : '')"
+      >
+        {{ row.releaseDate || '未知日期' }}
+        <b>{{ row.hitCount }}</b>
+      </span>
+      <span v-if="bonusProbe.dateRows.length > 12" class="bonus-date-more">+{{ bonusProbe.dateRows.length - 12 }}</span>
+    </div>
+  </section>
+
   <!-- 社团索引：高级面板（搜索 + 来源过滤 + 来源 breakdown） -->
   <section v-if="circleIndexModel" class="panel">
     <div class="panel-head">
@@ -876,6 +936,7 @@ const circleRefreshPageSize = m.circleRefreshPageSize
 const setCircleRefreshFilter = m.setCircleRefreshFilter
 const setCircleRefreshPage = m.setCircleRefreshPage
 const formatRefreshChangeValue = m.formatRefreshChangeValue
+const bonusProbe = m.bonusProbe
 
 const CIRCLE_REFRESH_FILTERS = [
   { value: 'all', label: '全部' },
@@ -1105,6 +1166,157 @@ function formatBytes(size) {
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
   margin-left: 2px;
+}
+
+.bonus-probe-panel.is-hit {
+  border-color: rgba(15, 23, 42, 0.1);
+}
+
+.bonus-probe-panel.is-miss {
+  background: rgba(248, 250, 252, 0.62);
+}
+
+.bonus-probe-summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.bonus-probe-source {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(15, 23, 42, 0.48);
+}
+
+.bonus-probe-title {
+  margin-top: 3px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: -0.01em;
+}
+
+.bonus-probe-metrics {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.bonus-probe-metric,
+.bonus-date-pill,
+.bonus-date-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 23px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: rgba(248, 250, 252, 0.88);
+  color: #475569;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.bonus-probe-metric b,
+.bonus-date-pill b {
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+
+.bonus-work-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.bonus-work-item {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.bonus-work-item:hover {
+  border-color: rgba(148, 163, 184, 0.34);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.05);
+}
+
+.bonus-work-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.bonus-work-rj {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(241, 245, 249, 0.78);
+  color: #334155;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 700;
+}
+
+.bonus-work-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #1e293b;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.bonus-work-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 5px;
+  color: rgba(15, 23, 42, 0.52);
+  font-size: 11.5px;
+}
+
+.bonus-probe-empty {
+  padding: 14px 12px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px dashed rgba(148, 163, 184, 0.36);
+  color: rgba(15, 23, 42, 0.54);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.bonus-date-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(15, 23, 42, 0.05);
+}
+
+.bonus-date-pill.is-hit {
+  background: rgba(241, 245, 249, 0.96);
+  color: #334155;
+  border-color: rgba(100, 116, 139, 0.26);
+}
+
+.bonus-date-pill.is-skipped {
+  opacity: 0.68;
 }
 
 .pair-result-open-btn {
@@ -1847,8 +2059,41 @@ function formatBytes(size) {
 :global(html.kikoerumanager-dark) .entry-eyebrow,
 :global(html.kikoerumanager-dark) .entry-section-desc,
 :global(html.kikoerumanager-dark) .highlight-label,
-:global(html.kikoerumanager-dark) .highlight-unit {
+:global(html.kikoerumanager-dark) .highlight-unit,
+:global(html.kikoerumanager-dark) .bonus-probe-source,
+:global(html.kikoerumanager-dark) .bonus-work-meta {
   color: rgba(212, 212, 216, 0.66);
+}
+
+:global(html.kikoerumanager-dark) .bonus-probe-panel.is-miss,
+:global(html.kikoerumanager-dark) .bonus-work-item,
+:global(html.kikoerumanager-dark) .bonus-probe-empty {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: #17181d;
+}
+
+:global(html.kikoerumanager-dark) .bonus-probe-title,
+:global(html.kikoerumanager-dark) .bonus-work-name,
+:global(html.kikoerumanager-dark) .bonus-probe-metric b,
+:global(html.kikoerumanager-dark) .bonus-date-pill b {
+  color: #f4f4f5;
+}
+
+:global(html.kikoerumanager-dark) .bonus-probe-metric,
+:global(html.kikoerumanager-dark) .bonus-date-pill,
+:global(html.kikoerumanager-dark) .bonus-date-more,
+:global(html.kikoerumanager-dark) .bonus-work-rj {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: #202126;
+  color: #d7dde7;
+}
+
+:global(html.kikoerumanager-dark) .bonus-probe-empty {
+  color: rgba(212, 212, 216, 0.68);
+}
+
+:global(html.kikoerumanager-dark) .bonus-date-strip {
+  border-top-color: rgba(255, 255, 255, 0.08);
 }
 
 :global(html.kikoerumanager-dark) .highlight-row {
@@ -2341,6 +2586,23 @@ function formatBytes(size) {
   .metric-cell {
     min-width: 0;
     padding: 10px;
+  }
+  .bonus-probe-summary {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .bonus-probe-metrics {
+    justify-content: flex-start;
+  }
+  .bonus-work-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .bonus-work-name {
+    flex: 1 1 100%;
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
   }
   .metric-num {
     font-size: 18px;

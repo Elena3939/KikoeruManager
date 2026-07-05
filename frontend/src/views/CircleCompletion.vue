@@ -108,7 +108,19 @@
               <div class="sidebar-overline">社团目录</div>
               <div class="sidebar-title">最近索引</div>
             </div>
-            <el-button text class="sidebar-refresh-button" @click="loadRecentCircles">刷新</el-button>
+            <div class="sidebar-head-actions">
+              <el-button
+                text
+                class="sidebar-refresh-button"
+                :loading="batchBonusProbeRunning"
+                :disabled="indexing || isRefreshJobActive || isBonusProbeJobActive"
+                @click="startBonusProbeForVisibleCircles"
+              >
+                <Gift :size="12" />
+                批量特典
+              </el-button>
+              <el-button text class="sidebar-refresh-button" @click="loadRecentCircles">刷新</el-button>
+            </div>
           </div>
           <div class="sidebar-search">
             <el-input v-model="circleSearch" placeholder="筛选已缓存社团" clearable @input="searchCachedCircles" />
@@ -201,8 +213,17 @@
                 仅索引新作
               </el-button>
               <el-button
+                class="batch-action-button bonus"
+                :disabled="!activeCircleId || indexing || isRefreshJobActive || isBonusProbeJobActive"
+                :loading="bonusProbeRunning"
+                @click="startBonusProbeFromToolbar"
+              >
+                <Gift :size="13" style="margin-right:4px" />
+                {{ bonusProbeActionLabel }}
+              </el-button>
+              <el-button
                 class="batch-action-button refresh"
-                :disabled="!activeCircleId || indexing || isRefreshJobActive"
+                :disabled="!activeCircleId || indexing || isRefreshJobActive || isBonusProbeJobActive"
                 :loading="refreshingCurrentCircle"
                 @click="refreshSelectedCircleIndex"
               >
@@ -226,6 +247,56 @@
         </section>
 
         <section v-if="activeCircleId" class="works-card">
+          <section v-if="bonusProbeJob.visible" class="index-progress-card refresh-progress-card bonus-progress-card">
+            <div class="index-progress-head">
+              <div>
+                <div class="index-progress-title">特典补全进度</div>
+                <div class="index-progress-subtitle">
+                  {{ bonusProbeJob.circle_name || detail.circle_name || '当前社团' }} · {{ bonusProbeJob.current_step || '处理中' }}
+                </div>
+              </div>
+              <div class="index-progress-head-actions">
+                <el-button
+                  v-if="canCancelBonusProbeJob"
+                  size="small"
+                  class="index-cancel-button"
+                  :loading="cancellingBonusProbeJob"
+                  @click="cancelBonusProbeJob"
+                >
+                  取消探测
+                </el-button>
+                <div class="index-progress-status" :class="bonusProbeJob.status">{{ bonusProbeJobStatusText }}</div>
+              </div>
+            </div>
+
+            <div class="index-progress-bar-wrap">
+              <AppLottieProgressBar :percentage="getJobProgressPercent(bonusProbeJob)" size="sm" :show-text="false" />
+            </div>
+
+            <div class="index-progress-meta">
+              <span class="progress-meta-pill time" title="耗时"><Clock :size="10" /> {{ formatElapsed(bonusProbeJob.elapsed_seconds) }}</span>
+              <span class="progress-meta-pill total" title="发售日"><Calendar :size="10" /> {{ bonusProbeJob.meta.release_dates_count || bonusProbeJob.release_dates.length || 0 }} 日</span>
+              <span class="progress-meta-pill batch" title="已查 RJ"><Hash :size="10" /> {{ formatBonusProbeRjProgress(bonusProbeJob.meta, bonusProbeJob.current_step) }}</span>
+              <span class="progress-meta-pill bonus" title="命中特典"><Gift :size="10" /> {{ bonusProbeJob.meta.hit_count || 0 }}</span>
+              <span class="progress-meta-pill ok" title="写入数量"><CheckCircle2 :size="10" /> {{ bonusProbeJob.meta.inserted_count || 0 }}</span>
+              <span class="progress-meta-pill dlsite" title="DLsite 请求"><Globe :size="10" /> {{ bonusProbeJob.meta.request_count || 0 }}</span>
+            </div>
+
+            <div v-if="bonusProbeJob.progress_log?.length" class="refresh-progress-log-list compact">
+              <div
+                v-for="entry in bonusProbeJob.progress_log.slice(-2)"
+                :key="`${bonusProbeJob.job_id}-${entry.time}-${entry.message}`"
+                class="refresh-progress-log-item"
+                :class="entry.level || 'info'"
+              >
+                <span class="refresh-progress-log-time">{{ formatLogTime(entry.time) }}</span>
+                <span class="refresh-progress-log-message">{{ entry.message }}</span>
+              </div>
+            </div>
+
+            <div v-if="bonusProbeJob.error_message" class="index-progress-error">{{ bonusProbeJob.error_message }}</div>
+          </section>
+
           <section v-if="refreshJob.visible" class="index-progress-card refresh-progress-card">
             <div class="index-progress-head">
               <div>
@@ -369,7 +440,7 @@
                     type="button"
                     class="batch-action-button refresh"
                     :class="{ 'is-busy': refreshingCurrentCircle }"
-                    :disabled="isRefreshJobActive"
+                    :disabled="isRefreshJobActive || isBonusProbeJobActive"
                     @click="refreshSelectedCircleIndex(selectedActiveCanonicalRJCodes)"
                   >
                     <RefreshCw v-if="refreshingCurrentCircle" :size="13" class="batch-action-spinner" />
@@ -611,7 +682,7 @@
                       type="button"
                       class="batch-action-button refresh"
                       :class="{ 'is-busy': refreshingCurrentCircle }"
-                      :disabled="isRefreshJobActive"
+                      :disabled="isRefreshJobActive || isBonusProbeJobActive"
                       @click="refreshSelectedCircleIndex(selectedActiveCanonicalRJCodes)"
                     >
                       <RefreshCw v-if="refreshingCurrentCircle" :size="13" class="batch-action-spinner" />
@@ -979,12 +1050,27 @@ const CIRCLE_COMPLETION_TARGET_SUBDIRS_KEY = 'kikoerumanager.circleCompletion.ta
 const CIRCLE_COMPLETION_DOWNLOAD_WORKBENCH_KEY = 'kikoerumanager.circleCompletion.downloadWorkbench'
 const CIRCLE_COMPLETION_REFRESH_JOB_KEY = 'kikoerumanager.circleCompletion.refreshJob'
 const CIRCLE_COMPLETION_INDEX_JOB_KEY = 'kikoerumanager.circleCompletion.indexJob'
+const CIRCLE_COMPLETION_BONUS_PROBE_JOB_KEY = 'kikoerumanager.circleCompletion.bonusProbeJob'
 const CIRCLE_COMPLETION_UPLOAD_WORKBENCH_KEY = 'kikoerumanager.circleCompletion.uploadWorkbench'
 const realtimeEvents = useRealtimeEvents()
 function getJobProgressPercent(job) {
   const value = Number(job?.progress || 0)
   if (!Number.isFinite(value)) return 0
   return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+function toProgressCount(value) {
+  const count = Number(value || 0)
+  return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0
+}
+
+function formatBonusProbeRjProgress(meta = {}, currentStep = '') {
+  const total = toProgressCount(meta.probe_count)
+  const checked = Math.min(toProgressCount(meta.checked_probe_count), total || Number.MAX_SAFE_INTEGER)
+  if (total > 0) return `${checked} / ${total}`
+  const stepMatch = String(currentStep || '').match(/[：:]\s*(\d+)\s*\/\s*(\d+)/)
+  if (stepMatch) return `${Number(stepMatch[1] || 0)} / ${Number(stepMatch[2] || 0)}`
+  return String(checked)
 }
 
 const circleSearch = ref('')
@@ -1007,6 +1093,7 @@ const circleSortKeyOptions = [
 ]
 const indexing = ref(false)
 const emailCheckLoading = ref(false)
+const batchBonusProbeRunning = ref(false)
 const previewing = ref(false)
 const previewLoading = ref(false)
 const previewProgressLabel = ref('正在分析资源结构并生成下载计划...')
@@ -1497,6 +1584,7 @@ let indexJobTimer = null
 let indexJobElapsedTimer = null
 let indexJobLastRealtimeAt = 0
 let refreshJobLastRealtimeAt = 0
+let bonusProbeJobLastRealtimeAt = 0
 const cancellingIndexJob = ref(false)
 const refreshingCurrentCircle = ref(false)
 const refreshJob = reactive({
@@ -1519,6 +1607,25 @@ const refreshJob = reactive({
 let refreshJobTimer = null
 let refreshJobAutoHideTimer = null
 const cancellingRefreshJob = ref(false)
+const bonusProbeRunning = ref(false)
+const cancellingBonusProbeJob = ref(false)
+const bonusProbeJob = reactive({
+  visible: false,
+  job_id: '',
+  status: '',
+  progress: 0,
+  current_step: '',
+  circle_id: '',
+  circle_name: '',
+  release_dates: [],
+  elapsed_seconds: 0,
+  error_message: '',
+  meta: {},
+  result: {},
+  progress_log: []
+})
+let bonusProbeJobTimer = null
+let bonusProbeJobAutoHideTimer = null
 const JOB_FALLBACK_POLL_INTERVAL_MS = 30000
 const JOB_SSE_STALE_MS = 45000
 const handledCircleTerminalTasks = new Set()
@@ -1698,6 +1805,42 @@ function parseReleaseDateForSort(raw) {
   }
 
   return 0
+}
+
+function normalizeReleaseDateForBonusProbe(raw) {
+  const text = String(raw || '').trim()
+  if (!text) return ''
+
+  const fullDateMatch = text.match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/)
+  if (fullDateMatch) {
+    const year = Number(fullDateMatch[1])
+    const month = Number(fullDateMatch[2])
+    const day = Number(fullDateMatch[3])
+    const date = new Date(year, month - 1, day)
+    if (
+      year > 0
+      && month >= 1
+      && month <= 12
+      && day >= 1
+      && day <= 31
+      && date.getFullYear() === year
+      && date.getMonth() === month - 1
+      && date.getDate() === day
+    ) {
+      return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+    }
+  }
+
+  const compactMatch = text.match(/(?:^|\D)(\d{4})(\d{2})(\d{2})(?:\D|$)/)
+  if (compactMatch) {
+    return normalizeReleaseDateForBonusProbe(`${compactMatch[1]}-${compactMatch[2]}-${compactMatch[3]}`)
+  }
+
+  return ''
+}
+
+function getWorkBonusProbeDate(item) {
+  return normalizeReleaseDateForBonusProbe(item?.release_date || item?.date || item?.release_at || '')
 }
 
 function toggleWorksReleaseSort() {
@@ -2170,6 +2313,10 @@ const activeSelectableWorksByCanonical = computed(() => {
 const selectedActiveDownloadableRJCodes = computed(() => selectedActiveCanonicalRJCodes.value.filter(code => {
   return selectedDownloadableCanonicals.value.has(code)
 }))
+const bonusProbeActionLabel = computed(() => {
+  const count = selectedActiveCanonicalRJCodes.value.length
+  return count > 0 ? `选中特典 ${count}` : '特典补全'
+})
 function getPreviewRequestedRjcodes(canonicalCodes = []) {
   const mapping = {}
   canonicalCodes.forEach(code => {
@@ -2335,6 +2482,17 @@ const isRefreshJobActive = computed(() =>
   Boolean(refreshJob.job_id) && ['pending', 'processing'].includes(String(refreshJob.status || ''))
 )
 const canCancelRefreshJob = computed(() => isRefreshJobActive.value)
+const bonusProbeJobStatusText = computed(() => {
+  if (bonusProbeJob.error_message === '用户取消' || bonusProbeJob.current_step === '已取消') return '已取消'
+  if (bonusProbeJob.status === 'completed') return '已完成'
+  if (bonusProbeJob.status === 'failed') return '失败'
+  if (bonusProbeJob.status === 'processing') return '进行中'
+  return '等待中'
+})
+const isBonusProbeJobActive = computed(() =>
+  Boolean(bonusProbeJob.job_id) && ['pending', 'processing'].includes(String(bonusProbeJob.status || ''))
+)
+const canCancelBonusProbeJob = computed(() => isBonusProbeJobActive.value)
 
 onMounted(async () => {
   window.addEventListener('kikoerumanager:notification:new', handleNewReleaseNotification)
@@ -2343,6 +2501,7 @@ onMounted(async () => {
   window.addEventListener('kikoerumanager:events:message', handleCircleTaskRealtimeEvent)
   hydrateIndexJobState()
   hydrateRefreshJobState()
+  hydrateBonusProbeJobState()
   hydrateDownloadWorkbenchState()
   restoreUploadWorkbenchState()
   loadCachedTargetSubdirs()
@@ -2361,6 +2520,7 @@ onMounted(async () => {
     }
     resumeRefreshJobAutoHide()
   }
+  if (isBonusProbeJobActive.value) await pollBonusProbeJob(bonusProbeJob.job_id, { silentFinish: true })
 })
 
 watch(() => route.fullPath, () => {
@@ -2383,6 +2543,10 @@ onActivated(() => {
       }).catch(() => {})
     }
     resumeRefreshJobAutoHide()
+  }
+  if (isBonusProbeJobActive.value) {
+    bonusProbeRunning.value = true
+    pollBonusProbeJob(bonusProbeJob.job_id, { silentFinish: true })
   }
   if (trackedDownloadTaskIds.value.length) {
     refreshDownloadWorkbench()
@@ -2441,6 +2605,8 @@ onBeforeUnmount(() => {
   }
   stopIndexJobPolling()
   stopRefreshJobPolling()
+  stopBonusProbeJobPolling()
+  stopBonusProbeJobAutoHide()
   stopRefreshJobAutoHide()
   stopDownloadWorkbenchPolling()
   stopUploadWorkbenchPolling()
@@ -2518,6 +2684,13 @@ watch(
   () => [refreshJob.job_id, refreshJob.status, refreshJob.progress, refreshJob.current_step, refreshJob.elapsed_seconds].join(':'),
   () => {
     persistRefreshJobState()
+  }
+)
+
+watch(
+  () => [bonusProbeJob.job_id, bonusProbeJob.status, bonusProbeJob.progress, bonusProbeJob.current_step, bonusProbeJob.elapsed_seconds].join(':'),
+  () => {
+    persistBonusProbeJobState()
   }
 )
 
@@ -3077,6 +3250,89 @@ function clearRefreshJobState() {
   } catch (_) {}
 }
 
+function persistBonusProbeJobState() {
+  try {
+    if (!bonusProbeJob.job_id) {
+      localStorage.removeItem(CIRCLE_COMPLETION_BONUS_PROBE_JOB_KEY)
+      return
+    }
+    localStorage.setItem(CIRCLE_COMPLETION_BONUS_PROBE_JOB_KEY, JSON.stringify({
+      job_id: bonusProbeJob.job_id,
+      status: bonusProbeJob.status,
+      progress: bonusProbeJob.progress,
+      current_step: bonusProbeJob.current_step,
+      circle_id: bonusProbeJob.circle_id,
+      circle_name: bonusProbeJob.circle_name,
+      release_dates: Array.isArray(bonusProbeJob.release_dates) ? bonusProbeJob.release_dates : [],
+      elapsed_seconds: bonusProbeJob.elapsed_seconds,
+      error_message: bonusProbeJob.error_message,
+      meta: bonusProbeJob.meta || {},
+      visible: bonusProbeJob.visible,
+    }))
+  } catch (_) {}
+}
+
+function hydrateBonusProbeJobState() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CIRCLE_COMPLETION_BONUS_PROBE_JOB_KEY) || '{}')
+    const status = String(raw.status || '').trim()
+    if (isCancelledJobState(raw) || ['completed', 'failed', 'cancelled'].includes(status)) {
+      clearBonusProbeJobState()
+      return
+    }
+    bonusProbeJob.visible = Boolean(raw.job_id && raw.visible !== false)
+    bonusProbeJob.job_id = String(raw.job_id || '').trim()
+    bonusProbeJob.status = status
+    bonusProbeJob.progress = Number(raw.progress || 0)
+    bonusProbeJob.current_step = String(raw.current_step || '').trim()
+    bonusProbeJob.circle_id = String(raw.circle_id || '').trim()
+    bonusProbeJob.circle_name = String(raw.circle_name || '').trim()
+    bonusProbeJob.release_dates = Array.isArray(raw.release_dates) ? raw.release_dates.filter(Boolean) : []
+    bonusProbeJob.elapsed_seconds = Number(raw.elapsed_seconds || 0)
+    bonusProbeJob.error_message = String(raw.error_message || '').trim()
+    bonusProbeJob.meta = raw.meta && typeof raw.meta === 'object' ? raw.meta : {}
+    bonusProbeRunning.value = Boolean(bonusProbeJob.job_id && ['pending', 'processing'].includes(status))
+  } catch (_) {
+    clearBonusProbeJobState()
+  }
+}
+
+function clearBonusProbeJobState() {
+  bonusProbeJob.visible = false
+  bonusProbeJob.job_id = ''
+  bonusProbeJob.status = ''
+  bonusProbeJob.progress = 0
+  bonusProbeJob.current_step = ''
+  bonusProbeJob.circle_id = ''
+  bonusProbeJob.circle_name = ''
+  bonusProbeJob.release_dates = []
+  bonusProbeJob.elapsed_seconds = 0
+  bonusProbeJob.error_message = ''
+  bonusProbeJob.meta = {}
+  bonusProbeJob.result = {}
+  bonusProbeJob.progress_log = []
+  bonusProbeRunning.value = false
+  stopBonusProbeJobPolling()
+  stopBonusProbeJobAutoHide()
+  try {
+    localStorage.removeItem(CIRCLE_COMPLETION_BONUS_PROBE_JOB_KEY)
+  } catch (_) {}
+}
+
+function stopBonusProbeJobAutoHide() {
+  if (bonusProbeJobAutoHideTimer) {
+    window.clearTimeout(bonusProbeJobAutoHideTimer)
+    bonusProbeJobAutoHideTimer = null
+  }
+}
+
+function scheduleBonusProbeJobAutoHide(delayMs = 10000) {
+  stopBonusProbeJobAutoHide()
+  bonusProbeJobAutoHideTimer = window.setTimeout(() => {
+    clearBonusProbeJobState()
+  }, Math.max(0, Number(delayMs || 0)))
+}
+
 function stopRefreshJobAutoHide() {
   if (refreshJobAutoHideTimer) {
     window.clearTimeout(refreshJobAutoHideTimer)
@@ -3404,6 +3660,13 @@ function stopRefreshJobPolling() {
   }
 }
 
+function stopBonusProbeJobPolling() {
+  if (bonusProbeJobTimer) {
+    window.clearTimeout(bonusProbeJobTimer)
+    bonusProbeJobTimer = null
+  }
+}
+
 function stopIndexJobPolling() {
   if (indexJobTimer) {
     window.clearTimeout(indexJobTimer)
@@ -3481,6 +3744,27 @@ function applyRefreshJob(payload = {}) {
   persistRefreshJobState()
 }
 
+function applyBonusProbeJob(payload = {}) {
+  bonusProbeJob.visible = true
+  bonusProbeJob._retryCount = 0
+  bonusProbeJob.job_id = payload.job_id || bonusProbeJob.job_id || ''
+  bonusProbeJob.status = payload.status || ''
+  bonusProbeJob.progress = Number(payload.progress || 0)
+  bonusProbeJob.current_step = payload.current_step || ''
+  bonusProbeJob.circle_id = payload.circle_id || payload.result?.circle_id || bonusProbeJob.circle_id || ''
+  bonusProbeJob.circle_name = payload.circle_name || payload.result?.circle_name || bonusProbeJob.circle_name || detail.circle_name || ''
+  bonusProbeJob.release_dates = Array.isArray(payload.release_dates)
+    ? payload.release_dates.filter(Boolean)
+    : (Array.isArray(payload.meta?.release_dates) ? payload.meta.release_dates.filter(Boolean) : bonusProbeJob.release_dates)
+  bonusProbeJob.elapsed_seconds = Number(payload.elapsed_seconds || 0)
+  bonusProbeJob.error_message = payload.error_message || ''
+  bonusProbeJob.meta = payload.meta || {}
+  bonusProbeJob.result = payload.result || {}
+  bonusProbeJob.progress_log = Array.isArray(payload.progress_log) ? payload.progress_log : []
+  bonusProbeRunning.value = ['pending', 'processing'].includes(String(bonusProbeJob.status || ''))
+  persistBonusProbeJobState()
+}
+
 function patchIndexJobFromTaskEvent(payload = {}) {
   indexJobLastRealtimeAt = Date.now()
   indexJob.visible = true
@@ -3509,6 +3793,17 @@ function patchRefreshJobFromTaskEvent(payload = {}) {
     refreshJob.auto_hide_at = ''
   }
   persistRefreshJobState()
+}
+
+function patchBonusProbeJobFromTaskEvent(payload = {}) {
+  bonusProbeJobLastRealtimeAt = Date.now()
+  bonusProbeJob.visible = true
+  bonusProbeJob.job_id = String(payload.engine_task_id || payload.entity_id || bonusProbeJob.job_id || '')
+  bonusProbeJob.status = payload.status || bonusProbeJob.status || ''
+  bonusProbeJob.progress = Number(payload.progress ?? bonusProbeJob.progress ?? 0)
+  bonusProbeJob.current_step = payload.current_step || bonusProbeJob.current_step || ''
+  bonusProbeRunning.value = ['pending', 'processing'].includes(String(bonusProbeJob.status || ''))
+  persistBonusProbeJobState()
 }
 
 function isTerminalTaskStatus(status) {
@@ -3553,6 +3848,19 @@ function handleCircleTaskPayload(payload) {
         pollRefreshJob(taskId, { silentFinish: true })
       }
     }
+    return
+  }
+
+  if (bonusProbeJob.job_id && taskId === bonusProbeJob.job_id) {
+    patchBonusProbeJobFromTaskEvent(payload)
+    if (isTerminalTaskStatus(payload.status)) {
+      const key = `bonus:${taskId}:${payload.status}`
+      if (!handledCircleTerminalTasks.has(key)) {
+        handledCircleTerminalTasks.add(key)
+        stopBonusProbeJobPolling()
+        pollBonusProbeJob(taskId, { silentFinish: true })
+      }
+    }
   }
 }
 
@@ -3579,6 +3887,19 @@ function scheduleRefreshJobFallbackPoll(jobId) {
       return
     }
     pollRefreshJob(jobId, { silentFinish: true })
+  }, JOB_FALLBACK_POLL_INTERVAL_MS)
+}
+
+function scheduleBonusProbeJobFallbackPoll(jobId) {
+  stopBonusProbeJobPolling()
+  bonusProbeJobTimer = window.setTimeout(() => {
+    bonusProbeJobTimer = null
+    if (!bonusProbeJob.job_id || String(bonusProbeJob.job_id) !== String(jobId)) return
+    if (isJobRealtimeFresh(bonusProbeJobLastRealtimeAt)) {
+      scheduleBonusProbeJobFallbackPoll(jobId)
+      return
+    }
+    pollBonusProbeJob(jobId, { silentFinish: true })
   }, JOB_FALLBACK_POLL_INTERVAL_MS)
 }
 
@@ -3688,6 +4009,66 @@ async function pollRefreshJob(jobId, options = {}) {
   }
 }
 
+async function pollBonusProbeJob(jobId, options = {}) {
+  stopBonusProbeJobPolling()
+  const silentFinish = Boolean(options?.silentFinish)
+  try {
+    const result = await circleCompletionApi.getBonusProbeJobStatus(jobId)
+    applyBonusProbeJob(result)
+    if (result.status === 'completed') {
+      bonusProbeRunning.value = false
+      await Promise.all([refreshActiveCircle({ summaryOnly: false }), loadRecentCircles()])
+      const summary = result.summary || result.result || result.meta || {}
+      const hitCount = Number(summary.hit_count || result.meta?.hit_count || 0)
+      const insertedCount = Number(summary.inserted_count || result.meta?.inserted_count || 0)
+      bonusProbeJob.current_step = `特典探测完成，命中 ${hitCount} 个，写入 ${insertedCount} 个`
+      bonusProbeJob.status = 'completed'
+      bonusProbeJob.progress = 100
+      bonusProbeJob.error_message = ''
+      const probeCount = Number(summary.probe_count || result.meta?.probe_count || 0)
+      bonusProbeJob.meta = {
+        ...(bonusProbeJob.meta || {}),
+        probe_count: probeCount,
+        checked_probe_count: Number(summary.checked_probe_count || result.meta?.checked_probe_count || probeCount),
+        hit_count: hitCount,
+        inserted_count: insertedCount,
+      }
+      persistBonusProbeJobState()
+      scheduleBonusProbeJobAutoHide(10000)
+      if (!silentFinish) {
+        ElMessage.success(`特典补全完成，命中 ${hitCount} 个，写入 ${insertedCount} 个`)
+      }
+      return
+    }
+    if (result.status === 'failed') {
+      bonusProbeRunning.value = false
+      if (result.error_message === '用户取消' || result.current_step === '已取消') {
+        ElMessage.info('特典探测已取消')
+      } else if (!silentFinish) {
+        ElMessage.error(result.error_message || '特典探测失败')
+      }
+      clearBonusProbeJobState()
+      return
+    }
+    scheduleBonusProbeJobFallbackPoll(jobId)
+  } catch (error) {
+    bonusProbeRunning.value = false
+    if (error?.response?.status === 404) {
+      clearBonusProbeJobState()
+      return
+    }
+    bonusProbeJob._retryCount = (bonusProbeJob._retryCount || 0) + 1
+    if (bonusProbeJob._retryCount >= 10) {
+      clearBonusProbeJobState()
+      return
+    }
+    if (!silentFinish) {
+      ElMessage.error(error.response?.data?.detail || '查询特典探测进度失败')
+    }
+    scheduleBonusProbeJobFallbackPoll(jobId)
+  }
+}
+
 async function cancelIndexJob() {
   if (!indexJob.job_id || cancellingIndexJob.value) return
   cancellingIndexJob.value = true
@@ -3714,6 +4095,20 @@ async function cancelRefreshJob() {
     ElMessage.error(error.response?.data?.detail || '取消批量刷新失败')
   } finally {
     cancellingRefreshJob.value = false
+  }
+}
+
+async function cancelBonusProbeJob() {
+  if (!bonusProbeJob.job_id || cancellingBonusProbeJob.value) return
+  cancellingBonusProbeJob.value = true
+  try {
+    await api.task.cancel(bonusProbeJob.job_id)
+    clearBonusProbeJobState()
+    ElMessage.success('已发送取消请求')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '取消特典探测失败')
+  } finally {
+    cancellingBonusProbeJob.value = false
   }
 }
 
@@ -3825,7 +4220,9 @@ function rjcodeMatchesWork(item, rjcode) {
     item?.preferred_variant?.rjcode,
     ...(Array.isArray(item?.linked_rjcodes) ? item.linked_rjcodes : []),
   ]
-  return candidates.some(candidate => normalizeRjcode(candidate) === target)
+  if (candidates.some(candidate => normalizeRjcode(candidate) === target)) return true
+  return (Array.isArray(item?.bonus_works) ? item.bonus_works : [])
+    .some(bonus => rjcodeMatchesWork(bonus, target))
 }
 
 async function locateWorkPageInCircle(circleId, item, targetTab, rjcode) {
@@ -4069,6 +4466,325 @@ async function handleIndexOnlyNewWorks() {
     circleQuery: targetQuery,
     onlyNewWorks: true
   })
+}
+
+async function startBonusProbeForCircle(circleId, options = {}) {
+  const normalizedCircleId = String(circleId || '').trim()
+  if (!normalizedCircleId) {
+    ElMessage.warning('当前还没有选中社团')
+    return null
+  }
+  const releaseDates = Array.isArray(options.releaseDates)
+    ? options.releaseDates.map(normalizeReleaseDateForBonusProbe).filter(Boolean)
+    : []
+  const result = await circleCompletionApi.startBonusProbe({
+    circle_id: normalizedCircleId,
+    release_dates: releaseDates,
+    mode: 'deep',
+    gap_limit: 500,
+    batch_size: 500,
+    concurrency: 5,
+  })
+  return {
+    ...result,
+    circle_name: result.circle_name || options.circleName || '',
+    current_step: result.current_step || options.currentStep || '正在探测 DLsite 隐藏特典',
+  }
+}
+
+async function startBonusProbeForActiveCircle() {
+  const circleId = String(activeCircleId.value || detail.circle_id || '').trim()
+  if (!circleId) {
+    ElMessage.warning('当前还没有选中社团')
+    return
+  }
+  if (isBonusProbeJobActive.value) {
+    ElMessage.warning('已有特典探测任务在跑')
+    return
+  }
+  if (indexing.value || isRefreshJobActive.value) {
+    ElMessage.warning('社团索引或批量刷新正在运行')
+    return
+  }
+  bonusProbeRunning.value = true
+  try {
+    const result = await startBonusProbeForCircle(circleId, {
+      circleName: detail.circle_name || '',
+      currentStep: '正在探测 DLsite 隐藏特典',
+    })
+    if (result?.already_completed) {
+      bonusProbeRunning.value = false
+      ElMessage.info('当前社团的发售日已完成特典探测，无需重复查找')
+      return
+    }
+    applyBonusProbeJob({
+      ...result,
+    })
+    if (result.duplicate) {
+      ElMessage.info('已有同范围特典探测任务，已恢复进度')
+    }
+    if (result.job_id) scheduleBonusProbeJobFallbackPoll(result.job_id)
+  } catch (error) {
+    bonusProbeRunning.value = false
+    clearBonusProbeJobState()
+    ElMessage.error(error.response?.data?.detail || '启动特典补全失败')
+  }
+}
+
+async function getSelectedBonusProbeDates() {
+  const selectedCodes = selectedActiveCanonicalRJCodes.value
+    .map(code => String(code || '').trim())
+    .filter(Boolean)
+  if (!selectedCodes.length) {
+    return { dates: [], selectedCount: 0, skippedBonusCount: 0, skippedHasBonusCount: 0, skippedNoBonusCount: 0, skippedCompletedDateCount: 0, missingDateCount: 0 }
+  }
+
+  const releaseDatesByCode = {}
+  const bonusCodes = new Set()
+  const hasBonusCodes = new Set()
+  const noBonusCodes = new Set()
+  const completedDates = new Set()
+  for (const code of selectedCodes) {
+    const item = activeSelectableWorksByCanonical.value.get(code)
+    if (!item) continue
+    if (isBonusDisplayWork(item)) bonusCodes.add(code)
+    if (!isBonusDisplayWork(item) && isStrictTrue(item?.has_bonus)) hasBonusCodes.add(code)
+    const releaseDate = getWorkBonusProbeDate(item)
+    if (releaseDate) releaseDatesByCode[code] = releaseDate
+  }
+
+  try {
+    const result = await circleCompletionApi.getCircleWorkCodes(activeCircleId.value, buildCircleWorksQuery({ includePage: false }))
+    const releaseMap = result.release_dates_by_rjcode || {}
+    for (const code of selectedCodes) {
+      const normalizedDate = normalizeReleaseDateForBonusProbe(releaseMap[code])
+      if (normalizedDate) releaseDatesByCode[code] = normalizedDate
+    }
+    for (const code of result.bonus_rjcodes || []) {
+      const normalizedCode = String(code || '').trim()
+      if (normalizedCode) bonusCodes.add(normalizedCode)
+    }
+    for (const code of result.has_bonus_rjcodes || []) {
+      const normalizedCode = String(code || '').trim()
+      if (normalizedCode) hasBonusCodes.add(normalizedCode)
+    }
+    for (const code of result.no_bonus_rjcodes || []) {
+      const normalizedCode = String(code || '').trim()
+      if (normalizedCode) noBonusCodes.add(normalizedCode)
+    }
+    for (const date of result.completed_bonus_probe_dates || []) {
+      const normalizedDate = normalizeReleaseDateForBonusProbe(date)
+      if (normalizedDate) completedDates.add(normalizedDate)
+    }
+  } catch (_) {}
+
+  const dates = []
+  let missingDateCount = 0
+  let skippedBonusCount = 0
+  let skippedHasBonusCount = 0
+  let skippedNoBonusCount = 0
+  let skippedCompletedDateCount = 0
+  for (const code of selectedCodes) {
+    if (bonusCodes.has(code)) {
+      skippedBonusCount += 1
+      continue
+    }
+    if (hasBonusCodes.has(code)) {
+      skippedHasBonusCount += 1
+      continue
+    }
+    if (noBonusCodes.has(code)) {
+      skippedNoBonusCount += 1
+      continue
+    }
+    const releaseDate = normalizeReleaseDateForBonusProbe(releaseDatesByCode[code])
+    if (!releaseDate) {
+      missingDateCount += 1
+      continue
+    }
+    if (completedDates.has(releaseDate)) {
+      skippedCompletedDateCount += 1
+      continue
+    }
+    if (!dates.includes(releaseDate)) dates.push(releaseDate)
+  }
+
+  return {
+    dates,
+    selectedCount: selectedCodes.length,
+    skippedBonusCount,
+    skippedHasBonusCount,
+    skippedNoBonusCount,
+    skippedCompletedDateCount,
+    missingDateCount,
+  }
+}
+
+async function startBonusProbeForSelectedWorks() {
+  const circleId = String(activeCircleId.value || detail.circle_id || '').trim()
+  if (!circleId) {
+    ElMessage.warning('当前还没有选中社团')
+    return
+  }
+  if (!selectedActiveCanonicalRJCodes.value.length) {
+    ElMessage.warning('先选择要查特典的作品')
+    return
+  }
+  if (isBonusProbeJobActive.value) {
+    ElMessage.warning('已有特典探测任务在跑')
+    return
+  }
+  if (indexing.value || isRefreshJobActive.value) {
+    ElMessage.warning('社团索引或批量刷新正在运行')
+    return
+  }
+  bonusProbeRunning.value = true
+  try {
+    const {
+      dates,
+      selectedCount,
+      skippedBonusCount,
+      skippedHasBonusCount,
+      skippedNoBonusCount,
+      skippedCompletedDateCount,
+      missingDateCount,
+    } = await getSelectedBonusProbeDates()
+    if (!dates.length) {
+      bonusProbeRunning.value = false
+      const skippedText = [
+        skippedBonusCount ? `特典本体 ${skippedBonusCount}` : '',
+        skippedHasBonusCount ? `已有特典 ${skippedHasBonusCount}` : '',
+        skippedNoBonusCount ? `已确认无特典 ${skippedNoBonusCount}` : '',
+        skippedCompletedDateCount ? `已查日期 ${skippedCompletedDateCount}` : '',
+        missingDateCount ? `无明确日期 ${missingDateCount}` : '',
+      ].filter(Boolean).join('，')
+      ElMessage.warning(skippedText ? `选中作品无需重复查特典（${skippedText}）` : '选中作品里没有可用于查特典的原作发售日')
+      return
+    }
+    const result = await startBonusProbeForCircle(circleId, {
+      circleName: detail.circle_name || '',
+      releaseDates: dates,
+      currentStep: `正在探测选中作品的 ${dates.length} 个发售日`,
+    })
+    if (result?.already_completed) {
+      bonusProbeRunning.value = false
+      ElMessage.info('选中作品的发售日已完成特典探测，无需重复查找')
+      return
+    }
+    applyBonusProbeJob(result)
+    if (result.job_id) scheduleBonusProbeJobFallbackPoll(result.job_id)
+    const skippedText = [
+      skippedBonusCount ? `跳过特典本体 ${skippedBonusCount}` : '',
+      skippedHasBonusCount ? `已有特典 ${skippedHasBonusCount}` : '',
+      skippedNoBonusCount ? `已确认无特典 ${skippedNoBonusCount}` : '',
+      skippedCompletedDateCount ? `已查日期 ${skippedCompletedDateCount}` : '',
+      missingDateCount ? `无明确日期 ${missingDateCount}` : '',
+    ].filter(Boolean).join('，')
+    ElMessage.success(`已按 ${selectedCount} 个选中作品提交 ${dates.length} 个发售日特典查找${skippedText ? `（${skippedText}）` : ''}`)
+  } catch (error) {
+    bonusProbeRunning.value = false
+    clearBonusProbeJobState()
+    ElMessage.error(error.response?.data?.detail || '启动选中作品特典查找失败')
+  }
+}
+
+async function startBonusProbeFromToolbar() {
+  if (selectedActiveCanonicalRJCodes.value.length > 0) {
+    await startBonusProbeForSelectedWorks()
+    return
+  }
+  await startBonusProbeForActiveCircle()
+}
+
+async function startBonusProbeForVisibleCircles() {
+  if (batchBonusProbeRunning.value) return
+  if (indexing.value || isRefreshJobActive.value) {
+    ElMessage.warning('社团索引或批量刷新正在运行')
+    return
+  }
+  if (isBonusProbeJobActive.value) {
+    ElMessage.warning('已有特典探测任务在跑')
+    return
+  }
+
+  const visibleCircles = (Array.isArray(displayCircleList.value) ? displayCircleList.value : [])
+    .map(circle => ({
+      circle_id: String(circle?.circle_id || '').trim(),
+      circle_name: String(circle?.circle_name || '').trim(),
+    }))
+    .filter(circle => circle.circle_id)
+  if (!visibleCircles.length) {
+    ElMessage.warning('左侧当前没有可提交的社团')
+    return
+  }
+
+  let targets = visibleCircles
+  if (targets.length > 100) {
+    try {
+      await showSystemConfirm({
+        title: '批量查找特典',
+        message: `当前筛选出了 ${targets.length} 个社团，一次最多提交前 100 个。`,
+        description: '这些任务会进入后台任务队列；当前页面只显示正在查看社团的进度，其他社团可在任务中心查看。',
+        tone: 'warning',
+        confirmText: '提交前 100 个',
+      })
+      targets = targets.slice(0, 100)
+    } catch (_) {
+      return
+    }
+  }
+
+  batchBonusProbeRunning.value = true
+  let submittedCount = 0
+  let duplicateCount = 0
+  let alreadyCompletedCount = 0
+  let failedCount = 0
+  let activeCircleApplied = false
+  let firstErrorMessage = ''
+
+  try {
+    for (const circle of targets) {
+      try {
+        const result = await startBonusProbeForCircle(circle.circle_id, {
+          circleName: circle.circle_name,
+          currentStep: '正在探测 DLsite 隐藏特典',
+        })
+        if (result?.already_completed) {
+          alreadyCompletedCount += 1
+          continue
+        }
+        submittedCount += 1
+        if (result?.duplicate) duplicateCount += 1
+        if (!activeCircleApplied && String(circle.circle_id) === String(activeCircleId.value || detail.circle_id || '')) {
+          applyBonusProbeJob(result)
+          if (result.job_id) scheduleBonusProbeJobFallbackPoll(result.job_id)
+          activeCircleApplied = true
+        }
+      } catch (error) {
+        failedCount += 1
+        if (!firstErrorMessage) {
+          firstErrorMessage = error.response?.data?.detail || error.message || ''
+        }
+      }
+    }
+
+    if (!submittedCount && !alreadyCompletedCount) {
+      ElMessage.error(firstErrorMessage || '批量特典任务提交失败')
+      return
+    }
+    const suffix = [
+      alreadyCompletedCount ? `已查跳过 ${alreadyCompletedCount}` : '',
+      duplicateCount ? `复用 ${duplicateCount}` : '',
+      failedCount ? `失败 ${failedCount}` : '',
+    ].filter(Boolean).join('，')
+    ElMessage.success(
+      submittedCount > 0
+        ? `已提交 ${submittedCount} 个社团特典任务${suffix ? `（${suffix}）` : ''}`
+        : `当前批量社团都已完成特典探测${suffix ? `（${suffix}）` : ''}`
+    )
+  } finally {
+    batchBonusProbeRunning.value = false
+  }
 }
 
 async function startIndexCircleJob({ circleQuery: targetQuery, circleQueries: rawCircleQueries = [], onlyNewWorks = false } = {}) {
@@ -5215,6 +5931,18 @@ function getUploadBackgroundTargetLabel(task) {
   font-weight: 600;
   color: var(--circle-text-muted, #6b7280);
   font-size: 12px;
+}
+.sidebar-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.sidebar-head-actions .sidebar-refresh-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
 
 .sidebar-filter-stack {

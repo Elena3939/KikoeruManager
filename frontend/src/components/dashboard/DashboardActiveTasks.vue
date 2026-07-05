@@ -50,23 +50,21 @@
       <article
         v-for="(task, index) in pagedTasks"
         :key="task.id"
-        class="dash-fade-up group grid grid-cols-[40px_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-0 rounded-[10px] border border-slate-100 bg-white p-3 transition-colors duration-300 hover:border-slate-200 hover:bg-slate-50/50"
+        class="dash-fade-up group grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-0 rounded-[10px] border border-slate-100 bg-white p-3 transition-colors duration-300 hover:border-slate-200 hover:bg-slate-50/50"
         :style="{ animationDelay: `${index * 40}ms` }"
       >
-        <!-- 域图标 -->
-        <span
-          class="dash-task-icon-box mt-0.5 inline-flex h-10 w-10 flex-shrink-0 items-center justify-center transition-transform duration-300 group-hover:scale-110 group-hover:rotate-[-6deg]"
-        >
-          <component :is="taskIcon(task)" :size="20" :stroke-width="1.9" :class="taskIconClass(task)" />
-        </span>
-
         <!-- 主内容 -->
         <div class="min-w-0">
           <h3 class="m-0 truncate text-[13.5px] font-bold leading-tight text-slate-900">{{ task.title }}</h3>
           <p v-if="displaySubtitle(task)" class="m-0 mt-0.5 truncate text-[12px] text-slate-500">{{ displaySubtitle(task) }}</p>
 
-          <div class="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
-            <span class="inline-flex h-[22px] items-center gap-1 rounded-[6px] border border-slate-200 bg-white px-2 text-[11px] font-medium text-slate-600">
+          <div class="dash-task-meta-row mt-2 flex min-w-0 flex-nowrap items-center gap-1.5 overflow-hidden">
+            <span
+              class="dash-task-icon-box inline-flex h-[22px] w-[22px] flex-none items-center justify-center transition-transform duration-300 group-hover:scale-110 group-hover:rotate-[-6deg]"
+            >
+              <component :is="taskIcon(task)" :size="16" :stroke-width="1.9" :class="taskIconClass(task)" />
+            </span>
+            <span class="dash-task-domain-chip inline-flex h-[22px] flex-none items-center gap-1 rounded-[6px] border border-slate-200 bg-white px-2 text-[11px] font-medium text-slate-600">
               <component :is="taskIcon(task)" :size="11" :stroke-width="1.8" :class="taskChipIconClass(task)" />
               {{ taskDomainLabel(task) }}
             </span>
@@ -77,15 +75,14 @@
             >
               <span class="min-w-0 truncate">{{ taskBadgeLabel(task) }}</span>
             </span>
-          </div>
-
-          <div
-            v-if="task.current_step && !isTerminalStatus(task)"
-            class="dash-task-step-line mt-1.5 min-w-0 rounded-[6px] px-2 py-1 text-[11px] leading-snug"
-            :class="stepChipClass(task)"
-            :title="task.current_step"
-          >
-            {{ task.current_step }}
+            <span
+              v-if="task.current_step && !isTerminalStatus(task)"
+              class="dash-task-step-line inline-flex h-[22px] min-w-0 items-center rounded-[6px] px-2 text-[11px] leading-none"
+              :class="stepChipClass(task)"
+              :title="task.current_step"
+            >
+              <span class="min-w-0 truncate">{{ task.current_step }}</span>
+            </span>
           </div>
 
           <div v-if="showProgress(task)" class="dash-task-progress mt-2.5 flex items-center gap-2">
@@ -671,16 +668,25 @@ function formatRJ(value) {
   color: inherit;
 }
 
+.dash-task-meta-row {
+  min-height: 22px;
+}
+
+.dash-task-domain-chip {
+  white-space: nowrap;
+}
+
 .dash-task-badge-chip {
   min-width: 0;
   max-width: 100%;
-  flex: 1 1 280px;
+  flex: 0 1 auto;
 }
 
 .dash-task-step-line {
-  width: fit-content;
+  flex: 0 1 auto;
+  width: auto;
   max-width: 100%;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
 .dash-task-pager-btn {

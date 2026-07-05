@@ -5,13 +5,24 @@ from datetime import datetime
 import pytest
 
 from app.core import circle_completion_service as circle_module
+from app.core import dlsite_bonus_probe_service as bonus_probe_module
 from app.core.circle_completion_service import CircleCompletionService
-from app.models.database import CircleCatalog, CircleWork, LibraryOwnedWork, WorkCanonicalLink, WorkMetadata
+from app.models.database import (
+    CircleCatalog,
+    CircleWork,
+    DLsiteBonusOriginalProbeState,
+    DLsiteBonusProbeDate,
+    LibraryOwnedWork,
+    WorkCanonicalLink,
+    WorkMetadata,
+)
 
 
 @pytest.fixture
 def service(db_session, monkeypatch: pytest.MonkeyPatch) -> CircleCompletionService:
     monkeypatch.setattr(circle_module, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(bonus_probe_module, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(bonus_probe_module, "_dlsite_bonus_probe_service", None)
     return CircleCompletionService()
 
 
@@ -133,6 +144,34 @@ async def test_paged_missing_works_and_work_codes(service: CircleCompletionServi
     assert codes["downloadable_rjcodes"] == ["RJ01000002"]
     assert codes["requested_rjcodes"]["RJ01000002"][0] == "RJ01000002"
 
+    row_with_bonus = db_session.query(CircleWork).filter(CircleWork.canonical_rjcode == "RJ01000002").first()
+    row_with_bonus.has_bonus = True
+    db_session.add(
+        DLsiteBonusProbeDate(
+            maker_id="RGPAGE",
+            release_date="2025-03-01",
+            gap_limit=500,
+            mode="deep:date-range-v4",
+            status="completed",
+        )
+    )
+    db_session.add(
+        DLsiteBonusOriginalProbeState(
+            circle_id=circle_id,
+            maker_id="RGPAGE",
+            original_rjcode="RJ01000003",
+            release_date="2025-03-01",
+            status="no_bonus",
+            strategy_version="date-range-v4",
+        )
+    )
+    db_session.commit()
+    service.invalidate_completion_view_cache(circle_id)
+    probe_codes = await service.list_circle_completion_work_codes(circle_id, tab="missing", sort="release_asc")
+    assert probe_codes["has_bonus_rjcodes"] == ["RJ01000002"]
+    assert probe_codes["no_bonus_rjcodes"] == ["RJ01000003"]
+    assert probe_codes["completed_bonus_probe_dates"] == ["2025-03-01"]
+
     without_dl_only = await service.list_circle_completion_works(
         circle_id,
         tab="missing",
@@ -163,6 +202,92 @@ async def test_paged_missing_works_and_work_codes(service: CircleCompletionServi
     assert owned_location["matched"] is True
     assert owned_location["page"] == 1
     assert owned_location["canonical_rjcode"] == "RJ01000001"
+
+
+@pytest.mark.asyncio
+async def test_release_sort_uses_original_canonical_release_date(
+    service: CircleCompletionService,
+    db_session,
+) -> None:
+    circle_id = "circle_original_release_sort"
+    db_session.add(
+        CircleCatalog(
+            circle_id=circle_id,
+            circle_name="原作排序社团",
+            circle_name_normalized="原作排序社团",
+            source_mask="dlsite",
+            last_indexed_at=datetime(2026, 7, 4),
+        )
+    )
+    for index, (canonical, display, original_date, display_date, title) in enumerate([
+        ("RJ01010001", "RJ02010001", "2024-01-01", "2026-01-01", "翻译版日期更晚"),
+        ("RJ01010002", "RJ02010002", "2025-01-01", "2025-06-01", "原作日期更晚"),
+    ], start=1):
+        db_session.add(
+            CircleWork(
+                id=f"orig-sort-{index}",
+                circle_id=circle_id,
+                canonical_rjcode=canonical,
+                display_rjcode=display,
+                title=title,
+                maker_id="RGSORT",
+                maker_name="原作排序社团",
+                source_mask="dlsite",
+                linked_rjcodes=[canonical, display],
+                has_dlsite=True,
+                has_asmr_one=True,
+                asmr_available_rjcode=display,
+                image_url=f"https://img.dlsite.jp/modpub/images2/work/doujin/RJ01010000/{canonical}_img_main.jpg",
+                created_at=datetime(2026, 7, 4),
+                updated_at=datetime(2026, 7, 4),
+            )
+        )
+        for linked_rjcode, link_type, lang in [
+            (canonical, "original", "JPN"),
+            (display, "translation", "CHI_HANS"),
+        ]:
+            db_session.add(
+                WorkCanonicalLink(
+                    id=f"link-sort-{linked_rjcode}",
+                    canonical_rjcode=canonical,
+                    linked_rjcode=linked_rjcode,
+                    link_type=link_type,
+                    lang=lang,
+                )
+            )
+        db_session.add(
+            WorkMetadata(
+                rjcode=canonical,
+                work_name=f"{title} 原作",
+                maker_name="原作排序社团",
+                release_date=original_date,
+                cached_at=datetime(2026, 7, 4),
+                expires_at=datetime(2099, 1, 1),
+            )
+        )
+        db_session.add(
+            WorkMetadata(
+                rjcode=display,
+                work_name=f"{title} 简中",
+                maker_name="原作排序社团",
+                release_date=display_date,
+                cached_at=datetime(2026, 7, 4),
+                expires_at=datetime(2099, 1, 1),
+            )
+        )
+    db_session.commit()
+
+    page = await service.list_circle_completion_works(
+        circle_id,
+        tab="missing",
+        page=1,
+        page_size=10,
+        sort="release_desc",
+    )
+
+    assert [item["canonical_rjcode"] for item in page["items"]] == ["RJ01010002", "RJ01010001"]
+    assert [item["release_date"] for item in page["items"]] == ["2025-06-01", "2026-01-01"]
+    assert [item["original_release_date"] for item in page["items"]] == ["2025-01-01", "2024-01-01"]
 
 
 @pytest.mark.asyncio

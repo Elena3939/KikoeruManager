@@ -2054,6 +2054,70 @@ function circleIndexSourceIcon(sourceKey, item) {
   return circleIndexSourceTone(sourceKey, item) === 'check' ? CheckCircle2 : MinusCircle
 }
 
+function bonusProbeModel(row) {
+  if (!row || String(row.category || '').trim() !== 'circle_completion') return null
+  const d = safeDetail(row)
+  const sourceAction = String(d.source_action || '').trim()
+  const isBonusProbe = sourceAction === 'bonus_probe'
+    || sourceAction === 'new_release_bonus_probe'
+    || String(d.bonus_probe_status || '').trim()
+  if (!isBonusProbe) return null
+
+  const rjcodes = Array.isArray(d.bonus_hit_rjcodes)
+    ? d.bonus_hit_rjcodes.map((it) => normalizeRjcode(it)).filter(Boolean)
+    : []
+  const itemMap = new Map()
+  for (const item of Array.isArray(d.bonus_hit_items) ? d.bonus_hit_items : []) {
+    const rjcode = normalizeRjcode(item?.rjcode)
+    if (!rjcode) continue
+    itemMap.set(rjcode, {
+      rjcode,
+      title: String(item?.title || '').trim(),
+      releaseDate: formatReleaseDate(item?.release_date),
+      makerId: String(item?.maker_id || '').trim(),
+      source: String(item?.source || '').trim(),
+    })
+  }
+  for (const rjcode of rjcodes) {
+    if (!itemMap.has(rjcode)) itemMap.set(rjcode, { rjcode, title: '', releaseDate: '', makerId: '', source: '' })
+  }
+
+  const items = Array.from(itemMap.values())
+  const dateRows = (Array.isArray(d.bonus_date_results) ? d.bonus_date_results : [])
+    .map((it) => ({
+      releaseDate: formatReleaseDate(it?.release_date),
+      probeCount: Number(it?.probe_count || 0),
+      requestCount: Number(it?.request_count || 0),
+      hitCount: Number(it?.hit_count || 0),
+      insertedCount: Number(it?.inserted_count || 0),
+      skipped: Boolean(it?.skipped),
+      skipReason: String(it?.skip_reason || '').trim(),
+      hitRjcodes: Array.isArray(it?.hit_rjcodes) ? it.hit_rjcodes.map((rj) => normalizeRjcode(rj)).filter(Boolean) : [],
+    }))
+    .filter((it) => it.releaseDate || it.probeCount || it.hitCount || it.skipped)
+
+  const hitCount = Number(d.hit_count || items.length || 0)
+  const insertedCount = Number(d.inserted_count || 0)
+  const probeCount = Number(d.probe_count || 0)
+  const requestCount = Number(d.request_count || 0)
+  const releaseDateCount = Array.isArray(d.release_dates) ? d.release_dates.length : dateRows.length
+  const status = items.length || String(d.bonus_probe_status || '').trim() === 'hit' ? 'hit' : 'miss'
+  return {
+    status,
+    statusLabel: status === 'hit' ? '已找到特典' : '未找到特典',
+    sourceLabel: sourceAction === 'new_release_bonus_probe' ? '邮件新作探测' : '社团特典补全',
+    items,
+    dateRows,
+    metrics: [
+      { label: '命中', value: String(hitCount) },
+      { label: '写入', value: String(insertedCount) },
+      { label: '探测 RJ', value: String(probeCount) },
+      { label: '请求', value: String(requestCount) },
+      { label: '发售日', value: String(releaseDateCount) },
+    ],
+  }
+}
+
 // ===================== 邮件监听新作模型 =====================
 // DLsite 新作通知邮件主题里通常带「社团名」，
 // 后端旧记录里 detail.items / 子任务的 circle_name 可能为空，
@@ -2329,6 +2393,7 @@ export function useActivityDetailModels(rowRef) {
   }
 
   const emailWatcherModel = computed(() => emailWatcherBatchModel(rowRef.value))
+  const bonusProbe = computed(() => bonusProbeModel(rowRef.value))
 
   // entry section / row 折叠态
   const isEntrySectionExpanded = (key) => !collapsedEntrySectionKeys.value.has(String(key || ''))
@@ -2388,6 +2453,7 @@ export function useActivityDetailModels(rowRef) {
     setCircleRefreshFilter, setCircleRefreshPage,
     formatRefreshChangeValue, normalizeKikoeruTags,
     circleIndexSourceTone, circleIndexSourceIcon,
+    bonusProbe,
     // email watcher
     emailWatcherModel, handleEmailWatchCoverError,
     // navigation helpers (resolvers, actually do the navigation in parent)

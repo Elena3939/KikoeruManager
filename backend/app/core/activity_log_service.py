@@ -516,6 +516,107 @@ def _sanitize_for_db_json(value: Any, depth: int = 0) -> Any:
         return None
 
 
+def _bonus_probe_hit_rjcodes(meta: Dict[str, Any]) -> list[str]:
+    result = meta.get("bonus_probe_result") if isinstance(meta.get("bonus_probe_result"), dict) else {}
+    candidates: list[Any] = []
+    candidates.extend(list(result.get("hit_rjcodes") or []))
+    for item in list(result.get("dates") or []):
+        if isinstance(item, dict):
+            candidates.extend(list(item.get("hit_rjcodes") or []))
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in candidates:
+        rjcode = str(value or "").strip().upper()
+        if not rjcode or rjcode in seen:
+            continue
+        seen.add(rjcode)
+        out.append(rjcode)
+    return out
+
+
+def _bonus_probe_date_results(meta: Dict[str, Any]) -> list[dict[str, Any]]:
+    result = meta.get("bonus_probe_result") if isinstance(meta.get("bonus_probe_result"), dict) else {}
+    rows: list[dict[str, Any]] = []
+    for item in list(result.get("dates") or [])[:120]:
+        if not isinstance(item, dict):
+            continue
+        release_date = str(item.get("release_date") or "").strip()
+        if not release_date:
+            continue
+        rows.append({
+            "release_date": release_date,
+            "probe_count": int(item.get("probe_count") or 0),
+            "request_count": int(item.get("request_count") or 0),
+            "hit_count": int(item.get("hit_count") or 0),
+            "inserted_count": int(item.get("inserted_count") or 0),
+            "skipped": bool(item.get("skipped")),
+            "skip_reason": str(item.get("skip_reason") or "").strip() or None,
+            "hit_rjcodes": [
+                str(rj or "").strip().upper()
+                for rj in list(item.get("hit_rjcodes") or [])[:30]
+                if str(rj or "").strip()
+            ],
+        })
+    return rows
+
+
+def _resolve_bonus_probe_hit_items(hit_rjcodes: list[str]) -> list[dict[str, Any]]:
+    if not hit_rjcodes:
+        return []
+
+    fallback = [{"rjcode": rjcode} for rjcode in hit_rjcodes]
+    try:
+        from ..models.database import CircleWork, DLsiteBonusProbeCache, SessionLocal, WorkMetadata
+
+        db = SessionLocal()
+        try:
+            metadata_rows = {
+                str(row.rjcode or "").strip().upper(): row
+                for row in db.query(WorkMetadata).filter(WorkMetadata.rjcode.in_(hit_rjcodes)).all()
+            }
+            circle_rows = {
+                str(row.canonical_rjcode or row.display_rjcode or "").strip().upper(): row
+                for row in db.query(CircleWork).filter(CircleWork.canonical_rjcode.in_(hit_rjcodes)).all()
+            }
+            cache_rows = {
+                str(row.rjcode or "").strip().upper(): row
+                for row in db.query(DLsiteBonusProbeCache).filter(DLsiteBonusProbeCache.rjcode.in_(hit_rjcodes)).all()
+            }
+            items: list[dict[str, Any]] = []
+            for rjcode in hit_rjcodes:
+                metadata = metadata_rows.get(rjcode)
+                circle = circle_rows.get(rjcode)
+                cache = cache_rows.get(rjcode)
+                items.append({
+                    "rjcode": rjcode,
+                    "title": str(
+                        getattr(metadata, "work_name", None)
+                        or getattr(circle, "title", None)
+                        or getattr(cache, "title", None)
+                        or ""
+                    ).strip() or None,
+                    "release_date": str(
+                        getattr(metadata, "release_date", None)
+                        or getattr(cache, "release_date", None)
+                        or ""
+                    ).strip() or None,
+                    "maker_id": str(
+                        getattr(metadata, "maker_id", None)
+                        or getattr(circle, "maker_id", None)
+                        or getattr(cache, "maker_id", None)
+                        or ""
+                    ).strip() or None,
+                    "source": "dlsite_bonus_probe",
+                })
+            return items
+        finally:
+            db.close()
+    except Exception:
+        logger.debug("[操作记录] 回查特典命中作品信息失败", exc_info=True)
+        return fallback
+
+
 def write_activity_log(
     category: str,
     action: str,
@@ -549,6 +650,18 @@ def write_activity_log(
         or ""
     ).strip()[:120] or None
     parent_id_value = str(detail_clean.get("parent_id") or "").strip()[:36] or None
+    searchable_text = " ".join(
+        part
+        for part in (
+            summary or "",
+            sp or "",
+            rc or "",
+            task_id or "",
+            batch_id_value or "",
+            session_key_value or "",
+        )
+        if part
+    )[:12000]
 
     payload = {
         "id": str(uuid.uuid4()),
@@ -563,6 +676,7 @@ def write_activity_log(
         "batch_id": batch_id_value,
         "session_key": session_key_value,
         "parent_id": parent_id_value,
+        "searchable_text": searchable_text,
     }
     get_activity_log_writer().enqueue(payload)
 
@@ -700,6 +814,7 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
         TaskType.CIRCLE_COMPLETION_INDEX: CATEGORY_CIRCLE_COMPLETION,
         TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED: CATEGORY_CIRCLE_COMPLETION,
         TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH: CATEGORY_CIRCLE_COMPLETION,
+        TaskType.CIRCLE_COMPLETION_BONUS_PROBE: CATEGORY_CIRCLE_COMPLETION,
     }
     category = type_map.get(tt, CATEGORY_AUTO_IMPORT) if tt else CATEGORY_AUTO_IMPORT
 
@@ -1055,7 +1170,12 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             "duration_ms": duration_ms,
             "file_tree_items": file_tree_items,
         }
-    elif tt in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH}:
+    elif tt in {
+        TaskType.CIRCLE_COMPLETION_INDEX,
+        TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED,
+        TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH,
+        TaskType.CIRCLE_COMPLETION_BONUS_PROBE,
+    }:
         duration_ms = _duration_ms_for_task(task)
         detail = {
             "circle_id": str(meta.get("circle_id") or "").strip() or None,
@@ -1067,6 +1187,36 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             "session_id": str(meta.get("session_id") or "").strip() or None,
             "batch_id": str(meta.get("batch_id") or "").strip() or None,
         }
+        if tt == TaskType.CIRCLE_COMPLETION_BONUS_PROBE:
+            summary_payload = meta.get("bonus_probe_summary") if isinstance(meta.get("bonus_probe_summary"), dict) else {}
+            hit_rjcodes = _bonus_probe_hit_rjcodes(meta)
+            hit_items = _resolve_bonus_probe_hit_items(hit_rjcodes)
+            date_results = _bonus_probe_date_results(meta)
+            hit_count = int(summary_payload.get("hit_count") or len(hit_rjcodes) or 0)
+            inserted_count = int(summary_payload.get("inserted_count") or 0)
+            probe_count = int(summary_payload.get("probe_count") or 0)
+            request_count = int(summary_payload.get("request_count") or 0)
+            date_count = int(summary_payload.get("date_count") or len(meta.get("release_dates") or []) or len(date_results) or 0)
+            if st == TaskStatus.COMPLETED:
+                if hit_rjcodes:
+                    preview = "、".join(hit_rjcodes[:6])
+                    suffix = f"：{preview}" if preview else ""
+                    summary = f"特典补全完成，发售日 {date_count} 个，命中 {hit_count} 个，写入 {inserted_count} 个{suffix}"[:4000]
+                else:
+                    summary = f"特典补全完成，发售日 {date_count} 个，未找到特典，探测 {probe_count} 个 RJ"[:4000]
+            detail.update({
+                "maker_id": str(meta.get("maker_id") or "").strip() or None,
+                "mode": str(meta.get("mode") or "").strip() or None,
+                "release_dates": list(meta.get("release_dates") or [])[:100],
+                "probe_count": probe_count or None,
+                "hit_count": hit_count or None,
+                "inserted_count": inserted_count or None,
+                "request_count": request_count or None,
+                "bonus_probe_status": "hit" if hit_rjcodes else "miss",
+                "bonus_hit_rjcodes": hit_rjcodes,
+                "bonus_hit_items": hit_items,
+                "bonus_date_results": date_results,
+            })
     else:
         archive_input = _looks_like_archive_path(task.source_path)
         linked_preview = meta.get("linked_subtitle_preview") if isinstance(meta.get("linked_subtitle_preview"), dict) else {}
@@ -1133,9 +1283,18 @@ def _build_and_write_task_lifecycle_log(snapshot: Dict[str, Any]) -> None:
             "multi_rj_dispatch_failed": len(list(meta.get("multi_rj_dispatch_failures") or [])) or None,
         }
 
-    if tt in {TaskType.CIRCLE_COMPLETION_INDEX, TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED, TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH, TaskType.HTTP_DOWNLOAD, TaskType.BAIDU_NETDISK_DOWNLOAD}:
+    if tt in {
+        TaskType.CIRCLE_COMPLETION_INDEX,
+        TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED,
+        TaskType.CIRCLE_COMPLETION_DOWNLOAD_BATCH,
+        TaskType.CIRCLE_COMPLETION_BONUS_PROBE,
+        TaskType.HTTP_DOWNLOAD,
+        TaskType.BAIDU_NETDISK_DOWNLOAD,
+    }:
         detail["source_page"] = str(meta.get("source_page") or "").strip() or None
-        detail["source_action"] = str(meta.get("source_action") or "").strip() or None
+        detail["source_action"] = str(meta.get("source_action") or "").strip() or (
+            "bonus_probe" if tt == TaskType.CIRCLE_COMPLETION_BONUS_PROBE else None
+        )
         detail["source_label"] = str(meta.get("source_label") or "").strip() or None
         detail["business_key"] = str(meta.get("business_key") or "").strip() or None
         if tt == TaskType.CIRCLE_COMPLETION_REFRESH_SELECTED:
@@ -1849,6 +2008,7 @@ def log_subtitle_batch_start_result(payload: Dict[str, Any]) -> None:
     force_rerun = bool(payload.get("force_rerun"))
     skip_if_existing_subtitles = bool(payload.get("skip_if_existing_subtitles"))
     naming_strategy = str(payload.get("naming_strategy") or "audio").strip() or "audio"
+    failure_reason = str(payload.get("failure_reason") or "").strip()
 
     if created_count > 0 and skipped_total > 0:
         status = "partial_success"
@@ -1868,6 +2028,8 @@ def log_subtitle_batch_start_result(payload: Dict[str, Any]) -> None:
         summary_parts.append(f"创建爬取 {created_count} 个")
     if skipped_total > 0:
         summary_parts.append(f"跳过 {skipped_total} 个")
+    if failure_reason and created_count <= 0:
+        summary_parts.append(failure_reason)
     summary = f"批量创建字幕任务，{'，'.join(summary_parts) if summary_parts else '无有效结果'}"
 
     detail = {
@@ -1889,6 +2051,8 @@ def log_subtitle_batch_start_result(payload: Dict[str, Any]) -> None:
         "created_tasks": payload.get("created_tasks") or [],
         "skipped_items": payload.get("skipped_items") or [],
     }
+    if failure_reason:
+        detail["failure_reason"] = failure_reason
     write_activity_log(
         category=CATEGORY_SUBTITLE_CRAWL,
         action="batch_start",
