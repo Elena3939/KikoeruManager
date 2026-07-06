@@ -568,20 +568,20 @@
   </section>
 
   <!-- 社团补全：特典探测结果 -->
-  <section v-if="bonusProbe" class="panel bonus-probe-panel" :class="bonusProbe.status === 'hit' ? 'is-hit' : 'is-miss'">
+  <section v-if="bonusProbe" class="panel bonus-probe-panel" :class="`is-${bonusProbe.status}`">
     <div class="panel-head">
       <Sparkles :size="13" :stroke-width="2.4" />
       <span>特典探测结果</span>
       <span
-        class="ml-1 inline-flex items-center px-1.5 py-[2px] rounded text-[10px] font-semibold tracking-wide ring-1 ring-inset"
-        :class="bonusProbe.status === 'hit' ? 'bg-slate-50/80 text-slate-700 ring-slate-200/60' : 'bg-slate-50/80 text-slate-500 ring-slate-200/60'"
+        class="bonus-probe-status"
+        :class="`is-${bonusProbe.status}`"
       >{{ bonusProbe.statusLabel }}</span>
     </div>
     <div class="bonus-probe-summary">
       <div>
         <div class="bonus-probe-source">{{ bonusProbe.sourceLabel }}</div>
         <div class="bonus-probe-title">
-          {{ bonusProbe.status === 'hit' ? `找到 ${bonusProbe.items.length} 个特典` : '未找到符合条件的特典' }}
+          {{ bonusProbe.title }}
         </div>
       </div>
       <div class="bonus-probe-metrics">
@@ -600,18 +600,30 @@
         :key="`bonus-${item.rjcode}`"
         class="bonus-work-item"
       >
-        <div class="bonus-work-head">
-          <span class="bonus-work-rj">{{ item.rjcode }}</span>
-          <span class="bonus-work-name">{{ item.title || '未命名特典' }}</span>
+        <div class="bonus-work-cover" :class="{ 'is-empty': !item.coverUrl }">
+          <img
+            v-if="item.coverUrl"
+            :src="item.coverUrl"
+            :alt="item.title || item.rjcode"
+            loading="lazy"
+            @error="onBonusCoverError"
+          >
+          <ImageIcon :size="18" :stroke-width="2.2" />
         </div>
-        <div class="bonus-work-meta">
-          <span v-if="item.releaseDate">发售日 {{ item.releaseDate }}</span>
-          <span v-if="item.makerId">maker {{ item.makerId }}</span>
+        <div class="bonus-work-body">
+          <div class="bonus-work-head">
+            <span class="bonus-work-rj">{{ item.rjcode }}</span>
+            <span class="bonus-work-name">{{ item.title || '未命名特典' }}</span>
+          </div>
+          <div class="bonus-work-meta">
+            <span v-if="item.releaseDate">发售日 {{ item.releaseDate }}</span>
+            <span v-if="item.circleName || bonusProbe.circleName">社团 {{ item.circleName || bonusProbe.circleName }}</span>
+          </div>
         </div>
       </li>
     </ul>
     <div v-else class="bonus-probe-empty">
-      已完成本次特典筛选，但没有命中隐藏特典条件的 RJ。
+      {{ bonusProbe.emptyText }}
     </div>
     <div v-if="bonusProbe.dateRows.length" class="bonus-date-strip">
       <span
@@ -979,6 +991,12 @@ function onEmailWatchCoverError(event, item) {
   m.handleEmailWatchCoverError(event, item)
 }
 
+function onBonusCoverError(event) {
+  const img = event?.currentTarget
+  const box = img?.parentElement
+  if (box) box.classList.add('is-fallback')
+}
+
 // ===== Tailwind tone 映射 =====
 const SRC_TAG_TONE_CLASS = {
   info: 'bg-slate-50/80 text-slate-700 ring-slate-200/60',
@@ -1176,6 +1194,27 @@ function formatBytes(size) {
   background: rgba(248, 250, 252, 0.62);
 }
 
+.bonus-probe-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 7px;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(248, 250, 252, 0.86);
+  color: #475569;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  line-height: 1;
+}
+
+.bonus-probe-status.is-hit {
+  border-color: rgba(100, 116, 139, 0.3);
+  background: rgba(241, 245, 249, 0.9);
+  color: #334155;
+}
+
 .bonus-probe-summary {
   display: flex;
   align-items: flex-start;
@@ -1240,16 +1279,64 @@ function formatBytes(size) {
 }
 
 .bonus-work-item {
-  padding: 10px 12px;
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  min-height: 82px;
+  padding: 8px;
   border-radius: 10px;
-  background: #ffffff;
-  border: 1px solid rgba(15, 23, 42, 0.06);
-  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+  background: rgba(248, 250, 252, 0.72);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
 }
 
 .bonus-work-item:hover {
   border-color: rgba(148, 163, 184, 0.34);
   box-shadow: 0 8px 18px rgba(15, 23, 42, 0.05);
+}
+
+.bonus-work-cover {
+  position: relative;
+  flex: 0 0 66px;
+  width: 66px;
+  min-height: 66px;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(226, 232, 240, 0.55);
+  color: rgba(71, 85, 105, 0.56);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bonus-work-cover img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.bonus-work-cover svg {
+  opacity: 0;
+}
+
+.bonus-work-cover.is-empty svg,
+.bonus-work-cover.is-fallback svg {
+  opacity: 1;
+}
+
+.bonus-work-cover.is-fallback img {
+  display: none;
+}
+
+.bonus-work-body {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .bonus-work-head {
@@ -2094,6 +2181,49 @@ function formatBytes(size) {
 
 :global(html.kikoerumanager-dark) .bonus-date-strip {
   border-top-color: rgba(255, 255, 255, 0.08);
+}
+
+:global(html.dark) .bonus-probe-panel,
+:global(html.kikoerumanager-dark) .bonus-probe-panel {
+  background: #111216;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+:global(html.dark) .bonus-probe-status,
+:global(html.kikoerumanager-dark) .bonus-probe-status {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: #202126;
+  color: #f4f4f5;
+}
+
+:global(html.dark) .bonus-probe-source,
+:global(html.kikoerumanager-dark) .bonus-probe-source {
+  color: rgba(232, 236, 243, 0.76);
+}
+
+:global(html.dark) .bonus-work-item,
+:global(html.kikoerumanager-dark) .bonus-work-item {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: #17181d;
+  box-shadow: none;
+}
+
+:global(html.dark) .bonus-work-item:hover,
+:global(html.kikoerumanager-dark) .bonus-work-item:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: #1c1d23;
+}
+
+:global(html.dark) .bonus-work-cover,
+:global(html.kikoerumanager-dark) .bonus-work-cover {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: #202126;
+  color: rgba(232, 236, 243, 0.62);
+}
+
+:global(html.dark) .bonus-work-meta,
+:global(html.kikoerumanager-dark) .bonus-work-meta {
+  color: rgba(212, 212, 216, 0.72);
 }
 
 :global(html.kikoerumanager-dark) .highlight-row {

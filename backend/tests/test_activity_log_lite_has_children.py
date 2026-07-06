@@ -8,7 +8,7 @@
  - aggregator 后处理过的 child_row_count 行 → True
  - 只有 batch_id / session_id / session_key 横向分组键的孤立行 → False
 """
-from app.core.activity_log_lite import _has_potential_children
+from app.core.activity_log_lite import _has_potential_children, build_lite_item
 
 
 # === 场景 1：邮件监听一轮里 N 条「单 RJ 触发索引」（兄弟而不是子任务） ===
@@ -119,3 +119,33 @@ def test_empty_list_does_not_trigger():
     assert _has_potential_children({"rjcodes": []}, "fetch_check") is False
     assert _has_potential_children({"items": []}, "fetch_check") is False
     assert _has_potential_children({"child_rows": []}, "x") is False
+
+
+def test_circle_completion_bonus_probe_lite_keeps_source_action():
+    item = build_lite_item({
+        "id": "log-1",
+        "category": "circle_completion",
+        "action": "task_finished",
+        "status": "success",
+        "summary": "特典补全完成，发售日 1 个，命中 1 个，写入 1 个：RJ01637964",
+        "rjcode": None,
+        "task_id": "task-1",
+        "source_path": "circle-1",
+        "created_at": "2026-07-06T21:50:37",
+        "detail": {
+            "source_action": "bonus_probe",
+            "circle_name": "リリムワークス/兎月りりむ。",
+            "bonus_probe_status": "hit",
+            "hit_count": 1,
+            "inserted_count": 1,
+            "probe_count": 42,
+            "request_count": 1,
+            "maker_id": "RG00000",
+        },
+    })
+
+    assert item["detail"]["source_action"] == "bonus_probe"
+    assert item["detail"]["bonus_probe_status"] == "hit"
+    assert {"label": "命中", "value": "1", "tone": "success"} in item["chips"]
+    assert {"label": "写入", "value": "1", "tone": "info"} in item["chips"]
+    assert {"label": "探测", "value": "42", "tone": "neutral"} in item["chips"]

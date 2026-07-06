@@ -760,8 +760,35 @@ const PARTIAL_SUCCESS_KEYWORDS = [
   '转入问题作品列表'
 ]
 
+function bonusProbeDisplayState(row) {
+  if (!row || String(row.category || '') !== 'circle_completion') return ''
+  const detail = row.detail && typeof row.detail === 'object' ? row.detail : {}
+  const sourceAction = String(row.source_action || detail.source_action || '').trim()
+  if (sourceAction !== 'bonus_probe' && sourceAction !== 'new_release_bonus_probe') return ''
+
+  const raw = String(row.status || '').trim()
+  if (raw === 'cancelled' || raw === 'aborted') return 'cancelled'
+
+  const probeStatus = String(detail.bonus_probe_status || '').trim()
+  const hitCount = Number(detail.hit_count || 0)
+  const hitRjcodes = Array.isArray(detail.bonus_hit_rjcodes) ? detail.bonus_hit_rjcodes.length : 0
+  if (probeStatus === 'hit' || hitCount > 0 || hitRjcodes > 0) return 'success'
+
+  const summary = String(row.summary || '')
+  const noConclusion = summary.includes('超出预算')
+    || summary.includes('未产出无特典结论')
+    || summary.includes('未完成结论')
+  if (noConclusion) return 'incomplete'
+  if (probeStatus === 'miss') return 'incomplete'
+
+  return ''
+}
+
 function effectiveStatus(row) {
   if (!row) return ''
+  const bonusState = bonusProbeDisplayState(row)
+  if (bonusState) return bonusState
+
   const raw = String(row.status || '')
 
   // 批次父行的子任务状态感知（lite 路径专用）：
@@ -1491,9 +1518,17 @@ function humanAction(row) {
   }
   if (cat === 'circle_completion') {
     const detail = row.detail && typeof row.detail === 'object' ? row.detail : {}
-    const sourceAction = String(detail.source_action || '')
+    const sourceAction = String(row.source_action || detail.source_action || '')
     if (sourceAction === 'bonus_probe' || sourceAction === 'new_release_bonus_probe') {
       const label = sourceAction === 'new_release_bonus_probe' ? '新作特典探测' : '特典补全'
+      const bonusState = bonusProbeDisplayState(row)
+      if (bonusState === 'success') return label
+      if (bonusState === 'incomplete') {
+        const summary = String(row.summary || '')
+        return summary.includes('超出预算') || summary.includes('未产出无特典结论')
+          ? `${label}未完成`
+          : '未找到特典'
+      }
       if (status === 'success') return label
       if (status === 'failed') return `${label}失败`
       if (status === 'cancelled') return `${label}取消`

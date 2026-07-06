@@ -2483,3 +2483,227 @@
 - `frontend/src/components/circle/CircleWorksViewport.vue`：让卡片模式特典小卡图片层铺满按钮，并清除按钮与封面层的深灰背景。
 - `progress.md`：追加本轮清除特典小卡底部深灰边记录。
 - 回滚方式：还原 `frontend/src/components/circle/CircleWorksViewport.vue` 中本轮 `.circle-bonus-shelf.is-card .circle-bonus-gift`、`.circle-bonus-shelf.is-card .circle-bonus-gift-cover` 和暗色态透明背景覆盖相关 hunk，并删除本段进度记录。
+
+## 2026-07-06 - Task: 完善 DLsite ASMR 特典探测调度与完成口径
+### What was done
+- 将特典探测的发售日完成口径改为“同发售日所有原作都有 `has_bonus/no_bonus` 结论”，避免把 500RJ 批次完成误当作日期完成。
+- 本地隐藏特典命中线索改为优先确认但不直接跳过整天；命中后继续补完同日未判明原作。
+- 日期调度改为先处理本地命中线索，再按最早 / 最晚两端向中间推进。
+- DLsite 日期页、公开作品确认、候选 RJ 探测出现异常或扫描范围超预算时，不再写 `no_bonus`，只允许沉淀已经确认的命中线索。
+- `request_count` 改为 DLsite 批量请求次数，`checked_probe_count` 继续表示已确认 RJ 数，并把原作结论统计写入任务元数据。
+- 新增 `docs/dlsite-bonus-probe.md` 固化特典探测完成口径、调度规则、异常规则和进度字段。
+
+### Testing
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-postgresql.ps1 -StartOnly`：通过，PostgreSQL 已启动，配置健康。
+- `cd backend; $env:PYTHONPATH=(Get-Location).Path; @'...create_postgres_test_engine...'@ | .\venv\Scripts\python.exe -`：通过，测试库 `kikoerumanager_test` 返回 `select 1`。
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\dlsite_bonus_probe_service.py app\core\task_engine.py app\api\routes.py tests\test_dlsite_bonus_probe_service.py`：通过。
+- `cd backend; $env:PYTHONPATH=(Get-Location).Path; .\venv\Scripts\python.exe -m pytest tests\test_dlsite_bonus_probe_service.py -q --maxfail=1 --basetemp=.pytest-codex-bonus-probe-manual`：通过，22 passed；仅有既有 deprecation warning 和 `.pytest_cache` 写入 warning。
+- `git diff --check -- backend/app/core/dlsite_bonus_probe_service.py backend/app/core/task_engine.py backend/app/api/routes.py backend/tests/test_dlsite_bonus_probe_service.py`：通过，仅 LF/CRLF 提示。
+
+### Notes
+- `backend/app/core/dlsite_bonus_probe_service.py`：修正请求计数、发售日完成复用、日期调度、本地线索续扫、异常不产出 `no_bonus` 和原作结论统计。
+- `backend/app/core/task_engine.py`：特典探测任务 summary 增加原作结论统计字段。
+- `backend/app/api/routes.py`：启动特典探测时用 `circle_id` 参与完成日期复用判断，避免旧日期状态跳过未结论原作。
+- `backend/tests/test_dlsite_bonus_probe_service.py`：新增 500RJ 请求计数、本地线索调度、未结论原作不跳过、异常不写 `no_bonus` 的回归测试。
+- `docs/dlsite-bonus-probe.md`：新增 DLsite ASMR 特典探测开发说明。
+- `progress.md`：追加本轮特典探测调度完善记录。
+- 回滚方式：还原上述代码 / 测试 / 文档文件中本轮关于特典探测调度、完成口径、异常保护和进度字段的改动；删除本段进度记录。
+
+## 2026-07-06 - Task: 防止同日特典探测 RJ range 重复查询
+### What was done
+- 为 DLsite 特典候选 RJ 增加按数字排序的 range shard，每个 shard 带 `range_key`、起止 RJ 和数量。
+- 增加进程内 active lease，同一发售日被多个调度来源同时命中时，后进入的探测会跳过正在查询的 RJ，避免重复请求同一格。
+- 候选请求结束后在 `finally` 释放 lease，异常路径也不会永久占住 RJ。
+- 特典探测结果中保留 shard 摘要，方便后续排查同日并发是否覆盖了正确 RJ 区间。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\dlsite_bonus_probe_service.py tests\test_dlsite_bonus_probe_service.py`：通过。
+- `cd backend; $env:PYTHONPATH=(Get-Location).Path; .\venv\Scripts\python.exe -m pytest tests\test_dlsite_bonus_probe_service.py -q --maxfail=1 --basetemp=.pytest-codex-bonus-probe-range-lease`：通过，25 passed；仅有既有 deprecation warning 和 `.pytest_cache` 写入 warning。
+
+### Notes
+- `backend/app/core/dlsite_bonus_probe_service.py`：新增 candidate shard range key、active lease、释放逻辑，并让 `probe_date()` 使用 lease 后再请求候选 RJ。
+- `backend/tests/test_dlsite_bonus_probe_service.py`：新增同日重复 lease 被 active RJ 拦截、释放后可重新分片的回归测试。
+- `docs/dlsite-bonus-probe.md`：补充同一发售日并发命中时必须按 RJ range shard lease 的规则。
+- `progress.md`：追加本轮 range 去重记录。
+- 回滚方式：还原上述文件中本轮 candidate shard active lease、测试和文档说明相关 hunk，并删除本段进度记录。
+
+## 2026-07-06 - Task: 简化 DLsite 特典探测为 6 并发日期调度
+### What was done
+- 将 DLsite 特典探测默认并发从 5 调整为 6，并同步 API 请求模型与任务执行默认值。
+- 移除“本地线索优先 + 最早 / 最晚两端推进”的日期调度策略，改为按每个发售日的最小原作 RJ 升序排序。
+- `probe_circle_dates()` 改为 6 个日期 worker 并发消费发售日队列；每个 worker 领取一个发售日后完整跑完该发售日，再领取下一个。
+- 保留 RJ range active lease，继续防止同一发售日在重复触发或并发 worker 下重复请求同一 RJ 格子。
+- 更新 DLsite 特典探测开发说明，明确 6 并发、最小 RJ 排序和单日期完整执行规则。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\dlsite_bonus_probe_service.py tests\test_dlsite_bonus_probe_service.py`：通过。
+- `cd backend; $env:PYTHONPATH=(Get-Location).Path; .\venv\Scripts\python.exe -m pytest tests\test_dlsite_bonus_probe_service.py -q --maxfail=1 --basetemp=.pytest-codex-bonus-probe-six-workers`：通过。
+
+### Notes
+- `backend/app/core/dlsite_bonus_probe_service.py`：默认并发改为 6，日期排序改为最小原作 RJ 升序，发售日处理改为 6 worker 并发队列。
+- `backend/app/core/task_engine.py`：特典探测任务默认并发改为 6。
+- `backend/app/api/routes.py`：特典探测启动请求默认并发改为 6。
+- `backend/tests/test_dlsite_bonus_probe_service.py`：更新日期排序测试，并新增 6 日期 worker 并发回归测试。
+- `docs/dlsite-bonus-probe.md`：同步新的调度口径。
+- `progress.md`：追加本轮 6 并发调度简化记录。
+- 回滚方式：还原上述文件中本轮默认并发、日期排序、worker 队列、测试和文档说明相关 hunk，并删除本段进度记录。
+
+## 2026-07-06 - Task: 收束社团补全特典小卡金色发光
+### What was done
+- 去掉卡片模式特典小卡外层完整金色环边，避免视觉上变成一圈黄光晕。
+- 将特典小卡金色效果收束到贴边小范围柔光和轻微斜向闪光，保留附赠品的稀有感但降低黄色浓度。
+- 同步调整深色模式下的特典小卡发光强度，只影响卡片模式特典小卡，不改本体作品卡片和列表模式特典行。
+
+### Testing
+- 使用 in-app browser 打开 `http://localhost:5556/circle-completion?circle_id=RG62878` 实测：特典小卡存在，`::before` 外层边框宽度为 `0px`，背景不再是完整环形黄雾。
+- `cd frontend; npm run build`：通过。仅出现既有 Rollup pure annotation、lottie eval 和大 chunk 体积警告。
+
+### Notes
+- `frontend/src/components/circle/CircleWorksViewport.vue`：收束卡片模式特典小卡的金色发光、动画透明度和深色态发光强度。
+- `progress.md`：追加本轮特典小卡金色发光收束记录。
+- 回滚方式：还原 `frontend/src/components/circle/CircleWorksViewport.vue` 中本轮 `.circle-bonus-shelf.is-card .circle-bonus-gift`、伪元素、`bonusGiftRareHalo` / `bonusGiftSoftGleam` 和暗色态相关 hunk，并删除本段进度记录。
+
+## 2026-07-06 - Task: 增强社团补全特典小卡呼吸发光
+### What was done
+- 给卡片模式特典小卡增加边缘亮度呼吸动画，让金色柔光有周期性明暗变化。
+- 给特典小卡伪元素增加局部光点与背景位置变化，让效果更灵动一点，但不扩大成整圈黄光晕。
+- 加强斜向闪光的位移和透明度变化，并补齐深色模式下的背景尺寸覆盖，保证暗色态动画也生效。
+
+### Testing
+- 使用 in-app browser 打开 `http://localhost:5556/circle-completion?circle_id=RG62878` 实测：特典小卡 `animationName` 为 `bonusGiftCardBreath`，伪元素透明度、背景位置、边框颜色和阴影在 900ms 采样间有变化。
+- `cd frontend; npm run build`：通过。仅出现既有 Rollup pure annotation、lottie eval 和大 chunk 体积警告。
+
+### Notes
+- `frontend/src/components/circle/CircleWorksViewport.vue`：为卡片模式特典小卡增加呼吸发光、局部光点移动和深色态背景尺寸覆盖。
+- `progress.md`：追加本轮特典小卡呼吸发光记录。
+- 回滚方式：还原 `frontend/src/components/circle/CircleWorksViewport.vue` 中本轮 `bonusGiftCardBreath`、`bonusGiftRareHalo`、`bonusGiftSoftGleam`、小卡动画和暗色态背景尺寸相关 hunk，并删除本段进度记录。
+
+## 2026-07-06 - Task: 加强社团补全特典小卡呼吸发光强度
+### What was done
+- 提高卡片模式特典小卡呼吸动画的峰值亮度，并把动画周期从 3.6s 缩短到 2.8s，让亮暗变化更容易被注意到。
+- 增强局部金色光点、白色闪点和斜向闪光的透明度与位移幅度，但继续保持 `inset: -2px`，避免重新变成大范围黄光晕。
+- 同步提高深色模式下的金色柔光强度，使暗色页面里特典附属卡片更明显。
+
+### Testing
+- 使用 in-app browser 打开 `http://localhost:5556/circle-completion?circle_id=RG62878` 实测：峰值阴影约 `0.32 / 18px`，低谷约 `0.16 / 10px`，斜向闪光透明度在约 `0.36` 到 `0.84` 间变化。
+- `cd frontend; npm run build`：通过。仅出现既有 Rollup pure annotation、lottie eval 和大 chunk 体积警告。
+
+### Notes
+- `frontend/src/components/circle/CircleWorksViewport.vue`：加强卡片模式特典小卡的呼吸峰值、局部光点、斜向闪光和深色态柔光。
+- `progress.md`：追加本轮特典小卡发光强度加强记录。
+- 回滚方式：还原 `frontend/src/components/circle/CircleWorksViewport.vue` 中本轮呼吸动画时长、透明度、阴影、渐变强度和深色态覆盖相关 hunk，并删除本段进度记录。
+
+## 2026-07-06 - Task: 修复选中查特典误报已有特典
+### What was done
+- 修正选中作品查特典的跳过口径，不再把原作裸 `has_bonus=True` 直接当作“已有特典”。
+- 后端 `has_bonus_rjcodes` 改为先按页面同口径挂载特典子项，只有实际存在 `bonus_works` 的原作才返回“已有特典”。
+- 前端本地预判同步改为只认实际挂载的 `bonus_works`，避免页面没有特典小卡却提示“已有特典”。
+- 增加回归测试覆盖：原作 `has_bonus=True` 但没有特典子项时不跳过；补入真实特典子项后才跳过。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\circle_completion_service.py tests\test_circle_completion_paged_view.py`：通过。
+- `cd backend; $env:PYTHONPATH=(Get-Location).Path; .\venv\Scripts\python.exe -m pytest tests\test_circle_completion_paged_view.py -q --maxfail=1 --basetemp=.pytest-codex-circle-bonus-has-card`：通过，7 passed；仅有既有 deprecation / pytest cache warning。
+- `cd frontend; npm run build`：通过。仅出现既有 Rollup pure annotation、lottie eval 和大 chunk 体积警告。
+- `cmd /c start-all.bat`：已按项目规则重启本地服务，前后端重新加载修复后的代码。
+
+### Notes
+- `backend/app/core/circle_completion_service.py`：让 `list_circle_completion_work_codes()` 的 `has_bonus_rjcodes` 对齐页面特典挂载口径。
+- `backend/tests/test_circle_completion_paged_view.py`：新增孤立 `has_bonus` 不算已有特典、真实挂载特典才算已有特典的回归断言。
+- `frontend/src/views/CircleCompletion.vue`：选中查特典本地预判改为检查实际 `bonus_works`。
+- `progress.md`：追加本轮误报修复记录。
+- 回滚方式：还原上述文件中本轮 `has_bonus_rjcodes`、`hasAttachedBonusWorks()` 和测试断言相关 hunk，并删除本段进度记录。
+
+## 2026-07-06 - Task: 修复选中作品特典探测预算超限失败
+### What was done
+- 修正 DLsite 特典探测在 RJ 范围超出预算时直接抛异常的问题；现在会记录为 `incomplete`，保留已沉淀命中线索，但不写 `no_bonus`，整轮任务继续完成并提示未产出结论的发售日数量。
+- 选中作品触发特典探测时，前端按发售日传入选中的本体 RJ；后端以这些 RJ 为锚点构造邻近候选，不再被同一天其它公开 RJ 的巨大跨度拖进整日全范围探测。
+- 单作品 / 选中作品入口并发参数从 5 统一为 6，并继续使用 500RJ 批量请求单位。
+- 任务中心和前端完成提示增加 `incomplete_count`，有预算超限日期时显示 warning，而不是把任务打成失败或伪装成完全完成。
+- 更新 DLsite 特典探测文档，固化选中 RJ 锚点、预算超限 `incomplete`、进度字段口径。
+
+### Testing
+- `cd backend; .\venv\Scripts\python.exe -m py_compile app\core\dlsite_bonus_probe_service.py app\core\task_engine.py app\api\routes.py tests\test_dlsite_bonus_probe_service.py`：通过。
+- `cd backend; $env:PYTHONPATH=(Get-Location).Path; .\venv\Scripts\python.exe -m pytest tests\test_dlsite_bonus_probe_service.py -q --maxfail=1 --basetemp=.pytest-codex-bonus-probe-selected-scope`：通过，28 passed；仅有既有 deprecation / pytest cache warning。
+- `cd frontend; npm run build`：通过。仅出现既有 Rollup pure annotation、lottie eval 和大 chunk 体积警告。
+
+### Notes
+- `backend/app/core/dlsite_bonus_probe_service.py`：新增选中 RJ 锚点候选构造、预算超限 `incomplete` 返回、汇总 `incomplete_count`。
+- `backend/app/core/task_engine.py`：把选中 RJ 映射传入探测服务，并在任务完成文案 / summary 中保留预算超限提示。
+- `backend/app/api/routes.py`：特典探测启动接口接收并规范化 `selected_rjcodes_by_date`，业务 key 区分不同选中范围。
+- `backend/tests/test_dlsite_bonus_probe_service.py`：新增预算超限不失败、选中 RJ 锚点避开整日大范围并命中特典的回归测试。
+- `frontend/src/views/CircleCompletion.vue`：选中作品特典探测传入按发售日分组的 RJ，并发统一为 6，完成提示支持 `incomplete_count`。
+- `docs/dlsite-bonus-probe.md`：补充选中 RJ 锚点、预算超限 `incomplete` 和进度字段说明。
+- `progress.md`：追加本轮预算超限失败修复记录。
+- 回滚方式：还原上述文件中本轮 `selected_rjcodes_by_date`、`_build_anchor_edge_candidates()`、`incomplete_count`、预算超限返回和前端并发 / 提示相关 hunk，并删除本段进度记录。
+## 2026-07-06 - Task: 修复特典探测操作记录不显示
+### What was done
+- 修复操作记录 lite 列表误过滤社团补全特典探测任务的问题；普通社团索引生命周期行继续隐藏，`bonus_probe` / `new_release_bonus_probe` 生命周期行保留展示。
+- 为社团补全特典探测 lite 行补充精简 `detail.source_action` 和命中 / 写入 / 探测数量 chip，避免前端无法识别为“特典补全”。
+- 用真实数据库确认最近的 `source_action=bonus_probe` 记录会被新过滤条件选出。
+
+### Testing
+- `.venv\Scripts\python.exe -m py_compile backend/app/api/routes.py backend/app/core/activity_log_lite.py backend/tests/test_activity_log_lite_has_children.py`
+- 在 `backend/` 下执行 `..\.venv\Scripts\python.exe -m pytest tests/test_activity_log_lite_has_children.py tests/test_activity_log_service.py -q`，结果 `19 passed`。
+- 使用项目虚拟环境查询真实 PostgreSQL，确认最近 `circle_completion/task_finished/source_action=bonus_probe` 记录存在，并在新 lite 过滤条件下返回。
+
+### Notes
+- `backend/app/api/routes.py`：调整操作记录 lite SQL 过滤，保留特典探测生命周期行。
+- `backend/app/core/activity_log_lite.py`：为特典探测行补充展示 chip 和精简 detail。
+- `backend/tests/test_activity_log_lite_has_children.py`：新增特典探测 lite 行回归测试。
+- 回滚方式：还原以上三个文件的本轮改动；已有数据库中的操作记录无需回滚。
+## 2026-07-06 - Task: 优化操作记录特典探测详情暗色样式与特典卡片
+### What was done
+- 修复操作记录详情里特典探测结果在暗色模式下白底、深蓝文字不可读的问题，暗色选择器同时覆盖 `html.dark` 与 `kikoerumanager-dark`。
+- 将特典命中项从单行文字条改成带封面的作品卡片；封面缺失或加载失败时显示图标占位。
+- 特典命中项的来源信息改为优先显示社团名，不再在详情卡里展示 `maker RGxxxx`。
+- 后端新写入的特典命中详情补充 `circle_name` 与 `cover_url`，旧记录前端用 RJ 号兜底生成 DLsite 封面。
+- 重启项目时检测到 PostgreSQL 进程存在但无响应，已由 `start-all.bat` 自动重启 PostgreSQL 并恢复数据库连接。
+
+### Testing
+- `.venv\Scripts\python.exe -m py_compile backend/app/core/activity_log_service.py`
+- `frontend/` 下执行 `npm run build`，构建通过。
+- 重启 PostgreSQL 后，使用项目虚拟环境查询真实库 `ActivityLog.count()` 返回 `3502`，确认数据库连接恢复。
+- 在 `backend/` 下执行 `..\.venv\Scripts\python.exe -m pytest tests/test_activity_log_service.py tests/test_activity_log_lite_has_children.py -q`，结果 `19 passed`。
+- `git diff --check -- frontend/src/components/activity/ActivityRichBlock.vue frontend/src/composables/useActivityDetailModels.js backend/app/core/activity_log_service.py progress.md` 通过，仅有既有 LF/CRLF 提示。
+
+### Notes
+- `frontend/src/components/activity/ActivityRichBlock.vue`：重做特典探测结果暗色样式、状态徽章、封面卡片与社团名展示。
+- `frontend/src/composables/useActivityDetailModels.js`：为特典命中项补充社团名和封面 URL 兜底。
+- `backend/app/core/activity_log_service.py`：新写入的特典命中项补充社团名与封面 URL。
+- `progress.md`：追加本轮修改和验证记录。
+- 回滚方式：还原以上四个文件的本轮改动；若只回滚前端视觉，保留后端 `cover_url/circle_name` 字段不会影响旧页面。
+## 2026-07-06 - Task: 修正操作记录特典卡片灰底暗色样式
+### What was done
+- 修复操作记录详情弹窗通过 Teleport 挂到 `body` 下，导致之前 `#app .activity-detail-panel` 暗色选择器无法命中的问题。
+- 将特典命中卡片改为与面板融合的透明黑底，不再使用灰色独立底。
+- 将特典状态、统计指标、日期 pill、RJ chip 统一改为深底白字，避免浅色 badge 插在暗色弹窗里。
+- 使用 Playwright 实际打开 `http://localhost:5556/activity-history`，强制暗色主题并点开最新特典补全记录，确认计算样式已生效：特典卡片背景为透明、标题为白色、指标/日期为深底白字。
+
+### Testing
+- `frontend/` 下执行 `npm run build`，构建通过。
+- `git diff --check -- frontend/src/dark-mode.css frontend/src/components/activity/ActivityRichBlock.vue frontend/src/composables/useActivityDetailModels.js backend/app/core/activity_log_service.py progress.md` 通过，仅有既有 LF/CRLF 提示。
+- Playwright 实测详情弹窗：`.bonus-work-item` 背景 `rgba(0, 0, 0, 0)`，文字 `rgb(245, 247, 251)`；`.bonus-work-name` 文字 `rgb(255, 255, 255)`；统计和日期 pill 背景 `rgb(16, 17, 22)`。
+
+### Notes
+- `frontend/src/dark-mode.css`：补充 Teleport 弹窗可命中的全局暗色覆盖。
+- 回滚方式：移除本轮追加的 `activity-detail-panel` 特典探测暗色覆盖块即可。
+## 2026-07-06 - Task: 修正特典探测未找到记录的失败样式与详情灰底
+### What was done
+- 将社团补全特典探测的 `miss` / 预算超限未产出结论从展示层的失败态改为信息态；列表和详情标题显示“未找到特典”或“特典补全未完成”，不再显示失败红色。
+- 特典探测详情模型补充 `hit / miss / incomplete` 三态文案，空态改为按状态显示“未找到”或“未产出无特典结论”。
+- 去掉操作记录详情头部浅色渐变、关键字段行、统计块和特典空态的白底 / 灰底残留，暗色模式下统一为黑底白字并与弹窗融合。
+- 实际打开 `http://localhost:5556/activity-history` 验证 20:38 的特典补全预算超限记录：列表行为 `tone-info`，详情标题为“特典补全未完成”，详情头部背景为 `rgb(11, 12, 16)` 且无渐变，页面文本不含“失败”。
+
+### Testing
+- `frontend/` 下执行 `npm run build`，构建通过；仅出现既有 Rollup pure annotation、lottie eval 和大 chunk 体积警告。
+- `git diff --check` 通过；仅有既有 LF/CRLF 提示。
+- 使用内置浏览器实际验证操作记录页：20:38 特典补全记录 class 为 `activity-log-row tone-info`；详情头部计算样式 `backgroundColor=rgb(11, 12, 16)`、`backgroundImage=none`；详情标题为“特典补全未完成”，未显示失败文案。
+- 当前详情完整内容接口加载停在“详情加载中…”，页面日志有 `/notifications/unread-count` 与 `/watcher/status` 超时；本轮已验证列表和详情头部，完整富内容块依赖后端详情接口恢复后再目测。
+
+### Notes
+- `frontend/src/views/ActivityHistory.vue`：特典探测行的有效状态和列表动作文案改为按 `bonus_probe_status` / 预算超限语义显示。
+- `frontend/src/composables/useActivityDetailModels.js`：详情页有效状态和特典探测模型增加未完成结论文案。
+- `frontend/src/components/activity/ActivityRichBlock.vue`：特典探测结果组件使用模型提供的标题、空态和三态 class。
+- `frontend/src/dark-mode.css`：补充操作记录详情头部、关键字段、统计块和特典空态暗色覆盖。
+- `progress.md`：追加本轮修改和验证记录。
+- 回滚方式：还原上述四个前端文件中本轮 `bonusProbeDisplayState`、`incomplete` 文案、`activity-detail-panel` 暗色覆盖相关 hunk，并删除本段进度记录。

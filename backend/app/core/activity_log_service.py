@@ -167,6 +167,21 @@ def _extract_rjcode(value: Any) -> str:
     return ""
 
 
+def _build_dlsite_cover_url(rjcode: Any) -> str:
+    normalized = _extract_rjcode(rjcode)
+    if not normalized:
+        return ""
+    import re
+
+    matched = re.match(r"RJ(\d{6}|\d{8})$", normalized)
+    if not matched:
+        return ""
+    digits = matched.group(1)
+    folder_upper = ((int(digits) // 1000) + 1) * 1000
+    folder = f"RJ{folder_upper:08d}" if len(digits) == 8 else f"RJ{folder_upper:06d}"
+    return f"https://img.dlsite.jp/modpub/images2/work/doujin/{folder}/{normalized}_img_sam.jpg"
+
+
 def _infer_rjcode_from_payload(payload: Dict[str, Any]) -> str:
     candidates = [
         payload.get("rjcode"),
@@ -588,6 +603,16 @@ def _resolve_bonus_probe_hit_items(hit_rjcodes: list[str]) -> list[dict[str, Any
                 metadata = metadata_rows.get(rjcode)
                 circle = circle_rows.get(rjcode)
                 cache = cache_rows.get(rjcode)
+                circle_name = str(
+                    getattr(metadata, "maker_name", None)
+                    or getattr(circle, "maker_name", None)
+                    or ""
+                ).strip()
+                cover_url = str(
+                    getattr(metadata, "cover_url", None)
+                    or getattr(circle, "image_url", None)
+                    or ""
+                ).strip() or _build_dlsite_cover_url(rjcode)
                 items.append({
                     "rjcode": rjcode,
                     "title": str(
@@ -607,6 +632,8 @@ def _resolve_bonus_probe_hit_items(hit_rjcodes: list[str]) -> list[dict[str, Any
                         or getattr(cache, "maker_id", None)
                         or ""
                     ).strip() or None,
+                    "circle_name": circle_name or None,
+                    "cover_url": cover_url or None,
                     "source": "dlsite_bonus_probe",
                 })
             return items

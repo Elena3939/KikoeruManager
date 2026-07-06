@@ -5556,3 +5556,126 @@ html.kikoerumanager-dark body #app .library .lib-search-box :is(
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }
+
+/* 操作记录详情：特典探测结果必须跟暗色弹窗融合，不能使用浅灰/白色独立底。 */
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel .bonus-probe-panel {
+  background: #0b0c10 !important;
+  background-color: #0b0c10 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  color: #f5f7fb !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel :is(
+  .bonus-work-item,
+  .bonus-work-item:hover
+) {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  box-shadow: none !important;
+  color: #f5f7fb !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel .bonus-work-item:hover {
+  border-color: rgba(255, 255, 255, 0.2) !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel :is(
+  .bonus-work-name,
+  .bonus-probe-title,
+  .bonus-probe-metric b,
+  .bonus-date-pill b
+) {
+  color: #ffffff !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel :is(
+  .bonus-probe-source,
+  .bonus-work-meta
+) {
+  color: rgba(235, 238, 245, 0.76) !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel :is(
+  .bonus-probe-status,
+  .bonus-probe-metric,
+  .bonus-date-pill,
+  .bonus-date-more,
+  .bonus-work-rj
+) {
+  background: #101116 !important;
+  background-color: #101116 !important;
+  background-image: none !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: #f5f7fb !important;
+  box-shadow: none !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel .bonus-work-cover {
+  background: #101116 !important;
+  background-color: #101116 !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel .bonus-date-strip {
+  border-top-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel :is(
+  .detail-body,
+  .detail-head,
+  .detail-content,
+  .panel,
+  .bonus-probe-panel
+) {
+  background: #0b0c10 !important;
+  background-color: #0b0c10 !important;
+  background-image: none !important;
+  color: #f5f7fb !important;
+  box-shadow: none !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel :is(
+  .highlight-grid,
+  .highlight-row,
+  .metric-card,
+  .metric-card-v,
+  .bonus-probe-empty
+) {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel .highlight-row {
+  border-bottom-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel .highlight-row:hover {
+  background: rgba(255, 255, 255, 0.025) !important;
+  background-color: rgba(255, 255, 255, 0.025) !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel .bonus-probe-empty {
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  color: rgba(245, 247, 251, 0.76) !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel :is(
+  .highlight-label,
+  .metric-tail-k,
+  .metric-label-v
+) {
+  color: rgba(245, 247, 251, 0.58) !important;
+}
+
+:is(html.dark, html.kikoerumanager-dark, body.kikoerumanager-dark) .activity-detail-panel :is(
+  .highlight-value,
+  .metric-tail-v,
+  .metric-value-v
+) {
+  color: #f5f7fb !important;
+}
