@@ -6094,9 +6094,10 @@ class TaskEngine:
         maker_id = str(metadata.get('maker_id') or '').strip().upper()
         mode = str(metadata.get('mode') or 'normal').strip() or 'normal'
         release_dates = list(metadata.get('release_dates') or [])
+        selected_rjcodes_by_date = dict(metadata.get('selected_rjcodes_by_date') or {})
         gap_limit = int(metadata.get('gap_limit') or 500)
         batch_size = int(metadata.get('batch_size') or 200)
-        concurrency = int(metadata.get('concurrency') or 5)
+        concurrency = int(metadata.get('concurrency') or 6)
         if not circle_id:
             raise ValueError('缺少社团 ID')
 
@@ -6123,6 +6124,7 @@ class TaskEngine:
             batch_size=batch_size,
             concurrency=concurrency,
             job_id=task.id,
+            selected_rjcodes_by_date=selected_rjcodes_by_date,
             progress_callback=progress_callback,
             cancel_callback=task.is_cancelled,
         )
@@ -6138,15 +6140,33 @@ class TaskEngine:
                 'hit_count': int(result.get('hit_count') or 0),
                 'inserted_count': int(result.get('inserted_count') or 0),
                 'request_count': int(result.get('request_count') or 0),
+                'original_count': int(result.get('original_count') or 0),
+                'original_concluded_count': int(result.get('original_concluded_count') or 0),
+                'original_pending_count': int(result.get('original_pending_count') or 0),
+                'original_has_bonus_count': int(result.get('original_has_bonus_count') or 0),
+                'original_no_bonus_count': int(result.get('original_no_bonus_count') or 0),
+                'incomplete_count': int(result.get('incomplete_count') or 0),
+                'budget_reached': bool(result.get('budget_reached')),
             },
         })
         inserted_count = int(result.get('inserted_count') or 0)
+        incomplete_count = int(result.get('incomplete_count') or 0)
+        if incomplete_count:
+            append_progress_log(
+                f"特典探测完成但有 {incomplete_count} 个发售日超出 RJ 预算，未产出无特典结论",
+                100,
+                'warning',
+            )
         append_progress_log(
             f"特典探测完成：命中 {int(result.get('hit_count') or 0)} 个，写入 {inserted_count} 个",
             100,
             'success',
         )
-        task.update_progress(100, f"特典探测完成，写入 {inserted_count} 个")
+        task.update_progress(
+            100,
+            f"特典探测完成，写入 {inserted_count} 个"
+            + (f"，{incomplete_count} 个发售日未产出无特典结论" if incomplete_count else ""),
+        )
         task.complete()
 
     async def _process_local_library_upload(self, task: Task):

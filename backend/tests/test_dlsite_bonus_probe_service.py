@@ -1,3 +1,7 @@
+import asyncio
+
+import pytest
+
 from app.core.dlsite_bonus_probe_service import DLsiteBonusProbeService
 from app.core.dlsite_service import DLsiteProductProbeFeature
 from app.models.database import (
@@ -266,6 +270,82 @@ def test_split_reusable_release_dates_uses_current_strategy(db_session, monkeypa
     assert pending == ["2025-06-29", "2025-06-30"]
 
 
+def test_split_reusable_release_dates_keeps_date_when_original_state_pending(db_session, monkeypatch) -> None:
+    service = _service()
+    monkeypatch.setattr("app.core.dlsite_bonus_probe_service.SessionLocal", lambda: db_session)
+    db_session.add(
+        DLsiteBonusProbeDate(
+            maker_id="RG62878",
+            circle_id="circle-pending-state",
+            release_date="2025-06-28",
+            gap_limit=500,
+            mode="deep:date-range-v4",
+            status="completed",
+            probe_count=5800,
+        )
+    )
+    for rjcode in ["RJ01000001", "RJ01000002"]:
+        db_session.add(
+            CircleWork(
+                id=f"pending-{rjcode}",
+                circle_id="circle-pending-state",
+                canonical_rjcode=rjcode,
+                display_rjcode=rjcode,
+                maker_id="RG62878",
+                is_bonus_work=False,
+            )
+        )
+        db_session.add(
+            WorkMetadata(
+                rjcode=rjcode,
+                maker_id="RG62878",
+                release_date="2025-06-28",
+                is_bonus_work=False,
+            )
+        )
+    db_session.add(
+        DLsiteBonusOriginalProbeState(
+            circle_id="circle-pending-state",
+            maker_id="RG62878",
+            original_rjcode="RJ01000001",
+            release_date="2025-06-28",
+            status="no_bonus",
+            strategy_version=service.PROBE_STRATEGY_VERSION,
+        )
+    )
+    db_session.commit()
+
+    pending, skipped = service.split_reusable_release_dates(
+        circle_id="circle-pending-state",
+        maker_id="RG62878",
+        release_dates=["2025-06-28"],
+        mode="deep",
+        gap_limit=500,
+    )
+
+    assert pending == ["2025-06-28"]
+    assert skipped == []
+
+
+def test_order_probe_release_dates_uses_min_original_rj(monkeypatch) -> None:
+    service = _service()
+    monkeypatch.setattr(
+        service,
+        "_release_date_min_rj_map",
+        lambda **_kwargs: {
+            "2025-06-28": 10030,
+            "2025-06-29": 10010,
+            "2025-06-30": 10020,
+        },
+    )
+
+    assert service._order_probe_release_dates(
+        circle_id="circle-order",
+        maker_id="RG62878",
+        dates=["2025-06-30", "2025-06-28", "2025-06-29", "2025-07-01"],
+    ) == ["2025-06-29", "2025-06-30", "2025-06-28", "2025-07-01"]
+
+
 def test_list_indexed_release_dates_skips_no_bonus_original_state(db_session, monkeypatch) -> None:
     service = _service()
     monkeypatch.setattr("app.core.dlsite_bonus_probe_service.SessionLocal", lambda: db_session)
@@ -384,3 +464,340 @@ def test_select_original_work_for_bonus_ignores_other_maker_and_bonus_rows() -> 
     )
 
     assert selected is None
+
+
+@pytest.mark.asyncio
+async def test_load_or_probe_features_counts_500_rj_batch_as_one_request(monkeypatch) -> None:
+    service = _service()
+    monkeypatch.setattr(service, "_load_cached_features_sync", lambda _normalized: {})
+    monkeypatch.setattr(service, "_upsert_cache_features_sync", lambda _features: None)
+
+    async def fake_probe(rjcodes, *, concurrency):
+        return {
+            rjcode: DLsiteProductProbeFeature(workno=rjcode, exists=False, probe_status="missing")
+            for rjcode in rjcodes
+        }
+
+    service.dlsite_service.probe_product_info_features = fake_probe
+    rjcodes = [f"RJ{index:08d}" for index in range(1, 1201)]
+
+    _features, cached_count, request_count = await service._load_or_probe_features(
+        rjcodes,
+        batch_size=500,
+        concurrency=6,
+    )
+
+    assert cached_count == 0
+    assert request_count == 3
+
+
+@pytest.mark.asyncio
+async def test_probe_circle_dates_runs_six_date_workers(monkeypatch) -> None:
+    service = _service()
+    monkeypatch.setattr(
+        service,
+        "resolve_circle_context",
+        lambda circle_id, maker_id="": {
+            "circle_id": circle_id,
+            "circle_name": "测试社团",
+            "maker_id": maker_id or "RG62878",
+        },
+    )
+    monkeypatch.setattr(service, "_order_probe_release_dates", lambda **kwargs: list(kwargs["dates"]))
+
+    active = 0
+    max_active = 0
+    lock = asyncio.Lock()
+
+    async def fake_probe_date(**kwargs):
+        nonlocal active, max_active
+        async with lock:
+            active += 1
+            max_active = max(max_active, active)
+        await asyncio.sleep(0.05)
+        async with lock:
+            active -= 1
+        return {
+            "release_date": kwargs["release_date"],
+            "probe_count": 1,
+            "request_count": 1,
+            "hit_count": 0,
+            "inserted_count": 0,
+        }
+
+    monkeypatch.setattr(service, "probe_date", fake_probe_date)
+
+    result = await service.probe_circle_dates(
+        circle_id="circle-six-workers",
+        maker_id="RG62878",
+        release_dates=[f"2025-06-{day:02d}" for day in range(1, 9)],
+        concurrency=6,
+    )
+
+    assert max_active == 6
+    assert result["date_count"] == 8
+    assert [item["release_date"] for item in result["dates"]] == [f"2025-06-{day:02d}" for day in range(1, 9)]
+
+
+@pytest.mark.asyncio
+async def test_probe_date_error_does_not_write_original_no_bonus_state(db_session, monkeypatch) -> None:
+    service = _service()
+    monkeypatch.setattr("app.core.dlsite_bonus_probe_service.SessionLocal", lambda: db_session)
+    db_session.add(
+        CircleWork(
+            id="error-original",
+            circle_id="circle-error-probe",
+            canonical_rjcode="RJ01000001",
+            display_rjcode="RJ01000001",
+            maker_id="RG62878",
+            is_bonus_work=False,
+        )
+    )
+    db_session.add(
+        WorkMetadata(
+            rjcode="RJ01000001",
+            maker_id="RG62878",
+            release_date="2025-06-28",
+            is_bonus_work=False,
+        )
+    )
+    db_session.commit()
+
+    monkeypatch.setattr(service, "_load_reusable_hidden_bonus_features", lambda **_kwargs: [])
+
+    async def fake_public_worknos(*_args, **_kwargs):
+        return ["RJ01000001"], ["RJ01000001"], "ok"
+
+    async def fake_load_or_probe(rjcodes, **_kwargs):
+        return {
+            "RJ01000001": DLsiteProductProbeFeature(
+                workno="RJ01000001",
+                exists=False,
+                probe_status="error",
+                error_message="HTTP 429",
+            )
+        }, 0, 1
+
+    monkeypatch.setattr(service, "_load_public_worknos_for_date", fake_public_worknos)
+    monkeypatch.setattr(service, "_load_or_probe_features", fake_load_or_probe)
+
+    with pytest.raises(RuntimeError, match="未产出特典结论"):
+        await service.probe_date(
+            circle_id="circle-error-probe",
+            maker_id="RG62878",
+            release_date="2025-06-28",
+            mode="deep",
+        )
+
+    states = db_session.query(DLsiteBonusOriginalProbeState).all()
+    date_row = db_session.query(DLsiteBonusProbeDate).first()
+    assert states == []
+    assert date_row.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_probe_date_budget_reached_returns_incomplete_without_no_bonus_state(db_session, monkeypatch) -> None:
+    service = _service()
+    service.DEFAULT_DATE_RANGE_LIMIT = 2
+    service.DEFAULT_CIRCLE_EDGE_WINDOW = 2
+    monkeypatch.setattr("app.core.dlsite_bonus_probe_service.SessionLocal", lambda: db_session)
+    db_session.add(
+        CircleWork(
+            id="budget-original",
+            circle_id="circle-budget-probe",
+            canonical_rjcode="RJ01000003",
+            display_rjcode="RJ01000003",
+            maker_id="RG62878",
+            is_bonus_work=False,
+        )
+    )
+    db_session.add(
+        WorkMetadata(
+            rjcode="RJ01000003",
+            maker_id="RG62878",
+            release_date="2025-06-11",
+            is_bonus_work=False,
+        )
+    )
+    db_session.commit()
+
+    monkeypatch.setattr(service, "_load_reusable_hidden_bonus_features", lambda **_kwargs: [])
+
+    async def fake_public_worknos(*_args, **_kwargs):
+        return ["RJ01000001", "RJ02000000"], ["RJ01000001", "RJ02000000"], "ok"
+
+    async def fake_load_or_probe(rjcodes, **_kwargs):
+        return {
+            rjcode: DLsiteProductProbeFeature(
+                workno=rjcode,
+                exists=True,
+                probe_status="ok",
+                maker_id="RG62878",
+                release_date="2025-06-11",
+                work_type="SOU",
+                price=770,
+            )
+            for rjcode in rjcodes
+        }, 0, 1
+
+    monkeypatch.setattr(service, "_load_public_worknos_for_date", fake_public_worknos)
+    monkeypatch.setattr(service, "_load_or_probe_features", fake_load_or_probe)
+
+    result = await service.probe_date(
+        circle_id="circle-budget-probe",
+        maker_id="RG62878",
+        release_date="2025-06-11",
+        mode="deep",
+        gap_limit=2,
+        batch_size=10,
+    )
+
+    states = db_session.query(DLsiteBonusOriginalProbeState).all()
+    date_row = db_session.query(DLsiteBonusProbeDate).first()
+    assert states == []
+    assert result["incomplete"] is True
+    assert result["budget_reached"] is True
+    assert date_row.status == "incomplete"
+
+
+@pytest.mark.asyncio
+async def test_probe_date_selected_rj_scope_avoids_large_date_range_budget(db_session, monkeypatch) -> None:
+    service = _service()
+    service.DEFAULT_DATE_RANGE_LIMIT = 2
+    service.DEFAULT_CIRCLE_EDGE_WINDOW = 2
+    monkeypatch.setattr("app.core.dlsite_bonus_probe_service.SessionLocal", lambda: db_session)
+    db_session.add(
+        CircleWork(
+            id="selected-original",
+            circle_id="circle-selected-probe",
+            canonical_rjcode="RJ01000003",
+            display_rjcode="RJ01000003",
+            maker_id="RG62878",
+            is_bonus_work=False,
+        )
+    )
+    db_session.add(
+        WorkMetadata(
+            rjcode="RJ01000003",
+            maker_id="RG62878",
+            release_date="2025-06-11",
+            is_bonus_work=False,
+        )
+    )
+    db_session.commit()
+
+    monkeypatch.setattr(service, "_load_reusable_hidden_bonus_features", lambda **_kwargs: [])
+
+    async def fake_public_worknos(*_args, **_kwargs):
+        return ["RJ01000001", "RJ02000000"], ["RJ01000001", "RJ02000000"], "ok"
+
+    async def fake_load_or_probe(rjcodes, **_kwargs):
+        features = {}
+        for rjcode in rjcodes:
+            is_bonus = rjcode == "RJ01000004"
+            features[rjcode] = DLsiteProductProbeFeature(
+                workno=rjcode,
+                exists=is_bonus or rjcode in {"RJ01000001", "RJ02000000"},
+                probe_status="ok" if is_bonus or rjcode in {"RJ01000001", "RJ02000000"} else "missing",
+                maker_id="RG62878" if is_bonus or rjcode in {"RJ01000001", "RJ02000000"} else "",
+                release_date="2025-06-11" if is_bonus or rjcode in {"RJ01000001", "RJ02000000"} else "",
+                work_type="SOU" if is_bonus or rjcode in {"RJ01000001", "RJ02000000"} else "",
+                price=0 if is_bonus else 770,
+                is_free=is_bonus,
+                is_oly=is_bonus,
+                is_hidden_bonus_audio=is_bonus,
+                title="Hidden Bonus" if is_bonus else "",
+            )
+        return features, 0, 1
+
+    monkeypatch.setattr(service, "_load_public_worknos_for_date", fake_public_worknos)
+    monkeypatch.setattr(service, "_load_or_probe_features", fake_load_or_probe)
+
+    result = await service.probe_date(
+        circle_id="circle-selected-probe",
+        maker_id="RG62878",
+        release_date="2025-06-11",
+        mode="deep",
+        gap_limit=2,
+        batch_size=10,
+        target_rjcodes=["RJ01000003"],
+    )
+
+    state = db_session.query(DLsiteBonusOriginalProbeState).first()
+    date_row = db_session.query(DLsiteBonusProbeDate).first()
+    assert result["selected_scope"] is True
+    assert result["target_rjcodes"] == ["RJ01000003"]
+    assert result["budget_reached"] is False
+    assert result["hit_rjcodes"] == ["RJ01000004"]
+    assert state.original_rjcode == "RJ01000003"
+    assert state.status == "has_bonus"
+    assert date_row.status == "completed"
+
+
+def test_split_candidate_shards_keeps_same_day_ranges_non_overlapping() -> None:
+    service = _service()
+    candidates = ["RJ01000005", "RJ01000001", "RJ01000003", "RJ01000002", "RJ01000004"]
+
+    shards = service._split_candidate_shards(candidates, 2)
+
+    assert [shard["rjcodes"] for shard in shards] == [
+        ["RJ01000001", "RJ01000002"],
+        ["RJ01000003", "RJ01000004"],
+        ["RJ01000005"],
+    ]
+    assert [shard["range_key"] for shard in shards] == [
+        "RJ01000001:RJ01000002",
+        "RJ01000003:RJ01000004",
+        "RJ01000005:RJ01000005",
+    ]
+    seen = [rjcode for shard in shards for rjcode in shard["rjcodes"]]
+    assert seen == sorted(set(candidates))
+    assert len(seen) == len(set(seen))
+
+
+def test_exclude_unprobeable_candidates_skips_cached_active_and_error_cooldown(monkeypatch) -> None:
+    service = _service()
+    cached = {
+        "RJ01000001": DLsiteProductProbeFeature(workno="RJ01000001", exists=True, probe_status="ok"),
+        "RJ01000002": DLsiteProductProbeFeature(workno="RJ01000002", exists=False, probe_status="missing"),
+        "RJ01000003": DLsiteProductProbeFeature(workno="RJ01000003", exists=False, probe_status="error"),
+    }
+    monkeypatch.setattr(service, "_load_cached_features_sync", lambda _values: cached)
+
+    selected, stats = service._exclude_unprobeable_candidates(
+        ["RJ01000001", "RJ01000002", "RJ01000003", "RJ01000004", "RJ01000005", "RJ01000005"],
+        active_rjcodes=["RJ01000004"],
+    )
+
+    assert selected == ["RJ01000005"]
+    assert stats == {"input": 5, "cached": 2, "active": 1, "cooldown": 1, "selected": 1}
+
+
+@pytest.mark.asyncio
+async def test_candidate_shard_lease_prevents_same_day_duplicate_ranges(monkeypatch) -> None:
+    service = _service()
+    monkeypatch.setattr(service, "_load_cached_features_sync", lambda _values: {})
+    candidates = [f"RJ0100000{index}" for index in range(1, 7)]
+
+    first_shards, first_stats = await service._lease_candidate_shards(candidates, shard_size=2)
+    second_shards, second_stats = await service._lease_candidate_shards(candidates, shard_size=2)
+
+    assert [shard["range_key"] for shard in first_shards] == [
+        "RJ01000001:RJ01000002",
+        "RJ01000003:RJ01000004",
+        "RJ01000005:RJ01000006",
+    ]
+    assert second_shards == []
+    assert first_stats["leased"] == 6
+    assert second_stats["active"] == 6
+    assert second_stats["leased"] == 0
+
+    await service._release_candidate_shards(first_shards)
+    third_shards, third_stats = await service._lease_candidate_shards(candidates, shard_size=3)
+
+    assert [shard["range_key"] for shard in third_shards] == [
+        "RJ01000001:RJ01000003",
+        "RJ01000004:RJ01000006",
+    ]
+    assert third_stats["leased"] == 6
+    await service._release_candidate_shards(third_shards)

@@ -35,13 +35,15 @@ class DLsiteBonusProbeService:
     DEFAULT_CIRCLE_EDGE_WINDOW = 2000
     DEFAULT_DATE_RANGE_LIMIT = 80000
     DEFAULT_BATCH_SIZE = 500
-    DEFAULT_CONCURRENCY = 5
+    DEFAULT_CONCURRENCY = 6
     DEFAULT_CACHE_LOOKUP_BATCH_SIZE = 2000
     DEFAULT_CACHE_WRITE_BATCH_SIZE = 500
     PROBE_STRATEGY_VERSION = "date-range-v4"
 
     def __init__(self) -> None:
         self.dlsite_service = get_dlsite_service()
+        self._active_probe_rjcodes: set[str] = set()
+        self._active_probe_lock = asyncio.Lock()
 
     def normalize_rjcode(self, value: Any) -> str:
         text = str(value or "").strip().upper()
@@ -255,10 +257,131 @@ class DLsiteBonusProbeService:
         ]
         return candidates, range_count, False
 
+    def _build_anchor_edge_candidates(
+        self,
+        anchor_worknos: Sequence[str],
+        *,
+        edge_window_limit: int,
+    ) -> List[str]:
+        parsed: List[Tuple[int, int, str]] = []
+        seen: set[str] = set()
+        for workno in anchor_worknos or []:
+            normalized = self.normalize_rjcode(workno)
+            if not normalized or normalized in seen:
+                continue
+            number = self._rj_number(normalized)
+            if not number:
+                continue
+            seen.add(normalized)
+            parsed.append((number[0], number[1], normalized))
+        if not parsed:
+            return []
+
+        edge_window = max(1, int(edge_window_limit or self.DEFAULT_CIRCLE_EDGE_WINDOW))
+        anchor_numbers = {item[0] for item in parsed}
+        candidates_by_number: Dict[int, str] = {}
+        for anchor_number, width, _ in parsed:
+            for offset in range(1, edge_window + 1):
+                for candidate_number in (anchor_number - offset, anchor_number + offset):
+                    if candidate_number <= 0 or candidate_number in anchor_numbers:
+                        continue
+                    candidates_by_number.setdefault(candidate_number, f"RJ{candidate_number:0{width}d}")
+        return [candidates_by_number[number] for number in sorted(candidates_by_number)]
+
     def _chunk(self, values: Sequence[str], size: int) -> Iterable[List[str]]:
         safe_size = max(1, int(size or self.DEFAULT_BATCH_SIZE))
         for index in range(0, len(values), safe_size):
             yield list(values[index:index + safe_size])
+
+    def _candidate_shard_key(self, rjcode: Any) -> int:
+        number = self._rj_number(rjcode)
+        return number[0] if number else 0
+
+    def _split_candidate_shards(self, candidates: Sequence[str], shard_size: int) -> List[Dict[str, Any]]:
+        ordered = sorted(self._dedupe(candidates), key=lambda item: (self._candidate_shard_key(item), item))
+        shards: List[Dict[str, Any]] = []
+        for index, values in enumerate(self._chunk(ordered, shard_size), start=1):
+            if not values:
+                continue
+            shards.append({
+                "index": index,
+                "rjcodes": values,
+                "start_rjcode": values[0],
+                "end_rjcode": values[-1],
+                "count": len(values),
+                "range_key": f"{values[0]}:{values[-1]}",
+            })
+        return shards
+
+    def _exclude_unprobeable_candidates(
+        self,
+        candidates: Sequence[str],
+        *,
+        active_rjcodes: Optional[Iterable[str]] = None,
+    ) -> Tuple[List[str], Dict[str, int]]:
+        normalized = self._dedupe(candidates)
+        stats = {"input": len(normalized), "cached": 0, "active": 0, "cooldown": 0, "selected": 0}
+        if not normalized:
+            return [], stats
+
+        active_set = {self.normalize_rjcode(value) for value in (active_rjcodes or []) if self.normalize_rjcode(value)}
+        cached = self._load_cached_features_sync(normalized)
+        selected: List[str] = []
+        for rjcode in normalized:
+            feature = cached.get(rjcode)
+            if feature is not None and str(feature.probe_status or "").strip() in {"ok", "missing"}:
+                stats["cached"] += 1
+                continue
+            if rjcode in active_set:
+                stats["active"] += 1
+                continue
+            if feature is not None and str(feature.probe_status or "").strip() == "error":
+                stats["cooldown"] += 1
+                continue
+            selected.append(rjcode)
+        stats["selected"] = len(selected)
+        return selected, stats
+
+    def _merge_candidate_shards(self, shards: Sequence[Dict[str, Any]]) -> List[str]:
+        merged: List[str] = []
+        for shard in shards or []:
+            for rjcode in list((shard or {}).get("rjcodes") or []):
+                normalized = self.normalize_rjcode(rjcode)
+                if normalized and normalized not in merged:
+                    merged.append(normalized)
+        return merged
+
+    def _ensure_active_probe_state(self) -> None:
+        if not hasattr(self, "_active_probe_rjcodes"):
+            self._active_probe_rjcodes = set()
+        if not hasattr(self, "_active_probe_lock"):
+            self._active_probe_lock = asyncio.Lock()
+
+    async def _lease_candidate_shards(
+        self,
+        candidates: Sequence[str],
+        *,
+        shard_size: int,
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+        self._ensure_active_probe_state()
+        async with self._active_probe_lock:
+            selected, stats = self._exclude_unprobeable_candidates(
+                candidates,
+                active_rjcodes=self._active_probe_rjcodes,
+            )
+            shards = self._split_candidate_shards(selected, shard_size)
+            leased = self._merge_candidate_shards(shards)
+            self._active_probe_rjcodes.update(leased)
+            stats["leased"] = len(leased)
+            return shards, stats
+
+    async def _release_candidate_shards(self, shards: Sequence[Dict[str, Any]]) -> None:
+        self._ensure_active_probe_state()
+        leased = set(self._merge_candidate_shards(shards))
+        if not leased:
+            return
+        async with self._active_probe_lock:
+            self._active_probe_rjcodes.difference_update(leased)
 
     def _feature_from_cache_row(self, row: DLsiteBonusProbeCache) -> DLsiteProductProbeFeature:
         return DLsiteProductProbeFeature(
@@ -394,18 +517,20 @@ class DLsiteBonusProbeService:
 
         missing = [workno for workno in normalized if workno not in features]
         request_count = 0
-        cached_count = len(normalized) - len(missing)
+        checked_count = len(normalized) - len(missing)
+        cached_count = checked_count
         if progress_callback:
             progress_callback(cached_count, len(normalized))
         for batch in self._chunk(missing, batch_size):
             probed = await self.dlsite_service.probe_product_info_features(batch, concurrency=concurrency)
-            request_count += len(batch)
+            request_count += 1
+            checked_count += len(batch)
             for workno, feature in probed.items():
                 normalized_workno = self.normalize_rjcode(workno)
                 features[normalized_workno] = feature
             await asyncio.to_thread(self._upsert_cache_features_sync, list(probed.values()))
             if progress_callback:
-                progress_callback(min(len(normalized), cached_count + request_count), len(normalized))
+                progress_callback(min(len(normalized), checked_count), len(normalized))
             await asyncio.sleep(0)
         return features, len(normalized) - len(missing), request_count
 
@@ -430,6 +555,98 @@ class DLsiteBonusProbeService:
             and feature.work_type == "SOU"
             and not feature.is_hidden_bonus_audio
         )
+
+    def _parse_status_blocks_conclusion(self, parse_status: str) -> bool:
+        return str(parse_status or "").strip() in {"date_page_error", "http_error", "html_decode_failed"}
+
+    def _probe_features_block_conclusion(self, features: Iterable[DLsiteProductProbeFeature]) -> Tuple[bool, List[str]]:
+        errors: List[str] = []
+        for feature in features or []:
+            if str(feature.probe_status or "").strip() != "error":
+                continue
+            workno = self.normalize_rjcode(feature.workno)
+            message = str(feature.error_message or "").strip()
+            errors.append(f"{workno}: {message}" if message else workno)
+        return bool(errors), errors[:5]
+
+    def _release_date_original_state_summary(
+        self,
+        db,
+        *,
+        circle_id: str,
+        maker_id: str,
+        release_date: str,
+    ) -> Dict[str, int]:
+        normalized_circle = str(circle_id or "").strip()
+        normalized_maker = str(maker_id or "").strip().upper()
+        normalized_date = self.normalize_date(release_date)
+        if not normalized_circle or not normalized_date:
+            return {
+                "original_count": 0,
+                "concluded_count": 0,
+                "pending_count": 0,
+                "has_bonus_count": 0,
+                "no_bonus_count": 0,
+            }
+
+        original_rows = (
+            db.query(CircleWork)
+            .filter(CircleWork.circle_id == normalized_circle, CircleWork.is_bonus_work == False)  # noqa: E712
+            .all()
+        )
+        original_rjcodes = self._dedupe(row.canonical_rjcode for row in original_rows)
+        if not original_rjcodes:
+            return {
+                "original_count": 0,
+                "concluded_count": 0,
+                "pending_count": 0,
+                "has_bonus_count": 0,
+                "no_bonus_count": 0,
+            }
+
+        metadata_by_rj = {
+            self.normalize_rjcode(metadata.rjcode): metadata
+            for metadata in db.query(WorkMetadata)
+            .filter(WorkMetadata.rjcode.in_(original_rjcodes))
+            .all()
+        }
+        same_date_originals: List[str] = []
+        for row in original_rows:
+            canonical = self.normalize_rjcode(row.canonical_rjcode)
+            metadata = metadata_by_rj.get(canonical)
+            if metadata is None or bool(metadata.is_bonus_work):
+                continue
+            if normalized_maker and str(metadata.maker_id or "").strip().upper() != normalized_maker:
+                continue
+            if self.normalize_date(metadata.release_date) != normalized_date:
+                continue
+            same_date_originals.append(canonical)
+
+        state_map = self._completed_original_state_map(db, normalized_circle, same_date_originals)
+        has_bonus_count = sum(1 for value in state_map.values() if value == "has_bonus")
+        no_bonus_count = sum(1 for value in state_map.values() if value == "no_bonus")
+        concluded_count = has_bonus_count + no_bonus_count
+        original_count = len(same_date_originals)
+        return {
+            "original_count": original_count,
+            "concluded_count": concluded_count,
+            "pending_count": max(0, original_count - concluded_count),
+            "has_bonus_count": has_bonus_count,
+            "no_bonus_count": no_bonus_count,
+        }
+
+    def _date_all_originals_completed(self, *, circle_id: str, maker_id: str, release_date: str) -> bool:
+        db = SessionLocal()
+        try:
+            summary = self._release_date_original_state_summary(
+                db,
+                circle_id=circle_id,
+                maker_id=maker_id,
+                release_date=release_date,
+            )
+            return summary["original_count"] > 0 and summary["pending_count"] == 0
+        finally:
+            db.close()
 
     def _load_indexed_public_worknos(
         self,
@@ -568,8 +785,10 @@ class DLsiteBonusProbeService:
         release_dates: Sequence[str],
         mode: str = "normal",
         gap_limit: int = DEFAULT_GAP_LIMIT,
+        circle_id: str = "",
     ) -> List[str]:
         normalized_maker_id = str(maker_id or "").strip().upper()
+        normalized_circle_id = str(circle_id or "").strip()
         normalized_dates = [self.normalize_date(value) for value in release_dates or []]
         normalized_dates = [value for value in normalized_dates if value]
         if not normalized_maker_id or not normalized_dates:
@@ -592,8 +811,15 @@ class DLsiteBonusProbeService:
                 for row in rows
             }
             for release_date in normalized_dates:
-                if self._can_reuse_completed_date_row(rows_by_date.get(release_date), mode=mode):
-                    completed.append(release_date)
+                if not self._can_reuse_completed_date_row(rows_by_date.get(release_date), mode=mode):
+                    continue
+                if normalized_circle_id and not self._date_all_originals_completed(
+                    circle_id=normalized_circle_id,
+                    maker_id=normalized_maker_id,
+                    release_date=release_date,
+                ):
+                    continue
+                completed.append(release_date)
             return completed
         finally:
             db.close()
@@ -605,6 +831,7 @@ class DLsiteBonusProbeService:
         release_dates: Sequence[str],
         mode: str = "normal",
         gap_limit: int = DEFAULT_GAP_LIMIT,
+        circle_id: str = "",
     ) -> Tuple[List[str], List[str]]:
         normalized_dates: List[str] = []
         for value in release_dates or []:
@@ -616,6 +843,7 @@ class DLsiteBonusProbeService:
             release_dates=normalized_dates,
             mode=mode,
             gap_limit=gap_limit,
+            circle_id=circle_id,
         ))
         pending = [release_date for release_date in normalized_dates if release_date not in completed]
         skipped = [release_date for release_date in normalized_dates if release_date in completed]
@@ -1004,6 +1232,59 @@ class DLsiteBonusProbeService:
         finally:
             db.close()
 
+    def _release_date_min_rj_map(self, *, circle_id: str, maker_id: str, dates: Sequence[str]) -> Dict[str, int]:
+        normalized_circle_id = str(circle_id or "").strip()
+        normalized_maker_id = str(maker_id or "").strip().upper()
+        normalized_dates = [self.normalize_date(value) for value in dates or []]
+        normalized_dates = [value for value in normalized_dates if value]
+        if not normalized_circle_id or not normalized_dates:
+            return {}
+
+        db = SessionLocal()
+        try:
+            rows = db.query(CircleWork).filter(CircleWork.circle_id == normalized_circle_id).all()
+            worknos = self._public_original_worknos_from_rows(rows)
+            if not worknos:
+                return {}
+            query = db.query(WorkMetadata).filter(
+                WorkMetadata.rjcode.in_(worknos),
+                WorkMetadata.release_date.in_(normalized_dates),
+            )
+            if normalized_maker_id:
+                query = query.filter(WorkMetadata.maker_id == normalized_maker_id)
+
+            min_by_date: Dict[str, int] = {}
+            for row in query.all():
+                if bool(row.is_bonus_work):
+                    continue
+                release_date = self.normalize_date(row.release_date)
+                number = self._rj_number(row.rjcode)
+                if not release_date or not number:
+                    continue
+                current = min_by_date.get(release_date)
+                if current is None or number[0] < current:
+                    min_by_date[release_date] = number[0]
+            return min_by_date
+        finally:
+            db.close()
+
+    def _order_probe_release_dates(self, *, circle_id: str, maker_id: str, dates: Sequence[str]) -> List[str]:
+        normalized_dates = [self.normalize_date(value) for value in dates or []]
+        normalized_dates = [value for value in normalized_dates if value]
+        deduped = self._dedupe(normalized_dates)
+        min_rj_by_date = self._release_date_min_rj_map(
+            circle_id=circle_id,
+            maker_id=maker_id,
+            dates=deduped,
+        )
+        return sorted(
+            deduped,
+            key=lambda release_date: (
+                min_rj_by_date.get(release_date, 10**18),
+                release_date,
+            ),
+        )
+
     async def probe_date(
         self,
         *,
@@ -1015,6 +1296,7 @@ class DLsiteBonusProbeService:
         concurrency: int = DEFAULT_CONCURRENCY,
         mode: str = "normal",
         job_id: str = "",
+        target_rjcodes: Optional[Sequence[str]] = None,
         probe_progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         normalized_circle_id = str(circle_id or "").strip()
@@ -1026,6 +1308,11 @@ class DLsiteBonusProbeService:
             raise ValueError("缺少 DLsite maker_id")
         if not normalized_date:
             raise ValueError("缺少发售日")
+        normalized_target_rjcodes = self._dedupe([
+            normalized
+            for normalized in (self.normalize_rjcode(value) for value in (target_rjcodes or []))
+            if normalized
+        ])
 
         mode_key = self._mode_key(mode)
         db = SessionLocal()
@@ -1074,6 +1361,7 @@ class DLsiteBonusProbeService:
 
         request_count = 0
         cached_hit_count = 0
+        inserted_count = 0
         try:
             reusable_hidden_hits = self._load_reusable_hidden_bonus_features(
                 circle_id=normalized_circle_id,
@@ -1081,70 +1369,89 @@ class DLsiteBonusProbeService:
                 release_date=normalized_date,
             )
             if reusable_hidden_hits:
-                inserted_count = self._upsert_bonus_works(
+                inserted_count += self._upsert_bonus_works(
                     normalized_circle_id,
                     normalized_maker_id,
                     reusable_hidden_hits,
                 )
+                cached_hit_count += len(reusable_hidden_hits)
                 self._mark_original_probe_states_after_scan(
                     circle_id=normalized_circle_id,
                     maker_id=normalized_maker_id,
                     release_date=normalized_date,
                     hidden_hits=reusable_hidden_hits,
                 )
-                result = {
-                    "circle_id": normalized_circle_id,
-                    "maker_id": normalized_maker_id,
-                    "release_date": normalized_date,
-                    "parse_status": "local_hit_index",
-                    "public_count": 0,
-                    "date_page_public_count": 0,
-                    "sou_public_count": 0,
-                    "gap_count": 0,
-                    "circle_gap_count": 0,
-                    "circle_edge_window": 0,
-                    "date_page_range_count": 0,
-                    "date_page_range_limit": self.DEFAULT_DATE_RANGE_LIMIT,
-                    "probe_count": 0,
-                    "cached_hit_count": len(reusable_hidden_hits),
-                    "request_count": 0,
-                    "hit_count": len(reusable_hidden_hits),
-                    "inserted_count": inserted_count,
-                    "budget_reached": False,
-                    "hit_rjcodes": [feature.workno for feature in reusable_hidden_hits],
-                    "reused_hit_index": True,
-                }
                 db = SessionLocal()
                 try:
-                    date_row = self._upsert_date_row(
+                    original_summary = self._release_date_original_state_summary(
                         db,
-                        maker_id=normalized_maker_id,
                         circle_id=normalized_circle_id,
+                        maker_id=normalized_maker_id,
                         release_date=normalized_date,
-                        gap_limit=gap_limit,
                     )
-                    date_row.mode = mode_key
-                    date_row.status = "completed"
-                    date_row.public_count = 0
-                    date_row.sou_public_count = 0
-                    date_row.gap_count = 0
-                    date_row.probe_count = 0
-                    date_row.cached_hit_count = len(reusable_hidden_hits)
-                    date_row.request_count = 0
-                    date_row.hit_count = len(reusable_hidden_hits)
-                    date_row.inserted_count = inserted_count
-                    date_row.budget_reached = False
-                    date_row.finished_at = datetime.now()
-                    db.commit()
                 finally:
                     db.close()
-                return result
+                if original_summary["pending_count"] == 0:
+                    result = {
+                        "circle_id": normalized_circle_id,
+                        "maker_id": normalized_maker_id,
+                        "release_date": normalized_date,
+                        "parse_status": "local_hit_index",
+                        "public_count": original_summary["original_count"],
+                        "date_page_public_count": 0,
+                        "sou_public_count": original_summary["original_count"],
+                        "gap_count": 0,
+                        "circle_gap_count": 0,
+                        "circle_edge_window": 0,
+                        "date_page_range_count": 0,
+                        "date_page_range_limit": self.DEFAULT_DATE_RANGE_LIMIT,
+                        "probe_count": 0,
+                        "cached_hit_count": cached_hit_count,
+                        "request_count": 0,
+                        "hit_count": len(reusable_hidden_hits),
+                        "inserted_count": inserted_count,
+                        "budget_reached": False,
+                        "hit_rjcodes": [feature.workno for feature in reusable_hidden_hits],
+                        "reused_hit_index": True,
+                        "original_count": original_summary["original_count"],
+                        "original_concluded_count": original_summary["concluded_count"],
+                        "original_pending_count": original_summary["pending_count"],
+                        "original_has_bonus_count": original_summary["has_bonus_count"],
+                        "original_no_bonus_count": original_summary["no_bonus_count"],
+                    }
+                    db = SessionLocal()
+                    try:
+                        date_row = self._upsert_date_row(
+                            db,
+                            maker_id=normalized_maker_id,
+                            circle_id=normalized_circle_id,
+                            release_date=normalized_date,
+                            gap_limit=gap_limit,
+                        )
+                        date_row.mode = mode_key
+                        date_row.status = "completed"
+                        date_row.public_count = result["public_count"]
+                        date_row.sou_public_count = result["sou_public_count"]
+                        date_row.gap_count = 0
+                        date_row.probe_count = 0
+                        date_row.cached_hit_count = cached_hit_count
+                        date_row.request_count = 0
+                        date_row.hit_count = result["hit_count"]
+                        date_row.inserted_count = inserted_count
+                        date_row.budget_reached = False
+                        date_row.finished_at = datetime.now()
+                        db.commit()
+                    finally:
+                        db.close()
+                    return result
 
             public_worknos, date_page_worknos, parse_status = await self._load_public_worknos_for_date(
                 normalized_circle_id,
                 normalized_maker_id,
                 normalized_date,
             )
+            if self._parse_status_blocks_conclusion(parse_status):
+                raise RuntimeError(f"DLsite 日期页解析异常，未产出特典结论：{normalized_date} ({parse_status})")
             public_features, cached_hits, requests = await self._load_or_probe_features(
                 public_worknos,
                 batch_size=batch_size,
@@ -1152,6 +1459,9 @@ class DLsiteBonusProbeService:
             )
             cached_hit_count += cached_hits
             request_count += requests
+            has_errors, error_samples = self._probe_features_block_conclusion(public_features.values())
+            if has_errors:
+                raise RuntimeError(f"DLsite 公开作品确认异常，未产出特典结论：{'; '.join(error_samples)}")
             sou_public = [
                 workno
                 for workno, feature in public_features.items()
@@ -1161,17 +1471,34 @@ class DLsiteBonusProbeService:
                 int(gap_limit or self.DEFAULT_GAP_LIMIT),
                 self.DEFAULT_CIRCLE_EDGE_WINDOW,
             )
-            circle_candidates, circle_gap_count, circle_budget_reached = self._build_gap_candidates(
-                sou_public,
-                gap_limit,
-                include_edges=True,
-                edge_window_limit=circle_edge_window,
+            selected_scope = bool(normalized_target_rjcodes)
+            if selected_scope:
+                circle_candidates = self._build_anchor_edge_candidates(
+                    normalized_target_rjcodes,
+                    edge_window_limit=circle_edge_window,
+                )
+                circle_gap_count = 0
+                circle_budget_reached = False
+                date_page_candidates = []
+                date_page_range_count = 0
+                date_page_budget_reached = False
+            else:
+                circle_candidates, circle_gap_count, circle_budget_reached = self._build_gap_candidates(
+                    sou_public,
+                    gap_limit,
+                    include_edges=True,
+                    edge_window_limit=circle_edge_window,
+                )
+                date_page_candidates, date_page_range_count, date_page_budget_reached = self._build_range_candidates(
+                    date_page_worknos,
+                    range_limit=self.DEFAULT_DATE_RANGE_LIMIT,
+                )
+            raw_probe_candidates = self._dedupe([*circle_candidates, *date_page_candidates])
+            candidate_shards, candidate_filter_stats = await self._lease_candidate_shards(
+                raw_probe_candidates,
+                shard_size=batch_size,
             )
-            date_page_candidates, date_page_range_count, date_page_budget_reached = self._build_range_candidates(
-                date_page_worknos,
-                range_limit=self.DEFAULT_DATE_RANGE_LIMIT,
-            )
-            probe_candidates = self._dedupe([*circle_candidates, *date_page_candidates])
+            leased_probe_candidates = self._merge_candidate_shards(candidate_shards)
             gap_count = circle_gap_count
             budget_reached = bool(circle_budget_reached or date_page_budget_reached)
 
@@ -1184,26 +1511,43 @@ class DLsiteBonusProbeService:
                     "probe_count": int(total_count or 0),
                 })
 
-            candidate_features, cached_hits, requests = await self._load_or_probe_features(
-                probe_candidates,
-                batch_size=batch_size,
-                concurrency=concurrency,
-                progress_callback=emit_probe_progress,
-            )
+            try:
+                candidate_features, cached_hits, requests = await self._load_or_probe_features(
+                    leased_probe_candidates,
+                    batch_size=batch_size,
+                    concurrency=concurrency,
+                    progress_callback=emit_probe_progress,
+                )
+            finally:
+                await self._release_candidate_shards(candidate_shards)
             cached_hit_count += cached_hits
             request_count += requests
+            has_errors, error_samples = self._probe_features_block_conclusion(candidate_features.values())
+            if has_errors:
+                raise RuntimeError(f"DLsite RJ 探测异常，未产出特典结论：{'; '.join(error_samples)}")
             hidden_hits = [
                 feature
                 for feature in candidate_features.values()
                 if self._hidden_bonus_matches(feature, maker_id=normalized_maker_id, release_date=normalized_date)
             ]
-            inserted_count = self._upsert_bonus_works(normalized_circle_id, normalized_maker_id, hidden_hits)
-            self._mark_original_probe_states_after_scan(
-                circle_id=normalized_circle_id,
-                maker_id=normalized_maker_id,
-                release_date=normalized_date,
-                hidden_hits=hidden_hits,
-            )
+            inserted_count += self._upsert_bonus_works(normalized_circle_id, normalized_maker_id, hidden_hits)
+            if not budget_reached:
+                self._mark_original_probe_states_after_scan(
+                    circle_id=normalized_circle_id,
+                    maker_id=normalized_maker_id,
+                    release_date=normalized_date,
+                    hidden_hits=hidden_hits,
+                )
+            db = SessionLocal()
+            try:
+                original_summary = self._release_date_original_state_summary(
+                    db,
+                    circle_id=normalized_circle_id,
+                    maker_id=normalized_maker_id,
+                    release_date=normalized_date,
+                )
+            finally:
+                db.close()
 
             result = {
                 "circle_id": normalized_circle_id,
@@ -1218,14 +1562,38 @@ class DLsiteBonusProbeService:
                 "circle_edge_window": circle_edge_window,
                 "date_page_range_count": date_page_range_count,
                 "date_page_range_limit": self.DEFAULT_DATE_RANGE_LIMIT,
-                "probe_count": len(probe_candidates),
+                "selected_scope": selected_scope,
+                "target_rjcodes": normalized_target_rjcodes,
+                "probe_count": len(leased_probe_candidates),
+                "raw_probe_count": len(raw_probe_candidates),
+                "candidate_filter_stats": candidate_filter_stats,
+                "candidate_shard_count": len(candidate_shards),
+                "candidate_shards": [
+                    {key: shard[key] for key in ("index", "start_rjcode", "end_rjcode", "count")}
+                    for shard in candidate_shards
+                ],
                 "cached_hit_count": cached_hit_count,
                 "request_count": request_count,
-                "hit_count": len(hidden_hits),
+                "hit_count": len(reusable_hidden_hits) + len(hidden_hits),
                 "inserted_count": inserted_count,
                 "budget_reached": bool(budget_reached),
-                "hit_rjcodes": [feature.workno for feature in hidden_hits],
+                "hit_rjcodes": [feature.workno for feature in [*reusable_hidden_hits, *hidden_hits]],
+                "reused_hit_index": bool(reusable_hidden_hits),
+                "original_count": original_summary["original_count"],
+                "original_concluded_count": original_summary["concluded_count"],
+                "original_pending_count": original_summary["pending_count"],
+                "original_has_bonus_count": original_summary["has_bonus_count"],
+                "original_no_bonus_count": original_summary["no_bonus_count"],
             }
+            if budget_reached:
+                result["incomplete"] = True
+                result["error_message"] = (
+                    f"发售日 {normalized_date} 的 RJ 探测范围超出预算，已沉淀命中线索但不产出无特典结论"
+                )
+            elif original_summary["pending_count"] != 0:
+                raise RuntimeError(
+                    f"发售日 {normalized_date} 仍有 {original_summary['pending_count']} 个原作未形成特典结论"
+                )
             db = SessionLocal()
             try:
                 date_row = self._upsert_date_row(
@@ -1236,7 +1604,7 @@ class DLsiteBonusProbeService:
                     gap_limit=gap_limit,
                 )
                 date_row.mode = mode_key
-                date_row.status = "completed"
+                date_row.status = "incomplete" if result.get("incomplete") else "completed"
                 date_row.public_count = result["public_count"]
                 date_row.sou_public_count = result["sou_public_count"]
                 date_row.gap_count = result["gap_count"]
@@ -1246,6 +1614,7 @@ class DLsiteBonusProbeService:
                 date_row.hit_count = result["hit_count"]
                 date_row.inserted_count = result["inserted_count"]
                 date_row.budget_reached = result["budget_reached"]
+                date_row.error_message = str(result.get("error_message") or "")[:2000]
                 date_row.finished_at = datetime.now()
                 db.commit()
             finally:
@@ -1281,6 +1650,7 @@ class DLsiteBonusProbeService:
         batch_size: int = DEFAULT_BATCH_SIZE,
         concurrency: int = DEFAULT_CONCURRENCY,
         job_id: str = "",
+        selected_rjcodes_by_date: Optional[Dict[str, Sequence[str]]] = None,
         progress_callback: Optional[Callable[[int, str, Dict[str, Any]], None]] = None,
         cancel_callback: Optional[Callable[[], bool]] = None,
     ) -> Dict[str, Any]:
@@ -1295,74 +1665,126 @@ class DLsiteBonusProbeService:
             dates = self.list_indexed_release_dates(normalized_circle_id, normalized_maker_id, mode=mode)
         if not dates:
             raise ValueError("没有可探测的已索引发售日")
+        dates = self._order_probe_release_dates(
+            circle_id=normalized_circle_id,
+            maker_id=normalized_maker_id,
+            dates=dates,
+        )
+        normalized_selected_by_date: Dict[str, List[str]] = {}
+        for raw_date, raw_codes in dict(selected_rjcodes_by_date or {}).items():
+            normalized_date = self.normalize_date(raw_date)
+            if not normalized_date:
+                continue
+            normalized_codes = self._dedupe([
+                normalized
+                for normalized in (self.normalize_rjcode(value) for value in (raw_codes or []))
+                if normalized
+            ])
+            if normalized_codes:
+                normalized_selected_by_date[normalized_date] = normalized_codes
 
         results: List[Dict[str, Any]] = []
         total = len(dates)
+        date_order = {release_date: index for index, release_date in enumerate(dates)}
+        worker_count = max(1, min(int(concurrency or self.DEFAULT_CONCURRENCY), total))
+        queue: asyncio.Queue[Tuple[int, str]] = asyncio.Queue()
+        result_lock = asyncio.Lock()
         for index, release_date in enumerate(dates, start=1):
-            if cancel_callback and cancel_callback():
-                raise asyncio.CancelledError()
-            completed_probe_count = sum(int(item.get("probe_count") or 0) for item in results)
-            if progress_callback:
-                progress_callback(
-                    max(1, int(((index - 1) / max(total, 1)) * 100)),
-                    f"探测 {release_date} 的 RJ 缺口",
-                    {
-                        "release_date": release_date,
-                        "batch_index": index,
-                        "batch_total": total,
-                        "checked_probe_count": completed_probe_count,
-                        "probe_count": completed_probe_count,
-                    },
-                )
+            queue.put_nowait((index, release_date))
 
-            def emit_date_probe_progress(meta: Dict[str, Any]) -> None:
-                if not progress_callback:
+        async def append_result(result: Dict[str, Any]) -> int:
+            async with result_lock:
+                results.append(result)
+                return sum(int(item.get("probe_count") or 0) for item in results)
+
+        def completed_probe_count_snapshot() -> int:
+            return sum(int(item.get("probe_count") or 0) for item in results)
+
+        async def probe_worker(worker_index: int) -> None:
+            worker_label = f"并发 {worker_index}/{worker_count}"
+            while True:
+                if cancel_callback and cancel_callback():
+                    raise asyncio.CancelledError()
+                try:
+                    index, release_date = queue.get_nowait()
+                except asyncio.QueueEmpty:
                     return
-                current_total = max(0, int((meta or {}).get("probe_count") or 0))
-                current_checked = max(0, int((meta or {}).get("checked_probe_count") or 0))
-                current_checked = min(current_checked, current_total) if current_total else current_checked
-                date_fraction = (current_checked / current_total) if current_total else 0
-                pct = max(1, min(99, int(((index - 1 + date_fraction) / max(total, 1)) * 100)))
-                progress_callback(
-                    pct,
-                    f"探测 {release_date} 的 RJ 缺口：{current_checked}/{current_total}",
-                    {
-                        "release_date": release_date,
-                        "batch_index": index,
-                        "batch_total": total,
-                        "current_probe_checked_count": current_checked,
-                        "current_probe_total_count": current_total,
-                        "checked_probe_count": completed_probe_count + current_checked,
-                        "probe_count": completed_probe_count + current_total,
-                    },
-                )
 
-            result = await self.probe_date(
-                circle_id=normalized_circle_id,
-                maker_id=normalized_maker_id,
-                release_date=release_date,
-                gap_limit=gap_limit,
-                batch_size=batch_size,
-                concurrency=concurrency,
-                mode=mode,
-                job_id=job_id,
-                probe_progress_callback=emit_date_probe_progress,
-            )
-            results.append(result)
-            completed_probe_count = sum(int(item.get("probe_count") or 0) for item in results)
-            if progress_callback:
-                progress_callback(
-                    min(99, int((index / max(total, 1)) * 100)),
-                    f"完成 {release_date}：命中 {result.get('hit_count', 0)} 个",
-                    {
-                        "release_date": release_date,
-                        "batch_index": index,
-                        "batch_total": total,
-                        "checked_probe_count": completed_probe_count,
-                        "probe_count": completed_probe_count,
-                        "last_result": result,
-                    },
-                )
+                completed_probe_count = completed_probe_count_snapshot()
+                if progress_callback:
+                    progress_callback(
+                        max(1, int(((index - 1) / max(total, 1)) * 100)),
+                        f"{worker_label} 探测 {release_date} 的 RJ 缺口",
+                        {
+                            "release_date": release_date,
+                            "batch_index": index,
+                            "batch_total": total,
+                            "worker_index": worker_index,
+                            "worker_total": worker_count,
+                            "checked_probe_count": completed_probe_count,
+                            "probe_count": completed_probe_count,
+                        },
+                    )
+
+                def emit_date_probe_progress(meta: Dict[str, Any]) -> None:
+                    if not progress_callback:
+                        return
+                    current_total = max(0, int((meta or {}).get("probe_count") or 0))
+                    current_checked = max(0, int((meta or {}).get("checked_probe_count") or 0))
+                    current_checked = min(current_checked, current_total) if current_total else current_checked
+                    date_fraction = (current_checked / current_total) if current_total else 0
+                    pct = max(1, min(99, int(((index - 1 + date_fraction) / max(total, 1)) * 100)))
+                    latest_completed_probe_count = completed_probe_count_snapshot()
+                    progress_callback(
+                        pct,
+                        f"{worker_label} 探测 {release_date} 的 RJ 缺口：{current_checked}/{current_total}",
+                        {
+                            "release_date": release_date,
+                            "batch_index": index,
+                            "batch_total": total,
+                            "worker_index": worker_index,
+                            "worker_total": worker_count,
+                            "current_probe_checked_count": current_checked,
+                            "current_probe_total_count": current_total,
+                            "checked_probe_count": latest_completed_probe_count + current_checked,
+                            "probe_count": latest_completed_probe_count + current_total,
+                        },
+                    )
+
+                try:
+                    result = await self.probe_date(
+                        circle_id=normalized_circle_id,
+                        maker_id=normalized_maker_id,
+                        release_date=release_date,
+                        gap_limit=gap_limit,
+                        batch_size=batch_size,
+                        concurrency=concurrency,
+                        mode=mode,
+                        job_id=job_id,
+                        target_rjcodes=normalized_selected_by_date.get(release_date) or [],
+                        probe_progress_callback=emit_date_probe_progress,
+                    )
+                    completed_probe_count = await append_result(result)
+                    if progress_callback:
+                        progress_callback(
+                            min(99, int((len(results) / max(total, 1)) * 100)),
+                            f"{worker_label} 完成 {release_date}：命中 {result.get('hit_count', 0)} 个",
+                            {
+                                "release_date": release_date,
+                                "batch_index": index,
+                                "batch_total": total,
+                                "worker_index": worker_index,
+                                "worker_total": worker_count,
+                                "checked_probe_count": completed_probe_count,
+                                "probe_count": completed_probe_count,
+                                "last_result": result,
+                            },
+                        )
+                finally:
+                    queue.task_done()
+
+        await asyncio.gather(*[probe_worker(index) for index in range(1, worker_count + 1)])
+        results.sort(key=lambda item: date_order.get(str(item.get("release_date") or ""), total))
 
         summary = {
             "circle_id": normalized_circle_id,
@@ -1382,7 +1804,13 @@ class DLsiteBonusProbeService:
             "request_count": sum(int(item.get("request_count") or 0) for item in results),
             "hit_count": sum(int(item.get("hit_count") or 0) for item in results),
             "inserted_count": sum(int(item.get("inserted_count") or 0) for item in results),
+            "original_count": sum(int(item.get("original_count") or 0) for item in results),
+            "original_concluded_count": sum(int(item.get("original_concluded_count") or 0) for item in results),
+            "original_pending_count": sum(int(item.get("original_pending_count") or 0) for item in results),
+            "original_has_bonus_count": sum(int(item.get("original_has_bonus_count") or 0) for item in results),
+            "original_no_bonus_count": sum(int(item.get("original_no_bonus_count") or 0) for item in results),
             "skipped_count": sum(1 for item in results if bool(item.get("skipped"))),
+            "incomplete_count": sum(1 for item in results if bool(item.get("incomplete"))),
             "budget_reached": any(bool(item.get("budget_reached")) for item in results),
             "dates": results,
         }

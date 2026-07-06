@@ -168,6 +168,45 @@ async def test_paged_missing_works_and_work_codes(service: CircleCompletionServi
     db_session.commit()
     service.invalidate_completion_view_cache(circle_id)
     probe_codes = await service.list_circle_completion_work_codes(circle_id, tab="missing", sort="release_asc")
+    assert probe_codes["has_bonus_rjcodes"] == []
+    assert probe_codes["no_bonus_rjcodes"] == ["RJ01000003"]
+    assert probe_codes["completed_bonus_probe_dates"] == ["2025-03-01"]
+
+    db_session.add(
+        CircleWork(
+            id=f"{circle_id}-RJ01000002-bonus",
+            circle_id=circle_id,
+            canonical_rjcode="RJ01000004",
+            display_rjcode="RJ01000004",
+            title="Downloadable Work Bonus",
+            maker_id="RGPAGE",
+            maker_name="分页社团",
+            source_mask="dlsite",
+            linked_rjcodes=["RJ01000002", "RJ01000004"],
+            has_dlsite=True,
+            has_asmr_one=True,
+            asmr_available_rjcode="RJ01000004",
+            image_url="https://img.dlsite.jp/modpub/images2/work/doujin/RJ999000/RJ01000004_img_main.jpg",
+            is_bonus_work=True,
+            has_bonus=False,
+            created_at=datetime(2024, 1, 1),
+            updated_at=datetime(2024, 1, 1),
+        )
+    )
+    db_session.add(
+        WorkMetadata(
+            rjcode="RJ01000004",
+            work_name="Downloadable Work Bonus",
+            maker_name="分页社团",
+            release_date="2024-02-01",
+            cvs=["CV A"],
+            cached_at=datetime(2024, 1, 1),
+            expires_at=datetime(2099, 1, 1),
+        )
+    )
+    db_session.commit()
+    service.invalidate_completion_view_cache(circle_id)
+    probe_codes = await service.list_circle_completion_work_codes(circle_id, tab="missing", sort="release_asc")
     assert probe_codes["has_bonus_rjcodes"] == ["RJ01000002"]
     assert probe_codes["no_bonus_rjcodes"] == ["RJ01000003"]
     assert probe_codes["completed_bonus_probe_dates"] == ["2025-03-01"]

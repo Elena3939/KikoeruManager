@@ -2083,6 +2083,12 @@ class CircleCompletionService:
             search=search,
         )
         filtered = self._sort_completion_items(filtered, sort)
+        tab_key = str(tab or "missing").strip().lower()
+        grouped_for_bonus = (
+            self._completion_group_bonus_items([dict(item) for item in filtered])
+            if tab_key in {"missing", "owned"}
+            else [dict(item) for item in filtered]
+        )
         canonical_rjcodes = [
             str(item.get("canonical_rjcode") or "").strip()
             for item in filtered
@@ -2100,11 +2106,11 @@ class CircleCompletionService:
         ]
         has_bonus_rjcodes = [
             str(item.get("canonical_rjcode") or "").strip()
-            for item in filtered
+            for item in grouped_for_bonus
             if (
                 str(item.get("canonical_rjcode") or "").strip()
                 and not item.get("is_bonus_work")
-                and item.get("has_bonus")
+                and item.get("bonus_works")
             )
         ]
         no_bonus_rjcodes = []
