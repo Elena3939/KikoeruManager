@@ -2745,3 +2745,40 @@
 - `frontend/src/components/circle/CircleWorksViewport.vue`：调整 `.circle-bonus-gift.is-dimmed` 的 `filter` 和 `opacity`。
 - `progress.md`：追加本轮视觉微调记录。
 - 回滚方式：还原本轮 `.circle-bonus-gift.is-dimmed` 灰化参数，并删除本段进度记录。
+## 2026-07-07 - Task: 修复社团补全本地库存拥有态漏识别
+### What was done
+- 修复库存索引 RJ 查询只依赖 `rjcode` 列的问题；当精确列查不到时，会用目录名、相对路径、绝对路径里的完整 RJ 号做兜底命中。
+- 兜底命中增加 RJ 边界过滤，避免 `RJ01627612` 误匹配到 `RJ016276120` 这类相邻编号。
+- 修复库存浏览全局搜索把 `page_cursor` 传给 `global_search_files` 时后端 500 的参数不匹配问题，并让普通浏览分支也透传分页游标。
+- 增加回归测试覆盖“目录名有 RJ，但索引 rjcode 列缺失”的社团补全本地拥有态识别场景。
+
+### Testing
+- `backend/` 下执行 `..\.venv\Scripts\python.exe -m py_compile app\core\library_index\snapshot_store.py app\core\library_manager.py app\api\routes.py`：通过。
+- `backend/` 下执行 `$env:PYTHONPATH=(Get-Location).Path; ..\.venv\Scripts\python.exe -m pytest tests\test_library_index_self_mutation.py -q`：通过，23 passed。
+- `backend/` 下执行 `$env:PYTHONPATH=(Get-Location).Path; ..\.venv\Scripts\python.exe -m pytest tests\test_circle_completion_owned_sync.py -q`：通过，4 passed。
+
+### Notes
+- `backend/app/core/library_index/snapshot_store.py`：为 `find_by_rjcode()` 增加路径 RJ 兜底查询与边界过滤。
+- `backend/app/core/library_manager.py`：`global_search_files()` 增加 `page_cursor` 参数并透传到普通搜索路径。
+- `backend/app/api/routes.py`：库存浏览普通分支透传 `page_cursor`。
+- `backend/tests/test_library_index_self_mutation.py`：新增路径 RJ 兜底命中的回归测试。
+- `progress.md`：追加本轮修复和验证记录。
+- 回滚方式：还原上述四个代码/测试文件中本轮 RJ 兜底与 `page_cursor` 相关 hunk，并删除本段进度记录。
+## 2026-07-07 - Task: 改为修复库存索引 RJ 字段缺失源头
+### What was done
+- 撤回查询层按路径兜底返回的方案，保留 `find_by_rjcode()` 对 `library_index_entries.rjcode` 的精确查询语义。
+- 在库存索引写入层补齐 RJ 字段：`IndexEntry.rjcode` 缺失时，从安全化后的名称、相对路径、绝对路径提取 RJ 后再落库，避免新索引行继续漏写。
+- 为旧索引脏数据增加小范围回填：精确 RJ 查询 0 命中时，只修正同 RJ、同库存范围内 `rjcode` 为空的索引行，然后再次走精确列查询。
+- 调整回归测试，覆盖新写入缺 RJ 自动补齐、旧索引行缺 RJ 自动修正两种场景。
+
+### Testing
+- `backend/` 下执行 `..\.venv\Scripts\python.exe -m py_compile app\core\library_index\snapshot_store.py app\core\library_manager.py app\api\routes.py`：通过。
+- `backend/` 下执行 `$env:PYTHONPATH=(Get-Location).Path; ..\.venv\Scripts\python.exe -m pytest tests\test_library_index_self_mutation.py -k "rjcode" -q`：通过，3 passed。
+- `backend/` 下执行 `$env:PYTHONPATH=(Get-Location).Path; ..\.venv\Scripts\python.exe -m pytest tests\test_circle_completion_owned_sync.py -q`：通过，4 passed。
+- `backend/` 下执行 `$env:PYTHONPATH=(Get-Location).Path; ..\.venv\Scripts\python.exe -m pytest tests\test_library_index_self_mutation.py -q --basetemp=.pytest-codex-rj-repair`：通过，24 passed。
+
+### Notes
+- `backend/app/core/library_index/snapshot_store.py`：索引入库前补齐 RJ 字段，并对旧缺失 RJ 行做写回修复后再精确查询。
+- `backend/tests/test_library_index_self_mutation.py`：替换查询兜底测试，新增写入补齐和旧数据回填测试。
+- `progress.md`：追加本轮方案修正和验证记录。
+- 回滚方式：还原本轮 `snapshot_store.py` 中 `_database_safe_entry()` RJ 补齐和 `_repair_missing_rjcode_rows()` 相关 hunk，恢复测试文件对应 hunk，并删除本段进度记录。

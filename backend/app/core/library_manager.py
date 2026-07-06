@@ -4653,6 +4653,7 @@ class LibraryManager:
         search_exact: bool = False,
         search_result_kind: str = "all",
         remote_warmup_retries: int = 3,
+        page_cursor: Optional[str] = None,
     ) -> dict[str, Any]:
         normalized_keyword = str(keyword or "").strip()
         requested_library = self.get_library_definition(library_id) if library_id else None
@@ -4759,6 +4760,7 @@ class LibraryManager:
             search_exact=search_exact,
             search_result_kind=search_result_kind,
             remote_warmup_retries=remote_warmup_retries,
+            page_cursor=page_cursor,
         )
 
     def _normalize_search_result_kind(self, value: str) -> str:

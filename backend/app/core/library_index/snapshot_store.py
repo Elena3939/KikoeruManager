@@ -32,6 +32,7 @@ from ...models.database import (
 )
 from ..resource_budget_service import get_resource_budget_service
 from ..ttl_cache import TTLCache
+from ._helpers import extract_rjcode as _extract_rjcode
 from .types import (
     IndexEntry,
     IndexStatus,
@@ -416,23 +417,37 @@ def _database_safe_entry(entry: IndexEntry) -> IndexEntry:
     safe_absolute = _database_safe_text(entry.absolute_path) or ''
     safe_name = _database_safe_text(entry.name) or ''
     safe_parent = _database_safe_text(entry.parent_path)
+    safe_rjcode = (
+        _extract_rjcode(_database_safe_text(entry.rjcode) or "")
+        or _extract_rjcode(safe_name)
+        or _extract_rjcode(safe_relative)
+        or _extract_rjcode(safe_absolute)
+    )
     if (
         safe_relative == entry.relative_path
         and safe_absolute == entry.absolute_path
         and safe_name == entry.name
         and safe_parent == entry.parent_path
+        and safe_rjcode == entry.rjcode
     ):
         return entry
-    logger.warning(
-        "[索引] 路径包含非法 UTF-8 字节，已转义后写入索引 library=%s path=%r",
-        entry.library_id,
-        safe_relative or safe_absolute or safe_name,
-    )
+    if (
+        safe_relative != entry.relative_path
+        or safe_absolute != entry.absolute_path
+        or safe_name != entry.name
+        or safe_parent != entry.parent_path
+    ):
+        logger.warning(
+            "[索引] 路径包含非法 UTF-8 字节，已转义后写入索引 library=%s path=%r",
+            entry.library_id,
+            safe_relative or safe_absolute or safe_name,
+        )
     return replace(
         entry,
         relative_path=safe_relative,
         absolute_path=safe_absolute,
         name=safe_name,
+        rjcode=safe_rjcode,
         parent_path=safe_parent,
     )
 
@@ -2073,6 +2088,7 @@ class SnapshotStore:
         """
         if not rjcode:
             return []
+        normalized_rjcode = _extract_rjcode(str(rjcode or "")) or str(rjcode or "").strip().upper()
         scope_ids: Optional[list[str]]
         if library_id is None:
             scope_ids = None
@@ -2082,9 +2098,9 @@ class SnapshotStore:
             scope_ids = [str(item) for item in library_id if item]
             if not scope_ids:
                 scope_ids = None
-        with self._read_session() as db:
+        def _query_rows(db: Session) -> list[LibraryIndexEntry]:
             q = db.query(LibraryIndexEntry)
-            filters = [LibraryIndexEntry.rjcode == rjcode]
+            filters = [LibraryIndexEntry.rjcode == normalized_rjcode]
             if scope_ids:
                 if len(scope_ids) == 1:
                     filters.append(LibraryIndexEntry.library_id == scope_ids[0])
@@ -2099,7 +2115,64 @@ class SnapshotStore:
                 LibraryIndexEntry.depth.asc(),
                 LibraryIndexEntry.relative_path.asc(),
             )
-            return [self._row_to_entry(row) for row in q.limit(limit).all()]
+            return q.limit(limit).all()
+
+        with self._read_session() as db:
+            rows = _query_rows(db)
+        if not rows and self._repair_missing_rjcode_rows(
+            normalized_rjcode,
+            scope_ids=scope_ids,
+            entry_type=entry_type,
+        ):
+            with self._read_session() as db:
+                rows = _query_rows(db)
+            return [self._row_to_entry(row) for row in rows]
+        return [self._row_to_entry(row) for row in rows]
+
+    def _repair_missing_rjcode_rows(
+        self,
+        rjcode: str,
+        *,
+        scope_ids: Optional[Sequence[str]],
+        entry_type: Optional[str],
+        limit: int = 200,
+    ) -> int:
+        if not re.fullmatch(r"[RVB]J\d{6}(?:\d{2})?", rjcode or "", re.IGNORECASE):
+            return 0
+        boundary = re.compile(rf"(?<![A-Z0-9]){re.escape(rjcode)}(?![A-Z0-9])", re.IGNORECASE)
+        filters = [
+            or_(LibraryIndexEntry.rjcode.is_(None), LibraryIndexEntry.rjcode == ""),
+            or_(
+                LibraryIndexEntry.name.ilike(f"%{rjcode}%"),
+                LibraryIndexEntry.relative_path.ilike(f"%{rjcode}%"),
+                LibraryIndexEntry.absolute_path.ilike(f"%{rjcode}%"),
+            ),
+        ]
+        if scope_ids:
+            if len(scope_ids) == 1:
+                filters.append(LibraryIndexEntry.library_id == scope_ids[0])
+            else:
+                filters.append(LibraryIndexEntry.library_id.in_(scope_ids))
+        if entry_type:
+            filters.append(LibraryIndexEntry.entry_type == entry_type)
+        with self._write_session(invalidate_children_total_cache=False) as db:
+            rows = db.query(LibraryIndexEntry).filter(*filters).limit(limit).all()
+            repaired = 0
+            for row in rows:
+                haystack = " ".join([
+                    str(row.name or ""),
+                    str(row.relative_path or ""),
+                    str(row.absolute_path or ""),
+                ])
+                if not boundary.search(haystack):
+                    continue
+                row.rjcode = rjcode.upper()
+                repaired += 1
+            if repaired:
+                db.flush()
+        if repaired:
+            logger.info("[索引] 修复缺失 RJ 字段 rjcode=%s rows=%s", rjcode.upper(), repaired)
+        return repaired
 
     def find_by_name(
         self,
