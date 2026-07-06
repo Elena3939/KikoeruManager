@@ -15,6 +15,8 @@ const props = defineProps({
   locateFlash: { type: Boolean, default: false },
   /** 是否禁用 */
   disabled: { type: Boolean, default: false },
+  /** 外层可覆盖补全灰态；不传则沿用 item.completion_card_dimmed */
+  completionDimmed: { type: Boolean, default: null },
   /** 封面图字段名 */
   imageField: { type: String, default: 'image_url' },
   /** 标识字段名（用于 RJ 号显示） */
@@ -106,6 +108,7 @@ function isStrictTrue(value) {
 
 const isNewWork = computed(() => isStrictTrue(props.item?.is_new_work))
 const isBonusWork = computed(() => isStrictTrue(props.item?.is_bonus_work))
+const isCompletionDimmed = computed(() => props.completionDimmed ?? isStrictTrue(props.item?.completion_card_dimmed))
 const displayVariant = computed(() =>
   isBonusWork.value ? '' :
   props.item?.owned ? (props.item.owned_variant?.group_short_label || '原作') : (props.item.preferred_variant?.group_short_label || '原作')
@@ -208,7 +211,7 @@ function onCoverLoad() {
       'is-new-work': isNewWork,
       'status-flash': props.statusFlash,
       'locate-flash': props.locateFlash,
-      'is-completion-dimmed': item.completion_card_dimmed,
+      'is-completion-dimmed': isCompletionDimmed,
       disabled: props.disabled,
       'work-card--lg': props.size === 'lg',
     }"

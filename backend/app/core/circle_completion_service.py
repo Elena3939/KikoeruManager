@@ -7253,6 +7253,8 @@ class CircleCompletionService:
             asmr_available_count = 0
             kikoeru_owned_count = 0
             total = len(rows)
+            local_owned_items_for_write: Dict[str, Dict[str, Any]] = {}
+            local_owned_ready_index_available = False
 
             def _normalize_code_list(values: Any) -> List[str]:
                 normalized_codes: List[str] = []
@@ -7453,7 +7455,10 @@ class CircleCompletionService:
                     "kikoeru_found_rjcodes": [],
                     "source_flags": set(),
                 }
-                self._apply_library_index_owned_state_to_items({canonical: local_state_item})
+                local_owned_stats = self._apply_library_index_owned_state_to_items({canonical: local_state_item})
+                if local_owned_stats.get("ready_index_available"):
+                    local_owned_ready_index_available = True
+                    local_owned_items_for_write[canonical] = local_state_item
                 found_rjcodes = _normalize_code_list(local_state_item.get("kikoeru_found_rjcodes") or [])
                 subtitle_rjcodes = _normalize_code_list(local_state_item.get("kikoeru_subtitle_rjcodes") or [])
                 found_titles: Dict[str, str] = {}
@@ -7631,6 +7636,12 @@ class CircleCompletionService:
             try:
                 for refreshed_row in rows:
                     write_db.merge(refreshed_row)
+                if local_owned_items_for_write:
+                    self._upsert_library_owned_rows_from_items(
+                        write_db,
+                        local_owned_items_for_write,
+                        prune_unmatched=local_owned_ready_index_available,
+                    )
                 write_db.merge(catalog)
                 write_db.commit()
             except Exception:

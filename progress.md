@@ -2782,3 +2782,72 @@
 - `backend/tests/test_library_index_self_mutation.py`：替换查询兜底测试，新增写入补齐和旧数据回填测试。
 - `progress.md`：追加本轮方案修正和验证记录。
 - 回滚方式：还原本轮 `snapshot_store.py` 中 `_database_safe_entry()` RJ 补齐和 `_repair_missing_rjcode_rows()` 相关 hunk，恢复测试文件对应 hunk，并删除本段进度记录。
+## 2026-07-07 - Task: 修复特典刷新拥有态后卡片不变色
+### What was done
+- 修复“刷新状态”任务只更新 `CircleWork.has_kikoeru`，但没有把本次库存索引命中的拥有态同步写入 `LibraryOwnedWork` 快照的问题。
+- 刷新任务现在会把选中 RJ 的 `local_owned / owned_paths / kikoeru_found_rjcodes` 写回拥有态快照；ready 索引可用且当前查不到时会清理旧快照，保证刷新状态反映当前库存。
+- 修复特典详情卡在刷新后继续引用旧 bonus 对象的问题；列表数据更新后会按 RJ 替换为新的特典对象，详情里的已收录/未收录标签同步变色。
+
+### Testing
+- `backend/` 下执行 `..\.venv\Scripts\python.exe -m py_compile app\core\circle_completion_service.py`：通过。
+- `backend/` 下执行 `$env:PYTHONPATH=(Get-Location).Path; ..\.venv\Scripts\python.exe -m pytest tests\test_circle_completion_owned_sync.py -q`：通过，4 passed。
+- `frontend/` 下执行 `npm run build`：通过；仅有既有 VueUse pure annotation、lottie eval 和 chunk size warning。
+
+### Notes
+- `backend/app/core/circle_completion_service.py`：刷新选中作品时同步写入/清理 `LibraryOwnedWork` 拥有态快照。
+- `frontend/src/components/circle/CircleWorksViewport.vue`：刷新后按 RJ 替换展开中的特典详情对象，避免详情卡保留旧状态。
+- `progress.md`：追加本轮修复和验证记录。
+- 回滚方式：还原上述两个代码文件本轮 hunk，并删除本段进度记录。
+## 2026-07-07 - Task: 调整社团补全卡片模式特典灰态规则
+### What was done
+- 将卡片模式的灰态判断改成以当前实际挂载的特典子项为准；只要本体卡片渲染时带有特典子项，本体封面不再被 `completion_card_dimmed` 压灰。
+- 特典附属小卡不再使用后端旧灰态字段，避免“实际已有特典但小卡仍然灰掉”的视觉误判。
+- `WorkCard` 增加外层灰态覆盖入口，默认仍兼容旧字段，只有社团补全卡片模式按特典挂载关系覆盖。
+
+### Testing
+- `frontend/` 下执行 `npm run build`：通过；仅有既有 VueUse pure annotation、lottie eval 和 chunk size warning。
+
+### Notes
+- `frontend/src/components/circle/WorkCard.vue`：新增 `completionDimmed` 覆盖入参，灰态 class 改为读统一计算值。
+- `frontend/src/components/circle/CircleWorksViewport.vue`：卡片模式按 `bonus_works` 实际挂载状态动态取消本体灰态，并移除特典小卡灰态绑定和无用样式。
+- `progress.md`：追加本轮样式规则调整和验证记录。
+- 回滚方式：还原上述两个前端组件本轮 hunk，并删除本段进度记录。
+## 2026-07-07 - Task: 修正特典灰态按库存拥有态判断
+### What was done
+- 修正上一轮“有特典关系就不灰”的判断，改为“库存实际拥有特典才不灰”。
+- 卡片模式下如果本体挂载了特典子项但这些特典都没有库存拥有态，本体卡片保持灰态，用来区分库存没有特典的情况。
+- 特典详情卡的“已收录 / 未收录”与灰态判断复用同一个拥有态函数，避免文字和视觉状态不一致。
+
+### Testing
+- `frontend/` 下执行 `npm run build`：通过；仅有既有 VueUse pure annotation、lottie eval 和 chunk size warning。
+
+### Notes
+- `frontend/src/components/circle/CircleWorksViewport.vue`：新增 `isBonusOwned()` / `hasOwnedRenderedBonus()`，灰态改为按挂载特典的库存拥有态计算。
+- `progress.md`：追加本轮规则修正和验证记录。
+- 回滚方式：还原 `frontend/src/components/circle/CircleWorksViewport.vue` 本轮拥有态判断 hunk，并删除本段进度记录。
+## 2026-07-07 - Task: 修正特典卡片刷新后的组内灰态规则
+### What was done
+- 纠正上一轮把灰态理解成“特典自身未拥有就灰”的错误，恢复为本体与特典同组对比：组内至少一边已拥有时，缺失的那一边才灰；组内都未拥有时都保持彩色。
+- 本体卡片灰态现在按“特典有、本体没有”动态计算；特典小卡灰态按“本体有、该特典没有”动态计算。
+- 灰态直接读取刷新后的 `server_owned / owned / completion_owned / local_owned`，避免刷新特典拥有状态后小卡仍沿用旧 `completion_card_dimmed`。
+
+### Testing
+- `frontend/` 下执行 `npm run build`：通过；仅有既有 VueUse pure annotation、lottie eval 和 chunk size warning。
+
+### Notes
+- `frontend/src/components/circle/CircleWorksViewport.vue`：新增组内拥有态判断，`shouldDimWorkCard()` 和 `shouldDimBonusCard()` 都按当前渲染组实时计算。
+- `progress.md`：追加本轮业务规则纠正和验证记录。
+- 回滚方式：还原 `frontend/src/components/circle/CircleWorksViewport.vue` 本轮组内灰态判断 hunk，并删除本段进度记录。
+## 2026-07-07 - Task: 优化社团补全卡片灰态计算效率
+### What was done
+- 将卡片模式的本体拥有态、组内拥有态、本体灰态、特典小卡灰态提前计算进 `itemViewModels`，避免模板渲染时反复扫描同一组特典。
+- 特典小卡新增预计算 view model，复用 key、选中态、闪烁态、定位态、拥有态和灰态，减少 class 绑定里的重复函数调用。
+- 图片可见队列改为复用特典小卡预计算 key，减少滚动渲染时重复拼接 key。
+
+### Testing
+- `frontend/` 下执行 `npm run build`：通过；仅有既有 VueUse pure annotation、lottie eval 和 chunk size warning。
+
+### Notes
+- `frontend/src/components/circle/CircleWorksViewport.vue`：卡片模式灰态和特典小卡状态改为 view model 预计算。
+- `progress.md`：追加本轮性能优化和验证记录。
+- 回滚方式：还原 `frontend/src/components/circle/CircleWorksViewport.vue` 本轮 view model 预计算相关 hunk，并删除本段进度记录。

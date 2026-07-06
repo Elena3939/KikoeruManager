@@ -128,10 +128,12 @@ function hasActiveBonus(bonuses = []) {
   return Array.isArray(bonuses) && bonuses.some(isActiveBonus)
 }
 
+function isCompletionOwned(item) {
+  return isStrictTrue(item?.server_owned) || isStrictTrue(item?.owned) || isStrictTrue(item?.completion_owned) || isStrictTrue(item?.local_owned)
+}
+
 function bonusOwnedLabel(bonus) {
-  return isStrictTrue(bonus?.server_owned) || isStrictTrue(bonus?.owned) || isStrictTrue(bonus?.completion_owned) || isStrictTrue(bonus?.local_owned)
-    ? '已收录'
-    : '未收录'
+  return isCompletionOwned(bonus) ? '已收录' : '未收录'
 }
 
 function bonusOwnedTagClass(bonus) {
@@ -157,6 +159,22 @@ function bonusCvLabel(bonus) {
 function isItemSelected(item) {
   const code = String(item?.canonical_rjcode || '').trim()
   return Boolean(code && props.selectedCodes?.has?.(code))
+}
+
+function hasRenderedBonuses(bonuses) {
+  return Array.isArray(bonuses) && bonuses.length > 0
+}
+
+function groupHasOwnedWork(item, bonuses) {
+  return isCompletionOwned(item) || (Array.isArray(bonuses) && bonuses.some(isCompletionOwned))
+}
+
+function shouldDimWorkCard(viewModel) {
+  return Boolean(viewModel?.completionDimmed)
+}
+
+function shouldDimBonusCard(bonusViewModel) {
+  return Boolean(bonusViewModel?.dimmed)
 }
 
 function openBonusDetail(bonus) {
@@ -218,6 +236,20 @@ const groupedItems = computed(() => {
       return { item, bonuses: bonusBuckets.get(key) || [], sourceIndex: index }
     })
 })
+
+watch(groupedItems, groups => {
+  const activeCode = bonusCode(activeBonusDetail.value)
+  if (!activeCode) return
+  for (const group of groups) {
+    for (const bonus of group.bonuses || []) {
+      if (bonusCode(bonus) === activeCode) {
+        if (activeBonusDetail.value !== bonus) activeBonusDetail.value = bonus
+        return
+      }
+    }
+  }
+})
+
 const displayGroups = computed(() => {
   if (props.mode === 'card') return groupedItems.value
 
@@ -271,13 +303,40 @@ const rowCount = computed(() => {
 })
 const itemViewModels = computed(() => pagedGroups.value.map((group, index) => {
   const item = group.item
+  const bonuses = Array.isArray(group.bonuses) ? group.bonuses : []
   const code = String(item?.canonical_rjcode || '').trim()
+  const key = itemKey(item, group.sourceIndex ?? index)
+  const itemOwned = isCompletionOwned(item)
+  const groupOwned = itemOwned || bonuses.some(isCompletionOwned)
+  const completionDimmed = props.mode === 'card' && bonuses.length
+    ? groupOwned && !itemOwned
+    : isStrictTrue(item?.completion_card_dimmed)
+  const bonusViewModels = bonuses.map((bonus, bonusIndex) => {
+    const bonusKey = itemKey(bonus, `${key}:bonus:${bonusIndex}`)
+    const bonusCodeValue = String(bonus?.canonical_rjcode || '').trim()
+    const bonusOwned = isCompletionOwned(bonus)
+    return {
+      item: bonus,
+      index: bonusIndex,
+      key: bonusKey,
+      code: bonusCodeValue,
+      owned: bonusOwned,
+      dimmed: groupOwned && !bonusOwned,
+      selected: Boolean(bonusCodeValue && props.selectedCodes?.has?.(bonusCodeValue)),
+      flashed: Boolean(bonusCodeValue && props.flashedCodes?.has?.(bonusCodeValue)),
+      located: Boolean(bonusCodeValue && props.locatedCodes?.has?.(bonusCodeValue)),
+    }
+  })
   return {
     item,
-    bonuses: group.bonuses,
+    bonuses,
+    bonusViewModels,
     index,
-    key: itemKey(item, group.sourceIndex ?? index),
+    key,
     code,
+    itemOwned,
+    groupOwned,
+    completionDimmed,
     selected: Boolean(code && props.selectedCodes?.has?.(code)),
     flashed: Boolean(code && props.flashedCodes?.has?.(code)),
     located: Boolean(code && props.locatedCodes?.has?.(code)),
@@ -316,15 +375,15 @@ const visibleImageKeys = computed(() => {
   if (usePlainRender.value) {
     return itemViewModels.value.flatMap(item => [
       item.key,
-      ...item.bonuses.map((bonus, index) => itemKey(bonus, `${item.key}:bonus:${index}`)),
+      ...item.bonusViewModels.map(bonus => bonus.key),
     ])
   }
   const keys = []
   for (const virtualRow of virtualRows.value) {
     for (const cell of getRowItems(virtualRow.index)) {
       keys.push(cell.key)
-      for (const [bonusIndex, bonus] of cell.bonuses.entries()) {
-        keys.push(itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`))
+      for (const bonus of cell.bonusViewModels) {
+        keys.push(bonus.key)
       }
     }
   }
@@ -591,6 +650,7 @@ onBeforeUnmount(() => {
               :selected="viewModel.selected"
               :status-flash="viewModel.flashed"
               :locate-flash="viewModel.located"
+              :completion-dimmed="shouldDimWorkCard(viewModel)"
               :corner-label="cornerLabel"
               :image-active="isImageActive(viewModel.key)"
               @select="emit('select', $event)"
@@ -600,29 +660,29 @@ onBeforeUnmount(() => {
             />
             <div v-if="viewModel.bonuses.length && mode === 'card'" class="circle-bonus-shelf is-card">
               <button
-                v-for="(bonus, bonusIndex) in viewModel.bonuses"
-                :key="itemKey(bonus, `${viewModel.key}:bonus:${bonusIndex}`)"
+                v-for="bonusViewModel in viewModel.bonusViewModels"
+                :key="bonusViewModel.key"
                 type="button"
                 class="circle-bonus-gift"
                 :class="{
-                  'is-selected': viewModelForBonus(bonus, `${viewModel.key}:bonus:${bonusIndex}`).selected,
-                  'status-flash': viewModelForBonus(bonus, `${viewModel.key}:bonus:${bonusIndex}`).flashed,
-                  'locate-flash': viewModelForBonus(bonus, `${viewModel.key}:bonus:${bonusIndex}`).located,
-                  'is-dimmed': bonus.completion_card_dimmed,
+                  'is-selected': bonusViewModel.selected,
+                  'status-flash': bonusViewModel.flashed,
+                  'locate-flash': bonusViewModel.located,
+                  'is-dimmed': shouldDimBonusCard(bonusViewModel),
                 }"
-                :title="bonusTitle(bonus)"
-                @click.stop="openBonusDetail(bonus)"
+                :title="bonusTitle(bonusViewModel.item)"
+                @click.stop="openBonusDetail(bonusViewModel.item)"
               >
                 <span class="circle-bonus-gift-cover">
                   <img
-                    v-if="isImageActive(itemKey(bonus, `${viewModel.key}:bonus:${bonusIndex}`)) && bonusCoverUrl(bonus)"
-                    :src="bonusCoverUrl(bonus)"
+                    v-if="isImageActive(bonusViewModel.key) && bonusCoverUrl(bonusViewModel.item)"
+                    :src="bonusCoverUrl(bonusViewModel.item)"
                     loading="lazy"
                     decoding="async"
                     fetchpriority="low"
                     referrerpolicy="no-referrer"
-                    @load="markImageSettled(itemKey(bonus, `${viewModel.key}:bonus:${bonusIndex}`))"
-                    @error="markImageSettled(itemKey(bonus, `${viewModel.key}:bonus:${bonusIndex}`))"
+                    @load="markImageSettled(bonusViewModel.key)"
+                    @error="markImageSettled(bonusViewModel.key)"
                   />
                   <Gift v-else :size="16" />
                 </span>
@@ -848,6 +908,7 @@ onBeforeUnmount(() => {
                   :selected="cell.selected"
                   :status-flash="cell.flashed"
                   :locate-flash="cell.located"
+                  :completion-dimmed="shouldDimWorkCard(cell)"
                   :corner-label="cornerLabel"
                   :image-active="isImageActive(cell.key)"
                   @select="emit('select', $event)"
@@ -857,29 +918,29 @@ onBeforeUnmount(() => {
                 />
                 <div v-if="cell.bonuses.length && mode === 'card'" class="circle-bonus-shelf is-card">
                   <button
-                    v-for="(bonus, bonusIndex) in cell.bonuses"
-                    :key="itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`)"
+                    v-for="bonusViewModel in cell.bonusViewModels"
+                    :key="bonusViewModel.key"
                     type="button"
                     class="circle-bonus-gift"
                     :class="{
-                      'is-selected': viewModelForBonus(bonus, `${cell.key}:bonus:${bonusIndex}`).selected,
-                      'status-flash': viewModelForBonus(bonus, `${cell.key}:bonus:${bonusIndex}`).flashed,
-                      'locate-flash': viewModelForBonus(bonus, `${cell.key}:bonus:${bonusIndex}`).located,
-                      'is-dimmed': bonus.completion_card_dimmed,
+                      'is-selected': bonusViewModel.selected,
+                      'status-flash': bonusViewModel.flashed,
+                      'locate-flash': bonusViewModel.located,
+                      'is-dimmed': shouldDimBonusCard(bonusViewModel),
                     }"
-                    :title="bonusTitle(bonus)"
-                    @click.stop="openBonusDetail(bonus)"
+                    :title="bonusTitle(bonusViewModel.item)"
+                    @click.stop="openBonusDetail(bonusViewModel.item)"
                   >
                     <span class="circle-bonus-gift-cover">
                       <img
-                        v-if="isImageActive(itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`)) && bonusCoverUrl(bonus)"
-                        :src="bonusCoverUrl(bonus)"
+                        v-if="isImageActive(bonusViewModel.key) && bonusCoverUrl(bonusViewModel.item)"
+                        :src="bonusCoverUrl(bonusViewModel.item)"
                         loading="lazy"
                         decoding="async"
                         fetchpriority="low"
                         referrerpolicy="no-referrer"
-                        @load="markImageSettled(itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`))"
-                        @error="markImageSettled(itemKey(bonus, `${cell.key}:bonus:${bonusIndex}`))"
+                        @load="markImageSettled(bonusViewModel.key)"
+                        @error="markImageSettled(bonusViewModel.key)"
                       />
                       <Gift v-else :size="16" />
                     </span>
@@ -1321,14 +1382,29 @@ onBeforeUnmount(() => {
 }
 
 .circle-bonus-shelf.is-card .circle-bonus-gift.is-dimmed {
-  filter: grayscale(1) saturate(0.18) brightness(0.74) contrast(1.08);
-  opacity: 0.94;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.18);
+  filter: grayscale(1) saturate(0.28) brightness(0.86) contrast(1.04);
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--circle-border, #94a3b8) 44%, transparent);
+  box-shadow:
+    0 6px 14px rgba(15, 23, 42, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.circle-bonus-shelf.is-card .circle-bonus-gift.is-dimmed::before {
+  opacity: 0.16;
+  filter: grayscale(1) blur(0.5px);
+}
+
+.circle-bonus-shelf.is-card .circle-bonus-gift.is-dimmed::after {
+  opacity: 0.18;
+  filter: grayscale(1);
 }
 
 .circle-bonus-shelf.is-card .circle-bonus-gift.is-dimmed:hover {
-  filter: grayscale(1) saturate(0.2) brightness(0.8) contrast(1.08);
-  opacity: 1;
+  filter: grayscale(1) saturate(0.34) brightness(0.9) contrast(1.04);
+  box-shadow:
+    0 8px 16px rgba(15, 23, 42, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24);
 }
 
 .circle-bonus-gift:active {
