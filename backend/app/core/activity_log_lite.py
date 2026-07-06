@@ -229,6 +229,23 @@ def _chips_for_upload(detail: Dict[str, Any]) -> List[Dict[str, str]]:
 def _chips_for_circle_completion(detail: Dict[str, Any]) -> List[Dict[str, str]]:
     chips: List[Dict[str, str]] = []
     circle = str(detail.get("circle_name") or "").strip()
+    source_action = str(detail.get("source_action") or "").strip()
+    if source_action in {"bonus_probe", "new_release_bonus_probe"}:
+        hit_count = _int(detail.get("hit_count"))
+        inserted_count = _int(detail.get("inserted_count"))
+        probe_count = _int(detail.get("probe_count"))
+        request_count = _int(detail.get("request_count"))
+        if circle:
+            chips.append(_chip("社团", circle[:20], "info"))
+        chips.append(_chip("命中", str(hit_count), "success" if hit_count else "neutral"))
+        if inserted_count:
+            chips.append(_chip("写入", str(inserted_count), "info"))
+        if probe_count:
+            chips.append(_chip("探测", str(probe_count), "neutral"))
+        elif request_count:
+            chips.append(_chip("请求", str(request_count), "neutral"))
+        return chips
+
     selected = _int(detail.get("selected_count"))
     refreshed = _int(detail.get("refreshed_count"))
     changed = _int(detail.get("changed_count"))
@@ -450,6 +467,23 @@ def build_lite_item(row: Dict[str, Any]) -> Dict[str, Any]:
         if reason_text:
             compact_detail["reason"] = reason_text
         if compact_detail:
+            item["detail"] = compact_detail
+
+    if category == "circle_completion":
+        source_action = str(detail.get("source_action") or "").strip()
+        if source_action in {"bonus_probe", "new_release_bonus_probe"}:
+            compact_detail = {"source_action": source_action}
+            for key in (
+                "bonus_probe_status",
+                "hit_count",
+                "inserted_count",
+                "probe_count",
+                "request_count",
+                "maker_id",
+            ):
+                value = detail.get(key)
+                if value not in (None, "", []):
+                    compact_detail[key] = value
             item["detail"] = compact_detail
 
     return item

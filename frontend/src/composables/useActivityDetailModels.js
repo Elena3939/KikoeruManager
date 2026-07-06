@@ -1620,8 +1620,35 @@ function isPurelyProblemListPartial(row) {
   return false
 }
 
+function bonusProbeDisplayState(row) {
+  if (!row || String(row.category || '') !== 'circle_completion') return ''
+  const detail = row.detail && typeof row.detail === 'object' ? row.detail : {}
+  const sourceAction = String(row.source_action || detail.source_action || '').trim()
+  if (sourceAction !== 'bonus_probe' && sourceAction !== 'new_release_bonus_probe') return ''
+
+  const raw = String(row.status || '').trim()
+  if (raw === 'cancelled' || raw === 'aborted') return 'cancelled'
+
+  const probeStatus = String(detail.bonus_probe_status || '').trim()
+  const hitCount = Number(detail.hit_count || 0)
+  const hitRjcodes = Array.isArray(detail.bonus_hit_rjcodes) ? detail.bonus_hit_rjcodes.length : 0
+  if (probeStatus === 'hit' || hitCount > 0 || hitRjcodes > 0) return 'success'
+
+  const summary = String(row.summary || '')
+  const noConclusion = summary.includes('超出预算')
+    || summary.includes('未产出无特典结论')
+    || summary.includes('未完成结论')
+  if (noConclusion) return 'incomplete'
+  if (probeStatus === 'miss') return 'incomplete'
+
+  return ''
+}
+
 function effectiveRowStatus(row) {
   if (!row) return ''
+  const bonusState = bonusProbeDisplayState(row)
+  if (bonusState) return bonusState
+
   const raw = String(row.status || '')
 
   // 批次父行的子任务状态感知（与 ActivityHistory.vue 的 effectiveStatus 同口径）：
@@ -1826,6 +1853,20 @@ function humanAction(row) {
     if (status === 'failed') return 'ASMR 同步下载失败'
   }
   if (cat === 'circle_completion') {
+    if (sourceAction === 'bonus_probe' || sourceAction === 'new_release_bonus_probe') {
+      const label = sourceAction === 'new_release_bonus_probe' ? '新作特典探测' : '特典补全'
+      const bonusState = bonusProbeDisplayState(row)
+      if (bonusState === 'success') return label
+      if (bonusState === 'incomplete') {
+        const summary = String(row.summary || '')
+        return summary.includes('超出预算') || summary.includes('未产出无特典结论')
+          ? `${label}未完成`
+          : '未找到特典'
+      }
+      if (bonusState === 'cancelled') return `${label}已取消`
+      if (status === 'failed') return `${label}失败`
+      return label
+    }
     if (action === 'index_completed') return status === 'success' ? '创建索引检索成功' : '创建索引检索失败'
     if (action === 'index_failed') return '创建索引检索失败'
     if (action === 'refresh_selected_works') return status === 'success' ? '社团作品信息更新' : '社团作品信息更新失败'
@@ -2062,6 +2103,7 @@ function bonusProbeModel(row) {
     || sourceAction === 'new_release_bonus_probe'
     || String(d.bonus_probe_status || '').trim()
   if (!isBonusProbe) return null
+  const circleName = String(d.circle_name || '').trim()
 
   const rjcodes = Array.isArray(d.bonus_hit_rjcodes)
     ? d.bonus_hit_rjcodes.map((it) => normalizeRjcode(it)).filter(Boolean)
@@ -2075,11 +2117,21 @@ function bonusProbeModel(row) {
       title: String(item?.title || '').trim(),
       releaseDate: formatReleaseDate(item?.release_date),
       makerId: String(item?.maker_id || '').trim(),
+      circleName: String(item?.circle_name || circleName || '').trim(),
+      coverUrl: String(item?.cover_url || item?.image_url || buildDlsiteCoverUrl(rjcode)).trim(),
       source: String(item?.source || '').trim(),
     })
   }
   for (const rjcode of rjcodes) {
-    if (!itemMap.has(rjcode)) itemMap.set(rjcode, { rjcode, title: '', releaseDate: '', makerId: '', source: '' })
+    if (!itemMap.has(rjcode)) itemMap.set(rjcode, {
+      rjcode,
+      title: '',
+      releaseDate: '',
+      makerId: '',
+      circleName,
+      coverUrl: buildDlsiteCoverUrl(rjcode),
+      source: '',
+    })
   }
 
   const items = Array.from(itemMap.values())
@@ -2101,11 +2153,28 @@ function bonusProbeModel(row) {
   const probeCount = Number(d.probe_count || 0)
   const requestCount = Number(d.request_count || 0)
   const releaseDateCount = Array.isArray(d.release_dates) ? d.release_dates.length : dateRows.length
-  const status = items.length || String(d.bonus_probe_status || '').trim() === 'hit' ? 'hit' : 'miss'
+  const summary = String(row.summary || '')
+  const noConclusion = summary.includes('超出预算')
+    || summary.includes('未产出无特典结论')
+    || summary.includes('未完成结论')
+  const rawProbeStatus = String(d.bonus_probe_status || '').trim()
+  const status = noConclusion
+    ? 'incomplete'
+    : (items.length || rawProbeStatus === 'hit' ? 'hit' : 'miss')
+  const statusLabel = status === 'hit'
+    ? '已找到特典'
+    : (status === 'incomplete' ? '未完成结论' : '未找到特典')
   return {
     status,
-    statusLabel: status === 'hit' ? '已找到特典' : '未找到特典',
+    statusLabel,
     sourceLabel: sourceAction === 'new_release_bonus_probe' ? '邮件新作探测' : '社团特典补全',
+    circleName,
+    title: status === 'hit'
+      ? `找到 ${items.length} 个特典`
+      : (status === 'incomplete' ? '探测未完成，未产出无特典结论' : '未找到符合条件的特典'),
+    emptyText: status === 'incomplete'
+      ? '本次探测未完成，没有产出无特典结论。'
+      : '已完成本次特典筛选，但没有命中隐藏特典条件的 RJ。',
     items,
     dateRows,
     metrics: [
