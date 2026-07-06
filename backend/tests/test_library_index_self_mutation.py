@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.models.database import Base, LibraryIndexStatus  # noqa: E402
+from app.models.database import Base, LibraryIndexEntry, LibraryIndexStatus  # noqa: E402
 from app.core.library_index.service import LibraryIndexService  # noqa: E402
 from app.core.library_index.snapshot_store import SnapshotStore  # noqa: E402
 from app.core.library_index.types import IndexEntry  # noqa: E402
@@ -786,6 +786,67 @@ def test_snapshot_store_reads_do_not_wait_for_index_write_budget(monkeypatch, is
     assert store.count_library_entries(library_id) == 1
 
     assert calls == []
+
+
+def test_bulk_upsert_fills_rjcode_from_directory_name_when_entry_rjcode_missing(isolated_index):
+    """目录名里有 RJ 但 entry.rjcode 缺失时，入库前必须补齐 rjcode 列。"""
+    service: LibraryIndexService = isolated_index["service"]
+    store: SnapshotStore = isolated_index["store"]
+    library_id = "lib_rj_write_fill"
+
+    store.bulk_upsert([
+        _manual_entry(
+            "RaRo/[RaRo][RJ01627612](CV 石飛恵里花)",
+            library_id=library_id,
+            rjcode="",
+        ),
+    ])
+
+    hits = service.find_by_rjcode("RJ01627612", library_id)
+
+    assert len(hits) == 1
+    assert hits[0].relative_path == "RaRo/[RaRo][RJ01627612](CV 石飛恵里花)"
+    assert hits[0].rjcode == "RJ01627612"
+
+
+def test_find_by_rjcode_repairs_legacy_missing_rjcode_column(isolated_index):
+    """旧索引行漏写 rjcode 时，查询前应修正 rjcode 列再精确命中。"""
+    service: LibraryIndexService = isolated_index["service"]
+    store: SnapshotStore = isolated_index["store"]
+    library_id = "lib_rj_legacy_repair"
+
+    store.bulk_upsert([
+        _manual_entry(
+            "RaRo/[RaRo][RJ01627612](CV 石飛恵里花)",
+            library_id=library_id,
+            rjcode="RJ01627612",
+        ),
+    ])
+    with store._write_session(invalidate_children_total_cache=False) as db:  # noqa: SLF001
+        row = (
+            db.query(LibraryIndexEntry)
+            .filter(
+                LibraryIndexEntry.library_id == library_id,
+                LibraryIndexEntry.relative_path == "RaRo/[RaRo][RJ01627612](CV 石飛恵里花)",
+            )
+            .one()
+        )
+        row.rjcode = ""
+
+    hits = service.find_by_rjcode("RJ01627612", library_id)
+
+    assert len(hits) == 1
+    assert hits[0].rjcode == "RJ01627612"
+    with store._read_session() as db:  # noqa: SLF001
+        repaired = (
+            db.query(LibraryIndexEntry.rjcode)
+            .filter(
+                LibraryIndexEntry.library_id == library_id,
+                LibraryIndexEntry.relative_path == "RaRo/[RaRo][RJ01627612](CV 石飛恵里花)",
+            )
+            .scalar()
+        )
+    assert repaired == "RJ01627612"
 
 
 def test_interrupted_initial_syncing_status_becomes_error(isolated_index):

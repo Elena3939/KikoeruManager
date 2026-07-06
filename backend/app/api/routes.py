@@ -8087,6 +8087,7 @@ async def browse_library_files(
                 force_refresh=force_refresh,
                 search_exact=search_exact,
                 search_result_kind=search_result_kind,
+                page_cursor=page_cursor,
             )
         data["libraries"] = manager.list_libraries()
         data["library_id"] = data.get("library_id") or current_library.id
