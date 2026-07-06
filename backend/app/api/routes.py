@@ -866,13 +866,15 @@ def list_activity_logs(
                     ActivityLog.status.in_(("failed", "partial_success")),
                 )
             )
-        # 社团补全的 task_finished / task_finished_incomplete 生命周期行只是 "完成" 的占位摘要，
+        # 社团索引的 task_finished / task_finished_incomplete 生命周期行只是 "完成" 的占位摘要，
         # 真正的信息（社团 / 索引计数 / 耗时）都在同时刻写入的 index_completed domain event 里。
-        # lite 路径不跑 aggregator 合并，否则会出现 "完成" + "索引完成" 并排两条，这里直接 SQL 过滤掉。
+        # 特典探测没有额外 domain event，必须保留这条生命周期行，否则操作记录会看不到刚执行的特典查找。
+        circle_source_action = func.coalesce(ActivityLog.detail.op("->>")("source_action"), "")
         query = query.filter(
             ~(
                 (ActivityLog.category == "circle_completion")
                 & ActivityLog.action.in_(("task_finished", "task_finished_incomplete"))
+                & ~circle_source_action.in_(("bonus_probe", "new_release_bonus_probe"))
             )
         )
         # 搜索分支：search_match_count 已是索引命中上限内的总数（≤ _SEARCH_MATCH_CAP），
@@ -14437,10 +14439,11 @@ class CircleCompletionBonusProbeStartRequest(BaseModel):
     circle_id: str
     maker_id: str = ""
     release_dates: List[str] = []
+    selected_rjcodes_by_date: Dict[str, List[str]] = {}
     mode: str = "normal"
     gap_limit: int = 500
     batch_size: int = 500
-    concurrency: int = 5
+    concurrency: int = 6
 
 
 class CircleCompletionDownloadPreviewRequest(BaseModel):
@@ -16758,6 +16761,18 @@ async def circle_completion_bonus_probe_start(request: CircleCompletionBonusProb
         mode = str(request.mode or "normal").strip() or "normal"
         release_dates = [service.normalize_date(value) for value in list(request.release_dates or [])]
         release_dates = [value for value in release_dates if value]
+        selected_rjcodes_by_date: Dict[str, List[str]] = {}
+        for raw_date, raw_codes in dict(request.selected_rjcodes_by_date or {}).items():
+            normalized_date = service.normalize_date(raw_date)
+            if not normalized_date:
+                continue
+            normalized_codes = []
+            for raw_code in raw_codes or []:
+                normalized_code = service.normalize_rjcode(raw_code)
+                if normalized_code and normalized_code not in normalized_codes:
+                    normalized_codes.append(normalized_code)
+            if normalized_codes:
+                selected_rjcodes_by_date[normalized_date] = normalized_codes
         if not release_dates:
             release_dates = service.list_indexed_release_dates(circle_id, maker_id, mode=mode)
         if not release_dates:
@@ -16765,14 +16780,20 @@ async def circle_completion_bonus_probe_start(request: CircleCompletionBonusProb
 
         gap_limit = max(1, int(request.gap_limit or 500))
         batch_size = max(1, int(request.batch_size or 500))
-        concurrency = max(1, int(request.concurrency or 5))
+        concurrency = max(1, int(request.concurrency or 6))
         requested_release_dates = list(release_dates)
         release_dates, skipped_completed_release_dates = service.split_reusable_release_dates(
+            circle_id=circle_id,
             maker_id=maker_id,
             release_dates=requested_release_dates,
             mode=mode,
             gap_limit=gap_limit,
         )
+        selected_rjcodes_by_date = {
+            date: selected_rjcodes_by_date.get(date, [])
+            for date in release_dates
+            if selected_rjcodes_by_date.get(date)
+        }
         if not release_dates:
             return {
                 "success": True,
@@ -16798,7 +16819,11 @@ async def circle_completion_bonus_probe_start(request: CircleCompletionBonusProb
                     "inserted_count": 0,
                 },
             }
-        business_key = f"{maker_id}:{mode}:{'|'.join(release_dates)}:{gap_limit}:bonus_probe"
+        selected_scope_key = "|".join(
+            f"{date}:{','.join(selected_rjcodes_by_date.get(date, []))}"
+            for date in sorted(selected_rjcodes_by_date)
+        )
+        business_key = f"{maker_id}:{mode}:{'|'.join(release_dates)}:{gap_limit}:{selected_scope_key}:bonus_probe"
         engine = get_task_engine()
         active_statuses = {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED}
         for current_task in engine.get_all_tasks(include_hidden=True):
@@ -16819,6 +16844,7 @@ async def circle_completion_bonus_probe_start(request: CircleCompletionBonusProb
                     "release_dates": release_dates,
                     "requested_release_dates": requested_release_dates,
                     "skipped_completed_release_dates": skipped_completed_release_dates,
+                    "selected_rjcodes_by_date": selected_rjcodes_by_date,
                     "duplicate": True,
                     "result": dict(metadata.get("bonus_probe_result") or {}),
                 }
@@ -16835,6 +16861,7 @@ async def circle_completion_bonus_probe_start(request: CircleCompletionBonusProb
                 "release_dates": release_dates,
                 "requested_release_dates": requested_release_dates,
                 "skipped_completed_release_dates": skipped_completed_release_dates,
+                "selected_rjcodes_by_date": selected_rjcodes_by_date,
                 "mode": mode,
                 "gap_limit": gap_limit,
                 "batch_size": batch_size,
@@ -16865,6 +16892,7 @@ async def circle_completion_bonus_probe_start(request: CircleCompletionBonusProb
             "release_dates": release_dates,
             "requested_release_dates": requested_release_dates,
             "skipped_completed_release_dates": skipped_completed_release_dates,
+            "selected_rjcodes_by_date": selected_rjcodes_by_date,
             "duplicate": False,
             "result": {},
         }

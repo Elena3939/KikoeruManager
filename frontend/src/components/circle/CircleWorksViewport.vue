@@ -1266,29 +1266,33 @@ onBeforeUnmount(() => {
 .circle-bonus-shelf.is-card .circle-bonus-gift {
   overflow: visible;
   isolation: isolate;
-  border-color: color-mix(in srgb, #f6d365 36%, transparent);
+  border-color: color-mix(in srgb, #f6d365 26%, transparent);
   background: transparent;
   box-shadow:
-    0 0 15px rgba(251, 191, 36, 0.24),
-    0 0 24px 2px rgba(251, 191, 36, 0.12),
+    0 0 7px rgba(251, 191, 36, 0.20),
+    0 0 12px rgba(251, 191, 36, 0.08),
     0 10px 24px color-mix(in srgb, var(--circle-shadow, rgba(31, 53, 84, 0.20)) 60%, transparent),
     inset 0 1px 0 rgba(255, 255, 255, 0.42);
+  animation: bonusGiftCardBreath 2.8s ease-in-out infinite;
 }
 
 .circle-bonus-shelf.is-card .circle-bonus-gift::before {
   content: '';
   position: absolute;
-  inset: -7px;
+  inset: -2px;
   z-index: -1;
-  border-radius: 18px;
+  border-radius: 14px;
   pointer-events: none;
+  border: 0;
   background:
-    radial-gradient(circle at 88% 12%, rgba(255, 244, 179, 0.76), rgba(251, 191, 36, 0.28) 26%, transparent 54%),
-    radial-gradient(circle at 8% 92%, rgba(251, 191, 36, 0.42), rgba(245, 158, 11, 0.18) 30%, transparent 58%),
-    radial-gradient(circle at 52% 50%, rgba(251, 191, 36, 0.16), transparent 62%);
-  opacity: 0.82;
-  filter: blur(1.6px);
-  animation: bonusGiftRareHalo 3.4s ease-in-out infinite;
+    radial-gradient(ellipse at 78% 8%, rgba(255, 236, 153, 0.42), rgba(250, 204, 21, 0.22) 22%, transparent 54%),
+    radial-gradient(ellipse at 16% 92%, rgba(250, 204, 21, 0.26), transparent 58%),
+    radial-gradient(circle at 54% 18%, rgba(255, 255, 255, 0.30), transparent 13%);
+  background-size: 120% 120%, 120% 120%, 100% 100%;
+  box-shadow: 0 0 10px rgba(250, 204, 21, 0.18);
+  opacity: 0.62;
+  filter: blur(0.5px);
+  animation: bonusGiftRareHalo 2.8s ease-in-out infinite;
 }
 
 .circle-bonus-shelf.is-card .circle-bonus-gift::after {
@@ -1299,17 +1303,18 @@ onBeforeUnmount(() => {
   border-radius: inherit;
   pointer-events: none;
   background:
-    radial-gradient(circle at 82% 18%, rgba(255, 244, 179, 0.30), transparent 24%),
-    linear-gradient(115deg, transparent 0%, rgba(255, 236, 153, 0.00) 36%, rgba(255, 236, 153, 0.26) 48%, rgba(255, 236, 153, 0.00) 60%, transparent 100%);
-  opacity: 0.68;
-  animation: bonusGiftSoftGleam 3.8s ease-in-out infinite;
+    radial-gradient(circle at 82% 18%, rgba(255, 244, 179, 0.28), transparent 22%),
+    linear-gradient(115deg, transparent 0%, rgba(255, 236, 153, 0.00) 35%, rgba(255, 236, 153, 0.28) 49%, rgba(255, 236, 153, 0.00) 63%, transparent 100%);
+  opacity: 0.62;
+  animation: bonusGiftSoftGleam 2.9s ease-in-out infinite;
 }
 
 .circle-bonus-shelf.is-card .circle-bonus-gift:hover {
-  border-color: color-mix(in srgb, #facc15 46%, transparent);
+  border-color: color-mix(in srgb, #facc15 42%, transparent);
+  animation-play-state: paused;
   box-shadow:
-    0 0 18px rgba(251, 191, 36, 0.30),
-    0 0 30px 3px rgba(251, 191, 36, 0.16),
+    0 0 10px rgba(251, 191, 36, 0.28),
+    0 0 16px rgba(251, 191, 36, 0.12),
     0 14px 26px color-mix(in srgb, var(--circle-shadow, rgba(31, 53, 84, 0.20)) 55%, transparent);
 }
 
@@ -1822,24 +1827,52 @@ onBeforeUnmount(() => {
 @keyframes bonusGiftSoftGleam {
   0%,
   100% {
-    opacity: 0.42;
-    transform: translateX(-10%);
+    opacity: 0.36;
+    transform: translateX(-16%) rotate(-1deg);
   }
   50% {
-    opacity: 0.78;
-    transform: translateX(10%);
+    opacity: 0.84;
+    transform: translateX(16%) rotate(1deg);
+  }
+}
+
+@keyframes bonusGiftCardBreath {
+  0%,
+  100% {
+    border-color: color-mix(in srgb, #f6d365 22%, transparent);
+    box-shadow:
+      0 0 6px rgba(251, 191, 36, 0.16),
+      0 0 10px rgba(251, 191, 36, 0.06),
+      0 10px 24px color-mix(in srgb, var(--circle-shadow, rgba(31, 53, 84, 0.20)) 60%, transparent),
+      inset 0 1px 0 rgba(255, 255, 255, 0.42);
+  }
+  48% {
+    border-color: color-mix(in srgb, #facc15 46%, transparent);
+    box-shadow:
+      0 0 11px rgba(251, 191, 36, 0.32),
+      0 0 18px rgba(251, 191, 36, 0.14),
+      0 10px 24px color-mix(in srgb, var(--circle-shadow, rgba(31, 53, 84, 0.20)) 60%, transparent),
+      inset 0 1px 0 rgba(255, 255, 255, 0.52);
   }
 }
 
 @keyframes bonusGiftRareHalo {
   0%,
   100% {
-    opacity: 0.72;
-    transform: scale(0.995);
+    opacity: 0.50;
+    transform: scale(0.998);
+    background-position:
+      50% 50%,
+      50% 50%,
+      45% 18%;
   }
   50% {
-    opacity: 0.96;
-    transform: scale(1.015);
+    opacity: 0.82;
+    transform: scale(1.004);
+    background-position:
+      54% 46%,
+      46% 54%,
+      62% 14%;
   }
 }
 
@@ -1866,19 +1899,21 @@ onBeforeUnmount(() => {
 
 :global(html.kikoerumanager-dark .circle-bonus-shelf.is-card .circle-bonus-gift),
 :global(body.kikoerumanager-dark .circle-bonus-shelf.is-card .circle-bonus-gift) {
-  border-color: rgba(250, 204, 21, 0.38);
+  border-color: rgba(250, 204, 21, 0.30);
   box-shadow:
-    0 0 16px rgba(250, 204, 21, 0.28),
-    0 0 28px 3px rgba(250, 204, 21, 0.16),
+    0 0 8px rgba(250, 204, 21, 0.22),
+    0 0 14px rgba(250, 204, 21, 0.10),
     0 10px 24px rgba(0, 0, 0, 0.34);
 }
 
 :global(html.kikoerumanager-dark .circle-bonus-shelf.is-card .circle-bonus-gift::before),
 :global(body.kikoerumanager-dark .circle-bonus-shelf.is-card .circle-bonus-gift::before) {
   background:
-    radial-gradient(circle at 88% 12%, rgba(254, 240, 138, 0.82), rgba(250, 204, 21, 0.34) 26%, transparent 54%),
-    radial-gradient(circle at 8% 92%, rgba(250, 204, 21, 0.48), rgba(245, 158, 11, 0.22) 30%, transparent 58%),
-    radial-gradient(circle at 52% 50%, rgba(250, 204, 21, 0.18), transparent 62%);
+    radial-gradient(ellipse at 78% 8%, rgba(254, 240, 138, 0.46), rgba(250, 204, 21, 0.24) 22%, transparent 54%),
+    radial-gradient(ellipse at 16% 92%, rgba(250, 204, 21, 0.30), transparent 58%),
+    radial-gradient(circle at 54% 18%, rgba(255, 255, 255, 0.32), transparent 13%);
+  background-size: 120% 120%, 120% 120%, 100% 100%;
+  box-shadow: 0 0 11px rgba(250, 204, 21, 0.20);
 }
 
 :global(html.kikoerumanager-dark .circle-bonus-shelf.is-card .circle-bonus-gift),

@@ -1993,6 +1993,10 @@ function isBonusDisplayWork(item) {
   return isStrictTrue(item?.is_bonus_work)
 }
 
+function hasAttachedBonusWorks(item) {
+  return Array.isArray(item?.bonus_works) && item.bonus_works.some(bonus => isBonusDisplayWork(bonus))
+}
+
 const detailWorksByCanonical = computed(() => {
   const map = new Map()
   for (const item of Array.isArray(detail.works) ? detail.works : []) {
@@ -4021,7 +4025,10 @@ async function pollBonusProbeJob(jobId, options = {}) {
       const summary = result.summary || result.result || result.meta || {}
       const hitCount = Number(summary.hit_count || result.meta?.hit_count || 0)
       const insertedCount = Number(summary.inserted_count || result.meta?.inserted_count || 0)
-      bonusProbeJob.current_step = `特典探测完成，命中 ${hitCount} 个，写入 ${insertedCount} 个`
+      const incompleteCount = Number(summary.incomplete_count || result.meta?.incomplete_count || 0)
+      bonusProbeJob.current_step = incompleteCount
+        ? `特典探测完成，命中 ${hitCount} 个，写入 ${insertedCount} 个，${incompleteCount} 个发售日未产出无特典结论`
+        : `特典探测完成，命中 ${hitCount} 个，写入 ${insertedCount} 个`
       bonusProbeJob.status = 'completed'
       bonusProbeJob.progress = 100
       bonusProbeJob.error_message = ''
@@ -4032,11 +4039,16 @@ async function pollBonusProbeJob(jobId, options = {}) {
         checked_probe_count: Number(summary.checked_probe_count || result.meta?.checked_probe_count || probeCount),
         hit_count: hitCount,
         inserted_count: insertedCount,
+        incomplete_count: incompleteCount,
       }
       persistBonusProbeJobState()
       scheduleBonusProbeJobAutoHide(10000)
       if (!silentFinish) {
-        ElMessage.success(`特典补全完成，命中 ${hitCount} 个，写入 ${insertedCount} 个`)
+        if (incompleteCount) {
+          ElMessage.warning(`特典补全完成，但 ${incompleteCount} 个发售日超出 RJ 预算，未产出无特典结论`)
+        } else {
+          ElMessage.success(`特典补全完成，命中 ${hitCount} 个，写入 ${insertedCount} 个`)
+        }
       }
       return
     }
@@ -4480,10 +4492,11 @@ async function startBonusProbeForCircle(circleId, options = {}) {
   const result = await circleCompletionApi.startBonusProbe({
     circle_id: normalizedCircleId,
     release_dates: releaseDates,
+    selected_rjcodes_by_date: options.selectedRjcodesByDate || {},
     mode: 'deep',
     gap_limit: 500,
     batch_size: 500,
-    concurrency: 5,
+    concurrency: 6,
   })
   return {
     ...result,
@@ -4536,10 +4549,11 @@ async function getSelectedBonusProbeDates() {
     .map(code => String(code || '').trim())
     .filter(Boolean)
   if (!selectedCodes.length) {
-    return { dates: [], selectedCount: 0, skippedBonusCount: 0, skippedHasBonusCount: 0, skippedNoBonusCount: 0, skippedCompletedDateCount: 0, missingDateCount: 0 }
+    return { dates: [], selectedRjcodesByDate: {}, selectedCount: 0, skippedBonusCount: 0, skippedHasBonusCount: 0, skippedNoBonusCount: 0, skippedCompletedDateCount: 0, missingDateCount: 0 }
   }
 
   const releaseDatesByCode = {}
+  const selectedRjcodesByDate = {}
   const bonusCodes = new Set()
   const hasBonusCodes = new Set()
   const noBonusCodes = new Set()
@@ -4548,7 +4562,7 @@ async function getSelectedBonusProbeDates() {
     const item = activeSelectableWorksByCanonical.value.get(code)
     if (!item) continue
     if (isBonusDisplayWork(item)) bonusCodes.add(code)
-    if (!isBonusDisplayWork(item) && isStrictTrue(item?.has_bonus)) hasBonusCodes.add(code)
+    if (!isBonusDisplayWork(item) && hasAttachedBonusWorks(item)) hasBonusCodes.add(code)
     const releaseDate = getWorkBonusProbeDate(item)
     if (releaseDate) releaseDatesByCode[code] = releaseDate
   }
@@ -4607,10 +4621,13 @@ async function getSelectedBonusProbeDates() {
       continue
     }
     if (!dates.includes(releaseDate)) dates.push(releaseDate)
+    if (!Array.isArray(selectedRjcodesByDate[releaseDate])) selectedRjcodesByDate[releaseDate] = []
+    if (!selectedRjcodesByDate[releaseDate].includes(code)) selectedRjcodesByDate[releaseDate].push(code)
   }
 
   return {
     dates,
+    selectedRjcodesByDate,
     selectedCount: selectedCodes.length,
     skippedBonusCount,
     skippedHasBonusCount,
@@ -4642,6 +4659,7 @@ async function startBonusProbeForSelectedWorks() {
   try {
     const {
       dates,
+      selectedRjcodesByDate,
       selectedCount,
       skippedBonusCount,
       skippedHasBonusCount,
@@ -4664,6 +4682,7 @@ async function startBonusProbeForSelectedWorks() {
     const result = await startBonusProbeForCircle(circleId, {
       circleName: detail.circle_name || '',
       releaseDates: dates,
+      selectedRjcodesByDate,
       currentStep: `正在探测选中作品的 ${dates.length} 个发售日`,
     })
     if (result?.already_completed) {
