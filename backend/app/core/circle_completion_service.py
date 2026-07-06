@@ -1448,6 +1448,91 @@ class CircleCompletionService:
             hidden_ids.add(id(item))
         return [item for item in rows if id(item) not in hidden_ids]
 
+    def _completion_group_members(self, item: Dict[str, Any]) -> List[Dict[str, Any]]:
+        members = [item]
+        for bonus in item.get("bonus_works") or []:
+            if isinstance(bonus, dict):
+                members.append(bonus)
+        return members
+
+    def _completion_apply_card_dim_state(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        for item in rows:
+            members = self._completion_group_members(item)
+            group_has_owned = any(bool(member.get("owned")) for member in members)
+            group_all_missing = not group_has_owned
+            for member in members:
+                member["completion_card_dimmed"] = bool(group_has_owned and not member.get("owned"))
+                member["completion_card_mixed_group"] = bool(not group_all_missing)
+        return rows
+
+    def _filter_completion_items_for_card_tab(
+        self,
+        items: List[Dict[str, Any]],
+        *,
+        tab: str,
+        include_dl_only: bool,
+        status_filters: Optional[List[str]] = None,
+        owned_filter: str = "all",
+        search: str = "",
+    ) -> List[Dict[str, Any]]:
+        tab_key = str(tab or "missing").strip().lower()
+        source_visible_items = [
+            dict(item)
+            for item in items
+            if include_dl_only or item.get("owned") or item.get("has_asmr_one")
+        ]
+        rows = self._completion_group_bonus_items(source_visible_items)
+
+        if tab_key == "owned":
+            rows = [
+                item for item in rows
+                if any(bool(member.get("owned")) for member in self._completion_group_members(item))
+            ]
+            owned_filter = str(owned_filter or "all").strip().lower()
+            if owned_filter != "all":
+                def _owned_filter_match(member: Dict[str, Any]) -> bool:
+                    if not bool(member.get("owned")):
+                        return False
+                    group_key = self._completion_variant_group_key(member, owned=True)
+                    has_subtitle = group_key == "original" and bool(member.get("subtitle_present"))
+                    if owned_filter == "original":
+                        return group_key == "original" and not has_subtitle
+                    if owned_filter == "simplified":
+                        return group_key == "simplified"
+                    if owned_filter == "traditional":
+                        return group_key == "traditional"
+                    if owned_filter == "subtitle":
+                        return has_subtitle
+                    if owned_filter == "bonus":
+                        return bool(member.get("is_bonus_work"))
+                    return True
+                rows = [
+                    item for item in rows
+                    if any(_owned_filter_match(member) for member in self._completion_group_members(item))
+                ]
+        else:
+            rows = [
+                item for item in rows
+                if not any(bool(member.get("owned")) for member in self._completion_group_members(item))
+                and self._is_preferred_missing_completion_item(item)
+            ]
+
+        if status_filters:
+            rows = [
+                item for item in rows
+                if any(
+                    self._completion_item_matches_status_filter(member, key)
+                    for member in self._completion_group_members(item)
+                    for key in status_filters
+                )
+            ]
+        if search:
+            rows = [
+                item for item in rows
+                if any(self._completion_search_match(member, search) for member in self._completion_group_members(item))
+            ]
+        return self._completion_apply_card_dim_state(rows)
+
     def _completion_rj_number(self, rjcode: Any) -> Optional[int]:
         normalized = self.normalize_rjcode(rjcode)
         if not normalized:
@@ -2014,27 +2099,45 @@ class CircleCompletionService:
         compare_filter: str = "all",
         search: str = "",
         sort: str = "updated_desc",
+        view_mode: str = "list",
     ) -> Dict[str, Any]:
         state = self._build_completion_view_state(circle_id_or_query)
         catalog = state["catalog"]
         items = state["items"]
         normalized_filters = self._completion_status_filters(status_filters)
-        filtered = self._filter_completion_items_for_tab(
-            items,
-            tab=tab,
-            include_dl_only=include_dl_only,
-            status_filters=normalized_filters,
-            owned_filter=owned_filter,
-            compare_filter=compare_filter,
-            search=search,
-        )
-        filtered = self._sort_completion_items(filtered, sort)
         tab_key = str(tab or "missing").strip().lower()
-        grouped_filtered = (
-            self._completion_group_bonus_items([dict(item) for item in filtered])
-            if tab_key in {"missing", "owned"}
-            else filtered
-        )
+        card_mode = str(view_mode or "").strip().lower() == "card"
+        if card_mode and tab_key in {"missing", "owned"}:
+            grouped_filtered = self._filter_completion_items_for_card_tab(
+                items,
+                tab=tab_key,
+                include_dl_only=include_dl_only,
+                status_filters=normalized_filters,
+                owned_filter=owned_filter,
+                search=search,
+            )
+            grouped_filtered = self._sort_completion_items(grouped_filtered, sort)
+            filtered = [
+                member
+                for item in grouped_filtered
+                for member in self._completion_group_members(item)
+            ]
+        else:
+            filtered = self._filter_completion_items_for_tab(
+                items,
+                tab=tab,
+                include_dl_only=include_dl_only,
+                status_filters=normalized_filters,
+                owned_filter=owned_filter,
+                compare_filter=compare_filter,
+                search=search,
+            )
+            filtered = self._sort_completion_items(filtered, sort)
+            grouped_filtered = (
+                self._completion_group_bonus_items([dict(item) for item in filtered])
+                if tab_key in {"missing", "owned"}
+                else filtered
+            )
         safe_page_size = max(1, min(200, int(page_size or 10)))
         total = len(grouped_filtered)
         page_count = max(1, (total + safe_page_size - 1) // safe_page_size)

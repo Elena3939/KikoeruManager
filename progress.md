@@ -2707,3 +2707,41 @@
 - `frontend/src/dark-mode.css`：补充操作记录详情头部、关键字段、统计块和特典空态暗色覆盖。
 - `progress.md`：追加本轮修改和验证记录。
 - 回滚方式：还原上述四个前端文件中本轮 `bonusProbeDisplayState`、`incomplete` 文案、`activity-detail-panel` 暗色覆盖相关 hunk，并删除本段进度记录。
+## 2026-07-06 - Task: 卡片模式合并本体与特典缺失状态
+### What was done
+- 社团补全作品分页新增 `view_mode=card` 分支，只在卡片模式按“本体 + 特典”整组决定归属；列表模式继续走原有过滤与拆分逻辑。
+- 卡片模式下只要本体或特典任意一项已拥有，整组留在“已满足”页；缺失的那一侧打 `completion_card_dimmed`，前端显示为灰色。
+- 本体和特典都没拥有时，整组仍留在“缺失作品”页，并保持彩色展示。
+- 前端只在当前 `viewMode === 'card'` 时请求 `view_mode=card`，列表模式请求 `view_mode=list`，并把缓存 key 按视图模式隔离。
+- 已用 `start-all.bat` 重启项目，让后端新接口逻辑实际生效。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile backend/app/core/circle_completion_service.py backend/app/api/routes.py`：通过。
+- 在 `backend/` 下执行 `$env:PYTHONPATH=(Get-Location).Path; ..\.venv\Scripts\python.exe -m pytest tests/test_circle_completion_bonus_grouping.py -q`：通过，6 passed；仅有既有 deprecation / pytest cache warning。
+- `frontend/` 下执行 `npm run build`：通过；仅出现既有 Rollup pure annotation、lottie eval 和大 chunk 体积警告。
+- `git diff --check`：通过，仅有既有 LF/CRLF 提示。
+- 实际请求本地接口验证 `RG62878`：`view_mode=card&tab=owned` 返回本体 `RJ01385196 owned=True dim=False`，其缺失特典 `RJ01416572 owned=False dim=True`；`view_mode=card&tab=missing` 中本体和特典都缺失的组 `dim=False`；`view_mode=list` 不返回 `completion_card_dimmed`。
+
+### Notes
+- `backend/app/core/circle_completion_service.py`：新增卡片模式整组过滤和灰化状态字段。
+- `backend/app/api/routes.py`：作品分页接口透传 `view_mode`。
+- `backend/tests/test_circle_completion_bonus_grouping.py`：覆盖本体有特典缺、特典有本体缺、两个都缺三种卡片模式分组。
+- `frontend/src/api/index.js`：作品分页请求支持 `view_mode`。
+- `frontend/src/views/CircleCompletion.vue`：按当前视图模式传参并隔离缓存。
+- `frontend/src/components/circle/WorkCard.vue`：本体卡片灰化只处理封面图。
+- `frontend/src/components/circle/CircleWorksViewport.vue`：卡片模式右下角特典小卡支持灰化，列表模式不加灰化 class。
+- `progress.md`：追加本轮修改和验证记录。
+- 回滚方式：还原上述文件中 `view_mode`、`_filter_completion_items_for_card_tab()`、`completion_card_dimmed`、卡片灰化样式和测试相关 hunk，并删除本段进度记录。
+## 2026-07-06 - Task: 调整卡片模式特典灰化透明度
+### What was done
+- 将卡片模式右下角特典小卡的缺失灰化从半透明效果改为不透明灰阶效果，避免图片发虚不好辨认。
+- 保留灰色缺失语义，只降低饱和度和亮度，不再明显透出下层内容。
+
+### Testing
+- `frontend/` 下执行 `npm run build`：通过；仅出现既有 Rollup pure annotation、lottie eval 和大 chunk 体积警告。
+- `git diff --check -- frontend/src/components/circle/CircleWorksViewport.vue progress.md`：通过，仅有既有 LF/CRLF 提示。
+
+### Notes
+- `frontend/src/components/circle/CircleWorksViewport.vue`：调整 `.circle-bonus-gift.is-dimmed` 的 `filter` 和 `opacity`。
+- `progress.md`：追加本轮视觉微调记录。
+- 回滚方式：还原本轮 `.circle-bonus-gift.is-dimmed` 灰化参数，并删除本段进度记录。

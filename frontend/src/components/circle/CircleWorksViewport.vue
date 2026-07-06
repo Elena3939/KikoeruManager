@@ -608,6 +608,7 @@ onBeforeUnmount(() => {
                   'is-selected': viewModelForBonus(bonus, `${viewModel.key}:bonus:${bonusIndex}`).selected,
                   'status-flash': viewModelForBonus(bonus, `${viewModel.key}:bonus:${bonusIndex}`).flashed,
                   'locate-flash': viewModelForBonus(bonus, `${viewModel.key}:bonus:${bonusIndex}`).located,
+                  'is-dimmed': bonus.completion_card_dimmed,
                 }"
                 :title="bonusTitle(bonus)"
                 @click.stop="openBonusDetail(bonus)"
@@ -864,6 +865,7 @@ onBeforeUnmount(() => {
                       'is-selected': viewModelForBonus(bonus, `${cell.key}:bonus:${bonusIndex}`).selected,
                       'status-flash': viewModelForBonus(bonus, `${cell.key}:bonus:${bonusIndex}`).flashed,
                       'locate-flash': viewModelForBonus(bonus, `${cell.key}:bonus:${bonusIndex}`).located,
+                      'is-dimmed': bonus.completion_card_dimmed,
                     }"
                     :title="bonusTitle(bonus)"
                     @click.stop="openBonusDetail(bonus)"
@@ -1316,6 +1318,17 @@ onBeforeUnmount(() => {
     0 0 10px rgba(251, 191, 36, 0.28),
     0 0 16px rgba(251, 191, 36, 0.12),
     0 14px 26px color-mix(in srgb, var(--circle-shadow, rgba(31, 53, 84, 0.20)) 55%, transparent);
+}
+
+.circle-bonus-shelf.is-card .circle-bonus-gift.is-dimmed {
+  filter: grayscale(1) saturate(0.18) brightness(0.74) contrast(1.08);
+  opacity: 0.94;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.18);
+}
+
+.circle-bonus-shelf.is-card .circle-bonus-gift.is-dimmed:hover {
+  filter: grayscale(1) saturate(0.2) brightness(0.8) contrast(1.08);
+  opacity: 1;
 }
 
 .circle-bonus-gift:active {
