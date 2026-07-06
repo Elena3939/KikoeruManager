@@ -17050,6 +17050,7 @@ async def circle_completion_works(
     compare_filter: str = "all",
     search: str = "",
     sort: str = "updated_desc",
+    view_mode: str = "list",
 ):
     from ..core.circle_completion_service import get_circle_completion_service
 
@@ -17065,6 +17066,7 @@ async def circle_completion_works(
             "compare_filter": compare_filter,
             "search": bool(str(search or "").strip()),
             "sort": sort,
+            "view_mode": view_mode,
             "view": "works",
         }
         result = await get_circle_completion_service().list_circle_completion_works(
@@ -17078,6 +17080,7 @@ async def circle_completion_works(
             compare_filter=compare_filter,
             search=search,
             sort=sort,
+            view_mode=view_mode,
         )
         return {"success": True, **result}
     except ValueError as exc:

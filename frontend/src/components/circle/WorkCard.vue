@@ -208,6 +208,7 @@ function onCoverLoad() {
       'is-new-work': isNewWork,
       'status-flash': props.statusFlash,
       'locate-flash': props.locateFlash,
+      'is-completion-dimmed': item.completion_card_dimmed,
       disabled: props.disabled,
       'work-card--lg': props.size === 'lg',
     }"
@@ -376,6 +377,20 @@ function onCoverLoad() {
 }
 .work-card.selected .work-cover {
   filter: brightness(1.04) saturate(1.1);
+}
+.work-card.is-completion-dimmed .work-cover {
+  filter: grayscale(1) saturate(0.22) brightness(0.74);
+}
+.work-card.is-completion-dimmed.selected .work-cover {
+  filter: grayscale(1) saturate(0.24) brightness(0.78);
+}
+.work-card.is-completion-dimmed .work-cover-wrapper::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: rgba(15, 23, 42, 0.22);
 }
 
 /* ── 封面占位 ── */

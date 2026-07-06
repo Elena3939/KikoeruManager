@@ -1239,7 +1239,7 @@ function resetCircleDetail() {
 }
 
 function getCircleDetailCacheKey(circleId) {
-  return `${String(circleId || '').trim()}::dlOnly=${filters.includeDlOnly ? 1 : 0}`
+  return `${String(circleId || '').trim()}::dlOnly=${filters.includeDlOnly ? 1 : 0}::view=${viewMode.value === 'card' ? 'card' : 'list'}`
 }
 
 function cloneCircleDetailPayload(payload = {}) {
@@ -1524,7 +1524,8 @@ function buildCircleWorksQuery(options = {}) {
     search: tab === 'owned'
       ? ownedWorksSearchQuery.value.trim()
       : (tab === 'compare' ? compareSearchQuery.value.trim() : ''),
-    sort: getCircleWorksSort()
+    sort: getCircleWorksSort(),
+    viewMode: viewMode.value === 'card' ? 'card' : 'list',
   }
 }
 
@@ -4404,7 +4405,8 @@ async function prefetchNeighborCircleDetails() {
           pageSize: worksPageSize.value,
           includeDlOnly: filters.includeDlOnly,
           statusFilters: [],
-          sort: getCircleWorksSort()
+          sort: getCircleWorksSort(),
+          viewMode: viewMode.value === 'card' ? 'card' : 'list',
         })
       ])
       if (circleDetailLoading.value || circleDetailAbortController) break

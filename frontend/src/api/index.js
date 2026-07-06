@@ -2354,7 +2354,8 @@ export const circleCompletionApi = {
         owned_filter: query.ownedFilter || query.owned_filter || 'all',
         compare_filter: query.compareFilter || query.compare_filter || 'all',
         search: query.search || '',
-        sort: query.sort || 'updated_desc'
+        sort: query.sort || 'updated_desc',
+        view_mode: query.viewMode || query.view_mode || 'list'
       },
       signal: options.signal
     })
