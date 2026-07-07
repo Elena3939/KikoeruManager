@@ -4,12 +4,13 @@ import asyncio
 import logging
 import re
 import uuid
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
-
-from sqlalchemy.exc import DBAPIError, SQLAlchemyError
+from sqlalchemy import or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 
+from ..config.settings import BonusProbeConfig, get_config
 from ..models.database import (
     CircleCatalog,
     CircleExternalIdentity,
@@ -36,9 +37,9 @@ class DLsiteBonusProbeService:
     DEFAULT_EDGE_WINDOW = 80
     DEFAULT_CIRCLE_EDGE_WINDOW = 2000
     DEFAULT_DATE_RANGE_LIMIT = 80000
-    DEFAULT_BATCH_SIZE = 500
-    DEFAULT_CONCURRENCY = 6
-    DEFAULT_CACHE_LOOKUP_BATCH_SIZE = 2000
+    DEFAULT_BATCH_SIZE = 100
+    DEFAULT_CONCURRENCY = 1
+    DEFAULT_CACHE_LOOKUP_BATCH_SIZE = 500
     DEFAULT_CACHE_WRITE_BATCH_SIZE = 500
     PROBE_STRATEGY_VERSION = "date-range-v4"
 
@@ -46,6 +47,66 @@ class DLsiteBonusProbeService:
         self.dlsite_service = get_dlsite_service()
         self._active_probe_rjcodes: set[str] = set()
         self._active_probe_lock = asyncio.Lock()
+        self._active_job_semaphore: Optional[asyncio.Semaphore] = None
+        self._active_job_limit = 0
+        self._cache_flush_task: Optional[asyncio.Task] = None
+        self._cache_flush_stop_event: Optional[asyncio.Event] = None
+
+    def _bonus_probe_config(self) -> BonusProbeConfig:
+        try:
+            return getattr(get_config(), "bonus_probe", BonusProbeConfig()) or BonusProbeConfig()
+        except Exception:
+            return BonusProbeConfig()
+
+    def resolve_probe_runtime_limits(
+        self,
+        *,
+        mode: str = "normal",
+        batch_size: Optional[int] = None,
+        concurrency: Optional[int] = None,
+    ) -> Dict[str, int]:
+        cfg = self._bonus_probe_config()
+        mode_key = str(mode or "normal").strip().lower() or "normal"
+        if mode_key == "deep":
+            default_batch_size = int(cfg.deep_batch_size)
+            default_concurrency = int(cfg.deep_concurrency)
+        elif mode_key == "new_release":
+            default_batch_size = int(cfg.new_release_batch_size)
+            default_concurrency = int(cfg.new_release_concurrency)
+        else:
+            default_batch_size = int(cfg.normal_batch_size)
+            default_concurrency = int(cfg.normal_concurrency)
+        return {
+            "batch_size": min(max(1, int(batch_size or default_batch_size)), int(cfg.max_batch_size)),
+            "concurrency": min(max(1, int(concurrency or default_concurrency)), int(cfg.max_concurrency)),
+            "max_active_jobs": max(1, int(cfg.max_active_jobs or 1)),
+            "cache_lookup_batch_size": max(100, int(cfg.cache_lookup_batch_size or self.DEFAULT_CACHE_LOOKUP_BATCH_SIZE)),
+            "cache_write_batch_size": max(50, int(cfg.cache_write_batch_size or self.DEFAULT_CACHE_WRITE_BATCH_SIZE)),
+        }
+
+    def _cache_lookup_batch_size(self) -> int:
+        return int(self.resolve_probe_runtime_limits()["cache_lookup_batch_size"])
+
+    def _cache_write_batch_size(self) -> int:
+        return int(self.resolve_probe_runtime_limits()["cache_write_batch_size"])
+
+    def _active_job_slot(self) -> asyncio.Semaphore:
+        max_active_jobs = int(self.resolve_probe_runtime_limits()["max_active_jobs"])
+        semaphore = getattr(self, "_active_job_semaphore", None)
+        if semaphore is None or int(getattr(self, "_active_job_limit", 0) or 0) != max_active_jobs:
+            semaphore = asyncio.Semaphore(max_active_jobs)
+            self._active_job_semaphore = semaphore
+            self._active_job_limit = max_active_jobs
+        return semaphore
+
+    @asynccontextmanager
+    async def _acquire_active_job_slot(self, job_id: str = ""):
+        semaphore = self._active_job_slot()
+        await semaphore.acquire()
+        try:
+            yield
+        finally:
+            semaphore.release()
 
     def normalize_rjcode(self, value: Any) -> str:
         text = str(value or "").strip().upper()
@@ -404,6 +465,50 @@ class DLsiteBonusProbeService:
             error_message=row.error_message or "",
         )
 
+    def _cache_bool(self, value: Any) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    def _cache_int(self, value: Any) -> int:
+        try:
+            return int(value or 0)
+        except Exception:
+            return 0
+
+    def _cache_datetime(self, value: Any) -> datetime:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                try:
+                    if text.endswith("Z"):
+                        text = f"{text[:-1]}+00:00"
+                    return datetime.fromisoformat(text)
+                except ValueError:
+                    pass
+        return datetime.now()
+
+    def _feature_from_cache_payload(self, payload: Dict[str, Any]) -> DLsiteProductProbeFeature:
+        return DLsiteProductProbeFeature(
+            workno=self.normalize_rjcode(payload.get("rjcode") or payload.get("workno")),
+            exists=self._cache_bool(payload.get("exists")),
+            probe_status=str(payload.get("probe_status") or "missing"),
+            maker_id=str(payload.get("maker_id") or ""),
+            release_date=str(payload.get("release_date") or ""),
+            work_type=str(payload.get("work_type") or ""),
+            price=self._cache_int(payload.get("price")),
+            is_sale=self._cache_bool(payload.get("is_sale")),
+            is_free=self._cache_bool(payload.get("is_free")),
+            is_oly=self._cache_bool(payload.get("is_oly")),
+            wishlist_count=self._cache_int(payload.get("wishlist_count")),
+            is_hidden_bonus_audio=self._cache_bool(payload.get("is_hidden_bonus_audio")),
+            title=str(payload.get("title") or ""),
+            raw_summary_json=dict(payload.get("raw_summary_json") or {}),
+            error_message=str(payload.get("error_message") or ""),
+        )
+
     def _upsert_cache_row(self, db, feature: DLsiteProductProbeFeature) -> None:
         workno = self.normalize_rjcode(feature.workno)
         if not workno:
@@ -433,9 +538,23 @@ class DLsiteBonusProbeService:
         features: Dict[str, DLsiteProductProbeFeature] = {}
         if not normalized:
             return features
+        try:
+            from .redis_service import get_redis_service
+
+            redis_rows = get_redis_service().read_bonus_probe_cache_rows_sync(normalized)
+            for rjcode, payload in redis_rows.items():
+                normalized_rjcode = self.normalize_rjcode(rjcode)
+                if normalized_rjcode:
+                    features[normalized_rjcode] = self._feature_from_cache_payload(payload)
+        except Exception:
+            logger.debug("[DLsite特典探测] 读取 Redis 缓存 overlay 失败", exc_info=True)
+
+        missing = [workno for workno in normalized if workno not in features]
+        if not missing:
+            return features
         db = SessionLocal()
         try:
-            for batch in self._chunk(list(normalized), self.DEFAULT_CACHE_LOOKUP_BATCH_SIZE):
+            for batch in self._chunk(list(missing), self._cache_lookup_batch_size()):
                 rows = (
                     db.query(DLsiteBonusProbeCache)
                     .filter(DLsiteBonusProbeCache.rjcode.in_(batch))
@@ -530,6 +649,75 @@ class DLsiteBonusProbeService:
             "error_message": message[:2000],
         }
 
+    def _normalize_cache_value_row(self, value: Dict[str, Any]) -> Dict[str, Any]:
+        row = dict(value or {})
+        rjcode = self.normalize_rjcode(row.get("rjcode") or row.get("workno"))
+        if not rjcode:
+            return {}
+        return {
+            "rjcode": rjcode,
+            "exists": self._cache_bool(row.get("exists")),
+            "probe_status": str(row.get("probe_status") or "missing"),
+            "maker_id": str(row.get("maker_id") or ""),
+            "release_date": str(row.get("release_date") or ""),
+            "work_type": str(row.get("work_type") or ""),
+            "price": self._safe_cache_int(row.get("price"), field="price", workno=rjcode),
+            "is_sale": self._cache_bool(row.get("is_sale")),
+            "is_free": self._cache_bool(row.get("is_free")),
+            "is_oly": self._cache_bool(row.get("is_oly")),
+            "wishlist_count": self._safe_cache_int(row.get("wishlist_count"), field="wishlist_count", workno=rjcode),
+            "is_hidden_bonus_audio": self._cache_bool(row.get("is_hidden_bonus_audio")),
+            "title": str(row.get("title") or ""),
+            "raw_summary_json": dict(row.get("raw_summary_json") or {}),
+            "error_message": str(row.get("error_message") or "") or None,
+            "checked_at": self._cache_datetime(row.get("checked_at")),
+            "created_at": self._cache_datetime(row.get("created_at")),
+            "updated_at": self._cache_datetime(row.get("updated_at")),
+        }
+
+    def _upsert_cache_values_sync(self, values: Sequence[Dict[str, Any]]) -> None:
+        rows_by_rjcode: Dict[str, Dict[str, Any]] = {}
+        for value in values or []:
+            row = self._normalize_cache_value_row(value)
+            if row:
+                rows_by_rjcode[row["rjcode"]] = row
+        rows = list(rows_by_rjcode.values())
+        if not rows:
+            return
+        db = SessionLocal()
+        try:
+            with get_resource_budget_service().acquire_sync(
+                "bonus_probe_database_write",
+                reason="dlsite_bonus_probe.cache_upsert",
+            ):
+                table = DLsiteBonusProbeCache.__table__
+                for batch in self._chunk(rows, self._cache_write_batch_size()):
+                    stmt = pg_insert(table).values(batch)
+                    update_columns = {
+                        column.name: getattr(stmt.excluded, column.name)
+                        for column in table.columns
+                        if column.name not in {"rjcode", "created_at"}
+                    }
+                    changed_columns = [
+                        column.name
+                        for column in table.columns
+                        if column.name not in {"rjcode", "created_at", "checked_at", "updated_at"}
+                    ]
+                    db.execute(stmt.on_conflict_do_update(
+                        index_elements=[table.c.rjcode],
+                        set_=update_columns,
+                        where=or_(*[
+                            table.c[column_name].is_distinct_from(getattr(stmt.excluded, column_name))
+                            for column_name in changed_columns
+                        ]),
+                    ))
+                db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
     def _upsert_cache_features_sync(self, features: Sequence[DLsiteProductProbeFeature]) -> None:
         values = [
             self._cache_values_from_feature(feature)
@@ -538,30 +726,103 @@ class DLsiteBonusProbeService:
         ]
         if not values:
             return
-        db = SessionLocal()
         try:
-            with get_resource_budget_service().acquire_sync(
-                "database_write",
-                reason="dlsite_bonus_probe.cache_upsert",
-            ):
-                table = DLsiteBonusProbeCache.__table__
-                for batch in self._chunk(values, self.DEFAULT_CACHE_WRITE_BATCH_SIZE):
-                    stmt = pg_insert(table).values(batch)
-                    update_columns = {
-                        column.name: getattr(stmt.excluded, column.name)
-                        for column in table.columns
-                        if column.name not in {"rjcode", "created_at"}
-                    }
-                    db.execute(stmt.on_conflict_do_update(
-                        index_elements=[table.c.rjcode],
-                        set_=update_columns,
-                    ))
-                db.commit()
+            from .redis_service import get_redis_service
+
+            written = get_redis_service().write_bonus_probe_cache_dirty_sync(values)
+            if written == len(values):
+                return
+            logger.warning(
+                "[DLsite特典探测] Redis dirty buffer 写入不完整，回退 PostgreSQL 同步写入 written=%s total=%s",
+                written,
+                len(values),
+            )
         except Exception:
-            db.rollback()
-            raise
-        finally:
-            db.close()
+            logger.warning("[DLsite特典探测] Redis dirty buffer 写入失败，回退 PostgreSQL 同步写入", exc_info=True)
+        self._upsert_cache_values_sync(values)
+
+    def flush_bonus_probe_cache_dirty_once(self, *, limit: int = 500, block_ms: int = 0) -> Dict[str, int]:
+        try:
+            from .redis_service import get_redis_service
+
+            redis_service = get_redis_service()
+            messages = redis_service.read_bonus_probe_cache_dirty_sync(
+                count=max(1, int(limit or self._cache_write_batch_size())),
+                block_ms=max(0, int(block_ms or 0)),
+            )
+        except Exception:
+            logger.debug("[DLsite特典探测] 读取 Redis dirty buffer 失败", exc_info=True)
+            return {"read": 0, "written": 0, "acked": 0}
+        if not messages:
+            return {"read": 0, "written": 0, "acked": 0}
+
+        latest_by_rjcode: Dict[str, Dict[str, Any]] = {}
+        message_ids: List[str] = []
+        for message_id, payload in messages:
+            message_ids.append(message_id)
+            if not isinstance(payload, dict):
+                continue
+            rjcode = self.normalize_rjcode(payload.get("rjcode") or payload.get("workno"))
+            if not rjcode:
+                continue
+            row = dict(payload)
+            row["rjcode"] = rjcode
+            row.pop("dirty_at", None)
+            latest_by_rjcode[rjcode] = row
+        if not latest_by_rjcode:
+            acked = redis_service.ack_bonus_probe_cache_dirty_sync(message_ids)
+            return {"read": len(messages), "written": 0, "acked": acked}
+
+        rows = list(latest_by_rjcode.values())
+        self._upsert_cache_values_sync(rows)
+        acked = redis_service.ack_bonus_probe_cache_dirty_sync(message_ids)
+        return {"read": len(messages), "written": len(rows), "acked": acked}
+
+    async def _bonus_probe_cache_flush_loop(self) -> None:
+        stop_event = getattr(self, "_cache_flush_stop_event", None)
+        if stop_event is None:
+            return
+        while not stop_event.is_set():
+            try:
+                result = await asyncio.to_thread(
+                    self.flush_bonus_probe_cache_dirty_once,
+                    limit=self._cache_write_batch_size(),
+                    block_ms=1000,
+                )
+                if not int((result or {}).get("read") or 0):
+                    await asyncio.sleep(0.5)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("[DLsite特典探测] Redis dirty buffer 回写 PostgreSQL 异常", exc_info=True)
+                await asyncio.sleep(2)
+
+    def start_cache_flush_worker(self) -> None:
+        task = getattr(self, "_cache_flush_task", None)
+        if task is not None and not task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._cache_flush_stop_event = asyncio.Event()
+        self._cache_flush_task = loop.create_task(
+            self._bonus_probe_cache_flush_loop(),
+            name="dlsite-bonus-probe-cache-flush",
+        )
+
+    async def stop_cache_flush_worker(self) -> None:
+        stop_event = getattr(self, "_cache_flush_stop_event", None)
+        if stop_event is not None:
+            stop_event.set()
+        task = getattr(self, "_cache_flush_task", None)
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        self._cache_flush_task = None
+        self._cache_flush_stop_event = None
+        await asyncio.to_thread(self.flush_bonus_probe_cache_dirty_once, limit=self._cache_write_batch_size(), block_ms=0)
 
     async def _load_or_probe_features(
         self,
@@ -1556,6 +1817,10 @@ class DLsiteBonusProbeService:
                     range_limit=self.DEFAULT_DATE_RANGE_LIMIT,
                 )
             raw_probe_candidates = self._dedupe([*circle_candidates, *date_page_candidates])
+            cached_candidate_features = await asyncio.to_thread(
+                self._load_cached_features_sync,
+                raw_probe_candidates,
+            )
             candidate_shards, candidate_filter_stats = await self._lease_candidate_shards(
                 raw_probe_candidates,
                 shard_size=batch_size,
@@ -1587,11 +1852,15 @@ class DLsiteBonusProbeService:
             has_errors, error_samples = self._probe_features_block_conclusion(candidate_features.values())
             if has_errors:
                 raise RuntimeError(f"DLsite RJ 探测异常，未产出特典结论：{'; '.join(error_samples)}")
-            hidden_hits = [
-                feature
-                for feature in candidate_features.values()
-                if self._hidden_bonus_matches(feature, maker_id=normalized_maker_id, release_date=normalized_date)
-            ]
+            hidden_hits_by_rjcode: Dict[str, DLsiteProductProbeFeature] = {}
+            for feature in [*cached_candidate_features.values(), *candidate_features.values()]:
+                if not self._hidden_bonus_matches(feature, maker_id=normalized_maker_id, release_date=normalized_date):
+                    continue
+                normalized_workno = self.normalize_rjcode(feature.workno)
+                if not normalized_workno:
+                    continue
+                hidden_hits_by_rjcode[normalized_workno] = feature
+            hidden_hits = list(hidden_hits_by_rjcode.values())
             inserted_count += self._upsert_bonus_works(normalized_circle_id, normalized_maker_id, hidden_hits)
             if not budget_reached:
                 self._mark_original_probe_states_after_scan(
@@ -1716,6 +1985,9 @@ class DLsiteBonusProbeService:
         progress_callback: Optional[Callable[[int, str, Dict[str, Any]], None]] = None,
         cancel_callback: Optional[Callable[[], bool]] = None,
     ) -> Dict[str, Any]:
+        limits = self.resolve_probe_runtime_limits(mode=mode, batch_size=batch_size, concurrency=concurrency)
+        batch_size = int(limits["batch_size"])
+        concurrency = int(limits["concurrency"])
         context = self.resolve_circle_context(circle_id, maker_id)
         normalized_circle_id = context["circle_id"]
         normalized_maker_id = context["maker_id"]
@@ -1745,6 +2017,37 @@ class DLsiteBonusProbeService:
             if normalized_codes:
                 normalized_selected_by_date[normalized_date] = normalized_codes
 
+        async with self._acquire_active_job_slot(job_id):
+            return await self._probe_circle_dates_locked(
+                context=context,
+                dates=dates,
+                mode=mode,
+                gap_limit=gap_limit,
+                batch_size=batch_size,
+                concurrency=concurrency,
+                job_id=job_id,
+                selected_rjcodes_by_date=normalized_selected_by_date,
+                progress_callback=progress_callback,
+                cancel_callback=cancel_callback,
+            )
+
+    async def _probe_circle_dates_locked(
+        self,
+        *,
+        context: Dict[str, str],
+        dates: List[str],
+        mode: str,
+        gap_limit: int,
+        batch_size: int,
+        concurrency: int,
+        job_id: str = "",
+        selected_rjcodes_by_date: Optional[Dict[str, Sequence[str]]] = None,
+        progress_callback: Optional[Callable[[int, str, Dict[str, Any]], None]] = None,
+        cancel_callback: Optional[Callable[[], bool]] = None,
+    ) -> Dict[str, Any]:
+        normalized_circle_id = context["circle_id"]
+        normalized_maker_id = context["maker_id"]
+        normalized_selected_by_date = dict(selected_rjcodes_by_date or {})
         results: List[Dict[str, Any]] = []
         total = len(dates)
         date_order = {release_date: index for index, release_date in enumerate(dates)}

@@ -211,6 +211,37 @@ async def test_paged_missing_works_and_work_codes(service: CircleCompletionServi
     assert probe_codes["no_bonus_rjcodes"] == ["RJ01000003"]
     assert probe_codes["completed_bonus_probe_dates"] == ["2025-03-01"]
 
+    has_bonus_page = await service.list_circle_completion_works(
+        circle_id,
+        tab="missing",
+        status_filters="has_early_bonus",
+        page=1,
+        page_size=10,
+        sort="release_asc",
+    )
+    assert [item["canonical_rjcode"] for item in has_bonus_page["items"]] == ["RJ01000002"]
+    assert has_bonus_page["status_filter_counts"]["missing"]["has_early_bonus"] == 1
+
+    no_bonus_page = await service.list_circle_completion_works(
+        circle_id,
+        tab="missing",
+        status_filters="no_early_bonus",
+        page=1,
+        page_size=10,
+        sort="release_asc",
+    )
+    assert [item["canonical_rjcode"] for item in no_bonus_page["items"]] == ["RJ01000003"]
+    assert no_bonus_page["status_filter_counts"]["missing"]["no_early_bonus"] == 1
+
+    owned_bonus_page = await service.list_circle_completion_works(
+        circle_id,
+        tab="owned",
+        status_filters="has_early_bonus",
+        page=1,
+        page_size=10,
+    )
+    assert owned_bonus_page["items"] == []
+
     without_dl_only = await service.list_circle_completion_works(
         circle_id,
         tab="missing",
