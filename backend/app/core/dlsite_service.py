@@ -30,6 +30,7 @@ _DLSITE_HTTP_CIRCUIT: Dict[str, Any] = {
     "open_until": 0.0,
     "last_error": "",
 }
+_POSTGRES_BIGINT_MAX = 9223372036854775807
 
 
 def _dlsite_http_circuit_is_open() -> bool:
@@ -282,6 +283,32 @@ class DLsiteApiService:
         value = str(rjcode or '').strip().upper()
         match = re.search(r'[RVB]J(?:\d{8}|\d{6})(?!\d)', value, re.IGNORECASE)
         return match.group(0).upper() if match else value
+
+    def _safe_product_int(self, value: Any, *, field: str, workno: str) -> int:
+        if value is None or isinstance(value, bool):
+            return 0
+        try:
+            if isinstance(value, str):
+                text = value.strip().replace(",", "")
+                if not text:
+                    return 0
+                number = int(float(text)) if "." in text else int(text)
+            else:
+                number = int(value)
+        except Exception:
+            logger.debug("[DLsite] product/info/ajax 数值字段无法解析 workno=%s field=%s value=%r", workno, field, value)
+            return 0
+        if number < 0:
+            return 0
+        if number > _POSTGRES_BIGINT_MAX:
+            logger.warning(
+                "[DLsite] product/info/ajax 数值字段超过 BIGINT 范围，已按 0 处理 workno=%s field=%s value=%s",
+                workno,
+                field,
+                value,
+            )
+            return 0
+        return number
 
     def _build_product_api_url(self, rjcode: str, locale: Optional[str] = None) -> str:
         workno = self._normalize_workno(rjcode)
@@ -2405,15 +2432,10 @@ class DLsiteApiService:
             or ""
         )
         work_type = str(product.get("work_type") or product.get("work_type_code") or product.get("category") or "").strip().upper()
-        try:
-            price = int(product.get("price") or product.get("official_price") or 0)
-        except Exception:
-            price = 0
+        raw_price = product.get("price") if product.get("price") is not None else product.get("official_price")
+        price = self._safe_product_int(raw_price, field="price", workno=workno)
         wishlist_value = product.get("wishlist_count")
-        try:
-            wishlist_count = int(wishlist_value or 0) if not isinstance(wishlist_value, bool) else 0
-        except Exception:
-            wishlist_count = 0
+        wishlist_count = self._safe_product_int(wishlist_value, field="wishlist_count", workno=workno)
         feature = DLsiteProductProbeFeature(
             workno=workno,
             exists=True,
@@ -2433,10 +2455,12 @@ class DLsiteApiService:
                 "regist_date": product.get("regist_date") or product.get("release_date") or "",
                 "work_type": work_type,
                 "price": price,
+                "raw_price": raw_price,
                 "is_sale": bool(product.get("is_sale")),
                 "is_free": bool(product.get("is_free")),
                 "is_oly": bool(product.get("is_oly")),
                 "wishlist_count": wishlist_count,
+                "raw_wishlist_count": wishlist_value,
             },
         )
         feature.is_hidden_bonus_audio = bool(

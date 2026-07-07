@@ -26,6 +26,7 @@ def _execute_if_table_exists(bind, table_name: str, sql: str) -> None:
 
 def upgrade() -> None:
     bind = op.get_bind()
+    bind.execute(text("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(128)"))
     bind.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
     if _table_exists(bind, "activity_logs"):
         bind.execute(text("ALTER TABLE activity_logs ADD COLUMN IF NOT EXISTS batch_id VARCHAR(80)"))

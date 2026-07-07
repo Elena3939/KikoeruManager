@@ -202,6 +202,29 @@ def _batch_api_rename_request_key(library_id: Any, paths: List[Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _circle_bonus_probe_business_key(
+    *,
+    maker_id: Any,
+    mode: Any,
+    release_dates: List[Any],
+    gap_limit: Any,
+    selected_rjcodes_by_date: Dict[str, Any],
+) -> str:
+    payload = {
+        "maker_id": str(maker_id or "").strip().upper(),
+        "mode": str(mode or "normal").strip() or "normal",
+        "release_dates": [str(value or "").strip() for value in release_dates or []],
+        "gap_limit": int(gap_limit or 0),
+        "selected_rjcodes_by_date": {
+            str(date or "").strip(): [str(code or "").strip().upper() for code in (codes or [])]
+            for date, codes in sorted(dict(selected_rjcodes_by_date or {}).items())
+        },
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    return f"{payload['maker_id']}:{payload['mode']}:bonus_probe:{digest}"
+
+
 def _api_rename_metadata_skip_reason(metadata: Dict[str, Any], rjcode: str) -> str:
     source = str(metadata.get("metadata_source") or "").strip().lower()
     normalized_rj = str(rjcode or metadata.get("rjcode") or "").strip().upper()
@@ -16820,11 +16843,13 @@ async def circle_completion_bonus_probe_start(request: CircleCompletionBonusProb
                     "inserted_count": 0,
                 },
             }
-        selected_scope_key = "|".join(
-            f"{date}:{','.join(selected_rjcodes_by_date.get(date, []))}"
-            for date in sorted(selected_rjcodes_by_date)
+        business_key = _circle_bonus_probe_business_key(
+            maker_id=maker_id,
+            mode=mode,
+            release_dates=release_dates,
+            gap_limit=gap_limit,
+            selected_rjcodes_by_date=selected_rjcodes_by_date,
         )
-        business_key = f"{maker_id}:{mode}:{'|'.join(release_dates)}:{gap_limit}:{selected_scope_key}:bonus_probe"
         engine = get_task_engine()
         active_statuses = {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED}
         for current_task in engine.get_all_tasks(include_hidden=True):
