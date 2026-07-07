@@ -160,11 +160,12 @@
       source-path-label="下载根目录"
       :merge-tasks="false"
       :compact="true"
-      :enable-file-retry="false"
+      :enable-file-retry="true"
       @refresh="refreshBaiduNetdiskWorkbench({ silent: true })"
       @background="hideBaiduNetdiskWorkbenchToBackground"
       @close="closeBaiduNetdiskWorkbench"
       @retry-task="retryBaiduNetdiskTask"
+      @retry-file="retryBaiduNetdiskFile"
       @pause-task="pauseBaiduNetdiskTask"
       @resume-task="resumeBaiduNetdiskTask"
       @cancel-task="cancelBaiduNetdiskTask"
@@ -1850,6 +1851,30 @@ async function retryBaiduNetdiskTask(task) {
   } finally {
     const done = new Set(baiduNetdiskRetryingTaskIds.value)
     done.delete(taskId)
+    baiduNetdiskRetryingTaskIds.value = done
+  }
+}
+
+async function retryBaiduNetdiskFile(payload) {
+  const task = payload?.task || {}
+  const file = payload?.file || {}
+  const taskId = resolveBaiduNetdiskTaskId(task)
+  const relativePath = String(file?.relative_path || file?.rawFile?.relative_path || file?.rawFile?.name || file?.name || '').trim()
+  if (!taskId || !relativePath) return ElMessage.warning('没有找到可重试的百度网盘失败文件')
+
+  const retryKey = `${taskId}:${relativePath}`
+  const next = new Set(baiduNetdiskRetryingTaskIds.value)
+  next.add(retryKey)
+  baiduNetdiskRetryingTaskIds.value = next
+  try {
+    await baiduNetdiskApi.retryFile(taskId, file?.rawFile || file)
+    ElMessage.success('已提交单文件重试')
+    await refreshBaiduNetdiskWorkbench({ silent: true })
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '提交单文件重试失败')
+  } finally {
+    const done = new Set(baiduNetdiskRetryingTaskIds.value)
+    done.delete(retryKey)
     baiduNetdiskRetryingTaskIds.value = done
   }
 }
