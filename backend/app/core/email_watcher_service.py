@@ -1156,6 +1156,10 @@ class EmailWatcherService:
                     try:
                         await asyncio.to_thread(self._run_single_fetch, config)
                         self._last_check_at = datetime.now().isoformat(timespec="seconds")
+                        consecutive_fails = 0
+                        self._fail_count = 0
+                        self._mode = "polling"
+                        self._last_error = ""
                     except Exception as poll_exc:
                         logger.warning("[邮件监听] fallback polling 也失败: %s", poll_exc)
 
