@@ -203,7 +203,18 @@ const groupedItems = computed(() => {
     return { item, bonuses, sourceIndex: index }
   })
   if (directGroups.some(group => group.bonuses.length)) {
-    return directGroups
+    const attachedBonusCodes = new Set()
+    for (const group of directGroups) {
+      for (const bonus of group.bonuses || []) {
+        const code = bonusCode(bonus)
+        if (code) attachedBonusCodes.add(code)
+      }
+    }
+    return directGroups.filter(group => {
+      if (!isStrictTrue(group.item?.is_bonus_work)) return true
+      const code = bonusCode(group.item)
+      return !code || !attachedBonusCodes.has(code)
+    })
   }
 
   const codeToItem = new Map()

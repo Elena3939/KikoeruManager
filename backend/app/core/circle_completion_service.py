@@ -1401,14 +1401,10 @@ class CircleCompletionService:
 
     def _completion_bonus_own_codes(self, item: Dict[str, Any]) -> Set[str]:
         candidates = [
+            item.get("canonical_rjcode"),
             item.get("display_rjcode"),
-            item.get("asmr_available_rjcode"),
-            item.get("server_match_primary_rjcode"),
+            item.get("rjcode"),
         ]
-        for payload_key in ["download_plan", "owned_variant", "preferred_variant"]:
-            payload = item.get(payload_key)
-            if isinstance(payload, dict):
-                candidates.append(payload.get("rjcode"))
         return {
             normalized
             for normalized in (self.normalize_rjcode(candidate) for candidate in candidates)
