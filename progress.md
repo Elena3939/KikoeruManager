@@ -2866,3 +2866,49 @@
 - `backend/tests/test_dlsite_bonus_probe_service.py`：特典日期探测并发测试改为验证配置的 6 worker 生效。
 - `progress.md`：追加本轮测试策略校正和验证记录。
 - 回滚方式：还原 `backend/tests/test_dlsite_bonus_probe_service.py` 本轮测试名称与断言 hunk，并删除本段进度记录。
+## 2026-07-08 - Task: 修正翻译版作品特典探测日期来源
+### What was done
+- 修正社团补全选中作品查特典时的日期来源，优先使用原作发售日，避免繁中/英/韩等翻译版卡片用翻译版发售日触发“已查日期”拦截。
+- 同步修正后端 work-codes 返回的 `release_dates_by_rjcode`，让前端刷新后仍按原作日期提交特典探测。
+
+### Testing
+- `backend/` 下执行 `..\.venv\Scripts\python.exe -m py_compile app\core\circle_completion_service.py`：通过。
+- `frontend/` 下执行 `npm run build`：通过；仅有既有 VueUse pure annotation、lottie eval 和 chunk size warning。
+
+### Notes
+- `backend/app/core/circle_completion_service.py`：`release_dates_by_rjcode` 改为优先读取 `original_release_date`。
+- `frontend/src/views/CircleCompletion.vue`：选中作品特典探测日期改为优先读取 `original_release_date`。
+- `progress.md`：追加本轮修复和验证记录。
+- 回滚方式：还原上述两个代码文件本轮 hunk，并删除本段进度记录。
+## 2026-07-08 - Task: 完善选中作品特典探测重跑逻辑
+### What was done
+- 选中具体作品发起特典探测时，不再被日期级已完成状态提前拦截，允许对指定原作重跑同日探测。
+- 复用已有命中索引时不再提前结束扫描，而是把缓存命中特典合并进本轮命中结果后继续探测未完成范围。
+- 修正同一轮多个特典映射到同一原作时，原作探测状态在同一事务内重复插入导致唯一键冲突的问题。
+- 前端选中作品时不再因为已确认无特典或已查日期直接跳过提交，而是保留提示计数并继续提交该日期。
+
+### Testing
+- `backend/` 下执行 `..\.venv\Scripts\python.exe -m py_compile app\api\routes.py app\core\circle_completion_service.py app\core\dlsite_bonus_probe_service.py`：通过。
+- `backend/` 下执行 `..\.venv\Scripts\python.exe -m pytest tests/test_dlsite_bonus_probe_service.py::test_probe_date_selected_rj_scope_uses_date_range_for_far_bonus tests/test_dlsite_bonus_probe_service.py::test_probe_date_reused_hit_index_still_continues_unfinished_scan tests/test_dlsite_bonus_probe_service.py::test_probe_date_counts_cached_hidden_bonus_candidate -q`：通过，3 passed。
+- `frontend/` 下执行 `npm run build`：通过；仅有既有 VueUse pure annotation、lottie eval 和 chunk size warning。
+
+### Notes
+- `backend/app/api/routes.py`：带 `selected_rjcodes_by_date` 的特典探测请求跳过日期级完成复用拦截。
+- `backend/app/core/dlsite_bonus_probe_service.py`：缓存命中特典合并到本轮扫描结果，并修复原作状态同事务重复 upsert。
+- `frontend/src/views/CircleCompletion.vue`：选中作品已查/无特典时继续提交探测日期，只保留提示计数。
+- `progress.md`：追加本轮修复和验证记录。
+- 回滚方式：还原上述三个代码文件本轮 hunk，并删除本段进度记录。
+## 2026-07-08 - Task: 更新 v1.6.73 Docker 导入版本并验证特典探测
+### What was done
+- Docker Compose 导入示例和部署文档中的 GHCR 镜像版本更新到 `1.6.73`，与本次即将发布的 semver tag 对齐。
+- 调整特典探测缓存候选统计断言，避免日期范围扫描扩大后把全局缓存候选数量误判为业务失败。
+
+### Testing
+- `backend/` 下执行 `venv\Scripts\python.exe -m pytest tests\test_dlsite_bonus_probe_service.py`：通过，37 passed。
+
+### Notes
+- `docker-compose.yml`：默认导入镜像更新为 `ghcr.io/elena3939/kikoerumanager:1.6.73`。
+- `DOCKER_DEPLOY.md`：Compose 和 `docker run` 示例镜像版本更新为 `1.6.73`。
+- `backend/tests/test_dlsite_bonus_probe_service.py`：缓存候选统计断言改为确认至少命中缓存路径。
+- `progress.md`：追加本轮发布配置和验证记录。
+- 回滚方式：还原上述三个文件本轮 hunk，并删除本段进度记录；如 tag 已推送，则需删除远程 `v1.6.73` 后重新发布。
