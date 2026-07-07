@@ -800,8 +800,9 @@ class EmailWatcherService:
                     release_dates.append(release_date)
             mode = "new_release"
             gap_limit = 500
-            batch_size = 500
-            concurrency = 5
+            runtime_limits = service.resolve_probe_runtime_limits(mode=mode)
+            batch_size = int(runtime_limits["batch_size"])
+            concurrency = int(runtime_limits["concurrency"])
             for release_date in release_dates:
                 business_key = f"{maker_id}:{mode}:{release_date}:{gap_limit}:bonus_probe"
                 duplicate = False

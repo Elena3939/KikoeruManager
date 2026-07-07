@@ -222,6 +222,15 @@
                 {{ bonusProbeActionLabel }}
               </el-button>
               <el-button
+                class="batch-action-button bonus-refresh"
+                :disabled="!activeCircleId || bonusWorksCount <= 0 || indexing || isRefreshJobActive || isBonusProbeJobActive || refreshingCurrentCircleBonuses"
+                :loading="refreshingCurrentCircleBonuses"
+                @click="refreshCurrentCircleBonusOwnedState"
+              >
+                <RefreshCw :size="13" style="margin-right:4px" />
+                刷新特典拥有
+              </el-button>
+              <el-button
                 class="batch-action-button refresh"
                 :disabled="!activeCircleId || indexing || isRefreshJobActive || isBonusProbeJobActive"
                 :loading="refreshingCurrentCircle"
@@ -1149,10 +1158,13 @@ const statusFilterBaseOptions = [
   { value: 'downloadable', label: '可下载' },
   { value: 'missing', label: '未收录' },
   { value: 'no_source', label: '无源' },
+  { value: 'has_early_bonus', label: '有早期特典' },
+  { value: 'no_early_bonus', label: '无早期特典' },
 ]
 const statusFilterExclusiveGroups = [
   ['downloadable', 'no_source'],
   ['repairable', 'missing'],
+  ['has_early_bonus', 'no_early_bonus'],
 ]
 const statusFilterOptions = computed(() => {
   const counts = detail.status_filter_counts?.[activeTab.value] || {}
@@ -1588,6 +1600,7 @@ let refreshJobLastRealtimeAt = 0
 let bonusProbeJobLastRealtimeAt = 0
 const cancellingIndexJob = ref(false)
 const refreshingCurrentCircle = ref(false)
+const refreshingCurrentCircleBonuses = ref(false)
 const refreshJob = reactive({
   visible: false,
   job_id: '',
@@ -1673,6 +1686,10 @@ function itemMatchesStatusFilter(item, key) {
       return !Boolean(item?.owned)
     case 'no_source':
       return !Boolean(item?.owned) && !Boolean(item?.has_asmr_one)
+    case 'has_early_bonus':
+      return String(item?.early_bonus_status || '').trim() === 'has_bonus'
+    case 'no_early_bonus':
+      return String(item?.early_bonus_status || '').trim() === 'no_bonus'
     default:
       return true
   }
@@ -4497,8 +4514,6 @@ async function startBonusProbeForCircle(circleId, options = {}) {
     selected_rjcodes_by_date: options.selectedRjcodesByDate || {},
     mode: 'deep',
     gap_limit: 500,
-    batch_size: 500,
-    concurrency: 6,
   })
   return {
     ...result,
@@ -4876,6 +4891,40 @@ async function refreshSelectedCircleIndex(targetCodes = null) {
     if (!isRefreshJobActive.value) {
       refreshingCurrentCircle.value = false
     }
+  }
+}
+
+async function refreshCurrentCircleBonusOwnedState() {
+  const circleId = String(activeCircleId.value || detail.circle_id || '').trim()
+  if (!circleId) {
+    ElMessage.warning('当前还没有选中社团')
+    return
+  }
+  if (indexing.value || isBonusProbeJobActive.value) {
+    ElMessage.warning('社团索引或特典补全正在运行')
+    return
+  }
+  if (isRefreshJobActive.value) {
+    ElMessage.warning('已有批量刷新任务在跑')
+    return
+  }
+
+  refreshingCurrentCircleBonuses.value = true
+  try {
+    const result = await circleCompletionApi.getCircleBonusWorkCodes(circleId)
+    const codes = [...new Set((result.canonical_rjcodes || [])
+      .map(code => String(code || '').trim())
+      .filter(Boolean))]
+    if (!codes.length) {
+      ElMessage.warning('当前社团没有可刷新的特典')
+      return
+    }
+    ElMessage.info(`已找到 ${codes.length} 个特典，开始刷新本地拥有状态`)
+    await refreshSelectedCircleIndex(codes)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '获取当前社团特典失败')
+  } finally {
+    refreshingCurrentCircleBonuses.value = false
   }
 }
 
@@ -6378,6 +6427,8 @@ function getUploadBackgroundTargetLabel(task) {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   flex-shrink: 0;
 }
 .toolbar-actions .batch-action-button {
@@ -7261,7 +7312,7 @@ function getUploadBackgroundTargetLabel(task) {
   transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
-.batch-action-button:not(.primary):not(.refresh):not(.ghost):hover:not(:disabled) {
+.batch-action-button:not(.primary):not(.refresh):not(.bonus-refresh):not(.ghost):hover:not(:disabled) {
   transform: translateY(-2px) scale(1.02);
   background: var(--circle-hover-bg, #f8fafc);
   border-color: var(--circle-border-strong, #cbd5e1);
@@ -7315,6 +7366,19 @@ function getUploadBackgroundTargetLabel(task) {
   filter: brightness(1.08);
   box-shadow: 0 8px 20px rgba(15, 23, 42, 0.3);
 }
+.batch-action-button.bonus-refresh {
+  --el-button-text-color: #ffffff;
+  --el-button-hover-text-color: #ffffff;
+  --el-button-active-text-color: #ffffff;
+  background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
+  color: #ffffff;
+  border: none;
+  box-shadow: 0 4px 12px rgba(109, 40, 217, 0.24);
+}
+.batch-action-button.bonus-refresh:hover:not(:disabled) {
+  background: linear-gradient(135deg, #a78bfa 0%, #7c3aed 100%);
+  box-shadow: 0 8px 20px rgba(109, 40, 217, 0.32);
+}
 .batch-action-button.ghost {
   background: transparent;
   border: 1px dashed var(--circle-border-strong, #cbd5e1);
@@ -7340,8 +7404,8 @@ function getUploadBackgroundTargetLabel(task) {
   color: rgba(244, 244, 245, 0.88) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 18px rgba(0, 0, 0, 0.18) !important;
 }
-:global(html.kikoerumanager-dark .circle-page .batch-action-button:not(.primary):not(.refresh):not(.ghost):hover:not(:disabled)),
-:global(body.kikoerumanager-dark .circle-page .batch-action-button:not(.primary):not(.refresh):not(.ghost):hover:not(:disabled)) {
+:global(html.kikoerumanager-dark .circle-page .batch-action-button:not(.primary):not(.refresh):not(.bonus-refresh):not(.ghost):hover:not(:disabled)),
+:global(body.kikoerumanager-dark .circle-page .batch-action-button:not(.primary):not(.refresh):not(.bonus-refresh):not(.ghost):hover:not(:disabled)) {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.11) 0%, rgba(255, 255, 255, 0.065) 100%) !important;
   border-color: rgba(255, 255, 255, 0.20) !important;
   color: #ffffff !important;
@@ -7349,6 +7413,8 @@ function getUploadBackgroundTargetLabel(task) {
 }
 :global(html.kikoerumanager-dark .circle-page .batch-action-button.refresh),
 :global(body.kikoerumanager-dark .circle-page .batch-action-button.refresh),
+:global(html.kikoerumanager-dark .circle-page .batch-action-button.bonus-refresh),
+:global(body.kikoerumanager-dark .circle-page .batch-action-button.bonus-refresh),
 :global(html.kikoerumanager-dark .circle-page .batch-action-button.primary),
 :global(body.kikoerumanager-dark .circle-page .batch-action-button.primary) {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.13) 0%, rgba(255, 255, 255, 0.075) 100%) !important;
@@ -7358,6 +7424,8 @@ function getUploadBackgroundTargetLabel(task) {
 }
 :global(html.kikoerumanager-dark .circle-page .batch-action-button.refresh:hover:not(:disabled)),
 :global(body.kikoerumanager-dark .circle-page .batch-action-button.refresh:hover:not(:disabled)),
+:global(html.kikoerumanager-dark .circle-page .batch-action-button.bonus-refresh:hover:not(:disabled)),
+:global(body.kikoerumanager-dark .circle-page .batch-action-button.bonus-refresh:hover:not(:disabled)),
 :global(html.kikoerumanager-dark .circle-page .batch-action-button.primary:hover:not(:disabled)),
 :global(body.kikoerumanager-dark .circle-page .batch-action-button.primary:hover:not(:disabled)) {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.18) 0%, rgba(255, 255, 255, 0.10) 100%) !important;

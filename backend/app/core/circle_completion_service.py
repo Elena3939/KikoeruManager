@@ -1269,7 +1269,7 @@ class CircleCompletionService:
         return catalog
 
     def _completion_status_filters(self, value: Any) -> List[str]:
-        allowed = {"repairable", "downloadable", "missing", "no_source"}
+        allowed = {"repairable", "downloadable", "missing", "no_source", "has_early_bonus", "no_early_bonus"}
         raw_values = value
         if isinstance(raw_values, str):
             raw_values = re.split(r"[,，\s]+", raw_values)
@@ -1331,6 +1331,10 @@ class CircleCompletionService:
             return not bool(item.get("owned"))
         if key == "no_source":
             return not bool(item.get("owned")) and not bool(item.get("has_asmr_one"))
+        if key == "has_early_bonus":
+            return str(item.get("early_bonus_status") or "").strip() == "has_bonus"
+        if key == "no_early_bonus":
+            return str(item.get("early_bonus_status") or "").strip() == "no_bonus"
         return True
 
     def _completion_apply_status_filters(self, rows: List[Dict[str, Any]], status_filters: List[str]) -> List[Dict[str, Any]]:
@@ -1596,6 +1600,35 @@ class CircleCompletionService:
                 candidates.sort(key=lambda row: (row[0], row[1]))
                 item["bonus_parent_rjcode"] = candidates[0][1]
         return items
+
+    def _completion_apply_early_bonus_status(
+        self,
+        items: List[Dict[str, Any]],
+        original_state_map: Dict[str, str],
+    ) -> None:
+        bonus_parent_codes: Set[str] = set()
+        for item in items:
+            if not bool(item.get("is_bonus_work")):
+                continue
+            own_codes = self._completion_bonus_own_codes(item)
+            explicit_parent = self.normalize_rjcode(item.get("bonus_parent_rjcode"))
+            if explicit_parent and explicit_parent not in own_codes:
+                bonus_parent_codes.add(explicit_parent)
+            for candidate in item.get("linked_rjcodes") or []:
+                normalized = self.normalize_rjcode(candidate)
+                if normalized and normalized not in own_codes:
+                    bonus_parent_codes.add(normalized)
+
+        for item in items:
+            item["early_bonus_status"] = ""
+            if bool(item.get("is_bonus_work")):
+                continue
+            canonical = self.normalize_rjcode(item.get("canonical_rjcode"))
+            state = str(original_state_map.get(canonical) or "").strip()
+            if state == "has_bonus" or bool(item.get("has_bonus")) or canonical in bonus_parent_codes:
+                item["early_bonus_status"] = "has_bonus"
+            elif state == "no_bonus":
+                item["early_bonus_status"] = "no_bonus"
 
     def _build_completion_item(
         self,
@@ -1885,6 +1918,24 @@ class CircleCompletionService:
                 .all()
                 if works else []
             )
+            early_bonus_state_map: Dict[str, str] = {}
+            if work_canonical_rjcodes:
+                state_rows = (
+                    db.query(DLsiteBonusOriginalProbeState)
+                    .filter(
+                        DLsiteBonusOriginalProbeState.circle_id == catalog.circle_id,
+                        DLsiteBonusOriginalProbeState.original_rjcode.in_(work_canonical_rjcodes),
+                        DLsiteBonusOriginalProbeState.strategy_version == "date-range-v4",
+                        DLsiteBonusOriginalProbeState.status.in_(("no_bonus", "has_bonus")),
+                    )
+                    .all()
+                )
+                early_bonus_state_map = {
+                    normalized: str(row.status or "").strip()
+                    for row in state_rows
+                    for normalized in [self.normalize_rjcode(row.original_rjcode)]
+                    if normalized
+                }
             link_map_by_canonical: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
             for link_row in link_rows:
                 link_map_by_canonical[str(link_row.canonical_rjcode or "")][str(link_row.linked_rjcode or "")] = {
@@ -1925,6 +1976,7 @@ class CircleCompletionService:
             for row in works
         ]
         items = self._completion_attach_bonus_parent_codes(items)
+        self._completion_apply_early_bonus_status(items, early_bonus_state_map)
         catalog_payload = {
             "circle_id": catalog.circle_id,
             "circle_name": catalog.circle_name,
@@ -1987,11 +2039,11 @@ class CircleCompletionService:
             "status_filter_counts": {
                 "missing": {
                     key: sum(1 for item in items if self._is_preferred_missing_completion_item(item) and self._completion_item_matches_status_filter(item, key))
-                    for key in ["repairable", "downloadable", "missing", "no_source"]
+                    for key in ["repairable", "downloadable", "missing", "no_source", "has_early_bonus", "no_early_bonus"]
                 },
                 "owned": {
                     key: sum(1 for item in items if item.get("owned") and self._completion_item_matches_status_filter(item, key))
-                    for key in ["repairable", "downloadable", "missing", "no_source"]
+                    for key in ["repairable", "downloadable", "missing", "no_source", "has_early_bonus", "no_early_bonus"]
                 },
             },
         }
@@ -2292,6 +2344,52 @@ class CircleCompletionService:
             "completed_bonus_probe_dates": completed_bonus_probe_dates,
             "total": len(canonical_rjcodes),
             "downloadable_count": len(downloadable_rjcodes),
+        }
+
+    async def list_circle_completion_bonus_work_codes(self, circle_id_or_query: str) -> Dict[str, Any]:
+        state = self._build_completion_view_state(circle_id_or_query)
+        catalog = state["catalog"]
+        items = state["items"]
+        seen: Set[str] = set()
+        bonus_items: List[Dict[str, Any]] = []
+
+        def add_bonus_item(item: Dict[str, Any]) -> None:
+            if not isinstance(item, dict) or not bool(item.get("is_bonus_work")):
+                return
+            canonical = self.normalize_rjcode(item.get("canonical_rjcode"))
+            if not canonical or canonical in seen:
+                return
+            seen.add(canonical)
+            bonus_items.append(item)
+
+        for item in items:
+            add_bonus_item(item)
+            for bonus in item.get("bonus_works") or []:
+                add_bonus_item(bonus)
+
+        # 兼容展示层把特典挂到原作卡片下的聚合形态；只读内存副本，不污染缓存。
+        for item in self._completion_group_bonus_items([dict(item) for item in items]):
+            for bonus in item.get("bonus_works") or []:
+                add_bonus_item(bonus)
+
+        canonical_rjcodes = [self.normalize_rjcode(item.get("canonical_rjcode")) for item in bonus_items]
+        canonical_rjcodes = [code for code in canonical_rjcodes if code]
+        return {
+            "circle_id": catalog.get("circle_id") if isinstance(catalog, dict) else catalog.circle_id,
+            "circle_name": catalog.get("circle_name") if isinstance(catalog, dict) else catalog.circle_name,
+            "canonical_rjcodes": canonical_rjcodes,
+            "total": len(canonical_rjcodes),
+            "items": [
+                {
+                    "canonical_rjcode": self.normalize_rjcode(item.get("canonical_rjcode")),
+                    "display_rjcode": self.normalize_rjcode(item.get("display_rjcode")),
+                    "title": str(item.get("title") or "").strip(),
+                    "owned": bool(item.get("owned")),
+                    "local_owned": bool(item.get("local_owned")),
+                    "server_owned": bool(item.get("server_owned")),
+                }
+                for item in bonus_items
+            ],
         }
 
     async def locate_circle_completion_work(

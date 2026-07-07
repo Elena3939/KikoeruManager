@@ -221,6 +221,82 @@
     </div>
 
     <div class="settings-grid two">
+      <!-- 社团特典补全 -->
+      <div class="settings-card bonus-probe-card">
+        <div class="card-title">社团特典补全</div>
+        <div class="field-stack">
+          <div class="bonus-probe-summary">
+            <span>普通 {{ bonusProbe.normal_concurrency }} 并发</span>
+            <span>深度 {{ bonusProbe.deep_concurrency }} 并发</span>
+            <span>新作 {{ bonusProbe.new_release_concurrency }} 并发</span>
+            <span>上限 {{ bonusProbe.max_concurrency }}</span>
+          </div>
+          <div class="mini-grid two">
+            <SettingsFieldCard label="同时运行任务" hint="同一时间允许几个特典探测任务进入执行；过高会叠加 DLsite 请求压力。">
+              <SettingsNumberStepper v-model="bonusProbe.max_active_jobs" :min="1" :max="6" />
+            </SettingsFieldCard>
+            <SettingsFieldCard label="最大并发上限" hint="普通、深度、新作并发都会被这个上限截断。">
+              <SettingsNumberStepper v-model="bonusProbe.max_concurrency" :min="1" :max="20" />
+            </SettingsFieldCard>
+          </div>
+          <div class="mini-grid two">
+            <SettingsFieldCard label="普通补全批次" hint="社团页点“特典补全”时，每批查询的 RJ 数量。">
+              <SettingsNumberStepper v-model="bonusProbe.normal_batch_size" :min="1" :max="bonusProbe.max_batch_size || 1000" />
+            </SettingsFieldCard>
+            <SettingsFieldCard label="普通补全并发">
+              <SettingsNumberStepper v-model="bonusProbe.normal_concurrency" :min="1" :max="bonusProbe.max_concurrency || 20" />
+            </SettingsFieldCard>
+          </div>
+          <div class="mini-grid two">
+            <SettingsFieldCard label="深度补全批次" hint="深度模式会查更大的候选范围，批次和并发建议比普通模式更谨慎。">
+              <SettingsNumberStepper v-model="bonusProbe.deep_batch_size" :min="1" :max="bonusProbe.max_batch_size || 1000" />
+            </SettingsFieldCard>
+            <SettingsFieldCard label="深度补全并发">
+              <SettingsNumberStepper v-model="bonusProbe.deep_concurrency" :min="1" :max="bonusProbe.max_concurrency || 20" />
+            </SettingsFieldCard>
+          </div>
+          <div class="mini-grid two">
+            <SettingsFieldCard label="新作探测批次" hint="邮件监听触发新作特典探测时使用。">
+              <SettingsNumberStepper v-model="bonusProbe.new_release_batch_size" :min="1" :max="bonusProbe.max_batch_size || 1000" />
+            </SettingsFieldCard>
+            <SettingsFieldCard label="新作探测并发">
+              <SettingsNumberStepper v-model="bonusProbe.new_release_concurrency" :min="1" :max="bonusProbe.max_concurrency || 20" />
+            </SettingsFieldCard>
+          </div>
+          <div class="mini-grid two">
+            <SettingsFieldCard label="最大批次上限" hint="保存时后端会把各模式批次限制在这个值以内。">
+              <SettingsNumberStepper v-model="bonusProbe.max_batch_size" :min="1" :max="500" />
+            </SettingsFieldCard>
+            <SettingsFieldCard label="缓存查询批次" hint="从 Redis / PostgreSQL 批量读取特典探测缓存的窗口。">
+              <SettingsNumberStepper v-model="bonusProbe.cache_lookup_batch_size" :min="100" :max="5000" :step="50" />
+            </SettingsFieldCard>
+          </div>
+          <SettingsFieldCard label="缓存写回批次" hint="特典探测缓存脏数据批量回写 PostgreSQL 的窗口。">
+            <SettingsNumberStepper v-model="bonusProbe.cache_write_batch_size" :min="50" :max="5000" :step="50" />
+          </SettingsFieldCard>
+        </div>
+      </div>
+
+      <div class="settings-card bonus-probe-note-card">
+        <div class="card-title">特典探测限流说明</div>
+        <div class="field-stack">
+          <div class="bonus-probe-note-item">
+            <div class="bonus-probe-note-label"><Zap :size="13" :stroke-width="2.5" /> 并发不是固定写死</div>
+            <p>任务启动时后端会读取这里的配置：普通补全走普通并发，新作邮件触发走新作并发，深度补全走深度并发。</p>
+          </div>
+          <div class="bonus-probe-note-item">
+            <div class="bonus-probe-note-label"><SearchCheck :size="13" :stroke-width="2.5" /> 上限会统一截断</div>
+            <p>如果某个模式填 10，但最大并发上限是 6，实际执行仍是 6。修改后需保存配置，新启动的任务才会使用新值。</p>
+          </div>
+          <div class="bonus-probe-note-item">
+            <div class="bonus-probe-note-label"><AlertCircle :size="13" :stroke-width="2.5" /> DLsite 请求压力</div>
+            <p>并发过高可能触发远端限流或短时间失败。默认 6 用来恢复原设计吞吐；网络不稳时建议先降到 2-4。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-grid two">
       <!-- DLsite 邮件监听 -->
       <div class="settings-card">
         <div class="card-title">
@@ -388,6 +464,30 @@ const subtitleItems = [
   { key: 'show_download_progress', label: '显示下载进度' },
   { key: 'show_issues', label: '显示问题项' }
 ]
+
+const defaultBonusProbeConfig = {
+  max_active_jobs: 1,
+  normal_batch_size: 100,
+  normal_concurrency: 6,
+  deep_batch_size: 200,
+  deep_concurrency: 6,
+  new_release_batch_size: 100,
+  new_release_concurrency: 6,
+  max_batch_size: 500,
+  max_concurrency: 6,
+  cache_lookup_batch_size: 500,
+  cache_write_batch_size: 500
+}
+
+const bonusProbe = computed(() => {
+  if (!props.config.bonus_probe || typeof props.config.bonus_probe !== 'object') {
+    props.config.bonus_probe = { ...defaultBonusProbeConfig }
+  }
+  for (const [key, value] of Object.entries(defaultBonusProbeConfig)) {
+    if (props.config.bonus_probe[key] == null) props.config.bonus_probe[key] = value
+  }
+  return props.config.bonus_probe
+})
 
 // ---- Kikoeru 测试链路 ----
 const kikoeruBusy = ref(false)
@@ -958,6 +1058,59 @@ async function pollEmailWatcherNow() {
 }
 
 .service-inline-row .field-input { flex: 1 1 220px; }
+
+.bonus-probe-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bonus-probe-summary span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--set-border);
+  background: var(--set-surface-soft);
+  color: var(--set-text-strong);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: -0.05px;
+}
+
+.bonus-probe-note-item {
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--set-surface);
+  border: 1px solid var(--set-border);
+  transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.bonus-probe-note-item:hover {
+  transform: translateY(-1px);
+  border-color: var(--set-border-strong);
+  background: var(--set-surface-hover);
+  box-shadow: 0 4px 12px -4px rgba(15, 23, 42, 0.08);
+}
+
+.bonus-probe-note-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--set-text-strong);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.05px;
+  margin-bottom: 6px;
+}
+
+.bonus-probe-note-item p {
+  margin: 0;
+  color: var(--set-text-muted);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
 
 .metadata-proxy-row {
   flex-wrap: nowrap;

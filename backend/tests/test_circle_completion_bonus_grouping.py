@@ -240,3 +240,34 @@ async def test_locate_bonus_work_returns_parent_page(monkeypatch):
     assert result["canonical_rjcode"] == "RJ01000001"
     assert result["display_rjcode"] == "RJ01000002"
     assert result["parent_canonical_rjcode"] == "RJ01000001"
+
+
+@pytest.mark.asyncio
+async def test_list_bonus_work_codes_returns_current_circle_bonus_rows(monkeypatch):
+    service = CircleCompletionService()
+    parent = _work("RJ01000001")
+    bonus = _work("RJ01000002", bonus=True)
+    bonus["bonus_parent_rjcode"] = "RJ01000001"
+    duplicate_bonus = _work("RJ01000002", bonus=True)
+    other = _work("RJ01000003")
+
+    monkeypatch.setattr(
+        service,
+        "_build_completion_view_state",
+        lambda _circle: {
+            "catalog": {
+                "circle_id": "RG00001",
+                "circle_name": "测试社团",
+                "source_mask": "",
+                "last_indexed_at": None,
+            },
+            "items": [parent, bonus, duplicate_bonus, other],
+        },
+    )
+
+    result = await service.list_circle_completion_bonus_work_codes("RG00001")
+
+    assert result["circle_id"] == "RG00001"
+    assert result["canonical_rjcodes"] == ["RJ01000002"]
+    assert result["total"] == 1
+    assert result["items"][0]["canonical_rjcode"] == "RJ01000002"

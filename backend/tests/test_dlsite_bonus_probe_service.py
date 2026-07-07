@@ -455,6 +455,103 @@ def test_local_hit_index_reuses_minimal_bonus_hit(db_session, monkeypatch) -> No
     assert [feature.workno for feature in features] == ["RJ01416572"]
 
 
+def test_load_cached_features_reads_redis_overlay(monkeypatch) -> None:
+    service = _service()
+
+    class FakeRedis:
+        def read_bonus_probe_cache_rows_sync(self, rjcodes):
+            assert list(rjcodes) == ["RJ01000001"]
+            return {
+                "RJ01000001": {
+                    "rjcode": "RJ01000001",
+                    "exists": True,
+                    "probe_status": "ok",
+                    "maker_id": "RG62878",
+                    "release_date": "2026-01-06",
+                    "work_type": "SOU",
+                    "price": 0,
+                    "is_free": True,
+                    "is_oly": True,
+                    "is_hidden_bonus_audio": True,
+                    "title": "Redis 特典缓存",
+                }
+            }
+
+    monkeypatch.setattr("app.core.redis_service.get_redis_service", lambda: FakeRedis())
+
+    features = service._load_cached_features_sync(["RJ01000001"])
+
+    assert features["RJ01000001"].title == "Redis 特典缓存"
+    assert features["RJ01000001"].is_hidden_bonus_audio is True
+
+
+def test_flush_bonus_probe_cache_dirty_once_writes_latest_row(db_session, monkeypatch) -> None:
+    service = _service()
+    monkeypatch.setattr("app.core.dlsite_bonus_probe_service.SessionLocal", lambda: db_session)
+
+    class FakeRedis:
+        def __init__(self):
+            self.acked = []
+
+        def read_bonus_probe_cache_dirty_sync(self, **_kwargs):
+            return [
+                (
+                    "1-0",
+                    {
+                        "rjcode": "RJ01000001",
+                        "exists": True,
+                        "probe_status": "ok",
+                        "maker_id": "RG62878",
+                        "release_date": "2026-01-06",
+                        "work_type": "SOU",
+                        "price": 0,
+                        "is_free": True,
+                        "is_oly": True,
+                        "is_hidden_bonus_audio": True,
+                        "title": "旧标题",
+                        "checked_at": "2026-01-06T00:00:00",
+                        "created_at": "2026-01-06T00:00:00",
+                        "updated_at": "2026-01-06T00:00:00",
+                    },
+                ),
+                (
+                    "2-0",
+                    {
+                        "rjcode": "RJ01000001",
+                        "exists": True,
+                        "probe_status": "ok",
+                        "maker_id": "RG62878",
+                        "release_date": "2026-01-06",
+                        "work_type": "SOU",
+                        "price": 0,
+                        "is_free": True,
+                        "is_oly": True,
+                        "is_hidden_bonus_audio": True,
+                        "title": "新标题",
+                        "checked_at": "2026-01-06T00:00:01",
+                        "created_at": "2026-01-06T00:00:00",
+                        "updated_at": "2026-01-06T00:00:01",
+                    },
+                ),
+                ("3-0", {"rjcode": ""}),
+            ]
+
+        def ack_bonus_probe_cache_dirty_sync(self, message_ids):
+            self.acked = list(message_ids)
+            return len(self.acked)
+
+    fake_redis = FakeRedis()
+    monkeypatch.setattr("app.core.redis_service.get_redis_service", lambda: fake_redis)
+
+    result = service.flush_bonus_probe_cache_dirty_once(limit=10)
+
+    row = db_session.query(DLsiteBonusProbeCache).filter(DLsiteBonusProbeCache.rjcode == "RJ01000001").one()
+    assert result == {"read": 3, "written": 1, "acked": 3}
+    assert row.title == "新标题"
+    assert row.is_hidden_bonus_audio is True
+    assert fake_redis.acked == ["1-0", "2-0", "3-0"]
+
+
 def test_select_original_work_for_bonus_uses_same_date_and_nearest_rj() -> None:
     service = _service()
     far_original = _Row("RJ01410000")
@@ -523,7 +620,7 @@ async def test_load_or_probe_features_counts_500_rj_batch_as_one_request(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_probe_circle_dates_runs_six_date_workers(monkeypatch) -> None:
+async def test_probe_circle_dates_clamps_date_workers_to_config_limit(monkeypatch) -> None:
     service = _service()
     monkeypatch.setattr(
         service,
@@ -565,7 +662,7 @@ async def test_probe_circle_dates_runs_six_date_workers(monkeypatch) -> None:
         concurrency=6,
     )
 
-    assert max_active == 6
+    assert max_active == 2
     assert result["date_count"] == 8
     assert [item["release_date"] for item in result["dates"]] == [f"2025-06-{day:02d}" for day in range(1, 9)]
 
@@ -898,6 +995,96 @@ async def test_probe_date_selected_rj_scope_avoids_large_date_range_budget(db_se
     assert result["hit_rjcodes"] == ["RJ01000004"]
     assert state.original_rjcode == "RJ01000003"
     assert state.status == "has_bonus"
+    assert date_row.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_probe_date_counts_cached_hidden_bonus_candidate(db_session, monkeypatch) -> None:
+    service = _service()
+    service.DEFAULT_DATE_RANGE_LIMIT = 2
+    service.DEFAULT_CIRCLE_EDGE_WINDOW = 10
+    monkeypatch.setattr("app.core.dlsite_bonus_probe_service.SessionLocal", lambda: db_session)
+    db_session.add(
+        CircleWork(
+            id="cached-original",
+            circle_id="circle-cached-probe",
+            canonical_rjcode="RJ01256625",
+            display_rjcode="RJ01256625",
+            maker_id="RG49556",
+            is_bonus_work=False,
+        )
+    )
+    db_session.add(
+        WorkMetadata(
+            rjcode="RJ01256625",
+            maker_id="RG49556",
+            release_date="2024-10-31",
+            is_bonus_work=False,
+        )
+    )
+    db_session.add(
+        DLsiteBonusProbeCache(
+            rjcode="RJ01256633",
+            exists=True,
+            probe_status="ok",
+            maker_id="RG49556",
+            release_date="2024-10-31",
+            work_type="SOU",
+            price=0,
+            is_sale=False,
+            is_free=True,
+            is_oly=True,
+            wishlist_count=0,
+            is_hidden_bonus_audio=True,
+            title="28日間限定早期特典",
+        )
+    )
+    db_session.commit()
+
+    monkeypatch.setattr(service, "_load_reusable_hidden_bonus_features", lambda **_kwargs: [])
+
+    async def fake_public_worknos(*_args, **_kwargs):
+        return ["RJ01256625"], ["RJ01256625"], "ok"
+
+    async def fake_load_or_probe(rjcodes, **_kwargs):
+        features = {}
+        for rjcode in rjcodes:
+            features[rjcode] = DLsiteProductProbeFeature(
+                workno=rjcode,
+                exists=rjcode == "RJ01256625",
+                probe_status="ok" if rjcode == "RJ01256625" else "missing",
+                maker_id="RG49556" if rjcode == "RJ01256625" else "",
+                release_date="2024-10-31" if rjcode == "RJ01256625" else "",
+                work_type="SOU" if rjcode == "RJ01256625" else "",
+                price=770 if rjcode == "RJ01256625" else 0,
+            )
+        return features, 0, 1 if rjcodes else 0
+
+    monkeypatch.setattr(service, "_load_public_worknos_for_date", fake_public_worknos)
+    monkeypatch.setattr(service, "_load_or_probe_features", fake_load_or_probe)
+
+    result = await service.probe_date(
+        circle_id="circle-cached-probe",
+        maker_id="RG49556",
+        release_date="2024-10-31",
+        mode="deep",
+        gap_limit=10,
+        batch_size=20,
+        target_rjcodes=["RJ01256625"],
+    )
+
+    state = db_session.query(DLsiteBonusOriginalProbeState).first()
+    bonus_row = db_session.query(CircleWork).filter(CircleWork.canonical_rjcode == "RJ01256633").first()
+    hit_index = db_session.query(DLsiteBonusProbeHitIndex).first()
+    date_row = db_session.query(DLsiteBonusProbeDate).first()
+    assert result["hit_rjcodes"] == ["RJ01256633"]
+    assert result["hit_count"] == 1
+    assert result["candidate_filter_stats"]["cached"] == 1
+    assert state.original_rjcode == "RJ01256625"
+    assert state.status == "has_bonus"
+    assert bonus_row is not None
+    assert bonus_row.is_bonus_work is True
+    assert hit_index.bonus_rjcode == "RJ01256633"
     assert date_row.status == "completed"
 
 
