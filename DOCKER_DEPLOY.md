@@ -57,7 +57,7 @@ cd /mnt/user/appdata/kikoerumanager
 ```yaml
 services:
   kikoerumanager:
-    image: ghcr.io/elena3939/kikoerumanager:1.6.25
+    image: ghcr.io/elena3939/kikoerumanager:1.6.73
     container_name: kikoerumanager
     ports:
       - "5555:5555"
@@ -122,7 +122,7 @@ docker run -d \
   -e POSTGRES_PASSWORD=请改成强密码 \
   --ulimit nofile=65536:65536 \
   --restart unless-stopped \
-  ghcr.io/elena3939/kikoerumanager:1.6.25
+  ghcr.io/elena3939/kikoerumanager:1.6.73
 ```
 
 ---
