@@ -491,6 +491,201 @@ class BaiduNetdiskService:
         digest = hashlib.sha1("\n".join(parts).encode("utf-8", errors="ignore")).hexdigest()[:16]
         return f"{BAIDU_NETDISK_PLATFORM}:{digest}"
 
+    def _download_row_identity(self, row: Dict[str, Any]) -> str:
+        if not isinstance(row, dict):
+            return ""
+        gid = str(row.get("gid") or "").strip()
+        if gid:
+            return gid
+        fs_id = str(row.get("fs_id") or row.get("fsid") or "").strip()
+        share_key = (
+            str(row.get("selection_key") or "").strip()
+            or str(row.get("share_id") or "").strip()
+            or str(row.get("share_url") or row.get("url") or "").strip()
+        )
+        if fs_id:
+            return f"{BAIDU_NETDISK_PLATFORM}:{share_key}:{fs_id}" if share_key else f"{BAIDU_NETDISK_PLATFORM}:fs:{fs_id}"
+        relative_path = str(row.get("relative_path") or row.get("original_relative_path") or "").strip().replace("\\", "/").strip("/")
+        remote_path = str(row.get("remote_path") or row.get("path") or "").strip().replace("\\", "/").strip("/")
+        name = str(row.get("name") or row.get("filename") or row.get("original_name") or "").strip()
+        identity = relative_path or remote_path or name
+        if identity:
+            return f"{BAIDU_NETDISK_PLATFORM}:{share_key}:{identity.lower()}" if share_key else f"{BAIDU_NETDISK_PLATFORM}:path:{identity.lower()}"
+        return json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)
+
+    def _download_row_completed(self, row: Dict[str, Any]) -> bool:
+        if not isinstance(row, dict):
+            return False
+        status = str(row.get("status") or "").strip().lower()
+        if status == "completed":
+            return True
+        progress = _safe_int(row.get("progress"))
+        total = _safe_int(row.get("total") or row.get("size"))
+        downloaded = _safe_int(row.get("downloaded"))
+        return bool(progress >= 100 or (total > 0 and downloaded >= total))
+
+    def _retry_failed_rows_from_metadata(self, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        completed_keys = {
+            self._download_row_identity(row)
+            for row in list((metadata or {}).get("download_files") or [])
+            if isinstance(row, dict) and self._download_row_completed(row)
+        }
+
+        def add_row(row: Dict[str, Any]) -> None:
+            if not isinstance(row, dict):
+                return
+            key = self._download_row_identity(row)
+            if key and key in completed_keys:
+                return
+            if key and key in seen:
+                return
+            if key:
+                seen.add(key)
+            rows.append(dict(row))
+
+        for row in list((metadata or {}).get("failed_files") or []):
+            add_row(row)
+        for row in list((metadata or {}).get("download_files") or []):
+            if not isinstance(row, dict) or self._download_row_completed(row):
+                continue
+            add_row(row)
+        return rows
+
+    def _same_download_row(self, left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            return False
+        left_key = self._download_row_identity(left)
+        right_key = self._download_row_identity(right)
+        if left_key and right_key and left_key == right_key:
+            return True
+        left_fs_id = str(left.get("fs_id") or left.get("fsid") or "").strip()
+        right_fs_id = str(right.get("fs_id") or right.get("fsid") or "").strip()
+        if left_fs_id and right_fs_id and left_fs_id == right_fs_id:
+            return True
+        for field in ("relative_path", "original_relative_path", "remote_path", "path", "name", "filename"):
+            left_value = str(left.get(field) or "").strip().replace("\\", "/").strip("/").lower()
+            right_value = str(right.get(field) or "").strip().replace("\\", "/").strip("/").lower()
+            if left_value and right_value and left_value == right_value:
+                return True
+        return False
+
+    def _item_matches_failed_row(self, item: Dict[str, Any], row: Dict[str, Any], *, only_item_scope: bool = False) -> bool:
+        if not isinstance(item, dict) or not isinstance(row, dict):
+            return False
+        item_selection_key = self._selection_key(item)
+        row_gid = str(row.get("gid") or "").strip()
+        if item_selection_key and row_gid and row_gid.startswith(f"{item_selection_key}:"):
+            return True
+        item_share_ids = {
+            str(item.get("selection_key") or "").strip(),
+            item_selection_key,
+            str(item.get("share_id") or "").strip(),
+            str(item.get("shorturl") or "").strip(),
+            str(item.get("share_url") or item.get("url") or "").strip(),
+        }
+        row_share_ids = {
+            str(row.get("selection_key") or "").strip(),
+            str(row.get("share_id") or "").strip(),
+            str(row.get("shorturl") or "").strip(),
+            str(row.get("share_url") or row.get("url") or "").strip(),
+        }
+        if any(value and value in item_share_ids for value in row_share_ids):
+            return True
+        if only_item_scope:
+            return False
+        item_files = [
+            file_item for file_item in list(item.get("share_files") or item.get("preview_files") or [])
+            if isinstance(file_item, dict)
+        ]
+        return any(self._same_download_row(file_item, row) for file_item in item_files)
+
+    def _retry_share_file_from_failed_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        item = dict(row or {})
+        remote_path = str(item.get("remote_path") or item.get("path") or "").strip()
+        if remote_path:
+            item["path"] = remote_path
+        item["name"] = str(item.get("name") or item.get("filename") or item.get("original_name") or "百度网盘文件").strip()
+        item["relative_path"] = str(item.get("relative_path") or item.get("original_relative_path") or item.get("name") or "").strip()
+        item["size"] = _safe_int(item.get("size") or item.get("total") or item.get("size_bytes"))
+        item["size_bytes"] = item["size"]
+        item["is_dir"] = False
+        item["isdir"] = 0
+        return item
+
+    def _retry_item_from_failed_rows(self, source_item: Dict[str, Any], failed_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        retry_item = dict(source_item or {})
+        retry_files = [self._retry_share_file_from_failed_row(row) for row in failed_rows if isinstance(row, dict)]
+        retry_item.pop("custom_group_folder", None)
+        retry_item.pop("custom_name", None)
+        retry_item.pop("custom_filename", None)
+        retry_item["ok"] = True
+        retry_item["share_files"] = retry_files
+        retry_item["preview_files"] = copy.deepcopy(retry_files)
+        retry_item["preview_file_count"] = len(retry_files)
+        retry_item["preview_folder_count"] = 0
+        retry_item["size"] = sum(_safe_int(row.get("size") or row.get("total") or row.get("size_bytes")) for row in retry_files)
+        retry_item["size_bytes"] = retry_item["size"]
+        retry_item["selection_key"] = self._selection_key(retry_item)
+        return retry_item
+
+    def _retry_items_from_failed_rows(self, metadata: Dict[str, Any], failed_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        source_items = [
+            item for item in list((metadata or {}).get("raw_selected_items") or [])
+            if isinstance(item, dict)
+        ]
+        if not source_items:
+            source_items = [
+                item for item in list((metadata or {}).get("selected_items") or [])
+                if isinstance(item, dict)
+            ]
+        retry_items: List[Dict[str, Any]] = []
+        used_row_keys: set[str] = set()
+        for source_item in source_items:
+            matched_rows = [
+                row for row in failed_rows
+                if isinstance(row, dict) and self._item_matches_failed_row(source_item, row)
+            ]
+            if not matched_rows:
+                continue
+            retry_items.append(self._retry_item_from_failed_rows(source_item, matched_rows))
+            used_row_keys.update(self._download_row_identity(row) for row in matched_rows if self._download_row_identity(row))
+        for row in failed_rows:
+            row_key = self._download_row_identity(row)
+            if row_key and row_key in used_row_keys:
+                continue
+            retry_items.append(self._retry_item_from_failed_rows(row, [row]))
+        return retry_items
+
+    def build_retry_selection_for_task(self, task) -> tuple[List[Dict[str, Any]], List[str]]:
+        metadata = dict(getattr(task, "task_metadata", None) or {})
+        failed_rows = self._retry_failed_rows_from_metadata(metadata)
+        retry_items = self._retry_items_from_failed_rows(metadata, failed_rows)
+        if not retry_items:
+            retry_items = [
+                dict(item)
+                for item in list(metadata.get("raw_selected_items") or metadata.get("selected_items") or [])
+                if isinstance(item, dict)
+            ]
+        retry_keys = [self._selection_key(item) for item in retry_items if self._selection_key(item)]
+        return retry_items, retry_keys
+
+    def build_retry_selection_for_file(self, task, file_row: Dict[str, Any]) -> tuple[List[Dict[str, Any]], List[str]]:
+        if not isinstance(file_row, dict):
+            return [], []
+        metadata = dict(getattr(task, "task_metadata", None) or {})
+        candidates = self._retry_failed_rows_from_metadata(metadata)
+        matched_rows = [row for row in candidates if self._same_download_row(row, file_row)]
+        if not matched_rows:
+            requested_identity = self._download_row_identity(file_row)
+            matched_rows = [row for row in candidates if requested_identity and self._download_row_identity(row) == requested_identity]
+        if not matched_rows:
+            return [], []
+        retry_items = self._retry_items_from_failed_rows(metadata, matched_rows)
+        retry_keys = [self._selection_key(item) for item in retry_items if self._selection_key(item)]
+        return retry_items, retry_keys
+
     def filter_preview_selection(
         self,
         preview: Dict[str, Any],
@@ -5150,9 +5345,31 @@ class BaiduNetdiskService:
         if event:
             event.set()
 
-    async def reset_task_for_retry(self, task) -> None:
+    async def reset_task_for_retry(
+        self,
+        task,
+        *,
+        retry_items: Optional[List[Dict[str, Any]]] = None,
+        retry_keys: Optional[List[str]] = None,
+    ) -> None:
         from .task_engine import TaskStatus
 
+        if retry_items is None or retry_keys is None:
+            retry_items, retry_keys = self.build_retry_selection_for_task(task)
+        if not retry_items:
+            raise BaiduNetdiskError("没有找到可重试的百度网盘失败项")
+
+        task.task_metadata["raw_selected_items"] = [dict(item) for item in retry_items if isinstance(item, dict)]
+        task.task_metadata["selected_items"] = [
+            sanitize_baidu_netdisk_item(item)
+            for item in retry_items
+            if isinstance(item, dict)
+        ]
+        task.task_metadata["selected_keys"] = list(retry_keys or [])
+        task.task_metadata["retry_target_count"] = len(retry_items)
+        if str(task.task_metadata.get("download_batch_folder_name") or "").strip():
+            task.task_metadata["retry_original_conflict_policy"] = task.task_metadata.get("conflict_policy", "")
+            task.task_metadata["conflict_policy"] = "resume"
         task.task_metadata["download_files"] = []
         task.task_metadata["download_runtime"] = {}
         task.task_metadata["failed_files"] = []

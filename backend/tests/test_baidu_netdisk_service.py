@@ -1549,6 +1549,111 @@ def test_baidu_download_file_concurrency_respects_network_budget(monkeypatch):
     assert service._baidu_download_file_concurrency(8) == 5
 
 
+def test_baidu_build_retry_selection_keeps_only_failed_or_incomplete_rows():
+    service = BaiduNetdiskService()
+    first_item = {
+        "ok": True,
+        "selection_key": "baidu:first",
+        "filename": "第一批",
+        "share_url": "https://pan.baidu.com/s/first?pwd=1111",
+        "share_files": [
+            {"fs_id": "1001", "name": "ok.zip", "relative_path": "ok.zip", "path": "/ok.zip", "size_bytes": 10},
+            {"fs_id": "1002", "name": "fail.zip", "relative_path": "fail.zip", "path": "/fail.zip", "size_bytes": 20},
+        ],
+    }
+    second_item = {
+        "ok": True,
+        "selection_key": "baidu:second",
+        "filename": "第二批",
+        "share_url": "https://pan.baidu.com/s/second?pwd=2222",
+        "share_files": [
+            {"fs_id": "2001", "name": "pending.zip", "relative_path": "pending.zip", "path": "/pending.zip", "size_bytes": 30},
+        ],
+    }
+    task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={
+            "raw_selected_items": [first_item, second_item],
+            "download_files": [
+                {"selection_key": "baidu:first", "fs_id": "1001", "name": "ok.zip", "relative_path": "ok.zip", "status": "completed"},
+                {"selection_key": "baidu:second", "fs_id": "2001", "name": "pending.zip", "relative_path": "pending.zip", "status": "downloading", "downloaded": 3, "total": 30},
+            ],
+            "failed_files": [
+                {"selection_key": "baidu:first", "fs_id": "1001", "name": "ok.zip", "relative_path": "ok.zip", "status": "failed", "failure_reason": "old"},
+                {"selection_key": "baidu:first", "fs_id": "1002", "name": "fail.zip", "relative_path": "fail.zip", "status": "failed", "failure_reason": "403"},
+            ],
+        },
+    )
+
+    retry_items, retry_keys = service.build_retry_selection_for_task(task)
+
+    assert retry_keys == ["baidu:first", "baidu:second"]
+    assert [item["selection_key"] for item in retry_items] == ["baidu:first", "baidu:second"]
+    assert [file_item["name"] for file_item in retry_items[0]["share_files"]] == ["fail.zip"]
+    assert [file_item["name"] for file_item in retry_items[1]["share_files"]] == ["pending.zip"]
+
+
+@pytest.mark.asyncio
+async def test_baidu_reset_task_for_retry_trims_raw_selection_and_uses_resume():
+    service = BaiduNetdiskService()
+    task = Task(
+        task_type=TaskType.BAIDU_NETDISK_DOWNLOAD,
+        source_path="pan.baidu.com",
+        metadata={
+            "raw_selected_items": [
+                {
+                    "ok": True,
+                    "selection_key": "baidu:all",
+                    "filename": "整批",
+                    "share_url": "https://pan.baidu.com/s/all?pwd=1111",
+                    "bdstoken": "secret-token",
+                    "randsk": "secret-randsk",
+                    "share_files": [
+                        {"fs_id": "1001", "name": "ok.zip", "relative_path": "ok.zip", "status": "completed"},
+                        {"fs_id": "1002", "name": "fail.zip", "relative_path": "fail.zip", "status": "failed"},
+                    ],
+                }
+            ],
+            "download_batch_folder_name": "百度网盘_20260707_120000",
+            "conflict_policy": "rename",
+            "download_files": [
+                {"selection_key": "baidu:all", "fs_id": "1001", "name": "ok.zip", "relative_path": "ok.zip", "status": "completed"},
+                {"selection_key": "baidu:all", "fs_id": "1002", "name": "fail.zip", "relative_path": "fail.zip", "status": "failed", "failure_reason": "403"},
+            ],
+            "failed_files": [
+                {"selection_key": "baidu:all", "fs_id": "1002", "name": "fail.zip", "relative_path": "fail.zip", "status": "failed", "failure_reason": "403"},
+            ],
+            "download_runtime": {"status": "failed"},
+            "performance_metrics": {"failed_count": 1},
+            "failure_reason": "403",
+        },
+        status=TaskStatus.FAILED,
+        task_id="baidu-retry-trim-test",
+    )
+
+    await service.reset_task_for_retry(task)
+
+    assert task.status == TaskStatus.PENDING
+    assert task.current_step == "等待重新下载"
+    assert task.task_metadata["retry_target_count"] == 1
+    assert task.task_metadata["selected_keys"] == ["baidu:all"]
+    assert task.task_metadata["conflict_policy"] == "resume"
+    assert task.task_metadata["retry_original_conflict_policy"] == "rename"
+    assert task.task_metadata["download_files"] == []
+    assert task.task_metadata["failed_files"] == []
+    assert task.task_metadata["download_runtime"] == {}
+    assert task.task_metadata["performance_metrics"] == {}
+    assert task.task_metadata["failure_reason"] == ""
+    raw_files = task.task_metadata["raw_selected_items"][0]["share_files"]
+    selected_files = task.task_metadata["selected_items"][0]["preview_files"]
+    assert [item["name"] for item in raw_files] == ["fail.zip"]
+    assert [item["name"] for item in selected_files] == ["fail.zip"]
+    assert "bdstoken" in task.task_metadata["raw_selected_items"][0]
+    assert "bdstoken" not in task.task_metadata["selected_items"][0]
+    assert "share_files" not in task.task_metadata["selected_items"][0]
+
+
 @pytest.mark.asyncio
 async def test_baidu_download_file_concurrency_is_global(monkeypatch, tmp_path):
     service = BaiduNetdiskService()
