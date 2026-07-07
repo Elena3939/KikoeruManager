@@ -45,6 +45,7 @@ _ONEDRIVE_HOST_HINTS = {"1drv.ms", "onedrive.live.com", "onedrive.com"}
 _GOOGLE_DRIVE_HOST_HINTS = {"drive.google.com", "docs.google.com", "drive.usercontent.google.com"}
 _PIKPAK_MAX_SHARE_FILES = 100
 _PIKPAK_STATUS_CACHE_TTL_SECONDS = 6 * 60 * 60
+_PIKPAK_STATUS_LIVE_TIMEOUT_SECONDS = 15.0
 _SHARE_PREVIEW_ONLY_SOURCES = {"pikpak", "transferit"}
 _FILE_LEVEL_SELECTION_SOURCES = _SHARE_PREVIEW_ONLY_SOURCES | {"gofile", "google_drive"}
 _GOFILE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -367,6 +368,7 @@ class HttpDownloadService:
         self._gofile_guest_token_lock = asyncio.Lock()
         self._google_drive_access_token_cache: tuple[str, float] = ("", 0.0)
         self._google_drive_access_token_lock = asyncio.Lock()
+        self._pikpak_status_refresh_tasks: Dict[str, asyncio.Task] = {}
 
     def _config(self):
         return get_config().http_downloader
@@ -555,6 +557,45 @@ class HttpDownloadService:
 
     def _pikpak_status_cache_ttl_seconds(self) -> int:
         return _PIKPAK_STATUS_CACHE_TTL_SECONDS
+
+    def _pikpak_status_live_timeout_seconds(self) -> float:
+        try:
+            return max(3.0, float(os.getenv("KIKOERUMANAGER_PIKPAK_STATUS_TIMEOUT_SECONDS", str(_PIKPAK_STATUS_LIVE_TIMEOUT_SECONDS)) or _PIKPAK_STATUS_LIVE_TIMEOUT_SECONDS))
+        except Exception:
+            return _PIKPAK_STATUS_LIVE_TIMEOUT_SECONDS
+
+    async def _pikpak_account_status_with_timeout(self, account: PikPakAccount, *, include_files: bool = False, limit: int = 100) -> Dict[str, Any]:
+        try:
+            return await asyncio.wait_for(
+                self._pikpak_account_status(account, include_files=include_files, limit=limit),
+                timeout=self._pikpak_status_live_timeout_seconds(),
+            )
+        except asyncio.TimeoutError as exc:
+            raise HttpDownloadError(f"PikPak 状态刷新超过 {self._pikpak_status_live_timeout_seconds():.0f}s，已停止等待") from exc
+
+    def _start_pikpak_status_background_refresh(self, account: PikPakAccount) -> None:
+        existing = self._pikpak_status_refresh_tasks.get(account.id)
+        if existing is not None and not existing.done():
+            return
+
+        async def _runner() -> None:
+            try:
+                await self._pikpak_account_status_with_timeout(account, include_files=False, limit=1)
+            except Exception as exc:
+                logger.info("[PikPak] 后台刷新状态失败 account=%s error=%s", account.id, self._sanitize_error(exc))
+            finally:
+                current = self._pikpak_status_refresh_tasks.get(account.id)
+                if current is asyncio.current_task():
+                    self._pikpak_status_refresh_tasks.pop(account.id, None)
+
+        self._pikpak_status_refresh_tasks[account.id] = asyncio.create_task(_runner())
+
+    def _mark_pikpak_stale_refreshing(self, payload: Dict[str, Any], message: str = "缓存已过期，正在后台刷新", *, refreshing: bool = True) -> Dict[str, Any]:
+        result = dict(payload or {})
+        result["stale"] = True
+        result["refreshing"] = bool(refreshing)
+        result["message"] = message
+        return result
 
     def _pikpak_status_cache_is_fresh(self, updated_at: Optional[datetime]) -> bool:
         if not updated_at:
@@ -1181,15 +1222,17 @@ class HttpDownloadService:
                 cached = self._pikpak_status_cache_read(account)
                 if cached:
                     return cached
+                stale = self._pikpak_status_cache_read(account, require_fresh=False)
+                if stale:
+                    self._start_pikpak_status_background_refresh(account)
+                    return self._mark_pikpak_stale_refreshing(stale)
             try:
-                return await self._pikpak_account_status(account, include_files=include_files, limit=limit)
+                return await self._pikpak_account_status_with_timeout(account, include_files=include_files, limit=limit)
             except Exception as exc:
                 if not force_refresh and not include_files:
                     stale = self._pikpak_status_cache_read(account, require_fresh=False)
                     if stale:
-                        stale["stale"] = True
-                        stale["message"] = f"缓存已过期，刷新失败: {self._sanitize_error(exc)}"
-                        return stale
+                        return self._mark_pikpak_stale_refreshing(stale, f"缓存已过期，刷新失败: {self._sanitize_error(exc)}", refreshing=False)
                 raise
         if not enabled_accounts:
             raise HttpDownloadError("PikPak 未配置可用账号或 token")
@@ -1201,15 +1244,18 @@ class HttpDownloadService:
                 if cached:
                     statuses.append(cached)
                     continue
+                stale = self._pikpak_status_cache_read(account, require_fresh=False)
+                if stale:
+                    self._start_pikpak_status_background_refresh(account)
+                    statuses.append(self._mark_pikpak_stale_refreshing(stale))
+                    continue
             try:
-                statuses.append(await self._pikpak_account_status(account, include_files=include_files, limit=limit))
+                statuses.append(await self._pikpak_account_status_with_timeout(account, include_files=include_files, limit=limit))
             except Exception as exc:
                 if not force_refresh and not include_files:
                     stale = self._pikpak_status_cache_read(account, require_fresh=False)
                     if stale:
-                        stale["stale"] = True
-                        stale["message"] = f"缓存已过期，刷新失败: {self._sanitize_error(exc)}"
-                        statuses.append(stale)
+                        statuses.append(self._mark_pikpak_stale_refreshing(stale, f"缓存已过期，刷新失败: {self._sanitize_error(exc)}", refreshing=False))
                         continue
                 status = self._pikpak_public_status(
                     account,
