@@ -121,7 +121,7 @@
         v-else-if="activeSection === 'system'"
         kicker="Runtime System"
         title="系统运行"
-        description="集中配置 PostgreSQL 连接池、语句超时、资源预算和数据库现场健康检查。"
+        description="集中配置 PostgreSQL、Redis、资源预算和数据库现场健康检查。"
       >
         <SystemSettingsPanel :config="config" />
       </SettingsSectionPanel>
@@ -192,7 +192,7 @@ const sectionKeyMap = {
   storage: ['storage'],
   processing: ['watcher', 'processing', 'extract', 'auto_process', 'process_existing'],
   rules: ['filter', 'rename', 'classification', 'path_mappings', 'path_mapping_enabled'],
-  services: ['kikoeru_server', 'asmr_sync', 'asmr_sync_step', 'rj_subtitle', 'email_watcher'],
+  services: ['kikoeru_server', 'asmr_sync', 'asmr_sync_step', 'rj_subtitle', 'email_watcher', 'bonus_probe'],
   aiSubtitle: ['ai_subtitle_matching'],
   httpDownload: ['http_downloader'],
   baiduNetdisk: ['baidu_netdisk'],
@@ -264,7 +264,7 @@ const sections = [
   { id: 'storage', title: '存储与库存', short: '路径、本地库存、群晖模板', icon: HardDrive, keywords: ['storage', 'library', 'synology', '群晖', '库存'] },
   { id: 'processing', title: '处理流程', short: '监视、解压、自动处理', icon: Workflow, keywords: ['watcher', 'processing', 'extract', '自动处理'] },
   { id: 'rules', title: '内容规则', short: '过滤、重命名、分类、路径映射', icon: Boxes, keywords: ['filter', 'rename', 'classification', 'path'] },
-  { id: 'services', title: '外部服务', short: 'Kikoeru、ASMR、RJ 字幕', icon: ScanSearch, keywords: ['kikoeru', 'asmr', 'subtitle', 'email', '外部服务'] },
+  { id: 'services', title: '外部服务', short: 'Kikoeru、ASMR、RJ 字幕、特典补全', icon: ScanSearch, keywords: ['kikoeru', 'asmr', 'subtitle', 'email', 'bonus', 'probe', 'dlsite', '外部服务', '特典补全', '特典探测'] },
   { id: 'aiSubtitle', title: 'AI 配对', short: '模型、Key、提示词、阈值', icon: Bot, keywords: ['ai', 'subtitle', 'match', 'model', 'prompt', '字幕配对', '模型', '提示词'] },
   { id: 'httpDownload', title: 'HTTP 下载', short: 'HTTP、Gofile、PikPak', icon: DownloadCloud, keywords: ['http', 'download', 'aria2', 'gofile', 'pikpak', '外链下载'] },
   { id: 'baiduNetdisk', title: '百度网盘', short: '官方登录、分享直下、SVIP', icon: BaiduNetdiskNavIcon, keywords: ['baidu', '百度网盘', '分享直下', 'SVIP', '百度'] },

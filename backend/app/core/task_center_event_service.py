@@ -153,9 +153,19 @@ def _broadcast_realtime_event(event: dict[str, Any]) -> None:
         logger.debug("桥接统一实时事件失败", exc_info=True)
 
 
+def _write_task_center_event_to_redis(event: dict[str, Any]) -> None:
+    try:
+        from .redis_service import get_redis_service
+
+        get_redis_service().append_stream_payload_sync('task-center:stream', dict(event), required=False)
+    except Exception:
+        logger.debug("[Redis] 写入任务中心事件流失败", exc_info=True)
+
+
 def broadcast_event(event: dict[str, Any]) -> None:
     if not event or not _should_emit(event):
         return
+    _write_task_center_event_to_redis(event)
     _broadcast_realtime_event(event)
     with _subscribers_lock:
         subscribers = list(_subscribers.values())

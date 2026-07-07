@@ -510,6 +510,66 @@ class NotificationCenterConfig(BaseModel):
     unread_highlight_enabled: bool = True
 
 
+class RedisConfig(BaseModel):
+    """Redis 运行态配置。PostgreSQL 仍是事实源，Redis 只承载短期运行态。"""
+    enabled: bool = True
+    required: bool = True
+    url: str = "redis://localhost:6379/0"
+    namespace: str = "kikoerumanager"
+    environment: str = "prod"
+    socket_timeout_seconds: float = 2.0
+    connect_timeout_seconds: float = 2.0
+    runtime_ttl_seconds: int = 259200
+    short_cache_ttl_seconds: int = 60
+    event_stream_maxlen: int = 50000
+    dirty_stream_maxlen: int = 200000
+
+    @model_validator(mode='after')
+    def normalize_runtime_values(self):
+        namespace = str(self.namespace or "kikoerumanager").strip() or "kikoerumanager"
+        if namespace.lower() in {"prekikoeru", "kikoerutool", "kikoerutool_elena"}:
+            namespace = "kikoerumanager"
+        self.namespace = namespace
+        self.environment = str(self.environment or "prod").strip() or "prod"
+        self.socket_timeout_seconds = max(0.1, float(self.socket_timeout_seconds or 2.0))
+        self.connect_timeout_seconds = max(0.1, float(self.connect_timeout_seconds or 2.0))
+        self.runtime_ttl_seconds = max(60, int(self.runtime_ttl_seconds or 259200))
+        self.short_cache_ttl_seconds = max(1, int(self.short_cache_ttl_seconds or 60))
+        self.event_stream_maxlen = max(100, int(self.event_stream_maxlen or 50000))
+        self.dirty_stream_maxlen = max(100, int(self.dirty_stream_maxlen or 200000))
+        return self
+
+
+class BonusProbeConfig(BaseModel):
+    """DLsite 特典补全运行配置。"""
+    max_active_jobs: int = 1
+    normal_batch_size: int = 100
+    normal_concurrency: int = 6
+    deep_batch_size: int = 200
+    deep_concurrency: int = 6
+    new_release_batch_size: int = 100
+    new_release_concurrency: int = 6
+    max_batch_size: int = 500
+    max_concurrency: int = 6
+    cache_lookup_batch_size: int = 500
+    cache_write_batch_size: int = 500
+
+    @model_validator(mode='after')
+    def normalize_limits(self):
+        self.max_active_jobs = max(1, int(self.max_active_jobs or 1))
+        self.max_batch_size = max(1, int(self.max_batch_size or 500))
+        self.max_concurrency = max(1, int(self.max_concurrency or 6))
+        self.normal_batch_size = min(max(1, int(self.normal_batch_size or 100)), self.max_batch_size)
+        self.normal_concurrency = min(max(1, int(self.normal_concurrency or 6)), self.max_concurrency)
+        self.deep_batch_size = min(max(1, int(self.deep_batch_size or 200)), self.max_batch_size)
+        self.deep_concurrency = min(max(1, int(self.deep_concurrency or 6)), self.max_concurrency)
+        self.new_release_batch_size = min(max(1, int(self.new_release_batch_size or 100)), self.max_batch_size)
+        self.new_release_concurrency = min(max(1, int(self.new_release_concurrency or 6)), self.max_concurrency)
+        self.cache_lookup_batch_size = max(100, int(self.cache_lookup_batch_size or 500))
+        self.cache_write_batch_size = max(50, int(self.cache_write_batch_size or 500))
+        return self
+
+
 class ResourceBudgetConfig(BaseModel):
     """跨业务资源预算：限制慢盘、远程库、下载等链路互相打满。"""
     enabled: bool = True
@@ -520,6 +580,7 @@ class ResourceBudgetConfig(BaseModel):
     network_download: int = 5
     database_write: int = 4
     library_index_write: int = 1
+    bonus_probe_database_write: int = 1
 
     @model_validator(mode='before')
     @classmethod
@@ -650,6 +711,8 @@ class AppConfig(BaseModel):
     email_watcher: EmailWatcherConfig = EmailWatcherConfig()
     notification_email: NotificationEmailConfig = NotificationEmailConfig()
     notification_center: NotificationCenterConfig = NotificationCenterConfig()
+    redis: RedisConfig = RedisConfig()
+    bonus_probe: BonusProbeConfig = BonusProbeConfig()
     resource_budget: ResourceBudgetConfig = ResourceBudgetConfig()
     database: DatabaseConfig = DatabaseConfig()
     security_gate: SecurityGateConfig = SecurityGateConfig()

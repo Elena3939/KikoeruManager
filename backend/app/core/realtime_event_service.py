@@ -60,6 +60,13 @@ def broadcast_event(event: dict[str, Any]) -> None:
         logger.debug("实时事件标准化失败", exc_info=True)
         return
 
+    try:
+        from .redis_service import get_redis_service
+
+        get_redis_service().write_realtime_event_sync(payload)
+    except Exception:
+        logger.debug("[Redis] 写入统一实时事件流失败", exc_info=True)
+
     with _subscribers_lock:
         subscribers = list(_subscribers.values())
     if not subscribers:

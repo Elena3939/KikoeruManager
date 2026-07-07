@@ -96,6 +96,17 @@ New-Item -ItemType Directory -Force -Path "test_data\input" | Out-Null
 New-Item -ItemType Directory -Force -Path "test_data\library" | Out-Null
 New-Item -ItemType Directory -Force -Path "test_data\temp" | Out-Null
 New-Item -ItemType Directory -Force -Path "data" | Out-Null
+New-Item -ItemType Directory -Force -Path "data\config" | Out-Null
+$ConfigPath = Join-Path $ScriptRoot "data\config\config.yaml"
+$DataPath = Join-Path $ScriptRoot "data"
+if (-not (Test-Path -LiteralPath $ConfigPath)) {
+    $TemplateConfigPath = Join-Path $ScriptRoot "backend\config\config.yaml"
+    if (Test-Path -LiteralPath $TemplateConfigPath) {
+        Copy-Item -LiteralPath $TemplateConfigPath -Destination $ConfigPath -Force
+    }
+}
+$env:CONFIG_PATH = $ConfigPath
+$env:DATA_PATH = $DataPath
 Write-Host "[OK] 目录创建完成" -ForegroundColor Green
 
 # 安装后端依赖
@@ -127,7 +138,7 @@ if ($LASTEXITCODE -ne 0) {
     Read-Host "按Enter键退出"
     exit 1
 }
-& .\venv\Scripts\python.exe -c "import click,uvicorn,fastapi,orjson,qrcode" *> $null
+& .\venv\Scripts\python.exe -c "import click,uvicorn,fastapi,orjson,qrcode,redis" *> $null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[提示] 检测到后端依赖不完整，正在修复..." -ForegroundColor Yellow
     & .\venv\Scripts\python.exe -m pip install -r requirements.txt
@@ -156,6 +167,21 @@ if (-not (Test-Path "frontend\node_modules")) {
     Write-Host "[3/4] 前端依赖已安装，跳过" -ForegroundColor Green
 }
 
+Write-Host ""
+Write-Host "正在启动 Redis..." -ForegroundColor Yellow
+& "$ScriptRoot\scripts\start-redis.ps1"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[错误] Redis 自动启动失败，请检查 data\config\config.yaml 或 D:\softApp\redis" -ForegroundColor Red
+    Read-Host "按Enter键退出"
+    exit 1
+}
+& "$ScriptRoot\scripts\check-redis.ps1"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[错误] Redis 未就绪" -ForegroundColor Red
+    Read-Host "按Enter键退出"
+    exit 1
+}
+
 # 启动服务
 Write-Host ""
 Write-Host "[4/4] 正在启动服务..." -ForegroundColor Yellow
@@ -169,7 +195,7 @@ Write-Host "按 Ctrl+C 停止服务" -ForegroundColor Yellow
 Write-Host ""
 
 # 启动后端（在新窗口）
-Start-Process cmd.exe -ArgumentList "/k", "title KikoeruManager Backend && cd /d `"$ScriptRoot\backend`" && venv\Scripts\python.exe -m app.main" -WindowStyle Normal
+Start-Process cmd.exe -ArgumentList "/k", "title KikoeruManager Backend && set `"CONFIG_PATH=$ConfigPath`" && set `"DATA_PATH=$DataPath`" && cd /d `"$ScriptRoot\backend`" && venv\Scripts\python.exe -m app.main" -WindowStyle Normal
 
 # 等待后端启动
 Start-Sleep -Seconds 3

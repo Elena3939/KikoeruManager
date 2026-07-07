@@ -22,7 +22,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# 安装系统依赖（官方 7-Zip 24.08、7-Zip ZS 兼容后端、BaiduPCS-Go、unar 和 opencc）
+# 安装系统依赖（官方 7-Zip 24.08、7-Zip ZS 兼容后端、BaiduPCS-Go、unar、opencc 和内置 Redis）
 # - 用 TARGETARCH（buildx 自动注入）选择 x64 / arm64 包，兼容 amd64 群晖和 ARM64 群晖。
 # - 显式 uninstall p7zip-full，避免 /usr/bin/7z 覆盖 /usr/local/bin/7zz 的 PATH 优先级。
 # - 构建末尾打印 `7zz -version`，构建失败或版本错位时立刻暴露，不会悄悄回退到旧 p7zip。
@@ -49,6 +49,7 @@ RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmwa
         libpq5 \
         postgresql-18 \
         postgresql-client-18 \
+        redis-server \
         libopencc-dev \
     && apt-get purge -y --auto-remove p7zip-full p7zip p7zip-rar 2>/dev/null || true \
     && case "${TARGETARCH:-amd64}" in \
@@ -123,6 +124,7 @@ print("psycopg version:", psycopg.__version__)
 print("PostgreSQL Python driver check OK")
 PY
 RUN psql --version
+RUN redis-server --version
 
 # 复制后端代码与 PostgreSQL schema baseline
 COPY backend/app/ ./app/

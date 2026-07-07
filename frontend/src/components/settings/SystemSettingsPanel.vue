@@ -91,6 +91,148 @@
       </section>
     </div>
 
+    <section class="system-card redis-card">
+      <div class="health-head">
+        <div>
+          <div class="card-title">
+            <IconDatabase :size="15" class="system-title-icon" />
+            <span>Redis 运行态配置</span>
+          </div>
+          <p class="system-desc">
+            Redis 只承载任务运行态、实时事件和高频短缓存；PostgreSQL 仍是事实源。保存 URL、开关或 namespace 后需要重启后端进程才会完全应用。
+          </p>
+        </div>
+        <div class="health-actions" aria-label="Redis 运行态操作">
+          <StatefulButton
+            class="health-stateful-btn health-stateful-btn--quick"
+            tone="neutral"
+            size="sm"
+            aria-label="刷新 Redis 运行态"
+            :success-hold="1200"
+            @click="refreshRedisStatus"
+          >
+            <template #prefix="{ state }">
+              <IconLoader2 v-if="state === 'loading'" :size="15" class="health-spin" />
+              <IconCheckCircle2 v-else-if="state === 'success'" :size="15" class="health-action-icon" />
+              <IconRefreshCw v-else :size="15" class="health-action-icon" />
+            </template>
+            <span class="health-btn-label">刷新 Redis</span>
+            <span class="health-btn-code">PING</span>
+          </StatefulButton>
+        </div>
+      </div>
+
+      <div class="redis-status-strip">
+        <span class="health-chip" :class="redis.enabled ? 'is-ok' : ''">
+          <component :is="redis.enabled ? IconCheckCircle2 : IconAlertCircle" :size="13" :stroke-width="2.5" />
+          {{ redis.enabled ? '已启用' : '已禁用' }}
+        </span>
+        <span class="runtime-pill">{{ redis.required ? '启动强依赖' : '允许降级' }}</span>
+        <span class="runtime-pill">{{ redis.namespace || 'kikoerumanager' }} / {{ redis.environment || 'prod' }}</span>
+        <span v-if="redisStatus" class="health-chip" :class="redisStatus.available ? 'is-ok' : 'is-error'">
+          <component :is="redisStatus.available ? IconCheckCircle2 : IconAlertCircle" :size="13" :stroke-width="2.5" />
+          {{ redisStatus.available ? '连接正常' : '连接不可用' }}
+        </span>
+      </div>
+
+      <div class="field-stack redis-form-stack">
+        <div class="redis-toggle-grid">
+          <SettingsToggleRow
+            v-model="redis.enabled"
+            title="启用 Redis"
+            subtitle="禁用后任务运行态和事件流回退到内存 / 数据库路径。"
+          />
+          <SettingsToggleRow
+            v-model="redis.required"
+            :disabled="!redis.enabled"
+            title="启动时必须可用"
+            subtitle="启用后 Redis ping 失败会阻断后端启动；不稳定环境可关闭。"
+          />
+        </div>
+
+        <SettingsFieldCard label="Redis URL" hint="接口默认仍脱敏返回；点击显示原始 URL 后从运行环境或配置文件读取真实连接串，随后可在左侧明文编辑并保存。">
+          <div class="redis-url-row">
+            <input v-model="redis.url" class="settings-inline-input redis-url-input" autocomplete="off" />
+            <StatefulButton
+              class="health-stateful-btn redis-reveal-btn"
+              tone="neutral"
+              size="sm"
+              aria-label="显示原始 Redis URL"
+              :success-hold="1200"
+              @click="fetchOriginalRedisUrl"
+            >
+              <template #prefix="{ state }">
+                <IconLoader2 v-if="state === 'loading'" :size="15" class="health-spin" />
+                <IconCheckCircle2 v-else-if="state === 'success'" :size="15" class="health-action-icon" />
+                <IconEye v-else :size="15" class="health-action-icon" />
+              </template>
+              <span class="health-btn-label">显示原始</span>
+            </StatefulButton>
+          </div>
+        </SettingsFieldCard>
+
+        <div class="mini-grid two">
+          <SettingsFieldCard label="Namespace" hint="同一个 Redis 中隔离不同产品或实例，默认 kikoerumanager。">
+            <input v-model="redis.namespace" class="settings-inline-input" autocomplete="off" />
+          </SettingsFieldCard>
+          <SettingsFieldCard label="Environment" hint="同一个 namespace 下隔离 prod、dev 等运行环境。">
+            <input v-model="redis.environment" class="settings-inline-input" autocomplete="off" />
+          </SettingsFieldCard>
+        </div>
+
+        <div class="mini-grid three">
+          <SettingsFieldCard label="Socket Timeout" hint="读写 Redis 的 socket 超时秒数。">
+            <SettingsNumberStepper v-model="redis.socket_timeout_seconds" :min="0.1" :max="60" :step="0.1" />
+          </SettingsFieldCard>
+          <SettingsFieldCard label="Connect Timeout" hint="建立 Redis 连接的超时秒数。">
+            <SettingsNumberStepper v-model="redis.connect_timeout_seconds" :min="0.1" :max="60" :step="0.1" />
+          </SettingsFieldCard>
+          <SettingsFieldCard label="Runtime TTL" hint="任务运行态和短期 overlay 的保留秒数。">
+            <SettingsNumberStepper v-model="redis.runtime_ttl_seconds" :min="60" :max="2592000" :step="60" />
+          </SettingsFieldCard>
+        </div>
+
+        <div class="mini-grid three">
+          <SettingsFieldCard label="Short Cache TTL" hint="短缓存默认保留秒数。">
+            <SettingsNumberStepper v-model="redis.short_cache_ttl_seconds" :min="1" :max="3600" />
+          </SettingsFieldCard>
+          <SettingsFieldCard label="Event Stream MaxLen" hint="实时事件 Redis Stream 近似最大长度。">
+            <SettingsNumberStepper v-model="redis.event_stream_maxlen" :min="100" :max="1000000" :step="1000" />
+          </SettingsFieldCard>
+          <SettingsFieldCard label="Dirty Stream MaxLen" hint="DLsite 特典缓存 dirty buffer 近似最大长度。">
+            <SettingsNumberStepper v-model="redis.dirty_stream_maxlen" :min="100" :max="2000000" :step="1000" />
+          </SettingsFieldCard>
+        </div>
+      </div>
+
+      <div v-if="redisStatus" class="health-result redis-status-result" :class="redisStatus.available ? 'is-ok' : 'is-error'">
+        <div class="health-status">
+          <span class="health-chip" :class="redisStatus.available ? 'is-ok' : 'is-error'">
+            <component :is="redisStatus.available ? IconCheckCircle2 : IconAlertCircle" :size="13" :stroke-width="2.5" />
+            {{ redisStatus.available ? 'Redis 可用' : 'Redis 不可用' }}
+          </span>
+          <span class="health-meta">{{ redisStatus.url_masked || redis.url || '未配置 URL' }}</span>
+        </div>
+
+        <div class="health-stat-grid redis-stat-grid">
+          <div v-for="item in redisStats" :key="item.label" class="health-stat-cell">
+            <span>{{ item.label }}</span>
+            <strong :title="String(item.value)">{{ item.value }}</strong>
+          </div>
+        </div>
+
+        <div v-if="redisStatus.last_error" class="health-error-line">
+          <IconAlertCircle :size="13" />
+          <span>{{ redisStatus.last_error }}</span>
+        </div>
+      </div>
+
+      <div v-else class="health-empty redis-empty">
+        <IconDatabase :size="16" />
+        <span>还没有 Redis 现场状态。点击“刷新 Redis”会读取当前后端运行态，不会保存配置。</span>
+      </div>
+    </section>
+
     <section class="system-card">
       <div class="card-title">
         <IconGauge :size="15" class="system-title-icon" />
@@ -213,7 +355,9 @@ import { computed, onMounted, ref, watch } from 'vue'
 import {
   AlertCircle as IconAlertCircle,
   CheckCircle2 as IconCheckCircle2,
+  Database as IconDatabase,
   DatabaseZap as IconDatabaseZap,
+  Eye as IconEye,
   Gauge as IconGauge,
   Loader2 as IconLoader2,
   RefreshCw as IconRefreshCw,
@@ -226,7 +370,7 @@ import SettingsNumberStepper from './SettingsNumberStepper.vue'
 import SettingsToggleRow from './SettingsToggleRow.vue'
 import AnimatedPasswordInput from '../common/AnimatedPasswordInput.vue'
 import StatefulButton from '../ui/stateful-button.vue'
-import { configApi, databaseMaintenanceApi } from '../../api'
+import { configApi, databaseMaintenanceApi, systemRuntimeApi } from '../../api'
 
 const props = defineProps({
   config: { type: Object, required: true }
@@ -257,6 +401,21 @@ const defaultResourceBudget = {
   network_download: 5,
   database_write: 1,
   library_index_write: 1,
+  bonus_probe_database_write: 1,
+}
+
+const defaultRedisConfig = {
+  enabled: true,
+  required: true,
+  url: 'redis://localhost:6379/0',
+  namespace: 'kikoerumanager',
+  environment: 'prod',
+  socket_timeout_seconds: 2.0,
+  connect_timeout_seconds: 2.0,
+  runtime_ttl_seconds: 259200,
+  short_cache_ttl_seconds: 60,
+  event_stream_maxlen: 50000,
+  dirty_stream_maxlen: 200000,
 }
 
 const budgetItems = [
@@ -270,11 +429,14 @@ const budgetItems = [
 ]
 
 const healthResult = ref(null)
+const redisStatus = ref(null)
 const databasePasswordRevealing = ref(false)
 const databaseRevealedPassword = ref('')
+const redisUrlRevealing = ref(false)
 
 const db = computed(() => props.config.database)
 const budget = computed(() => props.config.resource_budget)
+const redis = computed(() => props.config.redis)
 
 const healthMessages = computed(() => {
   const messages = healthResult.value?.messages
@@ -294,6 +456,24 @@ const healthStats = computed(() => {
   ]
 })
 
+const redisStats = computed(() => {
+  const status = redisStatus.value || {}
+  const streams = status.streams || {}
+  const keys = status.keys || {}
+  const memory = status.memory || {}
+  return [
+    { label: '启用状态', value: status.enabled ? '已启用' : '已禁用' },
+    { label: '强依赖', value: status.required ? '是' : '否' },
+    { label: '延迟', value: status.latency_ms === null || status.latency_ms === undefined ? '—' : `${status.latency_ms}ms` },
+    { label: '事件 Stream', value: formatRedisStreamInfo(streams.events) },
+    { label: '任务中心 Stream', value: formatRedisStreamInfo(streams.task_center) },
+    { label: '特典 Dirty Stream', value: formatRedisStreamInfo(streams.bonus_probe_cache) },
+    { label: '任务运行态 Key', value: formatRedisStatValue(keys.task_runtime ?? keys.tasks) },
+    { label: '缓存 Key', value: formatRedisStatValue(keys.bonus_probe_cache ?? keys.cache) },
+    { label: '内存', value: memory.used_memory_human || memory.used_memory || '—' },
+  ]
+})
+
 function ensureSystemConfig() {
   if (!props.config.database) {
     props.config.database = { ...defaultDatabaseConfig }
@@ -304,6 +484,42 @@ function ensureSystemConfig() {
     props.config.resource_budget = { ...defaultResourceBudget }
   } else {
     Object.assign(props.config.resource_budget, { ...defaultResourceBudget, ...props.config.resource_budget })
+  }
+  if (!props.config.redis) {
+    props.config.redis = { ...defaultRedisConfig }
+  } else {
+    Object.assign(props.config.redis, { ...defaultRedisConfig, ...props.config.redis })
+  }
+}
+
+async function refreshRedisStatus() {
+  try {
+    const result = await systemRuntimeApi.redisStatus()
+    redisStatus.value = result
+    if (result?.available || !result?.enabled) {
+      ElMessage.success(result?.enabled ? 'Redis 连接正常' : 'Redis 已禁用')
+    } else {
+      ElMessage.error(result?.last_error || 'Redis 连接不可用')
+      return false
+    }
+    return true
+  } catch (error) {
+    const detail = error.response?.data?.detail || error.message || 'Redis 状态读取失败'
+    redisStatus.value = {
+      enabled: redis.value?.enabled ?? true,
+      required: redis.value?.required ?? true,
+      available: false,
+      url_masked: redis.value?.url || '',
+      namespace: redis.value?.namespace || '',
+      environment: redis.value?.environment || '',
+      latency_ms: null,
+      last_error: String(detail),
+      streams: {},
+      keys: {},
+      memory: {},
+    }
+    ElMessage.error(String(detail))
+    return false
   }
 }
 
@@ -349,6 +565,40 @@ async function handleDatabasePasswordVisibility(visible) {
   } finally {
     databasePasswordRevealing.value = false
   }
+}
+
+async function fetchOriginalRedisUrl() {
+  if (redisUrlRevealing.value) return false
+  redisUrlRevealing.value = true
+  try {
+    const result = await configApi.revealRedisSecret({ key: 'url' })
+    if (result?.value) {
+      redis.value.url = result.value
+      ElMessage.success('已显示原始 Redis URL')
+      return true
+    } else {
+      ElMessage.warning('配置文件里没有可显示的原始 Redis URL')
+      return false
+    }
+  } catch (error) {
+    const detail = error.response?.data?.detail || error.message || '读取 Redis URL 失败'
+    ElMessage.error(String(detail))
+    return false
+  } finally {
+    redisUrlRevealing.value = false
+  }
+}
+
+function formatRedisStreamInfo(value) {
+  if (!value) return '—'
+  if (typeof value !== 'object') return String(value)
+  const length = value.length ?? value.len ?? '—'
+  const pending = value.pending
+  return pending === undefined || pending === null ? String(length) : `${length} / ${pending} pending`
+}
+
+function formatRedisStatValue(value) {
+  return value === undefined || value === null || value === '' ? '—' : String(value)
 }
 
 function formatBytes(bytes) {
@@ -493,6 +743,52 @@ watch(() => props.config, ensureSystemConfig, { immediate: true })
 
 .resource-head {
   margin: 16px 0 14px;
+}
+
+.redis-card {
+  display: grid;
+  gap: 16px;
+}
+
+.redis-status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.redis-form-stack {
+  margin-top: 2px;
+}
+
+.redis-url-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.redis-url-input {
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 12.5px;
+}
+
+.redis-reveal-btn {
+  min-width: 118px;
+}
+
+.redis-toggle-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 18px;
+}
+
+.redis-status-result,
+.redis-empty {
+  margin-top: 0;
+}
+
+.redis-stat-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .budget-grid {
@@ -781,6 +1077,8 @@ watch(() => props.config, ensureSystemConfig, { immediate: true })
   .settings-grid.two,
   .mini-grid.three,
   .budget-grid,
+  .redis-toggle-grid,
+  .redis-url-row,
   .health-stat-grid {
     grid-template-columns: 1fr;
   }

@@ -90,6 +90,12 @@ if not exist "test_data\input" mkdir test_data\input
 if not exist "test_data\library" mkdir test_data\library
 if not exist "test_data\temp" mkdir test_data\temp
 if not exist "data" mkdir data
+if not exist "data\config" mkdir "data\config"
+set "CONFIG_PATH=%ROOT_DIR%data\config\config.yaml"
+set "DATA_PATH=%ROOT_DIR%data"
+if not exist "%CONFIG_PATH%" (
+    if exist "%ROOT_DIR%backend\config\config.yaml" copy /Y "%ROOT_DIR%backend\config\config.yaml" "%CONFIG_PATH%" >nul
+)
 echo [OK] Directories created
 
 echo.
@@ -128,7 +134,7 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-venv\Scripts\python.exe -c "import click,uvicorn,fastapi,orjson,qrcode" >nul 2>&1
+venv\Scripts\python.exe -c "import click,uvicorn,fastapi,orjson,qrcode,redis" >nul 2>&1
 if errorlevel 1 (
     echo [INFO] Backend dependencies incomplete, repairing...
     venv\Scripts\python.exe -m pip install -r requirements.txt
@@ -157,6 +163,22 @@ cd ..
 echo [OK] Frontend ready
 
 echo.
+echo [INFO] Starting Redis...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%scripts\start-redis.ps1"
+if errorlevel 1 (
+    echo [ERROR] Redis auto-start failed.
+    echo [INFO] Check data\config\config.yaml redis.url or D:\softApp\redis installation.
+    pause
+    exit /b 1
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%scripts\check-redis.ps1"
+if errorlevel 1 (
+    echo [ERROR] Redis is not ready.
+    pause
+    exit /b 1
+)
+
+echo.
 echo [3/4] Starting services...
 echo.
 echo Backend: http://localhost:5555
@@ -167,7 +189,7 @@ echo Press Ctrl+C to stop
 echo.
 
 REM Start backend in new window
-start "KikoeruManager Backend" cmd /k "chcp 65001 >nul && set ""PYTHONUTF8=1"" && set ""PYTHONIOENCODING=utf-8"" && set ""BAIDUPCS_GO_PATH=%BAIDUPCS_GO_PATH%"" && set ""PATH=%BAIDUPCS_GO_DIR%;%PATH%"" && cd /d %ROOT_DIR%backend && venv\Scripts\python.exe -m app.main"
+start "KikoeruManager Backend" cmd /k "chcp 65001 >nul && set ""PYTHONUTF8=1"" && set ""PYTHONIOENCODING=utf-8"" && set ""CONFIG_PATH=%CONFIG_PATH%"" && set ""DATA_PATH=%DATA_PATH%"" && set ""BAIDUPCS_GO_PATH=%BAIDUPCS_GO_PATH%"" && set ""PATH=%BAIDUPCS_GO_DIR%;%PATH%"" && cd /d %ROOT_DIR%backend && venv\Scripts\python.exe -m app.main"
 
 REM Wait for backend
 timeout /t 3 /nobreak >nul

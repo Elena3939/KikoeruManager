@@ -116,6 +116,36 @@ class TaskCenterService:
         "renamed_output_path",
         "output_finalize_status",
         "svip_speed",
+        # Redis runtime overlay: summary 模式也要保留工作台需要的活跃运行态
+        "download_runtime",
+        "upload_runtime",
+        "bonus_probe_meta",
+        "progress_log",
+        "awaiting_manual_match",
+        "manual_match_completed",
+        "manual_match_completed_at",
+        "manual_match_applied_pairs",
+        "manual_match_deleted_subtitles",
+        "redis_runtime_updated_at",
+    )
+
+    REDIS_RUNTIME_METADATA_KEYS: tuple = (
+        "download_runtime",
+        "upload_runtime",
+        "bonus_probe_meta",
+        "progress_log",
+        "awaiting_manual_match",
+        "manual_match_completed",
+        "manual_match_completed_at",
+        "manual_match_applied_pairs",
+        "manual_match_deleted_subtitles",
+        "naming_strategy",
+        "ai_match_status",
+        "ai_match_mode",
+        "ai_auto_applied",
+        "ai_low_confidence_count",
+        "ai_unmatched_audio_count",
+        "ai_unmatched_subtitle_count",
     )
 
     # summary 模式下 pending preview 仅保留这些键
@@ -534,6 +564,74 @@ class TaskCenterService:
         if serialized:
             self._summary_engine_item_cache[task.id] = (cache_key, dict(serialized))
         return serialized
+
+    def _redis_runtime_for_task(self, task_id: str) -> Dict[str, Any]:
+        if not task_id:
+            return {}
+        try:
+            from .redis_service import get_redis_service
+
+            payload = get_redis_service().get_task_runtime_sync(task_id)
+            return dict(payload or {}) if isinstance(payload, dict) else {}
+        except Exception:
+            logger.debug("[Redis] 读取任务运行态失败: task_id=%s", task_id, exc_info=True)
+            return {}
+
+    def _merge_redis_runtime_item(self, item: Dict[str, Any], runtime: Dict[str, Any]) -> Dict[str, Any]:
+        if not item or not runtime:
+            return item
+        current_status = self._safe_text(item.get("status"))
+        if current_status not in {
+            TaskStatus.PENDING.value,
+            TaskStatus.PROCESSING.value,
+            TaskStatus.PAUSED.value,
+            TaskStatus.WAITING_MANUAL.value,
+            TaskStatus.WAITING_RETRY.value,
+        }:
+            return item
+        status = self._safe_text(runtime.get("status"))
+        if status not in {
+            TaskStatus.PENDING.value,
+            TaskStatus.PROCESSING.value,
+            TaskStatus.PAUSED.value,
+            TaskStatus.WAITING_MANUAL.value,
+            TaskStatus.WAITING_RETRY.value,
+        }:
+            status = ""
+        progress = runtime.get("progress")
+        current_step = self._safe_text(runtime.get("current_step"))
+        updated_at = self._safe_text(runtime.get("updated_at"))
+        progress_log = runtime.get("progress_log")
+        merged = dict(item)
+        if status:
+            merged["status"] = status
+            merged["status_label"] = self.STATUS_LABELS.get(status, status)
+        if progress is not None:
+            try:
+                merged["progress"] = int(progress or 0)
+            except Exception:
+                pass
+        if current_step:
+            merged["current_step"] = current_step
+        if updated_at:
+            merged["updated_at"] = updated_at
+        details = dict(merged.get("details") or {})
+        metadata = dict(details.get("metadata") or {})
+        for key in self.REDIS_RUNTIME_METADATA_KEYS:
+            if key not in runtime:
+                continue
+            value = runtime.get(key)
+            if key == "progress_log" and isinstance(value, list):
+                metadata[key] = list(value)[-80:]
+            else:
+                metadata[key] = self._json_safe(value)
+        if current_step:
+            metadata["current_step"] = current_step
+        if updated_at:
+            metadata["redis_runtime_updated_at"] = updated_at
+        details["metadata"] = metadata
+        merged["details"] = details
+        return merged
 
     def _first_metadata_rjcode(self, metadata: Dict[str, Any]) -> str:
         for key in ("canonical_rjcode", "target_rjcode", "actual_rjcode", "rjcode"):
@@ -1428,7 +1526,7 @@ class TaskCenterService:
         else:
             details_metadata = self._build_summary_metadata(metadata)
 
-        return {
+        item = {
             "id": f"engine:{task.id}",
             "entity_id": task.id,
             "engine_task_id": task.id,
@@ -1464,6 +1562,8 @@ class TaskCenterService:
                 "metadata": details_metadata,
             },
         }
+        runtime = self._redis_runtime_for_task(task.id)
+        return self._merge_redis_runtime_item(item, runtime)
 
     def _is_superseded_failed_item(self, item: Dict[str, Any]) -> bool:
         if self._safe_text(item.get("status")) != TaskStatus.FAILED.value:
