@@ -323,6 +323,19 @@ export const defaultConfig = {
     show_download_progress: true,
     show_issues: true
   },
+  bonus_probe: {
+    max_active_jobs: 1,
+    normal_batch_size: 100,
+    normal_concurrency: 6,
+    deep_batch_size: 200,
+    deep_concurrency: 6,
+    new_release_batch_size: 100,
+    new_release_concurrency: 6,
+    max_batch_size: 500,
+    max_concurrency: 6,
+    cache_lookup_batch_size: 500,
+    cache_write_batch_size: 500
+  },
   ai_subtitle_matching: {
     enabled: false,
     auto_apply_enabled: false,
@@ -539,6 +552,7 @@ function hydrateConfig(data = {}) {
     process_existing: { ...defaultConfig.process_existing, ...(data?.process_existing || {}) },
     asmr_sync_step: { ...defaultConfig.asmr_sync_step, ...(data?.asmr_sync_step || {}) },
     rj_subtitle: { ...defaultConfig.rj_subtitle, ...(data?.rj_subtitle || {}) },
+    bonus_probe: { ...defaultConfig.bonus_probe, ...(data?.bonus_probe || {}) },
     ai_subtitle_matching: { ...defaultConfig.ai_subtitle_matching, ...(data?.ai_subtitle_matching || {}) },
     email_watcher: { ...defaultConfig.email_watcher, ...(data?.email_watcher || {}) },
     notification_email: { ...defaultConfig.notification_email, ...(data?.notification_email || {}) },
@@ -592,6 +606,7 @@ function serializeConfig(config) {
     process_existing: payload.process_existing,
     asmr_sync_step: payload.asmr_sync_step,
     rj_subtitle: payload.rj_subtitle,
+    bonus_probe: payload.bonus_probe,
     ai_subtitle_matching: payload.ai_subtitle_matching,
     email_watcher: payload.email_watcher,
     notification_email: payload.notification_email,

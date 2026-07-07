@@ -11,6 +11,7 @@ class _BudgetConfig:
     remote_fs = 2
     database_write = 1
     library_index_write = 1
+    bonus_probe_database_write = 1
 
 
 class _Config:
@@ -82,6 +83,8 @@ def test_resource_budget_database_write_zero_is_serialized(monkeypatch):
     assert snapshot["resources"]["database_write"]["passthrough"] is False
     assert snapshot["resources"]["library_index_write"]["configured_limit"] == 1
     assert snapshot["resources"]["library_index_write"]["passthrough"] is False
+    assert snapshot["resources"]["bonus_probe_database_write"]["configured_limit"] == 1
+    assert snapshot["resources"]["bonus_probe_database_write"]["passthrough"] is False
 
 
 def test_resource_budget_snapshot_reports_active_tokens(monkeypatch):
@@ -104,6 +107,7 @@ def test_resource_budget_snapshot_reports_active_tokens(monkeypatch):
     assert remote_fs["passthrough"] is False
     assert snapshot["resources"]["database_write"]["configured_limit"] == 1
     assert snapshot["resources"]["library_index_write"]["configured_limit"] == 1
+    assert snapshot["resources"]["bonus_probe_database_write"]["configured_limit"] == 1
 
 
 def test_resource_budget_snapshot_reports_waiting_tokens(monkeypatch):

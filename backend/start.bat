@@ -72,7 +72,7 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-venv\Scripts\python.exe -c "import click,uvicorn,fastapi,orjson,qrcode" >nul 2>&1
+venv\Scripts\python.exe -c "import click,uvicorn,fastapi,orjson,qrcode,redis" >nul 2>&1
 if errorlevel 1 (
     echo [INFO] Backend dependencies incomplete, repairing...
     venv\Scripts\python.exe -m pip install -r requirements.txt
@@ -81,6 +81,23 @@ if errorlevel 1 (
         pause
         exit /b 1
     )
+)
+
+echo [INFO] Starting Redis...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\scripts\start-redis.ps1"
+if errorlevel 1 (
+    echo [ERROR] Redis auto-start failed.
+    echo [INFO] Check ..\data\config\config.yaml redis.url or D:\softApp\redis installation.
+    pause
+    exit /b 1
+)
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\scripts\check-redis.ps1"
+if errorlevel 1 (
+    echo [ERROR] Redis is not ready.
+    echo [INFO] Start Redis at the configured URL, or disable redis.required in ..\data\config\config.yaml for local development only.
+    pause
+    exit /b 1
 )
 
 venv\Scripts\python.exe -m app.main

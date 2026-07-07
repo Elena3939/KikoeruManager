@@ -28,6 +28,7 @@ RESOURCE_BUDGET_NAMES = (
     "network_download",
     "database_write",
     "library_index_write",
+    "bonus_probe_database_write",
 )
 
 _WAIT_LOG_THRESHOLD_SECONDS = float(os.getenv("KIKOERUMANAGER_RESOURCE_BUDGET_WAIT_LOG_SECONDS", "1.0") or 1.0)
@@ -64,7 +65,7 @@ class ResourceBudgetService:
             return 0
         # 数据库写入仍保留轻量背压，避免操作历史 / 任务中心批量写把连接池打满。
         # 库存索引使用独立 budget，避免后台索引追赶反压正常业务流程。
-        if resource in {"database_write", "library_index_write"}:
+        if resource in {"database_write", "library_index_write", "bonus_probe_database_write"}:
             return max(1, limit)
         return limit
 

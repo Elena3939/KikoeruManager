@@ -570,7 +570,7 @@ class TaskEngine:
             thread_name_prefix="task-center-materialize",
         )
         self._materialized_progress_min_interval_seconds = float(
-            os.getenv("KIKOERUMANAGER_TASK_CENTER_PROGRESS_SNAPSHOT_INTERVAL_SECONDS", "1.5") or 1.5
+            os.getenv("KIKOERUMANAGER_TASK_CENTER_PROGRESS_SNAPSHOT_INTERVAL_SECONDS", "5") or 5
         )
         Task.set_global_event_hook(self._emit_task_center_event)
         self.stale_processing_seconds = int(
@@ -589,12 +589,23 @@ class TaskEngine:
     def _emit_task_center_event(self, task: Task, reason: str = "progress") -> None:
         try:
             from .task_center_event_service import broadcast_task_center_changed
+
             self._ensure_task_context(task)
             self._bump_task_center_version()
+            self._write_task_runtime_to_redis(task, reason=reason)
             self.enqueue_task_center_item_snapshot(task)
             broadcast_task_center_changed(task, reason=reason)
         except Exception:
             logger.debug("任务中心事件广播失败: task_id=%s", getattr(task, "id", ""), exc_info=True)
+
+    def _write_task_runtime_to_redis(self, task: Task, reason: str = "progress") -> None:
+        try:
+            from .redis_service import get_redis_service
+
+            redis_service = get_redis_service()
+            redis_service.write_task_runtime_sync(task, reason=reason)
+        except Exception:
+            logger.debug("[Redis] 写入任务运行态失败: task_id=%s", getattr(task, "id", ""), exc_info=True)
 
     def set_max_concurrent(self, max_concurrent: int):
         """动态更新最大并发数"""
@@ -6096,12 +6107,27 @@ class TaskEngine:
         release_dates = list(metadata.get('release_dates') or [])
         selected_rjcodes_by_date = dict(metadata.get('selected_rjcodes_by_date') or {})
         gap_limit = int(metadata.get('gap_limit') or 500)
-        batch_size = int(metadata.get('batch_size') or 200)
-        concurrency = int(metadata.get('concurrency') or 6)
+        raw_batch_size = metadata.get('batch_size')
+        raw_concurrency = metadata.get('concurrency')
+        batch_size = int(raw_batch_size) if raw_batch_size is not None else None
+        concurrency = int(raw_concurrency) if raw_concurrency is not None else None
         if not circle_id:
             raise ValueError('缺少社团 ID')
 
         append_progress_log('准备探测 DLsite 隐藏特典', 1)
+        bonus_probe_service = get_dlsite_bonus_probe_service()
+        runtime_limits = bonus_probe_service.resolve_probe_runtime_limits(
+            mode=mode,
+            batch_size=batch_size,
+            concurrency=concurrency,
+        )
+        batch_size = int(runtime_limits['batch_size'])
+        concurrency = int(runtime_limits['concurrency'])
+        task.task_metadata.update({
+            'batch_size': batch_size,
+            'concurrency': concurrency,
+            'bonus_probe_runtime_limits': runtime_limits,
+        })
 
         def progress_callback(progress: int, step: str, meta: Dict[str, Any]):
             if task.status != TaskStatus.PROCESSING or task.is_cancelled():
@@ -6117,7 +6143,7 @@ class TaskEngine:
             }
             append_progress_log(step, pct)
 
-        result = await get_dlsite_bonus_probe_service().probe_circle_dates(
+        result = await bonus_probe_service.probe_circle_dates(
             circle_id=circle_id,
             maker_id=maker_id,
             release_dates=release_dates,

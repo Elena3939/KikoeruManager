@@ -14,8 +14,12 @@ PGDATA="${PGDATA:-/app/postgres/data}"
 PGHOST_DIR="${PGHOST_DIR:-/app/postgres/run}"
 PGPORT="${PGPORT:-5432}"
 PGLOG="${PGLOG:-/app/postgres/postgresql.log}"
+REDIS_HOST="${REDIS_HOST:-127.0.0.1}"
+REDIS_PORT="${REDIS_PORT:-6379}"
+REDIS_DIR="${REDIS_DIR:-/app/data/redis}"
+REDIS_LOG="${REDIS_LOG:-/app/data/redis/redis.log}"
 
-mkdir -p "$PGDATA" "$PGHOST_DIR" /app/data /app/config /input /temp /library /existing /processed
+mkdir -p "$PGDATA" "$PGHOST_DIR" "$REDIS_DIR" /app/data /app/config /input /temp /library /existing /processed
 chown -R postgres:postgres "$(dirname "$PGDATA")" "$PGHOST_DIR"
 chmod 700 "$PGHOST_DIR"
 
@@ -71,6 +75,32 @@ stop_postgres() {
   fi
 }
 
+start_redis() {
+  if [[ -n "${KIKOERUMANAGER_REDIS_URL:-}" ]]; then
+    log "检测到 KIKOERUMANAGER_REDIS_URL，使用外部 Redis"
+    return
+  fi
+  log "启动内置 Redis: ${REDIS_HOST}:${REDIS_PORT}"
+  redis-server \
+    --daemonize yes \
+    --bind "$REDIS_HOST" \
+    --port "$REDIS_PORT" \
+    --dir "$REDIS_DIR" \
+    --appendonly yes \
+    --protected-mode yes \
+    --logfile "$REDIS_LOG"
+  until redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" ping >/dev/null 2>&1; do
+    sleep 1
+  done
+  export KIKOERUMANAGER_REDIS_URL="redis://${REDIS_HOST}:${REDIS_PORT}/0"
+}
+
+stop_redis() {
+  if [[ -z "${KIKOERUMANAGER_REDIS_URL_WAS_SET:-}" && -n "${KIKOERUMANAGER_REDIS_URL:-}" ]]; then
+    redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" shutdown >/dev/null 2>&1 || true
+  fi
+}
+
 ensure_database() {
   export PGPASSWORD="$APP_PASSWORD"
   until pg_isready -h 127.0.0.1 -p "$PGPORT" -U "$APP_USER" >/dev/null 2>&1; do
@@ -93,13 +123,18 @@ SQL
 if [[ -z "${DATABASE_URL:-}" ]]; then
   init_postgres
   start_postgres
-  trap stop_postgres EXIT
   ensure_database
   export DATABASE_URL="postgresql+psycopg://${APP_USER}:${APP_PASSWORD}@127.0.0.1:${PGPORT}/${APP_DB}?sslmode=disable"
   log "使用内置 PostgreSQL: 127.0.0.1:${PGPORT}/${APP_DB}"
 else
   log "检测到 DATABASE_URL，使用外部 PostgreSQL"
 fi
+
+if [[ -n "${KIKOERUMANAGER_REDIS_URL:-}" ]]; then
+  KIKOERUMANAGER_REDIS_URL_WAS_SET=1
+fi
+start_redis
+trap 'stop_redis; stop_postgres' EXIT
 
 if [[ "$#" -eq 0 ]]; then
   set -- python -m app.main

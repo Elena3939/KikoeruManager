@@ -2219,6 +2219,14 @@ async def startup_event():
     # 初始化数据库
     init_db()
 
+    # Redis 是运行态高频链路的外部依赖；required=true 时不可用则阻断启动。
+    from ..core.redis_service import get_redis_service
+    redis_service = get_redis_service()
+    redis_service.startup_check()
+    if redis_service.is_enabled():
+        from ..core.dlsite_bonus_probe_service import get_dlsite_bonus_probe_service
+        get_dlsite_bonus_probe_service().start_cache_flush_worker()
+
     # 只纠正上次进程中断遗留的 syncing 状态；不自动重建库存索引。
     try:
         get_library_index_service().normalize_all_interrupted_syncing_statuses()
@@ -2300,6 +2308,13 @@ async def shutdown_event():
     archive_cleanup_service = get_processed_archive_cleanup_service()
     await archive_cleanup_service.stop()
 
+    # Flush DLsite 特典探测 Redis dirty buffer，确保关停前尽量回写 PostgreSQL。
+    try:
+        from ..core.dlsite_bonus_probe_service import get_dlsite_bonus_probe_service
+        await get_dlsite_bonus_probe_service().stop_cache_flush_worker()
+    except Exception:
+        logger.warning("关闭 DLsite 特典缓存回写 worker 失败", exc_info=True)
+
     # Flush 操作记录后台写入器，确保任务 finally 刚入队的审计不丢
     try:
         from ..core.activity_log_writer import (
@@ -2331,6 +2346,115 @@ class TaskResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+
+_TASK_RUNTIME_ACTIVE_STATUSES = {"pending", "processing", "paused", "waiting_manual", "waiting_retry"}
+_TASK_RUNTIME_METADATA_OVERLAY_KEYS = (
+    "download_runtime",
+    "upload_runtime",
+    "bonus_probe_meta",
+    "progress_log",
+    "awaiting_manual_match",
+    "manual_match_completed",
+    "manual_match_completed_at",
+    "manual_match_applied_pairs",
+    "manual_match_deleted_subtitles",
+    "naming_strategy",
+    "ai_match_status",
+    "ai_match_mode",
+    "ai_auto_applied",
+    "ai_low_confidence_count",
+    "ai_unmatched_audio_count",
+    "ai_unmatched_subtitle_count",
+)
+
+
+def _task_enum_value(value: Any) -> str:
+    return str(value.value if hasattr(value, "value") else (value or ""))
+
+
+def _task_status_value(task: Any) -> str:
+    return _task_enum_value(getattr(task, "status", ""))
+
+
+def _task_type_value(task: Any) -> str:
+    return _task_enum_value(getattr(task, "type", ""))
+
+
+def _redis_runtime_for_route_task(task: Any) -> Dict[str, Any]:
+    task_id = str(getattr(task, "id", "") or "").strip()
+    if not task_id:
+        return {}
+    try:
+        from ..core.redis_service import get_redis_service
+
+        payload = get_redis_service().get_task_runtime_sync(task_id)
+        return dict(payload or {}) if isinstance(payload, dict) else {}
+    except Exception:
+        logger.debug("[Redis] 路由读取任务运行态失败: task_id=%s", task_id, exc_info=True)
+        return {}
+
+
+def _should_apply_redis_task_runtime(task: Any, runtime: Dict[str, Any]) -> bool:
+    if not runtime:
+        return False
+    if _task_status_value(task) not in _TASK_RUNTIME_ACTIVE_STATUSES:
+        return False
+    runtime_status = str(runtime.get("status") or "").strip()
+    return not runtime_status or runtime_status in _TASK_RUNTIME_ACTIVE_STATUSES
+
+
+def _task_runtime_response_values(task: Any, runtime: Optional[Dict[str, Any]] = None) -> tuple[str, int, str]:
+    runtime = runtime if isinstance(runtime, dict) else _redis_runtime_for_route_task(task)
+    status_value = _task_status_value(task)
+    progress = int(getattr(task, "progress", 0) or 0)
+    current_step = str(getattr(task, "current_step", "") or "")
+    if not _should_apply_redis_task_runtime(task, runtime):
+        return status_value, progress, current_step
+    runtime_status = str(runtime.get("status") or "").strip()
+    if runtime_status:
+        status_value = runtime_status
+    if runtime.get("progress") is not None:
+        try:
+            progress = int(runtime.get("progress") or 0)
+        except Exception:
+            pass
+    runtime_step = str(runtime.get("current_step") or "").strip()
+    if runtime_step:
+        current_step = runtime_step
+    return status_value, progress, current_step
+
+
+def _task_metadata_with_redis_runtime(task: Any) -> Dict[str, Any]:
+    metadata = dict(getattr(task, "task_metadata", None) or {})
+    runtime = _redis_runtime_for_route_task(task)
+    if not _should_apply_redis_task_runtime(task, runtime):
+        return metadata
+    for key in _TASK_RUNTIME_METADATA_OVERLAY_KEYS:
+        if key not in runtime:
+            continue
+        value = runtime.get(key)
+        metadata[key] = list(value)[-80:] if key == "progress_log" and isinstance(value, list) else copy.deepcopy(value)
+    updated_at = str(runtime.get("updated_at") or "").strip()
+    if updated_at:
+        metadata["redis_runtime_updated_at"] = updated_at
+    return metadata
+
+
+def _serialize_task_response(task: Any) -> TaskResponse:
+    runtime = _redis_runtime_for_route_task(task)
+    status_value, progress, current_step = _task_runtime_response_values(task, runtime)
+    return TaskResponse(
+        id=str(getattr(task, "id", "") or ""),
+        type=_task_type_value(task),
+        status=status_value,
+        source_path=str(getattr(task, "source_path", "") or ""),
+        output_path=getattr(task, "output_path", None),
+        progress=progress,
+        current_step=current_step,
+        error_message=getattr(task, "error_message", None),
+        rjcode=getattr(task, "rjcode", None),
+    )
 
 
 class TaskCenterOverviewResponse(BaseModel):
@@ -2414,6 +2538,8 @@ class ConfigResponse(BaseModel):
     email_watcher: Optional[dict] = None
     notification_email: Optional[dict] = None
     notification_center: Optional[dict] = None
+    redis: Optional[dict] = None
+    bonus_probe: Optional[dict] = None
     resource_budget: Optional[dict] = None
     database: Optional[dict] = None
     security_gate: Optional[dict] = None
@@ -2442,6 +2568,10 @@ class AISubtitleSecretRevealRequest(BaseModel):
 
 
 class DatabaseSecretRevealRequest(BaseModel):
+    key: str
+
+
+class RedisSecretRevealRequest(BaseModel):
     key: str
 
 
@@ -2674,20 +2804,7 @@ async def get_tasks(status: Optional[str] = None):
     else:
         tasks = engine.get_all_tasks()
     
-    return [
-        TaskResponse(
-            id=task.id,
-            type=task.type.value,
-            status=task.status.value,
-            source_path=task.source_path,
-            output_path=task.output_path,
-            progress=task.progress,
-            current_step=task.current_step,
-            error_message=task.error_message,
-            rjcode=task.rjcode
-        )
-        for task in tasks
-    ]
+    return [_serialize_task_response(task) for task in tasks]
 
 
 @app.get("/api/task-center/overview", response_model=TaskCenterOverviewResponse)
@@ -2731,21 +2848,35 @@ async def get_task_center_item(item_id: Optional[str] = None, engine_task_id: Op
 async def stream_task_center_events(request: Request):
     """任务中心实时变更事件流。"""
     from ..core.task_center_event_service import sse_subscribe, sse_unsubscribe
+    from ..core.redis_service import get_redis_service
 
     loop = asyncio.get_event_loop()
     sid, queue = sse_subscribe(loop)
 
     async def generator():
+        last_redis_id = "$"
         try:
             yield f"data: {json.dumps({'type': 'connected', 'reason': 'connected'}, ensure_ascii=False)}\n\n"
             while True:
                 if await request.is_disconnected():
                     break
                 try:
-                    event = await asyncio.wait_for(queue.get(), timeout=25)
+                    event = await asyncio.wait_for(queue.get(), timeout=1)
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
+                    redis_events = await asyncio.to_thread(
+                        get_redis_service().read_stream_payloads_sync,
+                        'task-center:stream',
+                        last_id=last_redis_id,
+                        block_ms=1,
+                        count=50,
+                    )
+                    if redis_events:
+                        for message_id, event in redis_events:
+                            last_redis_id = message_id
+                            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    elif int(time.time()) % 25 == 0:
+                        yield ": keepalive\n\n"
         finally:
             sse_unsubscribe(sid)
 
@@ -2764,21 +2895,35 @@ async def stream_task_center_events(request: Request):
 async def stream_realtime_events(request: Request):
     """统一业务实时事件流。"""
     from ..core.realtime_event_service import sse_subscribe, sse_unsubscribe
+    from ..core.redis_service import get_redis_service
 
     loop = asyncio.get_event_loop()
     sid, queue = sse_subscribe(loop)
 
     async def generator():
+        last_redis_id = "$"
         try:
             yield f"data: {json.dumps({'type': 'connected'}, ensure_ascii=False)}\n\n"
             while True:
                 if await request.is_disconnected():
                     break
                 try:
-                    event = await asyncio.wait_for(queue.get(), timeout=25)
+                    event = await asyncio.wait_for(queue.get(), timeout=1)
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
+                    redis_events = await asyncio.to_thread(
+                        get_redis_service().read_stream_payloads_sync,
+                        'events:stream',
+                        last_id=last_redis_id,
+                        block_ms=1,
+                        count=50,
+                    )
+                    if redis_events:
+                        for message_id, event in redis_events:
+                            last_redis_id = message_id
+                            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    elif int(time.time()) % 25 == 0:
+                        yield ": keepalive\n\n"
         finally:
             sse_unsubscribe(sid)
 
@@ -2861,17 +3006,7 @@ async def get_task(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="任务未找到")
     
-    return TaskResponse(
-        id=task.id,
-        type=task.type.value,
-        status=task.status.value,
-        source_path=task.source_path,
-        output_path=task.output_path,
-        progress=task.progress,
-        current_step=task.current_step,
-        error_message=task.error_message,
-        rjcode=task.rjcode
-    )
+    return _serialize_task_response(task)
 
 @app.post("/api/tasks/{task_id}/pause", deprecated=True, summary="兼容层：暂停原始引擎任务")
 async def pause_task(task_id: str):
@@ -2956,6 +3091,17 @@ def _mask_database_config(config) -> Optional[dict]:
     data = config.database.model_dump()
     if data.get('password') or _read_database_secret_from_runtime('password'):
         data['password'] = '********'
+    return data
+
+
+def _mask_redis_config(config) -> Optional[dict]:
+    """返回 Redis 配置，URL 密码脱敏。"""
+    if not hasattr(config, 'redis'):
+        return None
+    from ..core.redis_service import _mask_redis_url
+
+    data = config.redis.model_dump()
+    data['url'] = _mask_redis_url(data.get('url') or '')
     return data
 
 
@@ -3064,6 +3210,25 @@ def _read_database_secret_from_runtime(key: str) -> str:
     except Exception:
         logger.warning("[数据库] 解析 DATABASE_URL 敏感配置失败", exc_info=True)
         return ""
+
+
+def _read_redis_url_from_disk() -> str:
+    """读取磁盘原始 Redis URL，避免把脱敏占位符写回。"""
+    try:
+        config_path = _runtime_config_path_from_settings()
+        if not os.path.exists(config_path):
+            return ""
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        value = str(data.get("redis", {}).get("url") or "")
+        return value if "********" not in value else ""
+    except Exception:
+        logger.warning("[Redis] 读取磁盘 Redis URL 失败", exc_info=True)
+        return ""
+
+
+def _read_redis_url_from_runtime() -> str:
+    return os.environ.get("KIKOERUMANAGER_REDIS_URL", "").strip()
 
 
 def _read_ai_subtitle_api_key_from_disk() -> str:
@@ -3215,6 +3380,8 @@ def get_configuration():
         email_watcher=config.email_watcher.model_dump() if hasattr(config, 'email_watcher') else None,
         notification_email=_mask_notification_email_config(config),
         notification_center=config.notification_center.model_dump() if hasattr(config, 'notification_center') else None,
+        redis=_mask_redis_config(config),
+        bonus_probe=config.bonus_probe.model_dump() if hasattr(config, 'bonus_probe') else None,
         resource_budget=config.resource_budget.model_dump() if hasattr(config, 'resource_budget') else None,
         database=_mask_database_config(config),
         security_gate=get_security_gate_service().sanitize_config() if hasattr(config, 'security_gate') else None,
@@ -3279,6 +3446,15 @@ def reveal_database_secret(payload: DatabaseSecretRevealRequest):
     if key != "password":
         raise HTTPException(status_code=400, detail="不支持读取该敏感字段")
     return {"value": _read_database_secret_from_disk(key) or _read_database_secret_from_runtime(key)}
+
+
+@app.post("/api/config/redis/reveal-secret")
+def reveal_redis_secret(payload: RedisSecretRevealRequest):
+    """从运行环境或本地配置文件读取 Redis URL，只供设置页显隐和编辑使用。"""
+    key = str(payload.key or "").strip()
+    if key != "url":
+        raise HTTPException(status_code=400, detail="不支持读取该敏感字段")
+    return {"value": _read_redis_url_from_runtime() or _read_redis_url_from_disk()}
 
 
 class SecurityGateVerifyRequest(BaseModel):
@@ -3450,6 +3626,29 @@ def get_resource_budget_snapshot():
     from ..core.resource_budget_service import get_resource_budget_service
 
     return get_resource_budget_service().snapshot()
+
+
+@app.get("/api/system/redis/status")
+def get_redis_status():
+    """返回 Redis 运行态诊断。"""
+    from ..core.redis_service import get_redis_service
+
+    return get_redis_service().diagnostics()
+
+
+@app.get("/api/system/runtime/status")
+def get_runtime_status():
+    """返回运行态依赖和关键限流配置。"""
+    from ..core.redis_service import get_redis_service
+    from ..core.resource_budget_service import get_resource_budget_service
+
+    config = get_config()
+    return {
+        "redis": get_redis_service().diagnostics(),
+        "resource_budget": get_resource_budget_service().snapshot(),
+        "bonus_probe": config.bonus_probe.model_dump() if hasattr(config, 'bonus_probe') else None,
+        "generated_at": datetime.now().isoformat(),
+    }
 
 
 @app.get("/api/system/remote-fs-health")
@@ -3743,6 +3942,34 @@ async def update_configuration(request: Request):
             except Exception as e:
                 logger.error(f"[资源预算] resource_budget 配置验证失败: {e}")
                 raise HTTPException(status_code=400, detail=f"资源预算配置无效: {e}")
+
+        if 'redis' in config_data and config_data['redis']:
+            try:
+                from ..config.settings import RedisConfig
+                redis_data = dict(config_data['redis'])
+                incoming_url = str(redis_data.get('url') or '').strip()
+                if '********' in incoming_url or 'url' not in redis_data:
+                    current_cfg = get_config()
+                    current_url = getattr(current_cfg.redis, 'url', '') if hasattr(current_cfg, 'redis') else ''
+                    redis_data['url'] = (
+                        _read_redis_url_from_runtime()
+                        or _read_redis_url_from_disk()
+                        or (current_url if '********' not in str(current_url or '') else '')
+                    )
+                redis_cfg = RedisConfig(**redis_data)
+                config_data['redis'] = redis_cfg.model_dump()
+            except Exception as e:
+                logger.error(f"[Redis] redis 配置验证失败: {e}")
+                raise HTTPException(status_code=400, detail=f"Redis 配置无效: {e}")
+
+        if 'bonus_probe' in config_data and config_data['bonus_probe']:
+            try:
+                from ..config.settings import BonusProbeConfig
+                bp_cfg = BonusProbeConfig(**config_data['bonus_probe'])
+                config_data['bonus_probe'] = bp_cfg.model_dump()
+            except Exception as e:
+                logger.error(f"[特典补全] bonus_probe 配置验证失败: {e}")
+                raise HTTPException(status_code=400, detail=f"特典补全配置无效: {e}")
 
         if 'database' in config_data and config_data['database']:
             try:
@@ -14093,64 +14320,7 @@ async def rj_subtitle_status():
             "pending": len([task for task in rj_tasks if task.status.value == "pending"]),
             "completed": len([task for task in rj_tasks if task.status.value == "completed"]),
             "failed": len([task for task in rj_tasks if task.status.value == "failed"]),
-            "tasks": [
-                {
-                    "id": task.id,
-                    "rjcode": task.task_metadata.get("rjcode", ""),
-                    "actual_rjcode": task.task_metadata.get("actual_rjcode", ""),
-                    "folder_name": task.task_metadata.get("folder_name", ""),
-                    "folder_path": task.task_metadata.get("folder_path", task.source_path),
-                    "library_id": task.task_metadata.get("library_id", ""),
-                    "status": task.status.value,
-                    "is_cancelled": task.is_cancelled(),
-                    "progress": task.progress,
-                    "current_step": task.current_step,
-                    "error_message": task.error_message,
-                    "created_at": task.created_at.isoformat() if task.created_at else None,
-                    "started_at": task.started_at.isoformat() if task.started_at else None,
-                    "completed_at": task.completed_at.isoformat() if task.completed_at else None,
-                    "source_lang": task.task_metadata.get("source_lang", ""),
-                    "source_work_type": task.task_metadata.get("source_work_type", ""),
-                    "source_title": task.task_metadata.get("source_title", ""),
-                    "source_mode": task.task_metadata.get("source_mode", ""),
-                    "target_rjcode": task.task_metadata.get("target_rjcode", ""),
-                    "target_folder_path": task.task_metadata.get("target_folder_path", ""),
-                    "target_library_id": task.task_metadata.get("target_library_id", ""),
-                    "subtitle_library_id": task.task_metadata.get("subtitle_library_id", task.task_metadata.get("library_id", "")),
-                    "source_archive_path": task.task_metadata.get("source_archive_path", ""),
-                    "source_subtitle_folder_path": task.task_metadata.get("source_subtitle_folder_path", ""),
-                    "import_reason": task.task_metadata.get("import_reason", ""),
-                    "kikoeru_checked_rjcode": task.task_metadata.get("kikoeru_checked_rjcode", ""),
-                    "kikoeru_has_work": task.task_metadata.get("kikoeru_has_work", False),
-                    "kikoeru_has_existing_subtitles": task.task_metadata.get("kikoeru_has_existing_subtitles", False),
-                    "kikoeru_matched_rjcode": task.task_metadata.get("kikoeru_matched_rjcode", ""),
-                    "kikoeru_subtitle_file_count": task.task_metadata.get("kikoeru_subtitle_file_count", 0),
-                    "kikoeru_subtitle_check_source": task.task_metadata.get("kikoeru_subtitle_check_source", ""),
-                    "downloaded_count": task.task_metadata.get("downloaded_count", 0),
-                    "existing_subtitle_count": task.task_metadata.get("existing_subtitle_count", 0),
-                    "subtitle_dir": task.task_metadata.get("subtitle_dir", ""),
-                    "linked_workbench_root_dir": task.task_metadata.get("linked_workbench_root_dir", ""),
-                    "written_files": task.task_metadata.get("written_files", []),
-                    "skipped_files": task.task_metadata.get("skipped_files", []),
-                    "write_errors": task.task_metadata.get("write_errors", []),
-                    "failed_files": task.task_metadata.get("failed_files", []),
-                    "match_result": task.task_metadata.get("match_result", {}),
-                    "search_attempts": task.task_metadata.get("search_attempts", []),
-                    "download_files": task.task_metadata.get("download_files", []),
-                    "filtered_out_count": task.task_metadata.get("filtered_out_count", 0),
-                    "content_deduped_count": task.task_metadata.get("content_deduped_count", 0),
-                    "content_deduped_files": task.task_metadata.get("content_deduped_files", []),
-                    "renamed_collision_files": task.task_metadata.get("renamed_collision_files", []),
-                    "progress_log": task.task_metadata.get("progress_log", []),
-                    "awaiting_manual_match": task.task_metadata.get("awaiting_manual_match", False),
-                    "manual_match_completed": task.task_metadata.get("manual_match_completed", False),
-                    "manual_match_applied_pairs": task.task_metadata.get("manual_match_applied_pairs", 0),
-                    "manual_match_deleted_subtitles": task.task_metadata.get("manual_match_deleted_subtitles", 0),
-                    "naming_strategy": task.task_metadata.get("naming_strategy", "audio"),
-                    "linked_subtitle_cleanup_result": task.task_metadata.get("linked_subtitle_cleanup_result"),
-                }
-                for task in rj_tasks
-            ]
+            "tasks": [_serialize_rj_subtitle_task_status(task) for task in rj_tasks]
         }
     except Exception as e:
         logger.error(f"获取 RJ 字幕抓取状态失败: {e}", exc_info=True)
@@ -14466,8 +14636,8 @@ class CircleCompletionBonusProbeStartRequest(BaseModel):
     selected_rjcodes_by_date: Dict[str, List[str]] = {}
     mode: str = "normal"
     gap_limit: int = 500
-    batch_size: int = 500
-    concurrency: int = 6
+    batch_size: Optional[int] = None
+    concurrency: Optional[int] = None
 
 
 class CircleCompletionDownloadPreviewRequest(BaseModel):
@@ -14535,6 +14705,10 @@ class HttpDownloadStartRequest(BaseModel):
 
 
 class HttpDownloadRetryFileRequest(BaseModel):
+    file: dict = Field(default_factory=dict)
+
+
+class BaiduNetdiskRetryFileRequest(BaseModel):
     file: dict = Field(default_factory=dict)
 
 
@@ -14684,11 +14858,11 @@ def _serialize_http_download_task(task) -> dict:
     from ..core.baidu_netdisk_service import build_baidu_netdisk_batch_title, sanitize_baidu_netdisk_item
     from ..core.http_download_service import build_http_download_batch_title, sanitize_http_download_item
 
-    metadata = dict(getattr(task, "task_metadata", None) or {})
+    metadata = _task_metadata_with_redis_runtime(task)
     download_mode = str(metadata.get("download_mode") or "http")
     is_baidu_netdisk = download_mode == "baidu_netdisk" or metadata.get("task_domain") == "baidu_netdisk"
     failed_files = list(metadata.get("failed_files") or [])
-    status_value = task.status.value if hasattr(task.status, "value") else str(task.status or "")
+    status_value, progress, current_step = _task_runtime_response_values(task)
     sanitize_download_item = sanitize_baidu_netdisk_item if is_baidu_netdisk else sanitize_http_download_item
     download_files = [
         sanitize_download_item(item)
@@ -14716,8 +14890,8 @@ def _serialize_http_download_task(task) -> dict:
         "source_label": metadata.get("source_label", ""),
         "status": status_value,
         "display_status": display_status,
-        "progress": task.progress,
-        "current_step": task.current_step,
+        "progress": progress,
+        "current_step": current_step,
         "error_message": task.error_message,
         "created_at": task.created_at.isoformat() if getattr(task, "created_at", None) else None,
         "started_at": task.started_at.isoformat() if getattr(task, "started_at", None) else None,
@@ -14749,6 +14923,177 @@ def _serialize_http_download_task(task) -> dict:
             "platform_label": metadata.get("platform_label", ""),
             "svip_speed": bool(metadata.get("svip_speed")),
         },
+    }
+
+
+def _serialize_local_upload_task_status(task) -> dict:
+    metadata = _task_metadata_with_redis_runtime(task)
+    status_value, progress, current_step = _task_runtime_response_values(task)
+    return {
+        "id": task.id,
+        "status": status_value,
+        "display_status": (
+            "partial_failed"
+            if (
+                metadata.get("local_cleanup_status") == "failed"
+                or metadata.get("verification_failures")
+                or metadata.get("failed_files")
+            )
+            else status_value
+        ),
+        "progress": progress,
+        "current_step": current_step,
+        "error_message": task.error_message,
+        "created_at": task.created_at.isoformat() if getattr(task, "created_at", None) else None,
+        "started_at": task.started_at.isoformat() if getattr(task, "started_at", None) else None,
+        "completed_at": task.completed_at.isoformat() if getattr(task, "completed_at", None) else None,
+        "source_path": task.source_path,
+        "output_path": getattr(task, "output_path", ""),
+        "upload_files": metadata.get("upload_files", []),
+        "uploaded_files": metadata.get("uploaded_files", []),
+        "failed_files": metadata.get("failed_files", []),
+        "verification_failures": metadata.get("verification_failures", []),
+        "source_lock_failures": metadata.get("source_lock_failures", []),
+        "upload_runtime": metadata.get("upload_runtime", {}),
+        "progress_log": metadata.get("progress_log", []),
+        "task_metadata": {
+            "source_library_id": metadata.get("source_library_id", ""),
+            "source_base_path": metadata.get("source_base_path", ""),
+            "selected_paths": metadata.get("selected_paths", []),
+            "selected_items": metadata.get("selected_items", []),
+            "selected_dir_count": metadata.get("selected_dir_count", 0),
+            "target_library_id": metadata.get("target_library_id", ""),
+            "target_subdir": metadata.get("target_subdir", ""),
+            "circle_name": metadata.get("circle_name", ""),
+            "target_path": metadata.get("target_path", ""),
+            "final_output_path": metadata.get("final_output_path", ""),
+            "upload_result": metadata.get("upload_result", {}),
+            "failure_reason": metadata.get("failure_reason", ""),
+            "source_lock_failures": metadata.get("source_lock_failures", []),
+            "local_cleanup_status": metadata.get("local_cleanup_status", ""),
+            "local_cleanup_error": metadata.get("local_cleanup_error", ""),
+            "remote_upload_verified": bool(metadata.get("remote_upload_verified")),
+            "source_action": metadata.get("source_action", ""),
+            "source_label": metadata.get("source_label", ""),
+        },
+    }
+
+
+def _serialize_asmr_sync_task_status(task, session_map: Dict[str, dict]) -> dict:
+    metadata = _task_metadata_with_redis_runtime(task)
+    status_value, progress, current_step = _task_runtime_response_values(task)
+    session_id = str(metadata.get("session_id") or "").strip()
+    session_state = session_map.get(session_id, {})
+    return {
+        "session_state": session_state,
+        "id": task.id,
+        "rjcode": metadata.get("rjcode", ""),
+        "actual_rjcode": metadata.get("actual_rjcode", ""),
+        "work_title": metadata.get("work_title", ""),
+        "source_label": metadata.get("source_label", ""),
+        "status": status_value,
+        "display_status": "partial_failed" if (status_value == "completed" and (metadata.get("failed_files") or metadata.get("verification_failures") or metadata.get("failure_reason"))) else status_value,
+        "progress": progress,
+        "current_step": current_step,
+        "error_message": task.error_message,
+        "created_at": task.created_at.isoformat() if getattr(task, "created_at", None) else None,
+        "started_at": task.started_at.isoformat() if getattr(task, "started_at", None) else None,
+        "completed_at": task.completed_at.isoformat() if getattr(task, "completed_at", None) else None,
+        "output_path": getattr(task, "output_path", ""),
+        "download_files": metadata.get("download_files", []),
+        "download_runtime": metadata.get("download_runtime", {}),
+        "upload_files": metadata.get("upload_files", []),
+        "upload_runtime": metadata.get("upload_runtime", {}),
+        "failed_files": metadata.get("failed_files", []),
+        "uploaded_files": metadata.get("uploaded_files", []),
+        "verification_failures": metadata.get("verification_failures", []),
+        "progress_log": metadata.get("progress_log", []),
+        "performance_metrics": metadata.get("performance_metrics", {}),
+        "sync_result": metadata.get("sync_result", {}),
+        "subtitle_moved_to": metadata.get("subtitle_moved_to", ""),
+        "download_mode": metadata.get("download_mode", "legacy"),
+        "session_id": session_id,
+        "queue_priority": metadata.get("queue_priority", metadata.get("priority", 100)),
+        "task_metadata": {
+            "retry_reason": metadata.get("retry_reason", ""),
+            "retry_count": metadata.get("retry_count", 0),
+            "retry_after": metadata.get("retry_after", ""),
+            "selected_resource_count": metadata.get("selected_resource_count", 0),
+            "selected_resources": metadata.get("selected_resources", []),
+            "verify_summary": metadata.get("verify_summary", {}),
+            "upload_summary": metadata.get("upload_summary", {}),
+            "retry_summary": metadata.get("retry_summary", {}),
+            "source_action": metadata.get("source_action", ""),
+            "circle_name": metadata.get("circle_name", ""),
+            "download_root": session_state.get("local_download_root") or metadata.get("download_root", ""),
+            "download_base_path": metadata.get("download_base_path", ""),
+            "final_output_path": metadata.get("final_output_path", ""),
+            "target_path": metadata.get("target_path", ""),
+            "failure_reason": metadata.get("failure_reason", ""),
+            "local_download_ready": session_state.get("local_download_ready", False),
+            "local_download_root": session_state.get("local_download_root", ""),
+            "local_downloaded_count": session_state.get("local_downloaded_count", 0),
+        }
+    }
+
+
+def _serialize_rj_subtitle_task_status(task) -> dict:
+    metadata = _task_metadata_with_redis_runtime(task)
+    status_value, progress, current_step = _task_runtime_response_values(task)
+    return {
+        "id": task.id,
+        "rjcode": metadata.get("rjcode", ""),
+        "actual_rjcode": metadata.get("actual_rjcode", ""),
+        "folder_name": metadata.get("folder_name", ""),
+        "folder_path": metadata.get("folder_path", task.source_path),
+        "library_id": metadata.get("library_id", ""),
+        "status": status_value,
+        "is_cancelled": task.is_cancelled(),
+        "progress": progress,
+        "current_step": current_step,
+        "error_message": task.error_message,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+        "started_at": task.started_at.isoformat() if task.started_at else None,
+        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+        "source_lang": metadata.get("source_lang", ""),
+        "source_work_type": metadata.get("source_work_type", ""),
+        "source_title": metadata.get("source_title", ""),
+        "source_mode": metadata.get("source_mode", ""),
+        "target_rjcode": metadata.get("target_rjcode", ""),
+        "target_folder_path": metadata.get("target_folder_path", ""),
+        "target_library_id": metadata.get("target_library_id", ""),
+        "subtitle_library_id": metadata.get("subtitle_library_id", metadata.get("library_id", "")),
+        "source_archive_path": metadata.get("source_archive_path", ""),
+        "source_subtitle_folder_path": metadata.get("source_subtitle_folder_path", ""),
+        "import_reason": metadata.get("import_reason", ""),
+        "kikoeru_checked_rjcode": metadata.get("kikoeru_checked_rjcode", ""),
+        "kikoeru_has_work": metadata.get("kikoeru_has_work", False),
+        "kikoeru_has_existing_subtitles": metadata.get("kikoeru_has_existing_subtitles", False),
+        "kikoeru_matched_rjcode": metadata.get("kikoeru_matched_rjcode", ""),
+        "kikoeru_subtitle_file_count": metadata.get("kikoeru_subtitle_file_count", 0),
+        "kikoeru_subtitle_check_source": metadata.get("kikoeru_subtitle_check_source", ""),
+        "downloaded_count": metadata.get("downloaded_count", 0),
+        "existing_subtitle_count": metadata.get("existing_subtitle_count", 0),
+        "subtitle_dir": metadata.get("subtitle_dir", ""),
+        "linked_workbench_root_dir": metadata.get("linked_workbench_root_dir", ""),
+        "written_files": metadata.get("written_files", []),
+        "skipped_files": metadata.get("skipped_files", []),
+        "write_errors": metadata.get("write_errors", []),
+        "failed_files": metadata.get("failed_files", []),
+        "match_result": metadata.get("match_result", {}),
+        "search_attempts": metadata.get("search_attempts", []),
+        "download_files": metadata.get("download_files", []),
+        "filtered_out_count": metadata.get("filtered_out_count", 0),
+        "content_deduped_count": metadata.get("content_deduped_count", 0),
+        "content_deduped_files": metadata.get("content_deduped_files", []),
+        "renamed_collision_files": metadata.get("renamed_collision_files", []),
+        "progress_log": metadata.get("progress_log", []),
+        "awaiting_manual_match": metadata.get("awaiting_manual_match", False),
+        "manual_match_completed": metadata.get("manual_match_completed", False),
+        "manual_match_applied_pairs": metadata.get("manual_match_applied_pairs", 0),
+        "manual_match_deleted_subtitles": metadata.get("manual_match_deleted_subtitles", 0),
+        "naming_strategy": metadata.get("naming_strategy", "audio"),
+        "linked_subtitle_cleanup_result": metadata.get("linked_subtitle_cleanup_result"),
     }
 
 
@@ -15756,6 +16101,33 @@ async def baidu_netdisk_retry_task(task_id: str):
         await get_baidu_netdisk_service().reset_task_for_retry(task)
     await engine.queue.put(task)
     return {"success": True, "message": "任务已加入重试队列"}
+
+
+@app.post("/api/baidu-netdisk/task/{task_id}/retry-file")
+async def baidu_netdisk_retry_task_file(task_id: str, request: BaiduNetdiskRetryFileRequest):
+    from ..core.baidu_netdisk_service import get_baidu_netdisk_service, sanitize_baidu_netdisk_item
+    from ..core.task_engine import TaskStatus, TaskType, get_task_engine
+
+    engine = get_task_engine()
+    task = engine.get_task(task_id)
+    if not task or task.type != TaskType.BAIDU_NETDISK_DOWNLOAD:
+        raise HTTPException(status_code=404, detail="百度网盘下载任务不存在")
+    if task.status in {TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.PAUSED}:
+        raise HTTPException(status_code=400, detail="任务仍在执行中，不能重试")
+
+    file_row = request.file if isinstance(request.file, dict) else {}
+    if not file_row:
+        raise HTTPException(status_code=400, detail="缺少要重试的百度网盘文件")
+
+    service = get_baidu_netdisk_service()
+    retry_items, retry_keys = service.build_retry_selection_for_file(task, file_row)
+    if not retry_items:
+        raise HTTPException(status_code=400, detail="无法识别要重试的百度网盘失败文件")
+
+    task.task_metadata["retry_file"] = sanitize_baidu_netdisk_item(file_row)
+    await service.reset_task_for_retry(task, retry_items=retry_items, retry_keys=retry_keys)
+    await engine.queue.put(task)
+    return {"success": True, "message": "该百度网盘文件已加入重试队列"}
 
 
 @app.post("/api/baidu-netdisk/account/test")
@@ -16803,8 +17175,15 @@ async def circle_completion_bonus_probe_start(request: CircleCompletionBonusProb
             raise ValueError("没有可探测的已索引发售日")
 
         gap_limit = max(1, int(request.gap_limit or 500))
-        batch_size = max(1, int(request.batch_size or 500))
-        concurrency = max(1, int(request.concurrency or 6))
+        batch_size = int(request.batch_size) if request.batch_size is not None else None
+        concurrency = int(request.concurrency) if request.concurrency is not None else None
+        runtime_limits = service.resolve_probe_runtime_limits(
+            mode=mode,
+            batch_size=batch_size,
+            concurrency=concurrency,
+        )
+        batch_size = int(runtime_limits["batch_size"])
+        concurrency = int(runtime_limits["concurrency"])
         requested_release_dates = list(release_dates)
         release_dates, skipped_completed_release_dates = service.split_reusable_release_dates(
             circle_id=circle_id,
@@ -16872,6 +17251,7 @@ async def circle_completion_bonus_probe_start(request: CircleCompletionBonusProb
                     "skipped_completed_release_dates": skipped_completed_release_dates,
                     "selected_rjcodes_by_date": selected_rjcodes_by_date,
                     "duplicate": True,
+                    "runtime_limits": runtime_limits,
                     "result": dict(metadata.get("bonus_probe_result") or {}),
                 }
 
@@ -16892,6 +17272,7 @@ async def circle_completion_bonus_probe_start(request: CircleCompletionBonusProb
                 "gap_limit": gap_limit,
                 "batch_size": batch_size,
                 "concurrency": concurrency,
+                "bonus_probe_runtime_limits": runtime_limits,
                 "task_domain": "circle_completion",
                 "source_page": "circle-completion",
                 "source_action": "bonus_probe",
@@ -16920,6 +17301,7 @@ async def circle_completion_bonus_probe_start(request: CircleCompletionBonusProb
             "skipped_completed_release_dates": skipped_completed_release_dates,
             "selected_rjcodes_by_date": selected_rjcodes_by_date,
             "duplicate": False,
+            "runtime_limits": runtime_limits,
             "result": {},
         }
     except ValueError as exc:
@@ -16937,7 +17319,8 @@ async def circle_completion_bonus_probe_job_status(job_id: str):
         task = get_task_engine().get_task(job_id)
         if task is None:
             raise ValueError("特典探测任务不存在")
-        metadata = dict(task.task_metadata or {})
+        metadata = _task_metadata_with_redis_runtime(task)
+        status_value, progress, current_step = _task_runtime_response_values(task)
         started_at = task.started_at or task.created_at
         finished_at = task.completed_at
         elapsed_seconds = 0.0
@@ -16946,9 +17329,9 @@ async def circle_completion_bonus_probe_job_status(job_id: str):
         return {
             "success": True,
             "job_id": task.id,
-            "status": task.status.value,
-            "progress": int(task.progress or 0),
-            "current_step": task.current_step,
+            "status": status_value,
+            "progress": progress,
+            "current_step": current_step,
             "circle_id": str(metadata.get("circle_id") or task.source_path or "").strip(),
             "circle_name": str(metadata.get("circle_name") or "").strip(),
             "maker_id": str(metadata.get("maker_id") or "").strip(),
@@ -17158,6 +17541,27 @@ async def circle_completion_work_codes(
     except Exception as exc:
         logger.error("查询社团补全作品编号失败: %s", sanitize_text_for_log(exc))
         raise HTTPException(status_code=500, detail=f"查询社团补全作品编号失败: {str(exc)}")
+
+
+@app.get("/api/circle-completion/circles/{circle_id}/bonus-work-codes")
+async def circle_completion_bonus_work_codes(
+    http_request: Request,
+    circle_id: str,
+):
+    from ..core.circle_completion_service import get_circle_completion_service
+
+    try:
+        http_request.state.slow_api_context = {
+            "circle_id": circle_id,
+            "view": "bonus_work_codes",
+        }
+        result = await get_circle_completion_service().list_circle_completion_bonus_work_codes(circle_id)
+        return {"success": True, **result}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("查询社团特典作品编号失败: %s", sanitize_text_for_log(exc))
+        raise HTTPException(status_code=500, detail=f"查询社团特典作品编号失败: {str(exc)}")
 
 
 @app.get("/api/circle-completion/circles/{circle_id}/work-location")
@@ -17783,57 +18187,7 @@ async def local_upload_status(task_ids: str = "", include_hidden: bool = True):
             "pending": len([t for t in upload_tasks if t.status.value == "pending"]),
             "completed": len([t for t in upload_tasks if t.status.value == "completed"]),
             "failed": len([t for t in upload_tasks if t.status.value == "failed"]),
-            "tasks": [
-                {
-                    "id": t.id,
-                    "status": t.status.value,
-                    "display_status": (
-                        "partial_failed"
-                        if (
-                            t.task_metadata.get("local_cleanup_status") == "failed"
-                            or t.task_metadata.get("verification_failures")
-                            or t.task_metadata.get("failed_files")
-                        )
-                        else t.status.value
-                    ),
-                    "progress": t.progress,
-                    "current_step": t.current_step,
-                    "error_message": t.error_message,
-                    "created_at": t.created_at.isoformat() if getattr(t, "created_at", None) else None,
-                    "started_at": t.started_at.isoformat() if getattr(t, "started_at", None) else None,
-                    "completed_at": t.completed_at.isoformat() if getattr(t, "completed_at", None) else None,
-                    "source_path": t.source_path,
-                    "output_path": getattr(t, "output_path", ""),
-                    "upload_files": t.task_metadata.get("upload_files", []),
-                    "uploaded_files": t.task_metadata.get("uploaded_files", []),
-                    "failed_files": t.task_metadata.get("failed_files", []),
-                    "verification_failures": t.task_metadata.get("verification_failures", []),
-                    "source_lock_failures": t.task_metadata.get("source_lock_failures", []),
-                    "upload_runtime": t.task_metadata.get("upload_runtime", {}),
-                    "progress_log": t.task_metadata.get("progress_log", []),
-                    "task_metadata": {
-                        "source_library_id": t.task_metadata.get("source_library_id", ""),
-                        "source_base_path": t.task_metadata.get("source_base_path", ""),
-                        "selected_paths": t.task_metadata.get("selected_paths", []),
-                        "selected_items": t.task_metadata.get("selected_items", []),
-                        "selected_dir_count": t.task_metadata.get("selected_dir_count", 0),
-                        "target_library_id": t.task_metadata.get("target_library_id", ""),
-                        "target_subdir": t.task_metadata.get("target_subdir", ""),
-                        "circle_name": t.task_metadata.get("circle_name", ""),
-                        "target_path": t.task_metadata.get("target_path", ""),
-                        "final_output_path": t.task_metadata.get("final_output_path", ""),
-                        "upload_result": t.task_metadata.get("upload_result", {}),
-                        "failure_reason": t.task_metadata.get("failure_reason", ""),
-                        "source_lock_failures": t.task_metadata.get("source_lock_failures", []),
-                        "local_cleanup_status": t.task_metadata.get("local_cleanup_status", ""),
-                        "local_cleanup_error": t.task_metadata.get("local_cleanup_error", ""),
-                        "remote_upload_verified": bool(t.task_metadata.get("remote_upload_verified")),
-                        "source_action": t.task_metadata.get("source_action", ""),
-                        "source_label": t.task_metadata.get("source_label", ""),
-                    },
-                }
-                for t in upload_tasks
-            ],
+            "tasks": [_serialize_local_upload_task_status(t) for t in upload_tasks],
         }
     except Exception as exc:
         logger.error("获取本地上传任务状态失败: %s", sanitize_text_for_log(exc))
@@ -17907,63 +18261,7 @@ async def asmr_sync_status():
             "completed": len([t for t in asmr_tasks if t.status.value == "completed"]),
             "failed": len([t for t in asmr_tasks if t.status.value == "failed"]),
             "waiting_retry": len([t for t in asmr_tasks if t.status.value == "waiting_retry"]),
-            "tasks": [
-                {
-                    "session_state": session_map.get(str(t.task_metadata.get("session_id") or "").strip(), {}),
-                    "id": t.id,
-                    "rjcode": t.task_metadata.get("rjcode", ""),
-                    "actual_rjcode": t.task_metadata.get("actual_rjcode", ""),
-                    "work_title": t.task_metadata.get("work_title", ""),
-                    "source_label": t.task_metadata.get("source_label", ""),
-                    "status": t.status.value,
-                    "display_status": "partial_failed" if (t.status.value == "completed" and (t.task_metadata.get("failed_files") or t.task_metadata.get("verification_failures") or t.task_metadata.get("failure_reason"))) else t.status.value,
-                    "progress": t.progress,
-                    "current_step": t.current_step,
-                    "error_message": t.error_message,
-                    "created_at": t.created_at.isoformat() if getattr(t, "created_at", None) else None,
-                    "started_at": t.started_at.isoformat() if getattr(t, "started_at", None) else None,
-                    "completed_at": t.completed_at.isoformat() if getattr(t, "completed_at", None) else None,
-                    "output_path": getattr(t, "output_path", ""),
-                    "download_files": t.task_metadata.get("download_files", []),
-                    "download_runtime": t.task_metadata.get("download_runtime", {}),
-                    "upload_files": t.task_metadata.get("upload_files", []),
-                    "upload_runtime": t.task_metadata.get("upload_runtime", {}),
-                    "failed_files": t.task_metadata.get("failed_files", []),
-                    "uploaded_files": t.task_metadata.get("uploaded_files", []),
-                    "verification_failures": t.task_metadata.get("verification_failures", []),
-                    "progress_log": t.task_metadata.get("progress_log", []),
-                    "performance_metrics": t.task_metadata.get("performance_metrics", {}),
-                    "sync_result": t.task_metadata.get("sync_result", {}),
-                    "subtitle_moved_to": t.task_metadata.get("subtitle_moved_to", ""),
-                    "download_mode": t.task_metadata.get("download_mode", "legacy"),
-                    "session_id": t.task_metadata.get("session_id", ""),
-                    "queue_priority": t.task_metadata.get("queue_priority", t.task_metadata.get("priority", 100)),
-                    "task_metadata": {
-                        "retry_reason": t.task_metadata.get("retry_reason", ""),
-                        "retry_count": t.task_metadata.get("retry_count", 0),
-                        "retry_after": t.task_metadata.get("retry_after", ""),
-                        "selected_resource_count": t.task_metadata.get("selected_resource_count", 0),
-                        "selected_resources": t.task_metadata.get("selected_resources", []),
-                        "verify_summary": t.task_metadata.get("verify_summary", {}),
-                        "upload_summary": t.task_metadata.get("upload_summary", {}),
-                        "retry_summary": t.task_metadata.get("retry_summary", {}),
-                        "source_action": t.task_metadata.get("source_action", ""),
-                        "circle_name": t.task_metadata.get("circle_name", ""),
-                        "download_root": (
-                            session_map.get(str(t.task_metadata.get("session_id") or "").strip(), {}).get("local_download_root")
-                            or t.task_metadata.get("download_root", "")
-                        ),
-                        "download_base_path": t.task_metadata.get("download_base_path", ""),
-                        "final_output_path": t.task_metadata.get("final_output_path", ""),
-                        "target_path": t.task_metadata.get("target_path", ""),
-                        "failure_reason": t.task_metadata.get("failure_reason", ""),
-                        "local_download_ready": session_map.get(str(t.task_metadata.get("session_id") or "").strip(), {}).get("local_download_ready", False),
-                        "local_download_root": session_map.get(str(t.task_metadata.get("session_id") or "").strip(), {}).get("local_download_root", ""),
-                        "local_downloaded_count": session_map.get(str(t.task_metadata.get("session_id") or "").strip(), {}).get("local_downloaded_count", 0),
-                    }
-                }
-                for t in asmr_tasks[:20]  # 只返回最近20个
-            ]
+            "tasks": [_serialize_asmr_sync_task_status(t, session_map) for t in asmr_tasks[:20]]
         }
 
     except Exception as e:

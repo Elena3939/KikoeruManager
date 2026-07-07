@@ -30,6 +30,30 @@ database:
   auto_explain_enabled: false
   auto_explain_threshold_ms: 1000
   search_backend: pg_trgm
+redis:
+  enabled: true
+  required: true
+  url: redis://localhost:6379/0
+  namespace: kikoerumanager
+  environment: prod
+  socket_timeout_seconds: 2.0
+  connect_timeout_seconds: 2.0
+  runtime_ttl_seconds: 259200
+  short_cache_ttl_seconds: 60
+  event_stream_maxlen: 50000
+  dirty_stream_maxlen: 200000
+bonus_probe:
+  max_active_jobs: 1
+  normal_batch_size: 100
+  normal_concurrency: 6
+  deep_batch_size: 200
+  deep_concurrency: 6
+  new_release_batch_size: 100
+  new_release_concurrency: 6
+  max_batch_size: 500
+  max_concurrency: 6
+  cache_lookup_batch_size: 500
+  cache_write_batch_size: 500
 watcher:
   enabled: false
   scan_interval: 30

@@ -222,8 +222,25 @@ export const configApi = {
     return response.data
   },
 
+  revealRedisSecret: async (payload) => {
+    const response = await apiClient.post('/config/redis/reveal-secret', payload)
+    return response.data
+  },
+
   revealAISubtitleSecret: async (payload) => {
     const response = await apiClient.post('/config/ai-subtitle-match/reveal-secret', payload)
+    return response.data
+  }
+}
+
+export const systemRuntimeApi = {
+  redisStatus: async () => {
+    const response = await apiClient.get('/system/redis/status')
+    return response.data
+  },
+
+  status: async () => {
+    const response = await apiClient.get('/system/runtime/status')
     return response.data
   }
 }
@@ -1925,6 +1942,11 @@ export const baiduNetdiskApi = {
     return response.data
   },
 
+  retryFile: async (taskId, file = {}) => {
+    const response = await apiClient.post(`/baidu-netdisk/task/${taskId}/retry-file`, { file })
+    return response.data
+  },
+
   testAccount: async (payload = {}) => {
     const response = await apiClient.post('/baidu-netdisk/account/test', {
       cookie: payload.cookie || '',
@@ -2373,6 +2395,13 @@ export const circleCompletionApi = {
         search: query.search || '',
         sort: query.sort || 'updated_desc'
       },
+      signal: options.signal
+    })
+    return response.data
+  },
+
+  getCircleBonusWorkCodes: async (circleId, options = {}) => {
+    const response = await apiClient.get(`/circle-completion/circles/${circleId}/bonus-work-codes`, {
       signal: options.signal
     })
     return response.data
