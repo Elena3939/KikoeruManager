@@ -2851,3 +2851,18 @@
 - `frontend/src/components/circle/CircleWorksViewport.vue`：卡片模式灰态和特典小卡状态改为 view model 预计算。
 - `progress.md`：追加本轮性能优化和验证记录。
 - 回滚方式：还原 `frontend/src/components/circle/CircleWorksViewport.vue` 本轮 view model 预计算相关 hunk，并删除本段进度记录。
+## 2026-07-08 - Task: 校正特典探测日期并发测试策略
+### What was done
+- 按当前发布策略保留 DLsite 特典探测默认 6 并发，不再把日期 worker 测试固定到保守 2 并发。
+- 更新特典探测日期并发测试名称和断言，让测试表达“按配置使用 6 个日期 worker”的行为。
+- 复核 Docker 单镜像 Redis 依赖已写入 `Dockerfile` 和 `docker/entrypoint.sh`，Docker 导入文件镜像版本已更新到 `1.6.72`。
+
+### Testing
+- `backend/` 下执行 `..\.venv\Scripts\python.exe -m pytest tests/test_dlsite_bonus_probe_service.py::test_probe_circle_dates_uses_configured_date_workers tests/test_routes_maintenance_config.py::test_redis_and_bonus_probe_defaults_use_parallel_probe_workers tests/test_routes_maintenance_config.py::test_update_config_validates_redis_and_bonus_probe -q --basetemp .pytest-codex-release-v172-fix3`：通过，3 passed。
+- `backend/` 下执行 `..\.venv\Scripts\python.exe -m pytest tests/test_redis_config.py tests/test_resource_budget_service.py tests/test_dlsite_bonus_probe_service.py tests/test_circle_completion_bonus_grouping.py tests/test_circle_completion_paged_view.py tests/test_baidu_netdisk_service.py tests/test_http_download_service.py tests/test_task_notification_service.py tests/test_routes_maintenance_config.py -q --basetemp .pytest-codex-release-v172-full`：通过，257 passed。
+- `frontend/` 下此前已执行 `npm run build`：通过，仅有既有 chunk size / lottie eval warning。
+
+### Notes
+- `backend/tests/test_dlsite_bonus_probe_service.py`：特典日期探测并发测试改为验证配置的 6 worker 生效。
+- `progress.md`：追加本轮测试策略校正和验证记录。
+- 回滚方式：还原 `backend/tests/test_dlsite_bonus_probe_service.py` 本轮测试名称与断言 hunk，并删除本段进度记录。

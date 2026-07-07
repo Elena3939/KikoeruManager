@@ -620,7 +620,7 @@ async def test_load_or_probe_features_counts_500_rj_batch_as_one_request(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_probe_circle_dates_clamps_date_workers_to_config_limit(monkeypatch) -> None:
+async def test_probe_circle_dates_uses_configured_date_workers(monkeypatch) -> None:
     service = _service()
     monkeypatch.setattr(
         service,
@@ -662,7 +662,7 @@ async def test_probe_circle_dates_clamps_date_workers_to_config_limit(monkeypatc
         concurrency=6,
     )
 
-    assert max_active == 2
+    assert max_active == 6
     assert result["date_count"] == 8
     assert [item["release_date"] for item in result["dates"]] == [f"2025-06-{day:02d}" for day in range(1, 9)]
 
