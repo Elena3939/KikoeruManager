@@ -946,6 +946,55 @@ def test_pikpak_status_uses_persisted_cache_by_default(monkeypatch, tmp_path):
     assert result["total_remaining_bytes"] == 60
 
 
+def test_pikpak_status_returns_stale_cache_and_refreshes_background(monkeypatch, tmp_path):
+    bind_config(
+        monkeypatch,
+        tmp_path,
+        pikpak_enabled=True,
+        pikpak_accounts=[{
+            "id": "first",
+            "label": "一号",
+            "username": "first@example.com",
+            "password": "pass",
+        }],
+    )
+    service = HttpDownloadService()
+    monkeypatch.setattr(service, "_pikpak_status_cache_delete_missing", lambda _ids: None)
+    refreshes = []
+
+    def cached_status(account, *, require_fresh=True):
+        if require_fresh:
+            return None
+        return {
+            "success": True,
+            "enabled": True,
+            "ready": True,
+            "account": service._pikpak_account_public(account),
+            "account_id": account.id,
+            "account_label": account.label,
+            "transfer_dir": account.transfer_dir,
+            "quota": {"limit_bytes": 100, "usage_bytes": 50, "remaining_bytes": 50},
+            "source": "cache",
+            "cached": True,
+            "cache_updated_at": "2026-01-01T00:00:00",
+        }
+
+    async def live_status(*_args, **_kwargs):
+        raise AssertionError("有 stale cache 时普通状态请求不应该同步等待 PikPak")
+
+    monkeypatch.setattr(service, "_pikpak_status_cache_read", cached_status)
+    monkeypatch.setattr(service, "_pikpak_account_status", live_status)
+    monkeypatch.setattr(service, "_start_pikpak_status_background_refresh", lambda account: refreshes.append(account.id))
+
+    result = asyncio.run(service.pikpak_status())
+
+    assert result["success"] is True
+    assert result["stale"] is True
+    assert result["refreshing"] is True
+    assert result["accounts"][0]["stale"] is True
+    assert refreshes == ["first"]
+
+
 def test_pikpak_status_force_refresh_bypasses_cache(monkeypatch, tmp_path):
     bind_config(
         monkeypatch,
